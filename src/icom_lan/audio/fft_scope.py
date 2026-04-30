@@ -22,7 +22,7 @@ import logging
 import time
 from typing import Any, Callable
 
-from .scope import ScopeFrame
+from icom_lan.scope import ScopeFrame
 
 __all__ = ["AudioFftScope"]
 
@@ -41,7 +41,7 @@ _DB_CEIL = -15.0  # clipping level dB
 
 def _import_numpy() -> Any:
     """Lazy-import numpy to avoid hard dependency at module level."""
-    from ._optional_deps import _require_numpy
+    from icom_lan._optional_deps import _require_numpy
 
     _require_numpy()
     import numpy as np

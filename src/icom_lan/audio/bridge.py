@@ -38,10 +38,11 @@ from typing import TYPE_CHECKING, Any, Callable
 
 import math
 
+from icom_lan._optional_deps import _require_opuslib, _require_sounddevice
+
 from ._bridge_metrics import BridgeMetrics
 from ._bridge_state import BridgeState, BridgeStateChange
-from ._optional_deps import _require_opuslib, _require_sounddevice
-from .audio.backend import (
+from .backend import (
     AudioBackend,
     AudioDeviceInfo,
     PortAudioBackend,
@@ -50,7 +51,7 @@ from .audio.backend import (
 )
 
 if TYPE_CHECKING:
-    from .radio_protocol import AudioCapable
+    from icom_lan.radio_protocol import AudioCapable
 
 logger = logging.getLogger(__name__)
 
@@ -398,7 +399,7 @@ class AudioBridge:
         await self._rx_stream.start()
 
         # Codec detection
-        from .types import AudioCodec
+        from icom_lan.types import AudioCodec
 
         _codec = getattr(self._radio, "audio_codec", None)
         self._is_opus = isinstance(_codec, AudioCodec) and _codec in (
