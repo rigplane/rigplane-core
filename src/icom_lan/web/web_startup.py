@@ -12,7 +12,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from pathlib import Path
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING, Any, cast
 
 from ..radio_state import RadioState
 from ..startup_checks import assert_radio_startup_ready
@@ -84,20 +84,17 @@ async def start_web_server(server: WebServer) -> None:
     if server._radio is not None:
         from ..radio_protocol import StateNotifyCapable
 
-        # --- Yaesu CAT backend: use YaesuCatPoller (request-response) ---
-        _is_yaesu = getattr(server._radio, "backend_id", None) == "yaesu_cat"
-
-        if _is_yaesu:
-            from ..backends.yaesu_cat.poller import YaesuCatPoller
+        # --- Yaesu CAT backend: use radio.create_state_poller (request-response) ---
+        if getattr(server._radio, "backend_id", None) == "yaesu_cat":
 
             def _yaesu_state_cb(state: RadioState) -> None:
                 server._radio_state = state
                 server._broadcast_state_update()
 
-            from ..backends.yaesu_cat.radio import YaesuCatRadio as _YaesuCatRadio
-
-            server._yaesu_poller = YaesuCatPoller(
-                cast(_YaesuCatRadio, server._radio),
+            # ``create_state_poller`` is a YaesuCatRadio-specific factory; the
+            # generic ``Radio`` protocol does not declare it, so cast to Any
+            # to express the duck-typed call without importing the concrete.
+            server._yaesu_poller = cast(Any, server._radio).create_state_poller(
                 callback=_yaesu_state_cb,
                 command_queue=server._command_queue,
             )

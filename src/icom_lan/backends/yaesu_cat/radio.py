@@ -22,10 +22,12 @@ from .parser import CatCommandParser, format_command
 from .transport import YaesuCatTransport
 
 if TYPE_CHECKING:
+    from ..._poller_types import CommandQueue
     from ...audio.usb_driver import UsbAudioDriver
     from ...audio_bus import AudioBus
     from ...profiles import RadioProfile
     from ...types import BandStackRegister, MemoryChannel
+    from .poller import YaesuCatPoller
 
 __all__ = ["YaesuCatRadio"]
 
@@ -1898,3 +1900,37 @@ class YaesuCatRadio:
 
     async def set_bsr(self, bsr: "BandStackRegister") -> None:
         raise NotImplementedError("Band stack register not supported on this radio")
+
+    def create_state_poller(
+        self,
+        *,
+        callback: Callable[[RadioState], None],
+        command_queue: "CommandQueue | None" = None,
+    ) -> "YaesuCatPoller":
+        """Construct a request-response state poller for this radio.
+
+        Used by the web layer to drive periodic state-change broadcasts
+        without depending on backend internals. Returns a
+        :class:`YaesuCatPoller` instance — the caller is responsible
+        for awaiting/spawning ``.start()``.
+
+        The lazy import keeps :class:`YaesuCatRadio` from depending on
+        its own poller at module-load time (the poller imports the
+        radio, so a top-level import here would be a cycle).
+
+        Args:
+            callback: Invoked with the current :class:`RadioState`
+                after every successful poll.
+            command_queue: Optional outbound command queue drained on
+                each poll cycle.
+
+        Returns:
+            A :class:`YaesuCatPoller` bound to this radio.
+        """
+        from .poller import YaesuCatPoller
+
+        return YaesuCatPoller(
+            self,
+            callback=callback,
+            command_queue=command_queue,
+        )

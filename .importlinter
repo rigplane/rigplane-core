@@ -16,8 +16,6 @@ layers =
 ignore_imports =
     icom_lan.core.radio_protocol -> icom_lan.audio_bus
     icom_lan.core.radio_protocol -> icom_lan.scope
-    icom_lan.web.web_startup -> icom_lan.backends.yaesu_cat.poller
-    icom_lan.web.web_startup -> icom_lan.backends.yaesu_cat.radio
 
 [importlinter:contract:independence-top]
 name = top siblings must not depend on each other
