@@ -1,41 +1,23 @@
-"""Bridge connection state machine.
+"""Re-export shim for backwards compatibility.
 
-State diagram::
+Canonical location: icom_lan.audio._bridge_state
+Do not add new symbols here -- add them at the canonical location.
 
-                     start()
-    IDLE ─────────────────────────► CONNECTING
-                                        │
-                      streams opened    │    error
-                            ┌───────────┘       │
-                            ▼                   ▼
-                        RUNNING ──────► RECONNECTING
-                            ▲    stream      │
-                            │     error      │  max_retries exhausted
-                            │                ▼
-                            │              FAILED
-                            │
-                  reconnect success ◄── backoff sleep
+This file uses the sys.modules-alias pattern: importing this shim
+makes ``icom_lan._bridge_state`` literally the same module object as
+``icom_lan.audio._bridge_state``. This preserves attribute walks (incl.
+stdlib names not in ``__all__``) and monkeypatch targets.
+
+The two import lines below are BOTH load-bearing -- do not remove
+either:
+
+* ``from icom_lan.audio._bridge_state import *`` -- static-analysis adapter.
+* ``sys.modules[__name__] = _canonical`` -- the runtime invariant.
 """
 
-from __future__ import annotations
+import sys
 
-import dataclasses
-import enum
+from icom_lan.audio._bridge_state import *  # noqa: F401, F403
+import icom_lan.audio._bridge_state as _canonical
 
-__all__ = ["BridgeState", "BridgeStateChange"]
-
-
-class BridgeState(enum.Enum):
-    IDLE = "idle"
-    CONNECTING = "connecting"
-    RUNNING = "running"
-    RECONNECTING = "reconnecting"
-    FAILED = "failed"
-
-
-@dataclasses.dataclass(frozen=True, slots=True)
-class BridgeStateChange:
-    previous: BridgeState
-    current: BridgeState
-    reason: str
-    attempt: int = 0
+sys.modules[__name__] = _canonical

@@ -1,51 +1,23 @@
-"""BridgeMetrics — structured audio bridge telemetry."""
+"""Re-export shim for backwards compatibility.
 
-from __future__ import annotations
+Canonical location: icom_lan.audio._bridge_metrics
+Do not add new symbols here -- add them at the canonical location.
 
-import dataclasses
-from typing import Any
+This file uses the sys.modules-alias pattern: importing this shim
+makes ``icom_lan._bridge_metrics`` literally the same module object as
+``icom_lan.audio._bridge_metrics``. This preserves attribute walks (incl.
+stdlib names not in ``__all__``) and monkeypatch targets.
 
-__all__ = ["BridgeMetrics"]
+The two import lines below are BOTH load-bearing -- do not remove
+either:
 
+* ``from icom_lan.audio._bridge_metrics import *`` -- static-analysis adapter.
+* ``sys.modules[__name__] = _canonical`` -- the runtime invariant.
+"""
 
-@dataclasses.dataclass(slots=True)
-class BridgeMetrics:
-    """Audio bridge telemetry snapshot.
+import sys
 
-    All timing values are in seconds (float) or milliseconds (float)
-    as indicated by the field name suffix.
-    """
+from icom_lan.audio._bridge_metrics import *  # noqa: F401, F403
+import icom_lan.audio._bridge_metrics as _canonical
 
-    running: bool = False
-    label: str = ""
-    bridge_state: str = "idle"
-    reconnect_attempt: int = 0
-
-    # Frame counters
-    rx_frames: int = 0
-    tx_frames: int = 0
-    rx_drops: int = 0
-
-    # Underrun / overrun
-    rx_underruns: int = 0
-    tx_overruns: int = 0
-
-    # Timing
-    uptime_seconds: float = 0.0
-    rx_interval_ms: float = 0.0
-    tx_interval_ms: float = 0.0
-
-    # Jitter (standard deviation of inter-frame interval)
-    rx_jitter_ms: float = 0.0
-    tx_jitter_ms: float = 0.0
-
-    # Audio levels (RMS in dBFS, 0.0 = full scale)
-    rx_level_dbfs: float = -96.0
-    tx_level_dbfs: float = -96.0
-
-    # Latency sample buffer size
-    buffer_size: int = 0
-
-    def to_dict(self) -> dict[str, Any]:
-        """Serialize to a plain dict (JSON-safe)."""
-        return dataclasses.asdict(self)
+sys.modules[__name__] = _canonical
