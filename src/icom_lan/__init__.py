@@ -80,27 +80,27 @@ from .types import AudioCodec, BreakInMode, Mode  # noqa: F401
 # Format: name -> (module, attribute)
 _LAZY_MAP: dict[str, tuple[str, str]] = {
     # --- Backward-compat radio facades ---
-    "IcomRadio": ("icom_lan.radio", "IcomRadio"),
-    "AudioRecoveryState": ("icom_lan.radio", "AudioRecoveryState"),
+    "IcomRadio": ("icom_lan.runtime.radio", "IcomRadio"),
+    "AudioRecoveryState": ("icom_lan.runtime.radio", "AudioRecoveryState"),
     # --- CI-V commander internals ---
-    "IcomCommander": ("icom_lan.commander", "IcomCommander"),
-    "Priority": ("icom_lan.commander", "Priority"),
+    "IcomCommander": ("icom_lan.commands.commander", "IcomCommander"),
+    "Priority": ("icom_lan.commands.commander", "Priority"),
     # --- Connection / transport ---
-    "ConnectionState": ("icom_lan.transport", "ConnectionState"),
-    "IcomTransport": ("icom_lan.transport", "IcomTransport"),
-    "RadioConnectionState": ("icom_lan._connection_state", "RadioConnectionState"),
+    "ConnectionState": ("icom_lan.core.transport", "ConnectionState"),
+    "IcomTransport": ("icom_lan.core.transport", "IcomTransport"),
+    "RadioConnectionState": ("icom_lan.runtime._connection_state", "RadioConnectionState"),
     # --- Auth helpers ---
-    "AuthResponse": ("icom_lan.auth", "AuthResponse"),
-    "StatusResponse": ("icom_lan.auth", "StatusResponse"),
-    "build_conninfo_packet": ("icom_lan.auth", "build_conninfo_packet"),
-    "build_login_packet": ("icom_lan.auth", "build_login_packet"),
-    "encode_credentials": ("icom_lan.auth", "encode_credentials"),
-    "parse_auth_response": ("icom_lan.auth", "parse_auth_response"),
-    "parse_status_response": ("icom_lan.auth", "parse_status_response"),
+    "AuthResponse": ("icom_lan.core.auth", "AuthResponse"),
+    "StatusResponse": ("icom_lan.core.auth", "StatusResponse"),
+    "build_conninfo_packet": ("icom_lan.core.auth", "build_conninfo_packet"),
+    "build_login_packet": ("icom_lan.core.auth", "build_login_packet"),
+    "encode_credentials": ("icom_lan.core.auth", "encode_credentials"),
+    "parse_auth_response": ("icom_lan.core.auth", "parse_auth_response"),
+    "parse_status_response": ("icom_lan.core.auth", "parse_status_response"),
     # --- Wire-protocol helpers ---
-    "identify_packet_type": ("icom_lan.protocol", "identify_packet_type"),
-    "parse_header": ("icom_lan.protocol", "parse_header"),
-    "serialize_header": ("icom_lan.protocol", "serialize_header"),
+    "identify_packet_type": ("icom_lan.core.protocol", "identify_packet_type"),
+    "parse_header": ("icom_lan.core.protocol", "parse_header"),
+    "serialize_header": ("icom_lan.core.protocol", "serialize_header"),
     # --- Audio (LAN stream) ---
     "AUDIO_HEADER_SIZE": ("icom_lan.audio", "AUDIO_HEADER_SIZE"),
     "AudioPacket": ("icom_lan.audio", "AudioPacket"),
@@ -121,21 +121,21 @@ _LAZY_MAP: dict[str, tuple[str, str]] = {
     # --- Profiles / runtime profiles ---
     "get_radio_profile": ("icom_lan.profiles", "get_radio_profile"),
     "resolve_radio_profile": ("icom_lan.profiles", "resolve_radio_profile"),
-    "OperatingProfile": ("icom_lan.profiles_runtime", "OperatingProfile"),
-    "apply_profile": ("icom_lan.profiles_runtime", "apply_profile"),
-    "PRESETS": ("icom_lan.profiles_runtime", "PRESETS"),
+    "OperatingProfile": ("icom_lan.runtime.profiles_runtime", "OperatingProfile"),
+    "apply_profile": ("icom_lan.runtime.profiles_runtime", "apply_profile"),
+    "PRESETS": ("icom_lan.runtime.profiles_runtime", "PRESETS"),
     # --- Radio model registry ---
-    "RADIOS": ("icom_lan.radios", "RADIOS"),
-    "RadioModel": ("icom_lan.radios", "RadioModel"),
-    "get_civ_addr": ("icom_lan.radios", "get_civ_addr"),
-    "IC_7610_ADDR": ("icom_lan.radios", "IC_7610_ADDR"),
+    "RADIOS": ("icom_lan.runtime.radios", "RADIOS"),
+    "RadioModel": ("icom_lan.runtime.radios", "RadioModel"),
+    "get_civ_addr": ("icom_lan.runtime.radios", "get_civ_addr"),
+    "IC_7610_ADDR": ("icom_lan.runtime.radios", "IC_7610_ADDR"),
     # --- IC-705 helpers ---
     "prepare_ic705_data_profile": (
-        "icom_lan.ic705",
+        "icom_lan.runtime.ic705",
         "prepare_ic705_data_profile",
     ),
     "restore_ic705_data_profile": (
-        "icom_lan.ic705",
+        "icom_lan.runtime.ic705",
         "restore_ic705_data_profile",
     ),
     # --- CI-V command helpers (subset historically re-exported) ---
@@ -203,22 +203,22 @@ _LAZY_MAP: dict[str, tuple[str, str]] = {
     "ScopeAssembler": ("icom_lan.scope", "ScopeAssembler"),
     "ScopeFrame": ("icom_lan.scope", "ScopeFrame"),
     # --- Scope rendering (optional Pillow dep — handled by ImportError below) ---
-    "SCOPE_THEMES": ("icom_lan.scope_render", "THEMES"),
-    "amplitude_to_color": ("icom_lan.scope_render", "amplitude_to_color"),
-    "render_scope_image": ("icom_lan.scope_render", "render_scope_image"),
-    "render_spectrum": ("icom_lan.scope_render", "render_spectrum"),
-    "render_waterfall": ("icom_lan.scope_render", "render_waterfall"),
+    "SCOPE_THEMES": ("icom_lan.scope.render", "THEMES"),
+    "amplitude_to_color": ("icom_lan.scope.render", "amplitude_to_color"),
+    "render_scope_image": ("icom_lan.scope.render", "render_scope_image"),
+    "render_spectrum": ("icom_lan.scope.render", "render_spectrum"),
+    "render_waterfall": ("icom_lan.scope.render", "render_waterfall"),
     # --- Public types not in tier-1 ---
-    "HEADER_SIZE": ("icom_lan.types", "HEADER_SIZE"),
-    "AudioCapabilities": ("icom_lan.types", "AudioCapabilities"),
-    "CivFrame": ("icom_lan.types", "CivFrame"),
-    "PacketHeader": ("icom_lan.types", "PacketHeader"),
-    "PacketType": ("icom_lan.types", "PacketType"),
-    "ScopeCompletionPolicy": ("icom_lan.types", "ScopeCompletionPolicy"),
-    "ScopeFixedEdge": ("icom_lan.types", "ScopeFixedEdge"),
-    "bcd_decode": ("icom_lan.types", "bcd_decode"),
-    "bcd_encode": ("icom_lan.types", "bcd_encode"),
-    "get_audio_capabilities": ("icom_lan.types", "get_audio_capabilities"),
+    "HEADER_SIZE": ("icom_lan.core.types", "HEADER_SIZE"),
+    "AudioCapabilities": ("icom_lan.core.types", "AudioCapabilities"),
+    "CivFrame": ("icom_lan.core.types", "CivFrame"),
+    "PacketHeader": ("icom_lan.core.types", "PacketHeader"),
+    "PacketType": ("icom_lan.core.types", "PacketType"),
+    "ScopeCompletionPolicy": ("icom_lan.core.types", "ScopeCompletionPolicy"),
+    "ScopeFixedEdge": ("icom_lan.core.types", "ScopeFixedEdge"),
+    "bcd_decode": ("icom_lan.core.types", "bcd_decode"),
+    "bcd_encode": ("icom_lan.core.types", "bcd_encode"),
+    "get_audio_capabilities": ("icom_lan.core.types", "get_audio_capabilities"),
 }
 
 
