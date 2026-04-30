@@ -12,16 +12,17 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from typing import Callable
 
-    from .audio import AudioPacket
+    from icom_lan.audio import AudioPacket
+
     from .radio import CoreRadio as _MixinBase  # type: ignore[attr-defined]
 else:
     _MixinBase = object
 
-from ._audio_transcoder import PcmOpusTranscoder, create_pcm_opus_transcoder
-from .audio import AudioStats, AudioStream
-from .exceptions import ConnectionError
-from .transport import IcomTransport
-from .types import AudioCodec
+from icom_lan._audio_transcoder import PcmOpusTranscoder, create_pcm_opus_transcoder
+from icom_lan.audio import AudioStats, AudioStream
+from icom_lan.exceptions import ConnectionError
+from icom_lan.transport import IcomTransport
+from icom_lan.types import AudioCodec
 
 logger = logging.getLogger(__name__)
 

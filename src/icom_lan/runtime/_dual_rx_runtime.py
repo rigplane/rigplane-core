@@ -16,7 +16,7 @@ if TYPE_CHECKING:
 else:
     _MixinBase = object
 
-from .commands import (
+from icom_lan.commands import (
     CONTROLLER_ADDR,
     RECEIVER_MAIN,
     build_civ_frame,
@@ -27,14 +27,14 @@ from .commands import (
     set_freq,
     set_mode,
 )
-from .commands import get_selected_freq as _get_selected_freq_cmd
-from .commands import get_selected_mode as _get_selected_mode_cmd
-from .commands import get_unselected_freq as _get_unselected_freq_cmd
-from .commands import get_unselected_mode as _get_unselected_mode_cmd
-from .commands import parse_selected_freq_response as _parse_selected_freq_response
-from .commands import parse_selected_mode_response as _parse_selected_mode_response
-from .exceptions import CommandError, TimeoutError
-from .types import Mode
+from icom_lan.commands import get_selected_freq as _get_selected_freq_cmd
+from icom_lan.commands import get_selected_mode as _get_selected_mode_cmd
+from icom_lan.commands import get_unselected_freq as _get_unselected_freq_cmd
+from icom_lan.commands import get_unselected_mode as _get_unselected_mode_cmd
+from icom_lan.commands import parse_selected_freq_response as _parse_selected_freq_response
+from icom_lan.commands import parse_selected_mode_response as _parse_selected_mode_response
+from icom_lan.exceptions import CommandError, TimeoutError
+from icom_lan.types import Mode
 
 # CI-V command byte for VFO select / equal / swap (0x07).
 _CMD_VFO = 0x07

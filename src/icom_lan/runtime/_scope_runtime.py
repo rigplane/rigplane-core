@@ -17,7 +17,7 @@ if TYPE_CHECKING:
 else:
     _MixinBase = object
 
-from .commands import (
+from icom_lan.commands import (
     parse_ack_nak,
     parse_civ_frame,
     parse_scope_center_type_response,
@@ -34,38 +34,38 @@ from .commands import (
     parse_scope_speed_response,
     parse_scope_vbw_response,
 )
-from .commands import get_scope_center_type as _get_scope_center_type_cmd
-from .commands import get_scope_during_tx as _get_scope_during_tx_cmd
-from .commands import get_scope_edge as _get_scope_edge_cmd
-from .commands import get_scope_fixed_edge as _get_scope_fixed_edge_cmd
-from .commands import get_scope_hold as _get_scope_hold_cmd
-from .commands import get_scope_main_sub as _get_scope_main_sub_cmd
-from .commands import get_scope_mode as _get_scope_mode_cmd
-from .commands import get_scope_rbw as _get_scope_rbw_cmd
-from .commands import get_scope_ref as _get_scope_ref_cmd
-from .commands import get_scope_single_dual as _get_scope_single_dual_cmd
-from .commands import get_scope_span as _get_scope_span_cmd
-from .commands import get_scope_speed as _get_scope_speed_cmd
-from .commands import get_scope_vbw as _get_scope_vbw_cmd
-from .commands import scope_data_output as _scope_data_output_cmd
-from .commands import scope_main_sub as _scope_main_sub_cmd
-from .commands import scope_on as _scope_on_cmd
-from .commands import scope_set_center_type as _scope_set_center_type_cmd
-from .commands import scope_set_during_tx as _scope_set_during_tx_cmd
-from .commands import scope_set_edge as _scope_set_edge_cmd
-from .commands import scope_set_fixed_edge as _scope_set_fixed_edge_cmd
-from .commands import scope_set_hold as _scope_set_hold_cmd
-from .commands import scope_set_mode as _scope_set_mode_cmd
-from .commands import scope_set_rbw as _scope_set_rbw_cmd
-from .commands import scope_set_ref as _scope_set_ref_cmd
-from .commands import scope_set_span as _scope_set_span_cmd
-from .commands import scope_set_speed as _scope_set_speed_cmd
-from .commands import scope_set_vbw as _scope_set_vbw_cmd
-from .commands import scope_single_dual as _scope_single_dual_cmd
-from .exceptions import CommandError, TimeoutError
-from .radio_state import ScopeControlsState
-from .scope import ScopeFrame
-from .types import ScopeCompletionPolicy, ScopeFixedEdge
+from icom_lan.commands import get_scope_center_type as _get_scope_center_type_cmd
+from icom_lan.commands import get_scope_during_tx as _get_scope_during_tx_cmd
+from icom_lan.commands import get_scope_edge as _get_scope_edge_cmd
+from icom_lan.commands import get_scope_fixed_edge as _get_scope_fixed_edge_cmd
+from icom_lan.commands import get_scope_hold as _get_scope_hold_cmd
+from icom_lan.commands import get_scope_main_sub as _get_scope_main_sub_cmd
+from icom_lan.commands import get_scope_mode as _get_scope_mode_cmd
+from icom_lan.commands import get_scope_rbw as _get_scope_rbw_cmd
+from icom_lan.commands import get_scope_ref as _get_scope_ref_cmd
+from icom_lan.commands import get_scope_single_dual as _get_scope_single_dual_cmd
+from icom_lan.commands import get_scope_span as _get_scope_span_cmd
+from icom_lan.commands import get_scope_speed as _get_scope_speed_cmd
+from icom_lan.commands import get_scope_vbw as _get_scope_vbw_cmd
+from icom_lan.commands import scope_data_output as _scope_data_output_cmd
+from icom_lan.commands import scope_main_sub as _scope_main_sub_cmd
+from icom_lan.commands import scope_on as _scope_on_cmd
+from icom_lan.commands import scope_set_center_type as _scope_set_center_type_cmd
+from icom_lan.commands import scope_set_during_tx as _scope_set_during_tx_cmd
+from icom_lan.commands import scope_set_edge as _scope_set_edge_cmd
+from icom_lan.commands import scope_set_fixed_edge as _scope_set_fixed_edge_cmd
+from icom_lan.commands import scope_set_hold as _scope_set_hold_cmd
+from icom_lan.commands import scope_set_mode as _scope_set_mode_cmd
+from icom_lan.commands import scope_set_rbw as _scope_set_rbw_cmd
+from icom_lan.commands import scope_set_ref as _scope_set_ref_cmd
+from icom_lan.commands import scope_set_span as _scope_set_span_cmd
+from icom_lan.commands import scope_set_speed as _scope_set_speed_cmd
+from icom_lan.commands import scope_set_vbw as _scope_set_vbw_cmd
+from icom_lan.commands import scope_single_dual as _scope_single_dual_cmd
+from icom_lan.exceptions import CommandError, TimeoutError
+from icom_lan.radio_state import ScopeControlsState
+from icom_lan.scope import ScopeFrame
+from icom_lan.types import ScopeCompletionPolicy, ScopeFixedEdge
 
 logger = logging.getLogger(__name__)
 
