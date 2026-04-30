@@ -9,12 +9,12 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from .capabilities import KNOWN_CAPABILITIES
-from .command_map import CommandMap
+from icom_lan.capabilities import KNOWN_CAPABILITIES
+from icom_lan.command_map import CommandMap
 
 __all__ = ["RigConfig", "RigLoadError", "load_rig", "discover_rigs"]
-from .command_spec import CatCommandSpec, CivCommandSpec, CommandSpec
-from .profiles import (
+from icom_lan.command_spec import CatCommandSpec, CivCommandSpec, CommandSpec
+from icom_lan.profiles import (
     BandInfo,
     ControlSpec,
     FilterWidthRule,
