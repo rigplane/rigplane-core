@@ -57,6 +57,9 @@ jobs:
       - name: Type-check web boundary
         run: uv run mypy --strict src/icom_lan/web
 
+      - name: Lint architecture (import-linter)
+        run: uv run lint-imports
+
       - name: Run tests
         id: tests
         run: |

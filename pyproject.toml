@@ -56,6 +56,7 @@ dev = ["pytest", "pytest-asyncio", "pytest-cov", "pytest-timeout", "ruff", "mypy
 [dependency-groups]
 dev = [
     "aiohttp>=3.13.3",
+    "import-linter>=2.0,<3",
     "mkdocs-material>=9.7.3",
     "mkdocstrings[python]>=1.0.3",
     "mypy>=1.18.1",

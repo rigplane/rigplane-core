@@ -1,0 +1,42 @@
+[importlinter]
+root_packages =
+    icom_lan
+
+[importlinter:contract:layers]
+name = icom-lan layered architecture
+type = layers
+layers =
+    icom_lan.cli
+    icom_lan.web | icom_lan.rigctld
+    icom_lan.backends
+    icom_lan.runtime
+    icom_lan.profiles | icom_lan.audio
+    icom_lan.commands | icom_lan.scope | icom_lan.dsp
+    icom_lan.core
+ignore_imports =
+    icom_lan.core.radio_protocol -> icom_lan.audio_bus
+    icom_lan.core.radio_protocol -> icom_lan.scope
+    icom_lan.web.web_startup -> icom_lan.backends.yaesu_cat.poller
+    icom_lan.web.web_startup -> icom_lan.backends.yaesu_cat.radio
+
+[importlinter:contract:independence-top]
+name = top siblings must not depend on each other
+type = independence
+modules =
+    icom_lan.web
+    icom_lan.rigctld
+
+[importlinter:contract:independence-mid]
+name = mid-tier siblings must not depend on each other
+type = independence
+modules =
+    icom_lan.profiles
+    icom_lan.audio
+
+[importlinter:contract:independence-low]
+name = low-tier siblings must not depend on each other
+type = independence
+modules =
+    icom_lan.commands
+    icom_lan.scope
+    icom_lan.dsp
