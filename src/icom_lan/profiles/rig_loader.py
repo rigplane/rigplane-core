@@ -757,7 +757,7 @@ def load_rig(path: Path) -> RigConfig:
                     f"{filename}: [audio].codec_preference must not be empty"
                 )
             # Validate entries against AudioCodec enum to fail fast on typos.
-            from .types import AudioCodec
+            from icom_lan.types import AudioCodec
 
             valid_names = {c.name for c in AudioCodec}
             unknown = [c for c in codec_raw if c not in valid_names]
