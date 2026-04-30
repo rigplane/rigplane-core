@@ -47,6 +47,8 @@ TIER1_NAMES = [
     "SplitCapable",
     "StateCacheCapable",
     "StateNotifyCapable",
+    "StatePollable",
+    "StatePoller",
     "SystemControlCapable",
     "TransceiverBankCapable",
     "TransceiverStatusCapable",

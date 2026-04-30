@@ -57,6 +57,7 @@ from .types import AudioCodec, BreakInMode, Mode
 if TYPE_CHECKING:
     from ._state_cache import StateCache
     from icom_lan.audio_bus import AudioBus
+    from icom_lan.runtime._poller_types import CommandQueue
     from icom_lan.scope import ScopeFrame
     from .types import BandStackRegister, MemoryChannel, ScopeFixedEdge
 
@@ -85,6 +86,8 @@ __all__ = [
     "PowerControlCapable",
     "SplitCapable",
     "StateNotifyCapable",
+    "StatePollable",
+    "StatePoller",
     "RitXitCapable",
     "TransceiverStatusCapable",
     "MemoryCapable",
@@ -485,6 +488,62 @@ class StateNotifyCapable(Protocol):
 
         Used by the web server to re-enable scope/audio after transport
         recovery.  Pass ``None`` to unregister.
+        """
+        ...
+
+
+@runtime_checkable
+class StatePoller(Protocol):
+    """Coroutine-driven request-response state poller.
+
+    Periodically issues read-state commands and invokes the registered
+    callback with the freshest :class:`RadioState`. Used by the web and
+    rigctld layers for radio backends that lack push-style state events
+    (Yaesu CAT and similar).
+    """
+
+    async def start(self) -> None:
+        """Start the polling loops."""
+        ...
+
+    async def stop(self) -> None:
+        """Stop the polling loops and wait for them to finish."""
+        ...
+
+
+@runtime_checkable
+class StatePollable(Protocol):
+    """Radio that needs an explicit request-response state poller.
+
+    Yaesu CAT radios implement this; Icom CI-V radios do not (they push
+    state changes via the CI-V RX stream and let the web layer drive a
+    fire-and-forget :class:`~icom_lan.web.radio_poller.RadioPoller` for
+    cache prewarming instead).
+
+    Consumers (web, rigctld) check this with ``isinstance`` and route
+    state-driving logic without importing concrete backend classes::
+
+        if isinstance(radio, StatePollable):
+            poller = radio.create_state_poller(callback=on_state)
+            await poller.start()
+    """
+
+    def create_state_poller(
+        self,
+        *,
+        callback: Callable[[RadioState], None],
+        command_queue: "CommandQueue | None" = None,
+    ) -> StatePoller:
+        """Construct a :class:`StatePoller` bound to this radio.
+
+        Args:
+            callback: Invoked with the current :class:`RadioState`
+                after every successful poll.
+            command_queue: Optional outbound command queue drained on
+                each poll cycle.
+
+        Returns:
+            A :class:`StatePoller` ready for ``await poller.start()``.
         """
         ...
 

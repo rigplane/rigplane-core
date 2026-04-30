@@ -16,6 +16,7 @@ layers =
 ignore_imports =
     icom_lan.core.radio_protocol -> icom_lan.audio_bus
     icom_lan.core.radio_protocol -> icom_lan.scope
+    icom_lan.core.radio_protocol -> icom_lan.runtime._poller_types
 
 [importlinter:contract:independence-top]
 name = top siblings must not depend on each other

@@ -52,6 +52,8 @@ TIER1_SYMBOLS: tuple[str, ...] = (
     "TransceiverBankCapable",
     "VfoSlotCapable",
     "StateCacheCapable",
+    "StatePollable",
+    "StatePoller",
     "RecoverableConnection",
     "DspControlCapable",
     "AntennaControlCapable",

@@ -98,7 +98,8 @@ available directly via `from icom_lan import …`.
 - `AudioCapable`, `CivCommandCapable`, `ModeInfoCapable`, `ScopeCapable`
 - `DualReceiverCapable`, `ReceiverBankCapable`, `TransceiverBankCapable`,
   `VfoSlotCapable`
-- `StateCacheCapable`, `RecoverableConnection`
+- `StateCacheCapable`, `StatePollable`, `StatePoller`,
+  `RecoverableConnection`
 - `DspControlCapable`, `AntennaControlCapable`, `CwControlCapable`,
   `VoiceControlCapable`
 - `SystemControlCapable`, `RepeaterControlCapable`, `AdvancedControlCapable`
