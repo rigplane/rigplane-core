@@ -22,32 +22,32 @@ from typing import TYPE_CHECKING, cast
 if TYPE_CHECKING:
     from typing import Any, Awaitable, Callable
 
-    from ._runtime_protocols import ControlPhaseHost
+    from icom_lan._runtime_protocols import ControlPhaseHost
 
 from . import radio_initial_state as _initial_state
 from . import radio_reconnect as _reconnect
 from . import radio_state_snapshot as _state_snapshot
-from ._audio_recovery import AudioRecoveryRuntime, AudioRecoveryState
-from ._audio_runtime_mixin import AudioRuntimeMixin
-from ._audio_transcoder import PcmOpusTranscoder
-from ._bounded_queue import BoundedQueue
-from ._civ_rx import CivRuntime
-from ._dual_rx_runtime import DualRxRuntimeMixin
-from ._scope_runtime import ScopeRuntimeMixin
+from icom_lan._audio_recovery import AudioRecoveryRuntime, AudioRecoveryState
+from icom_lan._audio_runtime_mixin import AudioRuntimeMixin
+from icom_lan._audio_transcoder import PcmOpusTranscoder
+from icom_lan._bounded_queue import BoundedQueue
+from icom_lan._civ_rx import CivRuntime
+from icom_lan._dual_rx_runtime import DualRxRuntimeMixin
+from icom_lan._scope_runtime import ScopeRuntimeMixin
 
 # Import split modules
-from ._connection_state import RadioConnectionState
-from ._control_phase import (
+from icom_lan._connection_state import RadioConnectionState
+from icom_lan._control_phase import (
     CONNINFO_SIZE,  # noqa: F401 (re-export for tests)
     OPENCLOSE_SIZE,  # noqa: F401 (re-export for tests)
     STATUS_SIZE,  # noqa: F401 (re-export for tests)
     TOKEN_ACK_SIZE,  # noqa: F401 (re-export for tests)
     ControlPhaseRuntime,
 )
-from .audio import AudioPacket, AudioStream
-from .civ import CivEvent, CivRequestTracker
-from .commander import IcomCommander, Priority
-from .commands import (
+from icom_lan.audio import AudioPacket, AudioStream
+from icom_lan.civ import CivEvent, CivRequestTracker
+from icom_lan.commander import IcomCommander, Priority
+from icom_lan.commands import (
     _SUB_REPEATER_TONE,
     _SUB_REPEATER_TSQL,
     CONTROLLER_ADDR,
@@ -246,31 +246,31 @@ from .commands import (
     set_xfc_status,
     stop_cw,
 )
-from .commands import (
+from icom_lan.commands import (
     get_attenuator as get_attenuator_cmd,  # Transceiver status family (#136); VFO / Dual Watch / Scanning (#132); Tone/TSQL (#134); System/Config commands (#135); Memory and band-stacking (#133)
 )
-from .commands import get_data_mode as get_data_mode_cmd
-from .commands import get_main_sub_tracking as _get_main_sub_tracking_cmd
-from .commands import get_preamp as get_preamp_cmd
-from .commands import get_repeater_tone as _get_repeater_tone_cmd
-from .commands import get_repeater_tsql as _get_repeater_tsql_cmd
-from .commands import get_tone_freq as _get_tone_freq_cmd
-from .commands import get_tsql_freq as _get_tsql_freq_cmd
-from .commands import set_data_mode as set_data_mode_cmd
-from .commands import set_main_sub_tracking as _set_main_sub_tracking_cmd
-from .commands import set_repeater_tone as _set_repeater_tone_cmd
-from .commands import set_repeater_tsql as _set_repeater_tsql_cmd
-from .commands import set_tone_freq as _set_tone_freq_cmd
-from .commands import set_tsql_freq as _set_tsql_freq_cmd
-from .commands import set_vfo as _select_vfo_cmd
-from .exceptions import CommandError, TimeoutError
-from .meter_cal import interpolate_swr
-from .profiles import RadioProfile, resolve_radio_profile
-from .radio_state import RadioState
-from ._state_cache import StateCache
-from .scope import ScopeAssembler, ScopeFrame
-from .transport import IcomTransport
-from .types import (
+from icom_lan.commands import get_data_mode as get_data_mode_cmd
+from icom_lan.commands import get_main_sub_tracking as _get_main_sub_tracking_cmd
+from icom_lan.commands import get_preamp as get_preamp_cmd
+from icom_lan.commands import get_repeater_tone as _get_repeater_tone_cmd
+from icom_lan.commands import get_repeater_tsql as _get_repeater_tsql_cmd
+from icom_lan.commands import get_tone_freq as _get_tone_freq_cmd
+from icom_lan.commands import get_tsql_freq as _get_tsql_freq_cmd
+from icom_lan.commands import set_data_mode as set_data_mode_cmd
+from icom_lan.commands import set_main_sub_tracking as _set_main_sub_tracking_cmd
+from icom_lan.commands import set_repeater_tone as _set_repeater_tone_cmd
+from icom_lan.commands import set_repeater_tsql as _set_repeater_tsql_cmd
+from icom_lan.commands import set_tone_freq as _set_tone_freq_cmd
+from icom_lan.commands import set_tsql_freq as _set_tsql_freq_cmd
+from icom_lan.commands import set_vfo as _select_vfo_cmd
+from icom_lan.exceptions import CommandError, TimeoutError
+from icom_lan.meter_cal import interpolate_swr
+from icom_lan.profiles import RadioProfile, resolve_radio_profile
+from icom_lan.radio_state import RadioState
+from icom_lan._state_cache import StateCache
+from icom_lan.scope import ScopeAssembler, ScopeFrame
+from icom_lan.transport import IcomTransport
+from icom_lan.types import (
     AgcMode,
     AudioCodec,
     AudioPeakFilter,
@@ -896,7 +896,7 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
     def audio_bus(self) -> Any:
         """Lazy-initialized AudioBus for pub/sub audio distribution."""
         if self._audio_bus is None:
-            from .audio_bus import AudioBus
+            from icom_lan.audio_bus import AudioBus
 
             self._audio_bus = AudioBus(self)
         return self._audio_bus
@@ -1682,7 +1682,7 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
             receiver=receiver,
             operation="set_squelch",
         )
-        from .commands import set_squelch as _set_squelch
+        from icom_lan.commands import set_squelch as _set_squelch
 
         civ = _set_squelch(level, to_addr=self._radio_addr, receiver=receiver)
         await self._send_civ_raw(civ, wait_response=False)
@@ -1698,7 +1698,7 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
             receiver=receiver,
             operation="get_squelch",
         )
-        from .commands import get_squelch as _get_squelch
+        from icom_lan.commands import get_squelch as _get_squelch
 
         civ = _get_squelch(to_addr=self._radio_addr, receiver=receiver)
         return await self._get_bcd_level(
@@ -3606,7 +3606,7 @@ class IcomRadio(CoreRadio):
     @staticmethod
     async def _flush_queue(transport: IcomTransport, max_pkts: int = 200) -> int:
         """Flush receive queue on the given transport (delegates to ControlPhaseRuntime)."""
-        from ._control_phase import ControlPhaseRuntime
+        from icom_lan._control_phase import ControlPhaseRuntime
 
         return await ControlPhaseRuntime._flush_queue(transport, max_pkts)
 
@@ -3624,7 +3624,7 @@ def _check_protocol_compliance() -> None:
     Note: ``@runtime_checkable`` checks only method/attribute *existence*.
     It does not validate full runtime semantics.
     """
-    from .radio_protocol import (
+    from icom_lan.radio_protocol import (
         AudioCapable,
         DualReceiverCapable,
         Radio,
