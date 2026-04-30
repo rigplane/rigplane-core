@@ -38,15 +38,15 @@ from typing import Any
 
 logger = logging.getLogger(__name__)
 
-from . import __version__  # noqa: E402
-from .audio import AudioStats  # noqa: E402
-from .backends.config import (  # noqa: E402
+from icom_lan import __version__  # noqa: E402
+from icom_lan.audio import AudioStats  # noqa: E402
+from icom_lan.backends.config import (  # noqa: E402
     LanBackendConfig,
     SerialBackendConfig,
     YaesuCatBackendConfig,
 )
-from .backends.factory import create_radio  # noqa: E402
-from .capabilities import (  # noqa: E402
+from icom_lan.backends.factory import create_radio  # noqa: E402
+from icom_lan.capabilities import (  # noqa: E402
     CAP_AF_LEVEL,
     CAP_ANTENNA,
     CAP_ATTENUATOR,
@@ -60,8 +60,8 @@ from .capabilities import (  # noqa: E402
     CAP_SYSTEM_SETTINGS,
     CAP_TUNER,
 )
-from .radio_protocol import Radio  # noqa: E402
-from .types import Mode, get_audio_capabilities  # noqa: E402
+from icom_lan.radio_protocol import Radio  # noqa: E402
+from icom_lan.types import Mode, get_audio_capabilities  # noqa: E402
 
 _AUDIO_FRAME_MS = 20
 _PCM_SAMPLE_WIDTH_BYTES = 2
@@ -99,7 +99,7 @@ async def _auto_discover_lan(timeout: float = _DISCOVER_TIMEOUT) -> str:
     Exits with an error message if zero or multiple radios are found
     (multiple radios print a list so the user can pick).
     """
-    from .discovery import discover_lan_radios
+    from icom_lan.discovery import discover_lan_radios
 
     print(f"No --host specified, scanning LAN for radios ({timeout:.0f}s)...")
     try:
@@ -135,7 +135,7 @@ async def _auto_discover_serial() -> tuple[str, int | None]:
 
     Exits with an error message if zero or multiple radios are found.
     """
-    from .discovery import discover_serial_radios
+    from icom_lan.discovery import discover_serial_radios
 
     print("No --serial-port specified, scanning serial ports...")
     radios = await discover_serial_radios()
@@ -1044,12 +1044,14 @@ def _parse_frequency(value: str) -> int:
 
 def _rigs_dir() -> Path:
     """Return the path to the rigs/ directory shipped with the package."""
-    # Installed layout: icom_lan/rigs/ next to this file
-    pkg_rigs = Path(__file__).resolve().parent / "rigs"
+    # Installed layout: icom_lan/rigs/ next to the package directory
+    # (this file is icom_lan/cli/__init__.py, so go up TWO levels to icom_lan/)
+    pkg_rigs = Path(__file__).resolve().parent.parent / "rigs"
     if pkg_rigs.is_dir():
         return pkg_rigs
     # Development layout: repo_root/rigs/
-    return Path(__file__).resolve().parents[2] / "rigs"
+    # (parents[3] from src/icom_lan/cli/__init__.py = repo root)
+    return Path(__file__).resolve().parents[3] / "rigs"
 
 
 def _resolve_model(
@@ -1060,7 +1062,7 @@ def _resolve_model(
     Returns:
         (radio_addr, model_name) — either may be None.
     """
-    from .rig_loader import discover_rigs
+    from icom_lan.rig_loader import discover_rigs
 
     model_name: str | None = getattr(args, "model", None)
     radio_addr: int | None = getattr(args, "radio_addr", None)
@@ -1219,7 +1221,7 @@ async def _cmd_list_audio_devices(args: argparse.Namespace) -> int:
             file=sys.stderr,
         )
         return 1
-    from .audio.usb_driver import list_usb_audio_devices
+    from icom_lan.audio.usb_driver import list_usb_audio_devices
 
     devices = list_usb_audio_devices(_sd)
     if getattr(args, "json", False):
@@ -1985,7 +1987,7 @@ async def _cmd_power(radio: Radio, args: argparse.Namespace) -> int:
 
 
 async def _cmd_meter(radio: Radio, args: argparse.Namespace) -> int:
-    from .exceptions import TimeoutError as IcomTimeout
+    from icom_lan.exceptions import TimeoutError as IcomTimeout
 
     if CAP_METERS not in radio.capabilities:
         print(
@@ -2293,7 +2295,7 @@ async def _cmd_scope(radio: Radio, args: argparse.Namespace) -> int:
 
     if not args.json:
         try:
-            from .scope_render import render_scope_image, render_spectrum
+            from icom_lan.scope_render import render_scope_image, render_spectrum
         except ImportError as exc:
             print(f"Error: {exc}", file=sys.stderr)
             return 1
@@ -2385,7 +2387,7 @@ async def _cmd_scope(radio: Radio, args: argparse.Namespace) -> int:
 async def _cmd_audio_bridge(radio: Radio, args: argparse.Namespace) -> int:
     """Bridge radio audio to a virtual audio device."""
     try:
-        from .audio_bridge import AudioBridge, derive_bridge_label, list_audio_devices
+        from icom_lan.audio_bridge import AudioBridge, derive_bridge_label, list_audio_devices
     except ImportError:
         print(
             "Error: audio bridge requires icom-lan[bridge].\n"
@@ -2475,7 +2477,7 @@ async def _cmd_audio_bridge(radio: Radio, args: argparse.Namespace) -> int:
 def _detect_loopback_hint() -> str | None:
     """Try to detect a loopback audio device; return a hint string or None."""
     try:
-        from .audio_bridge import find_loopback_device
+        from icom_lan.audio_bridge import find_loopback_device
 
         dev = find_loopback_device()
         if dev:
@@ -2525,9 +2527,9 @@ def _print_startup_banner(
 async def _cmd_serve(radio: Radio, args: argparse.Namespace) -> int:
     import logging as _logging
 
-    from .rigctld.audit import AUDIT_LOGGER_NAME, RigctldAuditFormatter
-    from .rigctld.contract import RigctldConfig
-    from .rigctld.server import RigctldServer
+    from icom_lan.rigctld.audit import AUDIT_LOGGER_NAME, RigctldAuditFormatter
+    from icom_lan.rigctld.contract import RigctldConfig
+    from icom_lan.rigctld.server import RigctldServer
 
     # Apply requested log level to the icom_lan logger hierarchy.
     log_level = getattr(args, "log_level", "INFO")
@@ -2573,7 +2575,7 @@ async def _cmd_serve(radio: Radio, args: argparse.Namespace) -> int:
 async def _cmd_web(radio: Radio, args: argparse.Namespace) -> int:
     import pathlib
 
-    from .web.server import WebConfig, WebServer
+    from icom_lan.web.server import WebConfig, WebServer
 
     static_dir = pathlib.Path(args.web_static_dir) if args.web_static_dir else None
     if static_dir is not None and not static_dir.is_dir():
@@ -2655,7 +2657,7 @@ async def _cmd_web(radio: Radio, args: argparse.Namespace) -> int:
         tx_device_name = getattr(args, "web_bridge_tx_device", None)
         rx_only = getattr(args, "web_bridge_rx_only", False)
         bridge_label = getattr(args, "web_bridge_label", None)
-        from .audio_bridge import LoopbackNotFoundError
+        from icom_lan.audio_bridge import LoopbackNotFoundError
 
         try:
             await server.start_audio_bridge(
@@ -2710,8 +2712,8 @@ async def _cmd_web(radio: Radio, args: argparse.Namespace) -> int:
     rigctld_server = None
     rigctld_addr: str | None = None
     if getattr(args, "web_rigctld", False):
-        from .rigctld.contract import RigctldConfig
-        from .rigctld.server import RigctldServer
+        from icom_lan.rigctld.contract import RigctldConfig
+        from icom_lan.rigctld.server import RigctldServer
 
         rigctld_port = getattr(args, "web_rigctld_port", 4532)
         rigctld_config = RigctldConfig(
@@ -2772,7 +2774,7 @@ async def _cmd_web(radio: Radio, args: argparse.Namespace) -> int:
 
 async def _cmd_discover(_radio: Radio | None, args: argparse.Namespace) -> int:
     """Discover Icom radios on LAN and/or serial ports."""
-    from .discovery import dedupe_radios, discover_lan_radios, discover_serial_radios
+    from icom_lan.discovery import dedupe_radios, discover_lan_radios, discover_serial_radios
 
     serial_only: bool = getattr(args, "serial_only", False)
     lan_only: bool = getattr(args, "lan_only", False)
@@ -2937,7 +2939,7 @@ def main() -> None:
     elif args.command == "discover":
         sys.exit(asyncio.run(_cmd_discover(None, args)))
     elif args.command == "proxy":
-        from .proxy import run_proxy
+        from icom_lan.proxy import run_proxy
 
         try:
             asyncio.run(run_proxy(args.radio, args.listen, args.port))
