@@ -12,7 +12,7 @@ import logging
 import time
 from dataclasses import dataclass
 
-from .types import bcd_decode
+from icom_lan.types import bcd_decode
 
 __all__ = ["ScopeFrame", "ScopeAssembler"]
 
