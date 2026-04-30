@@ -1,0 +1,592 @@
+# `__init__.py` snapshot
+
+Verbatim public surface (`__all__`) and side-effect / PEP 562 status of
+every package init under `src/icom_lan/`. The Phase 2 re-export shim plan
+must preserve every name listed here at its current dotted path.
+
+## `src/icom_lan/__init__.py` — `icom_lan`
+
+- **Summary:** icom-lan: Python library for controlling Icom transceivers over LAN.
+- **`__all__`** (61 names):
+  - `__version__`
+  - `create_radio`
+  - `BackendConfig`
+  - `LanBackendConfig`
+  - `SerialBackendConfig`
+  - `YaesuCatBackendConfig`
+  - `Radio`
+  - `AdvancedControlCapable`
+  - `AntennaControlCapable`
+  - `AudioCapable`
+  - `CivCommandCapable`
+  - `CwControlCapable`
+  - `DspControlCapable`
+  - `DualReceiverCapable`
+  - `LevelsCapable`
+  - `MemoryCapable`
+  - `MetersCapable`
+  - `ModeInfoCapable`
+  - `PowerControlCapable`
+  - `ReceiverBankCapable`
+  - `RecoverableConnection`
+  - `RepeaterControlCapable`
+  - `RitXitCapable`
+  - `ScopeCapable`
+  - `SplitCapable`
+  - `StateCacheCapable`
+  - `StateNotifyCapable`
+  - `SystemControlCapable`
+  - `TransceiverBankCapable`
+  - `TransceiverStatusCapable`
+  - `VfoSlotCapable`
+  - `VoiceControlCapable`
+  - `IcomLanError`
+  - `ConnectionError`
+  - `AuthenticationError`
+  - `CommandError`
+  - `TimeoutError`
+  - `AudioError`
+  - `AudioCodecBackendError`
+  - `AudioFormatError`
+  - `AudioTranscodeError`
+  - `Mode`
+  - `AudioCodec`
+  - `BreakInMode`
+  - `RadioState`
+  - `RadioProfile`
+  - `VfoSlotState`
+  - `YaesuStateExtension`
+  - `IcomRadio`
+  - `IcomCommander`
+  - `Priority`
+  - `AudioStream`
+  - `AudioBackend`
+  - `PortAudioBackend`
+  - `FakeAudioBackend`
+  - `AudioConfig`
+  - `NoiseGate`
+  - `RmsNormalizer`
+  - `Limiter`
+  - `DspPipeline`
+  - `UsbAudioDriver`
+- **PEP 562 `__getattr__`:** yes (lazy-loaded names — Tier 2)
+- **Top-level statements outside the import-only allowlist:**
+  - `81:AnnAssign`
+  - `245:FunctionDef`
+- **Dynamic-import call sites:** 239:13
+
+## `src/icom_lan/audio/__init__.py` — `icom_lan.audio`
+
+- **Summary:** Universal audio subsystem for icom-lan.
+- **`__all__`** (34 names):
+  - `AudioBackend`
+  - `AudioDeviceId`
+  - `AudioDeviceInfo`
+  - `FakeAudioBackend`
+  - `FakeRxStream`
+  - `FakeTxStream`
+  - `PortAudioBackend`
+  - `RxStream`
+  - `TxStream`
+  - `AUDIO_HEADER_SIZE`
+  - `AudioPacket`
+  - `AudioState`
+  - `AudioStats`
+  - `AudioStream`
+  - `JitterBuffer`
+  - `MAX_AUDIO_PAYLOAD`
+  - `RX_IDENT_0xA0`
+  - `build_audio_packet`
+  - `parse_audio_packet`
+  - `TX_IDENT`
+  - `DspPipeline`
+  - `DspStage`
+  - `Limiter`
+  - `NoiseGate`
+  - `RmsNormalizer`
+  - `PcmResampler`
+  - `SampleRateNegotiation`
+  - `negotiate_sample_rate`
+  - `AudioDeviceSelectionError`
+  - `AudioDriverLifecycleError`
+  - `UsbAudioDevice`
+  - `UsbAudioDriver`
+  - `list_usb_audio_devices`
+  - `select_usb_audio_devices`
+- **PEP 562 `__getattr__`:** yes (lazy-loaded names — Tier 2)
+- **Top-level statements outside the import-only allowlist:**
+  - `38:AnnAssign`
+  - `105:FunctionDef`
+- **Dynamic-import call sites:** 99:13
+
+## `src/icom_lan/backends/__init__.py` — `icom_lan.backends`
+
+- **Summary:** Backend-specific radio implementations and assembly helpers.
+- **`__all__`** (5 names):
+  - `BackendConfig`
+  - `LanBackendConfig`
+  - `SerialBackendConfig`
+  - `YaesuCatBackendConfig`
+  - `create_radio`
+- **PEP 562 `__getattr__`:** no
+- **Top-level statements outside the import-only allowlist:** none
+
+## `src/icom_lan/backends/ic705/__init__.py` — `icom_lan.backends.ic705`
+
+- **Summary:** IC-705 backend implementations (serial).
+- **`__all__`** (1 names):
+  - `Ic705SerialRadio`
+- **PEP 562 `__getattr__`:** no
+- **Top-level statements outside the import-only allowlist:** none
+
+## `src/icom_lan/backends/ic7300/__init__.py` — `icom_lan.backends.ic7300`
+
+- **Summary:** IC-7300 backend implementations (serial).
+- **`__all__`** (1 names):
+  - `Ic7300SerialRadio`
+- **PEP 562 `__getattr__`:** no
+- **Top-level statements outside the import-only allowlist:** none
+
+## `src/icom_lan/backends/ic9700/__init__.py` — `icom_lan.backends.ic9700`
+
+- **Summary:** IC-9700 backend implementations (serial and LAN).
+- **`__all__`** (1 names):
+  - `Ic9700SerialRadio`
+- **PEP 562 `__getattr__`:** no
+- **Top-level statements outside the import-only allowlist:** none
+
+## `src/icom_lan/backends/icom7610/__init__.py` — `icom_lan.backends.icom7610`
+
+- **Summary:** IC-7610 backend exports.
+- **`__all__`** (2 names):
+  - `Icom7610LanRadio`
+  - `Icom7610SerialRadio`
+- **PEP 562 `__getattr__`:** no
+- **Top-level statements outside the import-only allowlist:** none
+
+## `src/icom_lan/backends/icom7610/drivers/__init__.py` — `icom_lan.backends.icom7610.drivers`
+
+- **Summary:** Internal driver contracts for IC-7610 backend.
+- **`__all__`** (15 names):
+  - `AudioDriver`
+  - `CivLink`
+  - `SessionDriver`
+  - `SerialCivLink`
+  - `SerialFrameCodec`
+  - `SerialFrameError`
+  - `SerialFrameOverflowError`
+  - `SerialFrameTimeoutError`
+  - `SerialSessionDriver`
+  - `AudioDeviceSelectionError`
+  - `AudioDriverLifecycleError`
+  - `UsbAudioDevice`
+  - `UsbAudioDriver`
+  - `list_usb_audio_devices`
+  - `select_usb_audio_devices`
+- **PEP 562 `__getattr__`:** no
+- **Top-level statements outside the import-only allowlist:** none
+
+## `src/icom_lan/backends/yaesu_cat/__init__.py` — `icom_lan.backends.yaesu_cat`
+
+- **Summary:** Yaesu CAT backend for icom-lan.
+- **`__all__`** (5 names):
+  - `YaesuCatPoller`
+  - `YaesuCatRadio`
+  - `YaesuCatTransport`
+  - `CatTransportError`
+  - `CatTimeoutError`
+- **PEP 562 `__getattr__`:** no
+- **Top-level statements outside the import-only allowlist:** none
+
+## `src/icom_lan/commands/__init__.py` — `icom_lan.commands`
+
+- **Summary:** CI-V command encoding and decoding for Icom transceivers.
+- **`__all__`** (333 names):
+  - `_bcd_byte`
+  - `_bcd_decode_value`
+  - `_level_bcd_decode`
+  - `_level_bcd_encode`
+  - `_decode_tone_freq`
+  - `_encode_tone_freq`
+  - `_SUB_REPEATER_TONE`
+  - `_SUB_REPEATER_TSQL`
+  - `_CMD_ACK`
+  - `_CMD_FREQ_GET`
+  - `_CMD_FREQ_SET`
+  - `_CMD_LEVEL`
+  - `_CMD_METER`
+  - `_CMD_MODE_GET`
+  - `_CMD_MODE_SET`
+  - `_CMD_PREAMP`
+  - `_CMD_PTT`
+  - `_CMD_SELECTED_FREQ`
+  - `_CMD_SELECTED_MODE`
+  - `_SUB_ALC_METER`
+  - `_SUB_POWER_METER`
+  - `_SUB_PTT`
+  - `_SUB_RF_POWER`
+  - `_SUB_S_METER`
+  - `_SUB_SWR_METER`
+  - `CONTROLLER_ADDR`
+  - `RECEIVER_MAIN`
+  - `RECEIVER_SUB`
+  - `bcd_decode`
+  - `build_civ_frame`
+  - `build_cmd29_frame`
+  - `bcd_encode_value`
+  - `filter_hz_to_index`
+  - `filter_index_to_hz`
+  - `table_index_to_hz`
+  - `hz_to_table_index`
+  - `parse_civ_frame`
+  - `get_freq`
+  - `set_freq`
+  - `get_frequency`
+  - `set_frequency`
+  - `get_mode`
+  - `set_mode`
+  - `get_rf_power`
+  - `set_rf_power`
+  - `get_s_meter`
+  - `get_swr`
+  - `get_alc`
+  - `ptt_on`
+  - `ptt_off`
+  - `parse_frequency_response`
+  - `parse_mode_response`
+  - `parse_meter_response`
+  - `parse_ack_nak`
+  - `send_cw`
+  - `stop_cw`
+  - `power_on`
+  - `power_off`
+  - `get_attenuator`
+  - `set_attenuator`
+  - `set_attenuator_level`
+  - `get_preamp`
+  - `set_preamp`
+  - `get_digisel`
+  - `set_digisel`
+  - `get_apf_type_level`
+  - `set_apf_type_level`
+  - `get_nr_level`
+  - `set_nr_level`
+  - `get_pbt_inner`
+  - `set_pbt_inner`
+  - `get_pbt_outer`
+  - `set_pbt_outer`
+  - `get_cw_pitch`
+  - `set_cw_pitch`
+  - `get_mic_gain`
+  - `set_mic_gain`
+  - `get_key_speed`
+  - `set_key_speed`
+  - `get_notch_filter`
+  - `set_notch_filter`
+  - `get_compressor_level`
+  - `set_compressor_level`
+  - `get_break_in_delay`
+  - `set_break_in_delay`
+  - `get_nb_level`
+  - `set_nb_level`
+  - `get_digisel_shift`
+  - `set_digisel_shift`
+  - `get_drive_gain`
+  - `set_drive_gain`
+  - `get_monitor_gain`
+  - `set_monitor_gain`
+  - `get_vox_gain`
+  - `set_vox_gain`
+  - `get_anti_vox_gain`
+  - `set_anti_vox_gain`
+  - `get_ref_adjust`
+  - `set_ref_adjust`
+  - `get_dash_ratio`
+  - `set_dash_ratio`
+  - `get_nb_depth`
+  - `set_nb_depth`
+  - `get_nb_width`
+  - `set_nb_width`
+  - `get_vox_delay`
+  - `set_vox_delay`
+  - `get_af_mute`
+  - `set_af_mute`
+  - `get_squelch`
+  - `set_squelch`
+  - `get_s_meter_sql_status`
+  - `get_overflow_status`
+  - `get_agc`
+  - `set_agc`
+  - `get_audio_peak_filter`
+  - `set_audio_peak_filter`
+  - `get_auto_notch`
+  - `set_auto_notch`
+  - `get_compressor`
+  - `set_compressor`
+  - `get_monitor`
+  - `set_monitor`
+  - `get_vox`
+  - `set_vox`
+  - `get_break_in`
+  - `set_break_in`
+  - `get_manual_notch`
+  - `set_manual_notch`
+  - `get_manual_notch_width`
+  - `set_manual_notch_width`
+  - `get_twin_peak_filter`
+  - `set_twin_peak_filter`
+  - `get_dial_lock`
+  - `set_dial_lock`
+  - `get_selected_freq`
+  - `get_unselected_freq`
+  - `parse_selected_freq_response`
+  - `get_selected_mode`
+  - `get_unselected_mode`
+  - `parse_selected_mode_response`
+  - `_CMD_SELECTED_FREQ`
+  - `_CMD_SELECTED_MODE`
+  - `get_filter_shape`
+  - `set_filter_shape`
+  - `get_filter_width`
+  - `set_filter_width`
+  - `get_ssb_tx_bandwidth`
+  - `set_ssb_tx_bandwidth`
+  - `get_main_sub_tracking`
+  - `set_main_sub_tracking`
+  - `get_agc_time_constant`
+  - `set_agc_time_constant`
+  - `get_data_mode`
+  - `set_data_mode`
+  - `parse_data_mode_response`
+  - `parse_level_response`
+  - `parse_bool_response`
+  - `scope_on`
+  - `scope_off`
+  - `scope_data_output`
+  - `scope_data_output_on`
+  - `scope_data_output_off`
+  - `get_scope_main_sub`
+  - `scope_main_sub`
+  - `get_scope_single_dual`
+  - `scope_single_dual`
+  - `get_scope_mode`
+  - `scope_set_mode`
+  - `get_scope_span`
+  - `scope_set_span`
+  - `get_scope_ref`
+  - `scope_set_ref`
+  - `get_scope_speed`
+  - `scope_set_speed`
+  - `get_scope_edge`
+  - `scope_set_edge`
+  - `get_scope_hold`
+  - `scope_set_hold`
+  - `get_scope_during_tx`
+  - `scope_set_during_tx`
+  - `get_scope_center_type`
+  - `scope_set_center_type`
+  - `get_scope_vbw`
+  - `scope_set_vbw`
+  - `get_scope_fixed_edge`
+  - `scope_set_fixed_edge`
+  - `get_scope_rbw`
+  - `scope_set_rbw`
+  - `parse_scope_main_sub_response`
+  - `parse_scope_single_dual_response`
+  - `parse_scope_mode_response`
+  - `parse_scope_span_response`
+  - `parse_scope_ref_response`
+  - `parse_scope_speed_response`
+  - `parse_scope_edge_response`
+  - `parse_scope_hold_response`
+  - `parse_scope_during_tx_response`
+  - `parse_scope_center_type_response`
+  - `parse_scope_vbw_response`
+  - `parse_scope_fixed_edge_response`
+  - `parse_scope_rbw_response`
+  - `get_band_edge_freq`
+  - `get_various_squelch`
+  - `get_power_meter`
+  - `get_comp_meter`
+  - `get_vd_meter`
+  - `get_id_meter`
+  - `get_tuner_status`
+  - `set_tuner_status`
+  - `get_tx_freq_monitor`
+  - `set_tx_freq_monitor`
+  - `get_rit_frequency`
+  - `set_rit_frequency`
+  - `get_rit_status`
+  - `set_rit_status`
+  - `get_rit_tx_status`
+  - `set_rit_tx_status`
+  - `parse_rit_frequency_response`
+  - `get_vfo`
+  - `set_vfo`
+  - `get_main_sub_band`
+  - `select_vfo`
+  - `get_tuning_step`
+  - `set_tuning_step`
+  - `scan_start`
+  - `scan_start_type`
+  - `scan_stop`
+  - `scan_set_df_span`
+  - `scan_set_resume`
+  - `VALID_SCAN_TYPES`
+  - `VALID_DF_SPANS`
+  - `VALID_SCAN_RESUME`
+  - `start_scan`
+  - `stop_scan`
+  - `set_dual_watch_off`
+  - `set_dual_watch_on`
+  - `get_dual_watch`
+  - `set_dual_watch`
+  - `quick_dual_watch`
+  - `quick_split`
+  - `get_quick_dual_watch`
+  - `set_quick_dual_watch`
+  - `get_quick_split`
+  - `set_quick_split`
+  - `get_speech`
+  - `speech`
+  - `get_repeater_tone`
+  - `set_repeater_tone`
+  - `get_repeater_tsql`
+  - `set_repeater_tsql`
+  - `get_tone_freq`
+  - `set_tone_freq`
+  - `get_tsql_freq`
+  - `set_tsql_freq`
+  - `parse_tone_freq_response`
+  - `parse_tsql_freq_response`
+  - `get_antenna_1`
+  - `set_antenna_1`
+  - `get_antenna_2`
+  - `set_antenna_2`
+  - `get_rx_antenna_ant1`
+  - `set_rx_antenna_ant1`
+  - `get_rx_antenna_ant2`
+  - `set_rx_antenna_ant2`
+  - `get_antenna`
+  - `set_antenna`
+  - `get_rx_antenna`
+  - `set_rx_antenna`
+  - `get_acc1_mod_level`
+  - `set_acc1_mod_level`
+  - `get_usb_mod_level`
+  - `set_usb_mod_level`
+  - `get_lan_mod_level`
+  - `set_lan_mod_level`
+  - `get_data_off_mod_input`
+  - `set_data_off_mod_input`
+  - `get_data1_mod_input`
+  - `set_data1_mod_input`
+  - `get_data2_mod_input`
+  - `set_data2_mod_input`
+  - `get_data3_mod_input`
+  - `set_data3_mod_input`
+  - `get_civ_transceive`
+  - `set_civ_transceive`
+  - `get_civ_output_ant`
+  - `set_civ_output_ant`
+  - `get_system_date`
+  - `set_system_date`
+  - `parse_system_date_response`
+  - `get_system_time`
+  - `set_system_time`
+  - `parse_system_time_response`
+  - `get_utc_offset`
+  - `set_utc_offset`
+  - `parse_utc_offset_response`
+  - `get_bsr`
+  - `set_bsr`
+  - `build_band_stack_get`
+  - `build_band_stack_set`
+  - `get_powerstat`
+  - `parse_powerstat`
+  - `get_transceiver_id`
+  - `get_xfc_status`
+  - `set_xfc_status`
+  - `vfo_a_equals_b`
+  - `vfo_swap`
+  - `get_split`
+  - `set_split`
+  - `build_memory_clear`
+  - `build_memory_contents_get`
+  - `build_memory_contents_set`
+  - `build_memory_mode_get`
+  - `build_memory_mode_set`
+  - `build_memory_to_vfo`
+  - `build_memory_write`
+  - `parse_memory_mode_response`
+  - `parse_memory_contents_response`
+  - `parse_band_stack_response`
+  - `get_af_level`
+  - `set_af_level`
+  - `get_rf_gain`
+  - `set_rf_gain`
+  - `get_ip_plus`
+  - `set_ip_plus`
+  - `get_nb`
+  - `set_nb`
+  - `get_nr`
+  - `set_nr`
+  - `get_tx_band_count`
+  - `get_tx_band_edge`
+  - `parse_tx_band_count_response`
+  - `parse_tx_band_edge_response`
+- **PEP 562 `__getattr__`:** no
+- **Top-level statements outside the import-only allowlist:** none
+
+## `src/icom_lan/dsp/__init__.py` — `icom_lan.dsp`
+
+- **Summary:** DSP pipeline core abstractions for real-time audio processing.
+- **`__all__`** (6 names):
+  - `DSPBackendUnavailable`
+  - `DSPConfigError`
+  - `DSPNode`
+  - `DSPPipeline`
+  - `TapHandle`
+  - `TapRegistry`
+- **PEP 562 `__getattr__`:** no
+- **Top-level statements outside the import-only allowlist:** none
+
+## `src/icom_lan/dsp/nodes/__init__.py` — `icom_lan.dsp.nodes`
+
+- **Summary:** Concrete DSP nodes for audio processing pipelines.
+- **`__all__`** (3 names):
+  - `GainNode`
+  - `NRScipyNode`
+  - `PassthroughNode`
+- **PEP 562 `__getattr__`:** no
+- **Top-level statements outside the import-only allowlist:** none
+
+## `src/icom_lan/rigctld/__init__.py` — `icom_lan.rigctld`
+
+- **Summary:** Hamlib NET rigctld-compatible TCP server for icom-lan.
+- **`__all__`:** *(absent)*
+- **PEP 562 `__getattr__`:** no
+- **Top-level statements outside the import-only allowlist:**
+  - `13:Try`
+
+## `src/icom_lan/web/__init__.py` — `icom_lan.web`
+
+- **Summary:** icom-lan Web UI — WebSocket + HTTP server package.
+- **`__all__`** (3 names):
+  - `WebConfig`
+  - `WebServer`
+  - `run_web_server`
+- **PEP 562 `__getattr__`:** no
+- **Top-level statements outside the import-only allowlist:** none
+
+## `src/icom_lan/web/handlers/__init__.py` — `icom_lan.web.handlers`
+
+- **Summary:** Route handlers for WebSocket channels and HTTP endpoints.
+- **`__all__`** (5 names):
+  - `HIGH_WATERMARK`
+  - `ControlHandler`
+  - `ScopeHandler`
+  - `AudioBroadcaster`
+  - `AudioHandler`
+- **PEP 562 `__getattr__`:** no
+- **Top-level statements outside the import-only allowlist:** none

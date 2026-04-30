@@ -1,0 +1,228 @@
+# tach config — internal modularization dry-run for icom-lan
+# Buckets top-level files into proposed layers via filename heuristic.
+# Subpackages (audio/, backends/, commands/, dsp/, rigctld/, web/) become layers directly.
+# Run from repo root: uvx tach check --dependencies
+
+source_roots = ["src"]
+exclude = [
+  "tests",
+  "frontend",
+  "docs",
+  "scripts",
+  "rigs",
+  "band-plans",
+  ".venv",
+]
+
+# ---- Layer: core (no internal deps) ----
+[[modules]]
+path = "icom_lan.civ"
+depends_on = []
+[[modules]]
+path = "icom_lan.protocol"
+depends_on = []
+[[modules]]
+path = "icom_lan.transport"
+depends_on = []
+[[modules]]
+path = "icom_lan.proxy"
+depends_on = []
+[[modules]]
+path = "icom_lan.discovery"
+depends_on = []
+[[modules]]
+path = "icom_lan.auth"
+depends_on = []
+[[modules]]
+path = "icom_lan.sync"
+depends_on = []
+[[modules]]
+path = "icom_lan.exceptions"
+depends_on = []
+[[modules]]
+path = "icom_lan.types"
+depends_on = []
+[[modules]]
+path = "icom_lan.env_config"
+depends_on = []
+[[modules]]
+path = "icom_lan.capabilities"
+depends_on = []
+[[modules]]
+path = "icom_lan.startup_checks"
+depends_on = []
+[[modules]]
+path = "icom_lan._optional_deps"
+depends_on = []
+[[modules]]
+path = "icom_lan._civ_rx"
+depends_on = []
+[[modules]]
+path = "icom_lan._connection_state"
+depends_on = []
+[[modules]]
+path = "icom_lan._control_phase"
+depends_on = []
+[[modules]]
+path = "icom_lan.backends"
+depends_on = ["icom_lan.civ", "icom_lan.protocol", "icom_lan.transport", "icom_lan.proxy", "icom_lan.discovery", "icom_lan.auth", "icom_lan.sync", "icom_lan.exceptions", "icom_lan.types", "icom_lan.env_config", "icom_lan.capabilities", "icom_lan.startup_checks", "icom_lan._optional_deps", "icom_lan._civ_rx", "icom_lan._connection_state", "icom_lan._control_phase"]
+
+# ---- Layer: commands ----
+[[modules]]
+path = "icom_lan.commands"
+depends_on = ["icom_lan.civ", "icom_lan.protocol", "icom_lan.transport", "icom_lan.types", "icom_lan.exceptions", "icom_lan.capabilities", "icom_lan._optional_deps", "icom_lan.backends"]
+[[modules]]
+path = "icom_lan.command_map"
+depends_on = ["icom_lan.commands", "icom_lan.types", "icom_lan.exceptions"]
+[[modules]]
+path = "icom_lan.command_spec"
+depends_on = ["icom_lan.commands", "icom_lan.types", "icom_lan.exceptions"]
+[[modules]]
+path = "icom_lan.commander"
+depends_on = ["icom_lan.commands", "icom_lan.command_map", "icom_lan.command_spec", "icom_lan.types", "icom_lan.exceptions", "icom_lan.civ", "icom_lan.protocol", "icom_lan.capabilities", "icom_lan._optional_deps", "icom_lan.backends"]
+
+# ---- Layer: profiles ----
+[[modules]]
+path = "icom_lan.profiles"
+depends_on = ["icom_lan.types", "icom_lan.exceptions", "icom_lan.capabilities", "icom_lan.commands", "icom_lan.command_map", "icom_lan.command_spec"]
+[[modules]]
+path = "icom_lan.profiles_runtime"
+depends_on = ["icom_lan.profiles", "icom_lan.types", "icom_lan.exceptions", "icom_lan.commands", "icom_lan.command_map"]
+[[modules]]
+path = "icom_lan.rig_loader"
+depends_on = ["icom_lan.profiles", "icom_lan.types", "icom_lan.exceptions", "icom_lan.capabilities"]
+[[modules]]
+path = "icom_lan.ic705"
+depends_on = ["icom_lan.profiles", "icom_lan.types", "icom_lan.capabilities"]
+[[modules]]
+path = "icom_lan.radios"
+depends_on = ["icom_lan.profiles", "icom_lan.types", "icom_lan.capabilities", "icom_lan.ic705"]
+
+# ---- Layer: runtime ----
+[[modules]]
+path = "icom_lan.radio"
+depends_on = ["icom_lan.civ", "icom_lan.protocol", "icom_lan.transport", "icom_lan.proxy", "icom_lan.types", "icom_lan.exceptions", "icom_lan.capabilities", "icom_lan.commander", "icom_lan.command_map", "icom_lan.command_spec", "icom_lan.commands", "icom_lan.profiles", "icom_lan.profiles_runtime", "icom_lan.rig_loader", "icom_lan.radios", "icom_lan.ic705", "icom_lan.startup_checks", "icom_lan._optional_deps", "icom_lan._civ_rx", "icom_lan._connection_state", "icom_lan._control_phase", "icom_lan._bounded_queue", "icom_lan._bridge_metrics", "icom_lan._bridge_state", "icom_lan._poller_types", "icom_lan._queue_pressure", "icom_lan._runtime_protocols", "icom_lan._scope_runtime", "icom_lan._shared_state_runtime", "icom_lan._state_cache", "icom_lan._state_queries", "icom_lan._dual_rx_runtime", "icom_lan._audio_runtime_mixin", "icom_lan.radio_state", "icom_lan.radio_state_snapshot", "icom_lan.radio_initial_state", "icom_lan.radio_protocol", "icom_lan.radio_reconnect", "icom_lan.audio_bridge", "icom_lan.audio_bus", "icom_lan.audio_analyzer", "icom_lan.audio_fft_scope", "icom_lan.usb_audio_resolve", "icom_lan.scope", "icom_lan.scope_render", "icom_lan.cw_auto_tuner", "icom_lan.meter_cal", "icom_lan.audio", "icom_lan.backends"]
+[[modules]]
+path = "icom_lan.radio_protocol"
+depends_on = ["icom_lan.types", "icom_lan.exceptions", "icom_lan.capabilities", "icom_lan.commands", "icom_lan.command_map", "icom_lan.command_spec", "icom_lan.commander", "icom_lan.profiles", "icom_lan.civ", "icom_lan.protocol"]
+[[modules]]
+path = "icom_lan.radio_state"
+depends_on = ["icom_lan.types", "icom_lan.exceptions", "icom_lan.commands", "icom_lan.command_map", "icom_lan.civ"]
+[[modules]]
+path = "icom_lan.radio_state_snapshot"
+depends_on = ["icom_lan.types", "icom_lan.exceptions", "icom_lan.radio_state"]
+[[modules]]
+path = "icom_lan.radio_initial_state"
+depends_on = ["icom_lan.types", "icom_lan.exceptions", "icom_lan.commands", "icom_lan.command_map", "icom_lan.commander", "icom_lan.profiles"]
+[[modules]]
+path = "icom_lan.radio_reconnect"
+depends_on = ["icom_lan.types", "icom_lan.exceptions", "icom_lan._connection_state", "icom_lan._control_phase"]
+[[modules]]
+path = "icom_lan._bounded_queue"
+depends_on = []
+[[modules]]
+path = "icom_lan._bridge_metrics"
+depends_on = ["icom_lan.types"]
+[[modules]]
+path = "icom_lan._bridge_state"
+depends_on = ["icom_lan.types"]
+[[modules]]
+path = "icom_lan._poller_types"
+depends_on = ["icom_lan.types"]
+[[modules]]
+path = "icom_lan._queue_pressure"
+depends_on = ["icom_lan.types"]
+[[modules]]
+path = "icom_lan._runtime_protocols"
+depends_on = ["icom_lan.types", "icom_lan.commands", "icom_lan.command_map"]
+[[modules]]
+path = "icom_lan._scope_runtime"
+depends_on = ["icom_lan.types", "icom_lan.commands", "icom_lan.scope"]
+[[modules]]
+path = "icom_lan._shared_state_runtime"
+depends_on = ["icom_lan.types", "icom_lan.radio_state"]
+[[modules]]
+path = "icom_lan._state_cache"
+depends_on = ["icom_lan.types", "icom_lan.commands", "icom_lan.command_map"]
+[[modules]]
+path = "icom_lan._state_queries"
+depends_on = ["icom_lan.types", "icom_lan.radio_state", "icom_lan._state_cache"]
+[[modules]]
+path = "icom_lan._dual_rx_runtime"
+depends_on = ["icom_lan.types", "icom_lan.commands", "icom_lan.commander"]
+[[modules]]
+path = "icom_lan._audio_runtime_mixin"
+depends_on = ["icom_lan.types", "icom_lan.audio_bridge", "icom_lan.audio_bus", "icom_lan.audio", "icom_lan._audio_codecs", "icom_lan._audio_recovery", "icom_lan._audio_transcoder"]
+
+# ---- Layer: audio ----
+[[modules]]
+path = "icom_lan.audio"
+depends_on = ["icom_lan.types", "icom_lan.exceptions", "icom_lan._optional_deps"]
+[[modules]]
+path = "icom_lan.audio_bridge"
+depends_on = ["icom_lan.types", "icom_lan.audio", "icom_lan._audio_codecs", "icom_lan._audio_recovery", "icom_lan._audio_transcoder"]
+[[modules]]
+path = "icom_lan.audio_bus"
+depends_on = ["icom_lan.types", "icom_lan.audio"]
+[[modules]]
+path = "icom_lan.audio_analyzer"
+depends_on = ["icom_lan.types", "icom_lan.audio"]
+[[modules]]
+path = "icom_lan.audio_fft_scope"
+depends_on = ["icom_lan.types", "icom_lan.audio"]
+[[modules]]
+path = "icom_lan._audio_codecs"
+depends_on = ["icom_lan.types", "icom_lan._optional_deps"]
+[[modules]]
+path = "icom_lan._audio_recovery"
+depends_on = ["icom_lan.types"]
+[[modules]]
+path = "icom_lan._audio_transcoder"
+depends_on = ["icom_lan.types", "icom_lan._optional_deps"]
+[[modules]]
+path = "icom_lan.usb_audio_resolve"
+depends_on = ["icom_lan.types", "icom_lan.audio"]
+
+# ---- Layer: scope ----
+[[modules]]
+path = "icom_lan.scope"
+depends_on = ["icom_lan.types", "icom_lan.commands", "icom_lan.command_map"]
+[[modules]]
+path = "icom_lan.scope_render"
+depends_on = ["icom_lan.types", "icom_lan.scope"]
+
+# ---- Layer: dsp (no internal deps) ----
+[[modules]]
+path = "icom_lan.dsp"
+depends_on = []
+
+# ---- Layer: web ----
+[[modules]]
+path = "icom_lan.web"
+depends_on = ["icom_lan.radio", "icom_lan.radio_protocol", "icom_lan.commander", "icom_lan.commands", "icom_lan.command_map", "icom_lan.audio", "icom_lan.audio_bridge", "icom_lan.audio_bus", "icom_lan.audio_analyzer", "icom_lan.audio_fft_scope", "icom_lan.scope", "icom_lan.scope_render", "icom_lan.types", "icom_lan.exceptions", "icom_lan.capabilities", "icom_lan.profiles", "icom_lan.profiles_runtime", "icom_lan.rig_loader", "icom_lan._optional_deps", "icom_lan.radio_state", "icom_lan.radio_state_snapshot"]
+
+# ---- Layer: rigctld ----
+[[modules]]
+path = "icom_lan.rigctld"
+depends_on = ["icom_lan.radio", "icom_lan.radio_protocol", "icom_lan.commander", "icom_lan.commands", "icom_lan.command_map", "icom_lan.types", "icom_lan.exceptions", "icom_lan.capabilities", "icom_lan._optional_deps", "icom_lan.radio_state", "icom_lan.radio_state_snapshot"]
+
+# ---- Layer: cli ----
+[[modules]]
+path = "icom_lan.cli"
+depends_on = ["icom_lan.radio", "icom_lan.radio_protocol", "icom_lan.web", "icom_lan.rigctld", "icom_lan.commander", "icom_lan.commands", "icom_lan.command_map", "icom_lan.types", "icom_lan.exceptions", "icom_lan.capabilities", "icom_lan.profiles", "icom_lan.profiles_runtime", "icom_lan.rig_loader", "icom_lan.radios", "icom_lan.ic705", "icom_lan.audio", "icom_lan.discovery", "icom_lan.startup_checks", "icom_lan._optional_deps", "icom_lan.env_config", "icom_lan.backends", "icom_lan.usb_audio_resolve", "icom_lan.cw_auto_tuner", "icom_lan.meter_cal"]
+[[modules]]
+path = "icom_lan.__main__"
+depends_on = ["icom_lan.cli"]
+
+# ---- Misc ambiguous (best-guess; flagged in assessment) ----
+[[modules]]
+path = "icom_lan.cw_auto_tuner"
+depends_on = ["icom_lan.types", "icom_lan.commands", "icom_lan.commander", "icom_lan.command_map"]
+[[modules]]
+path = "icom_lan.meter_cal"
+depends_on = ["icom_lan.types", "icom_lan.commands", "icom_lan.commander"]
+
+# ---- Package root (re-exports — depends on everything below via __init__) ----
+[[modules]]
+path = "icom_lan"
+depends_on = ["icom_lan.radio", "icom_lan.radio_protocol", "icom_lan.types", "icom_lan.exceptions", "icom_lan.civ", "icom_lan.protocol", "icom_lan.transport", "icom_lan.discovery", "icom_lan.commands", "icom_lan.commander", "icom_lan.command_map", "icom_lan.command_spec", "icom_lan.profiles", "icom_lan.profiles_runtime", "icom_lan.rig_loader", "icom_lan.radios", "icom_lan.ic705", "icom_lan.audio", "icom_lan.audio_bridge", "icom_lan.scope", "icom_lan.scope_render", "icom_lan.web", "icom_lan.rigctld", "icom_lan.cli", "icom_lan.capabilities", "icom_lan.env_config", "icom_lan.startup_checks", "icom_lan.backends", "icom_lan.dsp"]

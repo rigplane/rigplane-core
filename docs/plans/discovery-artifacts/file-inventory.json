@@ -1,0 +1,2479 @@
+{
+  "icom_lan": {
+    "path": "src/icom_lan/__init__.py",
+    "summary": "icom-lan: Python library for controlling Icom transceivers over LAN.",
+    "all": [
+      "__version__",
+      "create_radio",
+      "BackendConfig",
+      "LanBackendConfig",
+      "SerialBackendConfig",
+      "YaesuCatBackendConfig",
+      "Radio",
+      "AdvancedControlCapable",
+      "AntennaControlCapable",
+      "AudioCapable",
+      "CivCommandCapable",
+      "CwControlCapable",
+      "DspControlCapable",
+      "DualReceiverCapable",
+      "LevelsCapable",
+      "MemoryCapable",
+      "MetersCapable",
+      "ModeInfoCapable",
+      "PowerControlCapable",
+      "ReceiverBankCapable",
+      "RecoverableConnection",
+      "RepeaterControlCapable",
+      "RitXitCapable",
+      "ScopeCapable",
+      "SplitCapable",
+      "StateCacheCapable",
+      "StateNotifyCapable",
+      "SystemControlCapable",
+      "TransceiverBankCapable",
+      "TransceiverStatusCapable",
+      "VfoSlotCapable",
+      "VoiceControlCapable",
+      "IcomLanError",
+      "ConnectionError",
+      "AuthenticationError",
+      "CommandError",
+      "TimeoutError",
+      "AudioError",
+      "AudioCodecBackendError",
+      "AudioFormatError",
+      "AudioTranscodeError",
+      "Mode",
+      "AudioCodec",
+      "BreakInMode",
+      "RadioState",
+      "RadioProfile",
+      "VfoSlotState",
+      "YaesuStateExtension",
+      "IcomRadio",
+      "IcomCommander",
+      "Priority",
+      "AudioStream",
+      "AudioBackend",
+      "PortAudioBackend",
+      "FakeAudioBackend",
+      "AudioConfig",
+      "NoiseGate",
+      "RmsNormalizer",
+      "Limiter",
+      "DspPipeline",
+      "UsbAudioDriver"
+    ],
+    "has_pep562_getattr": true,
+    "dynamic_imports": [
+      "239:13"
+    ],
+    "init_side_effects": [
+      "81:AnnAssign",
+      "245:FunctionDef"
+    ]
+  },
+  "icom_lan.__main__": {
+    "path": "src/icom_lan/__main__.py",
+    "summary": "Allow running as: python -m icom_lan",
+    "all": [
+      "main"
+    ],
+    "has_pep562_getattr": false,
+    "dynamic_imports": [],
+    "init_side_effects": []
+  },
+  "icom_lan._audio_codecs": {
+    "path": "src/icom_lan/_audio_codecs.py",
+    "summary": "Pure-Python audio codec utilities.",
+    "all": [
+      "decode_ulaw_to_pcm16"
+    ],
+    "has_pep562_getattr": false,
+    "dynamic_imports": [],
+    "init_side_effects": []
+  },
+  "icom_lan._audio_recovery": {
+    "path": "src/icom_lan/_audio_recovery.py",
+    "summary": "Audio snapshot/resume logic for IcomRadio reconnect scenarios.",
+    "all": [
+      "AudioRecoveryRuntime",
+      "AudioRecoveryState",
+      "_AudioSnapshot"
+    ],
+    "has_pep562_getattr": false,
+    "dynamic_imports": [],
+    "init_side_effects": []
+  },
+  "icom_lan._audio_runtime_mixin": {
+    "path": "src/icom_lan/_audio_runtime_mixin.py",
+    "summary": "AudioRuntimeMixin \u2014 audio streaming methods extracted from CoreRadio.",
+    "all": null,
+    "has_pep562_getattr": false,
+    "dynamic_imports": [],
+    "init_side_effects": []
+  },
+  "icom_lan._audio_transcoder": {
+    "path": "src/icom_lan/_audio_transcoder.py",
+    "summary": "Internal PCM <-> Opus transcoder utilities.",
+    "all": [
+      "PcmAudioFormat",
+      "PcmOpusTranscoder",
+      "create_pcm_opus_transcoder"
+    ],
+    "has_pep562_getattr": false,
+    "dynamic_imports": [],
+    "init_side_effects": []
+  },
+  "icom_lan._bounded_queue": {
+    "path": "src/icom_lan/_bounded_queue.py",
+    "summary": "Minimal bounded async queue helper used by inter-task buffers.",
+    "all": null,
+    "has_pep562_getattr": false,
+    "dynamic_imports": [],
+    "init_side_effects": []
+  },
+  "icom_lan._bridge_metrics": {
+    "path": "src/icom_lan/_bridge_metrics.py",
+    "summary": "BridgeMetrics \u2014 structured audio bridge telemetry.",
+    "all": [
+      "BridgeMetrics"
+    ],
+    "has_pep562_getattr": false,
+    "dynamic_imports": [],
+    "init_side_effects": []
+  },
+  "icom_lan._bridge_state": {
+    "path": "src/icom_lan/_bridge_state.py",
+    "summary": "Bridge connection state machine.",
+    "all": [
+      "BridgeState",
+      "BridgeStateChange"
+    ],
+    "has_pep562_getattr": false,
+    "dynamic_imports": [],
+    "init_side_effects": []
+  },
+  "icom_lan._civ_rx": {
+    "path": "src/icom_lan/_civ_rx.py",
+    "summary": "CI-V receive pump and event dispatch for IcomRadio.",
+    "all": [
+      "CivRuntime",
+      "CIV_HEADER_SIZE"
+    ],
+    "has_pep562_getattr": false,
+    "dynamic_imports": [],
+    "init_side_effects": []
+  },
+  "icom_lan._connection_state": {
+    "path": "src/icom_lan/_connection_state.py",
+    "summary": "Radio-level connection state machine.",
+    "all": [
+      "RadioConnectionState"
+    ],
+    "has_pep562_getattr": false,
+    "dynamic_imports": [],
+    "init_side_effects": []
+  },
+  "icom_lan._control_phase": {
+    "path": "src/icom_lan/_control_phase.py",
+    "summary": "Auth/login FSM, token renewal, watchdog, and reconnect for IcomRadio.",
+    "all": [
+      "ControlPhaseRuntime",
+      "OPENCLOSE_SIZE",
+      "TOKEN_ACK_SIZE",
+      "CONNINFO_SIZE",
+      "STATUS_SIZE"
+    ],
+    "has_pep562_getattr": false,
+    "dynamic_imports": [],
+    "init_side_effects": []
+  },
+  "icom_lan._dual_rx_runtime": {
+    "path": "src/icom_lan/_dual_rx_runtime.py",
+    "summary": "DualRxRuntimeMixin \u2014 dual-receiver routing methods extracted from CoreRadio.",
+    "all": null,
+    "has_pep562_getattr": false,
+    "dynamic_imports": [],
+    "init_side_effects": []
+  },
+  "icom_lan._optional_deps": {
+    "path": "src/icom_lan/_optional_deps.py",
+    "summary": "Helpers for optional / heavy dependencies.",
+    "all": [
+      "_require_numpy",
+      "_require_sounddevice",
+      "_require_opuslib",
+      "_require_pillow",
+      "_require_pyserial_asyncio"
+    ],
+    "has_pep562_getattr": false,
+    "dynamic_imports": [],
+    "init_side_effects": []
+  },
+  "icom_lan._poller_types": {
+    "path": "src/icom_lan/_poller_types.py",
+    "summary": "Shared command types and CommandQueue for radio pollers.",
+    "all": [
+      "Command",
+      "CommandQueue",
+      "DisableScope",
+      "EnableScope",
+      "MemoryClear",
+      "MemoryToVfo",
+      "MemoryWrite",
+      "PttOff",
+      "PttOn",
+      "QuickDualWatch",
+      "QuickDwTrigger",
+      "QuickSplit",
+      "QuickSplitTrigger",
+      "ScanSetDfSpan",
+      "ScanSetResume",
+      "ScanStart",
+      "ScanStop",
+      "SelectVfo",
+      "SetAcc1ModLevel",
+      "SetAfLevel",
+      "SetAfMute",
+      "SetAgc",
+      "SetAgcTimeConstant",
+      "SetAntenna1",
+      "SetAntenna2",
+      "SetApf",
+      "SetAttenuator",
+      "SetAudioPeakFilter",
+      "SetAutoNotch",
+      "SetBand",
+      "SetBreakIn",
+      "SetBreakInDelay",
+      "SetBsr",
+      "SetCivOutputAnt",
+      "SetCivTransceive",
+      "SetCompressor",
+      "SetCompressorLevel",
+      "SetCwPitch",
+      "SetDashRatio",
+      "SetData1ModInput",
+      "SetData2ModInput",
+      "SetData3ModInput",
+      "SetDataMode",
+      "SetDataOffModInput",
+      "SetDialLock",
+      "SetDigiSel",
+      "SetDigiselShift",
+      "SetDriveGain",
+      "SetDualWatch",
+      "SetFilter",
+      "SetFilterShape",
+      "SetFilterWidth",
+      "SetFreq",
+      "SetIfShift",
+      "SetIpPlus",
+      "SetKeySpeed",
+      "SetLanModLevel",
+      "SetMainSubTracking",
+      "SetManualNotch",
+      "SetManualNotchWidth",
+      "SetMemoryContents",
+      "SetMemoryMode",
+      "SetMicGain",
+      "SetMode",
+      "SetMonitor",
+      "SetMonitorGain",
+      "SetNB",
+      "SetNBLevel",
+      "SetNR",
+      "SetNRLevel",
+      "SetNbDepth",
+      "SetNbWidth",
+      "SetNotchFilter",
+      "SetPbtInner",
+      "SetPbtOuter",
+      "SetPower",
+      "SetPowerstat",
+      "SetPreamp",
+      "SetRefAdjust",
+      "SetRepeaterTone",
+      "SetRepeaterTsql",
+      "SetRfGain",
+      "SetRitFrequency",
+      "SetRitStatus",
+      "SetRitTxStatus",
+      "SetRxAntenna",
+      "SetRxAntennaAnt1",
+      "SetRxAntennaAnt2",
+      "SetScopeCenterType",
+      "SetScopeDual",
+      "SetScopeDuringTx",
+      "SetScopeEdge",
+      "SetScopeFixedEdge",
+      "SetScopeHold",
+      "SetScopeMode",
+      "SetScopeRbw",
+      "SetScopeRef",
+      "SetScopeSpeed",
+      "SetScopeSpan",
+      "SetScopeVbw",
+      "SetSplit",
+      "SetSquelch",
+      "SetSsbTxBandwidth",
+      "SetSystemDate",
+      "SetSystemTime",
+      "SetToneFreq",
+      "SetTsqlFreq",
+      "SetTunerStatus",
+      "SetTuningStep",
+      "SetTwinPeak",
+      "SetTxFreqMonitor",
+      "SetUsbModLevel",
+      "SetUtcOffset",
+      "SetVox",
+      "SetVoxDelay",
+      "SetVoxGain",
+      "SetAntiVoxGain",
+      "SetXfcStatus",
+      "SwitchScopeReceiver",
+      "VfoEqualize",
+      "VfoSwap"
+    ],
+    "has_pep562_getattr": false,
+    "dynamic_imports": [],
+    "init_side_effects": []
+  },
+  "icom_lan._queue_pressure": {
+    "path": "src/icom_lan/_queue_pressure.py",
+    "summary": "Queue pressure threshold for transport and poller coordination.",
+    "all": [
+      "PRESSURE_THRESHOLD"
+    ],
+    "has_pep562_getattr": false,
+    "dynamic_imports": [],
+    "init_side_effects": []
+  },
+  "icom_lan._runtime_protocols": {
+    "path": "src/icom_lan/_runtime_protocols.py",
+    "summary": "Internal runtime host Protocols (P0 decomposition).",
+    "all": [
+      "CivRuntimeHost",
+      "ControlPhaseHost",
+      "AudioRuntimeHost"
+    ],
+    "has_pep562_getattr": false,
+    "dynamic_imports": [],
+    "init_side_effects": []
+  },
+  "icom_lan._scope_runtime": {
+    "path": "src/icom_lan/_scope_runtime.py",
+    "summary": "ScopeRuntimeMixin \u2014 scope/waterfall methods extracted from CoreRadio.",
+    "all": null,
+    "has_pep562_getattr": false,
+    "dynamic_imports": [],
+    "init_side_effects": []
+  },
+  "icom_lan._shared_state_runtime": {
+    "path": "src/icom_lan/_shared_state_runtime.py",
+    "summary": "Shared state polling/cache helpers used by web and rigctld.",
+    "all": [
+      "DEFAULT_STATE_CACHE_TTL",
+      "is_cache_fresh",
+      "poll_frequency",
+      "poll_mode",
+      "poll_powerstat",
+      "poll_standard_fields"
+    ],
+    "has_pep562_getattr": false,
+    "dynamic_imports": [],
+    "init_side_effects": []
+  },
+  "icom_lan._state_cache": {
+    "path": "src/icom_lan/_state_cache.py",
+    "summary": "Shared radio state cache.",
+    "all": [
+      "CacheField",
+      "StateCache"
+    ],
+    "has_pep562_getattr": false,
+    "dynamic_imports": [],
+    "init_side_effects": []
+  },
+  "icom_lan._state_queries": {
+    "path": "src/icom_lan/_state_queries.py",
+    "summary": "Shared state query list for populating RadioState.",
+    "all": null,
+    "has_pep562_getattr": false,
+    "dynamic_imports": [],
+    "init_side_effects": []
+  },
+  "icom_lan.audio": {
+    "path": "src/icom_lan/audio/__init__.py",
+    "summary": "Universal audio subsystem for icom-lan.",
+    "all": [
+      "AudioBackend",
+      "AudioDeviceId",
+      "AudioDeviceInfo",
+      "FakeAudioBackend",
+      "FakeRxStream",
+      "FakeTxStream",
+      "PortAudioBackend",
+      "RxStream",
+      "TxStream",
+      "AUDIO_HEADER_SIZE",
+      "AudioPacket",
+      "AudioState",
+      "AudioStats",
+      "AudioStream",
+      "JitterBuffer",
+      "MAX_AUDIO_PAYLOAD",
+      "RX_IDENT_0xA0",
+      "build_audio_packet",
+      "parse_audio_packet",
+      "TX_IDENT",
+      "DspPipeline",
+      "DspStage",
+      "Limiter",
+      "NoiseGate",
+      "RmsNormalizer",
+      "PcmResampler",
+      "SampleRateNegotiation",
+      "negotiate_sample_rate",
+      "AudioDeviceSelectionError",
+      "AudioDriverLifecycleError",
+      "UsbAudioDevice",
+      "UsbAudioDriver",
+      "list_usb_audio_devices",
+      "select_usb_audio_devices"
+    ],
+    "has_pep562_getattr": true,
+    "dynamic_imports": [
+      "99:13"
+    ],
+    "init_side_effects": [
+      "38:AnnAssign",
+      "105:FunctionDef"
+    ]
+  },
+  "icom_lan.audio._macos_uid": {
+    "path": "src/icom_lan/audio/_macos_uid.py",
+    "summary": "macOS CoreAudio device UID lookup via ctypes.",
+    "all": null,
+    "has_pep562_getattr": false,
+    "dynamic_imports": [],
+    "init_side_effects": []
+  },
+  "icom_lan.audio.backend": {
+    "path": "src/icom_lan/audio/backend.py",
+    "summary": "AudioBackend protocol and implementations.",
+    "all": [
+      "AudioBackend",
+      "AudioDeviceId",
+      "AudioDeviceInfo",
+      "FakeAudioBackend",
+      "FakeRxStream",
+      "FakeTxStream",
+      "PortAudioBackend",
+      "RxStream",
+      "TxStream"
+    ],
+    "has_pep562_getattr": false,
+    "dynamic_imports": [],
+    "init_side_effects": []
+  },
+  "icom_lan.audio.config": {
+    "path": "src/icom_lan/audio/config.py",
+    "summary": "Optional audio.toml configuration \u2014 persists device selection across runs.",
+    "all": [
+      "AudioConfig",
+      "load_audio_config",
+      "save_audio_config"
+    ],
+    "has_pep562_getattr": false,
+    "dynamic_imports": [],
+    "init_side_effects": []
+  },
+  "icom_lan.audio.dsp": {
+    "path": "src/icom_lan/audio/dsp.py",
+    "summary": "Optional DSP pipeline for audio bridge \u2014 noise gate, RMS normalization, limiter.",
+    "all": [
+      "DspPipeline",
+      "DspStage",
+      "Limiter",
+      "NoiseGate",
+      "RmsNormalizer"
+    ],
+    "has_pep562_getattr": false,
+    "dynamic_imports": [],
+    "init_side_effects": []
+  },
+  "icom_lan.audio.lan_stream": {
+    "path": "src/icom_lan/audio/lan_stream.py",
+    "summary": "Audio streaming for Icom transceivers over LAN (UDP).",
+    "all": [
+      "AudioStream",
+      "AudioPacket",
+      "AudioStats",
+      "AudioState",
+      "JitterBuffer",
+      "AUDIO_HEADER_SIZE",
+      "TX_IDENT",
+      "RX_IDENT_0xA0"
+    ],
+    "has_pep562_getattr": false,
+    "dynamic_imports": [],
+    "init_side_effects": []
+  },
+  "icom_lan.audio.resample": {
+    "path": "src/icom_lan/audio/resample.py",
+    "summary": "Optional PCM resampling using numpy linear interpolation.",
+    "all": [
+      "PcmResampler",
+      "negotiate_sample_rate"
+    ],
+    "has_pep562_getattr": false,
+    "dynamic_imports": [],
+    "init_side_effects": []
+  },
+  "icom_lan.audio.usb_driver": {
+    "path": "src/icom_lan/audio/usb_driver.py",
+    "summary": "Universal USB audio driver for all serial-connected radios (macOS-first).",
+    "all": [
+      "AudioDeviceSelectionError",
+      "AudioDriverLifecycleError",
+      "UsbAudioDevice",
+      "UsbAudioDriver",
+      "list_usb_audio_devices",
+      "select_usb_audio_devices"
+    ],
+    "has_pep562_getattr": false,
+    "dynamic_imports": [],
+    "init_side_effects": []
+  },
+  "icom_lan.audio_analyzer": {
+    "path": "src/icom_lan/audio_analyzer.py",
+    "summary": "Lightweight audio analyzer \u2014 realtime SNR estimation from PCM stream.",
+    "all": [
+      "AudioAnalyzer"
+    ],
+    "has_pep562_getattr": false,
+    "dynamic_imports": [],
+    "init_side_effects": []
+  },
+  "icom_lan.audio_bridge": {
+    "path": "src/icom_lan/audio_bridge.py",
+    "summary": "Audio bridge \u2014 bidirectional PCM bridge between radio and a system audio device.",
+    "all": [
+      "AudioBridge",
+      "BridgeMetrics",
+      "BridgeState",
+      "BridgeStateChange",
+      "LoopbackNotFoundError",
+      "derive_bridge_label",
+      "find_loopback_device"
+    ],
+    "has_pep562_getattr": false,
+    "dynamic_imports": [],
+    "init_side_effects": []
+  },
+  "icom_lan.audio_bus": {
+    "path": "src/icom_lan/audio_bus.py",
+    "summary": "AudioBus \u2014 pub/sub distribution for radio audio streams.",
+    "all": [
+      "AudioBus",
+      "AudioSubscription"
+    ],
+    "has_pep562_getattr": false,
+    "dynamic_imports": [],
+    "init_side_effects": []
+  },
+  "icom_lan.audio_fft_scope": {
+    "path": "src/icom_lan/audio_fft_scope.py",
+    "summary": "Audio FFT Scope \u2014 derive IF panadapter from RX audio PCM stream.",
+    "all": [
+      "AudioFftScope"
+    ],
+    "has_pep562_getattr": false,
+    "dynamic_imports": [],
+    "init_side_effects": []
+  },
+  "icom_lan.auth": {
+    "path": "src/icom_lan/auth.py",
+    "summary": "Authentication logic for the Icom LAN protocol.",
+    "all": [
+      "PASSCODE_SEQUENCE",
+      "AuthResponse",
+      "StatusResponse",
+      "encode_credentials",
+      "build_login_packet",
+      "build_conninfo_packet",
+      "parse_auth_response",
+      "parse_status_response"
+    ],
+    "has_pep562_getattr": false,
+    "dynamic_imports": [],
+    "init_side_effects": []
+  },
+  "icom_lan.backends": {
+    "path": "src/icom_lan/backends/__init__.py",
+    "summary": "Backend-specific radio implementations and assembly helpers.",
+    "all": [
+      "BackendConfig",
+      "LanBackendConfig",
+      "SerialBackendConfig",
+      "YaesuCatBackendConfig",
+      "create_radio"
+    ],
+    "has_pep562_getattr": false,
+    "dynamic_imports": [],
+    "init_side_effects": []
+  },
+  "icom_lan.backends._icom_serial_base": {
+    "path": "src/icom_lan/backends/_icom_serial_base.py",
+    "summary": "Shared base class for Icom serial (USB CI-V) radio backends.",
+    "all": [
+      "_IcomSerialRadioBase",
+      "_SerialAudioDriver",
+      "_env_bool",
+      "_SERIAL_SCOPE_MIN_BAUD"
+    ],
+    "has_pep562_getattr": false,
+    "dynamic_imports": [],
+    "init_side_effects": []
+  },
+  "icom_lan.backends.config": {
+    "path": "src/icom_lan/backends/config.py",
+    "summary": "Typed backend configuration models for radio assembly.",
+    "all": [
+      "BackendConfig",
+      "LanBackendConfig",
+      "SerialBackendConfig",
+      "YaesuCatBackendConfig"
+    ],
+    "has_pep562_getattr": false,
+    "dynamic_imports": [],
+    "init_side_effects": []
+  },
+  "icom_lan.backends.factory": {
+    "path": "src/icom_lan/backends/factory.py",
+    "summary": "Backend factory for assembling radio implementations from typed config.",
+    "all": [
+      "create_radio"
+    ],
+    "has_pep562_getattr": false,
+    "dynamic_imports": [],
+    "init_side_effects": []
+  },
+  "icom_lan.backends.ic705": {
+    "path": "src/icom_lan/backends/ic705/__init__.py",
+    "summary": "IC-705 backend implementations (serial).",
+    "all": [
+      "Ic705SerialRadio"
+    ],
+    "has_pep562_getattr": false,
+    "dynamic_imports": [],
+    "init_side_effects": []
+  },
+  "icom_lan.backends.ic705.core": {
+    "path": "src/icom_lan/backends/ic705/core.py",
+    "summary": "Shared executable core for IC-705 behavior.",
+    "all": [
+      "Ic705CoreRadio"
+    ],
+    "has_pep562_getattr": false,
+    "dynamic_imports": [],
+    "init_side_effects": []
+  },
+  "icom_lan.backends.ic705.serial": {
+    "path": "src/icom_lan/backends/ic705/serial.py",
+    "summary": "Serial adaptation layer for the IC-705 backend.",
+    "all": [
+      "Ic705SerialRadio"
+    ],
+    "has_pep562_getattr": false,
+    "dynamic_imports": [],
+    "init_side_effects": []
+  },
+  "icom_lan.backends.ic7300": {
+    "path": "src/icom_lan/backends/ic7300/__init__.py",
+    "summary": "IC-7300 backend implementations (serial).",
+    "all": [
+      "Ic7300SerialRadio"
+    ],
+    "has_pep562_getattr": false,
+    "dynamic_imports": [],
+    "init_side_effects": []
+  },
+  "icom_lan.backends.ic7300.core": {
+    "path": "src/icom_lan/backends/ic7300/core.py",
+    "summary": "Shared executable core for IC-7300 behavior.",
+    "all": [
+      "Ic7300CoreRadio"
+    ],
+    "has_pep562_getattr": false,
+    "dynamic_imports": [],
+    "init_side_effects": []
+  },
+  "icom_lan.backends.ic7300.serial": {
+    "path": "src/icom_lan/backends/ic7300/serial.py",
+    "summary": "Serial adaptation layer for the IC-7300 backend.",
+    "all": [
+      "Ic7300SerialRadio"
+    ],
+    "has_pep562_getattr": false,
+    "dynamic_imports": [],
+    "init_side_effects": []
+  },
+  "icom_lan.backends.ic9700": {
+    "path": "src/icom_lan/backends/ic9700/__init__.py",
+    "summary": "IC-9700 backend implementations (serial and LAN).",
+    "all": [
+      "Ic9700SerialRadio"
+    ],
+    "has_pep562_getattr": false,
+    "dynamic_imports": [],
+    "init_side_effects": []
+  },
+  "icom_lan.backends.ic9700.core": {
+    "path": "src/icom_lan/backends/ic9700/core.py",
+    "summary": "Shared executable core for IC-9700 behavior.",
+    "all": [
+      "Ic9700CoreRadio"
+    ],
+    "has_pep562_getattr": false,
+    "dynamic_imports": [],
+    "init_side_effects": []
+  },
+  "icom_lan.backends.ic9700.serial": {
+    "path": "src/icom_lan/backends/ic9700/serial.py",
+    "summary": "Serial adaptation layer for the IC-9700 backend.",
+    "all": [
+      "Ic9700SerialRadio"
+    ],
+    "has_pep562_getattr": false,
+    "dynamic_imports": [],
+    "init_side_effects": []
+  },
+  "icom_lan.backends.icom7610": {
+    "path": "src/icom_lan/backends/icom7610/__init__.py",
+    "summary": "IC-7610 backend exports.",
+    "all": [
+      "Icom7610LanRadio",
+      "Icom7610SerialRadio"
+    ],
+    "has_pep562_getattr": false,
+    "dynamic_imports": [],
+    "init_side_effects": []
+  },
+  "icom_lan.backends.icom7610.drivers": {
+    "path": "src/icom_lan/backends/icom7610/drivers/__init__.py",
+    "summary": "Internal driver contracts for IC-7610 backend.",
+    "all": [
+      "AudioDriver",
+      "CivLink",
+      "SessionDriver",
+      "SerialCivLink",
+      "SerialFrameCodec",
+      "SerialFrameError",
+      "SerialFrameOverflowError",
+      "SerialFrameTimeoutError",
+      "SerialSessionDriver",
+      "AudioDeviceSelectionError",
+      "AudioDriverLifecycleError",
+      "UsbAudioDevice",
+      "UsbAudioDriver",
+      "list_usb_audio_devices",
+      "select_usb_audio_devices"
+    ],
+    "has_pep562_getattr": false,
+    "dynamic_imports": [],
+    "init_side_effects": []
+  },
+  "icom_lan.backends.icom7610.drivers.contracts": {
+    "path": "src/icom_lan/backends/icom7610/drivers/contracts.py",
+    "summary": "Internal backend driver contracts for IC-7610 core orchestration.",
+    "all": [
+      "AudioDriver",
+      "CivLink",
+      "SessionDriver"
+    ],
+    "has_pep562_getattr": false,
+    "dynamic_imports": [],
+    "init_side_effects": []
+  },
+  "icom_lan.backends.icom7610.drivers.serial_civ_link": {
+    "path": "src/icom_lan/backends/icom7610/drivers/serial_civ_link.py",
+    "summary": "Production Serial CI-V link for IC-7610 USB serial backend.",
+    "all": [
+      "SerialCivLink",
+      "SerialFrameCodec",
+      "SerialFrameError",
+      "SerialFrameOverflowError",
+      "SerialFrameTimeoutError"
+    ],
+    "has_pep562_getattr": false,
+    "dynamic_imports": [
+      "362:25"
+    ],
+    "init_side_effects": []
+  },
+  "icom_lan.backends.icom7610.drivers.serial_session": {
+    "path": "src/icom_lan/backends/icom7610/drivers/serial_session.py",
+    "summary": "Serial session driver and transport adapters for IC-7610 shared core.",
+    "all": [
+      "SerialCivTransport",
+      "SerialControlTransport",
+      "SerialSessionDriver"
+    ],
+    "has_pep562_getattr": false,
+    "dynamic_imports": [],
+    "init_side_effects": []
+  },
+  "icom_lan.backends.icom7610.drivers.serial_stub": {
+    "path": "src/icom_lan/backends/icom7610/drivers/serial_stub.py",
+    "summary": "Deterministic serial-ready test doubles for backend regression gates.",
+    "all": [
+      "DeterministicSerialCivLink",
+      "SerialFrameCodec",
+      "SerialFrameError",
+      "SerialFrameOverflowError",
+      "SerialFrameTimeoutError",
+      "SerialMockRadio"
+    ],
+    "has_pep562_getattr": false,
+    "dynamic_imports": [],
+    "init_side_effects": []
+  },
+  "icom_lan.backends.icom7610.drivers.usb_audio": {
+    "path": "src/icom_lan/backends/icom7610/drivers/usb_audio.py",
+    "summary": "Backward-compatible re-export \u2014 driver moved to icom_lan.audio.usb_driver.",
+    "all": [
+      "AudioDeviceSelectionError",
+      "AudioDriverLifecycleError",
+      "UsbAudioDevice",
+      "UsbAudioDriver",
+      "list_usb_audio_devices",
+      "select_usb_audio_devices"
+    ],
+    "has_pep562_getattr": false,
+    "dynamic_imports": [],
+    "init_side_effects": []
+  },
+  "icom_lan.backends.icom7610.lan": {
+    "path": "src/icom_lan/backends/icom7610/lan.py",
+    "summary": "LAN adaptation layer for the IC-7610 backend.",
+    "all": [
+      "Icom7610LanRadio"
+    ],
+    "has_pep562_getattr": false,
+    "dynamic_imports": [],
+    "init_side_effects": []
+  },
+  "icom_lan.backends.icom7610.serial": {
+    "path": "src/icom_lan/backends/icom7610/serial.py",
+    "summary": "Serial adaptation layer for the IC-7610 backend.",
+    "all": [
+      "Icom7610SerialRadio"
+    ],
+    "has_pep562_getattr": false,
+    "dynamic_imports": [],
+    "init_side_effects": []
+  },
+  "icom_lan.backends.yaesu_cat": {
+    "path": "src/icom_lan/backends/yaesu_cat/__init__.py",
+    "summary": "Yaesu CAT backend for icom-lan.",
+    "all": [
+      "YaesuCatPoller",
+      "YaesuCatRadio",
+      "YaesuCatTransport",
+      "CatTransportError",
+      "CatTimeoutError"
+    ],
+    "has_pep562_getattr": false,
+    "dynamic_imports": [],
+    "init_side_effects": []
+  },
+  "icom_lan.backends.yaesu_cat.parser": {
+    "path": "src/icom_lan/backends/yaesu_cat/parser.py",
+    "summary": "Yaesu CAT command formatter and parser.",
+    "all": [
+      "CatFormatError",
+      "CatParseError",
+      "CatCommandParser",
+      "format_command"
+    ],
+    "has_pep562_getattr": false,
+    "dynamic_imports": [],
+    "init_side_effects": []
+  },
+  "icom_lan.backends.yaesu_cat.poller": {
+    "path": "src/icom_lan/backends/yaesu_cat/poller.py",
+    "summary": "YaesuCatPoller \u2014 polling scheduler for YaesuCatRadio.",
+    "all": [
+      "YaesuCatPoller"
+    ],
+    "has_pep562_getattr": false,
+    "dynamic_imports": [],
+    "init_side_effects": []
+  },
+  "icom_lan.backends.yaesu_cat.radio": {
+    "path": "src/icom_lan/backends/yaesu_cat/radio.py",
+    "summary": "Yaesu CAT radio backend \u2014 FTX-1 and compatible transceivers.",
+    "all": [
+      "YaesuCatRadio"
+    ],
+    "has_pep562_getattr": false,
+    "dynamic_imports": [],
+    "init_side_effects": []
+  },
+  "icom_lan.backends.yaesu_cat.transport": {
+    "path": "src/icom_lan/backends/yaesu_cat/transport.py",
+    "summary": "Yaesu CAT serial transport \u2014 bulletproof async line protocol.",
+    "all": [
+      "YaesuCatTransport",
+      "CatTransportError",
+      "CatTimeoutError",
+      "CatCommandRejected"
+    ],
+    "has_pep562_getattr": false,
+    "dynamic_imports": [],
+    "init_side_effects": []
+  },
+  "icom_lan.capabilities": {
+    "path": "src/icom_lan/capabilities.py",
+    "summary": "Unified capability constants and known-capability registry.",
+    "all": [
+      "KNOWN_CAPABILITIES",
+      "CAP_AUDIO",
+      "CAP_DUAL_RX",
+      "CAP_DUAL_WATCH",
+      "CAP_AF_LEVEL",
+      "CAP_RF_GAIN",
+      "CAP_SQUELCH",
+      "CAP_ATTENUATOR",
+      "CAP_PREAMP",
+      "CAP_DIGISEL",
+      "CAP_IP_PLUS",
+      "CAP_ANTENNA",
+      "CAP_RX_ANTENNA",
+      "CAP_NB",
+      "CAP_NR",
+      "CAP_NOTCH",
+      "CAP_APF",
+      "CAP_TWIN_PEAK",
+      "CAP_PBT",
+      "CAP_FILTER_WIDTH",
+      "CAP_FILTER_SHAPE",
+      "CAP_IF_SHIFT",
+      "CAP_CONTOUR",
+      "CAP_TX",
+      "CAP_SPLIT",
+      "CAP_VOX",
+      "CAP_COMPRESSOR",
+      "CAP_MONITOR",
+      "CAP_DRIVE_GAIN",
+      "CAP_SSB_TX_BW",
+      "CAP_CW",
+      "CAP_BREAK_IN",
+      "CAP_RIT",
+      "CAP_XIT",
+      "CAP_TUNER",
+      "CAP_METERS",
+      "CAP_SCOPE",
+      "CAP_REPEATER_TONE",
+      "CAP_TSQL",
+      "CAP_DTCS",
+      "CAP_CSQL",
+      "CAP_VOICE_TX",
+      "CAP_DATA_MODE",
+      "CAP_AGC",
+      "CAP_POWER_CONTROL",
+      "CAP_DIAL_LOCK",
+      "CAP_SCAN",
+      "CAP_BSR",
+      "CAP_MAIN_SUB_TRACKING",
+      "CAP_TUNING_STEP",
+      "CAP_BAND_EDGE",
+      "CAP_XFC",
+      "CAP_SYSTEM_SETTINGS",
+      "CAP_WEBRTC"
+    ],
+    "has_pep562_getattr": false,
+    "dynamic_imports": [],
+    "init_side_effects": []
+  },
+  "icom_lan.civ": {
+    "path": "src/icom_lan/civ.py",
+    "summary": "CI-V event routing and request tracking utilities.",
+    "all": [
+      "CivEvent",
+      "CivEventType",
+      "CivRequestKey",
+      "CivRequestTracker",
+      "iter_civ_frames",
+      "request_key_from_frame"
+    ],
+    "has_pep562_getattr": false,
+    "dynamic_imports": [],
+    "init_side_effects": []
+  },
+  "icom_lan.cli": {
+    "path": "src/icom_lan/cli.py",
+    "summary": "icom-lan CLI \u2014 command-line interface for Icom LAN control.",
+    "all": [
+      "main",
+      "check_ports_available"
+    ],
+    "has_pep562_getattr": false,
+    "dynamic_imports": [],
+    "init_side_effects": []
+  },
+  "icom_lan.command_map": {
+    "path": "src/icom_lan/command_map.py",
+    "summary": "CommandMap \u2014 frozen lookup for CI-V wire bytes by command name.",
+    "all": [
+      "CommandMap"
+    ],
+    "has_pep562_getattr": false,
+    "dynamic_imports": [],
+    "init_side_effects": []
+  },
+  "icom_lan.command_spec": {
+    "path": "src/icom_lan/command_spec.py",
+    "summary": "Command specification types for multi-protocol radio control.",
+    "all": [
+      "CivCommandSpec",
+      "CatCommandSpec",
+      "CommandSpec"
+    ],
+    "has_pep562_getattr": false,
+    "dynamic_imports": [],
+    "init_side_effects": []
+  },
+  "icom_lan.commander": {
+    "path": "src/icom_lan/commander.py",
+    "summary": "classes: Priority, _QueueItem, IcomCommander",
+    "all": [
+      "IcomCommander",
+      "Priority"
+    ],
+    "has_pep562_getattr": false,
+    "dynamic_imports": [],
+    "init_side_effects": []
+  },
+  "icom_lan.commands": {
+    "path": "src/icom_lan/commands/__init__.py",
+    "summary": "CI-V command encoding and decoding for Icom transceivers.",
+    "all": [
+      "_bcd_byte",
+      "_bcd_decode_value",
+      "_level_bcd_decode",
+      "_level_bcd_encode",
+      "_decode_tone_freq",
+      "_encode_tone_freq",
+      "_SUB_REPEATER_TONE",
+      "_SUB_REPEATER_TSQL",
+      "_CMD_ACK",
+      "_CMD_FREQ_GET",
+      "_CMD_FREQ_SET",
+      "_CMD_LEVEL",
+      "_CMD_METER",
+      "_CMD_MODE_GET",
+      "_CMD_MODE_SET",
+      "_CMD_PREAMP",
+      "_CMD_PTT",
+      "_CMD_SELECTED_FREQ",
+      "_CMD_SELECTED_MODE",
+      "_SUB_ALC_METER",
+      "_SUB_POWER_METER",
+      "_SUB_PTT",
+      "_SUB_RF_POWER",
+      "_SUB_S_METER",
+      "_SUB_SWR_METER",
+      "CONTROLLER_ADDR",
+      "RECEIVER_MAIN",
+      "RECEIVER_SUB",
+      "bcd_decode",
+      "build_civ_frame",
+      "build_cmd29_frame",
+      "bcd_encode_value",
+      "filter_hz_to_index",
+      "filter_index_to_hz",
+      "table_index_to_hz",
+      "hz_to_table_index",
+      "parse_civ_frame",
+      "get_freq",
+      "set_freq",
+      "get_frequency",
+      "set_frequency",
+      "get_mode",
+      "set_mode",
+      "get_rf_power",
+      "set_rf_power",
+      "get_s_meter",
+      "get_swr",
+      "get_alc",
+      "ptt_on",
+      "ptt_off",
+      "parse_frequency_response",
+      "parse_mode_response",
+      "parse_meter_response",
+      "parse_ack_nak",
+      "send_cw",
+      "stop_cw",
+      "power_on",
+      "power_off",
+      "get_attenuator",
+      "set_attenuator",
+      "set_attenuator_level",
+      "get_preamp",
+      "set_preamp",
+      "get_digisel",
+      "set_digisel",
+      "get_apf_type_level",
+      "set_apf_type_level",
+      "get_nr_level",
+      "set_nr_level",
+      "get_pbt_inner",
+      "set_pbt_inner",
+      "get_pbt_outer",
+      "set_pbt_outer",
+      "get_cw_pitch",
+      "set_cw_pitch",
+      "get_mic_gain",
+      "set_mic_gain",
+      "get_key_speed",
+      "set_key_speed",
+      "get_notch_filter",
+      "set_notch_filter",
+      "get_compressor_level",
+      "set_compressor_level",
+      "get_break_in_delay",
+      "set_break_in_delay",
+      "get_nb_level",
+      "set_nb_level",
+      "get_digisel_shift",
+      "set_digisel_shift",
+      "get_drive_gain",
+      "set_drive_gain",
+      "get_monitor_gain",
+      "set_monitor_gain",
+      "get_vox_gain",
+      "set_vox_gain",
+      "get_anti_vox_gain",
+      "set_anti_vox_gain",
+      "get_ref_adjust",
+      "set_ref_adjust",
+      "get_dash_ratio",
+      "set_dash_ratio",
+      "get_nb_depth",
+      "set_nb_depth",
+      "get_nb_width",
+      "set_nb_width",
+      "get_vox_delay",
+      "set_vox_delay",
+      "get_af_mute",
+      "set_af_mute",
+      "get_squelch",
+      "set_squelch",
+      "get_s_meter_sql_status",
+      "get_overflow_status",
+      "get_agc",
+      "set_agc",
+      "get_audio_peak_filter",
+      "set_audio_peak_filter",
+      "get_auto_notch",
+      "set_auto_notch",
+      "get_compressor",
+      "set_compressor",
+      "get_monitor",
+      "set_monitor",
+      "get_vox",
+      "set_vox",
+      "get_break_in",
+      "set_break_in",
+      "get_manual_notch",
+      "set_manual_notch",
+      "get_manual_notch_width",
+      "set_manual_notch_width",
+      "get_twin_peak_filter",
+      "set_twin_peak_filter",
+      "get_dial_lock",
+      "set_dial_lock",
+      "get_selected_freq",
+      "get_unselected_freq",
+      "parse_selected_freq_response",
+      "get_selected_mode",
+      "get_unselected_mode",
+      "parse_selected_mode_response",
+      "_CMD_SELECTED_FREQ",
+      "_CMD_SELECTED_MODE",
+      "get_filter_shape",
+      "set_filter_shape",
+      "get_filter_width",
+      "set_filter_width",
+      "get_ssb_tx_bandwidth",
+      "set_ssb_tx_bandwidth",
+      "get_main_sub_tracking",
+      "set_main_sub_tracking",
+      "get_agc_time_constant",
+      "set_agc_time_constant",
+      "get_data_mode",
+      "set_data_mode",
+      "parse_data_mode_response",
+      "parse_level_response",
+      "parse_bool_response",
+      "scope_on",
+      "scope_off",
+      "scope_data_output",
+      "scope_data_output_on",
+      "scope_data_output_off",
+      "get_scope_main_sub",
+      "scope_main_sub",
+      "get_scope_single_dual",
+      "scope_single_dual",
+      "get_scope_mode",
+      "scope_set_mode",
+      "get_scope_span",
+      "scope_set_span",
+      "get_scope_ref",
+      "scope_set_ref",
+      "get_scope_speed",
+      "scope_set_speed",
+      "get_scope_edge",
+      "scope_set_edge",
+      "get_scope_hold",
+      "scope_set_hold",
+      "get_scope_during_tx",
+      "scope_set_during_tx",
+      "get_scope_center_type",
+      "scope_set_center_type",
+      "get_scope_vbw",
+      "scope_set_vbw",
+      "get_scope_fixed_edge",
+      "scope_set_fixed_edge",
+      "get_scope_rbw",
+      "scope_set_rbw",
+      "parse_scope_main_sub_response",
+      "parse_scope_single_dual_response",
+      "parse_scope_mode_response",
+      "parse_scope_span_response",
+      "parse_scope_ref_response",
+      "parse_scope_speed_response",
+      "parse_scope_edge_response",
+      "parse_scope_hold_response",
+      "parse_scope_during_tx_response",
+      "parse_scope_center_type_response",
+      "parse_scope_vbw_response",
+      "parse_scope_fixed_edge_response",
+      "parse_scope_rbw_response",
+      "get_band_edge_freq",
+      "get_various_squelch",
+      "get_power_meter",
+      "get_comp_meter",
+      "get_vd_meter",
+      "get_id_meter",
+      "get_tuner_status",
+      "set_tuner_status",
+      "get_tx_freq_monitor",
+      "set_tx_freq_monitor",
+      "get_rit_frequency",
+      "set_rit_frequency",
+      "get_rit_status",
+      "set_rit_status",
+      "get_rit_tx_status",
+      "set_rit_tx_status",
+      "parse_rit_frequency_response",
+      "get_vfo",
+      "set_vfo",
+      "get_main_sub_band",
+      "select_vfo",
+      "get_tuning_step",
+      "set_tuning_step",
+      "scan_start",
+      "scan_start_type",
+      "scan_stop",
+      "scan_set_df_span",
+      "scan_set_resume",
+      "VALID_SCAN_TYPES",
+      "VALID_DF_SPANS",
+      "VALID_SCAN_RESUME",
+      "start_scan",
+      "stop_scan",
+      "set_dual_watch_off",
+      "set_dual_watch_on",
+      "get_dual_watch",
+      "set_dual_watch",
+      "quick_dual_watch",
+      "quick_split",
+      "get_quick_dual_watch",
+      "set_quick_dual_watch",
+      "get_quick_split",
+      "set_quick_split",
+      "get_speech",
+      "speech",
+      "get_repeater_tone",
+      "set_repeater_tone",
+      "get_repeater_tsql",
+      "set_repeater_tsql",
+      "get_tone_freq",
+      "set_tone_freq",
+      "get_tsql_freq",
+      "set_tsql_freq",
+      "parse_tone_freq_response",
+      "parse_tsql_freq_response",
+      "get_antenna_1",
+      "set_antenna_1",
+      "get_antenna_2",
+      "set_antenna_2",
+      "get_rx_antenna_ant1",
+      "set_rx_antenna_ant1",
+      "get_rx_antenna_ant2",
+      "set_rx_antenna_ant2",
+      "get_antenna",
+      "set_antenna",
+      "get_rx_antenna",
+      "set_rx_antenna",
+      "get_acc1_mod_level",
+      "set_acc1_mod_level",
+      "get_usb_mod_level",
+      "set_usb_mod_level",
+      "get_lan_mod_level",
+      "set_lan_mod_level",
+      "get_data_off_mod_input",
+      "set_data_off_mod_input",
+      "get_data1_mod_input",
+      "set_data1_mod_input",
+      "get_data2_mod_input",
+      "set_data2_mod_input",
+      "get_data3_mod_input",
+      "set_data3_mod_input",
+      "get_civ_transceive",
+      "set_civ_transceive",
+      "get_civ_output_ant",
+      "set_civ_output_ant",
+      "get_system_date",
+      "set_system_date",
+      "parse_system_date_response",
+      "get_system_time",
+      "set_system_time",
+      "parse_system_time_response",
+      "get_utc_offset",
+      "set_utc_offset",
+      "parse_utc_offset_response",
+      "get_bsr",
+      "set_bsr",
+      "build_band_stack_get",
+      "build_band_stack_set",
+      "get_powerstat",
+      "parse_powerstat",
+      "get_transceiver_id",
+      "get_xfc_status",
+      "set_xfc_status",
+      "vfo_a_equals_b",
+      "vfo_swap",
+      "get_split",
+      "set_split",
+      "build_memory_clear",
+      "build_memory_contents_get",
+      "build_memory_contents_set",
+      "build_memory_mode_get",
+      "build_memory_mode_set",
+      "build_memory_to_vfo",
+      "build_memory_write",
+      "parse_memory_mode_response",
+      "parse_memory_contents_response",
+      "parse_band_stack_response",
+      "get_af_level",
+      "set_af_level",
+      "get_rf_gain",
+      "set_rf_gain",
+      "get_ip_plus",
+      "set_ip_plus",
+      "get_nb",
+      "set_nb",
+      "get_nr",
+      "set_nr",
+      "get_tx_band_count",
+      "get_tx_band_edge",
+      "parse_tx_band_count_response",
+      "parse_tx_band_edge_response"
+    ],
+    "has_pep562_getattr": false,
+    "dynamic_imports": [],
+    "init_side_effects": []
+  },
+  "icom_lan.commands._builders": {
+    "path": "src/icom_lan/commands/_builders.py",
+    "summary": "Shared builder templates used by multiple leaf modules.",
+    "all": null,
+    "has_pep562_getattr": false,
+    "dynamic_imports": [],
+    "init_side_effects": []
+  },
+  "icom_lan.commands._codec": {
+    "path": "src/icom_lan/commands/_codec.py",
+    "summary": "BCD and level encode/decode helpers.",
+    "all": null,
+    "has_pep562_getattr": false,
+    "dynamic_imports": [],
+    "init_side_effects": []
+  },
+  "icom_lan.commands._frame": {
+    "path": "src/icom_lan/commands/_frame.py",
+    "summary": "CI-V frame builders, parser, and all command/sub-command constants.",
+    "all": null,
+    "has_pep562_getattr": false,
+    "dynamic_imports": [],
+    "init_side_effects": []
+  },
+  "icom_lan.commands.antenna": {
+    "path": "src/icom_lan/commands/antenna.py",
+    "summary": "Antenna selection / RX-ANT commands (0x12).",
+    "all": null,
+    "has_pep562_getattr": false,
+    "dynamic_imports": [],
+    "init_side_effects": []
+  },
+  "icom_lan.commands.config": {
+    "path": "src/icom_lan/commands/config.py",
+    "summary": "Configuration commands: mod levels, mod input routing, CI-V options.",
+    "all": null,
+    "has_pep562_getattr": false,
+    "dynamic_imports": [],
+    "init_side_effects": []
+  },
+  "icom_lan.commands.cw": {
+    "path": "src/icom_lan/commands/cw.py",
+    "summary": "CW keying commands (send_cw, stop_cw).",
+    "all": null,
+    "has_pep562_getattr": false,
+    "dynamic_imports": [],
+    "init_side_effects": []
+  },
+  "icom_lan.commands.dsp": {
+    "path": "src/icom_lan/commands/dsp.py",
+    "summary": "DSP commands: ATT, preamp, NB, NR, IP+, AGC, notch, compressor, VOX, break-in, etc.",
+    "all": null,
+    "has_pep562_getattr": false,
+    "dynamic_imports": [],
+    "init_side_effects": []
+  },
+  "icom_lan.commands.freq": {
+    "path": "src/icom_lan/commands/freq.py",
+    "summary": "Frequency commands (0x03/0x05/0x25/0x26).",
+    "all": null,
+    "has_pep562_getattr": false,
+    "dynamic_imports": [],
+    "init_side_effects": []
+  },
+  "icom_lan.commands.levels": {
+    "path": "src/icom_lan/commands/levels.py",
+    "summary": "All 0x14-family level get/set commands + parse_level_response.",
+    "all": [
+      "get_af_level",
+      "get_anti_vox_gain",
+      "get_apf_type_level",
+      "get_break_in_delay",
+      "get_compressor_level",
+      "get_cw_pitch",
+      "get_dash_ratio",
+      "get_digisel_shift",
+      "get_drive_gain",
+      "get_key_speed",
+      "get_mic_gain",
+      "get_monitor_gain",
+      "get_nb_depth",
+      "get_nb_level",
+      "get_nb_width",
+      "get_notch_filter",
+      "get_nr_level",
+      "get_pbt_inner",
+      "get_pbt_outer",
+      "get_ref_adjust",
+      "get_rf_gain",
+      "get_rf_power",
+      "get_squelch",
+      "get_vox_delay",
+      "get_vox_gain",
+      "set_af_level",
+      "set_anti_vox_gain",
+      "set_apf_type_level",
+      "set_break_in_delay",
+      "set_compressor_level",
+      "set_cw_pitch",
+      "set_dash_ratio",
+      "set_digisel_shift",
+      "set_drive_gain",
+      "set_key_speed",
+      "set_mic_gain",
+      "set_monitor_gain",
+      "set_nb_depth",
+      "set_nb_level",
+      "set_nb_width",
+      "set_notch_filter",
+      "set_nr_level",
+      "set_pbt_inner",
+      "set_pbt_outer",
+      "set_ref_adjust",
+      "set_rf_gain",
+      "set_rf_power",
+      "set_squelch",
+      "set_vox_delay",
+      "set_vox_gain"
+    ],
+    "has_pep562_getattr": false,
+    "dynamic_imports": [],
+    "init_side_effects": []
+  },
+  "icom_lan.commands.memory": {
+    "path": "src/icom_lan/commands/memory.py",
+    "summary": "Memory mode/write/clear/contents and band stacking register commands.",
+    "all": null,
+    "has_pep562_getattr": false,
+    "dynamic_imports": [],
+    "init_side_effects": []
+  },
+  "icom_lan.commands.meters": {
+    "path": "src/icom_lan/commands/meters.py",
+    "summary": "All 0x15-family meter read commands.",
+    "all": null,
+    "has_pep562_getattr": false,
+    "dynamic_imports": [],
+    "init_side_effects": []
+  },
+  "icom_lan.commands.mode": {
+    "path": "src/icom_lan/commands/mode.py",
+    "summary": "Mode commands (0x04/0x06), data mode, filter shape/width, SSB BW, AGC time constant.",
+    "all": null,
+    "has_pep562_getattr": false,
+    "dynamic_imports": [],
+    "init_side_effects": []
+  },
+  "icom_lan.commands.power": {
+    "path": "src/icom_lan/commands/power.py",
+    "summary": "Power on/off and powerstat commands.",
+    "all": null,
+    "has_pep562_getattr": false,
+    "dynamic_imports": [],
+    "init_side_effects": []
+  },
+  "icom_lan.commands.ptt": {
+    "path": "src/icom_lan/commands/ptt.py",
+    "summary": "PTT on/off commands.",
+    "all": null,
+    "has_pep562_getattr": false,
+    "dynamic_imports": [],
+    "init_side_effects": []
+  },
+  "icom_lan.commands.scope": {
+    "path": "src/icom_lan/commands/scope.py",
+    "summary": "Spectrum / waterfall scope commands (0x27 family).",
+    "all": null,
+    "has_pep562_getattr": false,
+    "dynamic_imports": [],
+    "init_side_effects": []
+  },
+  "icom_lan.commands.speech": {
+    "path": "src/icom_lan/commands/speech.py",
+    "summary": "Speech announcement command (0x13).",
+    "all": null,
+    "has_pep562_getattr": false,
+    "dynamic_imports": [],
+    "init_side_effects": []
+  },
+  "icom_lan.commands.system": {
+    "path": "src/icom_lan/commands/system.py",
+    "summary": "System commands: transceiver ID, band edge, tuner, XFC, TX freq monitor, RIT/XIT.",
+    "all": null,
+    "has_pep562_getattr": false,
+    "dynamic_imports": [],
+    "init_side_effects": []
+  },
+  "icom_lan.commands.tone": {
+    "path": "src/icom_lan/commands/tone.py",
+    "summary": "Repeater tone/TSQL commands (0x1B family, 0x16 0x42/0x43).",
+    "all": null,
+    "has_pep562_getattr": false,
+    "dynamic_imports": [],
+    "init_side_effects": []
+  },
+  "icom_lan.commands.tx_band": {
+    "path": "src/icom_lan/commands/tx_band.py",
+    "summary": "TX band edge commands (0x1E).",
+    "all": null,
+    "has_pep562_getattr": false,
+    "dynamic_imports": [],
+    "init_side_effects": []
+  },
+  "icom_lan.commands.vfo": {
+    "path": "src/icom_lan/commands/vfo.py",
+    "summary": "VFO, scan, dual watch, split, tuning step commands.",
+    "all": null,
+    "has_pep562_getattr": false,
+    "dynamic_imports": [],
+    "init_side_effects": []
+  },
+  "icom_lan.cw_auto_tuner": {
+    "path": "src/icom_lan/cw_auto_tuner.py",
+    "summary": "CW Auto Tuner \u2014 FFT-based CW tone frequency detection.",
+    "all": [
+      "CwAutoTuner"
+    ],
+    "has_pep562_getattr": false,
+    "dynamic_imports": [],
+    "init_side_effects": []
+  },
+  "icom_lan.discovery": {
+    "path": "src/icom_lan/discovery.py",
+    "summary": "Serial port enumeration, candidate filtering, and multi-protocol radio discovery.",
+    "all": [
+      "CivProbeResult",
+      "RadioDiscoveryResult",
+      "SerialPortCandidate",
+      "dedupe_radios",
+      "discover_lan_radios",
+      "discover_serial_radios",
+      "enumerate_serial_ports",
+      "probe_serial_civ",
+      "probe_serial_kenwood_cat",
+      "probe_serial_yaesu_cat"
+    ],
+    "has_pep562_getattr": false,
+    "dynamic_imports": [],
+    "init_side_effects": []
+  },
+  "icom_lan.dsp": {
+    "path": "src/icom_lan/dsp/__init__.py",
+    "summary": "DSP pipeline core abstractions for real-time audio processing.",
+    "all": [
+      "DSPBackendUnavailable",
+      "DSPConfigError",
+      "DSPNode",
+      "DSPPipeline",
+      "TapHandle",
+      "TapRegistry"
+    ],
+    "has_pep562_getattr": false,
+    "dynamic_imports": [],
+    "init_side_effects": []
+  },
+  "icom_lan.dsp.exceptions": {
+    "path": "src/icom_lan/dsp/exceptions.py",
+    "summary": "DSP pipeline exceptions.",
+    "all": [
+      "DSPBackendUnavailable",
+      "DSPConfigError"
+    ],
+    "has_pep562_getattr": false,
+    "dynamic_imports": [],
+    "init_side_effects": []
+  },
+  "icom_lan.dsp.nodes": {
+    "path": "src/icom_lan/dsp/nodes/__init__.py",
+    "summary": "Concrete DSP nodes for audio processing pipelines.",
+    "all": [
+      "GainNode",
+      "NRScipyNode",
+      "PassthroughNode"
+    ],
+    "has_pep562_getattr": false,
+    "dynamic_imports": [],
+    "init_side_effects": []
+  },
+  "icom_lan.dsp.nodes.base": {
+    "path": "src/icom_lan/dsp/nodes/base.py",
+    "summary": "Base DSP nodes: PassthroughNode and GainNode.",
+    "all": null,
+    "has_pep562_getattr": false,
+    "dynamic_imports": [],
+    "init_side_effects": []
+  },
+  "icom_lan.dsp.nodes.nr_scipy": {
+    "path": "src/icom_lan/dsp/nodes/nr_scipy.py",
+    "summary": "NRScipyNode \u2014 spectral subtraction noise reduction.",
+    "all": [
+      "NRScipyNode"
+    ],
+    "has_pep562_getattr": false,
+    "dynamic_imports": [],
+    "init_side_effects": []
+  },
+  "icom_lan.dsp.pipeline": {
+    "path": "src/icom_lan/dsp/pipeline.py",
+    "summary": "DSP pipeline core: DSPNode protocol and DSPPipeline orchestrator.",
+    "all": [
+      "DSPNode",
+      "DSPPipeline"
+    ],
+    "has_pep562_getattr": false,
+    "dynamic_imports": [],
+    "init_side_effects": []
+  },
+  "icom_lan.dsp.resample": {
+    "path": "src/icom_lan/dsp/resample.py",
+    "summary": "Inter-node resample utility for the DSP pipeline.",
+    "all": [
+      "resample_if_needed"
+    ],
+    "has_pep562_getattr": false,
+    "dynamic_imports": [],
+    "init_side_effects": []
+  },
+  "icom_lan.dsp.tap_registry": {
+    "path": "src/icom_lan/dsp/tap_registry.py",
+    "summary": "Multi-consumer PCM audio tap registry.",
+    "all": [
+      "TapHandle",
+      "TapRegistry"
+    ],
+    "has_pep562_getattr": false,
+    "dynamic_imports": [],
+    "init_side_effects": []
+  },
+  "icom_lan.env_config": {
+    "path": "src/icom_lan/env_config.py",
+    "summary": "Environment variable configuration helpers for icom-lan.",
+    "all": [
+      "get_audio_sample_rate",
+      "get_audio_broadcaster_high_watermark",
+      "get_audio_client_high_watermark"
+    ],
+    "has_pep562_getattr": false,
+    "dynamic_imports": [],
+    "init_side_effects": []
+  },
+  "icom_lan.exceptions": {
+    "path": "src/icom_lan/exceptions.py",
+    "summary": "Custom exception hierarchy for icom-lan.",
+    "all": [
+      "IcomLanError",
+      "ConnectionError",
+      "AuthenticationError",
+      "CommandError",
+      "TimeoutError",
+      "AudioError",
+      "AudioCodecBackendError",
+      "AudioFormatError",
+      "AudioTranscodeError"
+    ],
+    "has_pep562_getattr": false,
+    "dynamic_imports": [],
+    "init_side_effects": []
+  },
+  "icom_lan.ic705": {
+    "path": "src/icom_lan/ic705.py",
+    "summary": "IC-705 convenience helpers for data and packet-mode workflows.",
+    "all": [
+      "prepare_ic705_data_profile",
+      "restore_ic705_data_profile"
+    ],
+    "has_pep562_getattr": false,
+    "dynamic_imports": [],
+    "init_side_effects": []
+  },
+  "icom_lan.meter_cal": {
+    "path": "src/icom_lan/meter_cal.py",
+    "summary": "Shared meter calibration helpers.",
+    "all": [
+      "interpolate_swr",
+      "MeterType"
+    ],
+    "has_pep562_getattr": false,
+    "dynamic_imports": [],
+    "init_side_effects": []
+  },
+  "icom_lan.profiles": {
+    "path": "src/icom_lan/profiles.py",
+    "summary": "Radio profile and capability matrix for runtime routing and guards.",
+    "all": [
+      "ControlSpec",
+      "FilterWidthSegment",
+      "FilterWidthRule",
+      "MeterCalibrationPoint",
+      "RadioProfile",
+      "RuleSpec",
+      "get_radio_profile",
+      "resolve_radio_profile",
+      "KeyboardBinding",
+      "KeyboardConfig"
+    ],
+    "has_pep562_getattr": false,
+    "dynamic_imports": [],
+    "init_side_effects": []
+  },
+  "icom_lan.profiles_runtime": {
+    "path": "src/icom_lan/profiles_runtime.py",
+    "summary": "Generic capability-aware radio profile system.",
+    "all": [
+      "OperatingProfile",
+      "apply_profile",
+      "PRESETS"
+    ],
+    "has_pep562_getattr": false,
+    "dynamic_imports": [],
+    "init_side_effects": []
+  },
+  "icom_lan.protocol": {
+    "path": "src/icom_lan/protocol.py",
+    "summary": "Packet parsing and serialization for the Icom LAN UDP protocol.",
+    "all": [
+      "parse_header",
+      "serialize_header",
+      "identify_packet_type"
+    ],
+    "has_pep562_getattr": false,
+    "dynamic_imports": [],
+    "init_side_effects": []
+  },
+  "icom_lan.proxy": {
+    "path": "src/icom_lan/proxy.py",
+    "summary": "Transparent UDP relay proxy for Icom LAN protocol.",
+    "all": [
+      "run_proxy"
+    ],
+    "has_pep562_getattr": false,
+    "dynamic_imports": [],
+    "init_side_effects": []
+  },
+  "icom_lan.radio": {
+    "path": "src/icom_lan/radio.py",
+    "summary": "IcomRadio \u2014 high-level async API for Icom transceivers over LAN.",
+    "all": [
+      "AudioRecoveryState",
+      "CoreRadio",
+      "IcomRadio",
+      "RadioProfile",
+      "AudioCodec",
+      "RadioConnectionState",
+      "ScopeFrame",
+      "ScopeCompletionPolicy"
+    ],
+    "has_pep562_getattr": false,
+    "dynamic_imports": [],
+    "init_side_effects": []
+  },
+  "icom_lan.radio_initial_state": {
+    "path": "src/icom_lan/radio_initial_state.py",
+    "summary": "Initial-state fetch orchestration for :class:`IcomRadio`.",
+    "all": null,
+    "has_pep562_getattr": false,
+    "dynamic_imports": [],
+    "init_side_effects": []
+  },
+  "icom_lan.radio_protocol": {
+    "path": "src/icom_lan/radio_protocol.py",
+    "summary": "Abstract Radio Protocol \u2014 multi-backend radio control interface.",
+    "all": [
+      "Radio",
+      "VfoSlotState",
+      "AudioCapable",
+      "CivCommandCapable",
+      "ModeInfoCapable",
+      "ScopeCapable",
+      "DualReceiverCapable",
+      "ReceiverBankCapable",
+      "TransceiverBankCapable",
+      "VfoSlotCapable",
+      "StateCacheCapable",
+      "RecoverableConnection",
+      "AdvancedControlCapable",
+      "DspControlCapable",
+      "AntennaControlCapable",
+      "CwControlCapable",
+      "VoiceControlCapable",
+      "SystemControlCapable",
+      "RepeaterControlCapable",
+      "LevelsCapable",
+      "MetersCapable",
+      "PowerControlCapable",
+      "SplitCapable",
+      "StateNotifyCapable",
+      "RitXitCapable",
+      "TransceiverStatusCapable",
+      "MemoryCapable"
+    ],
+    "has_pep562_getattr": false,
+    "dynamic_imports": [],
+    "init_side_effects": []
+  },
+  "icom_lan.radio_reconnect": {
+    "path": "src/icom_lan/radio_reconnect.py",
+    "summary": "Watchdog and reconnect loops for :class:`IcomRadio`.",
+    "all": null,
+    "has_pep562_getattr": false,
+    "dynamic_imports": [],
+    "init_side_effects": []
+  },
+  "icom_lan.radio_state": {
+    "path": "src/icom_lan/radio_state.py",
+    "summary": "RadioState \u2014 dual-receiver radio state model.",
+    "all": [
+      "ReceiverState",
+      "ScopeControlsState",
+      "TxBandEdge",
+      "RadioState",
+      "VfoSlotState",
+      "YaesuStateExtension"
+    ],
+    "has_pep562_getattr": false,
+    "dynamic_imports": [],
+    "init_side_effects": []
+  },
+  "icom_lan.radio_state_snapshot": {
+    "path": "src/icom_lan/radio_state_snapshot.py",
+    "summary": "Snapshot/restore helpers for :class:`IcomRadio` state.",
+    "all": null,
+    "has_pep562_getattr": false,
+    "dynamic_imports": [],
+    "init_side_effects": []
+  },
+  "icom_lan.radios": {
+    "path": "src/icom_lan/radios.py",
+    "summary": "Radio model presets with CI-V addresses and capabilities.",
+    "all": [
+      "RadioModel",
+      "RADIOS",
+      "SERIAL_RADIO_MAP",
+      "CIV_PROFILE_MAP",
+      "identify_radio",
+      "IC_7610_ADDR"
+    ],
+    "has_pep562_getattr": false,
+    "dynamic_imports": [],
+    "init_side_effects": []
+  },
+  "icom_lan.rig_loader": {
+    "path": "src/icom_lan/rig_loader.py",
+    "summary": "TOML rig config loader \u2014 parse, validate, and build runtime objects.",
+    "all": [
+      "RigConfig",
+      "RigLoadError",
+      "load_rig",
+      "discover_rigs"
+    ],
+    "has_pep562_getattr": false,
+    "dynamic_imports": [],
+    "init_side_effects": []
+  },
+  "icom_lan.rigctld": {
+    "path": "src/icom_lan/rigctld/__init__.py",
+    "summary": "Hamlib NET rigctld-compatible TCP server for icom-lan.",
+    "all": null,
+    "has_pep562_getattr": false,
+    "dynamic_imports": [],
+    "init_side_effects": [
+      "13:Try"
+    ]
+  },
+  "icom_lan.rigctld.audit": {
+    "path": "src/icom_lan/rigctld/audit.py",
+    "summary": "Structured per-command audit logging for the rigctld server.",
+    "all": [
+      "AuditRecord",
+      "AUDIT_LOGGER_NAME",
+      "RigctldAuditFormatter",
+      "log_command"
+    ],
+    "has_pep562_getattr": false,
+    "dynamic_imports": [],
+    "init_side_effects": []
+  },
+  "icom_lan.rigctld.circuit_breaker": {
+    "path": "src/icom_lan/rigctld/circuit_breaker.py",
+    "summary": "Circuit breaker for CI-V command resilience.",
+    "all": [
+      "CircuitBreaker",
+      "CircuitState"
+    ],
+    "has_pep562_getattr": false,
+    "dynamic_imports": [],
+    "init_side_effects": []
+  },
+  "icom_lan.rigctld.contract": {
+    "path": "src/icom_lan/rigctld/contract.py",
+    "summary": "Shared contracts between rigctld modules.",
+    "all": null,
+    "has_pep562_getattr": false,
+    "dynamic_imports": [],
+    "init_side_effects": []
+  },
+  "icom_lan.rigctld.handler": {
+    "path": "src/icom_lan/rigctld/handler.py",
+    "summary": "Rigctld command handler \u2014 dispatches parsed commands to IcomRadio.",
+    "all": [
+      "RigctldHandler"
+    ],
+    "has_pep562_getattr": false,
+    "dynamic_imports": [],
+    "init_side_effects": []
+  },
+  "icom_lan.rigctld.poller": {
+    "path": "src/icom_lan/rigctld/poller.py",
+    "summary": "Autonomous radio state poller for the rigctld server.",
+    "all": [
+      "RadioPoller"
+    ],
+    "has_pep562_getattr": false,
+    "dynamic_imports": [],
+    "init_side_effects": []
+  },
+  "icom_lan.rigctld.protocol": {
+    "path": "src/icom_lan/rigctld/protocol.py",
+    "summary": "Rigctld wire protocol parser and formatter.",
+    "all": [
+      "parse_line",
+      "format_response",
+      "format_error"
+    ],
+    "has_pep562_getattr": false,
+    "dynamic_imports": [],
+    "init_side_effects": []
+  },
+  "icom_lan.rigctld.routing": {
+    "path": "src/icom_lan/rigctld/routing.py",
+    "summary": "Rigctld vendor-specific routing strategies.",
+    "all": [
+      "RigctldRouting",
+      "YaesuRouting",
+      "create_routing"
+    ],
+    "has_pep562_getattr": false,
+    "dynamic_imports": [],
+    "init_side_effects": []
+  },
+  "icom_lan.rigctld.server": {
+    "path": "src/icom_lan/rigctld/server.py",
+    "summary": "Rigctld TCP server \u2014 asyncio.start_server transport layer.",
+    "all": [
+      "RigctldServer",
+      "run_rigctld_server"
+    ],
+    "has_pep562_getattr": false,
+    "dynamic_imports": [],
+    "init_side_effects": []
+  },
+  "icom_lan.rigctld.state_cache": {
+    "path": "src/icom_lan/rigctld/state_cache.py",
+    "summary": "(no docstring; no public top-level defs)",
+    "all": [
+      "CacheField",
+      "StateCache"
+    ],
+    "has_pep562_getattr": false,
+    "dynamic_imports": [],
+    "init_side_effects": []
+  },
+  "icom_lan.rigctld.utils": {
+    "path": "src/icom_lan/rigctld/utils.py",
+    "summary": "functions: get_mode_reader",
+    "all": [
+      "get_mode_reader"
+    ],
+    "has_pep562_getattr": false,
+    "dynamic_imports": [],
+    "init_side_effects": []
+  },
+  "icom_lan.scope": {
+    "path": "src/icom_lan/scope.py",
+    "summary": "Scope/waterfall frame assembly for Icom transceivers.",
+    "all": [
+      "ScopeFrame",
+      "ScopeAssembler"
+    ],
+    "has_pep562_getattr": false,
+    "dynamic_imports": [],
+    "init_side_effects": []
+  },
+  "icom_lan.scope_render": {
+    "path": "src/icom_lan/scope_render.py",
+    "summary": "Scope/waterfall frame rendering for Icom transceivers.",
+    "all": [
+      "THEMES",
+      "amplitude_to_color",
+      "render_spectrum",
+      "render_waterfall",
+      "render_scope_image"
+    ],
+    "has_pep562_getattr": false,
+    "dynamic_imports": [],
+    "init_side_effects": []
+  },
+  "icom_lan.startup_checks": {
+    "path": "src/icom_lan/startup_checks.py",
+    "summary": "functions: assert_radio_startup_ready, wait_for_radio_startup_ready",
+    "all": [
+      "assert_radio_startup_ready",
+      "wait_for_radio_startup_ready"
+    ],
+    "has_pep562_getattr": false,
+    "dynamic_imports": [],
+    "init_side_effects": []
+  },
+  "icom_lan.sync": {
+    "path": "src/icom_lan/sync.py",
+    "summary": "Synchronous (blocking) wrapper around :class:`~icom_lan.radio.IcomRadio`.",
+    "all": [
+      "IcomRadio"
+    ],
+    "has_pep562_getattr": false,
+    "dynamic_imports": [],
+    "init_side_effects": []
+  },
+  "icom_lan.transport": {
+    "path": "src/icom_lan/transport.py",
+    "summary": "Async UDP transport for the Icom LAN protocol.",
+    "all": [
+      "ConnectionState",
+      "IcomTransport",
+      "PACKET_QUEUE_MAXSIZE",
+      "PRESSURE_THRESHOLD"
+    ],
+    "has_pep562_getattr": false,
+    "dynamic_imports": [],
+    "init_side_effects": []
+  },
+  "icom_lan.types": {
+    "path": "src/icom_lan/types.py",
+    "summary": "Enums, dataclasses, and helper functions for the Icom LAN protocol.",
+    "all": [
+      "PacketType",
+      "Mode",
+      "AgcMode",
+      "AudioPeakFilter",
+      "BreakInMode",
+      "FilterShape",
+      "SsbTxBandwidth",
+      "AudioCodec",
+      "AudioCapabilities",
+      "get_audio_capabilities",
+      "ScopeCompletionPolicy",
+      "ScopeFixedEdge",
+      "PacketHeader",
+      "CivFrame",
+      "HEADER_SIZE",
+      "AUDIO_HEADER_SIZE",
+      "bcd_encode",
+      "bcd_decode",
+      "MemoryChannel",
+      "BandStackRegister"
+    ],
+    "has_pep562_getattr": false,
+    "dynamic_imports": [],
+    "init_side_effects": []
+  },
+  "icom_lan.usb_audio_resolve": {
+    "path": "src/icom_lan/usb_audio_resolve.py",
+    "summary": "Resolve USB Audio devices associated with a serial CI-V port.",
+    "all": [
+      "AudioDeviceMapping",
+      "resolve_audio_for_serial_port"
+    ],
+    "has_pep562_getattr": false,
+    "dynamic_imports": [],
+    "init_side_effects": []
+  },
+  "icom_lan.web": {
+    "path": "src/icom_lan/web/__init__.py",
+    "summary": "icom-lan Web UI \u2014 WebSocket + HTTP server package.",
+    "all": [
+      "WebConfig",
+      "WebServer",
+      "run_web_server"
+    ],
+    "has_pep562_getattr": false,
+    "dynamic_imports": [],
+    "init_side_effects": []
+  },
+  "icom_lan.web._delta_encoder": {
+    "path": "src/icom_lan/web/_delta_encoder.py",
+    "summary": "Delta encoding for web state updates \u2014 reduce payload for frequent broadcasts.",
+    "all": [
+      "DeltaEncoder",
+      "apply_delta"
+    ],
+    "has_pep562_getattr": false,
+    "dynamic_imports": [],
+    "init_side_effects": []
+  },
+  "icom_lan.web.band_plan": {
+    "path": "src/icom_lan/web/band_plan.py",
+    "summary": "Band plan registry \u2014 load TOML files and serve via REST.",
+    "all": null,
+    "has_pep562_getattr": false,
+    "dynamic_imports": [],
+    "init_side_effects": []
+  },
+  "icom_lan.web.discovery": {
+    "path": "src/icom_lan/web/discovery.py",
+    "summary": "UDP Discovery Responder for icom-lan.",
+    "all": [
+      "DiscoveryResponder",
+      "RadioInfo"
+    ],
+    "has_pep562_getattr": false,
+    "dynamic_imports": [],
+    "init_side_effects": []
+  },
+  "icom_lan.web.dx_cluster": {
+    "path": "src/icom_lan/web/dx_cluster.py",
+    "summary": "DX cluster client: spot parsing, telnet client, spot buffer.",
+    "all": [
+      "DXSpot",
+      "parse_spot",
+      "DXClusterClient",
+      "SpotBuffer"
+    ],
+    "has_pep562_getattr": false,
+    "dynamic_imports": [],
+    "init_side_effects": []
+  },
+  "icom_lan.web.eibi": {
+    "path": "src/icom_lan/web/eibi.py",
+    "summary": "EiBi broadcast station database \u2014 fetch, parse, cache, query.",
+    "all": null,
+    "has_pep562_getattr": false,
+    "dynamic_imports": [],
+    "init_side_effects": []
+  },
+  "icom_lan.web.handlers": {
+    "path": "src/icom_lan/web/handlers/__init__.py",
+    "summary": "Route handlers for WebSocket channels and HTTP endpoints.",
+    "all": [
+      "HIGH_WATERMARK",
+      "ControlHandler",
+      "ScopeHandler",
+      "AudioBroadcaster",
+      "AudioHandler"
+    ],
+    "has_pep562_getattr": false,
+    "dynamic_imports": [],
+    "init_side_effects": []
+  },
+  "icom_lan.web.handlers.audio": {
+    "path": "src/icom_lan/web/handlers/audio.py",
+    "summary": "Audio WebSocket handlers \u2014 broadcaster + per-client handler.",
+    "all": [
+      "AudioBroadcaster",
+      "AudioHandler"
+    ],
+    "has_pep562_getattr": false,
+    "dynamic_imports": [],
+    "init_side_effects": []
+  },
+  "icom_lan.web.handlers.control": {
+    "path": "src/icom_lan/web/handlers/control.py",
+    "summary": "Control WebSocket handler \u2014 JSON commands, events, state.",
+    "all": [
+      "ControlHandler"
+    ],
+    "has_pep562_getattr": false,
+    "dynamic_imports": [],
+    "init_side_effects": []
+  },
+  "icom_lan.web.handlers.scope": {
+    "path": "src/icom_lan/web/handlers/scope.py",
+    "summary": "Scope WebSocket handler \u2014 binary scope frame channel with backpressure.",
+    "all": [
+      "HIGH_WATERMARK",
+      "ScopeHandler"
+    ],
+    "has_pep562_getattr": false,
+    "dynamic_imports": [],
+    "init_side_effects": []
+  },
+  "icom_lan.web.protocol": {
+    "path": "src/icom_lan/web/protocol.py",
+    "summary": "Web UI binary frame protocol for scope and audio data.",
+    "all": [
+      "MSG_TYPE_SCOPE",
+      "MSG_TYPE_AUDIO_RX",
+      "MSG_TYPE_AUDIO_TX",
+      "SCOPE_HEADER_SIZE",
+      "encode_scope_frame",
+      "encode_audio_frame",
+      "AUDIO_HEADER_SIZE",
+      "AUDIO_CODEC_OPUS",
+      "AUDIO_CODEC_PCM16",
+      "encode_json",
+      "decode_json"
+    ],
+    "has_pep562_getattr": false,
+    "dynamic_imports": [],
+    "init_side_effects": []
+  },
+  "icom_lan.web.radio_poller": {
+    "path": "src/icom_lan/web/radio_poller.py",
+    "summary": "RadioPoller \u2014 fire-and-forget CI-V serialiser.",
+    "all": [
+      "RadioPoller",
+      "CommandQueue",
+      "SetAgcTimeConstant",
+      "SetDataMode",
+      "SetFilterWidth",
+      "SetFilterShape",
+      "SetPbtInner",
+      "SetPbtOuter",
+      "SetIfShift",
+      "SetRitFrequency",
+      "SetRitStatus",
+      "SetRitTxStatus",
+      "SetSplit",
+      "EnableScope",
+      "DisableScope",
+      "SwitchScopeReceiver",
+      "SetScopeDuringTx",
+      "SetScopeCenterType",
+      "SetScopeEdge",
+      "SetScopeFixedEdge",
+      "SetScopeDual",
+      "SetScopeMode",
+      "SetScopeRbw",
+      "SetScopeSpan",
+      "SetScopeSpeed",
+      "SetScopeRef",
+      "SetScopeHold",
+      "SetScopeVbw",
+      "SetAntenna1",
+      "SetAntenna2",
+      "SetRxAntennaAnt1",
+      "SetRxAntennaAnt2",
+      "SetSystemDate",
+      "SetSystemTime",
+      "SetAcc1ModLevel",
+      "SetUsbModLevel",
+      "SetLanModLevel",
+      "SetDualWatch",
+      "SetCompressor",
+      "SetApf",
+      "SetTwinPeak",
+      "SetDriveGain",
+      "ScanSetDfSpan",
+      "ScanSetResume",
+      "ScanStart",
+      "ScanStop",
+      "SetToneFreq",
+      "SetTsqlFreq",
+      "SetMainSubTracking",
+      "SetSsbTxBandwidth",
+      "SetManualNotchWidth",
+      "SetBreakInDelay",
+      "SetVoxGain",
+      "SetAntiVoxGain",
+      "SetVoxDelay",
+      "SetNbDepth",
+      "SetNbWidth",
+      "SetDashRatio",
+      "SetRepeaterTone",
+      "SetRepeaterTsql",
+      "SetRxAntenna",
+      "SetRefAdjust",
+      "SetCivTransceive",
+      "SetCivOutputAnt",
+      "SetAfMute",
+      "SetTunerStatus",
+      "SetTuningStep",
+      "SetXfcStatus",
+      "SetTxFreqMonitor",
+      "SetUtcOffset",
+      "QuickSplit",
+      "QuickDualWatch",
+      "QuickDwTrigger",
+      "QuickSplitTrigger"
+    ],
+    "has_pep562_getattr": false,
+    "dynamic_imports": [],
+    "init_side_effects": []
+  },
+  "icom_lan.web.rtc": {
+    "path": "src/icom_lan/web/rtc.py",
+    "summary": "WebRTC signaling support for icom-lan.",
+    "all": [
+      "webrtc_available",
+      "handle_rtc_offer",
+      "rtc_capability_info"
+    ],
+    "has_pep562_getattr": false,
+    "dynamic_imports": [
+      "49:12"
+    ],
+    "init_side_effects": []
+  },
+  "icom_lan.web.runtime_helpers": {
+    "path": "src/icom_lan/web/runtime_helpers.py",
+    "summary": "functions: runtime_capabilities, radio_ready, build_public_state_payload",
+    "all": [
+      "runtime_capabilities",
+      "radio_ready",
+      "build_public_state_payload"
+    ],
+    "has_pep562_getattr": false,
+    "dynamic_imports": [],
+    "init_side_effects": []
+  },
+  "icom_lan.web.server": {
+    "path": "src/icom_lan/web/server.py",
+    "summary": "WebSocket + HTTP server for the icom-lan Web UI.",
+    "all": [
+      "WebConfig",
+      "WebServer",
+      "run_web_server"
+    ],
+    "has_pep562_getattr": false,
+    "dynamic_imports": [],
+    "init_side_effects": []
+  },
+  "icom_lan.web.tls": {
+    "path": "src/icom_lan/web/tls.py",
+    "summary": "TLS certificate management for the web server.",
+    "all": [
+      "build_ssl_context",
+      "generate_self_signed"
+    ],
+    "has_pep562_getattr": false,
+    "dynamic_imports": [],
+    "init_side_effects": []
+  },
+  "icom_lan.web.web_routing": {
+    "path": "src/icom_lan/web/web_routing.py",
+    "summary": "HTTP method/path dispatch for :class:`icom_lan.web.server.WebServer`.",
+    "all": [
+      "dispatch_http_request"
+    ],
+    "has_pep562_getattr": false,
+    "dynamic_imports": [],
+    "init_side_effects": []
+  },
+  "icom_lan.web.web_startup": {
+    "path": "src/icom_lan/web/web_startup.py",
+    "summary": "Startup/shutdown orchestration for :class:`icom_lan.web.server.WebServer`.",
+    "all": [
+      "start_web_server",
+      "stop_web_server"
+    ],
+    "has_pep562_getattr": false,
+    "dynamic_imports": [],
+    "init_side_effects": []
+  },
+  "icom_lan.web.websocket": {
+    "path": "src/icom_lan/web/websocket.py",
+    "summary": "RFC 6455 WebSocket + RFC 7692 permessage-deflate (stdlib only).",
+    "all": [
+      "WS_MAGIC",
+      "WS_OP_CONTINUATION",
+      "WS_OP_TEXT",
+      "WS_OP_BINARY",
+      "WS_OP_CLOSE",
+      "WS_OP_PING",
+      "WS_OP_PONG",
+      "WS_KEEPALIVE_INTERVAL",
+      "WebSocketError",
+      "make_accept_key",
+      "make_frame",
+      "negotiate_deflate",
+      "WebSocketConnection"
+    ],
+    "has_pep562_getattr": false,
+    "dynamic_imports": [],
+    "init_side_effects": []
+  }
+}
