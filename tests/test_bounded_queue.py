@@ -6,7 +6,7 @@ import asyncio
 
 import pytest
 
-from icom_lan._bounded_queue import BoundedQueue
+from icom_lan.core._bounded_queue import BoundedQueue
 
 
 def test_put_get_preserves_fifo_order() -> None:

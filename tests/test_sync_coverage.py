@@ -6,7 +6,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from icom_lan._connection_state import RadioConnectionState
+from icom_lan.runtime._connection_state import RadioConnectionState
 from icom_lan.sync import IcomRadio
 
 

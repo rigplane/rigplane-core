@@ -18,7 +18,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from icom_lan._audio_transcoder import (
+from icom_lan.audio._transcoder import (
     PcmAudioFormat,
     PcmOpusTranscoder,
     _OpuslibBackend,

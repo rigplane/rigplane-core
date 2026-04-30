@@ -191,7 +191,7 @@ class TestCivRxTxBandEdge:
 
         rs = RadioState()
         # Import and call the parser directly
-        from icom_lan._civ_rx import CivRuntime
+        from icom_lan.runtime._civ_rx import CivRuntime
 
         # We need a minimal host to test the parser
         from unittest.mock import MagicMock
@@ -215,7 +215,7 @@ class TestCivRxTxBandEdge:
         frame = self._make_frame(sub=0x01, data=data)
 
         rs = RadioState()
-        from icom_lan._civ_rx import CivRuntime
+        from icom_lan.runtime._civ_rx import CivRuntime
         from unittest.mock import MagicMock
 
         host = MagicMock()
@@ -233,7 +233,7 @@ class TestCivRxTxBandEdge:
         frame = self._make_frame(sub=0x01, data=bytes(5))
 
         rs = RadioState()
-        from icom_lan._civ_rx import CivRuntime
+        from icom_lan.runtime._civ_rx import CivRuntime
         from unittest.mock import MagicMock
 
         host = MagicMock()

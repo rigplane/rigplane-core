@@ -38,7 +38,7 @@ import pytest
 from test_radio import MockTransport, _wrap_civ_in_udp
 
 from icom_lan import IC_7610_ADDR
-from icom_lan._civ_rx import CIV_HEADER_SIZE
+from icom_lan.runtime._civ_rx import CIV_HEADER_SIZE
 from icom_lan.commands import CONTROLLER_ADDR, build_civ_frame
 from icom_lan.exceptions import ConnectionError
 from icom_lan.radio import IcomRadio

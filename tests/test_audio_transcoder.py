@@ -6,7 +6,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from icom_lan._audio_transcoder import PcmAudioFormat, PcmOpusTranscoder
+from icom_lan.audio._transcoder import PcmAudioFormat, PcmOpusTranscoder
 from icom_lan.audio import AudioPacket
 from icom_lan.exceptions import (
     AudioCodecBackendError,

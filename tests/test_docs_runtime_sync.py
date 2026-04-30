@@ -8,7 +8,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from icom_lan._connection_state import RadioConnectionState
+from icom_lan.runtime._connection_state import RadioConnectionState
 from icom_lan.radio import IcomRadio
 from icom_lan.web.handlers import ControlHandler
 from icom_lan.web.protocol import decode_json

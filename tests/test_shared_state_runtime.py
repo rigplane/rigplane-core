@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from icom_lan._shared_state_runtime import (
+from icom_lan.runtime._shared_state_runtime import (
     DEFAULT_STATE_CACHE_TTL,
     is_cache_fresh,
     poll_frequency,

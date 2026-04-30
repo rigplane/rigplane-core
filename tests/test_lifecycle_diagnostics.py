@@ -11,7 +11,7 @@ import logging
 
 import pytest
 
-from icom_lan._connection_state import RadioConnectionState
+from icom_lan.runtime._connection_state import RadioConnectionState
 from icom_lan.backends.icom7610.drivers.serial_stub import SerialMockRadio
 from icom_lan.radio import IcomRadio
 from icom_lan.rigctld.contract import RigctldConfig

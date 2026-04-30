@@ -119,7 +119,7 @@ def radio(mock_transport: MockTransport):
 
 
 def test_conn_state_returns_current_state(radio: IcomRadio) -> None:
-    from icom_lan._connection_state import RadioConnectionState
+    from icom_lan.runtime._connection_state import RadioConnectionState
 
     assert radio.conn_state == RadioConnectionState.CONNECTED
 
@@ -158,7 +158,7 @@ def test_radio_ready_false_when_civ_data_is_stale(radio: IcomRadio) -> None:
 def test_intentional_disconnect_property_reflects_disconnected_state(
     radio: IcomRadio,
 ) -> None:
-    from icom_lan._connection_state import RadioConnectionState
+    from icom_lan.runtime._connection_state import RadioConnectionState
 
     # CONNECTED → not intentional disconnect
     assert radio._intentional_disconnect is False
@@ -168,7 +168,7 @@ def test_intentional_disconnect_property_reflects_disconnected_state(
 
 
 def test_intentional_disconnect_setter_true_sets_disconnected(radio: IcomRadio) -> None:
-    from icom_lan._connection_state import RadioConnectionState
+    from icom_lan.runtime._connection_state import RadioConnectionState
 
     radio._intentional_disconnect = True
     assert radio._conn_state == RadioConnectionState.DISCONNECTED
@@ -177,7 +177,7 @@ def test_intentional_disconnect_setter_true_sets_disconnected(radio: IcomRadio) 
 def test_intentional_disconnect_setter_false_when_disconnected_sets_reconnecting(
     radio: IcomRadio,
 ) -> None:
-    from icom_lan._connection_state import RadioConnectionState
+    from icom_lan.runtime._connection_state import RadioConnectionState
 
     radio._conn_state = RadioConnectionState.DISCONNECTED
     radio._intentional_disconnect = False
@@ -201,7 +201,7 @@ def test_civ_stats_returns_dict(radio: IcomRadio) -> None:
 
 
 async def test_soft_disconnect_when_not_connected_is_noop(radio: IcomRadio) -> None:
-    from icom_lan._connection_state import RadioConnectionState
+    from icom_lan.runtime._connection_state import RadioConnectionState
 
     radio._conn_state = RadioConnectionState.DISCONNECTED
     # Should not raise
@@ -1279,7 +1279,7 @@ async def test_force_cleanup_civ_tears_down_transport(
     radio: IcomRadio, mock_transport: MockTransport
 ) -> None:
     """_force_cleanup_civ disconnects transport unconditionally (lines 407-417)."""
-    from icom_lan._connection_state import RadioConnectionState
+    from icom_lan.runtime._connection_state import RadioConnectionState
 
     with (
         patch.object(radio._civ_runtime, "stop_data_watchdog", new=AsyncMock()),
@@ -1331,7 +1331,7 @@ async def test_soft_reconnect_reconnects_civ_when_ctrl_alive(
     radio: IcomRadio, mock_transport: MockTransport
 ) -> None:
     """soft_reconnect() opens new CI-V transport when ctrl is still alive (lines 434-472)."""
-    from icom_lan._connection_state import RadioConnectionState
+    from icom_lan.runtime._connection_state import RadioConnectionState
 
     radio._civ_transport = None
     # Make ctrl transport appear alive
@@ -1526,7 +1526,7 @@ async def test_watchdog_loop_triggers_reconnect_on_timeout(radio: IcomRadio) -> 
 
 async def test_reconnect_loop_succeeds_on_first_attempt(radio: IcomRadio) -> None:
     """_reconnect_loop reconnects successfully on first attempt (lines 553-581)."""
-    from icom_lan._connection_state import RadioConnectionState
+    from icom_lan.runtime._connection_state import RadioConnectionState
 
     radio._conn_state = RadioConnectionState.RECONNECTING
 
@@ -1550,7 +1550,7 @@ async def test_reconnect_loop_succeeds_on_first_attempt(radio: IcomRadio) -> Non
 
 async def test_reconnect_loop_handles_audio_stop_failure(radio: IcomRadio) -> None:
     """_reconnect_loop handles failure when stopping audio stream (lines 553-554)."""
-    from icom_lan._connection_state import RadioConnectionState
+    from icom_lan.runtime._connection_state import RadioConnectionState
 
     radio._conn_state = RadioConnectionState.RECONNECTING
 
@@ -1579,7 +1579,7 @@ async def test_reconnect_loop_handles_audio_stop_failure(radio: IcomRadio) -> No
 
 async def test_reconnect_loop_retries_on_failure(radio: IcomRadio) -> None:
     """_reconnect_loop retries with backoff when connect fails (lines 583-586)."""
-    from icom_lan._connection_state import RadioConnectionState
+    from icom_lan.runtime._connection_state import RadioConnectionState
 
     radio._conn_state = RadioConnectionState.RECONNECTING
     radio._reconnect_delay = 0.001  # very short delay
@@ -1608,7 +1608,7 @@ async def test_reconnect_loop_stops_audio_transport_on_reconnect(
     radio: IcomRadio,
 ) -> None:
     """_reconnect_loop disconnects audio transport during retry (lines 559-561)."""
-    from icom_lan._connection_state import RadioConnectionState
+    from icom_lan.runtime._connection_state import RadioConnectionState
 
     radio._conn_state = RadioConnectionState.RECONNECTING
 
@@ -1634,7 +1634,7 @@ async def test_reconnect_loop_stops_civ_transport_on_reconnect(
     radio: IcomRadio,
 ) -> None:
     """_reconnect_loop disconnects civ transport during retry (lines 564-567)."""
-    from icom_lan._connection_state import RadioConnectionState
+    from icom_lan.runtime._connection_state import RadioConnectionState
 
     radio._conn_state = RadioConnectionState.RECONNECTING
 
@@ -1657,7 +1657,7 @@ async def test_reconnect_loop_stops_ctrl_transport_on_reconnect(
     radio: IcomRadio,
 ) -> None:
     """_reconnect_loop disconnects ctrl transport during retry (lines 568-571)."""
-    from icom_lan._connection_state import RadioConnectionState
+    from icom_lan.runtime._connection_state import RadioConnectionState
 
     radio._conn_state = RadioConnectionState.RECONNECTING
 
@@ -1678,7 +1678,7 @@ async def test_reconnect_loop_attempts_token_remove(
     radio: IcomRadio,
 ) -> None:
     """_reconnect_loop sends token-remove before ctrl transport disconnect."""
-    from icom_lan._connection_state import RadioConnectionState
+    from icom_lan.runtime._connection_state import RadioConnectionState
 
     radio._conn_state = RadioConnectionState.RECONNECTING
     radio._audio_transport = None

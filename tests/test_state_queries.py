@@ -6,7 +6,7 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from icom_lan._state_queries import build_state_queries
+from icom_lan.runtime._state_queries import build_state_queries
 from icom_lan.profiles import resolve_radio_profile
 
 

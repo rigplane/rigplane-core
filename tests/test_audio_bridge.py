@@ -9,8 +9,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from icom_lan._bridge_metrics import BridgeMetrics
-from icom_lan._bridge_state import BridgeState, BridgeStateChange
+from icom_lan.audio._bridge_metrics import BridgeMetrics
+from icom_lan.audio._bridge_state import BridgeState, BridgeStateChange
 from icom_lan.audio.backend import (
     AudioDeviceId,
     AudioDeviceInfo,
