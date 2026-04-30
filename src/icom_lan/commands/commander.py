@@ -6,8 +6,8 @@ from dataclasses import dataclass
 from enum import IntEnum
 from typing import TypeVar
 
-from .exceptions import ConnectionError
-from .types import CivFrame
+from icom_lan.exceptions import ConnectionError
+from icom_lan.types import CivFrame
 
 __all__ = ["IcomCommander", "Priority"]
 
