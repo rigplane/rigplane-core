@@ -564,7 +564,36 @@ The "Re-export shim" header is a grep-able marker (`grep -rn
 "Re-export shim" src/icom_lan/`) and a signal to PR reviewers: do
 not edit by hand, file edits go to the canonical location.
 
-#### 5.1.1 Why sys.modules-alias (and not plain `from … import *`)
+#### 5.1.1 Underscore re-export for cross-module private consumers
+
+The hybrid template's `from … import *` excludes underscore-prefixed
+names by Python spec, so any private symbol that an *external*
+consumer imports through the shim path (e.g. `from icom_lan.<old>
+import _foo`) becomes invisible to mypy after the move — even though
+it works at runtime via the sys.modules alias. The fix is a single
+explicit underscore re-import line in the shim, between the
+`import *` and the alias assignment. The PEP 484 explicit re-export
+form (`X as X`) is required: mypy's default treats a plain `from X
+import _foo` as a non-explicit re-export and still reports
+`attr-defined` on consumers.
+
+```python
+from icom_lan.<canonical> import *  # noqa: F401, F403
+from icom_lan.<canonical> import _foo as _foo  # noqa: F401  # consumer: <where>
+import icom_lan.<canonical> as _canonical
+
+sys.modules[__name__] = _canonical
+```
+
+These explicit re-imports become dead after Step 13's global import
+canonicalization (consumers no longer reach through the shim) and
+can be removed at that time.
+
+First instance: `src/icom_lan/radio.py` shim re-exports
+`_DEFAULT_AUDIO_CODEC` for the consumer at `src/icom_lan/sync.py:23`
+(Step 8b).
+
+#### 5.1.2 Why sys.modules-alias (and not plain `from … import *`)
 
 The original verbatim template was a single-line `from
 icom_lan.<new_layer>.<module> import *`. It broke during Step 2b
