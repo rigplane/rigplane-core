@@ -93,7 +93,7 @@ select = ["E4", "E7", "E9", "F", "TID251"]
 [tool.ruff.lint.per-file-ignores]
 "tests/*" = ["TID251"]
 # CLI is the orchestrator that composes tier-3 web and rigctld servers (issue-blessed).
-"src/icom_lan/cli.py" = ["TID251"]
+"src/icom_lan/cli/**" = ["TID251"]
 # Package entry point dispatches to cli.main.
 "src/icom_lan/__main__.py" = ["TID251"]
 
