@@ -1,41 +1,24 @@
-"""Radio-level connection state machine."""
+"""Re-export shim for backwards compatibility.
 
-from __future__ import annotations
+Canonical location: icom_lan.runtime._connection_state
+Do not add new symbols here — add them at the canonical location.
 
-from enum import Enum
+This file uses the sys.modules-alias pattern: importing this shim
+makes ``icom_lan._connection_state`` literally the same module object
+as ``icom_lan.runtime._connection_state``. This preserves attribute
+walks (incl. stdlib names not in ``__all__``) and monkeypatch targets.
 
-__all__ = ["RadioConnectionState"]
+The two import lines below are BOTH load-bearing — do not remove
+either:
 
+* ``from icom_lan.runtime._connection_state import *`` —
+  static-analysis adapter.
+* ``sys.modules[__name__] = _canonical`` — the runtime invariant.
+"""
 
-class RadioConnectionState(Enum):
-    """Connection state for IcomRadio.
+import sys
 
-    Transitions::
+from icom_lan.runtime._connection_state import *  # noqa: F401, F403
+import icom_lan.runtime._connection_state as _canonical
 
-        DISCONNECTED ──connect()──► CONNECTING ──success──► CONNECTED
-             ▲                          │                       │
-             │                        fail                 disconnect()
-             │                          │                       │
-             └──────────────────────────┘               DISCONNECTING
-                                                               │
-        RECONNECTING ◄──watchdog timeout──────────────────────┘
-             │
-          connect()
-             │
-          CONNECTING …
-    """
-
-    DISCONNECTED = "disconnected"
-    """Cleanly disconnected or never connected."""
-
-    CONNECTING = "connecting"
-    """connect() is in progress."""
-
-    CONNECTED = "connected"
-    """Fully authenticated and operational."""
-
-    DISCONNECTING = "disconnecting"
-    """disconnect() is in progress."""
-
-    RECONNECTING = "reconnecting"
-    """Connection lost; auto-reconnect is waiting to retry."""
+sys.modules[__name__] = _canonical
