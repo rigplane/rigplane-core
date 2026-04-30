@@ -1,58 +1,23 @@
-"""Command specification types for multi-protocol radio control.
+"""Re-export shim for backwards compatibility.
 
-Supports both CI-V (wire bytes) and Yaesu CAT (text templates) in a unified schema.
+Canonical location: icom_lan.commands.command_spec
+Do not add new symbols here — add them at the canonical location.
+
+This file uses the sys.modules-alias pattern: importing this shim
+makes ``icom_lan.command_spec`` literally the same module object as
+``icom_lan.commands.command_spec``. This preserves attribute walks (incl.
+stdlib names not in ``__all__``) and monkeypatch targets.
+
+The two import lines below are BOTH load-bearing — do not remove
+either:
+
+* ``from icom_lan.commands.command_spec import *`` — static-analysis adapter.
+* ``sys.modules[__name__] = _canonical`` — the runtime invariant.
 """
 
-from __future__ import annotations
+import sys
 
-from dataclasses import dataclass
+from icom_lan.commands.command_spec import *  # noqa: F401, F403
+import icom_lan.commands.command_spec as _canonical
 
-__all__ = [
-    "CivCommandSpec",
-    "CatCommandSpec",
-    "CommandSpec",
-]
-
-
-@dataclass(frozen=True, slots=True)
-class CivCommandSpec:
-    """CI-V command specification (Icom radios).
-
-    Example TOML:
-        get_freq = [0x03]
-        set_mode = [0x06]
-    """
-
-    bytes: tuple[int, ...]
-    """CI-V wire bytes (e.g., (0x03,) for get_freq)."""
-
-
-@dataclass(frozen=True, slots=True)
-class CatCommandSpec:
-    """Yaesu CAT command specification (text-based protocol).
-
-    Example TOML:
-        get_freq = { cat = { read = "FA;", parse = "FA{freq:09d};" } }
-        set_mode = { cat = { write = "MD0{mode};" } }
-    """
-
-    read: str | None = None
-    """Template for READ command (e.g., "FA;" for get_freq)."""
-
-    write: str | None = None
-    """Template for WRITE command (e.g., "FA{freq:09d};" for set_freq)."""
-
-    parse: str | None = None
-    """Template for parsing response (e.g., "FA{freq:09d};" for get_freq).
-    
-    If omitted, defaults to `read` template (echo-based response).
-    """
-
-    def __post_init__(self) -> None:
-        """Validate CAT command spec."""
-        if self.read is None and self.write is None:
-            raise ValueError("CatCommandSpec must have at least one of read/write")
-
-
-# Union type for command specs (CI-V or CAT)
-CommandSpec = CivCommandSpec | CatCommandSpec
+sys.modules[__name__] = _canonical

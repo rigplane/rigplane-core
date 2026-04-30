@@ -1,48 +1,23 @@
-"""CommandMap — frozen lookup for CI-V wire bytes by command name."""
+"""Re-export shim for backwards compatibility.
 
-from __future__ import annotations
+Canonical location: icom_lan.commands.command_map
+Do not add new symbols here — add them at the canonical location.
 
-from collections.abc import Iterator
+This file uses the sys.modules-alias pattern: importing this shim
+makes ``icom_lan.command_map`` literally the same module object as
+``icom_lan.commands.command_map``. This preserves attribute walks (incl.
+stdlib names not in ``__all__``) and monkeypatch targets.
 
-__all__ = ["CommandMap"]
+The two import lines below are BOTH load-bearing — do not remove
+either:
 
+* ``from icom_lan.commands.command_map import *`` — static-analysis adapter.
+* ``sys.modules[__name__] = _canonical`` — the runtime invariant.
+"""
 
-class CommandMap:
-    """Immutable mapping from command names to CI-V wire byte tuples.
+import sys
 
-    Usage::
+from icom_lan.commands.command_map import *  # noqa: F401, F403
+import icom_lan.commands.command_map as _canonical
 
-        cm = CommandMap({"af_gain": (0x14, 0x01), "rf_gain": (0x14, 0x02)})
-        cm.get("af_gain")   # (0x14, 0x01)
-        cm.has("af_gain")   # True
-        len(cm)             # 2
-        list(cm)            # ["af_gain", "rf_gain"]
-    """
-
-    __slots__ = ("_commands",)
-
-    def __init__(self, commands: dict[str, tuple[int, ...]]) -> None:
-        self._commands: dict[str, tuple[int, ...]] = dict(commands)
-
-    def get(self, name: str) -> tuple[int, ...]:
-        """Return wire bytes for *name*, or raise ``KeyError``."""
-        try:
-            return self._commands[name]
-        except KeyError:
-            raise KeyError(
-                f"Unknown command {name!r}. "
-                f"Available: {', '.join(sorted(self._commands))}"
-            ) from None
-
-    def has(self, name: str) -> bool:
-        """Return ``True`` if *name* is a known command."""
-        return name in self._commands
-
-    def __iter__(self) -> Iterator[str]:
-        return iter(self._commands)
-
-    def __len__(self) -> int:
-        return len(self._commands)
-
-    def __repr__(self) -> str:
-        return f"CommandMap({len(self._commands)} commands)"
+sys.modules[__name__] = _canonical
