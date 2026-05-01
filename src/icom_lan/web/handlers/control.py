@@ -6,7 +6,7 @@ import asyncio
 import logging
 import time
 from collections.abc import Awaitable, Callable
-from typing import TYPE_CHECKING, Any, ClassVar, Literal, cast
+from typing import TYPE_CHECKING, Any, ClassVar, cast
 
 from ..._bounded_queue import BoundedQueue
 from ...profiles import RadioProfile
@@ -161,7 +161,7 @@ from ...capabilities import (
     CAP_TX,
     CAP_XFC,
 )
-from ...radio_protocol import MemoryCapable
+from ...radio_protocol import MemoryCapable, PowerControlCapable
 
 __all__ = ["ControlHandler"]
 
@@ -1393,23 +1393,21 @@ class ControlHandler:
             case "set_rf_power" | "set_power":
                 if radio is None:
                     raise RuntimeError("radio connection not available")
-                if CAP_POWER_CONTROL not in radio.capabilities:
+                if not isinstance(radio, PowerControlCapable):
                     raise ValueError(
                         "command set_rf_power is not supported by this radio "
-                        "(missing power_control capability)"
+                        "(radio does not implement PowerControlCapable)"
                     )
                 level = int(params["level"])
                 # Tag the unit per radio's wire-level scale. Icom CI-V
                 # backends expose ``native_power_unit = "raw_255"``,
                 # Yaesu CAT exposes ``"watts"`` — see
-                # :class:`PowerControlCapable.native_power_unit`. Falls
-                # back to ``"raw_255"`` when the attribute is missing
-                # (e.g. legacy mocks) to preserve prior default
-                # behaviour for Icom-shaped radios.
-                unit: Literal["raw_255", "watts"] = getattr(
-                    radio, "native_power_unit", "raw_255"
-                )
-                q.put(SetPower(level, unit=unit))
+                # :class:`PowerControlCapable.native_power_unit`.
+                # ``isinstance`` above narrows ``radio`` to
+                # :class:`PowerControlCapable`, so the attribute is
+                # typed ``Literal["raw_255", "watts"]`` with no
+                # ``getattr`` fallback needed.
+                q.put(SetPower(level, unit=radio.native_power_unit))
                 return {"level": level}
             case "set_powerstat":
                 if radio is None:

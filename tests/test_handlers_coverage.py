@@ -90,9 +90,16 @@ def _capable_radio() -> SimpleNamespace:
     return SimpleNamespace(
         capabilities=set(FULL_ICOM_CAPS),
         profile=resolve_radio_profile(model="IC-7610"),
+        # PowerControlCapable members — set_rf_power, get_rf_power,
+        # get_powerstat, set_powerstat, native_power_unit. Required
+        # in full so ``isinstance(radio, PowerControlCapable)`` in
+        # the control handler narrows correctly (gap previously
+        # masked by the legacy CAP_POWER_CONTROL string-cap gate).
         set_rf_power=AsyncMock(),
+        get_rf_power=AsyncMock(return_value=0),
         get_powerstat=AsyncMock(return_value=True),
         set_powerstat=AsyncMock(),
+        native_power_unit="raw_255",
         set_rf_gain=AsyncMock(),
         set_af_level=AsyncMock(),
         set_squelch=AsyncMock(),
