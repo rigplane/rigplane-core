@@ -1,0 +1,81 @@
+# WSJT-X 3.1 + Hamlib 4.7.1 NET rigctl init sequence on IC-7610 (dual-RX).
+#
+# Constructed from the Hamlib rigctl(1) protocol spec
+# (https://hamlib.sourceforge.net/manuals/4.5.5/rigctl.1.html) and Hamlib's
+# netrigctl.c source. Faithful protocol reproduction, not a live tcpdump.
+#
+# Format:
+#   > <wire-line>      client → server
+#   < <wire-line>      server → client (single line)
+#   < @dump_state      multi-line dump_state response — integration test
+#                      consumes lines until it sees the next > or EOF
+#   # <text>           comment, ignored by the replay parser
+#
+# Why xfail until A2-A5 lands:
+#   - Variant B (PR #1340) made chk_vfo return "0" unconditionally.
+#     Hamlib clients then DO NOT prefix VFO and stay on the bare-form path.
+#     This file documents the chk_vfo=1 path that A2-A5 will re-enable.
+#   - Today every VFO-prefixed line below trips parse_line ValueError
+#     (max_args=0) → server returns RPRT -4 instead of the expected value.
+#   - The whole replay is wrapped in @pytest.mark.xfail so it runs (records
+#     the protocol contract) but does not fail CI.
+#   - When A5 lands and chk_vfo flips back to "1", the xfail flips to xpass
+#     and pytest catches the unexpected pass — at which point the xfail
+#     marker is removed in that PR.
+
+# 1. Hamlib's chk_vfo handshake — server must advertise vfo_opt mode.
+#    Hamlib's netrigctld accepts both "1" and "CHKVFO 1"; icom-lan emits
+#    the bare form via _format_normal (one value per line).
+> \chk_vfo
+< 1
+
+# 2. dump_state — capability advertisement. WSJT-X parses positionally.
+> \dump_state
+< @dump_state
+
+# 3. WSJT-X first poll cycle: get current state on VFOA (MAIN receiver).
+> f VFOA
+< 14074000
+> m VFOA
+< USB
+< 3000
+> t VFOA
+< 0
+
+# 4. User clicks "Test CAT". WSJT-X reads VFOB (SUB) too on dual-RX.
+#    SerialMockRadio default: receiver 1 starts at 14074000 too.
+> f VFOB
+< 14074000
+> m VFOB
+< USB
+< 3000
+
+# 5. User selects a 20m FT8 frequency. WSJT-X writes VFOA.
+> F VFOA 14074000
+< RPRT 0
+> M VFOA USB 3000
+< RPRT 0
+
+# 6. WSJT-X arms split: VFOB carries the TX frequency.
+> S VFOA 1 VFOB
+< RPRT 0
+> F VFOB 14076000
+< RPRT 0
+> f VFOB
+< 14076000
+
+# 7. PTT cycle — keyed on VFOA per Hamlib convention (rig handles split).
+> T VFOA 1
+< RPRT 0
+> T VFOA 0
+< RPRT 0
+
+# 8. WSJT-X disarms split at end of TX cycle.
+> S VFOA 0 VFOA
+< RPRT 0
+
+# 9. Read-back to confirm post-TX state.
+> f VFOA
+< 14074000
+> t VFOA
+< 0

@@ -1,0 +1,50 @@
+# JS8Call + Hamlib 4.7.1 NET rigctl init sequence on IC-7610 (dual-RX).
+#
+# Constructed from the Hamlib rigctl(1) protocol spec
+# (https://hamlib.sourceforge.net/manuals/4.5.5/rigctl.1.html) and JS8Call's
+# WSJT-X-derived netrigctl bridge. JS8Call shares WSJT-X's CAT layer almost
+# verbatim but does not use split (TX is on the dial frequency).
+#
+# Format / xfail rationale: see tests/golden/wsjtx_dual_rx_session.txt.
+
+# 1. chk_vfo handshake.
+> \chk_vfo
+< 1
+
+# 2. dump_state capability dump.
+> \dump_state
+< @dump_state
+
+# 3. Initial state read on VFOA.
+> f VFOA
+< 14074000
+> m VFOA
+< USB
+< 3000
+> t VFOA
+< 0
+
+# 4. User selects 14078000 (JS8 normal speed center) on VFOA.
+> F VFOA 14078000
+< RPRT 0
+
+# 5. JS8Call sets DATA-USB mode by issuing M with PKTUSB / USB+wide PB.
+#    Hamlib NET rigctl maps PKTUSB → USB on the wire; passband 2400.
+> M VFOA USB 2400
+< RPRT 0
+
+# 6. PTT cycle for one transmission.
+> T VFOA 1
+< RPRT 0
+> T VFOA 0
+< RPRT 0
+
+# 7. Heartbeat polling continues after TX.
+#    M VFOA USB 2400 above narrowed the passband (filter 2 → 2400 Hz).
+> f VFOA
+< 14078000
+> t VFOA
+< 0
+> m VFOA
+< USB
+< 2400

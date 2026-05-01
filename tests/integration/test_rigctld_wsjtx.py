@@ -384,3 +384,57 @@ class TestUnknownVfoBackwardsCompat:
             assert all(name != "set_vfo" for name, _ in radio.calls)
         finally:
             await client.close()
+
+
+# ---------------------------------------------------------------------------
+# Real Hamlib chk_vfo=1 path — Variant A 1/5 (#1342)
+# ---------------------------------------------------------------------------
+#
+# All test classes ABOVE this line exercise the bare-form path used by
+# Hamlib clients under chk_vfo=0 (single-RX behaviour, or post-Variant-B
+# rollback). They predate epic #1341.
+#
+# THIS class delegates to the golden-replay test in
+# tests/integration/test_rigctld_golden_replay.py. The reason: research
+# finding A5 of issue #1319 — the existing fake bare-form tests are why
+# regression #1319 escaped CI in #722. We don't duplicate the replay
+# here; we make the dependency explicit so a reviewer reading this file
+# knows the chk_vfo=1 contract is enforced (just elsewhere).
+
+
+class TestRigctldWsjtxRealDualRx:
+    """The chk_vfo=1 wire trace — see test_rigctld_golden_replay.py.
+
+    Variant A 1/5 (#1342) introduced ``tests/golden/wsjtx_dual_rx_session.txt``
+    and ``tests/integration/test_rigctld_golden_replay.py::TestGoldenReplayDualRx``
+    as the load-bearing assertion that prevents another #1319.
+
+    This class documents that, on the WSJT-X side, the contract is:
+        1. Open TCP connection.
+        2. Send ``\\chk_vfo``; expect ``1``.
+        3. Send ``\\dump_state``; receive 26+ lines.
+        4. Every freq/mode/PTT/level/func/split command thereafter is
+           prefixed with ``VFOA``/``VFOB``/``currVFO``.
+
+    The test below is a "marker" test — it asserts the golden file
+    exists and contains the chk_vfo=1 handshake. The actual wire-level
+    replay lives in the dedicated test file so the wsjtx file stays
+    focused on call-sequence assertions for the bare-form path.
+    """
+
+    def test_golden_replay_fixture_exists(self) -> None:
+        """The wsjtx_dual_rx_session.txt fixture must exist and start
+        with the chk_vfo=1 handshake. Replay assertions live in
+        test_rigctld_golden_replay.py.
+        """
+        from pathlib import Path
+
+        golden = Path(__file__).parent.parent / "golden" / "wsjtx_dual_rx_session.txt"
+        assert golden.exists(), (
+            "Variant A 1/5 (#1342) golden replay fixture missing — "
+            "was it deleted or moved?"
+        )
+        text = golden.read_text()
+        assert "> \\chk_vfo" in text
+        assert "< 1" in text  # vfo_opt enabled response
+        assert "> f VFOA" in text  # canonical VFO-prefixed command

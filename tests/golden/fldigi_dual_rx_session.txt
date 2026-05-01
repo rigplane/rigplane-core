@@ -1,0 +1,55 @@
+# fldigi + Hamlib 4.7.1 NET rigctl init sequence on IC-7610 (dual-RX).
+#
+# Constructed from the Hamlib rigctl(1) protocol spec
+# (https://hamlib.sourceforge.net/manuals/4.5.5/rigctl.1.html) and fldigi's
+# rigCAT/hamlib bridge documentation. Faithful protocol reproduction, not a
+# live tcpdump.
+#
+# fldigi's CAT init is shorter than WSJT-X: it polls freq/mode aggressively
+# but does not arm split (split is a per-mode feature off by default in
+# fldigi) and does not exercise VFOB. The chk_vfo=1 path still requires
+# VFO-prefixed reads/writes for every command listed in rigctl(1) §VFO.
+#
+# Format / xfail rationale: see tests/golden/wsjtx_dual_rx_session.txt.
+
+# 1. chk_vfo handshake.
+> \chk_vfo
+< 1
+
+# 2. dump_state capability dump.
+> \dump_state
+< @dump_state
+
+# 3. fldigi polls get_mode + get_freq once per ~250ms during the QSO.
+> m VFOA
+< USB
+< 3000
+> f VFOA
+< 14074000
+
+# 4. User selects USB+3000 Hz passband from the mode menu.
+> M VFOA USB 2400
+< RPRT 0
+
+# 5. User tunes to 7074000 (40m FT8).
+> F VFOA 7074000
+< RPRT 0
+
+# 6. Read-back after the SET (fldigi confirms the value applied).
+> f VFOA
+< 7074000
+> m VFOA
+< USB
+< 2400
+
+# 7. PTT cycle for short transmission.
+> T VFOA 1
+< RPRT 0
+> T VFOA 0
+< RPRT 0
+
+# 8. Continued polling — fldigi never disconnects mid-session.
+> f VFOA
+< 7074000
+> t VFOA
+< 0
