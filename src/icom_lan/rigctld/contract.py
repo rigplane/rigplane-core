@@ -90,14 +90,21 @@ class RigctldCommand:
     Attributes:
         short_cmd: Single-char command (e.g. 'f', 'F', 'm', 'q').
         long_cmd: Long-form name (e.g. 'get_freq', 'set_freq').
-        args: Tuple of string arguments.
+        args: Tuple of string arguments (with any leading VFO label
+            already stripped — see ``vfo_arg``).
         is_set: True if this is a write/set command.
+        vfo_arg: VFO label (``"VFOA"``/``"VFOB"``/``"currVFO"``) when the
+            client sent a leading VFO token under Hamlib chk_vfo=1, else
+            ``None``. Stripped from ``args`` by the parser; handlers in
+            sub-issue #1343 ignore it (single-VFO routing) and per-VFO
+            routing arrives in #1344.
     """
 
     short_cmd: str
     long_cmd: str
     args: tuple[str, ...] = ()
     is_set: bool = False
+    vfo_arg: str | None = None
 
 
 @dataclass(slots=True)
@@ -126,13 +133,32 @@ class RigctldResponse:
 
 @dataclass(frozen=True, slots=True)
 class CommandDef:
-    """Definition of a rigctld command."""
+    """Definition of a rigctld command.
+
+    Attributes:
+        short: Single-character form (e.g. ``"f"``).
+        long: Long-form name (e.g. ``"get_freq"``).
+        is_set: True for write/set commands.
+        min_args: Minimum number of *payload* arguments (after any
+            leading VFO token has been stripped by the parser).
+        max_args: Maximum number of payload arguments (same convention).
+        accepts_vfo_arg: True when Hamlib prefixes the command with a
+            leading ``VFOA``/``VFOB``/``currVFO`` token under
+            ``chk_vfo=1``. Per ``rigctl(1)``: ``f m t j s l u`` (read)
+            and ``F M T L U S`` (write). The parser uses this flag to
+            decide whether to attempt to strip a leading VFO label
+            before the min/max arg check. Note: ``v`` (get_vfo) and
+            ``V`` (set_vfo) are NOT prefixed — VFO is the data, not a
+            prefix.
+        description: Free-form documentation.
+    """
 
     short: str
     long: str
     is_set: bool
     min_args: int = 0
     max_args: int = 0
+    accepts_vfo_arg: bool = False
     description: str = ""
 
 
@@ -148,17 +174,42 @@ def _register(*defs: CommandDef) -> None:
 
 _register(
     # Get commands
-    CommandDef("f", "get_freq", is_set=False, description="Get frequency in Hz"),
-    CommandDef("m", "get_mode", is_set=False, description="Get mode and passband"),
-    CommandDef("t", "get_ptt", is_set=False, description="Get PTT status"),
+    CommandDef(
+        "f",
+        "get_freq",
+        is_set=False,
+        accepts_vfo_arg=True,
+        description="Get frequency in Hz",
+    ),
+    CommandDef(
+        "m",
+        "get_mode",
+        is_set=False,
+        accepts_vfo_arg=True,
+        description="Get mode and passband",
+    ),
+    CommandDef(
+        "t",
+        "get_ptt",
+        is_set=False,
+        accepts_vfo_arg=True,
+        description="Get PTT status",
+    ),
     CommandDef("v", "get_vfo", is_set=False, description="Get current VFO"),
-    CommandDef("j", "get_rit", is_set=False, description="Get RIT offset"),
+    CommandDef(
+        "j",
+        "get_rit",
+        is_set=False,
+        accepts_vfo_arg=True,
+        description="Get RIT offset",
+    ),
     CommandDef(
         "l",
         "get_level",
         is_set=False,
         min_args=1,
         max_args=1,
+        accepts_vfo_arg=True,
         description="Get level (STRENGTH, RFPOWER, SWR, AF, RF, NR, NB, COMP, etc.)",
     ),
     CommandDef(
@@ -167,9 +218,16 @@ _register(
         is_set=False,
         min_args=1,
         max_args=1,
+        accepts_vfo_arg=True,
         description="Get function (NB, NR, COMP, VOX, TONE, TSQL, ANF, LOCK, MON, APF)",
     ),
-    CommandDef("s", "get_split_vfo", is_set=False, description="Get split VFO status"),
+    CommandDef(
+        "s",
+        "get_split_vfo",
+        is_set=False,
+        accepts_vfo_arg=True,
+        description="Get split VFO status",
+    ),
     # Set commands
     CommandDef(
         "F",
@@ -177,6 +235,7 @@ _register(
         is_set=True,
         min_args=1,
         max_args=1,
+        accepts_vfo_arg=True,
         description="Set frequency in Hz",
     ),
     CommandDef(
@@ -185,6 +244,7 @@ _register(
         is_set=True,
         min_args=1,
         max_args=2,
+        accepts_vfo_arg=True,
         description="Set mode and optional passband",
     ),
     CommandDef(
@@ -193,6 +253,7 @@ _register(
         is_set=True,
         min_args=1,
         max_args=1,
+        accepts_vfo_arg=True,
         description="Set PTT on/off",
     ),
     CommandDef(
@@ -204,6 +265,7 @@ _register(
         is_set=True,
         min_args=2,
         max_args=2,
+        accepts_vfo_arg=True,
         description="Set level (RFPOWER, AF, RF, NR, NB, COMP, MICGAIN, KEYSPD, etc.)",
     ),
     CommandDef(
@@ -212,6 +274,7 @@ _register(
         is_set=True,
         min_args=2,
         max_args=2,
+        accepts_vfo_arg=True,
         description="Set function (NB, NR, COMP, VOX, TONE, TSQL, ANF, LOCK, MON, APF)",
     ),
     CommandDef(
@@ -220,6 +283,7 @@ _register(
         is_set=True,
         min_args=2,
         max_args=2,
+        accepts_vfo_arg=True,
         description="Set split VFO",
     ),
     # Control / info commands (not set, not get — special)
@@ -286,7 +350,16 @@ class ClientSession:
     client_id: int = 0
     peername: str = ""
     extended_mode: bool = False
-    vfo_mode: bool = False  # Whether VFO arg is required
+    vfo_mode: bool = False
+    """Set to ``True`` once Hamlib has been told (via ``\\chk_vfo`` →
+    ``"1"`` or ``\\set_vfo_opt 1``) that this server speaks vfo_opt.
+    The parser uses this as a hint for diagnostics; the actual VFO-token
+    strip is driven by ``CommandDef.accepts_vfo_arg`` plus a label
+    match (Hamlib only emits the prefix under chk_vfo=1, so the label
+    match is sufficient on its own). Wired but dormant on `main`:
+    ``_cmd_chk_vfo`` still returns ``"0"`` (Variant B band-aid for
+    #1319) so this stays ``False`` for every client until #1346 (A5)
+    flips chk_vfo back to ``"1"`` for dual-RX rigs."""
 
 
 # ---------------------------------------------------------------------------

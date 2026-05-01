@@ -31,22 +31,46 @@ from .contract import (  # noqa: TID251
     RigctldResponse,
 )
 
-__all__ = ["parse_line", "format_response", "format_error"]
+__all__ = ["parse_line", "format_response", "format_error", "VFO_LABELS"]
 
 logger = logging.getLogger(__name__)
 
 
-def parse_line(line: bytes) -> RigctldCommand:
+# Hamlib VFO labels that may appear as a leading prefix under chk_vfo=1.
+# Per ``rigctl(1)`` Hamlib emits one of these for every command listed in
+# the "Reading"/"Writing" groups when ``chk_vfo`` returned ``"1"``.
+# (``MEM`` / ``Main`` / ``Sub`` etc. exist in Hamlib but are not emitted
+# by the chk_vfo=1 path — we deliberately keep this set tight.)
+VFO_LABELS: frozenset[str] = frozenset({"VFOA", "VFOB", "currVFO"})
+
+
+def parse_line(
+    line: bytes,
+    session: ClientSession | None = None,
+) -> RigctldCommand:
     """Parse a rigctld command line into a RigctldCommand.
 
     Args:
         line: Raw bytes, already stripped of the trailing newline.
+        session: Optional per-client session state. Currently consulted
+            only for diagnostic logging — the VFO-prefix strip itself
+            is driven by ``CommandDef.accepts_vfo_arg`` plus a label
+            match against :data:`VFO_LABELS`. Hamlib only emits the
+            prefix under chk_vfo=1, so the label match is sufficient
+            on its own; ``session`` is threaded through for future
+            per-mode parsing decisions.
 
     Returns:
-        Parsed RigctldCommand.
+        Parsed RigctldCommand. When the command is VFO-prefixable
+        (``CommandDef.accepts_vfo_arg=True``) and the first arg matches
+        a known VFO label, that label is stripped from ``args`` and
+        stashed on ``cmd.vfo_arg``. Handlers in #1343 ignore
+        ``vfo_arg`` and continue to route to the active VFO; per-VFO
+        routing arrives in #1344.
 
     Raises:
-        ValueError: Unknown command, or wrong number of arguments.
+        ValueError: Unknown command, or wrong number of arguments
+            (counted *after* the VFO-token strip).
     """
     text = line.rstrip(b"\r").decode("ascii", errors="replace").strip()
 
@@ -68,6 +92,24 @@ def parse_line(line: bytes) -> RigctldCommand:
     if defn is None:
         raise ValueError(f"Unknown command: {token!r}")
 
+    # VFO-prefix strip — must happen BEFORE the min/max args check so
+    # that ``f VFOA`` (post-strip args=()) doesn't fail max_args=0.
+    # See contract.CommandDef.accepts_vfo_arg for the canonical list.
+    vfo_arg: str | None = None
+    if defn.accepts_vfo_arg and args and args[0] in VFO_LABELS:
+        vfo_arg = args[0]
+        args = args[1:]
+        if session is not None and not session.vfo_mode:
+            # Defensive: real Hamlib only emits the VFO prefix after
+            # ``chk_vfo`` → ``"1"``, but accept it either way to keep
+            # the parser tolerant of clients that pre-emptively send
+            # vfo_opt traffic. Logged at debug level only.
+            logger.debug(
+                "leading VFO token %r seen on %s while session.vfo_mode=False",
+                vfo_arg,
+                token,
+            )
+
     n = len(args)
     if n < defn.min_args:
         raise ValueError(
@@ -78,13 +120,14 @@ def parse_line(line: bytes) -> RigctldCommand:
             f"Command {token!r} accepts at most {defn.max_args} arg(s), got {n}"
         )
 
-    logger.debug("parsed command %r args=%r", token, args)
+    logger.debug("parsed command %r vfo_arg=%r args=%r", token, vfo_arg, args)
 
     return RigctldCommand(
         short_cmd=defn.short,
         long_cmd=defn.long,
         args=args,
         is_set=defn.is_set,
+        vfo_arg=vfo_arg,
     )
 
 
