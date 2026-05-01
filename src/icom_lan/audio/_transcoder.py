@@ -10,7 +10,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Protocol
 
-from icom_lan.exceptions import AudioCodecBackendError, AudioFormatError, AudioTranscodeError
+from icom_lan.core.exceptions import AudioCodecBackendError, AudioFormatError, AudioTranscodeError
 
 __all__ = [
     "PcmAudioFormat",

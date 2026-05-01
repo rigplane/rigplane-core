@@ -17,7 +17,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import TYPE_CHECKING, TypedDict
 
-from icom_lan._optional_deps import _require_pillow
+from icom_lan.core._optional_deps import _require_pillow
 
 if TYPE_CHECKING:
     from PIL.Image import Image as PILImage

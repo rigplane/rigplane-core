@@ -9,17 +9,17 @@ import struct
 import time
 from typing import TYPE_CHECKING
 
-from icom_lan.auth import (
+from icom_lan.core.auth import (
     build_conninfo_packet,
     build_login_packet,
     parse_auth_response,
     parse_status_response,
 )
 from ._connection_state import RadioConnectionState
-from icom_lan.exceptions import AuthenticationError, ConnectionError, TimeoutError
+from icom_lan.core.exceptions import AuthenticationError, ConnectionError, TimeoutError
 from .startup_checks import wait_for_radio_startup_ready
-from icom_lan.transport import ConnectionState, IcomTransport
-from icom_lan.types import AudioCodec
+from icom_lan.core.transport import ConnectionState, IcomTransport
+from icom_lan.core.types import AudioCodec
 
 if TYPE_CHECKING:
     from ._runtime_protocols import ControlPhaseHost

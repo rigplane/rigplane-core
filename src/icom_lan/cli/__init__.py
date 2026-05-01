@@ -46,7 +46,7 @@ from icom_lan.backends.config import (  # noqa: E402
     YaesuCatBackendConfig,
 )
 from icom_lan.backends.factory import create_radio  # noqa: E402
-from icom_lan.capabilities import (  # noqa: E402
+from icom_lan.core.capabilities import (  # noqa: E402
     CAP_AF_LEVEL,
     CAP_ANTENNA,
     CAP_ATTENUATOR,
@@ -60,8 +60,8 @@ from icom_lan.capabilities import (  # noqa: E402
     CAP_SYSTEM_SETTINGS,
     CAP_TUNER,
 )
-from icom_lan.radio_protocol import Radio  # noqa: E402
-from icom_lan.types import Mode, get_audio_capabilities  # noqa: E402
+from icom_lan.core.radio_protocol import Radio  # noqa: E402
+from icom_lan.core.types import Mode, get_audio_capabilities  # noqa: E402
 
 _AUDIO_FRAME_MS = 20
 _PCM_SAMPLE_WIDTH_BYTES = 2

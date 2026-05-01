@@ -18,9 +18,9 @@ import logging
 import time
 from typing import TYPE_CHECKING
 
-from icom_lan._connection_state import RadioConnectionState
-from icom_lan.exceptions import AuthenticationError
-from icom_lan.transport import IcomTransport
+from icom_lan.runtime._connection_state import RadioConnectionState
+from icom_lan.core.exceptions import AuthenticationError
+from icom_lan.core.transport import IcomTransport
 
 if TYPE_CHECKING:
     # Internal implementation module for IcomRadio — the TID251 ban targets

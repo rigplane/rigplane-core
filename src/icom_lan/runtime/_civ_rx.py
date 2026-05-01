@@ -7,8 +7,8 @@ import logging
 import time
 from typing import TYPE_CHECKING, Any
 
-from icom_lan.civ import CivEvent, CivEventType, iter_civ_frames, request_key_from_frame
-from icom_lan.commander import IcomCommander, Priority
+from icom_lan.core.civ import CivEvent, CivEventType, iter_civ_frames, request_key_from_frame
+from icom_lan.commands.commander import IcomCommander, Priority
 from icom_lan.commands import (
     CONTROLLER_ADDR,
     parse_bool_response,
@@ -30,9 +30,9 @@ from icom_lan.commands import (
     parse_scope_speed_response,
     parse_scope_vbw_response,
 )
-from icom_lan.exceptions import ConnectionError, TimeoutError
+from icom_lan.core.exceptions import ConnectionError, TimeoutError
 from icom_lan.scope import ScopeFrame
-from icom_lan.types import CivFrame
+from icom_lan.core.types import CivFrame
 
 if TYPE_CHECKING:
     from ._runtime_protocols import CivRuntimeHost

@@ -38,7 +38,7 @@ from typing import TYPE_CHECKING, Any, Callable
 
 import math
 
-from icom_lan._optional_deps import _require_opuslib, _require_sounddevice
+from icom_lan.core._optional_deps import _require_opuslib, _require_sounddevice
 
 from ._bridge_metrics import BridgeMetrics
 from ._bridge_state import BridgeState, BridgeStateChange

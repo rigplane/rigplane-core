@@ -62,10 +62,10 @@ from icom_lan.commands import scope_set_span as _scope_set_span_cmd
 from icom_lan.commands import scope_set_speed as _scope_set_speed_cmd
 from icom_lan.commands import scope_set_vbw as _scope_set_vbw_cmd
 from icom_lan.commands import scope_single_dual as _scope_single_dual_cmd
-from icom_lan.exceptions import CommandError, TimeoutError
-from icom_lan.radio_state import ScopeControlsState
+from icom_lan.core.exceptions import CommandError, TimeoutError
+from icom_lan.core.radio_state import ScopeControlsState
 from icom_lan.scope import ScopeFrame
-from icom_lan.types import ScopeCompletionPolicy, ScopeFixedEdge
+from icom_lan.core.types import ScopeCompletionPolicy, ScopeFixedEdge
 
 logger = logging.getLogger(__name__)
 

@@ -30,7 +30,7 @@ from dataclasses import dataclass
 from types import SimpleNamespace
 from typing import Any
 
-from icom_lan.types import ScopeCompletionPolicy
+from icom_lan.core.types import ScopeCompletionPolicy
 
 logger = logging.getLogger(__name__)
 

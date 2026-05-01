@@ -27,17 +27,17 @@ if TYPE_CHECKING:
 from . import radio_initial_state as _initial_state
 from . import radio_reconnect as _reconnect
 from . import radio_state_snapshot as _state_snapshot
-from icom_lan._audio_recovery import AudioRecoveryRuntime, AudioRecoveryState
-from icom_lan._audio_runtime_mixin import AudioRuntimeMixin
-from icom_lan._audio_transcoder import PcmOpusTranscoder
-from icom_lan._bounded_queue import BoundedQueue
-from icom_lan._civ_rx import CivRuntime
-from icom_lan._dual_rx_runtime import DualRxRuntimeMixin
-from icom_lan._scope_runtime import ScopeRuntimeMixin
+from icom_lan.runtime._audio_recovery import AudioRecoveryRuntime, AudioRecoveryState
+from icom_lan.runtime._audio_runtime_mixin import AudioRuntimeMixin
+from icom_lan.audio._transcoder import PcmOpusTranscoder
+from icom_lan.core._bounded_queue import BoundedQueue
+from icom_lan.runtime._civ_rx import CivRuntime
+from icom_lan.runtime._dual_rx_runtime import DualRxRuntimeMixin
+from icom_lan.runtime._scope_runtime import ScopeRuntimeMixin
 
 # Import split modules
-from icom_lan._connection_state import RadioConnectionState
-from icom_lan._control_phase import (
+from icom_lan.runtime._connection_state import RadioConnectionState
+from icom_lan.runtime._control_phase import (
     CONNINFO_SIZE,  # noqa: F401 (re-export for tests)
     OPENCLOSE_SIZE,  # noqa: F401 (re-export for tests)
     STATUS_SIZE,  # noqa: F401 (re-export for tests)
@@ -45,8 +45,8 @@ from icom_lan._control_phase import (
     ControlPhaseRuntime,
 )
 from icom_lan.audio import AudioPacket, AudioStream
-from icom_lan.civ import CivEvent, CivRequestTracker
-from icom_lan.commander import IcomCommander, Priority
+from icom_lan.core.civ import CivEvent, CivRequestTracker
+from icom_lan.commands.commander import IcomCommander, Priority
 from icom_lan.commands import (
     _SUB_REPEATER_TONE,
     _SUB_REPEATER_TSQL,
@@ -263,14 +263,14 @@ from icom_lan.commands import set_repeater_tsql as _set_repeater_tsql_cmd
 from icom_lan.commands import set_tone_freq as _set_tone_freq_cmd
 from icom_lan.commands import set_tsql_freq as _set_tsql_freq_cmd
 from icom_lan.commands import set_vfo as _select_vfo_cmd
-from icom_lan.exceptions import CommandError, TimeoutError
-from icom_lan.meter_cal import interpolate_swr
+from icom_lan.core.exceptions import CommandError, TimeoutError
+from icom_lan.runtime.meter_cal import interpolate_swr
 from icom_lan.profiles import RadioProfile, resolve_radio_profile
-from icom_lan.radio_state import RadioState
-from icom_lan._state_cache import StateCache
+from icom_lan.core.radio_state import RadioState
+from icom_lan.core._state_cache import StateCache
 from icom_lan.scope import ScopeAssembler, ScopeFrame
-from icom_lan.transport import IcomTransport
-from icom_lan.types import (
+from icom_lan.core.transport import IcomTransport
+from icom_lan.core.types import (
     AgcMode,
     AudioCodec,
     AudioPeakFilter,

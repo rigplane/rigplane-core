@@ -18,11 +18,11 @@ if TYPE_CHECKING:
 else:
     _MixinBase = object
 
-from icom_lan._audio_transcoder import PcmOpusTranscoder, create_pcm_opus_transcoder
+from icom_lan.audio._transcoder import PcmOpusTranscoder, create_pcm_opus_transcoder
 from icom_lan.audio import AudioStats, AudioStream
-from icom_lan.exceptions import ConnectionError
-from icom_lan.transport import IcomTransport
-from icom_lan.types import AudioCodec
+from icom_lan.core.exceptions import ConnectionError
+from icom_lan.core.transport import IcomTransport
+from icom_lan.core.types import AudioCodec
 
 logger = logging.getLogger(__name__)
 

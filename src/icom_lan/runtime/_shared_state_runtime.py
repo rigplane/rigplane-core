@@ -20,7 +20,7 @@ import logging
 from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING, Final
 
-from icom_lan._state_cache import CacheField, StateCache
+from icom_lan.core._state_cache import CacheField, StateCache
 
 if TYPE_CHECKING:
     from icom_lan.radio_protocol import Radio

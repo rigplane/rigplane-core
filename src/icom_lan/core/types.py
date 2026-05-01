@@ -3,7 +3,7 @@
 from dataclasses import dataclass
 from enum import IntEnum, StrEnum
 
-from icom_lan.env_config import get_audio_sample_rate
+from icom_lan.core.env_config import get_audio_sample_rate
 
 __all__ = [
     "PacketType",

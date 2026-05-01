@@ -18,7 +18,7 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING, cast
 
-from icom_lan.types import Mode
+from icom_lan.core.types import Mode
 
 if TYPE_CHECKING:
     # Internal implementation module for IcomRadio — the TID251 ban targets
