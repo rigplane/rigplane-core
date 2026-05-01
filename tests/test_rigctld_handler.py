@@ -3295,3 +3295,104 @@ class TestPerVfoFunc:
         )
         assert resp.error == HamlibError.EVFO
         single_rx_radio.set_nb.assert_not_awaited()
+
+
+# ---------------------------------------------------------------------------
+# Issue #1354 — single-RX active_slot="B" must not route to receiver=1
+# ---------------------------------------------------------------------------
+#
+# Regression introduced by #1344 (per-VFO routing). When the active slot on
+# a single-receiver radio is "B", ``_active_vfo_name()`` returns "VFOB" —
+# which is correct for the get_vfo question. But the per-VFO routing then
+# treated VFOB as ``receiver=1``, i.e. the SUB receiver of a *dual-RX*
+# rig, which does not exist on a single-RX backend. Slot selection on
+# single-RX is via ``set_vfo_slot`` and lives on the same ``receiver=0``.
+
+
+class TestSingleRxActiveSlotBRouting:
+    """Bare ``F``/``M``/``T`` on single-RX with active_slot="B" routes to
+    receiver=0 (issue #1354). Without a VFO arg the handler may legitimately
+    resolve target to VFOB via the active-slot mirror, but the I/O kwarg
+    must still target the single available receiver (receiver=0)."""
+
+    @pytest.mark.asyncio
+    async def test_set_freq_no_vfo_arg_routes_to_receiver_0(
+        self, single_rx_handler: RigctldHandler, single_rx_radio: AsyncMock
+    ) -> None:
+        state = RadioState()
+        state.main.active_slot = "B"
+        single_rx_radio.radio_state = state
+
+        resp = await single_rx_handler.execute(
+            _vfo_set_cmd("set_freq", None, "14074000")
+        )
+
+        assert resp.ok
+        single_rx_radio.set_freq.assert_awaited_once_with(14_074_000, receiver=0)
+
+    @pytest.mark.asyncio
+    async def test_set_mode_no_vfo_arg_routes_to_receiver_0(
+        self, single_rx_handler: RigctldHandler, single_rx_radio: AsyncMock
+    ) -> None:
+        state = RadioState()
+        state.main.active_slot = "B"
+        single_rx_radio.radio_state = state
+
+        resp = await single_rx_handler.execute(
+            _vfo_set_cmd("set_mode", None, "USB", "2400")
+        )
+
+        assert resp.ok
+        # MAIN path: ``set_mode`` called WITHOUT a receiver kwarg (legacy
+        # default == receiver=0). Critically, NOT ``receiver=1``.
+        single_rx_radio.set_mode.assert_awaited_once_with("USB", filter_width=2)
+
+    @pytest.mark.asyncio
+    async def test_set_ptt_no_vfo_arg_keys_radio(
+        self, single_rx_handler: RigctldHandler, single_rx_radio: AsyncMock
+    ) -> None:
+        # PTT is global on the Icom CI-V — no receiver kwarg is involved.
+        # Regression-guard: bare ``T 1`` under active_slot="B" on single-RX
+        # must succeed (not EVFO) and reach the radio.
+        state = RadioState()
+        state.main.active_slot = "B"
+        single_rx_radio.radio_state = state
+
+        resp = await single_rx_handler.execute(_vfo_set_cmd("set_ptt", None, "1"))
+
+        assert resp.ok
+        single_rx_radio.set_ptt.assert_awaited_once_with(True)
+
+    @pytest.mark.asyncio
+    async def test_get_freq_no_vfo_arg_reads_main_path(
+        self, single_rx_handler: RigctldHandler, single_rx_radio: AsyncMock
+    ) -> None:
+        # The single-RX MAIN slot mirror is wfview's contract — main.freq
+        # always reflects the *currently selected* slot (A or B) on a
+        # single-RX backend (see SerialMockRadio). So the legacy MAIN path
+        # is correct even when active_slot="B" — what we must NOT do is
+        # branch into the SUB-state read intended for dual-RX VFOB.
+        state = RadioState()
+        state.main.active_slot = "B"
+        state.main.freq = 14_074_000
+        # state.sub.freq stays 0 to detect mis-routing through SUB.
+        single_rx_radio.radio_state = state
+
+        resp = await single_rx_handler.execute(_vfo_get_cmd("get_freq", None))
+
+        assert resp.ok
+        assert resp.values == ["14074000"]
+
+    @pytest.mark.asyncio
+    async def test_dual_rx_vfob_still_routes_to_receiver_1(
+        self, dual_rx_handler: RigctldHandler, dual_rx_radio: AsyncMock
+    ) -> None:
+        # Dual-RX path is unchanged: explicit ``F VFOB <freq>`` still
+        # uses receiver=1. This guards against the helper accidentally
+        # collapsing dual-RX routing to receiver=0.
+        resp = await dual_rx_handler.execute(
+            _vfo_set_cmd("set_freq", "VFOB", "7080000")
+        )
+
+        assert resp.ok
+        dual_rx_radio.set_freq.assert_awaited_once_with(7_080_000, receiver=1)

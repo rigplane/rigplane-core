@@ -458,7 +458,9 @@ class RigctldHandler:
 
         # Per-VFO routing for VFOB on dual-RX: read SUB receiver state directly.
         # Skip pending/cache (those track MAIN only — see _PendingRigState).
-        if target == "VFOB":
+        # Gate on _receiver_index_for so single-RX active_slot="B" falls through
+        # to the MAIN path (slot selection is via set_vfo_slot, not receiver=).
+        if self._receiver_index_for(target) == 1:
             state = self._radio_state()
             if state is not None:
                 return RigctldResponse(values=[str(state.sub.freq)])
@@ -491,11 +493,11 @@ class RigctldHandler:
         except ValueError:
             return _err(HamlibError.EVFO)
 
-        receiver = 1 if target == "VFOB" else 0
+        receiver = self._receiver_index_for(target)
         await self._radio.set_freq(freq, receiver=receiver)
         # Pending/cache track MAIN only — only update on the MAIN path so
         # subsequent ``f VFOA`` reads coalesce against the just-written value.
-        if target == "VFOA":
+        if receiver == 0:
             self._pending.freq = freq
             self._cache.update_freq(freq)
         return _ok()
@@ -512,7 +514,9 @@ class RigctldHandler:
 
         # Per-VFO routing for VFOB on dual-RX: read SUB receiver state directly.
         # Skip pending/cache (those track MAIN only — see _PendingRigState).
-        if target == "VFOB":
+        # Gate on _receiver_index_for so single-RX active_slot="B" falls through
+        # to the MAIN path (slot selection is via set_vfo_slot, not receiver=).
+        if self._receiver_index_for(target) == 1:
             state = self._radio_state()
             if state is not None:
                 sub = state.sub
@@ -599,7 +603,9 @@ class RigctldHandler:
 
         # Per-VFO routing for VFOB on dual-RX: dispatch to SUB receiver and
         # skip the MAIN-only pending/cache + read-back sync (those track MAIN).
-        if target == "VFOB":
+        # Gate on _receiver_index_for so single-RX active_slot="B" falls through
+        # to the MAIN path (slot selection is via set_vfo_slot, not receiver=).
+        if self._receiver_index_for(target) == 1:
             await self._radio.set_mode(
                 base_mode_str, filter_width=filter_width, receiver=1
             )
@@ -734,6 +740,25 @@ class RigctldHandler:
             return "VFOB" if state.active == "SUB" else "VFOA"
         return "VFOB" if state.main.active_slot == "B" else "VFOA"
 
+    def _receiver_index_for(self, target: Literal["VFOA", "VFOB"]) -> int:
+        """Map a resolved VFO target to a backend receiver index.
+
+        Dual-RX profiles (``receiver_count >= 2``) honour the per-VFO
+        routing introduced in #1344 — ``VFOB`` -> ``receiver=1``.
+
+        Single-RX profiles only have ``receiver=0``; per-VFO state is
+        selected via ``set_vfo_slot("A"/"B")`` on the *same* receiver
+        (issue #1354). ``_active_vfo_name`` may legitimately return
+        ``VFOB`` on single-RX when ``state.main.active_slot == "B"`` —
+        the slot is already selected, so the caller must still route
+        the I/O to ``receiver=0`` rather than to a non-existent
+        ``receiver=1``.
+        """
+        info = self._profile_vfo_info()
+        if info is not None and info[0] >= 2:
+            return 1 if target == "VFOB" else 0
+        return 0
+
     def _resolve_target_vfo(self, vfo_arg: str | None) -> Literal["VFOA", "VFOB"]:
         """Map a Hamlib VFO arg to the canonical VFO name for routing.
 
@@ -825,7 +850,9 @@ class RigctldHandler:
             target = self._resolve_target_vfo(cmd.vfo_arg)
         except ValueError:
             return _err(HamlibError.EVFO)
-        receiver = 1 if target == "VFOB" else 0
+        # Single-RX profiles only have receiver=0; per-VFO state is selected
+        # via set_vfo_slot, not receiver= (issue #1354).
+        receiver = self._receiver_index_for(target)
 
         if self._routing is not None:
             return await self._routing.get_level(level, vfo=cmd.vfo_arg)
@@ -843,7 +870,7 @@ class RigctldHandler:
         # directly from RadioState (don't update _cache — it tracks MAIN
         # only, mirroring the freq routing in #1344).
         if level == "STRENGTH":
-            if target == "VFOB":
+            if receiver == 1:
                 state = self._radio_state()
                 if state is not None:
                     raw = state.sub.s_meter
@@ -906,8 +933,8 @@ class RigctldHandler:
         if level in _GET_LEVEL_FLOAT:
             method = getattr(self._radio, _GET_LEVEL_FLOAT[level])
             # NB / NR are per-receiver on dual-RX Icoms — pass receiver=
-            # when targeting VFOB. Other levels are radio-global.
-            if level in ("NB", "NR") and target == "VFOB":
+            # when targeting SUB. Other levels are radio-global.
+            if level in ("NB", "NR") and receiver == 1:
                 raw = await method(receiver=receiver)
             else:
                 raw = await method()
@@ -945,7 +972,9 @@ class RigctldHandler:
             target = self._resolve_target_vfo(cmd.vfo_arg)
         except ValueError:
             return _err(HamlibError.EVFO)
-        receiver = 1 if target == "VFOB" else 0
+        # Single-RX profiles only have receiver=0; per-VFO state is selected
+        # via set_vfo_slot, not receiver= (issue #1354).
+        receiver = self._receiver_index_for(target)
 
         if self._routing is not None:
             return await self._routing.set_level(level, value, vfo=cmd.vfo_arg)
@@ -958,7 +987,7 @@ class RigctldHandler:
             raw = max(0, min(255, round(value * 255)))
             method = getattr(self._radio, _SET_LEVEL_FLOAT[level])
             # NB / NR are per-receiver on dual-RX Icoms.
-            if level in ("NB", "NR") and target == "VFOB":
+            if level in ("NB", "NR") and receiver == 1:
                 await method(raw, receiver=receiver)
             else:
                 await method(raw)
@@ -1006,7 +1035,9 @@ class RigctldHandler:
             target = self._resolve_target_vfo(cmd.vfo_arg)
         except ValueError:
             return _err(HamlibError.EVFO)
-        receiver = 1 if target == "VFOB" else 0
+        # Single-RX profiles only have receiver=0; per-VFO state is selected
+        # via set_vfo_slot, not receiver= (issue #1354).
+        receiver = self._receiver_index_for(target)
 
         if self._routing is not None:
             return await self._routing.get_func(func, vfo=cmd.vfo_arg)
@@ -1016,7 +1047,7 @@ class RigctldHandler:
         method = getattr(self._radio, _FUNC_GET[func])
         # NB / NR are per-receiver on dual-RX Icoms.  Other funcs are
         # radio-global — VFO arg is validated above but ignored.
-        if func in ("NB", "NR") and target == "VFOB":
+        if func in ("NB", "NR") and receiver == 1:
             result = await method(receiver=receiver)
         else:
             result = await method()
@@ -1037,7 +1068,9 @@ class RigctldHandler:
             target = self._resolve_target_vfo(cmd.vfo_arg)
         except ValueError:
             return _err(HamlibError.EVFO)
-        receiver = 1 if target == "VFOB" else 0
+        # Single-RX profiles only have receiver=0; per-VFO state is selected
+        # via set_vfo_slot, not receiver= (issue #1354).
+        receiver = self._receiver_index_for(target)
 
         if self._routing is not None:
             return await self._routing.set_func(func, on, vfo=cmd.vfo_arg)
@@ -1047,7 +1080,7 @@ class RigctldHandler:
         if func == "APF":
             # APF takes an int mode: 0=off, 1=soft
             await self._radio.set_audio_peak_filter(1 if on else 0)
-        elif func in ("NB", "NR") and target == "VFOB":
+        elif func in ("NB", "NR") and receiver == 1:
             # Per-receiver NB / NR on dual-RX.
             await getattr(self._radio, _FUNC_SET[func])(on, receiver=receiver)
         else:
