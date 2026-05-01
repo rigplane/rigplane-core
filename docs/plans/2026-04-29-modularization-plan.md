@@ -254,6 +254,46 @@ mechanism, not a temporary state). The bottom two are transitional;
 when the followup PR replaces direct instantiation with
 `backends.factory`, the ignores are removed.
 
+### 3.3.1 Post-execution evolution
+
+The `ignore_imports` set in `.importlinter` evolved during the migration as
+follow-ups landed. The current state on `main` (verifiable via
+`cat .importlinter`):
+
+**Removed (resolved by follow-up #1298)**:
+- `icom_lan.web.web_startup -> icom_lan.backends.yaesu_cat.poller` (was transitional)
+- `icom_lan.web.web_startup -> icom_lan.backends.yaesu_cat.radio` (was transitional)
+
+`web/web_startup.py` no longer reaches into `backends.yaesu_cat` directly;
+it uses `isinstance(server._radio, StatePollable)` and calls
+`server._radio.create_state_poller(...)`. The `RigctldRoutable` /
+`StatePollable` Capability Protocols added in epic #1322 abstract the
+backend-specific dispatch.
+
+**Added (from epic #1322 Capability Protocol generalisation)**:
+- `icom_lan.core.radio_protocol -> icom_lan.runtime._poller_types` — for
+  `StatePollable.create_state_poller`'s `CommandQueue` parameter type
+  (PR #1327, sub-issue #1323).
+- `icom_lan.core.radio_protocol -> icom_lan.rigctld.routing` — for
+  `RigctldRoutable.rigctld_routing` return type `RigctldRouting`
+  (PR #1328, sub-issue #1324).
+- `icom_lan.backends.yaesu_cat.radio -> icom_lan.rigctld.routing` — for
+  `YaesuCatRadio.rigctld_routing`'s lazy `YaesuRouting` import inside the
+  method body (PR #1328).
+
+All three new `ignore_imports` are TYPE_CHECKING-only edges (the
+`backends.yaesu_cat.radio → rigctld.routing` is a runtime lazy import
+inside the method, equivalent in scope). They follow the same exemption
+pattern as the original `radio_protocol → audio_bus / scope` pair.
+
+The live state of these exemptions is documented in:
+- `src/icom_lan/core/LAYER.md` (radio_protocol's TYPE_CHECKING references)
+- `src/icom_lan/rigctld/LAYER.md` (RigctldRouting / RigctldRoutable contract)
+- `src/icom_lan/backends/LAYER.md` (YaesuCatRadio's lazy routing import)
+
+Net `ignore_imports` count post-execution: **5** (was 4 originally planned;
+2 removed, 3 added).
+
 ---
 
 ## 4. Migration steps
@@ -813,11 +853,17 @@ cycles.
 
 | File | Line | Edge | Bound by step |
 |---|---:|---|---|
-| `src/icom_lan/profiles.py` | 266 | `profiles → rig_loader` | **Step 5** (moves both files into `profiles/`) |
-| `src/icom_lan/web/server.py` | 920 | `web.server → web.web_startup` | binding rule — `web/` is untouched in this effort, but this rule applies to any future PR (within this modularization or follow-ups) that touches `web/server.py` |
-| `src/icom_lan/web/server.py` | 989 | `web.server → web.web_startup` | same as above |
-| `src/icom_lan/web/server.py` | 1172 | `web.server → web.web_routing` | same as above |
-| `src/icom_lan/web/web_routing.py` | 50 | `web.web_routing → web.server` | same as above |
+| `src/icom_lan/profiles/__init__.py` | 266 | `profiles → rig_loader` | Preserved through Step 5 (Pattern A move) |
+| `src/icom_lan/web/server.py` | 951 | `web.server → web.web_startup` | binding rule for any future PR touching `web/server.py` |
+| `src/icom_lan/web/server.py` | 1020 | `web.server → web.web_startup` | same as above |
+| `src/icom_lan/web/server.py` | 1203 | `web.server → web.web_routing` | same as above |
+| `src/icom_lan/web/web_routing.py` | 26 | `web.web_routing → web.server` | same as above |
+
+> **Line numbers as of commit `08cd3105`.** File contents grew in subsequent
+> PRs; the cycle-breaker imports themselves are stable (still inside the same
+> function bodies), but exact line numbers drift as files are edited around
+> them. Re-grep `from \.\(rig_loader\|web_startup\|web_routing\|server\)` if you
+> need current values.
 
 (The TYPE_CHECKING-only edges between the same modules — `L26`, `L25`,
 etc. in `cycles-classified.md` — do not need preservation; they
