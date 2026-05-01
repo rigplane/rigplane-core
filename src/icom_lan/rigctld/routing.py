@@ -47,12 +47,28 @@ def _err(code: HamlibError) -> RigctldResponse:
 
 @runtime_checkable
 class RigctldRouting(Protocol):
-    """Vendor-specific rigctl level/func routing."""
+    """Vendor-specific rigctl level/func routing.
 
-    async def get_level(self, level: str) -> RigctldResponse: ...
-    async def set_level(self, level: str, value: float) -> RigctldResponse: ...
-    async def get_func(self, func: str) -> RigctldResponse: ...
-    async def set_func(self, func: str, on: bool) -> RigctldResponse: ...
+    The optional ``vfo`` keyword on ``get_level``/``set_level``/
+    ``get_func``/``set_func`` carries the Hamlib VFO label
+    (``"VFOA"``/``"VFOB"``/``"currVFO"`` or ``None``) for vendors
+    that need per-receiver routing under ``vfo_opt`` (see issue #1345).
+    Defaults to ``None`` for backwards compatibility — implementers
+    that do not care about VFO routing may safely ignore it.
+    """
+
+    async def get_level(
+        self, level: str, *, vfo: str | None = None
+    ) -> RigctldResponse: ...
+    async def set_level(
+        self, level: str, value: float, *, vfo: str | None = None
+    ) -> RigctldResponse: ...
+    async def get_func(
+        self, func: str, *, vfo: str | None = None
+    ) -> RigctldResponse: ...
+    async def set_func(
+        self, func: str, on: bool, *, vfo: str | None = None
+    ) -> RigctldResponse: ...
     def dump_state(self) -> list[str]: ...
     def get_info(self) -> str: ...
 
@@ -105,7 +121,10 @@ class YaesuRouting:
 
     # -- levels --------------------------------------------------------------
 
-    async def get_level(self, level: str) -> RigctldResponse:
+    async def get_level(self, level: str, *, vfo: str | None = None) -> RigctldResponse:
+        # ``vfo`` accepted for protocol conformance (issue #1345). Yaesu CAT
+        # is single-receiver; routing per VFO is not meaningful, ignore.
+        del vfo
         radio = self._radio
 
         if level in ("STRENGTH", "RAWSTR"):
@@ -176,7 +195,11 @@ class YaesuRouting:
 
         return _err(HamlibError.EINVAL)
 
-    async def set_level(self, level: str, value: float) -> RigctldResponse:
+    async def set_level(
+        self, level: str, value: float, *, vfo: str | None = None
+    ) -> RigctldResponse:
+        # ``vfo`` accepted for protocol conformance (issue #1345); ignored.
+        del vfo
         radio = self._radio
 
         if level == "RFPOWER":
@@ -236,7 +259,9 @@ class YaesuRouting:
 
     # -- funcs ---------------------------------------------------------------
 
-    async def get_func(self, func: str) -> RigctldResponse:
+    async def get_func(self, func: str, *, vfo: str | None = None) -> RigctldResponse:
+        # ``vfo`` accepted for protocol conformance (issue #1345); ignored.
+        del vfo
         radio = self._radio
 
         if func == "VOX":
@@ -259,7 +284,11 @@ class YaesuRouting:
             return RigctldResponse(values=[str(int(await radio.get_agc() > 0))])
         return _err(HamlibError.EINVAL)
 
-    async def set_func(self, func: str, on: bool) -> RigctldResponse:
+    async def set_func(
+        self, func: str, on: bool, *, vfo: str | None = None
+    ) -> RigctldResponse:
+        # ``vfo`` accepted for protocol conformance (issue #1345); ignored.
+        del vfo
         radio = self._radio
 
         if func == "VOX":

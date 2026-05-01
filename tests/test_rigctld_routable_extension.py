@@ -20,18 +20,27 @@ from icom_lan.rigctld.routing import RigctldRouting
 
 
 class _StubRouting:
-    """Structural stub that satisfies :class:`RigctldRouting`."""
+    """Structural stub that satisfies :class:`RigctldRouting`.
 
-    async def get_level(self, level: str) -> RigctldResponse:
+    Accepts the optional ``vfo`` kwarg added in #1345 for per-VFO routing
+    under ``vfo_opt``. The stub ignores ``vfo`` — it only exists to verify
+    structural conformance to the extended Protocol surface.
+    """
+
+    async def get_level(self, level: str, *, vfo: str | None = None) -> RigctldResponse:
         return RigctldResponse(values=["0"])
 
-    async def set_level(self, level: str, value: float) -> RigctldResponse:
+    async def set_level(
+        self, level: str, value: float, *, vfo: str | None = None
+    ) -> RigctldResponse:
         return RigctldResponse(values=["RPRT 0"])
 
-    async def get_func(self, func: str) -> RigctldResponse:
+    async def get_func(self, func: str, *, vfo: str | None = None) -> RigctldResponse:
         return RigctldResponse(values=["0"])
 
-    async def set_func(self, func: str, on: bool) -> RigctldResponse:
+    async def set_func(
+        self, func: str, on: bool, *, vfo: str | None = None
+    ) -> RigctldResponse:
         return RigctldResponse(values=["RPRT 0"])
 
     def dump_state(self) -> list[str]:
