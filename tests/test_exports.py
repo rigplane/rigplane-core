@@ -44,6 +44,7 @@ def test_public_api_surface() -> None:
         "ReceiverBankCapable",
         "RecoverableConnection",
         "RepeaterControlCapable",
+        "RigctldRoutable",
         "RitXitCapable",
         "ScopeCapable",
         "SplitCapable",

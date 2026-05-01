@@ -99,7 +99,7 @@ available directly via `from icom_lan import …`.
 - `DualReceiverCapable`, `ReceiverBankCapable`, `TransceiverBankCapable`,
   `VfoSlotCapable`
 - `StateCacheCapable`, `StatePollable`, `StatePoller`,
-  `RecoverableConnection`
+  `RigctldRoutable`, `RecoverableConnection`
 - `DspControlCapable`, `AntennaControlCapable`, `CwControlCapable`,
   `VoiceControlCapable`
 - `SystemControlCapable`, `RepeaterControlCapable`, `AdvancedControlCapable`

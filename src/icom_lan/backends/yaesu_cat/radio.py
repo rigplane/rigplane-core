@@ -1934,3 +1934,41 @@ class YaesuCatRadio:
             callback=callback,
             command_queue=command_queue,
         )
+
+    def rigctld_routing(
+        self,
+        cache: Any,
+        max_power_w: float = 100.0,
+    ) -> Any:
+        """Construct a Yaesu-specific rigctld routing strategy.
+
+        Returns a :class:`~icom_lan.rigctld.routing.YaesuRouting` that
+        translates rigctl ``get_level``/``set_level``/``get_func``/
+        ``set_func``/``dump_state``/``get_info`` calls into the Yaesu CAT
+        protocol semantics expected by the FTX-1 (and compatible)
+        transceivers.
+
+        The lazy import keeps :class:`YaesuCatRadio` from depending on
+        the rigctld layer at module-load time (``rigctld`` sits above
+        ``backends`` in the import-linter layered architecture, so a
+        top-level import here would invert the layering). The argument
+        and return types are annotated as :class:`~typing.Any` for the
+        same reason; precise typing for the public surface lives on
+        :class:`~icom_lan.core.radio_protocol.RigctldRoutable`.
+
+        Args:
+            cache: Shared
+                :class:`~icom_lan.rigctld.handler._FallbackRigState`
+                cache used by the rigctld handler to remember
+                last-known meter/level values when the radio cannot
+                answer.
+            max_power_w: Rated maximum TX power in watts; used to scale
+                normalised RFPOWER readings (defaults to 100 W).
+
+        Returns:
+            A :class:`~icom_lan.rigctld.routing.YaesuRouting` instance
+            bound to this radio.
+        """
+        from ...rigctld.routing import YaesuRouting  # noqa: TID251
+
+        return YaesuRouting(self, cache, max_power_w)

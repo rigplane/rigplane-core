@@ -56,6 +56,7 @@ from .radio_protocol import (  # noqa: F401
     ReceiverBankCapable,
     RecoverableConnection,
     RepeaterControlCapable,
+    RigctldRoutable,
     RitXitCapable,
     ScopeCapable,
     SplitCapable,
@@ -90,7 +91,10 @@ _LAZY_MAP: dict[str, tuple[str, str]] = {
     # --- Connection / transport ---
     "ConnectionState": ("icom_lan.core.transport", "ConnectionState"),
     "IcomTransport": ("icom_lan.core.transport", "IcomTransport"),
-    "RadioConnectionState": ("icom_lan.runtime._connection_state", "RadioConnectionState"),
+    "RadioConnectionState": (
+        "icom_lan.runtime._connection_state",
+        "RadioConnectionState",
+    ),
     # --- Auth helpers ---
     "AuthResponse": ("icom_lan.core.auth", "AuthResponse"),
     "StatusResponse": ("icom_lan.core.auth", "StatusResponse"),
@@ -276,6 +280,7 @@ __all__ = [
     "ReceiverBankCapable",
     "RecoverableConnection",
     "RepeaterControlCapable",
+    "RigctldRoutable",
     "RitXitCapable",
     "ScopeCapable",
     "SplitCapable",

@@ -54,6 +54,7 @@ TIER1_SYMBOLS: tuple[str, ...] = (
     "StateCacheCapable",
     "StatePollable",
     "StatePoller",
+    "RigctldRoutable",
     "RecoverableConnection",
     "DspControlCapable",
     "AntennaControlCapable",
@@ -133,9 +134,7 @@ def test_tier1_imports_do_not_pull_tier3() -> None:
     names; the test asserts the output is empty.
     """
     import_lines = ",\n    ".join(TIER1_SYMBOLS)
-    forbidden_check = " or ".join(
-        f"m.startswith({p!r})" for p in TIER3_PREFIXES
-    )
+    forbidden_check = " or ".join(f"m.startswith({p!r})" for p in TIER3_PREFIXES)
     code = (
         "import sys\n"
         "from icom_lan import (\n"

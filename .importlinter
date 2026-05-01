@@ -17,6 +17,8 @@ ignore_imports =
     icom_lan.core.radio_protocol -> icom_lan.audio_bus
     icom_lan.core.radio_protocol -> icom_lan.scope
     icom_lan.core.radio_protocol -> icom_lan.runtime._poller_types
+    icom_lan.core.radio_protocol -> icom_lan.rigctld.routing
+    icom_lan.backends.yaesu_cat.radio -> icom_lan.rigctld.routing
 
 [importlinter:contract:independence-top]
 name = top siblings must not depend on each other
@@ -24,6 +26,9 @@ type = independence
 modules =
     icom_lan.web
     icom_lan.rigctld
+ignore_imports =
+    icom_lan.core.radio_protocol -> icom_lan.rigctld.routing
+    icom_lan.backends.yaesu_cat.radio -> icom_lan.rigctld.routing
 
 [importlinter:contract:independence-mid]
 name = mid-tier siblings must not depend on each other

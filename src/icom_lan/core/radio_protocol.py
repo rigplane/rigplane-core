@@ -57,6 +57,15 @@ from .types import AudioCodec, BreakInMode, Mode
 if TYPE_CHECKING:
     from ._state_cache import StateCache
     from icom_lan.audio_bus import AudioBus
+
+    # ``_FallbackRigState`` actually lives in ``rigctld.handler`` and is
+    # re-exported through ``rigctld.routing``'s TYPE_CHECKING namespace; a
+    # single import edge keeps the import-linter exemption count to one
+    # per contract.
+    from icom_lan.rigctld.routing import (  # type: ignore[attr-defined]  # noqa: TID251
+        RigctldRouting,
+        _FallbackRigState,
+    )
     from icom_lan.runtime._poller_types import CommandQueue
     from icom_lan.scope import ScopeFrame
     from .types import BandStackRegister, MemoryChannel, ScopeFixedEdge
@@ -84,6 +93,7 @@ __all__ = [
     "LevelsCapable",
     "MetersCapable",
     "PowerControlCapable",
+    "RigctldRoutable",
     "SplitCapable",
     "StateNotifyCapable",
     "StatePollable",
@@ -544,6 +554,48 @@ class StatePollable(Protocol):
 
         Returns:
             A :class:`StatePoller` ready for ``await poller.start()``.
+        """
+        ...
+
+
+@runtime_checkable
+class RigctldRoutable(Protocol):
+    """Radio that provides a custom rigctld command-routing strategy.
+
+    The rigctld TCP server's handler ships with a built-in default
+    routing that works for Icom CI-V radios. Backends with significantly
+    different command semantics (Yaesu CAT today; future Kenwood TS-590
+    or other vendors) expose their own
+    :class:`~icom_lan.rigctld.routing.RigctldRouting` implementation via
+    this method.
+
+    Consumers (rigctld handler) check this with ``isinstance`` and pick
+    up the vendor-specific routing without importing concrete backend
+    classes::
+
+        if isinstance(radio, RigctldRoutable):
+            routing = radio.rigctld_routing(cache, max_power_w)
+        else:
+            routing = None  # fall through to the built-in Icom path
+    """
+
+    def rigctld_routing(
+        self,
+        cache: "_FallbackRigState",
+        max_power_w: float = 100.0,
+    ) -> "RigctldRouting":
+        """Construct a :class:`RigctldRouting` bound to this radio.
+
+        Args:
+            cache: Shared :class:`_FallbackRigState` cache used by the
+                rigctld handler to remember last-known meter/level
+                values when the radio cannot answer.
+            max_power_w: Rated maximum TX power in watts; used to scale
+                normalised RFPOWER readings (defaults to 100 W).
+
+        Returns:
+            A :class:`RigctldRouting` ready to serve get/set level,
+            get/set func, ``dump_state``, and ``get_info`` calls.
         """
         ...
 
