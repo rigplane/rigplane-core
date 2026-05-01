@@ -7,207 +7,194 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.0.0] — 2026-05-01
+
+**Public API stability commitment.** The Tier 1 surface documented in
+`docs/api/public-api-surface.md` — the `Radio` protocol, capability
+protocols (`AudioCapable`, `ScopeCapable`, `MetersCapable`,
+`LevelsCapable`, `StatePollable`, `RigctldRoutable`, `UsbAudioCapable`,
+…), `create_radio` / `BackendConfig`, and the `frontend/src/lib/local-extensions/`
+host API — is now under SemVer. No public API breaking changes vs
+v0.19.0; every prior import path continues to work via `sys.modules`-aliased
+re-export shims.
+
+### Added
+
+- **Tier 1 Capability Protocols extended (epic #1322).** Four new
+  protocols on `icom_lan.radio_protocol` enable `isinstance`-based feature
+  detection — backends are now selected by capability, not by backend-id
+  string:
+  - `StatePollable` + `StatePoller` (#1322, #1323) — replaces backend-id
+    branching in `web_startup`.
+  - `RigctldRoutable` (#1322, #1324) — pluggable rigctld routing.
+  - `UsbAudioCapable` (#1322, #1326) — uniform USB audio device contract.
+  - `PowerControlCapable.native_power_unit` (#1322, #1325) — drops the last
+    backend-id discriminator from `web/handlers/control.py`.
+- **rigctld per-VFO routing (#1342–#1346).** Parser now accepts the
+  Hamlib `chk_vfo=1` leading VFO argument and routes `f`/`m`/`t`/`s`/`S`/`j`/`l`/`L`/`u`/`U`
+  per-VFO. `RigctldRouting` Protocol gains an optional `vfo` kwarg;
+  `AuditRecord` gains a `vfo` column. `chk_vfo='1'` is re-enabled for
+  dual-RX (Variant A complete).
+- **`YaesuCatRadio.set_rf_power` (#1331)** — Yaesu CAT backend now
+  conforms to `PowerControlCapable`; `web/handlers/control.set_power`
+  switched from string-cap to `isinstance(PowerControlCapable)`.
+
 ### Changed
 
 - **Internal: source code reorganized into explicit layered structure
   (epic #1283).** `src/icom_lan/` is now organised into 11 layered
-  packages (`core/`, `commands/`, `profiles/`, `audio/`, `scope/`,
-  `dsp/`, `runtime/`, `backends/`, `web/`, `rigctld/`, `cli/`) with
-  per-layer charters in `LAYER.md` files and the full layout/matrix in
+  packages — `core/`, `commands/`, `profiles/`, `audio/`, `scope/`,
+  `dsp/`, `runtime/`, `backends/`, `web/`, `rigctld/`, `cli/` — with
+  per-layer `LAYER.md` charters and the full layer matrix in
   `docs/plans/2026-04-29-modularization-plan.md`. **No public API
-  changes** — every existing import path continues to work via
-  `sys.modules`-aliased re-export shims, and the Tier 1 / Tier 2 lazy
-  surface in `icom_lan/__init__.py` is unchanged.
-- **Tier 1 Capability Protocols extended (epic #1322).** Three new
-  protocols added to `icom_lan.radio_protocol` / re-exported from
-  `icom_lan` for `isinstance`-based feature detection:
-  `StatePollable` + `StatePoller` (replaces backend-id branching in
-  `web_startup`, see #1298 / #1323), `RigctldRoutable` (#1324),
-  `UsbAudioCapable` (#1326). `PowerControlCapable` gains
-  `native_power_unit` to drop the last `web/handlers/control.py`
-  backend-id discriminator (#1325).
-- **`import-linter` introduced for layer-boundary enforcement.**
-  Config at repo-root `.importlinter` declares one layered contract
-  + three sibling-independence contracts (`web`⊥`rigctld`,
-  `profiles`⊥`audio`, `commands`⊥`scope`⊥`dsp`); run locally via
-  `uv run lint-imports`. CI gates every PR.
-- **`_require_*()` helpers for optional deps (#1274).** New
-  `src/icom_lan/_optional_deps.py` provides `_require_numpy`,
-  `_require_sounddevice`, `_require_opuslib`, `_require_pillow` (and
-  others where applicable). Ad-hoc `try/except ImportError` blocks across
-  the codebase now share uniform error messages. Closes
-  `05-recommendations.md` PR 3 (Form A enforcement).
-- **`_fetch_initial_state` extracted to `radio_initial_state.py` (#1260).**
-  ~75 LOC moved out of `radio.py` god-object; `IcomRadio._fetch_initial_state`
-  is now a thin delegator. Public API unchanged. Final Tier 3 wave 3 sub-issue
-  of #1063.
-- **`_reconnect_loop` / `_watchdog_loop` extracted to `radio_reconnect.py`
-  (#1259).** ~130 LOC moved out of `radio.py` god-object; `IcomRadio` methods
-  remain as thin delegators. Public API unchanged. Tier 3 wave 3 of #1063.
-- **`snapshot_state` / `restore_state` extracted to `radio_state_snapshot.py`
-  (#1258).** ~150 LOC moved out of `radio.py` god-object; `IcomRadio` methods
-  are thin delegators. Public API unchanged. Tier 3 wave 3 of #1063.
-- **`_civ_rx._update_radio_state_from_frame` decomposed into table-driven
-  dispatch (#1257).** The 400-line if/elif over CI-V commands now dispatches
-  via `_HANDLERS: dict[int, Callable]`; each branch is a small private
-  handler. Behavior preserved — verified by 72 golden-test fixtures (#1266).
-  Also collapsed dead code at lines 1082-1093 (second `elif cmd == 0x12`
-  block, shadowed by first occurrence). Tier 3 wave 2 of #1063.
-- **Method/path routing extracted from `web/server.py` into `web_routing.py`
-  (#1262).** The route dispatch — previously inline in `WebServer` — now lives
-  in a dedicated module; `WebServer` delegates. Public API unchanged. Tier 3
-  wave 4 of #1063.
-- **`ControlButtonDemo` is now lazy-loaded (#1232).** Moved out of the main
-  bundle into a code-split chunk; the demo component loads on demand when the
-  debug route is mounted.
-- **Type safety: removed `as any` casts in `command-bus.ts` (#1233).** The 14
-  casts were replaced with precise types; any remaining cases (if any) are
-  documented with `eslint-disable-next-line` and a rationale.
+  changes:** every existing `from icom_lan.<old_path> import …` keeps
+  working via `sys.modules`-aliased re-export shims, and the Tier 1 / Tier 2
+  lazy surface in `icom_lan/__init__.py` is unchanged. New code SHOULD use
+  canonical layer paths (`icom_lan.runtime.radio`, `icom_lan.backends.discovery`,
+  …); see `ARCHITECTURE.md`.
+- **`import-linter` enforces layer boundaries.** Repo-root `.importlinter`
+  declares one layered contract plus three sibling-independence contracts
+  (`web`⊥`rigctld`, `profiles`⊥`audio`, `commands`⊥`scope`⊥`dsp`); run
+  locally via `uv run lint-imports`. CI gates every PR.
 - **`AudioStats.jitter_ms` renamed to `reorder_depth_ema_ms` (#1231).** The
   field measures reorder-depth EMA, not RFC 3550 jitter. Internal field; no
   back-compat alias.
-- **`BoundedQueue` helper extracted to `_bounded_queue.py` (#1230).** Four
-  asyncio call sites (transport RX, radio scope/civ event queues, web fanout)
-  now share a single bounded-queue implementation. No behavior change; drop
-  policies preserved per callsite.
-- **`transport._handle_packet` decomposed into dispatch table (#1239).**
-  Six packet types (single/multi retransmit, ping req/reply, scope fast-path,
-  generic data) now dispatch via a dict; behavior preserved.
-- **`web/handlers/control.py:_enqueue_read_only` decomposed into dispatch
-  table (#1263).** Same pattern as #1239 (transport): the if/elif ladder over
-  command names becomes a `dict[str, Callable]` lookup, with each branch
-  extracted to a small private async method (`_ro_<command>`). Behavior
-  preserved. Tier 3 wave 4 of #1063.
-- **Batch 1 of panel→adapter migration (#1244).** `CwPanel`, `DspPanel`,
-  `MeterPanel`, `TxPanel` no longer import from `$lib/stores/capabilities`
-  directly; capability flags now flow via panel-props from the wiring layer.
-  Tier 2 batch 1 of #1063.
-- **Batch 2 of panel→adapter migration (#1245).** New `capabilities-adapter.ts`
-  centralizes capability-derived state. `RfFrontEnd`, `AudioRoutingControl`,
-  and the `filter-controls.ts` / `meter-utils.ts` helpers no longer import
-  `$lib/stores/capabilities` directly. Tier 2 batch 2 of #1063.
-- **Batch 3 of panel→adapter migration (#1246).** `AudioSpectrumPanel`,
-  `MemoryPanel`, `AmberTelemetryStrip`, `VfoControlPanel` no longer import
-  from `$lib/stores/*` directly; live radio state now flows via per-panel
-  adapters in `panel-adapters.ts`. Tier 2 batch 3 of #1063.
-- **Batch 4 of panel→adapter migration (#1247).** New `lcd-chrome-adapter.ts`
-  and `qsy-history-adapter.ts` plus an `amberScopeProps()` adapter migrate
-  `LcdContrastControl`, `LcdDisplayModeControl`, `AmberMemoryStrip`, and
-  `AmberScope` off direct `$lib/stores/*` imports. Tier 2 batch 4 of #1063.
-- **Batch 5 (finisher) of panel→adapter migration (#1248).** `AmberCockpit`
-  and `RxAudioPanel` migrated off direct `$lib/stores/*` imports. After this
-  batch, no non-test panel under `components-v2/panels/` imports from
-  `$lib/stores/*`. Tier 2 batch 5/5 of #1063 — unblocks #1241 (ESLint
-  lockdown).
-- **ESLint lockdown: panels banned from `$lib/stores/*` (#1241).** With all
-  18 panels migrated to adapters across batches 1-5, the boundary is now
-  enforced at lint time. Tests remain exempt for mocking purposes. Closes
-  Tier 2 of #1063.
-- **`WebServer.start()` / `stop()` orchestration extracted to `web_startup.py`
-  (#1261).** The 200+ LOC of startup/shutdown logic now lives in a dedicated
-  module; `WebServer.start()` / `stop()` are thin delegators. Public API
-  unchanged. Tier 3 wave 4 of #1063.
+- **`_require_*()` helpers for optional deps (#1274).** New
+  `src/icom_lan/_optional_deps.py` provides `_require_numpy`,
+  `_require_sounddevice`, `_require_opuslib`, `_require_pillow`. Ad-hoc
+  `try/except ImportError` blocks across the codebase now share uniform
+  error messages.
 
 ### Fixed
 
-- **rigctld: `chk_vfo` now returns `"0"` unconditionally for all radio profiles
-  (#1319).** The dual-RX `"1"` advertising introduced in v0.17.0 (#722, #723)
-  caused WSJT-X / fldigi / JS8Call to fail with "Hamlib error: Feature not
-  implemented" on IC-7610, IC-9700, and FTX-1 because Hamlib's `vfo_opt` mode
-  prefixes every command with a VFO token that the parser does not yet accept.
-  This is a rollback to pre-v0.17.0 behaviour; full `vfo_opt` support is
-  tracked as a follow-up to #1319 for v0.20.x.
+#### rigctld
 
-### Tests
+- **`chk_vfo` now returns `"0"` unconditionally for all radio profiles
+  (#1319).** The dual-RX `"1"` advertising introduced in v0.17.0 caused
+  WSJT-X / fldigi / JS8Call to fail with "Hamlib error: Feature not
+  implemented" on IC-7610, IC-9700, and FTX-1 because Hamlib's `vfo_opt`
+  mode prefixes every command with a VFO token. After the rollback,
+  Variant A (#1342–#1346) re-enabled `chk_vfo='1'` for dual-RX with
+  full parser + per-VFO routing — WSJT-X / fldigi / JS8Call golden replay
+  now passes.
 
-- **Public-API surface regression test (#1273).** New
-  `tests/test_public_api_surface.py` asserts every tier-1 symbol from
-  `docs/api/public-api-surface.md` imports cleanly AND that tier-1 imports
-  do not transitively pull tier-3 modules into `sys.modules`. Closes the
-  missing acceptance criterion of `05-recommendations.md` PR 1.
-- **Golden-test fixtures for `_civ_rx._update_radio_state_from_frame` (#1256).**
-  Added 72 synthetic frame fixtures (`tests/fixtures/civ_rx_frames.json`) and
-  a parametrized dispatch test (`tests/test_civ_rx_dispatch_golden.py`).
-  Combined with the existing `test_civ_rx_coverage.py`, branch coverage of
-  the dispatch ladder (lines 750-1150 of `_civ_rx.py`) reaches 95.4% raw /
-  98.3% excluding the unreachable cmd 0x12 duplicate block at lines 1082-1093.
-  Tier 3 wave 1 of #1063 — fences the upcoming table-driven dispatch refactor
-  (#1257).
+#### Web server
 
-### Docs
+- **Blocking file I/O offloaded via `asyncio.to_thread` (#1332).**
+  `server._handle_band_plan_config` and `eibi.load_cache` no longer block
+  the event loop on disk reads.
+- **`runtime_capabilities` fallback recognises `UsbAudioCapable` (#1356).**
+  USB-audio detection now matches the Capability Protocol path.
 
-- **`local-extensions/` host API documented as Tier 1 Pro-facing contract
-  (#1277).** `docs/api/public-api-surface.md` now lists the exported types
-  and functions from `frontend/src/lib/local-extensions/{host-api,manifest}.ts`
-  with breakage policy. Closes the contract-visibility gap identified
-  during the strategic-context analysis.
-- **New `docs/architecture/open-core-policy.md` (#1276).** Codifies hard
-  constraints on icom-lan as the open-core half of a planned commercial
-  product: no telemetry, headless sacred, no hollowing out, Radio protocol
-  + `local-extensions/` as the Pro boundary, frontend WebKitGTK-floor
-  compatibility. CLAUDE.md gains a one-line cross-link.
-- **`AudioBackend` Protocol docstring promoted to stability marker (#1275).**
-  The Protocol (and `PortAudioBackend` / `FakeAudioBackend` impls) now
-  document their tier and breakage policy in their own docstrings, matching
-  `docs/api/public-api-surface.md` (Tier 2 — Best-effort, lazily exposed via
-  PEP 562 `__getattr__`). Closes `05-recommendations.md` PR 4.
-- **`docs/api/public-api-surface.md` Tier 1 list corrected (#1273).** Removed
-  `Meter` from the tier-1 public-types bullet — there is no `Meter` symbol
-  exported from `icom_lan` (only `MeterType`, which is tier-3). Discovered
-  while writing the tier-1 surface regression test.
-- **Panel → adapter migration plan (#1240).** Doc at
-  `docs/plans/2026-04-29-panel-adapter-migration.md` inventories the 18
-  remaining panels with direct `$lib/stores/*` imports, groups them into
-  clusters with proposed adapters, and breaks migration into ≤4-panel
-  batches. Concrete batch sub-issues will open from this plan. (Relocated
-  from `frontend/docs/` — that path is gitignored as "Frontend internal
-  docs"; this doc sits beside the target-frontend-architecture ADR
-  instead.)
+#### Sync API
 
-### Deprecated
+- **`get_alc_meter` exposed on `sync.IcomRadio` (#1228, refs #1226).**
+  Was missing after the v0.19 `get_alc` removal.
 
-- **Web UI v1 layout shell (#874, #1220).** The legacy `AppShell` /
-  `DesktopLayout` / `MobileLayout` tree under `frontend/src/components/layout/`
-  is deprecated; v2 (`RadioLayoutV2` + `frontend/src/components-v2/`) is the
-  only supported path going forward. v2 has been the default since v0.15.1.
-  The `?ui=v1` URL fallback is on track for removal alongside the v1 code
-  drop (tracked under epic #874 / sub-issues #1216, #1217). Documentation
-  has been updated to v2-only language in this release; user-facing docs no
-  longer describe the v1 shell.
+#### CI
+
+- **Subdirectory tests now actually run (#1352).** The `tests/test_*.py`
+  glob silently skipped suites in nested directories; the glob now
+  recurses.
 
 ### Removed
 
-- **`meter_cal._TABLES` and `meter_cal.calibrate()` (#1209).** The hardcoded
-  IC-7610 calibration tables and the `calibrate()` lookup wrapper were
-  unreachable since #1173 shipped per-rig TOML calibration in v0.19. All
-  consumers route through `interpolate_swr` against
-  `RadioProfile.meter_calibrations` (loaded from TOML
-  `[[meters.<name>.calibration]]`). No public-API impact —
-  `MeterType` and `interpolate_swr` remain exported.
-- **`IcomRadio.set_split_mode` deprecation alias (#1205).** The async method
-  on `icom_lan.radio.IcomRadio`, the sync wrapper on `icom_lan.sync.IcomRadio`,
-  and the `profiles_runtime.apply_profile` fallback branch are gone. Use
-  `set_split(...)` (`SplitCapable` protocol) — the canonical name introduced
-  in #1108. Deprecation was announced in v0.19; this is the scheduled v0.20
-  cleanup.
-- **`IcomRadio.get_alc` / `sync.IcomRadio.get_alc` (#1207)** — deprecated in
-  v0.19 (#1129), removed per schedule. Use `get_alc_meter`
-  (`MetersCapable`).
-- **`icom_lan.commands.levels` backward-compat aliases (#1208).** The
-  `get_power` / `set_power` / `get_sql` / `set_sql` aliases (deprecated in
-  v0.19, #1167 + #1182) are gone — both the PEP 562 `__getattr__` shim and
-  the sentinel `__all__` entries in `icom_lan.commands.levels` and
-  `icom_lan.commands` have been deleted. Use the canonical builders
-  directly: `get_rf_power`, `set_rf_power`, `get_squelch`, `set_squelch`.
+These deprecation closures were announced in v0.19 and dropped on schedule.
+
+- **`IcomRadio.set_split_mode` (#1205).** Use `set_split` (`SplitCapable`).
+- **`IcomRadio.get_alc` / `sync.IcomRadio.get_alc` (#1207).** Use
+  `get_alc_meter` (`MetersCapable`).
+- **`icom_lan.commands.levels` aliases (#1208):** `get_power`, `set_power`,
+  `get_sql`, `set_sql`. Use canonical `get_rf_power` / `set_rf_power` /
+  `get_squelch` / `set_squelch`.
 - **`IcomRadio.set_vfo("A"/"B"/"MAIN"/"SUB")` legacy overload + `select_vfo`
-  alias (#1206).** Deprecated in v0.19 (#1187, #1172) and replaced by the
-  receiver-tier protocols `ReceiverBankCapable.select_receiver` (MAIN/SUB)
-  and `VfoSlotCapable.set_vfo_slot` (A/B). The matching `SyncRadio.set_vfo`
-  / `SyncRadio.select_vfo` wrappers are removed in lockstep. Internal
-  callers (`apply_profile`, `restore_state`) now route through the
-  capability protocols or the silent `_set_vfo_wire` helper. Legacy fallback
-  paths in `web/radio_poller.py` and `rigctld/handler.py` remain for
-  third-party backends that only expose the legacy overload.
+  alias (#1206).** Use `ReceiverBankCapable.select_receiver` (MAIN/SUB) and
+  `VfoSlotCapable.set_vfo_slot` (A/B). Legacy fallback paths in
+  `web/radio_poller.py` and `rigctld/handler.py` remain for third-party
+  backends.
+- **`meter_cal._TABLES` and `meter_cal.calibrate()` (#1209).** Unreachable
+  since #1173 shipped per-rig TOML calibration. `MeterType` and
+  `interpolate_swr` remain exported.
+- **Web UI v1 layout shell (#1216, #1217, #1218, #1220, #1227).** Legacy
+  `AppShell` / `DesktopLayout` / `MobileLayout` removed. v2
+  (`RadioLayoutV2` + `frontend/src/components-v2/`) has been the default
+  since v0.15.1 and is now the only supported path. The `?ui=v1` URL
+  fallback and the `ui-version` store are gone.
+
+### Internal
+
+#### Frontend
+
+- **Panel → adapter migration complete (#1240, #1244–#1248, #1241).** All
+  18 panels under `components-v2/panels/` no longer import directly from
+  `$lib/stores/*`; capability flags and live radio state flow via panel
+  adapters in `wiring/`. ESLint `no-restricted-imports` enforces the
+  boundary (tests exempt for mocking).
+- **`ControlButtonDemo` is now lazy-loaded (#1232).** Code-split out of
+  the main bundle.
+- **Type safety: removed `as any` casts in `command-bus.ts` (#1233).**
+- **ESLint tightened — v2 layering only (#1219).** Banned `$lib/transport/*`
+  and `$lib/audio/audio-manager` from panels and layouts.
+
+#### `radio.py` god-object decomposition (#1063 wave 3)
+
+- **`_fetch_initial_state` extracted to `radio_initial_state.py` (#1260).**
+- **`_reconnect_loop` / `_watchdog_loop` extracted to `radio_reconnect.py`
+  (#1259).**
+- **`snapshot_state` / `restore_state` extracted to
+  `radio_state_snapshot.py` (#1258).**
+
+#### Dispatch-table refactors
+
+- **`_civ_rx._update_radio_state_from_frame` → table-driven dispatch
+  (#1257).** The 400-line if/elif over CI-V commands now dispatches via
+  `_HANDLERS: dict[int, Callable]`. Behaviour preserved — verified by 72
+  golden-test fixtures (#1266). Dead code at lines 1082-1093 (duplicate
+  cmd 0x12 block) collapsed.
+- **`transport._handle_packet` → dispatch table (#1239).** Six packet
+  types now dispatch via a dict.
+- **`web/handlers/control._enqueue_read_only` → dispatch table (#1263).**
+
+#### Web server decomposition (#1063 wave 4)
+
+- **`WebServer.start()` / `stop()` orchestration extracted to
+  `web_startup.py` (#1261).** ~200 LOC moved out; `WebServer.start()` /
+  `stop()` are thin delegators.
+- **Method/path routing extracted to `web_routing.py` (#1262).**
+
+#### Shared helpers
+
+- **`BoundedQueue` extracted to `_bounded_queue.py` (#1230).** Four
+  asyncio call sites (transport RX, radio scope/civ event queues, web
+  fanout) now share one bounded-queue implementation.
+
+#### Tests
+
+- **Public-API surface regression test (#1273).** New
+  `tests/test_public_api_surface.py` asserts every Tier 1 symbol from
+  `docs/api/public-api-surface.md` imports cleanly AND that Tier 1 imports
+  do not transitively pull Tier 3 modules into `sys.modules`.
+- **Golden-test fixtures for `_civ_rx` (#1256).** 72 synthetic frame
+  fixtures + parametrized dispatch test fence the upcoming refactor.
+- **rigctld parser VFO-prefix tests + CI consistency guard +
+  `dump_state` snapshots (#1342).** Wire-level integration test
+  + golden replay fixtures (Variant A foundation).
+- **Lazy-resolution contract test (#1284).** Locks down PEP 562
+  `__getattr__` Tier 2 surface.
+
+#### Documentation
+
+- **`docs/architecture/open-core-policy.md` (#1276)** — codifies hard
+  constraints: no telemetry, headless mode is sacred, no hollowing out,
+  Radio protocol + `local-extensions/` as the Pro boundary, frontend
+  WebKitGTK-floor compatibility.
+- **`local-extensions/` documented as Tier 1 Pro-facing contract
+  (#1277).** `docs/api/public-api-surface.md` lists exported types and
+  functions from `frontend/src/lib/local-extensions/{host-api,manifest}.ts`
+  with breakage policy.
+- **`AudioBackend` Protocol Tier 2 stability marker (#1275).**
+- **`ARCHITECTURE.md` refreshed for layered structure** + per-layer
+  `LAYER.md` charters (11 files) + CLAUDE.md "Layer boundaries" section.
 
 ## [0.19.0] — 2026-04-29
 
@@ -1047,7 +1034,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Transport layer, authentication, CI-V commands, meters, PTT, keep-alive.
 - Clean-room Icom LAN UDP protocol implementation.
 
-[Unreleased]: https://github.com/morozsm/icom-lan/compare/v0.19.0...HEAD
+[Unreleased]: https://github.com/morozsm/icom-lan/compare/v1.0.0...HEAD
+[1.0.0]: https://github.com/morozsm/icom-lan/compare/v0.19.0...v1.0.0
 [0.19.0]: https://github.com/morozsm/icom-lan/compare/v0.18.0...v0.19.0
 [0.18.0]: https://github.com/morozsm/icom-lan/compare/v0.17.0...v0.18.0
 [0.17.0]: https://github.com/morozsm/icom-lan/compare/v0.16.4...v0.17.0
