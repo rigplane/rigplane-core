@@ -2,9 +2,9 @@
 
 Presets for known Icom radios with CI-V addresses and capabilities.
 
-::: icom_lan.radios.RadioModel
+::: icom_lan.runtime.radios.RadioModel
 
-::: icom_lan.radios.get_civ_addr
+::: icom_lan.runtime.radios.get_civ_addr
 
 ## Supported Models
 
