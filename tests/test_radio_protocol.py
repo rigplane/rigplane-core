@@ -85,6 +85,7 @@ class _PowerStub:
     async def set_powerstat(self, on: bool) -> None: ...
     async def get_rf_power(self) -> int: return 128
     async def set_rf_power(self, level: int) -> None: ...
+    native_power_unit = "raw_255"
     # MetersCapable surface
     async def get_s_meter(self, receiver: int = 0) -> int: return 0
     async def get_swr(self) -> float: return 1.0

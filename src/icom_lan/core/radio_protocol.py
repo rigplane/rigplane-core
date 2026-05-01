@@ -47,6 +47,7 @@ from typing import (
     AsyncIterator,
     Awaitable,
     Callable,
+    Literal,
     Protocol,
     runtime_checkable,
 )
@@ -451,6 +452,23 @@ class PowerControlCapable(Protocol):
 
         Args:
             level: Power level in 0-255 scale.
+        """
+        ...
+
+    @property
+    def native_power_unit(self) -> Literal["raw_255", "watts"]:
+        """The wire-level unit used by this radio's power commands.
+
+        Icom CI-V radios use a raw 0-255 scale (``"raw_255"``); Yaesu
+        CAT ``PC`` commands use watts (0-999, three-digit padded).
+        Higher-level layers (web UI, rigctld) inspect this to decide
+        whether to translate from a user-friendly unit before queueing
+        a :class:`SetPower` command.
+
+        Implementations typically declare this as a class attribute
+        (``native_power_unit: Literal["raw_255", "watts"] = "raw_255"``)
+        — a class attribute structurally satisfies the property
+        requirement under :func:`runtime_checkable`.
         """
         ...
 

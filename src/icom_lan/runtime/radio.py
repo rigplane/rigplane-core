@@ -17,7 +17,7 @@ import logging
 import os
 import socket as _socket
 import time
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING, Literal, cast
 
 if TYPE_CHECKING:
     from typing import Any, Awaitable, Callable
@@ -363,6 +363,12 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
     # Watchdog timing (used by _watchdog_loop)
     WATCHDOG_CHECK_INTERVAL = 0.5
     _WATCHDOG_HEALTH_LOG_INTERVAL = 30.0
+
+    # PowerControlCapable: Icom CI-V uses a raw 0-255 scale on the wire
+    # (cmd 0x14 0x0A). Inspected by upper layers to decide unit
+    # translation before queueing SetPower. See
+    # :class:`icom_lan.core.radio_protocol.PowerControlCapable`.
+    native_power_unit: Literal["raw_255", "watts"] = "raw_255"
 
     # All public commands supported by Icom CI-V backends.
     _KNOWN_COMMANDS: frozenset[str] = frozenset(

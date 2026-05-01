@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Callable
+from typing import TYPE_CHECKING, Any, Callable, Literal
 
 from ...audio import AudioPacket
 from ...command_spec import CatCommandSpec
@@ -72,6 +72,13 @@ class YaesuCatRadio:
             await radio.set_ptt(True)
             s = await radio.get_s_meter()
     """
+
+    # Yaesu CAT ``PC`` command takes a watt value (0-999, three-digit
+    # padded), not a raw 0-255 scale. Inspected by upper layers to
+    # avoid translating user-facing watt values into the Icom raw
+    # scale before queueing SetPower. See
+    # :class:`icom_lan.core.radio_protocol.PowerControlCapable`.
+    native_power_unit: Literal["raw_255", "watts"] = "watts"
 
     def __init__(
         self,
