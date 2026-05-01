@@ -108,6 +108,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   module; `WebServer.start()` / `stop()` are thin delegators. Public API
   unchanged. Tier 3 wave 4 of #1063.
 
+### Fixed
+
+- **rigctld: `chk_vfo` now returns `"0"` unconditionally for all radio profiles
+  (#1319).** The dual-RX `"1"` advertising introduced in v0.17.0 (#722, #723)
+  caused WSJT-X / fldigi / JS8Call to fail with "Hamlib error: Feature not
+  implemented" on IC-7610, IC-9700, and FTX-1 because Hamlib's `vfo_opt` mode
+  prefixes every command with a VFO token that the parser does not yet accept.
+  This is a rollback to pre-v0.17.0 behaviour; full `vfo_opt` support is
+  tracked as a follow-up to #1319 for v0.20.x.
+
 ### Tests
 
 - **Public-API surface regression test (#1273).** New
