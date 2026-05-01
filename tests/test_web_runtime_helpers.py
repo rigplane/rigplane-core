@@ -97,6 +97,25 @@ def test_runtime_capabilities_falls_back_to_protocols_when_caps_missing() -> Non
     assert caps == {"scope", "audio", "dual_rx"}
 
 
+def test_runtime_capabilities_fallback_recognises_usb_audio_only() -> None:
+    """Fallback path (no `capabilities` set) must recognise USB-audio backends.
+
+    Regression for #1356: Yaesu CAT radios that satisfy only ``UsbAudioCapable``
+    (and not in-band ``AudioCapable``) must still get the ``"audio"`` tag when
+    capabilities are derived purely from Protocol checks.
+    """
+    from icom_lan.radio_protocol import UsbAudioCapable
+
+    class _UsbOnlyRadio(UsbAudioCapable):  # type: ignore[misc]
+        has_usb_audio: bool = True
+
+    radio = _UsbOnlyRadio()
+    # Sanity: no `capabilities` attribute → fallback path is used.
+    assert not hasattr(radio, "capabilities")
+    caps = runtime_capabilities(radio)
+    assert caps == {"audio"}
+
+
 def test_runtime_capabilities_filters_incompatible_tags() -> None:
     radio = _FakeRadio(caps={"scope", "audio", "dual_rx", "tx"})
     caps = runtime_capabilities(radio)

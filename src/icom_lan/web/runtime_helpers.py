@@ -53,7 +53,7 @@ def runtime_capabilities(radio: "Radio | None") -> set[str]:
     result: set[str] = set()
     if isinstance(radio, ScopeCapable):
         result.add("scope")
-    if isinstance(radio, AudioCapable):
+    if isinstance(radio, AudioCapable | UsbAudioCapable):
         result.add("audio")
     if isinstance(radio, DualReceiverCapable):
         result.add("dual_rx")
