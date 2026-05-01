@@ -9,6 +9,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Internal: source code reorganized into explicit layered structure
+  (epic #1283).** `src/icom_lan/` is now organised into 11 layered
+  packages (`core/`, `commands/`, `profiles/`, `audio/`, `scope/`,
+  `dsp/`, `runtime/`, `backends/`, `web/`, `rigctld/`, `cli/`) with
+  per-layer charters in `LAYER.md` files and the full layout/matrix in
+  `docs/plans/2026-04-29-modularization-plan.md`. **No public API
+  changes** — every existing import path continues to work via
+  `sys.modules`-aliased re-export shims, and the Tier 1 / Tier 2 lazy
+  surface in `icom_lan/__init__.py` is unchanged.
+- **Tier 1 Capability Protocols extended (epic #1322).** Three new
+  protocols added to `icom_lan.radio_protocol` / re-exported from
+  `icom_lan` for `isinstance`-based feature detection:
+  `StatePollable` + `StatePoller` (replaces backend-id branching in
+  `web_startup`, see #1298 / #1323), `RigctldRoutable` (#1324),
+  `UsbAudioCapable` (#1326). `PowerControlCapable` gains
+  `native_power_unit` to drop the last `web/handlers/control.py`
+  backend-id discriminator (#1325).
+- **`import-linter` introduced for layer-boundary enforcement.**
+  Config at repo-root `.importlinter` declares one layered contract
+  + three sibling-independence contracts (`web`⊥`rigctld`,
+  `profiles`⊥`audio`, `commands`⊥`scope`⊥`dsp`); run locally via
+  `uv run lint-imports`. CI gates every PR.
 - **`_require_*()` helpers for optional deps (#1274).** New
   `src/icom_lan/_optional_deps.py` provides `_require_numpy`,
   `_require_sounddevice`, `_require_opuslib`, `_require_pillow` (and
