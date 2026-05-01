@@ -1196,18 +1196,18 @@ class RigctldHandler:
     async def _cmd_chk_vfo(self, cmd: RigctldCommand) -> RigctldResponse:
         """Hamlib chk_vfo handshake.
 
-        Returns ``"0"`` unconditionally. The dual-RX ``"1"`` advertising
-        introduced in #722 was rolled back in 0.19.1 (issue #1319) because
-        Hamlib then prefixes every command with a VFO token (e.g.
-        ``f VFOA``) which the parser does not yet accept and the handlers
-        do not yet route per-VFO. Result before rollback: dual-RX models
-        (IC-7610, IC-9700, FTX-1) returned ``RPRT -4`` for any get/set,
-        breaking WSJT-X / fldigi / JS8Call.
+        Returns ``"1"`` for dual-RX profiles (advertises ``vfo_opt``
+        support); ``"0"`` for single-RX (legacy behaviour).
 
-        Re-enabled to ``"1"`` once full ``vfo_opt`` support lands —
-        tracked as a follow-up to #1319.
+        Re-enabled in Variant A 5/5 (#1346) after the full ``vfo_opt``
+        stack landed: parser support (#1343), per-VFO routing for
+        freq/mode/PTT (#1344), per-VFO split/RIT/level/func (#1345).
+        Variant B's unconditional ``"0"`` (PR #1340) is now correctly
+        superseded.
         """
-        return RigctldResponse(values=["0"])
+        info = self._profile_vfo_info()
+        dual = info is not None and info[0] >= 2
+        return RigctldResponse(values=["1" if dual else "0"])
 
     async def _cmd_get_powerstat(self, cmd: RigctldCommand) -> RigctldResponse:
         on = await self._radio.get_powerstat()

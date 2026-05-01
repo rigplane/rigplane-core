@@ -2345,20 +2345,33 @@ def single_rx_handler(
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("handler_fixture", ["single_rx_handler", "dual_rx_handler"])
-async def test_chk_vfo_returns_0_unconditionally(
-    handler_fixture: str, request: pytest.FixtureRequest
+async def test_chk_vfo_returns_1_for_dual_rx(
+    dual_rx_handler: RigctldHandler,
 ) -> None:
-    """``chk_vfo`` returns ``"0"`` for every profile (issue #1319).
+    """``chk_vfo`` returns ``"1"`` for dual-RX profiles (issue #1346).
 
-    The dual-RX ``"1"`` advertising introduced in v0.17.0 (#722) was rolled
-    back in v0.19.1 because Hamlib's ``vfo_opt`` mode prefixes every command
-    with a VFO token that the rigctld parser/handlers do not yet support —
-    breaking WSJT-X / fldigi / JS8Call on IC-7610, IC-9700, and FTX-1. Will
-    be re-enabled to ``"1"`` once full ``vfo_opt`` support lands.
+    Re-enabled in Variant A 5/5 after the full ``vfo_opt`` stack landed:
+    parser support (#1343), per-VFO routing for freq/mode/PTT (#1344),
+    per-VFO split/RIT/level/func (#1345). Variant B's unconditional
+    ``"0"`` (PR #1340) is now correctly superseded for dual-RX models.
     """
-    handler: RigctldHandler = request.getfixturevalue(handler_fixture)
-    resp = await handler.execute(get_cmd("chk_vfo"))
+    resp = await dual_rx_handler.execute(get_cmd("chk_vfo"))
+    assert resp.ok
+    assert resp.values == ["1"]
+
+
+@pytest.mark.asyncio
+async def test_chk_vfo_returns_0_for_single_rx(
+    single_rx_handler: RigctldHandler,
+) -> None:
+    """``chk_vfo`` stays ``"0"`` on single-RX profiles (issue #1346).
+
+    Single-receiver radios (IC-7300, IC-705, …) do not need ``vfo_opt``
+    advertising — their A/B VFO scheme is handled by the bare-form
+    Hamlib path. Avoids needlessly forcing VFO tokenisation on clients
+    that were happy without it.
+    """
+    resp = await single_rx_handler.execute(get_cmd("chk_vfo"))
     assert resp.ok
     assert resp.values == ["0"]
 
