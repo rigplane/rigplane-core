@@ -25,6 +25,8 @@ export interface AudioConfig {
   sampleRate: number;
   channels: number;
   codecs: string[];
+  jitterFloorMs?: number;
+  jitterCeilingMs?: number;
 }
 
 export interface FilterSegmentConfig {

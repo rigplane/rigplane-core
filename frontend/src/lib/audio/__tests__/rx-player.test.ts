@@ -206,3 +206,45 @@ describe('RxPlayer audio routing (#753)', () => {
     p.stop();
   });
 });
+
+describe('RxPlayer jitter bounds (#1363)', () => {
+  it('uses default 50/300 ms bounds without setJitterBounds', () => {
+    const p = new RxPlayer();
+    p.start();
+    ctx.currentTime = 0;
+    p.feed(pcm16(480));
+    // Floor 50 ms → nextPlayTime resets to 0 + 0.05 = 0.05.
+    expect(ctx._lastSrc.start).toHaveBeenCalledTimes(1);
+    expect(ctx._lastSrc.start.mock.calls[0][0]).toBeCloseTo(0.05, 5);
+    p.stop();
+  });
+
+  it('setJitterBounds(100, 500) changes floor used by reset', () => {
+    const p = new RxPlayer();
+    p.start();
+    p.setJitterBounds(100, 500);
+    ctx.currentTime = 0;
+    p.feed(pcm16(480));
+    // Floor 100 ms → nextPlayTime resets to 0 + 0.10 = 0.10.
+    expect(ctx._lastSrc.start).toHaveBeenCalledTimes(1);
+    expect(ctx._lastSrc.start.mock.calls[0][0]).toBeCloseTo(0.10, 5);
+    p.stop();
+  });
+
+  it('reset trigger uses floor/2 (derived, not hardcoded)', () => {
+    const p = new RxPlayer();
+    p.start();
+    // First feed with defaults (50/300): nextPlayTime → ~0.06 after start+duration.
+    ctx.currentTime = 0;
+    p.feed(pcm16(480));
+    expect(ctx._lastSrc.start.mock.calls[0][0]).toBeCloseTo(0.05, 5);
+    // Switch to bounds where floor=200: floor/2 = 0.10. Current nextPlayTime
+    // (~0.06) is below floor/2, so a new feed must reset to 0 + 0.20 = 0.20.
+    p.setJitterBounds(200, 1000);
+    ctx.currentTime = 0;
+    p.feed(pcm16(480));
+    expect(ctx._lastSrc.start).toHaveBeenCalledTimes(1);
+    expect(ctx._lastSrc.start.mock.calls[0][0]).toBeCloseTo(0.20, 5);
+    p.stop();
+  });
+});
