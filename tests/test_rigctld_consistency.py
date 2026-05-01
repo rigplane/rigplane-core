@@ -24,15 +24,15 @@ test fails immediately — preventing another #1319.
 
 Lifecycle
 ---------
-- Today (`main`, post-Variant-B): ``chk_vfo`` returns ``"0"``
-  unconditionally → property is vacuously true. The test is xfailed
-  because the *parser* still cannot accept ``f VFOA`` (max_args=0).
-  This deliberate over-strict reading of the property locks A2 into
-  fixing the parser before re-enabling chk_vfo.
-- After A2 (#1343): parser accepts the prefix → test passes naturally.
-  A2's PR removes the xfail marker.
+- Pre-A2: ``chk_vfo`` returns ``"0"`` unconditionally → property is
+  vacuously true. The test was xfailed because the *parser* could not
+  yet accept ``f VFOA`` (``max_args=0``).
+- After A2 (#1343, this state): parser accepts the prefix → test
+  passes naturally; the xfail marker has been removed. ``chk_vfo``
+  still returns ``"0"`` per Variant B, so the guard is currently
+  vacuously satisfied.
 - After A5 (#1346): chk_vfo flips back to ``"1"`` for dual-RX → guard
-  is now load-bearing; future re-regressions fail this test.
+  becomes load-bearing; future re-regressions fail this test.
 
 References
 ----------
@@ -61,15 +61,6 @@ VFO_PREFIXABLE_SHORTS: frozenset[str] = frozenset(
 )
 
 
-@pytest.mark.xfail(
-    reason=(
-        "A2 (#1343) — parser must accept ``<short> VFOA`` for every "
-        "VFO-prefixable command. Today max_args=0/1/2 rejects the leading "
-        "VFO token. Re-becomes load-bearing once A5 (#1346) flips chk_vfo "
-        "back to '1'."
-    ),
-    strict=False,
-)
 @pytest.mark.parametrize("short", sorted(VFO_PREFIXABLE_SHORTS))
 def test_chk_vfo_implies_parser_accepts_vfo_arg(short: str) -> None:
     """``parse_line(b"<short> VFOA ...")`` must not raise ``ValueError``.
