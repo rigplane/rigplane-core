@@ -32,6 +32,11 @@ class AuditRecord:
         cmd: Short (single-char or ``\\name``) command string.
         long_cmd: Long-form command name (e.g. ``"get_freq"``).
         args: Tuple of string arguments supplied with the command.
+        vfo: Leading VFO token (``"VFOA"``, ``"VFOB"``, ``"currVFO"`` …)
+            captured by the parser when the client uses ``chk_vfo=1``
+            mode, else ``None``. Distinguishes ``F VFOB 14080000`` from
+            ``F VFOA 14080000`` from bare-form ``F 14080000`` in audit
+            logs (issue #1346).
         duration_ms: Wall-clock time from execute-start to response-sent, ms.
         rprt: Hamlib ``RPRT`` code (0 = success, negative = error).
         is_set: ``True`` if this was a write/set command.
@@ -46,6 +51,7 @@ class AuditRecord:
     duration_ms: float
     rprt: int
     is_set: bool
+    vfo: str | None = None
 
 
 class RigctldAuditFormatter(logging.Formatter):
@@ -69,6 +75,7 @@ class RigctldAuditFormatter(logging.Formatter):
                 "cmd": audit.cmd,
                 "long_cmd": audit.long_cmd,
                 "args": list(audit.args),
+                "vfo": audit.vfo,
                 "duration_ms": audit.duration_ms,
                 "rprt": audit.rprt,
                 "is_set": audit.is_set,

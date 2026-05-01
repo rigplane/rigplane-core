@@ -89,6 +89,16 @@ class TestAuditRecord:
         rec = _sample_record(args=("USB", "2400"), long_cmd="set_mode", cmd="M")
         assert rec.args == ("USB", "2400")
 
+    def test_vfo_defaults_to_none(self) -> None:
+        """``AuditRecord.vfo`` defaults to ``None`` (bare-form path)."""
+        rec = _sample_record()
+        assert rec.vfo is None
+
+    def test_vfo_captures_token(self) -> None:
+        """``vfo`` captures the leading VFO token under ``chk_vfo=1``."""
+        rec = _sample_record(vfo="VFOB")
+        assert rec.vfo == "VFOB"
+
 
 # ---------------------------------------------------------------------------
 # RigctldAuditFormatter
@@ -112,6 +122,7 @@ class TestRigctldAuditFormatter:
             "cmd",
             "long_cmd",
             "args",
+            "vfo",
             "duration_ms",
             "rprt",
             "is_set",
@@ -160,6 +171,20 @@ class TestRigctldAuditFormatter:
         fmt = RigctldAuditFormatter()
         line = fmt.format(_make_record(_sample_record()))
         assert "\n" not in line
+
+    def test_vfo_serialised_when_present(self) -> None:
+        """``vfo`` field is included in JSON output under ``chk_vfo=1``."""
+        rec = _sample_record(vfo="VFOB", cmd="F", long_cmd="set_freq")
+        fmt = RigctldAuditFormatter()
+        data = json.loads(fmt.format(_make_record(rec)))
+        assert data["vfo"] == "VFOB"
+
+    def test_vfo_serialised_as_null_when_absent(self) -> None:
+        """``vfo`` is JSON ``null`` for bare-form (non-VFO-prefixed) commands."""
+        rec = _sample_record()
+        fmt = RigctldAuditFormatter()
+        data = json.loads(fmt.format(_make_record(rec)))
+        assert data["vfo"] is None
 
 
 # ---------------------------------------------------------------------------

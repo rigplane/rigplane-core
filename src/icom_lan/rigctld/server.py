@@ -447,6 +447,7 @@ class RigctldServer:
                         cmd=cmd.short_cmd,
                         long_cmd=cmd.long_cmd,
                         args=cmd.args,
+                        vfo=cmd.vfo_arg,
                         duration_ms=duration_ms,
                         rprt=resp.error,
                         is_set=cmd.is_set,
