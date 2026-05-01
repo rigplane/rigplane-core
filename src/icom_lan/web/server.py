@@ -111,6 +111,37 @@ def _redact_token_in_path(path: str) -> str:
 # Mode/filter lists moved to RadioProfile (profiles.py)
 
 
+def _load_band_plan_config_sync(path: pathlib.Path) -> dict[str, Any]:
+    """Synchronous helper for :meth:`WebServer._handle_band_plan_config`.
+
+    Reads a TOML file from disk via :func:`tomllib.load`. Runs in a
+    worker thread so the event loop is not blocked.
+    """
+    import tomllib
+
+    with open(path, "rb") as f:
+        return tomllib.load(f)
+
+
+def _format_band_plan_config(new_region: str, existing: dict[str, Any]) -> str:
+    """Render the band-plan ``_config.toml`` body as a single string.
+
+    Pure function — no I/O — so it is cheap to run on the event loop.
+    Output is byte-identical to the previous inline ``f.write()``
+    sequence in :meth:`WebServer._handle_band_plan_config`.
+    """
+    lines = [
+        "# Band plan configuration\n\n",
+        "[settings]\n",
+        f'region = "{new_region}"\n',
+    ]
+    if "layers" in existing:
+        lines.append("\n[layers]\n")
+        for k, v in existing["layers"].items():
+            lines.append(f"{k} = {'true' if v else 'false'}\n")
+    return "".join(lines)
+
+
 def _serialize_filter_config(profile: "RadioProfile") -> dict[str, dict[str, object]]:
     config = profile.filter_config or {}
     result: dict[str, dict[str, object]] = {}
@@ -1537,25 +1568,19 @@ class WebServer:
                 return
 
             # Write config and reload
-            import tomllib
             from pathlib import Path as _Path
 
             project_bp = _Path(__file__).resolve().parents[3] / "band-plans"
             config_path = project_bp / "_config.toml"
             existing: dict[str, Any] = {}
             if config_path.is_file():
-                with open(config_path, "rb") as f:
-                    existing = tomllib.load(f)
+                existing = await asyncio.to_thread(
+                    _load_band_plan_config_sync, config_path
+                )
 
             # Write back (simple format — tomli-w not required)
-            with open(config_path, "w") as f:
-                f.write("# Band plan configuration\n\n")
-                f.write("[settings]\n")
-                f.write(f'region = "{new_region}"\n')
-                if "layers" in existing:
-                    f.write("\n[layers]\n")
-                    for k, v in existing["layers"].items():
-                        f.write(f"{k} = {'true' if v else 'false'}\n")
+            content = _format_band_plan_config(new_region, existing)
+            await asyncio.to_thread(config_path.write_text, content)
 
             # Reload band plans
             self._band_plan.load(project_bp)
