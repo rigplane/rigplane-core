@@ -625,12 +625,17 @@ async def test_enqueue_command_variants(
 
 
 async def test_enqueue_set_rf_power_yaesu_tags_watts_unit() -> None:
-    """Yaesu CAT backend → SetPower(unit='watts'); Icom default → 'raw_255'."""
+    """Yaesu CAT backend → SetPower(unit='watts'); Icom default → 'raw_255'.
+
+    The handler now reads ``radio.native_power_unit`` (the Capability
+    Protocol property added in epic #1322) instead of the legacy
+    ``backend_id == "yaesu_cat"`` discriminator.
+    """
     queue = _QueueRecorder()
     server = SimpleNamespace(command_queue=queue)
 
     radio = _capable_radio()
-    radio.backend_id = "yaesu_cat"
+    radio.native_power_unit = "watts"
     handler = _control_handler(radio=radio, server=server)
     await handler._enqueue_command("set_rf_power", {"level": 50})
     assert isinstance(queue.items[-1], SetPower)
@@ -640,7 +645,7 @@ async def test_enqueue_set_rf_power_yaesu_tags_watts_unit() -> None:
     queue2 = _QueueRecorder()
     server2 = SimpleNamespace(command_queue=queue2)
     radio2 = _capable_radio()
-    radio2.backend_id = "icom_lan"
+    radio2.native_power_unit = "raw_255"
     handler2 = _control_handler(radio=radio2, server=server2)
     await handler2._enqueue_command("set_rf_power", {"level": 200})
     assert isinstance(queue2.items[-1], SetPower)

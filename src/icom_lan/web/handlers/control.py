@@ -1399,12 +1399,15 @@ class ControlHandler:
                         "(missing power_control capability)"
                     )
                 level = int(params["level"])
-                # Tag the unit per backend: Yaesu CAT expects watts (PC
-                # command, 0-999), Icom expects raw 0-255 CI-V scale.
-                unit: Literal["raw_255", "watts"] = (
-                    "watts"
-                    if getattr(radio, "backend_id", "") == "yaesu_cat"
-                    else "raw_255"
+                # Tag the unit per radio's wire-level scale. Icom CI-V
+                # backends expose ``native_power_unit = "raw_255"``,
+                # Yaesu CAT exposes ``"watts"`` — see
+                # :class:`PowerControlCapable.native_power_unit`. Falls
+                # back to ``"raw_255"`` when the attribute is missing
+                # (e.g. legacy mocks) to preserve prior default
+                # behaviour for Icom-shaped radios.
+                unit: Literal["raw_255", "watts"] = getattr(
+                    radio, "native_power_unit", "raw_255"
                 )
                 q.put(SetPower(level, unit=unit))
                 return {"level": level}
