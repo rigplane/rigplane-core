@@ -7,7 +7,11 @@ from dataclasses import dataclass
 import pytest
 
 from icom_lan import IcomRadio, create_radio
-from icom_lan.backends.config import LanBackendConfig, SerialBackendConfig, YaesuCatBackendConfig
+from icom_lan.backends.config import (
+    LanBackendConfig,
+    SerialBackendConfig,
+    YaesuCatBackendConfig,
+)
 from icom_lan.backends.icom7610 import Icom7610SerialRadio
 from icom_lan.backends.yaesu_cat.radio import YaesuCatRadio
 from icom_lan.backends.icom7610.drivers.contracts import (

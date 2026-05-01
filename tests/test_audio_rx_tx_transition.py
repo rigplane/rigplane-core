@@ -166,9 +166,7 @@ async def test_ptt_off_handles_audio_errors_gracefully(
 
 
 @pytest.mark.asyncio
-async def test_multiple_ptt_cycles(
-    poller: RadioPoller, radio: SimpleNamespace
-) -> None:
+async def test_multiple_ptt_cycles(poller: RadioPoller, radio: SimpleNamespace) -> None:
     """Множественные PTT циклы должны работать стабильно."""
     for i in range(3):
         # PTT ON

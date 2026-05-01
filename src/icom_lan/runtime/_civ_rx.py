@@ -7,7 +7,12 @@ import logging
 import time
 from typing import TYPE_CHECKING, Any
 
-from icom_lan.core.civ import CivEvent, CivEventType, iter_civ_frames, request_key_from_frame
+from icom_lan.core.civ import (
+    CivEvent,
+    CivEventType,
+    iter_civ_frames,
+    request_key_from_frame,
+)
 from icom_lan.commands.commander import IcomCommander, Priority
 from icom_lan.commands import (
     CONTROLLER_ADDR,

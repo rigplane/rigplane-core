@@ -2387,7 +2387,11 @@ async def _cmd_scope(radio: Radio, args: argparse.Namespace) -> int:
 async def _cmd_audio_bridge(radio: Radio, args: argparse.Namespace) -> int:
     """Bridge radio audio to a virtual audio device."""
     try:
-        from icom_lan.audio_bridge import AudioBridge, derive_bridge_label, list_audio_devices
+        from icom_lan.audio_bridge import (
+            AudioBridge,
+            derive_bridge_label,
+            list_audio_devices,
+        )
     except ImportError:
         print(
             "Error: audio bridge requires icom-lan[bridge].\n"
@@ -2774,7 +2778,11 @@ async def _cmd_web(radio: Radio, args: argparse.Namespace) -> int:
 
 async def _cmd_discover(_radio: Radio | None, args: argparse.Namespace) -> int:
     """Discover Icom radios on LAN and/or serial ports."""
-    from icom_lan.discovery import dedupe_radios, discover_lan_radios, discover_serial_radios
+    from icom_lan.discovery import (
+        dedupe_radios,
+        discover_lan_radios,
+        discover_serial_radios,
+    )
 
     serial_only: bool = getattr(args, "serial_only", False)
     lan_only: bool = getattr(args, "lan_only", False)
