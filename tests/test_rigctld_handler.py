@@ -3396,3 +3396,44 @@ class TestSingleRxActiveSlotBRouting:
 
         assert resp.ok
         dual_rx_radio.set_freq.assert_awaited_once_with(7_080_000, receiver=1)
+
+
+# ---------------------------------------------------------------------------
+# Issue #1355 — explicit VFOB get with no radio_state must not fall through
+# ---------------------------------------------------------------------------
+#
+# When ``chk_vfo=1`` and a client sends ``f VFOB`` / ``m VFOB`` against a
+# backend whose ``radio_state`` is ``None``, the handler used to silently
+# fall through to the MAIN read path and return MAIN data labelled as
+# VFOB. That is a contract violation. After #1355 the handler returns
+# ``ENIMPL`` for *explicit* VFOB requests so the client surfaces the
+# failure rather than acting on wrong data. Implicit/legacy paths
+# (``vfo_arg is None`` / ``"currVFO"``) keep the forgiving MAIN
+# fall-through.
+
+
+class TestExplicitVfobNoStateReturnsEnimpl:
+    @pytest.mark.asyncio
+    async def test_get_freq_explicit_vfob_no_state_returns_enimpl(
+        self, dual_rx_handler: RigctldHandler, dual_rx_radio: AsyncMock
+    ) -> None:
+        # Dual-RX profile but no RadioState wired up.
+        dual_rx_radio.radio_state = None
+
+        resp = await dual_rx_handler.execute(_vfo_get_cmd("get_freq", "VFOB"))
+
+        assert resp.error == HamlibError.ENIMPL
+        # Critically, the handler must NOT call ``get_freq()`` and return
+        # MAIN data labelled as VFOB.
+        dual_rx_radio.get_freq.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_get_mode_explicit_vfob_no_state_returns_enimpl(
+        self, dual_rx_handler: RigctldHandler, dual_rx_radio: AsyncMock
+    ) -> None:
+        dual_rx_radio.radio_state = None
+
+        resp = await dual_rx_handler.execute(_vfo_get_cmd("get_mode", "VFOB"))
+
+        assert resp.error == HamlibError.ENIMPL
+        dual_rx_radio.get_mode.assert_not_awaited()

@@ -464,8 +464,13 @@ class RigctldHandler:
             state = self._radio_state()
             if state is not None:
                 return RigctldResponse(values=[str(state.sub.freq)])
-            # No state available — fall through to bare get_freq() for MAIN
-            # rather than fabricate a SUB read path. Legacy behaviour.
+            # State unavailable. For an EXPLICIT VFOB request under chk_vfo=1
+            # surface ENIMPL rather than silently returning MAIN data labelled
+            # as VFOB (issue #1355). For implicit/legacy requests (vfo_arg
+            # is None or "currVFO") the legacy MAIN fall-through is more
+            # forgiving and remains the documented behaviour.
+            if cmd.vfo_arg == "VFOB":
+                return _err(HamlibError.ENIMPL)
 
         main_state = self._main_receiver_state()
         pending_freq = self._effective_pending_freq(main_state)
@@ -531,7 +536,13 @@ class RigctldHandler:
                     elif mode_str == "RTTY":
                         mode_str = "PKTRTTY"
                 return RigctldResponse(values=[mode_str, str(passband)])
-            # No state available — fall through to legacy MAIN read path.
+            # State unavailable. For an EXPLICIT VFOB request under chk_vfo=1
+            # surface ENIMPL rather than silently returning MAIN data labelled
+            # as VFOB (issue #1355). For implicit/legacy requests (vfo_arg
+            # is None or "currVFO") the legacy MAIN fall-through is more
+            # forgiving and remains the documented behaviour.
+            if cmd.vfo_arg == "VFOB":
+                return _err(HamlibError.ENIMPL)
 
         main_state = self._main_receiver_state()
         pending_mode = self._effective_pending_mode(main_state)
