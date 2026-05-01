@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "icom-lan"
-version = "0.19.0"
+version = "1.0.0"
 description = "Python library for controlling Icom transceivers over LAN (UDP) — no wfview/hamlib required"
 readme = "README.md"
 license = "MIT"
