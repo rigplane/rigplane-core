@@ -3,7 +3,12 @@ from __future__ import annotations
 import datetime
 from typing import TYPE_CHECKING, Any
 
-from ..radio_protocol import AudioCapable, DualReceiverCapable, ScopeCapable
+from ..radio_protocol import (
+    AudioCapable,
+    DualReceiverCapable,
+    ScopeCapable,
+    UsbAudioCapable,
+)
 from ..radio_state import RadioState
 
 if TYPE_CHECKING:
@@ -34,12 +39,13 @@ def runtime_capabilities(radio: "Radio | None") -> set[str]:
         caps = set(raw_caps)
         if "scope" in caps and not isinstance(radio, ScopeCapable):
             caps.discard("scope")
-        if "audio" in caps and not isinstance(radio, AudioCapable):
-            # Yaesu CAT radios declare "audio" via USB Audio Class (separate
-            # device), not through the Radio protocol.  Keep the capability
-            # so the frontend shows the audio controls.
-            if getattr(radio, "backend_id", None) != "yaesu_cat":
-                caps.discard("audio")
+        if "audio" in caps and not isinstance(radio, AudioCapable | UsbAudioCapable):
+            # Radios that don't implement in-band ``AudioCapable`` and
+            # don't expose OS-level USB Audio Class devices (via the
+            # ``UsbAudioCapable`` marker) cannot deliver audio to the
+            # frontend — drop the tag so the UI doesn't render dead
+            # controls.
+            caps.discard("audio")
         if "dual_rx" in caps and not isinstance(radio, DualReceiverCapable):
             caps.discard("dual_rx")
         return caps

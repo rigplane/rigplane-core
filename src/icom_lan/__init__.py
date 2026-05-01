@@ -67,6 +67,7 @@ from .radio_protocol import (  # noqa: F401
     SystemControlCapable,
     TransceiverBankCapable,
     TransceiverStatusCapable,
+    UsbAudioCapable,
     VfoSlotCapable,
     VoiceControlCapable,
 )
@@ -291,6 +292,7 @@ __all__ = [
     "SystemControlCapable",
     "TransceiverBankCapable",
     "TransceiverStatusCapable",
+    "UsbAudioCapable",
     "VfoSlotCapable",
     "VoiceControlCapable",
     # --- Tier 1: Exceptions ---

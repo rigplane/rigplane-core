@@ -55,6 +55,7 @@ def test_public_api_surface() -> None:
         "SystemControlCapable",
         "TransceiverBankCapable",
         "TransceiverStatusCapable",
+        "UsbAudioCapable",
         "VfoSlotCapable",
         "VoiceControlCapable",
         # --- Tier 1: Exceptions ---

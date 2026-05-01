@@ -53,6 +53,7 @@ TIER1_NAMES = [
     "SystemControlCapable",
     "TransceiverBankCapable",
     "TransceiverStatusCapable",
+    "UsbAudioCapable",
     "VfoSlotCapable",
     "VoiceControlCapable",
     # --- Exceptions ---

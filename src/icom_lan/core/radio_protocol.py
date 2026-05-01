@@ -101,6 +101,7 @@ __all__ = [
     "StatePoller",
     "RitXitCapable",
     "TransceiverStatusCapable",
+    "UsbAudioCapable",
     "MemoryCapable",
 ]
 
@@ -711,6 +712,57 @@ class AudioCapable(Protocol):
     async def get_audio_stats(self) -> dict[str, Any]: ...
     async def start_audio_tx_opus(self) -> None: ...
     async def stop_audio_tx_opus(self) -> None: ...
+
+
+@runtime_checkable
+class UsbAudioCapable(Protocol):
+    """Marker for radios whose audio is exposed as a separate OS-level
+    USB Audio Class device, NOT through the in-band Radio Protocol.
+
+    Yaesu CAT radios (FT-991A, FTX-1, …) connect over USB and expose
+    their audio as standard USB Audio Class endpoints; the application
+    layer (and the operating system) speaks to the audio device
+    directly, while CI-V/CAT commands flow through the serial port.
+    Higher layers (the web ``runtime_capabilities`` helper, future
+    rigctld extensions) use this Protocol to advertise the ``"audio"``
+    UI capability for backends that lack in-band :class:`AudioCapable`
+    audio but still let the user listen via the OS sound device.
+    Resolution of the actual USB audio device indices is independent of
+    this Protocol — see :mod:`icom_lan.audio._usb_resolve`, which keys
+    off the serial port path.
+
+    Implementations declare a ``has_usb_audio: bool`` class attribute
+    set to ``True``. The sentinel is required (rather than a pure
+    marker) because :func:`runtime_checkable` Protocols with no members
+    accept *any* object — see the
+    `"empty Protocol matches everything"
+    <https://docs.python.org/3/library/typing.html#typing.runtime_checkable>`_
+    note in the standard library docs. Backends that implement
+    :class:`AudioCapable` are still detected via that Protocol; this
+    one specifically captures backends that ONLY have OS-level audio
+    (e.g. classic CAT-only Yaesu radios). Note: the shipping
+    :class:`~icom_lan.backends.yaesu_cat.radio.YaesuCatRadio` already
+    structurally satisfies :class:`AudioCapable` because its
+    ``UsbAudioDriver`` is wrapped behind the same ``audio_bus`` /
+    ``start_audio_rx_*`` surface; declaring ``has_usb_audio = True``
+    documents the OS-level reality and provides a future-proof gate
+    for backends that don't (yet) wrap USB Audio behind the in-band
+    Protocol.
+    """
+
+    @property
+    def has_usb_audio(self) -> bool:
+        """``True`` if this radio's audio is delivered as a separate
+        USB Audio Class device handled by the OS (not by the Radio
+        Protocol's in-band audio methods).
+
+        Implementations typically declare this as a class attribute
+        (``has_usb_audio: bool = True``) — a class attribute
+        structurally satisfies the property requirement under
+        :func:`runtime_checkable`, mirroring the
+        :attr:`PowerControlCapable.native_power_unit` pattern.
+        """
+        ...
 
 
 @runtime_checkable
