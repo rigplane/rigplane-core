@@ -315,11 +315,18 @@ def create_routing(
     cache: "_FallbackRigState",
     max_power_w: float = 100.0,
 ) -> RigctldRouting | None:
-    """Create a YaesuRouting if the radio is Yaesu, else None.
+    """Create a vendor-specific :class:`RigctldRouting` for ``radio``.
 
-    Returns None for Icom radios — the handler's built-in Icom routing
-    is used as the default path.
+    Dispatches via the public
+    :class:`~icom_lan.core.radio_protocol.RigctldRoutable` Protocol:
+    radios that implement ``rigctld_routing(cache, max_power_w)`` get
+    their custom strategy (Yaesu CAT today; Kenwood TS-590 or others
+    in the future). Radios that do not — Icom CI-V — return ``None``
+    and the handler's built-in Icom routing is used as the default
+    path.
     """
-    if getattr(radio, "backend_id", None) == "yaesu_cat":
-        return YaesuRouting(radio, cache, max_power_w)
+    from icom_lan.core.radio_protocol import RigctldRoutable
+
+    if isinstance(radio, RigctldRoutable):
+        return radio.rigctld_routing(cache, max_power_w)
     return None

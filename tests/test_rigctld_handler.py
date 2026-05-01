@@ -1715,9 +1715,20 @@ class _FakeYaesuRadio(YaesuCatRadio):
 
 @pytest.fixture
 def yaesu_radio() -> AsyncMock:
-    """AsyncMock of a Yaesu CAT radio with backend_id discriminator."""
+    """AsyncMock of a Yaesu CAT radio with backend_id discriminator.
+
+    The mock is also wired to forward ``rigctld_routing`` to a real
+    :class:`YaesuRouting` so the handler's routing dispatch works
+    end-to-end (``AsyncMock(spec=…)`` would otherwise return a bare
+    MagicMock with non-awaitable ``get_level``/``get_func`` methods).
+    """
+    from icom_lan.rigctld.routing import YaesuRouting
+
     mock = AsyncMock(spec=_FakeYaesuRadio)
     mock.backend_id = "yaesu_cat"
+    mock.rigctld_routing = lambda cache, max_power_w=100.0: YaesuRouting(
+        mock, cache, max_power_w
+    )
     return mock
 
 
@@ -2650,10 +2661,15 @@ async def test_get_split_vfo_dual_rx_reflects_active_sub(
 
 def _yaesu_handler(get_attenuator_value: bool) -> RigctldHandler:
     """Build a handler with a Yaesu-tagged radio so create_routing returns YaesuRouting."""
-    radio = AsyncMock()
+    from icom_lan.rigctld.routing import YaesuRouting
+
+    radio = AsyncMock(spec=_FakeYaesuRadio)
     radio.backend_id = "yaesu_cat"
     radio.capabilities = set()
     radio.get_attenuator = AsyncMock(return_value=get_attenuator_value)
+    radio.rigctld_routing = lambda cache, max_power_w=100.0: YaesuRouting(
+        radio, cache, max_power_w
+    )
     return RigctldHandler(radio, RigctldConfig())
 
 
