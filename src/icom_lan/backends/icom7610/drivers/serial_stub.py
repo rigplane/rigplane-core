@@ -181,6 +181,17 @@ class SerialMockRadio:
             receiver: _ReceiverState()
             for receiver in range(self._profile.receiver_count)
         }
+        # Seed RadioState's MAIN/SUB receivers from the per-receiver
+        # _ReceiverState defaults so the rigctld handler's per-VFO reads
+        # (which go through ``radio.radio_state.{main,sub}.{freq,mode,filter}``)
+        # see the same values as the bare ``radio.get_freq()`` / ``get_mode()``
+        # paths. Without this, ``f VFOB`` on a freshly-connected dual-RX
+        # mock returns ``0`` (the VfoSlotState default) instead of the
+        # canonical 14_074_000. See ``set_freq`` / ``set_mode`` below for
+        # the matching write-side mirror.
+        self._sync_radio_state_from_rx(0)
+        if 1 in self._rx:
+            self._sync_radio_state_from_rx(1)
 
     @property
     def connected(self) -> bool:
@@ -236,6 +247,22 @@ class SerialMockRadio:
             f"{self._profile.model} (receivers={self._profile.receiver_count})"
         )
 
+    def _sync_radio_state_from_rx(self, receiver: int) -> None:
+        """Mirror per-receiver state into ``RadioState.{main,sub}``.
+
+        rigctld's per-VFO read paths (``f VFOB``, ``m VFOB``) read from
+        ``radio.radio_state.sub.{freq,mode,filter}`` directly, bypassing
+        the radio coroutines. Keep that view in sync with ``self._rx``
+        whenever a write touches a specific receiver.
+        """
+        rx = self._rx.get(receiver)
+        if rx is None:
+            return
+        target = self._radio_state.main if receiver == 0 else self._radio_state.sub
+        target.freq = rx.freq
+        target.mode = rx.mode.name
+        target.filter = rx.filter_width
+
     def set_state_change_callback(self, callback: Any | None) -> None:
         self._state_change_callback = callback
 
@@ -265,6 +292,7 @@ class SerialMockRadio:
 
     async def set_freq(self, freq: int, receiver: int = 0) -> None:
         self._receiver_state(receiver, operation="set_freq").freq = freq
+        self._sync_radio_state_from_rx(receiver)
         if receiver == 0:
             self._state_cache.update_freq(freq)
 
@@ -283,6 +311,7 @@ class SerialMockRadio:
         receiver_state.mode = parsed_mode
         if filter_width is not None:
             receiver_state.filter_width = filter_width
+        self._sync_radio_state_from_rx(receiver)
         if receiver == 0:
             self._state_cache.update_mode(parsed_mode.name, receiver_state.filter_width)
 

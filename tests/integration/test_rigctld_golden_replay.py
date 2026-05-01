@@ -1,8 +1,8 @@
 """Wire-level golden-replay tests for rigctld vfo_opt sessions.
 
 Variant A 1/5 of epic #1341 — closes #1342. **Load-bearing assertion**
-of the entire epic: every A2-A5 PR must keep the chk_vfo=0 lines green
-and progressively flip xfailed lines to xpass.
+of the entire epic: every A2-A5 PR must keep the chk_vfo=0 lines green;
+A5 (#1346) flipped the remaining xfailed traces to xpass.
 
 How it works
 ------------
@@ -19,30 +19,22 @@ client (WSJT-X 3.1, fldigi, JS8Call). The replay runner:
    where the snapshot test owns its content).
 3. Compares actual vs. expected, logging the first divergence point.
 
-Why xfail
----------
-Variant B (PR #1340) currently makes ``chk_vfo`` return ``"0"``
-unconditionally — the wsjtx golden's first expectation (``< 1``) does
-not match the actual response (``0``) and the assertion fails on the
-first check. Even after A5 flips ``chk_vfo`` back to ``"1"``, every
-subsequent VFO-prefixed command (``f VFOA``, ``m VFOA``, ...) still
-trips ``parse_line`` until A2 (#1343) teaches it to accept the leading
-VFO token. So the replay only goes fully green once the entire
-A2-A5 stack has landed.
-
-The test is wrapped with ``@pytest.mark.xfail(strict=False)`` so:
-
-- Today: counts as xfailed in the suite — does not fail CI.
-- After A2 lands: parser accepts ``f VFOA`` but ``chk_vfo=0`` still
-  short-circuits the test at the very first ``< 1`` — still xfailed.
-- After A5 lands and ``chk_vfo`` flips to ``"1"``: the trace passes
-  end-to-end, becomes xpassed (``strict=False`` → still green, but the
-  marker is now stale). A5's PR removes the xfail decorator.
+History
+-------
+- A1 (#1342) added the scaffolding with ``@pytest.mark.xfail`` — every
+  trace failed at the first ``< 1`` because Variant B (PR #1340) made
+  ``chk_vfo`` return ``"0"`` unconditionally.
+- A2 (#1343) parser accepts the leading VFO token.
+- A3 (#1344) per-VFO routing for freq/mode/PTT.
+- A4 (#1345) per-VFO routing for split/RIT/level/func.
+- A5 (#1346) re-enabled ``chk_vfo='1'`` for dual-RX, fixed
+  ``SerialMockRadio`` to mirror per-VFO state into ``RadioState``,
+  and removed the xfail markers — replays now pass end-to-end.
 
 References
 ----------
 - Issue #1319 — the bug the scaffolding catches.
-- Epic #1341 — five-PR plan; this is sub-issue 1/5 (#1342).
+- Epic #1341 — five-PR plan; A1 is sub-issue 1/5 (#1342).
 - Hamlib spec — https://hamlib.sourceforge.net/manuals/4.5.5/rigctl.1.html
 """
 
@@ -223,51 +215,25 @@ async def _replay(server: RigctldServer, steps: list[_Step]) -> None:
 class TestGoldenReplayDualRx:
     """Replay each canonical client's chk_vfo=1 wire trace.
 
-    All three replays are xfailed at file scope until Variant A 5/5
-    lands. The xfail is intentionally non-strict — strict=True would
-    fight A2-A5 incremental landings (e.g. A2 may make the parser
-    accept ``f VFOA`` but the test still trips at chk_vfo until A5).
-    Each subsequent A2-A5 PR removes its xfail decorator once the
-    relevant slice of the trace becomes green end-to-end.
+    All three replays now pass end-to-end — Variant A 5/5 (#1346)
+    re-enabled ``chk_vfo='1'`` and the SerialMockRadio mirrors per-VFO
+    state into ``RadioState``, so the dual-RX path works without xfail.
+    Earlier slices: A2 (#1343) parser support, A3 (#1344) per-VFO
+    freq/mode/PTT routing, A4 (#1345) per-VFO split/RIT/level/func.
     """
 
-    @pytest.mark.xfail(
-        reason=(
-            "Variant A 1/5 (#1342) — full chk_vfo=1 path lands across "
-            "A2 (#1343) parser, A3 (#1344) per-VFO routing, A4 (#1345) "
-            "split, A5 (#1346) dump_state + chk_vfo flip. xfail removed "
-            "in A5."
-        ),
-        strict=False,
-    )
     async def test_wsjtx_dual_rx_golden_replay(
         self, rigctld_dual_rx_server: RigctldServer
     ) -> None:
         steps = _parse_golden(GOLDEN_DIR / "wsjtx_dual_rx_session.txt")
         await _replay(rigctld_dual_rx_server, steps)
 
-    @pytest.mark.xfail(
-        reason=(
-            "Variant A 1/5 (#1342) — fldigi golden replay xfailed until "
-            "A5 (#1346) flips chk_vfo back to '1' and prior parser/routing "
-            "PRs land."
-        ),
-        strict=False,
-    )
     async def test_fldigi_dual_rx_golden_replay(
         self, rigctld_dual_rx_server: RigctldServer
     ) -> None:
         steps = _parse_golden(GOLDEN_DIR / "fldigi_dual_rx_session.txt")
         await _replay(rigctld_dual_rx_server, steps)
 
-    @pytest.mark.xfail(
-        reason=(
-            "Variant A 1/5 (#1342) — JS8Call golden replay xfailed until "
-            "A5 (#1346) flips chk_vfo back to '1' and prior parser/routing "
-            "PRs land."
-        ),
-        strict=False,
-    )
     async def test_js8call_dual_rx_golden_replay(
         self, rigctld_dual_rx_server: RigctldServer
     ) -> None:
