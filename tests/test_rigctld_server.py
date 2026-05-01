@@ -12,7 +12,7 @@ Strategy
 from __future__ import annotations
 
 import asyncio
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import ANY, AsyncMock, MagicMock
 
 import pytest
 
@@ -234,7 +234,7 @@ class TestAcceptResponse:
 
         data = await asyncio.wait_for(r.read(4096), timeout=1.0)
         assert data == _RESPONSE_BYTES
-        proto.parse_line.assert_called_once_with(b"f")
+        proto.parse_line.assert_called_once_with(b"f", ANY)
 
         await _close(w)
 
@@ -293,7 +293,7 @@ class TestAcceptResponse:
         await w.drain()
         data = await asyncio.wait_for(r.read(4096), timeout=1.0)
         assert data == _RESPONSE_BYTES
-        proto.parse_line.assert_called_once_with(b"f")
+        proto.parse_line.assert_called_once_with(b"f", ANY)
         await _close(w)
 
     async def test_crlf_line_ending_accepted(
@@ -304,7 +304,7 @@ class TestAcceptResponse:
         await w.drain()
         data = await asyncio.wait_for(r.read(4096), timeout=1.0)
         assert data == _RESPONSE_BYTES
-        proto.parse_line.assert_called_once_with(b"f")
+        proto.parse_line.assert_called_once_with(b"f", ANY)
         await _close(w)
 
 

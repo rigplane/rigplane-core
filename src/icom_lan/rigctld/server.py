@@ -350,7 +350,7 @@ class RigctldServer:
 
                 # ── parse ────────────────────────────────────────────
                 try:
-                    cmd = proto.parse_line(raw)
+                    cmd = proto.parse_line(raw, session)
                 except ValueError as exc:
                     # Unknown command or bad args → ENIMPL, not EPROTO
                     # (WSJT-X sends commands we don't support yet)
@@ -415,6 +415,19 @@ class RigctldServer:
                             except Exception:
                                 logger.debug("hold_for failed", exc_info=True)
                         self._poller.write_busy = False
+
+                # ── session-state wiring (vfo_opt handshake) ─────────
+                # When the handler advertised vfo_opt via ``\chk_vfo`` →
+                # ``"1"``, Hamlib will start prefixing every command
+                # with ``VFOA``/``VFOB``/``currVFO``. Flip the session
+                # bit so the parser knows it's expected and so the
+                # diagnostic in protocol.parse_line stays quiet. Wired
+                # here (rather than in handler.py) to keep the leaf
+                # handlers free of session arguments. Dormant on `main`
+                # because Variant B (#1340) keeps chk_vfo at ``"0"``;
+                # #1346 (A5) flips it back to ``"1"`` for dual-RX.
+                if cmd.long_cmd == "chk_vfo" and resp.values == ["1"]:
+                    session.vfo_mode = True
 
                 # ── send response ────────────────────────────────────
                 out = proto.format_response(cmd, resp, session)
