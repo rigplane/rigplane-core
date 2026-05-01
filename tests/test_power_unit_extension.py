@@ -84,3 +84,22 @@ def test_yaesu_cat_radio_declares_watts() -> None:
     from icom_lan.backends.yaesu_cat.radio import YaesuCatRadio
 
     assert YaesuCatRadio.native_power_unit == "watts"
+
+
+def test_yaesu_cat_radio_satisfies_power_control_capable() -> None:
+    """Regression for #1331 — :class:`YaesuCatRadio` must structurally
+    satisfy :class:`PowerControlCapable` so the web handler's
+    ``isinstance(radio, PowerControlCapable)`` gate works.
+
+    The last residual gap was ``set_rf_power``; the existing
+    ``set_power(watts, head=2)`` method has a different name and an
+    extra parameter, so a thin Protocol-shaped wrapper was added.
+
+    Note: :class:`PowerControlCapable` includes the non-method member
+    ``native_power_unit``, so ``issubclass`` is unsupported by Python's
+    runtime Protocol machinery — verify on an instance.
+    """
+    from icom_lan.backends.yaesu_cat.radio import YaesuCatRadio
+
+    radio = YaesuCatRadio("/dev/null")
+    assert isinstance(radio, PowerControlCapable)

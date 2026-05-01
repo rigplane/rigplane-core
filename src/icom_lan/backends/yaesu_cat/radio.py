@@ -1303,6 +1303,15 @@ class YaesuCatRadio:
         """
         await self._write("set_power", head=str(head), watts=watts)
 
+    async def set_rf_power(self, level: int) -> None:
+        """Set TX power level — :class:`PowerControlCapable` interface.
+
+        Yaesu's :attr:`native_power_unit` is ``"watts"``, so ``level`` is
+        interpreted as watts directly. Internally delegates to
+        :meth:`set_power` with the default ``head=2`` selector.
+        """
+        await self.set_power(watts=level)
+
     async def get_mic_gain(self) -> int:
         """Get microphone gain (0–100)."""
         result = await self._query("get_mic_gain")
