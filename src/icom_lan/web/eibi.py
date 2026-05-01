@@ -305,6 +305,24 @@ def _download_url(url: str, ua: str = "icom-lan/1.0") -> bytes:
         return data
 
 
+def _load_cache_files_sync(
+    csv_path: Path, meta_path: Path
+) -> tuple[bytes, dict[str, Any]]:
+    """Synchronous helper for :meth:`EibiClient.load_cache`.
+
+    Reads the CSV bytes and (optionally) the JSON meta sidecar in a
+    single worker-thread hop, so the event loop is not blocked while
+    the disk I/O completes. Returns an empty ``meta`` dict when the
+    sidecar is absent — control flow matches the previous inline form.
+    """
+    raw = csv_path.read_bytes()
+    meta: dict[str, Any] = {}
+    if meta_path.is_file():
+        with open(meta_path) as f:
+            meta = json.load(f)
+    return raw, meta
+
+
 # ── FCC AM/FM lookup ──
 
 _FCC_AM_URL = "https://transition.fcc.gov/fcc-bin/amq"
@@ -558,13 +576,10 @@ class EiBiProvider:
         if not csv_path.is_file():
             return {"status": "no_cache", "error": "No cached data found"}
 
-        raw = csv_path.read_bytes()
+        raw, meta = await asyncio.to_thread(
+            _load_cache_files_sync, csv_path, meta_path
+        )
         count = self._parse_csv(raw.decode("latin-1", errors="replace"))
-
-        meta: dict[str, Any] = {}
-        if meta_path.is_file():
-            with open(meta_path) as f:
-                meta = json.load(f)
 
         self._season = meta.get("season")
         self._last_updated = meta.get("fetched_iso")
