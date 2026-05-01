@@ -80,6 +80,15 @@ class YaesuCatRadio:
     # :class:`icom_lan.core.radio_protocol.PowerControlCapable`.
     native_power_unit: Literal["raw_255", "watts"] = "watts"
 
+    # Yaesu CAT radios connect over USB and expose audio as a separate
+    # USB Audio Class device handled by the OS, not through in-band
+    # CI-V/CAT framing. The web layer's ``runtime_capabilities`` helper
+    # uses this marker (via :class:`UsbAudioCapable`) to keep the
+    # ``"audio"`` UI capability advertised even for backends that don't
+    # implement the Radio Protocol's :class:`AudioCapable` surface.
+    # See :class:`icom_lan.core.radio_protocol.UsbAudioCapable`.
+    has_usb_audio: bool = True
+
     def __init__(
         self,
         device: str,

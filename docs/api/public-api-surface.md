@@ -105,6 +105,7 @@ available directly via `from icom_lan import …`.
 - `SystemControlCapable`, `RepeaterControlCapable`, `AdvancedControlCapable`
 - `TransceiverStatusCapable`, `RitXitCapable`, `MemoryCapable`
 - `SplitCapable` (new in v0.19)
+- `UsbAudioCapable` (new in v0.19)
 
 **Exceptions (from `icom_lan.exceptions`)**
 

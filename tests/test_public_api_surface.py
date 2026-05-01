@@ -67,6 +67,7 @@ TIER1_SYMBOLS: tuple[str, ...] = (
     "RitXitCapable",
     "MemoryCapable",
     "SplitCapable",
+    "UsbAudioCapable",
     # Exceptions
     "IcomLanError",
     "AudioCodecBackendError",
