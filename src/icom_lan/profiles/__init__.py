@@ -250,7 +250,8 @@ _by_civ_addr: dict[int, RadioProfile] = {}
 
 # Search paths for rig TOML files (first existing directory wins).
 _RIG_DIRS: list[Path] = [
-    Path(__file__).resolve().parent.parent.parent.parent / "rigs",  # dev: repo root/rigs/
+    Path(__file__).resolve().parent.parent.parent.parent
+    / "rigs",  # dev: repo root/rigs/
     Path(__file__).resolve().parent.parent / "rigs",  # installed: package/rigs/
 ]
 

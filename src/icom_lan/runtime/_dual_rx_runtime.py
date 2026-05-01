@@ -31,8 +31,12 @@ from icom_lan.commands import get_selected_freq as _get_selected_freq_cmd
 from icom_lan.commands import get_selected_mode as _get_selected_mode_cmd
 from icom_lan.commands import get_unselected_freq as _get_unselected_freq_cmd
 from icom_lan.commands import get_unselected_mode as _get_unselected_mode_cmd
-from icom_lan.commands import parse_selected_freq_response as _parse_selected_freq_response
-from icom_lan.commands import parse_selected_mode_response as _parse_selected_mode_response
+from icom_lan.commands import (
+    parse_selected_freq_response as _parse_selected_freq_response,
+)
+from icom_lan.commands import (
+    parse_selected_mode_response as _parse_selected_mode_response,
+)
 from icom_lan.core.exceptions import CommandError, TimeoutError
 from icom_lan.core.types import Mode
 

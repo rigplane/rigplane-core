@@ -195,8 +195,7 @@ async def test_async_iteration(bus, mock_radio):
     await sub.start()
 
     pkts = [
-        AudioPacket(ident=0x80, send_seq=i, data=f"pkt{i}".encode())
-        for i in range(3)
+        AudioPacket(ident=0x80, send_seq=i, data=f"pkt{i}".encode()) for i in range(3)
     ]
     for p in pkts:
         bus._on_opus_packet(p)

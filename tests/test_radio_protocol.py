@@ -48,13 +48,23 @@ class _StubRadio:
 
     async def connect(self) -> None: ...
     async def disconnect(self) -> None: ...
-    async def __aenter__(self) -> "_StubRadio": return self
+    async def __aenter__(self) -> "_StubRadio":
+        return self
+
     async def __aexit__(self, exc_type: Any, exc_val: Any, exc_tb: Any) -> None: ...
-    async def get_freq(self, receiver: int = 0) -> int: return 0
+    async def get_freq(self, receiver: int = 0) -> int:
+        return 0
+
     async def set_freq(self, freq: int, receiver: int = 0) -> None: ...
-    async def get_mode(self, receiver: int = 0) -> tuple[str, int | None]: return ("USB", None)
-    async def set_mode(self, mode: str, filter_width: int | None = None, receiver: int = 0) -> None: ...
-    async def get_data_mode(self) -> bool: return False
+    async def get_mode(self, receiver: int = 0) -> tuple[str, int | None]:
+        return ("USB", None)
+
+    async def set_mode(
+        self, mode: str, filter_width: int | None = None, receiver: int = 0
+    ) -> None: ...
+    async def get_data_mode(self) -> bool:
+        return False
+
     async def set_data_mode(self, on: int | bool, receiver: int = 0) -> None: ...
     async def set_ptt(self, on: bool) -> None: ...
 
@@ -81,20 +91,41 @@ class _PowerStub:
     checks must still pass for backends that implement the read+write pair.
     """
 
-    async def get_powerstat(self) -> bool: return True
+    async def get_powerstat(self) -> bool:
+        return True
+
     async def set_powerstat(self, on: bool) -> None: ...
-    async def get_rf_power(self) -> int: return 128
+    async def get_rf_power(self) -> int:
+        return 128
+
     async def set_rf_power(self, level: int) -> None: ...
+
     native_power_unit = "raw_255"
+
     # MetersCapable surface
-    async def get_s_meter(self, receiver: int = 0) -> int: return 0
-    async def get_swr(self) -> float: return 1.0
-    async def get_comp_meter(self) -> int: return 0
-    async def get_id_meter(self) -> int: return 0
-    async def get_vd_meter(self) -> int: return 0
-    async def get_power_meter(self) -> int: return 0
-    async def get_alc_meter(self) -> int: return 0
-    async def get_swr_meter(self) -> int: return 0
+    async def get_s_meter(self, receiver: int = 0) -> int:
+        return 0
+
+    async def get_swr(self) -> float:
+        return 1.0
+
+    async def get_comp_meter(self) -> int:
+        return 0
+
+    async def get_id_meter(self) -> int:
+        return 0
+
+    async def get_vd_meter(self) -> int:
+        return 0
+
+    async def get_power_meter(self) -> int:
+        return 0
+
+    async def get_alc_meter(self) -> int:
+        return 0
+
+    async def get_swr_meter(self) -> int:
+        return 0
 
 
 def test_get_rf_power_visible_on_power_control_capable() -> None:
@@ -225,18 +256,26 @@ def test_voice_compressor_round_trip_protocol_typed() -> None:
 class _RitXitStub:
     """Minimal stub that satisfies RitXitCapable (six methods)."""
 
-    async def get_rit_frequency(self) -> int: return 0
+    async def get_rit_frequency(self) -> int:
+        return 0
+
     async def set_rit_frequency(self, freq_hz: int) -> None: ...
-    async def get_rit_status(self) -> bool: return False
+    async def get_rit_status(self) -> bool:
+        return False
+
     async def set_rit_status(self, on: bool) -> None: ...
-    async def get_rit_tx_status(self) -> bool: return False
+    async def get_rit_tx_status(self) -> bool:
+        return False
+
     async def set_rit_tx_status(self, on: bool) -> None: ...
 
 
 class _TxMonitorStub:
     """Minimal stub that satisfies the reduced TransceiverStatusCapable."""
 
-    async def get_tx_freq_monitor(self) -> bool: return False
+    async def get_tx_freq_monitor(self) -> bool:
+        return False
+
     async def set_tx_freq_monitor(self, on: bool) -> None: ...
 
 

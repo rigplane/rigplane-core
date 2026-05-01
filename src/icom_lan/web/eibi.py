@@ -576,9 +576,7 @@ class EiBiProvider:
         if not csv_path.is_file():
             return {"status": "no_cache", "error": "No cached data found"}
 
-        raw, meta = await asyncio.to_thread(
-            _load_cache_files_sync, csv_path, meta_path
-        )
+        raw, meta = await asyncio.to_thread(_load_cache_files_sync, csv_path, meta_path)
         count = self._parse_csv(raw.decode("latin-1", errors="replace"))
 
         self._season = meta.get("season")

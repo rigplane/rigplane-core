@@ -1315,9 +1315,7 @@ class RadioPoller:
                     select_receiver = getattr(radio, "select_receiver", None)
                     if select_receiver is not None:
                         await select_receiver(target_name)
-                        logger.info(
-                            "radio-poller: select_receiver=%s", target_name
-                        )
+                        logger.info("radio-poller: select_receiver=%s", target_name)
                     else:
                         legacy_set_vfo = getattr(radio, "set_vfo", None)
                         if legacy_set_vfo is None:

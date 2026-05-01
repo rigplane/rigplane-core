@@ -356,9 +356,7 @@ async def test_rigctld_smoke_with_serial_mock_backend() -> None:
             radio.set_vfo = _spy  # type: ignore[method-assign]
             writer.write(b"V VFOA\n")
             await writer.drain()
-            set_vfo_resp = await asyncio.wait_for(
-                reader.readuntil(b"\n"), timeout=2.0
-            )
+            set_vfo_resp = await asyncio.wait_for(reader.readuntil(b"\n"), timeout=2.0)
             assert set_vfo_resp.strip() == b"RPRT 0"
             assert calls == ["MAIN"], (
                 f"V VFOA must reach legacy set_vfo (got calls={calls!r})"
