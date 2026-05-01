@@ -121,9 +121,7 @@ class YaesuRouting:
 
     # -- levels --------------------------------------------------------------
 
-    async def get_level(
-        self, level: str, *, vfo: str | None = None
-    ) -> RigctldResponse:
+    async def get_level(self, level: str, *, vfo: str | None = None) -> RigctldResponse:
         # ``vfo`` accepted for protocol conformance (issue #1345). Yaesu CAT
         # is single-receiver; routing per VFO is not meaningful, ignore.
         del vfo
@@ -261,9 +259,7 @@ class YaesuRouting:
 
     # -- funcs ---------------------------------------------------------------
 
-    async def get_func(
-        self, func: str, *, vfo: str | None = None
-    ) -> RigctldResponse:
+    async def get_func(self, func: str, *, vfo: str | None = None) -> RigctldResponse:
         # ``vfo`` accepted for protocol conformance (issue #1345); ignored.
         del vfo
         radio = self._radio

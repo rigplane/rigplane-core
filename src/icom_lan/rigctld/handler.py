@@ -342,6 +342,12 @@ class RigctldHandler:
         self._radio = radio
         self._config = config
         self._ptt_state: bool | None = None
+        # Hamlib-protocol concept: TX VFO label tracked across S/s commands.
+        # Not radio state (CI-V has no per-VFO TX-routing register on most
+        # Icoms — set_vfo_split routing is via active receiver). Initial
+        # value mirrors the Hamlib default ("VFOA"). Updated by
+        # ``_cmd_set_split_vfo`` on every ``S`` request. (Issue #1345.)
+        self._split_tx_vfo: Literal["VFOA", "VFOB"] = "VFOA"
         self._cache = _FallbackRigState()
         self._pending = _PendingRigState()
         self._routing = create_routing(
@@ -812,8 +818,17 @@ class RigctldHandler:
             return _err(HamlibError.EINVAL)
         level = cmd.args[0].upper()
 
+        # Validate the (optional) leading VFO label up-front — even for
+        # globally-scoped levels, an unknown label or VFOB on a single-RX
+        # profile must error before any radio call (issue #1345).
+        try:
+            target = self._resolve_target_vfo(cmd.vfo_arg)
+        except ValueError:
+            return _err(HamlibError.EVFO)
+        receiver = 1 if target == "VFOB" else 0
+
         if self._routing is not None:
-            return await self._routing.get_level(level)
+            return await self._routing.get_level(level, vfo=cmd.vfo_arg)
 
         all_levels = (
             {"STRENGTH", "RFPOWER", "SWR", "PREAMP", "ATT", "KEYSPD", "CWPITCH"}
@@ -824,8 +839,23 @@ class RigctldHandler:
             return _err(HamlibError.EINVAL)
         main_state = self._main_receiver_state()
 
-        # STRENGTH — prefer RadioState, then meter call
+        # STRENGTH — per-receiver on dual-RX. VFOB reads SUB s_meter
+        # directly from RadioState (don't update _cache — it tracks MAIN
+        # only, mirroring the freq routing in #1344).
         if level == "STRENGTH":
+            if target == "VFOB":
+                state = self._radio_state()
+                if state is not None:
+                    raw = state.sub.s_meter
+                    return RigctldResponse(
+                        values=[str(round((raw / 241.0) * 114.0 - 54.0))]
+                    )
+                if CAP_METERS in self._radio.capabilities:
+                    raw = await self._radio.get_s_meter(receiver=1)
+                    return RigctldResponse(
+                        values=[str(round((raw / 241.0) * 114.0 - 54.0))]
+                    )
+                return _err(HamlibError.ENIMPL)
             if main_state is not None:
                 raw = main_state.s_meter
                 self._cache.update_s_meter(raw)
@@ -874,7 +904,13 @@ class RigctldHandler:
 
         # Simple 0-255 → 0.0-1.0 float levels
         if level in _GET_LEVEL_FLOAT:
-            raw = await getattr(self._radio, _GET_LEVEL_FLOAT[level])()
+            method = getattr(self._radio, _GET_LEVEL_FLOAT[level])
+            # NB / NR are per-receiver on dual-RX Icoms — pass receiver=
+            # when targeting VFOB. Other levels are radio-global.
+            if level in ("NB", "NR") and target == "VFOB":
+                raw = await method(receiver=receiver)
+            else:
+                raw = await method()
             return RigctldResponse(values=[f"{raw / 255.0:.6f}"])
 
         # Integer levels (WPM, Hz)
@@ -904,8 +940,15 @@ class RigctldHandler:
         except ValueError:
             return _err(HamlibError.EINVAL)
 
+        # Validate the (optional) leading VFO label up-front (issue #1345).
+        try:
+            target = self._resolve_target_vfo(cmd.vfo_arg)
+        except ValueError:
+            return _err(HamlibError.EVFO)
+        receiver = 1 if target == "VFOB" else 0
+
         if self._routing is not None:
-            return await self._routing.set_level(level, value)
+            return await self._routing.set_level(level, value, vfo=cmd.vfo_arg)
 
         if level == "RFPOWER":
             await self._radio.set_rf_power(round(value * 255))
@@ -913,7 +956,12 @@ class RigctldHandler:
 
         if level in _SET_LEVEL_FLOAT:
             raw = max(0, min(255, round(value * 255)))
-            await getattr(self._radio, _SET_LEVEL_FLOAT[level])(raw)
+            method = getattr(self._radio, _SET_LEVEL_FLOAT[level])
+            # NB / NR are per-receiver on dual-RX Icoms.
+            if level in ("NB", "NR") and target == "VFOB":
+                await method(raw, receiver=receiver)
+            else:
+                await method(raw)
             return _ok()
 
         if level == "KEYSPD":
@@ -953,12 +1001,25 @@ class RigctldHandler:
             return _err(HamlibError.EINVAL)
         func = cmd.args[0].upper()
 
+        # Validate the (optional) leading VFO label (issue #1345).
+        try:
+            target = self._resolve_target_vfo(cmd.vfo_arg)
+        except ValueError:
+            return _err(HamlibError.EVFO)
+        receiver = 1 if target == "VFOB" else 0
+
         if self._routing is not None:
-            return await self._routing.get_func(func)
+            return await self._routing.get_func(func, vfo=cmd.vfo_arg)
 
         if func not in _FUNC_GET:
             return _err(HamlibError.EINVAL)
-        result = await getattr(self._radio, _FUNC_GET[func])()
+        method = getattr(self._radio, _FUNC_GET[func])
+        # NB / NR are per-receiver on dual-RX Icoms.  Other funcs are
+        # radio-global — VFO arg is validated above but ignored.
+        if func in ("NB", "NR") and target == "VFOB":
+            result = await method(receiver=receiver)
+        else:
+            result = await method()
         # APF returns AudioPeakFilter int enum (0=off); others return bool
         return RigctldResponse(values=[str(int(bool(result)))])
 
@@ -971,14 +1032,24 @@ class RigctldHandler:
         except ValueError:
             return _err(HamlibError.EINVAL)
 
+        # Validate the (optional) leading VFO label (issue #1345).
+        try:
+            target = self._resolve_target_vfo(cmd.vfo_arg)
+        except ValueError:
+            return _err(HamlibError.EVFO)
+        receiver = 1 if target == "VFOB" else 0
+
         if self._routing is not None:
-            return await self._routing.set_func(func, on)
+            return await self._routing.set_func(func, on, vfo=cmd.vfo_arg)
 
         if func not in _FUNC_SET:
             return _err(HamlibError.EINVAL)
         if func == "APF":
             # APF takes an int mode: 0=off, 1=soft
             await self._radio.set_audio_peak_filter(1 if on else 0)
+        elif func in ("NB", "NR") and target == "VFOB":
+            # Per-receiver NB / NR on dual-RX.
+            await getattr(self._radio, _FUNC_SET[func])(on, receiver=receiver)
         else:
             await getattr(self._radio, _FUNC_SET[func])(on)
         return _ok()
@@ -988,12 +1059,28 @@ class RigctldHandler:
     # ------------------------------------------------------------------
 
     async def _cmd_get_split_vfo(self, cmd: RigctldCommand) -> RigctldResponse:
+        # Validate the (optional) leading VFO label. Split is a global
+        # CI-V concept on Icom — the answer is the same for VFOA / VFOB —
+        # but the request must still name a receiver this profile has.
+        try:
+            self._resolve_target_vfo(cmd.vfo_arg)
+        except ValueError:
+            return _err(HamlibError.EVFO)
         state = self._radio_state()
         split = state.split if state is not None else False
-        return RigctldResponse(values=[str(int(split)), self._active_vfo_name()])
+        # ``_split_tx_vfo`` is handler-local Hamlib-protocol state, set by
+        # the most recent ``S`` command (issue #1345 — fixes #1319 finding
+        # #2 where this used to leak the active VFO instead of TX_VFO).
+        return RigctldResponse(values=[str(int(split)), self._split_tx_vfo])
 
     async def _cmd_set_split_vfo(self, cmd: RigctldCommand) -> RigctldResponse:
-        # Args: <split 0|1> <tx_vfo>
+        # Validate the (optional) leading VFO label first — VFOB on a
+        # single-RX profile must error before any radio call.
+        try:
+            self._resolve_target_vfo(cmd.vfo_arg)
+        except ValueError:
+            return _err(HamlibError.EVFO)
+        # Args after vfo_arg strip: <split 0|1> <tx_vfo>
         if len(cmd.args) < 2:
             return _ok()
         try:
@@ -1042,6 +1129,12 @@ class RigctldHandler:
                     )
                     await self._rollback_split(set_split)
                     return _err(HamlibError.EINTERNAL)
+        # Record the requested TX VFO for the next ``s`` (get_split_vfo)
+        # query — Hamlib protocol expects the TX VFO label round-trip
+        # (issue #1345). Validate the label so a malformed request never
+        # poisons the cached value.
+        if tx_vfo in ("VFOA", "VFOB"):
+            self._split_tx_vfo = cast(Literal["VFOA", "VFOB"], tx_vfo)
         return _ok()
 
     async def _rollback_split(self, set_split: Any) -> None:
@@ -1068,6 +1161,15 @@ class RigctldHandler:
     # ------------------------------------------------------------------
 
     async def _cmd_get_rit(self, cmd: RigctldCommand) -> RigctldResponse:
+        # Validate the (optional) leading VFO label. Most Icom radios
+        # expose a single global RIT register (CI-V 0x21 0x00) — the
+        # answer is the same for VFOA / VFOB. Hamlib clients tolerate
+        # this. Per-VFO RIT would require a RadioState extension; out of
+        # scope for #1345 (tracked as a follow-up under epic #1341).
+        try:
+            self._resolve_target_vfo(cmd.vfo_arg)
+        except ValueError:
+            return _err(HamlibError.EVFO)
         state = self._radio_state()
         rit = state.rit_freq if state is not None else 0
         return RigctldResponse(values=[str(rit)])

@@ -2645,9 +2645,20 @@ async def test_set_split_vfo_rollback_swallows_rollback_failure(
 
 
 @pytest.mark.asyncio
-async def test_get_split_vfo_dual_rx_reflects_active_sub(
+async def test_get_split_vfo_dual_rx_returns_tracked_tx_vfo(
     dual_rx_handler: RigctldHandler, dual_rx_radio: AsyncMock
 ) -> None:
+    """``s`` returns the TX_VFO label set by the most recent ``S`` command.
+
+    Issue #1345 (research finding #2 in #1319): the prior implementation
+    returned ``self._active_vfo_name()`` here, but the Hamlib protocol
+    expects the TX_VFO that the client itself selected via ``S`` — not
+    the active receiver. After #1345 the handler tracks the requested
+    TX VFO in ``_split_tx_vfo`` (handler-local Hamlib-protocol state).
+    """
+    # Drive the handler through ``S 1 VFOB`` so the TX VFO is recorded.
+    set_resp = await dual_rx_handler.execute(set_cmd("set_split_vfo", "1", "VFOB"))
+    assert set_resp.ok
     state = RadioState()
     state.split = True
     state.active = "SUB"
@@ -2955,3 +2966,319 @@ class TestPerVfoRoutingPtt:
         resp = await single_rx_handler.execute(_vfo_set_cmd("set_ptt", "VFOB", "1"))
         assert resp.error == HamlibError.EVFO
         single_rx_radio.set_ptt.assert_not_awaited()
+
+
+# ---------------------------------------------------------------------------
+# Per-VFO routing for s/S, j, l/L, u/U (issue #1345, Variant A 4/5)
+# ---------------------------------------------------------------------------
+
+
+class TestPerVfoSplit:
+    """`s`/`S` per-VFO routing under chk_vfo=1 (issue #1345).
+
+    Split is a Hamlib-protocol concept — the handler tracks the requested
+    TX_VFO label in handler-local state (``_split_tx_vfo``), set by the
+    most recent ``S`` command and returned by ``s``. This fixes a standing
+    bug (research finding #2 in #1319) where ``s`` previously returned
+    the active receiver label rather than the TX_VFO.
+    """
+
+    @pytest.mark.asyncio
+    async def test_get_split_vfo_default_tx_vfo_is_vfoa(
+        self, dual_rx_handler: RigctldHandler, dual_rx_radio: AsyncMock
+    ) -> None:
+        # No prior S command — the default Hamlib TX_VFO label is VFOA.
+        state = RadioState()
+        state.split = False
+        dual_rx_radio.radio_state = state
+        resp = await dual_rx_handler.execute(_vfo_get_cmd("get_split_vfo", "VFOA"))
+        assert resp.ok
+        assert resp.values == ["0", "VFOA"]
+
+    @pytest.mark.asyncio
+    async def test_set_split_vfo_records_tx_vfo_for_get(
+        self, dual_rx_handler: RigctldHandler, dual_rx_radio: AsyncMock
+    ) -> None:
+        # ``S VFOA 1 VFOB`` — split on, TX VFO = VFOB.  The follow-up
+        # ``s`` request must return the recorded TX VFO label, not the
+        # active receiver.
+        set_resp = await dual_rx_handler.execute(
+            _vfo_set_cmd("set_split_vfo", "VFOA", "1", "VFOB")
+        )
+        assert set_resp.ok
+        dual_rx_radio.set_split.assert_awaited_once_with(True)
+
+        state = RadioState()
+        state.split = True
+        state.active = "MAIN"  # active receiver is MAIN — TX_VFO is still VFOB
+        dual_rx_radio.radio_state = state
+        get_resp = await dual_rx_handler.execute(_vfo_get_cmd("get_split_vfo", "VFOA"))
+        assert get_resp.ok
+        assert get_resp.values == ["1", "VFOB"]
+
+    @pytest.mark.asyncio
+    async def test_get_split_vfo_unknown_vfo_arg_returns_evfo(
+        self, dual_rx_handler: RigctldHandler, dual_rx_radio: AsyncMock
+    ) -> None:
+        resp = await dual_rx_handler.execute(_vfo_get_cmd("get_split_vfo", "VFOC"))
+        assert resp.error == HamlibError.EVFO
+
+    @pytest.mark.asyncio
+    async def test_get_split_vfo_single_rx_vfob_returns_evfo(
+        self, single_rx_handler: RigctldHandler, single_rx_radio: AsyncMock
+    ) -> None:
+        single_rx_radio.radio_state = RadioState()
+        resp = await single_rx_handler.execute(_vfo_get_cmd("get_split_vfo", "VFOB"))
+        assert resp.error == HamlibError.EVFO
+
+    @pytest.mark.asyncio
+    async def test_set_split_vfo_single_rx_vfob_returns_evfo(
+        self, single_rx_handler: RigctldHandler, single_rx_radio: AsyncMock
+    ) -> None:
+        resp = await single_rx_handler.execute(
+            _vfo_set_cmd("set_split_vfo", "VFOB", "1", "VFOA")
+        )
+        assert resp.error == HamlibError.EVFO
+        single_rx_radio.set_split.assert_not_awaited()
+
+
+class TestPerVfoRit:
+    """`j` (get_rit) per-VFO routing (issue #1345).
+
+    Most Icom radios expose a single global RIT register (CI-V 0x21 0x00),
+    so the answer is the same for VFOA / VFOB.  Hamlib clients tolerate
+    this. The VFO arg is validated only for profile compatibility.
+    """
+
+    @pytest.mark.asyncio
+    async def test_get_rit_vfoa_returns_global_rit(
+        self, dual_rx_handler: RigctldHandler, dual_rx_radio: AsyncMock
+    ) -> None:
+        state = RadioState()
+        state.rit_freq = 250
+        dual_rx_radio.radio_state = state
+        resp = await dual_rx_handler.execute(_vfo_get_cmd("get_rit", "VFOA"))
+        assert resp.ok
+        assert resp.values == ["250"]
+
+    @pytest.mark.asyncio
+    async def test_get_rit_vfob_returns_same_global_rit(
+        self, dual_rx_handler: RigctldHandler, dual_rx_radio: AsyncMock
+    ) -> None:
+        # Per-VFO RIT is not modelled in RadioState — VFOB returns the
+        # same global value as VFOA. Documented limitation.
+        state = RadioState()
+        state.rit_freq = 250
+        dual_rx_radio.radio_state = state
+        resp = await dual_rx_handler.execute(_vfo_get_cmd("get_rit", "VFOB"))
+        assert resp.ok
+        assert resp.values == ["250"]
+
+    @pytest.mark.asyncio
+    async def test_get_rit_single_rx_vfob_returns_evfo(
+        self, single_rx_handler: RigctldHandler, single_rx_radio: AsyncMock
+    ) -> None:
+        single_rx_radio.radio_state = RadioState()
+        resp = await single_rx_handler.execute(_vfo_get_cmd("get_rit", "VFOB"))
+        assert resp.error == HamlibError.EVFO
+
+
+class TestPerVfoLevel:
+    """`l`/`L` per-VFO routing (issue #1345).
+
+    Per-receiver levels (STRENGTH, NB, NR) route via ``receiver=`` kwarg.
+    Radio-global levels (RFPOWER, MICGAIN, etc.) ignore the VFO arg but
+    still validate it against the profile.
+    """
+
+    @pytest.mark.asyncio
+    async def test_get_strength_vfoa_reads_main(
+        self, dual_rx_handler: RigctldHandler, dual_rx_radio: AsyncMock
+    ) -> None:
+        state = RadioState()
+        state.main.freq = 14_250_000
+        state.main.s_meter = 120  # S9
+        state.sub.s_meter = 60  # different value to detect mis-routing
+        dual_rx_radio.radio_state = state
+        resp = await dual_rx_handler.execute(
+            _vfo_get_cmd("get_level", "VFOA", "STRENGTH")
+        )
+        assert resp.ok
+        # 120 / 241 * 114 - 54 ≈ 2.78 → rounds to 3
+        assert resp.values == [str(round((120 / 241.0) * 114.0 - 54.0))]
+
+    @pytest.mark.asyncio
+    async def test_get_strength_vfob_reads_sub(
+        self, dual_rx_handler: RigctldHandler, dual_rx_radio: AsyncMock
+    ) -> None:
+        state = RadioState()
+        state.main.freq = 14_250_000
+        state.main.s_meter = 120
+        state.sub.s_meter = 60
+        dual_rx_radio.radio_state = state
+        resp = await dual_rx_handler.execute(
+            _vfo_get_cmd("get_level", "VFOB", "STRENGTH")
+        )
+        assert resp.ok
+        assert resp.values == [str(round((60 / 241.0) * 114.0 - 54.0))]
+
+    @pytest.mark.asyncio
+    async def test_get_rfpower_ignores_vfo_arg(
+        self, dual_rx_handler: RigctldHandler, dual_rx_radio: AsyncMock
+    ) -> None:
+        # RFPOWER is radio-global — VFOB request must succeed and return
+        # the global value, not error out (defeating vfo_opt).
+        state = RadioState()
+        state.main.freq = 14_250_000
+        state.power_level = 128
+        dual_rx_radio.radio_state = state
+        resp = await dual_rx_handler.execute(
+            _vfo_get_cmd("get_level", "VFOB", "RFPOWER")
+        )
+        assert resp.ok
+        assert resp.values == [f"{128 / 255.0:.6f}"]
+
+    @pytest.mark.asyncio
+    async def test_get_nb_level_vfob_routes_to_sub(
+        self, dual_rx_handler: RigctldHandler, dual_rx_radio: AsyncMock
+    ) -> None:
+        dual_rx_radio.get_nb_level = AsyncMock(return_value=120)
+        resp = await dual_rx_handler.execute(_vfo_get_cmd("get_level", "VFOB", "NB"))
+        assert resp.ok
+        dual_rx_radio.get_nb_level.assert_awaited_once_with(receiver=1)
+
+    @pytest.mark.asyncio
+    async def test_get_nb_level_vfoa_no_receiver_kwarg(
+        self, dual_rx_handler: RigctldHandler, dual_rx_radio: AsyncMock
+    ) -> None:
+        dual_rx_radio.get_nb_level = AsyncMock(return_value=120)
+        resp = await dual_rx_handler.execute(_vfo_get_cmd("get_level", "VFOA", "NB"))
+        assert resp.ok
+        # MAIN path: legacy call without receiver kwarg.
+        dual_rx_radio.get_nb_level.assert_awaited_once_with()
+
+    @pytest.mark.asyncio
+    async def test_get_level_unknown_vfo_arg_returns_evfo(
+        self, dual_rx_handler: RigctldHandler, dual_rx_radio: AsyncMock
+    ) -> None:
+        resp = await dual_rx_handler.execute(
+            _vfo_get_cmd("get_level", "VFOC", "STRENGTH")
+        )
+        assert resp.error == HamlibError.EVFO
+
+    @pytest.mark.asyncio
+    async def test_get_strength_single_rx_vfob_returns_evfo(
+        self, single_rx_handler: RigctldHandler, single_rx_radio: AsyncMock
+    ) -> None:
+        single_rx_radio.radio_state = RadioState()
+        resp = await single_rx_handler.execute(
+            _vfo_get_cmd("get_level", "VFOB", "STRENGTH")
+        )
+        assert resp.error == HamlibError.EVFO
+
+    @pytest.mark.asyncio
+    async def test_set_rfpower_ignores_vfo_arg(
+        self, dual_rx_handler: RigctldHandler, dual_rx_radio: AsyncMock
+    ) -> None:
+        resp = await dual_rx_handler.execute(
+            _vfo_set_cmd("set_level", "VFOB", "RFPOWER", "0.5")
+        )
+        assert resp.ok
+        # RFPOWER is global — call without receiver kwarg.
+        dual_rx_radio.set_rf_power.assert_awaited_once_with(round(0.5 * 255))
+
+    @pytest.mark.asyncio
+    async def test_set_nb_level_vfob_routes_to_sub(
+        self, dual_rx_handler: RigctldHandler, dual_rx_radio: AsyncMock
+    ) -> None:
+        resp = await dual_rx_handler.execute(
+            _vfo_set_cmd("set_level", "VFOB", "NB", "0.5")
+        )
+        assert resp.ok
+        dual_rx_radio.set_nb_level.assert_awaited_once_with(
+            round(0.5 * 255), receiver=1
+        )
+
+    @pytest.mark.asyncio
+    async def test_set_level_single_rx_vfob_returns_evfo(
+        self, single_rx_handler: RigctldHandler, single_rx_radio: AsyncMock
+    ) -> None:
+        resp = await single_rx_handler.execute(
+            _vfo_set_cmd("set_level", "VFOB", "RFPOWER", "0.5")
+        )
+        assert resp.error == HamlibError.EVFO
+        single_rx_radio.set_rf_power.assert_not_awaited()
+
+
+class TestPerVfoFunc:
+    """`u`/`U` per-VFO routing (issue #1345).
+
+    Per-receiver funcs (NB, NR) route via ``receiver=`` kwarg.  Radio-
+    global funcs (VOX, TUNER, COMP, etc.) ignore the VFO arg.
+    """
+
+    @pytest.mark.asyncio
+    async def test_get_nb_vfob_routes_to_sub(
+        self, dual_rx_handler: RigctldHandler, dual_rx_radio: AsyncMock
+    ) -> None:
+        dual_rx_radio.get_nb = AsyncMock(return_value=True)
+        resp = await dual_rx_handler.execute(_vfo_get_cmd("get_func", "VFOB", "NB"))
+        assert resp.ok
+        dual_rx_radio.get_nb.assert_awaited_once_with(receiver=1)
+
+    @pytest.mark.asyncio
+    async def test_get_nb_vfoa_no_receiver_kwarg(
+        self, dual_rx_handler: RigctldHandler, dual_rx_radio: AsyncMock
+    ) -> None:
+        dual_rx_radio.get_nb = AsyncMock(return_value=True)
+        resp = await dual_rx_handler.execute(_vfo_get_cmd("get_func", "VFOA", "NB"))
+        assert resp.ok
+        dual_rx_radio.get_nb.assert_awaited_once_with()
+
+    @pytest.mark.asyncio
+    async def test_get_vox_ignores_vfo_arg(
+        self, dual_rx_handler: RigctldHandler, dual_rx_radio: AsyncMock
+    ) -> None:
+        # VOX is radio-global.
+        dual_rx_radio.get_vox = AsyncMock(return_value=True)
+        resp = await dual_rx_handler.execute(_vfo_get_cmd("get_func", "VFOB", "VOX"))
+        assert resp.ok
+        dual_rx_radio.get_vox.assert_awaited_once_with()
+
+    @pytest.mark.asyncio
+    async def test_set_nb_vfob_routes_to_sub(
+        self, dual_rx_handler: RigctldHandler, dual_rx_radio: AsyncMock
+    ) -> None:
+        resp = await dual_rx_handler.execute(
+            _vfo_set_cmd("set_func", "VFOB", "NB", "1")
+        )
+        assert resp.ok
+        dual_rx_radio.set_nb.assert_awaited_once_with(True, receiver=1)
+
+    @pytest.mark.asyncio
+    async def test_set_vox_ignores_vfo_arg(
+        self, dual_rx_handler: RigctldHandler, dual_rx_radio: AsyncMock
+    ) -> None:
+        resp = await dual_rx_handler.execute(
+            _vfo_set_cmd("set_func", "VFOB", "VOX", "1")
+        )
+        assert resp.ok
+        # VOX is global — no receiver kwarg.
+        dual_rx_radio.set_vox.assert_awaited_once_with(True)
+
+    @pytest.mark.asyncio
+    async def test_get_func_unknown_vfo_arg_returns_evfo(
+        self, dual_rx_handler: RigctldHandler, dual_rx_radio: AsyncMock
+    ) -> None:
+        resp = await dual_rx_handler.execute(_vfo_get_cmd("get_func", "VFOC", "NB"))
+        assert resp.error == HamlibError.EVFO
+
+    @pytest.mark.asyncio
+    async def test_set_func_single_rx_vfob_returns_evfo(
+        self, single_rx_handler: RigctldHandler, single_rx_radio: AsyncMock
+    ) -> None:
+        resp = await single_rx_handler.execute(
+            _vfo_set_cmd("set_func", "VFOB", "NB", "1")
+        )
+        assert resp.error == HamlibError.EVFO
+        single_rx_radio.set_nb.assert_not_awaited()

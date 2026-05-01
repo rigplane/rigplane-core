@@ -27,9 +27,7 @@ class _StubRouting:
     structural conformance to the extended Protocol surface.
     """
 
-    async def get_level(
-        self, level: str, *, vfo: str | None = None
-    ) -> RigctldResponse:
+    async def get_level(self, level: str, *, vfo: str | None = None) -> RigctldResponse:
         return RigctldResponse(values=["0"])
 
     async def set_level(
@@ -37,9 +35,7 @@ class _StubRouting:
     ) -> RigctldResponse:
         return RigctldResponse(values=["RPRT 0"])
 
-    async def get_func(
-        self, func: str, *, vfo: str | None = None
-    ) -> RigctldResponse:
+    async def get_func(self, func: str, *, vfo: str | None = None) -> RigctldResponse:
         return RigctldResponse(values=["0"])
 
     async def set_func(
