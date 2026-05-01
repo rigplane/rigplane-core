@@ -4,7 +4,7 @@ Core data types used throughout the library.
 
 ## StateCache
 
-::: icom_lan.rigctld.state_cache.StateCache
+::: icom_lan.core._state_cache.StateCache
 
 ## Enums
 

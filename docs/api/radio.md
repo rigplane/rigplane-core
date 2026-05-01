@@ -2,7 +2,7 @@
 
 LAN-specific radio class. For new code, prefer the backend-neutral **[create_radio](public-api-surface.md)** + **Radio** API so the same code works over LAN or USB serial. Use `IcomRadio` when you need direct LAN control or are migrating from older examples.
 
-::: icom_lan.radio.IcomRadio
+::: icom_lan.runtime.radio.IcomRadio
 
 ## Reference
 

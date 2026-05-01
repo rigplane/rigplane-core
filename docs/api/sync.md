@@ -2,7 +2,7 @@
 
 Blocking wrapper around the async `IcomRadio` for use without `async/await`.
 
-::: icom_lan.sync.IcomRadio
+::: icom_lan.runtime.sync.IcomRadio
 
 ## Usage
 

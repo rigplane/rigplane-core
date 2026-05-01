@@ -17,7 +17,7 @@ Deprecated aliases still work during the deprecation window (two minor releases)
 
 ## AudioStream
 
-::: icom_lan.audio.AudioStream
+::: icom_lan.audio.lan_stream.AudioStream
 
 ## Runtime Audio Stats (`get_audio_stats`)
 
@@ -53,21 +53,21 @@ print(stats["packet_loss_percent"], stats["reorder_depth_ema_ms"])
 
 ## AudioPacket
 
-::: icom_lan.audio.AudioPacket
+::: icom_lan.audio.lan_stream.AudioPacket
 
 ## AudioState
 
-::: icom_lan.audio.AudioState
+::: icom_lan.audio.lan_stream.AudioState
 
 ## JitterBuffer
 
-::: icom_lan.audio.JitterBuffer
+::: icom_lan.audio.lan_stream.JitterBuffer
 
 ## Packet Functions
 
-::: icom_lan.audio.parse_audio_packet
+::: icom_lan.audio.lan_stream.parse_audio_packet
 
-::: icom_lan.audio.build_audio_packet
+::: icom_lan.audio.lan_stream.build_audio_packet
 
 ## Internal Transcoder Layer
 
@@ -83,8 +83,8 @@ future high-level PCM APIs.
 
 ## AudioBus (pub/sub multi-consumer)
 
-::: icom_lan.audio_bus.AudioBus
-::: icom_lan.audio_bus.AudioSubscription
+::: icom_lan.audio.bus.AudioBus
+::: icom_lan.audio.bus.AudioSubscription
 
 The AudioBus provides pub/sub distribution for radio RX audio. Multiple consumers (WebSocket broadcaster, audio bridge, recorders) share a single radio RX stream.
 
