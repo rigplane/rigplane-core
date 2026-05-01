@@ -63,7 +63,7 @@ jobs:
       - name: Run tests
         id: tests
         run: |
-          uv run pytest tests/test_*.py -v --tb=short --timeout=300 --timeout-method=thread \
+          uv run pytest tests/ --ignore=tests/integration -v --tb=short --timeout=300 --timeout-method=thread \
             | tee pytest-output.txt
           SUMMARY=$(tail -1 pytest-output.txt)
           PASSED=$(echo "$SUMMARY" | grep -oP '\d+ passed' | grep -oP '\d+' || echo "0")
