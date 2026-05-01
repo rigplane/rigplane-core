@@ -37,6 +37,10 @@ from ..radio_state import RadioState
 from ..capabilities import CAP_AUDIO, CAP_SCOPE
 from ..audio_analyzer import AudioAnalyzer
 from ..audio_fft_scope import AudioFftScope
+from ..env_config import (
+    get_audio_rx_jitter_ceiling_ms,
+    get_audio_rx_jitter_floor_ms,
+)
 from ..startup_checks import assert_radio_startup_ready
 from ._delta_encoder import DeltaEncoder  # noqa: TID251
 from .discovery import DiscoveryResponder  # noqa: TID251
@@ -1414,6 +1418,8 @@ class WebServer:
                     "sampleRate": 48000,
                     "channels": 1,
                     "codecs": ["opus"],
+                    "jitterFloorMs": get_audio_rx_jitter_floor_ms(),
+                    "jitterCeilingMs": get_audio_rx_jitter_ceiling_ms(),
                 },
                 "antennas": profile.antenna_tx_count,
                 "webrtc": rtc_capability_info(),

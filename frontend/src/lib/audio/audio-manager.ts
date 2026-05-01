@@ -12,6 +12,7 @@ import { RxPlayer, type RxAudioFocus } from './rx-player';
 import { TxMic } from './tx-mic';
 import { setAudioConnected } from '../stores/connection.svelte';
 import { setRxEnabled, setTxEnabled } from '../stores/audio.svelte';
+import { getCapabilities } from '$lib/stores/capabilities.svelte';
 
 export type AudioFocus = RxAudioFocus;
 
@@ -84,6 +85,10 @@ class AudioManager {
     if (this._rxEnabled) return;
     this._rxEnabled = true;
     setRxEnabled(true);
+    const audioCfg = getCapabilities()?.audioConfig;
+    if (audioCfg?.jitterFloorMs !== undefined && audioCfg?.jitterCeilingMs !== undefined) {
+      this.rxPlayer.setJitterBounds(audioCfg.jitterFloorMs, audioCfg.jitterCeilingMs);
+    }
     this.rxPlayer.start();
     this.connect();
     this.notify();

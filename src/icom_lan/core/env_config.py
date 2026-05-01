@@ -13,6 +13,8 @@ __all__ = [
     "get_audio_sample_rate",
     "get_audio_broadcaster_high_watermark",
     "get_audio_client_high_watermark",
+    "get_audio_rx_jitter_floor_ms",
+    "get_audio_rx_jitter_ceiling_ms",
 ]
 
 logger = logging.getLogger(__name__)
@@ -23,6 +25,8 @@ _DEFAULTS: dict[str, int] = {
     "ICOM_AUDIO_SAMPLE_RATE": 48000,
     "ICOM_AUDIO_BROADCASTER_HIGH_WATERMARK": 10,
     "ICOM_AUDIO_CLIENT_HIGH_WATERMARK": 10,
+    "ICOM_AUDIO_RX_JITTER_FLOOR_MS": 50,
+    "ICOM_AUDIO_RX_JITTER_CEILING_MS": 300,
 }
 
 
@@ -99,3 +103,53 @@ def get_audio_client_high_watermark() -> int:
     Reads ``ICOM_AUDIO_CLIENT_HIGH_WATERMARK``.  Must be a positive integer.
     """
     return _read_positive_int("ICOM_AUDIO_CLIENT_HIGH_WATERMARK")
+
+
+def _jitter_bounds() -> tuple[int, int]:
+    """Read and cross-validate jitter floor/ceiling.
+
+    Cross-validation: floor <= ceiling and ceiling <= 2000.  On any violation
+    BOTH values fall back to defaults (no half-apply).
+    """
+    floor_default = _DEFAULTS["ICOM_AUDIO_RX_JITTER_FLOOR_MS"]
+    ceiling_default = _DEFAULTS["ICOM_AUDIO_RX_JITTER_CEILING_MS"]
+    floor = _read_positive_int("ICOM_AUDIO_RX_JITTER_FLOOR_MS")
+    ceiling = _read_positive_int("ICOM_AUDIO_RX_JITTER_CEILING_MS")
+    if ceiling > 2000:
+        msg = (
+            f"env_config: ICOM_AUDIO_RX_JITTER_CEILING_MS={ceiling} must be <= 2000, "
+            f"reverting both to defaults ({floor_default}/{ceiling_default})"
+        )
+        logger.warning(msg)
+        print(f"Warning: {msg}", file=sys.stderr)
+        return floor_default, ceiling_default
+    if floor > ceiling:
+        msg = (
+            f"env_config: ICOM_AUDIO_RX_JITTER_FLOOR_MS={floor} > "
+            f"ICOM_AUDIO_RX_JITTER_CEILING_MS={ceiling}, "
+            f"reverting both to defaults ({floor_default}/{ceiling_default})"
+        )
+        logger.warning(msg)
+        print(f"Warning: {msg}", file=sys.stderr)
+        return floor_default, ceiling_default
+    return floor, ceiling
+
+
+def get_audio_rx_jitter_floor_ms() -> int:
+    """Return the configured RX jitter buffer floor in milliseconds.
+
+    Reads ``ICOM_AUDIO_RX_JITTER_FLOOR_MS``.  Must be a positive integer
+    and must not exceed the ceiling.  Falls back to 50 with a warning on
+    any violation.
+    """
+    return _jitter_bounds()[0]
+
+
+def get_audio_rx_jitter_ceiling_ms() -> int:
+    """Return the configured RX jitter buffer ceiling in milliseconds.
+
+    Reads ``ICOM_AUDIO_RX_JITTER_CEILING_MS``.  Must be a positive integer,
+    must not exceed 2000, and must not be less than the floor.  Falls back
+    to 300 with a warning on any violation.
+    """
+    return _jitter_bounds()[1]

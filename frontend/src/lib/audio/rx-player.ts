@@ -46,6 +46,11 @@ export class RxPlayer {
   private _mainGainDb = 0;
   private _subGainDb = 0;
 
+  // Jitter buffer bounds (seconds) — defaults match env_config defaults
+  // (50 ms floor / 300 ms ceiling). Configurable via setJitterBounds().
+  private _floorSec = 0.05;
+  private _ceilingSec = 0.30;
+
   get volume(): number {
     return this._volume;
   }
@@ -86,6 +91,13 @@ export class RxPlayer {
     if (channel === 'main') this._mainGainDb = db;
     else if (channel === 'sub') this._subGainDb = db;
     this._applyGraphState();
+  }
+
+  /** Configure jitter buffer bounds. Call before first feed() — typically after
+   *  capabilities are fetched. Values must be in milliseconds (positive integers). */
+  setJitterBounds(floorMs: number, ceilingMs: number): void {
+    this._floorSec = floorMs / 1000;
+    this._ceilingSec = ceilingMs / 1000;
   }
 
   get active(): boolean {
@@ -235,10 +247,10 @@ export class RxPlayer {
     src.connect(this.preGain);
 
     const now = this.ctx.currentTime;
-    if (this.nextPlayTime < now + 0.01) {
-      this.nextPlayTime = now + 0.02;
+    if (this.nextPlayTime < now + this._floorSec / 2) {
+      this.nextPlayTime = now + this._floorSec;
     }
-    if (this.nextPlayTime > now + 0.15) return;
+    if (this.nextPlayTime > now + this._ceilingSec) return;
 
     src.start(this.nextPlayTime);
     this.nextPlayTime += buf.duration;
