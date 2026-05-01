@@ -57,6 +57,26 @@ def _read_positive_int(var: str) -> int:
     return value
 
 
+def _try_read_positive_int(var: str) -> tuple[int, bool]:
+    """Read *var* and report parse success.
+
+    Returns ``(value, ok)`` where ``ok`` is False ONLY when the env var is
+    set but invalid (non-int or ``<= 0``). Absent vars return
+    ``(default, True)``.
+    """
+    default = _DEFAULTS[var]
+    raw = os.environ.get(var)
+    if raw is None:
+        return default, True
+    try:
+        value = int(raw)
+    except ValueError:
+        return default, False
+    if value <= 0:
+        return default, False
+    return value, True
+
+
 def get_audio_sample_rate() -> int:
     """Return the configured default audio sample rate in Hz.
 
@@ -108,13 +128,31 @@ def get_audio_client_high_watermark() -> int:
 def _jitter_bounds() -> tuple[int, int]:
     """Read and cross-validate jitter floor/ceiling.
 
-    Cross-validation: floor <= ceiling and ceiling <= 2000.  On any violation
-    BOTH values fall back to defaults (no half-apply).
+    If either env var is set but invalid (non-int or ``<= 0``), BOTH revert
+    to defaults. Then floor <= ceiling and ceiling <= 2000 are enforced; on
+    any violation BOTH revert to defaults (no half-apply).
     """
     floor_default = _DEFAULTS["ICOM_AUDIO_RX_JITTER_FLOOR_MS"]
     ceiling_default = _DEFAULTS["ICOM_AUDIO_RX_JITTER_CEILING_MS"]
-    floor = _read_positive_int("ICOM_AUDIO_RX_JITTER_FLOOR_MS")
-    ceiling = _read_positive_int("ICOM_AUDIO_RX_JITTER_CEILING_MS")
+    floor, floor_ok = _try_read_positive_int("ICOM_AUDIO_RX_JITTER_FLOOR_MS")
+    ceiling, ceiling_ok = _try_read_positive_int("ICOM_AUDIO_RX_JITTER_CEILING_MS")
+    if not (floor_ok and ceiling_ok):
+        invalid: list[str] = []
+        if not floor_ok:
+            invalid.append(
+                f"ICOM_AUDIO_RX_JITTER_FLOOR_MS={os.environ.get('ICOM_AUDIO_RX_JITTER_FLOOR_MS')!r}"
+            )
+        if not ceiling_ok:
+            invalid.append(
+                f"ICOM_AUDIO_RX_JITTER_CEILING_MS={os.environ.get('ICOM_AUDIO_RX_JITTER_CEILING_MS')!r}"
+            )
+        msg = (
+            f"env_config: invalid jitter env var(s) {', '.join(invalid)}, "
+            f"reverting both to defaults ({floor_default}/{ceiling_default})"
+        )
+        logger.warning(msg)
+        print(f"Warning: {msg}", file=sys.stderr)
+        return floor_default, ceiling_default
     if ceiling > 2000:
         msg = (
             f"env_config: ICOM_AUDIO_RX_JITTER_CEILING_MS={ceiling} must be <= 2000, "

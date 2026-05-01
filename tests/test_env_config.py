@@ -225,6 +225,66 @@ class TestGetAudioRxJitterBounds:
 
         assert get_audio_rx_jitter_ceiling_ms() == 2000
 
+    def test_floor_valid_ceiling_invalid_string_reverts_both(self, monkeypatch, caplog):
+        monkeypatch.setenv("ICOM_AUDIO_RX_JITTER_FLOOR_MS", "100")
+        monkeypatch.setenv("ICOM_AUDIO_RX_JITTER_CEILING_MS", "bad")
+        from icom_lan.env_config import (
+            get_audio_rx_jitter_ceiling_ms,
+            get_audio_rx_jitter_floor_ms,
+        )
+
+        with caplog.at_level(logging.WARNING, logger="icom_lan.env_config"):
+            floor = get_audio_rx_jitter_floor_ms()
+            ceiling = get_audio_rx_jitter_ceiling_ms()
+        assert floor == 50
+        assert ceiling == 300
+        assert "ICOM_AUDIO_RX_JITTER_CEILING_MS" in caplog.text
+
+    def test_floor_invalid_ceiling_valid_reverts_both(self, monkeypatch, caplog):
+        monkeypatch.setenv("ICOM_AUDIO_RX_JITTER_FLOOR_MS", "bad")
+        monkeypatch.setenv("ICOM_AUDIO_RX_JITTER_CEILING_MS", "500")
+        from icom_lan.env_config import (
+            get_audio_rx_jitter_ceiling_ms,
+            get_audio_rx_jitter_floor_ms,
+        )
+
+        with caplog.at_level(logging.WARNING, logger="icom_lan.env_config"):
+            floor = get_audio_rx_jitter_floor_ms()
+            ceiling = get_audio_rx_jitter_ceiling_ms()
+        assert floor == 50
+        assert ceiling == 300
+        assert "ICOM_AUDIO_RX_JITTER_FLOOR_MS" in caplog.text
+
+    def test_floor_valid_ceiling_zero_reverts_both(self, monkeypatch, caplog):
+        monkeypatch.setenv("ICOM_AUDIO_RX_JITTER_FLOOR_MS", "100")
+        monkeypatch.setenv("ICOM_AUDIO_RX_JITTER_CEILING_MS", "0")
+        from icom_lan.env_config import (
+            get_audio_rx_jitter_ceiling_ms,
+            get_audio_rx_jitter_floor_ms,
+        )
+
+        with caplog.at_level(logging.WARNING, logger="icom_lan.env_config"):
+            floor = get_audio_rx_jitter_floor_ms()
+            ceiling = get_audio_rx_jitter_ceiling_ms()
+        assert floor == 50
+        assert ceiling == 300
+        assert "ICOM_AUDIO_RX_JITTER_CEILING_MS" in caplog.text
+
+    def test_floor_zero_ceiling_valid_reverts_both(self, monkeypatch, caplog):
+        monkeypatch.setenv("ICOM_AUDIO_RX_JITTER_FLOOR_MS", "0")
+        monkeypatch.setenv("ICOM_AUDIO_RX_JITTER_CEILING_MS", "500")
+        from icom_lan.env_config import (
+            get_audio_rx_jitter_ceiling_ms,
+            get_audio_rx_jitter_floor_ms,
+        )
+
+        with caplog.at_level(logging.WARNING, logger="icom_lan.env_config"):
+            floor = get_audio_rx_jitter_floor_ms()
+            ceiling = get_audio_rx_jitter_ceiling_ms()
+        assert floor == 50
+        assert ceiling == 300
+        assert "ICOM_AUDIO_RX_JITTER_FLOOR_MS" in caplog.text
+
 
 class TestHandlerIntegration:
     """Verify that env vars are picked up when handlers are instantiated."""
