@@ -4,67 +4,52 @@
 
 ---
 
-## Уровни абстракции (снизу вверх)
+## Layered package structure
+
+`src/icom_lan/` is organised into 11 layered Python packages with
+explicit `import-linter`-enforced boundaries. Higher layers depend on
+lower ones; siblings are independent. See
+[`docs/plans/2026-04-29-modularization-plan.md`](docs/plans/2026-04-29-modularization-plan.md)
+§1 for the full layer matrix and `LAYER.md` inside each package for
+charter, public API, and forbidden patterns.
 
 ```
-┌─────────────────────────────────────────────────────────────┐
-│                   Frontend (Web UI)                         │
-│  Svelte 5 + TypeScript → WebSocket /api/v1/ws state_update  │
-│  HTTP fallback for initial load; WS for commands + scope    │
-└─────────────────────────────────────────────────────────────┘
-                              ↕
-┌─────────────────────────────────────────────────────────────┐
-│              Web Server (src/icom_lan/web/)                 │
-│  • HTTP API: /api/v1/info, /api/v1/state, /api/v1/capabilities
-│  • WebSocket handlers: control, scope, audio                │
-│  • RadioPoller: 200ms state polling                         │
-│  • AudioBroadcaster: Opus → browser                         │
-│  • DX Cluster client (telnet)                               │
-└─────────────────────────────────────────────────────────────┘
-                              ↕
-┌─────────────────────────────────────────────────────────────┐
-│          Radio API Layer (src/icom_lan/radio.py)            │
-│  IcomRadio (high-level async API)                           │
-│  • get_frequency(), set_mode(), get_s_meter()               │
-│  • Scope management (enable/disable/data callbacks)         │
-│  • Audio RX/TX (start/stop/push)                            │
-│  • Commander queue (serialized CI-V commands)               │
-│  • State cache (TTL-based)                                  │
-│  Implements: Radio protocol + AudioCapable + ScopeCapable   │
-└─────────────────────────────────────────────────────────────┘
-                              ↕
-┌─────────────────────────────────────────────────────────────┐
-│       Backend Layer (LAN/USB Serial transport)              │
-│  • LanBackend (UDP 50001/2/3): auth + CI-V + audio          │
-│  • SerialBackend (USB): CI-V over serial + USB audio        │
-│  Transport abstraction: send_civ() / recv_civ()             │
-│  Connection FSM: IDLE → AUTH → PORTS_READY → READY          │
-└─────────────────────────────────────────────────────────────┘
-                              ↕
-┌─────────────────────────────────────────────────────────────┐
-│    Command Layer (src/icom_lan/commands.py)                 │
-│  • 134 CI-V command builders (get_freq, set_mode, etc)      │
-│  • Command parsers (parse_frequency_response, etc)          │
-│  • CommandMap: rig-specific overrides                       │
-│  • Command29 wrapper для dual-receiver (IC-7610)            │
-└─────────────────────────────────────────────────────────────┘
-                              ↕
-┌─────────────────────────────────────────────────────────────┐
-│   CI-V Protocol (src/icom_lan/civ.py)                       │
-│  Binary framing: FE FE [to] [from] [cmd] [sub] [data] FD    │
-│  BCD encoding (frequency), meter calibration                │
-└─────────────────────────────────────────────────────────────┘
-                              ↕
-┌─────────────────────────────────────────────────────────────┐
-│  Rig Profiles (rigs/*.toml) → Data-Driven Config            │
-│  • Capabilities (dual_rx, scope, nb, nr, etc)               │
-│  • Modes (USB, LSB, CW, FM, AM, RTTY)                       │
-│  • Filters (FIL1, FIL2, FIL3)                               │
-│  • Band stack (160m-10m BSR codes)                          │
-│  • Command overrides (IC-7300 vs IC-7610)                   │
-│  • AGC labels (FAST/MID/SLOW vs 1/2/3)                      │
-└─────────────────────────────────────────────────────────────┘
+┌────────────────────────────────────────────────────────────────────┐
+│ cli/                       — Command-line entrypoints              │
+├────────────────────────────────────────────────────────────────────┤
+│ web/        rigctld/       — UI servers (siblings, independent)    │
+├────────────────────────────────────────────────────────────────────┤
+│ backends/                  — Factory + per-radio assembly          │
+├────────────────────────────────────────────────────────────────────┤
+│ runtime/                   — IcomRadio + state + mixins + pollers  │
+├────────────────────────────────────────────────────────────────────┤
+│ profiles/   audio/         — Rig profiles · Audio subsystem        │
+├────────────────────────────────────────────────────────────────────┤
+│ commands/   scope/   dsp/  — CI-V builders · scope · DSP pipeline  │
+├────────────────────────────────────────────────────────────────────┤
+│ core/                      — types, transport, civ, contracts      │
+└────────────────────────────────────────────────────────────────────┘
 ```
+
+**Rules of thumb (CLAUDE.md "Layer boundaries" section is canonical):**
+
+- Adding a new radio backend → conform to relevant Capability Protocols
+  (`AudioCapable`, `StatePollable`, `RigctldRoutable`, `UsbAudioCapable`,
+  …) in `core.radio_protocol`. Zero upper-layer changes if Protocols
+  are honoured.
+- New cross-layer imports must respect the matrix; `import-linter`
+  catches violations at CI.
+- The `Radio` Protocol (in `core.radio_protocol`) is the stable public
+  contract surfaced via `icom_lan` Tier 1; capability protocols
+  (`*Capable`, `StatePollable`, `StatePoller`, `RigctldRoutable`,
+  `UsbAudioCapable`) drive `isinstance`-based feature detection — see
+  [`docs/plans/2026-04-29-modularization-plan.md`](docs/plans/2026-04-29-modularization-plan.md)
+  §2 and `docs/api/public-api-surface.md`.
+
+`import-linter` (config at repo root `.importlinter`, run via
+`uv run lint-imports`) enforces one layered contract plus three
+sibling-independence contracts (`web`⊥`rigctld`,
+`profiles`⊥`audio`, `commands`⊥`scope`⊥`dsp`).
 
 ---
 
@@ -106,12 +91,13 @@ get_s_meter_sql_status = [0x15, 0x01]  # Override IC-7610 command
 
 ---
 
-### 2️⃣ **Rig Loader** (`src/icom_lan/rig_loader.py`)
+### 2️⃣ **Rig Loader** (`src/icom_lan/profiles/rig_loader.py`)
 
 Парсит TOML → валидирует → создаёт runtime объекты:
 
 ```python
-from icom_lan.rig_loader import load_rig
+from icom_lan.profiles.rig_loader import load_rig
+# (`from icom_lan.rig_loader import load_rig` also still works via shim)
 
 rig = load_rig("rigs/ic7610.toml")
 profile: RadioProfile = rig.to_profile()      # Runtime profile
@@ -120,11 +106,11 @@ cmd_map: CommandMap = rig.to_command_map()    # Command overrides
 
 **Выходные объекты:**
 - `RadioProfile` — capabilities, modes, filters, band stack, freq ranges
-- `CommandMap` — словарь wire bytes для команд (используется в `commands.py`)
+- `CommandMap` — словарь wire bytes для команд (используется в `commands/`)
 
 ---
 
-### 3️⃣ **Radio API** (`src/icom_lan/radio.py`)
+### 3️⃣ **Radio API** (`src/icom_lan/runtime/radio.py`)
 
 Высокоуровневый async API:
 
@@ -157,7 +143,7 @@ audio_frame = await radio.recv_audio()  # Opus/PCM bytes
 
 ---
 
-### 4️⃣ **Commands Layer** (`src/icom_lan/commands.py`)
+### 4️⃣ **Commands Layer** (`src/icom_lan/commands/`)
 
 **134 функции-builders** для CI-V команд:
 
@@ -196,7 +182,7 @@ get_frequency(receiver=RECEIVER_SUB)   # → 0x07 0xD1 prefix
 
 ### 5️⃣ **Backend Layer** (Transport)
 
-**LAN Backend** (`backends/icom7610/drivers/`):
+**LAN Backend** (`src/icom_lan/backends/icom7610/`):
 - UDP port 50001 → control (auth, token renewal)
 - UDP port 50002 → CI-V commands
 - UDP port 50003 → audio (Opus/PCM)
@@ -292,8 +278,13 @@ ws.send(JSON.stringify({
 - Command overrides через `CommandMap`
 
 ### 🔹 Protocol abstraction
-- `Radio` protocol — backend-agnostic API
-- `AudioCapable`, `ScopeCapable` — capability protocols
+- `Radio` protocol — backend-agnostic API (in `core.radio_protocol`)
+- Capability protocols (`AudioCapable`, `ScopeCapable`,
+  `MetersCapable`, `LevelsCapable`, `StatePollable`/`StatePoller`,
+  `RigctldRoutable`, `UsbAudioCapable`, …) — `isinstance`-based
+  feature detection so upper layers stay backend-agnostic; see
+  `docs/plans/2026-04-29-modularization-plan.md` §2 and
+  `docs/api/public-api-surface.md`
 - LAN vs Serial — одинаковый high-level API
 
 ### 🔹 Commander queue
@@ -376,7 +367,7 @@ RadioProfile passed to IcomRadio(profile=...)
 Used for:
   • Capability checks (if "scope" in profile.capabilities)
   • Mode/filter lists (frontend dropdown)
-  • Command overrides (cmd_map in commands.py)
+  • Command overrides (cmd_map in `commands/`)
   • Band stack (BSR codes)
 ```
 
@@ -391,7 +382,7 @@ Used for:
 4. Готово — библиотека автоматически поддержит модель
 
 ### ✅ Добавить новую команду
-1. Добавить builder в `commands.py`: `def get_new_feature()`
+1. Добавить builder в `commands/<domain>.py`: `def get_new_feature()`
 2. Добавить parser: `def parse_new_feature_response()`
 3. Добавить метод в `IcomRadio`: `async def get_new_feature()`
 4. Добавить в Web API handlers
@@ -406,7 +397,9 @@ Used for:
 
 ## Тестирование
 
-- **~4796 unit tests** (5 минут runtime)
+- **5230 unit tests** collected (5218 passed, 2 skipped, 9 xfailed,
+  1 xpassed) on `main` after epics #1283 (modularization) +
+  #1322 (capability protocols)
   - Command builders/parsers, protocol roundtrips
   - Rig profile validation (TOML schema)
   - Web API (HTTP + WebSocket)

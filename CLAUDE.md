@@ -46,6 +46,30 @@ Never bare `python` or `pytest`. Worktrees: `uv sync --all-extras` first.
 
 ---
 
+## Layer boundaries
+
+`src/icom_lan/` is organised into 11 layered packages with `import-linter`-enforced boundaries (config at repo root `.importlinter`; full matrix in `docs/plans/2026-04-29-modularization-plan.md` §1, §3; per-layer charters in `src/icom_lan/<layer>/LAYER.md`).
+
+Layers (top → bottom; higher = more dependent):
+
+| Layer | Purpose |
+|---|---|
+| `cli/` | Command-line entrypoints |
+| `web/`, `rigctld/` | UI servers (siblings — independent) |
+| `backends/` | Factory + per-radio assembly |
+| `runtime/` | IcomRadio + state + mixins + pollers |
+| `profiles/`, `audio/` | Rig profiles · audio subsystem (siblings) |
+| `commands/`, `scope/`, `dsp/` | CI-V builders · scope · DSP (siblings) |
+| `core/` | Foundational: types, transport, civ, contracts |
+
+When making changes:
+- Adding a new radio backend → conform to the relevant Capability Protocols in `core.radio_protocol` (`AudioCapable`, `StatePollable`, `RigctldRoutable`, `UsbAudioCapable`, …); zero upper-layer changes if the protocols are honoured.
+- New cross-layer imports must respect the matrix; if a sensible-looking import is rejected by the linter, the file is in the wrong layer.
+- Run `uv run lint-imports` before committing significant structural changes (CI gates every PR anyway).
+- Backwards compatibility: old top-level paths (`icom_lan.radio`, `icom_lan.commander`, `icom_lan.rig_loader`, …) keep working via `sys.modules`-aliased re-export shims; new code SHOULD use canonical paths (`icom_lan.runtime.radio`, etc.).
+
+---
+
 ## Testing
 
 - TDD — test first, implement second
