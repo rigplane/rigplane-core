@@ -291,6 +291,104 @@ class TestParseLineErrors:
             parse_line(b"\\dump_state extra")
 
 
+# ── parse_line: VFO-prefix support (Variant A — #1342, #1343) ────────────────
+
+
+class TestParseLineVfoPrefix:
+    """Parser must accept leading VFO arg under chk_vfo=1 (#1319).
+
+    Variant A precondition. All cases here are xfailed until A2 (#1343)
+    teaches ``parse_line`` to consume a leading ``VFOA``/``VFOB``/
+    ``currVFO`` token. The exact attribute layout (kept in ``args`` vs.
+    stripped into a new ``vfo`` field) is up to A2 — the assertions
+    here lock in the *short_cmd* and *non-VFO args*; A2's PR updates
+    the ``args`` shape and removes the xfail marker.
+
+    Hamlib spec — https://hamlib.sourceforge.net/manuals/4.5.5/rigctl.1.html
+    lists the VFO-prefixable commands under "rigctl Reading commands"
+    and "rigctl Writing commands". The 13 short forms covered here
+    correspond 1:1 with the wsjtx/fldigi/JS8Call init traces.
+
+    xfail strategy: ``strict=False`` so each subsequent A2-A5 PR may
+    flip individual cases to xpass without breaking CI; the marker is
+    removed in A2's PR once all cases pass cleanly.
+    """
+
+    @pytest.mark.xfail(
+        reason="A2 (#1343) — parser VFO-prefix support not yet landed",
+        strict=False,
+    )
+    @pytest.mark.parametrize(
+        "wire,expected_short,expected_long",
+        [
+            # GET commands — Hamlib prefixes VFO under chk_vfo=1.
+            (b"f VFOA", "f", "get_freq"),
+            (b"f VFOB", "f", "get_freq"),
+            (b"f currVFO", "f", "get_freq"),
+            (b"m VFOA", "m", "get_mode"),
+            (b"m VFOB", "m", "get_mode"),
+            (b"t VFOA", "t", "get_ptt"),
+            (b"j VFOA", "j", "get_rit"),
+            (b"s VFOA", "s", "get_split_vfo"),
+            (b"l VFOA STRENGTH", "l", "get_level"),
+            (b"u VFOA NB", "u", "get_func"),
+            # SET commands — Hamlib prefixes VFO under chk_vfo=1.
+            (b"F VFOA 14250000", "F", "set_freq"),
+            (b"M VFOA USB 2400", "M", "set_mode"),
+            (b"T VFOA 1", "T", "set_ptt"),
+            (b"L VFOA RFPOWER 0.5", "L", "set_level"),
+            (b"U VFOA NB 1", "U", "set_func"),
+            (b"S VFOA 1 VFOB", "S", "set_split_vfo"),
+        ],
+    )
+    def test_parses_vfo_prefix(
+        self, wire: bytes, expected_short: str, expected_long: str
+    ) -> None:
+        """A2 must accept the wire form without raising ``ValueError``.
+
+        Today these all raise because the get-command CommandDefs have
+        ``max_args=0`` and the set-commands have ``max_args=1`` or 2 —
+        none of them leave room for a leading VFO token.
+        """
+        cmd = parse_line(wire)
+        assert cmd.short_cmd == expected_short
+        assert cmd.long_cmd == expected_long
+
+
+class TestParseLineBareFormStillWorks:
+    """Bare-form (chk_vfo=0) commands must keep parsing on `main`.
+
+    These are the regression-guard for A2-A5: the parser changes to
+    accept VFO prefix MUST NOT break the bare form used by single-RX
+    profiles. NOT xfailed — passes on `main` already.
+    """
+
+    def test_bare_get_freq_still_parses(self) -> None:
+        cmd = parse_line(b"f")
+        assert cmd.short_cmd == "f"
+        assert cmd.args == ()
+
+    def test_bare_get_mode_still_parses(self) -> None:
+        cmd = parse_line(b"m")
+        assert cmd.short_cmd == "m"
+        assert cmd.args == ()
+
+    def test_bare_get_ptt_still_parses(self) -> None:
+        cmd = parse_line(b"t")
+        assert cmd.short_cmd == "t"
+        assert cmd.args == ()
+
+    def test_bare_set_freq_still_parses(self) -> None:
+        cmd = parse_line(b"F 14250000")
+        assert cmd.short_cmd == "F"
+        assert cmd.args == ("14250000",)
+
+    def test_bare_set_split_vfo_still_parses(self) -> None:
+        cmd = parse_line(b"S 1 VFOB")
+        assert cmd.short_cmd == "S"
+        assert cmd.args == ("1", "VFOB")
+
+
 # ── format_error ──────────────────────────────────────────────────────────────
 
 
