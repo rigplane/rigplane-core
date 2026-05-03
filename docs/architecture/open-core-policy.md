@@ -59,6 +59,52 @@ SWR, and similar meter readings surfaced in `radio_poller.py` and the
 not analytics. It does not leave the user's machine and is not subject to
 this rule.
 
+### Carve-out — user-initiated diagnostic support reports
+
+A diagnostic report workflow that lets a user **explicitly send a bundle of
+local logs and state** to a maintainer-operated triage endpoint is
+permitted. Telemetry is forbidden because it is automatic, ambient, and
+invisible; a support report is the opposite of those things — the user
+authored it, knows what's in it, and chose to send it.
+
+A diagnostic report mechanism in open-core must satisfy **all** of these:
+
+- **No automatic, background, recurring, first-run, or silent collection or
+  submission.** Logs may be written locally on a rotating file basis (see
+  `SafeRotatingFileHandler` in `icom_lan.diagnostics`), but submission to a
+  remote endpoint is never automatic.
+- **The user must explicitly start the workflow every time.** No "always send
+  reports" toggle, no install-time consent that grants ongoing permission, no
+  background queue. Each report = one user gesture (CLI command, Web UI
+  button, Pro Tauri click).
+- **CLI defaults never upload.** `icom-lan diagnose` (no flags) builds and
+  saves locally. `--upload` is opt-in. With a TTY, the final consent prompt
+  defaults to "save locally" (`[y/N]` for upload), so accidentally hitting
+  Enter cannot transmit anything.
+- **Headless / non-TTY mode never prompts and never auto-uploads.** Scripted
+  use must explicitly pass `--upload` to send.
+- **Destination endpoint is visible before upload.** The full URL (including
+  any `ICOM_LAN_REPORT_ENDPOINT` override) appears in the preview shown to
+  the user.
+- **Bundle is always available locally.** The user can always choose "save
+  locally" instead of uploading; the ZIP file is the same.
+- **Contact fields are opt-in only.** Email and callsign are never
+  auto-populated from environment variables, system identity, prior reports,
+  or any ambient source — only typed by the user at submission time.
+- **The endpoint behaviour is documented as a public contract.** The shape
+  of the anonymous request lives in `docs/contracts/diagnostic-bundle-v1.md`,
+  so the open-core upload client builds against a non-proprietary spec.
+
+This carve-out does **not** allow:
+- Crash reporters that send automatically on uncaught exceptions.
+- "Send anonymous usage stats" toggles.
+- Rate-limited periodic uploads.
+- First-run consent dialogs that authorise future automatic sends.
+- Pre-filling of contact fields from any source.
+
+If a future feature does not fit cleanly inside this carve-out, the default
+is the broader §2 rule: no telemetry, no exceptions.
+
 ---
 
 ## 3. Headless mode is sacred
