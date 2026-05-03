@@ -2,18 +2,23 @@
 
 from __future__ import annotations
 
-import struct
-from collections.abc import AsyncGenerator
+import os as _os
 
-import pytest
+_os.environ.setdefault("ICOM_LAN_DISABLE_DIAGNOSTIC_LOGGING", "1")
+del _os
 
-from icom_lan.radio import IcomRadio  # noqa: TID251
-from icom_lan.types import HEADER_SIZE, PacketType
+import struct  # noqa: E402
+from collections.abc import AsyncGenerator  # noqa: E402
 
-from _perf_helpers import fast_connect
-from mock_server import MockIcomRadio
+import pytest  # noqa: E402
 
-from _caps import FULL_ICOM_CAPS as FULL_ICOM_CAPS  # noqa: F401 — re-export
+from icom_lan.radio import IcomRadio  # noqa: TID251, E402
+from icom_lan.types import HEADER_SIZE, PacketType  # noqa: E402
+
+from _perf_helpers import fast_connect  # noqa: E402
+from mock_server import MockIcomRadio  # noqa: E402
+
+from _caps import FULL_ICOM_CAPS as FULL_ICOM_CAPS  # noqa: F401, E402 — re-export
 
 _HEADER_FMT = "<IHHII"
 

@@ -13,21 +13,28 @@ Submodules and private symbols (``icom_lan.web``, ``icom_lan.cli``,
 may change without warning.
 """
 
-from importlib.metadata import version as _pkg_version
-from typing import Any
+from icom_lan.diagnostics import (
+    configure_diagnostic_logging as _configure_diagnostic_logging,
+)
+
+_configure_diagnostic_logging()
+del _configure_diagnostic_logging
+
+from importlib.metadata import version as _pkg_version  # noqa: E402
+from typing import Any  # noqa: E402
 
 __version__ = _pkg_version("icom-lan")
 
 # === Tier 1 — eager (semver-stable from v0.19) ===
 
-from .backends import (  # noqa: F401
+from .backends import (  # noqa: F401, E402
     BackendConfig,
     LanBackendConfig,
     SerialBackendConfig,
     YaesuCatBackendConfig,
     create_radio,
 )
-from .exceptions import (  # noqa: F401
+from .exceptions import (  # noqa: F401, E402
     AudioCodecBackendError,
     AudioError,
     AudioFormatError,
@@ -38,8 +45,8 @@ from .exceptions import (  # noqa: F401
     IcomLanError,
     TimeoutError,
 )
-from .profiles import RadioProfile  # noqa: F401
-from .radio_protocol import (  # noqa: F401
+from .profiles import RadioProfile  # noqa: F401, E402
+from .radio_protocol import (  # noqa: F401, E402
     AdvancedControlCapable,
     AntennaControlCapable,
     AudioCapable,
@@ -71,8 +78,8 @@ from .radio_protocol import (  # noqa: F401
     VfoSlotCapable,
     VoiceControlCapable,
 )
-from .radio_state import RadioState, VfoSlotState, YaesuStateExtension  # noqa: F401
-from .types import AudioCodec, BreakInMode, Mode  # noqa: F401
+from .radio_state import RadioState, VfoSlotState, YaesuStateExtension  # noqa: F401, E402
+from .types import AudioCodec, BreakInMode, Mode  # noqa: F401, E402
 
 # === Tier 2 — lazy via PEP 562 ===
 #

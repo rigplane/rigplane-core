@@ -15,6 +15,7 @@ dependencies = [
     "opuslib",
     "sounddevice",
     "numpy",
+    "platformdirs>=4.2",
 ]
 authors = [
     { name = "Sergey Morozik", email = "morozsm@gmail.com" },
