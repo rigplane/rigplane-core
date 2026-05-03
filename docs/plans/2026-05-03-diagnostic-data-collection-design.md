@@ -115,7 +115,8 @@ def configure_diagnostic_logging() -> None:
         )
         handler.setLevel(logging.DEBUG)
         handler.setFormatter(_DIAGNOSTIC_FORMATTER)
-        logging.getLogger().addHandler(handler)
+        # Attach to the `icom_lan` logger, NOT root — see "Logger scope" below.
+        logging.getLogger("icom_lan").addHandler(handler)
     except Exception as exc:
         sys.stderr.write(
             f"icom-lan: diagnostic logging disabled: {exc}\n"
@@ -126,6 +127,10 @@ logging.raiseExceptions = False
 ```
 
 Called once, near the top of `icom_lan/__init__.py` (or whichever entry point runs earliest in every code path: CLI, web, library import). Test isolation via `ICOM_LAN_DISABLE_DIAGNOSTIC_LOGGING=1` (set by `conftest.py` autouse fixture).
+
+**Logger scope:** the handler is attached to `logging.getLogger("icom_lan")`, **not** the root logger. This is deliberate — when icom-lan is imported as a library by a third-party app (a common Pro use case), the host application's own loggers (`myapp.foo`, `gunicorn`, `aiohttp.access`, etc.) must not be captured into icom-lan's diagnostic file. icom-lan emits via `logger = logging.getLogger(__name__)` where `__name__` always starts with `icom_lan.`, so propagation up to the `icom_lan` logger is automatic for our own code; foreign loggers stop at root and never reach our file. Pro contributors that want their own emissions captured can either add their own handler to `logging.getLogger("icom_lan_pro")` or emit through `logging.getLogger("icom_lan.diagnostics.contributor.<name>")` to ride the existing channel.
+
+This is also why this section says "no automatic submission" rather than "no automatic data collection": local rotating logs are *bounded local storage*, scoped to icom-lan's own loggers, capped at ~15 MiB, never transmitted without an explicit user action. Submission to a remote endpoint is what the open-core policy forbids automating, not the local logs themselves.
 
 **Cache-dir resolution** uses `platformdirs.user_cache_path("icom-lan")`: `~/.cache/icom-lan/logs/` on Linux, `~/Library/Caches/icom-lan/logs/` on macOS, `%LOCALAPPDATA%\icom-lan\Cache\logs\` on Windows.
 
@@ -281,19 +286,30 @@ class ReportSubmitted:
     received_at_unix: int
     auth_class: str  # 'anonymous' | 'authenticated'
 
+HeaderProvider = Callable[[], Awaitable[dict[str, str]]]
+
 async def upload_bundle(
     bundle_path: Path,
     metadata: dict[str, Any],
     *,
     endpoint: str | None = None,
-    request_signer: Callable[[ClientRequest], None] | None = None,
+    header_provider: HeaderProvider | None = None,
     timeout_s: float = 60.0,
 ) -> ReportSubmitted:
     """POST multipart {bundle, metadata} to endpoint.
 
-    `request_signer` is the extension hook for Pro: it receives the prepared
-    aiohttp ClientRequest before send and may add headers (e.g.
-    Authorization). Open-core invocation passes `None` (anonymous).
+    `header_provider` is the extension hook for Pro: an async callable that
+    returns additional HTTP headers to merge into the request (e.g.
+    `{"Authorization": "Bearer <token>"}`). Open-core invocation passes
+    `None` (anonymous upload, no extra headers).
+
+    The hook is intentionally HTTP-client-agnostic — a coroutine returning a
+    plain `dict[str, str]` of header name to value. Pro implements it using
+    whatever client and token-refresh logic it wants, without coupling
+    icom-lan core to aiohttp internals (or any HTTP client at all). On 401
+    the upload client calls `header_provider` a second time and retries
+    once, so Pro's implementation can do refresh-on-call without external
+    coordination.
     """
     endpoint = endpoint or os.environ.get(
         "ICOM_LAN_REPORT_ENDPOINT",
@@ -302,7 +318,7 @@ async def upload_bundle(
     ...
 ```
 
-- Single attempt with 60s timeout. No retries beyond a single 401-driven token refresh callback (Pro's signer can refresh and retry once).
+- Single attempt with 60s timeout, plus one retry on 401 if `header_provider` is set (calls it again before retry; Pro's implementation refreshes the token).
 - `429 rate_limited` → raise typed exception with `retry_after_seconds` so CLI / Web UI can show correct guidance.
 - `413 bundle_too_large`, `422 forbidden_content`, `400 metadata_invalid` → typed exceptions.
 
@@ -325,11 +341,19 @@ icom-lan diagnose
   [--bundle-id UUID]      # explicit submission_id (for retry/dedup)
 ```
 
-**Default behaviour (TTY, no flags):** walks the user through prompts (description / issue ref / contact opt-in), shows preview with file list and total size, asks `Send to <endpoint>? [Y/n]`. On `Y` uploads, prints `support_url`. On `n` saves locally to `--output` path and prints the path.
+**Default behaviour without `--upload` flag (any context):** build the bundle, save it to `--output` path, print the path. **Never upload, never prompt for upload.** `icom-lan diagnose` is fundamentally a local-bundle generator; sending is a separate explicit step that requires `--upload`.
 
-**Non-interactive default (no TTY):** silent. Save to `--output`, print path. Do **not** prompt. Do **not** upload unless `--upload` is set explicitly.
+**Default behaviour with `--upload` on a TTY:** walk the user through prompts (description / issue ref / contact opt-in), show preview with file list and total size, then ask the final consent prompt:
 
-**Mixed:** any flag bypasses the prompt for that field. `--upload --no-confirm` enables fully-scripted submission for CI / cron use.
+```
+Send to https://reports.msmsoft.net/v1/diagnostics/upload? [y/N]
+```
+
+The default is **save locally** — pressing Enter does not transmit anything; it saves to `--output` and prints the path. Only an explicit `y` triggers upload. This keeps the privacy-sensitive action off the default keystroke.
+
+**Non-interactive (no TTY) with `--upload`:** must also pass `--no-confirm` to actually upload. Without `--no-confirm` on a non-TTY, the command saves locally and prints the path with a message explaining that confirmation cannot be obtained without a TTY. This prevents headless wrappers from accidentally transmitting.
+
+**Mixed:** any flag bypasses the prompt for that field. `--upload --no-confirm` enables fully-scripted submission for CI / cron use; the user has explicitly accepted the consequences by passing both flags.
 
 ### 4.9 Web UI handler + frontend
 
@@ -339,12 +363,21 @@ icom-lan diagnose
 
 REST endpoints under `/api/v1/diagnose`:
 
-- `POST /api/v1/diagnose/preview` — body: form fields (description, issue_ref, opt-in contact, category includes/excludes). Returns: `{preview_id, manifest, files: [{path, size}], total_size_bytes, redactions_applied, endpoint_url}`. Server generates the bundle into a session-scoped temp path keyed by `preview_id` (a UUID).
-- `POST /api/v1/diagnose/send` — body: `{preview_id, consent: true}`. Looks up the previewed bundle, uploads, returns `ReportSubmitted` JSON.
-- `POST /api/v1/diagnose/save` — body: `{preview_id}`. Returns the bundle as a download (`Content-Disposition: attachment; filename="icom-lan-report-<timestamp>.zip"`).
-- `DELETE /api/v1/diagnose/preview/{preview_id}` — discards a previewed bundle (cancel button or page navigation).
+- `POST /api/v1/diagnose/preview` — body: form fields (description, issue_ref, opt-in contact, category includes/excludes). Returns: `{preview_id, csrf_token, manifest, files: [{path, size}], total_size_bytes, redactions_applied, endpoint_url}`. Server generates the bundle into a session-scoped temp path keyed by `preview_id` and mints a one-shot `csrf_token` (random opaque string) bound to it.
+- `POST /api/v1/diagnose/send` — body: `{preview_id, consent: true}`, header: `X-Diagnostic-CSRF: <csrf_token>`. Looks up the previewed bundle, uploads, returns `ReportSubmitted` JSON.
+- `POST /api/v1/diagnose/save` — body: `{preview_id}`, header: `X-Diagnostic-CSRF: <csrf_token>`. Returns the bundle as a download (`Content-Disposition: attachment; filename="icom-lan-report-<timestamp>.zip"`).
+- `DELETE /api/v1/diagnose/preview/{preview_id}` — header: `X-Diagnostic-CSRF: <csrf_token>`. Discards a previewed bundle (cancel button or page navigation).
 
 Preview bundles auto-expire after 10 minutes if not sent / saved / deleted. Cleanup runs on a background task. `preview_id` is opaque to the client and required for any follow-up action — prevents replay of previously-generated bundles.
+
+**Abuse resistance.** The web server may bind to `0.0.0.0` and serve clients on the LAN. The diagnostic endpoints handle privacy-sensitive operations and must not be triggerable by unrelated LAN clients. The handler enforces:
+
+- **Same-origin check on follow-up endpoints.** `/api/v1/diagnose/{send,save}` and `DELETE /preview/{id}` require an `Origin` header that matches the server's bound host (or loopback). Cross-origin requests return `403 origin_mismatch`. The initial `POST /preview` is allowed cross-origin (no privacy operation yet) but its response cannot be used without the CSRF token from it.
+- **Preview-bound CSRF token.** `send`, `save`, and `DELETE /preview/{id}` require the `X-Diagnostic-CSRF` header. Token is single-use for `send` (consumed on successful upload), reusable for `save` and `delete` until preview expiry. Mismatched/missing token: `403 csrf_missing`.
+- **Loopback exception for Origin.** When the server is bound to `127.0.0.1` / `::1`, the same-origin check is skipped — the loopback boundary itself is the security boundary, and dev tools / curl (which often omit `Origin`) need to work. CSRF token is still required.
+- **API auth inheritance.** When the server has API token auth configured (existing feature for remote-bound deployments), the diagnostic endpoints inherit the same requirement; the diagnostics surface does not bypass existing auth.
+
+Net effect: a malicious page on another LAN host cannot drive a CSRF-style upload (no token, blocked by origin check); a curl-from-LAN cannot drive an upload without first observing the CSRF token (which requires the same origin restriction); and a misconfigured 0.0.0.0 deployment with API auth stays protected by the existing auth layer.
 
 **Frontend:** Settings panel section "Diagnostics" with a "Send diagnostic report" button. Click opens `SendReportDialog`:
 
