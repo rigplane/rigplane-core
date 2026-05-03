@@ -393,9 +393,18 @@ Use `rigplane --list-audio-devices` to find the correct indices.
 
 **Fix**:
 
-1. **WSJT-X → main window → right-side TX power slider** → drop to **~20-25%**.
+1. **WSJT-X → main window → right-side TX power slider** → drop to **~20-25%** as a starting point.
 2. Optionally also reduce **Menu → Set → Connectors → MOD Level** on the radio to ~30%.
 3. PTT into FT8 / JS8 and verify on the waterfall: a single clean carrier at the FT8 audio centre, no spread peaks during the first seconds.
+
+!!! tip "Precise tuning with an external SWR/power meter"
+    A more precise way to find the optimal level — if you have an external SWR/power meter inline — is to dial the WSJT-X slider down while keying TX:
+
+    - Above the ALC threshold the radio's output power stays roughly **flat** as you reduce the slider, because ALC is compressing the overdrive.
+    - Continue lowering the slider until the **external meter starts to drop**.
+    - That's the point where ALC has stopped engaging. Set the slider at (or just slightly above) that level — that's the optimal clean drive: full rated output, no compression, no IM3 spurs.
+
+    This works because ALC behaves as a hard limiter: once you're below its threshold, output tracks input one-to-one again, so the meter "wakes up" at exactly the right level.
 
 !!! note "IC-7610 specific"
     IC-7300 and FTX-1 tolerate the WSJT-X slider at 100% without this effect because their USB audio paths have more headroom. Don't apply this attenuation to those radios — it just costs you SNR.
