@@ -39,6 +39,7 @@ from typing import TYPE_CHECKING, Any, Callable
 import math
 
 from icom_lan.core._optional_deps import _require_opuslib, _require_sounddevice
+from icom_lan.core.types import _AUDIO_CODEC_CHANNELS
 
 from ._bridge_metrics import BridgeMetrics
 from ._bridge_state import BridgeState, BridgeStateChange
@@ -119,6 +120,22 @@ def _rms_dbfs(pcm: bytes) -> float:
     if rms < 1.0:
         return -96.0
     return 20.0 * math.log10(rms / _INT16_MAX)
+
+
+def _downmix_stereo_to_mono(pcm: bytes) -> bytes:
+    """Downmix L+R interleaved s16le → mono s16le via average.
+
+    Used when the radio negotiates a stereo codec (PCM_2CH_16BIT, OPUS_2CH,
+    etc.) but the bridge output stream remains mono — WSJT-X / JS8Call /
+    fldigi are mono-only consumers. Without this, interleaved stereo bytes
+    fed to a mono PortAudio stream halve the effective sample-rate and
+    compress the spectrum 2x (issue #1381).
+    """
+    import numpy as np
+
+    arr = np.frombuffer(pcm, dtype=np.int16).reshape(-1, 2).astype(np.int32)
+    mono = ((arr[:, 0] + arr[:, 1]) // 2).astype(np.int16)
+    return bytes(mono.tobytes())
 
 
 def derive_bridge_label(radio: Any, explicit: str | None = None) -> str:
@@ -241,6 +258,13 @@ class AudioBridge:
         self._reconnect_attempt: int = 0
 
         self._running = False
+        # Input channels from the radio's negotiated codec, resolved on
+        # start(). Defaults to 1 (mono); becomes 2 when the radio sends a
+        # stereo codec (PCM_2CH_16BIT, OPUS_2CH, …) in which case
+        # ``_rx_loop`` downmixes L+R → mono before writing to the loopback
+        # OutputStream (which is fixed at ``self._channels`` = 1 mono —
+        # WSJT-X / JS8Call are mono-only). Issue #1381.
+        self._input_channels: int = 1
         self._rx_stream: TxStream | None = None  # radio → device (playback)
         self._tx_stream: RxStream | None = None  # device → radio (capture)
         self._rx_task: asyncio.Task[None] | None = None
@@ -405,6 +429,23 @@ class AudioBridge:
         self._is_opus = isinstance(_codec, AudioCodec) and _codec in (
             AudioCodec.OPUS_1CH,
             AudioCodec.OPUS_2CH,
+        )
+
+        # Resolve input channels from the negotiated codec (issue #1381).
+        # The radio may have selected a stereo codec (PCM_2CH_16BIT default
+        # since v0.17.0); the bridge output is mono so we downmix below.
+        if isinstance(_codec, AudioCodec):
+            self._input_channels = _AUDIO_CODEC_CHANNELS.get(_codec, 1)
+        else:
+            self._input_channels = 1
+
+        logger.info(
+            "%s: bridge codec=%s input_channels=%d output_channels=%d sample_rate=%d",
+            self._label,
+            _codec.name if isinstance(_codec, AudioCodec) else _codec,
+            self._input_channels,
+            self._channels,
+            self._sample_rate,
         )
 
         if self._is_opus:
@@ -709,7 +750,10 @@ class AudioBridge:
                     if self._rx_frames % 50 == 0:
                         self._emit_metrics()
                     if self._rx_stream and self._rx_stream.running:
-                        await self._rx_stream.write(pcm_data)
+                        out_data = pcm_data
+                        if self._input_channels == 2:
+                            out_data = _downmix_stereo_to_mono(out_data)
+                        await self._rx_stream.write(out_data)
                 except OSError:
                     raise  # device-level error → outer handler → reconnect
                 except Exception as exc:
