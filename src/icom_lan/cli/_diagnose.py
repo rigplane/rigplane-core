@@ -144,14 +144,28 @@ def _default_config_dir() -> Path:
     return Path(platformdirs.user_config_path("icom-lan"))
 
 
-def _resolve_endpoint(endpoint_arg: str | None) -> str:
-    # Lazy import — keeps ``aiohttp`` out of the import path of bare CLI
-    # commands. Only fired on the diagnose codepath.
-    from icom_lan.diagnostics import DEFAULT_ENDPOINT
+_FALLBACK_ENDPOINT = "https://reports.msmsoft.net/v1/diagnostics/upload"
 
+
+def _resolve_endpoint(endpoint_arg: str | None) -> str:
     if endpoint_arg:
         return endpoint_arg
-    return os.environ.get("ICOM_LAN_REPORT_ENDPOINT", DEFAULT_ENDPOINT)
+    env = os.environ.get("ICOM_LAN_REPORT_ENDPOINT")
+    if env:
+        return env
+    # Try the canonical constant from the diagnostics package. On installs that
+    # omit ``aiohttp`` (a dev-only dep) the lazy ``__getattr__`` hook in
+    # ``icom_lan.diagnostics.__init__`` raises ``ImportError`` while loading
+    # ``upload.py`` — silently fall back to the well-known default URL so
+    # endpoint resolution still works in the preview / save-locally display
+    # path. The actual upload (which DOES need aiohttp) will fail later with
+    # a friendly message; the duplicated string is the price of decoupling
+    # the CLI's display path from the upload module's import requirements.
+    try:
+        from icom_lan.diagnostics import DEFAULT_ENDPOINT
+    except ImportError:
+        return _FALLBACK_ENDPOINT
+    return str(DEFAULT_ENDPOINT)
 
 
 def _is_tty() -> bool:
@@ -325,15 +339,41 @@ async def _run_async(args: argparse.Namespace) -> int:
     # imported alongside for symmetry; they live in non-aiohttp submodules
     # and would be cheap to hoist, but bundling them here keeps the upload
     # path self-contained.
-    from icom_lan.diagnostics import (
-        BundleTooLarge,
-        ForbiddenContent,
-        MetadataInvalid,
-        NetworkError,
-        RateLimited,
-        UploadFailed,
-        upload_bundle,
-    )
+    try:
+        from icom_lan.diagnostics import (
+            BundleTooLarge,
+            ForbiddenContent,
+            MetadataInvalid,
+            NetworkError,
+            RateLimited,
+            UploadFailed,
+            upload_bundle,
+        )
+    except ImportError as exc:
+        # `aiohttp` is a dev-only / optional dependency. Pip-install users who
+        # try `--upload` without it get here. Don't show a Python traceback —
+        # they need an actionable message + the local bundle path so they can
+        # still attach it to a GitHub issue manually.
+        if "aiohttp" in str(exc):
+            print(
+                "Upload requires the 'aiohttp' package, which is not installed.",
+                file=sys.stderr,
+            )
+            print(
+                "  Install it with:  pip install aiohttp",
+                file=sys.stderr,
+            )
+            print(
+                f"  Bundle saved locally: {bundle_path}",
+                file=sys.stderr,
+            )
+            print(
+                "  You can attach it to a GitHub issue manually, or re-run "
+                "with `pip install aiohttp` to enable upload.",
+                file=sys.stderr,
+            )
+            return 9
+        raise
 
     metadata = _read_manifest(bundle_path)
     try:
