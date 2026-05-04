@@ -85,6 +85,7 @@ nav:
       - WSJT-X / Digital Modes: guide/wsjtx-setup.md
       - Audio Recipes: guide/audio-recipes.md
       - Web UI: guide/web-ui.md
+      - Diagnostic Reports: guide/diagnostic-reports.md
       - CI-V Commands: guide/commands.md
       - Troubleshooting: guide/troubleshooting.md
   - API Reference:

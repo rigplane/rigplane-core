@@ -136,6 +136,7 @@ scopes into the open-core shell.
 - [Adding a new radio (TOML profiles)](https://morozsm.github.io/icom-lan/guide/rig-profiles/)
 - [Architecture overview](ARCHITECTURE.md)
 - [Open-core policy](docs/architecture/open-core-policy.md)
+- [Diagnostic reports guide](docs/guide/diagnostic-reports.md) — how to send a one-click bug report when you hit an issue.
 - [Protocol internals](https://morozsm.github.io/icom-lan/internals/protocol/)
 - [Security](docs/SECURITY.md)
 
