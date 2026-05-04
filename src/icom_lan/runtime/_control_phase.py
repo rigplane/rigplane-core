@@ -384,6 +384,9 @@ class ControlPhaseRuntime:
         self._stop_watchdog()
         self._stop_reconnect()
         self._stop_token_renewal()
+        stop_audio_wd = getattr(h, "_stop_audio_watchdog", None)
+        if stop_audio_wd is not None:
+            await stop_audio_wd()
         if h._audio_stream is not None:
             await h._audio_stream.stop_rx()
             await h._audio_stream.stop_tx()

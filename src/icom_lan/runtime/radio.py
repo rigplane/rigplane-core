@@ -733,6 +733,7 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
         self._scope_callback: Callable[[ScopeFrame], Any] | None = None
         self._civ_rx_task: asyncio.Task[None] | None = None
         self._civ_data_watchdog_task: asyncio.Task[None] | None = None
+        self._audio_watchdog_task: asyncio.Task[None] | None = None
         self._civ_request_tracker = CivRequestTracker()
         self._civ_epoch = self._civ_request_tracker.generation
         self._scope_frame_queue: BoundedQueue[ScopeFrame] = BoundedQueue(maxsize=64)
@@ -790,6 +791,25 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
 
     async def _stop_civ_data_watchdog(self) -> None:
         await self._civ_runtime.stop_data_watchdog()
+
+    def _start_audio_watchdog(self) -> None:
+        if self._audio_watchdog_task is None or self._audio_watchdog_task.done():
+            self._audio_watchdog_task = asyncio.create_task(
+                self._audio_watchdog_loop(), name="audio-error-watchdog"
+            )
+
+    async def _stop_audio_watchdog(self) -> None:
+        task = self._audio_watchdog_task
+        if task is not None and not task.done():
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+        self._audio_watchdog_task = None
+
+    async def _audio_watchdog_loop(self) -> None:
+        await _reconnect.audio_error_watchdog_loop(self)
 
     def _start_civ_worker(self) -> None:
         self._civ_runtime.start_worker()
@@ -998,6 +1018,7 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
         self._civ_runtime.advance_generation("soft_disconnect")
 
         # Stop audio
+        await self._stop_audio_watchdog()
         if self._audio_stream is not None:
             await self._audio_stream.stop_rx()
             await self._audio_stream.stop_tx()

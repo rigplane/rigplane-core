@@ -432,3 +432,6 @@ class AudioRuntimeMixin(_MixinBase):  # type: ignore[misc]
 
         self._audio_stream = AudioStream(self._audio_transport)
         logger.info("Audio transport connected on port %d", self._audio_port)
+
+        # Start EPIPE-storm watchdog for this transport session.
+        self._start_audio_watchdog()
