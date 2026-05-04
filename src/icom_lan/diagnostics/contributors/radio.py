@@ -12,7 +12,12 @@ from icom_lan.core.radio_protocol import (
     StatePollable,
     UsbAudioCapable,
 )
-from icom_lan.diagnostics.redaction import redact_credentials, redact_ips, redact_paths
+from icom_lan.diagnostics.redaction import (
+    redact_credentials,
+    redact_hostnames,
+    redact_ips,
+    redact_paths,
+)
 
 if TYPE_CHECKING:
     from icom_lan.diagnostics.contributor import BundleContext
@@ -29,6 +34,19 @@ def _redact(s: str | None) -> str | None:
     if s is None:
         return None
     return redact_credentials(redact_ips(redact_paths(s)))
+
+
+def _redact_host(s: str | None) -> str | None:
+    """Host-field redactor: full chain plus hostname scrubbing.
+
+    ``redact_hostnames`` is intentionally NOT in the generic ``_redact`` chain
+    because it would over-redact common identifiers (``radio.json``,
+    ``IC-7610.fw``, etc.) on other fields. Apply only where DNS-shape values
+    are expected — the radio's ``host``/``_host`` connection field.
+    """
+    if s is None:
+        return None
+    return redact_credentials(redact_hostnames(redact_ips(redact_paths(s))))
 
 
 def _capabilities(radio: Any) -> list[str]:
@@ -73,8 +91,14 @@ class RadioContributor:
                 ),
                 "capabilities": _capabilities(radio),
                 "audio_codec": str(_safe_attr(radio, "audio_codec") or "unknown"),
-                "host": _redact(_safe_attr(radio, "host")),
-                "port": _safe_attr(radio, "port"),
+                # Live runtimes store connection info as ``_host``/``_port``
+                # (private attrs). Try public first for stub-friendliness,
+                # then fall back so an active LAN session reports its real
+                # endpoint.
+                "host": _redact_host(
+                    _safe_attr(radio, "host") or _safe_attr(radio, "_host")
+                ),
+                "port": _safe_attr(radio, "port") or _safe_attr(radio, "_port"),
             }
         text = json.dumps(payload, indent=2, sort_keys=True)
         (output_dir / "radio.json").write_text(text + "\n", encoding="utf-8")

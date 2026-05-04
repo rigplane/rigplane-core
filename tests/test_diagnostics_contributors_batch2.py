@@ -195,6 +195,61 @@ def test_radio_safe_attr_handles_missing_attributes(tmp_path: Path) -> None:
     assert payload["backend"] == "FakeRadio"
 
 
+def test_radio_falls_back_to_private_host_port(tmp_path: Path) -> None:
+    """Live LAN runtimes store connection info as ``_host``/``_port`` (private).
+
+    Regression for Codex review on PR #1410: previously only public
+    ``host``/``port`` were read, so an active ``IcomRadio`` reported
+    ``host=null``/``port=null``.
+    """
+
+    class FakeRadio:
+        # Only private attrs — no public ``host``/``port``.
+        _host = "192.168.55.40"
+        _port = 50001
+
+    RadioContributor().contribute(_make_ctx(radio=FakeRadio()), tmp_path)
+    payload = json.loads((tmp_path / "radio.json").read_text())
+    # Private RFC 1918 IP is preserved; port comes through.
+    assert payload["host"] == "192.168.55.40"
+    assert payload["port"] == 50001
+
+
+def test_radio_redacts_hostname_in_host_field(tmp_path: Path) -> None:
+    """DNS-shape host values are scrubbed via ``redact_hostnames``.
+
+    Regression for Codex review on PR #1410: previously only
+    ``redact_paths``/``redact_ips``/``redact_credentials`` ran, so a
+    hostname like ``radio.example.com`` was emitted unchanged.
+    """
+
+    class FakeRadio:
+        host = "radio.example.com"
+
+    RadioContributor().contribute(_make_ctx(radio=FakeRadio()), tmp_path)
+    payload = json.loads((tmp_path / "radio.json").read_text())
+    assert payload["host"] == "<HOSTNAME>"
+
+
+def test_radio_model_field_not_over_redacted_by_hostname(tmp_path: Path) -> None:
+    """``redact_hostnames`` must NOT run on non-host fields like ``model``.
+
+    The hostname pattern matches ``label.tld`` shapes including filenames; we
+    only apply it to the ``host`` field. Model strings like ``IC-7610`` (no
+    dot) and synthetic ``radio.json``-shaped values must pass through other
+    fields unscrubbed by hostname rules.
+    """
+
+    class FakeRadio:
+        model = "IC-7610"
+        backend_id = "icom_lan"
+
+    RadioContributor().contribute(_make_ctx(radio=FakeRadio()), tmp_path)
+    payload = json.loads((tmp_path / "radio.json").read_text())
+    assert payload["model"] == "IC-7610"
+    assert payload["backend"] == "icom_lan"
+
+
 def test_radio_credentials_redacted_in_string_field(tmp_path: Path) -> None:
     """Per-value redaction preserves valid JSON (regex can't span structural chars)."""
 
@@ -248,6 +303,39 @@ def test_audio_redacts_device_name_with_username(tmp_path: Path) -> None:
     payload = json.loads(text)
     assert "/Users/foo" not in text
     assert "<USER>" in payload["rx_device"]
+
+
+def test_audio_redacts_macos_user_label_in_device_name(tmp_path: Path) -> None:
+    """macOS device labels embed usernames in ``(<name>'s Mac)``.
+
+    Regression for Codex review on PR #1410: previously only
+    ``redact_paths`` ran, so the ``(moroz's Mac)`` form leaked the username.
+    """
+
+    class FakeAudioRadio(_AudioCapableStub):
+        audio_rx_device = "BlackHole 2ch (moroz's Mac)"
+        audio_tx_device = "USB Audio (Alice's MacBook Pro)"
+
+    AudioContributor().contribute(_make_ctx(radio=FakeAudioRadio()), tmp_path)
+    text = (tmp_path / "audio.json").read_text()
+    payload = json.loads(text)
+    assert "moroz" not in text
+    assert "Alice" not in text
+    assert payload["rx_device"] == "BlackHole 2ch (<USER>'s Mac)"
+    assert payload["tx_device"] == "USB Audio (<USER>'s Mac)"
+
+
+def test_audio_no_false_positive_on_normal_device_name(tmp_path: Path) -> None:
+    """Normal device names without the ``'s Mac`` form are kept verbatim."""
+
+    class FakeAudioRadio(_AudioCapableStub):
+        audio_rx_device = "Built-in Output"
+        audio_tx_device = "External USB"
+
+    AudioContributor().contribute(_make_ctx(radio=FakeAudioRadio()), tmp_path)
+    payload = json.loads((tmp_path / "audio.json").read_text())
+    assert payload["rx_device"] == "Built-in Output"
+    assert payload["tx_device"] == "External USB"
 
 
 def test_audio_json_loads_round_trip(tmp_path: Path) -> None:

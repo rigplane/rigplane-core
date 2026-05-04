@@ -136,3 +136,34 @@ def test_log_file_writes_to_platformdirs_cache(
     log_file = tmp_path / "logs" / "icom-lan.log"
     assert log_file.exists()
     assert "hello" in log_file.read_text(encoding="utf-8")
+
+
+def test_preset_logger_level_preserved(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Host-app-set level must be respected — diagnostic init must NOT force DEBUG.
+
+    Regression test for Codex review on PR #1402: previously the init would
+    overwrite any level >= DEBUG (including WARNING/INFO), leaking icom_lan
+    DEBUG records into host-application handlers.
+    """
+    monkeypatch.setattr(platformdirs, "user_cache_path", lambda app: tmp_path)
+    icom_logger = logging.getLogger("icom_lan")
+    icom_logger.setLevel(logging.WARNING)
+    try:
+        configure_diagnostic_logging()
+        # Init must NOT have downgraded the host-app's WARNING level to DEBUG.
+        assert icom_logger.level == logging.WARNING
+    finally:
+        icom_logger.setLevel(logging.NOTSET)
+
+
+def test_unset_logger_level_set_to_debug(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """When the logger level is NOTSET, init promotes it to DEBUG."""
+    monkeypatch.setattr(platformdirs, "user_cache_path", lambda app: tmp_path)
+    icom_logger = logging.getLogger("icom_lan")
+    icom_logger.setLevel(logging.NOTSET)
+    configure_diagnostic_logging()
+    assert icom_logger.level == logging.DEBUG

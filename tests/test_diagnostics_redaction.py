@@ -7,6 +7,7 @@ import pytest
 from icom_lan.diagnostics.redaction import (
     REDACTORS,
     redact_credentials,
+    redact_hostnames,
     redact_ips,
     redact_paths,
     redact_tokens,
@@ -129,6 +130,22 @@ def test_redact_ipv6_private_kept(raw: str) -> None:
     assert redact_ips(raw) == raw
 
 
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        # Trailing ``::`` (zero compression at end) — used to slip through.
+        # Codex review on PR #1404.
+        ("2001:db8::", "<IP>"),
+        ("2607:f8b0:4002::", "<IP>"),
+        ("address 2001:db8:: here", "address <IP> here"),
+        ("foo 2001:db8::", "foo <IP>"),
+        ("(2001:db8::,)", "(<IP>,)"),
+    ],
+)
+def test_redact_ipv6_trailing_double_colon(raw: str, expected: str) -> None:
+    assert redact_ips(raw) == expected
+
+
 # --- Credentials ----------------------------------------------------
 
 
@@ -209,6 +226,39 @@ def test_redact_tokens_bearer() -> None:
 )
 def test_redact_tokens_no_false_positive_short_value(raw: str) -> None:
     assert redact_tokens(raw) == raw
+
+
+# --- Hostnames ------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        ("radio.example.com", "<HOSTNAME>"),
+        ("alice-mac.local", "<HOSTNAME>"),
+        ("connect to mac.local now", "connect to <HOSTNAME> now"),
+        ("foo.bar.baz.com", "<HOSTNAME>"),
+    ],
+)
+def test_redact_hostnames_dns_shape(raw: str, expected: str) -> None:
+    assert redact_hostnames(raw) == expected
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        "localhost",
+        "IC-7610",  # bare label, no TLD
+        "192.168.55.40",  # IPv4 — last octet is digits-only, not a TLD
+        "no host here",
+    ],
+)
+def test_redact_hostnames_no_false_positive(raw: str) -> None:
+    assert redact_hostnames(raw) == raw
+
+
+def test_redact_hostnames_empty_input() -> None:
+    assert redact_hostnames("") == ""
 
 
 # --- REDACTORS catalogue -------------------------------------------

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -20,16 +21,28 @@ def _safe_attr(obj: Any, name: str, default: Any = None) -> Any:
         return default
 
 
+# macOS device labels embed the local account name in parens, e.g.
+# ``"BlackHole 2ch (moroz's Mac)"`` or ``"... (Alice's MacBook Pro)"``.
+# Match the wrapping ``(... 's <Mac variant> ...)`` and replace with a
+# stable redacted token. The non-greedy class avoids spanning closing parens.
+_MACOS_USER_LABEL = re.compile(
+    r"\([^()]*?'s\s+(?:Mac|MacBook|iMac|Mini|Pro)\b[^()]*?\)",
+    re.IGNORECASE,
+)
+
+
 def _redact_device_name(name: str | None) -> str | None:
     """Redact OS-level device names that may embed usernames.
 
-    macOS device names often embed the OS username (e.g.,
-    ``"BlackHole 2ch (moroz's Mac)"``); apply :func:`redact_paths`
-    to also catch ``/Users/<name>`` if present.
+    macOS device names often embed the OS username — both as path-shaped
+    strings (``/Users/<name>``) and as freeform parenthetical labels
+    (``"(<name>'s Mac)"``). Apply both scrubbers so neither form leaks.
     """
     if name is None:
         return None
-    return redact_paths(name)
+    name = redact_paths(name)
+    name = _MACOS_USER_LABEL.sub("(<USER>'s Mac)", name)
+    return name
 
 
 class AudioContributor:

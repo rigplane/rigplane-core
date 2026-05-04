@@ -120,7 +120,9 @@ async def upload_bundle(
                 extra = await header_provider()
             except Exception as exc:  # noqa: BLE001 — Pro signer error → typed
                 raise NetworkError(f"header_provider failed: {exc}") from exc
-            if not isinstance(extra, dict):
+            if not isinstance(extra, dict) or not all(
+                isinstance(k, str) and isinstance(v, str) for k, v in extra.items()
+            ):
                 raise NetworkError("header_provider must return dict[str, str]")
             headers.update(extra)
         return await _do_upload(session, url, bundle_path, metadata, headers)
@@ -135,6 +137,11 @@ async def upload_bundle(
                 body = await resp.json(content_type=None)
             except (aiohttp.ContentTypeError, json.JSONDecodeError):
                 body = {}
+            # 2xx body must be a JSON object for ``body.get`` to work; a
+            # non-object body (null, list, string) would otherwise raise
+            # ``AttributeError`` and bypass typed-exception handling.
+            if not isinstance(body, dict):
+                body = {}
             if 200 <= resp.status < 300:
                 return ReportSubmitted(
                     report_id=str(body.get("report_id", "")),
@@ -142,7 +149,7 @@ async def upload_bundle(
                     received_at_unix=int(body.get("received_at_unix", 0)),
                     auth_class=str(body.get("auth_class", "anonymous")),
                 )
-            _raise_for_error(resp.status, body if isinstance(body, dict) else {})
+            _raise_for_error(resp.status, body)
             raise UploadFailed(status=resp.status, code=None, message="unreachable")
     except (aiohttp.ClientError, TimeoutError) as exc:
         raise NetworkError(f"upload failed: {exc}") from exc

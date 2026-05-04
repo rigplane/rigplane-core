@@ -50,9 +50,14 @@ def _filtered_env() -> dict[str, str]:
         if value is None:
             continue
         if key == "PATH":
+            # Redact each segment individually before re-joining: if we joined
+            # first, ``redact_paths``'s lookbehind ``(?<![/:\w])`` would skip
+            # every segment after the first ``:`` separator and leak
+            # ``/Users/<name>`` paths past the first entry.
             entries = value.split(os.pathsep)[:_PATH_ENTRY_LIMIT]
-            value = os.pathsep.join(entries)
-        out[key] = _redact_string(value)
+            out[key] = os.pathsep.join(_redact_string(entry) for entry in entries)
+        else:
+            out[key] = _redact_string(value)
     return out
 
 

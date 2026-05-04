@@ -45,10 +45,17 @@ _IPV4 = re.compile(
 # Permissive IPv6 candidate matcher. We then validate via ``ipaddress`` —
 # the regex only finds plausible substrings (``::``-compressed and full forms);
 # stdlib determines if it's a real address and whether it's private/loopback.
+#
+# Boundary handling: trailing ``\b`` does NOT fire after a final ``:`` because
+# ``:`` is non-word — ``\b`` requires a word/non-word transition. Use
+# ``(?![\w:])`` instead so trailing-``::`` forms (``2001:db8::``,
+# ``2607:f8b0:4002::``) match in full without leaking. Without this, alt 1
+# greedily matched the leading ``2607:f8b0:4002`` prefix, which is not a
+# valid IP and was passed through unchanged.
 _IPV6 = re.compile(
-    r"\b(?:[A-Fa-f0-9]{1,4}(?::[A-Fa-f0-9]{0,4}){2,7})\b"
+    r"\b(?:[A-Fa-f0-9]{1,4}(?::[A-Fa-f0-9]{0,4}){2,7})(?![\w:])"
     r"|"
-    r"\b(?:[A-Fa-f0-9]{1,4}:){1,7}:(?:[A-Fa-f0-9]{1,4})?\b"
+    r"\b(?:[A-Fa-f0-9]{1,4}:){1,7}:(?:[A-Fa-f0-9]{1,4})?(?![\w:])"
     r"|"
     r"\b::(?:[A-Fa-f0-9]{1,4}(?::[A-Fa-f0-9]{1,4})*)?\b"
 )
@@ -159,8 +166,45 @@ def redact_tokens(text: str) -> str:
     return text
 
 
+# --- Hostnames ------------------------------------------------------
+
+# DNS-style names: 1+ labels of ASCII alnum/hyphen joined by dots, ending in
+# a 2–63-letter "TLD". ``localhost`` is preserved (not PII, useful for triage).
+#
+# WARNING: this matcher is intentionally narrow but still over-eager — it
+# matches ``radio.json``, ``audio.log``, ``script.py``, etc. Apply ONLY at
+# call sites where the value is known to be a hostname (e.g. the radio's
+# ``host`` connection field). Do NOT add to a generic ``_redact`` chain.
+_HOSTNAME = re.compile(
+    r"\b(?!localhost\b)"
+    r"(?:[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?\.)+"
+    r"[a-zA-Z]{2,63}\b"
+)
+
+
+def redact_hostnames(text: str) -> str:
+    """Replace DNS-shape hostnames with ``<HOSTNAME>``.
+
+    Preserves ``localhost`` and bare hostnames without a TLD (e.g. ``IC-7610``).
+
+    .. warning::
+
+       This redactor will scrub anything matching ``label.tld`` shape, including
+       filenames like ``radio.json`` and ``script.py``. Apply only to fields
+       known to carry hostnames. See the ``_redact_host`` helper in
+       :mod:`icom_lan.diagnostics.contributors.radio` for the safe call site.
+    """
+    if not text:
+        return ""
+    return _HOSTNAME.sub("<HOSTNAME>", text)
+
+
 # --- Catalogue ------------------------------------------------------
 
 REDACTORS: tuple[str, ...] = ("paths", "ips", "credentials", "tokens")
 """Names of the scrubbers run on a bundle, recorded in
-``manifest.redactions_applied``."""
+``manifest.redactions_applied``.
+
+``hostnames`` is intentionally NOT in this catalogue: :func:`redact_hostnames`
+is opt-in per call-site (currently only the radio host field) because the
+``label.tld`` shape over-matches generic identifiers like ``radio.json``."""

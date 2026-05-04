@@ -67,8 +67,12 @@ def configure_diagnostic_logging() -> None:
         handler.setFormatter(_DIAGNOSTIC_FORMATTER)
         # Attach to "icom_lan" logger, NOT root — see spec §4.1.
         icom_logger.addHandler(handler)
-        # Make sure DEBUG records actually reach our handler.
-        if icom_logger.level > logging.DEBUG or icom_logger.level == logging.NOTSET:
+        # Only force DEBUG if the host application has not expressed an opinion
+        # (level == NOTSET). If the app has explicitly raised the level (e.g. to
+        # WARNING), respect it: only WARNING+ records reach the diagnostic file.
+        # The handler's own level is DEBUG, so any record the logger doesn't
+        # filter still hits the file — see spec §4.1.
+        if icom_logger.level == logging.NOTSET:
             icom_logger.setLevel(logging.DEBUG)
     except Exception as exc:  # noqa: BLE001 — best-effort init, swallow all
         sys.stderr.write(f"icom-lan: diagnostic logging disabled: {exc}\n")

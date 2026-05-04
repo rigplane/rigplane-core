@@ -95,6 +95,16 @@ class _RadioNoneAssertContributor:
         (output_dir / "ok.txt").write_text("ok", encoding="utf-8")
 
 
+class _FlakyContributor:
+    """Writes a file then raises — exercises partial-output cleanup."""
+
+    name = "flaky"
+
+    def contribute(self, ctx: BundleContext, output_dir: Path) -> None:
+        (output_dir / "partial.txt").write_text("half-written", encoding="utf-8")
+        raise RuntimeError("died after partial write")
+
+
 def _read_manifest(zip_path: Path) -> dict[str, Any]:
     with zipfile.ZipFile(zip_path) as zf:
         return json.loads(zf.read("manifest.json"))
@@ -254,3 +264,27 @@ def test_record_warning_message_uses_repr(tmp_path: Path) -> None:
     msg = warnings[0]["message"]
     assert "ValueError" in msg
     assert "kaboom" in msg
+
+
+def test_partial_failure_cleans_up_partial_output(tmp_path: Path) -> None:
+    """A contributor that writes files then raises must NOT leak those files into the zip.
+
+    Regression for Codex review on PR #1408: previously, a per-contributor
+    failure recorded a manifest warning but left the partial files in the
+    staging directory, so they ended up in the bundle alongside the warning.
+    """
+    register(_FlakyContributor)
+    output_path = tmp_path / "report.zip"
+    result = build_bundle(_make_ctx(), output_path)
+
+    manifest = _read_manifest(result)
+    # Warning was recorded.
+    warnings = manifest.get("warnings", [])
+    matching = [w for w in warnings if w["contributor"] == "flaky"]
+    assert len(matching) == 1
+    # And NO partial file leaked into the zip.
+    with zipfile.ZipFile(result) as zf:
+        names = zf.namelist()
+    assert not any(n.startswith("flaky/") for n in names), (
+        f"partial files leaked: {names}"
+    )

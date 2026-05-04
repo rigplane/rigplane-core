@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import os
+import shutil
 import tempfile
 import zipfile
 from pathlib import Path
@@ -40,6 +41,14 @@ def build_bundle(ctx: BundleContext, output_path: Path) -> Path:
                     "diagnostics: contributor %s failed: %r", contributor.name, exc
                 )
                 manifest.record_warning(contributor, repr(exc))
+                # Drop any partial files the contributor wrote before raising,
+                # so the bundle does not archive half-written / inconsistent
+                # output. Best-effort: cleanup failures are silent.
+                try:
+                    if contributor_dir.exists():
+                        shutil.rmtree(contributor_dir)
+                except Exception:  # noqa: BLE001 — best-effort cleanup
+                    pass
 
         manifest.write(staging_dir / "manifest.json")
         return _zip_directory(staging_dir, output_path)

@@ -362,3 +362,54 @@ async def test_upload_header_provider_returns_non_dict_raises_network_error(
         await upload_bundle(
             bundle_file, {}, endpoint=_url(server), header_provider=provider
         )
+
+
+async def test_upload_header_provider_non_string_value_raises_network_error(
+    make_server: Callable[[HandlerType], Awaitable[TestServer]],
+    bundle_file: Path,
+) -> None:
+    """Non-string header values must raise typed NetworkError, not aiohttp TypeError.
+
+    Regression for Codex review on PR #1405: previously, a header dict with a
+    non-string value (e.g. ``{"X-Test": 42}``) would pass the dict-isinstance
+    check, then trip aiohttp's internal TypeError outside the typed exception
+    handler.
+    """
+
+    async def handler(_request: web.Request) -> web.Response:
+        return web.json_response(_success_body())
+
+    server = await make_server(handler)
+
+    async def provider() -> dict[str, str]:
+        return {"X-Test": 42}  # type: ignore[dict-item]
+
+    with pytest.raises(NetworkError):
+        await upload_bundle(
+            bundle_file, {}, endpoint=_url(server), header_provider=provider
+        )
+
+
+@pytest.mark.parametrize("body", [[], "string-body", 42, None])
+async def test_upload_2xx_non_object_body_returns_defaults(
+    make_server: Callable[[HandlerType], Awaitable[TestServer]],
+    bundle_file: Path,
+    body: Any,
+) -> None:
+    """2xx response with a non-object JSON body must NOT raise AttributeError.
+
+    Regression for Codex review on PR #1405: previously, ``body.get(...)`` was
+    called without verifying ``isinstance(body, dict)`` and a 2xx response
+    containing ``[]``/string/null bypassed typed exception handling.
+    """
+
+    async def handler(_request: web.Request) -> web.Response:
+        return web.json_response(body)
+
+    server = await make_server(handler)
+    result = await upload_bundle(bundle_file, {"k": "v"}, endpoint=_url(server))
+    assert isinstance(result, ReportSubmitted)
+    assert result.report_id == ""
+    assert result.support_url == ""
+    assert result.received_at_unix == 0
+    assert result.auth_class == "anonymous"

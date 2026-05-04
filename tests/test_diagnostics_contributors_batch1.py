@@ -186,6 +186,41 @@ def test_invocation_path_truncated_to_five_entries(
     assert len(captured) == 5
 
 
+def test_invocation_path_redacts_each_segment(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Each PATH segment is redacted individually, not as one joined string.
+
+    Regression for Codex review on PR #1409: previously the join-then-redact
+    sequence let ``redact_paths``'s ``(?<![/:\\w])`` lookbehind skip every
+    segment after the first ``:``, leaking ``/Users/<name>`` from positions
+    2..N.
+    """
+    import os
+
+    monkeypatch.setenv(
+        "PATH",
+        os.pathsep.join(
+            [
+                "/Users/alice/bin",
+                "/Users/bob/bin",
+                "/usr/local/bin",
+            ]
+        ),
+    )
+    InvocationContributor().contribute(_make_ctx(), tmp_path)
+    text = (tmp_path / "invocation.json").read_text()
+    payload = json.loads(text)
+    path_value = payload["env"]["PATH"]
+    # Neither real username may leak.
+    assert "/Users/alice" not in path_value
+    assert "/Users/bob" not in path_value
+    # Both home prefixes must show the redacted form.
+    assert path_value.count("/Users/<USER>/bin") == 2
+    # The non-home segment is preserved.
+    assert "/usr/local/bin" in path_value
+
+
 # --------------------------------------------------------------- dependencies
 
 

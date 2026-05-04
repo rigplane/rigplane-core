@@ -115,6 +115,52 @@ def test_install_hooks_idempotent() -> None:
     assert len(snap) == 1
 
 
+@pytest.mark.filterwarnings("ignore::pytest.PytestUnhandledThreadExceptionWarning")
+def test_install_hooks_captures_threading_excepthook(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Worker-thread uncaught exceptions go through ``threading.excepthook``.
+
+    Regression for Codex review on PR #1411: previously only ``sys.excepthook``
+    was installed, so exceptions raised in ``threading.Thread`` workers were
+    silently dropped by the error ring.
+    """
+    import threading
+
+    # Suppress the chained default print-to-stderr — we only care that the
+    # ring captured the exception, not that the default reporter ran.
+    monkeypatch.setattr(_error_ring, "_PREVIOUS_THREADING_EXCEPTHOOK", None)
+    _error_ring.install_hooks()
+    # Re-suppress the previous-hook reference recorded inside install_hooks
+    # so the wrapped hook does not chain to the default printer.
+    monkeypatch.setattr(
+        _error_ring, "_PREVIOUS_THREADING_EXCEPTHOOK", lambda args: None
+    )
+
+    def _worker() -> None:
+        raise ValueError("from worker thread")
+
+    t = threading.Thread(target=_worker)
+    t.start()
+    t.join()
+
+    snap = _error_ring.get_ring().snapshot()
+    assert len(snap) == 1
+    assert snap[0].type_name == "ValueError"
+    assert snap[0].message == "from worker thread"
+
+
+def test_uninstall_hooks_restores_threading_excepthook() -> None:
+    """``uninstall_hooks`` must restore the original ``threading.excepthook``."""
+    import threading
+
+    saved = threading.excepthook
+    _error_ring.install_hooks()
+    assert threading.excepthook is not saved
+    _error_ring.uninstall_hooks()
+    assert threading.excepthook is saved
+
+
 # --------------------------------------------------------------------- logs
 
 

@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import logging
 import sys
+import threading
 import time
 import traceback
 from collections import deque
@@ -77,18 +78,24 @@ def get_ring() -> ExceptionRing:
 
 
 _PREVIOUS_EXCEPTHOOK: Any = None
+_PREVIOUS_THREADING_EXCEPTHOOK: Any = None
 
 
 def install_hooks() -> None:
-    """Wire ``sys.excepthook`` to record into the global ring.
+    """Wire ``sys.excepthook`` and ``threading.excepthook`` into the global ring.
 
-    Idempotent — safe to call multiple times. Preserves the prior excepthook
-    so default reporting still happens.
+    Idempotent — safe to call multiple times. Preserves the prior hooks so
+    default reporting (stderr traceback, threading default) still happens.
+
+    ``threading.excepthook`` (PEP 565, Python 3.8+) is required to capture
+    uncaught exceptions raised in worker threads — they do NOT flow through
+    ``sys.excepthook``.
     """
-    global _PREVIOUS_EXCEPTHOOK
+    global _PREVIOUS_EXCEPTHOOK, _PREVIOUS_THREADING_EXCEPTHOOK
     if _PREVIOUS_EXCEPTHOOK is not None:
         return  # already installed
     _PREVIOUS_EXCEPTHOOK = sys.excepthook
+    _PREVIOUS_THREADING_EXCEPTHOOK = threading.excepthook
 
     def _hook(exc_type: type[BaseException], exc: BaseException, tb: Any) -> None:
         try:
@@ -98,13 +105,31 @@ def install_hooks() -> None:
         if _PREVIOUS_EXCEPTHOOK is not None:
             _PREVIOUS_EXCEPTHOOK(exc_type, exc, tb)
 
+    def _threading_hook(args: threading.ExceptHookArgs) -> None:
+        # ``threading.ExceptHookArgs`` is a named tuple of
+        # (exc_type, exc_value, exc_traceback, thread).
+        exc_type = args.exc_type
+        exc_value = args.exc_value
+        exc_tb = args.exc_traceback
+        try:
+            if exc_type is not None and exc_value is not None:
+                _GLOBAL_RING.record(exc_type, exc_value, exc_tb)
+        except Exception:
+            logger.warning("error_ring: threading record failed", exc_info=True)
+        if _PREVIOUS_THREADING_EXCEPTHOOK is not None:
+            _PREVIOUS_THREADING_EXCEPTHOOK(args)
+
     sys.excepthook = _hook
+    threading.excepthook = _threading_hook
 
 
 def uninstall_hooks() -> None:
-    """For tests — restore the previous excepthook."""
-    global _PREVIOUS_EXCEPTHOOK
+    """For tests — restore the previous ``sys`` and ``threading`` excepthooks."""
+    global _PREVIOUS_EXCEPTHOOK, _PREVIOUS_THREADING_EXCEPTHOOK
     if _PREVIOUS_EXCEPTHOOK is None:
         return
     sys.excepthook = _PREVIOUS_EXCEPTHOOK
     _PREVIOUS_EXCEPTHOOK = None
+    if _PREVIOUS_THREADING_EXCEPTHOOK is not None:
+        threading.excepthook = _PREVIOUS_THREADING_EXCEPTHOOK
+        _PREVIOUS_THREADING_EXCEPTHOOK = None

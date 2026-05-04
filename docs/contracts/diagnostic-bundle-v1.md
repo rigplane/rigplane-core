@@ -82,6 +82,7 @@ The anonymous tier sends no authentication headers.
 
 - `schema_version`
 - `submission_id`
+- `generated_at_unix` — bundle assembly time as Unix epoch seconds.
 - `app.name`
 - `app.version`
 - `platform.os`
