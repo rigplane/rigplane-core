@@ -31,23 +31,20 @@ import time
 import uuid
 import zipfile
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import platformdirs
 
-from icom_lan.diagnostics import (
-    DEFAULT_ENDPOINT,
-    BundleContext,
-    BundleTooLarge,
-    ForbiddenContent,
-    MetadataInvalid,
-    NetworkError,
-    RateLimited,
-    ReportSubmitted,
-    UploadFailed,
-    build_bundle,
-    upload_bundle,
-)
+# NOTE: ``icom_lan.diagnostics`` re-exports ``upload_bundle`` from
+# ``upload.py``, which imports ``aiohttp`` at module level. ``aiohttp`` is a
+# dev-only / optional dependency, so importing it eagerly here would crash
+# every CLI invocation (``icom-lan status``, ``icom-lan freq`` …) for users
+# who installed only the runtime requirements. All ``icom_lan.diagnostics``
+# imports are therefore deferred into the helpers/coroutine that actually
+# need them — the ``diagnose`` subcommand path. ``add_subparser`` stays
+# argparse-only and never touches diagnostics symbols.
+if TYPE_CHECKING:
+    from icom_lan.diagnostics import BundleContext, ReportSubmitted
 
 logger = logging.getLogger(__name__)
 
@@ -148,6 +145,10 @@ def _default_config_dir() -> Path:
 
 
 def _resolve_endpoint(endpoint_arg: str | None) -> str:
+    # Lazy import — keeps ``aiohttp`` out of the import path of bare CLI
+    # commands. Only fired on the diagnose codepath.
+    from icom_lan.diagnostics import DEFAULT_ENDPOINT
+
     if endpoint_arg:
         return endpoint_arg
     return os.environ.get("ICOM_LAN_REPORT_ENDPOINT", DEFAULT_ENDPOINT)
@@ -164,6 +165,9 @@ def _prompt(prompt: str) -> str:
 
 
 def _make_context(args: argparse.Namespace) -> BundleContext:
+    # Lazy import — see module-level NOTE about deferring diagnostics imports.
+    from icom_lan.diagnostics import BundleContext
+
     submission_id = args.bundle_id or str(uuid.uuid4())
     return BundleContext(
         radio=None,
@@ -244,6 +248,20 @@ def _interactive_collect(args: argparse.Namespace) -> None:
 
 
 async def _run_async(args: argparse.Namespace) -> int:
+    # Lazy imports — see module-level NOTE. These names land in the local
+    # scope, so test fixtures must patch ``icom_lan.diagnostics`` (the
+    # source module) rather than ``icom_lan.cli._diagnose``.
+    from icom_lan.diagnostics import (
+        BundleTooLarge,
+        ForbiddenContent,
+        MetadataInvalid,
+        NetworkError,
+        RateLimited,
+        UploadFailed,
+        build_bundle,
+        upload_bundle,
+    )
+
     if args.include or args.exclude:
         print(
             "warning: --include / --exclude filtering is not yet implemented; "

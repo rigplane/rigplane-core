@@ -11,6 +11,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from icom_lan import diagnostics as _diagnostics_pkg
 from icom_lan.cli import _build_parser, _diagnose
 from icom_lan.diagnostics import (
     BundleContext,
@@ -72,7 +73,10 @@ def fake_build_bundle(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
         _write_fake_bundle(output_path)
         return output_path
 
-    monkeypatch.setattr(_diagnose, "build_bundle", _fake)
+    # Patch the source module — ``_diagnose._run_async`` does a local
+    # ``from icom_lan.diagnostics import build_bundle`` at call time, so the
+    # local import resolves via ``sys.modules['icom_lan.diagnostics']``.
+    monkeypatch.setattr(_diagnostics_pkg, "build_bundle", _fake)
     return captured
 
 
@@ -87,7 +91,8 @@ def fake_upload(monkeypatch: pytest.MonkeyPatch):
             auth_class="anonymous",
         )
     )
-    monkeypatch.setattr(_diagnose, "upload_bundle", mock)
+    # Patch the source module — see fake_build_bundle for rationale.
+    monkeypatch.setattr(_diagnostics_pkg, "upload_bundle", mock)
     return mock
 
 
@@ -306,7 +311,7 @@ class TestErrorMapping:
 
         def _run(exc: BaseException, capsys: pytest.CaptureFixture[str]):
             mock = AsyncMock(side_effect=exc)
-            monkeypatch.setattr(_diagnose, "upload_bundle", mock)
+            monkeypatch.setattr(_diagnostics_pkg, "upload_bundle", mock)
             args = parsed(["--upload", "--no-confirm"])
             rc = _diagnose.run(args)
             return rc, capsys.readouterr().err

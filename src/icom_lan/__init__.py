@@ -13,7 +13,12 @@ Submodules and private symbols (``icom_lan.web``, ``icom_lan.cli``,
 may change without warning.
 """
 
-from icom_lan.diagnostics import (
+# Import directly from the submodule to bypass ``icom_lan.diagnostics``
+# package init, which re-exports ``upload_bundle`` from ``upload.py`` →
+# ``aiohttp`` (a dev-only dependency). Pulling ``aiohttp`` here would
+# crash every ``import icom_lan`` for users on a runtime-only install.
+# See issue #1413.
+from icom_lan.diagnostics._logging import (
     configure_diagnostic_logging as _configure_diagnostic_logging,
 )
 
