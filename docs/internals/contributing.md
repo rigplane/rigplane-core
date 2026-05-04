@@ -10,6 +10,20 @@ cd icom-lan
 uv sync --all-extras
 ```
 
+### Frontend static files (one-time after clone)
+
+`src/icom_lan/web/static/` is a symlink to `frontend/dist/`, which is gitignored.
+Web-server tests that serve static files will fail on a clean clone until you build once:
+
+```bash
+cd frontend
+npm ci
+npm run build
+cd ..
+```
+
+CI runs this automatically; you only need it locally if you're running web-server tests.
+
 ## Running Tests
 
 ```bash
