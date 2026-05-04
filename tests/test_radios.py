@@ -74,7 +74,7 @@ class TestIdentifyRadio:
     def test_model_id_mismatch_returns_name(
         self, caplog: pytest.LogCaptureFixture
     ) -> None:
-        with caplog.at_level(logging.DEBUG, logger="icom_lan.radios"):
+        with caplog.at_level(logging.DEBUG, logger="icom_lan.runtime.radios"):
             result = identify_radio(0x98, b"\xff\xff")
         assert result == "IC-7610"
         assert "model id" in caplog.text.lower()

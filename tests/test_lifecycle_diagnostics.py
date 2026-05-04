@@ -29,7 +29,7 @@ def test_radio_gc_with_active_connection_logs_warning(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
     """When a Radio is collected while still 'connected', a WARN is emitted."""
-    with caplog.at_level(logging.WARNING, logger="icom_lan.radio"):
+    with caplog.at_level(logging.WARNING, logger="icom_lan.runtime.radio"):
         radio = IcomRadio("192.168.1.1")
         # Simulate still connected (e.g. user forgot disconnect() or async with exit)
         radio._conn_state = RadioConnectionState.CONNECTED
@@ -49,7 +49,7 @@ def test_radio_gc_when_disconnected_does_not_log_warning(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
     """When a Radio is collected after disconnect, no WARN is emitted."""
-    with caplog.at_level(logging.WARNING, logger="icom_lan.radio"):
+    with caplog.at_level(logging.WARNING, logger="icom_lan.runtime.radio"):
         radio = IcomRadio("192.168.1.1")
         assert radio._conn_state == RadioConnectionState.DISCONNECTED
         del radio

@@ -381,7 +381,7 @@ class TestAudioRecoveryAfterReconnect:
                 side_effect=RuntimeError("audio port gone"),
             ),
         ):
-            with caplog.at_level(logging.WARNING, logger="icom_lan.radio"):
+            with caplog.at_level(logging.WARNING, logger="icom_lan.runtime.radio"):
                 await radio._reconnect_loop()
 
         # Should not have crashed

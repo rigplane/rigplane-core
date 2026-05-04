@@ -66,7 +66,7 @@ def test_datagram_received_logs_client_address_change(
     t = _FakeTransport()
     relay.connection_made(t)  # type: ignore[arg-type]
 
-    with caplog.at_level(logging.INFO, logger="icom_lan.proxy"):
+    with caplog.at_level(logging.INFO, logger="icom_lan.runtime.proxy"):
         # First client registers
         relay.datagram_received(b"first", ("10.0.0.1", 11111))
         # Second client from different address
@@ -88,7 +88,7 @@ def test_error_received_logs_warning(caplog: pytest.LogCaptureFixture) -> None:
     relay = _make_relay()
     exc = OSError("network unreachable")
 
-    with caplog.at_level(logging.WARNING, logger="icom_lan.proxy"):
+    with caplog.at_level(logging.WARNING, logger="icom_lan.runtime.proxy"):
         relay.error_received(exc)
 
     assert any("UDP error" in r.message for r in caplog.records)
@@ -105,7 +105,7 @@ def test_connection_lost_logs_info(caplog: pytest.LogCaptureFixture) -> None:
 
     relay = _make_relay()
 
-    with caplog.at_level(logging.INFO, logger="icom_lan.proxy"):
+    with caplog.at_level(logging.INFO, logger="icom_lan.runtime.proxy"):
         relay.connection_lost(None)
 
     assert any("connection lost" in r.message for r in caplog.records)

@@ -248,7 +248,7 @@ async def test_soft_reconnect_warns_when_civ_transport_already_open(
     import logging
 
     # _civ_transport is already set (the mock)
-    with caplog.at_level(logging.WARNING, logger="icom_lan.radio"):
+    with caplog.at_level(logging.WARNING, logger="icom_lan.runtime.radio"):
         await radio.soft_reconnect()
 
     assert any("already open" in r.message for r in caplog.records)
@@ -1475,7 +1475,7 @@ async def test_watchdog_loop_logs_health_periodically(
     with (
         patch("icom_lan.radio.time.monotonic", side_effect=advancing_time),
         patch("asyncio.sleep", side_effect=mock_sleep),
-        caplog.at_level(logging.INFO, logger="icom_lan.radio"),
+        caplog.at_level(logging.INFO, logger="icom_lan.runtime.radio"),
     ):
         await radio._watchdog_loop()
 

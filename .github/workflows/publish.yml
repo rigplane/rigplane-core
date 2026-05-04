@@ -63,7 +63,7 @@ jobs:
         run: uv run lint-imports
 
       - name: Run tests
-        run: uv run pytest tests/ --ignore=tests/integration --tb=short --timeout=300 --timeout-method=thread
+        run: uv run pytest tests/ --ignore=tests/integration -n auto --tb=short --timeout=300 --timeout-method=thread
 
   build:
     needs: validate

@@ -34,7 +34,7 @@ class TestGetAudioSampleRate:
         monkeypatch.setenv("ICOM_AUDIO_SAMPLE_RATE", "not_a_number")
         from icom_lan.env_config import get_audio_sample_rate
 
-        with caplog.at_level(logging.WARNING, logger="icom_lan.env_config"):
+        with caplog.at_level(logging.WARNING, logger="icom_lan.core.env_config"):
             result = get_audio_sample_rate()
         assert result == 48000
         assert "ICOM_AUDIO_SAMPLE_RATE" in caplog.text
@@ -43,7 +43,7 @@ class TestGetAudioSampleRate:
         monkeypatch.setenv("ICOM_AUDIO_SAMPLE_RATE", "22050")
         from icom_lan.env_config import get_audio_sample_rate
 
-        with caplog.at_level(logging.WARNING, logger="icom_lan.env_config"):
+        with caplog.at_level(logging.WARNING, logger="icom_lan.core.env_config"):
             result = get_audio_sample_rate()
         assert result == 48000
         assert "ICOM_AUDIO_SAMPLE_RATE" in caplog.text
@@ -66,7 +66,7 @@ class TestGetAudioBroadcasterHighWatermark:
         monkeypatch.setenv("ICOM_AUDIO_BROADCASTER_HIGH_WATERMARK", "nope")
         from icom_lan.env_config import get_audio_broadcaster_high_watermark
 
-        with caplog.at_level(logging.WARNING, logger="icom_lan.env_config"):
+        with caplog.at_level(logging.WARNING, logger="icom_lan.core.env_config"):
             result = get_audio_broadcaster_high_watermark()
         assert result == 10
         assert "ICOM_AUDIO_BROADCASTER_HIGH_WATERMARK" in caplog.text
@@ -75,7 +75,7 @@ class TestGetAudioBroadcasterHighWatermark:
         monkeypatch.setenv("ICOM_AUDIO_BROADCASTER_HIGH_WATERMARK", "0")
         from icom_lan.env_config import get_audio_broadcaster_high_watermark
 
-        with caplog.at_level(logging.WARNING, logger="icom_lan.env_config"):
+        with caplog.at_level(logging.WARNING, logger="icom_lan.core.env_config"):
             result = get_audio_broadcaster_high_watermark()
         assert result == 10
 
@@ -97,7 +97,7 @@ class TestGetAudioClientHighWatermark:
         monkeypatch.setenv("ICOM_AUDIO_CLIENT_HIGH_WATERMARK", "??")
         from icom_lan.env_config import get_audio_client_high_watermark
 
-        with caplog.at_level(logging.WARNING, logger="icom_lan.env_config"):
+        with caplog.at_level(logging.WARNING, logger="icom_lan.core.env_config"):
             result = get_audio_client_high_watermark()
         assert result == 10
         assert "ICOM_AUDIO_CLIENT_HIGH_WATERMARK" in caplog.text
@@ -106,7 +106,7 @@ class TestGetAudioClientHighWatermark:
         monkeypatch.setenv("ICOM_AUDIO_CLIENT_HIGH_WATERMARK", "0")
         from icom_lan.env_config import get_audio_client_high_watermark
 
-        with caplog.at_level(logging.WARNING, logger="icom_lan.env_config"):
+        with caplog.at_level(logging.WARNING, logger="icom_lan.core.env_config"):
             result = get_audio_client_high_watermark()
         assert result == 10
 
@@ -145,7 +145,7 @@ class TestGetAudioRxJitterBounds:
         monkeypatch.delenv("ICOM_AUDIO_RX_JITTER_CEILING_MS", raising=False)
         from icom_lan.env_config import get_audio_rx_jitter_floor_ms
 
-        with caplog.at_level(logging.WARNING, logger="icom_lan.env_config"):
+        with caplog.at_level(logging.WARNING, logger="icom_lan.core.env_config"):
             result = get_audio_rx_jitter_floor_ms()
         assert result == 50
         assert "ICOM_AUDIO_RX_JITTER_FLOOR_MS" in caplog.text
@@ -155,7 +155,7 @@ class TestGetAudioRxJitterBounds:
         monkeypatch.setenv("ICOM_AUDIO_RX_JITTER_CEILING_MS", "bad")
         from icom_lan.env_config import get_audio_rx_jitter_ceiling_ms
 
-        with caplog.at_level(logging.WARNING, logger="icom_lan.env_config"):
+        with caplog.at_level(logging.WARNING, logger="icom_lan.core.env_config"):
             result = get_audio_rx_jitter_ceiling_ms()
         assert result == 300
         assert "ICOM_AUDIO_RX_JITTER_CEILING_MS" in caplog.text
@@ -184,7 +184,7 @@ class TestGetAudioRxJitterBounds:
             get_audio_rx_jitter_floor_ms,
         )
 
-        with caplog.at_level(logging.WARNING, logger="icom_lan.env_config"):
+        with caplog.at_level(logging.WARNING, logger="icom_lan.core.env_config"):
             floor = get_audio_rx_jitter_floor_ms()
             ceiling = get_audio_rx_jitter_ceiling_ms()
         assert floor == 50
@@ -200,7 +200,7 @@ class TestGetAudioRxJitterBounds:
             get_audio_rx_jitter_floor_ms,
         )
 
-        with caplog.at_level(logging.WARNING, logger="icom_lan.env_config"):
+        with caplog.at_level(logging.WARNING, logger="icom_lan.core.env_config"):
             floor = get_audio_rx_jitter_floor_ms()
             ceiling = get_audio_rx_jitter_ceiling_ms()
         assert floor == 50
@@ -233,7 +233,7 @@ class TestGetAudioRxJitterBounds:
             get_audio_rx_jitter_floor_ms,
         )
 
-        with caplog.at_level(logging.WARNING, logger="icom_lan.env_config"):
+        with caplog.at_level(logging.WARNING, logger="icom_lan.core.env_config"):
             floor = get_audio_rx_jitter_floor_ms()
             ceiling = get_audio_rx_jitter_ceiling_ms()
         assert floor == 50
@@ -248,7 +248,7 @@ class TestGetAudioRxJitterBounds:
             get_audio_rx_jitter_floor_ms,
         )
 
-        with caplog.at_level(logging.WARNING, logger="icom_lan.env_config"):
+        with caplog.at_level(logging.WARNING, logger="icom_lan.core.env_config"):
             floor = get_audio_rx_jitter_floor_ms()
             ceiling = get_audio_rx_jitter_ceiling_ms()
         assert floor == 50
@@ -263,7 +263,7 @@ class TestGetAudioRxJitterBounds:
             get_audio_rx_jitter_floor_ms,
         )
 
-        with caplog.at_level(logging.WARNING, logger="icom_lan.env_config"):
+        with caplog.at_level(logging.WARNING, logger="icom_lan.core.env_config"):
             floor = get_audio_rx_jitter_floor_ms()
             ceiling = get_audio_rx_jitter_ceiling_ms()
         assert floor == 50
@@ -278,7 +278,7 @@ class TestGetAudioRxJitterBounds:
             get_audio_rx_jitter_floor_ms,
         )
 
-        with caplog.at_level(logging.WARNING, logger="icom_lan.env_config"):
+        with caplog.at_level(logging.WARNING, logger="icom_lan.core.env_config"):
             floor = get_audio_rx_jitter_floor_ms()
             ceiling = get_audio_rx_jitter_ceiling_ms()
         assert floor == 50
