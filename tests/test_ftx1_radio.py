@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, call
 
 import pytest
 
@@ -676,6 +676,62 @@ async def test_get_tx_source_main(connected_radio):
     """get_tx_source parses FT0; and returns 0 (MAIN-side active)."""
     connected_radio._transport.query = AsyncMock(return_value="FT0")
     assert await connected_radio.get_tx_source() == 0
+
+
+# ---------------------------------------------------------------------------
+# TransceiverBankCapable (set_cross_band_split)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_set_cross_band_split_rx0_tx1(connected_radio):
+    """set_cross_band_split(rx=0, tx=1) sends FR00;, VS0;, FT1; in order."""
+    connected_radio._transport.write = AsyncMock()
+    await connected_radio.set_cross_band_split(rx_xcvr=0, tx_xcvr=1)
+    assert connected_radio._transport.write.call_args_list == [
+        call("FR00;"),
+        call("VS0;"),
+        call("FT1;"),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_set_cross_band_split_rx1_tx0(connected_radio):
+    """set_cross_band_split(rx=1, tx=0) sends FR00;, VS1;, FT0; in order."""
+    connected_radio._transport.write = AsyncMock()
+    await connected_radio.set_cross_band_split(rx_xcvr=1, tx_xcvr=0)
+    assert connected_radio._transport.write.call_args_list == [
+        call("FR00;"),
+        call("VS1;"),
+        call("FT0;"),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_set_cross_band_split_rejects_same_xcvr(connected_radio):
+    """set_cross_band_split raises ValueError when rx_xcvr == tx_xcvr."""
+    connected_radio._transport.write = AsyncMock()
+    with pytest.raises(ValueError, match="cross-band split requires different"):
+        await connected_radio.set_cross_band_split(rx_xcvr=0, tx_xcvr=0)
+    connected_radio._transport.write.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_set_cross_band_split_rejects_out_of_range_rx(connected_radio):
+    """set_cross_band_split raises ValueError for rx_xcvr out of range."""
+    connected_radio._transport.write = AsyncMock()
+    with pytest.raises(ValueError, match="rx_xcvr"):
+        await connected_radio.set_cross_band_split(rx_xcvr=2, tx_xcvr=0)
+    connected_radio._transport.write.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_set_cross_band_split_rejects_out_of_range_tx(connected_radio):
+    """set_cross_band_split raises ValueError for tx_xcvr out of range."""
+    connected_radio._transport.write = AsyncMock()
+    with pytest.raises(ValueError, match="tx_xcvr"):
+        await connected_radio.set_cross_band_split(rx_xcvr=0, tx_xcvr=2)
+    connected_radio._transport.write.assert_not_called()
 
 
 @pytest.mark.asyncio

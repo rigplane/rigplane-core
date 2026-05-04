@@ -941,6 +941,15 @@ class TransceiverBankCapable(Protocol):
         """
         ...
 
+    async def set_cross_band_split(self, rx_xcvr: int, tx_xcvr: int) -> None:
+        """Enable cross-band split: receive on ``rx_xcvr``, transmit on ``tx_xcvr``.
+
+        ``rx_xcvr`` and ``tx_xcvr`` must differ; same-transceiver operation is
+        regular split, not cross-band.  Implementations may reject out-of-range
+        values or unsupported combinations with :class:`ValueError`.
+        """
+        ...
+
 
 @runtime_checkable
 class VfoSlotCapable(Protocol):

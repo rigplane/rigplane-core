@@ -1097,6 +1097,45 @@ class YaesuCatRadio:
         result = await self._query("get_tx_func")
         return int(result["vfo"])
 
+    async def set_cross_band_split(self, rx_xcvr: int, tx_xcvr: int) -> None:
+        """Route RX to ``rx_xcvr`` and TX to ``tx_xcvr`` for cross-band split.
+
+        Emits three CAT commands in sequence:
+
+        1. ``FR00;`` — enable Dual RX so both transceivers receive.
+           The FTX-1 ``FR`` command (Function RX) uses a 2-digit mode code:
+           ``00`` = Dual RX, ``01`` = Single RX.  It is **not** a transceiver
+           selector; the single-digit form ``FR0;`` is not valid on FTX-1.
+        2. ``VS{rx_xcvr};`` — focus the active receiver on ``rx_xcvr`` so
+           S-meter reads and audio routing stay on the intended receive band.
+        3. ``FT{tx_xcvr};`` — route TX to ``tx_xcvr``.
+
+        Args:
+            rx_xcvr: Primary receive transceiver (0 = MAIN HF/50 MHz, 1 = SUB 144/430 MHz).
+            tx_xcvr: Transmit transceiver (0 = MAIN, 1 = SUB).
+
+        Raises:
+            ValueError: If ``rx_xcvr == tx_xcvr`` (same transceiver is regular
+                split, not cross-band) or if either index is out of range.
+        """
+        count = self.transceiver_count
+        if rx_xcvr < 0 or rx_xcvr >= count:
+            raise ValueError(
+                f"rx_xcvr {rx_xcvr} out of range for transceiver_count={count}"
+            )
+        if tx_xcvr < 0 or tx_xcvr >= count:
+            raise ValueError(
+                f"tx_xcvr {tx_xcvr} out of range for transceiver_count={count}"
+            )
+        if rx_xcvr == tx_xcvr:
+            raise ValueError(
+                f"cross-band split requires different rx_xcvr and tx_xcvr; "
+                f"got rx={rx_xcvr}, tx={tx_xcvr}"
+            )
+        await self.set_rx_func(0)           # FR00: Dual RX
+        await self.select_receiver(rx_xcvr) # VS{rx_xcvr}: focus active receiver
+        await self.set_tx_source(tx_xcvr)   # FT{tx_xcvr}: route TX
+
     async def get_split(self) -> bool:
         """Get split operation state."""
         result = await self._query("get_split")
