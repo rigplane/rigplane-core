@@ -154,6 +154,12 @@
   }
 
   async function handleCancel(): Promise<void> {
+    // While an in-flight previewBundle/sendBundle/saveBundle is awaiting,
+    // cancelling would race the server-side preview state (the preview may
+    // not yet exist, or the upload may already have started). Block Escape
+    // and backdrop closes for the duration; the explicit close buttons are
+    // already disabled via `disabled={busy}`.
+    if (busy) return;
     // Best-effort cleanup of server-side preview; ignore failures.
     if (preview) {
       try {

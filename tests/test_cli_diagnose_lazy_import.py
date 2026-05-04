@@ -18,6 +18,7 @@ from __future__ import annotations
 import subprocess
 import sys
 import textwrap
+from pathlib import Path
 
 
 def test_cli_module_loads_without_aiohttp() -> None:
@@ -69,3 +70,74 @@ def test_cli_module_loads_without_aiohttp() -> None:
         f"stderr:\n{result.stderr}"
     )
     assert "OK" in result.stdout
+
+
+def test_diagnose_save_only_runs_without_aiohttp(tmp_path: Path) -> None:
+    """``icom-lan diagnose --output ...`` (no --upload) must run without aiohttp.
+
+    Regression for the follow-up bug on PR-A (#1417): the lazy-import work
+    moved diagnostics symbols out of module level into ``_run_async``, but
+    the imports happened at the TOP of ``_run_async``, BEFORE checking
+    ``args.upload``. Result: even ``icom-lan diagnose`` (save-only) would
+    pull ``aiohttp`` via the lazy ``upload_bundle`` re-export and crash for
+    ``pip install icom-lan`` users (aiohttp is dev-only).
+
+    This test executes the full save-only path in a subprocess with
+    ``aiohttp`` blocked on ``sys.meta_path`` and asserts:
+
+    - exit code 0 (the bundle was built),
+    - the output zip exists,
+    - ``aiohttp`` was never imported.
+    """
+    out_zip = tmp_path / "diag.zip"
+
+    script = textwrap.dedent(
+        f"""
+        import sys
+
+        # Block aiohttp BEFORE any icom_lan import.
+        class _AiohttpBlocker:
+            def find_spec(self, name, path=None, target=None):
+                if name == "aiohttp" or name.startswith("aiohttp."):
+                    raise ImportError(
+                        f"aiohttp blocked by lazy-import regression test: {{name}}"
+                    )
+                return None
+
+        sys.meta_path.insert(0, _AiohttpBlocker())
+
+        from icom_lan.cli import _build_parser
+        from icom_lan.cli._diagnose import run as run_diagnose
+
+        parser = _build_parser()
+        args = parser.parse_args(
+            ["diagnose", "--output", {str(out_zip)!r}, "--no-confirm"]
+        )
+        rc = run_diagnose(args)
+        if rc != 0:
+            print(f"FAIL rc={{rc}}", file=sys.stderr)
+            sys.exit(rc)
+
+        leaked = [m for m in sys.modules if m == "aiohttp" or m.startswith("aiohttp.")]
+        if leaked:
+            print(f"FAIL aiohttp leaked: {{leaked}}", file=sys.stderr)
+            sys.exit(2)
+
+        print("OK")
+        """
+    )
+
+    result = subprocess.run(
+        [sys.executable, "-c", script],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, (
+        f"diagnose save-only crashed without aiohttp.\n"
+        f"stdout:\n{result.stdout}\n"
+        f"stderr:\n{result.stderr}"
+    )
+    assert "OK" in result.stdout
+    assert out_zip.exists(), f"bundle was not created at {out_zip}"

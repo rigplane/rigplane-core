@@ -248,19 +248,17 @@ def _interactive_collect(args: argparse.Namespace) -> None:
 
 
 async def _run_async(args: argparse.Namespace) -> int:
-    # Lazy imports — see module-level NOTE. These names land in the local
-    # scope, so test fixtures must patch ``icom_lan.diagnostics`` (the
-    # source module) rather than ``icom_lan.cli._diagnose``.
-    from icom_lan.diagnostics import (
-        BundleTooLarge,
-        ForbiddenContent,
-        MetadataInvalid,
-        NetworkError,
-        RateLimited,
-        UploadFailed,
-        build_bundle,
-        upload_bundle,
-    )
+    # Lazy imports — see module-level NOTE. ``build_bundle`` plus the typed
+    # error classes live in non-aiohttp submodules, so importing them here is
+    # cheap. ``upload_bundle`` (and the other ``upload``-module re-exports)
+    # transitively imports ``aiohttp`` via the lazy hook in
+    # ``icom_lan.diagnostics.__init__``; that import is deferred into the
+    # ``args.upload`` branch below so ``icom-lan diagnose`` (save-only) works
+    # for runtime-only installs without ``aiohttp``.
+    # These names land in the local scope, so test fixtures must patch
+    # ``icom_lan.diagnostics`` (the source module) rather than
+    # ``icom_lan.cli._diagnose``.
+    from icom_lan.diagnostics import build_bundle
 
     if args.include or args.exclude:
         print(
@@ -320,6 +318,23 @@ async def _run_async(args: argparse.Namespace) -> int:
             return 0
 
     # Upload (either --no-confirm path or user typed y/yes after preview).
+    # Lazy import — accessing ``upload_bundle`` is what triggers the aiohttp
+    # import via the :pep:`562` hook in ``icom_lan.diagnostics.__init__``.
+    # Keeping it inside the ``args.upload`` branch lets ``icom-lan diagnose``
+    # (save-only) run on installs that omit aiohttp. The error classes are
+    # imported alongside for symmetry; they live in non-aiohttp submodules
+    # and would be cheap to hoist, but bundling them here keeps the upload
+    # path self-contained.
+    from icom_lan.diagnostics import (
+        BundleTooLarge,
+        ForbiddenContent,
+        MetadataInvalid,
+        NetworkError,
+        RateLimited,
+        UploadFailed,
+        upload_bundle,
+    )
+
     metadata = _read_manifest(bundle_path)
     try:
         result: ReportSubmitted = await upload_bundle(
