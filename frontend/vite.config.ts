@@ -74,6 +74,22 @@ export default defineConfig({
             'src/lib/stores/radio.svelte.test.ts',
             'src/lib/runtime/__tests__/frontend-runtime.test.ts',
             'src/lib/radio/pending-focus.test.ts',
+            // *.component(.svelte).test.ts mount real Svelte components and
+            // depend on store mocks that vary across the suite. Under
+            // ``isolate: false`` sibling tests' inconsistent ``vi.mock(...)``
+            // definitions (e.g. ``capabilities.svelte`` returning
+            // ``hasCapability: false`` in some files vs ``true`` here) leak
+            // via the shared module cache and the component renders with the
+            // wrong capability flags. Failure mode: "component renders
+            // fallback markup" rather than "test asserts wrong" — extremely
+            // hard to diagnose without isolation. Reproduces only on
+            // low-parallelism CI (Ubuntu 2-core), passes locally on macOS
+            // with 16-core worker spread. See #771 for the original symptom;
+            // this expands the sensitive set after the post-#1385 marathon
+            // exposed SpectrumToolbar / CwPanel / DspPanel / SpectrumPanel /
+            // MobileRadioLayout / BandPlanOverlay component tests.
+            'src/**/*.component.test.ts',
+            'src/**/*.component.svelte.test.ts',
           ],
           pool: 'threads',
           isolate: false,
@@ -92,6 +108,8 @@ export default defineConfig({
             'src/lib/stores/radio.svelte.test.ts',
             'src/lib/runtime/__tests__/frontend-runtime.test.ts',
             'src/lib/radio/pending-focus.test.ts',
+            'src/**/*.component.test.ts',
+            'src/**/*.component.svelte.test.ts',
           ],
           pool: 'threads',
           isolate: true,

@@ -41,7 +41,14 @@ vi.mock('./vfo-layout-tokens', () => ({
 }));
 
 // -- Store mocks --
-vi.mock('$lib/stores/radio.svelte', () => ({ radio: { current: null as { active?: 'MAIN' | 'SUB' } | null } }));
+vi.mock('$lib/stores/radio.svelte', () => ({
+  radio: { current: null as { active?: 'MAIN' | 'SUB' } | null },
+  getActiveReceiver: vi.fn(),
+  getRadioState: vi.fn(),
+  patchActiveReceiver: vi.fn(),
+  patchRadioState: vi.fn(),
+  patchReceiver: vi.fn(),
+}));
 vi.mock('$lib/stores/connection.svelte', () => ({
   getConnectionStatus: vi.fn(() => ({ connected: false })),
   getRadioPowerOn: vi.fn(() => null),
