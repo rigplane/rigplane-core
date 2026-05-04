@@ -1,6 +1,7 @@
 <script lang="ts">
-  import { Radio, Cable, Activity, Volume2, ArrowDownUp, Power, Unplug, Palette, Monitor, Tv, Settings } from 'lucide-svelte';
+  import { Radio, Cable, Activity, Volume2, ArrowDownUp, Power, Unplug, Palette, Monitor, Tv, Settings, Bug } from 'lucide-svelte';
   import ThemePicker from '../controls/ThemePicker.svelte';
+  import SendReportDialog from '../dialogs/SendReportDialog.svelte';
   import { runtime } from '$lib/runtime';
   import {
     getRadioStatus,
@@ -116,6 +117,9 @@
     }
   }
 
+  // ── Send-Report dialog (issue #1397) ──
+  let reportOpen = $state(false);
+
   // ── Now Playing (EiBi identification) ──
   let nowPlaying = $state<any>(null);
   let nowPlayingExpanded = $state(false);
@@ -223,6 +227,16 @@
   </div>
 
   <div class="status-controls">
+    <button
+      type="button"
+      class="control-btn report-btn"
+      onclick={() => (reportOpen = true)}
+      title="Send diagnostic report"
+      aria-label="Send diagnostic report"
+    >
+      <Bug size={14} strokeWidth={2} />
+      <span class="btn-label">Report</span>
+    </button>
     {#if onSettings}
       <button
         type="button"
@@ -274,6 +288,8 @@
     </button>
   </div>
 </div>
+
+<SendReportDialog open={reportOpen} onClose={() => (reportOpen = false)} />
 
 <style>
   .control-link-lost {
