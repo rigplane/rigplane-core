@@ -17,6 +17,7 @@ from icom_lan.diagnostics._logging import (
     SafeRotatingFileHandler,
     configure_diagnostic_logging,
 )
+from icom_lan.diagnostics.bundle import build_bundle
 from icom_lan.diagnostics.contributor import BundleContext, DiagnosticContributor
 from icom_lan.diagnostics.redaction import (
     REDACTORS,
@@ -47,6 +48,7 @@ __all__ = [
     "ReportSubmitted",
     "SafeRotatingFileHandler",
     "UploadFailed",
+    "build_bundle",
     "configure_diagnostic_logging",
     "discover",
     "redact_credentials",
