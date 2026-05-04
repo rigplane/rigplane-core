@@ -60,6 +60,10 @@ from icom_lan.core.capabilities import (  # noqa: E402
     CAP_SYSTEM_SETTINGS,
     CAP_TUNER,
 )
+from icom_lan.cli._diagnose import (  # noqa: E402
+    add_subparser as _add_diagnose_subparser,
+    run as _run_diagnose,
+)
 from icom_lan.core.radio_protocol import Radio  # noqa: E402
 from icom_lan.core.types import Mode, get_audio_capabilities  # noqa: E402
 
@@ -1019,6 +1023,9 @@ def _build_parser() -> argparse.ArgumentParser:
         default=None,
         help="Capture timeout in seconds (default: 10 for spectrum-only, 15 for waterfall)",
     )
+
+    # diagnose — build (and optionally upload) a diagnostic report bundle
+    _add_diagnose_subparser(sub)
 
     return p
 
@@ -2955,6 +2962,8 @@ def main() -> None:
             print(f"Error: proxy failed: {exc}", file=sys.stderr)
             sys.exit(1)
         sys.exit(0)
+    elif args.command == "diagnose":
+        sys.exit(_run_diagnose(args))
     elif args.command is None:
         parser.print_help()
         sys.exit(0)
