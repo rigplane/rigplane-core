@@ -1,0 +1,133 @@
+name: Tests (quick)
+
+on:
+  push:
+    branches: [main]
+    paths-ignore:
+      - "**/*.md"
+      - "docs/**"
+      - "RELEASE_NOTES.md"
+      - ".github/ISSUE_TEMPLATE/**"
+  pull_request:
+    branches: [main]
+    paths-ignore:
+      - "**/*.md"
+      - "docs/**"
+      - "RELEASE_NOTES.md"
+      - ".github/ISSUE_TEMPLATE/**"
+
+concurrency:
+  group: tests-quick-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  quick:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Detect frontend changes
+        id: filter
+        uses: dorny/paths-filter@v3
+        with:
+          filters: |
+            frontend:
+              - 'frontend/**'
+              - 'src/icom_lan/web/**'
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+          cache-dependency-glob: |
+            pyproject.toml
+            uv.lock
+
+      - name: Set up Python 3.11
+        run: uv python install 3.11
+
+      - name: Install dependencies
+        run: uv sync --extra dev --extra bridge
+
+      - name: Ruff (lint + format check)
+        run: |
+          uv run ruff check src/ tests/
+          uv run ruff format --check src/ tests/
+
+      - name: Lint architecture (import-linter)
+        run: uv run lint-imports
+
+      - name: Set up Node.js
+        if: steps.filter.outputs.frontend == 'true'
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Frontend install + check + tests + build
+        if: steps.filter.outputs.frontend == 'true'
+        run: |
+          cd frontend
+          npm ci
+          npm run check
+          npx vitest run
+          npm run build
+          rm -f ../src/icom_lan/web/static
+          mkdir -p ../src/icom_lan/web/static
+          cp -r dist/* ../src/icom_lan/web/static/
+
+      - name: Type-check web boundary
+        if: steps.filter.outputs.frontend == 'true'
+        run: uv run mypy --strict src/icom_lan/web
+
+      - name: Run tests
+        id: tests
+        run: |
+          uv run pytest tests/ --ignore=tests/integration --tb=short --timeout=300 --timeout-method=thread \
+            | tee pytest-output.txt
+          SUMMARY=$(tail -1 pytest-output.txt)
+          PASSED=$(echo "$SUMMARY" | grep -oP '\d+ passed' | grep -oP '\d+' || echo "0")
+          echo "passed=$PASSED" >> "$GITHUB_OUTPUT"
+
+      - name: Extract version
+        if: github.ref == 'refs/heads/main'
+        id: version
+        run: |
+          VERSION=$(uv run python -c "from importlib.metadata import version; print(version('icom-lan'))")
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Update tests badge
+        if: github.ref == 'refs/heads/main' && always()
+        uses: schneegans/dynamic-badges-action@v1.7.0
+        with:
+          auth: ${{ secrets.GIST_TOKEN }}
+          gistID: bce917f4007ac491e527e142564fbbae
+          filename: icom-lan-tests.json
+          label: tests
+          message: "${{ steps.tests.outputs.passed }} passed"
+          color: ${{ steps.tests.outcome == 'success' && 'brightgreen' || 'red' }}
+
+      - name: Update version badge
+        if: github.ref == 'refs/heads/main' && always()
+        uses: schneegans/dynamic-badges-action@v1.7.0
+        with:
+          auth: ${{ secrets.GIST_TOKEN }}
+          gistID: bce917f4007ac491e527e142564fbbae
+          filename: icom-lan-version.json
+          label: version
+          message: "v${{ steps.version.outputs.version }}"
+          color: blue
+
+      - name: Update mypy badge
+        if: github.ref == 'refs/heads/main' && always()
+        uses: schneegans/dynamic-badges-action@v1.7.0
+        with:
+          auth: ${{ secrets.GIST_TOKEN }}
+          gistID: bce917f4007ac491e527e142564fbbae
+          filename: icom-lan-mypy.json
+          label: mypy
+          message: "0 errors"
+          color: blue

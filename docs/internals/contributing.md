@@ -26,6 +26,24 @@ uv run pytest tests/test_commands.py -q --tb=short
 uv run pytest tests/test_commands.py::test_get_frequency_builds_correct_frame -q --tb=short
 ```
 
+### Continuous Integration
+
+The repository has three Actions workflows, tiered to keep billable minutes low:
+
+| Workflow | When it runs | What it does |
+|---|---|---|
+| **Tests (quick)** | every push and PR to `main` (skips markdown-only changes) | Single Python 3.11 job: `ruff`, `import-linter`, `pytest` (no hardware integration). The frontend block (`npm ci`, type-check, vitest, build, mypy on `src/icom_lan/web`) only runs when files under `frontend/**` or `src/icom_lan/web/**` actually changed. ~3–5 min. |
+| **Tests (full matrix)** | cron Mon/Wed/Fri 03:00 UTC, manual `workflow_dispatch`, **or** any push whose commit message contains `[full-ci]` | Full 3.11/3.12/3.13 matrix with frontend, mypy, import-linter and the whole pytest suite. |
+| **Publish to PyPI** | on a published GitHub Release | Runs the full validation matrix first; the build/publish jobs only start if validation is green. |
+
+To force a full matrix run on demand:
+
+```bash
+git commit -m "chore: rebuild CI cache [full-ci]"
+# or
+gh workflow run "Tests (full matrix)"
+```
+
 ### Test Structure
 
 ```

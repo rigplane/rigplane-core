@@ -18,6 +18,22 @@ Never bare `python` or `pytest`. Worktrees: `uv sync --all-extras` first.
 
 ---
 
+## CI workflows (Actions billing-aware)
+
+Three workflows, tiered by cost:
+
+| Workflow | Trigger | Scope |
+|---|---|---|
+| `quick.yml` | every push/PR to `main` (md/docs ignored) | Python 3.11 only · ruff · import-linter · pytest (no integration) · frontend block runs **only** if `frontend/**` or `src/icom_lan/web/**` changed · badges |
+| `full.yml` | cron Mon/Wed/Fri 03:00 UTC + `workflow_dispatch` + push with `[full-ci]` in commit message | Full matrix 3.11/3.12/3.13, everything |
+| `publish.yml` | `release: published` | New `validate` job (full matrix) → `build` → `publish`. No publish if validate fails. |
+
+Trigger Full manually: append `[full-ci]` to a commit message, or `gh workflow run "Tests (full matrix)"`.
+
+Don't add per-push matrix builds back without explicit reason — the goal is minimum Actions minutes.
+
+---
+
 ## Architecture
 
 **Layering (enforce):**

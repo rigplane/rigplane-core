@@ -9,7 +9,64 @@ permissions:
   id-token: write
 
 jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    strategy:
+      fail-fast: true
+      matrix:
+        python-version: ["3.11", "3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+          cache-dependency-glob: |
+            pyproject.toml
+            uv.lock
+
+      - name: Set up Python ${{ matrix.python-version }}
+        run: uv python install ${{ matrix.python-version }}
+
+      - name: Install dependencies
+        run: uv sync --extra dev --extra bridge
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Frontend install + check + tests + build
+        run: |
+          cd frontend
+          npm ci
+          npm run check
+          npx vitest run
+          npm run build
+          rm -f ../src/icom_lan/web/static
+          mkdir -p ../src/icom_lan/web/static
+          cp -r dist/* ../src/icom_lan/web/static/
+
+      - name: Ruff
+        run: |
+          uv run ruff check src/ tests/
+          uv run ruff format --check src/ tests/
+
+      - name: Type-check web boundary
+        run: uv run mypy --strict src/icom_lan/web
+
+      - name: Lint architecture (import-linter)
+        run: uv run lint-imports
+
+      - name: Run tests
+        run: uv run pytest tests/ --ignore=tests/integration --tb=short --timeout=300 --timeout-method=thread
+
   build:
+    needs: validate
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4

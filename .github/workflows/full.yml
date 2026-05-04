@@ -1,17 +1,24 @@
-name: Tests
+name: Tests (full matrix)
 
 on:
+  schedule:
+    # Mon/Wed/Fri 03:00 UTC (06:00 MSK)
+    - cron: "0 3 * * 1,3,5"
+  workflow_dispatch:
   push:
-    branches: [main]
-  pull_request:
     branches: [main]
 
 concurrency:
-  group: tests-${{ github.workflow }}-${{ github.ref }}
+  group: tests-full-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
   test:
+    # On push: only when commit message contains [full-ci].
+    # On schedule / manual dispatch: always run.
+    if: >-
+      github.event_name != 'push' ||
+      contains(github.event.head_commit.message, '[full-ci]')
     runs-on: ubuntu-latest
     timeout-minutes: 25
     strategy:
