@@ -53,7 +53,7 @@ def _load_config(profile: Any) -> Any:
 # The shared implementation now lives in ``icom_lan.meter_cal`` so that
 # both the Yaesu and Icom backends apply the same piecewise-linear curve
 # to ``[[meters.swr.calibration]]`` tables (issue #1173).
-from ...meter_cal import interpolate_swr as _interpolate_swr  # noqa: E402
+from ...meter_cal import MeterType, interpolate_swr as _interpolate_swr  # noqa: E402
 
 
 class YaesuCatRadio:
@@ -800,6 +800,47 @@ class YaesuCatRadio:
         main, _ = await self._read_meter(8)
         return main
 
+    async def get_meter(self, meter_type: str | MeterType, receiver: int = 0) -> int:
+        """Dispatch to the matching per-type getter by meter type name.
+
+        Args:
+            meter_type: A :class:`~icom_lan.meter_cal.MeterType` enum value or
+                its string equivalent (``"smeter"``, ``"comp"``, ``"alc"``,
+                ``"power"``, ``"swr"``, ``"id"``, ``"vd"``).
+            receiver: 0 = main, 1 = sub (only meaningful for ``"smeter"``).
+
+        Returns:
+            Raw meter reading (0–255, vendor scale).
+
+        Raises:
+            ValueError: If *meter_type* is not a recognised value.
+        """
+        if isinstance(meter_type, MeterType):
+            mt = meter_type
+        else:
+            try:
+                mt = MeterType(str(meter_type))
+            except ValueError:
+                raise ValueError(
+                    f"Unknown meter type: {meter_type!r}. "
+                    f"Valid values: {[m.value for m in MeterType]}"
+                )
+        if mt == MeterType.SMETER:
+            return await self.get_s_meter(receiver=receiver)
+        if mt == MeterType.COMP:
+            return await self.get_comp_meter()
+        if mt == MeterType.ALC:
+            return await self.get_alc_meter()
+        if mt == MeterType.POWER:
+            return await self.get_power_meter()
+        if mt == MeterType.SWR:
+            return await self.get_swr_meter()
+        if mt == MeterType.CURRENT:
+            return await self.get_id_meter()
+        if mt == MeterType.VOLTAGE:
+            return await self.get_vd_meter()
+        raise ValueError(f"Unhandled meter type: {meter_type!r}")
+
     async def get_rf_power(self) -> int:
         """Get configured TX power in watts.
 
@@ -938,6 +979,15 @@ class YaesuCatRadio:
     async def set_manual_notch(self, state: bool, receiver: int = 0) -> None:
         """Set manual notch ON/OFF (BP00)."""
         await self._write("set_manual_notch", state=1 if state else 0)
+
+    async def get_manual_notch_freq(self, receiver: int = 0) -> int:
+        """Get manual notch frequency index (0–255, BP01).
+
+        Standalone freq-only getter for symmetry with :meth:`set_manual_notch_freq`.
+        Use :meth:`get_manual_notch` to fetch state+freq together in one call.
+        """
+        result = await self._query("get_manual_notch_freq")
+        return int(result["freq"])
 
     async def set_manual_notch_freq(self, freq: int, receiver: int = 0) -> None:
         """Set manual notch frequency index (0–255, BP01)."""

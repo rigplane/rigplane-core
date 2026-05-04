@@ -2113,3 +2113,134 @@ async def test_set_vfo_slot_rejects_bad_receiver_index(single_rx_radio):
 async def test_get_vfo_slot_rejects_bad_receiver_index(single_rx_radio):
     with pytest.raises(ValueError, match="out of range"):
         await single_rx_radio.get_vfo_slot(receiver=1)
+
+
+# ---------------------------------------------------------------------------
+# get_manual_notch_freq (standalone freq getter — MSMA-31)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_get_manual_notch_freq_returns_int(connected_radio):
+    """get_manual_notch_freq queries BP01 and returns the freq index as int."""
+    connected_radio._transport.query = AsyncMock(return_value="BP01080")
+    freq = await connected_radio.get_manual_notch_freq()
+    assert freq == 80
+    assert isinstance(freq, int)
+    connected_radio._transport.query.assert_called_once_with("BP01;")
+
+
+@pytest.mark.asyncio
+async def test_get_manual_notch_freq_zero(connected_radio):
+    """get_manual_notch_freq handles zero value."""
+    connected_radio._transport.query = AsyncMock(return_value="BP01000")
+    assert await connected_radio.get_manual_notch_freq() == 0
+
+
+@pytest.mark.asyncio
+async def test_get_manual_notch_freq_max(connected_radio):
+    """get_manual_notch_freq handles max value (255)."""
+    connected_radio._transport.query = AsyncMock(return_value="BP01255")
+    assert await connected_radio.get_manual_notch_freq() == 255
+
+
+@pytest.mark.asyncio
+async def test_get_manual_notch_freq_independent_of_get_manual_notch(connected_radio):
+    """get_manual_notch_freq issues a single BP01 query (not BP00+BP01 like get_manual_notch)."""
+    connected_radio._transport.query = AsyncMock(return_value="BP01120")
+    await connected_radio.get_manual_notch_freq()
+    assert connected_radio._transport.query.call_count == 1
+
+
+# ---------------------------------------------------------------------------
+# get_meter — unified dispatcher (MSMA-31)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_get_meter_smeter_string(connected_radio):
+    """get_meter('smeter') routes to get_s_meter on main receiver."""
+    connected_radio._transport.query = AsyncMock(return_value="SM0042")
+    val = await connected_radio.get_meter("smeter")
+    assert val == 42
+    connected_radio._transport.query.assert_called_once_with("SM0;")
+
+
+@pytest.mark.asyncio
+async def test_get_meter_smeter_sub_receiver(connected_radio):
+    """get_meter('smeter', receiver=1) routes to get_s_meter_sub."""
+    connected_radio._transport.query = AsyncMock(return_value="SM1015")
+    val = await connected_radio.get_meter("smeter", receiver=1)
+    assert val == 15
+    connected_radio._transport.query.assert_called_once_with("SM1;")
+
+
+@pytest.mark.asyncio
+async def test_get_meter_comp_string(connected_radio):
+    """get_meter('comp') routes to get_comp_meter (RM3)."""
+    connected_radio._transport.query = AsyncMock(return_value="RM3050000")
+    val = await connected_radio.get_meter("comp")
+    assert val == 50
+    connected_radio._transport.query.assert_called_once_with("RM3;")
+
+
+@pytest.mark.asyncio
+async def test_get_meter_alc_string(connected_radio):
+    """get_meter('alc') routes to get_alc_meter (RM4)."""
+    connected_radio._transport.query = AsyncMock(return_value="RM4080000")
+    val = await connected_radio.get_meter("alc")
+    assert val == 80
+    connected_radio._transport.query.assert_called_once_with("RM4;")
+
+
+@pytest.mark.asyncio
+async def test_get_meter_power_string(connected_radio):
+    """get_meter('power') routes to get_power_meter (RM5)."""
+    connected_radio._transport.query = AsyncMock(return_value="RM5200000")
+    val = await connected_radio.get_meter("power")
+    assert val == 200
+    connected_radio._transport.query.assert_called_once_with("RM5;")
+
+
+@pytest.mark.asyncio
+async def test_get_meter_swr_string(connected_radio):
+    """get_meter('swr') routes to get_swr_meter (RM6 raw, not interpolated)."""
+    connected_radio._transport.query = AsyncMock(return_value="RM6120000")
+    val = await connected_radio.get_meter("swr")
+    assert val == 120
+    connected_radio._transport.query.assert_called_once_with("RM6;")
+
+
+@pytest.mark.asyncio
+async def test_get_meter_current_string(connected_radio):
+    """get_meter('id') routes to get_id_meter (RM7)."""
+    connected_radio._transport.query = AsyncMock(return_value="RM7003000")
+    val = await connected_radio.get_meter("id")
+    assert val == 3
+    connected_radio._transport.query.assert_called_once_with("RM7;")
+
+
+@pytest.mark.asyncio
+async def test_get_meter_voltage_string(connected_radio):
+    """get_meter('vd') routes to get_vd_meter (RM8)."""
+    connected_radio._transport.query = AsyncMock(return_value="RM8005000")
+    val = await connected_radio.get_meter("vd")
+    assert val == 5
+    connected_radio._transport.query.assert_called_once_with("RM8;")
+
+
+@pytest.mark.asyncio
+async def test_get_meter_accepts_meter_type_enum(connected_radio):
+    """get_meter also accepts a MeterType enum value."""
+    from icom_lan.meter_cal import MeterType
+
+    connected_radio._transport.query = AsyncMock(return_value="SM0100")
+    val = await connected_radio.get_meter(MeterType.SMETER)
+    assert val == 100
+
+
+@pytest.mark.asyncio
+async def test_get_meter_unknown_type_raises(connected_radio):
+    """get_meter raises ValueError for an unrecognised meter type string."""
+    with pytest.raises(ValueError, match="Unknown meter type"):
+        await connected_radio.get_meter("no_such_meter")
