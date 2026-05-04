@@ -317,7 +317,7 @@ class TestDumpStateWire:
         b"0 0 0 0 0 0 0\n"
         b"0x1ff 1\n0 0\n"
         b"0x1ff 3000\n0x1ff 2400\n0x1ff 1800\n"
-        b"0 0\n0\n0\n0\n0\n"
+        b"0 0\n9999\n9999\n0\n0\n"
         b"12 20 0\n6 12 18 0\n"
         b"0x00011B3E\n0x00011B3E\n0x5401791B\n0x0001791B\n0\n0\n"
     )

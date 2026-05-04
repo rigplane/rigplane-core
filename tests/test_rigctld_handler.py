@@ -668,8 +668,8 @@ async def test_dump_state(handler: RigctldHandler, mock_radio: AsyncMock) -> Non
     # Line 12: end of filters sentinel
     assert lines[12] == "0 0"
     # Lines 13-16: bare scalars — no 'key: value' prefix
-    assert lines[13] == "0"  # max_rit
-    assert lines[14] == "0"  # max_xit
+    assert lines[13] == "9999"  # max_rit
+    assert lines[14] == "9999"  # max_xit
     assert lines[15] == "0"  # max_ifshift
     assert lines[16] == "0"  # announces
     # Lines 17-18: preamp/attenuator — space-separated ints, 0-terminated
@@ -766,6 +766,127 @@ async def test_get_rit_reads_radio_state(
 
     assert resp.ok
     assert resp.values == ["-250"]
+
+
+@pytest.mark.asyncio
+async def test_set_rit_calls_radio(
+    handler: RigctldHandler, mock_radio: AsyncMock
+) -> None:
+    mock_radio.set_rit_frequency = AsyncMock()
+    mock_radio.set_rit_status = AsyncMock()
+    resp = await handler.execute(set_cmd("set_rit", "500"))
+    assert resp.ok
+    mock_radio.set_rit_frequency.assert_awaited_once_with(500)
+    mock_radio.set_rit_status.assert_awaited_once_with(True)
+
+
+@pytest.mark.asyncio
+async def test_set_rit_zero_disables(
+    handler: RigctldHandler, mock_radio: AsyncMock
+) -> None:
+    mock_radio.set_rit_frequency = AsyncMock()
+    mock_radio.set_rit_status = AsyncMock()
+    resp = await handler.execute(set_cmd("set_rit", "0"))
+    assert resp.ok
+    mock_radio.set_rit_frequency.assert_awaited_once_with(0)
+    mock_radio.set_rit_status.assert_awaited_once_with(False)
+
+
+@pytest.mark.asyncio
+async def test_set_rit_negative_hz(
+    handler: RigctldHandler, mock_radio: AsyncMock
+) -> None:
+    mock_radio.set_rit_frequency = AsyncMock()
+    mock_radio.set_rit_status = AsyncMock()
+    resp = await handler.execute(set_cmd("set_rit", "-250"))
+    assert resp.ok
+    mock_radio.set_rit_frequency.assert_awaited_once_with(-250)
+    mock_radio.set_rit_status.assert_awaited_once_with(True)
+
+
+@pytest.mark.asyncio
+async def test_set_rit_missing_arg_returns_einval(
+    handler: RigctldHandler, mock_radio: AsyncMock
+) -> None:
+    resp = await handler.execute(set_cmd("set_rit"))
+    assert resp.error == HamlibError.EINVAL
+
+
+@pytest.mark.asyncio
+async def test_set_rit_invalid_arg_returns_einval(
+    handler: RigctldHandler, mock_radio: AsyncMock
+) -> None:
+    resp = await handler.execute(set_cmd("set_rit", "bad"))
+    assert resp.error == HamlibError.EINVAL
+
+
+@pytest.mark.asyncio
+async def test_set_rit_no_cap_returns_enimpl(mock_radio: AsyncMock, config: RigctldConfig) -> None:
+    mock_radio.capabilities = set()
+    h = RigctldHandler(mock_radio, config)
+    resp = await h.execute(set_cmd("set_rit", "100"))
+    assert resp.error == HamlibError.ENIMPL
+
+
+@pytest.mark.asyncio
+async def test_get_xit_reads_radio_state(
+    handler: RigctldHandler, mock_radio: AsyncMock
+) -> None:
+    state = RadioState()
+    state.rit_freq = 300
+    mock_radio.radio_state = state
+    resp = await handler.execute(get_cmd("get_xit"))
+    assert resp.ok
+    assert resp.values == ["300"]
+
+
+@pytest.mark.asyncio
+async def test_get_xit_default_zero(
+    handler: RigctldHandler, mock_radio: AsyncMock
+) -> None:
+    resp = await handler.execute(get_cmd("get_xit"))
+    assert resp.ok
+    assert resp.values == ["0"]
+
+
+@pytest.mark.asyncio
+async def test_set_xit_calls_radio(
+    handler: RigctldHandler, mock_radio: AsyncMock
+) -> None:
+    mock_radio.set_rit_frequency = AsyncMock()
+    mock_radio.set_rit_tx_status = AsyncMock()
+    resp = await handler.execute(set_cmd("set_xit", "750"))
+    assert resp.ok
+    mock_radio.set_rit_frequency.assert_awaited_once_with(750)
+    mock_radio.set_rit_tx_status.assert_awaited_once_with(True)
+
+
+@pytest.mark.asyncio
+async def test_set_xit_zero_disables(
+    handler: RigctldHandler, mock_radio: AsyncMock
+) -> None:
+    mock_radio.set_rit_frequency = AsyncMock()
+    mock_radio.set_rit_tx_status = AsyncMock()
+    resp = await handler.execute(set_cmd("set_xit", "0"))
+    assert resp.ok
+    mock_radio.set_rit_frequency.assert_awaited_once_with(0)
+    mock_radio.set_rit_tx_status.assert_awaited_once_with(False)
+
+
+@pytest.mark.asyncio
+async def test_set_xit_missing_arg_returns_einval(
+    handler: RigctldHandler, mock_radio: AsyncMock
+) -> None:
+    resp = await handler.execute(set_cmd("set_xit"))
+    assert resp.error == HamlibError.EINVAL
+
+
+@pytest.mark.asyncio
+async def test_set_xit_no_cap_returns_enimpl(mock_radio: AsyncMock, config: RigctldConfig) -> None:
+    mock_radio.capabilities = set()
+    h = RigctldHandler(mock_radio, config)
+    resp = await h.execute(set_cmd("set_xit", "100"))
+    assert resp.error == HamlibError.ENIMPL
 
 
 @pytest.mark.asyncio

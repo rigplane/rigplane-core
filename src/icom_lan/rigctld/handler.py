@@ -36,7 +36,7 @@ from .utils import get_mode_reader  # noqa: TID251
 if TYPE_CHECKING:
     from ..radio_protocol import Radio
 
-from ..capabilities import CAP_METERS
+from ..capabilities import CAP_METERS, CAP_RIT
 from .routing import create_routing  # noqa: TID251
 
 __all__ = ["RigctldHandler"]
@@ -84,8 +84,8 @@ _IC7610_DUMP_STATE: list[str] = [
     "0x1ff 2400",  # filter: normal 2400 Hz
     "0x1ff 1800",  # filter: narrow 1800 Hz
     "0 0",  # end of filters
-    "0",  # max_rit
-    "0",  # max_xit
+    "9999",  # max_rit (±9999 Hz, CI-V 0x21)
+    "9999",  # max_xit (±9999 Hz, shared register)
     "0",  # max_ifshift
     "0",  # announces
     "12 20 0",  # preamp (dB values, 0-terminated)
@@ -1218,6 +1218,43 @@ class RigctldHandler:
         rit = state.rit_freq if state is not None else 0
         return RigctldResponse(values=[str(rit)])
 
+    async def _cmd_set_rit(self, cmd: RigctldCommand) -> RigctldResponse:
+        if not cmd.args:
+            return _err(HamlibError.EINVAL)
+        try:
+            hz = int(cmd.args[0])
+        except ValueError:
+            return _err(HamlibError.EINVAL)
+        if CAP_RIT not in self._radio.capabilities:
+            return _err(HamlibError.ENIMPL)
+        await self._radio.set_rit_frequency(hz)
+        await self._radio.set_rit_status(hz != 0)
+        return _ok()
+
+    async def _cmd_get_xit(self, cmd: RigctldCommand) -> RigctldResponse:
+        # IC-7610 shares one RIT/XIT frequency register (CI-V 0x21 0x00).
+        # Return the same value as get_rit.
+        try:
+            self._resolve_target_vfo(cmd.vfo_arg)
+        except ValueError:
+            return _err(HamlibError.EVFO)
+        state = self._radio_state()
+        rit = state.rit_freq if state is not None else 0
+        return RigctldResponse(values=[str(rit)])
+
+    async def _cmd_set_xit(self, cmd: RigctldCommand) -> RigctldResponse:
+        if not cmd.args:
+            return _err(HamlibError.EINVAL)
+        try:
+            hz = int(cmd.args[0])
+        except ValueError:
+            return _err(HamlibError.EINVAL)
+        if CAP_RIT not in self._radio.capabilities:
+            return _err(HamlibError.ENIMPL)
+        await self._radio.set_rit_frequency(hz)
+        await self._radio.set_rit_tx_status(hz != 0)
+        return _ok()
+
     # ------------------------------------------------------------------
     # Info / control commands
     # ------------------------------------------------------------------
@@ -1361,6 +1398,9 @@ RigctldHandler._DISPATCH = {
     "get_split_vfo": RigctldHandler._cmd_get_split_vfo,
     "set_split_vfo": RigctldHandler._cmd_set_split_vfo,
     "get_rit": RigctldHandler._cmd_get_rit,
+    "set_rit": RigctldHandler._cmd_set_rit,
+    "get_xit": RigctldHandler._cmd_get_xit,
+    "set_xit": RigctldHandler._cmd_set_xit,
     "dump_state": RigctldHandler._cmd_dump_state,
     "dump_caps": RigctldHandler._cmd_dump_caps,
     "get_info": RigctldHandler._cmd_get_info,
