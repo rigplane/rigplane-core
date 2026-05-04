@@ -45,7 +45,13 @@ from ..startup_checks import assert_radio_startup_ready
 from ._delta_encoder import DeltaEncoder  # noqa: TID251
 from .discovery import DiscoveryResponder  # noqa: TID251
 from .dx_cluster import DXClusterClient, SpotBuffer  # noqa: TID251
-from .handlers import AudioBroadcaster, AudioHandler, ControlHandler, ScopeHandler  # noqa: TID251
+from .handlers import (  # noqa: TID251
+    AudioBroadcaster,
+    AudioHandler,
+    ControlHandler,
+    DiagnosticsHandler,
+    ScopeHandler,
+)
 from .rtc import handle_rtc_offer, rtc_capability_info, webrtc_available  # noqa: TID251
 from .radio_poller import CommandQueue, DisableScope, EnableScope, RadioPoller  # noqa: TID251
 from .runtime_helpers import (  # noqa: TID251
@@ -397,6 +403,10 @@ class WebServer:
         self._zombie_reaper_task: asyncio.Task[None] | None = None
         # UDP discovery responder
         self._discovery: DiscoveryResponder | None = None
+        # Diagnostic upload session manager (preview/send/save/delete).
+        # Sweeper task is started lazily on the first preview request and
+        # explicitly stopped during web shutdown.
+        self._diagnostics: DiagnosticsHandler = DiagnosticsHandler()
 
     def __del__(self) -> None:
         """Emit WARN if instance is collected while server is still running (forgotten teardown)."""
@@ -2018,6 +2028,273 @@ class WebServer:
             {"Content-Type": "application/json"},
         )
 
+    # ------------------------------------------------------------------
+    # Diagnostic upload endpoints (issue #1396)
+    # ------------------------------------------------------------------
+
+    def _resolve_diagnostic_dirs(self) -> tuple[pathlib.Path, pathlib.Path]:
+        """Resolve config_dir / log_dir for diagnostic bundle generation.
+
+        Uses ``platformdirs`` so the layout matches the always-on
+        diagnostic logging (``_logging.py``) and config contributors.
+        """
+        import platformdirs
+
+        config_dir = pathlib.Path(platformdirs.user_config_path("icom-lan"))
+        log_dir = pathlib.Path(platformdirs.user_cache_path("icom-lan")) / "logs"
+        return config_dir, log_dir
+
+    async def _handle_diagnose_preview(
+        self,
+        writer: asyncio.StreamWriter,
+        headers: dict[str, str] | None,
+        reader: asyncio.StreamReader | None,
+    ) -> None:
+        """POST /api/v1/diagnose/preview — build a bundle, mint preview/CSRF."""
+        from .handlers.diagnostics import _ClientError  # noqa: TID251
+
+        body_dict = await self._read_json_body(writer, headers, reader)
+        if body_dict is None:
+            return  # response already sent
+
+        config_dir, log_dir = self._resolve_diagnostic_dirs()
+        try:
+            result = await self._diagnostics.handle_preview(
+                body_dict, self._radio, config_dir, log_dir
+            )
+        except _ClientError as exc:
+            await _send_diag_error(writer, exc.status, exc.code, exc.message)
+            return
+        except Exception as exc:  # noqa: BLE001 — bubble up as 500
+            logger.exception("diagnose/preview failed")
+            await _send_diag_error(writer, 500, "preview_failed", str(exc))
+            return
+
+        body = json.dumps(result, separators=(",", ":")).encode()
+        await _send_response(
+            writer, 200, "OK", body, {"Content-Type": "application/json"}
+        )
+
+    async def _handle_diagnose_send(
+        self,
+        writer: asyncio.StreamWriter,
+        headers: dict[str, str] | None,
+        reader: asyncio.StreamReader | None,
+    ) -> None:
+        """POST /api/v1/diagnose/send — upload a previewed bundle."""
+        from .handlers.diagnostics import (  # noqa: TID251
+            _ClientError,
+            check_origin_or_loopback,
+        )
+        from icom_lan.diagnostics import (
+            BundleTooLarge,
+            DiagnosticUploadError,
+            ForbiddenContent,
+            MetadataInvalid,
+            NetworkError,
+            RateLimited,
+            UploadFailed,
+        )
+
+        h = headers or {}
+        allowed, reason = check_origin_or_loopback(
+            h.get("origin"),
+            self._config.host,
+            self._config.port,
+            h.get("host"),
+        )
+        if not allowed:
+            await _send_diag_error(writer, 403, reason, reason)
+            return
+        csrf = h.get("x-diagnostic-csrf", "")
+
+        body_dict = await self._read_json_body(writer, headers, reader)
+        if body_dict is None:
+            return
+
+        try:
+            result = await self._diagnostics.handle_send(body_dict, csrf)
+        except _ClientError as exc:
+            await _send_diag_error(writer, exc.status, exc.code, exc.message)
+            return
+        except RateLimited as exc:
+            await _send_diag_error(
+                writer,
+                429,
+                "rate_limited",
+                str(exc),
+                extra={"retry_after_seconds": exc.retry_after_seconds},
+            )
+            return
+        except BundleTooLarge as exc:
+            await _send_diag_error(writer, 413, "bundle_too_large", str(exc))
+            return
+        except ForbiddenContent as exc:
+            await _send_diag_error(
+                writer,
+                422,
+                "forbidden_content",
+                str(exc),
+                extra={"pattern": exc.pattern} if exc.pattern else None,
+            )
+            return
+        except MetadataInvalid as exc:
+            await _send_diag_error(
+                writer,
+                400,
+                "metadata_invalid",
+                str(exc),
+                extra={"field": exc.field} if exc.field else None,
+            )
+            return
+        except NetworkError as exc:
+            await _send_diag_error(writer, 502, "network_error", str(exc))
+            return
+        except UploadFailed as exc:
+            await _send_diag_error(
+                writer,
+                502,
+                "upload_failed",
+                str(exc),
+                extra={"upstream_status": exc.status},
+            )
+            return
+        except DiagnosticUploadError as exc:
+            await _send_diag_error(writer, 502, "upload_failed", str(exc))
+            return
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("diagnose/send failed")
+            await _send_diag_error(writer, 500, "send_failed", str(exc))
+            return
+
+        body = json.dumps(result, separators=(",", ":")).encode()
+        await _send_response(
+            writer, 200, "OK", body, {"Content-Type": "application/json"}
+        )
+
+    async def _handle_diagnose_save(
+        self,
+        writer: asyncio.StreamWriter,
+        headers: dict[str, str] | None,
+        reader: asyncio.StreamReader | None,
+    ) -> None:
+        """POST /api/v1/diagnose/save — return the bundle as a download."""
+        from .handlers.diagnostics import (  # noqa: TID251
+            _ClientError,
+            check_origin_or_loopback,
+        )
+
+        h = headers or {}
+        allowed, reason = check_origin_or_loopback(
+            h.get("origin"),
+            self._config.host,
+            self._config.port,
+            h.get("host"),
+        )
+        if not allowed:
+            await _send_diag_error(writer, 403, reason, reason)
+            return
+        csrf = h.get("x-diagnostic-csrf", "")
+
+        body_dict = await self._read_json_body(writer, headers, reader)
+        if body_dict is None:
+            return
+
+        try:
+            zip_bytes, filename = await self._diagnostics.handle_save(body_dict, csrf)
+        except _ClientError as exc:
+            await _send_diag_error(writer, exc.status, exc.code, exc.message)
+            return
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("diagnose/save failed")
+            await _send_diag_error(writer, 500, "save_failed", str(exc))
+            return
+
+        await _send_response(
+            writer,
+            200,
+            "OK",
+            zip_bytes,
+            {
+                "Content-Type": "application/zip",
+                "Content-Disposition": f'attachment; filename="{filename}"',
+            },
+        )
+
+    async def _handle_diagnose_delete(
+        self,
+        writer: asyncio.StreamWriter,
+        headers: dict[str, str] | None,
+        preview_id: str,
+    ) -> None:
+        """DELETE /api/v1/diagnose/preview/<preview_id>."""
+        from .handlers.diagnostics import (  # noqa: TID251
+            _ClientError,
+            check_origin_or_loopback,
+        )
+
+        h = headers or {}
+        allowed, reason = check_origin_or_loopback(
+            h.get("origin"),
+            self._config.host,
+            self._config.port,
+            h.get("host"),
+        )
+        if not allowed:
+            await _send_diag_error(writer, 403, reason, reason)
+            return
+        csrf = h.get("x-diagnostic-csrf", "")
+        if not preview_id:
+            await _send_diag_error(
+                writer, 400, "preview_missing", "preview_id required"
+            )
+            return
+
+        try:
+            await self._diagnostics.handle_delete(preview_id, csrf)
+        except _ClientError as exc:
+            await _send_diag_error(writer, exc.status, exc.code, exc.message)
+            return
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("diagnose/delete failed")
+            await _send_diag_error(writer, 500, "delete_failed", str(exc))
+            return
+        await _send_response(writer, 204, "No Content", b"", {})
+
+    async def _read_json_body(
+        self,
+        writer: asyncio.StreamWriter,
+        headers: dict[str, str] | None,
+        reader: asyncio.StreamReader | None,
+    ) -> dict[str, Any] | None:
+        """Read a JSON object body; send an error response and return ``None`` on failure."""
+        cl_str = (headers or {}).get("content-length", "0")
+        try:
+            cl = int(cl_str)
+        except ValueError:
+            cl = 0
+        body_bytes = b""
+        if reader is not None and cl > 0:
+            read_result = await _read_capped_body(reader, cl)
+            if read_result is None:
+                await _send_diag_error(
+                    writer, 413, "request_too_large", "request body too large"
+                )
+                writer.close()
+                return None
+            body_bytes = read_result
+        if not body_bytes:
+            return {}
+        try:
+            payload = json.loads(body_bytes)
+        except (json.JSONDecodeError, ValueError) as exc:
+            await _send_diag_error(writer, 400, "invalid_json", str(exc))
+            return None
+        if not isinstance(payload, dict):
+            await _send_diag_error(writer, 400, "invalid_body", "JSON object required")
+            return None
+        return payload
+
     async def _handle_bridge(
         self,
         method: str,
@@ -2255,6 +2532,37 @@ async def _send_json(
         extra["Content-Encoding"] = "gzip"
         extra["Vary"] = "Accept-Encoding"
     await _send_response(writer, 200, "OK", body, extra)
+
+
+async def _send_diag_error(
+    writer: asyncio.StreamWriter,
+    status: int,
+    code: str,
+    message: str,
+    *,
+    extra: dict[str, Any] | None = None,
+) -> None:
+    """Send a structured ``{error, message, ...}`` response for diagnostic endpoints."""
+    payload: dict[str, Any] = {"error": code, "message": message}
+    if extra:
+        for k, v in extra.items():
+            if v is not None:
+                payload[k] = v
+    body = json.dumps(payload, separators=(",", ":")).encode()
+    reason_map = {
+        400: "Bad Request",
+        403: "Forbidden",
+        404: "Not Found",
+        413: "Content Too Large",
+        422: "Unprocessable Entity",
+        429: "Too Many Requests",
+        500: "Internal Server Error",
+        502: "Bad Gateway",
+    }
+    reason = reason_map.get(status, "Error")
+    await _send_response(
+        writer, status, reason, body, {"Content-Type": "application/json"}
+    )
 
 
 _SECURITY_HEADERS: dict[str, str] = {

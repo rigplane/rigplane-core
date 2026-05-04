@@ -173,6 +173,35 @@ async def dispatch_http_request(
         await server._handle_rtc_offer(writer, headers, reader)
         return
 
+    # Diagnostic upload endpoints (issue #1396).
+    if path == "/api/v1/diagnose/preview":
+        if method != "POST":
+            await _send_response(writer, 405, "Method Not Allowed", b"", {})
+            return
+        await server._handle_diagnose_preview(writer, headers, reader)
+        return
+    if path == "/api/v1/diagnose/send":
+        if method != "POST":
+            await _send_response(writer, 405, "Method Not Allowed", b"", {})
+            return
+        await server._handle_diagnose_send(writer, headers, reader)
+        return
+    if path == "/api/v1/diagnose/save":
+        if method != "POST":
+            await _send_response(writer, 405, "Method Not Allowed", b"", {})
+            return
+        await server._handle_diagnose_save(writer, headers, reader)
+        return
+    # DELETE /api/v1/diagnose/preview/<preview_id> — prefix dispatch.
+    # The trailing slash check prevents collision with POST /preview above.
+    if path.startswith("/api/v1/diagnose/preview/"):
+        if method != "DELETE":
+            await _send_response(writer, 405, "Method Not Allowed", b"", {})
+            return
+        preview_id = path.removeprefix("/api/v1/diagnose/preview/")
+        await server._handle_diagnose_delete(writer, headers, preview_id)
+        return
+
     if method not in ("GET", "HEAD"):
         await _send_response(writer, 405, "Method Not Allowed", b"", {})
         return

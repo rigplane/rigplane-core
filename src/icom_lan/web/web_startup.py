@@ -179,6 +179,12 @@ async def stop_web_server(server: WebServer) -> None:
         await asyncio.wait_for(server._audio_broadcaster._stop_relay(), timeout=2.0)
     except (TimeoutError, Exception) as exc:
         logger.warning("audio relay stop: %s", exc)
+
+    # 2b. Stop diagnostic preview sweeper and clean up any in-flight bundles.
+    try:
+        await asyncio.wait_for(server._diagnostics.stop(), timeout=2.0)
+    except (TimeoutError, Exception) as exc:
+        logger.warning("diagnostics handler stop: %s", exc)
     if server._audio_bridge is not None:
         await server.stop_audio_bridge()
 
