@@ -51,8 +51,7 @@ anything; only an explicit `y` triggers upload.
 Open the Web UI, then **Settings → Diagnostics → "Send diagnostic
 report"**. A dialog walks through the same flow:
 
-1. Form — description, optional issue URL, optional contact fields,
-   category include/exclude.
+1. Form — description, optional issue URL, optional contact fields.
 2. Preview — file tree, sizes, redactions applied, the endpoint URL
    that will receive the bundle, and an "I understand" checkbox.
 3. Result — a `support_url` you can paste into a GitHub issue, or a
@@ -60,6 +59,12 @@ report"**. A dialog walks through the same flow:
 
 You can cancel at any step. "Save locally" is always available as an
 alternative to "Send".
+
+!!! note "Category filters"
+    The CLI and Web UI currently accept category include/exclude fields
+    for forward compatibility, but filtering is not wired into the bundle
+    builder yet. For now every registered contributor runs, and the CLI
+    prints a warning if you pass `--include` or `--exclude`.
 
 ### Save locally (no upload)
 
@@ -260,31 +265,36 @@ the file logger explicitly (used by the test suite).
 ### Rate-limited (429)
 
 Anonymous uploads are limited to **5 reports per hour and 10 per day
-per IP**. If you hit the limit you'll see:
+per IP**. If you hit the limit, the receiver returns `rate_limited`
+with `retry_after_seconds`; the CLI surfaces that retry window:
 
 ```
-Upload rejected: rate_limited (retry after 1842 seconds).
-Bundle saved locally at /home/you/icom-lan-report-….zip
+Rate limit exceeded. Try again in 1842s.
 ```
 
 Wait for the retry window, or activate an `icom-lan-pro` license for
-authenticated uploads with higher limits. The bundle is always saved
-locally on rate-limit, so you don't lose the report.
+authenticated uploads with higher limits. The bundle was already built
+before upload, so it remains at your `--output` path (or the default
+`~/icom-lan-report-<timestamp>.zip` path). In the Web UI, use the
+preview's "Save locally" action to keep a copy.
 
 ### Bundle too large (413)
 
 The triage endpoint rejects bundles larger than **25 MiB**. The
 default rotating log cap is 15 MiB, so you'll usually be fine, but a
 long-running session that triggers many tracebacks plus a verbose
-extension contributor can push you over. Mitigations:
+extension contributor can push you over.
+
+Current limitation: `--include` / `--exclude` are parsed but do not
+change the contributor set yet. If you hit this error today, save the
+bundle locally and inspect it, then delete or rotate large local log
+files before regenerating the report. The bundle that failed upload
+remains at your `--output` path; if you omitted `--output`, look for the
+default `~/icom-lan-report-<timestamp>.zip` path.
 
 ```bash
-# Drop the logs category — keeps state, radio, errors, dependencies
-icom-lan diagnose --upload --exclude logs
-
-# Or split: send state-only first, then logs separately
-icom-lan diagnose --output state.zip --exclude logs
-icom-lan diagnose --output logs.zip --include logs
+icom-lan diagnose --output ~/icom-lan-report.zip
+unzip -l ~/icom-lan-report.zip
 ```
 
 ### Forbidden content rejected (422)
@@ -307,6 +317,23 @@ Two things to check:
   being false-positive matched, please file an issue with the
   pattern (not the value).
 
+### Upload requires `aiohttp`
+
+`aiohttp` is a development dependency, not part of the minimal runtime
+install. Local bundle generation does not need it, but `--upload` does.
+If you run `icom-lan diagnose --upload --no-confirm` on an install that
+does not provide `aiohttp`, the CLI exits with code `9`, prints an
+actionable message, and keeps the generated ZIP locally:
+
+```text
+Upload requires the 'aiohttp' package, which is not installed.
+  Install it with:  pip install aiohttp
+  Bundle saved locally: /home/you/icom-lan-report-20260504-160209.zip
+```
+
+You can attach that ZIP manually, or install `aiohttp` and rerun the
+upload command.
+
 ## CLI reference
 
 ```
@@ -328,8 +355,8 @@ icom-lan diagnose
 | ---------------- | --------------------------------------- | ------------------------------------------------------------------ |
 | `--upload`       | absent → save locally                   | Required to transmit. Combined with `--no-confirm` for headless.   |
 | `--output`       | `~/icom-lan-report-<timestamp>.zip`     | The bundle is always written to this path, upload or no upload.    |
-| `--include`      | all categories                          | Repeatable. Mutually narrows: `--include radio --include logs`.    |
-| `--exclude`      | none                                    | Repeatable. Removes a category from the default-all set.           |
+| `--include`      | all categories                          | Repeatable, accepted for forward compatibility; filtering is not implemented yet. |
+| `--exclude`      | none                                    | Repeatable, accepted for forward compatibility; filtering is not implemented yet. |
 | `--description`  | interactive prompt                      | Free text — explain what you were doing when the bug occurred.     |
 | `--issue-ref`    | interactive prompt                      | Optional GitHub URL or issue number for context.                   |
 | `--email`        | not collected                           | Opt-in. If set, the maintainer can reach you about the report.     |
