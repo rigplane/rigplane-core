@@ -14,8 +14,11 @@ from icom_lan.diagnostics.contributors import (
     AudioContributor,
     ConfigContributor,
     DependenciesContributor,
+    ErrorsContributor,
     InvocationContributor,
+    LogsContributor,
     RadioContributor,
+    StateContributor,
     SystemContributor,
 )
 
@@ -24,8 +27,9 @@ logger = logging.getLogger(__name__)
 _ENTRY_POINT_GROUP = "icom_lan.diagnostics"
 
 # Built-in contributors are populated incrementally by #1390-#1392.
-# Batch #1390: system, invocation, dependencies, config.
-# Batch #1391: radio, audio.
+# #1390: system, invocation, dependencies, config.
+# #1391: radio, audio.
+# #1392: logs, state, errors.
 _BUILT_IN_CONTRIBUTORS: list[type["DiagnosticContributor"]] = [
     SystemContributor,
     InvocationContributor,
@@ -33,6 +37,9 @@ _BUILT_IN_CONTRIBUTORS: list[type["DiagnosticContributor"]] = [
     ConfigContributor,
     RadioContributor,
     AudioContributor,
+    LogsContributor,
+    StateContributor,
+    ErrorsContributor,
 ]
 
 _RUNTIME_REGISTERED: list[type["DiagnosticContributor"]] = []
