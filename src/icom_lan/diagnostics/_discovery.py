@@ -10,12 +10,25 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from icom_lan.diagnostics.contributor import DiagnosticContributor
 
+from icom_lan.diagnostics.contributors import (
+    ConfigContributor,
+    DependenciesContributor,
+    InvocationContributor,
+    SystemContributor,
+)
+
 logger = logging.getLogger(__name__)
 
 _ENTRY_POINT_GROUP = "icom_lan.diagnostics"
 
-# Built-in contributors are populated by #1390-#1392 (this issue ships an empty list).
-_BUILT_IN_CONTRIBUTORS: list[type["DiagnosticContributor"]] = []
+# Built-in contributors are populated incrementally by #1390-#1392.
+# This batch (#1390): system, invocation, dependencies, config.
+_BUILT_IN_CONTRIBUTORS: list[type["DiagnosticContributor"]] = [
+    SystemContributor,
+    InvocationContributor,
+    DependenciesContributor,
+    ConfigContributor,
+]
 
 _RUNTIME_REGISTERED: list[type["DiagnosticContributor"]] = []
 

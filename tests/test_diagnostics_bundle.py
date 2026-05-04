@@ -18,11 +18,15 @@ from icom_lan.diagnostics import _discovery
 
 
 @pytest.fixture(autouse=True)
-def _clear_runtime_registered() -> Any:
-    """Ensure runtime-registered contributors don't leak between tests."""
+def _isolate_contributors() -> Any:
+    """Isolate bundle tests from runtime-registered AND built-in contributors."""
     _discovery._RUNTIME_REGISTERED.clear()
+    saved_built_in = list(_discovery._BUILT_IN_CONTRIBUTORS)
+    _discovery._BUILT_IN_CONTRIBUTORS.clear()
     yield
     _discovery._RUNTIME_REGISTERED.clear()
+    _discovery._BUILT_IN_CONTRIBUTORS.clear()
+    _discovery._BUILT_IN_CONTRIBUTORS.extend(saved_built_in)
 
 
 def _make_ctx(**overrides: Any) -> BundleContext:
