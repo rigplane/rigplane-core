@@ -1,0 +1,350 @@
+"""``icom-lan diagnose`` subcommand — local-bundle generator with opt-in upload.
+
+Privacy posture (spec §4.8):
+
+* Default (no ``--upload``): build the bundle, save to ``--output``, print the
+  path. Never prompt, never transmit.
+* ``--upload`` on a TTY: collect any missing description/issue/contact fields
+  via prompts, build the bundle, show a preview (file list, total size,
+  endpoint URL), then ask a final ``[y/N]`` consent prompt where Enter saves
+  locally without sending.
+* ``--upload`` non-TTY: must also pass ``--no-confirm`` to actually transmit.
+  Otherwise the command saves locally and prints a message explaining that
+  confirmation cannot be obtained without a TTY.
+* ``--upload --no-confirm``: fully scripted; no prompts of any kind.
+
+Known limitation: ``--include`` / ``--exclude`` filtering is not yet
+implemented in this version. The flags are accepted but emit a warning; all
+registered contributors run regardless. A follow-up issue will wire the
+include/exclude lists through ``build_bundle``.
+"""
+
+from __future__ import annotations
+
+import argparse
+import asyncio
+import json
+import logging
+import os
+import sys
+import time
+import uuid
+import zipfile
+from pathlib import Path
+from typing import Any
+
+import platformdirs
+
+from icom_lan.diagnostics import (
+    DEFAULT_ENDPOINT,
+    BundleContext,
+    BundleTooLarge,
+    ForbiddenContent,
+    MetadataInvalid,
+    NetworkError,
+    RateLimited,
+    ReportSubmitted,
+    UploadFailed,
+    build_bundle,
+    upload_bundle,
+)
+
+logger = logging.getLogger(__name__)
+
+
+def add_subparser(sub: Any) -> argparse.ArgumentParser:
+    """Register the ``diagnose`` subparser on ``sub`` (an ``_SubParsersAction``).
+
+    Typed as ``Any`` because ``argparse._SubParsersAction`` is private and the
+    surrounding parser code in ``cli/__init__.py`` follows the same convention.
+    """
+    p: argparse.ArgumentParser = sub.add_parser(
+        "diagnose",
+        help="Build (and optionally upload) a diagnostic report bundle.",
+    )
+    p.add_argument(
+        "--upload",
+        action="store_true",
+        help="Upload the bundle after a confirmation prompt (default: save only).",
+    )
+    p.add_argument(
+        "--output",
+        type=Path,
+        default=None,
+        help="Output zip path (default: ~/icom-lan-report-<timestamp>.zip).",
+    )
+    p.add_argument(
+        "--include",
+        action="append",
+        default=[],
+        metavar="CATEGORY",
+        help="Contributor name to include (repeatable). NOTE: filtering not yet implemented.",
+    )
+    p.add_argument(
+        "--exclude",
+        action="append",
+        default=[],
+        metavar="CATEGORY",
+        help="Contributor name to exclude (repeatable). NOTE: filtering not yet implemented.",
+    )
+    p.add_argument(
+        "--description",
+        default=None,
+        help="Free-text description of the issue.",
+    )
+    p.add_argument(
+        "--issue-ref",
+        dest="issue_ref",
+        default=None,
+        help="Related issue URL (e.g. https://github.com/.../issues/123).",
+    )
+    p.add_argument(
+        "--email",
+        default=None,
+        help="Contact email (opt-in; sent only if explicitly provided).",
+    )
+    p.add_argument(
+        "--callsign",
+        default=None,
+        help="Amateur-radio callsign (opt-in; sent only if explicitly provided).",
+    )
+    p.add_argument(
+        "--endpoint",
+        default=None,
+        help="Upload endpoint URL (overrides ICOM_LAN_REPORT_ENDPOINT).",
+    )
+    p.add_argument(
+        "--no-confirm",
+        dest="no_confirm",
+        action="store_true",
+        help="Skip all interactive prompts (required for non-TTY upload).",
+    )
+    p.add_argument(
+        "--bundle-id",
+        dest="bundle_id",
+        default=None,
+        metavar="UUID",
+        help="Explicit submission_id for retry/dedup (default: random UUID).",
+    )
+    return p
+
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+
+def _default_output_path() -> Path:
+    ts = time.strftime("%Y%m%d-%H%M%S")
+    return Path.home() / f"icom-lan-report-{ts}.zip"
+
+
+def _default_log_dir() -> Path:
+    return Path(platformdirs.user_cache_path("icom-lan")) / "logs"
+
+
+def _default_config_dir() -> Path:
+    return Path(platformdirs.user_config_path("icom-lan"))
+
+
+def _resolve_endpoint(endpoint_arg: str | None) -> str:
+    if endpoint_arg:
+        return endpoint_arg
+    return os.environ.get("ICOM_LAN_REPORT_ENDPOINT", DEFAULT_ENDPOINT)
+
+
+def _is_tty() -> bool:
+    """True when both stdin and stdout are attached to a terminal."""
+    return bool(sys.stdin.isatty() and sys.stdout.isatty())
+
+
+def _prompt(prompt: str) -> str:
+    """Wrapper around ``input()`` so tests can patch a single name."""
+    return input(prompt)
+
+
+def _make_context(args: argparse.Namespace) -> BundleContext:
+    submission_id = args.bundle_id or str(uuid.uuid4())
+    return BundleContext(
+        radio=None,
+        config_dir=_default_config_dir(),
+        log_dir=_default_log_dir(),
+        user_description=args.description,
+        issue_ref=args.issue_ref,
+        contact_email=args.email,
+        contact_callsign=args.callsign,
+        submission_id=submission_id,
+        generated_at_unix=int(time.time()),
+    )
+
+
+def _read_manifest(bundle_path: Path) -> dict[str, Any]:
+    """Extract ``manifest.json`` from the produced bundle and parse it.
+
+    The manifest doubles as the upload metadata payload (schema-stable per
+    spec §5.2). Falls back to a minimal payload if the manifest is missing.
+    """
+    try:
+        with zipfile.ZipFile(bundle_path) as zf:
+            data = zf.read("manifest.json")
+    except (KeyError, zipfile.BadZipFile, OSError) as exc:
+        logger.warning("diagnose: cannot read manifest from bundle: %r", exc)
+        return {}
+    try:
+        parsed = json.loads(data)
+    except json.JSONDecodeError as exc:
+        logger.warning("diagnose: manifest.json is not valid JSON: %r", exc)
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
+
+
+def _print_preview(bundle_path: Path, endpoint: str) -> None:
+    size_bytes = bundle_path.stat().st_size
+    print("\nBundle preview:", file=sys.stderr)
+    print(f"  Path:     {bundle_path}", file=sys.stderr)
+    print(f"  Size:     {size_bytes} bytes", file=sys.stderr)
+    print(f"  Endpoint: {endpoint}", file=sys.stderr)
+
+
+def _interactive_collect(args: argparse.Namespace) -> None:
+    """Fill in missing description/issue/contact fields via prompts.
+
+    Mutates ``args`` in place. Only called on TTY when ``--no-confirm`` is
+    absent. Each field is skipped if it is already set on ``args``.
+    """
+    if args.description is None:
+        try:
+            value = _prompt("Description (what went wrong?): ").strip()
+        except EOFError:
+            value = ""
+        args.description = value or None
+    if args.issue_ref is None:
+        try:
+            value = _prompt("Issue URL (optional): ").strip()
+        except EOFError:
+            value = ""
+        args.issue_ref = value or None
+    if args.email is None:
+        try:
+            value = _prompt("Contact email (optional, opt-in): ").strip()
+        except EOFError:
+            value = ""
+        args.email = value or None
+    if args.callsign is None:
+        try:
+            value = _prompt("Callsign (optional, opt-in): ").strip()
+        except EOFError:
+            value = ""
+        args.callsign = value or None
+
+
+# ---------------------------------------------------------------------------
+# Main entry
+# ---------------------------------------------------------------------------
+
+
+async def _run_async(args: argparse.Namespace) -> int:
+    if args.include or args.exclude:
+        print(
+            "warning: --include / --exclude filtering is not yet implemented; "
+            "all registered contributors will run.",
+            file=sys.stderr,
+        )
+
+    output_path = args.output or _default_output_path()
+
+    # Default behaviour (no --upload): just build and save. No prompts ever.
+    if not args.upload:
+        ctx = _make_context(args)
+        print("Building diagnostic bundle...", file=sys.stderr)
+        bundle_path = build_bundle(ctx, output_path)
+        print(f"Bundle saved to: {bundle_path}")
+        return 0
+
+    # --upload path. Decide whether we may prompt.
+    is_tty = _is_tty()
+    may_prompt = is_tty and not args.no_confirm
+
+    # Non-TTY without --no-confirm → save locally, do not transmit.
+    if not is_tty and not args.no_confirm:
+        ctx = _make_context(args)
+        print("Building diagnostic bundle...", file=sys.stderr)
+        bundle_path = build_bundle(ctx, output_path)
+        print(
+            f"warning: --upload requires a TTY for confirmation, or pass "
+            f"--no-confirm to skip the prompt. Saved locally to {bundle_path}.",
+            file=sys.stderr,
+        )
+        return 0
+
+    # Collect any missing fields interactively before building the bundle, so
+    # they end up inside manifest.json (which doubles as upload metadata).
+    if may_prompt:
+        _interactive_collect(args)
+
+    ctx = _make_context(args)
+    print("Building diagnostic bundle...", file=sys.stderr)
+    bundle_path = build_bundle(ctx, output_path)
+
+    endpoint = _resolve_endpoint(args.endpoint)
+
+    if may_prompt:
+        _print_preview(bundle_path, endpoint)
+        try:
+            answer = _prompt(f"Send to {endpoint}? [y/N] ").strip().lower()
+        except EOFError:
+            answer = ""
+        if answer not in ("y", "yes"):
+            print(
+                f"Saved locally; not uploading. Bundle: {bundle_path}",
+                file=sys.stderr,
+            )
+            return 0
+
+    # Upload (either --no-confirm path or user typed y/yes after preview).
+    metadata = _read_manifest(bundle_path)
+    try:
+        result: ReportSubmitted = await upload_bundle(
+            bundle_path,
+            metadata,
+            endpoint=endpoint,
+        )
+    except RateLimited as exc:
+        retry = exc.retry_after_seconds
+        retry_str = f"{retry}s" if isinstance(retry, int) else "unknown"
+        print(f"Rate limit exceeded. Try again in {retry_str}.", file=sys.stderr)
+        return 4
+    except BundleTooLarge:
+        size_bytes = bundle_path.stat().st_size
+        print(
+            f"Bundle too large ({size_bytes} bytes). "
+            f"Try `--exclude` to drop some categories.",
+            file=sys.stderr,
+        )
+        return 5
+    except ForbiddenContent as exc:
+        pattern = getattr(exc, "pattern", None)
+        suffix = f" (pattern: {pattern})" if pattern else ""
+        print(
+            f"Server rejected bundle (forbidden content detected){suffix}. "
+            f"Review the manifest and contact support.",
+            file=sys.stderr,
+        )
+        return 6
+    except MetadataInvalid as exc:
+        print(f"Metadata validation failed: {exc}", file=sys.stderr)
+        return 7
+    except (NetworkError, UploadFailed) as exc:
+        print(f"Upload failed: {exc}", file=sys.stderr)
+        return 8
+
+    print("Uploaded.")
+    if result.support_url:
+        print(f"Support URL: {result.support_url}")
+    if result.report_id:
+        print(f"Report ID:   {result.report_id}")
+    return 0
+
+
+def run(args: argparse.Namespace) -> int:
+    return asyncio.run(_run_async(args))
