@@ -19,6 +19,11 @@ vi.mock('$lib/stores/capabilities.svelte', () => ({
 
 vi.mock('$lib/stores/radio.svelte', () => ({
   radio: { current: null },
+  getActiveReceiver: vi.fn(),
+  getRadioState: vi.fn(),
+  patchActiveReceiver: vi.fn(),
+  patchRadioState: vi.fn(),
+  patchReceiver: vi.fn(),
 }));
 
 vi.mock('$lib/transport/ws-client', () => ({
