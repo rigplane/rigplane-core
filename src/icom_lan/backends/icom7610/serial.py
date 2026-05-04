@@ -78,13 +78,22 @@ class Icom7610SerialRadio(_IcomSerialRadioBase):
                 "sample_rate * frame_ms must produce an integer frame size."
             )
 
+        # IC-7610 USB CODEC mic input is mono-only by hardware; the LAN path
+        # enforces this by forcing txcodec to a mono value in _send_conninfo
+        # (issue #794).  For the serial path we clamp channels to 1 here so
+        # that PortAudio always opens the USB CODEC as a mono output stream.
+        # Opening with channels=2 causes the IC-7610 ALC to behave erratically
+        # for the first 5-10 seconds of TX (GH#1382 regression vs 0.16.4 where
+        # the global default was PCM_1CH_16BIT → default_channels=1).
+        tx_channels = 1
+
         self._check_connected()
         await self._serial_audio_driver.start_tx(
             sample_rate=sample_rate,
-            channels=channels,
+            channels=tx_channels,
             frame_ms=frame_ms,
         )
-        self._pcm_tx_fmt = (sample_rate, channels, frame_ms)
+        self._pcm_tx_fmt = (sample_rate, tx_channels, frame_ms)
 
     async def push_audio_tx_pcm(
         self,

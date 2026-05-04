@@ -152,11 +152,11 @@ class _FakeUsbAudioDriver:
         self._rx_callback = None
 
     async def start_tx(self, **kwargs) -> None:  # type: ignore[no-untyped-def]
-        _ = kwargs
         if self.tx_running:
             raise RuntimeError("TX stream already started.")
         self.tx_running = True
         self.tx_starts += 1
+        self.tx_start_kwargs: dict = dict(kwargs)
 
     async def stop_tx(self) -> None:
         self.tx_running = False
@@ -478,4 +478,59 @@ async def test_serial_scope_flood_does_not_starve_get_frequency() -> None:
     await radio.enable_scope(policy="fast")
     assert await radio.get_freq() == 14_074_000
     await radio.disable_scope(policy="fast")
+    await radio.disconnect()
+
+
+# ---------------------------------------------------------------------------
+# GH#1382 regression: TX always opens USB CODEC as mono (channels=1)
+# IC-7610 USB CODEC mic input is mono-only; opening with channels=2 causes
+# PortAudio to negotiate a 2-channel stream, producing 5-10s of TX artifacts
+# while CoreAudio settles (regression introduced with stereo-first codec in
+# PCM_2CH_16BIT becoming the global default, commit 8cc677df).
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_serial_tx_always_uses_mono_channels_regression_gh1382() -> None:
+    """start_audio_tx_pcm always opens USB CODEC driver with channels=1 (GH#1382).
+
+    Even when the global audio capabilities default to 2 channels (because
+    PCM_2CH_16BIT is the preferred codec), the IC-7610 serial TX must open
+    the USB CODEC with channels=1.  Callers that pass channels=2 (e.g. the
+    CLI reading audio_caps.default_channels) must be clamped to mono.
+    """
+    usb_audio = _FakeUsbAudioDriver()
+    radio = Icom7610SerialRadio(
+        device="/dev/ttyUSB0",
+        civ_link=_FakeSerialCivLink(),
+        audio_driver=usb_audio,
+        audio_codec=AudioCodec.PCM_2CH_16BIT,  # stereo codec — reproduces regression
+    )
+    await radio.connect()
+
+    # Simulate CLI passing channels=2 from audio_caps.default_channels
+    await radio.start_audio_tx_pcm(sample_rate=48000, channels=2, frame_ms=20)
+
+    # USB CODEC must be opened mono regardless of what caller requested
+    assert usb_audio.tx_start_kwargs.get("channels") == 1, (
+        "IC-7610 serial TX must open USB CODEC as mono (channels=1) "
+        "regardless of the active audio codec or caller-supplied channels value"
+    )
+    await radio.stop_audio_tx_pcm()
+    await radio.disconnect()
+
+
+@pytest.mark.asyncio
+async def test_serial_tx_default_uses_mono_channels() -> None:
+    """Default call to start_audio_tx_pcm uses channels=1."""
+    usb_audio = _FakeUsbAudioDriver()
+    radio = Icom7610SerialRadio(
+        device="/dev/ttyUSB0",
+        civ_link=_FakeSerialCivLink(),
+        audio_driver=usb_audio,
+    )
+    await radio.connect()
+    await radio.start_audio_tx_pcm()
+    assert usb_audio.tx_start_kwargs.get("channels") == 1
+    await radio.stop_audio_tx_pcm()
     await radio.disconnect()
