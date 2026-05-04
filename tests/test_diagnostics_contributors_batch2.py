@@ -1,0 +1,269 @@
+"""Tests for built-in diagnostic contributors batch 2 (#1391).
+
+Covers: ``RadioContributor`` and ``AudioContributor``.
+
+Tests instantiate contributors directly (not via ``discover()``) so they
+do not need ``_BUILT_IN_CONTRIBUTORS`` isolation — they only need
+``_RUNTIME_REGISTERED`` cleanup to match the project pattern.
+
+Stubbing ``AudioCapable`` for ``isinstance()``: the Protocol is
+``runtime_checkable`` and declares ~14 attrs/methods. We provide a
+single ``_AudioCapableStub`` class at module level with bare async
+stubs and reuse it across radio + audio tests.
+"""
+
+from __future__ import annotations
+
+import json
+from pathlib import Path
+from typing import Any
+
+import pytest
+
+from icom_lan.diagnostics import _discovery
+from icom_lan.diagnostics.contributor import BundleContext
+from icom_lan.diagnostics.contributors import (
+    AudioContributor,
+    RadioContributor,
+)
+
+
+@pytest.fixture(autouse=True)
+def _clear_runtime_registered() -> Any:
+    """Ensure runtime-registered contributors don't leak between tests."""
+    _discovery._RUNTIME_REGISTERED.clear()
+    yield
+    _discovery._RUNTIME_REGISTERED.clear()
+
+
+def _make_ctx(**overrides: Any) -> BundleContext:
+    base: dict[str, Any] = {
+        "radio": None,
+        "config_dir": Path("/tmp/cfg-does-not-exist-1391"),
+        "log_dir": Path("/tmp/log-does-not-exist-1391"),
+        "user_description": None,
+        "issue_ref": None,
+        "contact_email": None,
+        "contact_callsign": None,
+        "submission_id": "sub-batch2",
+        "generated_at_unix": 1700000000,
+    }
+    base.update(overrides)
+    return BundleContext(**base)
+
+
+# ---------------------------------------------------------------- AudioCapable stub
+#
+# ``AudioCapable`` is ``@runtime_checkable``; ``isinstance()`` checks the
+# presence of every declared attribute/method. We provide minimal bare
+# stubs sufficient for the runtime check to pass.
+
+
+class _AudioCapableStub:
+    """Structurally satisfies ``AudioCapable`` for ``isinstance`` checks."""
+
+    # Attributes (declared as properties on the Protocol — class attrs OK).
+    audio_bus = None
+    audio_codec = "PCM_1CH_16BIT"
+    audio_sample_rate = 48000
+
+    # The Protocol's declared async methods. None of the bodies matter.
+    async def start_audio_rx_opus(self, callback: Any) -> None: ...
+    async def stop_audio_rx_opus(self) -> None: ...
+    async def push_audio_tx_opus(self, data: bytes) -> None: ...
+    async def start_audio_rx_pcm(
+        self,
+        callback: Any,
+        *,
+        sample_rate: int | None = None,
+        channels: int | None = None,
+        frame_ms: int | None = None,
+    ) -> None: ...
+    async def stop_audio_rx_pcm(self) -> None: ...
+    async def start_audio_tx_pcm(
+        self,
+        *,
+        sample_rate: int | None = None,
+        channels: int | None = None,
+        frame_ms: int | None = None,
+    ) -> None: ...
+    async def push_audio_tx_pcm(self, data: bytes) -> None: ...
+    async def stop_audio_tx_pcm(self) -> None: ...
+    async def get_audio_stats(self) -> dict[str, Any]:
+        return {}
+
+    async def start_audio_tx_opus(self) -> None: ...
+    async def stop_audio_tx_opus(self) -> None: ...
+
+
+class _PlainRadio:
+    """Bare radio object with no AudioCapable surface."""
+
+    model = "MockRig"
+
+
+# ---------------------------------------------------------------------- radio
+
+
+def test_radio_emits_unavailable_when_radio_is_none(tmp_path: Path) -> None:
+    RadioContributor().contribute(_make_ctx(radio=None), tmp_path)
+    out = tmp_path / "radio.json"
+    assert out.exists()
+    payload = json.loads(out.read_text())
+    assert payload["available"] is False
+    assert "note" in payload
+
+
+def test_radio_emits_capabilities_for_audio_capable_mock(tmp_path: Path) -> None:
+    radio = _AudioCapableStub()
+    RadioContributor().contribute(_make_ctx(radio=radio), tmp_path)
+    payload = json.loads((tmp_path / "radio.json").read_text())
+    assert payload["available"] is True
+    assert "AudioCapable" in payload["capabilities"]
+
+
+def test_radio_keeps_private_host_ip(tmp_path: Path) -> None:
+    """RFC 1918 IP addresses are kept (radio LAN is useful for triage)."""
+
+    class FakeRadio:
+        host = "192.168.55.40"
+
+    RadioContributor().contribute(_make_ctx(radio=FakeRadio()), tmp_path)
+    text = (tmp_path / "radio.json").read_text()
+    json.loads(text)  # round-trip
+    assert "192.168.55.40" in text
+
+
+def test_radio_redacts_public_host_ip(tmp_path: Path) -> None:
+    """Public IPv4 addresses are redacted to ``<IP>``."""
+
+    class FakeRadio:
+        host = "8.8.8.8"
+
+    RadioContributor().contribute(_make_ctx(radio=FakeRadio()), tmp_path)
+    text = (tmp_path / "radio.json").read_text()
+    payload = json.loads(text)
+    assert "8.8.8.8" not in text
+    assert payload["host"] == "<IP>"
+
+
+def test_radio_includes_model_and_backend(tmp_path: Path) -> None:
+    class FakeRadio:
+        model = "IC-7610"
+        backend_id = "icom_lan"
+
+    RadioContributor().contribute(_make_ctx(radio=FakeRadio()), tmp_path)
+    payload = json.loads((tmp_path / "radio.json").read_text())
+    assert payload["model"] == "IC-7610"
+    assert payload["backend"] == "icom_lan"
+
+
+def test_radio_backend_id_wins_over_class_name(tmp_path: Path) -> None:
+    """``backend_id`` takes precedence over the radio's class name."""
+
+    class WeirdName:
+        backend_id = "icom_lan"
+
+    RadioContributor().contribute(_make_ctx(radio=WeirdName()), tmp_path)
+    payload = json.loads((tmp_path / "radio.json").read_text())
+    assert payload["backend"] == "icom_lan"
+
+
+def test_radio_falls_back_to_class_name_when_no_backend_id(tmp_path: Path) -> None:
+    """No ``backend_id`` and no ``backend_name`` → class name fallback."""
+
+    class FakeRadio:
+        pass
+
+    RadioContributor().contribute(_make_ctx(radio=FakeRadio()), tmp_path)
+    payload = json.loads((tmp_path / "radio.json").read_text())
+    assert payload["backend"] == "FakeRadio"
+
+
+def test_radio_safe_attr_handles_missing_attributes(tmp_path: Path) -> None:
+    """Missing attributes → ``None`` in output, no exception."""
+
+    class FakeRadio:
+        pass  # no model, no firmware, etc.
+
+    RadioContributor().contribute(_make_ctx(radio=FakeRadio()), tmp_path)
+    payload = json.loads((tmp_path / "radio.json").read_text())
+    assert payload["available"] is True
+    assert payload["model"] is None
+    assert payload["firmware_version"] is None
+    # backend falls back to class name
+    assert payload["backend"] == "FakeRadio"
+
+
+def test_radio_credentials_redacted_in_string_field(tmp_path: Path) -> None:
+    """Per-value redaction preserves valid JSON (regex can't span structural chars)."""
+
+    class FakeRadio:
+        # Contrived: an attacker-controlled model string.
+        model = "credentials: password=secretrigsecret999"
+
+    RadioContributor().contribute(_make_ctx(radio=FakeRadio()), tmp_path)
+    text = (tmp_path / "radio.json").read_text()
+    # JSON must round-trip — would fail if `\S+` regex consumed the closing
+    # quote of the JSON string value when applied post-dump.
+    payload = json.loads(text)
+    assert "secretrigsecret999" not in text
+    assert "REDACTED" in payload["model"]
+
+
+# ---------------------------------------------------------------------- audio
+
+
+def test_audio_unavailable_when_radio_is_none(tmp_path: Path) -> None:
+    AudioContributor().contribute(_make_ctx(radio=None), tmp_path)
+    out = tmp_path / "audio.json"
+    assert out.exists()
+    payload = json.loads(out.read_text())
+    assert payload["available"] is False
+    assert "note" in payload
+
+
+def test_audio_unavailable_when_radio_not_audio_capable(tmp_path: Path) -> None:
+    AudioContributor().contribute(_make_ctx(radio=_PlainRadio()), tmp_path)
+    payload = json.loads((tmp_path / "audio.json").read_text())
+    assert payload["available"] is False
+
+
+def test_audio_emits_codec_and_sample_rate(tmp_path: Path) -> None:
+    radio = _AudioCapableStub()
+    AudioContributor().contribute(_make_ctx(radio=radio), tmp_path)
+    payload = json.loads((tmp_path / "audio.json").read_text())
+    assert payload["available"] is True
+    assert payload["codec"] == "PCM_1CH_16BIT"
+    assert payload["sample_rate_hz"] == 48000
+
+
+def test_audio_redacts_device_name_with_username(tmp_path: Path) -> None:
+    class FakeAudioRadio(_AudioCapableStub):
+        audio_rx_device = "Speakers (/Users/foo/Library/Audio)"
+        audio_tx_device = "Mic"
+
+    AudioContributor().contribute(_make_ctx(radio=FakeAudioRadio()), tmp_path)
+    text = (tmp_path / "audio.json").read_text()
+    payload = json.loads(text)
+    assert "/Users/foo" not in text
+    assert "<USER>" in payload["rx_device"]
+
+
+def test_audio_json_loads_round_trip(tmp_path: Path) -> None:
+    radio = _AudioCapableStub()
+    AudioContributor().contribute(_make_ctx(radio=radio), tmp_path)
+    text = (tmp_path / "audio.json").read_text()
+    payload = json.loads(text)  # round-trip guard
+    assert isinstance(payload, dict)
+    # also assert a value the contributor emits
+    assert "codec" in payload
+
+
+# -------------------------------------------------------------------- wiring
+
+
+def test_built_in_contributors_includes_batch2() -> None:
+    """``_BUILT_IN_CONTRIBUTORS`` includes batch-2 classes with expected names."""
+    names = {cls().name for cls in _discovery._BUILT_IN_CONTRIBUTORS}
+    assert {"radio", "audio"}.issubset(names)
