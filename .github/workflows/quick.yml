@@ -3,18 +3,24 @@ name: Tests (quick)
 on:
   push:
     branches: [main]
-    paths-ignore:
-      - "**/*.md"
-      - "docs/**"
-      - "RELEASE_NOTES.md"
-      - ".github/ISSUE_TEMPLATE/**"
+    paths:
+      - "src/**"
+      - "tests/**"
+      - "frontend/**"
+      - "pyproject.toml"
+      - "uv.lock"
+      - ".importlinter"
+      - ".github/workflows/**"
   pull_request:
     branches: [main]
-    paths-ignore:
-      - "**/*.md"
-      - "docs/**"
-      - "RELEASE_NOTES.md"
-      - ".github/ISSUE_TEMPLATE/**"
+    paths:
+      - "src/**"
+      - "tests/**"
+      - "frontend/**"
+      - "pyproject.toml"
+      - "uv.lock"
+      - ".importlinter"
+      - ".github/workflows/**"
 
 concurrency:
   group: tests-quick-${{ github.workflow }}-${{ github.ref }}

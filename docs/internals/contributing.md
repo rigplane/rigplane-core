@@ -32,7 +32,7 @@ The repository has three Actions workflows, tiered to keep billable minutes low:
 
 | Workflow | When it runs | What it does |
 |---|---|---|
-| **Tests (quick)** | every push and PR to `main` (skips markdown-only changes) | Single Python 3.11 job: `ruff`, `import-linter`, `pytest` (no hardware integration). The frontend block (`npm ci`, type-check, vitest, build, mypy on `src/icom_lan/web`) only runs when files under `frontend/**` or `src/icom_lan/web/**` actually changed. ~3–5 min. |
+| **Tests (quick)** | push/PR to `main` **only** when one of these paths changes: `src/**`, `tests/**`, `frontend/**`, `pyproject.toml`, `uv.lock`, `.importlinter`, `.github/workflows/**` | Single Python 3.11 job: `ruff`, `import-linter`, `pytest` (no hardware integration). The frontend block (`npm ci`, type-check, vitest, build, mypy on `src/icom_lan/web`) only runs when files under `frontend/**` or `src/icom_lan/web/**` actually changed. ~2–5 min. Doc-only edits and CLAUDE.md changes don't trigger CI at all — use `gh workflow run "Tests (quick)"` if you need a manual run. |
 | **Tests (full matrix)** | cron Mon/Wed/Fri 03:00 UTC, manual `workflow_dispatch`, **or** any push whose commit message contains `[full-ci]` | Full 3.11/3.12/3.13 matrix with frontend, mypy, import-linter and the whole pytest suite. |
 | **Publish to PyPI** | on a published GitHub Release | Runs the full validation matrix first; the build/publish jobs only start if validation is green. |
 

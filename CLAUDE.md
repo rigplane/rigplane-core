@@ -24,7 +24,7 @@ Three workflows, tiered by cost:
 
 | Workflow | Trigger | Scope |
 |---|---|---|
-| `quick.yml` | every push/PR to `main` (md/docs ignored) | Python 3.11 only · ruff · import-linter · pytest (no integration) · frontend block runs **only** if `frontend/**` or `src/icom_lan/web/**` changed · badges |
+| `quick.yml` | push/PR to `main` only when `src/**`, `tests/**`, `frontend/**`, `pyproject.toml`, `uv.lock`, `.importlinter`, or `.github/workflows/**` change | Python 3.11 only · ruff · import-linter · pytest (no integration) · frontend block runs **only** if `frontend/**` or `src/icom_lan/web/**` changed · badges |
 | `full.yml` | cron Mon/Wed/Fri 03:00 UTC + `workflow_dispatch` + push with `[full-ci]` in commit message | Full matrix 3.11/3.12/3.13, everything |
 | `publish.yml` | `release: published` | New `validate` job (full matrix) → `build` → `publish`. No publish if validate fails. |
 
