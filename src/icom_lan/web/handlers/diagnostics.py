@@ -68,7 +68,11 @@ class _PreviewSession:
     metadata: dict[str, Any]
     filename: str
     created_at_unix: int
-    consumed: bool = False  # True after a successful send
+    # True after a send ATTEMPT (success or failure). The flag is set inside
+    # the handler lock, before ``upload_bundle`` runs, to make the consumed
+    # check atomic against concurrent sends. A failed upload therefore still
+    # burns the CSRF — the caller must regenerate the preview to retry.
+    consumed: bool = False
 
     def is_expired(self, now: int | None = None) -> bool:
         if now is None:
@@ -359,6 +363,12 @@ class DiagnosticsHandler:
                 raise _ClientError(403, "csrf_missing", "CSRF token already consumed")
             if not _ct_eq(csrf_token, sess.csrf_token):
                 raise _ClientError(403, "csrf_missing", "CSRF token invalid")
+            # Atomic check-and-set: mark consumed BEFORE releasing the lock so
+            # a concurrent send (double-click, retry) sees the consumed flag
+            # and is rejected, even though upload_bundle() has not yet run.
+            # If the upload then fails, the flag stays set — the caller must
+            # regenerate the preview to retry. This is the documented contract.
+            sess.consumed = True
 
         # Upload outside the lock — network call is slow.
         try:
@@ -373,12 +383,6 @@ class DiagnosticsHandler:
             DiagnosticUploadError,
         ):
             raise
-
-        # Mark consumed only on success.
-        async with self._lock:
-            current = self._sessions.get(preview_id)
-            if current is sess:
-                current.consumed = True
 
         return _report_to_dict(report)
 

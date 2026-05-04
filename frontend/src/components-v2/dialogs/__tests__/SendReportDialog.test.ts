@@ -394,6 +394,66 @@ describe('SendReportDialog', () => {
     unmount(component);
   });
 
+  it('ignores Escape while a request is in flight (busy guard)', async () => {
+    // Regression for #1397 follow-up: the explicit close buttons gate on
+    // `disabled={busy}`, but Escape and backdrop clicks reached
+    // handleCancel() unguarded, so a user pressing Escape mid-preview
+    // could trigger a stray deletePreview() against a server preview that
+    // either did not yet exist or was about to be consumed by send.
+    let resolvePreview!: (v: ReturnType<typeof makePreview>) => void;
+    previewSpy.mockReturnValue(
+      new Promise<ReturnType<typeof makePreview>>((resolve) => {
+        resolvePreview = resolve;
+      }),
+    );
+
+    const onClose = vi.fn();
+    const { target, component } = setup({ open: true, onClose });
+
+    // Let the mount-time ``$effect(() => { if (open) reset(); })`` flush
+    // BEFORE we click. In Svelte 5 the initial $effect runs on the next
+    // microtask, not synchronously inside ``mount()``. If we click first,
+    // the effect would fire afterwards and reset busy=false mid-test.
+    await tick();
+    flushSync();
+
+    // Kick off the preview request — busy becomes true and stays true
+    // because the promise above never resolves on its own.
+    (target.querySelector('[data-testid="btn-generate"]') as HTMLButtonElement).click();
+    await tick();
+    flushSync();
+
+    // Sanity: previewBundle was kicked off (so handleGeneratePreview did set
+    // busy=true before awaiting). The promise is unresolved, so busy stays
+    // true throughout the rest of the assertions.
+    expect(previewSpy).toHaveBeenCalledTimes(1);
+
+    // Press Escape while busy — must not call deletePreview, must not close.
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }));
+    await tick();
+    flushSync();
+    expect(deleteSpy).not.toHaveBeenCalled();
+    expect(onClose).not.toHaveBeenCalled();
+
+    // Click the backdrop while still busy — same expectation.
+    const backdrop = target.querySelector(
+      '[data-testid="send-report-backdrop"]',
+    ) as HTMLElement;
+    backdrop.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    await tick();
+    flushSync();
+    expect(deleteSpy).not.toHaveBeenCalled();
+    expect(onClose).not.toHaveBeenCalled();
+
+    // Resolve the dangling promise so vitest doesn't complain about
+    // unhandled rejections / pending timers, then unmount.
+    resolvePreview(makePreview());
+    await tick();
+    await tick();
+    flushSync();
+    unmount(component);
+  });
+
   it('shows forbidden_content message on that error code', async () => {
     previewSpy.mockResolvedValue(makePreview());
     sendSpy.mockRejectedValue(

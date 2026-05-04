@@ -606,7 +606,13 @@ async def test_api_auth_inherited(
 async def test_send_translates_rate_limited(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    """upload_bundle raising RateLimited → 429 with retry_after_seconds."""
+    """upload_bundle raising RateLimited → 429 with retry_after_seconds.
+
+    Also covers the contract corollary of the atomic check-and-set fix in
+    ``handle_send``: a failed upload still consumes the CSRF, so a retry
+    with the same preview_id+csrf returns 403 ``csrf_missing``. The caller
+    must regenerate a preview to retry.
+    """
     _register_test_contributor()
     _stub_dirs(monkeypatch, tmp_path)
     srv = _make_server()
@@ -630,6 +636,18 @@ async def test_send_translates_rate_limited(
             assert writer.response_status == 429
             assert writer.response_json["error"] == "rate_limited"
             assert writer.response_json.get("retry_after_seconds") == 42
+
+            # Contract: failed upload burns the CSRF (consumed-on-attempt).
+            writer2 = _FakeWriter()
+            await srv._handle_diagnose_send(
+                writer2,  # type: ignore[arg-type]
+                headers=_post_headers(
+                    body, **{"x-diagnostic-csrf": preview["csrf_token"]}
+                ),
+                reader=_make_reader(body),
+            )
+            assert writer2.response_status == 403
+            assert writer2.response_json["error"] == "csrf_missing"
     finally:
         await srv._diagnostics.stop()
 
@@ -824,3 +842,74 @@ async def test_handler_preview_endpoint_url_matches_resolved() -> None:
 def test_diagnostics_upload_error_subtype_translation() -> None:
     """Sanity: typed errors are subclasses of DiagnosticUploadError."""
     assert issubclass(RateLimited, DiagnosticUploadError)
+
+
+@pytest.mark.asyncio
+async def test_concurrent_send_uploads_only_once(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Two concurrent sends with the same valid CSRF must upload exactly once.
+
+    Regression for the race in ``handle_send`` where the consumed flag was
+    set only AFTER ``upload_bundle`` returned. Two requests slipping through
+    the lock window (double-click, retry) would BOTH pass the ``consumed``
+    check before either marked the session consumed → bundle uploaded twice.
+
+    The test mocks ``upload_bundle`` with a small ``asyncio.sleep`` so the
+    first coroutine reliably yields (releasing its event-loop slot) after
+    releasing the handler lock, giving the second coroutine a window to
+    enter the critical section. Without the fix, both reach
+    ``upload_bundle``; with the fix, the second sees ``consumed=True`` set
+    inside the lock by the first and is rejected.
+    """
+    _register_test_contributor()
+    _stub_dirs(monkeypatch, tmp_path)
+    srv = _make_server()
+    try:
+        preview = await _do_preview(srv)
+        report = ReportSubmitted("r1", "https://x", 0, "anonymous")
+
+        async def _slow_upload(*_args: Any, **_kwargs: Any) -> ReportSubmitted:
+            # Yield once so the second coroutine can enter handle_send and
+            # try to acquire the lock while the first is awaiting upload.
+            await asyncio.sleep(0.01)
+            return report
+
+        with patch(
+            "icom_lan.web.handlers.diagnostics.upload_bundle",
+            new=AsyncMock(side_effect=_slow_upload),
+        ) as mock_upload:
+            body = json.dumps(
+                {"preview_id": preview["preview_id"], "consent": True}
+            ).encode()
+
+            async def _send() -> _FakeWriter:
+                writer = _FakeWriter()
+                await srv._handle_diagnose_send(
+                    writer,  # type: ignore[arg-type]
+                    headers=_post_headers(
+                        body, **{"x-diagnostic-csrf": preview["csrf_token"]}
+                    ),
+                    reader=_make_reader(body),
+                )
+                return writer
+
+            writer1, writer2 = await asyncio.gather(_send(), _send())
+
+            statuses = sorted([writer1.response_status, writer2.response_status])
+            assert statuses == [200, 403], (
+                f"expected one 200 and one 403, got {statuses}: "
+                f"w1={writer1.response_body!r} w2={writer2.response_body!r}"
+            )
+            # The defining assertion: the bundle was uploaded EXACTLY ONCE.
+            assert mock_upload.await_count == 1, (
+                f"upload_bundle was awaited {mock_upload.await_count} times; "
+                f"expected exactly 1 — race regressed"
+            )
+
+            # The 403 must carry the consumed/csrf_missing code (same as a
+            # second send after a successful first one).
+            losing = writer1 if writer1.response_status == 403 else writer2
+            assert losing.response_json["error"] == "csrf_missing"
+    finally:
+        await srv._diagnostics.stop()
