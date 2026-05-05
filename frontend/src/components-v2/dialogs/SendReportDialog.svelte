@@ -139,7 +139,7 @@
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;
-      a.download = `icom-lan-diagnostic-${preview.preview_id}.zip`;
+      a.download = `rigplane-diagnostic-${preview.preview_id}.zip`;
       document.body.appendChild(a);
       a.click();
       document.body.removeChild(a);

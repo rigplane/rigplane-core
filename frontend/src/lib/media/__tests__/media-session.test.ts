@@ -108,7 +108,7 @@ describe('media-session', () => {
     mod.initMediaSession();
 
     expect(navigator.mediaSession.metadata).toMatchObject({
-      title: 'icom-lan',
+      title: 'RigPlane',
       artist: 'Radio Control',
     });
   });

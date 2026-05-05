@@ -27,7 +27,7 @@
     if (typeof window !== 'undefined') {
       const uiParam = new URLSearchParams(window.location.search).get('ui');
       if (uiParam === 'v1') {
-        console.warn('[icom-lan] ?ui=v1 is no longer supported; v2 is the only UI. Update bookmarks.');
+        console.warn('[rigplane] ?ui=v1 is no longer supported; v2 is the only UI. Update bookmarks.');
       }
     }
 

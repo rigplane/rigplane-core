@@ -69,7 +69,7 @@ export function initMediaSession(): void {
   startSilentAudio();
 
   navigator.mediaSession.metadata = new MediaMetadata({
-    title: 'icom-lan',
+    title: 'RigPlane',
     artist: 'Radio Control',
   });
 
