@@ -1,8 +1,8 @@
-site_name: icom-lan
+site_name: rigplane
 site_description: Python library for controlling Icom transceivers over LAN
-site_url: https://morozsm.github.io/icom-lan
-repo_url: https://github.com/morozsm/icom-lan
-repo_name: morozsm/icom-lan
+site_url: https://rigplane.dev/
+repo_url: https://github.com/rigplane/rigplane-core
+repo_name: rigplane/rigplane-core
 
 theme:
   name: material
@@ -122,4 +122,4 @@ nav:
 extra:
   social:
     - icon: fontawesome/brands/github
-      link: https://github.com/morozsm/icom-lan
+      link: https://github.com/rigplane/rigplane-core
