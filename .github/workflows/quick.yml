@@ -41,7 +41,7 @@ jobs:
           filters: |
             frontend:
               - 'frontend/**'
-              - 'src/icom_lan/web/**'
+              - 'src/rigplane/web/**'
 
       - name: Install uv
         uses: astral-sh/setup-uv@v5
@@ -81,13 +81,13 @@ jobs:
           npm run check
           npx vitest run
           npm run build
-          rm -f ../src/icom_lan/web/static
-          mkdir -p ../src/icom_lan/web/static
-          cp -r dist/* ../src/icom_lan/web/static/
+          rm -f ../src/rigplane/web/static
+          mkdir -p ../src/rigplane/web/static
+          cp -r dist/* ../src/rigplane/web/static/
 
       - name: Type-check web boundary
         if: steps.filter.outputs.frontend == 'true'
-        run: uv run mypy --strict src/icom_lan/web
+        run: uv run mypy --strict src/rigplane/web
 
       - name: Run tests
         id: tests
@@ -102,7 +102,7 @@ jobs:
         if: github.ref == 'refs/heads/main'
         id: version
         run: |
-          VERSION=$(uv run python -c "from importlib.metadata import version; print(version('icom-lan'))")
+          VERSION=$(uv run python -c "from importlib.metadata import version; print(version('rigplane'))")
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
 
       - name: Update tests badge
@@ -111,7 +111,7 @@ jobs:
         with:
           auth: ${{ secrets.GIST_TOKEN }}
           gistID: bce917f4007ac491e527e142564fbbae
-          filename: icom-lan-tests.json
+          filename: rigplane-tests.json
           label: tests
           message: "${{ steps.tests.outputs.passed }} passed"
           color: ${{ steps.tests.outcome == 'success' && 'brightgreen' || 'red' }}
@@ -122,7 +122,7 @@ jobs:
         with:
           auth: ${{ secrets.GIST_TOKEN }}
           gistID: bce917f4007ac491e527e142564fbbae
-          filename: icom-lan-version.json
+          filename: rigplane-version.json
           label: version
           message: "v${{ steps.version.outputs.version }}"
           color: blue
@@ -133,7 +133,7 @@ jobs:
         with:
           auth: ${{ secrets.GIST_TOKEN }}
           gistID: bce917f4007ac491e527e142564fbbae
-          filename: icom-lan-mypy.json
+          filename: rigplane-mypy.json
           label: mypy
           message: "0 errors"
           color: blue

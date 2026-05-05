@@ -6,7 +6,7 @@ on:
     paths:
       - 'docs/**'
       - 'mkdocs.yml'
-      - 'src/icom_lan/**'
+      - 'src/rigplane/**'
       - '.github/workflows/docs.yml'
   workflow_dispatch:
 

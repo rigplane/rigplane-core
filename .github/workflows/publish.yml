@@ -47,9 +47,9 @@ jobs:
           npm run check
           npx vitest run
           npm run build
-          rm -f ../src/icom_lan/web/static
-          mkdir -p ../src/icom_lan/web/static
-          cp -r dist/* ../src/icom_lan/web/static/
+          rm -f ../src/rigplane/web/static
+          mkdir -p ../src/rigplane/web/static
+          cp -r dist/* ../src/rigplane/web/static/
 
       - name: Ruff
         run: |
@@ -57,7 +57,7 @@ jobs:
           uv run ruff format --check src/ tests/
 
       - name: Type-check web boundary
-        run: uv run mypy --strict src/icom_lan/web
+        run: uv run mypy --strict src/rigplane/web
 
       - name: Lint architecture (import-linter)
         run: uv run lint-imports
@@ -94,9 +94,9 @@ jobs:
           cd frontend
           npm ci
           npm run build
-          rm -f ../src/icom_lan/web/static
-          mkdir -p ../src/icom_lan/web/static
-          cp -r dist/* ../src/icom_lan/web/static/
+          rm -f ../src/rigplane/web/static
+          mkdir -p ../src/rigplane/web/static
+          cp -r dist/* ../src/rigplane/web/static/
 
       - name: Build package
         run: uv build
@@ -112,7 +112,7 @@ jobs:
     runs-on: ubuntu-latest
     environment:
       name: pypi
-      url: https://pypi.org/p/icom-lan
+      url: https://pypi.org/p/rigplane
     steps:
       - name: Download dist artifacts
         uses: actions/download-artifact@v4

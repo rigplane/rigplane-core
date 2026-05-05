@@ -68,15 +68,15 @@ jobs:
         run: |
           cd frontend
           npm run build
-          rm -f ../src/icom_lan/web/static
-          mkdir -p ../src/icom_lan/web/static
-          cp -r dist/* ../src/icom_lan/web/static/
+          rm -f ../src/rigplane/web/static
+          mkdir -p ../src/rigplane/web/static
+          cp -r dist/* ../src/rigplane/web/static/
 
       - name: Lint web boundary
-        run: uv run ruff check src/icom_lan/web
+        run: uv run ruff check src/rigplane/web
 
       - name: Type-check web boundary
-        run: uv run mypy --strict src/icom_lan/web
+        run: uv run mypy --strict src/rigplane/web
 
       - name: Lint architecture (import-linter)
         run: uv run lint-imports
@@ -94,7 +94,7 @@ jobs:
         if: matrix.python-version == '3.11' && github.ref == 'refs/heads/main'
         id: version
         run: |
-          VERSION=$(uv run python -c "from importlib.metadata import version; print(version('icom-lan'))")
+          VERSION=$(uv run python -c "from importlib.metadata import version; print(version('rigplane'))")
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
 
       - name: Update tests badge
@@ -103,7 +103,7 @@ jobs:
         with:
           auth: ${{ secrets.GIST_TOKEN }}
           gistID: bce917f4007ac491e527e142564fbbae
-          filename: icom-lan-tests.json
+          filename: rigplane-tests.json
           label: tests
           message: "${{ steps.tests.outputs.passed }} passed"
           color: ${{ steps.tests.outcome == 'success' && 'brightgreen' || 'red' }}
@@ -114,7 +114,7 @@ jobs:
         with:
           auth: ${{ secrets.GIST_TOKEN }}
           gistID: bce917f4007ac491e527e142564fbbae
-          filename: icom-lan-version.json
+          filename: rigplane-version.json
           label: version
           message: "v${{ steps.version.outputs.version }}"
           color: blue
@@ -125,7 +125,7 @@ jobs:
         with:
           auth: ${{ secrets.GIST_TOKEN }}
           gistID: bce917f4007ac491e527e142564fbbae
-          filename: icom-lan-mypy.json
+          filename: rigplane-mypy.json
           label: mypy
           message: "0 errors"
           color: blue
