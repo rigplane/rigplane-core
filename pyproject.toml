@@ -70,6 +70,9 @@ dev = [
     "types-pyserial>=3.5",
 ]
 
+[tool.hatch.build.targets.wheel]
+packages = ["src/rigplane", "src/icom_lan"]
+
 [tool.hatch.build.targets.wheel.force-include]
 "rigs" = "rigplane/rigs"
 
@@ -99,6 +102,9 @@ select = ["E4", "E7", "E9", "F", "TID251"]
 "src/rigplane/cli/**" = ["TID251"]
 # Package entry point dispatches to cli.main.
 "src/rigplane/__main__.py" = ["TID251"]
+# Backwards-compat shim — re-exports rigplane internals; banned-imports
+# checks for tier-3 boundaries don't apply to a deprecated alias package.
+"src/icom_lan/**" = ["TID251", "F401", "F403"]
 
 [tool.ruff.lint.flake8-tidy-imports.banned-api]
 "rigplane.radio.IcomRadio".msg = "Use radio_protocol.Radio in web/ modules (and capability protocols) instead of IcomRadio."
@@ -109,6 +115,12 @@ select = ["E4", "E7", "E9", "F", "TID251"]
 [tool.mypy]
 python_version = "3.11"
 follow_imports = "skip"
+
+# Backwards-compat shim — pure re-export façade, no semantic content to type-check.
+[[tool.mypy.overrides]]
+module = ["icom_lan", "icom_lan.*"]
+follow_imports = "skip"
+warn_unused_ignores = false
 
 [[tool.mypy.overrides]]
 module = ["rigplane.web.*"]
