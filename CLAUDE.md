@@ -115,6 +115,12 @@ Incomplete → continue or FAILED. Never skip.
 
 ## Autonomous pipeline
 
+**GitHub Project control plane:** non-trivial work should be tracked in
+`RigPlane Core Roadmap` (https://github.com/orgs/rigplane/projects/2). Work
+from GitHub issues with acceptance criteria, add missing issues to the Project,
+and keep fields current while working. See
+`docs/internals/github-project-workflow.md`.
+
 Strictly linear. No phase may be skipped or reordered. No exceptions.
 State files (`.claude/workflow/*.md`) are the sole source of truth — not memory or reasoning.
 CLAUDE.md controls all workflow transitions. Agents must not self-direct transitions.
