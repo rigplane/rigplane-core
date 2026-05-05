@@ -4,7 +4,10 @@ import type { Capabilities } from '$lib/types/capabilities';
 import type { ServerState } from '$lib/types/state';
 import {
   createLocalExtensionHostApi,
+  installLocalExtensionHostApi,
   LOCAL_EXTENSION_HOST_API_VERSION,
+  type LocalExtensionHostApiV1,
+  type LocalExtensionHostWindow,
   type RadioStateSubscriber,
 } from '../host-api';
 import {
@@ -136,5 +139,60 @@ describe('createLocalExtensionHostApi', () => {
     api.register(extension);
 
     expect(register).toHaveBeenCalledWith(extension);
+  });
+});
+
+describe('installLocalExtensionHostApi', () => {
+  function makeApi(): LocalExtensionHostApiV1 {
+    return createLocalExtensionHostApi({
+      getState: () => null,
+      getCapabilities: () => null,
+      subscribeState: vi.fn(),
+      dispatchCommand: vi.fn().mockReturnValue(true),
+      setKeyboardScope: vi.fn(),
+      register: vi.fn(),
+    });
+  }
+
+  it('exposes the api as both window.rigplaneExtensionHost and window.icomLanExtensionHost', () => {
+    const api = makeApi();
+    const fakeWindow = {} as LocalExtensionHostWindow;
+
+    const uninstall = installLocalExtensionHostApi(fakeWindow, api);
+
+    expect(fakeWindow.rigplaneExtensionHost).toBe(api);
+    expect(fakeWindow.icomLanExtensionHost).toBe(api);
+    // Same instance under both names — Pro extensions written against v1.x
+    // see exactly the same object as new code reading the v2.x global.
+    expect(fakeWindow.rigplaneExtensionHost).toBe(fakeWindow.icomLanExtensionHost);
+
+    uninstall();
+  });
+
+  it('clears both globals on uninstall when the api still matches', () => {
+    const api = makeApi();
+    const fakeWindow = {} as LocalExtensionHostWindow;
+
+    const uninstall = installLocalExtensionHostApi(fakeWindow, api);
+    uninstall();
+
+    expect(fakeWindow.rigplaneExtensionHost).toBeUndefined();
+    expect(fakeWindow.icomLanExtensionHost).toBeUndefined();
+  });
+
+  it('does not clear globals that have been re-bound to a different api', () => {
+    const api1 = makeApi();
+    const api2 = makeApi();
+    const fakeWindow = {} as LocalExtensionHostWindow;
+
+    const uninstall1 = installLocalExtensionHostApi(fakeWindow, api1);
+    // Simulate a second installation that swaps the live api (HMR / reinit).
+    fakeWindow.rigplaneExtensionHost = api2;
+    fakeWindow.icomLanExtensionHost = api2;
+    uninstall1();
+
+    // The first uninstall must not blow away the live api2.
+    expect(fakeWindow.rigplaneExtensionHost).toBe(api2);
+    expect(fakeWindow.icomLanExtensionHost).toBe(api2);
   });
 });

@@ -875,7 +875,7 @@ export function makeKeyboardHandlers() {
           return;
         }
         case 'open_filter_settings': {
-          window.dispatchEvent(new CustomEvent('icom-lan:open-filter-settings'));
+          window.dispatchEvent(new CustomEvent('rigplane:open-filter-settings'));
           return;
         }
         case 'mode_select': {

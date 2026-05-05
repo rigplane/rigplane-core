@@ -103,12 +103,12 @@ describe('makeKeyboardHandlers', () => {
 
   it('emits a filter-settings UI event when requested', () => {
     const listener = vi.fn();
-    window.addEventListener('icom-lan:open-filter-settings', listener as EventListener);
+    window.addEventListener('rigplane:open-filter-settings', listener as EventListener);
 
     makeKeyboardHandlers().dispatch(makeAction('open_filter_settings'));
 
     expect(listener).toHaveBeenCalledTimes(1);
-    window.removeEventListener('icom-lan:open-filter-settings', listener as EventListener);
+    window.removeEventListener('rigplane:open-filter-settings', listener as EventListener);
   });
 
   it('tunes frequency by the current frontend step', () => {

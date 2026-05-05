@@ -40,6 +40,13 @@ export interface LocalExtensionRegistration {
 }
 
 export interface LocalExtensionHostWindow extends Window {
+  /** Primary v2.x global. Pro local-extensions written for rigplane should read this. */
+  rigplaneExtensionHost?: LocalExtensionHostApiV1;
+  /**
+   * @deprecated Alias kept for v1.x extensions written against icom-lan.
+   * Will be removed in a future major. New code should use
+   * `rigplaneExtensionHost` instead.
+   */
   icomLanExtensionHost?: LocalExtensionHostApiV1;
 }
 
@@ -98,8 +105,16 @@ export function installLocalExtensionHostApi(
   targetWindow: LocalExtensionHostWindow = window as LocalExtensionHostWindow,
   api: LocalExtensionHostApiV1 = createDefaultLocalExtensionHostApi(),
 ): () => void {
+  // Primary v2.x global.
+  targetWindow.rigplaneExtensionHost = api;
+  // Backwards-compat: Pro local-extensions written for v1.x icom-lan read
+  // `window.icomLanExtensionHost`. Expose the same instance under both names
+  // so existing extensions keep working without modification.
   targetWindow.icomLanExtensionHost = api;
   return () => {
+    if (targetWindow.rigplaneExtensionHost === api) {
+      delete targetWindow.rigplaneExtensionHost;
+    }
     if (targetWindow.icomLanExtensionHost === api) {
       delete targetWindow.icomLanExtensionHost;
     }
