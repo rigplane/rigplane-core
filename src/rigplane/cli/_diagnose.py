@@ -137,10 +137,20 @@ def _default_output_path() -> Path:
 
 
 def _default_log_dir() -> Path:
+    # Defense in depth: the same call already runs inside
+    # `configure_diagnostic_logging()` at `import rigplane` time, but a CLI
+    # entry point that bypasses that path (or runs before logging init) still
+    # benefits from the migration. The helper is idempotent.
+    from rigplane._platformdirs_migration import migrate_legacy_platformdirs
+
+    migrate_legacy_platformdirs()
     return Path(platformdirs.user_cache_path("rigplane")) / "logs"
 
 
 def _default_config_dir() -> Path:
+    from rigplane._platformdirs_migration import migrate_legacy_platformdirs
+
+    migrate_legacy_platformdirs()
     return Path(platformdirs.user_config_path("rigplane"))
 
 

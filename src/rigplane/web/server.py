@@ -2040,6 +2040,12 @@ class WebServer:
         """
         import platformdirs
 
+        # Defense in depth — already runs at package init via
+        # ``configure_diagnostic_logging()``. Idempotent here.
+        from rigplane._platformdirs_migration import migrate_legacy_platformdirs
+
+        migrate_legacy_platformdirs()
+
         config_dir = pathlib.Path(platformdirs.user_config_path("rigplane"))
         log_dir = pathlib.Path(platformdirs.user_cache_path("rigplane")) / "logs"
         return config_dir, log_dir

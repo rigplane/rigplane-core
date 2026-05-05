@@ -53,6 +53,15 @@ def configure_diagnostic_logging() -> None:
     # Idempotency: skip if our handler already present.
     if any(isinstance(h, SafeRotatingFileHandler) for h in icom_logger.handlers):
         return
+    # Migrate any legacy v1 platformdirs contents BEFORE we resolve the
+    # rigplane log path, so existing log files come along on the very first
+    # start of v2.0.0. The helper is idempotent and best-effort.
+    try:
+        from rigplane._platformdirs_migration import migrate_legacy_platformdirs
+
+        migrate_legacy_platformdirs()
+    except Exception:  # noqa: BLE001 — best-effort, swallow all
+        pass
     try:
         log_dir = platformdirs.user_cache_path("rigplane") / "logs"
         log_dir.mkdir(parents=True, exist_ok=True)
