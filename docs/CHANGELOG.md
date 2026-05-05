@@ -7,6 +7,59 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.0.0] — 2026-05-05
+
+**Headline:** project renamed from `icom-lan` to **`rigplane`**. The old name was always misleading — the project shipped multi-vendor support (Icom CI-V, Yaesu CAT, Discovery TX-500, Xiegu X6200) over LAN, USB, and serial. Carrying "icom-lan" through a paid Pro tier also created a trademark risk on a vendor name we don't own. New brand at https://rigplane.dev.
+
+### Migration
+
+Existing v1.x scripts continue to work without modification:
+
+```python
+# This still works, emits DeprecationWarning on first import:
+from icom_lan import IcomRadio, LanBackendConfig, create_radio
+import icom_lan.web
+
+# Canonical v2 form:
+from rigplane import IcomRadio, LanBackendConfig, create_radio
+import rigplane.web
+```
+
+The `icom-lan` CLI binary remains as a deprecated alias of `rigplane` (prints a notice to stderr, then forwards `argv`).
+
+User-facing data (web-UI panel layouts, theme, auth token, memory channels, log directories) is migrated automatically on first launch — no re-login or reconfigure.
+
+### Breaking changes
+
+- **PyPI package**: `icom-lan` → `rigplane`. Preferred install: `pip install rigplane`. The old `icom-lan` package on PyPI is frozen at v1.1.0; future releases ship as `rigplane`.
+- **Python import path**: `icom_lan.*` → `rigplane.*`. The `icom_lan` shim re-exports from `rigplane` with `DeprecationWarning` and will be removed in a future major release.
+- **CLI binary**: `icom-lan` → `rigplane`. `icom-lan` retained as deprecated alias.
+- **Environment variables**: `ICOM_LAN_REPORT_ENDPOINT`, `ICOM_LAN_DISABLE_DIAGNOSTIC_LOGGING`, `ICOM_LAN_LOG_DIR` → `RIGPLANE_*`. The wire-protocol magic byte `b"ICOM_LAN_DISCOVER\n"` is unchanged (LAN discovery contract).
+- **Diagnostic bundle schema**: default emission is now `rigplane-bundle-v2` (was `icom-lan-bundle-v1`). The maintainer-operated triage service accepts both v1 and v2 for at least 12 months.
+- **Exception class**: `IcomLanError` → `RigplaneError`. Class is re-exported from `icom_lan` shim under both names.
+
+### Preserved (not renamed — vendor identifiers stay)
+
+- Vendor classes: `IcomRadio`, `IcomBackend`, `IcomCommander`, `Icom7610Profile`, `YaesuRadio`, `YaesuCatRadio`, etc. These name supported hardware vendors, not the product brand.
+- Backend directories: `src/rigplane/backends/icom7610/`, `…/yaesu_cat/`, etc. The vendor-model component is preserved.
+- Vendor-config env vars: `ICOM_HOST`, `ICOM_USER`, `ICOM_PASS`, `ICOM_PORT`, `ICOM_AUDIO_*`, `ICOM_CIV_*`, etc.
+- LAN discovery wire contract: magic byte sequence + service token unchanged in v2.0.0.
+
+### Added
+
+- **`rigplane-bundle-v2`** diagnostic-bundle wire-format spec (`docs/contracts/diagnostic-bundle-v2.md`). Bundle producer emits v2 by default; v1 emission preserved as opt-in.
+- **Brand identity v1**: wordmark, mark, lockup (light/dark/mono SVG), favicon set, app icons (Tauri + PWA), social cards, README banner, color palette, typography spec. Color palette: Ink `#0E1A28`, Paper `#F4F1EA`, Signal `#2D5F8A`. Typography: IBM Plex Sans + IBM Plex Mono.
+- **First-run platformdirs migration** (`rigplane._platformdirs_migration`). Copies legacy `~/.cache/icom-lan/`, `~/.config/icom-lan/`, etc. to corresponding `rigplane` paths. Best-effort, idempotent, sentinel-guarded.
+- **First-run localStorage migration** (`frontend/src/lib/migrate-legacy-storage.ts`). Auto-runs at module import (boot-order critical — stores read localStorage at module-init). Migrates 17 legacy keys to the new namespace.
+- **`window.rigplaneExtensionHost`** primary global for Pro local-extensions. `window.icomLanExtensionHost` alias preserved for v1.x extensions.
+- **CI grep gate** (`.github/workflows/rebrand-gate.yml`) prevents accidental brand-string regressions.
+
+### Changed
+
+- Default product description across docs, README, mkdocs `site_description`, and PyPI metadata acknowledges multi-vendor support instead of the legacy Icom-only framing.
+- Docs site: `https://morozsm.github.io/icom-lan/` → **https://rigplane.dev/**.
+- GitHub repo: `morozsm/icom-lan` → `rigplane/rigplane-core`. Auto-redirects active.
+
 ## [1.1.0] — 2026-05-04
 
 Two headline items:
