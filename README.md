@@ -1,28 +1,35 @@
-# icom-lan
+# rigplane
 
-[![PyPI](https://img.shields.io/pypi/v/icom-lan.svg)](https://pypi.org/project/icom-lan/)
+[![PyPI](https://img.shields.io/pypi/v/rigplane.svg)](https://pypi.org/project/rigplane/)
 [![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-blue.svg)](https://www.python.org/downloads/)
-[![CI](https://github.com/morozsm/icom-lan/actions/workflows/test.yml/badge.svg)](https://github.com/morozsm/icom-lan/actions/workflows/test.yml)
-[![Docs](https://img.shields.io/badge/docs-morozsm.github.io%2Ficom--lan-blue.svg)](https://morozsm.github.io/icom-lan)
+[![CI](https://github.com/rigplane/rigplane-core/actions/workflows/test.yml/badge.svg)](https://github.com/rigplane/rigplane-core/actions/workflows/test.yml)
+[![Docs](https://img.shields.io/badge/docs-rigplane.dev-blue.svg)](https://rigplane.dev)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 
-**icom-lan** is a Python asyncio library and Web UI for controlling Icom
-transceivers over LAN (UDP) or USB serial — and now Yaesu CAT radios over
-USB. Direct connection to your radio: no wfview, no hamlib daemon, no RS-BA1.
-A capability-driven runtime renders the same Web UI and `rigctld`-compatible
-network bridge across IC-7610, IC-7300, FTX-1, and any future backend that
-honours the public `Radio` protocol. Tested in production against WSJT-X,
-fldigi, and JS8Call.
+> **v2.0.0 — renamed from `icom-lan`.** The package, console script, repo,
+> and docs now ship as `rigplane`. Existing `from icom_lan import ...` calls
+> keep working through a deprecation shim. Migration guide:
+> [rigplane.dev/migrate](https://rigplane.dev/migrate).
+
+**rigplane** is a multi-vendor radio control library and Web UI — Python
+asyncio core plus a self-contained browser front-end. It speaks Icom CI-V
+(LAN UDP and USB), Yaesu CAT, and Kenwood-style CAT, with stable backends
+for IC-7610, IC-7300, and Yaesu FTX-1, and profile-based support for IC-705,
+IC-9700, Xiegu X6100, and Lab599 TX-500. Direct connection to your radio:
+no wfview, no hamlib daemon, no RS-BA1. A capability-driven runtime renders
+the same Web UI and `rigctld`-compatible network bridge across every backend
+that honours the public `Radio` protocol. Tested in production against
+WSJT-X, fldigi, and JS8Call.
 
 <p align="center">
-  <img src="docs/screenshots/hero.png" alt="icom-lan Web UI — IC-7610 dual-RX desktop with scope and waterfall" width="100%">
+  <img src="docs/screenshots/hero.png" alt="rigplane Web UI — IC-7610 dual-RX desktop with scope and waterfall" width="100%">
 </p>
 
 ## Quickstart
 
 ```bash
-pip install icom-lan
-icom-lan web                # auto-discovers a radio on the LAN
+pip install rigplane
+rigplane web                # auto-discovers a radio on the LAN
 # open http://localhost:8080
 ```
 
@@ -30,7 +37,7 @@ Or as a library:
 
 ```python
 import asyncio
-from icom_lan import create_radio, LanBackendConfig
+from rigplane import create_radio, LanBackendConfig
 
 async def main():
     async with create_radio(LanBackendConfig(host="192.168.1.100",
@@ -43,9 +50,9 @@ async def main():
 asyncio.run(main())
 ```
 
-Full guides: [getting started](https://morozsm.github.io/icom-lan/guide/quickstart/),
-[CLI](https://morozsm.github.io/icom-lan/guide/cli/),
-[public API surface](https://morozsm.github.io/icom-lan/api/public-api-surface/).
+Full guides: [getting started](https://rigplane.dev/guide/quickstart/),
+[CLI](https://rigplane.dev/guide/cli/),
+[public API surface](https://rigplane.dev/api/public-api-surface/).
 
 ## Supported radios
 
@@ -62,7 +69,7 @@ Full guides: [getting started](https://morozsm.github.io/icom-lan/guide/quicksta
 Radio capabilities are declared in `rigs/*.toml` — adding a new model is
 typically a profile change, not Python code. Three protocol families are
 supported: CI-V (Icom binary), Kenwood CAT (text), Yaesu CAT (text). See
-[adding a new radio](https://morozsm.github.io/icom-lan/guide/rig-profiles/).
+[adding a new radio](https://rigplane.dev/guide/rig-profiles/).
 
 ## Why 1.0
 
@@ -84,7 +91,7 @@ supported: CI-V (Icom binary), Kenwood CAT (text), Yaesu CAT (text). See
 
 ## Web UI
 
-`icom-lan web` boots a self-contained HTTP + WebSocket server. The frontend
+`rigplane web` boots a self-contained HTTP + WebSocket server. The frontend
 is a Svelte 5 single-page app served from the same process; no native
 shell, no Electron, no Tauri — just a browser tab.
 
@@ -109,15 +116,15 @@ Four user-facing skins resolve from `frontend/src/skins/registry.ts`:
 
 ## Architecture
 
-`src/icom_lan/` is organised into 11 layered Python packages
+`src/rigplane/` is organised into 11 layered Python packages
 (`core/`, `commands/`, `profiles/`, `audio/`, `scope/`, `dsp/`,
 `runtime/`, `backends/`, `web/`, `rigctld/`, `cli/`) with explicit
 boundaries enforced by `import-linter`. Higher layers depend on lower
 ones; siblings are independent. See [`ARCHITECTURE.md`](ARCHITECTURE.md)
-for the layout and per-layer charters in `src/icom_lan/<layer>/LAYER.md`.
+for the layout and per-layer charters in `src/rigplane/<layer>/LAYER.md`.
 
 Extensibility is centred on **Capability Protocols** in
-`icom_lan.radio_protocol`. A new backend implements the protocols it
+`rigplane.radio_protocol`. A new backend implements the protocols it
 supports; consumers (Web UI, rigctld, CLI, third-party scripts) feature-detect
 via `isinstance(radio, ScopeCapable)` and never branch on backend identity.
 The `Radio` protocol plus the capability suite is the **stable contract**
@@ -130,14 +137,14 @@ scopes into the open-core shell.
 
 ## Documentation
 
-- [Quickstart](https://morozsm.github.io/icom-lan/guide/quickstart/)
-- [CLI reference](https://morozsm.github.io/icom-lan/guide/cli/)
+- [Quickstart](https://rigplane.dev/guide/quickstart/)
+- [CLI reference](https://rigplane.dev/guide/cli/)
 - [Public API surface (Tier 1 stability)](docs/api/public-api-surface.md)
-- [Adding a new radio (TOML profiles)](https://morozsm.github.io/icom-lan/guide/rig-profiles/)
+- [Adding a new radio (TOML profiles)](https://rigplane.dev/guide/rig-profiles/)
 - [Architecture overview](ARCHITECTURE.md)
 - [Open-core policy](docs/architecture/open-core-policy.md)
 - [Diagnostic reports guide](docs/guide/diagnostic-reports.md) — how to send a one-click bug report when you hit an issue.
-- [Protocol internals](https://morozsm.github.io/icom-lan/internals/protocol/)
+- [Protocol internals](https://rigplane.dev/internals/protocol/)
 - [Security](docs/SECURITY.md)
 
 ## License
@@ -150,8 +157,8 @@ GPLv3 code. Icom™ and IC-* product names are registered trademarks of
 fair-use compatibility identification only — this project is not affiliated
 with, endorsed by, or sponsored by Icom.
 
-icom-lan is the **open-core** half of a planned product split. A
-proprietary commercial layer (`icom-lan-pro`) is under development and
+rigplane is the **open-core** half of a planned product split. A
+proprietary commercial layer (`rigplane-pro`) is under development and
 will integrate with this library through the public `Radio` protocol and
 the `local-extensions/` host API. Open-core constraints — no telemetry,
 headless mode is sacred, no hollowing out — are codified in

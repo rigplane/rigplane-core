@@ -1,12 +1,12 @@
-# icom-lan — High-Level Architecture
+# rigplane — High-Level Architecture
 
-**Краткое описание:** Python библиотека + Web UI для управления трансиверами Icom через LAN (UDP) или USB serial.
+**Краткое описание:** мульти-вендорная Python-библиотека + Web UI для управления любительскими трансиверами — Icom (CI-V over LAN/USB), Yaesu (CAT) и совместимыми (Kenwood-style CAT).
 
 ---
 
 ## Layered package structure
 
-`src/icom_lan/` is organised into 11 layered Python packages with
+`src/rigplane/` is organised into 11 layered Python packages with
 explicit `import-linter`-enforced boundaries. Higher layers depend on
 lower ones; siblings are independent. See
 [`docs/plans/2026-04-29-modularization-plan.md`](docs/plans/2026-04-29-modularization-plan.md)
@@ -40,7 +40,7 @@ charter, public API, and forbidden patterns.
 - New cross-layer imports must respect the matrix; `import-linter`
   catches violations at CI.
 - The `Radio` Protocol (in `core.radio_protocol`) is the stable public
-  contract surfaced via `icom_lan` Tier 1; capability protocols
+  contract surfaced via `rigplane` Tier 1; capability protocols
   (`*Capable`, `StatePollable`, `StatePoller`, `RigctldRoutable`,
   `UsbAudioCapable`) drive `isinstance`-based feature detection — see
   [`docs/plans/2026-04-29-modularization-plan.md`](docs/plans/2026-04-29-modularization-plan.md)
@@ -91,13 +91,13 @@ get_s_meter_sql_status = [0x15, 0x01]  # Override IC-7610 command
 
 ---
 
-### 2️⃣ **Rig Loader** (`src/icom_lan/profiles/rig_loader.py`)
+### 2️⃣ **Rig Loader** (`src/rigplane/profiles/rig_loader.py`)
 
 Парсит TOML → валидирует → создаёт runtime объекты:
 
 ```python
-from icom_lan.profiles.rig_loader import load_rig
-# (`from icom_lan.rig_loader import load_rig` also still works via shim)
+from rigplane.profiles.rig_loader import load_rig
+# (`from rigplane.rig_loader import load_rig` also still works via shim)
 
 rig = load_rig("rigs/ic7610.toml")
 profile: RadioProfile = rig.to_profile()      # Runtime profile
@@ -110,7 +110,7 @@ cmd_map: CommandMap = rig.to_command_map()    # Command overrides
 
 ---
 
-### 3️⃣ **Radio API** (`src/icom_lan/runtime/radio.py`)
+### 3️⃣ **Radio API** (`src/rigplane/runtime/radio.py`)
 
 Высокоуровневый async API:
 
@@ -143,7 +143,7 @@ audio_frame = await radio.recv_audio()  # Opus/PCM bytes
 
 ---
 
-### 4️⃣ **Commands Layer** (`src/icom_lan/commands/`)
+### 4️⃣ **Commands Layer** (`src/rigplane/commands/`)
 
 **134 функции-builders** для CI-V команд:
 
@@ -182,7 +182,7 @@ get_frequency(receiver=RECEIVER_SUB)   # → 0x07 0xD1 prefix
 
 ### 5️⃣ **Backend Layer** (Transport)
 
-**LAN Backend** (`src/icom_lan/backends/icom7610/`):
+**LAN Backend** (`src/rigplane/backends/icom7610/`):
 - UDP port 50001 → control (auth, token renewal)
 - UDP port 50002 → CI-V commands
 - UDP port 50003 → audio (Opus/PCM)
@@ -198,7 +198,7 @@ IDLE → AUTH → TOKEN_RENEW → PORTS_READY → AUDIO_NEG → READY
 
 ---
 
-### 6️⃣ **Web Server** (`src/icom_lan/web/server.py`)
+### 6️⃣ **Web Server** (`src/rigplane/web/server.py`)
 
 **HTTP API:**
 ```
@@ -225,7 +225,7 @@ GET /api/v1/state
 
 ---
 
-### 7️⃣ **Frontend** (`src/icom_lan/web/static/`)
+### 7️⃣ **Frontend** (`src/rigplane/web/static/`)
 
 **Svelte 5 + TypeScript**
 

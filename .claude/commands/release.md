@@ -1,4 +1,4 @@
-# Release icom-lan
+# Release rigplane
 
 Automate the full release process.
 
@@ -14,7 +14,7 @@ User-facing messages in Russian. Code / commit / release text in English.
 
 ## Step 1 — Determine target version
 
-1. Read current version from `pyproject.toml` (`version = "..."`) and `src/icom_lan/__init__.py` (`__version__ = "..."`). If mismatched, report both and proceed to sync.
+1. Read current version from `pyproject.toml` (`version = "..."`) and `src/rigplane/__init__.py` (`__version__ = "..."`). If mismatched, report both and proceed to sync.
 2. Get previous tag: `git tag --list 'v*' --sort=-version:refname | head -1`.
 3. If no bump argument passed, **auto-suggest**:
    - Run `git log vPREV..HEAD --no-merges --format='%s'`
@@ -114,7 +114,7 @@ Release plan for vNEW_VERSION:
 
   Bump:          vCURRENT → vNEW (TYPE)
   Commits:       N (X feat, Y fix, Z other)
-  Files to edit: pyproject.toml, src/icom_lan/__init__.py, CHANGELOG.md, RELEASE_NOTES.md [, CLAUDE.md]
+  Files to edit: pyproject.toml, src/rigplane/__init__.py, CHANGELOG.md, RELEASE_NOTES.md [, CLAUDE.md]
   Changelog:     [count] Added / [count] Changed / [count] Fixed entries
   Tag:           vNEW_VERSION
   Push target:   origin/main (atomic --follow-tags)
@@ -133,7 +133,7 @@ On dry-run → print what would be done and STOP here.
 All writes local — nothing pushed yet.
 
 1. `pyproject.toml` — `version = "OLD"` → `version = "NEW"`
-2. `src/icom_lan/__init__.py` — `__version__ = "OLD"` → `__version__ = "NEW"`
+2. `src/rigplane/__init__.py` — `__version__ = "OLD"` → `__version__ = "NEW"`
 3. `CLAUDE.md` — `| **Version** | OLD |` → `| **Version** | NEW |` (if the row exists)
 4. `CHANGELOG.md`:
    - Keep `## [Unreleased]` header (now empty) at top
@@ -142,7 +142,7 @@ All writes local — nothing pushed yet.
 5. `RELEASE_NOTES.md`: **derive from the CHANGELOG section you just inserted** — do NOT regenerate from commits.
    Structure:
    ```markdown
-   # icom-lan NEW_VERSION
+   # rigplane NEW_VERSION
 
    **Release date:** Month Day, Year
 
@@ -151,9 +151,9 @@ All writes local — nothing pushed yet.
    ## Install / Upgrade
 
    ```bash
-   pip install icom-lan==NEW_VERSION
+   pip install rigplane==NEW_VERSION
    # or upgrade:
-   pip install --upgrade icom-lan
+   pip install --upgrade rigplane
    ```
    ```
 
@@ -211,7 +211,7 @@ CI will now:
   - Publish to PyPI (publish.yml)
   - Deploy docs (docs.yml)
 
-Monitor: https://github.com/morozsm/icom-lan/actions
+Monitor: https://github.com/rigplane/rigplane-core/actions
 ```
 
 ---

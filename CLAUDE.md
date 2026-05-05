@@ -1,6 +1,6 @@
 # CLAUDE.md — Control Plane
 
-**icom-lan** v1.0.1 — Python 3.11+ asyncio library + Web UI for Icom transceivers over LAN/USB.
+**rigplane** v2.0.0 — Python 3.11+ asyncio library + Web UI for Icom transceivers over LAN/USB.
 IC-7610 at `192.168.55.40`, CI-V `0x98`. Context: `docs/PROJECT.md`.
 
 ---
@@ -24,7 +24,7 @@ Three workflows, tiered by cost:
 
 | Workflow | Trigger | Scope |
 |---|---|---|
-| `quick.yml` | push/PR to `main` only when `src/**`, `tests/**`, `frontend/**`, `pyproject.toml`, `uv.lock`, `.importlinter`, or `.github/workflows/**` change | Python 3.11 only · ruff · import-linter · pytest (no integration) · frontend block runs **only** if `frontend/**` or `src/icom_lan/web/**` changed · badges |
+| `quick.yml` | push/PR to `main` only when `src/**`, `tests/**`, `frontend/**`, `pyproject.toml`, `uv.lock`, `.importlinter`, or `.github/workflows/**` change | Python 3.11 only · ruff · import-linter · pytest (no integration) · frontend block runs **only** if `frontend/**` or `src/rigplane/web/**` changed · badges |
 | `full.yml` | cron Mon/Wed/Fri 03:00 UTC + `workflow_dispatch` + push with `[full-ci]` in commit message | Full matrix 3.11/3.12/3.13, everything |
 | `publish.yml` | `release: published` | New `validate` job (full matrix) → `build` → `publish`. No publish if validate fails. |
 
@@ -64,7 +64,7 @@ Don't add per-push matrix builds back without explicit reason — the goal is mi
 
 ## Layer boundaries
 
-`src/icom_lan/` is organised into 11 layered packages with `import-linter`-enforced boundaries (config at repo root `.importlinter`; full matrix in `docs/plans/2026-04-29-modularization-plan.md` §1, §3; per-layer charters in `src/icom_lan/<layer>/LAYER.md`).
+`src/rigplane/` is organised into 11 layered packages with `import-linter`-enforced boundaries (config at repo root `.importlinter`; full matrix in `docs/plans/2026-04-29-modularization-plan.md` §1, §3; per-layer charters in `src/rigplane/<layer>/LAYER.md`).
 
 Layers (top → bottom; higher = more dependent):
 
@@ -82,7 +82,7 @@ When making changes:
 - Adding a new radio backend → conform to the relevant Capability Protocols in `core.radio_protocol` (`AudioCapable`, `StatePollable`, `RigctldRoutable`, `UsbAudioCapable`, …); zero upper-layer changes if the protocols are honoured.
 - New cross-layer imports must respect the matrix; if a sensible-looking import is rejected by the linter, the file is in the wrong layer.
 - Run `uv run lint-imports` before committing significant structural changes (CI gates every PR anyway).
-- Backwards compatibility: old top-level paths (`icom_lan.radio`, `icom_lan.commander`, `icom_lan.rig_loader`, …) keep working via `sys.modules`-aliased re-export shims; new code SHOULD use canonical paths (`icom_lan.runtime.radio`, etc.).
+- Backwards compatibility: old top-level paths (`rigplane.radio`, `rigplane.commander`, `rigplane.rig_loader`, …) keep working via `sys.modules`-aliased re-export shims; new code SHOULD use canonical paths (`rigplane.runtime.radio`, etc.).
 
 ---
 
