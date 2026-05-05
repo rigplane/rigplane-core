@@ -21,7 +21,7 @@ Frequency is always in **Hz** (integer). The radio internally uses BCD encoding 
 ## Mode
 
 ```python
-from icom_lan import Mode
+from rigplane import Mode
 
 # Get current mode
 mode_name, filt = await radio.get_mode()
@@ -87,7 +87,7 @@ alc = await radio.get_alc_meter()
     `get_swr()` and `get_alc_meter()` will timeout if the radio is not transmitting. Wrap them in try/except:
 
     ```python
-    from icom_lan.exceptions import TimeoutError
+    from rigplane.exceptions import TimeoutError
 
     try:
         swr = await radio.get_swr()
@@ -151,7 +151,7 @@ These commands use **Command29 framing** for dual-receiver radios (IC-7610).
 By default, they target the MAIN receiver.
 
 ```python
-from icom_lan import RECEIVER_MAIN, RECEIVER_SUB
+from rigplane import RECEIVER_MAIN, RECEIVER_SUB
 
 # --- Attenuator ---
 # Get attenuation level in dB

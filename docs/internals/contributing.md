@@ -5,14 +5,14 @@ Contributions are welcome! Here's how to get started.
 ## Development Setup
 
 ```bash
-git clone https://github.com/morozsm/icom-lan.git
-cd icom-lan
+git clone https://github.com/rigplane/rigplane-core.git
+cd rigplane
 uv sync --all-extras
 ```
 
 ### Frontend static files (one-time after clone)
 
-`src/icom_lan/web/static/` is a symlink to `frontend/dist/`, which is gitignored.
+`src/rigplane/web/static/` is a symlink to `frontend/dist/`, which is gitignored.
 Web-server tests that serve static files will fail on a clean clone until you build once:
 
 ```bash
@@ -46,7 +46,7 @@ The repository has three Actions workflows, tiered to keep billable minutes low:
 
 | Workflow | When it runs | What it does |
 |---|---|---|
-| **Tests (quick)** | push/PR to `main` **only** when one of these paths changes: `src/**`, `tests/**`, `frontend/**`, `pyproject.toml`, `uv.lock`, `.importlinter`, `.github/workflows/**` | Single Python 3.11 job: `ruff`, `import-linter`, `pytest` (no hardware integration). The frontend block (`npm ci`, type-check, vitest, build, mypy on `src/icom_lan/web`) only runs when files under `frontend/**` or `src/icom_lan/web/**` actually changed. ~2–5 min. Doc-only edits and CLAUDE.md changes don't trigger CI at all — use `gh workflow run "Tests (quick)"` if you need a manual run. |
+| **Tests (quick)** | push/PR to `main` **only** when one of these paths changes: `src/**`, `tests/**`, `frontend/**`, `pyproject.toml`, `uv.lock`, `.importlinter`, `.github/workflows/**` | Single Python 3.11 job: `ruff`, `import-linter`, `pytest` (no hardware integration). The frontend block (`npm ci`, type-check, vitest, build, mypy on `src/rigplane/web`) only runs when files under `frontend/**` or `src/rigplane/web/**` actually changed. ~2–5 min. Doc-only edits and CLAUDE.md changes don't trigger CI at all — use `gh workflow run "Tests (quick)"` if you need a manual run. |
 | **Tests (full matrix)** | cron Mon/Wed/Fri 03:00 UTC, manual `workflow_dispatch`, **or** any push whose commit message contains `[full-ci]` | Full 3.11/3.12/3.13 matrix with frontend, mypy, import-linter and the whole pytest suite. |
 | **Publish to PyPI** | on a published GitHub Release | Runs the full validation matrix first; the build/publish jobs only start if validation is green. |
 
@@ -162,7 +162,7 @@ Always include the issue number in the scope (e.g., `#123`) for feature, fix, an
 
 ## Reporting Bugs
 
-[Open an issue](https://github.com/morozsm/icom-lan/issues/new) with:
+[Open an issue](https://github.com/rigplane/rigplane-core/issues/new) with:
 
 - Radio model and firmware version
 - Python version and OS

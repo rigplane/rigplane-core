@@ -2,7 +2,7 @@
 
 ## Charter
 
-Command-line entrypoints (`icom-lan` / `python -m icom_lan`). Wires CLI
+Command-line entrypoints (`rigplane` / `python -m rigplane`). Wires CLI
 arguments to the `backends.factory.create_radio` assembly path and the
 `runtime.IcomRadio` API surface; provides one-shot status/control
 subcommands plus `audio` and `discover` helpers. The CLI is a consumer:
@@ -18,9 +18,9 @@ no business logic lives here.
 - `check_ports_available` — pre-flight UDP port probe used by
   `web`/`rigctld` integration.
 
-The `icom-lan` console script (`pyproject.toml` `[project.scripts]`)
-points at `icom_lan.cli:main`. The `python -m icom_lan` entry uses
-`icom_lan/__main__.py` which delegates to the same `main`.
+The `rigplane` console script (`pyproject.toml` `[project.scripts]`)
+points at `rigplane.cli:main`. The `python -m rigplane` entry uses
+`rigplane/__main__.py` which delegates to the same `main`.
 
 ## Allowed dependencies
 
@@ -36,7 +36,7 @@ on `cli`.
   `runtime` or `backends`.
 - Direct backend instantiation. Use `_build_backend_config(args)` →
   `create_radio(config)` (issue #147; LightRAG memory note: tests must
-  patch `icom_lan.cli.create_radio`, not `icom_lan.cli.IcomRadio`).
+  patch `rigplane.cli.create_radio`, not `rigplane.cli.IcomRadio`).
 - Hardware-specific branches. Probe via the Capability Protocols on
   the resolved radio and surface graceful fallbacks.
 
@@ -44,7 +44,7 @@ on `cli`.
 
 - **Add a subcommand** → declare argparse subparser in `cli/__init__.py`,
   implement the async handler, register in the dispatch dict; cover
-  with `tests/test_cli*.py`. Mock `icom_lan.cli.create_radio` to
+  with `tests/test_cli*.py`. Mock `rigplane.cli.create_radio` to
   isolate from hardware.
 - **Add a new backend flag** → extend `_build_backend_config(args)`;
   the `--backend lan|serial` discriminator + per-backend flags are the

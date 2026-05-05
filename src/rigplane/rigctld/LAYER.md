@@ -14,7 +14,7 @@ works without modification.
 - `RigctldServer` — async TCP server; `serve_forever()` enters the
   accept loop. Module-level import is wrapped in `try/except
   ImportError` so optional-dep absence (e.g. headless install without
-  the rigctld extras) does not break `import icom_lan`.
+  the rigctld extras) does not break `import rigplane`.
 
 Internal layout:
 
@@ -41,9 +41,9 @@ introduction (#1324, #688bda03).
 
 ## Forbidden patterns
 
-- `from icom_lan.web` — independence contract.
-- `from icom_lan.audio` / `from icom_lan.scope` / `from icom_lan.dsp`
-  / `from icom_lan.profiles` — outside the matrix.
+- `from rigplane.web` — independence contract.
+- `from rigplane.audio` / `from rigplane.scope` / `from rigplane.dsp`
+  / `from rigplane.profiles` — outside the matrix.
 - Backend-id discriminator branches. Use `isinstance(radio,
   RigctldRoutable)` (#1324). Legacy `set_vfo` overload fallbacks live
   in `rigctld/handler.py` strictly for third-party backends that don't

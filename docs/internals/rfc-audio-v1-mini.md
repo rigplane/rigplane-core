@@ -47,9 +47,9 @@ This makes API naming ambiguous, CLI scope unclear, and recovery/testing behavio
 
 ### D3. Internal transcoder layer
 - Add internal PCM<->Opus transcoder abstraction.
-- Use `opuslib` when available (`pip install icom-lan[audio]`).
+- Use `opuslib` when available (`pip install rigplane[audio]`).
 - If missing, high-level PCM APIs raise actionable error:
-  `Audio codec backend unavailable; install icom-lan[audio]`.
+  `Audio codec backend unavailable; install rigplane[audio]`.
 
 ### D4. Capabilities model + deterministic defaults
 Add `AudioCaps` model and API:
@@ -60,7 +60,7 @@ Add `AudioCaps` model and API:
   - default codec/rate/channels
 
 CLI:
-- `icom-lan audio caps [--json]`
+- `rigplane audio caps [--json]`
 
 Default selection (deterministic):
 1. Prefer Opus mono 48k
@@ -86,7 +86,7 @@ Optional auto-recover after reconnect:
 - single active stream invariant (no duplicate RX/TX tasks)
 
 ### D7. CLI scope
-Add `icom-lan audio` command group:
+Add `rigplane audio` command group:
 - `audio rx --out rx.wav --seconds 10`
 - `audio tx --in tx.wav`
 - `audio loopback --seconds 10`

@@ -1,8 +1,8 @@
 ## Context
 
-Step 7 of the internal-modularization migration: move 9 top-level `audio_*` and `_audio_*` files into `src/icom_lan/audio/` as submodules. **`audio.backend` and `audio.dsp` paths are NOT moved** — they are the icom-lan-pro stable contract and remain exactly where they are. This step likely splits into 7a/7b at execution time per plan size budget; the maintainer decides.
+Step 7 of the internal-modularization migration: move 9 top-level `audio_*` and `_audio_*` files into `src/rigplane/audio/` as submodules. **`audio.backend` and `audio.dsp` paths are NOT moved** — they are the rigplane-pro stable contract and remain exactly where they are. This step likely splits into 7a/7b at execution time per plan size budget; the maintainer decides.
 
-Plan section: [§4.1 Step 7 — `audio` top-level (likely split 7a/7b)](https://github.com/morozsm/icom-lan/blob/refactor/modularization-discovery/docs/plans/2026-04-29-modularization-plan.md#step-7--audio-top-level-likely-split-7a7b).
+Plan section: [§4.1 Step 7 — `audio` top-level (likely split 7a/7b)](https://github.com/rigplane/rigplane-core/blob/refactor/modularization-discovery/docs/plans/2026-04-29-modularization-plan.md#step-7--audio-top-level-likely-split-7a7b).
 
 ## Pre-conditions
 
@@ -10,21 +10,21 @@ Blocked by #1289 (Step 6: scope).
 
 ## Scope
 
-Move these 9 files from `src/icom_lan/` into `src/icom_lan/audio/`:
+Move these 9 files from `src/rigplane/` into `src/rigplane/audio/`:
 
-1. `src/icom_lan/audio_analyzer.py` → `src/icom_lan/audio/analyzer.py`
-2. `src/icom_lan/audio_bridge.py` → `src/icom_lan/audio/bridge.py`
-3. `src/icom_lan/audio_bus.py` → `src/icom_lan/audio/bus.py`
-4. `src/icom_lan/audio_fft_scope.py` → `src/icom_lan/audio/fft_scope.py`
-5. `src/icom_lan/_audio_codecs.py` → `src/icom_lan/audio/_codecs.py`
-6. `src/icom_lan/_audio_transcoder.py` → `src/icom_lan/audio/_transcoder.py`
-7. `src/icom_lan/_bridge_metrics.py` → `src/icom_lan/audio/_bridge_metrics.py`
-8. `src/icom_lan/_bridge_state.py` → `src/icom_lan/audio/_bridge_state.py`
-9. `src/icom_lan/usb_audio_resolve.py` → `src/icom_lan/audio/_usb_resolve.py`
+1. `src/rigplane/audio_analyzer.py` → `src/rigplane/audio/analyzer.py`
+2. `src/rigplane/audio_bridge.py` → `src/rigplane/audio/bridge.py`
+3. `src/rigplane/audio_bus.py` → `src/rigplane/audio/bus.py`
+4. `src/rigplane/audio_fft_scope.py` → `src/rigplane/audio/fft_scope.py`
+5. `src/rigplane/_audio_codecs.py` → `src/rigplane/audio/_codecs.py`
+6. `src/rigplane/_audio_transcoder.py` → `src/rigplane/audio/_transcoder.py`
+7. `src/rigplane/_bridge_metrics.py` → `src/rigplane/audio/_bridge_metrics.py`
+8. `src/rigplane/_bridge_state.py` → `src/rigplane/audio/_bridge_state.py`
+9. `src/rigplane/usb_audio_resolve.py` → `src/rigplane/audio/_usb_resolve.py`
 
 Add **9 re-export shim files** at the old top-level paths using the plan §5.1 template.
 
-**`src/icom_lan/audio/backend/` and `src/icom_lan/audio/dsp/` subdirectories are untouched.** The `audio_*` LAZY_MAP entries inside `icom_lan/audio/__init__.py` keep pointing at the old top-level paths until Step 13.
+**`src/rigplane/audio/backend/` and `src/rigplane/audio/dsp/` subdirectories are untouched.** The `audio_*` LAZY_MAP entries inside `rigplane/audio/__init__.py` keep pointing at the old top-level paths until Step 13.
 
 ## Out of scope
 
@@ -41,24 +41,24 @@ Add **9 re-export shim files** at the old top-level paths using the plan §5.1 t
 - `uv run mypy src/` clean.
 - `uv run pytest tests/contracts/test_lazy_imports.py -v` passes (3 tests green).
 - Public-import smoke check (each must succeed):
-  - `uv run python -c "from icom_lan.audio_bridge import AudioBridge"` (legacy via shim).
-  - `uv run python -c "from icom_lan.audio_bus import AudioBus"` (legacy via shim).
-  - `uv run python -c "from icom_lan.audio_analyzer import AudioAnalyzer"` (legacy via shim).
-  - `uv run python -c "from icom_lan.audio_fft_scope import AudioFftScope"` (legacy via shim).
-  - `uv run python -c "from icom_lan.audio import AudioBus, AudioBridge"` (canonical).
-- **icom-lan-pro contract paths (Tier 2 of three-tier validation per plan §9):**
-  - `uv run python -c "from icom_lan.audio import backend, dsp"`
-  - `uv run python -c "from icom_lan.audio.backend import *"`
-  - `uv run python -c "from icom_lan.audio.dsp import *"`
-  - `uv run python -c "from icom_lan.dsp import pipeline, exceptions"`
-  - `uv run python -c "from icom_lan.dsp.nodes import base"`
+  - `uv run python -c "from rigplane.audio_bridge import AudioBridge"` (legacy via shim).
+  - `uv run python -c "from rigplane.audio_bus import AudioBus"` (legacy via shim).
+  - `uv run python -c "from rigplane.audio_analyzer import AudioAnalyzer"` (legacy via shim).
+  - `uv run python -c "from rigplane.audio_fft_scope import AudioFftScope"` (legacy via shim).
+  - `uv run python -c "from rigplane.audio import AudioBus, AudioBridge"` (canonical).
+- **rigplane-pro contract paths (Tier 2 of three-tier validation per plan §9):**
+  - `uv run python -c "from rigplane.audio import backend, dsp"`
+  - `uv run python -c "from rigplane.audio.backend import *"`
+  - `uv run python -c "from rigplane.audio.dsp import *"`
+  - `uv run python -c "from rigplane.dsp import pipeline, exceptions"`
+  - `uv run python -c "from rigplane.dsp.nodes import base"`
 
 ## Implementation prompt for the sub-agent
 
 ```
-You are implementing one step of the icom-lan internal modularization
+You are implementing one step of the rigplane internal modularization
 work. Read these references first:
-- /Users/moroz/Projects/icom-lan-research/2026-04-29-internal-modularization-orchestrator.md
+- /Users/moroz/Projects/rigplane-research/2026-04-29-internal-modularization-orchestrator.md
 - docs/plans/2026-04-29-modularization-plan.md
 - The full text of this issue, especially the Scope and Acceptance
   Criteria sections
@@ -90,6 +90,6 @@ stop and ask via PR comment. Do not guess.
 
 - Verify the shim header (plan §5.1 template, verbatim) is present in every shim file.
 - LAZY_MAP target tuples must be UNCHANGED.
-- **Confirm `audio/backend/` and `audio/dsp/` subdirectories are untouched.** Step 7 must not move, rename, or edit any file inside those two paths — they are the icom-lan-pro stable contract.
-- **Confirm icom-lan-pro smoke imports succeed (Tier 2 validation).** All five paths from plan §9 (`icom_lan.audio.backend`, `icom_lan.audio.dsp`, `icom_lan.dsp.pipeline`, `icom_lan.dsp.exceptions`, `icom_lan.dsp.nodes.base`) must import cleanly after the PR.
+- **Confirm `audio/backend/` and `audio/dsp/` subdirectories are untouched.** Step 7 must not move, rename, or edit any file inside those two paths — they are the rigplane-pro stable contract.
+- **Confirm rigplane-pro smoke imports succeed (Tier 2 validation).** All five paths from plan §9 (`rigplane.audio.backend`, `rigplane.audio.dsp`, `rigplane.dsp.pipeline`, `rigplane.dsp.exceptions`, `rigplane.dsp.nodes.base`) must import cleanly after the PR.
 - Confirm `audio_fft_scope`'s `audio → scope` edge (legitimate per plan §1.3) still resolves through the new layer.

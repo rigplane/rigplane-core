@@ -2,10 +2,10 @@
 
 TOML rig file loading, validation, and runtime object construction.
 
-Module: `icom_lan.rig_loader`
+Module: `rigplane.rig_loader`
 
 ```python
-from icom_lan.rig_loader import load_rig, discover_rigs, RigConfig, RigLoadError
+from rigplane.rig_loader import load_rig, discover_rigs, RigConfig, RigLoadError
 ```
 
 ## Functions
@@ -31,7 +31,7 @@ fails schema validation (missing sections, unknown capability, invalid VFO schem
 
 ```python
 from pathlib import Path
-from icom_lan.rig_loader import load_rig
+from rigplane.rig_loader import load_rig
 
 cfg = load_rig(Path("rigs/ic7610.toml"))
 print(cfg.model)          # "IC-7610"
@@ -58,7 +58,7 @@ Files whose names start with `_` are skipped (e.g. `_schema.md`, `_template.toml
 
 ```python
 from pathlib import Path
-from icom_lan.rig_loader import discover_rigs
+from rigplane.rig_loader import discover_rigs
 
 rigs = discover_rigs(Path("rigs/"))
 for model, cfg in rigs.items():
@@ -187,7 +187,7 @@ Raised by `load_rig()` when the rig file is invalid. The message includes the fi
 and the specific field or section that failed validation.
 
 ```python
-from icom_lan.rig_loader import load_rig, RigLoadError
+from rigplane.rig_loader import load_rig, RigLoadError
 
 try:
     cfg = load_rig(Path("rigs/bad.toml"))

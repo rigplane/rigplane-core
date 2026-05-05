@@ -35,7 +35,7 @@ The IC-9700 is the only supported radio with **dual independent receivers**:
 !!! danger "Critical Setup Step"
     On the IC-9700, navigate to **Menu → Set → Connectors → CI-V → CI-V USB Port** and set it to **`Link to [CI-V]`**, **NOT** `[REMOTE]`.
 
-    - `Link to [CI-V]` — serial CI-V commands work (required for icom-lan serial backend)
+    - `Link to [CI-V]` — serial CI-V commands work (required for rigplane serial backend)
     - `[REMOTE]` — RS-BA1 mode, serial CI-V is blocked
 
 ### LAN Backend (Ethernet)
@@ -71,10 +71,10 @@ The IC-9700 supports LAN operation:
 
 ## macOS Setup: Serial Backend
 
-### 1. Install icom-lan
+### 1. Install rigplane
 
 ```bash
-pip install icom-lan[serial]
+pip install rigplane[serial]
 ```
 
 ### 2. Connect USB and Verify Devices
@@ -89,7 +89,7 @@ ls /dev/cu.usbserial-* | head -5
 Verify audio devices:
 
 ```bash
-python -c "from icom_lan.usb_audio_resolve import list_usb_audio_devices; import json; print(json.dumps(list_usb_audio_devices(), indent=2))"
+python -c "from rigplane.usb_audio_resolve import list_usb_audio_devices; import json; print(json.dumps(list_usb_audio_devices(), indent=2))"
 ```
 
 You should see IC-9700 input (RX) and output (TX) audio devices.
@@ -98,7 +98,7 @@ You should see IC-9700 input (RX) and output (TX) audio devices.
 
 ```python
 import asyncio
-from icom_lan import IcomRadio
+from rigplane import IcomRadio
 
 async def main():
     # Create serial radio for IC-9700
@@ -135,23 +135,23 @@ asyncio.run(main())
 
 ```bash
 # Check connection
-icom-lan --backend serial --model IC-9700 --serial-port /dev/cu.usbserial-A602RVBV status
+rigplane --backend serial --model IC-9700 --serial-port /dev/cu.usbserial-A602RVBV status
 
 # MAIN receiver (default)
-icom-lan --backend serial --model IC-9700 --serial-port /dev/cu.usbserial-A602RVBV freq 144100000
+rigplane --backend serial --model IC-9700 --serial-port /dev/cu.usbserial-A602RVBV freq 144100000
 
 # SUB receiver
-icom-lan --backend serial --model IC-9700 --serial-port /dev/cu.usbserial-A602RVBV \
+rigplane --backend serial --model IC-9700 --serial-port /dev/cu.usbserial-A602RVBV \
     --receiver 1 freq 144200000
 
 # Monitor both
-icom-lan --backend serial --model IC-9700 --serial-port /dev/cu.usbserial-A602RVBV meters
+rigplane --backend serial --model IC-9700 --serial-port /dev/cu.usbserial-A602RVBV meters
 ```
 
 ### 5. Web UI (Serial)
 
 ```bash
-icom-lan web --backend serial --model IC-9700 --serial-port /dev/cu.usbserial-A602RVBV
+rigplane web --backend serial --model IC-9700 --serial-port /dev/cu.usbserial-A602RVBV
 # Open http://localhost:8000
 # Use MAIN/SUB selector in web UI
 ```
@@ -164,7 +164,7 @@ The IC-9700 supports direct LAN connection (Ethernet):
 
 ```bash
 # Discover IC-9700 on your network
-icom-lan discover --timeout 5
+rigplane discover --timeout 5
 
 # Output:
 # Found: IC-9700 at 192.168.1.100
@@ -174,7 +174,7 @@ icom-lan discover --timeout 5
 
 ```python
 import asyncio
-from icom_lan import IcomRadio
+from rigplane import IcomRadio
 
 async def main():
     # Create LAN radio for IC-9700
@@ -198,8 +198,8 @@ asyncio.run(main())
 ### 3. CLI Usage (LAN)
 
 ```bash
-icom-lan --backend lan --host 192.168.1.100 status
-icom-lan --backend lan --host 192.168.1.100 freq 144100000
+rigplane --backend lan --host 192.168.1.100 status
+rigplane --backend lan --host 192.168.1.100 freq 144100000
 ```
 
 ## Dual-Receiver Operations
@@ -295,7 +295,7 @@ ConnectionError: failed to connect to 192.168.1.100
 ```
 
 **Solution**:
-1. Verify IP address with `icom-lan discover`
+1. Verify IP address with `rigplane discover`
 2. Check network connectivity: `ping 192.168.1.100`
 3. Verify radio network settings (username/password)
 

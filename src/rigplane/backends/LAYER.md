@@ -31,12 +31,12 @@ their own Protocol-implementing class) and feed it the right transport
 + commander stack.
 
 `backends.yaesu_cat.radio` carries one named exception in
-`.importlinter`'s `ignore_imports` (`→ icom_lan.rigctld.routing`,
+`.importlinter`'s `ignore_imports` (`→ rigplane.rigctld.routing`,
 `TYPE_CHECKING` only, added by epic #1322's RigctldRoutable work).
 
 ## Forbidden patterns
 
-- `from icom_lan.web` / `from icom_lan.rigctld` / `from icom_lan.cli`.
+- `from rigplane.web` / `from rigplane.rigctld` / `from rigplane.cli`.
   Backends are below those layers; the inverse is the legal flow.
 - Direct instantiation of backend classes from upper layers. Always go
   through `create_radio` so the discriminator + capability assembly is

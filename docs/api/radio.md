@@ -2,14 +2,14 @@
 
 LAN-specific radio class. For new code, prefer the backend-neutral **[create_radio](public-api-surface.md)** + **Radio** API so the same code works over LAN or USB serial. Use `IcomRadio` when you need direct LAN control or are migrating from older examples.
 
-::: icom_lan.runtime.radio.IcomRadio
+::: rigplane.runtime.radio.IcomRadio
 
 ## Reference
 
 ### Class: `IcomRadio`
 
 ```python
-from icom_lan import IcomRadio
+from rigplane import IcomRadio
 ```
 
 ### Constructor
@@ -120,7 +120,7 @@ This is a backend-managed readiness contract: clients should treat
 def audio_capabilities() -> AudioCapabilities
 ```
 
-Return the stable icom-lan audio capability structure:
+Return the stable rigplane audio capability structure:
 
 - `supported_codecs`
 - `supported_sample_rates_hz`
@@ -131,7 +131,7 @@ Return the stable icom-lan audio capability structure:
 
 Default values are deterministic:
 
-1. Codec: first supported codec in icom-lan preference order.
+1. Codec: first supported codec in rigplane preference order.
 2. Sample rate: highest supported sample rate.
 3. Channels: implied by default codec (fallback to minimum supported channels).
 
@@ -502,7 +502,7 @@ Register a callback for scope/waterfall data. The callback receives a complete `
 Pass `None` to unregister.
 
 ```python
-from icom_lan.scope import ScopeFrame
+from rigplane.scope import ScopeFrame
 
 def handle_scope(frame: ScopeFrame):
     print(f"Receiver {frame.receiver}: "
@@ -539,7 +539,7 @@ Disable scope data output. Sends CI-V `0x27 0x11 0x00`.
 ### `ScopeFrame`
 
 ```python
-from icom_lan.scope import ScopeFrame
+from rigplane.scope import ScopeFrame
 ```
 
 | Attribute | Type | Description |

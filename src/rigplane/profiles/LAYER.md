@@ -39,7 +39,7 @@ types. **Do not hoist it to module top-level** (plan §6.2 no-touch list).
 
 ## Forbidden patterns
 
-- `from icom_lan.runtime`, `from icom_lan.audio`, `from icom_lan.web` —
+- `from rigplane.runtime`, `from rigplane.audio`, `from rigplane.web` —
   profiles are read-only data; consumers depend on profiles, not the
   reverse.
 - Any I/O outside the lazy `_ensure_loaded()` path. Profile lookup must

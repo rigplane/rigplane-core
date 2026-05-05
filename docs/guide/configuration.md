@@ -2,7 +2,7 @@
 
 ## Backend Selection
 
-icom-lan supports two backends selected via `--backend`:
+rigplane supports two backends selected via `--backend`:
 
 | Backend | Description |
 |---------|-------------|
@@ -35,11 +35,11 @@ icom-lan supports two backends selected via `--backend`:
 ```bash
 # Serial backend quick start
 export ICOM_SERIAL_DEVICE=/dev/tty.usbmodem-IC7610
-icom-lan --backend serial status
-icom-lan --backend serial freq 14.074m
+rigplane --backend serial status
+rigplane --backend serial freq 14.074m
 
 # List available USB audio devices
-icom-lan --list-audio-devices
+rigplane --list-audio-devices
 ```
 
 ## Connection Parameters (LAN, reference)
@@ -58,7 +58,7 @@ Each Icom radio model has a default CI-V address. You can also configure a custo
 | IC-R8600 | `0x96` |
 
 ```python
-from icom_lan import create_radio, LanBackendConfig
+from rigplane import create_radio, LanBackendConfig
 
 # IC-7610 (default radio_addr 0x98)
 config = LanBackendConfig(host="192.168.1.100", username="u", password="p")
@@ -136,7 +136,7 @@ ICOM_PASS=mypass
 The default 5-second timeout works well for local networks. Adjust if needed:
 
 ```python
-from icom_lan import create_radio, LanBackendConfig
+from rigplane import create_radio, LanBackendConfig
 
 # Fast local network
 config = LanBackendConfig(host="192.168.1.100", username="u", password="p", timeout=2.0)
@@ -163,12 +163,12 @@ The library uses Python's standard `logging` module. Enable debug output to trou
 ```python
 import logging
 
-# See all icom-lan internal messages
+# See all rigplane internal messages
 logging.basicConfig(level=logging.DEBUG)
 
 # Or target specific modules
-logging.getLogger("icom_lan.transport").setLevel(logging.DEBUG)
-logging.getLogger("icom_lan.radio").setLevel(logging.DEBUG)
+logging.getLogger("rigplane.transport").setLevel(logging.DEBUG)
+logging.getLogger("rigplane.radio").setLevel(logging.DEBUG)
 ```
 
 Log levels:

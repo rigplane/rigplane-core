@@ -1,7 +1,7 @@
 # Rig TOML Schema Specification
 
 This document describes the format of `.toml` rig configuration files used by
-`icom-lan` to define radio profiles in a data-driven way.
+`rigplane` to define radio profiles in a data-driven way.
 
 Adding a new radio = writing one TOML file, zero Python changes.
 

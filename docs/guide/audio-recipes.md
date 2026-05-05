@@ -1,6 +1,6 @@
 # Audio Recipes (copy/paste)
 
-Practical scenarios for the current `icom-lan` audio API.
+Practical scenarios for the current `rigplane` audio API.
 All examples use **PCM 16-bit mono 48 kHz** (`AudioCodec.PCM_1CH_16BIT`) to avoid external codec dependencies.
 
 ## Prerequisites
@@ -13,8 +13,8 @@ export ICOM_PASS=YOUR_PASS
 
 ```bash
 # Audio dependencies (opuslib, sounddevice, numpy) ship with the core
-# install since v0.19 — `pip install icom-lan` is enough.
-pip install icom-lan
+# install since v0.19 — `pip install rigplane` is enough.
+pip install rigplane
 ```
 
 ---
@@ -27,7 +27,7 @@ Saves the incoming audio stream from the radio to `rx.wav`.
 import asyncio
 import wave
 
-from icom_lan import create_radio, LanBackendConfig, AudioCodec
+from rigplane import create_radio, LanBackendConfig, AudioCodec
 
 SAMPLE_RATE = 48000
 CHANNELS = 1
@@ -74,7 +74,7 @@ Reads `tx.wav` (16-bit mono 48 kHz PCM) and transmits it.
 import asyncio
 import wave
 
-from icom_lan import create_radio, LanBackendConfig, AudioCodec
+from rigplane import create_radio, LanBackendConfig, AudioCodec
 
 SAMPLE_RATE = 48000
 CHANNELS = 1
@@ -131,7 +131,7 @@ import asyncio
 import math
 import struct
 
-from icom_lan import create_radio, LanBackendConfig, AudioCodec
+from rigplane import create_radio, LanBackendConfig, AudioCodec
 
 SAMPLE_RATE = 48000
 CHANNELS = 1
@@ -200,7 +200,7 @@ Route the same RX audio to multiple consumers simultaneously.
 
 ```python
 import asyncio
-from icom_lan import create_radio, LanBackendConfig
+from rigplane import create_radio, LanBackendConfig
 
 async def main() -> None:
     config = LanBackendConfig(
@@ -245,11 +245,11 @@ Run Web UI + audio bridge + rigctld in a single command:
 
 ```bash
 # Install (audio-bridge deps ship with the core install since v0.19)
-pip install icom-lan
+pip install rigplane
 brew install blackhole-2ch  # macOS
 
 # Start everything
-icom-lan --host 192.168.1.100 --user USER --pass PASS \
+rigplane --host 192.168.1.100 --user USER --pass PASS \
     web --bridge "BlackHole 2ch"
 
 # WSJT-X settings:
@@ -273,7 +273,7 @@ The audio bridge runs the TX path (reading from the virtual device and sending t
    ```
    You can use `max_workers=1` or `2`; the bridge only runs one TX read at a time.
 
-2. **Deployment:** For heavy scenarios, run the bridge in a **separate process** (e.g. a dedicated `icom-lan web --bridge ...` instance or a small script that only runs the bridge). That isolates CPU and I/O and avoids contention with web/rigctld in the same process.
+2. **Deployment:** For heavy scenarios, run the bridge in a **separate process** (e.g. a dedicated `rigplane web --bridge ...` instance or a small script that only runs the bridge). That isolates CPU and I/O and avoids contention with web/rigctld in the same process.
 
 3. **Scale:** Prefer **one bridge (and ideally one radio connection) per process** when you need stable low-latency audio; limit the number of simultaneous bridge clients if they share the same executor or process.
 

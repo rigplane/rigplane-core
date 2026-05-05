@@ -12,7 +12,7 @@ turns wire-level primitives into the user-visible Radio object.
 ## Public API
 
 `runtime/__init__.py` keeps `__all__` empty by design (plan §2.2). The
-top-level `icom_lan` lazy-loader and the legacy top-level shims surface
+top-level `rigplane` lazy-loader and the legacy top-level shims surface
 the canonical types to consumers; layer-internal callers reach the
 sub-modules directly:
 
@@ -43,12 +43,12 @@ construct audio backends and the scope assembler at runtime
 
 ## Forbidden patterns
 
-- `from icom_lan.backends` — backends compose runtime, not the reverse.
+- `from rigplane.backends` — backends compose runtime, not the reverse.
   The backend factory is the assembly seam; `IcomRadio` does not know
   which factory built it.
-- `from icom_lan.web` / `from icom_lan.rigctld` / `from icom_lan.cli` —
+- `from rigplane.web` / `from rigplane.rigctld` / `from rigplane.cli` —
   these are upper-tier consumers.
-- `from icom_lan.dsp` directly — DSP processing flows through `audio`,
+- `from rigplane.dsp` directly — DSP processing flows through `audio`,
   which composes `dsp` internally.
 - New cross-layer imports without checking the matrix; `import-linter`
   will catch them at CI but do not commit them.

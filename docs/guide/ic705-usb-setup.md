@@ -21,7 +21,7 @@ This guide shows how to control the IC-705 via **USB serial CI-V + USB audio dev
 !!! danger "Critical Setup Step"
     On the IC-705, navigate to **Menu → Set → Connectors → CI-V → CI-V USB Port** and set it to **`Link to [CI-V]`**, **NOT** `[REMOTE]`.
 
-    - `Link to [CI-V]` — serial CI-V commands work (required for icom-lan serial backend)
+    - `Link to [CI-V]` — serial CI-V commands work (required for rigplane serial backend)
     - `[REMOTE]` — RS-BA1 mode, serial CI-V is blocked
 
     This is the same critical setting as IC-7610; confirmed by wfview reference and IC-7610 hardware validation.
@@ -46,12 +46,12 @@ This guide shows how to control the IC-705 via **USB serial CI-V + USB audio dev
 
 ## macOS Setup
 
-### 1. Install icom-lan
+### 1. Install rigplane
 
 ```bash
 # Core install — includes serial CI-V (pyserial), USB audio RX/TX,
 # audio-device listing (sounddevice + numpy + opuslib).
-pip install icom-lan
+pip install rigplane
 ```
 
 !!! note
@@ -77,10 +77,10 @@ ls -l /dev/cu.usbserial-*
 
 The IC-705 typically appears as `/dev/cu.usbserial-*` where the suffix may include "IC705" or the radio's serial number.
 
-You can also use `icom-lan discover --serial-only` to find USB-connected radios automatically:
+You can also use `rigplane discover --serial-only` to find USB-connected radios automatically:
 
 ```bash
-icom-lan discover --serial-only
+rigplane discover --serial-only
 ```
 
 ```
@@ -92,11 +92,11 @@ IC-705:
 
 ```bash
 # List available audio devices
-icom-lan --list-audio-devices
+rigplane --list-audio-devices
 ```
 
 Audio-device listing requires `sounddevice`, which ships with the core
-install since v0.19 (`pip install icom-lan`).
+install since v0.19 (`pip install rigplane`).
 
 **Example output:**
 
@@ -140,11 +140,11 @@ install since v0.19 (`pip install icom-lan`).
 
 ```bash
 # Connect via USB serial (no audio)
-icom-lan --backend serial --device /dev/cu.usbserial-IC705123 \
+rigplane --backend serial --device /dev/cu.usbserial-IC705123 \
   --model IC-705 --baudrate 115200 repl
 
 # Connect with USB audio enabled
-icom-lan --backend serial --device /dev/cu.usbserial-IC705123 \
+rigplane --backend serial --device /dev/cu.usbserial-IC705123 \
   --model IC-705 --baudrate 115200 \
   --rx-audio-device "IC-705 RX" \
   --tx-audio-device "IC-705 TX" \
@@ -168,8 +168,8 @@ icom-lan --backend serial --device /dev/cu.usbserial-IC705123 \
 
 ```python
 import asyncio
-from icom_lan.backends.factory import create_radio
-from icom_lan.backends.config import SerialBackendConfig
+from rigplane.backends.factory import create_radio
+from rigplane.backends.config import SerialBackendConfig
 
 async def main():
     # Create IC-705 serial backend
@@ -205,8 +205,8 @@ asyncio.run(main())
 ### Python: Sync API
 
 ```python
-from icom_lan.backends.factory import create_radio
-from icom_lan.backends.config import SerialBackendConfig
+from rigplane.backends.factory import create_radio
+from rigplane.backends.config import SerialBackendConfig
 
 # Create IC-705 serial backend
 config = SerialBackendConfig(
@@ -232,7 +232,7 @@ with radio:
 
 ```bash
 # Start web server with IC-705 serial backend
-icom-lan --backend serial --device /dev/cu.usbserial-IC705123 \
+rigplane --backend serial --device /dev/cu.usbserial-IC705123 \
   --model IC-705 --baudrate 115200 \
   --rx-audio-device "IC-705 RX" \
   --tx-audio-device "IC-705 TX" \
@@ -253,7 +253,7 @@ The web UI provides:
 
 ```bash
 # Start rigctld server with IC-705 serial backend
-icom-lan --backend serial --device /dev/cu.usbserial-IC705123 \
+rigplane --backend serial --device /dev/cu.usbserial-IC705123 \
   --model IC-705 --baudrate 115200 \
   rigctld --port 4532
 
@@ -295,9 +295,9 @@ ls -l /dev/cu.*
 **Symptoms:** CI-V control works but no audio in browser/WSJT-X
 
 **Solutions:**
-- Make sure you're on icom-lan v0.19+ (audio deps ship with the core install; for older versions run `pip install 'icom-lan[bridge]'`)
+- Make sure you're on rigplane v0.19+ (audio deps ship with the core install; for older versions run `pip install 'rigplane[bridge]'`)
 - Verify `USB Audio RX/TX = Enabled` in radio settings
-- Check audio device names with `icom-lan --list-audio-devices`
+- Check audio device names with `rigplane --list-audio-devices`
 - macOS may require microphone/audio permissions for the terminal app
 
 ### Scope/Waterfall Disabled

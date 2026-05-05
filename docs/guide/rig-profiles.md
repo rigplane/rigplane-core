@@ -2,7 +2,7 @@
 
 ## Overview
 
-icom-lan uses **TOML rig files** to define radio capabilities, protocol type, CI-V commands,
+rigplane uses **TOML rig files** to define radio capabilities, protocol type, CI-V commands,
 and hardware parameters. Adding a new radio means adding a new `.toml` file — no Python
 changes required for most radios.
 
@@ -201,7 +201,7 @@ See the full schema for: `[attenuator]`, `[preamp]`, `[agc]`, `[spectrum]`,
 # Basic load + validation
 uv run python -c "
 from pathlib import Path
-from icom_lan.rig_loader import load_rig
+from rigplane.rig_loader import load_rig
 cfg = load_rig(Path('rigs/ic9700.toml'))
 print(cfg.model, cfg.protocol_type, cfg.receiver_count)
 print('capabilities:', cfg.capabilities)

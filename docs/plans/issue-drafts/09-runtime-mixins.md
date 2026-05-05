@@ -1,8 +1,8 @@
 ## Context
 
-Step 9 of the internal-modularization migration: move the 5 `_*_runtime_mixin` / `_runtime_*` files into `src/icom_lan/runtime/`, leaving silent re-export shims at the old top-level paths. Mixins are internal-only; tests reach them via private paths covered by the shims.
+Step 9 of the internal-modularization migration: move the 5 `_*_runtime_mixin` / `_runtime_*` files into `src/rigplane/runtime/`, leaving silent re-export shims at the old top-level paths. Mixins are internal-only; tests reach them via private paths covered by the shims.
 
-Plan section: [§4.1 Step 9 — `runtime` part 2 (mixins)](https://github.com/morozsm/icom-lan/blob/refactor/modularization-discovery/docs/plans/2026-04-29-modularization-plan.md#step-9--runtime-part-2-mixins).
+Plan section: [§4.1 Step 9 — `runtime` part 2 (mixins)](https://github.com/rigplane/rigplane-core/blob/refactor/modularization-discovery/docs/plans/2026-04-29-modularization-plan.md#step-9--runtime-part-2-mixins).
 
 ## Pre-conditions
 
@@ -10,13 +10,13 @@ Blocked by #1291 (Step 8: runtime part 1).
 
 ## Scope
 
-Move these 5 files from `src/icom_lan/` into `src/icom_lan/runtime/`:
+Move these 5 files from `src/rigplane/` into `src/rigplane/runtime/`:
 
-1. `src/icom_lan/_audio_runtime_mixin.py` → `src/icom_lan/runtime/_audio_runtime_mixin.py`
-2. `src/icom_lan/_dual_rx_runtime.py` → `src/icom_lan/runtime/_dual_rx_runtime.py`
-3. `src/icom_lan/_scope_runtime.py` → `src/icom_lan/runtime/_scope_runtime.py`
-4. `src/icom_lan/_shared_state_runtime.py` → `src/icom_lan/runtime/_shared_state_runtime.py`
-5. `src/icom_lan/_runtime_protocols.py` → `src/icom_lan/runtime/_runtime_protocols.py`
+1. `src/rigplane/_audio_runtime_mixin.py` → `src/rigplane/runtime/_audio_runtime_mixin.py`
+2. `src/rigplane/_dual_rx_runtime.py` → `src/rigplane/runtime/_dual_rx_runtime.py`
+3. `src/rigplane/_scope_runtime.py` → `src/rigplane/runtime/_scope_runtime.py`
+4. `src/rigplane/_shared_state_runtime.py` → `src/rigplane/runtime/_shared_state_runtime.py`
+5. `src/rigplane/_runtime_protocols.py` → `src/rigplane/runtime/_runtime_protocols.py`
 
 Add **5 re-export shim files** at the old top-level paths using the plan §5.1 template.
 
@@ -35,19 +35,19 @@ Add **5 re-export shim files** at the old top-level paths using the plan §5.1 t
 - `uv run mypy src/` clean.
 - `uv run pytest tests/contracts/test_lazy_imports.py -v` passes (3 tests green).
 - Public-import smoke check (each must succeed):
-  - `uv run python -c "from icom_lan._audio_runtime_mixin import *"` (legacy path via shim).
-  - `uv run python -c "from icom_lan._dual_rx_runtime import *"` (legacy path via shim).
-  - `uv run python -c "from icom_lan._scope_runtime import *"` (legacy path via shim).
-  - `uv run python -c "from icom_lan._shared_state_runtime import *"` (legacy path via shim).
-  - `uv run python -c "from icom_lan._runtime_protocols import *"` (legacy path via shim).
-  - `uv run python -c "from icom_lan import IcomRadio; r = IcomRadio  # mixin composition still resolves"`
+  - `uv run python -c "from rigplane._audio_runtime_mixin import *"` (legacy path via shim).
+  - `uv run python -c "from rigplane._dual_rx_runtime import *"` (legacy path via shim).
+  - `uv run python -c "from rigplane._scope_runtime import *"` (legacy path via shim).
+  - `uv run python -c "from rigplane._shared_state_runtime import *"` (legacy path via shim).
+  - `uv run python -c "from rigplane._runtime_protocols import *"` (legacy path via shim).
+  - `uv run python -c "from rigplane import IcomRadio; r = IcomRadio  # mixin composition still resolves"`
 
 ## Implementation prompt for the sub-agent
 
 ```
-You are implementing one step of the icom-lan internal modularization
+You are implementing one step of the rigplane internal modularization
 work. Read these references first:
-- /Users/moroz/Projects/icom-lan-research/2026-04-29-internal-modularization-orchestrator.md
+- /Users/moroz/Projects/rigplane-research/2026-04-29-internal-modularization-orchestrator.md
 - docs/plans/2026-04-29-modularization-plan.md
 - The full text of this issue, especially the Scope and Acceptance
   Criteria sections

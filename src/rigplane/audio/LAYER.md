@@ -6,7 +6,7 @@ End-to-end audio subsystem: `AudioBackend` Protocol + PortAudio/Fake
 implementations, codecs (PCM / Opus / μ-law), transcoder, audio bridge,
 audio bus, FFT scope (panadapter), reconnect-time recovery, and platform
 USB audio resolution. The `audio.backend` and `audio.dsp` submodule paths
-are part of the icom-lan-pro contract and **must remain stable**.
+are part of the rigplane-pro contract and **must remain stable**.
 
 ## Public API
 
@@ -42,7 +42,7 @@ frames from PCM. No `runtime`, no `commands`, no transport caller.
 
 ## Forbidden patterns
 
-- `from icom_lan.runtime` / `from icom_lan.commands` — audio is a leaf
+- `from rigplane.runtime` / `from rigplane.commands` — audio is a leaf
   that runtime composes; the inverse direction is forbidden.
 - Eager imports of `numpy`, `sounddevice`, `opuslib`, or `pyaudio` at
   module top level. Use `core._optional_deps._require_*()` and gate at
@@ -70,7 +70,7 @@ frames from PCM. No `runtime`, no `commands`, no transport caller.
 ## See also
 
 - `docs/plans/2026-04-29-modularization-plan.md` §1.2 ("audio.backend
-  and audio.dsp paths are the icom-lan-pro contract"), §2.2, §3.
+  and audio.dsp paths are the rigplane-pro contract"), §2.2, §3.
 - `docs/api/public-api-surface.md` — Tier 2 surface for AudioBackend.
 - `audio/backend.py` — the stable Protocol definition.
 - `tests/test_audio_*.py` — coverage; `FakeAudioBackend` lives in

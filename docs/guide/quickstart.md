@@ -16,7 +16,7 @@ export ICOM_PASS=mypass           # Network password
 
 ```bash
 # Check radio status
-icom-lan status
+rigplane status
 ```
 
 Expected output:
@@ -30,13 +30,13 @@ Power:        50
 
 ```bash
 # Change frequency
-icom-lan freq 14.074m
+rigplane freq 14.074m
 
 # Change mode
-icom-lan mode USB
+rigplane mode USB
 
 # Read meters as JSON
-icom-lan meter --json
+rigplane meter --json
 ```
 
 ## 3. Python API
@@ -45,7 +45,7 @@ Use **`create_radio`** with a backend config to get a **`Radio`** instance (work
 
 ```python
 import asyncio
-from icom_lan import create_radio, LanBackendConfig
+from rigplane import create_radio, LanBackendConfig
 
 async def main():
     config = LanBackendConfig(
@@ -74,7 +74,7 @@ For LAN-only scripts you can still use **`IcomRadio(host, username=..., password
 Don't know your radio's IP — or want to find USB-connected radios too? Use unified discovery:
 
 ```bash
-icom-lan discover
+rigplane discover
 ```
 
 ```
@@ -90,9 +90,9 @@ IC-7610:
 The command scans both LAN (UDP broadcast) and USB serial ports in parallel. Use filters for targeted scans:
 
 ```bash
-icom-lan discover --lan-only      # UDP broadcast only
-icom-lan discover --serial-only   # USB serial ports only
-icom-lan discover --timeout 5     # Longer LAN listen window
+rigplane discover --lan-only      # UDP broadcast only
+rigplane discover --serial-only   # USB serial ports only
+rigplane discover --timeout 5     # Longer LAN listen window
 ```
 
 ## What's Next?

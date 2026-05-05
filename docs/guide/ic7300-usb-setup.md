@@ -21,7 +21,7 @@ This guide shows how to control the IC-7300 via **USB serial CI-V + USB audio de
 !!! danger "Critical Setup Step"
     On the IC-7300, navigate to **Menu → Set → Connectors → CI-V → CI-V USB Port** and set it to **`Link to [CI-V]`**, **NOT** `[REMOTE]`.
 
-    - `Link to [CI-V]` — serial CI-V commands work (required for icom-lan serial backend)
+    - `Link to [CI-V]` — serial CI-V commands work (required for rigplane serial backend)
     - `[REMOTE]` — RS-BA1 mode, serial CI-V is blocked
 
     This is the same critical setting as IC-7610 and IC-705.
@@ -46,10 +46,10 @@ This guide shows how to control the IC-7300 via **USB serial CI-V + USB audio de
 
 ## macOS Setup
 
-### 1. Install icom-lan
+### 1. Install rigplane
 
 ```bash
-pip install icom-lan[serial]
+pip install rigplane[serial]
 ```
 
 ### 2. Connect USB and Verify Devices
@@ -64,7 +64,7 @@ ls /dev/cu.usbserial-* | head -5
 Check for audio devices exported by the radio:
 
 ```bash
-python -c "from icom_lan.usb_audio_resolve import list_usb_audio_devices; import json; print(json.dumps(list_usb_audio_devices(), indent=2))"
+python -c "from rigplane.usb_audio_resolve import list_usb_audio_devices; import json; print(json.dumps(list_usb_audio_devices(), indent=2))"
 ```
 
 You should see input and output devices for the IC-7300:
@@ -75,7 +75,7 @@ You should see input and output devices for the IC-7300:
 
 ```python
 import asyncio
-from icom_lan import IcomRadio
+from rigplane import IcomRadio
 
 async def main():
     # Create serial radio for IC-7300
@@ -105,19 +105,19 @@ asyncio.run(main())
 
 ```bash
 # Check connection
-icom-lan --backend serial --model IC-7300 --serial-port /dev/cu.usbserial-A602RVAV status
+rigplane --backend serial --model IC-7300 --serial-port /dev/cu.usbserial-A602RVAV status
 
 # Set frequency
-icom-lan --backend serial --model IC-7300 --serial-port /dev/cu.usbserial-A602RVAV freq 7074000
+rigplane --backend serial --model IC-7300 --serial-port /dev/cu.usbserial-A602RVAV freq 7074000
 
 # Monitor metrics
-icom-lan --backend serial --model IC-7300 --serial-port /dev/cu.usbserial-A602RVAV meters
+rigplane --backend serial --model IC-7300 --serial-port /dev/cu.usbserial-A602RVAV meters
 ```
 
 ### 5. Web UI
 
 ```bash
-icom-lan web --backend serial --model IC-7300 --serial-port /dev/cu.usbserial-A602RVAV
+rigplane web --backend serial --model IC-7300 --serial-port /dev/cu.usbserial-A602RVAV
 # Open http://localhost:8000
 ```
 
@@ -137,7 +137,7 @@ icom-lan web --backend serial --model IC-7300 --serial-port /dev/cu.usbserial-A6
 
 ## Audio Subsystem
 
-IC-7300 exports USB audio devices that icom-lan can use:
+IC-7300 exports USB audio devices that rigplane can use:
 
 ```python
 # Receive audio from radio
@@ -159,7 +159,7 @@ async with radio:
 
 ### WSJT-X Integration
 
-Use macOS BlackHole (or Loopback) to bridge icom-lan audio to WSJT-X:
+Use macOS BlackHole (or Loopback) to bridge rigplane audio to WSJT-X:
 
 1. **Install BlackHole 2ch**: https://github.com/ExistentialAudio/BlackHole
 2. **Create aggregate device**:
@@ -167,7 +167,7 @@ Use macOS BlackHole (or Loopback) to bridge icom-lan audio to WSJT-X:
    - Add "IC-7300" input + "BlackHole 2ch" output
 3. **Start audio bridge**:
    ```bash
-   icom-lan audio bridge --serial-port ic-7300-usb-in --loopback "BlackHole 2ch"
+   rigplane audio bridge --serial-port ic-7300-usb-in --loopback "BlackHole 2ch"
    ```
 4. **WSJT-X settings**:
    - Input Device: "IC-7300 Bridge"
@@ -199,7 +199,7 @@ WARNING: audio subsystem not detected; TX/RX disabled
 
 **Solution**: Verify **USB Audio TX/RX** are enabled in radio settings. Check with:
 ```bash
-python -c "from icom_lan.usb_audio_resolve import list_usb_audio_devices; import json; print(json.dumps(list_usb_audio_devices(), indent=2))"
+python -c "from rigplane.usb_audio_resolve import list_usb_audio_devices; import json; print(json.dumps(list_usb_audio_devices(), indent=2))"
 ```
 
 ### CI-V Commands Timing Out

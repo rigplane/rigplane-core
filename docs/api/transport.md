@@ -5,7 +5,7 @@ Low-level async UDP transport for the Icom LAN protocol. Most users should use [
 ## Class: `IcomTransport`
 
 ```python
-from icom_lan import IcomTransport
+from rigplane import IcomTransport
 ```
 
 Handles:
@@ -104,7 +104,7 @@ Start the background retransmit request task (100ms interval).
 ## Enum: `ConnectionState`
 
 ```python
-from icom_lan import ConnectionState
+from rigplane import ConnectionState
 ```
 
 | Value | Description |

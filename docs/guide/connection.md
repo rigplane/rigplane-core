@@ -124,7 +124,7 @@ await radio.disconnect()
 ## Connection States
 
 ```python
-from icom_lan import ConnectionState
+from rigplane import ConnectionState
 
 # Available states
 ConnectionState.DISCONNECTED  # Not connected
@@ -152,8 +152,8 @@ is skipped for that attempt.
 ## Error Handling
 
 ```python
-from icom_lan import create_radio, LanBackendConfig
-from icom_lan.exceptions import (
+from rigplane import create_radio, LanBackendConfig
+from rigplane.exceptions import (
     ConnectionError,
     AuthenticationError,
     TimeoutError,

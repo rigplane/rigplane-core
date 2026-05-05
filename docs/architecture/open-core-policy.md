@@ -1,6 +1,6 @@
 # Open-core policy
 
-This document codifies the hard constraints that govern **icom-lan** as the
+This document codifies the hard constraints that govern **rigplane** as the
 open-core half of a planned commercial product. These rules are not advisory:
 they shape what may and may not land in this repository.
 
@@ -12,28 +12,28 @@ open an issue and change this document first.
 
 ## 1. Project shape
 
-- **icom-lan** — open-core, MIT-licensed Python library + Web UI for Icom
+- **rigplane** — open-core, MIT-licensed Python library + Web UI for Icom
   transceivers over LAN/USB. Target users: hams, hobbyists, headless servers,
   Raspberry Pi setups, anyone who wants a free, scriptable, embeddable radio
   control plane.
-- **icom-lan-pro** — proprietary commercial layer, planned to ship roughly
+- **rigplane-pro** — proprietary commercial layer, planned to ship roughly
   2–3 months out. Architecturally a Tauri 2 single-signed installer that
-  spawns a Python sidecar (the icom-lan server) as a child process on
+  spawns a Python sidecar (the rigplane server) as a child process on
   `127.0.0.1:8470`, plus a native integrations layer (USB HID for RC-28,
   OS-level virtual audio routing, global hotkeys, license gating in
   Tauri-Rust). Pro injects UI extensions into the open-core frontend through
   `frontend/src/lib/local-extensions/`.
-- **One binary, two tiers.** The free experience is icom-lan rendered without
+- **One binary, two tiers.** The free experience is rigplane rendered without
   Pro extensions. Paid unlocks Pro features through the same shell.
 
-This document is about icom-lan. It exists so that the two halves can coexist
+This document is about rigplane. It exists so that the two halves can coexist
 without the open-core erosion that historically follows commercial spin-offs.
 
 ---
 
 ## 2. No telemetry, ever
 
-icom-lan does not phone home. No exceptions, no opt-in tracking, no anonymous
+rigplane does not phone home. No exceptions, no opt-in tracking, no anonymous
 usage statistics, no product analytics, no crash reporting beacon.
 
 **Forbidden in open-core dependencies and runtime:**
@@ -71,13 +71,13 @@ A diagnostic report mechanism in open-core must satisfy **all** of these:
 
 - **No automatic, background, recurring, first-run, or silent collection or
   submission.** Logs may be written locally on a rotating file basis (see
-  `SafeRotatingFileHandler` in `icom_lan.diagnostics`), but submission to a
+  `SafeRotatingFileHandler` in `rigplane.diagnostics`), but submission to a
   remote endpoint is never automatic.
 - **The user must explicitly start the workflow every time.** No "always send
   reports" toggle, no install-time consent that grants ongoing permission, no
   background queue. Each report = one user gesture (CLI command, Web UI
   button, Pro Tauri click).
-- **CLI defaults never upload.** `icom-lan diagnose` (no flags) builds and
+- **CLI defaults never upload.** `rigplane diagnose` (no flags) builds and
   saves locally. `--upload` is opt-in. With a TTY, the final consent prompt
   defaults to "save locally" (`[y/N]` for upload), so accidentally hitting
   Enter cannot transmit anything.
@@ -109,7 +109,7 @@ is the broader §2 rule: no telemetry, no exceptions.
 
 ## 3. Headless mode is sacred
 
-icom-lan must run on a headless Linux box — including a Raspberry Pi
+rigplane must run on a headless Linux box — including a Raspberry Pi
 acting as a remote radio gateway — without a display server, browser, or
 audio output device.
 
@@ -124,7 +124,7 @@ audio output device.
 - New CLI presets, daemons, and entry points must be tested against a
   no-display environment before they are accepted.
 
-Headless is the deployment mode that distinguishes icom-lan from the dozens
+Headless is the deployment mode that distinguishes rigplane from the dozens
 of GUI-only Icom utilities. Breaking it would be breaking the product.
 
 ---
@@ -166,8 +166,8 @@ browser, mobile app) might want — stays open.
 
 ## 5. Radio Protocol and capability protocols are the primary boundary
 
-The Pro layer consumes icom-lan through one stable surface: the
-`Radio` protocol in `src/icom_lan/radio_protocol.py` plus the capability
+The Pro layer consumes rigplane through one stable surface: the
+`Radio` protocol in `src/rigplane/radio_protocol.py` plus the capability
 protocols (`LevelsCapable`, `MetersCapable`, `ScopeCapable`,
 `AudioCapable`, etc.).
 
@@ -215,7 +215,7 @@ money, and silent breakage is not an option.
 
 ## 7. The frontend renders in four environments
 
-The icom-lan frontend ships into more than just a developer's Chrome tab.
+The rigplane frontend ships into more than just a developer's Chrome tab.
 It must render correctly in:
 
 1. **Browsers** — Chrome, Safari, Firefox.
@@ -252,10 +252,10 @@ Linux.
 
 Per the architecture review in
 `research/2026-04-27-architecture/05-recommendations.md`, the option of
-splitting icom-lan into separate `icom-lan-lib` and `icom-lan-app` packages
+splitting rigplane into separate `rigplane-lib` and `rigplane-app` packages
 (Form B) remains deferred.
 
-**Today.** Pro uses icom-lan as a separate Python server process via
+**Today.** Pro uses rigplane as a separate Python server process via
 HTTP/WebSocket on `127.0.0.1:8470`, plus a narrow library import surface
 (`audio.backend`, `audio.dsp`, `dsp.*`) for the small handful of helpers
 that don't make sense as RPC. That surface is narrow enough that the
@@ -263,10 +263,10 @@ single-package form (Form F) remains sufficient.
 
 **Triggers that activate Form B.** Either of:
 
-- Pro embeds icom-lan in-process for the radio loop (skipping the
+- Pro embeds rigplane in-process for the radio loop (skipping the
   server-process indirection), and the lib/app boundary becomes load-bearing
   for cold-start and packaging size.
-- A second downstream Python consumer of icom-lan emerges (a third-party
+- A second downstream Python consumer of rigplane emerges (a third-party
   application, a research tool, a different commercial product) that needs
   the library without the Web UI / rigctld application code.
 

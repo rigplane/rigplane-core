@@ -29,9 +29,9 @@ by the `independence-low` contract in `.importlinter`.
 
 ## Forbidden patterns
 
-- `from icom_lan.audio` / `from icom_lan.runtime` / `from
-  icom_lan.commands`. Sibling/upper-tier imports break the layer.
-- `from icom_lan.dsp` — the bottom-tier independence contract bans it.
+- `from rigplane.audio` / `from rigplane.runtime` / `from
+  rigplane.commands`. Sibling/upper-tier imports break the layer.
+- `from rigplane.dsp` — the bottom-tier independence contract bans it.
   PCM-derived spectra live in `audio/fft_scope.py`, which uses `scope`,
   not the reverse.
 - Maintaining radio I/O state. The assembler is fed bytes; it does not

@@ -1,8 +1,8 @@
 ## Context
 
-Step 5 of the internal-modularization migration: move `profiles.py` and `rig_loader.py` into `src/icom_lan/profiles/`, leaving silent re-export shims at the old top-level paths.
+Step 5 of the internal-modularization migration: move `profiles.py` and `rig_loader.py` into `src/rigplane/profiles/`, leaving silent re-export shims at the old top-level paths.
 
-Plan section: [§4.1 Step 5 — `profiles`](https://github.com/morozsm/icom-lan/blob/refactor/modularization-discovery/docs/plans/2026-04-29-modularization-plan.md#step-5--profiles).
+Plan section: [§4.1 Step 5 — `profiles`](https://github.com/rigplane/rigplane-core/blob/refactor/modularization-discovery/docs/plans/2026-04-29-modularization-plan.md#step-5--profiles).
 
 ## Pre-conditions
 
@@ -10,14 +10,14 @@ Blocked by #1287 (Step 4: commands top-level).
 
 ## Scope
 
-Move these 2 files from `src/icom_lan/` into `src/icom_lan/profiles/`:
+Move these 2 files from `src/rigplane/` into `src/rigplane/profiles/`:
 
-1. `src/icom_lan/profiles.py` → `src/icom_lan/profiles/profiles.py` (or keep as `profiles/__init__.py` body — sub-agent's call, but if going that route, the existing `profiles/__init__.py` stub from Step 1 is overwritten and the result must still pass the contract tests).
-2. `src/icom_lan/rig_loader.py` → `src/icom_lan/profiles/rig_loader.py`
+1. `src/rigplane/profiles.py` → `src/rigplane/profiles/profiles.py` (or keep as `profiles/__init__.py` body — sub-agent's call, but if going that route, the existing `profiles/__init__.py` stub from Step 1 is overwritten and the result must still pass the contract tests).
+2. `src/rigplane/rig_loader.py` → `src/rigplane/profiles/rig_loader.py`
 
-Add **2 re-export shim files** at the old top-level paths (`src/icom_lan/profiles.py`, `src/icom_lan/rig_loader.py`) using the plan §5.1 template.
+Add **2 re-export shim files** at the old top-level paths (`src/rigplane/profiles.py`, `src/rigplane/rig_loader.py`) using the plan §5.1 template.
 
-**CRITICAL pre-mitigation (plan §6.2 / R3):** the function-local cycle-breaker at `src/icom_lan/profiles.py:266` (`from .rig_loader import …` inside a function body) MUST be preserved verbatim. Do NOT hoist it to module level. Same for the top-level `rig_loader → profiles` import. These two imports together form the runtime cycle-breaker; both must stay exactly where they are.
+**CRITICAL pre-mitigation (plan §6.2 / R3):** the function-local cycle-breaker at `src/rigplane/profiles.py:266` (`from .rig_loader import …` inside a function body) MUST be preserved verbatim. Do NOT hoist it to module level. Same for the top-level `rig_loader → profiles` import. These two imports together form the runtime cycle-breaker; both must stay exactly where they are.
 
 ## Out of scope
 
@@ -34,16 +34,16 @@ Add **2 re-export shim files** at the old top-level paths (`src/icom_lan/profile
 - `uv run mypy src/` clean.
 - `uv run pytest tests/contracts/test_lazy_imports.py -v` passes (3 tests green).
 - Public-import smoke check (each must succeed):
-  - `uv run python -c "from icom_lan.profiles import RadioProfile, load_profile_toml"`
-  - `uv run python -c "from icom_lan.rig_loader import *"` (legacy path via shim).
-  - `uv run python -c "from icom_lan import Radio; r = Radio  # ensure top-level still imports"`
+  - `uv run python -c "from rigplane.profiles import RadioProfile, load_profile_toml"`
+  - `uv run python -c "from rigplane.rig_loader import *"` (legacy path via shim).
+  - `uv run python -c "from rigplane import Radio; r = Radio  # ensure top-level still imports"`
 
 ## Implementation prompt for the sub-agent
 
 ```
-You are implementing one step of the icom-lan internal modularization
+You are implementing one step of the rigplane internal modularization
 work. Read these references first:
-- /Users/moroz/Projects/icom-lan-research/2026-04-29-internal-modularization-orchestrator.md
+- /Users/moroz/Projects/rigplane-research/2026-04-29-internal-modularization-orchestrator.md
 - docs/plans/2026-04-29-modularization-plan.md
 - The full text of this issue, especially the Scope and Acceptance
   Criteria sections

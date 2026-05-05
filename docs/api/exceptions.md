@@ -1,11 +1,11 @@
 # Exceptions
 
-All exceptions inherit from `IcomLanError` for easy catch-all handling.
+All exceptions inherit from `RigplaneError` for easy catch-all handling.
 
 ## Hierarchy
 
 ```
-IcomLanError
+RigplaneError
 ├── ConnectionError
 ├── AuthenticationError
 ├── CommandError
@@ -18,26 +18,26 @@ IcomLanError
 
 ## Classes
 
-### `IcomLanError`
+### `RigplaneError`
 
 ```python
-from icom_lan import IcomLanError
+from rigplane import RigplaneError
 ```
 
-Base exception for all icom-lan errors. Catch this to handle any library error.
+Base exception for all rigplane errors. Catch this to handle any library error.
 
 ```python
 try:
     async with create_radio(config) as radio:
         ...
-except IcomLanError as e:
-    print(f"icom-lan error: {e}")
+except RigplaneError as e:
+    print(f"rigplane error: {e}")
 ```
 
 ### `ConnectionError`
 
 ```python
-from icom_lan import ConnectionError
+from rigplane import ConnectionError
 ```
 
 Raised when a connection to the radio fails or is lost.
@@ -47,12 +47,12 @@ Raised when a connection to the radio fails or is lost.
 - Radio dropped the connection
 
 !!! note
-    This is `icom_lan.ConnectionError`, not the built-in `builtins.ConnectionError`. Import explicitly to avoid shadowing.
+    This is `rigplane.ConnectionError`, not the built-in `builtins.ConnectionError`. Import explicitly to avoid shadowing.
 
 ### `AuthenticationError`
 
 ```python
-from icom_lan import AuthenticationError
+from rigplane import AuthenticationError
 ```
 
 Raised when authentication with the radio fails.
@@ -64,7 +64,7 @@ Raised when authentication with the radio fails.
 ### `CommandError`
 
 ```python
-from icom_lan import CommandError
+from rigplane import CommandError
 ```
 
 Raised when a CI-V command is rejected by the radio (NAK response).
@@ -76,7 +76,7 @@ Raised when a CI-V command is rejected by the radio (NAK response).
 ### `TimeoutError`
 
 ```python
-from icom_lan import TimeoutError
+from rigplane import TimeoutError
 ```
 
 Raised when an operation doesn't complete within the timeout period.
@@ -86,12 +86,12 @@ Raised when an operation doesn't complete within the timeout period.
 - Status packet not received during handshake
 
 !!! note "TimeoutError vs built-in and asyncio"
-    This is `icom_lan.exceptions.TimeoutError`, not the built-in `builtins.TimeoutError` (Python 3.10+). Import explicitly to avoid shadowing (e.g. `from icom_lan.exceptions import TimeoutError as IcomTimeoutError`). When handling timeouts, distinguish from `asyncio.TimeoutError`: the library converts asyncio timeouts to `icom_lan.TimeoutError` in its own code; if you use `asyncio.wait_for()` or similar, you may need to catch both.
+    This is `rigplane.exceptions.TimeoutError`, not the built-in `builtins.TimeoutError` (Python 3.10+). Import explicitly to avoid shadowing (e.g. `from rigplane.exceptions import TimeoutError as IcomTimeoutError`). When handling timeouts, distinguish from `asyncio.TimeoutError`: the library converts asyncio timeouts to `rigplane.TimeoutError` in its own code; if you use `asyncio.wait_for()` or similar, you may need to catch both.
 
 ### `AudioError`
 
 ```python
-from icom_lan import AudioError
+from rigplane import AudioError
 ```
 
 Base class for audio codec/transcoding failures.
@@ -99,7 +99,7 @@ Base class for audio codec/transcoding failures.
 ### `AudioCodecBackendError`
 
 ```python
-from icom_lan import AudioCodecBackendError
+from rigplane import AudioCodecBackendError
 ```
 
 Raised when no Opus backend is available for PCM/Opus conversion.
@@ -108,12 +108,12 @@ Raised when no Opus backend is available for PCM/Opus conversion.
 - backend failed initialization
 
 Typical actionable message:
-`Audio codec backend unavailable; install icom-lan[audio].`
+`Audio codec backend unavailable; install rigplane[audio].`
 
 ### `AudioFormatError`
 
 ```python
-from icom_lan import AudioFormatError
+from rigplane import AudioFormatError
 ```
 
 Raised when provided audio frame format is invalid.
@@ -125,7 +125,7 @@ Raised when provided audio frame format is invalid.
 ### `AudioTranscodeError`
 
 ```python
-from icom_lan import AudioTranscodeError
+from rigplane import AudioTranscodeError
 ```
 
 Raised when encode/decode fails in the codec backend.
@@ -135,8 +135,8 @@ Raised when encode/decode fails in the codec backend.
 ### Catch specific errors
 
 ```python
-from icom_lan import create_radio, LanBackendConfig
-from icom_lan.exceptions import (
+from rigplane import create_radio, LanBackendConfig
+from rigplane.exceptions import (
     ConnectionError,
     AuthenticationError,
     CommandError,
@@ -161,7 +161,7 @@ except TimeoutError:
 
 ```python
 import asyncio
-from icom_lan import create_radio, TimeoutError
+from rigplane import create_radio, TimeoutError
 
 async def get_frequency_with_retry(radio, retries=3):
     for attempt in range(retries):

@@ -1,8 +1,8 @@
 ## Context
 
-Step 6 of the internal-modularization migration: move `scope.py` and `scope_render.py` into `src/icom_lan/scope/`, leaving silent re-export shims at the old top-level paths. This is a tiny step — small surface, no known risks.
+Step 6 of the internal-modularization migration: move `scope.py` and `scope_render.py` into `src/rigplane/scope/`, leaving silent re-export shims at the old top-level paths. This is a tiny step — small surface, no known risks.
 
-Plan section: [§4.1 Step 6 — `scope`](https://github.com/morozsm/icom-lan/blob/refactor/modularization-discovery/docs/plans/2026-04-29-modularization-plan.md#step-6--scope).
+Plan section: [§4.1 Step 6 — `scope`](https://github.com/rigplane/rigplane-core/blob/refactor/modularization-discovery/docs/plans/2026-04-29-modularization-plan.md#step-6--scope).
 
 ## Pre-conditions
 
@@ -10,12 +10,12 @@ Blocked by #1288 (Step 5: profiles).
 
 ## Scope
 
-Move these 2 files from `src/icom_lan/` into `src/icom_lan/scope/`:
+Move these 2 files from `src/rigplane/` into `src/rigplane/scope/`:
 
-1. `src/icom_lan/scope.py` → `src/icom_lan/scope/scope.py` (or fold into `scope/__init__.py` body — sub-agent's call).
-2. `src/icom_lan/scope_render.py` → `src/icom_lan/scope/scope_render.py`
+1. `src/rigplane/scope.py` → `src/rigplane/scope/scope.py` (or fold into `scope/__init__.py` body — sub-agent's call).
+2. `src/rigplane/scope_render.py` → `src/rigplane/scope/scope_render.py`
 
-Add **2 re-export shim files** at the old top-level paths (`src/icom_lan/scope.py`, `src/icom_lan/scope_render.py`) using the plan §5.1 template.
+Add **2 re-export shim files** at the old top-level paths (`src/rigplane/scope.py`, `src/rigplane/scope_render.py`) using the plan §5.1 template.
 
 ## Out of scope
 
@@ -32,16 +32,16 @@ Add **2 re-export shim files** at the old top-level paths (`src/icom_lan/scope.p
 - `uv run mypy src/` clean.
 - `uv run pytest tests/contracts/test_lazy_imports.py -v` passes (3 tests green).
 - Public-import smoke check (each must succeed):
-  - `uv run python -c "from icom_lan.scope import ScopeFrame, assemble_scope_frame"`
-  - `uv run python -c "from icom_lan.scope_render import render_scope_image"` (legacy path via shim).
-  - `uv run python -c "from icom_lan import ScopeFixedEdge"` (Tier 1 still resolves).
+  - `uv run python -c "from rigplane.scope import ScopeFrame, assemble_scope_frame"`
+  - `uv run python -c "from rigplane.scope_render import render_scope_image"` (legacy path via shim).
+  - `uv run python -c "from rigplane import ScopeFixedEdge"` (Tier 1 still resolves).
 
 ## Implementation prompt for the sub-agent
 
 ```
-You are implementing one step of the icom-lan internal modularization
+You are implementing one step of the rigplane internal modularization
 work. Read these references first:
-- /Users/moroz/Projects/icom-lan-research/2026-04-29-internal-modularization-orchestrator.md
+- /Users/moroz/Projects/rigplane-research/2026-04-29-internal-modularization-orchestrator.md
 - docs/plans/2026-04-29-modularization-plan.md
 - The full text of this issue, especially the Scope and Acceptance
   Criteria sections

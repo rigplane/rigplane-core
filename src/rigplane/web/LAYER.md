@@ -2,7 +2,7 @@
 
 ## Charter
 
-WebSocket + HTTP server for the icom-lan Web UI. Hosts the built-in
+WebSocket + HTTP server for the rigplane Web UI. Hosts the built-in
 browser app — real-time spectrum/waterfall, radio control, audio
 streaming — accessible from any browser on the LAN. No external web
 framework: pure stdlib HTTP + RFC 6455 WebSocket, by design (Tier-1
@@ -42,7 +42,7 @@ than backend-id branching (#1298, #1323-#1326). The transitional
 
 ## Forbidden patterns
 
-- `from icom_lan.rigctld` — independence contract.
+- `from rigplane.rigctld` — independence contract.
 - Direct transport calls. Web talks to `runtime.IcomRadio`, never to
   `core.transport` directly. CLAUDE.md rule.
 - Direct backend-id checks (`if radio.backend_id == "yaesu_cat":`).

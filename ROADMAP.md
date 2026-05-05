@@ -22,7 +22,7 @@
 - [x] E2E tests for PCM API and CLI
 - [x] Runtime audio stats (`get_audio_stats`)
 - [x] Auto-recover audio streams after reconnect (#7)
-- [x] Capability negotiation UX + `icom-lan audio caps`
+- [x] Capability negotiation UX + `rigplane audio caps`
 - [x] Task-oriented docs/recipes
 - [x] API naming consistency + deprecation plan
 - [x] AudioBus pub/sub (v0.12.0, #106)
@@ -96,7 +96,7 @@
 - [x] Type annotations (`py.typed`)
 
 ### Documentation
-- [x] MkDocs site (morozsm.github.io/icom-lan)
+- [x] MkDocs site (rigplane.dev)
 - [x] Protocol internals deep-dive
 - [x] CLI reference
 - [x] API reference

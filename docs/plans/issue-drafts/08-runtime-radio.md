@@ -1,8 +1,8 @@
 ## Context
 
-Step 8 of the internal-modularization migration: move the `runtime` part-1 files (`radio.py` — the centerpiece — plus 6 supporting files) into `src/icom_lan/runtime/`. Likely splits 8a/8b at execution time per plan size budget.
+Step 8 of the internal-modularization migration: move the `runtime` part-1 files (`radio.py` — the centerpiece — plus 6 supporting files) into `src/rigplane/runtime/`. Likely splits 8a/8b at execution time per plan size budget.
 
-Plan section: [§4.1 Step 8 — `runtime` part 1 (radio + state)](https://github.com/morozsm/icom-lan/blob/refactor/modularization-discovery/docs/plans/2026-04-29-modularization-plan.md#step-8--runtime-part-1-radio--state).
+Plan section: [§4.1 Step 8 — `runtime` part 1 (radio + state)](https://github.com/rigplane/rigplane-core/blob/refactor/modularization-discovery/docs/plans/2026-04-29-modularization-plan.md#step-8--runtime-part-1-radio--state).
 
 ## Pre-conditions
 
@@ -10,17 +10,17 @@ Blocked by #1290 (Step 7: audio top-level).
 
 ## Scope
 
-Move these 7 files from `src/icom_lan/` into `src/icom_lan/runtime/`:
+Move these 7 files from `src/rigplane/` into `src/rigplane/runtime/`:
 
-1. `src/icom_lan/radio.py` → `src/icom_lan/runtime/radio.py`
-2. `src/icom_lan/radio_state_snapshot.py` → `src/icom_lan/runtime/radio_state_snapshot.py`
-3. `src/icom_lan/radio_initial_state.py` → `src/icom_lan/runtime/radio_initial_state.py`
-4. `src/icom_lan/radio_reconnect.py` → `src/icom_lan/runtime/radio_reconnect.py`
-5. `src/icom_lan/radios.py` → `src/icom_lan/runtime/radios.py`
-6. `src/icom_lan/ic705.py` → `src/icom_lan/runtime/ic705.py`
-7. `src/icom_lan/_state_queries.py` → `src/icom_lan/runtime/_state_queries.py`
+1. `src/rigplane/radio.py` → `src/rigplane/runtime/radio.py`
+2. `src/rigplane/radio_state_snapshot.py` → `src/rigplane/runtime/radio_state_snapshot.py`
+3. `src/rigplane/radio_initial_state.py` → `src/rigplane/runtime/radio_initial_state.py`
+4. `src/rigplane/radio_reconnect.py` → `src/rigplane/runtime/radio_reconnect.py`
+5. `src/rigplane/radios.py` → `src/rigplane/runtime/radios.py`
+6. `src/rigplane/ic705.py` → `src/rigplane/runtime/ic705.py`
+7. `src/rigplane/_state_queries.py` → `src/rigplane/runtime/_state_queries.py`
 
-Add **7 re-export shim files** at the old top-level paths using the plan §5.1 template. The shim at `src/icom_lan/radio.py` is critical — many tests reach into the radio module via the legacy path.
+Add **7 re-export shim files** at the old top-level paths using the plan §5.1 template. The shim at `src/rigplane/radio.py` is critical — many tests reach into the radio module via the legacy path.
 
 ## Out of scope
 
@@ -37,21 +37,21 @@ Add **7 re-export shim files** at the old top-level paths using the plan §5.1 t
 - `uv run mypy src/` clean.
 - `uv run pytest tests/contracts/test_lazy_imports.py -v` passes (3 tests green).
 - Public-import smoke check (each must succeed):
-  - `uv run python -c "from icom_lan import IcomRadio, Radio"` (Tier 1).
-  - `uv run python -c "from icom_lan.radio import IcomRadio"` (legacy path via shim).
-  - `uv run python -c "from icom_lan.radios import *"` (legacy path via shim).
-  - `uv run python -c "from icom_lan.ic705 import *"` (legacy path via shim).
-  - `uv run python -c "from icom_lan.radio_state_snapshot import *"` (legacy path via shim).
-  - `uv run python -c "from icom_lan.radio_initial_state import *"` (legacy path via shim).
-  - `uv run python -c "from icom_lan.radio_reconnect import *"` (legacy path via shim).
-  - `uv run python -c "from icom_lan._state_queries import *"` (legacy path via shim).
+  - `uv run python -c "from rigplane import IcomRadio, Radio"` (Tier 1).
+  - `uv run python -c "from rigplane.radio import IcomRadio"` (legacy path via shim).
+  - `uv run python -c "from rigplane.radios import *"` (legacy path via shim).
+  - `uv run python -c "from rigplane.ic705 import *"` (legacy path via shim).
+  - `uv run python -c "from rigplane.radio_state_snapshot import *"` (legacy path via shim).
+  - `uv run python -c "from rigplane.radio_initial_state import *"` (legacy path via shim).
+  - `uv run python -c "from rigplane.radio_reconnect import *"` (legacy path via shim).
+  - `uv run python -c "from rigplane._state_queries import *"` (legacy path via shim).
 
 ## Implementation prompt for the sub-agent
 
 ```
-You are implementing one step of the icom-lan internal modularization
+You are implementing one step of the rigplane internal modularization
 work. Read these references first:
-- /Users/moroz/Projects/icom-lan-research/2026-04-29-internal-modularization-orchestrator.md
+- /Users/moroz/Projects/rigplane-research/2026-04-29-internal-modularization-orchestrator.md
 - docs/plans/2026-04-29-modularization-plan.md
 - The full text of this issue, especially the Scope and Acceptance
   Criteria sections
@@ -83,6 +83,6 @@ stop and ask via PR comment. Do not guess.
 
 - Verify the shim header (plan §5.1 template, verbatim) is present in every shim file.
 - LAZY_MAP target tuples must be UNCHANGED.
-- Confirm `radio.py`'s heavy import surface is preserved unchanged — many tests import from `icom_lan.radio` directly via the shim. The `radio.py` shim is the most-imported one in the suite; verify by `grep -rn 'from icom_lan.radio import' tests/ | wc -l` returning a number consistent with the existing test count.
+- Confirm `radio.py`'s heavy import surface is preserved unchanged — many tests import from `rigplane.radio` directly via the shim. The `radio.py` shim is the most-imported one in the suite; verify by `grep -rn 'from rigplane.radio import' tests/ | wc -l` returning a number consistent with the existing test count.
 - Verify `_state_queries` shim is present (it is the one private-name file moving in this step that some test files may reach into directly).
 - The 22-occurrence `_connection_state` leak, the 8-occurrence `_civ_rx` leak, and the 4-occurrence `_poller_types` leak (per discovery §6) are NOT addressed by this step — those files move in Step 10. Reviewer of Step 10 must verify those shims; reviewer of Step 8 should NOT see those names move.

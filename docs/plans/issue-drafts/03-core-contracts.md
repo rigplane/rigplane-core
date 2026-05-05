@@ -1,8 +1,8 @@
 ## Context
 
-Step 3 of the internal-modularization migration: move the `core` contract trio (`radio_protocol`, `radio_state`, `_state_cache`) plus transport-adjacent primitives (`_queue_pressure`, `_bounded_queue`) into `src/icom_lan/core/`, leaving silent re-export shims at the old top-level paths.
+Step 3 of the internal-modularization migration: move the `core` contract trio (`radio_protocol`, `radio_state`, `_state_cache`) plus transport-adjacent primitives (`_queue_pressure`, `_bounded_queue`) into `src/rigplane/core/`, leaving silent re-export shims at the old top-level paths.
 
-Plan section: [§4.1 Step 3 — `core` contract trio + transport primitives](https://github.com/morozsm/icom-lan/blob/refactor/modularization-discovery/docs/plans/2026-04-29-modularization-plan.md#step-3--core-contract-trio--transport-primitives).
+Plan section: [§4.1 Step 3 — `core` contract trio + transport primitives](https://github.com/rigplane/rigplane-core/blob/refactor/modularization-discovery/docs/plans/2026-04-29-modularization-plan.md#step-3--core-contract-trio--transport-primitives).
 
 ## Pre-conditions
 
@@ -10,13 +10,13 @@ Blocked by #1285 (Step 2: core foundationals).
 
 ## Scope
 
-Move these 5 files from `src/icom_lan/` into `src/icom_lan/core/`:
+Move these 5 files from `src/rigplane/` into `src/rigplane/core/`:
 
-1. `src/icom_lan/radio_protocol.py` → `src/icom_lan/core/radio_protocol.py`
-2. `src/icom_lan/radio_state.py` → `src/icom_lan/core/radio_state.py`
-3. `src/icom_lan/_state_cache.py` → `src/icom_lan/core/_state_cache.py`
-4. `src/icom_lan/_queue_pressure.py` → `src/icom_lan/core/_queue_pressure.py`
-5. `src/icom_lan/_bounded_queue.py` → `src/icom_lan/core/_bounded_queue.py`
+1. `src/rigplane/radio_protocol.py` → `src/rigplane/core/radio_protocol.py`
+2. `src/rigplane/radio_state.py` → `src/rigplane/core/radio_state.py`
+3. `src/rigplane/_state_cache.py` → `src/rigplane/core/_state_cache.py`
+4. `src/rigplane/_queue_pressure.py` → `src/rigplane/core/_queue_pressure.py`
+5. `src/rigplane/_bounded_queue.py` → `src/rigplane/core/_bounded_queue.py`
 
 Add **5 re-export shim files** at the old top-level paths using the plan §5.1 template.
 
@@ -37,19 +37,19 @@ The TYPE_CHECKING-only imports in `radio_protocol.py` (`audio_bus`, `scope`) are
 - `uv run mypy src/` clean.
 - `uv run pytest tests/contracts/test_lazy_imports.py -v` passes (3 tests green).
 - Public-import smoke check (each must succeed):
-  - `uv run python -c "from icom_lan import Radio"` (Tier 1).
-  - `uv run python -c "from icom_lan.radio_protocol import Radio"`
-  - `uv run python -c "from icom_lan.radio_state import RadioState, VfoSlotState"`
-  - `uv run python -c "from icom_lan._state_cache import StateCache"`
-  - `uv run python -c "from icom_lan._queue_pressure import *"` (shim re-exports)
-  - `uv run python -c "from icom_lan._bounded_queue import *"` (shim re-exports)
+  - `uv run python -c "from rigplane import Radio"` (Tier 1).
+  - `uv run python -c "from rigplane.radio_protocol import Radio"`
+  - `uv run python -c "from rigplane.radio_state import RadioState, VfoSlotState"`
+  - `uv run python -c "from rigplane._state_cache import StateCache"`
+  - `uv run python -c "from rigplane._queue_pressure import *"` (shim re-exports)
+  - `uv run python -c "from rigplane._bounded_queue import *"` (shim re-exports)
 
 ## Implementation prompt for the sub-agent
 
 ```
-You are implementing one step of the icom-lan internal modularization
+You are implementing one step of the rigplane internal modularization
 work. Read these references first:
-- /Users/moroz/Projects/icom-lan-research/2026-04-29-internal-modularization-orchestrator.md
+- /Users/moroz/Projects/rigplane-research/2026-04-29-internal-modularization-orchestrator.md
 - docs/plans/2026-04-29-modularization-plan.md
 - The full text of this issue, especially the Scope and Acceptance
   Criteria sections

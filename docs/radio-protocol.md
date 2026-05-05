@@ -22,7 +22,7 @@ The Radio Protocol defines a vendor-neutral interface for controlling amateur ra
 Every backend **must** implement this. It covers the essentials that any transceiver supports.
 
 ```python
-from icom_lan.radio_protocol import Radio
+from rigplane.radio_protocol import Radio
 
 class MyRadio:
     """Implements Radio protocol."""
@@ -119,7 +119,7 @@ Returned by `radio.capabilities`:
 For radios that support audio streaming — either over LAN (Icom) or via USB audio device (serial-connected radios, Digirig).
 
 ```python
-from icom_lan.radio_protocol import AudioCapable
+from rigplane.radio_protocol import AudioCapable
 
 if isinstance(radio, AudioCapable):
     # Direct callback API
@@ -156,7 +156,7 @@ async for packet in web_sub:
 For radios with spectrum/panadapter output.
 
 ```python
-from icom_lan.radio_protocol import ScopeCapable
+from rigplane.radio_protocol import ScopeCapable
 
 if isinstance(radio, ScopeCapable):
     await radio.enable_scope(span=100_000)
@@ -168,7 +168,7 @@ if isinstance(radio, ScopeCapable):
 For radios with two independent receivers (e.g. IC-7610 Main/Sub).
 
 ```python
-from icom_lan.radio_protocol import DualReceiverCapable
+from rigplane.radio_protocol import DualReceiverCapable
 
 if isinstance(radio, DualReceiverCapable):
     await radio.vfo_exchange()   # swap Main ↔ Sub
@@ -182,8 +182,8 @@ if isinstance(radio, DualReceiverCapable):
 3. The Web UI, rigctld, and CLI will work automatically
 
 ```python
-from icom_lan.radio_protocol import Radio
-from icom_lan.radio_state import RadioState, ReceiverState
+from rigplane.radio_protocol import Radio
+from rigplane.radio_state import RadioState, ReceiverState
 
 class YaesuRadio:
     """Yaesu CAT protocol backend."""
@@ -271,7 +271,7 @@ assert isinstance(YaesuRadio("/dev/ttyUSB0"), Radio)
 If you're currently using `IcomRadio` directly, **no changes are required**:
 
 ```python
-from icom_lan import IcomRadio
+from rigplane import IcomRadio
 
 # This still works (LAN backend, backward compatible)
 async with IcomRadio("192.168.1.100", username="user", password="pass") as radio:
@@ -287,8 +287,8 @@ without modification.
 For new code or when adding serial backend support, use the **typed config factory**:
 
 ```python
-from icom_lan.backends.factory import create_radio
-from icom_lan.backends.config import LanBackendConfig, SerialBackendConfig
+from rigplane.backends.factory import create_radio
+from rigplane.backends.config import LanBackendConfig, SerialBackendConfig
 
 # LAN backend via factory (explicit)
 lan_config = LanBackendConfig(
@@ -316,14 +316,14 @@ Default behavior is **unchanged** (LAN):
 
 ```bash
 # Default: LAN backend (same as before)
-icom-lan status
-icom-lan freq 14.074m
+rigplane status
+rigplane freq 14.074m
 
 # Explicit LAN backend
-icom-lan --backend lan status
+rigplane --backend lan status
 
 # New: Serial backend
-icom-lan --backend serial --serial-port /dev/cu.usbserial-111120 status
+rigplane --backend serial --serial-port /dev/cu.usbserial-111120 status
 ```
 
 ### Web UI and rigctld
@@ -332,16 +332,16 @@ Web UI and rigctld now support backend selection via CLI flags. Default is LAN f
 
 ```bash
 # Web UI: LAN backend (default)
-icom-lan web
+rigplane web
 
 # Web UI: Serial backend
-icom-lan --backend serial --serial-port /dev/cu.usbserial-111120 web
+rigplane --backend serial --serial-port /dev/cu.usbserial-111120 web
 
 # rigctld: LAN backend (default)
-icom-lan serve
+rigplane serve
 
 # rigctld: Serial backend
-icom-lan --backend serial --serial-port /dev/cu.usbserial-111120 serve
+rigplane --backend serial --serial-port /dev/cu.usbserial-111120 serve
 ```
 
 ### Consumer Code (Web/rigctld/CLI)
@@ -360,7 +360,7 @@ goes through `create_radio(...)`.
 Use runtime capability detection for optional features:
 
 ```python
-from icom_lan.radio_protocol import AudioCapable, ScopeCapable
+from rigplane.radio_protocol import AudioCapable, ScopeCapable
 
 radio = create_radio(config)  # LAN or serial
 

@@ -5,14 +5,14 @@
 Foundational layer with no internal dependencies. Holds the wire-protocol
 primitives (CI-V framing, transport, auth), base types/exceptions, the
 optional-dependency probes, and the abstract Radio Protocol surface that
-downstream consumers (incl. `icom-lan-pro`) treat as the stable contract.
+downstream consumers (incl. `rigplane-pro`) treat as the stable contract.
 Anyone may import from `core`; `core` may import from no other layer.
 
 ## Public API
 
 `core/__init__.py` keeps `__all__` empty by design — layers reach into
-canonical sub-module paths and the top-level `icom_lan` lazy-loader
-(`icom_lan/__init__.py`) re-exports the Tier 1 / Tier 2 surface. Notable
+canonical sub-module paths and the top-level `rigplane` lazy-loader
+(`rigplane/__init__.py`) re-exports the Tier 1 / Tier 2 surface. Notable
 canonical entries:
 
 - `core.types` — `Mode`, `AudioCodec`, `BreakInMode`, `RadioState`,
@@ -34,14 +34,14 @@ test `tests/contracts/test_lazy_imports.py` plus `import-linter`'s layered
 contract police this.
 
 `radio_protocol` carries four named exceptions in `.importlinter`'s
-`ignore_imports`: `→ icom_lan.audio_bus` and `→ icom_lan.scope` (both
+`ignore_imports`: `→ rigplane.audio_bus` and `→ rigplane.scope` (both
 `TYPE_CHECKING`-only string annotations — see `radio_protocol.py:58`),
-plus `→ icom_lan.runtime._poller_types` and `→ icom_lan.rigctld.routing`
+plus `→ rigplane.runtime._poller_types` and `→ rigplane.rigctld.routing`
 (also `TYPE_CHECKING`, added by epic #1322).
 
 ## Forbidden patterns
 
-- Any `from icom_lan.<other layer>` import outside a `TYPE_CHECKING`
+- Any `from rigplane.<other layer>` import outside a `TYPE_CHECKING`
   block. New runtime imports here would create cycles instantly.
 - Side-effecting module-level code (no logger config, no env reads, no
   network/IO at import time).
@@ -53,12 +53,12 @@ plus `→ icom_lan.runtime._poller_types` and `→ icom_lan.rigctld.routing`
 - **Add a capability protocol** → extend `core/radio_protocol.py`, list
   the symbol in `tests/test_public_api_surface.py`, add to
   `tests/contracts/test_lazy_imports.py` if Tier 1, register in
-  `icom_lan/__init__.py` `_LAZY_MAP` if Tier 2 (see #1322 commits).
+  `rigplane/__init__.py` `_LAZY_MAP` if Tier 2 (see #1322 commits).
 - **Add an exception** → add to `core/exceptions.py`, ensure it inherits
-  from the existing `IcomLanError` hierarchy, expose via the top-level
+  from the existing `RigplaneError` hierarchy, expose via the top-level
   shim if it's part of the public Tier 1 surface.
 - **Add a transport primitive** → add to `core/transport.py` or a new
-  sub-module; verify zero `from icom_lan` imports remain.
+  sub-module; verify zero `from rigplane` imports remain.
 - **Touch `core/_optional_deps.py`** → run `uv run pytest
   tests/test_optional_deps.py`; the helper API is shared by every layer
   and breakage cascades.

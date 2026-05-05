@@ -22,7 +22,7 @@ Audio-specific stages (NoiseGate / Limiter / RmsNormalizer) live in
 `GainNode`, `NRScipyNode`, …); `dsp/resample.py` exposes the
 inter-node resampler used to bridge nodes that disagree on sample rate.
 
-The `icom-lan-pro` consumer reaches `dsp.pipeline`, `dsp.nodes.base`,
+The `rigplane-pro` consumer reaches `dsp.pipeline`, `dsp.nodes.base`,
 and `dsp.exceptions` directly via canonical paths — these are part of
 the Tier 2 stable contract (plan §9).
 
@@ -35,7 +35,7 @@ The `independence-low` contract in `.importlinter` enforces that
 
 ## Forbidden patterns
 
-- `from icom_lan.audio` / `from icom_lan.runtime` — `audio` depends on
+- `from rigplane.audio` / `from rigplane.runtime` — `audio` depends on
   `dsp`, not the reverse. Audio-policy nodes live in `audio/dsp.py`.
 - Module-level numpy/scipy imports. Gate via `_require_numpy()` /
   `_require_scipy()` at construction time; `DSPBackendUnavailable` is
@@ -56,7 +56,7 @@ The `independence-low` contract in `.importlinter` enforces that
 ## See also
 
 - `docs/plans/2026-04-29-modularization-plan.md` §1.2 ("`dsp` is
-  independent of the rest"), §3 (matrix), §9 (icom-lan-pro contract).
+  independent of the rest"), §3 (matrix), §9 (rigplane-pro contract).
 - `audio/dsp.py` — audio-policy stages built on top.
 - `tests/test_dsp_*.py` — node + pipeline + tap coverage.
 - `.importlinter` `independence-low` contract.

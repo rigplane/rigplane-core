@@ -4,14 +4,14 @@ Core data types used throughout the library.
 
 ## StateCache
 
-::: icom_lan.core._state_cache.StateCache
+::: rigplane.core._state_cache.StateCache
 
 ## Enums
 
 ### `PacketType`
 
 ```python
-from icom_lan import PacketType
+from rigplane import PacketType
 ```
 
 UDP packet type codes from the Icom LAN protocol header (offset 0x04, 2 bytes LE).
@@ -29,7 +29,7 @@ UDP packet type codes from the Icom LAN protocol header (offset 0x04, 2 bytes LE
 ### `Mode`
 
 ```python
-from icom_lan import Mode
+from rigplane import Mode
 ```
 
 Icom CI-V operating modes. Values match the CI-V mode byte.
@@ -54,7 +54,7 @@ Icom CI-V operating modes. Values match the CI-V mode byte.
 ### `PacketHeader`
 
 ```python
-from icom_lan import PacketHeader
+from rigplane import PacketHeader
 ```
 
 Fixed 16-byte header present in every Icom LAN UDP packet.
@@ -70,7 +70,7 @@ Fixed 16-byte header present in every Icom LAN UDP packet.
 ### `CivFrame`
 
 ```python
-from icom_lan import CivFrame
+from rigplane import CivFrame
 ```
 
 Parsed CI-V frame.
@@ -88,7 +88,7 @@ Parsed CI-V frame.
 ### `AudioCapabilities`
 
 ```python
-from icom_lan import AudioCapabilities
+from rigplane import AudioCapabilities
 ```
 
 Stable audio capability structure returned by `get_audio_capabilities()` (and by
@@ -116,7 +116,7 @@ def bcd_encode(freq_hz: int) -> bytes
 Encode a frequency (Hz) to Icom's 5-byte BCD format (little-endian BCD).
 
 ```python
->>> from icom_lan import bcd_encode
+>>> from rigplane import bcd_encode
 >>> bcd_encode(14074000).hex()
 '0040071400'
 ```
@@ -130,7 +130,7 @@ def bcd_decode(data: bytes) -> int
 Decode 5-byte BCD to frequency in Hz.
 
 ```python
->>> from icom_lan import bcd_decode
+>>> from rigplane import bcd_decode
 >>> bcd_decode(bytes.fromhex('0040071400'))
 14074000
 ```
@@ -138,10 +138,10 @@ Decode 5-byte BCD to frequency in Hz.
 ### `get_audio_capabilities()`
 
 ```python
-from icom_lan import get_audio_capabilities
+from rigplane import get_audio_capabilities
 ```
 
-Return the static icom-lan audio capability matrix and deterministic defaults.
+Return the static rigplane audio capability matrix and deterministic defaults.
 
 ---
 
@@ -150,7 +150,7 @@ Return the static icom-lan audio capability matrix and deterministic defaults.
 ### `HEADER_SIZE`
 
 ```python
-from icom_lan import HEADER_SIZE  # 16 (0x10)
+from rigplane import HEADER_SIZE  # 16 (0x10)
 ```
 
 Size of the fixed packet header in bytes.

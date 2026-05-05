@@ -17,7 +17,7 @@ Deprecated aliases still work during the deprecation window (two minor releases)
 
 ## AudioStream
 
-::: icom_lan.audio.lan_stream.AudioStream
+::: rigplane.audio.lan_stream.AudioStream
 
 ## Runtime Audio Stats (`get_audio_stats`)
 
@@ -53,29 +53,29 @@ print(stats["packet_loss_percent"], stats["reorder_depth_ema_ms"])
 
 ## AudioPacket
 
-::: icom_lan.audio.lan_stream.AudioPacket
+::: rigplane.audio.lan_stream.AudioPacket
 
 ## AudioState
 
-::: icom_lan.audio.lan_stream.AudioState
+::: rigplane.audio.lan_stream.AudioState
 
 ## JitterBuffer
 
-::: icom_lan.audio.lan_stream.JitterBuffer
+::: rigplane.audio.lan_stream.JitterBuffer
 
 ## Packet Functions
 
-::: icom_lan.audio.lan_stream.parse_audio_packet
+::: rigplane.audio.lan_stream.parse_audio_packet
 
-::: icom_lan.audio.lan_stream.build_audio_packet
+::: rigplane.audio.lan_stream.build_audio_packet
 
 ## Internal Transcoder Layer
 
-`icom_lan` now includes an internal PCM<->Opus transcoder foundation used for
+`rigplane` now includes an internal PCM<->Opus transcoder foundation used for
 future high-level PCM APIs.
 
-- Module: `icom_lan._audio_transcoder` (internal, no stability guarantee yet)
-- Backend: optional `opuslib` (`pip install icom-lan[audio]`)
+- Module: `rigplane._audio_transcoder` (internal, no stability guarantee yet)
+- Backend: optional `opuslib` (`pip install rigplane[audio]`)
 - Typed failures:
   - `AudioCodecBackendError` for missing backend
   - `AudioFormatError` for invalid PCM/Opus frame formats
@@ -83,15 +83,15 @@ future high-level PCM APIs.
 
 ## AudioBus (pub/sub multi-consumer)
 
-::: icom_lan.audio.bus.AudioBus
-::: icom_lan.audio.bus.AudioSubscription
+::: rigplane.audio.bus.AudioBus
+::: rigplane.audio.bus.AudioSubscription
 
 The AudioBus provides pub/sub distribution for radio RX audio. Multiple consumers (WebSocket broadcaster, audio bridge, recorders) share a single radio RX stream.
 
 ### Basic Usage
 
 ```python
-from icom_lan import create_radio, LanBackendConfig
+from rigplane import create_radio, LanBackendConfig
 
 config = LanBackendConfig(host="192.168.1.100", username="u", password="p")
 async with create_radio(config) as radio:
@@ -132,7 +132,7 @@ await bridge.start()
 ### `MAX_AUDIO_PAYLOAD`
 
 ```
-icom_lan.audio.MAX_AUDIO_PAYLOAD: int = 1364
+rigplane.audio.MAX_AUDIO_PAYLOAD: int = 1364
 ```
 
 Maximum audio payload in bytes per TX UDP packet.
@@ -161,7 +161,7 @@ is accepted.
 ### RX Audio (callback-based)
 
 ```python
-from icom_lan import create_radio, LanBackendConfig
+from rigplane import create_radio, LanBackendConfig
 
 config = LanBackendConfig(host="192.168.1.100", username="u", password="p")
 async with create_radio(config) as radio:
@@ -231,7 +231,7 @@ async with create_radio(config) as radio:
 ### Codec Selection
 
 ```python
-from icom_lan import create_radio, LanBackendConfig, AudioCodec
+from rigplane import create_radio, LanBackendConfig, AudioCodec
 
 config = LanBackendConfig(
     host="192.168.1.100",
@@ -249,7 +249,7 @@ async with create_radio(config) as radio:
 Use the capability API to inspect negotiated client-side audio options and defaults. The same API is available on the **Radio** returned by `create_radio` and on **IcomRadio** (legacy):
 
 ```python
-from icom_lan import create_radio, get_audio_capabilities, LanBackendConfig
+from rigplane import create_radio, get_audio_capabilities, LanBackendConfig
 
 config = LanBackendConfig(host="192.168.1.100", username="u", password="p")
 # Static defaults (no connection required):
@@ -264,7 +264,7 @@ For legacy LAN-only code, `IcomRadio.audio_capabilities()` returns the same stru
 
 Deterministic default selection rules:
 
-1. Codec: first supported codec in icom-lan preference order.
+1. Codec: first supported codec in rigplane preference order.
 2. Sample rate: highest supported sample rate.
 3. Channels: the channel count implied by default codec (fallback: minimum supported channels).
 

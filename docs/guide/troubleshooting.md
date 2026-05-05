@@ -24,7 +24,7 @@ ping 192.168.1.100
 nc -u -z 192.168.1.100 50001
 
 # Try discovery
-icom-lan discover
+rigplane discover
 ```
 
 ### "Authentication failed"
@@ -52,7 +52,7 @@ icom-lan discover
 
 ```python
 import logging
-from icom_lan import create_radio, LanBackendConfig
+from rigplane import create_radio, LanBackendConfig
 
 logging.basicConfig(level=logging.DEBUG)
 
@@ -239,7 +239,7 @@ Look for:
 ## Getting Help
 
 1. Enable debug logging (see above)
-2. [Open an issue](https://github.com/morozsm/icom-lan/issues) with:
+2. [Open an issue](https://github.com/rigplane/rigplane-core/issues) with:
     - Your radio model
     - Python version
     - OS
@@ -275,9 +275,9 @@ line. This helps distinguish which logical channel is failing.
 
 These are Icom's factory defaults and match the vast majority of deployments.
 If the radio's menu has been changed, or the client was started with a custom
-`--control-port` / `ICOM_PORT` (see `src/icom_lan/cli.py`), the actual ports may
+`--control-port` / `ICOM_PORT` (see `src/rigplane/cli.py`), the actual ports may
 differ — CI-V and audio ports can also be reassigned by the radio's status
-report (see `src/icom_lan/_control_phase.py`). In that case, substitute your
+report (see `src/rigplane/_control_phase.py`). In that case, substitute your
 session's ports in the filters below.
 
 **How to interpret quickly:**
@@ -296,10 +296,10 @@ session's ports in the filters below.
 
 ```bash
 # Keep only UDP diagnostics from the daemon log
-rg "UDP error|UDP connection lost" logs/icom-lan.log
+rg "UDP error|UDP connection lost" logs/rigplane.log
 
 # Focus on CI-V channel failures only (replace 50002 if your session uses a custom CI-V port)
-rg "peer=.*:50002" logs/icom-lan.log
+rg "peer=.*:50002" logs/rigplane.log
 ```
 
 If only one peer/port is noisy, troubleshoot that path first (audio, CI-V, or
@@ -408,7 +408,7 @@ ls -l /dev/ttyUSB*
 4. Retry connection
 
 !!! danger "Critical Hardware Finding"
-    This was confirmed with live IC-7610 hardware validation (issue #146, 2026-03-06). `[REMOTE]` mode blocks serial CI-V commands. Use `Link to [CI-V]` for icom-lan serial backend.
+    This was confirmed with live IC-7610 hardware validation (issue #146, 2026-03-06). `[REMOTE]` mode blocks serial CI-V commands. Use `Link to [CI-V]` for rigplane serial backend.
 
 ### "Audio device 'IC-7610 USB Audio' not found"
 
@@ -422,15 +422,15 @@ ls -l /dev/ttyUSB*
 **Solutions:**
 ```bash
 # List available audio devices
-icom-lan --list-audio-devices
-icom-lan --list-audio-devices --json
+rigplane --list-audio-devices
+rigplane --list-audio-devices --json
 
 # Check radio settings:
 # Menu → Set → Connectors → USB Audio → USB Audio (RX/TX) → Enabled
 
 # Audio dependencies ship with the core install (since v0.19); the legacy
 # `[bridge]` extra still resolves but is now a no-op alias.
-pip install icom-lan
+pip install rigplane
 ```
 
 ### "Scope over serial requires baudrate >= 115200"
@@ -445,7 +445,7 @@ pip install icom-lan
 2. **Override** (use with caution for debugging only):
    ```bash
    export ICOM_SERIAL_SCOPE_ALLOW_LOW_BAUD=1
-   icom-lan --backend serial --serial-baud 19200 scope
+   rigplane --backend serial --serial-baud 19200 scope
    ```
    Python API:
    ```python
@@ -465,7 +465,7 @@ pip install icom-lan
 ```bash
 # Increase serial CI-V pacing interval (default 50 ms)
 export ICOM_SERIAL_CIV_MIN_INTERVAL_MS=80
-icom-lan --backend serial status
+rigplane --backend serial status
 
 # Or use higher baud rate (radio setting)
 # Menu → Set → Connectors → CI-V → CI-V USB Baud Rate → 115200
@@ -486,10 +486,10 @@ icom-lan --backend serial status
 # Menu → Set → Connectors → USB Audio → USB Audio TX → Enabled
 
 # Verify TX device name matches RX
-icom-lan --list-audio-devices
+rigplane --list-audio-devices
 
 # Explicitly set TX device
-icom-lan --backend serial --tx-device "IC-7610 USB Audio" audio tx --in test.wav
+rigplane --backend serial --tx-device "IC-7610 USB Audio" audio tx --in test.wav
 
 # Ensure PTT is active during TX (library handles this automatically for audio tx)
 ```

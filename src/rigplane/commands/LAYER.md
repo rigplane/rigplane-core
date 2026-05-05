@@ -24,7 +24,7 @@ single import target. Highlights:
 - **Routing** — `CommandMap`, `CommandSpec` (rig-specific overrides).
 
 `__all__` enumerates ~250 names. Other layers import through this front
-door (`from icom_lan.commands import set_freq`) — direct sub-module
+door (`from rigplane.commands import set_freq`) — direct sub-module
 imports are an internal detail.
 
 ## Allowed dependencies
@@ -35,7 +35,7 @@ transport happens in the `runtime` layer that wires it up.
 
 ## Forbidden patterns
 
-- `from icom_lan.runtime` — would make builders depend on the commander
+- `from rigplane.runtime` — would make builders depend on the commander
   caller; instead, the runtime calls `commands.*`.
 - Module-level state (no caches, no registries that mutate at import).
   `CommandMap` is a runtime container constructed by `profiles`.
