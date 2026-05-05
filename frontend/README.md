@@ -1,6 +1,7 @@
-# icom-lan Frontend
+# RigPlane Frontend
 
-Svelte 5 + TypeScript + Vite UI for the icom-lan radio controller.
+Svelte 5 + TypeScript + Vite UI for the RigPlane multi-vendor radio control
+platform (Icom, Yaesu, Discovery, Xiegu) over LAN/USB.
 
 ## Quick Start
 

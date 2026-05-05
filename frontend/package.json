@@ -1,7 +1,18 @@
 {
-  "name": "frontend",
+  "name": "@rigplane/core-frontend",
+  "description": "RigPlane web UI — multi-vendor radio control platform.",
+  "homepage": "https://rigplane.dev/",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/rigplane/rigplane-core.git",
+    "directory": "frontend"
+  },
+  "bugs": {
+    "url": "https://github.com/rigplane/rigplane-core/issues"
+  },
+  "license": "MIT",
   "private": true,
-  "version": "0.0.0",
+  "version": "2.0.0",
   "type": "module",
   "scripts": {
     "dev": "vite",
