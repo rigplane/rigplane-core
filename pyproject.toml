@@ -3,8 +3,8 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-name = "icom-lan"
-version = "1.1.0"
+name = "rigplane"
+version = "2.0.0"
 description = "Python library for controlling Icom transceivers over LAN (UDP) — no wfview/hamlib required"
 readme = "README.md"
 license = "MIT"
@@ -20,7 +20,7 @@ dependencies = [
 authors = [
     { name = "Sergey Morozik", email = "morozsm@gmail.com" },
 ]
-keywords = ["icom", "ham-radio", "amateur-radio", "transceiver", "ci-v", "ic-7610", "ic-705"]
+keywords = ["rigplane", "icom", "ham-radio", "amateur-radio", "transceiver", "ci-v", "ic-7610", "ic-705"]
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Intended Audience :: Developers",
@@ -32,13 +32,13 @@ classifiers = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/morozsm/icom-lan"
-Documentation = "https://morozsm.github.io/icom-lan/"
-Repository = "https://github.com/morozsm/icom-lan"
-Issues = "https://github.com/morozsm/icom-lan/issues"
+Homepage = "https://rigplane.dev/"
+Documentation = "https://rigplane.dev/"
+Repository = "https://github.com/rigplane/rigplane-core"
+Issues = "https://github.com/rigplane/rigplane-core/issues"
 
 [project.scripts]
-icom-lan = "icom_lan.cli:main"
+rigplane = "rigplane.cli:main"
 
 [project.optional-dependencies]
 # `audio` and `bridge` extras are kept as no-op aliases for backwards
@@ -71,7 +71,7 @@ dev = [
 ]
 
 [tool.hatch.build.targets.wheel.force-include]
-"rigs" = "icom_lan/rigs"
+"rigs" = "rigplane/rigs"
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
@@ -96,22 +96,22 @@ select = ["E4", "E7", "E9", "F", "TID251"]
 [tool.ruff.lint.per-file-ignores]
 "tests/*" = ["TID251"]
 # CLI is the orchestrator that composes tier-3 web and rigctld servers (issue-blessed).
-"src/icom_lan/cli/**" = ["TID251"]
+"src/rigplane/cli/**" = ["TID251"]
 # Package entry point dispatches to cli.main.
-"src/icom_lan/__main__.py" = ["TID251"]
+"src/rigplane/__main__.py" = ["TID251"]
 
 [tool.ruff.lint.flake8-tidy-imports.banned-api]
-"icom_lan.radio.IcomRadio".msg = "Use radio_protocol.Radio in web/ modules (and capability protocols) instead of IcomRadio."
-"icom_lan.web".msg = "tier 3 — internal; do not import outside web/ subtree (tests are exempt)."
-"icom_lan.rigctld".msg = "tier 3 — internal; do not import outside rigctld/ subtree (tests are exempt)."
-"icom_lan.cli".msg = "tier 3 — internal; do not import outside cli + tests."
+"rigplane.radio.IcomRadio".msg = "Use radio_protocol.Radio in web/ modules (and capability protocols) instead of IcomRadio."
+"rigplane.web".msg = "tier 3 — internal; do not import outside web/ subtree (tests are exempt)."
+"rigplane.rigctld".msg = "tier 3 — internal; do not import outside rigctld/ subtree (tests are exempt)."
+"rigplane.cli".msg = "tier 3 — internal; do not import outside cli + tests."
 
 [tool.mypy]
 python_version = "3.11"
 follow_imports = "skip"
 
 [[tool.mypy.overrides]]
-module = ["icom_lan.web.*"]
+module = ["rigplane.web.*"]
 strict = true
 follow_imports = "skip"
 warn_unused_ignores = false
@@ -140,10 +140,10 @@ ignore_missing_imports = true
 
 [[tool.mypy.overrides]]
 module = [
-    "icom_lan.cli",
-    "icom_lan.web.radio_poller",
-    "icom_lan.web.handlers.control",
-    "icom_lan.rigctld.routing",
-    "icom_lan.rigctld.handler",
+    "rigplane.cli",
+    "rigplane.web.radio_poller",
+    "rigplane.web.handlers.control",
+    "rigplane.rigctld.routing",
+    "rigplane.rigctld.handler",
 ]
 disable_error_code = ["attr-defined"]

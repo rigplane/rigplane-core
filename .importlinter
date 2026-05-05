@@ -1,46 +1,46 @@
 [importlinter]
 root_packages =
-    icom_lan
+    rigplane
 
 [importlinter:contract:layers]
-name = icom-lan layered architecture
+name = rigplane layered architecture
 type = layers
 layers =
-    icom_lan.cli
-    icom_lan.web | icom_lan.rigctld
-    icom_lan.backends
-    icom_lan.runtime
-    icom_lan.profiles | icom_lan.audio
-    icom_lan.commands | icom_lan.scope | icom_lan.dsp
-    icom_lan.core
+    rigplane.cli
+    rigplane.web | rigplane.rigctld
+    rigplane.backends
+    rigplane.runtime
+    rigplane.profiles | rigplane.audio
+    rigplane.commands | rigplane.scope | rigplane.dsp
+    rigplane.core
 ignore_imports =
-    icom_lan.core.radio_protocol -> icom_lan.audio_bus
-    icom_lan.core.radio_protocol -> icom_lan.scope
-    icom_lan.core.radio_protocol -> icom_lan.runtime._poller_types
-    icom_lan.core.radio_protocol -> icom_lan.rigctld.routing
-    icom_lan.backends.yaesu_cat.radio -> icom_lan.rigctld.routing
+    rigplane.core.radio_protocol -> rigplane.audio_bus
+    rigplane.core.radio_protocol -> rigplane.scope
+    rigplane.core.radio_protocol -> rigplane.runtime._poller_types
+    rigplane.core.radio_protocol -> rigplane.rigctld.routing
+    rigplane.backends.yaesu_cat.radio -> rigplane.rigctld.routing
 
 [importlinter:contract:independence-top]
 name = top siblings must not depend on each other
 type = independence
 modules =
-    icom_lan.web
-    icom_lan.rigctld
+    rigplane.web
+    rigplane.rigctld
 ignore_imports =
-    icom_lan.core.radio_protocol -> icom_lan.rigctld.routing
-    icom_lan.backends.yaesu_cat.radio -> icom_lan.rigctld.routing
+    rigplane.core.radio_protocol -> rigplane.rigctld.routing
+    rigplane.backends.yaesu_cat.radio -> rigplane.rigctld.routing
 
 [importlinter:contract:independence-mid]
 name = mid-tier siblings must not depend on each other
 type = independence
 modules =
-    icom_lan.profiles
-    icom_lan.audio
+    rigplane.profiles
+    rigplane.audio
 
 [importlinter:contract:independence-low]
 name = low-tier siblings must not depend on each other
 type = independence
 modules =
-    icom_lan.commands
-    icom_lan.scope
-    icom_lan.dsp
+    rigplane.commands
+    rigplane.scope
+    rigplane.dsp
