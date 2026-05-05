@@ -163,11 +163,11 @@ uploads are unauthenticated, IP rate-limited, and retained for **90
 days** before automatic deletion.
 
 You can redirect to a different host (self-hosting, audit, or a private
-support contract) with the `ICOM_LAN_REPORT_ENDPOINT` environment
+support contract) with the `RIGPLANE_REPORT_ENDPOINT` environment
 variable:
 
 ```bash
-export ICOM_LAN_REPORT_ENDPOINT=https://reports.example.com/v1/diagnostics/upload
+export RIGPLANE_REPORT_ENDPOINT=https://reports.example.com/v1/diagnostics/upload
 rigplane diagnose --upload
 ```
 
@@ -254,7 +254,7 @@ mkdir -p ~/.cache/rigplane/logs
 chmod 700 ~/.cache/rigplane/logs
 ```
 
-You can also set `ICOM_LAN_DISABLE_DIAGNOSTIC_LOGGING=1` to disable
+You can also set `RIGPLANE_DISABLE_DIAGNOSTIC_LOGGING=1` to disable
 the file logger explicitly (used by the test suite).
 
 ### Rate-limited (429)
@@ -334,7 +334,7 @@ rigplane diagnose
 | `--issue-ref`    | interactive prompt                      | Optional GitHub URL or issue number for context.                   |
 | `--email`        | not collected                           | Opt-in. If set, the maintainer can reach you about the report.     |
 | `--callsign`     | not collected                           | Opt-in. Helps if your radio behaviour is callsign-specific.        |
-| `--endpoint`     | `$ICOM_LAN_REPORT_ENDPOINT` or default  | Override the upload destination (self-hosting / audit / dev).      |
+| `--endpoint`     | `$RIGPLANE_REPORT_ENDPOINT` or default  | Override the upload destination (self-hosting / audit / dev).      |
 | `--no-confirm`   | absent (interactive)                    | Skip the consent prompt. Required for headless `--upload`.         |
 | `--bundle-id`    | new UUID v4                             | Reuse a previous submission ID for retry / dedup on the receiver.  |
 

@@ -442,7 +442,7 @@ routes = [
 #
 # Legend:
 #   # NOT_IMPLEMENTED — command known from CI-V ref but not yet
-#                       handled by the icom-lan backend
+#                       handled by the rigplane backend
 
 [commands]
 

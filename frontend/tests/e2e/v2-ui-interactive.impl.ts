@@ -3,7 +3,7 @@ import { mkdir, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-const PAGE_URL = process.env.ICOM_LAN_V2_URL ?? 'http://192.168.55.152:8080?ui=v2';
+const PAGE_URL = process.env.RIGPLANE_V2_URL ?? 'http://192.168.55.152:8080?ui=v2';
 const PAGE_ORIGIN = new URL(PAGE_URL).origin;
 const STATE_URL = `${PAGE_ORIGIN}/api/v1/state`;
 const CAPABILITIES_URL = `${PAGE_ORIGIN}/api/v1/capabilities`;

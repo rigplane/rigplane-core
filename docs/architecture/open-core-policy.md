@@ -84,7 +84,7 @@ A diagnostic report mechanism in open-core must satisfy **all** of these:
 - **Headless / non-TTY mode never prompts and never auto-uploads.** Scripted
   use must explicitly pass `--upload` to send.
 - **Destination endpoint is visible before upload.** The full URL (including
-  any `ICOM_LAN_REPORT_ENDPOINT` override) appears in the preview shown to
+  any `RIGPLANE_REPORT_ENDPOINT` override) appears in the preview shown to
   the user.
 - **Bundle is always available locally.** The user can always choose "save
   locally" instead of uploading; the ZIP file is the same.

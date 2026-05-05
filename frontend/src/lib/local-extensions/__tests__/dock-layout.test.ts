@@ -53,7 +53,7 @@ describe('local extension dock layout', () => {
     });
   });
 
-  it('persists validated layout under the icom-lan key', () => {
+  it('persists validated layout under the rigplane storage key', () => {
     const backing = new Map<string, string>();
     const storage = memoryStorage(backing);
     const state = setLocalExtensionDockMode(loadLocalExtensionDockLayout(storage), 'meter', 'dock-bottom');
