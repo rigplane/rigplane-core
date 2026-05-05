@@ -50,10 +50,10 @@ def _write_fake_bundle(path: Path, manifest: dict[str, Any] | None = None) -> Pa
         manifest
         if manifest is not None
         else {
-            "schema_version": "icom-lan-bundle-v1",
+            "schema_version": "rigplane-bundle-v2",
             "submission_id": "test-submission",
             "generated_at_unix": 1_700_000_000,
-            "app": {"name": "icom-lan", "version": "0.0.0"},
+            "app": {"name": "rigplane", "version": "0.0.0"},
         }
     )
     with zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED) as zf:
@@ -209,7 +209,7 @@ class TestUploadNonTty:
         # Metadata payload (1st positional after bundle path) is the manifest.
         bundle_arg, metadata_arg = fake_upload.await_args.args
         assert bundle_arg == fake_build_bundle["output"]
-        assert metadata_arg["schema_version"] == "icom-lan-bundle-v1"
+        assert metadata_arg["schema_version"] == "rigplane-bundle-v2"
 
 
 # ---------------------------------------------------------------------------

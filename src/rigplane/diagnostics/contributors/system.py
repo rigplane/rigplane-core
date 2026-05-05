@@ -62,7 +62,7 @@ class SystemContributor:
             "arch": platform.machine() or "unknown",
             "python_version": platform.python_version(),
             "python_implementation": platform.python_implementation(),
-            "icom_lan_version": redact_paths(_get_version()),
+            "rigplane_version": redact_paths(_get_version()),
             "install_method": redact_paths(_detect_install_method()),
         }
         text = json.dumps(payload, indent=2, sort_keys=True)

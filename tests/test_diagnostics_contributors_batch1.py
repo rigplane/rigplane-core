@@ -74,10 +74,12 @@ def test_system_writes_required_keys(tmp_path: Path) -> None:
         "arch",
         "python_version",
         "python_implementation",
-        "icom_lan_version",
+        "rigplane_version",
         "install_method",
     ):
         assert key in payload, f"missing key: {key}"
+    # The legacy v1 key was renamed; ensure the old name is gone.
+    assert "icom_lan_version" not in payload
     assert payload["os"] in {"darwin", "linux", "windows"} or isinstance(
         payload["os"], str
     )

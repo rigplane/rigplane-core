@@ -1,4 +1,17 @@
-"""manifest.json builder per icom-lan-bundle-v1 schema (spec §5.2)."""
+"""manifest.json builder per ``rigplane-bundle-v2`` schema (spec §5.2).
+
+The bundle producer supports two on-the-wire schema strings:
+
+- ``rigplane-bundle-v2`` — canonical for rigplane v2.0.0+ (default).
+- ``icom-lan-bundle-v1`` — legacy format from the icom-lan brand. Tower
+  accepts it for the 12-month deprecation window documented in
+  ``docs/contracts/diagnostic-bundle-v2.md``. Kept available for
+  backwards-compatibility tests and unit fixtures.
+
+Pick the schema by passing ``schema_version=SCHEMA_VERSION_V1`` (or v2) to
+:class:`_Manifest` / :func:`rigplane.diagnostics.build_bundle`. ``app.name``
+is derived from the schema choice and need not be set independently.
+"""
 
 from __future__ import annotations
 
@@ -9,12 +22,33 @@ import subprocess
 import sys
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Final
 
 from rigplane.diagnostics.contributor import BundleContext, DiagnosticContributor
 
-SCHEMA_VERSION = "icom-lan-bundle-v1"
-APP_NAME = "icom-lan"
+# Wire-contract schema strings. v1 is the historical icom-lan format kept
+# for testing + backwards-compat verification; v2 is the canonical format
+# for rigplane v2.0.0+.
+SCHEMA_VERSION_V1: Final = "icom-lan-bundle-v1"
+SCHEMA_VERSION_V2: Final = "rigplane-bundle-v2"
+SCHEMA_VERSION: Final = SCHEMA_VERSION_V2  # current default
+
+# Application name embedded in bundle metadata. Derived from the schema
+# choice; v1 emits "icom-lan", v2 emits "rigplane".
+APP_NAME_V1: Final = "icom-lan"
+APP_NAME_V2: Final = "rigplane"
+APP_NAME: Final = APP_NAME_V2  # current default
+
+# All accepted schema_version strings (used to validate caller input).
+_SUPPORTED_SCHEMAS: Final = frozenset({SCHEMA_VERSION_V1, SCHEMA_VERSION_V2})
+
+# Map schema_version → app.name. Keeps the two fields locked together so a
+# caller can never produce a v2 manifest with app.name == "icom-lan".
+_APP_NAME_FOR_SCHEMA: Final = {
+    SCHEMA_VERSION_V1: APP_NAME_V1,
+    SCHEMA_VERSION_V2: APP_NAME_V2,
+}
+
 _PYPI_NAME = "rigplane"
 _VERSION_FALLBACK = "0.0.0+unknown"
 _GIT_TIMEOUT_S = 2.0
@@ -74,8 +108,17 @@ class _Warning:
 
 
 class _Manifest:
-    def __init__(self, ctx: BundleContext) -> None:
+    def __init__(
+        self, ctx: BundleContext, *, schema_version: str = SCHEMA_VERSION
+    ) -> None:
+        if schema_version not in _SUPPORTED_SCHEMAS:
+            raise ValueError(
+                f"unsupported schema_version: {schema_version!r}; "
+                f"expected one of {sorted(_SUPPORTED_SCHEMAS)}"
+            )
         self._ctx = ctx
+        self._schema_version = schema_version
+        self._app_name = _APP_NAME_FOR_SCHEMA[schema_version]
         self._contributors: list[_ContributorRecord] = []
         self._warnings: list[_Warning] = []
 
@@ -97,13 +140,13 @@ class _Manifest:
 
     def to_dict(self) -> dict[str, Any]:
         ctx = self._ctx
-        app: dict[str, Any] = {"name": APP_NAME, "version": _read_version()}
+        app: dict[str, Any] = {"name": self._app_name, "version": _read_version()}
         build_id = _read_build_id()
         if build_id:
             app["build_id"] = build_id
 
         manifest: dict[str, Any] = {
-            "schema_version": SCHEMA_VERSION,
+            "schema_version": self._schema_version,
             "submission_id": ctx.submission_id,
             "generated_at_unix": ctx.generated_at_unix,
             "app": app,

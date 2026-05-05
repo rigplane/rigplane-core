@@ -225,7 +225,7 @@ async def test_preview_returns_csrf_and_manifest(
         # Distinct random strings.
         assert result["preview_id"] != result["csrf_token"]
         assert isinstance(result["manifest"], dict)
-        assert result["manifest"]["schema_version"] == "icom-lan-bundle-v1"
+        assert result["manifest"]["schema_version"] == "rigplane-bundle-v2"
         # Bundle is non-empty (manifest.json + contributor file).
         assert isinstance(result["files"], list) and len(result["files"]) >= 2
         assert all(

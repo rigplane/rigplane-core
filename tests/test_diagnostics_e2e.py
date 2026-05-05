@@ -105,7 +105,7 @@ def bundle_file(tmp_path: Path) -> Path:
 def _metadata_for(submission_id: str | None = None) -> dict[str, Any]:
     """Mock-required metadata: schema_version + submission_id + generated_at_unix."""
     return {
-        "schema_version": "icom-lan-bundle-v1",
+        "schema_version": "rigplane-bundle-v2",
         "submission_id": submission_id or str(uuid.uuid4()),
         "generated_at_unix": int(time.time()),
     }
@@ -324,7 +324,7 @@ async def test_cli_diagnose_upload_against_mock_no_confirm(
     assert len(receiver.received) == 1
     rec = receiver.received[0]
     # CLI manifest must include the required fields.
-    assert rec["metadata"]["schema_version"] == "icom-lan-bundle-v1"
+    assert rec["metadata"]["schema_version"] == "rigplane-bundle-v2"
     assert "submission_id" in rec["metadata"]
 
 
@@ -479,7 +479,7 @@ async def test_web_diagnose_full_flow(
         # Mock confirmed receipt.
         assert len(receiver.received) == 1
         meta = receiver.received[0]["metadata"]
-        assert meta["schema_version"] == "icom-lan-bundle-v1"
+        assert meta["schema_version"] == "rigplane-bundle-v2"
         assert "submission_id" in meta
     finally:
         await srv._diagnostics.stop()

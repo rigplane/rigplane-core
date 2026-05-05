@@ -15,6 +15,10 @@ from rigplane.diagnostics import (
     register,
 )
 from rigplane.diagnostics import _discovery
+from rigplane.diagnostics._manifest import (
+    SCHEMA_VERSION_V1,
+    SCHEMA_VERSION_V2,
+)
 
 
 @pytest.fixture(autouse=True)
@@ -217,7 +221,8 @@ def test_optional_fields_omitted_when_absent(tmp_path: Path) -> None:
     assert "user_description" not in manifest
     assert "issue_ref" not in manifest
     assert "contact" not in manifest
-    assert manifest["schema_version"] == "icom-lan-bundle-v1"
+    assert manifest["schema_version"] == "rigplane-bundle-v2"
+    assert manifest["app"]["name"] == "rigplane"
 
 
 def test_optional_fields_present_when_set(tmp_path: Path) -> None:
@@ -287,4 +292,76 @@ def test_partial_failure_cleans_up_partial_output(tmp_path: Path) -> None:
         names = zf.namelist()
     assert not any(n.startswith("flaky/") for n in names), (
         f"partial files leaked: {names}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Schema version selection (v1 / v2)
+# ---------------------------------------------------------------------------
+
+
+def test_default_schema_is_v2(tmp_path: Path) -> None:
+    """rigplane v2.0.0+ emits rigplane-bundle-v2 by default."""
+    register(_OkContributor)
+    output_path = tmp_path / "report.zip"
+    result = build_bundle(_make_ctx(), output_path)
+
+    manifest = _read_manifest(result)
+    assert manifest["schema_version"] == "rigplane-bundle-v2"
+    assert manifest["app"]["name"] == "rigplane"
+
+
+def test_explicit_v2_schema(tmp_path: Path) -> None:
+    """Passing schema_version=SCHEMA_VERSION_V2 yields the v2 wire shape."""
+    register(_OkContributor)
+    output_path = tmp_path / "report.zip"
+    result = build_bundle(_make_ctx(), output_path, schema_version=SCHEMA_VERSION_V2)
+
+    manifest = _read_manifest(result)
+    assert manifest["schema_version"] == "rigplane-bundle-v2"
+    assert manifest["app"]["name"] == "rigplane"
+
+
+def test_explicit_v1_schema_for_backwards_compat(tmp_path: Path) -> None:
+    """Legacy icom-lan-bundle-v1 emission is preserved as an opt-in.
+
+    Tower accepts both schemas during the deprecation window documented in
+    docs/contracts/diagnostic-bundle-v2.md; this test exists so the v1 code
+    path remains exercised.
+    """
+    register(_OkContributor)
+    output_path = tmp_path / "report.zip"
+    result = build_bundle(_make_ctx(), output_path, schema_version=SCHEMA_VERSION_V1)
+
+    manifest = _read_manifest(result)
+    assert manifest["schema_version"] == "icom-lan-bundle-v1"
+    assert manifest["app"]["name"] == "icom-lan"
+
+
+def test_unknown_schema_raises_value_error(tmp_path: Path) -> None:
+    """Unsupported schema_version values are rejected with ValueError."""
+    register(_OkContributor)
+    output_path = tmp_path / "report.zip"
+    with pytest.raises(ValueError, match="unsupported schema_version"):
+        build_bundle(_make_ctx(), output_path, schema_version="rigplane-bundle-v999")
+
+
+def test_app_name_is_locked_to_schema(tmp_path: Path) -> None:
+    """schema_version drives app.name — caller cannot mismatch the two."""
+    register(_OkContributor)
+
+    out_v1 = tmp_path / "v1.zip"
+    build_bundle(_make_ctx(), out_v1, schema_version=SCHEMA_VERSION_V1)
+    out_v2 = tmp_path / "v2.zip"
+    build_bundle(_make_ctx(), out_v2, schema_version=SCHEMA_VERSION_V2)
+
+    m1 = _read_manifest(out_v1)
+    m2 = _read_manifest(out_v2)
+    assert (m1["schema_version"], m1["app"]["name"]) == (
+        "icom-lan-bundle-v1",
+        "icom-lan",
+    )
+    assert (m2["schema_version"], m2["app"]["name"]) == (
+        "rigplane-bundle-v2",
+        "rigplane",
     )

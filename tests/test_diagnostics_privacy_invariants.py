@@ -271,10 +271,10 @@ def test_manifest_required_fields_no_nulls(tmp_path: Path) -> None:
     manifest = _read_manifest(result)
 
     # Required top-level fields, all non-empty.
-    assert manifest["schema_version"] == "icom-lan-bundle-v1"
+    assert manifest["schema_version"] == "rigplane-bundle-v2"
     assert manifest["submission_id"]
     assert manifest["generated_at_unix"]
-    assert manifest["app"]["name"] == "icom-lan"
+    assert manifest["app"]["name"] == "rigplane"
     assert manifest["app"]["version"]
     assert manifest["platform"]["os"]
     assert manifest["platform"]["arch"]
