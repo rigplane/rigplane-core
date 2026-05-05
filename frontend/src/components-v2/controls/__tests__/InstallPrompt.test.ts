@@ -136,7 +136,7 @@ describe('dismissal', () => {
 
   it('uses correct localStorage key', () => {
     setDismissed();
-    expect(localStorage.getItem('icom-lan:install-dismissed')).toBe('true');
+    expect(localStorage.getItem('rigplane:install-dismissed')).toBe('true');
   });
 });
 

@@ -4,7 +4,7 @@
  *
  * Usage:
  *   const drag = createDragReorder({
- *     storageKey: 'icom-lan:panel-order',
+ *     storageKey: 'rigplane:panel-order',
  *     defaults: ['rf-front-end', 'mode', ...],
  *     containerSelector: '.left-sidebar',
  *   });

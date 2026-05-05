@@ -22,7 +22,7 @@
 
   // --- Panel reorder (shared logic) ---
   const drag = createDragReorder({
-    storageKey: 'icom-lan:panel-order',
+    storageKey: 'rigplane:panel-order',
     defaults: ['rf-front-end', 'mode', 'filter', 'agc', 'rit-xit', 'band', 'antenna', 'scan'],
     containerSelector: '.left-sidebar',
   });

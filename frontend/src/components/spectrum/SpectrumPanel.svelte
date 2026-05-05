@@ -63,13 +63,13 @@
   let showEiBi = $state(false);
   let hiddenLayers = $state<string[]>(
     typeof localStorage !== 'undefined'
-      ? JSON.parse(localStorage.getItem('icom-lan-hidden-layers') || '[]')
+      ? JSON.parse(localStorage.getItem('rigplane-hidden-layers') || '[]')
       : []
   );
   // Persist hidden layers to localStorage
   $effect(() => {
     if (typeof localStorage !== 'undefined') {
-      localStorage.setItem('icom-lan-hidden-layers', JSON.stringify(hiddenLayers));
+      localStorage.setItem('rigplane-hidden-layers', JSON.stringify(hiddenLayers));
     }
   });
   let dxSpots = $state<DxSpot[]>([]);

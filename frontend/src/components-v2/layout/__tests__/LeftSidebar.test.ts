@@ -7,7 +7,7 @@ import { describe, it, expect, beforeEach } from 'vitest';
  * mounting the full component (which pulls in radio stores, command-bus, etc.).
  */
 
-const PANEL_ORDER_KEY = 'icom-lan:panel-order';
+const PANEL_ORDER_KEY = 'rigplane:panel-order';
 const DEFAULT_ORDER = ['rf-front-end', 'mode', 'filter', 'agc', 'rit-xit', 'band', 'antenna'];
 
 // Mirror the loadPanelOrder logic from LeftSidebar.svelte

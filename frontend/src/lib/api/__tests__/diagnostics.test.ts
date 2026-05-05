@@ -94,7 +94,7 @@ describe('previewBundle', () => {
   it('includes Authorization header when auth token is stored', async () => {
     // Stub a minimal localStorage — robust against earlier tests that may
     // have replaced globalThis.localStorage (vitest fast-pool isolate:false).
-    const store: Record<string, string> = { 'icom-lan-auth-token': 'tok-secret' };
+    const store: Record<string, string> = { 'rigplane-auth-token': 'tok-secret' };
     const stub = {
       getItem: (k: string) => (k in store ? store[k] : null),
       setItem: (k: string, v: string) => {

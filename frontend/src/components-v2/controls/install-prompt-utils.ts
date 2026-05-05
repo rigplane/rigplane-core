@@ -6,7 +6,7 @@
 
 export type Platform = 'ios' | 'android' | 'desktop';
 
-const STORAGE_KEY = 'icom-lan:install-dismissed';
+const STORAGE_KEY = 'rigplane:install-dismissed';
 
 /** Detect platform from user-agent string. */
 export function detectPlatform(ua: string): Platform {

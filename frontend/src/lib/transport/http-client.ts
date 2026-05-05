@@ -18,7 +18,7 @@ function getStoredToken(): string | null {
   if (!storage || typeof storage.getItem !== 'function') {
     return null;
   }
-  return storage.getItem('icom-lan-auth-token');
+  return storage.getItem('rigplane-auth-token');
 }
 
 function getAuthHeaders(): Record<string, string> {
@@ -30,7 +30,7 @@ function getAuthHeaders(): Record<string, string> {
 function handleUnauthorized(): void {
   const token = prompt('Enter auth token:');
   if (token) {
-    localStorage.setItem('icom-lan-auth-token', token);
+    localStorage.setItem('rigplane-auth-token', token);
     location.reload();
   }
 }

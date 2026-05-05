@@ -301,7 +301,7 @@ _ctrl.onMessage((msg) => {
 
 export function connect(url: string = '/api/v1/ws') {
   const token = typeof globalThis.localStorage?.getItem === 'function'
-    ? globalThis.localStorage.getItem('icom-lan-auth-token')
+    ? globalThis.localStorage.getItem('rigplane-auth-token')
     : null;
   const wsUrl = token ? `${url}?token=${encodeURIComponent(token)}` : url;
   _ctrl.connect(wsUrl);

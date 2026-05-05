@@ -9,7 +9,7 @@
  * Legacy 'lcd' persisted values are mapped to 'lcd-cockpit' by resolveSkinId().
  */
 
-const STORAGE_KEY = 'icom-lan-layout';
+const STORAGE_KEY = 'rigplane-layout';
 
 export type LayoutMode = 'auto' | 'lcd' | 'lcd-cockpit' | 'lcd-scope' | 'standard' | 'sdr-test';
 

@@ -12,7 +12,7 @@
 
   let p = $derived(deriveMemoryPanelProps());
 
-  const STORAGE_KEY = 'icom-lan:memory-channels';
+  const STORAGE_KEY = 'rigplane:memory-channels';
   const MAX_CHANNELS = 99;
 
   interface MemoryEntry {

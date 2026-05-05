@@ -120,14 +120,14 @@ describe('CollapsiblePanel', () => {
     header?.click();
     flushSync();
 
-    const stored = localStorage.getItem('icom-lan:panel-collapsed');
+    const stored = localStorage.getItem('rigplane:panel-collapsed');
     expect(stored).not.toBeNull();
     const data = JSON.parse(stored!);
     expect(data['test-panel']).toBe(true);
   });
 
   it('restores collapsed state from localStorage', () => {
-    localStorage.setItem('icom-lan:panel-collapsed', JSON.stringify({ 'test-panel': true }));
+    localStorage.setItem('rigplane:panel-collapsed', JSON.stringify({ 'test-panel': true }));
 
     const target = mountPanel({ title: 'Test', panelId: 'test-panel' });
     const chevron = target.querySelector('.chevron');
@@ -317,7 +317,7 @@ describe('CollapsiblePanel', () => {
       // ``collapsed`` to false but left ``userExpanded`` false, so the derived
       // ``effectiveCollapsed`` stayed true.
       localStorage.setItem(
-        'icom-lan:panel-collapsed',
+        'rigplane:panel-collapsed',
         JSON.stringify({ 'auto-cw-persisted': true }),
       );
 

@@ -5,9 +5,9 @@ export interface ThemeInfo {
   preview: string[]; // 5 colors for swatch
 }
 
-const STORAGE_KEY = 'icom-lan:theme';
-const USER_CHOICE_KEY = 'icom-lan:theme-user-choice';
-const VFO_STORAGE_KEY = 'icom-lan:vfo-theme';
+const STORAGE_KEY = 'rigplane:theme';
+const USER_CHOICE_KEY = 'rigplane:theme-user-choice';
+const VFO_STORAGE_KEY = 'rigplane:vfo-theme';
 
 const THEMES: ThemeInfo[] = [
   // Dark themes

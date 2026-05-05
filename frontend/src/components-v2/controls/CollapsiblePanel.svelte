@@ -36,7 +36,7 @@
 
   let effectiveCollapsed = $derived(collapsed || (autoCollapseWhen && !userExpanded));
 
-  const STORAGE_KEY = 'icom-lan:panel-collapsed';
+  const STORAGE_KEY = 'rigplane:panel-collapsed';
 
   // Load collapsed state from localStorage
   onMount(() => {

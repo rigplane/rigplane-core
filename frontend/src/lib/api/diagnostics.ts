@@ -81,7 +81,7 @@ function getAuthHeaders(): Record<string, string> {
   if (!storage || typeof storage.getItem !== 'function') {
     return {};
   }
-  const token = storage.getItem('icom-lan-auth-token');
+  const token = storage.getItem('rigplane-auth-token');
   if (token) return { Authorization: `Bearer ${token}` };
   return {};
 }

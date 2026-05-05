@@ -21,7 +21,7 @@ export const LCD_DISPLAY_MODES: readonly LcdDisplayMode[] = [
   'flicker',
 ] as const;
 
-const STORAGE_KEY = 'icom-lan-lcd-display-mode';
+const STORAGE_KEY = 'rigplane-lcd-display-mode';
 
 let mode = $state<LcdDisplayMode>(loadMode());
 

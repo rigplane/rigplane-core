@@ -6,11 +6,11 @@
  * `--lcd-alpha-*` custom properties on the `.lcd-screen` root. This is
  * the foundation mechanism — see docs/plans/2026-04-18-lcd-display-enhancements.md §2.
  *
- * Persistence is intentionally separate from theme (`icom-lan:lcd-contrast`):
+ * Persistence is intentionally separate from theme (`rigplane:lcd-contrast`):
  * contrast tracks ambient light, theme is aesthetic.
  */
 
-const STORAGE_KEY = 'icom-lan:lcd-contrast';
+const STORAGE_KEY = 'rigplane:lcd-contrast';
 
 export type LcdContrastPreset = 'DIM' | 'LOW' | 'MID' | 'HIGH' | 'MAX';
 

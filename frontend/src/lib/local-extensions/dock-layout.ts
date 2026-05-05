@@ -1,4 +1,4 @@
-export const LOCAL_EXTENSION_DOCK_LAYOUT_STORAGE_KEY = 'icom-lan:local-extension-dock-layout:v1';
+export const LOCAL_EXTENSION_DOCK_LAYOUT_STORAGE_KEY = 'rigplane:local-extension-dock-layout:v1';
 export const LOCAL_EXTENSION_DOCK_LAYOUT_VERSION = 1;
 
 export type LocalExtensionDockMode =

@@ -22,7 +22,7 @@
 
   // --- Panel reorder (shared logic) ---
   const drag = createDragReorder({
-    storageKey: 'icom-lan:right-panel-order',
+    storageKey: 'rigplane:right-panel-order',
     defaults: ['rx-audio', 'audio-scope', 'dsp', 'tx', 'cw', 'memory'],
     containerSelector: '.right-sidebar',
   });
