@@ -10,25 +10,35 @@ import zipfile
 from pathlib import Path
 
 from rigplane.diagnostics._discovery import discover
-from rigplane.diagnostics._manifest import _Manifest
+from rigplane.diagnostics._manifest import SCHEMA_VERSION, _Manifest
 from rigplane.diagnostics.contributor import BundleContext
 
 logger = logging.getLogger(__name__)
 
 
-def build_bundle(ctx: BundleContext, output_path: Path) -> Path:
+def build_bundle(
+    ctx: BundleContext,
+    output_path: Path,
+    *,
+    schema_version: str = SCHEMA_VERSION,
+) -> Path:
     """Collect contributions, assemble manifest, write a zip at ``output_path``.
 
     Per-contributor failures are isolated: a raising ``contribute()`` is logged
     to ``manifest.warnings`` and the bundle is still produced. Returns the
     absolute path of the created zip.
+
+    ``schema_version`` selects the wire contract. Defaults to the current
+    canonical format (``rigplane-bundle-v2``); pass
+    :data:`rigplane.diagnostics._manifest.SCHEMA_VERSION_V1` to emit the
+    legacy ``icom-lan-bundle-v1`` format for backwards-compatibility tests.
     """
     output_path = Path(output_path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
     with tempfile.TemporaryDirectory() as staging:
         staging_dir = Path(staging)
-        manifest = _Manifest(ctx)
+        manifest = _Manifest(ctx, schema_version=schema_version)
 
         for contributor in discover():
             contributor_dir = staging_dir / contributor.name
