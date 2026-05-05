@@ -1,6 +1,6 @@
 # CLI Reference
 
-The `icom-lan` CLI provides quick access to radio control from the terminal.
+The `rigplane` CLI provides quick access to radio control from the terminal.
 
 ## Global Options
 
@@ -24,7 +24,7 @@ All commands accept these options:
 | `--version` | — | — | Print version and exit |
 
 !!! tip "Zero-config startup"
-    If you have a single radio on the network, just run `icom-lan web` — it auto-discovers the radio via LAN broadcast. No `--host` needed.
+    If you have a single radio on the network, just run `rigplane web` — it auto-discovers the radio via LAN broadcast. No `--host` needed.
 
     For permanent setups, set environment variables in your shell profile:
 
@@ -37,7 +37,7 @@ All commands accept these options:
 
 ## Auto-discovery
 
-When `--host` is omitted (LAN backend), icom-lan sends a UDP broadcast to find radios:
+When `--host` is omitted (LAN backend), rigplane sends a UDP broadcast to find radios:
 
 - **1 radio found** → uses it automatically, prints the IP
 - **Multiple radios** → lists them, asks you to specify `--host`
@@ -63,51 +63,51 @@ Use `--preset` with `web` or `serve` commands for common scenarios:
 | `headless` | rigctld only (no web UI) |
 
 ```bash
-icom-lan web --preset digimode          # Full digital mode setup
-icom-lan web --preset hamradio          # General ham radio setup
+rigplane web --preset digimode          # Full digital mode setup
+rigplane web --preset hamradio          # General ham radio setup
 ```
 
 User-provided flags override preset values: `--preset digimode --bridge "MyDevice"` uses your device name.
 
 ## Backend Selection
 
-icom-lan supports three backends: **LAN** (default), **serial** (USB CI-V), and
+rigplane supports three backends: **LAN** (default), **serial** (USB CI-V), and
 **yaesu-cat** (text CAT over serial).
 
 ### LAN backend (default)
 
 ```bash
 # Auto-discover radio on LAN
-icom-lan status
+rigplane status
 
 # Explicit IP
-icom-lan --host 192.168.55.40 status
-icom-lan --backend lan status
+rigplane --host 192.168.55.40 status
+rigplane --backend lan status
 ```
 
 ### Serial backend
 
 ```bash
 # Auto-discover serial port
-icom-lan --backend serial status
+rigplane --backend serial status
 
 # Explicit port (--backend serial is inferred)
-icom-lan --serial-port /dev/tty.usbmodem-IC7610 status
+rigplane --serial-port /dev/tty.usbmodem-IC7610 status
 ```
 
 Set via environment variable to avoid repeating:
 
 ```bash
 export ICOM_SERIAL_DEVICE=/dev/tty.usbmodem-IC7610
-icom-lan status    # auto-infers --backend serial
+rigplane status    # auto-infers --backend serial
 ```
 
 ### Yaesu CAT backend
 
 ```bash
 # Connects via Yaesu CAT serial protocol (for example FTX-1 / FT-710 profiles)
-icom-lan --backend yaesu-cat --serial-port /dev/tty.usbserial-FTX1 status
-icom-lan --backend yaesu-cat --serial-port /dev/tty.usbserial-FTX1 freq
+rigplane --backend yaesu-cat --serial-port /dev/tty.usbserial-FTX1 status
+rigplane --backend yaesu-cat --serial-port /dev/tty.usbserial-FTX1 freq
 ```
 
 ### Serial baud defaults by backend
@@ -123,11 +123,11 @@ The serial backend uses USB audio devices exported by the radio. By default, dev
 
 ```bash
 # List all available audio devices
-icom-lan --list-audio-devices
-icom-lan --list-audio-devices --json
+rigplane --list-audio-devices
+rigplane --list-audio-devices --json
 
 # Specify explicit devices
-icom-lan --backend serial --serial-port /dev/tty.usbmodem-IC7610 \
+rigplane --backend serial --serial-port /dev/tty.usbmodem-IC7610 \
     --rx-device "IC-7610 USB Audio" \
     --tx-device "IC-7610 USB Audio" \
     audio rx --out rx.wav --seconds 10
@@ -138,10 +138,10 @@ icom-lan --backend serial --serial-port /dev/tty.usbmodem-IC7610 \
 The `discover` command scans both LAN (UDP broadcast) and USB serial ports concurrently:
 
 ```bash
-icom-lan discover                      # LAN + serial (default)
-icom-lan discover --lan-only           # UDP broadcast only
-icom-lan discover --serial-only        # USB serial ports only
-icom-lan discover --timeout 5          # Longer LAN listen window
+rigplane discover                      # LAN + serial (default)
+rigplane discover --lan-only           # UDP broadcast only
+rigplane discover --serial-only        # USB serial ports only
+rigplane discover --timeout 5          # Longer LAN listen window
 ```
 
 ## Commands
@@ -151,8 +151,8 @@ icom-lan discover --timeout 5          # Longer LAN listen window
 Show radio status (frequency, mode, S-meter, power).
 
 ```bash
-icom-lan status
-icom-lan status --json
+rigplane status
+rigplane status --json
 ```
 
 ```
@@ -180,12 +180,12 @@ Get or set the operating frequency.
 
 ```bash
 # Get current frequency
-icom-lan freq
+rigplane freq
 
 # Set frequency (multiple formats)
-icom-lan freq 14074000      # Hz
-icom-lan freq 14074k        # kHz
-icom-lan freq 14.074m       # MHz
+rigplane freq 14074000      # Hz
+rigplane freq 14074k        # kHz
+rigplane freq 14.074m       # MHz
 ```
 
 ### `mode`
@@ -194,12 +194,12 @@ Get or set the operating mode.
 
 ```bash
 # Get current mode
-icom-lan mode
+rigplane mode
 
 # Set mode
-icom-lan mode USB
-icom-lan mode CW
-icom-lan mode LSB
+rigplane mode USB
+rigplane mode CW
+rigplane mode LSB
 ```
 
 Available modes: `LSB`, `USB`, `AM`, `CW`, `RTTY`, `FM`, `WFM`, `CW_R`, `RTTY_R`, `DV`
@@ -210,10 +210,10 @@ Get or set the RF power level (0–255).
 
 ```bash
 # Get current power
-icom-lan power
+rigplane power
 
 # Set power level
-icom-lan power 128
+rigplane power 128
 ```
 
 !!! note "Power Scale"
@@ -224,8 +224,8 @@ icom-lan power 128
 Read all available meters.
 
 ```bash
-icom-lan meter
-icom-lan meter --json
+rigplane meter
+rigplane meter --json
 ```
 
 ```
@@ -240,13 +240,13 @@ ALC      n/a
 
 ### `audio caps`
 
-Show icom-lan audio capability metadata and deterministic defaults.
+Show rigplane audio capability metadata and deterministic defaults.
 
 ```bash
-icom-lan audio caps
-icom-lan audio caps --json
-icom-lan audio caps --stats
-icom-lan audio caps --json --stats
+rigplane audio caps
+rigplane audio caps --json
+rigplane audio caps --stats
+rigplane audio caps --json --stats
 ```
 
 Text output includes:
@@ -285,9 +285,9 @@ JSON output example:
 Capture RX audio to a 16-bit PCM WAV file.
 
 ```bash
-icom-lan audio rx --out rx.wav --seconds 10
-icom-lan audio rx --out rx.wav --seconds 10 --sample-rate 48000 --channels 1
-icom-lan audio rx --out rx.wav --json
+rigplane audio rx --out rx.wav --seconds 10
+rigplane audio rx --out rx.wav --seconds 10 --sample-rate 48000 --channels 1
+rigplane audio rx --out rx.wav --json
 ```
 
 ### `audio tx`
@@ -295,9 +295,9 @@ icom-lan audio rx --out rx.wav --json
 Transmit a WAV file (`16-bit PCM`, matching sample rate/channels).
 
 ```bash
-icom-lan audio tx --in tx.wav
-icom-lan audio tx --in tx.wav --sample-rate 48000 --channels 1
-icom-lan audio tx --in tx.wav --json
+rigplane audio tx --in tx.wav
+rigplane audio tx --in tx.wav --sample-rate 48000 --channels 1
+rigplane audio tx --in tx.wav --json
 ```
 
 ### `audio loopback`
@@ -305,15 +305,15 @@ icom-lan audio tx --in tx.wav --json
 Run a quick RX-to-TX PCM loopback window.
 
 ```bash
-icom-lan audio loopback --seconds 10
-icom-lan audio loopback --seconds 10 --sample-rate 48000 --channels 1
-icom-lan audio loopback --json
+rigplane audio loopback --seconds 10
+rigplane audio loopback --seconds 10 --sample-rate 48000 --channels 1
+rigplane audio loopback --json
 ```
 
 ### Shared audio flags (`rx`/`tx`/`loopback`)
 
-- `--sample-rate` — PCM sample rate in Hz (must be supported by `icom-lan`)
-- `--channels` — PCM channel count (must be supported by `icom-lan`)
+- `--sample-rate` — PCM sample rate in Hz (must be supported by `rigplane`)
+- `--channels` — PCM channel count (must be supported by `rigplane`)
 - `--json` — machine-readable JSON output
 - `--stats` — print transfer counters/metrics (human-readable mode)
 
@@ -323,16 +323,16 @@ Get or set the attenuator level.
 
 ```bash
 # Get current attenuation
-icom-lan att
-icom-lan att --json
+rigplane att
+rigplane att --json
 
 # Set level in dB (0–45, 3 dB steps)
-icom-lan att 18
-icom-lan att 0
+rigplane att 18
+rigplane att 0
 
 # Toggle shortcuts
-icom-lan att on     # Sets 18 dB
-icom-lan att off    # Sets 0 dB
+rigplane att on     # Sets 18 dB
+rigplane att off    # Sets 0 dB
 ```
 
 ```
@@ -358,14 +358,14 @@ Get or set the preamplifier level.
 
 ```bash
 # Get current preamp level
-icom-lan preamp
-icom-lan preamp --json
+rigplane preamp
+rigplane preamp --json
 
 # Set level
-icom-lan preamp 0     # Off
-icom-lan preamp 1     # PREAMP 1
-icom-lan preamp 2     # PREAMP 2
-icom-lan preamp off   # Same as 0
+rigplane preamp 0     # Off
+rigplane preamp 1     # PREAMP 1
+rigplane preamp 2     # PREAMP 2
+rigplane preamp off   # Same as 0
 ```
 
 ```
@@ -387,13 +387,13 @@ Get or set antenna selection.
 
 ```bash
 # Get current antenna state
-icom-lan antenna
+rigplane antenna
 
 # Set antenna
-icom-lan antenna --ant1 on
-icom-lan antenna --ant2 on
-icom-lan antenna --rx-ant1 on
-icom-lan antenna --rx-ant2 off
+rigplane antenna --ant1 on
+rigplane antenna --ant2 on
+rigplane antenna --rx-ant1 on
+rigplane antenna --rx-ant2 off
 ```
 
 | Flag | Default | Description |
@@ -408,7 +408,7 @@ icom-lan antenna --rx-ant2 off
 Get or set the radio's internal date.
 
 ```bash
-icom-lan date
+rigplane date
 ```
 
 ### `time`
@@ -416,7 +416,7 @@ icom-lan date
 Get or set the radio's internal time.
 
 ```bash
-icom-lan time
+rigplane time
 ```
 
 ### `dualwatch`
@@ -424,7 +424,7 @@ icom-lan time
 Get or set dual watch mode.
 
 ```bash
-icom-lan dualwatch
+rigplane dualwatch
 ```
 
 ### `tuner`
@@ -432,7 +432,7 @@ icom-lan dualwatch
 Control the antenna tuner.
 
 ```bash
-icom-lan tuner
+rigplane tuner
 ```
 
 ### `levels`
@@ -440,7 +440,7 @@ icom-lan tuner
 Get or set radio levels (AF, RF, squelch, etc.).
 
 ```bash
-icom-lan levels
+rigplane levels
 ```
 
 ### `ptt`
@@ -448,8 +448,8 @@ icom-lan levels
 Toggle Push-To-Talk.
 
 ```bash
-icom-lan ptt on
-icom-lan ptt off
+rigplane ptt on
+rigplane ptt off
 ```
 
 !!! danger "Caution"
@@ -460,7 +460,7 @@ icom-lan ptt off
 Send CW text via the radio's built-in keyer.
 
 ```bash
-icom-lan cw "CQ CQ DE KN4KYD K"
+rigplane cw "CQ CQ DE KN4KYD K"
 ```
 
 The text is sent in chunks of up to 30 characters. Supports A–Z, 0–9, and standard prosigns.
@@ -470,8 +470,8 @@ The text is sent in chunks of up to 30 characters. Supports A–Z, 0–9, and st
 Remote power control.
 
 ```bash
-icom-lan power-on
-icom-lan power-off
+rigplane power-on
+rigplane power-off
 ```
 
 !!! warning
@@ -482,10 +482,10 @@ icom-lan power-off
 Discover Icom radios on LAN and USB serial ports. Results are grouped by radio identity — the same physical radio connected via both LAN and USB appears as one entry with two connection methods.
 
 ```bash
-icom-lan discover                   # LAN + serial
-icom-lan discover --lan-only        # UDP broadcast only
-icom-lan discover --serial-only     # USB serial ports only
-icom-lan discover --timeout 5       # Longer LAN listen window (default: 3s)
+rigplane discover                   # LAN + serial
+rigplane discover --lan-only        # UDP broadcast only
+rigplane discover --serial-only     # USB serial ports only
+rigplane discover --timeout 5       # Longer LAN listen window (default: 3s)
 ```
 
 ```
@@ -523,19 +523,19 @@ Start a rigctld-compatible TCP server so that logging and contesting software (W
 
 ```bash
 # Basic rigctld server on default port 4532
-icom-lan serve
+rigplane serve
 
 # Custom port, read-only, max 5 clients
-icom-lan serve --port 4533 --read-only --max-clients 5
+rigplane serve --port 4533 --read-only --max-clients 5
 
 # Write every command to an audit log
-icom-lan serve --audit-log /var/log/icom-audit.jsonl
+rigplane serve --audit-log /var/log/icom-audit.jsonl
 
 # Rate-limit to 10 commands/sec per client, verbose debug logs
-icom-lan serve --rate-limit 10 --log-level DEBUG
+rigplane serve --rate-limit 10 --log-level DEBUG
 
 # WSJT-X preset (enables DATA mode automatically on first connect)
-icom-lan serve --wsjtx-compat
+rigplane serve --wsjtx-compat
 ```
 
 | Option | Default | Description |
@@ -559,10 +559,10 @@ Transparent UDP relay that forwards all radio traffic between a remote client an
 
 ```bash
 # Forward radio at 192.168.55.40 to all VPN clients
-icom-lan proxy --radio 192.168.55.40
+rigplane proxy --radio 192.168.55.40
 
 # Listen only on VPN interface, custom base port
-icom-lan proxy --radio 192.168.55.40 --listen 10.8.0.1 --port 50010
+rigplane proxy --radio 192.168.55.40 --listen 10.8.0.1 --port 50010
 ```
 
 | Option | Default | Description |
@@ -577,29 +577,29 @@ Start the all-in-one server: Web UI + optional audio bridge + rigctld.
 
 ```bash
 # Web UI only (auto-discovers radio)
-icom-lan web
+rigplane web
 
 # Use a preset for common scenarios
-icom-lan web --preset digimode          # Bridge + rigctld + WSJT-X compat
-icom-lan web --preset hamradio          # Bridge + rigctld
+rigplane web --preset digimode          # Bridge + rigctld + WSJT-X compat
+rigplane web --preset hamradio          # Bridge + rigctld
 
 # Web UI + audio bridge + rigctld (recommended for WSJT-X)
-icom-lan web --bridge "BlackHole 2ch"
+rigplane web --bridge "BlackHole 2ch"
 
 # Web UI + WSJT-X compatibility on embedded rigctld
-icom-lan web --bridge --wsjtx-compat
+rigplane web --bridge --wsjtx-compat
 
 # Web UI + bridge (RX only, no TX from virtual device)
-icom-lan web --bridge "BlackHole 2ch" --bridge-rx-only
+rigplane web --bridge "BlackHole 2ch" --bridge-rx-only
 
 # Disable rigctld (enabled by default on :4532)
-icom-lan web --no-rigctld
+rigplane web --no-rigctld
 
 # Custom ports
-icom-lan web --port 9090 --rigctld-port 4533
+rigplane web --port 9090 --rigctld-port 4533
 
 # Require token for /api and WebSocket channels
-icom-lan web --auth-token "change-me"
+rigplane web --auth-token "change-me"
 ```
 
 | Option | Default | Description |
@@ -622,13 +622,13 @@ Route radio audio to/from a virtual audio device (BlackHole, Loopback, VB-Audio)
 
 ```bash
 # List available audio devices
-icom-lan audio bridge --list-devices
+rigplane audio bridge --list-devices
 
 # Start bridge
-icom-lan audio bridge --device "BlackHole 2ch"
+rigplane audio bridge --device "BlackHole 2ch"
 
 # RX only (no TX from virtual device)
-icom-lan audio bridge --device "BlackHole 2ch" --rx-only
+rigplane audio bridge --device "BlackHole 2ch" --rx-only
 ```
 
 !!! tip "macOS Setup"
@@ -640,7 +640,7 @@ icom-lan audio bridge --device "BlackHole 2ch" --rx-only
 
 !!! note "Dependencies"
     Audio-bridge dependencies (`opuslib`, `sounddevice`, `numpy`) ship with
-    the core install since v0.19 — `pip install icom-lan` is sufficient.
+    the core install since v0.19 — `pip install rigplane` is sufficient.
     On macOS with Homebrew, you may also need:
     ```bash
     export DYLD_LIBRARY_PATH=/opt/homebrew/lib
@@ -650,30 +650,30 @@ icom-lan audio bridge --device "BlackHole 2ch" --rx-only
 
 Capture spectrum and waterfall data from the radio's scope display and render as PNG.
 
-Requires optional dependency: `pip install icom-lan[scope]`
+Requires optional dependency: `pip install rigplane[scope]`
 
 ```bash
 # Combined spectrum + waterfall (50 frames, ~3 seconds)
-icom-lan scope
+rigplane scope
 
 # Spectrum only (1 frame, fast)
-icom-lan scope --spectrum-only
+rigplane scope --spectrum-only
 
 # Custom output and frame count
-icom-lan scope --output waterfall.png --frames 100
+rigplane scope --output waterfall.png --frames 100
 
 # Grayscale theme
-icom-lan scope --theme grayscale
+rigplane scope --theme grayscale
 
 # Wider image
-icom-lan scope --width 1200
+rigplane scope --width 1200
 
 # Raw JSON data (no Pillow needed)
-icom-lan scope --json
-icom-lan scope --spectrum-only --json
+rigplane scope --json
+rigplane scope --spectrum-only --json
 
 # Custom capture timeout
-icom-lan scope --capture-timeout 20
+rigplane scope --capture-timeout 20
 ```
 
 | Option | Default | Description |
@@ -692,14 +692,14 @@ For daemon-like commands (`web`, `serve`), you can opt in to writing a PID file 
 
 ```bash
 # Enable PID file for web/serve (e.g. in systemd or a wrapper script)
-export ICOM_PID_FILE=/var/run/icom-lan.pid
-icom-lan web
+export ICOM_PID_FILE=/var/run/rigplane.pid
+rigplane web
 
 # Graceful shutdown
-kill $(cat /var/run/icom-lan.pid)
+kill $(cat /var/run/rigplane.pid)
 
-# Check if icom-lan is running
-test -f /var/run/icom-lan.pid && ps -p $(cat /var/run/icom-lan.pid)
+# Check if rigplane is running
+test -f /var/run/rigplane.pid && ps -p $(cat /var/run/rigplane.pid)
 ```
 
 If `ICOM_PID_FILE` is unset or empty, no PID file is written. This avoids conflicts when running multiple instances or in tests.
@@ -709,7 +709,7 @@ If `ICOM_PID_FILE` is unset or empty, no PID file is written. This avoids confli
 `web` and `serve` are long-running commands, so the CLI enables file logging by default
 to preserve diagnostics across reconnects/restarts.
 
-- Default file path: `logs/icom-lan.log`
+- Default file path: `logs/rigplane.log`
 - Handler type: Python `RotatingFileHandler`
 - Rotation defaults: `50_000_000` bytes per file, `5` backups
 
@@ -717,24 +717,24 @@ You can tune this behavior with environment variables:
 
 | Variable | Default | Meaning |
 |---|---:|---|
-| `ICOM_LOG_FILE` | `logs/icom-lan.log` (for `web`/`serve`) | Log file path. Set to `off`, `none`, or `-` to disable file logging entirely. |
+| `ICOM_LOG_FILE` | `logs/rigplane.log` (for `web`/`serve`) | Log file path. Set to `off`, `none`, or `-` to disable file logging entirely. |
 | `ICOM_LOG_MAX_BYTES` | `50000000` | Rotate when file reaches this size (bytes). |
 | `ICOM_LOG_BACKUP_COUNT` | `5` | Number of rotated files to keep. Set `0` to disable rotation. |
 | `ICOM_DEBUG` | unset | Enables debug-level logging and also enables file logging if `ICOM_LOG_FILE` is not disabled. |
 
 ```bash
 # Custom log location (systemd/container-friendly)
-export ICOM_LOG_FILE=/var/log/icom-lan/daemon.log
-icom-lan web
+export ICOM_LOG_FILE=/var/log/rigplane/daemon.log
+rigplane web
 
 # Smaller files with more backups
 export ICOM_LOG_MAX_BYTES=10000000
 export ICOM_LOG_BACKUP_COUNT=10
-icom-lan serve
+rigplane serve
 
 # Explicitly disable file logs (stdout/stderr only)
 export ICOM_LOG_FILE=off
-icom-lan web
+rigplane web
 ```
 
 ## Flag Reference
@@ -754,13 +754,13 @@ These flags apply to **every** command and must come before the subcommand name.
 
 ```bash
 # Print installed version
-icom-lan --version
+rigplane --version
 
 # Connect to a radio on a non-default port
-icom-lan --control-port 50002 status
+rigplane --control-port 50002 status
 
 # Specify radio model explicitly
-icom-lan --model IC-7300 --backend serial --serial-port /dev/cu.usbserial-XXX status
+rigplane --model IC-7300 --backend serial --serial-port /dev/cu.usbserial-XXX status
 ```
 
 ### `serve` flags
@@ -778,25 +778,25 @@ icom-lan --model IC-7300 --backend serial --serial-port /dev/cu.usbserial-XXX st
 
 ```bash
 # Log every command to a JSONL audit trail
-icom-lan serve --audit-log /var/log/icom-audit.jsonl
+rigplane serve --audit-log /var/log/icom-audit.jsonl
 
 # Tighten cache for faster state sync
-icom-lan serve --cache-ttl 0.05
+rigplane serve --cache-ttl 0.05
 
 # Verbose debug logging
-icom-lan serve --log-level DEBUG
+rigplane serve --log-level DEBUG
 
 # Limit to 3 simultaneous clients
-icom-lan serve --max-clients 3
+rigplane serve --max-clients 3
 
 # Drop commands faster than 10/sec per client
-icom-lan serve --rate-limit 10
+rigplane serve --rate-limit 10
 
 # Prevent accidental frequency/mode changes
-icom-lan serve --read-only
+rigplane serve --read-only
 
 # Enable WSJT-X compatibility preset
-icom-lan serve --wsjtx-compat
+rigplane serve --wsjtx-compat
 ```
 
 ### `proxy` flags
@@ -808,10 +808,10 @@ icom-lan serve --wsjtx-compat
 
 ```bash
 # Forward traffic to radio at 192.168.1.100 (listen on all interfaces)
-icom-lan proxy --radio 192.168.1.100
+rigplane proxy --radio 192.168.1.100
 
 # Bind only on the VPN interface
-icom-lan proxy --radio 192.168.1.100 --listen 10.8.0.1
+rigplane proxy --radio 192.168.1.100 --listen 10.8.0.1
 ```
 
 ### `web` flags
@@ -835,16 +835,16 @@ icom-lan proxy --radio 192.168.1.100 --listen 10.8.0.1
 
 ```bash
 # Bidirectional bridge: RX from BlackHole 2ch, TX through BlackHole 16ch
-icom-lan web --bridge "BlackHole 2ch" --bridge-tx-device "BlackHole 16ch"
+rigplane web --bridge "BlackHole 2ch" --bridge-tx-device "BlackHole 16ch"
 
 # Serve a custom-built web UI from a local directory
-icom-lan web --static-dir /opt/icom-ui/dist
+rigplane web --static-dir /opt/icom-ui/dist
 
 # Connect to a DX cluster and show spot overlays on the waterfall
-icom-lan web --dx-cluster dxc.nc7j.com:7373 --callsign KN4KYD
+rigplane web --dx-cluster dxc.nc7j.com:7373 --callsign KN4KYD
 
 # Protect API + WS endpoints with a bearer token
-icom-lan web --auth-token "change-me"
+rigplane web --auth-token "change-me"
 ```
 
 ## Exit Codes
@@ -858,15 +858,15 @@ icom-lan web --auth-token "change-me"
 
 ```bash
 # Monitor frequency in a loop
-watch -n 1 icom-lan freq --json
+watch -n 1 rigplane freq --json
 
 # Quick band change
-icom-lan freq 7.074m && icom-lan mode USB
+rigplane freq 7.074m && rigplane mode USB
 
 # Check RF chain setup
-icom-lan att && icom-lan preamp
+rigplane att && rigplane preamp
 
 # Script-friendly JSON output
-FREQ=$(icom-lan freq --json | jq -r '.frequency_hz')
+FREQ=$(rigplane freq --json | jq -r '.frequency_hz')
 echo "Currently on $FREQ Hz"
 ```

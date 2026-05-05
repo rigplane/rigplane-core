@@ -1,8 +1,8 @@
 ## Context
 
-Step 12 of the internal-modularization migration: move `cli.py` into `src/icom_lan/cli/`. The `__main__.py` placement decision is in this step's PR — recommendation per plan §4.1: keep `__main__.py` at top level for `python -m icom_lan` discoverability, with one delegating line `from icom_lan.cli import main; main()`.
+Step 12 of the internal-modularization migration: move `cli.py` into `src/rigplane/cli/`. The `__main__.py` placement decision is in this step's PR — recommendation per plan §4.1: keep `__main__.py` at top level for `python -m rigplane` discoverability, with one delegating line `from rigplane.cli import main; main()`.
 
-Plan section: [§4.1 Step 12 — `cli`](https://github.com/morozsm/icom-lan/blob/refactor/modularization-discovery/docs/plans/2026-04-29-modularization-plan.md#step-12--cli).
+Plan section: [§4.1 Step 12 — `cli`](https://github.com/rigplane/rigplane-core/blob/refactor/modularization-discovery/docs/plans/2026-04-29-modularization-plan.md#step-12--cli).
 
 ## Pre-conditions
 
@@ -12,10 +12,10 @@ Blocked by #1294 (Step 11: discovery to backends).
 
 Move 1 file (and decide the `__main__.py` question):
 
-1. `src/icom_lan/cli.py` → `src/icom_lan/cli/cli.py` (or fold into `cli/__init__.py` body — sub-agent's call).
-2. Decision noted in the PR description: does `__main__.py` move into `cli/`, or stay top-level? Recommendation: keep top-level; if it stays, `src/icom_lan/__main__.py` is updated (1-line change) to call `from icom_lan.cli import main; main()`.
+1. `src/rigplane/cli.py` → `src/rigplane/cli/cli.py` (or fold into `cli/__init__.py` body — sub-agent's call).
+2. Decision noted in the PR description: does `__main__.py` move into `cli/`, or stay top-level? Recommendation: keep top-level; if it stays, `src/rigplane/__main__.py` is updated (1-line change) to call `from rigplane.cli import main; main()`.
 
-Add **1 re-export shim file** at `src/icom_lan/cli.py` using the plan §5.1 template (so the legacy `from icom_lan.cli import …` import continues to work — note: if the file becomes a package, the shim approach changes; sub-agent decides between (a) `cli.py` shim file alongside the new `cli/` package or (b) since you can't have both a `cli.py` and a `cli/` package with the same name, fold `cli.py`'s body into `cli/__init__.py` directly and skip the shim).
+Add **1 re-export shim file** at `src/rigplane/cli.py` using the plan §5.1 template (so the legacy `from rigplane.cli import …` import continues to work — note: if the file becomes a package, the shim approach changes; sub-agent decides between (a) `cli.py` shim file alongside the new `cli/` package or (b) since you can't have both a `cli.py` and a `cli/` package with the same name, fold `cli.py`'s body into `cli/__init__.py` directly and skip the shim).
 
 ## Out of scope
 
@@ -32,16 +32,16 @@ Add **1 re-export shim file** at `src/icom_lan/cli.py` using the plan §5.1 temp
 - `uv run mypy src/` clean.
 - `uv run pytest tests/contracts/test_lazy_imports.py -v` passes (3 tests green).
 - Public-import + entrypoint smoke check (each must succeed):
-  - `uv run python -c "from icom_lan.cli import main"` (canonical).
-  - `uv run python -m icom_lan --help` (`__main__.py` entrypoint resolves; CLI prints help and exits 0).
-  - `uv run icom-lan --help` (console-script entrypoint per `pyproject.toml`).
+  - `uv run python -c "from rigplane.cli import main"` (canonical).
+  - `uv run python -m rigplane --help` (`__main__.py` entrypoint resolves; CLI prints help and exits 0).
+  - `uv run rigplane --help` (console-script entrypoint per `pyproject.toml`).
 
 ## Implementation prompt for the sub-agent
 
 ```
-You are implementing one step of the icom-lan internal modularization
+You are implementing one step of the rigplane internal modularization
 work. Read these references first:
-- /Users/moroz/Projects/icom-lan-research/2026-04-29-internal-modularization-orchestrator.md
+- /Users/moroz/Projects/rigplane-research/2026-04-29-internal-modularization-orchestrator.md
 - docs/plans/2026-04-29-modularization-plan.md
 - The full text of this issue, especially the Scope and Acceptance
   Criteria sections
@@ -74,4 +74,4 @@ stop and ask via PR comment. Do not guess.
 - Verify the shim header (plan §5.1 template, verbatim) is present in any shim file added.
 - LAZY_MAP target tuples must be UNCHANGED.
 - Verify the `__main__.py` decision is documented clearly in the PR description.
-- Verify the `icom-lan` console script (defined in `pyproject.toml`) still resolves — the entry point may need its target updated, BUT only if the path actually moved; do not edit `pyproject.toml` opportunistically.
+- Verify the `rigplane` console script (defined in `pyproject.toml`) still resolves — the entry point may need its target updated, BUT only if the path actually moved; do not edit `pyproject.toml` opportunistically.

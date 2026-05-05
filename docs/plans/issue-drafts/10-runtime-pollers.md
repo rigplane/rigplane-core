@@ -1,8 +1,8 @@
 ## Context
 
-Step 10 of the internal-modularization migration: move 11 runtime helpers (pollers, control-phase, sync wrapper, plus several specialty modules) into `src/icom_lan/runtime/`. Likely splits 10a/10b at execution time per plan size budget. This step covers the **highest concentration of tests reaching into private paths** (per discovery §6: `_connection_state` 22 occurrences, `_civ_rx` 8, `_poller_types` 4) — every shim is load-bearing.
+Step 10 of the internal-modularization migration: move 11 runtime helpers (pollers, control-phase, sync wrapper, plus several specialty modules) into `src/rigplane/runtime/`. Likely splits 10a/10b at execution time per plan size budget. This step covers the **highest concentration of tests reaching into private paths** (per discovery §6: `_connection_state` 22 occurrences, `_civ_rx` 8, `_poller_types` 4) — every shim is load-bearing.
 
-Plan section: [§4.1 Step 10 — `runtime` part 3 (pollers + control + sync + helpers)](https://github.com/morozsm/icom-lan/blob/refactor/modularization-discovery/docs/plans/2026-04-29-modularization-plan.md#step-10--runtime-part-3-pollers--control--sync--helpers).
+Plan section: [§4.1 Step 10 — `runtime` part 3 (pollers + control + sync + helpers)](https://github.com/rigplane/rigplane-core/blob/refactor/modularization-discovery/docs/plans/2026-04-29-modularization-plan.md#step-10--runtime-part-3-pollers--control--sync--helpers).
 
 ## Pre-conditions
 
@@ -10,19 +10,19 @@ Blocked by #1292 (Step 9: runtime mixins).
 
 ## Scope
 
-Move these 11 files from `src/icom_lan/` into `src/icom_lan/runtime/`:
+Move these 11 files from `src/rigplane/` into `src/rigplane/runtime/`:
 
-1. `src/icom_lan/_civ_rx.py` → `src/icom_lan/runtime/_civ_rx.py`
-2. `src/icom_lan/_connection_state.py` → `src/icom_lan/runtime/_connection_state.py`
-3. `src/icom_lan/_control_phase.py` → `src/icom_lan/runtime/_control_phase.py`
-4. `src/icom_lan/_poller_types.py` → `src/icom_lan/runtime/_poller_types.py`
-5. `src/icom_lan/_audio_recovery.py` → `src/icom_lan/runtime/_audio_recovery.py`
-6. `src/icom_lan/sync.py` → `src/icom_lan/runtime/sync.py`
-7. `src/icom_lan/profiles_runtime.py` → `src/icom_lan/runtime/profiles_runtime.py`
-8. `src/icom_lan/meter_cal.py` → `src/icom_lan/runtime/meter_cal.py`
-9. `src/icom_lan/cw_auto_tuner.py` → `src/icom_lan/runtime/cw_auto_tuner.py`
-10. `src/icom_lan/startup_checks.py` → `src/icom_lan/runtime/startup_checks.py`
-11. `src/icom_lan/proxy.py` → `src/icom_lan/runtime/proxy.py`
+1. `src/rigplane/_civ_rx.py` → `src/rigplane/runtime/_civ_rx.py`
+2. `src/rigplane/_connection_state.py` → `src/rigplane/runtime/_connection_state.py`
+3. `src/rigplane/_control_phase.py` → `src/rigplane/runtime/_control_phase.py`
+4. `src/rigplane/_poller_types.py` → `src/rigplane/runtime/_poller_types.py`
+5. `src/rigplane/_audio_recovery.py` → `src/rigplane/runtime/_audio_recovery.py`
+6. `src/rigplane/sync.py` → `src/rigplane/runtime/sync.py`
+7. `src/rigplane/profiles_runtime.py` → `src/rigplane/runtime/profiles_runtime.py`
+8. `src/rigplane/meter_cal.py` → `src/rigplane/runtime/meter_cal.py`
+9. `src/rigplane/cw_auto_tuner.py` → `src/rigplane/runtime/cw_auto_tuner.py`
+10. `src/rigplane/startup_checks.py` → `src/rigplane/runtime/startup_checks.py`
+11. `src/rigplane/proxy.py` → `src/rigplane/runtime/proxy.py`
 
 Add **11 re-export shim files** at the old top-level paths using the plan §5.1 template.
 
@@ -41,24 +41,24 @@ Add **11 re-export shim files** at the old top-level paths using the plan §5.1 
 - `uv run mypy src/` clean.
 - `uv run pytest tests/contracts/test_lazy_imports.py -v` passes (3 tests green).
 - Public-import smoke check (each must succeed):
-  - `uv run python -c "from icom_lan._connection_state import *"` (legacy path via shim — heaviest test consumer).
-  - `uv run python -c "from icom_lan._civ_rx import *"` (legacy path via shim).
-  - `uv run python -c "from icom_lan._poller_types import *"` (legacy path via shim).
-  - `uv run python -c "from icom_lan._control_phase import *"` (legacy path via shim).
-  - `uv run python -c "from icom_lan._audio_recovery import *"` (legacy path via shim).
-  - `uv run python -c "from icom_lan.sync import SyncIcomRadio"`
-  - `uv run python -c "from icom_lan.profiles_runtime import *"` (legacy path via shim).
-  - `uv run python -c "from icom_lan.meter_cal import *"` (legacy path via shim).
-  - `uv run python -c "from icom_lan.cw_auto_tuner import *"` (legacy path via shim).
-  - `uv run python -c "from icom_lan.startup_checks import *"` (legacy path via shim).
-  - `uv run python -c "from icom_lan.proxy import *"` (legacy path via shim).
+  - `uv run python -c "from rigplane._connection_state import *"` (legacy path via shim — heaviest test consumer).
+  - `uv run python -c "from rigplane._civ_rx import *"` (legacy path via shim).
+  - `uv run python -c "from rigplane._poller_types import *"` (legacy path via shim).
+  - `uv run python -c "from rigplane._control_phase import *"` (legacy path via shim).
+  - `uv run python -c "from rigplane._audio_recovery import *"` (legacy path via shim).
+  - `uv run python -c "from rigplane.sync import SyncIcomRadio"`
+  - `uv run python -c "from rigplane.profiles_runtime import *"` (legacy path via shim).
+  - `uv run python -c "from rigplane.meter_cal import *"` (legacy path via shim).
+  - `uv run python -c "from rigplane.cw_auto_tuner import *"` (legacy path via shim).
+  - `uv run python -c "from rigplane.startup_checks import *"` (legacy path via shim).
+  - `uv run python -c "from rigplane.proxy import *"` (legacy path via shim).
 
 ## Implementation prompt for the sub-agent
 
 ```
-You are implementing one step of the icom-lan internal modularization
+You are implementing one step of the rigplane internal modularization
 work. Read these references first:
-- /Users/moroz/Projects/icom-lan-research/2026-04-29-internal-modularization-orchestrator.md
+- /Users/moroz/Projects/rigplane-research/2026-04-29-internal-modularization-orchestrator.md
 - docs/plans/2026-04-29-modularization-plan.md
 - The full text of this issue, especially the Scope and Acceptance
   Criteria sections

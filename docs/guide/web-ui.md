@@ -1,6 +1,6 @@
 # Web UI
 
-icom-lan ships with a built-in browser UI for live control, scope/waterfall, meters,
+rigplane ships with a built-in browser UI for live control, scope/waterfall, meters,
 and RX/TX audio.
 
 This page documents the **current implementation** (Svelte frontend + asyncio backend),
@@ -10,13 +10,13 @@ public interfaces, and operational workflows.
 
 ```bash
 # Default: bind all interfaces on port 8080
-icom-lan web
+rigplane web
 
 # Explicit host/port
-icom-lan web --host 0.0.0.0 --port 9090
+rigplane web --host 0.0.0.0 --port 9090
 
 # Require API/WebSocket auth token
-icom-lan web --auth-token "change-me"
+rigplane web --auth-token "change-me"
 ```
 
 Open `http://<server-ip>:8080` (or your custom port).
@@ -74,7 +74,7 @@ These are primarily used by automation, deployment scripts, and operator tooling
 
 !!! note "Audio bridge control path"
     Runtime bridge activation is typically done from CLI flags
-    (`icom-lan web --bridge ...` / `--bridge-rx-only`).
+    (`rigplane web --bridge ...` / `--bridge-rx-only`).
 
 ## WebSocket Channels
 
@@ -162,7 +162,7 @@ Control command:
 {"type":"cmd","id":"73","name":"set_band","params":{"band":5}}
 ```
 
-Backend flow (`src/icom_lan/web/radio_poller.py`):
+Backend flow (`src/rigplane/web/radio_poller.py`):
 
 1. Read Band Stack Register via CI-V `0x1A 0x01 <band> 0x01` (register 1).
 2. If response is valid, apply recalled frequency and mode/filter.
@@ -226,7 +226,7 @@ behavior is implemented in the layout and wiring modules listed above.
 
 ### Backend CI-V poll cadence (state freshness)
 
-`src/icom_lan/web/radio_poller.py` interleaves meter and state queries:
+`src/rigplane/web/radio_poller.py` interleaves meter and state queries:
 
 - even cycles -> meter query
 - odd cycles -> one state query
@@ -312,7 +312,7 @@ using `resolveSkinId(...)` and `getLayoutMode()`:
    - `min(window.innerWidth, window.innerHeight) < 640`, or
    - touch device and `min(window.innerWidth, window.innerHeight) < 500`.
 2. If `isMobile` is true -> mobile skin.
-3. Otherwise, layout preference from localStorage key `icom-lan-layout` is used:
+3. Otherwise, layout preference from localStorage key `rigplane-layout` is used:
    - `lcd` -> amber LCD skin
    - `standard` -> desktop v2 skin
    - `auto` -> desktop v2 when any scope is available, amber LCD when no scope is available.
@@ -353,13 +353,13 @@ Mobile PTT button behavior:
 ### Run with DX cluster overlays
 
 ```bash
-icom-lan web --dx-cluster dxc.nc7j.com:7373 --callsign YOURCALL
+rigplane web --dx-cluster dxc.nc7j.com:7373 --callsign YOURCALL
 ```
 
 ### Run with custom UI assets
 
 ```bash
-icom-lan web --static-dir /opt/icom-ui/dist
+rigplane web --static-dir /opt/icom-ui/dist
 ```
 
 ### Quick health checks
@@ -471,7 +471,7 @@ const sub = state.sub ?? null;
   all-zero scope frames trigger automatic re-enable attempts.
 - **UI version assumptions:** mobile v2 interactions (sheet/panel swipe, touch-first PTT flow)
   require `?ui=v2` or previously stored v2 selection; default is v1.
-- **Layout mode expectations:** v2 layout preference (`icom-lan-layout`) is capability-aware;
+- **Layout mode expectations:** v2 layout preference (`rigplane-layout`) is capability-aware;
   `auto` resolves to desktop only when any scope exists, otherwise LCD is selected.
 - **System action error surfacing:** connect/disconnect/power actions in v2 call
   `runtime.system.*` and surface backend HTTP errors directly in the UI.

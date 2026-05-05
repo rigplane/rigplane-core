@@ -1,8 +1,8 @@
 ## Context
 
-Step 4 of the internal-modularization migration: move the 3 top-level `commands` files (`commander`, `command_map`, `command_spec`) into `src/icom_lan/commands/`, leaving silent re-export shims at the old top-level paths. The `commands/` subpackage already exists; this step expands it.
+Step 4 of the internal-modularization migration: move the 3 top-level `commands` files (`commander`, `command_map`, `command_spec`) into `src/rigplane/commands/`, leaving silent re-export shims at the old top-level paths. The `commands/` subpackage already exists; this step expands it.
 
-Plan section: [§4.1 Step 4 — `commands` top-level](https://github.com/morozsm/icom-lan/blob/refactor/modularization-discovery/docs/plans/2026-04-29-modularization-plan.md#step-4--commands-top-level).
+Plan section: [§4.1 Step 4 — `commands` top-level](https://github.com/rigplane/rigplane-core/blob/refactor/modularization-discovery/docs/plans/2026-04-29-modularization-plan.md#step-4--commands-top-level).
 
 ## Pre-conditions
 
@@ -10,13 +10,13 @@ Blocked by #1286 (Step 3: core contract trio).
 
 ## Scope
 
-Move these 3 files from `src/icom_lan/` into `src/icom_lan/commands/`:
+Move these 3 files from `src/rigplane/` into `src/rigplane/commands/`:
 
-1. `src/icom_lan/commander.py` → `src/icom_lan/commands/commander.py`
-2. `src/icom_lan/command_map.py` → `src/icom_lan/commands/command_map.py`
-3. `src/icom_lan/command_spec.py` → `src/icom_lan/commands/command_spec.py`
+1. `src/rigplane/commander.py` → `src/rigplane/commands/commander.py`
+2. `src/rigplane/command_map.py` → `src/rigplane/commands/command_map.py`
+3. `src/rigplane/command_spec.py` → `src/rigplane/commands/command_spec.py`
 
-Add **3 re-export shim files** at the old top-level paths using the plan §5.1 template. The Tier 2 lazy names `IcomCommander` and `Priority` must continue to resolve through `from icom_lan import IcomCommander, Priority`.
+Add **3 re-export shim files** at the old top-level paths using the plan §5.1 template. The Tier 2 lazy names `IcomCommander` and `Priority` must continue to resolve through `from rigplane import IcomCommander, Priority`.
 
 If the existing `commands/__init__.py` needs name-collision resolution with the moved files, that's in scope; otherwise leave it untouched (LAZY_MAP cleanup is Step 13).
 
@@ -35,18 +35,18 @@ If the existing `commands/__init__.py` needs name-collision resolution with the 
 - `uv run mypy src/` clean.
 - `uv run pytest tests/contracts/test_lazy_imports.py -v` passes (3 tests green).
 - Public-import smoke check (each must succeed):
-  - `uv run python -c "from icom_lan import IcomCommander, Priority"` (Tier 2 lazy).
-  - `uv run python -c "from icom_lan.commander import IcomCommander, Priority"` (legacy path via shim).
-  - `uv run python -c "from icom_lan.command_map import CommandMap"`
-  - `uv run python -c "from icom_lan.command_spec import CommandSpec"`
-  - `uv run python -c "from icom_lan.commands import CommandMap, CommandSpec"` (subpackage re-export, if currently exposed).
+  - `uv run python -c "from rigplane import IcomCommander, Priority"` (Tier 2 lazy).
+  - `uv run python -c "from rigplane.commander import IcomCommander, Priority"` (legacy path via shim).
+  - `uv run python -c "from rigplane.command_map import CommandMap"`
+  - `uv run python -c "from rigplane.command_spec import CommandSpec"`
+  - `uv run python -c "from rigplane.commands import CommandMap, CommandSpec"` (subpackage re-export, if currently exposed).
 
 ## Implementation prompt for the sub-agent
 
 ```
-You are implementing one step of the icom-lan internal modularization
+You are implementing one step of the rigplane internal modularization
 work. Read these references first:
-- /Users/moroz/Projects/icom-lan-research/2026-04-29-internal-modularization-orchestrator.md
+- /Users/moroz/Projects/rigplane-research/2026-04-29-internal-modularization-orchestrator.md
 - docs/plans/2026-04-29-modularization-plan.md
 - The full text of this issue, especially the Scope and Acceptance
   Criteria sections

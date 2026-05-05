@@ -1,6 +1,6 @@
 # Supported Radios
 
-Radio support in icom-lan is defined by **TOML rig profiles** in `rigs/`.
+Radio support in rigplane is defined by **TOML rig profiles** in `rigs/`.
 Adding a new radio = adding a new `.toml` file — see [Adding a New Radio](rig-profiles.md).
 
 ## Tested
@@ -158,7 +158,7 @@ These radios use the same Icom LAN protocol and should work out of the box. Comm
 Instead of remembering CI-V addresses, use the built-in presets:
 
 ```python
-from icom_lan import create_radio, LanBackendConfig, get_civ_addr
+from rigplane import create_radio, LanBackendConfig, get_civ_addr
 
 # Look up by model name and pass to config
 addr = get_civ_addr("IC-705")
@@ -198,7 +198,7 @@ work. If you test with a new model:
 
 1. Connect with the model's default CI-V address
 2. Verify basic operations (frequency, mode, meters)
-3. [Open an issue](https://github.com/morozsm/icom-lan/issues) or PR with your rig file
+3. [Open an issue](https://github.com/rigplane/rigplane-core/issues) or PR with your rig file
 
 ### Finding Your Radio's CI-V Address
 

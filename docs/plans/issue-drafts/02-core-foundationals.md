@@ -1,8 +1,8 @@
 ## Context
 
-Step 2 of the internal-modularization migration: move the 9 foundational `core` files (types, exceptions, auth, transport, civ, protocol, capabilities, env_config, `_optional_deps`) into `src/icom_lan/core/`, leaving silent re-export shims at the old top-level paths.
+Step 2 of the internal-modularization migration: move the 9 foundational `core` files (types, exceptions, auth, transport, civ, protocol, capabilities, env_config, `_optional_deps`) into `src/rigplane/core/`, leaving silent re-export shims at the old top-level paths.
 
-Plan section: [§4.1 Step 2 — `core` foundationals](https://github.com/morozsm/icom-lan/blob/refactor/modularization-discovery/docs/plans/2026-04-29-modularization-plan.md#step-2--core-foundationals).
+Plan section: [§4.1 Step 2 — `core` foundationals](https://github.com/rigplane/rigplane-core/blob/refactor/modularization-discovery/docs/plans/2026-04-29-modularization-plan.md#step-2--core-foundationals).
 
 ## Pre-conditions
 
@@ -10,25 +10,25 @@ Blocked by #1284 (Step 1: skeleton).
 
 ## Scope
 
-Move these 9 files from `src/icom_lan/` into `src/icom_lan/core/`:
+Move these 9 files from `src/rigplane/` into `src/rigplane/core/`:
 
-1. `src/icom_lan/types.py` → `src/icom_lan/core/types.py`
-2. `src/icom_lan/exceptions.py` → `src/icom_lan/core/exceptions.py`
-3. `src/icom_lan/auth.py` → `src/icom_lan/core/auth.py`
-4. `src/icom_lan/transport.py` → `src/icom_lan/core/transport.py`
-5. `src/icom_lan/civ.py` → `src/icom_lan/core/civ.py`
-6. `src/icom_lan/protocol.py` → `src/icom_lan/core/protocol.py`
-7. `src/icom_lan/capabilities.py` → `src/icom_lan/core/capabilities.py`
-8. `src/icom_lan/env_config.py` → `src/icom_lan/core/env_config.py`
-9. `src/icom_lan/_optional_deps.py` → `src/icom_lan/core/_optional_deps.py`
+1. `src/rigplane/types.py` → `src/rigplane/core/types.py`
+2. `src/rigplane/exceptions.py` → `src/rigplane/core/exceptions.py`
+3. `src/rigplane/auth.py` → `src/rigplane/core/auth.py`
+4. `src/rigplane/transport.py` → `src/rigplane/core/transport.py`
+5. `src/rigplane/civ.py` → `src/rigplane/core/civ.py`
+6. `src/rigplane/protocol.py` → `src/rigplane/core/protocol.py`
+7. `src/rigplane/capabilities.py` → `src/rigplane/core/capabilities.py`
+8. `src/rigplane/env_config.py` → `src/rigplane/core/env_config.py`
+9. `src/rigplane/_optional_deps.py` → `src/rigplane/core/_optional_deps.py`
 
 Add **9 re-export shim files** at the old top-level paths, each using the exact template from plan §5.1:
 
 ```python
 # Re-export shim for backwards compatibility.
-# Canonical location: icom_lan.core.<module>
+# Canonical location: rigplane.core.<module>
 # Do not add new symbols here — add them at the canonical location.
-from icom_lan.core.<module> import *  # noqa: F401, F403
+from rigplane.core.<module> import *  # noqa: F401, F403
 ```
 
 If `transport.py` (~500+ LOC) pushes the moved-LOC budget over 500, **split this step into 2a (5 small files) and 2b (transport + civ + protocol)** and file the second sub-issue at execution time per plan §4.1.
@@ -48,20 +48,20 @@ If `transport.py` (~500+ LOC) pushes the moved-LOC budget over 500, **split this
 - `uv run mypy src/` clean.
 - `uv run pytest tests/contracts/test_lazy_imports.py -v` passes (3 tests green).
 - Public-import smoke check (each must succeed):
-  - `uv run python -c "from icom_lan import Radio, IcomRadio, Mode, AudioCodec, BreakInMode"`
-  - `uv run python -c "from icom_lan.transport import UdpTransport, parse_packet, HEADER_SIZE"`
-  - `uv run python -c "from icom_lan.civ import build_civ_message"`
-  - `uv run python -c "from icom_lan.exceptions import IcomLanError"`
-  - `uv run python -c "from icom_lan.auth import Authenticator"`
-  - `uv run python -c "from icom_lan.core import types as _t, transport as _tr; print('core OK')"`
-- `_optional_deps` has zero `from icom_lan` imports (verifies foundation-tier purity per plan §6 R7).
+  - `uv run python -c "from rigplane import Radio, IcomRadio, Mode, AudioCodec, BreakInMode"`
+  - `uv run python -c "from rigplane.transport import UdpTransport, parse_packet, HEADER_SIZE"`
+  - `uv run python -c "from rigplane.civ import build_civ_message"`
+  - `uv run python -c "from rigplane.exceptions import RigplaneError"`
+  - `uv run python -c "from rigplane.auth import Authenticator"`
+  - `uv run python -c "from rigplane.core import types as _t, transport as _tr; print('core OK')"`
+- `_optional_deps` has zero `from rigplane` imports (verifies foundation-tier purity per plan §6 R7).
 
 ## Implementation prompt for the sub-agent
 
 ```
-You are implementing one step of the icom-lan internal modularization
+You are implementing one step of the rigplane internal modularization
 work. Read these references first:
-- /Users/moroz/Projects/icom-lan-research/2026-04-29-internal-modularization-orchestrator.md
+- /Users/moroz/Projects/rigplane-research/2026-04-29-internal-modularization-orchestrator.md
 - docs/plans/2026-04-29-modularization-plan.md
 - The full text of this issue, especially the Scope and Acceptance
   Criteria sections
@@ -93,5 +93,5 @@ stop and ask via PR comment. Do not guess.
 
 - Verify the shim header (the plan §5.1 template, verbatim) is present in every shim file.
 - LAZY_MAP target tuples must be UNCHANGED (Step 13 will canonicalise them).
-- Verify `_optional_deps.py` (now at `icom_lan/core/_optional_deps.py`) still imports nothing from `icom_lan`.
+- Verify `_optional_deps.py` (now at `rigplane/core/_optional_deps.py`) still imports nothing from `rigplane`.
 - Verify atomic-commit policy (plan §5.3): one commit moves files, one commit adds shims (and optionally a third updates internal imports).

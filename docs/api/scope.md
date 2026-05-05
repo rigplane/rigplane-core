@@ -4,13 +4,13 @@ Spectrum and waterfall data from the radio's scope display.
 
 ## Overview
 
-Icom radios with spectrum scope (IC-7610, IC-7300, IC-705, etc.) stream real-time spectrum data over the CI-V protocol as unsolicited `0x27 0x00` packets. The `icom-lan` library reassembles these multi-sequence bursts and delivers complete frames via callback.
+Icom radios with spectrum scope (IC-7610, IC-7300, IC-705, etc.) stream real-time spectrum data over the CI-V protocol as unsolicited `0x27 0x00` packets. The `rigplane` library reassembles these multi-sequence bursts and delivers complete frames via callback.
 
 ## Quick Start
 
 ```python
-from icom_lan import create_radio, LanBackendConfig
-from icom_lan.scope import ScopeFrame
+from rigplane import create_radio, LanBackendConfig
+from rigplane.scope import ScopeFrame
 
 async def main():
     config = LanBackendConfig(host="192.168.1.100", username="u", password="p")
@@ -36,7 +36,7 @@ async def main():
 ### `ScopeFrame`
 
 ```python
-from icom_lan.scope import ScopeFrame
+from rigplane.scope import ScopeFrame
 ```
 
 A complete spectrum scope frame, assembled from a burst of CI-V sequences.
@@ -59,7 +59,7 @@ A complete spectrum scope frame, assembled from a burst of CI-V sequences.
 ### `ScopeAssembler`
 
 ```python
-from icom_lan.scope import ScopeAssembler
+from rigplane.scope import ScopeAssembler
 ```
 
 Low-level assembler that reconstructs `ScopeFrame` objects from raw CI-V `0x27 0x00` payloads. Maintains independent state for main and sub receivers.
@@ -134,13 +134,13 @@ Enable scope and capture `count` complete frames. Returns list oldest-first.
 ## Rendering (optional, requires Pillow)
 
 ```bash
-pip install icom-lan[scope]
+pip install rigplane[scope]
 ```
 
 ### `render_spectrum()`
 
 ```python
-from icom_lan.scope_render import render_spectrum
+from rigplane.scope_render import render_spectrum
 
 img = render_spectrum(frame, width=800, height=200, theme="classic")
 img.save("spectrum.png")
@@ -151,7 +151,7 @@ Renders a single ScopeFrame as a spectrum plot (amplitude vs frequency) with gri
 ### `render_waterfall()`
 
 ```python
-from icom_lan.scope_render import render_waterfall
+from rigplane.scope_render import render_waterfall
 
 img = render_waterfall(frames, width=800, height=400, theme="classic")
 ```
@@ -161,7 +161,7 @@ Renders multiple frames as a waterfall display. Newest frame at top, color encod
 ### `render_scope_image()`
 
 ```python
-from icom_lan.scope_render import render_scope_image
+from rigplane.scope_render import render_scope_image
 
 img = render_scope_image(frames, output="scope.png", theme="classic")
 ```

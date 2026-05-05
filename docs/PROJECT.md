@@ -1,4 +1,4 @@
-# icom-lan — Project Documentation
+# rigplane — Project Documentation
 
 ## Goal
 
@@ -25,7 +25,7 @@ No intermediary software (wfview, RS-BA1, hamlib) is required for supported path
 
 ```
 ┌──────────────────────────────────────────────────────────────┐
-│                           icom-lan                           │
+│                           rigplane                           │
 │                                                              │
 │  Consumers: API / CLI / Web / rigctld                       │
 │                 │                                            │
@@ -133,7 +133,7 @@ Each UDP packet has a fixed-format header (see `packettypes.h` in wfview):
 - [x] Audio auto-recovery after reconnect
 - [x] Runtime audio stats API
 - [x] Audio capability negotiation
-- [x] CLI: `icom-lan audio rx/tx/loopback`
+- [x] CLI: `rigplane audio rx/tx/loopback`
 
 **Result:** Full audio stack — Opus and PCM API, CLI, stats, auto-recovery. ✅
 
@@ -143,7 +143,7 @@ Each UDP packet has a fixed-format header (see `packettypes.h` in wfview):
 - [x] Sync + async API
 - [x] Autodiscovery of radios on the network
 - [x] Multi-model support (IC-7610, IC-705, IC-7300, IC-9700)
-- [x] CLI utility (`icom-lan status`, `icom-lan freq 14074000`)
+- [x] CLI utility (`rigplane status`, `rigplane freq 14074000`)
 - [x] Documentation + MkDocs site
 - [x] PyPI publication (v0.8.0)
 
@@ -412,7 +412,7 @@ IC-7610 parity matrix (issue #139, 2026-03-06): 134 implemented, 0 partial, 0 mi
 - Budget constraints for hardware
 - Team capacity for feature development
   recovery, collision/abort handling, timeout/overflow guardrails, writer backpressure handling,
-  and optional dependency guard (`pip install icom-lan[serial]`).
+  and optional dependency guard (`pip install rigplane[serial]`).
 - Added production `UsbAudioDriver` for IC-7610 serial backend with deterministic device probe/
   selection (auto-detect + explicit RX/TX overrides), RX/TX lifecycle guardrails, actionable
   optional dependency errors (`sounddevice`/`numpy`), and serial-audio contract coverage for web

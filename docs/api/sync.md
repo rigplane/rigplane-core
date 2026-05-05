@@ -2,12 +2,12 @@
 
 Blocking wrapper around the async `IcomRadio` for use without `async/await`.
 
-::: icom_lan.runtime.sync.IcomRadio
+::: rigplane.runtime.sync.IcomRadio
 
 ## Usage
 
 ```python
-from icom_lan.sync import IcomRadio
+from rigplane.sync import IcomRadio
 
 with IcomRadio("192.168.1.100", username="u", password="p") as radio:
     freq = radio.get_frequency()

@@ -2,19 +2,19 @@
 
 ## Overview
 
-icom-lan implements Icom's proprietary LAN protocol for controlling amateur radio transceivers. This document describes security properties, known limitations, and best practices.
+rigplane implements Icom's proprietary LAN protocol for controlling amateur radio transceivers. This document describes security properties, known limitations, and best practices.
 
 ## Threat Model
 
 The library is designed for use on **trusted local networks** (home LAN, shack network). The Icom protocol was designed for convenience, not security.
 
-### What icom-lan protects
+### What rigplane protects
 
 - ✅ **No credential storage** — credentials are passed as parameters or environment variables, never written to disk by the library
 - ✅ **No hardcoded secrets** — no default passwords or keys in the codebase
 - ✅ **Clean exception handling** — errors don't leak credentials in tracebacks
 - ✅ **Minimal attack surface** — core requires only `pyserial`; optional extras are well-scoped
-- ✅ **Controlled network listeners** — the library initiates outbound UDP connections; the optional web server (`icom-lan web`) and rigctld server (`icom-lan serve`) bind to configurable addresses and support auth tokens
+- ✅ **Controlled network listeners** — the library initiates outbound UDP connections; the optional web server (`rigplane web`) and rigctld server (`rigplane serve`) bind to configurable addresses and support auth tokens
 
 ### What the Icom protocol does NOT provide
 
@@ -95,7 +95,7 @@ Runtime: **`pyserial`** and **`pyserial-asyncio`** (core); optional extras (`opu
 If you discover a security vulnerability, please report it responsibly:
 
 1. **Do not** open a public GitHub issue
-2. Email: **morozsm@gmail.com** with subject line `[SECURITY] icom-lan`
+2. Email: **morozsm@gmail.com** with subject line `[SECURITY] rigplane`
 3. Include: description, reproduction steps, potential impact
 4. Allow 90 days for a fix before public disclosure
 

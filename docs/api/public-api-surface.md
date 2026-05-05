@@ -1,6 +1,6 @@
 # Public API Surface
 
-This page defines the **officially supported** public API of `icom_lan`. Use these exports for stable, documented behavior. Other symbols re-exported from `icom_lan` are available for advanced or legacy use but may have looser backward-compatibility guarantees.
+This page defines the **officially supported** public API of `rigplane`. Use these exports for stable, documented behavior. Other symbols re-exported from `rigplane` are available for advanced or legacy use but may have looser backward-compatibility guarantees.
 
 ## Supported exports (recommended)
 
@@ -34,15 +34,15 @@ This page defines the **officially supported** public API of `icom_lan`. Use the
 
 | Symbol | Description |
 |--------|-------------|
-| `IcomLanError` | Base exception. |
-| `ConnectionError`, `AuthenticationError`, `CommandError`, `TimeoutError` | Connection and command errors. When catching timeouts, use `icom_lan.exceptions.TimeoutError` explicitly; distinguish from `asyncio.TimeoutError` if needed (see [exceptions](exceptions.md)). |
+| `RigplaneError` | Base exception. |
+| `ConnectionError`, `AuthenticationError`, `CommandError`, `TimeoutError` | Connection and command errors. When catching timeouts, use `rigplane.exceptions.TimeoutError` explicitly; distinguish from `asyncio.TimeoutError` if needed (see [exceptions](exceptions.md)). |
 | `AudioError`, `AudioCodecBackendError`, `AudioFormatError`, `AudioTranscodeError` | Audio-related errors. |
 
 ### Sync wrapper and utilities
 
 | Symbol | Description |
 |--------|-------------|
-| `icom_lan.sync.IcomRadio` | Synchronous wrapper; use `from icom_lan.sync import IcomRadio` for blocking API. |
+| `rigplane.sync.IcomRadio` | Synchronous wrapper; use `from rigplane.sync import IcomRadio` for blocking API. |
 
 ### Common types
 
@@ -66,7 +66,7 @@ The following are re-exported for power users, scripts, or compatibility. Prefer
 - **Audio**: `AudioPacket`, `AudioState`, `AudioStats`, `AudioStream`, `JitterBuffer`, `AUDIO_HEADER_SIZE` — audio pipeline types.
 - **Scope**: `ScopeAssembler`, `ScopeFrame` — scope assembly; scope rendering (`SCOPE_THEMES`, `amplitude_to_color`, `render_scope_image`, etc.) when Pillow is available.
 
-When extending the library or writing integration code, prefer importing from the modules that define these symbols (e.g. `icom_lan.commands`, `icom_lan.transport`) rather than relying on `icom_lan` re-exports, so that future narrowing of the top-level `__all__` does not break your code.
+When extending the library or writing integration code, prefer importing from the modules that define these symbols (e.g. `rigplane.commands`, `rigplane.transport`) rather than relying on `rigplane` re-exports, so that future narrowing of the top-level `__all__` does not break your code.
 
 ---
 
@@ -80,8 +80,8 @@ subsystem.
 ### Tier 1 — Stable
 
 Public API. Breaking changes require a **major version bump**
-(semver-strict). Symbols are loaded eagerly by `icom_lan/__init__.py` and
-available directly via `from icom_lan import …`.
+(semver-strict). Symbols are loaded eagerly by `rigplane/__init__.py` and
+available directly via `from rigplane import …`.
 
 **Backend factory and configs**
 
@@ -90,7 +90,7 @@ available directly via `from icom_lan import …`.
 - `BackendConfig`, `LanBackendConfig`, `SerialBackendConfig`,
   `YaesuCatBackendConfig`
 
-**Capability protocols (from `icom_lan.radio_protocol`)**
+**Capability protocols (from `rigplane.radio_protocol`)**
 
 - `Radio`
 - `LevelsCapable`, `MetersCapable`, `PowerControlCapable`,
@@ -107,16 +107,16 @@ available directly via `from icom_lan import …`.
 - `SplitCapable` (new in v0.19)
 - `UsbAudioCapable` (new in v0.19)
 
-**Exceptions (from `icom_lan.exceptions`)**
+**Exceptions (from `rigplane.exceptions`)**
 
-- `IcomLanError`, `AudioCodecBackendError`, `AudioError`, `AudioFormatError`
+- `RigplaneError`, `AudioCodecBackendError`, `AudioError`, `AudioFormatError`
 - `AudioTranscodeError`, `AuthenticationError`, `CommandError`
 - `ConnectionError`, `TimeoutError`
 
-**Public types (from `icom_lan.types`)**
+**Public types (from `rigplane.types`)**
 
 - `Mode`, `AudioCodec`, `BreakInMode` (and the other symbols
-  currently re-exported from `icom_lan.types`)
+  currently re-exported from `rigplane.types`)
 
 **Public state types**
 
@@ -125,7 +125,7 @@ available directly via `from icom_lan import …`.
 **Frontend extension host API (Pro-facing)**
 
 The `frontend/src/lib/local-extensions/` module exposes a versioned host API
-that downstream products (notably icom-lan-pro) inject UI extensions through.
+that downstream products (notably rigplane-pro) inject UI extensions through.
 It is a stable Pro-facing contract — treat it as tier 1 in this document.
 
 From `frontend/src/lib/local-extensions/host-api.ts`:
@@ -157,7 +157,7 @@ From `frontend/src/lib/local-extensions/manifest.ts`:
 `LOCAL_EXTENSION_HOST_API_VERSION` (numeric, in `host-api.ts`) on any
 breaking change to a function signature or interface shape. The string
 version in `manifest.ts` mirrors this and is bumped together. Pro relies
-on this contract — coordinate breaking changes through the icom-lan
+on this contract — coordinate breaking changes through the rigplane
 issue tracker before merging.
 
 See also `docs/architecture/open-core-policy.md` (when published as part
@@ -166,12 +166,12 @@ of #1276) for the policy framing.
 Example (valid):
 
 ```python
-from icom_lan import create_radio, Radio, LanBackendConfig, MetersCapable
+from rigplane import create_radio, Radio, LanBackendConfig, MetersCapable
 ```
 
 ### Tier 2 — Best-effort
 
-Available via `from icom_lan import …`, but loaded lazily through PEP 562
+Available via `from rigplane import …`, but loaded lazily through PEP 562
 `__getattr__` so they do not pull their subsystem into memory until the name
 is actually accessed. Breaking changes require a **CHANGELOG note plus a
 minor version bump**. No semver guarantee — these may be reshaped or moved
@@ -188,7 +188,7 @@ without a major version.
 Example (valid, lazy-loaded):
 
 ```python
-from icom_lan import IcomRadio, IcomCommander  # tier-2 — works, but no semver guarantee
+from rigplane import IcomRadio, IcomCommander  # tier-2 — works, but no semver guarantee
 ```
 
 ### Tier 3 — Internal
@@ -198,19 +198,19 @@ package. Importing these from production source outside the owning
 subsystem triggers ruff `TID251`. Tests are exempt (see existing
 `tests/* per-file-ignores` in `pyproject.toml`).
 
-- `icom_lan.web.*` — internal to the web subsystem
-- `icom_lan.rigctld.*` — internal to the rigctld subsystem
-- `icom_lan.cli` — internal to the CLI
-- `icom_lan.radio.IcomRadio` — legacy direct-import path (use tier-2
-  re-export from `icom_lan` instead)
+- `rigplane.web.*` — internal to the web subsystem
+- `rigplane.rigctld.*` — internal to the rigctld subsystem
+- `rigplane.cli` — internal to the CLI
+- `rigplane.radio.IcomRadio` — legacy direct-import path (use tier-2
+  re-export from `rigplane` instead)
 - Most underscore-prefixed modules (`_connection_state`,
   `_shared_state_runtime`, …)
 
 Example (invalid — flagged by `TID251` outside the owning subsystem):
 
 ```python
-from icom_lan.web.handlers import ControlHandler  # tier-3 — forbidden in production
-from icom_lan.rigctld.server import RigctldServer  # tier-3 — forbidden in production
+from rigplane.web.handlers import ControlHandler  # tier-3 — forbidden in production
+from rigplane.rigctld.server import RigctldServer  # tier-3 — forbidden in production
 ```
 
 ### Migration policy
@@ -224,7 +224,7 @@ from icom_lan.rigctld.server import RigctldServer  # tier-3 — forbidden in pro
   two-minor-release deprecation cycle (`DeprecationWarning` for at least
   two minor releases before removal).
 - **Add a new tier-1 symbol.** PR + CHANGELOG entry under `### Added`. The
-  symbol must be re-exported from `icom_lan/__init__.py` and listed in this
+  symbol must be re-exported from `rigplane/__init__.py` and listed in this
   document.
 - **Tier 2 / tier 3 changes.** May happen in any minor release with a
   CHANGELOG note. No deprecation cycle is required, but a one-release

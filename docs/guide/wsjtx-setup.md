@@ -1,7 +1,7 @@
 # WSJT-X / JTDX / JS8Call Setup Guide
 
 This guide covers configuring WSJT-X (and compatible apps like JTDX, JS8Call)
-to work with `icom-lan serve` as a Hamlib NET rigctld replacement.
+to work with `rigplane serve` as a Hamlib NET rigctld replacement.
 
 ## Quick Start
 
@@ -10,8 +10,8 @@ to work with `icom-lan serve` as a Hamlib NET rigctld replacement.
 **Recommended: all-in-one** (Web UI + audio bridge + rigctld):
 
 ```bash
-# Install icom-lan (audio-bridge deps ship with the core install since v0.19)
-pip install icom-lan
+# Install rigplane (audio-bridge deps ship with the core install since v0.19)
+pip install rigplane
 
 # Install BlackHole virtual audio devices (macOS)
 # Two devices required: one for RX, one for TX (single device creates feedback loop)
@@ -21,7 +21,7 @@ brew install blackhole-16ch
 # IMPORTANT: Reboot after installing BlackHole to activate the audio drivers!
 
 # Start all-in-one server with separate RX/TX devices
-icom-lan --host <RADIO_IP> --user <USER> --pass <PASS> web \
+rigplane --host <RADIO_IP> --user <USER> --pass <PASS> web \
   --bridge "BlackHole 2ch" --bridge-tx-device "BlackHole 16ch"
 ```
 
@@ -33,7 +33,7 @@ This starts:
 **Alternative: rigctld only** (no Web UI or audio bridge):
 
 ```bash
-icom-lan --host <RADIO_IP> --user <USER> --pass <PASS> serve --wsjtx-compat
+rigplane --host <RADIO_IP> --user <USER> --pass <PASS> serve --wsjtx-compat
 ```
 
 ### 2. Configure WSJT-X
@@ -67,8 +67,8 @@ In **Settings → Audio**:
 > input, creating a feedback loop. Two separate devices isolate the paths.
 
 The audio bridge routes:
-- **Radio RX → icom-lan → BlackHole 2ch → WSJT-X Input** (decode FT8/FT4)
-- **WSJT-X Output → BlackHole 16ch → icom-lan → Radio TX** (transmit FT8/FT4)
+- **Radio RX → rigplane → BlackHole 2ch → WSJT-X Input** (decode FT8/FT4)
+- **WSJT-X Output → BlackHole 16ch → rigplane → Radio TX** (transmit FT8/FT4)
 
 ### Radio Settings (for TX audio)
 
@@ -121,7 +121,7 @@ When WSJT-X connects to a radio in plain USB (DATA off), it sends
 
 Some CAT client stacks (including WSJT-X and wfview's rigctld) introduce
 a ~15–20 second delay before the first PTT after this transition.
-**This is not an icom-lan bug** — the same behavior occurs with wfview's
+**This is not an rigplane bug** — the same behavior occurs with wfview's
 built-in rigctld emulation.
 
 **Workarounds:**

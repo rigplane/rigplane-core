@@ -1,6 +1,6 @@
 # Diagnostic Reports
 
-When something goes wrong with `icom-lan` — a CAT timeout, a stuck audio
+When something goes wrong with `rigplane` — a CAT timeout, a stuck audio
 bridge, a Web UI panel that won't render, a frequency that won't tune —
 the fastest way to get help is a diagnostic report. One command (or one
 button click) bundles your logs, radio state, runtime config, and
@@ -10,7 +10,7 @@ This guide explains when to use the feature, what's in the bundle, what's
 deliberately left out, and exactly what happens when you hit "Send".
 
 !!! note "Privacy first"
-    `icom-lan` does not phone home. There is no automatic telemetry, no
+    `rigplane` does not phone home. There is no automatic telemetry, no
     background crash reporter, no "anonymous usage statistics" toggle.
     Every diagnostic upload is the result of a single, explicit user
     gesture — see [Privacy](#privacy) below for the hard rules.
@@ -37,7 +37,7 @@ There are three ways to produce a report. Pick whichever is convenient.
 ### Interactive (TTY)
 
 ```bash
-icom-lan diagnose --upload
+rigplane diagnose --upload
 ```
 
 The CLI walks you through a description prompt, optional issue URL,
@@ -64,11 +64,11 @@ alternative to "Send".
 ### Save locally (no upload)
 
 ```bash
-icom-lan diagnose --output ~/icom-lan-report.zip
+rigplane diagnose --output ~/rigplane-report.zip
 ```
 
-Without `--upload`, `icom-lan diagnose` builds the bundle, writes it to
-the path you specify (or `~/icom-lan-report-<timestamp>.zip` by
+Without `--upload`, `rigplane diagnose` builds the bundle, writes it to
+the path you specify (or `~/rigplane-report-<timestamp>.zip` by
 default), prints the path, and exits. No network. Inspect the ZIP, edit
 it if needed, attach it manually to a GitHub issue or email.
 
@@ -81,15 +81,15 @@ own subdirectory of the ZIP. The full schema lives in the design spec
 
 | Category       | Contents                                                                  | Redaction applied                                            |
 | -------------- | ------------------------------------------------------------------------- | ------------------------------------------------------------ |
-| `system`       | OS, arch, Python version, `icom-lan` version, install method              | Absolute home paths rewritten to `<HOME>/...`                |
+| `system`       | OS, arch, Python version, `rigplane` version, install method              | Absolute home paths rewritten to `<HOME>/...`                |
 | `invocation`   | Filtered `sys.argv`, environment allowlist                                | `password=`, `pwd=`, `Bearer …`, API tokens → `***`          |
 | `radio`        | Model, firmware version, backend, capability matrix, audio codec          | Public IPs masked (RFC 1918 ranges kept — they're useful)    |
 | `audio`        | Codec, channels, sample rate, device names, bridge state                  | macOS device names containing usernames are masked           |
-| `logs`         | Rolling diagnostic logs from `~/.cache/icom-lan/logs/` (up to ~15 MiB)    | Path / IP / credential regex pass on copies                  |
+| `logs`         | Rolling diagnostic logs from `~/.cache/rigplane/logs/` (up to ~15 MiB)    | Path / IP / credential regex pass on copies                  |
 | `state`        | Current freq, mode, meters, last N CI-V exchanges (ring buffer)           | Optional callsign masking                                    |
 | `errors`       | Recent in-process tracebacks (ring buffer)                                | Paths scrubbed                                               |
 | `dependencies` | `pip freeze`-equivalent enumeration via `importlib.metadata`              | None — all-public package names + versions                   |
-| `config`       | Summary of `~/.icom-lan/*.toml` files                                     | `password` keys dropped entirely; other creds → `***`        |
+| `config`       | Summary of `~/.rigplane/*.toml` files                                     | `password` keys dropped entirely; other creds → `***`        |
 | `extensions/*` | Pro contributors (Tauri logs, Rust crash dumps, RC-28, DSP) when present  | Same redaction utilities; signed under the active license    |
 
 The manifest (`manifest.json`) lists which contributors ran, which
@@ -107,7 +107,7 @@ following:
   toggle, no install-time consent that grants ongoing permission, no
   background queue. One report = one deliberate action (CLI command,
   Web UI consent click, Pro Tauri "Send" button).
-- **CLI default never uploads.** `icom-lan diagnose` (no flags) builds
+- **CLI default never uploads.** `rigplane diagnose` (no flags) builds
   the bundle and saves it locally. `--upload` is opt-in.
 - **TTY consent prompt defaults to "save locally".** With `--upload` on
   a terminal, the final prompt is `[y/N]` for upload — pressing Enter
@@ -124,7 +124,7 @@ following:
   checkbox.
 - **Contact fields are opt-in only.** Email and callsign are never
   auto-populated from environment variables, system identity,
-  `~/.icom-lan/*.toml`, or any prior report — only typed at submission
+  `~/.rigplane/*.toml`, or any prior report — only typed at submission
   time.
 - **The bundle is always available locally.** The "Save locally"
   button (Web UI) and the default `--output` path (CLI) are always
@@ -168,7 +168,7 @@ variable:
 
 ```bash
 export ICOM_LAN_REPORT_ENDPOINT=https://reports.example.com/v1/diagnostics/upload
-icom-lan diagnose --upload
+rigplane diagnose --upload
 ```
 
 The override is visible in every preview pane (CLI and Web UI), so you
@@ -197,15 +197,15 @@ automatically. The `support_url` becomes a 404 after retention expires
 
 ## Local-only mode
 
-`icom-lan diagnose` (without `--upload`) is fundamentally a local
+`rigplane diagnose` (without `--upload`) is fundamentally a local
 bundle generator:
 
 ```bash
-icom-lan diagnose
-# → /home/you/icom-lan-report-2026-05-03T19-04-12.zip
+rigplane diagnose
+# → /home/you/rigplane-report-2026-05-03T19-04-12.zip
 ```
 
-The default output path is `~/icom-lan-report-<timestamp>.zip`;
+The default output path is `~/rigplane-report-<timestamp>.zip`;
 override with `--output PATH`. No network is ever touched in this mode.
 
 This is the right choice when:
@@ -216,17 +216,17 @@ This is the right choice when:
   the public triage endpoint.
 - You're saving a snapshot for later comparison.
 
-You can `unzip -l icom-lan-report-*.zip` to inspect the file list, or
+You can `unzip -l rigplane-report-*.zip` to inspect the file list, or
 extract and `cat manifest.json | jq` to see which contributors ran.
 
 ## Pro vs open-core
 
-Open-core (`icom-lan`) uploads are anonymous: no authentication, IP
+Open-core (`rigplane`) uploads are anonymous: no authentication, IP
 rate-limited (5/hour, 10/day per IP), 90-day retention, no AI triage.
 The bundle covers everything in §4.4 of the spec — system, radio,
 audio, logs, state, errors, dependencies, config.
 
-`icom-lan-pro` adds its own contributors (Tauri logs, Rust crash
+`rigplane-pro` adds its own contributors (Tauri logs, Rust crash
 dumps, RC-28 controller state, DSP state contributors) under
 `extensions/` in the same bundle, and signs the upload with the active
 license. Customer-tier service applies: longer retention, higher rate
@@ -238,20 +238,20 @@ through `setuptools` entry points.
 
 ### Cache directory permissions
 
-`icom-lan` keeps a rotating diagnostic log at:
+`rigplane` keeps a rotating diagnostic log at:
 
-- Linux: `~/.cache/icom-lan/logs/`
-- macOS: `~/Library/Caches/icom-lan/logs/`
-- Windows: `%LOCALAPPDATA%\icom-lan\Cache\logs\`
+- Linux: `~/.cache/rigplane/logs/`
+- macOS: `~/Library/Caches/rigplane/logs/`
+- Windows: `%LOCALAPPDATA%\rigplane\Cache\logs\`
 
 If this directory cannot be created (read-only home, sandboxed runtime,
 permission-denied) the diagnostic logger silently disables itself —
-`icom-lan` keeps running and continues to log to stdout/stderr, but the
+`rigplane` keeps running and continues to log to stdout/stderr, but the
 `logs` contributor in the bundle will be empty or absent. To fix:
 
 ```bash
-mkdir -p ~/.cache/icom-lan/logs
-chmod 700 ~/.cache/icom-lan/logs
+mkdir -p ~/.cache/rigplane/logs
+chmod 700 ~/.cache/rigplane/logs
 ```
 
 You can also set `ICOM_LAN_DISABLE_DIAGNOSTIC_LOGGING=1` to disable
@@ -264,10 +264,10 @@ per IP**. If you hit the limit you'll see:
 
 ```
 Upload rejected: rate_limited (retry after 1842 seconds).
-Bundle saved locally at /home/you/icom-lan-report-….zip
+Bundle saved locally at /home/you/rigplane-report-….zip
 ```
 
-Wait for the retry window, or activate an `icom-lan-pro` license for
+Wait for the retry window, or activate an `rigplane-pro` license for
 authenticated uploads with higher limits. The bundle is always saved
 locally on rate-limit, so you don't lose the report.
 
@@ -280,11 +280,11 @@ extension contributor can push you over. Mitigations:
 
 ```bash
 # Drop the logs category — keeps state, radio, errors, dependencies
-icom-lan diagnose --upload --exclude logs
+rigplane diagnose --upload --exclude logs
 
 # Or split: send state-only first, then logs separately
-icom-lan diagnose --output state.zip --exclude logs
-icom-lan diagnose --output logs.zip --include logs
+rigplane diagnose --output state.zip --exclude logs
+rigplane diagnose --output logs.zip --include logs
 ```
 
 ### Forbidden content rejected (422)
@@ -299,20 +299,20 @@ Upload rejected: forbidden_content (matched pattern: aws_secret_access_key).
 
 Two things to check:
 
-- Inspect your local config — `~/.icom-lan/*.toml` and any
-  `.env`-style file in the directory you ran `icom-lan` from. If raw
+- Inspect your local config — `~/.rigplane/*.toml` and any
+  `.env`-style file in the directory you ran `rigplane` from. If raw
   credentials live there in plaintext, redact or delete them.
 - The redaction utilities live at
-  `src/icom_lan/diagnostics/redaction.py` — if a legitimate value is
+  `src/rigplane/diagnostics/redaction.py` — if a legitimate value is
   being false-positive matched, please file an issue with the
   pattern (not the value).
 
 ## CLI reference
 
 ```
-icom-lan diagnose
+rigplane diagnose
   [--upload]                    # send after preview (default: save only)
-  [--output PATH]               # default: ~/icom-lan-report-<timestamp>.zip
+  [--output PATH]               # default: ~/rigplane-report-<timestamp>.zip
   [--include CATEGORY ...]      # repeatable; default: all
   [--exclude CATEGORY ...]      # repeatable
   [--description TEXT]          # bypass interactive prompt
@@ -327,7 +327,7 @@ icom-lan diagnose
 | Flag             | Default                                 | Notes                                                              |
 | ---------------- | --------------------------------------- | ------------------------------------------------------------------ |
 | `--upload`       | absent → save locally                   | Required to transmit. Combined with `--no-confirm` for headless.   |
-| `--output`       | `~/icom-lan-report-<timestamp>.zip`     | The bundle is always written to this path, upload or no upload.    |
+| `--output`       | `~/rigplane-report-<timestamp>.zip`     | The bundle is always written to this path, upload or no upload.    |
 | `--include`      | all categories                          | Repeatable. Mutually narrows: `--include radio --include logs`.    |
 | `--exclude`      | none                                    | Repeatable. Removes a category from the default-all set.           |
 | `--description`  | interactive prompt                      | Free text — explain what you were doing when the bug occurred.     |
@@ -342,7 +342,7 @@ icom-lan diagnose
     For CI / cron, the only fully-automated upload form is:
 
     ```bash
-    icom-lan diagnose --upload --no-confirm \
+    rigplane diagnose --upload --no-confirm \
       --description "nightly canary failed at $(date -Is)" \
       --issue-ref https://github.com/example/repo/issues/42
     ```
@@ -358,7 +358,7 @@ icom-lan diagnose
   — the full spec, including manifest schema, contributor protocol,
   and Pro extension boundary.
 - [Diagnostic bundle contract](../contracts/diagnostic-bundle-v1.md) —
-  the public `icom-lan-bundle-v1` contract documenting the receiver's
+  the public `rigplane-bundle-v1` contract documenting the receiver's
   HTTP API for self-hosted backends.
-- [Troubleshooting](troubleshooting.md) — general `icom-lan`
+- [Troubleshooting](troubleshooting.md) — general `rigplane`
   troubleshooting playbook.

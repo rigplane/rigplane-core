@@ -2,7 +2,7 @@
 
 ## Current implementation
 
-The CLI is implemented in a single module, `src/icom_lan/cli.py`, using the **stdlib `argparse`** only (~1860 lines). There are no runtime dependencies for the CLI beyond the library itself.
+The CLI is implemented in a single module, `src/rigplane/cli.py`, using the **stdlib `argparse`** only (~1860 lines). There are no runtime dependencies for the CLI beyond the library itself.
 
 - **Parser:** One root parser and subparsers for commands (`status`, `freq`, `mode`, `audio`, `web`, `serve`, etc.). Global options (`--host`, `--user`, `--pass`, `--backend`, `--serial-port`, …) are defined once and shared.
 - **Dispatch:** After parsing, `_run()` builds a backend config, calls `create_radio(config)`, then runs the selected command with `async with radio:` and a long `if/elif` chain.
@@ -25,7 +25,7 @@ The CLI is implemented in a single module, `src/icom_lan/cli.py`, using the **st
   - Type hints for options/arguments and automatic validation.
   - Optional **Pydantic** integration for settings (e.g. env vars, config file).
   - Cleaner subcommand structure via decorators.
-- **Cost:** New runtime dependency (`typer` → `click`). The CLI would either require `pip install icom-lan[cli]` with typer, or the dependency would be added to the default install (common for apps with a rich CLI).
+- **Cost:** New runtime dependency (`typer` → `click`). The CLI would either require `pip install rigplane[cli]` with typer, or the dependency would be added to the default install (common for apps with a rich CLI).
 - **Recommendation:** Treat this as an **optional follow-up**, not a prerequisite for the Radio/capability refactor. First complete the refactor to `Radio` + capability protocols with the current argparse CLI; then, if desired, plan a separate change to introduce Typer (e.g. split subcommands into modules, use Pydantic for config) without changing user-facing behavior.
 
 ### Option C: Click without Typer

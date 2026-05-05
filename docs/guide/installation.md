@@ -9,14 +9,14 @@
 ## Install from PyPI
 
 ```bash
-pip install icom-lan
+pip install rigplane
 ```
 
 ## Install from Source
 
 ```bash
-git clone https://github.com/morozsm/icom-lan.git
-cd icom-lan
+git clone https://github.com/rigplane/rigplane-core.git
+cd rigplane
 pip install -e .
 ```
 
@@ -25,22 +25,22 @@ pip install -e .
 For running tests and contributing:
 
 ```bash
-git clone https://github.com/morozsm/icom-lan.git
-cd icom-lan
+git clone https://github.com/rigplane/rigplane-core.git
+cd rigplane
 pip install -e ".[dev]"
 ```
 
 ## Optional Dependencies
 
 ```bash
-pip install icom-lan[scope]    # Scope PNG rendering (pillow)
-pip install icom-lan[tls]      # HTTPS with auto-generated certs (cryptography)
-pip install icom-lan[webrtc]   # WebRTC audio transport (aiortc)
+pip install rigplane[scope]    # Scope PNG rendering (pillow)
+pip install rigplane[tls]      # HTTPS with auto-generated certs (cryptography)
+pip install rigplane[webrtc]   # WebRTC audio transport (aiortc)
 ```
 
 !!! note "Audio bridge included by default (since v0.19)"
     `opuslib`, `sounddevice`, and `numpy` are now part of the core install.
-    `pip install icom-lan` is enough for the Web UI, audio bridge, and Opus
+    `pip install rigplane` is enough for the Web UI, audio bridge, and Opus
     codec support — no extras needed.
 
     The legacy `[audio]` and `[bridge]` extras are preserved as no-op
@@ -50,10 +50,10 @@ pip install icom-lan[webrtc]   # WebRTC audio transport (aiortc)
 
 ```bash
 # Check the CLI is available
-icom-lan --help
+rigplane --help
 
 # Or run as a module
-python -m icom_lan --help
+python -m rigplane --help
 ```
 
 ## Radio Setup
@@ -78,7 +78,7 @@ Before connecting, ensure your radio is configured for LAN control:
 The IC-7300 does **not** have LAN/WiFi connectivity. Use the **USB serial backend** instead:
 
 ```bash
-icom-lan --backend serial --model IC-7300 --serial-port /dev/cu.usbserial-XXXXX status
+rigplane --backend serial --model IC-7300 --serial-port /dev/cu.usbserial-XXXXX status
 ```
 
 See the [IC-7300 USB Setup guide](ic7300-usb-setup.md) for details.

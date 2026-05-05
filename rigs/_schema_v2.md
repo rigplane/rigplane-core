@@ -1,6 +1,6 @@
 # Rig Configuration Schema v2
 
-Declarative rig profiles for icom-lan. Goal: **zero radio-dependent logic in code**.
+Declarative rig profiles for rigplane. Goal: **zero radio-dependent logic in code**.
 Adding a new radio = writing one TOML file.
 
 ## Architecture: 4 Layers
@@ -246,8 +246,8 @@ declares how per-receiver and per-slot operations are routed on the wire.
 
 ### Fields
 
-Parsed by `src/icom_lan/rig_loader.py:575-605` into
-`RadioProfile` (`src/icom_lan/profiles.py:150-198`). Landed in #710.
+Parsed by `src/rigplane/rig_loader.py:575-605` into
+`RadioProfile` (`src/rigplane/profiles.py:150-198`). Landed in #710.
 
 | Field | Type | Example | When required |
 |-------|------|---------|---------------|
@@ -294,7 +294,7 @@ accepted:
 - Otherwise: `swap` → `swap_ab`, `equal` → `equal_ab`.
 
 Loading a rig that uses them emits a `DeprecationWarning` once per file
-(`src/icom_lan/rig_loader.py:600-606`). Migrate to the explicit keys.
+(`src/rigplane/rig_loader.py:600-606`). Migrate to the explicit keys.
 
 ---
 

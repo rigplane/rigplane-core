@@ -1,6 +1,6 @@
 # Rigctld Server
 
-Hamlib NET rigctld-compatible TCP server for icom-lan.
+Hamlib NET rigctld-compatible TCP server for rigplane.
 
 Provides a drop-in replacement for `rigctld` that bridges the hamlib line-based TCP
 protocol to a **Radio** instance (from `create_radio`). Clients such as WSJT-X, JS8Call, fldigi, and
@@ -33,10 +33,10 @@ For timeout values, cache TTL semantics, and connection/readiness state, see
 
 ## Quick Start
 
-### Standalone rigctld server (`icom-lan serve`)
+### Standalone rigctld server (`rigplane serve`)
 
 ```bash
-icom-lan --host 192.168.1.10 --user admin --password secret serve
+rigplane --host 192.168.1.10 --user admin --password secret serve
 ```
 
 Options:
@@ -53,23 +53,23 @@ Options:
 | `--audit-log PATH` | disabled | Path for JSONL audit log |
 | `--rate-limit N` | unlimited | Max commands/second per client |
 
-### Embedded in the web server (`icom-lan web`)
+### Embedded in the web server (`rigplane web`)
 
 The `web` command starts the rigctld server on port 4532 by default alongside the
 HTTP UI. Disable it with `--no-rigctld`, or change the port with `--rigctld-port`.
 
 ```bash
-icom-lan --host 192.168.1.10 web --rigctld-port 4533
-icom-lan --host 192.168.1.10 web --no-rigctld
+rigplane --host 192.168.1.10 web --rigctld-port 4533
+rigplane --host 192.168.1.10 web --no-rigctld
 ```
 
 ### Embedded in Python
 
 ```python
 import asyncio
-from icom_lan import create_radio, LanBackendConfig
-from icom_lan.rigctld import RigctldServer
-from icom_lan.rigctld.contract import RigctldConfig
+from rigplane import create_radio, LanBackendConfig
+from rigplane.rigctld import RigctldServer
+from rigplane.rigctld.contract import RigctldConfig
 
 async def main() -> None:
     radio_config = LanBackendConfig(host="192.168.1.10", username="admin", password="secret")
@@ -86,7 +86,7 @@ asyncio.run(main())
 ## `RigctldServer`
 
 ```python
-from icom_lan.rigctld import RigctldServer
+from rigplane.rigctld import RigctldServer
 ```
 
 Asyncio TCP server implementing the hamlib NET rigctld protocol.
@@ -160,7 +160,7 @@ Current state of the internal circuit breaker, or `None` if not yet initialised
 ## `RigctldConfig`
 
 ```python
-from icom_lan.rigctld.contract import RigctldConfig
+from rigplane.rigctld.contract import RigctldConfig
 ```
 
 Dataclass holding all server configuration.
@@ -200,11 +200,11 @@ RigctldConfig(
 ## `RigctldHandler`
 
 ```python
-from icom_lan.rigctld.handler import RigctldHandler
+from rigplane.rigctld.handler import RigctldHandler
 ```
 
 Dispatches parsed rigctld commands to the **Radio** instance. Handles the read-only gate,
-frequency/mode cache, and translates icom-lan exceptions to Hamlib error codes.
+frequency/mode cache, and translates rigplane exceptions to Hamlib error codes.
 
 ### Constructor
 
@@ -320,7 +320,7 @@ Accepted input formats:
 Behavior details:
 
 - If backend exposes `_send_civ_raw`, command forwards bytes as-is.
-- On transport timeout (`icom_lan.exceptions.TimeoutError` or `asyncio.TimeoutError`),
+- On transport timeout (`rigplane.exceptions.TimeoutError` or `asyncio.TimeoutError`),
   handler returns **successful empty response** (not `RPRT -5`).
 - If backend does not implement `_send_civ_raw`, returns `ENIMPL` (`RPRT -4`).
 
@@ -329,7 +329,7 @@ Behavior details:
 ## `RadioPoller`
 
 ```python
-from icom_lan.rigctld.poller import RadioPoller
+from rigplane.rigctld.poller import RadioPoller
 ```
 
 Background asyncio task that periodically polls the radio (frequency, mode, DATA
@@ -385,7 +385,7 @@ interleaving during DATA mode transitions (USB → PKT modes).
 ## `CircuitBreaker`
 
 ```python
-from icom_lan.rigctld.circuit_breaker import CircuitBreaker, CircuitState
+from rigplane.rigctld.circuit_breaker import CircuitBreaker, CircuitState
 ```
 
 State-machine circuit breaker wrapping CI-V command execution. Prevents
@@ -466,7 +466,7 @@ Record a failed command. Increments the counter (CLOSED) or re-opens (HALF_OPEN)
 ## `StateCache`
 
 ```python
-from icom_lan.rigctld.state_cache import StateCache
+from rigplane.rigctld.state_cache import StateCache
 ```
 
 Last-known radio state with per-field monotonic timestamps. Shared between
@@ -541,7 +541,7 @@ never written).
 ### `parse_line()`
 
 ```python
-from icom_lan.rigctld.protocol import parse_line
+from rigplane.rigctld.protocol import parse_line
 
 def parse_line(line: bytes) -> RigctldCommand
 ```
@@ -578,7 +578,7 @@ Format a bare Hamlib error response, e.g. `b'RPRT -1\n'`.
 ### `RigctldCommand`
 
 ```python
-from icom_lan.rigctld.contract import RigctldCommand
+from rigplane.rigctld.contract import RigctldCommand
 ```
 
 Frozen dataclass representing a parsed client command.
@@ -593,7 +593,7 @@ Frozen dataclass representing a parsed client command.
 ### `RigctldResponse`
 
 ```python
-from icom_lan.rigctld.contract import RigctldResponse
+from rigplane.rigctld.contract import RigctldResponse
 ```
 
 Mutable dataclass representing the response to send back to the client.
@@ -612,7 +612,7 @@ Mutable dataclass representing the response to send back to the client.
 ### `AuditRecord`
 
 ```python
-from icom_lan.rigctld.audit import AuditRecord
+from rigplane.rigctld.audit import AuditRecord
 ```
 
 Immutable dataclass capturing a single command execution.
@@ -632,15 +632,15 @@ Immutable dataclass capturing a single command execution.
 ### `RigctldAuditFormatter`
 
 ```python
-from icom_lan.rigctld.audit import RigctldAuditFormatter, AUDIT_LOGGER_NAME
+from rigplane.rigctld.audit import RigctldAuditFormatter, AUDIT_LOGGER_NAME
 ```
 
 `logging.Formatter` subclass that serialises `AuditRecord` entries as a single
-JSON line. Attach it to a handler on the `icom_lan.rigctld.audit` logger:
+JSON line. Attach it to a handler on the `rigplane.rigctld.audit` logger:
 
 ```python
 import logging
-from icom_lan.rigctld.audit import AUDIT_LOGGER_NAME, RigctldAuditFormatter
+from rigplane.rigctld.audit import AUDIT_LOGGER_NAME, RigctldAuditFormatter
 
 fh = logging.FileHandler("audit.jsonl")
 fh.setFormatter(RigctldAuditFormatter())
@@ -658,7 +658,7 @@ Example output line:
 ## `HamlibError`
 
 ```python
-from icom_lan.rigctld.contract import HamlibError
+from rigplane.rigctld.contract import HamlibError
 ```
 
 `IntEnum` of standard Hamlib error codes.
@@ -694,7 +694,7 @@ from icom_lan.rigctld.contract import HamlibError
 ## `run_rigctld_server()`
 
 ```python
-from icom_lan.rigctld.server import run_rigctld_server
+from rigplane.rigctld.server import run_rigctld_server
 
 async def run_rigctld_server(radio: Radio, **kwargs) -> None
 ```

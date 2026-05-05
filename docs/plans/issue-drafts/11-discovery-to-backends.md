@@ -1,8 +1,8 @@
 ## Context
 
-Step 11 of the internal-modularization migration: move `discovery.py` (the multi-protocol radio discovery utility) into `src/icom_lan/backends/discovery.py`. The `backends/__init__.py` re-exports the public entrypoint so consumers calling the discovery helper through the backends package keep working.
+Step 11 of the internal-modularization migration: move `discovery.py` (the multi-protocol radio discovery utility) into `src/rigplane/backends/discovery.py`. The `backends/__init__.py` re-exports the public entrypoint so consumers calling the discovery helper through the backends package keep working.
 
-Plan section: [§4.1 Step 11 — `discovery → backends/`](https://github.com/morozsm/icom-lan/blob/refactor/modularization-discovery/docs/plans/2026-04-29-modularization-plan.md#step-11--discovery--backends).
+Plan section: [§4.1 Step 11 — `discovery → backends/`](https://github.com/rigplane/rigplane-core/blob/refactor/modularization-discovery/docs/plans/2026-04-29-modularization-plan.md#step-11--discovery--backends).
 
 ## Pre-conditions
 
@@ -12,9 +12,9 @@ Blocked by #1293 (Step 10: runtime part 3).
 
 Move 1 file:
 
-1. `src/icom_lan/discovery.py` → `src/icom_lan/backends/discovery.py`
+1. `src/rigplane/discovery.py` → `src/rigplane/backends/discovery.py`
 
-Add **1 re-export shim file** at `src/icom_lan/discovery.py` using the plan §5.1 template. Verify (and if necessary update) `src/icom_lan/backends/__init__.py` so that the public entrypoint (`discover_backends` or whatever it is named) is exposed via `from icom_lan.backends import …`.
+Add **1 re-export shim file** at `src/rigplane/discovery.py` using the plan §5.1 template. Verify (and if necessary update) `src/rigplane/backends/__init__.py` so that the public entrypoint (`discover_backends` or whatever it is named) is exposed via `from rigplane.backends import …`.
 
 ## Out of scope
 
@@ -31,15 +31,15 @@ Add **1 re-export shim file** at `src/icom_lan/discovery.py` using the plan §5.
 - `uv run mypy src/` clean.
 - `uv run pytest tests/contracts/test_lazy_imports.py -v` passes (3 tests green).
 - Public-import smoke check (each must succeed):
-  - `uv run python -c "from icom_lan.discovery import *"` (legacy path via shim).
-  - `uv run python -c "from icom_lan.backends.discovery import *"` (canonical).
+  - `uv run python -c "from rigplane.discovery import *"` (legacy path via shim).
+  - `uv run python -c "from rigplane.backends.discovery import *"` (canonical).
 
 ## Implementation prompt for the sub-agent
 
 ```
-You are implementing one step of the icom-lan internal modularization
+You are implementing one step of the rigplane internal modularization
 work. Read these references first:
-- /Users/moroz/Projects/icom-lan-research/2026-04-29-internal-modularization-orchestrator.md
+- /Users/moroz/Projects/rigplane-research/2026-04-29-internal-modularization-orchestrator.md
 - docs/plans/2026-04-29-modularization-plan.md
 - The full text of this issue, especially the Scope and Acceptance
   Criteria sections

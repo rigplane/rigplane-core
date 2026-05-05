@@ -2,9 +2,9 @@
 
 Presets for known Icom radios with CI-V addresses and capabilities.
 
-::: icom_lan.runtime.radios.RadioModel
+::: rigplane.runtime.radios.RadioModel
 
-::: icom_lan.runtime.radios.get_civ_addr
+::: rigplane.runtime.radios.get_civ_addr
 
 ## Supported Models
 
@@ -20,7 +20,7 @@ Presets for known Icom radios with CI-V addresses and capabilities.
 ## Usage
 
 ```python
-from icom_lan import create_radio, LanBackendConfig, get_civ_addr
+from rigplane import create_radio, LanBackendConfig, get_civ_addr
 
 # Look up CI-V address by model name
 addr = get_civ_addr("IC-705")  # returns 0xA4

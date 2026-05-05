@@ -20,7 +20,7 @@ This guide shows how to control the IC-7610 via **USB serial CI-V + USB audio de
 !!! danger "Critical Setup Step"
     On the IC-7610, navigate to **Menu → Set → Connectors → CI-V → CI-V USB Port** and set it to **`Link to [CI-V]`**, **NOT** `[REMOTE]`.
     
-    - `Link to [CI-V]` — serial CI-V commands work (required for icom-lan serial backend)
+    - `Link to [CI-V]` — serial CI-V commands work (required for rigplane serial backend)
     - `[REMOTE]` — RS-BA1 mode, serial CI-V is blocked
     
     This finding was confirmed with live hardware validation in issue #146.
@@ -42,12 +42,12 @@ This guide shows how to control the IC-7610 via **USB serial CI-V + USB audio de
 
 ## macOS Setup
 
-### 1. Install icom-lan
+### 1. Install rigplane
 
 ```bash
 # Core install — includes serial CI-V (pyserial), USB audio RX/TX,
 # audio-device listing (sounddevice + numpy + opuslib).
-pip install icom-lan
+pip install rigplane
 ```
 
 !!! note
@@ -73,10 +73,10 @@ ls -l /dev/cu.usbserial-*
 
 The IC-7610 typically appears as `/dev/cu.usbserial-XXXXXX` where `XXXXXX` is the radio's serial number.
 
-You can also use `icom-lan discover --serial-only` to find USB-connected radios automatically:
+You can also use `rigplane discover --serial-only` to find USB-connected radios automatically:
 
 ```bash
-icom-lan discover --serial-only
+rigplane discover --serial-only
 ```
 
 ```
@@ -88,11 +88,11 @@ IC-7610:
 
 ```bash
 # List available audio devices
-icom-lan --list-audio-devices
+rigplane --list-audio-devices
 ```
 
 Audio-device listing requires `sounddevice`, which ships with the core
-install since v0.19 (`pip install icom-lan`).
+install since v0.19 (`pip install rigplane`).
 
 Example output:
 
@@ -108,7 +108,7 @@ The IC-7610 USB audio device is typically named `IC-7610 USB Audio` or similar.
 
 !!! tip "JSON Output"
     ```bash
-    icom-lan --list-audio-devices --json
+    rigplane --list-audio-devices --json
     ```
     Returns structured JSON for scripting.
 
@@ -134,9 +134,9 @@ export ICOM_SERIAL_DEVICE=/dev/cu.usbserial-111120
 export ICOM_SERIAL_BAUDRATE=115200
 
 # Test basic control
-icom-lan --backend serial status
-icom-lan --backend serial freq
-icom-lan --backend serial mode
+rigplane --backend serial status
+rigplane --backend serial freq
+rigplane --backend serial mode
 ```
 
 Expected output:
@@ -152,7 +152,7 @@ Power:        50
 
 ```bash
 # Capture 10 seconds of RX audio to WAV
-icom-lan --backend serial \
+rigplane --backend serial \
     --rx-device "IC-7610 USB Audio" \
     audio rx --out test_rx.wav --seconds 10
 
@@ -165,36 +165,36 @@ icom-lan --backend serial \
 
 ```bash
 # Status check
-icom-lan --backend serial status
+rigplane --backend serial status
 
 # Set frequency
-icom-lan --backend serial freq 7.074m
+rigplane --backend serial freq 7.074m
 
 # Set mode
-icom-lan --backend serial mode USB
+rigplane --backend serial mode USB
 
 # PTT on/off
-icom-lan --backend serial ptt on
-icom-lan --backend serial ptt off
+rigplane --backend serial ptt on
+rigplane --backend serial ptt off
 
 # CW keying
-icom-lan --backend serial cw "CQ CQ DE KN4KYD K"
+rigplane --backend serial cw "CQ CQ DE KN4KYD K"
 
 # Attenuator (uses Command29 for IC-7610)
-icom-lan --backend serial att 18
-icom-lan --backend serial att 0
+rigplane --backend serial att 18
+rigplane --backend serial att 0
 
 # Preamp
-icom-lan --backend serial preamp 1
-icom-lan --backend serial preamp 0
+rigplane --backend serial preamp 1
+rigplane --backend serial preamp 0
 ```
 
 ### Python API
 
 ```python
 import asyncio
-from icom_lan.backends.factory import create_radio
-from icom_lan.backends.config import SerialBackendConfig
+from rigplane.backends.factory import create_radio
+from rigplane.backends.config import SerialBackendConfig
 
 async def main():
     config = SerialBackendConfig(
@@ -220,7 +220,7 @@ async def main():
         print(f"S-meter: {s}")
         
         # Audio (if audio_capable)
-        from icom_lan.radio_protocol import AudioCapable
+        from rigplane.radio_protocol import AudioCapable
         if isinstance(radio, AudioCapable):
             def on_audio(packet):
                 print(f"RX audio: {len(packet.data)} bytes")
@@ -236,7 +236,7 @@ asyncio.run(main())
 
 ```bash
 # Start web UI on serial backend
-icom-lan --backend serial \
+rigplane --backend serial \
     --rx-device "IC-7610 USB Audio" \
     --tx-device "IC-7610 USB Audio" \
     web
@@ -254,7 +254,7 @@ The web UI will show:
 
 ```bash
 # Start rigctld server on serial backend
-icom-lan --backend serial serve
+rigplane --backend serial serve
 
 # Then configure WSJT-X:
 # Radio: Hamlib NET rigctl
@@ -318,7 +318,7 @@ ls -l /dev/cu.usbserial-*
    - Menu → Set → Connectors → USB Audio → **Enabled**
 2. List available devices:
    ```bash
-   icom-lan --list-audio-devices
+   rigplane --list-audio-devices
    ```
 3. Use exact device name from the list (case-sensitive)
 4. If still not visible, disconnect/reconnect USB cable
@@ -371,10 +371,10 @@ usb-audio-resolve: /dev/cu.usbserial-201410 → prefix 0x2014 → RX device [2],
 
 If you see `"topology resolution not supported"` (Linux), specify device indices explicitly:
 ```bash
-icom-lan --backend serial --rx-device 2 --tx-device 3 status
+rigplane --backend serial --rx-device 2 --tx-device 3 status
 ```
 
-Use `icom-lan --list-audio-devices` to find the correct indices.
+Use `rigplane --list-audio-devices` to find the correct indices.
 
 ### Audio TX not working
 
@@ -397,7 +397,7 @@ export ICOM_USB_RX_DEVICE="IC-7610 USB Audio"
 export ICOM_USB_TX_DEVICE="IC-7610 USB Audio"
 
 # Then simply:
-icom-lan --backend serial status
+rigplane --backend serial status
 ```
 
 ## Migration from LAN to Serial
@@ -407,11 +407,11 @@ If you're currently using the LAN backend and want to switch to serial:
 1. **No code changes needed** — use `create_radio(config)` factory with typed config:
    ```python
    # Before (LAN)
-   from icom_lan.backends.config import LanBackendConfig
+   from rigplane.backends.config import LanBackendConfig
    config = LanBackendConfig(host="192.168.1.100", ...)
    
    # After (Serial)
-   from icom_lan.backends.config import SerialBackendConfig
+   from rigplane.backends.config import SerialBackendConfig
    config = SerialBackendConfig(device="/dev/cu.usbserial-111120", ...)
    
    # Same factory call
@@ -421,10 +421,10 @@ If you're currently using the LAN backend and want to switch to serial:
 2. **CLI**: add `--backend serial` flag:
    ```bash
    # Before (LAN, default)
-   icom-lan status
+   rigplane status
    
    # After (Serial)
-   icom-lan --backend serial status
+   rigplane --backend serial status
    ```
 
 3. **Capability check**: scope/waterfall requires ≥115200 baud (see table above)

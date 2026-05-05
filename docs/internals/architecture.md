@@ -4,7 +4,7 @@
 
 ```
 ┌──────────────────────────────────────────────────────────┐
-│                        icom-lan                          │
+│                        rigplane                          │
 │                                                          │
 │  ┌─────────┐   ┌──────────┐   ┌────────────┐            │
 │  │   CLI   │   │  Web UI  │   │  Rigctld   │            │
@@ -69,11 +69,11 @@
 
 ## Multi-Backend Architecture
 
-icom-lan now uses a **shared-core backend-neutral architecture**. Consumers (CLI/Web/rigctld) program against the `Radio` protocol, while thin backend adapters handle transport-specific details.
+rigplane now uses a **shared-core backend-neutral architecture**. Consumers (CLI/Web/rigctld) program against the `Radio` protocol, while thin backend adapters handle transport-specific details.
 
 ```
 ┌──────────────────────────────────────────────────────────────────────────┐
-│                              icom-lan                                    │
+│                              rigplane                                    │
 │                                                                          │
 │  ┌───────────┐       ┌─────────────┐       ┌────────────┐              │
 │  │    CLI    │       │   Web UI    │       │  Rigctld   │              │
@@ -187,7 +187,7 @@ USB Audio CODEC entries in IORegistry  →  filter by same hub prefix   │
 
 ## Rig Profiles (Data-Driven Radio Config)
 
-icom-lan uses **TOML rig profiles** to define per-radio capabilities, CI-V wire bytes,
+rigplane uses **TOML rig profiles** to define per-radio capabilities, CI-V wire bytes,
 and hardware parameters. This makes adding new radio support a data task — not a code
 change.
 
@@ -387,8 +387,8 @@ Used by the web UI to find available radios without manual IP entry.
 **`web/tls.py`** — TLS support for `server.py`. Certificate loading and HTTPS server setup.
 
 **Boundary rule (web layer):**
-- `src/icom_lan/web/` must depend on `radio_protocol` protocols (`Radio` + capability protocols), not on concrete `IcomRadio`.
-- Direct import of `icom_lan.radio.IcomRadio` in `web/` is forbidden and enforced by lint/CI.
+- `src/rigplane/web/` must depend on `radio_protocol` protocols (`Radio` + capability protocols), not on concrete `IcomRadio`.
+- Direct import of `rigplane.radio.IcomRadio` in `web/` is forbidden and enforced by lint/CI.
 
 ### `rigctld/` — Hamlib NET rigctld Server
 
@@ -402,7 +402,7 @@ timeout, configurable max-client cap, and per-client rate limiting.
 
 **`rigctld/handler.py`** — Command dispatcher bridging parsed rigctld commands to `IcomRadio`.
 Implements get/set operations for frequency, mode, PTT, VFO, RF/AF levels, split VFO, and
-RIT. Uses `StateCache` for reads to avoid CI-V round-trips; translates icom-lan exceptions
+RIT. Uses `StateCache` for reads to avoid CI-V round-trips; translates rigplane exceptions
 to Hamlib error codes.
 
 **`rigctld/protocol.py`** — Stateless wire-protocol layer. Pure functions for parsing
@@ -423,7 +423,7 @@ timeouts from blocking connected clients.
 
 **`rigctld/audit.py`** — Structured per-command audit logging. Defines `AuditRecord` dataclass
 and `RigctldAuditFormatter`, emitting JSON-formatted records to a dedicated logger
-(`icom_lan.rigctld.audit`) for external log aggregation.
+(`rigplane.rigctld.audit`) for external log aggregation.
 
 **`rigctld/contract.py`** — Shared type definitions for the rigctld subpackage. Contains the
 Hamlib error code enum, hamlib mode-string mappings (USB, LSB, CW, …), and configuration
@@ -467,10 +467,10 @@ Low-level serialization and identification of the fixed 16-byte header present i
 
 ### `exceptions.py` — Exception Hierarchy
 
-All library exceptions derive from `IcomLanError`, allowing callers to catch either the base class or a specific subtype. Audio exceptions form a distinct sub-tree.
+All library exceptions derive from `RigplaneError`, allowing callers to catch either the base class or a specific subtype. Audio exceptions form a distinct sub-tree.
 
 ```
-IcomLanError
+RigplaneError
 ├── ConnectionError      — connection failed or lost
 ├── AuthenticationError  — login rejected by radio
 ├── CommandError         — CI-V NAK or unexpected response
@@ -595,7 +595,7 @@ Reassembles multi-sequence CI-V `0x27/0x00` bursts into complete `ScopeFrame` ob
 
 ### `scope_render.py` — Scope Image Rendering
 
-Renders `ScopeFrame` data to PNG images using Pillow (optional `icom-lan[scope]`). Provides spectrum (amplitude vs. frequency line chart) and waterfall (time × frequency heatmap) views with configurable color themes.
+Renders `ScopeFrame` data to PNG images using Pillow (optional `rigplane[scope]`). Provides spectrum (amplitude vs. frequency line chart) and waterfall (time × frequency heatmap) views with configurable color themes.
 
 - **`render_spectrum(frame, width, height, theme)`** → PIL Image: frequency-labeled X axis, amplitude Y axis, filled line graph
 - **`render_waterfall(frames, width, height, theme)`** → PIL Image: newest row at top; uses direct pixel access (`img.load()`) for ~10× speedup over `draw.point`
@@ -749,30 +749,30 @@ while separating concerns. `IcomRadio` inherits from `ControlPhaseMixin`,
 ## Dependencies
 
 ```
-icom-lan (runtime, core install — since v0.19)
+rigplane (runtime, core install — since v0.19)
 ├── pyserial, pyserial-asyncio (CI-V serial transport)
 ├── sounddevice (PortAudio bindings — virtual-audio bridge, USB audio devices)
 ├── numpy (PCM frame processing, DSP)
 └── opuslib (Opus codec for decode/encode)
 
-icom-lan[dev]
+rigplane[dev]
 ├── pytest, pytest-asyncio, pytest-cov, pytest-timeout
 ├── ruff, mypy
 
-icom-lan[scope]
+rigplane[scope]
 └── Pillow (for scope image rendering)
 
-icom-lan[dsp]
+rigplane[dsp]
 └── scipy (advanced DSP — anti-aliasing FIR filter design, etc.)
 
-icom-lan[webrtc]
+rigplane[webrtc]
 └── aiortc (WebRTC audio transport)
 
-icom-lan[tls]
+rigplane[tls]
 └── cryptography (auto-generated HTTPS certs)
 
-icom-lan[audio]   # no-op alias preserved for backwards compat (#1090)
-icom-lan[bridge]  # no-op alias preserved for backwards compat (#1090)
+rigplane[audio]   # no-op alias preserved for backwards compat (#1090)
+rigplane[bridge]  # no-op alias preserved for backwards compat (#1090)
 ```
 
 ## High-Level Flows
@@ -929,7 +929,7 @@ sequenceDiagram
 
 ```mermaid
 classDiagram
-    class IcomLanError
+    class RigplaneError
     class ConnectionError
     class AuthenticationError
     class CommandError
@@ -938,11 +938,11 @@ classDiagram
     class AudioCodecBackendError
     class AudioFormatError
     class AudioTranscodeError
-    IcomLanError <|-- ConnectionError
-    IcomLanError <|-- AuthenticationError
-    IcomLanError <|-- CommandError
-    IcomLanError <|-- TimeoutError
-    IcomLanError <|-- AudioError
+    RigplaneError <|-- ConnectionError
+    RigplaneError <|-- AuthenticationError
+    RigplaneError <|-- CommandError
+    RigplaneError <|-- TimeoutError
+    RigplaneError <|-- AudioError
     AudioError <|-- AudioCodecBackendError
     AudioError <|-- AudioFormatError
     AudioError <|-- AudioTranscodeError
@@ -981,7 +981,7 @@ flowchart LR
 ```mermaid
 flowchart LR
     subgraph Remote["Remote operator (via VPN)"]
-        Client[wfview / icom-lan\nclient]
+        Client[wfview / rigplane\nclient]
     end
     subgraph Proxy["Proxy machine (on radio LAN)"]
         C["_RelayProtocol\ncontrol :50001"]

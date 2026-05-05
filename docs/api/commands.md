@@ -11,7 +11,7 @@ This is how rig profile support works at the lowest level.
 ### Hardcoded path (default)
 
 ```python
-from icom_lan.commands import get_af_level
+from rigplane.commands import get_af_level
 
 # Uses hardcoded IC-7610 wire bytes: [0x14, 0x01]
 frame = get_af_level(to_addr=0x98)
@@ -21,8 +21,8 @@ frame = get_af_level(to_addr=0x98)
 
 ```python
 from pathlib import Path
-from icom_lan.rig_loader import load_rig
-from icom_lan.commands import get_af_level
+from rigplane.rig_loader import load_rig
+from rigplane.commands import get_af_level
 
 cfg = load_rig(Path("rigs/ic7300.toml"))
 cmd_map = cfg.to_command_map()
@@ -54,8 +54,8 @@ preserving full backward compatibility.
 - **Custom radios** — pass `cmd_map` explicitly when building frames for non-IC-7610 radios.
 
 ```python
-from icom_lan.command_map import CommandMap
-from icom_lan.commands import get_attenuator
+from rigplane.command_map import CommandMap
+from rigplane.commands import get_attenuator
 
 # Custom CommandMap for testing
 cm = CommandMap({"get_attenuator": (0x11,)})
@@ -64,7 +64,7 @@ frame = get_attenuator(to_addr=0x94, cmd_map=cm)
 
 See [`docs/api/rig-loader.md`](rig-loader.md) for the `CommandMap` class reference.
 
-::: icom_lan.commands
+::: rigplane.commands
 
 ## CI-V Frame Format
 
@@ -83,7 +83,7 @@ FE FE <to> <from> <cmd> [<sub>] [<data>...] FD
 ## Constants
 
 ```python
-from icom_lan import IC_7610_ADDR, CONTROLLER_ADDR
+from rigplane import IC_7610_ADDR, CONTROLLER_ADDR
 
 IC_7610_ADDR   # 0x98 — IC-7610's default CI-V address
 CONTROLLER_ADDR  # 0xE0 — Controller address (us)

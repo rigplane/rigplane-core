@@ -22,7 +22,7 @@ profile = OperatingProfile(
 ## API
 
 ```python
-from icom_lan import OperatingProfile, apply_profile, PRESETS
+from rigplane import OperatingProfile, apply_profile, PRESETS
 
 async with create_radio(config) as radio:
     # Apply a profile — returns a snapshot for later restore
@@ -60,7 +60,7 @@ async with create_radio(config) as radio:
 ## Built-in Presets
 
 ```python
-from icom_lan import apply_profile, PRESETS
+from rigplane import apply_profile, PRESETS
 
 # APRS on 2m (145.500 MHz FM, DATA mode, VOX off)
 snapshot = await apply_profile(radio, PRESETS.aprs_vhf)
@@ -122,7 +122,7 @@ snapshot = await apply_profile(radio, contest_20m)
 For non-async code, use the synchronous `IcomRadio` wrapper:
 
 ```python
-from icom_lan.sync import IcomRadio
+from rigplane.sync import IcomRadio
 
 radio = IcomRadio(config)
 snapshot = radio.prepare_ic705_data_profile(frequency_hz=145_500_000)
@@ -135,7 +135,7 @@ radio.restore_ic705_data_profile(snapshot)
 The original IC-705 specific helper still works and now delegates to the generic system:
 
 ```python
-from icom_lan import prepare_ic705_data_profile, restore_ic705_data_profile
+from rigplane import prepare_ic705_data_profile, restore_ic705_data_profile
 
 snapshot = await prepare_ic705_data_profile(
     radio,

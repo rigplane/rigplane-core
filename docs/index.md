@@ -1,4 +1,4 @@
-# icom-lan
+# rigplane
 
 **Python library for controlling Icom, Yaesu, and other transceivers over LAN (UDP) or USB serial.**
 
@@ -70,7 +70,7 @@ Direct connection to your radio — no wfview, hamlib, or RS-BA1 required.
 - :white_check_mark: **Audio streaming** — RX/TX with jitter buffer and full-duplex support
 - :white_check_mark: **Audio FFT Scope** — real-time FFT on USB/LAN audio for radios without hardware spectrum
 - :white_check_mark: **Network discovery** — find radios on your LAN automatically
-- :white_check_mark: **CLI tool** — `icom-lan status`, `icom-lan freq 14.074m`
+- :white_check_mark: **CLI tool** — `rigplane status`, `rigplane freq 14.074m`
 - :white_check_mark: **Built-in Web UI** — spectrum, waterfall, controls, meters, audio in browser; LCD layout for non-scope radios
 - :white_check_mark: **Async + Sync API** — async by default, blocking wrapper available
 - :white_check_mark: **Auto-reconnect** — watchdog + exponential backoff (opt-in)
@@ -98,7 +98,7 @@ See [Supported Radios](guide/radios.md) for full details. Any Icom radio with LA
 
 ```python
 import asyncio
-from icom_lan import create_radio, LanBackendConfig
+from rigplane import create_radio, LanBackendConfig
 
 async def main():
     config = LanBackendConfig(host="192.168.1.100", username="user", password="pass")
@@ -111,7 +111,7 @@ asyncio.run(main())
 
 ## License
 
-MIT — see [LICENSE](https://github.com/morozsm/icom-lan/blob/main/LICENSE).
+MIT — see [LICENSE](https://github.com/rigplane/rigplane-core/blob/main/LICENSE).
 
 Protocol knowledge derived from the [wfview](https://wfview.org/) project's reverse engineering work. This is an independent clean-room implementation.
 
