@@ -45,7 +45,7 @@ icom-lan = "icom_lan._cli_shim:main"
 [project.optional-dependencies]
 # `audio` and `bridge` extras are kept as no-op aliases for backwards
 # compatibility — `opuslib`, `sounddevice`, and `numpy` are now part of
-# the core dependencies (#1090). New users should run `pip install icom-lan`.
+# the core dependencies (#1090). New users should run `pip install rigplane`.
 audio = []
 bridge = []
 scope = [

@@ -71,6 +71,8 @@ mockups/
 
 # Scripts (internal dev tools)
 scripts/
+# But CI scripts under .github/ are tracked.
+!.github/scripts/
 
 # Local RAG / AI tooling
 .rag-update.sh

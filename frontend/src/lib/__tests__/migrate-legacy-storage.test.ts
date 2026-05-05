@@ -64,6 +64,18 @@ describe('migrateLegacyStorage', () => {
     expect(localStorageMock.getItem('icom-lan:vfo-theme')).toBeNull();
   });
 
+  it('migrates dot-namespaced tuning-step keys to their rigplane counterparts', () => {
+    localStorageMock.setItem('icom-lan.tuning-step-hz', '5000');
+    localStorageMock.setItem('icom-lan.tuning-step-auto', 'false');
+
+    migrateLegacyStorage();
+
+    expect(localStorageMock.getItem('rigplane.tuning-step-hz')).toBe('5000');
+    expect(localStorageMock.getItem('rigplane.tuning-step-auto')).toBe('false');
+    expect(localStorageMock.getItem('icom-lan.tuning-step-hz')).toBeNull();
+    expect(localStorageMock.getItem('icom-lan.tuning-step-auto')).toBeNull();
+  });
+
   it('migrates the dock-layout key with the v1 suffix preserved', () => {
     const payload = JSON.stringify({ version: 1, extensions: {} });
     localStorageMock.setItem('icom-lan:local-extension-dock-layout:v1', payload);

@@ -1,0 +1,31 @@
+name: Rebrand grep gate
+
+# Wave 2 final gate: fail any push or PR that introduces an `icom-lan` /
+# `icom_lan` / `IcomLanError` reference outside the preserved-by-design
+# allow-list. See .github/scripts/check-rebrand-allowlist.sh for the
+# rationale and the allow-list.
+#
+# Runs on EVERY push and PR (no path filter) so doc-only / rig-only / script-
+# only changes still trigger it. The job is sub-second (single git grep +
+# bash filter), so this is cheap.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+concurrency:
+  group: rebrand-gate-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  grep-gate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Wave 2 rebrand grep gate
+        run: .github/scripts/check-rebrand-allowlist.sh

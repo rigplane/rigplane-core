@@ -10,7 +10,7 @@
 # abstract commands to SDRplay API calls.
 #
 # Integration approach: SoapySDR abstraction layer, or direct API.
-# For icom-lan: would need a separate backend module (sdrplay_backend.py)
+# For rigplane: would need a separate backend module (sdrplay_backend.py)
 # that implements the same Radio Protocol interface.
 
 # ═══ Layer 0: PROTOCOL ═══════════════════════════════════════════

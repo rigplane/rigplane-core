@@ -43,6 +43,10 @@ const LEGACY_TO_NEW: Record<string, string> = {
   'icom-lan:vfo-theme': 'rigplane:vfo-theme',
   'icom-lan:lcd-contrast': 'rigplane:lcd-contrast',
   'icom-lan:local-extension-dock-layout:v1': 'rigplane:local-extension-dock-layout:v1',
+  // Dot-namespaced (tuning store) — produced by `frontend/src/lib/stores/tuning.svelte.ts`
+  // up to v1.x. Renamed to `rigplane.tuning-step-*` in v2.
+  'icom-lan.tuning-step-hz': 'rigplane.tuning-step-hz',
+  'icom-lan.tuning-step-auto': 'rigplane.tuning-step-auto',
 };
 
 const MIGRATION_SENTINEL_KEY = 'rigplane:storage-migrated-from-icom-lan';
