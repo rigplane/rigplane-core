@@ -34,8 +34,9 @@ node_modules/
 
 # Local config & tools
 config/
-.claude/
+.claude/*
 !.claude/commands/
+!.claude/skills/
 .kombai/
 .firecrawl/
 .playwright-mcp/

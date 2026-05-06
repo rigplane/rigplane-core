@@ -71,6 +71,9 @@ ALLOWLIST=(
     # Workflow definition for the gate: references the pattern in its
     # job description.
     '.github/workflows/rebrand-gate.yml'
+    # Release skill documents src/icom_lan/__init__.py shim as DO-NOT-TOUCH
+    # (deprecation shim — must not be modified during version bumps).
+    '.claude/skills/release/SKILL.md'
 )
 
 # Collect all files matching brand pattern.
