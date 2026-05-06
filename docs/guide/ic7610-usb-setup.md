@@ -389,7 +389,7 @@ Use `rigplane --list-audio-devices` to find the correct indices.
 
 **Symptom**: When transmitting from WSJT-X / JS8Call / fldigi via the USB Audio CODEC, the first 5–10 seconds of TX show on the waterfall (or a second receiver) as a "fat" carrier centred ~1500 Hz, or as several spurs spread across the audio passband. The signal then either settles into a clean tone, or never settles if the level is too high.
 
-**Cause**: IC-7610's USB audio input has less internal headroom before ALC compression than IC-7300 / FTX-1. With the WSJT-X power slider (the vertical slider on the right of the main window) at 100%, the FT8/JS8 tone clips inside the radio, producing IM3-style intermodulation products until ALC finds its working point. This is a hardware/firmware property of the IC-7610 USB CODEC — it occurs regardless of which CAT path (LAN, serial, direct rigctl) is used to control the radio, since the audio itself flows OS-level (WSJT-X → CoreAudio → USB Audio CODEC → radio) and never passes through icom-lan.
+**Cause**: IC-7610's USB audio input has less internal headroom before ALC compression than IC-7300 / FTX-1. With the WSJT-X power slider (the vertical slider on the right of the main window) at 100%, the FT8/JS8 tone clips inside the radio, producing IM3-style intermodulation products until ALC finds its working point. This is a hardware/firmware property of the IC-7610 USB CODEC — it occurs regardless of which CAT path (LAN, serial, direct rigctl) is used to control the radio, since the audio itself flows OS-level (WSJT-X → CoreAudio → USB Audio CODEC → radio) and never passes through RigPlane.
 
 **Fix**:
 
