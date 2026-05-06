@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.0.1] — 2026-05-06
+
+### Fixed
+- LAN TX audio bridge: fix audio not flowing in transmit direction (#1434, ba364e54)
+
 ## [2.0.0] — 2026-05-05
 
 **Headline:** project renamed from `icom-lan` to **`rigplane`**. The old name was always misleading — the project shipped multi-vendor support (Icom CI-V, Yaesu CAT, Discovery TX-500, Xiegu X6200) over LAN, USB, and serial. Carrying "icom-lan" through a paid Pro tier also created a trademark risk on a vendor name we don't own. New brand at https://rigplane.dev.
