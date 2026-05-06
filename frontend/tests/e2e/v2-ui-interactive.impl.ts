@@ -3,8 +3,8 @@ import { mkdir, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-const PAGE_URL = process.env.RIGPLANE_V2_URL ?? 'http://192.168.55.152:8080?ui=v2';
-const PAGE_ORIGIN = new URL(PAGE_URL).origin;
+const PAGE_URL = process.env.RIGPLANE_V2_URL ?? process.env.ICOM_LAN_V2_URL;
+const PAGE_ORIGIN = PAGE_URL ? new URL(PAGE_URL).origin : 'http://127.0.0.1:8080';
 const STATE_URL = `${PAGE_ORIGIN}/api/v1/state`;
 const CAPABILITIES_URL = `${PAGE_ORIGIN}/api/v1/capabilities`;
 const CONTROL_DELAY_MS = 700;
@@ -1141,7 +1141,11 @@ async function buildAuditCases(capabilities: Capabilities): Promise<AuditCase[]>
   ];
 }
 
-async function writeReport(results: ControlResult[], consoleErrors: ConsoleErrorRecord[]): Promise<void> {
+async function writeReport(
+  results: ControlResult[],
+  consoleErrors: ConsoleErrorRecord[],
+  pageUrl: string,
+): Promise<void> {
   await mkdir(SCREENSHOT_DIR, { recursive: true });
 
   const passed = results.filter((result) => result.status === 'PASS').length;
@@ -1189,7 +1193,7 @@ async function writeReport(results: ControlResult[], consoleErrors: ConsoleError
   }
   lines.push('');
   lines.push('## Notes');
-  lines.push('- Live target: `http://192.168.55.152:8080?ui=v2`');
+  lines.push(`- Live target: \`${pageUrl}\``);
   lines.push('- Safety guard: PTT and ATU TUNE were intentionally excluded.');
   lines.push('- The current frontend source sends WebSocket frames with `type: "cmd"`; the issue description still references `type: "command"`.');
   lines.push('- Cleanup restores radio state after each interaction using direct WS commands where a UI action is not safely invertible.');
@@ -1201,6 +1205,12 @@ async function writeReport(results: ControlResult[], consoleErrors: ConsoleError
 test.describe.configure({ mode: 'serial' });
 
 test('v2 interactive audit against the live backend', async ({ page, request }) => {
+  test.skip(
+    !PAGE_URL,
+    'Set RIGPLANE_V2_URL=http://host:port?ui=v2 to run the live backend audit.',
+  );
+
+  const pageUrl = PAGE_URL ?? '';
   await mkdir(SCREENSHOT_DIR, { recursive: true });
 
   const allConsoleErrors: ConsoleErrorRecord[] = [];
@@ -1217,7 +1227,7 @@ test('v2 interactive audit against the live backend', async ({ page, request }) 
   });
 
   await installWebSocketInterceptor(page);
-  await page.goto(PAGE_URL, { waitUntil: 'domcontentloaded' });
+  await page.goto(pageUrl, { waitUntil: 'domcontentloaded' });
   await page.locator('.left-sidebar').waitFor({ state: 'visible' });
   await page.locator('.right-sidebar').waitFor({ state: 'visible' });
   await wait(1500);
@@ -1331,7 +1341,7 @@ test('v2 interactive audit against the live backend', async ({ page, request }) 
       results.push(outcome);
     }
   } finally {
-    await writeReport(results, actionConsoleErrors);
+    await writeReport(results, actionConsoleErrors, pageUrl);
   }
 
   const unexpectedFailures = results.filter((result) => result.status === 'FAIL');

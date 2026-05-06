@@ -32,7 +32,9 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import sys
 import time
+from array import array
 from concurrent.futures import Executor
 from typing import TYPE_CHECKING, Any, Callable
 
@@ -113,13 +115,25 @@ def _std_dev(values: list[float]) -> float:
 
 def _rms_dbfs(pcm: bytes) -> float:
     """Compute RMS level of PCM s16le data in dBFS."""
-    import numpy as np
-
-    samples = np.frombuffer(pcm, dtype=np.int16).astype(np.float64)
-    rms = float(np.sqrt(np.mean(samples**2)))
+    samples = _pcm16le_samples(pcm)
+    if not samples:
+        return -96.0
+    rms = math.sqrt(sum(float(s) * float(s) for s in samples) / len(samples))
     if rms < 1.0:
         return -96.0
     return 20.0 * math.log10(rms / _INT16_MAX)
+
+
+def _pcm16le_samples(pcm: bytes) -> array[int]:
+    """Return signed 16-bit little-endian samples from raw PCM bytes."""
+    even_length = len(pcm) - (len(pcm) % BYTES_PER_SAMPLE)
+    samples: array[int] = array("h")
+    if even_length <= 0:
+        return samples
+    samples.frombytes(pcm[:even_length])
+    if sys.byteorder != "little":
+        samples.byteswap()
+    return samples
 
 
 def _downmix_stereo_to_mono(pcm: bytes) -> bytes:
@@ -774,8 +788,6 @@ class AudioBridge:
 
     async def _tx_loop(self) -> None:
         """Read captured audio from TX queue and push to the radio."""
-        import numpy as np
-
         silence_threshold = 10  # ~-70dB for int16
 
         try:
@@ -791,8 +803,9 @@ class AudioBridge:
                 except asyncio.TimeoutError:
                     continue
 
-                frame_array = np.frombuffer(pcm_bytes, dtype=np.int16)
-                if np.max(np.abs(frame_array)) < silence_threshold:
+                samples = _pcm16le_samples(pcm_bytes)
+                peak = max((abs(sample) for sample in samples), default=0)
+                if peak < silence_threshold:
                     continue
 
                 now = time.monotonic()
@@ -806,7 +819,6 @@ class AudioBridge:
                 self._last_tx_level_dbfs = _rms_dbfs(pcm_bytes)
 
                 if self._tx_frames <= 3 or self._tx_frames % 1000 == 0:
-                    peak = int(np.max(np.abs(frame_array)))
                     logger.info(
                         "%s: TX frame #%d, %d bytes, peak=%d",
                         self._label,
@@ -816,10 +828,7 @@ class AudioBridge:
                     )
 
                 try:
-                    if self._is_opus:
-                        await self._radio.push_audio_tx_opus(pcm_bytes)
-                    else:
-                        await self._radio.push_audio_tx_pcm(pcm_bytes)
+                    await self._radio.push_audio_tx_pcm(pcm_bytes)
                 except Exception:
                     if self._tx_frames <= 5:
                         logger.warning("%s: TX push error", self._label, exc_info=True)

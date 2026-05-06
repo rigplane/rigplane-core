@@ -340,9 +340,7 @@ async def test_bridge_tx_path_uses_backend_rx_stream():
     assert len(backend.rx_streams) == 1
     assert backend.rx_streams[0].running
 
-    import numpy as np
-
-    loud_frame = np.full(SAMPLES_PER_FRAME, 1000, dtype=np.int16).tobytes()
+    loud_frame = (1000).to_bytes(2, "little", signed=True) * SAMPLES_PER_FRAME
     backend.rx_streams[0].inject_frame(loud_frame)
 
     await asyncio.sleep(0.05)
@@ -350,6 +348,38 @@ async def test_bridge_tx_path_uses_backend_rx_stream():
 
     # PCM session (no opus codec) → push_audio_tx_pcm is called
     assert radio.push_audio_tx_pcm.called or bridge._tx_frames > 0
+
+
+async def test_bridge_tx_path_keeps_pcm_api_for_opus_radio():
+    from rigplane.types import AudioCodec
+
+    radio = _make_radio()
+    radio.audio_codec = AudioCodec.OPUS_1CH
+    backend = _bridge_backend()
+
+    class _DummyDecoder:
+        def __init__(self, *_args: object) -> None:
+            pass
+
+    fake_opuslib = types.SimpleNamespace(Decoder=_DummyDecoder)
+    with (
+        patch("rigplane.audio.bridge._require_opuslib", return_value=None),
+        patch.dict("sys.modules", {"opuslib": fake_opuslib}),
+    ):
+        bridge = AudioBridge(
+            radio, device_name="BlackHole", tx_enabled=True, backend=backend
+        )
+        await bridge.start()
+
+        loud_frame = (1000).to_bytes(2, "little", signed=True) * SAMPLES_PER_FRAME
+        backend.rx_streams[0].inject_frame(loud_frame)
+
+        await asyncio.sleep(0.05)
+        await bridge.stop()
+
+    radio.start_audio_tx_pcm.assert_awaited_once()
+    radio.push_audio_tx_pcm.assert_awaited()
+    radio.push_audio_tx_opus.assert_not_called()
 
 
 # ---------------------------------------------------------------------------
