@@ -157,17 +157,12 @@ GPLv3 code. Icom™ and IC-* product names are registered trademarks of
 fair-use compatibility identification only — this project is not affiliated
 with, endorsed by, or sponsored by Icom.
 
-rigplane is the **open-core** half of a product split. The proprietary
-commercial layer, [`rigplane-pro`](https://github.com/rigplane/rigplane-pro),
-is in **public beta** — it adds a Tauri-packaged desktop app, RC-28
-controller integration, audio bridge for digital modes, native CW console,
-and `rigctld` proxy on top of this library, integrating through the public
-`Radio` protocol and the `local-extensions/` host API. Open-core
-constraints — no telemetry, headless mode is sacred, no hollowing out —
-are codified in
+rigplane is the **open-core** half of a planned product split. A
+proprietary commercial layer (`rigplane-pro`) is under active development
+and will integrate with this library through the public `Radio` protocol
+and the `local-extensions/` host API. Open-core constraints — no
+telemetry, headless mode is sacred, no hollowing out — are codified in
 [`docs/architecture/open-core-policy.md`](docs/architecture/open-core-policy.md).
-Downloads (signed macOS / Windows / Linux):
-[releases.rigplane.app](https://releases.rigplane.app).
 
 ## Status
 
