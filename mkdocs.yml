@@ -111,6 +111,7 @@ nav:
       - Protocol Deep Dive: internals/protocol.md
       - Radio Protocol: radio-protocol.md
       - Reliability semantics: internals/reliability-semantics.md
+      - GitHub Project workflow: internals/github-project-workflow.md
       - Capabilities Matrix: capabilities-matrix.md
       - CLI design: internals/cli-design.md
       - Performance: PERFORMANCE.md
