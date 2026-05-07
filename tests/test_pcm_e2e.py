@@ -14,6 +14,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from rigplane.audio import AudioPacket, AudioState, AudioStats
+from rigplane.core.types import AudioCodec
 from rigplane.radio import IcomRadio
 
 
@@ -50,6 +51,12 @@ def _make_radio() -> IcomRadio:
     # Pre-install dummy transcoder so _get_pcm_transcoder succeeds.
     radio._pcm_transcoder = _DummyTranscoder()  # type: ignore[assignment]
     radio._pcm_transcoder_fmt = (48000, 1, 20)
+    # PR #1448 added a TX-codec branch in _push_audio_tx_pcm_internal: when
+    # the negotiated TX codec is PCM_1CH_16BIT (the default for direct Icom
+    # LAN), the frame is sent unchanged and the transcoder is bypassed.
+    # These tests exercise the OPUS_1CH transcode path through the dummy
+    # transcoder, so pin the TX codec accordingly.
+    radio._audio_tx_codec = AudioCodec.OPUS_1CH
     return radio
 
 
@@ -194,10 +201,16 @@ class TestPcmLoopbackE2E:
 
         assert len(rx_frames) == 5
 
-        # Now push them back through the TX pipeline.
+        # Now drive the TX pipeline N times. The dummy transcoder's RX output
+        # is a tagged byte string (not real PCM), so we can't feed it back
+        # verbatim — the TX path validates frame size against PcmAudioFormat
+        # (1920 bytes for 48kHz/1ch/20ms). Use a properly-sized synthetic
+        # frame; the assertion only checks that TX was invoked once per RX
+        # frame.
+        tx_frame = b"\x00" * 1920
         for frame in rx_frames:
             if frame is not None:
-                await radio.push_audio_tx_pcm(frame)
+                await radio.push_audio_tx_pcm(tx_frame)
 
         assert radio._audio_stream.push_tx.await_count == 5
 
