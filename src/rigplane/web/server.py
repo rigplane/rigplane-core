@@ -27,11 +27,12 @@ import logging
 import mimetypes
 import os
 import pathlib
+import sys
 import time
 import urllib.parse
 from dataclasses import dataclass, field
 from collections.abc import Coroutine
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, TextIO
 
 from .. import __version__
 from .._bounded_queue import BoundedQueue
@@ -253,6 +254,7 @@ class WebConfig:
     discovery: bool = True  # enable UDP discovery responder
     discovery_port: int = 8470  # UDP port for discovery
     read_only: bool = False  # reject PTT and other transmit commands
+    emit_startup_event: bool = False  # emit JSON runtime startup event to stdout
 
 
 class ConnectionManager:
@@ -1047,6 +1049,8 @@ class WebServer:
 
         await self.start()
         assert self._server is not None
+        if self._config.emit_startup_event:
+            self.emit_startup_event()
 
         loop = asyncio.get_running_loop()
         stop_event = asyncio.Event()
@@ -1347,6 +1351,30 @@ class WebServer:
             host, port = self._server.sockets[0].getsockname()[:2]
             return {"host": str(host), "port": int(port)}
         return {"host": self._config.host, "port": int(self._config.port)}
+
+    def _runtime_base_url(self) -> str:
+        bind = self._runtime_bind_payload()
+        scheme = "https" if self._config.tls else "http"
+        return f"{scheme}://{bind['host']}:{bind['port']}"
+
+    def startup_event_payload(self) -> dict[str, Any]:
+        base_url = self._runtime_base_url()
+        return {
+            "type": "rigplane.runtime.started",
+            "pid": os.getpid(),
+            "baseUrl": base_url,
+            "healthUrl": f"{base_url}/healthz",
+            "runtimeUrl": f"{base_url}/api/v1/runtime",
+            "logPath": self._runtime_log_path,
+        }
+
+    def emit_startup_event(self, stream: TextIO | None = None) -> None:
+        target = stream if stream is not None else sys.stdout
+        print(
+            json.dumps(self.startup_event_payload(), separators=(",", ":")),
+            file=target,
+            flush=True,
+        )
 
     def _runtime_bridge_payload(self) -> dict[str, Any]:
         bridge = self._audio_bridge

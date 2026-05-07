@@ -2748,6 +2748,8 @@ async def _cmd_web(radio: Radio, args: argparse.Namespace) -> int:
         return 1
     if auth_token:
         config_kwargs["auth_token"] = auth_token
+    if managed_runtime:
+        config_kwargs["emit_startup_event"] = True
 
     tls_cert = getattr(args, "tls_cert", "")
     tls_key = getattr(args, "tls_key", "")
