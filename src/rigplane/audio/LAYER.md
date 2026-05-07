@@ -5,8 +5,10 @@
 End-to-end audio subsystem: `AudioBackend` Protocol + PortAudio/Fake
 implementations, codecs (PCM / Opus / μ-law), transcoder, audio bridge,
 audio bus, FFT scope (panadapter), reconnect-time recovery, and platform
-USB audio resolution. The `audio.backend` and `audio.dsp` submodule paths
-are part of the rigplane-pro contract and **must remain stable**.
+USB audio resolution. `audio.route` resolves the radio audio route used by
+WSJT-X DATA policy; it must not treat the local loopback bridge as proof of
+LAN audio. The `audio.backend` and `audio.dsp` submodule paths are part of
+the rigplane-pro contract and **must remain stable**.
 
 ## Public API
 
@@ -30,6 +32,8 @@ types used by transport/radio/sync at import time) and a PEP 562
 - **Lazy — USB**: `UsbAudioDriver`, `UsbAudioDevice`,
   `list_usb_audio_devices`, `select_usb_audio_devices`,
   plus driver-lifecycle/selection exceptions.
+- **Direct submodule**: `audio.route` exposes the route resolver and
+  route-derived rigctld WSJT-X DATA policy.
 
 The `AudioBackend` Protocol is Tier 2 (best-effort; lazily exposed via
 PEP 562) — see #1275.

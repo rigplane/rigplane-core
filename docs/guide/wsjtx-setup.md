@@ -70,6 +70,11 @@ The audio bridge routes:
 - **Radio RX → rigplane → BlackHole 2ch → WSJT-X Input** (decode FT8/FT4)
 - **WSJT-X Output → BlackHole 16ch → rigplane → Radio TX** (transmit FT8/FT4)
 
+`--bridge` only describes the local audio loopback between WSJT-X and
+rigplane. Radio DATA policy is derived from the resolved audio route:
+direct Icom LAN audio uses the LAN audio route, while USB/serial audio
+remains a USB route even when a local loopback bridge is enabled.
+
 ### Radio Settings (for TX audio)
 
 On the IC-7610 front panel, set:

@@ -517,7 +517,7 @@ async def test_wsjtx_compat_prewarm_triggers_on_first_client(
 async def test_wsjtx_compat_prewarm_applies_configured_data2_lan(
     mock_radio: MagicMock,
 ) -> None:
-    """LAN bridge mode should steer WSJT-X packet mode to DATA2/LAN."""
+    """Route-derived config should steer WSJT-X packet mode to DATA2/LAN."""
     from rigplane.types import Mode
 
     cfg = RigctldConfig(

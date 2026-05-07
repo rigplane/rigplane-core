@@ -933,6 +933,74 @@ class TestWebRigctldDefault:
         assert captured[0].wsjtx_data_mod_input is None
         capsys.readouterr()
 
+    async def test_cli_web_wsjtx_uses_audio_route_policy_not_backend_guard(
+        self, capsys
+    ):
+        """Rigctld WSJT-X policy comes from AudioRoute, not raw backend_id."""
+        import asyncio
+
+        from rigplane.audio.route import (
+            AudioRoute,
+            DataModePolicy,
+            RadioTransport,
+            RxAudioSource,
+            TxAudioSource,
+        )
+        from rigplane.cli import _cmd_web
+
+        radio = AsyncMock()
+        radio.model = "IC-7610"
+        radio.backend_id = "rigplane"
+        radio.profile = MagicMock(data_mode_count=3)
+        captured = []
+
+        class FakeRigctldServer:
+            def __init__(self, _radio, cfg):
+                captured.append(cfg)
+
+            async def start(self):
+                pass
+
+            async def stop(self):
+                pass
+
+        class FakeWebServer:
+            def __init__(self, _radio, _cfg):
+                pass
+
+            async def start_audio_bridge(self, **_kwargs):
+                pass
+
+            async def serve_forever(self):
+                raise asyncio.CancelledError
+
+        unavailable_route = AudioRoute(
+            radio_transport=RadioTransport.UNKNOWN,
+            tx_audio_source=TxAudioSource.UNAVAILABLE,
+            rx_audio_source=RxAudioSource.UNAVAILABLE,
+            data_mode_policy=DataModePolicy.LEGACY,
+            bridge_required=False,
+        )
+
+        p = _build_parser()
+        args = p.parse_args(["--host", "1.2.3.4", "web", "--wsjtx-compat"])
+        args.web_bridge = None
+
+        with (
+            patch("rigplane.web.server.WebServer", FakeWebServer),
+            patch("rigplane.rigctld.server.RigctldServer", FakeRigctldServer),
+            patch("rigplane.cli._detect_loopback_hint", return_value=None),
+            patch("rigplane.cli.resolve_audio_route", return_value=unavailable_route),
+        ):
+            rc = await _cmd_web(radio, args)
+
+        assert rc == 0
+        assert len(captured) == 1
+        assert captured[0].wsjtx_compat is True
+        assert captured[0].wsjtx_data_mode is None
+        assert captured[0].wsjtx_data_mod_input is None
+        capsys.readouterr()
+
     async def test_cli_web_no_rigctld_opt_out(self, capsys):
         """`--no-rigctld` disables rigctld; banner omits the rigctld line."""
         import asyncio
