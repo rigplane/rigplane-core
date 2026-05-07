@@ -600,12 +600,16 @@ rigplane web --port 9090 --rigctld-port 4533
 
 # Require token for /api and WebSocket channels
 rigplane web --auth-token "change-me"
+
+# Managed local runtime for a supervising desktop app
+RIGPLANE_AUTH_TOKEN="$(openssl rand -hex 24)" rigplane station --port 0
 ```
 
 | Option | Default | Description |
 |--------|---------|-------------|
 | `--host` | `0.0.0.0` | Web server bind address |
 | `--port` | `8080` | Web server port |
+| `--managed` | off | Use managed local defaults: loopback bind, auth required, embedded rigctld disabled unless requested |
 | `--static-dir PATH` | — | Serve static files from a custom directory (default: built-in assets) |
 | `--bridge DEVICE` | — | Start audio bridge with named virtual device |
 | `--bridge-tx-device DEVICE` | — | Separate TX-only device for bidirectional bridge (e.g. `BlackHole 16ch`) |
@@ -615,6 +619,23 @@ rigplane web --auth-token "change-me"
 | `--dx-cluster HOST:PORT` | — | Connect to DX cluster server for real-time spot overlays (opt-in) |
 | `--callsign CALL` | — | Your callsign for DX cluster login (required with `--dx-cluster`) |
 | `--auth-token TOKEN` | — | Require `Authorization: Bearer <TOKEN>` for `/api/*` and WS channels |
+
+### `station`
+
+Start the managed local station runtime. This is a convenience command for
+supervisors such as desktop shells: it runs the web/API server on loopback,
+requires API/WebSocket auth, and does not expose embedded rigctld unless
+`--rigctld` is explicit.
+
+```bash
+export RIGPLANE_AUTH_TOKEN="$(openssl rand -hex 24)"
+rigplane station --port 0
+```
+
+`station` shares the radio connection flags from the top-level CLI, including
+`--host`, `--user`, `--pass-file`, `--backend`, `--serial-port`, and model/CI-V
+options. Prefer `RIGPLANE_AUTH_TOKEN` over `--auth-token` so the local API token
+does not appear in process listings.
 
 ### `audio bridge`
 

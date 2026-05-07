@@ -279,8 +279,40 @@ def _resolve_password(args: argparse.Namespace) -> str:
     return _get_env("ICOM_PASS", "")
 
 
+class _RigplaneArgumentParser(argparse.ArgumentParser):
+    def parse_args(
+        self,
+        args: list[str] | None = None,
+        namespace: argparse.Namespace | None = None,
+    ) -> argparse.Namespace:
+        parsed = super().parse_args(args, namespace)
+        _apply_managed_runtime_defaults(parsed)
+        return parsed
+
+
+def _apply_managed_runtime_defaults(args: argparse.Namespace) -> None:
+    if getattr(args, "command", None) == "station":
+        args.managed_runtime = True
+
+    if not getattr(args, "managed_runtime", False):
+        if (
+            getattr(args, "command", None) == "web"
+            and getattr(args, "web_rigctld", None) is None
+        ):
+            args.web_rigctld = True
+        return
+
+    if getattr(args, "command", None) not in {"web", "station"}:
+        return
+
+    if getattr(args, "web_host", "0.0.0.0") == "0.0.0.0":
+        args.web_host = "127.0.0.1"
+    if getattr(args, "web_rigctld", None) is None:
+        args.web_rigctld = False
+
+
 def _build_parser() -> argparse.ArgumentParser:
-    p = argparse.ArgumentParser(
+    p = _RigplaneArgumentParser(
         prog="rigplane",
         description="Control Icom transceivers over LAN",
         epilog=(
@@ -827,6 +859,13 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Server listen address (default: 0.0.0.0)",
     )
     web_p.add_argument(
+        "--managed",
+        dest="managed_runtime",
+        action="store_true",
+        default=False,
+        help="Run with managed local runtime defaults for a supervising desktop app",
+    )
+    web_p.add_argument(
         "--port",
         dest="web_port",
         type=int,
@@ -908,8 +947,14 @@ def _build_parser() -> argparse.ArgumentParser:
         "--no-rigctld",
         dest="web_rigctld",
         action="store_false",
-        default=True,
+        default=None,
         help="Disable the rigctld-compatible TCP server (enabled by default)",
+    )
+    web_p.add_argument(
+        "--rigctld",
+        dest="web_rigctld",
+        action="store_true",
+        help="Enable the embedded rigctld server when managed mode would disable it",
     )
     web_p.add_argument(
         "--rigctld-port",
@@ -958,6 +1003,74 @@ def _build_parser() -> argparse.ArgumentParser:
         action="store_false",
         default=True,
         help="Disable UDP discovery responder (enabled by default on port 8470)",
+    )
+
+    station_p = sub.add_parser(
+        "station",
+        help="Start managed local station runtime (loopback web server)",
+    )
+    station_p.add_argument(
+        "--host",
+        dest="web_host",
+        default="0.0.0.0",
+        help="Server listen address (managed default: 127.0.0.1)",
+    )
+    station_p.add_argument(
+        "--port",
+        dest="web_port",
+        type=int,
+        default=8080,
+        help="Server HTTP/WS port (default: 8080; use 0 for dynamic)",
+    )
+    station_p.add_argument(
+        "--static-dir",
+        dest="web_static_dir",
+        default=None,
+        metavar="PATH",
+        help="Directory to serve static files from (default: built-in)",
+    )
+    station_p.add_argument(
+        "--rigctld",
+        dest="web_rigctld",
+        action="store_true",
+        default=None,
+        help="Enable the embedded rigctld-compatible TCP server",
+    )
+    station_p.add_argument(
+        "--rigctld-port",
+        dest="web_rigctld_port",
+        type=int,
+        default=4532,
+        help="rigctld TCP port (default: 4532)",
+    )
+    station_p.add_argument(
+        "--auth-token",
+        dest="auth_token",
+        default="",
+        metavar="TOKEN",
+        help="Bearer token for API authentication (prefer RIGPLANE_AUTH_TOKEN)",
+    )
+    station_p.add_argument(
+        "--no-discovery",
+        dest="web_discovery",
+        action="store_false",
+        default=True,
+        help="Disable UDP discovery responder (enabled by default on port 8470)",
+    )
+    station_p.set_defaults(
+        managed_runtime=True,
+        web_bridge=None,
+        web_bridge_tx_device=None,
+        web_bridge_rx_only=False,
+        web_bridge_label=None,
+        web_bridge_max_retries=5,
+        web_bridge_retry_delay=1.0,
+        dx_cluster=None,
+        callsign=None,
+        wsjtx_compat=False,
+        tls=False,
+        tls_cert="",
+        tls_key="",
     )
 
     # proxy
@@ -1285,7 +1398,7 @@ async def _run(args: argparse.Namespace) -> int:
         return 1
     radio = create_radio(config)
 
-    if args.command == "web":
+    if args.command in ("web", "station"):
         # Only the web port is required. rigctld is best-effort: if its port
         # is busy we log a warning and continue (handled in _cmd_web).
         try:
@@ -1407,7 +1520,7 @@ async def _run(args: argparse.Namespace) -> int:
                     )
                     return 1
                 return await _cmd_levels(radio, args)
-            elif args.command == "web":
+            elif args.command in ("web", "station"):
                 return await _cmd_web(radio, args)
             elif args.command == "scope":
                 return await _cmd_scope(radio, args)
@@ -2623,7 +2736,16 @@ async def _cmd_web(radio: Radio, args: argparse.Namespace) -> int:
             return 1
         config_kwargs["dx_callsign"] = callsign
 
+    managed_runtime = getattr(args, "managed_runtime", False)
     auth_token = getattr(args, "auth_token", "")
+    if managed_runtime and not auth_token:
+        auth_token = os.environ.get("RIGPLANE_AUTH_TOKEN", "").strip()
+    if managed_runtime and not auth_token:
+        print(
+            "Error: managed mode requires auth. Set RIGPLANE_AUTH_TOKEN or pass --auth-token.",
+            file=sys.stderr,
+        )
+        return 1
     if auth_token:
         config_kwargs["auth_token"] = auth_token
 
@@ -2922,11 +3044,15 @@ def main() -> None:
     # Default to a rotating file log for long-running daemon commands so we
     # have a forensic trail for bug reports (EPIPE storms, reconnect loops,
     # etc.) that are easy to lose from stdout alone.
-    is_daemon = getattr(args, "command", None) in ("web", "serve")
+    is_daemon = getattr(args, "command", None) in ("web", "serve", "station")
 
     # File handler (if log_file specified, debug mode, or daemon command)
     if (debug_mode or is_daemon) and not log_file and not log_file_disabled:
-        log_file = "logs/rigplane.log"
+        log_file = (
+            "logs/rigplane-managed.log"
+            if getattr(args, "managed_runtime", False)
+            else "logs/rigplane.log"
+        )
 
     if log_file:
         log_path = Path(log_file).expanduser().resolve()
@@ -2988,7 +3114,7 @@ def main() -> None:
         # Set ICOM_PID_FILE to a path to enable; no default path to avoid multi-instance conflicts.
         pid_path = os.environ.get("ICOM_PID_FILE", "").strip()
         pid_file: Path | None = None
-        if pid_path and args.command in ("web", "serve"):
+        if pid_path and args.command in ("web", "serve", "station"):
             pid_file = Path(pid_path)
             try:
                 pid_file.write_text(str(os.getpid()))

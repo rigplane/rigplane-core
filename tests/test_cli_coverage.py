@@ -15,6 +15,7 @@ import pytest
 from _caps import FULL_ICOM_CAPS
 from rigplane.backends.config import SerialBackendConfig
 from rigplane.cli import (
+    _build_parser,
     _cmd_att,
     _cmd_audio_loopback,
     _cmd_audio_rx,
@@ -783,6 +784,79 @@ def _web_cmd_args(*, web_bridge: str | None) -> argparse.Namespace:
         dx_cluster=None,
         callsign=None,
     )
+
+
+def test_web_managed_parser_defaults_to_loopback_and_auth_required() -> None:
+    parser = _build_parser()
+
+    args = parser.parse_args(["web", "--managed"])
+
+    assert args.command == "web"
+    assert args.managed_runtime is True
+    assert args.web_host == "127.0.0.1"
+    assert args.web_rigctld is False
+    assert args.auth_token == ""
+
+
+def test_station_parser_is_managed_web_runtime() -> None:
+    parser = _build_parser()
+
+    args = parser.parse_args(["station", "--port", "0"])
+
+    assert args.command == "station"
+    assert args.managed_runtime is True
+    assert args.web_host == "127.0.0.1"
+    assert args.web_port == 0
+    assert args.web_rigctld is False
+
+
+@pytest.mark.asyncio
+async def test_cmd_web_managed_requires_auth_token(
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    radio = AsyncMock()
+    args = _web_cmd_args(web_bridge=None)
+    args.managed_runtime = True
+    args.auth_token = ""
+    monkeypatch.delenv("RIGPLANE_AUTH_TOKEN", raising=False)
+
+    rc = await _cmd_web(radio, args)
+
+    assert rc == 1
+    assert "managed mode requires auth" in capsys.readouterr().err
+
+
+@pytest.mark.asyncio
+async def test_cmd_web_managed_uses_env_auth_and_no_embedded_rigctld(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    radio = AsyncMock()
+    captured: dict[str, object] = {}
+    monkeypatch.setenv("RIGPLANE_AUTH_TOKEN", "env-token")
+
+    class FakeWebServer:
+        def __init__(self, _radio, cfg):
+            captured["cfg"] = cfg
+
+        async def serve_forever(self):
+            raise asyncio.CancelledError
+
+    args = _web_cmd_args(web_bridge=None)
+    args.managed_runtime = True
+    args.auth_token = ""
+    args.web_rigctld = False
+
+    with (
+        patch("rigplane.web.server.WebServer", FakeWebServer),
+        patch("rigplane.rigctld.server.RigctldServer") as rigctld_cls,
+    ):
+        assert await _cmd_web(radio, args) == 0
+
+    cfg = captured["cfg"]
+    assert cfg.auth_token == "env-token"
+    assert cfg.host == "127.0.0.1"
+    rigctld_cls.assert_not_called()
 
 
 @pytest.mark.asyncio
