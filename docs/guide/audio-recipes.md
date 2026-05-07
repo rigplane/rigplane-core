@@ -19,6 +19,30 @@ pip install rigplane
 
 ---
 
+## Optional OS Audio Smoke
+
+The normal pytest suite does not open PortAudio devices. To smoke-test the
+in-process bridge against real OS audio devices, opt in explicitly and select
+both sides of the virtual route:
+
+```bash
+uv run rigplane --list-audio-devices
+
+RIGPLANE_OS_AUDIO_SMOKE=1 \
+RIGPLANE_OS_AUDIO_RX_DEVICE="<output/playback device id or name>" \
+RIGPLANE_OS_AUDIO_TX_DEVICE="<input/capture device id or name>" \
+uv run pytest tests/test_audio_pipeline_os_smoke.py -q -rs
+```
+
+`RIGPLANE_OS_AUDIO_RX_DEVICE` is where the generated test tone is played.
+`RIGPLANE_OS_AUDIO_TX_DEVICE` is what rigplane captures and transmits. Use a
+loopback pair such as BlackHole, Loopback, VB-Cable, or PipeWire if you want
+the generated tone to feed TX capture without WSJT-X. The smoke skips unless
+`RIGPLANE_OS_AUDIO_SMOKE=1` and explicit devices are provided. Set
+`RIGPLANE_OS_AUDIO_SMOKE_FRAMES=<count>` to override the default 12 frames.
+
+---
+
 ## 1) RX → WAV file (10 seconds)
 
 Saves the incoming audio stream from the radio to `rx.wav`.
