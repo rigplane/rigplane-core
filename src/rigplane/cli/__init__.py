@@ -2959,6 +2959,7 @@ async def _cmd_web(radio: Radio, args: argparse.Namespace) -> int:
 async def _cmd_discover(_radio: Radio | None, args: argparse.Namespace) -> int:
     """Discover Icom radios on LAN and/or serial ports."""
     from rigplane.discovery import (
+        build_setup_discovery_payload,
         dedupe_radios,
         discover_lan_radios,
         discover_serial_radios,
@@ -2982,7 +2983,11 @@ async def _cmd_discover(_radio: Radio | None, args: argparse.Namespace) -> int:
     if not lan_only:
         tasks.append(discover_serial_radios())
 
-    if not serial_only and not lan_only:
+    json_output = getattr(args, "json", False)
+
+    if json_output:
+        pass
+    elif not serial_only and not lan_only:
         print(f"Scanning for Icom radios ({timeout:.0f}s LAN + serial)...")
     elif serial_only:
         print("Scanning serial ports for Icom radios...")
@@ -3020,6 +3025,10 @@ async def _cmd_discover(_radio: Radio | None, args: argparse.Namespace) -> int:
         scan_failed = True
 
     grouped = dedupe_radios(lan_radios, serial_radios)
+
+    if json_output:
+        print(json.dumps(build_setup_discovery_payload(grouped)))
+        return 1 if scan_failed else 0
 
     if not grouped:
         print("No radios found.")

@@ -9,6 +9,7 @@ from dataclasses import dataclass
 from typing import Any
 
 __all__ = [
+    "build_setup_discovery_payload",
     "CivProbeResult",
     "RadioDiscoveryResult",
     "SerialPortCandidate",
@@ -57,6 +58,8 @@ class RadioDiscoveryResult:
         profile_id: Rig profile identifier, e.g. ``"icom_ic7610"`` or ``"yaesu_ftx1"``.
         baudrate: Baud rate at which the radio was detected.
         address: CI-V address (``int``) for Icom radios; CAT model ID string for others.
+        description: Human-readable OS serial port description, if available.
+        hwid: OS hardware ID string, if available.
     """
 
     port: str
@@ -65,6 +68,8 @@ class RadioDiscoveryResult:
     profile_id: str
     baudrate: int
     address: int | str
+    description: str | None = None
+    hwid: str | None = None
 
 
 @dataclass
@@ -529,6 +534,8 @@ async def discover_serial_radios(
                     profile_id=profile_id,
                     baudrate=civ.baud,
                     address=civ.address,
+                    description=port.description,
+                    hwid=port.hwid,
                 )
             )
             continue
@@ -539,12 +546,16 @@ async def discover_serial_radios(
             _transport_factory=_yaesu_transport_factory,
         )
         if yaesu:
+            yaesu.description = port.description
+            yaesu.hwid = port.hwid
             results.append(yaesu)
             continue
 
         # --- Kenwood CAT probe ---
         kenwood = await probe_serial_kenwood_cat(port.device)
         if kenwood:
+            kenwood.description = port.description
+            kenwood.hwid = port.hwid
             results.append(kenwood)
 
     return results
@@ -603,6 +614,65 @@ def dedupe_radios(
         cast_list.append(serial)
 
     return list(radios.values())
+
+
+def build_setup_discovery_payload(
+    grouped_radios: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """Build stable discovery JSON for setup wizards and managed supervisors."""
+    radios: list[dict[str, Any]] = []
+    for index, radio in enumerate(grouped_radios, start=1):
+        connections: list[dict[str, Any]] = []
+        for lan in radio.get("lan", []):
+            host = str(lan.get("host", ""))
+            remote_id = lan.get("remote_id")
+            connection: dict[str, Any] = {
+                "type": "lan",
+                "backend": "lan",
+                "label": f"LAN {host}" if host else "LAN",
+                "host": host,
+                "remoteId": remote_id,
+                "requiresCredentials": True,
+            }
+            connections.append(connection)
+
+        for serial in radio.get("serial", []):
+            port = str(serial.get("port", ""))
+            baudrate = serial.get("baudrate", serial.get("baud"))
+            protocol = serial.get("protocol", "civ")
+            backend = "yaesu-cat" if protocol == "yaesu_cat" else "serial"
+            connection = {
+                "type": "serial",
+                "backend": backend,
+                "label": f"USB serial {port}" if port else "USB serial",
+                "port": port,
+                "protocol": protocol,
+                "profileId": serial.get("profile_id"),
+                "baudrate": baudrate,
+                "address": serial.get("address"),
+                "description": serial.get("description"),
+                "hwid": serial.get("hwid"),
+                "requiresCredentials": False,
+            }
+            connections.append(connection)
+
+        radios.append(
+            {
+                "id": f"radio-{index}",
+                "model": radio.get("model", "Unknown"),
+                "connections": connections,
+            }
+        )
+
+    return {
+        "schema": "rigplane.discovery.v1",
+        "radios": radios,
+        "limitations": {
+            "macosUsbAudio": "coreaudio-device-selection",
+            "windowsUsbAudio": "manual-device-selection",
+            "linuxUsbAudio": "pipewire-or-pulseaudio-device-selection",
+        },
+    }
 
 
 def _is_candidate(port: object) -> bool:

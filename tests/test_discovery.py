@@ -15,6 +15,7 @@ from rigplane.discovery import (
     SerialPortCandidate,
     _is_candidate,
     _parse_probe_response,
+    build_setup_discovery_payload,
     _parse_yaesu_id_response,
     dedupe_radios,
     discover_serial_radios,
@@ -441,6 +442,53 @@ class TestDedupeRadios:
         assert "serial" in result[0]
 
 
+def test_build_setup_discovery_payload_is_stable_and_credential_free() -> None:
+    grouped = [
+        {
+            "model": "IC-7610",
+            "lan": [
+                {
+                    "host": "192.168.55.40",
+                    "remote_id": 0x12345678,
+                    "user": "must-not-leak",
+                    "password": "must-not-leak",
+                }
+            ],
+            "serial": [
+                {
+                    "port": "/dev/cu.usbmodem7610",
+                    "protocol": "civ",
+                    "model": "IC-7610",
+                    "profile_id": "icom_ic7610",
+                    "baudrate": 115200,
+                    "address": 0x98,
+                    "description": "IC-7610 USB",
+                    "hwid": "USB VID:PID=10C4:EA60",
+                }
+            ],
+        }
+    ]
+
+    payload = build_setup_discovery_payload(grouped)
+
+    assert payload["schema"] == "rigplane.discovery.v1"
+    radio = payload["radios"][0]
+    assert radio["model"] == "IC-7610"
+    assert radio["connections"][0] == {
+        "type": "lan",
+        "backend": "lan",
+        "label": "LAN 192.168.55.40",
+        "host": "192.168.55.40",
+        "remoteId": 0x12345678,
+        "requiresCredentials": True,
+    }
+    assert radio["connections"][1]["type"] == "serial"
+    assert radio["connections"][1]["description"] == "IC-7610 USB"
+    assert radio["connections"][1]["hwid"] == "USB VID:PID=10C4:EA60"
+    assert "password" not in str(payload).lower()
+    assert payload["limitations"]["windowsUsbAudio"] == "manual-device-selection"
+
+
 # ---------------------------------------------------------------------------
 # Fake Yaesu CAT transport helpers
 # ---------------------------------------------------------------------------
@@ -672,6 +720,8 @@ class TestDiscoverSerialRadios:
         assert r.model == "IC-7610"
         assert r.profile_id == "icom_ic7610"
         assert r.address == 0x98
+        assert r.description == "USB Serial"
+        assert r.hwid == "USB VID:PID=10C4:EA60"
 
     @pytest.mark.asyncio
     async def test_yaesu_radio_detected(self) -> None:

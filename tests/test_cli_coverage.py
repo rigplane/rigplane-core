@@ -31,6 +31,7 @@ from rigplane.cli import (
     _validate_audio_format_args,
     main,
 )
+from rigplane.discovery import RadioDiscoveryResult
 from rigplane.radio_protocol import (
     AdvancedControlCapable,
     AudioCapable,
@@ -1115,6 +1116,43 @@ async def test_cmd_discover_found_and_not_found(
         rc_none = await _cmd_discover(None, None)
     assert rc_none == 0
     assert "No radios found." in capsys.readouterr().out
+
+
+@pytest.mark.asyncio
+async def test_cmd_discover_json_outputs_setup_payload(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    args = SimpleNamespace(serial_only=False, lan_only=False, timeout=0.1, json=True)
+    with (
+        patch(
+            "rigplane.discovery.discover_lan_radios",
+            AsyncMock(return_value=[{"host": "192.168.55.40", "remote_id": 42}]),
+        ),
+        patch(
+            "rigplane.discovery.discover_serial_radios",
+            AsyncMock(
+                return_value=[
+                    RadioDiscoveryResult(
+                        port="/dev/cu.usbmodem7610",
+                        protocol="civ",
+                        model="IC-7610",
+                        profile_id="icom_ic7610",
+                        baudrate=115200,
+                        address=0x98,
+                        description="IC-7610 USB",
+                        hwid="USB VID:PID=10C4:EA60",
+                    )
+                ]
+            ),
+        ),
+    ):
+        rc = await _cmd_discover(None, args)
+
+    assert rc == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["schema"] == "rigplane.discovery.v1"
+    assert payload["radios"][0]["connections"][0]["type"] == "lan"
+    assert payload["radios"][1]["connections"][0]["type"] == "serial"
 
 
 def test_main_branches(monkeypatch, capsys: pytest.CaptureFixture[str]) -> None:

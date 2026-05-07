@@ -142,6 +142,7 @@ rigplane discover                      # LAN + serial (default)
 rigplane discover --lan-only           # UDP broadcast only
 rigplane discover --serial-only        # USB serial ports only
 rigplane discover --timeout 5          # Longer LAN listen window
+rigplane --json discover               # Stable setup-wizard JSON
 ```
 
 ## Commands
@@ -486,6 +487,7 @@ rigplane discover                   # LAN + serial
 rigplane discover --lan-only        # UDP broadcast only
 rigplane discover --serial-only     # USB serial ports only
 rigplane discover --timeout 5       # Longer LAN listen window (default: 3s)
+rigplane --json discover            # Stable setup-wizard JSON
 ```
 
 ```
@@ -516,6 +518,21 @@ IC-705:
 | `--lan-only` | off | Only scan via UDP broadcast |
 | `--serial-only` | off | Only scan USB serial ports |
 | `--timeout SECONDS` | `3.0` | LAN broadcast listen timeout |
+
+With global `--json`, `discover` emits `schema: rigplane.discovery.v1` for
+first-run setup wizards. Each radio has stable `connections` entries for LAN
+and USB serial candidates. LAN entries include `host`, `remoteId`, and
+`requiresCredentials: true`; serial entries include `port`, `protocol`,
+`profileId`, `baudrate`, CI-V/CAT `address`, OS `description`, and `hwid` when
+available. Credentials are never included in discovery output.
+
+The JSON payload also reports current platform limitations:
+
+| Field | Meaning |
+|-------|---------|
+| `macosUsbAudio` | CoreAudio device selection is supported, but users may still need to grant microphone/input permission |
+| `windowsUsbAudio` | USB audio topology may require explicit/manual device selection |
+| `linuxUsbAudio` | PipeWire/PulseAudio device naming varies by distribution/session |
 
 ### `serve`
 
