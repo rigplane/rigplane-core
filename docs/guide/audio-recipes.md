@@ -43,6 +43,38 @@ the generated tone to feed TX capture without WSJT-X. The smoke skips unless
 
 ---
 
+## Optional IC-7610 LAN Hardware Audio Validation
+
+This test keys the transmitter and sends a short synthetic 1 kHz PCM tone over
+the rigplane LAN audio path. Run it only with a safe RF setup, for example into
+a dummy load or another controlled no-radiate configuration.
+
+```bash
+export RIGPLANE_HW_IC7610_AUDIO=1
+export RIGPLANE_HW_ALLOW_TX=1
+export RIGPLANE_HW_ICOM_HOST=192.168.55.40
+export RIGPLANE_HW_ICOM_USER=YOUR_USER
+export RIGPLANE_HW_ICOM_PASS_FILE=.rigplane-pass
+
+uv run pytest tests/hardware/test_ic7610_audio_pipeline.py -q -s
+```
+
+The test starts an embedded `RigctldServer`, replays the WSJT-X packet/PTT
+commands (`M PKTUSB`, `T 1`, `T 0`), injects synthetic PCM through
+`AudioBridge`, and asserts that the route policy selects DATA2/LAN without
+changing DATA1 modulation input. It prints compact diagnostics for the route,
+codec, frame count, PCM peak/RMS, bridge TX frames, overruns, and DATA
+modulation inputs.
+
+Optional overrides:
+
+```bash
+export RIGPLANE_HW_ICOM_RADIO_ADDR=0x98
+export RIGPLANE_HW_AUDIO_FRAMES=20
+```
+
+---
+
 ## 1) RX → WAV file (10 seconds)
 
 Saves the incoming audio stream from the radio to `rx.wav`.

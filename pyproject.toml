@@ -83,6 +83,7 @@ asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "function"
 markers = [
     "integration: tests requiring real radio hardware (skip if not configured)",
+    "hardware: opt-in tests that may key a real transmitter or require attached devices",
     "e2e: end-to-end tests for PCM API and CLI audio workflows",
     "slow: marks tests as slow (deselect with '-m \"not slow\"')",
 ]
