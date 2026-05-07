@@ -637,6 +637,15 @@ rigplane station --port 0
 options. Prefer `RIGPLANE_AUTH_TOKEN` over `--auth-token` so the local API token
 does not appear in process listings.
 
+After the web listener binds, `station` writes one JSON startup event to stdout:
+
+```json
+{"type":"rigplane.runtime.started","pid":12345,"baseUrl":"http://127.0.0.1:58421","healthUrl":"http://127.0.0.1:58421/healthz","runtimeUrl":"http://127.0.0.1:58421/api/v1/runtime","logPath":"/Users/me/Library/Logs/rigplane.log"}
+```
+
+Use this event for supervisor discovery when `--port 0` asks the OS to allocate
+the actual port.
+
 ### `audio bridge`
 
 Route radio audio to/from a virtual audio device (BlackHole, Loopback, VB-Audio).

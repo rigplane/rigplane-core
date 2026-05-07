@@ -111,6 +111,21 @@ When auth is configured, this endpoint requires the same bearer token as other
 }
 ```
 
+Managed runtimes also emit a single machine-readable startup event to stdout
+after the web listener has bound successfully. Supervisors should use this JSON
+line as the startup contract instead of parsing the human-readable banner:
+
+```json
+{
+  "type": "rigplane.runtime.started",
+  "pid": 12345,
+  "baseUrl": "http://127.0.0.1:58421",
+  "healthUrl": "http://127.0.0.1:58421/healthz",
+  "runtimeUrl": "http://127.0.0.1:58421/api/v1/runtime",
+  "logPath": "/Users/me/Library/Logs/rigplane.log"
+}
+```
+
 ---
 
 ## `GET /api/v1/info`

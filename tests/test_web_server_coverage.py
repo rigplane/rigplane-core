@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import io
 import json
 import pathlib
 import time
@@ -354,6 +355,30 @@ async def test_runtime_endpoint_reports_process_bind_radio_and_bridge_status() -
     assert data["bridge"]["stats"] == {"rx_frames": 3, "tx_frames": 4}
     assert data["lastError"] is None
     srv._server = None  # noqa: SLF001
+
+
+def test_startup_event_reports_actual_runtime_urls_and_log_path() -> None:
+    srv = WebServer(
+        None,
+        WebConfig(
+            host="127.0.0.1",
+            port=0,
+            emit_startup_event=True,
+        ),
+    )
+    srv._server = _FakeAsyncServer()  # noqa: SLF001
+    srv._runtime_log_path = "/tmp/rigplane-managed.log"  # noqa: SLF001
+    out = io.StringIO()
+
+    srv.emit_startup_event(out)
+
+    payload = json.loads(out.getvalue())
+    assert payload["type"] == "rigplane.runtime.started"
+    assert payload["pid"] > 0
+    assert payload["baseUrl"] == "http://127.0.0.1:4242"
+    assert payload["healthUrl"] == "http://127.0.0.1:4242/healthz"
+    assert payload["runtimeUrl"] == "http://127.0.0.1:4242/api/v1/runtime"
+    assert payload["logPath"] == "/tmp/rigplane-managed.log"
 
 
 @pytest.mark.asyncio

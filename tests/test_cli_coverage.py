@@ -869,9 +869,34 @@ async def test_cmd_web_managed_uses_env_auth_and_loopback_embedded_rigctld(
     cfg = captured["cfg"]
     assert cfg.auth_token == "env-token"
     assert cfg.host == "127.0.0.1"
+    assert cfg.emit_startup_event is True
     assert captured["runtime_log_path"] == "/tmp/rigplane-managed.log"
     rigctld_cfg = captured["rigctld_cfg"]
     assert rigctld_cfg.host == "127.0.0.1"
+
+
+@pytest.mark.asyncio
+async def test_cmd_web_plain_runtime_does_not_emit_startup_event() -> None:
+    radio = AsyncMock()
+    captured: dict[str, object] = {}
+
+    class FakeWebServer:
+        def __init__(self, _radio, cfg):
+            captured["cfg"] = cfg
+            self._runtime_log_path = None
+
+        async def serve_forever(self):
+            raise asyncio.CancelledError
+
+    args = _web_cmd_args(web_bridge=None)
+    args.managed_runtime = False
+    args.auth_token = ""
+    args.runtime_log_path = None
+
+    with patch("rigplane.web.server.WebServer", FakeWebServer):
+        assert await _cmd_web(radio, args) == 0
+
+    assert captured["cfg"].emit_startup_event is False
 
 
 @pytest.mark.asyncio
