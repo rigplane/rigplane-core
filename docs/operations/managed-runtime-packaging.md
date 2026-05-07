@@ -38,7 +38,10 @@ paths are green:
 
 The core `rigplane --json discover` payload uses `schema: rigplane.discovery.v1`
 and includes platform limitation hints for setup wizards. Discovery output must
-not include credentials.
+not include credentials. When USB audio topology resolution is available, serial
+connections may include a `usbAudio` object with PortAudio device indices,
+the resolved serial port, and platform location metadata. This is descriptive
+setup metadata only; it must not include account, radio, or service credentials.
 
 ## Validation Commands
 
@@ -53,6 +56,37 @@ Hardware or OS-assisted validation remains opt-in:
 ```bash
 RIGPLANE_OS_AUDIO_SMOKE=1 uv run pytest tests/test_audio_pipeline_os_smoke.py -q --tb=short
 RIGPLANE_HARDWARE_AUDIO=1 uv run pytest tests/hardware/test_ic7610_audio_pipeline.py -q --tb=short
+```
+
+For Windows local validation, install the managed-runtime bridge dependencies
+and run mocked core coverage first:
+
+```bash
+uv run pytest tests/test_discovery.py tests/test_cli_coverage.py tests/test_audio_pipeline_os_smoke.py -q --tb=short
+```
+
+Then run the opt-in PortAudio smoke with explicit device selectors. Typical
+Windows names include `Microphone (USB Audio CODEC)`, `Speakers (USB Audio
+CODEC)`, and `CABLE Output (VB-Audio Virtual Cable)`; use an integer device id
+when a substring matches more than one device:
+
+```powershell
+$env:RIGPLANE_OS_AUDIO_SMOKE="1"
+$env:RIGPLANE_OS_AUDIO_TX_DEVICE="Microphone (USB Audio CODEC)"
+$env:RIGPLANE_OS_AUDIO_RX_DEVICE="Speakers (USB Audio CODEC)"
+uv run pytest tests/test_audio_pipeline_os_smoke.py -q --tb=short
+```
+
+For Linux local validation, run the same mocked core coverage, then select
+ALSA/PipeWire/PulseAudio device names reported by PortAudio. Common names
+include `USB Audio CODEC: Audio (hw:2,0)`, `pipewire`, and `pulse`; use integer
+ids for ambiguous loopback devices:
+
+```bash
+RIGPLANE_OS_AUDIO_SMOKE=1 \
+RIGPLANE_OS_AUDIO_TX_DEVICE='USB Audio CODEC: Audio (hw:2,0)' \
+RIGPLANE_OS_AUDIO_RX_DEVICE='pipewire' \
+uv run pytest tests/test_audio_pipeline_os_smoke.py -q --tb=short
 ```
 
 ## Follow-up issues

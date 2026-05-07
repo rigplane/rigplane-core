@@ -30,6 +30,22 @@ class _SelectedDevices:
     tx: AudioDeviceInfo
 
 
+class _FakeNumpy:
+    pass
+
+
+def _portaudio_backend_for(raw_devices: list[dict[str, object]]) -> PortAudioBackend:
+    class FakeSd:
+        class default:
+            device = [0, 1]
+
+        @staticmethod
+        def query_devices() -> list[dict[str, object]]:
+            return raw_devices
+
+    return PortAudioBackend(dependency_loader=lambda: (FakeSd(), _FakeNumpy()))
+
+
 def _format_device(device: AudioDeviceInfo) -> str:
     flags = []
     if device.is_default_input:
@@ -47,6 +63,82 @@ def _format_devices(devices: list[AudioDeviceInfo]) -> str:
     if not devices:
         return "no PortAudio devices reported"
     return "; ".join(_format_device(device) for device in devices)
+
+
+def test_mocked_portaudio_enumeration_preserves_windows_usb_audio_names() -> None:
+    backend = _portaudio_backend_for(
+        [
+            {
+                "index": 12,
+                "name": "Microphone (USB Audio CODEC)",
+                "max_input_channels": 2,
+                "max_output_channels": 0,
+                "default_samplerate": 48000.0,
+            },
+            {
+                "index": 13,
+                "name": "Speakers (USB Audio CODEC)",
+                "max_input_channels": 0,
+                "max_output_channels": 2,
+                "default_samplerate": 48000.0,
+            },
+            {
+                "index": 14,
+                "name": "CABLE Output (VB-Audio Virtual Cable)",
+                "max_input_channels": 2,
+                "max_output_channels": 0,
+                "default_samplerate": 48000.0,
+            },
+        ]
+    )
+
+    devices = backend.list_devices()
+
+    assert [(int(d.id), d.name) for d in devices] == [
+        (12, "Microphone (USB Audio CODEC)"),
+        (13, "Speakers (USB Audio CODEC)"),
+        (14, "CABLE Output (VB-Audio Virtual Cable)"),
+    ]
+    assert devices[0].input_channels == 2
+    assert devices[1].output_channels == 2
+
+
+def test_mocked_portaudio_enumeration_preserves_linux_usb_audio_names() -> None:
+    backend = _portaudio_backend_for(
+        [
+            {
+                "index": 4,
+                "name": "USB Audio CODEC: Audio (hw:2,0)",
+                "max_input_channels": 2,
+                "max_output_channels": 2,
+                "default_samplerate": 48000.0,
+            },
+            {
+                "index": 5,
+                "name": "pipewire",
+                "max_input_channels": 64,
+                "max_output_channels": 64,
+                "default_samplerate": 48000.0,
+            },
+            {
+                "index": 6,
+                "name": "pulse",
+                "max_input_channels": 32,
+                "max_output_channels": 32,
+                "default_samplerate": 48000.0,
+            },
+        ]
+    )
+
+    devices = backend.list_devices()
+
+    assert [(int(d.id), d.name) for d in devices] == [
+        (4, "USB Audio CODEC: Audio (hw:2,0)"),
+        (5, "pipewire"),
+        (6, "pulse"),
+    ]
+    assert devices[0].duplex is True
+    assert devices[1].default_samplerate == 48_000
 
 
 def _select_device(

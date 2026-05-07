@@ -6,7 +6,9 @@ import asyncio
 import logging
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, cast
+
+from rigplane.usb_audio_resolve import AudioDeviceMapping, resolve_audio_for_serial_port
 
 __all__ = [
     "build_setup_discovery_payload",
@@ -60,6 +62,9 @@ class RadioDiscoveryResult:
         address: CI-V address (``int``) for Icom radios; CAT model ID string for others.
         description: Human-readable OS serial port description, if available.
         hwid: OS hardware ID string, if available.
+        usb_audio: Optional USB audio resolution metadata. Keys match
+            :class:`rigplane.usb_audio_resolve.AudioDeviceMapping` field names
+            when topology resolution is available.
     """
 
     port: str
@@ -70,6 +75,7 @@ class RadioDiscoveryResult:
     address: int | str
     description: str | None = None
     hwid: str | None = None
+    usb_audio: dict[str, Any] | None = None
 
 
 @dataclass
@@ -267,7 +273,7 @@ def _default_yaesu_transport_factory() -> _YaesuTransportFactory:
     """Return YaesuCatTransport class, or raise ImportError with hint."""
     from .yaesu_cat.transport import YaesuCatTransport
 
-    return YaesuCatTransport
+    return cast(_YaesuTransportFactory, YaesuCatTransport)
 
 
 async def probe_serial_yaesu_cat(
@@ -536,6 +542,7 @@ async def discover_serial_radios(
                     address=civ.address,
                     description=port.description,
                     hwid=port.hwid,
+                    usb_audio=_resolve_usb_audio_metadata(civ.port),
                 )
             )
             continue
@@ -548,6 +555,7 @@ async def discover_serial_radios(
         if yaesu:
             yaesu.description = port.description
             yaesu.hwid = port.hwid
+            yaesu.usb_audio = _resolve_usb_audio_metadata(yaesu.port)
             results.append(yaesu)
             continue
 
@@ -556,9 +564,28 @@ async def discover_serial_radios(
         if kenwood:
             kenwood.description = port.description
             kenwood.hwid = port.hwid
+            kenwood.usb_audio = _resolve_usb_audio_metadata(kenwood.port)
             results.append(kenwood)
 
     return results
+
+
+def _resolve_usb_audio_metadata(port: str) -> dict[str, object] | None:
+    """Return optional USB audio mapping metadata without failing discovery."""
+    mapping: AudioDeviceMapping | None
+    try:
+        mapping = resolve_audio_for_serial_port(port)
+    except Exception as exc:
+        logger.debug("discover_serial_radios: USB audio resolve failed: %s", exc)
+        return None
+    if mapping is None:
+        return None
+    return {
+        "rx_device_index": mapping.rx_device_index,
+        "tx_device_index": mapping.tx_device_index,
+        "serial_port": mapping.serial_port,
+        "location_prefix": mapping.location_prefix,
+    }
 
 
 def dedupe_radios(
@@ -654,6 +681,9 @@ def build_setup_discovery_payload(
                 "hwid": serial.get("hwid"),
                 "requiresCredentials": False,
             }
+            usb_audio = _normalize_usb_audio_metadata(serial.get("usb_audio"))
+            if usb_audio is not None:
+                connection["usbAudio"] = usb_audio
             connections.append(connection)
 
         radios.append(
@@ -673,6 +703,26 @@ def build_setup_discovery_payload(
             "linuxUsbAudio": "pipewire-or-pulseaudio-device-selection",
         },
     }
+
+
+def _normalize_usb_audio_metadata(value: object) -> dict[str, object] | None:
+    """Convert internal USB audio metadata into stable discovery JSON."""
+    if value is None:
+        return None
+    if not isinstance(value, dict):
+        return None
+
+    result: dict[str, object] = {}
+    field_map = {
+        "rx_device_index": "rxDeviceIndex",
+        "tx_device_index": "txDeviceIndex",
+        "serial_port": "serialPort",
+        "location_prefix": "locationPrefix",
+    }
+    for source, target in field_map.items():
+        if source in value:
+            result[target] = value[source]
+    return result or None
 
 
 def _is_candidate(port: object) -> bool:

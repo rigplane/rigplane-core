@@ -23,6 +23,7 @@ from rigplane.discovery import (
     probe_serial_civ,
     probe_serial_yaesu_cat,
 )
+from rigplane.usb_audio_resolve import AudioDeviceMapping
 
 
 @contextmanager
@@ -489,6 +490,47 @@ def test_build_setup_discovery_payload_is_stable_and_credential_free() -> None:
     assert payload["limitations"]["windowsUsbAudio"] == "manual-device-selection"
 
 
+def test_setup_payload_preserves_usb_audio_metadata_without_credentials() -> None:
+    grouped = [
+        {
+            "model": "IC-7610",
+            "lan": [],
+            "serial": [
+                {
+                    "port": "/dev/cu.usbserial-111120",
+                    "protocol": "civ",
+                    "model": "IC-7610",
+                    "profile_id": "icom_ic7610",
+                    "baudrate": 115200,
+                    "address": 0x98,
+                    "description": "Silicon Labs CP210x USB to UART Bridge",
+                    "hwid": "USB VID:PID=10C4:EA60 LOCATION=1-1.2",
+                    "usb_audio": {
+                        "rx_device_index": 6,
+                        "tx_device_index": 5,
+                        "serial_port": "/dev/cu.usbserial-111120",
+                        "location_prefix": 0x0111,
+                    },
+                    "user": "must-not-leak",
+                    "password": "must-not-leak",
+                }
+            ],
+        }
+    ]
+
+    payload = build_setup_discovery_payload(grouped)
+
+    connection = payload["radios"][0]["connections"][0]
+    assert connection["requiresCredentials"] is False
+    assert connection["usbAudio"] == {
+        "rxDeviceIndex": 6,
+        "txDeviceIndex": 5,
+        "serialPort": "/dev/cu.usbserial-111120",
+        "locationPrefix": 0x0111,
+    }
+    assert "password" not in str(payload).lower()
+
+
 # ---------------------------------------------------------------------------
 # Fake Yaesu CAT transport helpers
 # ---------------------------------------------------------------------------
@@ -722,6 +764,37 @@ class TestDiscoverSerialRadios:
         assert r.address == 0x98
         assert r.description == "USB Serial"
         assert r.hwid == "USB VID:PID=10C4:EA60"
+
+    @pytest.mark.asyncio
+    async def test_civ_radio_preserves_usb_audio_resolution_metadata(self) -> None:
+        reader = _FakeReader([_IC7610_RESPONSE])
+        writer = _FakeWriter()
+
+        port = _make_port("/dev/ttyUSB0", "USB Serial", "USB VID:PID=10C4:EA60")
+        mapping = AudioDeviceMapping(
+            rx_device_index=6,
+            tx_device_index=5,
+            serial_port="/dev/ttyUSB0",
+            location_prefix=None,
+        )
+        with (
+            _fast_probes(),
+            patch("serial.tools.list_ports.comports", return_value=[port]),
+            patch(
+                "rigplane.discovery.resolve_audio_for_serial_port",
+                return_value=mapping,
+            ),
+        ):
+            results = await discover_serial_radios(
+                _open_serial=_make_open(reader, writer),
+            )
+
+        assert results[0].usb_audio == {
+            "rx_device_index": 6,
+            "tx_device_index": 5,
+            "serial_port": "/dev/ttyUSB0",
+            "location_prefix": None,
+        }
 
     @pytest.mark.asyncio
     async def test_yaesu_radio_detected(self) -> None:

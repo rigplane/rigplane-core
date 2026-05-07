@@ -23,6 +23,10 @@ def test_managed_runtime_packaging_requirements_doc_tracks_v1_gates() -> None:
         "PipeWire",
         "PulseAudio",
         "minimum viable paid-v1 support",
+        "RIGPLANE_OS_AUDIO_TX_DEVICE",
+        "RIGPLANE_OS_AUDIO_RX_DEVICE",
+        "USB Audio CODEC: Audio (hw:2,0)",
+        "Microphone (USB Audio CODEC)",
         "Follow-up issues",
     ]
     for term in required_terms:

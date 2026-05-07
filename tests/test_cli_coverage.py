@@ -1155,6 +1155,48 @@ async def test_cmd_discover_json_outputs_setup_payload(
     assert payload["radios"][1]["connections"][0]["type"] == "serial"
 
 
+@pytest.mark.asyncio
+async def test_cmd_discover_json_preserves_usb_audio_resolution_metadata(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    args = SimpleNamespace(serial_only=True, lan_only=False, timeout=0.1, json=True)
+    with (
+        patch("rigplane.discovery.discover_lan_radios", AsyncMock(return_value=[])),
+        patch(
+            "rigplane.discovery.discover_serial_radios",
+            AsyncMock(
+                return_value=[
+                    RadioDiscoveryResult(
+                        port="/dev/cu.usbserial-111120",
+                        protocol="civ",
+                        model="IC-7610",
+                        profile_id="icom_ic7610",
+                        baudrate=115200,
+                        address=0x98,
+                        description="Silicon Labs CP210x USB to UART Bridge",
+                        hwid="USB VID:PID=10C4:EA60",
+                        usb_audio={
+                            "rx_device_index": 6,
+                            "tx_device_index": 5,
+                            "serial_port": "/dev/cu.usbserial-111120",
+                            "location_prefix": 0x0111,
+                        },
+                    )
+                ]
+            ),
+        ),
+    ):
+        rc = await _cmd_discover(None, args)
+
+    assert rc == 0
+    payload = json.loads(capsys.readouterr().out)
+    connection = payload["radios"][0]["connections"][0]
+    assert connection["requiresCredentials"] is False
+    assert connection["usbAudio"]["rxDeviceIndex"] == 6
+    assert connection["usbAudio"]["serialPort"] == "/dev/cu.usbserial-111120"
+    assert "password" not in str(payload).lower()
+
+
 def test_main_branches(monkeypatch, capsys: pytest.CaptureFixture[str]) -> None:
     class DummyParser:
         def __init__(self, args):
