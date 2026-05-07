@@ -866,6 +866,29 @@ class TestWsjtxCompatPrewarm:
 
         mock_radio.set_data_mode.assert_not_called()
 
+    async def test_prewarm_configured_data2_falls_back_on_single_data_profile(
+        self, mock_radio: MagicMock
+    ) -> None:
+        cfg = RigctldConfig(
+            wsjtx_compat=True,
+            wsjtx_data_mode=2,
+            wsjtx_data_mod_input=5,
+        )
+        srv = RigctldServer(
+            mock_radio, cfg, _protocol=MagicMock(), _handler=MagicMock()
+        )
+
+        mock_radio.profile = MagicMock(data_mode_count=1)
+        mock_radio.get_mode_info = AsyncMock(return_value=(Mode.USB, 2))
+        mock_radio.get_data_mode = AsyncMock(return_value=True)
+        mock_radio.set_data_mode = AsyncMock(return_value=None)
+        mock_radio.set_data2_mod_input = AsyncMock(return_value=None)
+
+        await srv._wsjtx_compat_prewarm()
+
+        mock_radio.set_data2_mod_input.assert_not_called()
+        mock_radio.set_data_mode.assert_awaited_once_with(True)
+
     async def test_prewarm_skips_for_non_ssb_modes(self, mock_radio: MagicMock) -> None:
         cfg = RigctldConfig(wsjtx_compat=True)
         srv = RigctldServer(

@@ -50,7 +50,7 @@ def get_cmd(long_cmd: str, *args: str) -> RigctldCommand:
 
 class TestGetDataModeCommand:
     def test_frame_bytes(self) -> None:
-        frame = get_data_mode()
+        frame = get_data_mode(to_addr=0x98)
         assert frame == b"\xfe\xfe\x98\xe0\x1a\x06\xfd"
 
     def test_custom_addresses(self) -> None:
@@ -60,23 +60,23 @@ class TestGetDataModeCommand:
 
 class TestSetDataModeCommand:
     def test_on(self) -> None:
-        frame = set_data_mode(True)
+        frame = set_data_mode(True, to_addr=0x98)
         assert frame == b"\xfe\xfe\x98\xe0\x1a\x06\x01\xfd"
 
     def test_off(self) -> None:
-        frame = set_data_mode(False)
+        frame = set_data_mode(False, to_addr=0x98)
         assert frame == b"\xfe\xfe\x98\xe0\x1a\x06\x00\xfd"
 
     def test_data2(self) -> None:
-        frame = set_data_mode(2)
+        frame = set_data_mode(2, to_addr=0x98)
         assert frame == b"\xfe\xfe\x98\xe0\x1a\x06\x02\xfd"
 
     def test_data3(self) -> None:
-        frame = set_data_mode(3)
+        frame = set_data_mode(3, to_addr=0x98)
         assert frame == b"\xfe\xfe\x98\xe0\x1a\x06\x03\xfd"
 
     def test_data3_sub_receiver_uses_cmd29(self) -> None:
-        frame = set_data_mode(3, receiver=1)
+        frame = set_data_mode(3, to_addr=0x98, receiver=1)
         assert frame == b"\xfe\xfe\x98\xe0\x29\x01\x1a\x06\x03\xfd"
 
 

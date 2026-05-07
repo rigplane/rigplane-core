@@ -780,7 +780,7 @@ async def test_restore_state_calls_set_methods(
     assert set_vox_called
     assert set_data_mode_called
     assert set_data_off_called
-    assert set_data1_called
+    assert not set_data1_called
 
 
 async def test_restore_state_ignores_set_failure(

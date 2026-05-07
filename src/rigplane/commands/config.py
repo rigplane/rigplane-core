@@ -180,8 +180,8 @@ def set_data1_mod_input(
     from_addr: int = CONTROLLER_ADDR,
     cmd_map: CommandMap | None = None,
 ) -> bytes:
-    if not 0 <= source <= 4:
-        raise ValueError(f"DATA1 mod input must be 0-4, got {source}")
+    if not 0 <= source <= 5:
+        raise ValueError(f"DATA1 mod input must be 0-5, got {source}")
     return _build_ctl_mem_set(
         _CTL_MEM_DATA1_MOD_INPUT,
         source,
@@ -211,8 +211,8 @@ def set_data2_mod_input(
     from_addr: int = CONTROLLER_ADDR,
     cmd_map: CommandMap | None = None,
 ) -> bytes:
-    if not 0 <= source <= 4:
-        raise ValueError(f"DATA2 mod input must be 0-4, got {source}")
+    if not 0 <= source <= 5:
+        raise ValueError(f"DATA2 mod input must be 0-5, got {source}")
     return _build_ctl_mem_set(
         _CTL_MEM_DATA2_MOD_INPUT,
         source,
@@ -242,8 +242,8 @@ def set_data3_mod_input(
     from_addr: int = CONTROLLER_ADDR,
     cmd_map: CommandMap | None = None,
 ) -> bytes:
-    if not 0 <= source <= 4:
-        raise ValueError(f"DATA3 mod input must be 0-4, got {source}")
+    if not 0 <= source <= 5:
+        raise ValueError(f"DATA3 mod input must be 0-5, got {source}")
     return _build_ctl_mem_set(
         _CTL_MEM_DATA3_MOD_INPUT,
         source,

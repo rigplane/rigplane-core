@@ -162,7 +162,7 @@ class TestApplyProfileFull:
             ),
         )
         radio.set_data_off_mod_input.assert_awaited_with(3)
-        radio.set_data1_mod_input.assert_awaited_with(5)
+        radio.set_data1_mod_input.assert_not_awaited()
 
     @pytest.mark.asyncio()
     async def test_applies_squelch(self, radio: AsyncMock) -> None:
@@ -243,7 +243,7 @@ class TestApplyProfileFull:
         radio.set_mode.assert_awaited()
         radio.set_data_mode.assert_awaited()
         radio.set_data_off_mod_input.assert_awaited()
-        radio.set_data1_mod_input.assert_awaited()
+        radio.set_data1_mod_input.assert_not_awaited()
         # #1113: dispatches to canonical ``equalize_vfo_ab(0)`` (bare
         # AsyncMock has no real profile attribute → single-RX fallback).
         radio.equalize_vfo_ab.assert_awaited_with(0)
@@ -483,7 +483,7 @@ class TestIC705BackwardCompat:
             data1_mod_input=5,
         )
         radio.set_data_off_mod_input.assert_awaited_with(3)
-        radio.set_data1_mod_input.assert_awaited_with(5)
+        radio.set_data1_mod_input.assert_not_awaited()
 
 
 # ---------------------------------------------------------------------------

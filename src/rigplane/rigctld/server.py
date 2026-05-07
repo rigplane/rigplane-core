@@ -35,6 +35,37 @@ logger = logging.getLogger(__name__)
 __all__ = ["RigctldServer", "run_rigctld_server"]
 
 
+def _profile_data_mode_count(radio: "Radio") -> int:
+    profile = getattr(radio, "profile", None)
+    count = getattr(profile, "data_mode_count", 1)
+    return count if isinstance(count, int) and count > 0 else 1
+
+
+def _wsjtx_data_mode_value(radio: "Radio", config: RigctldConfig) -> int | bool:
+    if config.wsjtx_data_mode is not None:
+        return config.wsjtx_data_mode
+    return True
+
+
+async def _apply_wsjtx_data_mod_input(
+    radio: "Radio",
+    *,
+    data_mode: int | bool,
+    source: int | None,
+) -> None:
+    if source is None or type(data_mode) is not int:
+        return
+    setter_name = f"set_data{data_mode}_mod_input"
+    setter = getattr(radio, setter_name, None)
+    if setter is None:
+        logger.debug(
+            "WSJT-X compat: radio has no %s, skipping DATA mod input",
+            setter_name,
+        )
+        return
+    await setter(source)
+
+
 def _mode_to_name(mode: object) -> str:
     """Normalize backend mode values to an uppercase mode name."""
     name = getattr(mode, "name", None)
@@ -283,12 +314,31 @@ class RigctldServer:
         try:
             mode_name, _ = await get_mode()
             data_on = await self._radio.get_data_mode()
-            if not data_on and mode_name in {"USB", "LSB", "RTTY"}:
-                await self._radio.set_data_mode(True)
+            # A plain DATA flag does not tell us whether the rig is in DATA1,
+            # DATA2, or DATA3.  When the embedded LAN bridge requests an
+            # explicit WSJT-X DATA sub-mode, apply it even if DATA is already
+            # on; otherwise keep the legacy prewarm behavior and only enable
+            # DATA1 when the rig is still in plain USB/LSB/RTTY.
+            explicit_data_mode = self._config.wsjtx_data_mode is not None
+            if mode_name in {"USB", "LSB", "RTTY"} and (
+                explicit_data_mode or not data_on
+            ):
+                data_mode = _wsjtx_data_mode_value(self._radio, self._config)
+                if type(data_mode) is int and data_mode > _profile_data_mode_count(
+                    self._radio
+                ):
+                    data_mode = True
+                await _apply_wsjtx_data_mod_input(
+                    self._radio,
+                    data_mode=data_mode,
+                    source=self._config.wsjtx_data_mod_input,
+                )
+                await self._radio.set_data_mode(data_mode)
                 if poller is not None:
                     poller.hold_for(1.5)
                 logger.info(
-                    "WSJT-X compat prewarm: DATA mode enabled (base mode=%s)",
+                    "WSJT-X compat prewarm: DATA%s enabled (base mode=%s)",
+                    data_mode,
                     mode_name,
                 )
         except Exception as exc:

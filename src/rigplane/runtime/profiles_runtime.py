@@ -193,10 +193,9 @@ async def apply_profile(radio: Any, profile: OperatingProfile) -> dict[str, obje
             logger.debug("apply_profile: radio has no set_data_off_mod_input, skipping")
 
     if profile.data1_mod_input is not None:
-        if hasattr(radio, "set_data1_mod_input"):
-            await radio.set_data1_mod_input(profile.data1_mod_input)
-        else:
-            logger.debug("apply_profile: radio has no set_data1_mod_input, skipping")
+        logger.debug(
+            "apply_profile: data1_mod_input is user-owned; automatic restore skipped"
+        )
 
     if profile.equalize_vfo:
         # Inline the dispatch previously hidden behind the deprecated

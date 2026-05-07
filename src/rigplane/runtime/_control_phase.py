@@ -549,7 +549,8 @@ class ControlPhaseRuntime:
         # issue #794.  We force ``PCM_1CH_16BIT`` so stereo RX works without
         # any user-visible tradeoff — the radio uses its own separately
         # configured TX modulation source regardless of this byte.
-        tx_codec = int(AudioCodec.PCM_1CH_16BIT)
+        h._audio_tx_codec = AudioCodec.PCM_1CH_16BIT
+        tx_codec = int(h._audio_tx_codec)
         conninfo = build_conninfo_packet(
             sender_id=h._ctrl_transport.my_id,
             receiver_id=h._ctrl_transport.remote_id,

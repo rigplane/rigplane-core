@@ -2499,6 +2499,11 @@ def _detect_loopback_hint() -> str | None:
     return None
 
 
+def _uses_direct_lan_audio(radio: Radio) -> bool:
+    """Return True when the active radio backend streams TX audio over Icom LAN."""
+    return getattr(radio, "backend_id", None) == "rigplane"
+
+
 def _print_startup_banner(
     *,
     radio: Radio,
@@ -2727,10 +2732,20 @@ async def _cmd_web(radio: Radio, args: argparse.Namespace) -> int:
         from rigplane.rigctld.server import RigctldServer
 
         rigctld_port = getattr(args, "web_rigctld_port", 4532)
+        wsjtx_compat = getattr(args, "wsjtx_compat", False)
+        wsjtx_data_mode = None
+        wsjtx_data_mod_input = None
+        if wsjtx_compat and _uses_direct_lan_audio(radio):
+            profile = getattr(radio, "profile", None)
+            if getattr(profile, "data_mode_count", 1) >= 2:
+                wsjtx_data_mode = 2
+                wsjtx_data_mod_input = 5  # IC-7610 DATA2 MOD input: LAN
         rigctld_config = RigctldConfig(
             host="0.0.0.0",
             port=rigctld_port,
-            wsjtx_compat=getattr(args, "wsjtx_compat", False),
+            wsjtx_compat=wsjtx_compat,
+            wsjtx_data_mode=wsjtx_data_mode,
+            wsjtx_data_mod_input=wsjtx_data_mod_input,
         )
         candidate = RigctldServer(radio, rigctld_config)
         try:

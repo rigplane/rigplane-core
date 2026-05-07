@@ -34,7 +34,7 @@ async def test_prepare_ic705_data_profile_applies_expected_sequence() -> None:
     radio.set_mode.assert_awaited_once_with("FM")
     radio.set_data_mode.assert_awaited_once_with(True)
     radio.set_data_off_mod_input.assert_awaited_once_with(3)
-    radio.set_data1_mod_input.assert_awaited_once_with(4)
+    radio.set_data1_mod_input.assert_not_awaited()
     # #1113: apply_profile dispatches to canonical ``equalize_main_sub`` /
     # ``equalize_vfo_ab`` instead of the deprecated ``vfo_equalize`` alias.
     # The bare AsyncMock has no real ``profile`` attribute, so the dispatch

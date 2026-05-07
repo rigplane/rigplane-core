@@ -2094,17 +2094,17 @@ class TestSystemConfigCommands:
         frame = get_data1_mod_input()
         assert frame == b"\xfe\xfe\x98\xe0\x1a\x05\x00\x92\xfd"
 
-    def test_set_data1_mod_input_usb(self) -> None:
+    def test_set_data1_mod_input_lan(self) -> None:
         from rigplane.commands import set_data1_mod_input
 
-        frame = set_data1_mod_input(2)  # USB
-        assert frame == b"\xfe\xfe\x98\xe0\x1a\x05\x00\x92\x02\xfd"
+        frame = set_data1_mod_input(5)  # LAN
+        assert frame == b"\xfe\xfe\x98\xe0\x1a\x05\x00\x92\x05\xfd"
 
     def test_set_data1_mod_input_rejects_out_of_range(self) -> None:
         from rigplane.commands import set_data1_mod_input
 
-        with pytest.raises(ValueError, match="0-4"):
-            set_data1_mod_input(5)
+        with pytest.raises(ValueError, match="0-5"):
+            set_data1_mod_input(6)
 
     def test_get_data2_mod_input_frame(self) -> None:
         from rigplane.commands import get_data2_mod_input
@@ -2112,11 +2112,23 @@ class TestSystemConfigCommands:
         frame = get_data2_mod_input()
         assert frame == b"\xfe\xfe\x98\xe0\x1a\x05\x00\x93\xfd"
 
+    def test_set_data2_mod_input_lan(self) -> None:
+        from rigplane.commands import set_data2_mod_input
+
+        frame = set_data2_mod_input(5)
+        assert frame == b"\xfe\xfe\x98\xe0\x1a\x05\x00\x93\x05\xfd"
+
     def test_get_data3_mod_input_frame(self) -> None:
         from rigplane.commands import get_data3_mod_input
 
         frame = get_data3_mod_input()
         assert frame == b"\xfe\xfe\x98\xe0\x1a\x05\x00\x94\xfd"
+
+    def test_set_data3_mod_input_lan(self) -> None:
+        from rigplane.commands import set_data3_mod_input
+
+        frame = set_data3_mod_input(5)
+        assert frame == b"\xfe\xfe\x98\xe0\x1a\x05\x00\x94\x05\xfd"
 
     def test_set_data3_mod_input_lan_usb(self) -> None:
         from rigplane.commands import set_data3_mod_input

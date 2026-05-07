@@ -97,6 +97,18 @@ When a CAT client connects for the first time:
 - This eliminates a known first-TX latency when WSJT-X switches
   from plain SSB to packet mode (PKTUSB).
 
+When `--wsjtx-compat` is used with a direct Icom LAN radio connection on a
+radio profile with multiple DATA sub-modes such as the IC-7610, rigplane treats
+WSJT-X packet-mode requests as LAN audio operation:
+
+- `PKTUSB`, `PKTLSB`, and `PKTRTTY` are mapped to DATA2 instead of DATA1.
+- DATA2 modulation input is set to LAN.
+- DATA1 modulation input is not changed.
+
+For USB/serial radio connections, including cases where rigplane bridges local
+USB audio devices for remote use, the compatibility mapping remains the legacy
+DATA1 behavior.
+
 ### When to use it
 
 - **Use** `--wsjtx-compat` if you run WSJT-X, JTDX, or JS8Call
@@ -106,8 +118,10 @@ When a CAT client connects for the first time:
 
 ### What it changes on the radio
 
-Only the DATA mode flag (CI-V `0x1A 0x06`). It does **not** change
-frequency, power, filter, or any other setting.
+In USB/serial CAT operation, only the DATA mode flag (CI-V `0x1A 0x06`) is
+changed. In direct Icom LAN operation on multi-DATA radios, rigplane may also
+set the selected LAN DATA sub-mode's modulation input to LAN. DATA1 is treated
+as user-owned and is not rewritten by prewarm, profile apply, or state restore.
 
 ## Known Behavior
 

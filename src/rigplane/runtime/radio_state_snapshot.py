@@ -157,7 +157,6 @@ async def restore_state(radio: IcomRadio, state: dict[str, object]) -> None:
         except Exception:
             logger.debug("restore_state: set_data_off_mod_input failed", exc_info=True)
     if "data1_mod_input" in state:
-        try:
-            await radio.set_data1_mod_input(int(cast(int, state["data1_mod_input"])))
-        except Exception:
-            logger.debug("restore_state: set_data1_mod_input failed", exc_info=True)
+        logger.debug(
+            "restore_state: data1_mod_input is user-owned; automatic restore skipped"
+        )

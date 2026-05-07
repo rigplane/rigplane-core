@@ -769,6 +769,170 @@ class TestWebRigctldDefault:
         assert "rigctld:" in out
         assert "4532" in out
 
+    async def test_cli_web_direct_lan_wsjtx_configures_data2_lan(self, capsys):
+        """Direct Icom LAN backend maps WSJT-X packet mode to DATA2/LAN."""
+        import asyncio
+
+        from rigplane.cli import _cmd_web
+
+        radio = AsyncMock()
+        radio.model = "IC-7610"
+        radio.backend_id = "rigplane"
+        radio.profile = MagicMock(data_mode_count=3)
+        captured = []
+
+        class FakeRigctldServer:
+            def __init__(self, _radio, cfg):
+                self.cfg = cfg
+                captured.append(cfg)
+
+            async def start(self):
+                pass
+
+            async def stop(self):
+                pass
+
+        class FakeWebServer:
+            def __init__(self, _radio, _cfg):
+                pass
+
+            async def start_audio_bridge(self, **_kwargs):
+                pass
+
+            async def serve_forever(self):
+                raise asyncio.CancelledError
+
+        p = _build_parser()
+        args = p.parse_args(["--host", "1.2.3.4", "web", "--wsjtx-compat"])
+        args.web_bridge = None
+
+        with (
+            patch("rigplane.web.server.WebServer", FakeWebServer),
+            patch("rigplane.rigctld.server.RigctldServer", FakeRigctldServer),
+            patch("rigplane.cli._detect_loopback_hint", return_value=None),
+        ):
+            rc = await _cmd_web(radio, args)
+
+        assert rc == 0
+        assert len(captured) == 1
+        assert captured[0].wsjtx_compat is True
+        assert captured[0].wsjtx_data_mode == 2
+        assert captured[0].wsjtx_data_mod_input == 5
+        capsys.readouterr()
+
+    async def test_cli_web_serial_bridge_wsjtx_keeps_legacy_data1(self, capsys):
+        """USB/serial backend keeps DATA1 even when local bridge is enabled."""
+        import asyncio
+
+        from rigplane.cli import _cmd_web
+
+        radio = AsyncMock()
+        radio.model = "IC-7610"
+        radio.backend_id = "icom_serial"
+        radio.profile = MagicMock(data_mode_count=3)
+        captured = []
+
+        class FakeRigctldServer:
+            def __init__(self, _radio, cfg):
+                self.cfg = cfg
+                captured.append(cfg)
+
+            async def start(self):
+                pass
+
+            async def stop(self):
+                pass
+
+        class FakeWebServer:
+            def __init__(self, _radio, _cfg):
+                pass
+
+            async def start_audio_bridge(self, **_kwargs):
+                pass
+
+            async def serve_forever(self):
+                raise asyncio.CancelledError
+
+        p = _build_parser()
+        args = p.parse_args(
+            [
+                "--backend",
+                "serial",
+                "--serial-port",
+                "/dev/tty.usbmodem",
+                "web",
+                "--bridge",
+                "BlackHole 16ch",
+                "--wsjtx-compat",
+            ]
+        )
+
+        with (
+            patch("rigplane.web.server.WebServer", FakeWebServer),
+            patch("rigplane.rigctld.server.RigctldServer", FakeRigctldServer),
+        ):
+            rc = await _cmd_web(radio, args)
+
+        assert rc == 0
+        assert len(captured) == 1
+        assert captured[0].wsjtx_compat is True
+        assert captured[0].wsjtx_data_mode is None
+        assert captured[0].wsjtx_data_mod_input is None
+        capsys.readouterr()
+
+    async def test_cli_web_direct_lan_single_data_profile_keeps_legacy_data1(
+        self, capsys
+    ):
+        """Single-DATA radios cannot be steered to DATA2."""
+        import asyncio
+
+        from rigplane.cli import _cmd_web
+
+        radio = AsyncMock()
+        radio.model = "IC-705"
+        radio.backend_id = "rigplane"
+        radio.profile = MagicMock(data_mode_count=1)
+        captured = []
+
+        class FakeRigctldServer:
+            def __init__(self, _radio, cfg):
+                self.cfg = cfg
+                captured.append(cfg)
+
+            async def start(self):
+                pass
+
+            async def stop(self):
+                pass
+
+        class FakeWebServer:
+            def __init__(self, _radio, _cfg):
+                pass
+
+            async def start_audio_bridge(self, **_kwargs):
+                pass
+
+            async def serve_forever(self):
+                raise asyncio.CancelledError
+
+        p = _build_parser()
+        args = p.parse_args(["--host", "1.2.3.4", "web", "--wsjtx-compat"])
+        args.web_bridge = None
+
+        with (
+            patch("rigplane.web.server.WebServer", FakeWebServer),
+            patch("rigplane.rigctld.server.RigctldServer", FakeRigctldServer),
+            patch("rigplane.cli._detect_loopback_hint", return_value=None),
+        ):
+            rc = await _cmd_web(radio, args)
+
+        assert rc == 0
+        assert len(captured) == 1
+        assert captured[0].wsjtx_compat is True
+        assert captured[0].wsjtx_data_mode is None
+        assert captured[0].wsjtx_data_mod_input is None
+        capsys.readouterr()
+
     async def test_cli_web_no_rigctld_opt_out(self, capsys):
         """`--no-rigctld` disables rigctld; banner omits the rigctld line."""
         import asyncio

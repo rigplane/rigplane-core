@@ -144,17 +144,18 @@ limit is undocumented but observed empirically and matches the wfview source:
 // wfview: audio.data.mid(len, 1364)
 ```
 
-`push_tx()` (and the high-level `push_audio_tx_pcm()`) automatically chunk oversized payloads:
+`push_tx()` automatically chunks oversized payloads:
 
 ```
-push_audio_tx_pcm(pcm_frame)  # 1920-byte 20ms PCM frame @ 48kHz/16-bit
+push_tx(pcm_frame)  # 1920-byte 20ms PCM frame @ 48kHz/16-bit
   → chunk 0: bytes [0 : 1364]    → 1364-byte UDP payload  ✓
   → chunk 1: bytes [1364 : 1920] →  556-byte UDP payload  ✓
 ```
 
 The two chunk sizes — 1364 and 556 bytes — correspond to the fixed audio payload sizes
-documented in wfview for the IC-7610. Callers do not need to pre-chunk frames; any frame size
-is accepted.
+documented in wfview for the IC-7610. Low-level callers do not need to pre-chunk payloads.
+The high-level `push_audio_tx_pcm()` API still requires one complete PCM frame at the
+configured sample rate, channel count, and frame duration.
 
 ## Usage
 
@@ -204,9 +205,14 @@ async with create_radio(config) as radio:
 config = LanBackendConfig(host="192.168.1.100", username="u", password="p")
 async with create_radio(config) as radio:
     await radio.start_audio_tx_opus()
-    await radio.push_audio_tx_opus(opus_frame)
+    await radio.push_audio_tx_opus(audio_payload)
     await radio.stop_audio_tx_opus()
 ```
+
+The low-level method names are historical. For direct Icom LAN sessions,
+rigplane currently negotiates TX as `PCM_1CH_16BIT`, so the TX payload sent to
+the radio is raw PCM16LE. Opus TX payloads are only valid for endpoints that
+negotiate an Opus TX codec, such as wfview-compatible server paths.
 
 ### TX Audio (high-level PCM)
 
@@ -294,5 +300,6 @@ For RX PCM, migrate callback-side decoding to the built-in API:
 
 For TX PCM, migrate manual Opus encoding to the built-in API:
 
-- Before: encode PCM to Opus yourself, then `push_audio_tx_opus()`.
+- Before: manually prepare the low-level negotiated-codec payload and call
+  `push_audio_tx_opus()`.
 - Now: `start_audio_tx_pcm()` and `push_audio_tx_pcm()` with fixed-size PCM frames.

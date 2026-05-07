@@ -593,7 +593,7 @@ class AudioStream:
         self._tx_packets_sent = 0
         logger.info("Audio TX started")
 
-    async def push_tx(self, opus_data: bytes) -> None:
+    async def push_tx(self, audio_data: bytes) -> None:
         """Send an audio frame to the radio.
 
         Large payloads (e.g. raw PCM) are automatically chunked to fit the
@@ -601,7 +601,7 @@ class AudioStream:
         matching the wfview chunking behaviour.
 
         Args:
-            opus_data: Audio data (Opus-encoded or raw PCM).
+            audio_data: Payload encoded with the negotiated TX audio codec.
 
         Raises:
             RuntimeError: If not in transmitting state.
@@ -609,7 +609,7 @@ class AudioStream:
         if self._state != AudioState.TRANSMITTING:
             raise RuntimeError(f"Cannot push TX in state {self._state}")
 
-        data = opus_data
+        data = audio_data
         offset = 0
         while offset < len(data):
             chunk = data[offset : offset + MAX_AUDIO_PAYLOAD]
@@ -670,17 +670,17 @@ def parse_audio_packet(data: bytes) -> AudioPacket | None:
 
 
 def build_audio_packet(
-    opus_data: bytes,
+    audio_data: bytes,
     *,
     sender_id: int,
     receiver_id: int,
     send_seq: int,
     ident: int = TX_IDENT,
 ) -> bytes:
-    """Build a raw UDP audio packet from Opus data.
+    """Build a raw UDP audio packet from negotiated-codec audio data.
 
     Args:
-        opus_data: Opus-encoded audio frame.
+        audio_data: Audio payload encoded with the negotiated stream codec.
         sender_id: Our connection ID.
         receiver_id: Radio's connection ID.
         send_seq: Audio-level sequence number.
@@ -689,7 +689,7 @@ def build_audio_packet(
     Returns:
         Complete UDP packet bytes ready to send.
     """
-    total_len = AUDIO_HEADER_SIZE + len(opus_data)
+    total_len = AUDIO_HEADER_SIZE + len(audio_data)
     pkt = bytearray(total_len)
 
     struct.pack_into("<I", pkt, 0x00, total_len)  # len (LE)
@@ -700,7 +700,7 @@ def build_audio_packet(
     struct.pack_into("<H", pkt, 0x10, ident)  # ident (LE)
     struct.pack_into(">H", pkt, 0x12, send_seq)  # sendseq (BE)
     # 0x14: unused (stays 0)
-    struct.pack_into(">H", pkt, 0x16, len(opus_data))  # datalen (BE)
+    struct.pack_into(">H", pkt, 0x16, len(audio_data))  # datalen (BE)
 
-    pkt[AUDIO_HEADER_SIZE:] = opus_data
+    pkt[AUDIO_HEADER_SIZE:] = audio_data
     return bytes(pkt)

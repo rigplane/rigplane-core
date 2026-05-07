@@ -15,6 +15,7 @@ from rigplane.exceptions import (
     AudioTranscodeError,
 )
 from rigplane.radio import IcomRadio
+from rigplane.types import AudioCodec
 from _audio_stream_fake import FakeAudioStream
 
 
@@ -124,8 +125,20 @@ class TestPcmOpusTranscoder:
 
 class TestRadioPcmHooks:
     @pytest.mark.asyncio
-    async def test_push_audio_tx_pcm_internal_uses_transcoder(self) -> None:
+    async def test_push_audio_tx_pcm_internal_sends_raw_pcm(self) -> None:
         radio = IcomRadio("192.168.1.100")
+        radio.push_audio_tx_opus = AsyncMock()  # type: ignore[method-assign]
+
+        pcm = b"\x01\x02" * 960
+        await radio._push_audio_tx_pcm_internal(pcm)
+        radio.push_audio_tx_opus.assert_awaited_once_with(pcm)
+
+    @pytest.mark.asyncio
+    async def test_push_audio_tx_pcm_internal_encodes_when_tx_codec_is_opus(
+        self,
+    ) -> None:
+        radio = IcomRadio("192.168.1.100")
+        radio._audio_tx_codec = AudioCodec.OPUS_1CH
         radio.push_audio_tx_opus = AsyncMock()  # type: ignore[method-assign]
 
         class _DummyTranscoder:
@@ -235,7 +248,7 @@ class TestRadioPcmRxApi:
 
 class TestRadioPcmTxApi:
     @pytest.mark.asyncio
-    async def test_start_audio_tx_pcm_starts_opus_and_tracks_format(self) -> None:
+    async def test_start_audio_tx_pcm_starts_stream_and_tracks_format(self) -> None:
         radio = IcomRadio("192.168.1.100")
         radio._connected = True
         radio._civ_transport = MagicMock()
@@ -250,22 +263,16 @@ class TestRadioPcmTxApi:
         assert radio._pcm_tx_fmt == (48000, 1, 20)
 
     @pytest.mark.asyncio
-    async def test_push_audio_tx_pcm_encodes_and_sends(self) -> None:
+    async def test_push_audio_tx_pcm_sends_raw_pcm(self) -> None:
         radio = IcomRadio("192.168.1.100")
         radio._connected = True
         radio._civ_transport = MagicMock()
         radio._pcm_tx_fmt = (48000, 1, 20)
         radio.push_audio_tx_opus = AsyncMock()  # type: ignore[method-assign]
 
-        class _DummyTranscoder:
-            def pcm_to_opus(self, pcm: bytes | bytearray | memoryview) -> bytes:
-                return b"opus:" + bytes(pcm)[:2]
-
-        radio._pcm_transcoder = _DummyTranscoder()  # type: ignore[assignment]
-        radio._pcm_transcoder_fmt = (48000, 1, 20)
-
-        await radio.push_audio_tx_pcm(b"\x01\x02" * 960)
-        radio.push_audio_tx_opus.assert_awaited_once_with(b"opus:\x01\x02")
+        pcm = b"\x01\x02" * 960
+        await radio.push_audio_tx_pcm(pcm)
+        radio.push_audio_tx_opus.assert_awaited_once_with(pcm)
 
     @pytest.mark.asyncio
     async def test_push_audio_tx_pcm_not_started(self) -> None:
@@ -296,7 +303,7 @@ class TestRadioPcmTxApi:
             await radio.start_audio_tx_pcm(sample_rate=44100)
 
     @pytest.mark.asyncio
-    async def test_start_audio_tx_pcm_backend_error_is_actionable(self) -> None:
+    async def test_start_audio_tx_pcm_does_not_require_opus_backend(self) -> None:
         radio = IcomRadio("192.168.1.100")
         radio._connected = True
         radio._civ_transport = MagicMock()
@@ -308,9 +315,8 @@ class TestRadioPcmTxApi:
             )
         )
 
-        with pytest.raises(AudioCodecBackendError, match="install rigplane\\[audio\\]"):
-            await radio.start_audio_tx_pcm()
-        assert fake_stream.start_tx_count == 0
+        await radio.start_audio_tx_pcm()
+        assert fake_stream.start_tx_count == 1
 
     @pytest.mark.asyncio
     async def test_push_audio_tx_pcm_frame_size_error(self) -> None:
@@ -318,16 +324,6 @@ class TestRadioPcmTxApi:
         radio._connected = True
         radio._civ_transport = MagicMock()
         radio._pcm_tx_fmt = (48000, 1, 20)
-
-        class _DummyTranscoder:
-            def pcm_to_opus(self, pcm: bytes | bytearray | memoryview) -> bytes:
-                _ = pcm
-                raise AudioFormatError(
-                    "PCM frame size mismatch: expected 1920 bytes, got 1919."
-                )
-
-        radio._pcm_transcoder = _DummyTranscoder()  # type: ignore[assignment]
-        radio._pcm_transcoder_fmt = (48000, 1, 20)
 
         with pytest.raises(AudioFormatError, match="expected 1920 bytes"):
             await radio.push_audio_tx_pcm(b"\x00" * 1919)

@@ -771,8 +771,7 @@ class AudioHandler:
                     try:
                         # Decode Opus → PCM16
                         pcm_data = self._transcoder.opus_to_pcm(opus_data)
-                        # Send PCM via push_audio_tx_opus (method accepts any codec)
-                        await self._radio.push_audio_tx_opus(pcm_data)  # type: ignore[attr-defined]
+                        await self._radio.push_audio_tx_pcm(pcm_data)  # type: ignore[attr-defined]
                         tx_data_desc = f"{len(pcm_data)} bytes pcm"
                     except Exception as e:
                         logger.warning(

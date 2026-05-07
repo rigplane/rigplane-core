@@ -18,9 +18,13 @@ if TYPE_CHECKING:
 else:
     _MixinBase = object
 
-from rigplane.audio._transcoder import PcmOpusTranscoder, create_pcm_opus_transcoder
+from rigplane.audio._transcoder import (
+    PcmAudioFormat,
+    PcmOpusTranscoder,
+    create_pcm_opus_transcoder,
+)
 from rigplane.audio import AudioStats, AudioStream
-from rigplane.core.exceptions import ConnectionError
+from rigplane.core.exceptions import AudioFormatError, ConnectionError
 from rigplane.core.transport import IcomTransport
 from rigplane.core.types import AudioCodec
 
@@ -38,6 +42,7 @@ class AudioRuntimeMixin(_MixinBase):  # type: ignore[misc]
     _pcm_rx_user_callback: Callable[[bytes | None], None] | None
     _opus_rx_user_callback: Callable[[AudioPacket | None], None] | None
     _audio_codec: AudioCodec
+    _audio_tx_codec: AudioCodec
     _audio_sample_rate: int
 
     # ------------------------------------------------------------------
@@ -181,8 +186,10 @@ class AudioRuntimeMixin(_MixinBase):  # type: ignore[misc]
     ) -> None:
         """Start transmitting PCM audio to the radio.
 
-        This high-level API validates PCM format settings, initializes
-        the Opus transcoder backend, and starts the underlying Opus TX stream.
+        This high-level API validates PCM format settings and starts the
+        underlying LAN audio TX stream.  Despite the legacy low-level method
+        name, Icom LAN TX is negotiated as PCM_1CH_16BIT in conninfo, so PCM
+        frames must be sent as raw s16le bytes rather than Opus frames.
 
         Args:
             sample_rate: PCM sample rate in Hz (Opus-supported values only).
@@ -192,7 +199,7 @@ class AudioRuntimeMixin(_MixinBase):  # type: ignore[misc]
         Raises:
             ConnectionError: If not connected or audio port unavailable.
             TypeError: If numeric args are not ints.
-            AudioCodecBackendError: If Opus backend is unavailable.
+            AudioCodecBackendError: If TX codec is Opus and backend is unavailable.
             AudioFormatError: If PCM format is unsupported.
         """
         for name, value in (
@@ -205,12 +212,24 @@ class AudioRuntimeMixin(_MixinBase):  # type: ignore[misc]
 
         self._check_connected()
 
-        # Validate codec/backend and PCM format before stream startup.
-        self._get_pcm_transcoder(
-            sample_rate=sample_rate,
-            channels=channels,
-            frame_ms=frame_ms,
-        )
+        tx_codec = getattr(self, "_audio_tx_codec", AudioCodec.PCM_1CH_16BIT)
+        if tx_codec == AudioCodec.OPUS_1CH:
+            self._get_pcm_transcoder(
+                sample_rate=sample_rate,
+                channels=channels,
+                frame_ms=frame_ms,
+            )
+        else:
+            # Validate PCM format before stream startup.  Direct Icom LAN TX
+            # does not require libopus because conninfo negotiates
+            # PCM_1CH_16BIT.
+            PcmOpusTranscoder._validate_format(  # noqa: SLF001
+                PcmAudioFormat(
+                    sample_rate=sample_rate,
+                    channels=channels,
+                    frame_ms=frame_ms,
+                )
+            )
         await self.start_audio_tx_opus()
         self._pcm_tx_fmt = (sample_rate, channels, frame_ms)
 
@@ -375,13 +394,39 @@ class AudioRuntimeMixin(_MixinBase):  # type: ignore[misc]
         frame_ms: int = 20,
     ) -> None:
         """Internal helper for future high-level TX PCM APIs."""
-        transcoder = self._get_pcm_transcoder(
+        fmt = PcmAudioFormat(
             sample_rate=sample_rate,
             channels=channels,
             frame_ms=frame_ms,
         )
-        opus_data = transcoder.pcm_to_opus(pcm_data)
-        await self.push_audio_tx_opus(opus_data)
+        PcmOpusTranscoder._validate_format(fmt)  # noqa: SLF001
+        if not isinstance(pcm_data, (bytes, bytearray, memoryview)):
+            raise AudioFormatError("PCM input must be bytes-like.")
+        frame = bytes(pcm_data)
+        if len(frame) != fmt.frame_bytes:
+            raise AudioFormatError(
+                f"PCM frame size mismatch: expected {fmt.frame_bytes} bytes "
+                f"({fmt.frame_ms}ms at {fmt.sample_rate}Hz, "
+                f"{fmt.channels}ch s16le), got {len(frame)}."
+            )
+
+        tx_codec = getattr(self, "_audio_tx_codec", AudioCodec.PCM_1CH_16BIT)
+        if tx_codec == AudioCodec.PCM_1CH_16BIT:
+            # push_audio_tx_opus is the historical low-level packet push.  The
+            # payload must match the negotiated Icom TX codec; direct Icom LAN
+            # conninfo forces PCM_1CH_16BIT for TX, so send the PCM frame
+            # unchanged.
+            await self.push_audio_tx_opus(frame)
+            return
+        if tx_codec == AudioCodec.OPUS_1CH:
+            transcoder = self._get_pcm_transcoder(
+                sample_rate=sample_rate,
+                channels=channels,
+                frame_ms=frame_ms,
+            )
+            await self.push_audio_tx_opus(transcoder.pcm_to_opus(frame))
+            return
+        raise AudioFormatError(f"PCM TX is not supported for TX codec {tx_codec!r}.")
 
     @property
     def audio_codec(self) -> AudioCodec:

@@ -671,6 +671,7 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
             raise ValueError("radio_addr must be a single byte (0..255).")
         self._timeout = timeout
         self._audio_codec = AudioCodec(audio_codec)
+        self._audio_tx_codec = AudioCodec.PCM_1CH_16BIT
         self._audio_sample_rate = audio_sample_rate
         self._ctrl_transport = IcomTransport()
         self._civ_transport: IcomTransport | None = None

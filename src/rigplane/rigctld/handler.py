@@ -199,6 +199,12 @@ def _err(code: HamlibError) -> RigctldResponse:
     return RigctldResponse(error=code)
 
 
+def _profile_data_mode_count(radio: Any) -> int:
+    profile = getattr(radio, "profile", None)
+    count = getattr(profile, "data_mode_count", 1)
+    return count if isinstance(count, int) and count > 0 else 1
+
+
 def _mode_to_hamlib_str(mode: object) -> str:
     """Normalize backend mode values to a hamlib-compatible string."""
     if isinstance(mode, Mode):
@@ -353,6 +359,32 @@ class RigctldHandler:
         self._routing = create_routing(
             radio, self._cache, getattr(config, "max_power_w", 100.0)
         )
+
+    def _packet_data_mode_value(self) -> int | bool:
+        value = self._config.wsjtx_data_mode
+        if value is None:
+            return True
+        if value > _profile_data_mode_count(self._radio):
+            return True
+        return value
+
+    async def _apply_packet_data_mode(self, *, receiver: int = 0) -> int | bool:
+        data_mode = self._packet_data_mode_value()
+        source = self._config.wsjtx_data_mod_input
+        if source is not None and type(data_mode) is int:
+            setter = getattr(self._radio, f"set_data{data_mode}_mod_input", None)
+            if setter is not None:
+                await setter(source)
+            else:
+                logger.debug(
+                    "rigctld: radio has no set_data%d_mod_input, skipping",
+                    data_mode,
+                )
+        if receiver == 0:
+            await self._radio.set_data_mode(data_mode)
+        else:
+            await self._radio.set_data_mode(data_mode, receiver=receiver)
+        return data_mode
 
     def _radio_state(self) -> RadioState | None:
         state = getattr(self._radio, "radio_state", None)
@@ -621,9 +653,7 @@ class RigctldHandler:
                 base_mode_str, filter_width=filter_width, receiver=1
             )
             if requested_mode in packet_modes:
-                set_data_mode = getattr(self._radio, "set_data_mode", None)
-                if set_data_mode is not None:
-                    await set_data_mode(True, receiver=1)
+                await self._apply_packet_data_mode(receiver=1)
             return _ok()
 
         await self._radio.set_mode(base_mode_str, filter_width=filter_width)
@@ -631,7 +661,7 @@ class RigctldHandler:
         # Only set DATA mode explicitly for packet modes.
         # For non-packet modes, avoid hidden side-effects (do not force DATA off).
         if requested_mode in packet_modes:
-            await self._radio.set_data_mode(True)
+            data_mode = await self._apply_packet_data_mode()
 
             # Read-back sync: keep next get_mode deterministic for CAT clients.
             # Some radios acknowledge set-data quickly but reflect packet mode
@@ -656,6 +686,7 @@ class RigctldHandler:
             self._pending.mode = base_mode_str
             self._pending.filter_width = filter_width
             self._pending.data_mode = True
+            logger.debug("set_mode(%s): DATA%s selected", requested_mode, data_mode)
             if not synced:
                 logger.debug(
                     "set_mode(%s): packet read-back not fully synced yet; cached optimistic state",

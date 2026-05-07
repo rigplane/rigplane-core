@@ -69,7 +69,7 @@ class _ContractModeRadio:
         self.filter_width = filter_width
         self.data_mode = data_mode
         self.set_mode_calls: list[tuple[str, int | None, int]] = []
-        self.set_data_mode_calls: list[bool] = []
+        self.set_data_mode_calls: list[int | bool] = []
 
     async def get_mode(self, receiver: int = 0) -> tuple[str, int | None]:
         assert receiver == 0
@@ -88,9 +88,9 @@ class _ContractModeRadio:
     async def get_data_mode(self) -> bool:
         return self.data_mode
 
-    async def set_data_mode(self, on: bool) -> None:
+    async def set_data_mode(self, on: int | bool) -> None:
         self.set_data_mode_calls.append(on)
-        self.data_mode = on
+        self.data_mode = bool(on)
 
 
 # ---------------------------------------------------------------------------
@@ -315,6 +315,73 @@ async def test_set_mode_uses_core_contract_string_values() -> None:
     assert resp.ok
     assert radio.set_mode_calls == [("USB", 2, 0)]
     assert radio.set_data_mode_calls == [True]
+
+
+@pytest.mark.asyncio
+async def test_set_mode_packet_uses_configured_wsjtx_data_mode() -> None:
+    radio = AsyncMock()
+    radio.set_mode = AsyncMock()
+    radio.set_data_mode = AsyncMock()
+    radio.set_data2_mod_input = AsyncMock()
+    radio.get_mode_info = AsyncMock(return_value=(Mode.USB, 1))
+    radio.get_data_mode = AsyncMock(return_value=True)
+    radio.profile = type("Profile", (), {"data_mode_count": 3})()
+    h = RigctldHandler(
+        radio,
+        RigctldConfig(wsjtx_data_mode=2, wsjtx_data_mod_input=5),
+    )
+
+    resp = await h.execute(set_cmd("set_mode", "PKTUSB", "2400"))
+
+    assert resp.ok
+    radio.set_mode.assert_awaited_once_with("USB", filter_width=2)
+    radio.set_data2_mod_input.assert_awaited_once_with(5)
+    radio.set_data_mode.assert_awaited_once_with(2)
+
+
+@pytest.mark.asyncio
+async def test_set_mode_packet_configured_data2_falls_back_on_single_data_profile() -> (
+    None
+):
+    radio = AsyncMock()
+    radio.set_mode = AsyncMock()
+    radio.set_data_mode = AsyncMock()
+    radio.set_data2_mod_input = AsyncMock()
+    radio.get_mode_info = AsyncMock(return_value=(Mode.USB, 1))
+    radio.get_data_mode = AsyncMock(return_value=True)
+    radio.profile = type("Profile", (), {"data_mode_count": 1})()
+    h = RigctldHandler(
+        radio,
+        RigctldConfig(wsjtx_data_mode=2, wsjtx_data_mod_input=5),
+    )
+
+    resp = await h.execute(set_cmd("set_mode", "PKTUSB", "2400"))
+
+    assert resp.ok
+    radio.set_data2_mod_input.assert_not_called()
+    radio.set_data_mode.assert_awaited_once_with(True)
+
+
+@pytest.mark.asyncio
+async def test_set_mode_packet_without_wsjtx_data_config_does_not_touch_data_mod_input() -> (
+    None
+):
+    radio = AsyncMock()
+    radio.set_mode = AsyncMock()
+    radio.set_data_mode = AsyncMock()
+    radio.set_data1_mod_input = AsyncMock()
+    radio.set_data2_mod_input = AsyncMock()
+    radio.get_mode_info = AsyncMock(return_value=(Mode.USB, 1))
+    radio.get_data_mode = AsyncMock(return_value=True)
+    radio.profile = type("Profile", (), {"data_mode_count": 3})()
+    h = RigctldHandler(radio, RigctldConfig())
+
+    resp = await h.execute(set_cmd("set_mode", "PKTUSB", "2400"))
+
+    assert resp.ok
+    radio.set_data1_mod_input.assert_not_called()
+    radio.set_data2_mod_input.assert_not_called()
+    radio.set_data_mode.assert_awaited_once_with(True)
 
 
 @pytest.mark.asyncio

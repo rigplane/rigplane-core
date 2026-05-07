@@ -47,7 +47,7 @@ async with create_radio(config) as radio:
 | `vfo` | `str \| None` | `None` | Select VFO: `"A"` or `"B"` |
 | `data_mode` | `bool \| None` | `None` | `True` = enable DATA mode, `False` = disable |
 | `data_off_mod_input` | `int \| None` | `None` | DATA-OFF modulation input source index |
-| `data1_mod_input` | `int \| None` | `None` | DATA-1 modulation input source index |
+| `data1_mod_input` | `int \| None` | `None` | DATA-1 modulation input source index. Captured for compatibility; apply/restore do not rewrite it because DATA1 is user-owned. |
 | `squelch_level` | `int \| None` | `None` | Squelch level (0 = open) |
 | `equalize_vfo` | `bool` | `False` | Copy active VFO to both VFOs |
 | `scope_enabled` | `bool \| None` | `None` | `True` = enable spectrum scope |

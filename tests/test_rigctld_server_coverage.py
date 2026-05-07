@@ -512,3 +512,39 @@ async def test_wsjtx_compat_prewarm_triggers_on_first_client(
         await _close(writer)
     finally:
         await srv.stop()
+
+
+async def test_wsjtx_compat_prewarm_applies_configured_data2_lan(
+    mock_radio: MagicMock,
+) -> None:
+    """LAN bridge mode should steer WSJT-X packet mode to DATA2/LAN."""
+    from rigplane.types import Mode
+
+    cfg = RigctldConfig(
+        host="127.0.0.1",
+        port=0,
+        client_timeout=0.5,
+        wsjtx_compat=True,
+        wsjtx_data_mode=2,
+        wsjtx_data_mod_input=5,
+    )
+    proto = _make_proto()
+    handler = _make_handler()
+
+    mock_radio.profile = MagicMock(data_mode_count=3)
+    mock_radio.get_mode_info = AsyncMock(return_value=(Mode.USB, 1))
+    mock_radio.get_data_mode = AsyncMock(return_value=True)
+    mock_radio.set_data_mode = AsyncMock(return_value=None)
+    mock_radio.set_data2_mod_input = AsyncMock(return_value=None)
+
+    srv = RigctldServer(mock_radio, cfg, _protocol=proto, _handler=handler)
+    await srv.start()
+    try:
+        _reader, writer = await _connect(srv)
+        await asyncio.sleep(0.1)
+        mock_radio.set_data2_mod_input.assert_awaited_once_with(5)
+        mock_radio.set_data_mode.assert_awaited_once_with(2)
+        mock_radio.set_data1_mod_input.assert_not_called()
+        await _close(writer)
+    finally:
+        await srv.stop()
