@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Awaitable, Callable, Iterable, Mapping
 
 from rigplane.audio.probe import (
@@ -18,27 +19,62 @@ AudioProbeAttempt = Callable[[AudioProbeCandidate], Awaitable[AudioProbeResult]]
 async def run_audio_probe(
     candidates: Iterable[AudioProbeCandidate],
     attempt: AudioProbeAttempt,
+    *,
+    candidate_cooldown_s: float = 0.0,
+    retry_rejected: int = 0,
+    sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
 ) -> list[AudioProbeResult]:
     """Run probe candidates sequentially and normalize attempt failures."""
 
     results: list[AudioProbeResult] = []
-    for candidate in candidates:
-        try:
-            results.append(await attempt(candidate))
-        except Exception as exc:
-            status, reason = classify_stock_radio_lan_probe_error(exc)
-            results.append(
-                AudioProbeResult(
-                    candidate=candidate,
-                    status=status,
-                    phase="conninfo"
-                    if status is AudioProbeStatus.REJECTED
-                    else "runtime",
-                    reason=reason,
-                    error=str(exc),
-                )
-            )
+    candidate_list = list(candidates)
+    for index, candidate in enumerate(candidate_list):
+        result = await _attempt_with_retries(
+            candidate,
+            attempt,
+            candidate_cooldown_s=candidate_cooldown_s,
+            retry_rejected=retry_rejected,
+            sleep=sleep,
+        )
+        results.append(result)
+        if candidate_cooldown_s > 0 and index < len(candidate_list) - 1:
+            await sleep(candidate_cooldown_s)
     return results
+
+
+async def _attempt_with_retries(
+    candidate: AudioProbeCandidate,
+    attempt: AudioProbeAttempt,
+    *,
+    candidate_cooldown_s: float,
+    retry_rejected: int,
+    sleep: Callable[[float], Awaitable[None]],
+) -> AudioProbeResult:
+    tries = 0
+    while True:
+        result = await _attempt_once(candidate, attempt)
+        if result.status is not AudioProbeStatus.REJECTED or tries >= retry_rejected:
+            return result
+        tries += 1
+        if candidate_cooldown_s > 0:
+            await sleep(candidate_cooldown_s)
+
+
+async def _attempt_once(
+    candidate: AudioProbeCandidate,
+    attempt: AudioProbeAttempt,
+) -> AudioProbeResult:
+    try:
+        return await attempt(candidate)
+    except Exception as exc:
+        status, reason = classify_stock_radio_lan_probe_error(exc)
+        return AudioProbeResult(
+            candidate=candidate,
+            status=status,
+            phase="conninfo" if status is AudioProbeStatus.REJECTED else "runtime",
+            reason=reason,
+            error=str(exc),
+        )
 
 
 def dry_run_probe_results(

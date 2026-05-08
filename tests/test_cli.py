@@ -168,6 +168,10 @@ class TestBuildParser:
                 "0.25",
                 "--limit",
                 "4",
+                "--candidate-cooldown",
+                "35",
+                "--retry-rejected",
+                "1",
             ]
         )
         assert args.command == "audio"
@@ -177,6 +181,8 @@ class TestBuildParser:
         assert args.output == "probe.json"
         assert args.duration == 0.25
         assert args.limit == 4
+        assert args.candidate_cooldown == 35.0
+        assert args.retry_rejected == 1
 
     def test_ptt_on(self):
         p = _build_parser()

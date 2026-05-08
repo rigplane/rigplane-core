@@ -61,6 +61,70 @@ async def test_run_audio_probe_classifies_attempt_exceptions() -> None:
     assert "conninfo" in (result.error or "")
 
 
+@pytest.mark.asyncio
+async def test_run_audio_probe_applies_cooldown_between_candidates() -> None:
+    candidates = build_stock_radio_lan_probe_matrix()[:3]
+    events: list[str] = []
+
+    async def attempt(candidate):
+        events.append(f"attempt:{candidate.sample_rate_hz}")
+        return AudioProbeResult(
+            candidate=candidate,
+            status=AudioProbeStatus.PASS,
+            phase="rx",
+            reason="rx-payload-stable",
+        )
+
+    async def sleep(seconds: float) -> None:
+        events.append(f"sleep:{seconds:g}")
+
+    await run_audio_probe(
+        candidates,
+        attempt,
+        candidate_cooldown_s=35.0,
+        sleep=sleep,
+    )
+
+    assert events == [
+        "attempt:48000",
+        "sleep:35",
+        "attempt:24000",
+        "sleep:35",
+        "attempt:16000",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_run_audio_probe_retries_rejected_after_cooldown() -> None:
+    candidate = build_stock_radio_lan_probe_matrix()[0]
+    events: list[str] = []
+
+    async def attempt(_candidate):
+        events.append("attempt")
+        if events.count("attempt") == 1:
+            raise RuntimeError("conninfo error=0xFFFFFFFF")
+        return AudioProbeResult(
+            candidate=candidate,
+            status=AudioProbeStatus.PASS,
+            phase="rx",
+            reason="rx-payload-stable",
+        )
+
+    async def sleep(seconds: float) -> None:
+        events.append(f"sleep:{seconds:g}")
+
+    results = await run_audio_probe(
+        [candidate],
+        attempt,
+        candidate_cooldown_s=35.0,
+        retry_rejected=1,
+        sleep=sleep,
+    )
+
+    assert results[0].status is AudioProbeStatus.PASS
+    assert events == ["attempt", "sleep:35", "attempt"]
+
+
 def test_dry_run_probe_results_marks_candidates_skipped() -> None:
     candidates = build_stock_radio_lan_probe_matrix()[:3]
 
@@ -112,6 +176,8 @@ async def test_cmd_audio_probe_dry_run_writes_machine_readable_artifact(
         output=str(output),
         duration=0.01,
         limit=2,
+        candidate_cooldown=35.0,
+        retry_rejected=1,
     )
     config = LanBackendConfig(host="127.0.0.1", model="IC-7610")
 
@@ -124,6 +190,8 @@ async def test_cmd_audio_probe_dry_run_writes_machine_readable_artifact(
     assert payload == written
     assert payload["transport"] == "stock_radio_lan"
     assert payload["model"] == "IC-7610"
+    assert payload["metadata"]["candidate_cooldown_s"] == 35.0
+    assert payload["metadata"]["retry_rejected"] == 1
     assert len(payload["results"]) == 2
     assert {result["status"] for result in payload["results"]} == {"skipped"}
 
@@ -136,6 +204,8 @@ async def test_cmd_audio_probe_rejects_non_lan_backend(capsys) -> None:
         output=None,
         duration=0.01,
         limit=None,
+        candidate_cooldown=0.0,
+        retry_rejected=0,
     )
     config = SerialBackendConfig(device="/dev/ttyUSB0")
 
