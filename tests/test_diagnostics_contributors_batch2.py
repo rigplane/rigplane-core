@@ -385,6 +385,59 @@ def test_audio_emits_configured_web_rx_policy_without_runtime_client_state(
     }
 
 
+def test_audio_emits_usb_audio_contract(tmp_path: Path) -> None:
+    class FakeAudioRadio(_AudioCapableStub):
+        usb_audio_contract = SimpleNamespace(
+            to_dict=lambda: {
+                "rx": {
+                    "device": {"index": 1, "name": "USB Audio CODEC"},
+                    "sample_rate_hz": 16000,
+                    "sample_rate_source": "fallback",
+                    "fallback_reason": "sample-rate-48000-unsupported",
+                },
+                "tx": None,
+            }
+        )
+
+    AudioContributor().contribute(_make_ctx(radio=FakeAudioRadio()), tmp_path)
+    payload = json.loads((tmp_path / "audio.json").read_text())
+
+    usb_audio = payload["usb_audio"]
+    assert usb_audio["rx"]["sample_rate_hz"] == 16000
+    assert usb_audio["rx"]["sample_rate_source"] == "fallback"
+    assert usb_audio["rx"]["fallback_reason"] == "sample-rate-48000-unsupported"
+
+
+def test_audio_redacts_usb_audio_contract_device_labels(tmp_path: Path) -> None:
+    class FakeAudioRadio(_AudioCapableStub):
+        usb_audio_contract = SimpleNamespace(
+            to_dict=lambda: {
+                "rx": {
+                    "device": {
+                        "index": 1,
+                        "name": "BlackHole 2ch (moroz's Mac)",
+                        "platform_uid": "/Users/moroz/Audio/Device",
+                    },
+                    "sample_rate_hz": 48000,
+                },
+                "tx": None,
+            }
+        )
+
+    AudioContributor().contribute(_make_ctx(radio=FakeAudioRadio()), tmp_path)
+    text = (tmp_path / "audio.json").read_text()
+    payload = json.loads(text)
+
+    assert "moroz" not in text
+    assert (
+        payload["usb_audio"]["rx"]["device"]["name"] == "BlackHole 2ch (<USER>'s Mac)"
+    )
+    assert (
+        payload["usb_audio"]["rx"]["device"]["platform_uid"]
+        == "/Users/<USER>/Audio/Device"
+    )
+
+
 def test_audio_redacts_device_name_with_username(tmp_path: Path) -> None:
     class FakeAudioRadio(_AudioCapableStub):
         audio_rx_device = "Speakers (/Users/foo/Library/Audio)"

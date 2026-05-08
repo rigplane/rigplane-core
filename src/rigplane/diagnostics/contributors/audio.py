@@ -126,6 +126,29 @@ def _web_rx_policy(radio: Any) -> dict[str, Any] | None:
     }
 
 
+def _usb_audio_contract(radio: Any) -> dict[str, Any] | None:
+    contract = _safe_attr(radio, "usb_audio_contract")
+    to_dict = _safe_attr(contract, "to_dict")
+    if callable(to_dict):
+        data = to_dict()
+        if isinstance(data, dict):
+            for leg in ("rx", "tx"):
+                stream = data.get(leg)
+                if not isinstance(stream, dict):
+                    continue
+                device = stream.get("device")
+                if not isinstance(device, dict):
+                    continue
+                name = device.get("name")
+                if isinstance(name, str):
+                    device["name"] = _redact_device_name(name)
+                platform_uid = device.get("platform_uid")
+                if isinstance(platform_uid, str):
+                    device["platform_uid"] = redact_paths(platform_uid)
+            return data
+    return None
+
+
 # macOS device labels embed the local account name in parens, e.g.
 # ``"BlackHole 2ch (moroz's Mac)"`` or ``"... (Alice's MacBook Pro)"``.
 # Match the wrapping ``(... 's <Mac variant> ...)`` and replace with a
@@ -179,5 +202,8 @@ class AudioContributor:
             web_rx = _web_rx_policy(radio)
             if web_rx is not None:
                 payload["web_rx"] = web_rx
+            usb_audio = _usb_audio_contract(radio)
+            if usb_audio is not None:
+                payload["usb_audio"] = usb_audio
         text = json.dumps(payload, indent=2, sort_keys=True)
         (output_dir / "audio.json").write_text(text + "\n", encoding="utf-8")

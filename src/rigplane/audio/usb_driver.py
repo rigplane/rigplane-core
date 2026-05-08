@@ -50,6 +50,9 @@ class AudioDriverLifecycleError(RuntimeError):
     """Raised on invalid USB audio lifecycle operations."""
 
 
+_DEFAULT_SAMPLE_RATE_CANDIDATES: tuple[int, ...] = (48_000, 24_000, 16_000, 8_000)
+
+
 @dataclass(frozen=True, slots=True)
 class UsbAudioDevice:
     """Normalized USB audio device descriptor."""
@@ -77,6 +80,58 @@ class UsbAudioDevice:
     def duplex(self) -> bool:
         """Whether the device supports both capture and playback."""
         return self.supports_rx and self.supports_tx
+
+    def to_dict(self) -> dict[str, object]:
+        """Return a JSON-friendly device descriptor for diagnostics."""
+
+        return {
+            "index": self.index,
+            "name": self.name,
+            "input_channels": self.input_channels,
+            "output_channels": self.output_channels,
+            "default_samplerate": self.default_samplerate,
+            "platform_uid": self.platform_uid,
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class UsbAudioStreamContract:
+    """Effective OS audio-device stream contract for one direction."""
+
+    direction: str
+    device: UsbAudioDevice
+    sample_rate_hz: int
+    channels: int
+    frame_ms: int
+    sample_rate_source: str
+    fallback_reason: str | None = None
+
+    def to_dict(self) -> dict[str, object]:
+        payload: dict[str, object] = {
+            "direction": self.direction,
+            "device": self.device.to_dict(),
+            "sample_rate_hz": self.sample_rate_hz,
+            "channels": self.channels,
+            "frame_ms": self.frame_ms,
+            "sample_rate_source": self.sample_rate_source,
+        }
+        if self.fallback_reason:
+            payload["fallback_reason"] = self.fallback_reason
+        return payload
+
+
+@dataclass(frozen=True, slots=True)
+class UsbAudioContract:
+    """Effective RX/TX OS audio contract for a USB-audio radio path."""
+
+    rx: UsbAudioStreamContract | None = None
+    tx: UsbAudioStreamContract | None = None
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "rx": self.rx.to_dict() if self.rx is not None else None,
+            "tx": self.tx.to_dict() if self.tx is not None else None,
+        }
 
 
 def _safe_int(value: object, default: int = 0) -> int:
@@ -316,6 +371,7 @@ class UsbAudioDriver:
 
         self._rx_stream: RxStream | None = None
         self._tx_stream: TxStream | None = None
+        self._usb_audio_contract = UsbAudioContract()
 
         self._rx_lock = asyncio.Lock()
         self._tx_lock = asyncio.Lock()
@@ -335,6 +391,12 @@ class UsbAudioDriver:
     @property
     def selected_tx_device(self) -> UsbAudioDevice | None:
         return self._selected_tx
+
+    @property
+    def usb_audio_contract(self) -> UsbAudioContract | None:
+        if self._usb_audio_contract.rx is None and self._usb_audio_contract.tx is None:
+            return None
+        return self._usb_audio_contract
 
     def _ensure_selected_devices(self) -> tuple[UsbAudioDevice, UsbAudioDevice]:
         devices = _devices_from_backend(self._backend)
@@ -408,6 +470,79 @@ class UsbAudioDriver:
         """List normalized devices from the active audio backend."""
         return _devices_from_backend(self._backend)
 
+    def _sample_rate_candidates(self, requested: int) -> tuple[int, ...]:
+        return tuple(dict.fromkeys((requested, *_DEFAULT_SAMPLE_RATE_CANDIDATES)))
+
+    def _resolve_stream_contract(
+        self,
+        *,
+        direction: str,
+        device: UsbAudioDevice,
+        requested_sample_rate: int,
+        channels: int,
+        frame_ms: int,
+        allow_sample_rate_fallback: bool,
+    ) -> UsbAudioStreamContract:
+        device_id = AudioDeviceId(device.index)
+        if self._backend.check_sample_rate(
+            device_id,
+            requested_sample_rate,
+            direction=direction,
+        ):
+            source = "default" if allow_sample_rate_fallback else "explicit"
+            return UsbAudioStreamContract(
+                direction=direction,
+                device=device,
+                sample_rate_hz=requested_sample_rate,
+                channels=channels,
+                frame_ms=frame_ms,
+                sample_rate_source=source,
+            )
+
+        if not allow_sample_rate_fallback:
+            raise AudioDriverLifecycleError(
+                f"Explicit {direction.upper()} sample rate "
+                f"{requested_sample_rate} Hz is not supported by [{device.index}] "
+                f"{device.name}."
+            )
+
+        for candidate in self._sample_rate_candidates(requested_sample_rate):
+            if candidate == requested_sample_rate:
+                continue
+            if self._backend.check_sample_rate(
+                device_id,
+                candidate,
+                direction=direction,
+            ):
+                return UsbAudioStreamContract(
+                    direction=direction,
+                    device=device,
+                    sample_rate_hz=candidate,
+                    channels=channels,
+                    frame_ms=frame_ms,
+                    sample_rate_source="fallback",
+                    fallback_reason=(
+                        f"sample-rate-{requested_sample_rate}-unsupported"
+                    ),
+                )
+
+        raise AudioDriverLifecycleError(
+            f"No supported {direction.upper()} sample rate found for [{device.index}] "
+            f"{device.name}; tried {list(self._sample_rate_candidates(requested_sample_rate))}."
+        )
+
+    def _store_stream_contract(self, contract: UsbAudioStreamContract) -> None:
+        if contract.direction == "rx":
+            self._usb_audio_contract = UsbAudioContract(
+                rx=contract,
+                tx=self._usb_audio_contract.tx,
+            )
+        else:
+            self._usb_audio_contract = UsbAudioContract(
+                rx=self._usb_audio_contract.rx,
+                tx=contract,
+            )
+
     async def start_rx(
         self,
         callback: Callable[[bytes], None] | None = None,
@@ -415,6 +550,7 @@ class UsbAudioDriver:
         sample_rate: int | None = None,
         channels: int | None = None,
         frame_ms: int | None = None,
+        allow_sample_rate_fallback: bool = True,
     ) -> None:
         """Start capture loop and deliver PCM frames to callback."""
         if callback is None:
@@ -434,13 +570,22 @@ class UsbAudioDriver:
                 raise AudioDriverLifecycleError(
                     "Invalid RX frame format: sample_rate * frame_ms must be divisible by 1000."
                 )
+            contract = self._resolve_stream_contract(
+                direction="rx",
+                device=selected_rx,
+                requested_sample_rate=sr,
+                channels=ch,
+                frame_ms=fm,
+                allow_sample_rate_fallback=allow_sample_rate_fallback,
+            )
             self._rx_stream = self._backend.open_rx(
                 AudioDeviceId(selected_rx.index),
-                sample_rate=sr,
+                sample_rate=contract.sample_rate_hz,
                 channels=ch,
                 frame_ms=fm,
             )
             await self._rx_stream.start(callback)
+            self._store_stream_contract(contract)
 
     async def stop_rx(self) -> None:
         """Stop capture loop and close RX stream."""
@@ -456,6 +601,7 @@ class UsbAudioDriver:
         sample_rate: int | None = None,
         channels: int | None = None,
         frame_ms: int | None = None,
+        allow_sample_rate_fallback: bool = True,
     ) -> None:
         """Start playback loop for outgoing PCM frames."""
         async with self._tx_lock:
@@ -470,13 +616,22 @@ class UsbAudioDriver:
                 raise AudioDriverLifecycleError(
                     "Invalid TX frame format: sample_rate * frame_ms must be divisible by 1000."
                 )
+            contract = self._resolve_stream_contract(
+                direction="tx",
+                device=selected_tx,
+                requested_sample_rate=sr,
+                channels=ch,
+                frame_ms=fm,
+                allow_sample_rate_fallback=allow_sample_rate_fallback,
+            )
             self._tx_stream = self._backend.open_tx(
                 AudioDeviceId(selected_tx.index),
-                sample_rate=sr,
+                sample_rate=contract.sample_rate_hz,
                 channels=ch,
                 frame_ms=fm,
             )
             await self._tx_stream.start()
+            self._store_stream_contract(contract)
 
     async def _push_tx_pcm(self, frame: bytes) -> None:
         """Queue one PCM frame for playback."""
@@ -500,7 +655,9 @@ __all__ = [
     "AudioDeviceSelectionError",
     "AudioDriverLifecycleError",
     "UsbAudioDevice",
+    "UsbAudioContract",
     "UsbAudioDriver",
+    "UsbAudioStreamContract",
     "list_usb_audio_devices",
     "select_usb_audio_devices",
 ]

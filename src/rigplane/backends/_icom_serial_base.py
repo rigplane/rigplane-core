@@ -166,6 +166,12 @@ class _IcomSerialRadioBase(CoreRadio):
         """Stable backend family identifier — ``"icom_serial"`` for serial CI-V."""
         return "icom_serial"
 
+    @property
+    def usb_audio_contract(self) -> object | None:
+        """Effective OS audio contract reported by the USB audio driver."""
+
+        return getattr(self._serial_audio_driver, "usb_audio_contract", None)
+
     # ------------------------------------------------------------------
     # Connection properties
     # ------------------------------------------------------------------

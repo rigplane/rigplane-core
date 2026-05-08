@@ -199,3 +199,75 @@ async def test_usb_audio_driver_selected_devices_populated_after_start() -> None
     assert driver.selected_rx_device is not None
     assert driver.selected_rx_device.name == "USB Audio CODEC"
     await driver.stop_rx()
+
+
+@pytest.mark.asyncio
+async def test_usb_audio_driver_auto_sample_rate_falls_back_and_reports_contract() -> (
+    None
+):
+    backend = FakeAudioBackend(_fake_devices(), supported_sample_rates={16_000})
+    driver = UsbAudioDriver(backend=backend, sample_rate=48_000)
+
+    await driver.start_rx(lambda _: None)
+
+    contract = driver.usb_audio_contract
+    assert contract is not None
+    assert contract.rx.sample_rate_hz == 16_000
+    assert contract.rx.sample_rate_source == "fallback"
+    assert contract.rx.fallback_reason == "sample-rate-48000-unsupported"
+    assert contract.rx.device.name == "USB Audio CODEC"
+    assert contract.to_dict()["rx"]["sample_rate_hz"] == 16_000
+    assert contract.to_dict()["rx"]["sample_rate_source"] == "fallback"
+    await driver.stop_rx()
+
+
+@pytest.mark.asyncio
+async def test_usb_audio_driver_explicit_sample_rate_failure_is_clear() -> None:
+    backend = FakeAudioBackend(_fake_devices(), supported_sample_rates={16_000})
+    driver = UsbAudioDriver(backend=backend, sample_rate=48_000)
+
+    with pytest.raises(
+        AudioDriverLifecycleError,
+        match="Explicit RX sample rate 48000 Hz is not supported",
+    ):
+        await driver.start_rx(
+            lambda _: None,
+            sample_rate=48_000,
+            allow_sample_rate_fallback=False,
+        )
+
+
+@pytest.mark.asyncio
+async def test_usb_audio_driver_explicit_sample_rate_reports_explicit_source() -> None:
+    backend = FakeAudioBackend(_fake_devices(), supported_sample_rates={48_000})
+    driver = UsbAudioDriver(backend=backend)
+
+    await driver.start_rx(
+        lambda _: None,
+        sample_rate=48_000,
+        allow_sample_rate_fallback=False,
+    )
+
+    assert driver.usb_audio_contract is not None
+    assert driver.usb_audio_contract.rx is not None
+    assert driver.usb_audio_contract.rx.sample_rate_source == "explicit"
+    await driver.stop_rx()
+
+
+@pytest.mark.asyncio
+async def test_usb_audio_driver_reports_rx_and_tx_effective_contract() -> None:
+    backend = FakeAudioBackend(_fake_devices(), supported_sample_rates={48_000})
+    driver = UsbAudioDriver(backend=backend)
+
+    await driver.start_rx(lambda _: None)
+    await driver.start_tx()
+
+    contract = driver.usb_audio_contract
+    assert contract is not None
+    assert contract.rx.sample_rate_source == "default"
+    assert contract.tx is not None
+    assert contract.tx.sample_rate_hz == 48_000
+    assert contract.tx.direction == "tx"
+    assert contract.tx.device.name == "USB Audio CODEC"
+    await driver.stop_tx()
+    await driver.stop_rx()

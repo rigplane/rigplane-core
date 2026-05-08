@@ -237,6 +237,12 @@ class YaesuCatRadio:
         return self._audio_sample_rate
 
     @property
+    def usb_audio_contract(self) -> object | None:
+        """Effective OS audio contract reported by the USB audio driver."""
+
+        return getattr(self._audio_driver, "usb_audio_contract", None)
+
+    @property
     def audio_bus(self) -> "AudioBus":
         """AudioBus instance for pub/sub audio distribution."""
         if self._audio_bus is None:
