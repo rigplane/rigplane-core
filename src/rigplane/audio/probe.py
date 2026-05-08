@@ -109,7 +109,7 @@ def _channels_for_codec(codec: AudioCodec) -> int:
     return 2 if "_2CH" in codec.name else 1
 
 
-def build_icom_lan_probe_matrix(
+def build_icomlan_probe_matrix(
     *,
     rx_codecs: Iterable[AudioCodec] = _DEFAULT_ICOM_LAN_RX_CODECS,
     sample_rates_hz: Iterable[int] = _DEFAULT_ICOM_LAN_SAMPLE_RATES_HZ,
@@ -142,7 +142,7 @@ def build_icom_lan_probe_matrix(
     return candidates
 
 
-def classify_icom_lan_probe_error(exc: Exception) -> tuple[AudioProbeStatus, str]:
+def classify_icomlan_probe_error(exc: Exception) -> tuple[AudioProbeStatus, str]:
     """Classify common Icom LAN session failures into probe statuses."""
 
     text = str(exc).lower()
@@ -183,7 +183,7 @@ __all__ = [
     "AudioProbeCandidate",
     "AudioProbeResult",
     "AudioProbeStatus",
-    "build_icom_lan_probe_matrix",
-    "classify_icom_lan_probe_error",
+    "build_icomlan_probe_matrix",
+    "classify_icomlan_probe_error",
     "profile_policy_from_probe_results",
 ]

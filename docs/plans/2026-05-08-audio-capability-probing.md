@@ -35,8 +35,8 @@ expose OS audio devices, so their hardening lives in #1480.
 - `AudioProbeResult`
 - `AudioProbeArtifact`
 - `AudioProbeStatus`
-- `build_icom_lan_probe_matrix()`
-- `classify_icom_lan_probe_error()`
+- `build_icomlan_probe_matrix()`
+- `classify_icomlan_probe_error()`
 - `profile_policy_from_probe_results()`
 
 The initial Icom LAN matrix is conservative:
