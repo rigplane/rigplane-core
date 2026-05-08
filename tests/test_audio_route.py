@@ -103,6 +103,28 @@ def test_ic7610_lan_stream_request_uses_profile_audio_policy() -> None:
     assert request.tx_sample_rate_source == AudioConfigSource.PROFILE_CODEC_DEFAULT
 
 
+def test_ic705_and_ic9700_lan_stream_requests_use_profile_tx_codec_only() -> None:
+    from rigplane.audio.route import AudioConfigSource, resolve_lan_audio_stream_request
+
+    for model in ("IC-705", "IC-9700"):
+        request = resolve_lan_audio_stream_request(
+            profile=get_radio_profile(model),
+            requested_rx_codec=AudioCodec.PCM_2CH_16BIT,
+            requested_sample_rate_hz=48000,
+        )
+
+        assert request.rx_codec == AudioCodec.PCM_1CH_16BIT
+        assert request.tx_codec == AudioCodec.PCM_1CH_16BIT
+        assert request.rx_sample_rate_hz == 48000
+        assert request.tx_sample_rate_hz == 48000
+        assert request.rx_channels == 1
+        assert request.tx_channels == 1
+        assert request.rx_codec_source == AudioConfigSource.PROFILE_DEFAULT
+        assert request.tx_codec_source == AudioConfigSource.PROFILE_DEFAULT
+        assert request.rx_sample_rate_source == AudioConfigSource.GLOBAL_DEFAULT
+        assert request.tx_sample_rate_source == AudioConfigSource.GLOBAL_DEFAULT
+
+
 def test_lan_stream_request_honors_explicit_overrides() -> None:
     from rigplane.audio.route import AudioConfigSource, resolve_lan_audio_stream_request
 

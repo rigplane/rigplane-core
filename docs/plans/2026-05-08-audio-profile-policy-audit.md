@@ -14,8 +14,22 @@ This audit reviews radio profile audio policy candidates for:
 - `rigs/ftx1.toml`
 - `rigs/examples/*.toml`
 
-No runtime code or rig profile values were changed. Unknown per-radio audio
-limits are intentionally left absent rather than inferred from generic defaults.
+The original audit did not change runtime code or rig profile values. Unknown
+per-radio audio limits are intentionally left absent rather than inferred from
+generic defaults.
+
+## Implementation Follow-Up
+
+Issue #1477 populated the evidence-backed subset of this audit for IC-705 and
+IC-9700. Both profiles now declare mono PCM TX and browser-only Opus transport
+policy, matching the Icom LAN rule that direct radio-native conninfo stays
+PCM/uLaw while web clients may receive a server-side transcode after PCM capture.
+
+Per-radio sample-rate fields remain intentionally unset for IC-705 and IC-9700.
+The local wfview UI exposes a generic sample-rate set, but neither the local
+official references nor the wfview rig files provide a per-radio support matrix.
+Those rates must be added only after official documentation, packet captures, or
+hardware validation prove the specific radio behavior.
 
 ## Evidence Sources
 

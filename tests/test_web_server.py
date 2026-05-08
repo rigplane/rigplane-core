@@ -1445,6 +1445,44 @@ class TestAudioHandlerCodecDetection:
             frame_ms=20,
         )
 
+    async def test_serial_backend_ignores_direct_lan_browser_opus_profile_policy(
+        self,
+    ) -> None:
+        from rigplane.audio_bus import AudioBus
+        from rigplane.radio_protocol import AudioCapable
+        from rigplane.types import AudioCodec
+        from rigplane.web.handlers import AudioBroadcaster, AudioHandler
+        from rigplane.web.protocol import AUDIO_CODEC_PCM16, AUDIO_HEADER_SIZE
+        from rigplane.web.websocket import WebSocketConnection
+
+        mock_ws = MagicMock(spec=WebSocketConnection)
+        mock_radio = MagicMock(spec=AudioCapable)
+        mock_radio.backend_id = "icom_serial"
+        mock_radio.capabilities = {"audio"}
+        mock_radio.audio_codec = AudioCodec.PCM_2CH_16BIT
+        mock_radio.audio_sample_rate = 48000
+        mock_radio.profile = SimpleNamespace(
+            browser_rx_transport="auto",
+            browser_rx_transcode_to_opus=True,
+        )
+        mock_radio.start_audio_rx_opus = AsyncMock()
+        mock_radio.stop_audio_rx_opus = AsyncMock()
+        bus = AudioBus(mock_radio)
+        mock_radio.audio_bus = bus
+
+        broadcaster = AudioBroadcaster(mock_radio)
+        handler = AudioHandler(mock_ws, mock_radio, broadcaster)
+        await handler._start_rx()
+
+        mock_pkt = MagicMock()
+        mock_pkt.data = b"\x01\x02" * 960
+        bus._on_opus_packet(mock_pkt)
+        await asyncio.sleep(0.1)
+
+        frame = handler._frame_queue.get_nowait()
+        assert frame[1] == AUDIO_CODEC_PCM16
+        assert frame[AUDIO_HEADER_SIZE:] == mock_pkt.data
+
     async def test_browser_opus_policy_falls_back_to_pcm16_when_encoder_unavailable(
         self, caplog: pytest.LogCaptureFixture
     ) -> None:

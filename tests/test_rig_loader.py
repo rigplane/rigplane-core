@@ -673,6 +673,25 @@ class TestAudioPolicy:
         assert profile.browser_rx_transport == "auto"
         assert profile.browser_rx_transcode_to_opus is True
 
+    def test_ic705_and_ic9700_declare_evidence_backed_mono_lan_policy(self):
+        for name in ("ic705.toml", "ic9700.toml"):
+            rig = load_rig(RIGS_DIR / name)
+
+            assert rig.codec_preference == ("PCM_1CH_16BIT", "ULAW_1CH")
+            assert rig.tx_codec == "PCM_1CH_16BIT"
+            assert rig.default_sample_rate_hz is None
+            assert rig.supported_sample_rates_hz is None
+            assert rig.sample_rate_by_codec is None
+            assert rig.browser_rx_transport == "auto"
+            assert rig.browser_rx_transcode_to_opus is True
+
+            profile = rig.to_profile()
+            assert profile.tx_codec == "PCM_1CH_16BIT"
+            assert profile.default_sample_rate_hz is None
+            assert profile.sample_rate_by_codec is None
+            assert profile.browser_rx_transport == "auto"
+            assert profile.browser_rx_transcode_to_opus is True
+
     def test_full_audio_policy_parses(self, tmp_path):
         toml = (
             _MINIMAL_TOML

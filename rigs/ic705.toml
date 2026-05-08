@@ -29,6 +29,9 @@ data_len_max = 475
 # mono fallback as belt-and-braces.
 [audio]
 codec_preference = ["PCM_1CH_16BIT", "ULAW_1CH"]
+tx_codec = "PCM_1CH_16BIT"
+browser_rx_transport = "auto"
+browser_rx_transcode_to_opus = true
 
 # ── Capabilities ─────────────────────────────────────────────────
 

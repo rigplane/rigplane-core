@@ -302,6 +302,10 @@ class AudioBroadcaster:
             AudioCodec.ULAW_2CH: AUDIO_CODEC_PCM16,
         }.get(radio_codec, AUDIO_CODEC_PCM16)
 
+        backend_id = getattr(self._radio, "backend_id", None)
+        if isinstance(backend_id, str) and backend_id != "rigplane":
+            return default_codec
+
         profile = getattr(self._radio, "profile", None)
         transport = getattr(profile, "browser_rx_transport", None)
         transcode_to_opus = getattr(profile, "browser_rx_transcode_to_opus", None)
