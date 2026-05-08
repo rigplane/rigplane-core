@@ -40,6 +40,8 @@ VALID_CONTROL_STYLES = {
 }
 VALID_RULE_KINDS = {"mutex", "disables", "requires", "value_limit"}
 VALID_KEYBOARD_MODIFIERS = {"SHIFT", "CTRL", "ALT", "META"}
+VALID_AUDIO_SAMPLE_RATES_HZ = {8000, 12000, 16000, 24000, 48000}
+VALID_BROWSER_RX_TRANSPORTS = {"auto", "pcm", "opus"}
 DEFAULT_KEYBOARD_PROFILE_NAME = "_keyboard-default.toml"
 
 _REQUIRED_SECTIONS = ("radio", "capabilities", "modes", "filters", "vfo")
@@ -106,6 +108,12 @@ class RigConfig:
     scope_ref_max_db: float | None = None
     scope_ref_step_db: float | None = None
     codec_preference: tuple[str, ...] | None = None
+    tx_codec: str | None = None
+    default_sample_rate_hz: int | None = None
+    supported_sample_rates_hz: tuple[int, ...] | None = None
+    sample_rate_by_codec: dict[str, int] | None = None
+    browser_rx_transport: str | None = None
+    browser_rx_transcode_to_opus: bool | None = None
 
     def to_profile(self) -> RadioProfile:
         """Build a ``RadioProfile`` from this config."""
@@ -177,6 +185,12 @@ class RigConfig:
             scope_ref_max_db=self.scope_ref_max_db,
             scope_ref_step_db=self.scope_ref_step_db,
             codec_preference=self.codec_preference,
+            tx_codec=self.tx_codec,
+            default_sample_rate_hz=self.default_sample_rate_hz,
+            supported_sample_rates_hz=self.supported_sample_rates_hz,
+            sample_rate_by_codec=self.sample_rate_by_codec,
+            browser_rx_transport=self.browser_rx_transport,
+            browser_rx_transcode_to_opus=self.browser_rx_transcode_to_opus,
         )
 
     def to_command_map(self) -> CommandMap:
@@ -440,6 +454,39 @@ def _merge_keyboard_config(
         help_title=help_title,
         bindings=tuple(merged_bindings.values()),
     )
+
+
+def _valid_audio_codec_names() -> set[str]:
+    from rigplane.types import AudioCodec
+
+    return {codec.name for codec in AudioCodec}
+
+
+def _validate_audio_codec_name(
+    filename: str,
+    field_name: str,
+    value: Any,
+    valid_names: set[str],
+) -> str:
+    if not isinstance(value, str):
+        raise RigLoadError(f"{filename}: [audio].{field_name} must be a string")
+    if value not in valid_names:
+        raise RigLoadError(
+            f"{filename}: [audio].{field_name} has unknown codec {value!r}. "
+            f"Valid names: {sorted(valid_names)}"
+        )
+    return value
+
+
+def _validate_audio_sample_rate(filename: str, field_name: str, value: Any) -> int:
+    if not isinstance(value, int) or isinstance(value, bool):
+        raise RigLoadError(f"{filename}: [audio].{field_name} must be an integer")
+    if value <= 0 or value not in VALID_AUDIO_SAMPLE_RATES_HZ:
+        raise RigLoadError(
+            f"{filename}: [audio].{field_name} must be one of "
+            f"{sorted(VALID_AUDIO_SAMPLE_RATES_HZ)}, got {value!r}"
+        )
+    return value
 
 
 def load_rig(path: Path) -> RigConfig:
@@ -738,12 +785,19 @@ def load_rig(path: Path) -> RigConfig:
         filename=filename,
     )
 
-    # Parse optional [audio] codec_preference (#797).
+    # Parse optional [audio] codec and sample-rate policy (#797, #1470).
     codec_preference: tuple[str, ...] | None = None
+    tx_codec: str | None = None
+    default_sample_rate_hz: int | None = None
+    supported_sample_rates_hz: tuple[int, ...] | None = None
+    sample_rate_by_codec: dict[str, int] | None = None
+    browser_rx_transport: str | None = None
+    browser_rx_transcode_to_opus: bool | None = None
     audio_section = data.get("audio")
     if audio_section is not None:
         if not isinstance(audio_section, dict):
             raise RigLoadError(f"{filename}: [audio] must be a table")
+        valid_codec_names = _valid_audio_codec_names()
         codec_raw = audio_section.get("codec_preference")
         if codec_raw is not None:
             if not isinstance(codec_raw, list) or not all(
@@ -756,17 +810,71 @@ def load_rig(path: Path) -> RigConfig:
                 raise RigLoadError(
                     f"{filename}: [audio].codec_preference must not be empty"
                 )
-            # Validate entries against AudioCodec enum to fail fast on typos.
-            from rigplane.types import AudioCodec
-
-            valid_names = {c.name for c in AudioCodec}
-            unknown = [c for c in codec_raw if c not in valid_names]
+            unknown = [c for c in codec_raw if c not in valid_codec_names]
             if unknown:
                 raise RigLoadError(
                     f"{filename}: [audio].codec_preference has unknown codec(s): "
-                    f"{unknown}. Valid names: {sorted(valid_names)}"
+                    f"{unknown}. Valid names: {sorted(valid_codec_names)}"
                 )
             codec_preference = tuple(codec_raw)
+        if "tx_codec" in audio_section:
+            tx_codec = _validate_audio_codec_name(
+                filename, "tx_codec", audio_section["tx_codec"], valid_codec_names
+            )
+        if "default_sample_rate_hz" in audio_section:
+            default_sample_rate_hz = _validate_audio_sample_rate(
+                filename,
+                "default_sample_rate_hz",
+                audio_section["default_sample_rate_hz"],
+            )
+        if "supported_sample_rates_hz" in audio_section:
+            supported_raw = audio_section["supported_sample_rates_hz"]
+            if not isinstance(supported_raw, list) or not supported_raw:
+                raise RigLoadError(
+                    f"{filename}: [audio].supported_sample_rates_hz must be a non-empty list"
+                )
+            supported_sample_rates_hz = tuple(
+                _validate_audio_sample_rate(filename, "supported_sample_rates_hz", rate)
+                for rate in supported_raw
+            )
+        if "sample_rate_by_codec" in audio_section:
+            by_codec_raw = audio_section["sample_rate_by_codec"]
+            if not isinstance(by_codec_raw, dict) or not by_codec_raw:
+                raise RigLoadError(
+                    f"{filename}: [audio].sample_rate_by_codec must be a non-empty table"
+                )
+            sample_rate_by_codec = {}
+            for codec_name, sample_rate in by_codec_raw.items():
+                codec_key = _validate_audio_codec_name(
+                    filename,
+                    "sample_rate_by_codec",
+                    codec_name,
+                    valid_codec_names,
+                )
+                sample_rate_by_codec[codec_key] = _validate_audio_sample_rate(
+                    filename,
+                    f"sample_rate_by_codec.{codec_key}",
+                    sample_rate,
+                )
+        if "browser_rx_transport" in audio_section:
+            browser_rx_transport_raw = audio_section["browser_rx_transport"]
+            if not isinstance(browser_rx_transport_raw, str):
+                raise RigLoadError(
+                    f"{filename}: [audio].browser_rx_transport must be a string"
+                )
+            if browser_rx_transport_raw not in VALID_BROWSER_RX_TRANSPORTS:
+                raise RigLoadError(
+                    f"{filename}: [audio].browser_rx_transport must be one of "
+                    f"{sorted(VALID_BROWSER_RX_TRANSPORTS)}, got {browser_rx_transport_raw!r}"
+                )
+            browser_rx_transport = browser_rx_transport_raw
+        if "browser_rx_transcode_to_opus" in audio_section:
+            transcode_raw = audio_section["browser_rx_transcode_to_opus"]
+            if not isinstance(transcode_raw, bool):
+                raise RigLoadError(
+                    f"{filename}: [audio].browser_rx_transcode_to_opus must be a boolean"
+                )
+            browser_rx_transcode_to_opus = transcode_raw
 
     return RigConfig(
         id=radio["id"],
@@ -818,6 +926,12 @@ def load_rig(path: Path) -> RigConfig:
         scope_ref_max_db=scope_ref_max_db,
         scope_ref_step_db=scope_ref_step_db,
         codec_preference=codec_preference,
+        tx_codec=tx_codec,
+        default_sample_rate_hz=default_sample_rate_hz,
+        supported_sample_rates_hz=supported_sample_rates_hz,
+        sample_rate_by_codec=sample_rate_by_codec,
+        browser_rx_transport=browser_rx_transport,
+        browser_rx_transcode_to_opus=browser_rx_transcode_to_opus,
     )
 
 

@@ -15,6 +15,16 @@ receiver_count = 2
 has_lan = true
 has_wifi = false
 
+[audio]
+# Direct IC-7610 LAN is PCM-first. Opus is only allowed as a browser
+# consumer transport after the server receives radio-native PCM.
+codec_preference = ["PCM_2CH_16BIT", "PCM_1CH_16BIT", "ULAW_2CH", "ULAW_1CH"]
+tx_codec = "PCM_1CH_16BIT"
+default_sample_rate_hz = 16000
+sample_rate_by_codec = { PCM_2CH_16BIT = 16000, PCM_1CH_16BIT = 16000 }
+browser_rx_transport = "auto"
+browser_rx_transcode_to_opus = true
+
 [spectrum]
 seq_max = 15
 amp_max = 200

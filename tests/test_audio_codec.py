@@ -2,6 +2,7 @@
 
 import pytest
 
+from rigplane.audio.route import AudioConfigSource
 from rigplane.types import AudioCapabilities, AudioCodec, get_audio_capabilities
 from rigplane.radio import IcomRadio
 
@@ -33,6 +34,21 @@ class TestRadioAudioConfig:
     def test_default_codec(self) -> None:
         r = IcomRadio("192.168.1.100")
         assert r.audio_codec == AudioCodec.PCM_2CH_16BIT
+        assert r.audio_sample_rate == 16000
+        assert r.audio_stream_request.rx_codec == AudioCodec.PCM_2CH_16BIT
+        assert r.audio_stream_request.tx_codec == AudioCodec.PCM_1CH_16BIT
+        assert r.audio_stream_request.rx_sample_rate_hz == 16000
+        assert r.audio_stream_request.tx_sample_rate_hz == 16000
+        assert r.audio_stream_contract.rx_codec == r.audio_stream_request.rx_codec
+        assert r.audio_stream_contract.tx_codec == r.audio_stream_request.tx_codec
+        assert (
+            r.audio_stream_contract.rx_sample_rate_hz
+            == r.audio_stream_request.rx_sample_rate_hz
+        )
+
+    def test_non_ic7610_keeps_global_sample_rate_default(self) -> None:
+        r = IcomRadio("192.168.1.100", model="IC-7300")
+        assert r.audio_codec == AudioCodec.PCM_1CH_16BIT
         assert r.audio_sample_rate == 48000
 
     def test_custom_codec(self) -> None:
@@ -43,6 +59,26 @@ class TestRadioAudioConfig:
         )
         assert r.audio_codec == AudioCodec.OPUS_1CH
         assert r.audio_sample_rate == 16000
+        assert r.audio_stream_contract.rx_codec == AudioCodec.OPUS_1CH
+        assert r.audio_stream_contract.tx_codec == AudioCodec.PCM_1CH_16BIT
+        assert (
+            r.audio_stream_contract.rx_sample_rate_source == AudioConfigSource.EXPLICIT
+        )
+        assert (
+            r.audio_stream_contract.tx_sample_rate_source == AudioConfigSource.EXPLICIT
+        )
+
+    def test_import_time_env_sample_rate_beats_profile_default(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import rigplane.runtime.radio as radio_module
+
+        monkeypatch.setenv("ICOM_AUDIO_SAMPLE_RATE", "24000")
+        monkeypatch.setattr(radio_module, "_DEFAULT_AUDIO_SAMPLE_RATE", 24000)
+
+        r = IcomRadio("192.168.1.100")
+
+        assert r.audio_sample_rate == 24000
 
     def test_codec_from_int(self) -> None:
         r = IcomRadio("192.168.1.100", audio_codec=0x40)

@@ -30,6 +30,12 @@ from . import radio_state_snapshot as _state_snapshot
 from rigplane.runtime._audio_recovery import AudioRecoveryRuntime, AudioRecoveryState
 from rigplane.runtime._audio_runtime_mixin import AudioRuntimeMixin
 from rigplane.audio._transcoder import PcmOpusTranscoder
+from rigplane.audio.route import (
+    AudioStreamContract,
+    AudioStreamRequest,
+    audio_stream_contract_from_request,
+    resolve_lan_audio_stream_request,
+)
 from rigplane.core._bounded_queue import BoundedQueue
 from rigplane.runtime._civ_rx import CivRuntime
 from rigplane.runtime._dual_rx_runtime import DualRxRuntimeMixin
@@ -311,30 +317,6 @@ _DEFAULT_CACHE_TTL: dict[str, float] = {"freq": 10.0, "mode": 10.0, "rf_power": 
 # cumulative and only the 30s watchdog resets it via ``soft_reconnect``.
 # Require >=3 accumulated errors before reporting ``connected = False``.
 _UDP_ERROR_THRESHOLD: int = 3
-
-
-def _resolve_profile_codec(
-    profile: RadioProfile, explicit: "AudioCodec | int"
-) -> "AudioCodec":
-    """Pick the effective RX codec for a radio under ``profile`` (#797).
-
-    The caller passes the ``audio_codec`` argument value (which defaults to the
-    global stereo-first default). If the caller accepted the global default AND
-    the profile pins a per-rig ``codec_preference``, honor the profile. An
-    explicit non-default value always wins.
-    """
-    resolved = AudioCodec(explicit)
-    if resolved != _DEFAULT_AUDIO_CODEC or not profile.codec_preference:
-        return resolved
-    supported = _AUDIO_CAPABILITIES.supported_codecs
-    for name in profile.codec_preference:
-        try:
-            candidate = AudioCodec[name]
-        except KeyError:
-            continue
-        if candidate in supported:
-            return candidate
-    return resolved
 
 
 class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
@@ -652,7 +634,9 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
         radio_addr: int | None = None,
         timeout: float = 5.0,
         audio_codec: AudioCodec | int = _DEFAULT_AUDIO_CODEC,
-        audio_sample_rate: int = _DEFAULT_AUDIO_SAMPLE_RATE,
+        audio_sample_rate: int | None = None,
+        audio_codec_explicit: bool | None = None,
+        audio_sample_rate_explicit: bool | None = None,
         auto_reconnect: bool = False,
         reconnect_delay: float = 2.0,
         reconnect_max_delay: float = 60.0,
@@ -672,7 +656,16 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
         self._timeout = timeout
         self._audio_codec = AudioCodec(audio_codec)
         self._audio_tx_codec = AudioCodec.PCM_1CH_16BIT
-        self._audio_sample_rate = audio_sample_rate
+        requested_sample_rate = (
+            _DEFAULT_AUDIO_SAMPLE_RATE
+            if audio_sample_rate is None
+            else audio_sample_rate
+        )
+        self._audio_sample_rate = requested_sample_rate
+        self._audio_rx_sample_rate = requested_sample_rate
+        self._audio_tx_sample_rate = requested_sample_rate
+        self._audio_stream_request: AudioStreamRequest | None = None
+        self._audio_stream_contract: AudioStreamContract | None = None
         self._ctrl_transport = IcomTransport()
         self._civ_transport: IcomTransport | None = None
         self._audio_transport: IcomTransport | None = None
@@ -765,7 +758,33 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
         )
         # Apply per-profile codec preference override (#797) — only if caller
         # accepted the global default. An explicit non-default value always wins.
-        self._audio_codec = _resolve_profile_codec(self._profile, audio_codec)
+        # Limitation kept for compatibility with the historical constructor:
+        # passing the global default codec value is indistinguishable from
+        # omitting it, so profile codec preference may still apply in that case.
+        codec_is_explicit = (
+            audio_codec_explicit is True
+            or AudioCodec(audio_codec) != _DEFAULT_AUDIO_CODEC
+        )
+        sample_rate_is_explicit = (
+            audio_sample_rate_explicit is True
+            or (audio_sample_rate_explicit is None and audio_sample_rate is not None)
+            or "ICOM_AUDIO_SAMPLE_RATE" in os.environ
+        )
+        self._audio_stream_request = resolve_lan_audio_stream_request(
+            profile=self._profile,
+            requested_rx_codec=audio_codec,
+            requested_sample_rate_hz=requested_sample_rate,
+            rx_codec_explicit=codec_is_explicit,
+            sample_rate_explicit=sample_rate_is_explicit,
+        )
+        self._audio_stream_contract = audio_stream_contract_from_request(
+            self._audio_stream_request
+        )
+        self._audio_codec = self._audio_stream_contract.rx_codec
+        self._audio_tx_codec = self._audio_stream_contract.tx_codec
+        self._audio_rx_sample_rate = self._audio_stream_contract.rx_sample_rate_hz
+        self._audio_tx_sample_rate = self._audio_stream_contract.tx_sample_rate_hz
+        self._audio_sample_rate = self._audio_rx_sample_rate
         self._radio_addr = self._profile.civ_addr if radio_addr is None else radio_addr
         # GET commands use a shorter timeout than the general connection timeout.
         # wfview-style: send once, short deadline, fall back to cache.

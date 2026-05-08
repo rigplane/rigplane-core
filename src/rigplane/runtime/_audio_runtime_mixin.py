@@ -13,6 +13,7 @@ if TYPE_CHECKING:
     from typing import Callable
 
     from rigplane.audio import AudioPacket
+    from rigplane.audio.route import AudioStreamContract, AudioStreamRequest
 
     from .radio import CoreRadio as _MixinBase  # type: ignore[attr-defined]
 else:
@@ -44,6 +45,8 @@ class AudioRuntimeMixin(_MixinBase):  # type: ignore[misc]
     _audio_codec: AudioCodec
     _audio_tx_codec: AudioCodec
     _audio_sample_rate: int
+    _audio_stream_request: AudioStreamRequest
+    _audio_stream_contract: AudioStreamContract
 
     # ------------------------------------------------------------------
     # Audio streaming
@@ -437,6 +440,16 @@ class AudioRuntimeMixin(_MixinBase):  # type: ignore[misc]
     def audio_sample_rate(self) -> int:
         """Configured audio sample rate in Hz."""
         return self._audio_sample_rate
+
+    @property
+    def audio_stream_request(self) -> "AudioStreamRequest":
+        """Requested radio-native audio values before conninfo fallback."""
+        return self._audio_stream_request
+
+    @property
+    def audio_stream_contract(self) -> "AudioStreamContract":
+        """Effective radio-native audio values accepted for this connection."""
+        return self._audio_stream_contract
 
     async def _ensure_audio_transport(self) -> None:
         """Connect the audio transport if not already connected."""

@@ -581,11 +581,21 @@ class TestCodecPreference:
             profile = rig.to_profile()
             assert profile.codec_preference == ("PCM_1CH_16BIT", "ULAW_1CH")
 
-    def test_ic7610_has_no_override(self):
-        """IC-7610 stays on the global stereo-first default (no override)."""
+    def test_ic7610_declares_stereo_pcm_first_override(self):
+        """IC-7610 explicitly pins the direct-LAN PCM-first RX preference."""
         rig = load_rig(TEMPLATE_PATH)
-        assert rig.codec_preference is None
-        assert rig.to_profile().codec_preference is None
+        assert rig.codec_preference == (
+            "PCM_2CH_16BIT",
+            "PCM_1CH_16BIT",
+            "ULAW_2CH",
+            "ULAW_1CH",
+        )
+        assert rig.to_profile().codec_preference == (
+            "PCM_2CH_16BIT",
+            "PCM_1CH_16BIT",
+            "ULAW_2CH",
+            "ULAW_1CH",
+        )
 
     def test_codec_preference_parses_list_of_strings(self, tmp_path):
         toml = _MINIMAL_TOML + '\n[audio]\ncodec_preference = ["PCM_1CH_16BIT"]\n'
@@ -622,3 +632,113 @@ class TestCodecPreference:
         p = _write_toml(tmp_path, toml)
         with pytest.raises(RigLoadError, match=r"\[audio\] must be a table"):
             load_rig(p)
+
+
+class TestAudioPolicy:
+    """Per-profile [audio] codec and sample-rate policy (#1470)."""
+
+    def test_ic7610_declares_pcm_first_lan_policy(self):
+        rig = load_rig(TEMPLATE_PATH)
+
+        assert rig.codec_preference == (
+            "PCM_2CH_16BIT",
+            "PCM_1CH_16BIT",
+            "ULAW_2CH",
+            "ULAW_1CH",
+        )
+        assert rig.tx_codec == "PCM_1CH_16BIT"
+        assert rig.default_sample_rate_hz == 16000
+        assert rig.supported_sample_rates_hz is None
+        assert rig.sample_rate_by_codec == {
+            "PCM_2CH_16BIT": 16000,
+            "PCM_1CH_16BIT": 16000,
+        }
+        assert rig.browser_rx_transport == "auto"
+        assert rig.browser_rx_transcode_to_opus is True
+
+        profile = rig.to_profile()
+        assert profile.codec_preference == (
+            "PCM_2CH_16BIT",
+            "PCM_1CH_16BIT",
+            "ULAW_2CH",
+            "ULAW_1CH",
+        )
+        assert profile.tx_codec == "PCM_1CH_16BIT"
+        assert profile.default_sample_rate_hz == 16000
+        assert profile.supported_sample_rates_hz is None
+        assert profile.sample_rate_by_codec == {
+            "PCM_2CH_16BIT": 16000,
+            "PCM_1CH_16BIT": 16000,
+        }
+        assert profile.browser_rx_transport == "auto"
+        assert profile.browser_rx_transcode_to_opus is True
+
+    def test_full_audio_policy_parses(self, tmp_path):
+        toml = (
+            _MINIMAL_TOML
+            + """
+
+[audio]
+codec_preference = ["PCM_2CH_16BIT", "PCM_1CH_16BIT"]
+tx_codec = "PCM_1CH_16BIT"
+default_sample_rate_hz = 16000
+supported_sample_rates_hz = [8000, 16000, 48000]
+sample_rate_by_codec = { PCM_2CH_16BIT = 16000, PCM_1CH_16BIT = 16000 }
+browser_rx_transport = "auto"
+browser_rx_transcode_to_opus = true
+"""
+        )
+        rig = load_rig(_write_toml(tmp_path, toml))
+
+        assert rig.codec_preference == ("PCM_2CH_16BIT", "PCM_1CH_16BIT")
+        assert rig.tx_codec == "PCM_1CH_16BIT"
+        assert rig.default_sample_rate_hz == 16000
+        assert rig.supported_sample_rates_hz == (8000, 16000, 48000)
+        assert rig.sample_rate_by_codec == {
+            "PCM_2CH_16BIT": 16000,
+            "PCM_1CH_16BIT": 16000,
+        }
+        assert rig.browser_rx_transport == "auto"
+        assert rig.browser_rx_transcode_to_opus is True
+
+    def test_existing_profiles_without_new_policy_load_unchanged(self, tmp_path):
+        rig = load_rig(_write_toml(tmp_path, _MINIMAL_TOML))
+        profile = rig.to_profile()
+
+        assert rig.codec_preference is None
+        assert rig.tx_codec is None
+        assert rig.default_sample_rate_hz is None
+        assert rig.supported_sample_rates_hz is None
+        assert rig.sample_rate_by_codec is None
+        assert rig.browser_rx_transport is None
+        assert rig.browser_rx_transcode_to_opus is None
+        assert profile.tx_codec is None
+        assert profile.default_sample_rate_hz is None
+
+    def test_unknown_tx_codec_rejected(self, tmp_path):
+        toml = _MINIMAL_TOML + '\n[audio]\ntx_codec = "BOGUS_CODEC"\n'
+        with pytest.raises(RigLoadError, match=r"\[audio\].tx_codec.*unknown codec"):
+            load_rig(_write_toml(tmp_path, toml))
+
+    def test_unsupported_default_sample_rate_rejected(self, tmp_path):
+        toml = _MINIMAL_TOML + "\n[audio]\ndefault_sample_rate_hz = 44100\n"
+        with pytest.raises(RigLoadError, match="default_sample_rate_hz"):
+            load_rig(_write_toml(tmp_path, toml))
+
+    def test_negative_sample_rate_rejected(self, tmp_path):
+        toml = _MINIMAL_TOML + "\n[audio]\nsupported_sample_rates_hz = [16000, -1]\n"
+        with pytest.raises(RigLoadError, match="supported_sample_rates_hz"):
+            load_rig(_write_toml(tmp_path, toml))
+
+    def test_unknown_sample_rate_codec_key_rejected(self, tmp_path):
+        toml = (
+            _MINIMAL_TOML
+            + "\n[audio]\nsample_rate_by_codec = { BOGUS_CODEC = 16000 }\n"
+        )
+        with pytest.raises(RigLoadError, match="sample_rate_by_codec.*unknown codec"):
+            load_rig(_write_toml(tmp_path, toml))
+
+    def test_invalid_browser_transport_rejected(self, tmp_path):
+        toml = _MINIMAL_TOML + '\n[audio]\nbrowser_rx_transport = "rtmp"\n'
+        with pytest.raises(RigLoadError, match="browser_rx_transport"):
+            load_rig(_write_toml(tmp_path, toml))

@@ -1,7 +1,46 @@
 # Audio Recipes (copy/paste)
 
 Practical scenarios for the current `rigplane` audio API.
-All examples use **PCM 16-bit mono 48 kHz** (`AudioCodec.PCM_1CH_16BIT`) to avoid external codec dependencies.
+Most generic examples below use **PCM 16-bit mono 48 kHz**
+(`AudioCodec.PCM_1CH_16BIT`) to avoid external codec dependencies. Radio
+profiles may choose a different radio-native LAN contract when a model has a
+better-known default.
+
+## Radio-native vs browser/client audio contracts
+
+Direct Icom LAN audio is PCM-first in `rigplane`. The radio-native contract is
+the codec, sample rate, and channel count written into the Icom conninfo packet
+and accepted by the radio. For direct radio LAN connections this should normally
+be PCM or u-law; Opus is not assumed to be a native Icom radio codec. Opus can
+still be useful as a server-to-browser or server-to-client transport when a web
+consumer benefits from lower bandwidth, but that is a consumer contract layered
+after the radio stream has been decoded to PCM for taps, DSP, and bridges.
+
+The runtime tracks three related decisions:
+
+| Contract | Meaning |
+| --- | --- |
+| Requested radio-native | Values selected before conninfo from explicit overrides, the radio profile, or global defaults. |
+| Effective radio-native | Values actually used after conninfo. If the radio rejects a request, this can record a fallback such as stereo RX downgraded to mono. |
+| Web RX emission | Browser/client codec selected from profile policy, for example PCM from the radio emitted as browser Opus. This does not change the radio-native stream. |
+
+Use diagnostics when debugging audio negotiation. The `audio/audio.json` file in
+a diagnostic report includes `radio_native.requested`,
+`radio_native.effective`, and `web_rx` when those values are available or
+configured.
+
+`ICOM_AUDIO_SAMPLE_RATE` remains an operator override. Set it only when you
+need to force the direct LAN conninfo sample rate for testing or hardware
+compatibility:
+
+```bash
+export ICOM_AUDIO_SAMPLE_RATE=16000
+uv run rigplane --host 192.168.55.40 --user USER --pass-file .rigplane-pass web
+```
+
+Explicit API or CLI/env overrides take precedence over profile defaults. If no
+override is supplied, model profiles choose the best known radio-native default;
+for example the IC-7610 direct LAN profile requests PCM at 16 kHz.
 
 ## Prerequisites
 

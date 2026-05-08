@@ -26,6 +26,8 @@ class LanBackendConfig:
     timeout: float = 5.0
     audio_codec: AudioCodec | int = _DEFAULT_AUDIO_CODEC
     audio_sample_rate: int = _DEFAULT_AUDIO_SAMPLE_RATE
+    audio_codec_explicit: bool = False
+    audio_sample_rate_explicit: bool = False
     auto_reconnect: bool = False
     reconnect_delay: float = 2.0
     reconnect_max_delay: float = 60.0

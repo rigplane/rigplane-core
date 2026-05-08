@@ -5,6 +5,9 @@ from __future__ import annotations
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
+from rigplane.profiles import get_radio_profile
+from rigplane.types import AudioCodec
+
 
 def _radio(*, backend_id: str, data_mode_count: int = 1) -> AsyncMock:
     radio = AsyncMock()
@@ -77,3 +80,62 @@ def test_unknown_route_does_not_change_data_source() -> None:
     assert route.tx_audio_source == TxAudioSource.UNAVAILABLE
     assert route.data_mode_policy == DataModePolicy.LEGACY
     assert rigctld_wsjtx_policy(route) == (None, None)
+
+
+def test_ic7610_lan_stream_request_uses_profile_audio_policy() -> None:
+    from rigplane.audio.route import AudioConfigSource, resolve_lan_audio_stream_request
+
+    request = resolve_lan_audio_stream_request(
+        profile=get_radio_profile("IC-7610"),
+        requested_rx_codec=AudioCodec.PCM_2CH_16BIT,
+        requested_sample_rate_hz=48000,
+    )
+
+    assert request.rx_codec == AudioCodec.PCM_2CH_16BIT
+    assert request.tx_codec == AudioCodec.PCM_1CH_16BIT
+    assert request.rx_sample_rate_hz == 16000
+    assert request.tx_sample_rate_hz == 16000
+    assert request.rx_channels == 2
+    assert request.tx_channels == 1
+    assert request.rx_codec_source == AudioConfigSource.PROFILE_DEFAULT
+    assert request.tx_codec_source == AudioConfigSource.PROFILE_DEFAULT
+    assert request.rx_sample_rate_source == AudioConfigSource.PROFILE_CODEC_DEFAULT
+    assert request.tx_sample_rate_source == AudioConfigSource.PROFILE_CODEC_DEFAULT
+
+
+def test_lan_stream_request_honors_explicit_overrides() -> None:
+    from rigplane.audio.route import AudioConfigSource, resolve_lan_audio_stream_request
+
+    request = resolve_lan_audio_stream_request(
+        profile=get_radio_profile("IC-7610"),
+        requested_rx_codec=AudioCodec.OPUS_1CH,
+        requested_sample_rate_hz=48000,
+        rx_codec_explicit=True,
+        sample_rate_explicit=True,
+    )
+
+    assert request.rx_codec == AudioCodec.OPUS_1CH
+    assert request.tx_codec == AudioCodec.PCM_1CH_16BIT
+    assert request.rx_sample_rate_hz == 48000
+    assert request.tx_sample_rate_hz == 48000
+    assert request.rx_channels == 1
+    assert request.rx_codec_source == AudioConfigSource.EXPLICIT
+    assert request.rx_sample_rate_source == AudioConfigSource.EXPLICIT
+    assert request.tx_sample_rate_source == AudioConfigSource.EXPLICIT
+
+
+def test_lan_stream_request_preserves_non_audited_profile_defaults() -> None:
+    from rigplane.audio.route import AudioConfigSource, resolve_lan_audio_stream_request
+
+    request = resolve_lan_audio_stream_request(
+        profile=get_radio_profile("IC-7300"),
+        requested_rx_codec=AudioCodec.PCM_2CH_16BIT,
+        requested_sample_rate_hz=48000,
+    )
+
+    assert request.rx_codec == AudioCodec.PCM_1CH_16BIT
+    assert request.tx_codec == AudioCodec.PCM_1CH_16BIT
+    assert request.rx_sample_rate_hz == 48000
+    assert request.tx_sample_rate_hz == 48000
+    assert request.rx_codec_source == AudioConfigSource.PROFILE_DEFAULT
+    assert request.rx_sample_rate_source == AudioConfigSource.GLOBAL_DEFAULT

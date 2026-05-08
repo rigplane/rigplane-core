@@ -45,7 +45,8 @@ class IcomRadio:
         audio_codec: Audio codec (default: stereo PCM 2ch 16-bit on dual-RX
             radios, auto-negotiated down to mono on single-RX firmware — see
             ``_DEFAULT_CODEC_PREFERENCE`` in ``types.py``).
-        audio_sample_rate: Audio sample rate in Hz.
+        audio_sample_rate: Audio sample rate in Hz. Omit to use the radio
+            profile's LAN audio policy.
     """
 
     def __init__(
@@ -57,7 +58,7 @@ class IcomRadio:
         radio_addr: int = 0x98,
         timeout: float = 5.0,
         audio_codec: AudioCodec | int = _DEFAULT_AUDIO_CODEC,
-        audio_sample_rate: int = 48000,
+        audio_sample_rate: int | None = None,
     ) -> None:
         self._loop = asyncio.new_event_loop()
         self._radio = _AsyncIcomRadio(

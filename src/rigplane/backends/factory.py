@@ -35,6 +35,8 @@ def create_radio(config: BackendConfig) -> Radio:
             timeout=config.timeout,
             audio_codec=config.audio_codec,
             audio_sample_rate=config.audio_sample_rate,
+            audio_codec_explicit=config.audio_codec_explicit,
+            audio_sample_rate_explicit=config.audio_sample_rate_explicit,
             auto_reconnect=config.auto_reconnect,
             reconnect_delay=config.reconnect_delay,
             reconnect_max_delay=config.reconnect_max_delay,

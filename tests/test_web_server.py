@@ -1389,6 +1389,120 @@ class TestAudioHandlerCodecDetection:
         frame = await self._start_rx_and_capture(MagicMock(), 48000)
         assert frame[1] == AUDIO_CODEC_PCM16
 
+    async def test_ic7610_pcm_native_can_emit_browser_opus_by_profile_policy(
+        self,
+    ) -> None:
+        from rigplane.audio_bus import AudioBus
+        from rigplane.radio_protocol import AudioCapable
+        from rigplane.types import AudioCodec
+        from rigplane.web.handlers import AudioBroadcaster, AudioHandler
+        from rigplane.web.protocol import AUDIO_CODEC_OPUS, AUDIO_HEADER_SIZE
+        from rigplane.web.websocket import WebSocketConnection
+
+        mock_ws = MagicMock(spec=WebSocketConnection)
+        mock_radio = MagicMock(spec=AudioCapable)
+        mock_radio.capabilities = {"audio"}
+        mock_radio.audio_codec = AudioCodec.PCM_2CH_16BIT
+        mock_radio.audio_sample_rate = 16000
+        mock_radio.profile = SimpleNamespace(
+            browser_rx_transport="auto",
+            browser_rx_transcode_to_opus=True,
+        )
+        mock_radio.start_audio_rx_opus = AsyncMock()
+        mock_radio.stop_audio_rx_opus = AsyncMock()
+        bus = AudioBus(mock_radio)
+        mock_radio.audio_bus = bus
+
+        pcm_payload = b"\x01\x02" * 640  # 20 ms, 16 kHz, stereo, s16le
+        tap_frames: list[bytes] = []
+
+        class _FakeTranscoder:
+            def pcm_to_opus(self, pcm: bytes) -> bytes:
+                assert pcm == pcm_payload
+                return b"opus-web-frame"
+
+        broadcaster = AudioBroadcaster(mock_radio)
+        broadcaster.set_pcm_tap(tap_frames.append)
+        handler = AudioHandler(mock_ws, mock_radio, broadcaster)
+
+        with patch(
+            "rigplane.web.handlers.audio.create_pcm_opus_transcoder",
+            return_value=_FakeTranscoder(),
+        ) as transcoder_factory:
+            await handler._start_rx()
+            mock_pkt = MagicMock()
+            mock_pkt.data = pcm_payload
+            bus._on_opus_packet(mock_pkt)
+            await asyncio.sleep(0.1)
+
+        frame = handler._frame_queue.get_nowait()
+        assert frame[1] == AUDIO_CODEC_OPUS
+        assert frame[AUDIO_HEADER_SIZE:] == b"opus-web-frame"
+        assert tap_frames == [pcm_payload]
+        transcoder_factory.assert_called_once_with(
+            sample_rate=16000,
+            channels=2,
+            frame_ms=20,
+        )
+
+    async def test_browser_opus_policy_falls_back_to_pcm16_when_encoder_unavailable(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        from rigplane.audio_bus import AudioBus
+        from rigplane.radio_protocol import AudioCapable
+        from rigplane.types import AudioCodec
+        from rigplane.web.handlers import AudioBroadcaster, AudioHandler
+        from rigplane.web.protocol import AUDIO_CODEC_PCM16, AUDIO_HEADER_SIZE
+        from rigplane.web.websocket import WebSocketConnection
+
+        mock_ws = MagicMock(spec=WebSocketConnection)
+        mock_radio = MagicMock(spec=AudioCapable)
+        mock_radio.capabilities = {"audio"}
+        mock_radio.audio_codec = AudioCodec.PCM_2CH_16BIT
+        mock_radio.audio_sample_rate = 16000
+        mock_radio.profile = SimpleNamespace(
+            browser_rx_transport="auto",
+            browser_rx_transcode_to_opus=True,
+        )
+        mock_radio.start_audio_rx_opus = AsyncMock()
+        mock_radio.stop_audio_rx_opus = AsyncMock()
+        bus = AudioBus(mock_radio)
+        mock_radio.audio_bus = bus
+
+        pcm_payload = b"\x01\x02" * 640
+        tap_frames: list[bytes] = []
+        broadcaster = AudioBroadcaster(mock_radio)
+        broadcaster.set_pcm_tap(tap_frames.append)
+        handler = AudioHandler(mock_ws, mock_radio, broadcaster)
+
+        with (
+            caplog.at_level("WARNING"),
+            patch(
+                "rigplane.web.handlers.audio.create_pcm_opus_transcoder",
+                side_effect=RuntimeError("opus disabled"),
+            ),
+        ):
+            await handler._start_rx()
+            for _ in range(2):
+                mock_pkt = MagicMock()
+                mock_pkt.data = pcm_payload
+                bus._on_opus_packet(mock_pkt)
+            await asyncio.sleep(0.1)
+
+        frames = [handler._frame_queue.get_nowait() for _ in range(2)]
+        assert [frame[1] for frame in frames] == [AUDIO_CODEC_PCM16, AUDIO_CODEC_PCM16]
+        assert [frame[AUDIO_HEADER_SIZE:] for frame in frames] == [
+            pcm_payload,
+            pcm_payload,
+        ]
+        assert tap_frames == [pcm_payload, pcm_payload]
+        warnings = [
+            record
+            for record in caplog.records
+            if "browser Opus transcode unavailable" in record.message
+        ]
+        assert len(warnings) == 1
+
 
 class TestBroadcasterFrameMsInvariant:
     """Wire-header ``frame_ms`` must match the actual payload size (issue #765).

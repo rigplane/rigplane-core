@@ -56,9 +56,9 @@ class _AudioBus(Protocol):
 class AudioBroadcaster:
     """Single-instance RX audio broadcaster shared by all AudioHandler clients.
 
-    Uses :class:`~rigplane.audio_bus.AudioBus` to subscribe to the radio's
-    opus RX stream.  Multiple consumers (WebSocket clients, audio bridge,
-    recorders) can all share the same stream through the bus.
+    Uses :class:`~rigplane.audio_bus.AudioBus` to subscribe to the radio-native
+    RX stream.  Browser WebSocket clients may receive a consumer-specific
+    transport codec, while PCM taps continue to see decoded radio audio.
     """
 
     HIGH_WATERMARK: int = 10
@@ -75,6 +75,9 @@ class AudioBroadcaster:
         self._radio_codec: AudioCodec | None = None
         self._sample_rate: int = 48000
         self._channels: int = 1
+        self._browser_opus_transcoder: PcmOpusTranscoder | None = None
+        self._browser_opus_transcoder_key: tuple[int, int, int] | None = None
+        self._browser_opus_warned: bool = False
         self._lock = asyncio.Lock()
         # Optional DSP pipeline (inserted between codec decode and tap/distribute).
         # NOTE: the DSP pipeline and the tap registry both operate on decoded
@@ -180,7 +183,7 @@ class AudioBroadcaster:
             return
         if self._dsp_pipeline is None:
             return
-        if self._web_codec != AUDIO_CODEC_OPUS:
+        if self._radio_codec not in (AudioCodec.OPUS_1CH, AudioCodec.OPUS_2CH):
             return
         logger.warning(
             "audio-broadcaster: DSP pipeline is configured but the radio's "
@@ -247,22 +250,10 @@ class AudioBroadcaster:
         refresh. Behavior-preserving extraction of the block previously
         inlined in ``_start_relay``.
         """
-        # Negotiate web codec from radio's actual audio codec
+        # Resolve browser transport from the radio-native codec plus profile
+        # consumer policy; this must not feed back into the radio conninfo codec.
         _codec = getattr(self._radio, "audio_codec", None)
         if isinstance(_codec, AudioCodec):
-            # Map radio codec → web transport codec.
-            # For ulaw codecs, we transcode to PCM16 in _relay_loop.
-            # NOTE: PCM_1CH_8BIT / PCM_2CH_8BIT intentionally NOT mapped
-            # (see #765); unknown codec falls through to PCM16 default.
-            _CODEC_MAP = {
-                AudioCodec.OPUS_1CH: AUDIO_CODEC_OPUS,
-                AudioCodec.OPUS_2CH: AUDIO_CODEC_OPUS,
-                AudioCodec.PCM_1CH_16BIT: AUDIO_CODEC_PCM16,
-                AudioCodec.PCM_2CH_16BIT: AUDIO_CODEC_PCM16,
-                AudioCodec.ULAW_1CH: AUDIO_CODEC_PCM16,
-                AudioCodec.ULAW_2CH: AUDIO_CODEC_PCM16,
-            }
-            self._web_codec = _CODEC_MAP.get(_codec, AUDIO_CODEC_PCM16)
             self._radio_codec = _codec
             self._channels = (
                 2
@@ -274,6 +265,7 @@ class AudioBroadcaster:
                 )
                 else 1
             )
+            self._web_codec = self._resolve_web_rx_codec(_codec)
             logger.info(
                 "audio-broadcaster: radio codec=%s (0x%02x) → web_codec=0x%02x",
                 _codec.name,
@@ -297,6 +289,64 @@ class AudioBroadcaster:
         # Re-check DSP-on-Opus after the codec may have just flipped.
         # Issue #762.
         self._maybe_warn_dsp_opus_gate()
+
+    def _resolve_web_rx_codec(self, radio_codec: AudioCodec) -> int:
+        """Resolve browser RX transport codec from profile consumer policy."""
+        if radio_codec in (AudioCodec.OPUS_1CH, AudioCodec.OPUS_2CH):
+            return AUDIO_CODEC_OPUS
+
+        default_codec = {
+            AudioCodec.PCM_1CH_16BIT: AUDIO_CODEC_PCM16,
+            AudioCodec.PCM_2CH_16BIT: AUDIO_CODEC_PCM16,
+            AudioCodec.ULAW_1CH: AUDIO_CODEC_PCM16,
+            AudioCodec.ULAW_2CH: AUDIO_CODEC_PCM16,
+        }.get(radio_codec, AUDIO_CODEC_PCM16)
+
+        profile = getattr(self._radio, "profile", None)
+        transport = getattr(profile, "browser_rx_transport", None)
+        transcode_to_opus = getattr(profile, "browser_rx_transcode_to_opus", None)
+        if transport == "pcm":
+            return AUDIO_CODEC_PCM16
+        if transport == "opus":
+            return AUDIO_CODEC_OPUS if transcode_to_opus is not False else default_codec
+        if transport == "auto" and transcode_to_opus is True:
+            return AUDIO_CODEC_OPUS
+        return default_codec
+
+    def _encode_browser_rx_frame(
+        self,
+        pcm_data: bytes,
+        frame_ms: int,
+    ) -> tuple[int, bytes]:
+        """Apply browser-only RX transport encoding after PCM consumers run."""
+        if self._web_codec != AUDIO_CODEC_OPUS:
+            return self._web_codec, pcm_data
+        if self._radio_codec in (AudioCodec.OPUS_1CH, AudioCodec.OPUS_2CH):
+            return AUDIO_CODEC_OPUS, pcm_data
+
+        key = (self._sample_rate, self._channels, frame_ms)
+        try:
+            if (
+                self._browser_opus_transcoder is None
+                or self._browser_opus_transcoder_key != key
+            ):
+                self._browser_opus_transcoder = create_pcm_opus_transcoder(
+                    sample_rate=self._sample_rate,
+                    channels=self._channels,
+                    frame_ms=frame_ms,
+                )
+                self._browser_opus_transcoder_key = key
+            return AUDIO_CODEC_OPUS, self._browser_opus_transcoder.pcm_to_opus(pcm_data)
+        except Exception as exc:
+            if not self._browser_opus_warned:
+                logger.warning(
+                    "audio: browser Opus transcode unavailable, emitting PCM16: %s",
+                    exc,
+                )
+                self._browser_opus_warned = True
+            self._browser_opus_transcoder = None
+            self._browser_opus_transcoder_key = None
+            return AUDIO_CODEC_PCM16, pcm_data
 
     async def _apply_phones_mix_off(self) -> None:
         """Force Phones L/R Mix = OFF so the LAN stream is separated stereo.
@@ -383,9 +433,9 @@ class AudioBroadcaster:
                 # quality loss on the wire; see issue #762 for the design
                 # note and ``_maybe_warn_dsp_opus_gate`` for the one-shot
                 # warning that surfaces this asymmetry to the operator.
-                if (
-                    self._dsp_pipeline is not None
-                    and self._web_codec == AUDIO_CODEC_PCM16
+                if self._dsp_pipeline is not None and self._radio_codec not in (
+                    AudioCodec.OPUS_1CH,
+                    AudioCodec.OPUS_2CH,
                 ):
                     try:
                         audio_data = self._dsp_pipeline.process_bytes(
@@ -397,7 +447,10 @@ class AudioBroadcaster:
                 # Fan out PCM data to all registered taps (FFT scope, analyzers, etc.).
                 # Opus-native radios do not feed taps — consumers get silence.
                 # Same rationale as the DSP gate above.  Issue #762.
-                if self._tap_registry.active and self._web_codec == AUDIO_CODEC_PCM16:
+                if self._tap_registry.active and self._radio_codec not in (
+                    AudioCodec.OPUS_1CH,
+                    AudioCodec.OPUS_2CH,
+                ):
                     self._tap_registry.feed(audio_data)
 
                 # frame_ms is derived from the actual payload size (issue #765).
@@ -410,14 +463,18 @@ class AudioBroadcaster:
                 _bytes_per_sample = 2
                 _denom = max(1, self._sample_rate * self._channels * _bytes_per_sample)
                 _frame_ms = max(1, min((len(audio_data) * 1000) // _denom, 255))
+                _frame_codec, _frame_audio_data = self._encode_browser_rx_frame(
+                    audio_data,
+                    _frame_ms,
+                )
                 frame = encode_audio_frame(
                     MSG_TYPE_AUDIO_RX,
-                    self._web_codec,
+                    _frame_codec,
                     self._seq,
                     self._sample_rate // 100,
                     self._channels,
                     _frame_ms,
-                    audio_data,
+                    _frame_audio_data,
                 )
                 self._seq = (self._seq + 1) & 0xFFFF
                 dead_ids: list[int] = []
@@ -463,12 +520,12 @@ class AudioBroadcaster:
 class AudioHandler:
     """Handler for the /api/v1/audio WebSocket channel.
 
-    Streams RX audio from the radio to the browser as binary Opus frames,
+    Streams RX audio from the radio to the browser as binary audio frames,
     and accepts TX audio frames from the browser to push to the radio.
 
     Control flow:
         Client sends JSON text: ``audio_start`` / ``audio_stop``
-        Server sends binary Opus frames continuously while RX is active.
+        Server sends binary audio frames continuously while RX is active.
         Client sends binary Opus frames while TX is active (after PTT on).
 
     Args:

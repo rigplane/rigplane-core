@@ -7,6 +7,7 @@ import logging
 import socket as _socket
 import struct
 import time
+from dataclasses import replace
 from typing import TYPE_CHECKING
 
 from rigplane.core.auth import (
@@ -20,6 +21,7 @@ from rigplane.core.exceptions import AuthenticationError, ConnectionError, Timeo
 from .startup_checks import wait_for_radio_startup_ready
 from rigplane.core.transport import ConnectionState, IcomTransport
 from rigplane.core.types import AudioCodec
+from rigplane.audio.route import AudioConfigSource
 
 if TYPE_CHECKING:
     from ._runtime_protocols import ControlPhaseHost
@@ -210,6 +212,13 @@ class ControlPhaseRuntime:
                             h._audio_codec.name,
                         )
                         h._audio_codec = AudioCodec.PCM_1CH_16BIT
+                        h._audio_stream_contract = replace(
+                            h._audio_stream_contract,
+                            rx_codec=AudioCodec.PCM_1CH_16BIT,
+                            rx_channels=1,
+                            rx_codec_source=AudioConfigSource.FALLBACK,
+                            fallback_reason="conninfo-stereo-rx-rejected",
+                        )
                         h._last_status_error = 0
                         await self._send_conninfo(
                             guid, _civ_local_port, _audio_local_port
@@ -539,18 +548,7 @@ class ControlPhaseRuntime:
         audio_local_port: int = 0,
     ) -> None:
         h = self._host
-        # TX codec must always be mono for IC-7610 (and all Icom LAN radios
-        # we target): the mic path through the transceiver is 1-channel, and
-        # the stock firmware rejects conninfo with ``error=0xFFFFFFFF`` when
-        # ``txcodec`` is a 2ch value (0x08 / 0x10 / 0x20 / 0x41).  wfview
-        # enforces the same constraint in its UI by only offering mono TX
-        # codecs (``settingswidget.cpp:118-124``).  Our Python client used to
-        # mirror the RX codec into TX, which broke stereo RX on LAN.  See
-        # issue #794.  We force ``PCM_1CH_16BIT`` so stereo RX works without
-        # any user-visible tradeoff — the radio uses its own separately
-        # configured TX modulation source regardless of this byte.
-        h._audio_tx_codec = AudioCodec.PCM_1CH_16BIT
-        tx_codec = int(h._audio_tx_codec)
+        contract = h._audio_stream_contract
         conninfo = build_conninfo_packet(
             sender_id=h._ctrl_transport.my_id,
             receiver_id=h._ctrl_transport.remote_id,
@@ -561,10 +559,10 @@ class ControlPhaseRuntime:
             mac_address=b"\x00" * 6,
             auth_seq=h._auth_seq,
             guid=guid,
-            rx_codec=int(h._audio_codec),
-            tx_codec=tx_codec,
-            rx_sample_rate=h._audio_sample_rate,
-            tx_sample_rate=h._audio_sample_rate,
+            rx_codec=int(contract.rx_codec),
+            tx_codec=int(contract.tx_codec),
+            rx_sample_rate=contract.rx_sample_rate_hz,
+            tx_sample_rate=contract.tx_sample_rate_hz,
             civ_local_port=civ_local_port,
             audio_local_port=audio_local_port,
         )

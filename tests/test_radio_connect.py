@@ -16,6 +16,7 @@ from rigplane.radio import (
     STATUS_SIZE,
     TOKEN_ACK_SIZE,
 )
+from rigplane.audio.route import AudioConfigSource
 from rigplane.transport import ConnectionState
 from rigplane.types import AudioCodec
 
@@ -216,6 +217,34 @@ class TestSendConninfo:
         assert packet[0x73] == int(AudioCodec.PCM_1CH_16BIT), (
             f"txcodec must be mono 0x04 even for stereo RX, got 0x{packet[0x73]:02X}"
         )
+        rx_sample = struct.unpack_from(">I", packet, 0x74)[0]
+        tx_sample = struct.unpack_from(">I", packet, 0x78)[0]
+        assert rx_sample == 16000
+        assert tx_sample == 16000
+
+    @pytest.mark.asyncio
+    async def test_conninfo_honors_explicit_sample_rate_override(self) -> None:
+        from rigplane.types import AudioCodec
+
+        radio = IcomRadio(
+            "192.168.1.100",
+            username="u",
+            password="p",
+            audio_codec=AudioCodec.PCM_2CH_16BIT,
+            audio_sample_rate=48000,
+        )
+        mt = ConnectMockTransport()
+        radio._ctrl_transport = mt
+        radio._token = 0x12345678
+        radio._tok_request = 0xABCD
+
+        await radio._control_phase._send_conninfo(b"\x00" * 16)
+
+        packet = mt.sent_packets[0]
+        assert packet[0x72] == int(AudioCodec.PCM_2CH_16BIT)
+        assert packet[0x73] == int(AudioCodec.PCM_1CH_16BIT)
+        assert struct.unpack_from(">I", packet, 0x74)[0] == 48000
+        assert struct.unpack_from(">I", packet, 0x78)[0] == 48000
 
 
 class TestReceiveCivPort:
@@ -562,7 +591,17 @@ class TestConnectSessionRejection:
             AudioCodec.PCM_2CH_16BIT,
             AudioCodec.PCM_1CH_16BIT,
         ], "Second conninfo must be sent with mono codec, before any later mutation"
+        assert radio.audio_stream_request.rx_codec == AudioCodec.PCM_2CH_16BIT
+        assert radio.audio_stream_contract.rx_codec == AudioCodec.PCM_1CH_16BIT
+        assert radio.audio_stream_contract.tx_codec == AudioCodec.PCM_1CH_16BIT
+        assert radio.audio_stream_contract.rx_sample_rate_hz == 16000
+        assert radio.audio_stream_contract.tx_sample_rate_hz == 16000
+        assert radio.audio_stream_contract.rx_codec_source == AudioConfigSource.FALLBACK
+        assert (
+            radio.audio_stream_contract.fallback_reason == "conninfo-stereo-rx-rejected"
+        )
         assert radio._audio_codec == AudioCodec.PCM_1CH_16BIT
+        assert radio.audio_codec == AudioCodec.PCM_1CH_16BIT
         assert radio._civ_port == 50001
 
     @pytest.mark.asyncio

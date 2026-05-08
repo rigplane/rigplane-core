@@ -13,6 +13,11 @@ class TestSyncInit:
         assert r._loop is not None
         r._loop.close()
 
+    def test_default_sample_rate_uses_profile_policy(self) -> None:
+        r = IcomRadio("192.168.1.100")
+        assert r.audio_sample_rate == 16000
+        r._loop.close()
+
     def test_custom_params(self) -> None:
         r = IcomRadio(
             "192.168.1.100",

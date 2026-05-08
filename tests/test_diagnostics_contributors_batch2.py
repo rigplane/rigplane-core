@@ -16,16 +16,19 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
 
+from rigplane.audio.route import AudioConfigSource
 from rigplane.diagnostics import _discovery
 from rigplane.diagnostics.contributor import BundleContext
 from rigplane.diagnostics.contributors import (
     AudioContributor,
     RadioContributor,
 )
+from rigplane.types import AudioCodec
 
 
 @pytest.fixture(autouse=True)
@@ -291,6 +294,95 @@ def test_audio_emits_codec_and_sample_rate(tmp_path: Path) -> None:
     assert payload["available"] is True
     assert payload["codec"] == "PCM_1CH_16BIT"
     assert payload["sample_rate_hz"] == 48000
+
+
+def test_audio_emits_requested_and_effective_radio_native_contracts(
+    tmp_path: Path,
+) -> None:
+    class FakeAudioRadio(_AudioCapableStub):
+        audio_stream_request = SimpleNamespace(
+            rx_codec=AudioCodec.PCM_2CH_16BIT,
+            tx_codec=AudioCodec.PCM_1CH_16BIT,
+            rx_sample_rate_hz=16000,
+            tx_sample_rate_hz=16000,
+            rx_channels=2,
+            tx_channels=1,
+            rx_codec_source=AudioConfigSource.PROFILE_DEFAULT,
+            tx_codec_source=AudioConfigSource.PROFILE_DEFAULT,
+            rx_sample_rate_source=AudioConfigSource.PROFILE_CODEC_DEFAULT,
+            tx_sample_rate_source=AudioConfigSource.PROFILE_CODEC_DEFAULT,
+        )
+        audio_stream_contract = SimpleNamespace(
+            rx_codec=AudioCodec.PCM_1CH_16BIT,
+            tx_codec=AudioCodec.PCM_1CH_16BIT,
+            rx_sample_rate_hz=16000,
+            tx_sample_rate_hz=16000,
+            rx_channels=1,
+            tx_channels=1,
+            rx_codec_source=AudioConfigSource.FALLBACK,
+            tx_codec_source=AudioConfigSource.PROFILE_DEFAULT,
+            rx_sample_rate_source=AudioConfigSource.PROFILE_CODEC_DEFAULT,
+            tx_sample_rate_source=AudioConfigSource.PROFILE_CODEC_DEFAULT,
+            fallback_reason="conninfo-stereo-rx-rejected",
+        )
+
+    AudioContributor().contribute(_make_ctx(radio=FakeAudioRadio()), tmp_path)
+    payload = json.loads((tmp_path / "audio.json").read_text())
+
+    requested = payload["radio_native"]["requested"]
+    assert requested["rx"] == {
+        "codec": "PCM_2CH_16BIT",
+        "sample_rate_hz": 16000,
+        "channels": 2,
+        "codec_source": "profile-default",
+        "sample_rate_source": "profile-codec-default",
+    }
+    assert requested["tx"]["codec"] == "PCM_1CH_16BIT"
+    assert requested["tx"]["channels"] == 1
+
+    effective = payload["radio_native"]["effective"]
+    assert effective["rx"]["codec"] == "PCM_1CH_16BIT"
+    assert effective["rx"]["codec_source"] == "fallback"
+    assert effective["fallback_reason"] == "conninfo-stereo-rx-rejected"
+
+
+def test_audio_emits_configured_web_rx_policy_without_runtime_client_state(
+    tmp_path: Path,
+) -> None:
+    class FakeAudioRadio(_AudioCapableStub):
+        profile = SimpleNamespace(
+            browser_rx_transport="auto",
+            browser_rx_transcode_to_opus=True,
+        )
+        audio_stream_contract = SimpleNamespace(
+            rx_codec="PCM_2CH_16BIT",
+            tx_codec="PCM_1CH_16BIT",
+            rx_sample_rate_hz=16000,
+            tx_sample_rate_hz=16000,
+            rx_channels=2,
+            tx_channels=1,
+            rx_codec_source="profile-default",
+            tx_codec_source="profile-default",
+            rx_sample_rate_source="profile-codec-default",
+            tx_sample_rate_source="profile-codec-default",
+            fallback_reason=None,
+        )
+
+    AudioContributor().contribute(_make_ctx(radio=FakeAudioRadio()), tmp_path)
+    payload = json.loads((tmp_path / "audio.json").read_text())
+
+    web_rx = payload["web_rx"]
+    assert web_rx == {
+        "state": "configured-policy",
+        "transport": "auto",
+        "transcode_to_opus": True,
+        "codec": "OPUS",
+        "sample_rate_hz": 16000,
+        "channels": 2,
+        "codec_source": "profile-default",
+        "sample_rate_source": "radio-native-effective",
+        "channels_source": "radio-native-effective",
+    }
 
 
 def test_audio_redacts_device_name_with_username(tmp_path: Path) -> None:

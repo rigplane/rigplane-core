@@ -133,7 +133,12 @@ class ControlPhaseHost(Protocol):
     _tok_request: int
     _auth_seq: int
     _audio_codec: Any
+    _audio_tx_codec: Any
     _audio_sample_rate: int
+    _audio_rx_sample_rate: int
+    _audio_tx_sample_rate: int
+    _audio_stream_request: Any
+    _audio_stream_contract: Any
 
     # Status / error tracking
     _last_status_error: int

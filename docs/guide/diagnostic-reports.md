@@ -84,7 +84,7 @@ own subdirectory of the ZIP. The full schema lives in the design spec
 | `system`       | OS, arch, Python version, `rigplane` version, install method              | Absolute home paths rewritten to `<HOME>/...`                |
 | `invocation`   | Filtered `sys.argv`, environment allowlist                                | `password=`, `pwd=`, `Bearer …`, API tokens → `***`          |
 | `radio`        | Model, firmware version, backend, capability matrix, audio codec          | Public IPs masked (RFC 1918 ranges kept — they're useful)    |
-| `audio`        | Codec, channels, sample rate, device names, bridge state                  | macOS device names containing usernames are masked           |
+| `audio`        | Legacy codec/rate/channel summary, requested and effective radio-native audio contracts, configured Web RX emission policy, device names, bridge state | macOS device names containing usernames are masked           |
 | `logs`         | Rolling diagnostic logs from `~/.cache/rigplane/logs/` (up to ~15 MiB)    | Path / IP / credential regex pass on copies                  |
 | `state`        | Current freq, mode, meters, last N CI-V exchanges (ring buffer)           | Optional callsign masking                                    |
 | `errors`       | Recent in-process tracebacks (ring buffer)                                | Paths scrubbed                                               |
@@ -95,6 +95,27 @@ own subdirectory of the ZIP. The full schema lives in the design spec
 The manifest (`manifest.json`) lists which contributors ran, which
 files each produced, and which redaction passes were applied to the
 bundle.
+
+### Audio contract fields
+
+For LAN audio issues, inspect `audio/audio.json` first. The file keeps the
+legacy top-level `codec`, `sample_rate_hz`, and `channels` fields for older
+tools, and may also include:
+
+- `radio_native.requested` — RX/TX codec, sample rate, channel count, and
+  source metadata selected before the Icom conninfo exchange.
+- `radio_native.effective` — RX/TX values in use after conninfo. If the radio
+  rejected a requested value, `fallback_reason` explains the downgrade.
+- `web_rx` — configured browser/client emission policy. When the diagnostic
+  bundle is created outside the WebSocket runtime, this reports profile policy
+  such as `auto` plus the derived emission codec; it does not claim that a
+  browser client was actively connected.
+
+Source metadata uses stable strings such as `explicit`, `profile-default`,
+`profile-codec-default`, `global-default`, and `fallback`. For example, an
+IC-7610 can request radio-native `PCM_2CH_16BIT` at `16000` Hz from its profile
+while the Web UI emits Opus as a browser transport. That means only the browser
+leg is Opus; the direct radio LAN stream remains PCM.
 
 ## Privacy
 

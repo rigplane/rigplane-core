@@ -184,6 +184,12 @@ class RadioProfile:
     # profile (unless the caller passes an explicit non-default value). Values
     # are ``AudioCodec`` enum names (e.g. ``"PCM_1CH_16BIT"``).
     codec_preference: tuple[str, ...] | None = None
+    tx_codec: str | None = None
+    default_sample_rate_hz: int | None = None
+    supported_sample_rates_hz: tuple[int, ...] | None = None
+    sample_rate_by_codec: dict[str, int] | None = None
+    browser_rx_transport: str | None = None
+    browser_rx_transcode_to_opus: bool | None = None
 
     @property
     def vfo_swap_code(self) -> int | None:
