@@ -34,6 +34,41 @@ Protocol types:
 - **`kenwood_cat`** — Kenwood text-based CAT (Lab599 TX-500, TS-890S). Commands: `"FA14200000;"`, `"MD2;"`
 - **`yaesu_cat`** — Yaesu text-based CAT (FTX-1, FT-710, FT-DX101)
 
+## `[audio]` — LAN Audio Policy
+
+Optional section. Defines radio-native LAN audio defaults and browser consumer
+transport policy. These fields are used by the LAN audio stream resolver when
+the caller did not explicitly override codec or sample rate.
+
+| Field                         | Type              | Required | Description |
+|-------------------------------|-------------------|----------|-------------|
+| `codec_preference`            | string[]          | no       | Ordered RX codec preference. Values must match `AudioCodec` names. The first supported codec is used unless the caller passed an explicit codec. |
+| `tx_codec`                    | string            | no       | Radio-native TX codec name from `AudioCodec`. Direct LAN TX profiles should prefer mono PCM unless hardware evidence proves otherwise. |
+| `default_sample_rate_hz`      | int               | no       | Profile default sample rate when `sample_rate_by_codec` has no entry for the selected codec. |
+| `supported_sample_rates_hz`   | int[]             | no       | Evidence-backed sample rates accepted by the radio profile. |
+| `sample_rate_by_codec`        | table string→int  | no       | Per-codec default sample rate used by the resolver for RX and TX. Keys must be `AudioCodec` names. |
+| `browser_rx_transport`        | string            | no       | Browser consumer transport policy: `"auto"`, `"pcm"`, or `"opus"`. |
+| `browser_rx_transcode_to_opus`| bool              | no       | Whether browser RX may transcode radio-native audio to Opus. This is not a radio-native codec setting. |
+
+Example:
+
+```toml
+[audio]
+codec_preference = ["PCM_2CH_16BIT", "PCM_1CH_16BIT", "ULAW_2CH", "ULAW_1CH"]
+tx_codec = "PCM_1CH_16BIT"
+default_sample_rate_hz = 48000
+sample_rate_by_codec = { PCM_2CH_16BIT = 48000, PCM_1CH_16BIT = 48000 }
+browser_rx_transport = "auto"
+browser_rx_transcode_to_opus = true
+```
+
+Profile defaults must be backed by radio evidence, not copied from generic
+codec lists. Prefer pass-only artifacts from `rigplane audio probe`; for radios
+with LAN session cooldown behavior, include a conservative candidate cooldown in
+the validation command. Opus must not be used as a stock radio LAN default unless
+the endpoint or protocol explicitly proves native Opus support. Browser Opus is
+only a server-to-browser transport policy after radio-native audio is received.
+
 ## `[capabilities]` — Feature Flags
 
 | Field      | Type     | Required | Description                    |
