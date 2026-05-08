@@ -43,9 +43,9 @@ variant = "standard"         # Protocol variant/extensions
 [audio]
 codec_preference = ["PCM_2CH_16BIT", "PCM_1CH_16BIT"]  # RX codec names from AudioCodec
 tx_codec = "PCM_1CH_16BIT"                             # TX codec name from AudioCodec
-default_sample_rate_hz = 16000
+default_sample_rate_hz = 48000
 supported_sample_rates_hz = [8000, 12000, 16000, 24000, 48000]
-sample_rate_by_codec = { PCM_2CH_16BIT = 16000, PCM_1CH_16BIT = 16000 }
+sample_rate_by_codec = { PCM_2CH_16BIT = 48000, PCM_1CH_16BIT = 48000 }
 browser_rx_transport = "auto"                          # auto | pcm | opus
 browser_rx_transcode_to_opus = true                    # Browser consumer policy only
 ```
@@ -54,6 +54,13 @@ Codec names must match `AudioCodec`. Sample rates must be positive supported
 audio rates from `8000`, `12000`, `16000`, `24000`, or `48000`. For direct Icom
 LAN profiles, Opus must not be used as the radio-native default; browser Opus is
 only a consumer/web transport policy.
+
+`codec_preference`, `tx_codec`, `default_sample_rate_hz`, and
+`sample_rate_by_codec` feed the LAN audio stream resolver. Explicit runtime
+codec and sample-rate choices still win over profile defaults. Profile defaults
+must come from pass-only radio evidence, preferably a `rigplane audio probe`
+artifact captured with enough cooldown for radios that reject rapid LAN audio
+session churn.
 
 ### Protocol Types
 
