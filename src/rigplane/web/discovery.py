@@ -4,7 +4,7 @@ Listens for broadcast discovery requests from companion apps and responds
 with server information (version, URL, radio status) via unicast.
 
 Protocol:
-    Request:  UDP broadcast, payload ``ICOM_LAN_DISCOVER\\n`` (17 bytes ASCII)
+    Request:  UDP broadcast, payload ``RIGPLANE_DISCOVER\\n`` (ASCII)
     Response: UDP unicast, payload JSON (UTF-8, single line, ≤512 bytes)
 """
 
@@ -23,7 +23,9 @@ __all__ = ["DiscoveryResponder", "RadioInfo"]
 
 logger = logging.getLogger(__name__)
 
-_DISCOVERY_MAGIC = b"ICOM_LAN_DISCOVER\n"
+_DISCOVERY_MAGIC = b"RIGPLANE_DISCOVER\n"
+_LEGACY_DISCOVERY_MAGIC = b"ICOM_LAN_DISCOVER\n"
+_DISCOVERY_MAGICS = {_DISCOVERY_MAGIC, _LEGACY_DISCOVERY_MAGIC}
 _DEFAULT_PORT = 8470
 
 
@@ -46,7 +48,7 @@ class _DiscoveryProtocol(asyncio.DatagramProtocol):
         self.transport = transport  # type: ignore[assignment]
 
     def datagram_received(self, data: bytes, addr: tuple[str, int]) -> None:
-        if data != _DISCOVERY_MAGIC:
+        if data not in _DISCOVERY_MAGICS:
             logger.debug("discovery: ignoring %d bytes from %s", len(data), addr[0])
             return
 
@@ -148,10 +150,10 @@ class DiscoveryResponder:
         elif radio_info and radio_info.model:
             name = radio_info.model
         else:
-            name = "icom-lan"
+            name = "RigPlane"
 
         payload: dict[str, object] = {
-            "service": "icom-lan",
+            "service": "rigplane",
             "version": __version__,
             "url": f"{scheme}://{local_ip}:{self._web_port}",
             "name": name,

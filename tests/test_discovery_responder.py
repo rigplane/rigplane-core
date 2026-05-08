@@ -11,7 +11,8 @@ import pytest
 from rigplane import __version__
 from rigplane.web.discovery import DiscoveryResponder, RadioInfo
 
-MAGIC = b"ICOM_LAN_DISCOVER\n"
+MAGIC = b"RIGPLANE_DISCOVER\n"
+LEGACY_MAGIC = b"ICOM_LAN_DISCOVER\n"
 
 
 async def _query(port: int, payload: bytes, timeout: float = 1.0) -> bytes | None:
@@ -66,11 +67,19 @@ class TestDiscoveryResponder:
         raw = await _query(responder.port, MAGIC)
         assert raw is not None
         data = json.loads(raw)
-        assert data["service"] == "icom-lan"
+        assert data["service"] == "rigplane"
         assert data["version"] == __version__
         assert "url" in data
         assert data["url"].startswith("http://")
         assert ":8080" in data["url"]
+
+    async def test_legacy_request_returns_json(
+        self, responder: DiscoveryResponder
+    ) -> None:
+        raw = await _query(responder.port, LEGACY_MAGIC)
+        assert raw is not None
+        data = json.loads(raw)
+        assert data["service"] == "rigplane"
 
     async def test_response_fields(self, responder: DiscoveryResponder) -> None:
         raw = await _query(responder.port, MAGIC)
@@ -85,7 +94,7 @@ class TestDiscoveryResponder:
         assert result is None
 
     async def test_ignores_partial_magic(self, responder: DiscoveryResponder) -> None:
-        result = await _query(responder.port, b"ICOM_LAN_DISCOVER", timeout=0.3)
+        result = await _query(responder.port, b"RIGPLANE_DISCOVER", timeout=0.3)
         assert result is None
 
     async def test_no_radio_provider(
@@ -95,7 +104,7 @@ class TestDiscoveryResponder:
         assert raw is not None
         data = json.loads(raw)
         assert data["radio"] is None
-        assert data["name"] == "icom-lan"
+        assert data["name"] == "RigPlane"
         assert data["url"].startswith("https://")
         assert ":9090" in data["url"]
 

@@ -59,7 +59,7 @@ User-facing data (web-UI panel layouts, theme, auth token, memory channels, log 
 - **PyPI package**: `icom-lan` → `rigplane`. Preferred install: `pip install rigplane`. The old `icom-lan` package on PyPI is frozen at v1.1.0; future releases ship as `rigplane`.
 - **Python import path**: `icom_lan.*` → `rigplane.*`. The `icom_lan` shim re-exports from `rigplane` with `DeprecationWarning` and will be removed in a future major release.
 - **CLI binary**: `icom-lan` → `rigplane`. `icom-lan` retained as deprecated alias.
-- **Environment variables**: `ICOM_LAN_REPORT_ENDPOINT`, `ICOM_LAN_DISABLE_DIAGNOSTIC_LOGGING`, `ICOM_LAN_LOG_DIR` → `RIGPLANE_*`. The wire-protocol magic byte `b"ICOM_LAN_DISCOVER\n"` is unchanged (LAN discovery contract).
+- **Environment variables**: `ICOM_LAN_REPORT_ENDPOINT`, `ICOM_LAN_DISABLE_DIAGNOSTIC_LOGGING`, `ICOM_LAN_LOG_DIR` → `RIGPLANE_*`. LAN discovery now uses `b"RIGPLANE_DISCOVER\n"` with `b"ICOM_LAN_DISCOVER\n"` accepted as a legacy request.
 - **Diagnostic bundle schema**: default emission is now `rigplane-bundle-v2` (was `icom-lan-bundle-v1`). The maintainer-operated triage service accepts both v1 and v2 for at least 12 months.
 - **Exception class**: `IcomLanError` → `RigplaneError`. Class is re-exported from `icom_lan` shim under both names.
 
@@ -813,7 +813,7 @@ These deprecation closures were announced in v0.19 and dropped on schedule.
 - **CW Auto Tuner** (#675, #677, #678) — FFT peak detection engine (`CwAutoTuner`),
   backend `cw_auto_tune` command, restored AUTO TUNE button in Web UI
 - **AudioAnalyzer** (#679) — realtime SNR estimation from PCM stream
-- **UDP Discovery Responder** — companion apps can broadcast `ICOM_LAN_DISCOVER` on
+- **UDP Discovery Responder** — companion apps can broadcast `RIGPLANE_DISCOVER` on
   UDP 8470 and receive server URL, version, and radio status via unicast;
   `--no-discovery` CLI flag to opt out
 - **Unified frontend architecture** (Epics #647–#653, #662–#665) — `FrontendRuntime`
