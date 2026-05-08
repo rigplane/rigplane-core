@@ -635,6 +635,23 @@ def _build_parser() -> argparse.ArgumentParser:
         default=None,
         help="Limit candidates for smoke tests and staged hardware validation",
     )
+    audio_probe_p.add_argument(
+        "--candidate-cooldown",
+        type=float,
+        default=0.0,
+        metavar="SEC",
+        help=(
+            "Cooldown between candidates in seconds (default: 0). "
+            "Use 35 for full IC-7610-class hardware validation."
+        ),
+    )
+    audio_probe_p.add_argument(
+        "--retry-rejected",
+        type=int,
+        default=0,
+        metavar="N",
+        help="Retry conninfo-rejected candidates after cooldown (default: 0)",
+    )
 
     audio_probe_profile_p = audio_sub.add_parser(
         "probe-profile",
@@ -1809,6 +1826,14 @@ async def _cmd_audio_probe(config: BackendConfig, args: argparse.Namespace) -> i
     if limit is not None and int(limit) <= 0:
         print("Error: --limit must be > 0.", file=sys.stderr)
         return 1
+    candidate_cooldown_s = float(getattr(args, "candidate_cooldown", 0.0))
+    if candidate_cooldown_s < 0:
+        print("Error: --candidate-cooldown must be >= 0.", file=sys.stderr)
+        return 1
+    retry_rejected = int(getattr(args, "retry_rejected", 0))
+    if retry_rejected < 0:
+        print("Error: --retry-rejected must be >= 0.", file=sys.stderr)
+        return 1
 
     candidates = build_stock_radio_lan_probe_matrix()
     if limit is not None:
@@ -1824,6 +1849,8 @@ async def _cmd_audio_probe(config: BackendConfig, args: argparse.Namespace) -> i
                 candidate,
                 duration_s=duration_s,
             ),
+            candidate_cooldown_s=candidate_cooldown_s,
+            retry_rejected=retry_rejected,
         )
 
     model = config.model or "unknown"
@@ -1836,6 +1863,8 @@ async def _cmd_audio_probe(config: BackendConfig, args: argparse.Namespace) -> i
             "duration_s": duration_s,
             "candidate_count": len(candidates),
             "dry_run": bool(getattr(args, "dry_run", False)),
+            "candidate_cooldown_s": candidate_cooldown_s,
+            "retry_rejected": retry_rejected,
         },
     )
     payload = artifact.to_dict()
