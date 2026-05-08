@@ -47,6 +47,10 @@ from rigplane.audio.probe import (  # noqa: E402
     AudioProbeStatus,
     build_stock_radio_lan_probe_matrix,
 )
+from rigplane.audio.probe_profile import (  # noqa: E402
+    AudioProfileProposalError,
+    propose_audio_profile_patch,
+)
 from rigplane.audio.probe_runner import (  # noqa: E402
     build_probe_artifact,
     dry_run_probe_results,
@@ -630,6 +634,16 @@ def _build_parser() -> argparse.ArgumentParser:
         type=int,
         default=None,
         help="Limit candidates for smoke tests and staged hardware validation",
+    )
+
+    audio_probe_profile_p = audio_sub.add_parser(
+        "probe-profile",
+        help="Propose a guarded profile [audio] patch from a probe artifact",
+    )
+    audio_probe_profile_p.add_argument(
+        "--artifact",
+        required=True,
+        help="Path to a JSON artifact emitted by `rigplane audio probe`",
     )
 
     # bridge
@@ -1444,6 +1458,8 @@ async def _run(args: argparse.Namespace) -> int:
     wants_stats = bool(getattr(args, "stats", False))
     if args.command == "audio" and args.audio_command == "caps" and not wants_stats:
         return await _cmd_audio_caps(args)
+    if args.command == "audio" and args.audio_command == "probe-profile":
+        return await _cmd_audio_probe_profile(args)
 
     # Apply preset before building config (so discovery sees preset-applied backend).
     preset = getattr(args, "preset", None)
@@ -1896,6 +1912,29 @@ async def _attempt_stock_radio_lan_audio_probe(
         reason="no-rx-packets",
         observed_packets=0,
     )
+
+
+async def _cmd_audio_probe_profile(args: argparse.Namespace) -> int:
+    """Print a guarded profile patch from a probe artifact."""
+
+    try:
+        artifact = json.loads(Path(args.artifact).read_text(encoding="utf-8"))
+        proposal = propose_audio_profile_patch(artifact)
+    except OSError as exc:
+        print(f"Error: cannot read artifact: {exc}", file=sys.stderr)
+        return 1
+    except json.JSONDecodeError as exc:
+        print(f"Error: artifact is not valid JSON: {exc}", file=sys.stderr)
+        return 1
+    except AudioProfileProposalError as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        return 1
+
+    for warning in proposal.warnings:
+        print(f"Warning: {warning}", file=sys.stderr)
+    print(proposal.toml, end="")
+    sys.stdout.flush()
+    return 0
 
 
 async def _cmd_audio_rx(radio: Radio, args: argparse.Namespace) -> int:
