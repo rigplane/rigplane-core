@@ -8,13 +8,18 @@ from typing import Iterable
 
 from rigplane.types import AudioCodec
 
-_DEFAULT_ICOM_LAN_RX_CODECS: tuple[AudioCodec, ...] = (
+_DEFAULT_STOCK_RADIO_LAN_RX_CODECS: tuple[AudioCodec, ...] = (
     AudioCodec.PCM_2CH_16BIT,
     AudioCodec.PCM_1CH_16BIT,
     AudioCodec.ULAW_2CH,
     AudioCodec.ULAW_1CH,
 )
-_DEFAULT_ICOM_LAN_SAMPLE_RATES_HZ: tuple[int, ...] = (48_000, 24_000, 16_000, 8_000)
+_DEFAULT_STOCK_RADIO_LAN_SAMPLE_RATES_HZ: tuple[int, ...] = (
+    48_000,
+    24_000,
+    16_000,
+    8_000,
+)
 _DIRECT_RADIO_OPUS_CODECS: frozenset[AudioCodec] = frozenset(
     {AudioCodec.OPUS_1CH, AudioCodec.OPUS_2CH}
 )
@@ -109,10 +114,10 @@ def _channels_for_codec(codec: AudioCodec) -> int:
     return 2 if "_2CH" in codec.name else 1
 
 
-def build_icomlan_probe_matrix(
+def build_stock_radio_lan_probe_matrix(
     *,
-    rx_codecs: Iterable[AudioCodec] = _DEFAULT_ICOM_LAN_RX_CODECS,
-    sample_rates_hz: Iterable[int] = _DEFAULT_ICOM_LAN_SAMPLE_RATES_HZ,
+    rx_codecs: Iterable[AudioCodec] = _DEFAULT_STOCK_RADIO_LAN_RX_CODECS,
+    sample_rates_hz: Iterable[int] = _DEFAULT_STOCK_RADIO_LAN_SAMPLE_RATES_HZ,
     tx_codec: AudioCodec = AudioCodec.PCM_1CH_16BIT,
     frame_ms: int = 20,
 ) -> list[AudioProbeCandidate]:
@@ -142,7 +147,9 @@ def build_icomlan_probe_matrix(
     return candidates
 
 
-def classify_icomlan_probe_error(exc: Exception) -> tuple[AudioProbeStatus, str]:
+def classify_stock_radio_lan_probe_error(
+    exc: Exception,
+) -> tuple[AudioProbeStatus, str]:
     """Classify common Icom LAN session failures into probe statuses."""
 
     text = str(exc).lower()
@@ -183,7 +190,7 @@ __all__ = [
     "AudioProbeCandidate",
     "AudioProbeResult",
     "AudioProbeStatus",
-    "build_icomlan_probe_matrix",
-    "classify_icomlan_probe_error",
+    "build_stock_radio_lan_probe_matrix",
+    "classify_stock_radio_lan_probe_error",
     "profile_policy_from_probe_results",
 ]

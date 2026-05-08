@@ -7,15 +7,15 @@ from rigplane.audio.probe import (
     AudioProbeCandidate,
     AudioProbeResult,
     AudioProbeStatus,
-    build_icomlan_probe_matrix,
-    classify_icomlan_probe_error,
+    build_stock_radio_lan_probe_matrix,
+    classify_stock_radio_lan_probe_error,
     profile_policy_from_probe_results,
 )
 from rigplane.types import AudioCodec
 
 
-def test_icomlan_probe_matrix_excludes_opus_and_stereo_tx() -> None:
-    matrix = build_icomlan_probe_matrix(
+def test_stock_radio_lan_probe_matrix_excludes_opus_and_stereo_tx() -> None:
+    matrix = build_stock_radio_lan_probe_matrix(
         rx_codecs=(AudioCodec.PCM_2CH_16BIT, AudioCodec.OPUS_2CH),
         sample_rates_hz=(48_000, 16_000),
     )
@@ -40,7 +40,7 @@ def test_probe_artifact_serializes_machine_readable_evidence() -> None:
     artifact = AudioProbeArtifact(
         model="IC-7610",
         profile_id="icom_ic7610",
-        transport="icomlan",
+        transport="stock_radio_lan",
         results=[
             AudioProbeResult(
                 candidate=candidate,
@@ -57,18 +57,20 @@ def test_probe_artifact_serializes_machine_readable_evidence() -> None:
 
     assert data["schema_version"] == 1
     assert data["model"] == "IC-7610"
-    assert data["transport"] == "icomlan"
+    assert data["transport"] == "stock_radio_lan"
     assert data["results"][0]["candidate"]["rx_codec"] == "PCM_1CH_16BIT"
     assert data["results"][0]["status"] == "pass"
     assert data["results"][0]["rx_payload_bytes"] == 640
 
 
-def test_icomlan_probe_error_classification_distinguishes_rejects() -> None:
-    assert classify_icomlan_probe_error(RuntimeError("conninfo error=0xFFFFFFFF")) == (
+def test_stock_radio_lan_probe_error_classification_distinguishes_rejects() -> None:
+    assert classify_stock_radio_lan_probe_error(
+        RuntimeError("conninfo error=0xFFFFFFFF")
+    ) == (
         AudioProbeStatus.REJECTED,
         "conninfo-rejected",
     )
-    assert classify_icomlan_probe_error(RuntimeError("socket timeout")) == (
+    assert classify_stock_radio_lan_probe_error(RuntimeError("socket timeout")) == (
         AudioProbeStatus.FAILED,
         "runtime-error",
     )
