@@ -147,7 +147,7 @@ class TestPcmTxE2E:
     async def test_tx_happy_path(self) -> None:
         radio = _make_radio()
 
-        await radio.start_audio_tx_pcm()
+        await radio.start_audio_tx_pcm(sample_rate=16000)
         radio._audio_stream.start_tx.assert_awaited_once()
         assert radio._pcm_tx_fmt == (16000, 1, 20)
 
@@ -165,7 +165,7 @@ class TestPcmTxE2E:
     @pytest.mark.asyncio
     async def test_tx_multiple_frames(self) -> None:
         radio = _make_radio()
-        await radio.start_audio_tx_pcm()
+        await radio.start_audio_tx_pcm(sample_rate=16000)
 
         for _ in range(10):
             await radio.push_audio_tx_pcm(b"\x00\x01" * 320)
@@ -199,7 +199,7 @@ class TestPcmLoopbackE2E:
             rx_frames.append(frame)
 
         # Start TX first, then RX.
-        await radio.start_audio_tx_pcm()
+        await radio.start_audio_tx_pcm(sample_rate=16000)
         await radio.start_audio_rx_pcm(_on_pcm, sample_rate=16000)
 
         rx_cb = radio._audio_stream.start_rx.await_args.args[0]
@@ -258,7 +258,7 @@ class TestPcmStartStopCycles:
         for _ in range(5):
             radio = _make_radio()
 
-            await radio.start_audio_tx_pcm()
+            await radio.start_audio_tx_pcm(sample_rate=16000)
             await radio.push_audio_tx_pcm(b"\xaa\xbb" * 320)
             assert radio._audio_stream.push_tx.await_count == 1
 
@@ -304,9 +304,9 @@ class TestPcmEdgeCases:
         radio._audio_stream.start_tx = AsyncMock(
             side_effect=[None, RuntimeError("Already transmitting")],
         )
-        await radio.start_audio_tx_pcm()
+        await radio.start_audio_tx_pcm(sample_rate=16000)
         with pytest.raises(RuntimeError, match="Already transmitting"):
-            await radio.start_audio_tx_pcm()
+            await radio.start_audio_tx_pcm(sample_rate=16000)
         await radio.stop_audio_tx_pcm()
 
 
