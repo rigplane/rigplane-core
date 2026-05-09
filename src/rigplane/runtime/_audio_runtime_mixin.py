@@ -183,9 +183,9 @@ class AudioRuntimeMixin(_MixinBase):  # type: ignore[misc]
     async def start_audio_tx_pcm(
         self,
         *,
-        sample_rate: int = 48000,
-        channels: int = 1,
-        frame_ms: int = 20,
+        sample_rate: int | None = None,
+        channels: int | None = None,
+        frame_ms: int | None = None,
     ) -> None:
         """Start transmitting PCM audio to the radio.
 
@@ -205,6 +205,16 @@ class AudioRuntimeMixin(_MixinBase):  # type: ignore[misc]
             AudioCodecBackendError: If TX codec is Opus and backend is unavailable.
             AudioFormatError: If PCM format is unsupported.
         """
+        contract = getattr(self, "_audio_stream_contract", None)
+        if sample_rate is None:
+            sample_rate = getattr(contract, "tx_sample_rate_hz", None) or getattr(
+                self, "_audio_tx_sample_rate", 48000
+            )
+        if channels is None:
+            channels = getattr(contract, "tx_channels", None) or 1
+        if frame_ms is None:
+            frame_ms = 20
+
         for name, value in (
             ("sample_rate", sample_rate),
             ("channels", channels),

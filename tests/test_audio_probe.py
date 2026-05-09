@@ -9,6 +9,7 @@ from rigplane.audio.probe import (
     AudioProbeStatus,
     build_stock_radio_lan_probe_matrix,
     classify_stock_radio_lan_probe_error,
+    expected_pcm16_rx_payload_bytes,
     profile_policy_from_probe_results,
 )
 from rigplane.types import AudioCodec
@@ -48,6 +49,7 @@ def test_probe_artifact_serializes_machine_readable_evidence() -> None:
                 phase="rx",
                 reason="rx-payload-stable",
                 rx_payload_bytes=640,
+                expected_rx_payload_bytes=640,
                 observed_packets=50,
             )
         ],
@@ -61,6 +63,49 @@ def test_probe_artifact_serializes_machine_readable_evidence() -> None:
     assert data["results"][0]["candidate"]["rx_codec"] == "PCM_1CH_16BIT"
     assert data["results"][0]["status"] == "pass"
     assert data["results"][0]["rx_payload_bytes"] == 640
+    assert data["results"][0]["expected_rx_payload_bytes"] == 640
+
+
+def test_expected_pcm16_rx_payload_bytes_uses_frame_rate_channels_and_width() -> None:
+    assert (
+        expected_pcm16_rx_payload_bytes(
+            AudioProbeCandidate(
+                rx_codec=AudioCodec.PCM_2CH_16BIT,
+                tx_codec=AudioCodec.PCM_1CH_16BIT,
+                sample_rate_hz=48_000,
+                rx_channels=2,
+                tx_channels=1,
+                frame_ms=20,
+            )
+        )
+        == 3840
+    )
+    assert (
+        expected_pcm16_rx_payload_bytes(
+            AudioProbeCandidate(
+                rx_codec=AudioCodec.PCM_1CH_16BIT,
+                tx_codec=AudioCodec.PCM_1CH_16BIT,
+                sample_rate_hz=16_000,
+                rx_channels=1,
+                tx_channels=1,
+                frame_ms=20,
+            )
+        )
+        == 640
+    )
+    assert (
+        expected_pcm16_rx_payload_bytes(
+            AudioProbeCandidate(
+                rx_codec=AudioCodec.ULAW_2CH,
+                tx_codec=AudioCodec.PCM_1CH_16BIT,
+                sample_rate_hz=48_000,
+                rx_channels=2,
+                tx_channels=1,
+                frame_ms=20,
+            )
+        )
+        is None
+    )
 
 
 def test_stock_radio_lan_probe_error_classification_distinguishes_rejects() -> None:

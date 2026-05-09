@@ -14,7 +14,11 @@
 
   let { family = 'control', initial = false }: Props = $props();
 
-  let active = $state(initial);
+  let active = $state(false);
+
+  $effect(() => {
+    active = initial;
+  });
 </script>
 
 <!-- data-testid="parent-toggle" lets the test drive parent state externally -->

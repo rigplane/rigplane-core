@@ -219,8 +219,8 @@ class TestSendConninfo:
         )
         rx_sample = struct.unpack_from(">I", packet, 0x74)[0]
         tx_sample = struct.unpack_from(">I", packet, 0x78)[0]
-        assert rx_sample == 48000
-        assert tx_sample == 48000
+        assert rx_sample == 16000
+        assert tx_sample == 16000
 
     @pytest.mark.asyncio
     async def test_conninfo_honors_explicit_sample_rate_override(self) -> None:
@@ -594,8 +594,8 @@ class TestConnectSessionRejection:
         assert radio.audio_stream_request.rx_codec == AudioCodec.PCM_2CH_16BIT
         assert radio.audio_stream_contract.rx_codec == AudioCodec.PCM_1CH_16BIT
         assert radio.audio_stream_contract.tx_codec == AudioCodec.PCM_1CH_16BIT
-        assert radio.audio_stream_contract.rx_sample_rate_hz == 48000
-        assert radio.audio_stream_contract.tx_sample_rate_hz == 48000
+        assert radio.audio_stream_contract.rx_sample_rate_hz == 16000
+        assert radio.audio_stream_contract.tx_sample_rate_hz == 16000
         assert radio.audio_stream_contract.rx_codec_source == AudioConfigSource.FALLBACK
         assert (
             radio.audio_stream_contract.fallback_reason == "conninfo-stereo-rx-rejected"

@@ -6,6 +6,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from rigplane.audio.route import AudioConfigSource, AudioStreamContract
 from rigplane.audio._transcoder import PcmAudioFormat, PcmOpusTranscoder
 from rigplane.audio import AudioPacket
 from rigplane.exceptions import (
@@ -317,6 +318,34 @@ class TestRadioPcmTxApi:
 
         await radio.start_audio_tx_pcm()
         assert fake_stream.start_tx_count == 1
+
+    @pytest.mark.asyncio
+    async def test_start_audio_tx_pcm_defaults_to_contract_sample_rate(self) -> None:
+        radio = IcomRadio("192.168.1.100")
+        radio._connected = True
+        radio._civ_transport = MagicMock()
+        fake_stream = FakeAudioStream()
+        radio._audio_stream = fake_stream  # type: ignore[assignment]
+        radio._audio_stream_contract = AudioStreamContract(
+            rx_codec=AudioCodec.PCM_2CH_16BIT,
+            tx_codec=AudioCodec.PCM_1CH_16BIT,
+            rx_sample_rate_hz=16000,
+            tx_sample_rate_hz=16000,
+            rx_channels=2,
+            tx_channels=1,
+            rx_codec_source=AudioConfigSource.PROFILE_DEFAULT,
+            tx_codec_source=AudioConfigSource.PROFILE_DEFAULT,
+            rx_sample_rate_source=AudioConfigSource.PROFILE_DEFAULT,
+            tx_sample_rate_source=AudioConfigSource.PROFILE_DEFAULT,
+        )
+        radio._audio_tx_codec = AudioCodec.PCM_1CH_16BIT
+        radio._audio_tx_sample_rate = 16000
+
+        await radio.start_audio_tx_pcm()
+
+        assert fake_stream.start_tx_count == 1
+        assert radio._pcm_tx_fmt == (16000, 1, 20)
+        radio._connected = False
 
     @pytest.mark.asyncio
     async def test_push_audio_tx_pcm_frame_size_error(self) -> None:

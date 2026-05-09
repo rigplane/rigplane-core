@@ -93,8 +93,8 @@ def test_ic7610_lan_stream_request_uses_profile_audio_policy() -> None:
 
     assert request.rx_codec == AudioCodec.PCM_2CH_16BIT
     assert request.tx_codec == AudioCodec.PCM_1CH_16BIT
-    assert request.rx_sample_rate_hz == 48000
-    assert request.tx_sample_rate_hz == 48000
+    assert request.rx_sample_rate_hz == 16000
+    assert request.tx_sample_rate_hz == 16000
     assert request.rx_channels == 2
     assert request.tx_channels == 1
     assert request.rx_codec_source == AudioConfigSource.PROFILE_DEFAULT

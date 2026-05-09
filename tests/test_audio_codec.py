@@ -34,11 +34,11 @@ class TestRadioAudioConfig:
     def test_default_codec(self) -> None:
         r = IcomRadio("192.168.1.100")
         assert r.audio_codec == AudioCodec.PCM_2CH_16BIT
-        assert r.audio_sample_rate == 48000
+        assert r.audio_sample_rate == 16000
         assert r.audio_stream_request.rx_codec == AudioCodec.PCM_2CH_16BIT
         assert r.audio_stream_request.tx_codec == AudioCodec.PCM_1CH_16BIT
-        assert r.audio_stream_request.rx_sample_rate_hz == 48000
-        assert r.audio_stream_request.tx_sample_rate_hz == 48000
+        assert r.audio_stream_request.rx_sample_rate_hz == 16000
+        assert r.audio_stream_request.tx_sample_rate_hz == 16000
         assert r.audio_stream_contract.rx_codec == r.audio_stream_request.rx_codec
         assert r.audio_stream_contract.tx_codec == r.audio_stream_request.tx_codec
         assert (

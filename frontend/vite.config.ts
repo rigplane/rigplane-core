@@ -74,6 +74,7 @@ export default defineConfig({
             'src/components-v2/panels/__tests__/AudioRoutingControl.test.ts',
             'src/lib/stores/radio.svelte.test.ts',
             'src/lib/runtime/__tests__/frontend-runtime.test.ts',
+            'src/lib/audio/__tests__/audio-manager.test.ts',
             'src/lib/radio/pending-focus.test.ts',
             // *.component(.svelte).test.ts mount real Svelte components and
             // depend on store mocks that vary across the suite. Under
@@ -109,6 +110,7 @@ export default defineConfig({
             'src/components-v2/panels/__tests__/AudioRoutingControl.test.ts',
             'src/lib/stores/radio.svelte.test.ts',
             'src/lib/runtime/__tests__/frontend-runtime.test.ts',
+            'src/lib/audio/__tests__/audio-manager.test.ts',
             'src/lib/radio/pending-focus.test.ts',
             'src/**/*.component.test.ts',
             'src/**/*.component.svelte.test.ts',

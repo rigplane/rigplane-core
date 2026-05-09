@@ -18,8 +18,10 @@ from unittest.mock import AsyncMock
 
 import pytest
 
+from rigplane.audio.route import AudioConfigSource, AudioStreamContract
 from rigplane.profiles import resolve_radio_profile
 from rigplane.rigctld.state_cache import StateCache
+from rigplane.types import AudioCodec
 from rigplane.web.radio_poller import (
     CommandQueue,
     PttOff,
@@ -180,3 +182,30 @@ async def test_multiple_ptt_cycles(poller: RadioPoller, radio: SimpleNamespace) 
     assert radio.stop_audio_tx_opus.await_count == 3
     assert radio.start_audio_rx_opus.await_count == 3
     assert radio.set_ptt.await_count == 6  # 3 ON + 3 OFF
+
+
+@pytest.mark.asyncio
+async def test_ptt_cycle_uses_pcm_when_audio_contract_tx_codec_is_pcm(
+    poller: RadioPoller, radio: SimpleNamespace
+) -> None:
+    """PTT transitions must follow the radio-native TX codec contract."""
+    radio.audio_stream_contract = AudioStreamContract(
+        rx_codec=AudioCodec.PCM_2CH_16BIT,
+        tx_codec=AudioCodec.PCM_1CH_16BIT,
+        rx_sample_rate_hz=16000,
+        tx_sample_rate_hz=16000,
+        rx_channels=2,
+        tx_channels=1,
+        rx_codec_source=AudioConfigSource.PROFILE_DEFAULT,
+        tx_codec_source=AudioConfigSource.PROFILE_DEFAULT,
+        rx_sample_rate_source=AudioConfigSource.PROFILE_DEFAULT,
+        tx_sample_rate_source=AudioConfigSource.PROFILE_DEFAULT,
+    )
+
+    await poller._execute(PttOn())
+    await poller._execute(PttOff())
+
+    radio.start_audio_tx_pcm.assert_awaited_once_with(sample_rate=16000)
+    radio.start_audio_tx_opus.assert_not_awaited()
+    radio.stop_audio_tx_pcm.assert_awaited_once()
+    radio.stop_audio_tx_opus.assert_not_awaited()

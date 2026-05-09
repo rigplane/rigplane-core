@@ -9,6 +9,7 @@ import pytest
 
 from _caps import FULL_ICOM_CAPS
 from rigplane.profiles import resolve_radio_profile
+from rigplane.audio.route import AudioConfigSource, AudioStreamContract
 from rigplane.scope import ScopeFrame
 from rigplane.types import AudioCodec
 from rigplane.web.handlers import (
@@ -1433,6 +1434,56 @@ async def test_audio_handler_tx_other_runtime_error_propagates() -> None:
     handler = AudioHandler(ws, radio, None)
     with pytest.raises(RuntimeError, match="Something else"):
         await handler._handle_control({"type": "audio_start", "direction": "tx"})
+
+
+async def test_audio_handler_uses_tx_contract_for_pcm_browser_tx() -> None:
+    from rigplane.radio_protocol import AudioCapable
+
+    contract = AudioStreamContract(
+        rx_codec=AudioCodec.PCM_2CH_16BIT,
+        tx_codec=AudioCodec.PCM_1CH_16BIT,
+        rx_sample_rate_hz=16000,
+        tx_sample_rate_hz=16000,
+        rx_channels=2,
+        tx_channels=1,
+        rx_codec_source=AudioConfigSource.PROFILE_DEFAULT,
+        tx_codec_source=AudioConfigSource.PROFILE_DEFAULT,
+        rx_sample_rate_source=AudioConfigSource.PROFILE_DEFAULT,
+        tx_sample_rate_source=AudioConfigSource.PROFILE_DEFAULT,
+    )
+
+    class _FakeAudioRadio(AudioCapable):
+        capabilities = {"audio"}
+        audio_codec = AudioCodec.PCM_2CH_16BIT
+        audio_sample_rate = 16000
+        audio_stream_contract = contract
+        push_audio_tx_opus = AsyncMock()
+        push_audio_tx_pcm = AsyncMock()
+        start_audio_rx_opus = AsyncMock()
+        stop_audio_rx_opus = AsyncMock()
+        start_audio_tx_opus = AsyncMock()
+        stop_audio_tx_opus = AsyncMock()
+        start_audio_tx_pcm = AsyncMock()
+        stop_audio_tx_pcm = AsyncMock()
+        audio_bus = None
+
+    radio = _FakeAudioRadio()
+    ws = SimpleNamespace(recv=AsyncMock(), send_binary=AsyncMock())
+    handler = AudioHandler(ws, radio, None)
+    handler._transcoder = SimpleNamespace(opus_to_pcm=lambda data: b"pcm-frame")
+    handler._transcoder_rate = 16000
+    handler._tx_active = True
+
+    await handler._handle_control({"type": "audio_start", "direction": "tx"})
+    await handler._handle_tx_audio(b"\x00" * AUDIO_HEADER_SIZE + b"opus-frame")
+    await handler._handle_control({"type": "audio_stop", "direction": "tx"})
+
+    radio.start_audio_tx_pcm.assert_awaited_once_with(sample_rate=16000)
+    radio.start_audio_tx_opus.assert_not_awaited()
+    radio.push_audio_tx_pcm.assert_awaited_once_with(b"pcm-frame")
+    radio.push_audio_tx_opus.assert_not_awaited()
+    radio.stop_audio_tx_pcm.assert_awaited_once()
+    radio.stop_audio_tx_opus.assert_not_awaited()
 
 
 async def test_audio_handler_run_resets_tx_active_on_exit() -> None:

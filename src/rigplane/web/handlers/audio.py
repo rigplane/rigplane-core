@@ -637,7 +637,12 @@ class AudioHandler:
                 if self._radio and CAP_AUDIO in self._radio.capabilities:
                     self._ensure_tx_transcoder()
                     try:
-                        await self._radio.start_audio_tx_opus()  # type: ignore[attr-defined]
+                        if self._tx_codec() == AudioCodec.PCM_1CH_16BIT:
+                            await self._radio.start_audio_tx_pcm(  # type: ignore[attr-defined]
+                                sample_rate=self._tx_sample_rate()
+                            )
+                        else:
+                            await self._radio.start_audio_tx_opus()  # type: ignore[attr-defined]
                     except RuntimeError as exc:
                         if "Already transmitting" in str(exc):
                             logger.info("audio: TX already started by poller, reusing")
@@ -650,7 +655,10 @@ class AudioHandler:
                 await self._stop_rx()
             elif direction == "tx":
                 if self._radio and CAP_AUDIO in self._radio.capabilities:
-                    await self._radio.stop_audio_tx_opus()  # type: ignore[attr-defined]
+                    if self._tx_codec() == AudioCodec.PCM_1CH_16BIT:
+                        await self._radio.stop_audio_tx_pcm()  # type: ignore[attr-defined]
+                    else:
+                        await self._radio.stop_audio_tx_opus()  # type: ignore[attr-defined]
                 self._tx_active = False
                 logger.info("audio: TX stopped")
         elif msg_type == "audio_config":
@@ -768,7 +776,10 @@ class AudioHandler:
         and the radio silently dropped TX audio. Called on ``audio_start
         direction=tx``, when the rate is guaranteed available.
         """
-        sr = getattr(self._radio, "audio_sample_rate", None)
+        contract = getattr(self._radio, "audio_stream_contract", None)
+        sr = getattr(contract, "tx_sample_rate_hz", None)
+        if not isinstance(sr, int) or isinstance(sr, bool) or sr <= 0:
+            sr = getattr(self._radio, "audio_sample_rate", None)
         rate = (
             sr if isinstance(sr, int) and not isinstance(sr, bool) and sr > 0 else 48000
         )
@@ -782,6 +793,20 @@ class AudioHandler:
             logger.debug("audio: TX transcoder unavailable (opus codec missing?)")
             self._transcoder = None
             self._transcoder_rate = 0
+
+    def _tx_codec(self) -> AudioCodec | None:
+        contract = getattr(self._radio, "audio_stream_contract", None)
+        tx_codec = getattr(contract, "tx_codec", None)
+        if tx_codec is not None:
+            return tx_codec
+        return getattr(self._radio, "audio_codec", None)
+
+    def _tx_sample_rate(self) -> int:
+        contract = getattr(self._radio, "audio_stream_contract", None)
+        tx_sr = getattr(contract, "tx_sample_rate_hz", None)
+        if isinstance(tx_sr, int) and not isinstance(tx_sr, bool) and tx_sr > 0:
+            return tx_sr
+        return 48000
 
     async def _start_rx(self) -> None:
         """Subscribe to audio broadcaster for RX frames."""
@@ -826,9 +851,9 @@ class AudioHandler:
         opus_data = payload[AUDIO_HEADER_SIZE:]
         if opus_data:
             try:
-                # Check if radio uses PCM codec → decode Opus → PCM
-                audio_codec = getattr(self._radio, "audio_codec", None)
-                if audio_codec == AudioCodec.PCM_1CH_16BIT and self._transcoder:
+                # Browser TX sends Opus; radio-native PCM TX must be decoded
+                # according to the accepted TX contract, not the RX codec.
+                if self._tx_codec() == AudioCodec.PCM_1CH_16BIT and self._transcoder:
                     try:
                         # Decode Opus → PCM16
                         pcm_data = self._transcoder.opus_to_pcm(opus_data)

@@ -217,11 +217,11 @@ async def test_cmd_audio_probe_rejects_non_lan_backend(capsys) -> None:
 
 @pytest.mark.asyncio
 async def test_stock_radio_lan_attempt_is_rx_only(monkeypatch) -> None:
-    candidate = build_stock_radio_lan_probe_matrix()[0]
+    candidate = build_stock_radio_lan_probe_matrix(sample_rates_hz=(16_000,))[0]
     calls: list[str] = []
 
     class Packet:
-        data = b"\x00\x01" * 16
+        data = b"\x00" * 1280
 
     class FakeRadio:
         async def __aenter__(self):
@@ -255,5 +255,57 @@ async def test_stock_radio_lan_attempt_is_rx_only(monkeypatch) -> None:
 
     assert result.status is AudioProbeStatus.PASS
     assert result.observed_packets == 1
-    assert result.rx_payload_bytes == 32
+    assert result.rx_payload_bytes == 1280
+    assert result.expected_rx_payload_bytes == 1280
     assert calls == ["enter", "start-rx", "stop-rx", "exit"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("sample_rate_hz", "payload_bytes", "expected_payload_bytes"),
+    [
+        (48_000, 1112, 3840),
+        (24_000, 556, 1920),
+    ],
+)
+async def test_stock_radio_lan_attempt_fails_pcm_payload_size_mismatch(
+    monkeypatch,
+    sample_rate_hz,
+    payload_bytes,
+    expected_payload_bytes,
+) -> None:
+    candidate = build_stock_radio_lan_probe_matrix(
+        sample_rates_hz=(sample_rate_hz,),
+    )[0]
+
+    class Packet:
+        data = b"\x00" * payload_bytes
+
+    class FakeRadio:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_exc_info):
+            pass
+
+        async def start_audio_rx_opus(self, callback):
+            callback(Packet())
+
+        async def stop_audio_rx_opus(self):
+            pass
+
+    monkeypatch.setattr("rigplane.cli.create_radio", lambda _config: FakeRadio())
+    config = LanBackendConfig(host="127.0.0.1", model="IC-7610")
+
+    result = await _attempt_stock_radio_lan_audio_probe(
+        config,
+        candidate,
+        duration_s=0,
+    )
+
+    assert result.status is AudioProbeStatus.FAILED
+    assert result.phase == "rx"
+    assert result.reason == "pcm-payload-size-mismatch"
+    assert result.rx_payload_bytes == payload_bytes
+    assert result.expected_rx_payload_bytes == expected_payload_bytes
+    assert result.observed_packets == 1

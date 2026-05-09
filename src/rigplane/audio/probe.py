@@ -67,6 +67,7 @@ class AudioProbeResult:
     phase: str
     reason: str
     rx_payload_bytes: int | None = None
+    expected_rx_payload_bytes: int | None = None
     observed_packets: int | None = None
     error: str | None = None
 
@@ -79,6 +80,8 @@ class AudioProbeResult:
         }
         if self.rx_payload_bytes is not None:
             payload["rx_payload_bytes"] = self.rx_payload_bytes
+        if self.expected_rx_payload_bytes is not None:
+            payload["expected_rx_payload_bytes"] = self.expected_rx_payload_bytes
         if self.observed_packets is not None:
             payload["observed_packets"] = self.observed_packets
         if self.error:
@@ -112,6 +115,23 @@ class AudioProbeArtifact:
 
 def _channels_for_codec(codec: AudioCodec) -> int:
     return 2 if "_2CH" in codec.name else 1
+
+
+def expected_pcm16_rx_payload_bytes(candidate: AudioProbeCandidate) -> int | None:
+    """Return expected RX payload bytes for PCM16 candidates."""
+
+    if candidate.rx_codec not in {
+        AudioCodec.PCM_1CH_16BIT,
+        AudioCodec.PCM_2CH_16BIT,
+    }:
+        return None
+    return (
+        candidate.sample_rate_hz
+        * candidate.frame_ms
+        * candidate.rx_channels
+        * 2
+        // 1000
+    )
 
 
 def build_stock_radio_lan_probe_matrix(
@@ -192,5 +212,6 @@ __all__ = [
     "AudioProbeStatus",
     "build_stock_radio_lan_probe_matrix",
     "classify_stock_radio_lan_probe_error",
+    "expected_pcm16_rx_payload_bytes",
     "profile_policy_from_probe_results",
 ]

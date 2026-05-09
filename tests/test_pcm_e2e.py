@@ -50,7 +50,7 @@ def _make_radio() -> IcomRadio:
     )
     # Pre-install dummy transcoder so _get_pcm_transcoder succeeds.
     radio._pcm_transcoder = _DummyTranscoder()  # type: ignore[assignment]
-    radio._pcm_transcoder_fmt = (48000, 1, 20)
+    radio._pcm_transcoder_fmt = (16000, 1, 20)
     # PR #1448 added a TX-codec branch in _push_audio_tx_pcm_internal: when
     # the negotiated TX codec is PCM_1CH_16BIT (the default for direct Icom
     # LAN), the frame is sent unchanged and the transcoder is bypassed.
@@ -74,7 +74,10 @@ class TestPcmRxE2E:
         radio = _make_radio()
         received: list[bytes | None] = []
 
-        await radio.start_audio_rx_pcm(lambda frame: received.append(frame))
+        await radio.start_audio_rx_pcm(
+            lambda frame: received.append(frame),
+            sample_rate=16000,
+        )
 
         # Grab the internal Opus-level callback that was registered.
         rx_cb = radio._audio_stream.start_rx.await_args.args[0]
@@ -98,7 +101,10 @@ class TestPcmRxE2E:
         radio = _make_radio()
         received: list[bytes | None] = []
 
-        await radio.start_audio_rx_pcm(lambda frame: received.append(frame))
+        await radio.start_audio_rx_pcm(
+            lambda frame: received.append(frame),
+            sample_rate=16000,
+        )
         rx_cb = radio._audio_stream.start_rx.await_args.args[0]
 
         rx_cb(AudioPacket(ident=0x0080, send_seq=1, data=b"\xaa"))
@@ -115,7 +121,10 @@ class TestPcmRxE2E:
         radio = _make_radio()
         received: list[bytes | None] = []
 
-        await radio.start_audio_rx_pcm(lambda frame: received.append(frame))
+        await radio.start_audio_rx_pcm(
+            lambda frame: received.append(frame),
+            sample_rate=16000,
+        )
         rx_cb = radio._audio_stream.start_rx.await_args.args[0]
 
         for seq in range(100):
@@ -140,10 +149,10 @@ class TestPcmTxE2E:
 
         await radio.start_audio_tx_pcm()
         radio._audio_stream.start_tx.assert_awaited_once()
-        assert radio._pcm_tx_fmt == (48000, 1, 20)
+        assert radio._pcm_tx_fmt == (16000, 1, 20)
 
         # Push a PCM frame.
-        pcm_frame = b"\x10\x00" * 960  # 1920 bytes = 960 samples × 2 bytes
+        pcm_frame = b"\x10\x00" * 320  # 640 bytes = 320 samples × 2 bytes
         await radio.push_audio_tx_pcm(pcm_frame)
 
         # Transcoder produces "opus:" + first 4 bytes of PCM.
@@ -159,7 +168,7 @@ class TestPcmTxE2E:
         await radio.start_audio_tx_pcm()
 
         for _ in range(10):
-            await radio.push_audio_tx_pcm(b"\x00\x01" * 960)
+            await radio.push_audio_tx_pcm(b"\x00\x01" * 320)
 
         assert radio._audio_stream.push_tx.await_count == 10
         await radio.stop_audio_tx_pcm()
@@ -191,7 +200,7 @@ class TestPcmLoopbackE2E:
 
         # Start TX first, then RX.
         await radio.start_audio_tx_pcm()
-        await radio.start_audio_rx_pcm(_on_pcm)
+        await radio.start_audio_rx_pcm(_on_pcm, sample_rate=16000)
 
         rx_cb = radio._audio_stream.start_rx.await_args.args[0]
 
@@ -204,10 +213,10 @@ class TestPcmLoopbackE2E:
         # Now drive the TX pipeline N times. The dummy transcoder's RX output
         # is a tagged byte string (not real PCM), so we can't feed it back
         # verbatim — the TX path validates frame size against PcmAudioFormat
-        # (1920 bytes for 48kHz/1ch/20ms). Use a properly-sized synthetic
+        # (640 bytes for 16kHz/1ch/20ms). Use a properly-sized synthetic
         # frame; the assertion only checks that TX was invoked once per RX
         # frame.
-        tx_frame = b"\x00" * 1920
+        tx_frame = b"\x00" * 640
         for frame in rx_frames:
             if frame is not None:
                 await radio.push_audio_tx_pcm(tx_frame)
@@ -233,7 +242,10 @@ class TestPcmStartStopCycles:
             radio = _make_radio()
             received: list[bytes | None] = []
 
-            await radio.start_audio_rx_pcm(lambda frame: received.append(frame))
+            await radio.start_audio_rx_pcm(
+                lambda frame: received.append(frame),
+                sample_rate=16000,
+            )
             rx_cb = radio._audio_stream.start_rx.await_args.args[0]
             rx_cb(AudioPacket(ident=0x0080, send_seq=0, data=b"\xcc"))
             assert received == [b"pcm:\xcc"]
@@ -247,7 +259,7 @@ class TestPcmStartStopCycles:
             radio = _make_radio()
 
             await radio.start_audio_tx_pcm()
-            await radio.push_audio_tx_pcm(b"\xaa\xbb" * 960)
+            await radio.push_audio_tx_pcm(b"\xaa\xbb" * 320)
             assert radio._audio_stream.push_tx.await_count == 1
 
             await radio.stop_audio_tx_pcm()
@@ -280,9 +292,9 @@ class TestPcmEdgeCases:
         radio._audio_stream.start_rx = AsyncMock(
             side_effect=[None, RuntimeError("Already receiving")],
         )
-        await radio.start_audio_rx_pcm(lambda _: None)
+        await radio.start_audio_rx_pcm(lambda _: None, sample_rate=16000)
         with pytest.raises(RuntimeError, match="Already receiving"):
-            await radio.start_audio_rx_pcm(lambda _: None)
+            await radio.start_audio_rx_pcm(lambda _: None, sample_rate=16000)
         await radio.stop_audio_rx_pcm()
 
     @pytest.mark.asyncio

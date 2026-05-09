@@ -69,6 +69,7 @@ from ..capabilities import (
 from .._queue_pressure import PRESSURE_THRESHOLD
 from .._state_queries import build_state_queries
 from ..profiles import RadioProfile, resolve_radio_profile
+from ..types import AudioCodec
 
 if TYPE_CHECKING:
     from ..radio_protocol import Radio
@@ -160,6 +161,15 @@ _DEFAULT_POLL_FIELD_TTL: float = 0.2
 _FAST_INTERVAL: float = 0.025  # meters — wfview queue interval for LAN (25ms)
 _FAST_INTERVAL_SERIAL: float = 0.100  # serial: 10 polls/sec for responsive meters
 _SLOW_INTERVAL: float = 0.25  # levels/settings — rarely change
+
+
+def _audio_tx_codec_and_rate(radio: Any) -> tuple[AudioCodec | None, int]:
+    contract = getattr(radio, "audio_stream_contract", None)
+    tx_codec = getattr(contract, "tx_codec", None)
+    tx_sr = getattr(contract, "tx_sample_rate_hz", None)
+    if not isinstance(tx_sr, int) or isinstance(tx_sr, bool) or tx_sr <= 0:
+        tx_sr = 48000
+    return tx_codec, tx_sr
 
 
 # ------------------------------------------------------------------
@@ -855,8 +865,16 @@ class RadioPoller:
                 # Start TX audio stream before PTT (LAN audio requires this)
                 if CAP_AUDIO in self._caps:
                     try:
-                        await radio.start_audio_tx_opus()
-                        logger.info("poller: TX audio stream started")
+                        tx_codec, tx_sr = _audio_tx_codec_and_rate(radio)
+                        if tx_codec == AudioCodec.PCM_1CH_16BIT:
+                            await radio.start_audio_tx_pcm(sample_rate=tx_sr)
+                        else:
+                            await radio.start_audio_tx_opus()
+                        logger.info(
+                            "poller: TX audio stream started (tx_codec=%s, sr=%d)",
+                            tx_codec,
+                            tx_sr,
+                        )
                     except Exception as e:
                         logger.warning("poller: start TX audio failed: %s", e)
                 await radio.set_ptt(True)
@@ -866,7 +884,11 @@ class RadioPoller:
                 # Stop TX audio stream after PTT, then restart RX
                 if CAP_AUDIO in self._caps:
                     try:
-                        await radio.stop_audio_tx_opus()
+                        tx_codec, _tx_sr = _audio_tx_codec_and_rate(radio)
+                        if tx_codec == AudioCodec.PCM_1CH_16BIT:
+                            await radio.stop_audio_tx_pcm()
+                        else:
+                            await radio.stop_audio_tx_opus()
                         logger.info("poller: TX audio stream stopped")
 
                         # Restart RX audio after TX (IC-7610 doesn't support full duplex)

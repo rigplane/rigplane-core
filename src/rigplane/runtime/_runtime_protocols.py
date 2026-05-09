@@ -296,9 +296,9 @@ class AudioRuntimeHost(Protocol):
     async def start_audio_tx_pcm(
         self,
         *,
-        sample_rate: int,
-        channels: int,
-        frame_ms: int,
+        sample_rate: int | None = None,
+        channels: int | None = None,
+        frame_ms: int | None = None,
     ) -> None: ...
 
     async def start_audio_tx_opus(self) -> None: ...

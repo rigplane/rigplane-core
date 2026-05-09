@@ -47,6 +47,7 @@ from rigplane.audio.probe import (  # noqa: E402
     AudioProbeResult,
     AudioProbeStatus,
     build_stock_radio_lan_probe_matrix,
+    expected_pcm16_rx_payload_bytes,
 )
 from rigplane.audio.probe_profile import (  # noqa: E402
     AudioProfileProposalError,
@@ -2117,12 +2118,27 @@ async def _attempt_stock_radio_lan_audio_probe(
             await radio.stop_audio_rx_opus()
 
     if packets > 0:
+        expected_payload_bytes = expected_pcm16_rx_payload_bytes(candidate)
+        if (
+            expected_payload_bytes is not None
+            and payload_bytes != expected_payload_bytes
+        ):
+            return AudioProbeResult(
+                candidate=candidate,
+                status=AudioProbeStatus.FAILED,
+                phase="rx",
+                reason="pcm-payload-size-mismatch",
+                rx_payload_bytes=payload_bytes,
+                expected_rx_payload_bytes=expected_payload_bytes,
+                observed_packets=packets,
+            )
         return AudioProbeResult(
             candidate=candidate,
             status=AudioProbeStatus.PASS,
             phase="rx",
             reason="rx-payload-stable",
             rx_payload_bytes=payload_bytes,
+            expected_rx_payload_bytes=expected_payload_bytes,
             observed_packets=packets,
         )
     return AudioProbeResult(

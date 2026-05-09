@@ -91,6 +91,9 @@ class AudioManager {
     }
     this.rxPlayer.start();
     this.connect();
+    if (this.ws?.readyState === WebSocket.OPEN) {
+      this.ws.send(JSON.stringify({ type: 'audio_start', direction: 'rx' }));
+    }
     this.notify();
   }
 
@@ -98,6 +101,9 @@ class AudioManager {
     if (!this._rxEnabled) return;
     this._rxEnabled = false;
     setRxEnabled(false);
+    if (this.ws?.readyState === WebSocket.OPEN) {
+      this.ws.send(JSON.stringify({ type: 'audio_stop', direction: 'rx' }));
+    }
     this.rxPlayer.stop();
     this.maybeDisconnect();
     this.notify();

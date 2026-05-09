@@ -77,10 +77,4 @@
     border-radius: 4px;
     transition: box-shadow 150ms ease;
   }
-
-  .dual-vfo-tile.is-active {
-    /* Active highlight is rendered by the inner VfoPanel.active class.
-       This selector exists so tests and external CSS can target the
-       outer tile without reaching into the panel. */
-  }
 </style>
