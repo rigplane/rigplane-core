@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.1.1] — 2026-05-09
+
+### Added
+- Direct CW send/stop HTTP endpoints for local app integrations, plus clearer CLI launch guidance and web radio aliases (#1496).
+
+### Fixed
+- Web TX audio on IC-7610 LAN now starts the accepted radio-native TX contract instead of starting Opus against the radio's PCM-only TX stream (#1493).
+- Web RX LIVE toggling now sends `audio_start` / `audio_stop` even when the audio WebSocket is already open, fixing the first-click silence after page load (#1495).
+- IC-7610 LAN audio defaults and probe evidence handling now validate PCM16 payload size; malformed 24/48 kHz PCM frames no longer count as passed probe evidence, and the profile defaults PCM back to 16 kHz (#1494).
+- Existing Svelte check warnings in touched frontend files were removed so `npm run check` is clean for the hotfix branch (#1497).
+
 ## [2.1.0] — 2026-05-08
 
 ### Added
@@ -1250,7 +1261,8 @@ These deprecation closures were announced in v0.19 and dropped on schedule.
 - Transport layer, authentication, CI-V commands, meters, PTT, keep-alive.
 - Clean-room Icom LAN UDP protocol implementation.
 
-[Unreleased]: https://github.com/rigplane/rigplane-core/compare/v2.1.0...HEAD
+[Unreleased]: https://github.com/rigplane/rigplane-core/compare/v2.1.1...HEAD
+[2.1.1]: https://github.com/rigplane/rigplane-core/compare/v2.1.0...v2.1.1
 [2.1.0]: https://github.com/rigplane/rigplane-core/compare/v2.0.3...v2.1.0
 [2.0.3]: https://github.com/rigplane/rigplane-core/compare/v2.0.2...v2.0.3
 [2.0.2]: https://github.com/rigplane/rigplane-core/compare/v2.0.1...v2.0.2
