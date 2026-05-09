@@ -178,9 +178,24 @@ def classify_radio_health(
         }
 
     last_civ = getattr(radio, "_last_civ_data_received", None)
-    idle_s = 0.0
+    last_civ_value: float | None = None
     if isinstance(last_civ, (int, float)) and not isinstance(last_civ, bool):
-        idle_s = max(0.0, now - float(last_civ))
+        last_civ_value = float(last_civ)
+    has_civ_evidence = last_civ_value is not None
+    had_success = _bool_attr(radio, "_has_connected_once") or has_civ_evidence
+    if radio_link == "unknown" and not had_success and not stats:
+        return {
+            "serverReachable": True,
+            "radioLink": "unknown",
+            "readiness": "stalled",
+            "likelyCause": "unknown",
+            "sinceMs": 0,
+            "lastError": last_error_value,
+        }
+
+    idle_s = 0.0
+    if last_civ_value is not None:
+        idle_s = max(0.0, now - last_civ_value)
     ready_timeout = getattr(radio, "_civ_ready_idle_timeout", 2.0)
     if not isinstance(ready_timeout, (int, float)) or isinstance(ready_timeout, bool):
         ready_timeout = 2.0
@@ -189,7 +204,6 @@ def classify_radio_health(
 
     timeouts = stats.get("timeouts", 0)
     timeout_count = timeouts if isinstance(timeouts, int) else 0
-    had_success = _bool_attr(radio, "_has_connected_once") or last_civ is not None
     recovering = _bool_attr(radio, "_civ_recovering")
     powered_off_likely = (
         had_success

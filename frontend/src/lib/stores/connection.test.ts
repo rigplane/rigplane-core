@@ -8,6 +8,7 @@ import {
   getControlConnected,
   setRadioHealth,
   getRadioHealth,
+  isLiveRadioAvailable,
 } from './connection.svelte';
 
 describe('connection readiness fields', () => {
@@ -48,5 +49,30 @@ describe('connection readiness fields', () => {
     expect(getRadioHealth()?.likelyCause).toBe('radio_not_responding');
     setRadioHealth(null);
     expect(getRadioHealth()).toBeNull();
+  });
+
+  it('marks live radio unavailable for degraded health', () => {
+    setRadioReady(true);
+    setRadioHealth({
+      serverReachable: true,
+      radioLink: 'connected',
+      readiness: 'stalled',
+      likelyCause: 'radio_not_responding',
+      sinceMs: 9000,
+      lastError: null,
+    });
+
+    expect(isLiveRadioAvailable()).toBe(false);
+
+    setRadioHealth({
+      serverReachable: true,
+      radioLink: 'connected',
+      readiness: 'ready',
+      likelyCause: 'unknown',
+      sinceMs: 0,
+      lastError: null,
+    });
+
+    expect(isLiveRadioAvailable()).toBe(true);
   });
 });

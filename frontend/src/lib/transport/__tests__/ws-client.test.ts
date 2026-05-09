@@ -7,6 +7,7 @@ vi.mock('../../stores/connection.svelte', () => ({
   setHttpConnected: vi.fn(),
   markStateUpdated: vi.fn(),
   setReconnecting: vi.fn(),
+  isLiveRadioAvailable: vi.fn(() => true),
 }));
 
 vi.mock('../../stores/radio.svelte', () => ({
@@ -17,7 +18,7 @@ vi.mock('../../stores/radio.svelte', () => ({
   setRadioState: vi.fn(),
 }));
 
-import { setWsConnected } from '../../stores/connection.svelte';
+import { isLiveRadioAvailable, setWsConnected } from '../../stores/connection.svelte';
 import { patchActiveReceiver } from '../../stores/radio.svelte';
 
 // ─── Minimal WebSocket mock ──────────────────────────────────────────────────
@@ -288,6 +289,17 @@ describe('control channel singleton', () => {
     expect(isConnected()).toBe(false);
     const result = sendCommand('ptt', { state: true });
     expect(result).toBe(false);
+  });
+
+  it('sendCommand blocks live-radio commands while radio health is degraded', async () => {
+    vi.mocked(isLiveRadioAvailable).mockReturnValue(false);
+    vi.mocked(patchActiveReceiver).mockClear();
+    const { sendCommand } = await import('../ws-client');
+
+    const result = sendCommand('set_freq', { freq: 14074000, receiver: 0 });
+
+    expect(result).toBe(false);
+    expect(patchActiveReceiver).not.toHaveBeenCalled();
   });
 
   it('getChannel returns the same instance for the same name', async () => {

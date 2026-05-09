@@ -165,6 +165,17 @@ def test_radio_health_classifies_network_loss_separately_from_server_loss() -> N
     assert health["likelyCause"] == "radio_network_lost"
 
 
+def test_radio_health_keeps_unknown_when_radio_has_no_runtime_evidence() -> None:
+    radio = _FakeRadio(connected=False, radio_ready_flag=False)
+
+    health = classify_radio_health(radio, server_reachable=True, now_monotonic=100.0)
+
+    assert health["serverReachable"] is True
+    assert health["radioLink"] == "unknown"
+    assert health["readiness"] == "stalled"
+    assert health["likelyCause"] == "unknown"
+
+
 def test_radio_health_classifies_delayed_then_stalled_radio_response() -> None:
     radio = _FakeRadio(connected=True, radio_ready_flag=False)
     radio._last_civ_data_received = 98.5

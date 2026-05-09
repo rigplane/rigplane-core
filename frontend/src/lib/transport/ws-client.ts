@@ -1,6 +1,6 @@
 import type { WsCommand, WsIncoming } from '../types/protocol';
 import { makeCommandId } from '../types/protocol';
-import { setWsConnected, setHttpConnected, markStateUpdated, setReconnecting } from '../stores/connection.svelte';
+import { isLiveRadioAvailable, setWsConnected, setHttpConnected, markStateUpdated, setReconnecting } from '../stores/connection.svelte';
 import { getRadioState, patchActiveReceiver, patchRadioState, resetRadioState, setRadioState } from '../stores/radio.svelte';
 
 export type ConnectionState = 'disconnected' | 'connecting' | 'connected' | 'reconnecting';
@@ -320,6 +320,10 @@ export function disconnect() {
 }
 
 export function sendCommand(name: string, params: Record<string, unknown> = {}, id?: string): boolean {
+  if (!isLiveRadioAvailable()) {
+    console.warn('[cmd] blocked while radio health is degraded', name);
+    return false;
+  }
   // Auto-optimistic: apply UI patch immediately before sending
   try { _applyOptimistic(name, params); } catch (e) { console.warn('[optimistic]', e); }
   return _ctrl.send({

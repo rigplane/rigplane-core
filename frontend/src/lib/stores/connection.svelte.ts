@@ -162,3 +162,16 @@ export function setRadioHealth(v: RadioHealth | null): void {
 export function getRadioHealth(): RadioHealth | null {
   return radioHealth;
 }
+
+export function isLiveRadioAvailable(): boolean {
+  if (!radioHealth) {
+    return radioReady;
+  }
+  return (
+    radioReady
+    && radioHealth.serverReachable
+    && radioHealth.radioLink === 'connected'
+    && radioHealth.readiness === 'ready'
+    && radioHealth.likelyCause === 'unknown'
+  );
+}
