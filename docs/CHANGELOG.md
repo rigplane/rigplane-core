@@ -15,7 +15,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 - Web TX audio on IC-7610 LAN now starts the accepted radio-native TX contract instead of starting Opus against the radio's PCM-only TX stream (#1493).
 - Web RX LIVE toggling now sends `audio_start` / `audio_stop` even when the audio WebSocket is already open, fixing the first-click silence after page load (#1495).
-- IC-7610 LAN audio defaults and probe evidence handling now validate PCM16 payload size; malformed 24/48 kHz PCM frames no longer count as passed probe evidence, and the profile defaults PCM back to 16 kHz (#1494).
+- IC-7610 LAN audio keeps 48 kHz PCM as the full-fidelity profile default; troubleshooting docs now call out VPN/tunnel MTU fragmentation issues and the `ICOM_AUDIO_SAMPLE_RATE=16000` low-bandwidth workaround (#1494).
 - Existing Svelte check warnings in touched frontend files were removed so `npm run check` is clean for the hotfix branch (#1497).
 
 ## [2.1.0] — 2026-05-08

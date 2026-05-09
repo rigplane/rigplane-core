@@ -20,12 +20,14 @@ has_wifi = false
 # consumer transport after the server receives radio-native PCM.
 # Hardware probe: 2026-05-08, firmware 1.42,
 # `rigplane audio probe --candidate-cooldown 35 --retry-rejected 1`.
-# The initial probe saw packets at 48000/24000/16000/8000 Hz, but PCM
-# payload-size validation leaves valid PCM16 framing at 16000/8000 Hz.
+# Full-fidelity 48000 Hz stereo PCM is valid. It fragments one 20 ms frame
+# across multiple UDP payloads (1364 + 1364 + 1112 audio bytes); make sure
+# VPN/tunnel MTU settings preserve those fragments, or override the sample
+# rate to 16000 Hz for constrained paths.
 codec_preference = ["PCM_2CH_16BIT", "PCM_1CH_16BIT", "ULAW_2CH", "ULAW_1CH"]
 tx_codec = "PCM_1CH_16BIT"
-default_sample_rate_hz = 16000
-sample_rate_by_codec = { PCM_2CH_16BIT = 16000, PCM_1CH_16BIT = 16000, ULAW_2CH = 48000, ULAW_1CH = 48000 }
+default_sample_rate_hz = 48000
+sample_rate_by_codec = { PCM_2CH_16BIT = 48000, PCM_1CH_16BIT = 48000, ULAW_2CH = 48000, ULAW_1CH = 48000 }
 browser_rx_transport = "auto"
 browser_rx_transcode_to_opus = true
 

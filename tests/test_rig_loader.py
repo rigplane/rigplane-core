@@ -647,11 +647,11 @@ class TestAudioPolicy:
             "ULAW_1CH",
         )
         assert rig.tx_codec == "PCM_1CH_16BIT"
-        assert rig.default_sample_rate_hz == 16000
+        assert rig.default_sample_rate_hz == 48000
         assert rig.supported_sample_rates_hz is None
         assert rig.sample_rate_by_codec == {
-            "PCM_2CH_16BIT": 16000,
-            "PCM_1CH_16BIT": 16000,
+            "PCM_2CH_16BIT": 48000,
+            "PCM_1CH_16BIT": 48000,
             "ULAW_2CH": 48000,
             "ULAW_1CH": 48000,
         }
@@ -666,11 +666,11 @@ class TestAudioPolicy:
             "ULAW_1CH",
         )
         assert profile.tx_codec == "PCM_1CH_16BIT"
-        assert profile.default_sample_rate_hz == 16000
+        assert profile.default_sample_rate_hz == 48000
         assert profile.supported_sample_rates_hz is None
         assert profile.sample_rate_by_codec == {
-            "PCM_2CH_16BIT": 16000,
-            "PCM_1CH_16BIT": 16000,
+            "PCM_2CH_16BIT": 48000,
+            "PCM_1CH_16BIT": 48000,
             "ULAW_2CH": 48000,
             "ULAW_1CH": 48000,
         }

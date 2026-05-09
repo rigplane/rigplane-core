@@ -349,6 +349,43 @@ may stutter briefly during reconnection.
 **Solution:** v0.8.0+ uses a 200ms jitter buffer (up from 50ms). For very high
 latency connections, this may still be insufficient — consider a local deployment.
 
+## LAN Audio Breaks Over WireGuard or Other UDP Tunnels
+
+**Symptom:** Control and CI-V commands work, but LAN audio is choppy, chipmunky,
+or loses whole chunks over a VPN/tunnel. This is most visible with high-rate
+PCM modes such as IC-7610 `PCM_2CH_16BIT` at 48 kHz.
+
+**Cause:** The radio may send one 20 ms audio frame as multiple UDP payloads.
+For IC-7610 48 kHz stereo PCM, one frame is 3840 audio bytes and is normally
+split across three payloads. If a tunnel path silently drops IP fragments, the
+receiver may see only the small trailing packets and cannot reassemble the
+original audio. This is a tunnel/path-MTU problem, not a radio capability
+failure.
+
+**Quick workaround:**
+
+```bash
+export ICOM_AUDIO_SAMPLE_RATE=16000
+uv run rigplane --host 192.168.55.40 --user USER --pass-file .rigplane-pass web
+```
+
+16 kHz stereo PCM fits a 20 ms frame in one UDP packet and is usually adequate
+for remote voice monitoring. Keep 48 kHz for full-fidelity LAN or well-tuned
+VPN paths.
+
+**MTU runbook:**
+
+1. Capture on both tunnel endpoints while audio is running:
+   `tcpdump -ni wg0 'udp and host <radio-or-peer-ip>'`.
+2. Look for IP fragments, especially first fragments with `MF` set.
+3. If first fragments disappear but small trailing fragments arrive, lower the
+   tunnel interface MTU on both ends.
+4. For WireGuard, remember to budget for outer IP/UDP/WireGuard overhead. The
+   correct value depends on the WAN path; cellular/CGNAT/cloud paths often need
+   smaller MTUs than a normal Ethernet LAN.
+5. Re-run `rigplane audio probe --candidate-cooldown 35 --retry-rejected 1`
+   after changing MTU and confirm packet counts are stable.
+
 ## TX Audio Has No Modulation on macOS (Web UI / Bridge)
 
 **Symptom:** PTT toggles ON, but transmitted audio is silent or very weak.

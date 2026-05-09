@@ -29,9 +29,9 @@ a diagnostic report includes `radio_native.requested`,
 `radio_native.effective`, and `web_rx` when those values are available or
 configured.
 
-`ICOM_AUDIO_SAMPLE_RATE` remains an operator override. Set it only when you
-need to force the direct LAN conninfo sample rate for testing or hardware
-compatibility:
+`ICOM_AUDIO_SAMPLE_RATE` remains an operator override. Set it when you need to
+force the direct LAN conninfo sample rate for testing, hardware compatibility,
+or bandwidth-constrained tunnel paths:
 
 ```bash
 export ICOM_AUDIO_SAMPLE_RATE=16000
@@ -40,7 +40,9 @@ uv run rigplane --host 192.168.55.40 --user USER --pass-file .rigplane-pass web
 
 Explicit API or CLI/env overrides take precedence over profile defaults. If no
 override is supplied, model profiles choose the best known radio-native default;
-for example the IC-7610 direct LAN profile requests PCM at 16 kHz.
+for example the IC-7610 direct LAN profile requests full-fidelity PCM at
+48 kHz. On constrained VPN/cloud paths, 16 kHz is a good low-bandwidth override
+because it fits each 20 ms stereo PCM frame in one UDP packet.
 
 ## Prerequisites
 

@@ -20,6 +20,7 @@ All commands accept these options:
 | `--serial-ptt-mode` | `ICOM_SERIAL_PTT_MODE` | `civ` | Serial PTT mode (`civ` currently supported) |
 | `--rx-device` | `ICOM_USB_RX_DEVICE` | auto | USB audio RX device name (serial/CAT profiles with audio support) |
 | `--tx-device` | `ICOM_USB_TX_DEVICE` | auto | USB audio TX device name (serial/CAT profiles with audio support) |
+| — | `ICOM_AUDIO_SAMPLE_RATE` | profile/default | LAN audio sample-rate override (`8000`, `16000`, `24000`, or `48000`) |
 | `--list-audio-devices` | — | — | List USB audio devices and exit |
 | `--version` | — | — | Print version and exit |
 

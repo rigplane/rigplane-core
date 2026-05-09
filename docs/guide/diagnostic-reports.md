@@ -113,7 +113,7 @@ tools, and may also include:
 
 Source metadata uses stable strings such as `explicit`, `profile-default`,
 `profile-codec-default`, `global-default`, and `fallback`. For example, an
-IC-7610 can request radio-native `PCM_2CH_16BIT` at `16000` Hz from its profile
+IC-7610 can request radio-native `PCM_2CH_16BIT` at `48000` Hz from its profile
 while the Web UI emits Opus as a browser transport. That means only the browser
 leg is Opus; the direct radio LAN stream remains PCM.
 
