@@ -253,6 +253,9 @@ secondary telemetry (COMP/Vd/Id) is intentionally sampled less often.
 
 - Polling uses `If-None-Match` with the previous `ETag`.
 - `304 Not Modified` is treated as a successful poll with no state payload.
+- The state `ETag` includes both `revision` and `healthRevision`. A
+  radio-health-only transition therefore returns `200` with a fresh payload even
+  when frequency/mode/meter state did not change.
 - On transient HTTP errors, cached ETag is cleared to force a fresh `200` response.
 - After repeated HTTP failures, the connection store marks HTTP as disconnected until recovery.
 

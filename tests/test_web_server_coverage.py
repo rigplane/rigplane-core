@@ -1018,6 +1018,43 @@ class TestStateEtag:
         assert text2[body_start:] == "", "304 response must have empty body"
 
     @pytest.mark.asyncio
+    async def test_state_etag_changes_when_health_changes_without_revision(
+        self,
+    ) -> None:
+        """Health-only transitions must not be hidden behind a revision-only ETag."""
+
+        class _HealthRadio:
+            connected = True
+            control_connected = True
+            radio_ready = True
+            capabilities: set[str] = set()
+
+        radio = _HealthRadio()
+        srv = WebServer(radio)
+        writer = _FakeWriter()
+        await srv._serve_state(writer)
+        text = writer.buffer.decode("ascii", errors="replace")
+        header_block = text[: text.index("\r\n\r\n")]
+        etag = next(
+            line.split(":", 1)[1].strip()
+            for line in header_block.splitlines()
+            if line.startswith("ETag:")
+        )
+
+        radio.radio_ready = False
+        radio._last_civ_data_received = 0.0
+        radio._civ_ready_idle_timeout = 1.0
+
+        writer2 = _FakeWriter()
+        await srv._serve_state(writer2, {"if-none-match": etag})
+        text2 = writer2.buffer.decode("ascii", errors="replace")
+        assert "200 OK" in text2.split("\r\n", 1)[0]
+        body = json.loads(text2[text2.index("\r\n\r\n") + 4 :])
+        assert body["revision"] == 0
+        assert body["healthRevision"] == 2
+        assert body["radioHealth"]["likelyCause"] == "radio_not_responding"
+
+    @pytest.mark.asyncio
     async def test_state_200_when_etag_differs(self) -> None:
         """GET /api/v1/state with stale If-None-Match returns 200 with full body."""
         srv = WebServer(None)

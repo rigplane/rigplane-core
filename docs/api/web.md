@@ -214,17 +214,28 @@ Version, model, capability summary, and connection metadata.
 
 Canonical full state payload for web consumers (camelCase keys).
 
-- Includes `revision` + `updatedAt`.
+- Includes `revision`, `healthRevision`, and `updatedAt`.
 - Includes `connection` object (`rigConnected`, `radioReady`, `controlConnected`).
+- Includes `radioHealth`, a classified server/radio health contract.
 - For single-receiver profiles, `sub` key is omitted.
-- Supports `ETag` based on `revision` for conditional requests.
+- Supports `ETag` based on `revision` and `healthRevision` for conditional
+  requests, so radio-health-only changes are not hidden behind `304 Not Modified`.
 
 ```json
 {
   "main": { "freqHz": 14074000, "mode": "USB", "filter": 1 },
   "revision": 42,
+  "healthRevision": 7,
   "updatedAt": "2026-03-15T10:00:00+00:00",
   "radioDetail": { "status": "connected" },
+  "radioHealth": {
+    "serverReachable": true,
+    "radioLink": "connected",
+    "readiness": "ready",
+    "likelyCause": "unknown",
+    "sinceMs": 0,
+    "lastError": null
+  },
   "wsClients": { "scope": 1, "control": 1, "audio": 0 },
   "connection": {
     "rigConnected": true,
@@ -233,6 +244,16 @@ Canonical full state payload for web consumers (camelCase keys).
   }
 }
 ```
+
+`radioHealth.likelyCause` distinguishes these public states:
+
+| Value | Meaning |
+|---|---|
+| `server_unreachable` | Browser/client cannot reach the web or proxy server. The server normally cannot emit this for itself; clients derive it from HTTP/WS failures. |
+| `radio_network_lost` | Server is reachable, but the radio link is disconnected or reconnecting. |
+| `radio_not_responding` | Radio link still exists, but CI-V/control data is delayed or stalled. |
+| `radio_powered_off_likely` | Server is reachable, the radio was previously available, and repeated timeout/recovery evidence suggests the hardware is off or unreachable. |
+| `unknown` | Insufficient evidence or healthy/ready state. |
 
 ## `GET /api/v1/capabilities`
 

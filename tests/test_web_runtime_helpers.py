@@ -6,7 +6,11 @@ from typing import Any
 import pytest
 from unittest.mock import MagicMock
 
-from rigplane.web.runtime_helpers import radio_ready, runtime_capabilities
+from rigplane.web.runtime_helpers import (
+    classify_radio_health,
+    radio_ready,
+    runtime_capabilities,
+)
 from rigplane.web.server import WebServer
 
 
@@ -137,6 +141,70 @@ def test_radio_ready_handles_missing_or_non_bool_attributes() -> None:
     radio = _FakeRadio(connected="yes", radio_ready_flag="maybe")  # type: ignore[arg-type]
     assert radio_ready(radio) is False
     assert radio_ready(None) is False
+
+
+def test_radio_health_classifies_ready_radio() -> None:
+    radio = _FakeRadio(connected=True, radio_ready_flag=True)
+    health = classify_radio_health(radio, server_reachable=True, now_monotonic=100.0)
+
+    assert health["serverReachable"] is True
+    assert health["radioLink"] == "connected"
+    assert health["readiness"] == "ready"
+    assert health["likelyCause"] == "unknown"
+
+
+def test_radio_health_classifies_network_loss_separately_from_server_loss() -> None:
+    radio = _FakeRadio(connected=False, radio_ready_flag=False)
+    radio.conn_state = "reconnecting"
+
+    health = classify_radio_health(radio, server_reachable=True, now_monotonic=100.0)
+
+    assert health["serverReachable"] is True
+    assert health["radioLink"] == "reconnecting"
+    assert health["readiness"] == "recovering"
+    assert health["likelyCause"] == "radio_network_lost"
+
+
+def test_radio_health_classifies_delayed_then_stalled_radio_response() -> None:
+    radio = _FakeRadio(connected=True, radio_ready_flag=False)
+    radio._last_civ_data_received = 98.5
+    radio._civ_ready_idle_timeout = 1.0
+
+    delayed = classify_radio_health(radio, server_reachable=True, now_monotonic=100.0)
+    assert delayed["radioLink"] == "connected"
+    assert delayed["readiness"] == "delayed"
+    assert delayed["likelyCause"] == "radio_not_responding"
+
+    radio._last_civ_data_received = 94.0
+    stalled = classify_radio_health(radio, server_reachable=True, now_monotonic=100.0)
+    assert stalled["readiness"] == "stalled"
+    assert stalled["likelyCause"] == "radio_not_responding"
+
+
+def test_radio_health_promotes_repeated_probe_failures_to_powered_off_likely() -> None:
+    radio = _FakeRadio(connected=True, radio_ready_flag=False)
+    radio._last_civ_data_received = 80.0
+    radio._civ_ready_idle_timeout = 2.0
+    radio._has_connected_once = True
+
+    def _stats() -> dict[str, int]:
+        return {"timeouts": 3, "active_waiters": 0}
+
+    radio.civ_stats = _stats
+
+    health = classify_radio_health(radio, server_reachable=True, now_monotonic=100.0)
+
+    assert health["readiness"] == "stalled"
+    assert health["likelyCause"] == "radio_powered_off_likely"
+
+
+def test_radio_health_reports_server_unreachable_without_radio_guess() -> None:
+    health = classify_radio_health(None, server_reachable=False, now_monotonic=100.0)
+
+    assert health["serverReachable"] is False
+    assert health["radioLink"] == "unknown"
+    assert health["readiness"] == "stalled"
+    assert health["likelyCause"] == "server_unreachable"
 
 
 @pytest.mark.asyncio

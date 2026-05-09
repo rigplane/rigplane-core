@@ -59,6 +59,7 @@ from .rtc import handle_rtc_offer, rtc_capability_info, webrtc_available  # noqa
 from .radio_poller import CommandQueue, DisableScope, EnableScope, RadioPoller  # noqa: TID251
 from .runtime_helpers import (  # noqa: TID251
     build_public_state_payload,
+    classify_radio_health,
     radio_ready,
     runtime_capabilities,
 )
@@ -380,6 +381,9 @@ class WebServer:
         self._last_state_broadcast: float = 0.0
         # Delta encoder for efficient state broadcasting
         self._delta_encoder: DeltaEncoder = DeltaEncoder(full_state_interval=100)
+        self._health_revision: int = 0
+        self._health_signature: tuple[object, ...] | None = None
+        self._health_since_monotonic: float = time.monotonic()
         # Audio bridge (virtual device integration)
         self._audio_bridge: "AudioBridge | None" = None
         # Scope health monitor
@@ -682,6 +686,7 @@ class WebServer:
     def build_public_state(self, *, updated_at: str | None = None) -> dict[str, Any]:
         """Return the canonical public state payload for web consumers."""
         revision = self._radio_poller.revision if self._radio_poller is not None else 0
+        health = self._build_radio_health()
         return build_public_state_payload(
             self._radio_state,
             radio=self._radio,
@@ -691,7 +696,31 @@ class WebServer:
             scope_clients=len(self._scope_handlers),
             control_clients=len(self._control_event_queues),
             audio_clients=len(self._audio_broadcaster._clients),
+            radio_health=health,
+            health_revision=self._health_revision,
         )
+
+    def _build_radio_health(self) -> dict[str, Any]:
+        """Build radio health and advance the health revision on transitions."""
+        now = time.monotonic()
+        health = classify_radio_health(
+            self._radio,
+            server_reachable=True,
+            now_monotonic=now,
+        )
+        signature = (
+            health.get("serverReachable"),
+            health.get("radioLink"),
+            health.get("readiness"),
+            health.get("likelyCause"),
+            health.get("lastError"),
+        )
+        if self._health_signature != signature:
+            self._health_signature = signature
+            self._health_revision += 1
+            self._health_since_monotonic = now
+        health["sinceMs"] = int(max(0.0, now - self._health_since_monotonic) * 1000)
+        return health
 
     def broadcast_notification(
         self,
@@ -1440,8 +1469,9 @@ class WebServer:
     ) -> None:
         body_dict = self.build_public_state()
         revision = int(body_dict.get("revision", 0))
+        health_revision = int(body_dict.get("healthRevision", 0))
         body = json.dumps(body_dict, separators=(",", ":")).encode()
-        await _send_json(writer, body, headers, etag=f'"{revision}"')
+        await _send_json(writer, body, headers, etag=f'"{revision}-{health_revision}"')
 
     async def _serve_audio_analysis(
         self, writer: asyncio.StreamWriter, headers: dict[str, str] | None = None

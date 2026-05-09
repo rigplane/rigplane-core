@@ -1,5 +1,5 @@
 import type { ServerState, ReceiverState } from '../types/state';
-import { setRadioPowerOn, setRigConnected, setRadioReady, setControlConnected } from './connection.svelte';
+import { setRadioPowerOn, setRigConnected, setRadioReady, setControlConnected, setRadioHealth } from './connection.svelte';
 
 /**
  * Shared radio state — class-based $state pattern for cross-module reactivity.
@@ -13,6 +13,7 @@ class RadioStore {
 export const radio = new RadioStore();
 
 let lastRevision = -1;
+let lastHealthRevision = -1;
 const stateSubscribers = new Set<(state: ServerState | null) => void>();
 
 function notifyRadioStateSubscribers(): void {
@@ -125,6 +126,7 @@ function applyOptimistic(state: ServerState): ServerState {
 export function resetRadioState(): void {
   radio.current = null;
   lastRevision = -1;
+  lastHealthRevision = -1;
   optimisticMain.clear();
   optimisticSub.clear();
   optimisticTopLevel.clear();
@@ -135,13 +137,16 @@ export function resetRadioState(): void {
 export function setRadioState(state: ServerState): void {
   const isReset = lastRevision > 10 && state.revision < lastRevision / 2;
   const isInitial = radio.current === null;
+  const nextHealthRevision = state.healthRevision ?? 0;
+  const healthAdvanced = nextHealthRevision > lastHealthRevision;
   if (isReset) {
     console.warn(
       `Detected server restart: revision reset from ${lastRevision} to ${state.revision}`,
     );
   }
-  if (isInitial || state.revision > lastRevision || isReset) {
+  if (isInitial || state.revision > lastRevision || healthAdvanced || isReset) {
     lastRevision = state.revision;
+    lastHealthRevision = nextHealthRevision;
     radio.current = applyOptimistic(state);
     notifyRadioStateSubscribers();
     // Sync power status to connection store
@@ -153,6 +158,9 @@ export function setRadioState(state: ServerState): void {
       setRigConnected(state.connection.rigConnected);
       setRadioReady(state.connection.radioReady);
       setControlConnected(state.connection.controlConnected);
+    }
+    if (state.radioHealth !== undefined) {
+      setRadioHealth(state.radioHealth);
     }
   }
 }

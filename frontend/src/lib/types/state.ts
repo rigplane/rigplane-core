@@ -60,6 +60,7 @@ export interface ScopeControls {
 
 export interface ServerState {
   revision: number;
+  healthRevision?: number;
   updatedAt: string;
 
   active: 'MAIN' | 'SUB';
@@ -76,6 +77,20 @@ export interface ServerState {
     rigConnected: boolean;
     radioReady: boolean;
     controlConnected: boolean;
+  };
+
+  radioHealth?: {
+    serverReachable: boolean;
+    radioLink: 'connected' | 'reconnecting' | 'disconnected' | 'unknown';
+    readiness: 'ready' | 'delayed' | 'stalled' | 'recovering';
+    likelyCause:
+      | 'server_unreachable'
+      | 'radio_network_lost'
+      | 'radio_not_responding'
+      | 'radio_powered_off_likely'
+      | 'unknown';
+    sinceMs: number;
+    lastError: string | null;
   };
 
   radioDetail?: {

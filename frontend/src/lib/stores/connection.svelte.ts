@@ -1,4 +1,8 @@
 // Connection health state
+import type { ServerState } from '../types/state';
+
+type RadioHealth = NonNullable<ServerState['radioHealth']>;
+
 let httpConnected = $state(false);
 let wsConnected = $state(false);
 let audioConnected = $state(false);
@@ -9,6 +13,7 @@ let radioPowerOn = $state<boolean | null>(null);
 let rigConnected = $state(false);
 let radioReady = $state(false);
 let controlConnected = $state(false);
+let radioHealth = $state<RadioHealth | null>(null);
 let lastResponseTime = $state<number | null>(null);
 
 let lastStateUpdate = $state(0);
@@ -148,4 +153,12 @@ export function setControlConnected(v: boolean): void {
 
 export function getControlConnected(): boolean {
   return controlConnected;
+}
+
+export function setRadioHealth(v: RadioHealth | null): void {
+  radioHealth = v;
+}
+
+export function getRadioHealth(): RadioHealth | null {
+  return radioHealth;
 }

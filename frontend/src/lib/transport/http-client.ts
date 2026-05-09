@@ -1,7 +1,7 @@
 import type { ServerState } from '../types/state';
 import type { Capabilities } from '../types/capabilities';
 import type { InfoResponse } from '../types/protocol';
-import { markStateUpdated, setHttpConnected, setRadioStatus, setReconnecting } from '../stores/connection.svelte';
+import { markStateUpdated, setHttpConnected, setRadioHealth, setRadioStatus, setReconnecting } from '../stores/connection.svelte';
 
 const BASE = '/api/v1';
 
@@ -93,6 +93,7 @@ export function startPolling(
   let running = true;
   let inflight = false;
   let lastRevision = -1;
+  let lastHealthRevision = -1;
   let consecutiveErrors = 0;
 
   async function tick() {
@@ -110,8 +111,13 @@ export function startPolling(
         if (state?.radioDetail?.status) {
           setRadioStatus(state.radioDetail.status);
         }
-        if (state && state.revision > lastRevision) {
+        const healthRevision = state?.healthRevision ?? 0;
+        if (
+          state
+          && (state.revision > lastRevision || healthRevision > lastHealthRevision)
+        ) {
           lastRevision = state.revision;
+          lastHealthRevision = healthRevision;
           callback(state);
         }
       } catch {
@@ -121,6 +127,14 @@ export function startPolling(
         lastStateEtag = null;
         if (consecutiveErrors >= HTTP_ERROR_THRESHOLD) {
           setHttpConnected(false);
+          setRadioHealth({
+            serverReachable: false,
+            radioLink: 'unknown',
+            readiness: 'stalled',
+            likelyCause: 'server_unreachable',
+            sinceMs: 0,
+            lastError: null,
+          });
         }
       } finally {
         inflight = false;

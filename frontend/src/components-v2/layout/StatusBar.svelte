@@ -11,6 +11,7 @@
     getHttpConnected,
     getRadioPowerOn,
     getRigConnected,
+    getRadioHealth,
   } from '$lib/stores/connection.svelte';
   import { getFrequency } from '$lib/stores/radio.svelte';
   import { hasAnyScope, hasAudio, hasSpectrum } from '$lib/stores/capabilities.svelte';
@@ -63,8 +64,31 @@
   let audioState = $derived(isPoweredOff ? 'disconnected' : (isAudioConnected() ? 'connected' : 'disconnected'));
   let httpState = $derived(getHttpConnected() ? 'connected' : 'disconnected'); // server link — always real
   let rigConnected = $derived(getRigConnected());
+  let radioHealth = $derived(getRadioHealth());
   // Effective radio indicator: downgrade to 'disconnected' when rigCtld reports radio offline
-  let radioIndicatorState = $derived(radioState === 'connected' && !rigConnected ? 'degraded' : radioState);
+  let radioIndicatorState = $derived.by(() => {
+    if (radioHealth?.likelyCause === 'radio_network_lost' || radioHealth?.likelyCause === 'radio_powered_off_likely') {
+      return 'disconnected';
+    }
+    if (radioHealth?.readiness === 'delayed' || radioHealth?.readiness === 'stalled') {
+      return 'degraded';
+    }
+    return radioState === 'connected' && !rigConnected ? 'degraded' : radioState;
+  });
+  let radioHealthLabel = $derived.by(() => {
+    switch (radioHealth?.likelyCause) {
+      case 'radio_network_lost':
+        return 'radio link lost';
+      case 'radio_not_responding':
+        return radioHealth.readiness === 'delayed' ? 'radio response delayed' : 'radio not responding';
+      case 'radio_powered_off_likely':
+        return 'radio appears powered off or unreachable';
+      case 'server_unreachable':
+        return 'server unreachable';
+      default:
+        return !rigConnected && radioState === 'connected' ? 'rig offline' : '';
+    }
+  });
 
   let connectionTooltip = $derived(
     controlState === 'connected'
@@ -153,7 +177,7 @@
 {/if}
 <div class="status-bar">
   <div class="status-indicators">
-    <span class="indicator" role="status" title="Radio ↔ Server: {radioState}{!rigConnected && radioState === 'connected' ? ' (rig offline)' : ''}" style="--indicator-color: {stateColor(radioIndicatorState)}">
+    <span class="indicator" role="status" title="Radio ↔ Server: {radioState}{radioHealthLabel ? ` (${radioHealthLabel})` : ''}" style="--indicator-color: {stateColor(radioIndicatorState)}">
       <span class="indicator-dot"></span>
       <Radio size={12} color="currentColor" strokeWidth={2.5} />
     </span>

@@ -6,6 +6,8 @@ import {
   getRadioReady,
   setControlConnected,
   getControlConnected,
+  setRadioHealth,
+  getRadioHealth,
 } from './connection.svelte';
 
 describe('connection readiness fields', () => {
@@ -31,5 +33,20 @@ describe('connection readiness fields', () => {
     expect(getControlConnected()).toBe(true);
     setControlConnected(false);
     expect(getControlConnected()).toBe(false);
+  });
+
+  it('classified radio health defaults to null and can be set', () => {
+    expect(getRadioHealth()).toBeNull();
+    setRadioHealth({
+      serverReachable: true,
+      radioLink: 'connected',
+      readiness: 'stalled',
+      likelyCause: 'radio_not_responding',
+      sinceMs: 2500,
+      lastError: null,
+    });
+    expect(getRadioHealth()?.likelyCause).toBe('radio_not_responding');
+    setRadioHealth(null);
+    expect(getRadioHealth()).toBeNull();
   });
 });

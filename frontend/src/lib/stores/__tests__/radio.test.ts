@@ -168,6 +168,29 @@ describe('radio store', () => {
     expect(store.getRadioState()?.ptt).toBe(false);
   });
 
+  it('accepts health-only updates when healthRevision advances', async () => {
+    const connection = await import('../connection.svelte');
+    store.setRadioState(makeState({ revision: 5, healthRevision: 1 }));
+    store.setRadioState(makeState({
+      revision: 5,
+      healthRevision: 2,
+      connection: { rigConnected: true, radioReady: false, controlConnected: true },
+      radioHealth: {
+        serverReachable: true,
+        radioLink: 'connected',
+        readiness: 'delayed',
+        likelyCause: 'radio_not_responding',
+        sinceMs: 1200,
+        lastError: null,
+      },
+    }));
+
+    expect(store.getRadioState()?.healthRevision).toBe(2);
+    expect(store.getRadioState()?.radioHealth?.likelyCause).toBe('radio_not_responding');
+    expect(connection.getRadioReady()).toBe(false);
+    expect(connection.getRadioHealth()?.readiness).toBe('delayed');
+  });
+
   it('getFrequency returns active receiver frequency (MAIN)', () => {
     store.setRadioState(makeState({ active: 'MAIN' }));
     expect(store.getFrequency()).toBe(14074000);

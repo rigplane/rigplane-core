@@ -78,9 +78,32 @@ So “ready” means: connection is up, CI-V stream is up and not in recovery, a
 
 `radio_ready` is **true** only when state is **CONNECTED** and the CI-V stream is healthy and recently active. So you can be CONNECTED but not ready (e.g. CI-V data stalled or recovering).
 
+### Public radio health classification
+
+`GET /api/v1/state` exposes `radioHealth` plus `healthRevision` in addition to
+the backward-compatible `connection` booleans. `revision` still tracks ordinary
+radio-state changes. `healthRevision` tracks classified health transitions, so
+HTTP polling and frontend stores can update degraded radio status even when the
+last frequency/mode/meter snapshot did not change.
+
+The public health model separates:
+
+- **`server_unreachable`** — client-side server/proxy loss.
+- **`radio_network_lost`** — server reachable, radio link disconnected or reconnecting.
+- **`radio_not_responding`** — radio link exists, but CI-V/control data is delayed or stalled.
+- **`radio_powered_off_likely`** — prior radio availability plus repeated timeout/recovery evidence indicates the radio is probably off or unreachable.
+- **`unknown`** — healthy/ready state or insufficient evidence.
+
+Temporary CI-V gaps are classified as `readiness: "delayed"` before they become
+`readiness: "stalled"`; ordinary jitter should not be treated as likely power
+loss.
+
 ### What consumers (web, rigctld) should expect
 
-- **Web:** The Web UI and API expose `radio_ready` (and optionally `connection_state`). Consumers should treat `radio_ready === false` as “do not rely on live CI-V” (e.g. scope or tuning may be deferred or show last-known state).
+- **Web:** The Web UI and API expose `radio_ready`, `connection`, and
+  `radioHealth`. Consumers should treat `radio_ready === false` and
+  non-ready `radioHealth.readiness` as “do not rely on live CI-V” (e.g. scope or
+  tuning may be deferred or show last-known state).
 - **Rigctld:** Commands that hit the radio will get `ETIMEOUT` or connection errors if the radio is not responding; the server does not gate commands on `radio_ready`, but the circuit breaker will open after consecutive timeouts and fail commands quickly until recovery.
 
 The helper `radio_ready(radio)` in `web/runtime_helpers.py` normalizes readiness: it uses `radio.radio_ready` if it is a boolean, otherwise falls back to `radio.connected`; `None` is treated as not ready.

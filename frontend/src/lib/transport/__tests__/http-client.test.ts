@@ -187,6 +187,45 @@ describe('startPolling', () => {
     stop();
   });
 
+  it('calls callback when only healthRevision advances', async () => {
+    const first = makeState(42);
+    first.healthRevision = 1;
+    const second = makeState(42);
+    second.healthRevision = 2;
+    second.connection = { rigConnected: true, radioReady: false, controlConnected: true };
+    second.radioHealth = {
+      serverReachable: true,
+      radioLink: 'connected',
+      readiness: 'delayed',
+      likelyCause: 'radio_not_responding',
+      sinceMs: 1500,
+      lastError: null,
+    };
+    let index = 0;
+    globalThis.fetch = vi.fn().mockImplementation(() => {
+      const state = index++ === 0 ? first : second;
+      return Promise.resolve({
+        ok: true,
+        status: 200,
+        headers: { get: () => `"42-${state.healthRevision}"` },
+        json: () => Promise.resolve(state),
+      });
+    });
+
+    const { startPolling } = await import('../http-client');
+    const received: ServerState[] = [];
+    const stop = startPolling((s) => received.push(s), 200);
+
+    await flushMicrotasks();
+    vi.advanceTimersByTime(200);
+    await flushMicrotasks();
+
+    expect(received).toHaveLength(2);
+    expect(received[1].revision).toBe(42);
+    expect(received[1].healthRevision).toBe(2);
+    stop();
+  });
+
   it('does not crash on fetch error', async () => {
     globalThis.fetch = vi.fn().mockRejectedValue(new Error('network gone'));
 
@@ -256,6 +295,24 @@ describe('startPolling', () => {
     await flushMicrotasks();
 
     expect(getHttpConnected()).toBe(false);
+    stop();
+  });
+
+  it('classifies repeated HTTP failures as server_unreachable', async () => {
+    globalThis.fetch = vi.fn().mockRejectedValue(new Error('network gone'));
+
+    const { startPolling } = await import('../http-client');
+    const { getRadioHealth } = await import('../../stores/connection.svelte');
+
+    const stop = startPolling(() => {}, 10);
+
+    for (let i = 0; i < 3; i++) {
+      await flushMicrotasks();
+      vi.advanceTimersByTime(10);
+    }
+    await flushMicrotasks();
+
+    expect(getRadioHealth()?.likelyCause).toBe('server_unreachable');
     stop();
   });
 
