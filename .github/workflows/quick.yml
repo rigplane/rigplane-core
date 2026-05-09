@@ -32,11 +32,11 @@ jobs:
     timeout-minutes: 10
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Detect frontend changes
         id: filter
-        uses: dorny/paths-filter@v3
+        uses: dorny/paths-filter@v4
         with:
           filters: |
             frontend:
@@ -44,7 +44,7 @@ jobs:
               - 'src/rigplane/web/**'
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v5
+        uses: astral-sh/setup-uv@v8.1.0
         with:
           enable-cache: true
           cache-dependency-glob: |
@@ -67,7 +67,7 @@ jobs:
 
       - name: Set up Node.js
         if: steps.filter.outputs.frontend == 'true'
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v6
         with:
           node-version: '20'
           cache: 'npm'
@@ -107,7 +107,7 @@ jobs:
 
       - name: Update tests badge
         if: github.ref == 'refs/heads/main' && always()
-        uses: schneegans/dynamic-badges-action@v1.7.0
+        uses: schneegans/dynamic-badges-action@v1.8.0
         with:
           auth: ${{ secrets.GIST_TOKEN }}
           gistID: bce917f4007ac491e527e142564fbbae
@@ -118,7 +118,7 @@ jobs:
 
       - name: Update version badge
         if: github.ref == 'refs/heads/main' && always()
-        uses: schneegans/dynamic-badges-action@v1.7.0
+        uses: schneegans/dynamic-badges-action@v1.8.0
         with:
           auth: ${{ secrets.GIST_TOKEN }}
           gistID: bce917f4007ac491e527e142564fbbae
@@ -129,7 +129,7 @@ jobs:
 
       - name: Update mypy badge
         if: github.ref == 'refs/heads/main' && always()
-        uses: schneegans/dynamic-badges-action@v1.7.0
+        uses: schneegans/dynamic-badges-action@v1.8.0
         with:
           auth: ${{ secrets.GIST_TOKEN }}
           gistID: bce917f4007ac491e527e142564fbbae

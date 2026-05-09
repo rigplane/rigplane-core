@@ -25,7 +25,7 @@ jobs:
     timeout-minutes: 2
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Wave 2 rebrand grep gate
         run: .github/scripts/check-rebrand-allowlist.sh
