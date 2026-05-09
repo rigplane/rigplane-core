@@ -1914,7 +1914,7 @@ class WebServer:
         headers: dict[str, str] | None = None,
         reader: asyncio.StreamReader | None = None,
     ) -> None:
-        """Handle POST /api/v1/radio/{disconnect,connect,power}."""
+        """Handle POST /api/v1/radio/{disconnect,connect,power,cw/send,cw/stop}."""
         radio = self._radio
         if radio is None:
             body = json.dumps(
@@ -2012,9 +2012,134 @@ class WebServer:
                     self._radio_state.power_on = is_on
                 self._on_radio_state_change("powerstat_changed", {"power_on": is_on})
                 resp = {"status": "ok", "power": power_state}
+            elif path == "/api/v1/radio/cw/send":
+                body_bytes = b""
+                if reader is not None:
+                    cl = int((headers or {}).get("content-length", "0"))
+                    if cl > 0:
+                        read_result = await _read_capped_body(reader, cl)
+                        if read_result is None:
+                            err = json.dumps(
+                                {"error": "request_too_large"},
+                                separators=(",", ":"),
+                            ).encode()
+                            await _send_response(
+                                writer,
+                                413,
+                                "Content Too Large",
+                                err,
+                                {"Content-Type": "application/json"},
+                            )
+                            writer.close()
+                            return
+                        body_bytes = read_result
+                if not body_bytes:
+                    err = json.dumps(
+                        {
+                            "error": "missing_body",
+                            "message": "JSON body with 'text' required",
+                        },
+                        separators=(",", ":"),
+                    ).encode()
+                    await _send_response(
+                        writer,
+                        400,
+                        "Bad Request",
+                        err,
+                        {"Content-Type": "application/json"},
+                    )
+                    return
+                payload = json.loads(body_bytes)
+                text = payload.get("text") if isinstance(payload, dict) else None
+                if not isinstance(text, str):
+                    err = json.dumps(
+                        {
+                            "error": "invalid_text",
+                            "message": "text must be a string",
+                        },
+                        separators=(",", ":"),
+                    ).encode()
+                    await _send_response(
+                        writer,
+                        400,
+                        "Bad Request",
+                        err,
+                        {"Content-Type": "application/json"},
+                    )
+                    return
+                handler = ControlHandler(
+                    None,  # type: ignore[arg-type]
+                    radio,
+                    __version__,
+                    self._config.radio_model,
+                    server=self,
+                    read_only=self._config.read_only,
+                )
+                resp = await handler._enqueue_command(  # noqa: SLF001
+                    "send_cw_text",
+                    {"text": text},
+                )
+            elif path == "/api/v1/radio/cw/stop":
+                handler = ControlHandler(
+                    None,  # type: ignore[arg-type]
+                    radio,
+                    __version__,
+                    self._config.radio_model,
+                    server=self,
+                    read_only=self._config.read_only,
+                )
+                resp = await handler._enqueue_command(  # noqa: SLF001
+                    "stop_cw_text",
+                    {},
+                )
             else:
                 await _send_response(writer, 404, "Not Found", b"", {})
                 return
+        except PermissionError as exc:
+            body = json.dumps(
+                {"error": "read_only", "message": str(exc)},
+                separators=(",", ":"),
+            ).encode()
+            await _send_response(
+                writer,
+                403,
+                "Forbidden",
+                body,
+                {"Content-Type": "application/json"},
+            )
+            return
+        except ValueError as exc:
+            body = json.dumps(
+                {"error": "invalid_request", "message": str(exc)},
+                separators=(",", ":"),
+            ).encode()
+            await _send_response(
+                writer,
+                400,
+                "Bad Request",
+                body,
+                {"Content-Type": "application/json"},
+            )
+            return
+        except RuntimeError as exc:
+            message = str(exc)
+            status, reason, code = (
+                (409, "Conflict", "unsupported_command")
+                if "does not support" in message
+                else (500, "Internal Server Error", "command_failed")
+            )
+            body = json.dumps(
+                {"error": code, "message": message},
+                separators=(",", ":"),
+            ).encode()
+            await _send_response(
+                writer,
+                status,
+                reason,
+                body,
+                {"Content-Type": "application/json"},
+            )
+            return
         except Exception as exc:
             body = json.dumps(
                 {"error": str(exc)},

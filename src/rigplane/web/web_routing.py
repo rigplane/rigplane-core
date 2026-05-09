@@ -92,6 +92,8 @@ async def dispatch_http_request(
         "/api/v1/radio/disconnect",
         "/api/v1/radio/connect",
         "/api/v1/radio/power",
+        "/api/v1/radio/cw/send",
+        "/api/v1/radio/cw/stop",
     ):
         if method != "POST":
             await _send_response(writer, 405, "Method Not Allowed", b"", {})

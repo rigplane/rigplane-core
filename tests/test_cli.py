@@ -7,6 +7,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from rigplane.cli import (
+    _HOST_NOT_SET,
     _build_backend_config,
     _build_parser,
     _parse_frequency,
@@ -283,6 +284,14 @@ class TestPasswordResolution:
         assert "--pass" in err
         assert "ICOM_PASS" in err
 
+    def test_password_alias_matches_user_expectation(self, monkeypatch):
+        monkeypatch.delenv("ICOM_PASS", raising=False)
+        p = _build_parser()
+        with patch("sys.stderr", new_callable=io.StringIO) as mock_stderr:
+            args = p.parse_args(["--password", "cli-secret", "status"])
+        assert _resolve_password(args) == "cli-secret"
+        assert "--password" in mock_stderr.getvalue()
+
     def test_no_warning_without_cli_pass(self, monkeypatch, tmp_path):
         monkeypatch.setenv("ICOM_PASS", "env-secret")
         p = _build_parser()
@@ -328,6 +337,75 @@ class TestPasswordResolution:
         p = _build_parser()
         args = p.parse_args(["--timeout", "10", "status"])
         assert args.timeout == 10.0
+
+    def test_web_accepts_radio_connection_options_after_command(self, tmp_path):
+        pw_file = tmp_path / "pw.txt"
+        pw_file.write_text("secret\n", encoding="utf-8")
+
+        p = _build_parser()
+        args = p.parse_args(
+            [
+                "web",
+                "--radio-host",
+                "192.168.55.40",
+                "--radio-user",
+                "moroz",
+                "--radio-pass-file",
+                str(pw_file),
+                "--host",
+                "127.0.0.1",
+                "--port",
+                "8080",
+            ]
+        )
+
+        assert args.command == "web"
+        assert args.host == "192.168.55.40"
+        assert args.user == "moroz"
+        assert args.pass_file == str(pw_file)
+        assert args.web_host == "127.0.0.1"
+        assert args.web_port == 8080
+
+    def test_web_warns_when_host_looks_like_radio_ip(self):
+        p = _build_parser()
+        with patch("sys.stderr", new_callable=io.StringIO) as mock_stderr:
+            args = p.parse_args(["web", "--host", "192.168.55.40"])
+
+        assert args.web_host == "192.168.55.40"
+        assert args.host == _HOST_NOT_SET
+        assert "--radio-host" in mock_stderr.getvalue()
+
+    def test_discover_web_common_mistake_gets_human_hint(self):
+        p = _build_parser()
+        with patch("sys.stderr", new_callable=io.StringIO) as mock_stderr:
+            with pytest.raises(SystemExit):
+                p.parse_args(
+                    [
+                        "discover",
+                        "--backend",
+                        "lan",
+                        "--host",
+                        "192.168.55.40",
+                        "--user",
+                        "moroz",
+                        "--password",
+                        "secret",
+                        "web",
+                    ]
+                )
+
+        err = mock_stderr.getvalue()
+        assert "do not combine 'discover' and 'web'" in err
+        assert "rigplane web --radio-host 192.168.55.40" in err
+
+    def test_web_help_does_not_print_error_hint(self):
+        p = _build_parser()
+        with patch("sys.stderr", new_callable=io.StringIO) as mock_stderr:
+            with pytest.raises(SystemExit) as exc_info:
+                p.parse_args(["web", "--radio-host", "192.168.55.40", "--help"])
+
+        assert exc_info.value.code == 0
+        assert "Hint:" not in mock_stderr.getvalue()
 
     def test_no_command_prints_help(self):
         p = _build_parser()

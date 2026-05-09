@@ -26,6 +26,7 @@ import argparse
 import asyncio
 from dataclasses import replace
 import errno
+import ipaddress
 import json
 import logging
 from logging.handlers import RotatingFileHandler
@@ -262,8 +263,9 @@ class _DeprecatedPassAction(argparse.Action):
         values: Any,
         option_string: str | None = None,
     ) -> None:
+        flag = option_string or "--pass"
         print(
-            "DeprecationWarning: --pass exposes the password on the process "
+            f"DeprecationWarning: {flag} exposes the password on the process "
             "command line (visible in `ps aux` and shell history). "
             "Use $ICOM_PASS or --pass-file PATH instead.",
             file=sys.stderr,
@@ -296,14 +298,143 @@ def _resolve_password(args: argparse.Namespace) -> str:
     return _get_env("ICOM_PASS", "")
 
 
+_COMMAND_NAMES = {
+    "status",
+    "freq",
+    "mode",
+    "power",
+    "meter",
+    "audio",
+    "ptt",
+    "cw",
+    "power-on",
+    "power-off",
+    "att",
+    "preamp",
+    "antenna",
+    "date",
+    "time",
+    "dualwatch",
+    "tuner",
+    "levels",
+    "discover",
+    "serve",
+    "web",
+    "station",
+    "proxy",
+    "scope",
+    "diagnose",
+}
+
+_GLOBAL_CONNECTION_OPTIONS = {
+    "--host",
+    "--control-port",
+    "--port",
+    "--user",
+    "--pass",
+    "--password",
+    "--pass-file",
+    "--timeout",
+    "--backend",
+    "--serial-port",
+    "--serial-baud",
+    "--serial-ptt-mode",
+    "--rx-device",
+    "--tx-device",
+    "--model",
+    "--radio-addr",
+}
+
+
+def _argv_tokens(args: list[str] | None) -> list[str]:
+    return list(sys.argv[1:] if args is None else args)
+
+
+def _token_matches_option(token: str, options: set[str]) -> bool:
+    name = token.split("=", 1)[0]
+    return name in options
+
+
+def _first_command_index(argv: list[str]) -> int | None:
+    for index, token in enumerate(argv):
+        if token in _COMMAND_NAMES:
+            return index
+    return None
+
+
+def _has_global_connection_options_after_command(argv: list[str]) -> bool:
+    command_index = _first_command_index(argv)
+    if command_index is None:
+        return False
+    return any(
+        _token_matches_option(token, _GLOBAL_CONNECTION_OPTIONS)
+        for token in argv[command_index + 1 :]
+    )
+
+
+def _print_common_cli_hint(argv: list[str]) -> None:
+    if "discover" in argv and "web" in argv:
+        print(
+            "\nHint: do not combine 'discover' and 'web'. "
+            "'web' can auto-discover the radio, or you can pass the radio explicitly:\n"
+            "  rigplane web\n"
+            "  rigplane web --radio-host 192.168.55.40 --radio-user USER "
+            "--radio-pass-file /path/to/password\n",
+            file=sys.stderr,
+        )
+        return
+
+    if _has_global_connection_options_after_command(argv):
+        print(
+            "\nHint: radio connection options normally go before the command:\n"
+            "  rigplane --backend lan --host 192.168.55.40 --user USER "
+            "--pass-file /path/to/password web\n\n"
+            "For the web UI, the more readable form is also supported:\n"
+            "  rigplane web --radio-host 192.168.55.40 --radio-user USER "
+            "--radio-pass-file /path/to/password\n",
+            file=sys.stderr,
+        )
+
+
+def _looks_like_explicit_radio_ip(value: str) -> bool:
+    try:
+        address = ipaddress.ip_address(value)
+    except ValueError:
+        return False
+    return not (address.is_loopback or address.is_unspecified)
+
+
+def _warn_web_host_ambiguity(args: argparse.Namespace) -> None:
+    if getattr(args, "command", None) != "web":
+        return
+    if getattr(args, "host", _HOST_NOT_SET) != _HOST_NOT_SET:
+        return
+    web_host = getattr(args, "web_host", "")
+    if not web_host or not _looks_like_explicit_radio_ip(web_host):
+        return
+    print(
+        "Warning: 'rigplane web --host ...' sets the web server listen address, "
+        "not the radio IP. If you meant the radio, use "
+        "'rigplane web --radio-host ...' or 'rigplane --host ... web'.",
+        file=sys.stderr,
+    )
+
+
 class _RigplaneArgumentParser(argparse.ArgumentParser):
     def parse_args(
         self,
         args: list[str] | None = None,
         namespace: argparse.Namespace | None = None,
     ) -> argparse.Namespace:
-        parsed = super().parse_args(args, namespace)
+        argv = _argv_tokens(args)
+        try:
+            parsed = super().parse_args(args, namespace)
+        except SystemExit as exc:
+            if exc.code != 0:
+                _print_common_cli_hint(argv)
+            raise
         _apply_managed_runtime_defaults(parsed)
+        _warn_web_host_ambiguity(parsed)
         return parsed
 
 
@@ -335,7 +466,7 @@ def _build_parser() -> argparse.ArgumentParser:
         epilog=(
             "examples:\n"
             "  rigplane web                          # auto-discover radio, start web UI\n"
-            "  rigplane web --host 192.168.55.40     # explicit radio IP\n"
+            "  rigplane web --radio-host 192.168.55.40  # explicit radio IP\n"
             "  rigplane web --preset digimode        # bridge + rigctld + WSJT-X compat\n"
             "  rigplane web --bridge                 # web UI + audio bridge\n"
             "  rigplane serve                        # rigctld server only\n"
@@ -382,6 +513,16 @@ def _build_parser() -> argparse.ArgumentParser:
         help=(
             "Deprecated: exposes password in `ps aux`/shell history. "
             "Prefer $ICOM_PASS or --pass-file PATH."
+        ),
+    )
+    p.add_argument(
+        "--password",
+        dest="password_cli",
+        default=None,
+        action=_DeprecatedPassAction,
+        help=(
+            "Alias for --pass. Deprecated: exposes password in process list "
+            "and shell history. Prefer $ICOM_PASS or --pass-file PATH."
         ),
     )
     p.add_argument(
@@ -927,6 +1068,56 @@ def _build_parser() -> argparse.ArgumentParser:
         default=None,
         metavar="NAME",
         help=f"Apply a named preset ({', '.join(_PRESETS)}). User flags override preset values.",
+    )
+    web_radio = web_p.add_argument_group("radio connection")
+    web_radio.add_argument(
+        "--radio-host",
+        dest="host",
+        default=argparse.SUPPRESS,
+        metavar="HOST",
+        help="Radio IP/hostname for the web UI backend",
+    )
+    web_radio.add_argument(
+        "--radio-user",
+        dest="user",
+        default=argparse.SUPPRESS,
+        metavar="USER",
+        help="Radio username for the web UI backend",
+    )
+    web_radio.add_argument(
+        "--radio-pass-file",
+        dest="pass_file",
+        default=argparse.SUPPRESS,
+        metavar="PATH",
+        help="Read radio password from file",
+    )
+    web_radio.add_argument(
+        "--radio-password",
+        "--password",
+        dest="password_cli",
+        default=argparse.SUPPRESS,
+        action=_DeprecatedPassAction,
+        metavar="PASSWORD",
+        help=(
+            "Radio password. Deprecated: exposes password in process list "
+            "and shell history. Prefer --radio-pass-file."
+        ),
+    )
+    web_radio.add_argument(
+        "--radio-control-port",
+        dest="control_port",
+        type=int,
+        default=argparse.SUPPRESS,
+        metavar="PORT",
+        help="Radio control port (default: $ICOM_PORT or 50001)",
+    )
+    web_radio.add_argument(
+        "--radio-backend",
+        dest="backend",
+        choices=["lan", "serial", "yaesu-cat"],
+        default=argparse.SUPPRESS,
+        metavar="TYPE",
+        help="Radio backend type for the web UI backend",
     )
     web_p.add_argument(
         "--host",
