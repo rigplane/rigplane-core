@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "rigplane"
-version = "2.1.1"
+version = "2.1.2"
 description = "Python library for controlling Icom transceivers over LAN (UDP) — no wfview/hamlib required"
 readme = "README.md"
 license = "MIT"

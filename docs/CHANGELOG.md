@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.1.2] — 2026-05-09
+
+### Added
+- Web state now exposes classified radio health with separate server reachability, radio link, readiness, likely-cause, and health revision fields (#1500).
+
+### Changed
+- `/api/v1/state` ETags now include both radio state revision and health revision, so health-only transitions reach UI clients instead of being hidden behind `304 Not Modified` responses (#1501).
+- The web client accepts health-only state updates, stores radio health separately from legacy readiness flags, maps degraded causes into status-bar state, and blocks live-radio commands before optimistic updates while radio health is degraded (#1501, #1503).
+
+### Fixed
+- Radios with no prior runtime evidence now remain classified as `unknown` instead of being prematurely reported as `radio_not_responding` (#1503).
+
+### Docs
+- Documented IC-7610 VPN/tunnel MTU fragmentation symptoms and the `ICOM_AUDIO_SAMPLE_RATE=16000` low-bandwidth workaround (#1504).
+
+### CI
+- GitHub workflows were migrated to current Node 24-compatible action versions, and release-related docs/full-matrix workflows were manually validated after merge (#1499).
+
 ## [2.1.1] — 2026-05-09
 
 ### Added
@@ -1261,7 +1279,8 @@ These deprecation closures were announced in v0.19 and dropped on schedule.
 - Transport layer, authentication, CI-V commands, meters, PTT, keep-alive.
 - Clean-room Icom LAN UDP protocol implementation.
 
-[Unreleased]: https://github.com/rigplane/rigplane-core/compare/v2.1.1...HEAD
+[Unreleased]: https://github.com/rigplane/rigplane-core/compare/v2.1.2...HEAD
+[2.1.2]: https://github.com/rigplane/rigplane-core/compare/v2.1.1...v2.1.2
 [2.1.1]: https://github.com/rigplane/rigplane-core/compare/v2.1.0...v2.1.1
 [2.1.0]: https://github.com/rigplane/rigplane-core/compare/v2.0.3...v2.1.0
 [2.0.3]: https://github.com/rigplane/rigplane-core/compare/v2.0.2...v2.0.3
