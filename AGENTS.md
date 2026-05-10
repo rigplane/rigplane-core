@@ -61,6 +61,36 @@ Default rule for agents:
 See `docs/internals/github-project-workflow.md` for the exact CLI and UI
 workflow.
 
+## Multi-agent Git hygiene
+
+This repo is developed from multiple machines and by multiple agents. Before
+editing:
+
+- run `git fetch --all --tags --prune`;
+- inspect `git status --short --branch`;
+- do not work directly on `main`;
+- use `codex/<issue-or-task>` branches for agent work;
+- use `git pull --ff-only --tags` only on clean branches with a normal upstream;
+- do not reset, clean, delete, or rebase uncertain work without explicit user
+  approval.
+
+Use the global `repo-hygiene` skill for cross-repo inventory and cleanup.
+
+## Protected main and review gate
+
+`main` is protected. Changes should land through PRs.
+
+Every non-trivial PR requires independent agent review before merge. The
+implementation agent may not be the review agent. The review must be visible in
+the PR and include either `Agent Review: PASS` or `Agent Review: BLOCKED`.
+
+## Release branches
+
+Use release branches only when a public/core release needs stabilization while
+`main` continues moving. Tags remain the source of truth for published
+artifacts. Hotfixes made on a release branch must be merged or cherry-picked
+back to `main`.
+
 ## Engineering rules
 
 - Follow `CLAUDE.md` for commands, architecture, testing, and workflow gates.
