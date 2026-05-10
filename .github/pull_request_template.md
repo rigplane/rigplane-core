@@ -11,9 +11,11 @@
 
 ## Agent Review
 
-- [ ] Independent agent review completed before merge
+- [ ] Independent agent review comment posted before merge
 - Reviewer:
 - Result: `Agent Review: PASS` / `Agent Review: BLOCKED`
+- If BLOCKED: include concrete problems, file/line references, risks, required
+  fixes, and checks to rerun.
 
 ## Notes
 

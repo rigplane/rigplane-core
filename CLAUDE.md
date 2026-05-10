@@ -120,9 +120,26 @@ Rules:
   approval;
 - report or snapshot dirty trees before sync.
 
-`main` is protected. Non-trivial PRs require independent agent review before
-merge. The implementation agent cannot self-review. The review must be visible
-in the PR and include either `Agent Review: PASS` or `Agent Review: BLOCKED`.
+`main` is protected. RigPlane uses `.github/workflows/agent-review-gate.yml`
+as the standard PR automation gate. The workflow passes only after a normal PR
+comment contains `Agent Review: PASS` for the current PR head; use the required
+commit status `Agent Review Gate` instead of GitHub required approving reviews,
+because same-user approval restrictions break automated agent flow.
+
+Non-trivial PRs require independent agent review before merge. The
+implementation agent cannot self-review. `Agent Review: PASS` means the PR may
+merge once required checks are green, the PASS comment is fresh for the current
+head, and the PR is not draft. `Agent Review: BLOCKED` must include concrete
+problems, file/line references where applicable, risk, required fixes, and
+checks to run. The implementation agent must fix
+BLOCKED feedback, push updates, and rerun or wait for checks before merge.
+
+A failed `Agent Review Gate` without BLOCKED feedback usually means no fresh
+PASS comment exists for the current head; perform or refresh the review instead
+of skipping the PR. Cancelled checks must be rerun with `gh run rerun <run-id>`
+or a new push, then watched to completion. Draft PRs must not merge: determine
+why the PR is draft, finish the missing work, run `gh pr ready`, then complete
+checks and review.
 
 Release branches are exceptional: use `release/<major.minor>` only when a
 public release needs stabilization while `main` moves ahead. Tags remain the
