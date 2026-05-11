@@ -46,6 +46,7 @@ These routes are part of the Pro/supervisor compatibility surface:
 | `GET` | `/healthz` | Process/API liveness, no API token required |
 | `GET` | `/readyz` | Station readiness, returns `503` until radio is ready |
 | `GET` | `/api/v1/runtime` | Process, bind, radio, rigctld, bridge, and diagnostic runtime status |
+| `GET` | `/api/v1/station` | Friendly station-server identity, readiness, and next-action status |
 | `GET` | `/api/v1/info` | Runtime model/capability summary |
 | `GET` | `/api/v1/state` | Canonical current state snapshot |
 | `GET` | `/api/v1/capabilities` | Full profile-backed capabilities |
@@ -147,6 +148,13 @@ When auth is configured, this endpoint requires the same bearer token as other
     "controlConnected": true,
     "radioReady": true
   },
+  "station": {
+    "readiness": "ready_with_radio",
+    "radioAvailable": true,
+    "backend": "rigplane",
+    "authRequired": true,
+    "message": "Station server is ready with an attached radio."
+  },
   "rigctld": {
     "enabled": true,
     "address": "127.0.0.1:4532"
@@ -158,6 +166,49 @@ When auth is configured, this endpoint requires the same bearer token as other
   "lastError": null
 }
 ```
+
+## `GET /api/v1/station`
+
+Friendly station-server status for desktop supervisors and setup tools. When
+auth is configured, this endpoint requires the same bearer token as other
+`/api/*` routes.
+
+```json
+{
+  "schema": "rigplane.station.status.v1",
+  "service": "rigplane",
+  "kind": "station_server",
+  "version": "2.0.3",
+  "displayName": "IC-7610",
+  "instanceId": null,
+  "baseUrl": "http://127.0.0.1:58421",
+  "healthUrl": "http://127.0.0.1:58421/healthz",
+  "readinessUrl": "http://127.0.0.1:58421/readyz",
+  "runtimeUrl": "http://127.0.0.1:58421/api/v1/runtime",
+  "stationUrl": "http://127.0.0.1:58421/api/v1/station",
+  "station": {
+    "readiness": "ready_with_radio",
+    "radioAvailable": true,
+    "backend": "rigplane",
+    "authRequired": true,
+    "message": "Station server is ready with an attached radio."
+  },
+  "radio": {
+    "model": "IC-7610",
+    "connected": true,
+    "controlConnected": true,
+    "radioReady": true
+  }
+}
+```
+
+Current readiness values are:
+
+- `ready_with_radio`
+- `radio_powered_off_or_unreachable`
+- `no_usb_radio_connected`
+- `lan_radio_unsupported_or_not_found`
+- `requires_configuration_or_auth`
 
 Managed runtimes also emit a single machine-readable startup event to stdout
 after the web listener has bound successfully. Supervisors should use this JSON

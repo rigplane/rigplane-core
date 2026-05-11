@@ -88,6 +88,17 @@ class TestDiscoveryResponder:
         assert data["radio"]["model"] == "IC-7610"
         assert data["radio"]["connected"] is True
         assert data["name"] == "IC-7610"
+        assert data["schema"] == "rigplane.station.discovery.v1"
+        assert data["kind"] == "station_server"
+        assert data["displayName"] == "IC-7610"
+        assert data["urls"]["base"].startswith("http://")
+        assert data["urls"]["health"].endswith("/healthz")
+        assert data["urls"]["readiness"].endswith("/readyz")
+        assert data["urls"]["runtime"].endswith("/api/v1/runtime")
+        assert data["urls"]["station"].endswith("/api/v1/station")
+        assert data["station"]["readiness"] == "ready_with_radio"
+        assert data["station"]["radioAvailable"] is True
+        assert data["station"]["authRequired"] is False
 
     async def test_ignores_garbage(self, responder: DiscoveryResponder) -> None:
         result = await _query(responder.port, b"hello world", timeout=0.3)
@@ -105,15 +116,18 @@ class TestDiscoveryResponder:
         data = json.loads(raw)
         assert data["radio"] is None
         assert data["name"] == "RigPlane"
+        assert data["displayName"] == "RigPlane"
+        assert data["station"]["readiness"] == "requires_configuration_or_auth"
+        assert data["station"]["radioAvailable"] is False
         assert data["url"].startswith("https://")
         assert ":9090" in data["url"]
 
-    async def test_response_fits_single_udp_packet(
+    async def test_response_fits_udp_datagram_budget(
         self, responder: DiscoveryResponder
     ) -> None:
         raw = await _query(responder.port, MAGIC)
         assert raw is not None
-        assert len(raw) <= 512
+        assert len(raw) <= 1200
 
     async def test_stop_idempotent(self, responder: DiscoveryResponder) -> None:
         await responder.stop()

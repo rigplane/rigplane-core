@@ -143,13 +143,23 @@ async def start_web_server(server: WebServer) -> None:
         def _radio_provider() -> RadioInfo | None:
             if radio is None:
                 return None
+            radio_payload = server._radio_runtime_payload()
+            station_payload = server._station_readiness_payload()
             return RadioInfo(
-                model=getattr(radio, "model", None) or server._config.radio_model,
-                connected=bool(getattr(radio, "connected", False)),
+                model=str(radio_payload["model"]),
+                connected=bool(radio_payload["connected"]),
+                control_connected=bool(radio_payload["controlConnected"]),
+                radio_ready=bool(radio_payload["radioReady"]),
+                backend=station_payload["backend"]
+                if isinstance(station_payload["backend"], str)
+                else None,
+                readiness=str(station_payload["readiness"]),
+                message=str(station_payload["message"]),
+                auth_required=bool(station_payload["authRequired"]),
             )
 
         server._discovery = DiscoveryResponder(
-            web_port=server._config.port,
+            web_port=server._runtime_bind_payload()["port"],
             tls=server._config.tls,
             radio_provider=_radio_provider,
             discovery_port=server._config.discovery_port,

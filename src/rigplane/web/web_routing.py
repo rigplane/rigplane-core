@@ -238,6 +238,8 @@ async def dispatch_http_request(
 
     if path == "/api/v1/info":
         await server._serve_info(writer, headers)
+    elif path == "/api/v1/station":
+        await server._serve_station_status(writer, headers)
     elif path == "/api/v1/runtime":
         await server._serve_runtime(writer, headers)
     elif path == "/api/v1/state":

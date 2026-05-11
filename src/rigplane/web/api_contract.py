@@ -46,6 +46,12 @@ STABLE_HTTP_ENDPOINTS: Final[tuple[HttpEndpoint, ...]] = (
     },
     {
         "method": "GET",
+        "path": "/api/v1/station",
+        "purpose": "friendly station-server status",
+        "auth": "bearer",
+    },
+    {
+        "method": "GET",
         "path": "/api/v1/info",
         "purpose": "runtime model and capability summary",
         "auth": "bearer",
@@ -128,9 +134,25 @@ RESPONSE_FIELD_CONTRACTS: Final[dict[str, ResponseFieldContract]] = {
             "authRequired",
             "backend",
             "radio",
+            "station",
             "rigctld",
             "bridge",
             "lastError",
+        )
+    },
+    "/api/v1/station": {
+        "required": (
+            "schema",
+            "service",
+            "kind",
+            "version",
+            "displayName",
+            "baseUrl",
+            "healthUrl",
+            "readinessUrl",
+            "runtimeUrl",
+            "station",
+            "radio",
         )
     },
     "/api/v1/info": {

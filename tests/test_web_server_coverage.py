@@ -257,17 +257,20 @@ async def test_handle_http_routes_and_405_404() -> None:
     srv2._serve_info = AsyncMock()
     srv2._serve_state = AsyncMock()
     srv2._serve_capabilities = AsyncMock()
+    srv2._serve_station_status = AsyncMock()
     srv2._serve_static = AsyncMock()
     with patch("rigplane.web.server._send_response", new=AsyncMock()) as send_resp2:
         await srv2._handle_http(writer2, "GET", "/api/v1/info")  # noqa: SLF001
         await srv2._handle_http(writer2, "GET", "/api/v1/state")  # noqa: SLF001
         await srv2._handle_http(writer2, "GET", "/api/v1/capabilities")  # noqa: SLF001
+        await srv2._handle_http(writer2, "GET", "/api/v1/station")  # noqa: SLF001
         await srv2._handle_http(writer2, "GET", "/")  # noqa: SLF001
         await srv2._handle_http(writer2, "GET", "/file.js")  # noqa: SLF001
         await srv2._handle_http(writer2, "GET", "relative-path")  # noqa: SLF001
     assert srv2._serve_info.await_count == 1
     assert srv2._serve_state.await_count == 1
     assert srv2._serve_capabilities.await_count == 1
+    assert srv2._serve_station_status.await_count == 1
     assert srv2._serve_static.await_count == 2
     send_resp2.assert_awaited_once()
 
@@ -350,10 +353,48 @@ async def test_runtime_endpoint_reports_process_bind_radio_and_bridge_status() -
         "controlConnected": True,
         "radioReady": True,
     }
+    assert data["station"]["readiness"] == "ready_with_radio"
+    assert data["station"]["radioAvailable"] is True
+    assert data["station"]["backend"] == "rigplane"
     assert data["rigctld"] == {"enabled": True, "address": "127.0.0.1:4532"}
     assert data["bridge"]["running"] is True
     assert data["bridge"]["stats"] == {"rx_frames": 3, "tx_frames": 4}
     assert data["lastError"] is None
+    srv._server = None  # noqa: SLF001
+
+
+@pytest.mark.asyncio
+async def test_station_endpoint_reports_selection_metadata_and_guidance() -> None:
+    serial_radio = SimpleNamespace(
+        model="IC-7300",
+        backend_id="icom_serial",
+        connected=False,
+        control_connected=False,
+        radio_ready=False,
+        capabilities=set(),
+    )
+    srv = WebServer(serial_radio, WebConfig(host="127.0.0.1", port=0))
+    srv._server = _FakeAsyncServer()  # noqa: SLF001
+    writer = _FakeWriter()
+
+    await srv._handle_http(writer, "GET", "/api/v1/station")  # noqa: SLF001
+
+    status, data = _response_json(writer)
+    assert status == 200
+    assert data["schema"] == "rigplane.station.status.v1"
+    assert data["displayName"] == "IC-7300"
+    assert data["baseUrl"] == "http://127.0.0.1:4242"
+    assert data["healthUrl"] == "http://127.0.0.1:4242/healthz"
+    assert data["runtimeUrl"] == "http://127.0.0.1:4242/api/v1/runtime"
+    assert data["station"]["readiness"] == "no_usb_radio_connected"
+    assert data["station"]["radioAvailable"] is False
+    assert "Connect the radio by USB" in data["station"]["message"]
+    assert data["radio"] == {
+        "model": "IC-7300",
+        "connected": False,
+        "controlConnected": False,
+        "radioReady": False,
+    }
     srv._server = None  # noqa: SLF001
 
 

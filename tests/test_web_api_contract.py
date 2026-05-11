@@ -40,6 +40,7 @@ def test_pro_web_api_contract_lists_stable_surface() -> None:
     assert ("GET", "/healthz") in http
     assert ("GET", "/readyz") in http
     assert ("GET", "/api/v1/runtime") in http
+    assert ("GET", "/api/v1/station") in http
     assert ("GET", "/api/v1/info") in http
     assert ("GET", "/api/v1/state") in http
     assert ("GET", "/api/v1/capabilities") in http
@@ -83,6 +84,7 @@ async def test_stable_http_payloads_satisfy_required_field_contract() -> None:
         ("/healthz", 200),
         ("/readyz", 503),
         ("/api/v1/runtime", 200),
+        ("/api/v1/station", 200),
         ("/api/v1/info", 200),
         ("/api/v1/state", 200),
         ("/api/v1/capabilities", 200),

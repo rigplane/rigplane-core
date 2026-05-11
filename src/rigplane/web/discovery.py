@@ -35,6 +35,12 @@ class RadioInfo:
 
     model: str
     connected: bool
+    control_connected: bool = False
+    radio_ready: bool = False
+    backend: str | None = None
+    readiness: str | None = None
+    message: str | None = None
+    auth_required: bool = False
 
 
 class _DiscoveryProtocol(asyncio.DatagramProtocol):
@@ -153,12 +159,46 @@ class DiscoveryResponder:
             name = "RigPlane"
 
         payload: dict[str, object] = {
+            "schema": "rigplane.station.discovery.v1",
             "service": "rigplane",
+            "kind": "station_server",
             "version": __version__,
             "url": f"{scheme}://{local_ip}:{self._web_port}",
+            "urls": {
+                "base": f"{scheme}://{local_ip}:{self._web_port}",
+                "health": f"{scheme}://{local_ip}:{self._web_port}/healthz",
+                "readiness": f"{scheme}://{local_ip}:{self._web_port}/readyz",
+                "runtime": (f"{scheme}://{local_ip}:{self._web_port}/api/v1/runtime"),
+                "station": (f"{scheme}://{local_ip}:{self._web_port}/api/v1/station"),
+            },
             "name": name,
+            "displayName": name,
+            "instanceId": None,
+            "station": {
+                "readiness": (
+                    radio_info.readiness
+                    if radio_info and radio_info.readiness
+                    else (
+                        "ready_with_radio"
+                        if radio_info
+                        and (radio_info.radio_ready or radio_info.connected)
+                        else "requires_configuration_or_auth"
+                    )
+                ),
+                "radioAvailable": bool(
+                    radio_info and (radio_info.radio_ready or radio_info.connected)
+                ),
+                "backend": radio_info.backend if radio_info else None,
+                "authRequired": bool(radio_info.auth_required) if radio_info else False,
+                "message": radio_info.message if radio_info else None,
+            },
             "radio": (
-                {"model": radio_info.model, "connected": radio_info.connected}
+                {
+                    "model": radio_info.model,
+                    "connected": radio_info.connected,
+                    "controlConnected": radio_info.control_connected,
+                    "radioReady": radio_info.radio_ready,
+                }
                 if radio_info
                 else None
             ),

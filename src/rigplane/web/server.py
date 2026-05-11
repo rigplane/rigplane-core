@@ -1386,6 +1386,85 @@ class WebServer:
         scheme = "https" if self._config.tls else "http"
         return f"{scheme}://{bind['host']}:{bind['port']}"
 
+    def _radio_runtime_payload(self) -> dict[str, Any]:
+        radio = self._radio
+        raw_connected = (
+            getattr(radio, "connected", False) if radio is not None else False
+        )
+        connected = raw_connected if isinstance(raw_connected, bool) else False
+        raw_control_connected = (
+            getattr(radio, "control_connected", False) if radio is not None else False
+        )
+        control_connected = (
+            raw_control_connected if isinstance(raw_control_connected, bool) else False
+        )
+        return {
+            "model": getattr(radio, "model", self._config.radio_model)
+            if radio is not None
+            else self._config.radio_model,
+            "connected": connected,
+            "controlConnected": control_connected,
+            "radioReady": self._radio_ready(),
+        }
+
+    def _station_readiness_payload(self) -> dict[str, Any]:
+        radio = self._radio
+        backend = getattr(radio, "backend_id", None) if radio is not None else None
+        radio_payload = self._radio_runtime_payload()
+        health = self._build_radio_health()
+        if radio_payload["radioReady"]:
+            readiness = "ready_with_radio"
+            message = "Station server is ready with an attached radio."
+        elif radio is None:
+            readiness = "requires_configuration_or_auth"
+            message = "Start the station server with a configured radio target."
+        elif backend in {"icom_serial", "yaesu_cat"}:
+            readiness = "no_usb_radio_connected"
+            message = "Connect the radio by USB and confirm serial permissions."
+        elif backend == "rigplane":
+            likely = health.get("likelyCause")
+            readiness = (
+                "radio_powered_off_or_unreachable"
+                if likely in {"radio_powered_off_likely", "radio_not_responding"}
+                else "lan_radio_unsupported_or_not_found"
+            )
+            message = "Power on the radio and confirm it is reachable on the LAN."
+        else:
+            readiness = "requires_configuration_or_auth"
+            message = "Configure a supported radio target before using this station."
+        return {
+            "readiness": readiness,
+            "radioAvailable": bool(radio_payload["radioReady"]),
+            "backend": backend,
+            "health": health,
+            "authRequired": bool(self._config.auth_token),
+            "message": message,
+        }
+
+    def _station_status_payload(self) -> dict[str, Any]:
+        base_url = self._runtime_base_url()
+        radio_payload = self._radio_runtime_payload()
+        display_name = (
+            radio_payload["model"]
+            if radio_payload["model"]
+            else self._config.radio_model
+        )
+        return {
+            "schema": "rigplane.station.status.v1",
+            "service": "rigplane",
+            "kind": "station_server",
+            "version": __version__,
+            "displayName": display_name,
+            "instanceId": None,
+            "baseUrl": base_url,
+            "healthUrl": f"{base_url}/healthz",
+            "readinessUrl": f"{base_url}/readyz",
+            "runtimeUrl": f"{base_url}/api/v1/runtime",
+            "stationUrl": f"{base_url}/api/v1/station",
+            "station": self._station_readiness_payload(),
+            "radio": radio_payload,
+        }
+
     def startup_event_payload(self) -> dict[str, Any]:
         base_url = self._runtime_base_url()
         return {
@@ -1424,16 +1503,6 @@ class WebServer:
         self, writer: asyncio.StreamWriter, headers: dict[str, str] | None = None
     ) -> None:
         radio = self._radio
-        raw_connected = (
-            getattr(radio, "connected", False) if radio is not None else False
-        )
-        connected = raw_connected if isinstance(raw_connected, bool) else False
-        raw_control_connected = (
-            getattr(radio, "control_connected", False) if radio is not None else False
-        )
-        control_connected = (
-            raw_control_connected if isinstance(raw_control_connected, bool) else False
-        )
         body = json.dumps(
             {
                 "pid": os.getpid(),
@@ -1445,14 +1514,8 @@ class WebServer:
                 "backend": getattr(radio, "backend_id", None)
                 if radio is not None
                 else None,
-                "radio": {
-                    "model": getattr(radio, "model", self._config.radio_model)
-                    if radio is not None
-                    else self._config.radio_model,
-                    "connected": connected,
-                    "controlConnected": control_connected,
-                    "radioReady": self._radio_ready(),
-                },
+                "radio": self._radio_runtime_payload(),
+                "station": self._station_readiness_payload(),
                 "rigctld": {
                     "enabled": self._runtime_rigctld_addr is not None,
                     "address": self._runtime_rigctld_addr,
@@ -1460,6 +1523,15 @@ class WebServer:
                 "bridge": self._runtime_bridge_payload(),
                 "lastError": self._runtime_last_error,
             },
+            separators=(",", ":"),
+        ).encode()
+        await _send_json(writer, body, headers)
+
+    async def _serve_station_status(
+        self, writer: asyncio.StreamWriter, headers: dict[str, str] | None = None
+    ) -> None:
+        body = json.dumps(
+            self._station_status_payload(),
             separators=(",", ":"),
         ).encode()
         await _send_json(writer, body, headers)

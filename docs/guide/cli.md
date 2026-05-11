@@ -669,6 +669,14 @@ After the web listener binds, `station` writes one JSON startup event to stdout:
 Use this event for supervisor discovery when `--port 0` asks the OS to allocate
 the actual port.
 
+When UDP discovery is enabled, `rigplane station` and `rigplane web` answer
+`RIGPLANE_DISCOVER\n` broadcasts with a `rigplane.station.discovery.v1` JSON
+payload. The payload includes the base URL, `/healthz`, `/readyz`,
+`/api/v1/runtime`, `/api/v1/station`, version, display name, radio model,
+backend, auth-required flag, and a readiness value such as
+`ready_with_radio`, `no_usb_radio_connected`, or
+`radio_powered_off_or_unreachable`.
+
 ### `audio bridge`
 
 Route radio audio to/from a virtual audio device (BlackHole, Loopback, VB-Audio).
