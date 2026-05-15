@@ -44,6 +44,12 @@ ALLOWLIST=(
     # Intentional historical / migration references.
     'README.md'
     'docs/CHANGELOG.md'
+    # User-facing migration guide for v1.x icom-lan -> v2.x rigplane;
+    # the legacy names are the literal subject of the page.
+    'docs/migrate.md'
+    # mkdocs nav label for the migration guide reads
+    # "Migration from icom-lan" -- legacy name is intentional.
+    'mkdocs.yml'
     'tests/golden/wsjtx_dual_rx_session.txt'
     # pyproject.toml — preserved console-script alias `icom-lan` (line 43),
     # hatch packages list keeping `src/icom_lan` shim, ruff per-file-ignores
