@@ -28,7 +28,11 @@ concurrency:
 
 jobs:
   quick:
-    runs-on: ubuntu-latest
+    # Self-hosted Mac mini build-tier runner. Python 3.11+/uv/Node 24/Rust
+    # and the Tauri/audio system libs are pre-baked in the image, so this
+    # job avoids the ubuntu-latest pickup + apt install passes. Operator
+    # doc: rigplane-tower/docs/development/mac-mini-self-hosted-runners.md.
+    runs-on: [self-hosted, linux, build]
     timeout-minutes: 10
 
     steps:
