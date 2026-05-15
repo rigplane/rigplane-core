@@ -81,6 +81,7 @@ nav:
   - Home: index.md
   - Getting Started:
       - Installation: guide/installation.md
+      - Migration from icom-lan: migrate.md
       - Quick Start: guide/quickstart.md
       - CLI Reference: guide/cli.md
       - Configuration: guide/configuration.md
