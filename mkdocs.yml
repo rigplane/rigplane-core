@@ -4,6 +4,18 @@ site_url: https://rigplane.dev/
 repo_url: https://github.com/rigplane/rigplane-core
 repo_name: rigplane/rigplane-core
 
+# Exclude internal working docs from the published site and sitemap.
+# These pages exist in the repo for contributors but are not meant for
+# end users or search indexing.
+exclude_docs: |
+  EXTENDED_PROTOCOL_RESEARCH.md
+  architecture/
+  contracts/
+  operations/
+  parity/
+  plans/
+  internals/rfc-audio-v1-mini.md
+
 theme:
   name: material
   custom_dir: docs/overrides
@@ -103,12 +115,14 @@ nav:
       - Exceptions: api/exceptions.md
       - Backends: api/backends.md
       - Icom 7610 Backend: api/backends-icom7610.md
+      - Icom 7610 Drivers: api/backends-icom7610-drivers.md
       - Rig Loader: api/rig-loader.md
       - rigctld: api/rigctld.md
       - Scope: api/scope.md
       - Web: api/web.md
   - Internals:
       - Architecture: internals/architecture.md
+      - Project Overview: PROJECT.md
       - Protocol Deep Dive: internals/protocol.md
       - Radio Protocol: radio-protocol.md
       - Reliability semantics: internals/reliability-semantics.md
