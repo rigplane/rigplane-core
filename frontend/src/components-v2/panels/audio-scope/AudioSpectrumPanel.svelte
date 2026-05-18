@@ -44,8 +44,10 @@
 <style>
   .audio-spectrum-panel {
     width: 100%;
-    height: 100%;
+    aspect-ratio: 2 / 1;
+    height: auto;
     min-height: 80px;
+    max-height: 180px;
     background: var(--panel, #121922);
     border: 1px solid var(--panel-border, #1e293b);
     border-radius: var(--radius, 8px);
