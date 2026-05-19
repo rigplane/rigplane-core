@@ -698,6 +698,69 @@ async def test_broadcast_notification_full_queue_no_crash() -> None:
     assert q.qsize() == 1  # queue still has the old item, notification was dropped
 
 
+@pytest.mark.asyncio
+async def test_broadcast_notification_includes_reason_code_when_set() -> None:
+    """broadcast_notification emits the optional `code` field for i18n resolution.
+
+    Wire-schema decision (RP-ML-005): the payload is additive — `code` and
+    `params` are present only when the caller supplies them, so legacy
+    consumers that only read `message` keep working.
+    """
+    srv = WebServer()
+    q: asyncio.Queue[dict] = asyncio.Queue()
+    srv.register_control_event_queue(q)
+
+    srv.broadcast_notification(
+        "success",
+        "Radio connected",
+        "connection",
+        code="radioConnected",
+    )
+
+    n = q.get_nowait()
+    assert n["type"] == "notification"
+    assert n["level"] == "success"
+    assert n["message"] == "Radio connected"
+    assert n["category"] == "connection"
+    assert n["code"] == "radioConnected"
+    assert "params" not in n
+
+
+@pytest.mark.asyncio
+async def test_broadcast_notification_threads_params_through() -> None:
+    """broadcast_notification copies `params` into the payload when provided."""
+    srv = WebServer()
+    q: asyncio.Queue[dict] = asyncio.Queue()
+    srv.register_control_event_queue(q)
+
+    srv.broadcast_notification(
+        "info",
+        "An update is available: 2.1.0.",
+        "system",
+        code="updateAvailable",
+        params={"version": "2.1.0"},
+    )
+
+    n = q.get_nowait()
+    assert n["code"] == "updateAvailable"
+    assert n["params"] == {"version": "2.1.0"}
+
+
+@pytest.mark.asyncio
+async def test_broadcast_notification_omits_code_for_legacy_path() -> None:
+    """Calls without an explicit `code` keep the legacy English-only shape."""
+    srv = WebServer()
+    q: asyncio.Queue[dict] = asyncio.Queue()
+    srv.register_control_event_queue(q)
+
+    srv.broadcast_notification("info", "Legacy notification")
+
+    n = q.get_nowait()
+    assert "code" not in n
+    assert "params" not in n
+    assert n["message"] == "Legacy notification"
+
+
 # ---------------------------------------------------------------------------
 # Sprint 0B: revision counter + updatedAt (#158)
 # ---------------------------------------------------------------------------

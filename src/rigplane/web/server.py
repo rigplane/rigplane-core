@@ -727,13 +727,36 @@ class WebServer:
         level: str,
         message: str,
         category: str = "system",
+        *,
+        code: str | None = None,
+        params: dict[str, Any] | None = None,
     ) -> None:
         """Broadcast a notification to all connected WebSocket clients.
 
         Args:
             level: Severity level — "info", "warning", "error", or "success".
-            message: Human-readable notification text.
-            category: Logical category — "connection", "dx_cluster", "bridge", "system".
+            message: Legacy human-readable notification text. Kept as a stable
+                English fallback for out-of-tree consumers that have not yet
+                migrated to ``code``-based resolution. The in-repo Svelte
+                frontend ignores this when ``code`` is set, and resolves the
+                localized string from ``core.toast.<code>`` via
+                ``messageFromReasonCode`` (RP-ML-005). New callers should pass
+                ``code`` plus an English-stable ``message`` for log/wire
+                correlation.
+            category: Logical category — "connection", "dx_cluster", "bridge",
+                "system".
+            code: Optional stable reason code (lowerCamelCase ASCII) the
+                frontend resolves into a localized message. When omitted, the
+                ``message`` field is the only display source (legacy path).
+            params: Optional named-placeholder substitutions for the localized
+                message. Values must already be canonical English (frequencies,
+                radio names, protocol values); the i18n layer never reformats
+                interpolated values (strategy glossary §4.3).
+
+        Wire schema (additive, backward compatible):
+            ``{type: "notification", level, message, category[, code, params]}``
+
+        Existing clients that only read ``message`` continue to work unchanged.
         """
         notification: dict[str, Any] = {
             "type": "notification",
@@ -741,6 +764,10 @@ class WebServer:
             "message": message,
             "category": category,
         }
+        if code is not None:
+            notification["code"] = code
+        if params:
+            notification["params"] = dict(params)
         for q in list(self._control_event_queues):
             try:
                 q.put_nowait(notification)
@@ -785,10 +812,18 @@ class WebServer:
         self._broadcast_state_update()
         if name == "connection_state":
             if data.get("connected"):
-                self.broadcast_notification("success", "Radio connected", "connection")
+                self.broadcast_notification(
+                    "success",
+                    "Radio connected",
+                    "connection",
+                    code="radioConnected",
+                )
             else:
                 self.broadcast_notification(
-                    "warning", "Radio disconnected", "connection"
+                    "warning",
+                    "Radio disconnected",
+                    "connection",
+                    code="radioDisconnected",
                 )
 
     def _on_radio_reconnect(self) -> None:
@@ -1049,14 +1084,24 @@ class WebServer:
             retry_base_delay=retry_base_delay,
         )
         await self._audio_bridge.start()
-        self.broadcast_notification("success", "Audio bridge started", "bridge")
+        self.broadcast_notification(
+            "success",
+            "Audio bridge started",
+            "bridge",
+            code="audioBridgeStarted",
+        )
 
     async def stop_audio_bridge(self) -> None:
         """Stop the audio bridge."""
         if self._audio_bridge is not None:
             await self._audio_bridge.stop()
             self._audio_bridge = None
-            self.broadcast_notification("info", "Audio bridge stopped", "bridge")
+            self.broadcast_notification(
+                "info",
+                "Audio bridge stopped",
+                "bridge",
+                code="audioBridgeStopped",
+            )
 
     @property
     def audio_bridge_stats(self) -> dict[str, Any] | None:
