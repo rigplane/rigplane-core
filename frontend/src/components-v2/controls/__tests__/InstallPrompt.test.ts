@@ -7,6 +7,8 @@ import {
   hasInstallButton,
   isStandalone,
 } from '../install-prompt-utils';
+import { setLocale } from '$lib/i18n';
+import { _resetLocale } from '$lib/i18n/store.svelte';
 
 // jsdom localStorage may be incomplete; provide a working mock
 const storage = new Map<string, string>();
@@ -72,6 +74,15 @@ describe('detectPlatform', () => {
 // ── Instructions ──────────────────────────────────────────────────────────
 
 describe('getInstruction', () => {
+  // These assertions are tied to the en-US source catalog. Pin the
+  // locale here so the test does not pick up a translated value from a
+  // sibling test that switched locale (vitest workers share module
+  // state, including the i18n store).
+  beforeEach(() => {
+    _resetLocale();
+    setLocale('en-US');
+  });
+
   it('returns share icon instruction for iOS', () => {
     expect(getInstruction('ios', false)).toContain('Add to Home Screen');
   });

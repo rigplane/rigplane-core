@@ -140,9 +140,8 @@ describe('Toast — reason-code resolution', () => {
     app = mount(Toast, { target: host });
     flushSync();
 
-    // ja-JP has no translation for radioConnected yet (Phase 3 community work),
-    // so the runtime falls back to en-US silently. The test exercises the
-    // resolution PATH, not the translation completeness.
+    // ja-JP is now a complete pilot translation, so `radioConnected`
+    // resolves to its Japanese value rather than falling back to en-US.
     dispatchNotification({
       level: 'success',
       message: 'Radio connected',
@@ -150,8 +149,7 @@ describe('Toast — reason-code resolution', () => {
     });
     flushSync();
 
-    // Falls back to en-US verbatim.
-    expect(getToastText()).toBe('Radio connected');
+    expect(getToastText()).toBe('トランシーバーを接続しました');
   });
 
   it('wraps the resolved message in pseudo-locale brackets under qps-ploc', () => {

@@ -29,10 +29,15 @@ describe('t()', () => {
     ).toBe('Connecting to IC-7610 on LAN…');
   });
 
-  it('falls back to en-US when a key is missing in the selected locale', () => {
+  it('resolves a translated value for ja-JP when the catalog covers the key', () => {
+    // Both ja-JP and ru-RU are now complete pilot translations, so the
+    // en-US silent-fallback path is no longer exercised by simply
+    // switching locale for a generic action key. The fallback behaviour
+    // itself is unit-tested at the runtime layer (see runtime.test.ts);
+    // here we just confirm setLocale('ja-JP') resolves to the Japanese
+    // string rather than the en-US source.
     setLocale('ja-JP');
-    // `common.action.cancel` is not translated in ja-JP scaffold.
-    expect(t('common.action.cancel')).toBe('Cancel');
+    expect(t('common.action.cancel')).toBe('キャンセル');
   });
 
   it('returns translated value for ja-JP when present', () => {
@@ -69,9 +74,14 @@ describe('tPlural()', () => {
   });
 
   it('ja-JP uses .other only', () => {
+    // Japanese has only `.other` in CLDR. The ja-JP catalog still
+    // provides a `.one` key for parity with en-US (i18n-check enforces
+    // strict key parity), but the runtime resolves to the same value
+    // for any count via the `.other` selector for ja-JP. Either form
+    // is acceptable here; we assert the literal translation we ship.
     setLocale('ja-JP');
     expect(tPlural('core.diagnostics.attachedFiles', 1)).toBe(
-      '1 個のファイルを添付',
+      'ファイル 1 件を添付',
     );
   });
 });
