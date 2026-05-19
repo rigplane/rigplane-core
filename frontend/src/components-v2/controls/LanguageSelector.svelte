@@ -35,6 +35,7 @@
   const ENDONYMS: Record<string, string> = {
     'en-US': 'English',
     'ja-JP': '日本語',
+    'ru-RU': 'Русский',
     // qps-ploc gets its label assembled at render time so the
     // "developer pseudo-locale" suffix follows the active locale.
     'qps-ploc': 'qps-ploc',

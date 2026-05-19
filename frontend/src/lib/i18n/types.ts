@@ -19,7 +19,7 @@
 import enUS from './locales/en-US.json' with { type: 'json' };
 
 /** All locale codes the bundled runtime ships with. */
-export type LocaleCode = 'en-US' | 'ja-JP' | 'qps-ploc';
+export type LocaleCode = 'en-US' | 'ja-JP' | 'ru-RU' | 'qps-ploc';
 
 /** BCP-47 source-of-truth locale. Fallback target for every other locale. */
 export const SOURCE_LOCALE: LocaleCode = 'en-US';

@@ -19,7 +19,7 @@ import { PSEUDO_LOCALE, SOURCE_LOCALE } from './types';
 
 const STORAGE_KEY = 'rigplane.i18n.locale';
 
-const SUPPORTED_LOCALES: readonly LocaleCode[] = ['en-US', 'ja-JP', 'qps-ploc'];
+const SUPPORTED_LOCALES: readonly LocaleCode[] = ['en-US', 'ja-JP', 'ru-RU', 'qps-ploc'];
 
 function isSupported(value: string): value is LocaleCode {
   return (SUPPORTED_LOCALES as readonly string[]).includes(value);
