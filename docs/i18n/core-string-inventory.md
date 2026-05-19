@@ -846,6 +846,44 @@ translation work. It also excludes CLI help text where the boundary
   preference store. Those are RP-ML-003 and RP-ML-004.
 - It does not translate. No `ja-JP` catalog scaffold work happens here.
 
+## Notes for translators (community contributors)
+
+`rigplane-core` is a public open-core repository, and translations beyond
+English and the pilot `ja-JP` scaffold are expected to come from the
+community over time. This inventory must remain useful to that audience,
+not just to the implementation agent who extracts strings.
+
+Implications for RP-ML-003 and downstream extraction PRs:
+
+- Catalog format must be a single editable file per locale (recommend plain
+  JSON keyed by `scope.subscope.verbOrNoun` per the strategy glossary §4).
+  A community contributor must be able to fork the repo, copy
+  `en-US.json` to `<locale>.json`, translate values, and open a PR
+  without running the Svelte/Vite toolchain.
+- Each catalog must declare placeholder syntax, fallback locale, and the
+  non-translatable glossary tokens inline (or via a sibling README) so
+  contributors do not need to read the strategy glossary first.
+- A `frontend/src/lib/i18n/CONTRIBUTING.md` (or equivalent path under
+  `frontend/`) must exist before any public call for community translators.
+  The doc must explain: how to add a locale, how to run pseudo-locale and
+  missing-key checks locally, which tokens never translate, and how PR
+  review works.
+- CI checks added in RP-ML-013A must fail with precise file path and key
+  name on: invalid JSON, missing keys, broken interpolation, translated
+  glossary tokens.
+- No Tower / Crowdin / Weblate dependency. Contribution flow is
+  `fork → edit JSON → PR`.
+- Server-rendered toast text (see "Surprises and notes" above) is the
+  one place where the community-friendly story is awkward: if the message
+  text lives in `web/server.py`, a translator cannot edit it in the
+  frontend JSON alone. RP-ML-003 should land the reason-code-on-the-wire
+  pattern so the frontend catalog is the only place a translator needs
+  to touch.
+
+This inventory does not by itself prescribe a community PR template, but
+RP-ML-003 should ship a CONTRIBUTING doc that the i18n catalog directory
+points to.
+
 ## Acceptance check (issue #1520)
 
 - [x] Inventory covers `frontend/src`, Python CLI user output, docs surfaces,
