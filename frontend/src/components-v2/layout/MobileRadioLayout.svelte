@@ -1,5 +1,6 @@
 <script lang="ts">
   import { runtime } from '$lib/runtime';
+  import { t } from '$lib/i18n';
   import { hasTx, hasDualReceiver, hasAnyScope, hasSpectrum, receiverLabel } from '$lib/stores/capabilities.svelte';
   import { HardwareButton } from '$lib/Button';
   import SpectrumPanel from '../../components/spectrum/SpectrumPanel.svelte';
@@ -134,18 +135,20 @@
   let activeChipId = $state('essentials');
   // Conditional chips are gated on capabilities so radios without the feature
   // don't see a dead chip (e.g. RIT-capable rigs get the dedicated RIT chip
-  // per #842, TX-capable rigs get TX).
+  // per #842, TX-capable rigs get TX). Labels resolve through the i18n
+  // catalog (RP-ML-005); glossary-stable tokens (BAND/DSP/RF/RIT/XIT/TX)
+  // are kept verbatim inside the catalog VALUE — enforced by RP-ML-013A.
   const mobileChips = $derived([
-    { id: 'essentials', label: 'ESSENTIALS' },
-    { id: 'band', label: 'BAND' },
-    { id: 'scan', label: 'SCAN' },
-    { id: 'rf', label: 'RF' },
+    { id: 'essentials', label: t('core.mobile.chip.essentials') },
+    { id: 'band', label: t('core.mobile.chip.band') },
+    { id: 'scan', label: t('core.mobile.chip.scan') },
+    { id: 'rf', label: t('core.mobile.chip.rf') },
     // DSP chip carries the level/threshold controls that ESSENTIALS exposes
     // only as on/off toggles (codex P2 on PR #925 — removing the SETUP
     // DSP panel left no mobile path to tune NR level, NB level, notch freq).
-    { id: 'dsp', label: 'DSP' },
-    ...(ritXit.hasRit || ritXit.hasXit ? [{ id: 'rit', label: 'RIT/XIT' }] : []),
-    ...(txCapable ? [{ id: 'tx', label: 'TX' }] : []),
+    { id: 'dsp', label: t('core.mobile.chip.dsp') },
+    ...(ritXit.hasRit || ritXit.hasXit ? [{ id: 'rit', label: t('core.mobile.chip.ritXit') }] : []),
+    ...(txCapable ? [{ id: 'tx', label: t('core.mobile.chip.tx') }] : []),
   ]);
 
   // Reset to ESSENTIALS if the active chip disappears from the list
@@ -539,7 +542,7 @@
           onpointercancel={lsPttPointerUp}
           onlostpointercapture={lsPttPointerUp}
           oncontextmenu={(e) => e.preventDefault()}
-          title={txPermit === 'denied' ? 'TX not allowed on this frequency' : 'Push to talk'}
+          title={txPermit === 'denied' ? t('core.mobile.tx.notAllowedFreq') : t('core.mobile.tx.pushToTalk')}
         >
           {pttMode === 'latched' ? 'TX🔒' : pttMode === 'held' ? 'TX' : 'PTT'}
         </button>
@@ -551,7 +554,7 @@
       class="m-step-picker-backdrop"
       role="button"
       tabindex="0"
-      aria-label="Close step picker"
+      aria-label={t('core.mobile.closeStepPicker')}
       onclick={() => (stepPickerOpen = false)}
       onkeydown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); stepPickerOpen = false; } }}
     ></div>
@@ -574,7 +577,7 @@
   <!-- ═══ STICKY VFO HEADER ═══ -->
   <header class="m-vfo-bar" bind:this={receiverDeckElement} style={receiverDeckStyle}>
     {#if hasDualReceiver()}
-      <div class="m-receiver-selector" role="group" aria-label="Receiver selector">
+      <div class="m-receiver-selector" role="group" aria-label={t('core.mobile.receiverSelector.label')}>
         <button
           type="button"
           class="m-receiver-pill"
@@ -596,13 +599,13 @@
       </div>
     {/if}
     <div class="m-vfo-row">
-      <span class="m-tx-indicator" style="background: {txIndicatorColor}" title={txPermit === 'allowed' ? 'TX allowed' : 'TX not allowed (out of band)'}></span>
+      <span class="m-tx-indicator" style="background: {txIndicatorColor}" title={txPermit === 'allowed' ? t('core.mobile.tx.allowed') : t('core.mobile.tx.notAllowedBand')}></span>
       <div class="m-vfo-freq" bind:this={vfoFreqElement}>
         <FrequencyDisplay freq={mainVfo.freq} compact active />
       </div>
-      <button class="m-settings-btn" onclick={() => (setupOpen = true)} aria-label="Setup">
+      <button class="m-settings-btn" onclick={() => (setupOpen = true)} aria-label={t('core.mobile.setupButton')}>
         <Settings size={16} />
-        <span>SETUP</span>
+        <span>{t('core.mobile.sheet.setup')}</span>
       </button>
     </div>
     <div class="m-vfo-meta">
@@ -775,7 +778,7 @@
           class="m-step-picker-backdrop"
           role="button"
           tabindex="0"
-          aria-label="Close step picker"
+          aria-label={t('core.mobile.closeStepPicker')}
           onclick={() => (stepPickerOpen = false)}
           onkeydown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); stepPickerOpen = false; } }}
         ></div>
@@ -804,7 +807,7 @@
        Per docs/plans/2026-04-18-mobile-ia.md §6, rare-config home.
        BAND / DSP / RF / MODE / FILTER / ESSENTIALS live in chips.
        Remaining here: AGC, RIT/XIT (until #842 chip lands), ANTENNA, CW. -->
-  <BottomSheet bind:open={setupOpen} title="SETUP">
+  <BottomSheet bind:open={setupOpen} title={t('core.mobile.sheet.setup')}>
           <!-- VFO/BAND, DSP panels removed (#841) — BAND lives in the "band" chip,
                VFO ops (SPLIT/A↔B/A=B) live in ESSENTIALS, DSP levels+toggles live
                in ESSENTIALS. -->
@@ -835,7 +838,7 @@
   </BottomSheet>
 
   <!-- ═══ MODE MODAL ═══ -->
-  <BottomSheet bind:open={modeModalOpen} title="ALL MODES" compact>
+  <BottomSheet bind:open={modeModalOpen} title={t('core.mobile.sheet.allModes')} compact>
           <div class="m-mode-grid">
             {#each mode.modes as m}
               <HardwareButton
@@ -849,7 +852,7 @@
             {/each}
           </div>
           {#if mode.hasDataMode}
-            <div class="m-sheet-subtitle">DATA MODE</div>
+            <div class="m-sheet-subtitle">{t('core.mobile.sheet.dataMode')}</div>
             <div class="m-mode-grid">
               {#each Array.from({ length: Math.max(0, (mode.dataModeCount ?? 0)) + 1 }, (_, i) => i) as d}
                 <HardwareButton
@@ -866,12 +869,12 @@
   </BottomSheet>
 
   <!-- ═══ FILTER MODAL ═══ -->
-  <BottomSheet bind:open={filterModalOpen} title="FILTER SETTINGS">
+  <BottomSheet bind:open={filterModalOpen} title={t('core.mobile.sheet.filterSettings')}>
           <FilterPanel />
   </BottomSheet>
 
   <!-- ═══ POWER MODAL ═══ -->
-  <BottomSheet bind:open={powerModalOpen} title="RF POWER" compact contentStyle="padding: 12px;">
+  <BottomSheet bind:open={powerModalOpen} title={t('core.mobile.sheet.rfPower')} compact contentStyle="padding: 12px;">
           <ValueControl
             label="RF Power"
             value={tx.rfPower}
@@ -887,7 +890,7 @@
   </BottomSheet>
 
   <!-- ═══ TX SETTINGS MODAL ═══ -->
-  <BottomSheet bind:open={txSettingsOpen} title="TX SETTINGS">
+  <BottomSheet bind:open={txSettingsOpen} title={t('core.mobile.sheet.txSettings')}>
           <TxPanel />
   </BottomSheet>
 </div>

@@ -10,6 +10,7 @@
     hasInstallButton,
     type Platform,
   } from './install-prompt-utils';
+  import { t } from '$lib/i18n';
 
   let visible = $state(false);
   let platform = $state<Platform>('desktop');
@@ -47,12 +48,12 @@
   <div class="install-banner" class:slide-in={visible}>
     <span class="install-text">
       {#if showButton}
-        <button type="button" class="install-btn" onclick={installApp}>Install</button>
+        <button type="button" class="install-btn" onclick={installApp}>{t('core.installPrompt.install')}</button>
       {:else}
         {instruction}
       {/if}
     </span>
-    <button type="button" class="dismiss-btn" onclick={dismiss} aria-label="Dismiss">
+    <button type="button" class="dismiss-btn" onclick={dismiss} aria-label={t('core.installPrompt.dismiss')}>
       <X size={16} />
     </button>
   </div>

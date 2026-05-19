@@ -3,6 +3,7 @@
  *
  * Extracted as pure functions for testability.
  */
+import { t } from '$lib/i18n';
 
 export type Platform = 'ios' | 'android' | 'desktop';
 
@@ -47,11 +48,11 @@ export function setDismissed(): void {
 export function getInstruction(platform: Platform, hasPrompt: boolean): string {
   switch (platform) {
     case 'ios':
-      return 'Tap \u{1F4E4} then "Add to Home Screen"';
+      return t('core.installPrompt.iosInstruction');
     case 'android':
-      return hasPrompt ? '' : 'Tap \u22EE menu \u2192 "Install app"';
+      return hasPrompt ? '' : t('core.installPrompt.androidInstruction');
     case 'desktop':
-      return hasPrompt ? '' : 'Install via browser menu for the best experience';
+      return hasPrompt ? '' : t('core.installPrompt.desktopInstruction');
   }
 }
 

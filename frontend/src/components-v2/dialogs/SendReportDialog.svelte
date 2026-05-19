@@ -19,6 +19,7 @@
     type PreviewResponse,
     type ReportSubmitted,
   } from '$lib/api/diagnostics';
+  import { t } from '$lib/i18n';
 
   type Props = {
     open: boolean;
@@ -209,27 +210,33 @@
       switch (err.code) {
         case 'rate_limited':
           return err.retryAfterSeconds !== undefined
-            ? `Rate limited. Retry in ${err.retryAfterSeconds} seconds.`
-            : 'Rate limited. Please wait a few minutes and try again.';
+            ? t('core.diagnostics.sendReport.error.rateLimitedWithSeconds', {
+                seconds: err.retryAfterSeconds,
+              })
+            : t('core.diagnostics.sendReport.error.rateLimited');
         case 'bundle_too_large':
-          return 'Bundle too large. Try unchecking some categories.';
+          return t('core.diagnostics.sendReport.error.bundleTooLarge');
         case 'forbidden_content':
-          return 'Server rejected the bundle (forbidden content detected). Review the manifest before submitting again.';
+          return t('core.diagnostics.sendReport.error.forbiddenContent');
         case 'origin_mismatch':
-          return 'Origin mismatch. Please reload the page and try again.';
+          return t('core.diagnostics.sendReport.error.originMismatch');
         case 'preview_not_found':
-          return 'Preview expired. Generate a new one and try again.';
+          return t('core.diagnostics.sendReport.error.previewNotFound');
         case 'csrf_missing':
-          return 'Session expired. Close and reopen the dialog to try again.';
+          return t('core.diagnostics.sendReport.error.csrfMissing');
         default:
-          return `Upload failed: ${err.detail || err.code}`;
+          return t('core.diagnostics.sendReport.error.uploadFailed', {
+            detail: err.detail || err.code,
+          });
       }
     }
     if (err instanceof TypeError) {
       // fetch() throws TypeError on network failure
-      return 'Network error. Check your connection and try again.';
+      return t('core.diagnostics.sendReport.error.network');
     }
-    return `Unexpected error: ${String(err)}`;
+    return t('core.diagnostics.sendReport.error.unexpected', {
+      detail: String(err),
+    });
   }
 
   function formatBytes(n: number): string {
@@ -257,11 +264,11 @@
       bind:this={modalRoot}
     >
       <div class="modal-header">
-        <h2 id="send-report-title">Send diagnostic report</h2>
+        <h2 id="send-report-title">{t('core.diagnostics.sendReport.dialogTitle')}</h2>
         <button
           type="button"
           class="close-btn"
-          aria-label="Close"
+          aria-label={t('common.action.close')}
           onclick={handleCancel}
           disabled={busy}
         >
@@ -272,46 +279,45 @@
       {#if screen === 'form'}
         <div class="modal-body">
           <p class="help-text">
-            Generates a redacted bundle of recent logs and configuration. You will see
-            a full preview before anything is uploaded.
+            {t('core.diagnostics.sendReport.helpText')}
           </p>
 
           <label class="field">
-            <span class="field-label">Describe the problem</span>
+            <span class="field-label">{t('core.diagnostics.sendReport.fieldDescribe')}</span>
             <textarea
               bind:value={description}
               rows="4"
-              placeholder="What were you doing when the issue occurred?"
+              placeholder={t('core.diagnostics.sendReport.placeholderDescribe')}
               data-testid="field-description"
             ></textarea>
           </label>
 
           <label class="field">
-            <span class="field-label">Issue URL (optional)</span>
+            <span class="field-label">{t('core.diagnostics.sendReport.fieldIssueUrl')}</span>
             <input
               type="url"
               bind:value={issueRef}
-              placeholder="https://github.com/.../issues/123"
+              placeholder={t('core.diagnostics.sendReport.placeholderIssueUrl')}
               data-testid="field-issue"
             />
           </label>
 
           <div class="field-row">
             <label class="field">
-              <span class="field-label">Email (optional)</span>
+              <span class="field-label">{t('core.diagnostics.sendReport.fieldEmail')}</span>
               <input
                 type="email"
                 bind:value={email}
-                placeholder="you@example.com"
+                placeholder={t('core.diagnostics.sendReport.placeholderEmail')}
                 data-testid="field-email"
               />
             </label>
             <label class="field">
-              <span class="field-label">Callsign (optional)</span>
+              <span class="field-label">{t('core.diagnostics.sendReport.fieldCallsign')}</span>
               <input
                 type="text"
                 bind:value={callsign}
-                placeholder="N0CALL"
+                placeholder={t('core.diagnostics.sendReport.placeholderCallsign')}
                 data-testid="field-callsign"
               />
             </label>
@@ -325,7 +331,7 @@
             onclick={handleCancel}
             disabled={busy}
           >
-            Cancel
+            {t('common.action.cancel')}
           </button>
           <button
             type="button"
@@ -334,25 +340,24 @@
             disabled={busy}
             data-testid="btn-generate"
           >
-            {busy ? 'Generating…' : 'Generate preview'}
+            {busy ? t('core.diagnostics.sendReport.generatingButton') : t('core.diagnostics.sendReport.generatePreviewButton')}
           </button>
         </div>
       {:else if screen === 'preview' && preview}
         <div class="modal-body">
           <p class="help-text">
-            Review the bundle below. Nothing leaves this machine until you click
-            <strong>Send</strong>.
+            {t('core.diagnostics.sendReport.previewHelp')}
           </p>
 
           <dl class="meta-grid">
-            <dt>Endpoint</dt>
+            <dt>{t('core.diagnostics.sendReport.metaEndpoint')}</dt>
             <dd class="endpoint" data-testid="meta-endpoint">{preview.endpoint_url}</dd>
-            <dt>Total size</dt>
+            <dt>{t('core.diagnostics.sendReport.metaTotalSize')}</dt>
             <dd data-testid="meta-size">{formatBytes(preview.total_size_bytes)}</dd>
-            <dt>Files</dt>
+            <dt>{t('core.diagnostics.sendReport.metaFiles')}</dt>
             <dd>{preview.files.length}</dd>
             {#if preview.redactions_applied.length > 0}
-              <dt>Redactions</dt>
+              <dt>{t('core.diagnostics.sendReport.metaRedactions')}</dt>
               <dd>{preview.redactions_applied.join(', ')}</dd>
             {/if}
           </dl>
@@ -373,8 +378,7 @@
               data-testid="consent-checkbox"
             />
             <span>
-              I understand this bundle will be uploaded to the endpoint above and
-              that my redacted logs may be reviewed by the maintainer.
+              {t('core.diagnostics.sendReport.consent')}
             </span>
           </label>
         </div>
@@ -387,7 +391,7 @@
             disabled={busy}
             data-testid="btn-cancel"
           >
-            Cancel
+            {t('common.action.cancel')}
           </button>
           <button
             type="button"
@@ -396,7 +400,7 @@
             disabled={busy}
             data-testid="btn-save"
           >
-            Save locally
+            {t('core.diagnostics.sendReport.saveLocally')}
           </button>
           <button
             type="button"
@@ -405,18 +409,18 @@
             disabled={busy || !understandChecked}
             data-testid="btn-send"
           >
-            {busy ? 'Sending…' : 'Send'}
+            {busy ? t('core.diagnostics.sendReport.sendingButton') : t('core.diagnostics.sendReport.sendButton')}
           </button>
         </div>
       {:else if screen === 'result'}
         <div class="modal-body">
           {#if result}
             <div class="result-success" data-testid="result-success">
-              <p class="result-title">Report uploaded successfully.</p>
+              <p class="result-title">{t('core.diagnostics.sendReport.successTitle')}</p>
               <dl class="meta-grid">
-                <dt>Report ID</dt>
+                <dt>{t('core.diagnostics.sendReport.metaReportId')}</dt>
                 <dd><code>{result.report_id}</code></dd>
-                <dt>Tracking URL</dt>
+                <dt>{t('core.diagnostics.sendReport.metaTrackingUrl')}</dt>
                 <dd class="url-row">
                   <a href={result.support_url} target="_blank" rel="noopener noreferrer">
                     {result.support_url}
@@ -427,16 +431,16 @@
                     onclick={handleCopy}
                     data-testid="btn-copy"
                   >
-                    {copied ? 'Copied' : 'Copy'}
+                    {copied ? t('common.action.copied') : t('common.action.copy')}
                   </button>
                 </dd>
-                <dt>Auth class</dt>
+                <dt>{t('core.diagnostics.sendReport.metaAuthClass')}</dt>
                 <dd>{result.auth_class}</dd>
               </dl>
             </div>
           {:else if errorMsg}
             <div class="result-error" data-testid="result-error" role="alert">
-              <p class="result-title">Could not send the report.</p>
+              <p class="result-title">{t('core.diagnostics.sendReport.errorTitle')}</p>
               <p class="error-detail">{errorMsg}</p>
             </div>
           {/if}
@@ -449,7 +453,7 @@
             onclick={handleResultClose}
             data-testid="btn-close"
           >
-            Close
+            {t('common.action.close')}
           </button>
         </div>
       {/if}

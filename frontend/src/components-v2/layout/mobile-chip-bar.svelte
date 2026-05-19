@@ -3,6 +3,8 @@
    * Horizontal chip-scroll navigation bar for mobile portrait IA (#839).
    * One active chip at a time. Horizontal scroll (touch) for overflow.
    */
+  import { t } from '$lib/i18n';
+
   type ChipItem = { id: string; label: string };
 
   interface Props {
@@ -14,7 +16,7 @@
   let { chips, activeId, onSelect }: Props = $props();
 </script>
 
-<div class="m-chip-bar" role="tablist" aria-label="Mobile sections">
+<div class="m-chip-bar" role="tablist" aria-label={t('core.mobile.chips.label')}>
   {#each chips as chip (chip.id)}
     <button
       type="button"
