@@ -18,6 +18,9 @@
 
   "core.settings.language.label": "Language",
   "core.settings.language.helpText": "Choose the language used by the RigPlane UI. Radio mode codes such as {modeToken} stay in English regardless of locale.",
+  "core.settings.language.choose": "Choose language",
+  "core.settings.language.srHint": "Selecting a language updates the UI immediately and is saved on this device.",
+  "core.settings.language.devLocaleSuffix": "developer pseudo-locale",
 
   "core.error.transport.timeout.title": "Connection Timed Out",
   "core.error.transport.timeout.body": "No response from {host}. Check that the radio is powered on and reachable.",

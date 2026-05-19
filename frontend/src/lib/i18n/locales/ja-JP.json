@@ -8,6 +8,9 @@
   "core.statusbar.connection.connectingTo": "{radio} に {transport} で接続中…",
 
   "core.settings.language.label": "言語",
+  "core.settings.language.choose": "言語を選択",
+  "core.settings.language.srHint": "言語を選択すると UI が即座に更新され、この端末に保存されます。",
+  "core.settings.language.devLocaleSuffix": "開発者用擬似ロケール",
 
   "core.diagnostics.attachedFiles.other": "{count} 個のファイルを添付",
 

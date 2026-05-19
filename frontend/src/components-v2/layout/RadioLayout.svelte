@@ -46,6 +46,7 @@
   import LcdLayout from './LcdLayout.svelte';
   import CollapsiblePanel from '../controls/CollapsiblePanel.svelte';
   import BandSelector from '../controls/BandSelector.svelte';
+  import LanguageSelector from '../controls/LanguageSelector.svelte';
   import DspPanel from '../panels/DspPanel.svelte';
   import AgcPanel from '../panels/AgcPanel.svelte';
   import RfFrontEnd from '../panels/RfFrontEnd.svelte';
@@ -341,6 +342,10 @@
         <button class="settings-close" onclick={() => (settingsOpen = false)}>✕</button>
       </div>
       <div class="settings-content">
+        <CollapsiblePanel title="LANGUAGE" panelId="desktop-language">
+          <LanguageSelector />
+        </CollapsiblePanel>
+
         <CollapsiblePanel title="VFO / BAND" panelId="desktop-vfo-ops">
           <div class="settings-vfo-ops-row">
             <HardwareButton
