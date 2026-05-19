@@ -102,6 +102,10 @@ nav:
       - Diagnostic Reports: guide/diagnostic-reports.md
       - CI-V Commands: guide/commands.md
       - Troubleshooting: guide/troubleshooting.md
+  - Localization:
+      - Translator guide: i18n/translating.md
+      - Core string inventory: i18n/core-string-inventory.md
+      - Locale preference contract: i18n/locale-contract.md
   - API Reference:
       - Public API Surface: api/public-api-surface.md
       - IcomRadio: api/radio.md
