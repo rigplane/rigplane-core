@@ -24,7 +24,8 @@
     "i18n:check": "node scripts/i18n-check.mjs",
     "test": "vitest run",
     "test:watch": "vitest",
-    "test:e2e": "playwright test -c ./playwright.config.ts"
+    "test:e2e": "playwright test -c ./playwright.config.ts",
+    "test:e2e:i18n": "playwright test -c ./playwright.i18n.config.ts"
   },
   "devDependencies": {
     "@playwright/test": "^1.55.0",

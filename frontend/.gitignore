@@ -22,3 +22,8 @@ dist-ssr
 *.njsproj
 *.sln
 *.sw?
+
+# Playwright artifacts — traces/error contexts from failed runs.
+# Baseline screenshots under tests/e2e/i18n/__screenshots__/ ARE tracked.
+tests/e2e/i18n/.output
+playwright-report

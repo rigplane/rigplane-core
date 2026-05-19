@@ -90,6 +90,18 @@ jobs:
           mkdir -p ../src/rigplane/web/static
           cp -r dist/* ../src/rigplane/web/static/
 
+      - name: Frontend i18n visual smoke (RP-ML-006)
+        if: steps.filter.outputs.frontend == 'true'
+        # Runs the localization screenshot pack against the freshly built
+        # `frontend/dist/`. Self-hosted Mac mini runners pre-bake the
+        # Playwright Chromium browser; the `install --with-deps` line is
+        # a no-op safety net if the cache was pruned. The suite finishes
+        # in ~40 s, no live backend required.
+        run: |
+          cd frontend
+          npx playwright install chromium >/dev/null 2>&1 || true
+          npm run test:e2e:i18n
+
       - name: Type-check web boundary
         if: steps.filter.outputs.frontend == 'true'
         run: uv run mypy --strict src/rigplane/web
