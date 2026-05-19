@@ -3,11 +3,22 @@
   import { fly } from 'svelte/transition';
   import { onMessage } from '../../lib/transport/ws-client';
   import { makeCommandId } from '../../lib/types/protocol';
+  import { t, messageFromReasonCode, type MessageParams } from '$lib/i18n';
 
   interface ToastItem {
     id: string;
     level: 'info' | 'warning' | 'error';
+    /**
+     * Stable English fallback. The server is expected to emit `code` for
+     * every new toast (RP-ML-005); `message` is preserved as a legacy field
+     * for backward compatibility and for entries the frontend creates
+     * locally without a reason code.
+     */
     message: string;
+    /** Optional reason code used for localized resolution. */
+    code?: string;
+    /** Optional named-placeholder substitutions for the localized message. */
+    params?: MessageParams;
   }
 
   let toasts = $state<ToastItem[]>([]);
@@ -16,30 +27,59 @@
     toasts = toasts.filter((t) => t.id !== id);
   }
 
-  function addToast(level: 'info' | 'warning' | 'error', message: string) {
+  function addToast(
+    level: 'info' | 'warning' | 'error',
+    message: string,
+    code?: string,
+    params?: MessageParams,
+  ) {
     const id = makeCommandId();
-    toasts = [...toasts, { id, level, message }];
+    toasts = [...toasts, { id, level, message, code, params }];
     setTimeout(() => dismiss(id), 5_000);
+  }
+
+  /**
+   * Display copy for a toast. When the server supplied a `code`, resolve
+   * `core.toast.<code>` via the i18n runtime (RP-ML-005 wire schema). When
+   * no `code` is present, keep the legacy English `message` verbatim so
+   * out-of-tree producers continue to work. `$derived` re-resolves on
+   * locale changes.
+   */
+  function renderToast(toast: ToastItem): string {
+    if (toast.code) {
+      return messageFromReasonCode(toast.code, toast.params);
+    }
+    return toast.message;
   }
 
   onMount(() => {
     return onMessage((msg) => {
       if (msg.type === 'notification') {
         const lvl = msg.level === 'warning' || msg.level === 'error' ? msg.level : 'info';
-        addToast(lvl as 'info' | 'warning' | 'error', msg.message as string);
+        const code = typeof msg.code === 'string' ? msg.code : undefined;
+        const params =
+          msg.params && typeof msg.params === 'object'
+            ? (msg.params as MessageParams)
+            : undefined;
+        addToast(
+          lvl as 'info' | 'warning' | 'error',
+          (msg.message as string) ?? '',
+          code,
+          params,
+        );
       }
     });
   });
 </script>
 
-<div class="toast-container" aria-live="polite" aria-label="Notifications">
+<div class="toast-container" aria-live="polite" aria-label={t('core.toast.notificationsLabel')}>
   {#each toasts as toast (toast.id)}
     <button
       class="toast"
       class:info={toast.level === 'info'}
       class:warning={toast.level === 'warning'}
       class:error={toast.level === 'error'}
-      aria-label="Dismiss notification"
+      aria-label={t('core.toast.dismiss')}
       onclick={() => dismiss(toast.id)}
       in:fly={{ x: 80, duration: 200, opacity: 0 }}
       out:fly={{ x: 80, duration: 150, opacity: 0 }}
@@ -47,7 +87,7 @@
       <span class="toast-icon" aria-hidden="true">
         {#if toast.level === 'error'}✕{:else if toast.level === 'warning'}⚠{:else}ℹ{/if}
       </span>
-      <span class="toast-msg">{toast.message}</span>
+      <span class="toast-msg">{renderToast(toast)}</span>
       <span class="toast-close" aria-hidden="true">×</span>
     </button>
   {/each}

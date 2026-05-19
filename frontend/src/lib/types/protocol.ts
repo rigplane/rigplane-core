@@ -22,7 +22,17 @@ export interface DxSpot {
 export type WsIncoming =
   | { type: 'dx_spot'; spot: DxSpot }
   | { type: 'dx_spots'; spots: DxSpot[] }
-  | { type: 'notification'; level: string; message: string; category?: string }
+  | {
+      type: 'notification';
+      level: string;
+      message: string;
+      category?: string;
+      // RP-ML-005: optional reason code + params for localized resolution.
+      // When `code` is present, the frontend resolves `core.toast.<code>`
+      // via the i18n runtime; `message` remains the legacy English fallback.
+      code?: string;
+      params?: Record<string, string | number>;
+    }
   | { type: 'ack'; id: string }
   | { type: 'error'; id: string; message: string }
   | { type: 'response'; id: string; ok: boolean; result?: Record<string, unknown>; error?: string; message?: string }
