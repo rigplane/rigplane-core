@@ -315,3 +315,12 @@ ConnectionError: failed to connect to 192.168.1.100
 - [IC-7300 USB Setup](ic7300-usb-setup.md) — Single-receiver desktop radio
 - [Audio Recipes](audio-recipes.md) — RX/TX dual-receiver examples
 - [Web UI Guide](web-ui.md) — Dual-receiver web interface
+
+## Get the Packaged Desktop App
+
+!!! tip "Prefer a packaged desktop app?"
+    This guide covers the open-source `rigplane` Python library. If you want
+    a polished desktop application with a GUI for IC-9700 control on macOS
+    and Linux, check out RigPlane Pro.
+
+    [Download RigPlane Pro for Mac and Linux →](https://rigplane.com/downloads/?utm_source=docs.rigplane.dev&utm_medium=cta&utm_campaign=ic9700-usb-setup)
