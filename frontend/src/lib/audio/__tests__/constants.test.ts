@@ -12,6 +12,11 @@ describe('buildTxHeader', () => {
     expect(v.getUint8(6)).toBe(CHANNELS);
     expect(v.getUint8(7)).toBe(FRAME_DURATION_MS);
   });
+  it('can mark PCM16 TX frames', () => {
+    const v = new DataView(buildTxHeader(42, CODEC_PCM16).buffer);
+    expect(v.getUint8(0)).toBe(MSG_TYPE_TX);
+    expect(v.getUint8(1)).toBe(CODEC_PCM16);
+  });
   it('wraps seq at 16-bit boundary', () => {
     // 0x10000 should roll over to 0x0000
     expect(new DataView(buildTxHeader(0x10000).buffer).getUint16(2, true)).toBe(0);

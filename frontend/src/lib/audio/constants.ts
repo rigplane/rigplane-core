@@ -11,11 +11,11 @@ export const FRAME_DURATION_MS = 20;
 export const TX_BITRATE = 32000;
 
 /** Build 8-byte audio header */
-export function buildTxHeader(seq: number): Uint8Array {
+export function buildTxHeader(seq: number, codec = CODEC_OPUS): Uint8Array {
   const h = new Uint8Array(8);
   const v = new DataView(h.buffer);
   v.setUint8(0, MSG_TYPE_TX);
-  v.setUint8(1, CODEC_OPUS);
+  v.setUint8(1, codec);
   v.setUint16(2, seq & 0xFFFF, true);
   v.setUint16(4, SAMPLE_RATE / 100, true);
   v.setUint8(6, CHANNELS);

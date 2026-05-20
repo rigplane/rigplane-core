@@ -316,6 +316,8 @@
     'var(--v2-text-dim, #555)'
   );
   let lastPttDown = 0;
+  let pttPressActive = false;
+  let txStartToken = 0;
   const DOUBLE_TAP_MS = 350;
   const PTT_SAFETY_TIMEOUT_MS = 3 * 60 * 1000; // 3 minutes
   let pttSafetyTimer: ReturnType<typeof setTimeout> | null = null;
@@ -336,9 +338,18 @@
     }, PTT_SAFETY_TIMEOUT_MS);
   }
 
-  async function engageTx() {
+  async function engageTx(token: number): Promise<boolean> {
+    const err = await txAudio.startTx();
+    if (token !== txStartToken || pttMode !== 'held' || !pttPressActive) {
+      if (!err) txAudio.stopTx();
+      return false;
+    }
+    if (err) {
+      console.warn('TX audio did not start:', err);
+      return false;
+    }
     systemHandlers.onPttOn();
-    await txAudio.startTx();
+    return true;
   }
 
   function disengageTx() {
@@ -346,10 +357,12 @@
     txAudio.stopTx();
   }
 
-  function pttDown() {
+  async function pttDown() {
     const now = Date.now();
     if (pttMode === 'latched') {
       // Tap while latched → unlock, go idle
+      pttPressActive = false;
+      txStartToken += 1;
       pttMode = 'idle';
       disengageTx();
       clearPttSafety();
@@ -357,6 +370,7 @@
     }
     if (now - lastPttDown < DOUBLE_TAP_MS && pttMode === 'held') {
       // Double-tap → latch
+      pttPressActive = false;
       pttMode = 'latched';
       startPttSafety();
       lastPttDown = 0;
@@ -364,12 +378,20 @@
     }
     // Normal press → held
     lastPttDown = now;
+    pttPressActive = true;
     pttMode = 'held';
-    engageTx();
-    startPttSafety();
+    const token = ++txStartToken;
+    if (await engageTx(token)) {
+      startPttSafety();
+    } else {
+      pttMode = 'idle';
+      lastPttDown = 0;
+    }
   }
 
   function pttUp() {
+    pttPressActive = false;
+    txStartToken += 1;
     if (pttMode === 'held') {
       // Release after single tap → off
       // But give a moment for double-tap detection

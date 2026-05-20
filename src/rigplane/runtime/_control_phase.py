@@ -205,7 +205,11 @@ class ControlPhaseRuntime:
                     codec_source = h._audio_stream_contract.rx_codec_source
                     allow_stereo_fallback = (
                         h._audio_codec in _STEREO_CODECS
-                        and codec_source is not AudioConfigSource.EXPLICIT
+                        and codec_source is AudioConfigSource.GLOBAL_DEFAULT
+                    )
+                    profile_selected_stereo = (
+                        h._audio_codec in _STEREO_CODECS
+                        and codec_source is AudioConfigSource.PROFILE_DEFAULT
                     )
                     if allow_stereo_fallback:
                         # Single-RX firmwares (IC-7300/IC-705, possibly IC-9700)
@@ -251,6 +255,13 @@ class ControlPhaseRuntime:
                         # else: civ_port=0 without 0xFFFFFFFF — session still
                         # warming up after fallback. Fall through to the
                         # busy-retry loop with the now-mono codec.
+                    elif profile_selected_stereo:
+                        logger.warning(
+                            "Status rejected session (error=0xFFFFFFFF) with "
+                            "profile-selected stereo rx_codec=%s; preserving profile "
+                            "codec and entering session cooldown/retry path",
+                            h._audio_codec.name,
+                        )
                     else:
                         self._close_pending_sockets()
                         await h._ctrl_transport.disconnect()

@@ -19,6 +19,7 @@ from ..protocol import (  # noqa: TID251
     AUDIO_CODEC_PCM16,
     AUDIO_HEADER_SIZE,
     MSG_TYPE_AUDIO_RX,
+    MSG_TYPE_AUDIO_TX,
     decode_json,
     encode_audio_frame,
     encode_json,
@@ -35,6 +36,15 @@ from ...capabilities import CAP_AUDIO, CAP_LAN_DUAL_RX_AUDIO_ROUTING
 __all__ = ["AudioBroadcaster", "AudioHandler"]
 
 logger = logging.getLogger(__name__)
+
+
+def _parse_preferred_rx_codec(msg: dict[str, Any]) -> int | None:
+    value = msg.get("preferred_rx_codec")
+    if value in ("pcm16", "pcm", "raw"):
+        return AUDIO_CODEC_PCM16
+    if value == "opus":
+        return AUDIO_CODEC_OPUS
+    return None
 
 
 class _AudioPacketLike(Protocol):
@@ -68,6 +78,7 @@ class AudioBroadcaster:
         self._radio = radio
         self._clients: dict[int, asyncio.Queue[bytes]] = {}
         self._client_ws: dict[int, WebSocketConnection] = {}
+        self._client_rx_codec: dict[int, int] = {}
         self._subscription: _AudioSubscription | None = None
         self._relay_task: asyncio.Task[None] | None = None
         self._seq: int = 0
@@ -100,7 +111,10 @@ class AudioBroadcaster:
         self._codec_stale: bool = False
 
     async def subscribe(
-        self, ws: WebSocketConnection | None = None
+        self,
+        ws: WebSocketConnection | None = None,
+        *,
+        preferred_rx_codec: int | None = None,
     ) -> asyncio.Queue[bytes]:
         """Register a new WebSocket client and start relaying if first."""
         queue: asyncio.Queue[bytes] = asyncio.Queue(maxsize=self.HIGH_WATERMARK)
@@ -109,6 +123,8 @@ class AudioBroadcaster:
             self._clients[client_id] = queue
             if ws is not None:
                 self._client_ws[client_id] = ws
+            if preferred_rx_codec is not None:
+                self._client_rx_codec[client_id] = preferred_rx_codec
             # Start relay if no active subscription, or if relay task died
             relay_alive = self._relay_task is not None and not self._relay_task.done()
             if self._subscription is None or not relay_alive:
@@ -122,6 +138,8 @@ class AudioBroadcaster:
                     self._subscription = None
                 if self._radio:
                     await self._start_relay()
+            elif preferred_rx_codec is not None:
+                self.invalidate_codec_state()
         logger.info("audio-broadcaster: client added (total=%d)", len(self._clients))
         return queue
 
@@ -131,6 +149,9 @@ class AudioBroadcaster:
         async with self._lock:
             self._clients.pop(client_id, None)
             self._client_ws.pop(client_id, None)
+            removed_codec = self._client_rx_codec.pop(client_id, None)
+            if removed_codec is not None:
+                self.invalidate_codec_state()
             if (
                 not self._clients
                 and self._subscription is not None
@@ -294,6 +315,13 @@ class AudioBroadcaster:
         """Resolve browser RX transport codec from profile consumer policy."""
         if radio_codec in (AudioCodec.OPUS_1CH, AudioCodec.OPUS_2CH):
             return AUDIO_CODEC_OPUS
+
+        # The frontend can explicitly ask for PCM16 when its WebView/browser
+        # cannot decode Opus with WebCodecs.  Keep this as an aggregate
+        # transport decision because the relay currently builds one shared
+        # frame for all browser clients.
+        if AUDIO_CODEC_PCM16 in self._client_rx_codec.values():
+            return AUDIO_CODEC_PCM16
 
         default_codec = {
             AudioCodec.PCM_1CH_16BIT: AUDIO_CODEC_PCM16,
@@ -632,7 +660,7 @@ class AudioHandler:
 
         if msg_type == "audio_start":
             if direction == "rx":
-                await self._start_rx()
+                await self._start_rx(preferred_rx_codec=_parse_preferred_rx_codec(msg))
             elif direction == "tx":
                 if self._radio and CAP_AUDIO in self._radio.capabilities:
                     self._ensure_tx_transcoder()
@@ -808,12 +836,15 @@ class AudioHandler:
             return tx_sr
         return 48000
 
-    async def _start_rx(self) -> None:
+    async def _start_rx(self, *, preferred_rx_codec: int | None = None) -> None:
         """Subscribe to audio broadcaster for RX frames."""
         if not self._broadcaster:
             return
         self._rx_active = True
-        self._frame_queue = await self._broadcaster.subscribe(ws=self._ws)
+        self._frame_queue = await self._broadcaster.subscribe(
+            ws=self._ws,
+            preferred_rx_codec=preferred_rx_codec,
+        )
         logger.info("audio: subscribed to RX broadcast")
 
     async def _stop_rx(self) -> None:
@@ -847,16 +878,24 @@ class AudioHandler:
                 AUDIO_HEADER_SIZE,
             )
             return
-        # Extract audio data after 8-byte header (frontend sends Opus)
-        opus_data = payload[AUDIO_HEADER_SIZE:]
-        if opus_data:
+        if payload[0] != MSG_TYPE_AUDIO_TX:
+            logger.warning("audio: TX frame wrong type 0x%02x, ignoring", payload[0])
+            return
+        browser_codec = payload[1]
+        audio_data = payload[AUDIO_HEADER_SIZE:]
+        if audio_data:
             try:
-                # Browser TX sends Opus; radio-native PCM TX must be decoded
-                # according to the accepted TX contract, not the RX codec.
-                if self._tx_codec() == AudioCodec.PCM_1CH_16BIT and self._transcoder:
+                if browser_codec == AUDIO_CODEC_PCM16:
+                    await self._radio.push_audio_tx_pcm(audio_data)  # type: ignore[attr-defined]
+                    tx_data_desc = f"{len(audio_data)} bytes pcm"
+                elif (
+                    browser_codec == AUDIO_CODEC_OPUS
+                    and self._tx_codec() == AudioCodec.PCM_1CH_16BIT
+                    and self._transcoder
+                ):
                     try:
                         # Decode Opus → PCM16
-                        pcm_data = self._transcoder.opus_to_pcm(opus_data)
+                        pcm_data = self._transcoder.opus_to_pcm(audio_data)
                         await self._radio.push_audio_tx_pcm(pcm_data)  # type: ignore[attr-defined]
                         tx_data_desc = f"{len(pcm_data)} bytes pcm"
                     except Exception as e:
@@ -864,10 +903,16 @@ class AudioHandler:
                             "audio: Opus decode failed: %s, dropping frame", e
                         )
                         return
-                else:
+                elif browser_codec == AUDIO_CODEC_OPUS:
                     # Radio uses Opus or PCM_1CH_8BIT/etc → send Opus as-is
-                    await self._radio.push_audio_tx_opus(opus_data)  # type: ignore[attr-defined]
-                    tx_data_desc = f"{len(opus_data)} bytes opus"
+                    await self._radio.push_audio_tx_opus(audio_data)  # type: ignore[attr-defined]
+                    tx_data_desc = f"{len(audio_data)} bytes opus"
+                else:
+                    logger.warning(
+                        "audio: unsupported browser TX codec 0x%02x, dropping frame",
+                        browser_codec,
+                    )
+                    return
 
                 # Log every 50th frame to avoid spam
                 if not hasattr(self, "_tx_frame_count"):

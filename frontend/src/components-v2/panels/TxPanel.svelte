@@ -43,6 +43,10 @@
   const PTT_SAFETY_MS = 3 * 60 * 1000;
   let pttMode = $state<'idle' | 'held' | 'latched'>('idle');
   let lastPttDown = 0;
+  let pttStarting = $state(false);
+  let txError = $state('');
+  let pttPressActive = false;
+  let txStartToken = 0;
   let pttSafetyTimer: ReturnType<typeof setTimeout> | null = null;
 
   function startPttSafety() {
@@ -53,20 +57,44 @@
     if (pttSafetyTimer) { clearTimeout(pttSafetyTimer); pttSafetyTimer = null; }
   }
 
-  function pttDown() {
+  async function engageTx(token: number): Promise<boolean> {
+    pttStarting = true;
+    txError = '';
+    const err = await txAudio.startTx();
+    pttStarting = false;
+    if (token !== txStartToken || pttMode !== 'held' || !pttPressActive) {
+      if (!err) txAudio.stopTx();
+      return false;
+    }
+    if (err) {
+      txError = err;
+      pttMode = 'idle';
+      lastPttDown = 0;
+      return false;
+    }
+    onPttOn?.();
+    return true;
+  }
+
+  async function pttDown() {
+    if (pttStarting) return;
     const now = Date.now();
-    if (pttMode === 'latched') { pttMode = 'idle'; onPttOff?.(); txAudio.stopTx(); clearPttSafety(); return; }
+    if (pttMode === 'latched') { pttPressActive = false; txStartToken += 1; pttMode = 'idle'; onPttOff?.(); txAudio.stopTx(); clearPttSafety(); return; }
     if (now - lastPttDown < PTT_DOUBLE_TAP_MS && pttMode === 'held') {
-      pttMode = 'latched'; startPttSafety(); lastPttDown = 0; return;
+      pttPressActive = false; pttMode = 'latched'; startPttSafety(); lastPttDown = 0; return;
     }
     lastPttDown = now;
+    pttPressActive = true;
     pttMode = 'held';
-    onPttOn?.();
-    txAudio.startTx();
-    startPttSafety();
+    const token = ++txStartToken;
+    if (await engageTx(token)) {
+      startPttSafety();
+    }
   }
 
   function pttUp() {
+    pttPressActive = false;
+    txStartToken += 1;
     if (pttMode === 'held') {
       setTimeout(() => {
         if (pttMode === 'held') { pttMode = 'idle'; onPttOff?.(); txAudio.stopTx(); clearPttSafety(); }
@@ -120,12 +148,16 @@
       class="ptt-button"
       class:ptt-held={pttMode === 'held'}
       class:ptt-latched={pttMode === 'latched'}
+      aria-disabled={pttStarting}
       onpointerdown={(e) => { e.preventDefault(); pttDown(); }}
       onpointerup={(e) => { e.preventDefault(); pttUp(); }}
       onpointerleave={() => { if (pttMode === 'held') pttUp(); }}
     >
-      {pttMode === 'latched' ? 'TX 🔒' : pttMode === 'held' ? 'TX' : 'PTT'}
+      {pttStarting ? 'MIC...' : pttMode === 'latched' ? 'TX 🔒' : pttMode === 'held' ? 'TX' : 'PTT'}
     </button>
+    {#if txError}
+      <div class="tx-error">{txError}</div>
+    {/if}
 
     <div class="tx-button-grid">
       {#if showTuner}
@@ -259,11 +291,22 @@
     background: rgba(239, 68, 68, 0.08);
   }
 
+  .ptt-button[aria-disabled="true"] {
+    cursor: wait;
+    opacity: 0.7;
+  }
+
   .ptt-button.ptt-held,
   .ptt-button.ptt-latched {
     background: var(--v2-accent-red, #ef4444);
     color: #fff;
     box-shadow: 0 0 12px rgba(239, 68, 68, 0.4);
+  }
+
+  .tx-error {
+    color: var(--v2-accent-red, #ef4444);
+    font-size: 11px;
+    line-height: 1.35;
   }
 
   .tx-button-grid > :global(button) {

@@ -26,6 +26,17 @@ export interface AudioRoutingConfig {
 const BACKOFF_MIN = 500;
 const BACKOFF_MAX = 10000;
 
+function preferredRxCodec(): 'opus' | 'pcm16' {
+  const globals = globalThis as typeof globalThis & {
+    __TAURI__?: unknown;
+    __TAURI_INTERNALS__?: unknown;
+  };
+  if (globals.__TAURI__ !== undefined || globals.__TAURI_INTERNALS__ !== undefined) {
+    return 'pcm16';
+  }
+  return typeof AudioDecoder === 'undefined' ? 'pcm16' : 'opus';
+}
+
 class AudioManager {
   private ws: WebSocket | null = null;
   private rxPlayer = new RxPlayer();
@@ -92,7 +103,11 @@ class AudioManager {
     this.rxPlayer.start();
     this.connect();
     if (this.ws?.readyState === WebSocket.OPEN) {
-      this.ws.send(JSON.stringify({ type: 'audio_start', direction: 'rx' }));
+      this.ws.send(JSON.stringify({
+        type: 'audio_start',
+        direction: 'rx',
+        preferred_rx_codec: preferredRxCodec(),
+      }));
     }
     this.notify();
   }
@@ -213,7 +228,11 @@ class AudioManager {
       setAudioConnected(true);
       console.log('[audio-ws] connected');
       if (this._rxEnabled) {
-        ws.send(JSON.stringify({ type: 'audio_start', direction: 'rx' }));
+        ws.send(JSON.stringify({
+          type: 'audio_start',
+          direction: 'rx',
+          preferred_rx_codec: preferredRxCodec(),
+        }));
       }
       if (this._txEnabled) {
         ws.send(JSON.stringify({ type: 'audio_start', direction: 'tx' }));

@@ -81,9 +81,23 @@ vi.mock('$lib/stores/capabilities.svelte', () => ({
 }));
 
 // -- Wiring mocks --
-const { onMainVfoClickSpy, onSubVfoClickSpy } = vi.hoisted(() => ({
+const {
+  onMainVfoClickSpy,
+  onSubVfoClickSpy,
+  mobileSystemHandlers,
+  mobileTxAudioControl,
+} = vi.hoisted(() => ({
   onMainVfoClickSpy: vi.fn(),
   onSubVfoClickSpy: vi.fn(),
+  mobileSystemHandlers: {
+    onPowerOff: vi.fn(),
+    onPttOn: vi.fn(),
+    onPttOff: vi.fn(),
+  },
+  mobileTxAudioControl: {
+    startTx: vi.fn(),
+    stopTx: vi.fn(),
+  },
 }));
 vi.mock('../../wiring/command-bus', () => {
   const n = vi.fn();
@@ -105,9 +119,12 @@ vi.mock('../../wiring/command-bus', () => {
     makeCwPanelHandlers: () => ({ onSpeedChange: n }),
     makeAntennaHandlers: () => ({ onAntennaSelect: n }),
     makeScanHandlers: () => ({ onScanStart: n, onScanStop: n, onDfSpanChange: n, onResumeChange: n }),
-    makeSystemHandlers: () => ({ onPowerOff: n, onPttOn: n, onPttOff: n }),
+    makeSystemHandlers: () => mobileSystemHandlers,
   };
 });
+vi.mock('$lib/runtime/adapters/tx-adapter', () => ({
+  getTxAudioControl: () => mobileTxAudioControl,
+}));
 vi.mock('../wiring/state-adapter', () => {
   const vfo = { freq: 14074000, mode: 'USB', filter: 'FIL1', sValue: 0, badges: {}, receiver: 'main', isActive: true };
   return {
@@ -149,6 +166,12 @@ beforeEach(() => {
   (radio as unknown as { current: { active?: 'MAIN' | 'SUB' } | null }).current = null;
   onMainVfoClickSpy.mockClear();
   onSubVfoClickSpy.mockClear();
+  mobileSystemHandlers.onPowerOff.mockReset();
+  mobileSystemHandlers.onPttOn.mockReset();
+  mobileSystemHandlers.onPttOff.mockReset();
+  mobileTxAudioControl.startTx.mockReset();
+  mobileTxAudioControl.stopTx.mockReset();
+  mobileTxAudioControl.startTx.mockResolvedValue(null);
 });
 
 afterEach(() => {
@@ -249,6 +272,30 @@ describe('MobileRadioLayout TX gating', () => {
     // ESSENTIALS chip should now be the active one in the chip bar.
     const active = t.querySelector('.m-chip-bar .m-chip-active');
     expect(active?.textContent?.trim()).toBe('ESSENTIALS');
+  });
+
+  it('does not key PTT when released before TX audio startup finishes', async () => {
+    vi.useFakeTimers();
+    let resolveStart!: (value: string | null) => void;
+    mobileTxAudioControl.startTx.mockReturnValueOnce(new Promise((resolve) => {
+      resolveStart = resolve;
+    }));
+
+    const t = mountMobile();
+    const ptt = t.querySelector<HTMLButtonElement>('.ptt-fab')!;
+    ptt.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, pointerId: 1 }));
+    vi.advanceTimersByTime(60);
+    ptt.dispatchEvent(new PointerEvent('pointerup', { bubbles: true, pointerId: 1 }));
+    resolveStart(null);
+    await Promise.resolve();
+    await Promise.resolve();
+    flushSync();
+
+    expect(mobileSystemHandlers.onPttOn).not.toHaveBeenCalled();
+    expect(mobileTxAudioControl.stopTx).toHaveBeenCalledOnce();
+
+    vi.runOnlyPendingTimers();
+    vi.useRealTimers();
   });
 });
 

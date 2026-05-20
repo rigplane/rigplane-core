@@ -79,6 +79,7 @@ class FakeWebSocket {
 describe('AudioManager websocket subscriptions', () => {
   beforeEach(() => {
     vi.resetModules();
+    vi.unstubAllGlobals();
     FakeWebSocket.instances = [];
     vi.stubGlobal('WebSocket', FakeWebSocket);
     vi.stubGlobal('location', { protocol: 'http:', host: 'localhost:5173' });
@@ -94,7 +95,11 @@ describe('AudioManager websocket subscriptions', () => {
 
     audioManager.startRx();
 
-    expect(ws.sent).toContain(JSON.stringify({ type: 'audio_start', direction: 'rx' }));
+    expect(ws.sent).toContain(JSON.stringify({
+      type: 'audio_start',
+      direction: 'rx',
+      preferred_rx_codec: 'pcm16',
+    }));
   });
 
   it('sends rx audio_stop before closing an open websocket', async () => {
@@ -108,5 +113,36 @@ describe('AudioManager websocket subscriptions', () => {
     audioManager.stopRx();
 
     expect(ws.sent).toContain(JSON.stringify({ type: 'audio_stop', direction: 'rx' }));
+  });
+
+  it('requests opus when AudioDecoder is available', async () => {
+    vi.stubGlobal('AudioDecoder', class {});
+    const { audioManager } = await import('../audio-manager');
+
+    audioManager.startRx();
+    const ws = FakeWebSocket.instances[0];
+    ws.open();
+
+    expect(ws.sent).toContain(JSON.stringify({
+      type: 'audio_start',
+      direction: 'rx',
+      preferred_rx_codec: 'opus',
+    }));
+  });
+
+  it('requests pcm16 inside the Tauri shell even when AudioDecoder is available', async () => {
+    vi.stubGlobal('AudioDecoder', class {});
+    vi.stubGlobal('__TAURI_INTERNALS__', {});
+    const { audioManager } = await import('../audio-manager');
+
+    audioManager.startRx();
+    const ws = FakeWebSocket.instances[0];
+    ws.open();
+
+    expect(ws.sent).toContain(JSON.stringify({
+      type: 'audio_start',
+      direction: 'rx',
+      preferred_rx_codec: 'pcm16',
+    }));
   });
 });

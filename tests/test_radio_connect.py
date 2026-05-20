@@ -17,6 +17,7 @@ from rigplane.radio import (
     TOKEN_ACK_SIZE,
 )
 from rigplane.audio.route import AudioConfigSource
+from rigplane.profiles import RadioProfile
 from rigplane.transport import ConnectionState
 from rigplane.types import AudioCodec
 
@@ -76,6 +77,18 @@ class ConnectMockTransport(MockTransport):
 
     def start_idle_loop(self) -> None:
         pass
+
+
+def _lan_profile_without_codec_preference() -> RadioProfile:
+    return RadioProfile(
+        id="test-lan",
+        model="Test LAN",
+        civ_addr=0x98,
+        receiver_count=1,
+        capabilities=frozenset({"lan"}),
+        cmd29_routes=frozenset(),
+        has_lan=True,
+    )
 
 
 def _build_login_response(
@@ -201,6 +214,7 @@ class TestSendConninfo:
             username="u",
             password="p",
             audio_codec=AudioCodec.PCM_2CH_16BIT,
+            profile=_lan_profile_without_codec_preference(),
         )
         mt = ConnectMockTransport()
         radio._ctrl_transport = mt
@@ -526,6 +540,7 @@ class TestConnectSessionRejection:
             username="u",
             password="p",
             audio_codec=AudioCodec.PCM_2CH_16BIT,
+            profile=_lan_profile_without_codec_preference(),
         )
         mt = ConnectMockTransport()
         radio._ctrl_transport = mt
@@ -652,6 +667,89 @@ class TestConnectSessionRejection:
         assert mt.disconnected is True
 
     @pytest.mark.asyncio
+    async def test_profile_stereo_rejection_uses_busy_retry_not_mono_fallback(
+        self,
+    ) -> None:
+        """Profile-selected stereo codecs are intentional; 0xFFFFFFFF is treated
+        as a busy/held session rather than proof that stereo is unsupported.
+        """
+        radio = IcomRadio(
+            "192.168.1.100",
+            username="u",
+            password="p",
+            # Default profile is IC-7610, whose stereo codec is profile-selected.
+            audio_codec=AudioCodec.PCM_2CH_16BIT,
+        )
+        mt = ConnectMockTransport()
+        radio._ctrl_transport = mt
+
+        civ_port_responses = [0, 50001]
+        status_errors = [0xFFFFFFFF, 0x00000000]
+
+        async def _status_flow() -> int:
+            radio._last_status_error = status_errors.pop(0)
+            return civ_port_responses.pop(0)
+
+        codec_per_call: list[AudioCodec] = []
+
+        async def _capture_codec(*_args: object, **_kwargs: object) -> None:
+            codec_per_call.append(radio._audio_codec)
+
+        with (
+            patch.object(radio._control_phase, "_status_retry_pause", return_value=0.0),
+            patch.object(
+                radio._control_phase,
+                "_wait_for_packet",
+                new=AsyncMock(return_value=_build_login_response()),
+            ),
+            patch.object(radio._control_phase, "_send_token_ack", new=AsyncMock()),
+            patch.object(
+                radio._control_phase,
+                "_receive_guid",
+                new=AsyncMock(return_value=b"\x00" * 16),
+            ),
+            patch.object(
+                radio._control_phase,
+                "_send_conninfo",
+                new=AsyncMock(side_effect=_capture_codec),
+            ),
+            patch.object(
+                radio._control_phase,
+                "_receive_civ_port",
+                new=AsyncMock(side_effect=_status_flow),
+            ),
+            patch.object(
+                radio._control_phase, "_flush_queue", new=AsyncMock(return_value=0)
+            ),
+            patch.object(radio._control_phase, "_start_token_renewal"),
+            patch.object(radio._control_phase, "_start_watchdog"),
+            patch.object(radio._civ_runtime, "start_pump"),
+            patch.object(radio._civ_runtime, "start_data_watchdog"),
+            patch.object(radio._civ_runtime, "start_worker"),
+            patch(
+                "rigplane.transport.IcomTransport",
+                return_value=ConnectMockTransport(),
+            ),
+            patch("rigplane._control_phase.asyncio.sleep", new=AsyncMock()),
+        ):
+            radio._civ_ready_idle_timeout = 0.0
+            try:
+                await radio.connect()
+            except ConnectionError:
+                pass
+
+        assert codec_per_call == [
+            AudioCodec.PCM_2CH_16BIT,
+            AudioCodec.PCM_2CH_16BIT,
+        ]
+        assert radio.audio_stream_contract.rx_codec == AudioCodec.PCM_2CH_16BIT
+        assert (
+            radio.audio_stream_contract.rx_codec_source
+            == AudioConfigSource.PROFILE_DEFAULT
+        )
+        assert radio._civ_port == 50001
+
+    @pytest.mark.asyncio
     async def test_stereo_codec_fallback_raises_on_second_rejection(self) -> None:
         """Stereo rx_codec rejected twice → raise, no infinite loop."""
         radio = IcomRadio(
@@ -659,6 +757,7 @@ class TestConnectSessionRejection:
             username="u",
             password="p",
             audio_codec=AudioCodec.PCM_2CH_16BIT,
+            profile=_lan_profile_without_codec_preference(),
         )
         mt = ConnectMockTransport()
         radio._ctrl_transport = mt
@@ -714,6 +813,7 @@ class TestConnectSessionRejection:
             username="u",
             password="p",
             audio_codec=AudioCodec.PCM_2CH_16BIT,
+            profile=_lan_profile_without_codec_preference(),
         )
         mt = ConnectMockTransport()
         radio._ctrl_transport = mt

@@ -75,16 +75,18 @@ const mockHandlers = {
   onPttOff: vi.fn(),
 };
 
+const mockTxAudioControl = vi.hoisted(() => ({
+  startTx: vi.fn(),
+  stopTx: vi.fn(),
+}));
+
 vi.mock('$lib/runtime/adapters/panel-adapters', () => ({
   deriveTxProps: () => mockProps,
   getTxHandlers: () => mockHandlers,
 }));
 
 vi.mock('$lib/runtime/adapters/tx-adapter', () => ({
-  getTxAudioControl: () => ({
-    startTx: vi.fn(),
-    stopTx: vi.fn(),
-  }),
+  getTxAudioControl: () => mockTxAudioControl,
 }));
 
 import TxPanel from '../TxPanel.svelte';
@@ -128,6 +130,9 @@ beforeEach(() => {
   mockHandlers.onDriveGainChange = vi.fn();
   mockHandlers.onPttOn = vi.fn();
   mockHandlers.onPttOff = vi.fn();
+  mockTxAudioControl.startTx.mockReset();
+  mockTxAudioControl.stopTx.mockReset();
+  mockTxAudioControl.startTx.mockResolvedValue(null);
 });
 
 afterEach(() => {
@@ -276,5 +281,66 @@ describe('callbacks', () => {
     vi.advanceTimersByTime(60);
 
     expect(mockHandlers.onMicGainChange).toHaveBeenCalled();
+  });
+
+  it('starts TX audio before keying PTT', async () => {
+    const order: string[] = [];
+    mockTxAudioControl.startTx.mockImplementationOnce(async () => {
+      order.push('audio');
+      return null;
+    });
+    mockHandlers.onPttOn.mockImplementationOnce(() => {
+      order.push('ptt');
+    });
+
+    const t = mountPanel();
+    const ptt = t.querySelector<HTMLButtonElement>('.ptt-button')!;
+    ptt.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true }));
+    await Promise.resolve();
+    await Promise.resolve();
+    flushSync();
+
+    expect(mockTxAudioControl.startTx).toHaveBeenCalledOnce();
+    expect(mockHandlers.onPttOn).toHaveBeenCalledOnce();
+    expect(order).toEqual(['audio', 'ptt']);
+  });
+
+  it('does not key PTT when TX audio startup fails', async () => {
+    mockTxAudioControl.startTx.mockResolvedValueOnce('TX MIC: microphone capture not supported');
+    const t = mountPanel();
+    const ptt = t.querySelector<HTMLButtonElement>('.ptt-button')!;
+    ptt.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true }));
+    await Promise.resolve();
+    await Promise.resolve();
+    flushSync();
+
+    expect(mockHandlers.onPttOn).not.toHaveBeenCalled();
+    expect(t.textContent).toContain('TX MIC: microphone capture not supported');
+  });
+
+  it('does not key PTT when released before TX audio startup finishes', async () => {
+    vi.useFakeTimers();
+    let resolveStart!: (value: string | null) => void;
+    mockTxAudioControl.startTx.mockReturnValueOnce(new Promise((resolve) => {
+      resolveStart = resolve;
+    }));
+
+    const t = mountPanel();
+    const ptt = t.querySelector<HTMLButtonElement>('.ptt-button')!;
+    ptt.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true }));
+    flushSync();
+    expect(ptt.disabled).toBe(false);
+    expect(ptt.getAttribute('aria-disabled')).toBe('true');
+    ptt.dispatchEvent(new PointerEvent('pointerup', { bubbles: true }));
+    resolveStart(null);
+    await Promise.resolve();
+    await Promise.resolve();
+    flushSync();
+
+    expect(mockHandlers.onPttOn).not.toHaveBeenCalled();
+    expect(mockTxAudioControl.stopTx).toHaveBeenCalledOnce();
+
+    vi.runOnlyPendingTimers();
+    vi.useRealTimers();
   });
 });

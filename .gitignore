@@ -41,6 +41,7 @@ config/
 .firecrawl/
 .playwright-mcp/
 .copilot-tmp/
+.agents/
 
 # Backups (local safety copies, not for repo)
 .backups/
