@@ -27,6 +27,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Moved quick/full/rebrand/agent-review CI workflows to the Mac mini
   build-tier runner while preserving the existing required gates (#1512,
   #1513, #1514).
+- Moved the lightweight rebrand and agent-review gate jobs to GitHub-hosted
+  runners so protected-branch release fixes are not blocked when the
+  self-hosted gate runner is unavailable.
 - Refined public packaging metadata and docs SEO/navigation for the
   multi-vendor RigPlane framing, including Project Overview, migration
   guidance, per-page descriptions, and setup-guide download CTAs (#1510,
@@ -45,6 +48,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Fixed PyPI runtime dependency metadata so installed wheels can import and
   serve the Web UI diagnostics upload path without relying on dev-only
   dependencies.
+- Refreshed the frontend lockfile to pick up Svelte/devalue security fixes;
+  `npm audit --omit=dev` now reports zero vulnerabilities.
 
 ### Docs
 - Added the Core user-facing string inventory, locale contract, translator
