@@ -198,3 +198,12 @@ Tested with:
 - **MacLoggerDX** (macOS logging)
 
 Any application that supports `Hamlib NET rigctl` should work.
+
+## Get the Packaged Desktop App
+
+!!! tip "Prefer a packaged desktop app?"
+    This guide covers the open-source `rigplane` Python library. If you want
+    a polished desktop application with a GUI that handles WSJT-X / JTDX /
+    JS8Call integration on macOS and Linux, check out RigPlane Pro.
+
+    [Download RigPlane Pro for Mac and Linux →](https://rigplane.com/downloads/?utm_source=docs.rigplane.dev&utm_medium=cta&utm_campaign=wsjtx-setup)

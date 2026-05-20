@@ -250,3 +250,12 @@ os.environ["ICOM_SERIAL_CIV_MIN_INTERVAL_MS"] = "100"
 - [IC-705 USB Setup](ic705-usb-setup.md) — Portable transceiver
 - [Audio Recipes](audio-recipes.md) — RX/TX examples
 - [WSJT-X Setup](wsjtx-setup.md) — Digital mode integration
+
+## Get the Packaged Desktop App
+
+!!! tip "Prefer a packaged desktop app?"
+    This guide covers the open-source `rigplane` Python library. If you want
+    a polished desktop application with a GUI for IC-7300 control on macOS
+    and Linux, check out RigPlane Pro.
+
+    [Download RigPlane Pro for Mac and Linux →](https://rigplane.com/downloads/?utm_source=docs.rigplane.dev&utm_medium=cta&utm_campaign=ic7300-usb-setup)

@@ -472,3 +472,12 @@ If you're currently using the LAN backend and want to switch to serial:
 ---
 
 **Hardware validated**: 2026-03-06, IC-7610 over USB on macOS (Darwin arm64), Python 3.11.14, pytest 9.0.2 (issue #146)
+
+## Get the Packaged Desktop App
+
+!!! tip "Prefer a packaged desktop app?"
+    This guide covers the open-source `rigplane` Python library. If you want
+    a polished desktop application with a GUI for IC-7610 control on macOS
+    and Linux, check out RigPlane Pro.
+
+    [Download RigPlane Pro for Mac and Linux →](https://rigplane.com/downloads/?utm_source=docs.rigplane.dev&utm_medium=cta&utm_campaign=ic7610-usb-setup)

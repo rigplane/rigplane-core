@@ -359,3 +359,12 @@ ls -l /dev/cu.*
 
     **Software validation:** Contract tests with mock IC-705 profile pass (13/13 tests).
     **Hardware validation:** Blocked on IC-705 procurement (tracked in MSMA-20).
+
+## Get the Packaged Desktop App
+
+!!! tip "Prefer a packaged desktop app?"
+    This guide covers the open-source `rigplane` Python library. If you want
+    a polished desktop application with a GUI for IC-705 control on macOS
+    and Linux, check out RigPlane Pro.
+
+    [Download RigPlane Pro for Mac and Linux →](https://rigplane.com/downloads/?utm_source=docs.rigplane.dev&utm_medium=cta&utm_campaign=ic705-usb-setup)
