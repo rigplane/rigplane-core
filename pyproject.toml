@@ -4,12 +4,13 @@ build-backend = "hatchling.build"
 
 [project]
 name = "rigplane"
-version = "2.2.0"
+version = "2.3.0"
 description = "Multi-vendor radio control library and Web UI for IP-connected ham transceivers (Icom, Yaesu, Xiegu, Lab599) — no wfview/hamlib required"
 readme = "README.md"
 license = "MIT"
 requires-python = ">=3.11"
 dependencies = [
+    "aiohttp>=3.13.3",
     "pyserial>=3.5",
     "pyserial-asyncio>=0.6",
     "opuslib",
@@ -58,7 +59,6 @@ dev = ["pytest", "pytest-asyncio", "pytest-cov", "pytest-timeout", "pytest-xdist
 
 [dependency-groups]
 dev = [
-    "aiohttp>=3.13.3",
     "import-linter>=2.0,<3",
     "mkdocs-material>=9.7.3",
     "mkdocstrings[python]>=1.0.3",
@@ -77,6 +77,9 @@ packages = ["src/rigplane", "src/icom_lan"]
 
 [tool.hatch.build.targets.wheel.force-include]
 "rigs" = "rigplane/rigs"
+
+[tool.hatch.build.targets.sdist.force-include]
+"frontend/dist" = "src/rigplane/web/static"
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"

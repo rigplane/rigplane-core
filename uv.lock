@@ -1958,9 +1958,10 @@ wheels = [
 
 [[package]]
 name = "rigplane"
-version = "2.2.0"
+version = "2.3.0"
 source = { editable = "." }
 dependencies = [
+    { name = "aiohttp" },
     { name = "numpy" },
     { name = "opuslib" },
     { name = "platformdirs" },
@@ -1994,7 +1995,6 @@ webrtc = [
 
 [package.dev-dependencies]
 dev = [
-    { name = "aiohttp" },
     { name = "import-linter" },
     { name = "mkdocs-material" },
     { name = "mkdocstrings", extra = ["python"] },
@@ -2010,6 +2010,7 @@ dev = [
 
 [package.metadata]
 requires-dist = [
+    { name = "aiohttp", specifier = ">=3.13.3" },
     { name = "aiortc", marker = "extra == 'webrtc'", specifier = ">=1.9" },
     { name = "cryptography", marker = "extra == 'tls'", specifier = ">=41.0" },
     { name = "mypy", marker = "extra == 'dev'" },
@@ -2032,7 +2033,6 @@ provides-extras = ["audio", "bridge", "scope", "dsp", "webrtc", "tls", "dev"]
 
 [package.metadata.requires-dev]
 dev = [
-    { name = "aiohttp", specifier = ">=3.13.3" },
     { name = "import-linter", specifier = ">=2.0,<3" },
     { name = "mkdocs-material", specifier = ">=9.7.3" },
     { name = "mkdocstrings", extras = ["python"], specifier = ">=1.0.3" },
