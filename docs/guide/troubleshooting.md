@@ -1,3 +1,7 @@
+---
+description: Troubleshooting RigPlane radio control — discovery timeouts, authentication failures, audio dropouts, USB serial issues, and Web UI connection problems.
+---
+
 # Troubleshooting
 
 ## Connection Issues

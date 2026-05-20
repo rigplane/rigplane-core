@@ -1,3 +1,7 @@
+---
+description: Copy-paste recipes for RX and TX audio with RigPlane — PCM and Opus contracts, browser playback, microphone capture, and radio-native LAN audio.
+---
+
 # Audio Recipes (copy/paste)
 
 Practical scenarios for the current `rigplane` audio API.

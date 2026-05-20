@@ -1,3 +1,7 @@
+---
+description: Get your first RigPlane connection to an Icom radio over LAN in under five minutes — credentials, discovery, and a basic frequency read in Python.
+---
+
 # Quick Start
 
 Get your first connection in under 5 minutes.

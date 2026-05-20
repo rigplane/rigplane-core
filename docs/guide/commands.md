@@ -1,3 +1,7 @@
+---
+description: CI-V commands supported by RigPlane — frequency, mode, filter, AGC, attenuator, preamp, meters, and per-radio extensions exposed in a Python API.
+---
+
 # CI-V Commands
 
 The library supports a comprehensive set of CI-V commands for controlling your Icom transceiver.

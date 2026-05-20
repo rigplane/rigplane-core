@@ -1,3 +1,7 @@
+---
+description: RigPlane's built-in browser Web UI for ham radio control — live tuning, scope and waterfall, meters, and RX/TX audio streaming from any browser.
+---
+
 # Web UI
 
 rigplane ships with a built-in browser UI for live control, scope/waterfall, meters,

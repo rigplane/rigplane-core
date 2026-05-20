@@ -1,3 +1,7 @@
+---
+description: Add a new radio to RigPlane by writing a TOML rig profile — capabilities, CI-V commands, hardware parameters, and registration in the rig loader.
+---
+
 # Adding a New Radio (Rig Profiles)
 
 ## Overview

@@ -1,3 +1,7 @@
+---
+description: Install RigPlane from PyPI on macOS, Linux, or Windows — Python 3.11+ requirements, optional extras, and verifying the install against a real radio.
+---
+
 # Installation
 
 ## Requirements

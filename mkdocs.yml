@@ -1,5 +1,5 @@
-site_name: rigplane
-site_description: Multi-vendor Python library and browser UI for controlling ham transceivers over LAN or USB serial
+site_name: RigPlane Docs
+site_description: RigPlane documentation — Python library and Web UI for controlling Icom, Yaesu, Xiegu and Lab599 ham transceivers over LAN or USB serial on macOS, Linux and Windows.
 site_url: https://rigplane.dev/
 repo_url: https://github.com/rigplane/rigplane-core
 repo_name: rigplane/rigplane-core

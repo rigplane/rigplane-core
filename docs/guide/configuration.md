@@ -1,3 +1,7 @@
+---
+description: Configure RigPlane backends, credentials, and runtime options — LAN versus USB serial, environment variables, and per-radio configuration tips.
+---
+
 # Configuration
 
 ## Backend Selection

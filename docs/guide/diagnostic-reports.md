@@ -1,3 +1,7 @@
+---
+description: Generate redacted RigPlane diagnostic reports — bundle logs, radio state, runtime config, and environment into a single ZIP for support and triage.
+---
+
 # Diagnostic Reports
 
 When something goes wrong with `rigplane` — a CAT timeout, a stuck audio

@@ -1,3 +1,7 @@
+---
+description: Radios supported by RigPlane — Icom IC-7610, IC-7300, IC-705, IC-9700, plus Yaesu, Xiegu, and Lab599 models defined by TOML rig profiles.
+---
+
 # Supported Radios
 
 Radio support in rigplane is defined by **TOML rig profiles** in `rigs/`.

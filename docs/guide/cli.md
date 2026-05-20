@@ -1,3 +1,7 @@
+---
+description: Full RigPlane CLI reference — connect, scan, tune, serve the Web UI, run rigctld, and stream audio from the terminal on macOS, Linux, and Windows.
+---
+
 # CLI Reference
 
 The `rigplane` CLI provides quick access to radio control from the terminal.

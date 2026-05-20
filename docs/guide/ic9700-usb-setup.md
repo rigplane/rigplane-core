@@ -1,3 +1,7 @@
+---
+description: Control the dual-receiver Icom IC-9700 via USB serial CI-V or LAN from macOS with RigPlane — both transport options covered end to end.
+---
+
 # IC-9700 USB Serial Backend Setup (macOS)
 
 This guide shows how to control the **IC-9700 dual-receiver transceiver** via USB serial CI-V + USB audio devices or LAN network connection.

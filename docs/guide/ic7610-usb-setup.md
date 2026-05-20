@@ -1,3 +1,7 @@
+---
+description: Step-by-step guide to control the Icom IC-7610 from macOS over USB serial CI-V and USB audio with RigPlane — no LAN, hamlib, or RS-BA1 required.
+---
+
 # IC-7610 USB Serial Backend Setup (macOS)
 
 This guide shows how to control the IC-7610 via **USB serial CI-V + USB audio devices** instead of the default LAN backend.

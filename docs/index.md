@@ -1,3 +1,8 @@
+---
+title: RigPlane — Ham Radio Control Library and Web UI for Icom, Yaesu, Xiegu
+description: RigPlane is a Python library and browser Web UI for controlling Icom IC-7610, IC-7300, IC-705, IC-9700 and Yaesu/Xiegu radios over LAN or USB — no wfview, hamlib, or RS-BA1 required.
+---
+
 # rigplane
 
 **Python library for controlling Icom, Yaesu, and other transceivers over LAN (UDP) or USB serial.**

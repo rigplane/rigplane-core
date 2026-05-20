@@ -1,3 +1,7 @@
+---
+description: Configure the Icom IC-705 for USB serial CI-V and USB audio control from macOS with RigPlane — field-friendly setup with no network required.
+---
+
 # IC-705 USB Serial Backend Setup (macOS)
 
 This guide shows how to control the IC-705 via **USB serial CI-V + USB audio devices** instead of the default LAN backend.

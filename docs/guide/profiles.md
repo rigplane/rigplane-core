@@ -1,3 +1,7 @@
+---
+description: Declarative operating profiles for RigPlane — describe desired radio state (frequency, mode, data, VOX) and let the library reconcile it for you.
+---
+
 # Radio Profiles
 
 Radio profiles let you describe the **desired radio state** declaratively — set only the fields you want to change, and the system figures out how to get there.

@@ -1,3 +1,7 @@
+---
+description: Understand the RigPlane connection lifecycle to an Icom radio — discovery, login, keep-alive, control and audio streams, and clean shutdown.
+---
+
 # Connection Lifecycle
 
 Understanding the connection sequence helps with debugging and advanced usage.
