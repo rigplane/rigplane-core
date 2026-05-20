@@ -208,7 +208,7 @@ def test_diagnose_upload_without_aiohttp_emits_friendly_error(tmp_path: Path) ->
         f"stderr:\n{result.stderr}"
     )
     assert "Upload requires the 'aiohttp' package" in result.stderr
-    assert "pip install aiohttp" in result.stderr
+    assert "Repair the installation" in result.stderr
     assert str(out_zip) in result.stderr
     assert "Traceback" not in result.stderr, (
         f"a friendly error must not include a Python traceback.\n"
