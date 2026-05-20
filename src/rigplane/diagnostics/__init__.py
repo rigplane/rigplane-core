@@ -2,14 +2,13 @@
 
 Subsequent issues (#1388-#1401) build on this package.
 
-Note (issue #1413): the ``upload`` submodule imports ``aiohttp``, which is a
-dev-only dependency (declared in ``[dependency-groups].dev``, not in
-``[project].dependencies``). Eagerly importing it here would break ``import
-rigplane`` for runtime-only installs, so the four upload-related names
+Note (issue #1413): the ``upload`` submodule initializes the HTTP client stack.
+Eagerly importing it here would make every ``import rigplane`` pay that cost,
+so the four upload-related names
 (``DEFAULT_ENDPOINT``, ``HeaderProvider``, ``ReportSubmitted``,
 ``upload_bundle``) are exposed lazily via :pep:`562` ``__getattr__``. They
 remain importable as ``from rigplane.diagnostics import upload_bundle``;
-the ``aiohttp`` import only fires on first access.
+the upload module import only fires on first access.
 """
 
 from __future__ import annotations
@@ -40,7 +39,7 @@ from rigplane.diagnostics.redaction import (
     redact_tokens,
 )
 
-# Lazy re-exports from ``rigplane.diagnostics.upload`` (which imports aiohttp).
+# Lazy re-exports from ``rigplane.diagnostics.upload``.
 # Map: public name → attribute on ``upload`` module.
 _LAZY_UPLOAD: dict[str, str] = {
     "DEFAULT_ENDPOINT": "DEFAULT_ENDPOINT",
@@ -50,7 +49,7 @@ _LAZY_UPLOAD: dict[str, str] = {
 }
 
 if TYPE_CHECKING:
-    # Make these names visible to typecheckers without triggering aiohttp.
+    # Make these names visible to typecheckers without eager runtime imports.
     from rigplane.diagnostics.upload import (  # noqa: F401
         DEFAULT_ENDPOINT,
         HeaderProvider,
@@ -62,8 +61,8 @@ if TYPE_CHECKING:
 def __getattr__(name: str) -> Any:
     """:pep:`562` lazy hook for upload-module re-exports.
 
-    Defers ``import aiohttp`` until a consumer actually accesses one of the
-    upload names. Cached in ``globals()`` so subsequent lookups skip the hook.
+    Defers the upload module import until a consumer actually accesses one of
+    the upload names. Cached in ``globals()`` so subsequent lookups skip the hook.
     """
     target = _LAZY_UPLOAD.get(name)
     if target is None:

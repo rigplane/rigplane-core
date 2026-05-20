@@ -13,11 +13,9 @@ Submodules and private symbols (``rigplane.web``, ``rigplane.cli``,
 may change without warning.
 """
 
-# Import directly from the submodule to bypass ``rigplane.diagnostics``
-# package init, which re-exports ``upload_bundle`` from ``upload.py`` →
-# ``aiohttp`` (a dev-only dependency). Pulling ``aiohttp`` here would
-# crash every ``import rigplane`` for users on a runtime-only install.
-# See issue #1413.
+# Import directly from the submodule to keep ``import rigplane`` lightweight.
+# The diagnostics package also exposes upload helpers that initialize the HTTP
+# client stack; package import should not pay that cost. See issue #1413.
 from rigplane.diagnostics._logging import (
     configure_diagnostic_logging as _configure_diagnostic_logging,
 )

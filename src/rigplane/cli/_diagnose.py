@@ -35,14 +35,11 @@ from typing import TYPE_CHECKING, Any
 
 import platformdirs
 
-# NOTE: ``rigplane.diagnostics`` re-exports ``upload_bundle`` from
-# ``upload.py``, which imports ``aiohttp`` at module level. ``aiohttp`` is a
-# dev-only / optional dependency, so importing it eagerly here would crash
-# every CLI invocation (``rigplane status``, ``rigplane freq`` …) for users
-# who installed only the runtime requirements. All ``rigplane.diagnostics``
-# imports are therefore deferred into the helpers/coroutine that actually
-# need them — the ``diagnose`` subcommand path. ``add_subparser`` stays
-# argparse-only and never touches diagnostics symbols.
+# NOTE: ``rigplane.diagnostics`` re-exports upload helpers from ``upload.py``.
+# Importing that path eagerly would initialize the HTTP client stack for every
+# CLI invocation (``rigplane status``, ``rigplane freq`` ...), so diagnostics
+# imports are deferred into the helpers/coroutine that actually need them. The
+# ``diagnose`` subparser registration stays argparse-only.
 if TYPE_CHECKING:
     from rigplane.diagnostics import BundleContext, ReportSubmitted
 
@@ -163,14 +160,9 @@ def _resolve_endpoint(endpoint_arg: str | None) -> str:
     env = os.environ.get("RIGPLANE_REPORT_ENDPOINT")
     if env:
         return env
-    # Try the canonical constant from the diagnostics package. On installs that
-    # omit ``aiohttp`` (a dev-only dep) the lazy ``__getattr__`` hook in
-    # ``rigplane.diagnostics.__init__`` raises ``ImportError`` while loading
-    # ``upload.py`` — silently fall back to the well-known default URL so
-    # endpoint resolution still works in the preview / save-locally display
-    # path. The actual upload (which DOES need aiohttp) will fail later with
-    # a friendly message; the duplicated string is the price of decoupling
-    # the CLI's display path from the upload module's import requirements.
+    # Try the canonical constant from the diagnostics package. Keep the local
+    # fallback so endpoint resolution can still run in constrained/broken
+    # environments where the upload module cannot be imported.
     try:
         from rigplane.diagnostics import DEFAULT_ENDPOINT
     except ImportError:
@@ -273,12 +265,10 @@ def _interactive_collect(args: argparse.Namespace) -> None:
 
 async def _run_async(args: argparse.Namespace) -> int:
     # Lazy imports — see module-level NOTE. ``build_bundle`` plus the typed
-    # error classes live in non-aiohttp submodules, so importing them here is
-    # cheap. ``upload_bundle`` (and the other ``upload``-module re-exports)
-    # transitively imports ``aiohttp`` via the lazy hook in
-    # ``rigplane.diagnostics.__init__``; that import is deferred into the
-    # ``args.upload`` branch below so ``rigplane diagnose`` (save-only) works
-    # for runtime-only installs without ``aiohttp``.
+    # error classes live in light submodules, so importing them here is cheap.
+    # ``upload_bundle`` (and the other ``upload``-module re-exports) is
+    # deferred into the ``args.upload`` branch below so ``rigplane diagnose``
+    # (save-only) avoids initializing the HTTP client stack.
     # These names land in the local scope, so test fixtures must patch
     # ``rigplane.diagnostics`` (the source module) rather than
     # ``rigplane.cli._diagnose``.
@@ -342,13 +332,13 @@ async def _run_async(args: argparse.Namespace) -> int:
             return 0
 
     # Upload (either --no-confirm path or user typed y/yes after preview).
-    # Lazy import — accessing ``upload_bundle`` is what triggers the aiohttp
-    # import via the :pep:`562` hook in ``rigplane.diagnostics.__init__``.
+    # Lazy import — accessing ``upload_bundle`` is what imports the upload
+    # module via the :pep:`562` hook in ``rigplane.diagnostics.__init__``.
     # Keeping it inside the ``args.upload`` branch lets ``rigplane diagnose``
-    # (save-only) run on installs that omit aiohttp. The error classes are
-    # imported alongside for symmetry; they live in non-aiohttp submodules
-    # and would be cheap to hoist, but bundling them here keeps the upload
-    # path self-contained.
+    # (save-only) avoid initializing the HTTP client stack. The error classes
+    # are imported alongside for symmetry; they live in lighter submodules and
+    # would be cheap to hoist, but bundling them here keeps the upload path
+    # self-contained.
     try:
         from rigplane.diagnostics import (
             BundleTooLarge,
@@ -360,17 +350,16 @@ async def _run_async(args: argparse.Namespace) -> int:
             upload_bundle,
         )
     except ImportError as exc:
-        # `aiohttp` is a dev-only / optional dependency. Pip-install users who
-        # try `--upload` without it get here. Don't show a Python traceback —
-        # they need an actionable message + the local bundle path so they can
-        # still attach it to a GitHub issue manually.
+        # Broken or partial installs may still fail to import the HTTP upload
+        # stack. Don't show a Python traceback — provide an actionable message
+        # and keep the local bundle path available for manual attachment.
         if "aiohttp" in str(exc):
             print(
-                "Upload requires the 'aiohttp' package, which is not installed.",
+                "Upload requires the 'aiohttp' package, which could not be imported.",
                 file=sys.stderr,
             )
             print(
-                "  Install it with:  pip install aiohttp",
+                "  Repair the installation, then re-run upload.",
                 file=sys.stderr,
             )
             print(
@@ -378,8 +367,8 @@ async def _run_async(args: argparse.Namespace) -> int:
                 file=sys.stderr,
             )
             print(
-                "  You can attach it to a GitHub issue manually, or re-run "
-                "with `pip install aiohttp` to enable upload.",
+                "  You can attach it to a GitHub issue manually, or repair "
+                "the installation and re-run upload.",
                 file=sys.stderr,
             )
             return 9

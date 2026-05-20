@@ -7,6 +7,49 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.3.0] — 2026-05-20
+
+### Added
+- Added the Core Svelte i18n runtime, locale store, pluralization helpers,
+  pseudo-locale tooling, and bundled `en-US`, `ru-RU`, and `ja-JP` locale
+  catalogs for the first localized Core web surfaces (#1528, #1534, #1536).
+- Added the Core language preference UX and the cross-app locale preference
+  contract used by local shells and integrations to hand off language hints
+  without overwriting the user's stable Core preference (#1529, #1531).
+- Added localization QA coverage: string inventory, runtime/unit tests,
+  pseudo-locale smoke tests, visual QA fixtures, and Playwright i18n
+  screenshot coverage for desktop and mobile app surfaces (#1530, #1533).
+- Added localized server toast reason codes and migrated the P0 Core web
+  surfaces to the i18n runtime, including app shell, status bar, install
+  prompt, language selector, diagnostics dialog, and shared toasts (#1532).
+
+### Changed
+- Moved quick/full/rebrand/agent-review CI workflows to the Mac mini
+  build-tier runner while preserving the existing required gates (#1512,
+  #1513, #1514).
+- Refined public packaging metadata and docs SEO/navigation for the
+  multi-vendor RigPlane framing, including Project Overview, migration
+  guidance, per-page descriptions, and setup-guide download CTAs (#1510,
+  #1511, #1538, #1540, #1541, #1542).
+
+### Fixed
+- Stabilized the audio-scope aspect ratio in the web UI (#1519).
+- Fixed WebView/Tauri audio compatibility by allowing browser clients to
+  request PCM16 RX transport, adding a PCM16 TX microphone fallback when
+  WebCodecs are unavailable, and guarding async PTT startup/release races
+  before keying transmit (#1543).
+- Fixed Japanese pilot copy after linguistic validation (#1537).
+- Fixed release packaging so the generated frontend bundle is included in
+  sdist/wheel artifacts without relying on a local absolute `web/static`
+  symlink.
+- Fixed PyPI runtime dependency metadata so installed wheels can import and
+  serve the Web UI diagnostics upload path without relying on dev-only
+  dependencies.
+
+### Docs
+- Added the Core user-facing string inventory, locale contract, translator
+  guide, i18n contribution notes, and visual QA documentation (#1527, #1535).
+
 ## [2.2.0] — 2026-05-11
 
 ### Added
@@ -1294,7 +1337,8 @@ These deprecation closures were announced in v0.19 and dropped on schedule.
 - Transport layer, authentication, CI-V commands, meters, PTT, keep-alive.
 - Clean-room Icom LAN UDP protocol implementation.
 
-[Unreleased]: https://github.com/rigplane/rigplane-core/compare/v2.2.0...HEAD
+[Unreleased]: https://github.com/rigplane/rigplane-core/compare/v2.3.0...HEAD
+[2.3.0]: https://github.com/rigplane/rigplane-core/compare/v2.2.0...v2.3.0
 [2.2.0]: https://github.com/rigplane/rigplane-core/compare/v2.1.2...v2.2.0
 [2.1.2]: https://github.com/rigplane/rigplane-core/compare/v2.1.1...v2.1.2
 [2.1.1]: https://github.com/rigplane/rigplane-core/compare/v2.1.0...v2.1.1
