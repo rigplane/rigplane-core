@@ -1322,8 +1322,11 @@ class RigctldHandler:
         return RigctldResponse(values=["1" if dual else "0"])
 
     async def _cmd_get_powerstat(self, cmd: RigctldCommand) -> RigctldResponse:
-        on = await self._radio.get_powerstat()
-        return RigctldResponse(values=[str(int(bool(on)))])
+        # Hamlib calls this during NET rigctl startup and treats failures as
+        # "rig power is off". Some radios do not answer the underlying
+        # power-status CI-V query over LAN even while normal CAT reads work, so
+        # expose the server's reachable state instead of blocking on the rig.
+        return RigctldResponse(values=["1"])
 
     async def _cmd_quit(self, cmd: RigctldCommand) -> RigctldResponse:
         # Return OK; server.py detects cmd_echo == "quit" and closes the connection
