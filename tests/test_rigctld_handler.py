@@ -787,31 +787,23 @@ async def test_chk_vfo(handler: RigctldHandler, mock_radio: AsyncMock) -> None:
 
 @pytest.mark.asyncio
 async def test_get_powerstat(handler: RigctldHandler, mock_radio: AsyncMock) -> None:
-    mock_radio.get_powerstat = AsyncMock(return_value=True)
+    mock_radio.get_powerstat = AsyncMock(side_effect=AssertionError("must not poll"))
     resp = await handler.execute(get_cmd("get_powerstat"))
     assert resp.ok
     assert resp.values == ["1"]
-    mock_radio.get_powerstat.assert_awaited_once()
+    mock_radio.get_powerstat.assert_not_awaited()
 
 
 @pytest.mark.asyncio
-async def test_rigctld_get_powerstat_returns_real_value(
+async def test_rigctld_get_powerstat_is_wsjtx_compatibility_probe(
     handler: RigctldHandler, mock_radio: AsyncMock
 ) -> None:
-    """get_powerstat dispatches to radio and reflects ON vs STANDBY."""
-    # Radio reports STANDBY (off).
-    mock_radio.get_powerstat = AsyncMock(return_value=False)
-    resp = await handler.execute(get_cmd("get_powerstat"))
-    assert resp.ok
-    assert resp.values == ["0"]
-    mock_radio.get_powerstat.assert_awaited_once()
-
-    # Radio reports ON.
-    mock_radio.get_powerstat = AsyncMock(return_value=True)
+    """get_powerstat reports reachable NET rigctl state without CI-V polling."""
+    mock_radio.get_powerstat = AsyncMock(side_effect=IcomTimeoutError("timed out"))
     resp = await handler.execute(get_cmd("get_powerstat"))
     assert resp.ok
     assert resp.values == ["1"]
-    mock_radio.get_powerstat.assert_awaited_once()
+    mock_radio.get_powerstat.assert_not_awaited()
 
 
 @pytest.mark.asyncio
