@@ -455,7 +455,34 @@ class ControlPhaseRuntime:
         """Reconnect CI-V transport using existing control session."""
         h = self._host
         if h._civ_transport is not None:
-            logger.warning("soft_reconnect: CI-V transport already open")
+            now = time.monotonic()
+            last_data = getattr(h, "_last_civ_data_received", None)
+            transport_open = (
+                getattr(h._civ_transport, "_udp_transport", None) is not None
+            )
+            data_flowing = isinstance(last_data, (int, float)) and (
+                now - float(last_data)
+            ) <= getattr(h, "_civ_ready_idle_timeout", 3.0)
+            if transport_open and data_flowing:
+                h._conn_state = RadioConnectionState.CONNECTED
+                h._civ_stream_ready = True
+                h._civ_recovering = False
+                h._last_civ_data_received = now
+                logger.info(
+                    "civ.soft_reconnect.noop",
+                    extra={
+                        "reason": "already_open_data_flowing",
+                        "civ_idle_seconds": now - float(last_data),
+                    },
+                )
+            else:
+                logger.warning(
+                    "civ.soft_reconnect.already_open_stalled",
+                    extra={
+                        "transport_open": transport_open,
+                        "data_flowing": data_flowing,
+                    },
+                )
             return
         if not h._ctrl_transport or not getattr(
             h._ctrl_transport, "_udp_transport", None

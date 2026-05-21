@@ -239,19 +239,57 @@ async def test_soft_disconnect_with_audio_stream_stops_audio(
 # ---------------------------------------------------------------------------
 
 
-async def test_soft_reconnect_warns_when_civ_transport_already_open(
+async def test_soft_reconnect_noops_when_open_transport_is_receiving_data(
     radio: IcomRadio,
     mock_transport: MockTransport,
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    """soft_reconnect() must warn and return early when CIV is already open."""
     import logging
+    import time
 
-    # _civ_transport is already set (the mock)
-    with caplog.at_level(logging.WARNING, logger="rigplane.runtime.radio"):
+    from rigplane.runtime._connection_state import RadioConnectionState
+
+    mock_transport._udp_transport = MagicMock()
+    radio._conn_state = RadioConnectionState.RECONNECTING
+    radio._civ_stream_ready = False
+    radio._civ_recovering = True
+    radio._last_civ_data_received = time.monotonic()
+
+    with caplog.at_level(logging.INFO, logger="rigplane.runtime._control_phase"):
         await radio.soft_reconnect()
 
-    assert any("already open" in r.message for r in caplog.records)
+    assert radio._conn_state == RadioConnectionState.CONNECTED
+    assert radio._civ_stream_ready is True
+    assert radio._civ_recovering is False
+    assert any(r.message == "civ.soft_reconnect.noop" for r in caplog.records)
+    assert not any("already open" in r.message for r in caplog.records)
+
+
+async def test_soft_reconnect_already_open_stalled_keeps_recovering(
+    radio: IcomRadio,
+    mock_transport: MockTransport,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    import logging
+    import time
+
+    from rigplane.runtime._connection_state import RadioConnectionState
+
+    mock_transport._udp_transport = MagicMock()
+    radio._conn_state = RadioConnectionState.RECONNECTING
+    radio._civ_stream_ready = False
+    radio._civ_recovering = True
+    radio._last_civ_data_received = time.monotonic() - 60.0
+
+    with caplog.at_level(logging.WARNING, logger="rigplane.runtime._control_phase"):
+        await radio.soft_reconnect()
+
+    assert radio._conn_state == RadioConnectionState.RECONNECTING
+    assert radio._civ_stream_ready is False
+    assert radio._civ_recovering is True
+    assert any(
+        r.message == "civ.soft_reconnect.already_open_stalled" for r in caplog.records
+    )
 
 
 async def test_soft_reconnect_does_full_connect_when_ctrl_dead(
