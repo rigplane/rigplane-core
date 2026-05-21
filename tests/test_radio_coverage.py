@@ -30,6 +30,7 @@ Covers the many methods/branches not reached by the existing test suite:
 from __future__ import annotations
 
 import asyncio
+import errno
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -1453,6 +1454,49 @@ async def test_soft_reconnect_handles_connect_failure(radio: IcomRadio) -> None:
             await radio.soft_reconnect()
 
     assert radio._civ_transport is None
+
+
+async def test_soft_reconnect_retries_ephemeral_port_when_saved_local_port_busy(
+    radio: IcomRadio,
+) -> None:
+    """A stale CI-V socket can briefly keep the previous local port busy."""
+    from rigplane.runtime._connection_state import RadioConnectionState
+
+    radio._civ_transport = None
+    radio._civ_local_port = 52002
+    radio._ctrl_transport._udp_transport = MagicMock()  # type: ignore[attr-defined]
+
+    busy_transport = MagicMock()
+    busy_transport.connect = AsyncMock(
+        side_effect=OSError(errno.EADDRINUSE, "Address already in use")
+    )
+
+    retry_transport = MagicMock()
+    retry_transport.connect = AsyncMock()
+    retry_transport.send_tracked = AsyncMock()
+    retry_transport.my_id = 1
+    retry_transport.remote_id = 2
+    retry_transport._udp_error_count = 0
+
+    with (
+        patch(
+            "rigplane.transport.IcomTransport",
+            side_effect=[busy_transport, retry_transport],
+        ),
+        patch.object(radio, "_send_open_close", new=AsyncMock()),
+        patch.object(radio._civ_runtime, "stop_pump", new=AsyncMock()),
+        patch.object(radio._civ_runtime, "start_pump"),
+        patch.object(radio._civ_runtime, "start_worker"),
+        patch.object(radio._civ_runtime, "start_data_watchdog"),
+    ):
+        await radio.soft_reconnect()
+
+    busy_transport.connect.assert_awaited_once()
+    retry_transport.connect.assert_awaited_once()
+    assert busy_transport.connect.await_args.kwargs["local_port"] == 52002
+    assert retry_transport.connect.await_args.kwargs["local_port"] == 0
+    assert radio._conn_state == RadioConnectionState.CONNECTED
+    assert radio._civ_transport is retry_transport
 
 
 # ---------------------------------------------------------------------------
