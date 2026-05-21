@@ -272,6 +272,7 @@ class _PortAudioTxStream:
         self._stream: Any = None
         self._task: asyncio.Task[None] | None = None
         self._queue: asyncio.Queue[bytes] = asyncio.Queue(maxsize=64)
+        self._dropped_frames: int = 0
 
     @property
     def running(self) -> bool:
@@ -319,7 +320,29 @@ class _PortAudioTxStream:
     async def write(self, frame: bytes) -> None:
         if not self.running:
             raise RuntimeError("TX stream is not running.")
-        await self._queue.put(frame)
+        try:
+            self._queue.put_nowait(frame)
+            return
+        except asyncio.QueueFull:
+            pass
+
+        # Audio playback is realtime: blocking here backpressures websocket
+        # receive and turns a brief CoreAudio stall into seconds of stale audio.
+        # Keep latency bounded by dropping the oldest queued frame.
+        try:
+            self._queue.get_nowait()
+        except asyncio.QueueEmpty:
+            pass
+        try:
+            self._queue.put_nowait(frame)
+        except asyncio.QueueFull:
+            pass
+        self._dropped_frames += 1
+        if self._dropped_frames <= 3 or self._dropped_frames % 500 == 0:
+            logger.warning(
+                "portaudio-tx: dropped stale playback frame (queue full, total=%d)",
+                self._dropped_frames,
+            )
 
     async def _loop(self) -> None:
         stream = self._stream

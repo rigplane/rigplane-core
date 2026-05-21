@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 
+import asyncio
+
 import pytest
 
 from rigplane.audio.backend import (
@@ -347,3 +349,32 @@ class TestPortAudioBackendDeps:
         backend = PortAudioBackend(dependency_loader=lambda: (FakeSd(), FakeNp()))
         stream = backend.open_tx(AudioDeviceId(0))
         assert isinstance(stream, TxStream)
+
+    @pytest.mark.asyncio()
+    async def test_portaudio_tx_write_drops_oldest_when_queue_full(self) -> None:
+        class FakeSd:
+            class OutputStream:
+                def __init__(self, **kw: object) -> None:
+                    pass
+
+        class FakeNp:
+            pass
+
+        backend = PortAudioBackend(dependency_loader=lambda: (FakeSd(), FakeNp()))
+        stream = backend.open_tx(AudioDeviceId(0))
+        assert hasattr(stream, "_queue")
+        assert hasattr(stream, "_task")
+
+        never_done = asyncio.Event()
+        task = asyncio.create_task(never_done.wait())
+        stream._task = task  # type: ignore[attr-defined]
+        stream._queue = asyncio.Queue(maxsize=1)  # type: ignore[attr-defined]
+        stream._queue.put_nowait(b"old")  # type: ignore[attr-defined]
+
+        try:
+            await asyncio.wait_for(stream.write(b"new"), timeout=0.1)
+            assert stream._queue.get_nowait() == b"new"  # type: ignore[attr-defined]
+        finally:
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
