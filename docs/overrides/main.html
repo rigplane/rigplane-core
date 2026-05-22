@@ -29,4 +29,7 @@
   {% else %}
     <script type="application/ld+json">{"@context":"https://schema.org","@type":"TechArticle","headline":{{ page_title | tojson }},"description":{{ page_description | tojson }},"url":{{ page_url | tojson }},"mainEntityOfPage":{{ page_url | tojson }},"image":{{ image_url | tojson }},"inLanguage":"en","author":{"@type":"Organization","name":"RigPlane","url":"https://rigplane.com/"},"publisher":{"@type":"Organization","name":"RigPlane","url":"https://rigplane.com/"}}</script>
   {% endif %}
+  <!-- Cloudflare Web Analytics -->
+  <script defer src="https://static.cloudflareinsights.com/beacon.min.js" data-cf-beacon='{"token": "70f1b2c2b3cd474fb47c1407cd8313b6"}'></script>
+  <!-- End Cloudflare Web Analytics -->
 {% endblock %}
