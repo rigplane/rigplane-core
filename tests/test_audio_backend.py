@@ -101,6 +101,7 @@ class TestProtocolConformance:
 
     def test_tx_stream_health_is_exported(self) -> None:
         assert TxStreamHealth().to_dict()["write_failures"] == 0
+        assert TxStreamHealth().to_dict()["written_audio_ms"] == 0.0
 
     def test_portaudio_backend_is_audio_backend(self) -> None:
         # PortAudioBackend satisfies the protocol structurally (deps not needed here)
@@ -400,10 +401,123 @@ class TestPortAudioBackendDeps:
         try:
             await asyncio.wait_for(stream.write(b"new"), timeout=0.1)
             assert stream._queue.get_nowait() == b"new"  # type: ignore[attr-defined]
+            assert stream.write_health.frames_dropped == 1
         finally:
             task.cancel()
             with pytest.raises(asyncio.CancelledError):
                 await task
+
+    @pytest.mark.asyncio()
+    async def test_portaudio_tx_coalesces_small_frames_into_20ms_writes(self) -> None:
+        class FakeArray:
+            def __init__(self, pcm: bytes) -> None:
+                self.pcm = pcm
+
+            def reshape(self, *args: object) -> "FakeArray":
+                return self
+
+        class FakeNp:
+            int16 = object()
+
+            @staticmethod
+            def frombuffer(pcm: bytes, *, dtype: object) -> FakeArray:
+                return FakeArray(pcm)
+
+        class FakeOutputStream:
+            def __init__(self) -> None:
+                self.writes: list[bytes] = []
+
+            def write(self, arr: FakeArray) -> None:
+                self.writes.append(arr.pcm)
+
+        class FakeSd:
+            class OutputStream:
+                def __init__(self, **kw: object) -> None:
+                    pass
+
+        backend = PortAudioBackend(dependency_loader=lambda: (FakeSd(), FakeNp()))
+        stream = backend.open_tx(
+            AudioDeviceId(0), sample_rate=48_000, channels=16, frame_ms=0
+        )
+        output = FakeOutputStream()
+        stream._stream = output  # type: ignore[attr-defined]
+        stream._task = asyncio.current_task()  # type: ignore[attr-defined]
+        stream._queue = asyncio.Queue(maxsize=200)  # type: ignore[attr-defined]
+
+        frame_bytes = 320 * 16 * 2
+        frames = [bytes([idx % 256]) * frame_bytes for idx in range(150)]
+        for frame in frames:
+            await stream.write(frame)
+        stream._queue.put_nowait(None)  # type: ignore[attr-defined]
+
+        await stream._loop()  # type: ignore[attr-defined]
+
+        assert b"".join(output.writes) == b"".join(frames)
+        assert len(output.writes) == 50
+        assert {len(write) for write in output.writes} == {960 * 16 * 2}
+
+        health = stream.write_health
+        assert health.frames_queued == 150
+        assert health.frames_dropped == 0
+        assert health.write_attempts == 50
+        assert health.writes_completed == 50
+        assert health.queued_audio_ms == pytest.approx(1000.0)
+        assert health.written_audio_ms == pytest.approx(1000.0)
+        assert health.dropped_audio_ms == 0.0
+        assert health.write_calls_per_sec_ewma is not None
+
+    @pytest.mark.asyncio()
+    async def test_portaudio_tx_flushes_partial_coalesced_chunk_on_stop_signal(
+        self,
+    ) -> None:
+        class FakeArray:
+            def __init__(self, pcm: bytes) -> None:
+                self.pcm = pcm
+
+            def reshape(self, *args: object) -> "FakeArray":
+                return self
+
+        class FakeNp:
+            int16 = object()
+
+            @staticmethod
+            def frombuffer(pcm: bytes, *, dtype: object) -> FakeArray:
+                return FakeArray(pcm)
+
+        class FakeOutputStream:
+            def __init__(self) -> None:
+                self.writes: list[bytes] = []
+
+            def write(self, arr: FakeArray) -> None:
+                self.writes.append(arr.pcm)
+
+        class FakeSd:
+            class OutputStream:
+                def __init__(self, **kw: object) -> None:
+                    pass
+
+        backend = PortAudioBackend(dependency_loader=lambda: (FakeSd(), FakeNp()))
+        stream = backend.open_tx(
+            AudioDeviceId(0), sample_rate=48_000, channels=2, frame_ms=0
+        )
+        output = FakeOutputStream()
+        stream._stream = output  # type: ignore[attr-defined]
+        stream._task = asyncio.current_task()  # type: ignore[attr-defined]
+
+        frame_a = b"a" * (320 * 2 * 2)
+        frame_b = b"b" * (320 * 2 * 2)
+        await stream.write(frame_a)
+        await stream.write(frame_b)
+        stream._queue.put_nowait(None)  # type: ignore[attr-defined]
+
+        await stream._loop()  # type: ignore[attr-defined]
+
+        assert output.writes == [frame_a + frame_b]
+        health = stream.write_health
+        assert health.write_attempts == 1
+        assert health.writes_completed == 1
+        assert health.written_audio_ms == pytest.approx(13.333, rel=1e-3)
+        assert health.write_calls_per_sec_ewma == 0.0
 
     @pytest.mark.asyncio()
     async def test_portaudio_tx_health_tracks_background_writer_failure(self) -> None:

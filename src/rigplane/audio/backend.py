@@ -11,11 +11,18 @@ opening RX/TX audio streams, plus two concrete implementations:
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
+import math
+import time
 from dataclasses import dataclass
 from typing import Any, Callable, NewType, Protocol, runtime_checkable
 
 logger = logging.getLogger(__name__)
+
+_TX_QUEUE_SIZE = 64
+_TX_WRITE_CHUNK_MS = 20
+_TX_STOP_DRAIN_TIMEOUT_S = 1.0
 
 # ---------------------------------------------------------------------------
 # Identifiers & descriptors
@@ -60,9 +67,13 @@ class TxStreamHealth:
     write_attempts: int = 0
     writes_completed: int = 0
     write_failures: int = 0
+    queued_audio_ms: float = 0.0
+    written_audio_ms: float = 0.0
+    dropped_audio_ms: float = 0.0
+    write_calls_per_sec_ewma: float | None = None
     last_error: str | None = None
 
-    def to_dict(self) -> dict[str, int | str | None]:
+    def to_dict(self) -> dict[str, int | float | str | None]:
         return {
             "queued_frames": self.queued_frames,
             "frames_queued": self.frames_queued,
@@ -70,6 +81,10 @@ class TxStreamHealth:
             "write_attempts": self.write_attempts,
             "writes_completed": self.writes_completed,
             "write_failures": self.write_failures,
+            "queued_audio_ms": self.queued_audio_ms,
+            "written_audio_ms": self.written_audio_ms,
+            "dropped_audio_ms": self.dropped_audio_ms,
+            "write_calls_per_sec_ewma": self.write_calls_per_sec_ewma,
             "last_error": self.last_error,
         }
 
@@ -298,12 +313,18 @@ class _PortAudioTxStream:
         self._blocksize = blocksize
         self._stream: Any = None
         self._task: asyncio.Task[None] | None = None
-        self._queue: asyncio.Queue[bytes] = asyncio.Queue(maxsize=64)
+        self._queue: asyncio.Queue[bytes | None] = asyncio.Queue(maxsize=_TX_QUEUE_SIZE)
         self._dropped_frames: int = 0
         self._frames_queued: int = 0
         self._write_attempts: int = 0
         self._writes_completed: int = 0
         self._write_failures: int = 0
+        self._queued_audio_ms: float = 0.0
+        self._written_audio_ms: float = 0.0
+        self._dropped_audio_ms: float = 0.0
+        self._write_calls_per_sec_ewma: float | None = None
+        self._last_write_rate_at: float | None = None
+        self._last_write_rate_total: int = 0
         self._last_error: str | None = None
 
     @property
@@ -319,6 +340,14 @@ class _PortAudioTxStream:
             write_attempts=self._write_attempts,
             writes_completed=self._writes_completed,
             write_failures=self._write_failures,
+            queued_audio_ms=round(self._queued_audio_ms, 3),
+            written_audio_ms=round(self._written_audio_ms, 3),
+            dropped_audio_ms=round(self._dropped_audio_ms, 3),
+            write_calls_per_sec_ewma=(
+                round(self._write_calls_per_sec_ewma, 3)
+                if self._write_calls_per_sec_ewma is not None
+                else None
+            ),
             last_error=self._last_error,
         )
 
@@ -334,7 +363,7 @@ class _PortAudioTxStream:
             latency="low",
         )
         self._stream.start()
-        self._queue = asyncio.Queue(maxsize=64)
+        self._queue = asyncio.Queue(maxsize=_TX_QUEUE_SIZE)
         self._task = asyncio.create_task(self._loop(), name="portaudio-tx")
 
     async def stop(self) -> None:
@@ -342,24 +371,22 @@ class _PortAudioTxStream:
         task = self._task
         self._stream = None
         self._task = None
-        self._queue = asyncio.Queue(maxsize=64)
-        # Close stream FIRST — unblocks executor thread stuck in stream.write()
-        if stream is not None:
-            try:
-                stream.stop()
-            except Exception:
-                logger.debug("portaudio-tx: stream stop failed", exc_info=True)
-            try:
-                stream.close()
-            except Exception:
-                logger.debug("portaudio-tx: stream close failed", exc_info=True)
-        # Now cancel the task (thread is already unblocked)
+
+        if task is not None and not task.done():
+            with contextlib.suppress(TimeoutError):
+                await asyncio.wait_for(self._queue.put(None), timeout=0.2)
+                await asyncio.wait_for(task, timeout=_TX_STOP_DRAIN_TIMEOUT_S)
+
+        # Close the stream after the normal drain path; if the writer is still
+        # blocked, closing it before cancellation unblocks the executor thread.
+        self._close_stream(stream)
         if task is not None and not task.done():
             task.cancel()
             try:
                 await task
             except asyncio.CancelledError:
                 pass
+        self._queue = asyncio.Queue(maxsize=_TX_QUEUE_SIZE)
 
     async def write(self, frame: bytes) -> None:
         if not self.running:
@@ -372,6 +399,7 @@ class _PortAudioTxStream:
         try:
             self._queue.put_nowait(frame)
             self._frames_queued += 1
+            self._queued_audio_ms += self._audio_ms_for_bytes(len(frame))
             return
         except asyncio.QueueFull:
             pass
@@ -380,12 +408,15 @@ class _PortAudioTxStream:
         # receive and turns a brief CoreAudio stall into seconds of stale audio.
         # Keep latency bounded by dropping the oldest queued frame.
         try:
-            self._queue.get_nowait()
+            dropped = self._queue.get_nowait()
+            if dropped is not None:
+                self._dropped_audio_ms += self._audio_ms_for_bytes(len(dropped))
         except asyncio.QueueEmpty:
             pass
         try:
             self._queue.put_nowait(frame)
             self._frames_queued += 1
+            self._queued_audio_ms += self._audio_ms_for_bytes(len(frame))
         except asyncio.QueueFull:
             pass
         self._dropped_frames += 1
@@ -402,11 +433,16 @@ class _PortAudioTxStream:
         try:
             while True:
                 pcm = await self._queue.get()
+                if pcm is None:
+                    break
+                pcm = self._coalesce_ready_pcm(pcm)
                 self._write_attempts += 1
                 try:
                     arr = np.frombuffer(pcm, dtype=np.int16).reshape(-1, channels)
                     await asyncio.to_thread(stream.write, arr)
                     self._writes_completed += 1
+                    self._written_audio_ms += self._audio_ms_for_bytes(len(pcm))
+                    self._track_write_rate()
                 except Exception as exc:
                     self._write_failures += 1
                     self._last_error = f"{type(exc).__name__}: {exc}"
@@ -414,6 +450,69 @@ class _PortAudioTxStream:
                     break
         except asyncio.CancelledError:
             pass
+
+    def _coalesce_ready_pcm(self, first: bytes) -> bytes:
+        target_bytes = self._target_write_bytes()
+        if len(first) >= target_bytes:
+            return first
+
+        parts = [first]
+        total = len(first)
+        while total < target_bytes:
+            try:
+                next_pcm = self._queue.get_nowait()
+            except asyncio.QueueEmpty:
+                break
+            if next_pcm is None:
+                self._queue.put_nowait(None)
+                break
+            parts.append(next_pcm)
+            total += len(next_pcm)
+        return b"".join(parts)
+
+    def _target_write_bytes(self) -> int:
+        target_frames = (
+            self._blocksize
+            if self._blocksize > 0
+            else (self._sample_rate * _TX_WRITE_CHUNK_MS) // 1000
+        )
+        return max(1, target_frames) * self._channels * 2
+
+    def _audio_ms_for_bytes(self, byte_count: int) -> float:
+        bytes_per_frame = max(1, self._channels * 2)
+        frames = byte_count // bytes_per_frame
+        return (frames / self._sample_rate) * 1000.0
+
+    def _track_write_rate(self) -> None:
+        observed_at = time.monotonic()
+        if self._last_write_rate_at is None:
+            self._last_write_rate_at = observed_at
+            self._last_write_rate_total = self._writes_completed
+            self._write_calls_per_sec_ewma = 0.0
+            return
+
+        dt = observed_at - self._last_write_rate_at
+        if dt <= 0:
+            return
+        delta = self._writes_completed - self._last_write_rate_total
+        instant_rate = delta / dt
+        alpha = 1.0 - math.exp(-dt / 5.0)
+        previous = self._write_calls_per_sec_ewma or 0.0
+        self._write_calls_per_sec_ewma = previous + alpha * (instant_rate - previous)
+        self._last_write_rate_at = observed_at
+        self._last_write_rate_total = self._writes_completed
+
+    def _close_stream(self, stream: Any) -> None:
+        if stream is None:
+            return
+        try:
+            stream.stop()
+        except Exception:
+            logger.debug("portaudio-tx: stream stop failed", exc_info=True)
+        try:
+            stream.close()
+        except Exception:
+            logger.debug("portaudio-tx: stream close failed", exc_info=True)
 
 
 class PortAudioBackend:
