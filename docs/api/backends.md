@@ -1,3 +1,7 @@
+---
+robots: noindex, follow
+---
+
 # Backends
 
 Radio backend implementations (multi-radio architecture).

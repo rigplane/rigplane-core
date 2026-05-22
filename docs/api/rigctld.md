@@ -1,3 +1,7 @@
+---
+robots: noindex, follow
+---
+
 # Rigctld Server
 
 Hamlib NET rigctld-compatible TCP server for rigplane.

@@ -1,3 +1,7 @@
+---
+robots: noindex, follow
+---
+
 # Icom IC-7610 Backend
 
 LAN and serial implementations for Icom IC-7610.

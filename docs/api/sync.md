@@ -1,3 +1,7 @@
+---
+robots: noindex, follow
+---
+
 # Synchronous API
 
 Blocking wrapper around the async `IcomRadio` for use without `async/await`.

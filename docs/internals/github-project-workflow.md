@@ -1,3 +1,7 @@
+---
+robots: noindex, follow
+---
+
 # GitHub Project Workflow
 
 RigPlane Core uses GitHub Issues plus GitHub Projects as the lightweight

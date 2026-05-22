@@ -1,3 +1,7 @@
+---
+robots: noindex, follow
+---
+
 # Protocol Deep Dive
 
 The Icom LAN protocol is a proprietary UDP-based protocol used by Icom transceivers for remote control over Ethernet/WiFi. It was reverse-engineered by the [wfview](https://wfview.org/) project.

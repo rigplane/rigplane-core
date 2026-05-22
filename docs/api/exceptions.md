@@ -1,3 +1,7 @@
+---
+robots: noindex, follow
+---
+
 # Exceptions
 
 All exceptions inherit from `RigplaneError` for easy catch-all handling.

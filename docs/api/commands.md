@@ -1,3 +1,7 @@
+---
+robots: noindex, follow
+---
+
 # Commands Module
 
 Low-level CI-V command encoding and decoding. Most users should use the high-level **Radio** API (via [`create_radio`](public-api-surface.md)).

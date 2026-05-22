@@ -1,3 +1,7 @@
+---
+robots: noindex, follow
+---
+
 # Web Server API
 
 Built-in HTTP + WebSocket interface used by the browser UI and automation clients.

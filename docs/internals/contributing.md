@@ -1,3 +1,7 @@
+---
+robots: noindex, follow
+---
+
 # Contributing
 
 Contributions are welcome! Here's how to get started.

@@ -1,3 +1,7 @@
+---
+robots: noindex, follow
+---
+
 # CLI design and technology choices
 
 ## Current implementation

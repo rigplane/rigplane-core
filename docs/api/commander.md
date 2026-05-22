@@ -1,3 +1,7 @@
+---
+robots: noindex, follow
+---
+
 # IcomCommander
 
 Serialized CI-V command executor with priority queuing (wfview-style).

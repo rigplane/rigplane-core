@@ -1,3 +1,7 @@
+---
+robots: noindex, follow
+---
+
 # Transport
 
 Low-level async UDP transport for the Icom LAN protocol. Most users should use [`create_radio`](public-api-surface.md) and the **Radio** API instead.

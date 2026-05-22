@@ -1,3 +1,7 @@
+---
+robots: noindex, follow
+---
+
 # Icom IC-7610 Drivers
 
 Low-level transport drivers for IC-7610 serial backend.

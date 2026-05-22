@@ -1,3 +1,7 @@
+---
+robots: noindex, follow
+---
+
 # Rig Loader
 
 TOML rig file loading, validation, and runtime object construction.

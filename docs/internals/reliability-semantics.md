@@ -1,3 +1,7 @@
+---
+robots: noindex, follow
+---
+
 # Reliability semantics
 
 This document defines the public contract for timeouts, retries, cache TTLs, and connection/readiness state. Web UI and rigctld documentation can reference this section for consistent behavior.
