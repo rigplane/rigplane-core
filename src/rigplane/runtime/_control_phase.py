@@ -45,6 +45,10 @@ _STEREO_CODECS = (
 )
 
 
+class _DataPortDiscoveryCooldown(Exception):
+    """Recoverable startup failure after control auth advertised a CI-V port."""
+
+
 def _is_address_in_use(exc: OSError) -> bool:
     return exc.errno == errno.EADDRINUSE or "Address already in use" in str(exc)
 
@@ -70,6 +74,7 @@ class ControlPhaseRuntime:
     _WATCHDOG_HEALTH_LOG_INTERVAL = 30.0
     _STATUS_RETRY_PAUSE = 10.0
     _STATUS_REJECT_COOLDOWN = 30.0
+    _DATA_PORT_COOLDOWN_RETRIES = 3
 
     def __init__(self, host: ControlPhaseHost) -> None:
         self._host = host
@@ -108,6 +113,36 @@ class ControlPhaseRuntime:
     async def connect(self) -> None:
         """Open connection to the radio and authenticate."""
         h = self._host
+        max_attempts = self._DATA_PORT_COOLDOWN_RETRIES + 1
+        for attempt in range(1, max_attempts + 1):
+            try:
+                await self._connect_once()
+                return
+            except _DataPortDiscoveryCooldown as exc:
+                if attempt >= max_attempts:
+                    raise ConnectionError(
+                        "CI-V data-port discovery timed out after successful "
+                        "control auth/status; the radio may still be releasing "
+                        "a previous LAN session. Wait 30-60s and retry."
+                    ) from exc
+                retry_pause = self._status_retry_pause()
+                logger.warning(
+                    "CI-V data-port discovery timed out after successful control "
+                    "auth/status; treating as session cooldown "
+                    "(host=%s, control=%d, civ=%d, attempt=%d/%d). "
+                    "Retrying after %.0fs.",
+                    h._host,
+                    h._port,
+                    h._civ_port,
+                    attempt,
+                    max_attempts,
+                    retry_pause,
+                )
+                await asyncio.sleep(retry_pause)
+
+    async def _connect_once(self) -> None:
+        """Open connection to the radio and authenticate."""
+        h = self._host
         h._conn_state = RadioConnectionState.CONNECTING
         h._civ_stream_ready = False
         h._civ_recovering = False
@@ -133,9 +168,19 @@ class ControlPhaseRuntime:
                     local_host=local_bind_host,
                 )
         except OSError as exc:
+            logger.warning(
+                "Radio host/control UDP open failed: %s:%d: %s", h._host, h._port, exc
+            )
             raise ConnectionError(
                 f"Failed to connect to {h._host}:{h._port}: {exc}"
             ) from exc
+        except TimeoutError as exc:
+            logger.warning(
+                "Control discovery failed before auth: %s:%d: %s", h._host, h._port, exc
+            )
+            await h._ctrl_transport.disconnect()
+            h._conn_state = RadioConnectionState.DISCONNECTED
+            raise
 
         h._ctrl_transport.start_ping_loop()
         h._ctrl_transport.start_retransmit_loop()
@@ -154,6 +199,9 @@ class ControlPhaseRuntime:
         )
         auth = parse_auth_response(resp_data)
         if not auth.success:
+            logger.warning(
+                "Control auth failed: %s:%d error=0x%08X", h._host, h._port, auth.error
+            )
             raise AuthenticationError(
                 f"Authentication failed (error=0x{auth.error:08X})"
             )
@@ -338,6 +386,18 @@ class ControlPhaseRuntime:
             raise ConnectionError(
                 f"Failed to connect CI-V port {h._civ_port}: {exc}"
             ) from exc
+        except TimeoutError as exc:
+            logger.warning(
+                "CI-V data-port discovery timeout after control auth/status "
+                "(host=%s, control=%d, civ=%d, audio=%d): %s",
+                h._host,
+                h._port,
+                h._civ_port,
+                h._audio_port,
+                exc,
+            )
+            await self._cleanup_data_port_discovery_timeout()
+            raise _DataPortDiscoveryCooldown() from exc
         except Exception:
             # asyncio consumed civ_sock — don't double-close it.
             h._civ_sock_pending = None
@@ -400,6 +460,33 @@ class ControlPhaseRuntime:
             h._port,
             h._civ_port,
         )
+
+    async def _cleanup_data_port_discovery_timeout(self) -> None:
+        """Release startup resources after data-port discovery times out."""
+        h = self._host
+        # Timeout happens after asyncio has consumed civ_sock; the datagram
+        # transport owns closing it.  The audio socket has not been consumed.
+        h._civ_sock_pending = None
+        self._close_pending_sockets()
+        if h._civ_transport is not None:
+            try:
+                await h._civ_transport.disconnect()
+            except Exception:
+                logger.debug(
+                    "data-port cooldown cleanup: civ disconnect failed",
+                    exc_info=True,
+                )
+            h._civ_transport = None
+        try:
+            await h._ctrl_transport.disconnect()
+        except Exception:
+            logger.debug(
+                "data-port cooldown cleanup: control disconnect failed",
+                exc_info=True,
+            )
+        h._conn_state = RadioConnectionState.DISCONNECTED
+        h._civ_stream_ready = False
+        h._civ_recovering = False
 
     async def disconnect(self) -> None:
         """Cleanly disconnect from the radio."""
