@@ -11,18 +11,17 @@ opening RX/TX audio streams, plus two concrete implementations:
 from __future__ import annotations
 
 import asyncio
-import contextlib
 import logging
 import math
+import threading
 import time
-from dataclasses import dataclass
+from collections import deque
+from dataclasses import dataclass, field
 from typing import Any, Callable, NewType, Protocol, runtime_checkable
 
 logger = logging.getLogger(__name__)
 
-_TX_QUEUE_SIZE = 64
-_TX_WRITE_CHUNK_MS = 80
-_TX_STOP_DRAIN_TIMEOUT_S = 1.0
+_TX_BUFFER_MS = 1_000
 
 # ---------------------------------------------------------------------------
 # Identifiers & descriptors
@@ -68,12 +67,20 @@ class TxStreamHealth:
     writes_completed: int = 0
     write_failures: int = 0
     queued_audio_ms: float = 0.0
+    buffered_audio_ms: float = 0.0
+    consumed_audio_ms: float = 0.0
     written_audio_ms: float = 0.0
     dropped_audio_ms: float = 0.0
+    overrun_audio_ms: float = 0.0
+    overrun_events: int = 0
+    underrun_audio_ms: float = 0.0
+    underrun_events: int = 0
+    callback_errors: int = 0
+    callback_status_flags: dict[str, int] = field(default_factory=dict)
     write_calls_per_sec_ewma: float | None = None
     last_error: str | None = None
 
-    def to_dict(self) -> dict[str, int | float | str | None]:
+    def to_dict(self) -> dict[str, Any]:
         return {
             "queued_frames": self.queued_frames,
             "frames_queued": self.frames_queued,
@@ -82,8 +89,16 @@ class TxStreamHealth:
             "writes_completed": self.writes_completed,
             "write_failures": self.write_failures,
             "queued_audio_ms": self.queued_audio_ms,
+            "buffered_audio_ms": self.buffered_audio_ms,
+            "consumed_audio_ms": self.consumed_audio_ms,
             "written_audio_ms": self.written_audio_ms,
             "dropped_audio_ms": self.dropped_audio_ms,
+            "overrun_audio_ms": self.overrun_audio_ms,
+            "overrun_events": self.overrun_events,
+            "underrun_audio_ms": self.underrun_audio_ms,
+            "underrun_events": self.underrun_events,
+            "callback_errors": self.callback_errors,
+            "callback_status_flags": dict(self.callback_status_flags),
             "write_calls_per_sec_ewma": self.write_calls_per_sec_ewma,
             "last_error": self.last_error,
         }
@@ -294,34 +309,47 @@ class _PortAudioRxStream:
 
 
 class _PortAudioTxStream:
-    """TxStream backed by a sounddevice OutputStream."""
+    """TxStream backed by a sounddevice OutputStream callback."""
 
     def __init__(
         self,
         sd: Any,
-        np: Any,
+        _np: Any,
         device_index: int,
         sample_rate: int,
         channels: int,
         blocksize: int,
     ) -> None:
         self._sd = sd
-        self._np = np
         self._device_index = device_index
         self._sample_rate = sample_rate
         self._channels = channels
         self._blocksize = blocksize
+        self._bytes_per_audio_frame = max(1, channels * 2)
+        self._capacity_bytes = self._buffer_capacity_bytes()
         self._stream: Any = None
-        self._task: asyncio.Task[None] | None = None
-        self._queue: asyncio.Queue[bytes | None] = asyncio.Queue(maxsize=_TX_QUEUE_SIZE)
+        self._running = False
+        self._lock = threading.Lock()
+        self._buffer = bytearray(self._capacity_bytes)
+        self._read_pos = 0
+        self._write_pos = 0
+        self._buffered_bytes: int = 0
+        self._frame_lengths: deque[int] = deque()
         self._dropped_frames: int = 0
         self._frames_queued: int = 0
         self._write_attempts: int = 0
         self._writes_completed: int = 0
         self._write_failures: int = 0
         self._queued_audio_ms: float = 0.0
+        self._consumed_audio_ms: float = 0.0
         self._written_audio_ms: float = 0.0
         self._dropped_audio_ms: float = 0.0
+        self._overrun_audio_ms: float = 0.0
+        self._overrun_events: int = 0
+        self._underrun_audio_ms: float = 0.0
+        self._underrun_events: int = 0
+        self._callback_errors: int = 0
+        self._callback_status_flags: dict[str, int] = {}
         self._write_calls_per_sec_ewma: float | None = None
         self._last_write_rate_at: float | None = None
         self._last_write_rate_total: int = 0
@@ -329,27 +357,37 @@ class _PortAudioTxStream:
 
     @property
     def running(self) -> bool:
-        return self._task is not None and not self._task.done()
+        return self._running
 
     @property
     def write_health(self) -> TxStreamHealth:
-        return TxStreamHealth(
-            queued_frames=self._queue.qsize(),
-            frames_queued=self._frames_queued,
-            frames_dropped=self._dropped_frames,
-            write_attempts=self._write_attempts,
-            writes_completed=self._writes_completed,
-            write_failures=self._write_failures,
-            queued_audio_ms=round(self._queued_audio_ms, 3),
-            written_audio_ms=round(self._written_audio_ms, 3),
-            dropped_audio_ms=round(self._dropped_audio_ms, 3),
-            write_calls_per_sec_ewma=(
-                round(self._write_calls_per_sec_ewma, 3)
-                if self._write_calls_per_sec_ewma is not None
-                else None
-            ),
-            last_error=self._last_error,
-        )
+        with self._lock:
+            buffered_audio_ms = self._audio_ms_for_bytes(self._buffered_bytes)
+            return TxStreamHealth(
+                queued_frames=len(self._frame_lengths),
+                frames_queued=self._frames_queued,
+                frames_dropped=self._dropped_frames,
+                write_attempts=self._write_attempts,
+                writes_completed=self._writes_completed,
+                write_failures=self._write_failures,
+                queued_audio_ms=round(self._queued_audio_ms, 3),
+                buffered_audio_ms=round(buffered_audio_ms, 3),
+                consumed_audio_ms=round(self._consumed_audio_ms, 3),
+                written_audio_ms=round(self._written_audio_ms, 3),
+                dropped_audio_ms=round(self._dropped_audio_ms, 3),
+                overrun_audio_ms=round(self._overrun_audio_ms, 3),
+                overrun_events=self._overrun_events,
+                underrun_audio_ms=round(self._underrun_audio_ms, 3),
+                underrun_events=self._underrun_events,
+                callback_errors=self._callback_errors,
+                callback_status_flags=dict(self._callback_status_flags),
+                write_calls_per_sec_ewma=(
+                    round(self._write_calls_per_sec_ewma, 3)
+                    if self._write_calls_per_sec_ewma is not None
+                    else None
+                ),
+                last_error=self._last_error,
+            )
 
     async def start(self) -> None:
         if self.running:
@@ -361,32 +399,17 @@ class _PortAudioTxStream:
             device=self._device_index,
             blocksize=self._blocksize,
             latency="low",
+            callback=self._output_callback,
         )
         self._stream.start()
-        self._queue = asyncio.Queue(maxsize=_TX_QUEUE_SIZE)
-        self._task = asyncio.create_task(self._loop(), name="portaudio-tx")
+        self._running = True
 
     async def stop(self) -> None:
         stream = self._stream
-        task = self._task
         self._stream = None
-        self._task = None
-
-        if task is not None and not task.done():
-            with contextlib.suppress(TimeoutError):
-                await asyncio.wait_for(self._queue.put(None), timeout=0.2)
-                await asyncio.wait_for(task, timeout=_TX_STOP_DRAIN_TIMEOUT_S)
-
-        # Close the stream after the normal drain path; if the writer is still
-        # blocked, closing it before cancellation unblocks the executor thread.
+        self._running = False
         self._close_stream(stream)
-        if task is not None and not task.done():
-            task.cancel()
-            try:
-                await task
-            except asyncio.CancelledError:
-                pass
-        self._queue = asyncio.Queue(maxsize=_TX_QUEUE_SIZE)
+        self._clear_buffer()
 
     async def write(self, frame: bytes) -> None:
         if not self.running:
@@ -396,94 +419,241 @@ class _PortAudioTxStream:
                 else ""
             )
             raise RuntimeError(f"TX stream is not running.{detail}")
-        try:
-            self._queue.put_nowait(frame)
-            self._frames_queued += 1
-            self._queued_audio_ms += self._audio_ms_for_bytes(len(frame))
+        if not frame:
             return
-        except asyncio.QueueFull:
-            pass
 
-        # Audio playback is realtime: blocking here backpressures websocket
-        # receive and turns a brief CoreAudio stall into seconds of stale audio.
-        # Keep latency bounded by dropping the oldest queued frame.
-        try:
-            dropped = self._queue.get_nowait()
-            if dropped is not None:
-                self._dropped_audio_ms += self._audio_ms_for_bytes(len(dropped))
-        except asyncio.QueueEmpty:
-            pass
-        try:
-            self._queue.put_nowait(frame)
+        data = bytes(frame)
+        if not data:
+            return
+
+        incoming_drop_bytes = 0
+        if len(data) > self._capacity_bytes:
+            incoming_drop_bytes = self._align_byte_count(
+                len(data) - self._capacity_bytes,
+                round_up=True,
+            )
+            data = data[incoming_drop_bytes:]
+
+        dropped_bytes = incoming_drop_bytes
+        with self._lock:
+            overflowed = self._buffered_bytes + len(data) > self._capacity_bytes
+            while (
+                self._buffered_bytes + len(data) > self._capacity_bytes
+                and self._frame_lengths
+            ):
+                dropped_bytes += self._drop_oldest_locked(self._frame_lengths[0])
+            remaining_overflow = max(
+                0,
+                self._buffered_bytes + len(data) - self._capacity_bytes,
+            )
+            if remaining_overflow:
+                drop_bytes = self._align_byte_count(remaining_overflow, round_up=True)
+                dropped_bytes += self._drop_oldest_locked(drop_bytes)
+            if incoming_drop_bytes or overflowed:
+                self._overrun_events += 1
+            if dropped_bytes:
+                dropped_audio_ms = self._audio_ms_for_bytes(dropped_bytes)
+                self._dropped_audio_ms += dropped_audio_ms
+                self._overrun_audio_ms += dropped_audio_ms
+
+            self._write_ring_locked(data)
+            self._frame_lengths.append(len(data))
             self._frames_queued += 1
-            self._queued_audio_ms += self._audio_ms_for_bytes(len(frame))
-        except asyncio.QueueFull:
-            pass
-        self._dropped_frames += 1
-        if self._dropped_frames <= 3 or self._dropped_frames % 500 == 0:
+            self._queued_audio_ms += self._audio_ms_for_bytes(len(data))
+
+            log_drops = dropped_bytes and (
+                self._dropped_frames <= 3 or self._dropped_frames % 500 == 0
+            )
+            total_dropped = self._dropped_frames
+
+        if log_drops:
             logger.warning(
-                "portaudio-tx: dropped stale playback frame (queue full, total=%d)",
-                self._dropped_frames,
+                "portaudio-tx: dropped stale playback frame (buffer full, total=%d)",
+                total_dropped,
             )
 
-    async def _loop(self) -> None:
-        stream = self._stream
-        np = self._np
-        channels = self._channels
+    def _output_callback(
+        self,
+        outdata: Any,
+        frames: int,
+        _time_info: Any,
+        status: Any,
+    ) -> None:
+        byte_count = frames * self._bytes_per_audio_frame
+        self._record_callback_attempt(status)
         try:
-            while True:
-                pcm = await self._queue.get()
-                if pcm is None:
-                    break
-                pcm = self._coalesce_ready_pcm(pcm)
-                self._write_attempts += 1
-                try:
-                    arr = np.frombuffer(pcm, dtype=np.int16).reshape(-1, channels)
-                    await asyncio.to_thread(stream.write, arr)
-                    self._writes_completed += 1
-                    self._written_audio_ms += self._audio_ms_for_bytes(len(pcm))
-                    self._track_write_rate()
-                except Exception as exc:
-                    self._write_failures += 1
-                    self._last_error = f"{type(exc).__name__}: {exc}"
-                    logger.warning("portaudio-tx: loop failed", exc_info=True)
-                    break
-        except asyncio.CancelledError:
-            pass
+            dest = memoryview(outdata).cast("B")
+            if len(dest) != byte_count:
+                raise ValueError(
+                    f"output buffer is {len(dest)} bytes, expected {byte_count}"
+                )
+            consumed_bytes = self._read_ring_into_locked(dest)
+            if consumed_bytes < byte_count:
+                underrun_bytes = byte_count - consumed_bytes
+                dest[consumed_bytes:] = b"\x00" * underrun_bytes
+                self._record_underrun(underrun_bytes)
+            self._record_callback_complete(
+                consumed_bytes=consumed_bytes,
+                output_bytes=byte_count,
+            )
+        except Exception as exc:
+            self._record_callback_failure(exc)
+            self._fill_output_silence(outdata, byte_count)
 
-    def _coalesce_ready_pcm(self, first: bytes) -> bytes:
-        target_bytes = self._target_write_bytes()
-        if len(first) >= target_bytes:
-            return first
+    def _record_callback_attempt(self, status: Any) -> None:
+        flags = self._status_flag_names(status)
+        with self._lock:
+            self._write_attempts += 1
+            for flag in flags:
+                self._callback_status_flags[flag] = (
+                    self._callback_status_flags.get(flag, 0) + 1
+                )
 
-        parts = [first]
-        total = len(first)
-        while total < target_bytes:
-            try:
-                next_pcm = self._queue.get_nowait()
-            except asyncio.QueueEmpty:
-                break
-            if next_pcm is None:
-                self._queue.put_nowait(None)
-                break
-            parts.append(next_pcm)
-            total += len(next_pcm)
-        return b"".join(parts)
+    def _record_callback_complete(
+        self,
+        *,
+        consumed_bytes: int,
+        output_bytes: int,
+    ) -> None:
+        with self._lock:
+            self._writes_completed += 1
+            self._consumed_audio_ms += self._audio_ms_for_bytes(consumed_bytes)
+            self._written_audio_ms += self._audio_ms_for_bytes(output_bytes)
+            self._track_write_rate_locked()
 
-    def _target_write_bytes(self) -> int:
-        target_frames = (
-            self._blocksize
-            if self._blocksize > 0
-            else (self._sample_rate * _TX_WRITE_CHUNK_MS) // 1000
-        )
-        return max(1, target_frames) * self._channels * 2
+    def _record_callback_failure(self, exc: Exception) -> None:
+        with self._lock:
+            self._callback_errors += 1
+            self._write_failures += 1
+            self._last_error = f"{type(exc).__name__}: {exc}"
+
+    def _record_underrun(self, byte_count: int) -> None:
+        with self._lock:
+            self._underrun_audio_ms += self._audio_ms_for_bytes(byte_count)
+            self._underrun_events += 1
+
+    def _read_ring_into_locked(self, dest: memoryview) -> int:
+        requested = len(dest)
+        with self._lock:
+            copied = min(requested, self._buffered_bytes)
+            first = min(copied, self._capacity_bytes - self._read_pos)
+            if first:
+                dest[:first] = self._buffer[self._read_pos : self._read_pos + first]
+            second = copied - first
+            if second:
+                dest[first : first + second] = self._buffer[:second]
+            self._read_pos = (self._read_pos + copied) % self._capacity_bytes
+            self._buffered_bytes -= copied
+            self._consume_frame_lengths_locked(copied, count_dropped=False)
+            if self._buffered_bytes == 0:
+                self._read_pos = self._write_pos
+        return copied
+
+    def _write_ring_locked(self, data: bytes) -> None:
+        first = min(len(data), self._capacity_bytes - self._write_pos)
+        if first:
+            self._buffer[self._write_pos : self._write_pos + first] = data[:first]
+        second = len(data) - first
+        if second:
+            self._buffer[:second] = data[first:]
+        self._write_pos = (self._write_pos + len(data)) % self._capacity_bytes
+        self._buffered_bytes += len(data)
+
+    def _drop_oldest_locked(self, byte_count: int) -> int:
+        dropped = min(byte_count, self._buffered_bytes)
+        if dropped <= 0:
+            return 0
+        self._read_pos = (self._read_pos + dropped) % self._capacity_bytes
+        self._buffered_bytes -= dropped
+        self._consume_frame_lengths_locked(dropped, count_dropped=True)
+        if self._buffered_bytes == 0:
+            self._read_pos = self._write_pos
+        return dropped
+
+    def _consume_frame_lengths_locked(
+        self,
+        byte_count: int,
+        *,
+        count_dropped: bool,
+    ) -> None:
+        remaining = byte_count
+        while remaining > 0 and self._frame_lengths:
+            frame_len = self._frame_lengths[0]
+            if frame_len <= remaining:
+                remaining -= frame_len
+                self._frame_lengths.popleft()
+                if count_dropped:
+                    self._dropped_frames += 1
+            else:
+                self._frame_lengths[0] = frame_len - remaining
+                remaining = 0
+
+    def _buffer_capacity_bytes(self) -> int:
+        frames = (self._sample_rate * _TX_BUFFER_MS) // 1000
+        return max(1, frames) * self._bytes_per_audio_frame
+
+    def _clear_buffer(self) -> None:
+        with self._lock:
+            self._buffer[:] = b"\x00" * self._capacity_bytes
+            self._read_pos = 0
+            self._write_pos = 0
+            self._buffered_bytes = 0
+            self._frame_lengths.clear()
 
     def _audio_ms_for_bytes(self, byte_count: int) -> float:
-        bytes_per_frame = max(1, self._channels * 2)
-        frames = byte_count // bytes_per_frame
+        frames = byte_count // self._bytes_per_audio_frame
         return (frames / self._sample_rate) * 1000.0
 
-    def _track_write_rate(self) -> None:
+    def _align_byte_count(self, byte_count: int, *, round_up: bool) -> int:
+        remainder = byte_count % self._bytes_per_audio_frame
+        if remainder == 0:
+            return byte_count
+        if round_up:
+            return byte_count + self._bytes_per_audio_frame - remainder
+        return byte_count - remainder
+
+    def _fill_output_silence(self, outdata: Any, byte_count: int) -> None:
+        try:
+            dest = memoryview(outdata).cast("B")
+            dest[: min(byte_count, len(dest))] = b"\x00" * min(byte_count, len(dest))
+            return
+        except Exception:
+            pass
+        try:
+            outdata.fill(0)
+        except Exception:
+            pass
+
+    def _status_flag_names(self, status: Any) -> tuple[str, ...]:
+        if status is None:
+            return ()
+        try:
+            if not bool(status):
+                return ()
+        except Exception:
+            pass
+        flags: list[str] = []
+        for name in (
+            "input_underflow",
+            "input_overflow",
+            "output_underflow",
+            "output_overflow",
+            "priming_output",
+        ):
+            try:
+                if bool(getattr(status, name, False)):
+                    flags.append(name)
+            except Exception:
+                continue
+        if flags:
+            return tuple(flags)
+        try:
+            label = str(status).strip()
+        except Exception:
+            label = type(status).__name__
+        return (label or type(status).__name__,)
+
+    def _track_write_rate_locked(self) -> None:
         observed_at = time.monotonic()
         if self._last_write_rate_at is None:
             self._last_write_rate_at = observed_at
