@@ -57,3 +57,59 @@ jobs:
       - name: Deploy to GitHub Pages
         id: deployment
         uses: actions/deploy-pages@v5
+
+  indexnow:
+    needs: deploy
+    runs-on: ubuntu-latest
+    steps:
+      - name: Wait for Pages CDN to settle
+        run: sleep 30
+
+      - name: Fetch published sitemap
+        run: curl -fsSL --retry 5 --retry-delay 10 https://rigplane.dev/sitemap.xml -o sitemap.xml
+
+      - name: Ping IndexNow with all sitemap URLs
+        # IndexNow key file is published at docs/4f4bcd28cb8d426ca58ec08b5035541e.txt
+        # and served at https://rigplane.dev/4f4bcd28cb8d426ca58ec08b5035541e.txt.
+        # Bing, Yandex and other IndexNow consumers honor pings for any URL on a
+        # host whose key file resolves to the declared keyLocation value.
+        run: |
+          python3 << 'PYEOF'
+          import json
+          import re
+          import sys
+          import urllib.error
+          import urllib.request
+
+          KEY = "4f4bcd28cb8d426ca58ec08b5035541e"
+          HOST = "rigplane.dev"
+
+          with open("sitemap.xml") as f:
+              urls = re.findall(r"<loc>(.*?)</loc>", f.read())
+          urls = [u for u in urls if u.startswith(f"https://{HOST}/")]
+          if not urls:
+              print("::warning::IndexNow: no rigplane.dev URLs in sitemap; skipping")
+              sys.exit(0)
+
+          payload = json.dumps({
+              "host": HOST,
+              "key": KEY,
+              "keyLocation": f"https://{HOST}/{KEY}.txt",
+              "urlList": urls,
+          }).encode()
+          req = urllib.request.Request(
+              "https://api.indexnow.org/IndexNow",
+              data=payload,
+              headers={"Content-Type": "application/json; charset=utf-8"},
+              method="POST",
+          )
+          try:
+              with urllib.request.urlopen(req, timeout=30) as resp:
+                  print(f"IndexNow: {resp.status} {resp.reason} for {len(urls)} URLs")
+          except urllib.error.HTTPError as exc:
+              # 200 OK / 202 Accepted are success. 4xx is a config error we want
+              # loud-but-non-fatal so a bad key file does not block deploy.
+              print(f"::warning::IndexNow returned {exc.code}: {exc.reason}")
+              if exc.code >= 500:
+                  raise
+          PYEOF
