@@ -408,7 +408,7 @@ class TestPortAudioBackendDeps:
                 await task
 
     @pytest.mark.asyncio()
-    async def test_portaudio_tx_coalesces_small_frames_into_20ms_writes(self) -> None:
+    async def test_portaudio_tx_coalesces_small_frames_into_80ms_writes(self) -> None:
         class FakeArray:
             def __init__(self, pcm: bytes) -> None:
                 self.pcm = pcm
@@ -453,14 +453,16 @@ class TestPortAudioBackendDeps:
         await stream._loop()  # type: ignore[attr-defined]
 
         assert b"".join(output.writes) == b"".join(frames)
-        assert len(output.writes) == 50
-        assert {len(write) for write in output.writes} == {960 * 16 * 2}
+        assert len(output.writes) == 13
+        assert [len(write) for write in output.writes] == [3840 * 16 * 2] * 12 + [
+            1920 * 16 * 2
+        ]
 
         health = stream.write_health
         assert health.frames_queued == 150
         assert health.frames_dropped == 0
-        assert health.write_attempts == 50
-        assert health.writes_completed == 50
+        assert health.write_attempts == 13
+        assert health.writes_completed == 13
         assert health.queued_audio_ms == pytest.approx(1000.0)
         assert health.written_audio_ms == pytest.approx(1000.0)
         assert health.dropped_audio_ms == 0.0

@@ -21,7 +21,7 @@ from typing import Any, Callable, NewType, Protocol, runtime_checkable
 logger = logging.getLogger(__name__)
 
 _TX_QUEUE_SIZE = 64
-_TX_WRITE_CHUNK_MS = 20
+_TX_WRITE_CHUNK_MS = 80
 _TX_STOP_DRAIN_TIMEOUT_S = 1.0
 
 # ---------------------------------------------------------------------------
