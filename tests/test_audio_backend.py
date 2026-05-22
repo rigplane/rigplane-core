@@ -436,7 +436,9 @@ class TestPortAudioBackendDeps:
                     pass
 
         backend = PortAudioBackend(dependency_loader=lambda: (FakeSd(), FakeNp()))
-        stream = backend.open_tx(AudioDeviceId(0), sample_rate=48_000, channels=16, frame_ms=0)
+        stream = backend.open_tx(
+            AudioDeviceId(0), sample_rate=48_000, channels=16, frame_ms=0
+        )
         output = FakeOutputStream()
         stream._stream = output  # type: ignore[attr-defined]
         stream._task = asyncio.current_task()  # type: ignore[attr-defined]
@@ -465,7 +467,9 @@ class TestPortAudioBackendDeps:
         assert health.write_calls_per_sec_ewma is not None
 
     @pytest.mark.asyncio()
-    async def test_portaudio_tx_flushes_partial_coalesced_chunk_on_stop_signal(self) -> None:
+    async def test_portaudio_tx_flushes_partial_coalesced_chunk_on_stop_signal(
+        self,
+    ) -> None:
         class FakeArray:
             def __init__(self, pcm: bytes) -> None:
                 self.pcm = pcm
@@ -493,7 +497,9 @@ class TestPortAudioBackendDeps:
                     pass
 
         backend = PortAudioBackend(dependency_loader=lambda: (FakeSd(), FakeNp()))
-        stream = backend.open_tx(AudioDeviceId(0), sample_rate=48_000, channels=2, frame_ms=0)
+        stream = backend.open_tx(
+            AudioDeviceId(0), sample_rate=48_000, channels=2, frame_ms=0
+        )
         output = FakeOutputStream()
         stream._stream = output  # type: ignore[attr-defined]
         stream._task = asyncio.current_task()  # type: ignore[attr-defined]
