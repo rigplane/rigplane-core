@@ -309,7 +309,12 @@ class _PortAudioRxStream:
 
 
 class _PortAudioTxStream:
-    """TxStream backed by a sounddevice OutputStream callback."""
+    """TxStream backed by a sounddevice OutputStream callback.
+
+    The bounded callback ring decouples async producers from PortAudio for
+    consumers like WSJT-X/BlackHole (#955): ``write()`` enqueues interleaved
+    PCM and returns quickly, and the PortAudio callback is the playback clock.
+    """
 
     def __init__(
         self,
@@ -426,6 +431,9 @@ class _PortAudioTxStream:
         if not data:
             return
 
+        # Keep producer writes cheap: enqueue bytes into the bounded ring and
+        # let the callback clock playback. On overflow, discard oldest queued
+        # audio first so latency cannot grow without bound (#955).
         incoming_drop_bytes = 0
         if len(data) > self._capacity_bytes:
             incoming_drop_bytes = self._align_byte_count(
@@ -482,6 +490,8 @@ class _PortAudioTxStream:
         byte_count = frames * self._bytes_per_audio_frame
         self._record_callback_attempt(status)
         try:
+            # Callback hot path: no logging or I/O. Copy from the ring; if the
+            # producer falls behind, fill the remainder with silence (#955).
             dest = memoryview(outdata).cast("B")
             if len(dest) != byte_count:
                 raise ValueError(
