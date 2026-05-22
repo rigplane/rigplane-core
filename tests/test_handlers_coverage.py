@@ -1447,6 +1447,144 @@ async def test_audio_handler_tx_other_runtime_error_propagates() -> None:
         await handler._handle_control({"type": "audio_start", "direction": "tx"})
 
 
+def _make_web_tx_contract(
+    tx_codec: AudioCodec,
+    *,
+    tx_sample_rate_hz: int = 16000,
+) -> AudioStreamContract:
+    return AudioStreamContract(
+        rx_codec=AudioCodec.PCM_2CH_16BIT,
+        tx_codec=tx_codec,
+        rx_sample_rate_hz=tx_sample_rate_hz,
+        tx_sample_rate_hz=tx_sample_rate_hz,
+        rx_channels=2,
+        tx_channels=1,
+        rx_codec_source=AudioConfigSource.PROFILE_DEFAULT,
+        tx_codec_source=AudioConfigSource.PROFILE_DEFAULT,
+        rx_sample_rate_source=AudioConfigSource.PROFILE_DEFAULT,
+        tx_sample_rate_source=AudioConfigSource.PROFILE_DEFAULT,
+    )
+
+
+def _make_web_tx_radio(contract: AudioStreamContract) -> SimpleNamespace:
+    return SimpleNamespace(
+        capabilities={"audio"},
+        audio_codec=contract.rx_codec,
+        audio_sample_rate=contract.tx_sample_rate_hz,
+        audio_stream_contract=contract,
+        push_audio_tx_opus=AsyncMock(),
+        push_audio_tx_pcm=AsyncMock(),
+        start_audio_rx_opus=AsyncMock(),
+        stop_audio_rx_opus=AsyncMock(),
+        start_audio_tx_opus=AsyncMock(),
+        stop_audio_tx_opus=AsyncMock(),
+        start_audio_tx_pcm=AsyncMock(),
+        stop_audio_tx_pcm=AsyncMock(),
+        audio_bus=None,
+    )
+
+
+def _make_web_tx_audio_frame(browser_codec: int, audio_data: bytes) -> bytes:
+    return (
+        bytes([MSG_TYPE_AUDIO_TX, browser_codec])
+        + b"\x00" * (AUDIO_HEADER_SIZE - 2)
+        + audio_data
+    )
+
+
+async def test_audio_handler_drops_opus_browser_tx_for_pcm_contract_without_transcoder(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    contract = _make_web_tx_contract(AudioCodec.PCM_1CH_16BIT)
+    radio = _make_web_tx_radio(contract)
+    ws = SimpleNamespace(recv=AsyncMock(), send_binary=AsyncMock())
+    handler = AudioHandler(ws, radio, None)
+
+    def _missing_transcoder(**_kwargs: object) -> object:
+        raise RuntimeError("opus backend unavailable")
+
+    monkeypatch.setattr(
+        "rigplane.web.handlers.audio.create_pcm_opus_transcoder",
+        _missing_transcoder,
+    )
+    await handler._handle_control({"type": "audio_start", "direction": "tx"})
+
+    with caplog.at_level("WARNING", logger="rigplane.web.handlers.audio"):
+        await handler._handle_tx_audio(
+            _make_web_tx_audio_frame(AUDIO_CODEC_OPUS, b"opus-frame")
+        )
+
+    radio.start_audio_tx_pcm.assert_awaited_once_with(sample_rate=16000)
+    radio.push_audio_tx_pcm.assert_not_awaited()
+    radio.push_audio_tx_opus.assert_not_awaited()
+    assert any(
+        "incoming_codec=opus" in record.message
+        and "radio_tx_codec=PCM_1CH_16BIT" in record.message
+        and "sample_rate=16000" in record.message
+        and "action=dropped_no_transcoder" in record.message
+        for record in caplog.records
+    )
+
+
+async def test_audio_handler_drops_opus_browser_tx_for_pcm_contract_on_decode_error(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    contract = _make_web_tx_contract(AudioCodec.PCM_1CH_16BIT)
+    radio = _make_web_tx_radio(contract)
+    ws = SimpleNamespace(recv=AsyncMock(), send_binary=AsyncMock())
+    handler = AudioHandler(ws, radio, None)
+    handler._tx_active = True
+
+    class _FailingTranscoder:
+        def opus_to_pcm(self, _data: bytes) -> bytes:
+            raise RuntimeError("decode failed")
+
+    handler._transcoder = _FailingTranscoder()  # type: ignore[assignment]
+    handler._transcoder_rate = 16000
+
+    with caplog.at_level("WARNING", logger="rigplane.web.handlers.audio"):
+        await handler._handle_tx_audio(
+            _make_web_tx_audio_frame(AUDIO_CODEC_OPUS, b"opus-frame")
+        )
+
+    radio.push_audio_tx_pcm.assert_not_awaited()
+    radio.push_audio_tx_opus.assert_not_awaited()
+    assert any(
+        "incoming_codec=opus" in record.message
+        and "radio_tx_codec=PCM_1CH_16BIT" in record.message
+        and "sample_rate=16000" in record.message
+        and "action=dropped_transcode_failed" in record.message
+        for record in caplog.records
+    )
+
+
+async def test_audio_handler_preserves_native_opus_browser_tx_path(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    contract = _make_web_tx_contract(AudioCodec.OPUS_1CH, tx_sample_rate_hz=48000)
+    radio = _make_web_tx_radio(contract)
+    ws = SimpleNamespace(recv=AsyncMock(), send_binary=AsyncMock())
+    handler = AudioHandler(ws, radio, None)
+
+    def _missing_transcoder(**_kwargs: object) -> object:
+        raise RuntimeError("opus backend unavailable")
+
+    monkeypatch.setattr(
+        "rigplane.web.handlers.audio.create_pcm_opus_transcoder",
+        _missing_transcoder,
+    )
+    await handler._handle_control({"type": "audio_start", "direction": "tx"})
+    await handler._handle_tx_audio(
+        _make_web_tx_audio_frame(AUDIO_CODEC_OPUS, b"opus-frame")
+    )
+
+    radio.start_audio_tx_opus.assert_awaited_once()
+    radio.start_audio_tx_pcm.assert_not_awaited()
+    radio.push_audio_tx_opus.assert_awaited_once_with(b"opus-frame")
+    radio.push_audio_tx_pcm.assert_not_awaited()
+
+
 async def test_audio_handler_decodes_opus_browser_tx_for_pcm_contract() -> None:
     from rigplane.radio_protocol import AudioCapable
 

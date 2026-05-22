@@ -885,14 +885,23 @@ class AudioHandler:
         audio_data = payload[AUDIO_HEADER_SIZE:]
         if audio_data:
             try:
+                tx_codec = self._tx_codec()
                 if browser_codec == AUDIO_CODEC_PCM16:
                     await self._radio.push_audio_tx_pcm(audio_data)  # type: ignore[attr-defined]
                     tx_data_desc = f"{len(audio_data)} bytes pcm"
                 elif (
                     browser_codec == AUDIO_CODEC_OPUS
-                    and self._tx_codec() == AudioCodec.PCM_1CH_16BIT
-                    and self._transcoder
+                    and tx_codec == AudioCodec.PCM_1CH_16BIT
                 ):
+                    if self._transcoder is None:
+                        logger.warning(
+                            "audio: TX frame dropped incoming_codec=opus "
+                            "radio_tx_codec=%s sample_rate=%d "
+                            "action=dropped_no_transcoder",
+                            tx_codec.name,
+                            self._tx_sample_rate(),
+                        )
+                        return
                     try:
                         # Decode Opus → PCM16
                         pcm_data = self._transcoder.opus_to_pcm(audio_data)
@@ -900,7 +909,12 @@ class AudioHandler:
                         tx_data_desc = f"{len(pcm_data)} bytes pcm"
                     except Exception as e:
                         logger.warning(
-                            "audio: Opus decode failed: %s, dropping frame", e
+                            "audio: TX frame dropped incoming_codec=opus "
+                            "radio_tx_codec=%s sample_rate=%d "
+                            "action=dropped_transcode_failed error=%s",
+                            tx_codec.name,
+                            self._tx_sample_rate(),
+                            e,
                         )
                         return
                 elif browser_codec == AUDIO_CODEC_OPUS:
