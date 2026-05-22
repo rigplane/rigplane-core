@@ -437,7 +437,10 @@ class _PortAudioTxStream:
         dropped_bytes = incoming_drop_bytes
         with self._lock:
             overflowed = self._buffered_bytes + len(data) > self._capacity_bytes
-            while self._buffered_bytes + len(data) > self._capacity_bytes and self._frame_lengths:
+            while (
+                self._buffered_bytes + len(data) > self._capacity_bytes
+                and self._frame_lengths
+            ):
                 dropped_bytes += self._drop_oldest_locked(self._frame_lengths[0])
             remaining_overflow = max(
                 0,
