@@ -35,6 +35,8 @@ class ConnectMockTransport(MockTransport):
     def __init__(self) -> None:
         super().__init__()
         self.state = ConnectionState.DISCONNECTED
+        self.connect_count = 0
+        self.disconnect_count = 0
 
     async def connect(
         self,
@@ -45,6 +47,7 @@ class ConnectMockTransport(MockTransport):
         local_port: int = 0,
         sock: "object | None" = None,
     ) -> None:
+        self.connect_count += 1
         self.connected = True
         self.state = ConnectionState.CONNECTING
         self.connect_args = {
@@ -53,6 +56,10 @@ class ConnectMockTransport(MockTransport):
             "local_host": local_host,
             "local_port": local_port,
         }
+
+    async def disconnect(self) -> None:
+        self.disconnect_count += 1
+        await super().disconnect()
 
     async def reconnect(
         self,
@@ -533,6 +540,105 @@ class TestConnectSessionRejection:
         assert mt.disconnected is True
 
     @pytest.mark.asyncio
+    async def test_data_port_discovery_timeout_retries_and_closes_pending_sockets(
+        self,
+    ) -> None:
+        radio = IcomRadio("192.168.1.100", username="u", password="p")
+        mt = ConnectMockTransport()
+        radio._ctrl_transport = mt
+
+        class TimeoutCivTransport(ConnectMockTransport):
+            async def connect(
+                self,
+                host: str,
+                port: int,
+                *,
+                local_host: str | None = None,
+                local_port: int = 0,
+                sock: object | None = None,
+            ) -> None:
+                await super().connect(
+                    host,
+                    port,
+                    local_host=local_host,
+                    local_port=local_port,
+                    sock=sock,
+                )
+                raise TimeoutError(
+                    "Radio did not respond to discovery after 10 attempts"
+                )
+
+        first_civ_sock = _FakeSocket(("192.168.2.194", 50002))
+        first_audio_sock = _FakeSocket(("192.168.2.194", 50003))
+        second_civ_sock = _FakeSocket(("192.168.2.194", 50004))
+        second_audio_sock = _FakeSocket(("192.168.2.194", 50005))
+        timeout_civ_transport = TimeoutCivTransport()
+        success_civ_transport = ConnectMockTransport()
+
+        with (
+            patch.object(
+                radio._control_phase,
+                "_resolve_local_bind_host",
+                return_value="192.168.2.194",
+            ),
+            patch(
+                "rigplane._control_phase._socket.socket",
+                side_effect=[
+                    first_civ_sock,
+                    first_audio_sock,
+                    second_civ_sock,
+                    second_audio_sock,
+                ],
+            ),
+            patch.object(
+                radio._control_phase,
+                "_status_retry_pause",
+                return_value=0.0,
+            ),
+            patch.object(
+                radio._control_phase,
+                "_wait_for_packet",
+                new=AsyncMock(return_value=_build_login_response()),
+            ),
+            patch.object(
+                radio._control_phase,
+                "_receive_guid",
+                new=AsyncMock(return_value=b"\x00" * 16),
+            ),
+            patch.object(
+                radio._control_phase,
+                "_receive_civ_port",
+                new=AsyncMock(side_effect=[50002, 50002]),
+            ),
+            patch.object(radio._control_phase, "_start_token_renewal"),
+            patch.object(radio._control_phase, "_start_watchdog"),
+            patch.object(radio._civ_runtime, "start_pump"),
+            patch.object(radio._civ_runtime, "start_data_watchdog"),
+            patch.object(radio._civ_runtime, "start_worker"),
+            patch(
+                "rigplane.transport.IcomTransport",
+                side_effect=[timeout_civ_transport, success_civ_transport],
+            ),
+            patch(
+                "rigplane.runtime._control_phase.wait_for_radio_startup_ready",
+                new=AsyncMock(),
+            ),
+            patch("rigplane._control_phase.asyncio.sleep", new=AsyncMock()),
+        ):
+            await radio._control_phase.connect()
+
+        assert mt.connect_count == 2
+        assert mt.disconnect_count == 1
+        assert timeout_civ_transport.disconnect_count == 1
+        assert first_civ_sock.close_count == 0
+        assert first_audio_sock.close_count == 1
+        assert second_civ_sock.close_count == 0
+        assert second_audio_sock.close_count == 0
+        assert radio._civ_transport is success_civ_transport
+        assert radio._civ_sock_pending is None
+        assert radio._audio_sock_pending is second_audio_sock
+
+    @pytest.mark.asyncio
     async def test_stereo_codec_fallback_succeeds(self) -> None:
         """Stereo rx_codec + 0xFFFFFFFF → retry with mono → connection succeeds."""
         radio = IcomRadio(
@@ -930,6 +1036,7 @@ class _FakeSocket:
         self.sockname = sockname
         self.bound: tuple[str, int] | None = None
         self.connected: tuple[str, int] | None = None
+        self.close_count = 0
 
     def connect(self, addr: tuple[str, int]) -> None:
         self.connected = addr
@@ -941,7 +1048,7 @@ class _FakeSocket:
         return self.sockname
 
     def close(self) -> None:
-        return None
+        self.close_count += 1
 
 
 class TestWifiBindBehavior:
