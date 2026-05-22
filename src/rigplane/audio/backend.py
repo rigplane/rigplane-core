@@ -50,6 +50,30 @@ class AudioDeviceInfo:
         return self.supports_rx and self.supports_tx
 
 
+@dataclass(frozen=True, slots=True)
+class TxStreamHealth:
+    """Snapshot of writable stream queue and backend write health."""
+
+    queued_frames: int = 0
+    frames_queued: int = 0
+    frames_dropped: int = 0
+    write_attempts: int = 0
+    writes_completed: int = 0
+    write_failures: int = 0
+    last_error: str | None = None
+
+    def to_dict(self) -> dict[str, int | str | None]:
+        return {
+            "queued_frames": self.queued_frames,
+            "frames_queued": self.frames_queued,
+            "frames_dropped": self.frames_dropped,
+            "write_attempts": self.write_attempts,
+            "writes_completed": self.writes_completed,
+            "write_failures": self.write_failures,
+            "last_error": self.last_error,
+        }
+
+
 # ---------------------------------------------------------------------------
 # Stream protocols
 # ---------------------------------------------------------------------------
@@ -75,6 +99,9 @@ class TxStream(Protocol):
 
     @property
     def running(self) -> bool: ...
+
+    @property
+    def write_health(self) -> TxStreamHealth: ...
 
     async def start(self) -> None: ...
 
@@ -273,10 +300,27 @@ class _PortAudioTxStream:
         self._task: asyncio.Task[None] | None = None
         self._queue: asyncio.Queue[bytes] = asyncio.Queue(maxsize=64)
         self._dropped_frames: int = 0
+        self._frames_queued: int = 0
+        self._write_attempts: int = 0
+        self._writes_completed: int = 0
+        self._write_failures: int = 0
+        self._last_error: str | None = None
 
     @property
     def running(self) -> bool:
         return self._task is not None and not self._task.done()
+
+    @property
+    def write_health(self) -> TxStreamHealth:
+        return TxStreamHealth(
+            queued_frames=self._queue.qsize(),
+            frames_queued=self._frames_queued,
+            frames_dropped=self._dropped_frames,
+            write_attempts=self._write_attempts,
+            writes_completed=self._writes_completed,
+            write_failures=self._write_failures,
+            last_error=self._last_error,
+        )
 
     async def start(self) -> None:
         if self.running:
@@ -319,9 +363,15 @@ class _PortAudioTxStream:
 
     async def write(self, frame: bytes) -> None:
         if not self.running:
-            raise RuntimeError("TX stream is not running.")
+            detail = (
+                f" Last writer error: {self._last_error}."
+                if self._last_error is not None
+                else ""
+            )
+            raise RuntimeError(f"TX stream is not running.{detail}")
         try:
             self._queue.put_nowait(frame)
+            self._frames_queued += 1
             return
         except asyncio.QueueFull:
             pass
@@ -335,6 +385,7 @@ class _PortAudioTxStream:
             pass
         try:
             self._queue.put_nowait(frame)
+            self._frames_queued += 1
         except asyncio.QueueFull:
             pass
         self._dropped_frames += 1
@@ -351,12 +402,18 @@ class _PortAudioTxStream:
         try:
             while True:
                 pcm = await self._queue.get()
-                arr = np.frombuffer(pcm, dtype=np.int16).reshape(-1, channels)
-                await asyncio.to_thread(stream.write, arr)
+                self._write_attempts += 1
+                try:
+                    arr = np.frombuffer(pcm, dtype=np.int16).reshape(-1, channels)
+                    await asyncio.to_thread(stream.write, arr)
+                    self._writes_completed += 1
+                except Exception as exc:
+                    self._write_failures += 1
+                    self._last_error = f"{type(exc).__name__}: {exc}"
+                    logger.warning("portaudio-tx: loop failed", exc_info=True)
+                    break
         except asyncio.CancelledError:
             pass
-        except Exception:
-            logger.warning("portaudio-tx: loop failed", exc_info=True)
 
 
 class PortAudioBackend:
@@ -540,10 +597,24 @@ class FakeTxStream:
         self.stopped_count = 0
         self.written_frames: list[bytes] = []
         self.fail_on_write: OSError | None = None
+        self.write_failures = 0
+        self.last_error: str | None = None
 
     @property
     def running(self) -> bool:
         return self._running
+
+    @property
+    def write_health(self) -> TxStreamHealth:
+        return TxStreamHealth(
+            queued_frames=0,
+            frames_queued=len(self.written_frames),
+            frames_dropped=0,
+            write_attempts=len(self.written_frames) + self.write_failures,
+            writes_completed=len(self.written_frames),
+            write_failures=self.write_failures,
+            last_error=self.last_error,
+        )
 
     async def start(self) -> None:
         if self._running:
@@ -561,6 +632,8 @@ class FakeTxStream:
         exc = self.fail_on_write
         if exc is not None:
             self.fail_on_write = None
+            self.write_failures += 1
+            self.last_error = f"{type(exc).__name__}: {exc}"
             raise exc
         self.written_frames.append(frame)
 
@@ -654,4 +727,5 @@ __all__ = [
     "PortAudioBackend",
     "RxStream",
     "TxStream",
+    "TxStreamHealth",
 ]

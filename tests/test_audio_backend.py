@@ -17,6 +17,7 @@ from rigplane.audio.backend import (
     PortAudioBackend,
     RxStream,
     TxStream,
+    TxStreamHealth,
 )
 
 # ---------------------------------------------------------------------------
@@ -97,6 +98,9 @@ class TestProtocolConformance:
 
     def test_fake_tx_stream_is_tx_stream(self) -> None:
         assert isinstance(FakeTxStream(), TxStream)
+
+    def test_tx_stream_health_is_exported(self) -> None:
+        assert TxStreamHealth().to_dict()["write_failures"] == 0
 
     def test_portaudio_backend_is_audio_backend(self) -> None:
         # PortAudioBackend satisfies the protocol structurally (deps not needed here)
@@ -229,6 +233,28 @@ class TestFakeTxStreamLifecycle:
         await stream.write(b"\x00\x01")
         await stream.write(b"\x02\x03")
         assert stream.written_frames == [b"\x00\x01", b"\x02\x03"]
+        assert stream.write_health.frames_queued == 2
+        assert stream.write_health.write_attempts == 2
+        assert stream.write_health.writes_completed == 2
+
+        await stream.stop()
+
+    @pytest.mark.asyncio()
+    async def test_write_health_tracks_fake_write_failure(
+        self, fake_backend: FakeAudioBackend
+    ) -> None:
+        stream = fake_backend.open_tx(DUPLEX_DEVICE.id)
+        await stream.start()
+        stream.fail_on_write = OSError("backend write failed")
+
+        with pytest.raises(OSError, match="backend write failed"):
+            await stream.write(b"\x00\x01")
+
+        health = stream.write_health
+        assert health.write_attempts == 1
+        assert health.writes_completed == 0
+        assert health.write_failures == 1
+        assert health.last_error == "OSError: backend write failed"
 
         await stream.stop()
 
@@ -378,3 +404,53 @@ class TestPortAudioBackendDeps:
             task.cancel()
             with pytest.raises(asyncio.CancelledError):
                 await task
+
+    @pytest.mark.asyncio()
+    async def test_portaudio_tx_health_tracks_background_writer_failure(self) -> None:
+        class FakeArray:
+            def reshape(self, *args: object) -> "FakeArray":
+                return self
+
+        class FakeNp:
+            int16 = object()
+
+            @staticmethod
+            def frombuffer(pcm: bytes, *, dtype: object) -> FakeArray:
+                return FakeArray()
+
+        class FakeSd:
+            class OutputStream:
+                def __init__(self, **kw: object) -> None:
+                    pass
+
+                def start(self) -> None:
+                    pass
+
+                def stop(self) -> None:
+                    pass
+
+                def close(self) -> None:
+                    pass
+
+                def write(self, arr: object) -> None:
+                    raise OSError("AUHAL -10863")
+
+        backend = PortAudioBackend(dependency_loader=lambda: (FakeSd(), FakeNp()))
+        stream = backend.open_tx(AudioDeviceId(0))
+
+        await stream.start()
+        await stream.write(b"\x00\x01")
+        for _ in range(20):
+            if stream.write_health.write_failures:
+                break
+            await asyncio.sleep(0.01)
+
+        health = stream.write_health
+        assert health.frames_queued == 1
+        assert health.write_attempts == 1
+        assert health.writes_completed == 0
+        assert health.write_failures == 1
+        assert health.last_error == "OSError: AUHAL -10863"
+        assert not stream.running
+
+        await stream.stop()
