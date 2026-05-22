@@ -1,3 +1,7 @@
+---
+robots: noindex, follow
+---
+
 # Types & Enums
 
 Core data types used throughout the library.

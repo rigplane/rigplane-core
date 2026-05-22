@@ -29,6 +29,14 @@ Direct connection to your radio — no wfview, hamlib, or RS-BA1 required.
 
     [:octicons-arrow-right-24: CLI Reference](guide/cli.md)
 
+- :material-radio-tower:{ .lg .middle } **Supported Radios**
+
+    ---
+
+    Pick the radio you operate and follow the matching setup path.
+
+    [:octicons-arrow-right-24: Radios](guide/radios.md) · [:octicons-arrow-right-24: IC-7610 USB](guide/ic7610-usb-setup.md) · [:octicons-arrow-right-24: WSJT-X](guide/wsjtx-setup.md)
+
 - :material-api:{ .lg .middle } **API Reference**
 
     ---
@@ -97,7 +105,11 @@ Direct connection to your radio — no wfview, hamlib, or RS-BA1 required.
 | IC-7851 | CI-V `0x8E` | :material-help-circle: Should work |
 | IC-R8600 | CI-V `0x96` | :material-help-circle: Should work |
 
-See [Supported Radios](guide/radios.md) for full details. Any Icom radio with LAN/WiFi control should work — the CI-V address is configurable.
+See [Supported Radios](guide/radios.md) for full details. Any Icom radio with LAN/WiFi control should work — the CI-V address is configurable. If you're choosing the commercial desktop app first, start from the matching landing page on [rigplane.com](https://rigplane.com/): [IC-7610](https://rigplane.com/ic-7610/), [IC-7300](https://rigplane.com/ic-7300/), [IC-705](https://rigplane.com/ic-705/), [IC-9700](https://rigplane.com/ic-9700/), or the platform pages for [Mac](https://rigplane.com/ham-radio-software/mac/) and [Linux](https://rigplane.com/ham-radio-software/linux/).
+
+## Indexing policy
+
+This docs site intentionally indexes operator-facing guides, setup pages, and the public API overview. Low-level generated API pages and internal engineering notes are marked `noindex, follow`: crawlers can follow their links, but search results should prefer the pages that help an operator install, configure, and use RigPlane.
 
 ## Minimal Example
 

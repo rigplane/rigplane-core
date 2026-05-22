@@ -1,3 +1,7 @@
+---
+robots: noindex, follow
+---
+
 # Mini RFC: Audio API v1 (PCM-first + explicit low-level API)
 
 Status: Draft (for approval)

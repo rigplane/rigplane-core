@@ -1,3 +1,7 @@
+---
+robots: noindex, follow
+---
+
 # Performance Analysis & Optimization (M6.3)
 
 ## Baseline Metrics (2026-03-23)

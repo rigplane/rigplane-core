@@ -1,3 +1,7 @@
+---
+robots: noindex, follow
+---
+
 # Web Audio Streaming Performance Profile (M6.P2.3)
 
 **Date**: 2026-03-24

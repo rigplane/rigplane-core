@@ -6,7 +6,8 @@
   {% set page_description = page.meta.description if page.meta and page.meta.description else config.site_description %}
   {% set page_url = page.canonical_url or config.site_url %}
   {% set image_url = config.extra.social_image %}
-  <meta name="robots" content="index, follow">
+  {% set robots = page.meta.robots if page.meta and page.meta.robots else "index, follow" %}
+  <meta name="robots" content="{{ robots }}">
   <meta property="og:type" content="{% if page.is_homepage %}website{% else %}article{% endif %}">
   <meta property="og:site_name" content="{{ config.site_name }}">
   <meta property="og:url" content="{{ page_url }}">

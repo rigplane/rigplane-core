@@ -1,3 +1,7 @@
+---
+robots: noindex, follow
+---
+
 # Radio Protocol — Multi-Backend Architecture
 
 ## Overview

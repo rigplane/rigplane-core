@@ -1,3 +1,7 @@
+---
+robots: noindex, follow
+---
+
 # Scope / Waterfall
 
 Spectrum and waterfall data from the radio's scope display.

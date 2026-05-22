@@ -1,3 +1,7 @@
+---
+robots: noindex, follow
+---
+
 # Capabilities Matrix — Verified from CI-V Reference
 
 Sources:
