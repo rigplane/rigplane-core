@@ -146,6 +146,9 @@ The `discover` command scans both LAN (UDP broadcast) and USB serial ports concu
 rigplane discover                      # LAN + serial (default)
 rigplane discover --lan-only           # UDP broadcast only
 rigplane discover --serial-only        # USB serial ports only
+rigplane discover --serial             # Alias for --serial-only
+rigplane --json discover --serial --hamlib-candidates
+rigplane --json discover --hamlib-validate --rigctld-host 127.0.0.1
 rigplane discover --timeout 5          # Longer LAN listen window
 rigplane --json discover               # Stable setup-wizard JSON
 ```
@@ -491,8 +494,11 @@ Discover Icom radios on LAN and USB serial ports. Results are grouped by radio i
 rigplane discover                   # LAN + serial
 rigplane discover --lan-only        # UDP broadcast only
 rigplane discover --serial-only     # USB serial ports only
+rigplane discover --serial          # Alias for --serial-only
 rigplane discover --timeout 5       # Longer LAN listen window (default: 3s)
 rigplane --json discover            # Stable setup-wizard JSON
+rigplane --json discover --serial --hamlib-candidates
+rigplane discover --hamlib-validate --rigctld-host 127.0.0.1
 ```
 
 ```
@@ -521,8 +527,13 @@ IC-705:
 | Flag | Default | Description |
 |------|---------|-------------|
 | `--lan-only` | off | Only scan via UDP broadcast |
-| `--serial-only` | off | Only scan USB serial ports |
+| `--serial-only`, `--serial` | off | Only scan USB serial ports |
 | `--timeout SECONDS` | `3.0` | LAN broadcast listen timeout |
+| `--hamlib-candidates` | off | Add explicit Hamlib setup candidates to human and JSON output |
+| `--hamlib-validate` | off | Run read-only validation against an external `rigctld` endpoint |
+| `--rigctld-host HOST` | `127.0.0.1` | Target host for `--hamlib-validate` |
+| `--rigctld-port PORT` | `4532` | Target TCP port for `--hamlib-validate` |
+| `--hamlib-model-id ID` | unset | Optional Hamlib model ID hint for validation ranking |
 
 With global `--json`, `discover` emits `schema: rigplane.discovery.v1` for
 first-run setup wizards. Each radio has stable `connections` entries for LAN
@@ -530,6 +541,96 @@ and USB serial candidates. LAN entries include `host`, `remoteId`, and
 `requiresCredentials: true`; serial entries include `port`, `protocol`,
 `profileId`, `baudrate`, CI-V/CAT `address`, OS `description`, and `hwid` when
 available. Credentials are never included in discovery output.
+
+Hamlib assisted discovery is fully opt-in. `rigplane discover` does not load
+the Hamlib model catalog and does not probe `rigctld` unless
+`--hamlib-candidates` or `--hamlib-validate` is present.
+
+When Hamlib output is requested with global `--json`, the existing top-level
+`schema: rigplane.discovery.v1` payload remains in place and a top-level
+`hamlib` object is added:
+
+```json
+{
+  "schema": "rigplane.discovery.v1",
+  "radios": [],
+  "hamlib": {
+    "schema": "rigplane.discovery.hamlib.v1",
+    "catalog": {
+      "available": true,
+      "sourceTool": "rigctld",
+      "modelCount": 314,
+      "degradedReason": null
+    },
+    "candidates": [
+      {
+        "id": "hamlib-validation-1-1",
+        "transport": "rigctld",
+        "address": "rigctld:1a2b3c4d5e6f",
+        "observedIdentity": {
+          "targetModelId": 3073,
+          "rigctldInfo": "available",
+          "frequency": "readable",
+          "mode": "readable"
+        },
+        "suggestedBackend": "hamlib",
+        "suggestedModel": "3073 Icom IC-7610",
+        "confidence": "high",
+        "evidence": [
+          {
+            "source": "rigctld_probe",
+            "kind": "frequency",
+            "status": "readable"
+          }
+        ],
+        "safeNextAction": "read_only_probe_confirmed",
+        "autoSelectable": true
+      }
+    ],
+    "summary": {
+      "candidateCount": 1,
+      "highConfidenceCount": 1,
+      "autoSelectableCount": 1
+    }
+  }
+}
+```
+
+Candidate fields use stable camelCase for Pro and other setup tools:
+
+| Field | Meaning |
+|-------|---------|
+| `id` | Stable ID within the current discovery response |
+| `transport` | Observed path, such as `serial` or `rigctld` |
+| `address` | Serial device path or redacted `rigctld:<hash>` target reference |
+| `observedIdentity` | Read-only facts such as protocol, model hint, frequency-readable, and mode-readable |
+| `suggestedBackend` | Suggested RigPlane backend, currently `hamlib` for Hamlib candidates |
+| `suggestedModel` | Best model hint, or `null` when manual selection is required |
+| `confidence` | `high`, `medium`, or `low` |
+| `evidence` | Structured observations explaining the ranking |
+| `safeNextAction` | Next safe action, such as `run_read_only_validation`, `confirm_model`, or `manual_configuration_required` |
+| `autoSelectable` | `true` only when exactly one candidate is high confidence |
+
+Degraded cases are reported in `hamlib.messages`. Missing Hamlib tools produce
+`hamlibCatalogUnavailable`; an empty serial scan produces `noSerialCandidates`;
+ambiguous read-only validation returns multiple medium-confidence candidates
+with `safeNextAction: confirm_model` and `autoSelectable: false`.
+
+`--hamlib-validate` is read-only. It sends only the safe `rigctld` read
+operations used by the backend probe layer: identity evidence, frequency read,
+and mode read. It does not set frequency or mode, toggle PTT, transmit audio,
+send CW, write memories, issue raw CI-V, or call `\dump_state`. Validation JSON
+includes:
+
+| Field | Meaning |
+|-------|---------|
+| `status` | `confirmed`, `partial`, or `unconfirmed` |
+| `readOnly` | Always `true` |
+| `safeOperations` | Semantic operations attempted: `read_info`, `read_frequency`, `read_mode` |
+| `frequencyReadable` | Whether the current frequency was read successfully |
+| `modeReadable` | Whether the current mode was read successfully |
+| `identityEvidence` | Whether safe identity evidence was available |
+| `audit` | Redacted per-operation status and duration |
 
 The JSON payload also reports current platform limitations:
 

@@ -221,6 +221,34 @@ class TestBuildParser:
         args = p.parse_args(["discover"])
         assert args.command == "discover"
 
+    def test_discover_serial_alias_and_hamlib_flags(self):
+        p = _build_parser()
+        args = p.parse_args(
+            [
+                "discover",
+                "--serial",
+                "--hamlib-candidates",
+                "--hamlib-validate",
+                "--rigctld-host",
+                "radio.local",
+                "--rigctld-port",
+                "4533",
+                "--hamlib-model-id",
+                "3073",
+            ]
+        )
+        assert args.serial_only is True
+        assert args.hamlib_candidates is True
+        assert args.hamlib_validate is True
+        assert args.rigctld_host == "radio.local"
+        assert args.rigctld_port == 4533
+        assert args.hamlib_model_id == 3073
+
+    def test_discover_lan_and_serial_filters_are_mutually_exclusive(self):
+        p = _build_parser()
+        with pytest.raises(SystemExit):
+            p.parse_args(["discover", "--serial", "--lan-only"])
+
     def test_json_flag(self):
         p = _build_parser()
         args = p.parse_args(["status", "--json"])
