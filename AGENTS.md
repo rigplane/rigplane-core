@@ -28,6 +28,22 @@ If a task mixes public and proprietary scope, split it:
 - product workflow, packaging, account/device, and support automation go to
   `rigplane-pro`.
 
+### Hamlib provider boundary
+
+The accepted Core Hamlib integration boundary is an external `rigctld`
+process, consumed through the backend-neutral `Radio` and capability protocols.
+Direct `libhamlib` binding is deferred unless a future spike proves the need
+and includes licensing and crash-containment acceptance criteria.
+
+Core owns the generic provider contract, external rigctld client behavior,
+discovery candidate schema, serial inventory/model metadata, safe read-only
+probing/ranking, fake rigctld tests, and public CLI/docs. Pro must consume
+those Core outputs instead of reimplementing Hamlib probing or ranking. Managed
+setup UX, diagnostics/support evidence, packaging/legal decisions, and
+redaction-specific support workflows belong in `rigplane-pro`; private
+validation matrices and decision records stay in Strategy. See
+`docs/internals/hamlib-provider-rollout.md`.
+
 ## GitHub Project workflow
 
 Use the GitHub Project as the development control plane for non-trivial work.
