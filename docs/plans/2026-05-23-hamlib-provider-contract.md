@@ -101,6 +101,23 @@ Discovery rules:
 - If no safe read probe exists, return a manual-configuration candidate with
   clear evidence and next action.
 
+### Read-only Hamlib probe safety
+
+The core probe internals for external `rigctld` targets are opt-in only. When
+probe options are disabled, no transport is constructed and no network or serial
+I/O is attempted.
+
+Allowed probe operations are limited to the read-only rigctld commands
+`\get_info`, `f`, and `m`. Probe code must not send PTT, transmit audio, CW,
+tuner, frequency/mode write, memory write, raw CI-V, `\dump_state`, or other
+state-changing commands. Probe audit records use semantic operation names and a
+redacted target reference; they must not include raw host/IP values, private
+hostnames, serial numbers, full device paths, credentials, raw command
+arguments, raw frequency values, or raw stdout/stderr.
+
+This probe layer does not add CLI flags or output. User-facing assisted
+discovery flows remain a separate implementation concern.
+
 ## Open-Core and Pro Boundary
 
 The open-core repository owns the generic public contract:

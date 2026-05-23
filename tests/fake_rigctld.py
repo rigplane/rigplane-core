@@ -15,6 +15,7 @@ _GET_PTT = {"t", r"\get_ptt"}
 _SET_PTT = {"T", r"\set_ptt"}
 _GET_VFO = {"v", r"\get_vfo"}
 _SET_VFO = {"V", r"\set_vfo"}
+_GET_INFO = {r"\get_info"}
 _QUIT = {"q", r"\quit"}
 
 
@@ -27,6 +28,7 @@ class FakeRigctldState:
     passband_hz: int = 2400
     ptt: int = 0
     vfo: str = "VFOA"
+    info: str = "Fake rigctld"
 
 
 @dataclass(slots=True)
@@ -224,6 +226,9 @@ class FakeRigctldServer:
                 return _error(HamlibError.EINVAL)
             self.state.vfo = tokens[1].upper()
             return _ok()
+
+        if key in _GET_INFO:
+            return f"{self.state.info}\n".encode("ascii")
 
         return _error(HamlibError.ENIMPL)
 

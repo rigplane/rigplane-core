@@ -10,18 +10,37 @@ from typing import Any, cast
 
 from rigplane.usb_audio_resolve import AudioDeviceMapping, resolve_audio_for_serial_port
 
+from .hamlib_probe import (
+    DiscoveryCandidate,
+    DiscoveryEvidence,
+    HamlibProbeTarget,
+    ProbeAuditRecord,
+    ProbeOptions,
+    ProbeResult,
+    probe_hamlib_rigctld_targets,
+    rank_hamlib_probe,
+)
+
 __all__ = [
     "build_setup_discovery_payload",
     "CivProbeResult",
+    "DiscoveryCandidate",
+    "DiscoveryEvidence",
+    "HamlibProbeTarget",
+    "ProbeAuditRecord",
+    "ProbeOptions",
+    "ProbeResult",
     "RadioDiscoveryResult",
     "SerialPortCandidate",
     "dedupe_radios",
     "discover_lan_radios",
     "discover_serial_radios",
     "enumerate_serial_ports",
+    "probe_hamlib_rigctld_targets",
     "probe_serial_civ",
     "probe_serial_kenwood_cat",
     "probe_serial_yaesu_cat",
+    "rank_hamlib_probe",
 ]
 
 _CIV_PROBE_CMD = bytes([0xFE, 0xFE, 0x00, 0xE0, 0x19, 0x00, 0xFD])
