@@ -805,6 +805,24 @@ class TestAutoDiscovery:
         assert config.host == "localhost"
         assert config.port == 4532
 
+    async def test_web_rigctld_backend_ignores_server_port_for_radio_port(self):
+        p = _build_parser()
+        args = p.parse_args(
+            [
+                "web",
+                "--radio-backend",
+                "rigctld",
+                "--radio-host",
+                "localhost",
+                "--port",
+                "8081",
+            ]
+        )
+        config = await _build_backend_config(args)
+        assert isinstance(config, RigctldBackendConfig)
+        assert config.port == 4532
+        assert args.web_port == 8081
+
     async def test_rigctld_backend_honors_explicit_control_port(self):
         p = _build_parser()
         args = p.parse_args(

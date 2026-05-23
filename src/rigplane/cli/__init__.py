@@ -374,6 +374,22 @@ def _has_global_connection_options_after_command(argv: list[str]) -> bool:
     )
 
 
+def _has_explicit_radio_control_port(argv: list[str]) -> bool:
+    command_index = _first_command_index(argv)
+    global_tokens = argv if command_index is None else argv[:command_index]
+    if any(
+        _token_matches_option(token, {"--control-port", "--port"})
+        for token in global_tokens
+    ):
+        return True
+    if command_index is not None and argv[command_index] == "web":
+        return any(
+            _token_matches_option(token, {"--radio-control-port"})
+            for token in argv[command_index + 1 :]
+        )
+    return False
+
+
 def _print_common_cli_hint(argv: list[str]) -> None:
     if "discover" in argv and "web" in argv:
         print(
@@ -435,13 +451,7 @@ class _RigplaneArgumentParser(argparse.ArgumentParser):
             if exc.code != 0:
                 _print_common_cli_hint(argv)
             raise
-        parsed._explicit_control_port = any(  # noqa: SLF001
-            _token_matches_option(
-                token,
-                {"--control-port", "--port", "--radio-control-port"},
-            )
-            for token in argv
-        )
+        parsed._explicit_control_port = _has_explicit_radio_control_port(argv)  # noqa: SLF001
         _apply_managed_runtime_defaults(parsed)
         _warn_web_host_ambiguity(parsed)
         return parsed
