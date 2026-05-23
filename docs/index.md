@@ -1,11 +1,11 @@
 ---
 title: RigPlane — Ham Radio Control Library and Web UI for Icom, Yaesu, Xiegu
-description: RigPlane is a Python library and browser Web UI for controlling ham radios through native providers and planned Hamlib-backed CAT coverage while keeping one capability-driven station model.
+description: RigPlane is a Python library and browser Web UI for controlling ham radios through native providers and external rigctld-backed Hamlib CAT coverage while keeping one capability-driven station model.
 ---
 
 # rigplane
 
-**Python library for controlling Icom, Yaesu, and other transceivers through native providers and planned Hamlib-backed CAT coverage.**
+**Python library for controlling Icom, Yaesu, and other transceivers through native providers and external `rigctld`-backed Hamlib CAT coverage.**
 
 RigPlane keeps the browser UI, audio path, diagnostics, and `rigctld`-compatible endpoint consistent across provider paths.
 
@@ -59,7 +59,7 @@ RigPlane keeps the browser UI, audio path, diagnostics, and `rigctld`-compatible
 
     Add native radio profiles and understand where Hamlib-backed provider work fits.
 
-    [:octicons-arrow-right-24: Adding a New Radio](guide/rig-profiles.md)
+    [:octicons-arrow-right-24: Adding a New Radio](guide/rig-profiles.md) · [:octicons-arrow-right-24: Hamlib Guide](guide/hamlib-rigctld-provider.md)
 
 - :material-monitor:{ .lg .middle } **Web UI**
 
@@ -75,15 +75,15 @@ RigPlane keeps the browser UI, audio path, diagnostics, and `rigctld`-compatible
 
 ## Features
 
-- :white_check_mark: **Multi-vendor support** — native Icom CI-V and Yaesu CAT, plus planned Hamlib-backed long-tail CAT coverage
-- :white_check_mark: **Direct UDP connection** — no intermediate software (LAN backend)
+- :white_check_mark: **Multi-vendor support** — native Icom CI-V and Yaesu CAT, plus external `rigctld`-backed Hamlib long-tail CAT coverage
+- :white_check_mark: **Direct UDP connection** — no intermediate software for native LAN operation
 - :white_check_mark: **USB serial backend** — CI-V over USB for IC-7610, IC-7300; USB audio devices
 - :white_check_mark: **Full CI-V command set** — frequency, mode/filter, power, meters, PTT, CW keying, VFO, split, ATT/PREAMP
 - :white_check_mark: **Yaesu CAT backend** — full working native backend for Yaesu FTX-1 (USB serial)
-- :white_check_mark: **Hamlib provider direction** — broad serial CAT coverage through assisted discovery and normalized RigPlane capabilities
+- :white_check_mark: **Hamlib provider** — broad serial CAT coverage through an external `rigctld` process, assisted discovery, and normalized RigPlane capabilities
 - :white_check_mark: **Audio streaming** — RX/TX with jitter buffer and full-duplex support
 - :white_check_mark: **Audio FFT Scope** — real-time FFT on USB/LAN audio for radios without hardware spectrum
-- :white_check_mark: **Discovery** — find supported LAN radios automatically; assisted serial CAT discovery is the long-tail direction
+- :white_check_mark: **Discovery** — find supported LAN radios automatically; assisted serial CAT discovery can suggest and validate Hamlib candidates
 - :white_check_mark: **CLI tool** — `rigplane status`, `rigplane freq 14.074m`
 - :white_check_mark: **Built-in Web UI** — spectrum, waterfall, controls, meters, audio in browser; LCD layout for non-scope radios
 - :white_check_mark: **Async + Sync API** — async by default, blocking wrapper available
@@ -101,12 +101,12 @@ RigPlane keeps the browser UI, audio path, diagnostics, and `rigctld`-compatible
 | Yaesu FTX-1 | Yaesu CAT | :white_check_mark: Tested (USB) |
 | IC-705 | CI-V `0xA4` | :white_check_mark: Validated (LAN/WiFi community-tested) |
 | IC-9700 | CI-V `0xA2` | :material-help-circle: Profile — not yet tested |
-| Xiegu X6100 | CI-V `0x70` / Hamlib candidate | :material-help-circle: Profile only; assisted discovery planned |
-| Lab599 TX-500 | Kenwood CAT / Hamlib candidate | :material-help-circle: Profile only; assisted discovery planned |
+| Xiegu X6100 | CI-V `0x70` / Hamlib candidate | :material-help-circle: Profile only; assisted discovery candidate |
+| Lab599 TX-500 | Kenwood CAT / Hamlib candidate | :material-help-circle: Profile only; assisted discovery candidate |
 | IC-7851 | CI-V `0x8E` | :material-help-circle: Should work |
 | IC-R8600 | CI-V `0x96` | :material-help-circle: Should work |
 
-See [Supported Radios](guide/radios.md) for full details. Any Icom radio with LAN/WiFi control should work — the CI-V address is configurable. If you're choosing the commercial desktop app first, start from the matching landing page on [rigplane.com](https://rigplane.com/): [IC-7610](https://rigplane.com/ic-7610/), [IC-7300](https://rigplane.com/ic-7300/), [IC-705](https://rigplane.com/ic-705/), [IC-9700](https://rigplane.com/ic-9700/), or the platform pages for [Mac](https://rigplane.com/ham-radio-software/mac/) and [Linux](https://rigplane.com/ham-radio-software/linux/).
+See [Supported Radios](guide/radios.md) and the [Hamlib provider guide](guide/hamlib-rigctld-provider.md) for full details. Any Icom radio with LAN/WiFi control should work — the CI-V address is configurable. If you're choosing the commercial desktop app first, start from the matching landing page on [rigplane.com](https://rigplane.com/): [IC-7610](https://rigplane.com/ic-7610/), [IC-7300](https://rigplane.com/ic-7300/), [IC-705](https://rigplane.com/ic-705/), [IC-9700](https://rigplane.com/ic-9700/), or the platform pages for [Mac](https://rigplane.com/ham-radio-software/mac/) and [Linux](https://rigplane.com/ham-radio-software/linux/).
 
 ## Indexing policy
 

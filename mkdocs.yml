@@ -88,6 +88,7 @@ nav:
   - User Guide:
       - Connection Lifecycle: guide/connection.md
       - Supported Radios: guide/radios.md
+      - Hamlib / external rigctld provider: guide/hamlib-rigctld-provider.md
       - Rig Profiles: guide/rig-profiles.md
       - Radio Setup Guides:
           - IC-7610 USB Serial: guide/ic7610-usb-setup.md

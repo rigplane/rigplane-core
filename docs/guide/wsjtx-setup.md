@@ -7,7 +7,9 @@ description: Configure WSJT-X, JTDX, and JS8Call against RigPlane's rigctld-comp
 This guide covers configuring WSJT-X (and compatible apps like JTDX, JS8Call)
 to work with RigPlane's client-facing `rigctld`-compatible endpoint. This is
 separate from the provider layer underneath RigPlane, which may be native or
-Hamlib-backed depending on the radio path.
+Hamlib-backed depending on the radio path. If RigPlane itself is using Hamlib,
+see the [Hamlib / external rigctld provider guide](hamlib-rigctld-provider.md)
+for the provider-facing setup.
 
 ## Quick Start
 
@@ -56,6 +58,11 @@ In **Settings → Radio**:
 
 Press **Test CAT** — the button should turn green.
 Press **Test PTT** — the radio should key up briefly.
+
+!!! note "Which port?"
+    Point WSJT-X at RigPlane's client-facing `rigctld` endpoint. If RigPlane is
+    also consuming an external Hamlib `rigctld` provider underneath, keep the two
+    TCP ports distinct so WSJT-X talks to RigPlane, not around it.
 
 ### 3. Configure WSJT-X Audio (with BlackHole bridge)
 

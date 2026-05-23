@@ -5,6 +5,8 @@ description: Full RigPlane CLI reference — connect, scan, tune, serve the Web 
 # CLI Reference
 
 The `rigplane` CLI provides quick access to radio control from the terminal.
+It can connect through native LAN/serial providers or through an external
+Hamlib `rigctld` process.
 
 ## Global Options
 
@@ -18,7 +20,7 @@ All commands accept these options:
 | `--pass` | `ICOM_PASS` | `""` | Password (LAN backend) |
 | `--timeout` | — | `5.0` | Timeout in seconds |
 | `--json` | — | `false` | Emit JSON when supported by the selected command |
-| `--backend` | — | auto | Backend type: `lan`, `serial`, or `yaesu-cat`. Auto-inferred from `--serial-port` if set. |
+| `--backend` | — | auto | Backend type: `lan`, `serial`, `yaesu-cat`, or `rigctld`. Auto-inferred from `--serial-port` if set. |
 | `--serial-port` | `ICOM_SERIAL_DEVICE` | auto-discover | Serial device path. If omitted with `--backend serial`, discovers via USB scan. |
 | `--serial-baud` | `ICOM_SERIAL_BAUDRATE` | env or backend default | Serial baud (`115200` for `serial`, `38400` for `yaesu-cat` when env is unset) |
 | `--serial-ptt-mode` | `ICOM_SERIAL_PTT_MODE` | `civ` | Serial PTT mode (`civ` currently supported) |
@@ -76,8 +78,9 @@ User-provided flags override preset values: `--preset digimode --bridge "MyDevic
 
 ## Backend Selection
 
-rigplane supports three backends: **LAN** (default), **serial** (USB CI-V), and
-**yaesu-cat** (text CAT over serial).
+rigplane supports four backends: **LAN** (default), **serial** (USB CI-V),
+**yaesu-cat** (text CAT over serial), and **rigctld** (external Hamlib
+`rigctld` over TCP).
 
 ### LAN backend (default)
 
@@ -114,6 +117,21 @@ rigplane status    # auto-infers --backend serial
 rigplane --backend yaesu-cat --serial-port /dev/tty.usbserial-FTX1 status
 rigplane --backend yaesu-cat --serial-port /dev/tty.usbserial-FTX1 freq
 ```
+
+### External rigctld backend
+
+Use this backend when Hamlib controls the radio through an external `rigctld`
+process and RigPlane should consume that endpoint:
+
+```bash
+# Start Hamlib separately, then point RigPlane at it
+rigplane --backend rigctld --host 127.0.0.1 --control-port 4532 status
+rigplane --backend rigctld --host 127.0.0.1 --control-port 4532 web
+```
+
+This provider-facing endpoint is separate from RigPlane's own client-facing
+`rigctld` server for WSJT-X and other applications. See the
+[Hamlib / external rigctld provider guide](hamlib-rigctld-provider.md).
 
 ### Serial baud defaults by backend
 
@@ -488,7 +506,7 @@ rigplane power-off
 
 ### `discover`
 
-Discover Icom radios on LAN and USB serial ports. Results are grouped by radio identity — the same physical radio connected via both LAN and USB appears as one entry with two connection methods.
+Discover Icom radios on LAN and USB serial ports. Results are grouped by radio identity — the same physical radio connected via both LAN and USB appears as one entry with two connection methods. Optional Hamlib flags add assisted discovery and read-only validation for external `rigctld` provider setup.
 
 ```bash
 rigplane discover                   # LAN + serial

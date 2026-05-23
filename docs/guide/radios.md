@@ -1,14 +1,14 @@
 ---
-description: Radios supported by RigPlane — native Icom and Yaesu providers today, plus Xiegu, Lab599, and other serial CAT candidates moving toward Hamlib-backed assisted discovery.
+description: Radios supported by RigPlane — native Icom and Yaesu providers today, plus Xiegu, Lab599, and other serial CAT candidates through Hamlib-backed assisted discovery.
 ---
 
 # Supported Radios
 
 Radio support in rigplane is provider-based. Native providers use **TOML rig
 profiles** in `rigs/` to describe capabilities and protocol details. Long-tail
-serial CAT radios are moving toward a Hamlib-backed provider path that emits
-structured discovery candidates and maps Hamlib control into RigPlane
-capabilities.
+serial CAT radios can use the [Hamlib / external rigctld provider](hamlib-rigctld-provider.md),
+which emits structured discovery candidates and maps Hamlib control into
+RigPlane capabilities through an external `rigctld` process.
 
 ## Tested
 
@@ -88,8 +88,8 @@ The Web UI automatically hides DIGI-SEL and IP+ controls when connected to an IC
 
 These radios have profiles or known CAT surfaces, but they are not yet
 first-party hardware-validated. The intended direction is assisted discovery and
-Hamlib-backed control where that gives broader coverage than maintaining a
-bespoke backend for each dialect.
+Hamlib-backed control through an external `rigctld` process where that gives
+broader coverage than maintaining a bespoke backend for each dialect.
 
 ### Xiegu X6100
 
@@ -98,7 +98,7 @@ bespoke backend for each dialect.
 - **Rig profile:** `rigs/x6100.toml`
 - **Features:** HF + 6m, QRP 8W, built-in ATU, WiFi
 - **VFO scheme:** `ab`
-- **Status:** Profile only. May work with CI-V backend (untested); assisted discovery and Hamlib-backed fallback planned.
+- **Status:** Profile only. May work with CI-V backend (untested); also a Hamlib assisted-discovery candidate.
 
 ### Lab599 TX-500
 
@@ -106,7 +106,7 @@ bespoke backend for each dialect.
 - **Rig profile:** `rigs/tx500.toml`
 - **Features:** HF + 6m, QRP 10W, built-in ATU, minimal CAT (ID FA FB MD FR FT PA RA)
 - **VFO scheme:** `ab`
-- **Status:** Profile only. Product direction is Hamlib-backed provider plus assisted discovery, not a bespoke Kenwood CAT backend first.
+- **Status:** Profile only. Hamlib-backed provider plus assisted discovery is the preferred first path, not a bespoke Kenwood CAT backend.
 
 ## Community-Validated / Maintainer Hardware Pending
 
@@ -194,7 +194,8 @@ See **[Adding a New Radio (Rig Profiles)](rig-profiles.md)** for the complete gu
 In brief:
 
 1. Decide whether the radio belongs on an existing native provider path or the
-   Hamlib-backed provider path.
+   Hamlib-backed provider path. For Hamlib, start with the
+   [external rigctld provider guide](hamlib-rigctld-provider.md).
 2. For native provider work, copy the closest reference rig file as a template:
    - Icom CI-V → `rigs/ic7610.toml`
    - Kenwood CAT → `rigs/tx500.toml`
