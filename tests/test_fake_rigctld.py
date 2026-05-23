@@ -138,9 +138,37 @@ async def test_rigctld_owned_delayed_response_can_be_scripted() -> None:
             await _close(writer)
 
 
+async def test_rigctld_owned_stop_cancels_active_delayed_response() -> None:
+    behavior = FakeRigctldBehavior(command_delays={"f": 10.0})
+    server = FakeRigctldServer(behavior=behavior)
+    await server.start()
+    reader, writer = await _connect(server)
+    try:
+        await _send_line(writer, "f")
+        await asyncio.wait_for(_wait_for_command(server, "f"), timeout=1.0)
+
+        loop = asyncio.get_running_loop()
+        started_at = loop.time()
+        await asyncio.wait_for(server.stop(), timeout=0.5)
+
+        assert loop.time() - started_at < 0.5
+        assert server._tasks == set()
+        assert server._writers == set()
+        assert await asyncio.wait_for(reader.read(4096), timeout=0.5) == b""
+    finally:
+        await server.stop()
+        if not writer.is_closing():
+            await _close(writer)
+
+
 async def test_rigctld_owned_busy_port_rejects_second_simulator() -> None:
     async with FakeRigctldServer() as first:
         second = FakeRigctldServer(port=first.port)
         with pytest.raises(OSError):
             await second.start()
         await second.stop()
+
+
+async def _wait_for_command(server: FakeRigctldServer, command: str) -> None:
+    while command not in server.commands_seen:
+        await asyncio.sleep(0)

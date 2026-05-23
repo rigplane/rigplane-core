@@ -61,6 +61,8 @@ class FakeRigctldServer:
         self.behavior = behavior or FakeRigctldBehavior()
         self.commands_seen: list[str] = []
         self._server: asyncio.AbstractServer | None = None
+        self._stopping = False
+        self._tasks: set[asyncio.Task[None]] = set()
         self._writers: set[asyncio.StreamWriter] = set()
 
     @property
@@ -89,6 +91,7 @@ class FakeRigctldServer:
     async def start(self) -> None:
         if self._server is not None:
             return
+        self._stopping = False
         self._server = await asyncio.start_server(
             self._handle_client,
             self.host,
@@ -96,26 +99,44 @@ class FakeRigctldServer:
         )
 
     async def stop(self) -> None:
+        self._stopping = True
+        server = self._server
         if self._server is not None:
             self._server.close()
-            await self._server.wait_closed()
             self._server = None
 
         writers = list(self._writers)
         for writer in writers:
-            writer.close()
+            _abort_writer(writer)
+
+        current_task = asyncio.current_task()
+        tasks = [task for task in self._tasks if task is not current_task]
+        for task in tasks:
+            task.cancel()
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
+
         for writer in writers:
             try:
-                await writer.wait_closed()
-            except OSError:
+                await asyncio.wait_for(writer.wait_closed(), timeout=0.1)
+            except (OSError, TimeoutError):
                 pass
         self._writers.clear()
+
+        if server is not None:
+            try:
+                await asyncio.wait_for(server.wait_closed(), timeout=0.1)
+            except TimeoutError:
+                pass
 
     async def _handle_client(
         self,
         reader: asyncio.StreamReader,
         writer: asyncio.StreamWriter,
     ) -> None:
+        task = asyncio.current_task()
+        if task is not None:
+            self._tasks.add(task)
         self._writers.add(writer)
         try:
             while True:
@@ -153,7 +174,12 @@ class FakeRigctldServer:
         except (ConnectionError, OSError):
             pass
         finally:
+            if task is not None:
+                self._tasks.discard(task)
             self._writers.discard(writer)
+            if self._stopping:
+                _abort_writer(writer)
+                return
             writer.close()
             try:
                 await writer.wait_closed()
@@ -227,6 +253,11 @@ async def _write_response(writer: asyncio.StreamWriter, response: bytes) -> None
         return
     writer.write(response)
     await writer.drain()
+
+
+def _abort_writer(writer: asyncio.StreamWriter) -> None:
+    writer.close()
+    writer.transport.abort()
 
 
 def _ok() -> bytes:
