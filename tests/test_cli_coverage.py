@@ -1197,6 +1197,227 @@ async def test_cmd_discover_json_preserves_usb_audio_resolution_metadata(
     assert "password" not in str(payload).lower()
 
 
+@pytest.mark.asyncio
+async def test_cmd_discover_does_not_load_hamlib_without_explicit_flags(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    args = SimpleNamespace(serial_only=True, lan_only=False, timeout=0.1, json=True)
+    with (
+        patch(
+            "rigplane.discovery.discover_serial_radios",
+            AsyncMock(return_value=[]),
+        ),
+        patch(
+            "rigplane.backends.hamlib_models.load_hamlib_model_catalog",
+            side_effect=AssertionError("Hamlib catalog must be opt-in"),
+        ),
+    ):
+        rc = await _cmd_discover(None, args)
+
+    assert rc == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["schema"] == "rigplane.discovery.v1"
+    assert "hamlib" not in payload
+
+
+@pytest.mark.asyncio
+async def test_cmd_discover_hamlib_candidates_degrade_without_catalog_or_serial(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    from rigplane.backends.hamlib_models import HamlibModelCatalog
+
+    args = SimpleNamespace(
+        serial_only=True,
+        lan_only=False,
+        timeout=0.1,
+        json=True,
+        hamlib_candidates=True,
+        hamlib_validate=False,
+    )
+    degraded_catalog = HamlibModelCatalog(
+        models={},
+        degraded_reason="hamlib model list unavailable: tool not found",
+    )
+    with (
+        patch(
+            "rigplane.discovery.discover_serial_radios",
+            AsyncMock(return_value=[]),
+        ),
+        patch(
+            "rigplane.backends.hamlib_models.load_hamlib_model_catalog",
+            return_value=degraded_catalog,
+        ),
+    ):
+        rc = await _cmd_discover(None, args)
+
+    assert rc == 0
+    payload = json.loads(capsys.readouterr().out)
+    hamlib = payload["hamlib"]
+    assert hamlib["schema"] == "rigplane.discovery.hamlib.v1"
+    assert hamlib["catalog"]["available"] is False
+    assert hamlib["candidates"] == []
+    assert {message["code"] for message in hamlib["messages"]} == {
+        "hamlibCatalogUnavailable",
+        "noSerialCandidates",
+    }
+
+
+@pytest.mark.asyncio
+async def test_cmd_discover_hamlib_serial_candidate_json_and_human_output(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    from rigplane.backends.hamlib_models import HamlibModelCatalog, HamlibModelMetadata
+
+    args = SimpleNamespace(
+        serial_only=True,
+        lan_only=False,
+        timeout=0.1,
+        json=False,
+        hamlib_candidates=True,
+        hamlib_validate=False,
+    )
+    catalog = HamlibModelCatalog(
+        models={
+            3073: HamlibModelMetadata(model_id=3073, name="Icom IC-7610"),
+        },
+        source_tool="rigctld",
+    )
+    with (
+        patch(
+            "rigplane.discovery.discover_serial_radios",
+            AsyncMock(
+                return_value=[
+                    RadioDiscoveryResult(
+                        port="/dev/cu.usbmodem7610",
+                        protocol="civ",
+                        model="IC-7610",
+                        profile_id="icom_ic7610",
+                        baudrate=115200,
+                        address=0x98,
+                    )
+                ]
+            ),
+        ),
+        patch(
+            "rigplane.backends.hamlib_models.load_hamlib_model_catalog",
+            return_value=catalog,
+        ),
+    ):
+        rc = await _cmd_discover(None, args)
+
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "Hamlib assisted discovery:" in out
+    assert "medium confidence" in out
+    assert "Evidence: hamlib_catalog model=catalog_match" in out
+    assert "Next action: run_read_only_validation" in out
+
+
+@pytest.mark.asyncio
+async def test_cmd_discover_hamlib_validation_is_read_only_and_auto_selects_single_high(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    from fake_rigctld import FakeRigctldServer, FakeRigctldState
+    from rigplane.backends.hamlib_models import HamlibModelCatalog, HamlibModelMetadata
+
+    catalog = HamlibModelCatalog(
+        models={
+            3073: HamlibModelMetadata(model_id=3073, name="Icom IC-7610"),
+        },
+        source_tool="rigctld",
+    )
+    async with FakeRigctldServer(
+        state=FakeRigctldState(info="Model 3073 Icom IC-7610")
+    ) as server:
+        args = SimpleNamespace(
+            serial_only=True,
+            lan_only=False,
+            timeout=0.1,
+            json=True,
+            hamlib_candidates=False,
+            hamlib_validate=True,
+            rigctld_host=server.host,
+            rigctld_port=server.port,
+            hamlib_model_id=3073,
+        )
+        with (
+            patch(
+                "rigplane.discovery.discover_serial_radios",
+                AsyncMock(return_value=[]),
+            ),
+            patch(
+                "rigplane.backends.hamlib_models.load_hamlib_model_catalog",
+                return_value=catalog,
+            ),
+        ):
+            rc = await _cmd_discover(None, args)
+
+    assert rc == 0
+    payload = json.loads(capsys.readouterr().out)
+    hamlib = payload["hamlib"]
+    assert hamlib["validation"]["status"] == "confirmed"
+    assert hamlib["validation"]["frequencyReadable"] is True
+    assert hamlib["validation"]["modeReadable"] is True
+    assert hamlib["summary"]["autoSelectableCount"] == 1
+    assert hamlib["candidates"][0]["confidence"] == "high"
+    assert hamlib["candidates"][0]["autoSelectable"] is True
+    assert set(server.commands_seen) <= {r"\get_info", "f", "m"}
+
+
+@pytest.mark.asyncio
+async def test_cmd_discover_hamlib_validation_keeps_ambiguous_candidates_manual(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    from fake_rigctld import FakeRigctldServer, FakeRigctldState
+    from rigplane.backends.hamlib_models import HamlibModelCatalog, HamlibModelMetadata
+
+    catalog = HamlibModelCatalog(
+        models={
+            3073: HamlibModelMetadata(model_id=3073, name="Icom IC-7610"),
+            3074: HamlibModelMetadata(model_id=3074, name="Icom IC-7600"),
+        },
+        source_tool="rigctld",
+    )
+    async with FakeRigctldServer(state=FakeRigctldState(info="Icom")) as server:
+        args = SimpleNamespace(
+            serial_only=True,
+            lan_only=False,
+            timeout=0.1,
+            json=True,
+            hamlib_candidates=False,
+            hamlib_validate=True,
+            rigctld_host=server.host,
+            rigctld_port=server.port,
+            hamlib_model_id=None,
+        )
+        with (
+            patch(
+                "rigplane.discovery.discover_serial_radios",
+                AsyncMock(return_value=[]),
+            ),
+            patch(
+                "rigplane.backends.hamlib_models.load_hamlib_model_catalog",
+                return_value=catalog,
+            ),
+        ):
+            rc = await _cmd_discover(None, args)
+
+    assert rc == 0
+    hamlib = json.loads(capsys.readouterr().out)["hamlib"]
+    assert [candidate["confidence"] for candidate in hamlib["candidates"]] == [
+        "medium",
+        "medium",
+    ]
+    assert {candidate["safeNextAction"] for candidate in hamlib["candidates"]} == {
+        "confirm_model"
+    }
+    assert hamlib["summary"]["autoSelectableCount"] == 0
+    assert {candidate["autoSelectable"] for candidate in hamlib["candidates"]} == {
+        False
+    }
+    assert set(server.commands_seen) <= {r"\get_info", "f", "m"}
+
+
 def test_main_branches(monkeypatch, capsys: pytest.CaptureFixture[str]) -> None:
     class DummyParser:
         def __init__(self, args):

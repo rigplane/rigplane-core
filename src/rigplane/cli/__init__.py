@@ -988,13 +988,16 @@ def _build_parser() -> argparse.ArgumentParser:
     discover_p = sub.add_parser(
         "discover", help="Discover Icom radios on LAN and serial ports"
     )
-    discover_p.add_argument(
+    discover_scope = discover_p.add_mutually_exclusive_group()
+    discover_scope.add_argument(
         "--serial-only",
+        "--serial",
+        dest="serial_only",
         action="store_true",
         default=False,
         help="Only scan serial (USB) ports; skip LAN broadcast",
     )
-    discover_p.add_argument(
+    discover_scope.add_argument(
         "--lan-only",
         action="store_true",
         default=False,
@@ -1006,6 +1009,38 @@ def _build_parser() -> argparse.ArgumentParser:
         default=3.0,
         metavar="SECONDS",
         help="LAN broadcast listen timeout in seconds (default: 3.0)",
+    )
+    discover_p.add_argument(
+        "--hamlib-candidates",
+        action="store_true",
+        default=False,
+        help="Include explicit Hamlib setup candidates in discovery output",
+    )
+    discover_p.add_argument(
+        "--hamlib-validate",
+        action="store_true",
+        default=False,
+        help="Run read-only rigctld validation using safe Hamlib probe commands",
+    )
+    discover_p.add_argument(
+        "--rigctld-host",
+        default="127.0.0.1",
+        metavar="HOST",
+        help="rigctld host for --hamlib-validate (default: 127.0.0.1)",
+    )
+    discover_p.add_argument(
+        "--rigctld-port",
+        type=int,
+        default=4532,
+        metavar="PORT",
+        help="rigctld port for --hamlib-validate (default: 4532)",
+    )
+    discover_p.add_argument(
+        "--hamlib-model-id",
+        type=int,
+        default=None,
+        metavar="ID",
+        help="Optional Hamlib model ID hint for read-only validation",
     )
 
     # serve
@@ -3445,11 +3480,16 @@ async def _cmd_discover(_radio: Radio | None, args: argparse.Namespace) -> int:
         dedupe_radios,
         discover_lan_radios,
         discover_serial_radios,
+        HamlibProbeTarget,
+        ProbeOptions,
+        probe_hamlib_rigctld_targets,
     )
 
     serial_only: bool = getattr(args, "serial_only", False)
     lan_only: bool = getattr(args, "lan_only", False)
     timeout: float = getattr(args, "timeout", 3.0)
+    hamlib_candidates: bool = getattr(args, "hamlib_candidates", False)
+    hamlib_validate: bool = getattr(args, "hamlib_validate", False)
 
     if serial_only and lan_only:
         print(
@@ -3507,13 +3547,46 @@ async def _cmd_discover(_radio: Radio | None, args: argparse.Namespace) -> int:
         scan_failed = True
 
     grouped = dedupe_radios(lan_radios, serial_radios)
+    hamlib_payload: dict[str, object] | None = None
+    if hamlib_candidates or hamlib_validate:
+        from rigplane.backends.hamlib_models import load_hamlib_model_catalog
+        from rigplane.cli._discover_hamlib import (
+            build_hamlib_discovery_payload,
+            print_hamlib_human,
+        )
+
+        catalog = load_hamlib_model_catalog()
+        validation_results: list[object] = []
+        if hamlib_validate:
+            target = HamlibProbeTarget(
+                host=str(getattr(args, "rigctld_host", "127.0.0.1")),
+                port=int(getattr(args, "rigctld_port", 4532)),
+                model_id=getattr(args, "hamlib_model_id", None),
+            )
+            validation_results = await probe_hamlib_rigctld_targets(
+                [target],
+                options=ProbeOptions(enabled=True),
+                catalog=catalog,
+            )
+        hamlib_payload = build_hamlib_discovery_payload(
+            catalog=catalog,
+            serial_radios=serial_radios,
+            serial_scan_enabled=not lan_only,
+            candidates_requested=hamlib_candidates,
+            validation_results=validation_results,
+        )
 
     if json_output:
-        print(json.dumps(build_setup_discovery_payload(grouped)))
+        payload = build_setup_discovery_payload(grouped)
+        if hamlib_payload is not None:
+            payload["hamlib"] = hamlib_payload
+        print(json.dumps(payload))
         return 1 if scan_failed else 0
 
     if not grouped:
         print("No radios found.")
+        if hamlib_payload is not None:
+            print_hamlib_human(hamlib_payload)
         return 1 if scan_failed else 0
 
     total_connections = sum(len(r["lan"]) + len(r["serial"]) for r in grouped)
@@ -3531,6 +3604,8 @@ async def _cmd_discover(_radio: Radio | None, args: argparse.Namespace) -> int:
         for serial in radio["serial"]:
             baud = serial.get("baudrate") or serial.get("baud", "?")
             print(f"  \u2022 Serial: {serial['port']} ({baud} baud)")
+    if hamlib_payload is not None:
+        print_hamlib_human(hamlib_payload)
     return 0
 
 
