@@ -1,5 +1,5 @@
 ---
-description: Step-by-step guide to control the Icom IC-7610 from macOS over USB serial CI-V and USB audio with RigPlane — no LAN, hamlib, or RS-BA1 required.
+description: Step-by-step guide to control the Icom IC-7610 from macOS over USB serial CI-V and USB audio with RigPlane's native Icom provider.
 ---
 
 # IC-7610 USB Serial Backend Setup (macOS)
@@ -77,7 +77,7 @@ ls -l /dev/cu.usbserial-*
 
 The IC-7610 typically appears as `/dev/cu.usbserial-XXXXXX` where `XXXXXX` is the radio's serial number.
 
-You can also use `rigplane discover --serial-only` to find USB-connected radios automatically:
+You can also use `rigplane discover --serial-only` to list USB serial candidates and identify likely supported radios:
 
 ```bash
 rigplane discover --serial-only

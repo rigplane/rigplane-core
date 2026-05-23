@@ -2,11 +2,17 @@
 
 ## Goal
 
-Create a Python library for direct control of Icom transceivers with a shared radio core:
-- LAN backend (UDP, native Icom protocol)
-- serial backend (USB CI-V + exported USB audio devices, in progress)
+Create a Python library for direct control of transceivers through a shared
+radio core:
+- native Icom LAN backend (UDP, native Icom protocol)
+- native Icom serial backend (USB CI-V + exported USB audio devices)
+- native Yaesu CAT paths where RigPlane can provide richer state, audio, or diagnostics
+- Hamlib-backed provider path for broader long-tail serial CAT coverage
 
-No intermediary software (wfview, RS-BA1, hamlib) is required for supported paths.
+RigPlane owns the public UX, state model, audio path, diagnostics, and
+`rigctld`-compatible client surface. Native providers stay direct where that is
+valuable; long-tail CAT coverage can use Hamlib underneath RigPlane's provider
+boundary.
 
 ### Objectives
 - Connect to Icom over network (authentication, keep-alive)
@@ -14,11 +20,11 @@ No intermediary software (wfview, RS-BA1, hamlib) is required for supported path
 - Receive/transmit audio stream (PCM default, Opus optional)
 - Simple Pythonic API (sync + async)
 - Keep one `Radio` contract for API/CLI/Web/rigctld consumers
-- Support IC-7610 first, then expand to other models/families via backend/profile architecture
+- Support IC-7610 first, then expand to other models/families via provider/profile architecture
 
 ### Non-goals (for now)
 - Full wfview replacement
-- Non-IC-7610 serial expansion before IC-7610 USB MVP is stable
+- Leaking Hamlib model IDs, command names, or raw error semantics into the Web UI/API
 - Cross-platform USB/audio polish beyond macOS-first rollout
 
 ## Architecture

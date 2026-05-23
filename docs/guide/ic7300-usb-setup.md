@@ -1,5 +1,5 @@
 ---
-description: Set up the Icom IC-7300 over USB serial CI-V and USB audio from macOS with RigPlane — low-latency direct control without LAN, hamlib, or RS-BA1.
+description: Set up the Icom IC-7300 over USB serial CI-V and USB audio from macOS with RigPlane's native Icom provider.
 ---
 
 # IC-7300 USB Serial Backend Setup (macOS)

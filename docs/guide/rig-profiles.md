@@ -1,14 +1,17 @@
 ---
-description: Add a new radio to RigPlane by writing a TOML rig profile — capabilities, CI-V commands, hardware parameters, and registration in the rig loader.
+description: Add a native radio profile to RigPlane, and understand when long-tail CAT support should route through the Hamlib-backed provider path instead.
 ---
 
 # Adding a New Radio (Rig Profiles)
 
 ## Overview
 
-rigplane uses **TOML rig files** to define radio capabilities, protocol type, CI-V commands,
-and hardware parameters. Adding a new radio means adding a new `.toml` file — no Python
-changes required for most radios.
+rigplane uses **TOML rig files** to define native radio capabilities, protocol
+type, CI-V/CAT commands, and hardware parameters. For radios that share an
+existing native provider, adding a model is often a profile change. For
+long-tail serial CAT radios, prefer the Hamlib-backed provider direction unless
+RigPlane can deliver meaningfully richer control, audio, discovery, or
+diagnostics through a native provider.
 
 Rig files live in `rigs/`. Reference files:
 
@@ -34,7 +37,7 @@ cp rigs/ftx1.toml rigs/ft710.toml      # for Yaesu CAT
 uv run pytest tests/test_rig_loader.py tests/test_rig_multi_vendor.py -v
 ```
 
-## Supported Protocols
+## Native Profile Protocols
 
 | Protocol | Type string | Examples | Description |
 |----------|------------|----------|-------------|
@@ -48,6 +51,11 @@ type = "civ"  # or "kenwood_cat" or "yaesu_cat"
 ```
 
 For CI-V radios, `[radio].civ_addr` is required. For Kenwood/Yaesu, omit it.
+
+Hamlib-backed support is a provider path, not just another TOML dialect. It
+should use Hamlib model metadata, safe read-only probing, and RigPlane's
+capability normalization instead of leaking Hamlib model IDs or command names to
+upper layers.
 
 ## TOML Schema Reference
 

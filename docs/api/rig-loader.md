@@ -228,5 +228,5 @@ Unknown sections or extra fields are silently ignored (forward-compatible).
 
 ## See Also
 
-- [`docs/guide/rig-profiles.md`](../guide/rig-profiles.md) — complete TOML schema reference and guide for adding new radios
+- [`docs/guide/rig-profiles.md`](../guide/rig-profiles.md) — native TOML schema reference and guidance on when long-tail radios belong on the Hamlib-backed provider path
 - [`docs/api/commands.md`](commands.md) — using `CommandMap` with command functions

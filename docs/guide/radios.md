@@ -1,11 +1,14 @@
 ---
-description: Radios supported by RigPlane — Icom IC-7610, IC-7300, IC-705, IC-9700, plus Yaesu, Xiegu, and Lab599 models defined by TOML rig profiles.
+description: Radios supported by RigPlane — native Icom and Yaesu providers today, plus Xiegu, Lab599, and other serial CAT candidates moving toward Hamlib-backed assisted discovery.
 ---
 
 # Supported Radios
 
-Radio support in rigplane is defined by **TOML rig profiles** in `rigs/`.
-Adding a new radio = adding a new `.toml` file — see [Adding a New Radio](rig-profiles.md).
+Radio support in rigplane is provider-based. Native providers use **TOML rig
+profiles** in `rigs/` to describe capabilities and protocol details. Long-tail
+serial CAT radios are moving toward a Hamlib-backed provider path that emits
+structured discovery candidates and maps Hamlib control into RigPlane
+capabilities.
 
 ## Tested
 
@@ -81,27 +84,29 @@ The Web UI automatically hides DIGI-SEL and IP+ controls when connected to an IC
     Full frequency, mode, PTT, and audio control is working.
     The Web UI uses the Audio FFT Scope for spectrum display (no hardware panadapter on FTX-1).
 
-## Non-Icom Radios (Profile Only)
+## Long-tail CAT / Profile Candidates
 
-The TOML rig profile system supports multiple protocols. These profiles exist but
-backend adapters are not yet implemented or tested:
+These radios have profiles or known CAT surfaces, but they are not yet
+first-party hardware-validated. The intended direction is assisted discovery and
+Hamlib-backed control where that gives broader coverage than maintaining a
+bespoke backend for each dialect.
 
 ### Xiegu X6100
 
-- **Protocol:** CI-V (IC-705 compatible subset)
+- **Protocol:** CI-V (IC-705 compatible subset) / Hamlib candidate
 - **CI-V Address:** `0x70`
 - **Rig profile:** `rigs/x6100.toml`
 - **Features:** HF + 6m, QRP 8W, built-in ATU, WiFi
 - **VFO scheme:** `ab`
-- **Status:** Profile only. May work with CI-V backend (untested).
+- **Status:** Profile only. May work with CI-V backend (untested); assisted discovery and Hamlib-backed fallback planned.
 
 ### Lab599 TX-500
 
-- **Protocol:** Kenwood CAT (text)
+- **Protocol:** Kenwood CAT (text) / Hamlib candidate
 - **Rig profile:** `rigs/tx500.toml`
 - **Features:** HF + 6m, QRP 10W, built-in ATU, minimal CAT (ID FA FB MD FR FT PA RA)
 - **VFO scheme:** `ab`
-- **Status:** Profile only. Kenwood CAT backend not yet implemented.
+- **Status:** Profile only. Product direction is Hamlib-backed provider plus assisted discovery, not a bespoke Kenwood CAT backend first.
 
 ## Community-Validated / Maintainer Hardware Pending
 
@@ -188,14 +193,16 @@ async with create_radio(config) as radio:
 See **[Adding a New Radio (Rig Profiles)](rig-profiles.md)** for the complete guide.
 In brief:
 
-1. Copy the closest reference rig file as a template:
+1. Decide whether the radio belongs on an existing native provider path or the
+   Hamlib-backed provider path.
+2. For native provider work, copy the closest reference rig file as a template:
    - Icom CI-V → `rigs/ic7610.toml`
    - Kenwood CAT → `rigs/tx500.toml`
    - Yaesu CAT → `rigs/ftx1.toml`
-2. Update `[radio]` and `[protocol]` sections
-3. Update `[capabilities]`, `[controls]`, `[meters]`, `[[rules]]` as needed
-4. For CI-V radios: update `[commands]` section
-5. Run `uv run pytest tests/test_rig_loader.py tests/test_rig_multi_vendor.py -v` to validate
+3. Update `[radio]` and `[protocol]` sections.
+4. Update `[capabilities]`, `[controls]`, `[meters]`, `[[rules]]` as needed.
+5. For CI-V radios: update `[commands]` section.
+6. Run `uv run pytest tests/test_rig_loader.py tests/test_rig_multi_vendor.py -v` to validate.
 
 The library is CI-V address agnostic — any radio that speaks the Icom LAN protocol should
 work. If you test with a new model:
