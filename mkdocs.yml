@@ -127,6 +127,7 @@ nav:
       - Web: api/web.md
   - Internals:
       - Architecture: internals/architecture.md
+      - Hamlib provider rollout: internals/hamlib-provider-rollout.md
       - Project Overview: PROJECT.md
       - Protocol Deep Dive: internals/protocol.md
       - Radio Protocol: radio-protocol.md
