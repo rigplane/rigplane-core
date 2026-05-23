@@ -5,7 +5,8 @@ from __future__ import annotations
 import asyncio
 from contextlib import ExitStack, contextmanager
 from functools import partial
-from unittest.mock import Mock, patch
+from types import SimpleNamespace
+from unittest.mock import patch
 
 import pytest
 
@@ -251,12 +252,18 @@ class TestParseProbeResponse:
         assert _parse_probe_response("/dev/x", 19200, data) is None
 
 
-def _make_port(device: str, description: str = "", hwid: str | None = None) -> Mock:
-    port = Mock()
-    port.device = device
-    port.description = description
-    port.hwid = hwid
-    return port
+def _make_port(
+    device: str,
+    description: str = "",
+    hwid: str | None = None,
+    **metadata: object,
+) -> SimpleNamespace:
+    return SimpleNamespace(
+        device=device,
+        description=description,
+        hwid=hwid,
+        **metadata,
+    )
 
 
 class TestIsCandidate:
@@ -302,7 +309,16 @@ class TestIsCandidate:
 
 class TestEnumerateSerialPorts:
     def test_usb_port_returned(self) -> None:
-        port = _make_port("/dev/ttyUSB0", "USB Serial", "USB VID:PID=10C4:EA60")
+        port = _make_port(
+            "/dev/ttyUSB0",
+            "USB Serial",
+            "USB VID:PID=10C4:EA60",
+            vid=0x10C4,
+            pid=0xEA60,
+            manufacturer="Silicon Labs",
+            product="CP210x USB to UART Bridge",
+            serial_number="0001",
+        )
         with patch("serial.tools.list_ports.comports", return_value=[port]):
             result = enumerate_serial_ports()
         assert len(result) == 1
@@ -310,7 +326,22 @@ class TestEnumerateSerialPorts:
             device="/dev/ttyUSB0",
             description="USB Serial",
             hwid="USB VID:PID=10C4:EA60",
+            vid=0x10C4,
+            pid=0xEA60,
+            manufacturer="Silicon Labs",
+            product="CP210x USB to UART Bridge",
+            serial_number="0001",
         )
+
+    def test_missing_usb_metadata_attrs_are_optional(self) -> None:
+        port = _make_port("/dev/ttyUSB0", "USB Serial", "USB VID:PID=10C4:EA60")
+        with patch("serial.tools.list_ports.comports", return_value=[port]):
+            result = enumerate_serial_ports()
+        assert result[0].vid is None
+        assert result[0].pid is None
+        assert result[0].manufacturer is None
+        assert result[0].product is None
+        assert result[0].serial_number is None
 
     def test_bluetooth_excluded(self) -> None:
         port = _make_port("/dev/tty.Bluetooth-Incoming-Port", "Bluetooth")
@@ -465,6 +496,13 @@ def test_build_setup_discovery_payload_is_stable_and_credential_free() -> None:
                     "address": 0x98,
                     "description": "IC-7610 USB",
                     "hwid": "USB VID:PID=10C4:EA60",
+                    "vid": 0x10C4,
+                    "pid": 0xEA60,
+                    "manufacturer": "Silicon Labs",
+                    "product": "CP210x USB to UART Bridge",
+                    "serial_number": "0001",
+                    "token": "must-not-leak",
+                    "hostname": "private-host.local",
                 }
             ],
         }
@@ -486,7 +524,14 @@ def test_build_setup_discovery_payload_is_stable_and_credential_free() -> None:
     assert radio["connections"][1]["type"] == "serial"
     assert radio["connections"][1]["description"] == "IC-7610 USB"
     assert radio["connections"][1]["hwid"] == "USB VID:PID=10C4:EA60"
+    assert radio["connections"][1]["vid"] == 0x10C4
+    assert radio["connections"][1]["pid"] == 0xEA60
+    assert radio["connections"][1]["manufacturer"] == "Silicon Labs"
+    assert radio["connections"][1]["product"] == "CP210x USB to UART Bridge"
+    assert radio["connections"][1]["serialNumber"] == "0001"
     assert "password" not in str(payload).lower()
+    assert "token" not in str(payload).lower()
+    assert "private-host" not in str(payload).lower()
     assert payload["limitations"]["windowsUsbAudio"] == "manual-device-selection"
 
 
@@ -513,6 +558,7 @@ def test_setup_payload_preserves_usb_audio_metadata_without_credentials() -> Non
                     },
                     "user": "must-not-leak",
                     "password": "must-not-leak",
+                    "private_key": "must-not-leak",
                 }
             ],
         }
@@ -529,6 +575,7 @@ def test_setup_payload_preserves_usb_audio_metadata_without_credentials() -> Non
         "locationPrefix": 0x0111,
     }
     assert "password" not in str(payload).lower()
+    assert "private_key" not in str(payload).lower()
 
 
 # ---------------------------------------------------------------------------
@@ -766,6 +813,36 @@ class TestDiscoverSerialRadios:
         assert r.hwid == "USB VID:PID=10C4:EA60"
 
     @pytest.mark.asyncio
+    async def test_civ_radio_preserves_serial_usb_metadata(self) -> None:
+        reader = _FakeReader([_IC7610_RESPONSE])
+        writer = _FakeWriter()
+
+        port = _make_port(
+            "/dev/ttyUSB0",
+            "USB Serial",
+            "USB VID:PID=10C4:EA60",
+            vid=0x10C4,
+            pid=0xEA60,
+            manufacturer="Silicon Labs",
+            product="CP210x USB to UART Bridge",
+            serial_number="0001",
+        )
+        with (
+            _fast_probes(),
+            patch("serial.tools.list_ports.comports", return_value=[port]),
+        ):
+            results = await discover_serial_radios(
+                _open_serial=_make_open(reader, writer),
+            )
+
+        r = results[0]
+        assert r.vid == 0x10C4
+        assert r.pid == 0xEA60
+        assert r.manufacturer == "Silicon Labs"
+        assert r.product == "CP210x USB to UART Bridge"
+        assert r.serial_number == "0001"
+
+    @pytest.mark.asyncio
     async def test_civ_radio_preserves_usb_audio_resolution_metadata(self) -> None:
         reader = _FakeReader([_IC7610_RESPONSE])
         writer = _FakeWriter()
@@ -804,7 +881,16 @@ class TestDiscoverSerialRadios:
 
         yaesu_factory = _make_yaesu_factory("ID0840")
 
-        port = _make_port("/dev/ttyUSB0", "USB Serial", "USB VID:PID=0403:6001")
+        port = _make_port(
+            "/dev/ttyUSB0",
+            "USB Serial",
+            "USB VID:PID=0403:6001",
+            vid=0x0403,
+            pid=0x6001,
+            manufacturer="FTDI",
+            product="USB Serial Converter",
+            serial_number="YAESU1",
+        )
         with (
             _fast_probes(),
             patch("serial.tools.list_ports.comports", return_value=[port]),
@@ -819,6 +905,11 @@ class TestDiscoverSerialRadios:
         assert r.protocol == "yaesu_cat"
         assert r.model == "FTX-1"
         assert r.profile_id == "yaesu_ftx1"
+        assert r.vid == 0x0403
+        assert r.pid == 0x6001
+        assert r.manufacturer == "FTDI"
+        assert r.product == "USB Serial Converter"
+        assert r.serial_number == "YAESU1"
 
     @pytest.mark.asyncio
     async def test_no_radio_on_port(self) -> None:

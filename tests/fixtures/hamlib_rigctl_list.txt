@@ -1,0 +1,5 @@
+Rig #  Mfg                 Model                         Version  Status
+1      Hamlib              Dummy                         20240312 Stable
+2      Hamlib              NET rigctl                    20240312 Beta
+3073   Icom                IC-7610                       20240312 Stable
+1040   Yaesu               FTX-1                         20240312 Untested

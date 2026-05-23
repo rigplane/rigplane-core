@@ -47,6 +47,11 @@ class SerialPortCandidate:
     device: str
     description: str
     hwid: str | None
+    vid: int | None = None
+    pid: int | None = None
+    manufacturer: str | None = None
+    product: str | None = None
+    serial_number: str | None = None
 
 
 @dataclass
@@ -62,6 +67,11 @@ class RadioDiscoveryResult:
         address: CI-V address (``int``) for Icom radios; CAT model ID string for others.
         description: Human-readable OS serial port description, if available.
         hwid: OS hardware ID string, if available.
+        vid: USB vendor ID from pySerial, if available.
+        pid: USB product ID from pySerial, if available.
+        manufacturer: USB manufacturer string from pySerial, if available.
+        product: USB product string from pySerial, if available.
+        serial_number: USB serial number from pySerial, if available.
         usb_audio: Optional USB audio resolution metadata. Keys match
             :class:`rigplane.usb_audio_resolve.AudioDeviceMapping` field names
             when topology resolution is available.
@@ -75,6 +85,11 @@ class RadioDiscoveryResult:
     address: int | str
     description: str | None = None
     hwid: str | None = None
+    vid: int | None = None
+    pid: int | None = None
+    manufacturer: str | None = None
+    product: str | None = None
+    serial_number: str | None = None
     usb_audio: dict[str, Any] | None = None
 
 
@@ -432,6 +447,11 @@ def enumerate_serial_ports() -> list[SerialPortCandidate]:
                     device=port.device,
                     description=port.description,
                     hwid=port.hwid,
+                    vid=getattr(port, "vid", None),
+                    pid=getattr(port, "pid", None),
+                    manufacturer=getattr(port, "manufacturer", None),
+                    product=getattr(port, "product", None),
+                    serial_number=getattr(port, "serial_number", None),
                 )
             )
             logger.debug("Serial candidate: %s (%s)", port.device, port.description)
@@ -542,6 +562,11 @@ async def discover_serial_radios(
                     address=civ.address,
                     description=port.description,
                     hwid=port.hwid,
+                    vid=port.vid,
+                    pid=port.pid,
+                    manufacturer=port.manufacturer,
+                    product=port.product,
+                    serial_number=port.serial_number,
                     usb_audio=_resolve_usb_audio_metadata(civ.port),
                 )
             )
@@ -555,6 +580,11 @@ async def discover_serial_radios(
         if yaesu:
             yaesu.description = port.description
             yaesu.hwid = port.hwid
+            yaesu.vid = port.vid
+            yaesu.pid = port.pid
+            yaesu.manufacturer = port.manufacturer
+            yaesu.product = port.product
+            yaesu.serial_number = port.serial_number
             yaesu.usb_audio = _resolve_usb_audio_metadata(yaesu.port)
             results.append(yaesu)
             continue
@@ -564,6 +594,11 @@ async def discover_serial_radios(
         if kenwood:
             kenwood.description = port.description
             kenwood.hwid = port.hwid
+            kenwood.vid = port.vid
+            kenwood.pid = port.pid
+            kenwood.manufacturer = port.manufacturer
+            kenwood.product = port.product
+            kenwood.serial_number = port.serial_number
             kenwood.usb_audio = _resolve_usb_audio_metadata(kenwood.port)
             results.append(kenwood)
 
@@ -679,6 +714,11 @@ def build_setup_discovery_payload(
                 "address": serial.get("address"),
                 "description": serial.get("description"),
                 "hwid": serial.get("hwid"),
+                "vid": serial.get("vid"),
+                "pid": serial.get("pid"),
+                "manufacturer": serial.get("manufacturer"),
+                "product": serial.get("product"),
+                "serialNumber": serial.get("serial_number"),
                 "requiresCredentials": False,
             }
             usb_audio = _normalize_usb_audio_metadata(serial.get("usb_audio"))
