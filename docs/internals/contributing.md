@@ -158,11 +158,13 @@ Always include the issue number in the scope (e.g., `#123`) for feature, fix, an
 
 ## Adding a New Radio Model
 
-1. Look up the radio's default CI-V address
-2. Test basic operations (frequency, mode, meters)
-3. Document any model-specific behavior
-4. Add to the radios table in `docs/guide/radios.md`
-5. Add the CI-V address constant in `commands.py` if desired
+1. Decide whether the radio belongs on an existing native provider path or the
+   Hamlib-backed provider path.
+2. For native CI-V radios, look up the default CI-V address and profile data.
+3. Test basic operations (frequency, mode, meters/PTT as applicable).
+4. Document any model-specific behavior and provider limitations.
+5. Add to the radios table in `docs/guide/radios.md`.
+6. Add protocol constants only when they belong to a native provider surface.
 
 ## Reporting Bugs
 

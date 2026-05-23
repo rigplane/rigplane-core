@@ -6,7 +6,11 @@ robots: noindex, follow
 
 ## Overview
 
-The Radio Protocol defines a vendor-neutral interface for controlling amateur radio transceivers. Any backend that implements the `Radio` protocol can be used with the Web UI, rigctld server, and CLI without modification.
+The Radio Protocol defines a vendor-neutral interface for controlling amateur
+radio transceivers. Any provider/backend that implements the `Radio` protocol
+can be used with the Web UI, rigctld server, and CLI without modification.
+Native providers and the planned Hamlib-backed provider meet the same contract;
+consumer layers should not depend on which path is underneath.
 
 ```
 ┌──────────────────────────────────────────────┐
@@ -17,13 +21,14 @@ The Radio Protocol defines a vendor-neutral interface for controlling amateur ra
 │  │ AudioCapable │ ScopeCapable│ DualRxCap. │ │
 │  └──────────────┴─────────────┴────────────┘ │
 ├────────┬──────────┬──────────┬───────────────┤
-│IcomLAN │IcomSerial│ YaesuCAT │  Future...    │
+│IcomLAN │IcomSerial│ YaesuCAT │ HamlibProvider│
 └────────┴──────────┴──────────┴───────────────┘
 ```
 
 ## Core Protocol: `Radio`
 
-Every backend **must** implement this. It covers the essentials that any transceiver supports.
+Every provider/backend **must** implement this. It covers the essentials that any
+transceiver supports.
 
 ```python
 from rigplane.radio_protocol import Radio
@@ -179,11 +184,14 @@ if isinstance(radio, DualReceiverCapable):
     await radio.vfo_equalize()   # Sub = Main
 ```
 
-## Implementing a New Backend
+## Implementing a New Provider/Backend
 
-1. Create a class that implements `Radio` (and optional protocols as needed)
-2. Register it in the radio factory
-3. The Web UI, rigctld, and CLI will work automatically
+1. Decide whether the radio needs a native provider or belongs on the
+   Hamlib-backed provider path.
+2. Create a class that implements `Radio` (and optional protocols as needed),
+   or map Hamlib control into the same capability model.
+3. Register it in the radio factory.
+4. The Web UI, rigctld, and CLI will work through the same contract.
 
 ```python
 from rigplane.radio_protocol import Radio

@@ -12,14 +12,12 @@
 > [rigplane.dev/migrate](https://rigplane.dev/migrate).
 
 **rigplane** is a multi-vendor radio control library and Web UI — Python
-asyncio core plus a self-contained browser front-end. It speaks Icom CI-V
-(LAN UDP and USB), Yaesu CAT, and Kenwood-style CAT, with stable backends
-for IC-7610, IC-7300, and Yaesu FTX-1, and profile-based support for IC-705,
-IC-9700, Xiegu X6100, and Lab599 TX-500. Direct connection to your radio:
-no wfview, no hamlib daemon, no RS-BA1. A capability-driven runtime renders
-the same Web UI and `rigctld`-compatible network bridge across every backend
-that honours the public `Radio` protocol. Tested in production against
-WSJT-X, fldigi, and JS8Call.
+asyncio core plus a self-contained browser front-end. It has native providers
+for rich Icom CI-V and Yaesu CAT paths, and is moving long-tail serial CAT
+coverage toward a Hamlib-backed provider with assisted discovery. A
+capability-driven runtime renders the same Web UI and `rigctld`-compatible
+network bridge across every backend that honours the public `Radio` protocol.
+Tested in production against WSJT-X, fldigi, and JS8Call.
 
 <p align="center">
   <img src="docs/screenshots/hero.png" alt="rigplane Web UI — IC-7610 dual-RX desktop with scope and waterfall" width="100%">
@@ -63,13 +61,13 @@ Full guides: [getting started](https://rigplane.dev/guide/quickstart/),
 | **Yaesu FTX-1**    | USB CAT            | Stable              | 17 modes, VHF/UHF, C4FM, audio FFT scope |
 | Icom IC-705        | LAN (WiFi)         | Community-validated | CI-V `0xA4`                            |
 | Icom IC-9700       | LAN, USB CI-V      | Profile only        | VHF/UHF/SHF                            |
-| Xiegu X6100        | USB CI-V           | Profile only        | IC-705 compatible, QRP                 |
-| Lab599 TX-500      | USB Kenwood CAT    | Profile only        | QRP, minimal CAT                       |
+| Xiegu X6100        | USB CI-V / Hamlib candidate | Profile only / assisted discovery planned | IC-705 compatible, QRP |
+| Lab599 TX-500      | USB Kenwood CAT / Hamlib candidate | Profile only / assisted discovery planned | QRP, minimal CAT |
 
-Radio capabilities are declared in `rigs/*.toml` — adding a new model is
-typically a profile change, not Python code. Three protocol families are
-supported: CI-V (Icom binary), Kenwood CAT (text), Yaesu CAT (text). See
-[adding a new radio](https://rigplane.dev/guide/rig-profiles/).
+Native radio capabilities are declared in `rigs/*.toml`. For long-tail serial
+CAT radios, the intended path is Hamlib-backed control underneath RigPlane's
+capability model, with structured discovery candidates and safe read-only
+probing where possible. See [adding a new radio](https://rigplane.dev/guide/rig-profiles/).
 
 ## Why 1.0
 

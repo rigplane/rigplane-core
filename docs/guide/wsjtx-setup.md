@@ -1,11 +1,13 @@
 ---
-description: Configure WSJT-X, JTDX, and JS8Call against RigPlane's built-in rigctld server for FT8, FT4, and JS8 on Icom radios — no Hamlib install needed.
+description: Configure WSJT-X, JTDX, and JS8Call against RigPlane's rigctld-compatible endpoint for FT8, FT4, and JS8.
 ---
 
 # WSJT-X / JTDX / JS8Call Setup Guide
 
 This guide covers configuring WSJT-X (and compatible apps like JTDX, JS8Call)
-to work with `rigplane serve` as a Hamlib NET rigctld replacement.
+to work with RigPlane's client-facing `rigctld`-compatible endpoint. This is
+separate from the provider layer underneath RigPlane, which may be native or
+Hamlib-backed depending on the radio path.
 
 ## Quick Start
 

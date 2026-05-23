@@ -541,7 +541,11 @@ The JSON payload also reports current platform limitations:
 
 ### `serve`
 
-Start a rigctld-compatible TCP server so that logging and contesting software (WSJT-X, JS8Call, Ham Radio Deluxe, etc.) can control the radio without a full Hamlib installation.
+Start a client-facing `rigctld`-compatible TCP server so that logging and
+contesting software (WSJT-X, JS8Call, Ham Radio Deluxe, etc.) can control the
+radio through RigPlane's active provider path. This endpoint is distinct from a
+Hamlib-backed provider that RigPlane may use underneath for long-tail CAT
+coverage.
 
 ```bash
 # Basic rigctld server on default port 4532

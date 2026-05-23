@@ -4,11 +4,16 @@ robots: noindex, follow
 
 # Rigctld Server
 
-Hamlib NET rigctld-compatible TCP server for rigplane.
+Client-facing Hamlib NET rigctld-compatible TCP server for rigplane.
 
-Provides a drop-in replacement for `rigctld` that bridges the hamlib line-based TCP
-protocol to a **Radio** instance (from `create_radio`). Clients such as WSJT-X, JS8Call, fldigi, and
-rigctl connect over TCP (default port 4532) and issue standard hamlib CAT commands.
+Provides a `rigctld`-compatible endpoint that bridges the Hamlib line-based TCP
+protocol to a **Radio** instance (from `create_radio`). Clients such as WSJT-X,
+JS8Call, fldigi, and `rigctl` connect over TCP (default port 4532) and issue
+standard Hamlib CAT commands.
+
+This server is the client-facing compatibility surface. It is separate from any
+Hamlib-backed provider RigPlane may use underneath to control long-tail CAT
+radios.
 
 ## Architecture
 

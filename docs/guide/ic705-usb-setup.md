@@ -81,7 +81,7 @@ ls -l /dev/cu.usbserial-*
 
 The IC-705 typically appears as `/dev/cu.usbserial-*` where the suffix may include "IC705" or the radio's serial number.
 
-You can also use `rigplane discover --serial-only` to find USB-connected radios automatically:
+You can also use `rigplane discover --serial-only` to list USB serial candidates and identify likely supported radios:
 
 ```bash
 rigplane discover --serial-only

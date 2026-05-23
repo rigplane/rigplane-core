@@ -191,9 +191,11 @@ USB Audio CODEC entries in IORegistry  →  filter by same hub prefix   │
 
 ## Rig Profiles (Data-Driven Radio Config)
 
-rigplane uses **TOML rig profiles** to define per-radio capabilities, CI-V wire bytes,
-and hardware parameters. This makes adding new radio support a data task — not a code
-change.
+rigplane uses **TOML rig profiles** to define native per-radio capabilities,
+CI-V/CAT wire details, and hardware parameters. Profiles remain the right path
+for native providers. Long-tail serial CAT coverage should route through the
+Hamlib-backed provider path unless a native provider gives RigPlane meaningfully
+richer UX, state, audio, discovery, or diagnostics.
 
 ### Data Flow
 
@@ -396,9 +398,10 @@ Used by the web UI to find available radios without manual IP entry.
 
 ### `rigctld/` — Hamlib NET rigctld Server
 
-TCP server that exposes the radio via the Hamlib `NET rigctld` protocol, enabling control
-from WSJT-X, fldigi, and any other Hamlib-aware software without needing a physical serial
-port.
+TCP server that exposes the radio via the Hamlib `NET rigctld` protocol,
+enabling control from WSJT-X, fldigi, and any other Hamlib-aware software
+without needing a physical serial port. This is the client-facing compatibility
+surface, separate from any Hamlib-backed provider RigPlane may use underneath.
 
 **`rigctld/server.py`** — asyncio TCP server (`asyncio.start_server`) implementing the hamlib
 NET rigctld protocol. Manages the TCP listener, per-client session lifecycle, connection
@@ -517,7 +520,10 @@ CI-V event classification, request-response matching, and frame scanning utiliti
 
 ### `radio_protocol.py` — Abstract Radio Protocols
 
-Runtime-checkable `Protocol` interfaces for multi-backend radio control. Web UI, rigctld, and CLI program against these interfaces so any backend (Icom LAN, serial, Yaesu CAT) can be substituted without changing consumers.
+Runtime-checkable `Protocol` interfaces for multi-backend radio control. Web
+UI, rigctld, and CLI program against these interfaces so native providers
+(Icom LAN, serial, Yaesu CAT) and a Hamlib-backed provider can be substituted
+without changing consumers.
 
 - **`Radio`**: core interface — lifecycle (`connect`/`disconnect`), frequency, mode, PTT, meters, power, levels, `radio_state`, `capabilities` set
 - **`AudioCapable`**: `audio_bus`, `start_audio_rx_opus`, `push_audio_tx_opus`
