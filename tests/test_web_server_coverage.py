@@ -12,6 +12,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from rigplane.web import server as server_module
 from rigplane.web.radio_poller import EnableScope
 from rigplane.web.server import WebConfig, WebServer, _send_response, run_web_server
 
@@ -163,6 +164,53 @@ async def test_start_and_stop_with_radio_sets_callbacks() -> None:
     # responsibility via the context manager (async with radio:).
     radio.disconnect.assert_not_awaited()
     assert fake_server.closed is True
+
+
+@pytest.mark.asyncio
+async def test_start_disables_reuse_port_on_windows() -> None:
+    srv = WebServer(None, WebConfig(host="127.0.0.1", port=0, discovery=False))
+    fake_server = _FakeAsyncServer()
+
+    with (
+        patch("rigplane.web.web_startup.sys.platform", "win32"),
+        patch(
+            "rigplane.web.web_startup.asyncio.start_server",
+            new=AsyncMock(return_value=fake_server),
+        ) as start_server,
+    ):
+        await srv.start()
+        await srv.stop()
+
+    assert start_server.await_args.kwargs["reuse_port"] is False
+
+
+def test_shutdown_signal_handler_falls_back_when_loop_does_not_support_signals(
+    monkeypatch,
+) -> None:
+    calls: list[tuple[int, object]] = []
+    triggered = 0
+
+    class FakeLoop:
+        def add_signal_handler(self, *_args: object) -> None:
+            raise NotImplementedError
+
+    def fake_signal(sig: int, handler: object) -> None:
+        calls.append((sig, handler))
+
+    def on_signal() -> None:
+        nonlocal triggered
+        triggered += 1
+
+    monkeypatch.setattr(server_module._signal, "signal", fake_signal)
+
+    server_module._install_shutdown_signal_handlers(FakeLoop(), on_signal)
+
+    assert [sig for sig, _handler in calls] == [
+        server_module._signal.SIGTERM,
+        server_module._signal.SIGINT,
+    ]
+    calls[0][1](server_module._signal.SIGTERM, None)  # type: ignore[operator]
+    assert triggered == 1
 
 
 @pytest.mark.asyncio

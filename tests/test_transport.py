@@ -75,16 +75,24 @@ def transport() -> IcomTransport:
 
 
 class _FakeDatagramTransport:
-    def __init__(self, sockname: tuple[str, int]) -> None:
+    def __init__(
+        self,
+        sockname: tuple[str, int],
+        peername: tuple[str, int] | None = None,
+    ) -> None:
         self._sockname = sockname
+        self._peername = peername
+        self.sent: list[tuple[bytes, tuple[str, int] | None]] = []
 
     def get_extra_info(self, name: str):
         if name == "sockname":
             return self._sockname
+        if name == "peername":
+            return self._peername
         return None
 
-    def sendto(self, data: bytes) -> None:
-        return None
+    def sendto(self, data: bytes, addr: tuple[str, int] | None = None) -> None:
+        self.sent.append((data, addr))
 
 
 class _FakeLoop:
@@ -100,7 +108,7 @@ class _FakeLoop:
         local_addr=None,
         sock=None,
     ):
-        transport = _FakeDatagramTransport(self.sockname)
+        transport = _FakeDatagramTransport(self.sockname, remote_addr)
         protocol = protocol_factory()
         protocol.connection_made(transport)
         call: dict[str, object] = {
@@ -129,6 +137,18 @@ class TestConnectionState:
         assert ConnectionState.DISCONNECTED == "disconnected"
         assert ConnectionState.CONNECTING == "connecting"
         assert ConnectionState.CONNECTED == "connected"
+
+    def test_raw_send_uses_peer_address_on_windows_datagram_transport(self) -> None:
+        t = IcomTransport()
+        peer = ("192.168.55.40", 50002)
+        udp = _FakeDatagramTransport(("10.211.55.4", 60538), peer)
+        t._udp_transport = udp  # type: ignore[assignment]
+        t._udp_peer_addr = peer
+
+        with patch("rigplane.transport.sys.platform", "win32"):
+            t._default_raw_send(b"are-you-there")
+
+        assert udp.sent == [(b"are-you-there", peer)]
 
     @pytest.mark.asyncio
     async def test_connect_binds_to_specific_local_host_and_port(self) -> None:
