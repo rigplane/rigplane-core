@@ -27,11 +27,12 @@ import logging
 import mimetypes
 import os
 import pathlib
+import signal as _signal
 import sys
 import time
 import urllib.parse
+from collections.abc import Callable, Coroutine
 from dataclasses import dataclass, field
-from collections.abc import Coroutine
 from typing import TYPE_CHECKING, Any, TextIO
 
 from .. import __version__
@@ -78,6 +79,18 @@ if TYPE_CHECKING:
 __all__ = ["WebConfig", "WebServer", "run_web_server"]
 
 logger = logging.getLogger(__name__)
+
+
+def _install_shutdown_signal_handlers(
+    loop: asyncio.AbstractEventLoop,
+    on_signal: Callable[[], None],
+) -> None:
+    for sig in (_signal.SIGTERM, _signal.SIGINT):
+        try:
+            loop.add_signal_handler(sig, on_signal)
+        except NotImplementedError:
+            _signal.signal(sig, lambda _signum, _frame: on_signal())
+
 
 _DEFAULT_STATIC_DIR = pathlib.Path(__file__).parent / "static"
 _RADIO_MODEL = "IC-7610"
@@ -1119,8 +1132,6 @@ class WebServer:
 
     async def serve_forever(self) -> None:
         """Start and block until cancelled.  Handles SIGTERM/SIGINT gracefully."""
-        import signal as _signal
-
         await self.start()
         assert self._server is not None
         if self._config.emit_startup_event:
@@ -1146,8 +1157,7 @@ class WebServer:
 
                 os._exit(1)
 
-        for sig in (_signal.SIGTERM, _signal.SIGINT):
-            loop.add_signal_handler(sig, _on_signal)
+        _install_shutdown_signal_handlers(loop, _on_signal)
 
         try:
             await stop_event.wait()

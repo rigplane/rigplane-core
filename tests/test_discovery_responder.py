@@ -61,6 +61,36 @@ async def responder_no_radio():
 
 
 class TestDiscoveryResponder:
+    async def test_start_disables_reuse_port_on_windows(self, monkeypatch) -> None:
+        calls: list[dict[str, object]] = []
+
+        class FakeSocket:
+            def getsockname(self) -> tuple[str, int]:
+                return ("127.0.0.1", 4242)
+
+        class FakeTransport:
+            def get_extra_info(self, name: str) -> object:
+                if name == "socket":
+                    return FakeSocket()
+                return None
+
+            def close(self) -> None:
+                pass
+
+        class FakeLoop:
+            async def create_datagram_endpoint(self, _factory, **kwargs: object):
+                calls.append(kwargs)
+                return FakeTransport(), object()
+
+        monkeypatch.setattr("rigplane.web.discovery.sys.platform", "win32")
+        monkeypatch.setattr(asyncio, "get_running_loop", lambda: FakeLoop())
+        responder = DiscoveryResponder(web_port=8080, discovery_port=0)
+
+        await responder.start()
+        await responder.stop()
+
+        assert calls[0]["reuse_port"] is False
+
     async def test_valid_request_returns_json(
         self, responder: DiscoveryResponder
     ) -> None:

@@ -14,6 +14,7 @@ import asyncio
 import json
 import logging
 import socket
+import sys
 from dataclasses import dataclass
 from typing import Callable
 
@@ -27,6 +28,10 @@ _DISCOVERY_MAGIC = b"RIGPLANE_DISCOVER\n"
 _LEGACY_DISCOVERY_MAGIC = b"ICOM_LAN_DISCOVER\n"
 _DISCOVERY_MAGICS = {_DISCOVERY_MAGIC, _LEGACY_DISCOVERY_MAGIC}
 _DEFAULT_PORT = 8470
+
+
+def _reuse_port_supported() -> bool:
+    return sys.platform != "win32"
 
 
 @dataclass
@@ -115,7 +120,7 @@ class DiscoveryResponder:
             transport, protocol = await loop.create_datagram_endpoint(
                 lambda: _DiscoveryProtocol(self),
                 local_addr=(self._bind_host, self._discovery_port),
-                reuse_port=True,
+                reuse_port=_reuse_port_supported(),
             )
             self._transport = transport  # type: ignore[assignment]
             self._protocol = protocol  # type: ignore[assignment]

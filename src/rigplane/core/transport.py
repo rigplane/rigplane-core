@@ -8,6 +8,7 @@ import asyncio
 import logging
 import socket
 import struct
+import sys
 import time
 from collections import OrderedDict
 from collections.abc import Callable
@@ -68,6 +69,7 @@ class _UdpProtocol(asyncio.DatagramProtocol):
         self._owner._udp_transport = transport  # type: ignore[assignment]
         peer = transport.get_extra_info("peername")
         if isinstance(peer, tuple) and len(peer) >= 2:
+            self._owner._udp_peer_addr = (str(peer[0]), int(peer[1]))
             self._peer = f"{peer[0]}:{peer[1]}"
 
     def datagram_received(self, data: bytes, addr: tuple[str, int]) -> None:
@@ -112,6 +114,7 @@ class IcomTransport:
         self.rx_last_seq: int | None = None
         self.rx_missing: dict[int, int] = {}  # seq -> retry count
         self._udp_transport: asyncio.DatagramTransport | None = None
+        self._udp_peer_addr: tuple[str, int] | None = None
         self._ping_task: asyncio.Task[None] | None = None
         self._idle_task: asyncio.Task[None] | None = None
         self._retransmit_task: asyncio.Task[None] | None = None
@@ -148,6 +151,9 @@ class IcomTransport:
     def _default_raw_send(self, data: bytes) -> None:
         """Send raw bytes via UDP transport."""
         if self._udp_transport is not None:
+            if sys.platform == "win32" and self._udp_peer_addr is not None:
+                self._udp_transport.sendto(data, self._udp_peer_addr)
+                return
             self._udp_transport.sendto(data)
 
     async def connect(

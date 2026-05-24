@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import sys
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -28,6 +29,10 @@ if TYPE_CHECKING:
 __all__ = ["start_web_server", "stop_web_server"]
 
 logger = logging.getLogger(__name__)
+
+
+def _reuse_port_supported() -> bool:
+    return sys.platform != "win32"
 
 
 def _supports_scope_local(server: WebServer) -> bool:
@@ -77,7 +82,7 @@ async def start_web_server(server: WebServer) -> None:
         port=server._config.port,
         ssl=ssl_ctx,
         reuse_address=True,
-        reuse_port=True,
+        reuse_port=_reuse_port_supported(),
     )
     addr = server._server.sockets[0].getsockname()
     scheme = "https" if ssl_ctx else "http"
