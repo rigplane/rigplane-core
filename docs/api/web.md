@@ -329,9 +329,10 @@ Partial-failure response:
 
 Set `continue_on_error` to `true` to keep applying later valid steps after a
 validation, timeout, or execution failure. When present, `continue_on_error`
-must be a JSON boolean. Queue-bypassing commands such as `get_*`,
-`send_cw_text`, and direct helper operations are rejected in batches with
-`unsupported_in_batch`; use `POST /api/v1/commands` for those one-off calls.
+must be a JSON boolean. Commands marked `Batch: No` in the command catalog
+(such as `send_cw_text` and direct helper operations) are rejected in batches
+with `unsupported_in_batch`; use `POST /api/v1/commands` for those one-off
+calls.
 
 If a queued step is not consumed by the poller before the step timeout, the
 result status is `timed_out` with error `command_timeout`. Unconsumed timed-out
