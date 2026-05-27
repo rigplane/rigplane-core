@@ -200,6 +200,58 @@ async def test_command_queue_wait_and_drain_behavior() -> None:
 
 
 @pytest.mark.asyncio
+async def test_command_queue_ordered_lane_preserves_repeated_commands() -> None:
+    q = CommandQueue()
+    q.put_ordered(SetFreq(14_030_000))
+    q.put_ordered(SetMode("FM"))
+    q.put_ordered(SetFreq(144_030_000))
+    q.put_ordered(PttOn())
+    q.put_ordered(PttOff())
+
+    cmds = q.drain()
+
+    assert cmds == [
+        SetFreq(14_030_000),
+        SetMode("FM"),
+        SetFreq(144_030_000),
+        PttOn(),
+        PttOff(),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_command_queue_ordered_lane_preserves_segment_order() -> None:
+    q = CommandQueue()
+    q.put(SetFreq(7_000_000))
+    q.put(SetFreq(7_074_000))
+    q.put_ordered(SetFreq(144_030_000))
+    q.put(SetFreq(14_000_000))
+    q.put(SetFreq(14_074_000))
+
+    assert q.drain() == [
+        SetFreq(7_074_000),
+        SetFreq(144_030_000),
+        SetFreq(14_074_000),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_radio_poller_skips_ordered_command_with_cancelled_future() -> None:
+    radio = _make_radio(active="MAIN")
+    q = CommandQueue()
+    future: asyncio.Future[None] = asyncio.get_running_loop().create_future()
+    future.cancel()
+    q.put_ordered(SetFreq(144_030_000), future=future)
+    poller = RadioPoller(radio, StateCache(), q)
+
+    poller.start()
+    await asyncio.sleep(0.05)
+    poller.stop()
+
+    radio.set_freq.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_current_active_defaults_and_setfreq_setmode_branches() -> None:
     radio = _make_radio(active="MAIN")
     poller = RadioPoller(radio, StateCache(), CommandQueue())

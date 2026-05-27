@@ -8,12 +8,13 @@ a neutral module avoids backend → web import cycles.
 from __future__ import annotations
 
 import asyncio
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Literal
 
 __all__ = [
     "Command",
     "CommandQueue",
+    "CommandQueueEntry",
     # -- command dataclasses (alphabetical) --
     "DisableScope",
     "EnableScope",
@@ -945,31 +946,87 @@ Command = (
 # ------------------------------------------------------------------
 
 
-class CommandQueue:
-    def __init__(self) -> None:
-        self._dedup: dict[type, Command] = {}
-        self._ptt: list[PttOn | PttOff] = []
-        self._notify: asyncio.Event = asyncio.Event()
+@dataclass(frozen=True, slots=True)
+class CommandQueueEntry:
+    command: Command
+    future: asyncio.Future[None] | None = None
 
-    def put(self, cmd: Command) -> None:
-        if isinstance(cmd, (PttOn, PttOff)):
-            self._ptt.append(cmd)
-        else:
-            self._dedup[type(cmd)] = cmd
-        self._notify.set()
 
-    def drain(self) -> list[Command]:
-        self._notify.clear()
-        cmds: list[Command] = []
-        cmds.extend(self._ptt)
-        self._ptt.clear()
-        cmds.extend(self._dedup.values())
-        self._dedup.clear()
-        return cmds
+@dataclass(slots=True)
+class _CommandQueueSegment:
+    kind: Literal["coalesced", "ordered"]
+    ptt: list[CommandQueueEntry] = field(default_factory=list)
+    dedup: dict[type, CommandQueueEntry] = field(default_factory=dict)
+    ordered: list[CommandQueueEntry] = field(default_factory=list)
+
+    @classmethod
+    def coalesced(cls) -> "_CommandQueueSegment":
+        return cls(kind="coalesced")
+
+    @classmethod
+    def ordered_entry(cls, entry: CommandQueueEntry) -> "_CommandQueueSegment":
+        return cls(kind="ordered", ordered=[entry])
 
     @property
     def has_commands(self) -> bool:
-        return bool(self._ptt or self._dedup)
+        return bool(self.ptt or self.dedup or self.ordered)
+
+    def entries(self) -> list[CommandQueueEntry]:
+        if self.kind == "ordered":
+            return list(self.ordered)
+        entries: list[CommandQueueEntry] = []
+        entries.extend(self.ptt)
+        entries.extend(self.dedup.values())
+        return entries
+
+
+class CommandQueue:
+    def __init__(self) -> None:
+        self._segments: list[_CommandQueueSegment] = []
+        self._notify: asyncio.Event = asyncio.Event()
+
+    def _coalesced_tail(self) -> _CommandQueueSegment:
+        if self._segments and self._segments[-1].kind == "coalesced":
+            return self._segments[-1]
+        segment = _CommandQueueSegment.coalesced()
+        self._segments.append(segment)
+        return segment
+
+    def put(self, cmd: Command) -> None:
+        entry = CommandQueueEntry(cmd)
+        segment = self._coalesced_tail()
+        if isinstance(cmd, (PttOn, PttOff)):
+            segment.ptt.append(entry)
+        else:
+            segment.dedup[type(cmd)] = entry
+        self._notify.set()
+
+    def put_ordered(
+        self,
+        cmd: Command,
+        *,
+        future: asyncio.Future[None] | None = None,
+    ) -> None:
+        self._segments.append(
+            _CommandQueueSegment.ordered_entry(CommandQueueEntry(cmd, future=future))
+        )
+        self._notify.set()
+
+    def drain(self) -> list[Command]:
+        return [entry.command for entry in self.drain_entries()]
+
+    def drain_entries(self) -> list["CommandQueueEntry"]:
+        self._notify.clear()
+        segments = self._segments
+        self._segments = []
+        entries: list[CommandQueueEntry] = []
+        for segment in segments:
+            entries.extend(segment.entries())
+        return entries
+
+    @property
+    def has_commands(self) -> bool:
+        return any(segment.has_commands for segment in self._segments)
 
     async def wait(self, timeout: float | None = None) -> None:
         try:

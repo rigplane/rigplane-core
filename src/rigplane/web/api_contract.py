@@ -92,6 +92,18 @@ STABLE_HTTP_ENDPOINTS: Final[tuple[HttpEndpoint, ...]] = (
         "purpose": "stop audio bridge",
         "auth": "bearer",
     },
+    {
+        "method": "POST",
+        "path": "/api/v1/commands",
+        "purpose": "enqueue one structured radio command",
+        "auth": "bearer",
+    },
+    {
+        "method": "POST",
+        "path": "/api/v1/commands/batch",
+        "purpose": "apply ordered stateless radio command batch",
+        "auth": "bearer",
+    },
 )
 
 STABLE_WEBSOCKET_ROUTES: Final[tuple[WebSocketRoute, ...]] = (
@@ -178,4 +190,6 @@ RESPONSE_FIELD_CONTRACTS: Final[dict[str, ResponseFieldContract]] = {
             "webrtc",
         )
     },
+    "/api/v1/commands": {"required": ("ok", "name", "result")},
+    "/api/v1/commands/batch": {"required": ("ok", "results")},
 }

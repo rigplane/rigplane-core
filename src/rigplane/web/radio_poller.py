@@ -629,13 +629,26 @@ class RadioPoller:
             while True:
                 # 1. Drain command queue (fire-and-forget writes)
                 if self._queue.has_commands:
-                    for cmd in self._queue.drain():
+                    for entry in self._queue.drain_entries():
+                        cmd = entry.command
+                        if entry.future is not None and entry.future.cancelled():
+                            logger.debug(
+                                "radio-poller: skipping cancelled queued cmd: %s",
+                                type(cmd).__name__,
+                            )
+                            continue
                         try:
                             await self._execute(cmd)
+                            if entry.future is not None and not entry.future.done():
+                                entry.future.set_result(None)
                             _backoff = 0.0
-                        except (ConnectionError, RadioConnectionError):
+                        except (ConnectionError, RadioConnectionError) as exc:
+                            if entry.future is not None and not entry.future.done():
+                                entry.future.set_exception(exc)
                             _backoff = min(_backoff + 0.5, _MAX_BACKOFF)
-                        except Exception:
+                        except Exception as exc:
+                            if entry.future is not None and not entry.future.done():
+                                entry.future.set_exception(exc)
                             logger.warning(
                                 "radio-poller: cmd error: %s",
                                 type(cmd).__name__,

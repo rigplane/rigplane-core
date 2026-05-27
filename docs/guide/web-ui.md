@@ -55,6 +55,8 @@ These are primarily used by automation, deployment scripts, and operator tooling
 | `POST` | `/api/v1/radio/connect` | Trigger backend connect/reconnect |
 | `POST` | `/api/v1/radio/disconnect` | Trigger backend disconnect |
 | `POST` | `/api/v1/radio/power` | CI-V power control (`{"state":"on" \| "off"}`) |
+| `POST` | `/api/v1/commands` | Enqueue one structured control command |
+| `POST` | `/api/v1/commands/batch` | Apply an ordered stateless command batch |
 | `POST` | `/api/v1/bridge` | Start audio bridge |
 | `DELETE` | `/api/v1/bridge` | Stop audio bridge |
 | `GET` | `/api/v1/band-plan/config` | Active band-plan region |
@@ -140,6 +142,108 @@ If backend recovery is already in progress, `radio_connect` returns:
 - DSP/features: `set_nb`, `set_nr`, `set_digisel`, `set_ipplus`, `set_comp`
 - Receiver/routing: `select_vfo`, `vfo_swap`, `vfo_equalize`, `set_dual_watch`
 - Scope control: `switch_scope_receiver`, `set_scope_during_tx`, `set_scope_center_type`
+
+## HTTP Structured Commands
+
+Automation clients can send the same structured command names over HTTP:
+
+```bash
+curl -X POST http://127.0.0.1:8080/api/v1/commands \
+  -H 'Content-Type: application/json' \
+  -d '{"id":"deck-1","name":"set_freq","params":{"freq":144030000}}'
+```
+
+For ordered profile-like changes, send a stateless batch:
+
+```bash
+curl -X POST http://127.0.0.1:8080/api/v1/commands/batch \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "id": "vara-fm",
+    "steps": [
+      {"name":"set_freq","params":{"freq":144030000}},
+      {"name":"set_mode","params":{"mode":"FM"}},
+      {"name":"set_af_level","params":{"level":72}}
+    ]
+  }'
+```
+
+Batch steps are executed in exact request order through the radio command queue.
+Repeated commands in one batch are preserved. The response includes one result
+per executed, timed-out, failed, or skipped step. `continue_on_error`, when
+provided, must be a JSON boolean. Core does not persist named profiles or stored
+batches; callers send the full sequence each time.
+
+Use `/api/v1/capabilities` before sending model-specific batches; not every
+radio exposes the same receivers, memory operations, audio routing controls, or
+feature toggles. Prefer these structured commands over raw CI-V for routine
+automation so RigPlane remains the single owner of the radio connection,
+queueing, pacing, auth policy, and safety checks.
+
+Minimal Python client:
+
+```python
+import json
+import urllib.request
+
+batch = {
+    "id": "vara-fm",
+    "steps": [
+        {"name": "set_freq", "params": {"freq": 144030000}},
+        {"name": "set_mode", "params": {"mode": "FM"}},
+    ],
+}
+
+request = urllib.request.Request(
+    "http://127.0.0.1:8080/api/v1/commands/batch",
+    data=json.dumps(batch).encode("utf-8"),
+    headers={"Content-Type": "application/json"},
+    method="POST",
+)
+
+with urllib.request.urlopen(request, timeout=30) as response:
+    result = json.load(response)
+```
+
+Minimal MQTT gateway shape:
+
+```python
+import json
+import urllib.request
+
+import paho.mqtt.client as mqtt
+
+BATCHES = {
+    "vara-fm": {
+        "steps": [
+            {"name": "set_freq", "params": {"freq": 144030000}},
+            {"name": "set_mode", "params": {"mode": "FM"}},
+        ],
+    }
+}
+
+
+def on_message(client, userdata, message) -> None:
+    batch = BATCHES.get(message.payload.decode("utf-8").strip())
+    if batch is None:
+        return
+    urllib.request.urlopen(
+        urllib.request.Request(
+            "http://127.0.0.1:8080/api/v1/commands/batch",
+            data=json.dumps(batch).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        ),
+        timeout=30,
+    )
+
+
+client = mqtt.Client()
+client.on_message = on_message
+client.connect("127.0.0.1", 1883)
+client.subscribe("radio/profile")
+client.loop_forever()
+```
 
 ### Band switching with `set_band` (`bsrCode` workflow)
 

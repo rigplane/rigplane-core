@@ -95,6 +95,30 @@ def _install_shutdown_signal_handlers(
 _DEFAULT_STATIC_DIR = pathlib.Path(__file__).parent / "static"
 _RADIO_MODEL = "IC-7610"
 _MAX_POST_BODY = 256 * 1024  # 256 KiB — hard ceiling for all POST body reads
+_MAX_COMMAND_BATCH_STEPS = 128
+_COMMAND_BATCH_STEP_TIMEOUT = 10.0
+
+
+class _HttpBatchValidationError(ValueError):
+    def __init__(self, error: str, message: str) -> None:
+        super().__init__(message)
+        self.error = error
+
+
+@dataclass(frozen=True, slots=True)
+class _HttpBatchStep:
+    index: int
+    name: str
+    command: Any
+    result: dict[str, Any]
+
+
+class _HttpCommandCollector:
+    def __init__(self) -> None:
+        self.commands: list[Any] = []
+
+    def put(self, command: Any) -> None:
+        self.commands.append(command)
 
 
 async def _read_capped_body(
@@ -2063,6 +2087,437 @@ class WebServer:
             body,
             {"Content-Type": "application/json"},
         )
+
+    async def _send_json(
+        self,
+        writer: asyncio.StreamWriter,
+        status: int,
+        reason: str,
+        payload: dict[str, Any],
+    ) -> None:
+        body = json.dumps(payload, separators=(",", ":")).encode()
+        await _send_response(
+            writer,
+            status,
+            reason,
+            body,
+            {"Content-Type": "application/json"},
+        )
+
+    async def _read_json_object(
+        self,
+        writer: asyncio.StreamWriter,
+        headers: dict[str, str] | None,
+        reader: asyncio.StreamReader | None,
+    ) -> dict[str, Any] | None:
+        try:
+            content_length = int((headers or {}).get("content-length", "0"))
+        except ValueError:
+            await self._send_json(
+                writer,
+                400,
+                "Bad Request",
+                {
+                    "error": "invalid_content_length",
+                    "message": "Content-Length must be an integer",
+                },
+            )
+            return None
+        if reader is None or content_length <= 0:
+            await self._send_json(
+                writer,
+                400,
+                "Bad Request",
+                {"error": "missing_body", "message": "JSON request body required"},
+            )
+            return None
+        read_result = await _read_capped_body(reader, content_length)
+        if read_result is None:
+            await self._send_json(
+                writer,
+                413,
+                "Content Too Large",
+                {"error": "request_too_large"},
+            )
+            writer.close()
+            return None
+        try:
+            payload = json.loads(read_result)
+        except json.JSONDecodeError as exc:
+            await self._send_json(
+                writer,
+                400,
+                "Bad Request",
+                {"error": "invalid_json", "message": str(exc)},
+            )
+            return None
+        if not isinstance(payload, dict):
+            await self._send_json(
+                writer,
+                400,
+                "Bad Request",
+                {
+                    "error": "invalid_request",
+                    "message": "JSON body must be an object",
+                },
+            )
+            return None
+        return payload
+
+    def _control_handler_for(self, *, server: Any | None = None) -> ControlHandler:
+        return ControlHandler(
+            None,  # type: ignore[arg-type]
+            self._radio,
+            __version__,
+            self._config.radio_model,
+            server=server if server is not None else self,
+            read_only=self._config.read_only,
+        )
+
+    async def _handle_http_commands(
+        self,
+        path: str,
+        writer: asyncio.StreamWriter,
+        headers: dict[str, str] | None = None,
+        reader: asyncio.StreamReader | None = None,
+    ) -> None:
+        """Handle POST /api/v1/commands and /api/v1/commands/batch."""
+        if self._radio is None:
+            await self._send_json(
+                writer,
+                503,
+                "Service Unavailable",
+                {"error": "no_radio", "message": "No radio configured"},
+            )
+            return
+
+        payload = await self._read_json_object(writer, headers, reader)
+        if payload is None:
+            return
+
+        if path == "/api/v1/commands":
+            await self._handle_http_single_command(writer, payload)
+            return
+        if path == "/api/v1/commands/batch":
+            await self._handle_http_command_batch(writer, payload)
+            return
+
+        await _send_response(writer, 404, "Not Found", b"", {})
+
+    async def _handle_http_single_command(
+        self,
+        writer: asyncio.StreamWriter,
+        payload: dict[str, Any],
+    ) -> None:
+        raw_name = payload.get("name")
+        if not isinstance(raw_name, str) or not raw_name:
+            await self._send_json(
+                writer,
+                400,
+                "Bad Request",
+                {"error": "invalid_request", "message": "name must be a string"},
+            )
+            return
+        if raw_name not in ControlHandler._COMMANDS:  # noqa: SLF001
+            await self._send_json(
+                writer,
+                400,
+                "Bad Request",
+                {
+                    "error": "unknown_command",
+                    "message": f"unknown command: {raw_name!r}",
+                },
+            )
+            return
+        raw_params = payload.get("params", {})
+        if not isinstance(raw_params, dict):
+            await self._send_json(
+                writer,
+                400,
+                "Bad Request",
+                {"error": "invalid_request", "message": "params must be an object"},
+            )
+            return
+        try:
+            result = await self._control_handler_for()._enqueue_command(  # noqa: SLF001
+                raw_name,
+                raw_params,
+            )
+        except PermissionError as exc:
+            await self._send_json(
+                writer,
+                403,
+                "Forbidden",
+                {"error": "read_only", "message": str(exc)},
+            )
+            return
+        except ValueError as exc:
+            await self._send_json(
+                writer,
+                400,
+                "Bad Request",
+                {"error": "invalid_request", "message": str(exc)},
+            )
+            return
+        except RuntimeError as exc:
+            message = str(exc)
+            status, reason, code = (
+                (409, "Conflict", "unsupported_command")
+                if "does not support" in message
+                else (500, "Internal Server Error", "command_failed")
+            )
+            await self._send_json(
+                writer,
+                status,
+                reason,
+                {"error": code, "message": message},
+            )
+            return
+
+        response: dict[str, Any] = {
+            "ok": True,
+            "name": raw_name,
+            "result": result,
+        }
+        if "id" in payload:
+            response["id"] = payload["id"]
+        await self._send_json(writer, 200, "OK", response)
+
+    async def _prepare_http_batch_step(
+        self,
+        index: int,
+        raw_step: Any,
+    ) -> _HttpBatchStep:
+        if not isinstance(raw_step, dict):
+            raise _HttpBatchValidationError(
+                "invalid_step",
+                f"step {index} must be an object",
+            )
+        raw_name = raw_step.get("name")
+        if not isinstance(raw_name, str) or not raw_name:
+            raise _HttpBatchValidationError(
+                "invalid_step",
+                f"step {index} name must be a string",
+            )
+        raw_params = raw_step.get("params", {})
+        if not isinstance(raw_params, dict):
+            raise _HttpBatchValidationError(
+                "invalid_step",
+                f"step {index} params must be an object",
+            )
+        if raw_name not in ControlHandler._COMMANDS:  # noqa: SLF001
+            raise _HttpBatchValidationError(
+                "unknown_command",
+                f"unknown command: {raw_name!r}",
+            )
+        if raw_name in ControlHandler._READ_ONLY_HANDLERS:  # noqa: SLF001
+            raise _HttpBatchValidationError(
+                "unsupported_in_batch",
+                f"command {raw_name!r} bypasses the command queue",
+            )
+
+        collector = _HttpCommandCollector()
+        proxy_server = type("_HttpBatchProxy", (), {"command_queue": collector})()
+        result = await self._control_handler_for(server=proxy_server)._enqueue_command(  # noqa: SLF001
+            raw_name,
+            raw_params,
+        )
+        if len(collector.commands) != 1:
+            raise _HttpBatchValidationError(
+                "unsupported_in_batch",
+                f"command {raw_name!r} did not produce exactly one queued command",
+            )
+        return _HttpBatchStep(
+            index=index,
+            name=raw_name,
+            command=collector.commands[0],
+            result=result,
+        )
+
+    @staticmethod
+    def _skipped_batch_result(index: int, name: str | None = None) -> dict[str, Any]:
+        result: dict[str, Any] = {
+            "index": index,
+            "ok": False,
+            "status": "skipped",
+            "error": "skipped_after_failure",
+            "message": "skipped after earlier batch failure",
+        }
+        if name is not None:
+            result["name"] = name
+        return result
+
+    async def _handle_http_command_batch(
+        self,
+        writer: asyncio.StreamWriter,
+        payload: dict[str, Any],
+    ) -> None:
+        raw_steps = payload.get("steps")
+        if not isinstance(raw_steps, list):
+            await self._send_json(
+                writer,
+                400,
+                "Bad Request",
+                {"error": "invalid_request", "message": "steps must be a list"},
+            )
+            return
+        if not raw_steps:
+            await self._send_json(
+                writer,
+                400,
+                "Bad Request",
+                {"error": "invalid_request", "message": "steps must not be empty"},
+            )
+            return
+        if len(raw_steps) > _MAX_COMMAND_BATCH_STEPS:
+            await self._send_json(
+                writer,
+                400,
+                "Bad Request",
+                {
+                    "error": "batch_too_large",
+                    "message": f"max {_MAX_COMMAND_BATCH_STEPS} steps supported",
+                },
+            )
+            return
+
+        raw_continue_on_error = payload.get("continue_on_error", False)
+        if not isinstance(raw_continue_on_error, bool):
+            await self._send_json(
+                writer,
+                400,
+                "Bad Request",
+                {
+                    "error": "invalid_request",
+                    "message": "continue_on_error must be a boolean",
+                },
+            )
+            return
+        continue_on_error = raw_continue_on_error
+        results: list[dict[str, Any]] = []
+
+        for index, raw_step in enumerate(raw_steps):
+            name = raw_step.get("name") if isinstance(raw_step, dict) else None
+            try:
+                step = await self._prepare_http_batch_step(index, raw_step)
+            except PermissionError as exc:
+                results.append(
+                    {
+                        "index": index,
+                        "name": name,
+                        "ok": False,
+                        "status": "failed_validation",
+                        "error": "read_only",
+                        "message": str(exc),
+                    }
+                )
+                step = None
+            except _HttpBatchValidationError as exc:
+                results.append(
+                    {
+                        "index": index,
+                        "name": name,
+                        "ok": False,
+                        "status": "failed_validation",
+                        "error": exc.error,
+                        "message": str(exc),
+                    }
+                )
+                step = None
+            except (ValueError, RuntimeError) as exc:
+                results.append(
+                    {
+                        "index": index,
+                        "name": name,
+                        "ok": False,
+                        "status": "failed_validation",
+                        "error": "invalid_request",
+                        "message": str(exc),
+                    }
+                )
+                step = None
+
+            if step is None:
+                if continue_on_error:
+                    continue
+                for skip_index in range(index + 1, len(raw_steps)):
+                    skip = raw_steps[skip_index]
+                    skip_name = skip.get("name") if isinstance(skip, dict) else None
+                    results.append(self._skipped_batch_result(skip_index, skip_name))
+                await self._send_batch_response(writer, payload, results)
+                return
+
+            loop = asyncio.get_running_loop()
+            future: asyncio.Future[None] = loop.create_future()
+            self._command_queue.put_ordered(step.command, future=future)
+            try:
+                await asyncio.wait_for(future, timeout=_COMMAND_BATCH_STEP_TIMEOUT)
+            except TimeoutError as exc:
+                results.append(
+                    {
+                        "index": step.index,
+                        "name": step.name,
+                        "ok": False,
+                        "status": "timed_out",
+                        "error": "command_timeout",
+                        "message": str(exc) or type(exc).__name__,
+                    }
+                )
+                if not continue_on_error:
+                    for skip_index in range(step.index + 1, len(raw_steps)):
+                        skip = raw_steps[skip_index]
+                        skip_name = skip.get("name") if isinstance(skip, dict) else None
+                        results.append(
+                            self._skipped_batch_result(skip_index, skip_name)
+                        )
+                    await self._send_batch_response(writer, payload, results)
+                    return
+            except Exception as exc:
+                results.append(
+                    {
+                        "index": step.index,
+                        "name": step.name,
+                        "ok": False,
+                        "status": "failed_execution",
+                        "error": "command_failed",
+                        "message": str(exc) or type(exc).__name__,
+                    }
+                )
+                if not continue_on_error:
+                    for skip_index in range(step.index + 1, len(raw_steps)):
+                        skip = raw_steps[skip_index]
+                        skip_name = skip.get("name") if isinstance(skip, dict) else None
+                        results.append(
+                            self._skipped_batch_result(skip_index, skip_name)
+                        )
+                    await self._send_batch_response(writer, payload, results)
+                    return
+            else:
+                results.append(
+                    {
+                        "index": step.index,
+                        "name": step.name,
+                        "ok": True,
+                        "status": "executed",
+                        "result": step.result,
+                    }
+                )
+
+        await self._send_batch_response(writer, payload, results)
+
+    async def _send_batch_response(
+        self,
+        writer: asyncio.StreamWriter,
+        payload: dict[str, Any],
+        results: list[dict[str, Any]],
+    ) -> None:
+        response: dict[str, Any] = {
+            "ok": all(result.get("ok") is True for result in results),
+            "results": results,
+        }
+        if "id" in payload:
+            response["id"] = payload["id"]
+        await self._send_json(writer, 200, "OK", response)
 
     async def _handle_radio_control(
         self,
