@@ -1,4 +1,5 @@
 """Regression check: docs/api/command-catalog.md stays aligned with ControlHandler._COMMANDS."""
+
 from __future__ import annotations
 
 import re

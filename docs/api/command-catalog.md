@@ -40,7 +40,7 @@ A command is batch-eligible when all of the following are true:
 2. It is **not** in `ControlHandler._READ_ONLY_HANDLERS` (i.e., it goes through the ordered command queue).
 3. It produces exactly one queued command.
 
-Queue-bypassing commands (`get_*`, `send_cw_text`, `stop_cw_text`, `set_tuner_status`, `cw_auto_tune`) return error `unsupported_in_batch` when used in a batch. Send those via `POST /api/v1/commands` instead.
+Commands marked `Batch: No` in the table return error `unsupported_in_batch` when used in a batch. Send those via `POST /api/v1/commands` instead. Note: `get_quick_split` and `get_quick_dual_watch` have `Batch: Yes` despite the `get_` prefix — they enqueue write operations and are queue-backed.
 
 Maximum batch size: 128 steps. Per-step timeout: 10 seconds.
 
@@ -284,7 +284,7 @@ directly and/or use `asyncio`). They are **not** batch-eligible. Use
 | `get_band_edge_freq` | — | `band_edge` | No | Returns `{freq: int}` (Hz). |
 | `get_xfc_status` | — | `xfc` | No | Returns `{on: bool}`. |
 | `get_tx_freq_monitor` | — | `tx` | No | Returns `{on: bool}`. |
-| `cw_auto_tune` | — | — | No | Detects CW tone via audio FFT and shifts VFO to zero-beat. Requires active audio relay; times out after 3 s. Returns `{detected: int\|null, cw_pitch: int, delta: int, applied: bool}`. Experimental. |
+| `cw_auto_tune` | — | — | No | Detects CW tone via audio FFT and shifts VFO to zero-beat. Requires active audio relay; times out after 3 s. On successful detection: `{detected: int, cw_pitch: int, delta: int, applied: bool}`. On timeout or no tone found: `{detected: null, applied: false}`. Experimental. |
 
 <!-- catalog:end -->
 
