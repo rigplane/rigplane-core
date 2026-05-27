@@ -169,6 +169,9 @@ curl -X POST http://127.0.0.1:8080/api/v1/commands/batch \
     "steps": [
       {"name":"set_freq","params":{"freq":144030000}},
       {"name":"set_mode","params":{"mode":"FM"}},
+      {"name":"set_data_mode","params":{"mode":1}},
+      {"name":"set_data1_mod_input","params":{"source":3}},
+      {"name":"set_usb_mod_level","params":{"level":72}},
       {"name":"set_af_level","params":{"level":72}}
     ]
   }'
@@ -198,6 +201,14 @@ feature toggles. Prefer these structured commands over raw CI-V for routine
 automation so RigPlane remains the single owner of the radio connection,
 queueing, pacing, auth policy, and safety checks.
 
+DATA mode commands use the active radio profile's numeric DATA value. For the
+current IC-9700 profile, `set_data_mode` uses `mode: 0` for OFF and `mode: 1`
+for DATA. Its modulation input source values are `0 = MIC`, `1 = ACC`,
+`2 = MIC+ACC`, `3 = USB`, and `4 = MIC+USB`; use
+`set_data1_mod_input`, `set_data_off_mod_input`, and modulation level commands
+such as `set_usb_mod_level` or `set_acc1_mod_level` to build audio-route
+specific profiles.
+
 The batch endpoint is stateless. In Core, a "profile" is simply the JSON batch
 the caller sends. Stored named profiles, profile builders, account sync, and
 profile sharing are product-layer concerns outside this open-core endpoint.
@@ -213,6 +224,8 @@ batch = {
     "steps": [
         {"name": "set_freq", "params": {"freq": 144030000}},
         {"name": "set_mode", "params": {"mode": "FM"}},
+        {"name": "set_data_mode", "params": {"mode": 1}},
+        {"name": "set_data1_mod_input", "params": {"source": 3}},
     ],
 }
 
@@ -240,6 +253,8 @@ BATCHES = {
         "steps": [
             {"name": "set_freq", "params": {"freq": 144030000}},
             {"name": "set_mode", "params": {"mode": "FM"}},
+            {"name": "set_data_mode", "params": {"mode": 1}},
+            {"name": "set_data1_mod_input", "params": {"source": 3}},
         ],
     }
 }

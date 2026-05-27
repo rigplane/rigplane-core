@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 import pytest
 
@@ -75,6 +76,22 @@ def test_pro_web_api_contract_lists_stable_surface() -> None:
         "ok",
         "results",
     )
+
+
+def test_command_batch_docs_use_numeric_data_mode_contract() -> None:
+    root = Path(__file__).resolve().parents[1]
+    docs = [
+        root / "docs/api/web.md",
+        root / "docs/guide/web-ui.md",
+    ]
+
+    for path in docs:
+        text = path.read_text(encoding="utf-8")
+        assert '"name": "set_data_mode"' in text or '"name":"set_data_mode"' in text
+        assert '"set_data_mode", "params": { "enabled"' not in text
+        assert '"set_data_mode","params":{"enabled"' not in text
+        assert '"set_data_mode", "params": {"enabled"' not in text
+        assert '"set_data_mode","params": {"enabled"' not in text
 
 
 @pytest.mark.asyncio

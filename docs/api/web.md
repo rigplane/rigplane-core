@@ -354,7 +354,9 @@ Example IC-9700-style local batches:
     "steps": [
       { "name": "set_freq", "params": { "freq": 144030000, "receiver": 0 } },
       { "name": "set_mode", "params": { "mode": "FM", "receiver": 0 } },
-      { "name": "set_data_mode", "params": { "enabled": true, "receiver": 0 } },
+      { "name": "set_data_mode", "params": { "mode": 1, "receiver": 0 } },
+      { "name": "set_data1_mod_input", "params": { "source": 3 } },
+      { "name": "set_usb_mod_level", "params": { "level": 72 } },
       { "name": "set_af_level", "params": { "level": 72, "receiver": 0 } },
       { "name": "set_squelch", "params": { "level": 0, "receiver": 0 } }
     ]
@@ -363,12 +365,18 @@ Example IC-9700-style local batches:
     "id": "fm-voice",
     "steps": [
       { "name": "set_mode", "params": { "mode": "FM", "receiver": 0 } },
-      { "name": "set_data_mode", "params": { "enabled": false, "receiver": 0 } },
+      { "name": "set_data_mode", "params": { "mode": 0, "receiver": 0 } },
+      { "name": "set_data_off_mod_input", "params": { "source": 0 } },
       { "name": "set_af_level", "params": { "level": 50, "receiver": 0 } }
     ]
   }
 }
 ```
+
+For `set_data_mode`, HTTP/WS params use the numeric DATA mode value from the
+active radio profile, not an `enabled` boolean. The current IC-9700 profile
+defines `0 = OFF`, `1 = DATA`. Its modulation input source values are
+`0 = MIC`, `1 = ACC`, `2 = MIC+ACC`, `3 = USB`, and `4 = MIC+USB`.
 
 Actual command availability depends on the active radio profile and backend.
 Fetch `/api/v1/capabilities` before enabling buttons or publishing a reusable
@@ -402,6 +410,9 @@ batch = {
     "steps": [
         {"name": "set_freq", "params": {"freq": 144030000}},
         {"name": "set_mode", "params": {"mode": "FM"}},
+        {"name": "set_data_mode", "params": {"mode": 1}},
+        {"name": "set_data1_mod_input", "params": {"source": 3}},
+        {"name": "set_usb_mod_level", "params": {"level": 72}},
         {"name": "set_af_level", "params": {"level": 72}},
     ],
 }
@@ -439,12 +450,17 @@ BATCHES = {
         "steps": [
             {"name": "set_freq", "params": {"freq": 144030000}},
             {"name": "set_mode", "params": {"mode": "FM"}},
+            {"name": "set_data_mode", "params": {"mode": 1}},
+            {"name": "set_data1_mod_input", "params": {"source": 3}},
+            {"name": "set_usb_mod_level", "params": {"level": 72}},
         ],
     },
     "fm-voice": {
         "id": "fm-voice",
         "steps": [
             {"name": "set_mode", "params": {"mode": "FM"}},
+            {"name": "set_data_mode", "params": {"mode": 0}},
+            {"name": "set_data_off_mod_input", "params": {"source": 0}},
             {"name": "set_af_level", "params": {"level": 50}},
         ],
     },
