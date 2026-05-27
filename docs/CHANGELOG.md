@@ -11,6 +11,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- Exposed a queued, fire-and-forget raw CI-V `send_civ` command through the
+  HTTP/WS command surface and ordered batch endpoint so automation clients can
+  send vendor-specific CI-V without opening a competing radio session (#1616,
+  #1617, 1437232d).
+
 ## [2.4.0] — 2026-05-24
 
 ### Added
