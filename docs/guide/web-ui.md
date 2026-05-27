@@ -143,6 +143,12 @@ If backend recovery is already in progress, `radio_connect` returns:
 - Receiver/routing: `select_vfo`, `vfo_swap`, `vfo_equalize`, `set_dual_watch`
 - Scope control: `switch_scope_receiver`, `set_scope_during_tx`, `set_scope_center_type`
 
+These are representative command names, not the complete catalog. The HTTP and
+WebSocket command surfaces share the same command names and `params` objects.
+Lower-level Python/CI-V examples are documented in
+[CI-V Commands](commands.md). A full HTTP/WS command catalog is tracked in
+[rigplane-core#1604](https://github.com/rigplane/rigplane-core/issues/1604).
+
 ## HTTP Structured Commands
 
 Automation clients can send the same structured command names over HTTP:
@@ -174,11 +180,27 @@ per executed, timed-out, failed, or skipped step. `continue_on_error`, when
 provided, must be a JSON boolean. Core does not persist named profiles or stored
 batches; callers send the full sequence each time.
 
+The batch path is designed for local profile switching from tools such as
+Stream Deck, MQTT gateways, shell scripts, and station supervisors:
+
+```mermaid
+flowchart LR
+  Button["operator button"] --> MQTT["MQTT/profile event"]
+  MQTT --> Gateway["local gateway maps name to steps"]
+  Gateway --> Batch["POST /api/v1/commands/batch"]
+  Batch --> Queue["RigPlane ordered command queue"]
+  Queue --> Radio["radio backend and hardware"]
+```
+
 Use `/api/v1/capabilities` before sending model-specific batches; not every
 radio exposes the same receivers, memory operations, audio routing controls, or
 feature toggles. Prefer these structured commands over raw CI-V for routine
 automation so RigPlane remains the single owner of the radio connection,
 queueing, pacing, auth policy, and safety checks.
+
+The batch endpoint is stateless. In Core, a "profile" is simply the JSON batch
+the caller sends. Stored named profiles, profile builders, account sync, and
+profile sharing are product-layer concerns outside this open-core endpoint.
 
 Minimal Python client:
 
