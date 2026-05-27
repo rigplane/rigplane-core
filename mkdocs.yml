@@ -126,6 +126,7 @@ nav:
       - rigctld: api/rigctld.md
       - Scope: api/scope.md
       - Web: api/web.md
+      - HTTP/WS Command Catalog: api/command-catalog.md
   - Internals:
       - Architecture: internals/architecture.md
       - Hamlib provider rollout: internals/hamlib-provider-rollout.md

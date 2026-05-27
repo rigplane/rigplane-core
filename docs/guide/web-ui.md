@@ -146,8 +146,9 @@ If backend recovery is already in progress, `radio_connect` returns:
 These are representative command names, not the complete catalog. The HTTP and
 WebSocket command surfaces share the same command names and `params` objects.
 Lower-level Python/CI-V examples are documented in
-[CI-V Commands](commands.md). A full HTTP/WS command catalog is tracked in
-[rigplane-core#1604](https://github.com/rigplane/rigplane-core/issues/1604).
+[CI-V Commands](commands.md). The full HTTP/WS command catalog with every
+accepted command name, parameter shape, and capability gate is in
+[HTTP/WS Command Catalog](../api/command-catalog.md).
 
 ## HTTP Structured Commands
 

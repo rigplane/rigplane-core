@@ -108,14 +108,12 @@ accepted for browser/WebSocket clients that cannot set headers.
 `params` objects. For example, `set_freq` and `set_mode` mean the same thing
 over WebSocket, single-command HTTP, and batch HTTP.
 
-The current public docs include common command examples in
-[Web UI: Common commands](../guide/web-ui.md#common-commands), and lower-level
-Python/CI-V command examples in [CI-V Commands](../guide/commands.md). A full
-machine-readable HTTP/WS command catalog with every command name, parameter
-shape, capability gate, and batch-eligibility flag is tracked in
-[rigplane-core#1604](https://github.com/rigplane/rigplane-core/issues/1604).
-Until that catalog is published, the implementation source of truth is
-`ControlHandler` in `src/rigplane/web/handlers/control.py`.
+The full HTTP/WS command catalog — every accepted command name, parameter
+shape, capability gate, queue model, and batch-eligibility flag — is documented
+in [HTTP/WS Command Catalog](command-catalog.md). Common command examples are
+also in [Web UI: Common commands](../guide/web-ui.md#common-commands), and
+lower-level Python/CI-V command examples are in
+[CI-V Commands](../guide/commands.md).
 
 ### Internal And Diagnostic Surface
 
