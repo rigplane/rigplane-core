@@ -101,6 +101,22 @@ Stable supervisor routes:
 WebSocket auth accepts the same bearer header as HTTP. Query token auth is also
 accepted for browser/WebSocket clients that cannot set headers.
 
+### Structured Command Surface
+
+`/api/v1/ws`, `POST /api/v1/commands`, and
+`POST /api/v1/commands/batch` use the same structured command names and
+`params` objects. For example, `set_freq` and `set_mode` mean the same thing
+over WebSocket, single-command HTTP, and batch HTTP.
+
+The current public docs include common command examples in
+[Web UI: Common commands](../guide/web-ui.md#common-commands), and lower-level
+Python/CI-V command examples in [CI-V Commands](../guide/commands.md). A full
+machine-readable HTTP/WS command catalog with every command name, parameter
+shape, capability gate, and batch-eligibility flag is tracked in
+[rigplane-core#1604](https://github.com/rigplane/rigplane-core/issues/1604).
+Until that catalog is published, the implementation source of truth is
+`ControlHandler` in `src/rigplane/web/handlers/control.py`.
+
 ### Internal And Diagnostic Surface
 
 Browser static files, `src/rigplane/web/static*`, handler class names, queue
@@ -213,10 +229,34 @@ Stateless ordered batch apply for local automation. RigPlane does not store,
 name, schedule, or share batches in Core. Clients send the full sequence on
 each request.
 
+Use this endpoint when an external controller needs an all-or-reported-nothing
+profile switch: tune frequency, select mode/filter, adjust levels, switch
+audio/data state, recall memory, or apply other supported structured commands
+as one ordered operation.
+
 Batch steps are validated and executed in request order. Each executable step
 is placed on an exact-order command-queue lane and the HTTP handler waits for
 the poller/backend to finish that step before advancing to the next step.
 Repeated commands are not deduplicated inside the ordered lane.
+
+Maximum batch size is 128 steps. Each step has a 10 second execution timeout.
+If the radio link is slow or disconnected, the failing step is reported and
+later steps are skipped unless `continue_on_error` is `true`.
+
+Data flow:
+
+```mermaid
+flowchart LR
+  Client["curl / Python / MQTT gateway"] --> HTTP["POST /api/v1/commands/batch"]
+  HTTP --> Validate["Validate JSON and command params"]
+  Validate --> Translate["ControlHandler builds Command objects"]
+  Translate --> Queue["CommandQueue.put_ordered"]
+  Queue --> Poller["radio poller drains queue"]
+  Poller --> Backend["LAN / serial / CAT backend"]
+  Backend --> Radio["physical radio"]
+  Poller --> Result["per-step future result"]
+  Result --> HTTP
+```
 
 Request:
 
@@ -298,6 +338,41 @@ must be a JSON boolean. Queue-bypassing commands such as `get_*`,
 If a queued step is not consumed by the poller before the step timeout, the
 result status is `timed_out` with error `command_timeout`. Unconsumed timed-out
 steps are cancelled before execution.
+
+### Profile-Switching Example
+
+Core treats a radio profile as a caller-owned batch, not as stored server
+state. This keeps the open-core API generic while still supporting local
+Stream Deck, MQTT, shell, and Python automation.
+
+Example IC-9700-style local batches:
+
+```json
+{
+  "vara-fm": {
+    "id": "vara-fm",
+    "steps": [
+      { "name": "set_freq", "params": { "freq": 144030000, "receiver": 0 } },
+      { "name": "set_mode", "params": { "mode": "FM", "receiver": 0 } },
+      { "name": "set_data_mode", "params": { "enabled": true, "receiver": 0 } },
+      { "name": "set_af_level", "params": { "level": 72, "receiver": 0 } },
+      { "name": "set_squelch", "params": { "level": 0, "receiver": 0 } }
+    ]
+  },
+  "fm-voice": {
+    "id": "fm-voice",
+    "steps": [
+      { "name": "set_mode", "params": { "mode": "FM", "receiver": 0 } },
+      { "name": "set_data_mode", "params": { "enabled": false, "receiver": 0 } },
+      { "name": "set_af_level", "params": { "level": 50, "receiver": 0 } }
+    ]
+  }
+}
+```
+
+Actual command availability depends on the active radio profile and backend.
+Fetch `/api/v1/capabilities` before enabling buttons or publishing a reusable
+profile.
 
 ### Automation Examples
 

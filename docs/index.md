@@ -81,6 +81,7 @@ RigPlane keeps the browser UI, audio path, diagnostics, and `rigctld`-compatible
 - :white_check_mark: **Full CI-V command set** — frequency, mode/filter, power, meters, PTT, CW keying, VFO, split, ATT/PREAMP
 - :white_check_mark: **Yaesu CAT backend** — full working native backend for Yaesu FTX-1 (USB serial)
 - :white_check_mark: **Hamlib provider** — broad serial CAT coverage through an external `rigctld` process, assisted discovery, and normalized RigPlane capabilities
+- :white_check_mark: **HTTP automation batches** — structured command batches for ordered local profile switching from curl, Python, MQTT, or Stream Deck gateways
 - :white_check_mark: **Audio streaming** — RX/TX with jitter buffer and full-duplex support
 - :white_check_mark: **Audio FFT Scope** — real-time FFT on USB/LAN audio for radios without hardware spectrum
 - :white_check_mark: **Discovery** — find supported LAN radios automatically; assisted serial CAT discovery can suggest and validate Hamlib candidates
