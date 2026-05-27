@@ -48,6 +48,8 @@ def test_pro_web_api_contract_lists_stable_surface() -> None:
     assert ("GET", "/api/v1/bridge") in http
     assert ("POST", "/api/v1/bridge") in http
     assert ("DELETE", "/api/v1/bridge") in http
+    assert ("POST", "/api/v1/commands") in http
+    assert ("POST", "/api/v1/commands/batch") in http
 
     ws = {route["path"] for route in STABLE_WEBSOCKET_ROUTES}
     assert "/api/v1/ws" in ws
@@ -63,6 +65,15 @@ def test_pro_web_api_contract_lists_stable_surface() -> None:
         "model",
         "capabilities",
         "connection",
+    )
+    assert RESPONSE_FIELD_CONTRACTS["/api/v1/commands"]["required"] == (
+        "ok",
+        "name",
+        "result",
+    )
+    assert RESPONSE_FIELD_CONTRACTS["/api/v1/commands/batch"]["required"] == (
+        "ok",
+        "results",
     )
 
 

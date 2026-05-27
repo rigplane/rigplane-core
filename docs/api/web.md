@@ -58,6 +58,8 @@ These routes are part of the Pro/supervisor compatibility surface:
 | `GET` | `/api/v1/bridge` | Audio bridge status |
 | `POST` | `/api/v1/bridge` | Start audio bridge |
 | `DELETE` | `/api/v1/bridge` | Stop audio bridge |
+| `POST` | `/api/v1/commands` | Enqueue one structured radio command |
+| `POST` | `/api/v1/commands/batch` | Apply a stateless ordered command batch |
 
 ### Other Web UI Endpoints
 
@@ -80,6 +82,8 @@ These routes are part of the Pro/supervisor compatibility surface:
 | `POST` | `/api/v1/radio/connect` | Connect/reconnect radio control path |
 | `POST` | `/api/v1/radio/disconnect` | Disconnect radio control path |
 | `POST` | `/api/v1/radio/power` | Power on/off via CI-V power control |
+| `POST` | `/api/v1/commands` | Enqueue one structured radio command |
+| `POST` | `/api/v1/commands/batch` | Apply a stateless ordered command batch |
 | `POST` | `/api/v1/band-plan/config` | Change active region and reload band plans |
 | `POST` | `/api/v1/eibi/fetch` | Fetch/refresh EiBi dataset |
 
@@ -169,6 +173,235 @@ When auth is configured, this endpoint requires the same bearer token as other
   },
   "lastError": null
 }
+```
+
+## `POST /api/v1/commands`
+
+HTTP command envelope for automation clients that do not need WebSocket
+delivery. The command names and `params` match the `/api/v1/ws` command channel.
+The endpoint accepts the command into RigPlane's normal command queue and
+returns the same acknowledgement shape as the WebSocket command handler.
+
+Request:
+
+```json
+{
+  "id": "button-1",
+  "name": "set_freq",
+  "params": { "freq": 144030000, "receiver": 0 }
+}
+```
+
+Response:
+
+```json
+{
+  "id": "button-1",
+  "ok": true,
+  "name": "set_freq",
+  "result": { "freq": 144030000, "receiver": 0 }
+}
+```
+
+`id` is optional and echoed when present. Unknown command names and malformed
+parameters return HTTP `400`. Read-only mode rejects transmit commands with
+HTTP `403`.
+
+## `POST /api/v1/commands/batch`
+
+Stateless ordered batch apply for local automation. RigPlane does not store,
+name, schedule, or share batches in Core. Clients send the full sequence on
+each request.
+
+Batch steps are validated and executed in request order. Each executable step
+is placed on an exact-order command-queue lane and the HTTP handler waits for
+the poller/backend to finish that step before advancing to the next step.
+Repeated commands are not deduplicated inside the ordered lane.
+
+Request:
+
+```json
+{
+  "id": "vara-fm",
+  "continue_on_error": false,
+  "steps": [
+    { "name": "set_freq", "params": { "freq": 144030000 } },
+    { "name": "set_mode", "params": { "mode": "FM" } }
+  ]
+}
+```
+
+Successful response:
+
+```json
+{
+  "id": "vara-fm",
+  "ok": true,
+  "results": [
+    {
+      "index": 0,
+      "name": "set_freq",
+      "ok": true,
+      "status": "executed",
+      "result": { "freq": 144030000, "receiver": 0 }
+    },
+    {
+      "index": 1,
+      "name": "set_mode",
+      "ok": true,
+      "status": "executed",
+      "result": { "mode": "FM", "receiver": 0 }
+    }
+  ]
+}
+```
+
+Partial-failure response:
+
+```json
+{
+  "ok": false,
+  "results": [
+    {
+      "index": 0,
+      "name": "set_freq",
+      "ok": true,
+      "status": "executed",
+      "result": { "freq": 144030000, "receiver": 0 }
+    },
+    {
+      "index": 1,
+      "name": "no_such_command",
+      "ok": false,
+      "status": "failed_validation",
+      "error": "unknown_command",
+      "message": "unknown command: 'no_such_command'"
+    },
+    {
+      "index": 2,
+      "name": "set_mode",
+      "ok": false,
+      "status": "skipped",
+      "error": "skipped_after_failure",
+      "message": "skipped after earlier batch failure"
+    }
+  ]
+}
+```
+
+Set `continue_on_error` to `true` to keep applying later valid steps after a
+validation, timeout, or execution failure. When present, `continue_on_error`
+must be a JSON boolean. Queue-bypassing commands such as `get_*`,
+`send_cw_text`, and direct helper operations are rejected in batches with
+`unsupported_in_batch`; use `POST /api/v1/commands` for those one-off calls.
+
+If a queued step is not consumed by the poller before the step timeout, the
+result status is `timed_out` with error `command_timeout`. Unconsumed timed-out
+steps are cancelled before execution.
+
+### Automation Examples
+
+Check capabilities before building model-specific batches. The capability
+payload tells clients which receivers, modes, filters, audio controls, memory
+operations, and feature toggles are available on the active radio:
+
+```bash
+curl http://127.0.0.1:8080/api/v1/capabilities
+```
+
+Prefer structured commands whenever a command exists. Raw CI-V is useful for
+diagnostics and experiments, but normal automation should let RigPlane own the
+radio connection, queueing, pacing, auth policy, and safety checks.
+
+Python example:
+
+```python
+import json
+import urllib.request
+
+base_url = "http://127.0.0.1:8080"
+token = None  # or "your-token"
+
+batch = {
+    "id": "vara-fm",
+    "steps": [
+        {"name": "set_freq", "params": {"freq": 144030000}},
+        {"name": "set_mode", "params": {"mode": "FM"}},
+        {"name": "set_af_level", "params": {"level": 72}},
+    ],
+}
+
+body = json.dumps(batch).encode("utf-8")
+request = urllib.request.Request(
+    f"{base_url}/api/v1/commands/batch",
+    data=body,
+    headers={"Content-Type": "application/json"},
+    method="POST",
+)
+if token:
+    request.add_header("Authorization", f"Bearer {token}")
+
+with urllib.request.urlopen(request, timeout=30) as response:
+    result = json.load(response)
+
+if not result["ok"]:
+    raise SystemExit(result)
+```
+
+Minimal MQTT gateway sketch:
+
+```python
+import json
+import urllib.request
+
+import paho.mqtt.client as mqtt
+
+RIGPLANE_URL = "http://127.0.0.1:8080"
+
+BATCHES = {
+    "vara-fm": {
+        "id": "vara-fm",
+        "steps": [
+            {"name": "set_freq", "params": {"freq": 144030000}},
+            {"name": "set_mode", "params": {"mode": "FM"}},
+        ],
+    },
+    "fm-voice": {
+        "id": "fm-voice",
+        "steps": [
+            {"name": "set_mode", "params": {"mode": "FM"}},
+            {"name": "set_af_level", "params": {"level": 50}},
+        ],
+    },
+}
+
+
+def post_batch(batch: dict) -> None:
+    body = json.dumps(batch).encode("utf-8")
+    request = urllib.request.Request(
+        f"{RIGPLANE_URL}/api/v1/commands/batch",
+        data=body,
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    with urllib.request.urlopen(request, timeout=30) as response:
+        result = json.load(response)
+    if not result["ok"]:
+        print("RigPlane batch failed:", result)
+
+
+def on_message(client, userdata, message) -> None:
+    profile_name = message.payload.decode("utf-8").strip()
+    batch = BATCHES.get(profile_name)
+    if batch is not None:
+        post_batch(batch)
+
+
+client = mqtt.Client()
+client.on_message = on_message
+client.connect("127.0.0.1", 1883)
+client.subscribe("radio/profile")
+client.loop_forever()
 ```
 
 ## `GET /api/v1/station`

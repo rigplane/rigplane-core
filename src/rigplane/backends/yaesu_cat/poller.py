@@ -231,11 +231,22 @@ class YaesuCatPoller:
         if self._command_queue is None or not self._command_queue.has_commands:
             return
 
-        commands = self._command_queue.drain()
-        for cmd in commands:
+        entries = self._command_queue.drain_entries()
+        for entry in entries:
+            cmd = entry.command
+            if entry.future is not None and entry.future.cancelled():
+                logger.debug(
+                    "YaesuCatPoller: skipping cancelled queued command %s",
+                    type(cmd).__name__,
+                )
+                continue
             try:
                 await self._execute_command(cmd)
-            except Exception:
+                if entry.future is not None and not entry.future.done():
+                    entry.future.set_result(None)
+            except Exception as exc:
+                if entry.future is not None and not entry.future.done():
+                    entry.future.set_exception(exc)
                 logger.warning(
                     "YaesuCatPoller: command %s failed",
                     type(cmd).__name__,

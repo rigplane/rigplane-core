@@ -94,11 +94,16 @@ async def dispatch_http_request(
         "/api/v1/radio/power",
         "/api/v1/radio/cw/send",
         "/api/v1/radio/cw/stop",
+        "/api/v1/commands",
+        "/api/v1/commands/batch",
     ):
         if method != "POST":
             await _send_response(writer, 405, "Method Not Allowed", b"", {})
             return
-        await server._handle_radio_control(path, writer, headers, reader)
+        if path.startswith("/api/v1/commands"):
+            await server._handle_http_commands(path, writer, headers, reader)
+        else:
+            await server._handle_radio_control(path, writer, headers, reader)
         return
 
     if path == "/api/v1/band-plan/config":
