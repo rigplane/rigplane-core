@@ -122,6 +122,7 @@ __all__ = [
     "ScanSetResume",
     "ScanStart",
     "ScanStop",
+    "SendCiv",
     "SetToneFreq",
     "SetTsqlFreq",
     "SetMainSubTracking",
@@ -196,6 +197,7 @@ from .._poller_types import (  # noqa: E402
     ScanStart,
     ScanStop,
     SelectVfo,
+    SendCiv,
     SetAcc1ModLevel,
     SetAfLevel,
     SetAfMute,
@@ -757,6 +759,17 @@ class RadioPoller:
         )
 
         match cmd:
+            case SendCiv(command=command, sub=sub, data=data):
+                from ..radio_protocol import CivCommandCapable
+
+                if not isinstance(radio, CivCommandCapable):
+                    raise CommandError("send_civ is not supported by this backend")
+                await radio.send_civ(
+                    command,
+                    sub=sub,
+                    data=data,
+                    wait_response=False,
+                )
             case SetFreq(freq=freq, receiver=rx):
                 self._last_user_write_ts = time.monotonic()
                 self._ensure_receiver_supported(rx, operation="set_freq")

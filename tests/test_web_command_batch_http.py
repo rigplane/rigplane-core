@@ -4,13 +4,15 @@ from __future__ import annotations
 
 import asyncio
 import json
+from types import SimpleNamespace
+from unittest.mock import AsyncMock
 from unittest.mock import MagicMock
 
 import pytest
 
 from rigplane.profiles import resolve_radio_profile
 from rigplane.web import server as web_server
-from rigplane.web.radio_poller import CommandQueue, SetFreq, SetMode
+from rigplane.web.radio_poller import CommandQueue, SendCiv, SetFreq, SetMode
 from rigplane.web.server import WebConfig, WebServer
 
 
@@ -60,7 +62,17 @@ def _radio() -> MagicMock:
     radio.profile = profile
     radio.model = profile.model
     radio.capabilities = set(profile.capabilities)
+    radio.send_civ = AsyncMock()
     return radio
+
+
+def _radio_without_civ() -> SimpleNamespace:
+    profile = resolve_radio_profile(model="FTX-1")
+    return SimpleNamespace(
+        profile=profile,
+        model=profile.model,
+        capabilities=set(profile.capabilities),
+    )
 
 
 async def _post_json(
@@ -119,6 +131,156 @@ async def test_http_command_enqueues_single_structured_command() -> None:
 
 
 @pytest.mark.asyncio
+async def test_http_command_enqueues_raw_civ_command() -> None:
+    srv = WebServer(_radio(), WebConfig(host="127.0.0.1", port=0))
+
+    writer = await _post_json(
+        srv,
+        "/api/v1/commands",
+        {
+            "id": "display-type-b",
+            "name": "send_civ",
+            "params": {"command": 0x1A, "sub": 0x05, "data": "015301"},
+        },
+    )
+
+    assert writer.response_status == 200
+    assert writer.response_body == {
+        "id": "display-type-b",
+        "ok": True,
+        "name": "send_civ",
+        "result": {
+            "command": 0x1A,
+            "sub": 0x05,
+            "data": "015301",
+            "wait_response": False,
+        },
+    }
+    assert srv.command_queue.drain() == [
+        SendCiv(command=0x1A, sub=0x05, data=b"\x01\x53\x01")
+    ]
+
+
+@pytest.mark.asyncio
+async def test_http_command_rejects_invalid_raw_civ_hex() -> None:
+    srv = WebServer(_radio(), WebConfig(host="127.0.0.1", port=0))
+
+    writer = await _post_json(
+        srv,
+        "/api/v1/commands",
+        {
+            "name": "send_civ",
+            "params": {"command": 0x1A, "sub": 0x05, "data": "01530"},
+        },
+    )
+
+    assert writer.response_status == 400
+    assert writer.response_body["error"] == "invalid_request"
+    assert "data must be an even-length hex string" in writer.response_body["message"]
+    assert srv.command_queue.drain() == []
+
+
+@pytest.mark.asyncio
+async def test_http_command_rejects_raw_civ_hex_with_spaces() -> None:
+    srv = WebServer(_radio(), WebConfig(host="127.0.0.1", port=0))
+
+    writer = await _post_json(
+        srv,
+        "/api/v1/commands",
+        {
+            "name": "send_civ",
+            "params": {"command": 0x1A, "sub": 0x05, "data": "01 53 01"},
+        },
+    )
+
+    assert writer.response_status == 400
+    assert writer.response_body["error"] == "invalid_request"
+    assert "data must be a compact hex string" in writer.response_body["message"]
+    assert srv.command_queue.drain() == []
+
+
+@pytest.mark.asyncio
+async def test_http_command_rejects_raw_civ_wait_response() -> None:
+    srv = WebServer(_radio(), WebConfig(host="127.0.0.1", port=0))
+
+    writer = await _post_json(
+        srv,
+        "/api/v1/commands",
+        {
+            "name": "send_civ",
+            "params": {
+                "command": 0x1A,
+                "sub": 0x05,
+                "data": "015301",
+                "wait_response": True,
+            },
+        },
+    )
+
+    assert writer.response_status == 400
+    assert writer.response_body["error"] == "invalid_request"
+    assert "wait_response is not supported" in writer.response_body["message"]
+    assert srv.command_queue.drain() == []
+
+
+@pytest.mark.asyncio
+async def test_http_command_rejects_raw_civ_when_backend_does_not_support_it() -> None:
+    srv = WebServer(_radio_without_civ(), WebConfig(host="127.0.0.1", port=0))
+
+    writer = await _post_json(
+        srv,
+        "/api/v1/commands",
+        {"name": "send_civ", "params": {"command": 0x1A, "data": "015301"}},
+    )
+
+    assert writer.response_status == 409
+    assert writer.response_body["error"] == "unsupported_command"
+    assert "does not support send_civ" in writer.response_body["message"]
+    assert srv.command_queue.drain() == []
+
+
+@pytest.mark.asyncio
+async def test_http_raw_civ_single_commands_preserve_repeated_steps() -> None:
+    srv = WebServer(_radio(), WebConfig(host="127.0.0.1", port=0))
+
+    writer1 = await _post_json(
+        srv,
+        "/api/v1/commands",
+        {"name": "send_civ", "params": {"command": 0x1A, "data": "0001"}},
+    )
+    writer2 = await _post_json(
+        srv,
+        "/api/v1/commands",
+        {"name": "send_civ", "params": {"command": 0x1A, "data": "0002"}},
+    )
+
+    assert writer1.response_status == 200
+    assert writer2.response_status == 200
+    assert srv.command_queue.drain() == [
+        SendCiv(command=0x1A, data=b"\x00\x01"),
+        SendCiv(command=0x1A, data=b"\x00\x02"),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_http_raw_civ_rejected_in_read_only_mode() -> None:
+    srv = WebServer(
+        _radio(),
+        WebConfig(host="127.0.0.1", port=0, read_only=True),
+    )
+
+    writer = await _post_json(
+        srv,
+        "/api/v1/commands",
+        {"name": "send_civ", "params": {"command": 0x1A, "data": "015301"}},
+    )
+
+    assert writer.response_status == 403
+    assert writer.response_body["error"] == "read_only"
+    assert srv.command_queue.drain() == []
+
+
+@pytest.mark.asyncio
 async def test_http_command_requires_auth_when_configured() -> None:
     srv = WebServer(
         _radio(),
@@ -171,6 +333,72 @@ async def test_http_command_batch_preserves_exact_order_and_repeated_commands() 
         SetMode("FM", receiver=0),
         SetFreq(144_031_000, receiver=0),
     ]
+
+
+@pytest.mark.asyncio
+async def test_http_command_batch_preserves_raw_civ_step_order() -> None:
+    srv = WebServer(_radio(), WebConfig(host="127.0.0.1", port=0))
+    captured: list[object] = []
+    consumer = asyncio.create_task(
+        _complete_ordered_commands(srv.command_queue, 3, captured)
+    )
+    try:
+        writer = await _post_json(
+            srv,
+            "/api/v1/commands/batch",
+            {
+                "id": "profile-display",
+                "steps": [
+                    {"name": "set_freq", "params": {"freq": 144_030_000}},
+                    {
+                        "name": "send_civ",
+                        "params": {"command": 0x1A, "sub": 0x05, "data": "015301"},
+                    },
+                    {"name": "set_mode", "params": {"mode": "FM"}},
+                ],
+            },
+        )
+    finally:
+        await asyncio.wait_for(consumer, timeout=1.0)
+
+    assert writer.response_status == 200
+    assert writer.response_body["id"] == "profile-display"
+    assert writer.response_body["ok"] is True
+    assert [r["status"] for r in writer.response_body["results"]] == [
+        "executed",
+        "executed",
+        "executed",
+    ]
+    assert captured == [
+        SetFreq(144_030_000, receiver=0),
+        SendCiv(command=0x1A, sub=0x05, data=b"\x01\x53\x01"),
+        SetMode("FM", receiver=0),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_http_command_batch_rejects_raw_civ_when_backend_does_not_support_it() -> (
+    None
+):
+    srv = WebServer(_radio_without_civ(), WebConfig(host="127.0.0.1", port=0))
+
+    writer = await _post_json(
+        srv,
+        "/api/v1/commands/batch",
+        {
+            "steps": [
+                {"name": "send_civ", "params": {"command": 0x1A, "data": "015301"}},
+                {"name": "set_freq", "params": {"freq": 144_030_000}},
+            ],
+        },
+    )
+
+    assert writer.response_status == 200
+    assert writer.response_body["ok"] is False
+    assert writer.response_body["results"][0]["status"] == "failed_validation"
+    assert writer.response_body["results"][0]["error"] == "unsupported_command"
+    assert writer.response_body["results"][1]["status"] == "skipped"
+    assert srv.command_queue.drain() == []
 
 
 @pytest.mark.asyncio

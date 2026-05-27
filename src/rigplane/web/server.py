@@ -2425,14 +2425,20 @@ class WebServer:
                 )
                 step = None
             except (ValueError, RuntimeError) as exc:
+                message = str(exc)
+                error = (
+                    "unsupported_command"
+                    if "does not support" in message or "not supported" in message
+                    else "invalid_request"
+                )
                 results.append(
                     {
                         "index": index,
                         "name": name,
                         "ok": False,
                         "status": "failed_validation",
-                        "error": "invalid_request",
-                        "message": str(exc),
+                        "error": error,
+                        "message": message,
                     }
                 )
                 step = None

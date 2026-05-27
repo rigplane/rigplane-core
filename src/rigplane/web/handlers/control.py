@@ -23,6 +23,7 @@ from ..radio_poller import (  # noqa: TID251
     ScanStart,
     ScanStop,
     SelectVfo,
+    SendCiv,
     SetAcc1ModLevel,
     SetAfLevel,
     SetAgc,
@@ -161,7 +162,7 @@ from ...capabilities import (
     CAP_TX,
     CAP_XFC,
 )
-from ...radio_protocol import MemoryCapable, PowerControlCapable
+from ...radio_protocol import CivCommandCapable, MemoryCapable, PowerControlCapable
 
 __all__ = ["ControlHandler"]
 
@@ -189,6 +190,7 @@ class ControlHandler:
             "set_freq",
             "set_band",
             "set_mode",
+            "send_civ",
             "set_filter",
             "set_filter_width",
             "set_filter_shape",
@@ -349,13 +351,14 @@ class ControlHandler:
         ]
     )
 
-    # Commands that key the transmitter — rejected when read_only=True.
+    # Commands that can transmit or send arbitrary radio writes — rejected when read_only=True.
     # set_tuner_status value=2 (TUNING) is handled inline in _enqueue_read_only.
     _TX_COMMANDS: frozenset[str] = frozenset(
         {
             "ptt",
             "ptt_on",
             "ptt_off",
+            "send_civ",
             "send_cw_text",
         }
     )
@@ -833,14 +836,20 @@ class ControlHandler:
             )
         except Exception as exc:
             logger.warning("control: command %r failed: %s", name, exc)
+            message = str(exc)
+            error = (
+                "unsupported_command"
+                if "does not support" in message or "not supported" in message
+                else "command_failed"
+            )
             await self._ws.send_text(
                 encode_json(
                     {
                         "type": "response",
                         "id": cmd_id,
                         "ok": False,
-                        "error": "command_failed",
-                        "message": str(exc),
+                        "error": error,
+                        "message": message,
                     }
                 )
             )
@@ -1278,6 +1287,43 @@ class ControlHandler:
         radio: "Radio | None",
     ) -> dict[str, Any] | None:
         match name:
+            case "send_civ":
+                if radio is None or not isinstance(radio, CivCommandCapable):
+                    raise RuntimeError("radio does not support send_civ")
+                if "command" not in params:
+                    raise ValueError("missing required 'command' parameter")
+                command = int(params["command"])
+                if not 0 <= command <= 0xFF:
+                    raise ValueError(f"command must be 0-255, got {command}")
+                raw_sub = params.get("sub")
+                sub = None if raw_sub is None else int(raw_sub)
+                if sub is not None and not 0 <= sub <= 0xFF:
+                    raise ValueError(f"sub must be 0-255, got {sub}")
+                wait_response = bool(params.get("wait_response", False))
+                if wait_response:
+                    raise ValueError(
+                        "wait_response is not supported for HTTP send_civ yet"
+                    )
+                raw_data = params.get("data", "")
+                if not isinstance(raw_data, str):
+                    raise ValueError("data must be a hex string")
+                if len(raw_data) % 2 != 0:
+                    raise ValueError("data must be an even-length hex string")
+                if any(ch not in "0123456789abcdefABCDEF" for ch in raw_data):
+                    raise ValueError("data must be a compact hex string")
+                data = bytes.fromhex(raw_data)
+                queue_cmd = SendCiv(command=command, sub=sub, data=data)
+                put_ordered = getattr(q, "put_ordered", None)
+                if callable(put_ordered):
+                    put_ordered(queue_cmd)
+                else:
+                    q.put(queue_cmd)
+                return {
+                    "command": command,
+                    "sub": sub,
+                    "data": data.hex().upper(),
+                    "wait_response": False,
+                }
             case "set_band":
                 band = int(params["band"])
                 q.put(SetBand(band))

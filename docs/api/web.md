@@ -223,6 +223,28 @@ Response:
 parameters return HTTP `400`. Read-only mode rejects transmit commands with
 HTTP `403`.
 
+Low-level CI-V escape hatch:
+
+```json
+{
+  "id": "display-type-b",
+  "name": "send_civ",
+  "params": {
+    "command": 26,
+    "sub": 5,
+    "data": "015301"
+  }
+}
+```
+
+`send_civ` is for Icom/vendor-specific commands that are not yet exposed as
+structured RigPlane commands. `command` and `sub` are byte values from `0` to
+`255`; `sub` may be omitted. `data` is an even-length hexadecimal string. The
+HTTP command is fire-and-forget: RigPlane enqueues the CI-V write through the
+same single-owner command queue, but does not return CI-V response bytes or
+claim readback verification. `wait_response` is reserved for a future
+transaction-capable API and is rejected when `true`.
+
 ## `POST /api/v1/commands/batch`
 
 Stateless ordered batch apply for local automation. RigPlane does not store,
@@ -266,7 +288,11 @@ Request:
   "continue_on_error": false,
   "steps": [
     { "name": "set_freq", "params": { "freq": 144030000 } },
-    { "name": "set_mode", "params": { "mode": "FM" } }
+    { "name": "set_mode", "params": { "mode": "FM" } },
+    {
+      "name": "send_civ",
+      "params": { "command": 26, "sub": 5, "data": "015301" }
+    }
   ]
 }
 ```
@@ -291,6 +317,18 @@ Successful response:
       "ok": true,
       "status": "executed",
       "result": { "mode": "FM", "receiver": 0 }
+    },
+    {
+      "index": 2,
+      "name": "send_civ",
+      "ok": true,
+      "status": "executed",
+      "result": {
+        "command": 26,
+        "sub": 5,
+        "data": "015301",
+        "wait_response": false
+      }
     }
   ]
 }
@@ -392,9 +430,10 @@ operations, and feature toggles are available on the active radio:
 curl http://127.0.0.1:8080/api/v1/capabilities
 ```
 
-Prefer structured commands whenever a command exists. Raw CI-V is useful for
-diagnostics and experiments, but normal automation should let RigPlane own the
-radio connection, queueing, pacing, auth policy, and safety checks.
+Prefer structured commands whenever a command exists. Use `send_civ` for
+vendor-specific CI-V that is not yet abstracted, such as display/menu settings.
+It still lets RigPlane own the radio connection, queueing, pacing, auth policy,
+and safety checks; it just does not return response bytes.
 
 Python example:
 

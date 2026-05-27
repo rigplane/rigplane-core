@@ -201,6 +201,31 @@ feature toggles. Prefer these structured commands over raw CI-V for routine
 automation so RigPlane remains the single owner of the radio connection,
 queueing, pacing, auth policy, and safety checks.
 
+For vendor-specific CI-V commands that are not yet covered by structured
+commands, use the queued `send_civ` escape hatch. The payload mirrors the
+Python `radio.send_civ(command=..., sub=..., data=...)` call, but `data` is an
+even-length hex string:
+
+```bash
+curl -X POST http://127.0.0.1:8080/api/v1/commands \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "id": "display-type-b",
+    "name": "send_civ",
+    "params": {
+      "command": 26,
+      "sub": 5,
+      "data": "015301"
+    }
+  }'
+```
+
+`send_civ` is fire-and-forget in the HTTP/WS command queue. It preserves order,
+including repeated raw CI-V steps in batches, but it does not return response
+bytes or readback verification. Use it for model-specific gaps such as
+display/menu settings; prefer structured commands for normal profile steps
+where RigPlane already has a command.
+
 DATA mode commands use the active radio profile's numeric DATA value. For the
 current IC-9700 profile, `set_data_mode` uses `mode: 0` for OFF and `mode: 1`
 for DATA. Its modulation input source values are `0 = MIC`, `1 = ACC`,
