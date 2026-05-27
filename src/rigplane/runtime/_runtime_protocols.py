@@ -70,6 +70,7 @@ class CivRuntimeHost(Protocol):
     _scope_assembler: "ScopeAssembler"
     _scope_frame_queue: "BoundedQueue[ScopeFrame]"
     _scope_callback: "Callable[[ScopeFrame], Any] | None"
+    _raw_civ_listeners: "list[Callable[[bytes], Any]]"
     _scope_activity_counter: int
     _scope_activity_event: asyncio.Event
     _civ_event_queue: "BoundedQueue[CivEvent]"
