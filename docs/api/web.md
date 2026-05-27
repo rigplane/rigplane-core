@@ -110,12 +110,10 @@ over WebSocket, single-command HTTP, and batch HTTP.
 
 The current public docs include common command examples in
 [Web UI: Common commands](../guide/web-ui.md#common-commands), and lower-level
-Python/CI-V command examples in [CI-V Commands](../guide/commands.md). A full
-machine-readable HTTP/WS command catalog with every command name, parameter
-shape, capability gate, and batch-eligibility flag is tracked in
-[rigplane-core#1604](https://github.com/rigplane/rigplane-core/issues/1604).
-Until that catalog is published, the implementation source of truth is
-`ControlHandler` in `src/rigplane/web/handlers/control.py`.
+Python/CI-V command examples in [CI-V Commands](../guide/commands.md). The full
+machine-readable HTTP/WS command catalog — every command name, parameter shape,
+capability gate, and batch-eligibility flag — is published in
+[HTTP / WebSocket Command Catalog](command-catalog.md).
 
 ### Internal And Diagnostic Surface
 
