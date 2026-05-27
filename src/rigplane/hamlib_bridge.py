@@ -9,9 +9,15 @@ transport; Hamlib stays the sole CAT master.
         ↳ RX: radio.add_raw_civ_listener(cb) → frame written back to rigctld
 
 This is an internal module: no UI, no Pro workflow, no assisted discovery, and
-no credential handling (the caller owns the already-connected radio). Session
-ownership / poller quiescing (slice 2) and non-Icom serial rigs (slice 3) are
-intentionally out of scope here.
+no credential handling (the caller owns the already-connected radio).
+
+Supported radios: any backend exposing the raw CI-V pipe (``RawCivPipe``). That
+covers every CoreRadio-derived Icom backend — **Icom LAN and Icom serial alike**
+(IC-7610/7300/705/9700, Xiegu X6200, …) — since the serial backends inherit the
+pipe from ``CoreRadio``. The session-ownership hooks (slice 2) are used when the
+radio provides them. Non-CI-V ASCII rigs (Yaesu/Kenwood, e.g. FTX-1 / TX-500)
+speak a different wire shape and need a separate raw-*byte* pipe seam; that is
+tracked as a follow-up, not handled here.
 """
 
 from __future__ import annotations

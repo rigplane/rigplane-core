@@ -237,3 +237,47 @@ async def test_double_spawn_is_rejected(radio: FakeRawPipeRadio) -> None:
 
     bridge._proc = None
     await bridge.stop()
+
+
+# ---------------------------------------------------------------------------
+# Slice 3: the bridge generalizes beyond Icom LAN — Icom *serial* backends
+# (Xiegu X6200, IC-7300/705/9700 serial) inherit the raw CI-V pipe + ownership
+# from CoreRadio, so the bridge drives them unchanged.
+# ---------------------------------------------------------------------------
+
+
+def test_icom_serial_backend_exposes_bridge_surface() -> None:
+    from rigplane.backends.icom7610.serial import Icom7610SerialRadio
+
+    radio = Icom7610SerialRadio(device="/dev/null")  # constructed, not connected
+    for attr in (
+        "send_civ_raw_fire_and_forget",
+        "add_raw_civ_listener",
+        "begin_external_cat_session",
+        "end_external_cat_session",
+        "reconcile_state",
+    ):
+        assert hasattr(radio, attr), f"serial backend missing {attr}"
+
+
+async def test_bridge_runs_against_icom_serial_backend() -> None:
+    """End-to-end-ish: the bridge claims ownership of a real Icom *serial*
+    backend and forwards an inbound CI-V frame (raw pipe inherited via
+    _IcomSerialRadioBase(CoreRadio)) — proving it is not limited to Icom LAN."""
+    from rigplane.backends.icom7610.serial import Icom7610SerialRadio
+
+    radio = Icom7610SerialRadio(device="/dev/null")
+    bridge = HamlibBridge(radio, model="3078")
+    port = await bridge.open_transport()
+    assert radio.external_cat_session_active is True  # ownership on a serial rig
+
+    reader, writer = await asyncio.open_connection("127.0.0.1", port)
+    await asyncio.sleep(0.02)
+    ack = bytes.fromhex("fefee098fbfd")  # FE FE E0 98 FB FD from the serial radio
+    radio._civ_runtime.deliver_raw_civ(ack)
+    got = await asyncio.wait_for(reader.readexactly(len(ack)), timeout=1.0)
+    assert got == ack
+
+    writer.close()
+    await bridge.stop()  # reconcile is best-effort (radio not connected) — tolerated
+    assert radio.external_cat_session_active is False
