@@ -295,6 +295,7 @@ __all__ = [
     "AudioRecoveryState",
     "CoreRadio",
     "IcomRadio",
+    "RawCivSubscription",
     "RadioProfile",
     "AudioCodec",
     "RadioConnectionState",
@@ -317,6 +318,40 @@ _DEFAULT_CACHE_TTL: dict[str, float] = {"freq": 10.0, "mode": 10.0, "rf_power": 
 # cumulative and only the 30s watchdog resets it via ``soft_reconnect``.
 # Require >=3 accumulated errors before reporting ``connected = False``.
 _UDP_ERROR_THRESHOLD: int = 3
+
+
+class RawCivSubscription:
+    """Handle for a raw CI-V listener registered via ``add_raw_civ_listener``.
+
+    Part of the raw CI-V pipe seam (MOR-164) that lets a transparent Hamlib A1
+    bridge use RigPlane purely as a CI-V byte transport. Call :meth:`close` (or
+    use the handle as a context manager) to unregister the listener.
+    """
+
+    def __init__(
+        self,
+        registry: list[Callable[[bytes], Any]],
+        callback: Callable[[bytes], Any],
+    ) -> None:
+        self._registry = registry
+        self._callback = callback
+        self._closed = False
+
+    def close(self) -> None:
+        """Unregister the listener. Idempotent."""
+        if self._closed:
+            return
+        self._closed = True
+        try:
+            self._registry.remove(self._callback)
+        except ValueError:
+            pass
+
+    def __enter__(self) -> "RawCivSubscription":
+        return self
+
+    def __exit__(self, *exc: object) -> None:
+        self.close()
 
 
 class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
@@ -725,6 +760,8 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
         self._audio_bus: Any = None
         self._scope_assembler: ScopeAssembler = ScopeAssembler()
         self._scope_callback: Callable[[ScopeFrame], Any] | None = None
+        # Raw CI-V pipe listeners (MOR-164): receive inbound on-wire frame bytes.
+        self._raw_civ_listeners: list[Callable[[bytes], Any]] = []
         self._civ_rx_task: asyncio.Task[None] | None = None
         self._civ_data_watchdog_task: asyncio.Task[None] | None = None
         self._audio_watchdog_task: asyncio.Task[None] | None = None
@@ -1238,6 +1275,42 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
             self._radio_addr, CONTROLLER_ADDR, command, sub=sub, data=data
         )
         return await self._send_civ_raw(frame, wait_response=wait_response)
+
+    # ------------------------------------------------------------------
+    # Raw CI-V pipe (MOR-164) — transparent byte transport for Hamlib A1
+    # ------------------------------------------------------------------
+
+    async def send_civ_raw_fire_and_forget(self, frame: bytes) -> None:
+        """Transmit a raw CI-V frame without waiting for or matching a response.
+
+        For the Hamlib A1 bridge, where the *external* CAT master (Hamlib) owns
+        request/response matching and RigPlane is used purely as a byte
+        transport. Unlike :meth:`send_civ`, this never registers a response
+        waiter, so it does **not** time out merely because the radio answered a
+        write with a bare ACK (``FE FE E0 98 FB FD``); the ACK is observed via
+        :meth:`add_raw_civ_listener` instead.
+        """
+        self._check_connected()
+        await self._send_civ_raw(frame, wait_response=False)
+
+    def add_raw_civ_listener(
+        self, callback: Callable[[bytes], Any]
+    ) -> RawCivSubscription:
+        """Register a listener for inbound raw CI-V frame bytes.
+
+        The callback receives the exact on-wire frame bytes of each inbound
+        frame addressed to the controller (including bare ACK/NAK frames).
+        Unsolicited transceive broadcasts (``to_addr == 0x00``) are filtered out
+        so they do not pollute a Hamlib-owned byte stream. Returns a
+        :class:`RawCivSubscription`; call ``.close()`` to unregister.
+
+        Note (MOR-164 limitation): while a raw-pipe consumer is active, RigPlane's
+        own poller/readback traffic is *not* yet automatically quiesced — the
+        bridge consumer is responsible for not issuing competing reads. Scoped
+        ownership is deferred to the bridge daemon issue.
+        """
+        self._raw_civ_listeners.append(callback)
+        return RawCivSubscription(self._raw_civ_listeners, callback)
 
     async def get_freq(
         self, receiver: int = RECEIVER_MAIN, *, bypass_cache: bool = False

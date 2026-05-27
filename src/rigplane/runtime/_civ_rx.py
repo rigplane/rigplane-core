@@ -541,6 +541,7 @@ class CivRuntime:
                             frame = parse_civ_frame(frame_bytes)
                         except ValueError:
                             continue
+                        self.deliver_raw_civ(frame_bytes)
                         try:
                             await self._route_civ_frame(
                                 frame,
@@ -594,6 +595,31 @@ class CivRuntime:
             self._update_state_cache_from_frame(frame)
         self._publish_civ_event(event)
         self._host._civ_request_tracker.resolve(event, generation=generation)
+
+    def deliver_raw_civ(self, frame_bytes: bytes) -> None:
+        """Forward a raw inbound CI-V frame to registered raw-pipe listeners.
+
+        Supports the Hamlib A1 transparent-bridge seam (MOR-164): listeners get
+        the exact on-wire bytes (including bare ACK frames such as
+        ``FE FE E0 98 FB FD``). Only frames from this radio addressed to the
+        controller are delivered; unsolicited transceive broadcasts
+        (``to_addr == 0x00``) are filtered out so they cannot pollute a
+        Hamlib-owned byte stream.
+        """
+        listeners = self._host._raw_civ_listeners
+        if not listeners:
+            return
+        # CI-V frame layout: FE FE <to_addr> <from_addr> <cmd> ... FD
+        if len(frame_bytes) < 5 or frame_bytes[3] != self._host._radio_addr:
+            return
+        if frame_bytes[2] != CONTROLLER_ADDR:  # drops transceive broadcasts (0x00)
+            return
+        raw = bytes(frame_bytes)
+        for listener in list(listeners):
+            try:
+                listener(raw)
+            except Exception:  # noqa: BLE001 — isolate listener failures
+                logger.exception("Raw CI-V listener raised")
 
     def _update_state_cache_from_frame(self, frame: CivFrame) -> None:
         """Best-effort update of state cache from an incoming CI-V frame."""
