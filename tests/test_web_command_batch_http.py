@@ -293,3 +293,41 @@ async def test_http_command_batch_rejects_queue_bypass_commands() -> None:
     assert writer.response_body["results"][0]["error"] == "unsupported_in_batch"
     assert writer.response_body["results"][1]["status"] == "skipped"
     assert srv.command_queue.drain() == []
+
+
+@pytest.mark.asyncio
+async def test_http_command_batch_missing_required_param_returns_failed_validation() -> (
+    None
+):
+    srv = WebServer(_radio(), WebConfig(host="127.0.0.1", port=0))
+
+    writer = await _post_json(
+        srv,
+        "/api/v1/commands/batch",
+        {
+            "steps": [
+                {"name": "set_freq", "params": {}},
+            ],
+        },
+    )
+
+    assert writer.response_status == 200
+    assert writer.response_body["ok"] is False
+    assert writer.response_body["results"][0]["status"] == "failed_validation"
+    assert writer.response_body["results"][0]["error"] == "invalid_request"
+    assert srv.command_queue.drain() == []
+
+
+@pytest.mark.asyncio
+async def test_http_single_command_missing_required_param_returns_400() -> None:
+    srv = WebServer(_radio(), WebConfig(host="127.0.0.1", port=0))
+
+    writer = await _post_json(
+        srv,
+        "/api/v1/commands",
+        {"name": "set_freq", "params": {}},
+    )
+
+    assert writer.response_status == 400
+    assert writer.response_body["error"] == "invalid_request"
+    assert srv.command_queue.drain() == []

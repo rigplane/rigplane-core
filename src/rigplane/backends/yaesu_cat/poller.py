@@ -330,147 +330,143 @@ class YaesuCatPoller:
         radio = self._radio
         name = type(cmd).__name__
 
-        try:
-            match cmd:
-                # ── Core: Frequency / Mode / Band ──
-                case SetFreq(freq=freq, receiver=rx):
-                    await radio.set_freq(freq, receiver=rx)
-                case SetMode(mode=mode, receiver=rx):
-                    await radio.set_mode(mode, receiver=rx)
-                case SetBand(band=band):
-                    yaesu_band = self._CIV_TO_YAESU_BAND.get(band, band)
-                    await radio.set_band(yaesu_band)
-                case SelectVfo(vfo=vfo):
-                    code = 0 if vfo.upper() in ("A", "MAIN") else 1
-                    await radio.set_vfo_select(code)
-                case VfoSwap():
-                    await radio.vfo_a_to_b()
+        match cmd:
+            # ── Core: Frequency / Mode / Band ──
+            case SetFreq(freq=freq, receiver=rx):
+                await radio.set_freq(freq, receiver=rx)
+            case SetMode(mode=mode, receiver=rx):
+                await radio.set_mode(mode, receiver=rx)
+            case SetBand(band=band):
+                yaesu_band = self._CIV_TO_YAESU_BAND.get(band, band)
+                await radio.set_band(yaesu_band)
+            case SelectVfo(vfo=vfo):
+                code = 0 if vfo.upper() in ("A", "MAIN") else 1
+                await radio.set_vfo_select(code)
+            case VfoSwap():
+                await radio.vfo_a_to_b()
 
-                # ── PTT ──
-                case PttOn():
-                    await radio.set_ptt(True)
-                case PttOff():
-                    await radio.set_ptt(False)
+            # ── PTT ──
+            case PttOn():
+                await radio.set_ptt(True)
+            case PttOff():
+                await radio.set_ptt(False)
 
-                # ── Audio / RF Levels ──
-                case SetAfLevel(level=level):
-                    await radio.set_af_level(level)
-                case SetRfGain(level=level):
-                    await radio.set_rf_gain(level)
-                case SetSquelch(level=level):
-                    await radio.set_squelch(level)
-                case SetMicGain(level=level):
-                    await radio.set_mic_gain(level)
-                case SetPower(level=level, unit=unit):
-                    if unit != "watts":
-                        raise ValueError(
-                            f"Yaesu backend expects SetPower unit='watts' "
-                            f"(PC command); got unit={unit!r}"
-                        )
-                    await radio.set_power(level)
-                case SetDriveGain(level=level):
-                    await radio.set_drive_gain(level)
+            # ── Audio / RF Levels ──
+            case SetAfLevel(level=level):
+                await radio.set_af_level(level)
+            case SetRfGain(level=level):
+                await radio.set_rf_gain(level)
+            case SetSquelch(level=level):
+                await radio.set_squelch(level)
+            case SetMicGain(level=level):
+                await radio.set_mic_gain(level)
+            case SetPower(level=level, unit=unit):
+                if unit != "watts":
+                    raise ValueError(
+                        f"Yaesu backend expects SetPower unit='watts' "
+                        f"(PC command); got unit={unit!r}"
+                    )
+                await radio.set_power(level)
+            case SetDriveGain(level=level):
+                await radio.set_drive_gain(level)
 
-                # ── RF Front End ──
-                case SetAttenuator(db=db):
-                    await radio.set_attenuator_level(db)
-                case SetPreamp(level=level, receiver=receiver):
-                    await radio.set_preamp(level, receiver)
+            # ── RF Front End ──
+            case SetAttenuator(db=db):
+                await radio.set_attenuator_level(db)
+            case SetPreamp(level=level, receiver=receiver):
+                await radio.set_preamp(level, receiver)
 
-                # ── DSP / Noise ──
-                case SetAgc(mode=mode):
-                    await radio.set_agc(mode)
-                case SetNB(on=on):
-                    await radio.set_nb(on)
-                case SetNR(on=on):
-                    await radio.set_nr(on)
-                case SetNBLevel(level=level):
-                    await radio.set_nb_level(level)
-                case SetNRLevel(level=level):
-                    await radio.set_nr_level(level)
-                case SetAutoNotch(on=on):
-                    await radio.set_auto_notch(on)
-                case SetManualNotch(on=on):
-                    await radio.set_manual_notch(on)
-                case SetNotchFilter(level=level):
-                    await radio.set_manual_notch_freq(level)
+            # ── DSP / Noise ──
+            case SetAgc(mode=mode):
+                await radio.set_agc(mode)
+            case SetNB(on=on):
+                await radio.set_nb(on)
+            case SetNR(on=on):
+                await radio.set_nr(on)
+            case SetNBLevel(level=level):
+                await radio.set_nb_level(level)
+            case SetNRLevel(level=level):
+                await radio.set_nr_level(level)
+            case SetAutoNotch(on=on):
+                await radio.set_auto_notch(on)
+            case SetManualNotch(on=on):
+                await radio.set_manual_notch(on)
+            case SetNotchFilter(level=level):
+                await radio.set_manual_notch_freq(level)
 
-                # ── Filters ──
-                case SetFilter(filter_num=_num):
-                    pass  # FTX-1 uses filter_width, not discrete filter numbers
-                case SetFilterWidth(width=width):
-                    await radio.set_filter_width(width)
-                case SetFilterShape(shape=_shape):
-                    pass  # Not available on FTX-1
-                case SetPbtInner() | SetPbtOuter():
-                    pass  # Not available on FTX-1
+            # ── Filters ──
+            case SetFilter(filter_num=_num):
+                pass  # FTX-1 uses filter_width, not discrete filter numbers
+            case SetFilterWidth(width=width):
+                await radio.set_filter_width(width)
+            case SetFilterShape(shape=_shape):
+                pass  # Not available on FTX-1
+            case SetPbtInner() | SetPbtOuter():
+                pass  # Not available on FTX-1
 
-                # ── IF Shift ──
-                case SetIfShift(offset=offset):
-                    await radio.set_if_shift(offset)
+            # ── IF Shift ──
+            case SetIfShift(offset=offset):
+                await radio.set_if_shift(offset)
 
-                # ── CW ──
-                case SetKeySpeed(speed=speed):
-                    await radio.set_keyer_speed(speed)
-                case SetCwPitch(value=value):
-                    await radio.set_key_pitch(value)
-                case SetBreakIn(mode=mode):
-                    await radio.set_break_in(bool(mode))
+            # ── CW ──
+            case SetKeySpeed(speed=speed):
+                await radio.set_keyer_speed(speed)
+            case SetCwPitch(value=value):
+                await radio.set_key_pitch(value)
+            case SetBreakIn(mode=mode):
+                await radio.set_break_in(bool(mode))
 
-                # ── TX Controls ──
-                case SetCompressor(on=on):
-                    await radio.set_processor(on)
-                case SetCompressorLevel(level=level):
-                    await radio.set_processor_level(level)
-                case SetVox(on=on):
-                    await radio.set_vox(on)
-                case SetTunerStatus(value=value):
-                    await radio.set_tuner(value)
-                case SetMonitor(on=on):
-                    await radio.set_monitor_on(on)
-                case SetMonitorGain(level=level):
-                    await radio.set_monitor_level(level)
-                case SetSplit(on=on):
-                    await radio.set_split(on)
+            # ── TX Controls ──
+            case SetCompressor(on=on):
+                await radio.set_processor(on)
+            case SetCompressorLevel(level=level):
+                await radio.set_processor_level(level)
+            case SetVox(on=on):
+                await radio.set_vox(on)
+            case SetTunerStatus(value=value):
+                await radio.set_tuner(value)
+            case SetMonitor(on=on):
+                await radio.set_monitor_on(on)
+            case SetMonitorGain(level=level):
+                await radio.set_monitor_level(level)
+            case SetSplit(on=on):
+                await radio.set_split(on)
 
-                # ── RIT / Clarifier ──
-                case SetRitStatus(on=on):
-                    # Canonical name; read-modify-write preserves XIT bit.
-                    await radio.set_rit_status(on)
-                case SetRitTxStatus(on=on):
-                    # Canonical name; read-modify-write preserves RIT bit.
-                    await radio.set_rit_tx_status(on)
-                case SetRitFrequency(freq=freq):
-                    await radio.set_rit_frequency(freq)
+            # ── RIT / Clarifier ──
+            case SetRitStatus(on=on):
+                # Canonical name; read-modify-write preserves XIT bit.
+                await radio.set_rit_status(on)
+            case SetRitTxStatus(on=on):
+                # Canonical name; read-modify-write preserves RIT bit.
+                await radio.set_rit_tx_status(on)
+            case SetRitFrequency(freq=freq):
+                await radio.set_rit_frequency(freq)
 
-                # ── Data Mode ──
-                case SetDataMode(mode=mode):
-                    await radio.set_data_mode(mode)
+            # ── Data Mode ──
+            case SetDataMode(mode=mode):
+                await radio.set_data_mode(mode)
 
-                # ── Dial Lock ──
-                case SetDialLock(on=on):
-                    await radio.set_lock(on)
+            # ── Dial Lock ──
+            case SetDialLock(on=on):
+                await radio.set_lock(on)
 
-                # ── Dual Watch ──
-                case SetDualWatch(on=on):
-                    await radio.set_dual_watch(on)
+            # ── Dual Watch ──
+            case SetDualWatch(on=on):
+                await radio.set_dual_watch(on)
 
-                # ── APF (Audio Peak Filter) ──
-                case SetApf(mode=mode, receiver=rx):
-                    await radio.set_audio_peak_filter(mode, receiver=rx)
+            # ── APF (Audio Peak Filter) ──
+            case SetApf(mode=mode, receiver=rx):
+                await radio.set_audio_peak_filter(mode, receiver=rx)
 
-                # ── IC-7610-specific (not applicable) ──
-                case SetIpPlus() | SetTwinPeak() | SetDigiSel():
-                    pass  # Icom-only DSP features
+            # ── IC-7610-specific (not applicable) ──
+            case SetIpPlus() | SetTwinPeak() | SetDigiSel():
+                pass  # Icom-only DSP features
 
-                case _:
-                    logger.debug("CMD: unhandled %s — ignoring", name)
-                    return
+            case _:
+                logger.debug("CMD: unhandled %s — ignoring", name)
+                return
 
-            logger.info("CMD: %s", name)
-
-        except Exception:
-            logger.warning("CMD: %s failed", name, exc_info=True)
+        logger.info("CMD: %s", name)
 
     # ------------------------------------------------------------------
     # Poll actions

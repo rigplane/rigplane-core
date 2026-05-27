@@ -9,6 +9,7 @@ import pytest
 
 from rigplane.backends.yaesu_cat.poller import YaesuCatPoller
 from rigplane.radio_state import RadioState
+from rigplane.web.radio_poller import CommandQueue, SetFreq
 
 
 # ---------------------------------------------------------------------------
@@ -558,6 +559,32 @@ async def test_fast_poll_reads_tx_meters_when_ptt_active() -> None:
     assert radio.radio_state.swr_meter == 120
 
 
+# ---------------------------------------------------------------------------
+# Command queue: future exception propagation
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_drain_commands_sets_future_exception_on_execution_failure() -> None:
+    """_drain_commands must set_exception on the future when _execute_command raises."""
+    radio = make_radio()
+    boom = RuntimeError("rig error")
+    radio.set_freq = AsyncMock(side_effect=boom)
+
+    queue = CommandQueue()
+    poller = YaesuCatPoller(radio, callback=lambda s: None, command_queue=queue)
+
+    loop = asyncio.get_running_loop()
+    future: asyncio.Future[None] = loop.create_future()
+    queue.put_ordered(SetFreq(144_030_000, receiver=0), future=future)
+
+    await poller._drain_commands()
+
+    assert future.done()
+    assert not future.cancelled()
+    assert future.exception() is boom
+
+
 @pytest.mark.asyncio
 async def test_fast_poll_skips_tx_meters_when_ptt_off() -> None:
     """When PTT is off, fast poll should NOT read TX meters."""
@@ -914,20 +941,15 @@ async def test_execute_command_set_power_watts_unit_dispatches_to_radio() -> Non
 
 
 @pytest.mark.asyncio
-async def test_execute_command_set_power_raw_255_unit_rejected(
-    caplog: pytest.LogCaptureFixture,
-) -> None:
-    """Default SetPower(unit='raw_255') is rejected by Yaesu poller and logs warning."""
-    import logging
-
+async def test_execute_command_set_power_raw_255_unit_rejected() -> None:
+    """SetPower with wrong unit raises ValueError so the caller can report failure."""
     from rigplane.runtime._poller_types import SetPower
 
     radio = make_radio()
     radio.set_power = AsyncMock()
     poller = YaesuCatPoller(radio, callback=lambda s: None, fast_interval=10.0)
 
-    with caplog.at_level(logging.WARNING, logger="rigplane.backends.yaesu_cat.poller"):
+    with pytest.raises(ValueError, match="unit='raw_255'"):
         await poller._execute_command(SetPower(level=200))  # default unit='raw_255'
 
     radio.set_power.assert_not_awaited()
-    assert any("SetPower" in r.message or "failed" in r.message for r in caplog.records)
