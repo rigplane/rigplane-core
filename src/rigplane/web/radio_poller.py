@@ -627,6 +627,16 @@ class RadioPoller:
 
         try:
             while True:
+                # 0. External CAT session (e.g. Hamlib A1 bridge) owns the wire —
+                # pause RigPlane's own polling/commands to avoid CI-V cross-talk
+                # in the owner's byte stream (MOR-166 slice 2). Queued commands
+                # stay buffered and drain once the session ends. ``is True`` (not
+                # just truthy) so duck-typed / mock radios never quiesce by
+                # accident — only a real bool flag does.
+                if getattr(self._radio, "external_cat_session_active", False) is True:
+                    await asyncio.sleep(self._adaptive_gap())
+                    continue
+
                 # 1. Drain command queue (fire-and-forget writes)
                 if self._queue.has_commands:
                     for entry in self._queue.drain_entries():

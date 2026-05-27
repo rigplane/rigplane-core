@@ -516,3 +516,20 @@ async def test_poller_without_circuit_breaker_still_works(
 
     assert cache.freq == 7_000_000
     assert cache.is_fresh("freq", 1.0) is True
+
+
+async def test_external_cat_session_quiesces_poller(
+    poller: RadioPoller,
+    mock_radio: AsyncMock,
+) -> None:
+    """While an external CAT session owns the wire, the poller issues no radio I/O.
+
+    (MOR-166 slice 2 — the Hamlib bridge sets this flag so RigPlane's own
+    polling does not pollute the external master's byte stream.)
+    """
+    mock_radio.get_freq.return_value = 7_000_000
+    mock_radio.external_cat_session_active = True
+    await poller.start()
+    await asyncio.sleep(0.05)
+    await poller.stop()
+    assert mock_radio.get_freq.await_count == 0

@@ -762,6 +762,9 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
         self._scope_callback: Callable[[ScopeFrame], Any] | None = None
         # Raw CI-V pipe listeners (MOR-164): receive inbound on-wire frame bytes.
         self._raw_civ_listeners: list[Callable[[bytes], Any]] = []
+        # External CAT-session ownership (MOR-166 slice 2): when True, cooperating
+        # pollers pause so they do not pollute an external master's byte stream.
+        self._external_cat_session: bool = False
         self._civ_rx_task: asyncio.Task[None] | None = None
         self._civ_data_watchdog_task: asyncio.Task[None] | None = None
         self._audio_watchdog_task: asyncio.Task[None] | None = None
@@ -1304,13 +1307,42 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
         so they do not pollute a Hamlib-owned byte stream. Returns a
         :class:`RawCivSubscription`; call ``.close()`` to unregister.
 
-        Note (MOR-164 limitation): while a raw-pipe consumer is active, RigPlane's
-        own poller/readback traffic is *not* yet automatically quiesced — the
-        bridge consumer is responsible for not issuing competing reads. Scoped
-        ownership is deferred to the bridge daemon issue.
+        To stop RigPlane's own pollers from competing on the wire while an
+        external CAT master consumes this stream, wrap the session with
+        :meth:`begin_external_cat_session` / :meth:`end_external_cat_session`
+        (MOR-166 slice 2).
         """
         self._raw_civ_listeners.append(callback)
         return RawCivSubscription(self._raw_civ_listeners, callback)
+
+    # ---- External CAT-session ownership (MOR-166 slice 2) ----
+
+    @property
+    def external_cat_session_active(self) -> bool:
+        """True while an external CAT master (e.g. a Hamlib bridge) owns the wire."""
+        return self._external_cat_session
+
+    def begin_external_cat_session(self) -> None:
+        """Mark the radio as owned by an external CAT session.
+
+        Cooperating pollers (e.g. the web ``RadioPoller``) pause their own CI-V
+        traffic while this is set, so they do not pollute the owner's byte
+        stream. Idempotent.
+        """
+        self._external_cat_session = True
+
+    def end_external_cat_session(self) -> None:
+        """Release external-CAT-session ownership. Idempotent."""
+        self._external_cat_session = False
+
+    async def reconcile_state(self) -> None:
+        """Re-read full radio state after an external session changed the rig.
+
+        Call once the external CAT master has finished; refreshes RigPlane's
+        ``RadioState`` from the wire so it reflects any frequency/mode/etc. the
+        external master applied while it owned the session.
+        """
+        await self._fetch_initial_state()
 
     async def get_freq(
         self, receiver: int = RECEIVER_MAIN, *, bypass_cache: bool = False

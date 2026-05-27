@@ -198,6 +198,12 @@ class RadioPoller:
 
     async def _poll_once(self) -> None:
         """Execute one poll cycle: get frequency, then (if not a probe) mode."""
+        # External CAT session (e.g. Hamlib A1 bridge) owns the wire — issue no
+        # RigPlane reads so we don't pollute the owner's byte stream (MOR-166
+        # slice 2). ``is True`` (not just truthy) so mock/duck-typed radios never
+        # quiesce by accident — only a real bool flag does.
+        if getattr(self._radio, "external_cat_session_active", False) is True:
+            return
         cb = self._circuit_breaker
         is_probe = cb is not None and cb.state == CircuitState.HALF_OPEN
 

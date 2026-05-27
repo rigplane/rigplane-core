@@ -108,6 +108,7 @@ class HamlibBridge:
         self._writer: asyncio.StreamWriter | None = None
         self._subscription: Any = None
         self._proc: asyncio.subprocess.Process | None = None
+        self._stderr_file: Any = None
         self._t0 = time.monotonic()
 
     # ------------------------------------------------------------------
@@ -127,6 +128,7 @@ class HamlibBridge:
         """
         if self._server is not None:
             return self.back_port
+        self._begin_session()  # take ownership: pause RigPlane's own pollers
         self._subscription = self._radio.add_raw_civ_listener(self._on_radio_frame)
         self._server = await asyncio.start_server(self._handle_back, self.host, 0)
         self._back_port = self._server.sockets[0].getsockname()[1]
@@ -156,11 +158,13 @@ class HamlibBridge:
 
     async def spawn_rigctld(self) -> asyncio.subprocess.Process:
         """Launch stock rigctld pointed at the back-side listener."""
-        stderr = (
-            open(self._stderr_path, "wb")  # noqa: SIM115 - lifetime tied to proc
-            if self._stderr_path
-            else asyncio.subprocess.DEVNULL
-        )
+        if self._proc is not None and self._proc.returncode is None:
+            raise RuntimeError("rigctld is already running for this bridge")
+        if self._stderr_path:
+            self._stderr_file = open(self._stderr_path, "wb")  # noqa: SIM115
+            stderr: Any = self._stderr_file
+        else:
+            stderr = asyncio.subprocess.DEVNULL
         self._proc = await asyncio.create_subprocess_exec(
             *self.rigctld_argv(),
             stdout=asyncio.subprocess.DEVNULL,
@@ -183,6 +187,9 @@ class HamlibBridge:
             except asyncio.TimeoutError:
                 self._proc.kill()
         self._proc = None
+        if self._stderr_file is not None:
+            self._stderr_file.close()
+            self._stderr_file = None
 
         if self._subscription is not None:
             self._subscription.close()
@@ -194,12 +201,39 @@ class HamlibBridge:
         self._back_port = None
         self._writer = None
 
+        # Release ownership and reconcile RigPlane's state from the wire.
+        await self._end_session_and_reconcile()
+
     async def __aenter__(self) -> HamlibBridge:
         await self.start()
         return self
 
     async def __aexit__(self, *exc: object) -> None:
         await self.stop()
+
+    # ------------------------------------------------------------------
+    # External CAT-session ownership (MOR-166 slice 2)
+    # ------------------------------------------------------------------
+
+    def _begin_session(self) -> None:
+        """Claim external-CAT-session ownership if the radio supports it."""
+        begin = getattr(self._radio, "begin_external_cat_session", None)
+        if callable(begin):
+            begin()
+
+    async def _end_session_and_reconcile(self) -> None:
+        """Release ownership and refresh RigPlane state (both best-effort)."""
+        end = getattr(self._radio, "end_external_cat_session", None)
+        if callable(end):
+            end()
+        reconcile = getattr(self._radio, "reconcile_state", None)
+        if callable(reconcile):
+            try:
+                await reconcile()
+            except Exception:  # noqa: BLE001 - reconcile is best-effort
+                logger.warning(
+                    "hamlib-bridge: post-session reconcile failed", exc_info=True
+                )
 
     # ------------------------------------------------------------------
     # Transparent pipe

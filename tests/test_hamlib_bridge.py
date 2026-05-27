@@ -35,6 +35,8 @@ class FakeRawPipeRadio:
     def __init__(self) -> None:
         self.sent: list[bytes] = []
         self._listeners: list[Any] = []
+        self.session_active = False
+        self.reconcile_count = 0
 
     async def send_civ_raw_fire_and_forget(self, frame: bytes) -> None:
         self.sent.append(frame)
@@ -47,6 +49,16 @@ class FakeRawPipeRadio:
         """Simulate an inbound frame from the radio."""
         for cb in list(self._listeners):
             cb(frame)
+
+    # External CAT-session ownership surface (MOR-166 slice 2)
+    def begin_external_cat_session(self) -> None:
+        self.session_active = True
+
+    def end_external_cat_session(self) -> None:
+        self.session_active = False
+
+    async def reconcile_state(self) -> None:
+        self.reconcile_count += 1
 
 
 @pytest.fixture
@@ -168,4 +180,60 @@ async def test_spawn_rigctld_invokes_subprocess(radio: FakeRawPipeRadio) -> None
     assert argv == bridge.rigctld_argv()
 
     bridge._proc = None  # avoid stop() awaiting the mock's terminate/wait
+    await bridge.stop()
+
+
+# ---------------------------------------------------------------------------
+# Slice 2: ownership / quiesce / reconcile + review nits
+# ---------------------------------------------------------------------------
+
+
+async def test_owns_session_and_reconciles_on_stop(radio: FakeRawPipeRadio) -> None:
+    bridge = HamlibBridge(radio, model="3078")
+    await bridge.open_transport()
+    assert radio.session_active is True  # ownership claimed while the bridge runs
+    await bridge.stop()
+    assert radio.session_active is False  # released on stop
+    assert radio.reconcile_count == 1  # state reconciled exactly once
+
+
+async def test_stderr_handle_closed_on_stop(
+    radio: FakeRawPipeRadio, tmp_path: Any
+) -> None:
+    log = tmp_path / "rigctld.log"
+    bridge = HamlibBridge(radio, model="3078", stderr_path=str(log))
+    await bridge.open_transport()
+
+    fake_proc = AsyncMock()
+    fake_proc.pid = 1
+    fake_proc.returncode = None
+    with patch(
+        "rigplane.hamlib_bridge.asyncio.create_subprocess_exec",
+        new=AsyncMock(return_value=fake_proc),
+    ):
+        await bridge.spawn_rigctld()
+
+    handle = bridge._stderr_file
+    assert handle is not None and not handle.closed
+
+    bridge._proc = None  # avoid stop() awaiting the mock
+    await bridge.stop()
+    assert handle.closed
+    assert bridge._stderr_file is None
+
+
+async def test_double_spawn_is_rejected(radio: FakeRawPipeRadio) -> None:
+    bridge = HamlibBridge(radio, model="3078")
+    await bridge.open_transport()
+    fake_proc = AsyncMock()
+    fake_proc.returncode = None
+    with patch(
+        "rigplane.hamlib_bridge.asyncio.create_subprocess_exec",
+        new=AsyncMock(return_value=fake_proc),
+    ):
+        await bridge.spawn_rigctld()
+        with pytest.raises(RuntimeError):
+            await bridge.spawn_rigctld()
+
+    bridge._proc = None
     await bridge.stop()
