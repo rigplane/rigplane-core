@@ -30,6 +30,102 @@
       "tx_adjacent": false
     },
     {
+      "check_id": "mode.set",
+      "capability": "",
+      "level": 2,
+      "declaration": "supported",
+      "summary": "Set operating mode via CI-V write (filter coupling).",
+      "tx_adjacent": false
+    },
+    {
+      "check_id": "filter_width.set",
+      "capability": "filter_width",
+      "level": 3,
+      "declaration": "supported",
+      "summary": "Set DSP IF filter width via CI-V write.",
+      "tx_adjacent": false
+    },
+    {
+      "check_id": "rf_gain.set",
+      "capability": "rf_gain",
+      "level": 3,
+      "declaration": "supported",
+      "summary": "Set RF gain level via CI-V write.",
+      "tx_adjacent": false
+    },
+    {
+      "check_id": "af_level.set",
+      "capability": "af_level",
+      "level": 3,
+      "declaration": "supported",
+      "summary": "Set AF output level via CI-V write.",
+      "tx_adjacent": false
+    },
+    {
+      "check_id": "preamp.set",
+      "capability": "preamp",
+      "level": 3,
+      "declaration": "supported",
+      "summary": "Set preamp state via CI-V write.",
+      "tx_adjacent": false
+    },
+    {
+      "check_id": "attenuator.set",
+      "capability": "attenuator",
+      "level": 3,
+      "declaration": "supported",
+      "summary": "Set attenuator state via CI-V write.",
+      "tx_adjacent": false
+    },
+    {
+      "check_id": "notch.set",
+      "capability": "notch",
+      "level": 3,
+      "declaration": "unsupported_pending_evidence",
+      "summary": "notch.set not declared in the TX-500 profile; pending evidence.",
+      "tx_adjacent": false
+    },
+    {
+      "check_id": "nb.set",
+      "capability": "nb",
+      "level": 3,
+      "declaration": "supported",
+      "summary": "Toggle noise blanker via CI-V write.",
+      "tx_adjacent": false
+    },
+    {
+      "check_id": "nr.set",
+      "capability": "nr",
+      "level": 3,
+      "declaration": "supported",
+      "summary": "Toggle noise reduction via CI-V write.",
+      "tx_adjacent": false
+    },
+    {
+      "check_id": "agc.set",
+      "capability": "agc",
+      "level": 3,
+      "declaration": "unsupported_pending_evidence",
+      "summary": "agc.set not declared in the TX-500 profile; pending evidence.",
+      "tx_adjacent": false
+    },
+    {
+      "check_id": "rit.set",
+      "capability": "rit",
+      "level": 3,
+      "declaration": "supported",
+      "summary": "Set RIT frequency offset via CI-V write.",
+      "tx_adjacent": false
+    },
+    {
+      "check_id": "xit.set",
+      "capability": "xit",
+      "level": 3,
+      "declaration": "unsupported_pending_evidence",
+      "summary": "xit.set not declared in the TX-500 profile; pending evidence.",
+      "tx_adjacent": false
+    },
+    {
       "check_id": "audio.rx",
       "capability": "audio",
       "level": 4,
