@@ -19,6 +19,7 @@ Rig files live in `rigs/`. Reference files:
 - `rigs/ic7300.toml` — IC-7300 (single receiver, USB serial, CI-V)
 - `rigs/ftx1.toml` — Yaesu FTX-1 (Yaesu CAT protocol, dual RX)
 - `rigs/x6100.toml` — Xiegu X6100 (CI-V, IC-705 compatible subset, QRP)
+- `rigs/x6200.toml` — Xiegu X6200 (CI-V subset, shares `0xA4` with IC-705)
 - `rigs/tx500.toml` — Lab599 TX-500 (Kenwood CAT protocol, QRP)
 
 ## Quick Start
@@ -51,6 +52,9 @@ type = "civ"  # or "kenwood_cat" or "yaesu_cat"
 ```
 
 For CI-V radios, `[radio].civ_addr` is required. For Kenwood/Yaesu, omit it.
+Do not assume a CI-V address uniquely identifies a model: Xiegu X6200 and
+Icom IC-705 both use `0xA4` by default, so discovery and profile selection must
+also consider model evidence such as hardware IDs and the resolved rig profile.
 
 Hamlib-backed support is a provider path, not just another TOML dialect. It
 should use Hamlib model metadata, safe read-only probing, and RigPlane's

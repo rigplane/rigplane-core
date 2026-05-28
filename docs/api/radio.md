@@ -567,15 +567,65 @@ async def send_civ(
     command: int,
     sub: int | None = None,
     data: bytes | None = None,
-) -> CivFrame
+    *,
+    wait_response: bool = True,
+) -> CivFrame | None
 ```
 
-Send an arbitrary CI-V command and return the response.
+Send an arbitrary CI-V command through the active backend transport.
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
 | `command` | `int` | CI-V command byte |
 | `sub` | `int \| None` | Optional sub-command byte |
 | `data` | `bytes \| None` | Optional payload data |
+| `wait_response` | `bool` | When `True`, wait for and return the parsed response frame. When `False`, send the frame without registering a response waiter. |
 
-**Returns:** `CivFrame` with the radio's response.
+**Returns:** `CivFrame` with the radio's response when `wait_response=True`;
+`None` when `wait_response=False`.
+
+Use `wait_response=False` for fire-and-forget writes where a later response is
+not needed. Use `send_civ_transaction()` when the caller needs explicit
+ACK/NAK/data semantics and bounded response handling.
+
+### `send_civ_transaction()`
+
+```python
+async def send_civ_transaction(
+    self,
+    command: int,
+    sub: int | None = None,
+    data: bytes | None = None,
+    *,
+    expect: Literal["none", "ack", "data"] = "data",
+    timeout: float | None = None,
+) -> RawCivTransactionResult
+```
+
+Send one raw CI-V command with explicit response semantics.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `command` | `int` | CI-V command byte, `0` through `255` |
+| `sub` | `int \| None` | Optional CI-V sub-command byte, `0` through `255` |
+| `data` | `bytes \| None` | Optional payload bytes |
+| `expect` | `"none" \| "ack" \| "data"` | Response contract for this transaction |
+| `timeout` | `float \| None` | Optional timeout in seconds |
+
+`expect="none"` sends one frame and returns a sent result without waiting.
+`expect="ack"` waits for a fresh CI-V ACK or NAK. `expect="data"` waits for
+the keyed data response, while still treating a fresh NAK as a deterministic
+failure result.
+
+While the transaction is active, cooperating pollers pause via the external
+CAT-session ownership guard so background CI-V traffic cannot consume or
+pollute the caller's response.
+
+**Returns:** `RawCivTransactionResult` with `status`, optional parsed frame
+fields, and explicit ACK/NAK/data/sent outcome metadata.
+
+!!! note "Public surface"
+    `send_civ_transaction()` is the Python counterpart to the public/dev-facing
+    raw CI-V HTTP transaction APIs. The lower-level raw CI-V pipe used by the
+    local Hamlib A1 bridge runner is internal experimental infrastructure and
+    should not be treated as a stable application API.

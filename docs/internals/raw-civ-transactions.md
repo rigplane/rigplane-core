@@ -4,6 +4,25 @@ Raw CI-V transactions are the response-capable counterpart to the
 fire-and-forget `send_civ` command path. They are intentionally scoped to one
 frame and one explicit expectation.
 
+## Release Status
+
+The response-capable transaction surface is public/dev-facing for v2.5-style
+release readers:
+
+- Python: `CoreRadio.send_civ_transaction()`;
+- HTTP: `POST /api/v1/civ/transaction`;
+- ordered batches: `type: "raw_civ_transaction"` steps in
+  `POST /api/v1/commands/batch`.
+
+The transparent raw CI-V pipe used by the local Hamlib A1 bridge runner
+(`send_civ_raw_fire_and_forget()` plus `add_raw_civ_listener()`) remains
+internal experimental infrastructure. It exists to validate external CAT
+session ownership and bridge behavior without committing the pipe itself as a
+stable application API. The open-core boundary remains the generic provider
+contract, external `rigctld` client behavior, discovery candidates, and public
+CLI/docs; managed setup UX, support-evidence workflows, packaging decisions,
+and hosted/customer-specific flows belong outside Core.
+
 ## Ownership
 
 `CoreRadio.send_civ_transaction()` claims the existing external CAT-session
