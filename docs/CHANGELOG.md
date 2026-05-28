@@ -11,6 +11,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.5.1] — 2026-05-28
+
 ### Fixed
 - Use the selected serial rig profile's `default_baud` when `--model` is
   provided without `--serial-baud`, fixing Xiegu X6200 managed/local launches
@@ -1451,7 +1453,8 @@ These deprecation closures were announced in v0.19 and dropped on schedule.
 - Transport layer, authentication, CI-V commands, meters, PTT, keep-alive.
 - Clean-room Icom LAN UDP protocol implementation.
 
-[Unreleased]: https://github.com/rigplane/rigplane-core/compare/v2.5.0...HEAD
+[Unreleased]: https://github.com/rigplane/rigplane-core/compare/v2.5.1...HEAD
+[2.5.1]: https://github.com/rigplane/rigplane-core/compare/v2.5.0...v2.5.1
 [2.5.0]: https://github.com/rigplane/rigplane-core/compare/v2.4.0...v2.5.0
 [2.4.0]: https://github.com/rigplane/rigplane-core/compare/v2.3.1...v2.4.0
 [2.3.1]: https://github.com/rigplane/rigplane-core/compare/v2.3.0...v2.3.1
