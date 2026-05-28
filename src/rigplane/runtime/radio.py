@@ -3029,12 +3029,13 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
         self._check_connected()
         self._require_capability("attenuator", operation="get_attenuator_level")
         self._require_receiver(receiver, operation="get_attenuator_level")
-        if not self._profile.supports_cmd29(0x11):
-            raise CommandError(
-                f"get_attenuator_level is unsupported by profile {self._profile.model}: "
-                "no cmd29 route for command 0x11"
-            )
-        civ = get_attenuator_cmd(to_addr=self._radio_addr, receiver=receiver)
+        self._require_cmd29_route(
+            0x11, None, receiver=receiver, operation="get_attenuator_level"
+        )
+        cmd29 = self._profile.supports_cmd29(0x11)
+        civ = get_attenuator_cmd(
+            to_addr=self._radio_addr, receiver=receiver, command29=cmd29
+        )
         try:
             resp = await self._send_civ_expect(civ, label="get_attenuator_level")
             if resp.data:
@@ -3068,14 +3069,15 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
         self._check_connected()
         self._require_capability("attenuator", operation="set_attenuator_level")
         self._require_receiver(receiver, operation="set_attenuator_level")
-        if not self._profile.supports_cmd29(0x11):
-            raise CommandError(
-                f"set_attenuator_level is unsupported by profile {self._profile.model}: "
-                "no cmd29 route for command 0x11"
-            )
+        self._require_cmd29_route(
+            0x11, None, receiver=receiver, operation="set_attenuator_level"
+        )
         if db < 0 or db > 45 or db % 3 != 0:
             raise ValueError(f"Attenuator level must be 0..45 in 3 dB steps, got {db}")
-        civ = set_attenuator_level(db, to_addr=self._radio_addr, receiver=receiver)
+        cmd29 = self._profile.supports_cmd29(0x11)
+        civ = set_attenuator_level(
+            db, to_addr=self._radio_addr, receiver=receiver, command29=cmd29
+        )
         await self._send_civ_raw(civ, wait_response=False)
         self._attenuator_state = db > 0
         logger.debug("set_attenuator(%d dB) sent (fire-and-forget)", db)
@@ -3085,12 +3087,13 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
         self._check_connected()
         self._require_capability("attenuator", operation="set_attenuator")
         self._require_receiver(receiver, operation="set_attenuator")
-        if not self._profile.supports_cmd29(0x11):
-            raise CommandError(
-                f"set_attenuator is unsupported by profile {self._profile.model}: "
-                "no cmd29 route for command 0x11"
-            )
-        civ = set_attenuator(on, to_addr=self._radio_addr, receiver=receiver)
+        self._require_cmd29_route(
+            0x11, None, receiver=receiver, operation="set_attenuator"
+        )
+        cmd29 = self._profile.supports_cmd29(0x11)
+        civ = set_attenuator(
+            on, to_addr=self._radio_addr, receiver=receiver, command29=cmd29
+        )
         await self._send_civ_raw(civ, wait_response=False)
         self._attenuator_state = on
 
@@ -3103,12 +3106,11 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
         self._check_connected()
         self._require_capability("preamp", operation="get_preamp")
         self._require_receiver(receiver, operation="get_preamp")
-        if not self._profile.supports_cmd29(0x16, 0x02):
-            raise CommandError(
-                f"get_preamp is unsupported by profile {self._profile.model}: "
-                "no cmd29 route for command 0x16/0x02"
-            )
-        civ = get_preamp_cmd(to_addr=self._radio_addr, receiver=receiver)
+        self._require_cmd29_route(0x16, 0x02, receiver=receiver, operation="get_preamp")
+        cmd29 = self._profile.supports_cmd29(0x16, 0x02)
+        civ = get_preamp_cmd(
+            to_addr=self._radio_addr, receiver=receiver, command29=cmd29
+        )
         try:
             resp = await self._send_civ_expect(civ, label="get_preamp")
             if resp.data:
@@ -3161,7 +3163,10 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
                     exc_info=True,
                 )
 
-        civ = set_preamp(level, to_addr=self._radio_addr, receiver=receiver)
+        cmd29 = self._profile.supports_cmd29(0x16, 0x02)
+        civ = set_preamp(
+            level, to_addr=self._radio_addr, receiver=receiver, command29=cmd29
+        )
         await self._send_civ_raw(civ, wait_response=False)
         self._preamp_level = level
 

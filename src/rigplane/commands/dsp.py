@@ -48,6 +48,8 @@ def get_attenuator(
     from_addr: int = CONTROLLER_ADDR,
     receiver: int = RECEIVER_MAIN,
     cmd_map: CommandMap | None = None,
+    *,
+    command29: bool = True,
 ) -> bytes:
     """Build CI-V command to read attenuator level (Command29-aware)."""
     if cmd_map is not None:
@@ -59,7 +61,9 @@ def get_attenuator(
             receiver=receiver,
             command29=True,
         )
-    return build_cmd29_frame(to_addr, from_addr, _CMD_ATT, receiver=receiver)
+    if command29:
+        return build_cmd29_frame(to_addr, from_addr, _CMD_ATT, receiver=receiver)
+    return build_civ_frame(to_addr, from_addr, _CMD_ATT)
 
 
 def set_attenuator_level(
@@ -68,6 +72,8 @@ def set_attenuator_level(
     from_addr: int = CONTROLLER_ADDR,
     receiver: int = RECEIVER_MAIN,
     cmd_map: CommandMap | None = None,
+    *,
+    command29: bool = True,
 ) -> bytes:
     """Set attenuator level in dB (IC-7610 supports 0..45 in 3 dB steps)."""
     if cmd_map is not None:
@@ -80,9 +86,11 @@ def set_attenuator_level(
             receiver=receiver,
             command29=True,
         )
-    return build_cmd29_frame(
-        to_addr, from_addr, _CMD_ATT, data=bytes([_bcd_byte(db)]), receiver=receiver
-    )
+    if command29:
+        return build_cmd29_frame(
+            to_addr, from_addr, _CMD_ATT, data=bytes([_bcd_byte(db)]), receiver=receiver
+        )
+    return build_civ_frame(to_addr, from_addr, _CMD_ATT, data=bytes([_bcd_byte(db)]))
 
 
 def set_attenuator(
@@ -91,6 +99,8 @@ def set_attenuator(
     from_addr: int = CONTROLLER_ADDR,
     receiver: int = RECEIVER_MAIN,
     cmd_map: CommandMap | None = None,
+    *,
+    command29: bool = True,
 ) -> bytes:
     """Compatibility wrapper for attenuator toggle (False->0dB, True->18dB)."""
     return set_attenuator_level(
@@ -99,6 +109,7 @@ def set_attenuator(
         from_addr=from_addr,
         receiver=receiver,
         cmd_map=cmd_map,
+        command29=command29,
     )
 
 
@@ -107,6 +118,8 @@ def get_preamp(
     from_addr: int = CONTROLLER_ADDR,
     receiver: int = RECEIVER_MAIN,
     cmd_map: CommandMap | None = None,
+    *,
+    command29: bool = True,
 ) -> bytes:
     """Build CI-V command to read preamp status (Command29-aware)."""
     if cmd_map is not None:
@@ -118,9 +131,11 @@ def get_preamp(
             receiver=receiver,
             command29=True,
         )
-    return build_cmd29_frame(
-        to_addr, from_addr, _CMD_PREAMP, sub=_SUB_PREAMP_STATUS, receiver=receiver
-    )
+    if command29:
+        return build_cmd29_frame(
+            to_addr, from_addr, _CMD_PREAMP, sub=_SUB_PREAMP_STATUS, receiver=receiver
+        )
+    return build_civ_frame(to_addr, from_addr, _CMD_PREAMP, sub=_SUB_PREAMP_STATUS)
 
 
 def set_preamp(
@@ -130,6 +145,7 @@ def set_preamp(
     from_addr: int = CONTROLLER_ADDR,
     receiver: int = RECEIVER_MAIN,
     cmd_map: CommandMap | None = None,
+    command29: bool = True,
 ) -> bytes:
     """Set preamp level (0=off, 1=PREAMP1, 2=PREAMP2)."""
     if cmd_map is not None:
@@ -142,13 +158,21 @@ def set_preamp(
             receiver=receiver,
             command29=True,
         )
-    return build_cmd29_frame(
+    if command29:
+        return build_cmd29_frame(
+            to_addr,
+            from_addr,
+            _CMD_PREAMP,
+            sub=_SUB_PREAMP_STATUS,
+            data=bytes([_bcd_byte(level)]),
+            receiver=receiver,
+        )
+    return build_civ_frame(
         to_addr,
         from_addr,
         _CMD_PREAMP,
         sub=_SUB_PREAMP_STATUS,
         data=bytes([_bcd_byte(level)]),
-        receiver=receiver,
     )
 
 
