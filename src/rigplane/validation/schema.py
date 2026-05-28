@@ -78,6 +78,8 @@ class CheckResult:
     failure_domain: FailureDomain | None = None
     evidence: dict[str, object] = field(default_factory=dict)
     error: str | None = None
+    started_at: str | None = None
+    finished_at: str | None = None
 
     def to_dict(self) -> dict[str, object]:
         payload: dict[str, object] = {
@@ -95,6 +97,10 @@ class CheckResult:
             payload["evidence"] = dict(self.evidence)
         if self.error:
             payload["error"] = self.error
+        if self.started_at is not None:
+            payload["started_at"] = self.started_at
+        if self.finished_at is not None:
+            payload["finished_at"] = self.finished_at
         return payload
 
 
@@ -218,6 +224,7 @@ class ValidationArtifact:
     schema_version: int = SCHEMA_VERSION
     tool: str = TOOL_NAME
     metadata: dict[str, object] = field(default_factory=dict)
+    generated_at: str | None = None
 
     def to_dict(self) -> dict[str, object]:
         payload: dict[str, object] = {
@@ -235,6 +242,8 @@ class ValidationArtifact:
             payload["core_commit"] = self.core_commit
         if self.logs_path is not None:
             payload["logs_path"] = self.logs_path
+        if self.generated_at is not None:
+            payload["generated_at"] = self.generated_at
         return payload
 
 
@@ -447,6 +456,19 @@ def _validate_check_dict(data: object, where: str) -> CheckResult:
     error_obj = check_dict.get("error")
     error = None if error_obj is None else _require_str(error_obj, f"{where}.error")
 
+    started_at_obj = check_dict.get("started_at")
+    started_at = (
+        None
+        if started_at_obj is None
+        else _require_str(started_at_obj, f"{where}.started_at")
+    )
+    finished_at_obj = check_dict.get("finished_at")
+    finished_at = (
+        None
+        if finished_at_obj is None
+        else _require_str(finished_at_obj, f"{where}.finished_at")
+    )
+
     return CheckResult(
         check_id=check_id,
         capability=capability,
@@ -457,6 +479,8 @@ def _validate_check_dict(data: object, where: str) -> CheckResult:
         failure_domain=failure_domain,
         evidence=dict(evidence_obj),
         error=error,
+        started_at=started_at,
+        finished_at=finished_at,
     )
 
 
@@ -544,6 +568,13 @@ def validate_artifact_dict(data: object) -> ValidationArtifact:
     if not isinstance(metadata_obj, dict):
         raise SchemaValidationError("artifact.metadata must be an object")
 
+    generated_at_obj = root.get("generated_at")
+    generated_at = (
+        None
+        if generated_at_obj is None
+        else _require_str(generated_at_obj, "artifact.generated_at")
+    )
+
     return ValidationArtifact(
         radio=radio,
         transport=transport,
@@ -555,6 +586,7 @@ def validate_artifact_dict(data: object) -> ValidationArtifact:
         mode=mode,
         tool=tool,
         metadata=dict(metadata_obj),
+        generated_at=generated_at,
     )
 
 
