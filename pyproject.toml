@@ -89,6 +89,7 @@ markers = [
     "hardware: opt-in tests that may key a real transmitter or require attached devices",
     "e2e: end-to-end tests for PCM API and CLI audio workflows",
     "slow: marks tests as slow (deselect with '-m \"not slow\"')",
+    "validation_hardware: real-radio validation runs; requires explicit env opt-in",
 ]
 testpaths = ["tests"]
 python_files = ["test_*.py"]

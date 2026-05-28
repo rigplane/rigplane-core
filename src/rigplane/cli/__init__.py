@@ -86,6 +86,10 @@ from rigplane.cli._diagnose import (  # noqa: E402
     add_subparser as _add_diagnose_subparser,
     run as _run_diagnose,
 )
+from rigplane.cli._validate import (  # noqa: E402
+    add_subparser as _add_validate_subparser,
+    run as _run_validate,
+)
 from rigplane.core.radio_protocol import Radio  # noqa: E402
 from rigplane.core.types import Mode, get_audio_capabilities  # noqa: E402
 
@@ -327,6 +331,7 @@ _COMMAND_NAMES = {
     "proxy",
     "scope",
     "diagnose",
+    "validate",
 }
 
 _GLOBAL_CONNECTION_OPTIONS = {
@@ -1480,6 +1485,9 @@ def _build_parser() -> argparse.ArgumentParser:
 
     # diagnose — build (and optionally upload) a diagnostic report bundle
     _add_diagnose_subparser(sub)
+
+    # validate — run the real-radio validation matrix (dry-run by default)
+    _add_validate_subparser(sub)
 
     return p
 
@@ -3713,6 +3721,8 @@ def main() -> None:
         sys.exit(0)
     elif args.command == "diagnose":
         sys.exit(_run_diagnose(args))
+    elif args.command == "validate":
+        sys.exit(_run_validate(args))
     elif args.command is None:
         parser.print_help()
         sys.exit(0)
