@@ -215,13 +215,17 @@ class AudioRuntimeMixin(_MixinBase):  # type: ignore[misc]
         if frame_ms is None:
             frame_ms = 20
 
-        for name, value in (
-            ("sample_rate", sample_rate),
-            ("channels", channels),
-            ("frame_ms", frame_ms),
-        ):
-            if isinstance(value, bool) or not isinstance(value, int):
-                raise TypeError(f"{name} must be an int, got {type(value).__name__}.")
+        # Explicit per-arg validation (rather than a loop) so the type checker
+        # can narrow each value from ``int | None`` to ``int`` for the format
+        # construction and the ``_pcm_tx_fmt`` tuple below.
+        if isinstance(sample_rate, bool) or not isinstance(sample_rate, int):
+            raise TypeError(
+                f"sample_rate must be an int, got {type(sample_rate).__name__}."
+            )
+        if isinstance(channels, bool) or not isinstance(channels, int):
+            raise TypeError(f"channels must be an int, got {type(channels).__name__}.")
+        if isinstance(frame_ms, bool) or not isinstance(frame_ms, int):
+            raise TypeError(f"frame_ms must be an int, got {type(frame_ms).__name__}.")
 
         self._check_connected()
 
