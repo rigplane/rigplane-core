@@ -169,6 +169,9 @@ class RadioProfile:
     data_mode_count: int = 0
     data_mode_labels: dict[str, str] | None = None
     protocol_type: str = "civ"
+    # Hamlib rig_model integer (from rigs_list.h). Used by the validate
+    # ``--provider hamlib`` path to launch stock rigctld with ``-m <id>``.
+    hamlib_model_id: int = 2028
     controls: dict[str, ControlSpec] | None = None
     meter_calibrations: dict[str, list[MeterCalibrationPoint]] | None = None
     meter_redlines: dict[str, int] | None = None

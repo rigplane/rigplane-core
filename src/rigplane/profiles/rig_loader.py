@@ -174,6 +174,7 @@ class RigConfig:
             data_mode_count=self.data_mode_count,
             data_mode_labels=self.data_mode_labels,
             protocol_type=self.protocol_type,
+            hamlib_model_id=self.hamlib_model_id,
             controls=self.controls,
             meter_calibrations=self.meter_calibrations,
             meter_redlines=self.meter_redlines,

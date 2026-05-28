@@ -24,6 +24,8 @@
 id = "xiegu_x6200"
 model = "X6200"
 civ_addr = 0xA4
+# Hamlib RIG_MODEL_X6200 (rigs_list.h) — used by validate --provider hamlib.
+hamlib_model_id = 3091
 receiver_count = 1
 has_lan = false
 has_wifi = true
