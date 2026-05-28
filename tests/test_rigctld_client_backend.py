@@ -10,6 +10,10 @@ from fake_rigctld import FakeRigctldBehavior, FakeRigctldServer
 from rigplane.backends.config import RigctldBackendConfig
 from rigplane.backends.factory import create_radio
 from rigplane.backends.rigctld_client import RigctldClientRadio, RigctldTransport
+from rigplane.backends.rigctld_client.radio import (
+    _float_to_level_255,
+    _level_255_to_float,
+)
 from rigplane.exceptions import CommandError
 from rigplane.exceptions import ConnectionError as RadioConnectionError
 from rigplane.exceptions import TimeoutError as RadioTimeoutError
@@ -112,7 +116,16 @@ async def test_radio_core_frequency_mode_ptt_and_vfo() -> None:
             assert radio.radio_ready
             assert radio.backend_id == "rigctld"
             assert radio.model == "External rigctld"
-            assert radio.capabilities == {"tx", "vfo"}
+            assert radio.capabilities == {
+                "tx",
+                "vfo",
+                "rf_gain",
+                "af_level",
+                "preamp",
+                "attenuator",
+                "nb",
+                "nr",
+            }
             assert radio.supports_command("set_freq")
             assert radio.supports_command("get_vfo_slot")
             assert not radio.supports_command("start_audio_rx_opus")
@@ -174,3 +187,101 @@ def test_config_validates_rigctld_client_backend() -> None:
         RigctldBackendConfig(host="localhost", port=0)
     with pytest.raises(ValueError, match="timeout"):
         RigctldBackendConfig(host="localhost", timeout=0)
+
+
+async def test_rigctld_levels_roundtrip() -> None:
+    async with FakeRigctldServer() as server:
+        radio = RigctldClientRadio(host=server.host, port=server.port)
+        await radio.connect()
+        try:
+            await radio.set_rf_gain(200)
+            assert abs(await radio.get_rf_gain() - 200) <= 2
+
+            await radio.set_af_level(120)
+            assert abs(await radio.get_af_level() - 120) <= 2
+        finally:
+            await radio.disconnect()
+
+
+async def test_rigctld_preamp_attenuator_nb_nr() -> None:
+    async with FakeRigctldServer() as server:
+        radio = RigctldClientRadio(host=server.host, port=server.port)
+        await radio.connect()
+        try:
+            assert await radio.get_preamp() == 0
+            await radio.set_preamp(1)
+            assert await radio.get_preamp() == 1
+
+            assert await radio.get_attenuator() is False
+            await radio.set_attenuator(True)
+            assert await radio.get_attenuator() is True
+            assert await radio.get_attenuator_level() == 6
+
+            assert await radio.get_nb() is False
+            await radio.set_nb(True)
+            assert await radio.get_nb() is True
+
+            assert await radio.get_nr() is False
+            await radio.set_nr(True)
+            assert await radio.get_nr() is True
+        finally:
+            await radio.disconnect()
+
+
+async def test_rigctld_unsupported_level_raises_command_error() -> None:
+    behavior = FakeRigctldBehavior(unsupported_commands={"l RF"})
+    async with FakeRigctldServer(behavior=behavior) as server:
+        radio = RigctldClientRadio(host=server.host, port=server.port)
+        await radio.connect()
+        try:
+            with pytest.raises(CommandError):
+                await radio.get_rf_gain()
+        finally:
+            await radio.disconnect()
+
+
+async def test_rigctld_capabilities_include_levels() -> None:
+    async with FakeRigctldServer() as server:
+        radio = RigctldClientRadio(host=server.host, port=server.port)
+        await radio.connect()
+        try:
+            assert {
+                "rf_gain",
+                "af_level",
+                "preamp",
+                "attenuator",
+                "nb",
+                "nr",
+            } <= radio.capabilities
+            for command in (
+                "get_rf_gain",
+                "set_rf_gain",
+                "get_af_level",
+                "set_af_level",
+                "get_preamp",
+                "set_preamp",
+                "get_attenuator",
+                "set_attenuator",
+                "get_nb",
+                "set_nb",
+                "get_nr",
+                "set_nr",
+            ):
+                assert radio.supports_command(command)
+        finally:
+            await radio.disconnect()
+
+
+def test_level_scale_conversions_roundtrip_and_clamp() -> None:
+    # Round-trip: a 0..255 level survives encode->decode within rounding.
+    for level in (0, 50, 128, 200, 255):
+        encoded = _level_255_to_float(level)
+        assert abs(_float_to_level_255(float(encoded)) - level) <= 1
+
+    # Clamp at boundaries.
+    assert _level_255_to_float(-10) == "0.000"
+    assert _level_255_to_float(999) == "1.000"
+    assert _float_to_level_255(-1.0) == 0
+    assert _float_to_level_255(2.0) == 255
+    assert _float_to_level_255(0.0) == 0
+    assert _float_to_level_255(1.0) == 255

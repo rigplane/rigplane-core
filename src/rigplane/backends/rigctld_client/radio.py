@@ -17,6 +17,20 @@ _SUPPORTED_COMMANDS = {
     "set_ptt",
     "get_vfo_slot",
     "set_vfo_slot",
+    "get_rf_gain",
+    "set_rf_gain",
+    "get_af_level",
+    "set_af_level",
+    "get_preamp",
+    "set_preamp",
+    "get_attenuator",
+    "set_attenuator",
+    "get_attenuator_level",
+    "set_attenuator_level",
+    "get_nb",
+    "set_nb",
+    "get_nr",
+    "set_nr",
 }
 
 
@@ -77,7 +91,7 @@ class RigctldClientRadio:
 
     @property
     def capabilities(self) -> set[str]:
-        caps = {"tx"}
+        caps = {"tx", "rf_gain", "af_level", "preamp", "attenuator", "nb", "nr"}
         if self._vfo_supported:
             caps.add("vfo")
         return caps
@@ -180,6 +194,66 @@ class RigctldClientRadio:
         await self._transport.command(f"V VFO{normalized}")
         self._state.main.active_slot = normalized
 
+    async def get_rf_gain(self, receiver: int = 0) -> int:
+        self._require_main_receiver(receiver, "get_rf_gain")
+        line = (await self._transport.query("l RF", response_lines=1))[0]
+        return _parse_level_255(line, "RF gain")
+
+    async def set_rf_gain(self, level: int, receiver: int = 0) -> None:
+        self._require_main_receiver(receiver, "set_rf_gain")
+        await self._transport.command(f"L RF {_level_255_to_float(level)}")
+
+    async def get_af_level(self, receiver: int = 0) -> int:
+        self._require_main_receiver(receiver, "get_af_level")
+        line = (await self._transport.query("l AF", response_lines=1))[0]
+        return _parse_level_255(line, "AF level")
+
+    async def set_af_level(self, level: int, receiver: int = 0) -> None:
+        self._require_main_receiver(receiver, "set_af_level")
+        await self._transport.command(f"L AF {_level_255_to_float(level)}")
+
+    async def get_preamp(self, receiver: int = 0) -> int:
+        self._require_main_receiver(receiver, "get_preamp")
+        line = (await self._transport.query("l PREAMP", response_lines=1))[0]
+        return _preamp_db_to_level(_parse_int_level(line, "preamp"))
+
+    async def set_preamp(self, level: int, receiver: int = 0) -> None:
+        self._require_main_receiver(receiver, "set_preamp")
+        await self._transport.command(f"L PREAMP {_preamp_level_to_db(level)}")
+
+    async def get_attenuator(self, receiver: int = 0) -> bool:
+        self._require_main_receiver(receiver, "get_attenuator")
+        return await self.get_attenuator_level(receiver) > 0
+
+    async def set_attenuator(self, on: bool, receiver: int = 0) -> None:
+        self._require_main_receiver(receiver, "set_attenuator")
+        await self._transport.command(f"L ATT {'6' if on else '0'}")
+
+    async def get_attenuator_level(self, receiver: int = 0) -> int:
+        self._require_main_receiver(receiver, "get_attenuator_level")
+        line = (await self._transport.query("l ATT", response_lines=1))[0]
+        return _parse_int_level(line, "attenuator")
+
+    async def set_attenuator_level(self, db: int, receiver: int = 0) -> None:
+        self._require_main_receiver(receiver, "set_attenuator_level")
+        await self._transport.command(f"L ATT {int(db)}")
+
+    async def get_nb(self) -> bool:
+        line = (await self._transport.query("u NB", response_lines=1))[0]
+        return _parse_func(line, "noise blanker")
+
+    async def set_nb(self, on: bool, receiver: int = 0) -> None:
+        self._require_main_receiver(receiver, "set_nb")
+        await self._transport.command(f"U NB {1 if on else 0}")
+
+    async def get_nr(self) -> bool:
+        line = (await self._transport.query("u NR", response_lines=1))[0]
+        return _parse_func(line, "noise reduction")
+
+    async def set_nr(self, on: bool, receiver: int = 0) -> None:
+        self._require_main_receiver(receiver, "set_nr")
+        await self._transport.command(f"U NR {1 if on else 0}")
+
     async def _probe_vfo_support(self) -> None:
         try:
             await self.get_vfo_slot()
@@ -203,3 +277,54 @@ def _normalize_vfo_slot(value: str) -> str:
     if normalized in {"B", "VFOB"}:
         return "B"
     raise CommandError(f"External rigctld returned unsupported VFO: {value!r}.")
+
+
+def _level_255_to_float(level: int) -> str:
+    """Format a RigPlane 0..255 level as a rigctl 0.0..1.0 string (3 decimals)."""
+    clamped = max(0, min(255, int(level)))
+    return f"{clamped / 255:.3f}"
+
+
+def _float_to_level_255(value: float) -> int:
+    """Convert a rigctl 0.0..1.0 level to a clamped RigPlane 0..255 integer."""
+    return max(0, min(255, round(value * 255)))
+
+
+def _parse_level_255(line: str, name: str) -> int:
+    try:
+        value = float(line)
+    except ValueError as exc:
+        raise CommandError(
+            f"External rigctld returned malformed {name}: {line!r}."
+        ) from exc
+    return _float_to_level_255(value)
+
+
+def _parse_int_level(line: str, name: str) -> int:
+    try:
+        return int(float(line))
+    except ValueError as exc:
+        raise CommandError(
+            f"External rigctld returned malformed {name}: {line!r}."
+        ) from exc
+
+
+def _parse_func(line: str, name: str) -> bool:
+    stripped = line.strip()
+    if stripped not in {"0", "1"}:
+        raise CommandError(f"External rigctld returned malformed {name}: {line!r}.")
+    return stripped == "1"
+
+
+def _preamp_level_to_db(level: int) -> str:
+    """Map a RigPlane preamp level (0/1/2) to a rigctl dB string."""
+    return {0: "0", 1: "10", 2: "20"}.get(int(level), "0")
+
+
+def _preamp_db_to_level(db: int) -> int:
+    """Map a rigctl preamp dB reading to a RigPlane preamp level (0/1/2)."""
+    if db <= 0:
+        return 0
+    if db <= 15:
+        return 1
+    return 2
