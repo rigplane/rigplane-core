@@ -29,6 +29,7 @@ from rigplane.commands import (
 )
 from rigplane.commands import get_selected_freq as _get_selected_freq_cmd
 from rigplane.commands import get_selected_mode as _get_selected_mode_cmd
+from rigplane.commands import set_selected_mode as _set_selected_mode_cmd
 from rigplane.commands import get_unselected_freq as _get_unselected_freq_cmd
 from rigplane.commands import get_unselected_mode as _get_unselected_mode_cmd
 from rigplane.commands import (
@@ -214,12 +215,28 @@ class DualRxRuntimeMixin(_MixinBase):  # type: ignore[misc]
         update_cache: bool = True,
     ) -> None:
         """Set MAIN receiver mode/filter with optional cache updates."""
-        civ = set_mode(
-            mode,
-            filter_width=filter_width,
-            to_addr=self._radio_addr,
-            receiver=RECEIVER_MAIN,
-        )
+        if self._profile.set_mode_via_selected:
+            # Rigs declaring ``set_selected_mode`` (e.g. X6200) ignore the bare
+            # 0x06 mode-set; route through CI-V 0x26 0x00 with the full
+            # (mode, data_mode, filter) tuple so a mode-only change preserves
+            # the radio's current data-mode and filter.
+            target = self._radio_state.receiver("MAIN")
+            data_mode = int(getattr(target, "data_mode", 0) or 0)
+            resolved_filter = (
+                filter_width
+                if filter_width is not None
+                else (self._filter_width if self._filter_width is not None else 1)
+            )
+            civ = _set_selected_mode_cmd(
+                mode, data_mode, resolved_filter, to_addr=self._radio_addr
+            )
+        else:
+            civ = set_mode(
+                mode,
+                filter_width=filter_width,
+                to_addr=self._radio_addr,
+                receiver=RECEIVER_MAIN,
+            )
         await self._send_civ_raw(civ, wait_response=False)
         self._last_mode = mode
         if update_cache:

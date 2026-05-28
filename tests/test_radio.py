@@ -396,6 +396,73 @@ class TestMode:
         assert len(mock_transport.sent_packets) > 0
 
 
+class TestSetModeSelected0x26:
+    """MAIN set_mode routes through CI-V 0x26 0x00 for rigs declaring
+    ``set_selected_mode`` (X6200), and stays on the bare 0x06 for rigs that
+    do not (IC-7610).
+
+    Note:
+        mock_server does not handle 0x26; the emitted bytes are asserted via
+        ``sent_packets[-1]``. Live IC-7610 + X6200 verification is done
+        separately by the orchestrator.
+    """
+
+    def _make_radio(self, model: str, mock_transport: MockTransport) -> IcomRadio:
+        r = IcomRadio("192.168.1.100", model=model, timeout=0.05)
+        r._civ_transport = mock_transport
+        r._ctrl_transport = mock_transport
+        r._connected = True
+        return r
+
+    @pytest.mark.asyncio
+    async def test_x6200_routes_via_0x26(self, mock_transport: MockTransport) -> None:
+        # X6200: civ_addr 0xA4, declares set_selected_mode → 0x26 path.
+        # Frame tail: 26 00 <receiver=00> <mode=LSB=00> <data_mode=00>
+        #             <filter=default 1> FD.
+        radio = self._make_radio("X6200", mock_transport)
+        try:
+            assert radio._profile.set_mode_via_selected is True
+            await radio.set_mode(Mode.LSB)
+            assert mock_transport.sent_packets[-1].endswith(
+                b"\xfe\xfe\xa4\xe0\x26\x00\x00\x00\x01\xfd"
+            )
+        finally:
+            radio._connected = False
+
+    @pytest.mark.asyncio
+    async def test_ic7610_stays_on_0x06_regression_lock(
+        self, mock_transport: MockTransport
+    ) -> None:
+        # IC-7610 must NOT declare set_selected_mode → unchanged 0x06 path.
+        # This locks zero flagship regression.
+        radio = self._make_radio("IC-7610", mock_transport)
+        try:
+            assert radio._profile.set_mode_via_selected is False
+            await radio.set_mode(Mode.LSB)
+            sent = mock_transport.sent_packets[-1]
+            assert sent.endswith(b"\xfe\xfe\x98\xe0\x06\x00\xfd")
+            assert b"\x26\x00" not in sent
+        finally:
+            radio._connected = False
+
+    @pytest.mark.asyncio
+    async def test_x6200_fills_data_mode_and_filter(
+        self, mock_transport: MockTransport
+    ) -> None:
+        # A mode-only change preserves the radio's current data_mode/filter:
+        # data_mode 1 (from MAIN state), filter 2 (from _filter_width cache).
+        # Frame tail: 26 <receiver=00> <mode=USB=01> <data_mode=01>
+        #             <filter=02> FD.
+        radio = self._make_radio("X6200", mock_transport)
+        try:
+            radio._radio_state.main.data_mode = 1
+            radio._filter_width = 2
+            await radio.set_mode(Mode.USB)
+            assert mock_transport.sent_packets[-1].endswith(b"\x26\x00\x01\x01\x02\xfd")
+        finally:
+            radio._connected = False
+
+
 class TestMeters:
     """Test meter readings."""
 

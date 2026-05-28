@@ -173,6 +173,7 @@ class RigConfig:
             agc_labels=self.agc_labels,
             data_mode_count=self.data_mode_count,
             data_mode_labels=self.data_mode_labels,
+            set_mode_via_selected="set_selected_mode" in self.commands,
             protocol_type=self.protocol_type,
             hamlib_model_id=self.hamlib_model_id,
             controls=self.controls,

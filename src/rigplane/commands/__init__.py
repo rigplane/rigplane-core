@@ -78,6 +78,7 @@ from .freq import (
     parse_selected_mode_response,
     set_freq,
     set_frequency,
+    set_selected_mode,
 )
 
 # --- mode.py ---
@@ -563,6 +564,7 @@ __all__ = [
     "parse_selected_freq_response",
     "get_selected_mode",
     "get_unselected_mode",
+    "set_selected_mode",
     "parse_selected_mode_response",
     "_CMD_SELECTED_FREQ",
     "_CMD_SELECTED_MODE",

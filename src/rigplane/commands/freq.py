@@ -146,6 +146,29 @@ def get_unselected_mode(
     return build_civ_frame(to_addr, from_addr, _CMD_SELECTED_MODE, data=bytes([0x01]))
 
 
+def set_selected_mode(
+    mode: Mode,
+    data_mode: int,
+    filter_index: int,
+    to_addr: int,
+    from_addr: int = CONTROLLER_ADDR,
+) -> bytes:
+    """Build a "set selected receiver mode" CI-V command (0x26 0x00).
+
+    Frame layout: ``FE FE <to> <from> 26 00 <mode> <data_mode> <filter> FD``.
+    The leading ``0x00`` data byte selects the active receiver (mirroring
+    :func:`get_selected_mode`); ``mode`` / ``data_mode`` / ``filter`` set the
+    full tuple so a mode-only change preserves the radio's current data-mode
+    and filter.
+    """
+    return build_civ_frame(
+        to_addr,
+        from_addr,
+        _CMD_SELECTED_MODE,
+        data=bytes([0x00, int(Mode(mode)), int(data_mode), int(filter_index)]),
+    )
+
+
 def parse_selected_mode_response(
     frame: CivFrame,
 ) -> tuple[int, Mode, int | None, int | None]:

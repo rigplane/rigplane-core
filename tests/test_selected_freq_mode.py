@@ -14,6 +14,7 @@ from rigplane.commands import (
     get_unselected_mode,
     parse_selected_freq_response,
     parse_selected_mode_response,
+    set_selected_mode,
 )
 from rigplane.radio import IcomRadio
 from rigplane.types import CivFrame, Mode, bcd_encode
@@ -73,6 +74,13 @@ class TestCommandBuilders:
     def test_get_unselected_mode_frame(self) -> None:
         frame = get_unselected_mode(to_addr=0x98)
         assert b"\x26\x01" in frame
+
+    def test_set_selected_mode_frame(self) -> None:
+        # X6200 CI-V address is 0xA4; controller 0xE0; Mode.LSB == 0x00.
+        # Frame: FE FE A4 E0 26 00 <receiver=00> <mode=LSB=00> <data_mode=00>
+        #        <filter=01> FD.
+        frame = set_selected_mode(Mode.LSB, 0, 1, to_addr=0xA4)
+        assert frame == b"\xfe\xfe\xa4\xe0\x26\x00\x00\x00\x01\xfd"
 
 
 # ---------------------------------------------------------------------------

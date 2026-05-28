@@ -168,6 +168,12 @@ class RadioProfile:
     agc_labels: dict[str, str] | None = None
     data_mode_count: int = 0
     data_mode_labels: dict[str, str] | None = None
+    # When True, MAIN set_mode routes through CI-V 0x26 0x00 (set selected
+    # receiver mode) instead of the bare 0x06. Data-driven: derived from the
+    # profile declaring a ``set_selected_mode`` command (e.g. Xiegu X6200,
+    # whose 0x06 mode-set is a hardware-confirmed no-op). Default False keeps
+    # the unchanged 0x06 path for every rig that does not declare it.
+    set_mode_via_selected: bool = False
     protocol_type: str = "civ"
     # Hamlib rig_model integer (from rigs_list.h). Used by the validate
     # ``--provider hamlib`` path to launch stock rigctld with ``-m <id>``.
