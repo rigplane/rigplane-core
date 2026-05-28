@@ -1517,11 +1517,11 @@ def _rigs_dir() -> Path:
 
 def _resolve_model(
     args: argparse.Namespace,
-) -> tuple[int | None, str | None]:
+) -> tuple[int | None, str | None, int | None]:
     """Resolve radio_addr and model name from --model / --radio-addr flags.
 
     Returns:
-        (radio_addr, model_name) — either may be None.
+        (radio_addr, model_name, default_baud) — each may be None.
     """
     from rigplane.rig_loader import discover_rigs
 
@@ -1529,7 +1529,7 @@ def _resolve_model(
     radio_addr: int | None = getattr(args, "radio_addr", None)
 
     if model_name is None:
-        return radio_addr, None
+        return radio_addr, None, None
 
     rigs = discover_rigs(_rigs_dir())
 
@@ -1551,7 +1551,7 @@ def _resolve_model(
     if radio_addr is None:
         radio_addr = matched.civ_addr
 
-    return radio_addr, matched.model
+    return radio_addr, matched.model, matched.default_baud
 
 
 def _find_port_pid(port: int) -> str | None:
@@ -1610,7 +1610,7 @@ async def _build_backend_config(
     Runs auto-discovery when host / serial-port is not provided.
     Infers backend type from --serial-port when --backend is not set.
     """
-    radio_addr, model_name = _resolve_model(args)
+    radio_addr, model_name, model_default_baud = _resolve_model(args)
 
     # Infer backend from context when not explicitly set.
     backend = getattr(args, "backend", None)
@@ -1666,7 +1666,7 @@ async def _build_backend_config(
                 args.serial_baud = discovered_baud
         return SerialBackendConfig(
             device=device,
-            baudrate=getattr(args, "serial_baud", None) or 115200,
+            baudrate=getattr(args, "serial_baud", None) or model_default_baud or 115200,
             timeout=args.timeout,
             radio_addr=radio_addr,
             model=model_name,
