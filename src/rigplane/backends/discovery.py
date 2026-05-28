@@ -542,6 +542,37 @@ async def discover_lan_radios(timeout: float = 3.0) -> list[dict[str, object]]:
     return await asyncio.get_running_loop().run_in_executor(None, _scan)
 
 
+def _resolve_xiegu_x6200_override(
+    address: int, port: SerialPortCandidate
+) -> tuple[str, str] | None:
+    """Disambiguate Xiegu X6200 from Icom IC-705 at the shared CI-V address 0xA4.
+
+    Both rigs default to CI-V address 0xA4 (Hamlib ``rigs/icom/xiegu.c``
+    ``x6100_priv_caps``; Radioddity *X6200 CI-V implementation V1.0.6*
+    PDF page 4). The address probe alone cannot distinguish them, so this
+    helper looks at the USB hardware fingerprint instead:
+
+    - X6200 enumerates over a Nanjing QinHeng / WCH CH342 chip
+      (``VID:PID = 1A86:55D2``) as a composite dual-ACM device with
+      product name ``"USB Dual_Serial"``. IC-705 uses an Icom-made USB
+      controller and never matches that fingerprint.
+    - Either signal alone is sufficient. VID/PID is the strong match;
+      the product-name fallback covers OS-level enumerations where
+      ``vid``/``pid`` were not surfaced by pyserial.
+
+    Returns ``(model_name, profile_id)`` when the fingerprint matches;
+    otherwise ``None`` (the caller falls back to the address-based
+    mapping, which keeps the existing IC-705 behaviour intact). MOR-170.
+    """
+    if address != 0xA4:
+        return None
+    if port.vid == 0x1A86 and port.pid == 0x55D2:
+        return ("X6200", "xiegu_x6200")
+    if port.product and "USB Dual_Serial" in port.product:
+        return ("X6200", "xiegu_x6200")
+    return None
+
+
 async def discover_serial_radios(
     *,
     _open_serial: _OpenSerial | None = None,
@@ -571,6 +602,11 @@ async def discover_serial_radios(
         if civ:
             model = identify_radio(civ.address, civ.model_id)
             profile_id = CIV_PROFILE_MAP.get(civ.address, "")
+            # Hardware-fingerprint override for the IC-705 / X6200 CI-V
+            # address collision (both default to 0xA4). MOR-170.
+            xiegu_override = _resolve_xiegu_x6200_override(civ.address, port)
+            if xiegu_override is not None:
+                model, profile_id = xiegu_override
             results.append(
                 RadioDiscoveryResult(
                     port=civ.port,
