@@ -823,11 +823,19 @@ class AudioHandler:
             self._transcoder_rate = 0
 
     def _tx_codec(self) -> AudioCodec | None:
+        # Under the ``rigplane.web.*`` strict override with
+        # ``follow_imports = "skip"``, ``AudioCodec`` resolves to ``Any`` in
+        # this module's view, so the function effectively returns
+        # ``Any | None`` and the ``getattr`` results below are also ``Any``.
+        # That triggers ``no-any-return``; suppress it locally rather than
+        # carrying a runtime-redundant ``cast``.  ``warn_unused_ignores`` is
+        # off for ``rigplane.web.*``, so the ignore stays safe in any future
+        # non-strict context.
         contract = getattr(self._radio, "audio_stream_contract", None)
         tx_codec = getattr(contract, "tx_codec", None)
         if tx_codec is not None:
-            return tx_codec
-        return getattr(self._radio, "audio_codec", None)
+            return tx_codec  # type: ignore[no-any-return]
+        return getattr(self._radio, "audio_codec", None)  # type: ignore[no-any-return]
 
     def _tx_sample_rate(self) -> int:
         contract = getattr(self._radio, "audio_stream_contract", None)
