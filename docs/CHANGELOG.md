@@ -11,6 +11,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- Use the selected serial rig profile's `default_baud` when `--model` is
+  provided without `--serial-baud`, fixing Xiegu X6200 managed/local launches
+  that otherwise fell back to 115200 baud and timed out CAT/control reads
+  (#1642).
+
 ## [2.5.0] — 2026-05-28
 
 ### Added

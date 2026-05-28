@@ -133,6 +133,46 @@ class TestSerialBackend:
         assert cfg.model == "IC-7300"
         assert cfg.backend == "serial"
 
+    async def test_serial_model_uses_profile_default_baud(
+        self, parser: argparse.ArgumentParser
+    ) -> None:
+        ns = _parse(
+            parser,
+            [
+                "--backend",
+                "serial",
+                "--serial-port",
+                "/dev/ttyUSB0",
+                "--model",
+                "X6200",
+                "status",
+            ],
+        )
+        cfg = await _build_backend_config(ns)
+        assert cfg.model == "X6200"
+        assert cfg.baudrate == 19200
+
+    async def test_serial_baud_overrides_profile_default_baud(
+        self, parser: argparse.ArgumentParser
+    ) -> None:
+        ns = _parse(
+            parser,
+            [
+                "--backend",
+                "serial",
+                "--serial-port",
+                "/dev/ttyUSB0",
+                "--model",
+                "X6200",
+                "--serial-baud",
+                "38400",
+                "status",
+            ],
+        )
+        cfg = await _build_backend_config(ns)
+        assert cfg.model == "X6200"
+        assert cfg.baudrate == 38400
+
     async def test_radio_addr_with_serial(
         self, parser: argparse.ArgumentParser
     ) -> None:
