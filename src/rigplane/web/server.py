@@ -24,6 +24,7 @@ import gzip as _gzip
 import hmac
 import json
 import logging
+import math
 import mimetypes
 import os
 import pathlib
@@ -33,7 +34,7 @@ import time
 import urllib.parse
 from collections.abc import Callable, Coroutine
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any, TextIO
+from typing import TYPE_CHECKING, Any, Literal, TextIO
 
 from .. import __version__
 from .._bounded_queue import BoundedQueue
@@ -99,6 +100,13 @@ _RADIO_MODEL = "IC-7610"
 _MAX_POST_BODY = 256 * 1024  # 256 KiB — hard ceiling for all POST body reads
 _MAX_COMMAND_BATCH_STEPS = 128
 _COMMAND_BATCH_STEP_TIMEOUT = 10.0
+_CIV_TRANSACTION_BATCH_STEP_TYPE = "raw_civ_transaction"
+_CIV_TRANSACTION_BATCH_STEP_KEYS = frozenset(
+    {"type", "id", "command", "sub", "data", "expect", "timeout_ms"}
+)
+
+_CivTransactionExpect = Literal["none", "ack", "data"]
+_MISSING_BATCH_STEP_ID = object()
 
 
 class _HttpBatchValidationError(ValueError):
@@ -113,6 +121,17 @@ class _HttpBatchStep:
     name: str
     command: Any
     result: dict[str, Any]
+
+
+@dataclass(frozen=True, slots=True)
+class _HttpBatchTransactionStep:
+    index: int
+    step_id: Any
+    command: int
+    sub: int | None
+    data: bytes
+    expect: _CivTransactionExpect
+    timeout: float
 
 
 class _HttpCommandCollector:
@@ -2184,7 +2203,7 @@ class WebServer:
         reader: asyncio.StreamReader | None = None,
     ) -> None:
         """Handle POST /api/v1/commands and /api/v1/commands/batch."""
-        if self._radio is None:
+        if self._radio is None and path != "/api/v1/commands/batch":
             await self._send_json(
                 writer,
                 503,
@@ -2201,6 +2220,23 @@ class WebServer:
             await self._handle_http_single_command(writer, payload)
             return
         if path == "/api/v1/commands/batch":
+            if self._radio is None:
+                raw_steps = payload.get("steps")
+                is_transaction_only_batch = (
+                    isinstance(raw_steps, list)
+                    and bool(raw_steps)
+                    and all(
+                        self._is_http_batch_transaction_step(step) for step in raw_steps
+                    )
+                )
+                if not is_transaction_only_batch:
+                    await self._send_json(
+                        writer,
+                        503,
+                        "Service Unavailable",
+                        {"error": "no_radio", "message": "No radio configured"},
+                    )
+                    return
             await self._handle_http_command_batch(writer, payload)
             return
 
@@ -2212,10 +2248,9 @@ class WebServer:
             if required:
                 raise ValueError(f"missing required '{name}' parameter")
             return None
-        try:
-            parsed = int(value)
-        except (TypeError, ValueError) as exc:
-            raise ValueError(f"{name} must be an integer byte") from exc
+        if isinstance(value, bool) or not isinstance(value, int):
+            raise ValueError(f"{name} must be an integer byte")
+        parsed = int(value)
         if not 0 <= parsed <= 0xFF:
             raise ValueError(f"{name} must be 0-255, got {parsed}")
         return parsed
@@ -2236,10 +2271,11 @@ class WebServer:
     def _parse_civ_transaction_timeout(value: Any) -> float | None:
         if value is None:
             return None
-        try:
-            timeout_ms = float(value)
-        except (TypeError, ValueError) as exc:
-            raise ValueError("timeout_ms must be a positive number") from exc
+        if isinstance(value, bool) or not isinstance(value, int | float):
+            raise ValueError("timeout_ms must be a positive finite number")
+        timeout_ms = float(value)
+        if not math.isfinite(timeout_ms):
+            raise ValueError("timeout_ms must be a positive finite number")
         if timeout_ms <= 0:
             raise ValueError("timeout_ms must be positive")
         return timeout_ms / 1000.0
@@ -2511,6 +2547,168 @@ class WebServer:
             result=result,
         )
 
+    def _prepare_http_batch_transaction_step(
+        self,
+        index: int,
+        raw_step: Any,
+    ) -> _HttpBatchTransactionStep:
+        if not isinstance(raw_step, dict):
+            raise _HttpBatchValidationError(
+                "invalid_step",
+                f"step {index} must be an object",
+            )
+        extra_keys = set(raw_step) - _CIV_TRANSACTION_BATCH_STEP_KEYS
+        if extra_keys:
+            extra = ", ".join(sorted(extra_keys))
+            raise _HttpBatchValidationError(
+                "invalid_step",
+                f"step {index} has unsupported raw CI-V transaction field(s): {extra}",
+            )
+        try:
+            if raw_step.get("type") != _CIV_TRANSACTION_BATCH_STEP_TYPE:
+                raise ValueError("type must be raw_civ_transaction")
+            command = self._parse_civ_byte(raw_step.get("command"), "command")
+            sub = self._parse_civ_byte(raw_step.get("sub"), "sub", required=False)
+            data = self._parse_civ_hex_data(raw_step.get("data", ""))
+            raw_expect = raw_step.get("expect")
+            if raw_expect not in ("none", "ack", "data"):
+                raise ValueError("expect must be one of: none, ack, data")
+            timeout = self._parse_civ_transaction_timeout(raw_step.get("timeout_ms"))
+        except ValueError as exc:
+            raise _HttpBatchValidationError("invalid_request", str(exc)) from exc
+        assert command is not None
+        return _HttpBatchTransactionStep(
+            index=index,
+            step_id=raw_step.get("id", _MISSING_BATCH_STEP_ID),
+            command=command,
+            sub=sub,
+            data=data,
+            expect=raw_expect,
+            timeout=timeout if timeout is not None else _COMMAND_BATCH_STEP_TIMEOUT,
+        )
+
+    @staticmethod
+    def _is_http_batch_transaction_step(raw_step: Any) -> bool:
+        return (
+            isinstance(raw_step, dict)
+            and raw_step.get("type") == _CIV_TRANSACTION_BATCH_STEP_TYPE
+        )
+
+    @staticmethod
+    def _is_http_batch_typed_step(raw_step: Any) -> bool:
+        return (
+            isinstance(raw_step, dict) and "type" in raw_step and "name" not in raw_step
+        )
+
+    def _failed_transaction_batch_result(
+        self,
+        step: _HttpBatchTransactionStep,
+        *,
+        status: str,
+        error: str,
+        message: str,
+        result: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        response: dict[str, Any] = {
+            "index": step.index,
+            "type": _CIV_TRANSACTION_BATCH_STEP_TYPE,
+            "ok": False,
+            "status": status,
+            "error": error,
+            "message": message,
+        }
+        if step.step_id is not _MISSING_BATCH_STEP_ID:
+            response["id"] = step.step_id
+        if result is not None:
+            response["result"] = result
+        return response
+
+    async def _execute_http_batch_transaction_step(
+        self,
+        step: _HttpBatchTransactionStep,
+    ) -> dict[str, Any]:
+        if self._config.read_only:
+            return self._failed_transaction_batch_result(
+                step,
+                status="read_only",
+                error="read_only",
+                message="raw CI-V transactions are disabled in read-only mode",
+            )
+        if self._radio is None:
+            return self._failed_transaction_batch_result(
+                step,
+                status="no_radio",
+                error="no_radio",
+                message="No radio configured",
+            )
+        if not isinstance(self._radio, CivTransactionCapable):
+            return self._failed_transaction_batch_result(
+                step,
+                status="unsupported",
+                error="unsupported_command",
+                message="active backend does not support raw CI-V transactions",
+            )
+
+        try:
+            result = await self._radio.send_civ_transaction(
+                step.command,
+                sub=step.sub,
+                data=step.data,
+                expect=step.expect,
+                timeout=step.timeout,
+            )
+        except (RigplaneTimeoutError, TimeoutError):
+            return self._failed_transaction_batch_result(
+                step,
+                status="timed_out",
+                error="transaction_timeout",
+                message="raw CI-V transaction timed out",
+            )
+        except RuntimeError as exc:
+            message = str(exc)
+            if "already owned" in message:
+                return self._failed_transaction_batch_result(
+                    step,
+                    status="owner_conflict",
+                    error="civ_owner_conflict",
+                    message=message,
+                )
+            return self._failed_transaction_batch_result(
+                step,
+                status="failed_execution",
+                error="transaction_failed",
+                message=message,
+            )
+        except ValueError as exc:
+            return self._failed_transaction_batch_result(
+                step,
+                status="failed_validation",
+                error="invalid_request",
+                message=str(exc),
+            )
+
+        status = getattr(result, "status", "response")
+        response: dict[str, Any] = {
+            "index": step.index,
+            "type": _CIV_TRANSACTION_BATCH_STEP_TYPE,
+            "ok": status != "nak",
+            "status": status,
+        }
+        if step.step_id is not _MISSING_BATCH_STEP_ID:
+            response["id"] = step.step_id
+        serialized = self._serialize_civ_transaction_result(result)
+        if status == "nak":
+            response.update(
+                {
+                    "error": "radio_nak",
+                    "message": "radio returned CI-V NAK",
+                    "result": serialized,
+                }
+            )
+        else:
+            response["result"] = serialized
+        return response
+
     @staticmethod
     def _skipped_batch_result(index: int, name: str | None = None) -> dict[str, Any]:
         result: dict[str, Any] = {
@@ -2523,6 +2721,24 @@ class WebServer:
         if name is not None:
             result["name"] = name
         return result
+
+    @classmethod
+    def _skipped_batch_result_for_raw_step(
+        cls,
+        index: int,
+        raw_step: Any,
+    ) -> dict[str, Any]:
+        if (
+            isinstance(raw_step, dict)
+            and raw_step.get("type") == _CIV_TRANSACTION_BATCH_STEP_TYPE
+        ):
+            result = cls._skipped_batch_result(index)
+            result["type"] = _CIV_TRANSACTION_BATCH_STEP_TYPE
+            if "id" in raw_step:
+                result["id"] = raw_step["id"]
+            return result
+        name = raw_step.get("name") if isinstance(raw_step, dict) else None
+        return cls._skipped_batch_result(index, name)
 
     async def _handle_http_command_batch(
         self,
@@ -2574,7 +2790,88 @@ class WebServer:
         results: list[dict[str, Any]] = []
 
         for index, raw_step in enumerate(raw_steps):
+            if self._is_http_batch_transaction_step(raw_step):
+                try:
+                    transaction_step = self._prepare_http_batch_transaction_step(
+                        index,
+                        raw_step,
+                    )
+                    transaction_result = (
+                        await self._execute_http_batch_transaction_step(
+                            transaction_step
+                        )
+                    )
+                except _HttpBatchValidationError as exc:
+                    transaction_result = {
+                        "index": index,
+                        "type": _CIV_TRANSACTION_BATCH_STEP_TYPE,
+                        "ok": False,
+                        "status": "failed_validation",
+                        "error": exc.error,
+                        "message": str(exc),
+                    }
+                    if isinstance(raw_step, dict) and "id" in raw_step:
+                        transaction_result["id"] = raw_step["id"]
+
+                results.append(transaction_result)
+                if transaction_result.get("ok") is True or continue_on_error:
+                    continue
+                for skip_index in range(index + 1, len(raw_steps)):
+                    results.append(
+                        self._skipped_batch_result_for_raw_step(
+                            skip_index,
+                            raw_steps[skip_index],
+                        )
+                    )
+                await self._send_batch_response(writer, payload, results)
+                return
+
+            if self._is_http_batch_typed_step(raw_step):
+                raw_type = raw_step.get("type")
+                results.append(
+                    {
+                        "index": index,
+                        "ok": False,
+                        "status": "failed_validation",
+                        "error": "unknown_step_type",
+                        "message": f"unknown step type: {raw_type!r}",
+                    }
+                )
+                if continue_on_error:
+                    continue
+                for skip_index in range(index + 1, len(raw_steps)):
+                    results.append(
+                        self._skipped_batch_result_for_raw_step(
+                            skip_index,
+                            raw_steps[skip_index],
+                        )
+                    )
+                await self._send_batch_response(writer, payload, results)
+                return
+
             name = raw_step.get("name") if isinstance(raw_step, dict) else None
+            if self._radio is None:
+                results.append(
+                    {
+                        "index": index,
+                        "name": name,
+                        "ok": False,
+                        "status": "no_radio",
+                        "error": "no_radio",
+                        "message": "No radio configured",
+                    }
+                )
+                if continue_on_error:
+                    continue
+                for skip_index in range(index + 1, len(raw_steps)):
+                    results.append(
+                        self._skipped_batch_result_for_raw_step(
+                            skip_index,
+                            raw_steps[skip_index],
+                        )
+                    )
+                await self._send_batch_response(writer, payload, results)
+                return
             try:
                 step = await self._prepare_http_batch_step(index, raw_step)
             except PermissionError as exc:
@@ -2624,9 +2921,12 @@ class WebServer:
                 if continue_on_error:
                     continue
                 for skip_index in range(index + 1, len(raw_steps)):
-                    skip = raw_steps[skip_index]
-                    skip_name = skip.get("name") if isinstance(skip, dict) else None
-                    results.append(self._skipped_batch_result(skip_index, skip_name))
+                    results.append(
+                        self._skipped_batch_result_for_raw_step(
+                            skip_index,
+                            raw_steps[skip_index],
+                        )
+                    )
                 await self._send_batch_response(writer, payload, results)
                 return
 
@@ -2648,10 +2948,11 @@ class WebServer:
                 )
                 if not continue_on_error:
                     for skip_index in range(step.index + 1, len(raw_steps)):
-                        skip = raw_steps[skip_index]
-                        skip_name = skip.get("name") if isinstance(skip, dict) else None
                         results.append(
-                            self._skipped_batch_result(skip_index, skip_name)
+                            self._skipped_batch_result_for_raw_step(
+                                skip_index,
+                                raw_steps[skip_index],
+                            )
                         )
                     await self._send_batch_response(writer, payload, results)
                     return
@@ -2668,10 +2969,11 @@ class WebServer:
                 )
                 if not continue_on_error:
                     for skip_index in range(step.index + 1, len(raw_steps)):
-                        skip = raw_steps[skip_index]
-                        skip_name = skip.get("name") if isinstance(skip, dict) else None
                         results.append(
-                            self._skipped_batch_result(skip_index, skip_name)
+                            self._skipped_batch_result_for_raw_step(
+                                skip_index,
+                                raw_steps[skip_index],
+                            )
                         )
                     await self._send_batch_response(writer, payload, results)
                     return
