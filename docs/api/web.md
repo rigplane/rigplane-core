@@ -60,6 +60,7 @@ These routes are part of the Pro/supervisor compatibility surface:
 | `DELETE` | `/api/v1/bridge` | Stop audio bridge |
 | `POST` | `/api/v1/commands` | Enqueue one structured radio command |
 | `POST` | `/api/v1/commands/batch` | Apply a stateless ordered command batch |
+| `POST` | `/api/v1/civ/transaction` | Send one scoped raw CI-V transaction with explicit response handling |
 
 ### Other Web UI Endpoints
 
@@ -84,6 +85,7 @@ These routes are part of the Pro/supervisor compatibility surface:
 | `POST` | `/api/v1/radio/power` | Power on/off via CI-V power control |
 | `POST` | `/api/v1/commands` | Enqueue one structured radio command |
 | `POST` | `/api/v1/commands/batch` | Apply a stateless ordered command batch |
+| `POST` | `/api/v1/civ/transaction` | Send one scoped raw CI-V transaction |
 | `POST` | `/api/v1/band-plan/config` | Change active region and reload band plans |
 | `POST` | `/api/v1/eibi/fetch` | Fetch/refresh EiBi dataset |
 
@@ -221,6 +223,145 @@ Response:
 parameters return HTTP `400`. Read-only mode rejects transmit commands with
 HTTP `403`.
 
+Low-level CI-V escape hatch:
+
+```json
+{
+  "id": "display-type-b",
+  "name": "send_civ",
+  "params": {
+    "command": 26,
+    "sub": 5,
+    "data": "015301"
+  }
+}
+```
+
+`send_civ` is for Icom/vendor-specific commands that are not yet exposed as
+structured RigPlane commands. `command` and `sub` are byte values from `0` to
+`255`; `sub` may be omitted. `data` is an even-length hexadecimal string. The
+HTTP command is fire-and-forget: RigPlane enqueues the CI-V write through the
+same single-owner command queue, but does not return CI-V response bytes or
+claim readback verification. `wait_response` is rejected when `true`; use
+`POST /api/v1/civ/transaction` when the caller needs an ACK, NAK, or data
+response.
+
+## `POST /api/v1/civ/transaction`
+
+Scoped raw CI-V transaction endpoint for local automation that needs a
+deterministic radio response. This endpoint bypasses the normal
+`RadioPoller` command queue, claims the CI-V stream while the transaction is
+active, and releases that claim on success, NAK, timeout, error, or
+cancellation. It uses the existing runtime CI-V receive pump and request
+tracker; it does not create a second raw listener path.
+
+Request:
+
+```json
+{
+  "id": "display-type-b",
+  "command": 26,
+  "sub": 5,
+  "data": "015301",
+  "expect": "ack",
+  "timeout_ms": 1000
+}
+```
+
+`command` and `sub` are byte values from `0` to `255`; `sub` may be omitted.
+`data` is an even-length compact hexadecimal string. `expect` is required by
+behavior, defaults to `"data"` for compatibility, and must be one of:
+
+| Value | Behavior |
+|-------|----------|
+| `"none"` | Send the raw CI-V frame and return `status: "sent"` without waiting |
+| `"ack"` | Wait for the next CI-V ACK or NAK and return `status: "ack"` or `"nak"` |
+| `"data"` | Wait for the matching data response for the request command/sub |
+
+`timeout_ms` is optional and must be positive when present. All waits are
+bounded by the timeout.
+
+Python example:
+
+```python
+import json
+import urllib.request
+
+base_url = "http://127.0.0.1:8080"
+token = None  # or "your-token"
+
+payload = {
+    "id": "display-type-b",
+    "command": 26,
+    "sub": 5,
+    "data": "015301",
+    "expect": "ack",
+    "timeout_ms": 1000,
+}
+
+request = urllib.request.Request(
+    f"{base_url}/api/v1/civ/transaction",
+    data=json.dumps(payload).encode("utf-8"),
+    headers={"Content-Type": "application/json"},
+    method="POST",
+)
+if token:
+    request.add_header("Authorization", f"Bearer {token}")
+
+with urllib.request.urlopen(request, timeout=5) as response:
+    result = json.load(response)
+
+if not result["ok"]:
+    raise SystemExit(result)
+```
+
+ACK response:
+
+```json
+{
+  "id": "display-type-b",
+  "ok": true,
+  "status": "ack",
+  "result": {
+    "frame": "FEFEE0A2FBFD",
+    "command": 251,
+    "sub": null,
+    "data": ""
+  }
+}
+```
+
+NAK response uses HTTP `200` with deterministic failure JSON:
+
+```json
+{
+  "ok": false,
+  "status": "nak",
+  "error": "radio_nak",
+  "result": {
+    "frame": "FEFEE0A2FAFD",
+    "command": 250,
+    "sub": null,
+    "data": ""
+  }
+}
+```
+
+Errors:
+
+| HTTP | Error | Meaning |
+|------|-------|---------|
+| `400` | `invalid_request` | Malformed command/sub/data/expect/timeout |
+| `403` | `read_only` | Server is running in read-only mode |
+| `409` | `unsupported_command` | Active backend does not expose raw CI-V transactions |
+| `409` | `civ_owner_conflict` | Another external CAT/transaction owner already owns the CI-V stream |
+| `503` | `no_radio` | No radio backend is configured |
+| `504` | `transaction_timeout` | Expected ACK/data response did not arrive before timeout |
+
+Use this endpoint only for model-specific commands where callers need the
+wire-level result. Keep normal profile/control automation on
+`/api/v1/commands` or `/api/v1/commands/batch`.
+
 ## `POST /api/v1/commands/batch`
 
 Stateless ordered batch apply for local automation. RigPlane does not store,
@@ -229,17 +370,34 @@ each request.
 
 Use this endpoint when an external controller needs an all-or-reported-nothing
 profile switch: tune frequency, select mode/filter, adjust levels, switch
-audio/data state, recall memory, or apply other supported structured commands
-as one ordered operation.
+audio/data state, recall memory, query model-specific CI-V state, or apply
+other supported operations as one ordered operation.
 
-Batch steps are validated and executed in request order. Each executable step
-is placed on an exact-order command-queue lane and the HTTP handler waits for
+Batch steps are validated and executed in request order. Legacy command steps
+are placed on an exact-order command-queue lane, and the HTTP handler waits for
 the poller/backend to finish that step before advancing to the next step.
-Repeated commands are not deduplicated inside the ordered lane.
+Raw CI-V transaction steps execute through `send_civ_transaction()` outside
+`RadioPoller`; the handler still waits for each transaction result before
+considering the next request step. Repeated commands are not deduplicated
+inside the ordered lane.
 
-Maximum batch size is 128 steps. Each step has a 10 second execution timeout.
-If the radio link is slow or disconnected, the failing step is reported and
-later steps are skipped unless `continue_on_error` is `true`.
+Maximum batch size is 128 steps. Legacy command steps use a 10 second
+execution timeout. Raw CI-V transaction steps use `timeout_ms` when present,
+otherwise the same 10 second default. If the radio link is slow or
+disconnected, the failing step is reported and later steps are skipped unless
+`continue_on_error` is `true`.
+
+Batch steps can use either shape:
+
+- legacy command steps: `{ "name": "set_freq", "params": { ... } }`;
+- response-capable raw CI-V transaction steps:
+  `{ "type": "raw_civ_transaction", ... }`.
+
+`send_civ` remains the fire-and-forget raw CI-V command. It is queued like
+other legacy command steps, returns the command parameters that were accepted,
+does not wait for ACK/data/NAK frames, and still rejects `wait_response=true`.
+Use a `raw_civ_transaction` step when the caller needs the radio's wire-level
+ACK, NAK, or data response inside the ordered batch.
 
 Data flow:
 
@@ -247,12 +405,15 @@ Data flow:
 flowchart LR
   Client["curl / Python / MQTT gateway"] --> HTTP["POST /api/v1/commands/batch"]
   HTTP --> Validate["Validate JSON and command params"]
-  Validate --> Translate["ControlHandler builds Command objects"]
-  Translate --> Queue["CommandQueue.put_ordered"]
+  Validate --> Dispatch["Legacy command or raw transaction step"]
+  Dispatch --> Queue["CommandQueue.put_ordered"]
+  Dispatch --> Transaction["CoreRadio.send_civ_transaction"]
   Queue --> Poller["radio poller drains queue"]
   Poller --> Backend["LAN / serial / CAT backend"]
+  Transaction --> Backend
   Backend --> Radio["physical radio"]
   Poller --> Result["per-step future result"]
+  Transaction --> Result
   Result --> HTTP
 ```
 
@@ -264,10 +425,46 @@ Request:
   "continue_on_error": false,
   "steps": [
     { "name": "set_freq", "params": { "freq": 144030000 } },
-    { "name": "set_mode", "params": { "mode": "FM" } }
+    {
+      "name": "send_civ",
+      "params": { "command": 26, "sub": 5, "data": "015301" }
+    },
+    {
+      "type": "raw_civ_transaction",
+      "id": "display-type-query",
+      "command": 26,
+      "sub": 5,
+      "data": "0153",
+      "expect": "data",
+      "timeout_ms": 250
+    },
+    {
+      "type": "raw_civ_transaction",
+      "id": "display-type-apply",
+      "command": 26,
+      "sub": 5,
+      "data": "015301",
+      "expect": "ack"
+    },
+    {
+      "name": "set_mode",
+      "params": { "mode": "FM" }
+    }
   ]
 }
 ```
+
+Raw CI-V transaction step fields:
+
+| Field | Required | Meaning |
+|-------|----------|---------|
+| `type` | yes | Must be `"raw_civ_transaction"` |
+| `command` | yes | CI-V command byte, `0` through `255` |
+| `expect` | yes | `"none"`, `"ack"`, or `"data"` |
+| `id` | no | Caller-owned value echoed in this step's result |
+| `sub` | no | CI-V subcommand byte, `0` through `255` |
+| `data` | no | Compact even-length hexadecimal string; response hex is uppercase |
+| `timeout_ms` | no | Positive finite timeout in milliseconds for this transaction step |
 
 Successful response:
 
@@ -285,6 +482,44 @@ Successful response:
     },
     {
       "index": 1,
+      "name": "send_civ",
+      "ok": true,
+      "status": "executed",
+      "result": {
+        "command": 26,
+        "sub": 5,
+        "data": "015301",
+        "wait_response": false
+      }
+    },
+    {
+      "index": 2,
+      "type": "raw_civ_transaction",
+      "id": "display-type-query",
+      "ok": true,
+      "status": "response",
+      "result": {
+        "frame": "FEFEE0981A050153FD",
+        "command": 26,
+        "sub": 5,
+        "data": "0153"
+      }
+    },
+    {
+      "index": 3,
+      "type": "raw_civ_transaction",
+      "id": "display-type-apply",
+      "ok": true,
+      "status": "ack",
+      "result": {
+        "frame": "FEFEE0A2FBFD",
+        "command": 251,
+        "sub": null,
+        "data": ""
+      }
+    },
+    {
+      "index": 4,
       "name": "set_mode",
       "ok": true,
       "status": "executed",
@@ -294,7 +529,12 @@ Successful response:
 }
 ```
 
-Partial-failure response:
+`expect: "none"` sends one CI-V frame and returns `status: "sent"` without
+waiting for a radio frame. `expect: "ack"` waits for ACK or NAK.
+`expect: "data"` waits for the matching data response, while a fresh NAK still
+returns `status: "nak"` and `error: "radio_nak"`.
+
+NAK failure with skipped later steps:
 
 ```json
 {
@@ -302,21 +542,20 @@ Partial-failure response:
   "results": [
     {
       "index": 0,
-      "name": "set_freq",
-      "ok": true,
-      "status": "executed",
-      "result": { "freq": 144030000, "receiver": 0 }
+      "type": "raw_civ_transaction",
+      "ok": false,
+      "status": "nak",
+      "error": "radio_nak",
+      "message": "radio returned CI-V NAK",
+      "result": {
+        "frame": "FEFEE0A2FAFD",
+        "command": 250,
+        "sub": null,
+        "data": ""
+      }
     },
     {
       "index": 1,
-      "name": "no_such_command",
-      "ok": false,
-      "status": "failed_validation",
-      "error": "unknown_command",
-      "message": "unknown command: 'no_such_command'"
-    },
-    {
-      "index": 2,
       "name": "set_mode",
       "ok": false,
       "status": "skipped",
@@ -329,20 +568,71 @@ Partial-failure response:
 
 Set `continue_on_error` to `true` to keep applying later valid steps after a
 validation, timeout, or execution failure. When present, `continue_on_error`
-must be a JSON boolean. Commands marked `Batch: No` in the command catalog
-(such as `send_cw_text` and direct helper operations) are rejected in batches
-with `unsupported_in_batch`; use `POST /api/v1/commands` for those one-off
-calls.
+must be a JSON boolean at the batch root. A transaction step-level
+`continue_on_error` field is invalid. Raw CI-V transaction failures that obey
+the continuation rule include `nak`, `timed_out`, `owner_conflict`,
+`unsupported`, `read_only`, `no_radio`, `failed_validation`, and
+`failed_execution`. Commands marked `Batch: No` in the command catalog, such
+as `send_cw_text`, read-only getter commands, and direct helper operations, are
+rejected in batches with `unsupported_in_batch`; use
+`POST /api/v1/commands` for those one-off calls.
+
+Timeout with `continue_on_error: true`:
+
+```json
+{
+  "ok": false,
+  "results": [
+    {
+      "index": 0,
+      "type": "raw_civ_transaction",
+      "ok": false,
+      "status": "timed_out",
+      "error": "transaction_timeout",
+      "message": "raw CI-V transaction timed out"
+    },
+    {
+      "index": 1,
+      "name": "set_mode",
+      "ok": true,
+      "status": "executed",
+      "result": { "mode": "FM", "receiver": 0 }
+    }
+  ]
+}
+```
+
+Other raw CI-V transaction step failures use these per-step `status` and
+`error` values:
+
+| Case | `status` | `error` |
+|------|----------|---------|
+| Timeout | `timed_out` | `transaction_timeout` |
+| Another CAT/transaction owner is active | `owner_conflict` | `civ_owner_conflict` |
+| Backend lacks raw transaction support | `unsupported` | `unsupported_command` |
+| Server is read-only | `read_only` | `read_only` |
+| No active radio for a transaction-only batch | `no_radio` | `no_radio` |
+| Malformed transaction step | `failed_validation` | `invalid_request` or `invalid_step` |
+| Runtime failure from `send_civ_transaction()` | `failed_execution` | `transaction_failed` |
+| Later step skipped after failure | `skipped` | `skipped_after_failure` |
+
+Unsupported typed batch steps are handled separately from malformed
+`raw_civ_transaction` steps. If a step has `type` present, the type is not
+supported, and no legacy `name` is present, that step returns
+`status: "failed_validation"` with `error: "unknown_step_type"`.
 
 If a queued step is not consumed by the poller before the step timeout, the
 result status is `timed_out` with error `command_timeout`. Unconsumed timed-out
-steps are cancelled before execution.
+steps are cancelled before execution. If a batch mixes legacy command steps
+with raw transaction steps and no radio is configured, the endpoint keeps the
+legacy behavior and returns HTTP `503 no_radio` before per-step execution.
 
 ### Profile-Switching Example
 
 Core treats a radio profile as a caller-owned batch, not as stored server
-state. This keeps the open-core API generic while still supporting local
-Stream Deck, MQTT, shell, and Python automation.
+state. Core does not store, name, schedule, or share profiles; callers own any
+batch/profile catalog they build. This keeps the open-core API generic while
+still supporting local Stream Deck, MQTT, shell, and Python automation.
 
 Example IC-9700-style local batches:
 
@@ -391,9 +681,10 @@ operations, and feature toggles are available on the active radio:
 curl http://127.0.0.1:8080/api/v1/capabilities
 ```
 
-Prefer structured commands whenever a command exists. Raw CI-V is useful for
-diagnostics and experiments, but normal automation should let RigPlane own the
-radio connection, queueing, pacing, auth policy, and safety checks.
+Prefer structured commands whenever a command exists. Use `send_civ` for
+vendor-specific CI-V that is not yet abstracted, such as display/menu settings.
+It still lets RigPlane own the radio connection, queueing, pacing, auth policy,
+and safety checks; it just does not return response bytes.
 
 Python example:
 

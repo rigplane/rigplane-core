@@ -33,6 +33,7 @@ from logging.handlers import RotatingFileHandler
 import os
 import signal
 import sys
+from collections.abc import Sequence
 from pathlib import Path
 import time
 import wave
@@ -348,7 +349,7 @@ _GLOBAL_CONNECTION_OPTIONS = {
 }
 
 
-def _argv_tokens(args: list[str] | None) -> list[str]:
+def _argv_tokens(args: Sequence[str] | None) -> list[str]:
     return list(sys.argv[1:] if args is None else args)
 
 
@@ -439,9 +440,13 @@ def _warn_web_host_ambiguity(args: argparse.Namespace) -> None:
 
 
 class _RigplaneArgumentParser(argparse.ArgumentParser):
-    def parse_args(
+    # The supertype is overloaded to support a custom ``Namespace`` subclass
+    # (returning that subclass's type via a ``_N`` TypeVar); this subclass
+    # only ever uses ``argparse.Namespace`` and therefore can't replicate
+    # the overload set with a single signature.
+    def parse_args(  # type: ignore[override]
         self,
-        args: list[str] | None = None,
+        args: Sequence[str] | None = None,
         namespace: argparse.Namespace | None = None,
     ) -> argparse.Namespace:
         argv = _argv_tokens(args)
@@ -2135,7 +2140,7 @@ async def _cmd_audio_probe(config: BackendConfig, args: argparse.Namespace) -> i
             "retry_rejected": retry_rejected,
         },
     )
-    payload = artifact.to_dict()
+    payload: dict[str, Any] = artifact.to_dict()
     output_path = getattr(args, "output", None)
     if output_path:
         Path(output_path).write_text(
@@ -3556,7 +3561,7 @@ async def _cmd_discover(_radio: Radio | None, args: argparse.Namespace) -> int:
         )
 
         catalog = load_hamlib_model_catalog()
-        validation_results: list[object] = []
+        validation_results: list[Any] = []
         if hamlib_validate:
             target = HamlibProbeTarget(
                 host=str(getattr(args, "rigctld_host", "127.0.0.1")),

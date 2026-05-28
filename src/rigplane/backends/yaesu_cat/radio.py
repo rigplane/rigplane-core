@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Callable, Literal
+from typing import TYPE_CHECKING, Any, Callable, Literal, cast
 
 from ...audio import AudioPacket
 from ...command_spec import CatCommandSpec
@@ -26,6 +26,7 @@ if TYPE_CHECKING:
     from ...audio.usb_driver import UsbAudioDriver
     from ...audio_bus import AudioBus
     from ...profiles import RadioProfile
+    from ...profiles.rig_loader import RigConfig
     from ...types import BandStackRegister, MemoryChannel
     from .poller import YaesuCatPoller
 
@@ -37,7 +38,7 @@ logger = logging.getLogger(__name__)
 _RIGS_DIR = Path(__file__).parents[4] / "rigs"
 
 
-def _load_config(profile: Any) -> Any:
+def _load_config(profile: Any) -> "RigConfig":
     """Load RigConfig from a profile name or return an existing RigConfig."""
     from ...rig_loader import RigConfig, load_rig
 
@@ -110,7 +111,7 @@ class YaesuCatRadio:
             audio_sample_rate: Audio sample rate in Hz (default 48000).
             audio_driver: Optional pre-constructed UsbAudioDriver (for testing).
         """
-        self._config = _load_config(profile)
+        self._config: RigConfig = _load_config(profile)
         self._profile_cache: RadioProfile | None = None
         self._transport = YaesuCatTransport(device=device, baudrate=baudrate)
         self._state = RadioState()
@@ -794,7 +795,7 @@ class YaesuCatRadio:
         ``1.0 + raw/255 * 8.9`` when no table is configured.
         """
         raw, _ = await self._read_meter(6)
-        return _interpolate_swr(raw, self._config.meter_calibrations)
+        return float(_interpolate_swr(raw, self._config.meter_calibrations))
 
     async def get_id_meter(self) -> int:
         """Get IDD (current drain) meter reading (0–255)."""
@@ -1028,7 +1029,7 @@ class YaesuCatRadio:
         mode = getattr(target, "mode", None)
         rule = profile.resolve_filter_rule(mode)
         if rule and rule.table:
-            return rule.table
+            return cast("tuple[int, ...]", rule.table)
         return None
 
     async def get_filter_width(self, receiver: int = 0) -> int:
@@ -1055,12 +1056,12 @@ class YaesuCatRadio:
             else None
         )
         if rule and rule.fixed and rule.defaults:
-            return rule.defaults[0]
+            return int(rule.defaults[0])
         table = self._filter_width_table(receiver)
         if table is None:
             return index
         try:
-            return table_index_to_hz(index, table=table)
+            return int(table_index_to_hz(index, table=table))
         except ValueError:
             return index
 

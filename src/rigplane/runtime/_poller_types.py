@@ -32,6 +32,7 @@ __all__ = [
     "ScanStart",
     "ScanStop",
     "SelectVfo",
+    "SendCiv",
     "SetAcc1ModLevel",
     "SetAfLevel",
     "SetAfMute",
@@ -154,6 +155,13 @@ class SetMode:
     mode: str
     filter_width: int | None = None
     receiver: int = 0
+
+
+@dataclass(frozen=True, slots=True)
+class SendCiv:
+    command: int
+    sub: int | None = None
+    data: bytes = b""
 
 
 @dataclass(frozen=True, slots=True)
@@ -822,6 +830,7 @@ class Speak:
 Command = (
     SetFreq
     | SetMode
+    | SendCiv
     | SetFilter
     | SetFilterWidth
     | SetPower

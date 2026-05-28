@@ -1,3 +1,7 @@
+---
+robots: noindex, follow
+---
+
 # rigplane — Project Documentation
 
 ## Goal

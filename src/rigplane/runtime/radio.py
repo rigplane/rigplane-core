@@ -37,7 +37,11 @@ from rigplane.audio.route import (
     resolve_lan_audio_stream_request,
 )
 from rigplane.core._bounded_queue import BoundedQueue
-from rigplane.runtime._civ_rx import CivRuntime
+from rigplane.runtime._civ_rx import (
+    CivRuntime,
+    RawCivExpectation,
+    RawCivTransactionResult,
+)
 from rigplane.runtime._dual_rx_runtime import DualRxRuntimeMixin
 from rigplane.runtime._scope_runtime import ScopeRuntimeMixin
 
@@ -295,6 +299,7 @@ __all__ = [
     "AudioRecoveryState",
     "CoreRadio",
     "IcomRadio",
+    "RawCivSubscription",
     "RadioProfile",
     "AudioCodec",
     "RadioConnectionState",
@@ -317,6 +322,40 @@ _DEFAULT_CACHE_TTL: dict[str, float] = {"freq": 10.0, "mode": 10.0, "rf_power": 
 # cumulative and only the 30s watchdog resets it via ``soft_reconnect``.
 # Require >=3 accumulated errors before reporting ``connected = False``.
 _UDP_ERROR_THRESHOLD: int = 3
+
+
+class RawCivSubscription:
+    """Handle for a raw CI-V listener registered via ``add_raw_civ_listener``.
+
+    Part of the raw CI-V pipe seam (MOR-164) that lets a transparent Hamlib A1
+    bridge use RigPlane purely as a CI-V byte transport. Call :meth:`close` (or
+    use the handle as a context manager) to unregister the listener.
+    """
+
+    def __init__(
+        self,
+        registry: list[Callable[[bytes], Any]],
+        callback: Callable[[bytes], Any],
+    ) -> None:
+        self._registry = registry
+        self._callback = callback
+        self._closed = False
+
+    def close(self) -> None:
+        """Unregister the listener. Idempotent."""
+        if self._closed:
+            return
+        self._closed = True
+        try:
+            self._registry.remove(self._callback)
+        except ValueError:
+            pass
+
+    def __enter__(self) -> "RawCivSubscription":
+        return self
+
+    def __exit__(self, *exc: object) -> None:
+        self.close()
 
 
 class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
@@ -725,6 +764,12 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
         self._audio_bus: Any = None
         self._scope_assembler: ScopeAssembler = ScopeAssembler()
         self._scope_callback: Callable[[ScopeFrame], Any] | None = None
+        # Raw CI-V pipe listeners (MOR-164): receive inbound on-wire frame bytes.
+        self._raw_civ_listeners: list[Callable[[bytes], Any]] = []
+        # External CAT-session ownership (MOR-166 slice 2): when True, cooperating
+        # pollers pause so they do not pollute an external master's byte stream.
+        self._external_cat_session: bool = False
+        self._external_cat_session_owner: str | None = None
         self._civ_rx_task: asyncio.Task[None] | None = None
         self._civ_data_watchdog_task: asyncio.Task[None] | None = None
         self._audio_watchdog_task: asyncio.Task[None] | None = None
@@ -1238,6 +1283,135 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
             self._radio_addr, CONTROLLER_ADDR, command, sub=sub, data=data
         )
         return await self._send_civ_raw(frame, wait_response=wait_response)
+
+    # ------------------------------------------------------------------
+    # Raw CI-V pipe (MOR-164) — transparent byte transport for Hamlib A1
+    # ------------------------------------------------------------------
+
+    async def send_civ_raw_fire_and_forget(self, frame: bytes) -> None:
+        """Transmit a raw CI-V frame without waiting for or matching a response.
+
+        For the Hamlib A1 bridge, where the *external* CAT master (Hamlib) owns
+        request/response matching and RigPlane is used purely as a byte
+        transport. Unlike :meth:`send_civ`, this never registers a response
+        waiter, so it does **not** time out merely because the radio answered a
+        write with a bare ACK (``FE FE E0 98 FB FD``); the ACK is observed via
+        :meth:`add_raw_civ_listener` instead.
+        """
+        self._check_connected()
+        await self._send_civ_raw(frame, wait_response=False)
+
+    def add_raw_civ_listener(
+        self, callback: Callable[[bytes], Any]
+    ) -> RawCivSubscription:
+        """Register a listener for inbound raw CI-V frame bytes.
+
+        The callback receives the exact on-wire frame bytes of each inbound
+        frame addressed to the controller (including bare ACK/NAK frames).
+        Unsolicited transceive broadcasts (``to_addr == 0x00``) are filtered out
+        so they do not pollute a Hamlib-owned byte stream. Returns a
+        :class:`RawCivSubscription`; call ``.close()`` to unregister.
+
+        To stop RigPlane's own pollers from competing on the wire while an
+        external CAT master consumes this stream, wrap the session with
+        :meth:`begin_external_cat_session` / :meth:`end_external_cat_session`
+        (MOR-166 slice 2).
+        """
+        self._raw_civ_listeners.append(callback)
+        return RawCivSubscription(self._raw_civ_listeners, callback)
+
+    # ---- External CAT-session ownership (MOR-166 slice 2) ----
+
+    @property
+    def external_cat_session_active(self) -> bool:
+        """True while an external CAT master (e.g. a Hamlib bridge) owns the wire."""
+        return self._external_cat_session
+
+    def begin_external_cat_session(self) -> None:
+        """Mark the radio as owned by an external CAT session.
+
+        Cooperating pollers (e.g. the web ``RadioPoller``) pause their own CI-V
+        traffic while this is set, so they do not pollute the owner's byte
+        stream. Idempotent when the external owner already holds the session.
+        """
+        if self._external_cat_session:
+            current = self._external_cat_session_owner or "external"
+            if current == "external":
+                self._external_cat_session_owner = "external"
+                return
+            raise RuntimeError(f"CI-V stream is already owned by {current}")
+        self._external_cat_session = True
+        self._external_cat_session_owner = "external"
+
+    def end_external_cat_session(self) -> None:
+        """Release legacy external-CAT-session ownership. Idempotent."""
+        if self._external_cat_session_owner not in (None, "external"):
+            return
+        self._external_cat_session = False
+        self._external_cat_session_owner = None
+
+    def _claim_external_cat_session(self, owner: str) -> None:
+        """Claim exclusive CI-V stream ownership for a scoped transaction."""
+        if self._external_cat_session:
+            current = self._external_cat_session_owner or "external"
+            raise RuntimeError(f"CI-V stream is already owned by {current}")
+        self._external_cat_session = True
+        self._external_cat_session_owner = owner
+
+    def _release_external_cat_session(self, owner: str) -> None:
+        """Release a transaction claim without disturbing another owner."""
+        if self._external_cat_session_owner not in (None, owner):
+            return
+        self._external_cat_session = False
+        self._external_cat_session_owner = None
+
+    async def send_civ_transaction(
+        self,
+        command: int,
+        sub: int | None = None,
+        data: bytes | None = None,
+        *,
+        expect: RawCivExpectation = "data",
+        timeout: float | None = None,
+    ) -> RawCivTransactionResult:
+        """Send one raw CI-V command with explicit response semantics.
+
+        This is intentionally separate from the web poller's fire-and-forget
+        queue. While the transaction is active, cooperating pollers pause via
+        ``external_cat_session_active`` so their background traffic cannot
+        consume or pollute the caller's response.
+        """
+        self._check_connected()
+        if not 0 <= command <= 0xFF:
+            raise ValueError(f"command must be 0-255, got {command}")
+        if sub is not None and not 0 <= sub <= 0xFF:
+            raise ValueError(f"sub must be 0-255, got {sub}")
+        if expect not in ("none", "ack", "data"):
+            raise ValueError(f"unsupported CI-V expectation: {expect!r}")
+
+        payload = data or b""
+        frame = build_civ_frame(
+            self._radio_addr, CONTROLLER_ADDR, command, sub=sub, data=payload
+        )
+        owner = "raw-civ-transaction"
+        self._claim_external_cat_session(owner)
+        try:
+            return await self._civ_runtime.execute_civ_transaction(
+                frame,
+                expect=expect,
+                timeout=timeout,
+            )
+        finally:
+            self._release_external_cat_session(owner)
+
+    async def reconcile_state(self) -> None:
+        """Re-read full radio state after an external session changed the rig.
+
+        Call once the external CAT master has finished; refreshes RigPlane's
+        ``RadioState`` from the wire so it reflects any frequency/mode/etc. the
+        external master applied while it owned the session.
+        """
+        await self._fetch_initial_state()
 
     async def get_freq(
         self, receiver: int = RECEIVER_MAIN, *, bypass_cache: bool = False

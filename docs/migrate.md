@@ -1,3 +1,7 @@
+---
+description: "Migrate from icom-lan to RigPlane: import paths, async API differences, configuration changes, and a checklist for existing scripts and Web UI deployments."
+---
+
 # Migrating from `icom-lan` to `rigplane`
 
 `rigplane` is the new name of the project formerly known as `icom-lan` (v1.x).

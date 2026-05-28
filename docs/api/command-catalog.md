@@ -240,6 +240,7 @@ the memory protocol reject these commands.
 
 | Command | Params | Capability | Batch | Notes |
 |---------|--------|------------|-------|-------|
+| `send_civ` | `command: int`, `sub?: int`, `data?: str=""`, `wait_response?: bool=false` | CivCommandCapable | Yes | Fire-and-forget raw CI-V write through the ordered queue. `command` and `sub` are byte values; `data` is compact even-length hex. `wait_response: true` is rejected; use `POST /api/v1/civ/transaction` for ACK/data responses. Rejected in read-only mode. |
 | `set_xfc_status` | `on: bool` | — | Yes | XFC on/off. `on` is required. |
 | `set_tx_freq_monitor` | `on: bool` | — | Yes | TX frequency monitor. `on` is required. |
 | `get_quick_split` | — | — | Yes | Enqueues `QuickSplit`. The `get_` prefix is a misnomer; no data is read. Experimental — see issue #774. |

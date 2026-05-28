@@ -96,9 +96,13 @@ async def dispatch_http_request(
         "/api/v1/radio/cw/stop",
         "/api/v1/commands",
         "/api/v1/commands/batch",
+        "/api/v1/civ/transaction",
     ):
         if method != "POST":
             await _send_response(writer, 405, "Method Not Allowed", b"", {})
+            return
+        if path == "/api/v1/civ/transaction":
+            await server._handle_http_civ_transaction(writer, headers, reader)
             return
         if path.startswith("/api/v1/commands"):
             await server._handle_http_commands(path, writer, headers, reader)

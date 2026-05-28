@@ -1,0 +1,346 @@
+# Rig Configuration — Xiegu X6200
+#
+# Xiegu X6200 ultra-portable HF/50MHz transceiver.
+# Protocol: CI-V (subset of standard Icom CI-V, similar to X6100 family).
+#
+# Sources of truth (cross-referenced):
+#   1. Radioddity "Xiegu X6200 CI-V implementation V1.0.6" (firmware V1.0.6).
+#      All commands below come from the documented Table 1 (parts 1-5),
+#      pages 5-9 of that PDF.
+#   2. Hamlib master ``rigs/icom/xiegu.c`` — ``x6200_caps`` reuses the same
+#      ``x6100_priv_caps`` struct (line ~690), confirming X6100 and X6200
+#      share the same CI-V personality at the protocol level even though
+#      they're separate Hamlib ``RIG_MODEL_*`` entries.
+#
+# History: MOR-170. Filed after the IC-705 profile (which X6200 was
+# misidentified as by default — both default to CI-V address 0xA4) drove
+# the radio's display into a flicker → wedge state on real hardware.
+# The X6200 documented CI-V envelope is narrower than IC-705's, and
+# crucially does NOT include the CI-V power command 0x18; this profile
+# therefore omits ``power_on`` / ``power_off`` entirely so the runtime
+# cannot send 0x18 on behalf of an X6200.
+
+[radio]
+id = "xiegu_x6200"
+model = "X6200"
+civ_addr = 0xA4
+receiver_count = 1
+has_lan = false
+has_wifi = true
+# PDF page 4: "For CAT control, a speed of 19.200 bps on the SERIAL-B port
+# is used." SERIAL-A at up to 115200 is the terminal port, not CAT.
+default_baud = 19200
+
+[protocol]
+type = "civ"
+address = 0xA4
+
+[capabilities]
+# Aligned to Hamlib's ``X108G_LEVELS`` / ``X108G_FUNCS`` envelope
+# (xiegu.c lines 52, 54) intersected with what the Radioddity X6200 PDF
+# explicitly documents as supported by firmware V1.0.6. Intentionally
+# narrower than the IC-705 envelope:
+#   - no ``power_control`` (no documented CI-V 0x18)
+#   - no ``scope`` (no documented 0x27 family)
+#   - no ``filter_width`` SET (PDF table 5 documents widths but encoding
+#     is the segmented BCD index family; mirror x6100.toml's "feature not
+#     advertised until tables are confirmed on hardware" stance — see
+#     issue #1159 referenced in x6100.toml)
+features = [
+    "audio",
+    "af_level",
+    "rf_gain",
+    "squelch",
+    "attenuator",
+    "preamp",
+    "nb",
+    "nr",
+    "notch",
+    "pbt",
+    "tx",
+    "split",
+    "vox",
+    "compressor",
+    "cw",
+    "break_in",
+    "rit",
+    "xit",
+    "tuner",
+    "meters",
+    "repeater_tone",
+    "tsql",
+    "data_mode",
+    "scan",
+    "dial_lock",
+    "agc",
+]
+
+# PDF page 10 (Table 3 — Mode, Data & filter bandwidth) documents:
+# LSB, LSB-D, USB, USB-D, AM, CW, NFM, CWR. The ``-D`` variants are the
+# data-mode flavours selected via byte 2 of mode commands 0x26 0x00/0x01.
+[modes]
+list = ["USB", "LSB", "CW", "CW-R", "AM", "FM", "RTTY", "DIGI"]
+
+[filters]
+list = ["FIL1", "FIL2", "FIL3"]
+
+[vfo]
+scheme = "ab"
+
+# PDF page 5: ``0x11 0x00`` (off) / ``0x11 0x01`` (on) — binary toggle.
+[attenuator]
+values = [0, 1]
+
+# PDF page 8: ``0x16 0x02 0x00`` / ``0x16 0x02 0x01`` — binary toggle.
+[preamp]
+values = [0, 1]
+
+# PDF page 8: ``0x16 0x12 0x00..0x03`` — off / fast / slow / auto.
+[agc]
+modes = [0, 1, 2, 3]
+labels = { "0" = "OFF", "1" = "FAST", "2" = "SLOW", "3" = "AUTO" }
+
+[controls.attenuator]
+style = "toggle"
+
+# Level control ranges — CI-V compatible (Xiegu X6200).
+# Every "raw_min/raw_max" pair below is documented in the PDF as
+# "BCD format 0-255" (pages 6-7).
+[controls.pbt_inner]
+raw_min = 0
+raw_max = 255
+raw_center = 128
+display_min = -1200
+display_max = 1200
+display_unit = "Hz"
+
+[controls.pbt_outer]
+raw_min = 0
+raw_max = 255
+raw_center = 128
+display_min = -1200
+display_max = 1200
+display_unit = "Hz"
+
+[controls.af_level]
+raw_min = 0
+raw_max = 255
+
+[controls.rf_gain]
+raw_min = 0
+raw_max = 255
+
+[controls.squelch]
+raw_min = 0
+raw_max = 255
+
+[controls.nr_level]
+raw_min = 0
+raw_max = 255
+
+[controls.nb_level]
+raw_min = 0
+raw_max = 255
+
+[controls.compressor_level]
+raw_min = 0
+raw_max = 255
+
+# PDF page 6: "0=400Hz, 255=1200Hz" for CW sidetone.
+[controls.cw_pitch]
+raw_min = 0
+raw_max = 255
+display_min = 400
+display_max = 1200
+display_unit = "Hz"
+
+[controls.rit]
+raw_min = -9999
+raw_max = 9999
+raw_center = 0
+display_min = -9999
+display_max = 9999
+display_unit = "Hz"
+
+# Same HF coverage envelope as X6100 (Xiegu HF/50MHz portables).
+[[freq_ranges.ranges]]
+label = "HF"
+start_hz = 100000
+end_hz = 54000000
+
+[[freq_ranges.ranges.bands]]
+name = "160m"
+start_hz = 1800000
+end_hz = 2000000
+default_hz = 1825000
+
+[[freq_ranges.ranges.bands]]
+name = "80m"
+start_hz = 3500000
+end_hz = 3800000
+default_hz = 3600000
+
+[[freq_ranges.ranges.bands]]
+name = "40m"
+start_hz = 7000000
+end_hz = 7200000
+default_hz = 7100000
+
+[[freq_ranges.ranges.bands]]
+name = "30m"
+start_hz = 10100000
+end_hz = 10150000
+default_hz = 10125000
+
+[[freq_ranges.ranges.bands]]
+name = "20m"
+start_hz = 14000000
+end_hz = 14350000
+default_hz = 14200000
+
+[[freq_ranges.ranges.bands]]
+name = "17m"
+start_hz = 18068000
+end_hz = 18168000
+default_hz = 18100000
+
+[[freq_ranges.ranges.bands]]
+name = "15m"
+start_hz = 21000000
+end_hz = 21450000
+default_hz = 21200000
+
+[[freq_ranges.ranges.bands]]
+name = "12m"
+start_hz = 24890000
+end_hz = 24990000
+default_hz = 24940000
+
+[[freq_ranges.ranges.bands]]
+name = "10m"
+start_hz = 28000000
+end_hz = 29700000
+default_hz = 28500000
+
+[[freq_ranges.ranges.bands]]
+name = "6m"
+start_hz = 50000000
+end_hz = 54000000
+default_hz = 51000000
+
+[[freq_ranges.ranges]]
+label = "WFM"
+start_hz = 88000000
+end_hz = 108000000
+
+[[freq_ranges.ranges]]
+label = "Air"
+start_hz = 108000000
+end_hz = 136000000
+
+# ── CI-V Commands ────────────────────────────────────────────────
+# Only opcodes documented in Radioddity X6200 CI-V V1.0.6.
+# NOTE: ``power_on`` / ``power_off`` are INTENTIONALLY OMITTED — CI-V
+# 0x18 is not in the X6200 documented command set, and sending it from
+# the IC-705 profile is the suspected wedge trigger that motivated this
+# file. Do NOT add a 0x18 mapping here without re-validating on hardware.
+[commands]
+
+# Frequency / mode (compatible Icom CI-V subset — PDF page 4 example)
+get_freq         = [0x03]
+set_freq         = [0x05]
+get_mode         = [0x04]
+set_mode         = [0x06]
+
+# Get receiver frequency range — PDF page 5
+get_band_edge_freq = [0x02]
+
+# VFO selection / swap — PDF page 5 (0x07 family)
+get_vfo          = [0x07]
+set_vfo          = [0x07]
+
+# Split — PDF page 5 (NOTE: Hamlib xiegu.c contains a comment that the
+# *X6100* rejected ``0x0f 0x01``; the X6200 PDF explicitly documents both
+# ``0x0f 0x00`` (split off) and ``0x0f 0x01`` (split on). If a runtime
+# wedge reappears tied to set_split, audit this entry against firmware.)
+set_split        = [0x0F]
+
+# Attenuator / preamp — PDF pages 5, 8
+get_attenuator   = [0x11]
+set_attenuator   = [0x11]
+get_preamp       = [0x16, 0x02]
+set_preamp       = [0x16, 0x02]
+
+# Levels (gets and sets — PDF pages 6-7, same opcode pair for both
+# directions, distinguished by frame data presence)
+get_af_level     = [0x14, 0x01]
+set_af_level     = [0x14, 0x01]
+get_rf_gain      = [0x14, 0x02]
+set_rf_gain      = [0x14, 0x02]
+get_squelch      = [0x14, 0x03]
+set_squelch      = [0x14, 0x03]
+get_nr_level     = [0x14, 0x06]
+set_nr_level     = [0x14, 0x06]
+get_cw_pitch     = [0x14, 0x09]
+set_cw_pitch     = [0x14, 0x09]
+get_rf_power     = [0x14, 0x0A]
+set_rf_power     = [0x14, 0x0A]
+get_mic_gain     = [0x14, 0x0B]
+set_mic_gain     = [0x14, 0x0B]
+get_key_speed    = [0x14, 0x0C]
+set_key_speed    = [0x14, 0x0C]
+get_nb_level     = [0x14, 0x12]
+set_nb_level     = [0x14, 0x12]
+get_monitor_gain = [0x14, 0x15]
+set_monitor_gain = [0x14, 0x15]
+
+# Meters — PDF page 7 (all returns BCD 0-255 → 0-100%)
+get_s_meter      = [0x15, 0x02]
+get_power_meter  = [0x15, 0x11]
+get_swr          = [0x15, 0x12]
+get_vd_meter     = [0x15, 0x15]
+
+# Functions — PDF page 8 (0x16 family)
+get_agc          = [0x16, 0x12]
+set_agc          = [0x16, 0x12]
+get_nb           = [0x16, 0x22]
+set_nb           = [0x16, 0x22]
+get_dial_lock    = [0x16, 0x50]
+set_dial_lock    = [0x16, 0x50]
+
+# Identification — PDF page 8
+get_transceiver_id = [0x19, 0x00]
+
+# 0x1A family — PDF pages 8-9 (band/spectrum, filter width)
+get_band_spectrum_display = [0x1A, 0x01]
+get_filter_width          = [0x1A, 0x03]
+
+# PTT / tuner — PDF page 9 (0x1C family)
+ptt_on           = [0x1C, 0x00]
+ptt_off          = [0x1C, 0x00]
+get_transceiver_status = [0x1C, 0x00]
+set_transceiver_status = [0x1C, 0x00]
+get_tuner_status = [0x1C, 0x01]
+set_tuner_status = [0x1C, 0x01]
+
+# Xiegu model ID — PDF page 9. Returns 0x6200 on this rig; intended as
+# a positive disambiguator vs Icom CI-V at the same address (IC-705 has
+# no 0x1D 0x19 opcode). Future improvement: probe this in discovery
+# rather than relying on hwid fingerprint.
+get_xiegu_model_id = [0x1D, 0x19]
+
+# Selected / unselected VFO (PDF page 9, 0x25 / 0x26)
+get_selected_freq    = [0x25, 0x00]
+set_selected_freq    = [0x25, 0x00]
+get_unselected_freq  = [0x25, 0x01]
+set_unselected_freq  = [0x25, 0x01]
+get_selected_mode    = [0x26, 0x00]
+set_selected_mode    = [0x26, 0x00]
+get_unselected_mode  = [0x26, 0x01]
+set_unselected_mode  = [0x26, 0x01]
+
+# Protocol ack/nak echoes (Icom common, used by transport-level matchers)
+get_command_error_fa = [0xFA]
+get_command_ok_fb    = [0xFB]
+
+[commands.overrides]

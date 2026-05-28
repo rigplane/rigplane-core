@@ -92,6 +92,9 @@ def _make_open(reader: _FakeReader, writer: _FakeWriter):
 
 
 _IC7610_RESPONSE = bytes([0xFE, 0xFE, 0xE0, 0x98, 0x19, 0x00, 0x01, 0x06, 0xFD])
+# IC-705 / X6200 share CI-V address 0xA4; the wire response is identical
+# at the address level — disambiguation is by USB hwid, not CI-V payload.
+_IC705_RESPONSE = bytes([0xFE, 0xFE, 0xE0, 0xA4, 0x19, 0x00, 0x01, 0x05, 0xFD])
 _PROBE_CMD = bytes([0xFE, 0xFE, 0x00, 0xE0, 0x19, 0x00, 0xFD])
 
 
@@ -861,6 +864,105 @@ class TestDiscoverSerialRadios:
         assert r.manufacturer == "Silicon Labs"
         assert r.product == "CP210x USB to UART Bridge"
         assert r.serial_number == "0001"
+
+    @pytest.mark.asyncio
+    async def test_civ_addr_0xA4_with_xiegu_hwid_resolves_to_x6200(self) -> None:
+        """MOR-170: at the shared 0xA4 address, the WCH CH342 VID:PID
+        + ``USB Dual_Serial`` product name must classify as Xiegu X6200,
+        not the address-default IC-705.
+        """
+        reader = _FakeReader([_IC705_RESPONSE])
+        writer = _FakeWriter()
+
+        port = _make_port(
+            "/dev/cu.usbmodem58910181093",
+            "USB Dual_Serial",
+            "USB VID:PID=1A86:55D2 SER=5891018109 LOCATION=0-1.2.4",
+            vid=0x1A86,
+            pid=0x55D2,
+            manufacturer=None,
+            product="USB Dual_Serial",
+            serial_number="5891018109",
+        )
+        with (
+            _fast_probes(),
+            patch("serial.tools.list_ports.comports", return_value=[port]),
+        ):
+            results = await discover_serial_radios(
+                _open_serial=_make_open(reader, writer),
+            )
+
+        assert len(results) == 1
+        r = results[0]
+        assert r.protocol == "civ"
+        assert r.address == 0xA4
+        assert r.model == "X6200"
+        assert r.profile_id == "xiegu_x6200"
+        # USB metadata still surfaced unmodified
+        assert r.vid == 0x1A86
+        assert r.pid == 0x55D2
+        assert r.product == "USB Dual_Serial"
+
+    @pytest.mark.asyncio
+    async def test_civ_addr_0xA4_without_xiegu_hwid_stays_ic705(self) -> None:
+        """MOR-170: at 0xA4, ports that do NOT match the X6200 fingerprint
+        must keep classifying as IC-705 — the existing behaviour for
+        actual IC-705 owners is preserved.
+        """
+        reader = _FakeReader([_IC705_RESPONSE])
+        writer = _FakeWriter()
+
+        port = _make_port(
+            "/dev/ttyUSB0",
+            "USB Serial",
+            "USB VID:PID=0C26:0036",
+            vid=0x0C26,
+            pid=0x0036,
+            manufacturer="Icom Inc.",
+            product="IC-705",
+            serial_number="0001",
+        )
+        with (
+            _fast_probes(),
+            patch("serial.tools.list_ports.comports", return_value=[port]),
+        ):
+            results = await discover_serial_radios(
+                _open_serial=_make_open(reader, writer),
+            )
+
+        assert len(results) == 1
+        r = results[0]
+        assert r.address == 0xA4
+        assert r.model == "IC-705"
+        assert r.profile_id == "icom_ic705"
+
+    @pytest.mark.asyncio
+    async def test_civ_addr_0xA4_xiegu_product_name_fallback(self) -> None:
+        """MOR-170: even when pyserial does not surface VID/PID (some OSes /
+        permission setups), a ``product`` field containing ``"USB Dual_Serial"``
+        is enough to classify as X6200.
+        """
+        reader = _FakeReader([_IC705_RESPONSE])
+        writer = _FakeWriter()
+
+        port = _make_port(
+            "/dev/cu.usbmodem58910181093",
+            "USB Dual_Serial",
+            "USB Dual_Serial",
+            vid=None,
+            pid=None,
+            product="USB Dual_Serial",
+        )
+        with (
+            _fast_probes(),
+            patch("serial.tools.list_ports.comports", return_value=[port]),
+        ):
+            results = await discover_serial_radios(
+                _open_serial=_make_open(reader, writer),
+            )
+
+        assert results[0].model == "X6200"
+        assert results[0].profile_id == "xiegu_x6200"
 
     @pytest.mark.asyncio
     async def test_civ_radio_preserves_usb_audio_resolution_metadata(self) -> None:

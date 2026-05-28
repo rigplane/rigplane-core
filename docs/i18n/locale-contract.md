@@ -1,3 +1,7 @@
+---
+robots: noindex, follow
+---
+
 # Cross-app locale preference contract (RP-ML-012)
 
 Status: Phase 3 wave 2 — public-core.

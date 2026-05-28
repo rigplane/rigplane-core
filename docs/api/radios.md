@@ -1,3 +1,7 @@
+---
+robots: noindex, follow
+---
+
 # Radio Models
 
 Presets for known Icom radios with CI-V addresses and capabilities.

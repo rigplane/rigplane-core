@@ -70,6 +70,20 @@ RADIOS: dict[str, RadioModel] = {
         civ_addr=0x8E,
         receivers=2,
     ),
+    # Xiegu X6200: shares CI-V address 0xA4 with Icom IC-705 by factory
+    # default (Radioddity X6200 CI-V Implementation V1.0.6, page 4; Hamlib
+    # rigs/icom/xiegu.c x6100_priv_caps). MOR-170 added a distinct profile
+    # (rigs/x6200.toml) and hwid-based discovery disambiguation; this entry
+    # makes ``--model X6200`` resolve in the parallel hardcoded registry so
+    # the CLI path stops silently falling back to IC-7610. The discovery-
+    # time override on address 0xA4 (discovery._resolve_xiegu_x6200_override)
+    # remains the source of truth for *auto-detected* radios.
+    "X6200": RadioModel(
+        name="X6200",
+        civ_addr=0xA4,
+        has_lan=False,
+        has_wifi=True,
+    ),
 }
 
 

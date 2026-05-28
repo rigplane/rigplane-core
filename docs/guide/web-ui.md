@@ -178,11 +178,14 @@ curl -X POST http://127.0.0.1:8080/api/v1/commands/batch \
   }'
 ```
 
-Batch steps are executed in exact request order through the radio command queue.
-Repeated commands in one batch are preserved. The response includes one result
-per executed, timed-out, failed, or skipped step. `continue_on_error`, when
-provided, must be a JSON boolean. Core does not persist named profiles or stored
-batches; callers send the full sequence each time.
+Batch steps are executed in exact request order. Structured command steps go
+through the radio command queue; raw CI-V transaction steps use
+`send_civ_transaction()` and wait for the requested ACK, NAK, data response, or
+timeout before the next step starts. Repeated commands in one batch are
+preserved. The response includes one result per executed, timed-out, failed, or
+skipped step. `continue_on_error`, when provided, must be a JSON boolean. Core
+does not persist named profiles or stored batches; callers send the full
+sequence each time.
 
 The batch path is designed for local profile switching from tools such as
 Stream Deck, MQTT gateways, shell scripts, and station supervisors:
@@ -201,6 +204,90 @@ radio exposes the same receivers, memory operations, audio routing controls, or
 feature toggles. Prefer these structured commands over raw CI-V for routine
 automation so RigPlane remains the single owner of the radio connection,
 queueing, pacing, auth policy, and safety checks.
+
+For vendor-specific CI-V commands that are not yet covered by structured
+commands, use the queued `send_civ` escape hatch. The payload mirrors the
+Python `radio.send_civ(command=..., sub=..., data=...)` call, but `data` is an
+even-length hex string:
+
+```bash
+curl -X POST http://127.0.0.1:8080/api/v1/commands \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "id": "display-type-b",
+    "name": "send_civ",
+    "params": {
+      "command": 26,
+      "sub": 5,
+      "data": "015301"
+    }
+  }'
+```
+
+`send_civ` is fire-and-forget in the HTTP/WS command queue. It preserves order,
+including repeated raw CI-V steps in batches, but it does not return response
+bytes or readback verification. Use it for model-specific gaps such as
+display/menu settings; prefer structured commands for normal profile steps
+where RigPlane already has a command.
+
+When a raw CI-V operation needs a radio response, use
+`POST /api/v1/civ/transaction` instead of `send_civ`. The transaction endpoint
+temporarily claims the CI-V stream, sends one frame, and waits according to an
+explicit expectation:
+
+```bash
+curl -X POST http://127.0.0.1:8080/api/v1/civ/transaction \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "id": "display-type-b",
+    "command": 26,
+    "sub": 5,
+    "data": "015301",
+    "expect": "ack",
+    "timeout_ms": 1000
+  }'
+```
+
+`expect` must be `none`, `ack`, or `data`. `none` sends without waiting and
+returns `status: "sent"`; `ack` waits for ACK/NAK; `data` waits for the
+matching data response. NAK returns HTTP `200` with `ok: false`,
+`status: "nak"`, and `error: "radio_nak"`. Timeouts return HTTP `504`.
+Inside `POST /api/v1/commands/batch`, use a `raw_civ_transaction` step when a
+batch needs the same wire-level ACK, NAK, or data response before continuing.
+
+The same transaction can be sent from a small Python tool:
+
+```python
+import json
+import urllib.request
+
+base_url = "http://127.0.0.1:8080"
+token = None  # or "your-token"
+
+payload = {
+    "id": "display-type-b",
+    "command": 26,
+    "sub": 5,
+    "data": "015301",
+    "expect": "ack",
+    "timeout_ms": 1000,
+}
+
+request = urllib.request.Request(
+    f"{base_url}/api/v1/civ/transaction",
+    data=json.dumps(payload).encode("utf-8"),
+    headers={"Content-Type": "application/json"},
+    method="POST",
+)
+if token:
+    request.add_header("Authorization", f"Bearer {token}")
+
+with urllib.request.urlopen(request, timeout=5) as response:
+    result = json.load(response)
+
+if not result["ok"]:
+    raise SystemExit(result)
+```
 
 DATA mode commands use the active radio profile's numeric DATA value. For the
 current IC-9700 profile, `set_data_mode` uses `mode: 0` for OFF and `mode: 1`

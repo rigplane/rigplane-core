@@ -76,6 +76,7 @@ __all__ = [
     "VfoSlotState",
     "AudioCapable",
     "CivCommandCapable",
+    "CivTransactionCapable",
     "ModeInfoCapable",
     "ScopeCapable",
     "DualReceiverCapable",
@@ -779,6 +780,23 @@ class CivCommandCapable(Protocol):
         wait_response: bool = True,
     ) -> Any:
         """Send a CI-V command through the active backend transport."""
+        ...
+
+
+@runtime_checkable
+class CivTransactionCapable(Protocol):
+    """Radio exposes scoped raw CI-V transactions with explicit expectations."""
+
+    async def send_civ_transaction(
+        self,
+        command: int,
+        sub: int | None = None,
+        data: bytes | None = None,
+        *,
+        expect: Literal["none", "ack", "data"] = "data",
+        timeout: float | None = None,
+    ) -> Any:
+        """Send one raw CI-V transaction and return a deterministic result."""
         ...
 
 

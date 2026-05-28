@@ -1,3 +1,7 @@
+---
+robots: noindex, follow
+---
+
 # Audio Streaming
 
 Audio RX/TX via the Icom audio UDP port (default 50003).

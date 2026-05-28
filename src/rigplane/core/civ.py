@@ -55,6 +55,7 @@ class _AckWaiter:
     token: int
     created_monotonic: float
     generation: int
+    nak_only: bool = False
 
 
 @dataclass(slots=True)
@@ -160,7 +161,13 @@ class CivRequestTracker:
             "ack_orphans": self._ack_orphans,
         }
 
-    def register_ack(self, wait: bool = True) -> asyncio.Future[CivFrame] | int:
+    def register_ack(
+        self,
+        wait: bool = True,
+        *,
+        consume_backlog: bool = True,
+        nak_only: bool = False,
+    ) -> asyncio.Future[CivFrame] | int:
         """Register a pending request that expects an ACK/NAK.
 
         Returns:
@@ -176,8 +183,11 @@ class CivRequestTracker:
             future: asyncio.Future[CivFrame] = (
                 asyncio.get_running_loop().create_future()
             )
-            if self._ack_backlog:
-                cached = self._ack_backlog.popleft()
+            if consume_backlog:
+                cached = self._pop_matching_ack_backlog(nak_only=nak_only)
+            else:
+                cached = None
+            if cached is not None:
                 future.set_result(cached.frame)
                 self._ack_backlog_hits += 1
                 return future
@@ -187,6 +197,7 @@ class CivRequestTracker:
                     token=token,
                     created_monotonic=created,
                     generation=self._generation,
+                    nak_only=nak_only,
                 )
             )
             return future
@@ -239,6 +250,13 @@ class CivRequestTracker:
         before = len(self._ack_waiters)
         self._ack_waiters = [w for w in self._ack_waiters if w.future is not None]
         return before - len(self._ack_waiters)
+
+    def drop_ack_backlog(self) -> int:
+        """Drop orphan ACK/NAK backlog without touching active waiters."""
+        dropped = len(self._ack_backlog)
+        self._ack_backlog.clear()
+        self._ack_backlog_drops += dropped
+        return dropped
 
     def cleanup_stale(self, *, now_monotonic: float | None = None) -> int:
         """Drop stale waiters that exceeded the TTL budget."""
@@ -293,6 +311,19 @@ class CivRequestTracker:
             self._ack_backlog.popleft()
             self._ack_backlog_drops += 1
 
+    def _pop_matching_ack_backlog(self, *, nak_only: bool) -> _AckBacklogEntry | None:
+        """Pop the oldest backlog entry matching an ACK waiter filter."""
+        if not self._ack_backlog:
+            return None
+        if not nak_only:
+            return self._ack_backlog.popleft()
+
+        for index, entry in enumerate(self._ack_backlog):
+            if entry.frame.command == 0xFA:
+                del self._ack_backlog[index]
+                return entry
+        return None
+
     def advance_generation(self, exc: Exception | None = None) -> int:
         """Advance generation and fail all pending waiters."""
         if exc is None:
@@ -312,10 +343,16 @@ class CivRequestTracker:
 
         if event.type in (CivEventType.ACK, CivEventType.NAK):
             self._prune_ack_backlog()
-            while self._ack_waiters:
-                waiter = self._ack_waiters.pop(0)
+            index = 0
+            while index < len(self._ack_waiters):
+                waiter = self._ack_waiters[index]
                 if waiter.generation != self._generation:
+                    self._ack_waiters.pop(index)
                     continue
+                if waiter.nak_only and event.type != CivEventType.NAK:
+                    index += 1
+                    continue
+                self._ack_waiters.pop(index)
                 if waiter.future is not None and not waiter.future.done():
                     waiter.future.set_result(frame)
                     return True

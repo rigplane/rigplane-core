@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Literal
 
 
 def _camelize_discovery_key(key: str) -> str:
@@ -132,7 +132,9 @@ def _build_hamlib_serial_candidate(
             )
         )
 
-    confidence = "medium" if catalog_match is not None else "low"
+    confidence: Literal["high", "medium", "low"] = (
+        "medium" if catalog_match is not None else "low"
+    )
     if catalog_match is not None:
         safe_next_action = "run_read_only_validation"
         suggested_model = f"{catalog_match.model_id} {catalog_match.name}"

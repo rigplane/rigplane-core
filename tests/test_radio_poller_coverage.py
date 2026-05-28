@@ -22,6 +22,7 @@ from rigplane.web.radio_poller import (
     QuickSplitTrigger,
     RadioPoller,
     SelectVfo,
+    SendCiv,
     SetAgc,
     SetAttenuator,
     SetDataMode,
@@ -217,6 +218,32 @@ async def test_command_queue_ordered_lane_preserves_repeated_commands() -> None:
         PttOn(),
         PttOff(),
     ]
+
+
+@pytest.mark.asyncio
+async def test_radio_poller_executes_raw_civ_fire_and_forget() -> None:
+    radio = _make_radio()
+    poller = RadioPoller(radio, StateCache(), CommandQueue())
+
+    await poller._execute(  # noqa: SLF001
+        SendCiv(command=0x1A, sub=0x05, data=b"\x01\x53\x01")
+    )
+
+    radio.send_civ.assert_awaited_once_with(
+        0x1A,
+        sub=0x05,
+        data=b"\x01\x53\x01",
+        wait_response=False,
+    )
+
+
+@pytest.mark.asyncio
+async def test_radio_poller_rejects_raw_civ_without_backend_support() -> None:
+    radio = SimpleNamespace(profile=resolve_radio_profile(model="FTX-1"))
+    poller = RadioPoller(radio, StateCache(), CommandQueue())
+
+    with pytest.raises(CommandError, match="send_civ is not supported"):
+        await poller._execute(SendCiv(command=0x1A, data=b"\x01"))  # noqa: SLF001
 
 
 @pytest.mark.asyncio

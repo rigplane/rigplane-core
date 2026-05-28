@@ -1,3 +1,7 @@
+---
+robots: noindex, follow
+---
+
 # RigPlane Core — Hardcoded User-Facing String Inventory
 
 Issue: [RP-ML-002 — Inventory Core hardcoded user-facing strings](https://github.com/rigplane/rigplane-core/issues/1520)

@@ -32,6 +32,30 @@ def test_ic7610_factory_creates_correct_backend():
     assert not isinstance(radio, Ic705SerialRadio)
 
 
+def test_x6200_factory_routes_to_ic705_class_without_warning(caplog):
+    """Regression for MOR-170: ``--model X6200`` must route to the IC-705
+    serial transport class (X6200 shares the IC-705 CI-V personality —
+    Hamlib ``x6100_priv_caps`` is reused by ``x6200_caps``) and MUST NOT
+    log the "Unknown model … defaulting to IC-7610" fallback warning.
+
+    Behaviour separation from IC-705 happens via the loaded
+    ``rigs/x6200.toml`` profile, not via a distinct serial class.
+    """
+    config = SerialBackendConfig(
+        device="/dev/ttyUSB0",
+        model="X6200",
+    )
+    with caplog.at_level("WARNING", logger="rigplane.backends.factory"):
+        radio = create_radio(config)
+    assert isinstance(radio, Ic705SerialRadio)
+    assert radio.model == "X6200"
+    # No silent fallback to IC-7610.
+    assert not any(
+        "defaulting to IC-7610" in rec.getMessage() for rec in caplog.records
+    )
+    assert not any("Unknown model" in rec.getMessage() for rec in caplog.records)
+
+
 def test_ic705_backend_default_model():
     """IC-705 backend should default model to IC-705."""
     radio = Ic705SerialRadio(device="/dev/ttyUSB0")

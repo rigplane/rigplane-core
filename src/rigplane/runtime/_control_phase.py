@@ -561,6 +561,9 @@ class ControlPhaseRuntime:
                 h._civ_stream_ready = True
                 h._civ_recovering = False
                 h._last_civ_data_received = now
+                # ``data_flowing`` being True implies ``last_data`` is numeric;
+                # re-narrow for mypy so ``float(last_data)`` type-checks.
+                assert isinstance(last_data, (int, float))
                 logger.info(
                     "civ.soft_reconnect.noop",
                     extra={

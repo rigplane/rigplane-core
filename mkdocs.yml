@@ -49,6 +49,10 @@ theme:
   icon:
     repo: fontawesome/brands/github
 
+# MkDocs hooks. See hooks/ directory.
+hooks:
+  - hooks/sitemap_noindex.py
+
 plugins:
   - search
   - mkdocstrings:

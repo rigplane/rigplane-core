@@ -1,3 +1,7 @@
+---
+description: Fix opuslib install errors on macOS for RigPlane audio streaming — Homebrew opus dependency, dynamic library path, and verifying that codec loading succeeds.
+---
+
 # macOS Opus Library Fix
 
 ## Problem

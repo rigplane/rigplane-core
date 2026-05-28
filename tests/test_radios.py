@@ -38,15 +38,37 @@ class TestRadioModels:
         r = RADIOS["IC-R8600"]
         assert r.civ_addr == 0x96
 
-    def test_all_have_lan(self) -> None:
-        for name, r in RADIOS.items():
-            assert r.has_lan, f"{name} should have LAN"
+    def test_x6200(self) -> None:
+        # Xiegu X6200 shares CI-V address 0xA4 with IC-705; the discovery
+        # path disambiguates by USB hwid (see MOR-170). Has WiFi, no LAN.
+        r = RADIOS["X6200"]
+        assert r.civ_addr == 0xA4
+        assert r.has_lan is False
+        assert r.has_wifi is True
+        assert r.receivers == 1
+
+    def test_lan_capable_radios(self) -> None:
+        # All Icom rigs in this registry are LAN-capable. The Xiegu X6200
+        # is the first registry entry that is USB-only; documented as the
+        # exception so future non-LAN rigs don't trip this assertion.
+        lan_capable = set(RADIOS) - {"X6200"}
+        for name in lan_capable:
+            assert RADIOS[name].has_lan, f"{name} should have LAN"
+        assert RADIOS["X6200"].has_lan is False
 
 
 class TestGetCivAddr:
     def test_known_model(self) -> None:
         assert get_civ_addr("IC-7610") == 0x98
         assert get_civ_addr("IC-705") == 0xA4
+
+    def test_x6200(self) -> None:
+        # Regression for MOR-170: the CLI ``--model X6200`` path used to
+        # fall through to "Unknown model, defaulting to IC-7610" because
+        # X6200 wasn't in the RADIOS registry.
+        assert get_civ_addr("X6200") == 0xA4
+        assert get_civ_addr("x6200") == 0xA4
+        assert get_civ_addr("X-6200") == 0xA4
 
     def test_case_insensitive(self) -> None:
         assert get_civ_addr("ic-7300") == 0x94

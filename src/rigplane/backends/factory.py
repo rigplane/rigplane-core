@@ -84,7 +84,14 @@ def create_radio(config: BackendConfig) -> Radio:
             | type[Ic9700SerialRadio]
             | type[Icom7610SerialRadio]
         )
-        if model == "IC-705":
+        if model in ("IC-705", "X6200"):
+            # X6200 shares the IC-705 CI-V personality (same default address
+            # 0xA4, same transport class is fine — see MOR-170, Hamlib's
+            # x6100_priv_caps reused by both x6100_caps and x6200_caps).
+            # The actual command set comes from the loaded rigs/x6200.toml
+            # via the ``model="X6200"`` argument passed through to the
+            # serial class constructor; the transport machinery here is
+            # transport-only, not personality-bearing.
             serial_class = Ic705SerialRadio
         elif model == "IC-7300":
             serial_class = Ic7300SerialRadio

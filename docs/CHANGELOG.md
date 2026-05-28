@@ -1,3 +1,7 @@
+---
+robots: noindex, follow
+---
+
 # Changelog
 
 All notable changes to this project will be documented in this file.
@@ -6,6 +10,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
+
+### Added
+- Exposed a queued, fire-and-forget raw CI-V `send_civ` command through the
+  HTTP/WS command surface and ordered batch endpoint so automation clients can
+  send vendor-specific CI-V without opening a competing radio session (#1616,
+  #1617, 1437232d).
+- Added `POST /api/v1/civ/transaction` for scoped raw CI-V transactions with
+  explicit `expect` modes (`none`, `ack`, `data`), deterministic ACK/NAK/data
+  JSON results, bounded timeouts, and CI-V ownership guarding (#1622, #1623).
+- Documented Python usage for response-capable raw CI-V HTTP transactions
+  (#1626).
 
 ## [2.4.0] — 2026-05-24
 

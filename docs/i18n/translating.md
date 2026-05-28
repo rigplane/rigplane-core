@@ -1,3 +1,7 @@
+---
+description: Translate the RigPlane Web UI and CLI strings — workflow for translators, where source strings live, language fallback rules, and how to submit a translation PR.
+---
+
 # Contributing translations to RigPlane Core
 
 Thank you for helping localize RigPlane Core. This document is the

@@ -1,3 +1,7 @@
+---
+robots: noindex, follow
+---
+
 # Public API Surface
 
 This page defines the **officially supported** public API of `rigplane`. Use these exports for stable, documented behavior. Other symbols re-exported from `rigplane` are available for advanced or legacy use but may have looser backward-compatibility guarantees.

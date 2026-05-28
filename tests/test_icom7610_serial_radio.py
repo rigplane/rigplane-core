@@ -534,3 +534,27 @@ async def test_serial_tx_default_uses_mono_channels() -> None:
     assert usb_audio.tx_start_kwargs.get("channels") == 1
     await radio.stop_audio_tx_pcm()
     await radio.disconnect()
+
+
+@pytest.mark.asyncio
+async def test_serial_tx_accepts_none_args_resolving_to_defaults() -> None:
+    """Explicit None args resolve to serial defaults (LSP parity with base).
+
+    The base ``AudioRuntimeMixin.start_audio_tx_pcm`` accepts ``int | None``;
+    the serial override must too, so a base-typed caller passing ``None`` does
+    not hit a ``TypeError``.  ``None`` resolves to sample_rate=48000,
+    frame_ms=20, channels=1 (USB CODEC mono clamp).
+    """
+    usb_audio = _FakeUsbAudioDriver()
+    radio = Icom7610SerialRadio(
+        device="/dev/ttyUSB0",
+        civ_link=_FakeSerialCivLink(),
+        audio_driver=usb_audio,
+    )
+    await radio.connect()
+    await radio.start_audio_tx_pcm(sample_rate=None, channels=None, frame_ms=None)
+    assert usb_audio.tx_start_kwargs.get("sample_rate") == 48000
+    assert usb_audio.tx_start_kwargs.get("frame_ms") == 20
+    assert usb_audio.tx_start_kwargs.get("channels") == 1
+    await radio.stop_audio_tx_pcm()
+    await radio.disconnect()
