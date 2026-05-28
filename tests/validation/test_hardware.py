@@ -381,6 +381,57 @@ async def test_reverse_sync_mismatch_yields_fail_state_publishing():
     assert check.evidence["delta_hz"] == 14_074_000 - 7_000_000
 
 
+def test_tolerant_equal_within_and_beyond_tolerance():
+    from rigplane.validation.hardware import _tolerant_equal
+
+    eq = _tolerant_equal(3)
+    assert eq(200, 198) is True
+    assert eq(200, 203) is True
+    assert eq(200, 196) is False
+    assert eq(50, 50) is True
+
+
+class _OffByTwoRfGainRadio:
+    """Dataclass-style fake whose rf_gain readback lags the write by 2.
+
+    Mirrors a real radio that quantizes an analog level: the tolerance-aware
+    comparator must still treat the readback as a successful reaction/restore
+    while evidence records the exact written/read values.
+    """
+
+    def __init__(self) -> None:
+        self.connected = True
+        self.model = "OffByTwo"
+        self.capabilities = {"rf_gain"}
+        self.radio_state = RadioState()
+        self._value = 100
+
+    async def get_rf_gain(self, receiver: int = 0) -> int:
+        # Reads back 2 below whatever was last written.
+        return max(0, self._value - 2)
+
+    async def set_rf_gain(self, level: int, receiver: int = 0) -> None:
+        self._value = level
+
+
+async def test_rf_gain_tolerance_passes_with_off_by_two_readback():
+    radio = _OffByTwoRfGainRadio()
+    template = _single_entry_template(check_id="rf_gain.set", capability="rf_gain")
+    levels = await execute_hardware_checks(
+        radio, template, OperatorSafetyBlock(), allow_writes=True
+    )
+    check = _flatten(levels)["rf_gain.set"]
+
+    assert check.status is CheckStatus.PASS
+    # original read: 100 -> 98; make_changed(98) -> 200; readback 200 -> 198.
+    assert check.evidence["original"] == 98
+    assert check.evidence["changed"] == 200
+    assert check.evidence["readback"] == 198
+    assert check.evidence["restored"] is True
+    # Restore wrote back the exact original (98); readback is 96.
+    assert check.evidence["restore_readback"] == 96
+
+
 async def test_artifact_round_trips():
     radio = _make_mock_radio()
     template = _x6200_template()

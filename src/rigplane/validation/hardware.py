@@ -341,6 +341,20 @@ def _default_equal(a: T, b: T) -> bool:
     return bool(a == b)
 
 
+def _tolerant_equal(tol: int) -> Callable[[int, int], bool]:
+    """Build a comparator treating values within ``tol`` as equal.
+
+    Used for analog level controls where a real radio may quantize a written
+    value, so an exact readback is not guaranteed. Evidence still records the
+    exact original/changed/readback values.
+    """
+
+    def _eq(a: int, b: int) -> bool:
+        return abs(int(a) - int(b)) <= tol
+
+    return _eq
+
+
 async def _read_modify_verify_restore(
     radio: Radio,
     entry: CapabilityDeclarationEntry,
@@ -700,6 +714,7 @@ async def _check_filter_width_set(
         read=lambda: dsp.get_filter_width(0),
         write=lambda value: dsp.set_filter_width(value, 0),
         make_changed=lambda w: w + 200 if w <= 2600 else w - 200,
+        equal=_tolerant_equal(50),
         per_check_timeout=per_check_timeout,
     )
 
@@ -721,6 +736,7 @@ async def _check_rf_gain_set(
         read=lambda: levels.get_rf_gain(0),
         write=lambda value: levels.set_rf_gain(value, 0),
         make_changed=lambda v: 200 if v < 128 else 50,
+        equal=_tolerant_equal(3),
         per_check_timeout=per_check_timeout,
     )
 
@@ -742,6 +758,7 @@ async def _check_af_level_set(
         read=lambda: levels.get_af_level(0),
         write=lambda value: levels.set_af_level(value, 0),
         make_changed=lambda v: 200 if v < 128 else 50,
+        equal=_tolerant_equal(3),
         per_check_timeout=per_check_timeout,
     )
 
@@ -905,6 +922,7 @@ async def _check_rit_set(
         read=rit.get_rit_frequency,
         write=rit.set_rit_frequency,
         make_changed=lambda v: v + 100,
+        equal=_tolerant_equal(10),
         per_check_timeout=per_check_timeout,
     )
 

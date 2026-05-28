@@ -16,6 +16,10 @@ _SET_PTT = {"T", r"\set_ptt"}
 _GET_VFO = {"v", r"\get_vfo"}
 _SET_VFO = {"V", r"\set_vfo"}
 _GET_INFO = {r"\get_info"}
+_GET_LEVEL = {"l", r"\get_level"}
+_SET_LEVEL = {"L", r"\set_level"}
+_GET_FUNC = {"u", r"\get_func"}
+_SET_FUNC = {"U", r"\set_func"}
 _QUIT = {"q", r"\quit"}
 
 
@@ -29,6 +33,12 @@ class FakeRigctldState:
     ptt: int = 0
     vfo: str = "VFOA"
     info: str = "Fake rigctld"
+    rf_gain: float = 0.5
+    af: float = 0.3
+    preamp_db: int = 0
+    att_db: int = 0
+    nb: int = 0
+    nr: int = 0
 
 
 @dataclass(slots=True)
@@ -227,9 +237,75 @@ class FakeRigctldServer:
             self.state.vfo = tokens[1].upper()
             return _ok()
 
+        if key in _GET_LEVEL:
+            return self._get_level(tokens)
+        if key in _SET_LEVEL:
+            return self._set_level(tokens)
+        if key in _GET_FUNC:
+            return self._get_func(tokens)
+        if key in _SET_FUNC:
+            return self._set_func(tokens)
+
         if key in _GET_INFO:
             return f"{self.state.info}\n".encode("ascii")
 
+        return _error(HamlibError.ENIMPL)
+
+    def _get_level(self, tokens: list[str]) -> bytes:
+        if len(tokens) != 2:
+            return _error(HamlibError.EINVAL)
+        name = tokens[1].upper()
+        if name == "RF":
+            return f"{self.state.rf_gain:.3f}\n".encode("ascii")
+        if name == "AF":
+            return f"{self.state.af:.3f}\n".encode("ascii")
+        if name == "PREAMP":
+            return f"{self.state.preamp_db}\n".encode("ascii")
+        if name == "ATT":
+            return f"{self.state.att_db}\n".encode("ascii")
+        return _error(HamlibError.ENIMPL)
+
+    def _set_level(self, tokens: list[str]) -> bytes:
+        if len(tokens) != 3:
+            return _error(HamlibError.EINVAL)
+        name = tokens[1].upper()
+        try:
+            if name == "RF":
+                self.state.rf_gain = float(tokens[2])
+                return _ok()
+            if name == "AF":
+                self.state.af = float(tokens[2])
+                return _ok()
+            if name == "PREAMP":
+                self.state.preamp_db = int(tokens[2])
+                return _ok()
+            if name == "ATT":
+                self.state.att_db = int(tokens[2])
+                return _ok()
+        except ValueError:
+            return _error(HamlibError.EINVAL)
+        return _error(HamlibError.ENIMPL)
+
+    def _get_func(self, tokens: list[str]) -> bytes:
+        if len(tokens) != 2:
+            return _error(HamlibError.EINVAL)
+        name = tokens[1].upper()
+        if name == "NB":
+            return f"{self.state.nb}\n".encode("ascii")
+        if name == "NR":
+            return f"{self.state.nr}\n".encode("ascii")
+        return _error(HamlibError.ENIMPL)
+
+    def _set_func(self, tokens: list[str]) -> bytes:
+        if len(tokens) != 3 or tokens[2] not in {"0", "1"}:
+            return _error(HamlibError.EINVAL)
+        name = tokens[1].upper()
+        if name == "NB":
+            self.state.nb = int(tokens[2])
+            return _ok()
+        if name == "NR":
+            self.state.nr = int(tokens[2])
+            return _ok()
         return _error(HamlibError.ENIMPL)
 
 
