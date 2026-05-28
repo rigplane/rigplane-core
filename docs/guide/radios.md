@@ -100,6 +100,22 @@ broader coverage than maintaining a bespoke backend for each dialect.
 - **VFO scheme:** `ab`
 - **Status:** Profile only. May work with CI-V backend (untested); also a Hamlib assisted-discovery candidate.
 
+### Xiegu X6200
+
+- **Protocol:** CI-V (Xiegu/Icom-compatible subset)
+- **CI-V Address:** `0xA4` by factory default, shared with IC-705
+- **Connectivity:** USB serial CAT on `SERIAL-B`; default baud `19200`
+- **Rig profile:** `rigs/x6200.toml`
+- **Features:** HF + 6m, QRP, single receiver, VFO A/B, audio controls, PTT,
+  split, VOX, compressor, CW, RIT/XIT, tuner, meters, tones, data mode, scan,
+  dial lock, AGC
+- **Not advertised:** CI-V power control and spectrum scope; the documented
+  X6200 CI-V command envelope does not include those IC-705-style commands.
+- **Status:** Native profile and CLI preset are present. Discovery includes
+  X6200-vs-IC-705 disambiguation because both radios can report CI-V address
+  `0xA4`. First-party maintainer hardware validation is still pending; hardware
+  reports are welcome.
+
 ### Lab599 TX-500
 
 - **Protocol:** Kenwood CAT (text) / Hamlib candidate

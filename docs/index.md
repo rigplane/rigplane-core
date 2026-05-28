@@ -102,6 +102,7 @@ RigPlane keeps the browser UI, audio path, diagnostics, and `rigctld`-compatible
 | Yaesu FTX-1 | Yaesu CAT | :white_check_mark: Tested (USB) |
 | IC-705 | CI-V `0xA4` | :white_check_mark: Validated (LAN/WiFi community-tested) |
 | IC-9700 | CI-V `0xA2` | :material-help-circle: Profile — not yet tested |
+| Xiegu X6200 | CI-V `0xA4` | :material-help-circle: Native profile + discovery disambiguation; hardware reports welcome |
 | Xiegu X6100 | CI-V `0x70` / Hamlib candidate | :material-help-circle: Profile only; assisted discovery candidate |
 | Lab599 TX-500 | Kenwood CAT / Hamlib candidate | :material-help-circle: Profile only; assisted discovery candidate |
 | IC-7851 | CI-V `0x8E` | :material-help-circle: Should work |

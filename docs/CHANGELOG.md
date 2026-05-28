@@ -12,15 +12,48 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- Added ordered HTTP command batches so local automation can run structured
+  commands in request order with per-step results and timeout handling (#1606,
+  31c41425).
+- Published the full HTTP/WebSocket command catalog in the API docs so client
+  authors can discover the supported command names, parameters, and response
+  shapes without reading server code (#1607, f4c113e7).
 - Exposed a queued, fire-and-forget raw CI-V `send_civ` command through the
   HTTP/WS command surface and ordered batch endpoint so automation clients can
   send vendor-specific CI-V without opening a competing radio session (#1616,
-  #1617, 1437232d).
+  fb2965ee).
 - Added `POST /api/v1/civ/transaction` for scoped raw CI-V transactions with
   explicit `expect` modes (`none`, `ack`, `data`), deterministic ACK/NAK/data
   JSON results, bounded timeouts, and CI-V ownership guarding (#1622, #1623).
+- Added response-capable raw CI-V transaction steps to ordered HTTP batches via
+  `type: "raw_civ_transaction"`, preserving order when mixed with queued
+  command steps (#1637, 06c4c7b0).
+- Added an internal raw CI-V pipe and local Hamlib A1 bridge runner for
+  development of transparent external-CAT ownership over CI-V serial backends
+  (#1610, #1612, #1614, #1615, c371bc3b, 085cd617, c3a09e1e, deabb95d).
+- Added a distinct Xiegu X6200 native rig profile and discovery
+  disambiguation from IC-705 despite the shared factory CI-V address `0xA4`
+  (#1630, 7b593eee).
 - Documented Python usage for response-capable raw CI-V HTTP transactions
   (#1626).
+
+### Changed
+- Cleaned up type-checking visible at integration boundaries, including raw
+  CI-V transaction coverage and audio TX PCM signatures, reducing false
+  positives for typed downstream users (#1628, #1629, db90a992, bda2ed0a,
+  a356a1ab).
+
+### Fixed
+- Registered Xiegu X6200 in the CLI model registry so `--model X6200` resolves
+  to the X6200 preset instead of silently falling back to IC-7610 (#1631,
+  204aea24).
+- Stopped sending LAN `OpenClose` packets on the serial CI-V wire, avoiding an
+  X6200 flicker/wedge failure mode observed on hardware (#1632, 28a962d0).
+
+### Docs
+- Clarified raw CI-V transaction and batch contracts, including the split
+  between public/dev-facing raw transaction APIs and the internal experimental
+  Hamlib A1 raw-pipe bridge path (#1616, #1637, #1638).
 
 ## [2.4.0] — 2026-05-24
 
