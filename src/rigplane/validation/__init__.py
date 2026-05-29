@@ -10,6 +10,14 @@ from __future__ import annotations
 
 from rigplane.validation.comparison import compute_comparison_dimensions
 from rigplane.validation.hardware import execute_hardware_checks
+from rigplane.validation.overrides import (
+    EXCLUDED,
+    MergeReport,
+    OverrideEntry,
+    OverridePatch,
+    merge_overrides,
+    parse_override_dict,
+)
 from rigplane.validation.runner import (
     HARDWARE_OPT_IN_ENV,
     HardwareExecutionBlocked,
@@ -66,4 +74,10 @@ __all__ = [
     "human_summary",
     "execute_hardware_checks",
     "compute_comparison_dimensions",
+    "EXCLUDED",
+    "OverrideEntry",
+    "OverridePatch",
+    "MergeReport",
+    "parse_override_dict",
+    "merge_overrides",
 ]
