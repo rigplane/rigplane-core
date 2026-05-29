@@ -141,6 +141,7 @@ nav:
       - Raw CI-V transactions: internals/raw-civ-transactions.md
       - GitHub Project workflow: internals/github-project-workflow.md
       - Capabilities Matrix: capabilities-matrix.md
+      - Running validation: validation/running-validation.md
       - CLI design: internals/cli-design.md
       - Performance: PERFORMANCE.md
       - Audio Streaming Profile: AUDIO_STREAMING_PROFILE.md
