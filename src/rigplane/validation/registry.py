@@ -505,6 +505,36 @@ _KIND_TO_DECLARATION: dict[CheckKind, CapabilityDeclaration] = {
 }
 
 
+def _presence_entries(
+    capabilities: frozenset[str],
+    functional_caps: set[str],
+) -> list[CapabilityDeclarationEntry]:
+    """Return synthetic ``<cap>.presence`` entries for undiscovered capabilities.
+
+    For every capability in *capabilities* that is not covered by any registry
+    check (i.e. not in *functional_caps*), emit a ``CapabilityDeclarationEntry``
+    at ``ValidationLevel.STATIC_PROFILE`` with ``UNSUPPORTED_PENDING_EVIDENCE``.
+    The list is sorted alphabetically by capability name so output is stable.
+    """
+    result: list[CapabilityDeclarationEntry] = []
+    for cap in sorted(capabilities):
+        if cap not in functional_caps:
+            result.append(
+                CapabilityDeclarationEntry(
+                    check_id=f"{cap}.presence",
+                    capability=cap,
+                    level=ValidationLevel.STATIC_PROFILE,
+                    declaration=CapabilityDeclaration.UNSUPPORTED_PENDING_EVIDENCE,
+                    summary=(
+                        f"Capability {cap!r} is declared by the profile but has "
+                        "no functional check yet."
+                    ),
+                    tx_adjacent=False,
+                )
+            )
+    return result
+
+
 def build_template_from_capabilities(
     capabilities: frozenset[str],
     *,
@@ -561,21 +591,96 @@ def build_template_from_capabilities(
         )
 
     # Presence entries: declared capabilities not covered by any registry check.
-    for cap in sorted(capabilities):
-        if cap not in functional_caps:
-            entries.append(
-                CapabilityDeclarationEntry(
-                    check_id=f"{cap}.presence",
-                    capability=cap,
-                    level=ValidationLevel.STATIC_PROFILE,
-                    declaration=CapabilityDeclaration.UNSUPPORTED_PENDING_EVIDENCE,
-                    summary=(
-                        f"Capability {cap!r} is declared by the profile but has "
-                        "no functional check yet."
-                    ),
-                    tx_adjacent=False,
-                )
+    entries.extend(_presence_entries(capabilities, functional_caps))
+
+    # Stable sort by level — preserves registry order within each level;
+    # presence entries are level 0 so they sort before DISCOVERY (level 1).
+    entries.sort(key=lambda e: int(e.level))
+
+    return MatrixTemplate(
+        radio=RadioTarget(model=model, profile_id=profile_id),
+        entries=entries,
+    )
+
+
+def build_hamlib_template_from_capabilities(
+    capabilities: frozenset[str],
+    available_hamlib_tokens: frozenset[str],
+    *,
+    model: str,
+    profile_id: str,
+) -> MatrixTemplate:
+    """Generate a ``MatrixTemplate`` gated on available Hamlib tokens.
+
+    This is Generator B (ADR §6): it mirrors ``build_template_from_capabilities``
+    (Generator A) but gates each check on whether its ``CheckSpec.hamlib_token``
+    is present in *available_hamlib_tokens*.
+
+    Parameters
+    ----------
+    capabilities:
+        The set of capability strings declared by the radio profile.
+    available_hamlib_tokens:
+        A plain ``frozenset[str]`` of Hamlib token names reported by the
+        Hamlib backend (e.g. ``{"f", "m", "RF", "AF", "PREAMP", "ATT", "t"}``).
+        This function takes a plain frozenset — it does **not** import
+        ``rigplane.backends``.  The caller (CLI, MOR-211) is responsible for
+        flattening a ``HamlibCaps`` object into tokens before calling here.
+    model:
+        Radio model string for ``RadioTarget``.
+    profile_id:
+        Profile identifier for ``RadioTarget``.
+
+    Algorithm (ADR §6):
+
+    1. Walk REGISTRY in order.  For each ``CheckSpec``:
+       - If ``spec.hamlib_token is None`` → ``UNSUPPORTED_PENDING_EVIDENCE``.
+       - elif ``spec.hamlib_token not in available_hamlib_tokens`` →
+         ``UNSUPPORTED_PENDING_EVIDENCE``.
+       - else (token present):
+         - If ``spec.capability == ""`` (structural) → ``SUPPORTED``.
+         - elif ``spec.capability in capabilities`` →
+           ``_KIND_TO_DECLARATION[spec.kind]``.
+         - else (token present but cap not declared) →
+           ``UNSUPPORTED_PENDING_EVIDENCE``.
+    2. Track functional caps (non-empty capability) for presence-entry exclusion.
+    3. Append ``_presence_entries(capabilities, functional_caps)``.
+    4. Stable-sort by level; return ``MatrixTemplate``.
+    """
+    entries: list[CapabilityDeclarationEntry] = []
+    functional_caps: set[str] = set()
+
+    for spec in REGISTRY:
+        # Track all functional capabilities regardless of token/cap status.
+        if spec.capability:
+            functional_caps.add(spec.capability)
+
+        if spec.hamlib_token is None:
+            declaration = CapabilityDeclaration.UNSUPPORTED_PENDING_EVIDENCE
+        elif spec.hamlib_token not in available_hamlib_tokens:
+            declaration = CapabilityDeclaration.UNSUPPORTED_PENDING_EVIDENCE
+        else:
+            # Token is present — now check structural vs functional.
+            if spec.capability == "":
+                declaration = CapabilityDeclaration.SUPPORTED
+            elif spec.capability in capabilities:
+                declaration = _KIND_TO_DECLARATION[spec.kind]
+            else:
+                declaration = CapabilityDeclaration.UNSUPPORTED_PENDING_EVIDENCE
+
+        entries.append(
+            CapabilityDeclarationEntry(
+                check_id=spec.check_id,
+                capability=spec.capability,
+                level=spec.level,
+                declaration=declaration,
+                summary=spec.summary,
+                tx_adjacent=spec.tx_adjacent,
             )
+        )
+
+    # Presence entries: declared capabilities not covered by any registry check.
+    entries.extend(_presence_entries(capabilities, functional_caps))
 
     # Stable sort by level — preserves registry order within each level;
     # presence entries are level 0 so they sort before DISCOVERY (level 1).
@@ -600,4 +705,5 @@ __all__ = [
     "REGISTRY_BY_ID",
     "get_spec",
     "build_template_from_capabilities",
+    "build_hamlib_template_from_capabilities",
 ]
