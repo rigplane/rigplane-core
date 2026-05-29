@@ -94,6 +94,10 @@ from rigplane.cli._radio_validate import (  # noqa: E402
     add_subparser as _add_radio_validate_subparser,
     run as _run_radio_validate,
 )
+from rigplane.cli._convert import (  # noqa: E402
+    add_subparser as _add_convert_subparser,
+    run as _run_convert,
+)
 from rigplane.core.radio_protocol import Radio  # noqa: E402
 from rigplane.core.types import Mode, get_audio_capabilities  # noqa: E402
 
@@ -337,6 +341,7 @@ _COMMAND_NAMES = {
     "diagnose",
     "validate",
     "radio-validate",
+    "convert",
 }
 
 _GLOBAL_CONNECTION_OPTIONS = {
@@ -1496,6 +1501,9 @@ def _build_parser() -> argparse.ArgumentParser:
 
     # radio-validate — profile-driven entrypoint; thin wrapper over validate
     _add_radio_validate_subparser(sub)
+
+    # convert — bootstrap a draft TOML from Hamlib dump_caps + cross-check
+    _add_convert_subparser(sub)
 
     return p
 
@@ -3733,6 +3741,8 @@ def main() -> None:
         sys.exit(_run_validate(args))
     elif args.command == "radio-validate":
         sys.exit(_run_radio_validate(args))
+    elif args.command == "convert":
+        sys.exit(_run_convert(args))
     elif args.command is None:
         parser.print_help()
         sys.exit(0)

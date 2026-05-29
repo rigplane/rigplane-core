@@ -957,7 +957,9 @@ def discover_rigs(directory: Path) -> dict[str, RigConfig]:
     """Discover and load all rig TOML files in a directory.
 
     Files starting with underscore are ignored (e.g. ``_schema.md``,
-    ``_template.toml``).
+    ``_template.toml``). ``*.draft.toml`` files (emitted by ``rigplane
+    convert``) are also ignored so an unreviewed bootstrap draft is never
+    auto-loaded as a real profile.
 
     Returns:
         Dict mapping model name to ``RigConfig``.
@@ -967,7 +969,7 @@ def discover_rigs(directory: Path) -> dict[str, RigConfig]:
         return rigs
 
     for path in sorted(directory.glob("*.toml")):
-        if path.name.startswith("_"):
+        if path.name.startswith("_") or path.name.endswith(".draft.toml"):
             continue
         rig = load_rig(path)
         rigs[rig.model] = rig

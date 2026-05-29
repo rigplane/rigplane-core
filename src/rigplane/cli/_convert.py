@@ -10,17 +10,24 @@ import BOTH ``rigplane.backends.hamlib_models`` (``HamlibCaps``) AND
 
 from __future__ import annotations
 
+import argparse
+import json
 import re
+import sys
 from dataclasses import dataclass
+from pathlib import Path
+from typing import Any
 
-from rigplane.backends.hamlib_models import HamlibCaps
+from rigplane.backends.hamlib_models import HamlibCaps, load_hamlib_caps
 from rigplane.validation.registry import REGISTRY
 
 __all__ = [
     "CrossCheckReport",
+    "add_subparser",
     "build_draft_toml",
     "caps_to_capabilities",
     "cross_check",
+    "run",
 ]
 
 
@@ -192,3 +199,133 @@ def build_draft_toml(caps: HamlibCaps, *, model: str, profile_id: str) -> str:
         ]
     )
     return "\n".join(lines)
+
+
+# ---------------------------------------------------------------------------
+# CLI verb: ``rigplane convert <model>`` (MOR-220 / ADR §8) — I/O driver.
+#
+# This is the thin driver wrapping the pure functions above. It shells out via
+# ``load_hamlib_caps`` (the only I/O), writes the draft TOML to disk, and
+# optionally runs the cross-check against an existing profile. It lives in the
+# same module to keep the pure converter + its driver cohesive.
+# ---------------------------------------------------------------------------
+
+
+def add_subparser(sub: Any) -> argparse.ArgumentParser:
+    """Register the top-level ``convert`` subparser on ``sub``.
+
+    Typed as ``Any`` because ``argparse._SubParsersAction`` is private and the
+    surrounding parser code in ``cli/__init__.py`` follows the same convention.
+    """
+    p: argparse.ArgumentParser = sub.add_parser(
+        "convert",
+        help=(
+            "Bootstrap a draft rigplane TOML profile from a Hamlib model's "
+            "dump_caps (and optionally cross-check it against an existing "
+            "profile). Human review required before the draft becomes real."
+        ),
+    )
+    p.add_argument(
+        "convert_model",
+        metavar="MODEL",
+        help=(
+            "Hamlib numeric model id (e.g. 3091) or a known rigplane model "
+            "name (e.g. X6200)."
+        ),
+    )
+    p.add_argument(
+        "--draft-out",
+        dest="draft_out",
+        default=None,
+        metavar="PATH",
+        help=(
+            "Where to write the draft TOML. Default: <slug>.draft.toml in the "
+            "current directory (NOT rigs/, to avoid auto-load)."
+        ),
+    )
+    p.add_argument(
+        "--compare-profile",
+        dest="compare_profile",
+        default=None,
+        metavar="MODEL",
+        help=(
+            "Cross-check the Hamlib-derived capabilities against this existing "
+            "profile and print the report."
+        ),
+    )
+    p.add_argument(
+        "--json",
+        action="store_true",
+        help="Emit machine-readable JSON (cross-check report) instead of human text.",
+    )
+    return p
+
+
+def _resolve_model_id(model: str) -> tuple[int, str]:
+    """Resolve *model* to ``(hamlib_model_id, display_name)``.
+
+    Tries ``int(model)`` first; on ``ValueError`` resolves a rigplane profile
+    by name via :func:`rigplane.profiles.get_radio_profile`. Raises ``KeyError``
+    when the name is unknown.
+    """
+    try:
+        model_id = int(model)
+    except ValueError:
+        from rigplane.profiles import get_radio_profile
+
+        profile = get_radio_profile(model)  # may raise KeyError
+        return profile.hamlib_model_id, profile.model
+    return model_id, str(model_id)
+
+
+def run(args: argparse.Namespace) -> int:
+    """Driver for ``rigplane convert``. Returns a process exit code.
+
+    Exit codes: ``0`` success; ``2`` unknown model name; ``3`` Hamlib
+    ``dump_caps`` unavailable / degraded (cannot bootstrap a draft).
+    """
+    model_arg = str(getattr(args, "convert_model"))
+
+    try:
+        model_id, display_name = _resolve_model_id(model_arg)
+    except KeyError as exc:
+        print(f"Error: unknown model {model_arg!r}: {exc}", file=sys.stderr)
+        return 2
+
+    caps = load_hamlib_caps(model_id)
+    if caps.degraded_reason:
+        print(
+            f"Error: cannot bootstrap draft for {model_arg!r}: "
+            f"{caps.degraded_reason}.\n"
+            "  dump_caps is required (check that Hamlib `rigctl` is installed "
+            "and the model id is valid).",
+            file=sys.stderr,
+        )
+        return 3
+
+    profile_id = _slug(display_name)
+    text = build_draft_toml(caps, model=display_name, profile_id=profile_id)
+
+    draft_out = getattr(args, "draft_out", None) or f"{profile_id}.draft.toml"
+    out_path = Path(draft_out)
+    out_path.write_text(text + "\n", encoding="utf-8")
+    print(f"Draft written to: {out_path}", file=sys.stderr)
+
+    compare = getattr(args, "compare_profile", None)
+    if compare:
+        from rigplane.profiles import get_radio_profile
+
+        try:
+            other = get_radio_profile(compare)
+        except KeyError as exc:
+            print(
+                f"Error: unknown --compare-profile {compare!r}: {exc}", file=sys.stderr
+            )
+            return 2
+        report = cross_check(caps, other.capabilities, profile_id=other.id)
+        if getattr(args, "json", False):
+            print(json.dumps(report.to_dict(), indent=2))
+        else:
+            print(report.human_table())
+
+    return 0
