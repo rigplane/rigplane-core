@@ -1,26 +1,40 @@
 """Resolve USB Audio devices associated with a serial CI-V port.
 
-When multiple Icom radios are connected via USB, each exposes identical
-"USB Audio CODEC" devices (Burr-Brown/TI USB Audio Class 1.0).  This module
-maps a serial port (e.g. ``/dev/cu.usbserial-201410``) to the correct
-audio input/output device indices by correlating USB topology information.
+When multiple USB radios are connected, each exposes a USB Audio Class
+device (Icom: "USB Audio CODEC"; Yaesu: "USB Audio Device"; Xiegu X6200:
+a C-Media "USB Audio Device"). This module maps a serial CI-V port
+(e.g. ``/dev/cu.usbserial-201410`` or the X6200's ``/dev/cu.usbmodemXXXXX``)
+to the correct audio input/output device indices by correlating USB
+topology information — anchoring on the physical hub the port sits on
+rather than fragile, collision-prone device-name strings.
 
 **Algorithm (macOS — IORegistry)**:
 
 1. Parse the serial port's TTY suffix → find its ``locationID`` in IORegistry.
+   Both ``usbserial-XXXX`` (FTDI/CP210x) and ``usbmodemXXXX`` (CDC-ACM, e.g.
+   the X6200's WCH CH342 bridge) suffixes are recognised.
 2. Extract the upper 16 bits of ``locationID`` as the USB hub prefix.
 3. Find all USB audio devices (``USB Audio CODEC``, ``USB Audio Device``) in
    IORegistry with their ``locationID``.
 4. Match audio devices sharing the same hub prefix as the serial port.
 5. Map matched locations to ``sounddevice`` device indices by positional order.
 
-**Fallback**: When IORegistry is unavailable (Linux, or ``ioreg`` missing),
-falls back to name-based matching (existing ``UsbAudioDriver`` behavior).
+**Fallback**: When IORegistry is unavailable, ``ioreg`` is missing, or the
+platform is not macOS, falls back to name-based matching (see
+:func:`_is_usb_audio_codec` and ``usb_driver._USB_NAME_PATTERNS``). Name
+matching recognises the C-Media identity used by the X6200 so single-device
+setups resolve even without topology.
 
 Platform support:
-- **macOS**: Full topology-based resolution via ``/usr/sbin/ioreg``.
-- **Linux**: Future — ``/sys/bus/usb/devices/`` sysfs traversal (not yet implemented).
-- **Windows**: Not supported (no USB topology introspection planned).
+- **macOS**: Full topology-based resolution via ``/usr/sbin/ioreg`` for both
+  FTDI/CP210x and CDC-ACM (``usbmodem``) serial ports.
+- **Linux**: Topology resolution not yet implemented (``/sys`` sysfs traversal
+  is future work); relies on name-based / robust-identity fallback and the
+  optional ``[usb] rx_device``/``tx_device`` override escape hatch.
+- **Windows**: Topology resolution not implemented; same fallback path.
+
+For Linux/Windows multi-radio disambiguation, capture the exact audio device
+names on hardware and set the ``[usb]`` override in ``audio.toml`` (MOR-219).
 """
 
 from __future__ import annotations
@@ -208,17 +222,30 @@ def _resolve_macos(
 
 
 def _extract_tty_suffix(serial_port: str) -> str | None:
-    """Extract TTY suffix from a serial port path.
+    """Extract TTY suffix from a macOS serial port path.
 
-    Handles macOS (``/dev/cu.usbserial-XXXXXX``) and Linux
-    (``/dev/ttyUSBX``) formats.
+    Handles both macOS USB serial enumeration schemes:
+
+    - **FTDI / CP210x bridges** (``/dev/cu.usbserial-XXXXXX``) — the suffix
+      follows a dash and is the chip serial number. Used by Icom CI-V
+      cables (CP2102), Yaesu HRI, etc.
+    - **CDC-ACM composite bridges** (``/dev/cu.usbmodemXXXXX``) — the suffix
+      follows ``usbmodem`` directly (no dash) and is a location-derived id.
+      Used by the WCH CH342 dual-serial bridge in the Xiegu X6200 (MOR-219).
+
+    The matched suffix corresponds to the IORegistry ``IOTTYSuffix`` value,
+    which is what :func:`_find_serial_location` correlates against.
 
     >>> _extract_tty_suffix("/dev/cu.usbserial-201410")
     '201410'
     >>> _extract_tty_suffix("/dev/tty.usbserial-201410")
     '201410'
+    >>> _extract_tty_suffix("/dev/cu.usbmodem14201")
+    '14201'
+    >>> _extract_tty_suffix("/dev/tty.usbmodem1434203")
+    '1434203'
     """
-    m = re.search(r"usbserial-(\w+)", serial_port)
+    m = re.search(r"usb(?:serial-|modem)(\w+)", serial_port)
     if m:
         return m.group(1)
     return None
@@ -276,13 +303,26 @@ def _find_audio_codec_locations(ioreg_text: str) -> list[int]:
 def _is_usb_audio_codec(name: str) -> bool:
     """Check if a device name matches a USB audio device pattern.
 
-    Uses a broad match to support Icom, Yaesu, and Kenwood radios that
-    expose USB Audio Class devices.
+    Uses a broad match to support radios that expose a USB Audio Class
+    device under a vendor-specific or commodity name:
+
+    - Icom (``USB Audio CODEC`` — Burr-Brown/TI),
+    - Yaesu / Kenwood (vendor name in the device string),
+    - Xiegu X6200 (``USB Audio Device`` — C-Media Electronics codec; the
+      generic CMedia name is also matched as a robust-identity fallback on
+      platforms without topology resolution, MOR-219).
     """
     lowered = name.lower()
     return any(
         p in lowered
-        for p in ("usb audio codec", "usb audio device", "yaesu", "kenwood")
+        for p in (
+            "usb audio codec",
+            "usb audio device",
+            "yaesu",
+            "kenwood",
+            "c-media",
+            "cmedia",
+        )
     )
 
 

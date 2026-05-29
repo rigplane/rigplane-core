@@ -32,12 +32,19 @@ _DEPENDENCY_HINT = (
     "USB audio backend requires optional dependencies sounddevice and numpy. "
     "Install with: pip install rigplane[bridge]"
 )
+# Ordered by selection preference (lower index = stronger match). The
+# C-Media identity ranks the Xiegu X6200's audio codec ahead of an unknown
+# commodity device on platforms without topology resolution (MOR-219). It is
+# placed after the explicit "usb audio" names so a vendor CODEC still wins
+# when both are present.
 _USB_NAME_PATTERNS: tuple[str, ...] = (
     "usb audio codec",
     "usb audio",
     "icom",
     "yaesu",
     "kenwood",
+    "c-media",
+    "cmedia",
     "ftdi",
 )
 

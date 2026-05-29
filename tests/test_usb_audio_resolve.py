@@ -501,3 +501,177 @@ class TestAudioDeviceMapping:
         )
         with pytest.raises(AttributeError):
             m.rx_device_index = 99  # type: ignore[misc]
+
+
+# ---------------------------------------------------------------------------
+# MOR-219 — Xiegu X6200 (CDC-ACM usbmodem + C-Media USB Audio)
+# ---------------------------------------------------------------------------
+
+# Xiegu X6200: WCH CH342 dual-serial CDC-ACM bridge (/dev/cu.usbmodem…) plus a
+# C-Media "USB Audio Device", both on hub prefix 0x1423. The CAT port is the
+# second ACM interface (SERIAL-B → /dev/cu.usbmodem14203). Before MOR-219,
+# _extract_tty_suffix matched only "usbserial-…", so the X6200's usbmodem port
+# never reached topology resolution and the browser RX stream stayed silent.
+IOREG_XIEGU_X6200 = textwrap.dedent("""\
+    | +-o USB Audio Device@14232200  <class IOUSBHostDevice, id 0x1000c0de1>
+    | |   "locationID" = 337846784
+    | |   "USB Product Name" = "USB Audio Device"
+    | |   "USB Vendor Name" = "C-Media Electronics Inc.      "
+    | +-o USB Dual_Serial@14231000  <class IOUSBHostDevice, id 0x1000c0de0>
+    | |   "locationID" = 337842176
+    | |   "USB Vendor Name" = "Nanjing QinHeng Electronics Co."
+    | | +-o AppleUSBACMData
+    | |   | "IOTTYSuffix" = "14203"
+    | |   | "IOCalloutDevice" = "/dev/cu.usbmodem14203"
+""")
+
+# X6200 (usbmodem) alongside an Icom IC-7610 (usbserial) — proves the usbmodem
+# port still resolves its own hub prefix when a CP2102-based radio is present.
+IOREG_XIEGU_AND_ICOM = textwrap.dedent("""\
+    | +-o USB Audio Device@14232200  <class IOUSBHostDevice, id 0x1000c0de1>
+    | |   "locationID" = 337846784
+    | |   "USB Product Name" = "USB Audio Device"
+    | +-o USB Dual_Serial@14231000  <class IOUSBHostDevice, id 0x1000c0de0>
+    | |   "locationID" = 337842176
+    | | +-o AppleUSBACMData
+    | |   | "IOTTYSuffix" = "14203"
+    | |   | "IOCalloutDevice" = "/dev/cu.usbmodem14203"
+    | +-o USB Audio CODEC@01111400  <class IOUSBHostDevice, id 0x1000a9ab5>
+    | |   "locationID" = 17895424
+    | |   "USB Product Name" = "USB Audio CODEC"
+    | +-o CP2102 USB to UART Bridge Controller@01112000
+    | |   "locationID" = 17895936
+    | | +-o AppleUSBSLCOM
+    | |   | "IOTTYSuffix" = "111120"
+    | |   | "IOCalloutDevice" = "/dev/cu.usbserial-111120"
+""")
+
+
+def _make_mock_sd_xiegu() -> MagicMock:
+    """Mock sounddevice for an X6200: one built-in + one C-Media duplex device.
+
+    The C-Media codec enumerates on macOS CoreAudio as a single "USB Audio
+    Device" with both capture (1ch) and playback (2ch) channels.
+    """
+    devices: list[dict[str, Any]] = [
+        {
+            "name": "Built-in Speaker",
+            "index": 0,
+            "max_input_channels": 0,
+            "max_output_channels": 2,
+            "default_samplerate": 48000.0,
+        },
+        {
+            "name": "USB Audio Device",
+            "index": 1,
+            "max_input_channels": 1,
+            "max_output_channels": 2,
+            "default_samplerate": 48000.0,
+        },
+    ]
+    sd = MagicMock()
+    sd.query_devices.return_value = devices
+    sd.default.device = [-1, -1]
+    return sd
+
+
+class TestExtractTtySuffixCdcAcm:
+    """MOR-219: usbmodem (CDC-ACM) ports must yield a TTY suffix."""
+
+    def test_usbmodem_cu(self) -> None:
+        assert _extract_tty_suffix("/dev/cu.usbmodem14201") == "14201"
+
+    def test_usbmodem_tty(self) -> None:
+        assert _extract_tty_suffix("/dev/tty.usbmodem1434203") == "1434203"
+
+    def test_usbmodem_composite_acm_index(self) -> None:
+        # CH342 dual-serial exposes …1 and …3; CAT is on SERIAL-B (…3).
+        assert _extract_tty_suffix("/dev/cu.usbmodem14203") == "14203"
+
+    def test_usbserial_unchanged(self) -> None:
+        # Existing FTDI/CP210x extraction must not regress.
+        assert _extract_tty_suffix("/dev/cu.usbserial-201410") == "201410"
+
+
+class TestIsUsbAudioCodecXiegu:
+    """MOR-219: recognise the C-Media / generic 'USB Audio Device' identity."""
+
+    def test_usb_audio_device(self) -> None:
+        assert _is_usb_audio_codec("USB Audio Device") is True
+
+    def test_cmedia_vendor_dashed(self) -> None:
+        assert _is_usb_audio_codec("C-Media USB Headphone Set") is True
+
+    def test_cmedia_vendor_plain(self) -> None:
+        assert _is_usb_audio_codec("CMedia Audio") is True
+
+    def test_unrelated_still_false(self) -> None:
+        assert _is_usb_audio_codec("Built-in Microphone") is False
+
+
+class TestResolveXieguX6200:
+    """Full macOS topology resolution for the X6200."""
+
+    def test_audio_codec_locations_include_cmedia(self) -> None:
+        assert _find_audio_codec_locations(IOREG_XIEGU_X6200) == [0x14232200]
+
+    def test_single_x6200_usbmodem_resolves_to_cmedia(self) -> None:
+        sd = _make_mock_sd_xiegu()
+        result = _resolve_macos(
+            "/dev/cu.usbmodem14203",
+            sounddevice_module=sd,
+            ioreg_output=IOREG_XIEGU_X6200,
+        )
+        assert result is not None
+        assert result.serial_port == "/dev/cu.usbmodem14203"
+        assert result.location_prefix == 0x1423
+        # The duplex C-Media device serves both RX and TX.
+        assert result.rx_device_index == 1
+        assert result.tx_device_index == 1
+
+    def test_x6200_serial_location_found_alongside_icom(self) -> None:
+        # Root-cause regression: the usbmodem suffix must extract AND its
+        # locationID must be found even when a usbserial Icom is also present.
+        loc = _find_serial_location(IOREG_XIEGU_AND_ICOM, "14203")
+        assert loc == 0x14231000
+        assert (loc >> 16) == 0x1423
+
+    def test_icom_unaffected_by_xiegu_presence(self) -> None:
+        loc = _find_serial_location(IOREG_XIEGU_AND_ICOM, "111120")
+        assert loc == 17895936  # matches the IC-7610 fixture literal
+        assert (loc >> 16) == 0x0111
+
+    def test_audio_locations_mixed(self) -> None:
+        assert _find_audio_codec_locations(IOREG_XIEGU_AND_ICOM) == [
+            0x01111400,
+            0x14232200,
+        ]
+
+
+class TestNameFallbackXiegu:
+    """MOR-219: name-based fallback (Linux/Windows) prefers the C-Media codec
+    over an unknown commodity device when topology is unavailable."""
+
+    def test_cmedia_preferred_over_unknown_duplex(self) -> None:
+        from rigplane.audio.usb_driver import (
+            UsbAudioDevice,
+            select_usb_audio_devices,
+        )
+
+        devices = [
+            UsbAudioDevice(
+                index=0,
+                name="Some Cheap Headset",
+                input_channels=1,
+                output_channels=2,
+            ),
+            UsbAudioDevice(
+                index=1,
+                name="C-Media Electronics",
+                input_channels=1,
+                output_channels=2,
+            ),
+        ]
+        rx, tx = select_usb_audio_devices(devices)
+        assert rx.index == 1
+        assert tx.index == 1
