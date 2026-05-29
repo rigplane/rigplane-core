@@ -38,10 +38,19 @@ Platform support:
 - **Linux**: Topology resolution not yet implemented (``/sys`` sysfs traversal
   is future work); relies on name-based / robust-identity fallback and the
   optional ``[usb] rx_device``/``tx_device`` override escape hatch.
-- **Windows**: Topology resolution not implemented; same fallback path.
+- **Windows**: Topology resolution via USB PnP (MOR-229). The serial ``COMx``
+  function and the USB Audio Class function of one physical radio share a
+  parent USB composite-device instance path, which is the topology anchor
+  (the analogue of the macOS hub prefix). When the parent link is unavailable,
+  a VID:PID robust-identity fallback links serial↔audio. The OS enumeration is
+  isolated behind an injectable ``pnp_query`` callable so the resolver is
+  testable off-Windows. Audio→``sounddevice`` mapping reuses the MOR-230
+  identity primitive (product name + same-name rank).
 
-For Linux/Windows multi-radio disambiguation, capture the exact audio device
-names on hardware and set the ``[usb]`` override in ``audio.toml`` (MOR-219).
+For Linux multi-radio disambiguation, and for Windows hosts with multiple
+identical radios (same VID:PID, ambiguous parent), capture the exact audio
+device names on hardware and set the ``[usb]`` override in ``audio.toml``
+(MOR-219).
 """
 
 from __future__ import annotations
@@ -57,6 +66,7 @@ logger = logging.getLogger(__name__)
 
 __all__ = [
     "AudioDeviceMapping",
+    "WindowsPnpDevice",
     "resolve_audio_for_serial_port",
 ]
 
@@ -79,6 +89,40 @@ class AudioDeviceMapping:
     location_prefix: int | None = None
 
 
+@dataclass(frozen=True, slots=True)
+class WindowsPnpDevice:
+    """One USB PnP function enumerated by the Windows PnP/WMI subsystem.
+
+    Each entry models a single child function of a USB composite device — the
+    serial (CDC/COM) function or the USB Audio Class function. The
+    ``parent_pnp_id`` is the shared composite-device instance path that links
+    the two functions of one physical radio (the Windows analogue of the macOS
+    USB hub prefix).
+
+    Attributes:
+        pnp_device_id: The function's own PnP instance path
+            (e.g. ``USB\\VID_0D8C&PID_0012\\6&1a2b&0&1&0000``).
+        parent_pnp_id: The parent composite-device instance path that the
+            serial and audio functions share. May be empty if the PnP query
+            could not resolve the parent (then VID:PID is the only link).
+        vid: USB vendor id, 4-hex-digit string (e.g. ``"0D8C"``), or ``None``.
+        pid: USB product id, 4-hex-digit string (e.g. ``"0012"``), or ``None``.
+        com_port: The ``COMx`` name if this function is the serial port, else
+            ``None``.
+        audio_endpoint_name: The audio device/endpoint product name if this
+            function is the USB Audio Class device, else ``None``. This is the
+            string CoreAudio/WASAPI surfaces as the ``sounddevice`` device
+            name, so it is the identity key for pairing.
+    """
+
+    pnp_device_id: str
+    parent_pnp_id: str
+    vid: str | None
+    pid: str | None
+    com_port: str | None
+    audio_endpoint_name: str | None
+
+
 def resolve_audio_for_serial_port(
     serial_port: str,
     *,
@@ -96,6 +140,8 @@ def resolve_audio_for_serial_port(
     """
     if platform.system() == "Darwin":
         return _resolve_macos(serial_port, sounddevice_module=sounddevice_module)
+    if platform.system() == "Windows":
+        return _resolve_windows(serial_port, sounddevice_module=sounddevice_module)
     # Future: Linux sysfs resolution
     logger.info(
         "usb-audio-resolve: platform %s — topology resolution not supported, "
@@ -203,9 +249,296 @@ def _resolve_macos(
     )
 
 
+def _resolve_windows(
+    serial_port: str,
+    *,
+    sounddevice_module: object | None = None,
+    pnp_query: object | None = None,
+) -> AudioDeviceMapping | None:
+    """Windows-specific resolution via USB PnP topology.
+
+    Args:
+        serial_port: The ``COMx`` name of the radio's CI-V serial port.
+        sounddevice_module: Injected ``sounddevice`` (for testing).
+        pnp_query: Injected zero-arg callable returning a list of
+            :class:`WindowsPnpDevice` (for testing without a Windows host).
+            Defaults to :func:`_query_windows_pnp_devices`, the real
+            PowerShell/WMI enumeration. Isolating the OS call here keeps the
+            resolver body testable on non-Windows hosts.
+
+    Algorithm:
+        1. Enumerate USB PnP functions via ``pnp_query`` (behind ``try/except``;
+           headless-safe — any failure → ``None``, name-based fallback).
+        2. Locate the serial function whose ``com_port`` matches ``serial_port``.
+        3. Find the audio endpoint(s) **sharing the serial function's parent**
+           USB composite device. If the parent link is unavailable (empty
+           ``parent_pnp_id``), fall back to matching by shared **VID:PID**
+           (robust-identity).
+        4. Map the matched audio endpoint name to ``sounddevice`` indices by
+           identity, reusing the MOR-230 cluster + same-name-rank primitive.
+
+    Multi-radio caveat: when several identical radios share one host (same
+    VID:PID, ambiguous parent), the VID:PID fallback cannot disambiguate them;
+    set the ``[usb] rx_device``/``tx_device`` override in ``audio.toml``.
+    """
+    query: Any = pnp_query if pnp_query is not None else _query_windows_pnp_devices
+    try:
+        records = list(query())
+    except Exception as exc:  # noqa: BLE001 — headless-safe: any failure → fallback
+        logger.warning("usb-audio-resolve: Windows PnP query failed: %s", exc)
+        return None
+
+    if not records:
+        logger.warning("usb-audio-resolve: Windows PnP query returned no devices")
+        return None
+
+    target = serial_port.strip().upper()
+    serial_dev = next(
+        (
+            r
+            for r in records
+            if r.com_port is not None and r.com_port.strip().upper() == target
+        ),
+        None,
+    )
+    if serial_dev is None:
+        logger.warning("usb-audio-resolve: no PnP serial function for %r", serial_port)
+        return None
+
+    # 1. Topology link: audio endpoints sharing the serial function's parent.
+    audio_devs: list[WindowsPnpDevice] = []
+    if serial_dev.parent_pnp_id:
+        audio_devs = [
+            r
+            for r in records
+            if r.audio_endpoint_name is not None
+            and r.parent_pnp_id == serial_dev.parent_pnp_id
+        ]
+    # 2. Robust-identity fallback: link by shared VID:PID when topology is
+    #    ambiguous (no parent or no co-parented audio function).
+    if not audio_devs and serial_dev.vid is not None and serial_dev.pid is not None:
+        audio_devs = [
+            r
+            for r in records
+            if r.audio_endpoint_name is not None
+            and r.vid == serial_dev.vid
+            and r.pid == serial_dev.pid
+        ]
+        if audio_devs:
+            logger.info(
+                "usb-audio-resolve: %s linked to audio by VID:PID %s:%s "
+                "(topology ambiguous — multi-radio hosts may need [usb] override)",
+                serial_port,
+                serial_dev.vid,
+                serial_dev.pid,
+            )
+
+    if not audio_devs:
+        logger.warning(
+            "usb-audio-resolve: no audio endpoint shares parent/identity with %s",
+            serial_port,
+        )
+        return None
+
+    audio_dev = audio_devs[0]
+    audio_name = audio_dev.audio_endpoint_name
+    assert audio_name is not None  # narrowed by the filters above
+
+    # Same-name rank: position of the matched endpoint among all same-named
+    # audio endpoints (ordered by PnP instance path), mirroring the macOS
+    # name + same-name-rank identity used by _pair_audio_device_for_location.
+    same_name = sorted(
+        (r for r in records if r.audio_endpoint_name == audio_name),
+        key=lambda r: r.pnp_device_id,
+    )
+    same_name_rank = next(
+        (
+            i
+            for i, r in enumerate(same_name)
+            if r.pnp_device_id == audio_dev.pnp_device_id
+        ),
+        0,
+    )
+
+    # 3. Map to sounddevice indices by identity (reuses the MOR-230 cluster).
+    sd: Any = sounddevice_module
+    if sd is None:
+        try:
+            import sounddevice as sd_mod
+
+            sd = sd_mod
+        except ImportError:
+            logger.warning(
+                "usb-audio-resolve: sounddevice not available, cannot map indices"
+            )
+            return None
+
+    devices = list(sd.query_devices())
+    pair = _pair_audio_cluster_by_name_rank(devices, audio_name, same_name_rank)
+    if pair is None:
+        logger.warning(
+            "usb-audio-resolve: could not map audio endpoint %r (rank %d) to "
+            "sounddevice indices for %s",
+            audio_name,
+            same_name_rank,
+            serial_port,
+        )
+        return None
+
+    rx_idx, tx_idx = pair
+    logger.info(
+        "usb-audio-resolve: %s → audio %r → RX device [%d], TX device [%d]",
+        serial_port,
+        audio_name,
+        rx_idx,
+        tx_idx,
+    )
+    return AudioDeviceMapping(
+        rx_device_index=rx_idx,
+        tx_device_index=tx_idx,
+        serial_port=serial_port,
+        location_prefix=None,
+    )
+
+
+def _query_windows_pnp_devices() -> list[WindowsPnpDevice]:
+    """Enumerate USB PnP functions on a real Windows host (best-effort).
+
+    Runs PowerShell ``Get-PnpDevice`` and joins each device with its parent
+    instance path and VID:PID parsed from the PnP instance id, plus the COM
+    port name (for serial functions) or the friendly audio endpoint name (for
+    USB Audio Class functions). Returns ``[]`` on any failure — the caller
+    treats an empty/raised result as "topology unavailable" and falls back to
+    name-based selection. This keeps the base install free of a hard PnP/WMI
+    dependency; the heavy lifting is shelled out to PowerShell, which ships
+    with Windows.
+
+    NOTE: This function is only ever executed on Windows. It is intentionally
+    NOT exercised by the unit tests (which inject a fake ``pnp_query``); its
+    exact field shape MUST be validated against a real Windows host + X6200
+    before relying on the topology path in production (see PR checklist).
+    """
+    if platform.system() != "Windows":
+        return []
+    # PowerShell one-liner: emit one CSV-ish line per USB PnP device with the
+    # fields we need. We parse the parent and VID:PID from the InstanceId.
+    script = (
+        "Get-PnpDevice -PresentOnly | "
+        "ForEach-Object { "
+        "$id = $_.InstanceId; "
+        "$parent = (Get-PnpDeviceProperty -InstanceId $id "
+        "-KeyName 'DEVPKEY_Device_Parent' -ErrorAction SilentlyContinue).Data; "
+        "$friendly = $_.FriendlyName; "
+        "'{0}`t{1}`t{2}`t{3}' -f $id, $parent, $_.Class, $friendly }"
+    )
+    try:
+        result = subprocess.run(
+            ["powershell", "-NoProfile", "-NonInteractive", "-Command", script],
+            capture_output=True,
+            timeout=20,
+        )
+        if result.returncode != 0:
+            logger.debug(
+                "usb-audio-resolve: Get-PnpDevice exited %d", result.returncode
+            )
+            return []
+        text = result.stdout.decode("utf-8", errors="replace")
+    except (FileNotFoundError, subprocess.TimeoutExpired, OSError) as exc:
+        logger.debug("usb-audio-resolve: PowerShell PnP query failed: %s", exc)
+        return []
+
+    devices: list[WindowsPnpDevice] = []
+    for line in text.splitlines():
+        parts = line.split("\t")
+        if len(parts) < 4:
+            continue
+        instance_id, parent, dev_class, friendly = (
+            parts[0].strip(),
+            parts[1].strip(),
+            parts[2].strip(),
+            parts[3].strip(),
+        )
+        vid, pid = _parse_vid_pid(instance_id)
+        com_port = _parse_com_port(friendly)
+        # Audio Class functions report Class in {AudioEndpoint, MEDIA}; the
+        # friendly name is the endpoint product name.
+        is_audio = dev_class.upper() in {
+            "AUDIOENDPOINT",
+            "MEDIA",
+        } or _is_usb_audio_codec(friendly)
+        audio_name = friendly if (is_audio and com_port is None) else None
+        if com_port is None and audio_name is None:
+            continue
+        devices.append(
+            WindowsPnpDevice(
+                pnp_device_id=instance_id,
+                parent_pnp_id=parent,
+                vid=vid,
+                pid=pid,
+                com_port=com_port,
+                audio_endpoint_name=audio_name,
+            )
+        )
+    return devices
+
+
+def _parse_vid_pid(instance_id: str) -> tuple[str | None, str | None]:
+    """Extract ``(VID, PID)`` 4-hex-digit strings from a PnP instance id."""
+    vid_m = re.search(r"VID_([0-9A-Fa-f]{4})", instance_id)
+    pid_m = re.search(r"PID_([0-9A-Fa-f]{4})", instance_id)
+    vid = vid_m.group(1).upper() if vid_m else None
+    pid = pid_m.group(1).upper() if pid_m else None
+    return vid, pid
+
+
+def _parse_com_port(friendly_name: str) -> str | None:
+    """Extract a ``COMx`` port name from a PnP friendly name (e.g. ``... (COM3)``)."""
+    m = re.search(r"\b(COM\d+)\b", friendly_name)
+    return m.group(1) if m else None
+
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+
+def _pair_audio_cluster_by_name_rank(
+    devices: list[Any],
+    audio_name: str,
+    same_name_rank: int,
+) -> tuple[int, int] | None:
+    """Select ``(rx_index, tx_index)`` for the rank-th same-named audio cluster.
+
+    This is the platform-neutral tail of :func:`_pair_audio_device_for_location`,
+    factored out so the Windows resolver (which derives the identity key —
+    product name + same-name rank — from PnP records rather than IORegistry
+    locationIDs) can reuse the exact cluster-and-rank selection. The macOS path
+    continues to derive the name+rank from ``locationID``-sorted entries.
+
+    Returns ``None`` when no same-named cluster occupies ``same_name_rank`` or
+    the matched cluster is missing an RX or TX index.
+    """
+    clusters = _cluster_usb_audio_devices(devices)
+    same_name_clusters = [c for c in clusters if c[0] == audio_name]
+    if same_name_rank >= len(same_name_clusters):
+        logger.warning(
+            "usb-audio-resolve: %r rank %d out of range (%d matching clusters)",
+            audio_name,
+            same_name_rank,
+            len(same_name_clusters),
+        )
+        return None
+    _name, rx, tx = same_name_clusters[same_name_rank]
+    if rx is None or tx is None:
+        logger.warning(
+            "usb-audio-resolve: incomplete audio cluster for %r rank %d (rx=%r, tx=%r)",
+            audio_name,
+            same_name_rank,
+            rx,
+            tx,
+        )
+        return None
+    return rx, tx
 
 
 def _cluster_usb_audio_devices(
@@ -331,29 +664,7 @@ def _pair_audio_device_for_location(
     same_name_rank = sum(
         1 for _n, _loc in sorted_entries[:matched_idx] if _n == matched_name
     )
-
-    clusters = _cluster_usb_audio_devices(devices)
-    same_name_clusters = [c for c in clusters if c[0] == matched_name]
-    if same_name_rank >= len(same_name_clusters):
-        logger.warning(
-            "usb-audio-resolve: %r rank %d out of range (%d matching clusters)",
-            matched_name,
-            same_name_rank,
-            len(same_name_clusters),
-        )
-        return None
-
-    _name, rx, tx = same_name_clusters[same_name_rank]
-    if rx is None or tx is None:
-        logger.warning(
-            "usb-audio-resolve: incomplete audio cluster for %r rank %d (rx=%r, tx=%r)",
-            matched_name,
-            same_name_rank,
-            rx,
-            tx,
-        )
-        return None
-    return rx, tx
+    return _pair_audio_cluster_by_name_rank(devices, matched_name, same_name_rank)
 
 
 def _extract_tty_suffix(serial_port: str) -> str | None:

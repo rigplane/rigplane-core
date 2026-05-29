@@ -833,3 +833,248 @@ class TestNameFallbackXiegu:
         rx, tx = select_usb_audio_devices(devices)
         assert rx.index == 1
         assert tx.index == 1
+
+
+# ---------------------------------------------------------------------------
+# MOR-229 — Windows USB topology / robust-identity resolution
+# ---------------------------------------------------------------------------
+
+# Windows enumerates USB devices through PnP. Each USB radio is a composite
+# parent device (instance path like USB\VID_xxxx&PID_yyyy\serial) whose
+# children are the CDC/serial function (exposing a COMx name) and the USB
+# Audio Class function (exposing an audio endpoint name). The shared *parent*
+# instance path is the topology anchor, mirroring the macOS hub-prefix anchor.
+#
+# Modelled set:
+#   - Xiegu X6200: C-Media composite parent, COM3 serial + "USB Audio Device"
+#     audio endpoint, VID:PID 0D8C:0012.
+#   - A second USB radio (Icom-like) on a DIFFERENT parent: COM7 serial +
+#     "USB Audio CODEC" audio endpoint, VID:PID 10C4:EA60 (CP210x bridge).
+
+
+def _x6200_pnp_records() -> list[Any]:
+    """X6200 alone: C-Media composite parent with serial (COM3) + audio."""
+    from rigplane.usb_audio_resolve import WindowsPnpDevice
+
+    parent = r"USB\VID_0D8C&PID_0012\6&1A2B3C4D&0&1"
+    return [
+        WindowsPnpDevice(
+            pnp_device_id=parent + r"&0000",
+            parent_pnp_id=parent,
+            vid="0D8C",
+            pid="0012",
+            com_port="COM3",
+            audio_endpoint_name=None,
+        ),
+        WindowsPnpDevice(
+            pnp_device_id=parent + r"&0001",
+            parent_pnp_id=parent,
+            vid="0D8C",
+            pid="0012",
+            com_port=None,
+            audio_endpoint_name="USB Audio Device",
+        ),
+    ]
+
+
+def _x6200_and_icom_pnp_records() -> list[Any]:
+    """X6200 (COM3, C-Media) + a second radio (COM7, Icom CODEC) on a
+    different USB parent. Each radio's serial and audio share one parent."""
+    from rigplane.usb_audio_resolve import WindowsPnpDevice
+
+    x6200_parent = r"USB\VID_0D8C&PID_0012\6&1A2B3C4D&0&1"
+    icom_parent = r"USB\VID_10C4&PID_EA60\IC7610_0001"
+    return [
+        WindowsPnpDevice(
+            pnp_device_id=x6200_parent + r"&0000",
+            parent_pnp_id=x6200_parent,
+            vid="0D8C",
+            pid="0012",
+            com_port="COM3",
+            audio_endpoint_name=None,
+        ),
+        WindowsPnpDevice(
+            pnp_device_id=x6200_parent + r"&0001",
+            parent_pnp_id=x6200_parent,
+            vid="0D8C",
+            pid="0012",
+            com_port=None,
+            audio_endpoint_name="USB Audio Device",
+        ),
+        WindowsPnpDevice(
+            pnp_device_id=icom_parent + r"&0000",
+            parent_pnp_id=icom_parent,
+            vid="10C4",
+            pid="EA60",
+            com_port="COM7",
+            audio_endpoint_name=None,
+        ),
+        WindowsPnpDevice(
+            pnp_device_id=icom_parent + r"&0001",
+            parent_pnp_id=icom_parent,
+            vid="10C4",
+            pid="EA60",
+            com_port=None,
+            audio_endpoint_name="USB Audio CODEC",
+        ),
+    ]
+
+
+class TestResolveWindows:
+    """MOR-229: Windows topology resolution via an injected pnp_query."""
+
+    def test_single_x6200_resolves_to_cmedia(self) -> None:
+        from rigplane.usb_audio_resolve import _resolve_windows
+
+        sd = _make_mock_sd_xiegu()
+        result = _resolve_windows(
+            "COM3",
+            sounddevice_module=sd,
+            pnp_query=lambda: _x6200_pnp_records(),
+        )
+        assert result is not None
+        assert result.serial_port == "COM3"
+        # The C-Media duplex device serves both RX and TX.
+        assert result.rx_device_index == 1
+        assert result.tx_device_index == 1
+
+    def test_two_radios_each_resolves_to_own_audio(self) -> None:
+        from rigplane.usb_audio_resolve import _resolve_windows
+
+        sd = _make_mock_sd_cmedia_duplex_plus_icom_split()
+        records = _x6200_and_icom_pnp_records()
+        x6200 = _resolve_windows(
+            "COM3",
+            sounddevice_module=sd,
+            pnp_query=lambda: records,
+        )
+        icom = _resolve_windows(
+            "COM7",
+            sounddevice_module=sd,
+            pnp_query=lambda: records,
+        )
+        assert x6200 is not None and icom is not None
+        # X6200 → C-Media duplex (idx 1/1).
+        assert x6200.rx_device_index == 1
+        assert x6200.tx_device_index == 1
+        # Icom → CODEC split pair (rx capture idx 3 / tx playback idx 2).
+        assert icom.rx_device_index == 3
+        assert icom.tx_device_index == 2
+        # The two radios must never share an audio device.
+        assert x6200.rx_device_index != icom.rx_device_index
+        assert x6200.tx_device_index != icom.tx_device_index
+
+    def test_unknown_com_port_returns_none(self) -> None:
+        from rigplane.usb_audio_resolve import _resolve_windows
+
+        sd = _make_mock_sd_xiegu()
+        result = _resolve_windows(
+            "COM99",
+            sounddevice_module=sd,
+            pnp_query=lambda: _x6200_pnp_records(),
+        )
+        assert result is None
+
+    def test_no_sibling_audio_endpoint_returns_none(self) -> None:
+        from rigplane.usb_audio_resolve import WindowsPnpDevice, _resolve_windows
+
+        # A serial-only device with no audio function on its parent.
+        parent = r"USB\VID_10C4&PID_EA60\NOAUDIO"
+        records = [
+            WindowsPnpDevice(
+                pnp_device_id=parent + r"&0000",
+                parent_pnp_id=parent,
+                vid="10C4",
+                pid="EA60",
+                com_port="COM5",
+                audio_endpoint_name=None,
+            ),
+        ]
+        sd = _make_mock_sd_xiegu()
+        result = _resolve_windows(
+            "COM5",
+            sounddevice_module=sd,
+            pnp_query=lambda: records,
+        )
+        assert result is None
+
+    def test_pnp_query_unavailable_returns_none(self) -> None:
+        from rigplane.usb_audio_resolve import _resolve_windows
+
+        def boom() -> list[Any]:
+            raise OSError("WMI not available (headless)")
+
+        sd = _make_mock_sd_xiegu()
+        result = _resolve_windows(
+            "COM3",
+            sounddevice_module=sd,
+            pnp_query=boom,
+        )
+        assert result is None
+
+    def test_pnp_query_returns_empty_returns_none(self) -> None:
+        from rigplane.usb_audio_resolve import _resolve_windows
+
+        sd = _make_mock_sd_xiegu()
+        result = _resolve_windows(
+            "COM3",
+            sounddevice_module=sd,
+            pnp_query=lambda: [],
+        )
+        assert result is None
+
+    def test_vidpid_fallback_when_parent_ambiguous(self) -> None:
+        """Robust-identity fallback: when the serial device exposes no usable
+        parent link, fall back to matching the audio endpoint by VID:PID."""
+        from rigplane.usb_audio_resolve import WindowsPnpDevice, _resolve_windows
+
+        # Serial and audio carry the same VID:PID but report no parent
+        # (parent_pnp_id empty) — topology is ambiguous, VID:PID must link.
+        records = [
+            WindowsPnpDevice(
+                pnp_device_id=r"USB\VID_0D8C&PID_0012\SER\&0000",
+                parent_pnp_id="",
+                vid="0D8C",
+                pid="0012",
+                com_port="COM3",
+                audio_endpoint_name=None,
+            ),
+            WindowsPnpDevice(
+                pnp_device_id=r"USB\VID_0D8C&PID_0012\SER\&0001",
+                parent_pnp_id="",
+                vid="0D8C",
+                pid="0012",
+                com_port=None,
+                audio_endpoint_name="USB Audio Device",
+            ),
+        ]
+        sd = _make_mock_sd_xiegu()
+        result = _resolve_windows(
+            "COM3",
+            sounddevice_module=sd,
+            pnp_query=lambda: records,
+        )
+        assert result is not None
+        assert result.rx_device_index == 1
+        assert result.tx_device_index == 1
+
+
+class TestResolvePlatformDispatchWindows:
+    """MOR-229: resolve_audio_for_serial_port dispatches to _resolve_windows."""
+
+    @patch("rigplane.usb_audio_resolve.platform")
+    @patch("rigplane.usb_audio_resolve._resolve_windows")
+    def test_windows_delegates(
+        self, mock_resolve: MagicMock, mock_platform: MagicMock
+    ) -> None:
+        mock_platform.system.return_value = "Windows"
+        mock_resolve.return_value = AudioDeviceMapping(
+            rx_device_index=1,
+            tx_device_index=1,
+            serial_port="COM3",
+            location_prefix=None,
+        )
+        result = resolve_audio_for_serial_port("COM3")
+        assert result is not None
+        assert result.rx_device_index == 1
+        mock_resolve.assert_called_once()
