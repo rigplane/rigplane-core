@@ -78,7 +78,20 @@ def test_short_freq_frame_does_not_raise_or_corrupt_state(
 
     # No error-level spam (the old code emitted "BCD data must be exactly..."
     # exceptions caught at debug; now we skip without ever invoking the decoder).
-    for record in caplog.records:
+    #
+    # Scope the assertion to the logger under test (``rigplane.runtime._civ_rx``
+    # and its children) only. Capturing global/root logging would let unrelated
+    # warnings fail the test — e.g. the ``Radio`` finalizer's "Radio collected
+    # with active connection/tasks" warning, which the GC can emit inside this
+    # capture window (timing differs across 3.11/3.12/3.13) from a different
+    # component entirely. The test's intent is purely about ``_civ_rx``.
+    civ_rx_logger = "rigplane.runtime._civ_rx"
+    civ_rx_records = [
+        record
+        for record in caplog.records
+        if record.name == civ_rx_logger or record.name.startswith(civ_rx_logger + ".")
+    ]
+    for record in civ_rx_records:
         assert record.levelno < logging.WARNING, (
             f"unexpected non-debug log: {record.levelname} {record.getMessage()}"
         )
