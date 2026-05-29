@@ -648,6 +648,164 @@ class TestResolveXieguX6200:
         ]
 
 
+# ---------------------------------------------------------------------------
+# MOR-230 — identity-based pairing for mixed-vendor / mixed-shape sets
+# ---------------------------------------------------------------------------
+
+
+def _make_mock_sd_cmedia_duplex_plus_icom_split() -> MagicMock:
+    """Mock the CoreAudio enumeration for an X6200 + Icom IC-7610 set.
+
+    The C-Media codec (X6200) enumerates as ONE duplex device (in=1/out=2),
+    while the Icom "USB Audio CODEC" enumerates as a split pair: an
+    output-only device followed by an input-only device.
+
+    Enumeration order here deliberately interleaves shapes so a flat
+    ``usb_inputs[i]`` / ``usb_outputs[i]`` positional index desyncs:
+
+        idx 0 -> Built-in Speaker      (skipped, not USB audio)
+        idx 1 -> C-Media duplex        in=1 out=2   (X6200, prefix 0x1423)
+        idx 2 -> Icom CODEC playback   in=0 out=2   (IC-7610, prefix 0x0111)
+        idx 3 -> Icom CODEC capture     in=2 out=0   (IC-7610, prefix 0x0111)
+    """
+    devices: list[dict[str, Any]] = [
+        {
+            "name": "Built-in Speaker",
+            "index": 0,
+            "max_input_channels": 0,
+            "max_output_channels": 2,
+            "default_samplerate": 48000.0,
+        },
+        {
+            "name": "USB Audio Device",
+            "index": 1,
+            "max_input_channels": 1,
+            "max_output_channels": 2,
+            "default_samplerate": 48000.0,
+        },
+        {
+            "name": "USB Audio CODEC",
+            "index": 2,
+            "max_input_channels": 0,
+            "max_output_channels": 2,
+            "default_samplerate": 48000.0,
+        },
+        {
+            "name": "USB Audio CODEC",
+            "index": 3,
+            "max_input_channels": 2,
+            "max_output_channels": 0,
+            "default_samplerate": 48000.0,
+        },
+    ]
+    sd = MagicMock()
+    sd.query_devices.return_value = devices
+    sd.default.device = [-1, -1]
+    return sd
+
+
+class TestResolveMixedVendorShapes:
+    """MOR-230: a duplex C-Media device next to a split-pair Icom CODEC.
+
+    The pre-MOR-230 positional logic flattens every USB-audio entry into a
+    single ``usb_inputs`` / ``usb_outputs`` list and indexes both by the
+    sorted-prefix position. With mixed device shapes those flat lists no
+    longer line up with the sorted prefixes, so each port resolves to the
+    *other* radio's device. Identity-based pairing must select each port's
+    OWN audio device.
+
+    Sorted audio locations: [0x01111400 (Icom), 0x14232200 (X6200)].
+    Correct outcome:
+        - X6200 usbmodem (prefix 0x1423) -> C-Media duplex (idx 1/1)
+        - Icom usbserial (prefix 0x0111) -> CODEC split   (rx 3 / tx 2)
+    """
+
+    def test_x6200_resolves_to_cmedia_duplex(self) -> None:
+        sd = _make_mock_sd_cmedia_duplex_plus_icom_split()
+        result = _resolve_macos(
+            "/dev/cu.usbmodem14203",
+            sounddevice_module=sd,
+            ioreg_output=IOREG_XIEGU_AND_ICOM,
+        )
+        assert result is not None
+        assert result.location_prefix == 0x1423
+        # The C-Media duplex device serves both RX and TX.
+        assert result.rx_device_index == 1
+        assert result.tx_device_index == 1
+
+    def test_icom_resolves_to_codec_split_pair(self) -> None:
+        sd = _make_mock_sd_cmedia_duplex_plus_icom_split()
+        result = _resolve_macos(
+            "/dev/cu.usbserial-111120",
+            sounddevice_module=sd,
+            ioreg_output=IOREG_XIEGU_AND_ICOM,
+        )
+        assert result is not None
+        assert result.location_prefix == 0x0111
+        # Icom CODEC: input-only capture (idx 3) + output-only playback (idx 2).
+        assert result.rx_device_index == 3
+        assert result.tx_device_index == 2
+
+    def test_each_port_resolves_to_its_own_device(self) -> None:
+        sd = _make_mock_sd_cmedia_duplex_plus_icom_split()
+        x6200 = _resolve_macos(
+            "/dev/cu.usbmodem14203",
+            sounddevice_module=sd,
+            ioreg_output=IOREG_XIEGU_AND_ICOM,
+        )
+        icom = _resolve_macos(
+            "/dev/cu.usbserial-111120",
+            sounddevice_module=sd,
+            ioreg_output=IOREG_XIEGU_AND_ICOM,
+        )
+        assert x6200 is not None and icom is not None
+        # The two radios must never share an audio device.
+        assert x6200.rx_device_index != icom.rx_device_index
+        assert x6200.tx_device_index != icom.tx_device_index
+
+
+class TestResolveSplitPairAtIndexZero:
+    """MOR-230 regression: a split-pair USB codec whose playback device
+    enumerates at sounddevice index 0 (e.g. a headless host with no built-in
+    audio ahead of the USB codec). Index 0 is a valid but falsy index; the
+    split-cluster merge must not drop it (the `pend_tx or tx` bug)."""
+
+    def _sd_codec_split_at_zero(self) -> MagicMock:
+        # No built-in device: the USB Audio CODEC pair occupies indices 0/1,
+        # output-only at 0 (the falsy index), input-only at 1.
+        devices: list[dict[str, Any]] = [
+            {
+                "name": "USB Audio CODEC",
+                "index": 0,
+                "max_input_channels": 0,
+                "max_output_channels": 2,
+                "default_samplerate": 48000.0,
+            },
+            {
+                "name": "USB Audio CODEC",
+                "index": 1,
+                "max_input_channels": 2,
+                "max_output_channels": 0,
+                "default_samplerate": 48000.0,
+            },
+        ]
+        sd = MagicMock()
+        sd.query_devices.return_value = devices
+        sd.default.device = [-1, -1]
+        return sd
+
+    def test_index_zero_playback_not_dropped(self) -> None:
+        result = _resolve_macos(
+            "/dev/cu.usbserial-201410",
+            sounddevice_module=self._sd_codec_split_at_zero(),
+            ioreg_output=IOREG_SINGLE_RADIO,
+        )
+        assert result is not None
+        assert result.rx_device_index == 1
+        # TX is the output-only device at index 0 — must survive the merge.
+        assert result.tx_device_index == 0
+
+
 class TestNameFallbackXiegu:
     """MOR-219: name-based fallback (Linux/Windows) prefers the C-Media codec
     over an unknown commodity device when topology is unavailable."""

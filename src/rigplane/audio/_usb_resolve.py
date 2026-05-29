@@ -17,7 +17,14 @@ rather than fragile, collision-prone device-name strings.
 3. Find all USB audio devices (``USB Audio CODEC``, ``USB Audio Device``) in
    IORegistry with their ``locationID``.
 4. Match audio devices sharing the same hub prefix as the serial port.
-5. Map matched locations to ``sounddevice`` device indices by positional order.
+5. Map the matched audio device to ``sounddevice`` indices by **identity**:
+   group the enumerated USB-audio entries into per-device clusters (a duplex
+   entry stands alone; an output-only entry adjacent to a same-named
+   input-only entry forms one split-pair cluster), then select the cluster
+   whose product name and same-name rank match the IORegistry device. This
+   survives mixed-vendor / mixed-shape sets (a single duplex C-Media device
+   next to a split-pair Icom CODEC), where a flat positional index over
+   inputs/outputs would desync (MOR-230).
 
 **Fallback**: When IORegistry is unavailable, ``ioreg`` is missing, or the
 platform is not macOS, falls back to name-based matching (see
@@ -135,14 +142,14 @@ def _resolve_macos(
 
     serial_prefix = serial_location >> 16
 
-    # 4. Find all USB Audio CODEC locationIDs
-    audio_locations = _find_audio_codec_locations(ioreg_text)
-    if not audio_locations:
+    # 4. Find all USB Audio CODEC (name, locationID) pairs
+    audio_entries = _find_audio_codec_entries(ioreg_text)
+    if not audio_entries:
         logger.warning("usb-audio-resolve: no USB Audio CODEC devices found in ioreg")
         return None
 
     # 5. Check if any audio device shares our hub prefix
-    matching = [loc for loc in audio_locations if (loc >> 16) == serial_prefix]
+    matching = [loc for _name, loc in audio_entries if (loc >> 16) == serial_prefix]
     if not matching:
         logger.warning(
             "usb-audio-resolve: no audio devices match prefix %#06x for %s",
@@ -166,39 +173,19 @@ def _resolve_macos(
 
     devices = list(sd.query_devices())
 
-    # Collect all USB Audio CODEC input/output device indices (ordered)
-    usb_inputs: list[int] = []
-    usb_outputs: list[int] = []
-    for idx, dev in enumerate(devices):
-        if _is_usb_audio_codec(dev.get("name", "")):
-            if _safe_int(dev.get("max_input_channels")) > 0:
-                usb_inputs.append(idx)
-            if _safe_int(dev.get("max_output_channels")) > 0:
-                usb_outputs.append(idx)
-
-    # 7. Determine positional index: sorted unique prefixes → pair index
-    unique_prefixes = sorted(set(loc >> 16 for loc in audio_locations))
-    try:
-        pair_idx = unique_prefixes.index(serial_prefix)
-    except ValueError:
+    # 7. Pair by identity, not positional order across flat input/output lists.
+    pair = _pair_audio_device_for_location(devices, audio_entries, serial_location)
+    if pair is None:
         logger.warning(
-            "usb-audio-resolve: prefix %#06x not in audio prefixes %s",
+            "usb-audio-resolve: could not pair an audio device for prefix %#06x "
+            "(serial loc %#010x, audio entries %s)",
             serial_prefix,
-            [f"{p:#06x}" for p in unique_prefixes],
+            serial_location,
+            [(n, f"{loc:#010x}") for n, loc in audio_entries],
         )
         return None
 
-    if pair_idx >= len(usb_inputs) or pair_idx >= len(usb_outputs):
-        logger.warning(
-            "usb-audio-resolve: pair index %d out of range (inputs=%d, outputs=%d)",
-            pair_idx,
-            len(usb_inputs),
-            len(usb_outputs),
-        )
-        return None
-
-    rx_idx = usb_inputs[pair_idx]
-    tx_idx = usb_outputs[pair_idx]
+    rx_idx, tx_idx = pair
 
     logger.info(
         "usb-audio-resolve: %s → prefix %#06x → RX device [%d], TX device [%d]",
@@ -219,6 +206,154 @@ def _resolve_macos(
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+
+def _cluster_usb_audio_devices(
+    devices: list[Any],
+) -> list[tuple[str, int | None, int | None]]:
+    """Group enumerated USB-audio entries into per-physical-device clusters.
+
+    Each cluster is a ``(name, rx_index, tx_index)`` tuple describing one
+    physical USB audio device's CoreAudio product name and its
+    capture/playback ``sounddevice`` indices:
+
+    - A **duplex** entry (both input and output channels) is a self-contained
+      cluster — the X6200's C-Media codec, which CoreAudio surfaces as one
+      bidirectional device.
+    - A **split** device (Icom "USB Audio CODEC") surfaces as two adjacent
+      same-named entries — one output-only and one input-only — which are
+      merged into a single cluster. Adjacency in the ``sounddevice``
+      enumeration mirrors USB topology order, so the two halves of one
+      physical device sit next to each other.
+
+    Clusters are returned in enumeration order. The ``name`` is the identity
+    key that :func:`_pair_audio_device_for_location` matches against the
+    IORegistry product name. Identity-based, not positional across flattened
+    input/output lists.
+    """
+    clusters: list[tuple[str, int | None, int | None]] = []
+    # pending split cluster: (name, rx_index|None, tx_index|None)
+    pending: tuple[str, int | None, int | None] | None = None
+
+    for idx, dev in enumerate(devices):
+        name = dev.get("name", "")
+        if not _is_usb_audio_codec(name):
+            continue
+        has_in = _safe_int(dev.get("max_input_channels")) > 0
+        has_out = _safe_int(dev.get("max_output_channels")) > 0
+
+        if has_in and has_out:
+            # Flush any half-open split cluster before the duplex device.
+            if pending is not None:
+                clusters.append(pending)
+                pending = None
+            clusters.append((name, idx, idx))
+            continue
+
+        rx = idx if has_in else None
+        tx = idx if has_out else None
+        if pending is None:
+            pending = (name, rx, tx)
+            continue
+        # Merge with the open split cluster when it is the same device name
+        # and fills the missing half.
+        pend_name, pend_rx, pend_tx = pending
+        if pend_name == name and (
+            (rx is not None and pend_rx is None) or (tx is not None and pend_tx is None)
+        ):
+            # Coalesce the two halves with explicit None checks: a device
+            # index of 0 is valid and falsy, so `pend_rx or rx` would wrongly
+            # drop it (e.g. a USB codec enumerating at index 0 on a headless
+            # host with no built-in audio). MOR-230.
+            merged_rx = pend_rx if pend_rx is not None else rx
+            merged_tx = pend_tx if pend_tx is not None else tx
+            clusters.append((pend_name, merged_rx, merged_tx))
+            pending = None
+        else:
+            clusters.append(pending)
+            pending = (name, rx, tx)
+
+    if pending is not None:
+        clusters.append(pending)
+
+    return clusters
+
+
+def _pair_audio_device_for_location(
+    devices: list[Any],
+    audio_entries: list[tuple[str, int]],
+    serial_location: int,
+) -> tuple[int, int] | None:
+    """Select the ``(rx_index, tx_index)`` for the matched audio device.
+
+    Pairing is by **identity**, not positional order across flattened
+    input/output lists. The serial port's hub prefix selects the matched
+    audio device (an IORegistry ``(product_name, locationID)`` entry); that
+    device's identity is its product name plus its **rank among same-named
+    audio devices** (sorted by ``locationID``). The corresponding
+    ``sounddevice`` cluster (see :func:`_cluster_usb_audio_devices`) is the
+    rank-th cluster carrying the same product name, and it yields the device
+    indices.
+
+    This is the reusable, platform-neutral pairing primitive the future
+    Linux/Windows resolvers (MOR-228/229) can call once they enumerate audio
+    ``(name, locationID)`` entries and ``sounddevice`` clusters.
+
+    Why name + same-name rank, not a global location rank: ``sounddevice``
+    exposes no ``locationID`` field, and CoreAudio does **not** enumerate USB
+    audio devices in ``locationID`` order across vendors (a C-Media device
+    may enumerate before an Icom CODEC with a lower ``locationID``). The
+    CoreAudio product name *is* the IORegistry node name, so it is the
+    strongest available identity link. Within one vendor/name the remaining
+    ambiguity (e.g. two identical Icom CODECs) is resolved by enumeration
+    order, which for same-model devices tracks ``locationID`` order — this
+    preserves the validated homogeneous-multi-radio behaviour.
+
+    Returns ``None`` when the serial port shares no audio hub prefix or when
+    no same-named cluster occupies the matched device's rank.
+    """
+    serial_prefix = serial_location >> 16
+    sorted_entries = sorted(audio_entries, key=lambda e: e[1])
+
+    # The matched audio device shares the serial port's hub prefix.
+    matched_idx = next(
+        (
+            i
+            for i, (_n, loc) in enumerate(sorted_entries)
+            if (loc >> 16) == serial_prefix
+        ),
+        None,
+    )
+    if matched_idx is None:
+        return None
+    matched_name, _matched_loc = sorted_entries[matched_idx]
+    # Rank of the matched device among same-named audio devices.
+    same_name_rank = sum(
+        1 for _n, _loc in sorted_entries[:matched_idx] if _n == matched_name
+    )
+
+    clusters = _cluster_usb_audio_devices(devices)
+    same_name_clusters = [c for c in clusters if c[0] == matched_name]
+    if same_name_rank >= len(same_name_clusters):
+        logger.warning(
+            "usb-audio-resolve: %r rank %d out of range (%d matching clusters)",
+            matched_name,
+            same_name_rank,
+            len(same_name_clusters),
+        )
+        return None
+
+    _name, rx, tx = same_name_clusters[same_name_rank]
+    if rx is None or tx is None:
+        logger.warning(
+            "usb-audio-resolve: incomplete audio cluster for %r rank %d (rx=%r, tx=%r)",
+            matched_name,
+            same_name_rank,
+            rx,
+            tx,
+        )
+        return None
+    return rx, tx
 
 
 def _extract_tty_suffix(serial_port: str) -> str | None:
@@ -294,10 +429,22 @@ def _find_audio_codec_locations(ioreg_text: str) -> list[int]:
     - ``USB Audio CODEC@...`` — Icom (Burr-Brown/TI chip)
     - ``USB Audio Device@...`` — Yaesu FTX-1 and similar
     """
-    locations: list[int] = []
-    for m in re.finditer(r"USB Audio (?:CODEC|Device)@([0-9a-fA-F]+)", ioreg_text):
-        locations.append(int(m.group(1), 16))
-    return sorted(locations)
+    return sorted(loc for _name, loc in _find_audio_codec_entries(ioreg_text))
+
+
+def _find_audio_codec_entries(ioreg_text: str) -> list[tuple[str, int]]:
+    """Find ``(product_name, locationID)`` pairs for USB audio devices.
+
+    The product name (``USB Audio CODEC`` / ``USB Audio Device``) is the same
+    string CoreAudio reports as the ``sounddevice`` device name, so it is the
+    identity key used to disambiguate mixed-vendor sets in
+    :func:`_pair_audio_device_for_location` (MOR-230). Returned in ascending
+    ``locationID`` order.
+    """
+    entries: list[tuple[str, int]] = []
+    for m in re.finditer(r"(USB Audio (?:CODEC|Device))@([0-9a-fA-F]+)", ioreg_text):
+        entries.append((m.group(1), int(m.group(2), 16)))
+    return sorted(entries, key=lambda e: e[1])
 
 
 def _is_usb_audio_codec(name: str) -> bool:
