@@ -83,6 +83,12 @@ class _IcomSerialRadioBase(CoreRadio):
     _DEFAULT_MODEL: str = ""
     _SERIAL_WATCHDOG_INTERVAL_S = 0.2
     _SERIAL_WATCHDOG_RETRY_S = 0.5
+    # Cap for the exponential backoff applied after repeated reconnect failures
+    # (e.g. the USB serial device node briefly disappearing during macOS device
+    # renumbering on a CH342 bridge — MOR-237). Without a backoff the watchdog
+    # retried every _SERIAL_WATCHDOG_RETRY_S and flooded the log with full
+    # tracebacks twice a second while the port was gone.
+    _SERIAL_WATCHDOG_RETRY_MAX_S = 5.0
 
     def __init__(
         self,
@@ -534,6 +540,11 @@ class _IcomSerialRadioBase(CoreRadio):
         self._civ_data_watchdog_task = None
 
     async def _serial_civ_watchdog_loop(self) -> None:
+        # Number of consecutive failed soft-reconnect attempts. Drives a capped
+        # exponential backoff and demotes repeated, identical failures from a
+        # WARNING-with-traceback to a quiet DEBUG so a transient/vanished port
+        # does not flood the log (MOR-237).
+        consecutive_failures = 0
         try:
             while True:
                 await asyncio.sleep(self._SERIAL_WATCHDOG_INTERVAL_S)
@@ -547,20 +558,55 @@ class _IcomSerialRadioBase(CoreRadio):
                     self._civ_recovering = False
                     self._conn_state = RadioConnectionState.CONNECTED
                     self._last_civ_data_received = time.monotonic()
+                    consecutive_failures = 0
                     continue
 
                 self._civ_stream_ready = False
                 self._civ_recovering = True
                 try:
                     await self.soft_reconnect()
-                except Exception:
-                    logger.warning(
-                        "serial-civ-watchdog: soft reconnect failed",
-                        exc_info=True,
+                    consecutive_failures = 0
+                except Exception as exc:
+                    consecutive_failures += 1
+                    if consecutive_failures == 1:
+                        # First failure of a run: surface it once, with the
+                        # full traceback for diagnosis.
+                        logger.warning(
+                            "serial-civ-watchdog: soft reconnect failed (%s); "
+                            "retrying with backoff",
+                            exc,
+                            exc_info=True,
+                        )
+                    else:
+                        # Subsequent identical failures (e.g. port still gone):
+                        # keep the log quiet, just note the count.
+                        logger.debug(
+                            "serial-civ-watchdog: soft reconnect still failing "
+                            "(attempt %d): %s",
+                            consecutive_failures,
+                            exc,
+                        )
+                    await asyncio.sleep(
+                        self._serial_watchdog_retry_delay(consecutive_failures)
                     )
-                    await asyncio.sleep(self._SERIAL_WATCHDOG_RETRY_S)
         except asyncio.CancelledError:
             pass
+
+    def _serial_watchdog_retry_delay(self, consecutive_failures: int) -> float:
+        """Capped exponential backoff for repeated reconnect failures.
+
+        The first retry uses ``_SERIAL_WATCHDOG_RETRY_S``; each subsequent
+        failure doubles the delay up to ``_SERIAL_WATCHDOG_RETRY_MAX_S`` so a
+        long-absent port is retried slowly and quietly instead of twice a
+        second with a full traceback (MOR-237).
+        """
+        exponent = max(0, consecutive_failures - 1)
+        multiplier: float = float(2**exponent)
+        delay: float = float(self._SERIAL_WATCHDOG_RETRY_S) * multiplier
+        cap: float = float(self._SERIAL_WATCHDOG_RETRY_MAX_S)
+        if delay > cap:
+            return cap
+        return delay
 
     # ------------------------------------------------------------------
     # Internal helpers

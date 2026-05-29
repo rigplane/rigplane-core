@@ -49,6 +49,12 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 CIV_HEADER_SIZE = 0x15
+# Icom CI-V frequency payloads (cmd 0x00 unsolicited / 0x03 GET response) are
+# always exactly 5 BCD bytes. Truncated/partial frames (e.g. from a flaky USB
+# serial line such as the Xiegu X6200 CH342 bridge — MOR-237) must be skipped
+# before reaching the 5-byte BCD decoder, otherwise every malformed frame
+# raised a caught ValueError and spammed the debug log on each poll cycle.
+_FREQ_BCD_LEN = 5
 _SCOPE_BACKLOG_SHED_THRESHOLD = 256
 _SCOPE_BACKLOG_KEEP_LATEST = 64
 _RAW_RECEIVED_FRAME_BYTES_LIMIT = 256
@@ -805,9 +811,18 @@ class CivRuntime:
         try:
             if frame.command in (0x03, 0x00):
                 # Frequency: 0x03 = response to GET, 0x00 = unsolicited (e.g. VFO knob)
-                freq = parse_frequency_response(frame)
-                host._state_cache.update_freq(freq)
-                host._last_freq_hz = freq
+                if len(frame.data) != _FREQ_BCD_LEN:
+                    # Truncated/partial freq frame (flaky serial). Skip quietly
+                    # so the 5-byte BCD decoder never sees a short payload.
+                    logger.debug(
+                        "civ-rx: skipping short freq frame cmd=0x%02x len=%d",
+                        frame.command,
+                        len(frame.data),
+                    )
+                else:
+                    freq = parse_frequency_response(frame)
+                    host._state_cache.update_freq(freq)
+                    host._last_freq_hz = freq
             elif frame.command in (0x04, 0x01):
                 mode_val, filt = parse_mode_response(frame)
                 host._state_cache.update_mode(mode_val.name, filt)
@@ -1010,6 +1025,15 @@ class CivRuntime:
         slot_override: str | None,
     ) -> None:
         # cmd 0x03 (GET freq response) and 0x00 (unsolicited freq).
+        if len(frame.data) != _FREQ_BCD_LEN:
+            # Truncated/partial freq frame (flaky serial — MOR-237). Skip quietly
+            # before the 5-byte BCD decoder rather than raising/logging per poll.
+            logger.debug(
+                "civ-rx: skipping short freq frame cmd=0x%02x len=%d",
+                frame.command,
+                len(frame.data),
+            )
+            return
         freq = parse_frequency_response(frame)
         if slot_override is not None:
             from dataclasses import replace as _replace

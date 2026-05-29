@@ -77,9 +77,11 @@ class _FakeSerialCivLink:
         *,
         fail_connect: BaseException | None = None,
         fail_connect_calls: set[int] | None = None,
+        fail_connect_calls_exc: BaseException | None = None,
     ) -> None:
         self._fail_connect = fail_connect
         self._fail_connect_calls = set(fail_connect_calls or set())
+        self._fail_connect_calls_exc = fail_connect_calls_exc
         self.connect_calls = 0
         self.disconnect_calls = 0
         self.connected = False
@@ -92,6 +94,8 @@ class _FakeSerialCivLink:
     async def connect(self) -> None:
         self.connect_calls += 1
         if self.connect_calls in self._fail_connect_calls:
+            if self._fail_connect_calls_exc is not None:
+                raise self._fail_connect_calls_exc
             raise OSError(f"connect failed on call {self.connect_calls}")
         if self._fail_connect is not None:
             raise self._fail_connect
@@ -258,6 +262,75 @@ async def test_serial_watchdog_retries_after_transient_soft_reconnect_failure() 
     assert await _wait_until(lambda: link.connect_calls >= 3, timeout_s=2.0)
     assert await _wait_until(lambda: radio.radio_ready, timeout_s=2.0)
     assert radio.conn_state == RadioConnectionState.CONNECTED
+
+    await radio.disconnect()
+
+
+def test_serial_watchdog_retry_delay_is_capped_exponential_backoff() -> None:
+    """MOR-237: repeated reconnect failures back off, capped at the max."""
+    radio = Icom7610SerialRadio(
+        device="/dev/ttyUSB0",
+        civ_link=_FakeSerialCivLink(),
+    )
+    base = radio._SERIAL_WATCHDOG_RETRY_S
+    cap = radio._SERIAL_WATCHDOG_RETRY_MAX_S
+
+    # First failure -> base delay; then doubling; never above the cap.
+    assert radio._serial_watchdog_retry_delay(1) == base
+    assert radio._serial_watchdog_retry_delay(2) == base * 2
+    assert radio._serial_watchdog_retry_delay(3) == base * 4
+    # A very large failure count is clamped to the cap.
+    assert radio._serial_watchdog_retry_delay(50) == cap
+    # Monotonic non-decreasing.
+    delays = [radio._serial_watchdog_retry_delay(n) for n in range(1, 12)]
+    assert delays == sorted(delays)
+
+
+@pytest.mark.asyncio
+async def test_serial_watchdog_quiet_after_transient_open_failure(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """MOR-237: a vanished port (FileNotFoundError) must not flood WARNING+traceback.
+
+    Only the first failure of a run is a WARNING (with traceback); subsequent
+    identical failures are demoted to DEBUG. Recovery resets the run.
+    """
+    import logging
+
+    # Fail soft_reconnect's connect() on calls 2..5 with a "port gone" error,
+    # then let it recover on call 6.
+    link = _FakeSerialCivLink(
+        fail_connect_calls={2, 3, 4, 5},
+        fail_connect_calls_exc=FileNotFoundError(
+            "[Errno 2] No such file or directory: '/dev/cu.usbmodem58910181093'"
+        ),
+    )
+    radio = Icom7610SerialRadio(device="/dev/ttyUSB0", civ_link=link)
+    radio._SERIAL_WATCHDOG_INTERVAL_S = 0.02  # type: ignore[attr-defined]
+    radio._SERIAL_WATCHDOG_RETRY_S = 0.01  # type: ignore[attr-defined]
+    radio._SERIAL_WATCHDOG_RETRY_MAX_S = 0.05  # type: ignore[attr-defined]
+
+    await radio.connect()
+    assert radio.radio_ready is True
+
+    with caplog.at_level(logging.DEBUG, logger="rigplane.backends._icom_serial_base"):
+        # Trip the watchdog into recovery.
+        link.ready = False
+        link.healthy = False
+        # Wait until the port "returns" and the session recovers.
+        assert await _wait_until(lambda: link.connect_calls >= 6, timeout_s=3.0)
+        assert await _wait_until(lambda: radio.radio_ready, timeout_s=2.0)
+
+    warnings = [
+        r
+        for r in caplog.records
+        if r.levelno >= logging.WARNING and "soft reconnect failed" in r.getMessage()
+    ]
+    # The whole multi-failure run must produce at most one WARNING line, and it
+    # must not be repeated per retry (the old behaviour logged one per 0.5s).
+    assert len(warnings) <= 1, (
+        f"expected <=1 WARNING during a transient outage, got {len(warnings)}"
+    )
 
     await radio.disconnect()
 
