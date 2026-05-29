@@ -594,16 +594,26 @@ check's safety class (§4.2). This is the structural guarantee behind D4.
 
 ### 11.2 Phasing → children
 
+> **Numbering note (reconciled 2026-05-29):** an earlier draft of this table
+> drifted from the actual Linear tickets. The table below now matches the real
+> ticket numbers. In particular `MOR-199` is the generic engine dispatch (§2.5,
+> shipped in PR #1661), the override merge layer (§4) is tracked as `MOR-206`,
+> and the Hamlib/comparison/converter slices are `MOR-200`–`MOR-204` as listed.
+> There is no dedicated "widen registry coverage" ticket: new `CheckSpec`
+> entries are added incrementally (alongside Generator B / as small registry
+> additions), never by editing a template.
+
 | Issue | Slice | Depends on |
 |---|---|---|
 | `MOR-197` | `registry.py`: `CheckSpec`, `CheckKind`, the §2.6 entries, value-rule/tolerance map | foundation #1653–#1657 |
 | `MOR-198` | Generator A + `build_template_from_capabilities`; CLI profile-read split (§2.4) | MOR-197 |
-| `MOR-199` | `hardware.py` generic `_check_from_spec` dispatch (the single additive engine change, §2.5) | MOR-197 |
-| `MOR-200` | Widen registry coverage to more `KNOWN_CAPABILITIES` (split/dual_rx/cw/…) | MOR-197, MOR-199 |
-| `MOR-201` | `HamlibCaps` parser + Generator B + token map; optional `RigctldClientRadio` squelch/S-meter | MOR-182 (bridge), MOR-197 |
-| `MOR-202` | Override merge layer (§4) | MOR-198 |
-| `MOR-203` | Comparison `dimensions` roll-up + `radio-validate --provider both` (§7, §9) | MOR-198, MOR-201 |
-| `MOR-204` | Profile converter `convert` subcommand + cross-check report (§8) | MOR-201 |
+| `MOR-199` | `hardware.py` generic `_check_from_spec` dispatch (the single additive engine change, §2.5) | MOR-197, MOR-198 |
+| `MOR-200` | `HamlibCaps` parser: `dump_caps` ingestion + capability↔Hamlib token map (§5) | MOR-182 (bridge), MOR-197 |
+| `MOR-201` | Generator B (Hamlib): registry → Hamlib check list via token map; optional `RigctldClientRadio` squelch/S-meter (§6) | MOR-200, MOR-197 |
+| `MOR-202` | Comparison/reporting: native-vs-hamlib + profile-vs-reality `dimensions` roll-up (§7) | MOR-198, MOR-201 |
+| `MOR-203` | Profile converter `convert` subcommand + cross-check report (§8) | MOR-200 |
+| `MOR-204` | CLI `radio-validate --provider both` + OSS docs (§9) | MOR-198, MOR-202 |
+| `MOR-206` | Override merge layer (§4) | MOR-198 |
 
 Prereqs: **MOR-180** (write-only set+observe) for the `WRITE_ONLY_OBSERVE`
 kind; **MOR-182** (Hamlib bridge) for Generator B execution — both already
