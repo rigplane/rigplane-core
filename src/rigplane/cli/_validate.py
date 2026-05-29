@@ -11,11 +11,16 @@ reads the original value, writes a different one, verifies the readback, then
 restores the original. ``--read-only`` disables all writes (write checks SKIP).
 TX and tuner are never auto-actuated.
 
+Template resolution: ``--template`` is optional.  If omitted, ``--model`` is
+required and the template is generated in-memory from the radio profile's
+declared capabilities via ``build_template_from_capabilities``.
+
 Exit codes:
 
 * ``0`` — success (dry-run or hardware artifact emitted). Failed/blocked checks
   do NOT change the exit code.
-* ``2`` — template missing, unreadable, or schema-invalid.
+* ``2`` — template missing, unreadable, or schema-invalid; or ``--template``
+  and ``--model`` both absent; or model name is unknown.
 * ``3`` — hardware run requested but blocked (gates closed), or the radio could
   not connect / authenticate / build a backend config (artifact still emitted
   on connect failure).
@@ -83,8 +88,13 @@ def add_subparser(sub: Any) -> argparse.ArgumentParser:
     )
     p.add_argument(
         "--template",
-        required=True,
-        help="Path to a validation matrix template JSON file.",
+        required=False,
+        default=None,
+        help=(
+            "Path to a validation matrix template JSON file.  Optional: "
+            "if omitted, supply --model to generate the template from the "
+            "radio profile's declared capabilities."
+        ),
     )
     p.add_argument(
         "--dry-run",
@@ -161,11 +171,29 @@ def add_subparser(sub: Any) -> argparse.ArgumentParser:
 
 
 def run(args: argparse.Namespace) -> int:
-    try:
-        template = load_template(Path(args.template))
-    except (SchemaValidationError, OSError) as exc:
-        print(f"Error: cannot load template: {exc}", file=sys.stderr)
-        return 2
+    if args.template:
+        try:
+            template = load_template(Path(args.template))
+        except (SchemaValidationError, OSError) as exc:
+            print(f"Error: cannot load template: {exc}", file=sys.stderr)
+            return 2
+    else:
+        if not getattr(args, "model", None):
+            print("Error: provide --template or --model", file=sys.stderr)
+            return 2
+        from rigplane.profiles import get_radio_profile
+        from rigplane.validation.registry import build_template_from_capabilities
+
+        try:
+            profile = get_radio_profile(args.model)
+        except KeyError as exc:
+            print(f"Error: {exc}", file=sys.stderr)
+            return 2
+        template = build_template_from_capabilities(
+            profile.capabilities,
+            model=profile.model,
+            profile_id=profile.id,
+        )
 
     authorized = bool(args.tx_allowed or args.tuner_allowed)
     safety = OperatorSafetyBlock(
