@@ -21,7 +21,9 @@ from unittest.mock import AsyncMock, MagicMock
 
 from rigplane.core.radio_protocol import Radio
 from rigplane.core.radio_state import RadioState
+from rigplane.core.types import AgcMode
 from rigplane.validation.hardware import execute_hardware_checks
+from rigplane.validation.registry import CheckKind, CheckSpec, ValueRule
 from rigplane.validation.runner import build_validation_artifact, load_template
 from rigplane.validation.schema import (
     CapabilityDeclaration,
@@ -449,3 +451,301 @@ async def test_artifact_round_trips():
     restored = validate_artifact_dict(json.loads(json.dumps(artifact.to_dict())))
     assert restored.mode == "hardware"
     assert restored.transport.backend == "serial"
+
+
+# ---------------------------------------------------------------------------
+# MOR-199: generic _check_from_spec dispatch tests
+# ---------------------------------------------------------------------------
+
+
+def _stateful_squelch_mock(*, start: int = 0):
+    """A MagicMock(spec=Radio) whose squelch set/get round-trips via a closure."""
+    radio = MagicMock(spec=Radio)
+    radio.connected = True
+    radio.model = "X6200"
+    radio.capabilities = {"squelch"}
+    store = {"value": start}
+
+    async def _get(receiver: int = 0) -> int:
+        return store["value"]
+
+    async def _set(level: int, receiver: int = 0) -> None:
+        store["value"] = level
+
+    radio.get_squelch = AsyncMock(side_effect=_get)
+    radio.set_squelch = AsyncMock(side_effect=_set)
+    return radio, store
+
+
+async def test_generic_squelch_set_rmvr_pass():
+    """squelch.set dispatches via generic handler and round-trips (PASS)."""
+    radio, store = _stateful_squelch_mock(start=0)
+    template = _single_entry_template(check_id="squelch.set", capability="squelch")
+    levels = await execute_hardware_checks(
+        radio, template, OperatorSafetyBlock(), allow_writes=True
+    )
+    check = _flatten(levels)["squelch.set"]
+    assert check.status is CheckStatus.PASS
+    # step_level_255(0) -> 200
+    assert check.evidence["original"] == 0
+    assert check.evidence["changed"] == 200
+    assert check.evidence["readback"] == 200
+    assert check.evidence["restored"] is True
+    assert check.evidence["handler"] == "generic"
+    assert check.evidence["value_rule"] == "step_level_255"
+
+
+async def test_generic_squelch_set_fail_no_react():
+    """set_squelch no-op (value never changes) -> FAIL with READBACK domain."""
+    radio = MagicMock(spec=Radio)
+    radio.connected = True
+    radio.model = "X6200"
+    radio.capabilities = {"squelch"}
+    radio.set_squelch = AsyncMock(return_value=None)  # no-op write
+    radio.get_squelch = AsyncMock(return_value=100)  # always 100
+    template = _single_entry_template(check_id="squelch.set", capability="squelch")
+    levels = await execute_hardware_checks(
+        radio, template, OperatorSafetyBlock(), allow_writes=True
+    )
+    check = _flatten(levels)["squelch.set"]
+    assert check.status is CheckStatus.FAIL
+    assert check.failure_domain is FailureDomain.READBACK
+    # write + restore => at least 2 set_squelch calls
+    assert radio.set_squelch.call_count >= 2
+
+
+class _OffByTwoSquelchRadio:
+    """Squelch fake that reads back 2 below whatever was last written."""
+
+    def __init__(self) -> None:
+        self.connected = True
+        self.model = "OffByTwo"
+        self.capabilities = {"squelch"}
+        self.radio_state = RadioState()
+        self._value = 100
+
+    async def get_squelch(self, receiver: int = 0) -> int:
+        return max(0, self._value - 2)
+
+    async def set_squelch(self, level: int, receiver: int = 0) -> None:
+        self._value = level
+
+
+async def test_generic_squelch_set_tolerance():
+    """Tolerance=3 on squelch.set allows an off-by-two fake to PASS."""
+    radio = _OffByTwoSquelchRadio()
+    template = _single_entry_template(check_id="squelch.set", capability="squelch")
+    levels = await execute_hardware_checks(
+        radio, template, OperatorSafetyBlock(), allow_writes=True
+    )
+    check = _flatten(levels)["squelch.set"]
+    assert check.status is CheckStatus.PASS
+
+
+async def test_generic_squelch_set_unsupported_no_setter():
+    """squelch capability present but set_squelch absent -> UNSUPPORTED."""
+    radio = MagicMock(spec=Radio)
+    radio.connected = True
+    radio.model = "X6200"
+    radio.capabilities = {"squelch"}
+    radio.get_squelch = AsyncMock(return_value=50)
+    # Deliberately omit set_squelch from the mock spec attribute access
+    # so getattr returns the MagicMock attribute but we override to None.
+    del radio.set_squelch
+    template = _single_entry_template(check_id="squelch.set", capability="squelch")
+    levels = await execute_hardware_checks(
+        radio, template, OperatorSafetyBlock(), allow_writes=True
+    )
+    check = _flatten(levels)["squelch.set"]
+    assert check.status is CheckStatus.UNSUPPORTED
+
+
+async def test_generic_squelch_set_skip_read_only():
+    """allow_writes=False -> SKIP, set_squelch never called."""
+    radio, _store = _stateful_squelch_mock(start=50)
+    template = _single_entry_template(check_id="squelch.set", capability="squelch")
+    levels = await execute_hardware_checks(
+        radio, template, OperatorSafetyBlock(), allow_writes=False
+    )
+    check = _flatten(levels)["squelch.set"]
+    assert check.status is CheckStatus.SKIP
+    radio.set_squelch.assert_not_called()
+
+
+async def test_generic_squelch_set_unsupported_capability_absent():
+    """capability 'squelch' absent from radio.capabilities -> UNSUPPORTED."""
+    radio = MagicMock(spec=Radio)
+    radio.connected = True
+    radio.model = "X6200"
+    radio.capabilities = set()
+    radio.get_squelch = AsyncMock(return_value=50)
+    radio.set_squelch = AsyncMock(return_value=None)
+    template = _single_entry_template(check_id="squelch.set", capability="squelch")
+    levels = await execute_hardware_checks(
+        radio, template, OperatorSafetyBlock(), allow_writes=True
+    )
+    check = _flatten(levels)["squelch.set"]
+    assert check.status is CheckStatus.UNSUPPORTED
+    assert check.evidence.get("capability_present") is False
+    radio.set_squelch.assert_not_called()
+
+
+async def test_generic_meters_read_pass():
+    """meters.read (READ_ONLY) dispatches via generic handler -> PASS."""
+    radio = MagicMock(spec=Radio)
+    radio.connected = True
+    radio.model = "X6200"
+    radio.capabilities = {"meters"}
+    radio.get_s_meter = AsyncMock(return_value=-73)
+    template = _single_entry_template(
+        check_id="meters.read",
+        capability="meters",
+        level=ValidationLevel.COMPATIBILITY_SURFACES,
+    )
+    levels = await execute_hardware_checks(
+        radio, template, OperatorSafetyBlock(), allow_writes=False
+    )
+    check = _flatten(levels)["meters.read"]
+    assert check.status is CheckStatus.PASS
+    assert check.evidence["value"] == -73
+    assert check.evidence["op"] == "get_s_meter"
+    assert check.evidence["handler"] == "generic"
+
+
+async def test_generic_meters_read_unsupported_no_getter():
+    """meters.read with no get_s_meter on radio -> UNSUPPORTED."""
+    radio = MagicMock(spec=Radio)
+    radio.connected = True
+    radio.model = "X6200"
+    radio.capabilities = {"meters"}
+    del radio.get_s_meter
+    template = _single_entry_template(
+        check_id="meters.read",
+        capability="meters",
+        level=ValidationLevel.COMPATIBILITY_SURFACES,
+    )
+    levels = await execute_hardware_checks(
+        radio, template, OperatorSafetyBlock(), allow_writes=False
+    )
+    check = _flatten(levels)["meters.read"]
+    assert check.status is CheckStatus.UNSUPPORTED
+
+
+async def test_named_handler_wins_over_generic():
+    """preamp.set has a named handler; it must NOT produce handler=='generic'."""
+    radio, _store = _stateful_preamp_mock(start=0)
+    template = _single_entry_template(check_id="preamp.set", capability="preamp")
+    levels = await execute_hardware_checks(
+        radio, template, OperatorSafetyBlock(), allow_writes=True
+    )
+    check = _flatten(levels)["preamp.set"]
+    assert check.status is CheckStatus.PASS
+    assert check.evidence.get("handler") != "generic"
+
+
+async def test_generic_write_only_observe_unsupported():
+    """WRITE_ONLY_OBSERVE kind -> UNSUPPORTED with MOR-180 note."""
+    from rigplane.validation.hardware import _check_from_spec
+
+    radio = MagicMock(spec=Radio)
+    radio.connected = True
+    radio.model = "X6200"
+    radio.capabilities = {"squelch"}
+    entry = CapabilityDeclarationEntry(
+        check_id="squelch.set",
+        capability="squelch",
+        level=ValidationLevel.CAPABILITY_MATRIX,
+        declaration=CapabilityDeclaration.SUPPORTED,
+        summary="write only observe stub",
+    )
+    spec = CheckSpec(
+        check_id="squelch.set",
+        capability="squelch",
+        kind=CheckKind.WRITE_ONLY_OBSERVE,
+        level=ValidationLevel.CAPABILITY_MATRIX,
+        failure_domain=FailureDomain.READBACK,
+        summary="write only observe stub",
+    )
+    result = await _check_from_spec(
+        radio, entry, spec, allow_writes=True, per_check_timeout=5.0
+    )
+    assert result.status is CheckStatus.UNSUPPORTED
+    assert "MOR-180" in str(result.evidence.get("reason", ""))
+
+
+async def test_generic_mode_cycle_unsupported():
+    """MODE_CYCLE value_rule -> UNSUPPORTED (handled by named _check_mode_set)."""
+    from rigplane.validation.hardware import _check_from_spec
+
+    radio = MagicMock(spec=Radio)
+    radio.connected = True
+    radio.model = "X6200"
+    radio.capabilities = {"mode_x"}
+    radio.get_x = AsyncMock(return_value="USB")
+    radio.set_x = AsyncMock(return_value=None)
+    entry = CapabilityDeclarationEntry(
+        check_id="mode_x.set",
+        capability="mode_x",
+        level=ValidationLevel.CAPABILITY_MATRIX,
+        declaration=CapabilityDeclaration.SUPPORTED,
+        summary="mode cycle stub",
+    )
+    spec = CheckSpec(
+        check_id="mode_x.set",
+        capability="mode_x",
+        kind=CheckKind.RMVR_SAFE_WRITE,
+        level=ValidationLevel.CAPABILITY_MATRIX,
+        failure_domain=FailureDomain.READBACK,
+        summary="mode cycle stub",
+        get_op="get_x",
+        set_op="set_x",
+        value_rule=ValueRule.MODE_CYCLE,
+    )
+    result = await _check_from_spec(
+        radio, entry, spec, allow_writes=True, per_check_timeout=5.0
+    )
+    assert result.status is CheckStatus.UNSUPPORTED
+    assert "mode_cycle" in str(result.evidence.get("reason", ""))
+
+
+def test_value_rule_map_correctness():
+    """All 6 scalar closures produce expected outputs; MODE_CYCLE is absent."""
+    from rigplane.validation.hardware import _VALUE_RULE_FNS
+
+    assert _VALUE_RULE_FNS[ValueRule.TOGGLE_BOOL](False) is True
+    assert _VALUE_RULE_FNS[ValueRule.TOGGLE_BOOL](True) is False
+
+    assert _VALUE_RULE_FNS[ValueRule.STEP_LEVEL_255](0) == 200
+    assert _VALUE_RULE_FNS[ValueRule.STEP_LEVEL_255](200) == 50
+
+    assert _VALUE_RULE_FNS[ValueRule.NUDGE_FILTER](2600) == 2800
+    assert _VALUE_RULE_FNS[ValueRule.NUDGE_FILTER](2601) == 2401
+
+    assert _VALUE_RULE_FNS[ValueRule.PREAMP_CYCLE](0) == 1
+    assert _VALUE_RULE_FNS[ValueRule.PREAMP_CYCLE](1) == 0
+
+    assert _VALUE_RULE_FNS[ValueRule.AGC_FLIP](AgcMode.FAST) == int(AgcMode.SLOW)
+    assert _VALUE_RULE_FNS[ValueRule.AGC_FLIP](AgcMode.SLOW) == int(AgcMode.FAST)
+
+    assert _VALUE_RULE_FNS[ValueRule.BUMP_HZ](14_000_000) == 14_000_100
+
+    assert ValueRule.MODE_CYCLE not in _VALUE_RULE_FNS
+
+
+async def test_unknown_check_id_still_skips():
+    """A SUPPORTED entry with an unknown check_id (no spec) -> SKIP."""
+    radio = MagicMock(spec=Radio)
+    radio.connected = True
+    radio.model = "X6200"
+    radio.capabilities = set()
+    template = _single_entry_template(
+        check_id="bogus.thing",
+        capability="",
+        level=ValidationLevel.CAPABILITY_MATRIX,
+    )
+    levels = await execute_hardware_checks(
+        radio, template, OperatorSafetyBlock(), allow_writes=True
+    )
+    check = _flatten(levels)["bogus.thing"]
+    assert check.status is CheckStatus.SKIP
+    assert "no hardware handler" in str(check.evidence.get("reason", ""))
