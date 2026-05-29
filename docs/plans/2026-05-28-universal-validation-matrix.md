@@ -475,6 +475,18 @@ disagreement.
 
 ## 8. Profile converter (Hamlib → draft TOML + cross-check)
 
+> **As-built note (reconciled 2026-05-29):** §8 and §9 describe the converter as
+> `rigplane radio-validate convert <…>` (a subcommand of the `radio-validate`
+> verb). It **shipped as a top-level verb, `rigplane convert <…>`** (MOR-220).
+> argparse cannot cleanly combine the `radio-validate` positional `MODEL` with a
+> nested `convert` subcommand, and `convert` is a distinct bootstrap operation
+> (no hardware, no matrix run) rather than a validation mode — so it reads better
+> as its own verb. Surface as built:
+> `rigplane convert <hamlib-model-id|name> [--draft-out PATH] [--compare-profile MODEL] [--json]`.
+> The two outputs and the human-review-required / never-auto-committed contract
+> below are unchanged; only the command path moved from
+> `radio-validate convert` to top-level `convert`.
+
 `rigplane radio-validate convert <hamlib-model-id|name>` (subcommand of the new
 verb, §9). Two outputs, both **human-review-required, never auto-committed**:
 
