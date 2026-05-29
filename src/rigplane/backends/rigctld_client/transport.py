@@ -3,10 +3,13 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 
 from ...exceptions import CommandError
 from ...exceptions import ConnectionError as RadioConnectionError
 from ...exceptions import TimeoutError as RadioTimeoutError
+
+_LOGGER = logging.getLogger(__name__)
 
 _ERROR_HINTS = {
     -1: "invalid parameter",
@@ -64,12 +67,29 @@ class RigctldTransport:
         except OSError:
             pass
 
+    async def _drain_stale(self) -> None:
+        """Discard any unread bytes left in the socket buffer from a prior
+        transaction (e.g. a late/out-of-band frame the bridge injected) so the
+        next command reads only its own reply."""
+        reader = self._reader
+        if reader is None:
+            return
+        while True:
+            try:
+                chunk = await asyncio.wait_for(reader.read(4096), timeout=0.001)
+            except (asyncio.TimeoutError, TimeoutError):
+                return
+            if not chunk:
+                return  # EOF
+            _LOGGER.debug("rigctld transport: drained %d stale bytes", len(chunk))
+
     async def query(self, command: str, *, response_lines: int) -> list[str]:
         """Send a command and read a fixed number of response lines."""
         if response_lines <= 0:
             raise ValueError("response_lines must be > 0")
 
         async with self._lock:
+            await self._drain_stale()
             await self._write_line(command)
             lines: list[str] = []
             for _ in range(response_lines):
@@ -88,8 +108,37 @@ class RigctldTransport:
     async def command(self, command: str) -> None:
         """Send a write command and require ``RPRT 0`` success."""
         async with self._lock:
+            await self._drain_stale()
             await self._write_line(command)
+            # Re-sync: do ONE blocking read for the server's response.
+            # If it is not RPRT-shaped (stray value line that arrived in the
+            # same transaction window), attempt non-blocking reads to find the
+            # real RPRT that should be buffered right behind it.  We only skip
+            # lines that have an immediately-buffered successor — a lone
+            # malformed response (nothing else buffered) is left in `line` so
+            # that _parse_rprt can raise its normal "malformed" CommandError.
+            _MAX_RESYNC = 4
             line = await self._read_line(command)
+            reader = self._reader
+            for _ in range(_MAX_RESYNC - 1):
+                if line.startswith("RPRT ") or reader is None:
+                    break
+                try:
+                    raw = await asyncio.wait_for(reader.readline(), timeout=0.001)
+                except (asyncio.TimeoutError, TimeoutError):
+                    # Nothing else buffered — `line` is the actual response.
+                    break
+                if not raw:
+                    break  # EOF
+                _LOGGER.debug(
+                    "rigctld transport: skipping non-RPRT line for %r: %r",
+                    command,
+                    line,
+                )
+                try:
+                    line = raw.decode("ascii").rstrip("\r\n")
+                except UnicodeDecodeError:
+                    line = raw.decode("latin-1").rstrip("\r\n")
 
         code = _parse_rprt(line, command)
         if code < 0:

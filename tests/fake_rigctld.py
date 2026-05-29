@@ -54,6 +54,7 @@ class FakeRigctldBehavior:
     disconnect_commands: set[str] = field(default_factory=set)
     malformed_responses: dict[str, bytes] = field(default_factory=dict)
     unsupported_commands: set[str] = field(default_factory=set)
+    extra_lines: dict[str, bytes] = field(default_factory=dict)
 
 
 class FakeRigctldServer:
@@ -181,6 +182,10 @@ class FakeRigctldServer:
 
                 if key in _QUIT:
                     break
+
+                extra = _lookup(self.behavior.extra_lines, line, key)
+                if extra is not None:
+                    await _write_response(writer, extra)
 
                 await _write_response(writer, self._response_for(line, key))
         except (ConnectionError, OSError):

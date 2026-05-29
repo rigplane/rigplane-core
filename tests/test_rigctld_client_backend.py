@@ -285,3 +285,77 @@ def test_level_scale_conversions_roundtrip_and_clamp() -> None:
     assert _float_to_level_255(2.0) == 255
     assert _float_to_level_255(0.0) == 0
     assert _float_to_level_255(1.0) == 255
+
+
+# ---------------------------------------------------------------------------
+# Stale-buffer / re-sync hardening tests (MOR-182)
+# ---------------------------------------------------------------------------
+
+
+async def test_command_drains_stray_preceding_line() -> None:
+    """SET command must succeed even when a stray value line precedes RPRT 0.
+
+    Regression: L AF 0.784 → server sends "0.0392157\\nRPRT 0\\n"; transport
+    used to read only one line, consuming the stray value and then
+    _parse_rprt("0.0392157") raised CommandError.
+    """
+    behavior = FakeRigctldBehavior(extra_lines={"L AF 0.784": b"0.0392157\n"})
+    async with FakeRigctldServer(behavior=behavior) as server:
+        transport = RigctldTransport(host=server.host, port=server.port)
+        await transport.connect()
+        try:
+            # Must NOT raise; real RPRT 0 follows the stray line.
+            await transport.command("L AF 0.784")
+        finally:
+            await transport.close()
+
+
+async def test_leftover_line_discarded_between_transactions() -> None:
+    """A leftover line in the buffer from transaction A must not corrupt B.
+
+    Simulates the U NB 1 → "0\\nRPRT 0\\n" scenario: if transaction A
+    somehow leaves a line in the reader, the pre-drain in transaction B
+    eats it so B reads its own RPRT 0.
+    """
+    behavior = FakeRigctldBehavior(extra_lines={"U NB 1": b"0\n"})
+    async with FakeRigctldServer(behavior=behavior) as server:
+        transport = RigctldTransport(host=server.host, port=server.port)
+        await transport.connect()
+        try:
+            # First call: server sends "0\nRPRT 0\n".  With the re-sync loop
+            # inside command() this should succeed.
+            await transport.command("U NB 1")
+            # Second call with a normal command must still work (no leftover
+            # from the first lingering in the buffer).
+            await transport.command("U NB 0")
+        finally:
+            await transport.close()
+
+
+async def test_get_reads_value_after_drain() -> None:
+    """GET (query) path is unaffected by the pre-drain (no leftover → no-op)."""
+    async with FakeRigctldServer() as server:
+        transport = RigctldTransport(host=server.host, port=server.port)
+        await transport.connect()
+        try:
+            result = await transport.query("l AF", response_lines=1)
+        finally:
+            await transport.close()
+    assert result == ["0.300"]
+
+
+async def test_negative_rprt_still_raises() -> None:
+    """l RF → RPRT -11 (unsupported) must still raise CommandError.
+
+    The re-sync loop must not discard RPRT-shaped lines — it must accept
+    them immediately so _raise_rprt can fire.
+    """
+    behavior = FakeRigctldBehavior(unsupported_commands={"l RF"})
+    async with FakeRigctldServer(behavior=behavior) as server:
+        transport = RigctldTransport(host=server.host, port=server.port)
+        await transport.connect()
+        try:
+            with pytest.raises(CommandError, match="command failed|unsupported"):
+                await transport.command("l RF")
+        finally:
+            await transport.close()
