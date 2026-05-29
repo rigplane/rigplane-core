@@ -16,6 +16,7 @@ from typing import Any
 from fake_rigctld import FakeRigctldServer
 
 from rigplane.backends.config import RigctldBackendConfig
+from rigplane.backends.hamlib_models import HamlibCaps
 from rigplane.backends.rigctld_client import RigctldClientRadio
 from rigplane.cli import _validate
 from rigplane.profiles import get_radio_profile
@@ -433,3 +434,207 @@ async def test_run_hardware_hamlib_forwards_write_only_capabilities(
     await _validate._run_hardware_hamlib(_base_args(), template, safety)
 
     assert captured["write_only_capabilities"] == frozenset({"rit", "xit", "notch"})
+
+
+# ---------------------------------------------------------------------------
+# Generator B (_hamlib_caps_to_tokens) unit tests (MOR-211)
+# ---------------------------------------------------------------------------
+
+
+def test_hamlib_caps_to_tokens_levels_and_funcs() -> None:
+    """Levels and funcs sets are all unioned into the token set."""
+    caps = HamlibCaps(
+        get_levels=frozenset({"RF", "STRENGTH"}),
+        set_levels=frozenset({"AF"}),
+        get_funcs=frozenset({"NB"}),
+        set_funcs=frozenset({"NR"}),
+    )
+    tokens = _validate._hamlib_caps_to_tokens(caps)
+    assert {"RF", "STRENGTH", "AF", "NB", "NR"}.issubset(tokens)
+
+
+def test_hamlib_caps_to_tokens_has_set_freq_true() -> None:
+    """has_set_freq=True adds 'f' token."""
+    caps = HamlibCaps(has_set_freq=True)
+    tokens = _validate._hamlib_caps_to_tokens(caps)
+    assert "f" in tokens
+
+
+def test_hamlib_caps_to_tokens_has_set_freq_false() -> None:
+    """has_set_freq=False does NOT add 'f' token."""
+    caps = HamlibCaps(has_set_freq=False)
+    tokens = _validate._hamlib_caps_to_tokens(caps)
+    assert "f" not in tokens
+
+
+def test_hamlib_caps_to_tokens_modes_nonempty() -> None:
+    """Non-empty modes adds 'm' token."""
+    caps = HamlibCaps(modes=frozenset({"USB", "LSB"}))
+    tokens = _validate._hamlib_caps_to_tokens(caps)
+    assert "m" in tokens
+
+
+def test_hamlib_caps_to_tokens_modes_empty() -> None:
+    """Empty modes does NOT add 'm' token."""
+    caps = HamlibCaps(modes=frozenset())
+    tokens = _validate._hamlib_caps_to_tokens(caps)
+    assert "m" not in tokens
+
+
+def test_hamlib_caps_to_tokens_ptt_type_present() -> None:
+    """ptt_type != None adds 't' token."""
+    caps = HamlibCaps(ptt_type="RIG")
+    tokens = _validate._hamlib_caps_to_tokens(caps)
+    assert "t" in tokens
+
+
+def test_hamlib_caps_to_tokens_ptt_type_none() -> None:
+    """ptt_type=None does NOT add 't' token."""
+    caps = HamlibCaps(ptt_type=None)
+    tokens = _validate._hamlib_caps_to_tokens(caps)
+    assert "t" not in tokens
+
+
+def test_hamlib_caps_to_tokens_empty_caps() -> None:
+    """All-default (degraded) HamlibCaps yields an empty frozenset."""
+    caps = HamlibCaps()
+    tokens = _validate._hamlib_caps_to_tokens(caps)
+    assert tokens == frozenset()
+
+
+# ---------------------------------------------------------------------------
+# CLI Gen-B generation — dry-run, no hardware (MOR-211)
+# ---------------------------------------------------------------------------
+
+
+def _make_dry_run_args(**kwargs: Any) -> argparse.Namespace:
+    """Namespace with safe defaults for _validate.run() dry-run."""
+    defaults = dict(
+        template=None,
+        model="X6200",
+        hardware=False,
+        allow_hardware=False,
+        tx_allowed=False,
+        tuner_allowed=False,
+        read_only=False,
+        provider="hamlib",
+        compare=None,
+        operator_id=None,
+        output=None,
+        json=True,
+    )
+    defaults.update(kwargs)
+    return argparse.Namespace(**defaults)
+
+
+def test_cli_genb_dry_run_hamlib_provider(monkeypatch: Any) -> None:
+    """validate --model X6200 --provider hamlib (no --template) calls Generator B.
+
+    With the supplied HamlibCaps providing RF/AF/PREAMP/ATT/NB/NR/f/m/t tokens,
+    the expected SUPPORTED checks are:
+      rf_gain.set, af_level.set, preamp.set, attenuator.set, nb.set, nr.set,
+      freq.write, mode.set.
+    Checks with hamlib_token=None (discovery.identify, agc.set, rit.set) must
+    be UNSUPPORTED_PENDING_EVIDENCE.
+    """
+    fake_caps = HamlibCaps(
+        get_levels=frozenset({"RF", "AF", "PREAMP", "ATT"}),
+        set_levels=frozenset({"RF", "AF", "PREAMP", "ATT"}),
+        get_funcs=frozenset({"NB", "NR"}),
+        set_funcs=frozenset({"NB", "NR"}),
+        modes=frozenset({"USB"}),
+        has_set_freq=True,
+        ptt_type="RIG",
+    )
+    monkeypatch.setattr(
+        "rigplane.backends.hamlib_models.load_hamlib_caps",
+        lambda model_id: fake_caps,
+    )
+
+    captured: dict[str, Any] = {}
+    monkeypatch.setattr(
+        _validate,
+        "_emit_artifact",
+        lambda artifact, args: captured.setdefault("artifact", artifact),
+    )
+
+    args = _make_dry_run_args()
+    rc = _validate.run(args)
+
+    assert rc == 0
+    artifact = captured["artifact"]
+    entries_by_id = {c.check_id: c for level in artifact.levels for c in level.checks}
+
+    # Checks that should be SUPPORTED (token present + cap declared on X6200)
+    expected_supported = {
+        "rf_gain.set",
+        "af_level.set",
+        "preamp.set",
+        "attenuator.set",
+        "nb.set",
+        "nr.set",
+        "freq.write",
+        "mode.set",
+    }
+    for cid in expected_supported:
+        assert cid in entries_by_id, f"Missing check_id {cid!r}"
+        assert entries_by_id[cid].declaration == CapabilityDeclaration.SUPPORTED, (
+            f"{cid!r}: expected SUPPORTED, got {entries_by_id[cid].declaration!r}"
+        )
+
+    # Checks with hamlib_token=None → always UNSUPPORTED_PENDING_EVIDENCE in Gen-B
+    expected_pending = {"discovery.identify", "agc.set", "rit.set"}
+    for cid in expected_pending:
+        assert cid in entries_by_id, f"Missing check_id {cid!r}"
+        assert (
+            entries_by_id[cid].declaration
+            == CapabilityDeclaration.UNSUPPORTED_PENDING_EVIDENCE
+        ), (
+            f"{cid!r}: expected UNSUPPORTED_PENDING_EVIDENCE, got {entries_by_id[cid].declaration!r}"
+        )
+
+
+def test_cli_genb_dry_run_degraded_caps_warns(monkeypatch: Any, capsys: Any) -> None:
+    """When HamlibCaps is degraded, a warning is printed to stderr."""
+    degraded_caps = HamlibCaps(
+        degraded_reason="dump_caps unavailable: tool not found",
+    )
+    monkeypatch.setattr(
+        "rigplane.backends.hamlib_models.load_hamlib_caps",
+        lambda model_id: degraded_caps,
+    )
+    monkeypatch.setattr(
+        _validate,
+        "_emit_artifact",
+        lambda artifact, args: None,
+    )
+
+    args = _make_dry_run_args()
+    rc = _validate.run(args)
+
+    assert rc == 0
+    captured = capsys.readouterr()
+    assert "Warning" in captured.err
+    assert "dump_caps unavailable" in captured.err or "N/A" in captured.err
+
+
+def test_cli_genb_native_provider_unchanged(monkeypatch: Any) -> None:
+    """--provider native (no --template) still uses Gen-A; discovery.identify SUPPORTED."""
+    captured: dict[str, Any] = {}
+    monkeypatch.setattr(
+        _validate,
+        "_emit_artifact",
+        lambda artifact, args: captured.setdefault("artifact", artifact),
+    )
+
+    args = _make_dry_run_args(provider="native")
+    rc = _validate.run(args)
+
+    assert rc == 0
+    artifact = captured["artifact"]
+    entries_by_id = {c.check_id: c for level in artifact.levels for c in level.checks}
+    # Gen-A: discovery.identify is SUPPORTED (structural, no hamlib_token gating)
+    assert (
+        entries_by_id["discovery.identify"].declaration
+        == CapabilityDeclaration.SUPPORTED
+    )

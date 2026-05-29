@@ -38,7 +38,10 @@ import sys
 import tempfile
 import time
 from pathlib import Path
-from typing import Any, cast
+from typing import TYPE_CHECKING, Any, cast
+
+if TYPE_CHECKING:
+    from rigplane.backends.hamlib_models import HamlibCaps
 
 from rigplane import __version__
 from rigplane.validation import (
@@ -61,6 +64,20 @@ from rigplane.validation.schema import (
     SchemaValidationError,
     ValidationLevel,
 )
+
+
+def _hamlib_caps_to_tokens(caps: HamlibCaps) -> frozenset[str]:
+    """Flatten a HamlibCaps into the set of registry hamlib_token strings the
+    model supports, for Generator B."""
+    tokens: set[str] = set()
+    tokens |= caps.get_levels | caps.set_levels | caps.get_funcs | caps.set_funcs
+    if caps.has_set_freq:
+        tokens.add("f")
+    if caps.modes:
+        tokens.add("m")
+    if caps.ptt_type is not None:
+        tokens.add("t")
+    return frozenset(tokens)
 
 
 def _utcnow_iso() -> str:
@@ -182,18 +199,41 @@ def run(args: argparse.Namespace) -> int:
             print("Error: provide --template or --model", file=sys.stderr)
             return 2
         from rigplane.profiles import get_radio_profile
-        from rigplane.validation.registry import build_template_from_capabilities
 
         try:
             profile = get_radio_profile(args.model)
         except KeyError as exc:
             print(f"Error: {exc}", file=sys.stderr)
             return 2
-        template = build_template_from_capabilities(
-            profile.capabilities,
-            model=profile.model,
-            profile_id=profile.id,
-        )
+        if getattr(args, "provider", "native") == "hamlib":
+            from rigplane.backends.hamlib_models import load_hamlib_caps
+            from rigplane.validation.registry import (
+                build_hamlib_template_from_capabilities,
+            )
+
+            caps = load_hamlib_caps(profile.hamlib_model_id)
+            if caps.degraded_reason:
+                print(
+                    f"Warning: Hamlib dump_caps unavailable for model "
+                    f"{profile.hamlib_model_id} ({caps.degraded_reason}); "
+                    f"all checks will be N/A.",
+                    file=sys.stderr,
+                )
+            tokens = _hamlib_caps_to_tokens(caps)
+            template = build_hamlib_template_from_capabilities(
+                profile.capabilities,
+                tokens,
+                model=profile.model,
+                profile_id=profile.id,
+            )
+        else:
+            from rigplane.validation.registry import build_template_from_capabilities
+
+            template = build_template_from_capabilities(
+                profile.capabilities,
+                model=profile.model,
+                profile_id=profile.id,
+            )
 
     authorized = bool(args.tx_allowed or args.tuner_allowed)
     safety = OperatorSafetyBlock(
