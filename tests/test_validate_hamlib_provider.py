@@ -393,7 +393,7 @@ async def test_run_hardware_forwards_write_only_capabilities(
 
     await _validate._run_hardware(_base_args(read_only=False), template, safety)
 
-    assert captured["write_only_capabilities"] == frozenset({"rit", "xit"})
+    assert captured["write_only_capabilities"] == frozenset({"rit", "xit", "notch"})
 
 
 async def test_run_hardware_hamlib_forwards_write_only_capabilities(
@@ -432,4 +432,4 @@ async def test_run_hardware_hamlib_forwards_write_only_capabilities(
 
     await _validate._run_hardware_hamlib(_base_args(), template, safety)
 
-    assert captured["write_only_capabilities"] == frozenset({"rit", "xit"})
+    assert captured["write_only_capabilities"] == frozenset({"rit", "xit", "notch"})
