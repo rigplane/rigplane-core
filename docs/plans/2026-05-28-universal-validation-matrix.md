@@ -134,20 +134,33 @@ booleans/modes → 0.
 
 ### 2.4 Why the registry's profile read is split out (D5)
 
-Generator A must read `RadioProfile.capabilities` and `RadioProfile.commands`
-(via `supports_command`). Those live in the `profiles` layer, which is **above**
-`validation` in the DAG. To avoid an illegal upward import, the split is:
+Generator A reads `RadioProfile.capabilities` — a real `frozenset[str]`
+(`profiles/__init__.py:143`). Those live in the `profiles` layer, which is
+**above** `validation` in the DAG. To avoid an illegal upward import, the split is:
 
 - `validation/registry.py` — pure data + a `build_template_from_capabilities(...)`
   function that takes an already-resolved **`frozenset[str]` of capabilities**
-  and a **`Callable[[str], bool]` command-probe**, never a `RadioProfile`.
+  and an **optional `Callable[[str], bool]` command-probe**, never a `RadioProfile`.
 - `cli/_validate.py` (or a small `cli/_validate_generate.py`) — resolves the
   `RadioProfile` via `get_radio_profile` (already imported there at
   `_validate.py:375`), then calls `build_template_from_capabilities(
-  profile.capabilities, profile.supports_command)`.
+  profile.capabilities, probe=None)`.
 
 This mirrors how `_run_hardware_hamlib` already reaches into `profiles` from the
 CLI while `hardware.py` stays profile-free.
+
+> **API note (corrects an earlier draft):** the runtime `RadioProfile` returned by
+> `get_radio_profile` exposes `capabilities: frozenset[str]` and the numeric
+> `supports_cmd29(...)`, but **no string command table and no `supports_command(name)`
+> method** — the string-keyed `commands: dict[str, CommandSpec]` lives only on the
+> internal `RigConfig` (`rig_loader.py:77`), which the CLI does not hold. Therefore
+> Generator A keys generation on `capabilities` alone, and the four **structural**
+> checks (`discovery.identify`, `freq.write`, `freq.reverse_sync`, `mode.set`) are
+> emitted **unconditionally** — matching today's shipped templates. The
+> `Callable[[str], bool]` command-probe parameter is reserved for **optional** finer
+> gating; supplying it requires first exposing a `supports_command` probe on
+> `RadioProfile` (a small, non-breaking prerequisite tracked under MOR-197/198). v1
+> generation does **not** depend on it.
 
 ### 2.5 Generic handler (no new per-capability handlers)
 
@@ -219,14 +232,16 @@ this ADR fixes the structure, not the final coverage.)
 
 ### 3.1 Algorithm
 
-`build_template_from_capabilities(capabilities, supports_command, *, model, profile_id)`:
+`build_template_from_capabilities(capabilities, *, probe=None, model, profile_id)`
+(`probe: Callable[[str], bool] | None`):
 
 1. Start with the **structural** entries that every CI-V radio gets, in order:
    `discovery.identify`, `freq.write`, `freq.reverse_sync`, `mode.set`
-   (capability `""`). These are gated only by `supports_command` where the
-   profile is command-driven (`profile.supports_command("set_freq")` etc.); a
-   profile that lacks the command emits the entry with declaration
-   `unsupported_pending_evidence`.
+   (capability `""`). These are emitted **unconditionally** (every CI-V rig has
+   freq/mode), matching today's shipped templates. If an optional `probe` is
+   supplied (future, see §2.4 API note), it MAY downgrade a structural entry to
+   `unsupported_pending_evidence` when the profile lacks the command; v1 passes
+   `probe=None` and emits all four.
 2. For every `CheckSpec` in the registry whose `capability` is non-empty:
    - If `capability in capabilities` → emit `CapabilityDeclarationEntry` with
      `declaration = SUPPORTED` (or `MANUAL_REQUIRED` when `kind == MANUAL`,
