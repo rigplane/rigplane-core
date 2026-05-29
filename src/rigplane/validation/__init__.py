@@ -8,6 +8,7 @@ path that plans checks from a template without touching hardware.
 
 from __future__ import annotations
 
+from rigplane.validation.comparison import compute_comparison_dimensions
 from rigplane.validation.hardware import execute_hardware_checks
 from rigplane.validation.runner import (
     HARDWARE_OPT_IN_ENV,
@@ -64,4 +65,5 @@ __all__ = [
     "build_validation_artifact",
     "human_summary",
     "execute_hardware_checks",
+    "compute_comparison_dimensions",
 ]
