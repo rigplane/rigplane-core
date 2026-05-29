@@ -11,6 +11,52 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.6.0] — 2026-05-29
+
+### Added
+- Universal real-radio validation matrix: JSON schema, per-radio templates, and
+  a headless dry-run runner (#1652, #1653).
+- `rigplane validate --provider hamlib | both` — validate the native rigplane
+  path against a Hamlib `rigctld` and surface native-vs-Hamlib comparison
+  dimensions, with tolerance-aware readback (#1654, #1655, #1673, #1672, #1671).
+- Profile-driven matrix generation: a capability→check-spec registry with
+  generic `_check_from_spec` dispatch, Generator A (from profile capabilities)
+  and Generator B (registry → Hamlib-filtered template) (#1659, #1660, #1661,
+  #1670, #1671, #1668).
+- `rigplane radio-validate` — profile-driven wrapper over the validate run path
+  (#1675).
+- `rigplane convert` — bootstrap a draft rig TOML from Hamlib `dump_caps` with
+  cross-check (#1674, #1679).
+- Override files for generated matrices: a pure, check_id-keyed,
+  safety-invariant merge layer wired into the generate path with metadata audit
+  (#1676, #1678).
+- Set-and-observe engine path for write-only controls, with per-radio
+  write-only classification (#1663, #1664).
+- Disambiguate the Xiegu X6200 from the Icom IC-705 (shared CI-V address `0xA4`)
+  by the Xiegu-only model-ID opcode `0x1D 0x19` when the USB hwid is
+  inconclusive (#1682).
+
+### Fixed
+- Xiegu X6200 USB RX audio now resolves in the browser "LIVE" stream on macOS:
+  the topology resolver handles CDC-ACM `usbmodem` ports and the C-Media codec
+  identity (#1677).
+- Xiegu X6200 (and other CDC-ACM / Windows COM serial radios) are no longer
+  skipped during discovery — port acceptance anchors on USB identity (VID:PID /
+  hwid) instead of the device-name substring (#1680).
+- Set mode via CI-V `0x26` selected-mode when the profile declares it (#1657).
+- Send plain ATT/PREAMP commands on single-RX radios (#1656).
+- Classify the X6200 manual notch as a write-only control (#1665, #1667).
+- Harden rigctld-client response alignment over the bridge (#1669).
+- Derive TX/tuner authorization from the capability registry rather than the
+  mutable template flag (#1683).
+
+### Docs
+- Open-source universal validation matrix guide — `radio-validate`, `convert`,
+  overrides, evidence (#1681); "Running the radio validation matrix" run recipes
+  (#1666).
+- ADR for the universal profile-driven validation matrix (#1658), reconciled
+  with the tracked tickets (#1662).
+
 ## [2.5.1] — 2026-05-28
 
 ### Fixed
@@ -1453,7 +1499,8 @@ These deprecation closures were announced in v0.19 and dropped on schedule.
 - Transport layer, authentication, CI-V commands, meters, PTT, keep-alive.
 - Clean-room Icom LAN UDP protocol implementation.
 
-[Unreleased]: https://github.com/rigplane/rigplane-core/compare/v2.5.1...HEAD
+[Unreleased]: https://github.com/rigplane/rigplane-core/compare/v2.6.0...HEAD
+[2.6.0]: https://github.com/rigplane/rigplane-core/compare/v2.5.1...v2.6.0
 [2.5.1]: https://github.com/rigplane/rigplane-core/compare/v2.5.0...v2.5.1
 [2.5.0]: https://github.com/rigplane/rigplane-core/compare/v2.4.0...v2.5.0
 [2.4.0]: https://github.com/rigplane/rigplane-core/compare/v2.3.1...v2.4.0
