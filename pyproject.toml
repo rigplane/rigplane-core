@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "rigplane"
-version = "2.6.0"
+version = "2.7.0"
 description = "Multi-vendor radio control library and Web UI with native providers and planned Hamlib-backed CAT coverage"
 readme = "README.md"
 license = "MIT"

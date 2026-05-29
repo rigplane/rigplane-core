@@ -11,6 +11,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.7.0] — 2026-05-29
+
+### Added
+- USB-audio topology resolution on **Linux** (`/sys` sysfs) and **Windows**
+  (USB PnP / SetupAPI), extending the macOS resolver so USB radios — notably
+  the Xiegu X6200's WCH CH342 CDC-ACM bridge (`/dev/ttyACM*`, `COMx`) — map
+  their host USB audio device by physical USB topology with a VID:PID identity
+  fallback (#1687, #1686).
+
+### Changed
+- USB audio↔serial device pairing is now by device **identity** (product name
+  + same-name rank) instead of positional enumeration order, correcting
+  selection on mixed-vendor multi-radio hosts (#1685).
+
+### Fixed
+- Xiegu X6200 browser "LIVE" RX audio now flows: the mono C-Media USB codec is
+  opened as 1-channel PCM via an `[audio] codec_preference` profile entry,
+  instead of failing the global stereo default (PortAudio `-9998`) and starving
+  the stream (#1688).
+- Xiegu X6200 CH342 serial session stabilized: the reconnect watchdog uses
+  capped exponential backoff and no longer floods the log on transient USB
+  renumbering, and CI-V RX framing tolerates short/partial frequency frames
+  instead of raising `BCD data must be exactly 5 bytes` (#1689).
+
 ## [2.6.0] — 2026-05-29
 
 ### Added
@@ -1499,7 +1523,8 @@ These deprecation closures were announced in v0.19 and dropped on schedule.
 - Transport layer, authentication, CI-V commands, meters, PTT, keep-alive.
 - Clean-room Icom LAN UDP protocol implementation.
 
-[Unreleased]: https://github.com/rigplane/rigplane-core/compare/v2.6.0...HEAD
+[Unreleased]: https://github.com/rigplane/rigplane-core/compare/v2.7.0...HEAD
+[2.7.0]: https://github.com/rigplane/rigplane-core/compare/v2.6.0...v2.7.0
 [2.6.0]: https://github.com/rigplane/rigplane-core/compare/v2.5.1...v2.6.0
 [2.5.1]: https://github.com/rigplane/rigplane-core/compare/v2.5.0...v2.5.1
 [2.5.0]: https://github.com/rigplane/rigplane-core/compare/v2.4.0...v2.5.0
