@@ -107,7 +107,7 @@ labels = { "0" = "OFF", "1" = "FAST", "2" = "SLOW", "3" = "AUTO" }
 # (no read-first), so SET-but-no-GET controls report honest PASS instead of a
 # read-first-timeout FAIL. Each entry must be a declared [capabilities] feature.
 [validation]
-write_only_controls = ["rit", "xit"]  # X6200 RIT/XIT accept SET but GET times out (MOR-179)
+write_only_controls = ["rit", "xit", "notch"]  # SET accepted but GET times out / no echo (MOR-179 rit/xit, MOR-207 notch; raw-CIV confirmed)
 
 [controls.attenuator]
 style = "toggle"

@@ -788,6 +788,6 @@ class TestWriteOnlyControls:
         with pytest.raises(RigLoadError, match="rit"):
             load_rig(_write_toml(tmp_path, toml))
 
-    def test_x6200_declares_rit_xit_write_only(self):
+    def test_x6200_declares_rit_xit_notch_write_only(self):
         profile = get_radio_profile("X6200")
-        assert profile.write_only_controls >= {"rit", "xit"}
+        assert profile.write_only_controls >= {"rit", "xit", "notch"}
