@@ -28,7 +28,7 @@ import dataclasses
 import datetime
 import logging
 from collections.abc import Awaitable, Callable
-from typing import TypeVar, cast
+from typing import Any, TypeVar, cast
 
 from rigplane.core.exceptions import (
     AuthenticationError,
@@ -49,6 +49,7 @@ from rigplane.core.radio_protocol import (
     UsbAudioCapable,
 )
 from rigplane.core.types import AgcMode
+from rigplane.validation.registry import CheckKind, CheckSpec, ValueRule, get_spec
 from rigplane.validation.runner import _is_authorized
 from rigplane.validation.schema import (
     CapabilityDeclaration,
@@ -234,6 +235,15 @@ async def _run_one_check(
     # Pre-gate 4: SUPPORTED -> check-specific logic.
     handler = _SUPPORTED_HANDLERS.get(entry.check_id)
     if handler is None:
+        spec = get_spec(entry.check_id)
+        if spec is not None:
+            return await _check_from_spec(
+                radio,
+                entry,
+                spec,
+                allow_writes=allow_writes,
+                per_check_timeout=per_check_timeout,
+            )
         return _base_result(
             entry,
             CheckStatus.SKIP,
@@ -945,6 +955,128 @@ async def _check_xit_set(
         write=rit.set_rit_tx_status,
         make_changed=lambda b: not b,
         per_check_timeout=per_check_timeout,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Generic dispatch: value-rule map + _check_from_spec
+# ---------------------------------------------------------------------------
+
+# Maps each scalar ValueRule to a mutation lambda.
+# MODE_CYCLE is deliberately absent: it is tuple-valued and handled exclusively
+# by the bespoke _check_mode_set named handler.
+_VALUE_RULE_FNS: dict[str, Callable[[Any], Any]] = {
+    ValueRule.TOGGLE_BOOL: lambda b: not b,
+    ValueRule.STEP_LEVEL_255: lambda v: 200 if v < 128 else 50,
+    ValueRule.NUDGE_FILTER: lambda w: w + 200 if w <= 2600 else w - 200,
+    ValueRule.PREAMP_CYCLE: lambda v: 1 if v == 0 else 0,
+    ValueRule.AGC_FLIP: lambda m: (
+        int(AgcMode.SLOW) if m != AgcMode.SLOW else int(AgcMode.FAST)
+    ),
+    ValueRule.BUMP_HZ: lambda v: v + 100,
+}
+
+
+async def _check_from_spec(
+    radio: Radio,
+    entry: CapabilityDeclarationEntry,
+    spec: CheckSpec,
+    *,
+    allow_writes: bool,
+    per_check_timeout: float,
+) -> CheckResult:
+    """Execute a check using a registry CheckSpec when no named handler exists."""
+    if spec.kind is CheckKind.READ_ONLY:
+        if spec.get_op is None:
+            return _base_result(
+                entry,
+                CheckStatus.UNSUPPORTED,
+                evidence={"reason": f"radio has no readable op {spec.get_op!r}"},
+            )
+        read_fn = getattr(radio, spec.get_op, None)
+        if not callable(read_fn):
+            return _base_result(
+                entry,
+                CheckStatus.UNSUPPORTED,
+                evidence={"reason": f"radio has no readable op {spec.get_op!r}"},
+            )
+        value, fail = await _guard(
+            cast(Awaitable[Any], read_fn()),
+            entry,
+            per_check_timeout=per_check_timeout,
+        )
+        if fail is not None:
+            return fail
+        return _base_result(
+            entry,
+            CheckStatus.PASS,
+            evidence={
+                "value": value,
+                "op": spec.get_op,
+                "handler": "generic",
+                "kind": str(spec.kind),
+            },
+        )
+
+    if spec.kind is CheckKind.RMVR_SAFE_WRITE:
+        gate = _write_gate(radio, entry, allow_writes=allow_writes)
+        if gate is not None:
+            return gate
+        read_fn = getattr(radio, spec.get_op, None) if spec.get_op else None
+        write_fn = getattr(radio, spec.set_op, None) if spec.set_op else None
+        if not callable(read_fn) or not callable(write_fn):
+            return _base_result(
+                entry,
+                CheckStatus.UNSUPPORTED,
+                evidence={
+                    "reason": f"radio is missing get/set op for {entry.check_id}"
+                },
+            )
+        make_changed = _VALUE_RULE_FNS.get(spec.value_rule)
+        if make_changed is None:
+            return _base_result(
+                entry,
+                CheckStatus.UNSUPPORTED,
+                evidence={
+                    "reason": f"value_rule {spec.value_rule!r} not supported by generic handler"
+                },
+            )
+        equal: Callable[[Any, Any], bool] = (
+            _tolerant_equal(spec.tolerance) if spec.tolerance else _default_equal
+        )
+        _read_fn = read_fn
+        _write_fn = write_fn
+        return await _read_modify_verify_restore(
+            radio,
+            entry,
+            read=lambda: cast(Awaitable[Any], _read_fn()),
+            write=lambda v: cast(Awaitable[None], _write_fn(v)),
+            make_changed=make_changed,
+            equal=equal,
+            per_check_timeout=per_check_timeout,
+            extra_evidence={
+                "handler": "generic",
+                "value_rule": str(spec.value_rule),
+                "kind": str(spec.kind),
+            },
+        )
+
+    if spec.kind is CheckKind.WRITE_ONLY_OBSERVE:
+        return _base_result(
+            entry,
+            CheckStatus.UNSUPPORTED,
+            evidence={"reason": "write_only_observe not yet implemented (MOR-180)"},
+        )
+
+    if spec.kind is CheckKind.MANUAL:
+        return _manual_required_result(radio, entry)
+
+    # CheckKind.TX_ADJACENT_BLOCKED (defensive)
+    return _base_result(
+        entry,
+        CheckStatus.BLOCKED,
+        failure_domain=FailureDomain.COMMAND_EXECUTION,
+        evidence={"reason": "tx-adjacent blocked"},
     )
 
 
