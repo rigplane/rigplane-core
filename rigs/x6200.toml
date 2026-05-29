@@ -37,6 +37,18 @@ default_baud = 19200
 type = "civ"
 address = 0xA4
 
+[audio]
+# The Xiegu X6200 exposes a standard mono USB Audio Class CODEC (C-Media
+# based), exactly like the IC-705 / IC-7300 SERIAL-audio path. Its capture
+# device advertises a single input channel, so RX audio must be opened as
+# 1-channel PCM. Without this section the profile fell back to the global
+# default codec (``PCM_2CH_16BIT``, stereo), and ``UsbAudioDriver.start_rx``
+# asked PortAudio for a 2-channel InputStream — which the mono device
+# rejects with ``Invalid number of channels`` (PaErrorCode -9998). The
+# AudioBus then logged ``failed to start RX`` and the browser received zero
+# RX frames (MOR-236). Mirror the IC-705 / IC-7300 mono preference.
+codec_preference = ["PCM_1CH_16BIT", "ULAW_1CH"]
+
 [capabilities]
 # Aligned to Hamlib's ``X108G_LEVELS`` / ``X108G_FUNCS`` envelope
 # (xiegu.c lines 52, 54) intersected with what the Radioddity X6200 PDF

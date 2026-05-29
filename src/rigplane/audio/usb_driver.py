@@ -585,6 +585,24 @@ class UsbAudioDriver:
                 frame_ms=fm,
                 allow_sample_rate_fallback=allow_sample_rate_fallback,
             )
+            # Log the effective capture request before opening the
+            # InputStream. ``input_channels`` is included because a codec /
+            # device channel-count mismatch is the failure mode behind
+            # MOR-236: requesting more channels than the mono USB CODEC
+            # exposes makes PortAudio reject the stream with "Invalid number
+            # of channels" (PaErrorCode -9998), which previously surfaced
+            # only as an opaque "audio-bus: failed to start RX" with zero
+            # RX frames reaching the browser.
+            logger.info(
+                "usb-audio: opening RX capture — device=[%d] %s, %d Hz, "
+                "%d ch, %d ms (device input_channels=%d)",
+                selected_rx.index,
+                selected_rx.name,
+                contract.sample_rate_hz,
+                ch,
+                fm,
+                selected_rx.input_channels,
+            )
             self._rx_stream = self._backend.open_rx(
                 AudioDeviceId(selected_rx.index),
                 sample_rate=contract.sample_rate_hz,
@@ -593,6 +611,11 @@ class UsbAudioDriver:
             )
             await self._rx_stream.start(callback)
             self._store_stream_contract(contract)
+            logger.info(
+                "usb-audio: RX capture running — device=[%d] %s",
+                selected_rx.index,
+                selected_rx.name,
+            )
 
     async def stop_rx(self) -> None:
         """Stop capture loop and close RX stream."""
