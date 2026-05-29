@@ -50,7 +50,7 @@ from rigplane.core.radio_protocol import (
 )
 from rigplane.core.types import AgcMode
 from rigplane.validation.registry import CheckKind, CheckSpec, ValueRule, get_spec
-from rigplane.validation.runner import _is_authorized
+from rigplane.validation.runner import _is_authorized, _is_safety_gated
 from rigplane.validation.schema import (
     CapabilityDeclaration,
     CapabilityDeclarationEntry,
@@ -213,7 +213,7 @@ async def _run_one_check(
 ) -> CheckResult:
     """Execute a single template entry, applying universal pre-gates first."""
     # Pre-gate 1: authorization for TX-adjacent checks.
-    if entry.tx_adjacent and not _is_authorized(entry, safety):
+    if _is_safety_gated(entry) and not _is_authorized(entry, safety):
         return _base_result(
             entry,
             CheckStatus.BLOCKED,
