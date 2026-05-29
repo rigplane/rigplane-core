@@ -309,6 +309,49 @@ class TestIsCandidate:
         port = _make_port("/dev/ttyS0", "Standard Serial")
         assert _is_candidate(port) is False
 
+    # MOR-224: CDC-ACM bridges (e.g. the X6200's WCH CH342) enumerate under
+    # device names that do NOT contain "usb" on Linux (/dev/ttyACM*) and
+    # Windows (COMx). They must still be accepted via their USB identity.
+    def test_x6200_linux_ttyacm_included_by_vid(self) -> None:
+        port = _make_port(
+            "/dev/ttyACM0",
+            "USB Dual_Serial",
+            "USB VID:PID=1A86:55D2 LOCATION=1-1.2.4",
+            vid=0x1A86,
+            pid=0x55D2,
+            product="USB Dual_Serial",
+        )
+        assert _is_candidate(port) is True
+
+    def test_x6200_windows_com_included_by_vid(self) -> None:
+        port = _make_port(
+            "COM3",
+            "USB Dual_Serial",
+            "USB VID:PID=1A86:55D2",
+            vid=0x1A86,
+            pid=0x55D2,
+            product="USB Dual_Serial",
+        )
+        assert _is_candidate(port) is True
+
+    def test_generic_usb_radio_windows_com_included_by_vid(self) -> None:
+        # Any USB serial radio on Windows surfaces as COMx (no "usb" in name).
+        port = _make_port(
+            "COM4", "Silicon Labs CP210x", "USB VID:PID=10C4:EA60", vid=0x10C4
+        )
+        assert _is_candidate(port) is True
+
+    def test_cdc_acm_included_by_hwid_when_vid_absent(self) -> None:
+        # Some OS/permission setups don't surface vid via pyserial; the
+        # "USB VID:PID=" hwid string is the robust-identity fallback.
+        port = _make_port("/dev/ttyACM0", "", "USB VID:PID=1A86:55D2")
+        assert _is_candidate(port) is True
+
+    def test_bluetooth_with_vid_still_excluded(self) -> None:
+        # Name-based exclusions take precedence over the USB-identity accept.
+        port = _make_port("/dev/tty.Bluetooth-Incoming-Port", "Bluetooth", vid=0x1234)
+        assert _is_candidate(port) is False
+
 
 class TestEnumerateSerialPorts:
     def test_usb_port_returned(self) -> None:
@@ -382,6 +425,26 @@ class TestEnumerateSerialPorts:
         with patch("serial.tools.list_ports.comports", return_value=[]):
             result = enumerate_serial_ports()
         assert isinstance(result, list)
+
+    def test_x6200_cdc_acm_returned_as_candidate(self) -> None:
+        # MOR-224: the X6200's CH342 on Linux (/dev/ttyACM*) must enumerate
+        # as a candidate even though its device name has no "usb".
+        port = _make_port(
+            "/dev/ttyACM0",
+            "USB Dual_Serial",
+            "USB VID:PID=1A86:55D2 LOCATION=1-1.2.4",
+            vid=0x1A86,
+            pid=0x55D2,
+            product="USB Dual_Serial",
+            manufacturer=None,
+            serial_number="5891018109",
+        )
+        with patch("serial.tools.list_ports.comports", return_value=[port]):
+            result = enumerate_serial_ports()
+        assert len(result) == 1
+        assert result[0].device == "/dev/ttyACM0"
+        assert result[0].vid == 0x1A86
+        assert result[0].pid == 0x55D2
 
 
 # ---------------------------------------------------------------------------

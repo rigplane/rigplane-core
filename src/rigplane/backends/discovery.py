@@ -821,14 +821,25 @@ def _normalize_usb_audio_metadata(value: object) -> dict[str, object] | None:
 
 
 def _is_candidate(port: object) -> bool:
-    """Return True if *port* is a plausible Icom serial connection.
+    """Return True if *port* is a plausible USB-connected radio serial port.
 
-    Inclusion criteria:
-    - Device path contains ``"usb"`` (case-insensitive)
+    Inclusion criteria (any one is sufficient):
+    - The OS reports a USB vendor id for the port (``port.vid`` is set), or
+    - The hardware id string contains ``"usb"`` (e.g. ``USB VID:PID=...``), or
+    - The device path contains ``"usb"`` (case-insensitive).
 
-    Exclusion criteria:
+    Exclusion criteria (checked first, take precedence):
     - Device path contains ``"bluetooth"`` (case-insensitive)
     - Device path contains ``"debug"``, ``"wlan"``, or ``"spi"`` (virtual ports)
+
+    Anchoring on the USB *identity* rather than only the device-path substring
+    matters cross-platform: USB serial radios do not all carry ``"usb"`` in
+    their OS device name. macOS uses ``/dev/cu.usbserial-*`` / ``usbmodem*``
+    (has ``"usb"``) and Linux ``/dev/ttyUSB*`` for FTDI/CP210x bridges, but
+    CDC-ACM composite bridges enumerate as ``/dev/ttyACM*`` on Linux and
+    ``COMx`` on Windows — neither contains ``"usb"``. The Xiegu X6200's WCH
+    CH342 is exactly such a CDC-ACM device, so the old device-name-only filter
+    hard-skipped it on Linux/Windows before any CI-V probe could run (MOR-224).
 
     Args:
         port: A ``serial.tools.list_ports_common.ListPortInfo`` object.
@@ -847,4 +858,9 @@ def _is_candidate(port: object) -> bool:
         if kw in device_lower:
             return False
 
+    if getattr(port, "vid", None) is not None:
+        return True
+    hwid_lower = str(getattr(port, "hwid", "") or "").lower()
+    if "usb" in hwid_lower:
+        return True
     return "usb" in device_lower
