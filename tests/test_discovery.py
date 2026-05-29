@@ -15,6 +15,7 @@ from rigplane.discovery import (
     RadioDiscoveryResult,
     SerialPortCandidate,
     _is_candidate,
+    _is_xiegu_model_id_reply,
     _parse_probe_response,
     build_setup_discovery_payload,
     _parse_yaesu_id_response,
@@ -23,6 +24,7 @@ from rigplane.discovery import (
     enumerate_serial_ports,
     probe_serial_civ,
     probe_serial_yaesu_cat,
+    probe_xiegu_model_id,
 )
 from rigplane.usb_audio_resolve import AudioDeviceMapping
 
@@ -46,6 +48,12 @@ def _fast_probes():
             patch(
                 "rigplane.discovery.probe_serial_yaesu_cat",
                 partial(probe_serial_yaesu_cat, baud_rates=[38400], timeout=0.01),
+            )
+        )
+        stack.enter_context(
+            patch(
+                "rigplane.discovery.probe_xiegu_model_id",
+                partial(probe_xiegu_model_id, timeout=0.01),
             )
         )
         yield
@@ -96,6 +104,12 @@ _IC7610_RESPONSE = bytes([0xFE, 0xFE, 0xE0, 0x98, 0x19, 0x00, 0x01, 0x06, 0xFD])
 # at the address level — disambiguation is by USB hwid, not CI-V payload.
 _IC705_RESPONSE = bytes([0xFE, 0xFE, 0xE0, 0xA4, 0x19, 0x00, 0x01, 0x05, 0xFD])
 _PROBE_CMD = bytes([0xFE, 0xFE, 0x00, 0xE0, 0x19, 0x00, 0xFD])
+
+# Xiegu model-ID (0x1D 0x19) replies (MOR-226). The X6200 echoes the command
+# and returns its model id (0x62 0x00); the IC-705 has no such opcode and NAKs.
+_XIEGU_MODEL_ID_CMD = bytes([0xFE, 0xFE, 0xA4, 0xE0, 0x1D, 0x19, 0xFD])
+_XIEGU_MODEL_ID_REPLY = bytes([0xFE, 0xFE, 0xE0, 0xA4, 0x1D, 0x19, 0x62, 0x00, 0xFD])
+_XIEGU_NAK_REPLY = bytes([0xFE, 0xFE, 0xE0, 0xA4, 0xFA, 0xFD])
 
 
 # ---------------------------------------------------------------------------
@@ -253,6 +267,85 @@ class TestParseProbeResponse:
     def test_no_terminator_returns_none(self) -> None:
         data = bytes([0xFE, 0xFE, 0xE0, 0x98, 0x19, 0x00, 0x01, 0x06])
         assert _parse_probe_response("/dev/x", 19200, data) is None
+
+
+# ---------------------------------------------------------------------------
+# Xiegu model-ID probe tests (MOR-226)
+# ---------------------------------------------------------------------------
+
+
+class TestIsXieguModelIdReply:
+    def test_valid_reply_is_xiegu(self) -> None:
+        assert _is_xiegu_model_id_reply("/dev/x", _XIEGU_MODEL_ID_REPLY) is True
+
+    def test_nak_is_not_xiegu(self) -> None:
+        # IC-705 has no 0x1D 0x19 opcode → NAK collision FE FE E0 A4 FA FD.
+        assert _is_xiegu_model_id_reply("/dev/x", _XIEGU_NAK_REPLY) is False
+
+    def test_wrong_command_echo_is_not_xiegu(self) -> None:
+        # A 0x19 0x00 transceiver-ID frame must not be mistaken for 0x1D 0x19.
+        assert _is_xiegu_model_id_reply("/dev/x", _IC705_RESPONSE) is False
+
+    def test_no_preamble_is_not_xiegu(self) -> None:
+        assert _is_xiegu_model_id_reply("/dev/x", bytes(8)) is False
+
+    def test_short_reply_is_not_xiegu(self) -> None:
+        assert _is_xiegu_model_id_reply("/dev/x", bytes([0xFE, 0xFE, 0xE0])) is False
+
+    def test_command_echo_before_reply_is_ignored(self) -> None:
+        # The radio's echo of our command (dest 0xA4) lacks the FE FE E0
+        # controller preamble, so only the real reply is matched.
+        data = _XIEGU_MODEL_ID_CMD + _XIEGU_MODEL_ID_REPLY
+        assert _is_xiegu_model_id_reply("/dev/x", data) is True
+
+
+class TestProbeXieguModelId:
+    @pytest.mark.asyncio
+    async def test_valid_reply_returns_true(self) -> None:
+        reader = _FakeReader([_XIEGU_MODEL_ID_REPLY])
+        writer = _FakeWriter()
+        result = await probe_xiegu_model_id(
+            "/dev/x", 19200, timeout=0.1, _open_serial=_make_open(reader, writer)
+        )
+        assert result is True
+        assert writer.written[0] == _XIEGU_MODEL_ID_CMD
+
+    @pytest.mark.asyncio
+    async def test_nak_returns_false(self) -> None:
+        reader = _FakeReader([_XIEGU_NAK_REPLY])
+        writer = _FakeWriter()
+        result = await probe_xiegu_model_id(
+            "/dev/x", 19200, timeout=0.1, _open_serial=_make_open(reader, writer)
+        )
+        assert result is False
+
+    @pytest.mark.asyncio
+    async def test_timeout_returns_false(self) -> None:
+        reader = _FakeReader([])  # nothing to read
+        writer = _FakeWriter()
+        result = await probe_xiegu_model_id(
+            "/dev/x", 19200, timeout=0.05, _open_serial=_make_open(reader, writer)
+        )
+        assert result is False
+
+    @pytest.mark.asyncio
+    async def test_open_failure_returns_false(self) -> None:
+        async def _open(*, url: str, baudrate: int, **_kw: object):
+            raise OSError("Resource busy")
+
+        result = await probe_xiegu_model_id(
+            "/dev/x", 19200, timeout=0.1, _open_serial=_open
+        )
+        assert result is False
+
+    @pytest.mark.asyncio
+    async def test_closes_writer(self) -> None:
+        reader = _FakeReader([_XIEGU_MODEL_ID_REPLY])
+        writer = _FakeWriter()
+        await probe_xiegu_model_id(
+            "/dev/x", 19200, timeout=0.1, _open_serial=_make_open(reader, writer)
+        )
+        assert writer.closed is True
 
 
 def _make_port(
@@ -1026,6 +1119,69 @@ class TestDiscoverSerialRadios:
 
         assert results[0].model == "X6200"
         assert results[0].profile_id == "xiegu_x6200"
+
+    @pytest.mark.asyncio
+    async def test_civ_addr_0xA4_civ_model_id_resolves_to_x6200(self) -> None:
+        """MOR-226: an X6200 whose USB hwid does NOT match the CH342
+        fingerprint (e.g. a different/future USB bridge, or VID/PID not
+        surfaced and no ``USB Dual_Serial`` product) is still classified as
+        X6200 via the Xiegu-only CI-V model-ID opcode (0x1D 0x19).
+        """
+        # First read → CI-V transceiver-ID probe response (addr 0xA4);
+        # second read → the Xiegu model-ID reply to 0x1D 0x19.
+        reader = _FakeReader([_IC705_RESPONSE, _XIEGU_MODEL_ID_REPLY])
+        writer = _FakeWriter()
+
+        port = _make_port(
+            "/dev/ttyACM0",
+            "Some Generic CDC-ACM",
+            "USB VID:PID=DEAD:BEEF",
+            vid=0xDEAD,
+            pid=0xBEEF,
+            product="Generic Serial",
+        )
+        with (
+            _fast_probes(),
+            patch("serial.tools.list_ports.comports", return_value=[port]),
+        ):
+            results = await discover_serial_radios(
+                _open_serial=_make_open(reader, writer),
+            )
+
+        assert len(results) == 1
+        assert results[0].address == 0xA4
+        assert results[0].model == "X6200"
+        assert results[0].profile_id == "xiegu_x6200"
+
+    @pytest.mark.asyncio
+    async def test_civ_addr_0xA4_civ_nak_stays_ic705(self) -> None:
+        """MOR-226: a genuine IC-705 (non-Xiegu hwid) that NAKs 0x1D 0x19
+        must remain classified as IC-705 — no false X6200 promotion.
+        """
+        reader = _FakeReader([_IC705_RESPONSE, _XIEGU_NAK_REPLY])
+        writer = _FakeWriter()
+
+        port = _make_port(
+            "/dev/ttyUSB0",
+            "USB Serial",
+            "USB VID:PID=0C26:0036",
+            vid=0x0C26,
+            pid=0x0036,
+            manufacturer="Icom Inc.",
+            product="IC-705",
+        )
+        with (
+            _fast_probes(),
+            patch("serial.tools.list_ports.comports", return_value=[port]),
+        ):
+            results = await discover_serial_radios(
+                _open_serial=_make_open(reader, writer),
+            )
+
+        assert len(results) == 1
+        assert results[0].address == 0xA4
+        assert results[0].model == "IC-705"
+        assert results[0].profile_id == "icom_ic705"
 
     @pytest.mark.asyncio
     async def test_civ_radio_preserves_usb_audio_resolution_metadata(self) -> None:
