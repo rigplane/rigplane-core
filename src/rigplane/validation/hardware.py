@@ -962,6 +962,24 @@ async def _check_xit_set(
 # Generic dispatch: value-rule map + _check_from_spec
 # ---------------------------------------------------------------------------
 
+# Standalone test value to SET for a write-only control (no original is readable).
+_WRITE_ONLY_TEST_VALUES: dict[str, Any] = {
+    ValueRule.TOGGLE_BOOL: True,
+    ValueRule.BUMP_HZ: 100,
+    ValueRule.STEP_LEVEL_255: 100,
+    ValueRule.NUDGE_FILTER: 2800,
+    ValueRule.PREAMP_CYCLE: 1,
+    ValueRule.AGC_FLIP: int(AgcMode.FAST),
+}
+
+# Benign value to restore a write-only control to afterwards (best-effort).
+# Only defined where a clear neutral exists; absence => skip restore honestly.
+_WRITE_ONLY_RESTORE: dict[str, Any] = {
+    ValueRule.TOGGLE_BOOL: False,
+    ValueRule.BUMP_HZ: 0,
+}
+
+
 # Maps each scalar ValueRule to a mutation lambda.
 # MODE_CYCLE is deliberately absent: it is tuple-valued and handled exclusively
 # by the bespoke _check_mode_set named handler.
@@ -975,6 +993,81 @@ _VALUE_RULE_FNS: dict[str, Callable[[Any], Any]] = {
     ),
     ValueRule.BUMP_HZ: lambda v: v + 100,
 }
+
+
+async def _set_and_observe(
+    radio: Radio,
+    entry: CapabilityDeclarationEntry,
+    spec: CheckSpec,
+    *,
+    per_check_timeout: float,
+) -> CheckResult:
+    """Verify a write-only control: SET a test value (no read-first), treat a
+    NAK/timeout-free SET as success, best-effort restore to a benign default."""
+    set_fn = getattr(radio, spec.set_op, None) if spec.set_op else None
+    if not callable(set_fn):
+        return _base_result(
+            entry,
+            CheckStatus.UNSUPPORTED,
+            evidence={
+                "reason": f"radio has no set op {spec.set_op!r} for write-only check"
+            },
+        )
+
+    test_value = _WRITE_ONLY_TEST_VALUES.get(spec.value_rule)
+    if test_value is None:
+        return _base_result(
+            entry,
+            CheckStatus.UNSUPPORTED,
+            evidence={
+                "reason": f"no write-only test value for value_rule {spec.value_rule!r}"
+            },
+        )
+
+    evidence: dict[str, object] = {
+        "verification": "set_observe",
+        "readback": "unavailable",
+        "test_value": test_value,
+        "handler": "set_and_observe",
+        "value_rule": str(spec.value_rule),
+    }
+
+    _, fail = await _guard(
+        cast(Awaitable[None], set_fn(test_value)),
+        entry,
+        per_check_timeout=per_check_timeout,
+    )
+    if fail is not None:
+        evidence["set_error"] = fail.error
+        return _base_result(
+            entry,
+            CheckStatus.FAIL,
+            failure_domain=fail.failure_domain,
+            evidence=evidence,
+            error=fail.error,
+        )
+
+    evidence["set_accepted"] = True
+
+    restore_value = _WRITE_ONLY_RESTORE.get(spec.value_rule)
+    if restore_value is not None:
+        _, r_fail = await _guard(
+            cast(Awaitable[None], set_fn(restore_value)),
+            entry,
+            per_check_timeout=per_check_timeout,
+        )
+        evidence["restored"] = r_fail is None
+        if r_fail is not None:
+            evidence["restore_error"] = r_fail.error
+        else:
+            evidence["restore_value"] = restore_value
+    else:
+        evidence["restored"] = False
+        evidence["restore_skipped"] = (
+            f"no benign default for value_rule {spec.value_rule!r}"
+        )
+
+    return _base_result(entry, CheckStatus.PASS, evidence=evidence)
 
 
 async def _check_from_spec(
@@ -1062,10 +1155,11 @@ async def _check_from_spec(
         )
 
     if spec.kind is CheckKind.WRITE_ONLY_OBSERVE:
-        return _base_result(
-            entry,
-            CheckStatus.UNSUPPORTED,
-            evidence={"reason": "write_only_observe not yet implemented (MOR-180)"},
+        gate = _write_gate(radio, entry, allow_writes=allow_writes)
+        if gate is not None:
+            return gate
+        return await _set_and_observe(
+            radio, entry, spec, per_check_timeout=per_check_timeout
         )
 
     if spec.kind is CheckKind.MANUAL:

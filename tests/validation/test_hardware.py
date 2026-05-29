@@ -643,20 +643,244 @@ async def test_named_handler_wins_over_generic():
     assert check.evidence.get("handler") != "generic"
 
 
-async def test_generic_write_only_observe_unsupported():
-    """WRITE_ONLY_OBSERVE kind -> UNSUPPORTED with MOR-180 note."""
+async def test_set_and_observe_pass():
+    """WRITE_ONLY_OBSERVE + TOGGLE_BOOL: SET accepted -> PASS; restore writes False."""
+    from rigplane.core.exceptions import TimeoutError as RigTimeoutError  # noqa: F401
+    from rigplane.validation.hardware import _check_from_spec
+
+    radio = MagicMock(spec=Radio)
+    radio.connected = True
+    radio.model = "X6200"
+    radio.capabilities = {"xit"}
+    radio.set_rit_tx_status = AsyncMock(return_value=None)
+
+    entry = CapabilityDeclarationEntry(
+        check_id="xit.set",
+        capability="xit",
+        level=ValidationLevel.CAPABILITY_MATRIX,
+        declaration=CapabilityDeclaration.SUPPORTED,
+        summary="write only xit",
+    )
+    spec = CheckSpec(
+        check_id="xit.set",
+        capability="xit",
+        kind=CheckKind.WRITE_ONLY_OBSERVE,
+        level=ValidationLevel.CAPABILITY_MATRIX,
+        failure_domain=FailureDomain.READBACK,
+        summary="write only xit",
+        set_op="set_rit_tx_status",
+        value_rule=ValueRule.TOGGLE_BOOL,
+    )
+    result = await _check_from_spec(
+        radio, entry, spec, allow_writes=True, per_check_timeout=5.0
+    )
+    assert result.status is CheckStatus.PASS
+    assert result.evidence["verification"] == "set_observe"
+    assert result.evidence["set_accepted"] is True
+    assert result.evidence["handler"] == "set_and_observe"
+    # restore: False is the benign default for TOGGLE_BOOL
+    assert radio.set_rit_tx_status.call_count == 2
+    calls = radio.set_rit_tx_status.call_args_list
+    assert calls[0].args[0] is True  # test value
+    assert calls[1].args[0] is False  # restore value
+    assert result.evidence["restored"] is True
+    assert result.evidence["restore_value"] is False
+
+
+async def test_set_and_observe_bump_hz_restores_zero():
+    """WRITE_ONLY_OBSERVE + BUMP_HZ: second call uses restore value 0."""
+    from rigplane.validation.hardware import _check_from_spec
+
+    radio = MagicMock(spec=Radio)
+    radio.connected = True
+    radio.model = "X6200"
+    radio.capabilities = {"rit"}
+    radio.set_rit_frequency = AsyncMock(return_value=None)
+
+    entry = CapabilityDeclarationEntry(
+        check_id="rit.set",
+        capability="rit",
+        level=ValidationLevel.CAPABILITY_MATRIX,
+        declaration=CapabilityDeclaration.SUPPORTED,
+        summary="write only rit freq",
+    )
+    spec = CheckSpec(
+        check_id="rit.set",
+        capability="rit",
+        kind=CheckKind.WRITE_ONLY_OBSERVE,
+        level=ValidationLevel.CAPABILITY_MATRIX,
+        failure_domain=FailureDomain.READBACK,
+        summary="write only rit freq",
+        set_op="set_rit_frequency",
+        value_rule=ValueRule.BUMP_HZ,
+    )
+    result = await _check_from_spec(
+        radio, entry, spec, allow_writes=True, per_check_timeout=5.0
+    )
+    assert result.status is CheckStatus.PASS
+    calls = radio.set_rit_frequency.call_args_list
+    assert radio.set_rit_frequency.call_count == 2
+    assert calls[0].args[0] == 100  # BUMP_HZ test value
+    assert calls[1].args[0] == 0  # restore value
+    assert result.evidence["restore_value"] == 0
+
+
+async def test_set_and_observe_set_timeout_fails():
+    """SET raises RigTimeoutError -> FAIL with COMMAND_EXECUTION domain."""
+    from rigplane.core.exceptions import TimeoutError as RigTimeoutError
+    from rigplane.validation.hardware import _check_from_spec
+
+    radio = MagicMock(spec=Radio)
+    radio.connected = True
+    radio.model = "X6200"
+    radio.capabilities = {"xit"}
+    radio.set_rit_tx_status = AsyncMock(side_effect=RigTimeoutError("timed out"))
+
+    entry = CapabilityDeclarationEntry(
+        check_id="xit.set",
+        capability="xit",
+        level=ValidationLevel.CAPABILITY_MATRIX,
+        declaration=CapabilityDeclaration.SUPPORTED,
+        summary="write only xit timeout",
+    )
+    spec = CheckSpec(
+        check_id="xit.set",
+        capability="xit",
+        kind=CheckKind.WRITE_ONLY_OBSERVE,
+        level=ValidationLevel.CAPABILITY_MATRIX,
+        failure_domain=FailureDomain.READBACK,
+        summary="write only xit timeout",
+        set_op="set_rit_tx_status",
+        value_rule=ValueRule.TOGGLE_BOOL,
+    )
+    result = await _check_from_spec(
+        radio, entry, spec, allow_writes=True, per_check_timeout=5.0
+    )
+    assert result.status is CheckStatus.FAIL
+    assert result.failure_domain is FailureDomain.COMMAND_EXECUTION
+    assert "set_error" in result.evidence
+    assert result.evidence.get("set_accepted") is not True
+
+
+async def test_set_and_observe_skip_read_only():
+    """allow_writes=False -> SKIP via _write_gate; set_op never called."""
+    from rigplane.validation.hardware import _check_from_spec
+
+    radio = MagicMock(spec=Radio)
+    radio.connected = True
+    radio.model = "X6200"
+    radio.capabilities = {"xit"}
+    radio.set_rit_tx_status = AsyncMock(return_value=None)
+
+    entry = CapabilityDeclarationEntry(
+        check_id="xit.set",
+        capability="xit",
+        level=ValidationLevel.CAPABILITY_MATRIX,
+        declaration=CapabilityDeclaration.SUPPORTED,
+        summary="write only xit skip",
+    )
+    spec = CheckSpec(
+        check_id="xit.set",
+        capability="xit",
+        kind=CheckKind.WRITE_ONLY_OBSERVE,
+        level=ValidationLevel.CAPABILITY_MATRIX,
+        failure_domain=FailureDomain.READBACK,
+        summary="write only xit skip",
+        set_op="set_rit_tx_status",
+        value_rule=ValueRule.TOGGLE_BOOL,
+    )
+    result = await _check_from_spec(
+        radio, entry, spec, allow_writes=False, per_check_timeout=5.0
+    )
+    assert result.status is CheckStatus.SKIP
+    radio.set_rit_tx_status.assert_not_called()
+
+
+async def test_set_and_observe_unsupported_capability_absent():
+    """Capability absent -> UNSUPPORTED via _write_gate; set_op never called."""
+    from rigplane.validation.hardware import _check_from_spec
+
+    radio = MagicMock(spec=Radio)
+    radio.connected = True
+    radio.model = "X6200"
+    radio.capabilities = set()
+    radio.set_rit_tx_status = AsyncMock(return_value=None)
+
+    entry = CapabilityDeclarationEntry(
+        check_id="xit.set",
+        capability="xit",
+        level=ValidationLevel.CAPABILITY_MATRIX,
+        declaration=CapabilityDeclaration.SUPPORTED,
+        summary="write only xit cap absent",
+    )
+    spec = CheckSpec(
+        check_id="xit.set",
+        capability="xit",
+        kind=CheckKind.WRITE_ONLY_OBSERVE,
+        level=ValidationLevel.CAPABILITY_MATRIX,
+        failure_domain=FailureDomain.READBACK,
+        summary="write only xit cap absent",
+        set_op="set_rit_tx_status",
+        value_rule=ValueRule.TOGGLE_BOOL,
+    )
+    result = await _check_from_spec(
+        radio, entry, spec, allow_writes=True, per_check_timeout=5.0
+    )
+    assert result.status is CheckStatus.UNSUPPORTED
+    radio.set_rit_tx_status.assert_not_called()
+
+
+async def test_set_and_observe_unsupported_no_set_op():
+    """Capability present but radio lacks set_op attribute -> UNSUPPORTED."""
+    from rigplane.validation.hardware import _check_from_spec
+
+    radio = MagicMock(spec=Radio)
+    radio.connected = True
+    radio.model = "X6200"
+    radio.capabilities = {"xit"}
+    # Deliberately omit set_rit_tx_status so getattr falls back to None/missing.
+    del radio.set_rit_tx_status
+
+    entry = CapabilityDeclarationEntry(
+        check_id="xit.set",
+        capability="xit",
+        level=ValidationLevel.CAPABILITY_MATRIX,
+        declaration=CapabilityDeclaration.SUPPORTED,
+        summary="write only no set op",
+    )
+    spec = CheckSpec(
+        check_id="xit.set",
+        capability="xit",
+        kind=CheckKind.WRITE_ONLY_OBSERVE,
+        level=ValidationLevel.CAPABILITY_MATRIX,
+        failure_domain=FailureDomain.READBACK,
+        summary="write only no set op",
+        set_op="set_rit_tx_status",
+        value_rule=ValueRule.TOGGLE_BOOL,
+    )
+    result = await _check_from_spec(
+        radio, entry, spec, allow_writes=True, per_check_timeout=5.0
+    )
+    assert result.status is CheckStatus.UNSUPPORTED
+    assert "set_rit_tx_status" in str(result.evidence.get("reason", ""))
+
+
+async def test_set_and_observe_no_restore_default():
+    """STEP_LEVEL_255 has no benign restore default -> PASS, set called once."""
     from rigplane.validation.hardware import _check_from_spec
 
     radio = MagicMock(spec=Radio)
     radio.connected = True
     radio.model = "X6200"
     radio.capabilities = {"squelch"}
+    radio.set_squelch = AsyncMock(return_value=None)
+
     entry = CapabilityDeclarationEntry(
         check_id="squelch.set",
         capability="squelch",
         level=ValidationLevel.CAPABILITY_MATRIX,
         declaration=CapabilityDeclaration.SUPPORTED,
-        summary="write only observe stub",
+        summary="write only squelch no restore",
     )
     spec = CheckSpec(
         check_id="squelch.set",
@@ -664,13 +888,56 @@ async def test_generic_write_only_observe_unsupported():
         kind=CheckKind.WRITE_ONLY_OBSERVE,
         level=ValidationLevel.CAPABILITY_MATRIX,
         failure_domain=FailureDomain.READBACK,
-        summary="write only observe stub",
+        summary="write only squelch no restore",
+        set_op="set_squelch",
+        value_rule=ValueRule.STEP_LEVEL_255,
     )
     result = await _check_from_spec(
         radio, entry, spec, allow_writes=True, per_check_timeout=5.0
     )
-    assert result.status is CheckStatus.UNSUPPORTED
-    assert "MOR-180" in str(result.evidence.get("reason", ""))
+    assert result.status is CheckStatus.PASS
+    assert result.evidence["restored"] is False
+    assert "restore_skipped" in result.evidence
+    radio.set_squelch.assert_called_once()
+
+
+async def test_set_and_observe_restore_error_swallowed():
+    """Restore raises RigTimeoutError -> still PASS, evidence records restore_error."""
+    from rigplane.core.exceptions import TimeoutError as RigTimeoutError
+    from rigplane.validation.hardware import _check_from_spec
+
+    radio = MagicMock(spec=Radio)
+    radio.connected = True
+    radio.model = "X6200"
+    radio.capabilities = {"xit"}
+    radio.set_rit_tx_status = AsyncMock(
+        side_effect=[None, RigTimeoutError("restore timed out")]
+    )
+
+    entry = CapabilityDeclarationEntry(
+        check_id="xit.set",
+        capability="xit",
+        level=ValidationLevel.CAPABILITY_MATRIX,
+        declaration=CapabilityDeclaration.SUPPORTED,
+        summary="write only xit restore error",
+    )
+    spec = CheckSpec(
+        check_id="xit.set",
+        capability="xit",
+        kind=CheckKind.WRITE_ONLY_OBSERVE,
+        level=ValidationLevel.CAPABILITY_MATRIX,
+        failure_domain=FailureDomain.READBACK,
+        summary="write only xit restore error",
+        set_op="set_rit_tx_status",
+        value_rule=ValueRule.TOGGLE_BOOL,
+    )
+    result = await _check_from_spec(
+        radio, entry, spec, allow_writes=True, per_check_timeout=5.0
+    )
+    assert result.status is CheckStatus.PASS
+    assert result.evidence["set_accepted"] is True
+    assert result.evidence["restored"] is False
+    assert "restore_error" in result.evidence
 
 
 async def test_generic_mode_cycle_unsupported():
