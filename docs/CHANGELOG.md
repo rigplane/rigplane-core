@@ -11,6 +11,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.7.2] — 2026-05-30
+
+### Fixed
+
+- Desktop RX audio: resume the `AudioContext` from the LIVE user-gesture so streamed RX audio plays under WKWebView/autoplay-restricted contexts, and recover from suspended-context frame drops instead of silently dropping them (MOR-239, #1694, 921f4c88)
+- Audio scope: dispatch audio-FFT frames to `/api/v1/audio-scope` for radios without a hardware scope (e.g. Xiegu X6200), fixing the blank AUDIO SCOPE panel; hardware-scope radios (IC-7610) are unchanged (MOR-241, #1695, 4e98ab0d)
+- Serial USB-audio TX: arm the PCM TX path in the shared serial Icom base so bridge TX reaches the radio (IC-705/IC-7300/IC-9700/X6200) instead of raising "PCM TX not started" per frame; the audio bridge now degrades to RX-only on TX failure instead of spamming (MOR-242, #1696, 37fe3d0a)
+
 ## [2.7.1] — 2026-05-29
 
 ### Fixed
@@ -1535,7 +1543,8 @@ These deprecation closures were announced in v0.19 and dropped on schedule.
 - Transport layer, authentication, CI-V commands, meters, PTT, keep-alive.
 - Clean-room Icom LAN UDP protocol implementation.
 
-[Unreleased]: https://github.com/rigplane/rigplane-core/compare/v2.7.1...HEAD
+[Unreleased]: https://github.com/rigplane/rigplane-core/compare/v2.7.2...HEAD
+[2.7.2]: https://github.com/rigplane/rigplane-core/compare/v2.7.1...v2.7.2
 [2.7.1]: https://github.com/rigplane/rigplane-core/compare/v2.7.0...v2.7.1
 [2.7.0]: https://github.com/rigplane/rigplane-core/compare/v2.6.0...v2.7.0
 [2.6.0]: https://github.com/rigplane/rigplane-core/compare/v2.5.1...v2.6.0
