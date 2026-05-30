@@ -454,7 +454,38 @@ class _IcomSerialRadioBase(CoreRadio):
         await self._serial_audio_driver.stop_rx()
 
     # ------------------------------------------------------------------
-    # Audio TX
+    # Audio TX (Opus)
+    # ------------------------------------------------------------------
+
+    async def start_audio_tx_opus(self) -> None:
+        self._check_connected()
+        await self._serial_audio_driver.start_tx(
+            sample_rate=self.audio_sample_rate,
+            channels=self._serial_audio_channels_for_codec(),
+            frame_ms=20,
+        )
+
+    async def push_audio_tx_opus(self, opus_data: bytes) -> None:
+        self._check_connected()
+        if not self._serial_audio_driver.tx_running:
+            raise RuntimeError("Audio TX not started")
+        payload = bytes(opus_data)
+        if self._serial_codec_is_opus():
+            transcoder = self._get_pcm_transcoder(
+                sample_rate=self.audio_sample_rate,
+                channels=self._serial_audio_channels_for_codec(),
+                frame_ms=20,
+            )
+            payload = transcoder.opus_to_pcm(payload)
+        await self._serial_audio_driver._push_tx_pcm(payload)
+
+    async def stop_audio_tx_opus(self) -> None:
+        await self._serial_audio_driver.stop_tx()
+        self._pcm_tx_fmt = None
+
+    # ------------------------------------------------------------------
+    # Audio TX (PCM) — arms ``_pcm_tx_fmt`` so ``push_audio_tx_pcm`` works
+    # over the serial USB CODEC path (MOR-242).
     # ------------------------------------------------------------------
 
     async def start_audio_tx_pcm(
@@ -485,15 +516,51 @@ class _IcomSerialRadioBase(CoreRadio):
                 "sample_rate * frame_ms must produce an integer frame size."
             )
 
+        # Icom USB CODEC mic input is mono-only by hardware; the LAN path
+        # enforces this by forcing txcodec to a mono value in _send_conninfo
+        # (issue #794).  For the serial path we clamp channels to 1 here so
+        # that PortAudio always opens the USB CODEC as a mono output stream.
+        # Opening with channels=2 causes the radio ALC to behave erratically
+        # for the first 5-10 seconds of TX (GH#1382 regression; consistent with
+        # the MOR-238 RX clamp).
+        tx_channels = 1
+
         self._check_connected()
         await self._serial_audio_driver.start_tx(
             sample_rate=sample_rate,
-            channels=channels,
+            channels=tx_channels,
             frame_ms=frame_ms,
         )
+        self._pcm_tx_fmt = (sample_rate, tx_channels, frame_ms)
+
+    async def push_audio_tx_pcm(
+        self,
+        pcm_bytes: bytes | bytearray | memoryview,
+    ) -> None:
+        self._check_connected()
+        if self._pcm_tx_fmt is None:
+            raise RuntimeError(
+                "PCM TX not started; call start_audio_tx_pcm() before push_audio_tx_pcm()."
+            )
+        if not isinstance(pcm_bytes, (bytes, bytearray, memoryview)):
+            raise AudioFormatError("PCM input must be bytes-like.")
+        sample_rate, channels, frame_ms = self._pcm_tx_fmt
+        if (sample_rate * frame_ms) % 1000 != 0:
+            raise AudioFormatError(
+                "sample_rate * frame_ms must produce an integer frame size."
+            )
+        frame_samples = (sample_rate * frame_ms) // 1000
+        expected = frame_samples * channels * 2
+        frame = bytes(pcm_bytes)
+        if len(frame) != expected:
+            raise AudioFormatError(
+                f"PCM frame size mismatch: expected {expected} bytes "
+                f"({frame_ms}ms at {sample_rate}Hz, {channels}ch s16le), got {len(frame)}."
+            )
+        await self._serial_audio_driver._push_tx_pcm(frame)
 
     async def stop_audio_tx_pcm(self) -> None:
-        await self._serial_audio_driver.stop_tx()
+        await self.stop_audio_tx_opus()
 
     async def _push_pcm_tx(self, frame: bytes) -> None:
         if not isinstance(frame, bytes):
@@ -613,8 +680,17 @@ class _IcomSerialRadioBase(CoreRadio):
     # ------------------------------------------------------------------
 
     async def _stop_serial_audio_driver(self) -> None:
-        await self._serial_audio_driver.stop_rx()
-        await self._serial_audio_driver.stop_tx()
+        self._pcm_tx_fmt = None
+        self._pcm_rx_user_callback = None
+        self._opus_rx_user_callback = None
+        try:
+            await self._serial_audio_driver.stop_tx()
+        except Exception:
+            logger.debug("serial-audio: failed to stop TX path", exc_info=True)
+        try:
+            await self._serial_audio_driver.stop_rx()
+        except Exception:
+            logger.debug("serial-audio: failed to stop RX path", exc_info=True)
 
     def _ensure_scope_baud_guardrail(self) -> None:
         if self._serial_baudrate >= _SERIAL_SCOPE_MIN_BAUD:
