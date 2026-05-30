@@ -478,11 +478,25 @@ class AudioBridge:
 
         # --- TX path: virtual device input → radio ---
         if self._tx_enabled:
-            await self._radio.start_audio_tx_pcm(
-                sample_rate=self._sample_rate,
-                channels=self._channels,
-                frame_ms=self._frame_ms,
-            )
+            try:
+                await self._radio.start_audio_tx_pcm(
+                    sample_rate=self._sample_rate,
+                    channels=self._channels,
+                    frame_ms=self._frame_ms,
+                )
+            except (RuntimeError, NotImplementedError) as exc:
+                # The radio cannot arm a PCM TX stream (e.g. a serial backend
+                # that never set up its USB-audio TX path). Degrade to RX-only
+                # instead of spinning a _tx_loop that would reject — and log —
+                # every captured frame (MOR-242).
+                self._tx_enabled = False
+                self._tx_started = False
+                logger.warning(
+                    "%s: radio rejected TX start (%s); running RX-only",
+                    self._label,
+                    exc,
+                )
+                return
             self._tx_started = True
 
             tx_dev_id = dev_id
@@ -829,6 +843,17 @@ class AudioBridge:
 
                 try:
                     await self._radio.push_audio_tx_pcm(pcm_bytes)
+                except (RuntimeError, NotImplementedError) as exc:
+                    # The radio cannot accept PCM TX frames (TX path not armed).
+                    # Degrade to RX-only and stop the loop instead of rejecting
+                    # — and logging — every captured frame (MOR-242).
+                    self._tx_enabled = False
+                    logger.warning(
+                        "%s: radio rejected TX frame (%s); switching to RX-only",
+                        self._label,
+                        exc,
+                    )
+                    return
                 except Exception:
                     if self._tx_frames <= 5:
                         logger.warning("%s: TX push error", self._label, exc_info=True)
