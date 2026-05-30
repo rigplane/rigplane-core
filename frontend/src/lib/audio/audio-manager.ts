@@ -228,6 +228,10 @@ class AudioManager {
       setAudioConnected(true);
       console.log('[audio-ws] connected');
       if (this._rxEnabled) {
+        // Idempotent resume nudge: if the AudioContext re-entered
+        // 'suspended' while the WS was down (WKWebView backgrounding), wake
+        // it as we resubscribe so streamed frames are not dropped.
+        this.rxPlayer.start();
         ws.send(JSON.stringify({
           type: 'audio_start',
           direction: 'rx',

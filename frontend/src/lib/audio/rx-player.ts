@@ -51,6 +51,12 @@ export class RxPlayer {
   private _floorSec = 0.05;
   private _ceilingSec = 0.30;
 
+  // Count of frames dropped because the context was suspended (autoplay
+  // policy). Surfaced via console.warn so a silent no-audio state is
+  // observable instead of invisible. Reset once the context resumes.
+  private _droppedSuspendedFrames = 0;
+  private _resumeListenersAttached = false;
+
   get volume(): number {
     return this._volume;
   }
@@ -104,9 +110,18 @@ export class RxPlayer {
     return this.ctx !== null && this.ctx.state !== 'closed';
   }
 
+  /** Start (or resume) playback.
+   *
+   * MUST be called synchronously from a user-gesture handler (e.g. the LIVE
+   * button click): WKWebView / mobile-Safari autoplay policy only honours
+   * ``AudioContext.resume()`` when it runs inside the gesture's call stack.
+   * Calling again on an existing context is a cheap idempotent resume — the
+   * AudioManager re-invokes start() on ``audio_start`` and reconnect to keep
+   * nudging a context that re-entered ``suspended``.
+   */
   start(): void {
     if (this.ctx) {
-      if (this.ctx.state === 'suspended') this.ctx.resume();
+      this._resume();
       return;
     }
     const Ctx = globalThis.AudioContext ?? (globalThis as any).webkitAudioContext;
@@ -129,9 +144,8 @@ export class RxPlayer {
     this.subPanner.connect(this.ctx.destination);
     this._applyGraphState();
     this.nextPlayTime = 0;
-    if (this.ctx.state === 'suspended') {
-      this.ctx.resume().catch(() => {});
-    }
+    this._attachResumeListeners();
+    this._resume();
   }
 
   stop(): void {
@@ -139,6 +153,7 @@ export class RxPlayer {
       try { this.decoder.close(); } catch { /* ok */ }
       this.decoder = null;
     }
+    this._detachResumeListeners();
     if (this.ctx) {
       this.ctx.close().catch(() => {});
       this.ctx = null;
@@ -151,6 +166,66 @@ export class RxPlayer {
     }
     this.nextPlayTime = 0;
     this.opusTs = 0;
+    this._droppedSuspendedFrames = 0;
+  }
+
+  /** Best-effort resume of a suspended context. Safe to call repeatedly. */
+  private _resume(): void {
+    if (this.ctx && this.ctx.state === 'suspended') {
+      this.ctx.resume().catch(() => {});
+    }
+  }
+
+  /** Resume-on-regain-focus handler: WKWebView re-suspends an AudioContext
+   *  when the webview is backgrounded; resume it when we come back. Bound as
+   *  an arrow property so add/removeEventListener see a stable reference. */
+  private _onResumeEvent = (): void => {
+    this._resume();
+  };
+
+  private _attachResumeListeners(): void {
+    if (this._resumeListenersAttached) return;
+    if (typeof document !== 'undefined') {
+      document.addEventListener('visibilitychange', this._onResumeEvent);
+    }
+    if (typeof window !== 'undefined') {
+      window.addEventListener('focus', this._onResumeEvent);
+    }
+    this._resumeListenersAttached = true;
+  }
+
+  private _detachResumeListeners(): void {
+    if (!this._resumeListenersAttached) return;
+    if (typeof document !== 'undefined') {
+      document.removeEventListener('visibilitychange', this._onResumeEvent);
+    }
+    if (typeof window !== 'undefined') {
+      window.removeEventListener('focus', this._onResumeEvent);
+    }
+    this._resumeListenersAttached = false;
+  }
+
+  /** Returns true when frames can be scheduled (context running). When the
+   *  context is suspended this re-attempts resume() and warns — rather than
+   *  silently dropping every frame, which previously made a stuck-suspended
+   *  context (no sound, blank scope) impossible to diagnose. */
+  private _ensureRunning(): boolean {
+    if (!this.ctx) return false;
+    if (this.ctx.state === 'running') {
+      this._droppedSuspendedFrames = 0;
+      return true;
+    }
+    if (this.ctx.state === 'suspended') {
+      this._resume();
+      this._droppedSuspendedFrames++;
+      if (this._droppedSuspendedFrames <= 3 || this._droppedSuspendedFrames % 200 === 0) {
+        console.warn(
+          `RxPlayer: AudioContext suspended — dropped ${this._droppedSuspendedFrames} ` +
+          `frame(s), retrying resume(). Audio needs a user gesture (click LIVE).`,
+        );
+      }
+    }
+    return false;
   }
 
   /** Feed a raw binary frame from WS */
@@ -174,7 +249,7 @@ export class RxPlayer {
 
   private playPcm16(payload: Uint8Array, sr: number, ch: number): void {
     if (!this.ctx || !this.preGain) return;
-    if (this.ctx.state === 'suspended') return;
+    if (!this._ensureRunning()) return;
     const channels = ch === 2 ? 2 : 1;
     const frameCount = Math.floor(payload.byteLength / (2 * channels));
     if (frameCount <= 0) return;
@@ -194,7 +269,7 @@ export class RxPlayer {
 
   private decodeOpus(payload: Uint8Array, sr: number, ch: number): void {
     if (!this.ctx || !this.preGain) return;
-    if (this.ctx.state === 'suspended') return;
+    if (!this._ensureRunning()) return;
     if (typeof AudioDecoder === 'undefined') return;
 
     if (!this.decoder) {

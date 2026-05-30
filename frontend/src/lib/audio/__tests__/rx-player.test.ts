@@ -248,3 +248,79 @@ describe('RxPlayer jitter bounds (#1363)', () => {
     p.stop();
   });
 });
+
+describe('RxPlayer suspended-context recovery (MOR-239)', () => {
+  it('start() resumes a context that is created suspended (WKWebView autoplay)', () => {
+    ctx.state = 'suspended';
+    const p = new RxPlayer();
+    p.start();
+    expect(ctx.resume).toHaveBeenCalled();
+    p.stop();
+  });
+
+  it('drops the frame while suspended but re-attempts resume and warns (not silent)', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    ctx.state = 'suspended';
+    const p = new RxPlayer();
+    p.start();
+    ctx.resume.mockClear();
+
+    p.feed(pcm16(480));
+
+    // Frame can't play on a suspended ctx, but instead of a silent return
+    // we re-attempt resume() and surface a warning so it's observable.
+    expect(ctx.createBufferSource).not.toHaveBeenCalled();
+    expect(ctx.resume).toHaveBeenCalled();
+    expect(warn).toHaveBeenCalled();
+    p.stop();
+    warn.mockRestore();
+  });
+
+  it('plays frames once the context has resumed to running', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    ctx.state = 'suspended';
+    const p = new RxPlayer();
+    p.start();
+    p.feed(pcm16(480));           // dropped — suspended
+    expect(ctx._lastSrc).toBeNull();
+
+    ctx.state = 'running';        // resume() honoured by the gesture
+    p.feed(pcm16(480));           // now audible
+    expect(ctx.createBufferSource).toHaveBeenCalled();
+    expect(ctx._lastSrc.start).toHaveBeenCalled();
+    p.stop();
+    warn.mockRestore();
+  });
+
+  it('re-attempts resume on focus/visibility regain (WKWebView re-suspend)', () => {
+    ctx.state = 'suspended';
+    const p = new RxPlayer();
+    p.start();
+    ctx.resume.mockClear();
+    window.dispatchEvent(new Event('focus'));
+    expect(ctx.resume).toHaveBeenCalled();
+    p.stop();
+    // After stop the listener must be gone — no further resume calls.
+    ctx.resume.mockClear();
+    window.dispatchEvent(new Event('focus'));
+    expect(ctx.resume).not.toHaveBeenCalled();
+  });
+});
+
+describe('RxPlayer mono routing (MOR-239)', () => {
+  it('routes a mono (1-ch) PCM16 buffer to the audible MAIN channel', () => {
+    const p = new RxPlayer();
+    p.start();                    // default focus='both' → MAIN gain audible
+    p.feed(pcm16(480));           // header marks 1 channel
+
+    // Mono buffer allocated as 1 channel...
+    expect(ctx.createBuffer).toHaveBeenCalledWith(1, 480, SAMPLE_RATE);
+    // ...fed into preGain (→ splitter[0] → mainGain → mainPanner → destination).
+    const [preGain, mainGain] = ctx._gains;
+    expect(ctx._lastSrc.connect).toHaveBeenCalledWith(preGain);
+    // MAIN channel must carry audible gain so mono lands on an output, not
+    // only on the silenced SUB (channel 1) of the splitter.
+    expect(mainGain.gain.value).toBeGreaterThan(0);
+    p.stop();
+  });
+});
