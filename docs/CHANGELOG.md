@@ -11,6 +11,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.7.1] — 2026-05-29
+
+### Fixed
+- USB audio now clamps the requested channel count to the device's real
+  capability (`input_channels` for RX, `output_channels` for TX) at stream
+  open, mirroring the existing sample-rate negotiation. Any mono USB codec
+  self-heals instead of failing the global stereo default with PortAudio
+  `-9998` ("Invalid number of channels") and starving the stream; the Xiegu
+  X6200 mono RX path no longer depends on its profile `codec_preference`
+  entry (verified on hardware). The effective channel count and its source
+  are recorded on the stream contract for diagnostics (#1692).
+
 ## [2.7.0] — 2026-05-29
 
 ### Added
@@ -1523,7 +1535,8 @@ These deprecation closures were announced in v0.19 and dropped on schedule.
 - Transport layer, authentication, CI-V commands, meters, PTT, keep-alive.
 - Clean-room Icom LAN UDP protocol implementation.
 
-[Unreleased]: https://github.com/rigplane/rigplane-core/compare/v2.7.0...HEAD
+[Unreleased]: https://github.com/rigplane/rigplane-core/compare/v2.7.1...HEAD
+[2.7.1]: https://github.com/rigplane/rigplane-core/compare/v2.7.0...v2.7.1
 [2.7.0]: https://github.com/rigplane/rigplane-core/compare/v2.6.0...v2.7.0
 [2.6.0]: https://github.com/rigplane/rigplane-core/compare/v2.5.1...v2.6.0
 [2.5.1]: https://github.com/rigplane/rigplane-core/compare/v2.5.0...v2.5.1
