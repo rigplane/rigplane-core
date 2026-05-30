@@ -413,10 +413,12 @@ class WebServer:
         _has_scope = (CAP_SCOPE in radio.capabilities) if radio is not None else False
         if radio is not None and _has_audio:
             self._audio_fft_scope = AudioFftScope(fft_size=2048, fps=20, avg_count=2)
-            self._audio_fft_scope.on_frame(self._broadcast_audio_scope)
+            # AudioFftScope.on_frame() is a single-slot setter: register one
+            # dispatch method that fans out to BOTH broadcasters. Registering
+            # twice would clobber the first callback (MOR-241).
+            self._audio_fft_scope.on_frame(self._dispatch_audio_fft_frame)
             if not _has_scope:
-                # No hardware scope — audio FFT also feeds /api/v1/scope
-                self._audio_fft_scope.on_frame(self._broadcast_scope)
+                # No hardware scope — audio FFT also feeds /api/v1/scope.
                 self._audio_broadcaster.set_pcm_tap(self._audio_fft_scope.feed_audio)
             logger.info(
                 "Audio FFT scope available (has_audio=%s, has_hw_scope=%s)",
@@ -608,6 +610,24 @@ class WebServer:
             )
             if self._radio is not None:
                 self._set_scope_data_callback(self._broadcast_scope)
+
+    def _dispatch_audio_fft_frame(self, frame: Any) -> None:
+        """Fan out an audio FFT frame to the relevant scope channels.
+
+        Single registered callback for :class:`AudioFftScope` (whose
+        ``on_frame`` is a single-slot setter). Always feeds the dedicated
+        ``/api/v1/audio-scope`` channel. For radios WITHOUT a hardware scope
+        the same frame also drives ``/api/v1/scope`` (the main panadapter),
+        since those radios derive their spectrum from RX audio. Hardware-scope
+        radios (e.g. IC-7610) keep ``/api/v1/scope`` sourced exclusively from
+        the real scope, so the audio FFT never touches it (MOR-241).
+        """
+        self._broadcast_audio_scope(frame)
+        _has_scope = (
+            CAP_SCOPE in self._radio.capabilities if self._radio is not None else False
+        )
+        if not _has_scope:
+            self._broadcast_scope(frame)
 
     def _broadcast_scope(self, frame: Any) -> None:
         """Broadcast scope frame to all registered handlers.
