@@ -10,7 +10,6 @@ opening RX/TX audio streams, plus two concrete implementations:
 
 from __future__ import annotations
 
-import asyncio
 import logging
 import math
 import threading
@@ -228,7 +227,29 @@ def _ensure_portaudio_deps() -> tuple[Any, Any]:
 
 
 class _PortAudioRxStream:
-    """RxStream backed by a sounddevice InputStream."""
+    """RxStream backed by a callback-driven sounddevice InputStream.
+
+    Capture is clocked by PortAudio's own audio thread via an ``InputStream``
+    callback, mirroring the callback design of :class:`_PortAudioTxStream`.
+    This replaces the previous fixed-``blocksize=960`` blocking-read loop
+    (``stream.read(960)`` on a worker thread), whose 20 ms read straddled the
+    WASAPI shared-mode engine period (~10 ms) and dropped/duplicated a sample
+    run once per block, producing a ~50 Hz spectral comb on captured TX audio
+    on Windows. The stream is opened with ``blocksize=0`` (engine-native
+    period), mirroring a known-clean ``sd.rec`` capture. The earlier WDM-KS
+    capture face rejected ``blocksize=0`` (PortAudioError -9999), but companion
+    device selection now forces the WASAPI host-API face, on which
+    ``blocksize=0`` opens cleanly.
+
+    The PortAudio callback runs on the audio thread and must not block. It
+    copies the captured PCM (s16le) and hands it straight to the consumer
+    *callback*. Each callback delivers a device-natural, variable-size block;
+    it is forwarded verbatim so no new fixed-size re-framing seam (which would
+    re-introduce a discontinuity) is added. The consumer contract (see
+    :class:`RxStream`) is that the callback is cheap and thread-safe to invoke
+    from the audio thread; the companion bridge marshals onto its event loop
+    via ``call_soon_threadsafe``.
+    """
 
     def __init__(
         self,
@@ -242,19 +263,25 @@ class _PortAudioRxStream:
         self._device_index = device_index
         self._sample_rate = sample_rate
         self._channels = channels
+        # Capture is callback-driven with blocksize=0 (engine-native period),
+        # mirroring a clean sd.rec. blocksize=0 was previously rejected by the
+        # WDM-KS capture face (PortAudioError -9999), but companion device
+        # selection now forces the WASAPI face, on which blocksize=0 opens.
         self._blocksize = blocksize
         self._stream: Any = None
-        self._task: asyncio.Task[None] | None = None
+        self._running = False
         self._callback: Callable[[bytes], None] | None = None
 
     @property
     def running(self) -> bool:
-        return self._task is not None and not self._task.done()
+        return self._running
 
     async def start(self, callback: Callable[[bytes], None]) -> None:
         if self.running:
             raise RuntimeError("RX stream already running.")
         self._callback = callback
+        # blocksize=0 (engine-native period) mirrors a clean sd.rec on the
+        # WASAPI face. latency="low" matches the (clean) output stream.
         self._stream = self._sd.InputStream(
             samplerate=self._sample_rate,
             channels=self._channels,
@@ -262,17 +289,16 @@ class _PortAudioRxStream:
             device=self._device_index,
             blocksize=self._blocksize,
             latency="low",
+            callback=self._input_callback,
         )
         self._stream.start()
-        self._task = asyncio.create_task(self._loop(), name="portaudio-rx")
+        self._running = True
 
     async def stop(self) -> None:
         stream = self._stream
-        task = self._task
         self._stream = None
-        self._task = None
+        self._running = False
         self._callback = None
-        # Close stream FIRST — unblocks executor thread stuck in stream.read()
         if stream is not None:
             try:
                 stream.stop()
@@ -282,30 +308,34 @@ class _PortAudioRxStream:
                 stream.close()
             except Exception:
                 logger.debug("portaudio-rx: stream close failed", exc_info=True)
-        # Now cancel the task (thread is already unblocked)
-        if task is not None and not task.done():
-            task.cancel()
-            try:
-                await task
-            except asyncio.CancelledError:
-                pass
 
-    async def _loop(self) -> None:
-        stream = self._stream
+    def _input_callback(
+        self,
+        indata: Any,
+        _frames: int,
+        _time_info: Any,
+        _status: Any,
+    ) -> None:
+        # Runs on PortAudio's audio thread: keep it non-blocking. Copy the
+        # captured PCM out of the (reused) input buffer and deliver it to the
+        # consumer verbatim — no re-chunking, so no new discontinuity. The
+        # consumer is contractually cheap/thread-safe.
+        cb = self._callback
+        if cb is None:
+            return
         try:
-            while True:
-                data, _overflowed = await asyncio.to_thread(
-                    stream.read, self._blocksize
-                )
-                cb = self._callback
-                if cb is None:
-                    continue
-                pcm = bytes(data.tobytes()) if hasattr(data, "tobytes") else bytes(data)
-                cb(pcm)
-        except asyncio.CancelledError:
-            pass
+            pcm = (
+                bytes(indata.tobytes()) if hasattr(indata, "tobytes") else bytes(indata)
+            )
         except Exception:
-            logger.warning("portaudio-rx: loop failed", exc_info=True)
+            logger.warning("portaudio-rx: capture copy failed", exc_info=True)
+            return
+        if not pcm:
+            return
+        try:
+            cb(pcm)
+        except Exception:
+            logger.warning("portaudio-rx: consumer callback failed", exc_info=True)
 
 
 class _PortAudioTxStream:
@@ -795,13 +825,17 @@ class PortAudioBackend:
         frame_ms: int = 20,
     ) -> RxStream:
         sd, _ = self._ensure_deps()
-        blocksize = (sample_rate * frame_ms) // 1000
+        # blocksize=0 lets PortAudio use the engine-native period, mirroring a
+        # clean ``sd.rec`` capture. This is safe now that companion device
+        # selection forces the WASAPI host-API face (the WDM-KS face that
+        # rejected blocksize=0 with PortAudioError -9999 is no longer chosen).
+        del frame_ms  # capture period is engine-native (blocksize=0)
         return _PortAudioRxStream(
             sd,
             device_index=int(device),
             sample_rate=sample_rate,
             channels=channels,
-            blocksize=blocksize,
+            blocksize=0,
         )
 
     def open_tx(

@@ -368,6 +368,138 @@ class TestPortAudioBackendDeps:
         stream = backend.open_rx(AudioDeviceId(0))
         assert isinstance(stream, RxStream)
 
+    @pytest.mark.asyncio()
+    async def test_open_rx_opens_callback_driven_blocksize_zero(self) -> None:
+        """Capture must be callback-driven with blocksize=0 (engine-native).
+
+        Regression guard against the ~50 Hz TX "comb": the old implementation
+        read on a fixed-``blocksize=960`` blocking loop (``stream.read(960)`` in
+        ``asyncio.to_thread``), which straddled the WASAPI shared-mode engine
+        period and dropped/duplicated a sample run once per 20 ms block. The
+        stream must now register a ``callback=`` rather than reading, and open
+        with ``blocksize=0`` (engine-native period), mirroring a clean
+        ``sd.rec``. Companion device selection forces the WASAPI face on which
+        ``blocksize=0`` opens (the WDM-KS face that rejected ``blocksize=0`` with
+        PortAudioError -9999 is no longer chosen).
+        """
+        created: list[dict[str, object]] = []
+
+        class FakeSd:
+            class InputStream:
+                def __init__(self, **kw: object) -> None:
+                    created.append(kw)
+                    self.started = False
+                    self.stopped = False
+                    self.closed = False
+
+                def start(self) -> None:
+                    self.started = True
+
+                def stop(self) -> None:
+                    self.stopped = True
+
+                def close(self) -> None:
+                    self.closed = True
+
+                def read(self, _frames: int) -> object:  # pragma: no cover
+                    raise AssertionError("capture must not use blocking read()")
+
+        backend = PortAudioBackend(dependency_loader=lambda: (FakeSd(), object()))
+        # frame_ms is advisory only now: the capture period is engine-native.
+        stream = backend.open_rx(
+            AudioDeviceId(0), sample_rate=48_000, channels=1, frame_ms=20
+        )
+        assert isinstance(stream, RxStream)
+
+        await stream.start(lambda _pcm: None)
+        assert stream.running
+
+        assert len(created) == 1
+        kwargs = created[0]
+        assert kwargs["blocksize"] == 0
+        assert callable(kwargs["callback"])
+        assert kwargs["samplerate"] == 48_000
+        assert kwargs["channels"] == 1
+        assert kwargs["dtype"] == "int16"
+        # device is passed as the integer index, unchanged.
+        assert kwargs["device"] == 0
+
+        await stream.stop()
+        assert not stream.running
+
+    @pytest.mark.asyncio()
+    async def test_open_rx_callback_delivers_all_samples_in_order(self) -> None:
+        """Anti-comb invariant: the variable-size callback blocks reach the
+        consumer with every sample, in order, with no loss or duplication.
+
+        The PortAudio callback delivers device-natural blocks whose frame count
+        may vary (480, then a short/long block, etc.). The capture path must not
+        re-chunk these onto a new fixed-size seam, drop, or reorder them: the
+        concatenation of what the consumer receives must equal the concatenation
+        of what PortAudio handed in. That byte-contiguity is exactly what was
+        broken by the old fixed-blocksize blocking read.
+        """
+
+        class FakeIndata:
+            def __init__(self, payload: bytes) -> None:
+                self._payload = payload
+
+            def tobytes(self) -> bytes:
+                return self._payload
+
+        captured_cb: dict[str, object] = {}
+
+        class FakeSd:
+            class InputStream:
+                def __init__(self, **kw: object) -> None:
+                    captured_cb["cb"] = kw["callback"]
+
+                def start(self) -> None:
+                    pass
+
+                def stop(self) -> None:
+                    pass
+
+                def close(self) -> None:
+                    pass
+
+        backend = PortAudioBackend(dependency_loader=lambda: (FakeSd(), object()))
+        stream = backend.open_rx(AudioDeviceId(0))
+
+        received: list[bytes] = []
+        await stream.start(received.append)
+
+        cb = captured_cb["cb"]
+        assert callable(cb)
+
+        # A reference s16le mono stream split into VARIABLE-size callback blocks
+        # (frame counts 4, 1, 7, 2, 6 -> 2 bytes/frame each). Feeding these
+        # through the callback must reproduce the reference byte-for-byte.
+        import struct
+
+        reference = b"".join(struct.pack("<h", v) for v in range(20))
+        frame_splits = (4, 1, 7, 2, 6)  # sums to 20 frames
+        offset = 0
+        for n_frames in frame_splits:
+            chunk = reference[offset : offset + n_frames * 2]
+            offset += n_frames * 2
+            cb(FakeIndata(chunk), n_frames, None, None)  # type: ignore[operator]
+
+        assert b"".join(received) == reference  # all samples, in order, no dup
+        assert received == [
+            reference[0:8],
+            reference[8:10],
+            reference[10:24],
+            reference[24:28],
+            reference[28:40],
+        ]
+
+        await stream.stop()
+        # After stop the consumer is detached: a late callback is a no-op (the
+        # audio thread may fire once more during teardown).
+        cb(FakeIndata(b"\xff\xff"), 1, None, None)  # type: ignore[operator]
+        assert b"".join(received) == reference
+
     def test_open_tx_returns_tx_stream(self) -> None:
         class FakeSd:
             class OutputStream:
