@@ -11,6 +11,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.7.3] — 2026-05-31
+
+### Fixed
+
+- Windows FT8 TX delivered no audio (Po=0 W): the callback/`blocksize=0` TX
+  capture emitted 960-byte (10 ms) frames while the PCM TX validator requires
+  1920-byte (20 ms) frames; capture now re-chunks the continuous callback stream
+  into fixed 20 ms frames (keeps the ~50 Hz comb fix; lossless) (MOR-256, #1699,
+  17492be6)
+
+### Changed
+
+- Build (packaging): build the web UI during packaging so source/git installs
+  bundle the SPA (#1698, 55a0f81f)
+
 ## [2.7.2] — 2026-05-30
 
 ### Fixed
@@ -1543,7 +1558,8 @@ These deprecation closures were announced in v0.19 and dropped on schedule.
 - Transport layer, authentication, CI-V commands, meters, PTT, keep-alive.
 - Clean-room Icom LAN UDP protocol implementation.
 
-[Unreleased]: https://github.com/rigplane/rigplane-core/compare/v2.7.2...HEAD
+[Unreleased]: https://github.com/rigplane/rigplane-core/compare/v2.7.3...HEAD
+[2.7.3]: https://github.com/rigplane/rigplane-core/compare/v2.7.2...v2.7.3
 [2.7.2]: https://github.com/rigplane/rigplane-core/compare/v2.7.1...v2.7.2
 [2.7.1]: https://github.com/rigplane/rigplane-core/compare/v2.7.0...v2.7.1
 [2.7.0]: https://github.com/rigplane/rigplane-core/compare/v2.6.0...v2.7.0
