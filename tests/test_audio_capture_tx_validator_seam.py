@@ -107,7 +107,7 @@ class _ValidatorHarness(AudioRuntimeMixin):
 # ---------------------------------------------------------------------------
 
 # Each entry is a format the capture path and the validator must agree on. The
-# 20 ms / 48 kHz / mono case is the production Icom-LAN PCM TX contract; 10 ms is
+# 20 ms / 48 kHz / mono case is the production RigPlane PCM TX contract; 10 ms is
 # the smaller frame, and 2-channel checks the channel multiplier on both sides.
 _SUPPORTED_FORMATS = [
     (48_000, 20, 1),

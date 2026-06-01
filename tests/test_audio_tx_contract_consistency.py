@@ -1,6 +1,6 @@
 """TX-format single-source-of-truth contract guards.
 
-These pin the boundaries where the negotiated Icom-LAN TX format (the
+These pin the boundaries where the negotiated RigPlane TX format (the
 ``AudioStreamContract`` resolved in ``IcomRadio.__init__``) must agree with the
 PCM TX validator and the codec the radio actually puts on the wire. They guard
 the *class* of the 3-day outage: a TX stage deriving its
