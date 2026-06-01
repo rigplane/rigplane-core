@@ -188,3 +188,48 @@ class TestReconnectPermanentErrors:
             radio._intentional_disconnect = True
             radio._control_phase._stop_reconnect()
             await asyncio.sleep(0.05)
+
+
+class TestExternalCatSessionResetOnConnect:
+    """Regression for #1702: a leaked external-CAT session must not survive a
+    (re)connect, or the cooperating pollers stay paused forever and rigctld/web
+    serve a frozen ``radio_state`` (e.g. the FT8 default freq)."""
+
+    @pytest.mark.asyncio
+    async def test_connect_resets_leaked_external_cat_session(
+        self, radio: IcomRadio
+    ) -> None:
+        """A begin_external_cat_session() that was never matched by an end()
+        (managed runtime crash/restart, dropped Hamlib bridge) leaves the flag
+        set. connect() must clear it so pollers resume after reconnect."""
+        # Simulate a leaked external-CAT session (no matching end()).
+        radio.begin_external_cat_session()
+        assert radio.external_cat_session_active is True
+
+        # Drive connect() without hardware: stub the control-phase handshake and
+        # the initial-state fetch so only the reset behaviour under test runs.
+        with (
+            patch.object(
+                radio._control_phase, "connect", new_callable=AsyncMock
+            ),
+            patch.object(radio, "_fetch_initial_state", new_callable=AsyncMock),
+        ):
+            await radio.connect()
+
+        assert radio.external_cat_session_active is False
+        assert radio._external_cat_session_owner is None
+
+    @pytest.mark.asyncio
+    async def test_connect_keeps_session_clear_when_not_leaked(
+        self, radio: IcomRadio
+    ) -> None:
+        """The reset is a no-op on a clean connect (no false-positive churn)."""
+        assert radio.external_cat_session_active is False
+        with (
+            patch.object(
+                radio._control_phase, "connect", new_callable=AsyncMock
+            ),
+            patch.object(radio, "_fetch_initial_state", new_callable=AsyncMock),
+        ):
+            await radio.connect()
+        assert radio.external_cat_session_active is False
