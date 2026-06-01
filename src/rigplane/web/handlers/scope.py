@@ -7,7 +7,8 @@ import logging
 from typing import TYPE_CHECKING, Any
 
 from ..protocol import decode_json, encode_scope_frame  # noqa: TID251
-from ..websocket import WS_OP_TEXT, WebSocketConnection  # noqa: TID251
+from ..transport import Connection  # noqa: TID251
+from ..websocket import WS_OP_TEXT  # noqa: TID251
 
 if TYPE_CHECKING:
     from ...scope import ScopeFrame
@@ -33,7 +34,7 @@ class ScopeHandler:
 
     def __init__(
         self,
-        ws: WebSocketConnection,
+        ws: Connection,
         radio: Any = None,
         server: Any = None,
         audio_mode: bool = False,
