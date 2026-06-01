@@ -24,7 +24,8 @@ from ..protocol import (  # noqa: TID251
     encode_audio_frame,
     encode_json,
 )
-from ..websocket import WS_OP_BINARY, WS_OP_TEXT, WebSocketConnection  # noqa: TID251
+from ..transport import Connection  # noqa: TID251
+from ..websocket import WS_OP_BINARY, WS_OP_TEXT  # noqa: TID251
 
 if TYPE_CHECKING:
     from ...capabilities import CAP_AUDIO as _CAP_AUDIO_TYPE  # noqa: F401
@@ -77,7 +78,7 @@ class AudioBroadcaster:
         self.HIGH_WATERMARK = get_audio_broadcaster_high_watermark()
         self._radio = radio
         self._clients: dict[int, asyncio.Queue[bytes]] = {}
-        self._client_ws: dict[int, WebSocketConnection] = {}
+        self._client_ws: dict[int, Connection] = {}
         self._client_rx_codec: dict[int, int] = {}
         self._subscription: _AudioSubscription | None = None
         self._relay_task: asyncio.Task[None] | None = None
@@ -112,7 +113,7 @@ class AudioBroadcaster:
 
     async def subscribe(
         self,
-        ws: WebSocketConnection | None = None,
+        ws: Connection | None = None,
         *,
         preferred_rx_codec: int | None = None,
     ) -> asyncio.Queue[bytes]:
@@ -567,7 +568,7 @@ class AudioHandler:
 
     def __init__(
         self,
-        ws: WebSocketConnection,
+        ws: Connection,
         radio: "Radio | None",
         broadcaster: "AudioBroadcaster | None" = None,
     ) -> None:

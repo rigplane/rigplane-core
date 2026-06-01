@@ -140,7 +140,8 @@ from ..runtime_helpers import (  # noqa: TID251
     radio_ready,
     runtime_capabilities,
 )
-from ..websocket import WS_OP_TEXT, WebSocketConnection  # noqa: TID251
+from ..transport import Connection  # noqa: TID251
+from ..websocket import WS_OP_TEXT  # noqa: TID251
 
 if TYPE_CHECKING:
     from ...radio_protocol import Radio
@@ -365,7 +366,7 @@ class ControlHandler:
 
     def __init__(
         self,
-        ws: WebSocketConnection,
+        ws: Connection,
         radio: "Radio | None",
         server_version: str,
         radio_model: str,
