@@ -281,3 +281,18 @@ async def test_bridge_runs_against_icom_serial_backend() -> None:
     writer.close()
     await bridge.stop()  # reconcile is best-effort (radio not connected) — tolerated
     assert radio.external_cat_session_active is False
+
+
+async def test_open_transport_failure_does_not_leak_session(
+    radio: FakeRawPipeRadio,
+) -> None:
+    """Regression for #1702: if open_transport() raises *after* taking session
+    ownership, the external-CAT flag must not leak — otherwise cooperating
+    pollers pause forever and radio_state freezes."""
+    bridge = HamlibBridge(radio, model="3078")
+    boom = RuntimeError("listener setup failed")
+    with patch.object(radio, "add_raw_civ_listener", side_effect=boom):
+        with pytest.raises(RuntimeError, match="listener setup failed"):
+            await bridge.open_transport()
+    # Ownership was taken (_begin_session) then released on failure — no leak.
+    assert radio.session_active is False

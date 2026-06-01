@@ -135,10 +135,23 @@ class HamlibBridge:
         if self._server is not None:
             return self.back_port
         self._begin_session()  # take ownership: pause RigPlane's own pollers
-        self._subscription = self._radio.add_raw_civ_listener(self._on_radio_frame)
-        self._server = await asyncio.start_server(self._handle_back, self.host, 0)
-        self._back_port = self._server.sockets[0].getsockname()[1]
-        await self._server.start_serving()
+        try:
+            self._subscription = self._radio.add_raw_civ_listener(self._on_radio_frame)
+            self._server = await asyncio.start_server(self._handle_back, self.host, 0)
+            self._back_port = self._server.sockets[0].getsockname()[1]
+            await self._server.start_serving()
+        except BaseException:
+            # Never leak external-CAT ownership if setup fails after we claimed
+            # it — a leaked session pauses RigPlane's pollers forever (#1702).
+            if self._subscription is not None:
+                self._subscription.close()
+                self._subscription = None
+            if self._server is not None:
+                self._server.close()
+                self._server = None
+            self._back_port = None
+            self._end_session()
+            raise
         logger.info(
             "hamlib-bridge: back-side CI-V listener up on %s:%d",
             self.host,
@@ -227,11 +240,15 @@ class HamlibBridge:
         if callable(begin):
             begin()
 
-    async def _end_session_and_reconcile(self) -> None:
-        """Release ownership and refresh RigPlane state (both best-effort)."""
+    def _end_session(self) -> None:
+        """Release external-CAT-session ownership if the radio supports it."""
         end = getattr(self._radio, "end_external_cat_session", None)
         if callable(end):
             end()
+
+    async def _end_session_and_reconcile(self) -> None:
+        """Release ownership and refresh RigPlane state (both best-effort)."""
+        self._end_session()
         reconcile = getattr(self._radio, "reconcile_state", None)
         if callable(reconcile):
             try:

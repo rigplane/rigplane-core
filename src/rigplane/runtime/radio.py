@@ -1056,7 +1056,15 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
 
         Delegates to the composed ControlPhaseRuntime, then fetches
         initial radio state so RadioState is populated before consumers.
+
+        A fresh (re)connection means any prior external-CAT session is over —
+        its transport is gone — so clear leaked ownership first (#1702). Without
+        this, a ``begin_external_cat_session()`` that was never matched by an
+        ``end_external_cat_session()`` (managed-runtime crash/restart, a dropped
+        Hamlib bridge) would keep cooperating pollers paused forever, freezing
+        ``radio_state`` while rigctld/web serve a stale frequency.
         """
+        self._reset_external_cat_session()
         await self._control_phase.connect()
         await self._fetch_initial_state()
 
@@ -1347,6 +1355,17 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
         """Release legacy external-CAT-session ownership. Idempotent."""
         if self._external_cat_session_owner not in (None, "external"):
             return
+        self._external_cat_session = False
+        self._external_cat_session_owner = None
+
+    def _reset_external_cat_session(self) -> None:
+        """Unconditionally clear external-CAT ownership (#1702).
+
+        Used on (re)connect: a new connection invalidates any prior session
+        regardless of owner, so this drops a leaked ``begin_external_cat_session``
+        that was never released. Unlike :meth:`end_external_cat_session` it does
+        not respect the current owner — the old session can no longer exist.
+        """
         self._external_cat_session = False
         self._external_cat_session_owner = None
 
