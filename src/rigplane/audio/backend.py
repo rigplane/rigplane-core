@@ -242,13 +242,19 @@ class _PortAudioRxStream:
     ``blocksize=0`` opens cleanly.
 
     The PortAudio callback runs on the audio thread and must not block. It
-    copies the captured PCM (s16le) and hands it straight to the consumer
-    *callback*. Each callback delivers a device-natural, variable-size block;
-    it is forwarded verbatim so no new fixed-size re-framing seam (which would
-    re-introduce a discontinuity) is added. The consumer contract (see
-    :class:`RxStream`) is that the callback is cheap and thread-safe to invoke
-    from the audio thread; the companion bridge marshals onto its event loop
-    via ``call_soon_threadsafe``.
+    copies the captured PCM (s16le) out of the engine-native, variable-size
+    block and *re-chunks* it into fixed ``frame_ms``-sized frames before
+    handing them to the consumer *callback*. The downstream PCM-TX contract
+    requires fixed-size frames (e.g. 20 ms = 960 samples = 1920 bytes s16le
+    mono @ 48 kHz); a managed core validator rejects any frame whose byte
+    length differs. Re-chunking a *continuous* callback stream is lossless and
+    introduces no scheduling seam (the ~50 Hz comb came from the old
+    blocking-read inter-read gap, not from re-chunking), so this preserves the
+    fixed-frame contract without re-introducing the comb. Sub-frame remainders
+    are buffered across callbacks; a trailing partial frame at stop is dropped.
+    The consumer contract (see :class:`RxStream`) is that the callback is cheap
+    and thread-safe to invoke from the audio thread; the companion bridge
+    marshals onto its event loop via ``call_soon_threadsafe``.
     """
 
     def __init__(
@@ -258,6 +264,7 @@ class _PortAudioRxStream:
         sample_rate: int,
         channels: int,
         blocksize: int,
+        frame_ms: int,
     ) -> None:
         self._sd = sd
         self._device_index = device_index
@@ -268,9 +275,17 @@ class _PortAudioRxStream:
         # WDM-KS capture face (PortAudioError -9999), but companion device
         # selection now forces the WASAPI face, on which blocksize=0 opens.
         self._blocksize = blocksize
+        # Fixed delivered-frame size: frame_ms worth of audio frames, each
+        # ``channels`` interleaved s16le samples (2 bytes/sample). The PortAudio
+        # stream stays blocksize=0; only the size handed to ``cb`` is fixed.
+        frame_samples = (sample_rate * frame_ms) // 1000
+        self._frame_bytes = max(1, frame_samples * channels * 2)
         self._stream: Any = None
         self._running = False
         self._callback: Callable[[bytes], None] | None = None
+        # Sub-frame remainder carried between audio-thread callbacks. The audio
+        # thread is the only writer, so no lock is needed.
+        self._accumulator = bytearray()
 
     @property
     def running(self) -> bool:
@@ -280,6 +295,7 @@ class _PortAudioRxStream:
         if self.running:
             raise RuntimeError("RX stream already running.")
         self._callback = callback
+        self._accumulator = bytearray()
         # blocksize=0 (engine-native period) mirrors a clean sd.rec on the
         # WASAPI face. latency="low" matches the (clean) output stream.
         self._stream = self._sd.InputStream(
@@ -299,6 +315,9 @@ class _PortAudioRxStream:
         self._stream = None
         self._running = False
         self._callback = None
+        # Drop any sub-frame remainder: an incomplete trailing frame cannot
+        # satisfy the fixed-size contract and is discarded at teardown.
+        self._accumulator = bytearray()
         if stream is not None:
             try:
                 stream.stop()
@@ -317,9 +336,13 @@ class _PortAudioRxStream:
         _status: Any,
     ) -> None:
         # Runs on PortAudio's audio thread: keep it non-blocking. Copy the
-        # captured PCM out of the (reused) input buffer and deliver it to the
-        # consumer verbatim — no re-chunking, so no new discontinuity. The
-        # consumer is contractually cheap/thread-safe.
+        # captured PCM (s16le) out of the (reused, variable-size) input buffer,
+        # append it to the running accumulator, then slice off whole fixed-size
+        # frames and deliver each to the consumer. Re-chunking a continuous
+        # callback stream is lossless (every sample reaches the consumer in
+        # order) and adds no scheduling seam, so it keeps the fixed-frame
+        # contract without re-introducing the comb. The consumer is
+        # contractually cheap/thread-safe.
         cb = self._callback
         if cb is None:
             return
@@ -332,8 +355,14 @@ class _PortAudioRxStream:
             return
         if not pcm:
             return
+        acc = self._accumulator
+        acc.extend(pcm)
+        frame_bytes = self._frame_bytes
         try:
-            cb(pcm)
+            while len(acc) >= frame_bytes:
+                frame = bytes(acc[:frame_bytes])
+                del acc[:frame_bytes]
+                cb(frame)
         except Exception:
             logger.warning("portaudio-rx: consumer callback failed", exc_info=True)
 
@@ -829,13 +858,15 @@ class PortAudioBackend:
         # clean ``sd.rec`` capture. This is safe now that companion device
         # selection forces the WASAPI host-API face (the WDM-KS face that
         # rejected blocksize=0 with PortAudioError -9999 is no longer chosen).
-        del frame_ms  # capture period is engine-native (blocksize=0)
+        # The PortAudio capture period stays engine-native; frame_ms only sizes
+        # the fixed frames re-chunked out to the consumer callback.
         return _PortAudioRxStream(
             sd,
             device_index=int(device),
             sample_rate=sample_rate,
             channels=channels,
             blocksize=0,
+            frame_ms=frame_ms,
         )
 
     def open_tx(

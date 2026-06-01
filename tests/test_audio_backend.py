@@ -428,16 +428,19 @@ class TestPortAudioBackendDeps:
         assert not stream.running
 
     @pytest.mark.asyncio()
-    async def test_open_rx_callback_delivers_all_samples_in_order(self) -> None:
-        """Anti-comb invariant: the variable-size callback blocks reach the
-        consumer with every sample, in order, with no loss or duplication.
+    async def test_open_rx_callback_emits_fixed_frame_ms_frames_lossless(self) -> None:
+        """Re-chunk invariant: variable-size device blocks are losslessly
+        accumulated and re-emitted to the consumer as FIXED frame_ms-sized
+        frames (the downstream PCM-TX validator rejects any other size).
 
-        The PortAudio callback delivers device-natural blocks whose frame count
-        may vary (480, then a short/long block, etc.). The capture path must not
-        re-chunk these onto a new fixed-size seam, drop, or reorder them: the
-        concatenation of what the consumer receives must equal the concatenation
-        of what PortAudio handed in. That byte-contiguity is exactly what was
-        broken by the old fixed-blocksize blocking read.
+        The PortAudio callback delivers engine-native blocks whose frame count
+        varies (480, 480, 200, 760, 480, ...). The capture path must accumulate
+        them and hand the consumer only whole frame_ms frames (960 samples =
+        1920 bytes s16le mono @ 48 kHz / 20 ms), with every sample delivered in
+        order, byte-for-byte equal to the input concatenation truncated to a
+        whole number of frames. No loss/dup/reorder. The re-chunk is of a
+        continuous callback stream, so it adds no scheduling seam (the ~50 Hz
+        comb came from the old blocking read's inter-read gap, not re-chunking).
         """
 
         class FakeIndata:
@@ -464,7 +467,9 @@ class TestPortAudioBackendDeps:
                     pass
 
         backend = PortAudioBackend(dependency_loader=lambda: (FakeSd(), object()))
-        stream = backend.open_rx(AudioDeviceId(0))
+        stream = backend.open_rx(
+            AudioDeviceId(0), sample_rate=48_000, channels=1, frame_ms=20
+        )
 
         received: list[bytes] = []
         await stream.start(received.append)
@@ -472,33 +477,89 @@ class TestPortAudioBackendDeps:
         cb = captured_cb["cb"]
         assert callable(cb)
 
-        # A reference s16le mono stream split into VARIABLE-size callback blocks
-        # (frame counts 4, 1, 7, 2, 6 -> 2 bytes/frame each). Feeding these
-        # through the callback must reproduce the reference byte-for-byte.
+        # A reference s16le mono stream split into VARIABLE-size device blocks
+        # (480, 480, 200, 760, 480 samples = 2400). The sequence crosses frame
+        # boundaries mid-block so re-chunking is genuinely exercised.
         import struct
 
-        reference = b"".join(struct.pack("<h", v) for v in range(20))
-        frame_splits = (4, 1, 7, 2, 6)  # sums to 20 frames
+        frame_samples = 960
+        frame_bytes = frame_samples * 2  # 1920 bytes (s16le mono)
+        # 2880 samples = exactly 3 whole frames once the final block lands.
+        total_samples = 2880
+        reference = b"".join(struct.pack("<h", v % 32768) for v in range(total_samples))
+        block_splits = (480, 480, 200, 760, 480)  # samples; sums to 2400
         offset = 0
-        for n_frames in frame_splits:
+        for n_frames in block_splits:
             chunk = reference[offset : offset + n_frames * 2]
             offset += n_frames * 2
             cb(FakeIndata(chunk), n_frames, None, None)  # type: ignore[operator]
 
-        assert b"".join(received) == reference  # all samples, in order, no dup
-        assert received == [
-            reference[0:8],
-            reference[8:10],
-            reference[10:24],
-            reference[24:28],
-            reference[28:40],
-        ]
+        # 2400 buffered samples -> two whole 960-sample frames emerge; the
+        # trailing 480-sample remainder stays buffered (not yet a whole frame).
+        assert len(received) == 2
+        for frame in received:
+            assert len(frame) == frame_bytes  # 1920 bytes / 20 ms each
+        assert b"".join(received) == reference[: 2 * frame_bytes]  # in order, no dup
+
+        # A final 480-sample block completes the third frame, draining the
+        # remainder. All 2880 samples now delivered as 3 fixed frames.
+        cb(FakeIndata(reference[offset:]), 480, None, None)  # type: ignore[operator]
+        assert len(received) == 3
+        assert all(len(f) == frame_bytes for f in received)
+        assert b"".join(received) == reference  # every sample, in order
 
         await stream.stop()
-        # After stop the consumer is detached: a late callback is a no-op (the
-        # audio thread may fire once more during teardown).
-        cb(FakeIndata(b"\xff\xff"), 1, None, None)  # type: ignore[operator]
-        assert b"".join(received) == reference
+        # After stop the consumer is detached and the accumulator is cleared: a
+        # late callback is a no-op (the audio thread may fire once during
+        # teardown).
+        cb(FakeIndata(b"\xff" * frame_bytes), 960, None, None)  # type: ignore[operator]
+        assert len(received) == 3
+
+    @pytest.mark.asyncio()
+    async def test_open_rx_callback_honors_frame_ms(self) -> None:
+        """frame_ms sizes the emitted frame: 10 ms -> 480 samples -> 960 bytes."""
+
+        class FakeIndata:
+            def __init__(self, payload: bytes) -> None:
+                self._payload = payload
+
+            def tobytes(self) -> bytes:
+                return self._payload
+
+        captured_cb: dict[str, object] = {}
+
+        class FakeSd:
+            class InputStream:
+                def __init__(self, **kw: object) -> None:
+                    captured_cb["cb"] = kw["callback"]
+
+                def start(self) -> None:
+                    pass
+
+                def stop(self) -> None:
+                    pass
+
+                def close(self) -> None:
+                    pass
+
+        backend = PortAudioBackend(dependency_loader=lambda: (FakeSd(), object()))
+        stream = backend.open_rx(
+            AudioDeviceId(0), sample_rate=48_000, channels=1, frame_ms=10
+        )
+
+        received: list[bytes] = []
+        await stream.start(received.append)
+        cb = captured_cb["cb"]
+
+        # 1000 samples in one block -> two 480-sample (960-byte) frames, 40 left.
+        block = b"\x01\x02" * 1000
+        cb(FakeIndata(block), 1000, None, None)  # type: ignore[operator]
+
+        assert len(received) == 2
+        for frame in received:
+            assert len(frame) == 480 * 2  # 960 bytes / 10 ms each
+
+        await stream.stop()
 
     def test_open_tx_returns_tx_stream(self) -> None:
         class FakeSd:
