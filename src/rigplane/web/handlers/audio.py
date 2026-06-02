@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Awaitable
 from typing import TYPE_CHECKING, Any, Callable, Protocol, cast
 
 from ..._audio_codecs import decode_ulaw_to_pcm16
@@ -37,6 +37,8 @@ from ...capabilities import CAP_AUDIO, CAP_LAN_DUAL_RX_AUDIO_ROUTING
 __all__ = ["AudioBroadcaster", "AudioHandler"]
 
 logger = logging.getLogger(__name__)
+
+_TX_CLEANUP_STOP_TIMEOUT_SECONDS = 2.0
 
 
 def _parse_preferred_rx_codec(msg: dict[str, Any]) -> int | None:
@@ -577,6 +579,7 @@ class AudioHandler:
         self._broadcaster = broadcaster
         self._rx_active = False
         self._tx_active = False
+        self._tx_stop_lock = asyncio.Lock()
         self._seq: int = 0
         self._frame_queue: asyncio.Queue[bytes] = asyncio.Queue()
         self._done = asyncio.Event()
@@ -622,16 +625,27 @@ class AudioHandler:
                     await task
                 except asyncio.CancelledError:
                     pass
+        except asyncio.CancelledError:
+            logger.info("audio: handler cancelled")
+            reader.cancel()
+            sender.cancel()
+            raise
         except Exception:
             logger.exception("audio: handler error")
             reader.cancel()
             sender.cancel()
         finally:
             self._done.set()
+            for task in (reader, sender):
+                if not task.done():
+                    task.cancel()
+            await asyncio.gather(reader, sender, return_exceptions=True)
             await self._stop_rx()
-            if self._tx_active:
-                self._tx_active = False
-                logger.info("audio: TX cleanup on handler exit")
+            await self._stop_tx(
+                reason="handler exit",
+                timeout=_TX_CLEANUP_STOP_TIMEOUT_SECONDS,
+                suppress_errors=True,
+            )
             logger.info("audio: handler finished")
 
     async def _reader_loop(self) -> None:
@@ -683,15 +697,81 @@ class AudioHandler:
             if direction == "rx":
                 await self._stop_rx()
             elif direction == "tx":
-                if self._radio and CAP_AUDIO in self._radio.capabilities:
-                    if self._tx_codec() == AudioCodec.PCM_1CH_16BIT:
-                        await self._radio.stop_audio_tx_pcm()  # type: ignore[attr-defined]
-                    else:
-                        await self._radio.stop_audio_tx_opus()  # type: ignore[attr-defined]
-                self._tx_active = False
-                logger.info("audio: TX stopped")
+                await self._stop_tx(reason="client request", force=True)
         elif msg_type == "audio_config":
             await self._handle_audio_config(msg)
+
+    async def _stop_tx(
+        self,
+        *,
+        reason: str,
+        timeout: float | None = None,
+        suppress_errors: bool = False,
+        force: bool = False,
+    ) -> None:
+        """Release this handler's active TX ownership, optionally bounded."""
+        async with self._tx_stop_lock:
+            if not self._tx_active and not force:
+                return
+            self._tx_active = False
+
+            if not self._radio or CAP_AUDIO not in getattr(
+                self._radio, "capabilities", ()
+            ):
+                logger.info("audio: TX cleanup skipped (%s, no audio radio)", reason)
+                return
+
+            try:
+                if self._tx_codec() == AudioCodec.PCM_1CH_16BIT:
+                    stop_tx = self._radio.stop_audio_tx_pcm()  # type: ignore[attr-defined]
+                else:
+                    stop_tx = self._radio.stop_audio_tx_opus()  # type: ignore[attr-defined]
+                if timeout is None:
+                    await stop_tx
+                else:
+                    await self._await_bounded_tx_stop(stop_tx, timeout=timeout)
+            except TimeoutError:
+                if timeout is None:
+                    logger.warning(
+                        "audio: TX stop timed out during %s", reason, exc_info=True
+                    )
+                else:
+                    logger.warning(
+                        "audio: TX stop timed out during %s after %.1fs",
+                        reason,
+                        timeout,
+                    )
+                if not suppress_errors:
+                    raise
+            except Exception:
+                logger.warning("audio: TX stop failed during %s", reason, exc_info=True)
+                if not suppress_errors:
+                    raise
+            else:
+                logger.info("audio: TX stopped (%s)", reason)
+
+    async def _await_bounded_tx_stop(
+        self,
+        stop_tx: Awaitable[None],
+        *,
+        timeout: float,
+    ) -> None:
+        task = asyncio.ensure_future(stop_tx)
+        done, pending = await asyncio.wait({task}, timeout=timeout)
+        if pending:
+            task.cancel()
+            task.add_done_callback(self._consume_late_tx_stop)
+            raise TimeoutError
+        await next(iter(done))
+
+    @staticmethod
+    def _consume_late_tx_stop(task: asyncio.Future[None]) -> None:
+        try:
+            task.result()
+        except asyncio.CancelledError:
+            pass
+        except Exception:
+            logger.debug("audio: late TX stop failed after timeout", exc_info=True)
 
     # --------------------------------------------------------------
     # audio_config — MAIN/SUB focus + stereo split (issue #752, revised in #788)

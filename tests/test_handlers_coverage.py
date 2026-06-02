@@ -1585,6 +1585,19 @@ async def test_audio_handler_preserves_native_opus_browser_tx_path(
     radio.push_audio_tx_pcm.assert_not_awaited()
 
 
+async def test_audio_handler_audio_stop_calls_backend_when_tx_inactive() -> None:
+    contract = _make_web_tx_contract(AudioCodec.OPUS_1CH, tx_sample_rate_hz=48000)
+    radio = _make_web_tx_radio(contract)
+    ws = SimpleNamespace(recv=AsyncMock(), send_binary=AsyncMock())
+    handler = AudioHandler(ws, radio, None)
+
+    await handler._handle_control({"type": "audio_stop", "direction": "tx"})
+
+    assert handler._tx_active is False
+    radio.stop_audio_tx_opus.assert_awaited_once()
+    radio.stop_audio_tx_pcm.assert_not_awaited()
+
+
 async def test_audio_handler_decodes_opus_browser_tx_for_pcm_contract() -> None:
     from rigplane.radio_protocol import AudioCapable
 
@@ -1713,7 +1726,7 @@ async def test_audio_handler_drops_non_tx_or_unknown_browser_audio_frames() -> N
 
 
 async def test_audio_handler_run_resets_tx_active_on_exit() -> None:
-    """run() finally block must reset _tx_active when TX was active (#684)."""
+    """run() finally block must reset _tx_active without an audio-capable radio."""
     ws = SimpleNamespace(
         recv=AsyncMock(side_effect=[EOFError()]),
         send_binary=AsyncMock(),
@@ -1724,6 +1737,83 @@ async def test_audio_handler_run_resets_tx_active_on_exit() -> None:
     await handler.run()
     assert handler._done.is_set()
     assert handler._tx_active is False
+
+
+async def test_audio_handler_run_stops_active_opus_tx_on_reader_exception() -> None:
+    contract = _make_web_tx_contract(AudioCodec.OPUS_1CH, tx_sample_rate_hz=48000)
+    radio = _make_web_tx_radio(contract)
+    ws = SimpleNamespace(
+        recv=AsyncMock(side_effect=RuntimeError("reader boom")),
+        send_binary=AsyncMock(),
+        close=AsyncMock(),
+    )
+    handler = AudioHandler(ws, radio, None)
+    handler._tx_active = True
+
+    await handler.run()
+
+    assert handler._done.is_set()
+    assert handler._tx_active is False
+    radio.stop_audio_tx_opus.assert_awaited_once()
+    radio.stop_audio_tx_pcm.assert_not_awaited()
+
+
+async def test_audio_handler_run_stops_active_pcm_tx_on_cancellation() -> None:
+    class _HangingWs:
+        def __init__(self) -> None:
+            self.recv_started = asyncio.Event()
+            self.send_binary = AsyncMock()
+            self.close = AsyncMock()
+
+        async def recv(self) -> tuple[int, bytes]:
+            self.recv_started.set()
+            await asyncio.Event().wait()
+            raise AssertionError("unreachable")
+
+    contract = _make_web_tx_contract(AudioCodec.PCM_1CH_16BIT)
+    radio = _make_web_tx_radio(contract)
+    ws = _HangingWs()
+    handler = AudioHandler(ws, radio, None)
+    handler._tx_active = True
+    task = asyncio.create_task(handler.run())
+
+    await asyncio.wait_for(ws.recv_started.wait(), timeout=1.0)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    assert handler._done.is_set()
+    assert handler._tx_active is False
+    radio.stop_audio_tx_pcm.assert_awaited_once()
+    radio.stop_audio_tx_opus.assert_not_awaited()
+
+
+async def test_audio_handler_run_bounds_active_tx_cleanup_timeout(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def _hang() -> None:
+        await asyncio.Event().wait()
+
+    contract = _make_web_tx_contract(AudioCodec.OPUS_1CH, tx_sample_rate_hz=48000)
+    radio = _make_web_tx_radio(contract)
+    radio.stop_audio_tx_opus = AsyncMock(side_effect=_hang)
+    ws = SimpleNamespace(
+        recv=AsyncMock(side_effect=[EOFError()]),
+        send_binary=AsyncMock(),
+        close=AsyncMock(),
+    )
+    handler = AudioHandler(ws, radio, None)
+    handler._tx_active = True
+    monkeypatch.setattr(
+        "rigplane.web.handlers.audio._TX_CLEANUP_STOP_TIMEOUT_SECONDS",
+        0.01,
+    )
+
+    await handler.run()
+
+    assert handler._done.is_set()
+    assert handler._tx_active is False
+    radio.stop_audio_tx_opus.assert_awaited_once()
 
 
 async def test_audio_handler_run_calls_stop_rx_on_exit() -> None:
