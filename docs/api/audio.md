@@ -121,8 +121,16 @@ await bridge.start()
 
 # Both receive the same packets independently
 # First subscriber triggers radio.start_audio_rx_opus()
-# Last .stop() schedules radio.stop_audio_rx_opus()
+# Last awaited close triggers radio.stop_audio_rx_opus()
+await web.aclose()
+await bridge.aclose()
 ```
+
+Subscriptions support `async with`, `await sub.aclose()`, and the older
+`sub.stop()` convenience path. Prefer `async with` or `await aclose()` when
+coordinating restart/teardown: the awaited close path removes the subscriber
+before the caller proceeds, so bridge or WebSocket restarts do not race a stale
+subscriber.
 
 ### Properties
 
@@ -130,6 +138,21 @@ await bridge.start()
 |----------|------|-------------|
 | `subscriber_count` | `int` | Number of active subscribers |
 | `rx_active` | `bool` | Whether radio RX is currently streaming |
+
+## Queue And Frame Semantics
+
+Audio queues are bounded to preserve real-time behavior. When a TX playback or
+bridge capture queue overflows, RigPlane drops the oldest queued audio and
+keeps the newest live frame. This intentionally favors bounded latency over
+perfect delivery of stale audio. Diagnostics count the event as an overrun and
+record dropped/overrun audio duration when that metric is available.
+
+PortAudio capture uses engine-native callback periods (`blocksize=0`) and then
+losslessly re-chunks the continuous callback stream into fixed `frame_ms`
+frames before handing it to PCM TX validators. At 48 kHz, 16-bit mono,
+`frame_ms=20` means each emitted TX frame is 1920 bytes. Consumers should still
+treat WebSocket/DataChannel `frame_ms` as an advisory label and derive actual
+duration from payload size and metadata.
 
 ## Module Constants
 

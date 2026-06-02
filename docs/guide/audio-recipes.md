@@ -376,6 +376,13 @@ Use two separate loopback devices for bidirectional operation. Reusing one
 device for both WSJT-X input and output can feed rigplane's RX audio back into
 its TX capture path.
 
+Serial USB-audio radios use the same direction. The shared serial audio backend
+arms PCM TX for IC-705, IC-7300, IC-9700, X6200, and related USB-audio
+profiles before bridge transmit. If TX startup fails, the bridge keeps RX
+running and reports the TX failure instead of logging per-frame "PCM TX not
+started" errors. On Windows callback capture, native callback blocks are
+re-chunked into fixed 20 ms PCM frames before transmit.
+
 ---
 
 ## Heavy usage and deployment

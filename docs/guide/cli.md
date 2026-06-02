@@ -804,6 +804,11 @@ backend, auth-required flag, and a readiness value such as
 `ready_with_radio`, `no_usb_radio_connected`, or
 `radio_powered_off_or_unreachable`.
 
+Fleet-aware station supervisors may also advertise multiple child radios in an
+additive `radios[]` array. Each entry includes `id`, `model`, `url`, `status`,
+and `connected`. Existing clients can keep using the top-level single-radio
+fields; clients that understand fleets should prefer `radios[]` when present.
+
 ### `audio bridge`
 
 Route radio audio to/from a virtual audio device (BlackHole, Loopback, VB-Audio).
@@ -818,6 +823,13 @@ rigplane audio bridge --device "BlackHole 2ch"
 # RX only (no TX from virtual device)
 rigplane audio bridge --device "BlackHole 2ch" --rx-only
 ```
+
+The TX capture path preserves real-time latency by dropping the oldest queued
+capture frame when its bounded queue fills, then keeping the newest live frame.
+On callback-based PortAudio hosts, including Windows, capture uses the native
+callback period and re-chunks the continuous stream into fixed PCM frames
+before transmit. For 48 kHz mono 16-bit audio and `frame_ms=20`, each TX frame
+is 1920 bytes.
 
 !!! tip "macOS Setup"
     Install BlackHole for virtual audio routing:
