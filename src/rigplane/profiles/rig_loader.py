@@ -911,9 +911,13 @@ def _parse_state_acquisition(
             defaults=default_policy,
         )
 
+    provider = raw.get("provider", "profile")
+    if not isinstance(provider, str):
+        raise RigLoadError(f"{filename}: [state_acquisition].provider must be a string")
+
     try:
         return RadioAcquisitionProfile(
-            provider=str(raw.get("provider", "profile")),
+            provider=provider,
             capabilities=tuple(capabilities),
             default_policy=default_policy,
             field_policies=field_policies,

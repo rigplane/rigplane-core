@@ -6,7 +6,7 @@ schedulers should acquire it. They intentionally do not implement scheduling.
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import Any
@@ -88,6 +88,14 @@ def _strict_int(value: Any, *, label: str) -> int:
     if not isinstance(value, int) or isinstance(value, bool):
         raise ValueError(f"{label} must be an integer")
     return value
+
+
+def _strict_string_sequence(value: Any, *, label: str) -> tuple[str, ...]:
+    if isinstance(value, str) or not isinstance(value, Sequence):
+        raise ValueError(f"{label} must be a sequence of strings")
+    if not all(isinstance(item, str) for item in value):
+        raise ValueError(f"{label} must be a sequence of strings")
+    return tuple(value)
 
 
 def _optional_positive_float(value: Any, *, label: str) -> float | None:
@@ -417,8 +425,9 @@ class FieldCapability:
                 "commandResponseObservable",
                 False,
             ),
-            supported_controls=tuple(
-                str(control) for control in value.get("supportedControls", ())
+            supported_controls=_strict_string_sequence(
+                value.get("supportedControls", ()),
+                label="supportedControls",
             ),
             diagnostic=str(value.get("diagnostic", "")),
         )

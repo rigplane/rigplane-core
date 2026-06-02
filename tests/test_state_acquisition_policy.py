@@ -145,6 +145,12 @@ def test_schema_from_dict_rejects_unknown_and_coerced_values() -> None:
     with pytest.raises(ValueError, match="polling must be a bool"):
         FieldCapability.from_dict({"path": freq, "polling": "false"})
 
+    with pytest.raises(ValueError, match="supportedControls must be a sequence of strings"):
+        FieldCapability.from_dict({"path": freq, "supportedControls": "set_freq"})
+
+    with pytest.raises(ValueError, match="supportedControls must be a sequence of strings"):
+        FieldCapability.from_dict({"path": freq, "supportedControls": [1]})
+
     with pytest.raises(ValueError, match="cadenceSeconds must be a number"):
         AcquisitionPolicy.from_dict({"cadenceSeconds": "1.0"})
 
