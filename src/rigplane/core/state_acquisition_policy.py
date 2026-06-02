@@ -331,7 +331,7 @@ class FieldCapability:
     polling: bool = False
     stream_like: bool = False
     command_response_observable: bool = False
-    supported_controls: tuple[str, ...] = ()
+    supported_controls: Sequence[str] | None = ()
     diagnostic: str = ""
 
     def __post_init__(self) -> None:
@@ -346,7 +346,14 @@ class FieldCapability:
             self.command_response_observable,
             label="commandResponseObservable",
         )
-        controls = tuple(str(control) for control in self.supported_controls)
+        controls = (
+            ()
+            if self.supported_controls is None
+            else _strict_string_sequence(
+                self.supported_controls,
+                label="supported_controls",
+            )
+        )
         for control in controls:
             _validate_token(control, label="supported control")
         if availability is not FieldAvailability.SUPPORTED and (
@@ -391,7 +398,7 @@ class FieldCapability:
             "polling": self.polling,
             "streamLike": self.stream_like,
             "commandResponseObservable": self.command_response_observable,
-            "supportedControls": list(self.supported_controls),
+            "supportedControls": list(self.supported_controls or ()),
             "diagnostic": self.diagnostic,
         }
 

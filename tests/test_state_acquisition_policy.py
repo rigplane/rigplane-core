@@ -168,6 +168,16 @@ def test_schema_from_dict_rejects_unknown_and_coerced_values() -> None:
         RadioAcquisitionProfile.from_dict({"provider": 123})
 
 
+def test_field_capability_direct_construction_rejects_coerced_controls() -> None:
+    freq = FieldPath.active("main", "freq_mode", "freq_hz")
+
+    with pytest.raises(ValueError, match="supported_controls must be a sequence of strings"):
+        FieldCapability(path=freq, supported_controls="set_freq")
+
+    with pytest.raises(ValueError, match="supported_controls must be a sequence of strings"):
+        FieldCapability(path=freq, supported_controls=(123,))  # type: ignore[arg-type]
+
+
 def test_missing_and_unsupported_capabilities_are_explicitly_unavailable() -> None:
     freq = FieldPath.active("main", "freq_mode", "freq_hz")
     power = FieldPath.global_("tx_state", "power_on")
