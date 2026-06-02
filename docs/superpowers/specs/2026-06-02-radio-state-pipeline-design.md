@@ -8,9 +8,9 @@ Scope: public open-core runtime, web, rigctld, and backend-neutral state flow
 
 RigPlane needs one canonical radio state model. WebSocket, HTTP snapshots,
 rigctld reads, diagnostics, and future processing hooks should all consume the
-same state source, with one revision sequence. Polling, push frames, command
-responses, and adaptive acquisition are ways to discover values; they must not
-be delivery pipelines.
+same state source, with one state revision sequence and separate freshness
+versioning. Polling, push frames, command responses, and adaptive acquisition
+are ways to discover values; they must not be delivery pipelines.
 
 The target architecture separates command ingress from data ingress:
 
@@ -200,10 +200,15 @@ Responsibilities:
 - Validate and normalize field updates.
 - Compare previous and next values.
 - Emit `ChangeSet` only when confirmed state changes.
-- Keep one monotonic state revision per process lifetime.
+- Keep one monotonic state revision for applied model snapshots. This revision
+  is a local version/cache-invalidation sequence, not proof that the physical
+  radio has not changed.
 - Provide full snapshots for HTTP and initial WebSocket state.
 - Provide optional projections for rigctld and diagnostics.
-- Maintain health/staleness metadata separately from data values.
+- Track per-field freshness metadata: last observation time, source,
+  confidence, max age, and stale/unknown status.
+- Maintain health/freshness revision separately from value revision for
+  validity changes that do not alter a data value.
 
 The implementation should avoid web or rigctld imports. Contracts should live
 in a neutral layer; the concrete runtime object can be wired into Web and
@@ -247,6 +252,31 @@ Suggested fields:
 Change hooks fire only when confirmed state changes. WebSocket deltas, HTTP
 ETags, rigctld GET cache invalidation, and diagnostics should derive from this
 event.
+
+#### Revision, Freshness, and Missed Events
+
+State revision answers only this question: "has the model applied a newer known
+state value?" It must not be interpreted as "the radio definitely did not
+change."
+
+If an unsolicited radio frame is lost, malformed, or never emitted by the radio,
+the model cannot infer the missing value change from revision alone. The system
+therefore also needs field freshness and reconciliation:
+
+- Each state field or field family tracks `last_observed_monotonic`, source,
+  confidence, and a policy-defined freshness window.
+- Freshness transitions, such as `fresh -> stale` or `unknown -> fresh`, emit a
+  health/freshness event and may advance a separate freshness revision.
+- Consumers that need authoritative state can call an `ensure_fresh(paths,
+  max_age)` style API. That API may return the current fresh value, trigger an
+  acquisition read, or report stale/unavailable state.
+- Critical fields such as frequency, mode, PTT, power state, and selected
+  receiver need reconciliation polling even when push is supported.
+- Meter fields can have shorter freshness windows and coalesced delivery, but
+  the latest sample must still be tracked independently from Web delivery rate.
+
+This keeps revision useful for transport deltas while preventing it from
+becoming a false correctness signal.
 
 #### CommandIntent
 
@@ -304,8 +334,12 @@ delivery.
 Examples:
 
 - Prefer CI-V unsolicited frames when a backend/profile supports them.
+- Run low-rate reconciliation reads for critical state even when push is
+  supported, because unsolicited frames can be missed.
 - Poll frequency/mode on a short pulse after local writes or detected external
   activity when unsolicited updates are unavailable.
+- Trigger `ensure_fresh` reads when a consumer requires data newer than the
+  field's freshness window.
 - Poll S-meter at a profile-safe target rate.
 - Poll TX meters more aggressively while transmitting.
 - Slow down background state queries when the link is idle or congested.
@@ -347,7 +381,7 @@ flowchart TB
     STORE["RadioStateModel / StateStore"]
     SNAP["Full public snapshot"]
     DIFF["ChangeSet projection"]
-    HTTP["GET /api/v1/state\nETag = state revision + health revision"]
+    HTTP["GET /api/v1/state\nETag = state revision + health/freshness revision"]
     WS_INIT["Initial WebSocket full state"]
     WS_DELTA["WebSocket state_update delta"]
 
@@ -361,12 +395,16 @@ flowchart TB
 Rules:
 
 - Initial WebSocket state and HTTP snapshot come from the same snapshot builder.
-- HTTP ETag uses the canonical state revision plus health revision.
+- HTTP ETag uses the canonical state revision plus health/freshness revision.
 - WebSocket `state_update.revision` uses the canonical state revision.
+- No state revision advance means "the model has no newer applied value"; it
+  does not prove the physical radio did not change.
 - Any transport-local sequence, if needed, should be a separate field and not
   the state revision.
 - Delta encoding is a representation concern. It must not own canonical state
   revision.
+- HTTP ETags include state revision plus health/freshness revision so stale
+  transitions can be observed even when values do not change.
 - HTTP polling can remain as a startup/fallback edge case, but it is not a
   second source of truth.
 
@@ -448,6 +486,8 @@ Deliverables:
 
 - Counters for observations by source and field family.
 - Counters for `ChangeSet` emission by field family.
+- Counters for stale/fresh transitions by field family.
+- Counters for reconciliation reads and `ensure_fresh` calls.
 - Broadcast counters for WebSocket and HTTP ETag revision changes.
 - Command queue latency and executor latency metrics.
 - Serial partial-frame, timeout, and backpressure metrics.
@@ -458,6 +498,8 @@ Acceptance:
   rate.
 - It is possible to determine whether X6200 emits unsolicited frequency frames
   during VFO tuning.
+- It is possible to determine whether reconciliation corrected a missed or
+  stale field.
 - No behavior changes are required in this milestone.
 
 ### Milestone 1: Core Contracts and StateStore
@@ -467,6 +509,7 @@ Deliverables:
 - Backend-neutral `Observation`, `ChangeSet`, `CommandIntent`, and
   `CommandLifecycleEvent` contracts.
 - `RadioStateModel` / `StateStore` implementation with canonical revision.
+- Per-field freshness metadata and separate freshness/health revision semantics.
 - Snapshot projection for the existing public state schema.
 - Hook registration for observation/change/command/policy events.
 - Unit tests for revision behavior, no-op applies, receiver paths, and
@@ -476,6 +519,8 @@ Acceptance:
 
 - Applying a changed observation increments state revision exactly once.
 - Applying an unchanged observation does not increment state revision.
+- Freshness-only transitions do not fake data changes, but they are visible to
+  consumers through freshness/health revision.
 - Full snapshots match the existing public state contract.
 - No Web or rigctld imports are introduced into core/runtime state modules.
 
@@ -497,6 +542,8 @@ Acceptance:
   revisions.
 - Frequency changes from unsolicited CI-V frames reach Web without waiting for
   unrelated events.
+- If an unsolicited frequency/mode event is missed, a reconciliation read can
+  eventually correct the shared state.
 - HTTP `/api/v1/state` and WebSocket initial state agree on revision and data.
 - Existing command execution behavior remains compatible.
 
@@ -510,7 +557,8 @@ Deliverables:
 - External Hamlib/rigctld client backend responses update the shared state
   model.
 - Capability/policy metadata describes push support, safe poll rates, meter
-  support, and transport constraints.
+  support, freshness windows, reconciliation intervals, and transport
+  constraints.
 
 Acceptance:
 
@@ -559,6 +607,7 @@ Acceptance:
 Deliverables:
 
 - Frequency/mode pulse policy for radios without reliable unsolicited updates.
+- Low-rate reconciliation policy for critical state even when push is available.
 - Meter telemetry policy separated from slow state polling.
 - TX-aware meter policy for POWER/ALC/SWR/COMP.
 - Idle decay policy for background state queries.
@@ -569,6 +618,8 @@ Acceptance:
 
 - X6200-like serial radios can use short freq/mode pulse polling without
   increasing all background traffic.
+- Push-capable radios still recover from missed critical-state events through
+  bounded reconciliation.
 - Meters have stable, bounded delivery cadence appropriate to transport
   capability.
 - Policy behavior is configured through capabilities/profile metadata, not
@@ -611,12 +662,14 @@ Guidelines:
   overlays.
 - Timed-out pending overlays expire and may trigger reconciliation polling.
 - Reconnect marks stale fields and may reset transport-local policy state.
+- Missing expected observations do not silently confirm intent. They expire the
+  pending overlay and may trigger targeted reconciliation.
 - External CAT/raw CI-V ownership remains exclusive; acquisition policies pause
   when required by the existing ownership mechanism.
 - Malformed or partial frames become diagnostics observations or counters, not
   state mutations.
 - Health revision remains separate from state revision, but HTTP ETags include
-  both.
+  state, health, and freshness revision inputs.
 
 ## Testing Strategy
 
@@ -626,6 +679,9 @@ Unit tests:
 - No-op observations do not emit `ChangeSet`.
 - Meter observations can be coalesced without losing latest values.
 - Pending overlays confirm, expire, and supersede correctly.
+- Freshness transitions are observable without changing confirmed values.
+- `ensure_fresh` returns fresh cached values, triggers acquisition for stale
+  values, and reports unavailable state when acquisition fails.
 - Snapshot projection matches the existing public state schema.
 
 Icom tests:
@@ -633,6 +689,7 @@ Icom tests:
 - CI-V `0x15` meter frames produce observations and state changes.
 - CI-V `0x00`/`0x03` frequency frames produce observations and state changes.
 - Poll responses and unsolicited frames use the same apply path.
+- Reconciliation reads correct stale or missed frequency/mode observations.
 - Background acquisition uses priority/dedupe where supported.
 
 Web tests:
@@ -641,12 +698,16 @@ Web tests:
   same state revision.
 - WebSocket deltas use canonical state revision.
 - HTTP ETag advances when state revision advances.
+- HTTP ETag or equivalent freshness token advances when critical fields become
+  stale even if values do not change.
 
 rigctld tests:
 
 - GET frequency/mode reads shared state when fresh.
 - SET frequency creates command intent and preserves read-after-write behavior.
 - Fallback radio reads publish observations.
+- GET paths can request fresh-enough values instead of trusting indefinitely
+  stale state.
 
 Integration/fake-backend tests:
 
