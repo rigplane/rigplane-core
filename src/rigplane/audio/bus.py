@@ -47,6 +47,7 @@ logger = logging.getLogger(__name__)
 __all__ = ["AudioBus", "AudioSubscription"]
 
 _DEFAULT_QUEUE_SIZE = 64
+_DEFAULT_CLOSE_TIMEOUT = 2.0
 
 
 class AudioSubscription:
@@ -73,6 +74,7 @@ class AudioSubscription:
             maxsize=queue_size,
         )
         self._active = False
+        self._close_task: asyncio.Task[None] | None = None
         self._dropped = 0
         self._received = 0
 
@@ -94,16 +96,86 @@ class AudioSubscription:
         """Activate this subscription (registers with the bus)."""
         if self._active:
             return
+        if self._close_task is not None and not self._close_task.done():
+            await self._close_task
         self._active = True
         await self._bus._add_subscriber(self)
 
     def stop(self) -> None:
-        """Deactivate this subscription (unregisters from the bus)."""
+        """Deactivate this subscription and schedule bus removal.
+
+        This method is intentionally synchronous for backward compatibility.
+        Prefer :meth:`aclose` in async teardown paths when callers need to know
+        removal has completed.
+        """
         if not self._active:
             return
         self._active = False
-        # Schedule async removal; we can't await in sync context
-        asyncio.create_task(self._bus._remove_subscriber(self))
+        self._schedule_close()
+
+    async def aclose(self, timeout: float | None = _DEFAULT_CLOSE_TIMEOUT) -> None:
+        """Deactivate this subscription and await bus removal.
+
+        Args:
+            timeout: Maximum seconds to wait for teardown. ``None`` disables
+                the timeout for callers that intentionally want unbounded
+                cleanup.
+        """
+        if not self._active and self._close_task is None:
+            return
+        self._active = False
+
+        task = self._close_task
+        if task is None:
+            close_coro = self._bus._remove_subscriber(self)
+            if timeout is None:
+                await close_coro
+            else:
+                try:
+                    await asyncio.wait_for(close_coro, timeout=timeout)
+                except asyncio.TimeoutError:
+                    logger.warning(
+                        "audio-bus: timed out closing subscriber %r",
+                        self.name,
+                    )
+            return
+
+        try:
+            if timeout is None:
+                await task
+            else:
+                await asyncio.wait_for(asyncio.shield(task), timeout=timeout)
+        except asyncio.TimeoutError:
+            logger.warning(
+                "audio-bus: timed out closing subscriber %r",
+                self.name,
+            )
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+
+    def _schedule_close(self) -> None:
+        """Schedule async bus removal for synchronous ``stop()`` callers."""
+        if self._close_task is not None and not self._close_task.done():
+            return
+        task = asyncio.create_task(self._bus._remove_subscriber(self))
+        self._close_task = task
+        task.add_done_callback(self._on_close_done)
+
+    def _on_close_done(self, task: asyncio.Task[None]) -> None:
+        if self._close_task is task:
+            self._close_task = None
+        try:
+            task.result()
+        except asyncio.CancelledError:
+            pass
+        except Exception:
+            logger.debug(
+                "audio-bus: subscriber close task failed",
+                exc_info=True,
+            )
 
     def deliver(self, packet: AudioPacket | None) -> None:
         """Called by the bus to deliver a packet (non-blocking)."""
@@ -155,7 +227,7 @@ class AudioSubscription:
         return self
 
     async def __aexit__(self, *exc: Any) -> None:
-        self.stop()
+        await self.aclose()
 
 
 class AudioBus:
@@ -260,6 +332,6 @@ class AudioBus:
     async def stop(self) -> None:
         """Stop the bus and all subscribers."""
         for sub in list(self._subscribers):
-            sub.stop()
+            await sub.aclose()
         if self._rx_active:
             await self._stop_rx()

@@ -536,7 +536,7 @@ class AudioBridge:
         self._rx_task = None
 
         if self._subscription is not None:
-            self._subscription.stop()
+            await self._subscription.aclose()
             self._subscription = None
 
         if self._tx_task and not self._tx_task.done():

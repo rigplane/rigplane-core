@@ -61,10 +61,21 @@ async def test_subscription_start_registers(bus, mock_radio):
 async def test_subscription_stop_unregisters(bus, mock_radio):
     sub = bus.subscribe(name="s1")
     await sub.start()
-    sub.stop()
+    assert sub.stop() is None
     assert not sub.active
-    # Give the scheduled stop task a chance to run
-    await asyncio.sleep(0.05)
+    await sub.aclose()
+    assert bus.subscriber_count == 0
+    mock_radio.stop_audio_rx_opus.assert_awaited_once()
+    assert not bus.rx_active
+
+
+async def test_subscription_aclose_unregisters(bus, mock_radio):
+    sub = bus.subscribe(name="s1")
+    await sub.start()
+
+    await sub.aclose()
+
+    assert not sub.active
     assert bus.subscriber_count == 0
     mock_radio.stop_audio_rx_opus.assert_awaited_once()
     assert not bus.rx_active
@@ -83,7 +94,7 @@ async def test_subscription_double_stop(bus, mock_radio):
     await sub.start()
     sub.stop()
     sub.stop()  # no-op
-    await asyncio.sleep(0.05)
+    await sub.aclose()
     assert bus.subscriber_count == 0
 
 
@@ -102,16 +113,58 @@ async def test_multiple_subscribers(bus, mock_radio):
     assert mock_radio.start_audio_rx_opus.await_count == 1
 
     # Remove first — RX still active
-    s1.stop()
-    await asyncio.sleep(0.05)
+    await s1.aclose()
     assert bus.rx_active
     assert bus.subscriber_count == 1
 
     # Remove second — RX stopped
-    s2.stop()
-    await asyncio.sleep(0.05)
+    await s2.aclose()
     assert not bus.rx_active
     mock_radio.stop_audio_rx_opus.assert_awaited_once()
+
+
+async def test_aclose_blocks_rapid_restart_until_rx_stop_completes(bus, mock_radio):
+    stop_entered = asyncio.Event()
+    release_stop = asyncio.Event()
+    stop_finished = False
+    start_count = 0
+
+    async def start_audio_rx_opus(*_args, **_kwargs):
+        nonlocal start_count
+        start_count += 1
+        if start_count == 2:
+            assert stop_finished
+
+    async def stop_audio_rx_opus():
+        nonlocal stop_finished
+        stop_entered.set()
+        await release_stop.wait()
+        stop_finished = True
+
+    mock_radio.start_audio_rx_opus.side_effect = start_audio_rx_opus
+    mock_radio.stop_audio_rx_opus.side_effect = stop_audio_rx_opus
+
+    old_sub = bus.subscribe(name="old")
+    await old_sub.start()
+
+    close_task = asyncio.create_task(old_sub.aclose())
+    await asyncio.wait_for(stop_entered.wait(), timeout=1.0)
+    assert bus.subscriber_count == 0
+
+    new_sub = bus.subscribe(name="new")
+    start_task = asyncio.create_task(new_sub.start())
+    await asyncio.sleep(0)
+    assert not start_task.done()
+
+    release_stop.set()
+    await close_task
+    await start_task
+
+    assert new_sub.active
+    assert bus.subscriber_count == 1
+    assert mock_radio.start_audio_rx_opus.await_count == 2
+
+    await new_sub.aclose()
 
 
 # ---------------------------------------------------------------------------
@@ -137,8 +190,8 @@ async def test_packet_delivery(bus, mock_radio):
     assert r1 is pkt
     assert r2 is pkt
 
-    s1.stop()
-    s2.stop()
+    await s1.aclose()
+    await s2.aclose()
 
 
 async def test_packet_delivery_none_gap(bus, mock_radio):
@@ -150,7 +203,7 @@ async def test_packet_delivery_none_gap(bus, mock_radio):
     assert result is None
     assert sub._received == 1
 
-    sub.stop()
+    await sub.aclose()
 
 
 async def test_inactive_subscriber_ignores_packets(bus, mock_radio):
@@ -182,7 +235,7 @@ async def test_queue_overflow_drops_oldest(bus, mock_radio):
     assert sub.get_nowait() is pkt2
     assert sub.get_nowait() is pkt3
 
-    sub.stop()
+    await sub.aclose()
 
 
 # ---------------------------------------------------------------------------
@@ -201,7 +254,7 @@ async def test_async_iteration(bus, mock_radio):
         bus._on_opus_packet(p)
 
     # Stop after delivering — iteration should end
-    sub.stop()
+    await sub.aclose()
 
     collected = []
     async for pkt in sub:
@@ -224,8 +277,7 @@ async def test_context_manager(bus, mock_radio):
         result = sub.get_nowait()
         assert result is pkt
 
-    # After exit, unsubscribed (removal is async, need one event loop tick)
-    await asyncio.sleep(0.05)
+    # After exit, unsubscribed via awaited context-manager teardown.
     assert not sub.active
     assert bus.subscriber_count == 0
 
@@ -242,7 +294,6 @@ async def test_bus_stop_all(bus, mock_radio):
     await s2.start()
 
     await bus.stop()
-    await asyncio.sleep(0.05)
     assert not s1.active
     assert not s2.active
     assert bus.subscriber_count == 0
@@ -268,7 +319,7 @@ async def test_subscription_stats(bus, mock_radio):
     assert stats["dropped"] == 0
     assert stats["queued"] == 2
 
-    sub.stop()
+    await sub.aclose()
 
 
 async def test_bus_stats(bus, mock_radio):
@@ -282,8 +333,8 @@ async def test_bus_stats(bus, mock_radio):
     assert stats["subscriber_count"] == 2
     assert len(stats["subscribers"]) == 2
 
-    s1.stop()
-    s2.stop()
+    await s1.aclose()
+    await s2.aclose()
 
 
 # ---------------------------------------------------------------------------
@@ -309,7 +360,7 @@ async def test_get_with_timeout(bus, mock_radio):
     with pytest.raises(asyncio.TimeoutError):
         await sub.get(timeout=0.01)
 
-    sub.stop()
+    await sub.aclose()
 
 
 async def test_remove_nonexistent_subscriber(bus):

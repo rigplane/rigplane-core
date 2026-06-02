@@ -277,7 +277,6 @@ async def test_bridge_start_stop_rx_only():
     await bridge.stop()
     assert not bridge._running
     assert bridge.bridge_state == BridgeState.IDLE
-    await asyncio.sleep(0.05)
     assert radio.audio_bus.subscriber_count == 0
     assert backend.tx_streams[0].stopped_count == 1
 
