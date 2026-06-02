@@ -105,6 +105,71 @@ Known capability strings (grouped by area):
 
 **System:** `power_control`, `dial_lock`, `scan`, `bsr`, `main_sub_tracking`, `lcd_backlight`
 
+## `[state_acquisition]` — State Capability And Policy Metadata
+
+Optional section. Defines provider-specific state acquisition behavior as data
+for future scheduler/adapters. Web and rigctld delivery code must not branch on
+these fields directly.
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `provider` | string | no | Lowercase provider identifier such as `"icom_civ"`, `"yaesu_cat"`, `"xiegu_civ"`, or `"external_rigctld"`. Defaults to `"profile"`. |
+| `default_cadence_seconds` | float | no | Conservative default polling cadence for supported fields. Defaults to `5.0`. |
+| `default_freshness_ttl_seconds` | float | no | TTL before a value should be considered stale. Must be greater than or equal to cadence. Defaults to `15.0`. |
+| `default_reconciliation_priority` | string | no | `"unsolicited"`, `"command_response"`, `"poll"`, or `"last_observation"`. Defaults to `"poll"`. |
+| `adaptive_decay` | bool | no | Whether a scheduler may widen cadence while idle. Defaults to `false`. |
+| `adaptive_decay_idle_multiplier` | float | no | Multiplier for idle cadence when adaptive decay is enabled. Must be greater than `1.0` when enabled. |
+| `adaptive_decay_max_cadence_seconds` | float | no | Maximum widened cadence. |
+| `external_cat_pause` | string | no | `"pause_polling"`, `"coalesce_meters_only"`, or `"continue"`. Defaults to `"pause_polling"`. |
+| `meter_coalescing_window_seconds` | float | no | Default short coalescing window for stream-like meter observations. |
+
+### `[state_acquisition.capabilities]`
+
+Each field path uses the canonical `FieldPath` strings from
+`rigplane.core.state_pipeline_contracts`.
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `unsolicited_push` | string[] | Fields the provider may push without an explicit poll. |
+| `polling_only` | string[] | Fields acquired by explicit polling. |
+| `stream_like_meters` | string[] | Meter fields whose observations may arrive frequently and be coalesced. Each path must use the `meters` family. |
+| `command_response_observable` | string[] | Fields where command responses can confirm state after a write. |
+| `supported_controls` | string[] | Writable/control fields supported by the provider profile. |
+| `unsupported` | string[] | Known-unavailable fields. These must not also appear in acquisition lists. |
+| `unknown` | string[] | Fields without enough evidence. Schedulers should diagnose them as unknown instead of polling forever. |
+
+### `[state_acquisition.field_policies."<field-path>"]`
+
+Optional per-field policy overrides. Supported keys are `cadence_seconds`,
+`freshness_ttl_seconds`, `reconciliation_priority`, `external_cat_pause`,
+`adaptive_decay`, `adaptive_decay_idle_multiplier`,
+`adaptive_decay_max_cadence_seconds`, and `meter_coalescing_window_seconds`.
+Field-specific `meter_coalescing_window_seconds` is valid only for meter paths.
+
+Example:
+
+```toml
+[state_acquisition]
+provider = "xiegu_civ"
+default_cadence_seconds = 2.0
+default_freshness_ttl_seconds = 8.0
+default_reconciliation_priority = "poll"
+external_cat_pause = "pause_polling"
+
+[state_acquisition.capabilities]
+polling_only = [
+    "receiver.main.active.freq_mode.freq_hz",
+    "receiver.main.active.freq_mode.mode",
+]
+command_response_observable = ["receiver.main.active.freq_mode.mode"]
+unsupported = ["global.tx_state.power_on"]
+
+[state_acquisition.field_policies."receiver.main.active.freq_mode.mode"]
+cadence_seconds = 1.0
+freshness_ttl_seconds = 4.0
+reconciliation_priority = "command_response"
+```
+
 ## `[attenuator]` — Attenuator Steps
 
 Optional section. Defines available attenuator values for the radio.

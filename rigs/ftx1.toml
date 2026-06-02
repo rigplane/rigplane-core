@@ -45,6 +45,44 @@ features = [
     "dial_lock",
 ]
 
+[state_acquisition]
+provider = "yaesu_cat"
+default_cadence_seconds = 2.0
+default_freshness_ttl_seconds = 8.0
+default_reconciliation_priority = "poll"
+adaptive_decay = true
+adaptive_decay_idle_multiplier = 3.0
+adaptive_decay_max_cadence_seconds = 20.0
+external_cat_pause = "pause_polling"
+meter_coalescing_window_seconds = 0.2
+
+[state_acquisition.capabilities]
+polling_only = [
+    "receiver.main.active.freq_mode.freq_hz",
+    "receiver.main.active.freq_mode.mode",
+    "receiver.sub.active.freq_mode.freq_hz",
+    "receiver.sub.active.freq_mode.mode",
+]
+stream_like_meters = [
+    "receiver.main.meters.s_meter",
+    "receiver.sub.meters.s_meter",
+    "global.meters.power",
+    "global.meters.swr",
+]
+command_response_observable = [
+    "receiver.main.active.freq_mode.freq_hz",
+    "receiver.main.active.freq_mode.mode",
+    "receiver.sub.active.freq_mode.freq_hz",
+    "receiver.sub.active.freq_mode.mode",
+]
+supported_controls = [
+    "receiver.main.active.freq_mode.freq_hz",
+    "receiver.main.active.freq_mode.mode",
+    "receiver.sub.active.freq_mode.freq_hz",
+    "receiver.sub.active.freq_mode.mode",
+]
+unsupported = ["global.tx_state.power_on"]
+
 [modes]
 list = [
     "LSB", "USB", "CW-U", "FM", "AM",

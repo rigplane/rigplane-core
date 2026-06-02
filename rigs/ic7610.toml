@@ -116,6 +116,44 @@ features = [
     "system_settings",
 ]
 
+[state_acquisition]
+provider = "icom_civ"
+default_cadence_seconds = 2.0
+default_freshness_ttl_seconds = 8.0
+default_reconciliation_priority = "unsolicited"
+adaptive_decay = true
+adaptive_decay_idle_multiplier = 4.0
+adaptive_decay_max_cadence_seconds = 30.0
+external_cat_pause = "pause_polling"
+meter_coalescing_window_seconds = 0.2
+
+[state_acquisition.capabilities]
+unsolicited_push = [
+    "receiver.main.active.freq_mode.freq_hz",
+    "receiver.main.active.freq_mode.mode",
+    "global.tx_state.ptt",
+]
+polling_only = [
+    "receiver.main.operator_controls.af_level",
+    "receiver.main.operator_controls.rf_gain",
+]
+stream_like_meters = [
+    "receiver.main.meters.s_meter",
+    "global.meters.power",
+    "global.meters.swr",
+    "global.meters.alc",
+]
+command_response_observable = [
+    "receiver.main.active.freq_mode.freq_hz",
+    "receiver.main.active.freq_mode.mode",
+    "global.tx_state.ptt",
+]
+supported_controls = [
+    "receiver.main.active.freq_mode.freq_hz",
+    "receiver.main.active.freq_mode.mode",
+    "global.tx_state.ptt",
+]
+
 # ── Parameterized Capabilities ───────────────────────────────────
 
 [attenuator]
