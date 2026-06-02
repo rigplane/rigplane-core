@@ -632,6 +632,8 @@ Deliverables:
 - Produce a cleanup inventory that lists every legacy state/revision/cache owner,
   its replacement, migration status, tests that protect it, and whether it must
   be kept, migrated, or deleted.
+- Produce explicit Web implementation and rigctl/rigctld implementation audits
+  before deleting compatibility paths.
 - Remove or deprecate poller-owned public state revision.
 - Remove duplicate state caches where replaced by the shared state model.
 - Remove manual state-change callback paths once observations cover the same
@@ -645,6 +647,10 @@ Acceptance:
 
 - The cleanup inventory is complete enough that each legacy tail has an owner
   and an explicit keep/migrate/delete decision.
+- The Web audit covers backend server state delivery, frontend state ingestion,
+  and HTTP/WebSocket compatibility.
+- The rigctl/rigctld audit covers command parsing, SET execution, GET state
+  reads, pending/cache behavior, and Hamlib wire compatibility.
 - One canonical state revision remains for Web/HTTP state.
 - No stale silent mutation path exists for supported state fields.
 - No legacy cache can serve fresher-looking data than the shared state model.
@@ -687,6 +693,46 @@ Initial inventory candidates:
   additive freshness metadata.
 - Documentation tails: update Web, rigctld, layer docs, and any outdated poller
   cadence or "poller broadcasts state" descriptions.
+
+Required Web audit surfaces:
+
+- `web_startup`: backend startup wiring for `StatePollable`,
+  `StateNotifyCapable`, `RadioPoller`, and state callbacks.
+- `web/server`: public state building, ETag construction, health/freshness
+  revision handling, `_broadcast_state_update`, and radio connect/power paths
+  that currently perform optimistic state mutation.
+- `web/handlers/control`: initial WebSocket state, command ACK behavior,
+  subscription behavior, and any direct fallback state payload generation.
+- `web/radio_poller`: command execution, acquisition queries, optimistic
+  mutations, `mark_polled`, and all revision bump sites.
+- `web/_delta_encoder`: delta encoding must remain a transport projection, not
+  the owner of canonical state revision.
+- `web/runtime_helpers`: public state schema projection and backward-compatible
+  field names.
+- Frontend transport/store: HTTP polling, WebSocket delta application,
+  revision/healthRevision stale rejection, restart detection, and optimistic
+  patches.
+- Web tests: state endpoint ETags, WebSocket initial/delta messages, frontend
+  stale-state rejection, and meter/frequency regression coverage.
+
+Required rigctl/rigctld audit surfaces:
+
+- `rigctld/contract` and `rigctld/protocol`: command definitions, VFO argument
+  handling, parser behavior, and stable Hamlib-compatible wire responses.
+- `rigctld/handler`: GET/SET dispatch, direct backend calls, `_FallbackRigState`,
+  `_PendingRigState`, read-after-write behavior, mode/data-mode compatibility,
+  and error mapping.
+- `rigctld/server`: per-client lifecycle, rate limiting, circuit breaker
+  interactions, poller startup/shutdown, and command timeout behavior.
+- `rigctld/poller`: state refresh cadence, cache updates, circuit breaker
+  behavior, and whether it should become an acquisition adapter.
+- `rigctld/routing`: level/function routing that currently depends on local
+  cache projections.
+- `rigctld/state_cache` and core `_state_cache` shims: decide whether each use
+  is an executor timeout cache, compatibility shim, or obsolete duplicate.
+- Integration tests: WSJT-X/fldigi-like command sequences, rigctl `F/M/f/m`
+  read-after-write, VFO-prefixed commands, stale/fresh reads, and Hamlib error
+  codes.
 
 Cleanup rules:
 
