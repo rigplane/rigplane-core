@@ -512,8 +512,11 @@ class RadioAcquisitionProfile:
             ),
             label="radio acquisition profile",
         )
+        provider = value["provider"]
+        if not isinstance(provider, str):
+            raise ValueError("provider must be a string")
         return cls(
-            provider=str(value["provider"]),
+            provider=provider,
             capabilities=tuple(
                 FieldCapability.from_dict(item)
                 for item in value.get("capabilities", ())

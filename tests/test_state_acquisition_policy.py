@@ -164,6 +164,9 @@ def test_schema_from_dict_rejects_unknown_and_coerced_values() -> None:
             }
         )
 
+    with pytest.raises(ValueError, match="provider must be a string"):
+        RadioAcquisitionProfile.from_dict({"provider": 123})
+
 
 def test_missing_and_unsupported_capabilities_are_explicitly_unavailable() -> None:
     freq = FieldPath.active("main", "freq_mode", "freq_hz")
