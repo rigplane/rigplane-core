@@ -277,7 +277,6 @@ async def test_bridge_start_stop_rx_only():
     await bridge.stop()
     assert not bridge._running
     assert bridge.bridge_state == BridgeState.IDLE
-    await asyncio.sleep(0.05)
     assert radio.audio_bus.subscriber_count == 0
     assert backend.tx_streams[0].stopped_count == 1
 
@@ -380,6 +379,39 @@ async def test_bridge_tx_path_keeps_pcm_api_for_opus_radio():
     radio.start_audio_tx_pcm.assert_awaited_once()
     radio.push_audio_tx_pcm.assert_awaited()
     radio.push_audio_tx_opus.assert_not_called()
+
+
+async def test_bridge_tx_queue_overflow_drops_oldest_and_counts_overrun():
+    sent_frames: list[bytes] = []
+
+    async def push_audio_tx_pcm(frame: bytes) -> None:
+        sent_frames.append(frame)
+        if len(sent_frames) == 2:
+            bridge._running = False
+
+    radio = _bare_radio(push_audio_tx_pcm=AsyncMock(side_effect=push_audio_tx_pcm))
+    bridge = AudioBridge(radio)
+    bridge._tx_queue = asyncio.Queue(maxsize=2)
+    bridge._tx_stream = types.SimpleNamespace(running=True)
+
+    stale = (1000).to_bytes(2, "little", signed=True) * SAMPLES_PER_FRAME
+    queued = (2000).to_bytes(2, "little", signed=True) * SAMPLES_PER_FRAME
+    live = (3000).to_bytes(2, "little", signed=True) * SAMPLES_PER_FRAME
+
+    # Fill the queue before starting the consumer to model a stalled TX loop.
+    bridge._enqueue_tx(stale)
+    bridge._enqueue_tx(queued)
+    bridge._enqueue_tx(live)
+
+    assert bridge.metrics.tx_overruns == 1
+    assert bridge.stats["tx_overruns"] == 1
+    assert bridge._tx_queue.qsize() == 2
+
+    bridge._running = True
+    await asyncio.wait_for(asyncio.create_task(bridge._tx_loop()), timeout=1.0)
+
+    assert sent_frames == [queued, live]
+    assert bridge._tx_frames == 2
 
 
 # ---------------------------------------------------------------------------

@@ -117,6 +117,10 @@ machine-readable HTTP/WS command catalog — every command name, parameter shape
 capability gate, and batch-eligibility flag — is published in
 [HTTP / WebSocket Command Catalog](command-catalog.md).
 
+The catalog documents the current command surface. A route or command is not a
+stable API contract solely because it appears there; stability still comes from
+explicit promotion into `rigplane.web.api_contract`.
+
 ### Internal And Diagnostic Surface
 
 Browser static files, `src/rigplane/web/static*`, handler class names, queue
@@ -951,6 +955,24 @@ and reports `scopeSource: "audio_fft"`.
 | `/api/v1/ws` | bi-directional | JSON commands/events/state updates |
 | `/api/v1/scope` | server -> client | Binary scope frames |
 | `/api/v1/audio` | bi-directional | JSON control + binary audio frames |
+
+Binary audio frames use an 8-byte header followed by codec-specific payload:
+
+| Offset | Size | Field | Notes |
+|--------|------|-------|-------|
+| `0` | 1 | `msg_type` | `0x10` RX, `0x11` TX |
+| `1` | 1 | `codec` | `0x01` Opus, `0x02` PCM16 |
+| `2` | 2 | `sequence` | uint16 little-endian |
+| `4` | 2 | `sample_rate` | encoded as Hz / 100, uint16 little-endian |
+| `6` | 1 | `channels` | `1` mono, `2` stereo |
+| `7` | 1 | `frame_ms` | advisory frame-duration label |
+| `8..` | variable | payload | codec-specific audio bytes |
+
+`frame_ms` is advisory. Consumers must derive actual audio length from the
+payload and metadata, not from a fixed frame-duration assumption. For PCM16,
+use `payload_bytes / (channels * 2)` to compute sample frames and use the
+header sample rate for playback timing; Opus consumers should decode the
+payload and use decoder output metadata.
 
 ### `/api/v1/ws` command envelope
 
