@@ -20,6 +20,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Literal, cast
 
 from ..commands import build_civ_frame
+from ..core.state_diagnostics import StateDiagnosticsRecorder
 from ..exceptions import ConnectionError, TimeoutError
 from ..radio_state import RadioState, ReceiverState
 from ..types import Mode
@@ -347,6 +348,7 @@ class RigctldHandler:
     ) -> None:
         self._radio = radio
         self._config = config
+        self._state_diagnostics = getattr(radio, "_state_diagnostics", None)
         self._ptt_state: bool | None = None
         # Hamlib-protocol concept: TX VFO label tracked across S/s commands.
         # Not radio state (CI-V has no per-VFO TX-routing register on most
@@ -464,7 +466,16 @@ class RigctldHandler:
             return _err(HamlibError.ENIMPL)
 
         try:
-            return cast(RigctldResponse, await handler_fn(self, cmd))
+            response = cast(RigctldResponse, await handler_fn(self, cmd))
+            if isinstance(self._state_diagnostics, StateDiagnosticsRecorder):
+                self._state_diagnostics.record(
+                    "rigctld_delivery_trigger",
+                    "rigctld.handler",
+                    command=cmd.long_cmd,
+                    is_set=cmd.is_set,
+                    error=int(response.error),
+                )
+            return response
         except ConnectionError:
             logger.warning("I/O error executing %s", cmd.long_cmd)
             return _err(HamlibError.EIO)

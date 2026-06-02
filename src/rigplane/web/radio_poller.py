@@ -67,6 +67,7 @@ from ..capabilities import (
     CAP_VOX,
 )
 from .._queue_pressure import PRESSURE_THRESHOLD
+from ..core.state_diagnostics import StateDiagnosticsRecorder
 from .._state_queries import build_state_queries
 from ..profiles import RadioProfile, resolve_radio_profile
 from ..types import AudioCodec
@@ -325,10 +326,12 @@ class RadioPoller:
         *,
         on_state_event: Callable[[str, dict[str, Any]], None] | None = None,
         radio_state: "RadioState | None" = None,
+        diagnostics: StateDiagnosticsRecorder | None = None,
     ) -> None:
         queue = legacy_queue if legacy_queue is not None else command_queue
         self._radio = radio
         self._radio_state = radio_state
+        self._state_diagnostics = diagnostics
         self._queue = queue
         self._on_state_event = on_state_event
         self._poll_index: int = 0
@@ -408,6 +411,11 @@ class RadioPoller:
     def bump_revision(self) -> None:
         """Increment the revision counter (called on each state change)."""
         self._revision += 1
+        self._record_state_diagnostic(
+            "revision_producing_event",
+            "web.radio_poller",
+            revision=self._revision,
+        )
 
     def mark_polled(self, field: str) -> None:
         """Record the last successful poll time for a logical field."""
@@ -1878,6 +1886,21 @@ class RadioPoller:
                     cmd_byte, sub_byte = self._LOW_TIER[low_idx]
                 else:
                     cmd_byte, sub_byte = self._pick_high_meter(high_idx)
+            self._record_state_diagnostic(
+                "meter_cadence",
+                "web.radio_poller",
+                command=f"0x{cmd_byte:02x}",
+                sub=None if sub_byte is None else f"0x{sub_byte:02x}",
+                poll_index=self._poll_index,
+                serial=self._is_serial,
+            )
+            self._record_state_diagnostic(
+                "backend_read",
+                "web.radio_poller",
+                family="meters",
+                command=f"0x{cmd_byte:02x}",
+                sub=None if sub_byte is None else f"0x{sub_byte:02x}",
+            )
             await self._civ(cmd_byte, sub=sub_byte, data=b"")
         else:
             if not self._STATE_QUERIES:
@@ -1885,6 +1908,14 @@ class RadioPoller:
                 return
             state_idx = (self._poll_index // 2) % len(self._STATE_QUERIES)
             cmd_byte, sub_byte, receiver = self._STATE_QUERIES[state_idx]
+            self._record_state_diagnostic(
+                "backend_read",
+                "web.radio_poller",
+                family="state",
+                command=f"0x{cmd_byte:02x}",
+                sub=None if sub_byte is None else f"0x{sub_byte:02x}",
+                receiver=receiver,
+            )
             await self._send_one_state_query(cmd_byte, sub_byte, receiver)
         self._poll_index += 1
 
@@ -2003,3 +2034,7 @@ class RadioPoller:
     def _emit(self, name: str, data: dict[str, Any]) -> None:
         if self._on_state_event is not None:
             self._on_state_event(name, data)
+
+    def _record_state_diagnostic(self, kind: str, source: str, **details: Any) -> None:
+        if self._state_diagnostics is not None:
+            self._state_diagnostics.record(kind, source, **details)

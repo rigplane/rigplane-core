@@ -38,6 +38,7 @@ from typing import TYPE_CHECKING, Any, Literal, TextIO
 
 from .. import __version__
 from .._bounded_queue import BoundedQueue
+from ..core.state_diagnostics import StateDiagnosticsRecorder
 from ..radio_state import RadioState
 from ..capabilities import CAP_AUDIO, CAP_SCOPE
 from ..exceptions import TimeoutError as RigplaneTimeoutError
@@ -316,6 +317,7 @@ class WebConfig:
     read_only: bool = False  # reject PTT and other transmit commands
     emit_startup_event: bool = False  # emit JSON runtime startup event to stdout
     webrtc_enabled: bool = False  # enable the gated WebRTC transport entrypoint
+    state_diagnostics: bool = False  # enable behavior-neutral state diagnostics
 
 
 class ConnectionManager:
@@ -388,6 +390,9 @@ class WebServer:
     ) -> None:
         self._radio = radio
         self._config = config or WebConfig()
+        self._state_diagnostics = StateDiagnosticsRecorder(
+            enabled=self._config.state_diagnostics
+        )
         self._server: asyncio.Server | None = None
         self._runtime_started_at = time.monotonic()
         self._runtime_log_path: str | None = None
@@ -405,6 +410,11 @@ class WebServer:
         self._radio_state: RadioState = (
             raw_radio_state if isinstance(raw_radio_state, RadioState) else RadioState()
         )
+        if radio is not None:
+            try:
+                setattr(radio, "_state_diagnostics", self._state_diagnostics)
+            except Exception:
+                logger.debug("state diagnostics: failed to attach to radio", exc_info=True)
         self._audio_broadcaster = AudioBroadcaster(radio)
         # Gated WebRTC transport session manager (A2.3 / MOR-307). Lazily
         # constructed on first use so the import stays out of the no-extra path.
@@ -720,6 +730,11 @@ class WebServer:
         """Command queue consumed by RadioPoller."""
         return self._command_queue
 
+    @property
+    def state_diagnostics(self) -> StateDiagnosticsRecorder:
+        """Behavior-neutral state-pipeline diagnostics recorder."""
+        return self._state_diagnostics
+
     def register_control_event_queue(self, q: BoundedQueue[dict[str, Any]]) -> None:
         """Register a ControlHandler event queue for broadcast."""
         self._control_event_queues.add(q)
@@ -759,6 +774,14 @@ class WebServer:
         # Encode state as delta to reduce bandwidth
         delta = self._delta_encoder.encode(body)
         event = {"type": "state_update", "data": delta}
+        self._state_diagnostics.record(
+            "web_delivery_trigger",
+            "web.websocket",
+            revision=body.get("revision"),
+            health_revision=body.get("healthRevision"),
+            delta_type=delta.get("type"),
+            clients=len(self._control_event_queues),
+        )
 
         for q in list(self._control_event_queues):
             try:
@@ -1667,6 +1690,12 @@ class WebServer:
         body_dict = self.build_public_state()
         revision = int(body_dict.get("revision", 0))
         health_revision = int(body_dict.get("healthRevision", 0))
+        self._state_diagnostics.record(
+            "web_delivery_trigger",
+            "web.http_state",
+            revision=revision,
+            health_revision=health_revision,
+        )
         body = json.dumps(body_dict, separators=(",", ":")).encode()
         await _send_json(writer, body, headers, etag=f'"{revision}-{health_revision}"')
 

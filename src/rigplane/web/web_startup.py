@@ -95,6 +95,11 @@ async def start_web_server(server: WebServer) -> None:
 
             def _state_cb(state: RadioState) -> None:
                 server._radio_state = state
+                server.state_diagnostics.record(
+                    "backend_read",
+                    "web.state_poller",
+                    backend=getattr(server._radio, "backend_id", None),
+                )
                 server._broadcast_state_update()
 
             server._state_poller = server._radio.create_state_poller(
@@ -115,6 +120,7 @@ async def start_web_server(server: WebServer) -> None:
                 server._command_queue,
                 on_state_event=server._on_poller_state_event,
                 radio_state=server._radio_state,
+                diagnostics=server.state_diagnostics,
             )
             server._radio_poller.start()
         if _supports_scope_local(server):

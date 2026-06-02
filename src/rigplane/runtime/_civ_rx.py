@@ -39,6 +39,7 @@ from rigplane.commands import (
     parse_scope_vbw_response,
 )
 from rigplane.core.exceptions import ConnectionError, TimeoutError
+from rigplane.core.state_diagnostics import StateDiagnosticsRecorder
 from rigplane.scope import ScopeFrame
 from rigplane.core.types import CivFrame
 
@@ -58,6 +59,30 @@ _FREQ_BCD_LEN = 5
 _SCOPE_BACKLOG_SHED_THRESHOLD = 256
 _SCOPE_BACKLOG_KEEP_LATEST = 64
 _RAW_RECEIVED_FRAME_BYTES_LIMIT = 256
+
+_CIV_STATE_FIELD_FAMILIES = {
+    0x00: "freq_mode",
+    0x01: "freq_mode",
+    0x03: "freq_mode",
+    0x04: "freq_mode",
+    0x07: "vfo",
+    0x0E: "slow_state",
+    0x0F: "operator_toggles",
+    0x10: "operator_controls",
+    0x11: "operator_controls",
+    0x12: "operator_controls",
+    0x14: "operator_controls",
+    0x15: "meters",
+    0x16: "operator_toggles",
+    0x1A: "operator_controls",
+    0x1B: "operator_controls",
+    0x1C: "tx_state",
+    0x1E: "slow_state",
+    0x21: "operator_controls",
+    0x25: "freq_mode",
+    0x26: "freq_mode",
+    0x27: "scope_controls",
+}
 
 __all__ = [
     "CivRuntime",
@@ -996,6 +1021,17 @@ class CivRuntime:
 
             handler = self._RADIO_STATE_HANDLERS.get(frame.command)
             if handler is not None:
+                self._record_state_diagnostic(
+                    "direct_state_write",
+                    "civ_rx",
+                    command=f"0x{frame.command:02x}",
+                    sub=None if frame.sub is None else f"0x{frame.sub:02x}",
+                    receiver=rx_name,
+                    field_family=_CIV_STATE_FIELD_FAMILIES.get(
+                        frame.command, "unknown"
+                    ),
+                    slot_override=slot_override,
+                )
                 handler(self, frame, rx, rs, slot_override)
 
         except (ValueError, IndexError, KeyError, AttributeError, TypeError) as exc:
@@ -1525,6 +1561,12 @@ class CivRuntime:
 
     def _notify_change(self, event_name: str, data: dict[str, Any]) -> None:
         """Notify server of state change (best-effort)."""
+        self._record_state_diagnostic(
+            "revision_producing_event",
+            "civ_rx.notify",
+            event=event_name,
+            data=data,
+        )
         cb = getattr(self._host, "_on_state_change", None)
         if cb is not None:
             logger.debug("civ-rx: notify %s %s", event_name, data)
@@ -1534,6 +1576,11 @@ class CivRuntime:
                 logger.warning("civ-rx: notify failed", exc_info=True)
         else:
             logger.debug("civ-rx: no callback for %s", event_name)
+
+    def _record_state_diagnostic(self, kind: str, source: str, **details: Any) -> None:
+        recorder = getattr(self._host, "_state_diagnostics", None)
+        if isinstance(recorder, StateDiagnosticsRecorder):
+            recorder.record(kind, source, **details)
 
     def _publish_scope_frame(self, frame: ScopeFrame) -> None:
         """Publish a complete scope frame to callback and bounded queue."""
