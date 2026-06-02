@@ -198,6 +198,11 @@ flowchart LR
 
 The target model is single-writer for confirmed state: `StateStore.apply(...)`
 is the only place that changes the consumer-visible confirmed state model.
+To make that enforceable, the state service must own a private state instance
+or immutable snapshot source. Exposing a mutable `RadioState` object as the
+consumer-visible state source is a migration hazard and should be treated as a
+legacy compatibility surface until each field family moves behind the state
+service.
 
 During migration, every legacy writer must be classified before it is touched:
 
@@ -238,6 +243,15 @@ Responsibilities:
 The implementation should avoid web or rigctld imports. Contracts should live
 in a neutral layer; the concrete runtime object can be wired into Web and
 rigctld at startup.
+
+Layer placement rule:
+
+- `core`: neutral contracts only, such as `Observation`, `FieldPath`, and
+  `ChangeSet`. Core must not contain Web or rigctld projection schemas.
+- `runtime`: state service implementation and backend orchestration.
+- `web` and `rigctld`: projections, wire schemas, and compatibility adapters.
+- `profiles`: static capability and acquisition-policy metadata, with loader
+  validation.
 
 #### Observation
 
@@ -610,22 +624,25 @@ migration.
 
 Deliverables:
 
-- Counters for observations by source and field family.
-- Counters for `ChangeSet` emission by field family.
-- Counters for stale/fresh transitions by field family.
-- Counters for reconciliation reads and `ensure_fresh` calls.
-- Broadcast counters for WebSocket and HTTP ETag revision changes.
+- Legacy baseline counters for current CI-V frame ingress by command/subcommand
+  family, including meters and frequency/mode frames.
+- Legacy baseline counters for current `_notify_change(...)` calls and event
+  names.
+- Legacy baseline counters for current poller revision bumps, WebSocket
+  broadcasts, HTTP ETag changes, and frontend accepted/rejected state updates.
 - Command queue latency and executor latency metrics.
-- Serial partial-frame, timeout, and backpressure metrics.
+- Serial partial-frame, timeout, external-CAT pause, and backpressure metrics.
+- Baseline traces that can answer whether X6200 emits unsolicited frequency
+  frames during VFO tuning and how long Web/rigctld take to observe the change.
 
 Acceptance:
 
-- It is possible to compare meter frame ingress rate with Web/UI state delivery
-  rate.
+- It is possible to compare current meter frame ingress rate with current Web/UI
+  state delivery rate.
 - It is possible to determine whether X6200 emits unsolicited frequency frames
   during VFO tuning.
-- It is possible to determine whether reconciliation corrected a missed or
-  stale field.
+- It is possible to identify which legacy mechanism advanced the public state
+  revision for a given Web update.
 - No behavior changes are required in this milestone.
 
 ### Milestone 1: Core Contracts and StateStore
@@ -640,8 +657,13 @@ Deliverables:
 - State ownership inventory that classifies legacy writers as
   `observation_adapter`, `pending_overlay`, `executor_cache`,
   `protocol_local_keep`, `compatibility_shim`, or `delete`.
+- FieldPath registry/table for existing public schema fields, including
+  MAIN/SUB, VFO A/B/active, global fields, scope controls, Yaesu extensions,
+  meter families, and legacy aliases.
 - Per-field freshness metadata and separate freshness/health revision semantics.
 - Active `FreshnessClock`/ticker for freshness deadlines and stale events.
+- New counters for observations, `ChangeSet` emission, freshness transitions,
+  and state/freshness revision movement.
 - Snapshot projection for the existing public state schema.
 - Hook registration for observation/change/command/policy events.
 - Unit tests for revision behavior, no-op applies, receiver paths, and
@@ -657,6 +679,31 @@ Acceptance:
   state revision churn.
 - Full snapshots match the existing public state contract.
 - No Web or rigctld imports are introduced into core/runtime state modules.
+
+### Milestone 1.5: Minimal AcquisitionScheduler
+
+Deliverables:
+
+- Minimal `AcquisitionScheduler` contract and implementation for freshness and
+  reconciliation reads.
+- Dedupe keys and waiter semantics for concurrent requests for the same
+  `FieldPath` family.
+- Priority classes for user freshness, command confirmation, reconciliation,
+  and background telemetry.
+- External-CAT/raw CI-V ownership checks.
+- Icom-safe acquisition path that queues queries and waits for RX-pump
+  observations instead of bypassing fire-and-forget semantics.
+
+Acceptance:
+
+- `ensure_fresh` can request an acquisition read without Web or rigctld calling
+  direct backend getters.
+- Concurrent freshness requests for the same field family share one acquisition
+  request.
+- External-CAT ownership causes freshness requests to pause, fail, or report
+  unavailable state without polluting the owned stream.
+- User-facing commands can still preempt background reconciliation on slow
+  transports.
 
 ### Milestone 2: Icom RX and Web State Migration
 
@@ -695,6 +742,11 @@ Deliverables:
 - Yaesu request-response polling updates the shared state model.
 - External Hamlib/rigctld client backend responses update the shared state
   model.
+- RadioProfile schema additions for acquisition policy metadata: push support,
+  safe poll rates, freshness windows, reconciliation intervals, transport
+  constraints, and meter family support.
+- Profile loader validation for acquisition policy metadata, with conservative
+  defaults for existing profiles.
 - Capability/policy metadata describes push support, safe poll rates, meter
   support, freshness windows, reconciliation intervals, and transport
   constraints.
@@ -705,6 +757,8 @@ Acceptance:
 - Backend differences are represented through capabilities and acquisition
   policies.
 - No model-specific X6200 branch is required for the general state pipeline.
+- The "no model-specific branch" acceptance is backed by profile metadata and
+  loader validation, not implicit backend-name checks.
 
 ### Milestone 4: rigctld Consumer Migration
 
@@ -810,6 +864,22 @@ removing code, create an inventory document and classify every legacy state path
 as `keep`, `migrate`, or `delete`. Each `delete` item needs a replacement path
 and regression coverage.
 
+Before the first implementation code change, complete an audit gate covering:
+
+- all Icom `_RADIO_STATE_HANDLERS`, `_notify_change(...)` sites, and direct
+  `RadioState` writes;
+- Web `RadioPoller` revision, mutation, `mark_polled`, and `bump_revision`
+  sites;
+- Web server public-state building, ETag, broadcast, delta, radio connect, and
+  power paths;
+- frontend HTTP/WS/store revision logic, optimistic overlays, restart handling,
+  and stale rejection;
+- rigctld pending/cache/VFO/protocol-local paths and Hamlib error mapping;
+- `StateCacheCapable`, core `_state_cache`, and any runtime cache exposed to
+  consumers;
+- Yaesu and external rigctld-client direct `RadioState` mutations;
+- profile schema gaps for acquisition policy metadata.
+
 Initial inventory candidates:
 
 - Web `RadioPoller` revision: `_revision`, `revision`, `bump_revision`, and all
@@ -861,6 +931,10 @@ Required Web audit surfaces:
   the owner of canonical state revision.
 - `web/runtime_helpers`: public state schema projection and backward-compatible
   field names.
+- Web revision migration tests must be written before changing wire behavior:
+  HTTP-vs-WebSocket race, full/delta handling, restart/reset, optimistic patch
+  confirmation/expiry, and no overwrite of canonical revision by transport
+  sequence.
 - Frontend transport/store: HTTP polling, WebSocket delta application,
   revision/healthRevision stale rejection, restart detection, and optimistic
   patches.
@@ -887,6 +961,8 @@ Required rigctl/rigctld audit surfaces:
 - Integration tests: WSJT-X/fldigi-like command sequences, rigctl `F/M/f/m`
   read-after-write, VFO-prefixed commands, stale/fresh reads, and Hamlib error
   codes.
+- rigctld caches must not be removed until pending-overlay parity tests prove
+  read-after-write behavior and protocol-local state remains compatible.
 
 Cleanup rules:
 
