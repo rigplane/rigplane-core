@@ -62,6 +62,7 @@ CommandLifecycleState = Literal[
     "failed",
     "timed_out",
     "confirmed",
+    "reconciled",
     "superseded",
 ]
 
