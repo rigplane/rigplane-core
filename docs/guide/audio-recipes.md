@@ -33,6 +33,12 @@ a diagnostic report includes `radio_native.requested`,
 `radio_native.effective`, and `web_rx` when those values are available or
 configured.
 
+For WebSocket audio frames, `frame_ms` is a timing label, not an allocation
+contract. Consumers should derive the actual buffer length from the payload and
+frame metadata: codec, sample rate, channel count, bytes per sample for PCM, and
+the binary payload size. Browser/client code must not assume every frame has a
+fixed duration or fixed payload length.
+
 `ICOM_AUDIO_SAMPLE_RATE` remains an operator override. Set it when you need to
 force the direct LAN conninfo sample rate for testing, hardware compatibility,
 or bandwidth-constrained tunnel paths:
@@ -347,16 +353,28 @@ Run Web UI + audio bridge + rigctld in a single command:
 ```bash
 # Install (audio-bridge deps ship with the core install since v0.19)
 pip install rigplane
-brew install blackhole-2ch  # macOS
+brew install blackhole-2ch blackhole-16ch  # macOS
 
 # Start everything
 rigplane --host 192.168.1.100 --user USER --pass PASS \
-    web --bridge "BlackHole 2ch"
+    web --bridge "BlackHole 2ch" --bridge-tx-device "BlackHole 16ch"
 
 # WSJT-X settings:
 #   Radio: Hamlib NET rigctl, localhost:4532
-#   Audio Input/Output: BlackHole 2ch
+#   Audio Input:  BlackHole 2ch
+#   Audio Output: BlackHole 16ch
 ```
+
+The direction matters:
+
+- `--bridge "BlackHole 2ch"` is the RX playback loopback:
+  **radio RX → rigplane → BlackHole 2ch → WSJT-X Input**.
+- `--bridge-tx-device "BlackHole 16ch"` is the TX capture loopback:
+  **WSJT-X Output → BlackHole 16ch → rigplane → radio TX**.
+
+Use two separate loopback devices for bidirectional operation. Reusing one
+device for both WSJT-X input and output can feed rigplane's RX audio back into
+its TX capture path.
 
 ---
 

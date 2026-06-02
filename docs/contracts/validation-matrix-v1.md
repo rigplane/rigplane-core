@@ -13,9 +13,9 @@ validation matrix for one radio) and validation **artifacts** (the recorded
 evidence of a run). It is the spec that `rigplane.validation` builds against and
 that any tooling consuming validation output should target.
 
-The current release ships the **dry-run** path only. The artifact shape is
-forward-compatible with hardware runs, but hardware execution is intentionally
-not implemented and is double-gated (see [Safety policy](#safety-policy)).
+The current release supports dry-run planning and gated hardware execution. The
+artifact shape covers both modes, and hardware execution is double-gated (see
+[Safety policy](#safety-policy)).
 
 ## Core boundary
 
@@ -140,9 +140,10 @@ skipped.
 
 Hardware execution is additionally double-gated at the CLI: `--hardware`
 requires both the `--allow-hardware` flag and the
-`RIGPLANE_VALIDATION_ALLOW_HARDWARE=1` environment variable. Even with both
-gates open, the current release refuses hardware runs (exit code `3`) because
-the hardware path is not implemented.
+`RIGPLANE_VALIDATION_ALLOW_HARDWARE=1` environment variable. With both gates
+open, the runner executes against hardware and emits a `mode: "hardware"`
+artifact. If either gate is missing, the CLI keeps the run in the safe planning
+path and does not touch a radio.
 
 ## Versioning
 
