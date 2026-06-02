@@ -11,6 +11,51 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.8.0] — 2026-06-02
+
+### Added
+
+- Web transport: added a backend-neutral `Connection` protocol and retargeted
+  the control, scope, and audio handlers to depend on that transport seam rather
+  than the concrete WebSocket wrapper. This is a no-behaviour-change foundation
+  for alternate transports (MOR-274, #1701, 8f2b6c5b).
+- WebRTC transport foundation: added optional `WebRtcDataChannelConnection`
+  support behind the `[webrtc]` extra, including an ordered/reliable `control`
+  DataChannel that drives the unchanged control handler with the same wire frame
+  shape as the WebSocket path (MOR-312, #1707, 047dea74).
+- WebRTC multi-channel support: added `scope` and `audio` DataChannel helpers
+  on the same peer connection, configured unordered and lossy
+  (`maxRetransmits=0`) while reusing the same connection adapter and unchanged
+  handlers (MOR-306, #1710, f1dad721).
+- Discovery: `DiscoveryResponder` can now advertise a station fleet through an
+  additive `radios[]` array with per-radio ids, models, urls, status, and
+  connection state, while preserving the legacy single-radio top-level fields
+  for existing discovery clients (MOR-303, #1705, eb4e2a98).
+
+### Changed
+
+- Audio bus lifecycle: subscriptions now have an awaited close path and bridge
+  teardown waits for subscriber removal, reducing restart races and keeping
+  rapid start/stop diagnostics deterministic (#1568, #1708, dae97577).
+- Realtime TX queue policy: bridge TX overflow now evicts the oldest queued
+  audio frame and keeps the newest live capture frame, preserving bounded
+  latency while continuing to count overruns (#1565, #1708, dae97577).
+- Public docs now clarify WSJT-X loopback device direction, advisory
+  `/api/v1/audio` `frame_ms` semantics, validation workflow status, and command
+  catalog stability boundaries (#1567, #1708, dae97577).
+
+### Fixed
+
+- External CAT reconnect: a leaked external-CAT ownership flag is now reset on
+  radio reconnect, so rigctld and web pollers resume instead of serving stale
+  frequency/state after a managed runtime restart (MOR-301, #1703, c3cb411d).
+- Hamlib bridge startup: partial `open_transport()` failures after CAT session
+  acquisition now release ownership, preventing a failed listener/server setup
+  from leaving pollers paused (#1703, c3cb411d).
+- Web audio TX cleanup: active PCM/Opus TX is now stopped or safely released
+  when an audio websocket disconnects, is cancelled, or exits with an exception;
+  explicit `audio_stop` behavior is preserved (#1566, #1708, dae97577).
+
 ## [2.7.3] — 2026-05-31
 
 ### Fixed
@@ -1558,7 +1603,8 @@ These deprecation closures were announced in v0.19 and dropped on schedule.
 - Transport layer, authentication, CI-V commands, meters, PTT, keep-alive.
 - Clean-room Icom LAN UDP protocol implementation.
 
-[Unreleased]: https://github.com/rigplane/rigplane-core/compare/v2.7.3...HEAD
+[Unreleased]: https://github.com/rigplane/rigplane-core/compare/v2.8.0...HEAD
+[2.8.0]: https://github.com/rigplane/rigplane-core/compare/v2.7.3...v2.8.0
 [2.7.3]: https://github.com/rigplane/rigplane-core/compare/v2.7.2...v2.7.3
 [2.7.2]: https://github.com/rigplane/rigplane-core/compare/v2.7.1...v2.7.2
 [2.7.1]: https://github.com/rigplane/rigplane-core/compare/v2.7.0...v2.7.1
