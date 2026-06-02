@@ -1352,6 +1352,13 @@ def _build_parser() -> argparse.ArgumentParser:
         default=True,
         help="Disable UDP discovery responder (enabled by default on port 8470)",
     )
+    web_p.add_argument(
+        "--webrtc",
+        dest="webrtc_enabled",
+        action="store_true",
+        default=False,
+        help="Enable the gated WebRTC transport entrypoint (requires the [webrtc] extra)",
+    )
 
     station_p = sub.add_parser(
         "station",
@@ -3348,6 +3355,7 @@ async def _cmd_web(radio: Radio, args: argparse.Namespace) -> int:
         config_kwargs["tls"] = True
 
     config_kwargs["discovery"] = getattr(args, "web_discovery", True)
+    config_kwargs["webrtc_enabled"] = getattr(args, "webrtc_enabled", False)
     config_kwargs["radio_model"] = getattr(radio, "model", "IC-7610")
     config = WebConfig(**config_kwargs)
     server = WebServer(radio, config)

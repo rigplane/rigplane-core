@@ -195,6 +195,14 @@ async def stop_web_server(server: WebServer) -> None:
     except (TimeoutError, Exception) as exc:
         logger.warning("audio relay stop: %s", exc)
 
+    # 2a. Tear down any live WebRTC transport sessions (A2.3 / MOR-307).
+    if server._webrtc_sessions is not None:
+        try:
+            await asyncio.wait_for(server._webrtc_sessions.close_all(), timeout=2.0)
+        except (TimeoutError, Exception) as exc:
+            logger.warning("webrtc session close: %s", exc)
+        server._webrtc_sessions = None
+
     # 2b. Stop diagnostic preview sweeper and clean up any in-flight bundles.
     try:
         await asyncio.wait_for(server._diagnostics.stop(), timeout=2.0)

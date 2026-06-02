@@ -78,6 +78,7 @@ if TYPE_CHECKING:
     from ..audio_bridge import AudioBridge
     from ..profiles import RadioProfile
     from ..radio_protocol import Radio
+    from .transport.webrtc_session import WebRtcSessionManager  # noqa: TID251
 
 __all__ = ["WebConfig", "WebServer", "run_web_server"]
 
@@ -314,6 +315,7 @@ class WebConfig:
     discovery_port: int = 8470  # UDP port for discovery
     read_only: bool = False  # reject PTT and other transmit commands
     emit_startup_event: bool = False  # emit JSON runtime startup event to stdout
+    webrtc_enabled: bool = False  # enable the gated WebRTC transport entrypoint
 
 
 class ConnectionManager:
@@ -404,6 +406,9 @@ class WebServer:
             raw_radio_state if isinstance(raw_radio_state, RadioState) else RadioState()
         )
         self._audio_broadcaster = AudioBroadcaster(radio)
+        # Gated WebRTC transport session manager (A2.3 / MOR-307). Lazily
+        # constructed on first use so the import stays out of the no-extra path.
+        self._webrtc_sessions: WebRtcSessionManager | None = None
         # Audio FFT scope: available when radio has audio capability.
         # For non-hardware-scope radios, also feeds /api/v1/scope (legacy).
         # For hardware-scope radios, audio FFT is ONLY on /api/v1/audio-scope.
@@ -3402,6 +3407,180 @@ class WebServer:
             reason,
             resp_body,
             {"Content-Type": "application/json"},
+        )
+
+    # ------------------------------------------------------------------
+    # Gated WebRTC transport entrypoint (A2.3 / MOR-307)
+    # ------------------------------------------------------------------
+
+    def _webrtc_session_manager(self) -> "WebRtcSessionManager":
+        """Return the lazily-built WebRTC session manager for this server."""
+        if self._webrtc_sessions is None:
+            from .transport.webrtc_session import WebRtcSessionManager  # noqa: TID251
+
+            raw_model = (
+                getattr(self._radio, "model", None) if self._radio is not None else None
+            )
+            model = (
+                raw_model if isinstance(raw_model, str) else self._config.radio_model
+            )
+            self._webrtc_sessions = WebRtcSessionManager(self._radio, self, model)
+        return self._webrtc_sessions
+
+    async def _webrtc_unavailable(
+        self, writer: asyncio.StreamWriter, reason: str
+    ) -> None:
+        """Send a clean 'unavailable' response without crashing."""
+        body = json.dumps(
+            {"status": "error", "code": "webrtc_unavailable", "message": reason},
+            separators=(",", ":"),
+        ).encode()
+        await _send_response(
+            writer,
+            503,
+            "Service Unavailable",
+            body,
+            {"Content-Type": "application/json"},
+        )
+
+    async def _handle_webrtc_offer(
+        self,
+        writer: asyncio.StreamWriter,
+        headers: dict[str, str] | None,
+        reader: asyncio.StreamReader | None,
+    ) -> None:
+        """Handle POST /api/v1/transport/webrtc/offer — stateless SDP exchange.
+
+        Gated behind ``WebConfig.webrtc_enabled`` AND the ``[webrtc]`` extra.
+        Negotiates a full session: wraps the offerer's control/scope/audio
+        DataChannels into the unchanged handlers and returns the answer SDP.
+        """
+        if not self._config.webrtc_enabled:
+            await self._webrtc_unavailable(
+                writer, "WebRTC transport disabled (set webrtc_enabled)."
+            )
+            return
+        if not webrtc_available():
+            await self._webrtc_unavailable(
+                writer, "WebRTC backend unavailable; install rigplane[webrtc]."
+            )
+            return
+
+        payload = await self._read_json_body(writer, headers, reader)
+        if payload is None:
+            return
+        sdp = payload.get("sdp")
+        offer_type = payload.get("type", "offer")
+        if not isinstance(sdp, str) or not sdp.strip():
+            err = json.dumps(
+                {
+                    "status": "error",
+                    "code": "missing_sdp",
+                    "message": "Field 'sdp' required.",
+                },
+                separators=(",", ":"),
+            ).encode()
+            await _send_response(
+                writer, 400, "Bad Request", err, {"Content-Type": "application/json"}
+            )
+            return
+
+        from .transport.webrtc_session import WebRtcSessionError  # noqa: TID251
+
+        try:
+            result = await self._webrtc_session_manager().negotiate(sdp, offer_type)
+        except WebRtcSessionError as exc:
+            err = json.dumps(
+                {"status": "error", "code": "sdp_error", "message": str(exc)},
+                separators=(",", ":"),
+            ).encode()
+            await _send_response(
+                writer, 400, "Bad Request", err, {"Content-Type": "application/json"}
+            )
+            return
+
+        resp_body = json.dumps(
+            {"status": "ok", **result}, separators=(",", ":")
+        ).encode()
+        await _send_response(
+            writer, 200, "OK", resp_body, {"Content-Type": "application/json"}
+        )
+
+    async def _handle_webrtc_ice(
+        self,
+        writer: asyncio.StreamWriter,
+        headers: dict[str, str] | None,
+        reader: asyncio.StreamReader | None,
+    ) -> None:
+        """Handle POST /api/v1/transport/webrtc/ice-candidate — ICE trickle.
+
+        Body: ``{"sessionId": <id>, "candidate": {...}}``. The candidate dict
+        mirrors the browser ``RTCIceCandidateInit`` (``candidate`` string plus
+        ``sdpMid`` / ``sdpMLineIndex``). An empty candidate ends gathering.
+        """
+        if not self._config.webrtc_enabled:
+            await self._webrtc_unavailable(
+                writer, "WebRTC transport disabled (set webrtc_enabled)."
+            )
+            return
+        if not webrtc_available():
+            await self._webrtc_unavailable(
+                writer, "WebRTC backend unavailable; install rigplane[webrtc]."
+            )
+            return
+
+        payload = await self._read_json_body(writer, headers, reader)
+        if payload is None:
+            return
+        session_id = payload.get("sessionId")
+        if not isinstance(session_id, str) or not session_id:
+            err = json.dumps(
+                {
+                    "status": "error",
+                    "code": "missing_session",
+                    "message": "Field 'sessionId' required.",
+                },
+                separators=(",", ":"),
+            ).encode()
+            await _send_response(
+                writer, 400, "Bad Request", err, {"Content-Type": "application/json"}
+            )
+            return
+
+        candidate = payload.get("candidate")
+        if candidate is not None and not isinstance(candidate, dict):
+            err = json.dumps(
+                {
+                    "status": "error",
+                    "code": "invalid_candidate",
+                    "message": "'candidate' must be an object or null.",
+                },
+                separators=(",", ":"),
+            ).encode()
+            await _send_response(
+                writer, 400, "Bad Request", err, {"Content-Type": "application/json"}
+            )
+            return
+
+        from .transport.webrtc_session import WebRtcSessionError  # noqa: TID251
+
+        try:
+            await self._webrtc_session_manager().add_ice_candidate(
+                session_id, candidate
+            )
+        except WebRtcSessionError as exc:
+            err = json.dumps(
+                {"status": "error", "code": "ice_error", "message": str(exc)},
+                separators=(",", ":"),
+            ).encode()
+            await _send_response(
+                writer, 404, "Not Found", err, {"Content-Type": "application/json"}
+            )
+            return
+
+        resp_body = json.dumps({"status": "ok"}, separators=(",", ":")).encode()
+        await _send_response(
+            writer, 200, "OK", resp_body, {"Content-Type": "application/json"}
         )
 
     # ------------------------------------------------------------------

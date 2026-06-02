@@ -198,6 +198,21 @@ async def dispatch_http_request(
         await server._handle_rtc_offer(writer, headers, reader)
         return
 
+    # Gated WebRTC transport entrypoint (A2.3 / MOR-307): stateless SDP
+    # exchange + ICE trickle, behind WebConfig.webrtc_enabled + [webrtc] extra.
+    if path == "/api/v1/transport/webrtc/offer":
+        if method != "POST":
+            await _send_response(writer, 405, "Method Not Allowed", b"", {})
+            return
+        await server._handle_webrtc_offer(writer, headers, reader)
+        return
+    if path == "/api/v1/transport/webrtc/ice-candidate":
+        if method != "POST":
+            await _send_response(writer, 405, "Method Not Allowed", b"", {})
+            return
+        await server._handle_webrtc_ice(writer, headers, reader)
+        return
+
     # Diagnostic upload endpoints (issue #1396).
     if path == "/api/v1/diagnose/preview":
         if method != "POST":
