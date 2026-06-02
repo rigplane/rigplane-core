@@ -317,6 +317,7 @@ class FakePendingOverlayStore:
         *,
         source: str,
         session_id: str | None,
+        command_id: str,
         path: FieldPath,
     ) -> Any | None:
         now = self.clock.now()
@@ -326,22 +327,37 @@ class FakePendingOverlayStore:
             if (
                 overlay.source == source
                 and overlay.session_id == session_id
+                and overlay.command_id == command_id
                 and overlay.path == path
             ):
                 return overlay.value
         return None
 
-    def confirm(self, path: FieldPath, value: Any) -> list[PendingOverlay]:
+    def confirm(
+        self,
+        *,
+        source: str,
+        session_id: str | None,
+        command_id: str,
+        path: FieldPath,
+        value: Any,
+    ) -> list[PendingOverlay]:
         matched = [
             overlay
             for overlay in self.overlays
-            if overlay.path == path and overlay.value == value
+            if (
+                overlay.source == source
+                and overlay.session_id == session_id
+                and overlay.command_id == command_id
+                and overlay.path == path
+                and overlay.value == value
+            )
         ]
         if matched:
             self.overlays = [
                 overlay
                 for overlay in self.overlays
-                if not (overlay.path == path and overlay.value == value)
+                if overlay not in matched
             ]
         return matched
 
