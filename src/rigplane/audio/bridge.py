@@ -737,7 +737,11 @@ class AudioBridge:
         try:
             self._tx_queue.put_nowait(frame)
         except asyncio.QueueFull:
+            # Keep TX latency bounded: preserve live capture by evicting stale
+            # queued audio rather than dropping the newest frame.
+            self._tx_queue.get_nowait()
             self._tx_overruns += 1
+            self._tx_queue.put_nowait(frame)
 
     async def _rx_loop(self) -> None:
         """Read packets from AudioBus subscription, decode, write to device."""
