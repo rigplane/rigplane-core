@@ -204,6 +204,7 @@ class FakeStatePipeline:
         if observation.path in self._state and previous == observation.value:
             if previous_freshness == "fresh":
                 return None
+            assert freshness_transition is not None
             changeset = ChangeSet(
                 state_revision=self.state_revision,
                 freshness_revision=self.freshness_revision,
