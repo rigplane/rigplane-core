@@ -15,6 +15,7 @@ from support.state_pipeline import (
     FakeYaesuLikeBackend,
     FieldPath,
     assert_consumer_delta,
+    assert_freshness_only_delta,
     assert_no_consumer_delta,
     assert_revision_counters,
 )
@@ -196,6 +197,26 @@ def test_stale_field_reconciles_after_missed_unsolicited_event() -> None:
     )
 
 
+def test_unchanged_stale_field_emits_freshness_only_delta() -> None:
+    clock = FakeClock()
+    pipeline = FakeStatePipeline(clock=clock)
+    backend = FakeDroppedUnsolicitedBackend(clock=clock)
+
+    pipeline.apply(backend.unsolicited(MAIN_FREQ, 14_074_000, max_age=0.5))
+    clock.advance(0.600)
+    assert pipeline.mark_stale_due()[0].path == MAIN_FREQ
+
+    refresh = pipeline.apply(backend.poll_response(MAIN_FREQ, 14_074_000))
+
+    assert_freshness_only_delta(refresh, path=MAIN_FREQ)
+    assert_revision_counters(
+        pipeline,
+        state_revision=1,
+        freshness_revision=3,
+        observation_seq=2,
+    )
+
+
 def test_backend_variants_and_pending_overlays_are_scoped() -> None:
     clock = FakeClock()
     variants = [
@@ -280,8 +301,15 @@ def test_backend_variants_and_pending_overlays_are_scoped() -> None:
         command_id="cmd-rig-later",
         path=MAIN_FREQ,
     ) == 7_074_000
-
     clock.advance(1.001)
+    assert overlays.confirm(
+        source="rigctld",
+        session_id="rig-1",
+        command_id="cmd-rig-later",
+        path=MAIN_FREQ,
+        value=7_074_000,
+    ) == []
+
     assert overlays.expire_due() == [web, same_value_other_command]
     assert (
         overlays.visible_value(

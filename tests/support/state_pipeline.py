@@ -94,6 +94,7 @@ class ChangeSet:
     changes: tuple[FieldChange, ...]
     timestamp_monotonic: float
     sources: tuple[ObservationSource, ...]
+    freshness: tuple[FreshnessTransition, ...] = ()
     coalesced: bool = False
 
 
@@ -171,7 +172,7 @@ class FakeStatePipeline:
         self._freshness: dict[FieldPath, _FreshnessEntry] = {}
 
     def apply(self, observation: Observation | None) -> ChangeSet | None:
-        """Apply an observation and return a delta only for real value changes."""
+        """Apply an observation and return value or freshness deltas."""
 
         if observation is None:
             return None
@@ -181,6 +182,7 @@ class FakeStatePipeline:
 
         freshness_entry = self._freshness.get(observation.path)
         previous_freshness = freshness_entry.state if freshness_entry else "unknown"
+        freshness_transition: FreshnessTransition | None = None
         self._freshness[observation.path] = _FreshnessEntry(
             state="fresh",
             last_observed=observation.timestamp_monotonic,
@@ -189,10 +191,30 @@ class FakeStatePipeline:
         )
         if previous_freshness != "fresh":
             self.freshness_revision += 1
+            freshness_transition = FreshnessTransition(
+                path=observation.path,
+                previous=previous_freshness,
+                current="fresh",
+                freshness_revision=self.freshness_revision,
+                timestamp_monotonic=observation.timestamp_monotonic,
+            )
+            self.freshness_events.append(freshness_transition)
 
         previous = self._state.get(observation.path)
         if observation.path in self._state and previous == observation.value:
-            return None
+            if previous_freshness == "fresh":
+                return None
+            changeset = ChangeSet(
+                state_revision=self.state_revision,
+                freshness_revision=self.freshness_revision,
+                observation_seq=self.observation_seq,
+                changes=(),
+                timestamp_monotonic=observation.timestamp_monotonic,
+                sources=(observation.source,),
+                freshness=(freshness_transition,),
+            )
+            self.consumer_deltas.append(changeset)
+            return changeset
 
         self._state[observation.path] = observation.value
         self.state_revision += 1
@@ -209,6 +231,9 @@ class FakeStatePipeline:
             ),
             timestamp_monotonic=observation.timestamp_monotonic,
             sources=(observation.source,),
+            freshness=()
+            if freshness_transition is None
+            else (freshness_transition,),
         )
         self.consumer_deltas.append(changeset)
         return changeset
@@ -342,11 +367,13 @@ class FakePendingOverlayStore:
         path: FieldPath,
         value: Any,
     ) -> list[PendingOverlay]:
+        now = self.clock.now()
         matched = [
             overlay
             for overlay in self.overlays
             if (
-                overlay.source == source
+                overlay.expires_at > now
+                and overlay.source == source
                 and overlay.session_id == session_id
                 and overlay.command_id == command_id
                 and overlay.path == path
@@ -528,3 +555,13 @@ def assert_consumer_delta(
 
 def assert_no_consumer_delta(changeset: ChangeSet | None) -> None:
     assert changeset is None
+
+
+def assert_freshness_only_delta(
+    changeset: ChangeSet | None,
+    *,
+    path: FieldPath,
+) -> None:
+    assert changeset is not None
+    assert changeset.changes == ()
+    assert tuple(event.path for event in changeset.freshness) == (path,)
