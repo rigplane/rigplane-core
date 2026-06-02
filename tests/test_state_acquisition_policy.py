@@ -29,6 +29,32 @@ def _write_toml(tmp_path: Path, content: str, name: str = "test.toml") -> Path:
     return path
 
 
+def _minimal_state_acquisition_toml(state_acquisition: str) -> str:
+    return f"""
+    [radio]
+    id = "policy_schema_test"
+    model = "POLICY-SCHEMA-TEST"
+    civ_addr = 0x94
+    receiver_count = 1
+    has_lan = true
+    has_wifi = false
+
+    [capabilities]
+    features = ["audio"]
+
+    [modes]
+    list = ["USB"]
+
+    [filters]
+    list = ["FIL1"]
+
+    [vfo]
+    scheme = "ab"
+
+    {state_acquisition}
+    """
+
+
 def test_radio_acquisition_profile_serializes_capabilities_and_policy() -> None:
     freq = FieldPath.active("main", "freq_mode", "freq_hz")
     s_meter = FieldPath.receiver("main", "meters", "s_meter")
@@ -108,6 +134,29 @@ def test_invalid_capability_and_policy_combinations_are_rejected() -> None:
             )
         },
     )
+
+
+def test_schema_from_dict_rejects_unknown_and_coerced_values() -> None:
+    freq = "receiver.main.active.freq_mode.freq_hz"
+
+    with pytest.raises(ValueError, match="unknown keys.*pollin"):
+        FieldCapability.from_dict({"path": freq, "pollin": True})
+
+    with pytest.raises(ValueError, match="polling must be a bool"):
+        FieldCapability.from_dict({"path": freq, "polling": "false"})
+
+    with pytest.raises(ValueError, match="cadenceSeconds must be a number"):
+        AcquisitionPolicy.from_dict({"cadenceSeconds": "1.0"})
+
+    with pytest.raises(ValueError, match="enabled must be a bool"):
+        AcquisitionPolicy.from_dict(
+            {
+                "adaptiveDecay": {
+                    "enabled": "false",
+                    "idleMultiplier": 2.0,
+                }
+            }
+        )
 
 
 def test_missing_and_unsupported_capabilities_are_explicitly_unavailable() -> None:
@@ -240,6 +289,86 @@ def test_loader_rejects_polling_unsupported_fields(tmp_path: Path) -> None:
 
     with pytest.raises(RigLoadError, match="global.tx_state.power_on"):
         load_rig(_write_toml(tmp_path, toml))
+
+
+def test_loader_rejects_unknown_state_acquisition_keys(
+    tmp_path: Path,
+) -> None:
+    cases: tuple[tuple[str, str], ...] = (
+        (
+            """
+            [state_acquisition]
+            provider = "profile"
+            default_cadence_seconds = 1.0
+            default_freshness_ttl_seconds = 3.0
+            cadance_seconds = 99.0
+            """,
+            r"\[state_acquisition\].*unknown key.*cadance_seconds",
+        ),
+        (
+            """
+            [state_acquisition.capabilities]
+            polling = ["receiver.main.active.freq_mode.freq_hz"]
+            """,
+            r"\[state_acquisition.capabilities\].*unknown key.*polling",
+        ),
+        (
+            """
+            [state_acquisition.field_policies."receiver.main.active.freq_mode.freq_hz"]
+            cadance_seconds = 99.0
+            """,
+            r"\[state_acquisition.field_policies.receiver.main.active.freq_mode.freq_hz\].*unknown key.*cadance_seconds",
+        ),
+    )
+
+    for index, (state_acquisition, message) in enumerate(cases):
+        with pytest.raises(RigLoadError, match=message):
+            load_rig(
+                _write_toml(
+                    tmp_path,
+                    _minimal_state_acquisition_toml(state_acquisition),
+                    name=f"unknown-{index}.toml",
+                )
+            )
+
+
+def test_loader_rejects_coerced_state_acquisition_values(
+    tmp_path: Path,
+) -> None:
+    cases: tuple[tuple[str, str], ...] = (
+        (
+            """
+            [state_acquisition]
+            adaptive_decay = "false"
+            adaptive_decay_idle_multiplier = 2.0
+            """,
+            r"\[state_acquisition\].*adaptive_decay must be a bool",
+        ),
+        (
+            """
+            [state_acquisition]
+            default_cadence_seconds = "1.0"
+            """,
+            r"\[state_acquisition\].*default_cadence_seconds must be a number",
+        ),
+        (
+            """
+            [state_acquisition.field_policies."receiver.main.active.freq_mode.freq_hz"]
+            cadence_seconds = "1.0"
+            """,
+            r"\[state_acquisition.field_policies.receiver.main.active.freq_mode.freq_hz\].*cadence_seconds must be a number",
+        ),
+    )
+
+    for index, (state_acquisition, message) in enumerate(cases):
+        with pytest.raises(RigLoadError, match=message):
+            load_rig(
+                _write_toml(
+                    tmp_path,
+                    _minimal_state_acquisition_toml(state_acquisition),
+                    name=f"coerced-{index}.toml",
+                )
+            )
 
 
 def test_known_profiles_load_with_state_acquisition_compatibility() -> None:

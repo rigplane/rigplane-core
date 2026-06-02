@@ -53,6 +53,17 @@ class ExternalCatPauseBehavior(StrEnum):
 _TOKEN_ALPHABET = frozenset("abcdefghijklmnopqrstuvwxyz0123456789_")
 
 
+def _reject_unknown_keys(
+    value: Mapping[str, Any],
+    *,
+    allowed: frozenset[str],
+    label: str,
+) -> None:
+    unknown = sorted(set(value) - allowed)
+    if unknown:
+        raise ValueError(f"{label} unknown keys: {', '.join(unknown)}")
+
+
 def _validate_token(value: str, *, label: str) -> str:
     if not value:
         raise ValueError(f"{label} must not be empty")
@@ -61,10 +72,28 @@ def _validate_token(value: str, *, label: str) -> str:
     return value
 
 
+def _strict_bool(value: Any, *, label: str) -> bool:
+    if not isinstance(value, bool):
+        raise ValueError(f"{label} must be a bool")
+    return value
+
+
+def _strict_float(value: Any, *, label: str) -> float:
+    if not isinstance(value, (int, float)) or isinstance(value, bool):
+        raise ValueError(f"{label} must be a number")
+    return float(value)
+
+
+def _strict_int(value: Any, *, label: str) -> int:
+    if not isinstance(value, int) or isinstance(value, bool):
+        raise ValueError(f"{label} must be an integer")
+    return value
+
+
 def _optional_positive_float(value: Any, *, label: str) -> float | None:
     if value is None:
         return None
-    number = float(value)
+    number = _strict_float(value, label=label)
     if number <= 0:
         raise ValueError(f"{label} must be positive")
     return number
@@ -79,14 +108,21 @@ class AdaptiveDecayPolicy:
     max_cadence_seconds: float | None = None
 
     def __post_init__(self) -> None:
-        if self.idle_multiplier < 1.0:
+        enabled = _strict_bool(self.enabled, label="enabled")
+        idle_multiplier = _strict_float(
+            self.idle_multiplier,
+            label="idle_multiplier",
+        )
+        if idle_multiplier < 1.0:
             raise ValueError("idle_multiplier must be >= 1.0")
         max_cadence = _optional_positive_float(
             self.max_cadence_seconds,
             label="max_cadence_seconds",
         )
-        if self.enabled and self.idle_multiplier <= 1.0:
+        if enabled and idle_multiplier <= 1.0:
             raise ValueError("enabled adaptive decay requires idle_multiplier > 1.0")
+        object.__setattr__(self, "enabled", enabled)
+        object.__setattr__(self, "idle_multiplier", idle_multiplier)
         object.__setattr__(self, "max_cadence_seconds", max_cadence)
 
     def to_dict(self) -> dict[str, Any]:
@@ -100,13 +136,24 @@ class AdaptiveDecayPolicy:
     def from_dict(cls, value: Mapping[str, Any] | None) -> AdaptiveDecayPolicy:
         if value is None:
             return cls()
+        _reject_unknown_keys(
+            value,
+            allowed=frozenset(
+                {
+                    "enabled",
+                    "idleMultiplier",
+                    "maxCadenceSeconds",
+                }
+            ),
+            label="adaptiveDecay",
+        )
         return cls(
-            enabled=bool(value.get("enabled", False)),
-            idle_multiplier=float(value.get("idleMultiplier", 1.0)),
+            enabled=value.get("enabled", False),
+            idle_multiplier=value.get("idleMultiplier", 1.0),
             max_cadence_seconds=(
                 None
                 if value.get("maxCadenceSeconds") is None
-                else float(value["maxCadenceSeconds"])
+                else value["maxCadenceSeconds"]
             ),
         )
 
@@ -119,10 +166,21 @@ class MeterCoalescingPolicy:
     max_samples: int | None = None
 
     def __post_init__(self) -> None:
-        if self.window_seconds < 0:
+        window_seconds = _strict_float(
+            self.window_seconds,
+            label="window_seconds",
+        )
+        max_samples = (
+            None
+            if self.max_samples is None
+            else _strict_int(self.max_samples, label="max_samples")
+        )
+        if window_seconds < 0:
             raise ValueError("window_seconds must be non-negative")
-        if self.max_samples is not None and self.max_samples <= 0:
+        if max_samples is not None and max_samples <= 0:
             raise ValueError("max_samples must be positive")
+        object.__setattr__(self, "window_seconds", window_seconds)
+        object.__setattr__(self, "max_samples", max_samples)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -137,10 +195,15 @@ class MeterCoalescingPolicy:
     ) -> MeterCoalescingPolicy | None:
         if value is None:
             return None
+        _reject_unknown_keys(
+            value,
+            allowed=frozenset({"windowSeconds", "maxSamples"}),
+            label="meterCoalescing",
+        )
         return cls(
-            window_seconds=float(value["windowSeconds"]),
+            window_seconds=value["windowSeconds"],
             max_samples=(
-                None if value.get("maxSamples") is None else int(value["maxSamples"])
+                None if value.get("maxSamples") is None else value["maxSamples"]
             ),
         )
 
@@ -202,17 +265,36 @@ class AcquisitionPolicy:
 
     @classmethod
     def from_dict(cls, value: Mapping[str, Any]) -> AcquisitionPolicy:
+        _reject_unknown_keys(
+            value,
+            allowed=frozenset(
+                {
+                    "cadenceSeconds",
+                    "freshnessTtlSeconds",
+                    "reconciliationPriority",
+                    "adaptiveDecay",
+                    "externalCatPause",
+                    "meterCoalescing",
+                }
+            ),
+            label="acquisition policy",
+        )
+        cadence_seconds = (
+            None
+            if value.get("cadenceSeconds") is None
+            else _strict_float(value["cadenceSeconds"], label="cadenceSeconds")
+        )
+        freshness_ttl_seconds = (
+            None
+            if value.get("freshnessTtlSeconds") is None
+            else _strict_float(
+                value["freshnessTtlSeconds"],
+                label="freshnessTtlSeconds",
+            )
+        )
         return cls(
-            cadence_seconds=(
-                None
-                if value.get("cadenceSeconds") is None
-                else float(value["cadenceSeconds"])
-            ),
-            freshness_ttl_seconds=(
-                None
-                if value.get("freshnessTtlSeconds") is None
-                else float(value["freshnessTtlSeconds"])
-            ),
+            cadence_seconds=cadence_seconds,
+            freshness_ttl_seconds=freshness_ttl_seconds,
             reconciliation_priority=ReconciliationPriority(
                 str(value.get("reconciliationPriority", ReconciliationPriority.POLL))
             ),
@@ -246,22 +328,40 @@ class FieldCapability:
 
     def __post_init__(self) -> None:
         availability = FieldAvailability(str(self.availability))
+        unsolicited_push = _strict_bool(
+            self.unsolicited_push,
+            label="unsolicitedPush",
+        )
+        polling = _strict_bool(self.polling, label="polling")
+        stream_like = _strict_bool(self.stream_like, label="streamLike")
+        command_response_observable = _strict_bool(
+            self.command_response_observable,
+            label="commandResponseObservable",
+        )
         controls = tuple(str(control) for control in self.supported_controls)
         for control in controls:
             _validate_token(control, label="supported control")
         if availability is not FieldAvailability.SUPPORTED and (
-            self.unsolicited_push
-            or self.polling
-            or self.stream_like
-            or self.command_response_observable
+            unsolicited_push
+            or polling
+            or stream_like
+            or command_response_observable
             or controls
         ):
             raise ValueError(
                 f"{self.path}: unavailable fields cannot be acquired or controlled"
             )
-        if self.stream_like and self.path.family is not FieldFamily.METERS:
+        if stream_like and self.path.family is not FieldFamily.METERS:
             raise ValueError(f"{self.path}: stream_like fields must be meters")
         object.__setattr__(self, "availability", availability)
+        object.__setattr__(self, "unsolicited_push", unsolicited_push)
+        object.__setattr__(self, "polling", polling)
+        object.__setattr__(self, "stream_like", stream_like)
+        object.__setattr__(
+            self,
+            "command_response_observable",
+            command_response_observable,
+        )
         object.__setattr__(self, "supported_controls", controls)
 
     @property
@@ -289,16 +389,33 @@ class FieldCapability:
 
     @classmethod
     def from_dict(cls, value: Mapping[str, Any]) -> FieldCapability:
+        _reject_unknown_keys(
+            value,
+            allowed=frozenset(
+                {
+                    "path",
+                    "availability",
+                    "unsolicitedPush",
+                    "polling",
+                    "streamLike",
+                    "commandResponseObservable",
+                    "supportedControls",
+                    "diagnostic",
+                }
+            ),
+            label="field capability",
+        )
         return cls(
             path=FieldPath.parse(str(value["path"])),
             availability=FieldAvailability(
                 str(value.get("availability", FieldAvailability.SUPPORTED))
             ),
-            unsolicited_push=bool(value.get("unsolicitedPush", False)),
-            polling=bool(value.get("polling", False)),
-            stream_like=bool(value.get("streamLike", False)),
-            command_response_observable=bool(
-                value.get("commandResponseObservable", False)
+            unsolicited_push=value.get("unsolicitedPush", False),
+            polling=value.get("polling", False),
+            stream_like=value.get("streamLike", False),
+            command_response_observable=value.get(
+                "commandResponseObservable",
+                False,
             ),
             supported_controls=tuple(
                 str(control) for control in value.get("supportedControls", ())
@@ -374,6 +491,18 @@ class RadioAcquisitionProfile:
 
     @classmethod
     def from_dict(cls, value: Mapping[str, Any]) -> RadioAcquisitionProfile:
+        _reject_unknown_keys(
+            value,
+            allowed=frozenset(
+                {
+                    "provider",
+                    "capabilities",
+                    "defaultPolicy",
+                    "fieldPolicies",
+                }
+            ),
+            label="radio acquisition profile",
+        )
         return cls(
             provider=str(value["provider"]),
             capabilities=tuple(

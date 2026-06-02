@@ -519,12 +519,51 @@ def _state_path_list(filename: str, section: str, value: Any) -> tuple[FieldPath
         ) from exc
 
 
+def _reject_unknown_keys(
+    filename: str,
+    section: str,
+    raw: dict[str, Any],
+    allowed: frozenset[str],
+) -> None:
+    unknown = sorted(set(raw) - allowed)
+    if unknown:
+        raise RigLoadError(
+            f"{filename}: {section} unknown key {unknown[0]!r}. "
+            f"Valid keys: {sorted(allowed)}"
+        )
+
+
+def _strict_policy_bool(
+    filename: str,
+    prefix: str,
+    key: str,
+    value: Any,
+) -> bool:
+    if not isinstance(value, bool):
+        raise RigLoadError(f"{filename}: {prefix}.{key} must be a bool")
+    return value
+
+
+def _strict_policy_float(
+    filename: str,
+    prefix: str,
+    key: str,
+    value: Any,
+) -> float:
+    if not isinstance(value, (int, float)) or isinstance(value, bool):
+        raise RigLoadError(f"{filename}: {prefix}.{key} must be a number")
+    return float(value)
+
+
 def _policy_seconds(
+    filename: str,
+    prefix: str,
     raw: dict[str, Any],
     key: str,
     *,
     defaults: AcquisitionPolicy | None,
     fallback: float,
+    label: str | None = None,
 ) -> float | None:
     if key in raw:
         value = raw[key]
@@ -532,7 +571,54 @@ def _policy_seconds(
         value = getattr(defaults, key)
     else:
         value = fallback
-    return None if value is None else float(value)
+    key_label = label if label is not None else key
+    return (
+        None
+        if value is None
+        else _strict_policy_float(filename, prefix, key_label, value)
+    )
+
+
+_ACQUISITION_POLICY_KEYS = frozenset(
+    {
+        "cadence_seconds",
+        "freshness_ttl_seconds",
+        "reconciliation_priority",
+        "adaptive_decay",
+        "adaptive_decay_idle_multiplier",
+        "adaptive_decay_max_cadence_seconds",
+        "external_cat_pause",
+        "meter_coalescing_window_seconds",
+    }
+)
+
+_STATE_ACQUISITION_KEYS = frozenset(
+    {
+        "provider",
+        "default_cadence_seconds",
+        "default_freshness_ttl_seconds",
+        "default_reconciliation_priority",
+        "adaptive_decay",
+        "adaptive_decay_idle_multiplier",
+        "adaptive_decay_max_cadence_seconds",
+        "external_cat_pause",
+        "meter_coalescing_window_seconds",
+        "capabilities",
+        "field_policies",
+    }
+)
+
+_STATE_ACQUISITION_CAPABILITY_KEYS = frozenset(
+    {
+        "unsolicited_push",
+        "polling_only",
+        "stream_like_meters",
+        "command_response_observable",
+        "supported_controls",
+        "unsupported",
+        "unknown",
+    }
+)
 
 
 def _parse_acquisition_policy(
@@ -541,20 +627,29 @@ def _parse_acquisition_policy(
     *,
     prefix: str,
     defaults: AcquisitionPolicy | None = None,
+    key_labels: dict[str, str] | None = None,
 ) -> AcquisitionPolicy:
+    _reject_unknown_keys(filename, prefix, raw, _ACQUISITION_POLICY_KEYS)
+    labels = key_labels or {}
     try:
         return AcquisitionPolicy(
             cadence_seconds=_policy_seconds(
+                filename,
+                prefix,
                 raw,
                 "cadence_seconds",
                 defaults=defaults,
                 fallback=5.0,
+                label=labels.get("cadence_seconds"),
             ),
             freshness_ttl_seconds=_policy_seconds(
+                filename,
+                prefix,
                 raw,
                 "freshness_ttl_seconds",
                 defaults=defaults,
                 fallback=15.0,
+                label=labels.get("freshness_ttl_seconds"),
             ),
             reconciliation_priority=ReconciliationPriority(
                 str(
@@ -567,15 +662,24 @@ def _parse_acquisition_policy(
                 )
             ),
             adaptive_decay=AdaptiveDecayPolicy(
-                enabled=bool(
+                enabled=_strict_policy_bool(
+                    filename,
+                    prefix,
+                    labels.get("adaptive_decay", "adaptive_decay"),
                     raw.get(
                         "adaptive_decay",
                         defaults.adaptive_decay.enabled
                         if defaults is not None
                         else False,
-                    )
+                    ),
                 ),
-                idle_multiplier=float(
+                idle_multiplier=_strict_policy_float(
+                    filename,
+                    prefix,
+                    labels.get(
+                        "adaptive_decay_idle_multiplier",
+                        "adaptive_decay_idle_multiplier",
+                    ),
                     raw.get(
                         "adaptive_decay_idle_multiplier",
                         defaults.adaptive_decay.idle_multiplier
@@ -584,11 +688,27 @@ def _parse_acquisition_policy(
                     )
                 ),
                 max_cadence_seconds=(
-                    raw.get(
+                    None
+                    if raw.get(
                         "adaptive_decay_max_cadence_seconds",
                         defaults.adaptive_decay.max_cadence_seconds
                         if defaults is not None
                         else None,
+                    )
+                    is None
+                    else _strict_policy_float(
+                        filename,
+                        prefix,
+                        labels.get(
+                            "adaptive_decay_max_cadence_seconds",
+                            "adaptive_decay_max_cadence_seconds",
+                        ),
+                        raw.get(
+                            "adaptive_decay_max_cadence_seconds",
+                            defaults.adaptive_decay.max_cadence_seconds
+                            if defaults is not None
+                            else None,
+                        ),
                     )
                 ),
             ),
@@ -604,7 +724,15 @@ def _parse_acquisition_policy(
             ),
             meter_coalescing=(
                 MeterCoalescingPolicy(
-                    window_seconds=float(raw["meter_coalescing_window_seconds"])
+                    window_seconds=_strict_policy_float(
+                        filename,
+                        prefix,
+                        labels.get(
+                            "meter_coalescing_window_seconds",
+                            "meter_coalescing_window_seconds",
+                        ),
+                        raw["meter_coalescing_window_seconds"],
+                    )
                 )
                 if "meter_coalescing_window_seconds" in raw
                 else None
@@ -624,12 +752,24 @@ def _parse_state_acquisition(
         return None
     if not isinstance(raw, dict):
         raise RigLoadError(f"{filename}: [state_acquisition] must be a table")
+    _reject_unknown_keys(
+        filename,
+        "[state_acquisition]",
+        raw,
+        _STATE_ACQUISITION_KEYS,
+    )
 
     caps_raw = raw.get("capabilities", {})
     if not isinstance(caps_raw, dict):
         raise RigLoadError(
             f"{filename}: [state_acquisition.capabilities] must be a table"
         )
+    _reject_unknown_keys(
+        filename,
+        "[state_acquisition.capabilities]",
+        caps_raw,
+        _STATE_ACQUISITION_CAPABILITY_KEYS,
+    )
 
     section = "[state_acquisition.capabilities]"
     unsolicited = set(
@@ -741,6 +881,10 @@ def _parse_state_acquisition(
             ),
         },
         prefix="[state_acquisition]",
+        key_labels={
+            "cadence_seconds": "default_cadence_seconds",
+            "freshness_ttl_seconds": "default_freshness_ttl_seconds",
+        },
     )
 
     policies_raw = raw.get("field_policies", {})
