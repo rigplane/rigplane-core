@@ -9,7 +9,7 @@ import socket
 import pytest
 
 from rigplane import __version__
-from rigplane.web.discovery import DiscoveryResponder, RadioInfo
+from rigplane.web.discovery import DiscoveryResponder, FleetRadioInfo, RadioInfo
 
 MAGIC = b"RIGPLANE_DISCOVER\n"
 LEGACY_MAGIC = b"ICOM_LAN_DISCOVER\n"
@@ -181,3 +181,146 @@ class TestDiscoveryResponder:
             assert result is None  # no response, but no crash
         finally:
             await r.stop()
+
+
+class TestDiscoveryResponderFleet:
+    """MOR-303: additive radios[] array for multi-radio fleets."""
+
+    async def _fleet_responder(
+        self,
+        fleet: list[FleetRadioInfo],
+        *,
+        radio_provider=None,
+    ) -> DiscoveryResponder:
+        r = DiscoveryResponder(
+            web_port=8080,
+            tls=False,
+            radio_provider=radio_provider,
+            fleet_provider=lambda: fleet,
+            bind_host="127.0.0.1",
+            discovery_port=0,
+        )
+        await r.start()
+        return r
+
+    async def test_radios_array_emitted_for_fleet(self) -> None:
+        fleet = [
+            FleetRadioInfo(
+                id="radio-a", model="IC-7610", web_port=8081, connected=True
+            ),
+            FleetRadioInfo(
+                id="radio-b", model="IC-705", web_port=8082, connected=False
+            ),
+        ]
+        r = await self._fleet_responder(fleet)
+        try:
+            raw = await _query(r.port, MAGIC)
+        finally:
+            await r.stop()
+        assert raw is not None
+        data = json.loads(raw)
+
+        assert data["kind"] == "station_fleet"
+        radios = data["radios"]
+        assert len(radios) == 2
+        first, second = radios
+        assert first["id"] == "radio-a"
+        assert first["model"] == "IC-7610"
+        assert first["url"].endswith(":8081")
+        assert first["url"].startswith("http://")
+        assert first["connected"] is True
+        assert first["status"] == "connected"
+        assert second["id"] == "radio-b"
+        assert second["url"].endswith(":8082")
+        assert second["connected"] is False
+        assert second["status"] == "available"
+
+    async def test_single_radio_fields_preserved_with_fleet(self) -> None:
+        """Back-compat: legacy single-radio top-level fields stay populated."""
+        fleet = [
+            FleetRadioInfo(
+                id="radio-a", model="IC-7610", web_port=8081, connected=True
+            ),
+            FleetRadioInfo(
+                id="radio-b", model="IC-705", web_port=8082, connected=False
+            ),
+        ]
+        # No dedicated radio_provider — top-level block must derive from first.
+        r = await self._fleet_responder(fleet)
+        try:
+            raw = await _query(r.port, MAGIC)
+        finally:
+            await r.stop()
+        assert raw is not None
+        data = json.loads(raw)
+
+        assert data["schema"] == "rigplane.station.discovery.v1"
+        assert data["radio"]["model"] == "IC-7610"
+        assert data["radio"]["connected"] is True
+        assert data["name"] == "IC-7610"
+        assert data["url"].startswith("http://")
+        assert ":8080" in data["url"]
+        assert data["station"]["radioAvailable"] is True
+        assert data["station"]["readiness"] == "ready_with_radio"
+
+    async def test_radio_provider_overrides_top_level_with_fleet(self) -> None:
+        """When both providers are set, top-level uses radio_provider."""
+        fleet = [
+            FleetRadioInfo(
+                id="radio-b", model="IC-705", web_port=8082, connected=False
+            ),
+        ]
+        r = await self._fleet_responder(
+            fleet,
+            radio_provider=lambda: RadioInfo(model="IC-7610", connected=True),
+        )
+        try:
+            raw = await _query(r.port, MAGIC)
+        finally:
+            await r.stop()
+        assert raw is not None
+        data = json.loads(raw)
+
+        assert data["radio"]["model"] == "IC-7610"
+        assert data["radios"][0]["model"] == "IC-705"
+
+    async def test_per_radio_explicit_status_and_tls(self) -> None:
+        fleet = [
+            FleetRadioInfo(
+                id="radio-a",
+                model="IC-7610",
+                web_port=8443,
+                connected=True,
+                tls=True,
+                status="in_use",
+            ),
+        ]
+        r = await self._fleet_responder(fleet)
+        try:
+            raw = await _query(r.port, MAGIC)
+        finally:
+            await r.stop()
+        assert raw is not None
+        data = json.loads(raw)
+
+        radio = data["radios"][0]
+        assert radio["status"] == "in_use"
+        assert radio["url"].startswith("https://")
+        assert radio["url"].endswith(":8443")
+
+    async def test_empty_fleet_keeps_single_radio_kind(self) -> None:
+        """An empty fleet must not flip kind or add radios[]."""
+        r = await self._fleet_responder(
+            [],
+            radio_provider=lambda: RadioInfo(model="IC-7610", connected=True),
+        )
+        try:
+            raw = await _query(r.port, MAGIC)
+        finally:
+            await r.stop()
+        assert raw is not None
+        data = json.loads(raw)
+
+        assert data["kind"] == "station_server"
+        assert "radios" not in data
+        assert data["radio"]["model"] == "IC-7610"

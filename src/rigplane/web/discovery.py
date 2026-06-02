@@ -20,7 +20,7 @@ from typing import Callable
 
 from .. import __version__
 
-__all__ = ["DiscoveryResponder", "RadioInfo"]
+__all__ = ["DiscoveryResponder", "FleetRadioInfo", "RadioInfo"]
 
 logger = logging.getLogger(__name__)
 
@@ -46,6 +46,25 @@ class RadioInfo:
     readiness: str | None = None
     message: str | None = None
     auth_required: bool = False
+
+
+@dataclass
+class FleetRadioInfo:
+    """Snapshot of a single radio endpoint in a multi-radio fleet.
+
+    A station supervisor runs N child radios on N web ports behind one
+    discovery responder. Each fleet member is described by one of these so the
+    responder can emit an additive ``radios[]`` array. ``web_port`` (and
+    optional per-radio ``tls``) let the responder build a reachable per-radio
+    URL using the same local IP it resolves for the response.
+    """
+
+    id: str
+    model: str
+    web_port: int
+    connected: bool
+    tls: bool | None = None
+    status: str | None = None
 
 
 class _DiscoveryProtocol(asyncio.DatagramProtocol):
@@ -85,6 +104,11 @@ class DiscoveryResponder:
         web_port: HTTP/HTTPS port of the web server.
         tls: Whether the web server uses TLS.
         radio_provider: Callable returning current RadioInfo, or None.
+        fleet_provider: Optional callable returning a list of FleetRadioInfo
+            for a multi-radio fleet. When it yields entries, the response gains
+            an additive ``radios[]`` array; the single-radio top-level fields
+            stay populated (from radio_provider, or from the first fleet entry)
+            for back-compatible parsers.
         name: Human-readable instance name (default: auto from radio model).
         bind_host: Address to bind UDP socket (default: 0.0.0.0).
         discovery_port: UDP port to listen on (default: 8470).
@@ -98,10 +122,12 @@ class DiscoveryResponder:
         name: str | None = None,
         bind_host: str = "0.0.0.0",
         discovery_port: int = _DEFAULT_PORT,
+        fleet_provider: Callable[[], list[FleetRadioInfo]] | None = None,
     ) -> None:
         self._web_port = web_port
         self._tls = tls
         self._radio_provider = radio_provider
+        self._fleet_provider = fleet_provider
         self._name = name
         self._bind_host = bind_host
         self._discovery_port = discovery_port
@@ -155,6 +181,18 @@ class DiscoveryResponder:
         scheme = "https" if self._tls else "http"
 
         radio_info = self._radio_provider() if self._radio_provider else None
+        fleet = self._fleet_provider() if self._fleet_provider else None
+
+        # Back-compat: keep the single-radio top-level block populated from the
+        # first/selected fleet member when no dedicated radio_provider is set,
+        # so legacy parsers still resolve a valid station_server.
+        if radio_info is None and fleet:
+            first = fleet[0]
+            radio_info = RadioInfo(
+                model=first.model,
+                connected=first.connected,
+                radio_ready=first.connected,
+            )
 
         if self._name:
             name = self._name
@@ -208,6 +246,27 @@ class DiscoveryResponder:
                 else None
             ),
         }
+
+        if fleet:
+            payload["kind"] = "station_fleet"
+            payload["radios"] = [
+                {
+                    "id": member.id,
+                    "model": member.model,
+                    "url": (
+                        f"{'https' if member.tls else 'http'}"
+                        f"://{local_ip}:{member.web_port}"
+                    ),
+                    "status": (
+                        member.status
+                        if member.status
+                        else ("connected" if member.connected else "available")
+                    ),
+                    "connected": member.connected,
+                }
+                for member in fleet
+            ]
+
         return json.dumps(payload, separators=(",", ":")).encode("utf-8")
 
 
