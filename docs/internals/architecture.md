@@ -388,7 +388,7 @@ broadcast station schedules for the waterfall display.
 **`web/discovery.py`** — UDP broadcast discovery for radio discovery on the local LAN.
 Used by the web UI to find available radios without manual IP entry.
 
-**`web/rtc.py`** — Real-Time Communication utilities (reserved for future peer-to-peer audio).
+**`web/transport/webrtc.py`** — WebRTC DataChannel transport (gated behind the `[webrtc]` extra). Bridges aiortc DataChannels into the existing control/scope/audio handlers; `web/transport/webrtc_session.py` adds the stateless SDP-exchange entrypoint.
 
 **`web/tls.py`** — TLS support for `server.py`. Certificate loading and HTTPS server setup.
 
