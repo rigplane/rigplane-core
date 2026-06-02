@@ -38,6 +38,14 @@ This starts:
 - **Audio bridge** routing radio RX → BlackHole 2ch, BlackHole 16ch → radio TX
 - **Rigctld** on `:4532` (enabled by default)
 
+Serial USB-audio radios use the same bridge direction: RX audio is played to
+the WSJT-X input loopback, and WSJT-X output is captured and transmitted
+through the radio's USB-audio TX path. Current serial Icom backends arm PCM TX
+before bridge transmit; if TX startup fails, the bridge keeps RX running and
+reports the TX failure instead of logging a per-frame "PCM TX not started"
+error. On Windows callback capture, native callback blocks are re-chunked into
+fixed 20 ms PCM frames before transmit.
+
 **Alternative: rigctld only** (no Web UI or audio bridge):
 
 ```bash

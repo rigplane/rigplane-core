@@ -75,6 +75,8 @@ These routes are part of the Pro/supervisor compatibility surface:
 | `GET` | `/api/v1/eibi/segments?start=<hz>&end=<hz>&on_air=true` | EiBi overlay segments |
 | `GET` | `/api/v1/eibi/identify?freq=<hz>&tolerance=<hz>` | Identify probable broadcast stations |
 | `GET` | `/api/v1/eibi/bands` | EiBi frequency bands |
+| `POST` | `/api/v1/transport/webrtc/offer` | Gated WebRTC DataChannel SDP exchange |
+| `POST` | `/api/v1/transport/webrtc/ice-candidate` | Gated WebRTC ICE trickle for a negotiated session |
 
 ### Control Endpoints
 
@@ -102,6 +104,35 @@ Stable supervisor routes:
 
 WebSocket auth accepts the same bearer header as HTTP. Query token auth is also
 accepted for browser/WebSocket clients that cannot set headers.
+
+### Optional WebRTC DataChannels
+
+WebRTC is optional and requires the `rigplane[webrtc]` extra (`aiortc`). There
+are two gated HTTP signaling routes for the DataChannel transport:
+
+| Method | Path | Status | Gate | Notes |
+|-------|------|--------|------|-------|
+| `POST` | `/api/v1/transport/webrtc/offer` | experimental transport entrypoint | `WebConfig.webrtc_enabled` / CLI `--webrtc` plus `rigplane[webrtc]` | Stateless client-facing SDP exchange that keeps a live session and returns `{ "status": "ok", "sessionId": "...", "sdp": "...", "type": "answer" }`. |
+| `POST` | `/api/v1/transport/webrtc/ice-candidate` | experimental transport entrypoint | `WebConfig.webrtc_enabled` / CLI `--webrtc` plus `rigplane[webrtc]` | Adds a browser `RTCIceCandidateInit` for an existing `sessionId`; `candidate: null` marks end-of-candidates. |
+
+The gated transport path is a transport alternative for the same handlers and
+wire frames used by WebSockets:
+
+| DataChannel | Reliability | Handler contract |
+|-------------|-------------|------------------|
+| `control` | ordered, reliable | Same JSON control frames as `/api/v1/ws` |
+| `scope` | unordered, `maxRetransmits=0` | Same binary scope frames as `/api/v1/scope` |
+| `audio` | unordered, `maxRetransmits=0` | Same JSON/binary audio frames as `/api/v1/audio` |
+
+The gated transport routes are default-off. If `WebConfig.webrtc_enabled` is
+false, or `aiortc` is missing, they return HTTP `503` with
+`code: "webrtc_unavailable"`. The CLI enables the gate with `rigplane web
+--webrtc`; programmatic callers set `WebConfig(webrtc_enabled=True)`.
+
+`/api/v1/info` exposes `capabilities.hasWebrtc`, and `/api/v1/capabilities`
+includes a `webrtc` metadata block. Treat these as optional dependency/audio
+feature-detection metadata; they do not prove the gated
+`/api/v1/transport/webrtc/*` routes are enabled.
 
 ### Structured Command Surface
 
@@ -832,6 +863,57 @@ Current readiness values are:
 - `lan_radio_unsupported_or_not_found`
 - `requires_configuration_or_auth`
 
+UDP discovery responses use the same `rigplane.station.discovery.v1` schema.
+Single-station responses keep the same top-level `kind: "station_server"`,
+`url`, `urls`, `station`, and `radio` fields. Fleet-aware supervisors can add
+an additive `radios` array and set `kind: "station_fleet"` while preserving the
+legacy top-level single-radio fields for older clients:
+
+```json
+{
+  "schema": "rigplane.station.discovery.v1",
+  "kind": "station_fleet",
+  "url": "http://192.168.1.50:58421",
+  "urls": {
+    "base": "http://192.168.1.50:58421",
+    "station": "http://192.168.1.50:58421/api/v1/station"
+  },
+  "station": {
+    "readiness": "ready_with_radio",
+    "radioAvailable": true,
+    "backend": null,
+    "authRequired": false,
+    "message": null
+  },
+  "radio": {
+    "model": "IC-705",
+    "connected": true,
+    "controlConnected": false,
+    "radioReady": true
+  },
+  "radios": [
+    {
+      "id": "portable",
+      "model": "IC-705",
+      "url": "http://192.168.1.50:58421",
+      "status": "connected",
+      "connected": true
+    },
+    {
+      "id": "base",
+      "model": "IC-7610",
+      "url": "http://192.168.1.50:58422",
+      "status": "available",
+      "connected": false
+    }
+  ]
+}
+```
+
+Clients that only understand the single-station response should ignore
+unknown fields and continue using the top-level `url`/`radio` values. Fleet
+clients should prefer `radios[]` when present.
+
 Managed runtimes also emit a single machine-readable startup event to stdout
 after the web listener has bound successfully. Supervisors should use this JSON
 line as the startup contract instead of parsing the human-readable banner:
@@ -872,7 +954,8 @@ Version, model, capability summary, and connection metadata.
     "modes": ["USB", "LSB", "CW", "CW-R", "AM", "FM", "RTTY", "RTTY-R"],
     "filters": ["FIL1", "FIL2", "FIL3"],
     "vfoScheme": "ab",
-    "hasLan": false
+    "hasLan": false,
+    "hasWebrtc": false
   },
   "connection": {
     "rigConnected": true,
@@ -942,19 +1025,27 @@ Notable fields:
 | `scopeSource` | `"hardware"` \| `"audio_fft"` \| `null` | Spectrum data source |
 | `scopeConfig.defaultSpan` | `int` | Hardware scope span or audio FFT bandwidth |
 | `audioConfig` | object | Web audio transport defaults |
+| `webrtc.available` | `bool` | Whether the optional `rigplane[webrtc]` backend is importable; this does not indicate that the default-off `WebConfig.webrtc_enabled` transport gate is enabled |
 
 When radio has audio but no hardware scope support, backend enables `AudioFftScope`
-and reports `scopeSource: "audio_fft"`.
+and reports `scopeSource: "audio_fft"`. The same FFT frames are also available
+on `/api/v1/audio-scope`; hardware-scope radios keep `/api/v1/scope` sourced
+from the radio's hardware scope.
 
 ---
 
-## WebSocket Endpoints
+## WebSocket And DataChannel Endpoints
 
 | Path | Direction | Payload |
 |------|-----------|---------|
 | `/api/v1/ws` | bi-directional | JSON commands/events/state updates |
 | `/api/v1/scope` | server -> client | Binary scope frames |
 | `/api/v1/audio` | bi-directional | JSON control + binary audio frames |
+
+The optional gated WebRTC transport uses `control`, `scope`, and `audio`
+DataChannels that carry the same payloads as these WebSocket routes. WebRTC
+changes only the transport, not command names, event names, binary headers, or
+audio frame semantics.
 
 Binary audio frames use an 8-byte header followed by codec-specific payload:
 

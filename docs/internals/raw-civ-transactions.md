@@ -37,6 +37,16 @@ A transaction rejects overlapping ownership instead of interrupting an existing
 external CAT session; external CAT begin likewise fails cleanly while a raw
 transaction owns the guard.
 
+`CoreRadio.connect()` resets any leaked external-CAT ownership at the LAN
+runtime full-connect boundary. This covers managed-runtime restarts, partial
+bridge startup failures, and LAN `soft_reconnect()` paths that fall back to
+that full `CoreRadio.connect()` after `begin_external_cat_session()` was called
+but the matching `end_external_cat_session()` never ran. A normal soft
+reconnect is not the reset boundary, and the shared serial Icom backend
+`connect()` override does not currently perform this reset. Rigctld and web
+pollers resume ownership only after the new LAN full radio session is
+established.
+
 ## Response Matching
 
 Transactions run on `CivRuntime`, not `RadioPoller`. They reuse the existing
