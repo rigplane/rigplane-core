@@ -629,17 +629,77 @@ Acceptance:
 
 Deliverables:
 
+- Produce a cleanup inventory that lists every legacy state/revision/cache owner,
+  its replacement, migration status, tests that protect it, and whether it must
+  be kept, migrated, or deleted.
 - Remove or deprecate poller-owned public state revision.
 - Remove duplicate state caches where replaced by the shared state model.
+- Remove manual state-change callback paths once observations cover the same
+  fields.
+- Rename or split any transport-local sequence counters that are currently
+  exposed as state revision.
 - Update docs for Web, rigctld, state pipeline, and backend capabilities.
 - Add regression tests for known meter and X6200 frequency-lag scenarios.
 
 Acceptance:
 
+- The cleanup inventory is complete enough that each legacy tail has an owner
+  and an explicit keep/migrate/delete decision.
 - One canonical state revision remains for Web/HTTP state.
 - No stale silent mutation path exists for supported state fields.
+- No legacy cache can serve fresher-looking data than the shared state model.
 - Public API, Web state schema, and rigctld wire behavior remain compatible or
   any additive changes are documented.
+
+## Legacy Cleanup Inventory
+
+Cleanup must be an explicit workstream, not an incidental final sweep. Before
+removing code, create an inventory document and classify every legacy state path
+as `keep`, `migrate`, or `delete`. Each `delete` item needs a replacement path
+and regression coverage.
+
+Initial inventory candidates:
+
+- Web `RadioPoller` revision: `_revision`, `revision`, `bump_revision`, and all
+  command branches that mutate `RadioState` and manually advance the revision.
+- Web public state builder: any code that reads state revision from the poller
+  instead of the state model.
+- Web broadcast path: `_broadcast_state_update`, `_on_radio_state_change`, and
+  `_on_poller_state_event` should consume `ChangeSet`/freshness events rather
+  than acting as state mutation triggers.
+- Web `DeltaEncoder`: keep delta encoding as a representation concern, but stop
+  treating its counter as canonical state revision. Rename or expose a separate
+  transport sequence only if needed.
+- CI-V RX manual notifications: `_notify_change(...)` calls should be replaced
+  by observation emission for all supported state-bearing frames.
+- StatePollable startup callback: direct Web callbacks should migrate to
+  observation application through the shared state model.
+- rigctld local state: `_FallbackRigState`, `_PendingRigState`, and routing
+  caches should either become projections/pending overlays from the state model
+  or be retained only as documented compatibility shims.
+- runtime `_state_cache`: decide field by field whether it remains an executor
+  optimization, migrates into the state model freshness index, or is removed.
+  It must not become a second source of truth for consumers.
+- Web HTTP ETag handling: move from poller revision plus health revision to
+  state revision plus health/freshness revision.
+- Frontend revision assumptions: HTTP polling, WebSocket delta application, and
+  store stale-state rejection should align with canonical state revision and
+  additive freshness metadata.
+- Documentation tails: update Web, rigctld, layer docs, and any outdated poller
+  cadence or "poller broadcasts state" descriptions.
+
+Cleanup rules:
+
+- Do not remove a legacy cache before the corresponding consumer reads from the
+  state model or an explicit compatibility shim.
+- Do not remove optimistic/pending behavior before `CommandIntent` pending
+  overlays preserve read-after-write semantics.
+- Do not remove Web HTTP polling; reduce it to startup/fallback representation
+  of the same state model.
+- Do not remove backend executor caches that are still required for timeout
+  fallback until `ensure_fresh` semantics cover the same behavior.
+- Every deleted path needs a regression test or an explicit reason why the path
+  is unreachable after migration.
 
 ## Coalescing and Rate Limits
 
