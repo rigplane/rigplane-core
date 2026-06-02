@@ -127,6 +127,11 @@ and a separate read cache.
 
 ## Target Architecture
 
+The shared state service is a runtime-level service, not Web-only wiring. Web,
+rigctld, CLI/public API paths, and backend runtimes should receive the same
+service instance through startup composition. This is required for rigctld and
+public SDK calls to observe the same source of truth as Web.
+
 ```mermaid
 flowchart LR
     subgraph "Command Ingress"
@@ -189,6 +194,26 @@ flowchart LR
 
 ### Core Concepts
 
+#### State Ownership and Migration Invariants
+
+The target model is single-writer for confirmed state: `StateStore.apply(...)`
+is the only place that changes the consumer-visible confirmed state model.
+
+During migration, every legacy writer must be classified before it is touched:
+
+- `observation_adapter`: decodes or polls values and emits observations only.
+- `pending_overlay`: records local intent but does not change confirmed state.
+- `executor_cache`: private timeout/pacing cache used by a command executor,
+  never exposed as fresher consumer state.
+- `protocol_local_keep`: protocol/session state that is not radio state, such
+  as rigctld session VFO handling.
+- `compatibility_shim`: temporary projection retained for API/wire stability.
+- `delete`: replaced by the shared state model and protected by tests.
+
+No legacy writer may remain a consumer-visible source of truth once its field
+family has migrated. If a temporary compatibility shim remains, the spec or
+inventory must name its owner, replacement, and removal condition.
+
 #### RadioStateModel / StateStore
 
 The state model owns the canonical `RadioState` instance and the canonical
@@ -221,8 +246,10 @@ command acknowledgement and not a Web event.
 
 Suggested fields:
 
-- `path`: typed state path, such as `main.freq`, `main.s_meter`,
-  `power_meter`, `ptt`.
+- `path`: typed `FieldPath`, not an ad-hoc string. It must distinguish receiver,
+  VFO slot, active slot, global fields, scope controls, and meter families.
+  Examples: `receiver.main.slot.A.freq_hz`, `receiver.sub.active_slot`,
+  `receiver.main.s_meter`, `global.ptt`.
 - `value`: normalized Python value.
 - `source`: `civ_unsolicited`, `poll_response`, `command_response`,
   `state_poller`, `hamlib_response`, `local_reconcile`.
@@ -278,6 +305,25 @@ therefore also needs field freshness and reconciliation:
 This keeps revision useful for transport deltas while preventing it from
 becoming a false correctness signal.
 
+#### FieldPath
+
+`FieldPath` should be a typed schema or enum-like value so pending overlays,
+freshness, and observations cannot accidentally target the wrong receiver or
+VFO slot.
+
+Required path dimensions:
+
+- scope: `global`, `receiver`, `scope_controls`, `connection`, `health`.
+- receiver: `main`, `sub`, or profile-specific receiver id.
+- slot: `active`, `A`, `B`, or `none`.
+- field family: `freq_mode`, `operator_toggles`, `operator_controls`,
+  `meters`, `tx_state`, `slow_state`.
+- field name: normalized `RadioState` field name.
+
+The VFO slot dimension is required because RigPlane supports selected and
+unselected frequency/mode reads. A path such as `main.freq` is not precise
+enough once pending confirmation and freshness windows are field-specific.
+
 #### CommandIntent
 
 A `CommandIntent` represents an attempt to change or query radio state from a
@@ -326,6 +372,20 @@ plain values. Additive metadata can expose pending/confirmed status later if
 needed. Internally, consumers must be able to distinguish confirmed state from
 local intent.
 
+Pending overlays must be scoped. A pending value is keyed by at least:
+
+- source: WebSocket, HTTP, rigctld, public API, internal policy.
+- session/client id when the protocol has session-local behavior.
+- command id.
+- `FieldPath`.
+- target receiver/VFO slot.
+- expiration/confirmation deadline.
+
+Global pending overlays may be used only when read-after-write behavior should
+be visible to every consumer. rigctld protocol-local state, such as split TX VFO
+selection or parser VFO mode, is not radio state and should remain
+`protocol_local_keep` unless a separate state projection is explicitly designed.
+
 ### Acquisition Policy
 
 Acquisition policies decide how values are obtained. They do not own state
@@ -357,6 +417,44 @@ Policy decisions should be capability-driven:
 
 No policy should branch directly on a model name such as X6200 unless the model
 profile exposes that capability or constraint.
+
+#### AcquisitionScheduler and `ensure_fresh`
+
+`ensure_fresh(paths, max_age, timeout, reason)` must not perform arbitrary
+direct backend reads from Web or rigctld. It asks an `AcquisitionScheduler` for
+fresh observations and waits for the state model to observe or reject them.
+
+Scheduler requirements:
+
+- Accept typed `FieldPath` requests and map them to backend/profile-safe
+  acquisition commands.
+- Use priorities: user-facing freshness, command confirmation, reconciliation,
+  background telemetry.
+- Use dedupe keys so concurrent `ensure_fresh` calls for the same field family
+  share one acquisition request.
+- Respect external CAT/raw CI-V ownership and pause or fail freshness requests
+  instead of polluting an owned byte stream.
+- Preserve Icom fire-and-forget polling semantics: queued acquisition requests
+  should emit CI-V queries and wait for RX-pump observations, not bypass the
+  queue with direct request-response reads in the Web poller path.
+- Prefer command preemption over background reconciliation on slow serial links.
+- Surface timeout/unavailable results without inventing synthetic confirmed
+  state.
+
+For Icom, an `ensure_fresh` confirmation should normally be:
+
+```text
+ensure_fresh(path)
+  -> AcquisitionScheduler queues deduped query
+  -> CI-V RX pump receives response
+  -> Observation(path)
+  -> StateStore.apply(...)
+  -> waiter resolves against ChangeSet or fresh unchanged observation
+```
+
+Direct getter-style reads may still exist inside backend executors for public
+API compatibility, but their results must be converted into observations before
+they become consumer-visible state.
 
 ### Hooks
 
@@ -396,7 +494,8 @@ Rules:
 
 - Initial WebSocket state and HTTP snapshot come from the same snapshot builder.
 - HTTP ETag uses the canonical state revision plus health/freshness revision.
-- WebSocket `state_update.revision` uses the canonical state revision.
+- WebSocket state payloads expose canonical state revision as `stateRevision`;
+  legacy `revision`, while present, is only an alias for that canonical value.
 - No state revision advance means "the model has no newer applied value"; it
   does not prove the physical radio did not change.
 - Any transport-local sequence, if needed, should be a separate field and not
@@ -407,6 +506,33 @@ Rules:
   transitions can be observed even when values do not change.
 - HTTP polling can remain as a startup/fallback edge case, but it is not a
   second source of truth.
+
+### WebSocket Wire Revision Semantics
+
+Current WebSocket deltas use an envelope revision that can overwrite the public
+state revision in the frontend. The migration must split these concepts.
+
+Target wire fields:
+
+- `stateRevision`: canonical value revision from `StateStore`.
+- `freshnessRevision`: freshness/health validity revision.
+- `transportSeq`: optional per-WebSocket delta/full-message sequence for
+  ordering and drift detection.
+- legacy `revision`: backward-compatible alias for `stateRevision` only while
+  old clients require it.
+
+Frontend rules:
+
+- A full-state envelope must not overwrite canonical state revision with
+  `transportSeq`.
+- A delta envelope applies only when it has a compatible base or carries enough
+  data to recover.
+- HTTP and WebSocket races are resolved by canonical `stateRevision` plus
+  `freshnessRevision`, not by transport-local sequence.
+- Restart/reset detection must use canonical state revision and server identity
+  if available, not delta encoder sequence.
+- Optimistic patches remain local overlays until confirmed, expired, or
+  superseded by canonical state/freshness changes.
 
 ## Command Flow
 
@@ -509,7 +635,13 @@ Deliverables:
 - Backend-neutral `Observation`, `ChangeSet`, `CommandIntent`, and
   `CommandLifecycleEvent` contracts.
 - `RadioStateModel` / `StateStore` implementation with canonical revision.
+- Typed `FieldPath` schema covering receiver, VFO slot, global, scope control,
+  and meter paths.
+- State ownership inventory that classifies legacy writers as
+  `observation_adapter`, `pending_overlay`, `executor_cache`,
+  `protocol_local_keep`, `compatibility_shim`, or `delete`.
 - Per-field freshness metadata and separate freshness/health revision semantics.
+- Active `FreshnessClock`/ticker for freshness deadlines and stale events.
 - Snapshot projection for the existing public state schema.
 - Hook registration for observation/change/command/policy events.
 - Unit tests for revision behavior, no-op applies, receiver paths, and
@@ -521,6 +653,8 @@ Acceptance:
 - Applying an unchanged observation does not increment state revision.
 - Freshness-only transitions do not fake data changes, but they are visible to
   consumers through freshness/health revision.
+- High-rate observations can advance `observationSeq` without forcing HTTP
+  state revision churn.
 - Full snapshots match the existing public state contract.
 - No Web or rigctld imports are introduced into core/runtime state modules.
 
@@ -531,6 +665,8 @@ Deliverables:
 - Icom CI-V RX path emits observations for frequency, mode, meters, and existing
   notify-backed fields.
 - Icom poll responses feed the same observation path.
+- Icom freshness reads go through `AcquisitionScheduler` and RX-pump
+  observations, respecting fire-and-forget and external-CAT ownership.
 - Web HTTP snapshot and initial WebSocket full state are built from
   `StateStore`.
 - WebSocket deltas use canonical state revision.
@@ -544,6 +680,9 @@ Acceptance:
   unrelated events.
 - If an unsolicited frequency/mode event is missed, a reconciliation read can
   eventually correct the shared state.
+- WebSocket envelope migration separates `stateRevision`, `freshnessRevision`,
+  and `transportSeq`; frontend code does not overwrite canonical state revision
+  with a transport-local sequence.
 - HTTP `/api/v1/state` and WebSocket initial state agree on revision and data.
 - Existing command execution behavior remains compatible.
 
@@ -595,12 +734,16 @@ Deliverables:
 - Command lifecycle events are observable.
 - Pending overlays are correlated with observations and cleared on
   confirmation, supersession, timeout, or failure.
+- Pending overlays are scoped by source/session/command id/`FieldPath` and do
+  not replace protocol-local state such as rigctld session VFO handling.
 
 Acceptance:
 
 - Command ingress is consistent across Web, HTTP, rigctld, and public API.
 - Command success/failure is not confused with confirmed state mutation.
 - User-facing commands can preempt background acquisition on slow transports.
+- rigctld protocol-local state is either preserved as `protocol_local_keep` or
+  explicitly migrated with wire-compatibility tests.
 
 ### Milestone 6: Adaptive Acquisition Policies
 
@@ -647,6 +790,9 @@ Acceptance:
 
 - The cleanup inventory is complete enough that each legacy tail has an owner
   and an explicit keep/migrate/delete decision.
+- Legacy confirmed-state writers are either migrated to observation adapters or
+  retained only as named compatibility shims that cannot be fresher than the
+  state model.
 - The Web audit covers backend server state delivery, frontend state ingestion,
   and HTTP/WebSocket compatibility.
 - The rigctl/rigctld audit covers command parsing, SET execution, GET state
@@ -683,9 +829,15 @@ Initial inventory candidates:
 - rigctld local state: `_FallbackRigState`, `_PendingRigState`, and routing
   caches should either become projections/pending overlays from the state model
   or be retained only as documented compatibility shims.
+- rigctld protocol-local state: `_split_tx_vfo`, client VFO mode, `chk_vfo`
+  parsing state, and similar Hamlib session semantics should be classified
+  separately from radio state and usually kept as protocol-local state.
 - runtime `_state_cache`: decide field by field whether it remains an executor
   optimization, migrates into the state model freshness index, or is removed.
   It must not become a second source of truth for consumers.
+- Public `StateCacheCapable`/`state_cache`: decide and document whether the
+  protocol remains as an executor timeout cache, becomes a projection of
+  `StateStore`, or is deprecated with compatibility guarantees.
 - Web HTTP ETag handling: move from poller revision plus health revision to
   state revision plus health/freshness revision.
 - Frontend revision assumptions: HTTP polling, WebSocket delta application, and
@@ -722,6 +874,8 @@ Required rigctl/rigctld audit surfaces:
 - `rigctld/handler`: GET/SET dispatch, direct backend calls, `_FallbackRigState`,
   `_PendingRigState`, read-after-write behavior, mode/data-mode compatibility,
   and error mapping.
+- rigctld protocol-local behavior: `_split_tx_vfo`, client/session VFO mode,
+  `chk_vfo`, read-only gates, and Hamlib error code mapping.
 - `rigctld/server`: per-client lifecycle, rate limiting, circuit breaker
   interactions, poller startup/shutdown, and command timeout behavior.
 - `rigctld/poller`: state refresh cadence, cache updates, circuit breaker
@@ -749,8 +903,25 @@ Cleanup rules:
 
 ## Coalescing and Rate Limits
 
-The state model should emit canonical changes. Transports may coalesce delivery
-for high-rate fields.
+The state model should emit canonical changes for discrete state. High-rate
+telemetry, especially meters, needs separate sample and delivery semantics so
+HTTP ETags do not churn at meter sample rate while diagnostics still see every
+sample.
+
+Revision semantics:
+
+- `observationSeq`: advances for every decoded observation sample, including
+  meter samples that do not become public state updates.
+- `stateRevision`: advances when the consumer-visible state snapshot changes.
+- `freshnessRevision`: advances when validity/freshness changes without a value
+  change.
+- `transportSeq`: optional WebSocket delivery sequence.
+
+For high-rate meter fields, `StateStore` may retain the latest raw sample and
+emit observation hooks for every sample, while publishing a coalesced `ChangeSet`
+at the configured meter delivery cadence. The published `ChangeSet` must include
+the latest sample in the batch and enough metadata for diagnostics to know how
+many samples were coalesced.
 
 Guidelines:
 
@@ -761,6 +932,25 @@ Guidelines:
 - Coalescing must not hide the last value in a burst.
 - Backpressure must drop or merge background telemetry before user-visible
   command lifecycle events.
+
+## Freshness Clock
+
+Freshness cannot be only a passive timestamp checked during reads. The state
+service needs an active clock/ticker that manages freshness deadlines.
+
+Responsibilities:
+
+- Maintain nearest stale deadlines by field family.
+- Emit freshness events when a field transitions `fresh -> stale`,
+  `unknown -> fresh`, or `stale -> fresh`.
+- Advance `freshnessRevision` when these transitions affect public snapshots or
+  consumers.
+- Trigger reconciliation requests for critical stale fields according to policy.
+- Avoid one timer per leaf field by grouping compatible paths into field
+  families.
+
+This replaces the current pattern where caches become stale only when some
+caller asks them.
 
 ## Error Handling
 
@@ -782,12 +972,20 @@ Guidelines:
 Unit tests:
 
 - `StateStore.apply` increments revision only on real changes.
+- `FieldPath` routing distinguishes MAIN/SUB, VFO A/B, active slot, global, and
+  meter paths.
 - No-op observations do not emit `ChangeSet`.
 - Meter observations can be coalesced without losing latest values.
+- Meter sample accounting advances observation metadata without forcing every
+  sample into HTTP-visible `stateRevision`.
 - Pending overlays confirm, expire, and supersede correctly.
+- Pending overlays are scoped by source/session/command id/path and do not leak
+  across unrelated consumers.
 - Freshness transitions are observable without changing confirmed values.
 - `ensure_fresh` returns fresh cached values, triggers acquisition for stale
   values, and reports unavailable state when acquisition fails.
+- `FreshnessClock` emits stale transitions without requiring another radio frame
+  or consumer read.
 - Snapshot projection matches the existing public state schema.
 
 Icom tests:
@@ -796,16 +994,21 @@ Icom tests:
 - CI-V `0x00`/`0x03` frequency frames produce observations and state changes.
 - Poll responses and unsolicited frames use the same apply path.
 - Reconciliation reads correct stale or missed frequency/mode observations.
+- `ensure_fresh` requests respect external CAT ownership and do not bypass the
+  Icom fire-and-forget RX-pump observation path.
 - Background acquisition uses priority/dedupe where supported.
 
 Web tests:
 
 - Initial WebSocket full state and HTTP `/api/v1/state` are generated from the
   same state revision.
-- WebSocket deltas use canonical state revision.
+- WebSocket deltas use canonical `stateRevision` and optional `transportSeq`
+  without overwriting public snapshot revision.
 - HTTP ETag advances when state revision advances.
 - HTTP ETag or equivalent freshness token advances when critical fields become
   stale even if values do not change.
+- HTTP-vs-WebSocket races, restart/reset detection, optimistic patch
+  confirmation/expiry, and stale rejection are covered by frontend tests.
 
 rigctld tests:
 
@@ -814,6 +1017,9 @@ rigctld tests:
 - Fallback radio reads publish observations.
 - GET paths can request fresh-enough values instead of trusting indefinitely
   stale state.
+- Protocol-local state, including session VFO handling and split TX VFO state,
+  remains wire-compatible and does not masquerade as confirmed radio state.
+- Hamlib error mapping and read-only gates remain compatible.
 
 Integration/fake-backend tests:
 
@@ -833,6 +1039,8 @@ Integration/fake-backend tests:
   diagnostics establish realistic serial and LAN rates.
 - The command confirmation timeout policy should differ by command family and
   transport.
+- The public `StateCacheCapable` compatibility plan should be decided before
+  runtime cache cleanup begins.
 
 ## Review Checklist
 
