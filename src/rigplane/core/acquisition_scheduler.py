@@ -120,6 +120,16 @@ class _PendingEnsureFresh:
     external_cat_owner: str | None
 
 
+@dataclass(frozen=True, slots=True)
+class _AcquisitionRequestKey:
+    scope: str
+    family: str
+    receiver_id: str | None
+    slot: str | None
+    acquisition_method: AcquisitionMethod
+    policy: AcquisitionPolicy
+
+
 _PRIORITY_RANK: dict[AcquisitionPriority, int] = {
     AcquisitionPriority.BACKGROUND: 0,
     AcquisitionPriority.RECONCILIATION: 1,
@@ -151,7 +161,7 @@ class AcquisitionScheduler:
     ) -> None:
         self._profile = profile
         self._clock = clock or FreshnessClock()
-        self._requests_by_key: dict[tuple[FieldPath, ...], AcquisitionRequest] = {}
+        self._requests_by_key: dict[_AcquisitionRequestKey, AcquisitionRequest] = {}
         self._deferred: dict[tuple[FieldPath, ...], _PendingEnsureFresh] = {}
         self._next_id = 1
         self._external_cat_paused = False
@@ -281,31 +291,56 @@ class AcquisitionScheduler:
         requested_at: float,
         external_cat_owner: str | None,
     ) -> AcquisitionRequest:
-        key = paths
-        existing = self._requests_by_key.get(key)
-        if existing is not None:
-            request = self._coalesce(
-                existing,
+        queued: list[AcquisitionRequest] = []
+        for key, grouped_paths in self._request_groups(paths):
+            existing = self._requests_by_key.get(key)
+            if existing is not None:
+                request = self._coalesce(
+                    existing,
+                    paths=grouped_paths,
+                    max_age=max_age,
+                    priority=priority,
+                    reason=reason,
+                    timeout=timeout,
+                    requested_at=requested_at,
+                )
+                self._requests_by_key[key] = request
+                queued.append(request)
+                continue
+
+            request = self._new_request(
+                paths=grouped_paths,
                 max_age=max_age,
                 priority=priority,
                 reason=reason,
                 timeout=timeout,
                 requested_at=requested_at,
+                external_cat_owner=external_cat_owner,
+                acquisition_method=key.acquisition_method,
+                policy=key.policy,
             )
             self._requests_by_key[key] = request
-            return request
+            queued.append(request)
+        return queued[0]
 
-        request = self._new_request(
-            paths=paths,
-            max_age=max_age,
-            priority=priority,
-            reason=reason,
-            timeout=timeout,
-            requested_at=requested_at,
-            external_cat_owner=external_cat_owner,
+    def _request_groups(
+        self,
+        paths: tuple[FieldPath, ...],
+    ) -> tuple[tuple[_AcquisitionRequestKey, tuple[FieldPath, ...]], ...]:
+        grouped: dict[_AcquisitionRequestKey, list[FieldPath]] = {}
+        for path in paths:
+            capability = self._profile.capability_for(path)
+            policy = self._profile.policy_for(path)
+            key = _request_key(
+                path,
+                acquisition_method=_capability_method(capability),
+                policy=policy,
+            )
+            grouped.setdefault(key, []).append(path)
+        return tuple(
+            (key, tuple(sorted(group_paths, key=str)))
+            for key, group_paths in grouped.items()
         )
-        self._requests_by_key[key] = request
-        return request
 
     def _new_request(
         self,
@@ -317,11 +352,11 @@ class AcquisitionScheduler:
         timeout: float | None,
         requested_at: float,
         external_cat_owner: str | None,
+        acquisition_method: AcquisitionMethod,
+        policy: AcquisitionPolicy,
     ) -> AcquisitionRequest:
-        capabilities = tuple(self._profile.capability_for(path) for path in paths)
         request_id = f"acq-{self._next_id}"
         self._next_id += 1
-        method = _select_method(capabilities)
         return AcquisitionRequest(
             id=request_id,
             paths=paths,
@@ -333,8 +368,8 @@ class AcquisitionScheduler:
             max_age=max_age,
             timeout=timeout,
             provider=self._profile.provider,
-            acquisition_method=method,
-            policy=self._merged_policy(paths),
+            acquisition_method=acquisition_method,
+            policy=policy,
             capability_ids=tuple(str(path) for path in paths),
             external_cat_paused=self._external_cat_paused,
             external_cat_owner=external_cat_owner,
@@ -348,6 +383,7 @@ class AcquisitionScheduler:
         self,
         existing: AcquisitionRequest,
         *,
+        paths: tuple[FieldPath, ...],
         max_age: float,
         priority: AcquisitionPriority,
         reason: str,
@@ -363,13 +399,20 @@ class AcquisitionScheduler:
         if reason not in reasons:
             reasons = (*reasons, reason)
         deadline = min(existing.deadline_monotonic, requested_at + max_age)
+        merged_paths = _merge_paths(existing.paths, paths)
         return replace(
             existing,
+            paths=merged_paths,
             priority=priority_to_keep,
             max_age=min(existing.max_age, max_age),
             timeout=_min_optional_timeout(existing.timeout, timeout),
             deadline_monotonic=deadline,
             reasons=reasons,
+            capability_ids=tuple(str(path) for path in merged_paths),
+            source_metadata={
+                "provider": self._profile.provider,
+                "capabilityId": ",".join(str(path) for path in merged_paths),
+            },
         )
 
     def _defer(self, item: _PendingEnsureFresh) -> None:
@@ -431,10 +474,6 @@ class AcquisitionScheduler:
             return True
         return False
 
-    def _merged_policy(self, paths: Sequence[FieldPath]) -> AcquisitionPolicy:
-        return self._profile.policy_for(paths[0])
-
-
 class RadioStateModelService:
     """Small service API joining StateStore freshness and scheduler requests."""
 
@@ -473,6 +512,10 @@ class RadioStateModelService:
             except KeyError:
                 break
             if field.freshness is not FreshnessState.FRESH:
+                break
+            if field.max_age is not None and now - field.last_observed_monotonic > (
+                field.max_age
+            ):
                 break
             if now - field.last_observed_monotonic > max_age:
                 break
@@ -521,12 +564,37 @@ def _has_acquisition_hook(capability: FieldCapability) -> bool:
     )
 
 
-def _select_method(capabilities: Sequence[FieldCapability]) -> AcquisitionMethod:
-    if any(capability.can_poll for capability in capabilities):
+def _request_key(
+    path: FieldPath,
+    *,
+    acquisition_method: AcquisitionMethod,
+    policy: AcquisitionPolicy,
+) -> _AcquisitionRequestKey:
+    return _AcquisitionRequestKey(
+        scope=path.scope.value,
+        family=path.family.value,
+        receiver_id=path.receiver_id,
+        slot=None if path.slot is None else path.slot.value,
+        acquisition_method=acquisition_method,
+        policy=policy,
+    )
+
+
+def _capability_method(capability: FieldCapability) -> AcquisitionMethod:
+    if capability.can_poll:
         return "poll"
-    if any(capability.command_response_observable for capability in capabilities):
+    if capability.command_response_observable:
         return "command_response"
-    return "wait_for_unsolicited"
+    if capability.unsolicited_push:
+        return "wait_for_unsolicited"
+    raise ValueError(f"{capability.path}: no acquisition hook is declared")
+
+
+def _merge_paths(
+    left: tuple[FieldPath, ...],
+    right: tuple[FieldPath, ...],
+) -> tuple[FieldPath, ...]:
+    return tuple(sorted({*left, *right}, key=str))
 
 
 def _min_optional_timeout(left: float | None, right: float | None) -> float | None:

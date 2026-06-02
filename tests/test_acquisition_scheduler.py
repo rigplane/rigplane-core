@@ -161,6 +161,40 @@ def test_duplicate_requests_coalesce_with_highest_priority_and_urgent_deadline()
     assert scheduler.pending_requests() == (high.request,)
 
 
+def test_same_family_requests_share_one_acquisition_request() -> None:
+    clock = FreshnessClock(start=35.0)
+    freq = FieldPath.active("main", "freq_mode", "freq_hz")
+    mode = FieldPath.active("main", "freq_mode", "mode")
+    scheduler = AcquisitionScheduler(profile=_profile([freq, mode]), clock=clock)
+
+    freq_result = scheduler.ensure_fresh(
+        freq,
+        max_age=5.0,
+        priority="background",
+        reason="background-freq",
+        timeout=10.0,
+    )
+    clock.advance(1.0)
+    mode_result = scheduler.ensure_fresh(
+        mode,
+        max_age=0.5,
+        priority="user",
+        reason="visible-mode",
+        timeout=2.0,
+    )
+
+    assert freq_result.request is not None
+    assert mode_result.request is not None
+    assert mode_result.request.id == freq_result.request.id
+    assert mode_result.request.paths == (freq, mode)
+    assert mode_result.request.priority is AcquisitionPriority.USER
+    assert mode_result.request.deadline_monotonic == 36.5
+    assert mode_result.request.max_age == 0.5
+    assert mode_result.request.timeout == 2.0
+    assert mode_result.request.reasons == ("background-freq", "visible-mode")
+    assert scheduler.pending_requests() == (mode_result.request,)
+
+
 def test_user_facing_requests_preempt_background_telemetry() -> None:
     clock = FreshnessClock(start=40.0)
     meter = FieldPath.receiver("main", "meters", "s_meter")
@@ -300,6 +334,77 @@ def test_policy_inputs_for_meters_and_slow_controls_are_preserved_on_request() -
     assert control_result.request.acquisition_method == "poll"
 
 
+def test_mixed_pollable_and_unsolicited_paths_are_not_emitted_as_one_poll() -> None:
+    clock = FreshnessClock(start=85.0)
+    freq = FieldPath.active("main", "freq_mode", "freq_hz")
+    ptt = FieldPath.global_("tx_state", "ptt")
+    profile = RadioAcquisitionProfile(
+        provider="test_provider",
+        capabilities=(
+            FieldCapability(path=freq, polling=True),
+            FieldCapability(path=ptt, unsolicited_push=True),
+        ),
+    )
+    scheduler = AcquisitionScheduler(profile=profile, clock=clock)
+
+    result = scheduler.ensure_fresh(
+        [freq, ptt],
+        max_age=1.0,
+        priority="user",
+        reason="snapshot",
+    )
+
+    assert result.status is AcquisitionStatus.QUEUED
+    requests = scheduler.pending_requests()
+    assert len(requests) == 2
+    assert not any(
+        request.acquisition_method == "poll"
+        and set(request.paths) == {freq, ptt}
+        for request in requests
+    )
+    requests_by_path = {request.paths: request for request in requests}
+    assert requests_by_path[(freq,)].acquisition_method == "poll"
+    assert requests_by_path[(ptt,)].acquisition_method == "wait_for_unsolicited"
+
+
+def test_mixed_meter_and_frequency_request_preserves_meter_coalescing_policy() -> None:
+    clock = FreshnessClock(start=86.0)
+    meter = FieldPath.receiver("main", "meters", "s_meter")
+    freq = FieldPath.active("main", "freq_mode", "freq_hz")
+    profile = _profile(
+        [meter, freq],
+        field_policies={
+            meter: AcquisitionPolicy(
+                cadence_seconds=0.2,
+                freshness_ttl_seconds=0.6,
+                meter_coalescing=MeterCoalescingPolicy(window_seconds=0.1),
+            ),
+            freq: AcquisitionPolicy(
+                cadence_seconds=5.0,
+                freshness_ttl_seconds=15.0,
+            ),
+        },
+    )
+    scheduler = AcquisitionScheduler(profile=profile, clock=clock)
+
+    result = scheduler.ensure_fresh(
+        [meter, freq],
+        max_age=1.0,
+        priority="normal",
+        reason="mixed-panel",
+    )
+
+    assert result.status is AcquisitionStatus.QUEUED
+    requests = scheduler.pending_requests()
+    assert len(requests) == 2
+    requests_by_path = {request.paths: request for request in requests}
+    meter_request = requests_by_path[(meter,)]
+    freq_request = requests_by_path[(freq,)]
+    assert meter_request.policy.meter_coalescing is not None
+    assert meter_request.policy.meter_coalescing.window_seconds == 0.1
+    assert freq_request.policy.meter_coalescing is None
+
+
 def test_scheduler_output_can_return_observation_applied_through_state_store() -> None:
     clock = FreshnessClock(start=90.0)
     freq = FieldPath.active("main", "freq_mode", "freq_hz")
@@ -332,3 +437,27 @@ def test_scheduler_output_can_return_observation_applied_through_state_store() -
 
     assert change.revision == 1
     assert store.snapshot().field(freq).value == 14_074_000
+
+
+def test_model_service_queues_when_field_observation_max_age_expired_without_mark_stale() -> (
+    None
+):
+    clock = FreshnessClock(start=100.0)
+    freq = FieldPath.active("main", "freq_mode", "freq_hz")
+    store = StateStore(freshness_clock=clock)
+    store.apply(_observation(freq, 14_074_000, at=clock.now(), max_age=1.0))
+    scheduler = AcquisitionScheduler(profile=_profile([freq]), clock=clock)
+    service = RadioStateModelService(store=store, scheduler=scheduler, clock=clock)
+    clock.advance(1.1)
+
+    result = service.ensure_fresh(
+        freq,
+        max_age=10.0,
+        priority="user",
+        reason="snapshot",
+    )
+
+    assert result.status is AcquisitionStatus.QUEUED
+    assert result.fields == ()
+    assert result.request is not None
+    assert result.request.paths == (freq,)
