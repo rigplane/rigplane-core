@@ -130,6 +130,21 @@ def _validate_source(value: str, allowed: frozenset[str], *, label: str) -> str:
     return value
 
 
+def _required(value: Mapping[str, Any], key: str) -> Any:
+    if key not in value:
+        raise KeyError(key)
+    return value[key]
+
+
+def _optional_bool(value: Mapping[str, Any], key: str, *, default: bool) -> bool:
+    if key not in value:
+        return default
+    item = value[key]
+    if not isinstance(item, bool):
+        raise TypeError(f"{key} must be a boolean")
+    return item
+
+
 def _observation_source(value: Any) -> ObservationSource:
     text = str(value)
     _validate_source(text, _OBSERVATION_SOURCES, label="observation source")
@@ -201,6 +216,8 @@ class FieldPath:
                 )
         if scope is FieldScope.SCOPE_CONTROLS and slot is not None:
             raise ValueError("scope_controls field paths cannot include VFO slot")
+        if scope is FieldScope.SCOPE_CONTROLS and family is not FieldFamily.DISPLAY:
+            raise ValueError("scope_controls field paths must use display family")
         if slot is VfoSlot.ACTIVE and scope is not FieldScope.RECEIVER:
             raise ValueError("active VFO slot is only valid for receiver fields")
         if slot is not None and family is not FieldFamily.FREQ_MODE:
@@ -573,9 +590,9 @@ class CapabilityMetadata:
         return cls(
             path=FieldPath.parse(str(value["path"])),
             sources=tuple(_observation_source(source) for source in value["sources"]),
-            readable=bool(value.get("readable", True)),
-            writable=bool(value.get("writable", False)),
-            unsolicited=bool(value.get("unsolicited", False)),
+            readable=_optional_bool(value, "readable", default=True),
+            writable=_optional_bool(value, "writable", default=False),
+            unsolicited=_optional_bool(value, "unsolicited", default=False),
             max_age=None if value.get("maxAge") is None else float(value["maxAge"]),
         )
 
@@ -613,7 +630,7 @@ class Observation:
     def from_dict(cls, value: Mapping[str, Any]) -> Observation:
         return cls(
             path=FieldPath.from_dict(str(value["path"])),
-            value=value.get("value"),
+            value=_required(value, "value"),
             source=SourceMetadata.from_dict(value["source"]),
             timestamp_monotonic=float(value["timestampMonotonic"]),
             quality=tuple(str(item) for item in value.get("quality", ("confirmed",))),
@@ -645,8 +662,8 @@ class FieldChange:
     def from_dict(cls, value: Mapping[str, Any]) -> FieldChange:
         return cls(
             path=FieldPath.from_dict(str(value["path"])),
-            previous=value.get("previous"),
-            current=value.get("current"),
+            previous=_required(value, "previous"),
+            current=_required(value, "current"),
         )
 
 
@@ -690,7 +707,7 @@ class ChangeSet:
             changes=tuple(FieldChange.from_dict(item) for item in value["changes"]),
             timestamp_monotonic=float(value["timestampMonotonic"]),
             sources=tuple(SourceMetadata.from_dict(item) for item in value["sources"]),
-            coalesced=bool(value.get("coalesced", False)),
+            coalesced=_optional_bool(value, "coalesced", default=False),
         )
 
 

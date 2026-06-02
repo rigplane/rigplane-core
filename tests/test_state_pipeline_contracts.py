@@ -69,6 +69,8 @@ def test_field_path_parse_and_format_round_trip(
         "receiver.main.active_slot",
         "global.ptt",
         "scope_controls.main.display.span",
+        "scope_controls.global.meters.s_meter",
+        "scope_controls.receiver.main.meters.s_meter",
         "receiver.MAIN.meters.s_meter",
         "receiver.main.meters.s-meter",
     ],
@@ -160,6 +162,49 @@ def test_observation_and_changeset_serialization_round_trip() -> None:
         == observation
     )
     assert ChangeSet.from_dict(payload) == changeset
+
+
+@pytest.mark.parametrize(  # type: ignore[untyped-decorator]
+    "payload",
+    [
+        {"path": "receiver.main.meters.s_meter", "source": {}, "timestampMonotonic": 1.0},
+        {"path": "receiver.main.meters.s_meter", "previous": 1},
+        {"path": "receiver.main.meters.s_meter", "current": 2},
+    ],
+)
+def test_value_bearing_contracts_reject_missing_required_values(
+    payload: dict[str, object],
+) -> None:
+    if "source" in payload:
+        with pytest.raises(KeyError):
+            Observation.from_dict(payload)
+    else:
+        with pytest.raises(KeyError):
+            FieldChange.from_dict(payload)
+
+
+def test_contract_bool_fields_reject_non_bool_payloads() -> None:
+    capability_payload = CapabilityMetadata(
+        path=FieldPath.active("main", "freq_mode", "freq_hz"),
+        sources=("civ_unsolicited",),
+    ).to_dict()
+    capability_payload["readable"] = "false"
+
+    changeset_payload = ChangeSet(
+        revision=1,
+        freshness_revision=1,
+        observation_seq=1,
+        changes=(),
+        timestamp_monotonic=1.0,
+        sources=(),
+        coalesced=False,
+    ).to_dict()
+    changeset_payload["coalesced"] = "false"
+
+    with pytest.raises(TypeError):
+        CapabilityMetadata.from_dict(capability_payload)
+    with pytest.raises(TypeError):
+        ChangeSet.from_dict(changeset_payload)
 
 
 def test_command_intent_and_lifecycle_event_serialization_round_trip() -> None:
