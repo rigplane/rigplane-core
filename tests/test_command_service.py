@@ -57,13 +57,19 @@ def _source() -> SourceMetadata:
     )
 
 
-def _observation(path: FieldPath, value: Any, *, at: float) -> Observation:
+def _observation(
+    path: FieldPath,
+    value: Any,
+    *,
+    at: float,
+    correlation_id: str | None = "cmd-1",
+) -> Observation:
     return Observation(
         path=path,
         value=value,
         source=_source(),
         timestamp_monotonic=at,
-        correlation_id="cmd-1",
+        correlation_id=correlation_id,
     )
 
 
@@ -267,6 +273,156 @@ def test_expired_pending_overlays_do_not_project_or_leak() -> None:
         paths=(_freq_path(),),
     ) == {}
     assert service.pending_overlays(source="public_api", session_id=None) == ()
+
+
+def test_same_path_value_across_sessions_reconciles_only_correlated_overlay() -> None:
+    clock = FreshnessClock(start=55.0)
+    service = CommandService(
+        executor=FakeExecutor(),
+        state_store=StateStore(freshness_clock=clock),
+        clock=clock.now,
+    )
+    freq = _freq_path()
+    for session_id, command_id in (("ws-a", "cmd-a"), ("ws-b", "cmd-b")):
+        service.record_pending_overlay(
+            PendingOverlay(
+                source="websocket",
+                session_id=session_id,
+                command_id=command_id,
+                path=freq,
+                value=14_074_000,
+                expires_at_monotonic=56.0,
+            )
+        )
+
+    service.apply_observation(
+        _observation(freq, 14_074_000, at=55.2, correlation_id="cmd-a")
+    )
+
+    assert service.pending_overlays(source="websocket", session_id="ws-a") == ()
+    assert service.pending_overlays(source="websocket", session_id="ws-b") == (
+        PendingOverlay(
+            source="websocket",
+            session_id="ws-b",
+            command_id="cmd-b",
+            path=freq,
+            value=14_074_000,
+            expires_at_monotonic=56.0,
+        ),
+    )
+    reconciled = [
+        event for event in service.lifecycle_events() if event.state == "reconciled"
+    ]
+    assert [event.command_id for event in reconciled] == ["cmd-a"]
+
+
+def test_same_path_value_across_command_ids_reconciles_only_correlated_command() -> None:
+    clock = FreshnessClock(start=56.0)
+    service = CommandService(
+        executor=FakeExecutor(),
+        state_store=StateStore(freshness_clock=clock),
+        clock=clock.now,
+    )
+    freq = _freq_path()
+    for command_id in ("cmd-a", "cmd-b"):
+        service.record_pending_overlay(
+            PendingOverlay(
+                source="websocket",
+                session_id="ws-a",
+                command_id=command_id,
+                path=freq,
+                value=14_074_000,
+                expires_at_monotonic=57.0,
+            )
+        )
+
+    service.apply_observation(
+        _observation(freq, 14_074_000, at=56.2, correlation_id="cmd-a")
+    )
+
+    assert service.pending_overlays(
+        source="websocket",
+        session_id="ws-a",
+        command_id="cmd-a",
+    ) == ()
+    assert service.pending_overlays(
+        source="websocket",
+        session_id="ws-a",
+        command_id="cmd-b",
+    ) == (
+        PendingOverlay(
+            source="websocket",
+            session_id="ws-a",
+            command_id="cmd-b",
+            path=freq,
+            value=14_074_000,
+            expires_at_monotonic=57.0,
+        ),
+    )
+    reconciled = [
+        event for event in service.lifecycle_events() if event.state == "reconciled"
+    ]
+    assert [event.command_id for event in reconciled] == ["cmd-a"]
+
+
+def test_uncorrelated_duplicate_observation_does_not_reconcile_pending_overlay() -> None:
+    clock = FreshnessClock(start=57.0)
+    service = CommandService(
+        executor=FakeExecutor(),
+        state_store=StateStore(freshness_clock=clock),
+        clock=clock.now,
+    )
+    freq = _freq_path()
+    overlay = PendingOverlay(
+        source="websocket",
+        session_id="ws-a",
+        command_id="cmd-a",
+        path=freq,
+        value=14_074_000,
+        expires_at_monotonic=58.0,
+    )
+    service.record_pending_overlay(overlay)
+
+    service.apply_observation(
+        _observation(freq, 14_074_000, at=57.2, correlation_id=None)
+    )
+
+    assert service.pending_overlays(source="websocket", session_id="ws-a") == (
+        overlay,
+    )
+    assert [
+        event for event in service.lifecycle_events() if event.state == "reconciled"
+    ] == []
+
+
+def test_intended_correlated_observation_reconciles_pending_overlay() -> None:
+    clock = FreshnessClock(start=58.0)
+    service = CommandService(
+        executor=FakeExecutor(),
+        state_store=StateStore(freshness_clock=clock),
+        clock=clock.now,
+    )
+    freq = _freq_path()
+    service.record_pending_overlay(
+        PendingOverlay(
+            source="websocket",
+            session_id="ws-a",
+            command_id="cmd-a",
+            path=freq,
+            value=14_074_000,
+            expires_at_monotonic=59.0,
+        )
+    )
+
+    service.apply_observation(
+        _observation(freq, 14_074_000, at=58.2, correlation_id="cmd-a")
+    )
+
+    assert service.pending_overlays(source="websocket", session_id="ws-a") == ()
+    reconciled = [
+        event for event in service.lifecycle_events() if event.state == "reconciled"
+    ]
+    assert [event.command_id for event in reconciled] == ["cmd-a"]
 
 
 def test_lifecycle_subscribers_observe_deterministic_events() -> None:

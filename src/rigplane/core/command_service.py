@@ -291,7 +291,7 @@ class CommandService:
         reconciled: list[PendingOverlay] = []
         remaining: list[PendingOverlay] = []
         for overlay in self._overlays:
-            if overlay.path == observation.path and overlay.value == observation.value:
+            if _observation_reconciles_overlay(observation, overlay):
                 reconciled.append(overlay)
             else:
                 remaining.append(overlay)
@@ -334,3 +334,15 @@ def _pending_value_for_intent(intent: CommandIntent) -> Any:
 def _session_id(intent: CommandIntent) -> str | None:
     value = intent.params.get("session_id")
     return None if value is None else str(value)
+
+
+def _observation_reconciles_overlay(
+    observation: Observation,
+    overlay: PendingOverlay,
+) -> bool:
+    return (
+        observation.correlation_id is not None
+        and observation.correlation_id == overlay.command_id
+        and overlay.path == observation.path
+        and overlay.value == observation.value
+    )
