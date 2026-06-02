@@ -58,7 +58,7 @@ from .handlers import (  # noqa: TID251
     DiagnosticsHandler,
     ScopeHandler,
 )
-from .rtc import handle_rtc_offer, rtc_capability_info, webrtc_available  # noqa: TID251
+from .transport.webrtc import webrtc_available  # noqa: TID251
 from .radio_poller import CommandQueue, DisableScope, EnableScope, RadioPoller  # noqa: TID251
 from .runtime_helpers import (  # noqa: TID251
     build_public_state_payload,
@@ -1793,7 +1793,10 @@ class WebServer:
                     "jitterCeilingMs": get_audio_rx_jitter_ceiling_ms(),
                 },
                 "antennas": profile.antenna_tx_count,
-                "webrtc": rtc_capability_info(),
+                "webrtc": {
+                    "available": webrtc_available(),
+                    "enabled": self._config.webrtc_enabled,
+                },
                 **({"controls": profile.controls} if profile.controls else {}),
                 "txBands": [
                     {"name": b.name, "start": b.start, "end": b.end}
@@ -3282,130 +3285,6 @@ class WebServer:
             200,
             "OK",
             body,
-            {"Content-Type": "application/json"},
-        )
-
-    async def _handle_rtc_offer(
-        self,
-        writer: asyncio.StreamWriter,
-        headers: dict[str, str] | None,
-        reader: asyncio.StreamReader | None,
-    ) -> None:
-        """Handle POST /api/v1/rtc/offer — WebRTC SDP signaling."""
-        if not webrtc_available():
-            body = json.dumps(
-                {
-                    "status": "error",
-                    "code": "webrtc_unavailable",
-                    "message": "WebRTC backend unavailable; install rigplane[webrtc].",
-                },
-                separators=(",", ":"),
-            ).encode()
-            await _send_response(
-                writer,
-                501,
-                "Not Implemented",
-                body,
-                {"Content-Type": "application/json"},
-            )
-            return
-
-        # Read request body
-        body_bytes = b""
-        if reader is not None:
-            cl = int((headers or {}).get("content-length", "0"))
-            if cl > 0:
-                read_result = await _read_capped_body(reader, cl)
-                if read_result is None:
-                    err = json.dumps(
-                        {"error": "request_too_large"},
-                        separators=(",", ":"),
-                    ).encode()
-                    await _send_response(
-                        writer,
-                        413,
-                        "Content Too Large",
-                        err,
-                        {"Content-Type": "application/json"},
-                    )
-                    writer.close()
-                    return
-                body_bytes = read_result
-        if not body_bytes:
-            err = json.dumps(
-                {
-                    "status": "error",
-                    "code": "missing_body",
-                    "message": "JSON body with 'sdp' and 'type' required.",
-                },
-                separators=(",", ":"),
-            ).encode()
-            await _send_response(
-                writer,
-                400,
-                "Bad Request",
-                err,
-                {"Content-Type": "application/json"},
-            )
-            return
-
-        try:
-            payload = json.loads(body_bytes)
-        except (json.JSONDecodeError, ValueError):
-            err = json.dumps(
-                {
-                    "status": "error",
-                    "code": "invalid_json",
-                    "message": "Request body is not valid JSON.",
-                },
-                separators=(",", ":"),
-            ).encode()
-            await _send_response(
-                writer,
-                400,
-                "Bad Request",
-                err,
-                {"Content-Type": "application/json"},
-            )
-            return
-
-        sdp = payload.get("sdp")
-        offer_type = payload.get("type", "offer")
-        if not isinstance(sdp, str) or not sdp.strip():
-            err = json.dumps(
-                {
-                    "status": "error",
-                    "code": "missing_sdp",
-                    "message": "Field 'sdp' is required and must be a non-empty string.",
-                },
-                separators=(",", ":"),
-            ).encode()
-            await _send_response(
-                writer,
-                400,
-                "Bad Request",
-                err,
-                {"Content-Type": "application/json"},
-            )
-            return
-
-        result = await handle_rtc_offer(sdp, offer_type, self._radio)
-
-        if result.get("status") == "ok":
-            status_code, reason = 200, "OK"
-        elif result.get("code") == "audio_unavailable":
-            status_code, reason = 503, "Service Unavailable"
-        elif result.get("code") == "sdp_error":
-            status_code, reason = 400, "Bad Request"
-        else:
-            status_code, reason = 500, "Internal Server Error"
-
-        resp_body = json.dumps(result, separators=(",", ":")).encode()
-        await _send_response(
-            writer,
-            status_code,
-            reason,
-            resp_body,
             {"Content-Type": "application/json"},
         )
 

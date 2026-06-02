@@ -191,13 +191,6 @@ async def dispatch_http_request(
         )
         return
 
-    if path == "/api/v1/rtc/offer":
-        if method != "POST":
-            await _send_response(writer, 405, "Method Not Allowed", b"", {})
-            return
-        await server._handle_rtc_offer(writer, headers, reader)
-        return
-
     # Gated WebRTC transport entrypoint (A2.3 / MOR-307): stateless SDP
     # exchange + ICE trickle, behind WebConfig.webrtc_enabled + [webrtc] extra.
     if path == "/api/v1/transport/webrtc/offer":

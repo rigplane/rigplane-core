@@ -26,7 +26,7 @@ Internal layout:
 - `web/_delta_encoder.py` — payload diffing.
 - `web/runtime_helpers.py`, `web/band_plan.py`, `web/dx_cluster.py`,
   `web/eibi.py`, `web/discovery.py`, `web/tls.py`, `web/protocol.py`,
-  `web/rtc.py`, `web/websocket.py` — supporting modules.
+  `web/websocket.py` — supporting modules.
 - `web/static/` — built frontend (symlinked from `frontend/dist/`).
 
 ## Allowed dependencies

@@ -1,8 +1,7 @@
 """Stateless SDP-exchange entrypoint + ICE trickle for the WebRTC transport.
 
-This is the *answerer* side of a stand-alone / lab WebRTC session. It is a
-sibling to the throwaway scaffold in :mod:`rigplane.web.rtc` (A2.4 / MOR-308
-removes that scaffold) and does **no** Tower signaling — the broker path is
+This is the *answerer* side of a stand-alone / lab WebRTC session. It does
+**no** Tower signaling — the broker path is
 A3 / pro. The flow here is a plain HTTP SDP exchange used to drive and test
 the A2.1 connection class + the A2.2 multi-channel set against the real
 handlers.
