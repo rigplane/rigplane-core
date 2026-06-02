@@ -12,7 +12,11 @@ module bridges the two with an internal :class:`asyncio.Queue`:
 A single ordered/reliable ``control`` DataChannel is created per peer via
 :func:`add_control_channel`; the resulting connection plugs into the
 unchanged ``ControlHandler`` because it structurally satisfies the
-``Connection`` protocol.
+``Connection`` protocol. The lossy ``scope`` and ``audio`` DataChannels are
+created on the *same* peer via :func:`add_scope_channel` /
+:func:`add_audio_channel` — both unordered with ``maxRetransmits=0``, since
+scope and audio tolerate loss — and feed the unchanged ``ScopeHandler`` /
+``AudioHandler`` through the very same seam.
 
 ``aiortc`` is an optional dependency behind the ``[webrtc]`` extra. This
 module therefore imports it lazily: importing the module never fails, and
@@ -36,7 +40,9 @@ if TYPE_CHECKING:
 __all__ = [
     "WebRtcDataChannelConnection",
     "WebRtcUnavailableError",
+    "add_audio_channel",
     "add_control_channel",
+    "add_scope_channel",
     "webrtc_available",
 ]
 
@@ -155,3 +161,42 @@ def add_control_channel(pc: RTCPeerConnection) -> WebRtcDataChannelConnection:
         raise WebRtcUnavailableError(_INSTALL_HINT)
     channel = pc.createDataChannel("control", ordered=True)
     return WebRtcDataChannelConnection(channel, pc)
+
+
+def _add_lossy_channel(
+    pc: RTCPeerConnection, label: str
+) -> WebRtcDataChannelConnection:
+    """Create one unordered, zero-retransmit (lossy) channel on ``pc``.
+
+    Scope and audio frames are time-sensitive and tolerate loss, so both use
+    ``ordered=False`` + ``maxRetransmits=0`` (fire-and-forget, no reliability
+    overhead). Mirrors :func:`add_control_channel` but for lossy traffic.
+    """
+    if not webrtc_available():
+        raise WebRtcUnavailableError(_INSTALL_HINT)
+    channel = pc.createDataChannel(label, ordered=False, maxRetransmits=0)
+    return WebRtcDataChannelConnection(channel, pc)
+
+
+def add_scope_channel(pc: RTCPeerConnection) -> WebRtcDataChannelConnection:
+    """Create the unordered/lossy ``scope`` channel on ``pc``.
+
+    Returns a :class:`WebRtcDataChannelConnection` ready to hand to
+    ``ScopeHandler`` via the ``Connection`` seam. Unordered with
+    ``maxRetransmits=0`` — scope frames tolerate loss.
+
+    Raises :class:`WebRtcUnavailableError` if ``aiortc`` is not installed.
+    """
+    return _add_lossy_channel(pc, "scope")
+
+
+def add_audio_channel(pc: RTCPeerConnection) -> WebRtcDataChannelConnection:
+    """Create the unordered/lossy ``audio`` channel on ``pc``.
+
+    Returns a :class:`WebRtcDataChannelConnection` ready to hand to
+    ``AudioHandler`` via the ``Connection`` seam. Unordered with
+    ``maxRetransmits=0`` — audio frames tolerate loss.
+
+    Raises :class:`WebRtcUnavailableError` if ``aiortc`` is not installed.
+    """
+    return _add_lossy_channel(pc, "audio")
