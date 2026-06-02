@@ -89,6 +89,43 @@ features = [
     "agc",
 ]
 
+[state_acquisition]
+provider = "xiegu_civ"
+default_cadence_seconds = 2.0
+default_freshness_ttl_seconds = 8.0
+default_reconciliation_priority = "poll"
+adaptive_decay = true
+adaptive_decay_idle_multiplier = 4.0
+adaptive_decay_max_cadence_seconds = 30.0
+external_cat_pause = "pause_polling"
+meter_coalescing_window_seconds = 0.25
+
+[state_acquisition.capabilities]
+polling_only = [
+    "receiver.main.active.freq_mode.freq_hz",
+    "receiver.main.active.freq_mode.mode",
+]
+stream_like_meters = [
+    "receiver.main.meters.s_meter",
+    "global.meters.power",
+]
+command_response_observable = [
+    "receiver.main.active.freq_mode.freq_hz",
+    "receiver.main.active.freq_mode.mode",
+]
+supported_controls = [
+    "receiver.main.active.freq_mode.freq_hz",
+    "receiver.main.active.freq_mode.mode",
+]
+unsupported = ["global.tx_state.power_on"]
+unknown = ["global.meters.swr", "global.meters.alc"]
+
+[state_acquisition.field_policies."receiver.main.active.freq_mode.mode"]
+cadence_seconds = 1.0
+freshness_ttl_seconds = 4.0
+reconciliation_priority = "command_response"
+external_cat_pause = "pause_polling"
+
 # PDF page 10 (Table 3 — Mode, Data & filter bandwidth) documents:
 # LSB, LSB-D, USB, USB-D, AM, CW, NFM, CWR. The ``-D`` variants are the
 # data-mode flavours selected via byte 2 of mode commands 0x26 0x00/0x01.

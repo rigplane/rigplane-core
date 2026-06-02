@@ -10,6 +10,17 @@ from pathlib import Path
 from typing import Any
 
 from rigplane.core.capabilities import KNOWN_CAPABILITIES
+from rigplane.core.state_acquisition_policy import (
+    AcquisitionPolicy,
+    AdaptiveDecayPolicy,
+    ExternalCatPauseBehavior,
+    FieldAvailability,
+    FieldCapability,
+    MeterCoalescingPolicy,
+    RadioAcquisitionProfile,
+    ReconciliationPriority,
+)
+from rigplane.core.state_pipeline_contracts import FieldPath
 from rigplane.commands.command_map import CommandMap
 
 __all__ = ["RigConfig", "RigLoadError", "load_rig", "discover_rigs"]
@@ -115,6 +126,7 @@ class RigConfig:
     browser_rx_transport: str | None = None
     browser_rx_transcode_to_opus: bool | None = None
     write_only_controls: tuple[str, ...] = ()
+    state_acquisition: RadioAcquisitionProfile | None = None
 
     def to_profile(self) -> RadioProfile:
         """Build a ``RadioProfile`` from this config."""
@@ -195,6 +207,7 @@ class RigConfig:
             browser_rx_transport=self.browser_rx_transport,
             browser_rx_transcode_to_opus=self.browser_rx_transcode_to_opus,
             write_only_controls=frozenset(self.write_only_controls),
+            state_acquisition=self.state_acquisition,
         )
 
     def to_command_map(self) -> CommandMap:
@@ -491,6 +504,278 @@ def _validate_audio_sample_rate(filename: str, field_name: str, value: Any) -> i
             f"{sorted(VALID_AUDIO_SAMPLE_RATES_HZ)}, got {value!r}"
         )
     return value
+
+
+def _state_path_list(filename: str, section: str, value: Any) -> tuple[FieldPath, ...]:
+    if value is None:
+        return ()
+    if not isinstance(value, list) or not all(isinstance(item, str) for item in value):
+        raise RigLoadError(f"{filename}: {section} must be a list of field paths")
+    try:
+        return tuple(FieldPath.parse(item) for item in value)
+    except ValueError as exc:
+        raise RigLoadError(
+            f"{filename}: {section} has invalid field path: {exc}"
+        ) from exc
+
+
+def _policy_seconds(
+    raw: dict[str, Any],
+    key: str,
+    *,
+    defaults: AcquisitionPolicy | None,
+    fallback: float,
+) -> float | None:
+    if key in raw:
+        value = raw[key]
+    elif defaults is not None:
+        value = getattr(defaults, key)
+    else:
+        value = fallback
+    return None if value is None else float(value)
+
+
+def _parse_acquisition_policy(
+    filename: str,
+    raw: dict[str, Any],
+    *,
+    prefix: str,
+    defaults: AcquisitionPolicy | None = None,
+) -> AcquisitionPolicy:
+    try:
+        return AcquisitionPolicy(
+            cadence_seconds=_policy_seconds(
+                raw,
+                "cadence_seconds",
+                defaults=defaults,
+                fallback=5.0,
+            ),
+            freshness_ttl_seconds=_policy_seconds(
+                raw,
+                "freshness_ttl_seconds",
+                defaults=defaults,
+                fallback=15.0,
+            ),
+            reconciliation_priority=ReconciliationPriority(
+                str(
+                    raw.get(
+                        "reconciliation_priority",
+                        defaults.reconciliation_priority
+                        if defaults is not None
+                        else ReconciliationPriority.POLL,
+                    )
+                )
+            ),
+            adaptive_decay=AdaptiveDecayPolicy(
+                enabled=bool(
+                    raw.get(
+                        "adaptive_decay",
+                        defaults.adaptive_decay.enabled
+                        if defaults is not None
+                        else False,
+                    )
+                ),
+                idle_multiplier=float(
+                    raw.get(
+                        "adaptive_decay_idle_multiplier",
+                        defaults.adaptive_decay.idle_multiplier
+                        if defaults is not None
+                        else 1.0,
+                    )
+                ),
+                max_cadence_seconds=(
+                    raw.get(
+                        "adaptive_decay_max_cadence_seconds",
+                        defaults.adaptive_decay.max_cadence_seconds
+                        if defaults is not None
+                        else None,
+                    )
+                ),
+            ),
+            external_cat_pause=ExternalCatPauseBehavior(
+                str(
+                    raw.get(
+                        "external_cat_pause",
+                        defaults.external_cat_pause
+                        if defaults is not None
+                        else ExternalCatPauseBehavior.PAUSE_POLLING,
+                    )
+                )
+            ),
+            meter_coalescing=(
+                MeterCoalescingPolicy(
+                    window_seconds=float(raw["meter_coalescing_window_seconds"])
+                )
+                if "meter_coalescing_window_seconds" in raw
+                else None
+            ),
+        )
+    except (TypeError, ValueError) as exc:
+        raise RigLoadError(
+            f"{filename}: {prefix} invalid acquisition policy: {exc}"
+        ) from exc
+
+
+def _parse_state_acquisition(
+    filename: str,
+    raw: Any,
+) -> RadioAcquisitionProfile | None:
+    if raw is None:
+        return None
+    if not isinstance(raw, dict):
+        raise RigLoadError(f"{filename}: [state_acquisition] must be a table")
+
+    caps_raw = raw.get("capabilities", {})
+    if not isinstance(caps_raw, dict):
+        raise RigLoadError(
+            f"{filename}: [state_acquisition.capabilities] must be a table"
+        )
+
+    section = "[state_acquisition.capabilities]"
+    unsolicited = set(
+        _state_path_list(
+            filename, f"{section}.unsolicited_push", caps_raw.get("unsolicited_push")
+        )
+    )
+    polling = set(
+        _state_path_list(
+            filename, f"{section}.polling_only", caps_raw.get("polling_only")
+        )
+    )
+    stream = set(
+        _state_path_list(
+            filename,
+            f"{section}.stream_like_meters",
+            caps_raw.get("stream_like_meters"),
+        )
+    )
+    command_response = set(
+        _state_path_list(
+            filename,
+            f"{section}.command_response_observable",
+            caps_raw.get("command_response_observable"),
+        )
+    )
+    supported_controls = set(
+        _state_path_list(
+            filename,
+            f"{section}.supported_controls",
+            caps_raw.get("supported_controls"),
+        )
+    )
+    unsupported = set(
+        _state_path_list(
+            filename, f"{section}.unsupported", caps_raw.get("unsupported")
+        )
+    )
+    unknown = set(
+        _state_path_list(filename, f"{section}.unknown", caps_raw.get("unknown"))
+    )
+
+    paths = (
+        unsolicited
+        | polling
+        | stream
+        | command_response
+        | supported_controls
+        | unsupported
+        | unknown
+    )
+    capabilities: list[FieldCapability] = []
+    for path in sorted(paths, key=str):
+        availability = FieldAvailability.SUPPORTED
+        diagnostic = ""
+        if path in unsupported:
+            availability = FieldAvailability.UNSUPPORTED
+            diagnostic = "profile marks field unsupported"
+        if path in unknown:
+            availability = FieldAvailability.UNKNOWN
+            diagnostic = "profile marks field unknown"
+        try:
+            capabilities.append(
+                FieldCapability(
+                    path=path,
+                    availability=availability,
+                    unsolicited_push=path in unsolicited,
+                    polling=path in polling or path in stream,
+                    stream_like=path in stream,
+                    command_response_observable=path in command_response,
+                    supported_controls=(
+                        ("profile_control",) if path in supported_controls else ()
+                    ),
+                    diagnostic=diagnostic,
+                )
+            )
+        except ValueError as exc:
+            raise RigLoadError(f"{filename}: {path}: {exc}") from exc
+
+    default_policy = _parse_acquisition_policy(
+        filename,
+        {
+            "cadence_seconds": raw.get("default_cadence_seconds", 5.0),
+            "freshness_ttl_seconds": raw.get("default_freshness_ttl_seconds", 15.0),
+            "reconciliation_priority": raw.get(
+                "default_reconciliation_priority",
+                ReconciliationPriority.POLL,
+            ),
+            "adaptive_decay": raw.get("adaptive_decay", False),
+            "adaptive_decay_idle_multiplier": raw.get(
+                "adaptive_decay_idle_multiplier",
+                1.0,
+            ),
+            "adaptive_decay_max_cadence_seconds": raw.get(
+                "adaptive_decay_max_cadence_seconds"
+            ),
+            "external_cat_pause": raw.get(
+                "external_cat_pause",
+                ExternalCatPauseBehavior.PAUSE_POLLING,
+            ),
+            **(
+                {
+                    "meter_coalescing_window_seconds": raw[
+                        "meter_coalescing_window_seconds"
+                    ]
+                }
+                if "meter_coalescing_window_seconds" in raw
+                else {}
+            ),
+        },
+        prefix="[state_acquisition]",
+    )
+
+    policies_raw = raw.get("field_policies", {})
+    if not isinstance(policies_raw, dict):
+        raise RigLoadError(
+            f"{filename}: [state_acquisition.field_policies] must be a table"
+        )
+    field_policies: dict[FieldPath, AcquisitionPolicy] = {}
+    for path_text, policy_raw in policies_raw.items():
+        if not isinstance(policy_raw, dict):
+            raise RigLoadError(
+                f"{filename}: [state_acquisition.field_policies.{path_text}] must be a table"
+            )
+        try:
+            path = FieldPath.parse(str(path_text))
+        except ValueError as exc:
+            raise RigLoadError(
+                f"{filename}: [state_acquisition.field_policies] invalid path {path_text!r}: {exc}"
+            ) from exc
+        field_policies[path] = _parse_acquisition_policy(
+            filename,
+            policy_raw,
+            prefix=f"[state_acquisition.field_policies.{path_text}]",
+            defaults=default_policy,
+        )
+
+    try:
+        return RadioAcquisitionProfile(
+            provider=str(raw.get("provider", "profile")),
+            capabilities=tuple(capabilities),
+            default_policy=default_policy,
+            field_policies=field_policies,
+        )
+    except ValueError as exc:
+        raise RigLoadError(f"{filename}: [state_acquisition] invalid: {exc}") from exc
 
 
 def load_rig(path: Path) -> RigConfig:
@@ -893,6 +1178,11 @@ def load_rig(path: Path) -> RigConfig:
                 )
             browser_rx_transcode_to_opus = transcode_raw
 
+    state_acquisition = _parse_state_acquisition(
+        filename,
+        data.get("state_acquisition"),
+    )
+
     return RigConfig(
         id=radio["id"],
         model=radio["model"],
@@ -950,6 +1240,7 @@ def load_rig(path: Path) -> RigConfig:
         browser_rx_transport=browser_rx_transport,
         browser_rx_transcode_to_opus=browser_rx_transcode_to_opus,
         write_only_controls=write_only_controls,
+        state_acquisition=state_acquisition,
     )
 
 
