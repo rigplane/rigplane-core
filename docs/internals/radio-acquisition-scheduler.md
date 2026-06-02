@@ -35,9 +35,10 @@ invent synthetic confirmed state.
 
 ## Dedupe And Priority
 
-Requests dedupe by the sorted tuple of target paths. Repeated requests for the
-same target keep one acquisition id, preserve accumulated reasons, and upgrade
-to the highest priority and most urgent deadline/max age. Pending requests are
+Requests dedupe by compatible field family, receiver/slot scope, acquisition
+method, and acquisition policy. Repeated compatible requests keep one
+acquisition id, preserve accumulated reasons, merge target paths, and upgrade to
+the highest priority and most urgent deadline/max age. Pending requests are
 returned in execution order so user-facing freshness and command confirmation
 can preempt background telemetry.
 

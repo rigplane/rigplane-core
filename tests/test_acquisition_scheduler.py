@@ -18,6 +18,7 @@ from rigplane.core.state_acquisition_policy import (
     FieldCapability,
     MeterCoalescingPolicy,
     RadioAcquisitionProfile,
+    ReconciliationPriority,
 )
 from rigplane.core.state_pipeline_contracts import (
     FieldPath,
@@ -266,6 +267,80 @@ def test_external_cat_continue_policy_allows_non_conflicting_request() -> None:
     assert result.request.external_cat_paused is True
 
 
+def test_external_cat_pause_defers_only_pause_policy_groups() -> None:
+    clock = FreshnessClock(start=62.0)
+    freq = FieldPath.active("main", "freq_mode", "freq_hz")
+    ptt = FieldPath.global_("tx_state", "ptt")
+    profile = _profile(
+        [freq, ptt],
+        field_policies={
+            freq: AcquisitionPolicy(
+                external_cat_pause=ExternalCatPauseBehavior.PAUSE_POLLING,
+            ),
+            ptt: AcquisitionPolicy(
+                external_cat_pause=ExternalCatPauseBehavior.CONTINUE,
+            ),
+        },
+    )
+    scheduler = AcquisitionScheduler(profile=profile, clock=clock)
+
+    scheduler.pause_external_cat(owner="hamlib-client")
+    result = scheduler.ensure_fresh(
+        [ptt, freq],
+        max_age=1.0,
+        priority="user",
+        reason="mixed-snapshot",
+    )
+
+    assert result.status is AcquisitionStatus.QUEUED
+    assert result.request is not None
+    assert result.request.paths == (ptt,)
+    assert result.request.external_cat_paused is True
+    assert scheduler.pending_requests() == (result.request,)
+
+    resumed = scheduler.resume_external_cat()
+
+    assert len(resumed) == 1
+    assert resumed[0].paths == (freq,)
+    assert scheduler.pending_requests() == (result.request, resumed[0])
+
+
+def test_external_cat_resume_dedupes_same_family_deferred_requests() -> None:
+    clock = FreshnessClock(start=63.0)
+    freq = FieldPath.active("main", "freq_mode", "freq_hz")
+    mode = FieldPath.active("main", "freq_mode", "mode")
+    scheduler = AcquisitionScheduler(profile=_profile([freq, mode]), clock=clock)
+
+    scheduler.pause_external_cat(owner="hamlib-client")
+    freq_result = scheduler.ensure_fresh(
+        freq,
+        max_age=5.0,
+        priority="background",
+        reason="background-freq",
+    )
+    clock.advance(1.0)
+    mode_result = scheduler.ensure_fresh(
+        mode,
+        max_age=0.5,
+        priority="user",
+        reason="visible-mode",
+    )
+
+    assert freq_result.status is AcquisitionStatus.DEFERRED
+    assert mode_result.status is AcquisitionStatus.DEFERRED
+    assert scheduler.pending_requests() == ()
+
+    resumed = scheduler.resume_external_cat()
+
+    assert len(resumed) == 1
+    assert resumed[0].paths == (freq, mode)
+    assert resumed[0].priority is AcquisitionPriority.USER
+    assert resumed[0].max_age == 0.5
+    assert resumed[0].deadline_monotonic == 64.5
+    assert resumed[0].reasons == ("background-freq", "visible-mode")
+    assert scheduler.pending_requests() == resumed
+
+
 def test_capability_metadata_reports_unavailable_without_backend_delivery() -> None:
     clock = FreshnessClock(start=70.0)
     power = FieldPath.global_("tx_state", "power_on")
@@ -365,6 +440,38 @@ def test_mixed_pollable_and_unsolicited_paths_are_not_emitted_as_one_poll() -> N
     requests_by_path = {request.paths: request for request in requests}
     assert requests_by_path[(freq,)].acquisition_method == "poll"
     assert requests_by_path[(ptt,)].acquisition_method == "wait_for_unsolicited"
+
+
+def test_policy_preferred_command_response_beats_polling_capability() -> None:
+    clock = FreshnessClock(start=85.5)
+    mode = FieldPath.active("main", "freq_mode", "mode")
+    profile = RadioAcquisitionProfile(
+        provider="x6200_like",
+        capabilities=(
+            FieldCapability(
+                path=mode,
+                polling=True,
+                command_response_observable=True,
+            ),
+        ),
+        field_policies={
+            mode: AcquisitionPolicy(
+                reconciliation_priority=ReconciliationPriority.COMMAND_RESPONSE,
+            ),
+        },
+    )
+    scheduler = AcquisitionScheduler(profile=profile, clock=clock)
+
+    result = scheduler.ensure_fresh(
+        mode,
+        max_age=1.0,
+        priority="reconciliation",
+        reason="x6200-mode-reconcile",
+    )
+
+    assert result.status is AcquisitionStatus.QUEUED
+    assert result.request is not None
+    assert result.request.acquisition_method == "command_response"
 
 
 def test_mixed_meter_and_frequency_request_preserves_meter_coalescing_policy() -> None:

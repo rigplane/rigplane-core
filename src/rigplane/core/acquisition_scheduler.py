@@ -13,6 +13,7 @@ from rigplane.core.state_acquisition_policy import (
     FieldAvailability,
     FieldCapability,
     RadioAcquisitionProfile,
+    ReconciliationPriority,
 )
 from rigplane.core.state_pipeline_contracts import FieldPath
 from rigplane.core.state_store import (
@@ -115,8 +116,10 @@ class _PendingEnsureFresh:
     max_age: float
     priority: AcquisitionPriority
     reason: str
+    reasons: tuple[str, ...]
     timeout: float | None
     requested_at_monotonic: float
+    deadline_monotonic: float
     external_cat_owner: str | None
 
 
@@ -162,7 +165,7 @@ class AcquisitionScheduler:
         self._profile = profile
         self._clock = clock or FreshnessClock()
         self._requests_by_key: dict[_AcquisitionRequestKey, AcquisitionRequest] = {}
-        self._deferred: dict[tuple[FieldPath, ...], _PendingEnsureFresh] = {}
+        self._deferred: dict[_AcquisitionRequestKey, _PendingEnsureFresh] = {}
         self._next_id = 1
         self._external_cat_paused = False
         self._external_cat_owner: str | None = None
@@ -188,37 +191,68 @@ class AcquisitionScheduler:
         if availability is not None:
             return availability
 
-        if self._external_cat_paused and self._must_defer_for_external_cat(
-            normalized_paths
-        ):
-            self._defer(
-                _PendingEnsureFresh(
-                    paths=normalized_paths,
-                    max_age=max_age,
-                    priority=normalized_priority,
-                    reason=reason,
-                    timeout=timeout,
-                    requested_at_monotonic=now,
-                    external_cat_owner=self._external_cat_owner,
+        if self._external_cat_paused:
+            queued: list[AcquisitionRequest] = []
+            deferred = False
+            for key, grouped_paths in self._request_groups(normalized_paths):
+                if self._must_defer_for_external_cat(grouped_paths):
+                    deferred = True
+                    self._defer(
+                        key,
+                        _PendingEnsureFresh(
+                            paths=grouped_paths,
+                            max_age=max_age,
+                            priority=normalized_priority,
+                            reason=reason,
+                            reasons=(reason,),
+                            timeout=timeout,
+                            requested_at_monotonic=now,
+                            deadline_monotonic=now + max_age,
+                            external_cat_owner=self._external_cat_owner,
+                        ),
+                    )
+                    continue
+                queued.extend(
+                    self._queue(
+                        paths=grouped_paths,
+                        max_age=max_age,
+                        priority=normalized_priority,
+                        reason=reason,
+                        timeout=timeout,
+                        requested_at=now,
+                        external_cat_owner=self._external_cat_owner,
+                    )
                 )
-            )
-            return EnsureFreshResult(
-                status=AcquisitionStatus.DEFERRED,
-                message=self._external_cat_reason or "external CAT ownership active",
-            )
+            if queued:
+                return EnsureFreshResult(
+                    status=AcquisitionStatus.QUEUED,
+                    request=queued[0],
+                )
+            if deferred:
+                return EnsureFreshResult(
+                    status=AcquisitionStatus.DEFERRED,
+                    message=self._external_cat_reason
+                    or "external CAT ownership active",
+                )
 
-        request = self._queue(
+        queued_requests = self._queue(
             paths=normalized_paths,
             max_age=max_age,
             priority=normalized_priority,
             reason=reason,
             timeout=timeout,
             requested_at=now,
-            external_cat_owner=self._external_cat_owner
-            if self._external_cat_paused
-            else None,
+            external_cat_owner=None,
         )
-        return EnsureFreshResult(status=AcquisitionStatus.QUEUED, request=request)
+        if not queued_requests:
+            return EnsureFreshResult(
+                status=AcquisitionStatus.DEFERRED,
+                message=self._external_cat_reason or "external CAT ownership active",
+            )
+        return EnsureFreshResult(
+            status=AcquisitionStatus.QUEUED,
+            request=queued_requests[0],
+        )
 
     def pending_requests(self) -> tuple[AcquisitionRequest, ...]:
         """Return queued backend acquisition requests in execution order."""
@@ -267,15 +301,17 @@ class AcquisitionScheduler:
         self._deferred.clear()
         queued: list[AcquisitionRequest] = []
         for item in deferred:
-            queued.append(
+            queued.extend(
                 self._queue(
                     paths=item.paths,
                     max_age=item.max_age,
                     priority=item.priority,
                     reason=item.reason,
+                    reasons=item.reasons,
                     timeout=item.timeout,
-                    requested_at=self._clock.now(),
+                    requested_at=item.requested_at_monotonic,
                     external_cat_owner=item.external_cat_owner or owner,
+                    deadline_monotonic=item.deadline_monotonic,
                 )
             )
         return tuple(queued)
@@ -290,7 +326,15 @@ class AcquisitionScheduler:
         timeout: float | None,
         requested_at: float,
         external_cat_owner: str | None,
-    ) -> AcquisitionRequest:
+        reasons: tuple[str, ...] | None = None,
+        deadline_monotonic: float | None = None,
+    ) -> tuple[AcquisitionRequest, ...]:
+        request_reasons = (reason,) if reasons is None else reasons
+        request_deadline = (
+            requested_at + max_age
+            if deadline_monotonic is None
+            else deadline_monotonic
+        )
         queued: list[AcquisitionRequest] = []
         for key, grouped_paths in self._request_groups(paths):
             existing = self._requests_by_key.get(key)
@@ -301,8 +345,10 @@ class AcquisitionScheduler:
                     max_age=max_age,
                     priority=priority,
                     reason=reason,
+                    reasons=request_reasons,
                     timeout=timeout,
                     requested_at=requested_at,
+                    deadline_monotonic=request_deadline,
                 )
                 self._requests_by_key[key] = request
                 queued.append(request)
@@ -318,10 +364,12 @@ class AcquisitionScheduler:
                 external_cat_owner=external_cat_owner,
                 acquisition_method=key.acquisition_method,
                 policy=key.policy,
+                reasons=request_reasons,
+                deadline_monotonic=request_deadline,
             )
             self._requests_by_key[key] = request
             queued.append(request)
-        return queued[0]
+        return tuple(queued)
 
     def _request_groups(
         self,
@@ -333,7 +381,7 @@ class AcquisitionScheduler:
             policy = self._profile.policy_for(path)
             key = _request_key(
                 path,
-                acquisition_method=_capability_method(capability),
+                acquisition_method=_capability_method(capability, policy),
                 policy=policy,
             )
             grouped.setdefault(key, []).append(path)
@@ -354,6 +402,8 @@ class AcquisitionScheduler:
         external_cat_owner: str | None,
         acquisition_method: AcquisitionMethod,
         policy: AcquisitionPolicy,
+        reasons: tuple[str, ...],
+        deadline_monotonic: float,
     ) -> AcquisitionRequest:
         request_id = f"acq-{self._next_id}"
         self._next_id += 1
@@ -362,9 +412,9 @@ class AcquisitionScheduler:
             paths=paths,
             priority=priority,
             reason=reason,
-            reasons=(reason,),
+            reasons=reasons,
             requested_at_monotonic=requested_at,
-            deadline_monotonic=requested_at + max_age,
+            deadline_monotonic=deadline_monotonic,
             max_age=max_age,
             timeout=timeout,
             provider=self._profile.provider,
@@ -387,18 +437,21 @@ class AcquisitionScheduler:
         max_age: float,
         priority: AcquisitionPriority,
         reason: str,
+        reasons: tuple[str, ...],
         timeout: float | None,
         requested_at: float,
+        deadline_monotonic: float,
     ) -> AcquisitionRequest:
         priority_to_keep = (
             priority
             if _PRIORITY_RANK[priority] > _PRIORITY_RANK[existing.priority]
             else existing.priority
         )
-        reasons = existing.reasons
-        if reason not in reasons:
-            reasons = (*reasons, reason)
-        deadline = min(existing.deadline_monotonic, requested_at + max_age)
+        merged_reasons = existing.reasons
+        for candidate in reasons:
+            if candidate not in merged_reasons:
+                merged_reasons = (*merged_reasons, candidate)
+        deadline = min(existing.deadline_monotonic, deadline_monotonic)
         merged_paths = _merge_paths(existing.paths, paths)
         return replace(
             existing,
@@ -407,7 +460,7 @@ class AcquisitionScheduler:
             max_age=min(existing.max_age, max_age),
             timeout=_min_optional_timeout(existing.timeout, timeout),
             deadline_monotonic=deadline,
-            reasons=reasons,
+            reasons=merged_reasons,
             capability_ids=tuple(str(path) for path in merged_paths),
             source_metadata={
                 "provider": self._profile.provider,
@@ -415,10 +468,14 @@ class AcquisitionScheduler:
             },
         )
 
-    def _defer(self, item: _PendingEnsureFresh) -> None:
-        existing = self._deferred.get(item.paths)
+    def _defer(
+        self,
+        key: _AcquisitionRequestKey,
+        item: _PendingEnsureFresh,
+    ) -> None:
+        existing = self._deferred.get(key)
         if existing is None:
-            self._deferred[item.paths] = item
+            self._deferred[key] = item
             return
         priority = (
             item.priority
@@ -428,15 +485,24 @@ class AcquisitionScheduler:
         max_age = min(existing.max_age, item.max_age)
         timeout = _min_optional_timeout(existing.timeout, item.timeout)
         reason = existing.reason if existing.reason == item.reason else item.reason
-        self._deferred[item.paths] = _PendingEnsureFresh(
-            paths=item.paths,
+        reasons = existing.reasons
+        for candidate in item.reasons:
+            if candidate not in reasons:
+                reasons = (*reasons, candidate)
+        self._deferred[key] = _PendingEnsureFresh(
+            paths=_merge_paths(existing.paths, item.paths),
             max_age=max_age,
             priority=priority,
             reason=reason,
+            reasons=reasons,
             timeout=timeout,
             requested_at_monotonic=min(
                 existing.requested_at_monotonic,
                 item.requested_at_monotonic,
+            ),
+            deadline_monotonic=min(
+                existing.deadline_monotonic,
+                item.deadline_monotonic,
             ),
             external_cat_owner=item.external_cat_owner or existing.external_cat_owner,
         )
@@ -473,6 +539,7 @@ class AcquisitionScheduler:
                     continue
             return True
         return False
+
 
 class RadioStateModelService:
     """Small service API joining StateStore freshness and scheduler requests."""
@@ -580,13 +647,33 @@ def _request_key(
     )
 
 
-def _capability_method(capability: FieldCapability) -> AcquisitionMethod:
-    if capability.can_poll:
-        return "poll"
-    if capability.command_response_observable:
-        return "command_response"
-    if capability.unsolicited_push:
-        return "wait_for_unsolicited"
+def _capability_method(
+    capability: FieldCapability,
+    policy: AcquisitionPolicy,
+) -> AcquisitionMethod:
+    preferred = ReconciliationPriority(str(policy.reconciliation_priority))
+    methods_by_priority: dict[ReconciliationPriority, tuple[AcquisitionMethod, ...]] = {
+        ReconciliationPriority.POLL: ("poll",),
+        ReconciliationPriority.COMMAND_RESPONSE: ("command_response",),
+        ReconciliationPriority.UNSOLICITED: ("wait_for_unsolicited",),
+        ReconciliationPriority.LAST_OBSERVATION: (),
+    }
+    fallback_methods: tuple[AcquisitionMethod, ...] = (
+        "poll",
+        "command_response",
+        "wait_for_unsolicited",
+    )
+    methods = (*methods_by_priority[preferred], *fallback_methods)
+    for method in methods:
+        if method == "poll" and capability.can_poll:
+            return "poll"
+        if (
+            method == "command_response"
+            and capability.command_response_observable
+        ):
+            return "command_response"
+        if method == "wait_for_unsolicited" and capability.unsolicited_push:
+            return "wait_for_unsolicited"
     raise ValueError(f"{capability.path}: no acquisition hook is declared")
 
 
