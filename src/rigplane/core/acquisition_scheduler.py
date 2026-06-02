@@ -280,6 +280,24 @@ class AcquisitionScheduler:
         self._external_cat_paused = True
         self._external_cat_owner = owner
         self._external_cat_reason = reason
+        for key, request in tuple(self._requests_by_key.items()):
+            if not self._must_defer_for_external_cat(request.paths):
+                continue
+            del self._requests_by_key[key]
+            self._defer(
+                key,
+                _PendingEnsureFresh(
+                    paths=request.paths,
+                    max_age=request.max_age,
+                    priority=request.priority,
+                    reason=request.reason,
+                    reasons=request.reasons,
+                    timeout=request.timeout,
+                    requested_at_monotonic=request.requested_at_monotonic,
+                    deadline_monotonic=request.deadline_monotonic,
+                    external_cat_owner=owner,
+                ),
+            )
 
     def resume_external_cat(self) -> tuple[AcquisitionRequest, ...]:
         """Resume acquisition and queue any deferred freshness requests."""

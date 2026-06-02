@@ -243,6 +243,25 @@ def test_external_cat_pause_defers_conflicting_polling_and_resume_queues_it() ->
     assert scheduler.pending_requests() == resumed
 
 
+def test_external_cat_pause_hides_existing_conflicting_poll_request() -> None:
+    clock = FreshnessClock(start=51.0)
+    freq = FieldPath.active("main", "freq_mode", "freq_hz")
+    scheduler = AcquisitionScheduler(profile=_profile([freq]), clock=clock)
+
+    result = scheduler.ensure_fresh(
+        freq,
+        max_age=0.5,
+        priority="background",
+        reason="background-poll",
+    )
+    assert result.request is not None
+    assert scheduler.pending_requests() == (result.request,)
+
+    scheduler.pause_external_cat(owner="hamlib-client", reason="raw-cat-session")
+
+    assert scheduler.pending_requests() == ()
+
+
 def test_external_cat_continue_policy_allows_non_conflicting_request() -> None:
     clock = FreshnessClock(start=60.0)
     ptt = FieldPath.global_("tx_state", "ptt")
@@ -265,6 +284,30 @@ def test_external_cat_continue_policy_allows_non_conflicting_request() -> None:
     assert result.status is AcquisitionStatus.QUEUED
     assert result.request is not None
     assert result.request.external_cat_paused is True
+
+
+def test_external_cat_pause_preserves_existing_continue_policy_request() -> None:
+    clock = FreshnessClock(start=61.0)
+    ptt = FieldPath.global_("tx_state", "ptt")
+    profile = _profile(
+        [ptt],
+        default_policy=AcquisitionPolicy(
+            external_cat_pause=ExternalCatPauseBehavior.CONTINUE,
+        ),
+    )
+    scheduler = AcquisitionScheduler(profile=profile, clock=clock)
+
+    result = scheduler.ensure_fresh(
+        ptt,
+        max_age=1.0,
+        priority="reconciliation",
+        reason="ptt-reconcile",
+    )
+    assert result.request is not None
+
+    scheduler.pause_external_cat(owner="hamlib-client", reason="raw-cat-session")
+
+    assert scheduler.pending_requests() == (result.request,)
 
 
 def test_external_cat_pause_defers_only_pause_policy_groups() -> None:
@@ -303,6 +346,40 @@ def test_external_cat_pause_defers_only_pause_policy_groups() -> None:
     assert len(resumed) == 1
     assert resumed[0].paths == (freq,)
     assert scheduler.pending_requests() == (result.request, resumed[0])
+
+
+def test_external_cat_resume_requeues_existing_deferred_request_once() -> None:
+    clock = FreshnessClock(start=62.5)
+    freq = FieldPath.active("main", "freq_mode", "freq_hz")
+    scheduler = AcquisitionScheduler(profile=_profile([freq]), clock=clock)
+
+    result = scheduler.ensure_fresh(
+        freq,
+        max_age=0.5,
+        priority="background",
+        reason="background-poll",
+        timeout=2.0,
+    )
+    assert result.request is not None
+
+    scheduler.pause_external_cat(owner="hamlib-client", reason="raw-cat-session")
+    assert scheduler.pending_requests() == ()
+
+    resumed = scheduler.resume_external_cat()
+
+    assert len(resumed) == 1
+    assert resumed[0].paths == (freq,)
+    assert resumed[0].priority is AcquisitionPriority.BACKGROUND
+    assert resumed[0].reason == "background-poll"
+    assert resumed[0].reasons == ("background-poll",)
+    assert resumed[0].max_age == 0.5
+    assert resumed[0].timeout == 2.0
+    assert resumed[0].requested_at_monotonic == 62.5
+    assert resumed[0].deadline_monotonic == 63.0
+    assert resumed[0].external_cat_owner == "hamlib-client"
+    assert scheduler.pending_requests() == resumed
+    assert scheduler.resume_external_cat() == ()
+    assert scheduler.pending_requests() == resumed
 
 
 def test_external_cat_resume_dedupes_same_family_deferred_requests() -> None:
