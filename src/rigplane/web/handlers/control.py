@@ -6,9 +6,17 @@ import asyncio
 import logging
 import time
 from collections.abc import Awaitable, Callable
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, ClassVar, cast
 
 from ..._bounded_queue import BoundedQueue
+from ...core.command_service import (
+    CommandExecutionResult,
+    CommandService,
+    command_intent_from_request,
+)
+from ...core.state_pipeline_contracts import CommandIntent, CommandSource
+from ...core.state_store import StateStore
 from ...profiles import RadioProfile
 from ...radio_state import RadioState
 from ..protocol import (  # noqa: TID251
@@ -169,6 +177,18 @@ __all__ = ["ControlHandler"]
 
 logger = logging.getLogger(__name__)
 _MAX_CW_TEXT_CHARS = 512
+
+
+@dataclass(slots=True)
+class _ControlCommandExecutor:
+    handler: "ControlHandler"
+
+    async def execute(self, intent: CommandIntent) -> CommandExecutionResult:
+        result = await self.handler._enqueue_legacy_command(  # noqa: SLF001
+            intent.name,
+            dict(intent.params),
+        )
+        return CommandExecutionResult(details=result)
 
 
 class ControlHandler:
@@ -389,6 +409,13 @@ class ControlHandler:
         # Minimum interval between same command (seconds).
         # Continuous slider/knob drag sends dozens of set_* per second.
         self._CMD_MIN_INTERVAL = 0.05  # 50ms = max 20 commands/sec per client
+        state_store = getattr(server, "command_state_store", None)
+        if not isinstance(state_store, StateStore):
+            state_store = StateStore()
+        self._command_service = CommandService(
+            executor=_ControlCommandExecutor(self),
+            state_store=state_store,
+        )
 
     async def run(self) -> None:
         """Run the control channel lifecycle."""
@@ -824,7 +851,12 @@ class ControlHandler:
             return
 
         try:
-            result = await self._enqueue_command(name, params)
+            result = await self._enqueue_command(
+                name,
+                params,
+                command_id=str(cmd_id),
+                source="websocket",
+            )
             await self._ws.send_text(
                 encode_json(
                     {
@@ -856,6 +888,23 @@ class ControlHandler:
             )
 
     async def _enqueue_command(
+        self,
+        name: str,
+        params: dict[str, Any],
+        *,
+        command_id: str | None = None,
+        source: CommandSource = "websocket",
+    ) -> dict[str, Any]:
+        intent = command_intent_from_request(
+            name,
+            params,
+            source=source,
+            command_id=command_id,
+        )
+        result = await self._command_service.execute(intent)
+        return dict(result.executor_result.details or {})
+
+    async def _enqueue_legacy_command(
         self, name: str, params: dict[str, Any]
     ) -> dict[str, Any]:
         """Build a Command dataclass, enqueue it, and return the ack result.

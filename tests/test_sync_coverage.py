@@ -151,6 +151,17 @@ def test_sync_wrappers_delegate_and_return_values() -> None:
     )
     r._radio.set_scope_mode.assert_awaited_once_with(3)
     r._radio.set_scope_span.assert_awaited_once_with(6)
+    events = r._command_service.lifecycle_events()  # noqa: SLF001
+    assert any(
+        event.source == "public_api"
+        and event.target is not None
+        and str(event.target) == "receiver.0.freq_mode.freq_hz"
+        for event in events
+    )
+    assert (
+        r._state_store.snapshot().field("receiver.0.freq_mode.freq_hz").value  # noqa: SLF001
+        == 7100000
+    )
     r._loop.close()
 
 

@@ -11,6 +11,8 @@ from rigplane.core.command_service import (
     CommandExecutionResult,
     CommandService,
     PendingOverlay,
+    command_intent_from_request,
+    command_response_observation,
 )
 from rigplane.core.state_pipeline_contracts import (
     CommandIntent,
@@ -441,3 +443,43 @@ def test_lifecycle_subscribers_observe_deterministic_events() -> None:
 
     assert _states(seen) == ["queued"]
     assert _states(service.lifecycle_events()) == ["queued", "sent"]
+
+
+def test_command_intent_from_web_set_freq_request_targets_receiver_state() -> None:
+    intent = command_intent_from_request(
+        "set_freq",
+        {"freq": 14_074_000, "receiver": 1, "session_id": "ws-a"},
+        source="websocket",
+        command_id="ws-123",
+    )
+
+    assert intent.id == "ws-123"
+    assert intent.name == "set_freq"
+    assert intent.source == "websocket"
+    assert intent.params["freq_hz"] == 14_074_000
+    assert intent.params["receiver"] == 1
+    assert intent.params["session_id"] == "ws-a"
+    assert str(intent.target) == "receiver.1.freq_mode.freq_hz"
+    assert intent.pending_policy == "scoped"
+    assert intent.expected_observations == (intent.target,)
+
+
+def test_command_response_observation_uses_command_response_source() -> None:
+    intent = command_intent_from_request(
+        "set_mode",
+        {"mode": "USB", "filter_width": 2, "receiver": 0},
+        source="rigctld",
+        command_id="rig-1",
+    )
+
+    observation = command_response_observation(
+        intent,
+        timestamp_monotonic=42.0,
+        provider="rigctld",
+    )
+
+    assert str(observation.path) == "receiver.0.freq_mode.mode"
+    assert observation.value == "USB"
+    assert observation.source.source == "command_response"
+    assert observation.source.provider == "rigctld"
+    assert observation.correlation_id == "rig-1"

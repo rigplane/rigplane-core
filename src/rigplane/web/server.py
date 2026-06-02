@@ -39,6 +39,7 @@ from typing import TYPE_CHECKING, Any, Literal, TextIO
 from .. import __version__
 from .._bounded_queue import BoundedQueue
 from ..core.state_diagnostics import StateDiagnosticsRecorder
+from ..core.state_store import StateStore
 from ..radio_state import RadioState
 from ..capabilities import CAP_AUDIO, CAP_SCOPE
 from ..exceptions import TimeoutError as RigplaneTimeoutError
@@ -393,6 +394,7 @@ class WebServer:
         self._state_diagnostics = StateDiagnosticsRecorder(
             enabled=self._config.state_diagnostics
         )
+        self.command_state_store = StateStore()
         self._server: asyncio.Server | None = None
         self._runtime_started_at = time.monotonic()
         self._runtime_log_path: str | None = None
@@ -2512,6 +2514,8 @@ class WebServer:
             result = await self._control_handler_for()._enqueue_command(  # noqa: SLF001
                 raw_name,
                 raw_params,
+                command_id=None if payload.get("id") is None else str(payload["id"]),
+                source="http",
             )
         except PermissionError as exc:
             await self._send_json(
@@ -2591,6 +2595,7 @@ class WebServer:
         result = await self._control_handler_for(server=proxy_server)._enqueue_command(  # noqa: SLF001
             raw_name,
             raw_params,
+            source="http",
         )
         if len(collector.commands) != 1:
             raise _HttpBatchValidationError(

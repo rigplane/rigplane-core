@@ -8,6 +8,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from rigplane.core.state_store import StateStore
 from rigplane.exceptions import CommandError
 from rigplane.profiles import resolve_radio_profile
 from rigplane.radio_state import RadioState
@@ -875,6 +876,27 @@ async def test_command_error_propagates_from_execute() -> None:
     radio.set_freq.reset_mock()
     await poller._execute(SetFreq(freq=7_074_000, receiver=0))  # noqa: SLF001
     radio.set_freq.assert_awaited_once_with(7_074_000)
+
+
+@pytest.mark.asyncio
+async def test_set_freq_readback_is_applied_as_state_store_observation() -> None:
+    radio = _make_radio()
+    state = RadioState()
+    store = StateStore()
+    poller = RadioPoller(
+        radio,
+        StateCache(),
+        CommandQueue(),
+        radio_state=state,
+        state_store=store,
+    )
+
+    await poller._execute(SetFreq(freq=14_074_000, receiver=0))  # noqa: SLF001
+
+    field = store.snapshot().field("receiver.0.freq_mode.freq_hz")
+    assert field.value == 14_074_000
+    assert field.source.source == "command_response"
+    assert state.main.freq == 14_074_000
 
 
 @pytest.mark.asyncio

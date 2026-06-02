@@ -67,7 +67,12 @@ from ..capabilities import (
     CAP_VOX,
 )
 from .._queue_pressure import PRESSURE_THRESHOLD
+from ..core.command_service import (
+    command_intent_from_request,
+    command_response_observation,
+)
 from ..core.state_diagnostics import StateDiagnosticsRecorder
+from ..core.state_store import StateStore
 from .._state_queries import build_state_queries
 from ..profiles import RadioProfile, resolve_radio_profile
 from ..types import AudioCodec
@@ -327,11 +332,13 @@ class RadioPoller:
         on_state_event: Callable[[str, dict[str, Any]], None] | None = None,
         radio_state: "RadioState | None" = None,
         diagnostics: StateDiagnosticsRecorder | None = None,
+        state_store: StateStore | None = None,
     ) -> None:
         queue = legacy_queue if legacy_queue is not None else command_queue
         self._radio = radio
         self._radio_state = radio_state
         self._state_diagnostics = diagnostics
+        self._state_store = state_store or StateStore()
         self._queue = queue
         self._on_state_event = on_state_event
         self._poll_index: int = 0
@@ -362,6 +369,27 @@ class RadioPoller:
         # than once per _UNSELECTED_SLOT_INTERVAL.
         self._last_user_write_ts: float = 0.0
         self._last_unselected_poll: dict[int, float] = {}
+
+    def _apply_command_response_observation(
+        self,
+        name: str,
+        params: dict[str, Any],
+    ) -> None:
+        intent = command_intent_from_request(
+            name,
+            params,
+            source="websocket",
+            command_id=f"web-poller-{name}-{time.monotonic_ns()}",
+        )
+        if intent.target is None:
+            return
+        self._state_store.apply(
+            command_response_observation(
+                intent,
+                timestamp_monotonic=time.monotonic(),
+                provider="web_poller",
+            )
+        )
 
     def start(self) -> None:
         if self._task is not None and not self._task.done():
@@ -808,7 +836,11 @@ class RadioPoller:
                     if current != "MAIN" and self._profile.vfo_sub_code is not None:
                         await asyncio.sleep(self._gap)
                         await self._civ(0x07, data=bytes([self._profile.vfo_sub_code]))
-                # Optimistic state update for frequency
+                self._apply_command_response_observation(
+                    "set_freq",
+                    {"freq": freq, "receiver": rx},
+                )
+                # Compatibility mirror until web state delivery reads StateStore.
                 if self._radio_state:
                     target = (
                         self._radio_state.sub if rx != 0 else self._radio_state.main
@@ -849,7 +881,11 @@ class RadioPoller:
                     if current != "MAIN" and self._profile.vfo_sub_code is not None:
                         await asyncio.sleep(self._gap)
                         await self._civ(0x07, data=bytes([self._profile.vfo_sub_code]))
-                # Optimistic state update for mode
+                self._apply_command_response_observation(
+                    "set_mode",
+                    {"mode": mode, "filter_width": fw, "receiver": rx},
+                )
+                # Compatibility mirror until web state delivery reads StateStore.
                 if self._radio_state:
                     target = (
                         self._radio_state.sub if rx != 0 else self._radio_state.main

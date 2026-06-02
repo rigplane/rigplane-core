@@ -13,6 +13,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from rigplane.web import server as server_module
+from rigplane.web.handlers.control import ControlHandler
 from rigplane.web.radio_poller import EnableScope
 from rigplane.web.server import WebConfig, WebServer, _send_response, run_web_server
 
@@ -321,6 +322,55 @@ async def test_handle_http_routes_and_405_404() -> None:
     assert srv2._serve_station_status.await_count == 1
     assert srv2._serve_static.await_count == 2
     send_resp2.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_http_single_command_uses_http_command_service_source(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    seen: dict[str, object] = {}
+
+    async def fake_enqueue(
+        self: ControlHandler,
+        name: str,
+        params: dict[str, object],
+        *,
+        command_id: str | None = None,
+        source: str = "websocket",
+    ) -> dict[str, object]:
+        del self
+        seen.update(
+            {
+                "name": name,
+                "params": params,
+                "command_id": command_id,
+                "source": source,
+            }
+        )
+        return {"freq": params["freq"], "receiver": params["receiver"]}
+
+    monkeypatch.setattr(ControlHandler, "_enqueue_command", fake_enqueue)
+    srv = WebServer(SimpleNamespace(connected=True, capabilities=set()), WebConfig())
+    writer = _FakeWriter()
+
+    await srv._handle_http_single_command(  # noqa: SLF001
+        writer,
+        {
+            "id": "http-set-freq",
+            "name": "set_freq",
+            "params": {"freq": 14_074_000, "receiver": 0},
+        },
+    )
+
+    status, body = _response_json(writer)
+    assert status == 200
+    assert body["ok"] is True
+    assert seen == {
+        "name": "set_freq",
+        "params": {"freq": 14_074_000, "receiver": 0},
+        "command_id": "http-set-freq",
+        "source": "http",
+    }
 
 
 @pytest.mark.asyncio

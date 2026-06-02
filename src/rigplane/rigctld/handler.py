@@ -20,7 +20,15 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Literal, cast
 
 from ..commands import build_civ_frame
+from ..core.command_service import (
+    CommandExecutionResult,
+    CommandService,
+    command_intent_from_request,
+    command_response_observation,
+)
 from ..core.state_diagnostics import StateDiagnosticsRecorder
+from ..core.state_pipeline_contracts import CommandIntent
+from ..core.state_store import StateStore
 from ..exceptions import ConnectionError, TimeoutError
 from ..radio_state import RadioState, ReceiverState
 from ..types import Mode
@@ -287,6 +295,51 @@ class _FallbackRigState:
         self.swr_ts = time.monotonic()
 
 
+@dataclass(slots=True)
+class _RigctldCommandExecutor:
+    handler: "RigctldHandler"
+
+    async def execute(self, intent: CommandIntent) -> CommandExecutionResult:
+        params = intent.params
+        if intent.name == "set_freq":
+            await self.handler._radio.set_freq(
+                int(params["freq_hz"]),
+                receiver=int(params.get("receiver", 0)),
+            )
+        elif intent.name == "set_mode":
+            receiver = int(params.get("receiver", 0))
+            mode = str(params["mode"])
+            filter_width = params.get("filter_width")
+            if filter_width is not None:
+                filter_width = int(filter_width)
+            if receiver == 0:
+                await self.handler._radio.set_mode(
+                    mode,
+                    filter_width=filter_width,
+                )
+            else:
+                await self.handler._radio.set_mode(
+                    mode,
+                    filter_width=filter_width,
+                    receiver=receiver,
+                )
+            if bool(params.get("packet_mode", False)):
+                await self.handler._apply_packet_data_mode(receiver=receiver)
+        else:
+            raise ValueError(f"unsupported rigctld command intent: {intent.name!r}")
+
+        observations = ()
+        if intent.target is not None:
+            observations = (
+                command_response_observation(
+                    intent,
+                    timestamp_monotonic=time.monotonic(),
+                    provider="rigctld",
+                ),
+            )
+        return CommandExecutionResult(observations=observations)
+
+
 # ---------------------------------------------------------------------------
 # Raw CI-V helpers
 # ---------------------------------------------------------------------------
@@ -360,6 +413,17 @@ class RigctldHandler:
         self._pending = _PendingRigState()
         self._routing = create_routing(
             radio, self._cache, getattr(config, "max_power_w", 100.0)
+        )
+        state_store = getattr(radio, "_state_store", None)
+        if not isinstance(state_store, StateStore):
+            state_store = StateStore()
+            try:
+                setattr(radio, "_state_store", state_store)
+            except Exception:
+                logger.debug("rigctld: failed to attach command StateStore")
+        self._command_service = CommandService(
+            executor=_RigctldCommandExecutor(self),
+            state_store=state_store,
         )
 
     def _packet_data_mode_value(self) -> int | bool:
@@ -542,8 +606,15 @@ class RigctldHandler:
             return _err(HamlibError.EVFO)
 
         receiver = self._receiver_index_for(target)
-        await self._radio.set_freq(freq, receiver=receiver)
-        # Pending/cache track MAIN only — only update on the MAIN path so
+        intent = command_intent_from_request(
+            "set_freq",
+            {"freq": freq, "receiver": receiver},
+            source="rigctld",
+            command_id=f"rigctld-set-freq-{time.monotonic_ns()}",
+        )
+        await self._command_service.execute(intent)
+        # Compatibility shim until MOR-340/MOR-341/MOR-343 move rigctld reads
+        # fully onto StateStore projections: pending/cache track MAIN only, so
         # subsequent ``f VFOA`` reads coalesce against the just-written value.
         if receiver == 0:
             self._pending.freq = freq
@@ -660,24 +731,42 @@ class RigctldHandler:
         # Gate on _receiver_index_for so single-RX active_slot="B" falls through
         # to the MAIN path (slot selection is via set_vfo_slot, not receiver=).
         if self._receiver_index_for(target) == 1:
-            await self._radio.set_mode(
-                base_mode_str, filter_width=filter_width, receiver=1
+            await self._command_service.execute(
+                command_intent_from_request(
+                    "set_mode",
+                    {
+                        "mode": base_mode_str,
+                        "filter_width": filter_width,
+                        "receiver": 1,
+                        "packet_mode": requested_mode in packet_modes,
+                    },
+                    source="rigctld",
+                    command_id=f"rigctld-set-mode-{time.monotonic_ns()}",
+                )
             )
-            if requested_mode in packet_modes:
-                await self._apply_packet_data_mode(receiver=1)
             return _ok()
 
-        await self._radio.set_mode(base_mode_str, filter_width=filter_width)
+        intent = command_intent_from_request(
+            "set_mode",
+            {
+                "mode": base_mode_str,
+                "filter_width": filter_width,
+                "receiver": 0,
+                "packet_mode": requested_mode in packet_modes,
+            },
+            source="rigctld",
+            command_id=f"rigctld-set-mode-{time.monotonic_ns()}",
+        )
+        await self._command_service.execute(intent)
 
         # Only set DATA mode explicitly for packet modes.
         # For non-packet modes, avoid hidden side-effects (do not force DATA off).
         if requested_mode in packet_modes:
-            data_mode = await self._apply_packet_data_mode()
-
             # Read-back sync: keep next get_mode deterministic for CAT clients.
             # Some radios acknowledge set-data quickly but reflect packet mode
             # with a short delay. We wait briefly to reduce client-side stalls.
             synced = False
+            data_mode = self._packet_data_mode_value()
             get_mode = get_mode_reader(self._radio, _mode_to_hamlib_str)
             if get_mode is not None:
                 for _ in range(5):
@@ -685,13 +774,22 @@ class RigctldHandler:
                         read_mode, _ = await get_mode()
                         read_data = await self._radio.get_data_mode()
                         if read_mode == base_mode_str and read_data:
+                            self._command_service.apply_observation(
+                                command_response_observation(
+                                    intent,
+                                    timestamp_monotonic=time.monotonic(),
+                                    provider="rigctld",
+                                    value=read_mode,
+                                )
+                            )
                             synced = True
                             break
                     except Exception:
                         logger.debug("rigctld: sync poll failed", exc_info=True)
                     await asyncio.sleep(0.05)
 
-            # Cache optimistic final state even if read-back lagged.
+            # Compatibility shim until rigctld reads are projected from
+            # StateStore: cache optimistic final state even if read-back lagged.
             self._cache.update_mode(base_mode_str, filter_width)
             self._cache.update_data_mode(True)
             self._pending.mode = base_mode_str

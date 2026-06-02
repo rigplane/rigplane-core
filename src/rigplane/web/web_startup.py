@@ -121,6 +121,7 @@ async def start_web_server(server: WebServer) -> None:
                 on_state_event=server._on_poller_state_event,
                 radio_state=server._radio_state,
                 diagnostics=server.state_diagnostics,
+                state_store=server.command_state_store,
             )
             server._radio_poller.start()
         if _supports_scope_local(server):

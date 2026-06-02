@@ -20,6 +20,7 @@ from rigplane.core.state_pipeline_contracts import (
     CommandSource,
     FieldPath,
     Observation,
+    SourceMetadata,
 )
 from rigplane.core.state_store import StateStore
 
@@ -29,6 +30,8 @@ __all__ = [
     "CommandService",
     "CommandServiceResult",
     "PendingOverlay",
+    "command_intent_from_request",
+    "command_response_observation",
 ]
 
 
@@ -346,3 +349,104 @@ def _observation_reconciles_overlay(
         and overlay.path == observation.path
         and overlay.value == observation.value
     )
+
+
+def command_intent_from_request(
+    name: str,
+    params: Mapping[str, Any],
+    *,
+    source: CommandSource,
+    command_id: str | None = None,
+    session_id: str | None = None,
+    timeout: float | None = 2.0,
+) -> CommandIntent:
+    """Normalize a production command request into a backend-neutral intent."""
+
+    normalized = dict(params)
+    if session_id is not None:
+        normalized["session_id"] = session_id
+    command_name = str(name)
+    target = _command_target(command_name, normalized)
+    if command_name == "set_freq":
+        raw_freq = (
+            normalized["freq_hz"] if "freq_hz" in normalized else normalized["freq"]
+        )
+        freq = int(raw_freq)
+        normalized["freq_hz"] = freq
+        normalized.setdefault("freq", freq)
+    elif command_name == "set_mode":
+        normalized["mode"] = str(normalized["mode"])
+    elif command_name == "set_filter":
+        if "filter_num" not in normalized:
+            raw_filter = normalized.get("filter", normalized.get("value", 1))
+            if isinstance(raw_filter, str):
+                normalized["filter_num"] = (
+                    int(raw_filter[-1]) if raw_filter[-1:].isdigit() else 1
+                )
+            else:
+                normalized["filter_num"] = int(raw_filter)
+
+    expected = () if target is None else (target,)
+    return CommandIntent(
+        id=command_id or f"{source}-{time.monotonic_ns()}",
+        name=command_name,
+        params=normalized,
+        source=source,
+        target=target,
+        priority="user",
+        timeout=timeout,
+        pending_policy="scoped" if target is not None else "none",
+        expected_observations=expected,
+    )
+
+
+def command_response_observation(
+    intent: CommandIntent,
+    *,
+    timestamp_monotonic: float,
+    provider: str,
+    transport: str | None = None,
+    value: Any = None,
+) -> Observation:
+    """Create a confirmed command-response observation for an intent target."""
+
+    if intent.target is None:
+        raise ValueError(f"command {intent.name!r} has no observable target")
+    observed_value = _value_for_observable_intent(intent) if value is None else value
+    return Observation(
+        path=intent.target,
+        value=observed_value,
+        source=SourceMetadata(
+            source="command_response",
+            provider=provider,
+            transport=transport,
+        ),
+        timestamp_monotonic=timestamp_monotonic,
+        correlation_id=intent.id,
+    )
+
+
+def _command_target(name: str, params: Mapping[str, Any]) -> FieldPath | None:
+    receiver = str(int(params.get("receiver", 0)))
+    if name == "set_freq":
+        return FieldPath.receiver(receiver, "freq_mode", "freq_hz")
+    if name == "set_mode":
+        return FieldPath.receiver(receiver, "freq_mode", "mode")
+    if name == "set_filter":
+        return FieldPath.receiver(receiver, "freq_mode", "filter_width")
+    return None
+
+
+def _value_for_observable_intent(intent: CommandIntent) -> Any:
+    if intent.target is None:
+        raise ValueError(f"command {intent.name!r} has no observable target")
+    params = intent.params
+    if intent.target.name in params:
+        return params[intent.target.name]
+    if intent.target.name == "freq_hz" and "freq" in params:
+        return params["freq"]
+    if intent.target.name == "filter_width" and "filter_num" in params:
+        return params["filter_num"]
+    if "value" in params:
+        return params["value"]
+    raise KeyError(intent.target.name)

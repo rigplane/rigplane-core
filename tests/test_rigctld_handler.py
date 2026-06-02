@@ -10,6 +10,7 @@ import pytest
 from _caps import FULL_ICOM_CAPS
 from rigplane.exceptions import ConnectionError as IcomConnectionError
 from rigplane.exceptions import TimeoutError as IcomTimeoutError
+from rigplane.core.state_store import StateStore
 from rigplane.radio_state import RadioState
 from rigplane.rigctld.contract import HamlibError, RigctldCommand, RigctldConfig
 from rigplane.rigctld.handler import RigctldHandler
@@ -156,6 +157,30 @@ async def test_set_freq_calls_radio(
     resp = await handler.execute(set_cmd("set_freq", "14074000"))
     assert resp.ok
     mock_radio.set_freq.assert_awaited_once_with(14_074_000, receiver=0)
+
+
+@pytest.mark.asyncio
+async def test_set_freq_enters_command_service_and_applies_observation(
+    mock_radio: AsyncMock,
+) -> None:
+    store = StateStore()
+    mock_radio._state_store = store
+    handler = RigctldHandler(mock_radio, RigctldConfig())
+
+    resp = await handler.execute(set_cmd("set_freq", "14074000"))
+
+    assert resp.ok
+    events = handler._command_service.lifecycle_events()  # noqa: SLF001
+    assert [event.state for event in events[:4]] == [
+        "accepted",
+        "queued",
+        "sent",
+        "acknowledged",
+    ]
+    assert events[0].source == "rigctld"
+    field = store.snapshot().field("receiver.0.freq_mode.freq_hz")
+    assert field.value == 14_074_000
+    assert field.source.source == "command_response"
 
 
 @pytest.mark.asyncio
