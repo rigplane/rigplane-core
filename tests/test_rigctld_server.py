@@ -265,7 +265,11 @@ class TestAcceptResponse:
 
         data = await asyncio.wait_for(r.read(4096), timeout=1.0)
         assert data == b"RPRT 0\n"
-        handler.execute.assert_called_once_with(set_cmd)
+        handler.execute.assert_called_once()
+        call = handler.execute.call_args
+        assert call is not None
+        assert call.args == (set_cmd,)
+        assert call.kwargs["session_id"] == "rigctld-client-1"
         await _close(w)
 
     async def test_format_response_receives_session(

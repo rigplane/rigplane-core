@@ -17,6 +17,7 @@ import asyncio
 import logging
 import time
 from collections.abc import Sequence
+from contextvars import ContextVar
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Literal, cast
 
@@ -53,6 +54,10 @@ from .routing import create_routing  # noqa: TID251
 __all__ = ["RigctldHandler"]
 
 logger = logging.getLogger(__name__)
+_RIGCTLD_SESSION_ID: ContextVar[str | None] = ContextVar(
+    "rigctld_session_id",
+    default=None,
+)
 
 # ---------------------------------------------------------------------------
 # IC-7610 hardcoded dump_state (hamlib protocol v0 positional format)
@@ -417,20 +422,30 @@ class _RigctldProjection:
 
     snapshot: StateSnapshot
     overlays: dict[str, Any]
+    aliases: dict[str, tuple[FieldPath, ...]]
 
-    def covers(self, paths: Sequence[str]) -> bool:
-        return all(path in self.overlays for path in paths)
+    def covers(self, paths: Sequence[FieldPath]) -> bool:
+        return all(self.value(path) is not None for path in paths)
 
-    def value(self, *paths: str) -> _ProjectedField | None:
+    def value(self, *paths: FieldPath) -> _ProjectedField | None:
         for path in paths:
-            if path in self.overlays:
-                return _ProjectedField(path=path, value=self.overlays[path])
+            key = str(path)
+            if key in self.overlays:
+                return _ProjectedField(path=key, value=self.overlays[key])
         for path in paths:
-            try:
-                field = self.snapshot.field(path)
-            except KeyError:
-                continue
-            return _ProjectedField(path=path, value=field.value)
+            newest = None
+            for candidate in self.aliases.get(str(path), (path,)):
+                try:
+                    field = self.snapshot.field(candidate)
+                except KeyError:
+                    continue
+                if (
+                    newest is None
+                    or field.last_observed_monotonic > newest.last_observed_monotonic
+                ):
+                    newest = field
+            if newest is not None:
+                return _ProjectedField(path=str(path), value=newest.value)
         return None
 
 
@@ -560,39 +575,69 @@ class RigctldHandler:
             return None
         return state.main
 
+    def _session_id(self) -> str | None:
+        return _RIGCTLD_SESSION_ID.get()
+
     def _receiver_id(self, receiver: int) -> str:
-        return str(receiver)
+        return "sub" if receiver == 1 else "main"
 
-    def _freq_path(self, receiver: int) -> str:
-        return f"receiver.{self._receiver_id(receiver)}.freq_mode.freq_hz"
+    def _legacy_receiver_id(self, receiver_id: str) -> str | None:
+        if receiver_id == "main":
+            return "0"
+        if receiver_id == "sub":
+            return "1"
+        return None
 
-    def _mode_path(self, receiver: int) -> str:
-        return f"receiver.{self._receiver_id(receiver)}.freq_mode.mode"
+    def _path_aliases(self, path: FieldPath) -> tuple[FieldPath, ...]:
+        aliases = [path]
+        if path.scope.value != "receiver":
+            return (path,)
+        receiver_id = path.receiver_id
+        if receiver_id is None:
+            return (path,)
+        legacy_receiver = self._legacy_receiver_id(receiver_id)
+        if legacy_receiver is None:
+            return (path,)
+        if path.slot is not None and path.slot.value == "active":
+            aliases.append(
+                FieldPath.receiver(legacy_receiver, path.family.value, path.name)
+            )
+        elif path.scope.value == "receiver":
+            aliases.append(
+                FieldPath.receiver(legacy_receiver, path.family.value, path.name)
+            )
+        return tuple(aliases)
 
-    def _filter_path(self, receiver: int) -> str:
-        return f"receiver.{self._receiver_id(receiver)}.freq_mode.filter_width"
+    def _freq_path(self, receiver: int) -> FieldPath:
+        return FieldPath.active(self._receiver_id(receiver), "freq_mode", "freq_hz")
 
-    def _data_mode_path(self, receiver: int) -> str:
-        return f"receiver.{self._receiver_id(receiver)}.freq_mode.data_mode"
+    def _mode_path(self, receiver: int) -> FieldPath:
+        return FieldPath.active(self._receiver_id(receiver), "freq_mode", "mode")
 
-    def _active_slot_path(self, receiver: int = 0) -> str:
-        return f"receiver.{self._receiver_id(receiver)}.vfo.active_slot"
+    def _filter_path(self, receiver: int) -> FieldPath:
+        return FieldPath.active(self._receiver_id(receiver), "freq_mode", "filter_width")
 
-    def _level_path(self, level: str, *, receiver: int) -> str | None:
+    def _data_mode_path(self, receiver: int) -> FieldPath:
+        return FieldPath.active(self._receiver_id(receiver), "freq_mode", "data_mode")
+
+    def _active_slot_path(self, receiver: int = 0) -> FieldPath:
+        return FieldPath.active_slot(self._receiver_id(receiver))
+
+    def _level_path(self, level: str, *, receiver: int) -> FieldPath | None:
         if level == "STRENGTH":
-            return f"receiver.{self._receiver_id(receiver)}.meters.s_meter"
+            return FieldPath.receiver(self._receiver_id(receiver), "meters", "s_meter")
         if level == "RFPOWER":
-            return "global.operator_controls.power_level"
+            return FieldPath.global_("operator_controls", "power_level")
         if level == "SWR":
-            return "global.meters.swr"
+            return FieldPath.global_("meters", "swr")
         if level == "RFPOWER_METER":
-            return "global.meters.power"
+            return FieldPath.global_("meters", "power")
         if level == "COMP_METER":
-            return "global.meters.comp_meter"
+            return FieldPath.global_("meters", "comp_meter")
         if level == "ID_METER":
-            return "global.meters.id_meter"
+            return FieldPath.global_("meters", "id_meter")
         if level == "VD_METER":
-            return "global.meters.vd_meter"
+            return FieldPath.global_("meters", "vd_meter")
         names = {
             "AF": "af_level",
             "RF": "rf_gain",
@@ -610,27 +655,36 @@ class RigctldHandler:
         name = names.get(level)
         if name is None:
             return None
-        return f"receiver.{self._receiver_id(receiver)}.operator_controls.{name}"
+        return FieldPath.receiver(self._receiver_id(receiver), "operator_controls", name)
 
-    def _func_path(self, func: str, *, receiver: int) -> str:
-        return (
-            f"receiver.{self._receiver_id(receiver)}."
-            f"operator_toggles.{func.lower()}"
+    def _func_path(self, func: str, *, receiver: int) -> FieldPath:
+        return FieldPath.receiver(
+            self._receiver_id(receiver),
+            "operator_toggles",
+            func.lower(),
         )
 
-    def _project_fields(self, paths: Sequence[str]) -> _RigctldProjection:
+    def _project_fields(self, paths: Sequence[FieldPath]) -> _RigctldProjection:
         snapshot = self._state_store.snapshot()
-        overlays = {
-            str(path): value
-            for path, value in self._command_service.project_pending_values(
-                source="rigctld",
-                session_id=None,
-                paths=tuple(FieldPath.parse(path) for path in paths),
-            ).items()
-        }
-        return _RigctldProjection(snapshot=snapshot, overlays=overlays)
+        aliases = {str(path): self._path_aliases(path) for path in paths}
+        projected = self._command_service.project_pending_values(
+            source="rigctld",
+            session_id=self._session_id(),
+            paths=tuple(
+                candidate
+                for path_aliases in aliases.values()
+                for candidate in path_aliases
+            ),
+        )
+        overlays: dict[str, Any] = {}
+        for key, candidates in aliases.items():
+            for candidate in candidates:
+                if candidate in projected:
+                    overlays[key] = projected[candidate]
+                    break
+        return _RigctldProjection(snapshot=snapshot, overlays=overlays, aliases=aliases)
 
-    def _ensure_fresh(self, paths: Sequence[str], *, reason: str) -> None:
+    def _ensure_fresh(self, paths: Sequence[FieldPath], *, reason: str) -> None:
         service = self._state_model_service
         if service is None or self._config.cache_ttl <= 0:
             return
@@ -638,7 +692,7 @@ class RigctldHandler:
         if not callable(ensure_fresh) or asyncio.iscoroutinefunction(ensure_fresh):
             return
         ensure_fresh(
-            tuple(sorted(paths)),
+            tuple(sorted(paths, key=str)),
             max_age=self._config.cache_ttl,
             priority="user",
             reason=reason,
@@ -646,19 +700,19 @@ class RigctldHandler:
 
     def _project_with_freshness(
         self,
-        paths: Sequence[str],
+        paths: Sequence[FieldPath],
         *,
         reason: str,
     ) -> _RigctldProjection:
         projection = self._project_fields(paths)
+        self._ensure_fresh(paths, reason=reason)
         if not projection.covers(paths):
-            self._ensure_fresh(paths, reason=reason)
             projection = self._project_fields(paths)
         return projection
 
     def _record_state_sample(
         self,
-        path: str,
+        path: FieldPath | str,
         value: Any,
         *,
         source: Literal["hamlib_response", "state_poller"],
@@ -666,7 +720,7 @@ class RigctldHandler:
     ) -> None:
         self._state_store.apply(
             Observation(
-                path=FieldPath.parse(path),
+                path=FieldPath.parse(path) if isinstance(path, str) else path,
                 value=value,
                 source=SourceMetadata(
                     source=source,
@@ -678,27 +732,40 @@ class RigctldHandler:
             )
         )
 
-    def _record_pending_overlay(self, path: str, value: Any, *, command_id: str) -> None:
+    def _record_pending_overlay(
+        self,
+        path: FieldPath | str,
+        value: Any,
+        *,
+        command_id: str,
+    ) -> None:
         self._command_service.record_pending_overlay(
             PendingOverlay(
                 source="rigctld",
-                session_id=None,
+                session_id=self._session_id(),
                 command_id=command_id,
-                path=FieldPath.parse(path),
+                path=FieldPath.parse(path) if isinstance(path, str) else path,
                 value=value,
                 expires_at_monotonic=time.monotonic() + 2.0,
             )
         )
 
-    def _confirm_pending_value(self, path: str, value: Any, *, command_id: str) -> None:
+    def _confirm_pending_value(
+        self,
+        path: FieldPath | str,
+        value: Any,
+        *,
+        command_id: str,
+    ) -> None:
         self._command_service.apply_observation(
             Observation(
-                path=FieldPath.parse(path),
+                path=FieldPath.parse(path) if isinstance(path, str) else path,
                 value=value,
                 source=SourceMetadata(
                     source="command_response",
                     provider="rigctld",
                     command_source="rigctld",
+                    session_id=self._session_id(),
                 ),
                 timestamp_monotonic=time.monotonic(),
                 correlation_id=command_id,
@@ -753,7 +820,12 @@ class RigctldHandler:
     # Public entry point
     # ------------------------------------------------------------------
 
-    async def execute(self, cmd: RigctldCommand) -> RigctldResponse:
+    async def execute(
+        self,
+        cmd: RigctldCommand,
+        *,
+        session_id: str | None = None,
+    ) -> RigctldResponse:
         """Execute a parsed rigctld command and return the response.
 
         Args:
@@ -762,42 +834,50 @@ class RigctldHandler:
         Returns:
             Response to send back.
         """
+        token = _RIGCTLD_SESSION_ID.set(session_id)
         # Read-only gate
-        if self._config.read_only and cmd.is_set:
-            logger.debug("read-only: rejecting set command %s", cmd.long_cmd)
-            return _err(HamlibError.EACCESS)
-
-        handler_fn = self._DISPATCH.get(cmd.long_cmd)
-        if handler_fn is None:
-            logger.debug("unimplemented command: %s", cmd.long_cmd)
-            return _err(HamlibError.ENIMPL)
-
         try:
-            response = cast(RigctldResponse, await handler_fn(self, cmd))
-            if isinstance(self._state_diagnostics, StateDiagnosticsRecorder):
-                self._state_diagnostics.record(
-                    "rigctld_delivery_trigger",
-                    "rigctld.handler",
-                    command=cmd.long_cmd,
-                    is_set=cmd.is_set,
-                    error=int(response.error),
+            if self._config.read_only and cmd.is_set:
+                logger.debug("read-only: rejecting set command %s", cmd.long_cmd)
+                return _err(HamlibError.EACCESS)
+
+            handler_fn = self._DISPATCH.get(cmd.long_cmd)
+            if handler_fn is None:
+                logger.debug("unimplemented command: %s", cmd.long_cmd)
+                return _err(HamlibError.ENIMPL)
+
+            try:
+                response = cast(RigctldResponse, await handler_fn(self, cmd))
+                if isinstance(self._state_diagnostics, StateDiagnosticsRecorder):
+                    self._state_diagnostics.record(
+                        "rigctld_delivery_trigger",
+                        "rigctld.handler",
+                        command=cmd.long_cmd,
+                        is_set=cmd.is_set,
+                        error=int(response.error),
+                    )
+                return response
+            except ConnectionError:
+                logger.warning("I/O error executing %s", cmd.long_cmd)
+                return _err(HamlibError.EIO)
+            except (RigplaneTimeoutError, TimeoutError, asyncio.TimeoutError):
+                logger.warning("Timeout executing %s", cmd.long_cmd)
+                return _err(HamlibError.ETIMEOUT)
+            except _RigctldCommandFailure as exc:
+                logger.debug(
+                    "rigctld command %s failed with %s",
+                    cmd.long_cmd,
+                    exc.error,
                 )
-            return response
-        except ConnectionError:
-            logger.warning("I/O error executing %s", cmd.long_cmd)
-            return _err(HamlibError.EIO)
-        except (RigplaneTimeoutError, TimeoutError, asyncio.TimeoutError):
-            logger.warning("Timeout executing %s", cmd.long_cmd)
-            return _err(HamlibError.ETIMEOUT)
-        except _RigctldCommandFailure as exc:
-            logger.debug("rigctld command %s failed with %s", cmd.long_cmd, exc.error)
-            return _err(exc.error)
-        except ValueError:
-            logger.warning("Invalid value in %s", cmd.long_cmd)
-            return _err(HamlibError.EINVAL)
-        except Exception:
-            logger.exception("Internal error executing %s", cmd.long_cmd)
-            return _err(HamlibError.EINTERNAL)
+                return _err(exc.error)
+            except ValueError:
+                logger.warning("Invalid value in %s", cmd.long_cmd)
+                return _err(HamlibError.EINVAL)
+            except Exception:
+                logger.exception("Internal error executing %s", cmd.long_cmd)
+                return _err(HamlibError.EINTERNAL)
+        finally:
+            _RIGCTLD_SESSION_ID.reset(token)
 
     # ------------------------------------------------------------------
     # Frequency commands
@@ -873,6 +953,7 @@ class RigctldHandler:
             {"freq": freq, "receiver": receiver},
             source="rigctld",
             command_id=f"rigctld-set-freq-{time.monotonic_ns()}",
+            session_id=self._session_id(),
         )
         await self._command_service.execute(intent)
         return _ok()
@@ -1070,6 +1151,7 @@ class RigctldHandler:
                 },
                 source="rigctld",
                 command_id=f"rigctld-set-mode-{time.monotonic_ns()}",
+                session_id=self._session_id(),
             )
             await self._command_service.execute(intent)
             self._record_pending_overlay(
@@ -1095,6 +1177,7 @@ class RigctldHandler:
             },
             source="rigctld",
             command_id=f"rigctld-set-mode-{time.monotonic_ns()}",
+            session_id=self._session_id(),
         )
         await self._command_service.execute(intent)
         self._record_pending_overlay(
@@ -1165,18 +1248,16 @@ class RigctldHandler:
         except ValueError:
             return _err(HamlibError.EVFO)
 
-        projection = self._project_with_freshness(
-            ("global.tx_state.ptt",),
-            reason="rigctld.get_ptt",
-        )
-        projected = projection.value("global.tx_state.ptt")
+        ptt_path = FieldPath.global_("tx_state", "ptt")
+        projection = self._project_with_freshness((ptt_path,), reason="rigctld.get_ptt")
+        projected = projection.value(ptt_path)
         if projected is not None:
             return RigctldResponse(values=[str(int(bool(projected.value)))])
 
         state = self._radio_state()
         if state is not None:
             self._record_state_sample(
-                "global.tx_state.ptt",
+                ptt_path,
                 bool(state.ptt),
                 source="state_poller",
                 max_age=self._config.cache_ttl,
@@ -1203,6 +1284,7 @@ class RigctldHandler:
                 {"on": on},
                 source="rigctld",
                 command_id=f"rigctld-set-ptt-{time.monotonic_ns()}",
+                session_id=self._session_id(),
             )
         )
         return _ok()
@@ -1309,6 +1391,7 @@ class RigctldHandler:
                 {"vfo": vfo},
                 source="rigctld",
                 command_id=f"rigctld-set-vfo-{time.monotonic_ns()}",
+                session_id=self._session_id(),
             )
         )
         return _ok()
@@ -1606,6 +1689,7 @@ class RigctldHandler:
                 },
                 source="rigctld",
                 command_id=f"rigctld-set-level-{time.monotonic_ns()}",
+                session_id=self._session_id(),
             )
         )
         return _ok()
@@ -1738,6 +1822,7 @@ class RigctldHandler:
                 },
                 source="rigctld",
                 command_id=f"rigctld-set-func-{time.monotonic_ns()}",
+                session_id=self._session_id(),
             )
         )
         return _ok()
@@ -1777,11 +1862,12 @@ class RigctldHandler:
             self._resolve_target_vfo(cmd.vfo_arg)
         except ValueError:
             return _err(HamlibError.EVFO)
+        split_path = FieldPath.global_("tx_state", "split")
         projection = self._project_with_freshness(
-            ("global.tx_state.split",),
+            (split_path,),
             reason="rigctld.get_split_vfo",
         )
-        projected = projection.value("global.tx_state.split")
+        projected = projection.value(split_path)
         if projected is not None:
             split = bool(projected.value)
         else:
@@ -1789,7 +1875,7 @@ class RigctldHandler:
             split = state.split if state is not None else False
             if state is not None:
                 self._record_state_sample(
-                    "global.tx_state.split",
+                    split_path,
                     split,
                     source="state_poller",
                     max_age=self._config.cache_ttl,
@@ -1820,6 +1906,7 @@ class RigctldHandler:
                 {"on": on, "tx_vfo": tx_vfo},
                 source="rigctld",
                 command_id=f"rigctld-set-split-vfo-{time.monotonic_ns()}",
+                session_id=self._session_id(),
             )
         )
         return _ok()
@@ -1926,6 +2013,7 @@ class RigctldHandler:
                 {"hz": hz},
                 source="rigctld",
                 command_id=f"rigctld-set-rit-{time.monotonic_ns()}",
+                session_id=self._session_id(),
             )
         )
         return _ok()
@@ -1956,6 +2044,7 @@ class RigctldHandler:
                 {"hz": hz},
                 source="rigctld",
                 command_id=f"rigctld-set-xit-{time.monotonic_ns()}",
+                session_id=self._session_id(),
             )
         )
         return _ok()
@@ -2071,6 +2160,7 @@ class RigctldHandler:
                 {"frame_bytes": frame_bytes},
                 source="rigctld",
                 command_id=f"rigctld-send-raw-{time.monotonic_ns()}",
+                session_id=self._session_id(),
             )
         )
         values = result.executor_result.details.get("values", [])

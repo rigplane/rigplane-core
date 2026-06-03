@@ -43,7 +43,7 @@ def _profile_data_mode_count(radio: "Radio") -> int:
 
 def _wsjtx_data_mode_value(radio: "Radio", config: RigctldConfig) -> int | bool:
     if config.wsjtx_data_mode is not None:
-        return config.wsjtx_data_mode
+        return int(config.wsjtx_data_mode)
     return True
 
 
@@ -437,7 +437,10 @@ class RigctldServer:
                 t_start = time.monotonic()
                 try:
                     resp = await asyncio.wait_for(
-                        rig_handler.execute(cmd),
+                        rig_handler.execute(
+                            cmd,
+                            session_id=f"rigctld-client-{client_id}",
+                        ),
                         timeout=self._config.command_timeout,
                     )
                 except asyncio.TimeoutError:

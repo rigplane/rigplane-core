@@ -9,6 +9,16 @@ from unittest.mock import AsyncMock
 import pytest
 
 from _caps import FULL_ICOM_CAPS
+from rigplane.core.acquisition_scheduler import (
+    AcquisitionPriority,
+    AcquisitionScheduler,
+    RadioStateModelService,
+)
+from rigplane.core.state_acquisition_policy import (
+    AcquisitionPolicy,
+    FieldCapability,
+    RadioAcquisitionProfile,
+)
 from rigplane.exceptions import ConnectionError as IcomConnectionError
 from rigplane.exceptions import TimeoutError as IcomTimeoutError
 from rigplane.core.state_pipeline_contracts import FieldPath, Observation, SourceMetadata
@@ -129,6 +139,21 @@ class _RecordingStateModelService:
         return object()
 
 
+def _acquisition_profile(*paths: FieldPath) -> RadioAcquisitionProfile:
+    return RadioAcquisitionProfile(
+        provider="test_provider",
+        capabilities=tuple(
+            FieldCapability(
+                path=path,
+                polling=True,
+                command_response_observable=True,
+            )
+            for path in paths
+        ),
+        default_policy=AcquisitionPolicy(),
+    )
+
+
 def _apply_store_value(
     store: StateStore,
     path: str,
@@ -213,7 +238,7 @@ async def test_get_freq_projects_state_store_snapshot(
 ) -> None:
     store = StateStore()
     mock_radio._state_store = store
-    _apply_store_value(store, "receiver.0.freq_mode.freq_hz", 14_074_000)
+    _apply_store_value(store, "receiver.main.active.freq_mode.freq_hz", 14_074_000)
     handler = RigctldHandler(mock_radio, RigctldConfig())
 
     resp = await handler.execute(get_cmd("get_freq"))
@@ -246,7 +271,12 @@ async def test_get_freq_ensure_fresh_requests_bounded_projection(
     model_service = _RecordingStateModelService()
     mock_radio._state_store = store
     mock_radio._state_model_service = model_service
-    _apply_store_value(store, "receiver.0.freq_mode.freq_hz", 14_074_000, max_age=1.0)
+    _apply_store_value(
+        store,
+        "receiver.main.active.freq_mode.freq_hz",
+        14_074_000,
+        max_age=1.0,
+    )
     handler = RigctldHandler(mock_radio, RigctldConfig(cache_ttl=0.25))
 
     resp = await handler.execute(get_cmd("get_freq"))
@@ -254,13 +284,36 @@ async def test_get_freq_ensure_fresh_requests_bounded_projection(
     assert resp.values == ["14074000"]
     assert model_service.calls == [
         {
-            "paths": ("receiver.0.freq_mode.freq_hz",),
+            "paths": ("receiver.main.active.freq_mode.freq_hz",),
             "max_age": 0.25,
             "priority": "user",
             "reason": "rigctld.get_freq",
             "timeout": None,
         }
     ]
+
+
+@pytest.mark.asyncio
+async def test_get_freq_ensure_fresh_queues_canonical_request_with_real_service(
+    mock_radio: AsyncMock,
+) -> None:
+    store = StateStore()
+    freq = FieldPath.active("main", "freq_mode", "freq_hz")
+    scheduler = AcquisitionScheduler(profile=_acquisition_profile(freq))
+    model_service = RadioStateModelService(store=store, scheduler=scheduler)
+    mock_radio._state_store = store
+    mock_radio._state_model_service = model_service
+    mock_radio.get_freq.return_value = 14_074_000
+    handler = RigctldHandler(mock_radio, RigctldConfig(cache_ttl=0.25))
+
+    resp = await handler.execute(get_cmd("get_freq"))
+
+    assert resp.values == ["14074000"]
+    requests = scheduler.pending_requests()
+    assert len(requests) == 1
+    assert requests[0].paths == (freq,)
+    assert requests[0].priority is AcquisitionPriority.USER
+    assert requests[0].reason == "rigctld.get_freq"
 
 
 @pytest.mark.asyncio
@@ -366,9 +419,9 @@ async def test_get_mode_projects_state_store_snapshot(
 ) -> None:
     store = StateStore()
     mock_radio._state_store = store
-    _apply_store_value(store, "receiver.0.freq_mode.mode", "USB")
-    _apply_store_value(store, "receiver.0.freq_mode.filter_width", 2)
-    _apply_store_value(store, "receiver.0.freq_mode.data_mode", True)
+    _apply_store_value(store, "receiver.main.active.freq_mode.mode", "USB")
+    _apply_store_value(store, "receiver.main.active.freq_mode.filter_width", 2)
+    _apply_store_value(store, "receiver.main.active.freq_mode.data_mode", True)
     handler = RigctldHandler(mock_radio, RigctldConfig())
 
     resp = await handler.execute(get_cmd("get_mode"))
@@ -416,9 +469,19 @@ async def test_get_mode_ensure_fresh_requests_bounded_projection(
     model_service = _RecordingStateModelService()
     mock_radio._state_store = store
     mock_radio._state_model_service = model_service
-    _apply_store_value(store, "receiver.0.freq_mode.mode", "USB", max_age=1.0)
-    _apply_store_value(store, "receiver.0.freq_mode.filter_width", 2, max_age=1.0)
-    _apply_store_value(store, "receiver.0.freq_mode.data_mode", False, max_age=1.0)
+    _apply_store_value(store, "receiver.main.active.freq_mode.mode", "USB", max_age=1.0)
+    _apply_store_value(
+        store,
+        "receiver.main.active.freq_mode.filter_width",
+        2,
+        max_age=1.0,
+    )
+    _apply_store_value(
+        store,
+        "receiver.main.active.freq_mode.data_mode",
+        False,
+        max_age=1.0,
+    )
     handler = RigctldHandler(mock_radio, RigctldConfig(cache_ttl=0.5))
 
     resp = await handler.execute(get_cmd("get_mode"))
@@ -427,9 +490,9 @@ async def test_get_mode_ensure_fresh_requests_bounded_projection(
     assert model_service.calls == [
         {
             "paths": (
-                "receiver.0.freq_mode.data_mode",
-                "receiver.0.freq_mode.filter_width",
-                "receiver.0.freq_mode.mode",
+                "receiver.main.active.freq_mode.data_mode",
+                "receiver.main.active.freq_mode.filter_width",
+                "receiver.main.active.freq_mode.mode",
             ),
             "max_age": 0.5,
             "priority": "user",
@@ -610,9 +673,9 @@ async def test_get_mode_read_after_write_uses_pending_overlays_until_reconciled(
 ) -> None:
     store = StateStore()
     mock_radio._state_store = store
-    _apply_store_value(store, "receiver.0.freq_mode.mode", "USB")
-    _apply_store_value(store, "receiver.0.freq_mode.filter_width", 1)
-    _apply_store_value(store, "receiver.0.freq_mode.data_mode", False)
+    _apply_store_value(store, "receiver.main.active.freq_mode.mode", "USB")
+    _apply_store_value(store, "receiver.main.active.freq_mode.filter_width", 1)
+    _apply_store_value(store, "receiver.main.active.freq_mode.data_mode", False)
     handler = RigctldHandler(mock_radio, RigctldConfig())
 
     resp = await handler.execute(set_cmd("set_mode", "PKTUSB", "2400"))
@@ -626,26 +689,26 @@ async def test_get_mode_read_after_write_uses_pending_overlays_until_reconciled(
         session_id=None,
     )
     overlay_ids = {str(item.path): item.command_id for item in overlays}
-    assert overlay_ids["receiver.0.freq_mode.filter_width"].startswith(
+    assert overlay_ids["receiver.main.active.freq_mode.filter_width"].startswith(
         "rigctld-set-mode-"
     )
-    assert overlay_ids["receiver.0.freq_mode.data_mode"].startswith(
+    assert overlay_ids["receiver.main.active.freq_mode.data_mode"].startswith(
         "rigctld-set-mode-"
     )
 
     _apply_handler_value(
         handler,
-        "receiver.0.freq_mode.filter_width",
+        "receiver.main.active.freq_mode.filter_width",
         2,
         command_source="rigctld",
-        correlation_id=overlay_ids["receiver.0.freq_mode.filter_width"],
+        correlation_id=overlay_ids["receiver.main.active.freq_mode.filter_width"],
     )
     _apply_handler_value(
         handler,
-        "receiver.0.freq_mode.data_mode",
+        "receiver.main.active.freq_mode.data_mode",
         True,
         command_source="rigctld",
-        correlation_id=overlay_ids["receiver.0.freq_mode.data_mode"],
+        correlation_id=overlay_ids["receiver.main.active.freq_mode.data_mode"],
     )
 
     assert handler._command_service.pending_overlays(  # noqa: SLF001
@@ -655,6 +718,36 @@ async def test_get_mode_read_after_write_uses_pending_overlays_until_reconciled(
 
     after = await handler.execute(get_cmd("get_mode"))
     assert after.values == ["PKTUSB", "2400"]
+
+
+@pytest.mark.asyncio
+async def test_get_mode_pending_overlays_are_scoped_to_rigctld_session(
+    mock_radio: AsyncMock,
+) -> None:
+    store = StateStore()
+    mock_radio._state_store = store
+    _apply_store_value(store, "receiver.main.active.freq_mode.mode", "USB")
+    _apply_store_value(store, "receiver.main.active.freq_mode.filter_width", 1)
+    _apply_store_value(store, "receiver.main.active.freq_mode.data_mode", False)
+    handler = RigctldHandler(mock_radio, RigctldConfig())
+
+    resp = await handler.execute(
+        set_cmd("set_mode", "PKTUSB", "2400"),
+        session_id="rigctld-client-a",
+    )
+
+    assert resp.ok
+    client_a = await handler.execute(
+        get_cmd("get_mode"),
+        session_id="rigctld-client-a",
+    )
+    client_b = await handler.execute(
+        get_cmd("get_mode"),
+        session_id="rigctld-client-b",
+    )
+
+    assert client_a.values == ["PKTUSB", "2400"]
+    assert client_b.values == ["USB", "3000"]
 
 
 # ---------------------------------------------------------------------------
@@ -787,7 +880,7 @@ async def test_get_vfo_projects_state_store_active_slot(
 ) -> None:
     store = StateStore()
     mock_radio._state_store = store
-    _apply_store_value(store, "receiver.0.vfo.active_slot", "B")
+    _apply_store_value(store, "receiver.main.vfo.active_slot", "B")
     handler = RigctldHandler(mock_radio, RigctldConfig())
 
     resp = await handler.execute(get_cmd("get_vfo"))
@@ -895,7 +988,7 @@ async def test_get_level_af_projects_state_store_snapshot(
 ) -> None:
     store = StateStore()
     mock_radio._state_store = store
-    _apply_store_value(store, "receiver.0.operator_controls.af_level", 128)
+    _apply_store_value(store, "receiver.main.operator_controls.af_level", 128)
     handler = RigctldHandler(mock_radio, RigctldConfig())
 
     resp = await handler.execute(get_cmd("get_level", "AF"))
@@ -1840,7 +1933,7 @@ async def test_get_func_projects_state_store_snapshot(
 ) -> None:
     store = StateStore()
     mock_radio._state_store = store
-    _apply_store_value(store, "receiver.0.operator_toggles.nb", True)
+    _apply_store_value(store, "receiver.main.operator_toggles.nb", True)
     handler = RigctldHandler(mock_radio, RigctldConfig())
 
     resp = await handler.execute(get_cmd("get_func", "NB"))
@@ -3327,7 +3420,7 @@ class TestPerVfoRoutingFreq:
     ) -> None:
         store = StateStore()
         dual_rx_radio._state_store = store
-        _apply_store_value(store, "receiver.1.freq_mode.freq_hz", 7_100_000)
+        _apply_store_value(store, "receiver.sub.active.freq_mode.freq_hz", 7_100_000)
         handler = RigctldHandler(dual_rx_radio, RigctldConfig())
 
         resp = await handler.execute(_vfo_get_cmd("get_freq", "VFOB"))
@@ -3436,9 +3529,9 @@ class TestPerVfoRoutingMode:
     ) -> None:
         store = StateStore()
         dual_rx_radio._state_store = store
-        _apply_store_value(store, "receiver.1.freq_mode.mode", "CW")
-        _apply_store_value(store, "receiver.1.freq_mode.filter_width", 2)
-        _apply_store_value(store, "receiver.1.freq_mode.data_mode", False)
+        _apply_store_value(store, "receiver.sub.active.freq_mode.mode", "CW")
+        _apply_store_value(store, "receiver.sub.active.freq_mode.filter_width", 2)
+        _apply_store_value(store, "receiver.sub.active.freq_mode.data_mode", False)
         handler = RigctldHandler(dual_rx_radio, RigctldConfig())
 
         resp = await handler.execute(_vfo_get_cmd("get_mode", "VFOB"))
