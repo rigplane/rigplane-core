@@ -16,6 +16,9 @@ from rigplane.core.command_service import (
     command_intent_from_request,
     command_response_observation,
 )
+from rigplane.core.state_pipeline_contracts import FieldPath, Observation, SourceMetadata
+from rigplane.core.state_store import FreshnessClock, StateStore
+from rigplane.radio_state import RadioState
 from rigplane.web import server as server_module
 from rigplane.web.handlers.control import ControlHandler
 from rigplane.web.radio_poller import EnableScope
@@ -79,6 +82,31 @@ def _response_json(writer: _FakeWriter) -> tuple[int, dict]:
     status = int(text.split(" ", 2)[1])
     body_start = text.index("\r\n\r\n") + 4
     return status, json.loads(text[body_start:] or "{}")
+
+
+def _state_store_source() -> SourceMetadata:
+    return SourceMetadata(
+        source="poll_response",
+        provider="test",
+        transport="fake",
+        native_id="test",
+    )
+
+
+def _store_observation(
+    path: FieldPath,
+    value: object,
+    *,
+    at: float,
+    max_age: float | None = None,
+) -> Observation:
+    return Observation(
+        path=path,
+        value=value,
+        source=_state_store_source(),
+        timestamp_monotonic=at,
+        max_age=max_age,
+    )
 
 
 def _scope_radio(*, ready: bool = True, connected: bool = True) -> MagicMock:
@@ -962,6 +990,386 @@ async def test_scope_health_and_radio_state_event_paths() -> None:
     await asyncio.sleep(0.05)  # let the refetch task complete
     cmds = srv.command_queue.drain
     assert any(isinstance(c, EnableScope) for c in cmds())
+
+
+@pytest.mark.asyncio
+async def test_http_snapshot_matches_initial_ws_full_state_for_same_store_revision() -> None:
+    srv = WebServer(None)
+    srv.command_state_store.apply(
+        _store_observation(
+            FieldPath.active("0", "freq_mode", "freq_hz"),
+            14_074_000,
+            at=1.0,
+            max_age=10.0,
+        )
+    )
+    srv.command_state_store.apply(
+        _store_observation(
+            FieldPath.receiver("0", "meters", "s_meter"),
+            42,
+            at=1.1,
+            max_age=0.5,
+        )
+    )
+
+    writer = _FakeWriter()
+    await srv._serve_state(writer)  # noqa: SLF001
+    _, http_body = _response_json(writer)
+
+    ws = MagicMock()
+    sent: list[dict[str, object]] = []
+
+    async def _send_text(payload: str) -> None:
+        sent.append(json.loads(payload))
+
+    ws.send_text = _send_text
+
+    handler = ControlHandler(ws, None, "0.0.0-test", "IC-TEST", server=srv)
+    await handler._send_state_snapshot()  # noqa: SLF001
+
+    assert sent[0]["type"] == "state_update"
+    ws_body = sent[0]["data"]["data"]  # type: ignore[index]
+    assert ws_body == http_body
+
+
+def test_meter_only_state_store_change_emits_web_delta_without_legacy_revision() -> None:
+    srv = WebServer(None)
+    q = asyncio.Queue()
+    srv.register_control_event_queue(q)
+    srv.command_state_store.apply(
+        _store_observation(
+            FieldPath.active("0", "freq_mode", "freq_hz"),
+            14_074_000,
+            at=1.0,
+            max_age=10.0,
+        )
+    )
+    srv._broadcast_state_update()  # noqa: SLF001
+    q.get_nowait()
+
+    srv.command_state_store.apply(
+        _store_observation(
+            FieldPath.receiver("0", "meters", "s_meter"),
+            55,
+            at=1.1,
+            max_age=0.5,
+        )
+    )
+    srv._last_state_broadcast = 0.0  # noqa: SLF001
+    srv._broadcast_state_update()  # noqa: SLF001
+    event = q.get_nowait()
+
+    assert event["type"] == "state_update"
+    assert event["data"]["type"] == "delta"
+    assert event["data"]["changed"]["main"]["sMeter"] == 55
+    assert event["data"]["stateRevision"] == 2
+    assert event["data"]["revision"] == 2
+
+
+def test_freshness_only_state_store_change_emits_web_delta() -> None:
+    clock = FreshnessClock(start=5.0)
+    store = StateStore(freshness_clock=clock)
+    srv = WebServer(None)
+    srv.command_state_store = store
+    srv.command_service._state_store = store  # noqa: SLF001
+    srv._http_command_service._state_store = store  # noqa: SLF001
+    q = asyncio.Queue()
+    srv.register_control_event_queue(q)
+
+    store.apply(
+        _store_observation(
+            FieldPath.receiver("0", "meters", "s_meter"),
+            12,
+            at=clock.now(),
+            max_age=0.5,
+        )
+    )
+    srv._broadcast_state_update()  # noqa: SLF001
+    q.get_nowait()
+
+    clock.advance(0.6)
+    delta = store.mark_stale_due()
+    assert delta.freshness
+
+    srv._last_state_broadcast = 0.0  # noqa: SLF001
+    srv._broadcast_state_update()  # noqa: SLF001
+    event = q.get_nowait()
+
+    assert event["type"] == "state_update"
+    assert event["data"]["type"] == "delta"
+    assert event["data"]["changed"]["freshnessRevision"] == 2
+    assert event["data"]["stateRevision"] == 1
+
+
+def test_initial_full_state_envelope_does_not_consume_broadcast_delta() -> None:
+    srv = WebServer(None)
+    q = asyncio.Queue()
+    srv.register_control_event_queue(q)
+    srv.command_state_store.apply(
+        _store_observation(
+            FieldPath.active("0", "freq_mode", "freq_hz"),
+            14_074_000,
+            at=1.0,
+        )
+    )
+    srv._broadcast_state_update()  # noqa: SLF001
+    q.get_nowait()
+
+    srv.command_state_store.apply(
+        _store_observation(
+            FieldPath.global_("tx_state", "ptt"),
+            True,
+            at=1.1,
+        )
+    )
+    initial = srv.build_state_update_envelope(force_full=True)
+    assert initial["type"] == "full"
+    assert initial["data"]["ptt"] is True
+
+    srv._last_state_broadcast = 0.0  # noqa: SLF001
+    srv._broadcast_state_update()  # noqa: SLF001
+    event = q.get_nowait()
+
+    assert event["data"]["type"] == "delta"
+    assert event["data"]["changed"]["ptt"] is True
+    assert event["data"]["stateRevision"] == 2
+
+
+@pytest.mark.asyncio
+async def test_initial_full_state_envelope_revisions_match_legacy_seeded_http_state() -> None:
+    srv = WebServer(None)
+    legacy = RadioState()
+    legacy.main.freq = 14_250_000
+    legacy.main.mode = "USB"
+    legacy.ptt = True
+    srv._radio_state = legacy  # noqa: SLF001
+
+    envelope = srv.build_state_update_envelope(force_full=True)
+    assert envelope["type"] == "full"
+    ws_state = envelope["data"]
+
+    assert envelope["revision"] == ws_state["stateRevision"]
+    assert envelope["stateRevision"] == ws_state["stateRevision"]
+    assert envelope["freshnessRevision"] == ws_state["freshnessRevision"]
+
+    writer = _FakeWriter()
+    await srv._serve_state(writer)  # noqa: SLF001
+    status, http_state = _response_json(writer)
+
+    assert status == 200
+    assert http_state == ws_state
+    assert http_state["revision"] == http_state["stateRevision"]
+    assert http_state["freshnessRevision"] == ws_state["freshnessRevision"]
+
+
+@pytest.mark.asyncio
+async def test_state_response_refreshes_live_connection_payload_without_revisions() -> None:
+    class _LiveConnectionRadio:
+        connected = True
+        control_connected = False
+        radio_ready = True
+        capabilities: set[str] = set()
+
+    radio = _LiveConnectionRadio()
+    srv = WebServer(radio)
+
+    writer = _FakeWriter()
+    await srv._serve_state(writer)  # noqa: SLF001
+    status, initial = _response_json(writer)
+
+    assert status == 200
+    assert initial["connection"]["rigConnected"] is True
+    assert initial["connection"]["controlConnected"] is False
+    assert initial["connection"]["radioReady"] is True
+
+    radio.control_connected = True
+
+    writer2 = _FakeWriter()
+    await srv._serve_state(writer2)  # noqa: SLF001
+    status2, control_changed = _response_json(writer2)
+
+    assert status2 == 200
+    assert control_changed["stateRevision"] == initial["stateRevision"]
+    assert control_changed["freshnessRevision"] == initial["freshnessRevision"]
+    assert control_changed["healthRevision"] == initial["healthRevision"]
+    assert control_changed["connection"]["controlConnected"] is True
+
+    radio.connected = False
+
+    writer3 = _FakeWriter()
+    await srv._serve_state(writer3)  # noqa: SLF001
+    status3, connected_changed = _response_json(writer3)
+
+    assert status3 == 200
+    assert connected_changed["stateRevision"] == initial["stateRevision"]
+    assert connected_changed["freshnessRevision"] == initial["freshnessRevision"]
+    assert connected_changed["healthRevision"] == initial["healthRevision"]
+    assert connected_changed["connection"]["rigConnected"] is False
+    assert connected_changed["connection"]["radioReady"] is True
+
+
+def test_broadcast_state_update_refreshes_live_connection_payload_without_revisions() -> (
+    None
+):
+    class _LiveConnectionRadio:
+        connected = True
+        control_connected = False
+        radio_ready = True
+        capabilities: set[str] = set()
+
+    radio = _LiveConnectionRadio()
+    srv = WebServer(radio)
+    q = asyncio.Queue()
+    srv.register_control_event_queue(q)
+
+    srv._broadcast_state_update()  # noqa: SLF001
+    first = q.get_nowait()
+    initial = first["data"]["data"]
+
+    radio.control_connected = True
+
+    srv._last_state_broadcast = 0.0  # noqa: SLF001
+    srv._broadcast_state_update()  # noqa: SLF001
+    event = q.get_nowait()
+
+    assert event["type"] == "state_update"
+    assert event["data"]["type"] == "delta"
+    assert event["data"]["stateRevision"] == initial["stateRevision"]
+    assert event["data"]["freshnessRevision"] == initial["freshnessRevision"]
+    assert event["data"]["changed"]["connection"]["controlConnected"] is True
+
+
+def test_legacy_state_store_sync_can_clear_default_boolean_values() -> None:
+    srv = WebServer(None)
+    transmitting = RadioState()
+    transmitting.ptt = True
+    srv.sync_state_store_from_radio_state(transmitting)
+    assert srv.build_public_state()["ptt"] is True
+
+    idle = RadioState()
+    idle.ptt = False
+    srv.sync_state_store_from_radio_state(idle)
+
+    assert srv.build_public_state()["ptt"] is False
+
+
+def test_legacy_state_store_sync_preserves_receiver_fields() -> None:
+    srv = WebServer(None)
+    legacy = RadioState()
+    legacy.main.data_mode = 2
+    legacy.main.filter_width = 1_800
+    legacy.main.nr_level = 42
+
+    srv.sync_state_store_from_radio_state(legacy)
+
+    public_state = srv.build_public_state()
+    assert public_state["main"]["dataMode"] == 2
+    assert public_state["main"]["filterWidth"] == 1_800
+    assert public_state["main"]["nrLevel"] == 42
+
+
+def test_legacy_state_store_sync_can_clear_default_receiver_values() -> None:
+    srv = WebServer(None)
+    legacy = RadioState()
+    legacy.main.data_mode = 2
+    srv.sync_state_store_from_radio_state(legacy)
+    assert srv.build_public_state()["main"]["dataMode"] == 2
+
+    cleared = RadioState()
+    cleared.main.data_mode = 0
+    srv.sync_state_store_from_radio_state(cleared)
+
+    assert srv.build_public_state()["main"]["dataMode"] == 0
+
+
+def test_legacy_state_store_sync_preserves_global_rit_on() -> None:
+    srv = WebServer(None)
+    legacy = RadioState()
+    legacy.rit_on = True
+
+    srv.sync_state_store_from_radio_state(legacy)
+
+    assert srv.build_public_state()["ritOn"] is True
+
+
+def test_public_state_syncs_legacy_active_after_state_store_observations() -> None:
+    srv = WebServer(None)
+    srv.command_state_store.apply(
+        _store_observation(
+            FieldPath.active("0", "freq_mode", "freq_hz"),
+            14_074_000,
+            at=1.0,
+        )
+    )
+    srv._radio_state.active = "SUB"  # noqa: SLF001
+
+    public_state = srv.build_public_state()
+
+    assert public_state["main"]["freqHz"] == 14_074_000
+    assert public_state["active"] == "SUB"
+
+
+def test_public_state_syncs_legacy_global_toggle_after_state_store_observations() -> None:
+    srv = WebServer(None)
+    srv.command_state_store.apply(
+        _store_observation(
+            FieldPath.active("0", "freq_mode", "freq_hz"),
+            14_074_000,
+            at=1.0,
+        )
+    )
+    srv._radio_state.dual_watch = True  # noqa: SLF001
+
+    public_state = srv.build_public_state()
+
+    assert public_state["dualWatch"] is True
+
+
+def test_public_state_sync_can_clear_legacy_global_toggle_default() -> None:
+    srv = WebServer(None)
+    srv.command_state_store.apply(
+        _store_observation(
+            FieldPath.active("0", "freq_mode", "freq_hz"),
+            14_074_000,
+            at=1.0,
+        )
+    )
+    srv._radio_state.split = True  # noqa: SLF001
+    assert srv.build_public_state()["split"] is True
+
+    srv._radio_state.split = False  # noqa: SLF001
+
+    assert srv.build_public_state()["split"] is False
+
+
+@pytest.mark.asyncio
+async def test_http_and_ws_full_state_share_post_sync_legacy_snapshot() -> None:
+    srv = WebServer(None)
+    srv.command_state_store.apply(
+        _store_observation(
+            FieldPath.active("0", "freq_mode", "freq_hz"),
+            14_074_000,
+            at=1.0,
+        )
+    )
+    srv._radio_state.active = "SUB"  # noqa: SLF001
+    srv._radio_state.dual_watch = True  # noqa: SLF001
+
+    envelope = srv.build_state_update_envelope(force_full=True)
+    assert envelope["type"] == "full"
+    ws_state = envelope["data"]
+
+    writer = _FakeWriter()
+    await srv._serve_state(writer)  # noqa: SLF001
+    status, http_state = _response_json(writer)
+
+    assert status == 200
+    assert http_state == ws_state
+    assert http_state["active"] == "SUB"
+    assert http_state["dualWatch"] is True
+    assert envelope["revision"] == ws_state["stateRevision"]
+    assert envelope["stateRevision"] == ws_state["stateRevision"]
+    assert envelope["freshnessRevision"] == ws_state["freshnessRevision"]
 
 
 @pytest.mark.asyncio

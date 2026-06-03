@@ -95,6 +95,7 @@ async def start_web_server(server: WebServer) -> None:
 
             def _state_cb(state: RadioState) -> None:
                 server._radio_state = state
+                server.sync_state_store_from_radio_state(state)
                 server.state_diagnostics.record(
                     "backend_read",
                     "web.state_poller",
@@ -147,6 +148,9 @@ async def start_web_server(server: WebServer) -> None:
             server._config.dx_cluster_port,
             server._config.dx_callsign,
         )
+    server._state_store_freshness_task = asyncio.get_running_loop().create_task(
+        server._state_store_freshness_loop(), name="web-state-freshness"
+    )
 
     # Start UDP discovery responder
     if server._config.discovery:
@@ -195,6 +199,13 @@ async def stop_web_server(server: WebServer) -> None:
         except TimeoutError:
             logger.warning("state poller stop timed out")
         server._state_poller = None
+    if server._state_store_freshness_task is not None:
+        server._state_store_freshness_task.cancel()
+        try:
+            await server._state_store_freshness_task
+        except asyncio.CancelledError:
+            pass
+        server._state_store_freshness_task = None
 
     # 2. Stop audio relay (stops AudioBus subscription → stop_audio_rx_opus)
     try:

@@ -13,8 +13,17 @@ class RadioStore {
 export const radio = new RadioStore();
 
 let lastRevision = -1;
+let lastFreshnessRevision = -1;
 let lastHealthRevision = -1;
 const stateSubscribers = new Set<(state: ServerState | null) => void>();
+
+function stateRevision(state: ServerState): number {
+  return state.stateRevision ?? state.revision;
+}
+
+function freshnessRevision(state: ServerState): number {
+  return state.freshnessRevision ?? 0;
+}
 
 function notifyRadioStateSubscribers(): void {
   for (const handler of stateSubscribers) {
@@ -126,6 +135,7 @@ function applyOptimistic(state: ServerState): ServerState {
 export function resetRadioState(): void {
   radio.current = null;
   lastRevision = -1;
+  lastFreshnessRevision = -1;
   lastHealthRevision = -1;
   optimisticMain.clear();
   optimisticSub.clear();
@@ -135,17 +145,29 @@ export function resetRadioState(): void {
 }
 
 export function setRadioState(state: ServerState): void {
-  const isReset = lastRevision > 10 && state.revision < lastRevision / 2;
+  const nextStateRevision = stateRevision(state);
+  const nextFreshnessRevision = freshnessRevision(state);
+  const isReset = lastRevision > 10 && nextStateRevision < lastRevision / 2;
   const isInitial = radio.current === null;
   const nextHealthRevision = state.healthRevision ?? 0;
   const healthAdvanced = nextHealthRevision > lastHealthRevision;
+  const freshnessAdvanced = nextFreshnessRevision > lastFreshnessRevision;
+  const semanticAdvanced = nextStateRevision > lastRevision;
+  const semanticCurrent = nextStateRevision === lastRevision;
+  const metadataAdvanced = semanticCurrent && (freshnessAdvanced || healthAdvanced);
   if (isReset) {
     console.warn(
-      `Detected server restart: revision reset from ${lastRevision} to ${state.revision}`,
+      `Detected server restart: revision reset from ${lastRevision} to ${nextStateRevision}`,
     );
   }
-  if (isInitial || state.revision > lastRevision || healthAdvanced || isReset) {
-    lastRevision = state.revision;
+  if (
+    isInitial
+    || semanticAdvanced
+    || metadataAdvanced
+    || isReset
+  ) {
+    lastRevision = nextStateRevision;
+    lastFreshnessRevision = nextFreshnessRevision;
     lastHealthRevision = nextHealthRevision;
     radio.current = applyOptimistic(state);
     notifyRadioStateSubscribers();

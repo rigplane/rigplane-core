@@ -5,6 +5,8 @@ import type { ServerState } from '../types/state';
 function makeState(revision: number): ServerState {
   return {
     revision,
+    stateRevision: revision,
+    freshnessRevision: 1,
     active: 'MAIN',
     powerOn: true,
     ptt: false,

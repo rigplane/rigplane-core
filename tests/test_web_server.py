@@ -741,7 +741,7 @@ class TestControlChannel:
                 writer, json.dumps({"type": "subscribe", "streams": []})
             )
             _, payload = await _ws_recv_frame(reader)
-            data = json.loads(payload)["data"]
+            data = json.loads(payload)["data"]["data"]
             assert "active" in data
             assert "main" in data
             assert "ptt" in data

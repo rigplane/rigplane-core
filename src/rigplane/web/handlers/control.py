@@ -480,11 +480,9 @@ class ControlHandler:
         # and before the recv loop — no interleaving with command responses.
         if self._server is not None:
             try:
-                initial_state = self._server.build_public_state()
-                rev = self._server._delta_encoder.revision
                 msg = {
                     "type": "state_update",
-                    "data": {"type": "full", "data": initial_state, "revision": rev},
+                    "data": self._server.build_state_update_envelope(force_full=True),
                 }
                 await self._ws.send_text(encode_json(msg))
             except Exception:
@@ -832,6 +830,11 @@ class ControlHandler:
             )
 
         msg_out = {"type": "state_update", "data": payload}
+        if self._server is not None:
+            try:
+                msg_out["data"] = self._server.build_state_update_envelope(force_full=True)
+            except Exception as exc:
+                logger.debug("control: state_update envelope build failed: %s", exc)
         await self._ws.send_text(encode_json(msg_out))
         # Send current DX spots if available
         if self._server is not None and hasattr(self._server, "_spot_buffer"):

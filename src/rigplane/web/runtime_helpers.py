@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+import copy
 import datetime
 import time
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
+from ..core.state_pipeline_contracts import FieldFamily, FieldScope, FieldPath, VfoSlot
+from ..core.state_store import StateSnapshot
 from ..radio_protocol import (
     AudioCapable,
     DualReceiverCapable,
@@ -20,9 +23,147 @@ __all__ = [
     "radio_ready",
     "classify_radio_health",
     "build_public_state_payload",
+    "build_public_state_payload_from_snapshot",
 ]
 
 _RECEIVER_KEY_MAP = {"freq": "freqHz"}
+_SNAPSHOT_RECEIVER_IDS = {
+    "0": "main",
+    "1": "sub",
+    "main": "main",
+    "sub": "sub",
+}
+_EMPTY_STATE_DICT = RadioState().to_dict()
+_RECEIVER_FREQ_MODE_FIELDS = {
+    "freq_hz": "freq",
+    "mode": "mode",
+    "filter": "filter",
+    "filter_num": "filter",
+    "data_mode": "data_mode",
+    "filter_width": "filter_width",
+}
+_VFO_SLOT_FIELDS = {
+    "freq_hz": "freq_hz",
+    "mode": "mode",
+    "filter_num": "filter_num",
+    "data_mode": "data_mode",
+}
+_RECEIVER_OPERATOR_CONTROL_FIELDS = {
+    "af_level",
+    "rf_gain",
+    "squelch",
+    "att",
+    "preamp",
+    "pbt_inner",
+    "pbt_outer",
+    "nr_level",
+    "nb_level",
+    "filter_width",
+    "if_shift",
+    "agc",
+    "agc_time_constant",
+    "audio_peak_filter",
+    "apf_type_level",
+    "apf_freq",
+    "filter_shape",
+    "manual_notch_freq",
+    "manual_notch_width",
+    "digisel_shift",
+    "tone_freq",
+    "tsql_freq",
+    "key_speed",
+    "cw_pitch",
+    "monitor_gain",
+    "mic_gain",
+    "compressor_level",
+    "break_in_delay",
+    "vox_gain",
+    "anti_vox_gain",
+    "vox_delay",
+}
+_RECEIVER_OPERATOR_TOGGLE_FIELDS = {
+    "nb",
+    "nr",
+    "digisel",
+    "manual_notch",
+    "auto_notch",
+    "audio_peak_filter",
+    "twin_peak_filter",
+    "af_mute",
+    "ipplus",
+    "s_meter_sql_open",
+    "apf_on",
+    "narrow",
+    "repeater_tone",
+    "repeater_tsql",
+}
+_RECEIVER_SLOW_STATE_FIELDS = {
+    "vfo_a",
+    "vfo_b",
+    "active_slot",
+    "filter",
+    "contour",
+}
+_GLOBAL_TX_FIELDS = {
+    "ptt",
+    "power_on",
+    "split",
+    "dual_watch",
+    "rit_on",
+    "rit_tx",
+    "monitor_on",
+    "vox_on",
+    "compressor_on",
+    "main_sub_tracking",
+    "dial_lock",
+    "tx_freq_monitor",
+}
+_GLOBAL_OPERATOR_CONTROL_FIELDS = {
+    "power_level",
+    "tuner_status",
+    "rit_freq",
+    "cw_pitch",
+    "mic_gain",
+    "key_speed",
+    "notch_filter",
+    "compressor_level",
+    "break_in_delay",
+    "break_in",
+    "drive_gain",
+    "monitor_gain",
+    "vox_gain",
+    "anti_vox_gain",
+    "vox_delay",
+    "ssb_tx_bandwidth",
+    "ref_adjust",
+    "dash_ratio",
+    "nb_depth",
+    "nb_width",
+    "tx_antenna",
+}
+_GLOBAL_METER_FIELDS = {
+    "alc",
+    "power",
+    "swr",
+    "comp",
+    "vd",
+    "id",
+}
+_GLOBAL_SLOW_STATE_FIELDS = {
+    "active",
+    "scanning",
+    "scan_type",
+    "scan_resume_mode",
+    "tuning_step",
+    "overflow",
+    "cw_spot",
+    "vfo_select",
+    "rx_antenna_1",
+    "rx_antenna_2",
+    "tx_band_edges",
+    "scope_controls",
+    "yaesu",
+}
 
 
 def runtime_capabilities(radio: "Radio | None") -> set[str]:
@@ -265,11 +406,190 @@ def _camel_case_state(d: dict[str, Any]) -> dict[str, Any]:
     return result
 
 
+def _snapshot_receiver_key(receiver_id: str | None) -> str | None:
+    if receiver_id is None:
+        return None
+    return _SNAPSHOT_RECEIVER_IDS.get(receiver_id)
+
+
+def _set_receiver_value(
+    state: dict[str, Any],
+    receiver_key: str,
+    name: str,
+    value: Any,
+) -> None:
+    receiver = state.get(receiver_key)
+    if not isinstance(receiver, dict):
+        return
+    receiver[name] = value
+
+
+def _apply_snapshot_field(
+    state: dict[str, Any],
+    path: FieldPath,
+    value: Any,
+) -> None:
+    if path.scope is FieldScope.RECEIVER:
+        receiver_key = _snapshot_receiver_key(path.receiver_id)
+        if receiver_key is None:
+            return
+        if path.family is FieldFamily.FREQ_MODE:
+            if path.slot in (VfoSlot.A, VfoSlot.B):
+                receiver = state.get(receiver_key)
+                if not isinstance(receiver, dict):
+                    return
+                slot_key = "vfo_a" if path.slot is VfoSlot.A else "vfo_b"
+                slot_state = receiver.get(slot_key)
+                if not isinstance(slot_state, dict):
+                    return
+                target = _VFO_SLOT_FIELDS.get(path.name)
+                if target is not None:
+                    slot_state[target] = value
+                return
+            if path.slot not in (None, VfoSlot.ACTIVE):
+                return
+            target = _RECEIVER_FREQ_MODE_FIELDS.get(path.name)
+            if target is not None:
+                _set_receiver_value(state, receiver_key, target, value)
+            return
+        if path.family is FieldFamily.VFO and path.name == "active_slot":
+            _set_receiver_value(state, receiver_key, "active_slot", value)
+            return
+        if path.family is FieldFamily.METERS and path.name == "s_meter":
+            _set_receiver_value(state, receiver_key, "s_meter", value)
+            return
+        if (
+            path.family is FieldFamily.OPERATOR_CONTROLS
+            and path.name in _RECEIVER_OPERATOR_CONTROL_FIELDS
+        ):
+            _set_receiver_value(state, receiver_key, path.name, value)
+            return
+        if (
+            path.family is FieldFamily.OPERATOR_TOGGLES
+            and path.name in _RECEIVER_OPERATOR_TOGGLE_FIELDS
+        ):
+            if path.name == "audio_peak_filter":
+                _set_receiver_value(state, receiver_key, "audio_peak_filter", value)
+            elif path.name == "twin_peak_filter":
+                _set_receiver_value(state, receiver_key, "twin_peak_filter", value)
+            elif path.name == "auto_notch":
+                _set_receiver_value(state, receiver_key, "auto_notch", value)
+            elif path.name == "af_mute":
+                _set_receiver_value(state, receiver_key, "af_mute", value)
+            else:
+                _set_receiver_value(state, receiver_key, path.name, value)
+            return
+        if (
+            path.family is FieldFamily.SLOW_STATE
+            and path.name in _RECEIVER_SLOW_STATE_FIELDS
+        ):
+            _set_receiver_value(state, receiver_key, path.name, value)
+            return
+
+    if path.scope is FieldScope.GLOBAL:
+        if path.family is FieldFamily.TX_STATE and path.name in _GLOBAL_TX_FIELDS:
+            state[path.name] = value
+            return
+        if (
+            path.family is FieldFamily.OPERATOR_CONTROLS
+            and path.name in _GLOBAL_OPERATOR_CONTROL_FIELDS
+        ):
+            state[path.name] = value
+            return
+        if path.family is FieldFamily.METERS and path.name in _GLOBAL_METER_FIELDS:
+            state[f"{path.name}_meter"] = value
+            return
+        if (
+            path.family is FieldFamily.SLOW_STATE
+            and path.name in _GLOBAL_SLOW_STATE_FIELDS
+        ):
+            state[path.name] = value
+            return
+
+    if path.scope is FieldScope.SCOPE_CONTROLS and path.family is FieldFamily.DISPLAY:
+        scope_controls = state.get("scope_controls")
+        if not isinstance(scope_controls, dict):
+            return
+        if path.receiver_id is not None:
+            receiver_key = _snapshot_receiver_key(path.receiver_id)
+            if receiver_key == "main":
+                scope_controls["receiver"] = 0
+            elif receiver_key == "sub":
+                scope_controls["receiver"] = 1
+        if path.name == "span":
+            scope_controls["span"] = value
+
+
+def _project_snapshot_state_dict(snapshot: StateSnapshot) -> dict[str, Any]:
+    state = copy.deepcopy(_EMPTY_STATE_DICT)
+    for field in snapshot.fields:
+        _apply_snapshot_field(state, field.path, field.value)
+    return cast(dict[str, Any], state)
+
+
+def _build_public_state_payload_from_dict(
+    state: dict[str, Any],
+    *,
+    radio: "Radio | None",
+    revision: int,
+    state_revision: int,
+    freshness_revision: int,
+    receiver_count: int,
+    updated_at: str | None = None,
+    scope_clients: int = 0,
+    control_clients: int = 0,
+    audio_clients: int = 0,
+    radio_health: dict[str, Any] | None = None,
+    health_revision: int = 0,
+) -> dict[str, Any]:
+    state = copy.deepcopy(state)
+    raw_connected = getattr(radio, "connected", False) if radio else False
+    state["connected"] = raw_connected if isinstance(raw_connected, bool) else False
+    state["radio_ready"] = radio_ready(radio)
+    raw_control_connected = (
+        getattr(radio, "control_connected", False) if radio else False
+    )
+    state["control_connected"] = (
+        raw_control_connected if isinstance(raw_control_connected, bool) else False
+    )
+    state["revision"] = revision
+    state["state_revision"] = state_revision
+    state["freshness_revision"] = freshness_revision
+    state["health_revision"] = health_revision
+    state["updated_at"] = (
+        updated_at or datetime.datetime.now(datetime.timezone.utc).isoformat()
+    )
+    if receiver_count < 2:
+        state.pop("sub", None)
+
+    conn_state_val = getattr(radio, "conn_state", None) if radio else None
+    radio_status: str = "disconnected"
+    if conn_state_val is not None and hasattr(conn_state_val, "value"):
+        raw_val = conn_state_val.value
+        if isinstance(raw_val, str):
+            radio_status = raw_val
+    elif raw_connected:
+        radio_status = "connected"
+    state["radio_detail"] = {
+        "status": radio_status,
+    }
+    state["radio_health"] = radio_health or classify_radio_health(radio)
+    state["ws_clients"] = {
+        "scope": scope_clients,
+        "control": control_clients,
+        "audio": audio_clients,
+    }
+
+    return _camel_case_state(state)
+
+
 def build_public_state_payload(
     radio_state: RadioState,
     *,
     radio: "Radio | None",
     revision: int,
+    state_revision: int | None = None,
+    freshness_revision: int = 0,
     receiver_count: int,
     updated_at: str | None = None,
     scope_clients: int = 0,
@@ -284,43 +604,47 @@ def build_public_state_payload(
     consumers. During the migration away from StateCache, all public state
     should be derived here.
     """
-    state = radio_state.to_dict()
-    raw_connected = getattr(radio, "connected", False) if radio else False
-    state["connected"] = raw_connected if isinstance(raw_connected, bool) else False
-    state["radio_ready"] = radio_ready(radio)
-    raw_control_connected = (
-        getattr(radio, "control_connected", False) if radio else False
+    return _build_public_state_payload_from_dict(
+        radio_state.to_dict(),
+        radio=radio,
+        revision=revision,
+        state_revision=revision if state_revision is None else state_revision,
+        freshness_revision=freshness_revision,
+        receiver_count=receiver_count,
+        updated_at=updated_at,
+        scope_clients=scope_clients,
+        control_clients=control_clients,
+        audio_clients=audio_clients,
+        radio_health=radio_health,
+        health_revision=health_revision,
     )
-    state["control_connected"] = (
-        raw_control_connected if isinstance(raw_control_connected, bool) else False
-    )
-    state["revision"] = revision
-    state["health_revision"] = health_revision
-    state["updated_at"] = (
-        updated_at or datetime.datetime.now(datetime.timezone.utc).isoformat()
-    )
-    if receiver_count < 2:
-        state.pop("sub", None)
 
-    # Radio connection detail for status bar
-    conn_state_val = getattr(radio, "conn_state", None) if radio else None
-    radio_status: str = "disconnected"
-    if conn_state_val is not None and hasattr(conn_state_val, "value"):
-        raw_val = conn_state_val.value
-        if isinstance(raw_val, str):
-            radio_status = raw_val
-    elif raw_connected:
-        # Serial backends (Yaesu CAT) don't have conn_state enum;
-        # fall back to the connected boolean.
-        radio_status = "connected"
-    state["radio_detail"] = {
-        "status": radio_status,
-    }
-    state["radio_health"] = radio_health or classify_radio_health(radio)
-    state["ws_clients"] = {
-        "scope": scope_clients,
-        "control": control_clients,
-        "audio": audio_clients,
-    }
 
-    return _camel_case_state(state)
+def build_public_state_payload_from_snapshot(
+    snapshot: StateSnapshot,
+    *,
+    radio: "Radio | None",
+    receiver_count: int,
+    updated_at: str | None = None,
+    scope_clients: int = 0,
+    control_clients: int = 0,
+    audio_clients: int = 0,
+    radio_health: dict[str, Any] | None = None,
+    health_revision: int = 0,
+) -> dict[str, Any]:
+    """Build the public web payload from one StateStore snapshot."""
+
+    return _build_public_state_payload_from_dict(
+        _project_snapshot_state_dict(snapshot),
+        radio=radio,
+        revision=snapshot.state_revision,
+        state_revision=snapshot.state_revision,
+        freshness_revision=snapshot.freshness_revision,
+        receiver_count=receiver_count,
+        updated_at=updated_at,
+        scope_clients=scope_clients,
+        control_clients=control_clients,
+        audio_clients=audio_clients,
+        radio_health=radio_health,
+        health_revision=health_revision,
+    )
