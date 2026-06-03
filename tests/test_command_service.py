@@ -427,6 +427,107 @@ def test_intended_correlated_observation_reconciles_pending_overlay() -> None:
     assert [event.command_id for event in reconciled] == ["cmd-a"]
 
 
+def test_same_command_id_reused_across_sources_requires_matching_source_metadata() -> (
+    None
+):
+    clock = FreshnessClock(start=59.0)
+    service = CommandService(
+        executor=FakeExecutor(),
+        state_store=StateStore(freshness_clock=clock),
+        clock=clock.now,
+    )
+    freq = _freq_path()
+    for source in ("websocket", "http"):
+        service.record_pending_overlay(
+            PendingOverlay(
+                source=cast(CommandSource, source),
+                session_id=None,
+                command_id="cmd-shared",
+                path=freq,
+                value=14_074_000,
+                expires_at_monotonic=60.0,
+            )
+        )
+
+    service.apply_observation(
+        Observation(
+            path=freq,
+            value=14_074_000,
+            source=SourceMetadata(
+                source="command_response",
+                provider="test",
+                transport="fake",
+                command_source="websocket",
+            ),
+            timestamp_monotonic=59.2,
+            correlation_id="cmd-shared",
+        )
+    )
+
+    assert service.pending_overlays(source="websocket", session_id=None) == ()
+    assert service.pending_overlays(source="http", session_id=None) == (
+        PendingOverlay(
+            source="http",
+            session_id=None,
+            command_id="cmd-shared",
+            path=freq,
+            value=14_074_000,
+            expires_at_monotonic=60.0,
+        ),
+    )
+
+
+def test_same_command_id_reused_across_sessions_requires_matching_session_metadata() -> (
+    None
+):
+    clock = FreshnessClock(start=60.0)
+    service = CommandService(
+        executor=FakeExecutor(),
+        state_store=StateStore(freshness_clock=clock),
+        clock=clock.now,
+    )
+    freq = _freq_path()
+    for session_id in ("ws-a", "ws-b"):
+        service.record_pending_overlay(
+            PendingOverlay(
+                source="websocket",
+                session_id=session_id,
+                command_id="cmd-shared",
+                path=freq,
+                value=14_074_000,
+                expires_at_monotonic=61.0,
+            )
+        )
+
+    service.apply_observation(
+        Observation(
+            path=freq,
+            value=14_074_000,
+            source=SourceMetadata(
+                source="command_response",
+                provider="test",
+                transport="fake",
+                command_source="websocket",
+                session_id="ws-a",
+            ),
+            timestamp_monotonic=60.2,
+            correlation_id="cmd-shared",
+        )
+    )
+
+    assert service.pending_overlays(source="websocket", session_id="ws-a") == ()
+    assert service.pending_overlays(source="websocket", session_id="ws-b") == (
+        PendingOverlay(
+            source="websocket",
+            session_id="ws-b",
+            command_id="cmd-shared",
+            path=freq,
+            value=14_074_000,
+            expires_at_monotonic=61.0,
+        ),
+    )
+
+
 def test_lifecycle_subscribers_observe_deterministic_events() -> None:
     clock = FreshnessClock(start=60.0)
     service = CommandService(
@@ -482,7 +583,27 @@ def test_command_response_observation_uses_command_response_source() -> None:
     assert observation.value == "USB"
     assert observation.source.source == "command_response"
     assert observation.source.provider == "rigctld"
+    assert observation.source.command_source == "rigctld"
+    assert observation.source.session_id is None
     assert observation.correlation_id == "rig-1"
+
+
+def test_command_response_observation_carries_session_metadata() -> None:
+    intent = command_intent_from_request(
+        "set_freq",
+        {"freq": 14_074_000, "receiver": 0, "session_id": "ws-a"},
+        source="websocket",
+        command_id="ws-1",
+    )
+
+    observation = command_response_observation(
+        intent,
+        timestamp_monotonic=43.0,
+        provider="web_poller",
+    )
+
+    assert observation.source.command_source == "websocket"
+    assert observation.source.session_id == "ws-a"
 
 
 @pytest.mark.parametrize(  # type: ignore[untyped-decorator]

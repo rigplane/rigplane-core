@@ -876,6 +876,14 @@ async def test_set_rit_calls_radio(
     assert resp.ok
     mock_radio.set_rit_frequency.assert_awaited_once_with(500)
     mock_radio.set_rit_status.assert_awaited_once_with(True)
+    events = handler._command_service.lifecycle_events()  # noqa: SLF001
+    assert [event.state for event in events[:4]] == [
+        "accepted",
+        "queued",
+        "sent",
+        "acknowledged",
+    ]
+    assert events[0].source == "rigctld"
 
 
 @pytest.mark.asyncio
@@ -959,6 +967,14 @@ async def test_set_xit_calls_radio(
     assert resp.ok
     mock_radio.set_rit_frequency.assert_awaited_once_with(750)
     mock_radio.set_rit_tx_status.assert_awaited_once_with(True)
+    events = handler._command_service.lifecycle_events()  # noqa: SLF001
+    assert [event.state for event in events[:4]] == [
+        "accepted",
+        "queued",
+        "sent",
+        "acknowledged",
+    ]
+    assert events[0].source == "rigctld"
 
 
 @pytest.mark.asyncio

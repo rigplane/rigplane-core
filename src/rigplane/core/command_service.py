@@ -159,6 +159,42 @@ class CommandService:
         self._reconcile_observation(observation, changeset)
         return changeset
 
+    def fail_command(
+        self,
+        command_id: str,
+        *,
+        message: str | None = None,
+        timed_out: bool = False,
+    ) -> bool:
+        """Mark a previously acknowledged command as failed and expire overlays."""
+
+        template = self._last_event(command_id)
+        if template is None or template.state in {
+            "failed",
+            "timed_out",
+            "reconciled",
+            "confirmed",
+            "superseded",
+        }:
+            return False
+        self.expire_command(command_id)
+        self.emit_lifecycle(
+            CommandIntent(
+                id=command_id,
+                name="queued_completion",
+                params={},
+                source=template.source,
+                target=template.target,
+                priority="user",
+                timeout=None,
+                pending_policy="none",
+                expected_observations=(),
+            ),
+            "timed_out" if timed_out else "failed",
+            message=message,
+        )
+        return True
+
     def emit_lifecycle(
         self,
         intent: CommandIntent,
@@ -323,6 +359,12 @@ class CommandService:
             overlay for overlay in self._overlays if not overlay.is_expired(now)
         ]
 
+    def _last_event(self, command_id: str) -> CommandLifecycleEvent | None:
+        for event in reversed(self._events):
+            if event.command_id == command_id:
+                return event
+        return None
+
 
 def _pending_value_for_intent(intent: CommandIntent) -> Any:
     assert intent.target is not None
@@ -343,6 +385,12 @@ def _observation_reconciles_overlay(
     observation: Observation,
     overlay: PendingOverlay,
 ) -> bool:
+    observed_source = observation.source.command_source
+    if observed_source is not None and observed_source != overlay.source:
+        return False
+    observed_session = observation.source.session_id
+    if observed_session is not None and observed_session != overlay.session_id:
+        return False
     return (
         observation.correlation_id is not None
         and observation.correlation_id == overlay.command_id
@@ -466,6 +514,8 @@ def command_response_observation(
             source="command_response",
             provider=provider,
             transport=transport,
+            command_source=intent.source,
+            session_id=_session_id(intent),
         ),
         timestamp_monotonic=timestamp_monotonic,
         correlation_id=intent.id,

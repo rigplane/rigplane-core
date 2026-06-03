@@ -528,10 +528,20 @@ class SourceMetadata:
     transport: str | None = None
     native_id: str | None = None
     capability_id: str | None = None
+    command_source: CommandSource | None = None
+    session_id: str | None = None
 
     def __post_init__(self) -> None:
         _validate_source(self.source, _OBSERVATION_SOURCES, label="observation source")
         _validate_token(self.provider, label="provider")
+        if self.command_source is not None:
+            _validate_source(
+                self.command_source,
+                _COMMAND_SOURCES,
+                label="command source",
+            )
+        if self.session_id is not None and not self.session_id:
+            raise ValueError("session_id must not be empty")
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -540,6 +550,8 @@ class SourceMetadata:
             "transport": self.transport,
             "nativeId": self.native_id,
             "capabilityId": self.capability_id,
+            "commandSource": self.command_source,
+            "sessionId": self.session_id,
         }
 
     @classmethod
@@ -555,6 +567,16 @@ class SourceMetadata:
                 None
                 if value.get("capabilityId") is None
                 else str(value["capabilityId"])
+            ),
+            command_source=(
+                None
+                if value.get("commandSource") is None
+                else _command_source(value["commandSource"])
+            ),
+            session_id=(
+                None
+                if value.get("sessionId") is None
+                else str(value["sessionId"])
             ),
         )
 

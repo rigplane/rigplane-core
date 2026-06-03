@@ -401,6 +401,39 @@ class RadioPoller:
         else:
             self._state_store.apply(observation)
 
+    def _apply_compatibility_mirror(
+        self,
+        apply: Callable[["RadioState"], None],
+    ) -> None:
+        """Mirror confirmed state into legacy RadioState delivery surfaces.
+
+        CommandService/StateStore observations remain the source of truth for
+        lifecycle, overlays, and reconciliation. This mirror only keeps the
+        existing web delivery path fed until MOR-341 finishes that migration.
+        """
+
+        state = self._radio_state
+        if state is None:
+            return
+        apply(state)
+        self.bump_revision()
+
+    def _mark_queued_command_failed(
+        self,
+        entry: CommandQueueEntry,
+        exc: BaseException,
+        *,
+        timed_out: bool = False,
+    ) -> None:
+        if entry.command_service is None or entry.command_id is None:
+            return
+        message = str(exc) or None
+        entry.command_service.fail_command(
+            entry.command_id,
+            message=message,
+            timed_out=timed_out,
+        )
+
     def start(self) -> None:
         if self._task is not None and not self._task.done():
             return
@@ -705,11 +738,26 @@ class RadioPoller:
                             if entry.future is not None and not entry.future.done():
                                 entry.future.set_result(None)
                             _backoff = 0.0
+                        except TimeoutError as exc:
+                            self._mark_queued_command_failed(
+                                entry,
+                                exc,
+                                timed_out=True,
+                            )
+                            if entry.future is not None and not entry.future.done():
+                                entry.future.set_exception(exc)
+                            logger.warning(
+                                "radio-poller: cmd timeout: %s",
+                                type(cmd).__name__,
+                                exc_info=True,
+                            )
                         except (ConnectionError, RadioConnectionError) as exc:
+                            self._mark_queued_command_failed(entry, exc)
                             if entry.future is not None and not entry.future.done():
                                 entry.future.set_exception(exc)
                             _backoff = min(_backoff + 0.5, _MAX_BACKOFF)
                         except Exception as exc:
+                            self._mark_queued_command_failed(entry, exc)
                             if entry.future is not None and not entry.future.done():
                                 entry.future.set_exception(exc)
                             logger.warning(
@@ -951,12 +999,13 @@ class RadioPoller:
                     source=source,
                     command_service=command_service,
                 )
-                if self._radio_state:
-                    target = (
-                        self._radio_state.sub if rx != 0 else self._radio_state.main
+                self._apply_compatibility_mirror(
+                    lambda state: setattr(
+                        state.sub if rx != 0 else state.main,
+                        "filter_width",
+                        width,
                     )
-                    target.filter_width = width
-                    self.bump_revision()
+                )
                 if self._on_state_event:
                     self._on_state_event(
                         "filter_width_changed", {"width": width, "receiver": rx}
@@ -1094,12 +1143,13 @@ class RadioPoller:
                         source=source,
                         command_service=command_service,
                     )
-                if self._radio_state:
-                    target = (
-                        self._radio_state.sub if rx != 0 else self._radio_state.main
+                self._apply_compatibility_mirror(
+                    lambda state: setattr(
+                        state.sub if rx != 0 else state.main,
+                        "nb",
+                        on,
                     )
-                    target.nb = on
-                    self.bump_revision()
+                )
                 if self._on_state_event:
                     self._on_state_event("nb_changed", {"on": on, "receiver": rx})
             case SetNR(on=on, receiver=rx):
@@ -1113,12 +1163,13 @@ class RadioPoller:
                         source=source,
                         command_service=command_service,
                     )
-                if self._radio_state:
-                    target = (
-                        self._radio_state.sub if rx != 0 else self._radio_state.main
+                self._apply_compatibility_mirror(
+                    lambda state: setattr(
+                        state.sub if rx != 0 else state.main,
+                        "nr",
+                        on,
                     )
-                    target.nr = on
-                    self.bump_revision()
+                )
                 if self._on_state_event:
                     self._on_state_event("nr_changed", {"on": on, "receiver": rx})
             case SetDigiSel(on=on, receiver=rx):
@@ -1174,12 +1225,13 @@ class RadioPoller:
                     source=source,
                     command_service=command_service,
                 )
-                if self._radio_state:
-                    target = (
-                        self._radio_state.sub if rx != 0 else self._radio_state.main
+                self._apply_compatibility_mirror(
+                    lambda state: setattr(
+                        state.sub if rx != 0 else state.main,
+                        "pbt_inner",
+                        level,
                     )
-                    target.pbt_inner = level
-                    self.bump_revision()
+                )
                 if self._on_state_event:
                     self._on_state_event(
                         "pbt_inner_changed", {"level": level, "receiver": rx}
@@ -1193,12 +1245,13 @@ class RadioPoller:
                     source=source,
                     command_service=command_service,
                 )
-                if self._radio_state:
-                    target = (
-                        self._radio_state.sub if rx != 0 else self._radio_state.main
+                self._apply_compatibility_mirror(
+                    lambda state: setattr(
+                        state.sub if rx != 0 else state.main,
+                        "pbt_outer",
+                        level,
                     )
-                    target.pbt_outer = level
-                    self.bump_revision()
+                )
                 if self._on_state_event:
                     self._on_state_event(
                         "pbt_outer_changed", {"level": level, "receiver": rx}

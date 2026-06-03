@@ -14,6 +14,7 @@ from rigplane.core.command_service import (
     CommandService,
     command_intent_from_request,
 )
+from rigplane.core.state_pipeline_contracts import CommandIntent
 from rigplane.exceptions import CommandError
 from rigplane.profiles import resolve_radio_profile
 from rigplane.radio_state import RadioState
@@ -61,6 +62,27 @@ class _NoopCommandExecutor:
     async def execute(self, intent: object) -> CommandExecutionResult:
         del intent
         return CommandExecutionResult()
+
+
+class _QueuedAckExecutor:
+    def __init__(self, queue: CommandQueue) -> None:
+        self.queue = queue
+        self.command_service: CommandService | None = None
+
+    async def execute(self, intent: CommandIntent) -> CommandExecutionResult:
+        assert self.command_service is not None
+        if intent.name != "set_freq":
+            raise AssertionError(f"unexpected intent {intent.name!r}")
+        self.queue.put_ordered(
+            SetFreq(
+                int(intent.params["freq_hz"]),
+                receiver=int(intent.params.get("receiver", 0)),
+            ),
+            command_id=intent.id,
+            source=intent.source,
+            command_service=self.command_service,
+        )
+        return CommandExecutionResult(details={"queued": True})
 
 
 def _make_radio(active: str = "MAIN") -> MagicMock:
@@ -977,6 +999,94 @@ async def test_observable_queue_commands_apply_state_store_observations(
     assert field.source.source == "command_response"
 
 
+@pytest.mark.parametrize(  # type: ignore[untyped-decorator]
+    ("name", "params", "command", "expected_path", "expected_value", "expected_mirror"),
+    [
+        (
+            "set_filter_width",
+            {"width": 1500, "receiver": 1},
+            SetFilterWidth(1500, receiver=1),
+            "receiver.1.freq_mode.filter_width",
+            1500,
+            ("filter_width", 1500),
+        ),
+        (
+            "set_nb",
+            {"on": True, "receiver": 1},
+            SetNB(True, receiver=1),
+            "receiver.1.operator_toggles.nb",
+            True,
+            ("nb", True),
+        ),
+        (
+            "set_nr",
+            {"on": False, "receiver": 1},
+            SetNR(False, receiver=1),
+            "receiver.1.operator_toggles.nr",
+            False,
+            ("nr", False),
+        ),
+        (
+            "set_pbt_inner",
+            {"level": 140, "receiver": 1},
+            SetPbtInner(140, receiver=1),
+            "receiver.1.operator_controls.pbt_inner",
+            140,
+            ("pbt_inner", 140),
+        ),
+        (
+            "set_pbt_outer",
+            {"level": 116, "receiver": 1},
+            SetPbtOuter(116, receiver=1),
+            "receiver.1.operator_controls.pbt_outer",
+            116,
+            ("pbt_outer", 116),
+        ),
+    ],
+)
+@pytest.mark.asyncio
+async def test_compatibility_mirror_commands_reconcile_from_state_store_observation(
+    name: str,
+    params: dict[str, object],
+    command: object,
+    expected_path: str,
+    expected_value: object,
+    expected_mirror: tuple[str, object],
+) -> None:
+    radio = _make_radio()
+    state = RadioState()
+    store = StateStore()
+    service = CommandService(executor=_NoopCommandExecutor(), state_store=store)
+    poller = RadioPoller(
+        radio,
+        StateCache(),
+        CommandQueue(),
+        radio_state=state,
+        state_store=store,
+    )
+    await service.execute(
+        command_intent_from_request(
+            name,
+            params,
+            source="websocket",
+            command_id="ws-compat",
+        )
+    )
+    assert service.pending_overlays(source="websocket", session_id=None) != ()
+
+    await poller._execute(  # noqa: SLF001[arg-type]
+        command,
+        command_id="ws-compat",
+        source="websocket",
+        command_service=service,
+    )
+
+    field = store.snapshot().field(expected_path)
+    assert field.value == expected_value
+    assert service.pending_overlays(source="websocket", session_id=None) == ()
+    assert getattr(state.sub, expected_mirror[0]) == expected_mirror[1]
+
+
 @pytest.mark.asyncio
 async def test_set_freq_readback_uses_original_command_correlation() -> None:
     radio = _make_radio()
@@ -1050,6 +1160,54 @@ async def test_set_split_readback_uses_original_command_correlation() -> None:
 
     field = store.snapshot().field("global.tx_state.split")
     assert field.value is True
+    assert service.pending_overlays(source="websocket", session_id=None) == ()
+
+
+@pytest.mark.asyncio
+async def test_queued_command_failure_emits_failed_lifecycle_and_expires_overlay() -> (
+    None
+):
+    radio = _make_radio()
+    radio.set_freq.side_effect = ConnectionError("down")
+    state = RadioState()
+    store = StateStore()
+    queue = CommandQueue()
+    executor = _QueuedAckExecutor(queue)
+    service = CommandService(executor=executor, state_store=store)
+    executor.command_service = service
+    poller = RadioPoller(
+        radio,
+        StateCache(),
+        queue,
+        radio_state=state,
+        state_store=store,
+    )
+
+    await service.execute(
+        command_intent_from_request(
+            "set_freq",
+            {"freq": 14_074_000, "receiver": 0},
+            source="websocket",
+            command_id="ws-fail",
+        )
+    )
+    assert service.pending_overlays(source="websocket", session_id=None) != ()
+
+    poller._send_query = AsyncMock(return_value=None)  # noqa: SLF001
+    poller._queue.wait = AsyncMock(side_effect=asyncio.CancelledError())  # noqa: SLF001
+    with patch("rigplane.web.radio_poller.asyncio.sleep", new=AsyncMock()):
+        await poller._run()  # noqa: SLF001
+
+    events = [
+        event for event in service.lifecycle_events() if event.command_id == "ws-fail"
+    ]
+    assert [event.state for event in events] == [
+        "accepted",
+        "queued",
+        "sent",
+        "acknowledged",
+        "failed",
+    ]
     assert service.pending_overlays(source="websocket", session_id=None) == ()
 
 

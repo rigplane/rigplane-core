@@ -332,6 +332,14 @@ class _RigctldCommandExecutor:
                 await self.handler._apply_packet_data_mode(receiver=receiver)
         elif intent.name == "set_ptt":
             await self.handler._radio.set_ptt(bool(params["ptt"]))
+        elif intent.name == "set_rit":
+            hz = int(params["hz"])
+            await self.handler._radio.set_rit_frequency(hz)
+            await self.handler._radio.set_rit_status(hz != 0)
+        elif intent.name == "set_xit":
+            hz = int(params["hz"])
+            await self.handler._radio.set_rit_frequency(hz)
+            await self.handler._radio.set_rit_tx_status(hz != 0)
         elif intent.name == "set_vfo":
             error = await self.handler._execute_set_vfo(str(params["vfo"]))
             if error is not HamlibError.OK:
@@ -1500,8 +1508,14 @@ class RigctldHandler:
             return _err(HamlibError.EINVAL)
         if CAP_RIT not in self._radio.capabilities:
             return _err(HamlibError.ENIMPL)
-        await self._radio.set_rit_frequency(hz)
-        await self._radio.set_rit_status(hz != 0)
+        await self._command_service.execute(
+            command_intent_from_request(
+                "set_rit",
+                {"hz": hz},
+                source="rigctld",
+                command_id=f"rigctld-set-rit-{time.monotonic_ns()}",
+            )
+        )
         return _ok()
 
     async def _cmd_get_xit(self, cmd: RigctldCommand) -> RigctldResponse:
@@ -1524,8 +1538,14 @@ class RigctldHandler:
             return _err(HamlibError.EINVAL)
         if CAP_RIT not in self._radio.capabilities:
             return _err(HamlibError.ENIMPL)
-        await self._radio.set_rit_frequency(hz)
-        await self._radio.set_rit_tx_status(hz != 0)
+        await self._command_service.execute(
+            command_intent_from_request(
+                "set_xit",
+                {"hz": hz},
+                source="rigctld",
+                command_id=f"rigctld-set-xit-{time.monotonic_ns()}",
+            )
+        )
         return _ok()
 
     # ------------------------------------------------------------------
