@@ -31,8 +31,8 @@ rigplane supports two backends selected via `--backend`:
 | Device | `device` | `--serial-port` | `ICOM_SERIAL_DEVICE` | — | Serial device path (required) |
 | Baud rate | `baudrate` | `--serial-baud` | `ICOM_SERIAL_BAUDRATE` | `115200` | CI-V baud rate |
 | PTT mode | `ptt_mode` | `--serial-ptt-mode` | `ICOM_SERIAL_PTT_MODE` | `civ` | Serial PTT control mode (`civ` supported) |
-| RX device | `rx_device` | `--rx-device` | `ICOM_USB_RX_DEVICE` | auto | USB audio RX device name |
-| TX device | `tx_device` | `--tx-device` | `ICOM_USB_TX_DEVICE` | auto | USB audio TX device name |
+| RX device | `rx_device` | `--rx-device` | `ICOM_USB_RX_DEVICE` | auto | USB audio RX device selector (name, index, or hardware id) |
+| TX device | `tx_device` | `--tx-device` | `ICOM_USB_TX_DEVICE` | auto | USB audio TX device selector (name, index, or hardware id) |
 | CI-V Address | `radio_addr` | — | — | `0x98` (IC-7610) | Radio's CI-V address |
 | Timeout | `timeout` | `--timeout` | — | `5.0` | Operation timeout (seconds) |
 

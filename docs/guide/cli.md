@@ -143,6 +143,8 @@ If `--serial-baud` and `ICOM_SERIAL_BAUDRATE` are both unset:
 ### Audio device selection (serial backend)
 
 The serial backend uses USB audio devices exported by the radio. By default, devices are auto-detected.
+When display names are duplicated, pass a PortAudio device index or a unique
+hardware identifier such as `hw:3,0` instead of the shared display name.
 
 ```bash
 # List all available audio devices
@@ -153,6 +155,12 @@ rigplane --list-audio-devices --json
 rigplane --backend serial --serial-port /dev/tty.usbmodem-IC7610 \
     --rx-device "IC-7610 USB Audio" \
     --tx-device "IC-7610 USB Audio" \
+    audio rx --out rx.wav --seconds 10
+
+# Specify an ALSA hardware id from --list-audio-devices --json
+rigplane --backend serial --serial-port /dev/ttyACM0 \
+    --rx-device "hw:3,0" \
+    --tx-device "hw:3,0" \
     audio rx --out rx.wav --seconds 10
 ```
 

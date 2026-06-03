@@ -24,6 +24,7 @@ from .backend import (
     PortAudioBackend,
     RxStream,
     TxStream,
+    _platform_uid_from_device_name,
 )
 
 logger = logging.getLogger(__name__)
@@ -160,28 +161,103 @@ def _name_score(name: str) -> int:
     return 99
 
 
+def _format_device_choices(devices: list[UsbAudioDevice]) -> str:
+    choices: list[str] = []
+    for dev in sorted(devices, key=lambda item: (item.index, item.name.lower())):
+        label = f"[{dev.index}] {dev.name}"
+        if dev.platform_uid:
+            label = f"{label} ({dev.platform_uid})"
+        choices.append(label)
+    return ", ".join(choices) or "<none>"
+
+
+def _unique_override_match(
+    matches: list[UsbAudioDevice],
+    *,
+    override: str,
+    direction: str,
+) -> UsbAudioDevice | None:
+    if len(matches) == 1:
+        return matches[0]
+    if len(matches) > 1:
+        available = _format_device_choices(matches)
+        raise AudioDeviceSelectionError(
+            f"Ambiguous {direction.upper()} device override {override!r}. "
+            f"Matching {direction.upper()} devices: {available}"
+        )
+    return None
+
+
 def _find_by_override(
     devices: list[UsbAudioDevice],
     *,
     override: str,
     direction: str,
 ) -> UsbAudioDevice:
-    if not override.strip():
+    selector = override.strip()
+    if not selector:
         raise AudioDeviceSelectionError(
             f"{direction.upper()} device override must be a non-empty string."
         )
-    exact = [dev for dev in devices if dev.name == override]
-    if len(exact) == 1:
-        return exact[0]
-    exact_ci = [dev for dev in devices if dev.name.lower() == override.lower()]
-    if len(exact_ci) == 1:
-        return exact_ci[0]
-    partial = [dev for dev in devices if override.lower() in dev.name.lower()]
-    if len(partial) == 1:
-        return partial[0]
-    available = ", ".join(sorted(dev.name for dev in devices)) or "<none>"
+
+    index_matches = [
+        dev
+        for dev in devices
+        if selector in {str(dev.index), f"[{dev.index}]", f"index:{dev.index}"}
+    ]
+    match = _unique_override_match(
+        index_matches,
+        override=selector,
+        direction=direction,
+    )
+    if match is not None:
+        return match
+
+    exact = [
+        dev
+        for dev in devices
+        if dev.name == selector or (dev.platform_uid and dev.platform_uid == selector)
+    ]
+    match = _unique_override_match(
+        exact,
+        override=selector,
+        direction=direction,
+    )
+    if match is not None:
+        return match
+
+    selector_ci = selector.lower()
+    exact_ci = [
+        dev
+        for dev in devices
+        if dev.name.lower() == selector_ci
+        or (dev.platform_uid and dev.platform_uid.lower() == selector_ci)
+    ]
+    match = _unique_override_match(
+        exact_ci,
+        override=selector,
+        direction=direction,
+    )
+    if match is not None:
+        return match
+
+    partial = [
+        dev
+        for dev in devices
+        if selector_ci in dev.name.lower()
+        or (dev.platform_uid and selector_ci in dev.platform_uid.lower())
+    ]
+    match = _unique_override_match(
+        partial,
+        override=selector,
+        direction=direction,
+    )
+    if match is not None:
+        return match
+
+    available = _format_device_choices(devices)
     raise AudioDeviceSelectionError(
-        f"Unknown {direction.upper()} device override {override!r}. "
+        f"Unknown {direction.upper()} device override {selector!r}. "
         f"Available {direction.upper()} devices: {available}"
     )
 
@@ -288,7 +364,11 @@ def _device_info_to_usb(
         default_samplerate=info.default_samplerate,
         is_default_input=info.is_default_input,
         is_default_output=info.is_default_output,
-        platform_uid=uid_map.get(info.name, ""),
+        platform_uid=(
+            info.platform_uid
+            or uid_map.get(info.name, "")
+            or _platform_uid_from_device_name(info.name)
+        ),
     )
 
 
@@ -334,7 +414,8 @@ def list_usb_audio_devices(sounddevice_module: Any) -> list[UsbAudioDevice]:
                 is_default_output=(
                     default_output_idx is not None and index == default_output_idx
                 ),
-                platform_uid=uid_map.get(name, ""),
+                platform_uid=uid_map.get(name, "")
+                or _platform_uid_from_device_name(name),
             )
         )
     return normalized
