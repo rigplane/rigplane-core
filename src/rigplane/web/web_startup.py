@@ -150,7 +150,7 @@ async def start_web_server(server: WebServer) -> None:
             server._config.dx_callsign,
         )
     server._state_store_freshness_task = asyncio.get_running_loop().create_task(
-        server._state_store_freshness_loop(), name="web-state-freshness"
+        server._state_freshness_service.run(), name="web-state-freshness"
     )
 
     # Start UDP discovery responder

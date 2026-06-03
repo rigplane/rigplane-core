@@ -11,6 +11,16 @@ from rigplane.core.state_pipeline_contracts import (
     Observation,
     SourceMetadata,
 )
+from rigplane.core.acquisition_scheduler import (
+    AcquisitionPriority,
+    AcquisitionScheduler,
+    StateFreshnessService,
+)
+from rigplane.core.state_acquisition_policy import (
+    AcquisitionPolicy,
+    FieldCapability,
+    RadioAcquisitionProfile,
+)
 from rigplane.core.state_store import (
     FreshnessClock,
     FreshnessState,
@@ -41,6 +51,21 @@ def _observation(
         source=_source(),
         timestamp_monotonic=at,
         max_age=max_age,
+    )
+
+
+def _acquisition_profile(*paths: FieldPath) -> RadioAcquisitionProfile:
+    return RadioAcquisitionProfile(
+        provider="test_provider",
+        capabilities=tuple(
+            FieldCapability(
+                path=path,
+                polling=True,
+                command_response_observable=True,
+            )
+            for path in paths
+        ),
+        default_policy=AcquisitionPolicy(),
     )
 
 
@@ -161,6 +186,29 @@ def test_dropped_event_marks_stale_and_requests_reconciliation() -> None:
     assert delta.reconciliation_requests[0].reason == "stale"
     assert delta.reconciliation_requests[0].state_revision == 1
     assert delta.reconciliation_requests[0].freshness_revision == 2
+
+
+def test_freshness_service_marks_stale_and_queues_reconciliation_without_web() -> None:
+    clock = FreshnessClock(start=50.0)
+    store = StateStore(freshness_clock=clock)
+    path = FieldPath.global_("tx_state", "ptt")
+    scheduler = AcquisitionScheduler(
+        profile=_acquisition_profile(path),
+        clock=clock,
+    )
+    service = StateFreshnessService(store=store, scheduler=scheduler)
+    store.apply(_observation(path, False, at=clock.now(), max_age=0.5))
+
+    clock.advance(0.6)
+    delta = service.tick()
+
+    assert store.snapshot().field(path).freshness is FreshnessState.STALE
+    assert delta.reconciliation_requests[0].path == path
+    requests = scheduler.pending_requests()
+    assert len(requests) == 1
+    assert requests[0].paths == (path,)
+    assert requests[0].priority is AcquisitionPriority.RECONCILIATION
+    assert requests[0].reason == "stale"
 
 
 def test_observation_refreshes_stale_field_without_semantic_state_change() -> None:

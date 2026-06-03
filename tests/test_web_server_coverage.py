@@ -20,6 +20,7 @@ from rigplane.core.command_service import (
 from rigplane.core.acquisition_scheduler import (
     AcquisitionScheduler,
     RadioStateModelService,
+    StateFreshnessService,
 )
 from rigplane.core.state_pipeline_contracts import FieldPath, Observation, SourceMetadata
 from rigplane.core.state_store import FreshnessClock, StateStore
@@ -240,6 +241,8 @@ async def test_start_attaches_shared_state_model_service_for_acquisition_profile
     assert srv.command_state_store is radio.state_store
     assert isinstance(radio._acquisition_scheduler, AcquisitionScheduler)
     assert isinstance(radio._state_model_service, RadioStateModelService)
+    assert isinstance(radio._state_freshness_service, StateFreshnessService)
+    assert srv._state_freshness_service is radio._state_freshness_service
     assert radio._meter_observation_coalescer is not None
     assert poller_cls.call_args.kwargs["state_store"] is radio.state_store
 

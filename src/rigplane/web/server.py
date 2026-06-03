@@ -43,6 +43,7 @@ from ..core.acquisition_scheduler import (
     AcquisitionScheduler,
     MeterObservationCoalescer,
     RadioStateModelService,
+    StateFreshnessService,
 )
 from ..core.state_diagnostics import StateDiagnosticsRecorder
 from ..core.command_service import (
@@ -655,6 +656,10 @@ class WebServer:
         self.command_state_store = (
             raw_state_store if isinstance(raw_state_store, StateStore) else StateStore()
         )
+        self._state_freshness_service = StateFreshnessService(
+            store=self.command_state_store,
+            on_delta=self._on_state_freshness_delta,
+        )
         self._bootstrap_state_acquisition()
         self.command_service = CommandService(
             executor=_SharedControlCommandExecutor(self),
@@ -840,9 +845,16 @@ class WebServer:
             store=self.command_state_store,
             scheduler=scheduler,
         )
+        freshness_service = StateFreshnessService(
+            store=self.command_state_store,
+            scheduler=scheduler,
+            on_delta=self._on_state_freshness_delta,
+        )
         coalescer = MeterObservationCoalescer()
+        self._state_freshness_service = freshness_service
         try:
             setattr(radio, "_state_model_service", service)
+            setattr(radio, "_state_freshness_service", freshness_service)
             setattr(radio, "_acquisition_scheduler", scheduler)
             setattr(radio, "_meter_observation_coalescer", coalescer)
         except Exception:
@@ -1380,16 +1392,9 @@ class WebServer:
         for observation in observations:
             self.command_state_store.apply(observation)
 
-    async def _state_store_freshness_loop(self) -> None:
-        """Advance freshness-only revisions and broadcast resulting deltas."""
-        try:
-            while True:
-                await asyncio.sleep(0.05)
-                delta = self.command_state_store.mark_stale_due()
-                if delta.freshness or delta.reconciliation_requests:
-                    self._broadcast_state_update()
-        except asyncio.CancelledError:
-            pass
+    def _on_state_freshness_delta(self, _delta: object) -> None:
+        """React to StateStore freshness changes produced by the shared service."""
+        self._broadcast_state_update()
 
     def _build_radio_health(self) -> dict[str, Any]:
         """Build radio health and advance the health revision on transitions."""
