@@ -2990,7 +2990,8 @@ class WebServer:
                     else str(payload["id"]),
                 )
             )
-            result = service_result.executor_result.details["transaction_result"]
+            details = service_result.executor_result.details or {}
+            result = details["transaction_result"]
         except (RigplaneTimeoutError, TimeoutError):
             await self._send_json(
                 writer,
@@ -3304,7 +3305,8 @@ class WebServer:
                     else str(step.step_id),
                 )
             )
-            result = service_result.executor_result.details["transaction_result"]
+            details = service_result.executor_result.details or {}
+            result = details["transaction_result"]
         except (RigplaneTimeoutError, TimeoutError):
             return self._failed_transaction_batch_result(
                 step,

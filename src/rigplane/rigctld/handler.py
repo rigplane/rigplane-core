@@ -2172,7 +2172,8 @@ class RigctldHandler:
                 session_id=self._session_id(),
             )
         )
-        values = result.executor_result.details.get("values", [])
+        details = result.executor_result.details or {}
+        values = details.get("values", [])
         return RigctldResponse(values=list(values))
 
     # ------------------------------------------------------------------
