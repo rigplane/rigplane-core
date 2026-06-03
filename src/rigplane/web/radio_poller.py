@@ -458,17 +458,10 @@ class RadioPoller:
         params: dict[str, Any] = {
             "message": message,
             "timed_out": timed_out,
+            "session_id": entry.session_id,
         }
         if entry.source is not None:
             params["source"] = entry.source
-            for event in reversed(entry.command_service.lifecycle_events()):
-                if (
-                    event.command_id == entry.command_id
-                    and event.source == entry.source
-                    and "session_id" in (event.details or {})
-                ):
-                    params["session_id"] = event.details["session_id"]
-                    break
         entry.command_service.fail_command(
             entry.command_id,
             **params,

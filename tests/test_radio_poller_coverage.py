@@ -1377,6 +1377,63 @@ async def test_mark_queued_command_failed_scopes_reused_command_ids_by_source() 
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("timed_out", "expected_state"),
+    [(False, "failed"), (True, "timed_out")],
+)
+async def test_mark_queued_command_failed_scopes_reused_command_ids_by_session(
+    timed_out: bool,
+    expected_state: str,
+) -> None:
+    radio = _make_radio()
+    store = StateStore()
+    queue = CommandQueue()
+    executor = _QueuedAckExecutor(queue)
+    service = CommandService(executor=executor, state_store=store)
+    executor.command_service = service
+    poller = RadioPoller(
+        radio,
+        StateCache(),
+        queue,
+        radio_state=RadioState(),
+        state_store=store,
+    )
+
+    for session_id in ("ws-a", "ws-b"):
+        await service.execute(
+            command_intent_from_request(
+                "set_freq",
+                {"freq": 14_074_000, "receiver": 0},
+                source="websocket",
+                command_id="shared-id",
+                session_id=session_id,
+            )
+        )
+
+    entries = queue.drain_entries()
+    poller._mark_queued_command_failed(  # noqa: SLF001
+        entries[0],
+        TimeoutError("command timed out")
+        if timed_out
+        else RuntimeError("radio rejected command"),
+        timed_out=timed_out,
+    )
+
+    assert service.pending_overlays(source="websocket", session_id="ws-a") == ()
+    assert len(service.pending_overlays(source="websocket", session_id="ws-b")) == 1
+    assert service.pending_overlays(source="websocket", session_id="ws-b")[0].value == 14_074_000
+
+    terminal_events = [
+        event
+        for event in service.lifecycle_events()
+        if event.command_id == "shared-id" and event.state == expected_state
+    ]
+    assert len(terminal_events) == 1
+    assert terminal_events[0].source == "websocket"
+    assert terminal_events[0].details["session_id"] == "ws-a"
+
+
+@pytest.mark.asyncio
 async def test_select_vfo_readback_uses_original_command_correlation() -> None:
     radio = _make_radio()
     state = RadioState()
