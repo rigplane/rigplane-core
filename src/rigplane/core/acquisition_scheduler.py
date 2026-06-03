@@ -2,10 +2,10 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterable, Sequence
+from collections.abc import Awaitable, Callable, Iterable, Sequence
 from dataclasses import dataclass, replace
 from enum import StrEnum
-from typing import Any, Literal
+from typing import Any, Literal, Protocol
 
 from rigplane.core.state_acquisition_policy import (
     AcquisitionPolicy,
@@ -32,17 +32,21 @@ from rigplane.core.state_store import (
 
 __all__ = [
     "AcquisitionMethod",
+    "AcquisitionExecutionResult",
+    "AcquisitionExecutor",
     "AcquisitionPriority",
     "AcquisitionRequest",
     "AcquisitionScheduler",
     "AcquisitionStatus",
     "EnsureFreshResult",
+    "IcomCivAcquisitionExecutor",
     "MeterObservationCoalescer",
     "RadioStateModelService",
 ]
 
 
 AcquisitionMethod = Literal["poll", "command_response", "wait_for_unsolicited"]
+AcquisitionQuerySender = Callable[[int, int | None, int | None], Awaitable[None]]
 
 
 class AcquisitionPriority(StrEnum):
@@ -62,6 +66,27 @@ class AcquisitionStatus(StrEnum):
     QUEUED = "queued"
     DEFERRED = "deferred"
     UNAVAILABLE = "unavailable"
+
+
+@dataclass(frozen=True, slots=True)
+class AcquisitionExecutionResult:
+    """Backend executor result for one scheduler request attempt."""
+
+    sent_paths: tuple[FieldPath, ...] = ()
+    failed_paths: tuple[FieldPath, ...] = ()
+    failure_reason: str = ""
+
+
+class AcquisitionExecutor(Protocol):
+    """Backend-owned executor for scheduler acquisition requests."""
+
+    async def execute(
+        self,
+        request: AcquisitionRequest,
+        *,
+        already_sent_paths: frozenset[FieldPath],
+    ) -> AcquisitionExecutionResult:
+        """Send backend reads for paths not already in flight."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -159,6 +184,111 @@ class _PendingMeterSample:
     policy: MeterCoalescingPolicy
 
 
+_RECEIVER_IDS: dict[str, int] = {
+    "0": 0,
+    "main": 0,
+    "1": 1,
+    "sub": 1,
+}
+_RECEIVER_LEVEL_QUERY_SUBS: dict[str, int] = {
+    "af_level": 0x01,
+    "rf_gain": 0x02,
+    "squelch": 0x03,
+    "apf_type_level": 0x05,
+    "nr_level": 0x06,
+    "pbt_inner": 0x07,
+    "pbt_outer": 0x08,
+    "nb_level": 0x12,
+    "digisel_shift": 0x13,
+}
+_GLOBAL_LEVEL_QUERY_SUBS: dict[str, int] = {
+    "power_level": 0x0A,
+    "mic_gain": 0x0B,
+    "notch_filter": 0x0D,
+    "compressor_level": 0x0E,
+    "break_in_delay": 0x0F,
+    "drive_gain": 0x14,
+    "monitor_gain": 0x15,
+    "vox_gain": 0x16,
+    "anti_vox_gain": 0x17,
+}
+_GLOBAL_METER_QUERY_SUBS: dict[str, int] = {
+    "power": 0x11,
+    "swr": 0x12,
+    "alc": 0x13,
+}
+
+
+class IcomCivAcquisitionExecutor:
+    """CI-V path-to-query executor for Icom acquisition profiles."""
+
+    __slots__ = ("_send_query",)
+
+    def __init__(self, send_query: AcquisitionQuerySender) -> None:
+        self._send_query = send_query
+
+    async def execute(
+        self,
+        request: AcquisitionRequest,
+        *,
+        already_sent_paths: frozenset[FieldPath],
+    ) -> AcquisitionExecutionResult:
+        sent: list[FieldPath] = []
+        failed: list[FieldPath] = []
+        for path in request.paths:
+            if path in already_sent_paths:
+                continue
+            query = self.query_for_path(path)
+            if query is None:
+                failed.append(path)
+                continue
+            await self._send_query(*query)
+            sent.append(path)
+        return AcquisitionExecutionResult(
+            sent_paths=tuple(sent),
+            failed_paths=tuple(failed),
+            failure_reason="no_civ_query_mapping" if failed else "",
+        )
+
+    def query_for_path(
+        self,
+        path: FieldPath,
+    ) -> tuple[int, int | None, int | None] | None:
+        receiver = _RECEIVER_IDS.get(path.receiver_id or "")
+        if path.scope.value == "receiver" and receiver is None:
+            return None
+        if path.scope.value == "receiver" and path.family.value == "freq_mode":
+            if path.name == "freq_hz":
+                return (0x25, None, receiver)
+            if path.name == "mode":
+                return (0x26, None, receiver)
+            return None
+        if path.scope.value == "receiver" and path.family.value == "meters":
+            if path.name == "s_meter":
+                return (0x15, 0x02, receiver)
+            return None
+        if (
+            path.scope.value == "receiver"
+            and path.family.value == "operator_controls"
+        ):
+            sub = _RECEIVER_LEVEL_QUERY_SUBS.get(path.name)
+            return None if sub is None else (0x14, sub, receiver)
+        if path.scope.value == "global" and path.family.value == "meters":
+            sub = _GLOBAL_METER_QUERY_SUBS.get(path.name)
+            return None if sub is None else (0x15, sub, None)
+        if path.scope.value == "global" and path.family.value == "tx_state":
+            if path.name == "ptt":
+                return (0x1C, 0x00, None)
+            return None
+        if (
+            path.scope.value == "global"
+            and path.family.value == "operator_controls"
+        ):
+            sub = _GLOBAL_LEVEL_QUERY_SUBS.get(path.name)
+            return None if sub is None else (0x14, sub, None)
+        return None
+
+
 _PRIORITY_RANK: dict[AcquisitionPriority, int] = {
     AcquisitionPriority.BACKGROUND: 0,
     AcquisitionPriority.RECONCILIATION: 1,
@@ -178,6 +308,8 @@ class AcquisitionScheduler:
         "_external_cat_owner",
         "_external_cat_paused",
         "_external_cat_reason",
+        "_failed_request_count",
+        "_failure_count_by_reason",
         "_next_id",
         "_pending_cadence_by_key",
         "_profile",
@@ -199,10 +331,18 @@ class AcquisitionScheduler:
             _AcquisitionRequestKey,
             _PendingCadenceUpdate,
         ] = {}
+        self._failed_request_count = 0
+        self._failure_count_by_reason: dict[str, int] = {}
         self._next_id = 1
         self._external_cat_paused = False
         self._external_cat_owner: str | None = None
         self._external_cat_reason = ""
+
+    @property
+    def provider(self) -> str:
+        """Return the backend/provider id declared by the acquisition profile."""
+
+        return self._profile.provider
 
     def ensure_fresh(
         self,
@@ -425,6 +565,54 @@ class AcquisitionScheduler:
             next_due_monotonic=change_set.timestamp_monotonic + current_cadence,
         )
 
+    def record_acquisition_failure(
+        self,
+        request: AcquisitionRequest,
+        *,
+        reason: str,
+        failed_paths: Iterable[FieldPath] | None = None,
+        now: float | None = None,
+    ) -> None:
+        """Complete failed paths and advance cadence to avoid immediate resend."""
+
+        failure_reason = reason or "acquisition_failed"
+        requested_paths = frozenset(request.paths)
+        failed = requested_paths if failed_paths is None else frozenset(failed_paths)
+        failed = failed.intersection(requested_paths)
+        if not failed:
+            return
+
+        self._failed_request_count += 1
+        self._failure_count_by_reason[failure_reason] = (
+            self._failure_count_by_reason.get(failure_reason, 0) + 1
+        )
+
+        key = _request_key(
+            request.paths[0],
+            acquisition_method=request.acquisition_method,
+            policy=request.policy,
+        )
+        existing = self._requests_by_key.get(key)
+        if existing is not None and existing.id == request.id:
+            remaining_paths = tuple(path for path in existing.paths if path not in failed)
+            if remaining_paths:
+                self._requests_by_key[key] = self._replace_request_paths(
+                    existing,
+                    paths=remaining_paths,
+                )
+            else:
+                del self._requests_by_key[key]
+                self._pending_cadence_by_key.pop(key, None)
+
+        if request.policy.cadence_seconds is None:
+            return
+        timestamp = self._clock.now() if now is None else now
+        previous = self._cadence_state_for(key, request.policy, now=timestamp)
+        self._cadence_by_key[key] = _CadenceState(
+            current_cadence_seconds=previous.current_cadence_seconds,
+            next_due_monotonic=timestamp + previous.current_cadence_seconds,
+        )
+
     def diagnostics(self) -> dict[str, Any]:
         """Return a JSON-safe scheduler projection for diagnostics surfaces."""
 
@@ -455,6 +643,8 @@ class AcquisitionScheduler:
         return {
             "queuedRequestCount": len(self._requests_by_key),
             "deferredRequestCount": len(self._deferred),
+            "failedRequestCount": self._failed_request_count,
+            "failureCountByReason": dict(self._failure_count_by_reason),
             "cadenceByPath": cadence_by_path,
             "cadenceByGroup": cadence_by_group,
             "requestPressureByPriorityFamily": self._request_pressure(),
