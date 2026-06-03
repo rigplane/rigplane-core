@@ -532,7 +532,7 @@ def _serialize_keyboard_config(profile: "RadioProfile") -> dict[str, object] | N
 
 def _runtime_capabilities(radio: "Radio | None") -> set[str]:
     """Backward-compatible alias to shared runtime_capabilities helper."""
-    return runtime_capabilities(radio)
+    return cast(set[str], runtime_capabilities(radio))
 
 
 def _supports_scope(radio: "Radio | None") -> bool:
@@ -767,6 +767,7 @@ class WebServer:
         self._zombie_reaper_task: asyncio.Task[None] | None = None
         # UDP discovery responder
         self._discovery: DiscoveryResponder | None = None
+        self._server_was_running: bool = False
         # Diagnostic upload session manager (preview/send/save/delete).
         # Sweeper task is started lazily on the first preview request and
         # explicitly stopped during web shutdown.
@@ -849,7 +850,7 @@ class WebServer:
 
     def _radio_ready(self) -> bool:
         """Backend view of radio readiness (CI-V healthy)."""
-        return radio_ready(self._radio)
+        return bool(radio_ready(self._radio))
 
     async def ensure_startup_ready(self, timeout: float = 5.0) -> None:
         """Assert that the attached radio is ready before exposing the server."""
@@ -1193,7 +1194,7 @@ class WebServer:
         if updated_at is None:
             self._cached_public_state_key = cache_key
             self._cached_public_state_payload = copy.deepcopy(payload)
-        return payload
+        return cast(dict[str, Any], payload)
 
     def build_state_update_envelope(self, *, force_full: bool = False) -> dict[str, Any]:
         """Return a WS state-update envelope from the canonical StateStore view."""
@@ -1410,7 +1411,7 @@ class WebServer:
             self._health_revision += 1
             self._health_since_monotonic = now
         health["sinceMs"] = int(max(0.0, now - self._health_since_monotonic) * 1000)
-        return health
+        return cast(dict[str, Any], health)
 
     def broadcast_notification(
         self,

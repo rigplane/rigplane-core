@@ -466,6 +466,32 @@ class TestHandlerMemoryDispatch:
         assert cmds[0].mem.frequency_hz == 14_074_000
 
     @pytest.mark.asyncio
+    async def test_set_memory_contents_ignores_transport_session_id(self) -> None:
+        handler, q = self._make_handler()
+        params = {
+            "channel": 1,
+            "frequency_hz": 14_074_000,
+            "mode": 1,
+            "filter": 1,
+            "scan": 0,
+            "datamode": 0,
+            "tonemode": 0,
+            "name": "FT8",
+            "session_id": "ws-a",
+        }
+
+        result = await handler._enqueue_command("set_memory_contents", params)
+
+        assert result == {"channel": 1}
+        cmds = q.drain()
+        assert len(cmds) == 1
+        from rigplane.web.radio_poller import SetMemoryContents
+
+        assert isinstance(cmds[0], SetMemoryContents)
+        assert cmds[0].mem.channel == 1
+        assert cmds[0].mem.frequency_hz == 14_074_000
+
+    @pytest.mark.asyncio
     async def test_set_bsr_dispatch(self) -> None:
         handler, q = self._make_handler()
         params = {
@@ -476,6 +502,28 @@ class TestHandlerMemoryDispatch:
             "filter": 1,
         }
         result = await handler._enqueue_command("set_bsr", params)
+        assert result == {"band": 5, "register": 1}
+        cmds = q.drain()
+        assert len(cmds) == 1
+        from rigplane.web.radio_poller import SetBsr
+
+        assert isinstance(cmds[0], SetBsr)
+        assert cmds[0].bsr.band == 5
+
+    @pytest.mark.asyncio
+    async def test_set_bsr_ignores_transport_session_id(self) -> None:
+        handler, q = self._make_handler()
+        params = {
+            "band": 5,
+            "register": 1,
+            "frequency_hz": 14_074_000,
+            "mode": 1,
+            "filter": 1,
+            "session_id": "ws-a",
+        }
+
+        result = await handler._enqueue_command("set_bsr", params)
+
         assert result == {"band": 5, "register": 1}
         cmds = q.drain()
         assert len(cmds) == 1

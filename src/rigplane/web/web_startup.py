@@ -84,6 +84,7 @@ async def start_web_server(server: WebServer) -> None:
         reuse_address=True,
         reuse_port=_reuse_port_supported(),
     )
+    server._server_was_running = True
     addr = server._server.sockets[0].getsockname()
     scheme = "https" if ssl_ctx else "http"
     logger.info("web server listening on %s://%s:%d", scheme, addr[0], addr[1])
@@ -272,6 +273,7 @@ async def stop_web_server(server: WebServer) -> None:
         except TimeoutError:
             logger.warning("server.wait_closed() timed out after 2s")
         server._server = None
+    server._server_was_running = False
 
     # 8. Wait for cancelled tasks to finish (with timeout)
     if all_tasks:

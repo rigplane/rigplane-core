@@ -584,6 +584,27 @@ async def test_set_mode_pktrtty_maps_to_rtty_and_sets_data(
     mock_radio.set_data_mode.assert_awaited_once_with(True)
 
 
+@pytest.mark.parametrize(
+    ("packet_mode", "base_mode"),
+    (("PKTUSB", "USB"), ("PKTLSB", "LSB"), ("PKTRTTY", "RTTY")),
+)
+@pytest.mark.asyncio
+async def test_set_mode_packet_refreshes_data_mode_cache(
+    mock_radio: AsyncMock,
+    packet_mode: str,
+    base_mode: str,
+) -> None:
+    handler = RigctldHandler(mock_radio, RigctldConfig())
+
+    resp = await handler.execute(set_cmd("set_mode", packet_mode))
+
+    assert resp.ok
+    mock_radio.set_mode.assert_awaited_once_with(base_mode, filter_width=None)
+    mock_radio.set_data_mode.assert_awaited_once_with(True)
+    assert handler._cache.mode == base_mode  # noqa: SLF001
+    assert handler._cache.data_mode is True  # noqa: SLF001
+
+
 @pytest.mark.asyncio
 async def test_set_mode_uses_core_contract_string_values() -> None:
     radio = _ContractModeRadio(mode="USB", filter_width=1, data_mode=False)

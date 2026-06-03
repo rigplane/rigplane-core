@@ -67,7 +67,7 @@ def test_civ_meter_write_records_diagnostic_without_notify_or_revision() -> None
     assert diagnostics.events()[0].details["field_family"] == "meters"
 
 
-def test_web_baseline_meter_write_waits_for_unrelated_delivery_trigger() -> None:
+def test_web_meter_write_delivers_state_store_revision_without_unrelated_trigger() -> None:
     server = WebServer(config=WebConfig(state_diagnostics=True))
     queue: BoundedQueue[dict[str, Any]] = BoundedQueue(maxsize=8)
     server.register_control_event_queue(queue)
@@ -81,16 +81,21 @@ def test_web_baseline_meter_write_waits_for_unrelated_delivery_trigger() -> None
         revision=server.build_public_state()["revision"],
     )
 
-    assert queue.empty()
-    assert server.build_public_state()["main"]["sMeter"] == 42
-    assert server.build_public_state()["revision"] == 0
+    payload = server.build_public_state()
+    assert payload["main"]["sMeter"] == 42
+    assert payload["revision"] == 1
+    assert payload["stateRevision"] == 1
+    assert payload["freshnessRevision"] == 1
 
-    server._on_radio_state_change("nb_changed", {"on": True})
+    server._broadcast_state_update()
 
-    queued = queue.get_nowait()
-    assert queued["type"] == "event"
     queued = queue.get_nowait()
     assert queued["type"] == "state_update"
+    assert queued["data"]["type"] == "full"
+    assert queued["data"]["stateRevision"] == 1
+    assert queued["data"]["freshnessRevision"] == 1
+    assert queued["data"]["data"]["main"]["sMeter"] == 42
+    assert queue.empty()
     assert server.state_diagnostics.snapshot()["counts"] == {
         "direct_state_write": 1,
         "web_delivery_trigger": 1,
