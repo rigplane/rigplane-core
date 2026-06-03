@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Iterable
+from dataclasses import replace
 from typing import Any
 
 from rigplane.core.acquisition_scheduler import (
@@ -885,6 +886,74 @@ def test_semantic_change_resets_adaptive_cadence_to_base_policy() -> None:
     assert scheduler.due_requests() == ()
     clock.advance(0.1)
     assert scheduler.due_requests()[0].paths == (freq,)
+
+
+def test_grouped_partial_semantic_change_resets_adaptive_cadence_after_all_paths_complete() -> (
+    None
+):
+    policy = AcquisitionPolicy(
+        cadence_seconds=2.0,
+        freshness_ttl_seconds=10.0,
+        adaptive_decay=AdaptiveDecayPolicy(
+            enabled=True,
+            idle_multiplier=2.0,
+            max_cadence_seconds=8.0,
+        ),
+    )
+    freq = FieldPath.active("main", "freq_mode", "freq_hz")
+    mode = FieldPath.active("main", "freq_mode", "mode")
+    cases = (
+        (
+            FreshnessClock(start=230.0),
+            freq,
+            mode,
+            FieldChange(path=freq, previous=7_074_000, current=14_074_000),
+        ),
+        (
+            FreshnessClock(start=250.0),
+            mode,
+            freq,
+            FieldChange(path=mode, previous="USB", current="LSB"),
+        ),
+    )
+
+    for clock, changed_path, unchanged_path, change in cases:
+        scheduler = AcquisitionScheduler(
+            profile=_profile([changed_path, unchanged_path], default_policy=policy),
+            clock=clock,
+        )
+
+        first = scheduler.due_requests()[0]
+        scheduler.record_acquisition_result(first, _changeset(at=clock.now()))
+        clock.advance(4.0)
+
+        grouped = scheduler.due_requests()[0]
+        changed_slice = replace(
+            grouped,
+            paths=(changed_path,),
+            capability_ids=(str(changed_path),),
+        )
+        scheduler.record_acquisition_result(
+            changed_slice,
+            _changeset(changes=(change,), at=clock.now()),
+        )
+        unchanged_slice = scheduler.pending_requests()[0]
+        assert unchanged_slice.paths == (unchanged_path,)
+
+        scheduler.record_acquisition_result(
+            unchanged_slice,
+            _changeset(at=clock.now()),
+        )
+
+        diagnostics = scheduler.diagnostics()
+        assert (
+            diagnostics["cadenceByPath"][str(changed_path)]["currentCadenceSeconds"]
+            == 2.0
+        )
+        assert (
+            diagnostics["cadenceByPath"][str(unchanged_path)]["currentCadenceSeconds"]
+            == 2.0
+        )
 
 
 def test_diagnostics_include_cadence_next_due_pending_pressure_and_counts() -> None:

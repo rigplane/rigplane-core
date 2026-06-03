@@ -142,6 +142,12 @@ class _CadenceState:
 
 
 @dataclass(frozen=True, slots=True)
+class _PendingCadenceUpdate:
+    request_id: str
+    semantic_changed: bool
+
+
+@dataclass(frozen=True, slots=True)
 class _PendingMeterSample:
     observation: Observation
     policy: MeterCoalescingPolicy
@@ -167,6 +173,7 @@ class AcquisitionScheduler:
         "_external_cat_paused",
         "_external_cat_reason",
         "_next_id",
+        "_pending_cadence_by_key",
         "_profile",
         "_requests_by_key",
     )
@@ -182,6 +189,10 @@ class AcquisitionScheduler:
         self._requests_by_key: dict[_AcquisitionRequestKey, AcquisitionRequest] = {}
         self._deferred: dict[_AcquisitionRequestKey, _PendingEnsureFresh] = {}
         self._cadence_by_key: dict[_AcquisitionRequestKey, _CadenceState] = {}
+        self._pending_cadence_by_key: dict[
+            _AcquisitionRequestKey,
+            _PendingCadenceUpdate,
+        ] = {}
         self._next_id = 1
         self._external_cat_paused = False
         self._external_cat_owner: str | None = None
@@ -345,7 +356,10 @@ class AcquisitionScheduler:
             policy=request.policy,
         )
         existing = self._requests_by_key.get(key)
+        matched_pending_request = False
+        remaining_paths: tuple[FieldPath, ...] = ()
         if existing is not None and existing.id == request.id:
+            matched_pending_request = True
             completed_paths = frozenset(request.paths)
             remaining_paths = tuple(
                 path for path in existing.paths if path not in completed_paths
@@ -361,16 +375,34 @@ class AcquisitionScheduler:
 
         base_cadence = request.policy.cadence_seconds
         if base_cadence is None:
+            if matched_pending_request and not remaining_paths:
+                self._pending_cadence_by_key.pop(key, None)
             return
+
+        requested_paths = frozenset(request.paths)
+        semantic_changed = any(
+            change.path in requested_paths for change in change_set.changes
+        )
+        pending_cadence = self._pending_cadence_by_key.get(key)
+        if matched_pending_request and remaining_paths:
+            if pending_cadence is not None and pending_cadence.request_id == request.id:
+                semantic_changed = (
+                    semantic_changed or pending_cadence.semantic_changed
+                )
+            self._pending_cadence_by_key[key] = _PendingCadenceUpdate(
+                request_id=request.id,
+                semantic_changed=semantic_changed,
+            )
+            return
+
+        if pending_cadence is not None and pending_cadence.request_id == request.id:
+            semantic_changed = semantic_changed or pending_cadence.semantic_changed
+            del self._pending_cadence_by_key[key]
 
         previous = self._cadence_state_for(
             key,
             request.policy,
             now=change_set.timestamp_monotonic,
-        )
-        requested_paths = frozenset(request.paths)
-        semantic_changed = any(
-            change.path in requested_paths for change in change_set.changes
         )
         if semantic_changed or not request.policy.adaptive_decay.enabled:
             current_cadence = base_cadence
