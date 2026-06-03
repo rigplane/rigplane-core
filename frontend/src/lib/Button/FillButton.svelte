@@ -14,6 +14,10 @@
     title = null,
     shortcutHint = null,
     onclick,
+    onpointerdown,
+    onpointerup,
+    onpointercancel,
+    onpointerleave,
     children
   }: Props = $props();
 </script>
@@ -27,6 +31,10 @@
   {title}
   {shortcutHint}
   {onclick}
+  {onpointerdown}
+  {onpointerup}
+  {onpointercancel}
+  {onpointerleave}
 >
   {@render children?.()}
 </ControlButton>

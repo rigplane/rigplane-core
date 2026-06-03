@@ -219,6 +219,22 @@ describe('modal initial state', () => {
     expect(t.querySelector('[aria-label="Notch filter settings"]')).toBeNull();
   });
 
+  it('opens NR settings on long press', () => {
+    vi.useFakeTimers();
+    try {
+      const t = mountPanel();
+      const nrBtn = getFillButtons(t).find((b) => b.textContent?.trim().startsWith('NR'));
+
+      nrBtn?.dispatchEvent(new Event('pointerdown', { bubbles: true }));
+      vi.advanceTimersByTime(600);
+      flushSync();
+
+      expect(t.querySelector('[aria-label="Noise reduction settings"]')).not.toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('renders the A-NOTCH button', () => {
     const t = mountPanel();
     const buttons = getFillButtons(t);

@@ -226,21 +226,8 @@ function verifyAllCommands(
   };
 }
 
-function clampToBipolarRange(value: number): number {
-  return Math.max(-1200, Math.min(1200, Math.round(value)));
-}
-
-function deriveIfShift(pbtInner: number, pbtOuter: number): number {
-  return clampToBipolarRange((pbtInner + pbtOuter) / 2);
-}
-
-function mapIfShiftToPbt(targetIfShift: number, currentPbtInner: number, currentPbtOuter: number) {
-  const currentIfShift = deriveIfShift(currentPbtInner, currentPbtOuter);
-  const delta = clampToBipolarRange(targetIfShift) - currentIfShift;
-  return {
-    pbtInner: clampToBipolarRange(currentPbtInner + delta),
-    pbtOuter: clampToBipolarRange(currentPbtOuter + delta),
-  };
+function pbtHzToRaw(hz: number): number {
+  return Math.max(0, Math.min(255, Math.round(hz * (128 / 1200) + 128)));
 }
 
 async function installWebSocketInterceptor(page: Page): Promise<void> {
@@ -453,24 +440,83 @@ async function restoreOriginalActiveReceiver(ctx: CaseContext): Promise<void> {
 }
 
 async function ensureCompSliderVisible(ctx: CaseContext): Promise<void> {
+  await ensureTxSettingsOpen(ctx);
   const slider = ctx.page.getByRole('slider', { name: 'Comp Level' });
   if (await slider.isVisible().catch(() => false)) {
     return;
   }
 
-  await panelByHeader(ctx.page, 'TX').getByRole('button', { name: 'COMP', exact: true }).click();
+  await closeOpenModal(ctx.page);
+  await panelByHeader(ctx.page, 'TX').getByRole('button', { name: /^COMP(?:\s+\d+%)?$/ }).click();
+  await wait(CONTROL_DELAY_MS);
+  await clearCommands(ctx.page);
+  await ensureTxSettingsOpen(ctx);
   await slider.waitFor({ state: 'visible', timeout: 5_000 });
   await clearCommands(ctx.page);
 }
 
 async function ensureMonSliderVisible(ctx: CaseContext): Promise<void> {
+  await ensureTxSettingsOpen(ctx);
   const slider = ctx.page.getByRole('slider', { name: 'Mon Level' });
   if (await slider.isVisible().catch(() => false)) {
     return;
   }
 
-  await panelByHeader(ctx.page, 'TX').getByRole('button', { name: 'MON', exact: true }).click();
+  await closeOpenModal(ctx.page);
+  await panelByHeader(ctx.page, 'TX').getByRole('button', { name: /^MON(?:\s+\d+%)?$/ }).click();
+  await wait(CONTROL_DELAY_MS);
+  await clearCommands(ctx.page);
+  await ensureTxSettingsOpen(ctx);
   await slider.waitFor({ state: 'visible', timeout: 5_000 });
+  await clearCommands(ctx.page);
+}
+
+async function ensureFilterSettingsOpen(ctx: CaseContext): Promise<void> {
+  const dialog = ctx.page.getByRole('dialog', { name: /Filter settings/ });
+  if (await dialog.isVisible().catch(() => false)) {
+    return;
+  }
+
+  await closeOpenModal(ctx.page);
+  await panelByHeader(ctx.page, 'FILTER').getByRole('button', { name: 'Open filter settings' }).click();
+  await dialog.waitFor({ state: 'visible', timeout: 5_000 });
+  await clearCommands(ctx.page);
+}
+
+async function ensureDspSettingsOpen(
+  ctx: CaseContext,
+  buttonName: string | RegExp,
+  dialogName: string | RegExp,
+): Promise<void> {
+  const dialog = ctx.page.getByRole('dialog', { name: dialogName });
+  if (await dialog.isVisible().catch(() => false)) {
+    return;
+  }
+
+  await closeOpenModal(ctx.page);
+  const button = panelByHeader(ctx.page, 'DSP').getByRole('button', { name: buttonName });
+  await button.scrollIntoViewIfNeeded();
+  const box = await button.boundingBox();
+  if (!box) {
+    throw new Error('DSP settings button has no bounding box');
+  }
+  await ctx.page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+  await ctx.page.mouse.down();
+  await wait(650);
+  await ctx.page.mouse.up();
+  await dialog.waitFor({ state: 'visible', timeout: 5_000 });
+  await clearCommands(ctx.page);
+}
+
+async function ensureTxSettingsOpen(ctx: CaseContext): Promise<void> {
+  const dialog = ctx.page.getByRole('dialog', { name: 'TX level settings' });
+  if (await dialog.isVisible().catch(() => false)) {
+    return;
+  }
+
+  await closeOpenModal(ctx.page);
+  await panelByHeader(ctx.page, 'TX').getByRole('button', { name: /LEVELS/ }).click();
+  await dialog.waitFor({ state: 'visible', timeout: 5_000 });
   await clearCommands(ctx.page);
 }
 
@@ -521,15 +567,52 @@ async function restoreSubReceiverFromOriginal(ctx: CaseContext): Promise<void> {
   await sendRestoreCommands(ctx.page, ctx.request, commands);
 }
 
-async function setRangeValue(locator: Locator, value: number): Promise<void> {
+async function closeOpenModal(page: Page): Promise<void> {
+  for (let i = 0; i < 3; i += 1) {
+    const filterClose = page.getByRole('dialog', { name: /Filter settings/ }).getByRole('button', { name: 'Close' });
+    if (await filterClose.isVisible().catch(() => false)) {
+      await filterClose.click();
+      await wait(100);
+      continue;
+    }
+
+    const backdrop = page.locator('.menu-backdrop:visible, .modal-backdrop:visible').first();
+    if ((await backdrop.count()) === 0) {
+      return;
+    }
+    await page.mouse.click(6, 6);
+    await wait(100);
+  }
+}
+
+async function setRangeValue(page: Page, locator: Locator, value: number): Promise<void> {
   await locator.scrollIntoViewIfNeeded();
-  await locator.evaluate((element, targetValue) => {
-    const input = element as HTMLInputElement;
-    const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set;
-    setter?.call(input, String(targetValue));
-    input.dispatchEvent(new Event('input', { bubbles: true }));
-    input.dispatchEvent(new Event('change', { bubbles: true }));
-  }, value);
+  const range = await locator.evaluate((element) => {
+    const min = Number(element.getAttribute('aria-valuemin') ?? 0);
+    const max = Number(element.getAttribute('aria-valuemax') ?? 100);
+    return { min, max };
+  });
+  const box = await locator.boundingBox();
+  if (!box) {
+    throw new Error('Slider has no bounding box');
+  }
+
+  const ratio = range.max === range.min ? 0 : (value - range.min) / (range.max - range.min);
+  const x = box.x + Math.max(1, Math.min(box.width - 1, box.width * Math.max(0, Math.min(1, ratio))));
+  await page.mouse.click(x, box.y + box.height / 2);
+}
+
+async function setDualRfGain(page: Page, locator: Locator, value: number): Promise<void> {
+  await locator.scrollIntoViewIfNeeded();
+  const box = await locator.boundingBox();
+  if (!box) {
+    throw new Error('RF/SQL slider has no bounding box');
+  }
+
+  const leftEdge = 0.5 - 0.04;
+  const ratio = leftEdge * (Math.max(0, Math.min(255, value)) / 255);
+  const x = box.x + Math.max(1, Math.min(box.width - 1, box.width * ratio));
+  await page.mouse.click(x, box.y + box.height / 2);
 }
 
 async function takeFailureScreenshot(page: Page, panel: string, control: string): Promise<string> {
@@ -541,19 +624,9 @@ async function takeFailureScreenshot(page: Page, panel: string, control: string)
 
 function panelByHeader(page: Page, header: string): Locator {
   return page
-    .locator('.panel, .filter-panel')
+    .locator('.collapsible-panel')
     .filter({ has: page.locator('.panel-header', { hasText: header }) })
     .first();
-}
-
-function rfControlRow(page: Page, label: string): Locator {
-  const panel = panelByHeader(page, 'RF FRONT END');
-  return panel.locator('.control-row').filter({ has: panel.locator('.control-label', { hasText: label }) }).first();
-}
-
-function dspSection(page: Page, label: string): Locator {
-  const panel = panelByHeader(page, 'DSP');
-  return panel.locator('.section').filter({ has: panel.locator('.section-label', { hasText: label }) }).first();
 }
 
 function bandCode(capabilities: Capabilities, bandName: string): number | undefined {
@@ -575,12 +648,12 @@ async function buildAuditCases(capabilities: Capabilities): Promise<AuditCase[]>
       control: 'RF Gain',
       action: 'set 200',
       expected: 'set_rf_gain { level: 200, receiver: 0 }',
-      locate: (page) => panelByHeader(page, 'RF FRONT END').getByRole('slider', { name: 'RF Gain' }),
-      act: async (_page, locator) => setRangeValue(locator, 200),
+      locate: (page) => panelByHeader(page, 'RF FRONT END').getByRole('slider', { name: /RF gain and squelch/ }),
+      act: async (page, locator) => setDualRfGain(page, locator, 200),
       verify: (_ctx, commands) =>
         verifySingleCommand(commands, {
           name: 'set_rf_gain',
-          approx: { level: { expected: 200 } },
+          approx: { level: { expected: 200, tolerance: 1 } },
           params: { receiver: 0 },
         }),
       cleanup: async (ctx) => {
@@ -594,7 +667,7 @@ async function buildAuditCases(capabilities: Capabilities): Promise<AuditCase[]>
       control: 'ATT',
       action: 'click 6dB',
       expected: 'set_attenuator { db: 6, receiver: 0 }',
-      locate: (page) => page.getByRole('radio', { name: '6dB', exact: true }),
+      locate: (page) => panelByHeader(page, 'RF FRONT END').getByRole('button', { name: '6dB', exact: true }),
       act: async (_page, locator) => locator.click(),
       verify: (_ctx, commands) =>
         verifySingleCommand(commands, {
@@ -612,7 +685,7 @@ async function buildAuditCases(capabilities: Capabilities): Promise<AuditCase[]>
       control: 'PRE',
       action: 'click P1',
       expected: 'set_preamp { level: 1, receiver: 0 }',
-      locate: (page) => page.getByRole('radio', { name: 'P1', exact: true }),
+      locate: (page) => panelByHeader(page, 'RF FRONT END').getByRole('button', { name: 'P1', exact: true }),
       act: async (_page, locator) => locator.click(),
       verify: (_ctx, commands) =>
         verifySingleCommand(commands, {
@@ -630,8 +703,9 @@ async function buildAuditCases(capabilities: Capabilities): Promise<AuditCase[]>
       control: 'Width',
       action: 'set 1500',
       expected: 'set_filter_width { width: 1500, receiver: 0 }',
-      locate: (page) => page.getByRole('slider', { name: 'Width' }),
-      act: async (_page, locator) => setRangeValue(locator, 1500),
+      prepare: ensureFilterSettingsOpen,
+      locate: (page) => page.getByRole('dialog', { name: /Filter settings/ }).getByRole('slider').first(),
+      act: async (page, locator) => setRangeValue(page, locator, 1500),
       verify: (_ctx, commands) =>
         verifySingleCommand(commands, {
           name: 'set_filter_width',
@@ -651,20 +725,23 @@ async function buildAuditCases(capabilities: Capabilities): Promise<AuditCase[]>
       control: 'IF Shift',
       action: 'set 300',
       expected: 'set_pbt_inner + set_pbt_outer',
-      locate: (page) => page.getByRole('slider', { name: 'IF Shift' }),
-      act: async (_page, locator) => setRangeValue(locator, 300),
-      verify: (ctx, commands) => {
-        const expected = mapIfShiftToPbt(300, ctx.originalState.main.pbtInner, ctx.originalState.main.pbtOuter);
+      locate: (page) => panelByHeader(page, 'FILTER').getByRole('slider', { name: 'PBT Inner' }),
+      act: async (page) => {
+        await setRangeValue(page, panelByHeader(page, 'FILTER').getByRole('slider', { name: 'PBT Inner' }), 300);
+        await setRangeValue(page, panelByHeader(page, 'FILTER').getByRole('slider', { name: 'PBT Outer' }), 300);
+      },
+      verify: (_ctx, commands) => {
+        const expectedRaw = pbtHzToRaw(300);
         return verifyAllCommands(commands, [
           {
             name: 'set_pbt_inner',
             params: { receiver: 0 },
-            approx: { value: { expected: expected.pbtInner } },
+            approx: { value: { expected: expectedRaw, tolerance: 1 } },
           },
           {
             name: 'set_pbt_outer',
             params: { receiver: 0 },
-            approx: { value: { expected: expected.pbtOuter } },
+            approx: { value: { expected: expectedRaw, tolerance: 1 } },
           },
         ]);
       },
@@ -680,7 +757,7 @@ async function buildAuditCases(capabilities: Capabilities): Promise<AuditCase[]>
       control: 'Mode',
       action: 'click FAST',
       expected: 'set_agc { mode: 1, receiver: 0 }',
-      locate: (page) => panelByHeader(page, 'AGC').getByRole('radio', { name: 'FAST' }),
+      locate: (page) => panelByHeader(page, 'AGC').getByRole('button', { name: 'FAST' }),
       act: async (_page, locator) => locator.click(),
       verify: (_ctx, commands) =>
         verifySingleCommand(commands, {
@@ -696,15 +773,16 @@ async function buildAuditCases(capabilities: Capabilities): Promise<AuditCase[]>
     {
       panel: 'AGC',
       control: 'Decay',
-      action: 'set 100',
-      expected: 'set_agc_time_constant { value: 100, receiver: 0 }',
-      locate: (page) => panelByHeader(page, 'AGC').getByRole('slider', { name: 'Decay' }),
-      act: async (_page, locator) => setRangeValue(locator, 100),
+      action: 'set 5',
+      expected: 'set_agc_time_constant { value: 5, receiver: 0 }',
+      prepare: (ctx) => ensureDspSettingsOpen(ctx, /^AGC-T/, 'AGC time settings'),
+      locate: (page) => page.getByRole('dialog', { name: 'AGC time settings' }).getByRole('slider', { name: 'AGC Time' }),
+      act: async (page, locator) => setRangeValue(page, locator, 5),
       verify: (_ctx, commands) =>
         verifySingleCommand(commands, {
           name: 'set_agc_time_constant',
           params: { receiver: 0 },
-          approx: { value: { expected: 100 } },
+          approx: { value: { expected: 5 } },
         }),
       cleanup: async (ctx) => {
         await sendRestoreCommands(ctx.page, ctx.request, [
@@ -717,7 +795,7 @@ async function buildAuditCases(capabilities: Capabilities): Promise<AuditCase[]>
       control: 'RIT',
       action: 'toggle',
       expected: `set_rit_status { on: ${String(true)} }`,
-      locate: (page) => panelByHeader(page, 'RIT / XIT').getByRole('button', { name: 'RIT' }),
+      locate: (page) => panelByHeader(page, 'RIT / XIT').getByRole('button', { name: 'RIT', exact: true }),
       act: async (_page, locator) => locator.click(),
       verify: (ctx, commands) =>
         verifySingleCommand(commands, {
@@ -735,7 +813,7 @@ async function buildAuditCases(capabilities: Capabilities): Promise<AuditCase[]>
       control: 'XIT',
       action: 'toggle',
       expected: `set_rit_tx_status { on: ${String(true)} }`,
-      locate: (page) => panelByHeader(page, 'RIT / XIT').getByRole('button', { name: 'XIT' }),
+      locate: (page) => panelByHeader(page, 'RIT / XIT').getByRole('button', { name: 'XIT', exact: true }),
       act: async (_page, locator) => locator.click(),
       verify: (ctx, commands) =>
         verifySingleCommand(commands, {
@@ -810,7 +888,7 @@ async function buildAuditCases(capabilities: Capabilities): Promise<AuditCase[]>
       expected: expected20mCode !== undefined
         ? `set_band { band: ${expected20mCode} }`
         : 'set_band { band: <number> }',
-      locate: (page) => page.locator('[data-band="20m"]').first(),
+      locate: (page) => panelByHeader(page, 'BAND').getByRole('button', { name: '20m', exact: true }),
       act: async (_page, locator) => locator.click(),
       verify: (_ctx, commands) =>
         verifySingleCommand(
@@ -835,7 +913,7 @@ async function buildAuditCases(capabilities: Capabilities): Promise<AuditCase[]>
       action: 'set 150',
       expected: 'set_af_level { level: 150, receiver: 0 }',
       locate: (page) => panelByHeader(page, 'RX AUDIO').getByRole('slider', { name: 'AF Level' }),
-      act: async (_page, locator) => setRangeValue(locator, 150),
+      act: async (page, locator) => setRangeValue(page, locator, 150),
       verify: (_ctx, commands) =>
         verifySingleCommand(commands, {
           name: 'set_af_level',
@@ -851,14 +929,14 @@ async function buildAuditCases(capabilities: Capabilities): Promise<AuditCase[]>
     {
       panel: 'DSP',
       control: 'NR',
-      action: 'click NR1',
+      action: 'toggle',
       expected: 'set_nr { on: true, receiver: 0 }',
-      locate: (page) => page.getByRole('radio', { name: 'NR1', exact: true }),
+      locate: (page) => panelByHeader(page, 'DSP').getByRole('button', { name: /^NR(?:\s+\d+)?$/ }),
       act: async (_page, locator) => locator.click(),
-      verify: (_ctx, commands) =>
+      verify: (ctx, commands) =>
         verifySingleCommand(commands, {
           name: 'set_nr',
-          params: { on: true, receiver: 0 },
+          params: { on: !ctx.originalState.main.nr, receiver: 0 },
         }),
       cleanup: async (ctx) => {
         await sendRestoreCommands(ctx.page, ctx.request, [
@@ -871,8 +949,9 @@ async function buildAuditCases(capabilities: Capabilities): Promise<AuditCase[]>
       control: 'NR Level',
       action: 'set 5',
       expected: 'set_nr_level { level: 5, receiver: 0 }',
-      locate: (page) => panelByHeader(page, 'DSP').getByRole('slider', { name: 'NR Level' }),
-      act: async (_page, locator) => setRangeValue(locator, 5),
+      prepare: (ctx) => ensureDspSettingsOpen(ctx, /^NR(?:\s+\d+)?$/, 'Noise reduction settings'),
+      locate: (page) => page.getByRole('dialog', { name: 'Noise reduction settings' }).getByRole('slider', { name: 'NR Level' }),
+      act: async (page, locator) => setRangeValue(page, locator, 5),
       verify: (_ctx, commands) =>
         verifySingleCommand(commands, {
           name: 'set_nr_level',
@@ -890,7 +969,7 @@ async function buildAuditCases(capabilities: Capabilities): Promise<AuditCase[]>
       control: 'NB',
       action: 'toggle',
       expected: `set_nb { on: ${String(true)}, receiver: 0 }`,
-      locate: (page) => page.getByRole('button', { name: /^(ON|OFF)$/ }).first(),
+      locate: (page) => panelByHeader(page, 'DSP').getByRole('button', { name: /^NB(?:\s+\d+)?$/ }),
       act: async (_page, locator) => locator.click(),
       verify: (ctx, commands) =>
         verifySingleCommand(commands, {
@@ -908,8 +987,9 @@ async function buildAuditCases(capabilities: Capabilities): Promise<AuditCase[]>
       control: 'NB Level',
       action: 'set 5',
       expected: 'set_nb_level { level: 5, receiver: 0 }',
-      locate: (page) => panelByHeader(page, 'DSP').getByRole('slider', { name: 'NB Level' }),
-      act: async (_page, locator) => setRangeValue(locator, 5),
+      prepare: (ctx) => ensureDspSettingsOpen(ctx, /^NB(?:\s+\d+)?$/, 'Noise blanker settings'),
+      locate: (page) => page.getByRole('dialog', { name: 'Noise blanker settings' }).getByRole('slider', { name: 'NB Level' }),
+      act: async (page, locator) => setRangeValue(page, locator, 5),
       verify: (_ctx, commands) =>
         verifySingleCommand(commands, {
           name: 'set_nb_level',
@@ -925,9 +1005,9 @@ async function buildAuditCases(capabilities: Capabilities): Promise<AuditCase[]>
     {
       panel: 'DSP',
       control: 'Notch',
-      action: 'click AUTO',
+      action: 'click A-NOTCH',
       expected: 'set_auto_notch { on: true, receiver: 0 }',
-      locate: (page) => page.getByRole('radio', { name: 'AUTO', exact: true }),
+      locate: (page) => panelByHeader(page, 'DSP').getByRole('button', { name: 'A-NOTCH' }),
       act: async (_page, locator) => locator.click(),
       verify: (_ctx, commands) =>
         verifySingleCommand(commands, {
@@ -961,7 +1041,7 @@ async function buildAuditCases(capabilities: Capabilities): Promise<AuditCase[]>
         actual: 'control missing from DOM',
         details: 'CW Pitch did not render after switching MAIN to CW mode with a direct set_mode command.',
       }),
-      act: async (_page, locator) => setRangeValue(locator, 700),
+      act: async (page, locator) => setRangeValue(page, locator, 700),
       verify: (_ctx, commands) =>
         verifySingleCommand(commands, {
           name: 'set_cw_pitch',
@@ -979,8 +1059,9 @@ async function buildAuditCases(capabilities: Capabilities): Promise<AuditCase[]>
       control: 'Mic Gain',
       action: 'set 100',
       expected: 'set_mic_gain { level: 100 }',
-      locate: (page) => panelByHeader(page, 'TX').getByRole('slider', { name: 'Mic Gain' }),
-      act: async (_page, locator) => setRangeValue(locator, 100),
+      prepare: ensureTxSettingsOpen,
+      locate: (page) => page.getByRole('dialog', { name: 'TX level settings' }).getByRole('slider', { name: 'Mic Gain' }),
+      act: async (page, locator) => setRangeValue(page, locator, 100),
       verify: (_ctx, commands) =>
         verifySingleCommand(commands, {
           name: 'set_mic_gain',
@@ -1015,7 +1096,7 @@ async function buildAuditCases(capabilities: Capabilities): Promise<AuditCase[]>
       control: 'COMP',
       action: 'toggle',
       expected: 'set_compressor { on: true/false }',
-      locate: (page) => panelByHeader(page, 'TX').getByRole('button', { name: 'COMP' }),
+      locate: (page) => panelByHeader(page, 'TX').getByRole('button', { name: /^COMP(?:\s+\d+%)?$/ }),
       act: async (_page, locator) => locator.click(),
       verify: (ctx, commands) =>
         verifySingleCommand(commands, {
@@ -1040,7 +1121,7 @@ async function buildAuditCases(capabilities: Capabilities): Promise<AuditCase[]>
         actual: 'control missing from DOM',
         details: 'Comp Level slider did not render after enabling COMP.',
       }),
-      act: async (_page, locator) => setRangeValue(locator, 5),
+      act: async (page, locator) => setRangeValue(page, locator, 5),
       verify: (_ctx, commands) =>
         verifySingleCommand(commands, {
           name: 'set_compressor_level',
@@ -1058,7 +1139,7 @@ async function buildAuditCases(capabilities: Capabilities): Promise<AuditCase[]>
       control: 'MON',
       action: 'toggle',
       expected: 'set_monitor { on: true/false }',
-      locate: (page) => panelByHeader(page, 'TX').getByRole('button', { name: 'MON' }),
+      locate: (page) => panelByHeader(page, 'TX').getByRole('button', { name: /^MON(?:\s+\d+%)?$/ }),
       act: async (_page, locator) => locator.click(),
       verify: (ctx, commands) =>
         verifySingleCommand(commands, {
@@ -1083,7 +1164,7 @@ async function buildAuditCases(capabilities: Capabilities): Promise<AuditCase[]>
         actual: 'control missing from DOM',
         details: 'Mon Level slider did not render after enabling MON.',
       }),
-      act: async (_page, locator) => setRangeValue(locator, 100),
+      act: async (page, locator) => setRangeValue(page, locator, 100),
       verify: (_ctx, commands) =>
         verifySingleCommand(commands, {
           name: 'set_monitor_gain',
@@ -1331,6 +1412,7 @@ test('v2 interactive audit against the live backend', async ({ page, request }) 
             await auditCase.cleanup(ctx);
           }
         } finally {
+          await closeOpenModal(page);
           if (auditCase.ensureMain !== false) {
             await restoreOriginalActiveReceiver(ctx);
           }
