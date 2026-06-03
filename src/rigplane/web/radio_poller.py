@@ -2144,7 +2144,8 @@ class RadioPoller:
         deadlines = [request.deadline_monotonic]
         if request.timeout is not None:
             deadlines.append(sent_at + request.timeout)
-        return now >= min(deadlines)
+        deadline: float = min(deadlines)
+        return now >= deadline
 
     async def _send_scheduler_requests(self) -> None:
         scheduler = self._acquisition_scheduler

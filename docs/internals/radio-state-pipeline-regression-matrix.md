@@ -1,67 +1,78 @@
 # Radio State Pipeline Regression Matrix
 
-Status: MOR-336 shared test foundation
-Date: 2026-06-02
+Status: MOR-348 risk-to-coverage index
+Date: 2026-06-03
 
-This matrix maps the original state-pipeline symptoms from
-`docs/superpowers/specs/2026-06-02-radio-state-pipeline-design.md` to reusable
-future tests. CI cases must run without physical radios and should use
-`tests/support/state_pipeline.py`. Hardware validation cases are listed
-separately and require explicit opt-in.
+This matrix maps the original state-pipeline risks from
+`docs/superpowers/specs/2026-06-02-radio-state-pipeline-design.md` to current
+coverage. It is an index, not the release checklist. Run final gate commands
+from `docs/internals/radio-state-pipeline-validation.md`.
 
-## Harness Coverage
+CI coverage must remain hardware-free. Hardware validation remains separate and
+requires explicit opt-in.
 
-The shared harness provides:
+## Coverage Primitives
 
-- `FakeClock` for deterministic monotonic time, freshness deadlines, pending
-  overlay expiry, and acquisition scheduling.
-- `FieldPath`, `Observation`, `ChangeSet`, and `FreshnessTransition` test
-  contracts for model-facing state pipeline assertions.
-- `FakeStatePipeline` with `state_revision`, `freshness_revision`, and
-  `observation_seq` counters.
-- Fake backends for CI-V push, command responses, dropped unsolicited events,
-  polling-only backends, Yaesu-like polling, and external rigctld-client
-  responses.
-- `FakeAcquisitionScheduler` for ensure-fresh scheduling assertions.
-- `FakePendingOverlayStore` for scoped read-after-write overlay tests.
-- Assertion helpers for revision counters and consumer-visible deltas.
+- `rigplane.core.state_pipeline_contracts`: `FieldPath`, `Observation`,
+  `ChangeSet`, freshness transitions, command intent/lifecycle contracts, and
+  capability metadata.
+- `rigplane.core.state_store.StateStore`: canonical state/freshness revisions,
+  observation sequence, immutable snapshots/deltas, and stale-field repair
+  hints.
+- `rigplane.core.acquisition_scheduler`: backend-neutral ensure-fresh requests,
+  dedupe/priority/cadence policy, external CAT pause handling, and meter
+  coalescing.
+- Web delivery: HTTP and WebSocket state projections from `StateStore`, legacy
+  `revision` aliasing `stateRevision`, and additive `transportSeq`.
+- Runtime/rigctld adapters: CI-V observation projection, poller command
+  readback, rigctld GET projection, and scoped pending overlays.
 
-## CI Regression Matrix
+## Risk-To-Coverage Matrix
 
-| Area | Original symptom or risk | Future CI tests | Harness primitives |
+| Area | Original symptom or risk | Current coverage | Remaining release gate |
 |---|---|---|---|
-| Meters | S-meter/meter samples mutate state but wait for unrelated revision bumps before Web sees them. | Meter observations advance `observation_seq`; delivered meter deltas include latest sample and do not require unrelated frequency/mode changes. Add coalescing tests once production store exists. | `FakeCivPushBackend`, `FakeStatePipeline`, `assert_consumer_delta`, `assert_revision_counters` |
-| Frequency latency | Slow serial or request/response radios can show delayed panel tuning updates. | CI-V unsolicited frequency, command-response frequency, and polling-only frequency observations all enter the same apply path; pulse polling can be scheduled after local/external tuning. | `FakeCivPushBackend`, `FakeCommandResponseBackend`, `FakePollingOnlyBackend`, `FakeYaesuLikeBackend`, `FakeAcquisitionScheduler`, `FakeClock` |
-| Stale fields | A missed or malformed unsolicited frame leaves consumers believing old state is authoritative. | Freshness deadline marks the field stale without changing `stateRevision`; reconciliation poll publishes the corrected value and advances `freshnessRevision` separately. | `FakeDroppedUnsolicitedBackend`, `FakeClock`, `FakeStatePipeline` |
-| Snapshots | HTTP snapshots and initial WebSocket state can disagree when they are built from different revision sources. | Snapshot projection uses the same `stateRevision` and `freshnessRevision` as WebSocket initial state; legacy `revision` aliases only `stateRevision`. | `FakeStatePipeline.snapshot()`, revision assertions |
-| WebSocket reconnect | Reconnect/reset logic can confuse canonical state revision with transport sequence. | Reconnected WebSocket full state preserves canonical `stateRevision`/`freshnessRevision`; `transportSeq` reset does not look like a state rollback. | `FakeStatePipeline`, consumer delta assertions |
-| rigctld GET | rigctld GET can read stale local cache instead of shared confirmed state. | GET frequency/mode reads fresh shared state; stale critical fields request acquisition or report unavailable instead of trusting expired values. | `FakeStatePipeline`, `FakeAcquisitionScheduler`, `FakeExternalRigctldClientBackend` |
-| rigctld SET | SET read-after-write behavior currently depends on local pending/cache state. | SET creates a scoped pending overlay, confirms only on matching observation, and expires without mutating confirmed state. | `FakePendingOverlayStore`, `FakeCommandResponseBackend`, `FakeExternalRigctldClientBackend`, `FakeClock` |
-| Pending overlays | Optimistic values can leak between Web, HTTP, rigctld sessions, or command IDs. | Pending overlays are scoped by source, session, command id, field path, and expiry; confirmation clears matching overlays only. | `FakePendingOverlayStore` |
-| Dropped unsolicited events | Push-capable backends can still lose an event, so revision alone is not proof of physical state. | Dropped push sample does not mutate state or increment `observation_seq`; stale transition plus poll response reconciles the value. | `FakeDroppedUnsolicitedBackend`, `FakeStatePipeline`, `FakeClock` |
-| Adaptive acquisition | Background polling can delay user commands or flood slow links. | ensure-fresh requests are deduped by path family, scheduled with fake time, and prioritized separately from background telemetry. | `FakeAcquisitionScheduler`, `FakeClock`, backend capability flags |
-| Command responses | Command acknowledgements can be mistaken for confirmed radio state, or confirmed responses can bypass state revisions. | Command lifecycle remains separate; only response observations mutate confirmed state and produce deltas. | `FakeCommandResponseBackend`, `correlation_id`, revision assertions |
-| External rigctld client | Hamlib-backed responses need to behave like observations, not a separate cache. | External rigctld-client poll responses publish `hamlib_response` observations into the same pipeline and preserve Hamlib error/read-only tests elsewhere. | `FakeExternalRigctldClientBackend`, `FakeStatePipeline` |
+| StateStore invariants | Consumers could not distinguish semantic changes, freshness changes, and observation traffic. | `tests/test_state_store.py::test_noop_observations_do_not_advance_state_revision`, `test_freshness_expiration_advances_freshness_without_state_change`, `test_full_snapshot_and_delta_projection_agree_after_observation_sequence`, `test_snapshot_output_cannot_mutate_store_owned_state`, `test_returned_changes_cannot_mutate_delta_history`, `test_direct_writer_api_is_not_exposed`; `tests/test_state_pipeline_contracts.py::test_observation_and_changeset_serialization_round_trip`. | Focused state pipeline batch plus full pytest gate. |
+| Meters | S-meter/meter samples mutated state but waited for unrelated revision bumps before Web saw them. | `tests/test_state_store.py::test_meter_delta_is_visible_without_unrelated_follow_up_revision`; `tests/test_state_pipeline_diagnostics.py::test_civ_meter_write_records_diagnostic_without_notify_or_revision`, `test_web_meter_write_delivers_state_store_revision_without_unrelated_trigger`; `tests/test_web_server_coverage.py::test_state_store_s_meter_change_broadcasts_without_legacy_revision_event`, `test_meter_only_state_store_change_emits_web_delta_without_legacy_revision`; `tests/test_civ_rx_coverage.py::test_meter_coalescing_applies_latest_due_sample_and_records_diagnostics`, `test_same_value_coalesced_meter_flush_completes_scheduler_request`; `tests/test_radio_poller_coverage.py::test_high_tier_emits_s_meter_on_rx_for_consecutive_cycles`, `test_high_tier_rotates_pwr_swr_alc_on_tx`, `test_low_tier_emits_at_expected_stride_for_lan`. | Live v2 Playwright plus IC-7610 LAN hardware for real cadence. |
+| Frequency latency | Slow serial or request/response radios could show delayed panel tuning updates. | `tests/test_radio_poller_coverage.py::test_set_freq_readback_is_applied_as_state_store_observation`, `test_set_freq_readback_uses_original_command_correlation`, `test_set_freq_readback_reconciles_only_matching_websocket_session_for_reused_command_id`, `test_scheduler_polling_does_not_starve_user_command_queue`; `tests/test_rigctld_handler.py::test_get_freq_projects_state_store_snapshot`, `test_get_freq_ensure_fresh_requests_bounded_projection`, `test_get_freq_stale_store_value_falls_through_to_radio_readback`, `test_set_freq_enters_command_service_and_applies_observation`. | Fake live Web v2 and X6200 serial hardware latency notes. |
+| Stale fields | A missed or malformed unsolicited frame could leave old state looking authoritative. | `tests/test_state_store.py::test_dropped_event_marks_stale_and_requests_reconciliation`, `test_freshness_service_marks_stale_and_queues_reconciliation_without_web`, `test_observation_refreshes_stale_field_without_semantic_state_change`; `tests/test_acquisition_scheduler.py::test_stale_unsolicited_field_queues_reconciliation_and_accepts_readback`, `test_model_service_queues_when_field_observation_max_age_expired_without_mark_stale`; `tests/test_civ_rx_coverage.py::test_same_value_stale_refresh_notifies_state_store_changed`; `tests/test_rigctld_handler.py::test_get_freq_headless_freshness_service_stale_value_queues_reconciliation`. | Hardware missed-event recovery when available. |
+| Snapshots | HTTP snapshots and initial WebSocket state could disagree when built from different revision sources. | `tests/test_web_server_coverage.py::test_http_snapshot_matches_initial_ws_full_state_for_same_store_revision`, `test_initial_full_state_envelope_revisions_match_ingested_legacy_state`, `test_http_and_ws_full_state_share_post_sync_legacy_snapshot`, `test_state_response_includes_revision_and_updated_at`; `tests/test_delta_encoder.py::TestDeltaEncoder::test_transport_sequence_is_split_from_canonical_state_revision`. | Live v2 Playwright. |
+| WebSocket reconnect | Reconnect/reset logic could confuse canonical state revision with transport sequence. | `tests/test_delta_encoder.py::TestDeltaEncoder::test_transport_sequence_is_split_from_canonical_state_revision`; `tests/test_web_server_coverage.py::test_initial_full_state_envelope_does_not_consume_broadcast_delta`, `test_on_radio_reconnect_enables_scope_without_waiting_for_broadcast`; `tests/test_websocket_coverage.py::test_keepalive_loop_sends_ping`, `test_close_idempotent`, frame parsing/close-path tests. | Live v2 Playwright reconnect observation; hardware optional. |
+| Web delivery cleanup | MOR-347 removed Web poller-owned public revision; regression could reintroduce poller revisions or legacy sync in delivery. | `tests/test_state_pipeline_contracts.py::test_web_poller_no_longer_exposes_public_revision_delivery_api`, `test_web_server_state_change_callback_does_not_bump_poller_revision`, `test_web_delivery_methods_snapshot_only`, `test_legacy_state_sync_is_not_called_from_web_server_delivery`; `docs/internals/legacy-state-writer-inventory.md`. | Full pytest and review of changed Web files. |
+| rigctld GET | rigctld GET could read stale local cache instead of shared confirmed state. | `tests/test_rigctld_handler.py::test_get_freq_projects_state_store_snapshot`, `test_get_mode_projects_state_store_snapshot`, `test_get_ptt_projects_state_store_snapshot`, `test_get_vfo_projects_state_store_active_slot`, `test_get_level_strength_projects_state_store_snapshot`, `test_get_level_af_projects_state_store_snapshot`, `test_get_func_projects_state_store_snapshot`, dual-RX state-store projection tests near `test_dual_rx_get_freq_vfob_projects_state_store_receiver_1` and `test_dual_rx_get_mode_vfob_projects_state_store_receiver_1`. | External rigctld/Hamlib hardware or fake integration when claiming provider readiness. |
+| rigctld SET / read-after-write | SET behavior could depend on unscoped pending/cache state. | `tests/test_rigctld_handler.py::test_get_freq_keeps_optimistic_value_until_radio_state_catches_up`, `test_get_mode_read_after_write_uses_pending_overlays_until_reconciled`, `test_get_mode_pending_overlays_are_scoped_to_rigctld_session`, `test_get_ptt_keeps_optimistic_state_until_radio_state_catches_up`, `test_set_freq_enters_command_service_and_applies_observation`; `tests/test_radio_poller_coverage.py::test_queued_command_failure_emits_failed_lifecycle_and_expires_overlay`, `test_queued_core_timeout_emits_timed_out_lifecycle_and_expires_overlay`. | rigctld semi-integration plus Hamlib/provider hardware when in scope. |
+| Pending overlays | Optimistic values could leak between Web, HTTP, rigctld sessions, or reused command IDs. | `tests/test_web_server_coverage.py::test_websocket_reused_command_ids_are_scoped_per_connection`, `test_http_command_batch_timeout_marks_command_timed_out_and_expires_overlay`; `tests/test_radio_poller_coverage.py::test_set_freq_readback_reconciles_only_matching_websocket_session_for_reused_command_id`, `test_mark_queued_command_failed_scopes_reused_command_ids_by_source`, `test_mark_queued_command_failed_scopes_reused_command_ids_by_session`; `tests/test_rigctld_handler.py::test_get_mode_pending_overlays_are_scoped_to_rigctld_session`. | Live v2 command audit. |
+| Dropped unsolicited events | Push-capable backends can lose an event, so revision alone is not proof of physical state. | `tests/test_state_store.py::test_dropped_event_marks_stale_and_requests_reconciliation`; `tests/test_acquisition_scheduler.py::test_stale_unsolicited_field_queues_reconciliation_and_accepts_readback`; `tests/test_civ_rx_coverage.py::test_scheduler_active_freq_mode_request_completes_from_civ_rx_loop`, `test_update_state_cache_records_scheduler_result_for_matching_pending_request`. | Hardware missed-event recovery when available. |
+| Adaptive acquisition | Background polling could delay commands or flood slow links. | `tests/test_acquisition_scheduler.py::test_duplicate_requests_coalesce_with_highest_priority_and_urgent_deadline`, `test_same_family_requests_share_one_acquisition_request`, `test_user_facing_requests_preempt_background_telemetry`, `test_due_polling_emits_only_pollable_cadence_fields_and_groups_by_existing_key`, `test_due_polling_does_not_reemit_pending_cadence_request`, `test_unchanged_acquisition_result_decays_cadence_exponentially_and_caps`, `test_semantic_change_resets_adaptive_cadence_to_base_policy`, `test_diagnostics_include_cadence_next_due_pending_pressure_and_counts`; `tests/test_radio_poller_coverage.py::test_scheduler_due_request_sends_supported_civ_query_once`, `test_scheduler_polling_does_not_starve_user_command_queue`. | X6200/Yaesu hardware or simulator notes for slow-link cadence. |
+| Command responses | Command acknowledgements could be mistaken for confirmed state, or confirmed responses could bypass state revisions. | `tests/test_state_pipeline_contracts.py::test_command_intent_and_lifecycle_event_serialization_round_trip`; `tests/test_radio_poller_coverage.py::test_command_queue_entries_preserve_command_correlation_metadata`, `test_set_freq_readback_is_applied_as_state_store_observation`, `test_observable_queue_commands_apply_state_store_observations`, `test_compatibility_mirror_commands_reconcile_from_state_store_observation`, `test_select_vfo_readback_uses_original_command_correlation`; `tests/test_civ_rx_coverage.py::test_update_state_cache_applies_command_response_observation_once`. | Live v2 command audit and full pytest. |
+| Mode/buttons | Mode, VFO, split, PTT, and button-like controls could diverge between legacy state and shared state. | `tests/test_rigctld_handler.py::test_get_mode_projects_state_store_snapshot`, `test_get_split_vfo_reads_state_store_split_and_protocol_local_tx_vfo`, `test_set_mode_uses_core_contract_string_values`; `tests/test_radio_poller_coverage.py::test_execute_quick_dw_trigger_equalizes_then_enables_dw`, `test_execute_quick_split_trigger_equalizes_then_enables_split`, `test_select_vfo_readback_uses_original_command_correlation`; `tests/test_bsr_band_switching.py::TestSetBandBSRRecall::test_bsr_recall_updates_state`, `test_bsr_recall_emits_events`. | Live v2 Playwright. |
+| Encoder-style controls | Knob/encoder controls could overwrite wrong receiver/global paths or bypass command correlation. | `tests/test_civ_rx_coverage.py::test_update_radio_state_cmd14_receiver_dsp_levels`, `test_update_radio_state_cmd14_global_dsp_levels`, `test_update_radio_state_operator_toggle_family`, `test_update_state_cache_uses_slot_specific_observation_path_when_override_active`; `tests/test_radio_poller_coverage.py::test_execute_receiver_routed_set_commands_use_backend_receiver_and_target_state`, `test_execute_set_filter_width_dispatches_to_radio_protocol`, `test_execute_set_scope_edge_updates_state`, `test_execute_set_scope_vbw_updates_state`, `test_execute_set_scope_rbw_updates_state`. | Live v2 Playwright and hardware operator notes. |
+| External rigctld client / Hamlib | Hamlib-backed responses must behave like observations, not a separate cache; direct `libhamlib` remains out of Core. | `tests/test_rigctld_handler.py` state-store projection/read-after-write coverage; `tests/test_rigctld_server.py::TestSemiIntegrationSerialMockRadio::test_get_and_set_frequency_flows_through_core`, `test_get_and_set_mode_flows_through_core`; `tests/integration/test_rigctld_wsjtx.py` when integration tests are explicitly run. Boundary decision documented in `docs/internals/hamlib-provider-rollout.md`. | External `rigctld` hardware/provider checklist before Hamlib readiness claim. |
+| Cleanup guards | Waiters, watchdogs, stale backlog, and lifecycle servers could leak or deliver stale data after migration. | `tests/test_civ_rx_coverage.py::test_cleanup_stale_civ_waiters_logs_cleaned_count`, `test_civ_rx_loop_sheds_stale_scope_backlog_but_keeps_control_packets`, watchdog stop/reconnect tests; `tests/test_lifecycle_diagnostics.py` WebServer/SerialMockRadio lifecycle diagnostics; `tests/test_state_pipeline_contracts.py` static cleanup guards. | Full pytest; manual check that fake live server is stopped after Playwright. |
+| Frontend v2 and i18n | Frontend could consume stale revisions, private live URLs, or regress localization/UI smoke. | `tests/test_frontend_e2e_config.py::test_frontend_e2e_does_not_default_to_private_live_backend`; `frontend/src/lib/i18n/__tests__/*`; `frontend/tests/e2e/i18n/i18n-visual.spec.ts`; live `frontend/tests/e2e/v2-ui-interactive.impl.ts` via `RIGPLANE_V2_URL`. | `npm run build`, `npm run check`, `npx vitest run`, `npm run test:e2e:i18n`, live v2 Playwright. |
 
 ## Hardware Validation Matrix
 
-Hardware validation must remain separate from CI and use explicit opt-in
-markers such as `integration`, `hardware`, or `validation_hardware`.
+Hardware cases are outside CI. Mark each run as `blocker-pass`,
+`blocker-fail`, `waived`, or `informational`.
 
-| Hardware case | Purpose | Expected marker |
+| Hardware case | Purpose | Release status |
 |---|---|---|
-| IC-7610 LAN CI-V unsolicited meter/frequency burst | Compare real CI-V ingress rate with state revision and Web delivery rate. | `hardware` or `validation_hardware` |
-| IC-7610 LAN missed-event recovery | Drop or ignore one captured unsolicited frame and verify reconciliation read corrects shared state. | `validation_hardware` |
-| X6200 serial panel tuning latency | Measure bounded frequency update latency after external VFO tuning with and without unsolicited frames. | `integration` plus hardware opt-in |
-| Yaesu CAT polling profile | Verify request/response polling updates shared state without model-specific state delivery branches. | `integration` plus hardware opt-in |
-| External Hamlib rigctld client | Verify real `rigctld` GET/SET responses publish observations and preserve read-after-write behavior. | `integration` or `validation_hardware` |
-| WebSocket reconnect against live radio | Verify reconnect full-state envelope preserves canonical state/freshness revisions while transport sequence resets. | `integration` plus hardware opt-in |
+| IC-7610 LAN CI-V unsolicited meter/frequency burst | Compare real CI-V ingress rate with state revision and Web delivery rate. | Blocker for IC-7610 LAN release readiness unless explicitly waived. |
+| IC-7610 LAN missed-event recovery | Drop or ignore one captured unsolicited frame and verify reconciliation read corrects shared state. | Blocker when claiming missed-event repair on IC-7610 hardware. |
+| X6200 serial panel tuning latency | Measure bounded frequency update latency after external VFO tuning with and without unsolicited frames. | Blocker for serial-readiness claim; informational otherwise. |
+| Yaesu CAT polling profile | Verify request/response polling updates shared state without model-specific state delivery branches. | Blocker for backend-neutral polling claim. |
+| External Hamlib `rigctld` client | Verify real `rigctld` GET/SET responses publish observations and preserve read-after-write/read-only behavior. | Blocker for Hamlib-provider readiness claim. |
+| WebSocket reconnect against live radio | Verify reconnect full-state envelope preserves canonical state/freshness revisions while transport sequence resets. | Informational unless reconnect regression appears in fake live or hardware run. |
+| Operator smoothness notes | Capture perceived meter jitter, knob feel, and UI smoothness. | Informational only; convert to blocker only with reproducible failing steps. |
 
-## Current MOR-336 Sample Tests
+## Residual Non-Blocking Compatibility Shims
 
-- `test_meter_updates_do_not_wait_for_unrelated_state_revisions` demonstrates a
-  meter delta independent from unrelated state revisions.
-- `test_stale_field_reconciles_after_missed_unsolicited_event` demonstrates
-  stale-field reconciliation after a missed unsolicited event.
-- `test_backend_variants_and_pending_overlays_are_scoped` demonstrates backend
-  source variants and scoped pending overlays.
+- Legacy Web `revision` remains and aliases `stateRevision`.
+- WebSocket `transportSeq` remains additive ordering metadata and is not a
+  state/freshness revision.
+- `sync_state_store_from_radio_state(...)` remains a one-way compatibility
+  adapter at explicit ingress/startup points only.
+- Mutable `RadioState`, `StateCacheCapable`, and rigctld cache fallback remain
+  for older public/backend compatibility.
+- Hardware latency is measured evidence unless a release explicitly promises a
+  numeric hardware target.

@@ -35,7 +35,7 @@ import time
 import urllib.parse
 from collections.abc import Callable, Coroutine
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any, Literal, Protocol, TextIO, cast
+from typing import TYPE_CHECKING, Any, Literal, Protocol, TextIO
 
 from .. import __version__
 from .._bounded_queue import BoundedQueue
@@ -1241,14 +1241,11 @@ class WebServer:
         encoder = (
             DeltaEncoder(full_state_interval=100) if force_full else self._delta_encoder
         )
-        return cast(
-            dict[str, Any],
-            encoder.encode(
-                body,
-                force_full=force_full,
-                state_revision=snapshot.state_revision,
-                freshness_revision=snapshot.freshness_revision,
-            ),
+        return encoder.encode(
+            body,
+            force_full=force_full,
+            state_revision=snapshot.state_revision,
+            freshness_revision=snapshot.freshness_revision,
         )
 
     def sync_state_store_from_radio_state(
