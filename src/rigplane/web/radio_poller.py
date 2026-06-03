@@ -180,6 +180,7 @@ _FAST_INTERVAL: float = 0.025  # meters — wfview queue interval for LAN (25ms)
 _FAST_INTERVAL_SERIAL: float = 0.100  # serial: 10 polls/sec for responsive meters
 _SLOW_INTERVAL: float = 0.25  # levels/settings — rarely change
 
+
 def _audio_tx_codec_and_rate(radio: Any) -> tuple[AudioCodec | None, int]:
     contract = getattr(radio, "audio_stream_contract", None)
     tx_codec = getattr(contract, "tx_codec", None)

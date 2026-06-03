@@ -232,9 +232,7 @@ class FakeStatePipeline:
             ),
             timestamp_monotonic=observation.timestamp_monotonic,
             sources=(observation.source,),
-            freshness=()
-            if freshness_transition is None
-            else (freshness_transition,),
+            freshness=() if freshness_transition is None else (freshness_transition,),
         )
         self.consumer_deltas.append(changeset)
         return changeset
@@ -383,9 +381,7 @@ class FakePendingOverlayStore:
         ]
         if matched:
             self.overlays = [
-                overlay
-                for overlay in self.overlays
-                if overlay not in matched
+                overlay for overlay in self.overlays if overlay not in matched
             ]
         return matched
 

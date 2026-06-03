@@ -56,7 +56,9 @@ def test_civ_meter_write_records_diagnostic_without_notify_or_revision() -> None
     diagnostics = StateDiagnosticsRecorder(enabled=True)
     host = _FakeCivHost(diagnostics)
     runtime = CivRuntime(host)  # type: ignore[arg-type]
-    frame = CivFrame(to_addr=0xE0, from_addr=0x98, command=0x15, sub=0x02, data=b"\x00\x42")
+    frame = CivFrame(
+        to_addr=0xE0, from_addr=0x98, command=0x15, sub=0x02, data=b"\x00\x42"
+    )
 
     runtime._update_state_cache_from_frame(frame)
 
@@ -67,7 +69,9 @@ def test_civ_meter_write_records_diagnostic_without_notify_or_revision() -> None
     assert diagnostics.events()[0].details["field_family"] == "meters"
 
 
-def test_web_meter_write_delivers_state_store_revision_without_unrelated_trigger() -> None:
+def test_web_meter_write_delivers_state_store_revision_without_unrelated_trigger() -> (
+    None
+):
     server = WebServer(config=WebConfig(state_diagnostics=True))
     queue: BoundedQueue[dict[str, Any]] = BoundedQueue(maxsize=8)
     server.register_control_event_queue(queue)

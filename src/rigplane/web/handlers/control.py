@@ -840,7 +840,9 @@ class ControlHandler:
         msg_out = {"type": "state_update", "data": payload}
         if self._server is not None:
             try:
-                msg_out["data"] = self._server.build_state_update_envelope(force_full=True)
+                msg_out["data"] = self._server.build_state_update_envelope(
+                    force_full=True
+                )
             except Exception as exc:
                 logger.debug("control: state_update envelope build failed: %s", exc)
         await self._ws.send_text(encode_json(msg_out))

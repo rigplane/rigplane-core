@@ -167,7 +167,11 @@ def test_observation_and_changeset_serialization_round_trip() -> None:
 @pytest.mark.parametrize(  # type: ignore[untyped-decorator]
     "payload",
     [
-        {"path": "receiver.main.meters.s_meter", "source": {}, "timestampMonotonic": 1.0},
+        {
+            "path": "receiver.main.meters.s_meter",
+            "source": {},
+            "timestampMonotonic": 1.0,
+        },
         {"path": "receiver.main.meters.s_meter", "previous": 1},
         {"path": "receiver.main.meters.s_meter", "current": 2},
     ],

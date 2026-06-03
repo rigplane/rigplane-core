@@ -574,9 +574,7 @@ class SourceMetadata:
                 else _command_source(value["commandSource"])
             ),
             session_id=(
-                None
-                if value.get("sessionId") is None
-                else str(value["sessionId"])
+                None if value.get("sessionId") is None else str(value["sessionId"])
             ),
         )
 

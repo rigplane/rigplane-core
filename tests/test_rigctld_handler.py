@@ -130,9 +130,7 @@ class _RecordingStateModelService:
                 str(path) if isinstance(path, FieldPath) else path for path in paths
             )
         else:
-            normalized = (
-                str(paths) if isinstance(paths, FieldPath) else paths,
-            )
+            normalized = (str(paths) if isinstance(paths, FieldPath) else paths,)
         self.calls.append(
             {
                 "paths": normalized,
@@ -802,10 +800,13 @@ async def test_get_mode_read_after_write_uses_pending_overlays_until_reconciled(
         correlation_id=overlay_ids["receiver.main.active.freq_mode.data_mode"],
     )
 
-    assert handler._command_service.pending_overlays(  # noqa: SLF001
-        source="rigctld",
-        session_id=None,
-    ) == ()
+    assert (
+        handler._command_service.pending_overlays(  # noqa: SLF001
+            source="rigctld",
+            session_id=None,
+        )
+        == ()
+    )
 
     after = await handler.execute(get_cmd("get_mode"))
     assert after.values == ["PKTUSB", "2400"]

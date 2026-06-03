@@ -86,7 +86,9 @@ class DeltaEncoder:
         """
         # Check if full state refresh is needed
         external_revision = state_revision is not None
-        revision_value = self._revision if state_revision is None else int(state_revision)
+        revision_value = (
+            self._revision if state_revision is None else int(state_revision)
+        )
         freshness_value = 0 if freshness_revision is None else int(freshness_revision)
 
         if (

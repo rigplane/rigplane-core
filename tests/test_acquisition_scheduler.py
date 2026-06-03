@@ -570,8 +570,7 @@ def test_mixed_pollable_and_unsolicited_paths_are_not_emitted_as_one_poll() -> N
     requests = scheduler.pending_requests()
     assert len(requests) == 2
     assert not any(
-        request.acquisition_method == "poll"
-        and set(request.paths) == {freq, ptt}
+        request.acquisition_method == "poll" and set(request.paths) == {freq, ptt}
         for request in requests
     )
     requests_by_path = {request.paths: request for request in requests}
@@ -724,7 +723,9 @@ def test_stale_unsolicited_field_queues_reconciliation_and_accepts_readback() ->
         priority="reconciliation",
         reason="missed-unsolicited",
     )
-    reconciled = store.apply(_observation(freq, 14_076_000, at=clock.now(), max_age=0.5))
+    reconciled = store.apply(
+        _observation(freq, 14_076_000, at=clock.now(), max_age=0.5)
+    )
 
     assert stale.changes == ()
     assert stale.reconciliation_requests[0].path == freq

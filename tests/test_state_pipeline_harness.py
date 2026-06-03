@@ -270,18 +270,24 @@ def test_backend_variants_and_pending_overlays_are_scoped() -> None:
         ttl=1.0,
     )
 
-    assert overlays.visible_value(
-        source="websocket",
-        session_id="web-1",
-        command_id="cmd-web",
-        path=MAIN_FREQ,
-    ) == 14_074_000
-    assert overlays.visible_value(
-        source="rigctld",
-        session_id="rig-1",
-        command_id="cmd-rig",
-        path=MAIN_FREQ,
-    ) == 7_074_000
+    assert (
+        overlays.visible_value(
+            source="websocket",
+            session_id="web-1",
+            command_id="cmd-web",
+            path=MAIN_FREQ,
+        )
+        == 14_074_000
+    )
+    assert (
+        overlays.visible_value(
+            source="rigctld",
+            session_id="rig-1",
+            command_id="cmd-rig",
+            path=MAIN_FREQ,
+        )
+        == 7_074_000
+    )
     assert overlays.confirm(
         source="rigctld",
         session_id="rig-1",
@@ -289,26 +295,35 @@ def test_backend_variants_and_pending_overlays_are_scoped() -> None:
         path=MAIN_FREQ,
         value=7_074_000,
     ) == [rigctld]
-    assert overlays.visible_value(
-        source="websocket",
-        session_id="web-1",
-        command_id="cmd-web",
-        path=MAIN_FREQ,
-    ) == 14_074_000
-    assert overlays.visible_value(
-        source="rigctld",
-        session_id="rig-1",
-        command_id="cmd-rig-later",
-        path=MAIN_FREQ,
-    ) == 7_074_000
+    assert (
+        overlays.visible_value(
+            source="websocket",
+            session_id="web-1",
+            command_id="cmd-web",
+            path=MAIN_FREQ,
+        )
+        == 14_074_000
+    )
+    assert (
+        overlays.visible_value(
+            source="rigctld",
+            session_id="rig-1",
+            command_id="cmd-rig-later",
+            path=MAIN_FREQ,
+        )
+        == 7_074_000
+    )
     clock.advance(1.001)
-    assert overlays.confirm(
-        source="rigctld",
-        session_id="rig-1",
-        command_id="cmd-rig-later",
-        path=MAIN_FREQ,
-        value=7_074_000,
-    ) == []
+    assert (
+        overlays.confirm(
+            source="rigctld",
+            session_id="rig-1",
+            command_id="cmd-rig-later",
+            path=MAIN_FREQ,
+            value=7_074_000,
+        )
+        == []
+    )
 
     assert overlays.expire_due() == [web, same_value_other_command]
     assert (

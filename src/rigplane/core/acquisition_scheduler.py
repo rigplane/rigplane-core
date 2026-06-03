@@ -273,10 +273,7 @@ class IcomCivAcquisitionExecutor:
             if path.name == "s_meter":
                 return (0x15, 0x02, receiver)
             return None
-        if (
-            path.scope.value == "receiver"
-            and path.family.value == "operator_controls"
-        ):
+        if path.scope.value == "receiver" and path.family.value == "operator_controls":
             sub = _RECEIVER_LEVEL_QUERY_SUBS.get(path.name)
             return None if sub is None else (0x14, sub, receiver)
         if path.scope.value == "global" and path.family.value == "meters":
@@ -286,10 +283,7 @@ class IcomCivAcquisitionExecutor:
             if path.name == "ptt":
                 return (0x1C, 0x00, None)
             return None
-        if (
-            path.scope.value == "global"
-            and path.family.value == "operator_controls"
-        ):
+        if path.scope.value == "global" and path.family.value == "operator_controls":
             sub = _GLOBAL_LEVEL_QUERY_SUBS.get(path.name)
             return None if sub is None else (0x14, sub, None)
         return None
@@ -461,7 +455,9 @@ class AcquisitionScheduler:
             )
         )
 
-    def due_requests(self, *, now: float | None = None) -> tuple[AcquisitionRequest, ...]:
+    def due_requests(
+        self, *, now: float | None = None
+    ) -> tuple[AcquisitionRequest, ...]:
         """Queue and return policy-cadence poll requests that are due."""
 
         timestamp = self._clock.now() if now is None else now
@@ -551,9 +547,7 @@ class AcquisitionScheduler:
         pending_cadence = self._pending_cadence_by_key.get(key)
         if matched_pending_request and remaining_paths:
             if pending_cadence is not None and pending_cadence.request_id == request.id:
-                semantic_changed = (
-                    semantic_changed or pending_cadence.semantic_changed
-                )
+                semantic_changed = semantic_changed or pending_cadence.semantic_changed
             self._pending_cadence_by_key[key] = _PendingCadenceUpdate(
                 request_id=request.id,
                 semantic_changed=semantic_changed,
@@ -613,7 +607,9 @@ class AcquisitionScheduler:
         )
         existing = self._requests_by_key.get(key)
         if existing is not None and existing.id == request.id:
-            remaining_paths = tuple(path for path in existing.paths if path not in failed)
+            remaining_paths = tuple(
+                path for path in existing.paths if path not in failed
+            )
             if remaining_paths:
                 self._requests_by_key[key] = self._replace_request_paths(
                     existing,
@@ -751,9 +747,7 @@ class AcquisitionScheduler:
     ) -> tuple[AcquisitionRequest, ...]:
         request_reasons = (reason,) if reasons is None else reasons
         request_deadline = (
-            requested_at + max_age
-            if deadline_monotonic is None
-            else deadline_monotonic
+            requested_at + max_age if deadline_monotonic is None else deadline_monotonic
         )
         return self._queue_grouped(
             groups=self._request_groups(paths),
@@ -782,9 +776,7 @@ class AcquisitionScheduler:
     ) -> tuple[AcquisitionRequest, ...]:
         request_reasons = (reason,) if reasons is None else reasons
         request_deadline = (
-            requested_at + max_age
-            if deadline_monotonic is None
-            else deadline_monotonic
+            requested_at + max_age if deadline_monotonic is None else deadline_monotonic
         )
         queued: list[AcquisitionRequest] = []
         for key, grouped_paths in groups:
@@ -860,10 +852,7 @@ class AcquisitionScheduler:
                 policy=policy,
             )
             grouped.setdefault(key, []).append(capability.path)
-        return {
-            key: tuple(sorted(paths, key=str))
-            for key, paths in grouped.items()
-        }
+        return {key: tuple(sorted(paths, key=str)) for key, paths in grouped.items()}
 
     def _cadence_state_for(
         self,
@@ -1105,7 +1094,9 @@ class MeterObservationCoalescer:
         if observation.path.family.value != "meters":
             raise ValueError(f"{observation.path}: meter coalescing requires meters")
 
-        self._pending.append(_PendingMeterSample(observation=observation, policy=policy))
+        self._pending.append(
+            _PendingMeterSample(observation=observation, policy=policy)
+        )
         if policy.max_samples is None:
             return
         overflow = len(self._pending) - policy.max_samples
@@ -1134,8 +1125,7 @@ class MeterObservationCoalescer:
         due_paths: set[FieldPath] = set()
         for path, sample in latest_by_path.items():
             flush_at = (
-                sample.observation.timestamp_monotonic
-                + sample.policy.window_seconds
+                sample.observation.timestamp_monotonic + sample.policy.window_seconds
             )
             if flush_at <= now:
                 due_paths.add(path)
@@ -1216,9 +1206,7 @@ class MeterObservationCoalescer:
 
         return {
             "pendingSampleCount": len(self._pending),
-            "pendingPaths": [
-                str(sample.observation.path) for sample in self._pending
-            ],
+            "pendingPaths": [str(sample.observation.path) for sample in self._pending],
             "droppedSampleCount": self._dropped_sample_count,
             "coalescedSampleCount": self._coalesced_sample_count,
             "nextFlushMonotonic": self.next_flush_monotonic(),
@@ -1427,10 +1415,7 @@ def _capability_method(
     for method in methods:
         if method == "poll" and capability.can_poll:
             return "poll"
-        if (
-            method == "command_response"
-            and capability.command_response_observable
-        ):
+        if method == "command_response" and capability.command_response_observable:
             return "command_response"
         if method == "wait_for_unsolicited" and capability.unsolicited_push:
             return "wait_for_unsolicited"

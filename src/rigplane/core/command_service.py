@@ -414,10 +414,7 @@ class CommandService:
             if (
                 event.command_id == command_id
                 and (source is None or event.source == source)
-                and (
-                    session_id is _UNSET
-                    or _event_session_id(event) == session_id
-                )
+                and (session_id is _UNSET or _event_session_id(event) == session_id)
             ):
                 return event
         return None
@@ -533,22 +530,30 @@ def command_intent_from_request(
         )
         normalized["att"] = int(raw_value)
     elif command_name == "set_preamp":
-        raw_value = normalized["level"] if "level" in normalized else normalized["value"]
+        raw_value = (
+            normalized["level"] if "level" in normalized else normalized["value"]
+        )
         normalized["preamp"] = int(raw_value)
     elif command_name == "set_nb":
         normalized["nb"] = bool(normalized["on"])
     elif command_name == "set_nr":
         normalized["nr"] = bool(normalized["on"])
     elif command_name == "set_pbt_inner":
-        raw_level = normalized["value"] if "value" in normalized else normalized["level"]
+        raw_level = (
+            normalized["value"] if "value" in normalized else normalized["level"]
+        )
         normalized["pbt_inner"] = int(raw_level)
     elif command_name == "set_pbt_outer":
-        raw_level = normalized["value"] if "value" in normalized else normalized["level"]
+        raw_level = (
+            normalized["value"] if "value" in normalized else normalized["level"]
+        )
         normalized["pbt_outer"] = int(raw_level)
     elif command_name == "set_powerstat":
         normalized["power_on"] = bool(normalized.get("on", True))
     elif command_name in ("set_rf_power", "set_power"):
-        raw_level = normalized["level"] if "level" in normalized else normalized["value"]
+        raw_level = (
+            normalized["level"] if "level" in normalized else normalized["value"]
+        )
         normalized["power_level"] = int(raw_level)
     elif command_name == "set_split":
         normalized["split"] = bool(normalized.get("on", False))

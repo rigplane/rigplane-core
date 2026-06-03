@@ -141,7 +141,9 @@ class RigctldServer:
         task.add_done_callback(self._bg_tasks.discard)
         return task
 
-    def _handler_execute_call(self, cmd: Any, *, session_id: str) -> Coroutine[Any, Any, Any]:
+    def _handler_execute_call(
+        self, cmd: Any, *, session_id: str
+    ) -> Coroutine[Any, Any, Any]:
         execute = getattr(self._rig_handler, "execute")
         try:
             signature = inspect.signature(execute)
@@ -151,9 +153,13 @@ class RigctldServer:
         if signature is not None:
             for parameter in signature.parameters.values():
                 if parameter.kind is inspect.Parameter.VAR_KEYWORD:
-                    return cast(Coroutine[Any, Any, Any], execute(cmd, session_id=session_id))
+                    return cast(
+                        Coroutine[Any, Any, Any], execute(cmd, session_id=session_id)
+                    )
                 if parameter.name == "session_id":
-                    return cast(Coroutine[Any, Any, Any], execute(cmd, session_id=session_id))
+                    return cast(
+                        Coroutine[Any, Any, Any], execute(cmd, session_id=session_id)
+                    )
         return cast(Coroutine[Any, Any, Any], execute(cmd))
 
     def __del__(self) -> None:

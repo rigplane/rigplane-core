@@ -103,7 +103,9 @@ def _states(events: Sequence[CommandLifecycleEvent]) -> list[str]:
 
 
 @pytest.mark.asyncio  # type: ignore[untyped-decorator]
-async def test_execute_emits_lifecycle_events_and_applies_response_observations() -> None:
+async def test_execute_emits_lifecycle_events_and_applies_response_observations() -> (
+    None
+):
     clock = FreshnessClock(start=10.0)
     store = StateStore(freshness_clock=clock)
     executor = FakeExecutor(
@@ -183,12 +185,15 @@ def test_pending_overlays_are_projected_by_source_session_command_and_path() -> 
         session_id="rig-a",
         paths=(mode,),
     ) == {mode: "USB"}
-    assert service.pending_overlays(
-        source="websocket",
-        session_id="ws-a",
-        command_id="cmd-1",
-        path=freq,
-    )[0].value == 14_074_000
+    assert (
+        service.pending_overlays(
+            source="websocket",
+            session_id="ws-a",
+            command_id="cmd-1",
+            path=freq,
+        )[0].value
+        == 14_074_000
+    )
 
 
 @pytest.mark.asyncio  # type: ignore[untyped-decorator]
@@ -208,9 +213,7 @@ async def test_late_matching_observation_reconciles_pending_overlay_once() -> No
         paths=(_freq_path(),),
     ) == {_freq_path(): 14_074_000}
 
-    first = service.apply_observation(
-        _observation(_freq_path(), 14_074_000, at=30.5)
-    )
+    first = service.apply_observation(_observation(_freq_path(), 14_074_000, at=30.5))
     duplicate = service.apply_observation(
         _observation(_freq_path(), 14_074_000, at=30.6)
     )
@@ -268,7 +271,9 @@ async def test_core_timeout_error_is_classified_as_timed_out() -> None:
 
 
 @pytest.mark.asyncio  # type: ignore[untyped-decorator]
-async def test_execute_failure_with_reused_command_id_expires_only_matching_scope() -> None:
+async def test_execute_failure_with_reused_command_id_expires_only_matching_scope() -> (
+    None
+):
     clock = FreshnessClock(start=41.0)
     service = CommandService(
         executor=FakeExecutor(fail=RuntimeError("radio rejected command")),
@@ -327,7 +332,9 @@ def test_fail_command_with_reused_command_id_expires_only_matching_scope() -> No
             )
         )
 
-    service.emit_lifecycle(_intent(command_id="cmd-shared", session_id="ws-a"), "queued")
+    service.emit_lifecycle(
+        _intent(command_id="cmd-shared", session_id="ws-a"), "queued"
+    )
     service.emit_lifecycle(
         _intent(command_id="cmd-shared", session_id="ws-b"),
         "queued",
@@ -387,11 +394,14 @@ def test_expired_pending_overlays_do_not_project_or_leak() -> None:
 
     clock.advance(0.6)
 
-    assert service.project_pending_values(
-        source="public_api",
-        session_id=None,
-        paths=(_freq_path(),),
-    ) == {}
+    assert (
+        service.project_pending_values(
+            source="public_api",
+            session_id=None,
+            paths=(_freq_path(),),
+        )
+        == {}
+    )
     assert service.pending_overlays(source="public_api", session_id=None) == ()
 
 
@@ -436,7 +446,9 @@ def test_same_path_value_across_sessions_reconciles_only_correlated_overlay() ->
     assert [event.command_id for event in reconciled] == ["cmd-a"]
 
 
-def test_same_path_value_across_command_ids_reconciles_only_correlated_command() -> None:
+def test_same_path_value_across_command_ids_reconciles_only_correlated_command() -> (
+    None
+):
     clock = FreshnessClock(start=56.0)
     service = CommandService(
         executor=FakeExecutor(),
@@ -460,11 +472,14 @@ def test_same_path_value_across_command_ids_reconciles_only_correlated_command()
         _observation(freq, 14_074_000, at=56.2, correlation_id="cmd-a")
     )
 
-    assert service.pending_overlays(
-        source="websocket",
-        session_id="ws-a",
-        command_id="cmd-a",
-    ) == ()
+    assert (
+        service.pending_overlays(
+            source="websocket",
+            session_id="ws-a",
+            command_id="cmd-a",
+        )
+        == ()
+    )
     assert service.pending_overlays(
         source="websocket",
         session_id="ws-a",
@@ -485,7 +500,9 @@ def test_same_path_value_across_command_ids_reconciles_only_correlated_command()
     assert [event.command_id for event in reconciled] == ["cmd-a"]
 
 
-def test_uncorrelated_duplicate_observation_does_not_reconcile_pending_overlay() -> None:
+def test_uncorrelated_duplicate_observation_does_not_reconcile_pending_overlay() -> (
+    None
+):
     clock = FreshnessClock(start=57.0)
     service = CommandService(
         executor=FakeExecutor(),
@@ -507,9 +524,7 @@ def test_uncorrelated_duplicate_observation_does_not_reconcile_pending_overlay()
         _observation(freq, 14_074_000, at=57.2, correlation_id=None)
     )
 
-    assert service.pending_overlays(source="websocket", session_id="ws-a") == (
-        overlay,
-    )
+    assert service.pending_overlays(source="websocket", session_id="ws-a") == (overlay,)
     assert [
         event for event in service.lifecycle_events() if event.state == "reconciled"
     ] == []
@@ -755,7 +770,12 @@ def test_command_response_observation_carries_session_metadata() -> None:
         ("set_powerstat", {"on": False}, "global.tx_state.power_on", False),
         ("set_rf_power", {"level": 88}, "global.operator_controls.power_level", 88),
         ("set_power", {"level": 77}, "global.operator_controls.power_level", 77),
-        ("set_filter_width", {"width": 1500}, "receiver.0.freq_mode.filter_width", 1500),
+        (
+            "set_filter_width",
+            {"width": 1500},
+            "receiver.0.freq_mode.filter_width",
+            1500,
+        ),
         ("set_split", {"on": True}, "global.tx_state.split", True),
         ("set_vfo", {"vfo": "B"}, "receiver.0.vfo.active_slot", "B"),
     ],

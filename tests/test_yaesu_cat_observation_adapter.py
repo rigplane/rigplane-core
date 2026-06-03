@@ -106,7 +106,9 @@ async def test_slow_poll_emits_declared_control_observations_only() -> None:
 
 
 @pytest.mark.asyncio
-async def test_slow_poll_skips_sub_controls_without_matching_runtime_capability() -> None:
+async def test_slow_poll_skips_sub_controls_without_matching_runtime_capability() -> (
+    None
+):
     radio = _make_radio()
     radio.capabilities = {"dual_rx", "af_level", "tx"}
     adapter = YaesuObservationAdapter(

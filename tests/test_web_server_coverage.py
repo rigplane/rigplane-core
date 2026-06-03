@@ -22,7 +22,11 @@ from rigplane.core.acquisition_scheduler import (
     RadioStateModelService,
     StateFreshnessService,
 )
-from rigplane.core.state_pipeline_contracts import FieldPath, Observation, SourceMetadata
+from rigplane.core.state_pipeline_contracts import (
+    FieldPath,
+    Observation,
+    SourceMetadata,
+)
 from rigplane.core.state_store import FreshnessClock, StateStore
 from rigplane.profiles import resolve_radio_profile
 from rigplane.radio_state import RadioState
@@ -213,7 +217,9 @@ async def test_start_and_stop_with_radio_sets_callbacks() -> None:
 
 
 @pytest.mark.asyncio
-async def test_start_attaches_shared_state_model_service_for_acquisition_profile() -> None:
+async def test_start_attaches_shared_state_model_service_for_acquisition_profile() -> (
+    None
+):
     radio = _ProfiledStateNotifyRadio()
     radio.profile = resolve_radio_profile(model="IC-7610")
     radio.model = radio.profile.model
@@ -233,7 +239,9 @@ async def test_start_attaches_shared_state_model_service_for_acquisition_profile
             "rigplane.web.web_startup.asyncio.start_server",
             new=AsyncMock(return_value=fake_server),
         ),
-        patch("rigplane.web.web_startup.RadioPoller", return_value=fake_poller) as poller_cls,
+        patch(
+            "rigplane.web.web_startup.RadioPoller", return_value=fake_poller
+        ) as poller_cls,
     ):
         await srv.start()
         await srv.stop()
@@ -607,7 +615,10 @@ async def test_http_power_enters_command_service_and_keeps_delivery_mirror() -> 
     assert body == {"status": "ok", "power": "off"}
     radio.set_powerstat.assert_awaited_once_with(False)
     assert srv._radio_state.power_on is False  # noqa: SLF001
-    assert srv.command_state_store.snapshot().field("global.tx_state.power_on").value is False
+    assert (
+        srv.command_state_store.snapshot().field("global.tx_state.power_on").value
+        is False
+    )
 
 
 @pytest.mark.asyncio
@@ -1123,7 +1134,9 @@ async def test_scope_health_and_radio_state_event_paths() -> None:
 
 
 @pytest.mark.asyncio
-async def test_http_snapshot_matches_initial_ws_full_state_for_same_store_revision() -> None:
+async def test_http_snapshot_matches_initial_ws_full_state_for_same_store_revision() -> (
+    None
+):
     srv = WebServer(None)
     srv.command_state_store.apply(
         _store_observation(
@@ -1162,7 +1175,9 @@ async def test_http_snapshot_matches_initial_ws_full_state_for_same_store_revisi
     assert ws_body == http_body
 
 
-def test_meter_only_state_store_change_emits_web_delta_without_legacy_revision() -> None:
+def test_meter_only_state_store_change_emits_web_delta_without_legacy_revision() -> (
+    None
+):
     srv = WebServer(None)
     q = asyncio.Queue()
     srv.register_control_event_queue(q)
@@ -1266,7 +1281,9 @@ def test_initial_full_state_envelope_does_not_consume_broadcast_delta() -> None:
 
 
 @pytest.mark.asyncio
-async def test_initial_full_state_envelope_revisions_match_legacy_seeded_http_state() -> None:
+async def test_initial_full_state_envelope_revisions_match_legacy_seeded_http_state() -> (
+    None
+):
     srv = WebServer(None)
     legacy = RadioState()
     legacy.main.freq = 14_250_000
@@ -1293,7 +1310,9 @@ async def test_initial_full_state_envelope_revisions_match_legacy_seeded_http_st
 
 
 @pytest.mark.asyncio
-async def test_state_response_refreshes_live_connection_payload_without_revisions() -> None:
+async def test_state_response_refreshes_live_connection_payload_without_revisions() -> (
+    None
+):
     class _LiveConnectionRadio:
         connected = True
         control_connected = False
@@ -1439,7 +1458,9 @@ def test_public_state_syncs_legacy_active_after_state_store_observations() -> No
     assert public_state["active"] == "SUB"
 
 
-def test_public_state_syncs_legacy_global_toggle_after_state_store_observations() -> None:
+def test_public_state_syncs_legacy_global_toggle_after_state_store_observations() -> (
+    None
+):
     srv = WebServer(None)
     srv.command_state_store.apply(
         _store_observation(

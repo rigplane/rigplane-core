@@ -398,7 +398,9 @@ class _HttpCommandExecutor:
         params = intent.params
         if intent.name == "raw_civ_transaction":
             if not isinstance(radio, CivTransactionCapable):
-                raise RuntimeError("active backend does not support raw CI-V transactions")
+                raise RuntimeError(
+                    "active backend does not support raw CI-V transactions"
+                )
             result = await radio.send_civ_transaction(
                 int(params["command"]),
                 sub=params.get("sub"),
@@ -703,7 +705,9 @@ class WebServer:
         self._state_diagnostics = StateDiagnosticsRecorder(
             enabled=self._config.state_diagnostics
         )
-        raw_state_store = getattr(radio, "state_store", None) if radio is not None else None
+        raw_state_store = (
+            getattr(radio, "state_store", None) if radio is not None else None
+        )
         self.command_state_store = (
             raw_state_store if isinstance(raw_state_store, StateStore) else StateStore()
         )
@@ -742,7 +746,9 @@ class WebServer:
             try:
                 setattr(radio, "_state_diagnostics", self._state_diagnostics)
             except Exception:
-                logger.debug("state diagnostics: failed to attach to radio", exc_info=True)
+                logger.debug(
+                    "state diagnostics: failed to attach to radio", exc_info=True
+                )
         self._audio_broadcaster = AudioBroadcaster(radio)
         # Gated WebRTC transport session manager (A2.3 / MOR-307). Lazily
         # constructed on first use so the import stays out of the no-extra path.
@@ -1259,7 +1265,9 @@ class WebServer:
             self._cached_public_state_payload = copy.deepcopy(payload)
         return payload
 
-    def build_state_update_envelope(self, *, force_full: bool = False) -> dict[str, Any]:
+    def build_state_update_envelope(
+        self, *, force_full: bool = False
+    ) -> dict[str, Any]:
         """Return a WS state-update envelope from the canonical StateStore view."""
         self._sync_legacy_state_store_for_delivery()
         snapshot = self.command_state_store.snapshot()
@@ -1304,7 +1312,8 @@ class WebServer:
         state_dict = state.to_dict()
         baseline_dict = baseline.to_dict()
         observed_values = {
-            field.path: field.value for field in self.command_state_store.snapshot().fields
+            field.path: field.value
+            for field in self.command_state_store.snapshot().fields
         }
         provider = getattr(self._radio, "backend_id", None)
         source = SourceMetadata(
