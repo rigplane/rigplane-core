@@ -53,9 +53,19 @@ class RigctldObservationRadio(Protocol):
 
     async def get_mode(self, receiver: int = 0) -> tuple[str, int | None]: ...
 
+    async def get_ptt(self) -> bool: ...
+
     async def get_rf_gain(self, receiver: int = 0) -> int: ...
 
     async def get_af_level(self, receiver: int = 0) -> int: ...
+
+    async def get_preamp(self, receiver: int = 0) -> int: ...
+
+    async def get_attenuator_level(self, receiver: int = 0) -> int: ...
+
+    async def get_nb(self) -> bool: ...
+
+    async def get_nr(self) -> bool: ...
 
     async def get_vfo_slot(self, receiver: int = 0) -> str: ...
 
@@ -80,8 +90,12 @@ def build_external_rigctld_acquisition_profile(
         FieldCapability(
             path=_FILTER,
             polling=True,
-            command_response_observable=True,
+            command_response_observable=False,
             supported_controls=("set_mode",),
+            diagnostic=(
+                "External rigctld confirms filter width through get_mode polling "
+                "readback, not a direct command response"
+            ),
         ),
         FieldCapability(
             path=_PTT,
@@ -194,6 +208,14 @@ class RigctldClientObservationAdapter:
             await self.read_af_level(),
         )
 
+    async def read_ptt(self) -> Observation:
+        radio = self._require_radio()
+        return self._adapter().observation(
+            _PTT,
+            await radio.get_ptt(),
+            native_id="t",
+        )
+
     async def read_freq(self) -> Observation:
         radio = self._require_radio()
         return self._adapter().observation(
@@ -225,6 +247,48 @@ class RigctldClientObservationAdapter:
             _AF_LEVEL,
             await radio.get_af_level(),
             native_id="l AF",
+        )
+
+    async def read_preamp(self) -> Observation:
+        radio = self._require_radio()
+        return self._adapter().observation(
+            _PREAMP,
+            await radio.get_preamp(),
+            native_id="l PREAMP",
+        )
+
+    async def read_attenuator(self) -> Observation:
+        radio = self._require_radio()
+        return self._adapter().observation(
+            _ATT,
+            await radio.get_attenuator_level(),
+            native_id="l ATT",
+        )
+
+    async def read_nb(self) -> Observation:
+        radio = self._require_radio()
+        return self._adapter().observation(
+            _NB,
+            await radio.get_nb(),
+            native_id="u NB",
+        )
+
+    async def read_nr(self) -> Observation:
+        radio = self._require_radio()
+        return self._adapter().observation(
+            _NR,
+            await radio.get_nr(),
+            native_id="u NR",
+        )
+
+    async def read_slow_controls(self) -> tuple[Observation, ...]:
+        return (
+            await self.read_rf_gain(),
+            await self.read_af_level(),
+            await self.read_preamp(),
+            await self.read_attenuator(),
+            await self.read_nb(),
+            await self.read_nr(),
         )
 
     async def read_active_vfo(self) -> Observation | None:

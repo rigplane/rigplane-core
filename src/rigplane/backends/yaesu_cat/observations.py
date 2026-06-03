@@ -138,7 +138,11 @@ class YaesuObservationAdapter:
                     native_id="get_squelch",
                 )
             )
-        if self._has_runtime_capability("dual_rx") and self._can_poll(_SUB_AF):
+        if (
+            self._has_runtime_capability("dual_rx")
+            and self._has_runtime_capability("af_level")
+            and self._can_poll(_SUB_AF)
+        ):
             observations.append(
                 adapter.observation(
                     _SUB_AF,
@@ -146,7 +150,11 @@ class YaesuObservationAdapter:
                     native_id="get_af_level",
                 )
             )
-        if self._has_runtime_capability("dual_rx") and self._can_poll(_SUB_RF):
+        if (
+            self._has_runtime_capability("dual_rx")
+            and self._has_runtime_capability("rf_gain")
+            and self._can_poll(_SUB_RF)
+        ):
             observations.append(
                 adapter.observation(
                     _SUB_RF,
@@ -154,7 +162,11 @@ class YaesuObservationAdapter:
                     native_id="get_rf_gain",
                 )
             )
-        if self._has_runtime_capability("dual_rx") and self._can_poll(_SUB_SQL):
+        if (
+            self._has_runtime_capability("dual_rx")
+            and self._has_runtime_capability("squelch")
+            and self._can_poll(_SUB_SQL)
+        ):
             observations.append(
                 adapter.observation(
                     _SUB_SQL,

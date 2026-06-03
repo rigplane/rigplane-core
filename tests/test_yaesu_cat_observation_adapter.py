@@ -103,3 +103,24 @@ async def test_slow_poll_emits_declared_control_observations_only() -> None:
     assert radio.get_af_level.await_count == 2
     assert radio.get_rf_gain.await_count == 2
     assert radio.get_squelch.await_count == 2
+
+
+@pytest.mark.asyncio
+async def test_slow_poll_skips_sub_controls_without_matching_runtime_capability() -> None:
+    radio = _make_radio()
+    radio.capabilities = {"dual_rx", "af_level", "tx"}
+    adapter = YaesuObservationAdapter(
+        radio,
+        profile=_profile_state_acquisition(),
+        clock=_clock,
+    )
+
+    observations = await adapter.poll_slow_controls()
+
+    assert [(str(item.path), item.value) for item in observations] == [
+        ("receiver.main.operator_controls.af_level", 128),
+        ("receiver.sub.operator_controls.af_level", 64),
+    ]
+    assert radio.get_af_level.await_count == 2
+    radio.get_rf_gain.assert_not_awaited()
+    radio.get_squelch.assert_not_awaited()
