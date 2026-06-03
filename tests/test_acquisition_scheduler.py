@@ -215,6 +215,46 @@ def test_same_family_requests_share_one_acquisition_request() -> None:
     assert scheduler.pending_requests() == (mode_result.request,)
 
 
+def test_recording_older_coalesced_request_preserves_newer_pending_paths() -> None:
+    clock = FreshnessClock(start=36.0)
+    freq = FieldPath.active("main", "freq_mode", "freq_hz")
+    mode = FieldPath.active("main", "freq_mode", "mode")
+    scheduler = AcquisitionScheduler(profile=_profile([freq, mode]), clock=clock)
+
+    freq_result = scheduler.ensure_fresh(
+        freq,
+        max_age=5.0,
+        priority="background",
+        reason="background-freq",
+        timeout=10.0,
+    )
+    assert freq_result.request is not None
+    stale_executor_copy = freq_result.request
+    mode_result = scheduler.ensure_fresh(
+        mode,
+        max_age=0.5,
+        priority="user",
+        reason="visible-mode",
+        timeout=2.0,
+    )
+    assert mode_result.request is not None
+    assert mode_result.request.id == stale_executor_copy.id
+    assert mode_result.request.paths == (freq, mode)
+
+    scheduler.record_acquisition_result(
+        stale_executor_copy,
+        _changeset(
+            changes=(FieldChange(path=freq, previous=7_074_000, current=14_074_000),),
+            at=clock.now(),
+        ),
+    )
+
+    pending = scheduler.pending_requests()
+    assert len(pending) == 1
+    assert pending[0].id == stale_executor_copy.id
+    assert pending[0].paths == (mode,)
+
+
 def test_user_facing_requests_preempt_background_telemetry() -> None:
     clock = FreshnessClock(start=40.0)
     meter = FieldPath.receiver("main", "meters", "s_meter")
@@ -726,6 +766,26 @@ def test_due_polling_emits_only_pollable_cadence_fields_and_groups_by_existing_k
     assert scheduler.pending_requests() == requests
 
 
+def test_due_polling_does_not_reemit_pending_cadence_request() -> None:
+    clock = FreshnessClock(start=202.0)
+    freq = FieldPath.active("main", "freq_mode", "freq_hz")
+    scheduler = AcquisitionScheduler(
+        profile=_profile(
+            [freq],
+            default_policy=AcquisitionPolicy(cadence_seconds=1.0),
+        ),
+        clock=clock,
+    )
+
+    first = scheduler.due_requests(now=clock.now())
+    second = scheduler.due_requests(now=clock.now())
+
+    assert len(first) == 1
+    assert first[0].paths == (freq,)
+    assert second == ()
+    assert scheduler.pending_requests() == first
+
+
 def test_due_polling_skips_unsupported_unhooked_and_unsolicited_only_fields() -> None:
     clock = FreshnessClock(start=205.0)
     supported = FieldPath.active("main", "freq_mode", "freq_hz")
@@ -874,7 +934,7 @@ def test_meter_coalescing_latest_sample_wins_and_exposes_drop_counts() -> None:
     coalescer.record(_observation(meter, 42, at=clock.now()), policy)
 
     assert coalescer.flush_due(store, now=clock.now() + 0.14) is None
-    changeset = coalescer.flush_due(store, now=clock.now() + 0.15)
+    changeset = coalescer.flush_due(store, now=clock.now() + 0.2)
 
     assert changeset is not None
     assert changeset.coalesced is True
@@ -885,3 +945,53 @@ def test_meter_coalescing_latest_sample_wins_and_exposes_drop_counts() -> None:
     assert diagnostics["droppedSampleCount"] == 1
     assert diagnostics["coalescedSampleCount"] == 1
     assert diagnostics["pendingSampleCount"] == 0
+
+
+def test_meter_coalescing_flush_uses_latest_batch_timestamp_not_last_path() -> None:
+    clock = FreshnessClock(start=250.0)
+    store = StateStore(freshness_clock=clock)
+    power = FieldPath.receiver("main", "meters", "power")
+    s_meter = FieldPath.receiver("main", "meters", "s_meter")
+    policy = MeterCoalescingPolicy(window_seconds=0.1)
+    coalescer = MeterObservationCoalescer()
+
+    coalescer.record(_observation(s_meter, 3, at=10.0), policy)
+    coalescer.record(_observation(power, 40, at=10.5), policy)
+
+    changeset = coalescer.flush(store)
+
+    assert changeset is not None
+    assert changeset.coalesced is True
+    assert changeset.timestamp_monotonic == 10.5
+    assert changeset.revision == 2
+    assert changeset.observation_seq == 2
+    assert {change.path for change in changeset.changes} == {power, s_meter}
+
+
+def test_meter_coalescing_flush_due_leaves_longer_window_samples_pending() -> None:
+    clock = FreshnessClock(start=260.0)
+    store = StateStore(freshness_clock=clock)
+    power = FieldPath.receiver("main", "meters", "power")
+    s_meter = FieldPath.receiver("main", "meters", "s_meter")
+    short_policy = MeterCoalescingPolicy(window_seconds=0.1)
+    long_policy = MeterCoalescingPolicy(window_seconds=1.0)
+    coalescer = MeterObservationCoalescer()
+
+    coalescer.record(_observation(power, 40, at=clock.now()), short_policy)
+    coalescer.record(_observation(s_meter, 3, at=clock.now()), long_policy)
+
+    first = coalescer.flush_due(store, now=clock.now() + 0.1)
+
+    assert first is not None
+    assert [change.path for change in first.changes] == [power]
+    assert store.snapshot().field(power).value == 40
+    diagnostics = coalescer.diagnostics()
+    assert diagnostics["pendingSampleCount"] == 1
+    assert diagnostics["pendingPaths"] == [str(s_meter)]
+
+    second = coalescer.flush_due(store, now=clock.now() + 1.0)
+
+    assert second is not None
+    assert [change.path for change in second.changes] == [s_meter]
+    assert store.snapshot().field(s_meter).value == 3
+    assert coalescer.diagnostics()["pendingSampleCount"] == 0

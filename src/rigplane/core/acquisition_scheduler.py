@@ -346,7 +346,18 @@ class AcquisitionScheduler:
         )
         existing = self._requests_by_key.get(key)
         if existing is not None and existing.id == request.id:
-            del self._requests_by_key[key]
+            completed_paths = frozenset(request.paths)
+            remaining_paths = tuple(
+                path for path in existing.paths if path not in completed_paths
+            )
+            if remaining_paths:
+                if remaining_paths != existing.paths:
+                    self._requests_by_key[key] = self._replace_request_paths(
+                        existing,
+                        paths=remaining_paths,
+                    )
+            else:
+                del self._requests_by_key[key]
 
         base_cadence = request.policy.cadence_seconds
         if base_cadence is None:
@@ -570,6 +581,8 @@ class AcquisitionScheduler:
     ) -> tuple[tuple[_AcquisitionRequestKey, tuple[FieldPath, ...]], ...]:
         due: list[tuple[_AcquisitionRequestKey, FieldPath]] = []
         for key, paths in self._poll_cadence_groups().items():
+            if key in self._requests_by_key or key in self._deferred:
+                continue
             policy = key.policy
             if policy.cadence_seconds is None:
                 continue
@@ -736,6 +749,22 @@ class AcquisitionScheduler:
             },
         )
 
+    def _replace_request_paths(
+        self,
+        request: AcquisitionRequest,
+        *,
+        paths: tuple[FieldPath, ...],
+    ) -> AcquisitionRequest:
+        return replace(
+            request,
+            paths=paths,
+            capability_ids=tuple(str(path) for path in paths),
+            source_metadata={
+                "provider": self._profile.provider,
+                "capabilityId": ",".join(str(path) for path in paths),
+            },
+        )
+
     def _defer(
         self,
         key: _AcquisitionRequestKey,
@@ -844,38 +873,66 @@ class MeterObservationCoalescer:
         if not self._pending:
             return None
 
-        latest_by_path: dict[FieldPath, Observation] = {}
+        samples = self._pending
+        self._pending = []
+        return self._flush_samples(store, samples=samples)
+
+    def flush_due(self, store: StateStore, *, now: float) -> ChangeSet | None:
+        """Flush pending samples whose individual coalescing windows elapsed."""
+
+        due: list[_PendingMeterSample] = []
+        pending: list[_PendingMeterSample] = []
         for sample in self._pending:
+            flush_at = (
+                sample.observation.timestamp_monotonic
+                + sample.policy.window_seconds
+            )
+            if flush_at <= now:
+                due.append(sample)
+            else:
+                pending.append(sample)
+
+        if not due:
+            return None
+
+        self._pending = pending
+        return self._flush_samples(store, samples=due)
+
+    def _flush_samples(
+        self,
+        store: StateStore,
+        *,
+        samples: Sequence[_PendingMeterSample],
+    ) -> ChangeSet:
+        latest_by_path: dict[FieldPath, Observation] = {}
+        for sample in samples:
             latest_by_path[sample.observation.path] = sample.observation
-        self._coalesced_sample_count += len(self._pending) - len(latest_by_path)
+        self._coalesced_sample_count += len(samples) - len(latest_by_path)
 
         changes = []
         sources = []
         result: ChangeSet | None = None
-        for observation in sorted(latest_by_path.values(), key=lambda item: str(item.path)):
+        timestamp_monotonic = max(
+            observation.timestamp_monotonic for observation in latest_by_path.values()
+        )
+        for observation in sorted(
+            latest_by_path.values(),
+            key=lambda item: str(item.path),
+        ):
             result = store.apply(observation)
             changes.extend(result.changes)
             sources.extend(result.sources)
 
-        self._pending.clear()
         assert result is not None
         return ChangeSet(
             revision=result.revision,
             freshness_revision=result.freshness_revision,
             observation_seq=result.observation_seq,
             changes=tuple(changes),
-            timestamp_monotonic=result.timestamp_monotonic,
+            timestamp_monotonic=timestamp_monotonic,
             sources=tuple(sources),
             coalesced=True,
         )
-
-    def flush_due(self, store: StateStore, *, now: float) -> ChangeSet | None:
-        """Flush only when the oldest pending coalescing window has elapsed."""
-
-        next_flush = self.next_flush_monotonic()
-        if next_flush is None or now < next_flush:
-            return None
-        return self.flush(store)
 
     def next_flush_monotonic(self) -> float | None:
         """Return the earliest monotonic time at which pending samples should flush."""
