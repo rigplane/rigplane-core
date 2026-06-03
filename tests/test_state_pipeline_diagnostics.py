@@ -6,6 +6,7 @@ from typing import Any
 
 from rigplane.core._bounded_queue import BoundedQueue
 from rigplane.core._state_cache import StateCache
+from rigplane.core.state_pipeline_contracts import FieldPath, Observation, SourceMetadata
 from rigplane.core.state_diagnostics import StateDiagnosticsRecorder
 from rigplane.radio_state import RadioState
 from rigplane.runtime._civ_rx import CivRuntime
@@ -72,7 +73,15 @@ def test_web_meter_write_delivers_state_store_revision_without_unrelated_trigger
     queue: BoundedQueue[dict[str, Any]] = BoundedQueue(maxsize=8)
     server.register_control_event_queue(queue)
 
-    server._radio_state.main.s_meter = 42
+    server.command_state_store.apply(
+        Observation(
+            path=FieldPath.receiver("0", "meters", "s_meter"),
+            value=42,
+            source=SourceMetadata(source="test", provider="test"),
+            timestamp_monotonic=1.0,
+            max_age=0.5,
+        )
+    )
     server.state_diagnostics.record(
         "direct_state_write",
         "test",

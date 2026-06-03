@@ -1252,13 +1252,13 @@ def test_initial_full_state_envelope_does_not_consume_broadcast_delta() -> None:
 
 
 @pytest.mark.asyncio
-async def test_initial_full_state_envelope_revisions_match_legacy_seeded_http_state() -> None:
+async def test_initial_full_state_envelope_revisions_match_ingested_legacy_state() -> None:
     srv = WebServer(None)
     legacy = RadioState()
     legacy.main.freq = 14_250_000
     legacy.main.mode = "USB"
     legacy.ptt = True
-    srv._radio_state = legacy  # noqa: SLF001
+    srv.sync_state_store_from_radio_state(legacy)
 
     envelope = srv.build_state_update_envelope(force_full=True)
     assert envelope["type"] == "full"
@@ -1408,7 +1408,9 @@ def test_legacy_state_store_sync_preserves_global_rit_on() -> None:
     assert srv.build_public_state()["ritOn"] is True
 
 
-def test_public_state_syncs_legacy_active_after_state_store_observations() -> None:
+def test_public_state_uses_ingested_legacy_active_after_state_store_observations() -> (
+    None
+):
     srv = WebServer(None)
     srv.command_state_store.apply(
         _store_observation(
@@ -1417,7 +1419,9 @@ def test_public_state_syncs_legacy_active_after_state_store_observations() -> No
             at=1.0,
         )
     )
-    srv._radio_state.active = "SUB"  # noqa: SLF001
+    legacy = RadioState()
+    legacy.active = "SUB"
+    srv.sync_state_store_from_radio_state(legacy, changed_legacy_keys={"active"})
 
     public_state = srv.build_public_state()
 
@@ -1425,7 +1429,7 @@ def test_public_state_syncs_legacy_active_after_state_store_observations() -> No
     assert public_state["active"] == "SUB"
 
 
-def test_public_state_syncs_legacy_global_toggle_after_state_store_observations() -> None:
+def test_public_state_uses_ingested_legacy_global_toggle_after_observations() -> None:
     srv = WebServer(None)
     srv.command_state_store.apply(
         _store_observation(
@@ -1434,7 +1438,9 @@ def test_public_state_syncs_legacy_global_toggle_after_state_store_observations(
             at=1.0,
         )
     )
-    srv._radio_state.dual_watch = True  # noqa: SLF001
+    legacy = RadioState()
+    legacy.dual_watch = True
+    srv.sync_state_store_from_radio_state(legacy, changed_legacy_keys={"dual_watch"})
 
     public_state = srv.build_public_state()
 
@@ -1450,10 +1456,14 @@ def test_public_state_sync_can_clear_legacy_global_toggle_default() -> None:
             at=1.0,
         )
     )
-    srv._radio_state.split = True  # noqa: SLF001
+    enabled = RadioState()
+    enabled.split = True
+    srv.sync_state_store_from_radio_state(enabled)
     assert srv.build_public_state()["split"] is True
 
-    srv._radio_state.split = False  # noqa: SLF001
+    cleared = RadioState()
+    cleared.split = False
+    srv.sync_state_store_from_radio_state(cleared)
 
     assert srv.build_public_state()["split"] is False
 
@@ -1468,8 +1478,13 @@ async def test_http_and_ws_full_state_share_post_sync_legacy_snapshot() -> None:
             at=1.0,
         )
     )
-    srv._radio_state.active = "SUB"  # noqa: SLF001
-    srv._radio_state.dual_watch = True  # noqa: SLF001
+    legacy = RadioState()
+    legacy.active = "SUB"
+    legacy.dual_watch = True
+    srv.sync_state_store_from_radio_state(
+        legacy,
+        changed_legacy_keys={"active", "dual_watch"},
+    )
 
     envelope = srv.build_state_update_envelope(force_full=True)
     assert envelope["type"] == "full"

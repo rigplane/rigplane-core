@@ -277,3 +277,43 @@ def test_web_server_state_change_callback_does_not_bump_poller_revision() -> Non
     )[0]
 
     assert "bump_revision" not in callback_body
+
+
+def _web_server_method_source(method_name: str) -> str:
+    source = (REPO_ROOT / "src/rigplane/web/server.py").read_text()
+    marker = f"    def {method_name}("
+    assert marker in source
+    return source.split(marker, maxsplit=1)[1].split("\n    def ", maxsplit=1)[0]
+
+
+@pytest.mark.parametrize(  # type: ignore[untyped-decorator]
+    "method_name",
+    [
+        "_broadcast_state_update",
+        "build_public_state",
+        "build_state_update_envelope",
+    ],
+)
+def test_web_delivery_methods_snapshot_only(method_name: str) -> None:
+    method_source = _web_server_method_source(method_name)
+
+    assert "command_state_store.snapshot()" in method_source
+    forbidden_fragments = {
+        "_sync_legacy_state_store_for_delivery": "legacy sync during delivery",
+        "sync_state_store_from_radio_state(": "legacy ingestion during delivery",
+        "command_state_store.apply(": "StateStore mutation during delivery",
+        "self._radio_state": "legacy RadioState read/write during delivery",
+        ".radio_state": "backend RadioState read during delivery",
+        "self._radio_poller": "poller state read during delivery",
+    }
+    for fragment, reason in forbidden_fragments.items():
+        assert fragment not in method_source, reason
+
+
+def test_legacy_state_sync_is_not_called_from_web_server_delivery() -> None:
+    server_source = (REPO_ROOT / "src/rigplane/web/server.py").read_text()
+    startup_source = (REPO_ROOT / "src/rigplane/web/web_startup.py").read_text()
+
+    assert "_sync_legacy_state_store_for_delivery" not in server_source
+    assert ".sync_state_store_from_radio_state(" not in server_source
+    assert "server.sync_state_store_from_radio_state(state)" in startup_source

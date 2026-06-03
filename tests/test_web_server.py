@@ -432,12 +432,13 @@ async def server_serial_radio() -> tuple[WebServer, SerialMockRadio]:
     """WebServer running on top of a real SerialMockRadio core."""
     radio = SerialMockRadio()
     await radio.connect()
-    # Seed RadioState so /api/v1/state exposes non-trivial freq/mode.
+    # Seed legacy RadioState, then ingest it before delivery snapshots.
     radio.radio_state.main.freq = 14_074_000
     radio.radio_state.main.mode = "USB"
 
     config = WebConfig(host="127.0.0.1", port=0, keepalive_interval=9999.0)
     srv = WebServer(radio, config)
+    srv.sync_state_store_from_radio_state(radio.radio_state)
     await srv.start()
     try:
         yield srv, radio

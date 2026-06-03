@@ -45,9 +45,9 @@ Decision statuses:
 | `web/radio_poller.py::_execute` direct command mirrors | `compatibility_only` | Supported commands apply command-response observations; remaining `RadioState` writes are legacy read-after-write mirrors and no longer advance a poller-owned public revision. | `deferred_follow_up`: migrate remaining command mirror fields to typed command observations/pending overlays field-family by field-family. |
 | `web/radio_poller.py::_last_polled` and `_send_query` | `executor_cache_keep` | Poll cadence is acquisition/runtime local. Meter and state query observations feed `StateStore` where supported. | Do not use poll cadence markers as delivery freshness for Web consumers. |
 | `web/radio_poller.py::_poll_unselected_slot` / host `_vfo_slot_override` | `migrated` plus `protocol_local_keep` | VFO swap mechanics remain protocol-local; returned values are slot-scoped observations where supported. | Keep swap/restore invisible to consumer state except via confirmed observations. |
-| `web/server.py::_radio_state` and `build_public_state` | `migrated` plus `compatibility_only` | HTTP and WS state build from `command_state_store.snapshot()`. `_sync_legacy_state_store_for_delivery()` is a one-way compatibility adapter from mutable `RadioState` to `StateStore`. | Legacy sync is allowed only at delivery boundary; normal delivery must not read backend/poller state as source of truth. |
+| `web/server.py::_radio_state` and `build_public_state` | `migrated` plus `compatibility_only` | HTTP and WS state build from `command_state_store.snapshot()`. `sync_state_store_from_radio_state(...)` is a one-way compatibility adapter from mutable `RadioState` to `StateStore` for explicit ingress/startup composition points. | Normal delivery must not call compatibility sync or read backend/poller/legacy state to build radio values. |
 | `web/server.py::_health_revision` | `compatibility_only` | Public health transitions are separate from semantic `stateRevision` and included in ETags. | Keep `healthRevision` additive/backward compatible until a public freshness schema replacement exists. |
-| `web/server.py::_broadcast_state_update` | `migrated` | Broadcast encodes snapshots from `StateStore` and suppresses duplicate state keys using state/freshness/health revisions. | Delivery triggers may broadcast events, but they must not mutate confirmed state. |
+| `web/server.py::_broadcast_state_update` | `migrated` | Broadcast encodes snapshots from `StateStore` and suppresses duplicate state keys using state/freshness/health revisions. Audio FFT scope metadata is derived from the same snapshot before broadcast. | Delivery triggers may broadcast events, but they must not mutate confirmed state or ingest legacy state. |
 | `web/server.py::_serve_state` | `migrated` | HTTP ETag uses `stateRevision-freshnessRevision-healthRevision`; body `revision` aliases `stateRevision`. | Preserve legacy `revision` key for existing clients. |
 | `web/_delta_encoder.py` | `migrated` | MOR-347 splits transport-local `transportSeq` from canonical `revision`/`stateRevision`. `tests/test_delta_encoder.py` covers the split. | `revision` remains a legacy alias for canonical state revision when supplied; no frontend should treat `transportSeq` as state freshness. |
 | `web/handlers/control.py` initial state | `migrated` | Initial WS state calls server `build_state_update_envelope(force_full=True)` so HTTP and WS share the same snapshot revision/freshness. | Fallback `build_public_state_payload(... revision=0)` remains compatibility-only for handler tests without a server. |
@@ -91,7 +91,8 @@ Decision statuses:
 ## MOR-347 Static Guards and Regression Coverage
 
 - `tests/test_state_pipeline_contracts.py` rejects Web poller public revision
-  API reintroduction and WebServer callback bumps.
+  API reintroduction, WebServer callback bumps, and delivery-time legacy
+  sync/direct StateStore mutation in Web delivery methods.
 - `tests/test_delta_encoder.py` verifies canonical `revision`/`stateRevision`
   are split from transport-local `transportSeq`.
 - Web regression tests cover meter-only semantic changes, freshness-only

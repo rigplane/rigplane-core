@@ -292,28 +292,6 @@ _CivTransactionExpect = Literal["none", "ack", "data"]
 _MISSING_BATCH_STEP_ID = object()
 
 
-def _changed_legacy_state_keys(
-    current: Any,
-    previous: Any,
-    *,
-    prefix: str = "",
-) -> set[str]:
-    if current == previous:
-        return set()
-    changed = {prefix} if prefix else set()
-    if isinstance(current, dict) and isinstance(previous, dict):
-        for key in current.keys() | previous.keys():
-            child_prefix = f"{prefix}.{key}" if prefix else str(key)
-            changed.update(
-                _changed_legacy_state_keys(
-                    current.get(key),
-                    previous.get(key),
-                    prefix=child_prefix,
-                )
-            )
-    return changed
-
-
 class _HttpBatchValidationError(ValueError):
     def __init__(self, error: str, message: str) -> None:
         super().__init__(message)
@@ -723,7 +701,6 @@ class WebServer:
         self._radio_state: RadioState = (
             raw_radio_state if isinstance(raw_radio_state, RadioState) else RadioState()
         )
-        self._legacy_delivery_state_dict: dict[str, Any] = RadioState().to_dict()
         if radio is not None:
             try:
                 setattr(radio, "_state_diagnostics", self._state_diagnostics)
@@ -1048,25 +1025,39 @@ class WebServer:
             len(self._audio_scope_handlers),
         )
 
-    def _update_fft_scope_freq(self) -> None:
-        """Sync AudioFftScope center frequency from current radio state."""
+    def _update_fft_scope_freq(self, snapshot: StateSnapshot | None = None) -> None:
+        """Sync AudioFftScope center frequency from a StateStore snapshot."""
         if self._audio_fft_scope is None:
             return
-        main = getattr(self._radio_state, "main", None)
-        if main is not None:
-            freq = getattr(main, "freq", 0)
-            if isinstance(freq, int) and freq > 0:
-                self._audio_fft_scope.set_center_freq(freq)
+        if snapshot is None:
+            snapshot = self.command_state_store.snapshot()
+        try:
+            freq = snapshot.field(FieldPath.active("0", "freq_mode", "freq_hz")).value
+        except KeyError:
+            return
+        if isinstance(freq, int) and freq > 0:
+            self._audio_fft_scope.set_center_freq(freq)
 
-    def _update_fft_scope_mode(self) -> None:
-        """Sync AudioFftScope bandwidth from current radio mode via rig profile."""
+    def _update_fft_scope_mode(self, snapshot: StateSnapshot | None = None) -> None:
+        """Sync AudioFftScope bandwidth from a StateStore snapshot."""
         if self._audio_fft_scope is None:
             return
-        main = getattr(self._radio_state, "main", None)
-        if main is None:
+        if snapshot is None:
+            snapshot = self.command_state_store.snapshot()
+        try:
+            mode = snapshot.field(FieldPath.active("0", "freq_mode", "mode")).value
+        except KeyError:
             return
-        mode = getattr(main, "mode", None)
-        data_mode = getattr(main, "data_mode", 0)
+        if not isinstance(mode, str):
+            return
+        try:
+            data_mode = snapshot.field(
+                FieldPath.active("0", "freq_mode", "data_mode")
+            ).value
+        except KeyError:
+            data_mode = 0
+        if not isinstance(data_mode, int):
+            data_mode = 0
         profile = self._get_profile()
         rule = profile.resolve_filter_rule(mode, data_mode=data_mode)
         if rule is not None and rule.max_hz is not None:
@@ -1133,12 +1124,11 @@ class WebServer:
             self._pending_state_broadcast_task.cancel()
             self._pending_state_broadcast_task = None
 
-        # Keep audio FFT scope center freq and mode bandwidth in sync
-        self._update_fft_scope_freq()
-        self._update_fft_scope_mode()
-
-        self._sync_legacy_state_store_for_delivery()
         snapshot = self.command_state_store.snapshot()
+        # Keep audio FFT scope center freq and mode bandwidth in sync
+        # from the same canonical snapshot used for Web delivery.
+        self._update_fft_scope_freq(snapshot)
+        self._update_fft_scope_mode(snapshot)
         body = self._build_public_state_from_snapshot(snapshot)
         state_key = (
             snapshot.state_revision,
@@ -1183,7 +1173,6 @@ class WebServer:
 
     def build_public_state(self, *, updated_at: str | None = None) -> dict[str, Any]:
         """Return the canonical public state payload for web consumers."""
-        self._sync_legacy_state_store_for_delivery()
         snapshot = self.command_state_store.snapshot()
         return self._build_public_state_from_snapshot(snapshot, updated_at=updated_at)
 
@@ -1247,7 +1236,6 @@ class WebServer:
 
     def build_state_update_envelope(self, *, force_full: bool = False) -> dict[str, Any]:
         """Return a WS state-update envelope from the canonical StateStore view."""
-        self._sync_legacy_state_store_for_delivery()
         snapshot = self.command_state_store.snapshot()
         body = self._build_public_state_from_snapshot(snapshot)
         encoder = (
@@ -1262,21 +1250,6 @@ class WebServer:
                 freshness_revision=snapshot.freshness_revision,
             ),
         )
-
-    def _sync_legacy_state_store_for_delivery(self) -> None:
-        """Reconcile legacy public RadioState fields before delivery snapshots."""
-        state_dict = self._radio_state.to_dict()
-        changed_legacy_keys = _changed_legacy_state_keys(
-            state_dict,
-            self._legacy_delivery_state_dict,
-        )
-        if not changed_legacy_keys:
-            return
-        self.sync_state_store_from_radio_state(
-            self._radio_state,
-            changed_legacy_keys=changed_legacy_keys,
-        )
-        self._legacy_delivery_state_dict = copy.deepcopy(state_dict)
 
     def sync_state_store_from_radio_state(
         self,

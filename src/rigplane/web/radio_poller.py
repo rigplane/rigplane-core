@@ -1552,6 +1552,26 @@ class RadioPoller:
                         await radio.set_freq(freq)
                         await asyncio.sleep(self._gap)
                         await radio.set_mode(mode_name, filter_num)
+                        self._apply_command_response_observation(
+                            "set_freq",
+                            {"freq": freq, "receiver": 0},
+                            command_id=f"{command_id}:freq" if command_id else None,
+                            source=source,
+                            session_id=session_id,
+                            command_service=command_service,
+                        )
+                        self._apply_command_response_observation(
+                            "set_mode",
+                            {
+                                "mode": mode_name,
+                                "filter_width": filter_num,
+                                "receiver": 0,
+                            },
+                            command_id=f"{command_id}:mode" if command_id else None,
+                            source=source,
+                            session_id=session_id,
+                            command_service=command_service,
+                        )
                         # Update local state immediately (don't wait for transceive echo)
                         if self._radio_state:
                             target = self._radio_state.main

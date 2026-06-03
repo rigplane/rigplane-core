@@ -146,18 +146,21 @@ class TestSetBandBSRRecall:
 
     @pytest.mark.asyncio
     async def test_bsr_recall_updates_state(self) -> None:
-        """BSR recall should update RadioState immediately."""
+        """BSR recall should update StateStore and legacy RadioState immediately."""
         radio = _make_radio(model="IC-7300")
         freq_bcd = b"\x00\x70\x20\x07\x00"  # 7207000 in BCD
         bsr_resp = _bsr_response_frame(0x03, 0x01, freq_bcd, 0x00, 0x01)
         radio.send_civ = AsyncMock(return_value=bsr_resp)
 
         poller = _make_poller(radio, model="IC-7300")
-        rev_before = poller.revision
+        snapshot_before = poller._state_store.snapshot()  # noqa: SLF001
 
         await poller._execute(SetBand(band=3))  # noqa: SLF001
 
-        assert poller.revision > rev_before
+        snapshot_after = poller._state_store.snapshot()  # noqa: SLF001
+        assert snapshot_after.state_revision > snapshot_before.state_revision
+        assert snapshot_after.field("receiver.0.freq_mode.freq_hz").value == 7207000
+        assert snapshot_after.field("receiver.0.freq_mode.mode").value == "LSB"
         assert poller._radio_state.main.freq == 7207000  # noqa: SLF001
         assert poller._radio_state.main.mode == "LSB"  # noqa: SLF001
 
