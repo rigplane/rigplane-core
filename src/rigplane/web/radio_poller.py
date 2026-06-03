@@ -2226,9 +2226,9 @@ class RadioPoller:
             return None
         if path.scope.value == "receiver" and path.family.value == "freq_mode":
             if path.name == "freq_hz":
-                return (0x03, None, receiver)
+                return (0x25, None, receiver)
             if path.name == "mode":
-                return (0x04, None, receiver)
+                return (0x26, None, receiver)
             return None
         if path.scope.value == "receiver" and path.family.value == "meters":
             if path.name == "s_meter":

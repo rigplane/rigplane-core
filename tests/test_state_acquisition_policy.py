@@ -406,6 +406,34 @@ def test_known_profiles_load_with_state_acquisition_compatibility() -> None:
     )
 
 
+def test_known_profiles_stream_like_meters_use_fast_non_decaying_policies() -> None:
+    for model in ("IC-7610", "FTX-1", "X6200"):
+        profile = get_radio_profile(model)
+        acquisition = profile.state_acquisition
+        assert acquisition is not None
+        assert acquisition.default_policy.meter_coalescing is not None
+
+        stream_like = tuple(
+            capability
+            for capability in acquisition.capabilities
+            if capability.stream_like
+        )
+        assert stream_like
+
+        for capability in stream_like:
+            policy = acquisition.policy_for(capability.path)
+            assert policy.cadence_seconds is not None
+            assert policy.cadence_seconds <= 0.25
+            assert policy.freshness_ttl_seconds is not None
+            assert policy.freshness_ttl_seconds <= 1.0
+            assert policy.adaptive_decay.enabled is False
+            assert policy.meter_coalescing is not None
+            assert (
+                policy.meter_coalescing.window_seconds
+                == acquisition.default_policy.meter_coalescing.window_seconds
+            )
+
+
 def test_ftx1_profile_declares_slow_control_policies_for_polling_adapter() -> None:
     ftx1 = get_radio_profile("FTX-1")
     assert ftx1.state_acquisition is not None

@@ -277,6 +277,38 @@ async def test_scheduler_due_request_sends_supported_civ_query_once() -> None:
     assert scheduler.pending_requests()[0].paths == (path,)
 
 
+@pytest.mark.parametrize(  # type: ignore[untyped-decorator]
+    ("path", "expected_cmd", "expected_receiver"),
+    [
+        (FieldPath.active("main", "freq_mode", "freq_hz"), 0x25, 0),
+        (FieldPath.active("main", "freq_mode", "mode"), 0x26, 0),
+        (FieldPath.active("sub", "freq_mode", "freq_hz"), 0x25, 1),
+        (FieldPath.active("sub", "freq_mode", "mode"), 0x26, 1),
+    ],
+)
+@pytest.mark.asyncio
+async def test_scheduler_active_freq_mode_requests_use_receiver_payload(
+    path: FieldPath,
+    expected_cmd: int,
+    expected_receiver: int,
+) -> None:
+    radio = _make_radio(active="MAIN")
+    scheduler = AcquisitionScheduler(profile=_acquisition_profile(path))
+    radio._acquisition_scheduler = scheduler
+    poller = RadioPoller(radio, CommandQueue(), radio_state=RadioState())
+
+    await poller._send_query()  # noqa: SLF001
+    await poller._send_query()  # noqa: SLF001
+
+    radio.send_civ.assert_awaited_once_with(
+        expected_cmd,
+        sub=None,
+        data=bytes([expected_receiver]),
+        wait_response=False,
+    )
+    assert scheduler.pending_requests()[0].paths == (path,)
+
+
 @pytest.mark.asyncio
 async def test_scheduler_unknown_query_mapping_is_recorded_and_left_pending() -> None:
     radio = _make_radio(active="MAIN")
