@@ -29,7 +29,7 @@ from ..core.command_service import (
 from ..core.state_diagnostics import StateDiagnosticsRecorder
 from ..core.state_pipeline_contracts import CommandIntent
 from ..core.state_store import StateStore
-from ..exceptions import ConnectionError, TimeoutError
+from ..exceptions import ConnectionError, TimeoutError as RigplaneTimeoutError
 from ..radio_state import RadioState, ReceiverState
 from ..types import Mode
 from .contract import (  # noqa: TID251
@@ -380,7 +380,7 @@ class _RigctldCommandExecutor:
             frame_bytes = params["frame_bytes"]
             try:
                 resp = await send_fn(frame_bytes)
-            except (TimeoutError, asyncio.TimeoutError):
+            except (RigplaneTimeoutError, TimeoutError, asyncio.TimeoutError):
                 logger.debug("send_raw: timeout — returning empty response")
                 return CommandExecutionResult(details={"values": []})
             if resp is None:
@@ -608,7 +608,7 @@ class RigctldHandler:
         except ConnectionError:
             logger.warning("I/O error executing %s", cmd.long_cmd)
             return _err(HamlibError.EIO)
-        except TimeoutError:
+        except (RigplaneTimeoutError, TimeoutError, asyncio.TimeoutError):
             logger.warning("Timeout executing %s", cmd.long_cmd)
             return _err(HamlibError.ETIMEOUT)
         except _RigctldCommandFailure as exc:
@@ -1438,7 +1438,7 @@ class RigctldHandler:
                     )
                     await self._rollback_split(set_split)
                     return HamlibError.EIO
-                except TimeoutError as exc:
+                except (RigplaneTimeoutError, TimeoutError, asyncio.TimeoutError) as exc:
                     logger.warning(
                         "set_split_vfo: set_vfo(%s) timed out (%s); rolling back split",
                         target,

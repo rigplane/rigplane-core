@@ -3146,6 +3146,13 @@ class WebServer:
             try:
                 await asyncio.wait_for(future, timeout=_COMMAND_BATCH_STEP_TIMEOUT)
             except TimeoutError as exc:
+                if step.command_service is not None and step.command_id is not None:
+                    step.command_service.fail_command(
+                        step.command_id,
+                        message=str(exc) or type(exc).__name__,
+                        timed_out=True,
+                        source=step.source,
+                    )
                 results.append(
                     {
                         "index": step.index,

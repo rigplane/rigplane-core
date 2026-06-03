@@ -543,6 +543,147 @@ async def test_http_command_batch_preparation_uses_shared_command_service(
 
 
 @pytest.mark.asyncio
+async def test_websocket_reused_command_ids_are_scoped_per_connection() -> None:
+    radio = SimpleNamespace(connected=True, capabilities=set())
+    srv = WebServer(radio, WebConfig())
+    handler_a = ControlHandler(
+        SimpleNamespace(send_text=AsyncMock(), recv=AsyncMock()),
+        radio,
+        "9.9.9",
+        "IC-7610",
+        server=srv,
+        session_id="ws-a",
+    )
+    handler_b = ControlHandler(
+        SimpleNamespace(send_text=AsyncMock(), recv=AsyncMock()),
+        radio,
+        "9.9.9",
+        "IC-7610",
+        server=srv,
+        session_id="ws-b",
+    )
+
+    await handler_a._enqueue_command(  # noqa: SLF001
+        "set_freq",
+        {"freq": 14_074_000, "receiver": 0},
+        command_id="ws-shared",
+        source="websocket",
+    )
+    await handler_b._enqueue_command(  # noqa: SLF001
+        "set_freq",
+        {"freq": 14_075_000, "receiver": 0},
+        command_id="ws-shared",
+        source="websocket",
+    )
+
+    overlays_a = srv.command_service.pending_overlays(
+        source="websocket",
+        session_id="ws-a",
+        command_id="ws-shared",
+    )
+    overlays_b = srv.command_service.pending_overlays(
+        source="websocket",
+        session_id="ws-b",
+        command_id="ws-shared",
+    )
+
+    assert len(overlays_a) == 1
+    assert overlays_a[0].value == 14_074_000
+    assert len(overlays_b) == 1
+    assert overlays_b[0].value == 14_075_000
+    accepted = [
+        event
+        for event in srv.command_service.lifecycle_events()
+        if event.command_id == "ws-shared" and event.state == "accepted"
+    ]
+    assert [event.details["session_id"] for event in accepted] == ["ws-a", "ws-b"]
+
+
+@pytest.mark.asyncio
+async def test_http_command_batch_timeout_marks_command_timed_out_and_expires_overlay(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    radio = SimpleNamespace(connected=True, capabilities=set())
+    srv = WebServer(radio, WebConfig())
+    writer = _FakeWriter()
+    seen: dict[str, object] = {}
+    real_wait_for = asyncio.wait_for
+
+    def fake_put_ordered(
+        command: object,
+        *,
+        future: asyncio.Future[None] | None = None,
+        command_id: str | None = None,
+        source: str | None = None,
+        command_service=None,
+    ) -> None:
+        del command
+        assert future is not None
+        seen.update(
+            {
+                "future": future,
+                "command_id": command_id,
+                "source": source,
+                "command_service": command_service,
+                "overlays": command_service.pending_overlays(
+                    source="http",
+                    session_id=None,
+                    command_id=command_id,
+                ),
+            }
+        )
+
+    async def fake_wait_for(awaitable, timeout):
+        if awaitable is seen.get("future"):
+            awaitable.cancel()
+            raise TimeoutError("batch step timed out")
+        return await real_wait_for(awaitable, timeout)
+
+    monkeypatch.setattr(srv.command_queue, "put_ordered", fake_put_ordered)
+    monkeypatch.setattr("rigplane.web.server.asyncio.wait_for", fake_wait_for)
+    payload = json.dumps(
+        {
+            "steps": [
+                {
+                    "id": "http-timeout",
+                    "name": "set_freq",
+                    "params": {"freq": 14_074_000, "receiver": 0},
+                }
+            ]
+        }
+    ).encode()
+
+    await srv._handle_http_commands(  # noqa: SLF001
+        "/api/v1/commands/batch",
+        writer,
+        headers={"content-length": str(len(payload))},
+        reader=_reader_with(payload),
+    )
+
+    status, body = _response_json(writer)
+    assert status == 200
+    assert body["ok"] is False
+    assert body["results"][0]["status"] == "timed_out"
+    assert seen["overlays"] != ()
+    assert (
+        srv.command_service.pending_overlays(
+            source="http",
+            session_id=None,
+            command_id=seen["command_id"],
+        )
+        == ()
+    )
+    timed_out = [
+        event
+        for event in srv.command_service.lifecycle_events()
+        if event.command_id == seen["command_id"] and event.state == "timed_out"
+    ]
+    assert len(timed_out) == 1
+    assert timed_out[0].source == "http"
+    assert timed_out[0].message == "batch step timed out"
+
+
+@pytest.mark.asyncio
 async def test_healthz_reports_process_liveness() -> None:
     srv = WebServer(None, WebConfig(host="127.0.0.1", port=0))
     writer = _FakeWriter()

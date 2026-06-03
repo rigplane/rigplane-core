@@ -433,6 +433,7 @@ class ControlHandler:
         radio_model: str,
         server: Any = None,
         read_only: bool = False,
+        session_id: str | None = None,
     ) -> None:
         self._ws = ws
         self._radio = radio
@@ -440,6 +441,9 @@ class ControlHandler:
         self._radio_model = radio_model
         self._server = server
         self._read_only = read_only
+        self._session_id = (
+            session_id if session_id is not None else f"websocket-{time.monotonic_ns()}"
+        )
         self._subscribed_streams: set[str] = set()
         self._event_queue: BoundedQueue[dict[str, Any]] = BoundedQueue(
             maxsize=100,
@@ -948,6 +952,7 @@ class ControlHandler:
             intent_params,
             source=source,
             command_id=command_id,
+            session_id=self._session_id if source == "websocket" else None,
         )
         result = await self._command_service.execute(intent)
         return dict(result.executor_result.details or {})

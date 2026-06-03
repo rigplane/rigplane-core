@@ -1098,6 +1098,15 @@ async def test_timeout_error_becomes_etimeout(
 
 
 @pytest.mark.asyncio
+async def test_builtin_timeout_error_becomes_etimeout(
+    handler: RigctldHandler, mock_radio: AsyncMock
+) -> None:
+    mock_radio.get_freq.side_effect = TimeoutError("timeout")
+    resp = await handler.execute(get_cmd("get_freq"))
+    assert resp.error == HamlibError.ETIMEOUT
+
+
+@pytest.mark.asyncio
 async def test_value_error_becomes_einval(
     handler: RigctldHandler, mock_radio: AsyncMock
 ) -> None:

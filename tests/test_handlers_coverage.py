@@ -259,10 +259,18 @@ def _control_handler(
     ws: object | None = None,
     radio: object | None = None,
     server: object | None = None,
+    session_id: str | None = None,
 ) -> ControlHandler:
     if ws is None:
         ws = SimpleNamespace(send_text=AsyncMock(), recv=AsyncMock())
-    return ControlHandler(ws, radio, "9.9.9", "IC-7610", server=server)
+    return ControlHandler(
+        ws,
+        radio,
+        "9.9.9",
+        "IC-7610",
+        server=server,
+        session_id=session_id,
+    )
 
 
 @pytest.mark.asyncio
