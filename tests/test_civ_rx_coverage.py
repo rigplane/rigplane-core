@@ -41,12 +41,25 @@ from test_radio import MockTransport, _wrap_civ_in_udp
 from rigplane import IC_7610_ADDR
 from rigplane.runtime._civ_rx import CIV_HEADER_SIZE
 from rigplane.commands import CONTROLLER_ADDR, build_civ_frame
+from rigplane.core.acquisition_scheduler import (
+    AcquisitionScheduler,
+    MeterObservationCoalescer,
+)
+from rigplane.core.state_acquisition_policy import (
+    AcquisitionPolicy,
+    FieldCapability,
+    MeterCoalescingPolicy,
+    RadioAcquisitionProfile,
+)
+from rigplane.core.state_diagnostics import StateDiagnosticsRecorder
+from rigplane.core.state_pipeline_contracts import FieldPath
 from rigplane.exceptions import ConnectionError
 from rigplane.radio import IcomRadio
 from rigplane.radio_state import RadioState
 from rigplane.scope import ScopeFrame
 from rigplane.core.state_store import StateSnapshot
 from rigplane.types import CivFrame, Mode, bcd_encode
+from rigplane.web.radio_poller import CommandQueue, RadioPoller
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -92,6 +105,24 @@ def _bcd2(value: int) -> bytes:
     b0 = (int(d[0]) << 4) | int(d[1])
     b1 = (int(d[2]) << 4) | int(d[3])
     return bytes([b0, b1])
+
+
+def _acquisition_profile(
+    *paths: FieldPath,
+    policy: AcquisitionPolicy | None = None,
+) -> RadioAcquisitionProfile:
+    acquisition_policy = policy or AcquisitionPolicy(
+        cadence_seconds=1.0,
+        freshness_ttl_seconds=4.0,
+    )
+    return RadioAcquisitionProfile(
+        provider="icom_civ",
+        capabilities=tuple(
+            FieldCapability(path=path, polling=True, stream_like=path.family.value == "meters")
+            for path in paths
+        ),
+        default_policy=acquisition_policy,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -869,6 +900,233 @@ def test_update_state_cache_projects_supported_fields_into_state_store(
 
     assert field.value == expected
     assert field.source.source == expected_source
+
+
+def test_update_state_cache_records_scheduler_result_for_matching_pending_request(
+    radio: IcomRadio,
+) -> None:
+    class _SpyScheduler(AcquisitionScheduler):
+        def __init__(self, *, profile: RadioAcquisitionProfile) -> None:
+            super().__init__(profile=profile)
+            self.recorded_count = 0
+
+        def record_acquisition_result(self, request, change_set):  # type: ignore[no-untyped-def]
+            self.recorded_count += 1
+            return super().record_acquisition_result(request, change_set)
+
+    path = FieldPath.active("main", "freq_mode", "freq_hz")
+    scheduler = _SpyScheduler(profile=_acquisition_profile(path))
+    scheduler.due_requests(now=0.0)
+    radio._acquisition_scheduler = scheduler
+
+    radio._civ_runtime._update_state_cache_from_frame(
+        _make_frame(cmd=0x03, data=bcd_encode(14_074_000))
+    )
+
+    assert scheduler.recorded_count == 1
+    assert scheduler.pending_requests() == ()
+
+
+@pytest.mark.parametrize(  # type: ignore[untyped-decorator]
+    ("path", "cmd", "receiver", "payload", "stored_path", "expected"),
+    [
+        (
+            FieldPath.active("main", "freq_mode", "freq_hz"),
+            0x25,
+            0x00,
+            bcd_encode(14_074_000),
+            "receiver.0.active.freq_mode.freq_hz",
+            14_074_000,
+        ),
+        (
+            FieldPath.active("sub", "freq_mode", "freq_hz"),
+            0x25,
+            0x01,
+            bcd_encode(7_100_000),
+            "receiver.1.active.freq_mode.freq_hz",
+            7_100_000,
+        ),
+        (
+            FieldPath.active("main", "freq_mode", "mode"),
+            0x26,
+            0x00,
+            bytes([Mode.USB.value, 0x00, 1]),
+            "receiver.0.active.freq_mode.mode",
+            "USB",
+        ),
+        (
+            FieldPath.active("sub", "freq_mode", "mode"),
+            0x26,
+            0x01,
+            bytes([Mode.CW.value, 0x00, 3]),
+            "receiver.1.active.freq_mode.mode",
+            "CW",
+        ),
+    ],
+)
+async def test_scheduler_active_freq_mode_request_completes_from_civ_rx_loop(
+    radio: IcomRadio,
+    transport: MockTransport,
+    path: FieldPath,
+    cmd: int,
+    receiver: int,
+    payload: bytes,
+    stored_path: str,
+    expected: object,
+) -> None:
+    scheduler = AcquisitionScheduler(profile=_acquisition_profile(path))
+    radio._acquisition_scheduler = scheduler
+    poller = RadioPoller(radio, CommandQueue(), radio_state=RadioState())
+
+    await poller._send_query()  # noqa: SLF001
+
+    assert scheduler.pending_requests()[0].paths == (path,)
+
+    civ = build_civ_frame(
+        CONTROLLER_ADDR,
+        IC_7610_ADDR,
+        cmd,
+        data=bytes([receiver]) + payload,
+    )
+    transport.queue_response(_wrap_civ_in_udp(civ))
+
+    radio._civ_runtime.start_pump()
+    try:
+        for _ in range(20):
+            if scheduler.pending_requests() == ():
+                break
+            await asyncio.sleep(0.01)
+    finally:
+        await radio._civ_runtime.stop_pump()
+        radio._connected = False
+
+    assert scheduler.pending_requests() == ()
+    assert radio._state_store.snapshot().field(stored_path).value == expected
+
+
+def test_meter_coalescing_applies_latest_due_sample_and_records_diagnostics(
+    radio: IcomRadio,
+) -> None:
+    path = FieldPath.receiver("main", "meters", "s_meter")
+    policy = AcquisitionPolicy(
+        cadence_seconds=1.0,
+        freshness_ttl_seconds=4.0,
+        meter_coalescing=MeterCoalescingPolicy(window_seconds=0.2, max_samples=2),
+    )
+    radio._acquisition_scheduler = AcquisitionScheduler(
+        profile=_acquisition_profile(path, policy=policy)
+    )
+    radio._meter_observation_coalescer = MeterObservationCoalescer()
+    radio._state_diagnostics = StateDiagnosticsRecorder(enabled=True)
+    events: list[tuple[str, dict[str, object]]] = []
+    radio._on_state_change = lambda name, data: events.append((name, data))
+
+    with patch(
+        "rigplane.runtime._civ_rx.time.monotonic",
+        side_effect=[100.0, 100.0, 100.1, 100.1],
+    ):
+        radio._civ_runtime._apply_state_store_observations(
+            _make_frame(cmd=0x15, sub=0x02, data=_bcd2(111))
+        )
+        radio._civ_runtime._apply_state_store_observations(
+            _make_frame(cmd=0x15, sub=0x02, data=_bcd2(222))
+        )
+
+    with pytest.raises(KeyError):
+        radio._state_store.snapshot().field("receiver.0.meters.s_meter")
+
+    radio._civ_runtime.flush_due_meter_observations(now=100.3)
+
+    assert radio._state_store.snapshot().field("receiver.0.meters.s_meter").value == 222
+    assert events == [
+        (
+            "state_store_changed",
+            {"coalesced": True, "paths": ["receiver.0.meters.s_meter"]},
+        )
+    ]
+    meter_events = [
+        event
+        for event in radio._state_diagnostics.events()
+        if event.kind == "meter_coalescing"
+    ]
+    assert meter_events[-1].details == {
+        "pendingSampleCount": 0,
+        "pendingPaths": [],
+        "droppedSampleCount": 0,
+        "coalescedSampleCount": 1,
+        "nextFlushMonotonic": None,
+    }
+
+
+def test_same_value_coalesced_meter_flush_completes_scheduler_request(
+    radio: IcomRadio,
+) -> None:
+    path = FieldPath.receiver("main", "meters", "s_meter")
+    stored_path = FieldPath.receiver("0", "meters", "s_meter")
+    policy = AcquisitionPolicy(
+        cadence_seconds=1.0,
+        freshness_ttl_seconds=4.0,
+        meter_coalescing=MeterCoalescingPolicy(window_seconds=0.2),
+    )
+    radio._state_store.apply(
+        radio._civ_runtime._observation(
+            stored_path,
+            111,
+            frame=_make_frame(cmd=0x15, sub=0x02, data=_bcd2(111)),
+        )
+    )
+    scheduler = AcquisitionScheduler(profile=_acquisition_profile(path, policy=policy))
+    scheduler.due_requests(now=100.0)
+    radio._acquisition_scheduler = scheduler
+    radio._meter_observation_coalescer = MeterObservationCoalescer()
+    radio._state_diagnostics = StateDiagnosticsRecorder(enabled=True)
+
+    with patch("rigplane.runtime._civ_rx.time.monotonic", return_value=100.0):
+        radio._civ_runtime._apply_state_store_observations(
+            _make_frame(cmd=0x15, sub=0x02, data=_bcd2(111))
+        )
+    changeset = radio._civ_runtime.flush_due_meter_observations(now=100.2)
+
+    assert changeset is not None
+    assert changeset.changes == ()
+    assert scheduler.pending_requests() == ()
+    assert scheduler.diagnostics()["cadenceByPath"][str(path)][
+        "nextDueMonotonic"
+    ] == 101.0
+    assert any(
+        event.kind == "acquisition_result"
+        and event.details["paths"] == [str(path)]
+        and event.details["changed"] is False
+        for event in radio._state_diagnostics.events()
+    )
+
+
+def test_same_value_stale_refresh_notifies_state_store_changed(
+    radio: IcomRadio,
+) -> None:
+    path = FieldPath.receiver("main", "meters", "s_meter")
+    events: list[tuple[str, dict[str, object]]] = []
+    radio._on_state_change = lambda name, data: events.append((name, data))
+
+    radio._state_store.apply(
+        radio._civ_runtime._observation(
+            path,
+            111,
+            frame=_make_frame(cmd=0x15, sub=0x02, data=_bcd2(111)),
+        )
+    )
+    radio._state_store.mark_stale_due(now=time.monotonic() + 1.0)
+
+    radio._civ_runtime._apply_state_store_observations(
+        _make_frame(cmd=0x15, sub=0x02, data=_bcd2(111))
+    )
+
+    assert events == [
+        (
+            "state_store_changed",
+            {"coalesced": False, "paths": ["receiver.0.meters.s_meter"]},
+        )
+    ]
 
 
 @pytest.mark.parametrize(  # type: ignore[untyped-decorator]

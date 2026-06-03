@@ -13,6 +13,7 @@ from rigplane.core.acquisition_scheduler import (
     AcquisitionPriority,
     AcquisitionScheduler,
     RadioStateModelService,
+    StateFreshnessService,
 )
 from rigplane.core.state_acquisition_policy import (
     AcquisitionPolicy,
@@ -353,6 +354,39 @@ async def test_get_freq_stale_store_value_falls_through_to_radio_readback(
 
 
 @pytest.mark.asyncio
+async def test_get_freq_headless_freshness_service_stale_value_queues_reconciliation(
+    mock_radio: AsyncMock,
+) -> None:
+    store = StateStore()
+    freq = FieldPath.active("main", "freq_mode", "freq_hz")
+    scheduler = AcquisitionScheduler(profile=_acquisition_profile(freq))
+    model_service = RadioStateModelService(store=store, scheduler=scheduler)
+    freshness_service = StateFreshnessService(store=store, scheduler=scheduler)
+    mock_radio._state_store = store
+    mock_radio._state_model_service = model_service
+    mock_radio._state_freshness_service = freshness_service
+    mock_radio.get_freq.return_value = 14_090_000
+    _apply_store_value(
+        store,
+        "receiver.main.active.freq_mode.freq_hz",
+        14_074_000,
+        max_age=0.25,
+    )
+    freshness_service.tick(now=2.0)
+    handler = RigctldHandler(mock_radio, RigctldConfig(cache_ttl=0.25))
+
+    resp = await handler.execute(get_cmd("get_freq"))
+
+    assert resp.values == ["14090000"]
+    requests = scheduler.pending_requests()
+    assert len(requests) == 1
+    assert requests[0].paths == (freq,)
+    assert requests[0].priority is AcquisitionPriority.USER
+    assert requests[0].reasons == ("stale", "rigctld.get_freq")
+    mock_radio.get_freq.assert_awaited_once()
+
+
+@pytest.mark.asyncio
 async def test_set_freq_calls_radio(
     handler: RigctldHandler, mock_radio: AsyncMock
 ) -> None:
@@ -582,6 +616,27 @@ async def test_set_mode_pktrtty_maps_to_rtty_and_sets_data(
     assert resp.ok
     mock_radio.set_mode.assert_awaited_once_with("RTTY", filter_width=None)
     mock_radio.set_data_mode.assert_awaited_once_with(True)
+
+
+@pytest.mark.parametrize(
+    ("packet_mode", "base_mode"),
+    (("PKTUSB", "USB"), ("PKTLSB", "LSB"), ("PKTRTTY", "RTTY")),
+)
+@pytest.mark.asyncio
+async def test_set_mode_packet_refreshes_data_mode_cache(
+    mock_radio: AsyncMock,
+    packet_mode: str,
+    base_mode: str,
+) -> None:
+    handler = RigctldHandler(mock_radio, RigctldConfig())
+
+    resp = await handler.execute(set_cmd("set_mode", packet_mode))
+
+    assert resp.ok
+    mock_radio.set_mode.assert_awaited_once_with(base_mode, filter_width=None)
+    mock_radio.set_data_mode.assert_awaited_once_with(True)
+    assert handler._cache.mode == base_mode  # noqa: SLF001
+    assert handler._cache.data_mode is True  # noqa: SLF001
 
 
 @pytest.mark.asyncio

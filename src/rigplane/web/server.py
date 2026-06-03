@@ -35,10 +35,16 @@ import time
 import urllib.parse
 from collections.abc import Callable, Coroutine
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any, Literal, TextIO
+from typing import TYPE_CHECKING, Any, Literal, Protocol, TextIO, cast
 
 from .. import __version__
 from .._bounded_queue import BoundedQueue
+from ..core.acquisition_scheduler import (
+    AcquisitionScheduler,
+    MeterObservationCoalescer,
+    RadioStateModelService,
+    StateFreshnessService,
+)
 from ..core.state_diagnostics import StateDiagnosticsRecorder
 from ..core.command_service import (
     CommandExecutionResult,
@@ -105,6 +111,43 @@ if TYPE_CHECKING:
 __all__ = ["WebConfig", "WebServer", "run_web_server"]
 
 logger = logging.getLogger(__name__)
+
+
+class _RuntimeCapabilitiesFn(Protocol):
+    def __call__(self, radio: "Radio | None") -> set[str]: ...
+
+
+class _ClassifyRadioHealthFn(Protocol):
+    def __call__(
+        self,
+        radio: "Radio | None",
+        *,
+        server_reachable: bool = True,
+        now_monotonic: float | None = None,
+    ) -> dict[str, Any]: ...
+
+
+class _PublicStatePayloadFromSnapshotFn(Protocol):
+    def __call__(
+        self,
+        snapshot: StateSnapshot,
+        *,
+        radio: "Radio | None",
+        receiver_count: int,
+        updated_at: str | None = None,
+        scope_clients: int = 0,
+        control_clients: int = 0,
+        audio_clients: int = 0,
+        radio_health: dict[str, Any] | None = None,
+        health_revision: int = 0,
+    ) -> dict[str, Any]: ...
+
+
+_runtime_capabilities_impl: _RuntimeCapabilitiesFn = runtime_capabilities
+_classify_radio_health_impl: _ClassifyRadioHealthFn = classify_radio_health
+_build_public_state_payload_from_snapshot_impl: _PublicStatePayloadFromSnapshotFn = (
+    build_public_state_payload_from_snapshot
+)
 
 
 def _install_shutdown_signal_handlers(
@@ -527,7 +570,7 @@ def _serialize_keyboard_config(profile: "RadioProfile") -> dict[str, object] | N
 
 def _runtime_capabilities(radio: "Radio | None") -> set[str]:
     """Backward-compatible alias to shared runtime_capabilities helper."""
-    return runtime_capabilities(radio)
+    return _runtime_capabilities_impl(radio)
 
 
 def _supports_scope(radio: "Radio | None") -> bool:
@@ -650,6 +693,11 @@ class WebServer:
         self.command_state_store = (
             raw_state_store if isinstance(raw_state_store, StateStore) else StateStore()
         )
+        self._state_freshness_service = StateFreshnessService(
+            store=self.command_state_store,
+            on_delta=self._on_state_freshness_delta,
+        )
+        self._bootstrap_state_acquisition()
         self.command_service = CommandService(
             executor=_SharedControlCommandExecutor(self),
             state_store=self.command_state_store,
@@ -761,6 +809,7 @@ class WebServer:
         self._zombie_reaper_task: asyncio.Task[None] | None = None
         # UDP discovery responder
         self._discovery: DiscoveryResponder | None = None
+        self._server_was_running: bool = False
         # Diagnostic upload session manager (preview/send/save/delete).
         # Sweeper task is started lazily on the first preview request and
         # explicitly stopped during web shutdown.
@@ -815,9 +864,42 @@ class WebServer:
         except KeyError:
             return resolve_radio_profile(model="IC-7610")
 
+    def _bootstrap_state_acquisition(self) -> None:
+        """Attach shared StateStore-backed acquisition services when profiled."""
+        radio = self._radio
+        if radio is None:
+            return
+        try:
+            profile = self._get_profile()
+        except Exception:
+            logger.debug("state acquisition: failed to resolve profile", exc_info=True)
+            return
+        acquisition_profile = getattr(profile, "state_acquisition", None)
+        if acquisition_profile is None:
+            return
+        scheduler = AcquisitionScheduler(profile=acquisition_profile)
+        service = RadioStateModelService(
+            store=self.command_state_store,
+            scheduler=scheduler,
+        )
+        freshness_service = StateFreshnessService(
+            store=self.command_state_store,
+            scheduler=scheduler,
+            on_delta=self._on_state_freshness_delta,
+        )
+        coalescer = MeterObservationCoalescer()
+        self._state_freshness_service = freshness_service
+        try:
+            setattr(radio, "_state_model_service", service)
+            setattr(radio, "_state_freshness_service", freshness_service)
+            setattr(radio, "_acquisition_scheduler", scheduler)
+            setattr(radio, "_meter_observation_coalescer", coalescer)
+        except Exception:
+            logger.debug("state acquisition: failed to attach services", exc_info=True)
+
     def _radio_ready(self) -> bool:
         """Backend view of radio readiness (CI-V healthy)."""
-        return radio_ready(self._radio)
+        return bool(radio_ready(self._radio))
 
     async def ensure_startup_ready(self, timeout: float = 5.0) -> None:
         """Assert that the attached radio is ready before exposing the server."""
@@ -1147,7 +1229,7 @@ class WebServer:
             and self._cached_public_state_payload is not None
         ):
             return copy.deepcopy(self._cached_public_state_payload)
-        payload = build_public_state_payload_from_snapshot(
+        payload = _build_public_state_payload_from_snapshot_impl(
             snapshot,
             radio=self._radio,
             receiver_count=self._get_profile().receiver_count,
@@ -1171,11 +1253,14 @@ class WebServer:
         encoder = (
             DeltaEncoder(full_state_interval=100) if force_full else self._delta_encoder
         )
-        return encoder.encode(
-            body,
-            force_full=force_full,
-            state_revision=snapshot.state_revision,
-            freshness_revision=snapshot.freshness_revision,
+        return cast(
+            dict[str, Any],
+            encoder.encode(
+                body,
+                force_full=force_full,
+                state_revision=snapshot.state_revision,
+                freshness_revision=snapshot.freshness_revision,
+            ),
         )
 
     def _sync_legacy_state_store_for_delivery(self) -> None:
@@ -1344,21 +1429,14 @@ class WebServer:
         for observation in observations:
             self.command_state_store.apply(observation)
 
-    async def _state_store_freshness_loop(self) -> None:
-        """Advance freshness-only revisions and broadcast resulting deltas."""
-        try:
-            while True:
-                await asyncio.sleep(0.05)
-                delta = self.command_state_store.mark_stale_due()
-                if delta.freshness or delta.reconciliation_requests:
-                    self._broadcast_state_update()
-        except asyncio.CancelledError:
-            pass
+    def _on_state_freshness_delta(self, _delta: object) -> None:
+        """React to StateStore freshness changes produced by the shared service."""
+        self._broadcast_state_update()
 
     def _build_radio_health(self) -> dict[str, Any]:
         """Build radio health and advance the health revision on transitions."""
         now = time.monotonic()
-        health = classify_radio_health(
+        health = _classify_radio_health_impl(
             self._radio,
             server_reachable=True,
             now_monotonic=now,
@@ -1461,7 +1539,7 @@ class WebServer:
         This is the PRIMARY update path.  Called whenever the radio sends
         a CI-V frame (solicited response or unsolicited change).
         """
-        if self._radio_poller is not None:
+        if self._radio_poller is not None and name != "state_store_changed":
             self._radio_poller.bump_revision()
         self.broadcast_event(name, data)
         self._broadcast_state_update()
@@ -2196,6 +2274,29 @@ class WebServer:
             "stats": stats,
         }
 
+    def _state_acquisition_diagnostics_payload(self) -> dict[str, Any]:
+        radio = self._radio
+        scheduler = (
+            getattr(radio, "_acquisition_scheduler", None)
+            if radio is not None
+            else None
+        )
+        coalescer = (
+            getattr(radio, "_meter_observation_coalescer", None)
+            if radio is not None
+            else None
+        )
+        return {
+            "enabled": isinstance(scheduler, AcquisitionScheduler),
+            "scheduler": scheduler.diagnostics()
+            if isinstance(scheduler, AcquisitionScheduler)
+            else None,
+            "meterCoalescing": coalescer.diagnostics()
+            if isinstance(coalescer, MeterObservationCoalescer)
+            else None,
+            "events": self._state_diagnostics.snapshot(),
+        }
+
     async def _serve_runtime(
         self, writer: asyncio.StreamWriter, headers: dict[str, str] | None = None
     ) -> None:
@@ -2218,6 +2319,7 @@ class WebServer:
                     "address": self._runtime_rigctld_addr,
                 },
                 "bridge": self._runtime_bridge_payload(),
+                "stateAcquisition": self._state_acquisition_diagnostics_payload(),
                 "lastError": self._runtime_last_error,
             },
             separators=(",", ":"),

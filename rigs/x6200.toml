@@ -126,6 +126,18 @@ freshness_ttl_seconds = 4.0
 reconciliation_priority = "command_response"
 external_cat_pause = "pause_polling"
 
+[state_acquisition.field_policies."receiver.main.meters.s_meter"]
+cadence_seconds = 0.25
+freshness_ttl_seconds = 1.0
+adaptive_decay = false
+meter_coalescing_window_seconds = 0.25
+
+[state_acquisition.field_policies."global.meters.power"]
+cadence_seconds = 0.25
+freshness_ttl_seconds = 1.0
+adaptive_decay = false
+meter_coalescing_window_seconds = 0.25
+
 # PDF page 10 (Table 3 — Mode, Data & filter bandwidth) documents:
 # LSB, LSB-D, USB, USB-D, AM, CW, NFM, CWR. The ``-D`` variants are the
 # data-mode flavours selected via byte 2 of mode commands 0x26 0x00/0x01.

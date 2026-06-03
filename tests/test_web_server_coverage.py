@@ -12,12 +12,19 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from rigplane._bounded_queue import BoundedQueue
 from rigplane.core.command_service import (
     command_intent_from_request,
     command_response_observation,
 )
+from rigplane.core.acquisition_scheduler import (
+    AcquisitionScheduler,
+    RadioStateModelService,
+    StateFreshnessService,
+)
 from rigplane.core.state_pipeline_contracts import FieldPath, Observation, SourceMetadata
 from rigplane.core.state_store import FreshnessClock, StateStore
+from rigplane.profiles import resolve_radio_profile
 from rigplane.radio_state import RadioState
 from rigplane.web import server as server_module
 from rigplane.web.handlers.control import ControlHandler
@@ -164,6 +171,12 @@ class _StateNotifyRadio(MagicMock):
         self._reconnect_callback = callback
 
 
+class _ProfiledStateNotifyRadio(_StateNotifyRadio):
+    @property
+    def state_store(self) -> StateStore:
+        return self._state_store
+
+
 @pytest.mark.asyncio
 async def test_start_and_stop_with_radio_sets_callbacks() -> None:
     radio = _StateNotifyRadio()
@@ -197,6 +210,123 @@ async def test_start_and_stop_with_radio_sets_callbacks() -> None:
     # responsibility via the context manager (async with radio:).
     radio.disconnect.assert_not_awaited()
     assert fake_server.closed is True
+
+
+@pytest.mark.asyncio
+async def test_start_attaches_shared_state_model_service_for_acquisition_profile() -> None:
+    radio = _ProfiledStateNotifyRadio()
+    radio.profile = resolve_radio_profile(model="IC-7610")
+    radio.model = radio.profile.model
+    radio.capabilities = set(radio.profile.capabilities)
+    radio._state_store = StateStore()
+    radio.state_cache = MagicMock()
+    radio.disconnect = AsyncMock()
+    radio.connected = True
+    radio.radio_ready = True
+    radio.control_connected = True
+    fake_server = _FakeAsyncServer()
+    fake_poller = MagicMock()
+
+    srv = WebServer(radio, WebConfig(host="127.0.0.1", port=0))
+    with (
+        patch(
+            "rigplane.web.web_startup.asyncio.start_server",
+            new=AsyncMock(return_value=fake_server),
+        ),
+        patch("rigplane.web.web_startup.RadioPoller", return_value=fake_poller) as poller_cls,
+    ):
+        await srv.start()
+        await srv.stop()
+
+    assert srv.command_state_store is radio.state_store
+    assert isinstance(radio._acquisition_scheduler, AcquisitionScheduler)
+    assert isinstance(radio._state_model_service, RadioStateModelService)
+    assert isinstance(radio._state_freshness_service, StateFreshnessService)
+    assert srv._state_freshness_service is radio._state_freshness_service
+    assert radio._meter_observation_coalescer is not None
+    assert poller_cls.call_args.kwargs["state_store"] is radio.state_store
+
+
+def test_state_store_s_meter_change_broadcasts_without_legacy_revision_event() -> None:
+    radio = MagicMock()
+    radio.profile = resolve_radio_profile(model="IC-7610")
+    radio.model = radio.profile.model
+    radio.capabilities = set(radio.profile.capabilities)
+    srv = WebServer(radio, WebConfig(state_diagnostics=True))
+    srv._radio_poller = SimpleNamespace(
+        bump_revision=lambda: srv.state_diagnostics.record(
+            "revision_producing_event",
+            "web.radio_poller",
+            revision=1,
+        )
+    )
+    queue = BoundedQueue[dict[str, object]](maxsize=4)
+    srv.register_control_event_queue(queue)
+    path = FieldPath.receiver("0", "meters", "s_meter")
+    srv.command_state_store.apply(_store_observation(path, 73, at=time.monotonic()))
+
+    srv._on_radio_state_change("state_store_changed", {"paths": [str(path)]})
+
+    event = queue.get_nowait()
+    state_update = queue.get_nowait()
+    assert event == {
+        "type": "event",
+        "name": "state_store_changed",
+        "data": {"paths": [str(path)]},
+    }
+    assert state_update["type"] == "state_update"
+    payload = srv.build_public_state()
+    assert payload["main"]["sMeter"] == 73
+    assert not any(
+        item.kind == "revision_producing_event"
+        for item in srv.state_diagnostics.events()
+    )
+
+
+def test_state_store_freshness_refresh_broadcasts_without_semantic_change() -> None:
+    radio = MagicMock()
+    radio.profile = resolve_radio_profile(model="IC-7610")
+    radio.model = radio.profile.model
+    radio.capabilities = set(radio.profile.capabilities)
+    srv = WebServer(radio, WebConfig(state_diagnostics=True))
+    srv._radio_poller = SimpleNamespace(
+        bump_revision=lambda: srv.state_diagnostics.record(
+            "revision_producing_event",
+            "web.radio_poller",
+            revision=1,
+        )
+    )
+    queue = BoundedQueue[dict[str, object]](maxsize=4)
+    srv.register_control_event_queue(queue)
+    path = FieldPath.receiver("0", "meters", "s_meter")
+    clock = FreshnessClock(start=10.0)
+    store = StateStore(freshness_clock=clock)
+    srv.command_state_store = store
+    store.apply(_store_observation(path, 73, at=clock.now(), max_age=0.5))
+    clock.advance(0.6)
+    store.mark_stale_due()
+    refreshed = store.apply(_store_observation(path, 73, at=clock.now(), max_age=0.5))
+
+    assert refreshed.changes == ()
+    srv._on_radio_state_change("state_store_changed", {"paths": [str(path)]})
+
+    event = queue.get_nowait()
+    state_update = queue.get_nowait()
+    assert event == {
+        "type": "event",
+        "name": "state_store_changed",
+        "data": {"paths": [str(path)]},
+    }
+    assert state_update["type"] == "state_update"
+    assert any(
+        item.kind == "web_delivery_trigger"
+        and item.details["freshness_revision"] == refreshed.freshness_revision
+        for item in srv.state_diagnostics.events()
+    )
+    assert not any(
+        item.kind == "revision_producing_event"
+        for item in srv.state_diagnostics.events()
+    )
 
 
 @pytest.mark.asyncio

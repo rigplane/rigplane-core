@@ -85,6 +85,8 @@ async def _force_gc_ready(server: WebServer) -> None:
         "_scope_health_task",
         "_scope_reenable_task",
         "_dx_client_task",
+        "_state_store_freshness_task",
+        "_pending_state_broadcast_task",
     ):
         task = getattr(server, attr, None)
         if task is not None and not task.done():
@@ -138,7 +140,9 @@ async def test_web_server_gc_after_stop_does_not_log_warning(
     with caplog.at_level(logging.WARNING, logger="rigplane.web.server"):
         server = WebServer(config=WebConfig(port=0, discovery=False))
         await server.start()
+        assert server._server_was_running is True  # type: ignore[attr-defined]
         await server.stop()
+        assert server._server_was_running is False  # type: ignore[attr-defined]
         del server
         gc.collect()
 

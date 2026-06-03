@@ -6,9 +6,14 @@ import asyncio
 import logging
 import time
 from dataclasses import dataclass
+from dataclasses import replace as _replace_dataclass
 from typing import TYPE_CHECKING, Any, cast
 from typing import Literal
 
+from rigplane.core.acquisition_scheduler import (
+    AcquisitionScheduler,
+    MeterObservationCoalescer,
+)
 from rigplane.core.civ import (
     CivEvent,
     CivEventType,
@@ -40,6 +45,8 @@ from rigplane.commands import (
 )
 from rigplane.core.exceptions import ConnectionError, TimeoutError
 from rigplane.core.state_pipeline_contracts import (
+    ChangeSet,
+    FieldChange,
     FieldPath,
     Observation,
     ObservationSource,
@@ -228,6 +235,105 @@ def _frame_native_id(frame: CivFrame) -> str:
     if frame.sub is None:
         return f"civ:{frame.command:02x}"
     return f"civ:{frame.command:02x}:{frame.sub:02x}"
+
+
+_RECEIVER_ALIASES: dict[str, str] = {
+    "0": "main",
+    "main": "0",
+    "1": "sub",
+    "sub": "1",
+}
+
+
+def _field_paths_match(expected: FieldPath, observed: FieldPath) -> bool:
+    if expected == observed:
+        return True
+    if (
+        expected.scope != observed.scope
+        or expected.family != observed.family
+        or expected.name != observed.name
+        or expected.slot != observed.slot
+    ):
+        return False
+    if expected.receiver_id is None or observed.receiver_id is None:
+        return bool(expected.receiver_id == observed.receiver_id)
+    return bool(_RECEIVER_ALIASES.get(expected.receiver_id) == observed.receiver_id)
+
+
+def _profile_path_for_observation(profile: Any, path: FieldPath) -> FieldPath:
+    if path.receiver_id is None:
+        return path
+    candidates = [path]
+    alias = _RECEIVER_ALIASES.get(path.receiver_id)
+    if alias is not None:
+        candidates.append(_replace_dataclass(path, receiver_id=alias))
+    for candidate in candidates:
+        capability = profile.capability_for(candidate)
+        if capability.availability.value != "unknown":
+            return candidate
+    return path
+
+
+def _changeset_for_request_paths(
+    changeset: ChangeSet,
+    *,
+    observed_path: FieldPath,
+    request_paths: tuple[FieldPath, ...],
+) -> ChangeSet:
+    if (
+        not changeset.changes
+        and not changeset.observed_paths
+        and not changeset.freshness_paths
+    ):
+        return changeset
+    remapped_observed_paths = tuple(
+        _request_path_for_observed_path(
+            path,
+            observed_path=observed_path,
+            request_paths=request_paths,
+        )
+        or path
+        for path in changeset.observed_paths
+    )
+    remapped_freshness_paths = tuple(
+        _request_path_for_observed_path(
+            path,
+            observed_path=observed_path,
+            request_paths=request_paths,
+        )
+        or path
+        for path in changeset.freshness_paths
+    )
+    remapped: list[FieldChange] = []
+    for change in changeset.changes:
+        replacement = _request_path_for_observed_path(
+            change.path,
+            observed_path=observed_path,
+            request_paths=request_paths,
+        )
+        remapped.append(
+            change if replacement is None else _replace_dataclass(change, path=replacement)
+        )
+    return _replace_dataclass(
+        changeset,
+        changes=tuple(remapped),
+        observed_paths=remapped_observed_paths,
+        freshness_paths=remapped_freshness_paths,
+    )
+
+
+def _request_path_for_observed_path(
+    path: FieldPath,
+    *,
+    observed_path: FieldPath,
+    request_paths: tuple[FieldPath, ...],
+) -> FieldPath | None:
+    if not _field_paths_match(path, observed_path):
+        return None
+    for request_path in request_paths:
+        if _field_paths_match(request_path, path):
+            return request_path
+    return None
 
 _CMD1A_CTL_MEM_LEVEL_FIELDS = {
     b"\x00\x70": ("ref_adjust", 2),
@@ -1120,13 +1226,130 @@ class CivRuntime:
 
         for observation in observations:
             try:
-                self._host._state_store.apply(observation)
+                self.flush_due_meter_observations(
+                    now=observation.timestamp_monotonic
+                )
+                if self._record_coalesced_meter_observation(observation):
+                    continue
+                changeset = self._host._state_store.apply(observation)
+                self._record_scheduler_result_for_observation(
+                    observation,
+                    changeset,
+                )
+                self._notify_state_store_changed(changeset)
             except Exception:
                 logger.warning(
                     "civ-rx: state-store apply failed for %s",
                     observation.path,
                     exc_info=True,
                 )
+
+    def _record_coalesced_meter_observation(self, observation: Observation) -> bool:
+        if observation.path.family.value != "meters":
+            return False
+        scheduler = getattr(self._host, "_acquisition_scheduler", None)
+        if not isinstance(scheduler, AcquisitionScheduler):
+            return False
+        profile = getattr(scheduler, "_profile", None)
+        if profile is None:
+            return False
+        policy = profile.policy_for(_profile_path_for_observation(profile, observation.path))
+        if policy.meter_coalescing is None:
+            return False
+        coalescer = getattr(self._host, "_meter_observation_coalescer", None)
+        if not isinstance(coalescer, MeterObservationCoalescer):
+            return False
+        coalescer.record(observation, policy.meter_coalescing)
+        self._record_state_diagnostic(
+            "meter_coalescing",
+            "civ_rx.coalescer",
+            **coalescer.diagnostics(),
+        )
+        self.flush_due_meter_observations(now=observation.timestamp_monotonic)
+        return True
+
+    def flush_due_meter_observations(self, *, now: float | None = None) -> ChangeSet | None:
+        coalescer = getattr(self._host, "_meter_observation_coalescer", None)
+        if not isinstance(coalescer, MeterObservationCoalescer):
+            return None
+        timestamp = time.monotonic() if now is None else now
+        changeset = coalescer.flush_due(self._host._state_store, now=timestamp)
+        if changeset is None:
+            return None
+        self._record_scheduler_results_for_changeset(changeset)
+        self._record_state_diagnostic(
+            "meter_coalescing",
+            "civ_rx.coalescer",
+            **coalescer.diagnostics(),
+        )
+        self._notify_state_store_changed(changeset)
+        return changeset
+
+    def _record_scheduler_result_for_observation(
+        self,
+        observation: Observation,
+        changeset: ChangeSet,
+    ) -> None:
+        scheduler = getattr(self._host, "_acquisition_scheduler", None)
+        if not isinstance(scheduler, AcquisitionScheduler):
+            return
+        for request in scheduler.pending_requests():
+            matched_paths = tuple(
+                path for path in request.paths if _field_paths_match(path, observation.path)
+            )
+            if not matched_paths:
+                continue
+            scheduler.record_acquisition_result(
+                _replace_dataclass(request, paths=matched_paths),
+                _changeset_for_request_paths(
+                    changeset,
+                    observed_path=observation.path,
+                    request_paths=matched_paths,
+                ),
+            )
+            self._record_state_diagnostic(
+                "acquisition_result",
+                "civ_rx.scheduler",
+                request_id=request.id,
+                paths=[str(path) for path in matched_paths],
+                changed=bool(changeset.changes),
+            )
+
+    def _record_scheduler_results_for_changeset(self, changeset: ChangeSet) -> None:
+        scheduler = getattr(self._host, "_acquisition_scheduler", None)
+        if not isinstance(scheduler, AcquisitionScheduler):
+            return
+        change_by_path = {change.path: change for change in changeset.changes}
+        paths = changeset.observed_paths or tuple(change_by_path)
+        for path in paths:
+            change = change_by_path.get(path)
+            observation = Observation(
+                path=path,
+                value=None if change is None else change.current,
+                source=changeset.sources[0]
+                if changeset.sources
+                else SourceMetadata(
+                    source="command_response",
+                    provider="icom_civ",
+                    transport="civ",
+                    native_id="coalesced",
+                ),
+                timestamp_monotonic=changeset.timestamp_monotonic,
+            )
+            self._record_scheduler_result_for_observation(observation, changeset)
+
+    def _notify_state_store_changed(self, changeset: ChangeSet) -> None:
+        paths = {change.path for change in changeset.changes}
+        paths.update(changeset.freshness_paths)
+        if not paths:
+            return
+        self._notify_change(
+            "state_store_changed",
+            {
+                "coalesced": changeset.coalesced,
+                "paths": sorted(str(path) for path in paths),
+            },
+        )
 
     def _observations_from_frame(self, frame: CivFrame) -> tuple[Observation, ...]:
         """Decode one CI-V frame into supported observation contracts."""

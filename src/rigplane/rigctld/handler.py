@@ -1188,6 +1188,9 @@ class RigctldHandler:
             session_id=self._session_id(),
         )
         await self._command_service.execute(intent)
+        self._cache.update_mode(base_mode_str, filter_width)
+        if requested_mode in packet_modes:
+            self._cache.update_data_mode(True)
         self._record_pending_overlay(
             self._filter_path(0),
             filter_width,

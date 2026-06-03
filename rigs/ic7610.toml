@@ -154,6 +154,30 @@ supported_controls = [
     "global.tx_state.ptt",
 ]
 
+[state_acquisition.field_policies."receiver.main.meters.s_meter"]
+cadence_seconds = 0.2
+freshness_ttl_seconds = 0.8
+adaptive_decay = false
+meter_coalescing_window_seconds = 0.2
+
+[state_acquisition.field_policies."global.meters.power"]
+cadence_seconds = 0.2
+freshness_ttl_seconds = 0.8
+adaptive_decay = false
+meter_coalescing_window_seconds = 0.2
+
+[state_acquisition.field_policies."global.meters.swr"]
+cadence_seconds = 0.2
+freshness_ttl_seconds = 0.8
+adaptive_decay = false
+meter_coalescing_window_seconds = 0.2
+
+[state_acquisition.field_policies."global.meters.alc"]
+cadence_seconds = 0.2
+freshness_ttl_seconds = 0.8
+adaptive_decay = false
+meter_coalescing_window_seconds = 0.2
+
 # ── Parameterized Capabilities ───────────────────────────────────
 
 [attenuator]

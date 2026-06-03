@@ -8,6 +8,16 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from rigplane.core.acquisition_scheduler import (
+    AcquisitionScheduler,
+    MeterObservationCoalescer,
+)
+from rigplane.core.state_acquisition_policy import (
+    AcquisitionPolicy,
+    FieldCapability,
+    RadioAcquisitionProfile,
+)
+from rigplane.core.state_pipeline_contracts import FieldPath
 from rigplane.core.state_store import StateStore
 from rigplane.core.command_service import (
     CommandExecutionResult,
@@ -87,6 +97,24 @@ class _QueuedAckExecutor:
             command_service=self.command_service,
         )
         return CommandExecutionResult(details={"queued": True})
+
+
+class _InjectedAcquisitionExecutor:
+    def __init__(self) -> None:
+        self.calls: list[tuple[object, frozenset[FieldPath]]] = []
+
+    async def execute(
+        self,
+        request: object,
+        *,
+        already_sent_paths: frozenset[FieldPath],
+    ) -> object:
+        self.calls.append((request, already_sent_paths))
+        return SimpleNamespace(
+            sent_paths=tuple(getattr(request, "paths")),
+            failed_paths=(),
+            failure_reason="",
+        )
 
 
 def _make_radio(active: str = "MAIN") -> MagicMock:
@@ -207,6 +235,24 @@ def _make_radio(active: str = "MAIN") -> MagicMock:
     return radio
 
 
+def _acquisition_profile(
+    *paths: FieldPath,
+    policy: AcquisitionPolicy | None = None,
+    provider: str = "icom_civ",
+) -> RadioAcquisitionProfile:
+    acquisition_policy = policy or AcquisitionPolicy(
+        cadence_seconds=1.0,
+        freshness_ttl_seconds=4.0,
+    )
+    return RadioAcquisitionProfile(
+        provider=provider,
+        capabilities=tuple(
+            FieldCapability(path=path, polling=True) for path in paths
+        ),
+        default_policy=acquisition_policy,
+    )
+
+
 @pytest.mark.asyncio
 async def test_execute_set_data_mode_updates_sub_receiver_state_and_sends_wire_value() -> (
     None
@@ -228,6 +274,329 @@ async def test_execute_set_data_mode_updates_sub_receiver_state_and_sends_wire_v
     assert state.main.data_mode == 0
     assert state.sub.data_mode == 3
     assert ("data_mode_changed", {"mode": 3, "receiver": 1}) in events
+
+
+@pytest.mark.asyncio
+async def test_scheduler_due_request_sends_supported_civ_query_once() -> None:
+    radio = _make_radio(active="MAIN")
+    path = FieldPath.receiver("main", "meters", "s_meter")
+    scheduler = AcquisitionScheduler(profile=_acquisition_profile(path))
+    radio._acquisition_scheduler = scheduler
+    poller = RadioPoller(radio, CommandQueue(), radio_state=RadioState())
+
+    await poller._send_query()  # noqa: SLF001
+    await poller._send_query()  # noqa: SLF001
+
+    radio.send_civ.assert_awaited_once_with(
+        0x29,
+        sub=None,
+        data=b"\x00\x15\x02",
+        wait_response=False,
+    )
+    assert scheduler.pending_requests()[0].paths == (path,)
+
+
+@pytest.mark.asyncio
+async def test_x6200_scheduler_due_request_sends_civ_query_from_profile() -> None:
+    radio = _make_radio(active="MAIN")
+    profile = resolve_radio_profile(model="X6200")
+    assert profile.state_acquisition is not None
+    radio.profile = profile
+    radio.model = profile.model
+    radio.capabilities = set(profile.capabilities)
+    scheduler = AcquisitionScheduler(profile=profile.state_acquisition)
+    radio._acquisition_scheduler = scheduler
+    poller = RadioPoller(radio, CommandQueue(), radio_state=RadioState())
+
+    await poller._send_query()  # noqa: SLF001
+
+    assert radio.send_civ.await_count == 4
+    radio.send_civ.assert_any_await(
+        0x25,
+        sub=None,
+        data=b"\x00",
+        wait_response=False,
+    )
+    radio.send_civ.assert_any_await(
+        0x26,
+        sub=None,
+        data=b"\x00",
+        wait_response=False,
+    )
+    radio.send_civ.assert_any_await(
+        0x29,
+        sub=None,
+        data=b"\x00\x15\x02",
+        wait_response=False,
+    )
+    radio.send_civ.assert_any_await(
+        0x15,
+        sub=0x11,
+        data=b"",
+        wait_response=False,
+    )
+    assert scheduler.pending_requests()
+
+
+@pytest.mark.asyncio
+async def test_xiegu_civ_scheduler_due_request_uses_civ_executor() -> None:
+    radio = _make_radio(active="MAIN")
+    path = FieldPath.active("main", "freq_mode", "mode")
+    scheduler = AcquisitionScheduler(
+        profile=_acquisition_profile(path, provider="xiegu_civ")
+    )
+    radio._acquisition_scheduler = scheduler
+    poller = RadioPoller(radio, CommandQueue(), radio_state=RadioState())
+
+    await poller._send_query()  # noqa: SLF001
+
+    radio.send_civ.assert_awaited_once_with(
+        0x26,
+        sub=None,
+        data=b"\x00",
+        wait_response=False,
+    )
+
+
+@pytest.mark.asyncio
+async def test_scheduler_due_request_timeout_is_terminal_not_resent_each_tick() -> None:
+    radio = _make_radio(active="MAIN")
+    path = FieldPath.receiver("main", "meters", "s_meter")
+    policy = AcquisitionPolicy(cadence_seconds=1.0, freshness_ttl_seconds=1.0)
+    scheduler = AcquisitionScheduler(profile=_acquisition_profile(path, policy=policy))
+    radio._acquisition_scheduler = scheduler
+    poller = RadioPoller(radio, CommandQueue(), radio_state=RadioState())
+
+    with patch(
+        "rigplane.web.radio_poller.time.monotonic",
+        side_effect=(100.0, 101.1, 101.2),
+    ):
+        await poller._send_query()  # noqa: SLF001
+        await poller._send_query()  # noqa: SLF001
+        await poller._send_query()  # noqa: SLF001
+
+    radio.send_civ.assert_awaited_once()
+    assert scheduler.pending_requests() == ()
+    diagnostics = scheduler.diagnostics()
+    assert diagnostics["failedRequestCount"] == 1
+    assert diagnostics["failureCountByReason"]["acquisition_request_timeout"] == 1
+
+
+@pytest.mark.asyncio
+async def test_scheduler_request_execution_uses_injected_executor_not_web_mapping() -> None:
+    radio = _make_radio(active="MAIN")
+    path = FieldPath.global_("slow_state", "value")
+    scheduler = AcquisitionScheduler(profile=_acquisition_profile(path))
+    radio._acquisition_scheduler = scheduler
+    executor = _InjectedAcquisitionExecutor()
+    poller = RadioPoller(
+        radio,
+        CommandQueue(),
+        radio_state=RadioState(),
+        acquisition_executor=executor,
+    )
+
+    await poller._send_query()  # noqa: SLF001
+
+    radio.send_civ.assert_not_awaited()
+    assert len(executor.calls) == 1
+    request, already_sent_paths = executor.calls[0]
+    assert getattr(request, "paths") == (path,)
+    assert already_sent_paths == frozenset()
+    assert scheduler.pending_requests()[0].paths == (path,)
+
+
+@pytest.mark.asyncio
+async def test_non_icom_scheduler_without_executor_fails_instead_of_web_civ_send() -> None:
+    radio = _make_radio(active="MAIN")
+    path = FieldPath.receiver("main", "meters", "s_meter")
+    scheduler = AcquisitionScheduler(
+        profile=RadioAcquisitionProfile(
+            provider="test_provider",
+            capabilities=(FieldCapability(path=path, polling=True),),
+            default_policy=AcquisitionPolicy(
+                cadence_seconds=1.0,
+                freshness_ttl_seconds=4.0,
+            ),
+        )
+    )
+    radio._acquisition_scheduler = scheduler
+    diagnostics = []
+    poller = RadioPoller(
+        radio,
+        CommandQueue(),
+        radio_state=RadioState(),
+        diagnostics=SimpleNamespace(record=lambda *args, **kwargs: diagnostics.append((args, kwargs))),  # type: ignore[arg-type]
+    )
+
+    await poller._send_query()  # noqa: SLF001
+
+    radio.send_civ.assert_not_awaited()
+    assert scheduler.pending_requests() == ()
+    assert scheduler.diagnostics()["failureCountByReason"][
+        "acquisition_executor_missing"
+    ] == 1
+    assert any(
+        args[:2] == ("acquisition_executor_missing", "web.radio_poller")
+        and kwargs["provider"] == "test_provider"
+        for args, kwargs in diagnostics
+    )
+
+
+@pytest.mark.parametrize(  # type: ignore[untyped-decorator]
+    ("path", "expected_cmd", "expected_receiver"),
+    [
+        (FieldPath.active("main", "freq_mode", "freq_hz"), 0x25, 0),
+        (FieldPath.active("main", "freq_mode", "mode"), 0x26, 0),
+        (FieldPath.active("sub", "freq_mode", "freq_hz"), 0x25, 1),
+        (FieldPath.active("sub", "freq_mode", "mode"), 0x26, 1),
+    ],
+)
+@pytest.mark.asyncio
+async def test_scheduler_active_freq_mode_requests_use_receiver_payload(
+    path: FieldPath,
+    expected_cmd: int,
+    expected_receiver: int,
+) -> None:
+    radio = _make_radio(active="MAIN")
+    scheduler = AcquisitionScheduler(profile=_acquisition_profile(path))
+    radio._acquisition_scheduler = scheduler
+    poller = RadioPoller(radio, CommandQueue(), radio_state=RadioState())
+
+    await poller._send_query()  # noqa: SLF001
+    await poller._send_query()  # noqa: SLF001
+
+    radio.send_civ.assert_awaited_once_with(
+        expected_cmd,
+        sub=None,
+        data=bytes([expected_receiver]),
+        wait_response=False,
+    )
+    assert scheduler.pending_requests()[0].paths == (path,)
+
+
+@pytest.mark.asyncio
+async def test_scheduler_unknown_query_mapping_is_recorded_and_failed() -> None:
+    radio = _make_radio(active="MAIN")
+    path = FieldPath.global_("slow_state", "overflow")
+    scheduler = AcquisitionScheduler(profile=_acquisition_profile(path))
+    radio._acquisition_scheduler = scheduler
+    diagnostics = []
+    poller = RadioPoller(
+        radio,
+        CommandQueue(),
+        radio_state=RadioState(),
+        diagnostics=SimpleNamespace(record=lambda *args, **kwargs: diagnostics.append((args, kwargs))),  # type: ignore[arg-type]
+    )
+
+    await poller._send_query()  # noqa: SLF001
+    await poller._send_query()  # noqa: SLF001
+
+    radio.send_civ.assert_not_awaited()
+    assert scheduler.pending_requests() == ()
+    assert scheduler.diagnostics()["failureCountByReason"][
+        "no_civ_query_mapping"
+    ] == 1
+    assert any(
+        args[:2] == ("acquisition_request_failed", "web.radio_poller")
+        and kwargs["request_id"] == "acq-1"
+        and kwargs["reason"] == "no_civ_query_mapping"
+        for args, kwargs in diagnostics
+    )
+
+
+@pytest.mark.asyncio
+async def test_scheduler_ptt_request_sends_civ_ptt_query() -> None:
+    radio = _make_radio(active="MAIN")
+    path = FieldPath.global_("tx_state", "ptt")
+    scheduler = AcquisitionScheduler(profile=_acquisition_profile(path))
+    radio._acquisition_scheduler = scheduler
+    poller = RadioPoller(radio, CommandQueue(), radio_state=RadioState())
+
+    await poller._send_query()  # noqa: SLF001
+
+    radio.send_civ.assert_awaited_once_with(
+        0x1C,
+        sub=0x00,
+        data=b"",
+        wait_response=False,
+    )
+    assert scheduler.pending_requests()[0].paths == (path,)
+
+
+@pytest.mark.asyncio
+async def test_poller_falls_back_to_legacy_query_without_scheduler() -> None:
+    radio = _make_radio(active="MAIN")
+    poller = RadioPoller(radio, CommandQueue(), radio_state=RadioState())
+
+    await poller._send_query()  # noqa: SLF001
+
+    assert radio.send_civ.await_count == 1
+
+
+@pytest.mark.asyncio
+async def test_poller_flushes_due_meter_coalescer_on_query_tick() -> None:
+    radio = _make_radio(active="MAIN")
+    radio._meter_observation_coalescer = MeterObservationCoalescer()
+    radio._civ_runtime = SimpleNamespace(flush_due_meter_observations=MagicMock())
+    poller = RadioPoller(radio, CommandQueue(), radio_state=RadioState())
+
+    await poller._send_query()  # noqa: SLF001
+
+    radio._civ_runtime.flush_due_meter_observations.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_scheduler_polling_does_not_starve_user_command_queue() -> None:
+    order: list[str] = []
+    radio = _make_radio(active="MAIN")
+    radio.set_freq = AsyncMock(side_effect=lambda *args, **kwargs: order.append("cmd"))
+
+    async def _send_civ(*args: object, **kwargs: object) -> None:
+        order.append("poll")
+
+    radio.send_civ = AsyncMock(side_effect=_send_civ)
+    path = FieldPath.receiver("main", "meters", "s_meter")
+    radio._acquisition_scheduler = AcquisitionScheduler(
+        profile=_acquisition_profile(path)
+    )
+    queue = CommandQueue()
+    queue.put_ordered(SetFreq(14_074_000))
+    poller = RadioPoller(radio, queue, radio_state=RadioState())
+
+    async def _stop_after_first_wait(*args: object, **kwargs: object) -> None:
+        raise asyncio.CancelledError
+
+    queue.wait = _stop_after_first_wait  # type: ignore[method-assign]
+
+    await poller._run()  # noqa: SLF001
+
+    assert order[:2] == ["cmd", "poll"]
+    assert radio.send_civ.await_count == 1
+
+
+@pytest.mark.asyncio
+async def test_run_does_not_raw_poll_unselected_slot_when_scheduler_attached() -> None:
+    radio = _make_radio(active="MAIN")
+    path = FieldPath.receiver("main", "meters", "s_meter")
+    radio._acquisition_scheduler = AcquisitionScheduler(
+        profile=_acquisition_profile(path)
+    )
+    queue = CommandQueue()
+    poller = RadioPoller(radio, queue, radio_state=RadioState())
+    poller._send_query = AsyncMock(return_value=None)  # noqa: SLF001
+    poller._poll_unselected_slot = AsyncMock(return_value=None)  # noqa: SLF001
+    poller._unselected_slot_gate = MagicMock(return_value=True)  # noqa: SLF001
+
+    async def _stop_after_first_wait(*args: object, **kwargs: object) -> None:
+        raise asyncio.CancelledError
+
+    queue.wait = _stop_after_first_wait  # type: ignore[method-assign]
+
+    await poller._run()  # noqa: SLF001
+
+    poller._unselected_slot_gate.assert_not_called()  # type: ignore[attr-defined]
+    poller._poll_unselected_slot.assert_not_awaited()  # type: ignore[attr-defined]
 
 
 @pytest.mark.asyncio

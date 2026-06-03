@@ -2229,7 +2229,9 @@ class ControlHandler:
                     )
                 from ...types import MemoryChannel
 
-                mem = MemoryChannel(**params)
+                mem_params = dict(params)
+                mem_params.pop("session_id", None)
+                mem = MemoryChannel(**mem_params)
                 q.put(SetMemoryContents(mem))
                 return {"channel": mem.channel}
             case "set_bsr":
@@ -2240,7 +2242,9 @@ class ControlHandler:
                     )
                 from ...types import BandStackRegister
 
-                bsr = BandStackRegister(**params)
+                bsr_params = dict(params)
+                bsr_params.pop("session_id", None)
+                bsr = BandStackRegister(**bsr_params)
                 q.put(SetBsr(bsr))
                 return {"band": bsr.band, "register": bsr.register}
             case _:

@@ -84,6 +84,7 @@ async def start_web_server(server: WebServer) -> None:
         reuse_address=True,
         reuse_port=_reuse_port_supported(),
     )
+    server._server_was_running = True
     addr = server._server.sockets[0].getsockname()
     scheme = "https" if ssl_ctx else "http"
     logger.info("web server listening on %s://%s:%d", scheme, addr[0], addr[1])
@@ -149,7 +150,7 @@ async def start_web_server(server: WebServer) -> None:
             server._config.dx_callsign,
         )
     server._state_store_freshness_task = asyncio.get_running_loop().create_task(
-        server._state_store_freshness_loop(), name="web-state-freshness"
+        server._state_freshness_service.run(), name="web-state-freshness"
     )
 
     # Start UDP discovery responder
@@ -272,6 +273,7 @@ async def stop_web_server(server: WebServer) -> None:
         except TimeoutError:
             logger.warning("server.wait_closed() timed out after 2s")
         server._server = None
+    server._server_was_running = False
 
     # 8. Wait for cancelled tasks to finish (with timeout)
     if all_tasks:

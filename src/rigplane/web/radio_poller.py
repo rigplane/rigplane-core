@@ -28,7 +28,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
-from typing import TYPE_CHECKING, Any, Callable
+from typing import TYPE_CHECKING, Any, Callable, cast
 
 from ..exceptions import CommandError
 from ..exceptions import ConnectionError as RadioConnectionError
@@ -73,7 +73,14 @@ from ..core.command_service import (
     command_intent_from_request,
     command_response_observation,
 )
-from ..core.state_pipeline_contracts import CommandSource
+from ..core.acquisition_scheduler import (
+    AcquisitionExecutor,
+    AcquisitionRequest,
+    AcquisitionScheduler,
+    MeterObservationCoalescer,
+    civ_acquisition_executor_for_provider,
+)
+from ..core.state_pipeline_contracts import CommandSource, FieldPath
 from ..core.state_diagnostics import StateDiagnosticsRecorder
 from ..core.state_store import StateStore
 from .._state_queries import build_state_queries
@@ -172,7 +179,6 @@ _DEFAULT_POLL_FIELD_TTL: float = 0.2
 _FAST_INTERVAL: float = 0.025  # meters — wfview queue interval for LAN (25ms)
 _FAST_INTERVAL_SERIAL: float = 0.100  # serial: 10 polls/sec for responsive meters
 _SLOW_INTERVAL: float = 0.25  # levels/settings — rarely change
-
 
 def _audio_tx_codec_and_rate(radio: Any) -> tuple[AudioCodec | None, int]:
     contract = getattr(radio, "audio_stream_contract", None)
@@ -362,12 +368,19 @@ class RadioPoller:
         radio_state: "RadioState | None" = None,
         diagnostics: StateDiagnosticsRecorder | None = None,
         state_store: StateStore | None = None,
+        acquisition_executor: AcquisitionExecutor | None = None,
     ) -> None:
         queue = legacy_queue if legacy_queue is not None else command_queue
         self._radio = radio
         self._radio_state = radio_state
         self._state_diagnostics = diagnostics
         self._state_store = state_store or StateStore()
+        raw_scheduler = getattr(radio, "_acquisition_scheduler", None)
+        self._acquisition_scheduler = (
+            raw_scheduler if isinstance(raw_scheduler, AcquisitionScheduler) else None
+        )
+        self._acquisition_executor = acquisition_executor
+        self._acquisition_in_flight: dict[str, tuple[frozenset[FieldPath], float]] = {}
         self._queue = queue
         self._on_state_event = on_state_event
         self._poll_index: int = 0
@@ -387,6 +400,19 @@ class RadioPoller:
             self._FAST_CMDS_SERIAL if self._is_serial else self._FAST_CMDS_LAN
         )
         self._STATE_QUERIES = self._build_state_queries()
+        if self._acquisition_executor is None:
+            raw_executor = getattr(radio, "__dict__", {}).get("_acquisition_executor")
+            execute = getattr(raw_executor, "execute", None)
+            if callable(execute):
+                self._acquisition_executor = cast(AcquisitionExecutor, raw_executor)
+        if (
+            self._acquisition_executor is None
+            and self._acquisition_scheduler is not None
+        ):
+            self._acquisition_executor = civ_acquisition_executor_for_provider(
+                self._acquisition_scheduler.provider,
+                self._send_one_state_query,
+            )
         # Set by default — cleared at _run() start, re-set after initial fetch.
         # This prevents EnableScope from hanging in tests that don't call start().
         self._initial_fetch_done = asyncio.Event()
@@ -831,16 +857,18 @@ class RadioPoller:
                 # VFO slot on each receiver.  Fully gated (PTT, queue
                 # pressure, debounce, per-rx interval) so it cannot
                 # regress fast-poll cadence.
-                for _rx in range(self._profile.receiver_count):
-                    try:
-                        await self._poll_unselected_slot(_rx)
-                    except (ConnectionError, RadioConnectionError):
-                        _backoff = min(_backoff + 0.5, _MAX_BACKOFF)
-                        break
-                    except Exception:
-                        logger.debug(
-                            "radio-poller: unselected-slot poll error", exc_info=True
-                        )
+                if self._acquisition_scheduler is None:
+                    for _rx in range(self._profile.receiver_count):
+                        try:
+                            await self._poll_unselected_slot(_rx)
+                        except (ConnectionError, RadioConnectionError):
+                            _backoff = min(_backoff + 0.5, _MAX_BACKOFF)
+                            break
+                        except Exception:
+                            logger.debug(
+                                "radio-poller: unselected-slot poll error",
+                                exc_info=True,
+                            )
 
                 # 4. Wait for next cycle
                 await self._queue.wait(timeout=self._fast_interval)
@@ -2160,7 +2188,132 @@ class RadioPoller:
             return self._HIGH_TIER_RX[0]
         return self._HIGH_TIER_TX[high_idx % len(self._HIGH_TIER_TX)]
 
+    def _flush_due_meter_observations(self) -> None:
+        coalescer = getattr(self._radio, "_meter_observation_coalescer", None)
+        if not isinstance(coalescer, MeterObservationCoalescer):
+            return
+        runtime = getattr(self._radio, "_civ_runtime", None)
+        flush_due = getattr(runtime, "flush_due_meter_observations", None)
+        if not callable(flush_due):
+            return
+        try:
+            flush_due(now=time.monotonic())
+        except Exception:
+            logger.debug("radio-poller: meter coalescer flush failed", exc_info=True)
+
+    def _acquisition_request_expired(
+        self,
+        request: AcquisitionRequest,
+        *,
+        sent_at: float,
+        now: float,
+    ) -> bool:
+        deadlines = [request.deadline_monotonic]
+        if request.timeout is not None:
+            deadlines.append(sent_at + request.timeout)
+        return now >= min(deadlines)
+
+    async def _send_scheduler_requests(self) -> None:
+        scheduler = self._acquisition_scheduler
+        if scheduler is None:
+            return
+        now = time.monotonic()
+        scheduler.due_requests(now=now)
+        pending = scheduler.pending_requests()
+        pending_ids = {request.id for request in pending}
+        for request_id in tuple(self._acquisition_in_flight):
+            if request_id not in pending_ids:
+                del self._acquisition_in_flight[request_id]
+
+        for request in pending:
+            sent_paths: frozenset[FieldPath] = frozenset()
+            sent_at = 0.0
+            existing = self._acquisition_in_flight.get(request.id)
+            if existing is not None:
+                sent_paths, sent_at = existing
+                if self._acquisition_request_expired(
+                    request,
+                    sent_at=sent_at,
+                    now=now,
+                ):
+                    self._record_state_diagnostic(
+                        "acquisition_request_failed",
+                        "web.radio_poller",
+                        request_id=request.id,
+                        paths=[str(path) for path in request.paths],
+                        reason="acquisition_request_timeout",
+                    )
+                    scheduler.record_acquisition_failure(
+                        request,
+                        reason="acquisition_request_timeout",
+                        failed_paths=sent_paths or frozenset(request.paths),
+                        now=now,
+                    )
+                    self._acquisition_in_flight.pop(request.id, None)
+                    continue
+                else:
+                    sent_paths = sent_paths.intersection(request.paths)
+
+            if all(path in sent_paths for path in request.paths):
+                continue
+
+            executor = self._acquisition_executor
+            if executor is None:
+                self._record_state_diagnostic(
+                    "acquisition_executor_missing",
+                    "web.radio_poller",
+                    request_id=request.id,
+                    paths=[str(path) for path in request.paths],
+                    provider=request.provider,
+                )
+                scheduler.record_acquisition_failure(
+                    request,
+                    reason="acquisition_executor_missing",
+                    now=now,
+                )
+                continue
+
+            result = await executor.execute(
+                request,
+                already_sent_paths=sent_paths,
+            )
+            newly_sent = tuple(result.sent_paths)
+            failed_paths = tuple(result.failed_paths)
+            if failed_paths:
+                reason = result.failure_reason or "acquisition_request_failed"
+                self._record_state_diagnostic(
+                    "acquisition_request_failed",
+                    "web.radio_poller",
+                    request_id=request.id,
+                    paths=[str(path) for path in failed_paths],
+                    reason=reason,
+                    provider=request.provider,
+                )
+                scheduler.record_acquisition_failure(
+                    request,
+                    reason=reason,
+                    failed_paths=failed_paths,
+                    now=now,
+                )
+
+            if newly_sent:
+                self._acquisition_in_flight[request.id] = (
+                    sent_paths.union(newly_sent),
+                    now,
+                )
+                self._record_state_diagnostic(
+                    "acquisition_request_sent",
+                    "web.radio_poller",
+                    request_id=request.id,
+                    paths=[str(path) for path in newly_sent],
+                    pending_request_count=len(scheduler.pending_requests()),
+                )
+
     async def _send_query(self) -> None:
+        self._flush_due_meter_observations()
+        if self._acquisition_scheduler is not None:
+            await self._send_scheduler_requests()
+            return
         # Even cycles → meter query; odd cycles → state query.
         if self._poll_index % 2 == 0:
             if self._is_serial:

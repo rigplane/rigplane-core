@@ -701,6 +701,8 @@ class ChangeSet:
     timestamp_monotonic: float
     sources: tuple[SourceMetadata, ...]
     coalesced: bool = False
+    observed_paths: tuple[FieldPath, ...] = ()
+    freshness_paths: tuple[FieldPath, ...] = ()
 
     def __post_init__(self) -> None:
         if self.revision < 0:
@@ -709,6 +711,22 @@ class ChangeSet:
             raise ValueError("freshness_revision must be non-negative")
         if self.observation_seq < 0:
             raise ValueError("observation_seq must be non-negative")
+        object.__setattr__(
+            self,
+            "observed_paths",
+            tuple(
+                FieldPath.from_dict(path) if isinstance(path, str) else path
+                for path in self.observed_paths
+            ),
+        )
+        object.__setattr__(
+            self,
+            "freshness_paths",
+            tuple(
+                FieldPath.from_dict(path) if isinstance(path, str) else path
+                for path in self.freshness_paths
+            ),
+        )
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -719,6 +737,8 @@ class ChangeSet:
             "timestampMonotonic": self.timestamp_monotonic,
             "sources": [source.to_dict() for source in self.sources],
             "coalesced": self.coalesced,
+            "observedPaths": [str(path) for path in self.observed_paths],
+            "freshnessPaths": [str(path) for path in self.freshness_paths],
         }
 
     @classmethod
@@ -731,6 +751,12 @@ class ChangeSet:
             timestamp_monotonic=float(value["timestampMonotonic"]),
             sources=tuple(SourceMetadata.from_dict(item) for item in value["sources"]),
             coalesced=_optional_bool(value, "coalesced", default=False),
+            observed_paths=tuple(
+                FieldPath.from_dict(item) for item in value.get("observedPaths", ())
+            ),
+            freshness_paths=tuple(
+                FieldPath.from_dict(item) for item in value.get("freshnessPaths", ())
+            ),
         )
 
 
