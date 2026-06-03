@@ -39,6 +39,13 @@ from typing import TYPE_CHECKING, Any, Literal, TextIO
 from .. import __version__
 from .._bounded_queue import BoundedQueue
 from ..core.state_diagnostics import StateDiagnosticsRecorder
+from ..core.command_service import (
+    CommandExecutionResult,
+    CommandService,
+    command_intent_from_request,
+    command_response_observation,
+)
+from ..core.state_pipeline_contracts import CommandIntent, CommandSource
 from ..core.state_store import StateStore
 from ..radio_state import RadioState
 from ..capabilities import CAP_AUDIO, CAP_SCOPE
@@ -61,7 +68,13 @@ from .handlers import (  # noqa: TID251
     ScopeHandler,
 )
 from .transport.webrtc import webrtc_available  # noqa: TID251
-from .radio_poller import CommandQueue, DisableScope, EnableScope, RadioPoller  # noqa: TID251
+from .radio_poller import (  # noqa: TID251
+    CommandQueue,
+    CommandQueueEntry,
+    DisableScope,
+    EnableScope,
+    RadioPoller,
+)
 from .runtime_helpers import (  # noqa: TID251
     build_public_state_payload,
     classify_radio_health,
@@ -124,6 +137,9 @@ class _HttpBatchStep:
     name: str
     command: Any
     result: dict[str, Any]
+    command_id: str | None = None
+    source: CommandSource | None = None
+    command_service: CommandService | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -140,9 +156,76 @@ class _HttpBatchTransactionStep:
 class _HttpCommandCollector:
     def __init__(self) -> None:
         self.commands: list[Any] = []
+        self.entries: list[CommandQueueEntry] = []
 
-    def put(self, command: Any) -> None:
+    def put(
+        self,
+        command: Any,
+        *,
+        command_id: str | None = None,
+        source: CommandSource | None = None,
+        command_service: CommandService | None = None,
+    ) -> None:
         self.commands.append(command)
+        self.entries.append(
+            CommandQueueEntry(
+                command,
+                command_id=command_id,
+                source=source,
+                command_service=command_service,
+            )
+        )
+
+    def put_ordered(
+        self,
+        command: Any,
+        *,
+        future: asyncio.Future[None] | None = None,
+        command_id: str | None = None,
+        source: CommandSource | None = None,
+        command_service: CommandService | None = None,
+    ) -> None:
+        del future
+        self.put(
+            command,
+            command_id=command_id,
+            source=source,
+            command_service=command_service,
+        )
+
+
+@dataclass(slots=True)
+class _HttpCommandExecutor:
+    server: "WebServer"
+
+    async def execute(self, intent: CommandIntent) -> CommandExecutionResult:
+        radio = self.server._radio
+        if radio is None:
+            raise RuntimeError("No radio configured")
+        params = intent.params
+        if intent.name == "raw_civ_transaction":
+            if not isinstance(radio, CivTransactionCapable):
+                raise RuntimeError("active backend does not support raw CI-V transactions")
+            result = await radio.send_civ_transaction(
+                int(params["command"]),
+                sub=params.get("sub"),
+                data=params["data"],
+                expect=params["expect"],
+                timeout=params.get("timeout"),
+            )
+            return CommandExecutionResult(details={"transaction_result": result})
+        if intent.name == "set_powerstat":
+            await radio.set_powerstat(bool(params["power_on"]))  # type: ignore[attr-defined]
+            return CommandExecutionResult(
+                observations=(
+                    command_response_observation(
+                        intent,
+                        timestamp_monotonic=time.monotonic(),
+                        provider="http",
+                    ),
+                )
+            )
+        raise ValueError(f"unsupported HTTP command intent: {intent.name!r}")
 
 
 async def _read_capped_body(
@@ -395,6 +478,10 @@ class WebServer:
             enabled=self._config.state_diagnostics
         )
         self.command_state_store = StateStore()
+        self._http_command_service = CommandService(
+            executor=_HttpCommandExecutor(self),
+            state_store=self.command_state_store,
+        )
         self._server: asyncio.Server | None = None
         self._runtime_started_at = time.monotonic()
         self._runtime_log_path: str | None = None
@@ -2420,13 +2507,23 @@ class WebServer:
 
         try:
             assert command is not None
-            result = await self._radio.send_civ_transaction(
-                command,
-                sub=sub,
-                data=data,
-                expect=raw_expect,
-                timeout=timeout,
+            service_result = await self._http_command_service.execute(
+                command_intent_from_request(
+                    "raw_civ_transaction",
+                    {
+                        "command": command,
+                        "sub": sub,
+                        "data": data,
+                        "expect": raw_expect,
+                        "timeout": timeout,
+                    },
+                    source="http",
+                    command_id=None
+                    if payload.get("id") is None
+                    else str(payload["id"]),
+                )
             )
+            result = service_result.executor_result.details["transaction_result"]
         except (RigplaneTimeoutError, TimeoutError):
             await self._send_json(
                 writer,
@@ -2602,11 +2699,15 @@ class WebServer:
                 "unsupported_in_batch",
                 f"command {raw_name!r} did not produce exactly one queued command",
             )
+        entry = collector.entries[0]
         return _HttpBatchStep(
             index=index,
             name=raw_name,
-            command=collector.commands[0],
+            command=entry.command,
             result=result,
+            command_id=entry.command_id,
+            source=entry.source,
+            command_service=entry.command_service,
         )
 
     def _prepare_http_batch_transaction_step(
@@ -2712,13 +2813,23 @@ class WebServer:
             )
 
         try:
-            result = await self._radio.send_civ_transaction(
-                step.command,
-                sub=step.sub,
-                data=step.data,
-                expect=step.expect,
-                timeout=step.timeout,
+            service_result = await self._http_command_service.execute(
+                command_intent_from_request(
+                    "raw_civ_transaction",
+                    {
+                        "command": step.command,
+                        "sub": step.sub,
+                        "data": step.data,
+                        "expect": step.expect,
+                        "timeout": step.timeout,
+                    },
+                    source="http",
+                    command_id=None
+                    if step.step_id is _MISSING_BATCH_STEP_ID
+                    else str(step.step_id),
+                )
             )
+            result = service_result.executor_result.details["transaction_result"]
         except (RigplaneTimeoutError, TimeoutError):
             return self._failed_transaction_batch_result(
                 step,
@@ -2994,7 +3105,13 @@ class WebServer:
 
             loop = asyncio.get_running_loop()
             future: asyncio.Future[None] = loop.create_future()
-            self._command_queue.put_ordered(step.command, future=future)
+            self._command_queue.put_ordered(
+                step.command,
+                future=future,
+                command_id=step.command_id,
+                source=step.source,
+                command_service=step.command_service,
+            )
             try:
                 await asyncio.wait_for(future, timeout=_COMMAND_BATCH_STEP_TIMEOUT)
             except TimeoutError as exc:
@@ -3165,8 +3282,17 @@ class WebServer:
                         logger.warning("power-on: reconnect failed: %s", conn_err)
                         # Try anyway — some radios accept CI-V on stale transport
                 is_on = power_state == "on"
-                await radio.set_powerstat(is_on)  # type: ignore[attr-defined]
-                # Optimistic state update: radio won't respond to polls when off
+                await self._http_command_service.execute(
+                    command_intent_from_request(
+                        "set_powerstat",
+                        {"on": is_on},
+                        source="http",
+                        command_id=f"http-power-{time.monotonic_ns()}",
+                    )
+                )
+                # Compatibility delivery mirror until web state responses read
+                # power directly from StateStore; command lifecycle and
+                # reconciliation are owned by CommandService.
                 if self._radio_state is not None:
                     self._radio_state.power_on = is_on
                 self._on_radio_state_change("powerstat_changed", {"power_on": is_on})

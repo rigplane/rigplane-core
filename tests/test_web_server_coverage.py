@@ -374,6 +374,81 @@ async def test_http_single_command_uses_http_command_service_source(
 
 
 @pytest.mark.asyncio
+async def test_http_raw_civ_transaction_enters_command_lifecycle() -> None:
+    frame = SimpleNamespace(command=0x03, sub=None, data=b"\x01")
+    radio = SimpleNamespace(
+        connected=True,
+        capabilities=set(),
+        send_civ_transaction=AsyncMock(
+            return_value=SimpleNamespace(
+                status="response",
+                frame=frame,
+                frame_bytes=b"\xfe\xfe\xe0\x98\x03\x01\xfd",
+            )
+        ),
+    )
+    srv = WebServer(radio, WebConfig())
+    writer = _FakeWriter()
+    payload = json.dumps(
+        {"id": "raw-1", "command": 0x03, "data": "", "expect": "data"}
+    ).encode()
+
+    await srv._handle_http_civ_transaction(  # noqa: SLF001
+        writer,
+        headers={"content-length": str(len(payload))},
+        reader=_reader_with(payload),
+    )
+
+    status, body = _response_json(writer)
+    assert status == 200
+    assert body["id"] == "raw-1"
+    radio.send_civ_transaction.assert_awaited_once_with(
+        0x03,
+        sub=None,
+        data=b"",
+        expect="data",
+        timeout=None,
+    )
+    events = srv._http_command_service.lifecycle_events()  # noqa: SLF001
+    assert [event.state for event in events[:4]] == [
+        "accepted",
+        "queued",
+        "sent",
+        "acknowledged",
+    ]
+    assert events[0].command_id == "raw-1"
+    assert events[0].source == "http"
+
+
+@pytest.mark.asyncio
+async def test_http_power_enters_command_service_and_keeps_delivery_mirror() -> None:
+    radio = SimpleNamespace(
+        connected=True,
+        control_connected=True,
+        capabilities={"power_control"},
+        set_powerstat=AsyncMock(),
+    )
+    srv = WebServer(radio, WebConfig())
+    writer = _FakeWriter()
+    payload = json.dumps({"state": "off"}).encode()
+
+    await srv._handle_http(  # noqa: SLF001
+        writer,
+        "POST",
+        "/api/v1/radio/power",
+        headers={"content-length": str(len(payload))},
+        reader=_reader_with(payload),
+    )
+
+    status, body = _response_json(writer)
+    assert status == 200
+    assert body == {"status": "ok", "power": "off"}
+    radio.set_powerstat.assert_awaited_once_with(False)
+    assert srv._radio_state.power_on is False  # noqa: SLF001
+    assert srv.command_state_store.snapshot().field("global.tx_state.power_on").value is False
+
+
+@pytest.mark.asyncio
 async def test_healthz_reports_process_liveness() -> None:
     srv = WebServer(None, WebConfig(host="127.0.0.1", port=0))
     writer = _FakeWriter()

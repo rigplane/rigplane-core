@@ -366,7 +366,6 @@ def command_intent_from_request(
     if session_id is not None:
         normalized["session_id"] = session_id
     command_name = str(name)
-    target = _command_target(command_name, normalized)
     if command_name == "set_freq":
         raw_freq = (
             normalized["freq_hz"] if "freq_hz" in normalized else normalized["freq"]
@@ -385,7 +384,54 @@ def command_intent_from_request(
                 )
             else:
                 normalized["filter_num"] = int(raw_filter)
+        normalized["filter_width"] = int(normalized["filter_num"])
+    elif command_name == "set_filter_width":
+        normalized["filter_width"] = int(normalized["width"])
+    elif command_name in ("set_ptt", "ptt"):
+        normalized["ptt"] = _ptt_value(command_name, normalized)
+    elif command_name == "ptt_on":
+        normalized["ptt"] = True
+    elif command_name == "ptt_off":
+        normalized["ptt"] = False
+    elif command_name == "set_rf_gain":
+        normalized["rf_gain"] = int(normalized["level"])
+    elif command_name == "set_af_level":
+        normalized["af_level"] = int(normalized["level"])
+    elif command_name in ("set_sql", "set_squelch"):
+        normalized["squelch"] = int(normalized["level"])
+    elif command_name == "set_nb":
+        normalized["nb"] = bool(normalized["on"])
+    elif command_name == "set_nr":
+        normalized["nr"] = bool(normalized["on"])
+    elif command_name == "set_pbt_inner":
+        raw_level = normalized["value"] if "value" in normalized else normalized["level"]
+        normalized["pbt_inner"] = int(raw_level)
+    elif command_name == "set_pbt_outer":
+        raw_level = normalized["value"] if "value" in normalized else normalized["level"]
+        normalized["pbt_outer"] = int(raw_level)
+    elif command_name == "set_powerstat":
+        normalized["power_on"] = bool(normalized.get("on", True))
+    elif command_name in ("set_rf_power", "set_power"):
+        raw_level = normalized["level"] if "level" in normalized else normalized["value"]
+        normalized["power_level"] = int(raw_level)
+    elif command_name == "set_split":
+        normalized["split"] = bool(normalized.get("on", False))
+    elif command_name in ("set_vfo", "select_vfo"):
+        active_slot = _active_slot_value(normalized.get("vfo", "A"))
+        if active_slot is not None:
+            normalized["active_slot"] = active_slot
+    elif command_name == "set_level":
+        normalized["level"] = str(normalized["level"]).upper()
+        normalized["value"] = float(normalized["value"])
+        _normalize_level_value(normalized)
+    elif command_name == "set_func":
+        func = str(normalized["func"]).lower()
+        normalized["func"] = func.upper()
+        normalized[func] = bool(normalized["on"])
+    elif command_name == "set_split_vfo":
+        normalized["split"] = bool(normalized["on"])
 
+    target = _command_target(command_name, normalized)
     expected = () if target is None else (target,)
     return CommandIntent(
         id=command_id or f"{source}-{time.monotonic_ns()}",
@@ -434,6 +480,42 @@ def _command_target(name: str, params: Mapping[str, Any]) -> FieldPath | None:
         return FieldPath.receiver(receiver, "freq_mode", "mode")
     if name == "set_filter":
         return FieldPath.receiver(receiver, "freq_mode", "filter_width")
+    if name == "set_filter_width":
+        return FieldPath.receiver(receiver, "freq_mode", "filter_width")
+    if name in ("set_ptt", "ptt", "ptt_on", "ptt_off"):
+        return FieldPath.global_("tx_state", "ptt")
+    if name == "set_rf_gain":
+        return FieldPath.receiver(receiver, "operator_controls", "rf_gain")
+    if name == "set_af_level":
+        return FieldPath.receiver(receiver, "operator_controls", "af_level")
+    if name in ("set_sql", "set_squelch"):
+        return FieldPath.receiver(receiver, "operator_controls", "squelch")
+    if name == "set_nb":
+        return FieldPath.receiver(receiver, "operator_toggles", "nb")
+    if name == "set_nr":
+        return FieldPath.receiver(receiver, "operator_toggles", "nr")
+    if name == "set_pbt_inner":
+        return FieldPath.receiver(receiver, "operator_controls", "pbt_inner")
+    if name == "set_pbt_outer":
+        return FieldPath.receiver(receiver, "operator_controls", "pbt_outer")
+    if name == "set_powerstat":
+        return FieldPath.global_("tx_state", "power_on")
+    if name in ("set_rf_power", "set_power"):
+        return FieldPath.global_("operator_controls", "power_level")
+    if name == "set_split":
+        return FieldPath.global_("tx_state", "split")
+    if name in ("set_vfo", "select_vfo") and "active_slot" in params:
+        return FieldPath.active_slot(receiver)
+    if name == "set_level":
+        return _level_target(params, receiver)
+    if name == "set_func":
+        return FieldPath.receiver(
+            receiver,
+            "operator_toggles",
+            str(params["func"]).lower(),
+        )
+    if name == "set_split_vfo":
+        return FieldPath.global_("tx_state", "split")
     return None
 
 
@@ -450,3 +532,71 @@ def _value_for_observable_intent(intent: CommandIntent) -> Any:
     if "value" in params:
         return params["value"]
     raise KeyError(intent.target.name)
+
+
+def _ptt_value(name: str, params: Mapping[str, Any]) -> bool:
+    if name == "ptt" and "state" in params:
+        return bool(params["state"])
+    if "on" in params:
+        return bool(params["on"])
+    if "value" in params:
+        return bool(params["value"])
+    return False
+
+
+def _active_slot_value(value: Any) -> str | None:
+    text = str(value).strip().upper()
+    if text in ("B", "VFOB", "SUB", "1"):
+        return "B"
+    if text in ("A", "VFOA", "MAIN", "0"):
+        return "A"
+    return None
+
+
+def _normalize_level_value(params: dict[str, Any]) -> None:
+    level = str(params["level"]).upper()
+    value = float(params["value"])
+    receiver_control_names = {
+        "AF": "af_level",
+        "RF": "rf_gain",
+        "SQL": "squelch",
+        "NR": "nr_level",
+        "NB": "nb_level",
+        "COMP": "compressor_level",
+        "MICGAIN": "mic_gain",
+        "MONITOR_GAIN": "monitor_gain",
+        "KEYSPD": "key_speed",
+        "CWPITCH": "cw_pitch",
+        "PREAMP": "preamp",
+        "ATT": "att",
+    }
+    if level == "RFPOWER":
+        params["power_level"] = round(value * 255)
+    elif level in {"AF", "RF", "SQL", "NR", "NB", "COMP", "MICGAIN", "MONITOR_GAIN"}:
+        params[receiver_control_names[level]] = max(0, min(255, round(value * 255)))
+    elif level in receiver_control_names:
+        params[receiver_control_names[level]] = round(value)
+
+
+def _level_target(params: Mapping[str, Any], receiver: str) -> FieldPath | None:
+    level = str(params["level"]).upper()
+    if level == "RFPOWER":
+        return FieldPath.global_("operator_controls", "power_level")
+    names = {
+        "AF": "af_level",
+        "RF": "rf_gain",
+        "SQL": "squelch",
+        "NR": "nr_level",
+        "NB": "nb_level",
+        "COMP": "compressor_level",
+        "MICGAIN": "mic_gain",
+        "MONITOR_GAIN": "monitor_gain",
+        "KEYSPD": "key_speed",
+        "CWPITCH": "cw_pitch",
+        "PREAMP": "preamp",
+        "ATT": "att",
+    }
+    name = names.get(level)
+    if name is None:
+        return None
+    return FieldPath.receiver(receiver, "operator_controls", name)

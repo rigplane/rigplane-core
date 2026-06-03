@@ -483,3 +483,59 @@ def test_command_response_observation_uses_command_response_source() -> None:
     assert observation.source.source == "command_response"
     assert observation.source.provider == "rigctld"
     assert observation.correlation_id == "rig-1"
+
+
+@pytest.mark.parametrize(  # type: ignore[untyped-decorator]
+    ("name", "params", "expected_path", "expected_value"),
+    [
+        ("set_filter", {"filter_num": 2}, "receiver.0.freq_mode.filter_width", 2),
+        ("set_ptt", {"on": True}, "global.tx_state.ptt", True),
+        ("ptt", {"state": True}, "global.tx_state.ptt", True),
+        ("ptt_on", {}, "global.tx_state.ptt", True),
+        ("ptt_off", {}, "global.tx_state.ptt", False),
+        ("set_rf_gain", {"level": 111}, "receiver.0.operator_controls.rf_gain", 111),
+        ("set_af_level", {"level": 87}, "receiver.0.operator_controls.af_level", 87),
+        ("set_squelch", {"level": 42}, "receiver.0.operator_controls.squelch", 42),
+        ("set_nb", {"on": True}, "receiver.0.operator_toggles.nb", True),
+        ("set_nr", {"on": False}, "receiver.0.operator_toggles.nr", False),
+        (
+            "set_pbt_inner",
+            {"level": 140},
+            "receiver.0.operator_controls.pbt_inner",
+            140,
+        ),
+        (
+            "set_pbt_outer",
+            {"level": 116},
+            "receiver.0.operator_controls.pbt_outer",
+            116,
+        ),
+        ("set_powerstat", {"on": False}, "global.tx_state.power_on", False),
+        ("set_rf_power", {"level": 88}, "global.operator_controls.power_level", 88),
+        ("set_power", {"level": 77}, "global.operator_controls.power_level", 77),
+        ("set_filter_width", {"width": 1500}, "receiver.0.freq_mode.filter_width", 1500),
+        ("set_split", {"on": True}, "global.tx_state.split", True),
+        ("set_vfo", {"vfo": "B"}, "receiver.0.vfo.active_slot", "B"),
+    ],
+)
+def test_command_intent_targets_observable_production_write_paths(
+    name: str,
+    params: dict[str, object],
+    expected_path: str,
+    expected_value: object,
+) -> None:
+    intent = command_intent_from_request(
+        name,
+        params,
+        source="http",
+        command_id=f"cmd-{name}",
+    )
+
+    assert str(intent.target) == expected_path
+    assert intent.pending_policy == "scoped"
+    observation = command_response_observation(
+        intent,
+        timestamp_monotonic=70.0,
+        provider="test",
+    )
+    assert observation.value == expected_value

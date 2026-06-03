@@ -187,8 +187,47 @@ class _ControlCommandExecutor:
         result = await self.handler._enqueue_legacy_command(  # noqa: SLF001
             intent.name,
             dict(intent.params),
+            command_id=intent.id,
+            source=intent.source,
+            command_service=self.handler._command_service,  # noqa: SLF001
         )
         return CommandExecutionResult(details=result)
+
+
+@dataclass(frozen=True, slots=True)
+class _CommandMetadataQueue:
+    queue: Any
+    command_id: str
+    source: CommandSource
+    command_service: CommandService
+
+    def put(self, command: Any) -> None:
+        try:
+            self.queue.put(
+                command,
+                command_id=self.command_id,
+                source=self.source,
+                command_service=self.command_service,
+            )
+        except TypeError:
+            self.queue.put(command)
+
+    def put_ordered(
+        self,
+        command: Any,
+        *,
+        future: asyncio.Future[None] | None = None,
+    ) -> None:
+        try:
+            self.queue.put_ordered(
+                command,
+                future=future,
+                command_id=self.command_id,
+                source=self.source,
+                command_service=self.command_service,
+            )
+        except TypeError:
+            self.queue.put_ordered(command, future=future)
 
 
 class ControlHandler:
@@ -905,7 +944,13 @@ class ControlHandler:
         return dict(result.executor_result.details or {})
 
     async def _enqueue_legacy_command(
-        self, name: str, params: dict[str, Any]
+        self,
+        name: str,
+        params: dict[str, Any],
+        *,
+        command_id: str,
+        source: CommandSource,
+        command_service: CommandService,
     ) -> dict[str, Any]:
         """Build a Command dataclass, enqueue it, and return the ack result.
 
@@ -926,6 +971,12 @@ class ControlHandler:
         q = self._server.command_queue if self._server is not None else None
         if q is None:
             raise RuntimeError("no command queue available")
+        q = _CommandMetadataQueue(
+            q,
+            command_id=command_id,
+            source=source,
+            command_service=command_service,
+        )
 
         # Dispatch to group handlers
         for handler in (

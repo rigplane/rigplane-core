@@ -506,6 +506,20 @@ async def test_set_ptt_on(handler: RigctldHandler, mock_radio: AsyncMock) -> Non
     resp = await handler.execute(set_cmd("set_ptt", "1"))
     assert resp.ok
     mock_radio.set_ptt.assert_awaited_once_with(True)
+    events = handler._command_service.lifecycle_events()  # noqa: SLF001
+    assert [event.state for event in events[:4]] == [
+        "accepted",
+        "queued",
+        "sent",
+        "acknowledged",
+    ]
+    assert events[0].source == "rigctld"
+    assert (
+        handler._command_service._state_store.snapshot()  # noqa: SLF001
+        .field("global.tx_state.ptt")
+        .value
+        is True
+    )
 
 
 @pytest.mark.asyncio
@@ -1828,6 +1842,15 @@ async def test_send_raw_returns_hex_response(
 
     assert resp.ok
     assert resp.values == ["FE FE E0 98 03 00 60 00 00 00 FD"]
+    events = handler._command_service.lifecycle_events()  # noqa: SLF001
+    assert [event.state for event in events[:4]] == [
+        "accepted",
+        "queued",
+        "sent",
+        "acknowledged",
+    ]
+    assert events[0].command_id.startswith("rigctld-send-raw-")
+    assert events[0].source == "rigctld"
 
 
 @pytest.mark.asyncio

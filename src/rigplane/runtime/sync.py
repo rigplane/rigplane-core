@@ -59,6 +59,12 @@ class _SyncCommandExecutor:
             )
         elif intent.name == "set_rf_power":
             await radio.set_rf_power(int(params["value"]))
+        elif intent.name == "set_ptt":
+            await radio.set_ptt(bool(params["ptt"]))
+        elif intent.name == "set_split":
+            await radio.set_split(bool(params["split"]))
+        elif intent.name == "set_powerstat":
+            await radio.set_powerstat(bool(params["power_on"]))
         else:
             raise ValueError(f"unsupported public API command intent: {intent.name!r}")
 
@@ -320,7 +326,15 @@ class IcomRadio:
 
     def set_ptt(self, on: bool) -> None:
         """Enable or disable PTT."""
-        self._run(self._radio.set_ptt(on))
+        self._run(
+            self._command_service.execute(
+                command_intent_from_request(
+                    "set_ptt",
+                    {"on": on},
+                    source="public_api",
+                )
+            )
+        )
 
     # ------------------------------------------------------------------
     # VFO / Split
@@ -349,7 +363,15 @@ class IcomRadio:
 
     def set_split(self, on: bool) -> None:
         """Enable or disable split mode."""
-        self._run(self._radio.set_split(on))
+        self._run(
+            self._command_service.execute(
+                command_intent_from_request(
+                    "set_split",
+                    {"on": on},
+                    source="public_api",
+                )
+            )
+        )
 
     def get_split(self) -> bool:
         """Read split mode state."""
@@ -492,7 +514,15 @@ class IcomRadio:
             raise AttributeError(
                 "power_control requires a radio that implements PowerControlCapable"
             )
-        self._run(self._radio.set_powerstat(on))
+        self._run(
+            self._command_service.execute(
+                command_intent_from_request(
+                    "set_powerstat",
+                    {"on": on},
+                    source="public_api",
+                )
+            )
+        )
 
     # ------------------------------------------------------------------
     # Scope

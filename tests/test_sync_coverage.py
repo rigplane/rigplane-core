@@ -158,9 +158,39 @@ def test_sync_wrappers_delegate_and_return_values() -> None:
         and str(event.target) == "receiver.0.freq_mode.freq_hz"
         for event in events
     )
+    assert any(
+        event.source == "public_api"
+        and event.target is not None
+        and str(event.target) == "global.tx_state.ptt"
+        for event in events
+    )
+    assert any(
+        event.source == "public_api"
+        and event.target is not None
+        and str(event.target) == "global.tx_state.split"
+        for event in events
+    )
+    assert any(
+        event.source == "public_api"
+        and event.target is not None
+        and str(event.target) == "global.tx_state.power_on"
+        for event in events
+    )
     assert (
         r._state_store.snapshot().field("receiver.0.freq_mode.freq_hz").value  # noqa: SLF001
         == 7100000
+    )
+    assert (
+        r._state_store.snapshot().field("global.tx_state.ptt").value  # noqa: SLF001
+        is True
+    )
+    assert (
+        r._state_store.snapshot().field("global.tx_state.split").value  # noqa: SLF001
+        is True
+    )
+    assert (
+        r._state_store.snapshot().field("global.tx_state.power_on").value  # noqa: SLF001
+        is False
     )
     r._loop.close()
 

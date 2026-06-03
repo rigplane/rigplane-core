@@ -9,6 +9,11 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from rigplane.core.state_store import StateStore
+from rigplane.core.command_service import (
+    CommandExecutionResult,
+    CommandService,
+    command_intent_from_request,
+)
 from rigplane.exceptions import CommandError
 from rigplane.profiles import resolve_radio_profile
 from rigplane.radio_state import RadioState
@@ -24,6 +29,7 @@ from rigplane.web.radio_poller import (
     RadioPoller,
     SelectVfo,
     SendCiv,
+    SetAfLevel,
     SetAgc,
     SetAttenuator,
     SetDataMode,
@@ -35,15 +41,26 @@ from rigplane.web.radio_poller import (
     SetMode,
     SetNB,
     SetNR,
+    SetPbtInner,
+    SetPbtOuter,
     SetPower,
     SetPreamp,
+    SetRfGain,
     SetScopeEdge,
     SetScopeRbw,
     SetScopeVbw,
+    SetSplit,
+    SetSquelch,
     SwitchScopeReceiver,
     VfoEqualize,
     VfoSwap,
 )
+
+
+class _NoopCommandExecutor:
+    async def execute(self, intent: object) -> CommandExecutionResult:
+        del intent
+        return CommandExecutionResult()
 
 
 def _make_radio(active: str = "MAIN") -> MagicMock:
@@ -75,6 +92,8 @@ def _make_radio(active: str = "MAIN") -> MagicMock:
     radio.set_preamp = AsyncMock()
     radio.get_preamp = AsyncMock(return_value=0)
     radio.set_agc = AsyncMock()
+    radio.set_pbt_inner = AsyncMock()
+    radio.set_pbt_outer = AsyncMock()
     radio.set_antenna_1 = AsyncMock()
     radio.set_antenna_2 = AsyncMock()
     radio.set_rx_antenna_ant1 = AsyncMock()
@@ -219,6 +238,21 @@ async def test_command_queue_ordered_lane_preserves_repeated_commands() -> None:
         PttOn(),
         PttOff(),
     ]
+
+
+def test_command_queue_entries_preserve_command_correlation_metadata() -> None:
+    q = CommandQueue()
+    q.put(SetFreq(14_030_000), command_id="ws-freq", source="websocket")
+    q.put_ordered(SetMode("USB"), command_id="http-mode", source="http")
+
+    entries = q.drain_entries()
+
+    assert entries[0].command == SetFreq(14_030_000)
+    assert entries[0].command_id == "ws-freq"
+    assert entries[0].source == "websocket"
+    assert entries[1].command == SetMode("USB")
+    assert entries[1].command_id == "http-mode"
+    assert entries[1].source == "http"
 
 
 @pytest.mark.asyncio
@@ -897,6 +931,164 @@ async def test_set_freq_readback_is_applied_as_state_store_observation() -> None
     assert field.value == 14_074_000
     assert field.source.source == "command_response"
     assert state.main.freq == 14_074_000
+
+
+@pytest.mark.parametrize(  # type: ignore[untyped-decorator]
+    ("command", "expected_path", "expected_value"),
+    [
+        (SetRfGain(level=120, receiver=1), "receiver.1.operator_controls.rf_gain", 120),
+        (SetAfLevel(level=90, receiver=1), "receiver.1.operator_controls.af_level", 90),
+        (SetSquelch(level=33, receiver=1), "receiver.1.operator_controls.squelch", 33),
+        (SetNB(on=True, receiver=1), "receiver.1.operator_toggles.nb", True),
+        (SetNR(on=False, receiver=1), "receiver.1.operator_toggles.nr", False),
+        (
+            SetPbtInner(level=140, receiver=1),
+            "receiver.1.operator_controls.pbt_inner",
+            140,
+        ),
+        (
+            SetPbtOuter(level=116, receiver=1),
+            "receiver.1.operator_controls.pbt_outer",
+            116,
+        ),
+    ],
+)
+@pytest.mark.asyncio
+async def test_observable_queue_commands_apply_state_store_observations(
+    command: object,
+    expected_path: str,
+    expected_value: object,
+) -> None:
+    radio = _make_radio()
+    state = RadioState()
+    store = StateStore()
+    poller = RadioPoller(
+        radio,
+        StateCache(),
+        CommandQueue(),
+        radio_state=state,
+        state_store=store,
+    )
+
+    await poller._execute(command)  # noqa: SLF001[arg-type]
+
+    field = store.snapshot().field(expected_path)
+    assert field.value == expected_value
+    assert field.source.source == "command_response"
+
+
+@pytest.mark.asyncio
+async def test_set_freq_readback_uses_original_command_correlation() -> None:
+    radio = _make_radio()
+    state = RadioState()
+    store = StateStore()
+    service = CommandService(
+        executor=_NoopCommandExecutor(),
+        state_store=store,
+    )
+    poller = RadioPoller(
+        radio,
+        StateCache(),
+        CommandQueue(),
+        radio_state=state,
+        state_store=store,
+    )
+    await service.execute(
+        command_intent_from_request(
+            "set_freq",
+            {"freq": 14_074_000, "receiver": 0},
+            source="websocket",
+            command_id="ws-set-freq",
+        )
+    )
+    assert service.pending_overlays(source="websocket", session_id=None) != ()
+
+    await poller._execute(  # noqa: SLF001
+        SetFreq(freq=14_074_000, receiver=0),
+        command_id="ws-set-freq",
+        source="websocket",
+        command_service=service,
+    )
+
+    field = store.snapshot().field("receiver.0.freq_mode.freq_hz")
+    assert field.value == 14_074_000
+    assert service.pending_overlays(source="websocket", session_id=None) == ()
+
+
+@pytest.mark.asyncio
+async def test_set_split_readback_uses_original_command_correlation() -> None:
+    radio = _make_radio()
+    state = RadioState()
+    store = StateStore()
+    service = CommandService(
+        executor=_NoopCommandExecutor(),
+        state_store=store,
+    )
+    poller = RadioPoller(
+        radio,
+        StateCache(),
+        CommandQueue(),
+        radio_state=state,
+        state_store=store,
+    )
+    await service.execute(
+        command_intent_from_request(
+            "set_split",
+            {"on": True},
+            source="websocket",
+            command_id="ws-set-split",
+        )
+    )
+    assert service.pending_overlays(source="websocket", session_id=None) != ()
+
+    await poller._execute(  # noqa: SLF001
+        SetSplit(on=True),
+        command_id="ws-set-split",
+        source="websocket",
+        command_service=service,
+    )
+
+    field = store.snapshot().field("global.tx_state.split")
+    assert field.value is True
+    assert service.pending_overlays(source="websocket", session_id=None) == ()
+
+
+@pytest.mark.asyncio
+async def test_select_vfo_readback_uses_original_command_correlation() -> None:
+    radio = _make_radio()
+    state = RadioState()
+    store = StateStore()
+    service = CommandService(
+        executor=_NoopCommandExecutor(),
+        state_store=store,
+    )
+    poller = RadioPoller(
+        radio,
+        StateCache(),
+        CommandQueue(),
+        radio_state=state,
+        state_store=store,
+    )
+    await service.execute(
+        command_intent_from_request(
+            "set_vfo",
+            {"vfo": "SUB"},
+            source="websocket",
+            command_id="ws-set-vfo",
+        )
+    )
+    assert service.pending_overlays(source="websocket", session_id=None) != ()
+
+    await poller._execute(  # noqa: SLF001
+        SelectVfo(vfo="SUB"),
+        command_id="ws-set-vfo",
+        source="websocket",
+        command_service=service,
+    )
+
+    field = store.snapshot().field("receiver.0.vfo.active_slot")
+    assert field.value == "B"
+    assert service.pending_overlays(source="websocket", session_id=None) == ()
 
 
 @pytest.mark.asyncio

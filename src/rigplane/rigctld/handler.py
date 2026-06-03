@@ -295,6 +295,11 @@ class _FallbackRigState:
         self.swr_ts = time.monotonic()
 
 
+@dataclass(frozen=True, slots=True)
+class _RigctldCommandFailure(Exception):
+    error: HamlibError
+
+
 @dataclass(slots=True)
 class _RigctldCommandExecutor:
     handler: "RigctldHandler"
@@ -325,6 +330,56 @@ class _RigctldCommandExecutor:
                 )
             if bool(params.get("packet_mode", False)):
                 await self.handler._apply_packet_data_mode(receiver=receiver)
+        elif intent.name == "set_ptt":
+            await self.handler._radio.set_ptt(bool(params["ptt"]))
+        elif intent.name == "set_vfo":
+            error = await self.handler._execute_set_vfo(str(params["vfo"]))
+            if error is not HamlibError.OK:
+                raise _RigctldCommandFailure(error)
+        elif intent.name == "set_level":
+            error = await self.handler._execute_set_level(
+                str(params["level"]),
+                float(params["value"]),
+                receiver=int(params.get("receiver", 0)),
+                vfo_arg=None
+                if params.get("vfo_arg") is None
+                else str(params["vfo_arg"]),
+            )
+            if error is not HamlibError.OK:
+                raise _RigctldCommandFailure(error)
+        elif intent.name == "set_func":
+            error = await self.handler._execute_set_func(
+                str(params["func"]),
+                bool(params["on"]),
+                receiver=int(params.get("receiver", 0)),
+                vfo_arg=None
+                if params.get("vfo_arg") is None
+                else str(params["vfo_arg"]),
+            )
+            if error is not HamlibError.OK:
+                raise _RigctldCommandFailure(error)
+        elif intent.name == "set_split_vfo":
+            error = await self.handler._execute_set_split_vfo(
+                bool(params["on"]),
+                str(params["tx_vfo"]),
+            )
+            if error is not HamlibError.OK:
+                raise _RigctldCommandFailure(error)
+        elif intent.name == "send_raw":
+            send_fn = getattr(self.handler._radio, "_send_civ_raw", None)
+            if send_fn is None:
+                raise _RigctldCommandFailure(HamlibError.ENIMPL)
+            frame_bytes = params["frame_bytes"]
+            try:
+                resp = await send_fn(frame_bytes)
+            except (TimeoutError, asyncio.TimeoutError):
+                logger.debug("send_raw: timeout — returning empty response")
+                return CommandExecutionResult(details={"values": []})
+            if resp is None:
+                return CommandExecutionResult(details={"values": []})
+            raw = _civ_frame_to_bytes(resp)
+            hex_str = " ".join(f"{b:02X}" for b in raw)
+            return CommandExecutionResult(details={"values": [hex_str]})
         else:
             raise ValueError(f"unsupported rigctld command intent: {intent.name!r}")
 
@@ -409,6 +464,8 @@ class RigctldHandler:
         # value mirrors the Hamlib default ("VFOA"). Updated by
         # ``_cmd_set_split_vfo`` on every ``S`` request. (Issue #1345.)
         self._split_tx_vfo: Literal["VFOA", "VFOB"] = "VFOA"
+        # Temporary rigctld GET/read-projection shims until MOR-340/MOR-341/
+        # MOR-343 move delivery fully onto the shared StateStore.
         self._cache = _FallbackRigState()
         self._pending = _PendingRigState()
         self._routing = create_routing(
@@ -546,6 +603,9 @@ class RigctldHandler:
         except TimeoutError:
             logger.warning("Timeout executing %s", cmd.long_cmd)
             return _err(HamlibError.ETIMEOUT)
+        except _RigctldCommandFailure as exc:
+            logger.debug("rigctld command %s failed with %s", cmd.long_cmd, exc.error)
+            return _err(exc.error)
         except ValueError:
             logger.warning("Invalid value in %s", cmd.long_cmd)
             return _err(HamlibError.EINVAL)
@@ -850,7 +910,14 @@ class RigctldHandler:
             self._resolve_target_vfo(cmd.vfo_arg)
         except ValueError:
             return _err(HamlibError.EVFO)
-        await self._radio.set_ptt(on)
+        await self._command_service.execute(
+            command_intent_from_request(
+                "set_ptt",
+                {"on": on},
+                source="rigctld",
+                command_id=f"rigctld-set-ptt-{time.monotonic_ns()}",
+            )
+        )
         self._ptt_state = on
         self._cache.update_ptt(on)
         return _ok()
@@ -946,10 +1013,21 @@ class RigctldHandler:
         if not cmd.args:
             return _err(HamlibError.EINVAL)
         vfo = cmd.args[0].upper()
+        await self._command_service.execute(
+            command_intent_from_request(
+                "set_vfo",
+                {"vfo": vfo},
+                source="rigctld",
+                command_id=f"rigctld-set-vfo-{time.monotonic_ns()}",
+            )
+        )
+        return _ok()
+
+    async def _execute_set_vfo(self, vfo: str) -> HamlibError:
         info = self._profile_vfo_info()
         # Backwards-compat: unknown VFO names or profile-less radios → no-op
         if vfo not in ("VFOA", "VFOB") or info is None:
-            return _ok()
+            return HamlibError.OK
         rc, _ = info
         # Issue #1172: route by capability, not by string-overloaded
         # ``set_vfo``.  Dual-RX rigs use ``select_receiver`` (the
@@ -963,14 +1041,14 @@ class RigctldHandler:
             if select_receiver is not None:
                 target = "MAIN" if vfo == "VFOA" else "SUB"
                 await select_receiver(target)
-                return _ok()
+                return HamlibError.OK
             target = "MAIN" if vfo == "VFOA" else "SUB"
         else:
             set_vfo_slot = getattr(self._radio, "set_vfo_slot", None)
             if set_vfo_slot is not None:
                 slot = "A" if vfo == "VFOA" else "B"
                 await set_vfo_slot(slot)
-                return _ok()
+                return HamlibError.OK
             target = "A" if vfo == "VFOA" else "B"
         # Issue #1189: legacy backends (e.g. SerialMockRadio,
         # 3rd-party Radio implementers) predate ``ReceiverBankCapable`` /
@@ -981,9 +1059,9 @@ class RigctldHandler:
         # intentional — it signals migration.
         legacy_set_vfo = getattr(self._radio, "set_vfo", None)
         if legacy_set_vfo is None:
-            return _err(HamlibError.ENAVAIL)
+            return HamlibError.ENAVAIL
         await legacy_set_vfo(target)
-        return _ok()
+        return HamlibError.OK
 
     # ------------------------------------------------------------------
     # Level commands
@@ -1126,13 +1204,35 @@ class RigctldHandler:
         # Single-RX profiles only have receiver=0; per-VFO state is selected
         # via set_vfo_slot, not receiver= (issue #1354).
         receiver = self._receiver_index_for(target)
+        await self._command_service.execute(
+            command_intent_from_request(
+                "set_level",
+                {
+                    "level": level,
+                    "value": value,
+                    "receiver": receiver,
+                    "vfo_arg": cmd.vfo_arg,
+                },
+                source="rigctld",
+                command_id=f"rigctld-set-level-{time.monotonic_ns()}",
+            )
+        )
+        return _ok()
 
+    async def _execute_set_level(
+        self,
+        level: str,
+        value: float,
+        *,
+        receiver: int,
+        vfo_arg: str | None,
+    ) -> HamlibError:
         if self._routing is not None:
-            return await self._routing.set_level(level, value, vfo=cmd.vfo_arg)
+            return (await self._routing.set_level(level, value, vfo=vfo_arg)).error
 
         if level == "RFPOWER":
             await self._radio.set_rf_power(round(value * 255))
-            return _ok()
+            return HamlibError.OK
 
         if level in _SET_LEVEL_FLOAT:
             raw = max(0, min(255, round(value * 255)))
@@ -1142,15 +1242,15 @@ class RigctldHandler:
                 await method(raw, receiver=receiver)
             else:
                 await method(raw)
-            return _ok()
+            return HamlibError.OK
 
         if level == "KEYSPD":
             await self._radio.set_key_speed(round(value))
-            return _ok()
+            return HamlibError.OK
 
         if level == "CWPITCH":
             await self._radio.set_cw_pitch(round(value))
-            return _ok()
+            return HamlibError.OK
 
         if level == "PREAMP":
             db = round(value)
@@ -1160,7 +1260,7 @@ class RigctldHandler:
                 key=lambda i: abs(_PREAMP_IDX_TO_DB[i] - db),
             )
             await self._radio.set_preamp(idx)
-            return _ok()
+            return HamlibError.OK
 
         if level == "ATT":
             # Find nearest supported dB (0, 6, 12, 18)
@@ -1168,9 +1268,9 @@ class RigctldHandler:
             db = round(value)
             nearest = min(_att_steps, key=lambda x: abs(x - db))
             await self._radio.set_attenuator_level(nearest)
-            return _ok()
+            return HamlibError.OK
 
-        return _err(HamlibError.EINVAL)
+        return HamlibError.EINVAL
 
     # ------------------------------------------------------------------
     # Function commands
@@ -1222,12 +1322,34 @@ class RigctldHandler:
         # Single-RX profiles only have receiver=0; per-VFO state is selected
         # via set_vfo_slot, not receiver= (issue #1354).
         receiver = self._receiver_index_for(target)
+        await self._command_service.execute(
+            command_intent_from_request(
+                "set_func",
+                {
+                    "func": func,
+                    "on": on,
+                    "receiver": receiver,
+                    "vfo_arg": cmd.vfo_arg,
+                },
+                source="rigctld",
+                command_id=f"rigctld-set-func-{time.monotonic_ns()}",
+            )
+        )
+        return _ok()
 
+    async def _execute_set_func(
+        self,
+        func: str,
+        on: bool,
+        *,
+        receiver: int,
+        vfo_arg: str | None,
+    ) -> HamlibError:
         if self._routing is not None:
-            return await self._routing.set_func(func, on, vfo=cmd.vfo_arg)
+            return (await self._routing.set_func(func, on, vfo=vfo_arg)).error
 
         if func not in _FUNC_SET:
-            return _err(HamlibError.EINVAL)
+            return HamlibError.EINVAL
         if func == "APF":
             # APF takes an int mode: 0=off, 1=soft
             await self._radio.set_audio_peak_filter(1 if on else 0)
@@ -1236,7 +1358,7 @@ class RigctldHandler:
             await getattr(self._radio, _FUNC_SET[func])(on, receiver=receiver)
         else:
             await getattr(self._radio, _FUNC_SET[func])(on)
-        return _ok()
+        return HamlibError.OK
 
     # ------------------------------------------------------------------
     # Split VFO commands
@@ -1272,6 +1394,17 @@ class RigctldHandler:
         except ValueError:
             return _err(HamlibError.EINVAL)
         tx_vfo = cmd.args[1].upper()
+        await self._command_service.execute(
+            command_intent_from_request(
+                "set_split_vfo",
+                {"on": on, "tx_vfo": tx_vfo},
+                source="rigctld",
+                command_id=f"rigctld-set-split-vfo-{time.monotonic_ns()}",
+            )
+        )
+        return _ok()
+
+    async def _execute_set_split_vfo(self, on: bool, tx_vfo: str) -> HamlibError:
         info = self._profile_vfo_info()
         set_split = getattr(self._radio, "set_split", None)
         if set_split is not None:
@@ -1296,7 +1429,7 @@ class RigctldHandler:
                         exc,
                     )
                     await self._rollback_split(set_split)
-                    return _err(HamlibError.EIO)
+                    return HamlibError.EIO
                 except TimeoutError as exc:
                     logger.warning(
                         "set_split_vfo: set_vfo(%s) timed out (%s); rolling back split",
@@ -1304,7 +1437,7 @@ class RigctldHandler:
                         exc,
                     )
                     await self._rollback_split(set_split)
-                    return _err(HamlibError.ETIMEOUT)
+                    return HamlibError.ETIMEOUT
                 except Exception:
                     logger.exception(
                         "set_split_vfo: set_vfo(%s) failed unexpectedly; "
@@ -1312,14 +1445,14 @@ class RigctldHandler:
                         target,
                     )
                     await self._rollback_split(set_split)
-                    return _err(HamlibError.EINTERNAL)
+                    return HamlibError.EINTERNAL
         # Record the requested TX VFO for the next ``s`` (get_split_vfo)
         # query — Hamlib protocol expects the TX VFO label round-trip
         # (issue #1345). Validate the label so a malformed request never
         # poisons the cached value.
         if tx_vfo in ("VFOA", "VFOB"):
             self._split_tx_vfo = cast(Literal["VFOA", "VFOB"], tx_vfo)
-        return _ok()
+        return HamlibError.OK
 
     async def _rollback_split(self, set_split: Any) -> None:
         """Best-effort rollback: disable split that was just enabled.
@@ -1500,22 +1633,16 @@ class RigctldHandler:
         except (ValueError, IndexError):
             return _err(HamlibError.EINVAL)
 
-        send_fn = getattr(self._radio, "_send_civ_raw", None)
-        if send_fn is None:
-            return _err(HamlibError.ENIMPL)
-
-        try:
-            resp = await send_fn(frame_bytes)
-        except (TimeoutError, asyncio.TimeoutError):
-            logger.debug("send_raw: timeout — returning empty response")
-            return RigctldResponse(values=[])
-
-        if resp is None:
-            return RigctldResponse(values=[])
-
-        raw = _civ_frame_to_bytes(resp)
-        hex_str = " ".join(f"{b:02X}" for b in raw)
-        return RigctldResponse(values=[hex_str])
+        result = await self._command_service.execute(
+            command_intent_from_request(
+                "send_raw",
+                {"frame_bytes": frame_bytes},
+                source="rigctld",
+                command_id=f"rigctld-send-raw-{time.monotonic_ns()}",
+            )
+        )
+        values = result.executor_result.details.get("values", [])
+        return RigctldResponse(values=list(values))
 
     # ------------------------------------------------------------------
     # Dispatch table (populated after method definitions)
