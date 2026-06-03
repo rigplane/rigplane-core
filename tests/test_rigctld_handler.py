@@ -21,7 +21,12 @@ from rigplane.core.state_acquisition_policy import (
 )
 from rigplane.exceptions import ConnectionError as IcomConnectionError
 from rigplane.exceptions import TimeoutError as IcomTimeoutError
-from rigplane.core.state_pipeline_contracts import FieldPath, Observation, SourceMetadata
+from rigplane.core.state_pipeline_contracts import (
+    CommandSource,
+    FieldPath,
+    Observation,
+    SourceMetadata,
+)
 from rigplane.core.state_store import StateStore
 from rigplane.radio_state import RadioState
 from rigplane.rigctld.contract import HamlibError, RigctldCommand, RigctldConfig
@@ -159,7 +164,7 @@ def _apply_store_value(
     path: str,
     value: object,
     *,
-    command_source: str | None = None,
+    command_source: CommandSource | None = None,
     correlation_id: str | None = None,
     max_age: float | None = None,
 ) -> None:
@@ -184,7 +189,7 @@ def _apply_handler_value(
     path: str,
     value: object,
     *,
-    command_source: str | None = None,
+    command_source: CommandSource | None = None,
     correlation_id: str | None = None,
     max_age: float | None = None,
 ) -> None:
