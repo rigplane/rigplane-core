@@ -59,6 +59,7 @@ from rigplane.radio_state import RadioState
 from rigplane.scope import ScopeFrame
 from rigplane.core.state_store import StateSnapshot
 from rigplane.types import CivFrame, Mode, bcd_encode
+from rigplane.web.radio_poller import CommandQueue, RadioPoller
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -924,6 +925,83 @@ def test_update_state_cache_records_scheduler_result_for_matching_pending_reques
 
     assert scheduler.recorded_count == 1
     assert scheduler.pending_requests() == ()
+
+
+@pytest.mark.parametrize(  # type: ignore[untyped-decorator]
+    ("path", "cmd", "receiver", "payload", "stored_path", "expected"),
+    [
+        (
+            FieldPath.active("main", "freq_mode", "freq_hz"),
+            0x25,
+            0x00,
+            bcd_encode(14_074_000),
+            "receiver.0.active.freq_mode.freq_hz",
+            14_074_000,
+        ),
+        (
+            FieldPath.active("sub", "freq_mode", "freq_hz"),
+            0x25,
+            0x01,
+            bcd_encode(7_100_000),
+            "receiver.1.active.freq_mode.freq_hz",
+            7_100_000,
+        ),
+        (
+            FieldPath.active("main", "freq_mode", "mode"),
+            0x26,
+            0x00,
+            bytes([Mode.USB.value, 0x00, 1]),
+            "receiver.0.active.freq_mode.mode",
+            "USB",
+        ),
+        (
+            FieldPath.active("sub", "freq_mode", "mode"),
+            0x26,
+            0x01,
+            bytes([Mode.CW.value, 0x00, 3]),
+            "receiver.1.active.freq_mode.mode",
+            "CW",
+        ),
+    ],
+)
+async def test_scheduler_active_freq_mode_request_completes_from_civ_rx_loop(
+    radio: IcomRadio,
+    transport: MockTransport,
+    path: FieldPath,
+    cmd: int,
+    receiver: int,
+    payload: bytes,
+    stored_path: str,
+    expected: object,
+) -> None:
+    scheduler = AcquisitionScheduler(profile=_acquisition_profile(path))
+    radio._acquisition_scheduler = scheduler
+    poller = RadioPoller(radio, CommandQueue(), radio_state=RadioState())
+
+    await poller._send_query()  # noqa: SLF001
+
+    assert scheduler.pending_requests()[0].paths == (path,)
+
+    civ = build_civ_frame(
+        CONTROLLER_ADDR,
+        IC_7610_ADDR,
+        cmd,
+        data=bytes([receiver]) + payload,
+    )
+    transport.queue_response(_wrap_civ_in_udp(civ))
+
+    radio._civ_runtime.start_pump()
+    try:
+        for _ in range(20):
+            if scheduler.pending_requests() == ():
+                break
+            await asyncio.sleep(0.01)
+    finally:
+        await radio._civ_runtime.stop_pump()
+        radio._connected = False
+
+    assert scheduler.pending_requests() == ()
+    assert radio._state_store.snapshot().field(stored_path).value == expected
 
 
 def test_meter_coalescing_applies_latest_due_sample_and_records_diagnostics(
