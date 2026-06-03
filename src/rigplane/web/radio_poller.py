@@ -28,7 +28,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
-from typing import TYPE_CHECKING, Any, Callable
+from typing import TYPE_CHECKING, Any, Callable, cast
 
 from ..exceptions import CommandError
 from ..exceptions import ConnectionError as RadioConnectionError
@@ -74,8 +74,10 @@ from ..core.command_service import (
     command_response_observation,
 )
 from ..core.acquisition_scheduler import (
+    AcquisitionExecutor,
     AcquisitionRequest,
     AcquisitionScheduler,
+    IcomCivAcquisitionExecutor,
     MeterObservationCoalescer,
 )
 from ..core.state_pipeline_contracts import CommandSource, FieldPath
@@ -177,41 +179,6 @@ _DEFAULT_POLL_FIELD_TTL: float = 0.2
 _FAST_INTERVAL: float = 0.025  # meters — wfview queue interval for LAN (25ms)
 _FAST_INTERVAL_SERIAL: float = 0.100  # serial: 10 polls/sec for responsive meters
 _SLOW_INTERVAL: float = 0.25  # levels/settings — rarely change
-
-_RECEIVER_IDS: dict[str, int] = {
-    "0": 0,
-    "main": 0,
-    "1": 1,
-    "sub": 1,
-}
-_RECEIVER_LEVEL_QUERY_SUBS: dict[str, int] = {
-    "af_level": 0x01,
-    "rf_gain": 0x02,
-    "squelch": 0x03,
-    "apf_type_level": 0x05,
-    "nr_level": 0x06,
-    "pbt_inner": 0x07,
-    "pbt_outer": 0x08,
-    "nb_level": 0x12,
-    "digisel_shift": 0x13,
-}
-_GLOBAL_LEVEL_QUERY_SUBS: dict[str, int] = {
-    "power_level": 0x0A,
-    "mic_gain": 0x0B,
-    "notch_filter": 0x0D,
-    "compressor_level": 0x0E,
-    "break_in_delay": 0x0F,
-    "drive_gain": 0x14,
-    "monitor_gain": 0x15,
-    "vox_gain": 0x16,
-    "anti_vox_gain": 0x17,
-}
-_GLOBAL_METER_QUERY_SUBS: dict[str, int] = {
-    "power": 0x11,
-    "swr": 0x12,
-    "alc": 0x13,
-}
-
 
 def _audio_tx_codec_and_rate(radio: Any) -> tuple[AudioCodec | None, int]:
     contract = getattr(radio, "audio_stream_contract", None)
@@ -401,6 +368,7 @@ class RadioPoller:
         radio_state: "RadioState | None" = None,
         diagnostics: StateDiagnosticsRecorder | None = None,
         state_store: StateStore | None = None,
+        acquisition_executor: AcquisitionExecutor | None = None,
     ) -> None:
         queue = legacy_queue if legacy_queue is not None else command_queue
         self._radio = radio
@@ -411,6 +379,7 @@ class RadioPoller:
         self._acquisition_scheduler = (
             raw_scheduler if isinstance(raw_scheduler, AcquisitionScheduler) else None
         )
+        self._acquisition_executor = acquisition_executor
         self._acquisition_in_flight: dict[str, tuple[frozenset[FieldPath], float]] = {}
         self._queue = queue
         self._on_state_event = on_state_event
@@ -431,6 +400,19 @@ class RadioPoller:
             self._FAST_CMDS_SERIAL if self._is_serial else self._FAST_CMDS_LAN
         )
         self._STATE_QUERIES = self._build_state_queries()
+        if self._acquisition_executor is None:
+            raw_executor = getattr(radio, "__dict__", {}).get("_acquisition_executor")
+            execute = getattr(raw_executor, "execute", None)
+            if callable(execute):
+                self._acquisition_executor = cast(AcquisitionExecutor, raw_executor)
+        if (
+            self._acquisition_executor is None
+            and self._acquisition_scheduler is not None
+            and self._acquisition_scheduler.provider == "icom_civ"
+        ):
+            self._acquisition_executor = IcomCivAcquisitionExecutor(
+                self._send_one_state_query
+            )
         # Set by default — cleared at _run() start, re-set after initial fetch.
         # This prevents EnableScope from hanging in tests that don't call start().
         self._initial_fetch_done = asyncio.Event()
@@ -875,16 +857,18 @@ class RadioPoller:
                 # VFO slot on each receiver.  Fully gated (PTT, queue
                 # pressure, debounce, per-rx interval) so it cannot
                 # regress fast-poll cadence.
-                for _rx in range(self._profile.receiver_count):
-                    try:
-                        await self._poll_unselected_slot(_rx)
-                    except (ConnectionError, RadioConnectionError):
-                        _backoff = min(_backoff + 0.5, _MAX_BACKOFF)
-                        break
-                    except Exception:
-                        logger.debug(
-                            "radio-poller: unselected-slot poll error", exc_info=True
-                        )
+                if self._acquisition_scheduler is None:
+                    for _rx in range(self._profile.receiver_count):
+                        try:
+                            await self._poll_unselected_slot(_rx)
+                        except (ConnectionError, RadioConnectionError):
+                            _backoff = min(_backoff + 0.5, _MAX_BACKOFF)
+                            break
+                        except Exception:
+                            logger.debug(
+                                "radio-poller: unselected-slot poll error",
+                                exc_info=True,
+                            )
 
                 # 4. Wait for next cycle
                 await self._queue.wait(timeout=self._fast_interval)
@@ -2217,44 +2201,6 @@ class RadioPoller:
         except Exception:
             logger.debug("radio-poller: meter coalescer flush failed", exc_info=True)
 
-    def _query_for_acquisition_path(
-        self,
-        path: FieldPath,
-    ) -> tuple[int, int | None, int | None] | None:
-        receiver = _RECEIVER_IDS.get(path.receiver_id or "")
-        if path.scope.value == "receiver" and receiver is None:
-            return None
-        if path.scope.value == "receiver" and path.family.value == "freq_mode":
-            if path.name == "freq_hz":
-                return (0x25, None, receiver)
-            if path.name == "mode":
-                return (0x26, None, receiver)
-            return None
-        if path.scope.value == "receiver" and path.family.value == "meters":
-            if path.name == "s_meter":
-                return (0x15, 0x02, receiver)
-            return None
-        if (
-            path.scope.value == "receiver"
-            and path.family.value == "operator_controls"
-        ):
-            sub = _RECEIVER_LEVEL_QUERY_SUBS.get(path.name)
-            return None if sub is None else (0x14, sub, receiver)
-        if path.scope.value == "global" and path.family.value == "meters":
-            sub = _GLOBAL_METER_QUERY_SUBS.get(path.name)
-            return None if sub is None else (0x15, sub, None)
-        if path.scope.value == "global" and path.family.value == "tx_state":
-            if path.name == "ptt":
-                return (0x1C, 0x00, None)
-            return None
-        if (
-            path.scope.value == "global"
-            and path.family.value == "operator_controls"
-        ):
-            sub = _GLOBAL_LEVEL_QUERY_SUBS.get(path.name)
-            return None if sub is None else (0x14, sub, None)
-        return None
-
     def _acquisition_request_expired(
         self,
         request: AcquisitionRequest,
@@ -2291,43 +2237,64 @@ class RadioPoller:
                     now=now,
                 ):
                     self._record_state_diagnostic(
-                        "acquisition_resend",
+                        "acquisition_request_failed",
                         "web.radio_poller",
                         request_id=request.id,
                         paths=[str(path) for path in request.paths],
+                        reason="acquisition_request_timeout",
                     )
-                    sent_paths = frozenset()
+                    scheduler.record_acquisition_failure(
+                        request,
+                        reason="acquisition_request_timeout",
+                        failed_paths=sent_paths or frozenset(request.paths),
+                        now=now,
+                    )
+                    self._acquisition_in_flight.pop(request.id, None)
+                    continue
                 else:
                     sent_paths = sent_paths.intersection(request.paths)
-            paths_to_send = tuple(path for path in request.paths if path not in sent_paths)
-            if not paths_to_send:
+
+            if all(path in sent_paths for path in request.paths):
                 continue
 
-            newly_sent: list[FieldPath] = []
-            for path in paths_to_send:
-                query = self._query_for_acquisition_path(path)
-                if query is None:
-                    self._record_state_diagnostic(
-                        "acquisition_skip",
-                        "web.radio_poller",
-                        request_id=request.id,
-                        path=str(path),
-                        reason="no_civ_query_mapping",
-                    )
-                    continue
-                cmd_byte, sub_byte, receiver = query
+            executor = self._acquisition_executor
+            if executor is None:
                 self._record_state_diagnostic(
-                    "backend_read",
+                    "acquisition_executor_missing",
                     "web.radio_poller",
-                    family=path.family.value,
-                    path=str(path),
                     request_id=request.id,
-                    command=f"0x{cmd_byte:02x}",
-                    sub=None if sub_byte is None else f"0x{sub_byte:02x}",
-                    receiver=receiver,
+                    paths=[str(path) for path in request.paths],
+                    provider=request.provider,
                 )
-                await self._send_one_state_query(cmd_byte, sub_byte, receiver)
-                newly_sent.append(path)
+                scheduler.record_acquisition_failure(
+                    request,
+                    reason="acquisition_executor_missing",
+                    now=now,
+                )
+                continue
+
+            result = await executor.execute(
+                request,
+                already_sent_paths=sent_paths,
+            )
+            newly_sent = tuple(result.sent_paths)
+            failed_paths = tuple(result.failed_paths)
+            if failed_paths:
+                reason = result.failure_reason or "acquisition_request_failed"
+                self._record_state_diagnostic(
+                    "acquisition_request_failed",
+                    "web.radio_poller",
+                    request_id=request.id,
+                    paths=[str(path) for path in failed_paths],
+                    reason=reason,
+                    provider=request.provider,
+                )
+                scheduler.record_acquisition_failure(
+                    request,
+                    reason=reason,
+                    failed_paths=failed_paths,
+                    now=now,
+                )
 
             if newly_sent:
                 self._acquisition_in_flight[request.id] = (
