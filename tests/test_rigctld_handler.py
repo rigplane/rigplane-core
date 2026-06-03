@@ -317,6 +317,37 @@ async def test_get_freq_ensure_fresh_queues_canonical_request_with_real_service(
 
 
 @pytest.mark.asyncio
+async def test_get_freq_stale_store_value_falls_through_to_radio_readback(
+    mock_radio: AsyncMock,
+) -> None:
+    store = StateStore()
+    freq = FieldPath.active("main", "freq_mode", "freq_hz")
+    scheduler = AcquisitionScheduler(profile=_acquisition_profile(freq))
+    model_service = RadioStateModelService(store=store, scheduler=scheduler)
+    mock_radio._state_store = store
+    mock_radio._state_model_service = model_service
+    mock_radio.get_freq.return_value = 14_090_000
+    _apply_store_value(
+        store,
+        "receiver.main.active.freq_mode.freq_hz",
+        14_074_000,
+        max_age=0.25,
+    )
+    store.mark_stale_due(now=2.0)
+    handler = RigctldHandler(mock_radio, RigctldConfig(cache_ttl=0.25))
+
+    resp = await handler.execute(get_cmd("get_freq"))
+
+    assert resp.values == ["14090000"]
+    requests = scheduler.pending_requests()
+    assert len(requests) == 1
+    assert requests[0].paths == (freq,)
+    assert requests[0].priority is AcquisitionPriority.USER
+    assert requests[0].reason == "rigctld.get_freq"
+    mock_radio.get_freq.assert_awaited_once()
+
+
+@pytest.mark.asyncio
 async def test_set_freq_calls_radio(
     handler: RigctldHandler, mock_radio: AsyncMock
 ) -> None:
@@ -1086,6 +1117,36 @@ async def test_get_split_vfo_reads_state_store_split_and_protocol_local_tx_vfo(
     get_resp = await handler.execute(get_cmd("get_split_vfo"))
     assert get_resp.ok
     assert get_resp.values == ["1", "VFOB"]
+
+
+@pytest.mark.asyncio
+async def test_get_split_vfo_scopes_tx_vfo_by_session_id(
+    dual_rx_handler: RigctldHandler,
+    dual_rx_radio: AsyncMock,
+) -> None:
+    state = RadioState()
+    state.split = True
+    dual_rx_radio.radio_state = state
+
+    set_resp = await dual_rx_handler.execute(
+        set_cmd("set_split_vfo", "1", "VFOB"),
+        session_id="rigctld-client-a",
+    )
+    assert set_resp.ok
+
+    resp_a = await dual_rx_handler.execute(
+        get_cmd("get_split_vfo"),
+        session_id="rigctld-client-a",
+    )
+    resp_b = await dual_rx_handler.execute(
+        get_cmd("get_split_vfo"),
+        session_id="rigctld-client-b",
+    )
+
+    assert resp_a.ok
+    assert resp_a.values == ["1", "VFOB"]
+    assert resp_b.ok
+    assert resp_b.values == ["1", "VFOA"]
 
 
 @pytest.mark.asyncio

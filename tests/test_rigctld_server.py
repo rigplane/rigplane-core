@@ -1,3 +1,4 @@
+# mypy: disable-error-code=untyped-decorator
 """Tests for src/rigplane/rigctld/server.py.
 
 Strategy
@@ -12,6 +13,8 @@ Strategy
 from __future__ import annotations
 
 import asyncio
+from collections.abc import AsyncIterator
+from typing import Any, cast
 from unittest.mock import ANY, AsyncMock, MagicMock
 
 import pytest
@@ -46,7 +49,12 @@ _TIMEOUT_BYTES = b"RPRT -5\n"  # ETIMEOUT
 def _addr(server: RigctldServer) -> tuple[str, int]:
     """Return (host, port) for a started server."""
     assert server._server is not None
-    return server._server.sockets[0].getsockname()
+    sockname = server._server.sockets[0].getsockname()
+    assert isinstance(sockname, tuple)
+    host, port = sockname[:2]
+    assert isinstance(host, str)
+    assert isinstance(port, int)
+    return host, port
 
 
 async def _connect(
@@ -87,6 +95,15 @@ class _ContractPrewarmRadio:
 
     async def _set_data_mode(self, on: bool) -> None:
         self.data_mode = on
+
+
+class _CompatHandler:
+    def __init__(self) -> None:
+        self.calls: list[RigctldCommand] = []
+
+    async def execute(self, cmd: RigctldCommand) -> RigctldResponse:
+        self.calls.append(cmd)
+        return _FREQ_RESP
 
 
 # ---------------------------------------------------------------------------
@@ -135,17 +152,17 @@ def handler() -> MagicMock:
 @pytest.fixture
 async def server(
     mock_radio: MagicMock, cfg: RigctldConfig, proto: MagicMock, handler: MagicMock
-) -> RigctldServer:  # type: ignore[misc]
+) -> AsyncIterator[RigctldServer]:
     srv = RigctldServer(mock_radio, cfg, _protocol=proto, _handler=handler)
     await srv.start()
-    yield srv  # type: ignore[misc]
+    yield srv
     await srv.stop()
 
 
 @pytest.fixture
 async def server_serial_radio(
     cfg: RigctldConfig,
-) -> tuple[RigctldServer, SerialMockRadio]:
+) -> AsyncIterator[tuple[RigctldServer, SerialMockRadio]]:
     """RigctldServer running on top of a real SerialMockRadio core."""
     radio = SerialMockRadio()
     await radio.connect()
@@ -271,6 +288,29 @@ class TestAcceptResponse:
         assert call.args == (set_cmd,)
         assert call.kwargs["session_id"] == "rigctld-client-1"
         await _close(w)
+
+    async def test_legacy_handler_execute_without_session_id_still_runs(
+        self, mock_radio: MagicMock, cfg: RigctldConfig, proto: MagicMock
+    ) -> None:
+        compat_handler = _CompatHandler()
+        srv = RigctldServer(
+            mock_radio,
+            cfg,
+            _protocol=proto,
+            _handler=compat_handler,
+        )
+        await srv.start()
+        try:
+            r, w = await _connect(srv)
+            w.write(b"f\n")
+            await w.drain()
+
+            data = await asyncio.wait_for(r.read(4096), timeout=1.0)
+            assert data == _RESPONSE_BYTES
+            assert compat_handler.calls == [_FREQ_CMD]
+            await _close(w)
+        finally:
+            await srv.stop()
 
     async def test_format_response_receives_session(
         self, server: RigctldServer, proto: MagicMock
@@ -804,11 +844,12 @@ class TestRunRigctldServer:
         import rigplane.rigctld.server as server_mod
 
         orig_cls = server_mod.RigctldServer
+        server_mod_any = cast(Any, server_mod)
 
         def _patched_cls(radio: MagicMock, config: RigctldConfig) -> RigctldServer:
             return orig_cls(radio, config, _protocol=proto, _handler=hdl)
 
-        server_mod.RigctldServer = _patched_cls  # type: ignore[assignment]
+        server_mod_any.RigctldServer = _patched_cls
         try:
             task = asyncio.get_event_loop().create_task(
                 run_rigctld_server(mock_radio, host="127.0.0.1", port=0)
@@ -820,7 +861,7 @@ class TestRunRigctldServer:
             except (asyncio.CancelledError, asyncio.TimeoutError):
                 pass
         finally:
-            server_mod.RigctldServer = orig_cls  # type: ignore[assignment]
+            server_mod_any.RigctldServer = orig_cls
 
 
 # ---------------------------------------------------------------------------

@@ -31,7 +31,7 @@ from ..core.command_service import (
 )
 from ..core.state_diagnostics import StateDiagnosticsRecorder
 from ..core.state_pipeline_contracts import CommandIntent, FieldPath, Observation, SourceMetadata
-from ..core.state_store import StateStore, StateSnapshot
+from ..core.state_store import FreshnessState, StateStore, StateSnapshot
 from ..exceptions import ConnectionError, TimeoutError as RigplaneTimeoutError
 from ..radio_state import RadioState, ReceiverState
 from ..types import Mode
@@ -439,6 +439,8 @@ class _RigctldProjection:
                     field = self.snapshot.field(candidate)
                 except KeyError:
                     continue
+                if field.freshness is not FreshnessState.FRESH:
+                    continue
                 if (
                     newest is None
                     or field.last_observed_monotonic > newest.last_observed_monotonic
@@ -516,7 +518,7 @@ class RigctldHandler:
         # Icoms — set_vfo_split routing is via active receiver). Initial
         # value mirrors the Hamlib default ("VFOA"). Updated by
         # ``_cmd_set_split_vfo`` on every ``S`` request. (Issue #1345.)
-        self._split_tx_vfo: Literal["VFOA", "VFOB"] = "VFOA"
+        self._split_tx_vfo_by_session: dict[str | None, Literal["VFOA", "VFOB"]] = {}
         # Legacy routing cache is retained only for vendor-specific routing
         # strategies that still depend on it (Yaesu today). Core rigctld GET
         # paths project from StateStore plus scoped CommandService overlays.
@@ -580,6 +582,12 @@ class RigctldHandler:
 
     def _receiver_id(self, receiver: int) -> str:
         return "sub" if receiver == 1 else "main"
+
+    def _split_tx_vfo(self) -> Literal["VFOA", "VFOB"]:
+        return self._split_tx_vfo_by_session.get(self._session_id(), "VFOA")
+
+    def _set_split_tx_vfo(self, tx_vfo: Literal["VFOA", "VFOB"]) -> None:
+        self._split_tx_vfo_by_session[self._session_id()] = tx_vfo
 
     def _legacy_receiver_id(self, receiver_id: str) -> str | None:
         if receiver_id == "main":
@@ -1883,7 +1891,7 @@ class RigctldHandler:
         # ``_split_tx_vfo`` is handler-local Hamlib-protocol state, set by
         # the most recent ``S`` command (issue #1345 — fixes #1319 finding
         # #2 where this used to leak the active VFO instead of TX_VFO).
-        return RigctldResponse(values=[str(int(split)), self._split_tx_vfo])
+        return RigctldResponse(values=[str(int(split)), self._split_tx_vfo()])
 
     async def _cmd_set_split_vfo(self, cmd: RigctldCommand) -> RigctldResponse:
         # Validate the (optional) leading VFO label first — VFOB on a
@@ -1958,7 +1966,7 @@ class RigctldHandler:
         # (issue #1345). Validate the label so a malformed request never
         # poisons the cached value.
         if tx_vfo in ("VFOA", "VFOB"):
-            self._split_tx_vfo = cast(Literal["VFOA", "VFOB"], tx_vfo)
+            self._set_split_tx_vfo(cast(Literal["VFOA", "VFOB"], tx_vfo))
         return HamlibError.OK
 
     async def _rollback_split(self, set_split: Any) -> None:
