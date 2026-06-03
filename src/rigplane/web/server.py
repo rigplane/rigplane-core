@@ -1496,7 +1496,7 @@ class WebServer:
         This is the PRIMARY update path.  Called whenever the radio sends
         a CI-V frame (solicited response or unsolicited change).
         """
-        if self._radio_poller is not None:
+        if self._radio_poller is not None and name != "state_store_changed":
             self._radio_poller.bump_revision()
         self.broadcast_event(name, data)
         self._broadcast_state_update()

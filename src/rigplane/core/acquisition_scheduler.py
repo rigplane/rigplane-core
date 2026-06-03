@@ -920,6 +920,8 @@ class MeterObservationCoalescer:
 
         changes = []
         sources = []
+        observed_paths: list[FieldPath] = []
+        freshness_paths: list[FieldPath] = []
         result: ChangeSet | None = None
         timestamp_monotonic = max(
             observation.timestamp_monotonic for observation in latest_by_path.values()
@@ -931,6 +933,8 @@ class MeterObservationCoalescer:
             result = store.apply(observation)
             changes.extend(result.changes)
             sources.extend(result.sources)
+            observed_paths.extend(result.observed_paths)
+            freshness_paths.extend(result.freshness_paths)
 
         assert result is not None
         return ChangeSet(
@@ -941,6 +945,8 @@ class MeterObservationCoalescer:
             timestamp_monotonic=timestamp_monotonic,
             sources=tuple(sources),
             coalesced=True,
+            observed_paths=tuple(observed_paths),
+            freshness_paths=tuple(freshness_paths),
         )
 
     def next_flush_monotonic(self) -> float | None:

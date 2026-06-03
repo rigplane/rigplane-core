@@ -28,7 +28,6 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
-from dataclasses import replace
 from typing import TYPE_CHECKING, Any, Callable
 
 from ..exceptions import CommandError
@@ -79,7 +78,7 @@ from ..core.acquisition_scheduler import (
     AcquisitionScheduler,
     MeterObservationCoalescer,
 )
-from ..core.state_pipeline_contracts import ChangeSet, CommandSource, FieldPath
+from ..core.state_pipeline_contracts import CommandSource, FieldPath
 from ..core.state_diagnostics import StateDiagnosticsRecorder
 from ..core.state_store import StateStore
 from .._state_queries import build_state_queries
@@ -2244,6 +2243,10 @@ class RadioPoller:
         if path.scope.value == "global" and path.family.value == "meters":
             sub = _GLOBAL_METER_QUERY_SUBS.get(path.name)
             return None if sub is None else (0x15, sub, None)
+        if path.scope.value == "global" and path.family.value == "tx_state":
+            if path.name == "ptt":
+                return (0x1C, 0x00, None)
+            return None
         if (
             path.scope.value == "global"
             and path.family.value == "operator_controls"
@@ -2251,17 +2254,6 @@ class RadioPoller:
             sub = _GLOBAL_LEVEL_QUERY_SUBS.get(path.name)
             return None if sub is None else (0x14, sub, None)
         return None
-
-    def _empty_acquisition_changeset(self, *, now: float) -> ChangeSet:
-        snapshot = self._state_store.snapshot()
-        return ChangeSet(
-            revision=snapshot.state_revision,
-            freshness_revision=snapshot.freshness_revision,
-            observation_seq=snapshot.observation_seq,
-            changes=(),
-            timestamp_monotonic=now,
-            sources=(),
-        )
 
     def _acquisition_request_expired(
         self,
@@ -2321,10 +2313,6 @@ class RadioPoller:
                         request_id=request.id,
                         path=str(path),
                         reason="no_civ_query_mapping",
-                    )
-                    scheduler.record_acquisition_result(
-                        replace(request, paths=(path,)),
-                        self._empty_acquisition_changeset(now=now),
                     )
                     continue
                 cmd_byte, sub_byte, receiver = query

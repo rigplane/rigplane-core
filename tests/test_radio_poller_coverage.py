@@ -278,7 +278,7 @@ async def test_scheduler_due_request_sends_supported_civ_query_once() -> None:
 
 
 @pytest.mark.asyncio
-async def test_scheduler_unknown_query_mapping_is_recorded_and_completed() -> None:
+async def test_scheduler_unknown_query_mapping_is_recorded_and_left_pending() -> None:
     radio = _make_radio(active="MAIN")
     path = FieldPath.global_("slow_state", "overflow")
     scheduler = AcquisitionScheduler(profile=_acquisition_profile(path))
@@ -295,12 +295,32 @@ async def test_scheduler_unknown_query_mapping_is_recorded_and_completed() -> No
     await poller._send_query()  # noqa: SLF001
 
     radio.send_civ.assert_not_awaited()
-    assert scheduler.pending_requests() == ()
+    assert len(scheduler.pending_requests()) == 1
+    assert scheduler.pending_requests()[0].paths == (path,)
     assert any(
         args[:2] == ("acquisition_skip", "web.radio_poller")
         and kwargs["path"] == str(path)
         for args, kwargs in diagnostics
     )
+
+
+@pytest.mark.asyncio
+async def test_scheduler_ptt_request_sends_civ_ptt_query() -> None:
+    radio = _make_radio(active="MAIN")
+    path = FieldPath.global_("tx_state", "ptt")
+    scheduler = AcquisitionScheduler(profile=_acquisition_profile(path))
+    radio._acquisition_scheduler = scheduler
+    poller = RadioPoller(radio, CommandQueue(), radio_state=RadioState())
+
+    await poller._send_query()  # noqa: SLF001
+
+    radio.send_civ.assert_awaited_once_with(
+        0x1C,
+        sub=0x00,
+        data=b"",
+        wait_response=False,
+    )
+    assert scheduler.pending_requests()[0].paths == (path,)
 
 
 @pytest.mark.asyncio

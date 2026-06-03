@@ -261,6 +261,10 @@ class StateStore:
             timestamp_monotonic=observation.timestamp_monotonic,
             sources=(observation.source,),
             coalesced=False,
+            observed_paths=(observation.path,),
+            freshness_paths=()
+            if freshness_transition is None
+            else (freshness_transition.path,),
         )
         self._append_history(
             changes=changes,

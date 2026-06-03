@@ -280,20 +280,60 @@ def _changeset_for_request_paths(
     observed_path: FieldPath,
     request_paths: tuple[FieldPath, ...],
 ) -> ChangeSet:
-    if not changeset.changes:
+    if (
+        not changeset.changes
+        and not changeset.observed_paths
+        and not changeset.freshness_paths
+    ):
         return changeset
+    remapped_observed_paths = tuple(
+        _request_path_for_observed_path(
+            path,
+            observed_path=observed_path,
+            request_paths=request_paths,
+        )
+        or path
+        for path in changeset.observed_paths
+    )
+    remapped_freshness_paths = tuple(
+        _request_path_for_observed_path(
+            path,
+            observed_path=observed_path,
+            request_paths=request_paths,
+        )
+        or path
+        for path in changeset.freshness_paths
+    )
     remapped: list[FieldChange] = []
     for change in changeset.changes:
-        replacement = None
-        if _field_paths_match(change.path, observed_path):
-            for request_path in request_paths:
-                if _field_paths_match(request_path, change.path):
-                    replacement = request_path
-                    break
+        replacement = _request_path_for_observed_path(
+            change.path,
+            observed_path=observed_path,
+            request_paths=request_paths,
+        )
         remapped.append(
             change if replacement is None else _replace_dataclass(change, path=replacement)
         )
-    return _replace_dataclass(changeset, changes=tuple(remapped))
+    return _replace_dataclass(
+        changeset,
+        changes=tuple(remapped),
+        observed_paths=remapped_observed_paths,
+        freshness_paths=remapped_freshness_paths,
+    )
+
+
+def _request_path_for_observed_path(
+    path: FieldPath,
+    *,
+    observed_path: FieldPath,
+    request_paths: tuple[FieldPath, ...],
+) -> FieldPath | None:
+    if not _field_paths_match(path, observed_path):
+        return None
+    for request_path in request_paths:
+        if _field_paths_match(request_path, path):
+            return request_path
+    return None
 
 _CMD1A_CTL_MEM_LEVEL_FIELDS = {
     b"\x00\x70": ("ref_adjust", 2),
@@ -1279,10 +1319,13 @@ class CivRuntime:
         scheduler = getattr(self._host, "_acquisition_scheduler", None)
         if not isinstance(scheduler, AcquisitionScheduler):
             return
-        for change in changeset.changes:
+        change_by_path = {change.path: change for change in changeset.changes}
+        paths = changeset.observed_paths or tuple(change_by_path)
+        for path in paths:
+            change = change_by_path.get(path)
             observation = Observation(
-                path=change.path,
-                value=change.current,
+                path=path,
+                value=None if change is None else change.current,
                 source=changeset.sources[0]
                 if changeset.sources
                 else SourceMetadata(
@@ -1296,13 +1339,15 @@ class CivRuntime:
             self._record_scheduler_result_for_observation(observation, changeset)
 
     def _notify_state_store_changed(self, changeset: ChangeSet) -> None:
-        if not changeset.changes:
+        paths = {change.path for change in changeset.changes}
+        paths.update(changeset.freshness_paths)
+        if not paths:
             return
         self._notify_change(
             "state_store_changed",
             {
                 "coalesced": changeset.coalesced,
-                "paths": sorted(str(change.path) for change in changeset.changes),
+                "paths": sorted(str(path) for path in paths),
             },
         )
 

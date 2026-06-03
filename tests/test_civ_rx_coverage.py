@@ -980,6 +980,77 @@ def test_meter_coalescing_applies_latest_due_sample_and_records_diagnostics(
     }
 
 
+def test_same_value_coalesced_meter_flush_completes_scheduler_request(
+    radio: IcomRadio,
+) -> None:
+    path = FieldPath.receiver("main", "meters", "s_meter")
+    stored_path = FieldPath.receiver("0", "meters", "s_meter")
+    policy = AcquisitionPolicy(
+        cadence_seconds=1.0,
+        freshness_ttl_seconds=4.0,
+        meter_coalescing=MeterCoalescingPolicy(window_seconds=0.2),
+    )
+    radio._state_store.apply(
+        radio._civ_runtime._observation(
+            stored_path,
+            111,
+            frame=_make_frame(cmd=0x15, sub=0x02, data=_bcd2(111)),
+        )
+    )
+    scheduler = AcquisitionScheduler(profile=_acquisition_profile(path, policy=policy))
+    scheduler.due_requests(now=100.0)
+    radio._acquisition_scheduler = scheduler
+    radio._meter_observation_coalescer = MeterObservationCoalescer()
+    radio._state_diagnostics = StateDiagnosticsRecorder(enabled=True)
+
+    with patch("rigplane.runtime._civ_rx.time.monotonic", return_value=100.0):
+        radio._civ_runtime._apply_state_store_observations(
+            _make_frame(cmd=0x15, sub=0x02, data=_bcd2(111))
+        )
+    changeset = radio._civ_runtime.flush_due_meter_observations(now=100.2)
+
+    assert changeset is not None
+    assert changeset.changes == ()
+    assert scheduler.pending_requests() == ()
+    assert scheduler.diagnostics()["cadenceByPath"][str(path)][
+        "nextDueMonotonic"
+    ] == 101.0
+    assert any(
+        event.kind == "acquisition_result"
+        and event.details["paths"] == [str(path)]
+        and event.details["changed"] is False
+        for event in radio._state_diagnostics.events()
+    )
+
+
+def test_same_value_stale_refresh_notifies_state_store_changed(
+    radio: IcomRadio,
+) -> None:
+    path = FieldPath.receiver("main", "meters", "s_meter")
+    events: list[tuple[str, dict[str, object]]] = []
+    radio._on_state_change = lambda name, data: events.append((name, data))
+
+    radio._state_store.apply(
+        radio._civ_runtime._observation(
+            path,
+            111,
+            frame=_make_frame(cmd=0x15, sub=0x02, data=_bcd2(111)),
+        )
+    )
+    radio._state_store.mark_stale_due(now=time.monotonic() + 1.0)
+
+    radio._civ_runtime._apply_state_store_observations(
+        _make_frame(cmd=0x15, sub=0x02, data=_bcd2(111))
+    )
+
+    assert events == [
+        (
+            "state_store_changed",
+            {"coalesced": False, "paths": ["receiver.0.meters.s_meter"]},
+        )
+    ]
+
+
 @pytest.mark.parametrize(  # type: ignore[untyped-decorator]
     ("frame", "field_name", "initial_value"),
     [
