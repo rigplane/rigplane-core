@@ -159,8 +159,16 @@ class TestSetBandBSRRecall:
 
         snapshot_after = poller._state_store.snapshot()  # noqa: SLF001
         assert snapshot_after.state_revision > snapshot_before.state_revision
-        assert snapshot_after.field("receiver.0.freq_mode.freq_hz").value == 7207000
-        assert snapshot_after.field("receiver.0.freq_mode.mode").value == "LSB"
+        freq_field = snapshot_after.field("receiver.0.active.freq_mode.freq_hz")
+        mode_field = snapshot_after.field("receiver.0.active.freq_mode.mode")
+        assert freq_field.value == 7207000
+        assert mode_field.value == "LSB"
+        assert freq_field.source.source == "poll_response"
+        assert freq_field.source.provider == "web_poller"
+        assert freq_field.source.native_id == "bsr_readback"
+        assert mode_field.source.source == "poll_response"
+        assert mode_field.source.provider == "web_poller"
+        assert mode_field.source.native_id == "bsr_readback"
         assert poller._radio_state.main.freq == 7207000  # noqa: SLF001
         assert poller._radio_state.main.mode == "LSB"  # noqa: SLF001
 
@@ -227,6 +235,7 @@ class TestSetBandFallback:
         radio.set_freq.assert_awaited_once()
         freq_arg = radio.set_freq.call_args[0][0]
         assert 13_900_000 <= freq_arg <= 14_500_000  # within 20m band
+        assert poller._state_store.snapshot().fields == ()  # noqa: SLF001
 
     @pytest.mark.asyncio
     async def test_fallback_when_bsr_response_too_short(self) -> None:
@@ -246,6 +255,7 @@ class TestSetBandFallback:
         await poller._execute(SetBand(band=5))  # noqa: SLF001
 
         radio.set_freq.assert_awaited_once()
+        assert poller._state_store.snapshot().fields == ()  # noqa: SLF001
 
     @pytest.mark.asyncio
     async def test_fallback_when_send_civ_raises(self) -> None:
@@ -260,6 +270,7 @@ class TestSetBandFallback:
         radio.set_freq.assert_awaited_once()
         freq_arg = radio.set_freq.call_args[0][0]
         assert 6_900_000 <= freq_arg <= 7_500_000  # within 40m band
+        assert poller._state_store.snapshot().fields == ()  # noqa: SLF001
 
     @pytest.mark.asyncio
     async def test_unknown_bsr_code_no_crash(self) -> None:

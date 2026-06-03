@@ -47,8 +47,10 @@ from typing import (
     AsyncIterator,
     Awaitable,
     Callable,
+    Iterable,
     Literal,
     Protocol,
+    Sequence,
     runtime_checkable,
 )
 
@@ -57,13 +59,16 @@ from .types import AudioCodec, BreakInMode, Mode
 
 if TYPE_CHECKING:
     from ._state_cache import StateCache
+    from .acquisition_scheduler import AcquisitionPriority, EnsureFreshResult
+    from .state_pipeline_contracts import FieldPath, Observation
+    from .state_store import StateStore
     from rigplane.audio_bus import AudioBus
 
     # ``_FallbackRigState`` actually lives in ``rigctld.handler`` and is
     # re-exported through ``rigctld.routing``'s TYPE_CHECKING namespace; a
     # single import edge keeps the import-linter exemption count to one
     # per contract.
-    from rigplane.rigctld.routing import (  # type: ignore[attr-defined]  # noqa: TID251
+    from rigplane.rigctld.routing import (  # noqa: TID251
         RigctldRouting,
         _FallbackRigState,
     )
@@ -84,6 +89,8 @@ __all__ = [
     "TransceiverBankCapable",
     "VfoSlotCapable",
     "StateCacheCapable",
+    "StateModelCapable",
+    "StateModelService",
     "RecoverableConnection",
     "AdvancedControlCapable",
     "DspControlCapable",
@@ -98,8 +105,11 @@ __all__ = [
     "RigctldRoutable",
     "SplitCapable",
     "StateNotifyCapable",
+    "ObservationPollable",
+    "ObservationPoller",
     "StatePollable",
     "StatePoller",
+    "StateStoreCapable",
     "RitXitCapable",
     "TransceiverStatusCapable",
     "UsbAudioCapable",
@@ -576,6 +586,70 @@ class StatePollable(Protocol):
         Returns:
             A :class:`StatePoller` ready for ``await poller.start()``.
         """
+        ...
+
+
+@runtime_checkable
+class ObservationPoller(Protocol):
+    """Coroutine-driven request-response observation poller."""
+
+    async def start(self) -> None:
+        """Start the polling loops."""
+        ...
+
+    async def stop(self) -> None:
+        """Stop the polling loops and wait for them to finish."""
+        ...
+
+
+@runtime_checkable
+class ObservationPollable(Protocol):
+    """Radio that can emit backend-neutral observations from poll reads."""
+
+    def create_observation_poller(
+        self,
+        *,
+        callback: Callable[[Sequence["Observation"]], None],
+        command_queue: "CommandQueue | None" = None,
+    ) -> ObservationPoller:
+        """Construct an observation poller bound to this radio."""
+        ...
+
+
+@runtime_checkable
+class StateModelService(Protocol):
+    """Service capable of requesting fresh StateStore-backed fields."""
+
+    def ensure_fresh(
+        self,
+        paths: FieldPath | str | Iterable[FieldPath | str],
+        *,
+        max_age: float,
+        priority: AcquisitionPriority | str,
+        reason: str,
+        timeout: float | None = None,
+    ) -> EnsureFreshResult:
+        """Return fresh fields or enqueue acquisition for stale/missing fields."""
+        ...
+
+
+@runtime_checkable
+class StateStoreCapable(Protocol):
+    """Radio exposes the canonical StateStore through a public capability."""
+
+    @property
+    def state_store(self) -> "StateStore":
+        """Canonical confirmed-observation store for runtime state ingress."""
+        ...
+
+
+@runtime_checkable
+class StateModelCapable(StateStoreCapable, Protocol):
+    """Radio exposes StateStore-backed acquisition through a public capability."""
+
+    @property
+    def state_model_service(self) -> StateModelService | None:
+        """Optional service for StateStore freshness/acquisition requests."""
         ...
 
 

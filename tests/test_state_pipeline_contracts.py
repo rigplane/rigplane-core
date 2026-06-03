@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
-from pathlib import Path
+from typing import Any
 
 import pytest
 
+from rigplane.core.state_store import StateSnapshot, StateStore
 from rigplane.core.state_pipeline_contracts import (
     CapabilityMetadata,
     DEFAULT_FIELD_REGISTRY,
@@ -20,9 +22,125 @@ from rigplane.core.state_pipeline_contracts import (
     Observation,
     SourceMetadata,
 )
+from rigplane.radio_state import RadioState
+from rigplane.web.radio_poller import RadioPoller
+from rigplane.web.server import WebConfig, WebServer
+
+_LEGACY_POLLER_REVISION = 987_654
 
 
-REPO_ROOT = Path(__file__).resolve().parents[1]
+class _StateStoreRadio:
+    capabilities: set[str] = set()
+    connected = False
+    control_connected = False
+    radio_ready = False
+    backend_id = "contract_test"
+
+    def __init__(self, store: StateStore, legacy_state: RadioState) -> None:
+        self._store = store
+        self.radio_state = legacy_state
+
+    @property
+    def state_store(self) -> StateStore:
+        return self._store
+
+
+class _LegacyRevisionPoller:
+    revision = _LEGACY_POLLER_REVISION
+
+    def bump_revision(self) -> None:
+        raise AssertionError("web delivery attempted to bump legacy poller revision")
+
+
+class _FakeWriter:
+    def __init__(self) -> None:
+        self.buffer = bytearray()
+
+    def write(self, data: bytes) -> None:
+        self.buffer.extend(data)
+
+    async def drain(self) -> None:
+        return None
+
+
+def _response_json(writer: _FakeWriter) -> tuple[int, dict[str, Any]]:
+    text = writer.buffer.decode("ascii", errors="replace")
+    status = int(text.split(" ", 2)[1])
+    body_start = text.index("\r\n\r\n") + 4
+    return status, json.loads(text[body_start:] or "{}")
+
+
+def _state_store_source() -> SourceMetadata:
+    return SourceMetadata(
+        source="poll_response",
+        provider="contract_test",
+        transport="fake",
+        native_id="contract_test",
+    )
+
+
+def _store_observation(
+    path: FieldPath,
+    value: object,
+    *,
+    at: float,
+) -> Observation:
+    return Observation(
+        path=path,
+        value=value,
+        source=_state_store_source(),
+        timestamp_monotonic=at,
+    )
+
+
+def _server_with_conflicting_legacy_state() -> tuple[WebServer, StateSnapshot]:
+    store = StateStore()
+    store.apply(
+        _store_observation(
+            FieldPath.active("0", "freq_mode", "freq_hz"),
+            14_074_000,
+            at=1.0,
+        )
+    )
+    store.apply(
+        _store_observation(
+            FieldPath.active("0", "freq_mode", "mode"),
+            "USB",
+            at=1.1,
+        )
+    )
+    store.apply(
+        _store_observation(
+            FieldPath.global_("tx_state", "ptt"),
+            False,
+            at=1.2,
+        )
+    )
+    snapshot = store.snapshot()
+    legacy_state = RadioState()
+    legacy_state.main.freq = 14_250_000
+    legacy_state.main.mode = "LSB"
+    legacy_state.ptt = True
+    server = WebServer(
+        _StateStoreRadio(store, legacy_state),
+        WebConfig(state_diagnostics=True),
+    )
+    server._radio_state = legacy_state  # noqa: SLF001
+    server._radio_poller = _LegacyRevisionPoller()  # noqa: SLF001
+    return server, snapshot
+
+
+def _assert_delivered_from_snapshot(
+    payload: dict[str, Any],
+    snapshot: StateSnapshot,
+) -> None:
+    assert payload["revision"] == snapshot.state_revision
+    assert payload["stateRevision"] == snapshot.state_revision
+    assert payload["freshnessRevision"] == snapshot.freshness_revision
+    assert payload["revision"] != _LEGACY_POLLER_REVISION
+    assert payload["main"]["freqHz"] == 14_074_000
+    assert payload["main"]["mode"] == "USB"
+    assert payload["ptt"] is False
 
 
 @pytest.mark.parametrize(  # type: ignore[untyped-decorator]
@@ -256,64 +374,67 @@ def test_capability_metadata_serialization_round_trip() -> None:
     )
 
 
-def test_web_poller_no_longer_exposes_public_revision_delivery_api() -> None:
-    source = (REPO_ROOT / "src/rigplane/web/radio_poller.py").read_text()
+def test_web_poller_public_revision_delivery_api_remains_absent() -> None:
+    # Narrow API-surface guard. Delivery behavior is covered by the semantic
+    # WebServer tests below, so this only rejects reintroducing the old poller
+    # revision methods as public delivery API.
+    assert not hasattr(RadioPoller, "bump_revision")
+    assert not hasattr(RadioPoller, "revision")
 
-    forbidden_fragments = (
-        "self._revision",
-        "def bump_revision(",
-        "def revision(",
-        '"revision_producing_event"',
+
+@pytest.mark.asyncio
+async def test_web_delivery_payloads_use_snapshot_not_legacy_state_or_revision() -> None:
+    server, snapshot = _server_with_conflicting_legacy_state()
+
+    public_payload = server.build_public_state()
+    _assert_delivered_from_snapshot(public_payload, snapshot)
+
+    envelope = server.build_state_update_envelope(force_full=True)
+    assert envelope["type"] == "full"
+    _assert_delivered_from_snapshot(envelope["data"], snapshot)
+
+    queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
+    server.register_control_event_queue(queue)
+    server._last_state_broadcast = 0.0  # noqa: SLF001
+    server._broadcast_state_update()  # noqa: SLF001
+    broadcast = queue.get_nowait()
+    assert broadcast["type"] == "state_update"
+    assert broadcast["data"]["type"] == "full"
+    _assert_delivered_from_snapshot(broadcast["data"]["data"], snapshot)
+
+    writer = _FakeWriter()
+    await server._serve_state(writer)  # noqa: SLF001
+    status, http_payload = _response_json(writer)
+    assert status == 200
+    _assert_delivered_from_snapshot(http_payload, snapshot)
+
+    after_delivery = server.command_state_store.snapshot()
+    assert after_delivery.state_revision == snapshot.state_revision
+    assert after_delivery.freshness_revision == snapshot.freshness_revision
+    assert after_delivery.as_dict() == snapshot.as_dict()
+
+
+def test_web_state_change_callback_broadcasts_snapshot_without_revision_path() -> None:
+    server, snapshot = _server_with_conflicting_legacy_state()
+    queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
+    server.register_control_event_queue(queue)
+
+    server._on_radio_state_change(  # noqa: SLF001
+        "legacy_radio_state_changed",
+        {"revision": _LEGACY_POLLER_REVISION, "freq": 14_250_000},
     )
 
-    for fragment in forbidden_fragments:
-        assert fragment not in source
-
-
-def test_web_server_state_change_callback_does_not_bump_poller_revision() -> None:
-    source = (REPO_ROOT / "src/rigplane/web/server.py").read_text()
-    callback_body = source.split("def _on_radio_state_change", maxsplit=1)[1].split(
-        "def _", maxsplit=1
-    )[0]
-
-    assert "bump_revision" not in callback_body
-
-
-def _web_server_method_source(method_name: str) -> str:
-    source = (REPO_ROOT / "src/rigplane/web/server.py").read_text()
-    marker = f"    def {method_name}("
-    assert marker in source
-    return source.split(marker, maxsplit=1)[1].split("\n    def ", maxsplit=1)[0]
-
-
-@pytest.mark.parametrize(  # type: ignore[untyped-decorator]
-    "method_name",
-    [
-        "_broadcast_state_update",
-        "build_public_state",
-        "build_state_update_envelope",
-    ],
-)
-def test_web_delivery_methods_snapshot_only(method_name: str) -> None:
-    method_source = _web_server_method_source(method_name)
-
-    assert "command_state_store.snapshot()" in method_source
-    forbidden_fragments = {
-        "_sync_legacy_state_store_for_delivery": "legacy sync during delivery",
-        "sync_state_store_from_radio_state(": "legacy ingestion during delivery",
-        "command_state_store.apply(": "StateStore mutation during delivery",
-        "self._radio_state": "legacy RadioState read/write during delivery",
-        ".radio_state": "backend RadioState read during delivery",
-        "self._radio_poller": "poller state read during delivery",
+    forwarded = queue.get_nowait()
+    broadcast = queue.get_nowait()
+    assert forwarded == {
+        "type": "event",
+        "name": "legacy_radio_state_changed",
+        "data": {"revision": _LEGACY_POLLER_REVISION, "freq": 14_250_000},
     }
-    for fragment, reason in forbidden_fragments.items():
-        assert fragment not in method_source, reason
-
-
-def test_legacy_state_sync_is_not_called_from_web_server_delivery() -> None:
-    server_source = (REPO_ROOT / "src/rigplane/web/server.py").read_text()
-    startup_source = (REPO_ROOT / "src/rigplane/web/web_startup.py").read_text()
-
-    assert "_sync_legacy_state_store_for_delivery" not in server_source
-    assert ".sync_state_store_from_radio_state(" not in server_source
-    assert "server.sync_state_store_from_radio_state(state)" in startup_source
+    assert broadcast["type"] == "state_update"
+    assert broadcast["data"]["type"] == "full"
+    _assert_delivered_from_snapshot(broadcast["data"]["data"], snapshot)
+    assert not any(
+        item.kind == "revision_producing_event"
+        for item in server.state_diagnostics.events()
+    )

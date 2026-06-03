@@ -6,7 +6,7 @@ import time
 from typing import TYPE_CHECKING, Any, cast
 
 from ..core.state_pipeline_contracts import FieldFamily, FieldScope, FieldPath, VfoSlot
-from ..core.state_store import StateSnapshot
+from ..core.state_store import FieldSnapshot, FreshnessState, StateSnapshot
 from ..radio_protocol import (
     AudioCapable,
     DualReceiverCapable,
@@ -164,6 +164,241 @@ _GLOBAL_SLOW_STATE_FIELDS = {
     "scope_controls",
     "yaesu",
 }
+
+
+def _receiver_public_key(name: str) -> str:
+    return _RECEIVER_KEY_MAP.get(name, _to_camel(name))
+
+
+def _public_field_path(*parts: str) -> str:
+    return ".".join(parts)
+
+
+def _snapshot_field_public_paths(path: FieldPath) -> tuple[str, ...]:
+    if path.scope is FieldScope.RECEIVER:
+        receiver_key = _snapshot_receiver_key(path.receiver_id)
+        if receiver_key is None:
+            return ()
+        if path.family is FieldFamily.FREQ_MODE:
+            if path.slot in (VfoSlot.A, VfoSlot.B):
+                slot_key = "vfoA" if path.slot is VfoSlot.A else "vfoB"
+                target = _VFO_SLOT_FIELDS.get(path.name)
+                if target is None:
+                    return ()
+                return (
+                    _public_field_path(
+                        receiver_key,
+                        slot_key,
+                        _receiver_public_key(target),
+                    ),
+                )
+            if path.slot not in (None, VfoSlot.ACTIVE):
+                return ()
+            target = _RECEIVER_FREQ_MODE_FIELDS.get(path.name)
+            if target is None:
+                return ()
+            return (_public_field_path(receiver_key, _receiver_public_key(target)),)
+        if path.family is FieldFamily.VFO and path.name == "active_slot":
+            return (_public_field_path(receiver_key, "activeSlot"),)
+        if path.family is FieldFamily.METERS and path.name == "s_meter":
+            return (_public_field_path(receiver_key, "sMeter"),)
+        if (
+            path.family is FieldFamily.OPERATOR_CONTROLS
+            and path.name in _RECEIVER_OPERATOR_CONTROL_FIELDS
+        ):
+            return (_public_field_path(receiver_key, _receiver_public_key(path.name)),)
+        if (
+            path.family is FieldFamily.OPERATOR_TOGGLES
+            and path.name in _RECEIVER_OPERATOR_TOGGLE_FIELDS
+        ):
+            return (_public_field_path(receiver_key, _receiver_public_key(path.name)),)
+        if (
+            path.family is FieldFamily.SLOW_STATE
+            and path.name in _RECEIVER_SLOW_STATE_FIELDS
+        ):
+            return (_public_field_path(receiver_key, _receiver_public_key(path.name)),)
+        return ()
+
+    if path.scope is FieldScope.GLOBAL:
+        if path.family is FieldFamily.TX_STATE and path.name in _GLOBAL_TX_FIELDS:
+            return (_to_camel(path.name),)
+        if (
+            path.family is FieldFamily.OPERATOR_CONTROLS
+            and path.name in _GLOBAL_OPERATOR_CONTROL_FIELDS
+        ):
+            return (_to_camel(path.name),)
+        if path.family is FieldFamily.METERS and path.name in _GLOBAL_METER_FIELDS:
+            return (_to_camel(f"{path.name}_meter"),)
+        if (
+            path.family is FieldFamily.SLOW_STATE
+            and path.name in _GLOBAL_SLOW_STATE_FIELDS
+        ):
+            return (_to_camel(path.name),)
+        return ()
+
+    if path.scope is FieldScope.SCOPE_CONTROLS and path.family is FieldFamily.DISPLAY:
+        paths: list[str] = []
+        if path.receiver_id is not None and _snapshot_receiver_key(path.receiver_id):
+            paths.append("scopeControls.receiver")
+        if path.name == "span":
+            paths.append("scopeControls.span")
+        return tuple(paths)
+
+    return ()
+
+
+def _freshness_availability(freshness: FreshnessState) -> str:
+    if freshness is FreshnessState.FRESH:
+        return "available"
+    if freshness is FreshnessState.STALE:
+        return "stale"
+    return "missing"
+
+
+def _missing_field_status(path: FieldPath) -> dict[str, Any]:
+    return {
+        "storePath": str(path),
+        "observed": False,
+        "freshness": FreshnessState.UNKNOWN.value,
+        "availability": "missing",
+    }
+
+
+def _observed_field_status(field: FieldSnapshot) -> dict[str, Any]:
+    return {
+        "storePath": str(field.path),
+        "observed": True,
+        "freshness": field.freshness.value,
+        "availability": _freshness_availability(field.freshness),
+        "lastObservedMonotonic": field.last_observed_monotonic,
+        "maxAge": field.max_age,
+        "source": field.source.to_dict(),
+    }
+
+
+def _set_missing_field_status(
+    statuses: dict[str, dict[str, Any]],
+    public_path: str,
+    path: FieldPath,
+) -> None:
+    statuses.setdefault(public_path, _missing_field_status(path))
+
+
+def _default_receiver_field_status(
+    statuses: dict[str, dict[str, Any]],
+    receiver_key: str,
+) -> None:
+    for name, state_key in _RECEIVER_FREQ_MODE_FIELDS.items():
+        _set_missing_field_status(
+            statuses,
+            _public_field_path(receiver_key, _receiver_public_key(state_key)),
+            FieldPath.active(receiver_key, "freq_mode", name),
+        )
+    for slot_name, slot_key in (("A", "vfoA"), ("B", "vfoB")):
+        for name, state_key in _VFO_SLOT_FIELDS.items():
+            _set_missing_field_status(
+                statuses,
+                _public_field_path(
+                    receiver_key,
+                    slot_key,
+                    _receiver_public_key(state_key),
+                ),
+                FieldPath.vfo_slot(receiver_key, slot_name, "freq_mode", name),
+            )
+    _set_missing_field_status(
+        statuses,
+        _public_field_path(receiver_key, "activeSlot"),
+        FieldPath.active_slot(receiver_key),
+    )
+    _set_missing_field_status(
+        statuses,
+        _public_field_path(receiver_key, "sMeter"),
+        FieldPath.receiver(receiver_key, "meters", "s_meter"),
+    )
+    for name in _RECEIVER_OPERATOR_CONTROL_FIELDS:
+        _set_missing_field_status(
+            statuses,
+            _public_field_path(receiver_key, _receiver_public_key(name)),
+            FieldPath.receiver(receiver_key, "operator_controls", name),
+        )
+    for name in _RECEIVER_OPERATOR_TOGGLE_FIELDS:
+        _set_missing_field_status(
+            statuses,
+            _public_field_path(receiver_key, _receiver_public_key(name)),
+            FieldPath.receiver(receiver_key, "operator_toggles", name),
+        )
+    for name in _RECEIVER_SLOW_STATE_FIELDS:
+        _set_missing_field_status(
+            statuses,
+            _public_field_path(receiver_key, _receiver_public_key(name)),
+            FieldPath.receiver(receiver_key, "slow_state", name),
+        )
+
+
+def _default_snapshot_field_status(receiver_count: int) -> dict[str, dict[str, Any]]:
+    statuses: dict[str, dict[str, Any]] = {}
+    _default_receiver_field_status(statuses, "main")
+    if receiver_count >= 2:
+        _default_receiver_field_status(statuses, "sub")
+    for name in _GLOBAL_TX_FIELDS:
+        _set_missing_field_status(
+            statuses,
+            _to_camel(name),
+            FieldPath.global_("tx_state", name),
+        )
+    for name in _GLOBAL_OPERATOR_CONTROL_FIELDS:
+        _set_missing_field_status(
+            statuses,
+            _to_camel(name),
+            FieldPath.global_("operator_controls", name),
+        )
+    for name in _GLOBAL_METER_FIELDS:
+        _set_missing_field_status(
+            statuses,
+            _to_camel(f"{name}_meter"),
+            FieldPath.global_("meters", name),
+        )
+    for name in _GLOBAL_SLOW_STATE_FIELDS:
+        _set_missing_field_status(
+            statuses,
+            _to_camel(name),
+            FieldPath.global_("slow_state", name),
+        )
+    _set_missing_field_status(
+        statuses,
+        "scopeControls.span",
+        FieldPath.scope_control("display", "span"),
+    )
+    return statuses
+
+
+def _build_snapshot_field_status(
+    snapshot: StateSnapshot,
+    *,
+    receiver_count: int,
+) -> dict[str, dict[str, Any]]:
+    statuses = _default_snapshot_field_status(receiver_count)
+    for field in snapshot.fields:
+        observed_status = _observed_field_status(field)
+        for public_path in _snapshot_field_public_paths(field.path):
+            previous_at = None
+            previous = statuses.get(public_path)
+            if previous is not None:
+                raw_previous_at = previous.get("lastObservedMonotonic")
+                if (
+                    isinstance(raw_previous_at, (int, float))
+                    and not isinstance(raw_previous_at, bool)
+                ):
+                    previous_at = float(raw_previous_at)
+            if (
+                previous is not None
+                and previous.get("observed") is True
+                and previous_at is not None
+                and previous_at > field.last_observed_monotonic
+            ):
+                continue
+            statuses[public_path] = dict(observed_status)
+    return statuses
 
 
 def runtime_capabilities(radio: "Radio | None") -> set[str]:
@@ -534,6 +769,7 @@ def _build_public_state_payload_from_dict(
     revision: int,
     state_revision: int,
     freshness_revision: int,
+    observation_seq: int,
     receiver_count: int,
     updated_at: str | None = None,
     scope_clients: int = 0,
@@ -555,6 +791,7 @@ def _build_public_state_payload_from_dict(
     state["revision"] = revision
     state["state_revision"] = state_revision
     state["freshness_revision"] = freshness_revision
+    state["observation_seq"] = observation_seq
     state["health_revision"] = health_revision
     state["updated_at"] = (
         updated_at or datetime.datetime.now(datetime.timezone.utc).isoformat()
@@ -590,6 +827,7 @@ def build_public_state_payload(
     revision: int,
     state_revision: int | None = None,
     freshness_revision: int = 0,
+    observation_seq: int = 0,
     receiver_count: int,
     updated_at: str | None = None,
     scope_clients: int = 0,
@@ -610,6 +848,7 @@ def build_public_state_payload(
         revision=revision,
         state_revision=revision if state_revision is None else state_revision,
         freshness_revision=freshness_revision,
+        observation_seq=observation_seq,
         receiver_count=receiver_count,
         updated_at=updated_at,
         scope_clients=scope_clients,
@@ -634,12 +873,18 @@ def build_public_state_payload_from_snapshot(
 ) -> dict[str, Any]:
     """Build the public web payload from one StateStore snapshot."""
 
+    state = _project_snapshot_state_dict(snapshot)
+    state["field_status"] = _build_snapshot_field_status(
+        snapshot,
+        receiver_count=receiver_count,
+    )
     return _build_public_state_payload_from_dict(
-        _project_snapshot_state_dict(snapshot),
+        state,
         radio=radio,
         revision=snapshot.state_revision,
         state_revision=snapshot.state_revision,
         freshness_revision=snapshot.freshness_revision,
+        observation_seq=snapshot.observation_seq,
         receiver_count=receiver_count,
         updated_at=updated_at,
         scope_clients=scope_clients,

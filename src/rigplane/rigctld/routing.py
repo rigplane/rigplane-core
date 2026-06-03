@@ -19,17 +19,21 @@ Architecture::
 from __future__ import annotations
 
 import logging
-from typing import TYPE_CHECKING, Protocol, runtime_checkable
+from collections.abc import Callable
+from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
 if TYPE_CHECKING:
     from ..radio_protocol import Radio
     from .handler import _FallbackRigState  # noqa: TID251
 
+from ..core.state_pipeline_contracts import FieldPath
 from .contract import HamlibError, RigctldResponse  # noqa: TID251
 
 logger = logging.getLogger(__name__)
 
 __all__ = ["RigctldRouting", "YaesuRouting", "create_routing"]
+
+_StateObserver = Callable[[FieldPath, object], None]
 
 
 def _ok() -> RigctldResponse:
@@ -111,6 +115,22 @@ class YaesuRouting:
 
     _CW_PITCH_BASE: int = 300
     _CW_PITCH_STEP: int = 10
+    _S_METER = FieldPath.receiver("main", "meters", "s_meter")
+    _LEVEL_PATHS: dict[str, FieldPath] = {
+        "STRENGTH": _S_METER,
+        "RAWSTR": _S_METER,
+        "AF": FieldPath.receiver("main", "operator_controls", "af_level"),
+        "RF": FieldPath.receiver("main", "operator_controls", "rf_gain"),
+        "SQL": FieldPath.receiver("main", "operator_controls", "squelch"),
+        "NB": FieldPath.receiver("main", "operator_controls", "nb_level"),
+        "NR": FieldPath.receiver("main", "operator_controls", "nr_level"),
+        "PREAMP": FieldPath.receiver("main", "operator_controls", "preamp"),
+        "ATT": FieldPath.receiver("main", "operator_controls", "att"),
+    }
+    _FUNC_PATHS: dict[str, FieldPath] = {
+        "NB": FieldPath.receiver("main", "operator_toggles", "nb"),
+        "NR": FieldPath.receiver("main", "operator_toggles", "nr"),
+    }
 
     def __init__(
         self, radio: "Radio", cache: "_FallbackRigState", max_power_w: float
@@ -118,6 +138,64 @@ class YaesuRouting:
         self._radio = radio
         self._cache = cache
         self._max_power_w = max_power_w
+        self._state_observer: _StateObserver | None = None
+
+    def set_state_observer(self, observer: _StateObserver | None) -> None:
+        """Install a handler-owned callback for routed backend observations."""
+
+        self._state_observer = observer
+
+    def state_path_for_level(
+        self, level: str, *, receiver: int = 0
+    ) -> FieldPath | None:
+        """Return the StateStore path that can satisfy a Yaesu rigctl level."""
+
+        del receiver
+        return self._LEVEL_PATHS.get(level)
+
+    def state_path_for_func(self, func: str, *, receiver: int = 0) -> FieldPath | None:
+        """Return the StateStore path that can satisfy a Yaesu rigctl function."""
+
+        del receiver
+        return self._FUNC_PATHS.get(func)
+
+    def format_state_level(self, level: str, value: Any) -> RigctldResponse | None:
+        """Format a projected StateStore value with Yaesu rigctl scaling."""
+
+        try:
+            if level == "STRENGTH":
+                raw = int(value)
+                return RigctldResponse(
+                    values=[str(round((raw / 255.0) * 114.0 - 54.0))]
+                )
+            if level == "RAWSTR":
+                return RigctldResponse(values=[str(int(value))])
+            if level in ("AF", "RF", "SQL"):
+                return RigctldResponse(values=[f"{int(value) / 255.0:.6f}"])
+            if level == "NB":
+                return RigctldResponse(values=[f"{int(value) / 10.0:.6f}"])
+            if level == "NR":
+                return RigctldResponse(values=[f"{int(value) / 15.0:.6f}"])
+            if level == "PREAMP":
+                return RigctldResponse(values=[str(int(value))])
+            if level == "ATT":
+                return RigctldResponse(values=[str(int(bool(value)))])
+        except (TypeError, ValueError):
+            logger.debug("rigctld: invalid Yaesu StateStore level %s=%r", level, value)
+        return None
+
+    def format_state_func(self, func: str, value: Any) -> RigctldResponse | None:
+        """Format a projected StateStore value with Yaesu rigctl func semantics."""
+
+        if func in self._FUNC_PATHS:
+            return RigctldResponse(values=[str(int(bool(value)))])
+        return None
+
+    def _observe(self, path: FieldPath | None, value: object) -> None:
+        observer = self._state_observer
+        if observer is None or path is None:
+            return
+        observer(path, value)
 
     # -- levels --------------------------------------------------------------
 
@@ -130,6 +208,7 @@ class YaesuRouting:
         if level in ("STRENGTH", "RAWSTR"):
             raw = await radio.get_s_meter()
             self._cache.update_s_meter(raw)
+            self._observe(self.state_path_for_level(level), raw)
             if level == "STRENGTH":
                 return RigctldResponse(
                     values=[str(round((raw / 255.0) * 114.0 - 54.0))]
@@ -149,10 +228,14 @@ class YaesuRouting:
 
         # 0–255 → 0.0–1.0
         if level == "SQL":
-            return RigctldResponse(values=[f"{await radio.get_squelch() / 255.0:.6f}"])
+            raw = await radio.get_squelch()
+            self._observe(self.state_path_for_level(level), raw)
+            return RigctldResponse(values=[f"{raw / 255.0:.6f}"])
         if level in ("AF", "RF"):
             m = {"AF": "get_af_level", "RF": "get_rf_gain"}[level]
-            return RigctldResponse(values=[f"{await getattr(radio, m)() / 255.0:.6f}"])
+            raw = await getattr(radio, m)()
+            self._observe(self.state_path_for_level(level), raw)
+            return RigctldResponse(values=[f"{raw / 255.0:.6f}"])
 
         # 0–100 → 0.0–1.0
         if level in ("MICGAIN", "MONITOR_GAIN", "COMP"):
@@ -164,9 +247,13 @@ class YaesuRouting:
             return RigctldResponse(values=[f"{await getattr(radio, m)() / 100.0:.6f}"])
 
         if level == "NB":
-            return RigctldResponse(values=[f"{await radio.get_nb_level() / 10.0:.6f}"])
+            raw = await radio.get_nb_level()
+            self._observe(self.state_path_for_level(level), raw)
+            return RigctldResponse(values=[f"{raw / 10.0:.6f}"])
         if level == "NR":
-            return RigctldResponse(values=[f"{await radio.get_nr_level() / 15.0:.6f}"])
+            raw = await radio.get_nr_level()
+            self._observe(self.state_path_for_level(level), raw)
+            return RigctldResponse(values=[f"{raw / 15.0:.6f}"])
         if level == "NOTCHF":
             _, freq_idx = await radio.get_manual_notch()
             return RigctldResponse(values=[str(freq_idx)])
@@ -189,9 +276,13 @@ class YaesuRouting:
             return RigctldResponse(values=[f"{await getattr(radio, m)() / 255.0:.6f}"])
 
         if level == "PREAMP":
-            return RigctldResponse(values=[str(await radio.get_preamp())])
+            value = await radio.get_preamp()
+            self._observe(self.state_path_for_level(level), value)
+            return RigctldResponse(values=[str(value)])
         if level == "ATT":
-            return RigctldResponse(values=[str(int(await radio.get_attenuator()))])
+            value = await radio.get_attenuator()
+            self._observe(self.state_path_for_level(level), bool(value))
+            return RigctldResponse(values=[str(int(value))])
 
         return _err(HamlibError.EINVAL)
 
@@ -273,9 +364,13 @@ class YaesuRouting:
         if func == "COMP":
             return RigctldResponse(values=[str(int(await radio.get_processor()))])
         if func == "NB":
-            return RigctldResponse(values=[str(int(await radio.get_nb_level() > 0))])
+            value = await radio.get_nb_level() > 0
+            self._observe(self.state_path_for_func(func), value)
+            return RigctldResponse(values=[str(int(value))])
         if func == "NR":
-            return RigctldResponse(values=[str(int(await radio.get_nr_level() > 0))])
+            value = await radio.get_nr_level() > 0
+            self._observe(self.state_path_for_func(func), value)
+            return RigctldResponse(values=[str(int(value))])
         if func == "LOCK":
             return RigctldResponse(values=[str(int(await radio.get_dial_lock()))])
         if func == "SPLIT":

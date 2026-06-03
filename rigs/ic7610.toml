@@ -134,6 +134,10 @@ unsolicited_push = [
     "global.tx_state.ptt",
 ]
 polling_only = [
+    "global.slow_state.active",
+    "global.operator_controls.rit_freq",
+    "global.tx_state.rit_on",
+    "global.tx_state.rit_tx",
     "receiver.main.operator_controls.af_level",
     "receiver.main.operator_controls.rf_gain",
 ]
@@ -146,7 +150,11 @@ stream_like_meters = [
 command_response_observable = [
     "receiver.main.active.freq_mode.freq_hz",
     "receiver.main.active.freq_mode.mode",
+    "global.slow_state.active",
+    "global.operator_controls.rit_freq",
     "global.tx_state.ptt",
+    "global.tx_state.rit_on",
+    "global.tx_state.rit_tx",
 ]
 supported_controls = [
     "receiver.main.active.freq_mode.freq_hz",

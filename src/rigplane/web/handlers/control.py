@@ -479,6 +479,7 @@ class ControlHandler:
         # Sent directly (not via event queue) so it arrives right after hello
         # and before the recv loop — no interleaving with command responses.
         if self._server is not None:
+            self._server.register_control_event_queue(self._event_queue)
             try:
                 msg = {
                     "type": "state_update",
@@ -487,7 +488,6 @@ class ControlHandler:
                 await self._ws.send_text(encode_json(msg))
             except Exception:
                 logger.debug("control: failed to send initial state", exc_info=True)
-            self._server.register_control_event_queue(self._event_queue)
         event_task: asyncio.Task[None] = asyncio.create_task(self._event_sender_loop())
         try:
             while True:
@@ -832,7 +832,9 @@ class ControlHandler:
         msg_out = {"type": "state_update", "data": payload}
         if self._server is not None:
             try:
-                msg_out["data"] = self._server.build_state_update_envelope(force_full=True)
+                msg_out["data"] = self._server.build_state_update_envelope(
+                    force_full=True
+                )
             except Exception as exc:
                 logger.debug("control: state_update envelope build failed: %s", exc)
         await self._ws.send_text(encode_json(msg_out))

@@ -23,6 +23,7 @@ if TYPE_CHECKING:
     from typing import Any, Awaitable, Callable
 
     from rigplane._runtime_protocols import ControlPhaseHost
+    from rigplane.core.acquisition_scheduler import RadioStateModelService
 
 from . import radio_initial_state as _initial_state
 from . import radio_reconnect as _reconnect
@@ -791,6 +792,7 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
         )
         self._state_cache: StateCache = StateCache()
         self._state_store: StateStore = StateStore()
+        self._state_model_service: RadioStateModelService | None = None
         self._state_diagnostics: StateDiagnosticsRecorder | None = None
         self._on_state_change: Callable[[str, dict[str, Any]], None] | None = (
             None  # set by server
@@ -983,6 +985,16 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
         """Canonical confirmed-observation store for runtime state ingress."""
 
         return self._state_store
+
+    @property
+    def state_model_service(self) -> "RadioStateModelService | None":
+        """Optional StateStore freshness/acquisition service for consumers."""
+
+        return self._state_model_service
+
+    @state_model_service.setter
+    def state_model_service(self, service: "RadioStateModelService | None") -> None:
+        self._state_model_service = service
 
     @property
     def radio_state(self) -> RadioState:

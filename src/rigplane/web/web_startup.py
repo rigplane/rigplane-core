@@ -12,10 +12,12 @@ from __future__ import annotations
 import asyncio
 import logging
 import sys
+from collections.abc import Sequence
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from ..core.radio_protocol import StatePollable
+from ..core.radio_protocol import ObservationPollable, StatePollable
+from ..core.state_pipeline_contracts import Observation
 from ..radio_state import RadioState
 from ..startup_checks import assert_radio_startup_ready
 from .discovery import DiscoveryResponder, RadioInfo  # noqa: TID251
@@ -91,8 +93,27 @@ async def start_web_server(server: WebServer) -> None:
     if server._radio is not None:
         from ..radio_protocol import StateNotifyCapable
 
-        # --- Request-response state poller (Yaesu CAT et al.) ---
-        if isinstance(server._radio, StatePollable):
+        # --- Request-response observation poller (Yaesu CAT, rigctld client, etc.) ---
+        if isinstance(server._radio, ObservationPollable):
+
+            def _observation_cb(observations: Sequence[Observation]) -> None:
+                for observation in observations:
+                    server.command_service.apply_observation(observation)
+                server.state_diagnostics.record(
+                    "backend_read",
+                    "web.observation_poller",
+                    backend=getattr(server._radio, "backend_id", None),
+                )
+                server._broadcast_state_update()
+
+            server._state_poller = server._radio.create_observation_poller(
+                callback=_observation_cb,
+                command_queue=server._command_queue,
+            )
+            server._spawn(server._state_poller.start())
+            logger.info("observation poller started")
+        # --- Legacy request-response state poller compatibility path ---
+        elif isinstance(server._radio, StatePollable):
 
             def _state_cb(state: RadioState) -> None:
                 server._radio_state = state

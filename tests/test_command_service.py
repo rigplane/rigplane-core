@@ -57,6 +57,8 @@ def _source() -> SourceMetadata:
         source="command_response",
         provider="test",
         transport="fake",
+        command_source="websocket",
+        session_id="ws-a",
     )
 
 
@@ -124,6 +126,34 @@ async def test_execute_emits_lifecycle_events_and_applies_response_observations(
     assert result.observation_changes[0].changes[0].current == 14_074_000
     assert store.snapshot().field(_freq_path()).value == 14_074_000
     assert service.pending_overlays(source="websocket", session_id="ws-a") == ()
+
+
+@pytest.mark.asyncio  # type: ignore[untyped-decorator]
+async def test_execute_acknowledges_without_confirming_state_when_executor_has_no_observation() -> None:
+    clock = FreshnessClock(start=10.0)
+    store = StateStore(freshness_clock=clock)
+    service = CommandService(
+        executor=FakeExecutor(observations=()),
+        state_store=store,
+        clock=clock.now,
+    )
+
+    result = await service.execute(_intent())
+
+    assert _states(result.lifecycle_events) == [
+        "accepted",
+        "queued",
+        "sent",
+        "acknowledged",
+    ]
+    assert result.observation_changes == ()
+    with pytest.raises(KeyError):
+        store.snapshot().field(_freq_path())
+    assert service.project_pending_values(
+        source="websocket",
+        session_id="ws-a",
+        paths=(_freq_path(),),
+    ) == {_freq_path(): 14_074_000}
 
 
 def test_pending_overlays_are_projected_by_source_session_command_and_path() -> None:
@@ -545,6 +575,213 @@ def test_intended_correlated_observation_reconciles_pending_overlay() -> None:
     assert [event.command_id for event in reconciled] == ["cmd-a"]
 
 
+def test_correlated_receiver_zero_overlay_reconciles_main_readback_alias() -> None:
+    clock = FreshnessClock(start=58.5)
+    service = CommandService(
+        executor=FakeExecutor(),
+        state_store=StateStore(freshness_clock=clock),
+        clock=clock.now,
+    )
+    overlay_path = FieldPath.receiver("0", "freq_mode", "freq_hz")
+    readback_path = FieldPath.active("main", "freq_mode", "freq_hz")
+    service.record_pending_overlay(
+        PendingOverlay(
+            source="websocket",
+            session_id="ws-a",
+            command_id="cmd-a",
+            path=overlay_path,
+            value=14_074_000,
+            expires_at_monotonic=59.0,
+        )
+    )
+
+    service.apply_observation(
+        Observation(
+            path=readback_path,
+            value=14_074_000,
+            source=SourceMetadata(
+                source="hamlib_response",
+                provider="external_rigctld",
+                transport="rigctld",
+                command_source="websocket",
+                session_id="ws-a",
+            ),
+            timestamp_monotonic=58.7,
+            correlation_id="cmd-a",
+        )
+    )
+
+    assert service.pending_overlays(source="websocket", session_id="ws-a") == ()
+    assert service.lifecycle_events()[-1].state == "reconciled"
+    assert service.lifecycle_events()[-1].command_id == "cmd-a"
+    assert service.lifecycle_events()[-1].details["session_id"] == "ws-a"
+
+
+@pytest.mark.asyncio  # type: ignore[untyped-decorator]
+async def test_expired_overlay_still_reconciles_correlated_external_rigctld_readback() -> None:
+    clock = FreshnessClock(start=58.6)
+    service = CommandService(
+        executor=FakeExecutor(observations=()),
+        state_store=StateStore(freshness_clock=clock),
+        clock=clock.now,
+    )
+    command_id = "cmd-expired-rigctld"
+    await service.execute(_intent(command_id=command_id, session_id="ws-a"))
+    clock.advance(2.01)
+    assert service.pending_overlays(
+        source="websocket",
+        session_id="ws-a",
+        command_id=command_id,
+    ) == ()
+
+    service.apply_observation(
+        Observation(
+            path=FieldPath.active("main", "freq_mode", "freq_hz"),
+            value=14_074_000,
+            source=SourceMetadata(
+                source="hamlib_response",
+                provider="external_rigctld",
+                transport="rigctld",
+                command_source="websocket",
+                session_id="ws-a",
+            ),
+            timestamp_monotonic=60.7,
+            correlation_id=command_id,
+        )
+    )
+
+    assert _states(
+        event for event in service.lifecycle_events() if event.command_id == command_id
+    ) == ["accepted", "queued", "sent", "acknowledged", "reconciled"]
+
+
+@pytest.mark.asyncio  # type: ignore[untyped-decorator]
+@pytest.mark.asyncio  # type: ignore[untyped-decorator]
+@pytest.mark.parametrize(  # type: ignore[untyped-decorator]
+    ("command_source", "session_id"),
+    (("http", None), ("websocket", "ws-b")),
+)
+async def test_expired_overlay_correlated_rigctld_readback_requires_matching_scope(
+    command_source: CommandSource,
+    session_id: str | None,
+) -> None:
+    clock = FreshnessClock(start=58.7)
+    service = CommandService(
+        executor=FakeExecutor(observations=()),
+        state_store=StateStore(freshness_clock=clock),
+        clock=clock.now,
+    )
+    command_id = "cmd-expired-wrong-scope"
+    await service.execute(_intent(command_id=command_id, session_id="ws-a"))
+    clock.advance(2.01)
+
+    service.apply_observation(
+        Observation(
+            path=FieldPath.active("main", "freq_mode", "freq_hz"),
+            value=14_074_000,
+            source=SourceMetadata(
+                source="hamlib_response",
+                provider="external_rigctld",
+                transport="rigctld",
+                command_source=command_source,
+                session_id=session_id,
+            ),
+            timestamp_monotonic=60.8,
+            correlation_id=command_id,
+        )
+    )
+
+    assert _states(
+        event for event in service.lifecycle_events() if event.command_id == command_id
+    ) == ["accepted", "queued", "sent", "acknowledged"]
+
+
+def test_correlated_receiver_zero_overlay_does_not_alias_non_rigctld_readback() -> None:
+    clock = FreshnessClock(start=58.8)
+    service = CommandService(
+        executor=FakeExecutor(),
+        state_store=StateStore(freshness_clock=clock),
+        clock=clock.now,
+    )
+    overlay_path = FieldPath.receiver("0", "freq_mode", "freq_hz")
+    readback_path = FieldPath.active("main", "freq_mode", "freq_hz")
+    overlay = PendingOverlay(
+        source="websocket",
+        session_id="ws-a",
+        command_id="cmd-a",
+        path=overlay_path,
+        value=14_074_000,
+        expires_at_monotonic=59.0,
+    )
+    service.record_pending_overlay(overlay)
+
+    service.apply_observation(
+        Observation(
+            path=readback_path,
+            value=14_074_000,
+            source=SourceMetadata(
+                source="state_poller",
+                provider="test_backend",
+                transport="fake",
+                command_source="websocket",
+                session_id="ws-a",
+            ),
+            timestamp_monotonic=58.9,
+            correlation_id="cmd-a",
+        )
+    )
+
+    assert service.pending_overlays(source="websocket", session_id="ws-a") == (
+        overlay,
+    )
+    assert [
+        event for event in service.lifecycle_events() if event.state == "reconciled"
+    ] == []
+
+
+def test_correlated_receiver_zero_overlay_does_not_alias_rigctld_ack_metadata() -> None:
+    clock = FreshnessClock(start=58.8)
+    service = CommandService(
+        executor=FakeExecutor(),
+        state_store=StateStore(freshness_clock=clock),
+        clock=clock.now,
+    )
+    overlay_path = FieldPath.receiver("0", "freq_mode", "freq_hz")
+    readback_path = FieldPath.active("main", "freq_mode", "freq_hz")
+    overlay = PendingOverlay(
+        source="websocket",
+        session_id="ws-a",
+        command_id="cmd-a",
+        path=overlay_path,
+        value=14_074_000,
+        expires_at_monotonic=59.0,
+    )
+    service.record_pending_overlay(overlay)
+
+    service.apply_observation(
+        Observation(
+            path=readback_path,
+            value=14_074_000,
+            source=SourceMetadata(
+                source="command_response",
+                provider="external_rigctld",
+                transport="rigctld",
+                command_source="websocket",
+                session_id="ws-a",
+            ),
+            timestamp_monotonic=58.9,
+            correlation_id="cmd-a",
+        )
+    )
+
+    assert service.pending_overlays(source="websocket", session_id="ws-a") == (
+        overlay,
+    )
+    assert [
+        event for event in service.lifecycle_events() if event.state == "reconciled"
+    ] == []
+
+
 def test_same_command_id_reused_across_sources_requires_matching_source_metadata() -> (
     None
 ):
@@ -644,6 +881,55 @@ def test_same_command_id_reused_across_sessions_requires_matching_session_metada
             expires_at_monotonic=61.0,
         ),
     )
+
+
+def test_sessionless_observation_does_not_reconcile_session_scoped_overlay() -> None:
+    clock = FreshnessClock(start=60.5)
+    service = CommandService(
+        executor=FakeExecutor(),
+        state_store=StateStore(freshness_clock=clock),
+        clock=clock.now,
+    )
+    freq = _freq_path()
+    overlays = tuple(
+        PendingOverlay(
+            source="websocket",
+            session_id=session_id,
+            command_id="cmd-shared",
+            path=freq,
+            value=14_074_000,
+            expires_at_monotonic=61.5,
+        )
+        for session_id in ("ws-a", "ws-b")
+    )
+    for overlay in overlays:
+        service.record_pending_overlay(overlay)
+
+    service.apply_observation(
+        Observation(
+            path=freq,
+            value=14_074_000,
+            source=SourceMetadata(
+                source="command_response",
+                provider="test",
+                transport="fake",
+                command_source="websocket",
+                session_id=None,
+            ),
+            timestamp_monotonic=60.7,
+            correlation_id="cmd-shared",
+        )
+    )
+
+    assert service.pending_overlays(source="websocket", session_id="ws-a") == (
+        overlays[0],
+    )
+    assert service.pending_overlays(source="websocket", session_id="ws-b") == (
+        overlays[1],
+    )
+    assert [
+        event for event in service.lifecycle_events() if event.state == "reconciled"
+    ] == []
 
 
 def test_lifecycle_subscribers_observe_deterministic_events() -> None:
@@ -757,7 +1043,15 @@ def test_command_response_observation_carries_session_metadata() -> None:
         ("set_power", {"level": 77}, "global.operator_controls.power_level", 77),
         ("set_filter_width", {"width": 1500}, "receiver.0.freq_mode.filter_width", 1500),
         ("set_split", {"on": True}, "global.tx_state.split", True),
+        ("set_rit", {"hz": 500}, "global.operator_controls.rit_freq", 500),
+        ("set_xit", {"hz": -250}, "global.operator_controls.rit_freq", -250),
         ("set_vfo", {"vfo": "B"}, "receiver.0.vfo.active_slot", "B"),
+        (
+            "set_vfo",
+            {"vfo": "VFOB", "receiver_count": 2},
+            "global.slow_state.active",
+            "SUB",
+        ),
     ],
 )
 def test_command_intent_targets_observable_production_write_paths(
@@ -781,3 +1075,125 @@ def test_command_intent_targets_observable_production_write_paths(
         provider="test",
     )
     assert observation.value == expected_value
+
+
+@pytest.mark.parametrize(  # type: ignore[untyped-decorator]
+    ("name", "params", "expected"),
+    [
+        (
+            "set_rit",
+            {"hz": 500},
+            (
+                ("global.operator_controls.rit_freq", 500),
+                ("global.tx_state.rit_on", True),
+            ),
+        ),
+        (
+            "set_rit",
+            {"hz": 0},
+            (
+                ("global.operator_controls.rit_freq", 0),
+                ("global.tx_state.rit_on", False),
+            ),
+        ),
+        (
+            "set_xit",
+            {"hz": -250},
+            (
+                ("global.operator_controls.rit_freq", -250),
+                ("global.tx_state.rit_tx", True),
+            ),
+        ),
+        (
+            "set_xit",
+            {"hz": 0},
+            (
+                ("global.operator_controls.rit_freq", 0),
+                ("global.tx_state.rit_tx", False),
+            ),
+        ),
+    ],
+)
+async def test_rit_xit_intents_record_all_scoped_readback_targets(
+    name: str,
+    params: dict[str, object],
+    expected: tuple[tuple[str, object], ...],
+) -> None:
+    service = CommandService(
+        executor=FakeExecutor(),
+        state_store=StateStore(),
+    )
+    intent = command_intent_from_request(
+        name,
+        params,
+        source="rigctld",
+        command_id=f"rigctld-{name}",
+        session_id="client-a",
+    )
+    paths = tuple(FieldPath.parse(path) for path, _value in expected)
+
+    assert tuple(str(path) for path in intent.expected_observations) == tuple(
+        path for path, _value in expected
+    )
+
+    await service.execute(intent)
+
+    assert service.project_pending_values(
+        source="rigctld",
+        session_id="client-a",
+        paths=paths,
+    ) == {path: value for path, (_path, value) in zip(paths, expected)}
+    assert service.project_pending_values(
+        source="rigctld",
+        session_id="client-b",
+        paths=paths,
+    ) == {}
+    assert {
+        overlay.path: overlay.value
+        for overlay in service.readback_expectations(
+            source="rigctld",
+            session_id="client-a",
+            command_id=f"rigctld-{name}",
+        )
+    } == {path: value for path, (_path, value) in zip(paths, expected)}
+
+
+@pytest.mark.asyncio  # type: ignore[untyped-decorator]
+async def test_multi_target_readback_reconciles_only_matching_rit_overlay() -> None:
+    service = CommandService(
+        executor=FakeExecutor(),
+        state_store=StateStore(),
+    )
+    intent = command_intent_from_request(
+        "set_rit",
+        {"hz": 500},
+        source="rigctld",
+        command_id="rigctld-set-rit",
+        session_id="client-a",
+    )
+    await service.execute(intent)
+
+    service.apply_observation(
+        Observation(
+            path=FieldPath.global_("operator_controls", "rit_freq"),
+            value=500,
+            source=SourceMetadata(
+                source="hamlib_response",
+                provider="external_rigctld",
+                transport="rigctld",
+                command_source="rigctld",
+                session_id="client-a",
+            ),
+            timestamp_monotonic=80.0,
+            correlation_id="rigctld-set-rit",
+        )
+    )
+
+    remaining = service.pending_overlays(
+        source="rigctld",
+        session_id="client-a",
+        command_id="rigctld-set-rit",
+    )
+    assert [(str(overlay.path), overlay.value) for overlay in remaining] == [
+        ("global.tx_state.rit_on", True)
+    ]

@@ -1315,7 +1315,7 @@ async def test_command_error_propagates_from_execute() -> None:
 
 
 @pytest.mark.asyncio
-async def test_set_freq_readback_is_applied_as_state_store_observation() -> None:
+async def test_set_freq_success_does_not_apply_confirmed_state_store_observation() -> None:
     radio = _make_radio()
     state = RadioState()
     store = StateStore()
@@ -1329,37 +1329,64 @@ async def test_set_freq_readback_is_applied_as_state_store_observation() -> None
 
     await poller._execute(SetFreq(freq=14_074_000, receiver=0))  # noqa: SLF001
 
-    field = store.snapshot().field("receiver.0.freq_mode.freq_hz")
-    assert field.value == 14_074_000
-    assert field.source.source == "command_response"
+    with pytest.raises(KeyError):
+        store.snapshot().field("receiver.0.freq_mode.freq_hz")
     assert state.main.freq == 14_074_000
 
 
 @pytest.mark.parametrize(  # type: ignore[untyped-decorator]
-    ("command", "expected_path", "expected_value"),
+    ("command", "expected_path"),
     [
-        (SetRfGain(level=120, receiver=1), "receiver.1.operator_controls.rf_gain", 120),
-        (SetAfLevel(level=90, receiver=1), "receiver.1.operator_controls.af_level", 90),
-        (SetSquelch(level=33, receiver=1), "receiver.1.operator_controls.squelch", 33),
-        (SetNB(on=True, receiver=1), "receiver.1.operator_toggles.nb", True),
-        (SetNR(on=False, receiver=1), "receiver.1.operator_toggles.nr", False),
+        (SetMode(mode="USB", receiver=0), "receiver.0.freq_mode.mode"),
+        (PttOn(), "global.tx_state.ptt"),
+        (PttOff(), "global.tx_state.ptt"),
+        (SetSplit(on=True), "global.tx_state.split"),
+        (SelectVfo(vfo="SUB"), "receiver.0.vfo.active_slot"),
+    ],
+)
+@pytest.mark.asyncio
+async def test_release_critical_web_setters_do_not_confirm_state_without_readback(
+    command: object,
+    expected_path: str,
+) -> None:
+    radio = _make_radio()
+    store = StateStore()
+    poller = RadioPoller(
+        radio,
+        StateCache(),
+        CommandQueue(),
+        radio_state=RadioState(),
+        state_store=store,
+    )
+
+    await poller._execute(command)  # noqa: SLF001
+
+    with pytest.raises(KeyError):
+        store.snapshot().field(expected_path)
+
+
+@pytest.mark.parametrize(  # type: ignore[untyped-decorator]
+    ("command", "expected_path"),
+    [
+        (SetRfGain(level=120, receiver=1), "receiver.1.operator_controls.rf_gain"),
+        (SetAfLevel(level=90, receiver=1), "receiver.1.operator_controls.af_level"),
+        (SetSquelch(level=33, receiver=1), "receiver.1.operator_controls.squelch"),
+        (SetNB(on=True, receiver=1), "receiver.1.operator_toggles.nb"),
+        (SetNR(on=False, receiver=1), "receiver.1.operator_toggles.nr"),
         (
             SetPbtInner(level=140, receiver=1),
             "receiver.1.operator_controls.pbt_inner",
-            140,
         ),
         (
             SetPbtOuter(level=116, receiver=1),
             "receiver.1.operator_controls.pbt_outer",
-            116,
         ),
     ],
 )
 @pytest.mark.asyncio
-async def test_observable_queue_commands_apply_state_store_observations(
+async def test_non_readback_queue_commands_do_not_apply_state_store_observations(
     command: object,
     expected_path: str,
-    expected_value: object,
 ) -> None:
     radio = _make_radio()
     state = RadioState()
@@ -1372,22 +1399,20 @@ async def test_observable_queue_commands_apply_state_store_observations(
         state_store=store,
     )
 
-    await poller._execute(command)  # noqa: SLF001[arg-type]
+    await poller._execute(command)  # noqa: SLF001
 
-    field = store.snapshot().field(expected_path)
-    assert field.value == expected_value
-    assert field.source.source == "command_response"
+    with pytest.raises(KeyError):
+        store.snapshot().field(expected_path)
 
 
 @pytest.mark.parametrize(  # type: ignore[untyped-decorator]
-    ("name", "params", "command", "expected_path", "expected_value", "expected_mirror"),
+    ("name", "params", "command", "expected_path", "expected_mirror"),
     [
         (
             "set_filter_width",
             {"width": 1500, "receiver": 1},
             SetFilterWidth(1500, receiver=1),
             "receiver.1.freq_mode.filter_width",
-            1500,
             ("filter_width", 1500),
         ),
         (
@@ -1395,7 +1420,6 @@ async def test_observable_queue_commands_apply_state_store_observations(
             {"on": True, "receiver": 1},
             SetNB(True, receiver=1),
             "receiver.1.operator_toggles.nb",
-            True,
             ("nb", True),
         ),
         (
@@ -1403,7 +1427,6 @@ async def test_observable_queue_commands_apply_state_store_observations(
             {"on": False, "receiver": 1},
             SetNR(False, receiver=1),
             "receiver.1.operator_toggles.nr",
-            False,
             ("nr", False),
         ),
         (
@@ -1411,7 +1434,6 @@ async def test_observable_queue_commands_apply_state_store_observations(
             {"db": 12, "receiver": 1},
             SetAttenuator(12, receiver=1),
             "receiver.1.operator_controls.att",
-            12,
             ("att", 12),
         ),
         (
@@ -1419,7 +1441,6 @@ async def test_observable_queue_commands_apply_state_store_observations(
             {"level": 2, "receiver": 1},
             SetPreamp(2, receiver=1),
             "receiver.1.operator_controls.preamp",
-            2,
             ("preamp", 2),
         ),
         (
@@ -1427,7 +1448,6 @@ async def test_observable_queue_commands_apply_state_store_observations(
             {"level": 140, "receiver": 1},
             SetPbtInner(140, receiver=1),
             "receiver.1.operator_controls.pbt_inner",
-            140,
             ("pbt_inner", 140),
         ),
         (
@@ -1435,18 +1455,16 @@ async def test_observable_queue_commands_apply_state_store_observations(
             {"level": 116, "receiver": 1},
             SetPbtOuter(116, receiver=1),
             "receiver.1.operator_controls.pbt_outer",
-            116,
             ("pbt_outer", 116),
         ),
     ],
 )
 @pytest.mark.asyncio
-async def test_compatibility_mirror_commands_reconcile_from_state_store_observation(
+async def test_compatibility_mirror_commands_do_not_confirm_state_without_readback(
     name: str,
     params: dict[str, object],
     command: object,
     expected_path: str,
-    expected_value: object,
     expected_mirror: tuple[str, object],
 ) -> None:
     radio = _make_radio()
@@ -1470,21 +1488,21 @@ async def test_compatibility_mirror_commands_reconcile_from_state_store_observat
     )
     assert service.pending_overlays(source="websocket", session_id=None) != ()
 
-    await poller._execute(  # noqa: SLF001[arg-type]
+    await poller._execute(  # noqa: SLF001
         command,
         command_id="ws-compat",
         source="websocket",
         command_service=service,
     )
 
-    field = store.snapshot().field(expected_path)
-    assert field.value == expected_value
-    assert service.pending_overlays(source="websocket", session_id=None) == ()
+    with pytest.raises(KeyError):
+        store.snapshot().field(expected_path)
+    assert service.pending_overlays(source="websocket", session_id=None) != ()
     assert getattr(state.sub, expected_mirror[0]) == expected_mirror[1]
 
 
 @pytest.mark.asyncio
-async def test_set_freq_readback_uses_original_command_correlation() -> None:
+async def test_set_freq_success_keeps_pending_overlay_until_observation() -> None:
     radio = _make_radio()
     state = RadioState()
     store = StateStore()
@@ -1516,13 +1534,13 @@ async def test_set_freq_readback_uses_original_command_correlation() -> None:
         command_service=service,
     )
 
-    field = store.snapshot().field("receiver.0.freq_mode.freq_hz")
-    assert field.value == 14_074_000
-    assert service.pending_overlays(source="websocket", session_id=None) == ()
+    with pytest.raises(KeyError):
+        store.snapshot().field("receiver.0.freq_mode.freq_hz")
+    assert service.pending_overlays(source="websocket", session_id=None) != ()
 
 
 @pytest.mark.asyncio
-async def test_set_freq_readback_reconciles_only_matching_websocket_session_for_reused_command_id() -> (
+async def test_set_freq_success_does_not_reconcile_reused_command_id_without_readback() -> (
     None
 ):
     radio = _make_radio()
@@ -1562,13 +1580,15 @@ async def test_set_freq_readback_reconciles_only_matching_websocket_session_for_
         command_service=entry.command_service,
     )
 
-    assert service.pending_overlays(source="websocket", session_id="ws-a") == ()
+    assert len(service.pending_overlays(source="websocket", session_id="ws-a")) == 1
     assert len(service.pending_overlays(source="websocket", session_id="ws-b")) == 1
+    with pytest.raises(KeyError):
+        store.snapshot().field("receiver.0.freq_mode.freq_hz")
     assert service.pending_overlays(source="websocket", session_id="ws-b")[0].value == 14_074_000
 
 
 @pytest.mark.asyncio
-async def test_set_split_readback_uses_original_command_correlation() -> None:
+async def test_set_split_success_keeps_pending_overlay_until_observation() -> None:
     radio = _make_radio()
     state = RadioState()
     store = StateStore()
@@ -1600,9 +1620,9 @@ async def test_set_split_readback_uses_original_command_correlation() -> None:
         command_service=service,
     )
 
-    field = store.snapshot().field("global.tx_state.split")
-    assert field.value is True
-    assert service.pending_overlays(source="websocket", session_id=None) == ()
+    with pytest.raises(KeyError):
+        store.snapshot().field("global.tx_state.split")
+    assert service.pending_overlays(source="websocket", session_id=None) != ()
 
 
 @pytest.mark.asyncio
@@ -1803,7 +1823,7 @@ async def test_mark_queued_command_failed_scopes_reused_command_ids_by_session(
 
 
 @pytest.mark.asyncio
-async def test_select_vfo_readback_uses_original_command_correlation() -> None:
+async def test_select_vfo_success_keeps_pending_overlay_until_observation() -> None:
     radio = _make_radio()
     state = RadioState()
     store = StateStore()
@@ -1835,9 +1855,9 @@ async def test_select_vfo_readback_uses_original_command_correlation() -> None:
         command_service=service,
     )
 
-    field = store.snapshot().field("receiver.0.vfo.active_slot")
-    assert field.value == "B"
-    assert service.pending_overlays(source="websocket", session_id=None) == ()
+    with pytest.raises(KeyError):
+        store.snapshot().field("receiver.0.vfo.active_slot")
+    assert service.pending_overlays(source="websocket", session_id=None) != ()
 
 
 @pytest.mark.asyncio

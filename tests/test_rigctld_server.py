@@ -15,11 +15,32 @@ from __future__ import annotations
 import asyncio
 from collections.abc import AsyncIterator
 from typing import Any, cast
-from unittest.mock import ANY, AsyncMock, MagicMock
+from unittest.mock import ANY, AsyncMock, MagicMock, patch
 
 import pytest
 
 from rigplane.backends.icom7610.drivers.serial_stub import SerialMockRadio
+from rigplane.core.acquisition_scheduler import (
+    AcquisitionExecutionResult,
+    AcquisitionPriority,
+    AcquisitionRequest,
+    AcquisitionScheduler,
+    RadioStateModelService,
+    StateFreshnessService,
+)
+from rigplane.core.state_acquisition_policy import (
+    AcquisitionPolicy,
+    FieldAvailability,
+    FieldCapability,
+    RadioAcquisitionProfile,
+)
+from rigplane.core.state_diagnostics import StateDiagnosticsRecorder
+from rigplane.core.state_pipeline_contracts import (
+    FieldPath,
+    Observation,
+    SourceMetadata,
+)
+from rigplane.core.state_store import StateStore
 from rigplane.rigctld.contract import (
     ClientSession,
     HamlibError,
@@ -104,6 +125,188 @@ class _CompatHandler:
     async def execute(self, cmd: RigctldCommand) -> RigctldResponse:
         self.calls.append(cmd)
         return _FREQ_RESP
+
+
+class _RecordingStateModelService:
+    def ensure_fresh(self, *args: object, **kwargs: object) -> object:
+        return object()
+
+
+class _FakeSocket:
+    def getsockname(self) -> tuple[str, int]:
+        return ("127.0.0.1", 0)
+
+
+class _FakeAsyncServer:
+    def __init__(self) -> None:
+        self.sockets = [_FakeSocket()]
+        self.closed = False
+
+    def close(self) -> None:
+        self.closed = True
+
+    async def wait_closed(self) -> None:
+        return None
+
+
+class _ProfiledStandaloneRadio:
+    def __init__(self, *, profile: object) -> None:
+        self.profile = profile
+        self.connected = True
+        self.radio_ready = True
+        self.control_connected = True
+        self.get_freq = AsyncMock(return_value=14_090_000)
+
+
+class _CivProfiledStandaloneRadio(_ProfiledStandaloneRadio):
+    def __init__(self, *, profile: object, observed_freq: int) -> None:
+        super().__init__(profile=profile)
+        self.observed_freq = observed_freq
+        self.send_civ_calls: list[dict[str, object]] = []
+
+    async def send_civ(
+        self,
+        command: int,
+        sub: int | None = None,
+        data: bytes | None = None,
+        *,
+        wait_response: bool = True,
+    ) -> None:
+        self.send_civ_calls.append(
+            {
+                "command": command,
+                "sub": sub,
+                "data": data,
+                "wait_response": wait_response,
+            }
+        )
+
+
+class _ApplyingAcquisitionExecutor:
+    def __init__(self, radio: object, *, value: int) -> None:
+        self._radio = radio
+        self._value = value
+        self.calls: list[tuple[AcquisitionRequest, frozenset[FieldPath]]] = []
+
+    async def execute(
+        self,
+        request: AcquisitionRequest,
+        *,
+        already_sent_paths: frozenset[FieldPath],
+    ) -> AcquisitionExecutionResult:
+        self.calls.append((request, already_sent_paths))
+        store = getattr(self._radio, "_state_store")
+        scheduler = getattr(self._radio, "_acquisition_scheduler")
+        change_set = store.apply(
+            Observation(
+                path=request.paths[0],
+                value=self._value,
+                source=SourceMetadata(
+                    source="poll_response",
+                    provider=request.provider,
+                    native_id="fake-provider-read",
+                ),
+                timestamp_monotonic=3.0,
+                max_age=request.policy.freshness_ttl_seconds,
+            )
+        )
+        scheduler.record_acquisition_result(request, change_set)
+        return AcquisitionExecutionResult(sent_paths=request.paths)
+
+
+class _BlockingAcquisitionExecutor:
+    def __init__(self) -> None:
+        self.calls: list[tuple[AcquisitionRequest, frozenset[FieldPath]]] = []
+        self.started = asyncio.Event()
+        self.release = asyncio.Event()
+
+    async def execute(
+        self,
+        request: AcquisitionRequest,
+        *,
+        already_sent_paths: frozenset[FieldPath],
+    ) -> AcquisitionExecutionResult:
+        self.calls.append((request, already_sent_paths))
+        self.started.set()
+        await self.release.wait()
+        return AcquisitionExecutionResult(sent_paths=request.paths)
+
+
+class _FailingAcquisitionExecutor:
+    def __init__(self) -> None:
+        self.calls: list[tuple[AcquisitionRequest, frozenset[FieldPath]]] = []
+
+    async def execute(
+        self,
+        request: AcquisitionRequest,
+        *,
+        already_sent_paths: frozenset[FieldPath],
+    ) -> AcquisitionExecutionResult:
+        self.calls.append((request, already_sent_paths))
+        raise RuntimeError("executor transport failed")
+
+
+def _acquisition_profile(
+    *paths: FieldPath,
+    provider: str = "test_provider",
+) -> RadioAcquisitionProfile:
+    return RadioAcquisitionProfile(
+        provider=provider,
+        capabilities=tuple(
+            FieldCapability(
+                path=path,
+                polling=True,
+                command_response_observable=True,
+            )
+            for path in paths
+        ),
+        default_policy=AcquisitionPolicy(),
+    )
+
+
+def _unavailable_profile(path: FieldPath) -> RadioAcquisitionProfile:
+    return RadioAcquisitionProfile(
+        provider="test_provider",
+        capabilities=(
+            FieldCapability(
+                path=path,
+                availability=FieldAvailability.UNSUPPORTED,
+                diagnostic=f"{path}: field unavailable in fake profile",
+            ),
+        ),
+        default_policy=AcquisitionPolicy(),
+    )
+
+
+def _apply_store_value(
+    store: StateStore,
+    path: FieldPath,
+    value: object,
+    *,
+    max_age: float | None = None,
+) -> None:
+    store.apply(
+        Observation(
+            path=path,
+            value=value,
+            source=SourceMetadata(
+                source="test",
+                provider="tests",
+                command_source="rigctld",
+            ),
+            timestamp_monotonic=1.0,
+            max_age=max_age,
+        )
+    )
+
+
+async def _wait_for(predicate: object, *, timeout: float = 1.0) -> None:
+    deadline = asyncio.get_running_loop().time() + timeout
+    while asyncio.get_running_loop().time() < deadline:
+        if cast(Any, predicate)():
+            return
+        await asyncio.sleep(0.01)
+    assert cast(Any, predicate)()
 
 
 # ---------------------------------------------------------------------------
@@ -234,6 +437,516 @@ class TestLifecycle:
             assert srv._rig_handler._cache is not radio.state_cache
         finally:
             await srv.stop()
+
+    async def test_start_passes_state_model_capability_to_default_handler(
+        self, mock_radio: MagicMock, cfg: RigctldConfig
+    ) -> None:
+        store = StateStore()
+        model_service = _RecordingStateModelService()
+        mock_radio.state_store = store
+        mock_radio.state_model_service = model_service
+        fake_server = _FakeAsyncServer()
+
+        with (
+            patch(
+                "rigplane.rigctld.server.asyncio.start_server",
+                new=AsyncMock(return_value=fake_server),
+            ),
+            patch("rigplane.rigctld.handler.RigctldHandler") as handler_cls,
+        ):
+            srv = RigctldServer(mock_radio, cfg)
+            await srv.start()
+            await srv.stop()
+
+        handler_cls.assert_called_once_with(
+            mock_radio,
+            cfg,
+            state_store=store,
+            state_model_service=model_service,
+        )
+
+    async def test_start_bootstraps_profiled_standalone_state_acquisition(
+        self, cfg: RigctldConfig
+    ) -> None:
+        freq = FieldPath.active("main", "freq_mode", "freq_hz")
+        radio = _ProfiledStandaloneRadio(
+            profile=type(
+                "Profile",
+                (),
+                {"state_acquisition": _acquisition_profile(freq)},
+            )()
+        )
+        fake_server = _FakeAsyncServer()
+
+        with (
+            patch(
+                "rigplane.rigctld.server.asyncio.start_server",
+                new=AsyncMock(return_value=fake_server),
+            ),
+            patch("rigplane.rigctld.handler.RigctldHandler") as handler_cls,
+        ):
+            srv = RigctldServer(radio, cfg)
+            await srv.start()
+            try:
+                assert isinstance(srv._state_store, StateStore)
+                assert isinstance(srv._acquisition_scheduler, AcquisitionScheduler)
+                assert isinstance(srv._state_model_service, RadioStateModelService)
+                assert isinstance(srv._state_freshness_service, StateFreshnessService)
+                assert srv._state_store_freshness_task is not None
+                assert not srv._state_store_freshness_task.done()
+            finally:
+                await srv.stop()
+
+        handler_cls.assert_called_once_with(
+            radio,
+            cfg,
+            state_store=srv._state_store,
+            state_model_service=srv._state_model_service,
+        )
+        assert srv._state_store_freshness_task is None
+
+    async def test_start_reuses_runtime_services_without_owning_freshness_task(
+        self, cfg: RigctldConfig
+    ) -> None:
+        store = StateStore()
+        freq = FieldPath.active("main", "freq_mode", "freq_hz")
+        scheduler = AcquisitionScheduler(profile=_acquisition_profile(freq))
+        model_service = RadioStateModelService(store=store, scheduler=scheduler)
+        freshness_service = StateFreshnessService(store=store, scheduler=scheduler)
+        radio = _ProfiledStandaloneRadio(
+            profile=type(
+                "Profile",
+                (),
+                {"state_acquisition": _acquisition_profile(freq)},
+            )()
+        )
+        radio.state_store = store
+        radio.state_model_service = model_service
+        radio._state_freshness_service = freshness_service
+        fake_server = _FakeAsyncServer()
+
+        with (
+            patch(
+                "rigplane.rigctld.server.asyncio.start_server",
+                new=AsyncMock(return_value=fake_server),
+            ),
+            patch("rigplane.rigctld.handler.RigctldHandler") as handler_cls,
+        ):
+            srv = RigctldServer(radio, cfg)
+            await srv.start()
+            await srv.stop()
+
+        assert srv._state_store is store
+        assert srv._state_model_service is model_service
+        assert srv._state_freshness_service is freshness_service
+        assert srv._state_store_freshness_task is None
+        handler_cls.assert_called_once_with(
+            radio,
+            cfg,
+            state_store=store,
+            state_model_service=model_service,
+        )
+
+    async def test_start_without_acquisition_profile_keeps_handler_local_fallback(
+        self, cfg: RigctldConfig
+    ) -> None:
+        radio = _ProfiledStandaloneRadio(
+            profile=type("Profile", (), {"state_acquisition": None})()
+        )
+        fake_server = _FakeAsyncServer()
+
+        with (
+            patch(
+                "rigplane.rigctld.server.asyncio.start_server",
+                new=AsyncMock(return_value=fake_server),
+            ),
+            patch("rigplane.rigctld.handler.RigctldHandler") as handler_cls,
+        ):
+            srv = RigctldServer(radio, cfg)
+            await srv.start()
+            await srv.stop()
+
+        assert srv._state_store is None
+        assert srv._acquisition_scheduler is None
+        assert srv._state_model_service is None
+        assert srv._state_freshness_service is None
+        assert srv._state_store_freshness_task is None
+        handler_cls.assert_called_once_with(
+            radio,
+            cfg,
+            state_store=None,
+            state_model_service=None,
+        )
+
+    async def test_stale_standalone_state_store_queues_acquisition_via_server_service(
+        self, cfg: RigctldConfig
+    ) -> None:
+        freq = FieldPath.active("main", "freq_mode", "freq_hz")
+        radio = _ProfiledStandaloneRadio(
+            profile=type(
+                "Profile",
+                (),
+                {"state_acquisition": _acquisition_profile(freq)},
+            )()
+        )
+        executor = _BlockingAcquisitionExecutor()
+        radio._acquisition_executor = executor
+        fake_server = _FakeAsyncServer()
+
+        with patch(
+            "rigplane.rigctld.server.asyncio.start_server",
+            new=AsyncMock(return_value=fake_server),
+        ):
+            srv = RigctldServer(radio, cfg)
+            await srv.start()
+            try:
+                assert isinstance(srv._state_store, StateStore)
+                assert isinstance(srv._state_freshness_service, StateFreshnessService)
+                assert isinstance(srv._acquisition_scheduler, AcquisitionScheduler)
+                _apply_store_value(
+                    srv._state_store,
+                    freq,
+                    14_074_000,
+                    max_age=0.25,
+                )
+                srv._state_freshness_service.tick(now=2.0)
+
+                resp = await srv._rig_handler.execute(_FREQ_CMD)
+
+                assert resp.values == ["14090000"]
+                await asyncio.wait_for(executor.started.wait(), timeout=1.0)
+                requests = srv._acquisition_scheduler.pending_requests()
+                assert len(requests) == 1
+                assert requests[0].paths == (freq,)
+                assert requests[0].priority is AcquisitionPriority.USER
+                assert requests[0].reasons == ("stale", "rigctld.get_freq")
+            finally:
+                executor.release.set()
+                await srv.stop()
+
+    async def test_stale_standalone_get_drains_acquisition_through_provider_observation(
+        self, cfg: RigctldConfig
+    ) -> None:
+        freq = FieldPath.active("main", "freq_mode", "freq_hz")
+        radio = _ProfiledStandaloneRadio(
+            profile=type(
+                "Profile",
+                (),
+                {"state_acquisition": _acquisition_profile(freq)},
+            )()
+        )
+        executor = _ApplyingAcquisitionExecutor(radio, value=14_110_000)
+        radio._acquisition_executor = executor
+        fake_server = _FakeAsyncServer()
+
+        with patch(
+            "rigplane.rigctld.server.asyncio.start_server",
+            new=AsyncMock(return_value=fake_server),
+        ):
+            srv = RigctldServer(radio, cfg)
+            await srv.start()
+            try:
+                assert isinstance(srv._state_store, StateStore)
+                assert isinstance(srv._acquisition_scheduler, AcquisitionScheduler)
+                _apply_store_value(
+                    srv._state_store,
+                    freq,
+                    14_074_000,
+                    max_age=0.25,
+                )
+                srv._state_freshness_service.tick(now=2.0)
+
+                resp = await srv._rig_handler.execute(_FREQ_CMD)
+
+                assert resp.values == ["14090000"]
+                await _wait_for(
+                    lambda: srv._acquisition_scheduler.pending_requests() == ()
+                )
+                assert executor.calls
+                assert srv._state_store.snapshot().field(freq).value == 14_110_000
+                assert srv._acquisition_scheduler.diagnostics()[
+                    "queuedRequestCount"
+                ] == 0
+            finally:
+                await srv.stop()
+
+    async def test_standalone_drain_records_executor_missing_failure(
+        self, cfg: RigctldConfig
+    ) -> None:
+        freq = FieldPath.active("main", "freq_mode", "freq_hz")
+        diagnostics = StateDiagnosticsRecorder(enabled=True)
+        radio = _ProfiledStandaloneRadio(
+            profile=type(
+                "Profile",
+                (),
+                {"state_acquisition": _acquisition_profile(freq)},
+            )()
+        )
+        radio._state_diagnostics = diagnostics
+        fake_server = _FakeAsyncServer()
+
+        with patch(
+            "rigplane.rigctld.server.asyncio.start_server",
+            new=AsyncMock(return_value=fake_server),
+        ):
+            srv = RigctldServer(radio, cfg)
+            await srv.start()
+            try:
+                assert isinstance(srv._state_store, StateStore)
+                assert isinstance(srv._acquisition_scheduler, AcquisitionScheduler)
+                _apply_store_value(
+                    srv._state_store,
+                    freq,
+                    14_074_000,
+                    max_age=0.25,
+                )
+                srv._state_freshness_service.tick(now=2.0)
+
+                await srv._rig_handler.execute(_FREQ_CMD)
+
+                await _wait_for(
+                    lambda: srv._acquisition_scheduler.pending_requests() == ()
+                )
+                scheduler_diagnostics = srv._acquisition_scheduler.diagnostics()
+                assert scheduler_diagnostics["failureCountByReason"][
+                    "acquisition_executor_missing"
+                ] == 1
+                assert any(
+                    event.kind == "acquisition_executor_missing"
+                    and event.source == "rigctld.server"
+                    and event.details["provider"] == "test_provider"
+                    for event in diagnostics.events()
+                )
+            finally:
+                await srv.stop()
+
+    async def test_standalone_drain_records_executor_exception_and_keeps_running(
+        self, cfg: RigctldConfig
+    ) -> None:
+        freq = FieldPath.active("main", "freq_mode", "freq_hz")
+        diagnostics = StateDiagnosticsRecorder(enabled=True)
+        radio = _ProfiledStandaloneRadio(
+            profile=type(
+                "Profile",
+                (),
+                {"state_acquisition": _acquisition_profile(freq)},
+            )()
+        )
+        executor = _FailingAcquisitionExecutor()
+        radio._acquisition_executor = executor
+        radio._state_diagnostics = diagnostics
+        fake_server = _FakeAsyncServer()
+
+        with patch(
+            "rigplane.rigctld.server.asyncio.start_server",
+            new=AsyncMock(return_value=fake_server),
+        ):
+            srv = RigctldServer(radio, cfg)
+            await srv.start()
+            try:
+                assert isinstance(srv._state_store, StateStore)
+                assert isinstance(srv._acquisition_scheduler, AcquisitionScheduler)
+                _apply_store_value(
+                    srv._state_store,
+                    freq,
+                    14_074_000,
+                    max_age=0.25,
+                )
+                srv._state_freshness_service.tick(now=2.0)
+
+                await srv._rig_handler.execute(_FREQ_CMD)
+
+                await _wait_for(
+                    lambda: srv._acquisition_scheduler.pending_requests() == ()
+                )
+                assert executor.calls
+                assert srv._state_acquisition_drain_task is not None
+                assert not srv._state_acquisition_drain_task.done()
+                scheduler_diagnostics = srv._acquisition_scheduler.diagnostics()
+                assert scheduler_diagnostics["failureCountByReason"][
+                    "acquisition_executor_error"
+                ] == 1
+                assert any(
+                    event.kind == "acquisition_request_failed"
+                    and event.source == "rigctld.server"
+                    and event.details["reason"] == "acquisition_executor_error"
+                    and "executor transport failed" in event.details["error"]
+                    for event in diagnostics.events()
+                )
+            finally:
+                await srv.stop()
+
+    async def test_civ_profile_without_send_capability_fails_before_timeout(
+        self, cfg: RigctldConfig
+    ) -> None:
+        freq = FieldPath.active("main", "freq_mode", "freq_hz")
+        diagnostics = StateDiagnosticsRecorder(enabled=True)
+        radio = _ProfiledStandaloneRadio(
+            profile=type(
+                "Profile",
+                (),
+                {
+                    "state_acquisition": _acquisition_profile(
+                        freq,
+                        provider="icom_civ",
+                    )
+                },
+            )()
+        )
+        radio._state_diagnostics = diagnostics
+        fake_server = _FakeAsyncServer()
+
+        with patch(
+            "rigplane.rigctld.server.asyncio.start_server",
+            new=AsyncMock(return_value=fake_server),
+        ):
+            srv = RigctldServer(radio, cfg)
+            await srv.start()
+            try:
+                assert isinstance(srv._state_store, StateStore)
+                assert isinstance(srv._acquisition_scheduler, AcquisitionScheduler)
+                _apply_store_value(
+                    srv._state_store,
+                    freq,
+                    14_074_000,
+                    max_age=0.25,
+                )
+                srv._state_freshness_service.tick(now=2.0)
+
+                await srv._rig_handler.execute(_FREQ_CMD)
+
+                await _wait_for(
+                    lambda: srv._acquisition_scheduler.pending_requests() == ()
+                )
+                scheduler_diagnostics = srv._acquisition_scheduler.diagnostics()
+                assert scheduler_diagnostics["failureCountByReason"][
+                    "acquisition_executor_unavailable"
+                ] == 1
+                assert any(
+                    event.kind == "acquisition_executor_unavailable"
+                    and event.source == "rigctld.server"
+                    and event.details["provider"] == "icom_civ"
+                    for event in diagnostics.events()
+                )
+                assert not any(
+                    event.kind == "acquisition_request_failed"
+                    and event.details.get("reason") == "acquisition_request_timeout"
+                    for event in diagnostics.events()
+                )
+            finally:
+                await srv.stop()
+
+    async def test_civ_standalone_drain_sends_read_and_applies_observation(
+        self, cfg: RigctldConfig
+    ) -> None:
+        freq = FieldPath.active("main", "freq_mode", "freq_hz")
+        radio = _CivProfiledStandaloneRadio(
+            profile=type(
+                "Profile",
+                (),
+                {
+                    "state_acquisition": _acquisition_profile(
+                        freq,
+                        provider="icom_civ",
+                    )
+                },
+            )(),
+            observed_freq=14_110_000,
+        )
+        fake_server = _FakeAsyncServer()
+
+        with patch(
+            "rigplane.rigctld.server.asyncio.start_server",
+            new=AsyncMock(return_value=fake_server),
+        ):
+            srv = RigctldServer(radio, cfg)
+            await srv.start()
+            try:
+                assert isinstance(srv._state_store, StateStore)
+                assert isinstance(srv._acquisition_scheduler, AcquisitionScheduler)
+                _apply_store_value(
+                    srv._state_store,
+                    freq,
+                    14_074_000,
+                    max_age=0.25,
+                )
+                srv._state_freshness_service.tick(now=2.0)
+
+                resp = await srv._rig_handler.execute(_FREQ_CMD)
+
+                assert resp.values == ["14090000"]
+                await _wait_for(lambda: bool(radio.send_civ_calls))
+                assert radio.send_civ_calls == [
+                    {
+                        "command": 0x25,
+                        "sub": None,
+                        "data": b"\x00",
+                        "wait_response": False,
+                    }
+                ]
+
+                request = srv._acquisition_scheduler.pending_requests()[0]
+                change_set = srv._state_store.apply(
+                    Observation(
+                        path=freq,
+                        value=radio.observed_freq,
+                        source=SourceMetadata(
+                            source="command_response",
+                            provider=request.provider,
+                            native_id="0x25",
+                        ),
+                        timestamp_monotonic=3.0,
+                        max_age=request.policy.freshness_ttl_seconds,
+                    )
+                )
+                srv._acquisition_scheduler.record_acquisition_result(
+                    request,
+                    change_set,
+                )
+
+                assert srv._state_store.snapshot().field(freq).value == 14_110_000
+                assert srv._acquisition_scheduler.pending_requests() == ()
+            finally:
+                await srv.stop()
+
+    async def test_unavailable_field_records_distinct_acquisition_diagnostic(
+        self, cfg: RigctldConfig
+    ) -> None:
+        freq = FieldPath.active("main", "freq_mode", "freq_hz")
+        diagnostics = StateDiagnosticsRecorder(enabled=True)
+        radio = _ProfiledStandaloneRadio(
+            profile=type(
+                "Profile",
+                (),
+                {"state_acquisition": _unavailable_profile(freq)},
+            )()
+        )
+        radio._state_diagnostics = diagnostics
+        fake_server = _FakeAsyncServer()
+
+        with patch(
+            "rigplane.rigctld.server.asyncio.start_server",
+            new=AsyncMock(return_value=fake_server),
+        ):
+            srv = RigctldServer(radio, cfg)
+            await srv.start()
+            try:
+                await srv._rig_handler.execute(_FREQ_CMD)
+
+                assert isinstance(srv._acquisition_scheduler, AcquisitionScheduler)
+                assert srv._acquisition_scheduler.pending_requests() == ()
+                assert not any(
+                    event.kind == "acquisition_executor_missing"
+                    for event in diagnostics.events()
+                )
+                assert any(
+                    event.kind == "acquisition_unavailable"
+                    and event.source == "rigctld.handler"
+                    and event.details["reason"] == "rigctld.get_freq"
+                    for event in diagnostics.events()
+                )
+            finally:
+                await srv.stop()
 
 
 # ---------------------------------------------------------------------------

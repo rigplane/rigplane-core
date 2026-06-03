@@ -244,6 +244,66 @@ def test_meter_delta_is_visible_without_unrelated_follow_up_revision() -> None:
     assert [(change.path, change.current) for change in delta.changes] == [(meter, 42)]
 
 
+def test_history_prunes_old_deltas_while_recent_replay_still_works() -> None:
+    store = StateStore(max_history_count=2)
+    meter = FieldPath.receiver("main", "meters", "s_meter")
+
+    store.apply(_observation(meter, 1, at=1.0))
+    retained_baseline = store.snapshot()
+    store.apply(_observation(meter, 2, at=2.0))
+    store.apply(_observation(meter, 3, at=3.0))
+
+    delta = store.delta_since(retained_baseline)
+
+    assert len(store._history) == 2  # noqa: SLF001
+    assert delta.requires_full_snapshot is False
+    assert delta.state_revision == 3
+    assert delta.freshness_revision == 1
+    assert delta.observation_seq == 3
+    assert [change.current for change in delta.changes] == [2, 3]
+
+
+def test_replay_before_retention_floor_requires_full_snapshot() -> None:
+    store = StateStore(max_history_count=2)
+    meter = FieldPath.receiver("main", "meters", "s_meter")
+
+    store.apply(_observation(meter, 1, at=1.0))
+    store.apply(_observation(meter, 2, at=2.0))
+    store.apply(_observation(meter, 3, at=3.0))
+
+    delta = store.delta_since(StateSnapshot.empty())
+
+    assert len(store._history) == 2  # noqa: SLF001
+    assert delta.requires_full_snapshot is True
+    assert delta.state_revision == 3
+    assert delta.freshness_revision == 1
+    assert delta.observation_seq == 3
+    assert delta.changes == ()
+    assert delta.freshness == ()
+    assert delta.reconciliation_requests == ()
+    assert delta.to_dict()["requiresFullSnapshot"] is True
+
+
+def test_freshness_replay_before_retention_floor_requires_full_snapshot() -> None:
+    clock = FreshnessClock(start=70.0)
+    store = StateStore(freshness_clock=clock, max_history_count=1)
+    meter = FieldPath.receiver("main", "meters", "s_meter")
+
+    store.apply(_observation(meter, 1, at=clock.now(), max_age=0.5))
+    stale_baseline = store.snapshot()
+    clock.advance(0.6)
+    store.mark_stale_due()
+    store.apply(_observation(meter, 1, at=clock.now(), max_age=0.5))
+
+    stale_delta = store.delta_since(stale_baseline)
+
+    assert stale_delta.requires_full_snapshot is True
+    assert stale_delta.state_revision == 1
+    assert stale_delta.freshness_revision == 3
+    assert stale_delta.observation_seq == 2
+    assert stale_delta.freshness == ()
+
+
 def test_freshness_clock_rejects_backwards_time() -> None:
     clock = FreshnessClock(start=3.0)
 

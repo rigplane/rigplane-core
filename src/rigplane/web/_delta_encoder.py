@@ -57,6 +57,7 @@ class DeltaEncoder:
         force_full: bool = False,
         state_revision: int | None = None,
         freshness_revision: int | None = None,
+        observation_seq: int | None = None,
     ) -> dict[str, Any]:
         """Encode a state snapshot as a delta or full state.
 
@@ -90,6 +91,7 @@ class DeltaEncoder:
             self._transport_seq if state_revision is None else int(state_revision)
         )
         freshness_value = 0 if freshness_revision is None else int(freshness_revision)
+        observation_value = 0 if observation_seq is None else int(observation_seq)
 
         if (
             force_full
@@ -109,6 +111,8 @@ class DeltaEncoder:
                 full_result["stateRevision"] = revision_value
             if freshness_revision is not None:
                 full_result["freshnessRevision"] = freshness_value
+            if observation_seq is not None:
+                full_result["observationSeq"] = observation_value
             return full_result
 
         # Compute delta
@@ -141,6 +145,8 @@ class DeltaEncoder:
             result["stateRevision"] = revision_value
         if freshness_revision is not None:
             result["freshnessRevision"] = freshness_value
+        if observation_seq is not None:
+            result["observationSeq"] = observation_value
         if removed:
             result["removed"] = removed
 

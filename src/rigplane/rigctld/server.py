@@ -22,6 +22,25 @@ import time
 from collections.abc import Coroutine
 from typing import TYPE_CHECKING, Any, cast
 
+from ..core.acquisition_scheduler import (
+    AcquisitionExecutionResult,
+    AcquisitionExecutor,
+    AcquisitionRequest,
+    AcquisitionScheduler,
+    RadioStateModelService,
+    StateFreshnessService,
+    civ_acquisition_executor_for_provider,
+)
+from ..core.state_diagnostics import StateDiagnosticsRecorder
+from ..core.state_pipeline_contracts import FieldPath
+from ..core.state_acquisition_policy import RadioAcquisitionProfile
+from ..core.state_store import StateStore
+from ..radio_protocol import (
+    CivCommandCapable,
+    StateModelCapable,
+    StateModelService,
+    StateStoreCapable,
+)
 from ..startup_checks import assert_radio_startup_ready
 from . import audit as _audit  # noqa: TID251
 from .circuit_breaker import CircuitBreaker, CircuitState  # noqa: TID251
@@ -34,6 +53,10 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 __all__ = ["RigctldServer", "run_rigctld_server"]
+
+
+class _AcquisitionExecutorUnavailable(RuntimeError):
+    """Raised when a configured acquisition executor cannot run on this radio."""
 
 
 def _profile_data_mode_count(radio: "Radio") -> int:
@@ -129,6 +152,16 @@ class RigctldServer:
         self._rig_handler: Any = _handler
         self._poller: Any = _poller
         self._circuit_breaker: CircuitBreaker | None = _circuit_breaker
+        self._server_was_running: bool = False
+        self._state_store: StateStore | None = None
+        self._acquisition_scheduler: AcquisitionScheduler | None = None
+        self._state_model_service: StateModelService | None = None
+        self._state_freshness_service: StateFreshnessService | None = None
+        self._state_store_freshness_task: asyncio.Task[None] | None = None
+        self._acquisition_executor: AcquisitionExecutor | None = None
+        self._state_acquisition_drain_task: asyncio.Task[None] | None = None
+        self._acquisition_in_flight: dict[str, tuple[frozenset[FieldPath], float]] = {}
+        self._state_diagnostics = getattr(radio, "_state_diagnostics", None)
         # Per-client sliding window for rate limiting: client_id → timestamps
         self._rate_windows: dict[int, list[float]] = {}
         # prevent GC of fire-and-forget tasks
@@ -159,7 +192,8 @@ class RigctldServer:
     def __del__(self) -> None:
         """Emit WARN if instance is collected while TCP server/poller is still active."""
         try:
-            if self._server is not None:
+            still_running = self._server is not None or self._server_was_running
+            if still_running:
                 logger.warning(
                     "RigctldServer collected while still running; "
                     "ensure stop() or async context manager is used."
@@ -182,6 +216,386 @@ class RigctldServer:
     # Lifecycle
     # ------------------------------------------------------------------
 
+    def _profile_state_acquisition(self) -> RadioAcquisitionProfile | None:
+        """Return profile acquisition metadata for the attached radio, if any."""
+        raw_profile = getattr(self._radio, "profile", None)
+        acquisition_profile = getattr(raw_profile, "state_acquisition", None)
+        if acquisition_profile is not None:
+            return cast(RadioAcquisitionProfile, acquisition_profile)
+
+        model = getattr(self._radio, "model", None)
+        if not isinstance(model, str):
+            return None
+
+        try:
+            from ..profiles import resolve_radio_profile  # noqa: PLC0415
+
+            profile = resolve_radio_profile(model=model)
+        except Exception:
+            logger.debug("rigctld state acquisition: failed to resolve profile", exc_info=True)
+            return None
+        return cast(RadioAcquisitionProfile | None, profile.state_acquisition)
+
+    def _radio_state_store(self) -> StateStore | None:
+        if not isinstance(self._radio, StateStoreCapable):
+            return None
+        store = self._radio.state_store
+        return store if isinstance(store, StateStore) else None
+
+    def _radio_state_model_service(self) -> StateModelService | None:
+        if not isinstance(self._radio, StateModelCapable):
+            return None
+        service = self._radio.state_model_service
+        return service if isinstance(service, StateModelService) else None
+
+    def _radio_state_freshness_service(self) -> StateFreshnessService | None:
+        service = getattr(self._radio, "_state_freshness_service", None)
+        return service if isinstance(service, StateFreshnessService) else None
+
+    def _provided_acquisition_executor(self) -> AcquisitionExecutor | None:
+        raw_executor = getattr(self._radio, "__dict__", {}).get("_acquisition_executor")
+        execute = getattr(raw_executor, "execute", None)
+        if callable(execute):
+            return cast(AcquisitionExecutor, raw_executor)
+        return None
+
+    def _provider_uses_civ_executor(self, provider: str) -> bool:
+        return (
+            civ_acquisition_executor_for_provider(
+                provider,
+                self._send_one_state_query,
+            )
+            is not None
+        )
+
+    def _default_acquisition_executor_for_scheduler(
+        self,
+        scheduler: AcquisitionScheduler,
+    ) -> AcquisitionExecutor | None:
+        if not self._provider_uses_civ_executor(scheduler.provider):
+            return None
+        if not isinstance(self._radio, CivCommandCapable):
+            return None
+        return civ_acquisition_executor_for_provider(
+            scheduler.provider,
+            self._send_one_state_query,
+        )
+
+    def _attach_state_acquisition_services(
+        self,
+        *,
+        store: StateStore,
+        scheduler: AcquisitionScheduler,
+        model_service: StateModelService,
+        freshness_service: StateFreshnessService,
+    ) -> None:
+        for name, value in (
+            ("_state_store", store),
+            ("_acquisition_scheduler", scheduler),
+            ("state_model_service", model_service),
+            ("_state_freshness_service", freshness_service),
+        ):
+            try:
+                setattr(self._radio, name, value)
+            except Exception:
+                logger.debug(
+                    "rigctld state acquisition: failed to attach %s",
+                    name,
+                    exc_info=True,
+                )
+
+    def _bootstrap_state_acquisition(self) -> None:
+        """Prepare StateStore-backed acquisition services for standalone rigctld."""
+        self._state_store = self._radio_state_store()
+        self._state_model_service = self._radio_state_model_service()
+        self._state_freshness_service = self._radio_state_freshness_service()
+        self._acquisition_executor = self._provided_acquisition_executor()
+
+        acquisition_profile = self._profile_state_acquisition()
+        if acquisition_profile is None:
+            return
+        if self._state_store is None:
+            self._state_store = StateStore()
+        if self._state_model_service is not None:
+            scheduler = getattr(self._radio, "_acquisition_scheduler", None)
+            if isinstance(scheduler, AcquisitionScheduler):
+                self._acquisition_scheduler = scheduler
+                if self._acquisition_executor is None:
+                    self._acquisition_executor = (
+                        self._default_acquisition_executor_for_scheduler(scheduler)
+                    )
+            return
+
+        scheduler = AcquisitionScheduler(profile=acquisition_profile)
+        model_service = RadioStateModelService(
+            store=self._state_store,
+            scheduler=scheduler,
+        )
+        freshness_service = StateFreshnessService(
+            store=self._state_store,
+            scheduler=scheduler,
+        )
+        self._acquisition_scheduler = scheduler
+        self._state_model_service = model_service
+        self._state_freshness_service = freshness_service
+        if self._acquisition_executor is None:
+            self._acquisition_executor = self._default_acquisition_executor_for_scheduler(
+                scheduler
+            )
+        self._attach_state_acquisition_services(
+            store=self._state_store,
+            scheduler=scheduler,
+            model_service=model_service,
+            freshness_service=freshness_service,
+        )
+
+    def _start_state_freshness_task(self) -> None:
+        if (
+            self._state_freshness_service is None
+            or self._acquisition_scheduler is None
+            or self._state_store_freshness_task is not None
+        ):
+            return
+        self._state_store_freshness_task = asyncio.get_running_loop().create_task(
+            self._state_freshness_service.run(),
+            name="rigctld-state-freshness",
+        )
+
+    def _start_state_acquisition_drain_task(self) -> None:
+        if (
+            self._acquisition_scheduler is None
+            or self._state_acquisition_drain_task is not None
+        ):
+            return
+        self._state_acquisition_drain_task = asyncio.get_running_loop().create_task(
+            self._run_state_acquisition_drain(),
+            name="rigctld-state-acquisition",
+        )
+
+    async def _send_one_state_query(
+        self,
+        cmd_byte: int,
+        sub_byte: int | None,
+        receiver: int | None,
+    ) -> None:
+        radio = self._radio
+        if not isinstance(radio, CivCommandCapable):
+            raise _AcquisitionExecutorUnavailable(
+                "radio does not support CI-V state acquisition sends"
+            )
+        if receiver is not None:
+            if cmd_byte in (0x25, 0x26):
+                await radio.send_civ(
+                    cmd_byte,
+                    data=bytes([receiver]),
+                    wait_response=False,
+                )
+                return
+            inner = bytes([receiver, cmd_byte])
+            if sub_byte is not None:
+                inner += bytes([sub_byte])
+            await radio.send_civ(0x29, data=inner, wait_response=False)
+            return
+        await radio.send_civ(
+            cmd_byte,
+            sub=sub_byte,
+            data=b"",
+            wait_response=False,
+        )
+
+    def _record_state_diagnostic(
+        self,
+        kind: str,
+        source: str,
+        **details: Any,
+    ) -> None:
+        if isinstance(self._state_diagnostics, StateDiagnosticsRecorder):
+            self._state_diagnostics.record(kind, source, **details)
+
+    @staticmethod
+    def _acquisition_request_expired(
+        request: AcquisitionRequest,
+        *,
+        sent_at: float,
+        now: float,
+    ) -> bool:
+        deadlines = [request.deadline_monotonic]
+        if request.timeout is not None:
+            deadlines.append(sent_at + request.timeout)
+        deadline = min(float(value) for value in deadlines)
+        return now >= deadline
+
+    async def _run_state_acquisition_drain(self) -> None:
+        while True:
+            try:
+                await self._drain_state_acquisition_once()
+                await asyncio.sleep(0.05)
+            except asyncio.CancelledError:
+                break
+            except Exception as exc:
+                logger.warning(
+                    "rigctld state acquisition drain failed: %s",
+                    exc,
+                    exc_info=True,
+                )
+                self._record_state_diagnostic(
+                    "acquisition_drain_error",
+                    "rigctld.server",
+                    error=str(exc),
+                    error_type=type(exc).__name__,
+                )
+                await asyncio.sleep(0.05)
+
+    def _record_acquisition_failure(
+        self,
+        scheduler: AcquisitionScheduler,
+        request: AcquisitionRequest,
+        *,
+        reason: str,
+        failed_paths: tuple[FieldPath, ...] | frozenset[FieldPath],
+        now: float,
+        kind: str = "acquisition_request_failed",
+        error: str | None = None,
+        error_type: str | None = None,
+    ) -> None:
+        details: dict[str, Any] = {
+            "request_id": request.id,
+            "paths": [str(path) for path in failed_paths],
+            "reason": reason,
+            "provider": request.provider,
+        }
+        if error is not None:
+            details["error"] = error
+        if error_type is not None:
+            details["error_type"] = error_type
+        self._record_state_diagnostic(kind, "rigctld.server", **details)
+        scheduler.record_acquisition_failure(
+            request,
+            reason=reason,
+            failed_paths=failed_paths,
+            now=now,
+        )
+
+    async def _drain_state_acquisition_once(self) -> None:
+        scheduler = self._acquisition_scheduler
+        if scheduler is None:
+            return
+        now = time.monotonic()
+        pending = scheduler.pending_requests()
+        pending_ids = {request.id for request in pending}
+        for request_id in tuple(self._acquisition_in_flight):
+            if request_id not in pending_ids:
+                del self._acquisition_in_flight[request_id]
+
+        for request in pending:
+            sent_paths: frozenset[FieldPath] = frozenset()
+            sent_at = 0.0
+            existing = self._acquisition_in_flight.get(request.id)
+            if existing is not None:
+                sent_paths, sent_at = existing
+                if self._acquisition_request_expired(
+                    request,
+                    sent_at=sent_at,
+                    now=now,
+                ):
+                    self._record_acquisition_failure(
+                        scheduler,
+                        request,
+                        reason="acquisition_request_timeout",
+                        failed_paths=sent_paths or frozenset(request.paths),
+                        now=now,
+                    )
+                    self._acquisition_in_flight.pop(request.id, None)
+                    continue
+                sent_paths = sent_paths.intersection(request.paths)
+
+            if all(path in sent_paths for path in request.paths):
+                continue
+
+            executor = self._acquisition_executor
+            if executor is None:
+                if (
+                    self._provider_uses_civ_executor(request.provider)
+                    and not isinstance(self._radio, CivCommandCapable)
+                ):
+                    reason = "acquisition_executor_unavailable"
+                    kind = reason
+                else:
+                    reason = "acquisition_executor_missing"
+                    kind = reason
+                self._record_acquisition_failure(
+                    scheduler,
+                    request,
+                    reason=reason,
+                    failed_paths=request.paths,
+                    now=now,
+                    kind=kind,
+                )
+                continue
+
+            try:
+                result: AcquisitionExecutionResult = await executor.execute(
+                    request,
+                    already_sent_paths=sent_paths,
+                )
+            except asyncio.CancelledError:
+                raise
+            except _AcquisitionExecutorUnavailable as exc:
+                failed_paths = tuple(
+                    path for path in request.paths if path not in sent_paths
+                )
+                self._record_acquisition_failure(
+                    scheduler,
+                    request,
+                    reason="acquisition_executor_unavailable",
+                    failed_paths=failed_paths or request.paths,
+                    now=now,
+                    kind="acquisition_executor_unavailable",
+                    error=str(exc),
+                    error_type=type(exc).__name__,
+                )
+                self._acquisition_in_flight.pop(request.id, None)
+                continue
+            except Exception as exc:
+                failed_paths = tuple(
+                    path for path in request.paths if path not in sent_paths
+                )
+                self._record_acquisition_failure(
+                    scheduler,
+                    request,
+                    reason="acquisition_executor_error",
+                    failed_paths=failed_paths or request.paths,
+                    now=now,
+                    error=str(exc),
+                    error_type=type(exc).__name__,
+                )
+                self._acquisition_in_flight.pop(request.id, None)
+                continue
+            failed_paths = tuple(result.failed_paths)
+            if failed_paths:
+                reason = result.failure_reason or "acquisition_request_failed"
+                self._record_acquisition_failure(
+                    scheduler,
+                    request,
+                    reason=reason,
+                    failed_paths=failed_paths,
+                    now=now,
+                )
+
+            newly_sent = tuple(result.sent_paths)
+            if newly_sent:
+                self._acquisition_in_flight[request.id] = (
+                    sent_paths.union(newly_sent),
+                    now,
+                )
+                self._record_state_diagnostic(
+                    "acquisition_request_sent",
+                    "rigctld.server",
+                    request_id=request.id,
+                    paths=[str(path) for path in newly_sent],
+                    pending_request_count=len(scheduler.pending_requests()),
+                )
+
     async def start(self) -> None:
         """Start the TCP listener and initialise the command handler."""
         assert_radio_startup_ready(self._radio, component="rigctld startup")
@@ -194,21 +608,51 @@ class RigctldServer:
         if self._rig_handler is None:
             from . import handler as _handler_mod  # noqa: PLC0415, TID251
 
-            self._rig_handler = _handler_mod.RigctldHandler(self._radio, self._config)
+            self._bootstrap_state_acquisition()
+            self._rig_handler = _handler_mod.RigctldHandler(
+                self._radio,
+                self._config,
+                state_store=self._state_store,
+                state_model_service=self._state_model_service,
+            )
 
         self._server = await asyncio.start_server(
             self._accept_client,
             host=self._config.host,
             port=self._config.port,
         )
+        self._server_was_running = True
         addr = self._server.sockets[0].getsockname()
         logger.info("rigctld listening on %s:%d", addr[0], addr[1])
+        self._start_state_freshness_task()
+        self._start_state_acquisition_drain_task()
 
         # Poller starts lazily on first client connection to avoid idle
         # CI-V traffic/noise when no CAT clients are connected.
 
     async def stop(self) -> None:
         """Close the listener and cancel all active client tasks."""
+        if self._state_acquisition_drain_task is not None:
+            self._state_acquisition_drain_task.cancel()
+            try:
+                await self._state_acquisition_drain_task
+            except asyncio.CancelledError:
+                pass
+            except Exception:
+                logger.debug(
+                    "rigctld state acquisition drain task failed before stop",
+                    exc_info=True,
+                )
+            self._state_acquisition_drain_task = None
+
+        if self._state_store_freshness_task is not None:
+            self._state_store_freshness_task.cancel()
+            try:
+                await self._state_store_freshness_task
+            except asyncio.CancelledError:
+                pass
+            self._state_store_freshness_task = None
+
         if self._poller is not None:
             await self._poller.stop()
             self._poller = None
@@ -217,6 +661,7 @@ class RigctldServer:
             self._server.close()
             await self._server.wait_closed()
             self._server = None
+        self._server_was_running = False
 
         tasks = list(self._client_tasks)
         for task in tasks:

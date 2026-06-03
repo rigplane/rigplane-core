@@ -33,7 +33,7 @@ import signal as _signal
 import sys
 import time
 import urllib.parse
-from collections.abc import Callable, Coroutine
+from collections.abc import Callable, Collection, Coroutine
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Literal, Protocol, TextIO
 
@@ -50,7 +50,6 @@ from ..core.command_service import (
     CommandExecutionResult,
     CommandService,
     command_intent_from_request,
-    command_response_observation,
 )
 from ..core.state_pipeline_contracts import (
     CommandIntent,
@@ -100,7 +99,7 @@ from .websocket import (  # noqa: TID251
     make_accept_key,
     negotiate_deflate,
 )
-from ..radio_protocol import CivTransactionCapable
+from ..radio_protocol import CivTransactionCapable, StateStoreCapable
 
 if TYPE_CHECKING:
     from ..audio_bridge import AudioBridge
@@ -376,7 +375,9 @@ class _HttpCommandExecutor:
         params = intent.params
         if intent.name == "raw_civ_transaction":
             if not isinstance(radio, CivTransactionCapable):
-                raise RuntimeError("active backend does not support raw CI-V transactions")
+                raise RuntimeError(
+                    "active backend does not support raw CI-V transactions"
+                )
             result = await radio.send_civ_transaction(
                 int(params["command"]),
                 sub=params.get("sub"),
@@ -387,15 +388,7 @@ class _HttpCommandExecutor:
             return CommandExecutionResult(details={"transaction_result": result})
         if intent.name == "set_powerstat":
             await radio.set_powerstat(bool(params["power_on"]))  # type: ignore[attr-defined]
-            return CommandExecutionResult(
-                observations=(
-                    command_response_observation(
-                        intent,
-                        timestamp_monotonic=time.monotonic(),
-                        provider="http",
-                    ),
-                )
-            )
+            return CommandExecutionResult()
         raise ValueError(f"unsupported HTTP command intent: {intent.name!r}")
 
 
@@ -667,7 +660,11 @@ class WebServer:
         self._state_diagnostics = StateDiagnosticsRecorder(
             enabled=self._config.state_diagnostics
         )
-        raw_state_store = getattr(radio, "state_store", None) if radio is not None else None
+        raw_state_store = (
+            radio.state_store
+            if radio is not None and isinstance(radio, StateStoreCapable)
+            else None
+        )
         self.command_state_store = (
             raw_state_store if isinstance(raw_state_store, StateStore) else StateStore()
         )
@@ -685,6 +682,7 @@ class WebServer:
             state_store=self.command_state_store,
         )
         self._server: asyncio.Server | None = None
+        self._stopping = False
         self._runtime_started_at = time.monotonic()
         self._runtime_log_path: str | None = None
         self._runtime_rigctld_addr: str | None = None
@@ -705,8 +703,13 @@ class WebServer:
             try:
                 setattr(radio, "_state_diagnostics", self._state_diagnostics)
             except Exception:
-                logger.debug("state diagnostics: failed to attach to radio", exc_info=True)
-        self._audio_broadcaster = AudioBroadcaster(radio)
+                logger.debug(
+                    "state diagnostics: failed to attach to radio", exc_info=True
+                )
+        self._audio_broadcaster = AudioBroadcaster(
+            radio,
+            on_client_count_change=self._broadcast_ws_client_state_update,
+        )
         # Gated WebRTC transport session manager (A2.3 / MOR-307). Lazily
         # constructed on first use so the import stays out of the no-extra path.
         self._webrtc_sessions: WebRtcSessionManager | None = None
@@ -752,6 +755,8 @@ class WebServer:
         self._last_broadcast_state_key: tuple[object, ...] | None = None
         self._cached_public_state_key: tuple[object, ...] | None = None
         self._cached_public_state_payload: dict[str, Any] | None = None
+        self._public_state_seq: int = 0
+        self._last_public_state_seq_key: tuple[object, ...] | None = None
         self._health_revision: int = 0
         self._health_signature: tuple[object, ...] | None = None
         self._health_since_monotonic: float = time.monotonic()
@@ -867,7 +872,7 @@ class WebServer:
         coalescer = MeterObservationCoalescer()
         self._state_freshness_service = freshness_service
         try:
-            setattr(radio, "_state_model_service", service)
+            setattr(radio, "state_model_service", service)
             setattr(radio, "_state_freshness_service", freshness_service)
             setattr(radio, "_acquisition_scheduler", scheduler)
             setattr(radio, "_meter_observation_coalescer", coalescer)
@@ -900,7 +905,10 @@ class WebServer:
         is needed — frames are generated from the audio stream.
         """
         async with self._scope_enable_lock:
+            was_registered = handler in self._scope_handlers
             self._scope_handlers.add(handler)
+            if not was_registered:
+                self._broadcast_ws_client_state_update()
             if self._radio is not None:
                 if not _supports_scope(self._radio):
                     logger.info(
@@ -925,7 +933,10 @@ class WebServer:
 
     def unregister_scope_handler(self, handler: "ScopeHandler") -> None:
         """Unregister a scope handler."""
+        was_registered = handler in self._scope_handlers
         self._scope_handlers.discard(handler)
+        if was_registered:
+            self._broadcast_ws_client_state_update()
         if (
             not self._scope_handlers
             and self._radio is not None
@@ -1081,11 +1092,17 @@ class WebServer:
 
     def register_control_event_queue(self, q: BoundedQueue[dict[str, Any]]) -> None:
         """Register a ControlHandler event queue for broadcast."""
+        existing_queues = set(self._control_event_queues)
         self._control_event_queues.add(q)
+        if q not in existing_queues:
+            self._broadcast_ws_client_state_update(queues=existing_queues)
 
     def unregister_control_event_queue(self, q: BoundedQueue[dict[str, Any]]) -> None:
         """Unregister a ControlHandler event queue."""
+        was_registered = q in self._control_event_queues
         self._control_event_queues.discard(q)
+        if was_registered:
+            self._broadcast_ws_client_state_update()
 
     def broadcast_event(self, name: str, data: dict[str, Any]) -> None:
         """Push an event to all ControlHandler event queues."""
@@ -1096,7 +1113,25 @@ class WebServer:
             except asyncio.QueueFull:
                 logger.debug("broadcast_event: queue full, dropping event=%s", name)
 
-    def _broadcast_state_update(self) -> None:
+    def _broadcast_ws_client_state_update(
+        self,
+        *,
+        queues: Collection[BoundedQueue[dict[str, Any]]] | None = None,
+    ) -> None:
+        """Deliver a public-state update for live WS client count changes."""
+        if self._stopping:
+            return
+        target_queues = self._control_event_queues if queues is None else queues
+        if not target_queues:
+            return
+        self._broadcast_state_update(force=True, queues=target_queues)
+
+    def _broadcast_state_update(
+        self,
+        *,
+        force: bool = False,
+        queues: Collection[BoundedQueue[dict[str, Any]]] | None = None,
+    ) -> None:
         """Broadcast current state to all control WS clients (throttled).
 
         Uses delta encoding to reduce payload size for subsequent updates.
@@ -1105,7 +1140,7 @@ class WebServer:
         import time
 
         now = time.monotonic()
-        if now - self._last_state_broadcast < 0.05:
+        if not force and now - self._last_state_broadcast < 0.05:
             try:
                 asyncio.get_running_loop()
             except RuntimeError:
@@ -1130,11 +1165,9 @@ class WebServer:
         self._update_fft_scope_freq(snapshot)
         self._update_fft_scope_mode(snapshot)
         body = self._build_public_state_from_snapshot(snapshot)
-        state_key = (
-            snapshot.state_revision,
-            snapshot.freshness_revision,
-            int(body.get("healthRevision", 0)),
-            *self._live_connection_metadata_key(),
+        state_key = self._public_state_delivery_key(
+            snapshot,
+            health_revision=int(body.get("healthRevision", 0)),
         )
         if state_key == self._last_broadcast_state_key:
             return
@@ -1144,6 +1177,7 @@ class WebServer:
             body,
             state_revision=snapshot.state_revision,
             freshness_revision=snapshot.freshness_revision,
+            observation_seq=snapshot.observation_seq,
         )
         self._last_broadcast_state_key = state_key
         event = {"type": "state_update", "data": delta}
@@ -1153,12 +1187,14 @@ class WebServer:
             revision=body.get("revision"),
             state_revision=body.get("stateRevision"),
             freshness_revision=body.get("freshnessRevision"),
+            observation_seq=body.get("observationSeq"),
             health_revision=body.get("healthRevision"),
             delta_type=delta.get("type"),
             clients=len(self._control_event_queues),
         )
 
-        for q in list(self._control_event_queues):
+        target_queues = self._control_event_queues if queues is None else queues
+        for q in list(target_queues):
             try:
                 q.put_nowait(event)
             except asyncio.QueueFull:
@@ -1196,6 +1232,54 @@ class WebServer:
                 conn_state = raw_conn_state
         return (connected, control_connected, radio_ready(radio), conn_state)
 
+    def _public_state_delivery_key(
+        self,
+        snapshot: StateSnapshot,
+        *,
+        health_revision: int,
+    ) -> tuple[object, ...]:
+        return (
+            snapshot.state_revision,
+            snapshot.freshness_revision,
+            snapshot.observation_seq,
+            health_revision,
+            *self._live_connection_metadata_key(),
+            len(self._scope_handlers),
+            len(self._control_event_queues),
+            len(self._audio_broadcaster._clients),
+        )
+
+    def _public_state_etag(
+        self,
+        snapshot: StateSnapshot,
+        *,
+        health_revision: int,
+        public_state_seq: int,
+    ) -> str:
+        def _etag_component(value: object) -> str:
+            if isinstance(value, bool):
+                return "1" if value else "0"
+            if value is None:
+                return "none"
+            return str(value)
+
+        return '"{}"'.format(
+            "-".join(
+                _etag_component(value)
+                for value in self._public_state_delivery_key(
+                    snapshot,
+                    health_revision=health_revision,
+                )
+                + (public_state_seq,)
+            )
+        )
+
+    def _public_state_seq_for_key(self, key: tuple[object, ...]) -> int:
+        if key != self._last_public_state_seq_key:
+            self._public_state_seq += 1
+            self._last_public_state_seq_key = key
+        return self._public_state_seq
+
     def _build_public_state_from_snapshot(
         self,
         snapshot: StateSnapshot,
@@ -1203,14 +1287,9 @@ class WebServer:
         updated_at: str | None = None,
     ) -> dict[str, Any]:
         health = self._build_radio_health()
-        cache_key = (
-            snapshot.state_revision,
-            snapshot.freshness_revision,
-            self._health_revision,
-            len(self._scope_handlers),
-            len(self._control_event_queues),
-            len(self._audio_broadcaster._clients),
-            *self._live_connection_metadata_key(),
+        cache_key = self._public_state_delivery_key(
+            snapshot,
+            health_revision=self._health_revision,
         )
         if (
             updated_at is None
@@ -1218,6 +1297,7 @@ class WebServer:
             and self._cached_public_state_payload is not None
         ):
             return copy.deepcopy(self._cached_public_state_payload)
+        public_state_seq = self._public_state_seq_for_key(cache_key)
         payload = _build_public_state_payload_from_snapshot_impl(
             snapshot,
             radio=self._radio,
@@ -1229,12 +1309,15 @@ class WebServer:
             radio_health=health,
             health_revision=self._health_revision,
         )
+        payload["publicStateSeq"] = public_state_seq
         if updated_at is None:
             self._cached_public_state_key = cache_key
             self._cached_public_state_payload = copy.deepcopy(payload)
         return payload
 
-    def build_state_update_envelope(self, *, force_full: bool = False) -> dict[str, Any]:
+    def build_state_update_envelope(
+        self, *, force_full: bool = False
+    ) -> dict[str, Any]:
         """Return a WS state-update envelope from the canonical StateStore view."""
         snapshot = self.command_state_store.snapshot()
         body = self._build_public_state_from_snapshot(snapshot)
@@ -1246,6 +1329,7 @@ class WebServer:
             force_full=force_full,
             state_revision=snapshot.state_revision,
             freshness_revision=snapshot.freshness_revision,
+            observation_seq=snapshot.observation_seq,
         )
 
     def sync_state_store_from_radio_state(
@@ -1260,7 +1344,8 @@ class WebServer:
         state_dict = state.to_dict()
         baseline_dict = baseline.to_dict()
         observed_values = {
-            field.path: field.value for field in self.command_state_store.snapshot().fields
+            field.path: field.value
+            for field in self.command_state_store.snapshot().fields
         }
         provider = getattr(self._radio, "backend_id", None)
         source = SourceMetadata(
@@ -1737,6 +1822,7 @@ class WebServer:
         """Start the HTTP/WS listener and RadioPoller (if radio is connected)."""
         from .web_startup import start_web_server  # noqa: TID251
 
+        self._stopping = False
         await start_web_server(self)
 
     # ------------------------------------------------------------------
@@ -1816,6 +1902,7 @@ class WebServer:
         """Close the listener, stop RadioPoller, disconnect radio, cancel tasks."""
         from .web_startup import stop_web_server  # noqa: TID251
 
+        self._stopping = True
         await stop_web_server(self)
 
     async def serve_forever(self) -> None:
@@ -2306,10 +2393,12 @@ class WebServer:
     async def _serve_state(
         self, writer: asyncio.StreamWriter, headers: dict[str, str] | None = None
     ) -> None:
-        body_dict = self.build_public_state()
+        snapshot = self.command_state_store.snapshot()
+        body_dict = self._build_public_state_from_snapshot(snapshot)
         revision = int(body_dict.get("stateRevision", body_dict.get("revision", 0)))
         freshness_revision = int(body_dict.get("freshnessRevision", 0))
         health_revision = int(body_dict.get("healthRevision", 0))
+        public_state_seq = int(body_dict.get("publicStateSeq", 0))
         self._state_diagnostics.record(
             "web_delivery_trigger",
             "web.http_state",
@@ -2322,7 +2411,11 @@ class WebServer:
             writer,
             body,
             headers,
-            etag=f'"{revision}-{freshness_revision}-{health_revision}"',
+            etag=self._public_state_etag(
+                snapshot,
+                health_revision=health_revision,
+                public_state_seq=public_state_seq,
+            ),
         )
 
     async def _serve_audio_analysis(

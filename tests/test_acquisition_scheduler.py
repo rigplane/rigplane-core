@@ -2,14 +2,17 @@
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Iterable
 from dataclasses import replace
+from pathlib import Path
 from typing import Any
 
 from rigplane.core.acquisition_scheduler import (
     AcquisitionPriority,
     AcquisitionScheduler,
     AcquisitionStatus,
+    IcomCivAcquisitionExecutor,
     MeterObservationCoalescer,
     RadioStateModelService,
 )
@@ -31,6 +34,10 @@ from rigplane.core.state_pipeline_contracts import (
     SourceMetadata,
 )
 from rigplane.core.state_store import FreshnessClock, FreshnessState, StateStore
+from rigplane.profiles.rig_loader import load_rig
+
+
+RIGS_DIR = Path(__file__).parents[1] / "rigs"
 
 
 def _source() -> SourceMetadata:
@@ -734,6 +741,61 @@ def test_stale_unsolicited_field_queues_reconciliation_and_accepts_readback() ->
     assert reconciled.revision == 2
     assert store.snapshot().field(freq).freshness is FreshnessState.FRESH
     assert store.snapshot().field(freq).value == 14_076_000
+
+
+def test_ic7610_real_profile_stale_active_rit_xit_acquisition_can_send_queries() -> (
+    None
+):
+    acquisition = load_rig(RIGS_DIR / "ic7610.toml").to_profile().state_acquisition
+    assert acquisition is not None
+    clock = FreshnessClock(start=120.0)
+    store = StateStore(freshness_clock=clock)
+    paths_and_values = (
+        (FieldPath.global_("slow_state", "active"), "SUB"),
+        (FieldPath.global_("operator_controls", "rit_freq"), -200),
+        (FieldPath.global_("tx_state", "rit_on"), True),
+        (FieldPath.global_("tx_state", "rit_tx"), True),
+    )
+    for path, value in paths_and_values:
+        store.apply(_observation(path, value, at=clock.now(), max_age=0.5))
+    clock.advance(0.6)
+    store.mark_stale_due()
+    scheduler = AcquisitionScheduler(profile=acquisition, clock=clock)
+    service = RadioStateModelService(store=store, scheduler=scheduler, clock=clock)
+    sent: list[tuple[int, int | None, int | None]] = []
+
+    async def send_query(
+        command: int,
+        sub: int | None,
+        receiver: int | None,
+    ) -> None:
+        sent.append((command, sub, receiver))
+
+    result = service.ensure_fresh(
+        tuple(path for path, _value in paths_and_values),
+        max_age=0.5,
+        priority="user",
+        reason="rigctld.active-rit",
+    )
+
+    assert result.status is AcquisitionStatus.QUEUED
+    requests = scheduler.pending_requests()
+    requested_paths = {path for request in requests for path in request.paths}
+    assert requested_paths >= {path for path, _value in paths_and_values}
+    executor = IcomCivAcquisitionExecutor(send_query)
+    for request in requests:
+        execution = asyncio.run(
+            executor.execute(request, already_sent_paths=frozenset())
+        )
+        assert execution.failed_paths == ()
+
+    assert len(sent) == 4
+    assert set(sent) == {
+        (0x07, 0xD2, None),
+        (0x21, 0x00, None),
+        (0x21, 0x01, None),
+        (0x21, 0x02, None),
+    }
 
 
 def test_due_polling_emits_only_pollable_cadence_fields_and_groups_by_existing_key() -> (

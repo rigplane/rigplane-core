@@ -57,7 +57,7 @@ from rigplane.exceptions import ConnectionError
 from rigplane.radio import IcomRadio
 from rigplane.radio_state import RadioState
 from rigplane.scope import ScopeFrame
-from rigplane.core.state_store import StateSnapshot
+from rigplane.core.state_store import FreshnessState, StateSnapshot
 from rigplane.types import CivFrame, Mode, bcd_encode
 from rigplane.web.radio_poller import CommandQueue, RadioPoller
 
@@ -885,6 +885,30 @@ def test_update_state_cache_exception_suppressed(radio: IcomRadio) -> None:
             True,
             "command_response",
         ),
+        (
+            _make_frame(cmd=0x07, data=bytes([0xD2, 0x01])),
+            "global.slow_state.active",
+            "SUB",
+            "command_response",
+        ),
+        (
+            _make_frame(cmd=0x21, sub=0x00, data=b"\x00\x02\x01"),
+            "global.operator_controls.rit_freq",
+            -200,
+            "command_response",
+        ),
+        (
+            _make_frame(cmd=0x21, sub=0x01, data=b"\x01"),
+            "global.tx_state.rit_on",
+            True,
+            "command_response",
+        ),
+        (
+            _make_frame(cmd=0x21, sub=0x02, data=b"\x01"),
+            "global.tx_state.rit_tx",
+            True,
+            "command_response",
+        ),
     ],
 )
 def test_update_state_cache_projects_supported_fields_into_state_store(
@@ -900,6 +924,48 @@ def test_update_state_cache_projects_supported_fields_into_state_store(
 
     assert field.value == expected
     assert field.source.source == expected_source
+
+
+def test_civ_projected_active_rit_xit_fields_become_stale(
+    radio: IcomRadio,
+) -> None:
+    try:
+        frames_and_paths = (
+            (
+                _make_frame(cmd=0x07, data=bytes([0xD2, 0x01])),
+                "global.slow_state.active",
+            ),
+            (
+                _make_frame(cmd=0x21, sub=0x00, data=b"\x00\x02\x01"),
+                "global.operator_controls.rit_freq",
+            ),
+            (_make_frame(cmd=0x21, sub=0x01, data=b"\x01"), "global.tx_state.rit_on"),
+            (_make_frame(cmd=0x21, sub=0x02, data=b"\x01"), "global.tx_state.rit_tx"),
+        )
+
+        for frame, _path in frames_and_paths:
+            radio._civ_runtime._update_state_cache_from_frame(frame)
+
+        fields = tuple(
+            radio._state_store.snapshot().field(path)
+            for _frame, path in frames_and_paths
+        )
+        max_age = max(field.max_age or 0.0 for field in fields)
+
+        assert all(field.freshness is FreshnessState.FRESH for field in fields)
+        assert all(field.max_age is not None for field in fields)
+
+        stale = radio._state_store.mark_stale_due(now=time.monotonic() + max_age + 1.0)
+
+        expected_paths = {path for _frame, path in frames_and_paths}
+        assert {
+            str(transition.path) for transition in stale.freshness
+        } >= expected_paths
+        assert {
+            str(request.path) for request in stale.reconciliation_requests
+        } >= expected_paths
+    finally:
+        radio._connected = False
 
 
 def test_update_state_cache_records_scheduler_result_for_matching_pending_request(
@@ -1227,7 +1293,7 @@ async def test_route_civ_frame_contains_observation_decode_failures(
     assert radio._state_store.snapshot().observation_seq == 0
 
 
-def test_update_state_cache_cmd07_d2_keeps_legacy_active_receiver_without_state_store_projection(
+def test_update_state_cache_cmd07_d2_projects_active_receiver_and_legacy_mirror(
     radio: IcomRadio,
 ) -> None:
     radio._radio_state = RadioState()
@@ -1237,7 +1303,9 @@ def test_update_state_cache_cmd07_d2_keeps_legacy_active_receiver_without_state_
     )
 
     assert radio._radio_state.active == "SUB"
-    assert radio._state_store.snapshot().fields == ()
+    field = radio._state_store.snapshot().field("global.slow_state.active")
+    assert field.value == "SUB"
+    assert field.source.source == "command_response"
 
 
 # ---------------------------------------------------------------------------

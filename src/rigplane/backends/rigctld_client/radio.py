@@ -2,11 +2,28 @@
 
 from __future__ import annotations
 
-from typing import Any
+import asyncio
+import logging
+from collections.abc import Awaitable, Callable
+from dataclasses import dataclass
+from typing import TYPE_CHECKING, Any, Sequence
 
 from ...exceptions import CommandError
+from ...core.state_pipeline_contracts import (
+    CommandSource,
+    FieldPath,
+    Observation,
+    SourceMetadata,
+)
 from ...radio_state import RadioState
 from .transport import RigctldTransport
+
+if TYPE_CHECKING:
+    from ..._poller_types import CommandQueue, CommandQueueEntry
+    from ...core.command_service import CommandService
+    from .observations import RigctldClientObservationAdapter
+
+logger = logging.getLogger(__name__)
 
 _SUPPORTED_COMMANDS = {
     "get_freq",
@@ -32,6 +49,333 @@ _SUPPORTED_COMMANDS = {
     "get_nr",
     "set_nr",
 }
+
+
+@dataclass(frozen=True, slots=True)
+class _ReadbackCorrelation:
+    command_id: str
+    source: CommandSource
+    session_id: str | None
+    path: FieldPath
+    value: Any
+    command_service: "CommandService"
+
+
+class RigctldClientObservationPoller:
+    """Production observation poller for external Hamlib rigctld reads."""
+
+    def __init__(
+        self,
+        radio: "RigctldClientRadio",
+        callback: Callable[[Sequence["Observation"]], None],
+        *,
+        medium_interval: float = 2.0,
+        slow_interval: float = 30.0,
+        command_queue: "CommandQueue | None" = None,
+    ) -> None:
+        self._radio = radio
+        self._callback = callback
+        self._command_queue = command_queue
+        self._medium_interval = medium_interval
+        self._slow_interval = slow_interval
+        self._tasks: list[asyncio.Task[None]] = []
+        self._pending_readback_entries: list[_ReadbackCorrelation] = []
+
+    async def start(self) -> None:
+        if self._tasks:
+            return
+        loop = asyncio.get_running_loop()
+        self._tasks = [
+            loop.create_task(self._run_loop(self._poll_medium, self._medium_interval)),
+            loop.create_task(self._run_loop(self._poll_slow, self._slow_interval)),
+        ]
+
+    async def stop(self) -> None:
+        for task in self._tasks:
+            task.cancel()
+        if self._tasks:
+            await asyncio.gather(*self._tasks, return_exceptions=True)
+        self._tasks.clear()
+
+    async def _run_loop(
+        self,
+        poll: Callable[[], Awaitable[None]],
+        interval: float,
+    ) -> None:
+        while True:
+            try:
+                await poll()
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.warning("rigctld-client observation poll failed", exc_info=True)
+            await asyncio.sleep(interval)
+
+    async def _poll_medium(self) -> None:
+        from .observations import RigctldClientObservationAdapter
+
+        drained_entries = await self._drain_commands()
+        adapter = RigctldClientObservationAdapter(self._radio)
+        observations: list["Observation"] = list(
+            await adapter.read_freq_mode_controls()
+        )
+        observations.append(await adapter.read_ptt())
+        active_vfo = await adapter.read_active_vfo()
+        if active_vfo is not None:
+            observations.append(active_vfo)
+        observations.extend(
+            await _read_drained_slow_control_readbacks(adapter, drained_entries)
+        )
+        self._callback(self._annotate_readback_observations(observations))
+
+    async def _poll_slow(self) -> None:
+        from .observations import RigctldClientObservationAdapter
+
+        adapter = RigctldClientObservationAdapter(self._radio)
+        self._callback(
+            self._annotate_readback_observations(await adapter.read_slow_controls())
+        )
+
+    async def _drain_commands(self) -> tuple["CommandQueueEntry", ...]:
+        """Process pending Web command queue entries before rigctld readback."""
+        if self._command_queue is None or not self._command_queue.has_commands:
+            return ()
+
+        successful: list["CommandQueueEntry"] = []
+        for entry in self._command_queue.drain_entries():
+            cmd = entry.command
+            if entry.future is not None and entry.future.cancelled():
+                logger.debug(
+                    "rigctld-client observation poller: skipping cancelled command %s",
+                    type(cmd).__name__,
+                )
+                continue
+            try:
+                await self._execute_command(cmd)
+                successful.append(entry)
+                self._track_readback_entry(entry)
+                if entry.future is not None and not entry.future.done():
+                    entry.future.set_result(None)
+            except Exception as exc:
+                self._mark_queued_command_failed(entry, exc)
+                if entry.future is not None and not entry.future.done():
+                    entry.future.set_exception(exc)
+                logger.warning(
+                    "rigctld-client observation poller: command %s failed",
+                    type(cmd).__name__,
+                    exc_info=True,
+                )
+        return tuple(successful)
+
+    def _track_readback_entry(self, entry: "CommandQueueEntry") -> None:
+        correlation = _readback_correlation_for_entry(entry)
+        if correlation is None:
+            return
+        self._pending_readback_entries.append(correlation)
+
+    def _annotate_readback_observations(
+        self,
+        observations: Sequence[Observation],
+    ) -> tuple[Observation, ...]:
+        if not self._pending_readback_entries:
+            return tuple(observations)
+
+        unmatched = list(self._pending_readback_entries)
+        annotated: list[Observation] = []
+        for observation in observations:
+            match_index = _matching_readback_entry_index(observation, unmatched)
+            if match_index is None:
+                annotated.append(observation)
+                continue
+            entry = unmatched.pop(match_index)
+            annotated.append(_with_command_metadata(observation, entry))
+        self._pending_readback_entries = []
+        _discard_readback_correlations(unmatched)
+        return tuple(annotated)
+
+    async def _execute_command(self, cmd: Any) -> None:
+        from ..._poller_types import (
+            PttOff,
+            PttOn,
+            SelectVfo,
+            SetAfLevel,
+            SetAttenuator,
+            SetFreq,
+            SetMode,
+            SetNB,
+            SetNR,
+            SetPreamp,
+            SetRfGain,
+        )
+
+        match cmd:
+            case SetFreq(freq=freq, receiver=rx):
+                await self._radio.set_freq(freq, receiver=rx)
+            case SetMode(mode=mode, filter_width=filter_width, receiver=rx):
+                await self._radio.set_mode(
+                    mode,
+                    filter_width=filter_width,
+                    receiver=rx,
+                )
+            case PttOn():
+                await self._radio.set_ptt(True)
+            case PttOff():
+                await self._radio.set_ptt(False)
+            case SelectVfo(vfo=vfo):
+                await self._radio.set_vfo_slot(vfo)
+            case SetRfGain(level=level, receiver=rx):
+                await self._radio.set_rf_gain(level, receiver=rx)
+            case SetAfLevel(level=level, receiver=rx):
+                await self._radio.set_af_level(level, receiver=rx)
+            case SetPreamp(level=level, receiver=rx):
+                await self._radio.set_preamp(level, receiver=rx)
+            case SetAttenuator(db=db, receiver=rx):
+                await self._radio.set_attenuator_level(db, receiver=rx)
+            case SetNB(on=on, receiver=rx):
+                await self._radio.set_nb(on, receiver=rx)
+            case SetNR(on=on, receiver=rx):
+                await self._radio.set_nr(on, receiver=rx)
+            case _:
+                raise CommandError(
+                    f"{type(cmd).__name__} is not supported by external rigctld"
+                )
+
+    @staticmethod
+    def _mark_queued_command_failed(
+        entry: "CommandQueueEntry",
+        exc: BaseException,
+    ) -> None:
+        if entry.command_service is None or entry.command_id is None:
+            return
+        params: dict[str, Any] = {
+            "message": str(exc) or None,
+            "session_id": entry.session_id,
+        }
+        if entry.source is not None:
+            params["source"] = entry.source
+        entry.command_service.fail_command(entry.command_id, **params)
+
+
+async def _read_drained_slow_control_readbacks(
+    adapter: "RigctldClientObservationAdapter",
+    entries: Sequence["CommandQueueEntry"],
+) -> tuple[Observation, ...]:
+    from ..._poller_types import SetAttenuator, SetNB, SetNR, SetPreamp
+
+    commands = tuple(entry.command for entry in entries)
+    observations: list[Observation] = []
+    if any(isinstance(command, SetPreamp) for command in commands):
+        observations.append(await adapter.read_preamp())
+    if any(isinstance(command, SetAttenuator) for command in commands):
+        observations.append(await adapter.read_attenuator())
+    if any(isinstance(command, SetNB) for command in commands):
+        observations.append(await adapter.read_nb())
+    if any(isinstance(command, SetNR) for command in commands):
+        observations.append(await adapter.read_nr())
+    return tuple(observations)
+
+
+def _readback_correlation_for_entry(
+    entry: "CommandQueueEntry",
+) -> _ReadbackCorrelation | None:
+    if entry.command_service is None or entry.command_id is None or entry.source is None:
+        return None
+    expectations = entry.command_service.readback_expectations(
+        source=entry.source,
+        session_id=entry.session_id,
+        command_id=entry.command_id,
+    )
+    if not expectations:
+        return None
+    expectation = expectations[0]
+    return _ReadbackCorrelation(
+        command_id=entry.command_id,
+        source=entry.source,
+        session_id=entry.session_id,
+        path=expectation.path,
+        value=expectation.value,
+        command_service=entry.command_service,
+    )
+
+
+def _discard_readback_correlations(entries: Sequence[_ReadbackCorrelation]) -> None:
+    for entry in entries:
+        entry.command_service.discard_readback_expectations(
+            source=entry.source,
+            session_id=entry.session_id,
+            command_id=entry.command_id,
+            path=entry.path,
+        )
+
+
+def _matching_readback_entry_index(
+    observation: Observation,
+    entries: Sequence[_ReadbackCorrelation],
+) -> int | None:
+    for index, entry in enumerate(entries):
+        if _entry_matches_observation(entry, observation):
+            return index
+    return None
+
+
+def _entry_matches_observation(
+    entry: _ReadbackCorrelation,
+    observation: Observation,
+) -> bool:
+    if not _is_external_rigctld_readback(observation.source):
+        return False
+    return (
+        entry.value == observation.value
+        and _readback_paths_match(observation.path, entry.path)
+    )
+
+
+def _with_command_metadata(
+    observation: Observation,
+    entry: _ReadbackCorrelation,
+) -> Observation:
+    source = observation.source
+    return Observation(
+        path=observation.path,
+        value=observation.value,
+        source=SourceMetadata(
+            source=source.source,
+            provider=source.provider,
+            transport=source.transport,
+            native_id=source.native_id,
+            capability_id=source.capability_id,
+            command_source=entry.source,
+            session_id=entry.session_id,
+        ),
+        timestamp_monotonic=observation.timestamp_monotonic,
+        quality=observation.quality,
+        correlation_id=entry.command_id,
+        max_age=observation.max_age,
+    )
+
+
+def _readback_paths_match(readback_path: FieldPath, overlay_path: FieldPath) -> bool:
+    if readback_path == overlay_path:
+        return True
+    return _external_rigctld_main_alias(readback_path) == (
+        _external_rigctld_main_alias(overlay_path)
+    )
+
+
+def _external_rigctld_main_alias(path: FieldPath) -> FieldPath:
+    if path.scope.value != "receiver" or path.receiver_id != "0":
+        return path
+    if path.family.value == "freq_mode" and path.slot is None:
+        return FieldPath.active("main", path.family.value, path.name)
+    return FieldPath.receiver("main", path.family.value, path.name)
+
+
+def _is_external_rigctld_readback(source: SourceMetadata) -> bool:
+    return (
+        source.source == "hamlib_response"
+        and source.provider == "external_rigctld"
+        and source.transport == "rigctld"
+    )
 
 
 class RigctldClientRadio:
@@ -100,6 +444,19 @@ class RigctldClientRadio:
         if command in {"get_vfo_slot", "set_vfo_slot"}:
             return self._vfo_supported
         return command in _SUPPORTED_COMMANDS
+
+    def create_observation_poller(
+        self,
+        *,
+        callback: Callable[[Sequence["Observation"]], None],
+        command_queue: "CommandQueue | None" = None,
+    ) -> RigctldClientObservationPoller:
+        """Construct a backend-neutral observation poller for Web startup."""
+        return RigctldClientObservationPoller(
+            self,
+            callback=callback,
+            command_queue=command_queue,
+        )
 
     async def get_freq(self, receiver: int = 0) -> int:
         self._require_main_receiver(receiver, "get_freq")

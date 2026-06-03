@@ -16,6 +16,8 @@ from rigplane.core.state_pipeline_contracts import (
     SourceMetadata,
 )
 
+_DEFAULT_MAX_HISTORY_COUNT = 4096
+
 __all__ = [
     "FieldSnapshot",
     "FreshnessClock",
@@ -142,7 +144,11 @@ class StateSnapshot:
 
 @dataclass(frozen=True, slots=True)
 class SnapshotDelta:
-    """Consumer-facing delta projection since a prior snapshot."""
+    """Consumer-facing delta projection since a prior snapshot.
+
+    ``requires_full_snapshot`` is true when the requested baseline is older than
+    retained history; partial deltas are intentionally omitted in that case.
+    """
 
     state_revision: int
     freshness_revision: int
@@ -150,6 +156,7 @@ class SnapshotDelta:
     changes: tuple[FieldChange, ...]
     freshness: tuple[FreshnessTransition, ...] = ()
     reconciliation_requests: tuple[ReconciliationRequest, ...] = ()
+    requires_full_snapshot: bool = False
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -161,6 +168,7 @@ class SnapshotDelta:
             "reconciliationRequests": [
                 request.to_dict() for request in self.reconciliation_requests
             ],
+            "requiresFullSnapshot": self.requires_full_snapshot,
         }
 
 
@@ -196,24 +204,42 @@ class FreshnessClock:
 
 
 class StateStore:
-    """Single-writer store for confirmed radio state observations."""
+    """Single-writer store for confirmed radio state observations.
+
+    Delta replay keeps at most ``max_history_count`` history entries. Requests
+    older than the retained semantic or freshness floor return a replay miss
+    marker so consumers can recover by requesting a full snapshot.
+    """
 
     __slots__ = (
         "_entries",
         "_freshness_clock",
         "_freshness_revision",
         "_history",
+        "_history_floor_freshness_revision",
+        "_history_floor_state_revision",
+        "_max_history_count",
         "_observation_seq",
         "_state_revision",
     )
 
-    def __init__(self, *, freshness_clock: FreshnessClock | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        freshness_clock: FreshnessClock | None = None,
+        max_history_count: int = _DEFAULT_MAX_HISTORY_COUNT,
+    ) -> None:
+        if max_history_count < 0:
+            raise ValueError("max_history_count must be non-negative")
         self._freshness_clock = freshness_clock or FreshnessClock()
+        self._max_history_count = max_history_count
         self._state_revision = 0
         self._freshness_revision = 0
         self._observation_seq = 0
         self._entries: dict[FieldPath, _FieldEntry] = {}
         self._history: list[SnapshotDelta] = []
+        self._history_floor_state_revision = 0
+        self._history_floor_freshness_revision = 0
 
     def apply(self, observation: Observation) -> ChangeSet:
         """Apply one confirmed observation and return its state ChangeSet."""
@@ -305,16 +331,21 @@ class StateStore:
             transitions.append(transition)
             requests.append(request)
 
+        freshness = tuple(transitions)
+        reconciliation_requests = tuple(requests)
         delta = SnapshotDelta(
             state_revision=self._state_revision,
             freshness_revision=self._freshness_revision,
             observation_seq=self._observation_seq,
             changes=(),
-            freshness=tuple(transitions),
-            reconciliation_requests=tuple(requests),
+            freshness=freshness,
+            reconciliation_requests=reconciliation_requests,
         )
-        if transitions or requests:
-            self._history.append(delta)
+        self._append_history(
+            changes=(),
+            freshness=freshness,
+            reconciliation_requests=reconciliation_requests,
+        )
         return delta
 
     def snapshot(self) -> StateSnapshot:
@@ -344,6 +375,17 @@ class StateStore:
     def delta_since(self, snapshot: StateSnapshot) -> SnapshotDelta:
         """Return all semantic and freshness deltas after ``snapshot``."""
 
+        if self._requires_full_snapshot(snapshot):
+            return SnapshotDelta(
+                state_revision=self._state_revision,
+                freshness_revision=self._freshness_revision,
+                observation_seq=self._observation_seq,
+                changes=(),
+                freshness=(),
+                reconciliation_requests=(),
+                requires_full_snapshot=True,
+            )
+
         changes: list[FieldChange] = []
         freshness: list[FreshnessTransition] = []
         requests: list[ReconciliationRequest] = []
@@ -368,6 +410,12 @@ class StateStore:
             changes=_copy_changes(tuple(changes)),
             freshness=tuple(freshness),
             reconciliation_requests=tuple(requests),
+        )
+
+    def _requires_full_snapshot(self, snapshot: StateSnapshot) -> bool:
+        return (
+            snapshot.state_revision < self._history_floor_state_revision
+            or snapshot.freshness_revision < self._history_floor_freshness_revision
         )
 
     def _mark_fresh(
@@ -407,6 +455,21 @@ class StateStore:
                 reconciliation_requests=reconciliation_requests,
             )
         )
+        self._prune_history()
+
+    def _prune_history(self) -> None:
+        while len(self._history) > self._max_history_count:
+            pruned = self._history.pop(0)
+            if pruned.changes:
+                self._history_floor_state_revision = max(
+                    self._history_floor_state_revision,
+                    pruned.state_revision,
+                )
+            if pruned.freshness or pruned.reconciliation_requests:
+                self._history_floor_freshness_revision = max(
+                    self._history_floor_freshness_revision,
+                    pruned.freshness_revision,
+                )
 
 
 def _copy_value(value: Any) -> Any:

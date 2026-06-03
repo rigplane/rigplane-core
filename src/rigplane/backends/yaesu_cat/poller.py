@@ -24,7 +24,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections.abc import Awaitable
-from typing import TYPE_CHECKING, Any, Callable
+from typing import TYPE_CHECKING, Any, Callable, Sequence
 
 from ...exceptions import ConnectionError as RadioConnectionError
 from ...radio_state import YaesuStateExtension
@@ -32,6 +32,7 @@ from ...radio_state import YaesuStateExtension
 if TYPE_CHECKING:
     from ..._poller_types import CommandQueue
     from ...radio_state import RadioState
+    from ...core.state_pipeline_contracts import Observation
     from .radio import YaesuCatRadio
 
 __all__ = ["YaesuCatPoller"]
@@ -61,8 +62,9 @@ class YaesuCatPoller:
     def __init__(
         self,
         radio: "YaesuCatRadio",
-        callback: Callable[["RadioState"], None],
+        callback: Callable[["RadioState"], None] | None = None,
         *,
+        observation_callback: Callable[[Sequence["Observation"]], None] | None = None,
         command_queue: "CommandQueue | None" = None,
         fast_interval: float = _FAST_INTERVAL,
         medium_interval: float = _MEDIUM_INTERVAL,
@@ -71,6 +73,7 @@ class YaesuCatPoller:
     ) -> None:
         self._radio = radio
         self._callback = callback
+        self._observation_callback = observation_callback
         self._command_queue = command_queue
         self._fast_interval = fast_interval
         self._medium_interval = medium_interval
@@ -92,6 +95,7 @@ class YaesuCatPoller:
         # EMA state per receiver (None until first sample).
         self._ema_s_main: float | None = None
         self._ema_s_sub: float | None = None
+        self._last_ptt = bool(getattr(radio.radio_state, "ptt", False))
 
     # ------------------------------------------------------------------
     # Lifecycle
@@ -143,6 +147,57 @@ class YaesuCatPoller:
         if prev is None or self._ema_alpha <= 0:
             return float(raw)
         return self._ema_alpha * raw + (1.0 - self._ema_alpha) * prev
+
+    def _smooth_s_meter(self, receiver: int, raw: int) -> int:
+        if receiver == 0:
+            self._ema_s_main = self._apply_ema(raw, self._ema_s_main)
+            return int(round(self._ema_s_main))
+        self._ema_s_sub = self._apply_ema(raw, self._ema_s_sub)
+        return int(round(self._ema_s_sub))
+
+    def _emit_legacy_state(self) -> None:
+        if self._callback is not None and self._observation_callback is None:
+            self._callback(self._radio.radio_state)
+
+    async def _emit_medium_observations(self) -> bool:
+        if self._observation_callback is None:
+            return False
+        from .observations import YAESU_PTT_PATH, YaesuObservationAdapter
+
+        observations = await YaesuObservationAdapter.from_radio(
+            self._radio
+        ).poll_medium()
+        for observation in observations:
+            if observation.path == YAESU_PTT_PATH:
+                self._last_ptt = bool(observation.value)
+        self._observation_callback(observations)
+        return True
+
+    async def _emit_fast_observations(self) -> bool:
+        if self._observation_callback is None:
+            return False
+        from .observations import YaesuObservationAdapter
+
+        adapter = YaesuObservationAdapter.from_radio(self._radio)
+        if self._last_ptt:
+            observations = await adapter.poll_tx_meters()
+        else:
+            observations = await adapter.poll_rx_meters(
+                smooth_s_meter=self._smooth_s_meter
+            )
+        self._observation_callback(observations)
+        return True
+
+    async def _emit_slow_control_observations(self) -> bool:
+        if self._observation_callback is None:
+            return False
+        from .observations import YaesuObservationAdapter
+
+        observations = await YaesuObservationAdapter.from_radio(
+            self._radio
+        ).poll_slow_controls()
+        self._observation_callback(observations)
+        return True
 
     # ------------------------------------------------------------------
     # Polling loops
@@ -474,6 +529,9 @@ class YaesuCatPoller:
 
     async def _poll_fast(self) -> None:
         """Fast group: S-meter (RX) or ALC/Power/COMP/SWR meters (TX)."""
+        if await self._emit_fast_observations():
+            return
+
         state = self._radio.radio_state
 
         if state.ptt and "meters" in self._caps:
@@ -512,10 +570,13 @@ class YaesuCatPoller:
                         "YaesuCatPoller: sub S-meter unavailable", exc_info=True
                     )
 
-        self._callback(state)
+        self._emit_legacy_state()
 
     async def _poll_medium(self) -> None:
         """Medium group: frequency, mode, PTT."""
+        if await self._emit_medium_observations():
+            return
+
         await self._radio.get_freq(0)
         await self._radio.get_mode(0)
 
@@ -531,7 +592,7 @@ class YaesuCatPoller:
                 await self._radio.get_filter_width(0)
             )
 
-        self._callback(self._radio.radio_state)
+        self._emit_legacy_state()
 
     async def _poll_slow(self) -> None:
         """Slow group: AGC, levels, DSP, TX settings.
@@ -541,6 +602,9 @@ class YaesuCatPoller:
         items are gated by ``self._caps`` to avoid hitting methods
         that raise ``NotImplementedError``.
         """
+        if await self._emit_slow_control_observations():
+            return
+
         state = self._radio.radio_state
         radio = self._radio
         caps = self._caps

@@ -15,8 +15,9 @@ reply.
 
 How it works:
 1. RadioPoller sends fire-and-forget CI-V queries (get_freq, get_mode, etc.)
-2. The CI-V RX loop receives all packets and projects them into RadioState.
-3. RadioState is the canonical source of truth for web consumers.
+2. The CI-V RX loop receives packets and applies observations to StateStore.
+3. StateStore snapshots are the canonical source of truth for web consumers.
+   RadioState mirrors remain compatibility surfaces only.
 4. Poll freshness stays local to the poller; broadcast events notify on changes.
 
 DO NOT add request-response (await get_frequency, await get_mode, etc.)
@@ -70,8 +71,6 @@ from ..capabilities import (
 from .._queue_pressure import PRESSURE_THRESHOLD
 from ..core.command_service import (
     CommandService,
-    command_intent_from_request,
-    command_response_observation,
 )
 from ..core.acquisition_scheduler import (
     AcquisitionExecutor,
@@ -80,7 +79,12 @@ from ..core.acquisition_scheduler import (
     MeterObservationCoalescer,
     civ_acquisition_executor_for_provider,
 )
-from ..core.state_pipeline_contracts import CommandSource, FieldPath
+from ..core.state_pipeline_contracts import (
+    CommandSource,
+    FieldPath,
+    Observation,
+    SourceMetadata,
+)
 from ..core.state_diagnostics import StateDiagnosticsRecorder
 from ..core.state_store import StateStore
 from .._state_queries import build_state_queries
@@ -179,6 +183,7 @@ _DEFAULT_POLL_FIELD_TTL: float = 0.2
 _FAST_INTERVAL: float = 0.025  # meters — wfview queue interval for LAN (25ms)
 _FAST_INTERVAL_SERIAL: float = 0.100  # serial: 10 polls/sec for responsive meters
 _SLOW_INTERVAL: float = 0.25  # levels/settings — rarely change
+
 
 def _audio_tx_codec_and_rate(radio: Any) -> tuple[AudioCodec | None, int]:
     contract = getattr(radio, "audio_stream_contract", None)
@@ -354,8 +359,9 @@ from .._poller_types import (  # noqa: E402
 class RadioPoller:
     """Fire-and-forget CI-V poller.
 
-    State is updated from the CI-V RX stream into RadioState,
-    NOT from polling responses.
+    Executes queued commands and acquisition work, applying observations and
+    readbacks through StateStore/CommandService while maintaining compatibility
+    mirrors where required.
     """
 
     def __init__(
@@ -434,24 +440,49 @@ class RadioPoller:
         session_id: str | None = None,
         command_service: CommandService | None = None,
     ) -> None:
-        intent = command_intent_from_request(
-            name,
-            params,
-            source=source,
-            command_id=command_id or f"web-poller-{name}-{time.monotonic_ns()}",
+        """Setter success is lifecycle acknowledgment, not confirmed radio state."""
+
+        del name, params, command_id, source, session_id, command_service
+
+    def _apply_bsr_readback_observations(
+        self,
+        *,
+        freq: int,
+        mode: str,
+        command_id: str | None,
+        source: CommandSource,
+        session_id: str | None,
+        command_service: CommandService | None,
+    ) -> None:
+        observed_at = time.monotonic()
+        metadata = SourceMetadata(
+            source="poll_response",
+            provider="web_poller",
+            native_id="bsr_readback",
+            command_source=source,
             session_id=session_id,
         )
-        if intent.target is None:
-            return
-        observation = command_response_observation(
-            intent,
-            timestamp_monotonic=time.monotonic(),
-            provider="web_poller",
+        observations = (
+            Observation(
+                path=FieldPath.active("0", "freq_mode", "freq_hz"),
+                value=freq,
+                source=metadata,
+                timestamp_monotonic=observed_at,
+                correlation_id=f"{command_id}:freq" if command_id else None,
+            ),
+            Observation(
+                path=FieldPath.active("0", "freq_mode", "mode"),
+                value=mode,
+                source=metadata,
+                timestamp_monotonic=observed_at,
+                correlation_id=f"{command_id}:mode" if command_id else None,
+            ),
         )
-        if command_service is not None:
-            command_service.apply_observation(observation)
-        else:
-            self._state_store.apply(observation)
+        for observation in observations:
+            if command_service is not None:
+                command_service.apply_observation(observation)
+            else:
+                self._state_store.apply(observation)
 
     def _apply_compatibility_mirror(
         self,
@@ -1552,22 +1583,10 @@ class RadioPoller:
                         await radio.set_freq(freq)
                         await asyncio.sleep(self._gap)
                         await radio.set_mode(mode_name, filter_num)
-                        self._apply_command_response_observation(
-                            "set_freq",
-                            {"freq": freq, "receiver": 0},
-                            command_id=f"{command_id}:freq" if command_id else None,
-                            source=source,
-                            session_id=session_id,
-                            command_service=command_service,
-                        )
-                        self._apply_command_response_observation(
-                            "set_mode",
-                            {
-                                "mode": mode_name,
-                                "filter_width": filter_num,
-                                "receiver": 0,
-                            },
-                            command_id=f"{command_id}:mode" if command_id else None,
+                        self._apply_bsr_readback_observations(
+                            freq=freq,
+                            mode=mode_name,
+                            command_id=command_id,
                             source=source,
                             session_id=session_id,
                             command_service=command_service,

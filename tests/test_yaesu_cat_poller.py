@@ -2,12 +2,17 @@
 
 from __future__ import annotations
 
+import ast
 import asyncio
+from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from rigplane.core.state_acquisition_policy import RadioAcquisitionProfile
+from rigplane.core.state_pipeline_contracts import FieldPath, Observation
 from rigplane.backends.yaesu_cat.poller import YaesuCatPoller
+from rigplane.profiles import get_radio_profile
 from rigplane.radio_state import RadioState
 from rigplane.web.radio_poller import CommandQueue, SetFreq
 
@@ -71,17 +76,30 @@ def make_radio(
     radio.get_s_meter = AsyncMock(
         side_effect=lambda r=0: s_meter_main if r == 0 else s_meter_sub
     )
+    radio.read_s_meter = AsyncMock(
+        side_effect=lambda r=0: s_meter_main if r == 0 else s_meter_sub
+    )
     radio.get_freq = AsyncMock(
+        side_effect=lambda r=0: freq_main if r == 0 else freq_sub
+    )
+    radio.read_freq = AsyncMock(
         side_effect=lambda r=0: freq_main if r == 0 else freq_sub
     )
     radio.get_mode = AsyncMock(
         side_effect=lambda r=0: mode_main if r == 0 else mode_sub
     )
+    radio.read_mode = AsyncMock(
+        side_effect=lambda r=0: mode_main if r == 0 else mode_sub
+    )
     radio.get_ptt = AsyncMock(return_value=ptt)
+    radio.read_ptt = AsyncMock(return_value=ptt)
     radio.get_agc = AsyncMock(return_value=agc)
     radio.get_af_level = AsyncMock(return_value=af_level)
+    radio.read_af_level = AsyncMock(return_value=af_level)
     radio.get_rf_gain = AsyncMock(return_value=rf_gain)
+    radio.read_rf_gain = AsyncMock(return_value=rf_gain)
     radio.get_squelch = AsyncMock(return_value=squelch)
+    radio.read_squelch = AsyncMock(return_value=squelch)
     radio.get_clarifier = AsyncMock(return_value=clarifier)
     radio.get_clarifier_freq = AsyncMock(return_value=clarifier_freq)
     radio.get_manual_notch = AsyncMock(return_value=manual_notch)
@@ -89,8 +107,10 @@ def make_radio(
     radio.get_vfo_select = AsyncMock(return_value=vfo_select)
     radio.get_alc_meter = AsyncMock(return_value=0)
     radio.get_power_meter = AsyncMock(return_value=0)
+    radio.read_power_meter = AsyncMock(return_value=0)
     radio.get_comp_meter = AsyncMock(return_value=0)
     radio.get_swr_meter = AsyncMock(return_value=0)
+    radio.read_swr_meter = AsyncMock(return_value=0)
     radio._read_meter = AsyncMock(return_value=(0, 0))
     radio.get_keyer_speed = AsyncMock(return_value=20)
     radio.get_key_pitch = AsyncMock(return_value=30)  # idx — Yaesu-internal API
@@ -101,6 +121,159 @@ def make_radio(
     radio.get_rx_func = AsyncMock(return_value=0)
     radio.get_tx_func = AsyncMock(return_value=0)
     return radio
+
+
+class _SideEffectingYaesuRadio:
+    capabilities = {
+        "dual_rx",
+        "af_level",
+        "rf_gain",
+        "squelch",
+        "meters",
+        "tx",
+    }
+
+    def __init__(self) -> None:
+        self.radio_state = RadioState()
+        self.radio_state.main.freq = 1
+        self.radio_state.main.mode = "INIT-MAIN"
+        self.radio_state.sub.freq = 2
+        self.radio_state.sub.mode = "INIT-SUB"
+        self.radio_state.main.s_meter = 3
+        self.radio_state.sub.s_meter = 4
+        self.radio_state.main.af_level = 5
+        self.radio_state.main.rf_gain = 6
+        self.radio_state.main.squelch = 7
+        self.radio_state.sub.af_level = 8
+        self.radio_state.sub.rf_gain = 9
+        self.radio_state.sub.squelch = 10
+        self.profile = get_radio_profile("FTX-1")
+        self.legacy_getter_calls = 0
+
+    async def read_freq(self, receiver: int = 0) -> int:
+        return 14_074_000 if receiver == 0 else 7_074_000
+
+    async def get_freq(self, receiver: int = 0) -> int:
+        self.legacy_getter_calls += 1
+        value = await self.read_freq(receiver)
+        target = self.radio_state.main if receiver == 0 else self.radio_state.sub
+        target.freq = value
+        return value
+
+    async def read_mode(self, receiver: int = 0) -> tuple[str, int | None]:
+        return ("USB" if receiver == 0 else "LSB"), None
+
+    async def get_mode(self, receiver: int = 0) -> tuple[str, int | None]:
+        self.legacy_getter_calls += 1
+        value, filter_width = await self.read_mode(receiver)
+        target = self.radio_state.main if receiver == 0 else self.radio_state.sub
+        target.mode = value
+        return value, filter_width
+
+    async def read_ptt(self) -> bool:
+        return False
+
+    async def get_ptt(self) -> bool:
+        self.legacy_getter_calls += 1
+        value = await self.read_ptt()
+        self.radio_state.ptt = value
+        return value
+
+    async def read_s_meter(self, receiver: int = 0) -> int:
+        return 150 if receiver == 0 else 75
+
+    async def get_s_meter(self, receiver: int = 0) -> int:
+        self.legacy_getter_calls += 1
+        value = await self.read_s_meter(receiver)
+        target = self.radio_state.main if receiver == 0 else self.radio_state.sub
+        target.s_meter = value
+        return value
+
+    async def read_af_level(self, receiver: int = 0) -> int:
+        return 128 if receiver == 0 else 64
+
+    async def get_af_level(self, receiver: int = 0) -> int:
+        self.legacy_getter_calls += 1
+        value = await self.read_af_level(receiver)
+        target = self.radio_state.main if receiver == 0 else self.radio_state.sub
+        target.af_level = value
+        return value
+
+    async def read_rf_gain(self, receiver: int = 0) -> int:
+        return 180 if receiver == 0 else 90
+
+    async def get_rf_gain(self, receiver: int = 0) -> int:
+        self.legacy_getter_calls += 1
+        value = await self.read_rf_gain(receiver)
+        target = self.radio_state.main if receiver == 0 else self.radio_state.sub
+        target.rf_gain = value
+        return value
+
+    async def read_squelch(self, receiver: int = 0) -> int:
+        return 12 if receiver == 0 else 8
+
+    async def get_squelch(self, receiver: int = 0) -> int:
+        self.legacy_getter_calls += 1
+        value = await self.read_squelch(receiver)
+        target = self.radio_state.main if receiver == 0 else self.radio_state.sub
+        target.squelch = value
+        return value
+
+
+def _profile_state_acquisition() -> RadioAcquisitionProfile:
+    profile = get_radio_profile("FTX-1")
+    assert profile.state_acquisition is not None
+    return profile.state_acquisition
+
+
+def _state_write_target(node: ast.AST) -> str | None:
+    parts: list[str] = []
+    current = node
+    while isinstance(current, ast.Attribute):
+        parts.append(current.attr)
+        current = current.value
+    if isinstance(current, ast.Name) and current.id == "state" and parts:
+        return ".".join(reversed(parts))
+    if (
+        len(parts) >= 2
+        and parts[-1] == "_radio"
+        and parts[-2] == "radio_state"
+        and isinstance(current, ast.Name)
+        and current.id == "self"
+    ):
+        state_parts = parts[:-2]
+        if not state_parts:
+            return None
+        return ".".join(reversed(state_parts))
+    return None
+
+
+def _yaesu_poller_state_write_targets() -> set[str]:
+    root = Path(__file__).resolve().parents[1]
+    source = (root / "src/rigplane/backends/yaesu_cat/poller.py").read_text()
+    module = ast.parse(source)
+    targets: set[str] = set()
+    for item in module.body:
+        if not isinstance(item, ast.ClassDef) or item.name != "YaesuCatPoller":
+            continue
+        for method in item.body:
+            if not isinstance(method, ast.AsyncFunctionDef):
+                continue
+            if method.name not in {"_poll_fast", "_poll_medium", "_poll_slow"}:
+                continue
+            for node in ast.walk(method):
+                assignment_targets: list[ast.AST] = []
+                if isinstance(node, ast.Assign):
+                    assignment_targets.extend(node.targets)
+                elif isinstance(node, ast.AnnAssign):
+                    assignment_targets.append(node.target)
+                elif isinstance(node, ast.AugAssign):
+                    assignment_targets.append(node.target)
+                for target in assignment_targets:
+                    name = _state_write_target(target)
+                    if name is not None:
+                        targets.add(name)
+    return targets
 
 
 # ---------------------------------------------------------------------------
@@ -255,6 +428,212 @@ async def test_medium_poll_updates_freq_mode_ptt() -> None:
     radio.get_freq.assert_called()
     radio.get_mode.assert_called()
     radio.get_ptt.assert_called()
+
+
+@pytest.mark.asyncio
+async def test_medium_poll_emits_observations_without_legacy_state_callback() -> None:
+    radio = make_radio(freq_main=14_074_000, ptt=True)
+    radio.profile.state_acquisition = _profile_state_acquisition()
+    legacy_calls: list[RadioState] = []
+    observations: list[Observation] = []
+
+    poller = YaesuCatPoller(
+        radio,
+        callback=legacy_calls.append,
+        observation_callback=observations.extend,
+        fast_interval=10.0,
+        medium_interval=10.0,
+        slow_interval=10.0,
+    )
+
+    await poller._poll_medium()  # noqa: SLF001
+
+    assert legacy_calls == []
+    assert [(str(item.path), item.value) for item in observations] == [
+        ("receiver.main.active.freq_mode.freq_hz", 14_074_000),
+        ("receiver.main.active.freq_mode.mode", "USB"),
+        ("receiver.sub.active.freq_mode.freq_hz", 7_074_000),
+        ("receiver.sub.active.freq_mode.mode", "LSB"),
+        ("global.tx_state.ptt", True),
+    ]
+    assert {item.source.source for item in observations} == {"yaesu_poll_response"}
+
+
+@pytest.mark.asyncio
+async def test_fast_poll_emits_rx_meter_observations_without_legacy_state_callback() -> None:
+    radio = make_radio(s_meter_main=150, s_meter_sub=75, ptt=False)
+    radio.profile.state_acquisition = _profile_state_acquisition()
+    legacy_calls: list[RadioState] = []
+    observations: list[Observation] = []
+
+    poller = YaesuCatPoller(
+        radio,
+        callback=legacy_calls.append,
+        observation_callback=observations.extend,
+        fast_interval=10.0,
+        medium_interval=10.0,
+        slow_interval=10.0,
+        ema_alpha=1.0,
+    )
+
+    await poller._poll_fast()  # noqa: SLF001
+
+    assert legacy_calls == []
+    assert [(str(item.path), item.value) for item in observations] == [
+        ("receiver.main.meters.s_meter", 150),
+        ("receiver.sub.meters.s_meter", 75),
+    ]
+    assert radio.radio_state.main.s_meter == 0
+    assert radio.radio_state.sub.s_meter == 0
+
+
+@pytest.mark.asyncio
+async def test_observation_poller_uses_read_only_paths_when_getters_mutate_state() -> None:
+    radio = _SideEffectingYaesuRadio()
+    legacy_calls: list[RadioState] = []
+    observations: list[Observation] = []
+
+    poller = YaesuCatPoller(
+        radio,
+        callback=legacy_calls.append,
+        observation_callback=observations.extend,
+        fast_interval=10.0,
+        medium_interval=10.0,
+        slow_interval=10.0,
+        ema_alpha=1.0,
+    )
+
+    await poller._poll_medium()  # noqa: SLF001
+    await poller._poll_fast()  # noqa: SLF001
+    await poller._poll_slow()  # noqa: SLF001
+
+    assert legacy_calls == []
+    assert [(str(item.path), item.value) for item in observations] == [
+        ("receiver.main.active.freq_mode.freq_hz", 14_074_000),
+        ("receiver.main.active.freq_mode.mode", "USB"),
+        ("receiver.sub.active.freq_mode.freq_hz", 7_074_000),
+        ("receiver.sub.active.freq_mode.mode", "LSB"),
+        ("global.tx_state.ptt", False),
+        ("receiver.main.meters.s_meter", 150),
+        ("receiver.sub.meters.s_meter", 75),
+        ("receiver.main.operator_controls.af_level", 128),
+        ("receiver.main.operator_controls.rf_gain", 180),
+        ("receiver.main.operator_controls.squelch", 12),
+        ("receiver.sub.operator_controls.af_level", 64),
+        ("receiver.sub.operator_controls.rf_gain", 90),
+        ("receiver.sub.operator_controls.squelch", 8),
+    ]
+    assert radio.legacy_getter_calls == 0
+    assert radio.radio_state.main.freq == 1
+    assert radio.radio_state.main.mode == "INIT-MAIN"
+    assert radio.radio_state.sub.freq == 2
+    assert radio.radio_state.sub.mode == "INIT-SUB"
+    assert radio.radio_state.ptt is False
+    assert radio.radio_state.main.s_meter == 3
+    assert radio.radio_state.sub.s_meter == 4
+    assert radio.radio_state.main.af_level == 5
+    assert radio.radio_state.main.rf_gain == 6
+    assert radio.radio_state.main.squelch == 7
+    assert radio.radio_state.sub.af_level == 8
+    assert radio.radio_state.sub.rf_gain == 9
+    assert radio.radio_state.sub.squelch == 10
+
+
+@pytest.mark.asyncio
+async def test_fast_poll_emits_profiled_tx_meter_observations_only() -> None:
+    radio = make_radio(ptt=True)
+    radio.profile.state_acquisition = _profile_state_acquisition()
+    radio.read_power_meter = AsyncMock(return_value=180)
+    radio.read_swr_meter = AsyncMock(return_value=120)
+    radio.get_alc_meter = AsyncMock(return_value=42)
+    radio.get_power_meter = AsyncMock(return_value=180)
+    radio.get_comp_meter = AsyncMock(return_value=30)
+    radio.get_swr_meter = AsyncMock(return_value=120)
+    observations: list[Observation] = []
+
+    poller = YaesuCatPoller(
+        radio,
+        observation_callback=observations.extend,
+        fast_interval=10.0,
+        medium_interval=10.0,
+        slow_interval=10.0,
+    )
+
+    await poller._poll_medium()  # noqa: SLF001
+    observations.clear()
+    await poller._poll_fast()  # noqa: SLF001
+
+    assert [(str(item.path), item.value) for item in observations] == [
+        ("global.meters.power", 180),
+        ("global.meters.swr", 120),
+    ]
+    radio.get_alc_meter.assert_not_awaited()
+    radio.get_power_meter.assert_not_awaited()
+    radio.get_comp_meter.assert_not_awaited()
+    radio.get_swr_meter.assert_not_awaited()
+    assert radio.radio_state.power_meter == 0
+    assert radio.radio_state.swr_meter == 0
+
+
+def test_legacy_yaesu_state_writes_are_observed_or_explicit_limitations() -> None:
+    decisions = {
+        "main.s_meter": "observation:receiver.main.meters.s_meter",
+        "sub.s_meter": "observation:receiver.sub.meters.s_meter",
+        "power_meter": "observation:global.meters.power",
+        "swr_meter": "observation:global.meters.swr",
+        "main.af_level": "observation:receiver.main.operator_controls.af_level",
+        "main.rf_gain": "observation:receiver.main.operator_controls.rf_gain",
+        "main.squelch": "observation:receiver.main.operator_controls.squelch",
+        "sub.af_level": "observation:receiver.sub.operator_controls.af_level",
+        "sub.rf_gain": "observation:receiver.sub.operator_controls.rf_gain",
+        "sub.squelch": "observation:receiver.sub.operator_controls.squelch",
+        "alc_meter": "limitation: FTX-1 acquisition profile does not mark global.meters.alc pollable",
+        "comp_meter": "limitation: no canonical comp meter FieldPath in DEFAULT_FIELD_REGISTRY",
+        "main.filter_width": "limitation: filter_width lacks FTX-1 pollable acquisition policy",
+        "main.agc": "limitation: AGC lacks FTX-1 pollable acquisition policy",
+        "main.nb_level": "limitation: NB level lacks canonical acquisition profile coverage",
+        "main.nb": "limitation: NB toggle lacks FTX-1 pollable acquisition policy",
+        "main.nr_level": "limitation: NR level lacks canonical acquisition profile coverage",
+        "main.nr": "limitation: NR toggle lacks FTX-1 pollable acquisition policy",
+        "main.auto_notch": "limitation: notch toggle lacks FTX-1 pollable acquisition policy",
+        "power_level": "limitation: TX power level lacks FTX-1 pollable acquisition policy",
+        "mic_gain": "limitation: mic gain lacks canonical acquisition profile coverage",
+        "split": "limitation: split lacks FTX-1 pollable acquisition policy",
+        "vox_on": "limitation: VOX lacks canonical acquisition profile coverage",
+        "dial_lock": "limitation: dial lock lacks canonical acquisition profile coverage",
+        "compressor_on": "limitation: compressor toggle lacks canonical acquisition profile coverage",
+        "compressor_level": "limitation: compressor level lacks canonical acquisition profile coverage",
+        "main.att": "limitation: attenuator lacks FTX-1 pollable acquisition policy",
+        "main.preamp": "limitation: preamp lacks FTX-1 pollable acquisition policy",
+        "tuner_status": "limitation: tuner status lacks canonical acquisition profile coverage",
+        "main.contour": "limitation: contour lacks canonical acquisition profile coverage",
+        "main.if_shift": "limitation: IF shift lacks canonical acquisition profile coverage",
+        "rit_on": "limitation: RIT state lacks canonical acquisition profile coverage",
+        "rit_tx": "limitation: XIT state lacks canonical acquisition profile coverage",
+        "rit_freq": "limitation: clarifier offset lacks canonical acquisition profile coverage",
+        "main.manual_notch": "limitation: manual notch lacks canonical acquisition profile coverage",
+        "main.manual_notch_freq": "limitation: manual notch frequency lacks canonical acquisition profile coverage",
+        "main.narrow": "limitation: Yaesu narrow flag lacks canonical acquisition profile coverage",
+        "key_speed": "limitation: CW key speed lacks canonical acquisition profile coverage",
+        "cw_pitch": "limitation: CW pitch lacks canonical acquisition profile coverage",
+        "break_in": "limitation: break-in lacks canonical acquisition profile coverage",
+        "break_in_delay": "limitation: break-in delay lacks canonical acquisition profile coverage",
+        "cw_spot": "limitation: CW spot lacks canonical acquisition profile coverage",
+        "yaesu": "limitation: Yaesu extension namespace is backend-specific compatibility state",
+        "yaesu.rx_func_mode": "limitation: Yaesu FR mode is backend-specific compatibility state",
+        "yaesu.tx_func_mode": "limitation: Yaesu FT mode is backend-specific compatibility state",
+        "vfo_select": "limitation: Yaesu VFO select lacks canonical active-slot policy mapping",
+    }
+
+    assert _yaesu_poller_state_write_targets() == set(decisions)
+
+    profile = _profile_state_acquisition()
+    canonical_paths = [
+        FieldPath.parse(decision.removeprefix("observation:"))
+        for decision in decisions.values()
+        if decision.startswith("observation:")
+    ]
+    assert all(profile.capability_for(path).can_poll for path in canonical_paths)
 
 
 @pytest.mark.asyncio

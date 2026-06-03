@@ -967,9 +967,18 @@ def _global_specs() -> tuple[FieldSpec, ...]:
     return (
         spec(FieldPath.global_("tx_state", "ptt"), "bool", writable=True),
         spec(FieldPath.global_("tx_state", "power_on"), "bool", writable=True),
+        spec(FieldPath.global_("tx_state", "rit_on"), "bool", writable=True),
+        spec(FieldPath.global_("tx_state", "rit_tx"), "bool", writable=True),
         spec(
             FieldPath.global_("operator_controls", "power_level"), "int", writable=True
         ),
+        spec(
+            FieldPath.global_("operator_controls", "rit_freq"),
+            "int",
+            writable=True,
+            unit="hz",
+        ),
+        spec(FieldPath.global_("slow_state", "active"), "str"),
         spec(FieldPath.global_("meters", "alc"), "int"),
         spec(FieldPath.global_("meters", "power"), "int"),
         spec(FieldPath.global_("meters", "swr"), "int"),

@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Callable, Literal, cast
+from typing import TYPE_CHECKING, Any, Callable, Literal, Sequence, cast
 
 from ...audio import AudioPacket
 from ...command_spec import CatCommandSpec
@@ -25,6 +25,7 @@ if TYPE_CHECKING:
     from ..._poller_types import CommandQueue
     from ...audio.usb_driver import UsbAudioDriver
     from ...audio_bus import AudioBus
+    from ...core.state_pipeline_contracts import Observation
     from ...profiles import RadioProfile
     from ...profiles.rig_loader import RigConfig
     from ...types import BandStackRegister, MemoryChannel
@@ -592,15 +593,23 @@ class YaesuCatRadio:
 
     # -- Frequency ----------------------------------------------------------
 
-    async def get_freq(self, receiver: int = 0) -> int:
-        """Get the current VFO frequency in Hz.
+    async def read_freq(self, receiver: int = 0) -> int:
+        """Read the current VFO frequency without mutating legacy state.
 
         Args:
             receiver: 0 = main (VFO-A), 1 = sub (VFO-B).
         """
         cmd = "get_freq" if receiver == 0 else "get_freq_sub"
         result = await self._query(cmd)
-        freq: int = result["freq"]
+        return int(result["freq"])
+
+    async def get_freq(self, receiver: int = 0) -> int:
+        """Get the current VFO frequency in Hz.
+
+        Args:
+            receiver: 0 = main (VFO-A), 1 = sub (VFO-B).
+        """
+        freq = await self.read_freq(receiver)
         if receiver == 0:
             self._state.main.freq = freq
         else:
@@ -623,8 +632,8 @@ class YaesuCatRadio:
 
     # -- Mode ---------------------------------------------------------------
 
-    async def get_mode(self, receiver: int = 0) -> tuple[str, int | None]:
-        """Get the current operating mode.
+    async def read_mode(self, receiver: int = 0) -> tuple[str, int | None]:
+        """Read the current operating mode without mutating legacy state.
 
         Returns:
             Tuple of (mode_name, None).  Mode names are from the rig
@@ -634,11 +643,21 @@ class YaesuCatRadio:
         result = await self._query(cmd)
         code: str = result["mode"]
         mode_name = self._code_to_mode.get(code, f"UNKNOWN({code})")
+        return mode_name, None
+
+    async def get_mode(self, receiver: int = 0) -> tuple[str, int | None]:
+        """Get the current operating mode.
+
+        Returns:
+            Tuple of (mode_name, None).  Mode names are from the rig
+            profile (e.g. ``"USB"``, ``"LSB"``, ``"CW-U"``).
+        """
+        mode_name, filter_width = await self.read_mode(receiver)
         if receiver == 0:
             self._state.main.mode = mode_name
         else:
             self._state.sub.mode = mode_name
-        return mode_name, None
+        return mode_name, filter_width
 
     async def set_mode(
         self,
@@ -721,18 +740,39 @@ class YaesuCatRadio:
         await self._write("set_ptt", state="1" if on else "0")
         self._state.ptt = on
 
+    async def read_ptt(self) -> bool:
+        """Read the current PTT state without mutating legacy state.
+
+        Returns:
+            ``True`` if transmitting, ``False`` if receiving.
+        """
+        result = await self._query("get_ptt")
+        return bool(result["state"] == "1")
+
     async def get_ptt(self) -> bool:
         """Query the current PTT state.
 
         Returns:
             ``True`` if transmitting, ``False`` if receiving.
         """
-        result = await self._query("get_ptt")
-        ptt: bool = result["state"] == "1"
+        ptt = await self.read_ptt()
         self._state.ptt = ptt
         return ptt
 
     # -- S-meter ------------------------------------------------------------
+
+    async def read_s_meter(self, receiver: int = 0) -> int:
+        """Read the S-meter raw value without mutating legacy state.
+
+        Args:
+            receiver: 0 = main, 1 = sub.
+
+        Returns:
+            Raw S-meter reading (0–255, vendor scale).
+        """
+        cmd = "get_s_meter" if receiver == 0 else "get_s_meter_sub"
+        result = await self._query(cmd)
+        return int(result["raw"])
 
     async def get_s_meter(self, receiver: int = 0) -> int:
         """Get the S-meter raw value.
@@ -743,9 +783,7 @@ class YaesuCatRadio:
         Returns:
             Raw S-meter reading (0–255, vendor scale).
         """
-        cmd = "get_s_meter" if receiver == 0 else "get_s_meter_sub"
-        result = await self._query(cmd)
-        raw: int = result["raw"]
+        raw = await self.read_s_meter(receiver)
         if receiver == 0:
             self._state.main.s_meter = raw
         else:
@@ -776,15 +814,23 @@ class YaesuCatRadio:
         main, _ = await self._read_meter(4)
         return main
 
+    async def read_power_meter(self) -> int:
+        """Read TX power meter without mutating legacy state."""
+        main, _ = await self._read_meter(5)
+        return main
+
     async def get_power_meter(self) -> int:
         """Get TX power meter reading (0–255)."""
-        main, _ = await self._read_meter(5)
+        return await self.read_power_meter()
+
+    async def read_swr_meter(self) -> int:
+        """Read SWR meter without mutating legacy state."""
+        main, _ = await self._read_meter(6)
         return main
 
     async def get_swr_meter(self) -> int:
         """Get SWR meter raw reading (0–255)."""
-        main, _ = await self._read_meter(6)
-        return main
+        return await self.read_swr_meter()
 
     async def get_swr(self) -> float:
         """Get SWR as a ratio (>= 1.0).
@@ -859,11 +905,15 @@ class YaesuCatRadio:
 
     # -- D1: RX Audio Controls ----------------------------------------------
 
-    async def get_af_level(self, receiver: int = 0) -> int:
-        """Get the AF (audio) level (0–255)."""
+    async def read_af_level(self, receiver: int = 0) -> int:
+        """Read the AF (audio) level without mutating legacy state."""
         cmd = "get_af_level" if receiver == 0 else "get_af_level_sub"
         result = await self._query(cmd)
-        level = int(result["level"])
+        return int(result["level"])
+
+    async def get_af_level(self, receiver: int = 0) -> int:
+        """Get the AF (audio) level (0–255)."""
+        level = await self.read_af_level(receiver)
         rx = self._state.main if receiver == 0 else self._state.sub
         rx.af_level = level
         return level
@@ -875,11 +925,15 @@ class YaesuCatRadio:
         rx = self._state.main if receiver == 0 else self._state.sub
         rx.af_level = level
 
-    async def get_rf_gain(self, receiver: int = 0) -> int:
-        """Get the RF gain (0–255)."""
+    async def read_rf_gain(self, receiver: int = 0) -> int:
+        """Read the RF gain without mutating legacy state."""
         cmd = "get_rf_gain" if receiver == 0 else "get_rf_gain_sub"
         result = await self._query(cmd)
-        level = int(result["level"])
+        return int(result["level"])
+
+    async def get_rf_gain(self, receiver: int = 0) -> int:
+        """Get the RF gain (0–255)."""
+        level = await self.read_rf_gain(receiver)
         rx = self._state.main if receiver == 0 else self._state.sub
         rx.rf_gain = level
         return level
@@ -891,11 +945,15 @@ class YaesuCatRadio:
         rx = self._state.main if receiver == 0 else self._state.sub
         rx.rf_gain = level
 
-    async def get_squelch(self, receiver: int = 0) -> int:
-        """Get the squelch level (0–255)."""
+    async def read_squelch(self, receiver: int = 0) -> int:
+        """Read the squelch level without mutating legacy state."""
         cmd = "get_squelch" if receiver == 0 else "get_squelch_sub"
         result = await self._query(cmd)
-        level = int(result["level"])
+        return int(result["level"])
+
+    async def get_squelch(self, receiver: int = 0) -> int:
+        """Get the squelch level (0–255)."""
+        level = await self.read_squelch(receiver)
         rx = self._state.main if receiver == 0 else self._state.sub
         rx.squelch = level
         return level
@@ -2053,6 +2111,21 @@ class YaesuCatRadio:
         return YaesuCatPoller(
             self,
             callback=callback,
+            command_queue=command_queue,
+        )
+
+    def create_observation_poller(
+        self,
+        *,
+        callback: Callable[[Sequence["Observation"]], None],
+        command_queue: "CommandQueue | None" = None,
+    ) -> "YaesuCatPoller":
+        """Construct a backend-neutral observation poller for this radio."""
+        from .poller import YaesuCatPoller
+
+        return YaesuCatPoller(
+            self,
+            observation_callback=callback,
             command_queue=command_queue,
         )
 

@@ -29,6 +29,7 @@ from rigplane.commands import (
     parse_frequency_response,
     parse_level_response,
     parse_mode_response,
+    parse_rit_frequency_response,
     parse_scope_center_type_response,
     parse_scope_during_tx_response,
     parse_scope_edge_response,
@@ -84,8 +85,12 @@ _OBSERVATION_MAX_AGE_SECONDS: dict[tuple[str, str, str], float] = {
     ("receiver", "operator_controls", "rf_gain"): 10.0,
     ("receiver", "operator_controls", "pbt_inner"): 10.0,
     ("receiver", "operator_controls", "pbt_outer"): 10.0,
+    ("global", "slow_state", "active"): 5.0,
     ("global", "tx_state", "ptt"): 1.0,
+    ("global", "tx_state", "rit_on"): 10.0,
+    ("global", "tx_state", "rit_tx"): 10.0,
     ("global", "tx_state", "power_on"): 30.0,
+    ("global", "operator_controls", "rit_freq"): 10.0,
     ("global", "operator_controls", "power_level"): 30.0,
     ("global", "meters", "alc"): 0.6,
     ("global", "meters", "power"): 0.6,
@@ -1454,6 +1459,42 @@ class CivRuntime:
                     frame=frame,
                 )
             )
+        elif frame.command == 0x07 and len(frame.data) >= 2:
+            sub07 = frame.data[0]
+            val07 = frame.data[1]
+            if sub07 == 0xD2:
+                observations.append(
+                    self._observation(
+                        FieldPath.global_("slow_state", "active"),
+                        "SUB" if val07 else "MAIN",
+                        frame=frame,
+                    )
+                )
+        elif frame.command == 0x21:
+            if frame.sub == 0x00 and len(frame.data) >= 3:
+                observations.append(
+                    self._observation(
+                        FieldPath.global_("operator_controls", "rit_freq"),
+                        parse_rit_frequency_response(frame.data),
+                        frame=frame,
+                    )
+                )
+            elif frame.sub == 0x01 and frame.data:
+                observations.append(
+                    self._observation(
+                        FieldPath.global_("tx_state", "rit_on"),
+                        bool(frame.data[0]),
+                        frame=frame,
+                    )
+                )
+            elif frame.sub == 0x02 and frame.data:
+                observations.append(
+                    self._observation(
+                        FieldPath.global_("tx_state", "rit_tx"),
+                        bool(frame.data[0]),
+                        frame=frame,
+                    )
+                )
 
         return tuple(observations)
 

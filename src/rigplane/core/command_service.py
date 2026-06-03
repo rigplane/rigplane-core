@@ -36,6 +36,8 @@ __all__ = [
 ]
 
 _UNSET = object()
+_MAX_READBACK_EXPECTATIONS = 128
+_READBACK_EXPECTATION_GRACE_SECONDS = 2.0
 
 
 Clock = Callable[[], float]
@@ -102,6 +104,7 @@ class CommandService:
         "_events",
         "_executor",
         "_overlays",
+        "_readback_expectations",
         "_state_store",
         "_subscribers",
     )
@@ -123,6 +126,7 @@ class CommandService:
         self._events: list[CommandLifecycleEvent] = []
         self._subscribers: list[LifecycleSubscriber] = []
         self._overlays: list[PendingOverlay] = []
+        self._readback_expectations: list[PendingOverlay] = []
 
     async def execute(self, intent: CommandIntent) -> CommandServiceResult:
         """Execute an intent through the injected backend executor."""
@@ -308,6 +312,47 @@ class CommandService:
             and (path is None or item.path == path)
         )
 
+    def readback_expectations(
+        self,
+        *,
+        source: CommandSource,
+        session_id: str | None,
+        command_id: str,
+    ) -> tuple[PendingOverlay, ...]:
+        """Return command expectations retained for immediate readback matching."""
+
+        self._purge_expired()
+        return tuple(
+            item
+            for item in self._readback_expectations
+            if item.source == source
+            and item.session_id == session_id
+            and item.command_id == command_id
+        )
+
+    def discard_readback_expectations(
+        self,
+        *,
+        source: CommandSource,
+        session_id: str | None,
+        command_id: str,
+        path: FieldPath | None = None,
+    ) -> int:
+        """Discard immediate-readback expectations after an attempted readback."""
+
+        before = len(self._readback_expectations)
+        self._readback_expectations = [
+            item
+            for item in self._readback_expectations
+            if not (
+                item.source == source
+                and item.session_id == session_id
+                and item.command_id == command_id
+                and (path is None or item.path == path)
+            )
+        ]
+        return before - len(self._readback_expectations)
+
     def project_pending_values(
         self,
         *,
@@ -343,27 +388,72 @@ class CommandService:
                 session_id=session_id,
             )
         ]
+        self._readback_expectations = [
+            item
+            for item in self._readback_expectations
+            if not _overlay_matches(
+                item,
+                command_id=command_id,
+                source=source,
+                session_id=session_id,
+            )
+        ]
 
     def _record_intent_overlay(self, intent: CommandIntent) -> None:
-        if intent.pending_policy != "scoped" or intent.target is None:
+        if intent.pending_policy != "scoped":
             return
-        try:
-            value = _pending_value_for_intent(intent)
-        except KeyError:
+        paths = _observable_paths_for_intent(intent)
+        if not paths:
             return
+        now = self._clock()
         timeout = (
             self._default_pending_ttl if intent.timeout is None else intent.timeout
         )
-        self.record_pending_overlay(
-            PendingOverlay(
-                source=intent.source,
-                session_id=_session_id(intent),
-                command_id=intent.id,
-                path=intent.target,
-                value=value,
-                expires_at_monotonic=self._clock() + timeout,
+        session_id = _session_id(intent)
+        for path in paths:
+            try:
+                value = _pending_value_for_path(intent.params, path)
+            except KeyError:
+                continue
+            self.record_pending_overlay(
+                PendingOverlay(
+                    source=intent.source,
+                    session_id=session_id,
+                    command_id=intent.id,
+                    path=path,
+                    value=value,
+                    expires_at_monotonic=now + timeout,
+                )
             )
-        )
+            self._record_readback_expectation(
+                PendingOverlay(
+                    source=intent.source,
+                    session_id=session_id,
+                    command_id=intent.id,
+                    path=path,
+                    value=value,
+                    expires_at_monotonic=(
+                        now + timeout + _READBACK_EXPECTATION_GRACE_SECONDS
+                    ),
+                )
+            )
+
+    def _record_readback_expectation(self, overlay: PendingOverlay) -> None:
+        self._purge_expired()
+        self._readback_expectations = [
+            item
+            for item in self._readback_expectations
+            if not (
+                item.source == overlay.source
+                and item.session_id == overlay.session_id
+                and item.command_id == overlay.command_id
+                and item.path == overlay.path
+            )
+        ]
+        self._readback_expectations.append(overlay)
+        excess = len(self._readback_expectations) - _MAX_READBACK_EXPECTATIONS
+        if excess > 0:
+            self._readback_expectations = self._readback_expectations[excess:]
 
     def _reconcile_observation(
         self,
@@ -381,11 +471,16 @@ class CommandService:
         self._overlays = remaining
 
         for overlay in reconciled:
+            self._remove_readback_expectation(overlay)
             self.emit_lifecycle(
                 CommandIntent(
                     id=overlay.command_id,
                     name="reconcile",
-                    params={},
+                    params=(
+                        {}
+                        if overlay.session_id is None
+                        else {"session_id": overlay.session_id}
+                    ),
                     source=overlay.source,
                     target=overlay.path,
                 ),
@@ -396,11 +491,84 @@ class CommandService:
                     "observationSeq": changeset.observation_seq,
                 },
             )
+        if not reconciled:
+            self._reconcile_readback_expectation(observation, changeset)
+
+    def _reconcile_readback_expectation(
+        self,
+        observation: Observation,
+        changeset: ChangeSet,
+    ) -> None:
+        if (
+            observation.correlation_id is None
+            or not _is_external_rigctld_readback(observation.source)
+            or observation.source.command_source is None
+        ):
+            return
+        matches = [
+            item
+            for item in self._readback_expectations
+            if _observation_reconciles_overlay(observation, item)
+        ]
+        if not matches:
+            return
+        expectation = matches[0]
+        template = self._last_event(
+            expectation.command_id,
+            source=expectation.source,
+            session_id=expectation.session_id,
+        )
+        if template is None or template.state in {
+            "failed",
+            "timed_out",
+            "reconciled",
+            "confirmed",
+            "superseded",
+        }:
+            return
+
+        self._remove_readback_expectation(expectation)
+        self.emit_lifecycle(
+            CommandIntent(
+                id=expectation.command_id,
+                name="reconcile",
+                params=(
+                    {}
+                    if expectation.session_id is None
+                    else {"session_id": expectation.session_id}
+                ),
+                source=expectation.source,
+                target=expectation.path,
+            ),
+            "reconciled",
+            message="confirmed by matching observation",
+            details={
+                "revision": changeset.revision,
+                "observationSeq": changeset.observation_seq,
+            },
+        )
+
+    def _remove_readback_expectation(self, overlay: PendingOverlay) -> None:
+        self._readback_expectations = [
+            item
+            for item in self._readback_expectations
+            if not (
+                item.source == overlay.source
+                and item.session_id == overlay.session_id
+                and item.command_id == overlay.command_id
+                and item.path == overlay.path
+            )
+        ]
 
     def _purge_expired(self) -> None:
         now = self._clock()
         self._overlays = [
             overlay for overlay in self._overlays if not overlay.is_expired(now)
+        ]
+        self._readback_expectations = [
+            overlay
+            for overlay in self._readback_expectations
+            if not overlay.is_expired(now)
         ]
 
     def _last_event(
@@ -425,12 +593,23 @@ class CommandService:
 
 def _pending_value_for_intent(intent: CommandIntent) -> Any:
     assert intent.target is not None
-    params = intent.params
-    if intent.target.name in params:
-        return params[intent.target.name]
+    return _pending_value_for_path(intent.params, intent.target)
+
+
+def _observable_paths_for_intent(intent: CommandIntent) -> tuple[FieldPath, ...]:
+    if intent.expected_observations:
+        return intent.expected_observations
+    if intent.target is not None:
+        return (intent.target,)
+    return ()
+
+
+def _pending_value_for_path(params: Mapping[str, Any], path: FieldPath) -> Any:
+    if path.name in params:
+        return params[path.name]
     if "value" in params:
         return params["value"]
-    raise KeyError(intent.target.name)
+    raise KeyError(path.name)
 
 
 def _session_id(intent: CommandIntent) -> str | None:
@@ -465,14 +644,41 @@ def _observation_reconciles_overlay(
     if observed_source is not None and observed_source != overlay.source:
         return False
     observed_session = observation.source.session_id
-    if observed_session is not None and observed_session != overlay.session_id:
+    if observed_session != overlay.session_id:
         return False
     return (
         observation.correlation_id is not None
         and observation.correlation_id == overlay.command_id
-        and overlay.path == observation.path
+        and _paths_reconcile(observation, overlay.path)
         and overlay.value == observation.value
     )
+
+
+def _paths_reconcile(observation: Observation, overlay_path: FieldPath) -> bool:
+    observation_path = observation.path
+    if observation_path == overlay_path:
+        return True
+    if not _is_external_rigctld_readback(observation.source):
+        return False
+    return _external_rigctld_main_alias(observation_path) == (
+        _external_rigctld_main_alias(overlay_path)
+    )
+
+
+def _is_external_rigctld_readback(source: SourceMetadata) -> bool:
+    return (
+        source.source == "hamlib_response"
+        and source.provider == "external_rigctld"
+        and source.transport == "rigctld"
+    )
+
+
+def _external_rigctld_main_alias(path: FieldPath) -> FieldPath:
+    if path.scope.value != "receiver" or path.receiver_id != "0":
+        return path
+    if path.family.value == "freq_mode" and path.slot is None:
+        return FieldPath.active("main", path.family.value, path.name)
+    return FieldPath.receiver("main", path.family.value, path.name)
 
 
 def command_intent_from_request(
@@ -552,10 +758,27 @@ def command_intent_from_request(
         normalized["power_level"] = int(raw_level)
     elif command_name == "set_split":
         normalized["split"] = bool(normalized.get("on", False))
+    elif command_name == "set_rit":
+        hz = int(normalized["hz"])
+        normalized["hz"] = hz
+        normalized["rit_freq"] = hz
+        normalized["rit_on"] = hz != 0
+    elif command_name == "set_xit":
+        hz = int(normalized["hz"])
+        normalized["hz"] = hz
+        normalized["rit_freq"] = hz
+        normalized["rit_tx"] = hz != 0
     elif command_name in ("set_vfo", "select_vfo"):
-        active_slot = _active_slot_value(normalized.get("vfo", "A"))
+        raw_vfo = normalized.get("vfo", "A")
+        active_slot = _active_slot_value(raw_vfo)
         if active_slot is not None:
             normalized["active_slot"] = active_slot
+        active = _active_receiver_value(raw_vfo)
+        if active is not None:
+            normalized["active"] = active
+        receiver_count = _receiver_count_value(normalized)
+        if receiver_count is not None:
+            normalized["receiver_count"] = receiver_count
     elif command_name == "set_level":
         normalized["level"] = str(normalized["level"]).upper()
         normalized["value"] = float(normalized["value"])
@@ -568,7 +791,7 @@ def command_intent_from_request(
         normalized["split"] = bool(normalized["on"])
 
     target = _command_target(command_name, normalized)
-    expected = () if target is None else (target,)
+    expected = _command_expected_observations(command_name, normalized, target)
     return CommandIntent(
         id=command_id or f"{source}-{time.monotonic_ns()}",
         name=command_name,
@@ -646,6 +869,16 @@ def _command_target(name: str, params: Mapping[str, Any]) -> FieldPath | None:
         return FieldPath.global_("operator_controls", "power_level")
     if name == "set_split":
         return FieldPath.global_("tx_state", "split")
+    if name == "set_rit":
+        return FieldPath.global_("operator_controls", "rit_freq")
+    if name == "set_xit":
+        return FieldPath.global_("operator_controls", "rit_freq")
+    if (
+        name in ("set_vfo", "select_vfo")
+        and _is_dual_receiver_selection(params)
+        and "active" in params
+    ):
+        return FieldPath.global_("slow_state", "active")
     if name in ("set_vfo", "select_vfo") and "active_slot" in params:
         return FieldPath.active_slot(receiver)
     if name == "set_level":
@@ -659,6 +892,25 @@ def _command_target(name: str, params: Mapping[str, Any]) -> FieldPath | None:
     if name == "set_split_vfo":
         return FieldPath.global_("tx_state", "split")
     return None
+
+
+def _command_expected_observations(
+    name: str,
+    params: Mapping[str, Any],
+    target: FieldPath | None,
+) -> tuple[FieldPath, ...]:
+    del params
+    if name == "set_rit":
+        return (
+            FieldPath.global_("operator_controls", "rit_freq"),
+            FieldPath.global_("tx_state", "rit_on"),
+        )
+    if name == "set_xit":
+        return (
+            FieldPath.global_("operator_controls", "rit_freq"),
+            FieldPath.global_("tx_state", "rit_tx"),
+        )
+    return () if target is None else (target,)
 
 
 def _value_for_observable_intent(intent: CommandIntent) -> Any:
@@ -693,6 +945,29 @@ def _active_slot_value(value: Any) -> str | None:
     if text in ("A", "VFOA", "MAIN", "0"):
         return "A"
     return None
+
+
+def _active_receiver_value(value: Any) -> str | None:
+    text = str(value).strip().upper()
+    if text in ("B", "VFOB", "SUB", "1"):
+        return "SUB"
+    if text in ("A", "VFOA", "MAIN", "0"):
+        return "MAIN"
+    return None
+
+
+def _receiver_count_value(params: Mapping[str, Any]) -> int | None:
+    if "receiver_count" not in params:
+        return None
+    try:
+        return int(params["receiver_count"])
+    except (TypeError, ValueError):
+        return None
+
+
+def _is_dual_receiver_selection(params: Mapping[str, Any]) -> bool:
+    receiver_count = _receiver_count_value(params)
+    return receiver_count is not None and receiver_count >= 2
 
 
 def _normalize_level_value(params: dict[str, Any]) -> None:

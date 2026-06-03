@@ -282,14 +282,24 @@ class IcomCivAcquisitionExecutor:
         if path.scope.value == "global" and path.family.value == "meters":
             sub = _GLOBAL_METER_QUERY_SUBS.get(path.name)
             return None if sub is None else (0x15, sub, None)
+        if path.scope.value == "global" and path.family.value == "slow_state":
+            if path.name == "active":
+                return (0x07, 0xD2, None)
+            return None
         if path.scope.value == "global" and path.family.value == "tx_state":
             if path.name == "ptt":
                 return (0x1C, 0x00, None)
+            if path.name == "rit_on":
+                return (0x21, 0x01, None)
+            if path.name == "rit_tx":
+                return (0x21, 0x02, None)
             return None
         if (
             path.scope.value == "global"
             and path.family.value == "operator_controls"
         ):
+            if path.name == "rit_freq":
+                return (0x21, 0x00, None)
             sub = _GLOBAL_LEVEL_QUERY_SUBS.get(path.name)
             return None if sub is None else (0x14, sub, None)
         return None
