@@ -16,10 +16,11 @@ from __future__ import annotations
 
 import asyncio
 import datetime
+import inspect
 import logging
 import time
 from collections.abc import Coroutine
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 from ..startup_checks import assert_radio_startup_ready
 from . import audit as _audit  # noqa: TID251
@@ -43,7 +44,7 @@ def _profile_data_mode_count(radio: "Radio") -> int:
 
 def _wsjtx_data_mode_value(radio: "Radio", config: RigctldConfig) -> int | bool:
     if config.wsjtx_data_mode is not None:
-        return config.wsjtx_data_mode
+        return int(config.wsjtx_data_mode)
     return True
 
 
@@ -139,6 +140,21 @@ class RigctldServer:
         self._bg_tasks.add(task)
         task.add_done_callback(self._bg_tasks.discard)
         return task
+
+    def _handler_execute_call(self, cmd: Any, *, session_id: str) -> Coroutine[Any, Any, Any]:
+        execute = getattr(self._rig_handler, "execute")
+        try:
+            signature = inspect.signature(execute)
+        except (TypeError, ValueError):
+            signature = None
+
+        if signature is not None:
+            for parameter in signature.parameters.values():
+                if parameter.kind is inspect.Parameter.VAR_KEYWORD:
+                    return cast(Coroutine[Any, Any, Any], execute(cmd, session_id=session_id))
+                if parameter.name == "session_id":
+                    return cast(Coroutine[Any, Any, Any], execute(cmd, session_id=session_id))
+        return cast(Coroutine[Any, Any, Any], execute(cmd))
 
     def __del__(self) -> None:
         """Emit WARN if instance is collected while TCP server/poller is still active."""
@@ -358,7 +374,6 @@ class RigctldServer:
     ) -> None:
         """Manage a single TCP client for its full lifetime."""
         proto = self._protocol
-        rig_handler = self._rig_handler
 
         peer = writer.get_extra_info("peername", ("?", 0))
         self._next_client_id += 1
@@ -437,7 +452,10 @@ class RigctldServer:
                 t_start = time.monotonic()
                 try:
                     resp = await asyncio.wait_for(
-                        rig_handler.execute(cmd),
+                        self._handler_execute_call(
+                            cmd,
+                            session_id=f"rigctld-client-{client_id}",
+                        ),
                         timeout=self._config.command_timeout,
                     )
                 except asyncio.TimeoutError:
