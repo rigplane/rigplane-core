@@ -35,7 +35,7 @@ import time
 import urllib.parse
 from collections.abc import Callable, Coroutine
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any, Literal, TextIO, cast
+from typing import TYPE_CHECKING, Any, Literal, Protocol, TextIO, cast
 
 from .. import __version__
 from .._bounded_queue import BoundedQueue
@@ -111,6 +111,43 @@ if TYPE_CHECKING:
 __all__ = ["WebConfig", "WebServer", "run_web_server"]
 
 logger = logging.getLogger(__name__)
+
+
+class _RuntimeCapabilitiesFn(Protocol):
+    def __call__(self, radio: "Radio | None") -> set[str]: ...
+
+
+class _ClassifyRadioHealthFn(Protocol):
+    def __call__(
+        self,
+        radio: "Radio | None",
+        *,
+        server_reachable: bool = True,
+        now_monotonic: float | None = None,
+    ) -> dict[str, Any]: ...
+
+
+class _PublicStatePayloadFromSnapshotFn(Protocol):
+    def __call__(
+        self,
+        snapshot: StateSnapshot,
+        *,
+        radio: "Radio | None",
+        receiver_count: int,
+        updated_at: str | None = None,
+        scope_clients: int = 0,
+        control_clients: int = 0,
+        audio_clients: int = 0,
+        radio_health: dict[str, Any] | None = None,
+        health_revision: int = 0,
+    ) -> dict[str, Any]: ...
+
+
+_runtime_capabilities_impl: _RuntimeCapabilitiesFn = runtime_capabilities
+_classify_radio_health_impl: _ClassifyRadioHealthFn = classify_radio_health
+_build_public_state_payload_from_snapshot_impl: _PublicStatePayloadFromSnapshotFn = (
+    build_public_state_payload_from_snapshot
+)
 
 
 def _install_shutdown_signal_handlers(
@@ -533,7 +570,7 @@ def _serialize_keyboard_config(profile: "RadioProfile") -> dict[str, object] | N
 
 def _runtime_capabilities(radio: "Radio | None") -> set[str]:
     """Backward-compatible alias to shared runtime_capabilities helper."""
-    return cast(set[str], runtime_capabilities(radio))
+    return _runtime_capabilities_impl(radio)
 
 
 def _supports_scope(radio: "Radio | None") -> bool:
@@ -1192,19 +1229,16 @@ class WebServer:
             and self._cached_public_state_payload is not None
         ):
             return copy.deepcopy(self._cached_public_state_payload)
-        payload = cast(
-            dict[str, Any],
-            build_public_state_payload_from_snapshot(
-                snapshot,
-                radio=self._radio,
-                receiver_count=self._get_profile().receiver_count,
-                updated_at=updated_at,
-                scope_clients=len(self._scope_handlers),
-                control_clients=len(self._control_event_queues),
-                audio_clients=len(self._audio_broadcaster._clients),
-                radio_health=health,
-                health_revision=self._health_revision,
-            ),
+        payload = _build_public_state_payload_from_snapshot_impl(
+            snapshot,
+            radio=self._radio,
+            receiver_count=self._get_profile().receiver_count,
+            updated_at=updated_at,
+            scope_clients=len(self._scope_handlers),
+            control_clients=len(self._control_event_queues),
+            audio_clients=len(self._audio_broadcaster._clients),
+            radio_health=health,
+            health_revision=self._health_revision,
         )
         if updated_at is None:
             self._cached_public_state_key = cache_key
@@ -1402,13 +1436,10 @@ class WebServer:
     def _build_radio_health(self) -> dict[str, Any]:
         """Build radio health and advance the health revision on transitions."""
         now = time.monotonic()
-        health = cast(
-            dict[str, Any],
-            classify_radio_health(
-                self._radio,
-                server_reachable=True,
-                now_monotonic=now,
-            ),
+        health = _classify_radio_health_impl(
+            self._radio,
+            server_reachable=True,
+            now_monotonic=now,
         )
         signature = (
             health.get("serverReachable"),
