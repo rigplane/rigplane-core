@@ -774,6 +774,46 @@ class TestControlChannel:
         finally:
             await _close_ws(writer)
 
+    async def test_observer_query_makes_control_channel_read_only(
+        self, server: WebServer
+    ) -> None:
+        host, port = _addr(server)
+        reader, writer, _ = await _ws_connect(host, port, "/api/v1/ws?observer=1")
+        try:
+            opcode, payload = await _ws_recv_frame(reader)
+            assert opcode == WS_OP_TEXT
+            hello = json.loads(payload)
+            assert hello["type"] == "hello"
+            assert hello["read_only"] is True
+            assert hello["observer"] is True
+
+            await _ws_skip_handshake(reader)
+            await _ws_send_text(
+                writer, json.dumps({"type": "subscribe", "streams": ["state"]})
+            )
+            opcode, payload = await _ws_recv_frame(reader)
+            assert opcode == WS_OP_TEXT
+            state = json.loads(payload)
+            assert state["type"] == "state_update"
+
+            cmd = {
+                "type": "cmd",
+                "id": "observer-set",
+                "name": "set_freq",
+                "params": {"vfo": "A", "freq": 14_074_000},
+            }
+            await _ws_send_text(writer, json.dumps(cmd))
+            response = await _ws_recv_cmd_response(reader)
+            assert response == {
+                "type": "response",
+                "id": "observer-set",
+                "ok": False,
+                "error": "read_only",
+                "message": "read-only mode: set_freq rejected",
+            }
+        finally:
+            await _close_ws(writer)
+
     async def test_command_set_mode(
         self, server: WebServer, mock_radio: MagicMock
     ) -> None:

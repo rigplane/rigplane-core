@@ -151,8 +151,21 @@ class TestWebTunerReadOnly:
     def _make_tuner_radio(self) -> MagicMock:
         radio = MagicMock()
         radio.capabilities = frozenset({CAP_TUNER})
+        radio.get_tuner_status = AsyncMock(return_value=1)
         radio.set_tuner_status = AsyncMock(return_value=None)
         return radio
+
+    @pytest.mark.asyncio
+    async def test_tuner_status_read_allowed_in_read_only_mode(self) -> None:
+        """get_tuner_status remains usable when read_only=True."""
+        radio = self._make_tuner_radio()
+        handler, q = _make_handler(read_only=True, radio=radio)
+
+        result = await handler._enqueue_command("get_tuner_status", {})
+
+        assert result == {"status": 1, "label": "ON"}
+        assert q.empty(), "read command must not touch the command queue"
+        radio.get_tuner_status.assert_awaited_once()
 
     @pytest.mark.asyncio
     async def test_tuner_tune_rejected_in_read_only_mode(self) -> None:
@@ -165,26 +178,28 @@ class TestWebTunerReadOnly:
         assert q.empty(), "command queue must not be touched in read-only mode"
 
     @pytest.mark.asyncio
-    async def test_tuner_on_allowed_in_read_only_mode(self) -> None:
-        """set_tuner_status value=1 (ON) is allowed even when read_only=True."""
+    async def test_tuner_on_rejected_in_read_only_mode(self) -> None:
+        """set_tuner_status value=1 (ON) raises PermissionError when read_only=True."""
         radio = self._make_tuner_radio()
         handler, q = _make_handler(read_only=True, radio=radio)
 
-        result = await handler._enqueue_command("set_tuner_status", {"value": 1})
+        with pytest.raises(PermissionError, match="read-only"):
+            await handler._enqueue_command("set_tuner_status", {"value": 1})
 
-        assert result == {"value": 1, "label": "ON"}
-        radio.set_tuner_status.assert_awaited_once_with(1)
+        assert q.empty(), "command queue must not be touched in read-only mode"
+        radio.set_tuner_status.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_tuner_off_allowed_in_read_only_mode(self) -> None:
-        """set_tuner_status value=0 (OFF) is allowed even when read_only=True."""
+    async def test_tuner_off_rejected_in_read_only_mode(self) -> None:
+        """set_tuner_status value=0 (OFF) raises PermissionError when read_only=True."""
         radio = self._make_tuner_radio()
         handler, q = _make_handler(read_only=True, radio=radio)
 
-        result = await handler._enqueue_command("set_tuner_status", {"value": 0})
+        with pytest.raises(PermissionError, match="read-only"):
+            await handler._enqueue_command("set_tuner_status", {"value": 0})
 
-        assert result == {"value": 0, "label": "OFF"}
-        radio.set_tuner_status.assert_awaited_once_with(0)
+        assert q.empty(), "command queue must not be touched in read-only mode"
+        radio.set_tuner_status.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_tuner_tune_allowed_when_not_read_only(self) -> None:

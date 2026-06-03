@@ -428,8 +428,10 @@ class _SharedControlCommandExecutor:
     async def execute(self, intent: CommandIntent) -> CommandExecutionResult:
         params = dict(intent.params)
         control_server = params.pop("_control_server", None)
+        control_read_only = bool(params.pop("_control_read_only", False))
         result = await self.server._control_handler_for(  # noqa: SLF001
             server=control_server,
+            read_only=control_read_only,
         )._enqueue_legacy_command(
             intent.name,
             params,
@@ -476,6 +478,18 @@ def _redact_token_in_path(path: str) -> str:
         else:
             parts.append(pair)
     return f"{base}?{'&'.join(parts)}"
+
+
+def _query_flag(query: dict[str, list[str]] | None, *names: str) -> bool:
+    """Return True when any named query parameter is explicitly truthy."""
+    if not query:
+        return False
+    truthy = {"1", "true", "yes", "on"}
+    for name in names:
+        values = query.get(name, [])
+        if any(value.lower() in truthy for value in values):
+            return True
+    return False
 
 
 # Mode/filter lists moved to RadioProfile (profiles.py)
@@ -2900,14 +2914,19 @@ class WebServer:
             return None
         return payload
 
-    def _control_handler_for(self, *, server: Any | None = None) -> ControlHandler:
+    def _control_handler_for(
+        self,
+        *,
+        server: Any | None = None,
+        read_only: bool | None = None,
+    ) -> ControlHandler:
         return ControlHandler(
             None,  # type: ignore[arg-type]
             self._radio,
             __version__,
             self._config.radio_model,
             server=server if server is not None else self,
-            read_only=self._config.read_only,
+            read_only=self._config.read_only if read_only is None else read_only,
         )
 
     async def _handle_http_commands(
@@ -4628,13 +4647,20 @@ class WebServer:
         model = raw_model if isinstance(raw_model, str) else self._config.radio_model
 
         if path == "/api/v1/ws":
+            control_read_only = self._config.read_only or _query_flag(
+                query,
+                "read_only",
+                "readonly",
+                "readOnly",
+                "observer",
+            )
             handler: Any = ControlHandler(
                 ws,
                 self._radio,
                 __version__,
                 model,
                 server=self,
-                read_only=self._config.read_only,
+                read_only=control_read_only,
             )
         elif path == "/api/v1/scope":
             handler = ScopeHandler(ws, self._radio, server=self)

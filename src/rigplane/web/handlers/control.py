@@ -186,6 +186,7 @@ class _ControlCommandExecutor:
     async def execute(self, intent: CommandIntent) -> CommandExecutionResult:
         params = dict(intent.params)
         params.pop("_control_server", None)
+        params.pop("_control_read_only", None)
         result = await self.handler._enqueue_legacy_command(  # noqa: SLF001
             intent.name,
             params,
@@ -416,18 +417,6 @@ class ControlHandler:
         ]
     )
 
-    # Commands that can transmit or send arbitrary radio writes — rejected when read_only=True.
-    # set_tuner_status value=2 (TUNING) is handled inline in _enqueue_read_only.
-    _TX_COMMANDS: frozenset[str] = frozenset(
-        {
-            "ptt",
-            "ptt_on",
-            "ptt_off",
-            "send_civ",
-            "send_cw_text",
-        }
-    )
-
     def __init__(
         self,
         ws: Connection,
@@ -537,6 +526,8 @@ class ControlHandler:
             "radio": self._radio_model,
             "connected": raw_connected if isinstance(raw_connected, bool) else False,
             "radio_ready": self._radio_ready(),
+            "read_only": self._read_only,
+            "observer": self._read_only,
             "capabilities": caps,
         }
         await self._ws.send_text(encode_json(msg))
@@ -926,7 +917,9 @@ class ControlHandler:
             logger.warning("control: command %r failed: %s", name, exc)
             message = str(exc)
             error = (
-                "unsupported_command"
+                "read_only"
+                if isinstance(exc, PermissionError)
+                else "unsupported_command"
                 if "does not support" in message or "not supported" in message
                 else "command_failed"
             )
@@ -953,6 +946,8 @@ class ControlHandler:
         intent_params = dict(params)
         if self._server is not None:
             intent_params["_control_server"] = self._server
+        if self._read_only:
+            intent_params["_control_read_only"] = True
         intent = command_intent_from_request(
             name,
             intent_params,
@@ -979,8 +974,8 @@ class ControlHandler:
         logger.info("enqueue_command: %s params=%s", name, params)
         radio = self._radio
 
-        # Transmit safety gate — must come before any dispatch.
-        if self._read_only and name in self._TX_COMMANDS:
+        # Observer/read-only gate — must come before any command queue dispatch.
+        if self._read_only and not self._is_observer_safe_command(name):
             raise PermissionError(f"read-only mode: {name} rejected")
 
         # Read-only commands — bypass command queue
@@ -1018,6 +1013,10 @@ class ControlHandler:
                 return result
 
         raise ValueError(f"unhandled command: {name!r}")
+
+    @classmethod
+    def _is_observer_safe_command(cls, name: str) -> bool:
+        return name.startswith("get_") and name in cls._READ_ONLY_HANDLERS
 
     # ------------------------------------------------------------------
     # Read-only commands (no command queue needed)
