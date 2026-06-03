@@ -25,7 +25,7 @@ from rigplane.core.state_pipeline_contracts import (
     Observation,
     SourceMetadata,
 )
-from rigplane.core.state_store import FreshnessClock, StateStore
+from rigplane.core.state_store import FreshnessClock, FreshnessState, StateStore
 
 
 def _source() -> SourceMetadata:
@@ -645,3 +645,32 @@ def test_model_service_queues_when_field_observation_max_age_expired_without_mar
     assert result.fields == ()
     assert result.request is not None
     assert result.request.paths == (freq,)
+
+
+def test_stale_unsolicited_field_queues_reconciliation_and_accepts_readback() -> None:
+    clock = FreshnessClock(start=110.0)
+    freq = FieldPath.active("main", "freq_mode", "freq_hz")
+    store = StateStore(freshness_clock=clock)
+    scheduler = AcquisitionScheduler(profile=_profile([freq]), clock=clock)
+    service = RadioStateModelService(store=store, scheduler=scheduler, clock=clock)
+
+    store.apply(_observation(freq, 14_074_000, at=clock.now(), max_age=0.5))
+    clock.advance(0.6)
+
+    stale = store.mark_stale_due()
+    queued = service.ensure_fresh(
+        freq,
+        max_age=0.5,
+        priority="reconciliation",
+        reason="missed-unsolicited",
+    )
+    reconciled = store.apply(_observation(freq, 14_076_000, at=clock.now(), max_age=0.5))
+
+    assert stale.changes == ()
+    assert stale.reconciliation_requests[0].path == freq
+    assert queued.status is AcquisitionStatus.QUEUED
+    assert queued.request is not None
+    assert queued.request.paths == (freq,)
+    assert reconciled.revision == 2
+    assert store.snapshot().field(freq).freshness is FreshnessState.FRESH
+    assert store.snapshot().field(freq).value == 14_076_000

@@ -179,6 +179,23 @@ def test_observation_refreshes_stale_field_without_semantic_state_change() -> No
     assert store.snapshot().field(path).freshness == FreshnessState.FRESH
 
 
+def test_meter_delta_is_visible_without_unrelated_follow_up_revision() -> None:
+    clock = FreshnessClock(start=40.0)
+    store = StateStore(freshness_clock=clock)
+    freq = FieldPath.active("main", "freq_mode", "freq_hz")
+    meter = FieldPath.receiver("main", "meters", "s_meter")
+
+    store.apply(_observation(freq, 14_074_000, at=clock.now(), max_age=10.0))
+    baseline = store.snapshot()
+    store.apply(_observation(meter, 42, at=clock.now() + 0.1, max_age=0.5))
+
+    delta = store.delta_since(baseline)
+
+    assert delta.state_revision == 2
+    assert delta.observation_seq == 2
+    assert [(change.path, change.current) for change in delta.changes] == [(meter, 42)]
+
+
 def test_freshness_clock_rejects_backwards_time() -> None:
     clock = FreshnessClock(start=3.0)
 

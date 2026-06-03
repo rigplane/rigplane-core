@@ -274,6 +274,7 @@ from rigplane.commands import set_tone_freq as _set_tone_freq_cmd
 from rigplane.commands import set_tsql_freq as _set_tsql_freq_cmd
 from rigplane.commands import set_vfo as _select_vfo_cmd
 from rigplane.core.exceptions import CommandError, TimeoutError
+from rigplane.core.state_store import StateStore
 from rigplane.runtime.meter_cal import interpolate_swr
 from rigplane.profiles import RadioProfile, resolve_radio_profile
 from rigplane.core.radio_state import RadioState
@@ -789,6 +790,7 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
             float(os.environ.get("ICOM_CIV_RETRY_SLICE_MS", "150")) / 1000.0
         )
         self._state_cache: StateCache = StateCache()
+        self._state_store: StateStore = StateStore()
         self._state_diagnostics: StateDiagnosticsRecorder | None = None
         self._on_state_change: Callable[[str, dict[str, Any]], None] | None = (
             None  # set by server
@@ -975,6 +977,12 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
         non-blocking snapshot of recent state.
         """
         return self._state_cache
+
+    @property
+    def state_store(self) -> StateStore:
+        """Canonical confirmed-observation store for runtime state ingress."""
+
+        return self._state_store
 
     @property
     def radio_state(self) -> RadioState:

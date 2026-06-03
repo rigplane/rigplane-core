@@ -21,6 +21,7 @@ if TYPE_CHECKING:
     from rigplane.civ import CivEvent, CivRequestTracker
     from rigplane.commander import IcomCommander
     from rigplane.radio_state import RadioState
+    from rigplane.core.state_store import StateStore
     from rigplane.scope import ScopeAssembler, ScopeFrame
     from rigplane.transport import IcomTransport
     from rigplane.types import Mode
@@ -77,6 +78,7 @@ class CivRuntimeHost(Protocol):
 
     # State cache / last-known values
     _state_cache: "StateCache"
+    _state_store: "StateStore"
     _last_freq_hz: "int | None"
     _last_mode: "Mode | None"
     _filter_width: "int | None"

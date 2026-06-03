@@ -44,6 +44,7 @@ from rigplane.exceptions import ConnectionError
 from rigplane.radio import IcomRadio
 from rigplane.radio_state import RadioState
 from rigplane.scope import ScopeFrame
+from rigplane.core.state_store import StateSnapshot
 from rigplane.types import CivFrame, Mode, bcd_encode
 
 # ---------------------------------------------------------------------------
@@ -739,6 +740,167 @@ def test_update_state_cache_exception_suppressed(radio: IcomRadio) -> None:
     frame = _make_frame(cmd=0x03, data=freq_data)
     # Should NOT raise, exception is swallowed
     radio._civ_runtime._update_state_cache_from_frame(frame)
+
+
+@pytest.mark.parametrize(
+    ("frame", "path", "expected", "expected_source"),
+    [
+        (
+            _make_frame(cmd=0x00, data=bcd_encode(7_074_000)),
+            "receiver.0.active.freq_mode.freq_hz",
+            7_074_000,
+            "civ_unsolicited",
+        ),
+        (
+            _make_frame(cmd=0x03, data=bcd_encode(14_074_000)),
+            "receiver.0.active.freq_mode.freq_hz",
+            14_074_000,
+            "command_response",
+        ),
+        (
+            _make_frame(cmd=0x01, data=bytes([Mode.USB.value, 1])),
+            "receiver.0.active.freq_mode.mode",
+            "USB",
+            "civ_unsolicited",
+        ),
+        (
+            _make_frame(cmd=0x04, data=bytes([Mode.LSB.value, 2])),
+            "receiver.0.active.freq_mode.mode",
+            "LSB",
+            "command_response",
+        ),
+        (
+            _make_frame(cmd=0x25, data=bytes([0x01]) + bcd_encode(21_074_000)),
+            "receiver.1.active.freq_mode.freq_hz",
+            21_074_000,
+            "command_response",
+        ),
+        (
+            _make_frame(cmd=0x26, data=bytes([0x01, Mode.CW.value, 0x00, 3])),
+            "receiver.1.active.freq_mode.mode",
+            "CW",
+            "command_response",
+        ),
+        (
+            _make_frame(cmd=0x15, sub=0x02, data=_bcd2(150), receiver=0x01),
+            "receiver.1.meters.s_meter",
+            150,
+            "command_response",
+        ),
+        (
+            _make_frame(cmd=0x15, sub=0x11, data=_bcd2(120)),
+            "global.meters.power",
+            120,
+            "command_response",
+        ),
+        (
+            _make_frame(cmd=0x15, sub=0x13, data=_bcd2(98)),
+            "global.meters.alc",
+            98,
+            "command_response",
+        ),
+        (
+            _make_frame(cmd=0x14, sub=0x01, data=_bcd2(87), receiver=0x01),
+            "receiver.1.operator_controls.af_level",
+            87,
+            "command_response",
+        ),
+        (
+            _make_frame(cmd=0x14, sub=0x02, data=_bcd2(111), receiver=0x01),
+            "receiver.1.operator_controls.rf_gain",
+            111,
+            "command_response",
+        ),
+        (
+            _make_frame(cmd=0x14, sub=0x07, data=_bcd2(142), receiver=0x01),
+            "receiver.1.operator_controls.pbt_inner",
+            142,
+            "command_response",
+        ),
+        (
+            _make_frame(cmd=0x14, sub=0x08, data=_bcd2(143), receiver=0x01),
+            "receiver.1.operator_controls.pbt_outer",
+            143,
+            "command_response",
+        ),
+        (
+            _make_frame(cmd=0x16, sub=0x22, data=b"\x01", receiver=0x01),
+            "receiver.1.operator_toggles.nb",
+            True,
+            "command_response",
+        ),
+        (
+            _make_frame(cmd=0x16, sub=0x40, data=b"\x00", receiver=0x01),
+            "receiver.1.operator_toggles.nr",
+            False,
+            "command_response",
+        ),
+        (
+            _make_frame(cmd=0x18, data=b"\x01"),
+            "global.tx_state.power_on",
+            True,
+            "command_response",
+        ),
+        (
+            _make_frame(cmd=0x1C, sub=0x00, data=b"\x01"),
+            "global.tx_state.ptt",
+            True,
+            "command_response",
+        ),
+        (
+            _make_frame(cmd=0x07, data=bytes([0xD2, 0x01])),
+            "receiver.0.vfo.active_slot",
+            "B",
+            "command_response",
+        ),
+    ],
+)
+def test_update_state_cache_projects_supported_fields_into_state_store(
+    radio: IcomRadio,
+    frame: CivFrame,
+    path: str,
+    expected: object,
+    expected_source: str,
+) -> None:
+    radio._civ_runtime._update_state_cache_from_frame(frame)
+
+    field = radio._state_store.snapshot().field(path)
+
+    assert field.value == expected
+    assert field.source.source == expected_source
+
+
+def test_update_state_cache_uses_slot_specific_observation_path_when_override_active(
+    radio: IcomRadio,
+) -> None:
+    radio._vfo_slot_override = {"MAIN": "B"}  # noqa: SLF001
+    radio._civ_runtime._update_state_cache_from_frame(
+        _make_frame(cmd=0x03, data=bcd_encode(14_250_000))
+    )
+
+    assert (
+        radio._state_store.snapshot()
+        .field("receiver.0.slot.B.freq_mode.freq_hz")
+        .value
+        == 14_250_000
+    )
+
+
+def test_update_state_cache_applies_command_response_observation_once(
+    radio: IcomRadio,
+) -> None:
+    frame = _make_frame(cmd=0x03, data=bcd_encode(14_074_000))
+
+    radio._civ_runtime._update_state_cache_from_frame(frame)
+
+    snapshot = radio._state_store.snapshot()
+    delta = radio._state_store.delta_since(StateSnapshot.empty())
+
+    assert snapshot.state_revision == 1
+    assert snapshot.observation_seq == 1
+    assert len(delta.changes) == 1
+    assert delta.changes[0].path == snapshot.fields[0].path
+    assert radio._radio_state.main.freq == 14_074_000
 
 
 # ---------------------------------------------------------------------------

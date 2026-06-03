@@ -39,9 +39,10 @@ from rigplane.commands import (
     parse_scope_vbw_response,
 )
 from rigplane.core.exceptions import ConnectionError, TimeoutError
+from rigplane.core.state_pipeline_contracts import FieldPath, Observation, SourceMetadata
 from rigplane.core.state_diagnostics import StateDiagnosticsRecorder
 from rigplane.scope import ScopeFrame
-from rigplane.core.types import CivFrame
+from rigplane.core.types import CivFrame, Mode
 
 if TYPE_CHECKING:
     from ._runtime_protocols import CivRuntimeHost
@@ -59,6 +60,25 @@ _FREQ_BCD_LEN = 5
 _SCOPE_BACKLOG_SHED_THRESHOLD = 256
 _SCOPE_BACKLOG_KEEP_LATEST = 64
 _RAW_RECEIVED_FRAME_BYTES_LIMIT = 256
+
+_OBSERVATION_MAX_AGE_SECONDS: dict[tuple[str, str, str], float] = {
+    ("receiver", "freq_mode", "freq_hz"): 5.0,
+    ("receiver", "freq_mode", "mode"): 5.0,
+    ("receiver", "vfo", "active_slot"): 5.0,
+    ("receiver", "meters", "s_meter"): 0.6,
+    ("receiver", "operator_toggles", "nb"): 10.0,
+    ("receiver", "operator_toggles", "nr"): 10.0,
+    ("receiver", "operator_controls", "af_level"): 10.0,
+    ("receiver", "operator_controls", "rf_gain"): 10.0,
+    ("receiver", "operator_controls", "pbt_inner"): 10.0,
+    ("receiver", "operator_controls", "pbt_outer"): 10.0,
+    ("global", "tx_state", "ptt"): 1.0,
+    ("global", "tx_state", "power_on"): 30.0,
+    ("global", "operator_controls", "power_level"): 30.0,
+    ("global", "meters", "alc"): 0.6,
+    ("global", "meters", "power"): 0.6,
+    ("global", "meters", "swr"): 0.6,
+}
 
 _CIV_STATE_FIELD_FAMILIES = {
     0x00: "freq_mode",
@@ -177,6 +197,32 @@ _CMD16_NOTIFY_EVENTS = {
     0x58: "ssb_tx_bandwidth_changed",
     0x65: "ipplus_changed",
 }
+
+_OBSERVABLE_CMD14_FIELDS = {
+    0x01: ("receiver", "operator_controls", "af_level"),
+    0x02: ("receiver", "operator_controls", "rf_gain"),
+    0x07: ("receiver", "operator_controls", "pbt_inner"),
+    0x08: ("receiver", "operator_controls", "pbt_outer"),
+    0x0A: ("global", "operator_controls", "power_level"),
+}
+
+_OBSERVABLE_CMD15_FIELDS = {
+    0x02: ("receiver", "meters", "s_meter"),
+    0x11: ("global", "meters", "power"),
+    0x12: ("global", "meters", "swr"),
+    0x13: ("global", "meters", "alc"),
+}
+
+_OBSERVABLE_CMD16_FIELDS = {
+    0x22: ("receiver", "operator_toggles", "nb"),
+    0x40: ("receiver", "operator_toggles", "nr"),
+}
+
+
+def _frame_native_id(frame: CivFrame) -> str:
+    if frame.sub is None:
+        return f"civ:{frame.command:02x}"
+    return f"civ:{frame.command:02x}:{frame.sub:02x}"
 
 _CMD1A_CTL_MEM_LEVEL_FIELDS = {
     b"\x00\x70": ("ref_adjust", 2),
@@ -987,15 +1033,15 @@ class CivRuntime:
             logger.debug("civ-rx: cache update failed: %s", exc)
         except Exception:
             logger.warning("civ-rx: unexpected error in cache update", exc_info=True)
+        self._apply_state_store_observations(frame)
         self._update_radio_state_from_frame(frame)
 
     def _update_radio_state_from_frame(self, frame: CivFrame) -> None:
-        """Update RadioState from a CI-V frame (additive alongside StateCache).
+        """Mirror confirmed observations into legacy RadioState compatibility.
 
-        Top-level dispatch via ``_RADIO_STATE_HANDLERS`` (cmd-keyed). Each
-        handler is a small private method that performs the same mutations
-        as the original if/elif ladder. Behavior is fenced by the golden
-        tests in ``tests/test_civ_rx_dispatch_golden.py``.
+        ``StateStore.apply(...)`` is the canonical semantic write path. These
+        handlers remain only as compatibility shims for MOR-341/MOR-347 until
+        Web and other consumers stop reading mutable ``RadioState`` directly.
         """
         rs: "RadioState | None" = getattr(self._host, "_radio_state", None)
         if rs is None:
@@ -1043,6 +1089,199 @@ class CivRuntime:
             )
         except Exception:
             logger.warning("civ-rx: unexpected error in state update", exc_info=True)
+
+    def _apply_state_store_observations(self, frame: CivFrame) -> None:
+        """Project supported CI-V ingress fields into the runtime StateStore."""
+
+        for observation in self._observations_from_frame(frame):
+            try:
+                self._host._state_store.apply(observation)
+            except Exception:
+                logger.warning(
+                    "civ-rx: state-store apply failed for %s",
+                    observation.path,
+                    exc_info=True,
+                )
+
+    def _observations_from_frame(self, frame: CivFrame) -> tuple[Observation, ...]:
+        """Decode one CI-V frame into supported observation contracts."""
+
+        receiver_id, _, slot_override = self._receiver_context(frame)
+        observations: list[Observation] = []
+
+        if frame.command in (0x00, 0x03):
+            if len(frame.data) == _FREQ_BCD_LEN:
+                observations.append(
+                    self._observation(
+                        self._freq_mode_path(
+                            receiver_id=receiver_id,
+                            slot_override=slot_override,
+                            name="freq_hz",
+                        ),
+                        parse_frequency_response(frame),
+                        frame=frame,
+                    )
+                )
+        elif frame.command in (0x01, 0x04):
+            mode_val, _ = parse_mode_response(frame)
+            observations.append(
+                self._observation(
+                    self._freq_mode_path(
+                        receiver_id=receiver_id,
+                        slot_override=slot_override,
+                        name="mode",
+                    ),
+                    mode_val.name,
+                    frame=frame,
+                )
+            )
+        elif frame.command == 0x07 and len(frame.data) >= 2:
+            if frame.data[0] == 0xD2:
+                observations.append(
+                    self._observation(
+                        FieldPath.active_slot("0"),
+                        "B" if bool(frame.data[1]) else "A",
+                        frame=frame,
+                    )
+                )
+        elif frame.command == 0x25 and len(frame.data) >= 6:
+            from rigplane.types import bcd_decode
+
+            target_receiver = "1" if frame.data[0] else "0"
+            observations.append(
+                self._observation(
+                    FieldPath.active(target_receiver, "freq_mode", "freq_hz"),
+                    bcd_decode(frame.data[1:6]),
+                    frame=frame,
+                )
+            )
+        elif frame.command == 0x26 and len(frame.data) >= 2:
+            target_receiver = "1" if frame.data[0] else "0"
+            observations.append(
+                self._observation(
+                    FieldPath.active(target_receiver, "freq_mode", "mode"),
+                    Mode(frame.data[1]).name,
+                    frame=frame,
+                )
+            )
+        elif frame.command == 0x14 and len(frame.data) >= 2:
+            mapping = _OBSERVABLE_CMD14_FIELDS.get(frame.sub or 0)
+            if mapping is not None:
+                observations.append(
+                    self._observation(
+                        self._field_path(mapping, receiver_id=receiver_id),
+                        self._decode_level(frame.data),
+                        frame=frame,
+                    )
+                )
+        elif frame.command == 0x15 and len(frame.data) >= 2:
+            mapping = _OBSERVABLE_CMD15_FIELDS.get(frame.sub or 0)
+            if mapping is not None:
+                observations.append(
+                    self._observation(
+                        self._field_path(mapping, receiver_id=receiver_id),
+                        self._decode_level(frame.data),
+                        frame=frame,
+                    )
+                )
+        elif frame.command == 0x16:
+            sub = frame.sub or 0
+            data = frame.data
+            if sub == 0 and len(data) >= 2:
+                sub = data[0]
+                data = data[1:]
+            mapping = _OBSERVABLE_CMD16_FIELDS.get(sub)
+            if mapping is not None and data:
+                observations.append(
+                    self._observation(
+                        self._field_path(mapping, receiver_id=receiver_id),
+                        bool(data[0]),
+                        frame=frame,
+                    )
+                )
+        elif frame.command == 0x18 and len(frame.data) == 1:
+            observations.append(
+                self._observation(
+                    FieldPath.global_("tx_state", "power_on"),
+                    bool(frame.data[0]),
+                    frame=frame,
+                )
+            )
+        elif frame.command == 0x1C and frame.sub == 0x00 and frame.data:
+            observations.append(
+                self._observation(
+                    FieldPath.global_("tx_state", "ptt"),
+                    bool(frame.data[0]),
+                    frame=frame,
+                )
+            )
+
+        return tuple(observations)
+
+    def _receiver_context(self, frame: CivFrame) -> tuple[str, str, str | None]:
+        """Return receiver id/name plus any temporary VFO-slot override."""
+
+        rs = getattr(self._host, "_radio_state", None)
+        if frame.receiver is not None:
+            receiver_name = "SUB" if frame.receiver else "MAIN"
+            receiver_id = "1" if frame.receiver else "0"
+        else:
+            receiver_name = "SUB" if getattr(rs, "active", "MAIN") == "SUB" else "MAIN"
+            receiver_id = "1" if receiver_name == "SUB" else "0"
+
+        slot_override: str | None = None
+        override_map = getattr(self._host, "_vfo_slot_override", None)
+        if isinstance(override_map, dict):
+            candidate = override_map.get(receiver_name)
+            if candidate in ("A", "B"):
+                slot_override = candidate
+
+        return receiver_id, receiver_name, slot_override
+
+    @staticmethod
+    def _decode_level(data: bytes) -> int:
+        b0, b1 = data[0], data[1]
+        return (b0 >> 4) * 1000 + (b0 & 0x0F) * 100 + (b1 >> 4) * 10 + (b1 & 0x0F)
+
+    @staticmethod
+    def _field_path(
+        mapping: tuple[str, str, str],
+        *,
+        receiver_id: str,
+    ) -> FieldPath:
+        scope, family, name = mapping
+        if scope == "global":
+            return FieldPath.global_(family, name)
+        return FieldPath.receiver(receiver_id, family, name)
+
+    @staticmethod
+    def _freq_mode_path(
+        *,
+        receiver_id: str,
+        slot_override: str | None,
+        name: str,
+    ) -> FieldPath:
+        if slot_override is not None:
+            return FieldPath.vfo_slot(receiver_id, slot_override, "freq_mode", name)
+        return FieldPath.active(receiver_id, "freq_mode", name)
+
+    def _observation(self, path: FieldPath, value: Any, *, frame: CivFrame) -> Observation:
+        source = "civ_unsolicited" if frame.to_addr == 0x00 or frame.command in (0x00, 0x01) else "command_response"
+        return Observation(
+            path=path,
+            value=value,
+            source=SourceMetadata(
+                source=source,
+                provider="icom_civ",
+                transport="civ",
+                native_id=_frame_native_id(frame),
+                capability_id=str(path),
+            ),
+            timestamp_monotonic=time.monotonic(),
+            max_age=_OBSERVATION_MAX_AGE_SECONDS.get(
+                (path.scope.value, path.family.value, path.name)
+            ),
+        )
 
     # ------------------------------------------------------------------
     # Per-command handlers for _update_radio_state_from_frame.
