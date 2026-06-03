@@ -995,3 +995,33 @@ def test_meter_coalescing_flush_due_leaves_longer_window_samples_pending() -> No
     assert [change.path for change in second.changes] == [s_meter]
     assert store.snapshot().field(s_meter).value == 3
     assert coalescer.diagnostics()["pendingSampleCount"] == 0
+
+
+def test_meter_coalescing_flush_due_defers_same_path_until_latest_window() -> None:
+    clock = FreshnessClock(start=270.0)
+    store = StateStore(freshness_clock=clock)
+    meter = FieldPath.receiver("main", "meters", "s_meter")
+    policy = MeterCoalescingPolicy(window_seconds=0.2)
+    coalescer = MeterObservationCoalescer()
+
+    coalescer.record(_observation(meter, 40, at=clock.now()), policy)
+    clock.advance(0.05)
+    coalescer.record(_observation(meter, 41, at=clock.now()), policy)
+
+    assert coalescer.flush_due(store, now=270.2) is None
+    diagnostics = coalescer.diagnostics()
+    assert diagnostics["coalescedSampleCount"] == 0
+    assert diagnostics["pendingSampleCount"] == 2
+    assert diagnostics["pendingPaths"] == [str(meter), str(meter)]
+    assert diagnostics["nextFlushMonotonic"] == 270.25
+
+    changeset = coalescer.flush_due(store, now=270.25)
+
+    assert changeset is not None
+    assert changeset.coalesced is True
+    assert changeset.changes[0].current == 41
+    assert store.snapshot().field(meter).value == 41
+    assert store.snapshot().state_revision == 1
+    diagnostics = coalescer.diagnostics()
+    assert diagnostics["coalescedSampleCount"] == 1
+    assert diagnostics["pendingSampleCount"] == 0

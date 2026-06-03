@@ -878,22 +878,31 @@ class MeterObservationCoalescer:
         return self._flush_samples(store, samples=samples)
 
     def flush_due(self, store: StateStore, *, now: float) -> ChangeSet | None:
-        """Flush pending samples whose individual coalescing windows elapsed."""
+        """Flush paths whose latest pending sample has aged past its window."""
 
-        due: list[_PendingMeterSample] = []
-        pending: list[_PendingMeterSample] = []
+        latest_by_path: dict[FieldPath, _PendingMeterSample] = {}
         for sample in self._pending:
+            latest_by_path[sample.observation.path] = sample
+
+        due_paths: set[FieldPath] = set()
+        for path, sample in latest_by_path.items():
             flush_at = (
                 sample.observation.timestamp_monotonic
                 + sample.policy.window_seconds
             )
             if flush_at <= now:
+                due_paths.add(path)
+
+        if not due_paths:
+            return None
+
+        due: list[_PendingMeterSample] = []
+        pending: list[_PendingMeterSample] = []
+        for sample in self._pending:
+            if sample.observation.path in due_paths:
                 due.append(sample)
             else:
                 pending.append(sample)
-
-        if not due:
-            return None
 
         self._pending = pending
         return self._flush_samples(store, samples=due)
@@ -939,10 +948,13 @@ class MeterObservationCoalescer:
 
         if not self._pending:
             return None
+        latest_by_path: dict[FieldPath, _PendingMeterSample] = {}
+        for sample in self._pending:
+            latest_by_path[sample.observation.path] = sample
         return float(
             min(
                 sample.observation.timestamp_monotonic + sample.policy.window_seconds
-                for sample in self._pending
+                for sample in latest_by_path.values()
             )
         )
 
