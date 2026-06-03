@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 import pytest
 
@@ -19,6 +20,9 @@ from rigplane.core.state_pipeline_contracts import (
     Observation,
     SourceMetadata,
 )
+
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
 
 
 @pytest.mark.parametrize(  # type: ignore[untyped-decorator]
@@ -250,3 +254,26 @@ def test_capability_metadata_serialization_round_trip() -> None:
         CapabilityMetadata.from_dict(json.loads(json.dumps(capability.to_dict())))
         == capability
     )
+
+
+def test_web_poller_no_longer_exposes_public_revision_delivery_api() -> None:
+    source = (REPO_ROOT / "src/rigplane/web/radio_poller.py").read_text()
+
+    forbidden_fragments = (
+        "self._revision",
+        "def bump_revision(",
+        "def revision(",
+        '"revision_producing_event"',
+    )
+
+    for fragment in forbidden_fragments:
+        assert fragment not in source
+
+
+def test_web_server_state_change_callback_does_not_bump_poller_revision() -> None:
+    source = (REPO_ROOT / "src/rigplane/web/server.py").read_text()
+    callback_body = source.split("def _on_radio_state_change", maxsplit=1)[1].split(
+        "def _", maxsplit=1
+    )[0]
+
+    assert "bump_revision" not in callback_body

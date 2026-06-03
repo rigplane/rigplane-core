@@ -1,122 +1,112 @@
 # Legacy State Writer Inventory
 
-Status: MOR-335 baseline audit
-Date: 2026-06-02
+Status: MOR-347 cleanup status
+Date: 2026-06-03
 Spec: `docs/superpowers/specs/2026-06-02-radio-state-pipeline-design.md`
 
-This inventory records the current pre-migration state/revision/cache paths.
-It is intentionally descriptive: MOR-335 adds diagnostics only and does not
-change delivery semantics.
+This inventory started as the MOR-335 baseline audit. MOR-347 resolves that
+baseline into explicit cleanup decisions so reviewers can tell which legacy
+paths were deleted, which now project through `StateStore`, which remain
+protocol-local, and which are compatibility-only surfaces.
 
-Migration classes:
+Decision statuses:
 
-- `observation_adapter`: decoded or polled values should become observations.
-- `pending_overlay`: local intent/read-after-write state only.
-- `executor_cache`: private timeout, pacing, or dedupe cache.
-- `protocol_local_keep`: protocol/session state that is not radio state.
-- `compatibility_shim`: retained temporarily for API/wire stability.
-- `delete`: replace with the shared state model when the field family migrates.
+- `deleted`: removed in MOR-347 or an earlier milestone.
+- `migrated`: normal delivery now uses observations, `StateStore`, or
+  `StateStore` snapshots.
+- `protocol_local_keep`: local protocol/session state, not semantic radio
+  state.
+- `compatibility_only`: retained only for public API, Web schema, CLI/config,
+  Hamlib wire behavior, or legacy test/backend compatibility.
+- `executor_cache_keep`: private command/acquisition timeout, pacing, dedupe,
+  or restore cache; it must not be treated as fresher consumer state.
+- `deferred_follow_up`: intentionally left for a later issue because removing
+  it requires a broader field-family migration or public compatibility decision.
 
 ## Icom Runtime and CI-V
 
-| Path | Current behavior | Class | Migration note |
+| Path | MOR-347 status | Current replacement / guard | Remaining constraint |
 |---|---|---|---|
-| `runtime/_civ_rx.py::_update_state_cache_from_frame` | Parses solicited and unsolicited CI-V frames, updates `_state_cache`, `_last_freq_hz`, `_last_mode`, `_last_vfo`, and selected `RadioState` fields, then calls `_update_radio_state_from_frame`. | `observation_adapter` plus `executor_cache` | Convert decoded frame values to observations. Keep private request/cache hints only for executor fallback. |
-| `runtime/_civ_rx.py::_RADIO_STATE_HANDLERS` | Directly writes `RadioState` for frequency, mode, VFO/dual-watch, scan/split/tuning, levels, meters, function flags, scope controls, PTT, RIT, and dual-RX cmd25/cmd26. | `observation_adapter` now, then `delete` | These are the highest-risk legacy confirmed-state writers. Diagnostics now record `direct_state_write` for handler dispatches. |
-| `runtime/_civ_rx.py::_notify_change` | Only selected decoded fields notify Web, which indirectly bumps Web poller revision and broadcasts. Meter, frequency, mode, and many slow-state writes can be silent. | `compatibility_shim` then `delete` | Replace with `StateStore.apply(...) -> ChangeSet`; diagnostics record `revision_producing_event`. |
-| `runtime/_civ_rx.py::_publish_scope_frame` and `_scope_frame_queue` | Scope samples use their own delivery queue/callback. | `protocol_local_keep` | Scope sample streaming is not canonical radio state; scope control values still need observations. |
-| `runtime/_dual_rx_runtime.py` main getters/setters | Uses `_state_cache`, `_last_freq_hz`, `_last_mode`, `_filter_width`, and direct `RadioState` writes for fallback VFO routing and selected slot APIs. | `executor_cache` plus `pending_overlay` | Convert confirmed getter results to observations. Keep VFO-switch sequencing private to the executor. |
-| `runtime/radio_initial_state.py` | Sends initial query sweep to populate `RadioState` through existing backend/RX paths. | `observation_adapter` | Initial acquisition should emit observations, not own delivery. |
-| `runtime/radio_state_snapshot.py` | Best-effort snapshot/restore uses `_last_*` caches when reads fail. | `executor_cache` | Keep only as private restore fallback; do not expose as fresher consumer state. |
-| `core/_state_cache.py` and re-export `_state_cache.py` | Shared mutable cache with per-field timestamps for freq/mode/PTT/meters/levels. | `executor_cache` and `compatibility_shim` | Retain only for executor timeout fallback until freshness metadata moves into the state model. |
-| `backends/icom7610/drivers/serial_stub.py` | Fake serial backend mirrors private receiver state into `RadioState` and `StateCache`. | `compatibility_shim` | Test backend should migrate behind the same observation/state-store test harness. |
+| `runtime/_civ_rx.py::_update_state_cache_from_frame` | `migrated` plus `executor_cache_keep` | Supported CI-V frames call `_apply_state_store_observations(...)` before legacy mirrors; private `_state_cache` updates remain executor fallback. Covered by `tests/test_civ_rx_coverage.py`, Web meter/freshness regressions, and state pipeline diagnostics. | Keep cache reads private to executors; do not expose `_state_cache` as consumer delivery truth. |
+| `runtime/_civ_rx.py::_RADIO_STATE_HANDLERS` | `compatibility_only` | `StateStore.apply(...)` is canonical for supported field families; handlers still mirror into `RadioState` for public API/backward test compatibility. | `deferred_follow_up`: delete handler mirrors only after every public `RadioState` field family has a documented snapshot projection and compatibility tests. |
+| `runtime/_civ_rx.py::_notify_change` | `compatibility_only` | `state_store_changed` carries canonical revision/freshness delivery; legacy event names remain for Web event notifications and older callback consumers. | Do not use notify events to produce Web state revisions. MOR-347 static tests reject reintroducing Web poller revision bumps. |
+| `runtime/_civ_rx.py::_publish_scope_frame` and `_scope_frame_queue` | `protocol_local_keep` | Scope sample streaming remains a separate sample protocol, not semantic radio state. | Scope controls are state fields; scope samples are not. |
+| `runtime/_dual_rx_runtime.py` main getters/setters | `executor_cache_keep` plus `compatibility_only` | VFO switch/restore sequencing and `_last_*` cache use remain private executor behavior; confirmed values are also represented by `StateStore` where supported. | `deferred_follow_up`: remove direct active-slot `RadioState` writes after dual-RX slot projections cover all public consumers. |
+| `runtime/radio_initial_state.py` | `migrated` | Initial sweeps flow through runtime receive/observation paths and seed `StateStore` for supported fields. | Keep hardware-dependent validation manual where profiles require it. |
+| `runtime/radio_state_snapshot.py` | `executor_cache_keep` | Best-effort restore fallback may use `_last_*` caches but does not define consumer freshness. | No Web/rigctld delivery path may prefer this cache over `StateStore`. |
+| `core/_state_cache.py` and re-export `_state_cache.py` | `executor_cache_keep` plus `compatibility_only` | Retained for runtime timeout fallback and import compatibility. | Public `state_cache` exposure is compatibility-only; new delivery code must use snapshots/projections. |
+| `backends/icom7610/drivers/serial_stub.py` | `compatibility_only` | Fake serial backend still mirrors into `RadioState`/`StateCache` for legacy tests. | `deferred_follow_up`: migrate to provider observation test harness when serial stub tests no longer depend on mutable mirrors. |
 
 ## Web Runtime, Revisions, and Frontend Store
 
-| Path | Current behavior | Class | Migration note |
+| Path | MOR-347 status | Current replacement / guard | Remaining constraint |
 |---|---|---|---|
-| `web/radio_poller.py::_revision` / `bump_revision` | Web-owned public revision counter, bumped by optimistic command updates and selected state-change callbacks. | `compatibility_shim` then `delete` | Canonical revision must move to the state model. Diagnostics record `revision_producing_event`. |
-| `web/radio_poller.py::_execute` | Many command handlers optimistically write `RadioState` and call `bump_revision`; frequency/mode/filter/DSP/scope/power/antenna paths are included. | `pending_overlay` | Preserve read-after-write UX as pending intent, not confirmed state. |
-| `web/radio_poller.py::_last_polled` and `_send_query` | Poll freshness and meter/state query cadence are poller-local. | `executor_cache` | Diagnostics now record `meter_cadence` and `backend_read`; later acquisition policy should own scheduling. |
-| `web/radio_poller.py::_poll_unselected_slot` / host `_vfo_slot_override` | Temporarily swaps VFO slot, routes late 0x03/0x04 responses into inactive slot, then restores. | `observation_adapter` plus `protocol_local_keep` | Keep the swap/restore protocol mechanics local; convert returned values into slot-scoped observations. |
-| `web/server.py::_radio_state` and `build_public_state` | Web projects the mutable `RadioState` plus Web poller revision into HTTP/WS payloads. | `compatibility_shim` | Snapshot builder should consume canonical state model snapshots. |
-| `web/server.py::_health_revision` | Separate health revision for readiness transitions. | `compatibility_shim` | Confirms spec assumption that freshness/health revision must be separate from value revision. |
-| `web/server.py::_broadcast_state_update` | Throttled WebSocket delivery trigger; delta encoder revision is separate from public state revision. | `compatibility_shim` | Diagnostics now record `web_delivery_trigger`. Delta delivery remains representation-only. |
-| `web/server.py::_serve_state` | HTTP snapshot uses `revision-healthRevision` ETag from Web payload. | `compatibility_shim` | HTTP should use canonical state/freshness revisions from the state model. |
-| `web/_delta_encoder.py` | Maintains transport-local `revision` and emits full/delta envelopes. | `compatibility_shim` then `delete` as state revision source | Keep transport sequence only if renamed/split from canonical state revision. |
-| `web/handlers/control.py` initial state | Sends a full state envelope whose revision is the delta encoder revision, while payload also has public revision. | `compatibility_shim` | Confirms spec assumption that wire `transportSeq` and state revision are currently conflated. |
-| `web/web_startup.py` `StatePollable` branch | Yaesu/external pollers replace `server._radio_state` and trigger broadcast on callback. | `observation_adapter` | Callback should apply observations/change sets; diagnostics record a backend read callback. |
-| `frontend/src/lib/transport/http-client.ts` | HTTP callback only fires when `revision` or `healthRevision` advances. | `compatibility_shim` | Confirms meter jitter symptom: silent meter writes remain invisible until a revision/health change. |
-| `frontend/src/lib/transport/ws-client.ts` | Applies delta encoder envelope and copies envelope `revision` to full state. | `compatibility_shim` | Split transport sequence from canonical `stateRevision`. |
-| `frontend/src/lib/stores/radio.svelte.ts` | Store accepts state only when revision/health advances; optimistic maps overlay receiver/top-level fields. | `compatibility_shim` plus `pending_overlay` | Optimistic maps are pending overlays. Revision gate should use canonical value/freshness revisions. |
+| `web/radio_poller.py::_revision` / `bump_revision` | `deleted` | Removed in MOR-347. Web state revisions come from `StateStore.snapshot().state_revision`; `tests/test_state_pipeline_contracts.py` rejects reintroducing poller revision API or server callback bumps. | Public Web payload still includes legacy `revision`, but it aliases canonical `stateRevision`. |
+| `web/radio_poller.py::_execute` direct command mirrors | `compatibility_only` | Supported commands apply command-response observations; remaining `RadioState` writes are legacy read-after-write mirrors and no longer advance a poller-owned public revision. | `deferred_follow_up`: migrate remaining command mirror fields to typed command observations/pending overlays field-family by field-family. |
+| `web/radio_poller.py::_last_polled` and `_send_query` | `executor_cache_keep` | Poll cadence is acquisition/runtime local. Meter and state query observations feed `StateStore` where supported. | Do not use poll cadence markers as delivery freshness for Web consumers. |
+| `web/radio_poller.py::_poll_unselected_slot` / host `_vfo_slot_override` | `migrated` plus `protocol_local_keep` | VFO swap mechanics remain protocol-local; returned values are slot-scoped observations where supported. | Keep swap/restore invisible to consumer state except via confirmed observations. |
+| `web/server.py::_radio_state` and `build_public_state` | `migrated` plus `compatibility_only` | HTTP and WS state build from `command_state_store.snapshot()`. `_sync_legacy_state_store_for_delivery()` is a one-way compatibility adapter from mutable `RadioState` to `StateStore`. | Legacy sync is allowed only at delivery boundary; normal delivery must not read backend/poller state as source of truth. |
+| `web/server.py::_health_revision` | `compatibility_only` | Public health transitions are separate from semantic `stateRevision` and included in ETags. | Keep `healthRevision` additive/backward compatible until a public freshness schema replacement exists. |
+| `web/server.py::_broadcast_state_update` | `migrated` | Broadcast encodes snapshots from `StateStore` and suppresses duplicate state keys using state/freshness/health revisions. | Delivery triggers may broadcast events, but they must not mutate confirmed state. |
+| `web/server.py::_serve_state` | `migrated` | HTTP ETag uses `stateRevision-freshnessRevision-healthRevision`; body `revision` aliases `stateRevision`. | Preserve legacy `revision` key for existing clients. |
+| `web/_delta_encoder.py` | `migrated` | MOR-347 splits transport-local `transportSeq` from canonical `revision`/`stateRevision`. `tests/test_delta_encoder.py` covers the split. | `revision` remains a legacy alias for canonical state revision when supplied; no frontend should treat `transportSeq` as state freshness. |
+| `web/handlers/control.py` initial state | `migrated` | Initial WS state calls server `build_state_update_envelope(force_full=True)` so HTTP and WS share the same snapshot revision/freshness. | Fallback `build_public_state_payload(... revision=0)` remains compatibility-only for handler tests without a server. |
+| `web/web_startup.py` `StatePollable` branch | `migrated` | Startup poller callbacks call `sync_state_store_from_radio_state(...)` before broadcast. | `deferred_follow_up`: replace callback payloads with typed observations when all `StatePollable` providers expose adapters. |
+| `frontend/src/lib/transport/http-client.ts` | `migrated` | Frontend gates updates on canonical `stateRevision` plus `freshnessRevision`, falling back to legacy `revision` for compatibility. | Legacy `revision` fallback remains public Web compatibility. |
+| `frontend/src/lib/transport/ws-client.ts` | `migrated` | WS full/delta envelopes preserve `stateRevision` and `freshnessRevision`; MOR-347 adds backend `transportSeq` without requiring frontend changes. | Future frontend tests may consume `transportSeq` for ordering only. |
+| `frontend/src/lib/stores/radio.svelte.ts` | `migrated` plus `compatibility_only` | Store stale rejection uses canonical state/freshness revision helpers with legacy fallback. Optimistic maps remain local pending overlays. | Keep restart handling compatible with legacy low revision resets. |
 
 ## rigctld Server and Hamlib Compatibility
 
-| Path | Current behavior | Class | Migration note |
+| Path | MOR-347 status | Current replacement / guard | Remaining constraint |
 |---|---|---|---|
-| `rigctld/handler.py::_PendingRigState` | Local optimistic read-after-write state for MAIN freq/mode/filter/data_mode. | `pending_overlay` | Keep as scoped pending intent until shared pending overlays exist. |
-| `rigctld/handler.py::_FallbackRigState` | Handler-local fallback cache for freq/mode/data/PTT/S-meter/RF power/SWR. | `compatibility_shim` and `executor_cache` | Replace consumer-visible fallback with shared state/freshness; keep only private executor fallback if needed. |
-| `rigctld/handler.py::_split_tx_vfo` | Tracks Hamlib protocol TX VFO label across split commands. | `protocol_local_keep` | This is session/protocol state, not confirmed radio state. |
-| `rigctld/handler.py` GET paths | Prefer `RadioState`, then pending/cache, then backend reads for some fields. | `compatibility_shim` | GET should consume shared state projections. Diagnostics now record `rigctld_delivery_trigger`. |
-| `rigctld/routing.py` level/func routing | Reads backend meters/levels/functions and updates `_FallbackRigState`. | `observation_adapter` plus `compatibility_shim` | Backend reads should become observations; Hamlib response formatting remains compatibility. |
-| `rigctld/poller.py` | Background poller updates `StateCache` for freq/mode/data_mode. | `executor_cache` then `delete` as consumer source | Later rigctld should consume shared state model instead of this cache. |
-| `rigctld/server.py` session `vfo_mode` | Per-client Hamlib `chk_vfo` state. | `protocol_local_keep` | Keep local; do not migrate into radio state. |
-| `rigctld/contract.py` and dump-state constants | Hamlib wire compatibility, positional dump-state assumptions. | `compatibility_shim` | Preserve wire behavior; state migration must not alter protocol text output. |
+| `rigctld/handler.py::_PendingRigState` | `compatibility_only` | CommandService pending overlays and `StateStore` projections are canonical where present; local pending state preserves Hamlib read-after-write behavior. | Keep scoped to Hamlib commands; do not share as generic radio state. |
+| `rigctld/handler.py::_FallbackRigState` | `compatibility_only` | GET paths prefer `StateStore` projections, then public `RadioState` compatibility, then fallback cache where needed for Hamlib wire stability. | `deferred_follow_up`: remove individual fallback fields once projections cover every GET and compatibility tests prove behavior. |
+| `rigctld/handler.py::_split_tx_vfo` | `protocol_local_keep` | Hamlib TX VFO label/session behavior is protocol state, not confirmed radio state. | Preserve wire output. |
+| `rigctld/handler.py` GET paths | `migrated` plus `compatibility_only` | Frequency, mode, PTT, levels, split, functions, and dual-RX reads project `StateStore` first when available. | Compatibility fallbacks may not appear fresher than a present projection. |
+| `rigctld/routing.py` level/func routing | `migrated` plus `compatibility_only` | Routing reads can update fallback cache, but handler projections prefer `StateStore`. | Backend reads should continue moving into observation adapters. |
+| `rigctld/poller.py` | `executor_cache_keep` | Background cache maintenance remains private telemetry plumbing. | `deferred_follow_up`: delete as consumer source after rigctld fake-radio tests cover all projection reads. |
+| `rigctld/server.py` session `vfo_mode` | `protocol_local_keep` | Per-client `chk_vfo` state is Hamlib session state. | Preserve Hamlib protocol behavior. |
+| `rigctld/contract.py` and dump-state constants | `compatibility_only` | Positional dump-state and command response text remain public Hamlib wire compatibility. | State migration must not alter text output without explicit compatibility callout. |
 
 ## Yaesu and External rigctld Client Backends
 
-| Path | Current behavior | Class | Migration note |
+| Path | MOR-347 status | Current replacement / guard | Remaining constraint |
 |---|---|---|---|
-| `backends/yaesu_cat/radio.py::_state` | Request/response getters and setters directly mutate `RadioState`; IF bulk query seeds several fields. | `observation_adapter` plus `pending_overlay` | Getter/IF responses should emit observations. Setter echoes become pending overlays until confirmed. |
-| `backends/yaesu_cat/poller.py` | Fast/medium/slow loops call getters, smooth S-meter, mutate backend `RadioState`, then invoke callback. | `observation_adapter` | Poller is an acquisition scheduler precursor; callback should carry observations/change sets. |
-| `backends/yaesu_cat/poller.py` EMA S-meter state | Local smoothing memory for meter samples. | `executor_cache` | Keep as acquisition/presentation policy only if explicitly needed; do not treat as confirmed state. |
-| `backends/rigctld_client/radio.py::_state` | External Hamlib responses and local SET commands directly mutate `RadioState`; VFO support probe caches capability. | `observation_adapter` plus `pending_overlay` | Translate rigctld responses to observations. SET writes should be pending until readback/confirmation. |
-| `backends/rigctld_client/radio.py::_vfo_supported` | Capability probe result for external rigctld VFO command availability. | `executor_cache` | Keep as backend capability/cache, not radio state. |
-| `core.radio_protocol.StateCacheCapable` | Protocol advertises `state_cache` and `radio_state` to consumers. | `compatibility_shim` | Shared state service should replace consumer reliance on these mutable objects. |
+| `backends/yaesu_cat/radio.py::_state` | `migrated` plus `compatibility_only` | `backends/yaesu_cat/observations.py` provides provider observations for polling reads; mutable `_state` remains public backend compatibility. | `deferred_follow_up`: remove direct setter echo mirrors after pending overlays cover Yaesu SET commands. |
+| `backends/yaesu_cat/poller.py` | `migrated` | Poll loops now have observation adapter coverage for freq/mode/control fields. | Keep EMA S-meter state as acquisition policy only. |
+| `backends/yaesu_cat/poller.py` EMA S-meter state | `executor_cache_keep` | Local smoothing memory is acquisition-local. | Do not expose it as confirmed state unless a presentation policy explicitly documents it. |
+| `backends/rigctld_client/radio.py::_state` | `migrated` plus `compatibility_only` | `backends/rigctld_client/observations.py` adapts external Hamlib responses and command responses to observations. | `deferred_follow_up`: direct SET echoes remain compatibility until command pending overlays cover all fields. |
+| `backends/rigctld_client/radio.py::_vfo_supported` | `executor_cache_keep` | Capability probe result remains a backend capability cache. | Not radio state. |
+| `core.radio_protocol.StateCacheCapable` | `compatibility_only` | Protocol remains to preserve public API/backend compatibility. New consumers should prefer `state_store`/snapshot projections when available. | Public removal/deprecation requires a separate compatibility issue. |
 
 ## Profile and Schema Gaps
 
-| Gap | Current behavior | Class | Migration note |
+| Gap | MOR-347 status | Current replacement / guard | Remaining constraint |
 |---|---|---|---|
-| Meter push/support metadata | Profiles expose meter calibration/redlines, but not complete unsolicited-vs-polled meter freshness policy. | `compatibility_shim` | Add profile capability metadata for acquisition policy and freshness windows. |
-| VFO path precision | Profiles know VFO schemes/codes, but current state paths still mix receiver active state, VFO slots, and Hamlib VFO labels. | `protocol_local_keep` and `compatibility_shim` | Target `FieldPath` must include receiver and slot. |
-| Hamlib wire assumptions | dump-state constants, `chk_vfo`, and split VFO labels are protocol compatibility, not state correctness. | `compatibility_shim` and `protocol_local_keep` | Preserve wire output while moving GET values to shared state projections. |
+| Meter push/support metadata | `migrated` plus `deferred_follow_up` | Acquisition scheduler/coalescer and profile capability metadata now cover current meter freshness behavior. | Extend profile metadata before adding model-specific meter push policy. |
+| VFO path precision | `migrated` plus `protocol_local_keep` | `FieldPath` includes receiver and active/fixed slot dimensions; Hamlib VFO labels remain protocol-local. | Continue migrating dual-RX public fields to slot-aware projections. |
+| Hamlib wire assumptions | `protocol_local_keep` plus `compatibility_only` | `chk_vfo`, split TX labels, dump-state constants, and text formatting remain Hamlib compatibility. | Preserve wire behavior while values move to `StateStore` projections. |
 
-## Baseline Diagnostics Added in MOR-335
+## MOR-347 Static Guards and Regression Coverage
 
-`rigplane.core.state_diagnostics.StateDiagnosticsRecorder` is disabled by
-default and records nothing unless explicitly enabled. When enabled through
-`WebConfig(state_diagnostics=True)` or tests, instrumentation records:
+- `tests/test_state_pipeline_contracts.py` rejects Web poller public revision
+  API reintroduction and WebServer callback bumps.
+- `tests/test_delta_encoder.py` verifies canonical `revision`/`stateRevision`
+  are split from transport-local `transportSeq`.
+- Web regression tests cover meter-only semantic changes, freshness-only
+  updates, HTTP/WS snapshot agreement, ETag state/freshness/health behavior,
+  and legacy `revision` aliasing.
+- rigctld tests cover `StateStore` projection precedence and Hamlib
+  compatibility fallbacks.
 
-- `direct_state_write`: CI-V `RadioState` handler dispatches.
-- `revision_producing_event`: CI-V notify events and Web poller revision bumps.
-- `meter_cadence`: Web poller meter query cadence.
-- `backend_read`: Web poller state/meter queries and `StatePollable` callbacks.
-- `web_delivery_trigger`: HTTP state and WebSocket state delivery.
-- `rigctld_delivery_trigger`: rigctld handler responses.
+## Public Compatibility Callouts
 
-Focused tests cover the recorder's inert behavior, CI-V S-meter direct writes
-without notify/revision, and the current Web-visible symptom where a silent
-meter write is only delivered after an unrelated state-change trigger.
-
-## Spec Assumptions Confirmed
-
-- A mutable `RadioState` is currently consumer-visible and has multiple writers.
-- Meter fields can change without a public Web revision-producing event.
-- HTTP and WebSocket both gate frontend updates through legacy revision fields.
-- Web delta revision and public state revision are separate counters today but
-  are exposed with the same `revision` name in different envelope positions.
-- rigctld has protocol-local state that must not become canonical radio state.
-- Hamlib external rigctld remains the correct Core boundary; no direct Hamlib
-  binding is needed for this migration.
-
-## Deferred Follow-Ups
-
-- Add typed `Observation`, `FieldPath`, and `ChangeSet` contracts in the next
-  implementation milestone.
-- Replace the CI-V direct writer handlers with observation adapters one field
-  family at a time.
-- Add frontend tests for `stateRevision`/`transportSeq` split when the wire
-  schema changes.
-- Add rigctld fake-radio tests that compare GET responses against shared state
-  projections once the state model exists.
+- Web state payloads still include legacy `revision`; it is now explicitly an
+  alias for canonical `stateRevision` whenever the backend supplies a canonical
+  revision.
+- WebSocket full/delta envelopes now include additive `transportSeq`. Existing
+  clients may ignore it. It must be treated as ordering metadata only, never as
+  semantic state freshness.
+- Public `RadioState`, `StateCacheCapable`, CLI/config behavior, and Hamlib
+  rigctld wire text remain compatible in MOR-347.

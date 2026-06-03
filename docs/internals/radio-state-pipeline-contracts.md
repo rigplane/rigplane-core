@@ -109,6 +109,18 @@ Command contracts can name a target `FieldPath`, a pending-overlay policy, and
 expected observation paths. They do not implement command execution or mutate
 confirmed state.
 
+## MOR-347 Web Delivery Cleanup
+
+MOR-347 removes the Web poller-owned public revision counter. Web HTTP and
+WebSocket state payloads use `StateStore.snapshot().state_revision` as the
+canonical semantic revision. The legacy Web `revision` key remains present for
+existing clients, but it is an alias for `stateRevision`, not a poller or
+transport counter.
+
+WebSocket delta/full envelopes may include `transportSeq` as additive ordering
+metadata. `transportSeq` is local to the WebSocket representation and must not
+be used for stale-state rejection, freshness, or HTTP/WS race resolution.
+
 ## Compatibility
 
 MOR-337 only adds a new core module and documentation. Existing import paths,
@@ -117,3 +129,10 @@ Icom/Yaesu/Hamlib adapter behavior, and state delivery semantics remain
 unchanged. New code should import contracts from
 `rigplane.core.state_pipeline_contracts`; they are not added to the top-level
 `rigplane` Tier 1 API in this milestone.
+
+After MOR-347, compatibility-sensitive Web state behavior is:
+
+- legacy `revision` is retained and aliases canonical `stateRevision`;
+- `freshnessRevision` remains separate from semantic state revision;
+- `healthRevision` remains a public Web compatibility field;
+- `transportSeq` is additive WebSocket ordering metadata.

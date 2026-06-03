@@ -32,6 +32,11 @@ Transport sequence is not owned by `StateStore`. Backend transports may keep
 their own packet/frame ordering metadata, but that sequence is not interpreted
 as a state revision and is not exposed by the store API.
 
+In Web delivery after MOR-347, the public legacy `revision` field aliases
+`stateRevision`. WebSocket envelopes may also include `transportSeq`; that
+sequence is representation-local ordering metadata and does not participate in
+`StateStore` freshness or semantic revision decisions.
+
 ## Freshness
 
 Each observation may carry `max_age`. When `mark_stale_due()` observes that a
@@ -48,3 +53,5 @@ unchanged, only `freshnessRevision` advances; `stateRevision` remains stable.
 This module does not import Web, rigctld, runtime, transport, or legacy
 `RadioState` types. One-way compatibility adapters may be added later, but
 direct mutation of the store's backing state is not a supported public API.
+Web's legacy `RadioState` snapshot sync is one such adapter and must remain
+one-way into `StateStore` snapshots.

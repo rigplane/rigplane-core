@@ -253,13 +253,6 @@ def test_state_store_s_meter_change_broadcasts_without_legacy_revision_event() -
     radio.model = radio.profile.model
     radio.capabilities = set(radio.profile.capabilities)
     srv = WebServer(radio, WebConfig(state_diagnostics=True))
-    srv._radio_poller = SimpleNamespace(
-        bump_revision=lambda: srv.state_diagnostics.record(
-            "revision_producing_event",
-            "web.radio_poller",
-            revision=1,
-        )
-    )
     queue = BoundedQueue[dict[str, object]](maxsize=4)
     srv.register_control_event_queue(queue)
     path = FieldPath.receiver("0", "meters", "s_meter")
@@ -289,13 +282,6 @@ def test_state_store_freshness_refresh_broadcasts_without_semantic_change() -> N
     radio.model = radio.profile.model
     radio.capabilities = set(radio.profile.capabilities)
     srv = WebServer(radio, WebConfig(state_diagnostics=True))
-    srv._radio_poller = SimpleNamespace(
-        bump_revision=lambda: srv.state_diagnostics.record(
-            "revision_producing_event",
-            "web.radio_poller",
-            revision=1,
-        )
-    )
     queue = BoundedQueue[dict[str, object]](maxsize=4)
     srv.register_control_event_queue(queue)
     path = FieldPath.receiver("0", "meters", "s_meter")
@@ -1708,76 +1694,8 @@ async def test_broadcast_notification_omits_code_for_legacy_path() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Sprint 0B: revision counter + updatedAt (#158)
+# Sprint 0B compatibility: canonical state revision + updatedAt (#158)
 # ---------------------------------------------------------------------------
-
-
-def test_radio_poller_revision_starts_at_zero() -> None:
-    """RadioPoller.revision is 0 before any state changes."""
-    from rigplane.web.radio_poller import CommandQueue, RadioPoller
-    from rigplane.rigctld.state_cache import StateCache
-
-    radio = MagicMock()
-    radio.capabilities = set()
-    radio.profile = MagicMock()
-    radio.profile.receiver_count = 1
-    radio.profile.model = "IC-7300"
-    radio.profile.supports_receiver = MagicMock(return_value=True)
-    radio.profile.supports_cmd29 = MagicMock(return_value=False)
-    radio.profile.vfo_sub_code = None
-    radio.profile.vfo_main_code = None
-    radio.profile.vfo_swap_code = None
-
-    poller = RadioPoller(radio, StateCache(), CommandQueue())
-    assert poller.revision == 0
-
-
-def test_radio_poller_revision_increments() -> None:
-    """bump_revision() monotonically increments revision."""
-    from rigplane.web.radio_poller import CommandQueue, RadioPoller
-    from rigplane.rigctld.state_cache import StateCache
-
-    radio = MagicMock()
-    radio.capabilities = set()
-    radio.profile = MagicMock()
-    radio.profile.receiver_count = 1
-    radio.profile.model = "IC-7300"
-    radio.profile.supports_receiver = MagicMock(return_value=True)
-    radio.profile.supports_cmd29 = MagicMock(return_value=False)
-    radio.profile.vfo_sub_code = None
-    radio.profile.vfo_main_code = None
-    radio.profile.vfo_swap_code = None
-
-    poller = RadioPoller(radio, StateCache(), CommandQueue())
-    assert poller.revision == 0
-    poller.bump_revision()
-    assert poller.revision == 1
-    poller.bump_revision()
-    assert poller.revision == 2
-
-
-def test_radio_poller_revision_never_decreases() -> None:
-    """After many bump_revision calls, revision is always >= previous value."""
-    from rigplane.web.radio_poller import CommandQueue, RadioPoller
-    from rigplane.rigctld.state_cache import StateCache
-
-    radio = MagicMock()
-    radio.capabilities = set()
-    radio.profile = MagicMock()
-    radio.profile.receiver_count = 1
-    radio.profile.model = "IC-7300"
-    radio.profile.supports_receiver = MagicMock(return_value=True)
-    radio.profile.supports_cmd29 = MagicMock(return_value=False)
-    radio.profile.vfo_sub_code = None
-    radio.profile.vfo_main_code = None
-    radio.profile.vfo_swap_code = None
-
-    poller = RadioPoller(radio, StateCache(), CommandQueue())
-    prev = poller.revision
-    for _ in range(10):
-        poller.bump_revision()
-        assert poller.revision >= prev
-        prev = poller.revision
 
 
 @pytest.mark.asyncio
@@ -1805,7 +1723,7 @@ async def test_state_response_includes_revision_and_updated_at() -> None:
 
 @pytest.mark.asyncio
 async def test_state_response_revision_zero_without_poller() -> None:
-    """revision is 0 when no RadioPoller is attached."""
+    """The legacy revision alias comes from the StateStore, not RadioPoller."""
     import json as _json
 
     srv = WebServer(None)
@@ -1816,14 +1734,12 @@ async def test_state_response_revision_zero_without_poller() -> None:
     body_start = text.index("\r\n\r\n") + 4
     data = _json.loads(text[body_start:])
     assert data["revision"] == 0
+    assert data["stateRevision"] == 0
 
 
 @pytest.mark.asyncio
-async def test_on_radio_state_change_bumps_revision() -> None:
-    """_on_radio_state_change increments poller.revision."""
-    from rigplane.web.radio_poller import CommandQueue, RadioPoller
-    from rigplane.rigctld.state_cache import StateCache
-
+async def test_on_radio_state_change_broadcasts_canonical_state_payload() -> None:
+    """State callbacks broadcast StateStore-backed payloads without poller revision."""
     radio = MagicMock()
     radio.capabilities = set()
     radio.profile = MagicMock()
@@ -1835,16 +1751,25 @@ async def test_on_radio_state_change_bumps_revision() -> None:
     radio.profile.vfo_main_code = None
     radio.profile.vfo_swap_code = None
 
-    srv = WebServer(None)
-    poller = RadioPoller(radio, StateCache(), CommandQueue())
-    srv._radio_poller = poller  # noqa: SLF001
-    assert poller.revision == 0
+    srv = WebServer(radio)
+    queue = BoundedQueue[dict[str, object]](maxsize=4)
+    srv.register_control_event_queue(queue)
+    srv.command_state_store.apply(
+        _store_observation(
+            FieldPath.active("0", "freq_mode", "freq_hz"),
+            14_074_000,
+            at=time.monotonic(),
+        )
+    )
 
     srv._on_radio_state_change("freq_changed", {"freq": 14074000})  # noqa: SLF001
-    assert poller.revision == 1
 
-    srv._on_radio_state_change("mode_changed", {"mode": "USB"})  # noqa: SLF001
-    assert poller.revision == 2
+    event = queue.get_nowait()
+    state_update = queue.get_nowait()
+    assert event["type"] == "event"
+    assert state_update["type"] == "state_update"
+    assert state_update["data"]["stateRevision"] == 1
+    assert state_update["data"]["revision"] == 1
 
 
 @pytest.mark.asyncio

@@ -2788,7 +2788,6 @@ class TestRadioPoller:
         radio.set_key_speed.assert_awaited_once_with(24)
         assert poller._radio_state is not None
         assert poller._radio_state.key_speed == 24
-        assert poller.revision > 0
 
     async def test_set_break_in_updates_radio_and_state(self) -> None:
         """SetBreakIn(mode) calls radio.set_break_in and updates RadioState.break_in."""
@@ -2807,7 +2806,6 @@ class TestRadioPoller:
         radio.set_break_in.assert_awaited_once_with(1)
         assert poller._radio_state is not None
         assert poller._radio_state.break_in == 1
-        assert poller.revision > 0
 
 
 # ---------------------------------------------------------------------------
@@ -3018,7 +3016,6 @@ class TestSwitchScopeReceiver:
         radio.set_split.assert_awaited_once_with(True)
         assert poller._radio_state is not None
         assert poller._radio_state.split is True
-        assert poller.revision > 0
 
     async def test_set_rit_status_updates_radio_and_state(self) -> None:
         """SetRitStatus(on) calls radio.set_rit_status and updates RadioState.rit_on."""
@@ -3037,7 +3034,6 @@ class TestSwitchScopeReceiver:
         radio.set_rit_status.assert_awaited_once_with(True)
         assert poller._radio_state is not None
         assert poller._radio_state.rit_on is True
-        assert poller.revision > 0
 
     async def test_set_rit_tx_status_updates_radio_and_state(self) -> None:
         """SetRitTxStatus(on) calls radio.set_rit_tx_status and updates RadioState.rit_tx."""
@@ -3056,7 +3052,6 @@ class TestSwitchScopeReceiver:
         radio.set_rit_tx_status.assert_awaited_once_with(True)
         assert poller._radio_state is not None
         assert poller._radio_state.rit_tx is True
-        assert poller.revision > 0
 
     async def test_set_rit_frequency_updates_radio_and_state(self) -> None:
         """SetRitFrequency(freq) calls radio.set_rit_frequency and updates RadioState.rit_freq."""
@@ -3075,7 +3070,6 @@ class TestSwitchScopeReceiver:
         radio.set_rit_frequency.assert_awaited_once_with(-200)
         assert poller._radio_state is not None
         assert poller._radio_state.rit_freq == -200
-        assert poller.revision > 0
 
     async def test_set_pbt_inner_updates_radio_and_state(self) -> None:
         """SetPbtInner(level) calls radio.set_pbt_inner and updates receiver state."""
@@ -3094,7 +3088,6 @@ class TestSwitchScopeReceiver:
         radio.set_pbt_inner.assert_awaited_once_with(150, receiver=0)
         assert poller._radio_state is not None
         assert poller._radio_state.main.pbt_inner == 150
-        assert poller.revision > 0
 
     async def test_set_pbt_outer_updates_radio_and_state(self) -> None:
         """SetPbtOuter(level) calls radio.set_pbt_outer and updates receiver state."""
@@ -3113,7 +3106,6 @@ class TestSwitchScopeReceiver:
         radio.set_pbt_outer.assert_awaited_once_with(200, receiver=0)
         assert poller._radio_state is not None
         assert poller._radio_state.main.pbt_outer == 200
-        assert poller.revision > 0
 
     async def test_set_nr_level_updates_radio_and_state(self) -> None:
         """SetNRLevel(level) calls radio.set_nr_level and updates receiver state."""
@@ -3132,7 +3124,6 @@ class TestSwitchScopeReceiver:
         radio.set_nr_level.assert_awaited_once_with(42, receiver=0)
         assert poller._radio_state is not None
         assert poller._radio_state.main.nr_level == 42
-        assert poller.revision > 0
 
     async def test_set_nb_level_updates_radio_and_state(self) -> None:
         """SetNBLevel(level) calls radio.set_nb_level and updates receiver state."""
@@ -3151,7 +3142,6 @@ class TestSwitchScopeReceiver:
         radio.set_nb_level.assert_awaited_once_with(17, receiver=0)
         assert poller._radio_state is not None
         assert poller._radio_state.main.nb_level == 17
-        assert poller.revision > 0
 
     async def test_set_auto_notch_updates_radio_and_state(self) -> None:
         """SetAutoNotch(on) calls radio.set_auto_notch and updates receiver state."""
@@ -3170,7 +3160,6 @@ class TestSwitchScopeReceiver:
         radio.set_auto_notch.assert_awaited_once_with(True, receiver=0)
         assert poller._radio_state is not None
         assert poller._radio_state.main.auto_notch is True
-        assert poller.revision > 0
 
     async def test_set_manual_notch_updates_radio_and_state(self) -> None:
         """SetManualNotch(on) calls radio.set_manual_notch and updates receiver state."""
@@ -3189,7 +3178,6 @@ class TestSwitchScopeReceiver:
         radio.set_manual_notch.assert_awaited_once_with(True, receiver=0)
         assert poller._radio_state is not None
         assert poller._radio_state.main.manual_notch is True
-        assert poller.revision > 0
 
     async def test_set_notch_filter_updates_radio_and_state(self) -> None:
         """SetNotchFilter(level) calls radio.set_notch_filter and updates RadioState.notch_filter."""
@@ -3208,7 +3196,6 @@ class TestSwitchScopeReceiver:
         radio.set_notch_filter.assert_awaited_once_with(91)
         assert poller._radio_state is not None
         assert poller._radio_state.notch_filter == 91
-        assert poller.revision > 0
 
     async def test_set_agc_time_constant_updates_radio_and_state(self) -> None:
         """SetAgcTimeConstant(value) calls radio.set_agc_time_constant and updates receiver state."""
@@ -3231,7 +3218,6 @@ class TestSwitchScopeReceiver:
         radio.set_agc_time_constant.assert_awaited_once_with(9, receiver=0)
         assert poller._radio_state is not None
         assert poller._radio_state.main.agc_time_constant == 9
-        assert poller.revision > 0
 
     async def test_set_cw_pitch_updates_radio_and_state(self) -> None:
         """SetCwPitch(value) calls radio.set_cw_pitch and updates RadioState.cw_pitch."""
@@ -3250,7 +3236,6 @@ class TestSwitchScopeReceiver:
         radio.set_cw_pitch.assert_awaited_once_with(600)
         assert poller._radio_state is not None
         assert poller._radio_state.cw_pitch == 600
-        assert poller.revision > 0
 
     async def test_set_mic_gain_updates_radio_and_state(self) -> None:
         """SetMicGain(level) calls radio.set_mic_gain and updates RadioState.mic_gain."""
@@ -3269,7 +3254,6 @@ class TestSwitchScopeReceiver:
         radio.set_mic_gain.assert_awaited_once_with(123)
         assert poller._radio_state is not None
         assert poller._radio_state.mic_gain == 123
-        assert poller.revision > 0
 
     async def test_set_vox_updates_radio_and_state(self) -> None:
         """SetVox(on) calls radio.set_vox and updates RadioState.vox_on."""
@@ -3288,7 +3272,6 @@ class TestSwitchScopeReceiver:
         radio.set_vox.assert_awaited_once_with(True)
         assert poller._radio_state is not None
         assert poller._radio_state.vox_on is True
-        assert poller.revision > 0
 
     async def test_set_compressor_level_updates_radio_and_state(self) -> None:
         """SetCompressorLevel(level) calls radio.set_compressor_level and updates RadioState.compressor_level."""
@@ -3311,7 +3294,6 @@ class TestSwitchScopeReceiver:
         radio.set_compressor_level.assert_awaited_once_with(88)
         assert poller._radio_state is not None
         assert poller._radio_state.compressor_level == 88
-        assert poller.revision > 0
 
     async def test_set_monitor_updates_radio_and_state(self) -> None:
         """SetMonitor(on) calls radio.set_monitor and updates RadioState.monitor_on."""
@@ -3330,7 +3312,6 @@ class TestSwitchScopeReceiver:
         radio.set_monitor.assert_awaited_once_with(True)
         assert poller._radio_state is not None
         assert poller._radio_state.monitor_on is True
-        assert poller.revision > 0
 
     async def test_set_monitor_gain_updates_radio_and_state(self) -> None:
         """SetMonitorGain(level) calls radio.set_monitor_gain and updates RadioState.monitor_gain."""
@@ -3349,7 +3330,6 @@ class TestSwitchScopeReceiver:
         radio.set_monitor_gain.assert_awaited_once_with(55)
         assert poller._radio_state is not None
         assert poller._radio_state.monitor_gain == 55
-        assert poller.revision > 0
 
     async def test_set_dial_lock_updates_radio_and_state(self) -> None:
         """SetDialLock(on) calls radio.set_dial_lock and updates RadioState.dial_lock."""
@@ -3368,7 +3348,6 @@ class TestSwitchScopeReceiver:
         radio.set_dial_lock.assert_awaited_once_with(True)
         assert poller._radio_state is not None
         assert poller._radio_state.dial_lock is True
-        assert poller.revision > 0
 
 
 class TestSwitchScopeReceiverCommand:

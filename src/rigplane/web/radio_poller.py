@@ -384,7 +384,6 @@ class RadioPoller:
         self._queue = queue
         self._on_state_event = on_state_event
         self._poll_index: int = 0
-        self._revision: int = 0
         self._task: asyncio.Task[None] | None = None
         self._last_polled: dict[str, float] = {}
         self._caps: set[str] = self._radio_capabilities()
@@ -469,7 +468,6 @@ class RadioPoller:
         if state is None:
             return
         apply(state)
-        self.bump_revision()
 
     def _mark_queued_command_failed(
         self,
@@ -511,11 +509,6 @@ class RadioPoller:
     def running(self) -> bool:
         return self._task is not None and not self._task.done()
 
-    @property
-    def revision(self) -> int:
-        """Monotonic counter incremented on every radio state change."""
-        return self._revision
-
     def _adaptive_gap(self) -> float:
         """Return gap adjusted for queue pressure.
 
@@ -537,15 +530,6 @@ class RadioPoller:
         # Linear interpolation between 0.5 and threshold
         t: float = (pressure - 0.5) / (PRESSURE_THRESHOLD - 0.5)
         return self._gap * (1.0 + t)
-
-    def bump_revision(self) -> None:
-        """Increment the revision counter (called on each state change)."""
-        self._revision += 1
-        self._record_state_diagnostic(
-            "revision_producing_event",
-            "web.radio_poller",
-            revision=self._revision,
-        )
 
     def mark_polled(self, field: str) -> None:
         """Record the last successful poll time for a logical field."""
@@ -984,7 +968,6 @@ class RadioPoller:
                     )
                     if target:
                         target.freq = freq
-                    self.bump_revision()
                     self.mark_polled("freq")
                 if self._on_state_event:
                     self._on_state_event("freq_changed", {"freq": freq, "receiver": rx})
@@ -1033,7 +1016,6 @@ class RadioPoller:
                     )
                     if target:
                         target.mode = mode
-                    self.bump_revision()
                     self.mark_polled("mode")
                 if self._on_state_event:
                     self._on_state_event("mode_changed", {"mode": mode, "receiver": rx})
@@ -1093,7 +1075,6 @@ class RadioPoller:
                         self._radio_state.sub if rx != 0 else self._radio_state.main
                     )
                     target.filter_shape = shape
-                    self.bump_revision()
                 if self._on_state_event:
                     self._on_state_event(
                         "filter_shape_changed", {"shape": shape, "receiver": rx}
@@ -1354,7 +1335,6 @@ class RadioPoller:
                         self._radio_state.sub if rx != 0 else self._radio_state.main
                     )
                     target.if_shift = offset
-                    self.bump_revision()
                 if self._on_state_event:
                     self._on_state_event(
                         "if_shift_changed", {"offset": offset, "receiver": rx}
@@ -1366,7 +1346,6 @@ class RadioPoller:
                         self._radio_state.sub if rx != 0 else self._radio_state.main
                     )
                     target.nr_level = level
-                    self.bump_revision()
             case SetNBLevel(level=level, receiver=rx):
                 await _r.set_nb_level(level, receiver=rx)
                 if self._radio_state:
@@ -1374,7 +1353,6 @@ class RadioPoller:
                         self._radio_state.sub if rx != 0 else self._radio_state.main
                     )
                     target.nb_level = level
-                    self.bump_revision()
             case SetAutoNotch(on=on, receiver=rx):
                 await _r.set_auto_notch(on, receiver=rx)
                 if self._radio_state:
@@ -1382,7 +1360,6 @@ class RadioPoller:
                         self._radio_state.sub if rx != 0 else self._radio_state.main
                     )
                     target.auto_notch = on
-                    self.bump_revision()
             case SetManualNotch(on=on, receiver=rx):
                 await _r.set_manual_notch(on, receiver=rx)
                 if self._radio_state:
@@ -1390,12 +1367,10 @@ class RadioPoller:
                         self._radio_state.sub if rx != 0 else self._radio_state.main
                     )
                     target.manual_notch = on
-                    self.bump_revision()
             case SetNotchFilter(level=level):
                 await _r.set_notch_filter(level)
                 if self._radio_state:
                     self._radio_state.notch_filter = level
-                    self.bump_revision()
             case SetAgcTimeConstant(value=value, receiver=rx):
                 await _r.set_agc_time_constant(value, receiver=rx)
                 if self._radio_state:
@@ -1403,22 +1378,18 @@ class RadioPoller:
                         self._radio_state.sub if rx != 0 else self._radio_state.main
                     )
                     target.agc_time_constant = value
-                    self.bump_revision()
             case SetCwPitch(value=value):
                 await _r.set_cw_pitch(value)
                 if self._radio_state:
                     self._radio_state.cw_pitch = value
-                    self.bump_revision()
             case SetKeySpeed(speed=speed):
                 await _r.set_key_speed(speed)
                 if self._radio_state:
                     self._radio_state.key_speed = speed
-                    self.bump_revision()
             case SetBreakIn(mode=mode):
                 await _r.set_break_in(mode)
                 if self._radio_state:
                     self._radio_state.break_in = mode
-                    self.bump_revision()
             case SetApf(mode=mode, receiver=rx):
                 self._ensure_receiver_supported(rx, operation="set_apf")
                 await _r.set_audio_peak_filter(mode, receiver=rx)
@@ -1427,7 +1398,6 @@ class RadioPoller:
                         self._radio_state.sub if rx != 0 else self._radio_state.main
                     )
                     target.apf_type_level = mode
-                    self.bump_revision()
             case SetTwinPeak(on=on, receiver=rx):
                 self._ensure_receiver_supported(rx, operation="set_twin_peak")
                 await _r.set_twin_peak_filter(on, receiver=rx)
@@ -1436,33 +1406,26 @@ class RadioPoller:
                         self._radio_state.sub if rx != 0 else self._radio_state.main
                     )
                     target.twin_peak_filter = on
-                    self.bump_revision()
             case SetDriveGain(level=level):
                 await _r.set_drive_gain(level)
                 if self._radio_state:
                     self._radio_state.drive_gain = level
-                    self.bump_revision()
             case ScanStart(scan_type=st):
                 await _r.scan_start(mode=st)
                 if self._radio_state:
                     self._radio_state.scanning = True
                     self._radio_state.scan_type = st
-                    self.bump_revision()
             case ScanStop():
                 await _r.scan_stop()
                 if self._radio_state:
                     self._radio_state.scanning = False
                     self._radio_state.scan_type = 0
-                    self.bump_revision()
             case ScanSetDfSpan(span=span):
                 await _r.scan_set_df_span(span)
-                if self._radio_state:
-                    self.bump_revision()
             case ScanSetResume(mode=resume_mode):
                 await _r.scan_set_resume(resume_mode)
                 if self._radio_state:
                     self._radio_state.scan_resume_mode = resume_mode & 0x0F
-                    self.bump_revision()
             case SetDataMode(mode=mode, receiver=rx):
                 self._ensure_receiver_supported(rx, operation="set_data_mode")
                 if not 0 <= mode <= 3:
@@ -1473,7 +1436,6 @@ class RadioPoller:
                         self._radio_state.sub if rx != 0 else self._radio_state.main
                     )
                     target.data_mode = mode
-                    self.bump_revision()
                 if self._on_state_event:
                     self._on_state_event(
                         "data_mode_changed", {"mode": mode, "receiver": rx}
@@ -1482,32 +1444,26 @@ class RadioPoller:
                 await _r.set_mic_gain(level)
                 if self._radio_state:
                     self._radio_state.mic_gain = level
-                    self.bump_revision()
             case SetVox(on=on):
                 await _r.set_vox(on)
                 if self._radio_state:
                     self._radio_state.vox_on = on
-                    self.bump_revision()
             case SetCompressorLevel(level=level):
                 await _r.set_compressor_level(level)
                 if self._radio_state:
                     self._radio_state.compressor_level = level
-                    self.bump_revision()
             case SetMonitor(on=on):
                 await _r.set_monitor(on)
                 if self._radio_state:
                     self._radio_state.monitor_on = on
-                    self.bump_revision()
             case SetMonitorGain(level=level):
                 await _r.set_monitor_gain(level)
                 if self._radio_state:
                     self._radio_state.monitor_gain = level
-                    self.bump_revision()
             case SetDialLock(on=on):
                 await _r.set_dial_lock(on)
                 if self._radio_state:
                     self._radio_state.dial_lock = on
-                    self.bump_revision()
             case SetAgc(mode=mode, receiver=rx):
                 if CAP_AGC in self._caps:
                     self._ensure_receiver_supported(rx, operation="set_agc")
@@ -1520,28 +1476,24 @@ class RadioPoller:
                         self._radio_state.sub if rx != 0 else self._radio_state.main
                     )
                     target.agc = mode
-                    self.bump_revision()
                 if self._on_state_event:
                     self._on_state_event("agc_changed", {"mode": mode, "receiver": rx})
             case SetRitStatus(on=on):
                 await _r.set_rit_status(on)
                 if self._radio_state:
                     self._radio_state.rit_on = on
-                    self.bump_revision()
                 if self._on_state_event:
                     self._on_state_event("rit_changed", {"on": on})
             case SetRitTxStatus(on=on):
                 await _r.set_rit_tx_status(on)
                 if self._radio_state:
                     self._radio_state.rit_tx = on
-                    self.bump_revision()
                 if self._on_state_event:
                     self._on_state_event("rit_tx_changed", {"on": on})
             case SetRitFrequency(freq=freq):
                 await _r.set_rit_frequency(freq)
                 if self._radio_state:
                     self._radio_state.rit_freq = freq
-                    self.bump_revision()
                 if self._on_state_event:
                     self._on_state_event("rit_freq_changed", {"hz": freq})
             case SetSplit(on=on):
@@ -1558,7 +1510,6 @@ class RadioPoller:
                     # Compatibility mirror until web state delivery reads
                     # split directly from StateStore.
                     self._radio_state.split = on
-                    self.bump_revision()
                 if self._on_state_event:
                     self._on_state_event("split_changed", {"on": on})
             case SetBand(band=band):
@@ -1607,7 +1558,6 @@ class RadioPoller:
                             if target:
                                 target.freq = freq
                                 target.mode = mode_name
-                            self.bump_revision()
                             self.mark_polled("freq")
                             self.mark_polled("mode")
                         if self._on_state_event:
@@ -1785,13 +1735,11 @@ class RadioPoller:
                     await radio.set_scope_during_tx(on)
                     if self._radio_state:
                         self._radio_state.scope_controls.during_tx = on
-                    self.bump_revision()
             case SetScopeCenterType(center_type=center_type):
                 if CAP_SCOPE in self._caps:
                     await radio.set_scope_center_type(center_type)
                     if self._radio_state:
                         self._radio_state.scope_controls.center_type = center_type
-                    self.bump_revision()
             case SetScopeFixedEdge(edge=edge, start_hz=start_hz, end_hz=end_hz):
                 if CAP_SCOPE in self._caps:
                     await radio.set_scope_fixed_edge(
@@ -1804,55 +1752,46 @@ class RadioPoller:
                     await radio.set_scope_dual(dual)
                     if self._radio_state:
                         self._radio_state.scope_controls.dual = dual
-                    self.bump_revision()
             case SetScopeMode(mode=mode):
                 if CAP_SCOPE in self._caps:
                     await radio.set_scope_mode(mode)
                     if self._radio_state:
                         self._radio_state.scope_controls.mode = mode
-                    self.bump_revision()
             case SetScopeSpan(span=span):
                 if CAP_SCOPE in self._caps:
                     await radio.set_scope_span(span)
                     if self._radio_state:
                         self._radio_state.scope_controls.span = span
-                    self.bump_revision()
             case SetScopeSpeed(speed=speed):
                 if CAP_SCOPE in self._caps:
                     await radio.set_scope_speed(speed)
                     if self._radio_state:
                         self._radio_state.scope_controls.speed = speed
-                    self.bump_revision()
             case SetScopeRef(ref=ref):
                 if CAP_SCOPE in self._caps:
                     await radio.set_scope_ref(ref)
                     if self._radio_state:
                         self._radio_state.scope_controls.ref_db = float(ref)
-                    self.bump_revision()
             case SetScopeHold(on=on):
                 if CAP_SCOPE in self._caps:
                     await radio.set_scope_hold(on)
                     if self._radio_state:
                         self._radio_state.scope_controls.hold = on
-                    self.bump_revision()
             case SetScopeEdge(edge=edge):
                 if CAP_SCOPE in self._caps:
                     await radio.set_scope_edge(edge)
                     if self._radio_state:
                         self._radio_state.scope_controls.edge = edge
-                    self.bump_revision()
             case SetScopeVbw(narrow=narrow):
                 if CAP_SCOPE in self._caps:
                     await radio.set_scope_vbw(narrow)
                     if self._radio_state:
                         self._radio_state.scope_controls.vbw_narrow = narrow
-                    self.bump_revision()
             case SetScopeRbw(rbw=rbw):
                 if CAP_SCOPE in self._caps:
                     await radio.set_scope_rbw(rbw)
                     if self._radio_state:
                         self._radio_state.scope_controls.rbw = rbw
-                    self.bump_revision()
             case SetPowerstat(on=on):
                 if CAP_POWER_CONTROL in self._caps:
                     await radio.set_powerstat(on)
@@ -1868,7 +1807,6 @@ class RadioPoller:
                     if self._radio_state is not None:
                         self._radio_state.power_on = on
                     self._emit("powerstat_changed", {"power_on": on})
-                    self.bump_revision()
                     logger.info("radio-poller: power %s", "ON" if on else "OFF")
             case SetTunerStatus(value=value):
                 if CAP_TUNER in self._caps:
@@ -1876,7 +1814,6 @@ class RadioPoller:
                     if self._radio_state is not None:
                         self._radio_state.tuner_status = value
                     self._emit("tuner_changed", {"value": value})
-                    self.bump_revision()
             case SetAntenna1(on=on):
                 # IC-7610: 0x12 0x00 selects ANT1, data byte encodes RX-ANT OFF/ON.
                 if CAP_ANTENNA in self._caps:
@@ -1884,14 +1821,12 @@ class RadioPoller:
                     if self._radio_state is not None:
                         self._radio_state.tx_antenna = 1
                         self._radio_state.rx_antenna_1 = on
-                    self.bump_revision()
             case SetAntenna2(on=on):
                 if CAP_ANTENNA in self._caps:
                     await radio.set_antenna_2(on)
                     if self._radio_state is not None:
                         self._radio_state.tx_antenna = 2
                         self._radio_state.rx_antenna_2 = on
-                    self.bump_revision()
             case SetRxAntennaAnt1(on=on):
                 # IC-7610 RX-ANT is encoded as data byte on 0x12 0x00.
                 # WARNING: This selects ANT1 as TX.
@@ -1900,7 +1835,6 @@ class RadioPoller:
                     if self._radio_state is not None:
                         self._radio_state.tx_antenna = 1
                         self._radio_state.rx_antenna_1 = on
-                    self.bump_revision()
             case SetRxAntennaAnt2(on=on):
                 # IC-7610 RX-ANT is encoded as data byte on 0x12 0x01.
                 # WARNING: This selects ANT2 as TX.
@@ -1909,7 +1843,6 @@ class RadioPoller:
                     if self._radio_state is not None:
                         self._radio_state.tx_antenna = 2
                         self._radio_state.rx_antenna_2 = on
-                    self.bump_revision()
             case SetSystemDate(year=year, month=month, day=day):
                 if CAP_SYSTEM_SETTINGS in self._caps:
                     await radio.set_system_date(year, month, day)
@@ -1940,7 +1873,6 @@ class RadioPoller:
                         self._radio_state.sub if rx != 0 else self._radio_state.main
                     )
                     target.tone_freq = freq
-                    self.bump_revision()
             case SetTsqlFreq(freq_hz=freq, receiver=rx):
                 self._ensure_receiver_supported(rx, operation="set_tsql_freq")
                 if CAP_TSQL in self._caps:
@@ -1950,68 +1882,57 @@ class RadioPoller:
                         self._radio_state.sub if rx != 0 else self._radio_state.main
                     )
                     target.tsql_freq = freq
-                    self.bump_revision()
             case SetMainSubTracking(on=on):
                 if CAP_MAIN_SUB_TRACKING in self._caps:
                     await radio.set_main_sub_tracking(on)
                 if self._radio_state:
                     self._radio_state.main_sub_tracking = on
-                    self.bump_revision()
             case SetSsbTxBandwidth(value=value):
                 if CAP_SSB_TX_BW in self._caps:
                     await radio.set_ssb_tx_bandwidth(value)
                 if self._radio_state:
                     self._radio_state.ssb_tx_bandwidth = value
-                    self.bump_revision()
             case SetManualNotchWidth(value=value, receiver=rx):
                 self._ensure_receiver_supported(rx, operation="set_manual_notch_width")
                 if CAP_NOTCH in self._caps:
                     await radio.set_manual_notch_width(value, receiver=rx)
-                self.bump_revision()
             case SetBreakInDelay(level=level):
                 if CAP_BREAK_IN in self._caps:
                     await radio.set_break_in_delay(level)
                 if self._radio_state:
                     self._radio_state.break_in_delay = level
-                    self.bump_revision()
             case SetVoxGain(level=level):
                 if CAP_VOX in self._caps:
                     await radio.set_vox_gain(level)
                 if self._radio_state:
                     self._radio_state.vox_gain = level
-                    self.bump_revision()
             case SetAntiVoxGain(level=level):
                 if CAP_VOX in self._caps:
                     await radio.set_anti_vox_gain(level)
                 if self._radio_state:
                     self._radio_state.anti_vox_gain = level
-                    self.bump_revision()
             case SetVoxDelay(level=level):
                 if CAP_VOX in self._caps:
                     await radio.set_vox_delay(level)
                 if self._radio_state:
                     self._radio_state.vox_delay = level
-                    self.bump_revision()
             case SetNbDepth(level=level, receiver=rx):
                 self._ensure_receiver_supported(rx, operation="set_nb_depth")
                 if CAP_NB in self._caps:
                     await radio.set_nb_depth(level, receiver=rx)
                 if self._radio_state:
                     self._radio_state.nb_depth = level
-                    self.bump_revision()
             case SetNbWidth(level=level, receiver=rx):
                 self._ensure_receiver_supported(rx, operation="set_nb_width")
                 if CAP_NB in self._caps:
                     await radio.set_nb_width(level, receiver=rx)
                 if self._radio_state:
                     self._radio_state.nb_width = level
-                    self.bump_revision()
             case SetDashRatio(value=value):
                 if CAP_CW in self._caps:
                     await radio.set_dash_ratio(value)
                 if self._radio_state:
                     self._radio_state.dash_ratio = value
-                    self.bump_revision()
             case SetRepeaterTone(on=on, receiver=rx):
                 self._ensure_receiver_supported(rx, operation="set_repeater_tone")
                 if CAP_REPEATER_TONE in self._caps:
@@ -2021,7 +1942,6 @@ class RadioPoller:
                         self._radio_state.sub if rx != 0 else self._radio_state.main
                     )
                     target.repeater_tone = on
-                    self.bump_revision()
             case SetRepeaterTsql(on=on, receiver=rx):
                 self._ensure_receiver_supported(rx, operation="set_repeater_tsql")
                 if CAP_TSQL in self._caps:
@@ -2031,14 +1951,12 @@ class RadioPoller:
                         self._radio_state.sub if rx != 0 else self._radio_state.main
                     )
                     target.repeater_tsql = on
-                    self.bump_revision()
             case SetRxAntenna(antenna=antenna, on=on):
                 if CAP_RX_ANTENNA in self._caps:
                     if antenna == 1:
                         await radio.set_rx_antenna_ant1(on)
                     else:
                         await radio.set_rx_antenna_ant2(on)
-                self.bump_revision()
             case SetMemoryMode(channel=channel):
                 if isinstance(radio, MemoryCapable):
                     await radio.set_memory_mode(channel)
@@ -2081,7 +1999,6 @@ class RadioPoller:
                 await _r.set_ref_adjust(value)
                 if self._radio_state:
                     self._radio_state.ref_adjust = value
-                    self.bump_revision()
             case SetCivTransceive(on=on):
                 await _r.set_civ_transceive(on)
             case SetCivOutputAnt(on=on):
@@ -2093,19 +2010,16 @@ class RadioPoller:
                         self._radio_state.sub if rx != 0 else self._radio_state.main
                     )
                     target.af_mute = on
-                    self.bump_revision()
             case SetTuningStep(step=step):
                 await _r.set_tuning_step(step)
                 if self._radio_state:
                     self._radio_state.tuning_step = step
-                    self.bump_revision()
             case SetXfcStatus(on=on):
                 await _r.set_xfc_status(on)
             case SetTxFreqMonitor(on=on):
                 await _r.set_tx_freq_monitor(on)
                 if self._radio_state:
                     self._radio_state.tx_freq_monitor = on
-                    self.bump_revision()
             case SetUtcOffset(hours=hours, minutes=minutes, is_negative=is_negative):
                 await _r.set_utc_offset(hours, minutes, is_negative)
             case QuickSplit():
@@ -2128,7 +2042,6 @@ class RadioPoller:
                     logger.info("radio-poller: quick SPLIT (equalize + SPLIT ON)")
                     if self._radio_state:
                         self._radio_state.split = True
-                        self.bump_revision()
                     if self._on_state_event:
                         self._on_state_event("split_changed", {"on": True})
             case Speak(mode=what):

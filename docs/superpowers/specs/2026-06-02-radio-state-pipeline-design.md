@@ -548,6 +548,15 @@ Frontend rules:
 - Optimistic patches remain local overlays until confirmed, expired, or
   superseded by canonical state/freshness changes.
 
+MOR-347 implementation note:
+
+- Web poller-owned public revision has been removed.
+- HTTP and WebSocket payloads use `StateStore` snapshots for canonical
+  `stateRevision`/`freshnessRevision`; legacy `revision` aliases
+  `stateRevision`.
+- WebSocket delta/full envelopes include additive `transportSeq` for transport
+  ordering only.
+
 ## Command Flow
 
 ```mermaid

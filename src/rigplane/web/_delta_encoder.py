@@ -46,7 +46,7 @@ class DeltaEncoder:
                 Prevents client/server state drift due to missed messages.
         """
         self._previous_state: dict[str, Any] | None = None
-        self._revision: int = 0
+        self._transport_seq: int = 0
         self._delta_count: int = 0
         self._full_state_interval = full_state_interval
 
@@ -85,8 +85,10 @@ class DeltaEncoder:
                 }
         """
         # Check if full state refresh is needed
-        external_revision = state_revision is not None
-        revision_value = self._revision if state_revision is None else int(state_revision)
+        self._transport_seq += 1
+        revision_value = (
+            self._transport_seq if state_revision is None else int(state_revision)
+        )
         freshness_value = 0 if freshness_revision is None else int(freshness_revision)
 
         if (
@@ -96,15 +98,15 @@ class DeltaEncoder:
         ):
             # Send full state
             self._previous_state = copy.deepcopy(current_state)
-            self._revision = revision_value if external_revision else self._revision + 1
             self._delta_count = 0
             full_result = {
                 "type": "full",
                 "data": dict(current_state),
-                "revision": self._revision,
+                "revision": revision_value,
+                "transportSeq": self._transport_seq,
             }
             if state_revision is not None:
-                full_result["stateRevision"] = self._revision
+                full_result["stateRevision"] = revision_value
             if freshness_revision is not None:
                 full_result["freshnessRevision"] = freshness_value
             return full_result
@@ -126,17 +128,17 @@ class DeltaEncoder:
 
         # Update previous state for next comparison
         self._previous_state = copy.deepcopy(current_state)
-        self._revision = revision_value if external_revision else self._revision + 1
         self._delta_count += 1
 
         # Build delta message
         result: dict[str, Any] = {
             "type": "delta",
             "changed": changed,
-            "revision": self._revision,
+            "revision": revision_value,
+            "transportSeq": self._transport_seq,
         }
         if state_revision is not None:
-            result["stateRevision"] = self._revision
+            result["stateRevision"] = revision_value
         if freshness_revision is not None:
             result["freshnessRevision"] = freshness_value
         if removed:
@@ -146,13 +148,13 @@ class DeltaEncoder:
 
     @property
     def revision(self) -> int:
-        """Current revision counter."""
-        return self._revision
+        """Current transport sequence counter for legacy callers."""
+        return self._transport_seq
 
     def reset(self) -> None:
         """Reset encoder state (e.g., on client reconnect)."""
         self._previous_state = None
-        self._revision = 0
+        self._transport_seq = 0
         self._delta_count = 0
 
 
