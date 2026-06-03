@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass, replace
 from enum import StrEnum
-from typing import Any, Literal
+from typing import Any, Callable, Literal
 
 from rigplane.core.state_acquisition_policy import (
     AcquisitionPolicy,
@@ -27,6 +28,8 @@ from rigplane.core.state_store import (
     FieldSnapshot,
     FreshnessClock,
     FreshnessState,
+    ReconciliationRequest,
+    SnapshotDelta,
     StateStore,
 )
 
@@ -39,6 +42,7 @@ __all__ = [
     "EnsureFreshResult",
     "MeterObservationCoalescer",
     "RadioStateModelService",
+    "StateFreshnessService",
 ]
 
 
@@ -166,6 +170,7 @@ _PRIORITY_RANK: dict[AcquisitionPriority, int] = {
     AcquisitionPriority.COMMAND: 3,
     AcquisitionPriority.USER: 4,
 }
+_MIN_RECONCILIATION_MAX_AGE = 1e-9
 
 
 class AcquisitionScheduler:
@@ -1014,6 +1019,60 @@ class MeterObservationCoalescer:
             "coalescedSampleCount": self._coalesced_sample_count,
             "nextFlushMonotonic": self.next_flush_monotonic(),
         }
+
+
+class StateFreshnessService:
+    """Advance StateStore freshness and enqueue reconciliation requests."""
+
+    __slots__ = ("_interval_seconds", "_on_delta", "_scheduler", "_store")
+
+    def __init__(
+        self,
+        *,
+        store: StateStore,
+        scheduler: AcquisitionScheduler | None = None,
+        interval_seconds: float = 0.05,
+        on_delta: Callable[[SnapshotDelta], None] | None = None,
+    ) -> None:
+        _validate_positive(interval_seconds, label="interval_seconds")
+        self._store = store
+        self._scheduler = scheduler
+        self._interval_seconds = interval_seconds
+        self._on_delta = on_delta
+
+    def tick(self, *, now: float | None = None) -> SnapshotDelta:
+        """Advance stale fields once and queue reconciliation through scheduler."""
+
+        delta = self._store.mark_stale_due(now=now)
+        for request in delta.reconciliation_requests:
+            self._queue_reconciliation(request)
+        if (delta.freshness or delta.reconciliation_requests) and self._on_delta:
+            self._on_delta(delta)
+        return delta
+
+    async def run(self) -> None:
+        """Run the periodic freshness loop until cancelled by the host."""
+
+        try:
+            while True:
+                await asyncio.sleep(self._interval_seconds)
+                self.tick()
+        except asyncio.CancelledError:
+            pass
+
+    def _queue_reconciliation(self, request: ReconciliationRequest) -> None:
+        scheduler = self._scheduler
+        if scheduler is None:
+            return
+        max_age = request.max_age
+        if max_age is None or max_age <= 0:
+            max_age = _MIN_RECONCILIATION_MAX_AGE
+        scheduler.ensure_fresh(
+            (request.path,),
+            max_age=max_age,
+            priority=AcquisitionPriority.RECONCILIATION,
+            reason=request.reason,
+        )
 
 
 class RadioStateModelService:

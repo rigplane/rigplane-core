@@ -43,6 +43,7 @@ from ..core.acquisition_scheduler import (
     AcquisitionScheduler,
     MeterObservationCoalescer,
     RadioStateModelService,
+    StateFreshnessService,
 )
 from ..core.state_diagnostics import StateDiagnosticsRecorder
 from ..core.command_service import (
@@ -532,7 +533,7 @@ def _serialize_keyboard_config(profile: "RadioProfile") -> dict[str, object] | N
 
 def _runtime_capabilities(radio: "Radio | None") -> set[str]:
     """Backward-compatible alias to shared runtime_capabilities helper."""
-    return runtime_capabilities(radio)
+    return cast(set[str], runtime_capabilities(radio))
 
 
 def _supports_scope(radio: "Radio | None") -> bool:
@@ -654,6 +655,10 @@ class WebServer:
         raw_state_store = getattr(radio, "state_store", None) if radio is not None else None
         self.command_state_store = (
             raw_state_store if isinstance(raw_state_store, StateStore) else StateStore()
+        )
+        self._state_freshness_service = StateFreshnessService(
+            store=self.command_state_store,
+            on_delta=self._on_state_freshness_delta,
         )
         self._bootstrap_state_acquisition()
         self.command_service = CommandService(
@@ -840,9 +845,16 @@ class WebServer:
             store=self.command_state_store,
             scheduler=scheduler,
         )
+        freshness_service = StateFreshnessService(
+            store=self.command_state_store,
+            scheduler=scheduler,
+            on_delta=self._on_state_freshness_delta,
+        )
         coalescer = MeterObservationCoalescer()
+        self._state_freshness_service = freshness_service
         try:
             setattr(radio, "_state_model_service", service)
+            setattr(radio, "_state_freshness_service", freshness_service)
             setattr(radio, "_acquisition_scheduler", scheduler)
             setattr(radio, "_meter_observation_coalescer", coalescer)
         except Exception:
@@ -1194,7 +1206,7 @@ class WebServer:
         if updated_at is None:
             self._cached_public_state_key = cache_key
             self._cached_public_state_payload = copy.deepcopy(payload)
-        return payload
+        return cast(dict[str, Any], payload)
 
     def build_state_update_envelope(self, *, force_full: bool = False) -> dict[str, Any]:
         """Return a WS state-update envelope from the canonical StateStore view."""
@@ -1380,16 +1392,9 @@ class WebServer:
         for observation in observations:
             self.command_state_store.apply(observation)
 
-    async def _state_store_freshness_loop(self) -> None:
-        """Advance freshness-only revisions and broadcast resulting deltas."""
-        try:
-            while True:
-                await asyncio.sleep(0.05)
-                delta = self.command_state_store.mark_stale_due()
-                if delta.freshness or delta.reconciliation_requests:
-                    self._broadcast_state_update()
-        except asyncio.CancelledError:
-            pass
+    def _on_state_freshness_delta(self, _delta: object) -> None:
+        """React to StateStore freshness changes produced by the shared service."""
+        self._broadcast_state_update()
 
     def _build_radio_health(self) -> dict[str, Any]:
         """Build radio health and advance the health revision on transitions."""
@@ -1411,7 +1416,7 @@ class WebServer:
             self._health_revision += 1
             self._health_since_monotonic = now
         health["sinceMs"] = int(max(0.0, now - self._health_since_monotonic) * 1000)
-        return health
+        return cast(dict[str, Any], health)
 
     def broadcast_notification(
         self,
