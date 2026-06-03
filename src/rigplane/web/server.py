@@ -53,7 +53,7 @@ from ..core.state_pipeline_contracts import (
     Observation,
     SourceMetadata,
 )
-from ..core.state_store import StateStore
+from ..core.state_store import StateSnapshot, StateStore
 from ..radio_state import RadioState
 from ..capabilities import CAP_AUDIO, CAP_SCOPE
 from ..exceptions import TimeoutError as RigplaneTimeoutError
@@ -247,6 +247,28 @@ _LEGACY_GLOBAL_SLOW_STATE_FIELDS: tuple[tuple[str, str], ...] = (
 
 _CivTransactionExpect = Literal["none", "ack", "data"]
 _MISSING_BATCH_STEP_ID = object()
+
+
+def _changed_legacy_state_keys(
+    current: Any,
+    previous: Any,
+    *,
+    prefix: str = "",
+) -> set[str]:
+    if current == previous:
+        return set()
+    changed = {prefix} if prefix else set()
+    if isinstance(current, dict) and isinstance(previous, dict):
+        for key in current.keys() | previous.keys():
+            child_prefix = f"{prefix}.{key}" if prefix else str(key)
+            changed.update(
+                _changed_legacy_state_keys(
+                    current.get(key),
+                    previous.get(key),
+                    prefix=child_prefix,
+                )
+            )
+    return changed
 
 
 class _HttpBatchValidationError(ValueError):
@@ -653,6 +675,7 @@ class WebServer:
         self._radio_state: RadioState = (
             raw_radio_state if isinstance(raw_radio_state, RadioState) else RadioState()
         )
+        self._legacy_delivery_state_dict: dict[str, Any] = RadioState().to_dict()
         if radio is not None:
             try:
                 setattr(radio, "_state_diagnostics", self._state_diagnostics)
@@ -1032,9 +1055,9 @@ class WebServer:
         self._update_fft_scope_freq()
         self._update_fft_scope_mode()
 
-        self._ensure_legacy_state_store_seeded()
+        self._sync_legacy_state_store_for_delivery()
         snapshot = self.command_state_store.snapshot()
-        body = self.build_public_state()
+        body = self._build_public_state_from_snapshot(snapshot)
         state_key = (
             snapshot.state_revision,
             snapshot.freshness_revision,
@@ -1077,8 +1100,16 @@ class WebServer:
 
     def build_public_state(self, *, updated_at: str | None = None) -> dict[str, Any]:
         """Return the canonical public state payload for web consumers."""
-        self._ensure_legacy_state_store_seeded()
+        self._sync_legacy_state_store_for_delivery()
         snapshot = self.command_state_store.snapshot()
+        return self._build_public_state_from_snapshot(snapshot, updated_at=updated_at)
+
+    def _build_public_state_from_snapshot(
+        self,
+        snapshot: StateSnapshot,
+        *,
+        updated_at: str | None = None,
+    ) -> dict[str, Any]:
         health = self._build_radio_health()
         cache_key = (
             snapshot.state_revision,
@@ -1112,9 +1143,9 @@ class WebServer:
 
     def build_state_update_envelope(self, *, force_full: bool = False) -> dict[str, Any]:
         """Return a WS state-update envelope from the canonical StateStore view."""
-        self._ensure_legacy_state_store_seeded()
+        self._sync_legacy_state_store_for_delivery()
         snapshot = self.command_state_store.snapshot()
-        body = self.build_public_state()
+        body = self._build_public_state_from_snapshot(snapshot)
         encoder = (
             DeltaEncoder(full_state_interval=100) if force_full else self._delta_encoder
         )
@@ -1125,19 +1156,34 @@ class WebServer:
             freshness_revision=snapshot.freshness_revision,
         )
 
-    def _ensure_legacy_state_store_seeded(self) -> None:
-        """Seed the StateStore from legacy RadioState before delivery snapshots."""
-        if self.command_state_store.snapshot().observation_seq == 0:
-            self.sync_state_store_from_radio_state(self._radio_state)
+    def _sync_legacy_state_store_for_delivery(self) -> None:
+        """Reconcile legacy public RadioState fields before delivery snapshots."""
+        state_dict = self._radio_state.to_dict()
+        changed_legacy_keys = _changed_legacy_state_keys(
+            state_dict,
+            self._legacy_delivery_state_dict,
+        )
+        if not changed_legacy_keys:
+            return
+        self.sync_state_store_from_radio_state(
+            self._radio_state,
+            changed_legacy_keys=changed_legacy_keys,
+        )
+        self._legacy_delivery_state_dict = copy.deepcopy(state_dict)
 
-    def sync_state_store_from_radio_state(self, state: RadioState) -> None:
+    def sync_state_store_from_radio_state(
+        self,
+        state: RadioState,
+        *,
+        changed_legacy_keys: set[str] | None = None,
+    ) -> None:
         """Feed compatibility poller snapshots into the canonical StateStore."""
         timestamp = time.monotonic()
         baseline = RadioState()
         state_dict = state.to_dict()
         baseline_dict = baseline.to_dict()
-        observed_paths = {
-            field.path for field in self.command_state_store.snapshot().fields
+        observed_values = {
+            field.path: field.value for field in self.command_state_store.snapshot().fields
         }
         provider = getattr(self._radio, "backend_id", None)
         source = SourceMetadata(
@@ -1153,9 +1199,17 @@ class WebServer:
             path: FieldPath,
             value: Any,
             default: Any,
+            legacy_key: str,
             max_age: float | None = None,
         ) -> None:
-            if value == default and path not in observed_paths:
+            if (
+                changed_legacy_keys is not None
+                and legacy_key not in changed_legacy_keys
+            ):
+                return
+            if value == default and path not in observed_values:
+                return
+            if path in observed_values and observed_values[path] == value:
                 return
             observations.append(
                 Observation(
@@ -1169,6 +1223,7 @@ class WebServer:
 
         def append_receiver_snapshot(
             receiver_id: str,
+            receiver_key: str,
             receiver: Any,
             default_receiver: Any,
         ) -> None:
@@ -1177,11 +1232,13 @@ class WebServer:
                     path=FieldPath.active(receiver_id, "freq_mode", name),
                     value=getattr(receiver, attr),
                     default=getattr(default_receiver, attr),
+                    legacy_key=f"{receiver_key}.{attr}",
                 )
             for slot_name, slot, default_slot in (
                 ("A", receiver.vfo_a, default_receiver.vfo_a),
                 ("B", receiver.vfo_b, default_receiver.vfo_b),
             ):
+                slot_key = f"{receiver_key}.vfo_{slot_name.lower()}"
                 for attr, name in _LEGACY_VFO_SLOT_FIELDS:
                     append_if_changed(
                         path=FieldPath.vfo_slot(
@@ -1192,17 +1249,20 @@ class WebServer:
                         ),
                         value=getattr(slot, attr),
                         default=getattr(default_slot, attr),
+                        legacy_key=f"{slot_key}.{attr}",
                     )
             append_if_changed(
                 path=FieldPath.active_slot(receiver_id),
                 value=receiver.active_slot,
                 default=default_receiver.active_slot,
+                legacy_key=f"{receiver_key}.active_slot",
             )
             for attr, name, max_age in _LEGACY_RECEIVER_METER_FIELDS:
                 append_if_changed(
                     path=FieldPath.receiver(receiver_id, "meters", name),
                     value=getattr(receiver, attr),
                     default=getattr(default_receiver, attr),
+                    legacy_key=f"{receiver_key}.{attr}",
                     max_age=max_age,
                 )
             for attr, name in _LEGACY_RECEIVER_CONTROL_FIELDS:
@@ -1210,38 +1270,44 @@ class WebServer:
                     path=FieldPath.receiver(receiver_id, "operator_controls", name),
                     value=getattr(receiver, attr),
                     default=getattr(default_receiver, attr),
+                    legacy_key=f"{receiver_key}.{attr}",
                 )
             for attr, name in _LEGACY_RECEIVER_TOGGLE_FIELDS:
                 append_if_changed(
                     path=FieldPath.receiver(receiver_id, "operator_toggles", name),
                     value=getattr(receiver, attr),
                     default=getattr(default_receiver, attr),
+                    legacy_key=f"{receiver_key}.{attr}",
                 )
             for attr, name in _LEGACY_RECEIVER_SLOW_STATE_FIELDS:
                 append_if_changed(
                     path=FieldPath.receiver(receiver_id, "slow_state", name),
                     value=getattr(receiver, attr),
                     default=getattr(default_receiver, attr),
+                    legacy_key=f"{receiver_key}.{attr}",
                 )
 
-        append_receiver_snapshot("0", state.main, baseline.main)
+        append_receiver_snapshot("0", "main", state.main, baseline.main)
         for attr, name in _LEGACY_GLOBAL_TX_FIELDS:
             append_if_changed(
                 path=FieldPath.global_("tx_state", name),
                 value=getattr(state, attr),
                 default=getattr(baseline, attr),
+                legacy_key=attr,
             )
         for attr, name in _LEGACY_GLOBAL_CONTROL_FIELDS:
             append_if_changed(
                 path=FieldPath.global_("operator_controls", name),
                 value=getattr(state, attr),
                 default=getattr(baseline, attr),
+                legacy_key=attr,
             )
         for attr, name, max_age in _LEGACY_GLOBAL_METER_FIELDS:
             append_if_changed(
                 path=FieldPath.global_("meters", name),
                 value=getattr(state, attr),
                 default=getattr(baseline, attr),
+                legacy_key=attr,
                 max_age=max_age,
             )
         for attr, name in _LEGACY_GLOBAL_SLOW_STATE_FIELDS:
@@ -1249,9 +1315,10 @@ class WebServer:
                 path=FieldPath.global_("slow_state", name),
                 value=state_dict[attr],
                 default=baseline_dict[attr],
+                legacy_key=attr,
             )
         if self._get_profile().receiver_count > 1:
-            append_receiver_snapshot("1", state.sub, baseline.sub)
+            append_receiver_snapshot("1", "sub", state.sub, baseline.sub)
         for observation in observations:
             self.command_state_store.apply(observation)
 

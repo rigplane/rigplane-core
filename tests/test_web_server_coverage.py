@@ -1215,6 +1215,86 @@ def test_legacy_state_store_sync_preserves_global_rit_on() -> None:
     assert srv.build_public_state()["ritOn"] is True
 
 
+def test_public_state_syncs_legacy_active_after_state_store_observations() -> None:
+    srv = WebServer(None)
+    srv.command_state_store.apply(
+        _store_observation(
+            FieldPath.active("0", "freq_mode", "freq_hz"),
+            14_074_000,
+            at=1.0,
+        )
+    )
+    srv._radio_state.active = "SUB"  # noqa: SLF001
+
+    public_state = srv.build_public_state()
+
+    assert public_state["main"]["freqHz"] == 14_074_000
+    assert public_state["active"] == "SUB"
+
+
+def test_public_state_syncs_legacy_global_toggle_after_state_store_observations() -> None:
+    srv = WebServer(None)
+    srv.command_state_store.apply(
+        _store_observation(
+            FieldPath.active("0", "freq_mode", "freq_hz"),
+            14_074_000,
+            at=1.0,
+        )
+    )
+    srv._radio_state.dual_watch = True  # noqa: SLF001
+
+    public_state = srv.build_public_state()
+
+    assert public_state["dualWatch"] is True
+
+
+def test_public_state_sync_can_clear_legacy_global_toggle_default() -> None:
+    srv = WebServer(None)
+    srv.command_state_store.apply(
+        _store_observation(
+            FieldPath.active("0", "freq_mode", "freq_hz"),
+            14_074_000,
+            at=1.0,
+        )
+    )
+    srv._radio_state.split = True  # noqa: SLF001
+    assert srv.build_public_state()["split"] is True
+
+    srv._radio_state.split = False  # noqa: SLF001
+
+    assert srv.build_public_state()["split"] is False
+
+
+@pytest.mark.asyncio
+async def test_http_and_ws_full_state_share_post_sync_legacy_snapshot() -> None:
+    srv = WebServer(None)
+    srv.command_state_store.apply(
+        _store_observation(
+            FieldPath.active("0", "freq_mode", "freq_hz"),
+            14_074_000,
+            at=1.0,
+        )
+    )
+    srv._radio_state.active = "SUB"  # noqa: SLF001
+    srv._radio_state.dual_watch = True  # noqa: SLF001
+
+    envelope = srv.build_state_update_envelope(force_full=True)
+    assert envelope["type"] == "full"
+    ws_state = envelope["data"]
+
+    writer = _FakeWriter()
+    await srv._serve_state(writer)  # noqa: SLF001
+    status, http_state = _response_json(writer)
+
+    assert status == 200
+    assert http_state == ws_state
+    assert http_state["active"] == "SUB"
+    assert http_state["dualWatch"] is True
+    assert envelope["revision"] == ws_state["stateRevision"]
+    assert envelope["stateRevision"] == ws_state["stateRevision"]
+    assert envelope["freshnessRevision"] == ws_state["freshnessRevision"]
+
+
 @pytest.mark.asyncio
 async def test_on_radio_reconnect_enables_scope_without_waiting_for_broadcast() -> None:
     """Reconnect must queue EnableScope even while ``radio_ready`` is False.
