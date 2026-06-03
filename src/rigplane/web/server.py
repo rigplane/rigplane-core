@@ -532,7 +532,7 @@ def _serialize_keyboard_config(profile: "RadioProfile") -> dict[str, object] | N
 
 def _runtime_capabilities(radio: "Radio | None") -> set[str]:
     """Backward-compatible alias to shared runtime_capabilities helper."""
-    return cast(set[str], runtime_capabilities(radio))
+    return runtime_capabilities(radio)
 
 
 def _supports_scope(radio: "Radio | None") -> bool:
@@ -1194,7 +1194,7 @@ class WebServer:
         if updated_at is None:
             self._cached_public_state_key = cache_key
             self._cached_public_state_payload = copy.deepcopy(payload)
-        return cast(dict[str, Any], payload)
+        return payload
 
     def build_state_update_envelope(self, *, force_full: bool = False) -> dict[str, Any]:
         """Return a WS state-update envelope from the canonical StateStore view."""
@@ -1411,7 +1411,7 @@ class WebServer:
             self._health_revision += 1
             self._health_since_monotonic = now
         health["sinceMs"] = int(max(0.0, now - self._health_since_monotonic) * 1000)
-        return cast(dict[str, Any], health)
+        return health
 
     def broadcast_notification(
         self,

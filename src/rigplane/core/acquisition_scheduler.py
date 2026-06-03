@@ -16,7 +16,13 @@ from rigplane.core.state_acquisition_policy import (
     RadioAcquisitionProfile,
     ReconciliationPriority,
 )
-from rigplane.core.state_pipeline_contracts import ChangeSet, FieldPath, Observation
+from rigplane.core.state_pipeline_contracts import (
+    ChangeSet,
+    FieldChange,
+    FieldPath,
+    Observation,
+    SourceMetadata,
+)
 from rigplane.core.state_store import (
     FieldSnapshot,
     FreshnessClock,
@@ -950,8 +956,8 @@ class MeterObservationCoalescer:
             latest_by_path[sample.observation.path] = sample.observation
         self._coalesced_sample_count += len(samples) - len(latest_by_path)
 
-        changes = []
-        sources = []
+        changes: list[FieldChange] = []
+        sources: list[SourceMetadata] = []
         observed_paths: list[FieldPath] = []
         freshness_paths: list[FieldPath] = []
         result: ChangeSet | None = None
@@ -1074,6 +1080,7 @@ class RadioStateModelService:
 def _normalize_paths(
     paths: FieldPath | str | Iterable[FieldPath | str],
 ) -> tuple[FieldPath, ...]:
+    normalized: tuple[FieldPath, ...]
     if isinstance(paths, FieldPath):
         normalized = (paths,)
     elif isinstance(paths, str):
