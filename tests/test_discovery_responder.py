@@ -263,6 +263,35 @@ class TestDiscoveryResponderFleet:
         assert data["station"]["radioAvailable"] is True
         assert data["station"]["readiness"] == "ready_with_radio"
 
+    async def test_fleet_metadata_emitted_when_supplied(self) -> None:
+        """MOR-387: station fleet datagrams can carry box and Fleet API data."""
+        fleet = [
+            FleetRadioInfo(
+                id="radio-a", model="IC-7610", web_port=8081, connected=True
+            ),
+        ]
+        r = DiscoveryResponder(
+            web_port=8080,
+            fleet_provider=lambda: fleet,
+            fleet_api_base="http://127.0.0.1:8090",
+            box_id="RP-354E-3168-2C7B",
+            bind_host="127.0.0.1",
+            discovery_port=0,
+        )
+        await r.start()
+        try:
+            raw = await _query(r.port, MAGIC)
+        finally:
+            await r.stop()
+        assert raw is not None
+        data = json.loads(raw)
+
+        assert data["kind"] == "station_fleet"
+        assert data["box_id"] == "RP-354E-3168-2C7B"
+        assert data["urls"]["fleet"] == "http://127.0.0.1:8090"
+        assert data["radio"]["model"] == "IC-7610"
+        assert data["radios"][0]["id"] == "radio-a"
+
     async def test_radio_provider_overrides_top_level_with_fleet(self) -> None:
         """When both providers are set, top-level uses radio_provider."""
         fleet = [

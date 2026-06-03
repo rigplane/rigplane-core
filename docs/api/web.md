@@ -867,15 +867,19 @@ UDP discovery responses use the same `rigplane.station.discovery.v1` schema.
 Single-station responses keep the same top-level `kind: "station_server"`,
 `url`, `urls`, `station`, and `radio` fields. Fleet-aware supervisors can add
 an additive `radios` array and set `kind: "station_fleet"` while preserving the
-legacy top-level single-radio fields for older clients:
+legacy top-level single-radio fields for older clients. When a supervisor has a
+reachable Fleet API base or stable box identity, it can also add `urls.fleet`
+and top-level `box_id`:
 
 ```json
 {
   "schema": "rigplane.station.discovery.v1",
   "kind": "station_fleet",
+  "box_id": "RP-354E-3168-2C7B",
   "url": "http://192.168.1.50:58421",
   "urls": {
     "base": "http://192.168.1.50:58421",
+    "fleet": "http://192.168.1.50:8090",
     "station": "http://192.168.1.50:58421/api/v1/station"
   },
   "station": {
