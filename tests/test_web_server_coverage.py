@@ -453,7 +453,7 @@ async def test_http_power_enters_command_service_and_keeps_delivery_mirror() -> 
 
 
 @pytest.mark.asyncio
-async def test_http_command_batch_preparation_uses_shared_command_state_store(
+async def test_http_command_batch_preparation_uses_shared_command_service(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     radio = SimpleNamespace(connected=True, capabilities={"tuner"})
@@ -525,7 +525,7 @@ async def test_http_command_batch_preparation_uses_shared_command_state_store(
     assert body["results"][0]["ok"] is True
     assert isinstance(seen["command_id"], str)
     assert seen["source"] == "http"
-    assert seen["command_service"] is not None
+    assert seen["command_service"] is srv.command_service
     assert seen["command_service"]._state_store is srv.command_state_store  # noqa: SLF001
     assert seen["overlays"] != ()
     assert (

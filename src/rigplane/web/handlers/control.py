@@ -184,9 +184,11 @@ class _ControlCommandExecutor:
     handler: "ControlHandler"
 
     async def execute(self, intent: CommandIntent) -> CommandExecutionResult:
+        params = dict(intent.params)
+        params.pop("_control_server", None)
         result = await self.handler._enqueue_legacy_command(  # noqa: SLF001
             intent.name,
-            dict(intent.params),
+            params,
             command_id=intent.id,
             source=intent.source,
             command_service=self.handler._command_service,  # noqa: SLF001
@@ -938,9 +940,12 @@ class ControlHandler:
         command_id: str | None = None,
         source: CommandSource = "websocket",
     ) -> dict[str, Any]:
+        intent_params = dict(params)
+        if self._server is not None:
+            intent_params["_control_server"] = self._server
         intent = command_intent_from_request(
             name,
-            params,
+            intent_params,
             source=source,
             command_id=command_id,
         )

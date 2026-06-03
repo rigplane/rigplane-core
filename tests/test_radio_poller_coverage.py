@@ -14,6 +14,7 @@ from rigplane.core.command_service import (
     CommandService,
     command_intent_from_request,
 )
+from rigplane.core.exceptions import TimeoutError as RigplaneTimeoutError
 from rigplane.core.state_pipeline_contracts import CommandIntent
 from rigplane.exceptions import CommandError
 from rigplane.profiles import resolve_radio_profile
@@ -1027,6 +1028,22 @@ async def test_observable_queue_commands_apply_state_store_observations(
             ("nr", False),
         ),
         (
+            "set_att",
+            {"db": 12, "receiver": 1},
+            SetAttenuator(12, receiver=1),
+            "receiver.1.operator_controls.att",
+            12,
+            ("att", 12),
+        ),
+        (
+            "set_preamp",
+            {"level": 2, "receiver": 1},
+            SetPreamp(2, receiver=1),
+            "receiver.1.operator_controls.preamp",
+            2,
+            ("preamp", 2),
+        ),
+        (
             "set_pbt_inner",
             {"level": 140, "receiver": 1},
             SetPbtInner(140, receiver=1),
@@ -1209,6 +1226,98 @@ async def test_queued_command_failure_emits_failed_lifecycle_and_expires_overlay
         "failed",
     ]
     assert service.pending_overlays(source="websocket", session_id=None) == ()
+
+
+@pytest.mark.asyncio
+async def test_queued_core_timeout_emits_timed_out_lifecycle_and_expires_overlay() -> (
+    None
+):
+    radio = _make_radio()
+    radio.set_freq.side_effect = RigplaneTimeoutError("backend timed out")
+    state = RadioState()
+    store = StateStore()
+    queue = CommandQueue()
+    executor = _QueuedAckExecutor(queue)
+    service = CommandService(executor=executor, state_store=store)
+    executor.command_service = service
+    poller = RadioPoller(
+        radio,
+        StateCache(),
+        queue,
+        radio_state=state,
+        state_store=store,
+    )
+
+    await service.execute(
+        command_intent_from_request(
+            "set_freq",
+            {"freq": 14_074_000, "receiver": 0},
+            source="websocket",
+            command_id="ws-timeout",
+        )
+    )
+    assert service.pending_overlays(source="websocket", session_id=None) != ()
+
+    poller._send_query = AsyncMock(return_value=None)  # noqa: SLF001
+    poller._queue.wait = AsyncMock(side_effect=asyncio.CancelledError())  # noqa: SLF001
+    with patch("rigplane.web.radio_poller.asyncio.sleep", new=AsyncMock()):
+        await poller._run()  # noqa: SLF001
+
+    events = [
+        event for event in service.lifecycle_events() if event.command_id == "ws-timeout"
+    ]
+    assert [event.state for event in events] == [
+        "accepted",
+        "queued",
+        "sent",
+        "acknowledged",
+        "timed_out",
+    ]
+    assert service.pending_overlays(source="websocket", session_id=None) == ()
+
+
+@pytest.mark.asyncio
+async def test_mark_queued_command_failed_scopes_reused_command_ids_by_source() -> None:
+    radio = _make_radio()
+    store = StateStore()
+    queue = CommandQueue()
+    executor = _QueuedAckExecutor(queue)
+    service = CommandService(executor=executor, state_store=store)
+    executor.command_service = service
+    poller = RadioPoller(
+        radio,
+        StateCache(),
+        queue,
+        radio_state=RadioState(),
+        state_store=store,
+    )
+
+    await service.execute(
+        command_intent_from_request(
+            "set_freq",
+            {"freq": 14_074_000, "receiver": 0},
+            source="websocket",
+            command_id="shared-id",
+        )
+    )
+    await service.execute(
+        command_intent_from_request(
+            "set_freq",
+            {"freq": 7_074_000, "receiver": 0},
+            source="http",
+            command_id="shared-id",
+        )
+    )
+
+    entries = queue.drain_entries()
+    poller._mark_queued_command_failed(  # noqa: SLF001
+        entries[0],
+        RuntimeError("radio rejected command"),
+    )
+
+    assert service.pending_overlays(source="websocket", session_id=None) == ()
+    assert len(service.pending_overlays(source="http", session_id=None)) == 1
+    assert service.pending_overlays(source="http", session_id=None)[0].value == 7_074_000
 
 
 @pytest.mark.asyncio

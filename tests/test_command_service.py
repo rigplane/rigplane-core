@@ -14,6 +14,7 @@ from rigplane.core.command_service import (
     command_intent_from_request,
     command_response_observation,
 )
+from rigplane.core.exceptions import TimeoutError as RigplaneTimeoutError
 from rigplane.core.state_pipeline_contracts import (
     CommandIntent,
     CommandLifecycleEvent,
@@ -247,6 +248,23 @@ async def test_failed_and_timed_out_commands_expire_overlays() -> None:
     assert _states(timeout.lifecycle_events())[-1] == "timed_out"
     assert failed.pending_overlays(source="websocket", session_id="ws-a") == ()
     assert timeout.pending_overlays(source="websocket", session_id="ws-a") == ()
+
+
+@pytest.mark.asyncio  # type: ignore[untyped-decorator]
+async def test_core_timeout_error_is_classified_as_timed_out() -> None:
+    clock = FreshnessClock(start=40.5)
+    store = StateStore(freshness_clock=clock)
+    service = CommandService(
+        executor=FakeExecutor(fail=RigplaneTimeoutError("backend timed out")),
+        state_store=store,
+        clock=clock.now,
+    )
+
+    with pytest.raises(RigplaneTimeoutError, match="backend timed out"):
+        await service.execute(_intent(command_id="cmd-core-timeout"))
+
+    assert _states(service.lifecycle_events())[-1] == "timed_out"
+    assert service.pending_overlays(source="websocket", session_id="ws-a") == ()
 
 
 @pytest.mark.asyncio  # type: ignore[untyped-decorator]
@@ -717,6 +735,9 @@ def test_command_response_observation_carries_session_metadata() -> None:
         ("set_rf_gain", {"level": 111}, "receiver.0.operator_controls.rf_gain", 111),
         ("set_af_level", {"level": 87}, "receiver.0.operator_controls.af_level", 87),
         ("set_squelch", {"level": 42}, "receiver.0.operator_controls.squelch", 42),
+        ("set_att", {"db": 12}, "receiver.0.operator_controls.att", 12),
+        ("set_attenuator", {"level": 18}, "receiver.0.operator_controls.att", 18),
+        ("set_preamp", {"level": 2}, "receiver.0.operator_controls.preamp", 2),
         ("set_nb", {"on": True}, "receiver.0.operator_toggles.nb", True),
         ("set_nr", {"on": False}, "receiver.0.operator_toggles.nr", False),
         (

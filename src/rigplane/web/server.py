@@ -228,6 +228,25 @@ class _HttpCommandExecutor:
         raise ValueError(f"unsupported HTTP command intent: {intent.name!r}")
 
 
+@dataclass(slots=True)
+class _SharedControlCommandExecutor:
+    server: "WebServer"
+
+    async def execute(self, intent: CommandIntent) -> CommandExecutionResult:
+        params = dict(intent.params)
+        control_server = params.pop("_control_server", None)
+        result = await self.server._control_handler_for(  # noqa: SLF001
+            server=control_server,
+        )._enqueue_legacy_command(
+            intent.name,
+            params,
+            command_id=intent.id,
+            source=intent.source,
+            command_service=self.server.command_service,
+        )
+        return CommandExecutionResult(details=result)
+
+
 async def _read_capped_body(
     reader: asyncio.StreamReader,
     content_length: int,
@@ -478,6 +497,10 @@ class WebServer:
             enabled=self._config.state_diagnostics
         )
         self.command_state_store = StateStore()
+        self.command_service = CommandService(
+            executor=_SharedControlCommandExecutor(self),
+            state_store=self.command_state_store,
+        )
         self._http_command_service = CommandService(
             executor=_HttpCommandExecutor(self),
             state_store=self.command_state_store,
@@ -2694,6 +2717,7 @@ class WebServer:
             {
                 "command_queue": collector,
                 "command_state_store": self.command_state_store,
+                "command_service": self.command_service,
             },
         )()
         result = await self._control_handler_for(server=proxy_server)._enqueue_command(  # noqa: SLF001

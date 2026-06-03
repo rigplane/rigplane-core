@@ -32,6 +32,7 @@ from typing import TYPE_CHECKING, Any, Callable
 
 from ..exceptions import CommandError
 from ..exceptions import ConnectionError as RadioConnectionError
+from ..core.exceptions import TimeoutError as RigplaneTimeoutError
 from ..capabilities import (
     CAP_AF_LEVEL,
     CAP_AGC,
@@ -180,6 +181,30 @@ def _audio_tx_codec_and_rate(radio: Any) -> tuple[AudioCodec | None, int]:
     if not isinstance(tx_sr, int) or isinstance(tx_sr, bool) or tx_sr <= 0:
         tx_sr = 48000
     return tx_codec, tx_sr
+
+
+def _apply_att_compatibility_mirror(
+    state: "RadioState",
+    *,
+    db: int,
+    receiver: int,
+) -> None:
+    target = state.sub if receiver != 0 else state.main
+    target.att = db
+    if db > 0:
+        target.preamp = 0
+
+
+def _apply_preamp_compatibility_mirror(
+    state: "RadioState",
+    *,
+    level: int,
+    receiver: int,
+) -> None:
+    target = state.sub if receiver != 0 else state.main
+    target.preamp = level
+    if level > 0:
+        target.att = 0
 
 
 # ------------------------------------------------------------------
@@ -428,10 +453,23 @@ class RadioPoller:
         if entry.command_service is None or entry.command_id is None:
             return
         message = str(exc) or None
+        params: dict[str, Any] = {
+            "message": message,
+            "timed_out": timed_out,
+        }
+        if entry.source is not None:
+            params["source"] = entry.source
+            for event in reversed(entry.command_service.lifecycle_events()):
+                if (
+                    event.command_id == entry.command_id
+                    and event.source == entry.source
+                    and "session_id" in (event.details or {})
+                ):
+                    params["session_id"] = event.details["session_id"]
+                    break
         entry.command_service.fail_command(
             entry.command_id,
-            message=message,
-            timed_out=timed_out,
+            **params,
         )
 
     def start(self) -> None:
@@ -738,7 +776,7 @@ class RadioPoller:
                             if entry.future is not None and not entry.future.done():
                                 entry.future.set_result(None)
                             _backoff = 0.0
-                        except TimeoutError as exc:
+                        except (TimeoutError, RigplaneTimeoutError) as exc:
                             self._mark_queued_command_failed(
                                 entry,
                                 exc,
@@ -1188,14 +1226,20 @@ class RadioPoller:
                 self._ensure_receiver_supported(rx, operation="set_attenuator")
                 if CAP_ATTENUATOR in self._caps:
                     await radio.set_attenuator_level(db, receiver=rx)
-                if self._radio_state:
-                    target = (
-                        self._radio_state.sub if rx != 0 else self._radio_state.main
+                self._apply_command_response_observation(
+                    "set_attenuator_level",
+                    {"db": db, "receiver": rx},
+                    command_id=command_id,
+                    source=source,
+                    command_service=command_service,
+                )
+                self._apply_compatibility_mirror(
+                    lambda state: _apply_att_compatibility_mirror(
+                        state,
+                        db=db,
+                        receiver=rx,
                     )
-                    target.att = db
-                    if db > 0:
-                        target.preamp = 0
-                    self.bump_revision()
+                )
                 if self._on_state_event:
                     self._on_state_event(
                         "attenuator_changed", {"db": db, "receiver": rx}
@@ -1204,14 +1248,20 @@ class RadioPoller:
                 self._ensure_receiver_supported(rx, operation="set_preamp")
                 if CAP_PREAMP in self._caps:
                     await radio.set_preamp(level, receiver=rx)
-                if self._radio_state:
-                    target = (
-                        self._radio_state.sub if rx != 0 else self._radio_state.main
+                self._apply_command_response_observation(
+                    "set_preamp",
+                    {"level": level, "receiver": rx},
+                    command_id=command_id,
+                    source=source,
+                    command_service=command_service,
+                )
+                self._apply_compatibility_mirror(
+                    lambda state: _apply_preamp_compatibility_mirror(
+                        state,
+                        level=level,
+                        receiver=rx,
                     )
-                    target.preamp = level
-                    if level > 0:
-                        target.att = 0
-                    self.bump_revision()
+                )
                 if self._on_state_event:
                     self._on_state_event(
                         "preamp_changed", {"level": level, "receiver": rx}

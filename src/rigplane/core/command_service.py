@@ -12,6 +12,7 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any, Protocol
 
+from rigplane.core.exceptions import TimeoutError as RigplaneTimeoutError
 from rigplane.core.state_pipeline_contracts import (
     ChangeSet,
     CommandIntent,
@@ -134,7 +135,7 @@ class CommandService:
 
         try:
             executor_result = await self._executor.execute(intent)
-        except TimeoutError as exc:
+        except (TimeoutError, RigplaneTimeoutError) as exc:
             self.expire_command(
                 intent.id,
                 source=intent.source,
@@ -522,8 +523,14 @@ def command_intent_from_request(
         normalized["af_level"] = int(normalized["level"])
     elif command_name in ("set_sql", "set_squelch"):
         normalized["squelch"] = int(normalized["level"])
-    elif command_name == "set_attenuator_level":
-        raw_value = normalized["db"] if "db" in normalized else normalized["value"]
+    elif command_name in ("set_att", "set_attenuator", "set_attenuator_level"):
+        raw_value = (
+            normalized["db"]
+            if "db" in normalized
+            else normalized["level"]
+            if "level" in normalized
+            else normalized["value"]
+        )
         normalized["att"] = int(raw_value)
     elif command_name == "set_preamp":
         raw_value = normalized["level"] if "level" in normalized else normalized["value"]
@@ -621,7 +628,7 @@ def _command_target(name: str, params: Mapping[str, Any]) -> FieldPath | None:
         return FieldPath.receiver(receiver, "operator_controls", "af_level")
     if name in ("set_sql", "set_squelch"):
         return FieldPath.receiver(receiver, "operator_controls", "squelch")
-    if name == "set_attenuator_level":
+    if name in ("set_att", "set_attenuator", "set_attenuator_level"):
         return FieldPath.receiver(receiver, "operator_controls", "att")
     if name == "set_preamp":
         return FieldPath.receiver(receiver, "operator_controls", "preamp")
