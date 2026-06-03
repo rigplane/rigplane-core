@@ -814,6 +814,55 @@ class TestControlChannel:
         finally:
             await _close_ws(writer)
 
+    async def test_observer_repeated_set_commands_are_not_throttled_ok(
+        self, server: WebServer
+    ) -> None:
+        host, port = _addr(server)
+        reader, writer, _ = await _ws_connect(host, port, "/api/v1/ws?observer=1")
+        try:
+            await _ws_skip_handshake(reader)
+
+            for cmd_id in ("observer-set-1", "observer-set-2"):
+                cmd = {
+                    "type": "cmd",
+                    "id": cmd_id,
+                    "name": "set_freq",
+                    "params": {"vfo": "A", "freq": 14_074_000},
+                }
+                await _ws_send_text(writer, json.dumps(cmd))
+                response = await _ws_recv_cmd_response(reader)
+                assert response == {
+                    "type": "response",
+                    "id": cmd_id,
+                    "ok": False,
+                    "error": "read_only",
+                    "message": "read-only mode: set_freq rejected",
+                }
+        finally:
+            await _close_ws(writer)
+
+    async def test_observer_rejects_radio_lifecycle_messages(
+        self, server: WebServer
+    ) -> None:
+        host, port = _addr(server)
+        reader, writer, _ = await _ws_connect(host, port, "/api/v1/ws?observer=1")
+        try:
+            await _ws_skip_handshake(reader)
+
+            for msg_type in ("radio_connect", "radio_disconnect"):
+                msg = {"type": msg_type, "id": f"observer-{msg_type}"}
+                await _ws_send_text(writer, json.dumps(msg))
+                response = await _ws_recv_cmd_response(reader)
+                assert response == {
+                    "type": "response",
+                    "id": f"observer-{msg_type}",
+                    "ok": False,
+                    "error": "read_only",
+                    "message": f"read-only mode: {msg_type} rejected",
+                }
+        finally:
+            await _close_ws(writer)
+
     async def test_command_set_mode(
         self, server: WebServer, mock_radio: MagicMock
     ) -> None:

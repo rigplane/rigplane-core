@@ -635,6 +635,9 @@ class ControlHandler:
         """Handle radio_connect request — reconnect the radio."""
         logger.info("radio_connect requested")
         msg_id = msg.get("id", "")
+        if self._read_only:
+            await self._send_read_only_rejection(msg_id, "radio_connect")
+            return
         if self._radio is None:
             await self._send_json(
                 {
@@ -704,6 +707,9 @@ class ControlHandler:
         """Handle radio_disconnect request — disconnect the radio."""
         logger.info("radio_disconnect requested")
         msg_id = msg.get("id", "")
+        if self._read_only:
+            await self._send_read_only_rejection(msg_id, "radio_disconnect")
+            return
         if self._radio is None:
             await self._send_json(
                 {
@@ -767,6 +773,17 @@ class ControlHandler:
     async def _send_json(self, obj: dict[str, Any]) -> None:
         """Send a JSON message to the WebSocket client."""
         await self._ws.send_text(encode_json(obj))
+
+    async def _send_read_only_rejection(self, msg_id: Any, name: str) -> None:
+        await self._send_json(
+            {
+                "type": "response",
+                "id": msg_id,
+                "ok": False,
+                "error": "read_only",
+                "message": f"read-only mode: {name} rejected",
+            }
+        )
 
     async def _handle_subscribe(self, msg: dict[str, Any]) -> None:
         streams = msg.get("streams", [])
@@ -837,6 +854,24 @@ class ControlHandler:
         name = msg.get("name", "")
         params = msg.get("params", {})
 
+        if name not in self._COMMANDS:
+            await self._ws.send_text(
+                encode_json(
+                    {
+                        "type": "response",
+                        "id": cmd_id,
+                        "ok": False,
+                        "error": "unknown_command",
+                        "message": f"unknown command: {name!r}",
+                    }
+                )
+            )
+            return
+
+        if self._read_only and not self._is_observer_safe_command(name):
+            await self._send_read_only_rejection(cmd_id, str(name))
+            return
+
         # ── Server-side rate limiting (per client, per command) ──
         # Only throttle SET commands (continuous slider/knob drag).
         # GET and read-only commands pass through.
@@ -867,20 +902,6 @@ class ControlHandler:
                 return
             self._cmd_last[name] = now
             self._cmd_drops[name] = 0
-
-        if name not in self._COMMANDS:
-            await self._ws.send_text(
-                encode_json(
-                    {
-                        "type": "response",
-                        "id": cmd_id,
-                        "ok": False,
-                        "error": "unknown_command",
-                        "message": f"unknown command: {name!r}",
-                    }
-                )
-            )
-            return
 
         if self._radio is None:
             await self._ws.send_text(
