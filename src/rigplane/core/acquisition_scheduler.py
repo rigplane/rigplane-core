@@ -5,17 +5,18 @@ from __future__ import annotations
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass, replace
 from enum import StrEnum
-from typing import Literal
+from typing import Any, Literal
 
 from rigplane.core.state_acquisition_policy import (
     AcquisitionPolicy,
     ExternalCatPauseBehavior,
     FieldAvailability,
     FieldCapability,
+    MeterCoalescingPolicy,
     RadioAcquisitionProfile,
     ReconciliationPriority,
 )
-from rigplane.core.state_pipeline_contracts import FieldPath
+from rigplane.core.state_pipeline_contracts import ChangeSet, FieldPath, Observation
 from rigplane.core.state_store import (
     FieldSnapshot,
     FreshnessClock,
@@ -30,6 +31,7 @@ __all__ = [
     "AcquisitionScheduler",
     "AcquisitionStatus",
     "EnsureFreshResult",
+    "MeterObservationCoalescer",
     "RadioStateModelService",
 ]
 
@@ -133,6 +135,18 @@ class _AcquisitionRequestKey:
     policy: AcquisitionPolicy
 
 
+@dataclass(frozen=True, slots=True)
+class _CadenceState:
+    current_cadence_seconds: float
+    next_due_monotonic: float
+
+
+@dataclass(frozen=True, slots=True)
+class _PendingMeterSample:
+    observation: Observation
+    policy: MeterCoalescingPolicy
+
+
 _PRIORITY_RANK: dict[AcquisitionPriority, int] = {
     AcquisitionPriority.BACKGROUND: 0,
     AcquisitionPriority.RECONCILIATION: 1,
@@ -147,6 +161,7 @@ class AcquisitionScheduler:
 
     __slots__ = (
         "_clock",
+        "_cadence_by_key",
         "_deferred",
         "_external_cat_owner",
         "_external_cat_paused",
@@ -166,6 +181,7 @@ class AcquisitionScheduler:
         self._clock = clock or FreshnessClock()
         self._requests_by_key: dict[_AcquisitionRequestKey, AcquisitionRequest] = {}
         self._deferred: dict[_AcquisitionRequestKey, _PendingEnsureFresh] = {}
+        self._cadence_by_key: dict[_AcquisitionRequestKey, _CadenceState] = {}
         self._next_id = 1
         self._external_cat_paused = False
         self._external_cat_owner: str | None = None
@@ -269,6 +285,134 @@ class AcquisitionScheduler:
             )
         )
 
+    def due_requests(self, *, now: float | None = None) -> tuple[AcquisitionRequest, ...]:
+        """Queue and return policy-cadence poll requests that are due."""
+
+        timestamp = self._clock.now() if now is None else now
+        groups = self._due_poll_groups(timestamp)
+        queued: list[AcquisitionRequest] = []
+        for key, grouped_paths in groups:
+            policy = key.policy
+            assert policy.cadence_seconds is not None
+            max_age = (
+                policy.freshness_ttl_seconds
+                if policy.freshness_ttl_seconds is not None
+                else policy.cadence_seconds
+            )
+            if self._external_cat_paused and self._must_defer_for_external_cat(
+                grouped_paths
+            ):
+                self._defer(
+                    key,
+                    _PendingEnsureFresh(
+                        paths=grouped_paths,
+                        max_age=max_age,
+                        priority=AcquisitionPriority.BACKGROUND,
+                        reason="policy-cadence",
+                        reasons=("policy-cadence",),
+                        timeout=None,
+                        requested_at_monotonic=timestamp,
+                        deadline_monotonic=timestamp + max_age,
+                        external_cat_owner=self._external_cat_owner,
+                    ),
+                )
+                continue
+            queued.extend(
+                self._queue_grouped(
+                    groups=((key, grouped_paths),),
+                    max_age=max_age,
+                    priority=AcquisitionPriority.BACKGROUND,
+                    reason="policy-cadence",
+                    timeout=None,
+                    requested_at=timestamp,
+                    external_cat_owner=self._external_cat_owner,
+                )
+            )
+        return tuple(queued)
+
+    poll_due_requests = due_requests
+
+    def record_acquisition_result(
+        self,
+        request: AcquisitionRequest,
+        change_set: ChangeSet,
+    ) -> None:
+        """Update adaptive cadence state after a backend acquisition completes."""
+
+        key = _request_key(
+            request.paths[0],
+            acquisition_method=request.acquisition_method,
+            policy=request.policy,
+        )
+        existing = self._requests_by_key.get(key)
+        if existing is not None and existing.id == request.id:
+            del self._requests_by_key[key]
+
+        base_cadence = request.policy.cadence_seconds
+        if base_cadence is None:
+            return
+
+        previous = self._cadence_state_for(
+            key,
+            request.policy,
+            now=change_set.timestamp_monotonic,
+        )
+        requested_paths = frozenset(request.paths)
+        semantic_changed = any(
+            change.path in requested_paths for change in change_set.changes
+        )
+        if semantic_changed or not request.policy.adaptive_decay.enabled:
+            current_cadence = base_cadence
+        else:
+            current_cadence = (
+                previous.current_cadence_seconds
+                * request.policy.adaptive_decay.idle_multiplier
+            )
+            max_cadence = request.policy.adaptive_decay.max_cadence_seconds
+            if max_cadence is not None:
+                current_cadence = min(current_cadence, max_cadence)
+        self._cadence_by_key[key] = _CadenceState(
+            current_cadence_seconds=current_cadence,
+            next_due_monotonic=change_set.timestamp_monotonic + current_cadence,
+        )
+
+    def diagnostics(self) -> dict[str, Any]:
+        """Return a JSON-safe scheduler projection for diagnostics surfaces."""
+
+        now = self._clock.now()
+        cadence_by_path: dict[str, dict[str, Any]] = {}
+        cadence_by_group: dict[str, dict[str, Any]] = {}
+        for key, paths in self._poll_cadence_groups().items():
+            policy = key.policy
+            if policy.cadence_seconds is None:
+                continue
+            state = self._cadence_state_for(key, policy, now=now)
+            group_key = _diagnostic_group_key(key)
+            payload = {
+                "paths": [str(path) for path in paths],
+                "baseCadenceSeconds": policy.cadence_seconds,
+                "currentCadenceSeconds": state.current_cadence_seconds,
+                "nextDueMonotonic": state.next_due_monotonic,
+            }
+            cadence_by_group[group_key] = payload
+            for path in paths:
+                cadence_by_path[str(path)] = {
+                    "group": group_key,
+                    "baseCadenceSeconds": policy.cadence_seconds,
+                    "currentCadenceSeconds": state.current_cadence_seconds,
+                    "nextDueMonotonic": state.next_due_monotonic,
+                }
+
+        return {
+            "queuedRequestCount": len(self._requests_by_key),
+            "deferredRequestCount": len(self._deferred),
+            "cadenceByPath": cadence_by_path,
+            "cadenceByGroup": cadence_by_group,
+            "requestPressureByPriorityFamily": self._request_pressure(),
+        }
+
+    to_diagnostics = diagnostics
+
     def pause_external_cat(
         self,
         *,
@@ -353,8 +497,39 @@ class AcquisitionScheduler:
             if deadline_monotonic is None
             else deadline_monotonic
         )
+        return self._queue_grouped(
+            groups=self._request_groups(paths),
+            max_age=max_age,
+            priority=priority,
+            reason=reason,
+            timeout=timeout,
+            requested_at=requested_at,
+            external_cat_owner=external_cat_owner,
+            reasons=request_reasons,
+            deadline_monotonic=request_deadline,
+        )
+
+    def _queue_grouped(
+        self,
+        *,
+        groups: tuple[tuple[_AcquisitionRequestKey, tuple[FieldPath, ...]], ...],
+        max_age: float,
+        priority: AcquisitionPriority,
+        reason: str,
+        timeout: float | None,
+        requested_at: float,
+        external_cat_owner: str | None,
+        reasons: tuple[str, ...] | None = None,
+        deadline_monotonic: float | None = None,
+    ) -> tuple[AcquisitionRequest, ...]:
+        request_reasons = (reason,) if reasons is None else reasons
+        request_deadline = (
+            requested_at + max_age
+            if deadline_monotonic is None
+            else deadline_monotonic
+        )
         queued: list[AcquisitionRequest] = []
-        for key, grouped_paths in self._request_groups(paths):
+        for key, grouped_paths in groups:
             existing = self._requests_by_key.get(key)
             if existing is not None:
                 request = self._coalesce(
@@ -388,6 +563,81 @@ class AcquisitionScheduler:
             self._requests_by_key[key] = request
             queued.append(request)
         return tuple(queued)
+
+    def _due_poll_groups(
+        self,
+        now: float,
+    ) -> tuple[tuple[_AcquisitionRequestKey, tuple[FieldPath, ...]], ...]:
+        due: list[tuple[_AcquisitionRequestKey, FieldPath]] = []
+        for key, paths in self._poll_cadence_groups().items():
+            policy = key.policy
+            if policy.cadence_seconds is None:
+                continue
+            state = self._cadence_state_for(key, policy, now=now)
+            if state.next_due_monotonic <= now:
+                due.extend((key, path) for path in paths)
+
+        grouped: dict[_AcquisitionRequestKey, list[FieldPath]] = {}
+        for key, path in due:
+            grouped.setdefault(key, []).append(path)
+        return tuple(
+            (key, tuple(sorted(paths, key=str))) for key, paths in grouped.items()
+        )
+
+    def _poll_cadence_groups(
+        self,
+    ) -> dict[_AcquisitionRequestKey, tuple[FieldPath, ...]]:
+        grouped: dict[_AcquisitionRequestKey, list[FieldPath]] = {}
+        for capability in self._profile.capabilities:
+            if not capability.can_poll:
+                continue
+            policy = self._profile.policy_for(capability.path)
+            if policy.cadence_seconds is None:
+                continue
+            key = _request_key(
+                capability.path,
+                acquisition_method="poll",
+                policy=policy,
+            )
+            grouped.setdefault(key, []).append(capability.path)
+        return {
+            key: tuple(sorted(paths, key=str))
+            for key, paths in grouped.items()
+        }
+
+    def _cadence_state_for(
+        self,
+        key: _AcquisitionRequestKey,
+        policy: AcquisitionPolicy,
+        *,
+        now: float,
+    ) -> _CadenceState:
+        existing = self._cadence_by_key.get(key)
+        if existing is not None:
+            return existing
+        assert policy.cadence_seconds is not None
+        state = _CadenceState(
+            current_cadence_seconds=policy.cadence_seconds,
+            next_due_monotonic=now,
+        )
+        self._cadence_by_key[key] = state
+        return state
+
+    def _request_pressure(self) -> dict[str, int]:
+        pressure: dict[str, int] = {}
+        for request in self._requests_by_key.values():
+            _add_pressure(
+                pressure,
+                priority=request.priority,
+                family=request.paths[0].family.value,
+            )
+        for item in self._deferred.values():
+            _add_pressure(
+                pressure,
+                priority=item.priority,
+                family=item.paths[0].family.value,
+            )
+        return pressure
 
     def _request_groups(
         self,
@@ -559,6 +809,100 @@ class AcquisitionScheduler:
         return False
 
 
+class MeterObservationCoalescer:
+    """Coalesce short-window meter observations before StateStore apply."""
+
+    __slots__ = ("_coalesced_sample_count", "_dropped_sample_count", "_pending")
+
+    def __init__(self) -> None:
+        self._pending: list[_PendingMeterSample] = []
+        self._dropped_sample_count = 0
+        self._coalesced_sample_count = 0
+
+    def record(
+        self,
+        observation: Observation,
+        policy: MeterCoalescingPolicy,
+    ) -> None:
+        """Record one meter observation under its coalescing policy."""
+
+        if observation.path.family.value != "meters":
+            raise ValueError(f"{observation.path}: meter coalescing requires meters")
+
+        self._pending.append(_PendingMeterSample(observation=observation, policy=policy))
+        if policy.max_samples is None:
+            return
+        overflow = len(self._pending) - policy.max_samples
+        if overflow <= 0:
+            return
+        del self._pending[:overflow]
+        self._dropped_sample_count += overflow
+
+    def flush(self, store: StateStore) -> ChangeSet | None:
+        """Apply latest pending sample per path and return one coalesced ChangeSet."""
+
+        if not self._pending:
+            return None
+
+        latest_by_path: dict[FieldPath, Observation] = {}
+        for sample in self._pending:
+            latest_by_path[sample.observation.path] = sample.observation
+        self._coalesced_sample_count += len(self._pending) - len(latest_by_path)
+
+        changes = []
+        sources = []
+        result: ChangeSet | None = None
+        for observation in sorted(latest_by_path.values(), key=lambda item: str(item.path)):
+            result = store.apply(observation)
+            changes.extend(result.changes)
+            sources.extend(result.sources)
+
+        self._pending.clear()
+        assert result is not None
+        return ChangeSet(
+            revision=result.revision,
+            freshness_revision=result.freshness_revision,
+            observation_seq=result.observation_seq,
+            changes=tuple(changes),
+            timestamp_monotonic=result.timestamp_monotonic,
+            sources=tuple(sources),
+            coalesced=True,
+        )
+
+    def flush_due(self, store: StateStore, *, now: float) -> ChangeSet | None:
+        """Flush only when the oldest pending coalescing window has elapsed."""
+
+        next_flush = self.next_flush_monotonic()
+        if next_flush is None or now < next_flush:
+            return None
+        return self.flush(store)
+
+    def next_flush_monotonic(self) -> float | None:
+        """Return the earliest monotonic time at which pending samples should flush."""
+
+        if not self._pending:
+            return None
+        return float(
+            min(
+                sample.observation.timestamp_monotonic + sample.policy.window_seconds
+                for sample in self._pending
+            )
+        )
+
+    def diagnostics(self) -> dict[str, Any]:
+        """Return JSON-safe coalescing counters."""
+
+        return {
+            "pendingSampleCount": len(self._pending),
+            "pendingPaths": [
+                str(sample.observation.path) for sample in self._pending
+            ],
+            "droppedSampleCount": self._dropped_sample_count,
+            "coalescedSampleCount": self._coalesced_sample_count,
+            "nextFlushMonotonic": self.next_flush_monotonic(),
+        }
+
+
 class RadioStateModelService:
     """Small service API joining StateStore freshness and scheduler requests."""
 
@@ -663,6 +1007,27 @@ def _request_key(
         acquisition_method=acquisition_method,
         policy=policy,
     )
+
+
+def _diagnostic_group_key(key: _AcquisitionRequestKey) -> str:
+    parts = [
+        key.scope,
+        key.family,
+        "" if key.receiver_id is None else key.receiver_id,
+        "" if key.slot is None else key.slot,
+        key.acquisition_method,
+    ]
+    return ":".join(parts)
+
+
+def _add_pressure(
+    pressure: dict[str, int],
+    *,
+    priority: AcquisitionPriority,
+    family: str,
+) -> None:
+    key = f"{priority.value}:{family}"
+    pressure[key] = pressure.get(key, 0) + 1
 
 
 def _capability_method(

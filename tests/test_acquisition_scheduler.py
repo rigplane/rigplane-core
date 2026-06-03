@@ -9,10 +9,12 @@ from rigplane.core.acquisition_scheduler import (
     AcquisitionPriority,
     AcquisitionScheduler,
     AcquisitionStatus,
+    MeterObservationCoalescer,
     RadioStateModelService,
 )
 from rigplane.core.state_acquisition_policy import (
     AcquisitionPolicy,
+    AdaptiveDecayPolicy,
     ExternalCatPauseBehavior,
     FieldAvailability,
     FieldCapability,
@@ -21,6 +23,8 @@ from rigplane.core.state_acquisition_policy import (
     ReconciliationPriority,
 )
 from rigplane.core.state_pipeline_contracts import (
+    ChangeSet,
+    FieldChange,
     FieldPath,
     Observation,
     SourceMetadata,
@@ -45,6 +49,21 @@ def _observation(
         source=_source(),
         timestamp_monotonic=at,
         max_age=max_age,
+    )
+
+
+def _changeset(
+    *,
+    changes: tuple[FieldChange, ...] = (),
+    at: float,
+) -> ChangeSet:
+    return ChangeSet(
+        revision=1 if changes else 0,
+        freshness_revision=1,
+        observation_seq=1,
+        changes=changes,
+        timestamp_monotonic=at,
+        sources=(_source(),),
     )
 
 
@@ -674,3 +693,195 @@ def test_stale_unsolicited_field_queues_reconciliation_and_accepts_readback() ->
     assert reconciled.revision == 2
     assert store.snapshot().field(freq).freshness is FreshnessState.FRESH
     assert store.snapshot().field(freq).value == 14_076_000
+
+
+def test_due_polling_emits_only_pollable_cadence_fields_and_groups_by_existing_key() -> (
+    None
+):
+    clock = FreshnessClock(start=200.0)
+    freq = FieldPath.active("main", "freq_mode", "freq_hz")
+    mode = FieldPath.active("main", "freq_mode", "mode")
+    ptt = FieldPath.global_("tx_state", "ptt")
+    profile = RadioAcquisitionProfile(
+        provider="test_provider",
+        capabilities=(
+            FieldCapability(path=freq, polling=True, unsolicited_push=True),
+            FieldCapability(path=mode, polling=True),
+            FieldCapability(path=ptt, unsolicited_push=True),
+        ),
+        default_policy=AcquisitionPolicy(
+            cadence_seconds=2.0,
+            freshness_ttl_seconds=6.0,
+        ),
+    )
+    scheduler = AcquisitionScheduler(profile=profile, clock=clock)
+
+    requests = scheduler.due_requests()
+
+    assert len(requests) == 1
+    assert requests[0].paths == (freq, mode)
+    assert requests[0].priority is AcquisitionPriority.BACKGROUND
+    assert requests[0].reason == "policy-cadence"
+    assert requests[0].acquisition_method == "poll"
+    assert scheduler.pending_requests() == requests
+
+
+def test_due_polling_skips_unsupported_unhooked_and_unsolicited_only_fields() -> None:
+    clock = FreshnessClock(start=205.0)
+    supported = FieldPath.active("main", "freq_mode", "freq_hz")
+    unsupported = FieldPath.global_("tx_state", "power_on")
+    unhooked = FieldPath.global_("health", "state")
+    unsolicited_only = FieldPath.global_("tx_state", "ptt")
+    profile = RadioAcquisitionProfile(
+        provider="test_provider",
+        capabilities=(
+            FieldCapability(path=supported, polling=True),
+            FieldCapability(
+                path=unsupported,
+                availability=FieldAvailability.UNSUPPORTED,
+                diagnostic="not exposed",
+            ),
+            FieldCapability(path=unhooked),
+            FieldCapability(path=unsolicited_only, unsolicited_push=True),
+        ),
+        default_policy=AcquisitionPolicy(cadence_seconds=1.0),
+    )
+    scheduler = AcquisitionScheduler(profile=profile, clock=clock)
+
+    requests = scheduler.due_requests()
+
+    assert len(requests) == 1
+    assert requests[0].paths == (supported,)
+
+
+def test_unchanged_acquisition_result_decays_cadence_exponentially_and_caps() -> None:
+    clock = FreshnessClock(start=210.0)
+    freq = FieldPath.active("main", "freq_mode", "freq_hz")
+    policy = AcquisitionPolicy(
+        cadence_seconds=2.0,
+        freshness_ttl_seconds=10.0,
+        adaptive_decay=AdaptiveDecayPolicy(
+            enabled=True,
+            idle_multiplier=2.0,
+            max_cadence_seconds=6.0,
+        ),
+    )
+    scheduler = AcquisitionScheduler(
+        profile=_profile([freq], default_policy=policy),
+        clock=clock,
+    )
+
+    first = scheduler.due_requests()[0]
+    scheduler.record_acquisition_result(first, _changeset(at=clock.now()))
+
+    diagnostics = scheduler.diagnostics()
+    assert diagnostics["cadenceByPath"][str(freq)]["currentCadenceSeconds"] == 4.0
+    assert diagnostics["cadenceByPath"][str(freq)]["nextDueMonotonic"] == 214.0
+    clock.advance(3.9)
+    assert scheduler.due_requests() == ()
+    clock.advance(0.1)
+
+    second = scheduler.due_requests()[0]
+    scheduler.record_acquisition_result(second, _changeset(at=clock.now()))
+
+    diagnostics = scheduler.diagnostics()
+    assert diagnostics["cadenceByPath"][str(freq)]["currentCadenceSeconds"] == 6.0
+    assert diagnostics["cadenceByPath"][str(freq)]["nextDueMonotonic"] == 220.0
+
+
+def test_semantic_change_resets_adaptive_cadence_to_base_policy() -> None:
+    clock = FreshnessClock(start=220.0)
+    freq = FieldPath.active("main", "freq_mode", "freq_hz")
+    policy = AcquisitionPolicy(
+        cadence_seconds=2.0,
+        freshness_ttl_seconds=10.0,
+        adaptive_decay=AdaptiveDecayPolicy(
+            enabled=True,
+            idle_multiplier=2.0,
+            max_cadence_seconds=8.0,
+        ),
+    )
+    scheduler = AcquisitionScheduler(
+        profile=_profile([freq], default_policy=policy),
+        clock=clock,
+    )
+    first = scheduler.due_requests()[0]
+    scheduler.record_acquisition_result(first, _changeset(at=clock.now()))
+    clock.advance(4.0)
+
+    second = scheduler.due_requests()[0]
+    scheduler.record_acquisition_result(
+        second,
+        _changeset(
+            changes=(FieldChange(path=freq, previous=7_074_000, current=14_074_000),),
+            at=clock.now(),
+        ),
+    )
+
+    diagnostics = scheduler.diagnostics()
+    assert diagnostics["cadenceByPath"][str(freq)]["currentCadenceSeconds"] == 2.0
+    assert diagnostics["cadenceByPath"][str(freq)]["nextDueMonotonic"] == 226.0
+    clock.advance(1.9)
+    assert scheduler.due_requests() == ()
+    clock.advance(0.1)
+    assert scheduler.due_requests()[0].paths == (freq,)
+
+
+def test_diagnostics_include_cadence_next_due_pending_pressure_and_counts() -> None:
+    clock = FreshnessClock(start=230.0)
+    freq = FieldPath.active("main", "freq_mode", "freq_hz")
+    meter = FieldPath.receiver("main", "meters", "s_meter")
+    profile = _profile(
+        [freq, meter],
+        field_policies={
+            meter: AcquisitionPolicy(
+                external_cat_pause=ExternalCatPauseBehavior.CONTINUE,
+            ),
+        },
+    )
+    scheduler = AcquisitionScheduler(profile=profile, clock=clock)
+
+    scheduler.due_requests()
+    scheduler.pause_external_cat(owner="external")
+    scheduler.ensure_fresh(
+        freq,
+        max_age=1.0,
+        priority="user",
+        reason="deferred-user-read",
+    )
+
+    diagnostics = scheduler.diagnostics()
+
+    assert diagnostics["queuedRequestCount"] == 1
+    assert diagnostics["deferredRequestCount"] == 1
+    assert diagnostics["cadenceByPath"][str(freq)]["baseCadenceSeconds"] == 5.0
+    assert diagnostics["cadenceByPath"][str(freq)]["nextDueMonotonic"] == 230.0
+    assert diagnostics["requestPressureByPriorityFamily"]["background:meters"] == 1
+    assert diagnostics["requestPressureByPriorityFamily"]["user:freq_mode"] == 1
+
+
+def test_meter_coalescing_latest_sample_wins_and_exposes_drop_counts() -> None:
+    clock = FreshnessClock(start=240.0)
+    store = StateStore(freshness_clock=clock)
+    meter = FieldPath.receiver("main", "meters", "s_meter")
+    policy = MeterCoalescingPolicy(window_seconds=0.2, max_samples=2)
+    coalescer = MeterObservationCoalescer()
+
+    coalescer.record(_observation(meter, 40, at=clock.now()), policy)
+    clock.advance(0.05)
+    coalescer.record(_observation(meter, 41, at=clock.now()), policy)
+    clock.advance(0.05)
+    coalescer.record(_observation(meter, 42, at=clock.now()), policy)
+
+    assert coalescer.flush_due(store, now=clock.now() + 0.14) is None
+    changeset = coalescer.flush_due(store, now=clock.now() + 0.15)
+
+    assert changeset is not None
+    assert changeset.coalesced is True
+    assert changeset.changes[0].current == 42
+    assert store.snapshot().field(meter).value == 42
+    assert store.snapshot().state_revision == 1
+    diagnostics = coalescer.diagnostics()
+    assert diagnostics["droppedSampleCount"] == 1
+    assert diagnostics["coalescedSampleCount"] == 1
+    assert diagnostics["pendingSampleCount"] == 0
