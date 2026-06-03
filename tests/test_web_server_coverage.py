@@ -1208,6 +1208,37 @@ async def test_state_response_refreshes_live_connection_payload_without_revision
     assert connected_changed["connection"]["radioReady"] is True
 
 
+def test_broadcast_state_update_refreshes_live_connection_payload_without_revisions() -> (
+    None
+):
+    class _LiveConnectionRadio:
+        connected = True
+        control_connected = False
+        radio_ready = True
+        capabilities: set[str] = set()
+
+    radio = _LiveConnectionRadio()
+    srv = WebServer(radio)
+    q = asyncio.Queue()
+    srv.register_control_event_queue(q)
+
+    srv._broadcast_state_update()  # noqa: SLF001
+    first = q.get_nowait()
+    initial = first["data"]["data"]
+
+    radio.control_connected = True
+
+    srv._last_state_broadcast = 0.0  # noqa: SLF001
+    srv._broadcast_state_update()  # noqa: SLF001
+    event = q.get_nowait()
+
+    assert event["type"] == "state_update"
+    assert event["data"]["type"] == "delta"
+    assert event["data"]["stateRevision"] == initial["stateRevision"]
+    assert event["data"]["freshnessRevision"] == initial["freshnessRevision"]
+    assert event["data"]["changed"]["connection"]["controlConnected"] is True
+
+
 def test_legacy_state_store_sync_can_clear_default_boolean_values() -> None:
     srv = WebServer(None)
     transmitting = RadioState()

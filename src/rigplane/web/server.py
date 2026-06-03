@@ -724,7 +724,7 @@ class WebServer:
         self._pending_state_broadcast_task: asyncio.Task[None] | None = None
         # Delta encoder for efficient state broadcasting
         self._delta_encoder: DeltaEncoder = DeltaEncoder(full_state_interval=100)
-        self._last_broadcast_state_key: tuple[int, int, int] | None = None
+        self._last_broadcast_state_key: tuple[object, ...] | None = None
         self._cached_public_state_key: tuple[object, ...] | None = None
         self._cached_public_state_payload: dict[str, Any] | None = None
         self._health_revision: int = 0
@@ -1062,6 +1062,7 @@ class WebServer:
             snapshot.state_revision,
             snapshot.freshness_revision,
             int(body.get("healthRevision", 0)),
+            *self._live_connection_metadata_key(),
         )
         if state_key == self._last_broadcast_state_key:
             return
@@ -1104,7 +1105,7 @@ class WebServer:
         snapshot = self.command_state_store.snapshot()
         return self._build_public_state_from_snapshot(snapshot, updated_at=updated_at)
 
-    def _public_state_live_connection_cache_key(
+    def _live_connection_metadata_key(
         self,
     ) -> tuple[bool, bool, bool, str | None]:
         radio = self._radio
@@ -1138,7 +1139,7 @@ class WebServer:
             len(self._scope_handlers),
             len(self._control_event_queues),
             len(self._audio_broadcaster._clients),
-            *self._public_state_live_connection_cache_key(),
+            *self._live_connection_metadata_key(),
         )
         if (
             updated_at is None
