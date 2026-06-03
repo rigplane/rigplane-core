@@ -260,7 +260,85 @@ function syncEnvelopeRevisions(
   if (typeof envelope.freshnessRevision === 'number') {
     state.freshnessRevision = envelope.freshnessRevision;
   }
+  if (typeof envelope.observationSeq === 'number') {
+    state.observationSeq = envelope.observationSeq;
+  }
+  if (typeof envelope.publicStateSeq === 'number') {
+    state.publicStateSeq = envelope.publicStateSeq;
+  }
+  if (typeof envelope.transportSeq === 'number') {
+    state.transportSeq = envelope.transportSeq;
+  }
+  if (typeof envelope.healthRevision === 'number') {
+    state.healthRevision = envelope.healthRevision;
+  }
   return state;
+}
+
+function stateRevisionOf(state: Record<string, unknown> | null): number {
+  if (!state) return -1;
+  if (typeof state.stateRevision === 'number') return state.stateRevision;
+  if (typeof state.revision === 'number') return state.revision;
+  return -1;
+}
+
+function freshnessRevisionOf(state: Record<string, unknown> | null): number {
+  return typeof state?.freshnessRevision === 'number' ? state.freshnessRevision : 0;
+}
+
+function healthRevisionOf(state: Record<string, unknown> | null): number {
+  return typeof state?.healthRevision === 'number' ? state.healthRevision : 0;
+}
+
+function observationSeqOf(state: Record<string, unknown> | null): number {
+  return typeof state?.observationSeq === 'number' ? state.observationSeq : 0;
+}
+
+function deliverySeqOf(state: Record<string, unknown> | null): number {
+  if (!state) return -1;
+  const publicStateSeq = typeof state.publicStateSeq === 'number' ? state.publicStateSeq : 0;
+  const transportSeq = typeof state.transportSeq === 'number' ? state.transportSeq : 0;
+  return Math.max(publicStateSeq, transportSeq);
+}
+
+const LIVE_METADATA_KEYS = new Set([
+  'connection',
+  'fieldStatus',
+  'healthRevision',
+  'publicStateSeq',
+  'radioHealth',
+  'transportSeq',
+  'updatedAt',
+  'wsClients',
+]);
+
+function hasOnlyLiveMetadataKeys(keys: string[]): boolean {
+  return keys.length > 0 && keys.every((key) => LIVE_METADATA_KEYS.has(key));
+}
+
+function isRevisionAcceptable(
+  currentState: Record<string, unknown> | null,
+  nextState: Record<string, unknown>,
+  changedKeys: string[] = [],
+): boolean {
+  if (!currentState) return true;
+
+  const lastRevision = stateRevisionOf(currentState);
+  const nextRevision = stateRevisionOf(nextState);
+  const isReset = lastRevision > 10 && nextRevision < lastRevision / 2;
+  const semanticAdvanced = nextRevision > lastRevision;
+  const semanticCurrent = nextRevision === lastRevision;
+  const metadataAdvanced = semanticCurrent && (
+    freshnessRevisionOf(nextState) > freshnessRevisionOf(currentState)
+    || healthRevisionOf(nextState) > healthRevisionOf(currentState)
+    || observationSeqOf(nextState) > observationSeqOf(currentState)
+    || (
+      deliverySeqOf(nextState) > deliverySeqOf(currentState)
+      && hasOnlyLiveMetadataKeys(changedKeys)
+    )
+  );
+
+  return semanticAdvanced || metadataAdvanced || isReset;
 }
 
 function applyDeltaEnvelope(envelope: Record<string, unknown>): Record<string, unknown> | null {
@@ -283,11 +361,16 @@ function applyDeltaEnvelope(envelope: Record<string, unknown>): Record<string, u
     const changed = (envelope.changed ?? {}) as Record<string, unknown>;
     const removed = (envelope.removed ?? []) as string[];
 
-    Object.assign(_fullState, changed);
+    const currentState = _fullState;
+    const nextState = { ...currentState, ...changed };
     for (const key of removed) {
-      delete _fullState[key];
+      delete nextState[key];
     }
-    return syncEnvelopeRevisions(_fullState, envelope);
+    syncEnvelopeRevisions(nextState, envelope);
+    if (!isRevisionAcceptable(currentState, nextState, Object.keys(changed))) return null;
+
+    _fullState = nextState;
+    return _fullState;
   }
 
   // Legacy format (no delta envelope) — plain state object

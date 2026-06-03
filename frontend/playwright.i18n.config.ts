@@ -1,3 +1,5 @@
+/// <reference types="node" />
+
 /**
  * Playwright config for the i18n visual smoke suite (RP-ML-006).
  *
@@ -46,12 +48,16 @@ export default defineConfig({
     },
   ],
   webServer: {
-    // `--strictPort` ensures we fail fast if 4173 is occupied, instead
-    // of silently rolling to 4174 and letting Playwright probe the
-    // wrong URL.
-    command: `npx vite preview --port ${PREVIEW_PORT} --strictPort --host 127.0.0.1`,
+    // The wrapper snapshots `dist/` to a temp directory, then launches
+    // Vite preview with `--strictPort` so the suite serves one immutable
+    // build and fails fast if the requested port is occupied.
+    command: `node scripts/i18n-preview-server.mjs --port ${PREVIEW_PORT} --host 127.0.0.1`,
     url: BASE_URL,
-    reuseExistingServer: !process.env.CI,
+    // This suite updates visual baselines and depends on serving the
+    // freshly built Core frontend. Reusing an arbitrary local process on
+    // this port can produce blank 404 pages that only fail later at the
+    // app-shell visibility gate.
+    reuseExistingServer: false,
     stdout: 'pipe',
     stderr: 'pipe',
     timeout: 60_000,

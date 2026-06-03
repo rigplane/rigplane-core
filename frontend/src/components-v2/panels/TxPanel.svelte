@@ -37,6 +37,13 @@
   let showTx = $derived(p.hasTx);
   let showTuner = $derived(p.hasTuner);
   let showMon = $derived(p.hasMonitor);
+  let showVox = $derived(p.voxAvailable ?? true);
+  let showComp = $derived(p.compAvailable ?? true);
+  let rfPowerAvailable = $derived(p.rfPowerAvailable ?? true);
+  let micGainAvailable = $derived(p.micGainAvailable ?? true);
+  let compLevelAvailable = $derived(p.compLevelAvailable ?? true);
+  let monLevelAvailable = $derived(p.monLevelAvailable ?? true);
+  let driveGainAvailable = $derived(p.driveGainAvailable ?? true);
 
   // ── PTT (hold-to-talk + double-tap latch) ──
   const PTT_DOUBLE_TAP_MS = 300;
@@ -179,12 +186,16 @@
         </HardwareButton>
       {/if}
 
-      <HardwareButton active={voxActive} indicator="edge-left" color="amber" onclick={onVoxToggle}>
-        VOX
-      </HardwareButton>
-      <HardwareButton active={compActive} indicator="edge-left" color="amber" onclick={onCompToggle}>
-        COMP{compActive && compLevel > 0 ? ` ${Math.round(compLevel / 2.55)}%` : ''}
-      </HardwareButton>
+      {#if showVox}
+        <HardwareButton active={voxActive} indicator="edge-left" color="amber" onclick={onVoxToggle}>
+          VOX
+        </HardwareButton>
+      {/if}
+      {#if showComp}
+        <HardwareButton active={compActive} indicator="edge-left" color="amber" onclick={onCompToggle}>
+          COMP{compActive && compLevel > 0 ? ` ${Math.round(compLevel / 2.55)}%` : ''}
+        </HardwareButton>
+      {/if}
       {#if showMon}
         <HardwareButton active={monActive} indicator="edge-left" color="amber" onclick={onMonToggle}>
           MON{monActive && monLevel > 0 ? ` ${Math.round(monLevel / 2.55)}%` : ''}
@@ -215,23 +226,23 @@
     <div class="modal-body">
       <ValueControl label="RF Power" value={rfPower} min={0} max={255} step={1}
         renderer="hbar" displayFn={rawToPercentDisplay} accentColor="var(--v2-accent-red)"
-        onChange={onRfPowerChange} variant="hardware-illuminated" />
+        onChange={onRfPowerChange} variant="hardware-illuminated" disabled={!rfPowerAvailable} />
       <ValueControl label="Mic Gain" value={micGain} min={0} max={255} step={1}
         renderer="hbar" displayFn={rawToPercentDisplay} accentColor="var(--v2-accent-orange)"
-        onChange={onMicGainChange} variant="hardware-illuminated" />
+        onChange={onMicGainChange} variant="hardware-illuminated" disabled={!micGainAvailable} />
       {#if compActive}
         <ValueControl label="Comp Level" value={compLevel} min={0} max={255} step={1}
           renderer="hbar" displayFn={rawToPercentDisplay} accentColor="var(--v2-accent-orange)"
-          onChange={onCompLevelChange} variant="hardware-illuminated" />
+          onChange={onCompLevelChange} variant="hardware-illuminated" disabled={!compLevelAvailable} />
       {/if}
       {#if showMon && monActive}
         <ValueControl label="Mon Level" value={monLevel} min={0} max={255} step={1}
           renderer="hbar" displayFn={rawToPercentDisplay} accentColor="var(--v2-accent-orange)"
-          onChange={onMonLevelChange} variant="hardware-illuminated" />
+          onChange={onMonLevelChange} variant="hardware-illuminated" disabled={!monLevelAvailable} />
       {/if}
       <ValueControl label="Drive Gain" value={driveGain} min={0} max={255} step={1}
         renderer="hbar" displayFn={rawToPercentDisplay} accentColor="var(--v2-accent-orange)"
-        onChange={onDriveGainChange} variant="hardware-illuminated" />
+        onChange={onDriveGainChange} variant="hardware-illuminated" disabled={!driveGainAvailable} />
     </div>
   </div>
 {/if}

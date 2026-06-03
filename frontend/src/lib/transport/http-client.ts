@@ -21,6 +21,51 @@ function getFreshnessRevision(state: ServerState): number {
   return state.freshnessRevision ?? 0;
 }
 
+function getObservationSeq(state: ServerState): number {
+  return state.observationSeq ?? 0;
+}
+
+const LIVE_METADATA_KEYS = new Set([
+  'connection',
+  'fieldStatus',
+  'healthRevision',
+  'publicStateSeq',
+  'radioHealth',
+  'transportSeq',
+  'updatedAt',
+  'wsClients',
+]);
+
+function getDeliverySeq(state: ServerState | null): number {
+  if (!state) return -1;
+  return Math.max(state.publicStateSeq ?? 0, state.transportSeq ?? 0);
+}
+
+function valuesEqual(left: unknown, right: unknown): boolean {
+  if (Object.is(left, right)) return true;
+  try {
+    return JSON.stringify(left) === JSON.stringify(right);
+  } catch {
+    return false;
+  }
+}
+
+function hasOnlyLiveMetadataChanges(current: ServerState | null, next: ServerState): boolean {
+  if (!current) return false;
+  const currentRecord = current as unknown as Record<string, unknown>;
+  const nextRecord = next as unknown as Record<string, unknown>;
+  const keys = new Set([...Object.keys(current), ...Object.keys(next)]);
+  for (const key of keys) {
+    if (valuesEqual(currentRecord[key], nextRecord[key])) {
+      continue;
+    }
+    if (!LIVE_METADATA_KEYS.has(key)) {
+      return false;
+    }
+  }
+  return true;
+}
+
 function getStoredToken(): string | null {
   const storage = globalThis.localStorage;
   if (!storage || typeof storage.getItem !== 'function') {
@@ -102,7 +147,9 @@ export function startPolling(
   let inflight = false;
   let lastStateRevision = -1;
   let lastFreshnessRevision = -1;
+  let lastObservationSeq = -1;
   let lastHealthRevision = -1;
+  let lastAcceptedState: ServerState | null = null;
   let consecutiveErrors = 0;
 
   async function tick() {
@@ -123,11 +170,19 @@ export function startPolling(
         const healthRevision = state?.healthRevision ?? 0;
         const stateRevision = state ? getStateRevision(state) : -1;
         const freshnessRevision = state ? getFreshnessRevision(state) : -1;
+        const observationSeq = state ? getObservationSeq(state) : -1;
         const semanticAdvanced = stateRevision > lastStateRevision;
         const semanticCurrent = stateRevision === lastStateRevision;
         const metadataAdvanced = semanticCurrent && (
           freshnessRevision > lastFreshnessRevision
+          || observationSeq > lastObservationSeq
           || healthRevision > lastHealthRevision
+          || (
+            state !== null
+            && lastAcceptedState !== null
+            && getDeliverySeq(state) > getDeliverySeq(lastAcceptedState)
+            && hasOnlyLiveMetadataChanges(lastAcceptedState, state)
+          )
         );
         if (
           state
@@ -135,7 +190,9 @@ export function startPolling(
         ) {
           lastStateRevision = stateRevision;
           lastFreshnessRevision = freshnessRevision;
+          lastObservationSeq = observationSeq;
           lastHealthRevision = healthRevision;
+          lastAcceptedState = state;
           callback(state);
         }
       } catch {

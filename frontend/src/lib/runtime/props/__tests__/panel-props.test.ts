@@ -1,0 +1,174 @@
+import { describe, expect, it } from 'vitest';
+
+import {
+  toAgcProps,
+  toDspProps,
+  toRfFrontEndProps,
+  toTxProps,
+} from '../panel-props';
+
+function fieldStatus(
+  availability: 'available' | 'missing' | 'stale',
+  observed = availability === 'available',
+) {
+  return {
+    storePath: 'test.path',
+    observed,
+    freshness: availability === 'stale' ? 'stale' : availability === 'missing' ? 'unknown' : 'fresh',
+    availability,
+  };
+}
+
+function makeState(overrides: Record<string, unknown> = {}) {
+  return {
+    revision: 1,
+    updatedAt: '2026-06-03T00:00:00Z',
+    active: 'MAIN',
+    ptt: false,
+    split: false,
+    dualWatch: false,
+    tunerStatus: 0,
+    main: {
+      freqHz: 14_074_000,
+      mode: 'USB',
+      filter: 1,
+      dataMode: 0,
+      sMeter: 50,
+      att: 0,
+      preamp: 0,
+      nb: false,
+      nr: false,
+      afLevel: 128,
+      rfGain: 255,
+      squelch: 0,
+      agc: 2,
+      nbLevel: 0,
+      nrLevel: 0,
+      autoNotch: false,
+      manualNotch: false,
+      agcTimeConstant: 0,
+    },
+    sub: {
+      freqHz: 7_074_000,
+      mode: 'LSB',
+      filter: 1,
+      dataMode: 0,
+      sMeter: 20,
+      att: 0,
+      preamp: 0,
+      nb: false,
+      nr: false,
+      afLevel: 128,
+      rfGain: 255,
+      squelch: 0,
+      agc: 2,
+      nbLevel: 0,
+      nrLevel: 0,
+      autoNotch: false,
+      manualNotch: false,
+      agcTimeConstant: 0,
+    },
+    connection: { rigConnected: true, radioReady: true, controlConnected: true },
+    powerLevel: 128,
+    micGain: 128,
+    voxOn: false,
+    compressorOn: false,
+    compressorLevel: 0,
+    monitorOn: false,
+    monitorGain: 128,
+    driveGain: 128,
+    ...overrides,
+  } as any;
+}
+
+describe('panel prop field availability', () => {
+  it('marks top-level TX controls unavailable when fieldStatus is missing or stale', () => {
+    const props = toTxProps(
+      makeState({
+        fieldStatus: {
+          powerLevel: fieldStatus('missing', false),
+          micGain: fieldStatus('stale'),
+          ptt: fieldStatus('available'),
+        },
+      }),
+      { tx: true, capabilities: ['tuner', 'monitor'] } as any,
+    );
+
+    expect(props.txActive).toBe(false);
+    expect(props.rfPower).toBe(128);
+    expect(props.rfPowerAvailable).toBe(false);
+    expect(props.micGainAvailable).toBe(false);
+    expect(props.txActiveAvailable).toBe(true);
+  });
+
+  it('keeps observed TX controls available', () => {
+    const props = toTxProps(
+      makeState({
+        powerLevel: 200,
+        micGain: 90,
+        fieldStatus: {
+          powerLevel: fieldStatus('available'),
+          micGain: fieldStatus('available'),
+        },
+      }),
+      { tx: true, capabilities: [] } as any,
+    );
+
+    expect(props.rfPower).toBe(200);
+    expect(props.micGain).toBe(90);
+    expect(props.rfPowerAvailable).toBe(true);
+    expect(props.micGainAvailable).toBe(true);
+  });
+
+  it('hides RF front-end controls whose active receiver fields are missing or stale', () => {
+    const props = toRfFrontEndProps(
+      makeState({
+        fieldStatus: {
+          'main.rfGain': fieldStatus('missing', false),
+          'main.att': fieldStatus('stale'),
+          'main.preamp': fieldStatus('available'),
+        },
+      }),
+      {
+        capabilities: ['rf_gain', 'squelch', 'attenuator', 'preamp'],
+        attValues: [0, 6, 12],
+        preValues: [0, 1, 2],
+      } as any,
+    );
+
+    expect(props.showRfGain).toBe(false);
+    expect(props.showAtt).toBe(false);
+    expect(props.showPre).toBe(true);
+  });
+
+  it('does not present missing AGC as the default MID mode', () => {
+    const props = toAgcProps(
+      makeState({
+        fieldStatus: {
+          'main.agc': fieldStatus('missing', false),
+        },
+      }),
+      { capabilities: ['agc'] } as any,
+    );
+
+    expect(props.agcMode).toBe(2);
+    expect(props.hasAgc).toBe(false);
+  });
+
+  it('treats stale DSP fields as unavailable controls', () => {
+    const props = toDspProps(
+      makeState({
+        fieldStatus: {
+          'main.nb': fieldStatus('stale'),
+          'main.nr': fieldStatus('available'),
+          'main.agcTimeConstant': fieldStatus('missing', false),
+        },
+      }),
+      { capabilities: ['nb', 'nr'] } as any,
+    );
+
+    expect(props.hasNb).toBe(false);
+    expect(props.hasNr).toBe(true);
+    expect(props.hasAgcTime).toBe(false);
+  });
+});

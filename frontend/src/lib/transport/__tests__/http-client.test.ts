@@ -1,13 +1,20 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import type { ServerState } from '../../types/state';
 
+type ServerStateWithObservation = ServerState & {
+  observationSeq?: number;
+  publicStateSeq?: number;
+  fieldStatus?: Record<string, unknown>;
+};
+
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
-function makeState(revision: number): ServerState {
+function makeState(revision: number): ServerStateWithObservation {
   return {
     revision,
     stateRevision: revision,
     freshnessRevision: 1,
+    observationSeq: revision,
     updatedAt: new Date().toISOString(),
     active: 'MAIN',
     ptt: false,
@@ -43,6 +50,7 @@ function makeState(revision: number): ServerState {
       squelch: 0,
     },
     connection: { rigConnected: true, radioReady: true, controlConnected: true },
+    wsClients: { scope: 0, control: 1, audio: 0 },
   };
 }
 
@@ -260,6 +268,181 @@ describe('startPolling', () => {
     stop();
   });
 
+  it('delivers stale fieldStatus metadata when freshnessRevision advances', async () => {
+    const first = makeState(42);
+    first.freshnessRevision = 1;
+    first.fieldStatus = {
+      'main.sMeter': {
+        storePath: 'receiver.main.meters.s_meter',
+        observed: true,
+        freshness: 'fresh',
+        availability: 'available',
+      },
+    };
+    const second = makeState(42);
+    second.freshnessRevision = 2;
+    second.fieldStatus = {
+      'main.sMeter': {
+        storePath: 'receiver.main.meters.s_meter',
+        observed: true,
+        freshness: 'stale',
+        availability: 'stale',
+      },
+    };
+    let index = 0;
+    globalThis.fetch = vi.fn().mockImplementation(() => {
+      const state = index++ === 0 ? first : second;
+      return Promise.resolve({
+        ok: true,
+        status: 200,
+        headers: { get: () => `"42-${state.freshnessRevision}-stale-meter"` },
+        json: () => Promise.resolve(state),
+      });
+    });
+
+    const { startPolling } = await import('../http-client');
+    const received: ServerStateWithObservation[] = [];
+    const stop = startPolling((s) => received.push(s), 200);
+
+    await flushMicrotasks();
+    vi.advanceTimersByTime(200);
+    await flushMicrotasks();
+
+    expect(received).toHaveLength(2);
+    expect(received[1].stateRevision).toBe(42);
+    expect(received[1].freshnessRevision).toBe(2);
+    expect(received[1].fieldStatus?.['main.sMeter']).toEqual(
+      second.fieldStatus['main.sMeter'],
+    );
+    stop();
+  });
+
+  it('calls callback when only observationSeq advances after a new ETag payload', async () => {
+    const first = makeState(42);
+    first.observationSeq = 1;
+    first.fieldStatus = {
+      'main.freqHz': {
+        storePath: 'receiver.main.active.freq_mode.freq_hz',
+        observed: true,
+        freshness: 'fresh',
+        availability: 'available',
+        lastObservedMonotonic: 1,
+        source: { provider: 'first' },
+      },
+    };
+    const second = makeState(42);
+    second.observationSeq = 2;
+    second.fieldStatus = {
+      'main.freqHz': {
+        storePath: 'receiver.main.active.freq_mode.freq_hz',
+        observed: true,
+        freshness: 'fresh',
+        availability: 'available',
+        lastObservedMonotonic: 2,
+        source: { provider: 'second' },
+      },
+    };
+    let index = 0;
+    globalThis.fetch = vi.fn().mockImplementation(() => {
+      const state = index++ === 0 ? first : second;
+      return Promise.resolve({
+        ok: true,
+        status: 200,
+        headers: { get: () => `"42-1-h1-o${state.observationSeq}"` },
+        json: () => Promise.resolve(state),
+      });
+    });
+
+    const { startPolling } = await import('../http-client');
+    const received: ServerStateWithObservation[] = [];
+    const stop = startPolling((s) => received.push(s), 200);
+
+    await flushMicrotasks();
+    vi.advanceTimersByTime(200);
+    await flushMicrotasks();
+
+    expect(received).toHaveLength(2);
+    expect(received[1].stateRevision).toBe(42);
+    expect(received[1].freshnessRevision).toBe(1);
+    expect(received[1].observationSeq).toBe(2);
+    expect(received[1].fieldStatus?.['main.freqHz']).toEqual(
+      second.fieldStatus['main.freqHz'],
+    );
+    stop();
+  });
+
+  it('calls callback when only wsClients changes and publicStateSeq advances', async () => {
+    const first = makeState(42);
+    first.observationSeq = 7;
+    first.publicStateSeq = 1;
+    first.wsClients = { scope: 0, control: 1, audio: 0 };
+    const second = makeState(42);
+    second.observationSeq = 7;
+    second.publicStateSeq = 2;
+    second.wsClients = { scope: 0, control: 2, audio: 0 };
+    let index = 0;
+    globalThis.fetch = vi.fn().mockImplementation(() => {
+      const state = index++ === 0 ? first : second;
+      return Promise.resolve({
+        ok: true,
+        status: 200,
+        headers: { get: () => `"42-public-${state.publicStateSeq}"` },
+        json: () => Promise.resolve(state),
+      });
+    });
+
+    const { startPolling } = await import('../http-client');
+    const received: ServerStateWithObservation[] = [];
+    const stop = startPolling((s) => received.push(s), 200);
+
+    await flushMicrotasks();
+    vi.advanceTimersByTime(200);
+    await flushMicrotasks();
+
+    expect(received).toHaveLength(2);
+    expect(received[1].stateRevision).toBe(42);
+    expect(received[1].freshnessRevision).toBe(1);
+    expect(received[1].observationSeq).toBe(7);
+    expect(received[1].publicStateSeq).toBe(2);
+    expect(received[1].wsClients?.control).toBe(2);
+    stop();
+  });
+
+  it('skips equal-revision semantic state even when publicStateSeq advances', async () => {
+    const first = makeState(42);
+    first.publicStateSeq = 1;
+    first.ptt = true;
+    first.wsClients = { scope: 0, control: 1, audio: 0 };
+    const second = makeState(42);
+    second.publicStateSeq = 2;
+    second.ptt = false;
+    second.wsClients = { scope: 0, control: 2, audio: 0 };
+    let index = 0;
+    globalThis.fetch = vi.fn().mockImplementation(() => {
+      const state = index++ === 0 ? first : second;
+      return Promise.resolve({
+        ok: true,
+        status: 200,
+        headers: { get: () => `"42-public-${state.publicStateSeq}"` },
+        json: () => Promise.resolve(state),
+      });
+    });
+
+    const { startPolling } = await import('../http-client');
+    const received: ServerStateWithObservation[] = [];
+    const stop = startPolling((s) => received.push(s), 200);
+
+    await flushMicrotasks();
+    vi.advanceTimersByTime(200);
+    await flushMicrotasks();
+
+    expect(received).toHaveLength(1);
+    expect(received[0].publicStateSeq).toBe(1);
+    expect(received[0].wsClients?.control).toBe(1);
+    expect(received[0].ptt).toBe(true);
+    stop();
+  });
+
   it('skips stale semantic state even when freshnessRevision advances', async () => {
     const first = makeState(42);
     first.freshnessRevision = 1;
@@ -289,6 +472,41 @@ describe('startPolling', () => {
 
     expect(received).toHaveLength(1);
     expect(received[0].stateRevision).toBe(42);
+    expect(received[0].ptt).toBe(true);
+    expect(received[0].main.freqHz).toBe(14074000);
+    stop();
+  });
+
+  it('skips stale semantic state even when observationSeq advances', async () => {
+    const first = makeState(42);
+    first.observationSeq = 10;
+    first.ptt = true;
+    const second = makeState(41);
+    second.observationSeq = 11;
+    second.ptt = false;
+    second.main.freqHz = 7100000;
+    let index = 0;
+    globalThis.fetch = vi.fn().mockImplementation(() => {
+      const state = index++ === 0 ? first : second;
+      return Promise.resolve({
+        ok: true,
+        status: 200,
+        headers: { get: () => `"${state.stateRevision}-o${state.observationSeq}"` },
+        json: () => Promise.resolve(state),
+      });
+    });
+
+    const { startPolling } = await import('../http-client');
+    const received: ServerStateWithObservation[] = [];
+    const stop = startPolling((s) => received.push(s), 200);
+
+    await flushMicrotasks();
+    vi.advanceTimersByTime(200);
+    await flushMicrotasks();
+
+    expect(received).toHaveLength(1);
+    expect(received[0].stateRevision).toBe(42);
+    expect(received[0].observationSeq).toBe(10);
     expect(received[0].ptt).toBe(true);
     expect(received[0].main.freqHz).toBe(14074000);
     stop();

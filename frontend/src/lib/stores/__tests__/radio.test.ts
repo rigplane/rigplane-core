@@ -1,13 +1,20 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import type { ServerState } from '../../types/state';
 
-function makeState(overrides: Partial<ServerState> = {}): ServerState {
+type ServerStateWithObservation = ServerState & {
+  observationSeq?: number;
+  publicStateSeq?: number;
+  fieldStatus?: Record<string, unknown>;
+};
+
+function makeState(overrides: Partial<ServerStateWithObservation> = {}): ServerStateWithObservation {
   const revision = overrides.stateRevision ?? overrides.revision ?? 1;
   const freshnessRevision = overrides.freshnessRevision ?? 1;
   return {
     revision,
     stateRevision: revision,
     freshnessRevision,
+    observationSeq: overrides.observationSeq ?? revision,
     updatedAt: '2026-03-07T00:00:00Z',
     active: 'MAIN',
     ptt: false,
@@ -77,6 +84,7 @@ function makeState(overrides: Partial<ServerState> = {}): ServerState {
       afMute: false,
     },
     connection: { rigConnected: true, radioReady: true, controlConnected: true },
+    wsClients: { scope: 0, control: 1, audio: 0 },
     powerLevel: 255,
     scanning: false,
     tuningStep: 0,
@@ -211,6 +219,100 @@ describe('radio store', () => {
     expect(store.getRadioState()?.main.sMeter).toBe(77);
   });
 
+  it('accepts same-value fieldStatus metadata when observationSeq advances', () => {
+    store.setRadioState(makeState({
+      revision: 5,
+      stateRevision: 5,
+      freshnessRevision: 1,
+      healthRevision: 1,
+      observationSeq: 1,
+      fieldStatus: {
+        'main.freqHz': {
+          storePath: 'receiver.main.active.freq_mode.freq_hz',
+          observed: true,
+          freshness: 'fresh',
+          availability: 'available',
+          lastObservedMonotonic: 1,
+          source: { provider: 'first' },
+        },
+      },
+    }));
+
+    const nextFieldStatus = {
+      'main.freqHz': {
+        storePath: 'receiver.main.active.freq_mode.freq_hz',
+        observed: true,
+        freshness: 'fresh',
+        availability: 'available',
+        lastObservedMonotonic: 2,
+        source: { provider: 'second' },
+      },
+    } as const;
+    store.setRadioState(makeState({
+      revision: 5,
+      stateRevision: 5,
+      freshnessRevision: 1,
+      healthRevision: 1,
+      observationSeq: 2,
+      fieldStatus: nextFieldStatus,
+    }));
+
+    expect(store.getRadioState()?.stateRevision).toBe(5);
+    expect(store.getRadioState()?.freshnessRevision).toBe(1);
+    expect(store.getRadioState()?.observationSeq).toBe(2);
+    expect(store.getRadioState()?.fieldStatus?.['main.freqHz']).toEqual(
+      nextFieldStatus['main.freqHz'],
+    );
+  });
+
+  it('accepts wsClients metadata when publicStateSeq advances without semantic revisions', () => {
+    store.setRadioState(makeState({
+      revision: 5,
+      stateRevision: 5,
+      freshnessRevision: 1,
+      observationSeq: 1,
+      publicStateSeq: 1,
+      wsClients: { scope: 0, control: 1, audio: 0 },
+    }));
+
+    store.setRadioState(makeState({
+      revision: 5,
+      stateRevision: 5,
+      freshnessRevision: 1,
+      observationSeq: 1,
+      publicStateSeq: 2,
+      wsClients: { scope: 0, control: 2, audio: 0 },
+    }));
+
+    expect(store.getRadioState()?.stateRevision).toBe(5);
+    expect(store.getRadioState()?.freshnessRevision).toBe(1);
+    expect(store.getRadioState()?.observationSeq).toBe(1);
+    expect(store.getRadioState()?.publicStateSeq).toBe(2);
+    expect(store.getRadioState()?.wsClients?.control).toBe(2);
+  });
+
+  it('ignores equal-revision semantic changes even when publicStateSeq advances', () => {
+    store.setRadioState(makeState({
+      revision: 5,
+      stateRevision: 5,
+      publicStateSeq: 1,
+      ptt: true,
+      wsClients: { scope: 0, control: 1, audio: 0 },
+    }));
+
+    store.setRadioState(makeState({
+      revision: 5,
+      stateRevision: 5,
+      publicStateSeq: 2,
+      ptt: false,
+      wsClients: { scope: 0, control: 2, audio: 0 },
+    }));
+
+    expect(store.getRadioState()?.publicStateSeq).toBe(1);
+    expect(store.getRadioState()?.wsClients?.control).toBe(1);
+    expect(store.getRadioState()?.ptt).toBe(true);
+  });
+
   it('ignores stale semantic state even when freshnessRevision advances', () => {
     store.setRadioState(makeState({ revision: 6, stateRevision: 6, freshnessRevision: 1, ptt: true }));
     store.setRadioState(makeState({
@@ -226,6 +328,30 @@ describe('radio store', () => {
 
     expect(store.getRadioState()?.stateRevision).toBe(6);
     expect(store.getRadioState()?.freshnessRevision).toBe(1);
+    expect(store.getRadioState()?.ptt).toBe(true);
+    expect(store.getRadioState()?.main.freqHz).toBe(14074000);
+  });
+
+  it('ignores stale semantic state even when observationSeq advances', () => {
+    store.setRadioState(makeState({
+      revision: 6,
+      stateRevision: 6,
+      observationSeq: 6,
+      ptt: true,
+    }));
+    store.setRadioState(makeState({
+      revision: 5,
+      stateRevision: 5,
+      observationSeq: 7,
+      ptt: false,
+      main: {
+        ...makeState().main,
+        freqHz: 7100000,
+      },
+    }));
+
+    expect(store.getRadioState()?.stateRevision).toBe(6);
+    expect(store.getRadioState()?.observationSeq).toBe(6);
     expect(store.getRadioState()?.ptt).toBe(true);
     expect(store.getRadioState()?.main.freqHz).toBe(14074000);
   });
@@ -365,6 +491,42 @@ describe('radio store', () => {
     // Server still says false — optimistic has expired, server wins
     store.setRadioState(makeState({ revision: 2, ptt: false }));
     expect(store.getRadioState()?.ptt).toBe(false);
+
+    vi.useRealTimers();
+  });
+
+  it('exposes missing field status after optimistic top-level TTL expires', () => {
+    vi.useFakeTimers();
+    store.setRadioState(makeState({
+      revision: 1,
+      powerLevel: 128,
+      fieldStatus: {
+        powerLevel: {
+          storePath: 'global.operator_controls.power_level',
+          observed: true,
+          freshness: 'fresh',
+          availability: 'available',
+        },
+      },
+    }));
+    store.patchRadioState({ powerLevel: 220 });
+
+    vi.advanceTimersByTime(6000);
+    store.setRadioState(makeState({
+      revision: 2,
+      powerLevel: 128,
+      fieldStatus: {
+        powerLevel: {
+          storePath: 'global.operator_controls.power_level',
+          observed: false,
+          freshness: 'unknown',
+          availability: 'missing',
+        },
+      },
+    }));
+
+    expect(store.getRadioState()?.powerLevel).toBe(128);
+    expect(store.isRadioFieldAvailable('powerLevel')).toBe(false);
 
     vi.useRealTimers();
   });

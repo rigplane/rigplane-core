@@ -10,6 +10,7 @@
 import type { ServerState, ReceiverState } from '$lib/types/state';
 import type { Capabilities, FilterModeConfig } from '$lib/types/capabilities';
 import type { VfoStateProps } from '../layout/layout-utils';
+import { isFieldAvailable } from '$lib/state/field-status';
 import { deriveIfShift, pbtRawToHz } from '../panels/filter-controls';
 
 /* ── Helpers ─────────────────────────────────────────────────── */
@@ -19,9 +20,22 @@ function activeRx(state: ServerState): ReceiverState {
   return state.active === 'SUB' ? state.sub : state.main;
 }
 
+function activeReceiverKey(state: ServerState): 'main' | 'sub' {
+  return state.active === 'SUB' ? 'sub' : 'main';
+}
+
 /** Check capability presence (safe for null caps). */
 function hasCap(caps: Capabilities | null, name: string): boolean {
   return caps?.capabilities?.includes(name) ?? false;
+}
+
+function topFieldAvailable(state: ServerState | null, field: string): boolean {
+  return isFieldAvailable(state, field);
+}
+
+function activeFieldAvailable(state: ServerState | null, field: string): boolean {
+  if (!state) return false;
+  return isFieldAvailable(state, `${activeReceiverKey(state)}.${field}`);
 }
 
 export function resolveFilterModeConfig(
@@ -176,6 +190,12 @@ export interface RfFrontEndProps {
   pre: number;
   digiSel: boolean;
   ipPlus: boolean;
+  rfGainAvailable: boolean;
+  squelchAvailable: boolean;
+  attAvailable: boolean;
+  preAvailable: boolean;
+  digiSelAvailable: boolean;
+  ipPlusAvailable: boolean;
   attValues: number[];
   preValues: number[];
 }
@@ -185,12 +205,24 @@ export function toRfFrontEndProps(
   caps: Capabilities | null,
 ): RfFrontEndProps {
   const rx = state ? activeRx(state) : null;
+  const rfGainAvailable = activeFieldAvailable(state, 'rfGain');
+  const squelchAvailable = activeFieldAvailable(state, 'squelch');
+  const attAvailable = activeFieldAvailable(state, 'att');
+  const preAvailable = activeFieldAvailable(state, 'preamp');
+  const digiSelAvailable = activeFieldAvailable(state, 'digisel');
+  const ipPlusAvailable = activeFieldAvailable(state, 'ipplus');
   return {
     rfGain: rx?.rfGain ?? 255,
     squelch: rx?.squelch ?? 0,
     att: rx?.att ?? 0,
     digiSel: rx?.digisel ?? false,
     ipPlus: rx?.ipplus ?? false,
+    rfGainAvailable,
+    squelchAvailable,
+    attAvailable,
+    preAvailable,
+    digiSelAvailable,
+    ipPlusAvailable,
     pre: rx?.preamp ?? 0,
     attValues: caps?.attValues ?? [0, 6, 12, 18],
     preValues: caps?.preValues ?? [0, 1, 2],
@@ -244,6 +276,7 @@ export interface AgcProps {
   agcMode: number;
   agcModes: number[];
   agcLabels: Record<string, string>;
+  hasAgc: boolean;
 }
 
 export function toAgcProps(
@@ -255,6 +288,7 @@ export function toAgcProps(
     agcMode: rx?.agc ?? 2,
     agcModes: caps?.agcModes ?? [1, 2, 3],
     agcLabels: caps?.agcLabels ?? { '1': 'FAST', '2': 'MID', '3': 'SLOW' },
+    hasAgc: hasCap(caps, 'agc') && activeFieldAvailable(state, 'agc'),
   };
 }
 
@@ -322,11 +356,16 @@ export interface DspProps {
   notchFreq: number;
   manualNotchWidth: number;
   agcTimeConstant: number;
+  hasNr: boolean;
+  hasNb: boolean;
+  hasNotch: boolean;
+  hasAutoNotch: boolean;
+  hasAgcTime: boolean;
 }
 
 export function toDspProps(
   state: ServerState | null,
-  _caps: Capabilities | null,
+  caps: Capabilities | null,
 ): DspProps {
   const rx = state ? activeRx(state) : null;
 
@@ -334,6 +373,8 @@ export function toDspProps(
   let notchMode: 'off' | 'auto' | 'manual' = 'off';
   if (rx?.autoNotch) notchMode = 'auto';
   else if (rx?.manualNotch) notchMode = 'manual';
+  const manualNotchAvailable = activeFieldAvailable(state, 'manualNotch');
+  const autoNotchAvailable = activeFieldAvailable(state, 'autoNotch');
 
   return {
     nrMode: rx?.nr ? 1 : 0,
@@ -346,6 +387,11 @@ export function toDspProps(
     notchFreq: state?.notchFilter ?? 0,
     manualNotchWidth: rx?.manualNotchWidth ?? 0,
     agcTimeConstant: rx?.agcTimeConstant ?? 0,
+    hasNr: hasCap(caps, 'nr') && activeFieldAvailable(state, 'nr'),
+    hasNb: hasCap(caps, 'nb') && activeFieldAvailable(state, 'nb'),
+    hasNotch: (hasCap(caps, 'notch') || caps === null) && manualNotchAvailable,
+    hasAutoNotch: (hasCap(caps, 'notch') || caps === null) && autoNotchAvailable,
+    hasAgcTime: activeFieldAvailable(state, 'agcTimeConstant'),
   };
 }
 
@@ -363,12 +409,32 @@ export interface TxProps {
   monActive: boolean;
   monLevel: number;
   driveGain: number;
+  txActiveAvailable: boolean;
+  rfPowerAvailable: boolean;
+  micGainAvailable: boolean;
+  atuAvailable: boolean;
+  voxAvailable: boolean;
+  compAvailable: boolean;
+  compLevelAvailable: boolean;
+  monAvailable: boolean;
+  monLevelAvailable: boolean;
+  driveGainAvailable: boolean;
 }
 
 export function toTxProps(
   state: ServerState | null,
   _caps: Capabilities | null,
 ): TxProps {
+  const txActiveAvailable = topFieldAvailable(state, 'ptt');
+  const rfPowerAvailable = topFieldAvailable(state, 'powerLevel');
+  const micGainAvailable = topFieldAvailable(state, 'micGain');
+  const atuAvailable = topFieldAvailable(state, 'tunerStatus');
+  const voxAvailable = topFieldAvailable(state, 'voxOn');
+  const compAvailable = topFieldAvailable(state, 'compressorOn');
+  const compLevelAvailable = topFieldAvailable(state, 'compressorLevel');
+  const monAvailable = topFieldAvailable(state, 'monitorOn');
+  const monLevelAvailable = topFieldAvailable(state, 'monitorGain');
+  const driveGainAvailable = topFieldAvailable(state, 'driveGain');
   return {
     txActive: state?.ptt ?? false,
     rfPower: state?.powerLevel ?? 128,
@@ -381,6 +447,16 @@ export function toTxProps(
     monActive: state?.monitorOn ?? false,
     monLevel: state?.monitorGain ?? 128,
     driveGain: state?.driveGain ?? 128,
+    txActiveAvailable,
+    rfPowerAvailable,
+    micGainAvailable,
+    atuAvailable,
+    voxAvailable,
+    compAvailable,
+    compLevelAvailable,
+    monAvailable,
+    monLevelAvailable,
+    driveGainAvailable,
   };
 }
 

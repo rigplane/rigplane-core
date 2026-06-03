@@ -6,22 +6,25 @@
   const handlers = getAgcHandlers();
   let props = $derived(deriveAgcProps());
   let options = $derived(buildAgcOptions(props.agcModes, props.agcLabels));
+  let showAgc = $derived(props.hasAgc ?? true);
 </script>
 
-<div class="panel-body">
-  <div class="button-grid">
-    {#each options as option}
-      <HardwareButton
-        active={props.agcMode === option.value}
-        indicator="edge-left"
-        color="cyan"
-        onclick={() => handlers.onAgcModeChange(option.value)}
-      >
-        {option.label}
-      </HardwareButton>
-    {/each}
+{#if showAgc}
+  <div class="panel-body">
+    <div class="button-grid">
+      {#each options as option}
+        <HardwareButton
+          active={props.agcMode === option.value}
+          indicator="edge-left"
+          color="cyan"
+          onclick={() => handlers.onAgcModeChange(option.value)}
+        >
+          {option.label}
+        </HardwareButton>
+      {/each}
+    </div>
   </div>
-</div>
+{/if}
 
 <style>
   .panel-body {

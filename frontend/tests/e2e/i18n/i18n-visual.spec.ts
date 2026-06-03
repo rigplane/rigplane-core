@@ -269,6 +269,14 @@ async function waitForAppShell(page: Page): Promise<void> {
   await page.waitForTimeout(400);
 }
 
+async function gotoApp(page: Page, locale: SupportedLocale): Promise<void> {
+  const response = await page.goto(`/?locale=${encodeURIComponent(locale)}`);
+  expect(
+    response?.ok(),
+    `app navigation for ${locale} returned ${response?.status() ?? 'no response'}`,
+  ).toBe(true);
+}
+
 async function captureBaseline(
   page: Page,
   surface: string,
@@ -290,7 +298,7 @@ test.describe('i18n visual smoke (RP-ML-006)', () => {
     for (const viewport of VIEWPORTS) {
       test(`app-shell loaded — ${locale} @ ${viewport.name}`, async ({ page }) => {
         await preparePage(page, locale, viewport);
-        await page.goto(`/?locale=${encodeURIComponent(locale)}`);
+        await gotoApp(page, locale);
         await waitForAppShell(page);
         await assertNoLookupMisses(page, `app-shell/${locale}/${viewport.name}`);
         await assertGlossaryTokens(page, viewport, `app-shell/${locale}/${viewport.name}`);
@@ -299,7 +307,7 @@ test.describe('i18n visual smoke (RP-ML-006)', () => {
 
       test(`status-bar populated — ${locale} @ ${viewport.name}`, async ({ page }) => {
         await preparePage(page, locale, viewport);
-        await page.goto(`/?locale=${encodeURIComponent(locale)}`);
+        await gotoApp(page, locale);
         await waitForAppShell(page);
         // StatusBar lives at the top of the layout in both skins.
         const statusBar = page.locator('.status-bar, [data-status-bar], header.status-bar');
@@ -312,7 +320,7 @@ test.describe('i18n visual smoke (RP-ML-006)', () => {
 
       test(`connection-overlay disconnected — ${locale} @ ${viewport.name}`, async ({ page }) => {
         await preparePage(page, locale, viewport, { state: mockDisconnectedState });
-        await page.goto(`/?locale=${encodeURIComponent(locale)}`);
+        await gotoApp(page, locale);
         await waitForAppShell(page);
         await assertNoLookupMisses(
           page,
@@ -323,7 +331,7 @@ test.describe('i18n visual smoke (RP-ML-006)', () => {
 
       test(`settings modal open — ${locale} @ ${viewport.name}`, async ({ page }) => {
         await preparePage(page, locale, viewport);
-        await page.goto(`/?locale=${encodeURIComponent(locale)}`);
+        await gotoApp(page, locale);
         await waitForAppShell(page);
         // The settings button lives in StatusBar. Its aria-label is
         // localized; instead of looking up the translated string per
@@ -348,7 +356,7 @@ test.describe('i18n visual smoke (RP-ML-006)', () => {
 
       test(`send-report dialog open — ${locale} @ ${viewport.name}`, async ({ page }) => {
         await preparePage(page, locale, viewport);
-        await page.goto(`/?locale=${encodeURIComponent(locale)}`);
+        await gotoApp(page, locale);
         await waitForAppShell(page);
         const reportBtn = page.locator('.control-btn.report-btn');
         if ((await reportBtn.count()) > 0) {
@@ -369,7 +377,7 @@ test.describe('i18n visual smoke (RP-ML-006)', () => {
 
       test(`toast notification — ${locale} @ ${viewport.name}`, async ({ page }) => {
         await preparePage(page, locale, viewport);
-        await page.goto(`/?locale=${encodeURIComponent(locale)}`);
+        await gotoApp(page, locale);
         await waitForAppShell(page);
         // Dispatch a notification through the stubbed WebSocket using
         // a code that is bundled in en-US.json (RP-ML-005 emits
