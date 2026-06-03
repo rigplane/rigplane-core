@@ -34,6 +34,20 @@ _SNAPSHOT_RECEIVER_IDS = {
     "sub": "sub",
 }
 _EMPTY_STATE_DICT = RadioState().to_dict()
+_RECEIVER_FREQ_MODE_FIELDS = {
+    "freq_hz": "freq",
+    "mode": "mode",
+    "filter": "filter",
+    "filter_num": "filter",
+    "data_mode": "data_mode",
+    "filter_width": "filter_width",
+}
+_VFO_SLOT_FIELDS = {
+    "freq_hz": "freq_hz",
+    "mode": "mode",
+    "filter_num": "filter_num",
+    "data_mode": "data_mode",
+}
 _RECEIVER_OPERATOR_CONTROL_FIELDS = {
     "af_level",
     "rf_gain",
@@ -46,10 +60,17 @@ _RECEIVER_OPERATOR_CONTROL_FIELDS = {
     "nb_level",
     "filter_width",
     "if_shift",
+    "agc",
     "agc_time_constant",
+    "audio_peak_filter",
     "apf_type_level",
+    "apf_freq",
+    "filter_shape",
+    "manual_notch_freq",
     "manual_notch_width",
     "digisel_shift",
+    "tone_freq",
+    "tsql_freq",
     "key_speed",
     "cw_pitch",
     "monitor_gain",
@@ -69,6 +90,19 @@ _RECEIVER_OPERATOR_TOGGLE_FIELDS = {
     "audio_peak_filter",
     "twin_peak_filter",
     "af_mute",
+    "ipplus",
+    "s_meter_sql_open",
+    "apf_on",
+    "narrow",
+    "repeater_tone",
+    "repeater_tsql",
+}
+_RECEIVER_SLOW_STATE_FIELDS = {
+    "vfo_a",
+    "vfo_b",
+    "active_slot",
+    "filter",
+    "contour",
 }
 _GLOBAL_TX_FIELDS = {
     "ptt",
@@ -88,12 +122,24 @@ _GLOBAL_OPERATOR_CONTROL_FIELDS = {
     "power_level",
     "tuner_status",
     "rit_freq",
+    "cw_pitch",
+    "mic_gain",
+    "key_speed",
+    "notch_filter",
+    "compressor_level",
+    "break_in_delay",
+    "break_in",
+    "drive_gain",
+    "monitor_gain",
+    "vox_gain",
+    "anti_vox_gain",
+    "vox_delay",
     "ssb_tx_bandwidth",
     "ref_adjust",
     "dash_ratio",
     "nb_depth",
     "nb_width",
-    "drive_gain",
+    "tx_antenna",
 }
 _GLOBAL_METER_FIELDS = {
     "alc",
@@ -102,6 +148,21 @@ _GLOBAL_METER_FIELDS = {
     "comp",
     "vd",
     "id",
+}
+_GLOBAL_SLOW_STATE_FIELDS = {
+    "active",
+    "scanning",
+    "scan_type",
+    "scan_resume_mode",
+    "tuning_step",
+    "overflow",
+    "cw_spot",
+    "vfo_select",
+    "rx_antenna_1",
+    "rx_antenna_2",
+    "tx_band_edges",
+    "scope_controls",
+    "yaesu",
 }
 
 
@@ -373,17 +434,26 @@ def _apply_snapshot_field(
         if receiver_key is None:
             return
         if path.family is FieldFamily.FREQ_MODE:
+            if path.slot in (VfoSlot.A, VfoSlot.B):
+                receiver = state.get(receiver_key)
+                if not isinstance(receiver, dict):
+                    return
+                slot_key = "vfo_a" if path.slot is VfoSlot.A else "vfo_b"
+                slot_state = receiver.get(slot_key)
+                if not isinstance(slot_state, dict):
+                    return
+                target = _VFO_SLOT_FIELDS.get(path.name)
+                if target is not None:
+                    slot_state[target] = value
+                return
             if path.slot not in (None, VfoSlot.ACTIVE):
                 return
-            mapping = {
-                "freq_hz": "freq",
-                "mode": "mode",
-                "data_mode": "data_mode",
-                "filter_width": "filter_width",
-            }
-            target = mapping.get(path.name)
+            target = _RECEIVER_FREQ_MODE_FIELDS.get(path.name)
             if target is not None:
                 _set_receiver_value(state, receiver_key, target, value)
+            return
+        if path.family is FieldFamily.VFO and path.name == "active_slot":
+            _set_receiver_value(state, receiver_key, "active_slot", value)
             return
         if path.family is FieldFamily.METERS and path.name == "s_meter":
             _set_receiver_value(state, receiver_key, "s_meter", value)
@@ -409,6 +479,12 @@ def _apply_snapshot_field(
             else:
                 _set_receiver_value(state, receiver_key, path.name, value)
             return
+        if (
+            path.family is FieldFamily.SLOW_STATE
+            and path.name in _RECEIVER_SLOW_STATE_FIELDS
+        ):
+            _set_receiver_value(state, receiver_key, path.name, value)
+            return
 
     if path.scope is FieldScope.GLOBAL:
         if path.family is FieldFamily.TX_STATE and path.name in _GLOBAL_TX_FIELDS:
@@ -422,6 +498,12 @@ def _apply_snapshot_field(
             return
         if path.family is FieldFamily.METERS and path.name in _GLOBAL_METER_FIELDS:
             state[f"{path.name}_meter"] = value
+            return
+        if (
+            path.family is FieldFamily.SLOW_STATE
+            and path.name in _GLOBAL_SLOW_STATE_FIELDS
+        ):
+            state[path.name] = value
             return
 
     if path.scope is FieldScope.SCOPE_CONTROLS and path.family is FieldFamily.DISPLAY:

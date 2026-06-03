@@ -127,6 +127,123 @@ _CIV_TRANSACTION_BATCH_STEP_TYPE = "raw_civ_transaction"
 _CIV_TRANSACTION_BATCH_STEP_KEYS = frozenset(
     {"type", "id", "command", "sub", "data", "expect", "timeout_ms"}
 )
+_LEGACY_RECEIVER_FREQ_MODE_FIELDS: tuple[tuple[str, str], ...] = (
+    ("freq", "freq_hz"),
+    ("mode", "mode"),
+    ("filter", "filter"),
+    ("data_mode", "data_mode"),
+    ("filter_width", "filter_width"),
+)
+_LEGACY_VFO_SLOT_FIELDS: tuple[tuple[str, str], ...] = (
+    ("freq_hz", "freq_hz"),
+    ("mode", "mode"),
+    ("filter_num", "filter_num"),
+    ("data_mode", "data_mode"),
+)
+_LEGACY_RECEIVER_METER_FIELDS: tuple[tuple[str, str, float | None], ...] = (
+    ("s_meter", "s_meter", 0.5),
+)
+_LEGACY_RECEIVER_CONTROL_FIELDS: tuple[tuple[str, str], ...] = (
+    ("af_level", "af_level"),
+    ("rf_gain", "rf_gain"),
+    ("squelch", "squelch"),
+    ("att", "att"),
+    ("preamp", "preamp"),
+    ("pbt_inner", "pbt_inner"),
+    ("pbt_outer", "pbt_outer"),
+    ("nr_level", "nr_level"),
+    ("nb_level", "nb_level"),
+    ("if_shift", "if_shift"),
+    ("agc", "agc"),
+    ("agc_time_constant", "agc_time_constant"),
+    ("audio_peak_filter", "audio_peak_filter"),
+    ("apf_type_level", "apf_type_level"),
+    ("apf_freq", "apf_freq"),
+    ("filter_shape", "filter_shape"),
+    ("manual_notch_freq", "manual_notch_freq"),
+    ("manual_notch_width", "manual_notch_width"),
+    ("digisel_shift", "digisel_shift"),
+    ("tone_freq", "tone_freq"),
+    ("tsql_freq", "tsql_freq"),
+)
+_LEGACY_RECEIVER_TOGGLE_FIELDS: tuple[tuple[str, str], ...] = (
+    ("nb", "nb"),
+    ("nr", "nr"),
+    ("digisel", "digisel"),
+    ("manual_notch", "manual_notch"),
+    ("auto_notch", "auto_notch"),
+    ("twin_peak_filter", "twin_peak_filter"),
+    ("af_mute", "af_mute"),
+    ("ipplus", "ipplus"),
+    ("s_meter_sql_open", "s_meter_sql_open"),
+    ("apf_on", "apf_on"),
+    ("narrow", "narrow"),
+    ("repeater_tone", "repeater_tone"),
+    ("repeater_tsql", "repeater_tsql"),
+)
+_LEGACY_RECEIVER_SLOW_STATE_FIELDS: tuple[tuple[str, str], ...] = (
+    ("contour", "contour"),
+)
+_LEGACY_GLOBAL_TX_FIELDS: tuple[tuple[str, str], ...] = (
+    ("ptt", "ptt"),
+    ("power_on", "power_on"),
+    ("split", "split"),
+    ("dual_watch", "dual_watch"),
+    ("rit_on", "rit_on"),
+    ("rit_tx", "rit_tx"),
+    ("monitor_on", "monitor_on"),
+    ("vox_on", "vox_on"),
+    ("compressor_on", "compressor_on"),
+    ("main_sub_tracking", "main_sub_tracking"),
+    ("dial_lock", "dial_lock"),
+    ("tx_freq_monitor", "tx_freq_monitor"),
+)
+_LEGACY_GLOBAL_CONTROL_FIELDS: tuple[tuple[str, str], ...] = (
+    ("power_level", "power_level"),
+    ("tuner_status", "tuner_status"),
+    ("rit_freq", "rit_freq"),
+    ("cw_pitch", "cw_pitch"),
+    ("mic_gain", "mic_gain"),
+    ("key_speed", "key_speed"),
+    ("notch_filter", "notch_filter"),
+    ("compressor_level", "compressor_level"),
+    ("break_in_delay", "break_in_delay"),
+    ("break_in", "break_in"),
+    ("drive_gain", "drive_gain"),
+    ("monitor_gain", "monitor_gain"),
+    ("vox_gain", "vox_gain"),
+    ("anti_vox_gain", "anti_vox_gain"),
+    ("vox_delay", "vox_delay"),
+    ("ssb_tx_bandwidth", "ssb_tx_bandwidth"),
+    ("ref_adjust", "ref_adjust"),
+    ("dash_ratio", "dash_ratio"),
+    ("nb_depth", "nb_depth"),
+    ("nb_width", "nb_width"),
+    ("tx_antenna", "tx_antenna"),
+)
+_LEGACY_GLOBAL_METER_FIELDS: tuple[tuple[str, str, float | None], ...] = (
+    ("alc_meter", "alc", 0.5),
+    ("power_meter", "power", 0.5),
+    ("swr_meter", "swr", 0.5),
+    ("comp_meter", "comp", 0.5),
+    ("vd_meter", "vd", 0.5),
+    ("id_meter", "id", 0.5),
+)
+_LEGACY_GLOBAL_SLOW_STATE_FIELDS: tuple[tuple[str, str], ...] = (
+    ("active", "active"),
+    ("scanning", "scanning"),
+    ("scan_type", "scan_type"),
+    ("scan_resume_mode", "scan_resume_mode"),
+    ("tuning_step", "tuning_step"),
+    ("overflow", "overflow"),
+    ("cw_spot", "cw_spot"),
+    ("vfo_select", "vfo_select"),
+    ("rx_antenna_1", "rx_antenna_1"),
+    ("rx_antenna_2", "rx_antenna_2"),
+    ("tx_band_edges", "tx_band_edges"),
+    ("scope_controls", "scope_controls"),
+    ("yaesu", "yaesu"),
+)
 
 _CivTransactionExpect = Literal["none", "ack", "data"]
 _MISSING_BATCH_STEP_ID = object()
@@ -1017,6 +1134,8 @@ class WebServer:
         """Feed compatibility poller snapshots into the canonical StateStore."""
         timestamp = time.monotonic()
         baseline = RadioState()
+        state_dict = state.to_dict()
+        baseline_dict = baseline.to_dict()
         observed_paths = {
             field.path for field in self.command_state_store.snapshot().fields
         }
@@ -1048,99 +1167,91 @@ class WebServer:
                 )
             )
 
-        append_if_changed(
-            path=FieldPath.active("0", "freq_mode", "freq_hz"),
-            value=state.main.freq,
-            default=baseline.main.freq,
-        )
-        append_if_changed(
-            path=FieldPath.active("0", "freq_mode", "mode"),
-            value=state.main.mode,
-            default=baseline.main.mode,
-        )
-        append_if_changed(
-            path=FieldPath.receiver("0", "meters", "s_meter"),
-            value=state.main.s_meter,
-            default=baseline.main.s_meter,
-            max_age=0.5,
-        )
-        append_if_changed(
-            path=FieldPath.receiver("0", "operator_controls", "af_level"),
-            value=state.main.af_level,
-            default=baseline.main.af_level,
-        )
-        append_if_changed(
-            path=FieldPath.receiver("0", "operator_controls", "rf_gain"),
-            value=state.main.rf_gain,
-            default=baseline.main.rf_gain,
-        )
-        append_if_changed(
-            path=FieldPath.receiver("0", "operator_controls", "squelch"),
-            value=state.main.squelch,
-            default=baseline.main.squelch,
-        )
-        append_if_changed(
-            path=FieldPath.receiver("0", "operator_toggles", "nb"),
-            value=state.main.nb,
-            default=baseline.main.nb,
-        )
-        append_if_changed(
-            path=FieldPath.receiver("0", "operator_toggles", "nr"),
-            value=state.main.nr,
-            default=baseline.main.nr,
-        )
-        append_if_changed(
-            path=FieldPath.global_("tx_state", "ptt"),
-            value=state.ptt,
-            default=baseline.ptt,
-        )
-        append_if_changed(
-            path=FieldPath.global_("tx_state", "power_on"),
-            value=state.power_on,
-            default=baseline.power_on,
-        )
-        append_if_changed(
-            path=FieldPath.global_("operator_controls", "power_level"),
-            value=state.power_level,
-            default=baseline.power_level,
-        )
-        append_if_changed(
-            path=FieldPath.global_("tx_state", "split"),
-            value=state.split,
-            default=baseline.split,
-        )
+        def append_receiver_snapshot(
+            receiver_id: str,
+            receiver: Any,
+            default_receiver: Any,
+        ) -> None:
+            for attr, name in _LEGACY_RECEIVER_FREQ_MODE_FIELDS:
+                append_if_changed(
+                    path=FieldPath.active(receiver_id, "freq_mode", name),
+                    value=getattr(receiver, attr),
+                    default=getattr(default_receiver, attr),
+                )
+            for slot_name, slot, default_slot in (
+                ("A", receiver.vfo_a, default_receiver.vfo_a),
+                ("B", receiver.vfo_b, default_receiver.vfo_b),
+            ):
+                for attr, name in _LEGACY_VFO_SLOT_FIELDS:
+                    append_if_changed(
+                        path=FieldPath.vfo_slot(
+                            receiver_id,
+                            slot_name,
+                            "freq_mode",
+                            name,
+                        ),
+                        value=getattr(slot, attr),
+                        default=getattr(default_slot, attr),
+                    )
+            append_if_changed(
+                path=FieldPath.active_slot(receiver_id),
+                value=receiver.active_slot,
+                default=default_receiver.active_slot,
+            )
+            for attr, name, max_age in _LEGACY_RECEIVER_METER_FIELDS:
+                append_if_changed(
+                    path=FieldPath.receiver(receiver_id, "meters", name),
+                    value=getattr(receiver, attr),
+                    default=getattr(default_receiver, attr),
+                    max_age=max_age,
+                )
+            for attr, name in _LEGACY_RECEIVER_CONTROL_FIELDS:
+                append_if_changed(
+                    path=FieldPath.receiver(receiver_id, "operator_controls", name),
+                    value=getattr(receiver, attr),
+                    default=getattr(default_receiver, attr),
+                )
+            for attr, name in _LEGACY_RECEIVER_TOGGLE_FIELDS:
+                append_if_changed(
+                    path=FieldPath.receiver(receiver_id, "operator_toggles", name),
+                    value=getattr(receiver, attr),
+                    default=getattr(default_receiver, attr),
+                )
+            for attr, name in _LEGACY_RECEIVER_SLOW_STATE_FIELDS:
+                append_if_changed(
+                    path=FieldPath.receiver(receiver_id, "slow_state", name),
+                    value=getattr(receiver, attr),
+                    default=getattr(default_receiver, attr),
+                )
+
+        append_receiver_snapshot("0", state.main, baseline.main)
+        for attr, name in _LEGACY_GLOBAL_TX_FIELDS:
+            append_if_changed(
+                path=FieldPath.global_("tx_state", name),
+                value=getattr(state, attr),
+                default=getattr(baseline, attr),
+            )
+        for attr, name in _LEGACY_GLOBAL_CONTROL_FIELDS:
+            append_if_changed(
+                path=FieldPath.global_("operator_controls", name),
+                value=getattr(state, attr),
+                default=getattr(baseline, attr),
+            )
+        for attr, name, max_age in _LEGACY_GLOBAL_METER_FIELDS:
+            append_if_changed(
+                path=FieldPath.global_("meters", name),
+                value=getattr(state, attr),
+                default=getattr(baseline, attr),
+                max_age=max_age,
+            )
+        for attr, name in _LEGACY_GLOBAL_SLOW_STATE_FIELDS:
+            append_if_changed(
+                path=FieldPath.global_("slow_state", name),
+                value=state_dict[attr],
+                default=baseline_dict[attr],
+            )
         if self._get_profile().receiver_count > 1:
-            append_if_changed(
-                path=FieldPath.active("1", "freq_mode", "freq_hz"),
-                value=state.sub.freq,
-                default=baseline.sub.freq,
-            )
-            append_if_changed(
-                path=FieldPath.active("1", "freq_mode", "mode"),
-                value=state.sub.mode,
-                default=baseline.sub.mode,
-            )
-            append_if_changed(
-                path=FieldPath.receiver("1", "meters", "s_meter"),
-                value=state.sub.s_meter,
-                default=baseline.sub.s_meter,
-                max_age=0.5,
-            )
-            append_if_changed(
-                path=FieldPath.receiver("1", "operator_controls", "af_level"),
-                value=state.sub.af_level,
-                default=baseline.sub.af_level,
-            )
-            append_if_changed(
-                path=FieldPath.receiver("1", "operator_controls", "rf_gain"),
-                value=state.sub.rf_gain,
-                default=baseline.sub.rf_gain,
-            )
-            append_if_changed(
-                path=FieldPath.receiver("1", "operator_controls", "squelch"),
-                value=state.sub.squelch,
-                default=baseline.sub.squelch,
-            )
+            append_receiver_snapshot("1", state.sub, baseline.sub)
         for observation in observations:
             self.command_state_store.apply(observation)
 

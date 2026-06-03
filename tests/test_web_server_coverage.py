@@ -1176,6 +1176,45 @@ def test_legacy_state_store_sync_can_clear_default_boolean_values() -> None:
     assert srv.build_public_state()["ptt"] is False
 
 
+def test_legacy_state_store_sync_preserves_receiver_fields() -> None:
+    srv = WebServer(None)
+    legacy = RadioState()
+    legacy.main.data_mode = 2
+    legacy.main.filter_width = 1_800
+    legacy.main.nr_level = 42
+
+    srv.sync_state_store_from_radio_state(legacy)
+
+    public_state = srv.build_public_state()
+    assert public_state["main"]["dataMode"] == 2
+    assert public_state["main"]["filterWidth"] == 1_800
+    assert public_state["main"]["nrLevel"] == 42
+
+
+def test_legacy_state_store_sync_can_clear_default_receiver_values() -> None:
+    srv = WebServer(None)
+    legacy = RadioState()
+    legacy.main.data_mode = 2
+    srv.sync_state_store_from_radio_state(legacy)
+    assert srv.build_public_state()["main"]["dataMode"] == 2
+
+    cleared = RadioState()
+    cleared.main.data_mode = 0
+    srv.sync_state_store_from_radio_state(cleared)
+
+    assert srv.build_public_state()["main"]["dataMode"] == 0
+
+
+def test_legacy_state_store_sync_preserves_global_rit_on() -> None:
+    srv = WebServer(None)
+    legacy = RadioState()
+    legacy.rit_on = True
+
+    srv.sync_state_store_from_radio_state(legacy)
+
+    assert srv.build_public_state()["ritOn"] is True
+
+
 @pytest.mark.asyncio
 async def test_on_radio_reconnect_enables_scope_without_waiting_for_broadcast() -> None:
     """Reconnect must queue EnableScope even while ``radio_ready`` is False.
