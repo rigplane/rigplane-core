@@ -39,7 +39,12 @@ from rigplane.commands import (
     parse_scope_vbw_response,
 )
 from rigplane.core.exceptions import ConnectionError, TimeoutError
-from rigplane.core.state_pipeline_contracts import FieldPath, Observation, SourceMetadata
+from rigplane.core.state_pipeline_contracts import (
+    FieldPath,
+    Observation,
+    ObservationSource,
+    SourceMetadata,
+)
 from rigplane.core.state_diagnostics import StateDiagnosticsRecorder
 from rigplane.scope import ScopeFrame
 from rigplane.core.types import CivFrame, Mode
@@ -870,6 +875,8 @@ class CivRuntime:
 
     def _update_state_cache_from_frame(self, frame: CivFrame) -> None:
         """Best-effort update of state cache from an incoming CI-V frame."""
+        self._apply_state_store_observations(frame)
+
         host = self._host
         _rs = getattr(host, "_radio_state", None)
         _rx = None
@@ -1033,7 +1040,6 @@ class CivRuntime:
             logger.debug("civ-rx: cache update failed: %s", exc)
         except Exception:
             logger.warning("civ-rx: unexpected error in cache update", exc_info=True)
-        self._apply_state_store_observations(frame)
         self._update_radio_state_from_frame(frame)
 
     def _update_radio_state_from_frame(self, frame: CivFrame) -> None:
@@ -1093,7 +1099,26 @@ class CivRuntime:
     def _apply_state_store_observations(self, frame: CivFrame) -> None:
         """Project supported CI-V ingress fields into the runtime StateStore."""
 
-        for observation in self._observations_from_frame(frame):
+        try:
+            observations = self._observations_from_frame(frame)
+        except (ValueError, IndexError, KeyError, AttributeError, TypeError) as exc:
+            logger.debug(
+                "civ-rx: observation decode failed for cmd=0x%02x sub=0x%02x: %s",
+                frame.command,
+                frame.sub or 0,
+                exc,
+            )
+            return
+        except Exception:
+            logger.warning(
+                "civ-rx: unexpected observation decode error for cmd=0x%02x sub=0x%02x",
+                frame.command,
+                frame.sub or 0,
+                exc_info=True,
+            )
+            return
+
+        for observation in observations:
             try:
                 self._host._state_store.apply(observation)
             except Exception:
@@ -1135,15 +1160,6 @@ class CivRuntime:
                     frame=frame,
                 )
             )
-        elif frame.command == 0x07 and len(frame.data) >= 2:
-            if frame.data[0] == 0xD2:
-                observations.append(
-                    self._observation(
-                        FieldPath.active_slot("0"),
-                        "B" if bool(frame.data[1]) else "A",
-                        frame=frame,
-                    )
-                )
         elif frame.command == 0x25 and len(frame.data) >= 6:
             from rigplane.types import bcd_decode
 
@@ -1266,7 +1282,11 @@ class CivRuntime:
         return FieldPath.active(receiver_id, "freq_mode", name)
 
     def _observation(self, path: FieldPath, value: Any, *, frame: CivFrame) -> Observation:
-        source = "civ_unsolicited" if frame.to_addr == 0x00 or frame.command in (0x00, 0x01) else "command_response"
+        source: ObservationSource = (
+            "civ_unsolicited"
+            if frame.to_addr == 0x00 or frame.command in (0x00, 0x01)
+            else "command_response"
+        )
         return Observation(
             path=path,
             value=value,

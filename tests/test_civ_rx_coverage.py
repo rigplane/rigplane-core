@@ -32,6 +32,7 @@ from __future__ import annotations
 
 import asyncio
 import time
+from typing import Any
 from unittest.mock import AsyncMock, MagicMock, PropertyMock, patch
 
 import pytest
@@ -52,12 +53,12 @@ from rigplane.types import CivFrame, Mode, bcd_encode
 # ---------------------------------------------------------------------------
 
 
-@pytest.fixture
+@pytest.fixture  # type: ignore[untyped-decorator]
 def transport() -> MockTransport:
     return MockTransport()
 
 
-@pytest.fixture
+@pytest.fixture  # type: ignore[untyped-decorator]
 def radio(transport: MockTransport) -> IcomRadio:
     r = IcomRadio("192.168.1.100")
     r._civ_transport = transport
@@ -708,9 +709,9 @@ def test_update_state_cache_cmd29_sub_bool_does_not_overwrite_main(
 
 def test_update_state_cache_ip_plus(radio: IcomRadio) -> None:
     """cmd 0x16 sub 0x65 fires IP+ change notification (lines 449-450)."""
-    notify_calls: dict = {}
+    notify_calls: dict[str, dict[str, object]] = {}
 
-    def _on_change(name: str, data: dict) -> None:
+    def _on_change(name: str, data: dict[str, object]) -> None:
         notify_calls[name] = data
 
     radio._on_state_change = _on_change
@@ -742,7 +743,7 @@ def test_update_state_cache_exception_suppressed(radio: IcomRadio) -> None:
     radio._civ_runtime._update_state_cache_from_frame(frame)
 
 
-@pytest.mark.parametrize(
+@pytest.mark.parametrize(  # type: ignore[untyped-decorator]
     ("frame", "path", "expected", "expected_source"),
     [
         (
@@ -791,6 +792,12 @@ def test_update_state_cache_exception_suppressed(radio: IcomRadio) -> None:
             _make_frame(cmd=0x15, sub=0x11, data=_bcd2(120)),
             "global.meters.power",
             120,
+            "command_response",
+        ),
+        (
+            _make_frame(cmd=0x15, sub=0x12, data=_bcd2(48)),
+            "global.meters.swr",
+            48,
             "command_response",
         ),
         (
@@ -847,12 +854,6 @@ def test_update_state_cache_exception_suppressed(radio: IcomRadio) -> None:
             True,
             "command_response",
         ),
-        (
-            _make_frame(cmd=0x07, data=bytes([0xD2, 0x01])),
-            "receiver.0.vfo.active_slot",
-            "B",
-            "command_response",
-        ),
     ],
 )
 def test_update_state_cache_projects_supported_fields_into_state_store(
@@ -868,6 +869,40 @@ def test_update_state_cache_projects_supported_fields_into_state_store(
 
     assert field.value == expected
     assert field.source.source == expected_source
+
+
+@pytest.mark.parametrize(  # type: ignore[untyped-decorator]
+    ("frame", "field_name", "initial_value"),
+    [
+        (_make_frame(cmd=0x03, data=bcd_encode(14_074_000)), "freq", 0),
+        (_make_frame(cmd=0x04, data=bytes([Mode.LSB.value, 2])), "mode", "USB"),
+        (_make_frame(cmd=0x1C, sub=0x00, data=b"\x01"), "ptt", False),
+        (_make_frame(cmd=0x18, data=b"\x01"), "powerstat", False),
+    ],
+)
+def test_update_state_cache_applies_state_store_before_legacy_cache_mirror(
+    radio: IcomRadio,
+    frame: CivFrame,
+    field_name: str,
+    initial_value: object,
+) -> None:
+    setattr(radio._state_cache, field_name, initial_value)
+    seen_legacy_values: list[object] = []
+    original_apply = type(radio._state_store).apply
+
+    def apply_and_record(store: object, observation: object) -> object:
+        seen_legacy_values.append(getattr(radio._state_cache, field_name))
+        return original_apply(store, observation)
+
+    with patch.object(
+        type(radio._state_store),
+        "apply",
+        autospec=True,
+        side_effect=apply_and_record,
+    ):
+        radio._civ_runtime._update_state_cache_from_frame(frame)
+
+    assert seen_legacy_values == [initial_value]
 
 
 def test_update_state_cache_uses_slot_specific_observation_path_when_override_active(
@@ -903,12 +938,56 @@ def test_update_state_cache_applies_command_response_observation_once(
     assert radio._radio_state.main.freq == 14_074_000
 
 
+@pytest.mark.parametrize(  # type: ignore[untyped-decorator]
+    "frame",
+    [
+        _make_frame(cmd=0x03, data=b"\x12\x34"),
+        _make_frame(cmd=0x04, data=b""),
+        _make_frame(cmd=0x04, data=bytes([0xFF, 0x01])),
+        _make_frame(cmd=0x26, data=bytes([0x00, 0xFF])),
+    ],
+)
+async def test_route_civ_frame_contains_observation_decode_failures(
+    radio: IcomRadio,
+    frame: CivFrame,
+) -> None:
+    published: list[Any] = []
+    radio._civ_request_tracker.resolve = MagicMock()
+
+    with patch.object(
+        radio._civ_runtime,
+        "_publish_civ_event",
+        side_effect=published.append,
+    ):
+        await radio._civ_runtime._route_civ_frame(frame, generation=17)
+
+    assert len(published) == 1
+    assert published[0].frame == frame
+    radio._civ_request_tracker.resolve.assert_called_once_with(
+        published[0], generation=17
+    )
+    assert radio._state_store.snapshot().observation_seq == 0
+
+
+def test_update_state_cache_cmd07_d2_keeps_legacy_active_receiver_without_state_store_projection(
+    radio: IcomRadio,
+) -> None:
+    radio._radio_state = RadioState()
+
+    radio._civ_runtime._update_state_cache_from_frame(
+        _make_frame(cmd=0x07, data=bytes([0xD2, 0x01]))
+    )
+
+    assert radio._radio_state.active == "SUB"
+    assert radio._state_store.snapshot().fields == ()
+
+
 # ---------------------------------------------------------------------------
 # _update_radio_state_from_frame (lines 470-622)
 # ---------------------------------------------------------------------------
 
 
-@pytest.fixture
+@pytest.fixture  # type: ignore[untyped-decorator]
 def radio_with_state(radio: IcomRadio) -> IcomRadio:
     """Radio with RadioState set for testing _update_radio_state_from_frame."""
     radio._radio_state = RadioState()
@@ -1041,7 +1120,7 @@ def test_update_radio_state_cmd14_power_level(radio_with_state: IcomRadio) -> No
     assert rs.power_level == 128
 
 
-@pytest.mark.parametrize(
+@pytest.mark.parametrize(  # type: ignore[untyped-decorator]
     ("sub", "value", "field"),
     [
         (0x05, 90, "apf_type_level"),
@@ -1064,7 +1143,7 @@ def test_update_radio_state_cmd14_receiver_dsp_levels(
     assert getattr(rs.sub, field) == value
 
 
-@pytest.mark.parametrize(
+@pytest.mark.parametrize(  # type: ignore[untyped-decorator]
     ("sub", "raw", "field", "expected"),
     [
         (0x09, 128, "cw_pitch", 600),
@@ -1160,7 +1239,7 @@ def test_update_radio_state_cmd16_ipplus(radio_with_state: IcomRadio) -> None:
     assert rs.main.ipplus is True
 
 
-@pytest.mark.parametrize(
+@pytest.mark.parametrize(  # type: ignore[untyped-decorator]
     ("cmd", "sub", "data", "receiver", "target", "field", "expected"),
     [
         (0x15, 0x01, b"\x01", 0x01, "sub", "s_meter_sql_open", True),
@@ -1224,7 +1303,7 @@ def test_update_radio_state_cmd1a_sub06_data_mode(radio_with_state: IcomRadio) -
     assert rs.main.data_mode == 2
 
 
-@pytest.mark.parametrize(
+@pytest.mark.parametrize(  # type: ignore[untyped-decorator]
     ("data", "field", "expected"),
     [
         (b"\x00\x70\x05\x11", "ref_adjust", 511),
@@ -1389,7 +1468,7 @@ def test_update_radio_state_with_receiver_field_set(
 
 def test_update_radio_state_returns_when_no_radio_state(radio: IcomRadio) -> None:
     """When _radio_state is None (not set), method returns immediately (line 469)."""
-    radio._radio_state = None  # type: ignore[assignment]
+    radio._radio_state = None
     frame = _make_frame(cmd=0x03, data=bcd_encode(14_000_000))
     radio._civ_runtime._update_radio_state_from_frame(frame)  # should not raise
 
@@ -1401,9 +1480,9 @@ def test_update_radio_state_returns_when_no_radio_state(radio: IcomRadio) -> Non
 
 def test_notify_change_calls_callback(radio: IcomRadio) -> None:
     """_notify_change invokes _on_state_change callback (lines 628-632)."""
-    calls: list[tuple] = []
+    calls: list[tuple[str, dict[str, object]]] = []
 
-    def my_callback(event_name: str, data: dict) -> None:
+    def my_callback(event_name: str, data: dict[str, object]) -> None:
         calls.append((event_name, data))
 
     radio._on_state_change = my_callback
@@ -1414,7 +1493,7 @@ def test_notify_change_calls_callback(radio: IcomRadio) -> None:
 def test_notify_change_callback_exception_suppressed(radio: IcomRadio) -> None:
     """Exception in callback is suppressed (not propagated)."""
 
-    def failing_callback(event_name: str, data: dict) -> None:
+    def failing_callback(event_name: str, data: dict[str, object]) -> None:
         raise RuntimeError("callback error")
 
     radio._on_state_change = failing_callback
