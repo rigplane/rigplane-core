@@ -35,10 +35,15 @@ import time
 import urllib.parse
 from collections.abc import Callable, Coroutine
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any, Literal, TextIO
+from typing import TYPE_CHECKING, Any, Literal, TextIO, cast
 
 from .. import __version__
 from .._bounded_queue import BoundedQueue
+from ..core.acquisition_scheduler import (
+    AcquisitionScheduler,
+    MeterObservationCoalescer,
+    RadioStateModelService,
+)
 from ..core.state_diagnostics import StateDiagnosticsRecorder
 from ..core.command_service import (
     CommandExecutionResult,
@@ -650,6 +655,7 @@ class WebServer:
         self.command_state_store = (
             raw_state_store if isinstance(raw_state_store, StateStore) else StateStore()
         )
+        self._bootstrap_state_acquisition()
         self.command_service = CommandService(
             executor=_SharedControlCommandExecutor(self),
             state_store=self.command_state_store,
@@ -814,6 +820,32 @@ class WebServer:
             return resolve_radio_profile(model=self._config.radio_model)
         except KeyError:
             return resolve_radio_profile(model="IC-7610")
+
+    def _bootstrap_state_acquisition(self) -> None:
+        """Attach shared StateStore-backed acquisition services when profiled."""
+        radio = self._radio
+        if radio is None:
+            return
+        try:
+            profile = self._get_profile()
+        except Exception:
+            logger.debug("state acquisition: failed to resolve profile", exc_info=True)
+            return
+        acquisition_profile = getattr(profile, "state_acquisition", None)
+        if acquisition_profile is None:
+            return
+        scheduler = AcquisitionScheduler(profile=acquisition_profile)
+        service = RadioStateModelService(
+            store=self.command_state_store,
+            scheduler=scheduler,
+        )
+        coalescer = MeterObservationCoalescer()
+        try:
+            setattr(radio, "_state_model_service", service)
+            setattr(radio, "_acquisition_scheduler", scheduler)
+            setattr(radio, "_meter_observation_coalescer", coalescer)
+        except Exception:
+            logger.debug("state acquisition: failed to attach services", exc_info=True)
 
     def _radio_ready(self) -> bool:
         """Backend view of radio readiness (CI-V healthy)."""
@@ -1171,11 +1203,14 @@ class WebServer:
         encoder = (
             DeltaEncoder(full_state_interval=100) if force_full else self._delta_encoder
         )
-        return encoder.encode(
-            body,
-            force_full=force_full,
-            state_revision=snapshot.state_revision,
-            freshness_revision=snapshot.freshness_revision,
+        return cast(
+            dict[str, Any],
+            encoder.encode(
+                body,
+                force_full=force_full,
+                state_revision=snapshot.state_revision,
+                freshness_revision=snapshot.freshness_revision,
+            ),
         )
 
     def _sync_legacy_state_store_for_delivery(self) -> None:
@@ -2196,6 +2231,29 @@ class WebServer:
             "stats": stats,
         }
 
+    def _state_acquisition_diagnostics_payload(self) -> dict[str, Any]:
+        radio = self._radio
+        scheduler = (
+            getattr(radio, "_acquisition_scheduler", None)
+            if radio is not None
+            else None
+        )
+        coalescer = (
+            getattr(radio, "_meter_observation_coalescer", None)
+            if radio is not None
+            else None
+        )
+        return {
+            "enabled": isinstance(scheduler, AcquisitionScheduler),
+            "scheduler": scheduler.diagnostics()
+            if isinstance(scheduler, AcquisitionScheduler)
+            else None,
+            "meterCoalescing": coalescer.diagnostics()
+            if isinstance(coalescer, MeterObservationCoalescer)
+            else None,
+            "events": self._state_diagnostics.snapshot(),
+        }
+
     async def _serve_runtime(
         self, writer: asyncio.StreamWriter, headers: dict[str, str] | None = None
     ) -> None:
@@ -2218,6 +2276,7 @@ class WebServer:
                     "address": self._runtime_rigctld_addr,
                 },
                 "bridge": self._runtime_bridge_payload(),
+                "stateAcquisition": self._state_acquisition_diagnostics_payload(),
                 "lastError": self._runtime_last_error,
             },
             separators=(",", ":"),

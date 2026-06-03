@@ -28,6 +28,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
+from dataclasses import replace
 from typing import TYPE_CHECKING, Any, Callable
 
 from ..exceptions import CommandError
@@ -73,7 +74,12 @@ from ..core.command_service import (
     command_intent_from_request,
     command_response_observation,
 )
-from ..core.state_pipeline_contracts import CommandSource
+from ..core.acquisition_scheduler import (
+    AcquisitionRequest,
+    AcquisitionScheduler,
+    MeterObservationCoalescer,
+)
+from ..core.state_pipeline_contracts import ChangeSet, CommandSource, FieldPath
 from ..core.state_diagnostics import StateDiagnosticsRecorder
 from ..core.state_store import StateStore
 from .._state_queries import build_state_queries
@@ -172,6 +178,40 @@ _DEFAULT_POLL_FIELD_TTL: float = 0.2
 _FAST_INTERVAL: float = 0.025  # meters — wfview queue interval for LAN (25ms)
 _FAST_INTERVAL_SERIAL: float = 0.100  # serial: 10 polls/sec for responsive meters
 _SLOW_INTERVAL: float = 0.25  # levels/settings — rarely change
+
+_RECEIVER_IDS: dict[str, int] = {
+    "0": 0,
+    "main": 0,
+    "1": 1,
+    "sub": 1,
+}
+_RECEIVER_LEVEL_QUERY_SUBS: dict[str, int] = {
+    "af_level": 0x01,
+    "rf_gain": 0x02,
+    "squelch": 0x03,
+    "apf_type_level": 0x05,
+    "nr_level": 0x06,
+    "pbt_inner": 0x07,
+    "pbt_outer": 0x08,
+    "nb_level": 0x12,
+    "digisel_shift": 0x13,
+}
+_GLOBAL_LEVEL_QUERY_SUBS: dict[str, int] = {
+    "power_level": 0x0A,
+    "mic_gain": 0x0B,
+    "notch_filter": 0x0D,
+    "compressor_level": 0x0E,
+    "break_in_delay": 0x0F,
+    "drive_gain": 0x14,
+    "monitor_gain": 0x15,
+    "vox_gain": 0x16,
+    "anti_vox_gain": 0x17,
+}
+_GLOBAL_METER_QUERY_SUBS: dict[str, int] = {
+    "power": 0x11,
+    "swr": 0x12,
+    "alc": 0x13,
+}
 
 
 def _audio_tx_codec_and_rate(radio: Any) -> tuple[AudioCodec | None, int]:
@@ -368,6 +408,11 @@ class RadioPoller:
         self._radio_state = radio_state
         self._state_diagnostics = diagnostics
         self._state_store = state_store or StateStore()
+        raw_scheduler = getattr(radio, "_acquisition_scheduler", None)
+        self._acquisition_scheduler = (
+            raw_scheduler if isinstance(raw_scheduler, AcquisitionScheduler) else None
+        )
+        self._acquisition_in_flight: dict[str, tuple[frozenset[FieldPath], float]] = {}
         self._queue = queue
         self._on_state_event = on_state_event
         self._poll_index: int = 0
@@ -2160,7 +2205,160 @@ class RadioPoller:
             return self._HIGH_TIER_RX[0]
         return self._HIGH_TIER_TX[high_idx % len(self._HIGH_TIER_TX)]
 
+    def _flush_due_meter_observations(self) -> None:
+        coalescer = getattr(self._radio, "_meter_observation_coalescer", None)
+        if not isinstance(coalescer, MeterObservationCoalescer):
+            return
+        runtime = getattr(self._radio, "_civ_runtime", None)
+        flush_due = getattr(runtime, "flush_due_meter_observations", None)
+        if not callable(flush_due):
+            return
+        try:
+            flush_due(now=time.monotonic())
+        except Exception:
+            logger.debug("radio-poller: meter coalescer flush failed", exc_info=True)
+
+    def _query_for_acquisition_path(
+        self,
+        path: FieldPath,
+    ) -> tuple[int, int | None, int | None] | None:
+        receiver = _RECEIVER_IDS.get(path.receiver_id or "")
+        if path.scope.value == "receiver" and receiver is None:
+            return None
+        if path.scope.value == "receiver" and path.family.value == "freq_mode":
+            if path.name == "freq_hz":
+                return (0x03, None, receiver)
+            if path.name == "mode":
+                return (0x04, None, receiver)
+            return None
+        if path.scope.value == "receiver" and path.family.value == "meters":
+            if path.name == "s_meter":
+                return (0x15, 0x02, receiver)
+            return None
+        if (
+            path.scope.value == "receiver"
+            and path.family.value == "operator_controls"
+        ):
+            sub = _RECEIVER_LEVEL_QUERY_SUBS.get(path.name)
+            return None if sub is None else (0x14, sub, receiver)
+        if path.scope.value == "global" and path.family.value == "meters":
+            sub = _GLOBAL_METER_QUERY_SUBS.get(path.name)
+            return None if sub is None else (0x15, sub, None)
+        if (
+            path.scope.value == "global"
+            and path.family.value == "operator_controls"
+        ):
+            sub = _GLOBAL_LEVEL_QUERY_SUBS.get(path.name)
+            return None if sub is None else (0x14, sub, None)
+        return None
+
+    def _empty_acquisition_changeset(self, *, now: float) -> ChangeSet:
+        snapshot = self._state_store.snapshot()
+        return ChangeSet(
+            revision=snapshot.state_revision,
+            freshness_revision=snapshot.freshness_revision,
+            observation_seq=snapshot.observation_seq,
+            changes=(),
+            timestamp_monotonic=now,
+            sources=(),
+        )
+
+    def _acquisition_request_expired(
+        self,
+        request: AcquisitionRequest,
+        *,
+        sent_at: float,
+        now: float,
+    ) -> bool:
+        deadlines = [request.deadline_monotonic]
+        if request.timeout is not None:
+            deadlines.append(sent_at + request.timeout)
+        return now >= min(deadlines)
+
+    async def _send_scheduler_requests(self) -> None:
+        scheduler = self._acquisition_scheduler
+        if scheduler is None:
+            return
+        now = time.monotonic()
+        scheduler.due_requests(now=now)
+        pending = scheduler.pending_requests()
+        pending_ids = {request.id for request in pending}
+        for request_id in tuple(self._acquisition_in_flight):
+            if request_id not in pending_ids:
+                del self._acquisition_in_flight[request_id]
+
+        for request in pending:
+            sent_paths: frozenset[FieldPath] = frozenset()
+            sent_at = 0.0
+            existing = self._acquisition_in_flight.get(request.id)
+            if existing is not None:
+                sent_paths, sent_at = existing
+                if self._acquisition_request_expired(
+                    request,
+                    sent_at=sent_at,
+                    now=now,
+                ):
+                    self._record_state_diagnostic(
+                        "acquisition_resend",
+                        "web.radio_poller",
+                        request_id=request.id,
+                        paths=[str(path) for path in request.paths],
+                    )
+                    sent_paths = frozenset()
+                else:
+                    sent_paths = sent_paths.intersection(request.paths)
+            paths_to_send = tuple(path for path in request.paths if path not in sent_paths)
+            if not paths_to_send:
+                continue
+
+            newly_sent: list[FieldPath] = []
+            for path in paths_to_send:
+                query = self._query_for_acquisition_path(path)
+                if query is None:
+                    self._record_state_diagnostic(
+                        "acquisition_skip",
+                        "web.radio_poller",
+                        request_id=request.id,
+                        path=str(path),
+                        reason="no_civ_query_mapping",
+                    )
+                    scheduler.record_acquisition_result(
+                        replace(request, paths=(path,)),
+                        self._empty_acquisition_changeset(now=now),
+                    )
+                    continue
+                cmd_byte, sub_byte, receiver = query
+                self._record_state_diagnostic(
+                    "backend_read",
+                    "web.radio_poller",
+                    family=path.family.value,
+                    path=str(path),
+                    request_id=request.id,
+                    command=f"0x{cmd_byte:02x}",
+                    sub=None if sub_byte is None else f"0x{sub_byte:02x}",
+                    receiver=receiver,
+                )
+                await self._send_one_state_query(cmd_byte, sub_byte, receiver)
+                newly_sent.append(path)
+
+            if newly_sent:
+                self._acquisition_in_flight[request.id] = (
+                    sent_paths.union(newly_sent),
+                    now,
+                )
+                self._record_state_diagnostic(
+                    "acquisition_request_sent",
+                    "web.radio_poller",
+                    request_id=request.id,
+                    paths=[str(path) for path in newly_sent],
+                    pending_request_count=len(scheduler.pending_requests()),
+                )
+
     async def _send_query(self) -> None:
+        self._flush_due_meter_observations()
+        if self._acquisition_scheduler is not None:
+            await self._send_scheduler_requests()
+            return
         # Even cycles → meter query; odd cycles → state query.
         if self._poll_index % 2 == 0:
             if self._is_serial:
