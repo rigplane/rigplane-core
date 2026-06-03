@@ -1324,17 +1324,18 @@ class RigctldHandler:
         1-Rx: maps ``radio_state.main.active_slot`` (``A``/``B``) → VFOA/VFOB.
         Falls back to ``VFOA`` when state is missing or profile is unknown.
         """
+        info = self._profile_vfo_info()
+        state = self._radio_state()
+        if info is not None and info[0] >= 2:
+            if state is None:
+                return "VFOA"
+            return "VFOB" if state.active == "SUB" else "VFOA"
         projection = self._project_fields((self._active_slot_path(),))
         active_slot = projection.value(self._active_slot_path())
         if active_slot is not None:
             return "VFOB" if str(active_slot.value).upper() == "B" else "VFOA"
-        info = self._profile_vfo_info()
-        state = self._radio_state()
         if info is None or state is None:
             return "VFOA"
-        rc, _ = info
-        if rc >= 2:
-            return "VFOB" if state.active == "SUB" else "VFOA"
         return "VFOB" if state.main.active_slot == "B" else "VFOA"
 
     def _receiver_index_for(self, target: Literal["VFOA", "VFOB"]) -> int:

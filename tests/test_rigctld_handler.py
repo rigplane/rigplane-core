@@ -3092,6 +3092,23 @@ async def test_get_vfo_dual_rx_sub_is_vfob(
 
 
 @pytest.mark.asyncio
+async def test_get_vfo_dual_rx_ignores_main_active_slot_projection(
+    dual_rx_radio: AsyncMock,
+) -> None:
+    store = StateStore()
+    dual_rx_radio._state_store = store
+    _apply_store_value(store, "receiver.main.vfo.active_slot", "B")
+    state = RadioState()
+    state.active = "MAIN"
+    dual_rx_radio.radio_state = state
+    handler = RigctldHandler(dual_rx_radio, RigctldConfig())
+
+    resp = await handler.execute(get_cmd("get_vfo"))
+
+    assert resp.values == ["VFOA"]
+
+
+@pytest.mark.asyncio
 async def test_get_vfo_single_rx_reflects_slot_b(
     single_rx_handler: RigctldHandler, single_rx_radio: AsyncMock
 ) -> None:
@@ -3509,6 +3526,24 @@ class TestPerVfoRoutingFreq:
         # so behaviour matches the pre-#1344 single-VFO path: MAIN freq.
         dual_rx_radio.radio_state = _dual_rx_state()
         resp = await dual_rx_handler.execute(_vfo_get_cmd("get_freq", None))
+        assert resp.ok
+        assert resp.values == ["14250000"]
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("vfo_arg", [None, "currVFO"])
+    async def test_dual_rx_get_freq_ignores_main_active_slot_projection(
+        self, dual_rx_radio: AsyncMock, vfo_arg: str | None
+    ) -> None:
+        store = StateStore()
+        dual_rx_radio._state_store = store
+        _apply_store_value(store, "receiver.main.vfo.active_slot", "B")
+        state = _dual_rx_state(main_freq=14_250_000, sub_freq=7_100_000)
+        state.active = "MAIN"
+        dual_rx_radio.radio_state = state
+        handler = RigctldHandler(dual_rx_radio, RigctldConfig())
+
+        resp = await handler.execute(_vfo_get_cmd("get_freq", vfo_arg))
+
         assert resp.ok
         assert resp.values == ["14250000"]
 
