@@ -77,8 +77,8 @@ from ..core.acquisition_scheduler import (
     AcquisitionExecutor,
     AcquisitionRequest,
     AcquisitionScheduler,
-    IcomCivAcquisitionExecutor,
     MeterObservationCoalescer,
+    civ_acquisition_executor_for_provider,
 )
 from ..core.state_pipeline_contracts import CommandSource, FieldPath
 from ..core.state_diagnostics import StateDiagnosticsRecorder
@@ -408,10 +408,10 @@ class RadioPoller:
         if (
             self._acquisition_executor is None
             and self._acquisition_scheduler is not None
-            and self._acquisition_scheduler.provider == "icom_civ"
         ):
-            self._acquisition_executor = IcomCivAcquisitionExecutor(
-                self._send_one_state_query
+            self._acquisition_executor = civ_acquisition_executor_for_provider(
+                self._acquisition_scheduler.provider,
+                self._send_one_state_query,
             )
         # Set by default — cleared at _run() start, re-set after initial fetch.
         # This prevents EnableScope from hanging in tests that don't call start().

@@ -46,6 +46,7 @@ __all__ = [
     "MeterObservationCoalescer",
     "RadioStateModelService",
     "StateFreshnessService",
+    "civ_acquisition_executor_for_provider",
 ]
 
 
@@ -221,10 +222,11 @@ _GLOBAL_METER_QUERY_SUBS: dict[str, int] = {
     "swr": 0x12,
     "alc": 0x13,
 }
+_CIV_ACQUISITION_PROVIDERS = frozenset(("icom_civ", "xiegu_civ"))
 
 
 class IcomCivAcquisitionExecutor:
-    """CI-V path-to-query executor for Icom acquisition profiles."""
+    """CI-V path-to-query executor for compatible CI-V acquisition profiles."""
 
     __slots__ = ("_send_query",)
 
@@ -293,6 +295,17 @@ class IcomCivAcquisitionExecutor:
         return None
 
 
+def civ_acquisition_executor_for_provider(
+    provider: str,
+    send_query: AcquisitionQuerySender,
+) -> AcquisitionExecutor | None:
+    """Return the shared CI-V executor for providers using this query envelope."""
+
+    if provider not in _CIV_ACQUISITION_PROVIDERS:
+        return None
+    return IcomCivAcquisitionExecutor(send_query)
+
+
 _PRIORITY_RANK: dict[AcquisitionPriority, int] = {
     AcquisitionPriority.BACKGROUND: 0,
     AcquisitionPriority.RECONCILIATION: 1,
@@ -347,7 +360,8 @@ class AcquisitionScheduler:
     def provider(self) -> str:
         """Return the backend/provider id declared by the acquisition profile."""
 
-        return self._profile.provider
+        provider: str = self._profile.provider
+        return provider
 
     def ensure_fresh(
         self,

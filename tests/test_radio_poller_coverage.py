@@ -238,13 +238,14 @@ def _make_radio(active: str = "MAIN") -> MagicMock:
 def _acquisition_profile(
     *paths: FieldPath,
     policy: AcquisitionPolicy | None = None,
+    provider: str = "icom_civ",
 ) -> RadioAcquisitionProfile:
     acquisition_policy = policy or AcquisitionPolicy(
         cadence_seconds=1.0,
         freshness_ttl_seconds=4.0,
     )
     return RadioAcquisitionProfile(
-        provider="icom_civ",
+        provider=provider,
         capabilities=tuple(
             FieldCapability(path=path, polling=True) for path in paths
         ),
@@ -293,6 +294,68 @@ async def test_scheduler_due_request_sends_supported_civ_query_once() -> None:
         wait_response=False,
     )
     assert scheduler.pending_requests()[0].paths == (path,)
+
+
+@pytest.mark.asyncio
+async def test_x6200_scheduler_due_request_sends_civ_query_from_profile() -> None:
+    radio = _make_radio(active="MAIN")
+    profile = resolve_radio_profile(model="X6200")
+    assert profile.state_acquisition is not None
+    radio.profile = profile
+    radio.model = profile.model
+    radio.capabilities = set(profile.capabilities)
+    scheduler = AcquisitionScheduler(profile=profile.state_acquisition)
+    radio._acquisition_scheduler = scheduler
+    poller = RadioPoller(radio, CommandQueue(), radio_state=RadioState())
+
+    await poller._send_query()  # noqa: SLF001
+
+    assert radio.send_civ.await_count == 4
+    radio.send_civ.assert_any_await(
+        0x25,
+        sub=None,
+        data=b"\x00",
+        wait_response=False,
+    )
+    radio.send_civ.assert_any_await(
+        0x26,
+        sub=None,
+        data=b"\x00",
+        wait_response=False,
+    )
+    radio.send_civ.assert_any_await(
+        0x29,
+        sub=None,
+        data=b"\x00\x15\x02",
+        wait_response=False,
+    )
+    radio.send_civ.assert_any_await(
+        0x15,
+        sub=0x11,
+        data=b"",
+        wait_response=False,
+    )
+    assert scheduler.pending_requests()
+
+
+@pytest.mark.asyncio
+async def test_xiegu_civ_scheduler_due_request_uses_civ_executor() -> None:
+    radio = _make_radio(active="MAIN")
+    path = FieldPath.active("main", "freq_mode", "mode")
+    scheduler = AcquisitionScheduler(
+        profile=_acquisition_profile(path, provider="xiegu_civ")
+    )
+    radio._acquisition_scheduler = scheduler
+    poller = RadioPoller(radio, CommandQueue(), radio_state=RadioState())
+
+    await poller._send_query()  # noqa: SLF001
+
+    radio.send_civ.assert_awaited_once_with(
+        0x26,
+        sub=None,
+        data=b"\x00",
+        wait_response=False,
+    )
 
 
 @pytest.mark.asyncio
