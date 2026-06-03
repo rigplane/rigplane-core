@@ -210,7 +210,7 @@ class RigctldClientObservationAdapter:
 
     async def read_ptt(self) -> Observation:
         radio = self._require_radio()
-        return self._adapter().observation(
+        return self._observation(
             _PTT,
             await radio.get_ptt(),
             native_id="t",
@@ -218,7 +218,7 @@ class RigctldClientObservationAdapter:
 
     async def read_freq(self) -> Observation:
         radio = self._require_radio()
-        return self._adapter().observation(
+        return self._observation(
             _FREQ,
             await radio.get_freq(),
             native_id="f",
@@ -235,7 +235,7 @@ class RigctldClientObservationAdapter:
 
     async def read_rf_gain(self) -> Observation:
         radio = self._require_radio()
-        return self._adapter().observation(
+        return self._observation(
             _RF_GAIN,
             await radio.get_rf_gain(),
             native_id="l RF",
@@ -243,7 +243,7 @@ class RigctldClientObservationAdapter:
 
     async def read_af_level(self) -> Observation:
         radio = self._require_radio()
-        return self._adapter().observation(
+        return self._observation(
             _AF_LEVEL,
             await radio.get_af_level(),
             native_id="l AF",
@@ -251,7 +251,7 @@ class RigctldClientObservationAdapter:
 
     async def read_preamp(self) -> Observation:
         radio = self._require_radio()
-        return self._adapter().observation(
+        return self._observation(
             _PREAMP,
             await radio.get_preamp(),
             native_id="l PREAMP",
@@ -259,7 +259,7 @@ class RigctldClientObservationAdapter:
 
     async def read_attenuator(self) -> Observation:
         radio = self._require_radio()
-        return self._adapter().observation(
+        return self._observation(
             _ATT,
             await radio.get_attenuator_level(),
             native_id="l ATT",
@@ -267,7 +267,7 @@ class RigctldClientObservationAdapter:
 
     async def read_nb(self) -> Observation:
         radio = self._require_radio()
-        return self._adapter().observation(
+        return self._observation(
             _NB,
             await radio.get_nb(),
             native_id="u NB",
@@ -275,7 +275,7 @@ class RigctldClientObservationAdapter:
 
     async def read_nr(self) -> Observation:
         radio = self._require_radio()
-        return self._adapter().observation(
+        return self._observation(
             _NR,
             await radio.get_nr(),
             native_id="u NR",
@@ -295,7 +295,7 @@ class RigctldClientObservationAdapter:
         if not self.profile.capability_for(_ACTIVE_VFO).can_poll:
             return None
         radio = self._require_radio()
-        return self._adapter().observation(
+        return self._observation(
             _ACTIVE_VFO,
             await radio.get_vfo_slot(),
             native_id="v",
@@ -307,7 +307,7 @@ class RigctldClientObservationAdapter:
         *,
         value: object = None,
     ) -> Observation:
-        observation = self._adapter().command_response(intent, value=value)
+        observation = self._command_response_observation(intent, value=value)
         normalized_path = _normalize_command_path(observation.path)
         if normalized_path == observation.path:
             return observation
@@ -328,6 +328,31 @@ class RigctldClientObservationAdapter:
             transport="rigctld",
             clock=self.clock,
         )
+
+    def _observation(
+        self,
+        path: FieldPath,
+        value: object,
+        *,
+        native_id: str | None = None,
+    ) -> Observation:
+        adapter = self._adapter()
+        observation: Observation = adapter.observation(
+            path,
+            value,
+            native_id=native_id,
+        )
+        return observation
+
+    def _command_response_observation(
+        self,
+        intent: CommandIntent,
+        *,
+        value: object = None,
+    ) -> Observation:
+        adapter = self._adapter()
+        observation: Observation = adapter.command_response(intent, value=value)
+        return observation
 
     def _require_radio(self) -> RigctldObservationRadio:
         if self.radio is None:
