@@ -1162,6 +1162,52 @@ async def test_initial_full_state_envelope_revisions_match_legacy_seeded_http_st
     assert http_state["freshnessRevision"] == ws_state["freshnessRevision"]
 
 
+@pytest.mark.asyncio
+async def test_state_response_refreshes_live_connection_payload_without_revisions() -> None:
+    class _LiveConnectionRadio:
+        connected = True
+        control_connected = False
+        radio_ready = True
+        capabilities: set[str] = set()
+
+    radio = _LiveConnectionRadio()
+    srv = WebServer(radio)
+
+    writer = _FakeWriter()
+    await srv._serve_state(writer)  # noqa: SLF001
+    status, initial = _response_json(writer)
+
+    assert status == 200
+    assert initial["connection"]["rigConnected"] is True
+    assert initial["connection"]["controlConnected"] is False
+    assert initial["connection"]["radioReady"] is True
+
+    radio.control_connected = True
+
+    writer2 = _FakeWriter()
+    await srv._serve_state(writer2)  # noqa: SLF001
+    status2, control_changed = _response_json(writer2)
+
+    assert status2 == 200
+    assert control_changed["stateRevision"] == initial["stateRevision"]
+    assert control_changed["freshnessRevision"] == initial["freshnessRevision"]
+    assert control_changed["healthRevision"] == initial["healthRevision"]
+    assert control_changed["connection"]["controlConnected"] is True
+
+    radio.connected = False
+
+    writer3 = _FakeWriter()
+    await srv._serve_state(writer3)  # noqa: SLF001
+    status3, connected_changed = _response_json(writer3)
+
+    assert status3 == 200
+    assert connected_changed["stateRevision"] == initial["stateRevision"]
+    assert connected_changed["freshnessRevision"] == initial["freshnessRevision"]
+    assert connected_changed["healthRevision"] == initial["healthRevision"]
+    assert connected_changed["connection"]["rigConnected"] is False
+    assert connected_changed["connection"]["radioReady"] is True
+
+
 def test_legacy_state_store_sync_can_clear_default_boolean_values() -> None:
     srv = WebServer(None)
     transmitting = RadioState()

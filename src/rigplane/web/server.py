@@ -725,7 +725,7 @@ class WebServer:
         # Delta encoder for efficient state broadcasting
         self._delta_encoder: DeltaEncoder = DeltaEncoder(full_state_interval=100)
         self._last_broadcast_state_key: tuple[int, int, int] | None = None
-        self._cached_public_state_key: tuple[int, int, int, int, int, int] | None = None
+        self._cached_public_state_key: tuple[object, ...] | None = None
         self._cached_public_state_payload: dict[str, Any] | None = None
         self._health_revision: int = 0
         self._health_signature: tuple[object, ...] | None = None
@@ -1104,6 +1104,26 @@ class WebServer:
         snapshot = self.command_state_store.snapshot()
         return self._build_public_state_from_snapshot(snapshot, updated_at=updated_at)
 
+    def _public_state_live_connection_cache_key(
+        self,
+    ) -> tuple[bool, bool, bool, str | None]:
+        radio = self._radio
+        raw_connected = getattr(radio, "connected", False) if radio else False
+        connected = raw_connected if isinstance(raw_connected, bool) else False
+        raw_control_connected = (
+            getattr(radio, "control_connected", False) if radio else False
+        )
+        control_connected = (
+            raw_control_connected if isinstance(raw_control_connected, bool) else False
+        )
+        conn_state_val = getattr(radio, "conn_state", None) if radio else None
+        conn_state: str | None = None
+        if conn_state_val is not None and hasattr(conn_state_val, "value"):
+            raw_conn_state = conn_state_val.value
+            if isinstance(raw_conn_state, str):
+                conn_state = raw_conn_state
+        return (connected, control_connected, radio_ready(radio), conn_state)
+
     def _build_public_state_from_snapshot(
         self,
         snapshot: StateSnapshot,
@@ -1118,6 +1138,7 @@ class WebServer:
             len(self._scope_handlers),
             len(self._control_event_queues),
             len(self._audio_broadcaster._clients),
+            *self._public_state_live_connection_cache_key(),
         )
         if (
             updated_at is None
