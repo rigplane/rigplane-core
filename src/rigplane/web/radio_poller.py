@@ -48,7 +48,6 @@ from ..capabilities import (
     CAP_DUAL_RX,
     CAP_DUAL_WATCH,
     CAP_FILTER_SHAPE,
-    CAP_FILTER_WIDTH,
     CAP_IP_PLUS,
     CAP_MAIN_SUB_TRACKING,
     CAP_NB,
@@ -1039,7 +1038,13 @@ class RadioPoller:
                 if self._on_state_event:
                     self._on_state_event("mode_changed", {"mode": mode, "receiver": rx})
             case SetFilter(filter_num=fn, receiver=rx):
-                if CAP_FILTER_WIDTH in self._caps:
+                # Filter SELECTION (FIL1/2/3) rides the mode command and is
+                # gated on the rig declaring filter presets — NOT on
+                # CAP_FILTER_WIDTH, which is the distinct DSP IF-width control
+                # (0x1A 0x03). Conflating them silently dropped set_filter for
+                # rigs with presets but no width control, e.g. Xiegu X6200
+                # (ack ok, no-op on readback) — MOR-419.
+                if self._profile.filters:
                     self._ensure_receiver_supported(rx, operation="set_filter")
                     await radio.set_filter(fn, receiver=rx)
                     self._apply_command_response_observation(

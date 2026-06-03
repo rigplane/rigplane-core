@@ -1410,6 +1410,19 @@ class CivRuntime:
                     frame=frame,
                 )
             )
+            # 0x26 0x00/0x01 response carries (receiver, mode, data_mode, filter).
+            # Emit the filter too, else a set_filter routed via 0x26 (rigs with
+            # set_mode_via_selected, e.g. Xiegu X6200) is a no-op on readback —
+            # the periodic 0x26 poll returns the new filter but it was dropped
+            # here, leaving filterNum stuck at its prior value (MOR-419).
+            if len(frame.data) >= 4:
+                observations.append(
+                    self._observation(
+                        FieldPath.active(target_receiver, "freq_mode", "filter_num"),
+                        frame.data[3],
+                        frame=frame,
+                    )
+                )
         elif frame.command == 0x14 and len(frame.data) >= 2:
             mapping = _OBSERVABLE_CMD14_FIELDS.get(frame.sub or 0)
             if mapping is not None:

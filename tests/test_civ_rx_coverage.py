@@ -1338,6 +1338,25 @@ def test_update_radio_state_cmd26_with_data_mode(radio_with_state: IcomRadio) ->
     assert rs.main.data_mode == 3
 
 
+def test_observations_cmd26_emit_filter_num(radio: IcomRadio) -> None:
+    """MOR-419: the 0x26 0x00 mode response also emits filter_num, so a
+    set_filter routed via 0x26 (set_mode_via_selected rigs, e.g. Xiegu X6200)
+    is reflected on readback instead of being a no-op."""
+    frame = _make_frame(cmd=0x26, data=bytes([0x00, Mode.USB.value, 0x00, 2]))
+    by_path = {
+        str(o.path): o.value for o in radio._civ_runtime._observations_from_frame(frame)
+    }
+    assert by_path.get("receiver.0.active.freq_mode.mode") == "USB"
+    assert by_path.get("receiver.0.active.freq_mode.filter_num") == 2
+
+
+def test_observations_cmd26_minimal_emits_no_filter_num(radio: IcomRadio) -> None:
+    """A 2-byte 0x26 response (mode only, no filter byte) emits no filter_num."""
+    frame = _make_frame(cmd=0x26, data=bytes([0x00, Mode.FM.value]))
+    paths = {str(o.path) for o in radio._civ_runtime._observations_from_frame(frame)}
+    assert "receiver.0.active.freq_mode.filter_num" not in paths
+
+
 def test_update_radio_state_cmd15_smeter(radio_with_state: IcomRadio) -> None:
     """cmd 0x15 sub 0x02 updates s_meter on active receiver (lines 521-528)."""
     rs = radio_with_state._radio_state

@@ -27,6 +27,7 @@ from rigplane.core.command_service import (
 from rigplane.core.exceptions import TimeoutError as RigplaneTimeoutError
 from rigplane.core.state_pipeline_contracts import CommandIntent
 from rigplane.exceptions import CommandError
+from rigplane.core.capabilities import CAP_FILTER_WIDTH
 from rigplane.profiles import resolve_radio_profile
 from rigplane.radio_state import RadioState
 from rigplane.rigctld.state_cache import StateCache
@@ -46,6 +47,7 @@ from rigplane.web.radio_poller import (
     SetAttenuator,
     SetDataMode,
     SetDigiSel,
+    SetFilter,
     SetFilterShape,
     SetFilterWidth,
     SetFreq,
@@ -944,6 +946,31 @@ async def test_execute_set_preamp_updates_sub_receiver_state_and_radio_call() ->
     assert state.sub.preamp == 2
     assert state.sub.att == 0
     assert ("preamp_changed", {"level": 2, "receiver": 1}) in events
+
+
+@pytest.mark.asyncio
+async def test_execute_set_filter_dispatches_for_preset_rig_without_width_cap() -> None:
+    """MOR-419: filter SELECTION (FIL1/2/3) is gated on the rig's filter presets,
+    not CAP_FILTER_WIDTH (the distinct DSP IF-width control). The Xiegu X6200 has
+    presets but no width control, so set_filter must still reach the radio instead
+    of being silently dropped (ack ok, no-op on readback)."""
+    x6200 = resolve_radio_profile(model="X6200")
+    assert x6200.filters  # declares FIL1/FIL2/FIL3 presets
+    assert CAP_FILTER_WIDTH not in x6200.capabilities  # but no IF-width control
+    radio = _make_radio()
+    radio.model = "X6200"
+    radio.profile = x6200
+    radio.capabilities = set(x6200.capabilities)
+    poller = RadioPoller(
+        radio,
+        StateCache(),
+        CommandQueue(),
+        radio_state=RadioState(),
+    )
+
+    await poller._execute(SetFilter(2, receiver=0))  # noqa: SLF001
+
+    radio.set_filter.assert_awaited_once_with(2, receiver=0)
 
 
 @pytest.mark.asyncio
