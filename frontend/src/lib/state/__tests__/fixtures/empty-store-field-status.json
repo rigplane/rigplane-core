@@ -1,0 +1,1094 @@
+{
+  "active": {
+    "availability": "missing",
+    "freshness": "unknown",
+    "observed": false,
+    "storePath": "global.slow_state.active"
+  },
+  "alcMeter": {
+    "availability": "missing",
+    "freshness": "unknown",
+    "observed": false,
+    "storePath": "global.meters.alc"
+  },
+  "antiVoxGain": {
+    "availability": "missing",
+    "freshness": "unknown",
+    "observed": false,
+    "storePath": "global.operator_controls.anti_vox_gain"
+  },
+  "breakIn": {
+    "availability": "missing",
+    "freshness": "unknown",
+    "observed": false,
+    "storePath": "global.operator_controls.break_in"
+  },
+  "breakInDelay": {
+    "availability": "missing",
+    "freshness": "unknown",
+    "observed": false,
+    "storePath": "global.operator_controls.break_in_delay"
+  },
+  "compMeter": {
+    "availability": "missing",
+    "freshness": "unknown",
+    "observed": false,
+    "storePath": "global.meters.comp"
+  },
+  "compressorLevel": {
+    "availability": "missing",
+    "freshness": "unknown",
+    "observed": false,
+    "storePath": "global.operator_controls.compressor_level"
+  },
+  "compressorOn": {
+    "availability": "missing",
+    "freshness": "unknown",
+    "observed": false,
+    "storePath": "global.tx_state.compressor_on"
+  },
+  "cwPitch": {
+    "availability": "missing",
+    "freshness": "unknown",
+    "observed": false,
+    "storePath": "global.operator_controls.cw_pitch"
+  },
+  "cwSpot": {
+    "availability": "missing",
+    "freshness": "unknown",
+    "observed": false,
+    "storePath": "global.slow_state.cw_spot"
+  },
+  "dashRatio": {
+    "availability": "missing",
+    "freshness": "unknown",
+    "observed": false,
+    "storePath": "global.operator_controls.dash_ratio"
+  },
+  "dialLock": {
+    "availability": "missing",
+    "freshness": "unknown",
+    "observed": false,
+    "storePath": "global.tx_state.dial_lock"
+  },
+  "driveGain": {
+    "availability": "missing",
+    "freshness": "unknown",
+    "observed": false,
+    "storePath": "global.operator_controls.drive_gain"
+  },
+  "dualWatch": {
+    "availability": "missing",
+    "freshness": "unknown",
+    "observed": false,
+    "storePath": "global.tx_state.dual_watch"
+  },
+  "idMeter": {
+    "availability": "missing",
+    "freshness": "unknown",
+    "observed": false,
+    "storePath": "global.meters.id"
+  },
+  "keySpeed": {
+    "availability": "missing",
+    "freshness": "unknown",
+    "observed": false,
+    "storePath": "global.operator_controls.key_speed"
+  },
+  "main.activeSlot": {
+    "availability": "missing",
+    "freshness": "unknown",
+    "observed": false,
+    "storePath": "receiver.main.vfo.active_slot"
+  },
+  "main.afLevel": {
+    "availability": "missing",
+    "freshness": "unknown",
+    "observed": false,
+    "storePath": "receiver.main.operator_controls.af_level"
+  },
+  "main.afMute": {
+    "availability": "missing",
+    "freshness": "unknown",
+    "observed": false,
+    "storePath": "receiver.main.operator_toggles.af_mute"
+  },
+  "main.agc": {
+    "availability": "missing",
+    "freshness": "unknown",
+    "observed": false,
+    "storePath": "receiver.main.operator_controls.agc"
+  },
+  "main.agcTimeConstant": {
+    "availability": "missing",
+    "freshness": "unknown",
+    "observed": false,
+    "storePath": "receiver.main.operator_controls.agc_time_constant"
+  },
+  "main.antiVoxGain": {
+    "availability": "missing",
+    "freshness": "unknown",
+    "observed": false,
+    "storePath": "receiver.main.operator_controls.anti_vox_gain"
+  },
+  "main.apfFreq": {
+    "availability": "missing",
+    "freshness": "unknown",
+    "observed": false,
+    "storePath": "receiver.main.operator_controls.apf_freq"
+  },
+  "main.apfOn": {
+    "availability": "missing",
+    "freshness": "unknown",
+    "observed": false,
+    "storePath": "receiver.main.operator_toggles.apf_on"
+  },
+  "main.apfTypeLevel": {
+    "availability": "missing",
+    "freshness": "unknown",
+    "observed": false,
+    "storePath": "receiver.main.operator_controls.apf_type_level"
+  },
+  "main.att": {
+    "availability": "missing",
+    "freshness": "unknown",
+    "observed": false,
+    "storePath": "receiver.main.operator_controls.att"
+  },
+  "main.audioPeakFilter": {
+    "availability": "missing",
+    "freshness": "unknown",
+    "observed": false,
+    "storePath": "receiver.main.operator_controls.audio_peak_filter"
+  },
+  "main.autoNotch": {
+    "availability": "missing",
+    "freshness": "unknown",
+    "observed": false,
+    "storePath": "receiver.main.operator_toggles.auto_notch"
+  },
+  "main.breakInDelay": {
+    "availability": "missing",
+    "freshness": "unknown",
+    "observed": false,
+    "storePath": "receiver.main.operator_controls.break_in_delay"
+  },
+  "main.compressorLevel": {
+    "availability": "missing",
+    "freshness": "unknown",
+    "observed": false,
+    "storePath": "receiver.main.operator_controls.compressor_level"
+  },
+  "main.contour": {
+    "availability": "missing",
+    "freshness": "unknown",
+    "observed": false,
+    "storePath": "receiver.main.slow_state.contour"
+  },
+  "main.cwPitch": {
+    "availability": "missing",
+    "freshness": "unknown",
+    "observed": false,
+    "storePath": "receiver.main.operator_controls.cw_pitch"
+  },
+  "main.dataMode": {
+    "availability": "missing",
+    "freshness": "unknown",
+    "observed": false,
+    "storePath": "receiver.main.active.freq_mode.data_mode"
+  },
+  "main.digisel": {
+    "availability": "missing",
+    "freshness": "unknown",
+    "observed": false,
+    "storePath": "receiver.main.operator_toggles.digisel"
+  },
+  "main.digiselShift": {
+    "availability": "missing",
+    "freshness": "unknown",
+    "observed": false,
+    "storePath": "receiver.main.operator_controls.digisel_shift"
+  },
+  "main.filter": {
+    "availability": "missing",
+    "freshness": "unknown",
+    "observed": false,
+    "storePath": "receiver.main.active.freq_mode.filter"
+  },
+  "main.filterShape": {
+    "availability": "missing",
+    "freshness": "unknown",
+    "observed": false,
+    "storePath": "receiver.main.operator_controls.filter_shape"
+  },
+  "main.filterWidth": {
+    "availability": "missing",
+    "freshness": "unknown",
+    "observed": false,
+    "storePath": "receiver.main.active.freq_mode.filter_width"
+  },
+  "main.freqHz": {
+    "availability": "missing",
+    "freshness": "unknown",
+    "observed": false,
+    "storePath": "receiver.main.active.freq_mode.freq_hz"
+  },
+  "main.ifShift": {
+    "availability": "missing",
+    "freshness": "unknown",
+    "observed": false,
+    "storePath": "receiver.main.operator_controls.if_shift"
+  },
+  "main.ipplus": {
+    "availability": "missing",
+    "freshness": "unknown",
+    "observed": false,
+    "storePath": "receiver.main.operator_toggles.ipplus"
+  },
+  "main.keySpeed": {
+    "availability": "missing",
+    "freshness": "unknown",
+    "observed": false,
+    "storePath": "receiver.main.operator_controls.key_speed"
+  },
+  "main.manualNotch": {
+    "availability": "missing",
+    "freshness": "unknown",
+    "observed": false,
+    "storePath": "receiver.main.operator_toggles.manual_notch"
+  },
+  "main.manualNotchFreq": {
+    "availability": "missing",
+    "freshness": "unknown",
+    "observed": false,
+    "storePath": "receiver.main.operator_controls.manual_notch_freq"
+  },
+  "main.manualNotchWidth": {
+    "availability": "missing",
+    "freshness": "unknown",
+    "observed": false,
+    "storePath": "receiver.main.operator_controls.manual_notch_width"
+  },
+  "main.micGain": {
+    "availability": "missing",
+    "freshness": "unknown",
+    "observed": false,
+    "storePath": "receiver.main.operator_controls.mic_gain"
+  },
+  "main.mode": {
+    "availability": "missing",
+    "freshness": "unknown",
+    "observed": false,
+    "storePath": "receiver.main.active.freq_mode.mode"
+  },
+  "main.monitorGain": {
+    "availability": "missing",
+    "freshness": "unknown",
+    "observed": false,
+    "storePath": "receiver.main.operator_controls.monitor_gain"
+  },
+  "main.narrow": {
+    "availability": "missing",
+    "freshness": "unknown",
+    "observed": false,
+    "storePath": "receiver.main.operator_toggles.narrow"
+  },
+  "main.nb": {
+    "availability": "missing",
+    "freshness": "unknown",
+    "observed": false,
+    "storePath": "receiver.main.operator_toggles.nb"
+  },
+  "main.nbLevel": {
+    "availability": "missing",
+    "freshness": "unknown",
+    "observed": false,
+    "storePath": "receiver.main.operator_controls.nb_level"
+  },
+  "main.nr": {
+    "availability": "missing",
+    "freshness": "unknown",
+    "observed": false,
+    "storePath": "receiver.main.operator_toggles.nr"
+  },
+  "main.nrLevel": {
+    "availability": "missing",
+    "freshness": "unknown",
+    "observed": false,
+    "storePath": "receiver.main.operator_controls.nr_level"
+  },
+  "main.pbtInner": {
+    "availability": "missing",
+    "freshness": "unknown",
+    "observed": false,
+    "storePath": "receiver.main.operator_controls.pbt_inner"
+  },
+  "main.pbtOuter": {
+    "availability": "missing",
+    "freshness": "unknown",
+    "observed": false,
+    "storePath": "receiver.main.operator_controls.pbt_outer"
+  },
+  "main.preamp": {
+    "availability": "missing",
+    "freshness": "unknown",
+    "observed": false,
+    "storePath": "receiver.main.operator_controls.preamp"
+  },
+  "main.repeaterTone": {
+    "availability": "missing",
+    "freshness": "unknown",
+    "observed": false,
+    "storePath": "receiver.main.operator_toggles.repeater_tone"
+  },
+  "main.repeaterTsql": {
+    "availability": "missing",
+    "freshness": "unknown",
+    "observed": false,
+    "storePath": "receiver.main.operator_toggles.repeater_tsql"
+  },
+  "main.rfGain": {
+    "availability": "missing",
+    "freshness": "unknown",
+    "observed": false,
+    "storePath": "receiver.main.operator_controls.rf_gain"
+  },
+  "main.sMeter": {
+    "availability": "missing",
+    "freshness": "unknown",
+    "observed": false,
+    "storePath": "receiver.main.meters.s_meter"
+  },
+  "main.sMeterSqlOpen": {
+    "availability": "missing",
+    "freshness": "unknown",
+    "observed": false,
+    "storePath": "receiver.main.operator_toggles.s_meter_sql_open"
+  },
+  "main.squelch": {
+    "availability": "missing",
+    "freshness": "unknown",
+    "observed": false,
+    "storePath": "receiver.main.operator_controls.squelch"
+  },
+  "main.toneFreq": {
+    "availability": "missing",
+    "freshness": "unknown",
+    "observed": false,
+    "storePath": "receiver.main.operator_controls.tone_freq"
+  },
+  "main.tsqlFreq": {
+    "availability": "missing",
+    "freshness": "unknown",
+    "observed": false,
+    "storePath": "receiver.main.operator_controls.tsql_freq"
+  },
+  "main.twinPeakFilter": {
+    "availability": "missing",
+    "freshness": "unknown",
+    "observed": false,
+    "storePath": "receiver.main.operator_toggles.twin_peak_filter"
+  },
+  "main.vfoA": {
+    "availability": "missing",
+    "freshness": "unknown",
+    "observed": false,
+    "storePath": "receiver.main.slow_state.vfo_a"
+  },
+  "main.vfoA.dataMode": {
+    "availability": "missing",
+    "freshness": "unknown",
+    "observed": false,
+    "storePath": "receiver.main.slot.A.freq_mode.data_mode"
+  },
+  "main.vfoA.filterNum": {
+    "availability": "missing",
+    "freshness": "unknown",
+    "observed": false,
+    "storePath": "receiver.main.slot.A.freq_mode.filter_num"
+  },
+  "main.vfoA.freqHz": {
+    "availability": "missing",
+    "freshness": "unknown",
+    "observed": false,
+    "storePath": "receiver.main.slot.A.freq_mode.freq_hz"
+  },
+  "main.vfoA.mode": {
+    "availability": "missing",
+    "freshness": "unknown",
+    "observed": false,
+    "storePath": "receiver.main.slot.A.freq_mode.mode"
+  },
+  "main.vfoB": {
+    "availability": "missing",
+    "freshness": "unknown",
+    "observed": false,
+    "storePath": "receiver.main.slow_state.vfo_b"
+  },
+  "main.vfoB.dataMode": {
+    "availability": "missing",
+    "freshness": "unknown",
+    "observed": false,
+    "storePath": "receiver.main.slot.B.freq_mode.data_mode"
+  },
+  "main.vfoB.filterNum": {
+    "availability": "missing",
+    "freshness": "unknown",
+    "observed": false,
+    "storePath": "receiver.main.slot.B.freq_mode.filter_num"
+  },
+  "main.vfoB.freqHz": {
+    "availability": "missing",
+    "freshness": "unknown",
+    "observed": false,
+    "storePath": "receiver.main.slot.B.freq_mode.freq_hz"
+  },
+  "main.vfoB.mode": {
+    "availability": "missing",
+    "freshness": "unknown",
+    "observed": false,
+    "storePath": "receiver.main.slot.B.freq_mode.mode"
+  },
+  "main.voxDelay": {
+    "availability": "missing",
+    "freshness": "unknown",
+    "observed": false,
+    "storePath": "receiver.main.operator_controls.vox_delay"
+  },
+  "main.voxGain": {
+    "availability": "missing",
+    "freshness": "unknown",
+    "observed": false,
+    "storePath": "receiver.main.operator_controls.vox_gain"
+  },
+  "mainSubTracking": {
+    "availability": "missing",
+    "freshness": "unknown",
+    "observed": false,
+    "storePath": "global.tx_state.main_sub_tracking"
+  },
+  "micGain": {
+    "availability": "missing",
+    "freshness": "unknown",
+    "observed": false,
+    "storePath": "global.operator_controls.mic_gain"
+  },
+  "monitorGain": {
+    "availability": "missing",
+    "freshness": "unknown",
+    "observed": false,
+    "storePath": "global.operator_controls.monitor_gain"
+  },
+  "monitorOn": {
+    "availability": "missing",
+    "freshness": "unknown",
+    "observed": false,
+    "storePath": "global.tx_state.monitor_on"
+  },
+  "nbDepth": {
+    "availability": "missing",
+    "freshness": "unknown",
+    "observed": false,
+    "storePath": "global.operator_controls.nb_depth"
+  },
+  "nbWidth": {
+    "availability": "missing",
+    "freshness": "unknown",
+    "observed": false,
+    "storePath": "global.operator_controls.nb_width"
+  },
+  "notchFilter": {
+    "availability": "missing",
+    "freshness": "unknown",
+    "observed": false,
+    "storePath": "global.operator_controls.notch_filter"
+  },
+  "overflow": {
+    "availability": "missing",
+    "freshness": "unknown",
+    "observed": false,
+    "storePath": "global.slow_state.overflow"
+  },
+  "powerLevel": {
+    "availability": "missing",
+    "freshness": "unknown",
+    "observed": false,
+    "storePath": "global.operator_controls.power_level"
+  },
+  "powerMeter": {
+    "availability": "missing",
+    "freshness": "unknown",
+    "observed": false,
+    "storePath": "global.meters.power"
+  },
+  "powerOn": {
+    "availability": "missing",
+    "freshness": "unknown",
+    "observed": false,
+    "storePath": "global.tx_state.power_on"
+  },
+  "ptt": {
+    "availability": "missing",
+    "freshness": "unknown",
+    "observed": false,
+    "storePath": "global.tx_state.ptt"
+  },
+  "refAdjust": {
+    "availability": "missing",
+    "freshness": "unknown",
+    "observed": false,
+    "storePath": "global.operator_controls.ref_adjust"
+  },
+  "ritFreq": {
+    "availability": "missing",
+    "freshness": "unknown",
+    "observed": false,
+    "storePath": "global.operator_controls.rit_freq"
+  },
+  "ritOn": {
+    "availability": "missing",
+    "freshness": "unknown",
+    "observed": false,
+    "storePath": "global.tx_state.rit_on"
+  },
+  "ritTx": {
+    "availability": "missing",
+    "freshness": "unknown",
+    "observed": false,
+    "storePath": "global.tx_state.rit_tx"
+  },
+  "rxAntenna1": {
+    "availability": "missing",
+    "freshness": "unknown",
+    "observed": false,
+    "storePath": "global.slow_state.rx_antenna_1"
+  },
+  "rxAntenna2": {
+    "availability": "missing",
+    "freshness": "unknown",
+    "observed": false,
+    "storePath": "global.slow_state.rx_antenna_2"
+  },
+  "scanResumeMode": {
+    "availability": "missing",
+    "freshness": "unknown",
+    "observed": false,
+    "storePath": "global.slow_state.scan_resume_mode"
+  },
+  "scanType": {
+    "availability": "missing",
+    "freshness": "unknown",
+    "observed": false,
+    "storePath": "global.slow_state.scan_type"
+  },
+  "scanning": {
+    "availability": "missing",
+    "freshness": "unknown",
+    "observed": false,
+    "storePath": "global.slow_state.scanning"
+  },
+  "scopeControls": {
+    "availability": "missing",
+    "freshness": "unknown",
+    "observed": false,
+    "storePath": "global.slow_state.scope_controls"
+  },
+  "scopeControls.dual": {
+    "availability": "missing",
+    "freshness": "unknown",
+    "observed": false,
+    "storePath": "scope_controls.global.display.dual"
+  },
+  "scopeControls.edge": {
+    "availability": "missing",
+    "freshness": "unknown",
+    "observed": false,
+    "storePath": "scope_controls.global.display.edge"
+  },
+  "scopeControls.hold": {
+    "availability": "missing",
+    "freshness": "unknown",
+    "observed": false,
+    "storePath": "scope_controls.global.display.hold"
+  },
+  "scopeControls.mode": {
+    "availability": "missing",
+    "freshness": "unknown",
+    "observed": false,
+    "storePath": "scope_controls.global.display.mode"
+  },
+  "scopeControls.receiver": {
+    "availability": "missing",
+    "freshness": "unknown",
+    "observed": false,
+    "storePath": "scope_controls.global.display.receiver"
+  },
+  "scopeControls.refDb": {
+    "availability": "missing",
+    "freshness": "unknown",
+    "observed": false,
+    "storePath": "scope_controls.global.display.ref_db"
+  },
+  "scopeControls.span": {
+    "availability": "missing",
+    "freshness": "unknown",
+    "observed": false,
+    "storePath": "scope_controls.global.display.span"
+  },
+  "scopeControls.speed": {
+    "availability": "missing",
+    "freshness": "unknown",
+    "observed": false,
+    "storePath": "scope_controls.global.display.speed"
+  },
+  "split": {
+    "availability": "missing",
+    "freshness": "unknown",
+    "observed": false,
+    "storePath": "global.tx_state.split"
+  },
+  "ssbTxBandwidth": {
+    "availability": "missing",
+    "freshness": "unknown",
+    "observed": false,
+    "storePath": "global.operator_controls.ssb_tx_bandwidth"
+  },
+  "sub.activeSlot": {
+    "availability": "missing",
+    "freshness": "unknown",
+    "observed": false,
+    "storePath": "receiver.sub.vfo.active_slot"
+  },
+  "sub.afLevel": {
+    "availability": "missing",
+    "freshness": "unknown",
+    "observed": false,
+    "storePath": "receiver.sub.operator_controls.af_level"
+  },
+  "sub.afMute": {
+    "availability": "missing",
+    "freshness": "unknown",
+    "observed": false,
+    "storePath": "receiver.sub.operator_toggles.af_mute"
+  },
+  "sub.agc": {
+    "availability": "missing",
+    "freshness": "unknown",
+    "observed": false,
+    "storePath": "receiver.sub.operator_controls.agc"
+  },
+  "sub.agcTimeConstant": {
+    "availability": "missing",
+    "freshness": "unknown",
+    "observed": false,
+    "storePath": "receiver.sub.operator_controls.agc_time_constant"
+  },
+  "sub.antiVoxGain": {
+    "availability": "missing",
+    "freshness": "unknown",
+    "observed": false,
+    "storePath": "receiver.sub.operator_controls.anti_vox_gain"
+  },
+  "sub.apfFreq": {
+    "availability": "missing",
+    "freshness": "unknown",
+    "observed": false,
+    "storePath": "receiver.sub.operator_controls.apf_freq"
+  },
+  "sub.apfOn": {
+    "availability": "missing",
+    "freshness": "unknown",
+    "observed": false,
+    "storePath": "receiver.sub.operator_toggles.apf_on"
+  },
+  "sub.apfTypeLevel": {
+    "availability": "missing",
+    "freshness": "unknown",
+    "observed": false,
+    "storePath": "receiver.sub.operator_controls.apf_type_level"
+  },
+  "sub.att": {
+    "availability": "missing",
+    "freshness": "unknown",
+    "observed": false,
+    "storePath": "receiver.sub.operator_controls.att"
+  },
+  "sub.audioPeakFilter": {
+    "availability": "missing",
+    "freshness": "unknown",
+    "observed": false,
+    "storePath": "receiver.sub.operator_controls.audio_peak_filter"
+  },
+  "sub.autoNotch": {
+    "availability": "missing",
+    "freshness": "unknown",
+    "observed": false,
+    "storePath": "receiver.sub.operator_toggles.auto_notch"
+  },
+  "sub.breakInDelay": {
+    "availability": "missing",
+    "freshness": "unknown",
+    "observed": false,
+    "storePath": "receiver.sub.operator_controls.break_in_delay"
+  },
+  "sub.compressorLevel": {
+    "availability": "missing",
+    "freshness": "unknown",
+    "observed": false,
+    "storePath": "receiver.sub.operator_controls.compressor_level"
+  },
+  "sub.contour": {
+    "availability": "missing",
+    "freshness": "unknown",
+    "observed": false,
+    "storePath": "receiver.sub.slow_state.contour"
+  },
+  "sub.cwPitch": {
+    "availability": "missing",
+    "freshness": "unknown",
+    "observed": false,
+    "storePath": "receiver.sub.operator_controls.cw_pitch"
+  },
+  "sub.dataMode": {
+    "availability": "missing",
+    "freshness": "unknown",
+    "observed": false,
+    "storePath": "receiver.sub.active.freq_mode.data_mode"
+  },
+  "sub.digisel": {
+    "availability": "missing",
+    "freshness": "unknown",
+    "observed": false,
+    "storePath": "receiver.sub.operator_toggles.digisel"
+  },
+  "sub.digiselShift": {
+    "availability": "missing",
+    "freshness": "unknown",
+    "observed": false,
+    "storePath": "receiver.sub.operator_controls.digisel_shift"
+  },
+  "sub.filter": {
+    "availability": "missing",
+    "freshness": "unknown",
+    "observed": false,
+    "storePath": "receiver.sub.active.freq_mode.filter"
+  },
+  "sub.filterShape": {
+    "availability": "missing",
+    "freshness": "unknown",
+    "observed": false,
+    "storePath": "receiver.sub.operator_controls.filter_shape"
+  },
+  "sub.filterWidth": {
+    "availability": "missing",
+    "freshness": "unknown",
+    "observed": false,
+    "storePath": "receiver.sub.active.freq_mode.filter_width"
+  },
+  "sub.freqHz": {
+    "availability": "missing",
+    "freshness": "unknown",
+    "observed": false,
+    "storePath": "receiver.sub.active.freq_mode.freq_hz"
+  },
+  "sub.ifShift": {
+    "availability": "missing",
+    "freshness": "unknown",
+    "observed": false,
+    "storePath": "receiver.sub.operator_controls.if_shift"
+  },
+  "sub.ipplus": {
+    "availability": "missing",
+    "freshness": "unknown",
+    "observed": false,
+    "storePath": "receiver.sub.operator_toggles.ipplus"
+  },
+  "sub.keySpeed": {
+    "availability": "missing",
+    "freshness": "unknown",
+    "observed": false,
+    "storePath": "receiver.sub.operator_controls.key_speed"
+  },
+  "sub.manualNotch": {
+    "availability": "missing",
+    "freshness": "unknown",
+    "observed": false,
+    "storePath": "receiver.sub.operator_toggles.manual_notch"
+  },
+  "sub.manualNotchFreq": {
+    "availability": "missing",
+    "freshness": "unknown",
+    "observed": false,
+    "storePath": "receiver.sub.operator_controls.manual_notch_freq"
+  },
+  "sub.manualNotchWidth": {
+    "availability": "missing",
+    "freshness": "unknown",
+    "observed": false,
+    "storePath": "receiver.sub.operator_controls.manual_notch_width"
+  },
+  "sub.micGain": {
+    "availability": "missing",
+    "freshness": "unknown",
+    "observed": false,
+    "storePath": "receiver.sub.operator_controls.mic_gain"
+  },
+  "sub.mode": {
+    "availability": "missing",
+    "freshness": "unknown",
+    "observed": false,
+    "storePath": "receiver.sub.active.freq_mode.mode"
+  },
+  "sub.monitorGain": {
+    "availability": "missing",
+    "freshness": "unknown",
+    "observed": false,
+    "storePath": "receiver.sub.operator_controls.monitor_gain"
+  },
+  "sub.narrow": {
+    "availability": "missing",
+    "freshness": "unknown",
+    "observed": false,
+    "storePath": "receiver.sub.operator_toggles.narrow"
+  },
+  "sub.nb": {
+    "availability": "missing",
+    "freshness": "unknown",
+    "observed": false,
+    "storePath": "receiver.sub.operator_toggles.nb"
+  },
+  "sub.nbLevel": {
+    "availability": "missing",
+    "freshness": "unknown",
+    "observed": false,
+    "storePath": "receiver.sub.operator_controls.nb_level"
+  },
+  "sub.nr": {
+    "availability": "missing",
+    "freshness": "unknown",
+    "observed": false,
+    "storePath": "receiver.sub.operator_toggles.nr"
+  },
+  "sub.nrLevel": {
+    "availability": "missing",
+    "freshness": "unknown",
+    "observed": false,
+    "storePath": "receiver.sub.operator_controls.nr_level"
+  },
+  "sub.pbtInner": {
+    "availability": "missing",
+    "freshness": "unknown",
+    "observed": false,
+    "storePath": "receiver.sub.operator_controls.pbt_inner"
+  },
+  "sub.pbtOuter": {
+    "availability": "missing",
+    "freshness": "unknown",
+    "observed": false,
+    "storePath": "receiver.sub.operator_controls.pbt_outer"
+  },
+  "sub.preamp": {
+    "availability": "missing",
+    "freshness": "unknown",
+    "observed": false,
+    "storePath": "receiver.sub.operator_controls.preamp"
+  },
+  "sub.repeaterTone": {
+    "availability": "missing",
+    "freshness": "unknown",
+    "observed": false,
+    "storePath": "receiver.sub.operator_toggles.repeater_tone"
+  },
+  "sub.repeaterTsql": {
+    "availability": "missing",
+    "freshness": "unknown",
+    "observed": false,
+    "storePath": "receiver.sub.operator_toggles.repeater_tsql"
+  },
+  "sub.rfGain": {
+    "availability": "missing",
+    "freshness": "unknown",
+    "observed": false,
+    "storePath": "receiver.sub.operator_controls.rf_gain"
+  },
+  "sub.sMeter": {
+    "availability": "missing",
+    "freshness": "unknown",
+    "observed": false,
+    "storePath": "receiver.sub.meters.s_meter"
+  },
+  "sub.sMeterSqlOpen": {
+    "availability": "missing",
+    "freshness": "unknown",
+    "observed": false,
+    "storePath": "receiver.sub.operator_toggles.s_meter_sql_open"
+  },
+  "sub.squelch": {
+    "availability": "missing",
+    "freshness": "unknown",
+    "observed": false,
+    "storePath": "receiver.sub.operator_controls.squelch"
+  },
+  "sub.toneFreq": {
+    "availability": "missing",
+    "freshness": "unknown",
+    "observed": false,
+    "storePath": "receiver.sub.operator_controls.tone_freq"
+  },
+  "sub.tsqlFreq": {
+    "availability": "missing",
+    "freshness": "unknown",
+    "observed": false,
+    "storePath": "receiver.sub.operator_controls.tsql_freq"
+  },
+  "sub.twinPeakFilter": {
+    "availability": "missing",
+    "freshness": "unknown",
+    "observed": false,
+    "storePath": "receiver.sub.operator_toggles.twin_peak_filter"
+  },
+  "sub.vfoA": {
+    "availability": "missing",
+    "freshness": "unknown",
+    "observed": false,
+    "storePath": "receiver.sub.slow_state.vfo_a"
+  },
+  "sub.vfoA.dataMode": {
+    "availability": "missing",
+    "freshness": "unknown",
+    "observed": false,
+    "storePath": "receiver.sub.slot.A.freq_mode.data_mode"
+  },
+  "sub.vfoA.filterNum": {
+    "availability": "missing",
+    "freshness": "unknown",
+    "observed": false,
+    "storePath": "receiver.sub.slot.A.freq_mode.filter_num"
+  },
+  "sub.vfoA.freqHz": {
+    "availability": "missing",
+    "freshness": "unknown",
+    "observed": false,
+    "storePath": "receiver.sub.slot.A.freq_mode.freq_hz"
+  },
+  "sub.vfoA.mode": {
+    "availability": "missing",
+    "freshness": "unknown",
+    "observed": false,
+    "storePath": "receiver.sub.slot.A.freq_mode.mode"
+  },
+  "sub.vfoB": {
+    "availability": "missing",
+    "freshness": "unknown",
+    "observed": false,
+    "storePath": "receiver.sub.slow_state.vfo_b"
+  },
+  "sub.vfoB.dataMode": {
+    "availability": "missing",
+    "freshness": "unknown",
+    "observed": false,
+    "storePath": "receiver.sub.slot.B.freq_mode.data_mode"
+  },
+  "sub.vfoB.filterNum": {
+    "availability": "missing",
+    "freshness": "unknown",
+    "observed": false,
+    "storePath": "receiver.sub.slot.B.freq_mode.filter_num"
+  },
+  "sub.vfoB.freqHz": {
+    "availability": "missing",
+    "freshness": "unknown",
+    "observed": false,
+    "storePath": "receiver.sub.slot.B.freq_mode.freq_hz"
+  },
+  "sub.vfoB.mode": {
+    "availability": "missing",
+    "freshness": "unknown",
+    "observed": false,
+    "storePath": "receiver.sub.slot.B.freq_mode.mode"
+  },
+  "sub.voxDelay": {
+    "availability": "missing",
+    "freshness": "unknown",
+    "observed": false,
+    "storePath": "receiver.sub.operator_controls.vox_delay"
+  },
+  "sub.voxGain": {
+    "availability": "missing",
+    "freshness": "unknown",
+    "observed": false,
+    "storePath": "receiver.sub.operator_controls.vox_gain"
+  },
+  "swrMeter": {
+    "availability": "missing",
+    "freshness": "unknown",
+    "observed": false,
+    "storePath": "global.meters.swr"
+  },
+  "tunerStatus": {
+    "availability": "missing",
+    "freshness": "unknown",
+    "observed": false,
+    "storePath": "global.operator_controls.tuner_status"
+  },
+  "tuningStep": {
+    "availability": "missing",
+    "freshness": "unknown",
+    "observed": false,
+    "storePath": "global.slow_state.tuning_step"
+  },
+  "txAntenna": {
+    "availability": "missing",
+    "freshness": "unknown",
+    "observed": false,
+    "storePath": "global.operator_controls.tx_antenna"
+  },
+  "txBandEdges": {
+    "availability": "missing",
+    "freshness": "unknown",
+    "observed": false,
+    "storePath": "global.slow_state.tx_band_edges"
+  },
+  "txFreqMonitor": {
+    "availability": "missing",
+    "freshness": "unknown",
+    "observed": false,
+    "storePath": "global.tx_state.tx_freq_monitor"
+  },
+  "vdMeter": {
+    "availability": "missing",
+    "freshness": "unknown",
+    "observed": false,
+    "storePath": "global.meters.vd"
+  },
+  "vfoSelect": {
+    "availability": "missing",
+    "freshness": "unknown",
+    "observed": false,
+    "storePath": "global.slow_state.vfo_select"
+  },
+  "voxDelay": {
+    "availability": "missing",
+    "freshness": "unknown",
+    "observed": false,
+    "storePath": "global.operator_controls.vox_delay"
+  },
+  "voxGain": {
+    "availability": "missing",
+    "freshness": "unknown",
+    "observed": false,
+    "storePath": "global.operator_controls.vox_gain"
+  },
+  "voxOn": {
+    "availability": "missing",
+    "freshness": "unknown",
+    "observed": false,
+    "storePath": "global.tx_state.vox_on"
+  },
+  "yaesu": {
+    "availability": "missing",
+    "freshness": "unknown",
+    "observed": false,
+    "storePath": "global.slow_state.yaesu"
+  }
+}

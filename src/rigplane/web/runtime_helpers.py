@@ -164,6 +164,22 @@ _GLOBAL_SLOW_STATE_FIELDS = {
     "scope_controls",
     "yaesu",
 }
+# Public ``scopeControls.<suffix>`` leaves the toolbar/LCD gate on, mapped to
+# their backend scope-control field name. The whole group is unobserved until
+# a real scope-control observation lands, so every leaf is seeded ``missing``
+# in the default snapshot — otherwise an absent leaf would resolve to
+# ``available`` on the frontend and render its default (CTR / MID / …) as
+# confirmed (MOR-429).
+_SCOPE_CONTROL_PUBLIC_FIELDS = {
+    "mode": "mode",
+    "edge": "edge",
+    "span": "span",
+    "speed": "speed",
+    "hold": "hold",
+    "refDb": "ref_db",
+    "dual": "dual",
+    "receiver": "receiver",
+}
 
 
 def _receiver_public_key(name: str) -> str:
@@ -364,11 +380,12 @@ def _default_snapshot_field_status(receiver_count: int) -> dict[str, dict[str, A
             _to_camel(name),
             FieldPath.global_("slow_state", name),
         )
-    _set_missing_field_status(
-        statuses,
-        "scopeControls.span",
-        FieldPath.scope_control("display", "span"),
-    )
+    for public_suffix, control_name in _SCOPE_CONTROL_PUBLIC_FIELDS.items():
+        _set_missing_field_status(
+            statuses,
+            f"scopeControls.{public_suffix}",
+            FieldPath.scope_control("display", control_name),
+        )
     return statuses
 
 

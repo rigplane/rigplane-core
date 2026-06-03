@@ -9,6 +9,7 @@
   import AmberIndStrip from './AmberIndStrip.svelte';
   import type { IndToken } from './AmberIndStrip.svelte';
   import { runtime } from '$lib/runtime';
+  import { isFieldAvailable } from '$lib/state/field-status';
 
   // Band lookup by frequency (LCD-specific, mirrors AmberCockpit)
   const BANDS: [string, number, number][] = [
@@ -60,6 +61,13 @@
 
   // Active receiver for indicator zone data (unchanged from pre-#897)
   let rx = $derived(radioState?.active === 'SUB' ? radioState?.sub : radioState?.main);
+  let activeRxKey = $derived<'main' | 'sub'>(radioState?.active === 'SUB' ? 'sub' : 'main');
+
+  // MOR-429: gate active-receiver indicators on fieldStatus availability so an
+  // unobserved/stale/default value is never presented as a confirmed reading.
+  function rxAvailable(field: string): boolean {
+    return isFieldAvailable(radioState, `${activeRxKey}.${field}`);
+  }
 
   // ── VFO A (MAIN) — always top line ──
   // Read directly from radioState.main so the tag is statically correct (fixes codex P2).
@@ -103,10 +111,10 @@
       label: tx.compActive ? `PROC ${tx.compLevel}` : 'PROC',
       active: tx.compActive,
     }] : []),
-    ...(hasCap('attenuator') ? [{
+    ...(hasCap('attenuator') && rxAvailable('att') ? [{
       id: 'att' as const, label: 'ATT', active: (rx?.att ?? 0) > 0,
     }] : []),
-    ...(hasCap('preamp') ? [{
+    ...(hasCap('preamp') && rxAvailable('preamp') ? [{
       id: 'pre' as const,
       label: (rx?.preamp ?? 0) === 0 ? 'IPO'
            : (rx?.preamp ?? 0) === 1 ? 'AMP1' : 'AMP2',
@@ -116,31 +124,37 @@
 
   // dspTokens: RX processing (NB/NR/NOTCH/ANF/RFG)
   let dspTokens = $derived<IndToken[]>([
-    ...(hasCap('nb') ? [{
+    ...(hasCap('nb') && rxAvailable('nb') ? [{
       id: 'nb' as const,
       label: (rx?.nb ?? false) || (rx?.nbLevel ?? 0) > 0
         ? `NB ${rx?.nbLevel ?? 0}` : 'NB',
       active: (rx?.nb ?? false) || (rx?.nbLevel ?? 0) > 0,
     }] : []),
-    ...(hasCap('nr') ? [{
+    ...(hasCap('nr') && rxAvailable('nr') ? [{
       id: 'nr' as const,
       label: (rx?.nr ?? false) || (rx?.nrLevel ?? 0) > 0
         ? `NR ${rx?.nrLevel ?? 0}` : 'NR',
       active: (rx?.nr ?? false) || (rx?.nrLevel ?? 0) > 0,
     }] : []),
     ...(hasCap('notch') ? [
-      { id: 'notch' as const, label: 'NOTCH', active: rx?.manualNotch ?? false },
-      { id: 'anf' as const, label: 'ANF', active: rx?.autoNotch ?? false },
+      ...(rxAvailable('manualNotch')
+        ? [{ id: 'notch' as const, label: 'NOTCH', active: rx?.manualNotch ?? false }]
+        : []),
+      ...(rxAvailable('autoNotch')
+        ? [{ id: 'anf' as const, label: 'ANF', active: rx?.autoNotch ?? false }]
+        : []),
     ] : []),
-    ...(hasCap('rf_gain') ? [{
+    ...(hasCap('rf_gain') && rxAvailable('rfGain') ? [{
       id: 'rfg' as const, label: 'RFG', active: (rx?.rfGain ?? 255) < 255,
     }] : []),
   ]);
 
   // globalTokens: AGC/SQL/LOCK/SPLIT/RIT
   let globalTokens = $derived<IndToken[]>([
-    { id: 'agc' as const, label: `AGC ${agcLabelFor(rx?.agc ?? 2)}`, active: true },
-    ...(hasCap('squelch') ? [{
+    ...(rxAvailable('agc')
+      ? [{ id: 'agc' as const, label: `AGC ${agcLabelFor(rx?.agc ?? 2)}`, active: true }]
+      : []),
+    ...(hasCap('squelch') && rxAvailable('squelch') ? [{
       id: 'sql' as const, label: 'SQL', active: (rx?.squelch ?? 0) > 0,
     }] : []),
     ...(hasCap('dial_lock') ? [{ id: 'lock' as const, label: 'LOCK', active: lockActive }] : []),

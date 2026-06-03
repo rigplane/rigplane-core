@@ -262,6 +262,43 @@ describe('SpectrumToolbar component', () => {
     expect(spanValue?.textContent?.trim()).toBe('—');
   });
 
+  it('disables scope controls when the scopeControls parent is unobserved (no child entries)', () => {
+    // Mirrors the real backend payload for an unobserved scope group: the
+    // parent `scopeControls` carries a `missing` status, the individual
+    // children (mode/span/speed/…) have NO own entries. Parent/child
+    // resolution must treat each leaf as unavailable so defaults
+    // (CTR/MID/±25k/…) are not presented as confirmed (MOR-429).
+    radioStoreMock.current = {
+      scopeControls: { mode: 0, span: 3, speed: 1, hold: false, dual: false, receiver: 0, refDb: 0, edge: 1 },
+      fieldStatus: {
+        scopeControls: {
+          storePath: 'global.slow_state.scope_controls',
+          observed: false,
+          freshness: 'unknown',
+          availability: 'missing',
+        },
+      },
+    };
+
+    const target = mountToolbar();
+    const buttons = Array.from(target.querySelectorAll<HTMLButtonElement>('.toolbar-btn'));
+    const ctrBtn = buttons.find((b) => b.textContent?.trim() === 'CTR');
+    const holdBtn = buttons.find((b) => b.textContent?.trim() === 'HOLD');
+    const dualBtn = buttons.find((b) => b.textContent?.trim() === 'DUAL');
+    const spanDown = buttons.find((b) => b.title === 'Decrease span');
+    const speedDown = buttons.find((b) => b.title === 'Decrease speed');
+    const spanValue = Array.from(target.querySelectorAll('.toolbar-value'))
+      .find((el) => el.textContent?.includes('±25k') || el.textContent?.includes('—'));
+
+    expect(ctrBtn?.disabled).toBe(true);
+    expect(ctrBtn?.classList.contains('active')).toBe(false);
+    expect(holdBtn?.disabled).toBe(true);
+    expect(dualBtn?.disabled).toBe(true);
+    expect(spanDown?.disabled).toBe(true);
+    expect(speedDown?.disabled).toBe(true);
+    expect(spanValue?.textContent?.trim()).toBe('—');
+  });
+
   it('HOLD button click dispatches sendCommand', () => {
     const target = mountToolbar();
     const buttons = Array.from(target.querySelectorAll<HTMLButtonElement>('.toolbar-btn'));
