@@ -945,6 +945,62 @@ def _receiver_specs(receiver_id: str) -> tuple[FieldSpec, ...]:
             "int",
             writable=True,
         ),
+        spec(
+            FieldPath.receiver(receiver_id, "operator_controls", "squelch"),
+            "int",
+            writable=True,
+        ),
+        spec(
+            FieldPath.receiver(receiver_id, "operator_controls", "att"),
+            "int",
+            writable=True,
+        ),
+        spec(
+            FieldPath.receiver(receiver_id, "operator_controls", "preamp"),
+            "int",
+            writable=True,
+        ),
+        spec(
+            FieldPath.receiver(receiver_id, "operator_controls", "agc"),
+            "int",
+            writable=True,
+        ),
+        spec(
+            FieldPath.receiver(receiver_id, "operator_controls", "agc_time_constant"),
+            "int",
+            writable=True,
+        ),
+        spec(
+            FieldPath.receiver(receiver_id, "operator_controls", "nr_level"),
+            "int",
+            writable=True,
+        ),
+        spec(
+            FieldPath.receiver(receiver_id, "operator_controls", "nb_level"),
+            "int",
+            writable=True,
+        ),
+        spec(
+            FieldPath.receiver(receiver_id, "operator_toggles", "auto_notch"),
+            "bool",
+            writable=True,
+        ),
+        spec(
+            FieldPath.receiver(receiver_id, "operator_toggles", "manual_notch"),
+            "bool",
+            writable=True,
+        ),
+        spec(
+            FieldPath.active(receiver_id, "freq_mode", "data_mode"),
+            "int",
+            writable=True,
+        ),
+        spec(
+            FieldPath.active(receiver_id, "freq_mode", "filter_width"),
+            "int",
+            writable=True,
+            unit="hz",
+        ),
     )
 
 
@@ -969,6 +1025,11 @@ def _global_specs() -> tuple[FieldSpec, ...]:
         spec(FieldPath.global_("tx_state", "power_on"), "bool", writable=True),
         spec(FieldPath.global_("tx_state", "rit_on"), "bool", writable=True),
         spec(FieldPath.global_("tx_state", "rit_tx"), "bool", writable=True),
+        spec(FieldPath.global_("tx_state", "split"), "bool", writable=True),
+        spec(FieldPath.global_("tx_state", "dual_watch"), "bool", writable=True),
+        spec(FieldPath.global_("tx_state", "compressor_on"), "bool", writable=True),
+        spec(FieldPath.global_("tx_state", "monitor_on"), "bool", writable=True),
+        spec(FieldPath.global_("tx_state", "vox_on"), "bool", writable=True),
         spec(
             FieldPath.global_("operator_controls", "power_level"), "int", writable=True
         ),
@@ -977,6 +1038,30 @@ def _global_specs() -> tuple[FieldSpec, ...]:
             "int",
             writable=True,
             unit="hz",
+        ),
+        spec(
+            FieldPath.global_("operator_controls", "mic_gain"), "int", writable=True
+        ),
+        spec(
+            FieldPath.global_("operator_controls", "compressor_level"),
+            "int",
+            writable=True,
+        ),
+        spec(
+            FieldPath.global_("operator_controls", "monitor_gain"),
+            "int",
+            writable=True,
+        ),
+        spec(
+            FieldPath.global_("operator_controls", "cw_pitch"),
+            "int",
+            writable=True,
+            unit="hz",
+        ),
+        spec(
+            FieldPath.global_("operator_controls", "tuner_status"),
+            "int",
+            writable=True,
         ),
         spec(FieldPath.global_("slow_state", "active"), "str"),
         spec(FieldPath.global_("meters", "alc"), "int"),

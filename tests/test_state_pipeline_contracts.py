@@ -24,6 +24,7 @@ from rigplane.core.state_pipeline_contracts import (
 )
 from rigplane.radio_state import RadioState
 from rigplane.web.radio_poller import RadioPoller
+from rigplane.web.runtime_helpers import build_public_state_payload_from_snapshot
 from rigplane.web.server import WebConfig, WebServer
 
 _LEGACY_POLLER_REVISION = 987_654
@@ -438,3 +439,168 @@ def test_web_state_change_callback_broadcasts_snapshot_without_revision_path() -
         item.kind == "revision_producing_event"
         for item in server.state_diagnostics.events()
     )
+
+
+# Icom v2 field families that MOR-437 makes observation-backed. Each entry is
+# ``(FieldPath, public field-status key, public dict location, sentinel value)``
+# where ``location`` is the receiver public key (``"main"``) for receiver-scoped
+# leaves or ``None`` for top-level global leaves.
+_ICOM_V2_FIELD_FAMILIES: tuple[tuple[FieldPath, str, str | None, Any], ...] = (
+    # receiver operator_controls
+    (FieldPath.receiver("main", "operator_controls", "rf_gain"), "rfGain", "main", 7),
+    (FieldPath.receiver("main", "operator_controls", "squelch"), "squelch", "main", 7),
+    (FieldPath.receiver("main", "operator_controls", "att"), "att", "main", 6),
+    (FieldPath.receiver("main", "operator_controls", "preamp"), "preamp", "main", 1),
+    (FieldPath.receiver("main", "operator_controls", "agc"), "agc", "main", 2),
+    (
+        FieldPath.receiver("main", "operator_controls", "agc_time_constant"),
+        "agcTimeConstant",
+        "main",
+        3,
+    ),
+    (
+        FieldPath.receiver("main", "operator_controls", "nr_level"),
+        "nrLevel",
+        "main",
+        9,
+    ),
+    (
+        FieldPath.receiver("main", "operator_controls", "nb_level"),
+        "nbLevel",
+        "main",
+        4,
+    ),
+    (
+        FieldPath.receiver("main", "operator_controls", "pbt_inner"),
+        "pbtInner",
+        "main",
+        50,
+    ),
+    (
+        FieldPath.receiver("main", "operator_controls", "pbt_outer"),
+        "pbtOuter",
+        "main",
+        60,
+    ),
+    # receiver operator_toggles
+    (
+        FieldPath.receiver("main", "operator_toggles", "auto_notch"),
+        "autoNotch",
+        "main",
+        True,
+    ),
+    (
+        FieldPath.receiver("main", "operator_toggles", "manual_notch"),
+        "manualNotch",
+        "main",
+        True,
+    ),
+    # receiver freq_mode (active slot)
+    (FieldPath.active("main", "freq_mode", "data_mode"), "dataMode", "main", 1),
+    (
+        FieldPath.active("main", "freq_mode", "filter_width"),
+        "filterWidth",
+        "main",
+        500,
+    ),
+    # global operator_controls
+    (FieldPath.global_("operator_controls", "mic_gain"), "micGain", None, 5),
+    (
+        FieldPath.global_("operator_controls", "compressor_level"),
+        "compressorLevel",
+        None,
+        5,
+    ),
+    (
+        FieldPath.global_("operator_controls", "monitor_gain"),
+        "monitorGain",
+        None,
+        5,
+    ),
+    (FieldPath.global_("operator_controls", "cw_pitch"), "cwPitch", None, 600),
+    (
+        FieldPath.global_("operator_controls", "tuner_status"),
+        "tunerStatus",
+        None,
+        1,
+    ),
+    # global tx_state
+    (FieldPath.global_("tx_state", "split"), "split", None, True),
+    (FieldPath.global_("tx_state", "compressor_on"), "compressorOn", None, True),
+    (FieldPath.global_("tx_state", "monitor_on"), "monitorOn", None, True),
+    (FieldPath.global_("tx_state", "vox_on"), "voxOn", None, True),
+    (FieldPath.global_("tx_state", "dual_watch"), "dualWatch", None, True),
+)
+
+
+def _public_status_path(public_key: str, location: str | None) -> str:
+    return public_key if location is None else f"{location}.{public_key}"
+
+
+@pytest.mark.parametrize(  # type: ignore[untyped-decorator]
+    ("path", "public_key", "location", "value"),
+    _ICOM_V2_FIELD_FAMILIES,
+    ids=[str(entry[0]) for entry in _ICOM_V2_FIELD_FAMILIES],
+)
+def test_icom_v2_field_family_registered(
+    path: FieldPath,
+    public_key: str,
+    location: str | None,
+    value: Any,
+) -> None:
+    spec = DEFAULT_FIELD_REGISTRY.require(path)
+    assert spec.path == path
+    assert spec.family is path.family
+
+
+@pytest.mark.parametrize(  # type: ignore[untyped-decorator]
+    ("path", "public_key", "location", "value"),
+    _ICOM_V2_FIELD_FAMILIES,
+    ids=[str(entry[0]) for entry in _ICOM_V2_FIELD_FAMILIES],
+)
+def test_icom_v2_field_family_projects_observed(
+    path: FieldPath,
+    public_key: str,
+    location: str | None,
+    value: Any,
+) -> None:
+    store = StateStore()
+    store.apply(_store_observation(path, value, at=1.0))
+    payload = build_public_state_payload_from_snapshot(
+        store.snapshot(),
+        radio=None,
+        receiver_count=2,
+    )
+
+    if location is None:
+        assert payload[public_key] == value
+    else:
+        assert payload[location][public_key] == value
+
+    status_path = _public_status_path(public_key, location)
+    field_status = payload["fieldStatus"][status_path]
+    assert field_status["observed"] is True
+    assert field_status["availability"] == "available"
+
+
+@pytest.mark.parametrize(  # type: ignore[untyped-decorator]
+    ("path", "public_key", "location", "value"),
+    _ICOM_V2_FIELD_FAMILIES,
+    ids=[str(entry[0]) for entry in _ICOM_V2_FIELD_FAMILIES],
+)
+def test_icom_v2_field_family_seeds_missing_when_unobserved(
+    path: FieldPath,
+    public_key: str,
+    location: str | None,
+    value: Any,
+) -> None:
+    payload = build_public_state_payload_from_snapshot(
+        StateStore().snapshot(),
+        radio=None,
+        receiver_count=2,
+    )
+
+    status_path = _public_status_path(public_key, location)
+    field_status = payload["fieldStatus"][status_path]
+    assert field_status["observed"] is False
+    assert field_status["availability"] == "missing"
