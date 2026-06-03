@@ -448,13 +448,17 @@ class ControlHandler:
         # Minimum interval between same command (seconds).
         # Continuous slider/knob drag sends dozens of set_* per second.
         self._CMD_MIN_INTERVAL = 0.05  # 50ms = max 20 commands/sec per client
-        state_store = getattr(server, "command_state_store", None)
-        if not isinstance(state_store, StateStore):
-            state_store = StateStore()
-        self._command_service = CommandService(
-            executor=_ControlCommandExecutor(self),
-            state_store=state_store,
-        )
+        shared_service = getattr(server, "command_service", None)
+        if isinstance(shared_service, CommandService):
+            self._command_service = shared_service
+        else:
+            state_store = getattr(server, "command_state_store", None)
+            if not isinstance(state_store, StateStore):
+                state_store = StateStore()
+            self._command_service = CommandService(
+                executor=_ControlCommandExecutor(self),
+                state_store=state_store,
+            )
 
     async def run(self) -> None:
         """Run the control channel lifecycle."""

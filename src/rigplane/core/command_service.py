@@ -34,6 +34,8 @@ __all__ = [
     "command_response_observation",
 ]
 
+_UNSET = object()
+
 
 Clock = Callable[[], float]
 LifecycleSubscriber = Callable[[CommandLifecycleEvent], None]
@@ -133,11 +135,19 @@ class CommandService:
         try:
             executor_result = await self._executor.execute(intent)
         except TimeoutError as exc:
-            self.expire_command(intent.id)
+            self.expire_command(
+                intent.id,
+                source=intent.source,
+                session_id=_session_id(intent),
+            )
             self.emit_lifecycle(intent, "timed_out", message=str(exc) or None)
             raise
         except Exception as exc:
-            self.expire_command(intent.id)
+            self.expire_command(
+                intent.id,
+                source=intent.source,
+                session_id=_session_id(intent),
+            )
             self.emit_lifecycle(intent, "failed", message=str(exc) or None)
             raise
 
@@ -165,10 +175,16 @@ class CommandService:
         *,
         message: str | None = None,
         timed_out: bool = False,
+        source: CommandSource | None = None,
+        session_id: str | None | object = _UNSET,
     ) -> bool:
         """Mark a previously acknowledged command as failed and expire overlays."""
 
-        template = self._last_event(command_id)
+        template = self._last_event(
+            command_id,
+            source=source,
+            session_id=session_id,
+        )
         if template is None or template.state in {
             "failed",
             "timed_out",
@@ -177,13 +193,24 @@ class CommandService:
             "superseded",
         }:
             return False
-        self.expire_command(command_id)
+        scoped_source = template.source if source is None else source
+        scoped_session = (
+            _event_session_id(template) if session_id is _UNSET else session_id
+        )
+        self.expire_command(
+            command_id,
+            source=scoped_source,
+            session_id=scoped_session,
+        )
+        params = {}
+        if scoped_session is not _UNSET:
+            params["session_id"] = scoped_session
         self.emit_lifecycle(
             CommandIntent(
                 id=command_id,
                 name="queued_completion",
-                params={},
-                source=template.source,
+                params=params,
+                source=scoped_source,
                 target=template.target,
                 priority="user",
                 timeout=None,
@@ -205,6 +232,9 @@ class CommandService:
     ) -> CommandLifecycleEvent:
         """Record and publish a lifecycle event for an intent."""
 
+        payload_details = dict(details or {})
+        if "session_id" in intent.params:
+            payload_details.setdefault("session_id", intent.params["session_id"])
         event = CommandLifecycleEvent(
             command_id=intent.id,
             state=state,
@@ -212,7 +242,7 @@ class CommandService:
             source=intent.source,
             target=intent.target,
             message=message,
-            details=details,
+            details=payload_details,
         )
         self._events.append(event)
         for subscriber in tuple(self._subscribers):
@@ -293,11 +323,24 @@ class CommandService:
                 projected[overlay.path] = overlay.value
         return projected
 
-    def expire_command(self, command_id: str) -> None:
+    def expire_command(
+        self,
+        command_id: str,
+        *,
+        source: CommandSource | None = None,
+        session_id: str | None | object = _UNSET,
+    ) -> None:
         """Remove all pending overlays created by one command."""
 
         self._overlays = [
-            item for item in self._overlays if item.command_id != command_id
+            item
+            for item in self._overlays
+            if not _overlay_matches(
+                item,
+                command_id=command_id,
+                source=source,
+                session_id=session_id,
+            )
         ]
 
     def _record_intent_overlay(self, intent: CommandIntent) -> None:
@@ -359,9 +402,22 @@ class CommandService:
             overlay for overlay in self._overlays if not overlay.is_expired(now)
         ]
 
-    def _last_event(self, command_id: str) -> CommandLifecycleEvent | None:
+    def _last_event(
+        self,
+        command_id: str,
+        *,
+        source: CommandSource | None = None,
+        session_id: str | None | object = _UNSET,
+    ) -> CommandLifecycleEvent | None:
         for event in reversed(self._events):
-            if event.command_id == command_id:
+            if (
+                event.command_id == command_id
+                and (source is None or event.source == source)
+                and (
+                    session_id is _UNSET
+                    or _event_session_id(event) == session_id
+                )
+            ):
                 return event
         return None
 
@@ -379,6 +435,25 @@ def _pending_value_for_intent(intent: CommandIntent) -> Any:
 def _session_id(intent: CommandIntent) -> str | None:
     value = intent.params.get("session_id")
     return None if value is None else str(value)
+
+
+def _event_session_id(event: CommandLifecycleEvent) -> str | None:
+    value = (event.details or {}).get("session_id")
+    return None if value is None else str(value)
+
+
+def _overlay_matches(
+    overlay: PendingOverlay,
+    *,
+    command_id: str,
+    source: CommandSource | None,
+    session_id: str | None | object,
+) -> bool:
+    return (
+        overlay.command_id == command_id
+        and (source is None or overlay.source == source)
+        and (session_id is _UNSET or overlay.session_id == session_id)
+    )
 
 
 def _observation_reconciles_overlay(
@@ -447,6 +522,12 @@ def command_intent_from_request(
         normalized["af_level"] = int(normalized["level"])
     elif command_name in ("set_sql", "set_squelch"):
         normalized["squelch"] = int(normalized["level"])
+    elif command_name == "set_attenuator_level":
+        raw_value = normalized["db"] if "db" in normalized else normalized["value"]
+        normalized["att"] = int(raw_value)
+    elif command_name == "set_preamp":
+        raw_value = normalized["level"] if "level" in normalized else normalized["value"]
+        normalized["preamp"] = int(raw_value)
     elif command_name == "set_nb":
         normalized["nb"] = bool(normalized["on"])
     elif command_name == "set_nr":
@@ -540,6 +621,10 @@ def _command_target(name: str, params: Mapping[str, Any]) -> FieldPath | None:
         return FieldPath.receiver(receiver, "operator_controls", "af_level")
     if name in ("set_sql", "set_squelch"):
         return FieldPath.receiver(receiver, "operator_controls", "squelch")
+    if name == "set_attenuator_level":
+        return FieldPath.receiver(receiver, "operator_controls", "att")
+    if name == "set_preamp":
+        return FieldPath.receiver(receiver, "operator_controls", "preamp")
     if name == "set_nb":
         return FieldPath.receiver(receiver, "operator_toggles", "nb")
     if name == "set_nr":

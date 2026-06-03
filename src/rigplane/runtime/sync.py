@@ -63,6 +63,21 @@ class _SyncCommandExecutor:
             await radio.set_ptt(bool(params["ptt"]))
         elif intent.name == "set_split":
             await radio.set_split(bool(params["split"]))
+        elif intent.name == "set_attenuator_level":
+            await radio.set_attenuator_level(
+                int(params["att"]),
+                receiver=int(params.get("receiver", 0)),
+            )
+        elif intent.name == "set_preamp":
+            await radio.set_preamp(
+                int(params["preamp"]),
+                receiver=int(params.get("receiver", 0)),
+            )
+        elif intent.name == "set_squelch":
+            await radio.set_squelch(
+                int(params["squelch"]),
+                receiver=int(params.get("receiver", 0)),
+            )
         elif intent.name == "set_powerstat":
             await radio.set_powerstat(bool(params["power_on"]))
         else:
@@ -391,7 +406,15 @@ class IcomRadio:
 
     def set_attenuator_level(self, db: int) -> None:
         """Set attenuator level in dB."""
-        self._run(self._radio.set_attenuator_level(db))
+        self._run(
+            self._command_service.execute(
+                command_intent_from_request(
+                    "set_attenuator_level",
+                    {"db": db, "receiver": 0},
+                    source="public_api",
+                )
+            )
+        )
 
     def set_attenuator(self, on: bool) -> None:
         """Enable or disable the attenuator."""
@@ -403,7 +426,15 @@ class IcomRadio:
 
     def set_preamp(self, level: int = 1) -> None:
         """Set preamp level (0=off, 1=PREAMP1, 2=PREAMP2)."""
-        self._run(self._radio.set_preamp(level))
+        self._run(
+            self._command_service.execute(
+                command_intent_from_request(
+                    "set_preamp",
+                    {"level": level, "receiver": 0},
+                    source="public_api",
+                )
+            )
+        )
 
     def get_digisel(self) -> bool:
         """Read DIGI-SEL status."""
@@ -415,7 +446,15 @@ class IcomRadio:
 
     def set_squelch(self, level: int, receiver: int = 0) -> None:
         """Set squelch level (0-255, 0=open)."""
-        self._run(self._radio.set_squelch(level, receiver=receiver))
+        self._run(
+            self._command_service.execute(
+                command_intent_from_request(
+                    "set_squelch",
+                    {"level": level, "receiver": receiver},
+                    source="public_api",
+                )
+            )
+        )
 
     def get_data_off_mod_input(self) -> int:
         """Read the Data Off modulation input source."""

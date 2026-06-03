@@ -2688,7 +2688,14 @@ class WebServer:
             )
 
         collector = _HttpCommandCollector()
-        proxy_server = type("_HttpBatchProxy", (), {"command_queue": collector})()
+        proxy_server = type(
+            "_HttpBatchProxy",
+            (),
+            {
+                "command_queue": collector,
+                "command_state_store": self.command_state_store,
+            },
+        )()
         result = await self._control_handler_for(server=proxy_server)._enqueue_command(  # noqa: SLF001
             raw_name,
             raw_params,

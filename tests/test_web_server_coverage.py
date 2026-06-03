@@ -12,6 +12,10 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from rigplane.core.command_service import (
+    command_intent_from_request,
+    command_response_observation,
+)
 from rigplane.web import server as server_module
 from rigplane.web.handlers.control import ControlHandler
 from rigplane.web.radio_poller import EnableScope
@@ -446,6 +450,96 @@ async def test_http_power_enters_command_service_and_keeps_delivery_mirror() -> 
     radio.set_powerstat.assert_awaited_once_with(False)
     assert srv._radio_state.power_on is False  # noqa: SLF001
     assert srv.command_state_store.snapshot().field("global.tx_state.power_on").value is False
+
+
+@pytest.mark.asyncio
+async def test_http_command_batch_preparation_uses_shared_command_state_store(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    radio = SimpleNamespace(connected=True, capabilities={"tuner"})
+    srv = WebServer(radio, WebConfig())
+    writer = _FakeWriter()
+    seen: dict[str, object] = {}
+
+    def fake_put_ordered(
+        command: object,
+        *,
+        future: asyncio.Future[None] | None = None,
+        command_id: str | None = None,
+        source: str | None = None,
+        command_service=None,
+    ) -> None:
+        del command
+        seen.update(
+            {
+                "command_id": command_id,
+                "source": source,
+                "command_service": command_service,
+                "overlays": command_service.pending_overlays(
+                    source="http",
+                    session_id=None,
+                    command_id=command_id,
+                ),
+            }
+        )
+        assert command_id is not None
+        intent = command_intent_from_request(
+            "set_freq",
+            {"freq": 14_074_000, "receiver": 0},
+            source="http",
+            command_id=command_id,
+        )
+        command_service.apply_observation(
+            command_response_observation(
+                intent,
+                timestamp_monotonic=123.0,
+                provider="test",
+            )
+        )
+        assert future is not None
+        future.set_result(None)
+
+    monkeypatch.setattr(srv.command_queue, "put_ordered", fake_put_ordered)
+    payload = json.dumps(
+        {
+            "steps": [
+                {
+                    "id": "http-batch-freq",
+                    "name": "set_freq",
+                    "params": {"freq": 14_074_000, "receiver": 0},
+                }
+            ]
+        }
+    ).encode()
+
+    await srv._handle_http_commands(  # noqa: SLF001
+        "/api/v1/commands/batch",
+        writer,
+        headers={"content-length": str(len(payload))},
+        reader=_reader_with(payload),
+    )
+
+    status, body = _response_json(writer)
+    assert status == 200
+    assert body["ok"] is True
+    assert body["results"][0]["ok"] is True
+    assert isinstance(seen["command_id"], str)
+    assert seen["source"] == "http"
+    assert seen["command_service"] is not None
+    assert seen["command_service"]._state_store is srv.command_state_store  # noqa: SLF001
+    assert seen["overlays"] != ()
+    assert (
+        srv.command_state_store.snapshot().field("receiver.0.freq_mode.freq_hz").value
+        == 14_074_000
+    )
+    assert (
+        seen["command_service"].pending_overlays(
+            source="http",
+            session_id=None,
+            command_id=seen["command_id"],
+        )
+        == ()
+    )
 
 
 @pytest.mark.asyncio

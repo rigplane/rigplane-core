@@ -249,6 +249,106 @@ async def test_failed_and_timed_out_commands_expire_overlays() -> None:
     assert timeout.pending_overlays(source="websocket", session_id="ws-a") == ()
 
 
+@pytest.mark.asyncio  # type: ignore[untyped-decorator]
+async def test_execute_failure_with_reused_command_id_expires_only_matching_scope() -> None:
+    clock = FreshnessClock(start=41.0)
+    service = CommandService(
+        executor=FakeExecutor(fail=RuntimeError("radio rejected command")),
+        state_store=StateStore(freshness_clock=clock),
+        clock=clock.now,
+    )
+    freq = _freq_path()
+    service.record_pending_overlay(
+        PendingOverlay(
+            source="http",
+            session_id=None,
+            command_id="cmd-shared",
+            path=freq,
+            value=7_040_000,
+            expires_at_monotonic=42.0,
+        )
+    )
+
+    with pytest.raises(RuntimeError, match="radio rejected command"):
+        await service.execute(_intent(command_id="cmd-shared"))
+
+    assert service.pending_overlays(source="websocket", session_id="ws-a") == ()
+    assert service.pending_overlays(source="http", session_id=None) == (
+        PendingOverlay(
+            source="http",
+            session_id=None,
+            command_id="cmd-shared",
+            path=freq,
+            value=7_040_000,
+            expires_at_monotonic=42.0,
+        ),
+    )
+
+
+def test_fail_command_with_reused_command_id_expires_only_matching_scope() -> None:
+    clock = FreshnessClock(start=42.0)
+    service = CommandService(
+        executor=FakeExecutor(),
+        state_store=StateStore(freshness_clock=clock),
+        clock=clock.now,
+    )
+    freq = _freq_path()
+    for source, session_id, value in (
+        ("websocket", "ws-a", 14_074_000),
+        ("websocket", "ws-b", 14_075_000),
+        ("http", None, 14_076_000),
+    ):
+        service.record_pending_overlay(
+            PendingOverlay(
+                source=cast(CommandSource, source),
+                session_id=session_id,
+                command_id="cmd-shared",
+                path=freq,
+                value=value,
+                expires_at_monotonic=43.0,
+            )
+        )
+
+    service.emit_lifecycle(_intent(command_id="cmd-shared", session_id="ws-a"), "queued")
+    service.emit_lifecycle(
+        _intent(command_id="cmd-shared", session_id="ws-b"),
+        "queued",
+    )
+    service.emit_lifecycle(
+        _intent(command_id="cmd-shared", source="http", session_id=None),
+        "queued",
+    )
+
+    assert service.fail_command(
+        "cmd-shared",
+        message="radio rejected command",
+        source="websocket",
+        session_id="ws-a",
+    )
+
+    assert service.pending_overlays(source="websocket", session_id="ws-a") == ()
+    assert service.pending_overlays(source="websocket", session_id="ws-b") == (
+        PendingOverlay(
+            source="websocket",
+            session_id="ws-b",
+            command_id="cmd-shared",
+            path=freq,
+            value=14_075_000,
+            expires_at_monotonic=43.0,
+        ),
+    )
+    assert service.pending_overlays(source="http", session_id=None) == (
+        PendingOverlay(
+            source="http",
+            session_id=None,
+            command_id="cmd-shared",
+            path=freq,
+            value=14_076_000,
+            expires_at_monotonic=43.0,
+        ),
+    )
+
+
 def test_expired_pending_overlays_do_not_project_or_leak() -> None:
     clock = FreshnessClock(start=50.0)
     service = CommandService(
