@@ -13,6 +13,14 @@ export function setPollingMultiplier(m: number): void {
 
 let lastStateEtag: string | null = null;
 
+function getStateRevision(state: ServerState): number {
+  return state.stateRevision ?? state.revision;
+}
+
+function getFreshnessRevision(state: ServerState): number {
+  return state.freshnessRevision ?? 0;
+}
+
 function getStoredToken(): string | null {
   const storage = globalThis.localStorage;
   if (!storage || typeof storage.getItem !== 'function') {
@@ -92,7 +100,8 @@ export function startPolling(
   let timer: ReturnType<typeof setTimeout> | null = null;
   let running = true;
   let inflight = false;
-  let lastRevision = -1;
+  let lastStateRevision = -1;
+  let lastFreshnessRevision = -1;
   let lastHealthRevision = -1;
   let consecutiveErrors = 0;
 
@@ -112,11 +121,18 @@ export function startPolling(
           setRadioStatus(state.radioDetail.status);
         }
         const healthRevision = state?.healthRevision ?? 0;
+        const stateRevision = state ? getStateRevision(state) : -1;
+        const freshnessRevision = state ? getFreshnessRevision(state) : -1;
         if (
           state
-          && (state.revision > lastRevision || healthRevision > lastHealthRevision)
+          && (
+            stateRevision > lastStateRevision
+            || freshnessRevision > lastFreshnessRevision
+            || healthRevision > lastHealthRevision
+          )
         ) {
-          lastRevision = state.revision;
+          lastStateRevision = stateRevision;
+          lastFreshnessRevision = freshnessRevision;
           lastHealthRevision = healthRevision;
           callback(state);
         }

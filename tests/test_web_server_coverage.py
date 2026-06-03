@@ -16,6 +16,8 @@ from rigplane.core.command_service import (
     command_intent_from_request,
     command_response_observation,
 )
+from rigplane.core.state_pipeline_contracts import FieldPath, Observation, SourceMetadata
+from rigplane.core.state_store import FreshnessClock, StateStore
 from rigplane.web import server as server_module
 from rigplane.web.handlers.control import ControlHandler
 from rigplane.web.radio_poller import EnableScope
@@ -79,6 +81,31 @@ def _response_json(writer: _FakeWriter) -> tuple[int, dict]:
     status = int(text.split(" ", 2)[1])
     body_start = text.index("\r\n\r\n") + 4
     return status, json.loads(text[body_start:] or "{}")
+
+
+def _state_store_source() -> SourceMetadata:
+    return SourceMetadata(
+        source="poll_response",
+        provider="test",
+        transport="fake",
+        native_id="test",
+    )
+
+
+def _store_observation(
+    path: FieldPath,
+    value: object,
+    *,
+    at: float,
+    max_age: float | None = None,
+) -> Observation:
+    return Observation(
+        path=path,
+        value=value,
+        source=_state_store_source(),
+        timestamp_monotonic=at,
+        max_age=max_age,
+    )
 
 
 def _scope_radio(*, ready: bool = True, connected: bool = True) -> MagicMock:
@@ -962,6 +989,115 @@ async def test_scope_health_and_radio_state_event_paths() -> None:
     await asyncio.sleep(0.05)  # let the refetch task complete
     cmds = srv.command_queue.drain
     assert any(isinstance(c, EnableScope) for c in cmds())
+
+
+@pytest.mark.asyncio
+async def test_http_snapshot_matches_initial_ws_full_state_for_same_store_revision() -> None:
+    srv = WebServer(None)
+    srv.command_state_store.apply(
+        _store_observation(
+            FieldPath.active("0", "freq_mode", "freq_hz"),
+            14_074_000,
+            at=1.0,
+            max_age=10.0,
+        )
+    )
+    srv.command_state_store.apply(
+        _store_observation(
+            FieldPath.receiver("0", "meters", "s_meter"),
+            42,
+            at=1.1,
+            max_age=0.5,
+        )
+    )
+
+    writer = _FakeWriter()
+    await srv._serve_state(writer)  # noqa: SLF001
+    _, http_body = _response_json(writer)
+
+    ws = MagicMock()
+    sent: list[dict[str, object]] = []
+
+    async def _send_text(payload: str) -> None:
+        sent.append(json.loads(payload))
+
+    ws.send_text = _send_text
+
+    handler = ControlHandler(ws, None, "0.0.0-test", "IC-TEST", server=srv)
+    await handler._send_state_snapshot()  # noqa: SLF001
+
+    assert sent[0]["type"] == "state_update"
+    ws_body = sent[0]["data"]["data"]  # type: ignore[index]
+    assert ws_body == http_body
+
+
+def test_meter_only_state_store_change_emits_web_delta_without_legacy_revision() -> None:
+    srv = WebServer(None)
+    q = asyncio.Queue()
+    srv.register_control_event_queue(q)
+    srv.command_state_store.apply(
+        _store_observation(
+            FieldPath.active("0", "freq_mode", "freq_hz"),
+            14_074_000,
+            at=1.0,
+            max_age=10.0,
+        )
+    )
+    srv._broadcast_state_update()  # noqa: SLF001
+    q.get_nowait()
+
+    srv.command_state_store.apply(
+        _store_observation(
+            FieldPath.receiver("0", "meters", "s_meter"),
+            55,
+            at=1.1,
+            max_age=0.5,
+        )
+    )
+    srv._last_state_broadcast = 0.0  # noqa: SLF001
+    srv._broadcast_state_update()  # noqa: SLF001
+    event = q.get_nowait()
+
+    assert event["type"] == "state_update"
+    assert event["data"]["type"] == "delta"
+    assert event["data"]["changed"]["main"]["sMeter"] == 55
+    assert event["data"]["stateRevision"] == 2
+    assert event["data"]["revision"] == 2
+
+
+def test_freshness_only_state_store_change_emits_web_delta() -> None:
+    clock = FreshnessClock(start=5.0)
+    store = StateStore(freshness_clock=clock)
+    srv = WebServer(None)
+    srv.command_state_store = store
+    srv.command_service._state_store = store  # noqa: SLF001
+    srv._http_command_service._state_store = store  # noqa: SLF001
+    q = asyncio.Queue()
+    srv.register_control_event_queue(q)
+
+    store.apply(
+        _store_observation(
+            FieldPath.receiver("0", "meters", "s_meter"),
+            12,
+            at=clock.now(),
+            max_age=0.5,
+        )
+    )
+    srv._broadcast_state_update()  # noqa: SLF001
+    q.get_nowait()
+
+    clock.advance(0.6)
+    delta = store.mark_stale_due()
+    assert delta.freshness
+
+    srv._last_state_broadcast = 0.0  # noqa: SLF001
+    srv._broadcast_state_update()  # noqa: SLF001
+    event = q.get_nowait()
+
+    assert event["type"] == "state_update"
+    assert event["data"]["type"] == "delta"
+    assert event["data"]["changed"]["freshnessRevision"] == 2
+    assert event["data"]["stateRevision"] == 1
 
 
 @pytest.mark.asyncio

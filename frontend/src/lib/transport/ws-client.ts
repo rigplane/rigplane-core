@@ -247,14 +247,31 @@ _ctrl.onStateChange((s) => {
 let _fullState: Record<string, unknown> = {};
 let _hasReceivedFullState = false;
 
+function syncEnvelopeRevisions(
+  state: Record<string, unknown>,
+  envelope: Record<string, unknown>,
+): Record<string, unknown> {
+  if (typeof envelope.revision === 'number') {
+    state.revision = envelope.revision;
+  }
+  if (typeof envelope.stateRevision === 'number') {
+    state.stateRevision = envelope.stateRevision;
+  }
+  if (typeof envelope.freshnessRevision === 'number') {
+    state.freshnessRevision = envelope.freshnessRevision;
+  }
+  return state;
+}
+
 function applyDeltaEnvelope(envelope: Record<string, unknown>): Record<string, unknown> | null {
   const deltaType = envelope.type as string;
 
   if (deltaType === 'full') {
     // Full state refresh — replace everything
-    _fullState = { ...(envelope.data as Record<string, unknown>) };
-    // Carry revision at top level for setRadioState
-    _fullState.revision = envelope.revision as number;
+    _fullState = syncEnvelopeRevisions(
+      { ...(envelope.data as Record<string, unknown>) },
+      envelope,
+    );
     _hasReceivedFullState = true;
     return _fullState;
   }
@@ -270,9 +287,7 @@ function applyDeltaEnvelope(envelope: Record<string, unknown>): Record<string, u
     for (const key of removed) {
       delete _fullState[key];
     }
-    // Update revision
-    _fullState.revision = envelope.revision as number;
-    return _fullState;
+    return syncEnvelopeRevisions(_fullState, envelope);
   }
 
   // Legacy format (no delta envelope) — plain state object

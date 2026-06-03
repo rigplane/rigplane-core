@@ -20,6 +20,7 @@ command dispatch and scope data delivery.
 from __future__ import annotations
 
 import asyncio
+import copy
 import gzip as _gzip
 import hmac
 import json
@@ -45,7 +46,13 @@ from ..core.command_service import (
     command_intent_from_request,
     command_response_observation,
 )
-from ..core.state_pipeline_contracts import CommandIntent, CommandSource
+from ..core.state_pipeline_contracts import (
+    CommandIntent,
+    CommandSource,
+    FieldPath,
+    Observation,
+    SourceMetadata,
+)
 from ..core.state_store import StateStore
 from ..radio_state import RadioState
 from ..capabilities import CAP_AUDIO, CAP_SCOPE
@@ -76,7 +83,7 @@ from .radio_poller import (  # noqa: TID251
     RadioPoller,
 )
 from .runtime_helpers import (  # noqa: TID251
-    build_public_state_payload,
+    build_public_state_payload_from_snapshot,
     classify_radio_health,
     radio_ready,
     runtime_capabilities,
@@ -500,7 +507,10 @@ class WebServer:
         self._state_diagnostics = StateDiagnosticsRecorder(
             enabled=self._config.state_diagnostics
         )
-        self.command_state_store = StateStore()
+        raw_state_store = getattr(radio, "state_store", None) if radio is not None else None
+        self.command_state_store = (
+            raw_state_store if isinstance(raw_state_store, StateStore) else StateStore()
+        )
         self.command_service = CommandService(
             executor=_SharedControlCommandExecutor(self),
             state_store=self.command_state_store,
@@ -566,12 +576,17 @@ class WebServer:
         self._command_queue: CommandQueue = CommandQueue()
         self._radio_poller: RadioPoller | None = None
         self._state_poller: Any | None = None  # StatePoller (lazy, optional)
+        self._state_store_freshness_task: asyncio.Task[None] | None = None
         # Control handler event queues
         self._control_event_queues: set[BoundedQueue[dict[str, Any]]] = set()
         # State broadcast throttle
         self._last_state_broadcast: float = 0.0
+        self._pending_state_broadcast_task: asyncio.Task[None] | None = None
         # Delta encoder for efficient state broadcasting
         self._delta_encoder: DeltaEncoder = DeltaEncoder(full_state_interval=100)
+        self._last_broadcast_state_key: tuple[int, int, int] | None = None
+        self._cached_public_state_key: tuple[int, int, int, int, int, int] | None = None
+        self._cached_public_state_payload: dict[str, Any] | None = None
         self._health_revision: int = 0
         self._health_signature: tuple[object, ...] | None = None
         self._health_since_monotonic: float = time.monotonic()
@@ -878,22 +893,52 @@ class WebServer:
 
         now = time.monotonic()
         if now - self._last_state_broadcast < 0.05:
+            try:
+                asyncio.get_running_loop()
+            except RuntimeError:
+                return
+            if (
+                self._pending_state_broadcast_task is None
+                or self._pending_state_broadcast_task.done()
+            ):
+                delay = max(0.0, 0.05 - (now - self._last_state_broadcast))
+                self._pending_state_broadcast_task = self._spawn(
+                    self._delayed_state_broadcast(delay)
+                )
             return
         self._last_state_broadcast = now
+        if self._pending_state_broadcast_task is not None:
+            self._pending_state_broadcast_task.cancel()
+            self._pending_state_broadcast_task = None
 
         # Keep audio FFT scope center freq and mode bandwidth in sync
         self._update_fft_scope_freq()
         self._update_fft_scope_mode()
 
+        snapshot = self.command_state_store.snapshot()
         body = self.build_public_state()
+        state_key = (
+            snapshot.state_revision,
+            snapshot.freshness_revision,
+            int(body.get("healthRevision", 0)),
+        )
+        if state_key == self._last_broadcast_state_key:
+            return
 
         # Encode state as delta to reduce bandwidth
-        delta = self._delta_encoder.encode(body)
+        delta = self._delta_encoder.encode(
+            body,
+            state_revision=snapshot.state_revision,
+            freshness_revision=snapshot.freshness_revision,
+        )
+        self._last_broadcast_state_key = state_key
         event = {"type": "state_update", "data": delta}
         self._state_diagnostics.record(
             "web_delivery_trigger",
             "web.websocket",
             revision=body.get("revision"),
+            state_revision=body.get("stateRevision"),
+            freshness_revision=body.get("freshnessRevision"),
             health_revision=body.get("healthRevision"),
             delta_type=delta.get("type"),
             clients=len(self._control_event_queues),
@@ -905,14 +950,37 @@ class WebServer:
             except asyncio.QueueFull:
                 logger.warning("control state queue full; dropping state_update")
 
+    async def _delayed_state_broadcast(self, delay: float) -> None:
+        try:
+            await asyncio.sleep(delay)
+            self._broadcast_state_update()
+        except asyncio.CancelledError:
+            pass
+
     def build_public_state(self, *, updated_at: str | None = None) -> dict[str, Any]:
         """Return the canonical public state payload for web consumers."""
-        revision = self._radio_poller.revision if self._radio_poller is not None else 0
+        snapshot = self.command_state_store.snapshot()
+        if snapshot.observation_seq == 0:
+            self.sync_state_store_from_radio_state(self._radio_state)
+            snapshot = self.command_state_store.snapshot()
         health = self._build_radio_health()
-        return build_public_state_payload(
-            self._radio_state,
+        cache_key = (
+            snapshot.state_revision,
+            snapshot.freshness_revision,
+            self._health_revision,
+            len(self._scope_handlers),
+            len(self._control_event_queues),
+            len(self._audio_broadcaster._clients),
+        )
+        if (
+            updated_at is None
+            and cache_key == self._cached_public_state_key
+            and self._cached_public_state_payload is not None
+        ):
+            return copy.deepcopy(self._cached_public_state_payload)
+        payload = build_public_state_payload_from_snapshot(
+            snapshot,
             radio=self._radio,
-            revision=revision,
             receiver_count=self._get_profile().receiver_count,
             updated_at=updated_at,
             scope_clients=len(self._scope_handlers),
@@ -921,6 +989,160 @@ class WebServer:
             radio_health=health,
             health_revision=self._health_revision,
         )
+        if updated_at is None:
+            self._cached_public_state_key = cache_key
+            self._cached_public_state_payload = copy.deepcopy(payload)
+        return payload
+
+    def build_state_update_envelope(self, *, force_full: bool = False) -> dict[str, Any]:
+        """Return a WS state-update envelope from the canonical StateStore view."""
+        snapshot = self.command_state_store.snapshot()
+        body = self.build_public_state()
+        return self._delta_encoder.encode(
+            body,
+            force_full=force_full,
+            state_revision=snapshot.state_revision,
+            freshness_revision=snapshot.freshness_revision,
+        )
+
+    def sync_state_store_from_radio_state(self, state: RadioState) -> None:
+        """Feed compatibility poller snapshots into the canonical StateStore."""
+        timestamp = time.monotonic()
+        baseline = RadioState()
+        provider = getattr(self._radio, "backend_id", None)
+        source = SourceMetadata(
+            source="state_poller",
+            provider=provider if isinstance(provider, str) else "web_state_poller",
+            transport="backend",
+            native_id="state_poller",
+        )
+        observations: list[Observation] = []
+
+        def append_if_changed(
+            *,
+            path: FieldPath,
+            value: Any,
+            default: Any,
+            max_age: float | None = None,
+        ) -> None:
+            if value == default:
+                return
+            observations.append(
+                Observation(
+                    path=path,
+                    value=value,
+                    source=source,
+                    timestamp_monotonic=timestamp,
+                    max_age=max_age,
+                )
+            )
+
+        append_if_changed(
+            path=FieldPath.active("0", "freq_mode", "freq_hz"),
+            value=state.main.freq,
+            default=baseline.main.freq,
+        )
+        append_if_changed(
+            path=FieldPath.active("0", "freq_mode", "mode"),
+            value=state.main.mode,
+            default=baseline.main.mode,
+        )
+        append_if_changed(
+            path=FieldPath.receiver("0", "meters", "s_meter"),
+            value=state.main.s_meter,
+            default=baseline.main.s_meter,
+            max_age=0.5,
+        )
+        append_if_changed(
+            path=FieldPath.receiver("0", "operator_controls", "af_level"),
+            value=state.main.af_level,
+            default=baseline.main.af_level,
+        )
+        append_if_changed(
+            path=FieldPath.receiver("0", "operator_controls", "rf_gain"),
+            value=state.main.rf_gain,
+            default=baseline.main.rf_gain,
+        )
+        append_if_changed(
+            path=FieldPath.receiver("0", "operator_controls", "squelch"),
+            value=state.main.squelch,
+            default=baseline.main.squelch,
+        )
+        append_if_changed(
+            path=FieldPath.receiver("0", "operator_toggles", "nb"),
+            value=state.main.nb,
+            default=baseline.main.nb,
+        )
+        append_if_changed(
+            path=FieldPath.receiver("0", "operator_toggles", "nr"),
+            value=state.main.nr,
+            default=baseline.main.nr,
+        )
+        append_if_changed(
+            path=FieldPath.global_("tx_state", "ptt"),
+            value=state.ptt,
+            default=baseline.ptt,
+        )
+        append_if_changed(
+            path=FieldPath.global_("tx_state", "power_on"),
+            value=state.power_on,
+            default=baseline.power_on,
+        )
+        append_if_changed(
+            path=FieldPath.global_("operator_controls", "power_level"),
+            value=state.power_level,
+            default=baseline.power_level,
+        )
+        append_if_changed(
+            path=FieldPath.global_("tx_state", "split"),
+            value=state.split,
+            default=baseline.split,
+        )
+        if self._get_profile().receiver_count > 1:
+            append_if_changed(
+                path=FieldPath.active("1", "freq_mode", "freq_hz"),
+                value=state.sub.freq,
+                default=baseline.sub.freq,
+            )
+            append_if_changed(
+                path=FieldPath.active("1", "freq_mode", "mode"),
+                value=state.sub.mode,
+                default=baseline.sub.mode,
+            )
+            append_if_changed(
+                path=FieldPath.receiver("1", "meters", "s_meter"),
+                value=state.sub.s_meter,
+                default=baseline.sub.s_meter,
+                max_age=0.5,
+            )
+            append_if_changed(
+                path=FieldPath.receiver("1", "operator_controls", "af_level"),
+                value=state.sub.af_level,
+                default=baseline.sub.af_level,
+            )
+            append_if_changed(
+                path=FieldPath.receiver("1", "operator_controls", "rf_gain"),
+                value=state.sub.rf_gain,
+                default=baseline.sub.rf_gain,
+            )
+            append_if_changed(
+                path=FieldPath.receiver("1", "operator_controls", "squelch"),
+                value=state.sub.squelch,
+                default=baseline.sub.squelch,
+            )
+        for observation in observations:
+            self.command_state_store.apply(observation)
+
+    async def _state_store_freshness_loop(self) -> None:
+        """Advance freshness-only revisions and broadcast resulting deltas."""
+        try:
+            while True:
+                await asyncio.sleep(0.05)
+                delta = self.command_state_store.mark_stale_due()
+                if delta.freshness or delta.reconciliation_requests:
+                    self._broadcast_state_update()
+        except asyncio.CancelledError:
+            pass
 
     def _build_radio_health(self) -> dict[str, Any]:
         """Build radio health and advance the health revision on transitions."""
@@ -1804,16 +2026,23 @@ class WebServer:
         self, writer: asyncio.StreamWriter, headers: dict[str, str] | None = None
     ) -> None:
         body_dict = self.build_public_state()
-        revision = int(body_dict.get("revision", 0))
+        revision = int(body_dict.get("stateRevision", body_dict.get("revision", 0)))
+        freshness_revision = int(body_dict.get("freshnessRevision", 0))
         health_revision = int(body_dict.get("healthRevision", 0))
         self._state_diagnostics.record(
             "web_delivery_trigger",
             "web.http_state",
             revision=revision,
+            freshness_revision=freshness_revision,
             health_revision=health_revision,
         )
         body = json.dumps(body_dict, separators=(",", ":")).encode()
-        await _send_json(writer, body, headers, etag=f'"{revision}-{health_revision}"')
+        await _send_json(
+            writer,
+            body,
+            headers,
+            etag=f'"{revision}-{freshness_revision}-{health_revision}"',
+        )
 
     async def _serve_audio_analysis(
         self, writer: asyncio.StreamWriter, headers: dict[str, str] | None = None
