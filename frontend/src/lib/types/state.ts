@@ -60,6 +60,8 @@ export interface ScopeControls {
 
 export interface ServerState {
   revision: number;
+  stateRevision?: number;
+  freshnessRevision?: number;
   healthRevision?: number;
   updatedAt: string;
 

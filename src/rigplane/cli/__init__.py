@@ -1751,6 +1751,7 @@ async def _cmd_list_audio_devices(args: argparse.Namespace) -> int:
                         "default_samplerate": d.default_samplerate,
                         "is_default_input": d.is_default_input,
                         "is_default_output": d.is_default_output,
+                        "platform_uid": d.platform_uid,
                     }
                     for d in devices
                 ]

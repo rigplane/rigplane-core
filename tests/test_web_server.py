@@ -741,7 +741,7 @@ class TestControlChannel:
                 writer, json.dumps({"type": "subscribe", "streams": []})
             )
             _, payload = await _ws_recv_frame(reader)
-            data = json.loads(payload)["data"]
+            data = json.loads(payload)["data"]["data"]
             assert "active" in data
             assert "main" in data
             assert "ptt" in data
@@ -771,6 +771,95 @@ class TestControlChannel:
             assert resp["id"] == "test-1"
             assert resp["ok"] is True
             assert resp["result"]["freq"] == 14_074_000
+        finally:
+            await _close_ws(writer)
+
+    async def test_observer_query_makes_control_channel_read_only(
+        self, server: WebServer
+    ) -> None:
+        host, port = _addr(server)
+        reader, writer, _ = await _ws_connect(host, port, "/api/v1/ws?observer=1")
+        try:
+            opcode, payload = await _ws_recv_frame(reader)
+            assert opcode == WS_OP_TEXT
+            hello = json.loads(payload)
+            assert hello["type"] == "hello"
+            assert hello["read_only"] is True
+            assert hello["observer"] is True
+
+            await _ws_skip_handshake(reader)
+            await _ws_send_text(
+                writer, json.dumps({"type": "subscribe", "streams": ["state"]})
+            )
+            opcode, payload = await _ws_recv_frame(reader)
+            assert opcode == WS_OP_TEXT
+            state = json.loads(payload)
+            assert state["type"] == "state_update"
+
+            cmd = {
+                "type": "cmd",
+                "id": "observer-set",
+                "name": "set_freq",
+                "params": {"vfo": "A", "freq": 14_074_000},
+            }
+            await _ws_send_text(writer, json.dumps(cmd))
+            response = await _ws_recv_cmd_response(reader)
+            assert response == {
+                "type": "response",
+                "id": "observer-set",
+                "ok": False,
+                "error": "read_only",
+                "message": "read-only mode: set_freq rejected",
+            }
+        finally:
+            await _close_ws(writer)
+
+    async def test_observer_repeated_set_commands_are_not_throttled_ok(
+        self, server: WebServer
+    ) -> None:
+        host, port = _addr(server)
+        reader, writer, _ = await _ws_connect(host, port, "/api/v1/ws?observer=1")
+        try:
+            await _ws_skip_handshake(reader)
+
+            for cmd_id in ("observer-set-1", "observer-set-2"):
+                cmd = {
+                    "type": "cmd",
+                    "id": cmd_id,
+                    "name": "set_freq",
+                    "params": {"vfo": "A", "freq": 14_074_000},
+                }
+                await _ws_send_text(writer, json.dumps(cmd))
+                response = await _ws_recv_cmd_response(reader)
+                assert response == {
+                    "type": "response",
+                    "id": cmd_id,
+                    "ok": False,
+                    "error": "read_only",
+                    "message": "read-only mode: set_freq rejected",
+                }
+        finally:
+            await _close_ws(writer)
+
+    async def test_observer_rejects_radio_lifecycle_messages(
+        self, server: WebServer
+    ) -> None:
+        host, port = _addr(server)
+        reader, writer, _ = await _ws_connect(host, port, "/api/v1/ws?observer=1")
+        try:
+            await _ws_skip_handshake(reader)
+
+            for msg_type in ("radio_connect", "radio_disconnect"):
+                msg = {"type": msg_type, "id": f"observer-{msg_type}"}
+                await _ws_send_text(writer, json.dumps(msg))
+                response = await _ws_recv_cmd_response(reader)
+                assert response == {
+                    "type": "response",
+                    "id": f"observer-{msg_type}",
+                    "ok": False,
+                    "error": "read_only",
+                    "message": f"read-only mode: {msg_type} rejected",
+                }
         finally:
             await _close_ws(writer)
 

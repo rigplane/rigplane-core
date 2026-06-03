@@ -134,9 +134,9 @@ def test_sync_wrappers_delegate_and_return_values() -> None:
     r._radio.equalize_main_sub.assert_awaited_once()
     r._radio.swap_main_sub.assert_awaited_once()
     r._radio.set_split.assert_awaited_once_with(True)
-    r._radio.set_attenuator_level.assert_awaited_once_with(18)
+    r._radio.set_attenuator_level.assert_awaited_once_with(18, receiver=0)
     r._radio.set_attenuator.assert_awaited_once_with(True)
-    r._radio.set_preamp.assert_awaited_once_with(2)
+    r._radio.set_preamp.assert_awaited_once_with(2, receiver=0)
     r._radio.set_digisel.assert_awaited_once_with(True)
     r._radio.set_squelch.assert_awaited_once_with(100, receiver=1)
     r._radio.set_data_off_mod_input.assert_awaited_once_with(2)
@@ -151,6 +151,77 @@ def test_sync_wrappers_delegate_and_return_values() -> None:
     )
     r._radio.set_scope_mode.assert_awaited_once_with(3)
     r._radio.set_scope_span.assert_awaited_once_with(6)
+    events = r._command_service.lifecycle_events()  # noqa: SLF001
+    assert any(
+        event.source == "public_api"
+        and event.target is not None
+        and str(event.target) == "receiver.0.freq_mode.freq_hz"
+        for event in events
+    )
+    assert any(
+        event.source == "public_api"
+        and event.target is not None
+        and str(event.target) == "global.tx_state.ptt"
+        for event in events
+    )
+    assert any(
+        event.source == "public_api"
+        and event.target is not None
+        and str(event.target) == "global.tx_state.split"
+        for event in events
+    )
+    assert any(
+        event.source == "public_api"
+        and event.target is not None
+        and str(event.target) == "global.tx_state.power_on"
+        for event in events
+    )
+    assert any(
+        event.source == "public_api"
+        and event.target is not None
+        and str(event.target) == "receiver.0.operator_controls.att"
+        for event in events
+    )
+    assert any(
+        event.source == "public_api"
+        and event.target is not None
+        and str(event.target) == "receiver.0.operator_controls.preamp"
+        for event in events
+    )
+    assert any(
+        event.source == "public_api"
+        and event.target is not None
+        and str(event.target) == "receiver.1.operator_controls.squelch"
+        for event in events
+    )
+    assert (
+        r._state_store.snapshot().field("receiver.0.freq_mode.freq_hz").value  # noqa: SLF001
+        == 7100000
+    )
+    assert (
+        r._state_store.snapshot().field("global.tx_state.ptt").value  # noqa: SLF001
+        is True
+    )
+    assert (
+        r._state_store.snapshot().field("global.tx_state.split").value  # noqa: SLF001
+        is True
+    )
+    assert (
+        r._state_store.snapshot().field("global.tx_state.power_on").value  # noqa: SLF001
+        is False
+    )
+    assert (
+        r._state_store.snapshot().field("receiver.0.operator_controls.att").value  # noqa: SLF001
+        == 18
+    )
+    assert (
+        r._state_store.snapshot().field("receiver.0.operator_controls.preamp").value  # noqa: SLF001
+        == 2
+    )
+    assert (
+        r._state_store.snapshot().field("receiver.1.operator_controls.squelch").value  # noqa: SLF001
+        == 100
+    )
     r._loop.close()
 
 

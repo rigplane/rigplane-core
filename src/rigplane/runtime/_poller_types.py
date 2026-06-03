@@ -11,6 +11,8 @@ import asyncio
 from dataclasses import dataclass, field
 from typing import Any, Literal
 
+from rigplane.core.state_pipeline_contracts import CommandSource
+
 __all__ = [
     "Command",
     "CommandQueue",
@@ -959,6 +961,10 @@ Command = (
 class CommandQueueEntry:
     command: Command
     future: asyncio.Future[None] | None = None
+    command_id: str | None = None
+    source: CommandSource | None = None
+    session_id: str | None = None
+    command_service: Any | None = None
 
 
 @dataclass(slots=True)
@@ -1001,8 +1007,22 @@ class CommandQueue:
         self._segments.append(segment)
         return segment
 
-    def put(self, cmd: Command) -> None:
-        entry = CommandQueueEntry(cmd)
+    def put(
+        self,
+        cmd: Command,
+        *,
+        command_id: str | None = None,
+        source: CommandSource | None = None,
+        session_id: str | None = None,
+        command_service: Any | None = None,
+    ) -> None:
+        entry = CommandQueueEntry(
+            cmd,
+            command_id=command_id,
+            source=source,
+            session_id=session_id,
+            command_service=command_service,
+        )
         segment = self._coalesced_tail()
         if isinstance(cmd, (PttOn, PttOff)):
             segment.ptt.append(entry)
@@ -1015,9 +1035,22 @@ class CommandQueue:
         cmd: Command,
         *,
         future: asyncio.Future[None] | None = None,
+        command_id: str | None = None,
+        source: CommandSource | None = None,
+        session_id: str | None = None,
+        command_service: Any | None = None,
     ) -> None:
         self._segments.append(
-            _CommandQueueSegment.ordered_entry(CommandQueueEntry(cmd, future=future))
+            _CommandQueueSegment.ordered_entry(
+                CommandQueueEntry(
+                    cmd,
+                    future=future,
+                    command_id=command_id,
+                    source=source,
+                    session_id=session_id,
+                    command_service=command_service,
+                )
+            )
         )
         self._notify.set()
 

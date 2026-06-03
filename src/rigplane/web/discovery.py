@@ -109,6 +109,10 @@ class DiscoveryResponder:
             an additive ``radios[]`` array; the single-radio top-level fields
             stay populated (from radio_provider, or from the first fleet entry)
             for back-compatible parsers.
+        fleet_api_base: Optional reachable Fleet API base URL. When supplied,
+            emitted as ``urls.fleet``.
+        box_id: Optional stable box identifier. When supplied, emitted as
+            top-level ``box_id``.
         name: Human-readable instance name (default: auto from radio model).
         bind_host: Address to bind UDP socket (default: 0.0.0.0).
         discovery_port: UDP port to listen on (default: 8470).
@@ -123,11 +127,15 @@ class DiscoveryResponder:
         bind_host: str = "0.0.0.0",
         discovery_port: int = _DEFAULT_PORT,
         fleet_provider: Callable[[], list[FleetRadioInfo]] | None = None,
+        fleet_api_base: str | None = None,
+        box_id: str | None = None,
     ) -> None:
         self._web_port = web_port
         self._tls = tls
         self._radio_provider = radio_provider
         self._fleet_provider = fleet_provider
+        self._fleet_api_base = fleet_api_base
+        self._box_id = box_id
         self._name = name
         self._bind_host = bind_host
         self._discovery_port = discovery_port
@@ -201,19 +209,23 @@ class DiscoveryResponder:
         else:
             name = "RigPlane"
 
+        urls: dict[str, object] = {
+            "base": f"{scheme}://{local_ip}:{self._web_port}",
+            "health": f"{scheme}://{local_ip}:{self._web_port}/healthz",
+            "readiness": f"{scheme}://{local_ip}:{self._web_port}/readyz",
+            "runtime": (f"{scheme}://{local_ip}:{self._web_port}/api/v1/runtime"),
+            "station": (f"{scheme}://{local_ip}:{self._web_port}/api/v1/station"),
+        }
+        if self._fleet_api_base is not None:
+            urls["fleet"] = self._fleet_api_base
+
         payload: dict[str, object] = {
             "schema": "rigplane.station.discovery.v1",
             "service": "rigplane",
             "kind": "station_server",
             "version": __version__,
             "url": f"{scheme}://{local_ip}:{self._web_port}",
-            "urls": {
-                "base": f"{scheme}://{local_ip}:{self._web_port}",
-                "health": f"{scheme}://{local_ip}:{self._web_port}/healthz",
-                "readiness": f"{scheme}://{local_ip}:{self._web_port}/readyz",
-                "runtime": (f"{scheme}://{local_ip}:{self._web_port}/api/v1/runtime"),
-                "station": (f"{scheme}://{local_ip}:{self._web_port}/api/v1/station"),
-            },
+            "urls": urls,
             "name": name,
             "displayName": name,
             "instanceId": None,
@@ -246,6 +258,8 @@ class DiscoveryResponder:
                 else None
             ),
         }
+        if self._box_id is not None:
+            payload["box_id"] = self._box_id
 
         if fleet:
             payload["kind"] = "station_fleet"

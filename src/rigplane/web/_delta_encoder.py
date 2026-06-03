@@ -51,7 +51,12 @@ class DeltaEncoder:
         self._full_state_interval = full_state_interval
 
     def encode(
-        self, current_state: dict[str, Any], *, force_full: bool = False
+        self,
+        current_state: dict[str, Any],
+        *,
+        force_full: bool = False,
+        state_revision: int | None = None,
+        freshness_revision: int | None = None,
     ) -> dict[str, Any]:
         """Encode a state snapshot as a delta or full state.
 
@@ -80,6 +85,12 @@ class DeltaEncoder:
                 }
         """
         # Check if full state refresh is needed
+        external_revision = state_revision is not None
+        revision_value = (
+            self._revision if state_revision is None else int(state_revision)
+        )
+        freshness_value = 0 if freshness_revision is None else int(freshness_revision)
+
         if (
             force_full
             or self._previous_state is None
@@ -87,13 +98,18 @@ class DeltaEncoder:
         ):
             # Send full state
             self._previous_state = copy.deepcopy(current_state)
-            self._revision += 1
+            self._revision = revision_value if external_revision else self._revision + 1
             self._delta_count = 0
-            return {
+            full_result = {
                 "type": "full",
                 "data": dict(current_state),
                 "revision": self._revision,
             }
+            if state_revision is not None:
+                full_result["stateRevision"] = self._revision
+            if freshness_revision is not None:
+                full_result["freshnessRevision"] = freshness_value
+            return full_result
 
         # Compute delta
         changed: dict[str, Any] = {}
@@ -112,7 +128,7 @@ class DeltaEncoder:
 
         # Update previous state for next comparison
         self._previous_state = copy.deepcopy(current_state)
-        self._revision += 1
+        self._revision = revision_value if external_revision else self._revision + 1
         self._delta_count += 1
 
         # Build delta message
@@ -121,6 +137,10 @@ class DeltaEncoder:
             "changed": changed,
             "revision": self._revision,
         }
+        if state_revision is not None:
+            result["stateRevision"] = self._revision
+        if freshness_revision is not None:
+            result["freshnessRevision"] = freshness_value
         if removed:
             result["removed"] = removed
 

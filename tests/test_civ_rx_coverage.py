@@ -32,6 +32,7 @@ from __future__ import annotations
 
 import asyncio
 import time
+from typing import Any
 from unittest.mock import AsyncMock, MagicMock, PropertyMock, patch
 
 import pytest
@@ -40,23 +41,37 @@ from test_radio import MockTransport, _wrap_civ_in_udp
 from rigplane import IC_7610_ADDR
 from rigplane.runtime._civ_rx import CIV_HEADER_SIZE
 from rigplane.commands import CONTROLLER_ADDR, build_civ_frame
+from rigplane.core.acquisition_scheduler import (
+    AcquisitionScheduler,
+    MeterObservationCoalescer,
+)
+from rigplane.core.state_acquisition_policy import (
+    AcquisitionPolicy,
+    FieldCapability,
+    MeterCoalescingPolicy,
+    RadioAcquisitionProfile,
+)
+from rigplane.core.state_diagnostics import StateDiagnosticsRecorder
+from rigplane.core.state_pipeline_contracts import FieldPath
 from rigplane.exceptions import ConnectionError
 from rigplane.radio import IcomRadio
 from rigplane.radio_state import RadioState
 from rigplane.scope import ScopeFrame
+from rigplane.core.state_store import StateSnapshot
 from rigplane.types import CivFrame, Mode, bcd_encode
+from rigplane.web.radio_poller import CommandQueue, RadioPoller
 
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
 
 
-@pytest.fixture
+@pytest.fixture  # type: ignore[untyped-decorator]
 def transport() -> MockTransport:
     return MockTransport()
 
 
-@pytest.fixture
+@pytest.fixture  # type: ignore[untyped-decorator]
 def radio(transport: MockTransport) -> IcomRadio:
     r = IcomRadio("192.168.1.100")
     r._civ_transport = transport
@@ -90,6 +105,26 @@ def _bcd2(value: int) -> bytes:
     b0 = (int(d[0]) << 4) | int(d[1])
     b1 = (int(d[2]) << 4) | int(d[3])
     return bytes([b0, b1])
+
+
+def _acquisition_profile(
+    *paths: FieldPath,
+    policy: AcquisitionPolicy | None = None,
+) -> RadioAcquisitionProfile:
+    acquisition_policy = policy or AcquisitionPolicy(
+        cadence_seconds=1.0,
+        freshness_ttl_seconds=4.0,
+    )
+    return RadioAcquisitionProfile(
+        provider="icom_civ",
+        capabilities=tuple(
+            FieldCapability(
+                path=path, polling=True, stream_like=path.family.value == "meters"
+            )
+            for path in paths
+        ),
+        default_policy=acquisition_policy,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -707,9 +742,9 @@ def test_update_state_cache_cmd29_sub_bool_does_not_overwrite_main(
 
 def test_update_state_cache_ip_plus(radio: IcomRadio) -> None:
     """cmd 0x16 sub 0x65 fires IP+ change notification (lines 449-450)."""
-    notify_calls: dict = {}
+    notify_calls: dict[str, dict[str, object]] = {}
 
-    def _on_change(name: str, data: dict) -> None:
+    def _on_change(name: str, data: dict[str, object]) -> None:
         notify_calls[name] = data
 
     radio._on_state_change = _on_change
@@ -741,12 +776,476 @@ def test_update_state_cache_exception_suppressed(radio: IcomRadio) -> None:
     radio._civ_runtime._update_state_cache_from_frame(frame)
 
 
+@pytest.mark.parametrize(  # type: ignore[untyped-decorator]
+    ("frame", "path", "expected", "expected_source"),
+    [
+        (
+            _make_frame(cmd=0x00, data=bcd_encode(7_074_000)),
+            "receiver.0.active.freq_mode.freq_hz",
+            7_074_000,
+            "civ_unsolicited",
+        ),
+        (
+            _make_frame(cmd=0x03, data=bcd_encode(14_074_000)),
+            "receiver.0.active.freq_mode.freq_hz",
+            14_074_000,
+            "command_response",
+        ),
+        (
+            _make_frame(cmd=0x01, data=bytes([Mode.USB.value, 1])),
+            "receiver.0.active.freq_mode.mode",
+            "USB",
+            "civ_unsolicited",
+        ),
+        (
+            _make_frame(cmd=0x04, data=bytes([Mode.LSB.value, 2])),
+            "receiver.0.active.freq_mode.mode",
+            "LSB",
+            "command_response",
+        ),
+        (
+            _make_frame(cmd=0x25, data=bytes([0x01]) + bcd_encode(21_074_000)),
+            "receiver.1.active.freq_mode.freq_hz",
+            21_074_000,
+            "command_response",
+        ),
+        (
+            _make_frame(cmd=0x26, data=bytes([0x01, Mode.CW.value, 0x00, 3])),
+            "receiver.1.active.freq_mode.mode",
+            "CW",
+            "command_response",
+        ),
+        (
+            _make_frame(cmd=0x15, sub=0x02, data=_bcd2(150), receiver=0x01),
+            "receiver.1.meters.s_meter",
+            150,
+            "command_response",
+        ),
+        (
+            _make_frame(cmd=0x15, sub=0x11, data=_bcd2(120)),
+            "global.meters.power",
+            120,
+            "command_response",
+        ),
+        (
+            _make_frame(cmd=0x15, sub=0x12, data=_bcd2(48)),
+            "global.meters.swr",
+            48,
+            "command_response",
+        ),
+        (
+            _make_frame(cmd=0x15, sub=0x13, data=_bcd2(98)),
+            "global.meters.alc",
+            98,
+            "command_response",
+        ),
+        (
+            _make_frame(cmd=0x14, sub=0x01, data=_bcd2(87), receiver=0x01),
+            "receiver.1.operator_controls.af_level",
+            87,
+            "command_response",
+        ),
+        (
+            _make_frame(cmd=0x14, sub=0x02, data=_bcd2(111), receiver=0x01),
+            "receiver.1.operator_controls.rf_gain",
+            111,
+            "command_response",
+        ),
+        (
+            _make_frame(cmd=0x14, sub=0x07, data=_bcd2(142), receiver=0x01),
+            "receiver.1.operator_controls.pbt_inner",
+            142,
+            "command_response",
+        ),
+        (
+            _make_frame(cmd=0x14, sub=0x08, data=_bcd2(143), receiver=0x01),
+            "receiver.1.operator_controls.pbt_outer",
+            143,
+            "command_response",
+        ),
+        (
+            _make_frame(cmd=0x16, sub=0x22, data=b"\x01", receiver=0x01),
+            "receiver.1.operator_toggles.nb",
+            True,
+            "command_response",
+        ),
+        (
+            _make_frame(cmd=0x16, sub=0x40, data=b"\x00", receiver=0x01),
+            "receiver.1.operator_toggles.nr",
+            False,
+            "command_response",
+        ),
+        (
+            _make_frame(cmd=0x18, data=b"\x01"),
+            "global.tx_state.power_on",
+            True,
+            "command_response",
+        ),
+        (
+            _make_frame(cmd=0x1C, sub=0x00, data=b"\x01"),
+            "global.tx_state.ptt",
+            True,
+            "command_response",
+        ),
+    ],
+)
+def test_update_state_cache_projects_supported_fields_into_state_store(
+    radio: IcomRadio,
+    frame: CivFrame,
+    path: str,
+    expected: object,
+    expected_source: str,
+) -> None:
+    radio._civ_runtime._update_state_cache_from_frame(frame)
+
+    field = radio._state_store.snapshot().field(path)
+
+    assert field.value == expected
+    assert field.source.source == expected_source
+
+
+def test_update_state_cache_records_scheduler_result_for_matching_pending_request(
+    radio: IcomRadio,
+) -> None:
+    class _SpyScheduler(AcquisitionScheduler):
+        def __init__(self, *, profile: RadioAcquisitionProfile) -> None:
+            super().__init__(profile=profile)
+            self.recorded_count = 0
+
+        def record_acquisition_result(self, request, change_set):  # type: ignore[no-untyped-def]
+            self.recorded_count += 1
+            return super().record_acquisition_result(request, change_set)
+
+    path = FieldPath.active("main", "freq_mode", "freq_hz")
+    scheduler = _SpyScheduler(profile=_acquisition_profile(path))
+    scheduler.due_requests(now=0.0)
+    radio._acquisition_scheduler = scheduler
+
+    radio._civ_runtime._update_state_cache_from_frame(
+        _make_frame(cmd=0x03, data=bcd_encode(14_074_000))
+    )
+
+    assert scheduler.recorded_count == 1
+    assert scheduler.pending_requests() == ()
+
+
+@pytest.mark.parametrize(  # type: ignore[untyped-decorator]
+    ("path", "cmd", "receiver", "payload", "stored_path", "expected"),
+    [
+        (
+            FieldPath.active("main", "freq_mode", "freq_hz"),
+            0x25,
+            0x00,
+            bcd_encode(14_074_000),
+            "receiver.0.active.freq_mode.freq_hz",
+            14_074_000,
+        ),
+        (
+            FieldPath.active("sub", "freq_mode", "freq_hz"),
+            0x25,
+            0x01,
+            bcd_encode(7_100_000),
+            "receiver.1.active.freq_mode.freq_hz",
+            7_100_000,
+        ),
+        (
+            FieldPath.active("main", "freq_mode", "mode"),
+            0x26,
+            0x00,
+            bytes([Mode.USB.value, 0x00, 1]),
+            "receiver.0.active.freq_mode.mode",
+            "USB",
+        ),
+        (
+            FieldPath.active("sub", "freq_mode", "mode"),
+            0x26,
+            0x01,
+            bytes([Mode.CW.value, 0x00, 3]),
+            "receiver.1.active.freq_mode.mode",
+            "CW",
+        ),
+    ],
+)
+async def test_scheduler_active_freq_mode_request_completes_from_civ_rx_loop(
+    radio: IcomRadio,
+    transport: MockTransport,
+    path: FieldPath,
+    cmd: int,
+    receiver: int,
+    payload: bytes,
+    stored_path: str,
+    expected: object,
+) -> None:
+    scheduler = AcquisitionScheduler(profile=_acquisition_profile(path))
+    radio._acquisition_scheduler = scheduler
+    poller = RadioPoller(radio, CommandQueue(), radio_state=RadioState())
+
+    await poller._send_query()  # noqa: SLF001
+
+    assert scheduler.pending_requests()[0].paths == (path,)
+
+    civ = build_civ_frame(
+        CONTROLLER_ADDR,
+        IC_7610_ADDR,
+        cmd,
+        data=bytes([receiver]) + payload,
+    )
+    transport.queue_response(_wrap_civ_in_udp(civ))
+
+    radio._civ_runtime.start_pump()
+    try:
+        for _ in range(20):
+            if scheduler.pending_requests() == ():
+                break
+            await asyncio.sleep(0.01)
+    finally:
+        await radio._civ_runtime.stop_pump()
+        radio._connected = False
+
+    assert scheduler.pending_requests() == ()
+    assert radio._state_store.snapshot().field(stored_path).value == expected
+
+
+def test_meter_coalescing_applies_latest_due_sample_and_records_diagnostics(
+    radio: IcomRadio,
+) -> None:
+    path = FieldPath.receiver("main", "meters", "s_meter")
+    policy = AcquisitionPolicy(
+        cadence_seconds=1.0,
+        freshness_ttl_seconds=4.0,
+        meter_coalescing=MeterCoalescingPolicy(window_seconds=0.2, max_samples=2),
+    )
+    radio._acquisition_scheduler = AcquisitionScheduler(
+        profile=_acquisition_profile(path, policy=policy)
+    )
+    radio._meter_observation_coalescer = MeterObservationCoalescer()
+    radio._state_diagnostics = StateDiagnosticsRecorder(enabled=True)
+    events: list[tuple[str, dict[str, object]]] = []
+    radio._on_state_change = lambda name, data: events.append((name, data))
+
+    with patch(
+        "rigplane.runtime._civ_rx.time.monotonic",
+        side_effect=[100.0, 100.0, 100.1, 100.1],
+    ):
+        radio._civ_runtime._apply_state_store_observations(
+            _make_frame(cmd=0x15, sub=0x02, data=_bcd2(111))
+        )
+        radio._civ_runtime._apply_state_store_observations(
+            _make_frame(cmd=0x15, sub=0x02, data=_bcd2(222))
+        )
+
+    with pytest.raises(KeyError):
+        radio._state_store.snapshot().field("receiver.0.meters.s_meter")
+
+    radio._civ_runtime.flush_due_meter_observations(now=100.3)
+
+    assert radio._state_store.snapshot().field("receiver.0.meters.s_meter").value == 222
+    assert events == [
+        (
+            "state_store_changed",
+            {"coalesced": True, "paths": ["receiver.0.meters.s_meter"]},
+        )
+    ]
+    meter_events = [
+        event
+        for event in radio._state_diagnostics.events()
+        if event.kind == "meter_coalescing"
+    ]
+    assert meter_events[-1].details == {
+        "pendingSampleCount": 0,
+        "pendingPaths": [],
+        "droppedSampleCount": 0,
+        "coalescedSampleCount": 1,
+        "nextFlushMonotonic": None,
+    }
+
+
+def test_same_value_coalesced_meter_flush_completes_scheduler_request(
+    radio: IcomRadio,
+) -> None:
+    path = FieldPath.receiver("main", "meters", "s_meter")
+    stored_path = FieldPath.receiver("0", "meters", "s_meter")
+    policy = AcquisitionPolicy(
+        cadence_seconds=1.0,
+        freshness_ttl_seconds=4.0,
+        meter_coalescing=MeterCoalescingPolicy(window_seconds=0.2),
+    )
+    radio._state_store.apply(
+        radio._civ_runtime._observation(
+            stored_path,
+            111,
+            frame=_make_frame(cmd=0x15, sub=0x02, data=_bcd2(111)),
+        )
+    )
+    scheduler = AcquisitionScheduler(profile=_acquisition_profile(path, policy=policy))
+    scheduler.due_requests(now=100.0)
+    radio._acquisition_scheduler = scheduler
+    radio._meter_observation_coalescer = MeterObservationCoalescer()
+    radio._state_diagnostics = StateDiagnosticsRecorder(enabled=True)
+
+    with patch("rigplane.runtime._civ_rx.time.monotonic", return_value=100.0):
+        radio._civ_runtime._apply_state_store_observations(
+            _make_frame(cmd=0x15, sub=0x02, data=_bcd2(111))
+        )
+    changeset = radio._civ_runtime.flush_due_meter_observations(now=100.2)
+
+    assert changeset is not None
+    assert changeset.changes == ()
+    assert scheduler.pending_requests() == ()
+    assert (
+        scheduler.diagnostics()["cadenceByPath"][str(path)]["nextDueMonotonic"] == 101.0
+    )
+    assert any(
+        event.kind == "acquisition_result"
+        and event.details["paths"] == [str(path)]
+        and event.details["changed"] is False
+        for event in radio._state_diagnostics.events()
+    )
+
+
+def test_same_value_stale_refresh_notifies_state_store_changed(
+    radio: IcomRadio,
+) -> None:
+    path = FieldPath.receiver("main", "meters", "s_meter")
+    events: list[tuple[str, dict[str, object]]] = []
+    radio._on_state_change = lambda name, data: events.append((name, data))
+
+    radio._state_store.apply(
+        radio._civ_runtime._observation(
+            path,
+            111,
+            frame=_make_frame(cmd=0x15, sub=0x02, data=_bcd2(111)),
+        )
+    )
+    radio._state_store.mark_stale_due(now=time.monotonic() + 1.0)
+
+    radio._civ_runtime._apply_state_store_observations(
+        _make_frame(cmd=0x15, sub=0x02, data=_bcd2(111))
+    )
+
+    assert events == [
+        (
+            "state_store_changed",
+            {"coalesced": False, "paths": ["receiver.0.meters.s_meter"]},
+        )
+    ]
+
+
+@pytest.mark.parametrize(  # type: ignore[untyped-decorator]
+    ("frame", "field_name", "initial_value"),
+    [
+        (_make_frame(cmd=0x03, data=bcd_encode(14_074_000)), "freq", 0),
+        (_make_frame(cmd=0x04, data=bytes([Mode.LSB.value, 2])), "mode", "USB"),
+        (_make_frame(cmd=0x1C, sub=0x00, data=b"\x01"), "ptt", False),
+        (_make_frame(cmd=0x18, data=b"\x01"), "powerstat", False),
+    ],
+)
+def test_update_state_cache_applies_state_store_before_legacy_cache_mirror(
+    radio: IcomRadio,
+    frame: CivFrame,
+    field_name: str,
+    initial_value: object,
+) -> None:
+    setattr(radio._state_cache, field_name, initial_value)
+    seen_legacy_values: list[object] = []
+    original_apply = type(radio._state_store).apply
+
+    def apply_and_record(store: object, observation: object) -> object:
+        seen_legacy_values.append(getattr(radio._state_cache, field_name))
+        return original_apply(store, observation)
+
+    with patch.object(
+        type(radio._state_store),
+        "apply",
+        autospec=True,
+        side_effect=apply_and_record,
+    ):
+        radio._civ_runtime._update_state_cache_from_frame(frame)
+
+    assert seen_legacy_values == [initial_value]
+
+
+def test_update_state_cache_uses_slot_specific_observation_path_when_override_active(
+    radio: IcomRadio,
+) -> None:
+    radio._vfo_slot_override = {"MAIN": "B"}  # noqa: SLF001
+    radio._civ_runtime._update_state_cache_from_frame(
+        _make_frame(cmd=0x03, data=bcd_encode(14_250_000))
+    )
+
+    assert (
+        radio._state_store.snapshot().field("receiver.0.slot.B.freq_mode.freq_hz").value
+        == 14_250_000
+    )
+
+
+def test_update_state_cache_applies_command_response_observation_once(
+    radio: IcomRadio,
+) -> None:
+    frame = _make_frame(cmd=0x03, data=bcd_encode(14_074_000))
+
+    radio._civ_runtime._update_state_cache_from_frame(frame)
+
+    snapshot = radio._state_store.snapshot()
+    delta = radio._state_store.delta_since(StateSnapshot.empty())
+
+    assert snapshot.state_revision == 1
+    assert snapshot.observation_seq == 1
+    assert len(delta.changes) == 1
+    assert delta.changes[0].path == snapshot.fields[0].path
+    assert radio._radio_state.main.freq == 14_074_000
+
+
+@pytest.mark.parametrize(  # type: ignore[untyped-decorator]
+    "frame",
+    [
+        _make_frame(cmd=0x03, data=b"\x12\x34"),
+        _make_frame(cmd=0x04, data=b""),
+        _make_frame(cmd=0x04, data=bytes([0xFF, 0x01])),
+        _make_frame(cmd=0x26, data=bytes([0x00, 0xFF])),
+    ],
+)
+async def test_route_civ_frame_contains_observation_decode_failures(
+    radio: IcomRadio,
+    frame: CivFrame,
+) -> None:
+    published: list[Any] = []
+    radio._civ_request_tracker.resolve = MagicMock()
+
+    with patch.object(
+        radio._civ_runtime,
+        "_publish_civ_event",
+        side_effect=published.append,
+    ):
+        await radio._civ_runtime._route_civ_frame(frame, generation=17)
+
+    assert len(published) == 1
+    assert published[0].frame == frame
+    radio._civ_request_tracker.resolve.assert_called_once_with(
+        published[0], generation=17
+    )
+    assert radio._state_store.snapshot().observation_seq == 0
+
+
+def test_update_state_cache_cmd07_d2_keeps_legacy_active_receiver_without_state_store_projection(
+    radio: IcomRadio,
+) -> None:
+    radio._radio_state = RadioState()
+
+    radio._civ_runtime._update_state_cache_from_frame(
+        _make_frame(cmd=0x07, data=bytes([0xD2, 0x01]))
+    )
+
+    assert radio._radio_state.active == "SUB"
+    assert radio._state_store.snapshot().fields == ()
+
+
 # ---------------------------------------------------------------------------
 # _update_radio_state_from_frame (lines 470-622)
 # ---------------------------------------------------------------------------
 
 
-@pytest.fixture
+@pytest.fixture  # type: ignore[untyped-decorator]
 def radio_with_state(radio: IcomRadio) -> IcomRadio:
     """Radio with RadioState set for testing _update_radio_state_from_frame."""
     radio._radio_state = RadioState()
@@ -879,7 +1378,7 @@ def test_update_radio_state_cmd14_power_level(radio_with_state: IcomRadio) -> No
     assert rs.power_level == 128
 
 
-@pytest.mark.parametrize(
+@pytest.mark.parametrize(  # type: ignore[untyped-decorator]
     ("sub", "value", "field"),
     [
         (0x05, 90, "apf_type_level"),
@@ -902,7 +1401,7 @@ def test_update_radio_state_cmd14_receiver_dsp_levels(
     assert getattr(rs.sub, field) == value
 
 
-@pytest.mark.parametrize(
+@pytest.mark.parametrize(  # type: ignore[untyped-decorator]
     ("sub", "raw", "field", "expected"),
     [
         (0x09, 128, "cw_pitch", 600),
@@ -998,7 +1497,7 @@ def test_update_radio_state_cmd16_ipplus(radio_with_state: IcomRadio) -> None:
     assert rs.main.ipplus is True
 
 
-@pytest.mark.parametrize(
+@pytest.mark.parametrize(  # type: ignore[untyped-decorator]
     ("cmd", "sub", "data", "receiver", "target", "field", "expected"),
     [
         (0x15, 0x01, b"\x01", 0x01, "sub", "s_meter_sql_open", True),
@@ -1062,7 +1561,7 @@ def test_update_radio_state_cmd1a_sub06_data_mode(radio_with_state: IcomRadio) -
     assert rs.main.data_mode == 2
 
 
-@pytest.mark.parametrize(
+@pytest.mark.parametrize(  # type: ignore[untyped-decorator]
     ("data", "field", "expected"),
     [
         (b"\x00\x70\x05\x11", "ref_adjust", 511),
@@ -1227,7 +1726,7 @@ def test_update_radio_state_with_receiver_field_set(
 
 def test_update_radio_state_returns_when_no_radio_state(radio: IcomRadio) -> None:
     """When _radio_state is None (not set), method returns immediately (line 469)."""
-    radio._radio_state = None  # type: ignore[assignment]
+    radio._radio_state = None
     frame = _make_frame(cmd=0x03, data=bcd_encode(14_000_000))
     radio._civ_runtime._update_radio_state_from_frame(frame)  # should not raise
 
@@ -1239,9 +1738,9 @@ def test_update_radio_state_returns_when_no_radio_state(radio: IcomRadio) -> Non
 
 def test_notify_change_calls_callback(radio: IcomRadio) -> None:
     """_notify_change invokes _on_state_change callback (lines 628-632)."""
-    calls: list[tuple] = []
+    calls: list[tuple[str, dict[str, object]]] = []
 
-    def my_callback(event_name: str, data: dict) -> None:
+    def my_callback(event_name: str, data: dict[str, object]) -> None:
         calls.append((event_name, data))
 
     radio._on_state_change = my_callback
@@ -1252,7 +1751,7 @@ def test_notify_change_calls_callback(radio: IcomRadio) -> None:
 def test_notify_change_callback_exception_suppressed(radio: IcomRadio) -> None:
     """Exception in callback is suppressed (not propagated)."""
 
-    def failing_callback(event_name: str, data: dict) -> None:
+    def failing_callback(event_name: str, data: dict[str, object]) -> None:
         raise RuntimeError("callback error")
 
     radio._on_state_change = failing_callback

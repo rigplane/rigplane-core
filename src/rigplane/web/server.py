@@ -20,6 +20,7 @@ command dispatch and scope data delivery.
 from __future__ import annotations
 
 import asyncio
+import copy
 import gzip as _gzip
 import hmac
 import json
@@ -34,10 +35,31 @@ import time
 import urllib.parse
 from collections.abc import Callable, Coroutine
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any, Literal, TextIO
+from typing import TYPE_CHECKING, Any, Literal, Protocol, TextIO, cast
 
 from .. import __version__
 from .._bounded_queue import BoundedQueue
+from ..core.acquisition_scheduler import (
+    AcquisitionScheduler,
+    MeterObservationCoalescer,
+    RadioStateModelService,
+    StateFreshnessService,
+)
+from ..core.state_diagnostics import StateDiagnosticsRecorder
+from ..core.command_service import (
+    CommandExecutionResult,
+    CommandService,
+    command_intent_from_request,
+    command_response_observation,
+)
+from ..core.state_pipeline_contracts import (
+    CommandIntent,
+    CommandSource,
+    FieldPath,
+    Observation,
+    SourceMetadata,
+)
+from ..core.state_store import StateSnapshot, StateStore
 from ..radio_state import RadioState
 from ..capabilities import CAP_AUDIO, CAP_SCOPE
 from ..exceptions import TimeoutError as RigplaneTimeoutError
@@ -59,9 +81,15 @@ from .handlers import (  # noqa: TID251
     ScopeHandler,
 )
 from .transport.webrtc import webrtc_available  # noqa: TID251
-from .radio_poller import CommandQueue, DisableScope, EnableScope, RadioPoller  # noqa: TID251
+from .radio_poller import (  # noqa: TID251
+    CommandQueue,
+    CommandQueueEntry,
+    DisableScope,
+    EnableScope,
+    RadioPoller,
+)
 from .runtime_helpers import (  # noqa: TID251
-    build_public_state_payload,
+    build_public_state_payload_from_snapshot,
     classify_radio_health,
     radio_ready,
     runtime_capabilities,
@@ -85,6 +113,43 @@ __all__ = ["WebConfig", "WebServer", "run_web_server"]
 logger = logging.getLogger(__name__)
 
 
+class _RuntimeCapabilitiesFn(Protocol):
+    def __call__(self, radio: "Radio | None") -> set[str]: ...
+
+
+class _ClassifyRadioHealthFn(Protocol):
+    def __call__(
+        self,
+        radio: "Radio | None",
+        *,
+        server_reachable: bool = True,
+        now_monotonic: float | None = None,
+    ) -> dict[str, Any]: ...
+
+
+class _PublicStatePayloadFromSnapshotFn(Protocol):
+    def __call__(
+        self,
+        snapshot: StateSnapshot,
+        *,
+        radio: "Radio | None",
+        receiver_count: int,
+        updated_at: str | None = None,
+        scope_clients: int = 0,
+        control_clients: int = 0,
+        audio_clients: int = 0,
+        radio_health: dict[str, Any] | None = None,
+        health_revision: int = 0,
+    ) -> dict[str, Any]: ...
+
+
+_runtime_capabilities_impl: _RuntimeCapabilitiesFn = runtime_capabilities
+_classify_radio_health_impl: _ClassifyRadioHealthFn = classify_radio_health
+_build_public_state_payload_from_snapshot_impl: _PublicStatePayloadFromSnapshotFn = (
+    build_public_state_payload_from_snapshot
+)
+
+
 def _install_shutdown_signal_handlers(
     loop: asyncio.AbstractEventLoop,
     on_signal: Callable[[], None],
@@ -105,9 +170,148 @@ _CIV_TRANSACTION_BATCH_STEP_TYPE = "raw_civ_transaction"
 _CIV_TRANSACTION_BATCH_STEP_KEYS = frozenset(
     {"type", "id", "command", "sub", "data", "expect", "timeout_ms"}
 )
+_LEGACY_RECEIVER_FREQ_MODE_FIELDS: tuple[tuple[str, str], ...] = (
+    ("freq", "freq_hz"),
+    ("mode", "mode"),
+    ("filter", "filter"),
+    ("data_mode", "data_mode"),
+    ("filter_width", "filter_width"),
+)
+_LEGACY_VFO_SLOT_FIELDS: tuple[tuple[str, str], ...] = (
+    ("freq_hz", "freq_hz"),
+    ("mode", "mode"),
+    ("filter_num", "filter_num"),
+    ("data_mode", "data_mode"),
+)
+_LEGACY_RECEIVER_METER_FIELDS: tuple[tuple[str, str, float | None], ...] = (
+    ("s_meter", "s_meter", 0.5),
+)
+_LEGACY_RECEIVER_CONTROL_FIELDS: tuple[tuple[str, str], ...] = (
+    ("af_level", "af_level"),
+    ("rf_gain", "rf_gain"),
+    ("squelch", "squelch"),
+    ("att", "att"),
+    ("preamp", "preamp"),
+    ("pbt_inner", "pbt_inner"),
+    ("pbt_outer", "pbt_outer"),
+    ("nr_level", "nr_level"),
+    ("nb_level", "nb_level"),
+    ("if_shift", "if_shift"),
+    ("agc", "agc"),
+    ("agc_time_constant", "agc_time_constant"),
+    ("audio_peak_filter", "audio_peak_filter"),
+    ("apf_type_level", "apf_type_level"),
+    ("apf_freq", "apf_freq"),
+    ("filter_shape", "filter_shape"),
+    ("manual_notch_freq", "manual_notch_freq"),
+    ("manual_notch_width", "manual_notch_width"),
+    ("digisel_shift", "digisel_shift"),
+    ("tone_freq", "tone_freq"),
+    ("tsql_freq", "tsql_freq"),
+)
+_LEGACY_RECEIVER_TOGGLE_FIELDS: tuple[tuple[str, str], ...] = (
+    ("nb", "nb"),
+    ("nr", "nr"),
+    ("digisel", "digisel"),
+    ("manual_notch", "manual_notch"),
+    ("auto_notch", "auto_notch"),
+    ("twin_peak_filter", "twin_peak_filter"),
+    ("af_mute", "af_mute"),
+    ("ipplus", "ipplus"),
+    ("s_meter_sql_open", "s_meter_sql_open"),
+    ("apf_on", "apf_on"),
+    ("narrow", "narrow"),
+    ("repeater_tone", "repeater_tone"),
+    ("repeater_tsql", "repeater_tsql"),
+)
+_LEGACY_RECEIVER_SLOW_STATE_FIELDS: tuple[tuple[str, str], ...] = (
+    ("contour", "contour"),
+)
+_LEGACY_GLOBAL_TX_FIELDS: tuple[tuple[str, str], ...] = (
+    ("ptt", "ptt"),
+    ("power_on", "power_on"),
+    ("split", "split"),
+    ("dual_watch", "dual_watch"),
+    ("rit_on", "rit_on"),
+    ("rit_tx", "rit_tx"),
+    ("monitor_on", "monitor_on"),
+    ("vox_on", "vox_on"),
+    ("compressor_on", "compressor_on"),
+    ("main_sub_tracking", "main_sub_tracking"),
+    ("dial_lock", "dial_lock"),
+    ("tx_freq_monitor", "tx_freq_monitor"),
+)
+_LEGACY_GLOBAL_CONTROL_FIELDS: tuple[tuple[str, str], ...] = (
+    ("power_level", "power_level"),
+    ("tuner_status", "tuner_status"),
+    ("rit_freq", "rit_freq"),
+    ("cw_pitch", "cw_pitch"),
+    ("mic_gain", "mic_gain"),
+    ("key_speed", "key_speed"),
+    ("notch_filter", "notch_filter"),
+    ("compressor_level", "compressor_level"),
+    ("break_in_delay", "break_in_delay"),
+    ("break_in", "break_in"),
+    ("drive_gain", "drive_gain"),
+    ("monitor_gain", "monitor_gain"),
+    ("vox_gain", "vox_gain"),
+    ("anti_vox_gain", "anti_vox_gain"),
+    ("vox_delay", "vox_delay"),
+    ("ssb_tx_bandwidth", "ssb_tx_bandwidth"),
+    ("ref_adjust", "ref_adjust"),
+    ("dash_ratio", "dash_ratio"),
+    ("nb_depth", "nb_depth"),
+    ("nb_width", "nb_width"),
+    ("tx_antenna", "tx_antenna"),
+)
+_LEGACY_GLOBAL_METER_FIELDS: tuple[tuple[str, str, float | None], ...] = (
+    ("alc_meter", "alc", 0.5),
+    ("power_meter", "power", 0.5),
+    ("swr_meter", "swr", 0.5),
+    ("comp_meter", "comp", 0.5),
+    ("vd_meter", "vd", 0.5),
+    ("id_meter", "id", 0.5),
+)
+_LEGACY_GLOBAL_SLOW_STATE_FIELDS: tuple[tuple[str, str], ...] = (
+    ("active", "active"),
+    ("scanning", "scanning"),
+    ("scan_type", "scan_type"),
+    ("scan_resume_mode", "scan_resume_mode"),
+    ("tuning_step", "tuning_step"),
+    ("overflow", "overflow"),
+    ("cw_spot", "cw_spot"),
+    ("vfo_select", "vfo_select"),
+    ("rx_antenna_1", "rx_antenna_1"),
+    ("rx_antenna_2", "rx_antenna_2"),
+    ("tx_band_edges", "tx_band_edges"),
+    ("scope_controls", "scope_controls"),
+    ("yaesu", "yaesu"),
+)
 
 _CivTransactionExpect = Literal["none", "ack", "data"]
 _MISSING_BATCH_STEP_ID = object()
+
+
+def _changed_legacy_state_keys(
+    current: Any,
+    previous: Any,
+    *,
+    prefix: str = "",
+) -> set[str]:
+    if current == previous:
+        return set()
+    changed = {prefix} if prefix else set()
+    if isinstance(current, dict) and isinstance(previous, dict):
+        for key in current.keys() | previous.keys():
+            child_prefix = f"{prefix}.{key}" if prefix else str(key)
+            changed.update(
+                _changed_legacy_state_keys(
+                    current.get(key),
+                    previous.get(key),
+                    prefix=child_prefix,
+                )
+            )
+    return changed
 
 
 class _HttpBatchValidationError(ValueError):
@@ -122,6 +326,9 @@ class _HttpBatchStep:
     name: str
     command: Any
     result: dict[str, Any]
+    command_id: str | None = None
+    source: CommandSource | None = None
+    command_service: CommandService | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -138,9 +345,103 @@ class _HttpBatchTransactionStep:
 class _HttpCommandCollector:
     def __init__(self) -> None:
         self.commands: list[Any] = []
+        self.entries: list[CommandQueueEntry] = []
 
-    def put(self, command: Any) -> None:
+    def put(
+        self,
+        command: Any,
+        *,
+        command_id: str | None = None,
+        source: CommandSource | None = None,
+        session_id: str | None = None,
+        command_service: CommandService | None = None,
+    ) -> None:
         self.commands.append(command)
+        self.entries.append(
+            CommandQueueEntry(
+                command,
+                command_id=command_id,
+                source=source,
+                session_id=session_id,
+                command_service=command_service,
+            )
+        )
+
+    def put_ordered(
+        self,
+        command: Any,
+        *,
+        future: asyncio.Future[None] | None = None,
+        command_id: str | None = None,
+        source: CommandSource | None = None,
+        session_id: str | None = None,
+        command_service: CommandService | None = None,
+    ) -> None:
+        del future
+        self.put(
+            command,
+            command_id=command_id,
+            source=source,
+            session_id=session_id,
+            command_service=command_service,
+        )
+
+
+@dataclass(slots=True)
+class _HttpCommandExecutor:
+    server: "WebServer"
+
+    async def execute(self, intent: CommandIntent) -> CommandExecutionResult:
+        radio = self.server._radio
+        if radio is None:
+            raise RuntimeError("No radio configured")
+        params = intent.params
+        if intent.name == "raw_civ_transaction":
+            if not isinstance(radio, CivTransactionCapable):
+                raise RuntimeError(
+                    "active backend does not support raw CI-V transactions"
+                )
+            result = await radio.send_civ_transaction(
+                int(params["command"]),
+                sub=params.get("sub"),
+                data=params["data"],
+                expect=params["expect"],
+                timeout=params.get("timeout"),
+            )
+            return CommandExecutionResult(details={"transaction_result": result})
+        if intent.name == "set_powerstat":
+            await radio.set_powerstat(bool(params["power_on"]))  # type: ignore[attr-defined]
+            return CommandExecutionResult(
+                observations=(
+                    command_response_observation(
+                        intent,
+                        timestamp_monotonic=time.monotonic(),
+                        provider="http",
+                    ),
+                )
+            )
+        raise ValueError(f"unsupported HTTP command intent: {intent.name!r}")
+
+
+@dataclass(slots=True)
+class _SharedControlCommandExecutor:
+    server: "WebServer"
+
+    async def execute(self, intent: CommandIntent) -> CommandExecutionResult:
+        params = dict(intent.params)
+        control_server = params.pop("_control_server", None)
+        control_read_only = bool(params.pop("_control_read_only", False))
+        result = await self.server._control_handler_for(  # noqa: SLF001
+            server=control_server,
+            read_only=control_read_only,
+        )._enqueue_legacy_command(
+            intent.name,
+            params,
+            command_id=intent.id,
+            source=intent.source,
+            command_service=self.server.command_service,
+        )
+        return CommandExecutionResult(details=result)
 
 
 async def _read_capped_body(
@@ -179,6 +480,18 @@ def _redact_token_in_path(path: str) -> str:
         else:
             parts.append(pair)
     return f"{base}?{'&'.join(parts)}"
+
+
+def _query_flag(query: dict[str, list[str]] | None, *names: str) -> bool:
+    """Return True when any named query parameter is explicitly truthy."""
+    if not query:
+        return False
+    truthy = {"1", "true", "yes", "on"}
+    for name in names:
+        values = query.get(name, [])
+        if any(value.lower() in truthy for value in values):
+            return True
+    return False
 
 
 # Mode/filter lists moved to RadioProfile (profiles.py)
@@ -273,7 +586,7 @@ def _serialize_keyboard_config(profile: "RadioProfile") -> dict[str, object] | N
 
 def _runtime_capabilities(radio: "Radio | None") -> set[str]:
     """Backward-compatible alias to shared runtime_capabilities helper."""
-    return runtime_capabilities(radio)
+    return _runtime_capabilities_impl(radio)
 
 
 def _supports_scope(radio: "Radio | None") -> bool:
@@ -316,6 +629,7 @@ class WebConfig:
     read_only: bool = False  # reject PTT and other transmit commands
     emit_startup_event: bool = False  # emit JSON runtime startup event to stdout
     webrtc_enabled: bool = False  # enable the gated WebRTC transport entrypoint
+    state_diagnostics: bool = False  # enable behavior-neutral state diagnostics
 
 
 class ConnectionManager:
@@ -388,6 +702,28 @@ class WebServer:
     ) -> None:
         self._radio = radio
         self._config = config or WebConfig()
+        self._state_diagnostics = StateDiagnosticsRecorder(
+            enabled=self._config.state_diagnostics
+        )
+        raw_state_store = (
+            getattr(radio, "state_store", None) if radio is not None else None
+        )
+        self.command_state_store = (
+            raw_state_store if isinstance(raw_state_store, StateStore) else StateStore()
+        )
+        self._state_freshness_service = StateFreshnessService(
+            store=self.command_state_store,
+            on_delta=self._on_state_freshness_delta,
+        )
+        self._bootstrap_state_acquisition()
+        self.command_service = CommandService(
+            executor=_SharedControlCommandExecutor(self),
+            state_store=self.command_state_store,
+        )
+        self._http_command_service = CommandService(
+            executor=_HttpCommandExecutor(self),
+            state_store=self.command_state_store,
+        )
         self._server: asyncio.Server | None = None
         self._runtime_started_at = time.monotonic()
         self._runtime_log_path: str | None = None
@@ -405,6 +741,14 @@ class WebServer:
         self._radio_state: RadioState = (
             raw_radio_state if isinstance(raw_radio_state, RadioState) else RadioState()
         )
+        self._legacy_delivery_state_dict: dict[str, Any] = RadioState().to_dict()
+        if radio is not None:
+            try:
+                setattr(radio, "_state_diagnostics", self._state_diagnostics)
+            except Exception:
+                logger.debug(
+                    "state diagnostics: failed to attach to radio", exc_info=True
+                )
         self._audio_broadcaster = AudioBroadcaster(radio)
         # Gated WebRTC transport session manager (A2.3 / MOR-307). Lazily
         # constructed on first use so the import stays out of the no-extra path.
@@ -440,12 +784,17 @@ class WebServer:
         self._command_queue: CommandQueue = CommandQueue()
         self._radio_poller: RadioPoller | None = None
         self._state_poller: Any | None = None  # StatePoller (lazy, optional)
+        self._state_store_freshness_task: asyncio.Task[None] | None = None
         # Control handler event queues
         self._control_event_queues: set[BoundedQueue[dict[str, Any]]] = set()
         # State broadcast throttle
         self._last_state_broadcast: float = 0.0
+        self._pending_state_broadcast_task: asyncio.Task[None] | None = None
         # Delta encoder for efficient state broadcasting
         self._delta_encoder: DeltaEncoder = DeltaEncoder(full_state_interval=100)
+        self._last_broadcast_state_key: tuple[object, ...] | None = None
+        self._cached_public_state_key: tuple[object, ...] | None = None
+        self._cached_public_state_payload: dict[str, Any] | None = None
         self._health_revision: int = 0
         self._health_signature: tuple[object, ...] | None = None
         self._health_since_monotonic: float = time.monotonic()
@@ -480,6 +829,7 @@ class WebServer:
         self._zombie_reaper_task: asyncio.Task[None] | None = None
         # UDP discovery responder
         self._discovery: DiscoveryResponder | None = None
+        self._server_was_running: bool = False
         # Diagnostic upload session manager (preview/send/save/delete).
         # Sweeper task is started lazily on the first preview request and
         # explicitly stopped during web shutdown.
@@ -534,9 +884,42 @@ class WebServer:
         except KeyError:
             return resolve_radio_profile(model="IC-7610")
 
+    def _bootstrap_state_acquisition(self) -> None:
+        """Attach shared StateStore-backed acquisition services when profiled."""
+        radio = self._radio
+        if radio is None:
+            return
+        try:
+            profile = self._get_profile()
+        except Exception:
+            logger.debug("state acquisition: failed to resolve profile", exc_info=True)
+            return
+        acquisition_profile = getattr(profile, "state_acquisition", None)
+        if acquisition_profile is None:
+            return
+        scheduler = AcquisitionScheduler(profile=acquisition_profile)
+        service = RadioStateModelService(
+            store=self.command_state_store,
+            scheduler=scheduler,
+        )
+        freshness_service = StateFreshnessService(
+            store=self.command_state_store,
+            scheduler=scheduler,
+            on_delta=self._on_state_freshness_delta,
+        )
+        coalescer = MeterObservationCoalescer()
+        self._state_freshness_service = freshness_service
+        try:
+            setattr(radio, "_state_model_service", service)
+            setattr(radio, "_state_freshness_service", freshness_service)
+            setattr(radio, "_acquisition_scheduler", scheduler)
+            setattr(radio, "_meter_observation_coalescer", coalescer)
+        except Exception:
+            logger.debug("state acquisition: failed to attach services", exc_info=True)
+
     def _radio_ready(self) -> bool:
         """Backend view of radio readiness (CI-V healthy)."""
-        return radio_ready(self._radio)
+        return bool(radio_ready(self._radio))
 
     async def ensure_startup_ready(self, timeout: float = 5.0) -> None:
         """Assert that the attached radio is ready before exposing the server."""
@@ -720,6 +1103,11 @@ class WebServer:
         """Command queue consumed by RadioPoller."""
         return self._command_queue
 
+    @property
+    def state_diagnostics(self) -> StateDiagnosticsRecorder:
+        """Behavior-neutral state-pipeline diagnostics recorder."""
+        return self._state_diagnostics
+
     def register_control_event_queue(self, q: BoundedQueue[dict[str, Any]]) -> None:
         """Register a ControlHandler event queue for broadcast."""
         self._control_event_queues.add(q)
@@ -747,18 +1135,58 @@ class WebServer:
 
         now = time.monotonic()
         if now - self._last_state_broadcast < 0.05:
+            try:
+                asyncio.get_running_loop()
+            except RuntimeError:
+                return
+            if (
+                self._pending_state_broadcast_task is None
+                or self._pending_state_broadcast_task.done()
+            ):
+                delay = max(0.0, 0.05 - (now - self._last_state_broadcast))
+                self._pending_state_broadcast_task = self._spawn(
+                    self._delayed_state_broadcast(delay)
+                )
             return
         self._last_state_broadcast = now
+        if self._pending_state_broadcast_task is not None:
+            self._pending_state_broadcast_task.cancel()
+            self._pending_state_broadcast_task = None
 
         # Keep audio FFT scope center freq and mode bandwidth in sync
         self._update_fft_scope_freq()
         self._update_fft_scope_mode()
 
-        body = self.build_public_state()
+        self._sync_legacy_state_store_for_delivery()
+        snapshot = self.command_state_store.snapshot()
+        body = self._build_public_state_from_snapshot(snapshot)
+        state_key = (
+            snapshot.state_revision,
+            snapshot.freshness_revision,
+            int(body.get("healthRevision", 0)),
+            *self._live_connection_metadata_key(),
+        )
+        if state_key == self._last_broadcast_state_key:
+            return
 
         # Encode state as delta to reduce bandwidth
-        delta = self._delta_encoder.encode(body)
+        delta = self._delta_encoder.encode(
+            body,
+            state_revision=snapshot.state_revision,
+            freshness_revision=snapshot.freshness_revision,
+        )
+        self._last_broadcast_state_key = state_key
         event = {"type": "state_update", "data": delta}
+        self._state_diagnostics.record(
+            "web_delivery_trigger",
+            "web.websocket",
+            revision=body.get("revision"),
+            state_revision=body.get("stateRevision"),
+            freshness_revision=body.get("freshnessRevision"),
+            health_revision=body.get("healthRevision"),
+            delta_type=delta.get("type"),
+            clients=len(self._control_event_queues),
+        )
 
         for q in list(self._control_event_queues):
             try:
@@ -766,14 +1194,64 @@ class WebServer:
             except asyncio.QueueFull:
                 logger.warning("control state queue full; dropping state_update")
 
+    async def _delayed_state_broadcast(self, delay: float) -> None:
+        try:
+            await asyncio.sleep(delay)
+            self._broadcast_state_update()
+        except asyncio.CancelledError:
+            pass
+
     def build_public_state(self, *, updated_at: str | None = None) -> dict[str, Any]:
         """Return the canonical public state payload for web consumers."""
-        revision = self._radio_poller.revision if self._radio_poller is not None else 0
+        self._sync_legacy_state_store_for_delivery()
+        snapshot = self.command_state_store.snapshot()
+        return self._build_public_state_from_snapshot(snapshot, updated_at=updated_at)
+
+    def _live_connection_metadata_key(
+        self,
+    ) -> tuple[bool, bool, bool, str | None]:
+        radio = self._radio
+        raw_connected = getattr(radio, "connected", False) if radio else False
+        connected = raw_connected if isinstance(raw_connected, bool) else False
+        raw_control_connected = (
+            getattr(radio, "control_connected", False) if radio else False
+        )
+        control_connected = (
+            raw_control_connected if isinstance(raw_control_connected, bool) else False
+        )
+        conn_state_val = getattr(radio, "conn_state", None) if radio else None
+        conn_state: str | None = None
+        if conn_state_val is not None and hasattr(conn_state_val, "value"):
+            raw_conn_state = conn_state_val.value
+            if isinstance(raw_conn_state, str):
+                conn_state = raw_conn_state
+        return (connected, control_connected, radio_ready(radio), conn_state)
+
+    def _build_public_state_from_snapshot(
+        self,
+        snapshot: StateSnapshot,
+        *,
+        updated_at: str | None = None,
+    ) -> dict[str, Any]:
         health = self._build_radio_health()
-        return build_public_state_payload(
-            self._radio_state,
+        cache_key = (
+            snapshot.state_revision,
+            snapshot.freshness_revision,
+            self._health_revision,
+            len(self._scope_handlers),
+            len(self._control_event_queues),
+            len(self._audio_broadcaster._clients),
+            *self._live_connection_metadata_key(),
+        )
+        if (
+            updated_at is None
+            and cache_key == self._cached_public_state_key
+            and self._cached_public_state_payload is not None
+        ):
+            return copy.deepcopy(self._cached_public_state_payload)
+        payload = _build_public_state_payload_from_snapshot_impl(
+            snapshot,
             radio=self._radio,
-            revision=revision,
             receiver_count=self._get_profile().receiver_count,
             updated_at=updated_at,
             scope_clients=len(self._scope_handlers),
@@ -782,11 +1260,206 @@ class WebServer:
             radio_health=health,
             health_revision=self._health_revision,
         )
+        if updated_at is None:
+            self._cached_public_state_key = cache_key
+            self._cached_public_state_payload = copy.deepcopy(payload)
+        return payload
+
+    def build_state_update_envelope(
+        self, *, force_full: bool = False
+    ) -> dict[str, Any]:
+        """Return a WS state-update envelope from the canonical StateStore view."""
+        self._sync_legacy_state_store_for_delivery()
+        snapshot = self.command_state_store.snapshot()
+        body = self._build_public_state_from_snapshot(snapshot)
+        encoder = (
+            DeltaEncoder(full_state_interval=100) if force_full else self._delta_encoder
+        )
+        return cast(
+            dict[str, Any],
+            encoder.encode(
+                body,
+                force_full=force_full,
+                state_revision=snapshot.state_revision,
+                freshness_revision=snapshot.freshness_revision,
+            ),
+        )
+
+    def _sync_legacy_state_store_for_delivery(self) -> None:
+        """Reconcile legacy public RadioState fields before delivery snapshots."""
+        state_dict = self._radio_state.to_dict()
+        changed_legacy_keys = _changed_legacy_state_keys(
+            state_dict,
+            self._legacy_delivery_state_dict,
+        )
+        if not changed_legacy_keys:
+            return
+        self.sync_state_store_from_radio_state(
+            self._radio_state,
+            changed_legacy_keys=changed_legacy_keys,
+        )
+        self._legacy_delivery_state_dict = copy.deepcopy(state_dict)
+
+    def sync_state_store_from_radio_state(
+        self,
+        state: RadioState,
+        *,
+        changed_legacy_keys: set[str] | None = None,
+    ) -> None:
+        """Feed compatibility poller snapshots into the canonical StateStore."""
+        timestamp = time.monotonic()
+        baseline = RadioState()
+        state_dict = state.to_dict()
+        baseline_dict = baseline.to_dict()
+        observed_values = {
+            field.path: field.value
+            for field in self.command_state_store.snapshot().fields
+        }
+        provider = getattr(self._radio, "backend_id", None)
+        source = SourceMetadata(
+            source="state_poller",
+            provider=provider if isinstance(provider, str) else "web_state_poller",
+            transport="backend",
+            native_id="state_poller",
+        )
+        observations: list[Observation] = []
+
+        def append_if_changed(
+            *,
+            path: FieldPath,
+            value: Any,
+            default: Any,
+            legacy_key: str,
+            max_age: float | None = None,
+        ) -> None:
+            if (
+                changed_legacy_keys is not None
+                and legacy_key not in changed_legacy_keys
+            ):
+                return
+            if value == default and path not in observed_values:
+                return
+            if path in observed_values and observed_values[path] == value:
+                return
+            observations.append(
+                Observation(
+                    path=path,
+                    value=value,
+                    source=source,
+                    timestamp_monotonic=timestamp,
+                    max_age=max_age,
+                )
+            )
+
+        def append_receiver_snapshot(
+            receiver_id: str,
+            receiver_key: str,
+            receiver: Any,
+            default_receiver: Any,
+        ) -> None:
+            for attr, name in _LEGACY_RECEIVER_FREQ_MODE_FIELDS:
+                append_if_changed(
+                    path=FieldPath.active(receiver_id, "freq_mode", name),
+                    value=getattr(receiver, attr),
+                    default=getattr(default_receiver, attr),
+                    legacy_key=f"{receiver_key}.{attr}",
+                )
+            for slot_name, slot, default_slot in (
+                ("A", receiver.vfo_a, default_receiver.vfo_a),
+                ("B", receiver.vfo_b, default_receiver.vfo_b),
+            ):
+                slot_key = f"{receiver_key}.vfo_{slot_name.lower()}"
+                for attr, name in _LEGACY_VFO_SLOT_FIELDS:
+                    append_if_changed(
+                        path=FieldPath.vfo_slot(
+                            receiver_id,
+                            slot_name,
+                            "freq_mode",
+                            name,
+                        ),
+                        value=getattr(slot, attr),
+                        default=getattr(default_slot, attr),
+                        legacy_key=f"{slot_key}.{attr}",
+                    )
+            append_if_changed(
+                path=FieldPath.active_slot(receiver_id),
+                value=receiver.active_slot,
+                default=default_receiver.active_slot,
+                legacy_key=f"{receiver_key}.active_slot",
+            )
+            for attr, name, max_age in _LEGACY_RECEIVER_METER_FIELDS:
+                append_if_changed(
+                    path=FieldPath.receiver(receiver_id, "meters", name),
+                    value=getattr(receiver, attr),
+                    default=getattr(default_receiver, attr),
+                    legacy_key=f"{receiver_key}.{attr}",
+                    max_age=max_age,
+                )
+            for attr, name in _LEGACY_RECEIVER_CONTROL_FIELDS:
+                append_if_changed(
+                    path=FieldPath.receiver(receiver_id, "operator_controls", name),
+                    value=getattr(receiver, attr),
+                    default=getattr(default_receiver, attr),
+                    legacy_key=f"{receiver_key}.{attr}",
+                )
+            for attr, name in _LEGACY_RECEIVER_TOGGLE_FIELDS:
+                append_if_changed(
+                    path=FieldPath.receiver(receiver_id, "operator_toggles", name),
+                    value=getattr(receiver, attr),
+                    default=getattr(default_receiver, attr),
+                    legacy_key=f"{receiver_key}.{attr}",
+                )
+            for attr, name in _LEGACY_RECEIVER_SLOW_STATE_FIELDS:
+                append_if_changed(
+                    path=FieldPath.receiver(receiver_id, "slow_state", name),
+                    value=getattr(receiver, attr),
+                    default=getattr(default_receiver, attr),
+                    legacy_key=f"{receiver_key}.{attr}",
+                )
+
+        append_receiver_snapshot("0", "main", state.main, baseline.main)
+        for attr, name in _LEGACY_GLOBAL_TX_FIELDS:
+            append_if_changed(
+                path=FieldPath.global_("tx_state", name),
+                value=getattr(state, attr),
+                default=getattr(baseline, attr),
+                legacy_key=attr,
+            )
+        for attr, name in _LEGACY_GLOBAL_CONTROL_FIELDS:
+            append_if_changed(
+                path=FieldPath.global_("operator_controls", name),
+                value=getattr(state, attr),
+                default=getattr(baseline, attr),
+                legacy_key=attr,
+            )
+        for attr, name, max_age in _LEGACY_GLOBAL_METER_FIELDS:
+            append_if_changed(
+                path=FieldPath.global_("meters", name),
+                value=getattr(state, attr),
+                default=getattr(baseline, attr),
+                legacy_key=attr,
+                max_age=max_age,
+            )
+        for attr, name in _LEGACY_GLOBAL_SLOW_STATE_FIELDS:
+            append_if_changed(
+                path=FieldPath.global_("slow_state", name),
+                value=state_dict[attr],
+                default=baseline_dict[attr],
+                legacy_key=attr,
+            )
+        if self._get_profile().receiver_count > 1:
+            append_receiver_snapshot("1", "sub", state.sub, baseline.sub)
+        for observation in observations:
+            self.command_state_store.apply(observation)
+
+    def _on_state_freshness_delta(self, _delta: object) -> None:
+        """React to StateStore freshness changes produced by the shared service."""
+        self._broadcast_state_update()
 
     def _build_radio_health(self) -> dict[str, Any]:
         """Build radio health and advance the health revision on transitions."""
         now = time.monotonic()
-        health = classify_radio_health(
+        health = _classify_radio_health_impl(
             self._radio,
             server_reachable=True,
             now_monotonic=now,
@@ -889,7 +1562,7 @@ class WebServer:
         This is the PRIMARY update path.  Called whenever the radio sends
         a CI-V frame (solicited response or unsolicited change).
         """
-        if self._radio_poller is not None:
+        if self._radio_poller is not None and name != "state_store_changed":
             self._radio_poller.bump_revision()
         self.broadcast_event(name, data)
         self._broadcast_state_update()
@@ -1624,6 +2297,29 @@ class WebServer:
             "stats": stats,
         }
 
+    def _state_acquisition_diagnostics_payload(self) -> dict[str, Any]:
+        radio = self._radio
+        scheduler = (
+            getattr(radio, "_acquisition_scheduler", None)
+            if radio is not None
+            else None
+        )
+        coalescer = (
+            getattr(radio, "_meter_observation_coalescer", None)
+            if radio is not None
+            else None
+        )
+        return {
+            "enabled": isinstance(scheduler, AcquisitionScheduler),
+            "scheduler": scheduler.diagnostics()
+            if isinstance(scheduler, AcquisitionScheduler)
+            else None,
+            "meterCoalescing": coalescer.diagnostics()
+            if isinstance(coalescer, MeterObservationCoalescer)
+            else None,
+            "events": self._state_diagnostics.snapshot(),
+        }
+
     async def _serve_runtime(
         self, writer: asyncio.StreamWriter, headers: dict[str, str] | None = None
     ) -> None:
@@ -1646,6 +2342,7 @@ class WebServer:
                     "address": self._runtime_rigctld_addr,
                 },
                 "bridge": self._runtime_bridge_payload(),
+                "stateAcquisition": self._state_acquisition_diagnostics_payload(),
                 "lastError": self._runtime_last_error,
             },
             separators=(",", ":"),
@@ -1665,10 +2362,23 @@ class WebServer:
         self, writer: asyncio.StreamWriter, headers: dict[str, str] | None = None
     ) -> None:
         body_dict = self.build_public_state()
-        revision = int(body_dict.get("revision", 0))
+        revision = int(body_dict.get("stateRevision", body_dict.get("revision", 0)))
+        freshness_revision = int(body_dict.get("freshnessRevision", 0))
         health_revision = int(body_dict.get("healthRevision", 0))
+        self._state_diagnostics.record(
+            "web_delivery_trigger",
+            "web.http_state",
+            revision=revision,
+            freshness_revision=freshness_revision,
+            health_revision=health_revision,
+        )
         body = json.dumps(body_dict, separators=(",", ":")).encode()
-        await _send_json(writer, body, headers, etag=f'"{revision}-{health_revision}"')
+        await _send_json(
+            writer,
+            body,
+            headers,
+            etag=f'"{revision}-{freshness_revision}-{health_revision}"',
+        )
 
     async def _serve_audio_analysis(
         self, writer: asyncio.StreamWriter, headers: dict[str, str] | None = None
@@ -2213,14 +2923,19 @@ class WebServer:
             return None
         return payload
 
-    def _control_handler_for(self, *, server: Any | None = None) -> ControlHandler:
+    def _control_handler_for(
+        self,
+        *,
+        server: Any | None = None,
+        read_only: bool | None = None,
+    ) -> ControlHandler:
         return ControlHandler(
             None,  # type: ignore[arg-type]
             self._radio,
             __version__,
             self._config.radio_model,
             server=server if server is not None else self,
-            read_only=self._config.read_only,
+            read_only=self._config.read_only if read_only is None else read_only,
         )
 
     async def _handle_http_commands(
@@ -2389,13 +3104,24 @@ class WebServer:
 
         try:
             assert command is not None
-            result = await self._radio.send_civ_transaction(
-                command,
-                sub=sub,
-                data=data,
-                expect=raw_expect,
-                timeout=timeout,
+            service_result = await self._http_command_service.execute(
+                command_intent_from_request(
+                    "raw_civ_transaction",
+                    {
+                        "command": command,
+                        "sub": sub,
+                        "data": data,
+                        "expect": raw_expect,
+                        "timeout": timeout,
+                    },
+                    source="http",
+                    command_id=None
+                    if payload.get("id") is None
+                    else str(payload["id"]),
+                )
             )
+            details = service_result.executor_result.details or {}
+            result = details["transaction_result"]
         except (RigplaneTimeoutError, TimeoutError):
             await self._send_json(
                 writer,
@@ -2483,6 +3209,8 @@ class WebServer:
             result = await self._control_handler_for()._enqueue_command(  # noqa: SLF001
                 raw_name,
                 raw_params,
+                command_id=None if payload.get("id") is None else str(payload["id"]),
+                source="http",
             )
         except PermissionError as exc:
             await self._send_json(
@@ -2558,21 +3286,34 @@ class WebServer:
             )
 
         collector = _HttpCommandCollector()
-        proxy_server = type("_HttpBatchProxy", (), {"command_queue": collector})()
+        proxy_server = type(
+            "_HttpBatchProxy",
+            (),
+            {
+                "command_queue": collector,
+                "command_state_store": self.command_state_store,
+                "command_service": self.command_service,
+            },
+        )()
         result = await self._control_handler_for(server=proxy_server)._enqueue_command(  # noqa: SLF001
             raw_name,
             raw_params,
+            source="http",
         )
         if len(collector.commands) != 1:
             raise _HttpBatchValidationError(
                 "unsupported_in_batch",
                 f"command {raw_name!r} did not produce exactly one queued command",
             )
+        entry = collector.entries[0]
         return _HttpBatchStep(
             index=index,
             name=raw_name,
-            command=collector.commands[0],
+            command=entry.command,
             result=result,
+            command_id=entry.command_id,
+            source=entry.source,
+            command_service=entry.command_service,
         )
 
     def _prepare_http_batch_transaction_step(
@@ -2678,13 +3419,24 @@ class WebServer:
             )
 
         try:
-            result = await self._radio.send_civ_transaction(
-                step.command,
-                sub=step.sub,
-                data=step.data,
-                expect=step.expect,
-                timeout=step.timeout,
+            service_result = await self._http_command_service.execute(
+                command_intent_from_request(
+                    "raw_civ_transaction",
+                    {
+                        "command": step.command,
+                        "sub": step.sub,
+                        "data": step.data,
+                        "expect": step.expect,
+                        "timeout": step.timeout,
+                    },
+                    source="http",
+                    command_id=None
+                    if step.step_id is _MISSING_BATCH_STEP_ID
+                    else str(step.step_id),
+                )
             )
+            details = service_result.executor_result.details or {}
+            result = details["transaction_result"]
         except (RigplaneTimeoutError, TimeoutError):
             return self._failed_transaction_batch_result(
                 step,
@@ -2960,10 +3712,23 @@ class WebServer:
 
             loop = asyncio.get_running_loop()
             future: asyncio.Future[None] = loop.create_future()
-            self._command_queue.put_ordered(step.command, future=future)
+            self._command_queue.put_ordered(
+                step.command,
+                future=future,
+                command_id=step.command_id,
+                source=step.source,
+                command_service=step.command_service,
+            )
             try:
                 await asyncio.wait_for(future, timeout=_COMMAND_BATCH_STEP_TIMEOUT)
             except TimeoutError as exc:
+                if step.command_service is not None and step.command_id is not None:
+                    step.command_service.fail_command(
+                        step.command_id,
+                        message=str(exc) or type(exc).__name__,
+                        timed_out=True,
+                        source=step.source,
+                    )
                 results.append(
                     {
                         "index": step.index,
@@ -3131,8 +3896,17 @@ class WebServer:
                         logger.warning("power-on: reconnect failed: %s", conn_err)
                         # Try anyway — some radios accept CI-V on stale transport
                 is_on = power_state == "on"
-                await radio.set_powerstat(is_on)  # type: ignore[attr-defined]
-                # Optimistic state update: radio won't respond to polls when off
+                await self._http_command_service.execute(
+                    command_intent_from_request(
+                        "set_powerstat",
+                        {"on": is_on},
+                        source="http",
+                        command_id=f"http-power-{time.monotonic_ns()}",
+                    )
+                )
+                # Compatibility delivery mirror until web state responses read
+                # power directly from StateStore; command lifecycle and
+                # reconciliation are owned by CommandService.
                 if self._radio_state is not None:
                     self._radio_state.power_on = is_on
                 self._on_radio_state_change("powerstat_changed", {"power_on": is_on})
@@ -3882,13 +4656,20 @@ class WebServer:
         model = raw_model if isinstance(raw_model, str) else self._config.radio_model
 
         if path == "/api/v1/ws":
+            control_read_only = self._config.read_only or _query_flag(
+                query,
+                "read_only",
+                "readonly",
+                "readOnly",
+                "observer",
+            )
             handler: Any = ControlHandler(
                 ws,
                 self._radio,
                 __version__,
                 model,
                 server=self,
-                read_only=self._config.read_only,
+                read_only=control_read_only,
             )
         elif path == "/api/v1/scope":
             handler = ScopeHandler(ws, self._radio, server=self)

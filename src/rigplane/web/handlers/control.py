@@ -6,9 +6,17 @@ import asyncio
 import logging
 import time
 from collections.abc import Awaitable, Callable
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, ClassVar, cast
 
 from ..._bounded_queue import BoundedQueue
+from ...core.command_service import (
+    CommandExecutionResult,
+    CommandService,
+    command_intent_from_request,
+)
+from ...core.state_pipeline_contracts import CommandIntent, CommandSource
+from ...core.state_store import StateStore
 from ...profiles import RadioProfile
 from ...radio_state import RadioState
 from ..protocol import (  # noqa: TID251
@@ -169,6 +177,63 @@ __all__ = ["ControlHandler"]
 
 logger = logging.getLogger(__name__)
 _MAX_CW_TEXT_CHARS = 512
+
+
+@dataclass(slots=True)
+class _ControlCommandExecutor:
+    handler: "ControlHandler"
+
+    async def execute(self, intent: CommandIntent) -> CommandExecutionResult:
+        params = dict(intent.params)
+        params.pop("_control_server", None)
+        params.pop("_control_read_only", None)
+        result = await self.handler._enqueue_legacy_command(  # noqa: SLF001
+            intent.name,
+            params,
+            command_id=intent.id,
+            source=intent.source,
+            command_service=self.handler._command_service,  # noqa: SLF001
+        )
+        return CommandExecutionResult(details=result)
+
+
+@dataclass(frozen=True, slots=True)
+class _CommandMetadataQueue:
+    queue: Any
+    command_id: str
+    source: CommandSource
+    session_id: str | None
+    command_service: CommandService
+
+    def put(self, command: Any) -> None:
+        try:
+            self.queue.put(
+                command,
+                command_id=self.command_id,
+                source=self.source,
+                session_id=self.session_id,
+                command_service=self.command_service,
+            )
+        except TypeError:
+            self.queue.put(command)
+
+    def put_ordered(
+        self,
+        command: Any,
+        *,
+        future: asyncio.Future[None] | None = None,
+    ) -> None:
+        try:
+            self.queue.put_ordered(
+                command,
+                future=future,
+                command_id=self.command_id,
+                source=self.source,
+                session_id=self.session_id,
+                command_service=self.command_service,
+            )
+        except TypeError:
+            self.queue.put_ordered(command, future=future)
 
 
 class ControlHandler:
@@ -352,18 +417,6 @@ class ControlHandler:
         ]
     )
 
-    # Commands that can transmit or send arbitrary radio writes — rejected when read_only=True.
-    # set_tuner_status value=2 (TUNING) is handled inline in _enqueue_read_only.
-    _TX_COMMANDS: frozenset[str] = frozenset(
-        {
-            "ptt",
-            "ptt_on",
-            "ptt_off",
-            "send_civ",
-            "send_cw_text",
-        }
-    )
-
     def __init__(
         self,
         ws: Connection,
@@ -372,6 +425,7 @@ class ControlHandler:
         radio_model: str,
         server: Any = None,
         read_only: bool = False,
+        session_id: str | None = None,
     ) -> None:
         self._ws = ws
         self._radio = radio
@@ -379,6 +433,9 @@ class ControlHandler:
         self._radio_model = radio_model
         self._server = server
         self._read_only = read_only
+        self._session_id = (
+            session_id if session_id is not None else f"websocket-{time.monotonic_ns()}"
+        )
         self._subscribed_streams: set[str] = set()
         self._event_queue: BoundedQueue[dict[str, Any]] = BoundedQueue(
             maxsize=100,
@@ -389,6 +446,17 @@ class ControlHandler:
         # Minimum interval between same command (seconds).
         # Continuous slider/knob drag sends dozens of set_* per second.
         self._CMD_MIN_INTERVAL = 0.05  # 50ms = max 20 commands/sec per client
+        shared_service = getattr(server, "command_service", None)
+        if isinstance(shared_service, CommandService):
+            self._command_service = shared_service
+        else:
+            state_store = getattr(server, "command_state_store", None)
+            if not isinstance(state_store, StateStore):
+                state_store = StateStore()
+            self._command_service = CommandService(
+                executor=_ControlCommandExecutor(self),
+                state_store=state_store,
+            )
 
     async def run(self) -> None:
         """Run the control channel lifecycle."""
@@ -401,11 +469,9 @@ class ControlHandler:
         # and before the recv loop — no interleaving with command responses.
         if self._server is not None:
             try:
-                initial_state = self._server.build_public_state()
-                rev = self._server._delta_encoder.revision
                 msg = {
                     "type": "state_update",
-                    "data": {"type": "full", "data": initial_state, "revision": rev},
+                    "data": self._server.build_state_update_envelope(force_full=True),
                 }
                 await self._ws.send_text(encode_json(msg))
             except Exception:
@@ -460,6 +526,8 @@ class ControlHandler:
             "radio": self._radio_model,
             "connected": raw_connected if isinstance(raw_connected, bool) else False,
             "radio_ready": self._radio_ready(),
+            "read_only": self._read_only,
+            "observer": self._read_only,
             "capabilities": caps,
         }
         await self._ws.send_text(encode_json(msg))
@@ -567,6 +635,9 @@ class ControlHandler:
         """Handle radio_connect request — reconnect the radio."""
         logger.info("radio_connect requested")
         msg_id = msg.get("id", "")
+        if self._read_only:
+            await self._send_read_only_rejection(msg_id, "radio_connect")
+            return
         if self._radio is None:
             await self._send_json(
                 {
@@ -636,6 +707,9 @@ class ControlHandler:
         """Handle radio_disconnect request — disconnect the radio."""
         logger.info("radio_disconnect requested")
         msg_id = msg.get("id", "")
+        if self._read_only:
+            await self._send_read_only_rejection(msg_id, "radio_disconnect")
+            return
         if self._radio is None:
             await self._send_json(
                 {
@@ -700,6 +774,17 @@ class ControlHandler:
         """Send a JSON message to the WebSocket client."""
         await self._ws.send_text(encode_json(obj))
 
+    async def _send_read_only_rejection(self, msg_id: Any, name: str) -> None:
+        await self._send_json(
+            {
+                "type": "response",
+                "id": msg_id,
+                "ok": False,
+                "error": "read_only",
+                "message": f"read-only mode: {name} rejected",
+            }
+        )
+
     async def _handle_subscribe(self, msg: dict[str, Any]) -> None:
         streams = msg.get("streams", [])
         if isinstance(streams, list):
@@ -753,6 +838,13 @@ class ControlHandler:
             )
 
         msg_out = {"type": "state_update", "data": payload}
+        if self._server is not None:
+            try:
+                msg_out["data"] = self._server.build_state_update_envelope(
+                    force_full=True
+                )
+            except Exception as exc:
+                logger.debug("control: state_update envelope build failed: %s", exc)
         await self._ws.send_text(encode_json(msg_out))
         # Send current DX spots if available
         if self._server is not None and hasattr(self._server, "_spot_buffer"):
@@ -763,6 +855,24 @@ class ControlHandler:
         cmd_id = msg.get("id", "")
         name = msg.get("name", "")
         params = msg.get("params", {})
+
+        if name not in self._COMMANDS:
+            await self._ws.send_text(
+                encode_json(
+                    {
+                        "type": "response",
+                        "id": cmd_id,
+                        "ok": False,
+                        "error": "unknown_command",
+                        "message": f"unknown command: {name!r}",
+                    }
+                )
+            )
+            return
+
+        if self._read_only and not self._is_observer_safe_command(name):
+            await self._send_read_only_rejection(cmd_id, str(name))
+            return
 
         # ── Server-side rate limiting (per client, per command) ──
         # Only throttle SET commands (continuous slider/knob drag).
@@ -795,20 +905,6 @@ class ControlHandler:
             self._cmd_last[name] = now
             self._cmd_drops[name] = 0
 
-        if name not in self._COMMANDS:
-            await self._ws.send_text(
-                encode_json(
-                    {
-                        "type": "response",
-                        "id": cmd_id,
-                        "ok": False,
-                        "error": "unknown_command",
-                        "message": f"unknown command: {name!r}",
-                    }
-                )
-            )
-            return
-
         if self._radio is None:
             await self._ws.send_text(
                 encode_json(
@@ -824,7 +920,12 @@ class ControlHandler:
             return
 
         try:
-            result = await self._enqueue_command(name, params)
+            result = await self._enqueue_command(
+                name,
+                params,
+                command_id=str(cmd_id),
+                source="websocket",
+            )
             await self._ws.send_text(
                 encode_json(
                     {
@@ -839,7 +940,9 @@ class ControlHandler:
             logger.warning("control: command %r failed: %s", name, exc)
             message = str(exc)
             error = (
-                "unsupported_command"
+                "read_only"
+                if isinstance(exc, PermissionError)
+                else "unsupported_command"
                 if "does not support" in message or "not supported" in message
                 else "command_failed"
             )
@@ -856,7 +959,36 @@ class ControlHandler:
             )
 
     async def _enqueue_command(
-        self, name: str, params: dict[str, Any]
+        self,
+        name: str,
+        params: dict[str, Any],
+        *,
+        command_id: str | None = None,
+        source: CommandSource = "websocket",
+    ) -> dict[str, Any]:
+        intent_params = dict(params)
+        if self._server is not None:
+            intent_params["_control_server"] = self._server
+        if self._read_only:
+            intent_params["_control_read_only"] = True
+        intent = command_intent_from_request(
+            name,
+            intent_params,
+            source=source,
+            command_id=command_id,
+            session_id=self._session_id if source == "websocket" else None,
+        )
+        result = await self._command_service.execute(intent)
+        return dict(result.executor_result.details or {})
+
+    async def _enqueue_legacy_command(
+        self,
+        name: str,
+        params: dict[str, Any],
+        *,
+        command_id: str,
+        source: CommandSource,
+        command_service: CommandService,
     ) -> dict[str, Any]:
         """Build a Command dataclass, enqueue it, and return the ack result.
 
@@ -865,8 +997,8 @@ class ControlHandler:
         logger.info("enqueue_command: %s params=%s", name, params)
         radio = self._radio
 
-        # Transmit safety gate — must come before any dispatch.
-        if self._read_only and name in self._TX_COMMANDS:
+        # Observer/read-only gate — must come before any command queue dispatch.
+        if self._read_only and not self._is_observer_safe_command(name):
             raise PermissionError(f"read-only mode: {name} rejected")
 
         # Read-only commands — bypass command queue
@@ -877,6 +1009,15 @@ class ControlHandler:
         q = self._server.command_queue if self._server is not None else None
         if q is None:
             raise RuntimeError("no command queue available")
+        q = _CommandMetadataQueue(
+            q,
+            command_id=command_id,
+            source=source,
+            session_id=None
+            if params.get("session_id") is None
+            else str(params["session_id"]),
+            command_service=command_service,
+        )
 
         # Dispatch to group handlers
         for handler in (
@@ -895,6 +1036,10 @@ class ControlHandler:
                 return result
 
         raise ValueError(f"unhandled command: {name!r}")
+
+    @classmethod
+    def _is_observer_safe_command(cls, name: str) -> bool:
+        return name.startswith("get_") and name in cls._READ_ONLY_HANDLERS
 
     # ------------------------------------------------------------------
     # Read-only commands (no command queue needed)
@@ -2106,7 +2251,9 @@ class ControlHandler:
                     )
                 from ...types import MemoryChannel
 
-                mem = MemoryChannel(**params)
+                mem_params = dict(params)
+                mem_params.pop("session_id", None)
+                mem = MemoryChannel(**mem_params)
                 q.put(SetMemoryContents(mem))
                 return {"channel": mem.channel}
             case "set_bsr":
@@ -2117,7 +2264,9 @@ class ControlHandler:
                     )
                 from ...types import BandStackRegister
 
-                bsr = BandStackRegister(**params)
+                bsr_params = dict(params)
+                bsr_params.pop("session_id", None)
+                bsr = BandStackRegister(**bsr_params)
                 q.put(SetBsr(bsr))
                 return {"band": bsr.band, "register": bsr.register}
             case _:

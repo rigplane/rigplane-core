@@ -259,10 +259,18 @@ def _control_handler(
     ws: object | None = None,
     radio: object | None = None,
     server: object | None = None,
+    session_id: str | None = None,
 ) -> ControlHandler:
     if ws is None:
         ws = SimpleNamespace(send_text=AsyncMock(), recv=AsyncMock())
-    return ControlHandler(ws, radio, "9.9.9", "IC-7610", server=server)
+    return ControlHandler(
+        ws,
+        radio,
+        "9.9.9",
+        "IC-7610",
+        server=server,
+        session_id=session_id,
+    )
 
 
 @pytest.mark.asyncio
@@ -973,6 +981,38 @@ async def test_handle_command_response_paths() -> None:
     await handler._handle_command({"id": "d", "name": "set_freq", "params": {}})
     msg = decode_json(ws.send_text.await_args_list[-1].args[0])
     assert msg["ok"] is False and msg["error"] == "command_failed"
+
+
+async def test_websocket_set_freq_enters_command_service_and_preserves_queue() -> None:
+    ws = SimpleNamespace(send_text=AsyncMock())
+    queue = _QueueRecorder()
+    handler = _control_handler(
+        ws=ws,
+        radio=SimpleNamespace(connected=True),
+        server=SimpleNamespace(command_queue=queue),
+    )
+
+    await handler._handle_command(
+        {
+            "id": "ws-set-freq",
+            "name": "set_freq",
+            "params": {"freq": 14_074_000, "receiver": 0},
+        }
+    )
+
+    msg = decode_json(ws.send_text.await_args_list[-1].args[0])
+    assert msg["ok"] is True
+    assert msg["result"] == {"freq": 14_074_000, "receiver": 0}
+    assert isinstance(queue.items[-1], SetFreq)
+    events = handler._command_service.lifecycle_events()  # noqa: SLF001
+    assert [event.state for event in events[:4]] == [
+        "accepted",
+        "queued",
+        "sent",
+        "acknowledged",
+    ]
+    assert events[0].command_id == "ws-set-freq"
+    assert events[0].source == "websocket"
 
 
 async def test_radio_connect_paths() -> None:

@@ -6,9 +6,14 @@ import asyncio
 import logging
 import time
 from dataclasses import dataclass
+from dataclasses import replace as _replace_dataclass
 from typing import TYPE_CHECKING, Any, cast
 from typing import Literal
 
+from rigplane.core.acquisition_scheduler import (
+    AcquisitionScheduler,
+    MeterObservationCoalescer,
+)
 from rigplane.core.civ import (
     CivEvent,
     CivEventType,
@@ -39,8 +44,17 @@ from rigplane.commands import (
     parse_scope_vbw_response,
 )
 from rigplane.core.exceptions import ConnectionError, TimeoutError
+from rigplane.core.state_pipeline_contracts import (
+    ChangeSet,
+    FieldChange,
+    FieldPath,
+    Observation,
+    ObservationSource,
+    SourceMetadata,
+)
+from rigplane.core.state_diagnostics import StateDiagnosticsRecorder
 from rigplane.scope import ScopeFrame
-from rigplane.core.types import CivFrame
+from rigplane.core.types import CivFrame, Mode
 
 if TYPE_CHECKING:
     from ._runtime_protocols import CivRuntimeHost
@@ -58,6 +72,49 @@ _FREQ_BCD_LEN = 5
 _SCOPE_BACKLOG_SHED_THRESHOLD = 256
 _SCOPE_BACKLOG_KEEP_LATEST = 64
 _RAW_RECEIVED_FRAME_BYTES_LIMIT = 256
+
+_OBSERVATION_MAX_AGE_SECONDS: dict[tuple[str, str, str], float] = {
+    ("receiver", "freq_mode", "freq_hz"): 5.0,
+    ("receiver", "freq_mode", "mode"): 5.0,
+    ("receiver", "vfo", "active_slot"): 5.0,
+    ("receiver", "meters", "s_meter"): 0.6,
+    ("receiver", "operator_toggles", "nb"): 10.0,
+    ("receiver", "operator_toggles", "nr"): 10.0,
+    ("receiver", "operator_controls", "af_level"): 10.0,
+    ("receiver", "operator_controls", "rf_gain"): 10.0,
+    ("receiver", "operator_controls", "pbt_inner"): 10.0,
+    ("receiver", "operator_controls", "pbt_outer"): 10.0,
+    ("global", "tx_state", "ptt"): 1.0,
+    ("global", "tx_state", "power_on"): 30.0,
+    ("global", "operator_controls", "power_level"): 30.0,
+    ("global", "meters", "alc"): 0.6,
+    ("global", "meters", "power"): 0.6,
+    ("global", "meters", "swr"): 0.6,
+}
+
+_CIV_STATE_FIELD_FAMILIES = {
+    0x00: "freq_mode",
+    0x01: "freq_mode",
+    0x03: "freq_mode",
+    0x04: "freq_mode",
+    0x07: "vfo",
+    0x0E: "slow_state",
+    0x0F: "operator_toggles",
+    0x10: "operator_controls",
+    0x11: "operator_controls",
+    0x12: "operator_controls",
+    0x14: "operator_controls",
+    0x15: "meters",
+    0x16: "operator_toggles",
+    0x1A: "operator_controls",
+    0x1B: "operator_controls",
+    0x1C: "tx_state",
+    0x1E: "slow_state",
+    0x21: "operator_controls",
+    0x25: "freq_mode",
+    0x26: "freq_mode",
+    0x27: "scope_controls",
+}
 
 __all__ = [
     "CivRuntime",
@@ -152,6 +209,134 @@ _CMD16_NOTIFY_EVENTS = {
     0x58: "ssb_tx_bandwidth_changed",
     0x65: "ipplus_changed",
 }
+
+_OBSERVABLE_CMD14_FIELDS = {
+    0x01: ("receiver", "operator_controls", "af_level"),
+    0x02: ("receiver", "operator_controls", "rf_gain"),
+    0x07: ("receiver", "operator_controls", "pbt_inner"),
+    0x08: ("receiver", "operator_controls", "pbt_outer"),
+    0x0A: ("global", "operator_controls", "power_level"),
+}
+
+_OBSERVABLE_CMD15_FIELDS = {
+    0x02: ("receiver", "meters", "s_meter"),
+    0x11: ("global", "meters", "power"),
+    0x12: ("global", "meters", "swr"),
+    0x13: ("global", "meters", "alc"),
+}
+
+_OBSERVABLE_CMD16_FIELDS = {
+    0x22: ("receiver", "operator_toggles", "nb"),
+    0x40: ("receiver", "operator_toggles", "nr"),
+}
+
+
+def _frame_native_id(frame: CivFrame) -> str:
+    if frame.sub is None:
+        return f"civ:{frame.command:02x}"
+    return f"civ:{frame.command:02x}:{frame.sub:02x}"
+
+
+_RECEIVER_ALIASES: dict[str, str] = {
+    "0": "main",
+    "main": "0",
+    "1": "sub",
+    "sub": "1",
+}
+
+
+def _field_paths_match(expected: FieldPath, observed: FieldPath) -> bool:
+    if expected == observed:
+        return True
+    if (
+        expected.scope != observed.scope
+        or expected.family != observed.family
+        or expected.name != observed.name
+        or expected.slot != observed.slot
+    ):
+        return False
+    if expected.receiver_id is None or observed.receiver_id is None:
+        return bool(expected.receiver_id == observed.receiver_id)
+    return bool(_RECEIVER_ALIASES.get(expected.receiver_id) == observed.receiver_id)
+
+
+def _profile_path_for_observation(profile: Any, path: FieldPath) -> FieldPath:
+    if path.receiver_id is None:
+        return path
+    candidates = [path]
+    alias = _RECEIVER_ALIASES.get(path.receiver_id)
+    if alias is not None:
+        candidates.append(_replace_dataclass(path, receiver_id=alias))
+    for candidate in candidates:
+        capability = profile.capability_for(candidate)
+        if capability.availability.value != "unknown":
+            return candidate
+    return path
+
+
+def _changeset_for_request_paths(
+    changeset: ChangeSet,
+    *,
+    observed_path: FieldPath,
+    request_paths: tuple[FieldPath, ...],
+) -> ChangeSet:
+    if (
+        not changeset.changes
+        and not changeset.observed_paths
+        and not changeset.freshness_paths
+    ):
+        return changeset
+    remapped_observed_paths = tuple(
+        _request_path_for_observed_path(
+            path,
+            observed_path=observed_path,
+            request_paths=request_paths,
+        )
+        or path
+        for path in changeset.observed_paths
+    )
+    remapped_freshness_paths = tuple(
+        _request_path_for_observed_path(
+            path,
+            observed_path=observed_path,
+            request_paths=request_paths,
+        )
+        or path
+        for path in changeset.freshness_paths
+    )
+    remapped: list[FieldChange] = []
+    for change in changeset.changes:
+        replacement = _request_path_for_observed_path(
+            change.path,
+            observed_path=observed_path,
+            request_paths=request_paths,
+        )
+        remapped.append(
+            change
+            if replacement is None
+            else _replace_dataclass(change, path=replacement)
+        )
+    return _replace_dataclass(
+        changeset,
+        changes=tuple(remapped),
+        observed_paths=remapped_observed_paths,
+        freshness_paths=remapped_freshness_paths,
+    )
+
+
+def _request_path_for_observed_path(
+    path: FieldPath,
+    *,
+    observed_path: FieldPath,
+    request_paths: tuple[FieldPath, ...],
+) -> FieldPath | None:
+    if not _field_paths_match(path, observed_path):
+        return None
+    for request_path in request_paths:
+        if _field_paths_match(request_path, path):
+            return request_path
+    return None
+
 
 _CMD1A_CTL_MEM_LEVEL_FIELDS = {
     b"\x00\x70": ("ref_adjust", 2),
@@ -799,6 +984,8 @@ class CivRuntime:
 
     def _update_state_cache_from_frame(self, frame: CivFrame) -> None:
         """Best-effort update of state cache from an incoming CI-V frame."""
+        self._apply_state_store_observations(frame)
+
         host = self._host
         _rs = getattr(host, "_radio_state", None)
         _rx = None
@@ -965,12 +1152,11 @@ class CivRuntime:
         self._update_radio_state_from_frame(frame)
 
     def _update_radio_state_from_frame(self, frame: CivFrame) -> None:
-        """Update RadioState from a CI-V frame (additive alongside StateCache).
+        """Mirror confirmed observations into legacy RadioState compatibility.
 
-        Top-level dispatch via ``_RADIO_STATE_HANDLERS`` (cmd-keyed). Each
-        handler is a small private method that performs the same mutations
-        as the original if/elif ladder. Behavior is fenced by the golden
-        tests in ``tests/test_civ_rx_dispatch_golden.py``.
+        ``StateStore.apply(...)`` is the canonical semantic write path. These
+        handlers remain only as compatibility shims for MOR-341/MOR-347 until
+        Web and other consumers stop reading mutable ``RadioState`` directly.
         """
         rs: "RadioState | None" = getattr(self._host, "_radio_state", None)
         if rs is None:
@@ -996,6 +1182,17 @@ class CivRuntime:
 
             handler = self._RADIO_STATE_HANDLERS.get(frame.command)
             if handler is not None:
+                self._record_state_diagnostic(
+                    "direct_state_write",
+                    "civ_rx",
+                    command=f"0x{frame.command:02x}",
+                    sub=None if frame.sub is None else f"0x{frame.sub:02x}",
+                    receiver=rx_name,
+                    field_family=_CIV_STATE_FIELD_FAMILIES.get(
+                        frame.command, "unknown"
+                    ),
+                    slot_override=slot_override,
+                )
                 handler(self, frame, rx, rs, slot_override)
 
         except (ValueError, IndexError, KeyError, AttributeError, TypeError) as exc:
@@ -1007,6 +1204,336 @@ class CivRuntime:
             )
         except Exception:
             logger.warning("civ-rx: unexpected error in state update", exc_info=True)
+
+    def _apply_state_store_observations(self, frame: CivFrame) -> None:
+        """Project supported CI-V ingress fields into the runtime StateStore."""
+
+        try:
+            observations = self._observations_from_frame(frame)
+        except (ValueError, IndexError, KeyError, AttributeError, TypeError) as exc:
+            logger.debug(
+                "civ-rx: observation decode failed for cmd=0x%02x sub=0x%02x: %s",
+                frame.command,
+                frame.sub or 0,
+                exc,
+            )
+            return
+        except Exception:
+            logger.warning(
+                "civ-rx: unexpected observation decode error for cmd=0x%02x sub=0x%02x",
+                frame.command,
+                frame.sub or 0,
+                exc_info=True,
+            )
+            return
+
+        for observation in observations:
+            try:
+                self.flush_due_meter_observations(now=observation.timestamp_monotonic)
+                if self._record_coalesced_meter_observation(observation):
+                    continue
+                changeset = self._host._state_store.apply(observation)
+                self._record_scheduler_result_for_observation(
+                    observation,
+                    changeset,
+                )
+                self._notify_state_store_changed(changeset)
+            except Exception:
+                logger.warning(
+                    "civ-rx: state-store apply failed for %s",
+                    observation.path,
+                    exc_info=True,
+                )
+
+    def _record_coalesced_meter_observation(self, observation: Observation) -> bool:
+        if observation.path.family.value != "meters":
+            return False
+        scheduler = getattr(self._host, "_acquisition_scheduler", None)
+        if not isinstance(scheduler, AcquisitionScheduler):
+            return False
+        profile = getattr(scheduler, "_profile", None)
+        if profile is None:
+            return False
+        policy = profile.policy_for(
+            _profile_path_for_observation(profile, observation.path)
+        )
+        if policy.meter_coalescing is None:
+            return False
+        coalescer = getattr(self._host, "_meter_observation_coalescer", None)
+        if not isinstance(coalescer, MeterObservationCoalescer):
+            return False
+        coalescer.record(observation, policy.meter_coalescing)
+        self._record_state_diagnostic(
+            "meter_coalescing",
+            "civ_rx.coalescer",
+            **coalescer.diagnostics(),
+        )
+        self.flush_due_meter_observations(now=observation.timestamp_monotonic)
+        return True
+
+    def flush_due_meter_observations(
+        self, *, now: float | None = None
+    ) -> ChangeSet | None:
+        coalescer = getattr(self._host, "_meter_observation_coalescer", None)
+        if not isinstance(coalescer, MeterObservationCoalescer):
+            return None
+        timestamp = time.monotonic() if now is None else now
+        changeset = coalescer.flush_due(self._host._state_store, now=timestamp)
+        if changeset is None:
+            return None
+        self._record_scheduler_results_for_changeset(changeset)
+        self._record_state_diagnostic(
+            "meter_coalescing",
+            "civ_rx.coalescer",
+            **coalescer.diagnostics(),
+        )
+        self._notify_state_store_changed(changeset)
+        return changeset
+
+    def _record_scheduler_result_for_observation(
+        self,
+        observation: Observation,
+        changeset: ChangeSet,
+    ) -> None:
+        scheduler = getattr(self._host, "_acquisition_scheduler", None)
+        if not isinstance(scheduler, AcquisitionScheduler):
+            return
+        for request in scheduler.pending_requests():
+            matched_paths = tuple(
+                path
+                for path in request.paths
+                if _field_paths_match(path, observation.path)
+            )
+            if not matched_paths:
+                continue
+            scheduler.record_acquisition_result(
+                _replace_dataclass(request, paths=matched_paths),
+                _changeset_for_request_paths(
+                    changeset,
+                    observed_path=observation.path,
+                    request_paths=matched_paths,
+                ),
+            )
+            self._record_state_diagnostic(
+                "acquisition_result",
+                "civ_rx.scheduler",
+                request_id=request.id,
+                paths=[str(path) for path in matched_paths],
+                changed=bool(changeset.changes),
+            )
+
+    def _record_scheduler_results_for_changeset(self, changeset: ChangeSet) -> None:
+        scheduler = getattr(self._host, "_acquisition_scheduler", None)
+        if not isinstance(scheduler, AcquisitionScheduler):
+            return
+        change_by_path = {change.path: change for change in changeset.changes}
+        paths = changeset.observed_paths or tuple(change_by_path)
+        for path in paths:
+            change = change_by_path.get(path)
+            observation = Observation(
+                path=path,
+                value=None if change is None else change.current,
+                source=changeset.sources[0]
+                if changeset.sources
+                else SourceMetadata(
+                    source="command_response",
+                    provider="icom_civ",
+                    transport="civ",
+                    native_id="coalesced",
+                ),
+                timestamp_monotonic=changeset.timestamp_monotonic,
+            )
+            self._record_scheduler_result_for_observation(observation, changeset)
+
+    def _notify_state_store_changed(self, changeset: ChangeSet) -> None:
+        paths = {change.path for change in changeset.changes}
+        paths.update(changeset.freshness_paths)
+        if not paths:
+            return
+        self._notify_change(
+            "state_store_changed",
+            {
+                "coalesced": changeset.coalesced,
+                "paths": sorted(str(path) for path in paths),
+            },
+        )
+
+    def _observations_from_frame(self, frame: CivFrame) -> tuple[Observation, ...]:
+        """Decode one CI-V frame into supported observation contracts."""
+
+        receiver_id, _, slot_override = self._receiver_context(frame)
+        observations: list[Observation] = []
+
+        if frame.command in (0x00, 0x03):
+            if len(frame.data) == _FREQ_BCD_LEN:
+                observations.append(
+                    self._observation(
+                        self._freq_mode_path(
+                            receiver_id=receiver_id,
+                            slot_override=slot_override,
+                            name="freq_hz",
+                        ),
+                        parse_frequency_response(frame),
+                        frame=frame,
+                    )
+                )
+        elif frame.command in (0x01, 0x04):
+            mode_val, _ = parse_mode_response(frame)
+            observations.append(
+                self._observation(
+                    self._freq_mode_path(
+                        receiver_id=receiver_id,
+                        slot_override=slot_override,
+                        name="mode",
+                    ),
+                    mode_val.name,
+                    frame=frame,
+                )
+            )
+        elif frame.command == 0x25 and len(frame.data) >= 6:
+            from rigplane.types import bcd_decode
+
+            target_receiver = "1" if frame.data[0] else "0"
+            observations.append(
+                self._observation(
+                    FieldPath.active(target_receiver, "freq_mode", "freq_hz"),
+                    bcd_decode(frame.data[1:6]),
+                    frame=frame,
+                )
+            )
+        elif frame.command == 0x26 and len(frame.data) >= 2:
+            target_receiver = "1" if frame.data[0] else "0"
+            observations.append(
+                self._observation(
+                    FieldPath.active(target_receiver, "freq_mode", "mode"),
+                    Mode(frame.data[1]).name,
+                    frame=frame,
+                )
+            )
+        elif frame.command == 0x14 and len(frame.data) >= 2:
+            mapping = _OBSERVABLE_CMD14_FIELDS.get(frame.sub or 0)
+            if mapping is not None:
+                observations.append(
+                    self._observation(
+                        self._field_path(mapping, receiver_id=receiver_id),
+                        self._decode_level(frame.data),
+                        frame=frame,
+                    )
+                )
+        elif frame.command == 0x15 and len(frame.data) >= 2:
+            mapping = _OBSERVABLE_CMD15_FIELDS.get(frame.sub or 0)
+            if mapping is not None:
+                observations.append(
+                    self._observation(
+                        self._field_path(mapping, receiver_id=receiver_id),
+                        self._decode_level(frame.data),
+                        frame=frame,
+                    )
+                )
+        elif frame.command == 0x16:
+            sub = frame.sub or 0
+            data = frame.data
+            if sub == 0 and len(data) >= 2:
+                sub = data[0]
+                data = data[1:]
+            mapping = _OBSERVABLE_CMD16_FIELDS.get(sub)
+            if mapping is not None and data:
+                observations.append(
+                    self._observation(
+                        self._field_path(mapping, receiver_id=receiver_id),
+                        bool(data[0]),
+                        frame=frame,
+                    )
+                )
+        elif frame.command == 0x18 and len(frame.data) == 1:
+            observations.append(
+                self._observation(
+                    FieldPath.global_("tx_state", "power_on"),
+                    bool(frame.data[0]),
+                    frame=frame,
+                )
+            )
+        elif frame.command == 0x1C and frame.sub == 0x00 and frame.data:
+            observations.append(
+                self._observation(
+                    FieldPath.global_("tx_state", "ptt"),
+                    bool(frame.data[0]),
+                    frame=frame,
+                )
+            )
+
+        return tuple(observations)
+
+    def _receiver_context(self, frame: CivFrame) -> tuple[str, str, str | None]:
+        """Return receiver id/name plus any temporary VFO-slot override."""
+
+        rs = getattr(self._host, "_radio_state", None)
+        if frame.receiver is not None:
+            receiver_name = "SUB" if frame.receiver else "MAIN"
+            receiver_id = "1" if frame.receiver else "0"
+        else:
+            receiver_name = "SUB" if getattr(rs, "active", "MAIN") == "SUB" else "MAIN"
+            receiver_id = "1" if receiver_name == "SUB" else "0"
+
+        slot_override: str | None = None
+        override_map = getattr(self._host, "_vfo_slot_override", None)
+        if isinstance(override_map, dict):
+            candidate = override_map.get(receiver_name)
+            if candidate in ("A", "B"):
+                slot_override = candidate
+
+        return receiver_id, receiver_name, slot_override
+
+    @staticmethod
+    def _decode_level(data: bytes) -> int:
+        b0, b1 = data[0], data[1]
+        return (b0 >> 4) * 1000 + (b0 & 0x0F) * 100 + (b1 >> 4) * 10 + (b1 & 0x0F)
+
+    @staticmethod
+    def _field_path(
+        mapping: tuple[str, str, str],
+        *,
+        receiver_id: str,
+    ) -> FieldPath:
+        scope, family, name = mapping
+        if scope == "global":
+            return FieldPath.global_(family, name)
+        return FieldPath.receiver(receiver_id, family, name)
+
+    @staticmethod
+    def _freq_mode_path(
+        *,
+        receiver_id: str,
+        slot_override: str | None,
+        name: str,
+    ) -> FieldPath:
+        if slot_override is not None:
+            return FieldPath.vfo_slot(receiver_id, slot_override, "freq_mode", name)
+        return FieldPath.active(receiver_id, "freq_mode", name)
+
+    def _observation(
+        self, path: FieldPath, value: Any, *, frame: CivFrame
+    ) -> Observation:
+        source: ObservationSource = (
+            "civ_unsolicited"
+            if frame.to_addr == 0x00 or frame.command in (0x00, 0x01)
+            else "command_response"
+        )
+        return Observation(
+            path=path,
+            value=value,
+            source=SourceMetadata(
+                source=source,
+                provider="icom_civ",
+                transport="civ",
+                native_id=_frame_native_id(frame),
+                capability_id=str(path),
+            ),
+            timestamp_monotonic=time.monotonic(),
+            max_age=_OBSERVATION_MAX_AGE_SECONDS.get(
+                (path.scope.value, path.family.value, path.name)
+            ),
+        )
 
     # ------------------------------------------------------------------
     # Per-command handlers for _update_radio_state_from_frame.
@@ -1525,6 +2052,12 @@ class CivRuntime:
 
     def _notify_change(self, event_name: str, data: dict[str, Any]) -> None:
         """Notify server of state change (best-effort)."""
+        self._record_state_diagnostic(
+            "revision_producing_event",
+            "civ_rx.notify",
+            event=event_name,
+            data=data,
+        )
         cb = getattr(self._host, "_on_state_change", None)
         if cb is not None:
             logger.debug("civ-rx: notify %s %s", event_name, data)
@@ -1534,6 +2067,11 @@ class CivRuntime:
                 logger.warning("civ-rx: notify failed", exc_info=True)
         else:
             logger.debug("civ-rx: no callback for %s", event_name)
+
+    def _record_state_diagnostic(self, kind: str, source: str, **details: Any) -> None:
+        recorder = getattr(self._host, "_state_diagnostics", None)
+        if isinstance(recorder, StateDiagnosticsRecorder):
+            recorder.record(kind, source, **details)
 
     def _publish_scope_frame(self, frame: ScopeFrame) -> None:
         """Publish a complete scope frame to callback and bounded queue."""

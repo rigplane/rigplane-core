@@ -531,6 +531,8 @@ export function toMeterProps(
 export interface RxAudioProps {
   monitorMode: 'local' | 'live' | 'mute';
   afLevel: number;
+  /** Radio AF-level control capability; independent from browser live audio. */
+  hasAfLevel: boolean;
   hasLiveAudio: boolean;
   /** Audio-WS connection health — used to render a "link lost" indicator. */
   isAudioConnected: boolean;
@@ -552,6 +554,7 @@ export function toRxAudioProps(
 ): RxAudioProps {
   const rx = state ? activeRx(state) : null;
   const hasLiveAudio = hasCap(caps, 'audio');
+  const hasAfLevel = hasCap(caps, 'af_level') || hasLiveAudio;
   const monitorMode = audioState.muted
     ? 'mute'
     : audioState.rxEnabled && hasLiveAudio
@@ -565,6 +568,7 @@ export function toRxAudioProps(
   return {
     monitorMode,
     afLevel,
+    hasAfLevel,
     hasLiveAudio,
     isAudioConnected: audioConnected,
     hasDualReceiver,

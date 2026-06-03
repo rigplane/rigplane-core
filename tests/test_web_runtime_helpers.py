@@ -1,17 +1,25 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Callable
 from typing import Any
 
 import pytest
 from unittest.mock import MagicMock
 
 from rigplane.web.runtime_helpers import (
+    build_public_state_payload_from_snapshot,
     classify_radio_health,
     radio_ready,
     runtime_capabilities,
 )
 from rigplane.web.server import WebServer
+from rigplane.core.state_pipeline_contracts import (
+    FieldPath,
+    Observation,
+    SourceMetadata,
+)
+from rigplane.core.state_store import FreshnessClock, StateStore
 
 
 class _FakeWriter:
@@ -36,6 +44,12 @@ class _FakeWriter:
 
 
 class _FakeRadio:
+    conn_state: str | None
+    _last_civ_data_received: float | None
+    _civ_ready_idle_timeout: float | None
+    _has_connected_once: bool
+    civ_stats: Callable[[], dict[str, int]] | None
+
     def __init__(
         self,
         *,
@@ -48,6 +62,36 @@ class _FakeRadio:
         self.radio_ready = radio_ready_flag
         self.control_connected = False
         self.model = "IC-TEST"
+        self.conn_state = None
+        self._last_civ_data_received = None
+        self._civ_ready_idle_timeout = None
+        self._has_connected_once = False
+        self.civ_stats = None
+
+
+def _source() -> SourceMetadata:
+    return SourceMetadata(
+        source="poll_response",
+        provider="test",
+        transport="fake",
+        native_id="test",
+    )
+
+
+def _observation(
+    path: FieldPath,
+    value: Any,
+    *,
+    at: float,
+    max_age: float | None = None,
+) -> Observation:
+    return Observation(
+        path=path,
+        value=value,
+        source=_source(),
+        timestamp_monotonic=at,
+        max_age=max_age,
+    )
 
 
 def test_runtime_capabilities_none_radio_returns_empty() -> None:
@@ -231,7 +275,7 @@ async def test_webserver_and_control_handler_use_same_capabilities_and_ready() -
 
     # HTTP: capture /api/v1/info JSON body
     writer = _FakeWriter()
-    await server._serve_info(writer)  # noqa: SLF001
+    await server._serve_info(writer)  # type: ignore[arg-type]  # noqa: SLF001
     text = writer.buffer.decode("ascii", errors="replace")
     body_start = text.index("\r\n\r\n") + 4
     info = json.loads(text[body_start:])
@@ -240,14 +284,14 @@ async def test_webserver_and_control_handler_use_same_capabilities_and_ready() -
     ws = MagicMock(spec=WebSocketConnection)
 
     async def _send_text(payload: str) -> None:
-        ws._last_payload = payload  # type: ignore[attr-defined]
+        setattr(ws, "_last_payload", payload)
 
-    ws.send_text = _send_text  # type: ignore[assignment]
+    ws.send_text = _send_text
 
     handler = ControlHandler(ws, radio, "0.0.0-test", radio.model, server=server)
-    await handler._send_hello()  # type: ignore[attr-defined]
+    await handler._send_hello()
 
-    hello = json.loads(ws._last_payload)  # type: ignore[attr-defined]
+    hello = json.loads(getattr(ws, "_last_payload"))
 
     # Capabilities: tags and hello list must match runtime_capabilities(radio)
     expected_caps = sorted(runtime_capabilities(radio))
@@ -258,3 +302,36 @@ async def test_webserver_and_control_handler_use_same_capabilities_and_ready() -
     expected_ready = radio_ready(radio)
     assert info["connection"]["radioReady"] is expected_ready
     assert hello["radio_ready"] is expected_ready
+
+
+def test_public_state_projection_uses_snapshot_revisions_and_meter_values() -> None:
+    clock = FreshnessClock(start=10.0)
+    store = StateStore(freshness_clock=clock)
+    store.apply(
+        _observation(
+            FieldPath.active("0", "freq_mode", "freq_hz"),
+            14_074_000,
+            at=clock.now(),
+            max_age=10.0,
+        )
+    )
+    store.apply(
+        _observation(
+            FieldPath.receiver("0", "meters", "s_meter"),
+            42,
+            at=clock.now(),
+            max_age=0.5,
+        )
+    )
+
+    payload = build_public_state_payload_from_snapshot(
+        store.snapshot(),
+        radio=None,
+        receiver_count=1,
+    )
+
+    assert payload["revision"] == 2
+    assert payload["stateRevision"] == 2
+    assert payload["freshnessRevision"] == 2
+    assert payload["main"]["freqHz"] == 14_074_000
+    assert payload["main"]["sMeter"] == 42

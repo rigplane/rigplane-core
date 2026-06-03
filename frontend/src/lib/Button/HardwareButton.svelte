@@ -12,7 +12,13 @@
     compact = false,
     indicator = 'dot',
     color = 'cyan',
+    title = null,
+    shortcutHint = null,
     onclick,
+    onpointerdown,
+    onpointerup,
+    onpointercancel,
+    onpointerleave,
     children
   }: Props = $props();
 </script>
@@ -24,7 +30,13 @@
   surface="hardware"
   indicatorStyle={indicator}
   indicatorColor={color}
+  {title}
+  {shortcutHint}
   {onclick}
+  {onpointerdown}
+  {onpointerup}
+  {onpointercancel}
+  {onpointerleave}
 >
   {@render children?.()}
 </ControlButton>

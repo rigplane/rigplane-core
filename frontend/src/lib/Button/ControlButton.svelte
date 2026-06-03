@@ -13,6 +13,10 @@
     title?: string | null;
     shortcutHint?: string | null;
     onclick?: (event: MouseEvent) => void;
+    onpointerdown?: (event: PointerEvent) => void;
+    onpointerup?: (event: PointerEvent) => void;
+    onpointercancel?: (event: PointerEvent) => void;
+    onpointerleave?: (event: PointerEvent) => void;
     children?: any;
   }
 
@@ -27,6 +31,10 @@
     title = null,
     shortcutHint = null,
     onclick,
+    onpointerdown,
+    onpointerup,
+    onpointercancel,
+    onpointerleave,
     children
   }: Props = $props();
 
@@ -40,6 +48,26 @@
   function handleClick(event: MouseEvent) {
     if (disabled) return;
     onclick?.(event);
+  }
+
+  function handlePointerDown(event: PointerEvent) {
+    if (disabled) return;
+    onpointerdown?.(event);
+  }
+
+  function handlePointerUp(event: PointerEvent) {
+    if (disabled) return;
+    onpointerup?.(event);
+  }
+
+  function handlePointerCancel(event: PointerEvent) {
+    if (disabled) return;
+    onpointercancel?.(event);
+  }
+
+  function handlePointerLeave(event: PointerEvent) {
+    if (disabled) return;
+    onpointerleave?.(event);
   }
 
   // Compute glow attribute (only 'white' or 'warm', 'color' = omit)
@@ -59,6 +87,10 @@
   data-shortcut-hint={shortcutHint ?? undefined}
   {disabled}
   onclick={handleClick}
+  onpointerdown={handlePointerDown}
+  onpointerup={handlePointerUp}
+  onpointercancel={handlePointerCancel}
+  onpointerleave={handlePointerLeave}
 >
   {@render children?.()}
 </button>

@@ -86,6 +86,22 @@ class TestLoadRig:
         rig = load_rig(p)
         assert rig.model == "IC-7300"
 
+    def test_state_acquisition_provider_must_be_string(self, tmp_path):
+        p = _write_toml(
+            tmp_path,
+            _MINIMAL_TOML
+            + """
+
+[state_acquisition]
+provider = 123
+""",
+        )
+        with pytest.raises(
+            RigLoadError,
+            match=r"\[state_acquisition\].*provider must be a string",
+        ):
+            load_rig(p)
+
     def test_missing_radio_section(self, tmp_path):
         p = _write_toml(
             tmp_path,

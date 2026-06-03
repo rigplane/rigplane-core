@@ -10,6 +10,7 @@ import RxAudioPanel from '../RxAudioPanel.svelte';
 const mockProps = {
   monitorMode: 'local' as 'local' | 'live' | 'mute',
   afLevel: 128,
+  hasAfLevel: true,
   hasLiveAudio: false,
   isAudioConnected: true,
   hasDualReceiver: false,
@@ -125,6 +126,7 @@ beforeEach(() => {
   components = [];
   mockProps.monitorMode = 'local';
   mockProps.afLevel = 128;
+  mockProps.hasAfLevel = true;
   mockProps.hasLiveAudio = false;
   mockProps.isAudioConnected = true;
   mockProps.hasDualReceiver = false;
@@ -138,20 +140,25 @@ afterEach(() => {
 });
 
 describe('panel visibility', () => {
-  it('renders the panel when hasLiveAudio is true', () => {
-    const t = mountPanel({ hasLiveAudio: true });
+  it('renders the panel when only radio AF level is available', () => {
+    const t = mountPanel({ hasAfLevel: true, hasLiveAudio: false });
     expect(t.querySelector('.panel-body')).not.toBeNull();
   });
 
-  it('does not render the panel when hasLiveAudio is false', () => {
-    const t = mountPanel({ hasLiveAudio: false });
+  it('renders the panel when hasLiveAudio is true', () => {
+    const t = mountPanel({ hasAfLevel: true, hasLiveAudio: true });
+    expect(t.querySelector('.panel-body')).not.toBeNull();
+  });
+
+  it('does not render the panel when neither AF level nor live audio is available', () => {
+    const t = mountPanel({ hasAfLevel: false, hasLiveAudio: false });
     expect(t.querySelector('.panel-body')).toBeNull();
   });
 });
 
 describe('panel structure', () => {
   it('renders the AF Level slider', () => {
-    const t = mountPanel({ hasLiveAudio: true });
+    const t = mountPanel({ hasAfLevel: true, hasLiveAudio: false });
     const labels = Array.from(t.querySelectorAll('.vc-label'));
     expect(labels.some((el) => el.textContent === 'AF Level')).toBe(true);
   });
