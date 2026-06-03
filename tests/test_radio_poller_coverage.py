@@ -81,6 +81,9 @@ class _QueuedAckExecutor:
             ),
             command_id=intent.id,
             source=intent.source,
+            session_id=None
+            if intent.params.get("session_id") is None
+            else str(intent.params["session_id"]),
             command_service=self.command_service,
         )
         return CommandExecutionResult(details={"queued": True})
@@ -265,7 +268,12 @@ async def test_command_queue_ordered_lane_preserves_repeated_commands() -> None:
 
 def test_command_queue_entries_preserve_command_correlation_metadata() -> None:
     q = CommandQueue()
-    q.put(SetFreq(14_030_000), command_id="ws-freq", source="websocket")
+    q.put(
+        SetFreq(14_030_000),
+        command_id="ws-freq",
+        source="websocket",
+        session_id="ws-a",
+    )
     q.put_ordered(SetMode("USB"), command_id="http-mode", source="http")
 
     entries = q.drain_entries()
@@ -273,9 +281,11 @@ def test_command_queue_entries_preserve_command_correlation_metadata() -> None:
     assert entries[0].command == SetFreq(14_030_000)
     assert entries[0].command_id == "ws-freq"
     assert entries[0].source == "websocket"
+    assert entries[0].session_id == "ws-a"
     assert entries[1].command == SetMode("USB")
     assert entries[1].command_id == "http-mode"
     assert entries[1].source == "http"
+    assert entries[1].session_id is None
 
 
 @pytest.mark.asyncio
@@ -1140,6 +1150,52 @@ async def test_set_freq_readback_uses_original_command_correlation() -> None:
     field = store.snapshot().field("receiver.0.freq_mode.freq_hz")
     assert field.value == 14_074_000
     assert service.pending_overlays(source="websocket", session_id=None) == ()
+
+
+@pytest.mark.asyncio
+async def test_set_freq_readback_reconciles_only_matching_websocket_session_for_reused_command_id() -> (
+    None
+):
+    radio = _make_radio()
+    store = StateStore()
+    queue = CommandQueue()
+    executor = _QueuedAckExecutor(queue)
+    service = CommandService(executor=executor, state_store=store)
+    executor.command_service = service
+    poller = RadioPoller(
+        radio,
+        StateCache(),
+        queue,
+        radio_state=RadioState(),
+        state_store=store,
+    )
+
+    for session_id in ("ws-a", "ws-b"):
+        await service.execute(
+            command_intent_from_request(
+                "set_freq",
+                {"freq": 14_074_000, "receiver": 0},
+                source="websocket",
+                command_id="shared-id",
+                session_id=session_id,
+            )
+        )
+
+    assert len(service.pending_overlays(source="websocket", session_id="ws-a")) == 1
+    assert len(service.pending_overlays(source="websocket", session_id="ws-b")) == 1
+
+    entry = queue.drain_entries()[0]
+    await poller._execute(  # noqa: SLF001
+        entry.command,
+        command_id=entry.command_id,
+        source=entry.source or "websocket",
+        session_id=entry.session_id,
+        command_service=entry.command_service,
+    )
+
+    assert service.pending_overlays(source="websocket", session_id="ws-a") == ()
+    assert len(service.pending_overlays(source="websocket", session_id="ws-b")) == 1
+    assert service.pending_overlays(source="websocket", session_id="ws-b")[0].value == 14_074_000
 
 
 @pytest.mark.asyncio

@@ -406,6 +406,7 @@ class RadioPoller:
         *,
         command_id: str | None = None,
         source: CommandSource = "websocket",
+        session_id: str | None = None,
         command_service: CommandService | None = None,
     ) -> None:
         intent = command_intent_from_request(
@@ -413,6 +414,7 @@ class RadioPoller:
             params,
             source=source,
             command_id=command_id or f"web-poller-{name}-{time.monotonic_ns()}",
+            session_id=session_id,
         )
         if intent.target is None:
             return
@@ -771,6 +773,7 @@ class RadioPoller:
                                 cmd,
                                 command_id=entry.command_id,
                                 source=entry.source or "websocket",
+                                session_id=entry.session_id,
                                 command_service=entry.command_service,
                             )
                             if entry.future is not None and not entry.future.done():
@@ -894,6 +897,7 @@ class RadioPoller:
         *,
         command_id: str | None = None,
         source: CommandSource = "websocket",
+        session_id: str | None = None,
         command_service: CommandService | None = None,
     ) -> None:
         radio = self._radio
@@ -949,6 +953,7 @@ class RadioPoller:
                     {"freq": freq, "receiver": rx},
                     command_id=command_id,
                     source=source,
+                    session_id=session_id,
                     command_service=command_service,
                 )
                 # Compatibility mirror until web state delivery reads StateStore.
@@ -997,6 +1002,7 @@ class RadioPoller:
                     {"mode": mode, "filter_width": fw, "receiver": rx},
                     command_id=command_id,
                     source=source,
+                    session_id=session_id,
                     command_service=command_service,
                 )
                 # Compatibility mirror until web state delivery reads StateStore.
@@ -1019,6 +1025,7 @@ class RadioPoller:
                         {"filter_num": fn, "receiver": rx},
                         command_id=command_id,
                         source=source,
+                        session_id=session_id,
                         command_service=command_service,
                     )
             case SetFilterWidth(width=width, receiver=rx):
@@ -1035,6 +1042,7 @@ class RadioPoller:
                     {"width": width, "receiver": rx},
                     command_id=command_id,
                     source=source,
+                    session_id=session_id,
                     command_service=command_service,
                 )
                 self._apply_compatibility_mirror(
@@ -1092,6 +1100,7 @@ class RadioPoller:
                     {},
                     command_id=command_id,
                     source=source,
+                    session_id=session_id,
                     command_service=command_service,
                 )
             case PttOff():
@@ -1102,6 +1111,7 @@ class RadioPoller:
                     {},
                     command_id=command_id,
                     source=source,
+                    session_id=session_id,
                     command_service=command_service,
                 )
                 # Stop TX audio stream after PTT, then restart RX
@@ -1135,6 +1145,7 @@ class RadioPoller:
                         {"level": level},
                         command_id=command_id,
                         source=source,
+                        session_id=session_id,
                         command_service=command_service,
                     )
             case SetRfGain(level=level, receiver=rx):
@@ -1146,6 +1157,7 @@ class RadioPoller:
                         {"level": level, "receiver": rx},
                         command_id=command_id,
                         source=source,
+                        session_id=session_id,
                         command_service=command_service,
                     )
             case SetAfLevel(level=level, receiver=rx):
@@ -1157,6 +1169,7 @@ class RadioPoller:
                         {"level": level, "receiver": rx},
                         command_id=command_id,
                         source=source,
+                        session_id=session_id,
                         command_service=command_service,
                     )
             case SetSquelch(level=level, receiver=rx):
@@ -1168,6 +1181,7 @@ class RadioPoller:
                         {"level": level, "receiver": rx},
                         command_id=command_id,
                         source=source,
+                        session_id=session_id,
                         command_service=command_service,
                     )
             case SetNB(on=on, receiver=rx):
@@ -1179,6 +1193,7 @@ class RadioPoller:
                         {"on": on, "receiver": rx},
                         command_id=command_id,
                         source=source,
+                        session_id=session_id,
                         command_service=command_service,
                     )
                 self._apply_compatibility_mirror(
@@ -1199,6 +1214,7 @@ class RadioPoller:
                         {"on": on, "receiver": rx},
                         command_id=command_id,
                         source=source,
+                        session_id=session_id,
                         command_service=command_service,
                     )
                 self._apply_compatibility_mirror(
@@ -1231,6 +1247,7 @@ class RadioPoller:
                     {"db": db, "receiver": rx},
                     command_id=command_id,
                     source=source,
+                    session_id=session_id,
                     command_service=command_service,
                 )
                 self._apply_compatibility_mirror(
@@ -1253,6 +1270,7 @@ class RadioPoller:
                     {"level": level, "receiver": rx},
                     command_id=command_id,
                     source=source,
+                    session_id=session_id,
                     command_service=command_service,
                 )
                 self._apply_compatibility_mirror(
@@ -1273,6 +1291,7 @@ class RadioPoller:
                     {"level": level, "receiver": rx},
                     command_id=command_id,
                     source=source,
+                    session_id=session_id,
                     command_service=command_service,
                 )
                 self._apply_compatibility_mirror(
@@ -1293,6 +1312,7 @@ class RadioPoller:
                     {"level": level, "receiver": rx},
                     command_id=command_id,
                     source=source,
+                    session_id=session_id,
                     command_service=command_service,
                 )
                 self._apply_compatibility_mirror(
@@ -1510,6 +1530,7 @@ class RadioPoller:
                     {"on": on},
                     command_id=command_id,
                     source=source,
+                    session_id=session_id,
                     command_service=command_service,
                 )
                 if self._radio_state:
@@ -1688,6 +1709,7 @@ class RadioPoller:
                     {"vfo": vfo},
                     command_id=command_id,
                     source=source,
+                    session_id=session_id,
                     command_service=command_service,
                 )
                 if self._radio_state is not None:
@@ -1818,6 +1840,7 @@ class RadioPoller:
                         {"on": on},
                         command_id=command_id,
                         source=source,
+                        session_id=session_id,
                         command_service=command_service,
                     )
                     # Optimistic update: radio won't respond to polls when off

@@ -201,6 +201,7 @@ class _CommandMetadataQueue:
     queue: Any
     command_id: str
     source: CommandSource
+    session_id: str | None
     command_service: CommandService
 
     def put(self, command: Any) -> None:
@@ -209,6 +210,7 @@ class _CommandMetadataQueue:
                 command,
                 command_id=self.command_id,
                 source=self.source,
+                session_id=self.session_id,
                 command_service=self.command_service,
             )
         except TypeError:
@@ -226,6 +228,7 @@ class _CommandMetadataQueue:
                 future=future,
                 command_id=self.command_id,
                 source=self.source,
+                session_id=self.session_id,
                 command_service=self.command_service,
             )
         except TypeError:
@@ -989,6 +992,9 @@ class ControlHandler:
             q,
             command_id=command_id,
             source=source,
+            session_id=None
+            if params.get("session_id") is None
+            else str(params["session_id"]),
             command_service=command_service,
         )
 

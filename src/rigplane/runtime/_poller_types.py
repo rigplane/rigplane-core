@@ -963,6 +963,7 @@ class CommandQueueEntry:
     future: asyncio.Future[None] | None = None
     command_id: str | None = None
     source: CommandSource | None = None
+    session_id: str | None = None
     command_service: Any | None = None
 
 
@@ -1012,12 +1013,14 @@ class CommandQueue:
         *,
         command_id: str | None = None,
         source: CommandSource | None = None,
+        session_id: str | None = None,
         command_service: Any | None = None,
     ) -> None:
         entry = CommandQueueEntry(
             cmd,
             command_id=command_id,
             source=source,
+            session_id=session_id,
             command_service=command_service,
         )
         segment = self._coalesced_tail()
@@ -1034,6 +1037,7 @@ class CommandQueue:
         future: asyncio.Future[None] | None = None,
         command_id: str | None = None,
         source: CommandSource | None = None,
+        session_id: str | None = None,
         command_service: Any | None = None,
     ) -> None:
         self._segments.append(
@@ -1043,6 +1047,7 @@ class CommandQueue:
                     future=future,
                     command_id=command_id,
                     source=source,
+                    session_id=session_id,
                     command_service=command_service,
                 )
             )

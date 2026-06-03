@@ -164,6 +164,7 @@ class _HttpCommandCollector:
         *,
         command_id: str | None = None,
         source: CommandSource | None = None,
+        session_id: str | None = None,
         command_service: CommandService | None = None,
     ) -> None:
         self.commands.append(command)
@@ -172,6 +173,7 @@ class _HttpCommandCollector:
                 command,
                 command_id=command_id,
                 source=source,
+                session_id=session_id,
                 command_service=command_service,
             )
         )
@@ -183,6 +185,7 @@ class _HttpCommandCollector:
         future: asyncio.Future[None] | None = None,
         command_id: str | None = None,
         source: CommandSource | None = None,
+        session_id: str | None = None,
         command_service: CommandService | None = None,
     ) -> None:
         del future
@@ -190,6 +193,7 @@ class _HttpCommandCollector:
             command,
             command_id=command_id,
             source=source,
+            session_id=session_id,
             command_service=command_service,
         )
 
