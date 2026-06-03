@@ -146,7 +146,7 @@ class TestWebCwReadOnly:
 
 
 class TestWebTunerReadOnly:
-    """read_only=True must reject set_tuner_status TUNING (value=2) only."""
+    """read_only=True must reject set_tuner_status writes."""
 
     def _make_tuner_radio(self) -> MagicMock:
         radio = MagicMock()
