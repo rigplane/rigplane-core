@@ -123,13 +123,15 @@ export function startPolling(
         const healthRevision = state?.healthRevision ?? 0;
         const stateRevision = state ? getStateRevision(state) : -1;
         const freshnessRevision = state ? getFreshnessRevision(state) : -1;
+        const semanticAdvanced = stateRevision > lastStateRevision;
+        const semanticCurrent = stateRevision === lastStateRevision;
+        const metadataAdvanced = semanticCurrent && (
+          freshnessRevision > lastFreshnessRevision
+          || healthRevision > lastHealthRevision
+        );
         if (
           state
-          && (
-            stateRevision > lastStateRevision
-            || freshnessRevision > lastFreshnessRevision
-            || healthRevision > lastHealthRevision
-          )
+          && (semanticAdvanced || metadataAdvanced)
         ) {
           lastStateRevision = stateRevision;
           lastFreshnessRevision = freshnessRevision;

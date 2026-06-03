@@ -211,6 +211,41 @@ describe('radio store', () => {
     expect(store.getRadioState()?.main.sMeter).toBe(77);
   });
 
+  it('ignores stale semantic state even when freshnessRevision advances', () => {
+    store.setRadioState(makeState({ revision: 6, stateRevision: 6, freshnessRevision: 1, ptt: true }));
+    store.setRadioState(makeState({
+      revision: 5,
+      stateRevision: 5,
+      freshnessRevision: 2,
+      ptt: false,
+      main: {
+        ...makeState().main,
+        freqHz: 7100000,
+      },
+    }));
+
+    expect(store.getRadioState()?.stateRevision).toBe(6);
+    expect(store.getRadioState()?.freshnessRevision).toBe(1);
+    expect(store.getRadioState()?.ptt).toBe(true);
+    expect(store.getRadioState()?.main.freqHz).toBe(14074000);
+  });
+
+  it('ignores stale semantic state even when healthRevision advances', () => {
+    store.setRadioState(makeState({ revision: 6, stateRevision: 6, healthRevision: 1, ptt: true }));
+    store.setRadioState(makeState({
+      revision: 5,
+      stateRevision: 5,
+      healthRevision: 2,
+      ptt: false,
+      connection: { rigConnected: true, radioReady: false, controlConnected: true },
+    }));
+
+    expect(store.getRadioState()?.stateRevision).toBe(6);
+    expect(store.getRadioState()?.healthRevision).toBe(1);
+    expect(store.getRadioState()?.ptt).toBe(true);
+    expect(store.getRadioState()?.connection.radioReady).toBe(true);
+  });
+
   it('getFrequency returns active receiver frequency (MAIN)', () => {
     store.setRadioState(makeState({ active: 'MAIN' }));
     expect(store.getFrequency()).toBe(14074000);

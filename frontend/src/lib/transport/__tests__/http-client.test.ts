@@ -260,6 +260,74 @@ describe('startPolling', () => {
     stop();
   });
 
+  it('skips stale semantic state even when freshnessRevision advances', async () => {
+    const first = makeState(42);
+    first.freshnessRevision = 1;
+    first.ptt = true;
+    const second = makeState(41);
+    second.freshnessRevision = 2;
+    second.ptt = false;
+    second.main.freqHz = 7100000;
+    let index = 0;
+    globalThis.fetch = vi.fn().mockImplementation(() => {
+      const state = index++ === 0 ? first : second;
+      return Promise.resolve({
+        ok: true,
+        status: 200,
+        headers: { get: () => `"${state.stateRevision}-${state.freshnessRevision}"` },
+        json: () => Promise.resolve(state),
+      });
+    });
+
+    const { startPolling } = await import('../http-client');
+    const received: ServerState[] = [];
+    const stop = startPolling((s) => received.push(s), 200);
+
+    await flushMicrotasks();
+    vi.advanceTimersByTime(200);
+    await flushMicrotasks();
+
+    expect(received).toHaveLength(1);
+    expect(received[0].stateRevision).toBe(42);
+    expect(received[0].ptt).toBe(true);
+    expect(received[0].main.freqHz).toBe(14074000);
+    stop();
+  });
+
+  it('skips stale semantic state even when healthRevision advances', async () => {
+    const first = makeState(42);
+    first.healthRevision = 1;
+    first.ptt = true;
+    const second = makeState(41);
+    second.healthRevision = 2;
+    second.ptt = false;
+    second.connection = { rigConnected: true, radioReady: false, controlConnected: true };
+    let index = 0;
+    globalThis.fetch = vi.fn().mockImplementation(() => {
+      const state = index++ === 0 ? first : second;
+      return Promise.resolve({
+        ok: true,
+        status: 200,
+        headers: { get: () => `"${state.stateRevision}-h${state.healthRevision}"` },
+        json: () => Promise.resolve(state),
+      });
+    });
+
+    const { startPolling } = await import('../http-client');
+    const received: ServerState[] = [];
+    const stop = startPolling((s) => received.push(s), 200);
+
+    await flushMicrotasks();
+    vi.advanceTimersByTime(200);
+    await flushMicrotasks();
+
+    expect(received).toHaveLength(1);
+    expect(received[0].stateRevision).toBe(42);
+    expect(received[0].ptt).toBe(true);
+    expect(received[0].connection.radioReady).toBe(true);
+    stop();
+  });
+
   it('does not crash on fetch error', async () => {
     globalThis.fetch = vi.fn().mockRejectedValue(new Error('network gone'));
 

@@ -915,6 +915,7 @@ class WebServer:
         self._update_fft_scope_freq()
         self._update_fft_scope_mode()
 
+        self._ensure_legacy_state_store_seeded()
         snapshot = self.command_state_store.snapshot()
         body = self.build_public_state()
         state_key = (
@@ -959,10 +960,8 @@ class WebServer:
 
     def build_public_state(self, *, updated_at: str | None = None) -> dict[str, Any]:
         """Return the canonical public state payload for web consumers."""
+        self._ensure_legacy_state_store_seeded()
         snapshot = self.command_state_store.snapshot()
-        if snapshot.observation_seq == 0:
-            self.sync_state_store_from_radio_state(self._radio_state)
-            snapshot = self.command_state_store.snapshot()
         health = self._build_radio_health()
         cache_key = (
             snapshot.state_revision,
@@ -996,19 +995,31 @@ class WebServer:
 
     def build_state_update_envelope(self, *, force_full: bool = False) -> dict[str, Any]:
         """Return a WS state-update envelope from the canonical StateStore view."""
+        self._ensure_legacy_state_store_seeded()
         snapshot = self.command_state_store.snapshot()
         body = self.build_public_state()
-        return self._delta_encoder.encode(
+        encoder = (
+            DeltaEncoder(full_state_interval=100) if force_full else self._delta_encoder
+        )
+        return encoder.encode(
             body,
             force_full=force_full,
             state_revision=snapshot.state_revision,
             freshness_revision=snapshot.freshness_revision,
         )
 
+    def _ensure_legacy_state_store_seeded(self) -> None:
+        """Seed the StateStore from legacy RadioState before delivery snapshots."""
+        if self.command_state_store.snapshot().observation_seq == 0:
+            self.sync_state_store_from_radio_state(self._radio_state)
+
     def sync_state_store_from_radio_state(self, state: RadioState) -> None:
         """Feed compatibility poller snapshots into the canonical StateStore."""
         timestamp = time.monotonic()
         baseline = RadioState()
+        observed_paths = {
+            field.path for field in self.command_state_store.snapshot().fields
+        }
         provider = getattr(self._radio, "backend_id", None)
         source = SourceMetadata(
             source="state_poller",
@@ -1025,7 +1036,7 @@ class WebServer:
             default: Any,
             max_age: float | None = None,
         ) -> None:
-            if value == default:
+            if value == default and path not in observed_paths:
                 return
             observations.append(
                 Observation(

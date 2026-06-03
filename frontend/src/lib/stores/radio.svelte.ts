@@ -152,6 +152,9 @@ export function setRadioState(state: ServerState): void {
   const nextHealthRevision = state.healthRevision ?? 0;
   const healthAdvanced = nextHealthRevision > lastHealthRevision;
   const freshnessAdvanced = nextFreshnessRevision > lastFreshnessRevision;
+  const semanticAdvanced = nextStateRevision > lastRevision;
+  const semanticCurrent = nextStateRevision === lastRevision;
+  const metadataAdvanced = semanticCurrent && (freshnessAdvanced || healthAdvanced);
   if (isReset) {
     console.warn(
       `Detected server restart: revision reset from ${lastRevision} to ${nextStateRevision}`,
@@ -159,9 +162,8 @@ export function setRadioState(state: ServerState): void {
   }
   if (
     isInitial
-    || nextStateRevision > lastRevision
-    || freshnessAdvanced
-    || healthAdvanced
+    || semanticAdvanced
+    || metadataAdvanced
     || isReset
   ) {
     lastRevision = nextStateRevision;

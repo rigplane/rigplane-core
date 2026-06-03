@@ -18,6 +18,7 @@ from rigplane.core.command_service import (
 )
 from rigplane.core.state_pipeline_contracts import FieldPath, Observation, SourceMetadata
 from rigplane.core.state_store import FreshnessClock, StateStore
+from rigplane.radio_state import RadioState
 from rigplane.web import server as server_module
 from rigplane.web.handlers.control import ControlHandler
 from rigplane.web.radio_poller import EnableScope
@@ -1098,6 +1099,81 @@ def test_freshness_only_state_store_change_emits_web_delta() -> None:
     assert event["data"]["type"] == "delta"
     assert event["data"]["changed"]["freshnessRevision"] == 2
     assert event["data"]["stateRevision"] == 1
+
+
+def test_initial_full_state_envelope_does_not_consume_broadcast_delta() -> None:
+    srv = WebServer(None)
+    q = asyncio.Queue()
+    srv.register_control_event_queue(q)
+    srv.command_state_store.apply(
+        _store_observation(
+            FieldPath.active("0", "freq_mode", "freq_hz"),
+            14_074_000,
+            at=1.0,
+        )
+    )
+    srv._broadcast_state_update()  # noqa: SLF001
+    q.get_nowait()
+
+    srv.command_state_store.apply(
+        _store_observation(
+            FieldPath.global_("tx_state", "ptt"),
+            True,
+            at=1.1,
+        )
+    )
+    initial = srv.build_state_update_envelope(force_full=True)
+    assert initial["type"] == "full"
+    assert initial["data"]["ptt"] is True
+
+    srv._last_state_broadcast = 0.0  # noqa: SLF001
+    srv._broadcast_state_update()  # noqa: SLF001
+    event = q.get_nowait()
+
+    assert event["data"]["type"] == "delta"
+    assert event["data"]["changed"]["ptt"] is True
+    assert event["data"]["stateRevision"] == 2
+
+
+@pytest.mark.asyncio
+async def test_initial_full_state_envelope_revisions_match_legacy_seeded_http_state() -> None:
+    srv = WebServer(None)
+    legacy = RadioState()
+    legacy.main.freq = 14_250_000
+    legacy.main.mode = "USB"
+    legacy.ptt = True
+    srv._radio_state = legacy  # noqa: SLF001
+
+    envelope = srv.build_state_update_envelope(force_full=True)
+    assert envelope["type"] == "full"
+    ws_state = envelope["data"]
+
+    assert envelope["revision"] == ws_state["stateRevision"]
+    assert envelope["stateRevision"] == ws_state["stateRevision"]
+    assert envelope["freshnessRevision"] == ws_state["freshnessRevision"]
+
+    writer = _FakeWriter()
+    await srv._serve_state(writer)  # noqa: SLF001
+    status, http_state = _response_json(writer)
+
+    assert status == 200
+    assert http_state == ws_state
+    assert http_state["revision"] == http_state["stateRevision"]
+    assert http_state["freshnessRevision"] == ws_state["freshnessRevision"]
+
+
+def test_legacy_state_store_sync_can_clear_default_boolean_values() -> None:
+    srv = WebServer(None)
+    transmitting = RadioState()
+    transmitting.ptt = True
+    srv.sync_state_store_from_radio_state(transmitting)
+    assert srv.build_public_state()["ptt"] is True
+
+    idle = RadioState()
+    idle.ptt = False
+    srv.sync_state_store_from_radio_state(idle)
+
+    assert srv.build_public_state()["ptt"] is False
 
 
 @pytest.mark.asyncio
