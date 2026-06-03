@@ -62,6 +62,13 @@ polling_only = [
     "receiver.main.active.freq_mode.mode",
     "receiver.sub.active.freq_mode.freq_hz",
     "receiver.sub.active.freq_mode.mode",
+    "global.tx_state.ptt",
+    "receiver.main.operator_controls.af_level",
+    "receiver.main.operator_controls.rf_gain",
+    "receiver.main.operator_controls.squelch",
+    "receiver.sub.operator_controls.af_level",
+    "receiver.sub.operator_controls.rf_gain",
+    "receiver.sub.operator_controls.squelch",
 ]
 stream_like_meters = [
     "receiver.main.meters.s_meter",
@@ -80,8 +87,33 @@ supported_controls = [
     "receiver.main.active.freq_mode.mode",
     "receiver.sub.active.freq_mode.freq_hz",
     "receiver.sub.active.freq_mode.mode",
+    "global.tx_state.ptt",
 ]
 unsupported = ["global.tx_state.power_on"]
+
+[state_acquisition.field_policies."receiver.main.operator_controls.af_level"]
+cadence_seconds = 30.0
+freshness_ttl_seconds = 120.0
+
+[state_acquisition.field_policies."receiver.main.operator_controls.rf_gain"]
+cadence_seconds = 30.0
+freshness_ttl_seconds = 120.0
+
+[state_acquisition.field_policies."receiver.main.operator_controls.squelch"]
+cadence_seconds = 30.0
+freshness_ttl_seconds = 120.0
+
+[state_acquisition.field_policies."receiver.sub.operator_controls.af_level"]
+cadence_seconds = 30.0
+freshness_ttl_seconds = 120.0
+
+[state_acquisition.field_policies."receiver.sub.operator_controls.rf_gain"]
+cadence_seconds = 30.0
+freshness_ttl_seconds = 120.0
+
+[state_acquisition.field_policies."receiver.sub.operator_controls.squelch"]
+cadence_seconds = 30.0
+freshness_ttl_seconds = 120.0
 
 [modes]
 list = [
