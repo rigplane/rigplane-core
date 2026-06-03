@@ -533,7 +533,7 @@ def _serialize_keyboard_config(profile: "RadioProfile") -> dict[str, object] | N
 
 def _runtime_capabilities(radio: "Radio | None") -> set[str]:
     """Backward-compatible alias to shared runtime_capabilities helper."""
-    return runtime_capabilities(radio)
+    return cast(set[str], runtime_capabilities(radio))
 
 
 def _supports_scope(radio: "Radio | None") -> bool:
@@ -1192,16 +1192,19 @@ class WebServer:
             and self._cached_public_state_payload is not None
         ):
             return copy.deepcopy(self._cached_public_state_payload)
-        payload = build_public_state_payload_from_snapshot(
-            snapshot,
-            radio=self._radio,
-            receiver_count=self._get_profile().receiver_count,
-            updated_at=updated_at,
-            scope_clients=len(self._scope_handlers),
-            control_clients=len(self._control_event_queues),
-            audio_clients=len(self._audio_broadcaster._clients),
-            radio_health=health,
-            health_revision=self._health_revision,
+        payload = cast(
+            dict[str, Any],
+            build_public_state_payload_from_snapshot(
+                snapshot,
+                radio=self._radio,
+                receiver_count=self._get_profile().receiver_count,
+                updated_at=updated_at,
+                scope_clients=len(self._scope_handlers),
+                control_clients=len(self._control_event_queues),
+                audio_clients=len(self._audio_broadcaster._clients),
+                radio_health=health,
+                health_revision=self._health_revision,
+            ),
         )
         if updated_at is None:
             self._cached_public_state_key = cache_key
@@ -1399,10 +1402,13 @@ class WebServer:
     def _build_radio_health(self) -> dict[str, Any]:
         """Build radio health and advance the health revision on transitions."""
         now = time.monotonic()
-        health = classify_radio_health(
-            self._radio,
-            server_reachable=True,
-            now_monotonic=now,
+        health = cast(
+            dict[str, Any],
+            classify_radio_health(
+                self._radio,
+                server_reachable=True,
+                now_monotonic=now,
+            ),
         )
         signature = (
             health.get("serverReachable"),
