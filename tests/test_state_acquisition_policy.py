@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import textwrap
 from pathlib import Path
+from typing import cast
 
 import pytest
 
@@ -175,7 +176,7 @@ def test_field_capability_direct_construction_rejects_coerced_controls() -> None
         FieldCapability(path=freq, supported_controls="set_freq")
 
     with pytest.raises(ValueError, match="supported_controls must be a sequence of strings"):
-        FieldCapability(path=freq, supported_controls=(123,))  # type: ignore[arg-type]
+        FieldCapability(path=freq, supported_controls=cast(tuple[str, ...], (123,)))
 
 
 def test_missing_and_unsupported_capabilities_are_explicitly_unavailable() -> None:
@@ -403,3 +404,20 @@ def test_known_profiles_load_with_state_acquisition_compatibility() -> None:
     assert x6200.state_acquisition.policy_for(mode).reconciliation_priority == (
         "command_response"
     )
+
+
+def test_ftx1_profile_declares_slow_control_policies_for_polling_adapter() -> None:
+    ftx1 = get_radio_profile("FTX-1")
+    assert ftx1.state_acquisition is not None
+
+    af_level = FieldPath.receiver("main", "operator_controls", "af_level")
+    squelch = FieldPath.receiver("sub", "operator_controls", "squelch")
+    ptt = FieldPath.global_("tx_state", "ptt")
+
+    assert ftx1.state_acquisition.capability_for(af_level).can_poll is True
+    assert ftx1.state_acquisition.capability_for(squelch).can_poll is True
+    assert ftx1.state_acquisition.capability_for(ptt).can_poll is True
+    assert (
+        ftx1.state_acquisition.policy_for(af_level).freshness_ttl_seconds == 120.0
+    )
+    assert ftx1.state_acquisition.policy_for(af_level).cadence_seconds == 30.0
