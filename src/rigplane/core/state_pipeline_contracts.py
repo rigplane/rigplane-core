@@ -991,6 +991,26 @@ def _receiver_specs(receiver_id: str) -> tuple[FieldSpec, ...]:
             writable=True,
         ),
         spec(
+            FieldPath.receiver(receiver_id, "operator_toggles", "repeater_tone"),
+            "bool",
+            writable=True,
+        ),
+        spec(
+            FieldPath.receiver(receiver_id, "operator_toggles", "repeater_tsql"),
+            "bool",
+            writable=True,
+        ),
+        spec(
+            FieldPath.receiver(receiver_id, "operator_controls", "tone_freq"),
+            "int",
+            writable=True,
+        ),
+        spec(
+            FieldPath.receiver(receiver_id, "operator_controls", "tsql_freq"),
+            "int",
+            writable=True,
+        ),
+        spec(
             FieldPath.active(receiver_id, "freq_mode", "data_mode"),
             "int",
             writable=True,

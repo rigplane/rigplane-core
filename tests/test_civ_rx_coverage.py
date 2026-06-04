@@ -41,6 +41,7 @@ from test_radio import MockTransport, _wrap_civ_in_udp
 from rigplane import IC_7610_ADDR
 from rigplane.runtime._civ_rx import CIV_HEADER_SIZE
 from rigplane.commands import CONTROLLER_ADDR, build_civ_frame
+from rigplane.commands.tone import _encode_tone_freq
 from rigplane.core.acquisition_scheduler import (
     AcquisitionScheduler,
     MeterObservationCoalescer,
@@ -957,6 +958,18 @@ _SLOW_STATE_TOGGLE_CASES = (
         True,
     ),
     (
+        _make_frame(cmd=0x16, sub=0x42, data=b"\x01", receiver=0x00),
+        "receiver.0.operator_toggles.repeater_tone",
+        "main.repeaterTone",
+        True,
+    ),
+    (
+        _make_frame(cmd=0x16, sub=0x43, data=b"\x01", receiver=0x00),
+        "receiver.0.operator_toggles.repeater_tsql",
+        "main.repeaterTsql",
+        True,
+    ),
+    (
         _make_frame(cmd=0x16, sub=0x44, data=b"\x01"),
         "global.tx_state.compressor_on",
         "compressorOn",
@@ -1171,6 +1184,20 @@ _VALUE_CONTROL_CASES = (
         "receiver.0.operator_controls.agc_time_constant",
         "main.agcTimeConstant",
         13,
+    ),
+    # 0x1B 0x00 tone_freq: BCD freq-encoded 88.5 Hz → 8850 centiHz (MOR-451).
+    (
+        _make_frame(cmd=0x1B, sub=0x00, data=_encode_tone_freq(88.5), receiver=0x00),
+        "receiver.0.operator_controls.tone_freq",
+        "main.toneFreq",
+        8850,
+    ),
+    # 0x1B 0x01 tsql_freq: BCD freq-encoded 88.5 Hz → 8850 centiHz (MOR-451).
+    (
+        _make_frame(cmd=0x1B, sub=0x01, data=_encode_tone_freq(88.5), receiver=0x00),
+        "receiver.0.operator_controls.tsql_freq",
+        "main.tsqlFreq",
+        8850,
     ),
 )
 
@@ -2019,6 +2046,48 @@ def test_update_radio_state_cmd16_agc_observation_backed(
         "receiver.1.operator_controls.agc"
     )
     assert field.value == 3
+
+
+@pytest.mark.parametrize(  # type: ignore[untyped-decorator]
+    ("sub", "field"),
+    [(0x42, "repeater_tone"), (0x43, "repeater_tsql")],
+)
+def test_update_radio_state_cmd16_repeater_tone_observation_backed(
+    radio_with_state: IcomRadio,
+    sub: int,
+    field: str,
+) -> None:
+    """MOR-451: cmd 0x16/0x42-0x43 mirror removed; StateStore is source of truth."""
+    rs = radio_with_state._radio_state
+    frame = _make_frame(cmd=0x16, sub=sub, data=b"\x01", receiver=0x01)
+    radio_with_state._civ_runtime._update_state_cache_from_frame(frame)
+    # Legacy ReceiverState mirror stays at its default; the store carries truth.
+    assert getattr(rs.sub, field) is False
+    store_field = radio_with_state._state_store.snapshot().field(
+        f"receiver.1.operator_toggles.{field}"
+    )
+    assert store_field.value is True
+
+
+@pytest.mark.parametrize(  # type: ignore[untyped-decorator]
+    ("sub", "field"),
+    [(0x00, "tone_freq"), (0x01, "tsql_freq")],
+)
+def test_update_radio_state_cmd1b_tone_freq_observation_backed(
+    radio_with_state: IcomRadio,
+    sub: int,
+    field: str,
+) -> None:
+    """MOR-451: cmd 0x1B/0x00-0x01 mirror removed; StateStore is source of truth."""
+    rs = radio_with_state._radio_state
+    frame = _make_frame(cmd=0x1B, sub=sub, data=_encode_tone_freq(88.5), receiver=0x01)
+    radio_with_state._civ_runtime._update_state_cache_from_frame(frame)
+    # Legacy ReceiverState mirror stays at its default 0; the store carries truth.
+    assert getattr(rs.sub, field) == 0
+    store_field = radio_with_state._state_store.snapshot().field(
+        f"receiver.1.operator_controls.{field}"
+    )
+    assert store_field.value == 8850
 
 
 def test_update_radio_state_cmd1a_agc_time_constant_observation_backed(

@@ -204,6 +204,8 @@ _CMD16_GLOBAL_VALUE_FIELDS = {
 _CMD16_OBSERVATION_BACKED_SUBS = frozenset(
     {
         0x41,  # auto_notch
+        0x42,  # repeater_tone (MOR-451)
+        0x43,  # repeater_tsql (MOR-451)
         0x48,  # manual_notch
         0x44,  # compressor_on
         0x45,  # monitor_on
@@ -278,6 +280,23 @@ _CMD16_OBSERVATION_BACKED_VALUE_SUBS = frozenset(
     }
 )
 
+# 0x1B tone/TSQL-freq sub-commands whose RadioState mirror write was migrated to
+# the StateStore observation pipeline (MOR-451). ``_handle_1b`` skips the
+# redundant ``setattr`` mirror for these; ``_observations_from_frame`` is the
+# source of truth and reuses the identical ``_decode_tone_freq`` decode.
+_CMD1B_OBSERVATION_BACKED_SUBS = frozenset(
+    {
+        0x00,  # tone_freq (receiver)
+        0x01,  # tsql_freq (receiver)
+    }
+)
+
+# 0x1B sub-command → receiver FieldPath spec for tone/TSQL freq observations.
+_OBSERVABLE_CMD1B_FIELDS = {
+    0x00: ("receiver", "operator_controls", "tone_freq"),
+    0x01: ("receiver", "operator_controls", "tsql_freq"),
+}
+
 _OBSERVABLE_CMD15_FIELDS = {
     0x02: ("receiver", "meters", "s_meter"),
     0x11: ("global", "meters", "power"),
@@ -289,6 +308,8 @@ _OBSERVABLE_CMD16_FIELDS = {
     0x22: ("receiver", "operator_toggles", "nb"),
     0x40: ("receiver", "operator_toggles", "nr"),
     0x41: ("receiver", "operator_toggles", "auto_notch"),
+    0x42: ("receiver", "operator_toggles", "repeater_tone"),
+    0x43: ("receiver", "operator_toggles", "repeater_tsql"),
     0x48: ("receiver", "operator_toggles", "manual_notch"),
     0x44: ("global", "tx_state", "compressor_on"),
     0x45: ("global", "tx_state", "monitor_on"),
@@ -1561,6 +1582,20 @@ class CivRuntime:
                     frame=frame,
                 )
             )
+        elif frame.command == 0x1B and len(frame.data) >= 3:
+            # Tone/TSQL freq: BCD freq → centiHz, reusing the exact decode of
+            # ``_handle_1b`` (``round(_decode_tone_freq(...) * 100)``) (MOR-451).
+            mapping = _OBSERVABLE_CMD1B_FIELDS.get(frame.sub or 0)
+            if mapping is not None:
+                from rigplane.commands import _decode_tone_freq
+
+                observations.append(
+                    self._observation(
+                        self._field_path(mapping, receiver_id=receiver_id),
+                        round(_decode_tone_freq(frame.data) * 100),
+                        frame=frame,
+                    )
+                )
         elif frame.command == 0x18 and len(frame.data) == 1:
             observations.append(
                 self._observation(
@@ -2046,16 +2081,12 @@ class CivRuntime:
         rs: "RadioState",
         slot_override: str | None,
     ) -> None:
-        # cmd 0x1B: tone/TSQL freq (frequency-encoded).
-        if len(frame.data) >= 3:
-            from rigplane.commands import _decode_tone_freq
-
-            freq_hz = _decode_tone_freq(frame.data)
-            freq_centihz = round(freq_hz * 100)
-            if frame.sub == 0x00:
-                rx.tone_freq = freq_centihz
-            elif frame.sub == 0x01:
-                rx.tsql_freq = freq_centihz
+        # cmd 0x1B: tone/TSQL freq (frequency-encoded). The mirror write for
+        # both subs was migrated to the StateStore observation pipeline
+        # (MOR-451); ``_observations_from_frame`` is the source of truth and
+        # reuses the identical ``_decode_tone_freq`` decode.
+        if frame.sub in _CMD1B_OBSERVATION_BACKED_SUBS:
+            return
 
     def _handle_1c(
         self,

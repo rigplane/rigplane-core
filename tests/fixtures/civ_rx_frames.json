@@ -155,18 +155,18 @@
   },
   {
     "name": "cmd1B_sub00_tone_freq_centihz",
-    "comment": "0x1B/0x00 repeater tone freq → centihz (88.5 Hz → 8850)",
+    "comment": "0x1B/0x00 tone freq is observation-backed (MOR-451); the legacy RadioState mirror is no longer written and stays at its default 0.",
     "frame": {"command": 27, "sub": 0, "data": "008805"},
     "expected_state": {
-      "main.tone_freq": 8850
+      "main.tone_freq": 0
     }
   },
   {
     "name": "cmd1B_sub01_tsql_freq_centihz",
-    "comment": "0x1B/0x01 TSQL freq → centihz (123.0 Hz → 12300)",
+    "comment": "0x1B/0x01 TSQL freq is observation-backed (MOR-451); the legacy RadioState mirror is no longer written and stays at its default 0.",
     "frame": {"command": 27, "sub": 1, "data": "012300"},
     "expected_state": {
-      "main.tsql_freq": 12300
+      "main.tsql_freq": 0
     }
   },
   {
