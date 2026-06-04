@@ -48,6 +48,37 @@ uv run ruff format --check src tests
 uv run mypy src
 ```
 
+### Final gate run
+
+Date: 2026-06-04
+Integration head: `27084af8`
+
+This is the final, all-green execution of the gate above after the MOR-437
+dead-code/mirror cleanup. The checklist tables in this document remain the
+canonical definitions; this subsection records the outcome of running them.
+
+| Gate | Result |
+|---|---|
+| Focused state pipeline batch | 1016 passed |
+| Python full regression (`uv run pytest tests/`) | 7081 passed |
+| Python E2E marker (`uv run pytest -m e2e`) | 59 passed |
+| Web type boundary (`uv run mypy --strict src/rigplane/web`) | Success |
+| Python lint (`uv run ruff check src tests`) | Clean |
+| Import boundaries (`uv run lint-imports`) | 4 contracts kept, 0 broken |
+| Frontend type/check (`npm run check`) | 0 errors / 0 warnings |
+| Frontend unit tests (`npx vitest run`) | 1895 passed |
+| Frontend build (`npm run build`) | OK |
+| Frontend i18n E2E (`npm run test:e2e:i18n`) | 36 passed |
+| Live fake-backend v2 Playwright | PASS — 27/28 audit cases |
+
+Live v2 audit notes:
+
+- The one expected non-pass is the pre-existing mode-gated DSP/CW Pitch case
+  (CW Pitch is only writable in a CW mode); it is a known-fail, not a
+  regression.
+- No local test server remained after the run (no listener on `:8765`).
+- The working tree was clean at the end of the run.
+
 ## Live Fake-Backend Web Recipe
 
 Use this recipe when no hardware is connected. It starts a real `WebServer` with
