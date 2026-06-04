@@ -413,6 +413,26 @@ def test_global_cw_spot_registered_as_slow_state_bool() -> None:
     assert spec.value_type == "bool"
 
 
+def test_global_tuning_step_registered_as_writable_slow_state_int() -> None:
+    """MOR-461: ``global.slow_state.tuning_step`` is a registered writable int.
+
+    The observation-backed Icom tuning step (CI-V ``get_tuning_step`` 0x10) is
+    promoted to a backend-neutral slow-state int, matching how it is already
+    projected/consumed (``_GLOBAL_SLOW_STATE_FIELDS`` / server.py legacy bridge).
+    The value is a device step *index* (0-8), NOT Hz, so the spec carries no
+    ``unit``; any Hz mapping is deferred to MOR-453. Writable because
+    ``set_tuning_step`` exists. Icom-only natively (FTX-1/Xiegu/Lab599 have no
+    tuning-step command), so the field stays ``missing`` on those backends.
+    """
+    path = FieldPath.global_("slow_state", "tuning_step")
+    spec = DEFAULT_FIELD_REGISTRY.require(path)
+    assert spec.path == path
+    assert spec.family is FieldFamily.SLOW_STATE
+    assert spec.value_type == "int"
+    assert spec.writable is True
+    assert spec.unit is None
+
+
 def test_observation_and_changeset_serialization_round_trip() -> None:
     source = SourceMetadata(
         source="civ_unsolicited",
@@ -735,6 +755,11 @@ _ICOM_V2_FIELD_FAMILIES: tuple[tuple[FieldPath, str, str | None, Any], ...] = (
         30,
     ),
     (FieldPath.global_("operator_controls", "vox_delay"), "voxDelay", None, 12),
+    # global slow_state
+    # tuning_step promoted as a neutral writable slow-state int (device step
+    # index, NOT Hz) — projects to the existing top-level ``tuningStep`` key
+    # (MOR-461).
+    (FieldPath.global_("slow_state", "tuning_step"), "tuningStep", None, 5),
     # global tx_state
     (FieldPath.global_("tx_state", "split"), "split", None, True),
     (FieldPath.global_("tx_state", "compressor_on"), "compressorOn", None, True),

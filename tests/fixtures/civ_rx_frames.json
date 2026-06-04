@@ -243,10 +243,10 @@
   },
   {
     "name": "cmd10_tuning_step",
-    "comment": "0x10 tuning step decoded from BCD nibble pair",
+    "comment": "0x10 tuning step is observation-backed (MOR-461); the legacy RadioState mirror is no longer written and stays at its default.",
     "frame": {"command": 16, "sub": null, "data": "12"},
     "expected_state": {
-      "tuning_step": 12
+      "tuning_step": 0
     }
   },
   {

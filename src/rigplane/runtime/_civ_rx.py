@@ -1702,6 +1702,19 @@ class CivRuntime:
                     frame=frame,
                 )
             )
+        elif frame.command == 0x10 and frame.data:
+            # Tuning step: device step index (0-8), BCD nibble-pair byte.
+            # Reuse the exact decode of ``_handle_10`` / ``get_tuning_step``;
+            # the value is a device step code, not Hz (MOR-461). Promoted to a
+            # neutral global slow-state int; Hz mapping is deferred to MOR-453.
+            b = frame.data[0]
+            observations.append(
+                self._observation(
+                    FieldPath.global_("slow_state", "tuning_step"),
+                    ((b >> 4) & 0x0F) * 10 + (b & 0x0F),
+                    frame=frame,
+                )
+            )
         elif frame.command == 0x21:
             if frame.sub == 0x00 and len(frame.data) >= 3:
                 observations.append(
@@ -1948,9 +1961,12 @@ class CivRuntime:
         slot_override: str | None,
     ) -> None:
         # cmd 0x10: tuning step (BCD nibble pair).
-        if frame.data:
-            b = frame.data[0]
-            rs.tuning_step = ((b >> 4) & 0x0F) * 10 + (b & 0x0F)
+        # Mirror write migrated to the StateStore observation pipeline (MOR-461);
+        # ``_observations_from_frame`` is the source of truth and reuses the
+        # identical device-step-index decode. The legacy ``tuning_step_changed``
+        # ``_notify_change`` event (in ``_update_state_cache_from_frame``) is kept
+        # for back-compat, mirroring the MOR-437 slow-state toggle events.
+        return
 
     def _handle_11(
         self,

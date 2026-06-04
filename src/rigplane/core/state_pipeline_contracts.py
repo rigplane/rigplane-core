@@ -1147,6 +1147,11 @@ def _global_specs() -> tuple[FieldSpec, ...]:
         ),
         spec(FieldPath.global_("slow_state", "active"), "str"),
         spec(FieldPath.global_("slow_state", "cw_spot"), "bool"),
+        spec(
+            FieldPath.global_("slow_state", "tuning_step"),
+            "int",
+            writable=True,
+        ),
         spec(FieldPath.global_("meters", "alc"), "int"),
         spec(FieldPath.global_("meters", "power"), "int"),
         spec(FieldPath.global_("meters", "swr"), "int"),

@@ -1263,6 +1263,14 @@ _VALUE_CONTROL_CASES = (
         "voxDelay",
         12,
     ),
+    # 0x10 tuning_step: device step index (0-8), BCD nibble-pair byte 0x05 → 5;
+    # NOT Hz. Promoted to a global slow-state int (MOR-461).
+    (
+        _make_frame(cmd=0x10, data=b"\x05"),
+        "global.slow_state.tuning_step",
+        "tuningStep",
+        5,
+    ),
 )
 
 
@@ -2274,6 +2282,27 @@ def test_update_radio_state_cmd1a_vox_delay_observation_backed(
         "global.operator_controls.vox_delay"
     )
     assert store_field.value == 12
+
+
+def test_update_radio_state_cmd10_tuning_step_observation_backed(
+    radio_with_state: IcomRadio,
+) -> None:
+    """MOR-461: cmd 0x10 tuning_step mirror removed; the StateStore is truth.
+
+    The tuning step is a device step *index* (0-8, BCD byte 0x05 → 5), NOT Hz.
+    It is promoted to a neutral global slow-state int; the legacy
+    ``RadioState.tuning_step`` mirror is no longer written and stays at its
+    default 0 while the StateStore carries the decoded value. The legacy
+    ``tuning_step_changed`` notify event is retained for back-compat.
+    """
+    rs = radio_with_state._radio_state
+    frame = _make_frame(cmd=0x10, data=b"\x05")
+    radio_with_state._civ_runtime._update_state_cache_from_frame(frame)
+    assert rs.tuning_step == 0
+    store_field = radio_with_state._state_store.snapshot().field(
+        "global.slow_state.tuning_step"
+    )
+    assert store_field.value == 5
 
 
 def test_update_radio_state_cmd1a_af_mute(radio_with_state: IcomRadio) -> None:
