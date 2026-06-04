@@ -752,14 +752,26 @@ def test_update_state_cache_ip_plus(radio: IcomRadio) -> None:
 
 
 def test_update_state_cache_filter_width_decodes_index_to_hz(radio: IcomRadio) -> None:
-    """Filter width response stores Hz decoded from the profile mapping."""
+    """Filter width response stores Hz decoded from the profile mapping.
+
+    MOR-437: the RadioState mirror was removed; the value lands in the
+    StateStore (and the private executor _state_cache fallback) instead.
+    """
     radio._radio_state = RadioState()
     radio._radio_state.main.mode = "USB"
     frame = _make_frame(cmd=0x1A, sub=0x03, data=b"\x00\x19", receiver=0x00)
 
     radio._civ_runtime._update_state_cache_from_frame(frame)
 
-    assert radio._radio_state.main.filter_width == 1500
+    # Legacy RadioState mirror is no longer written.
+    assert radio._radio_state.main.filter_width is None
+    # Profile-dependent decode (USB, BCD index 0x19=19 → 1500 Hz) lands in store.
+    field = radio._state_store.snapshot().field(
+        "receiver.0.active.freq_mode.filter_width"
+    )
+    assert field.value == 1500
+    # Executor cache fallback keeps the same decoded value.
+    assert radio._state_cache.filter_width == 1500
 
 
 def test_update_state_cache_exception_suppressed(radio: IcomRadio) -> None:
@@ -1063,6 +1075,191 @@ def test_slow_state_toggle_projects_available(
     status = payload["fieldStatus"][public_path]
     assert status["observed"] is True
     assert status["availability"] == "available"
+
+
+# ---------------------------------------------------------------------------
+# MOR-437 (BE-2): value-scaled level/control families observation-backed.
+#
+# Each case feeds a known raw CI-V payload and asserts the EXACT decoded value
+# (compared against the same decode the removed mirror used), so a wrong scale
+# would fail here rather than silently projecting a bad number.
+# (frame, store path, public status path, expected decoded value)
+# ---------------------------------------------------------------------------
+_VALUE_CONTROL_CASES = (
+    # 0x11 attenuator: BCD nibble 0x18 → 18 dB.
+    (
+        _make_frame(cmd=0x11, data=bytes([0x18]), receiver=0x00),
+        "receiver.0.operator_controls.att",
+        "main.att",
+        18,
+    ),
+    # 0x16 0x02 preamp: raw byte verbatim.
+    (
+        _make_frame(cmd=0x16, sub=0x02, data=b"\x01", receiver=0x00),
+        "receiver.0.operator_controls.preamp",
+        "main.preamp",
+        1,
+    ),
+    # 0x16 0x12 agc: BCD nibble 0x03 → 3.
+    (
+        _make_frame(cmd=0x16, sub=0x12, data=b"\x03", receiver=0x00),
+        "receiver.0.operator_controls.agc",
+        "main.agc",
+        3,
+    ),
+    # 0x14 levels (4-digit BCD pair).
+    (
+        _make_frame(cmd=0x14, sub=0x03, data=_bcd2(50), receiver=0x00),
+        "receiver.0.operator_controls.squelch",
+        "main.squelch",
+        50,
+    ),
+    (
+        _make_frame(cmd=0x14, sub=0x06, data=_bcd2(91), receiver=0x00),
+        "receiver.0.operator_controls.nr_level",
+        "main.nrLevel",
+        91,
+    ),
+    (
+        _make_frame(cmd=0x14, sub=0x12, data=_bcd2(94), receiver=0x00),
+        "receiver.0.operator_controls.nb_level",
+        "main.nbLevel",
+        94,
+    ),
+    (
+        _make_frame(cmd=0x14, sub=0x0B, data=_bcd2(101)),
+        "global.operator_controls.mic_gain",
+        "micGain",
+        101,
+    ),
+    (
+        _make_frame(cmd=0x14, sub=0x0E, data=_bcd2(103)),
+        "global.operator_controls.compressor_level",
+        "compressorLevel",
+        103,
+    ),
+    (
+        _make_frame(cmd=0x14, sub=0x15, data=_bcd2(106)),
+        "global.operator_controls.monitor_gain",
+        "monitorGain",
+        106,
+    ),
+    # 0x14 0x09 cw_pitch: non-linear raw level → Hz (level 128 → 600 Hz).
+    (
+        _make_frame(cmd=0x14, sub=0x09, data=_bcd2(128)),
+        "global.operator_controls.cw_pitch",
+        "cwPitch",
+        600,
+    ),
+    # 0x1A 0x03 filter_width: profile-dependent index → Hz (USB index 19 → 1500).
+    (
+        _make_frame(cmd=0x1A, sub=0x03, data=b"\x00\x19", receiver=0x00),
+        "receiver.0.active.freq_mode.filter_width",
+        "main.filterWidth",
+        1500,
+    ),
+    # 0x1A 0x06 data_mode: raw byte.
+    (
+        _make_frame(cmd=0x1A, sub=0x06, data=b"\x02", receiver=0x00),
+        "receiver.0.active.freq_mode.data_mode",
+        "main.dataMode",
+        2,
+    ),
+    # 0x1A 0x04 agc_time_constant: 1-byte BCD 0x13 → 13.
+    (
+        _make_frame(cmd=0x1A, sub=0x04, data=b"\x13", receiver=0x00),
+        "receiver.0.operator_controls.agc_time_constant",
+        "main.agcTimeConstant",
+        13,
+    ),
+)
+
+
+@pytest.mark.parametrize(  # type: ignore[untyped-decorator]
+    ("frame", "store_path", "public_path", "expected"),
+    _VALUE_CONTROL_CASES,
+    ids=[entry[1] for entry in _VALUE_CONTROL_CASES],
+)
+def test_value_control_observation_value(
+    radio_with_state: IcomRadio,
+    frame: CivFrame,
+    store_path: str,
+    public_path: str,
+    expected: object,
+) -> None:
+    """MOR-437 (BE-2): level/value CI-V families emit the exact decoded value."""
+    # A real mode is required so the profile-dependent filter_width decode runs.
+    radio_with_state._radio_state.main.mode = "USB"
+    radio_with_state._civ_runtime._update_state_cache_from_frame(frame)
+
+    field = radio_with_state._state_store.snapshot().field(store_path)
+    assert field.value == expected
+    # These level/value families never expire — no max_age, so the freshness
+    # service cannot re-gate them ``missing`` (MOR-437).
+    assert field.max_age is None
+    assert field.freshness is FreshnessState.FRESH
+
+
+@pytest.mark.parametrize(  # type: ignore[untyped-decorator]
+    ("frame", "store_path", "public_path", "expected"),
+    _VALUE_CONTROL_CASES,
+    ids=[entry[1] for entry in _VALUE_CONTROL_CASES],
+)
+def test_value_control_survives_unrelated_poll_cycle(
+    radio_with_state: IcomRadio,
+    frame: CivFrame,
+    store_path: str,
+    public_path: str,
+    expected: object,
+) -> None:
+    """The observed value must not snap back when an unrelated frame arrives."""
+    radio_with_state._radio_state.main.mode = "USB"
+    radio_with_state._civ_runtime._update_state_cache_from_frame(frame)
+    # An unrelated S-meter poll on the next cycle must not disturb the value.
+    radio_with_state._civ_runtime._update_state_cache_from_frame(
+        _make_frame(cmd=0x15, sub=0x02, data=_bcd2(120), receiver=0x00)
+    )
+
+    field = radio_with_state._state_store.snapshot().field(store_path)
+    assert field.value == expected
+    assert field.freshness is FreshnessState.FRESH
+
+
+@pytest.mark.parametrize(  # type: ignore[untyped-decorator]
+    ("frame", "store_path", "public_path", "expected"),
+    _VALUE_CONTROL_CASES,
+    ids=[entry[1] for entry in _VALUE_CONTROL_CASES],
+)
+def test_value_control_projects_available(
+    radio_with_state: IcomRadio,
+    frame: CivFrame,
+    store_path: str,
+    public_path: str,
+    expected: object,
+) -> None:
+    """Once observed, the public key projects available with the right value."""
+    from rigplane.web.runtime_helpers import (
+        build_public_state_payload_from_snapshot,
+    )
+
+    radio_with_state._radio_state.main.mode = "USB"
+    radio_with_state._civ_runtime._update_state_cache_from_frame(frame)
+    payload = build_public_state_payload_from_snapshot(
+        radio_with_state._state_store.snapshot(),
+        radio=None,
+        receiver_count=2,
+    )
+
+    status = payload["fieldStatus"][public_path]
+    assert status["observed"] is True
+    assert status["availability"] == "available"
+
+    # The decoded value also lands in the main public state payload at the
+    # camelCase public path (top-level for globals, ``main.*`` for receiver).
+    node: Any = payload
+    for segment in public_path.split("."):
+        node = node[segment]
+    assert node == expected
 
 
 def test_civ_projected_active_rit_xit_fields_become_stale(
@@ -1562,19 +1759,28 @@ def test_update_radio_state_cmd14_af_level(radio_with_state: IcomRadio) -> None:
 
 
 def test_update_radio_state_cmd14_rf_gain(radio_with_state: IcomRadio) -> None:
-    """cmd 0x14 sub 0x02 updates RF gain."""
+    """cmd 0x14 sub 0x02 RF gain is observation-backed (MOR-437)."""
     rs = radio_with_state._radio_state
     frame = _make_frame(cmd=0x14, sub=0x02, data=_bcd2(180))
-    radio_with_state._civ_runtime._update_radio_state_from_frame(frame)
-    assert rs.main.rf_gain == 180
+    radio_with_state._civ_runtime._update_state_cache_from_frame(frame)
+    # Legacy mirror removed: StateStore is the source of truth.
+    assert rs.main.rf_gain == 0
+    field = radio_with_state._state_store.snapshot().field(
+        "receiver.0.operator_controls.rf_gain"
+    )
+    assert field.value == 180
 
 
 def test_update_radio_state_cmd14_squelch(radio_with_state: IcomRadio) -> None:
-    """cmd 0x14 sub 0x03 updates squelch."""
+    """cmd 0x14 sub 0x03 squelch is observation-backed (MOR-437)."""
     rs = radio_with_state._radio_state
     frame = _make_frame(cmd=0x14, sub=0x03, data=_bcd2(50))
-    radio_with_state._civ_runtime._update_radio_state_from_frame(frame)
-    assert rs.main.squelch == 50
+    radio_with_state._civ_runtime._update_state_cache_from_frame(frame)
+    assert rs.main.squelch == 0
+    field = radio_with_state._state_store.snapshot().field(
+        "receiver.0.operator_controls.squelch"
+    )
+    assert field.value == 50
 
 
 def test_update_radio_state_cmd14_power_level(radio_with_state: IcomRadio) -> None:
@@ -1589,10 +1795,8 @@ def test_update_radio_state_cmd14_power_level(radio_with_state: IcomRadio) -> No
     ("sub", "value", "field"),
     [
         (0x05, 90, "apf_type_level"),
-        (0x06, 91, "nr_level"),
         (0x07, 92, "pbt_inner"),
         (0x08, 93, "pbt_outer"),
-        (0x12, 94, "nb_level"),
         (0x13, 95, "digisel_shift"),
     ],
 )
@@ -1609,16 +1813,36 @@ def test_update_radio_state_cmd14_receiver_dsp_levels(
 
 
 @pytest.mark.parametrize(  # type: ignore[untyped-decorator]
+    ("sub", "value", "field"),
+    [
+        (0x06, 91, "nr_level"),
+        (0x12, 94, "nb_level"),
+    ],
+)
+def test_update_radio_state_cmd14_receiver_dsp_levels_observation_backed(
+    radio_with_state: IcomRadio,
+    sub: int,
+    value: int,
+    field: str,
+) -> None:
+    """MOR-437: nr_level/nb_level mirror removed; StateStore is source of truth."""
+    rs = radio_with_state._radio_state
+    frame = _make_frame(cmd=0x14, sub=sub, data=_bcd2(value), receiver=0x01)
+    radio_with_state._civ_runtime._update_state_cache_from_frame(frame)
+    assert getattr(rs.sub, field) == 0
+    store_field = radio_with_state._state_store.snapshot().field(
+        f"receiver.1.operator_controls.{field}"
+    )
+    assert store_field.value == value
+
+
+@pytest.mark.parametrize(  # type: ignore[untyped-decorator]
     ("sub", "raw", "field", "expected"),
     [
-        (0x09, 128, "cw_pitch", 600),
-        (0x0B, 101, "mic_gain", 101),
         (0x0C, 146, "key_speed", 30),
         (0x0D, 102, "notch_filter", 102),
-        (0x0E, 103, "compressor_level", 103),
         (0x0F, 104, "break_in_delay", 104),
         (0x14, 105, "drive_gain", 105),
-        (0x15, 106, "monitor_gain", 106),
         (0x16, 107, "vox_gain", 107),
         (0x17, 108, "anti_vox_gain", 108),
     ],
@@ -1636,12 +1860,50 @@ def test_update_radio_state_cmd14_global_dsp_levels(
     assert getattr(rs, field) == expected
 
 
+@pytest.mark.parametrize(  # type: ignore[untyped-decorator]
+    ("sub", "raw", "field", "expected"),
+    [
+        # cw_pitch raw level 128 → 600 Hz via the non-linear set_cw_pitch map.
+        (0x09, 128, "cw_pitch", 600),
+        (0x0B, 101, "mic_gain", 101),
+        (0x0E, 103, "compressor_level", 103),
+        (0x15, 106, "monitor_gain", 106),
+    ],
+)
+def test_update_radio_state_cmd14_global_dsp_levels_observation_backed(
+    radio_with_state: IcomRadio,
+    sub: int,
+    raw: int,
+    field: str,
+    expected: int,
+) -> None:
+    """MOR-437: cw_pitch/mic_gain/compressor_level/monitor_gain are
+    observation-backed; the legacy global RadioState mirror was removed.
+
+    cw_pitch in particular asserts the exact non-linear raw→Hz mapping
+    (level 128 → 600 Hz) the mirror and ``set_cw_pitch`` use.
+    """
+    rs = radio_with_state._radio_state
+    frame = _make_frame(cmd=0x14, sub=sub, data=_bcd2(raw))
+    radio_with_state._civ_runtime._update_state_cache_from_frame(frame)
+    assert getattr(rs, field) == 0
+    store_field = radio_with_state._state_store.snapshot().field(
+        f"global.operator_controls.{field}"
+    )
+    assert store_field.value == expected
+
+
 def test_update_radio_state_cmd11_attenuator(radio_with_state: IcomRadio) -> None:
-    """cmd 0x11 updates attenuator (lines 548-552)."""
+    """cmd 0x11 attenuator is observation-backed (MOR-437)."""
     rs = radio_with_state._radio_state
     frame = _make_frame(cmd=0x11, data=bytes([0x18]))  # 0x18 BCD = 18 dB
-    radio_with_state._civ_runtime._update_radio_state_from_frame(frame)
-    assert rs.main.att == 18
+    radio_with_state._civ_runtime._update_state_cache_from_frame(frame)
+    # Legacy mirror removed from _handle_11; StateStore is the source of truth.
+    assert rs.main.att == 0
+    field = radio_with_state._state_store.snapshot().field(
+        "receiver.0.operator_controls.att"
+    )
+    assert field.value == 18
 
 
 def test_update_radio_state_cmd12_antenna_ant1(radio_with_state: IcomRadio) -> None:
@@ -1665,11 +1927,16 @@ def test_update_radio_state_cmd12_antenna_ant2_rx_on(
 
 
 def test_update_radio_state_cmd16_preamp(radio_with_state: IcomRadio) -> None:
-    """cmd 0x16 sub 0x02 updates preamp (lines 554-565)."""
+    """cmd 0x16 sub 0x02 preamp is observation-backed (MOR-437)."""
     rs = radio_with_state._radio_state
     frame = _make_frame(cmd=0x16, sub=0x02, data=bytes([0x01]))
-    radio_with_state._civ_runtime._update_radio_state_from_frame(frame)
-    assert rs.main.preamp == 1
+    radio_with_state._civ_runtime._update_state_cache_from_frame(frame)
+    # Legacy mirror removed: preamp lands in the StateStore as a raw byte value.
+    assert rs.main.preamp == 0
+    field = radio_with_state._state_store.snapshot().field(
+        "receiver.0.operator_controls.preamp"
+    )
+    assert field.value == 1
 
 
 def test_update_radio_state_cmd16_nb(radio_with_state: IcomRadio) -> None:
@@ -1709,17 +1976,16 @@ def test_update_radio_state_cmd16_ipplus(radio_with_state: IcomRadio) -> None:
     [
         (0x15, 0x01, b"\x01", 0x01, "sub", "s_meter_sql_open", True),
         (0x15, 0x07, b"\x01", None, "radio", "overflow", True),
-        (0x16, 0x12, b"\x03", 0x01, "sub", "agc", 3),
         (0x16, 0x32, b"\x02", 0x01, "sub", "audio_peak_filter", 2),
         # 0x41 auto_notch, 0x44 compressor_on, 0x45 monitor_on, 0x46 vox_on,
-        # 0x48 manual_notch are now observation-backed (MOR-437) — the legacy
-        # RadioState mirror was removed, so they no longer belong here.
+        # 0x48 manual_notch (MOR-437) and 0x12 agc + 0x1A/0x04 agc_time_constant
+        # (this lane) are now observation-backed — the legacy RadioState mirror
+        # was removed, so they no longer belong here.
         (0x16, 0x47, b"\x02", None, "radio", "break_in", 2),
         (0x16, 0x4F, b"\x01", 0x01, "sub", "twin_peak_filter", True),
         (0x16, 0x50, b"\x01", None, "radio", "dial_lock", True),
         (0x16, 0x56, b"\x01", 0x01, "sub", "filter_shape", 1),
         (0x16, 0x58, b"\x02", None, "radio", "ssb_tx_bandwidth", 2),
-        (0x1A, 0x04, b"\x13", 0x01, "sub", "agc_time_constant", 13),
     ],
 )
 def test_update_radio_state_operator_toggle_family(
@@ -1740,13 +2006,48 @@ def test_update_radio_state_operator_toggle_family(
     assert getattr(owner, field) == expected
 
 
+def test_update_radio_state_cmd16_agc_observation_backed(
+    radio_with_state: IcomRadio,
+) -> None:
+    """MOR-437: cmd 0x16/0x12 agc mirror removed; StateStore is source of truth."""
+    rs = radio_with_state._radio_state
+    frame = _make_frame(cmd=0x16, sub=0x12, data=b"\x03", receiver=0x01)
+    radio_with_state._civ_runtime._update_state_cache_from_frame(frame)
+    # BCD-nibble decode of 0x03 == 3, matching the removed legacy mirror.
+    assert rs.sub.agc == 0
+    field = radio_with_state._state_store.snapshot().field(
+        "receiver.1.operator_controls.agc"
+    )
+    assert field.value == 3
+
+
+def test_update_radio_state_cmd1a_agc_time_constant_observation_backed(
+    radio_with_state: IcomRadio,
+) -> None:
+    """MOR-437: cmd 0x1A/0x04 agc_time_constant is observation-backed."""
+    rs = radio_with_state._radio_state
+    frame = _make_frame(cmd=0x1A, sub=0x04, data=b"\x13", receiver=0x01)
+    radio_with_state._civ_runtime._update_state_cache_from_frame(frame)
+    # 1-byte BCD decode of 0x13 == 13, matching the removed legacy mirror.
+    assert rs.sub.agc_time_constant == 0
+    field = radio_with_state._state_store.snapshot().field(
+        "receiver.1.operator_controls.agc_time_constant"
+    )
+    assert field.value == 13
+
+
 def test_update_radio_state_cmd16_via_data_sub(radio_with_state: IcomRadio) -> None:
-    """cmd 0x16 with sub=0x00 reads sub-code from data[0] (lines 558-561)."""
+    """cmd 0x16 with sub=0x00 reads sub-code from data[0] (observation path)."""
     rs = radio_with_state._radio_state
     # sub=None, data[0]=0x02 (preamp), data[1]=0x01
     frame = _make_frame(cmd=0x16, sub=None, data=bytes([0x02, 0x01]))
-    radio_with_state._civ_runtime._update_radio_state_from_frame(frame)
-    assert rs.main.preamp == 1
+    radio_with_state._civ_runtime._update_state_cache_from_frame(frame)
+    # MOR-437: preamp mirror removed; the embedded-sub frame still observes it.
+    assert rs.main.preamp == 0
+    field = radio_with_state._state_store.snapshot().field(
+        "receiver.0.operator_controls.preamp"
+    )
+    assert field.value == 1
 
 
 def test_update_radio_state_cmd1a_sub03_ignored(radio_with_state: IcomRadio) -> None:
@@ -1759,11 +2060,16 @@ def test_update_radio_state_cmd1a_sub03_ignored(radio_with_state: IcomRadio) -> 
 
 
 def test_update_radio_state_cmd1a_sub06_data_mode(radio_with_state: IcomRadio) -> None:
-    """cmd 0x1A sub 0x06 updates data_mode (lines 582-583)."""
+    """cmd 0x1A sub 0x06 data_mode is observation-backed (MOR-437)."""
     rs = radio_with_state._radio_state
     frame = _make_frame(cmd=0x1A, sub=0x06, data=bytes([0x02]))
-    radio_with_state._civ_runtime._update_radio_state_from_frame(frame)
-    assert rs.main.data_mode == 2
+    radio_with_state._civ_runtime._update_state_cache_from_frame(frame)
+    # Legacy mirror removed: data_mode lands in the active-slot StateStore path.
+    assert rs.main.data_mode == 0
+    field = radio_with_state._state_store.snapshot().field(
+        "receiver.0.active.freq_mode.data_mode"
+    )
+    assert field.value == 2
 
 
 @pytest.mark.parametrize(  # type: ignore[untyped-decorator]

@@ -98,10 +98,10 @@
   },
   {
     "name": "cmd14_sub09_cw_pitch",
-    "comment": "0x14/0x09 CW pitch (computed from raw via 600/255 mapping then snapped to 5 Hz)",
+    "comment": "0x14/0x09 CW pitch is observation-backed (MOR-437); the legacy RadioState mirror (600 Hz via the 600/255 mapping) is no longer written and stays at its default.",
     "frame": {"command": 20, "sub": 9, "data": "0128"},
     "expected_state": {
-      "cw_pitch": 600
+      "cw_pitch": 0
     }
   },
   {
@@ -138,19 +138,19 @@
   },
   {
     "name": "cmd1A_sub03_filter_width_no_profile",
-    "comment": "0x1A/0x03 filter index → raw filter_width when host has no segmented profile (lines 1023-1025)",
+    "comment": "0x1A/0x03 filter_width is observation-backed (MOR-437); the legacy RadioState mirror (raw index 21 with no segmented profile) is no longer written and stays at its default.",
     "host_setup": {"clear_profile": true},
     "frame": {"command": 26, "sub": 3, "data": "21"},
     "expected_state": {
-      "main.filter_width": 21
+      "main.filter_width": null
     }
   },
   {
     "name": "cmd1A_sub03_filter_width_segmented_profile",
-    "comment": "0x1A/0x03 filter index → resolved Hz via IC-7610 segmented profile (USB rule). Covers lines 1009-1022.",
+    "comment": "0x1A/0x03 filter_width is observation-backed (MOR-437); the legacy RadioState mirror (1700 Hz resolved via the IC-7610 segmented USB rule) is no longer written and stays at its default. The profile-dependent decode itself is asserted on the StateStore path in test_civ_rx_coverage.",
     "frame": {"command": 26, "sub": 3, "data": "21"},
     "expected_state": {
-      "main.filter_width": 1700
+      "main.filter_width": null
     }
   },
   {
@@ -449,10 +449,10 @@
   },
   {
     "name": "cmd16_sub12_agc_value_with_notify",
-    "comment": "0x16/0x12 AGC value-field + agc_changed notify — covers value-notify branch (line 931).",
+    "comment": "0x16/0x12 AGC is observation-backed (MOR-437); the legacy RadioState mirror is no longer written (stays at default), but the agc_changed notify still fires.",
     "frame": {"command": 22, "sub": 18, "data": "02"},
     "expected_state": {
-      "main.agc": 2
+      "main.agc": 0
     }
   },
   {

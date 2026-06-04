@@ -44,6 +44,7 @@ from rigplane.commands import (
     parse_scope_speed_response,
     parse_scope_vbw_response,
 )
+from rigplane.commands.levels import _cw_pitch_from_level
 from rigplane.core.exceptions import ConnectionError, TimeoutError
 from rigplane.core.state_pipeline_contracts import (
     ChangeSet,
@@ -232,10 +233,50 @@ _CMD16_NOTIFY_EVENTS = {
 _OBSERVABLE_CMD14_FIELDS = {
     0x01: ("receiver", "operator_controls", "af_level"),
     0x02: ("receiver", "operator_controls", "rf_gain"),
+    0x03: ("receiver", "operator_controls", "squelch"),
+    0x06: ("receiver", "operator_controls", "nr_level"),
     0x07: ("receiver", "operator_controls", "pbt_inner"),
     0x08: ("receiver", "operator_controls", "pbt_outer"),
     0x0A: ("global", "operator_controls", "power_level"),
+    0x0B: ("global", "operator_controls", "mic_gain"),
+    0x0E: ("global", "operator_controls", "compressor_level"),
+    0x12: ("receiver", "operator_controls", "nb_level"),
+    0x15: ("global", "operator_controls", "monitor_gain"),
 }
+
+# 0x14 cw_pitch (sub 0x09) is observation-backed too, but its raw level → Hz
+# mapping is non-linear, so it is decoded via ``_cw_pitch_from_level`` rather
+# than the plain BCD ``_decode_level`` used for the other 0x14 levels (MOR-437).
+_OBSERVABLE_CMD14_CW_PITCH_SUB = 0x09
+_CMD14_CW_PITCH_FIELD = ("global", "operator_controls", "cw_pitch")
+
+# 0x14 level sub-commands whose RadioState mirror write was migrated to the
+# StateStore observation pipeline (MOR-437). ``_handle_14`` skips the redundant
+# ``setattr`` mirror for these; ``_observations_from_frame`` is the source of
+# truth and reuses the identical decode.
+_CMD14_OBSERVATION_BACKED_SUBS = frozenset(
+    {
+        0x02,  # rf_gain (receiver)
+        0x03,  # squelch (receiver)
+        0x06,  # nr_level (receiver)
+        0x12,  # nb_level (receiver)
+        0x0B,  # mic_gain (global)
+        0x0E,  # compressor_level (global)
+        0x15,  # monitor_gain (global)
+        0x09,  # cw_pitch (global)
+    }
+)
+
+# 0x16 value sub-commands whose RadioState mirror write was migrated to the
+# StateStore observation pipeline (MOR-437). ``_handle_16`` skips the redundant
+# ``setattr`` mirror for these (while still firing the legacy notify event);
+# ``_observations_from_frame`` is the source of truth.
+_CMD16_OBSERVATION_BACKED_VALUE_SUBS = frozenset(
+    {
+        0x02,  # preamp (receiver, raw byte)
+        0x12,  # agc (receiver, BCD nibble)
+    }
+)
 
 _OBSERVABLE_CMD15_FIELDS = {
     0x02: ("receiver", "meters", "s_meter"),
@@ -253,6 +294,19 @@ _OBSERVABLE_CMD16_FIELDS = {
     0x45: ("global", "tx_state", "monitor_on"),
     0x46: ("global", "tx_state", "vox_on"),
 }
+
+# 0x16 value sub-commands → (FieldPath spec, decode mode). ``raw`` keeps the
+# data byte verbatim (preamp), ``bcd_nibble`` decodes the BCD-nibble pair the
+# legacy mirror used for agc. Both reuse the exact decode of ``_handle_16``.
+_OBSERVABLE_CMD16_VALUE_FIELDS = {
+    0x02: (("receiver", "operator_controls", "preamp"), "raw"),
+    0x12: (("receiver", "operator_controls", "agc"), "bcd_nibble"),
+}
+
+
+def _decode_bcd_nibble(value: int) -> int:
+    """Decode a single BCD-nibble byte (matches ``_handle_16``/``_handle_11``)."""
+    return ((value >> 4) & 0x0F) * 10 + (value & 0x0F)
 
 
 def _frame_native_id(frame: CivFrame) -> str:
@@ -1046,10 +1100,6 @@ class CivRuntime:
                 if _rs is not None:
                     _rs.power_on = power_on
                 self._notify_change("powerstat_changed", {"power_on": power_on})
-            elif frame.command == 0x11 and frame.data and _rx is not None:
-                # Attenuator response (plain CI-V, no cmd29)
-                val = frame.data[0]
-                _rx.att = ((val >> 4) & 0x0F) * 10 + (val & 0x0F)
             elif frame.command == 0x12 and frame.data and _rs is not None:
                 # Antenna select / RX-ANT state (plain CI-V)
                 # IC-7610 CI-V reference:
@@ -1070,31 +1120,22 @@ class CivRuntime:
                 and len(frame.data) >= 2
                 and _rx is not None
             ):
-                # Level response (plain CI-V, no cmd29)
+                # Level response (plain CI-V, no cmd29). rf_gain (0x02), squelch
+                # (0x03), nr_level (0x06) and nb_level (0x12) are now
+                # observation-backed (MOR-437); only af_level (0x01) still
+                # mirrors into legacy RadioState here.
                 sub = frame.sub or 0
                 raw = ((frame.data[0] >> 4) & 0x0F) * 100 + (frame.data[0] & 0x0F) * 10
                 if len(frame.data) > 1:
                     raw += (frame.data[1] >> 4) & 0x0F
                 if sub == 0x01:
                     _rx.af_level = raw
-                elif sub == 0x02:
-                    _rx.rf_gain = raw
-                elif sub == 0x03:
-                    _rx.squelch = raw
-                elif sub == 0x06:
-                    _rx.nr_level = raw
-                elif sub == 0x12:
-                    _rx.nb_level = raw
             elif frame.command == 0x16:
                 data = frame.data
                 sub = frame.sub or 0
-                if data and sub == 0x02 and _rx is not None:
-                    # Preamp response (plain CI-V)
-                    _rx.preamp = data[0]
-                elif data and sub == 0x12 and _rx is not None:
-                    # AGC mode response (plain CI-V)
-                    _rx.agc = data[0]
-                elif data and sub == 0x22 and _rx is not None:
+                # preamp (0x02) and agc (0x12) are now observation-backed
+                # (MOR-437); their legacy RadioState mirror was removed here.
+                if data and sub == 0x22 and _rx is not None:
                     # NB on/off (plain CI-V)
                     _rx.nb = bool(data[0])
                     self._notify_change("nb_changed", {"on": bool(data[0])})
@@ -1114,28 +1155,10 @@ class CivRuntime:
                 and frame.data
                 and _rx is not None
             ):
-                from rigplane.commands import _bcd_decode_value, filter_index_to_hz
-
-                filter_index = _bcd_decode_value(frame.data)
-                profile = getattr(host, "_profile", None)
-                if (
-                    profile is not None
-                    and getattr(profile, "filter_width_encoding", None)
-                    == "segmented_bcd_index"
-                ):
-                    rule = profile.resolve_filter_rule(
-                        getattr(_rx, "mode", None),
-                        data_mode=int(getattr(_rx, "data_mode", 0) or 0),
-                    )
-                    if rule is not None and rule.segments:
-                        decoded_width = filter_index_to_hz(
-                            filter_index, segments=rule.segments
-                        )
-                    else:
-                        decoded_width = filter_index
-                else:
-                    decoded_width = filter_index
-                _rx.filter_width = decoded_width
+                # filter_width RadioState mirror is now observation-backed
+                # (MOR-437); only the private executor _state_cache fallback
+                # (main receiver) is kept here, reusing the identical decode.
+                decoded_width = self._decode_filter_width(frame)
                 if getattr(frame, "receiver", None) in (None, 0x00):
                     host._state_cache.filter_width = decoded_width
             elif frame.command == 0x07 and frame.data and len(frame.data) >= 2:
@@ -1428,15 +1451,29 @@ class CivRuntime:
                 )
             )
         elif frame.command == 0x14 and len(frame.data) >= 2:
-            mapping = _OBSERVABLE_CMD14_FIELDS.get(frame.sub or 0)
-            if mapping is not None:
+            sub14 = frame.sub or 0
+            if sub14 == _OBSERVABLE_CMD14_CW_PITCH_SUB:
+                # cw_pitch raw level → Hz (non-linear) — reuse the exact decode
+                # the legacy mirror and ``set_cw_pitch`` use (MOR-437).
                 observations.append(
                     self._observation(
-                        self._field_path(mapping, receiver_id=receiver_id),
-                        self._decode_level(frame.data),
+                        self._field_path(
+                            _CMD14_CW_PITCH_FIELD, receiver_id=receiver_id
+                        ),
+                        _cw_pitch_from_level(self._decode_level(frame.data)),
                         frame=frame,
                     )
                 )
+            else:
+                mapping = _OBSERVABLE_CMD14_FIELDS.get(sub14)
+                if mapping is not None:
+                    observations.append(
+                        self._observation(
+                            self._field_path(mapping, receiver_id=receiver_id),
+                            self._decode_level(frame.data),
+                            frame=frame,
+                        )
+                    )
         elif frame.command == 0x15 and len(frame.data) >= 2:
             mapping = _OBSERVABLE_CMD15_FIELDS.get(frame.sub or 0)
             if mapping is not None:
@@ -1454,6 +1491,7 @@ class CivRuntime:
                 sub = data[0]
                 data = data[1:]
             mapping = _OBSERVABLE_CMD16_FIELDS.get(sub)
+            value_mapping = _OBSERVABLE_CMD16_VALUE_FIELDS.get(sub)
             if mapping is not None and data:
                 observations.append(
                     self._observation(
@@ -1462,6 +1500,67 @@ class CivRuntime:
                         frame=frame,
                     )
                 )
+            elif value_mapping is not None and data:
+                spec, decode_mode = value_mapping
+                value = (
+                    _decode_bcd_nibble(data[0])
+                    if decode_mode == "bcd_nibble"
+                    else data[0]
+                )
+                observations.append(
+                    self._observation(
+                        self._field_path(spec, receiver_id=receiver_id),
+                        value,
+                        frame=frame,
+                    )
+                )
+        elif frame.command == 0x11 and frame.data:
+            # Attenuator value (BCD nibbles → dB) — same decode as ``_handle_11``.
+            observations.append(
+                self._observation(
+                    FieldPath.receiver(receiver_id, "operator_controls", "att"),
+                    _decode_bcd_nibble(frame.data[0]),
+                    frame=frame,
+                )
+            )
+        elif frame.command == 0x1A and frame.sub == 0x03 and frame.data:
+            # Filter width: profile-dependent CI-V index → Hz, reusing the exact
+            # decode + receiver/profile context of ``_handle_1a`` (MOR-437).
+            observations.append(
+                self._observation(
+                    self._freq_mode_path(
+                        receiver_id=receiver_id,
+                        slot_override=slot_override,
+                        name="filter_width",
+                    ),
+                    self._decode_filter_width(frame),
+                    frame=frame,
+                )
+            )
+        elif frame.command == 0x1A and frame.sub == 0x04 and frame.data:
+            # AGC time constant: 1-byte BCD, same decode as ``_handle_1a``.
+            observations.append(
+                self._observation(
+                    FieldPath.receiver(
+                        receiver_id, "operator_controls", "agc_time_constant"
+                    ),
+                    parse_level_response(frame, command=0x1A, sub=0x04, bcd_bytes=1),
+                    frame=frame,
+                )
+            )
+        elif frame.command == 0x1A and frame.sub == 0x06 and frame.data:
+            # Data mode: raw byte, same as ``_handle_1a``.
+            observations.append(
+                self._observation(
+                    self._freq_mode_path(
+                        receiver_id=receiver_id,
+                        slot_override=slot_override,
+                        name="data_mode",
+                    ),
+                    frame.data[0],
+                    frame=frame,
+                )
+            )
         elif frame.command == 0x18 and len(frame.data) == 1:
             observations.append(
                 self._observation(
@@ -1573,6 +1672,47 @@ class CivRuntime:
     def _decode_level(data: bytes) -> int:
         b0, b1 = data[0], data[1]
         return (b0 >> 4) * 1000 + (b0 & 0x0F) * 100 + (b1 >> 4) * 10 + (b1 & 0x0F)
+
+    def _decode_filter_width(self, frame: CivFrame) -> int:
+        """Decode a 0x1A/0x03 filter-width frame to Hz.
+
+        Profile-dependent: when the active profile encodes filter width as a
+        ``segmented_bcd_index``, the BCD index is mapped to Hz via the
+        mode/data-mode filter rule; otherwise the raw index is returned. Shared
+        by ``_observations_from_frame`` and ``_handle_1a`` so both produce a
+        byte-for-byte identical value (MOR-437).
+        """
+
+        from rigplane.commands import _bcd_decode_value, filter_index_to_hz
+
+        filter_index = _bcd_decode_value(frame.data)
+        profile = getattr(self._host, "_profile", None)
+        rx = self._resolve_filter_width_receiver(frame)
+        if (
+            profile is not None
+            and getattr(profile, "filter_width_encoding", None)
+            == "segmented_bcd_index"
+        ):
+            rule = profile.resolve_filter_rule(
+                getattr(rx, "mode", None),
+                data_mode=int(getattr(rx, "data_mode", 0) or 0),
+            )
+            if rule is not None and rule.segments:
+                return int(filter_index_to_hz(filter_index, segments=rule.segments))
+            return filter_index
+        return filter_index
+
+    def _resolve_filter_width_receiver(self, frame: CivFrame) -> Any:
+        """Resolve the RadioState receiver providing mode/data_mode context."""
+
+        rs = getattr(self._host, "_radio_state", None)
+        if rs is None:
+            return None
+        if frame.receiver is not None:
+            rx_name = "MAIN" if frame.receiver == 0x00 else "SUB"
+        else:
+            rx_name = rs.active
+        return rs.receiver(rx_name)
 
     @staticmethod
     def _field_path(
@@ -1738,9 +1878,9 @@ class CivRuntime:
         slot_override: str | None,
     ) -> None:
         # cmd 0x11: attenuator value (BCD nibbles → dB).
-        if frame.data:
-            val = frame.data[0]
-            rx.att = ((val >> 4) & 0x0F) * 10 + (val & 0x0F)
+        # Mirror write migrated to the StateStore observation pipeline (MOR-437);
+        # ``_observations_from_frame`` is the source of truth.
+        return
 
     def _handle_12(
         self,
@@ -1774,12 +1914,15 @@ class CivRuntime:
             b0, b1 = frame.data[0], frame.data[1]
             raw = (b0 >> 4) * 1000 + (b0 & 0x0F) * 100 + (b1 >> 4) * 10 + (b1 & 0x0F)
             sub = frame.sub
+            if sub in _CMD14_OBSERVATION_BACKED_SUBS:
+                # rf_gain/squelch/nr_level/nb_level/mic_gain/compressor_level/
+                # monitor_gain/cw_pitch mirror writes migrated to the StateStore
+                # observation pipeline (MOR-437).
+                return
             if sub in _CMD14_RECEIVER_LEVEL_FIELDS:
                 setattr(rx, _CMD14_RECEIVER_LEVEL_FIELDS[sub], raw)
             elif sub == 0x0A:
                 rs.power_level = raw
-            elif sub == 0x09:
-                rs.cw_pitch = int(round((((600.0 / 255.0) * raw) + 300) / 5.0) * 5.0)
             elif sub == 0x0C:
                 rs.key_speed = round((raw / 6.071) + 6)
             elif sub in _CMD14_GLOBAL_LEVEL_FIELDS:
@@ -1832,12 +1975,13 @@ class CivRuntime:
             data = data[1:]
         if data:
             val = data[0]
-            if sub in _CMD16_OBSERVATION_BACKED_SUBS:
+            if (
+                sub in _CMD16_OBSERVATION_BACKED_SUBS
+                or sub in _CMD16_OBSERVATION_BACKED_VALUE_SUBS
+            ):
                 # Mirror write migrated to the StateStore observation pipeline
                 # (MOR-437); only the legacy notify event below still fires.
                 pass
-            elif sub == 0x02:
-                rx.preamp = val
             elif sub in _CMD16_RECEIVER_BOOL_FIELDS:
                 setattr(rx, _CMD16_RECEIVER_BOOL_FIELDS[sub], bool(val))
             elif sub in _CMD16_RECEIVER_VALUE_FIELDS:
@@ -1869,38 +2013,12 @@ class CivRuntime:
         rs: "RadioState",
         slot_override: str | None,
     ) -> None:
-        # cmd 0x1A: CTL mem levels + filter width + data mode + AF mute.
+        # cmd 0x1A: CTL mem levels + AF mute. Filter width (0x03), AGC time
+        # constant (0x04) and data mode (0x06) are now observation-backed
+        # (MOR-437); only the CTL-mem levels (0x05) and AF mute (0x09) still
+        # mirror into RadioState here.
         sub = frame.sub
-        if sub == 0x04:
-            rx.agc_time_constant = parse_level_response(
-                frame,
-                command=0x1A,
-                sub=0x04,
-                bcd_bytes=1,
-            )
-        if sub == 0x03 and frame.data:
-            from rigplane.commands import _bcd_decode_value, filter_index_to_hz
-
-            filter_index = _bcd_decode_value(frame.data)
-            profile = getattr(self._host, "_profile", None)
-            if (
-                profile is not None
-                and getattr(profile, "filter_width_encoding", None)
-                == "segmented_bcd_index"
-            ):
-                rule = profile.resolve_filter_rule(
-                    rx.mode,
-                    data_mode=int(getattr(rx, "data_mode", 0) or 0),
-                )
-                if rule is not None and rule.segments:
-                    rx.filter_width = filter_index_to_hz(
-                        filter_index, segments=rule.segments
-                    )
-                else:
-                    rx.filter_width = filter_index
-            else:
-                rx.filter_width = filter_index
-        elif sub == 0x05:
+        if sub == 0x05:
             for prefix, (
                 field,
                 bcd_bytes,
@@ -1918,8 +2036,6 @@ class CivRuntime:
                         ),
                     )
                     break
-        elif sub == 0x06 and frame.data:
-            rx.data_mode = frame.data[0]
         elif sub == 0x09:
             rx.af_mute = parse_bool_response(frame, command=0x1A, sub=0x09)
 
