@@ -5,11 +5,14 @@ from __future__ import annotations
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Protocol
+from typing import TYPE_CHECKING, Protocol
 
 from rigplane.core.observation_adapter import ProviderObservationAdapter
 from rigplane.core.state_acquisition_policy import RadioAcquisitionProfile
 from rigplane.core.state_pipeline_contracts import FieldPath, Observation
+
+if TYPE_CHECKING:
+    from rigplane.core.types import BreakInMode
 
 Clock = Callable[[], float]
 
@@ -104,6 +107,21 @@ _RIT_FREQ = FieldPath.global_("operator_controls", "rit_freq")
 # single ``get_tuner``/``get_lock`` reads.
 _TUNER = FieldPath.global_("operator_controls", "tuner_status")
 _DIAL_LOCK = FieldPath.global_("tx_state", "dial_lock")
+# CW keyer family (MOR-456). GLOBAL slow-changing operator/slow controls, all
+# gated on the legacy poller's single ``"cw" in caps`` gate: ``key_speed`` is
+# the keyer WPM (CAT ``KS``), ``cw_pitch`` is the sidetone pitch in Hz (CAT
+# ``KP`` idx → ``300 + idx * 10``), ``break_in`` is the break-in mode emitted as
+# the device int (CAT ``BI``: 0=OFF, 1=SEMI — FTX-1 is binary only, matching the
+# legacy poller's ``1 if get_break_in() else 0`` int store), ``break_in_delay``
+# is the QSK delay in ms (CAT ``SD``). All four are operator_controls and ride
+# the global TX-control lane alongside RIT/tuner. ``cw_spot`` is a global
+# slow_state bool (CAT ``CS``) emitted in the slow-control lane beside
+# ``slow_state.active``. Raw device scale (cross-vendor calibration is MOR-453).
+_KEY_SPEED = FieldPath.global_("operator_controls", "key_speed")
+_CW_PITCH = FieldPath.global_("operator_controls", "cw_pitch")
+_BREAK_IN = FieldPath.global_("operator_controls", "break_in")
+_BREAK_IN_DELAY = FieldPath.global_("operator_controls", "break_in_delay")
+_CW_SPOT = FieldPath.global_("slow_state", "cw_spot")
 YAESU_PTT_PATH = _PTT
 
 
@@ -173,6 +191,16 @@ class YaesuObservationRadio(Protocol):
     async def read_tuner(self) -> int: ...
 
     async def read_lock(self) -> bool: ...
+
+    async def read_keyer_speed(self) -> int: ...
+
+    async def read_cw_pitch(self) -> int: ...
+
+    async def read_break_in(self) -> BreakInMode: ...
+
+    async def read_break_in_delay(self) -> int: ...
+
+    async def read_cw_spot(self) -> bool: ...
 
 
 @dataclass(slots=True)
@@ -518,6 +546,18 @@ class YaesuObservationAdapter:
                     native_id="read_vfo_select",
                 )
             )
+        # CW spot (MOR-456) — GLOBAL slow_state bool (CAT ``CS``), gated on the
+        # legacy poller's single ``"cw" in caps`` gate (the same block that feeds
+        # key_speed/cw_pitch/break_in). Emitted in the slow-control lane beside
+        # ``slow_state.active``, the only other global slow_state observation.
+        if self._has_runtime_capability("cw") and self._can_poll(_CW_SPOT):
+            observations.append(
+                adapter.observation(
+                    _CW_SPOT,
+                    bool(await self.radio.read_cw_spot()),
+                    native_id="read_cw_spot",
+                )
+            )
         return tuple(observations)
 
     async def poll_tx_controls(self) -> tuple[Observation, ...]:
@@ -648,6 +688,49 @@ class YaesuObservationAdapter:
                     native_id="read_lock",
                 )
             )
+        # CW keyer family (MOR-456) — GLOBAL operator-control setpoints, all
+        # gated on the legacy poller's single ``"cw" in caps`` gate, mirroring
+        # its ``key_speed``/``cw_pitch``/``break_in``/``break_in_delay`` reads in
+        # the same pass. ``key_speed`` is the keyer WPM (CAT ``KS``); ``cw_pitch``
+        # is the sidetone in Hz (CAT ``KP`` idx → ``300 + idx * 10``);
+        # ``break_in`` is emitted as the device int (CAT ``BI``: 0=OFF, 1=SEMI),
+        # exactly the poller's ``1 if get_break_in() else 0`` int store;
+        # ``break_in_delay`` is the QSK delay in ms (CAT ``SD``). Raw device scale
+        # (cross-vendor calibration is MOR-453); each emission is gated
+        # independently by per-field policy.
+        if self._has_runtime_capability("cw"):
+            if self._can_poll(_KEY_SPEED):
+                observations.append(
+                    adapter.observation(
+                        _KEY_SPEED,
+                        int(await self.radio.read_keyer_speed()),
+                        native_id="read_keyer_speed",
+                    )
+                )
+            if self._can_poll(_CW_PITCH):
+                observations.append(
+                    adapter.observation(
+                        _CW_PITCH,
+                        int(await self.radio.read_cw_pitch()),
+                        native_id="read_cw_pitch",
+                    )
+                )
+            if self._can_poll(_BREAK_IN):
+                observations.append(
+                    adapter.observation(
+                        _BREAK_IN,
+                        int(await self.radio.read_break_in()),
+                        native_id="read_break_in",
+                    )
+                )
+            if self._can_poll(_BREAK_IN_DELAY):
+                observations.append(
+                    adapter.observation(
+                        _BREAK_IN_DELAY,
+                        int(await self.radio.read_break_in_delay()),
+                        native_id="read_break_in_delay",
+                    )
+                )
         return tuple(observations)
 
     def _adapter(self) -> ProviderObservationAdapter:

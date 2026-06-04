@@ -261,6 +261,65 @@ def test_global_dial_lock_registered_as_tx_state_bool() -> None:
     assert spec.writable is True
 
 
+def test_global_key_speed_registered_as_operator_control_int() -> None:
+    """MOR-456: ``global.operator_controls.key_speed`` is a registered int.
+
+    The observation-backed FTX-1 keyer-speed field (CAT ``KS``) needs a
+    canonical FieldSpec so the acquisition profile and store accept it. It is a
+    global operator-control int (WPM), alongside ``cw_pitch``.
+    """
+    path = FieldPath.global_("operator_controls", "key_speed")
+    spec = DEFAULT_FIELD_REGISTRY.require(path)
+    assert spec.path == path
+    assert spec.family is FieldFamily.OPERATOR_CONTROLS
+    assert spec.value_type == "int"
+    assert spec.writable is True
+
+
+def test_global_break_in_registered_as_operator_control_int() -> None:
+    """MOR-456: ``global.operator_controls.break_in`` is a registered int.
+
+    ``get_break_in`` returns a :class:`BreakInMode` ``IntEnum``, but the legacy
+    poller and ``RadioState.break_in`` store it as a plain int
+    (``1 if get_break_in() else 0``; ``0=off, 1=semi, 2=full``) and the web
+    projection passes that int straight through with no ``.value``/``str()``.
+    The canonical neutral type is therefore ``int``, not an enum/str.
+    """
+    path = FieldPath.global_("operator_controls", "break_in")
+    spec = DEFAULT_FIELD_REGISTRY.require(path)
+    assert spec.path == path
+    assert spec.family is FieldFamily.OPERATOR_CONTROLS
+    assert spec.value_type == "int"
+    assert spec.writable is True
+
+
+def test_global_break_in_delay_registered_as_operator_control_int() -> None:
+    """MOR-456: ``global.operator_controls.break_in_delay`` is a registered int.
+
+    The observation-backed FTX-1 QSK-delay field (CAT ``SD``) needs a canonical
+    FieldSpec. It is a global operator-control int (milliseconds).
+    """
+    path = FieldPath.global_("operator_controls", "break_in_delay")
+    spec = DEFAULT_FIELD_REGISTRY.require(path)
+    assert spec.path == path
+    assert spec.family is FieldFamily.OPERATOR_CONTROLS
+    assert spec.value_type == "int"
+    assert spec.writable is True
+
+
+def test_global_cw_spot_registered_as_slow_state_bool() -> None:
+    """MOR-456: ``global.slow_state.cw_spot`` is a registered slow_state bool.
+
+    The observation-backed FTX-1 CW-spot field (CAT ``CS``) needs a canonical
+    FieldSpec. It is a global slow_state bool, alongside ``slow_state.active``.
+    """
+    path = FieldPath.global_("slow_state", "cw_spot")
+    spec = DEFAULT_FIELD_REGISTRY.require(path)
+    assert spec.path == path
+    assert spec.family is FieldFamily.SLOW_STATE
+    assert spec.value_type == "bool"
+
+
 def test_observation_and_changeset_serialization_round_trip() -> None:
     source = SourceMetadata(
         source="civ_unsolicited",

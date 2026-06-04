@@ -18,6 +18,7 @@ import pytest
 
 from rigplane.core.state_acquisition_policy import RadioAcquisitionProfile
 from rigplane.core.state_store import StateStore
+from rigplane.core.types import BreakInMode
 from rigplane.profiles import get_radio_profile
 from rigplane.web.runtime_helpers import build_public_state_payload_from_snapshot
 
@@ -109,6 +110,23 @@ _TUNER_LOCK_CASES = (
     ("global.tx_state.dial_lock", "dialLock", True),
 )
 
+# (store path, public fieldStatus key, expected value) for the CW keyer family
+# (MOR-456). key_speed/cw_pitch/break_in/break_in_delay are global
+# operator-control ints emitted on the tx-control lane; cw_pitch is Hz, break_in
+# is the device int (1=SEMI) from the BreakInMode IntEnum (matching the legacy
+# poller's ``1 if get_break_in() else 0`` int store). Raw device scale
+# (cross-vendor calibration is MOR-453).
+_CW_KEYER_CASES = (
+    ("global.operator_controls.key_speed", "keySpeed", 24),
+    ("global.operator_controls.cw_pitch", "cwPitch", 600),
+    ("global.operator_controls.break_in", "breakIn", 1),
+    ("global.operator_controls.break_in_delay", "breakInDelay", 300),
+)
+
+# (store path, public fieldStatus key, expected value) for CW spot (MOR-456), a
+# global slow_state bool emitted on the slow-control lane beside active-slot.
+_CW_SPOT_CASES = (("global.slow_state.cw_spot", "cwSpot", True),)
+
 
 def _clock() -> float:
     return 123.456
@@ -142,6 +160,7 @@ def _make_radio() -> MagicMock:
         "rit",
         "tuner",
         "dial_lock",
+        "cw",
     }
     # Power emits the watt SETPOINT (read_power), not the RM5 meter.
     radio.read_power = AsyncMock(return_value=(2, 55))
@@ -193,6 +212,15 @@ def _make_radio() -> MagicMock:
     # tx_state bool — both ride the tx-control lane.
     radio.read_tuner = AsyncMock(return_value=2)
     radio.read_lock = AsyncMock(return_value=True)
+    # CW keyer family observation reads (MOR-456). key_speed/cw_pitch/break_in/
+    # break_in_delay ride the tx-control lane (global operator-control ints);
+    # cw_spot rides the slow-control lane (global slow_state bool). cw_pitch is
+    # Hz; break_in is the BreakInMode IntEnum emitted downstream as int (1=SEMI).
+    radio.read_keyer_speed = AsyncMock(return_value=24)
+    radio.read_cw_pitch = AsyncMock(return_value=600)
+    radio.read_break_in = AsyncMock(return_value=BreakInMode.SEMI)
+    radio.read_break_in_delay = AsyncMock(return_value=300)
+    radio.read_cw_spot = AsyncMock(return_value=True)
     return radio
 
 
@@ -693,6 +721,104 @@ async def test_tuner_lock_projects_available() -> None:
     )
 
     for _store_path, public_path, _expected in _TUNER_LOCK_CASES:
+        status = payload["fieldStatus"][public_path]
+        assert status["observed"] is True
+        assert status["availability"] == "available"
+
+
+@pytest.mark.asyncio
+async def test_cw_keyer_observation_value() -> None:
+    store = StateStore()
+    radio = _make_radio()
+
+    await _apply_tx_controls(store, radio)
+
+    snapshot = store.snapshot()
+    for store_path, _public_path, expected in _CW_KEYER_CASES:
+        assert snapshot.field(store_path).value == expected
+
+
+@pytest.mark.asyncio
+async def test_cw_keyer_survives_unrelated_observation() -> None:
+    store = StateStore()
+    radio = _make_radio()
+
+    await _apply_tx_controls(store, radio)
+    # An unrelated RX-meter observation on a later cycle must not disturb the
+    # CW keyer controls (no snap-back to the default snapshot value).
+    for observation in await _adapter(radio).poll_rx_meters():
+        store.apply(observation)
+
+    snapshot = store.snapshot()
+    for store_path, _public_path, expected in _CW_KEYER_CASES:
+        assert snapshot.field(store_path).value == expected
+
+
+@pytest.mark.asyncio
+async def test_cw_keyer_projects_available() -> None:
+    store = StateStore()
+    radio = _make_radio()
+
+    await _apply_tx_controls(store, radio)
+    for observation in await _adapter(radio).poll_rx_meters():
+        store.apply(observation)
+
+    payload = build_public_state_payload_from_snapshot(
+        store.snapshot(),
+        radio=None,
+        receiver_count=2,
+    )
+
+    for _store_path, public_path, _expected in _CW_KEYER_CASES:
+        status = payload["fieldStatus"][public_path]
+        assert status["observed"] is True
+        assert status["availability"] == "available"
+
+
+@pytest.mark.asyncio
+async def test_cw_spot_observation_value() -> None:
+    store = StateStore()
+    radio = _make_radio()
+
+    await _apply_slow_controls(store, radio)
+
+    snapshot = store.snapshot()
+    for store_path, _public_path, expected in _CW_SPOT_CASES:
+        assert snapshot.field(store_path).value == expected
+
+
+@pytest.mark.asyncio
+async def test_cw_spot_survives_unrelated_observation() -> None:
+    store = StateStore()
+    radio = _make_radio()
+
+    await _apply_slow_controls(store, radio)
+    # An unrelated RX-meter observation on a later cycle must not disturb the
+    # CW spot field (no snap-back to the default snapshot value).
+    for observation in await _adapter(radio).poll_rx_meters():
+        store.apply(observation)
+
+    snapshot = store.snapshot()
+    for store_path, _public_path, expected in _CW_SPOT_CASES:
+        assert snapshot.field(store_path).value == expected
+
+
+@pytest.mark.asyncio
+async def test_cw_spot_projects_available() -> None:
+    store = StateStore()
+    radio = _make_radio()
+
+    await _apply_slow_controls(store, radio)
+    for observation in await _adapter(radio).poll_rx_meters():
+        store.apply(observation)
+
+    payload = build_public_state_payload_from_snapshot(
+        store.snapshot(),
+        radio=None,
+        receiver_count=2,
+    )
+
+    for _store_path, public_path, _expected in _CW_SPOT_CASES:
         status = payload["fieldStatus"][public_path]
         assert status["observed"] is True
         assert status["availability"] == "available"

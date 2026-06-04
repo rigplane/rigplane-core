@@ -8,6 +8,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from rigplane.core.state_acquisition_policy import RadioAcquisitionProfile
+from rigplane.core.types import BreakInMode
 from rigplane.profiles import get_radio_profile
 from rigplane.radio_state import RadioState
 
@@ -41,6 +42,7 @@ def _make_radio() -> MagicMock:
         "rit",
         "tuner",
         "dial_lock",
+        "cw",
     }
     radio.get_freq = AsyncMock(
         side_effect=lambda receiver=0: 14_074_000 if receiver == 0 else 7_074_000
@@ -141,6 +143,21 @@ def _make_radio() -> MagicMock:
     radio.read_tuner = AsyncMock(return_value=2)
     radio.get_lock = AsyncMock(return_value=True)
     radio.read_lock = AsyncMock(return_value=True)
+    # CW keyer family observation reads (MOR-456). ``read_keyer_speed`` returns
+    # the WPM; ``read_cw_pitch`` returns the sidetone in Hz (idx → 300+idx*10);
+    # ``read_break_in`` returns the BreakInMode IntEnum (emitted as int 0/1);
+    # ``read_break_in_delay`` returns the QSK delay in ms; ``read_cw_spot``
+    # returns the CW-spot bool.
+    radio.get_keyer_speed = AsyncMock(return_value=24)
+    radio.read_keyer_speed = AsyncMock(return_value=24)
+    radio.get_cw_pitch = AsyncMock(return_value=600)
+    radio.read_cw_pitch = AsyncMock(return_value=600)
+    radio.get_break_in = AsyncMock(return_value=BreakInMode.SEMI)
+    radio.read_break_in = AsyncMock(return_value=BreakInMode.SEMI)
+    radio.get_break_in_delay = AsyncMock(return_value=300)
+    radio.read_break_in_delay = AsyncMock(return_value=300)
+    radio.get_cw_spot = AsyncMock(return_value=True)
+    radio.read_cw_spot = AsyncMock(return_value=True)
     return radio
 
 
@@ -163,6 +180,7 @@ class _SideEffectingYaesuRadio:
         "rit",
         "tuner",
         "dial_lock",
+        "cw",
     }
 
     def __init__(self) -> None:
@@ -201,6 +219,11 @@ class _SideEffectingYaesuRadio:
         self.radio_state.rit_freq = 21
         self.radio_state.tuner_status = 0
         self.radio_state.dial_lock = False
+        self.radio_state.key_speed = 99
+        self.radio_state.cw_pitch = 999
+        self.radio_state.break_in = 2
+        self.radio_state.break_in_delay = 888
+        self.radio_state.cw_spot = False
 
     async def read_freq(self, receiver: int = 0) -> int:
         return 14_074_000 if receiver == 0 else 7_074_000
@@ -426,6 +449,46 @@ class _SideEffectingYaesuRadio:
         self.radio_state.dial_lock = value
         return value
 
+    async def read_keyer_speed(self) -> int:
+        return 24
+
+    async def get_keyer_speed(self) -> int:
+        value = await self.read_keyer_speed()
+        self.radio_state.key_speed = value
+        return value
+
+    async def read_cw_pitch(self) -> int:
+        return 600
+
+    async def get_cw_pitch(self) -> int:
+        value = await self.read_cw_pitch()
+        self.radio_state.cw_pitch = value
+        return value
+
+    async def read_break_in(self) -> BreakInMode:
+        return BreakInMode.SEMI
+
+    async def get_break_in(self) -> BreakInMode:
+        value = await self.read_break_in()
+        self.radio_state.break_in = int(value)
+        return value
+
+    async def read_break_in_delay(self) -> int:
+        return 300
+
+    async def get_break_in_delay(self) -> int:
+        value = await self.read_break_in_delay()
+        self.radio_state.break_in_delay = value
+        return value
+
+    async def read_cw_spot(self) -> bool:
+        return True
+
+    async def get_cw_spot(self) -> bool:
+        value = await self.read_cw_spot()
+        self.radio_state.cw_spot = value
+        return value
+
 
 @pytest.mark.asyncio
 async def test_medium_poll_emits_frequency_mode_and_ptt_observations() -> None:
@@ -508,15 +571,20 @@ async def test_slow_poll_emits_declared_control_observations_only() -> None:
         ("receiver.main.operator_toggles.manual_notch", True),
         ("receiver.main.operator_controls.manual_notch_freq", 128),
         # active-slot (MOR-446): the global "which receiver is active" field,
-        # emitted last in the slow-control lane, unconditional (no FTX-1 cap
-        # gate) like the legacy poller's always-on ``get_vfo_select`` read. The
-        # int receiver index (1=SUB) coerces to the neutral "MAIN"/"SUB" str.
+        # emitted in the slow-control lane, unconditional (no FTX-1 cap gate)
+        # like the legacy poller's always-on ``get_vfo_select`` read. The int
+        # receiver index (1=SUB) coerces to the neutral "MAIN"/"SUB" str.
         ("global.slow_state.active", "SUB"),
+        # cw_spot (MOR-456): global slow_state bool (CAT ``CS``), closes the
+        # slow-control lane, gated on the legacy poller's ``"cw" in caps`` gate.
+        ("global.slow_state.cw_spot", True),
     ]
     assert all(item.source.source == "yaesu_poll_response" for item in observations)
     assert all(item.max_age == 120.0 for item in observations)
     assert radio.read_vfo_select.await_count == 1
     radio.get_vfo_select.assert_not_awaited()
+    assert radio.read_cw_spot.await_count == 1
+    radio.get_cw_spot.assert_not_awaited()
     assert radio.read_af_level.await_count == 2
     assert radio.read_rf_gain.await_count == 2
     assert radio.read_squelch.await_count == 2
@@ -754,6 +822,15 @@ async def test_tx_controls_poll_emits_global_setpoints() -> None:
         # ``"dial_lock" in caps`` gates.
         ("global.operator_controls.tuner_status", 2),
         ("global.tx_state.dial_lock", True),
+        # CW keyer family (MOR-456): key_speed/cw_pitch/break_in/break_in_delay
+        # are global operator-control ints gated on the legacy poller's single
+        # ``"cw" in caps`` gate. cw_pitch is Hz; break_in is the device int
+        # (1=SEMI) from the BreakInMode IntEnum. (cw_spot is a slow_state bool
+        # emitted on the slow-control lane, asserted separately below.)
+        ("global.operator_controls.key_speed", 24),
+        ("global.operator_controls.cw_pitch", 600),
+        ("global.operator_controls.break_in", 1),
+        ("global.operator_controls.break_in_delay", 300),
     ]
     assert all(item.source.source == "yaesu_poll_response" for item in observations)
     assert all(item.max_age == 120.0 for item in observations)
@@ -770,6 +847,11 @@ async def test_tx_controls_poll_emits_global_setpoints() -> None:
     # Tuner + dial-lock each use a single read (MOR-455).
     radio.read_tuner.assert_awaited_once()
     radio.read_lock.assert_awaited_once()
+    # CW keyer family each use a single read (MOR-456).
+    radio.read_keyer_speed.assert_awaited_once()
+    radio.read_cw_pitch.assert_awaited_once()
+    radio.read_break_in.assert_awaited_once()
+    radio.read_break_in_delay.assert_awaited_once()
     radio.get_power.assert_not_awaited()
     radio.get_mic_gain.assert_not_awaited()
     radio.get_processor.assert_not_awaited()
@@ -780,6 +862,10 @@ async def test_tx_controls_poll_emits_global_setpoints() -> None:
     radio.get_clarifier_freq.assert_not_awaited()
     radio.get_tuner.assert_not_awaited()
     radio.get_lock.assert_not_awaited()
+    radio.get_keyer_speed.assert_not_awaited()
+    radio.get_cw_pitch.assert_not_awaited()
+    radio.get_break_in.assert_not_awaited()
+    radio.get_break_in_delay.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -812,6 +898,11 @@ async def test_tx_controls_poll_skips_fields_without_matching_runtime_capability
     # Tuner + dial-lock are dropped: ``tuner``/``dial_lock`` caps absent (MOR-455).
     radio.read_tuner.assert_not_awaited()
     radio.read_lock.assert_not_awaited()
+    # CW keyer family dropped: the ``cw`` runtime cap is absent here (MOR-456).
+    radio.read_keyer_speed.assert_not_awaited()
+    radio.read_cw_pitch.assert_not_awaited()
+    radio.read_break_in.assert_not_awaited()
+    radio.read_break_in_delay.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -858,6 +949,9 @@ async def test_adapter_uses_read_only_yaesu_paths_when_getters_mutate_state() ->
         # active-slot (MOR-446) closes the slow-control lane; unconditional like
         # AGC/narrow, the SUB index coerces to the neutral "SUB" str.
         ("global.slow_state.active", "SUB"),
+        # cw_spot (MOR-456) — global slow_state bool, gated on the ``cw`` cap
+        # (present here); ``read_cw_spot`` does not mutate legacy state.
+        ("global.slow_state.cw_spot", True),
         ("global.operator_controls.power_level", 55),
         ("global.operator_controls.mic_gain", 40),
         ("global.tx_state.compressor_on", True),
@@ -875,6 +969,15 @@ async def test_adapter_uses_read_only_yaesu_paths_when_getters_mutate_state() ->
         # mutates legacy state. tuner_status is the raw device int (0-3).
         ("global.operator_controls.tuner_status", 2),
         ("global.tx_state.dial_lock", True),
+        # CW keyer family (MOR-456): gated on the ``cw`` cap (present here); a
+        # single ``read_keyer_speed``/``read_cw_pitch``/``read_break_in``/
+        # ``read_break_in_delay`` each — none mutates legacy state. cw_pitch is
+        # Hz; break_in is the device int (1=SEMI). (cw_spot rides the
+        # slow-control lane, asserted above.)
+        ("global.operator_controls.key_speed", 24),
+        ("global.operator_controls.cw_pitch", 600),
+        ("global.operator_controls.break_in", 1),
+        ("global.operator_controls.break_in_delay", 300),
     ]
     assert radio.radio_state.main.freq == 1
     assert radio.radio_state.main.mode == "INIT-MAIN"
@@ -919,6 +1022,12 @@ async def test_adapter_uses_read_only_yaesu_paths_when_getters_mutate_state() ->
     # Tuner + dial-lock read_* paths must not mutate legacy state (MOR-455).
     assert radio.radio_state.tuner_status == 0
     assert radio.radio_state.dial_lock is False
+    # CW keyer family read_* paths must not mutate legacy state (MOR-456).
+    assert radio.radio_state.key_speed == 99
+    assert radio.radio_state.cw_pitch == 999
+    assert radio.radio_state.break_in == 2
+    assert radio.radio_state.break_in_delay == 888
+    assert radio.radio_state.cw_spot is False
 
 
 @pytest.mark.asyncio
@@ -995,6 +1104,47 @@ async def test_read_tuner_and_lock_are_pure_reads() -> None:
     radio._query = AsyncMock(return_value={"state": "1"})  # type: ignore[method-assign]
     assert await radio.read_lock() is True
     assert radio.radio_state.dial_lock is False
+
+
+@pytest.mark.asyncio
+async def test_read_cw_keyer_family_are_pure_reads() -> None:
+    """MOR-456: the CW keyer ``read_*`` helpers are pure CAT reads.
+
+    Each delegates to the underlying ``get_*`` query/parse path but must NOT
+    write ``self._state`` — only the ``read_*`` variants feed the observation
+    pipeline (MOR-434 pattern). ``read_cw_pitch`` maps the FTX-1 idx to Hz
+    (``300 + idx * 10``); ``read_break_in`` returns the BreakInMode IntEnum
+    (emitted downstream as the device int). Raw device scale (cross-vendor
+    calibration is MOR-453).
+    """
+    radio = YaesuCatRadio("/dev/null", audio_driver=MagicMock())
+    radio.radio_state.key_speed = 99
+    radio.radio_state.cw_pitch = 999
+    radio.radio_state.break_in = 2
+    radio.radio_state.break_in_delay = 888
+    radio.radio_state.cw_spot = False
+    state_before = radio.radio_state
+
+    radio._query = AsyncMock(return_value={"wpm": "24"})  # type: ignore[method-assign]
+    assert await radio.read_keyer_speed() == 24
+    assert radio.radio_state is state_before
+    assert radio.radio_state.key_speed == 99
+
+    radio._query = AsyncMock(return_value={"idx": "30"})  # type: ignore[method-assign]
+    assert await radio.read_cw_pitch() == 600  # 300 + 30 * 10
+    assert radio.radio_state.cw_pitch == 999
+
+    radio._query = AsyncMock(return_value={"state": "1"})  # type: ignore[method-assign]
+    assert await radio.read_break_in() is BreakInMode.SEMI
+    assert radio.radio_state.break_in == 2
+
+    radio._query = AsyncMock(return_value={"delay": "300"})  # type: ignore[method-assign]
+    assert await radio.read_break_in_delay() == 300
+    assert radio.radio_state.break_in_delay == 888
+
+    radio._query = AsyncMock(return_value={"state": "1"})  # type: ignore[method-assign]
+    assert await radio.read_cw_spot() is True
+    assert radio.radio_state.cw_spot is False
 
 
 @pytest.mark.asyncio

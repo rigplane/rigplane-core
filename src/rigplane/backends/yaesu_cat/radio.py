@@ -1677,23 +1677,51 @@ class YaesuCatRadio:
 
     # -- D7: CW -------------------------------------------------------------
 
-    async def get_keyer_speed(self) -> int:
-        """Get CW keyer speed in WPM (4–60)."""
+    async def read_keyer_speed(self) -> int:
+        """Read CW keyer speed in WPM (4–60) without mutating legacy state."""
         result = await self._query("get_keyer_speed")
         return int(result["wpm"])
+
+    async def get_keyer_speed(self) -> int:
+        """Get CW keyer speed in WPM (4–60)."""
+        return await self.read_keyer_speed()
 
     async def set_keyer_speed(self, wpm: int) -> None:
         """Set CW keyer speed in WPM (4–60)."""
         await self._write("set_keyer_speed", wpm=wpm)
 
-    async def get_key_pitch(self) -> int:
-        """Get CW pitch index (0–75, maps to 300–1050 Hz)."""
+    async def read_key_pitch(self) -> int:
+        """Read CW pitch index (0–75) without mutating legacy state."""
         result = await self._query("get_key_pitch")
         return int(result["idx"])
+
+    async def get_key_pitch(self) -> int:
+        """Get CW pitch index (0–75, maps to 300–1050 Hz)."""
+        return await self.read_key_pitch()
 
     async def set_key_pitch(self, idx: int) -> None:
         """Set CW pitch index (0–75)."""
         await self._write("set_key_pitch", idx=idx)
+
+    async def read_cw_pitch(self) -> int:
+        """Read CW pitch in Hz (300-1050) without mutating legacy state.
+
+        Maps the FTX-1 idx (0-75) to Hz (``idx → 300 + idx * 10``), matching
+        :meth:`get_cw_pitch`. Pure CAT read used by the observation pipeline.
+        """
+        idx = await self.read_key_pitch()
+        return 300 + idx * 10
+
+    async def read_break_in(self) -> BreakInMode:
+        """Read CW break-in mode without mutating legacy state.
+
+        FTX-1 CAT exposes only binary on/off; map ``"1"`` to
+        :attr:`BreakInMode.SEMI` and ``"0"`` to :attr:`BreakInMode.OFF`.
+        :class:`BreakInMode` is an :class:`IntEnum` and remains
+        bool-compatible at runtime.
+        """
+        result = await self._query("get_break_in")
+        return BreakInMode.SEMI if result["state"] == "1" else BreakInMode.OFF
 
     async def get_break_in(self) -> BreakInMode:
         """Get CW break-in mode.
@@ -1703,8 +1731,7 @@ class YaesuCatRadio:
         :class:`BreakInMode` is an :class:`IntEnum` and remains
         bool-compatible at runtime.
         """
-        result = await self._query("get_break_in")
-        return BreakInMode.SEMI if result["state"] == "1" else BreakInMode.OFF
+        return await self.read_break_in()
 
     async def set_break_in(self, mode: BreakInMode | int | bool) -> None:
         """Set CW break-in mode.
@@ -1717,10 +1744,14 @@ class YaesuCatRadio:
         on = BreakInMode(int(mode)) != BreakInMode.OFF
         await self._write("set_break_in", state="1" if on else "0")
 
-    async def get_cw_spot(self) -> bool:
-        """Get CW spot tone state."""
+    async def read_cw_spot(self) -> bool:
+        """Read CW spot tone state without mutating legacy state."""
         result = await self._query("get_cw_spot")
         return bool(result["state"] == "1")
+
+    async def get_cw_spot(self) -> bool:
+        """Get CW spot tone state."""
+        return await self.read_cw_spot()
 
     async def set_cw_spot(self, state: bool) -> None:
         """Set CW spot tone state."""
@@ -1735,10 +1766,14 @@ class YaesuCatRadio:
         """
         await self._write("send_cw", type=msg_type, mem=mem)
 
-    async def get_break_in_delay(self) -> int:
-        """Get CW break-in delay in milliseconds (30–3000)."""
+    async def read_break_in_delay(self) -> int:
+        """Read CW break-in delay in ms (30–3000) without mutating legacy state."""
         result = await self._query("get_break_in_delay")
         return int(result["delay"])
+
+    async def get_break_in_delay(self) -> int:
+        """Get CW break-in delay in milliseconds (30–3000)."""
+        return await self.read_break_in_delay()
 
     async def set_break_in_delay(self, delay: int) -> None:
         """Set CW break-in delay in milliseconds (30–3000)."""
@@ -1988,8 +2023,7 @@ class YaesuCatRadio:
 
     async def get_key_speed(self) -> int:
         """Get CW keyer speed in WPM (KS)."""
-        result = await self._query("get_keyer_speed")
-        return int(result["wpm"])
+        return await self.read_keyer_speed()
 
     async def set_key_speed(self, speed: int) -> None:
         """Set CW keyer speed in WPM (KS)."""
@@ -2000,13 +2034,12 @@ class YaesuCatRadio:
     async def get_cw_pitch(self) -> int:
         """CW pitch in Hz (300-1050).
 
-        ``get_key_pitch`` is the Yaesu-internal helper and returns the FTX-1
+        ``read_key_pitch`` is the Yaesu-internal helper and returns the FTX-1
         idx (0-75). The Icom-spelled ``CwControlCapable`` contract is Hz, so
         we map ``idx → 300 + idx * 10`` (FTX-1 documented mapping: 0=300 Hz,
         75=1050 Hz, 10 Hz step).
         """
-        idx = await self.get_key_pitch()
-        return 300 + idx * 10
+        return await self.read_cw_pitch()
 
     async def set_cw_pitch(self, freq: int) -> None:
         """Set CW pitch in Hz (300-1050).
