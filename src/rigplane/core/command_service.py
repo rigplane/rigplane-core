@@ -640,6 +640,29 @@ def _observation_reconciles_overlay(
     observation: Observation,
     overlay: PendingOverlay,
 ) -> bool:
+    """Decide whether an observation reconciles (clears) a pending overlay.
+
+    Value-equality is *not* a sufficient signal on its own. For
+    low-cardinality fields (booleans like ``split``/``vox_on``/
+    ``compressor_on``, small enums like ``mode``/``agc``) a coincidental
+    same-value observation would otherwise be indistinguishable from the
+    causal readback of the command that created the overlay. To prevent such
+    false reconciliation, ALL of the following are load-bearing and required
+    together:
+
+    - matching command source (when the observation carries one);
+    - matching ``session_id`` (MOR-430 session scoping);
+    - a causal correlation: ``observation.correlation_id`` must be present and
+      equal the overlay's ``command_id`` (MOR-435 — value-equality alone is a
+      weak signal for low-cardinality fields);
+    - a reconcilable path (exact, or the external-rigctld main alias);
+    - value equality.
+
+    Because correlation is mandatory, an unsolicited update or poll response
+    that merely happens to carry the same value with no (or a different)
+    ``correlation_id`` does not reconcile the overlay.
+    """
+
     observed_source = observation.source.command_source
     if observed_source is not None and observed_source != overlay.source:
         return False

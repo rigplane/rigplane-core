@@ -545,6 +545,51 @@ def test_uncorrelated_duplicate_observation_does_not_reconcile_pending_overlay()
     ] == []
 
 
+def test_uncorrelated_same_value_boolean_does_not_reconcile_overlay() -> None:
+    # MOR-435: for low-cardinality fields (booleans) value-equality is a weak
+    # signal. A same-value, same-path, same-session observation that is NOT
+    # correlated to the command must not prematurely confirm the overlay.
+    clock = FreshnessClock(start=57.0)
+    service = CommandService(
+        executor=FakeExecutor(),
+        state_store=StateStore(freshness_clock=clock),
+        clock=clock.now,
+    )
+    split = FieldPath.global_("tx_state", "split")
+    overlay = PendingOverlay(
+        source="websocket",
+        session_id="ws-a",
+        command_id="cmd-split",
+        path=split,
+        value=True,
+        expires_at_monotonic=59.0,
+    )
+    service.record_pending_overlay(overlay)
+
+    # Coincidental boolean readback carrying the same value but no correlation.
+    service.apply_observation(
+        _observation(split, True, at=57.2, correlation_id=None)
+    )
+
+    assert service.pending_overlays(source="websocket", session_id="ws-a") == (
+        overlay,
+    )
+    assert [
+        event for event in service.lifecycle_events() if event.state == "reconciled"
+    ] == []
+
+    # The legitimately correlated readback still reconciles the boolean overlay.
+    service.apply_observation(
+        _observation(split, True, at=57.4, correlation_id="cmd-split")
+    )
+
+    assert service.pending_overlays(source="websocket", session_id="ws-a") == ()
+    reconciled = [
+        event for event in service.lifecycle_events() if event.state == "reconciled"
+    ]
+    assert [event.command_id for event in reconciled] == ["cmd-split"]
+
+
 def test_intended_correlated_observation_reconciles_pending_overlay() -> None:
     clock = FreshnessClock(start=58.0)
     service = CommandService(
