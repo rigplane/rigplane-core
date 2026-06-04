@@ -1147,20 +1147,14 @@ class CivRuntime:
                 if _rs is not None:
                     _rs.power_on = power_on
                 self._notify_change("powerstat_changed", {"power_on": power_on})
-            elif frame.command == 0x12 and frame.data and _rs is not None:
-                # Antenna select / RX-ANT state (plain CI-V)
-                # IC-7610 CI-V reference:
-                #   0x12 0x00 <00|01> = select ANT1, data = RX ANT OFF/ON
-                #   0x12 0x01 <00|01> = select ANT2, data = RX ANT OFF/ON
-                # NOTE: This command is NOT safe to poll.
-                sub = frame.sub or 0
-                val = bool(frame.data[0])
-                if sub == 0x00:
-                    _rs.tx_antenna = 1
-                    _rs.rx_antenna_1 = val
-                elif sub == 0x01:
-                    _rs.tx_antenna = 2
-                    _rs.rx_antenna_2 = val
+            elif frame.command == 0x12:
+                # Antenna select / RX-ANT state (plain CI-V): 0x12 0x00/0x01.
+                # The RadioState mirror write (tx_antenna / rx_antenna_1/2) was
+                # migrated to the StateStore observation pipeline (MOR-462);
+                # ``_observations_from_frame`` is the source of truth and reuses
+                # the identical sub→TX-antenna and data-byte→RX-ANT decode. This
+                # command is NOT safe to poll, so the fields are ingress-gated.
+                pass
             elif (
                 frame.command == 0x14
                 and frame.data
@@ -1570,6 +1564,30 @@ class CivRuntime:
                     frame=frame,
                 )
             )
+        elif frame.command == 0x12 and frame.sub in (0x00, 0x01):
+            # Antenna selection (0x12): sub 0x00 → ANT1, 0x01 → ANT2; the data
+            # byte (when present) carries the RX-ANT OFF/ON state for that
+            # connector. Reuse the exact decode of ``_handle_12`` (and the inline
+            # ``_update_state_cache_from_frame`` mirror), promoting both halves to
+            # neutral global fields (MOR-462). TX-antenna selection is a global
+            # operator-control int (1/2); the per-connector RX-ANT toggle is a
+            # global slow-state bool. NOT safe to poll — ingress-gated only.
+            observations.append(
+                self._observation(
+                    FieldPath.global_("operator_controls", "tx_antenna"),
+                    frame.sub + 1,  # 0x00 → 1, 0x01 → 2
+                    frame=frame,
+                )
+            )
+            if frame.data:
+                rx_ant_name = "rx_antenna_1" if frame.sub == 0x00 else "rx_antenna_2"
+                observations.append(
+                    self._observation(
+                        FieldPath.global_("slow_state", rx_ant_name),
+                        bool(frame.data[0]),
+                        frame=frame,
+                    )
+                )
         elif frame.command == 0x1A and frame.sub == 0x03 and frame.data:
             # Filter width: profile-dependent CI-V index → Hz, reusing the exact
             # decode + receiver/profile context of ``_handle_1a`` (MOR-437).
@@ -1987,18 +2005,11 @@ class CivRuntime:
         rs: "RadioState",
         slot_override: str | None,
     ) -> None:
-        # cmd 0x12: antenna selection.
-        # Sub 0x00 → ANT1, 0x01 → ANT2.
-        # Data byte: 0x00 = RX ANT OFF, 0x01 = RX ANT ON.
-        sub12 = frame.sub
-        if sub12 in (0x00, 0x01):
-            rs.tx_antenna = sub12 + 1  # 0x00→1, 0x01→2
-            if frame.data:
-                rx_ant_on = bool(frame.data[0])
-                if sub12 == 0x00:
-                    rs.rx_antenna_1 = rx_ant_on
-                else:
-                    rs.rx_antenna_2 = rx_ant_on
+        # cmd 0x12: antenna selection (sub 0x00 → ANT1, 0x01 → ANT2; data byte
+        # → RX-ANT OFF/ON). Mirror write migrated to the StateStore observation
+        # pipeline (MOR-462); ``_observations_from_frame`` is the source of truth
+        # and reuses the identical TX-antenna / RX-ANT decode.
+        return
 
     def _handle_14(
         self,

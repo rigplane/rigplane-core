@@ -430,7 +430,7 @@
   },
   {
     "name": "cmd12_unknown_sub_no_op",
-    "comment": "0x12 with sub=0x05 is not 0/1 — covers `sub12 in (0x00, 0x01)` false (line 895). RadioState default tx_antenna=1 is preserved.",
+    "comment": "0x12 with sub=0x05 is not 0/1 — _handle_12 is a no-op for it. Antenna is observation-backed (MOR-462); the legacy RadioState mirror is no longer written and stays at its defaults (tx_antenna=1, rx_antenna_1/2=false).",
     "frame": {"command": 18, "sub": 5, "data": "01"},
     "expected_state": {
       "tx_antenna": 1,
@@ -440,11 +440,20 @@
   },
   {
     "name": "cmd12_sub00_no_data",
-    "comment": "0x12/0x00 with empty data — covers `if frame.data` false (line 897); tx_antenna still set.",
+    "comment": "0x12/0x00 with empty data. Antenna is observation-backed (MOR-462); the legacy RadioState mirror is no longer written and stays at its default tx_antenna=1.",
     "frame": {"command": 18, "sub": 0, "data": ""},
     "expected_state": {
       "tx_antenna": 1,
       "rx_antenna_1": false
+    }
+  },
+  {
+    "name": "cmd12_sub01_ant2_mirror_removed",
+    "comment": "0x12/0x01 0x01 = select ANT2 + RX-ANT ON. Antenna is observation-backed (MOR-462); the legacy RadioState mirror is no longer written, so tx_antenna stays at its default 1 (not 2) and rx_antenna_2 stays false on the mirror path.",
+    "frame": {"command": 18, "sub": 1, "data": "01"},
+    "expected_state": {
+      "tx_antenna": 1,
+      "rx_antenna_2": false
     }
   },
   {

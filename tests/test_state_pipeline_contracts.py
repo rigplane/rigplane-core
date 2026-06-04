@@ -433,6 +433,60 @@ def test_global_tuning_step_registered_as_writable_slow_state_int() -> None:
     assert spec.unit is None
 
 
+def test_global_tx_antenna_registered_as_writable_operator_control_int() -> None:
+    """MOR-462: ``global.operator_controls.tx_antenna`` is a registered int.
+
+    The observation-backed Icom antenna selection (CI-V ``get_antenna`` 0x12,
+    sub 0x00 → ANT1 / 0x01 → ANT2) is promoted to a backend-neutral
+    operator-control int (1 or 2), matching how it is already projected/consumed
+    (``_GLOBAL_OPERATOR_CONTROL_FIELDS`` → ``txAntenna``). Writable because
+    ``set_antenna_1``/``set_antenna_2`` exist. Icom-only natively
+    (FTX-1/Xiegu/Lab599 have no antenna command), so the field stays ``missing``
+    on those backends per the promotion-criterion ADR.
+    """
+    path = FieldPath.global_("operator_controls", "tx_antenna")
+    spec = DEFAULT_FIELD_REGISTRY.require(path)
+    assert spec.path == path
+    assert spec.family is FieldFamily.OPERATOR_CONTROLS
+    assert spec.value_type == "int"
+    assert spec.writable is True
+    assert spec.unit is None
+
+
+def test_global_rx_antenna_1_registered_as_writable_slow_state_bool() -> None:
+    """MOR-462: ``global.slow_state.rx_antenna_1`` is a registered writable bool.
+
+    The per-connector RX-ANT toggle for ANT1 is decoded from the 0x12 0x00 data
+    byte and promoted to a backend-neutral slow-state bool, matching how it is
+    already projected/consumed (``_GLOBAL_SLOW_STATE_FIELDS`` → ``rxAntenna1``).
+    Writable because ``set_rx_antenna_ant1`` exists. Only the IC-7610/IC-705 ship
+    the RX-ANT path; backends without it leave the field ``missing``.
+    """
+    path = FieldPath.global_("slow_state", "rx_antenna_1")
+    spec = DEFAULT_FIELD_REGISTRY.require(path)
+    assert spec.path == path
+    assert spec.family is FieldFamily.SLOW_STATE
+    assert spec.value_type == "bool"
+    assert spec.writable is True
+
+
+def test_global_rx_antenna_2_registered_as_writable_slow_state_bool() -> None:
+    """MOR-462: ``global.slow_state.rx_antenna_2`` is a registered writable bool.
+
+    The per-connector RX-ANT toggle for ANT2 is decoded from the 0x12 0x01 data
+    byte and promoted to a backend-neutral slow-state bool, matching how it is
+    already projected/consumed (``_GLOBAL_SLOW_STATE_FIELDS`` → ``rxAntenna2``).
+    Writable because ``set_rx_antenna_ant2`` exists. Only the IC-7610/IC-705 ship
+    the RX-ANT path; backends without it leave the field ``missing``.
+    """
+    path = FieldPath.global_("slow_state", "rx_antenna_2")
+    spec = DEFAULT_FIELD_REGISTRY.require(path)
+    assert spec.path == path
+    assert spec.family is FieldFamily.SLOW_STATE
+    assert spec.value_type == "bool"
+    assert spec.writable is True
+
+
 def test_observation_and_changeset_serialization_round_trip() -> None:
     source = SourceMetadata(
         source="civ_unsolicited",
@@ -755,11 +809,19 @@ _ICOM_V2_FIELD_FAMILIES: tuple[tuple[FieldPath, str, str | None, Any], ...] = (
         30,
     ),
     (FieldPath.global_("operator_controls", "vox_delay"), "voxDelay", None, 12),
+    # tx_antenna promoted as a neutral writable operator-control int (1/2) —
+    # projects to the existing top-level ``txAntenna`` key (MOR-462).
+    (FieldPath.global_("operator_controls", "tx_antenna"), "txAntenna", None, 2),
     # global slow_state
     # tuning_step promoted as a neutral writable slow-state int (device step
     # index, NOT Hz) — projects to the existing top-level ``tuningStep`` key
     # (MOR-461).
     (FieldPath.global_("slow_state", "tuning_step"), "tuningStep", None, 5),
+    # RX-ANT per-connector toggles promoted as neutral writable slow-state bools
+    # — project to the existing top-level ``rxAntenna1``/``rxAntenna2`` keys
+    # (MOR-462).
+    (FieldPath.global_("slow_state", "rx_antenna_1"), "rxAntenna1", None, True),
+    (FieldPath.global_("slow_state", "rx_antenna_2"), "rxAntenna2", None, True),
     # global tx_state
     (FieldPath.global_("tx_state", "split"), "split", None, True),
     (FieldPath.global_("tx_state", "compressor_on"), "compressorOn", None, True),

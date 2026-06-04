@@ -1036,6 +1036,20 @@ _SLOW_STATE_TOGGLE_CASES = (
         "txFreqMonitor",
         True,
     ),
+    # 0x12 0x00 0x01 RX-ANT for ANT1 ON → global slow-state bool (MOR-462).
+    (
+        _make_frame(cmd=0x12, sub=0x00, data=b"\x01"),
+        "global.slow_state.rx_antenna_1",
+        "rxAntenna1",
+        True,
+    ),
+    # 0x12 0x01 0x01 RX-ANT for ANT2 ON → global slow-state bool (MOR-462).
+    (
+        _make_frame(cmd=0x12, sub=0x01, data=b"\x01"),
+        "global.slow_state.rx_antenna_2",
+        "rxAntenna2",
+        True,
+    ),
 )
 
 
@@ -1270,6 +1284,14 @@ _VALUE_CONTROL_CASES = (
         "global.slow_state.tuning_step",
         "tuningStep",
         5,
+    ),
+    # 0x12 0x01 antenna selection: sub 0x01 → ANT2 (value 2). Promoted to a
+    # global operator-control int (MOR-462). Data byte 0x00 keeps RX-ANT off.
+    (
+        _make_frame(cmd=0x12, sub=0x01, data=b"\x00"),
+        "global.operator_controls.tx_antenna",
+        "txAntenna",
+        2,
     ),
 )
 
@@ -2007,24 +2029,38 @@ def test_update_radio_state_cmd11_attenuator(radio_with_state: IcomRadio) -> Non
     assert field.value == 18
 
 
-def test_update_radio_state_cmd12_antenna_ant1(radio_with_state: IcomRadio) -> None:
-    """cmd 0x12 sub 0x00 selects ANT1 with RX ANT OFF."""
+def test_update_radio_state_cmd12_antenna_ant1_mirror_removed(
+    radio_with_state: IcomRadio,
+) -> None:
+    """MOR-462: cmd 0x12 sub 0x00 mirror removed; ``_handle_12`` is a no-op.
+
+    The mirror path (``_update_radio_state_from_frame`` → ``_handle_12``) no
+    longer writes ``RadioState``; the fields stay at their defaults. The
+    StateStore observation pipeline is the source of truth (covered by
+    ``test_update_radio_state_cmd12_tx_antenna_observation_backed``).
+    """
     rs = radio_with_state._radio_state
-    frame = _make_frame(cmd=0x12, sub=0x00, data=bytes([0x00]))
+    frame = _make_frame(cmd=0x12, sub=0x00, data=bytes([0x01]))
     radio_with_state._civ_runtime._update_radio_state_from_frame(frame)
     assert rs.tx_antenna == 1
     assert rs.rx_antenna_1 is False
 
 
-def test_update_radio_state_cmd12_antenna_ant2_rx_on(
+def test_update_radio_state_cmd12_antenna_ant2_mirror_removed(
     radio_with_state: IcomRadio,
 ) -> None:
-    """cmd 0x12 sub 0x01 selects ANT2 with RX ANT ON."""
+    """MOR-462: cmd 0x12 sub 0x01 mirror removed; ``_handle_12`` is a no-op.
+
+    The mirror path no longer writes ``RadioState``: ``tx_antenna`` stays at its
+    default 1 (not 2) and ``rx_antenna_2`` stays ``False`` even though the frame
+    selects ANT2 with RX-ANT ON. The StateStore observation pipeline carries the
+    real values.
+    """
     rs = radio_with_state._radio_state
     frame = _make_frame(cmd=0x12, sub=0x01, data=bytes([0x01]))
     radio_with_state._civ_runtime._update_radio_state_from_frame(frame)
-    assert rs.tx_antenna == 2
-    assert rs.rx_antenna_2 is True
+    assert rs.tx_antenna == 1
+    assert rs.rx_antenna_2 is False
 
 
 def test_update_radio_state_cmd16_preamp(radio_with_state: IcomRadio) -> None:
@@ -2303,6 +2339,48 @@ def test_update_radio_state_cmd10_tuning_step_observation_backed(
         "global.slow_state.tuning_step"
     )
     assert store_field.value == 5
+
+
+def test_update_radio_state_cmd12_tx_antenna_observation_backed(
+    radio_with_state: IcomRadio,
+) -> None:
+    """MOR-462: cmd 0x12 tx_antenna mirror removed at BOTH decode sites.
+
+    Antenna selection (sub 0x01 → ANT2) is promoted to a neutral global
+    operator-control int; the legacy ``RadioState.tx_antenna`` mirror — written
+    by both the inline ``_update_state_cache_from_frame`` branch and ``_handle_12``
+    — is no longer written and stays at its default 1 while the StateStore
+    carries the decoded value 2.
+    """
+    rs = radio_with_state._radio_state
+    frame = _make_frame(cmd=0x12, sub=0x01, data=b"\x00")
+    radio_with_state._civ_runtime._update_state_cache_from_frame(frame)
+    assert rs.tx_antenna == 1
+    store_field = radio_with_state._state_store.snapshot().field(
+        "global.operator_controls.tx_antenna"
+    )
+    assert store_field.value == 2
+
+
+def test_update_radio_state_cmd12_rx_antenna_observation_backed(
+    radio_with_state: IcomRadio,
+) -> None:
+    """MOR-462: cmd 0x12 rx_antenna_1/2 mirror removed at BOTH decode sites.
+
+    The per-connector RX-ANT toggle (0x12 0x00 data byte) is promoted to a
+    neutral global slow-state bool; the legacy ``RadioState.rx_antenna_1`` mirror
+    — written by both the inline ``_update_state_cache_from_frame`` branch and
+    ``_handle_12`` — is no longer written and stays at its default ``False`` while
+    the StateStore carries the decoded ``True``.
+    """
+    rs = radio_with_state._radio_state
+    frame = _make_frame(cmd=0x12, sub=0x00, data=b"\x01")
+    radio_with_state._civ_runtime._update_state_cache_from_frame(frame)
+    assert rs.rx_antenna_1 is False
+    store_field = radio_with_state._state_store.snapshot().field(
+        "global.slow_state.rx_antenna_1"
+    )
+    assert store_field.value is True
 
 
 def test_update_radio_state_cmd1a_af_mute(radio_with_state: IcomRadio) -> None:
