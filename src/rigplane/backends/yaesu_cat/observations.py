@@ -53,6 +53,23 @@ _VOX_ON = FieldPath.global_("tx_state", "vox_on")
 _MAIN_FILTER_WIDTH = FieldPath.active("main", "freq_mode", "filter_width")
 _MAIN_IF_SHIFT = FieldPath.receiver("main", "operator_controls", "if_shift")
 _MAIN_NARROW = FieldPath.receiver("main", "operator_toggles", "narrow")
+# NB/NR levels + derived toggles, auto/manual notch DSP controls (MOR-444).
+# MAIN-only: the FTX-1 has no per-receiver CAT command for these (no NL1/RL1/
+# BC1/BP10/BP11), so emitting them for the sub receiver would mislabel the
+# shared read. This mirrors the legacy poller, which only writes
+# ``main.{nb_level, nb, nr_level, nr, auto_notch, manual_notch,
+# manual_notch_freq}``. The ``nb``/``nr`` toggles are DERIVED from the level
+# (``level > 0``) read in the same cycle — a single CAT read each, never a
+# second query — exactly as the legacy poller derives them.
+_MAIN_NB_LEVEL = FieldPath.receiver("main", "operator_controls", "nb_level")
+_MAIN_NB = FieldPath.receiver("main", "operator_toggles", "nb")
+_MAIN_NR_LEVEL = FieldPath.receiver("main", "operator_controls", "nr_level")
+_MAIN_NR = FieldPath.receiver("main", "operator_toggles", "nr")
+_MAIN_AUTO_NOTCH = FieldPath.receiver("main", "operator_toggles", "auto_notch")
+_MAIN_MANUAL_NOTCH = FieldPath.receiver("main", "operator_toggles", "manual_notch")
+_MAIN_MANUAL_NOTCH_FREQ = FieldPath.receiver(
+    "main", "operator_controls", "manual_notch_freq"
+)
 YAESU_PTT_PATH = _PTT
 
 
@@ -82,6 +99,16 @@ class YaesuObservationRadio(Protocol):
     async def read_if_shift(self, receiver: int = 0) -> int: ...
 
     async def read_narrow(self, receiver: int = 0) -> bool: ...
+
+    async def read_nb_level(self, receiver: int = 0) -> int: ...
+
+    async def read_nr_level(self, receiver: int = 0) -> int: ...
+
+    async def read_auto_notch(self, receiver: int = 0) -> bool: ...
+
+    async def read_manual_notch(self, receiver: int = 0) -> bool: ...
+
+    async def read_manual_notch_freq(self, receiver: int = 0) -> int: ...
 
     async def read_s_meter(self, receiver: int = 0) -> int: ...
 
@@ -360,6 +387,75 @@ class YaesuObservationAdapter:
                     _MAIN_NARROW,
                     await self.radio.read_narrow(0),
                     native_id="read_narrow",
+                )
+            )
+        # NB/NR levels + derived toggles, auto/manual notch (MOR-444) —
+        # MAIN-only DSP controls. NB/NR gate on their runtime capabilities
+        # (matching the legacy poller's ``nb``/``nr`` gates); both notch
+        # controls gate on the ``notch`` capability (matching the poller's
+        # ``notch`` gate). The ``nb``/``nr`` toggles are DERIVED from the level
+        # read in the same cycle (``level > 0``), a single CAT read each —
+        # exactly as the legacy poller derives them; no second query.
+        if self._has_runtime_capability("nb"):
+            nb_level = await self.radio.read_nb_level(0)
+            if self._can_poll(_MAIN_NB_LEVEL):
+                observations.append(
+                    adapter.observation(
+                        _MAIN_NB_LEVEL,
+                        nb_level,
+                        native_id="read_nb_level",
+                    )
+                )
+            if self._can_poll(_MAIN_NB):
+                observations.append(
+                    adapter.observation(
+                        _MAIN_NB,
+                        nb_level > 0,
+                        native_id="read_nb_level",
+                    )
+                )
+        if self._has_runtime_capability("nr"):
+            nr_level = await self.radio.read_nr_level(0)
+            if self._can_poll(_MAIN_NR_LEVEL):
+                observations.append(
+                    adapter.observation(
+                        _MAIN_NR_LEVEL,
+                        nr_level,
+                        native_id="read_nr_level",
+                    )
+                )
+            if self._can_poll(_MAIN_NR):
+                observations.append(
+                    adapter.observation(
+                        _MAIN_NR,
+                        nr_level > 0,
+                        native_id="read_nr_level",
+                    )
+                )
+        if self._has_runtime_capability("notch") and self._can_poll(_MAIN_AUTO_NOTCH):
+            observations.append(
+                adapter.observation(
+                    _MAIN_AUTO_NOTCH,
+                    await self.radio.read_auto_notch(0),
+                    native_id="read_auto_notch",
+                )
+            )
+        if self._has_runtime_capability("notch") and self._can_poll(_MAIN_MANUAL_NOTCH):
+            observations.append(
+                adapter.observation(
+                    _MAIN_MANUAL_NOTCH,
+                    await self.radio.read_manual_notch(0),
+                    native_id="read_manual_notch",
+                )
+            )
+        if self._has_runtime_capability("notch") and self._can_poll(
+            _MAIN_MANUAL_NOTCH_FREQ
+        ):
+            observations.append(
+                adapter.observation(
+                    _MAIN_MANUAL_NOTCH_FREQ,
+                    await self.radio.read_manual_notch_freq(0),
+                    native_id="read_manual_notch_freq",
                 )
             )
         return tuple(observations)

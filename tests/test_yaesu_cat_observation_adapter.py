@@ -34,6 +34,9 @@ def _make_radio() -> MagicMock:
         "compressor",
         "attenuator",
         "preamp",
+        "nb",
+        "nr",
+        "notch",
     }
     radio.get_freq = AsyncMock(
         side_effect=lambda receiver=0: 14_074_000 if receiver == 0 else 7_074_000
@@ -84,6 +87,17 @@ def _make_radio() -> MagicMock:
     radio.read_if_shift = AsyncMock(return_value=200)
     radio.get_narrow = AsyncMock(return_value=True)
     radio.read_narrow = AsyncMock(return_value=True)
+    # NB/NR levels + derived toggles, auto/manual notch DSP controls (MOR-444).
+    # MAIN-only: no per-receiver CAT command (no NL1/RL1/BC1/BP10/BP11). The
+    # nb/nr toggles are derived from the non-zero level read in the same cycle.
+    radio.get_nb_level = AsyncMock(return_value=5)
+    radio.read_nb_level = AsyncMock(return_value=5)
+    radio.get_nr_level = AsyncMock(return_value=9)
+    radio.read_nr_level = AsyncMock(return_value=9)
+    radio.get_auto_notch = AsyncMock(return_value=True)
+    radio.read_auto_notch = AsyncMock(return_value=True)
+    radio.read_manual_notch = AsyncMock(return_value=True)
+    radio.read_manual_notch_freq = AsyncMock(return_value=128)
     # TX meters: ALC mirrors power/swr as a stream-like meter (MOR-448).
     radio.get_alc_meter = AsyncMock(return_value=42)
     radio.read_alc_meter = AsyncMock(return_value=42)
@@ -384,6 +398,10 @@ async def test_slow_poll_emits_declared_control_observations_only() -> None:
     # IF-shift (operator_controls, gated on ``if_shift`` cap) and narrow
     # (operator_toggles, unconditional like AGC) are MAIN-only DSP controls
     # (MOR-445), emitted after the RF front-end in the slow-control lane.
+    # NB/NR levels + derived nb/nr toggles, auto/manual notch + manual notch
+    # freq (MOR-444) follow, MAIN-only, gated on ``nb``/``nr``/``notch`` caps.
+    # The nb/nr toggles are derived from the level read in the same cycle
+    # (``level > 0``); a non-zero level → toggle ON, a single read each.
     assert [(str(item.path), item.value) for item in observations] == [
         ("receiver.main.operator_controls.af_level", 128),
         ("receiver.main.operator_controls.rf_gain", 180),
@@ -396,6 +414,13 @@ async def test_slow_poll_emits_declared_control_observations_only() -> None:
         ("receiver.main.operator_controls.agc", 3),
         ("receiver.main.operator_controls.if_shift", 200),
         ("receiver.main.operator_toggles.narrow", True),
+        ("receiver.main.operator_controls.nb_level", 5),
+        ("receiver.main.operator_toggles.nb", True),
+        ("receiver.main.operator_controls.nr_level", 9),
+        ("receiver.main.operator_toggles.nr", True),
+        ("receiver.main.operator_toggles.auto_notch", True),
+        ("receiver.main.operator_toggles.manual_notch", True),
+        ("receiver.main.operator_controls.manual_notch_freq", 128),
     ]
     assert all(item.source.source == "yaesu_poll_response" for item in observations)
     assert all(item.max_age == 120.0 for item in observations)
@@ -407,6 +432,12 @@ async def test_slow_poll_emits_declared_control_observations_only() -> None:
     assert radio.read_agc.await_count == 1
     assert radio.read_if_shift.await_count == 1
     assert radio.read_narrow.await_count == 1
+    # Single CAT read per family — nb/nr toggles derive from the level read.
+    assert radio.read_nb_level.await_count == 1
+    assert radio.read_nr_level.await_count == 1
+    assert radio.read_auto_notch.await_count == 1
+    assert radio.read_manual_notch.await_count == 1
+    assert radio.read_manual_notch_freq.await_count == 1
     radio.get_af_level.assert_not_awaited()
     radio.get_rf_gain.assert_not_awaited()
     radio.get_squelch.assert_not_awaited()
@@ -415,6 +446,9 @@ async def test_slow_poll_emits_declared_control_observations_only() -> None:
     radio.get_agc.assert_not_awaited()
     radio.get_if_shift.assert_not_awaited()
     radio.get_narrow.assert_not_awaited()
+    radio.get_nb_level.assert_not_awaited()
+    radio.get_nr_level.assert_not_awaited()
+    radio.get_auto_notch.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -446,9 +480,73 @@ async def test_slow_poll_skips_sub_controls_without_matching_runtime_capability(
     assert radio.read_agc.await_count == 1
     radio.read_if_shift.assert_not_awaited()
     assert radio.read_narrow.await_count == 1
+    # NB/NR/notch dropped: their runtime caps are absent (MOR-444).
+    radio.read_nb_level.assert_not_awaited()
+    radio.read_nr_level.assert_not_awaited()
+    radio.read_auto_notch.assert_not_awaited()
+    radio.read_manual_notch.assert_not_awaited()
+    radio.read_manual_notch_freq.assert_not_awaited()
     radio.get_af_level.assert_not_awaited()
     radio.get_rf_gain.assert_not_awaited()
     radio.get_squelch.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_slow_poll_derives_nb_nr_toggles_off_from_zero_level() -> None:
+    """MOR-444: the nb/nr toggles are derived from the level (``level > 0``).
+
+    A zero level (OFF) → toggle ``False``, mirroring the legacy poller's
+    ``state.main.nb = nb_level > 0`` derivation. A single CAT read per family
+    feeds both the level and the derived toggle — no second query.
+    """
+    radio = _make_radio()
+    radio.read_nb_level = AsyncMock(return_value=0)
+    radio.read_nr_level = AsyncMock(return_value=0)
+    adapter = YaesuObservationAdapter(
+        radio,
+        profile=_profile_state_acquisition(),
+        clock=_clock,
+    )
+
+    observations = await adapter.poll_slow_controls()
+    by_path = {str(item.path): item.value for item in observations}
+
+    assert by_path["receiver.main.operator_controls.nb_level"] == 0
+    assert by_path["receiver.main.operator_toggles.nb"] is False
+    assert by_path["receiver.main.operator_controls.nr_level"] == 0
+    assert by_path["receiver.main.operator_toggles.nr"] is False
+    # Single read per family — the toggle reuses the level read.
+    assert radio.read_nb_level.await_count == 1
+    assert radio.read_nr_level.await_count == 1
+
+
+@pytest.mark.asyncio
+async def test_slow_poll_skips_dsp_without_matching_runtime_capability() -> None:
+    """MOR-444: NB/NR gate on ``nb``/``nr``; notch fields gate on ``notch``."""
+    radio = _make_radio()
+    # Keep nb only; drop nr and notch to prove per-family gating.
+    radio.capabilities = {"meters", "nb"}
+    adapter = YaesuObservationAdapter(
+        radio,
+        profile=_profile_state_acquisition(),
+        clock=_clock,
+    )
+
+    observations = await adapter.poll_slow_controls()
+    paths = [str(item.path) for item in observations]
+
+    assert "receiver.main.operator_controls.nb_level" in paths
+    assert "receiver.main.operator_toggles.nb" in paths
+    assert "receiver.main.operator_controls.nr_level" not in paths
+    assert "receiver.main.operator_toggles.nr" not in paths
+    assert "receiver.main.operator_toggles.auto_notch" not in paths
+    assert "receiver.main.operator_toggles.manual_notch" not in paths
+    assert "receiver.main.operator_controls.manual_notch_freq" not in paths
+    assert radio.read_nb_level.await_count == 1
+    radio.read_nr_level.assert_not_awaited()
+    radio.read_auto_notch.assert_not_awaited()
+    radio.read_manual_notch.assert_not_awaited()
+    radio.read_manual_notch_freq.assert_not_awaited()
 
 
 @pytest.mark.asyncio

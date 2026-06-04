@@ -1032,32 +1032,82 @@ class YaesuCatRadio:
 
     # -- D3: DSP (NB/NR/Notch) ----------------------------------------------
 
-    async def get_nb_level(self, receiver: int = 0) -> int:
-        """Get noise blanker level (0 = OFF, 1–10 = level)."""
+    async def read_nb_level(self, receiver: int = 0) -> int:
+        """Read noise blanker level without mutating legacy state.
+
+        The FTX-1 has a single noise-blanker path (``NL0``); the ``receiver``
+        argument is accepted for protocol symmetry but does not select a
+        per-receiver command (no ``NL1`` exists).
+
+        Returns:
+            NB level (0 = OFF, 1–10 = level).
+        """
         result = await self._query("get_nb_level")
         return int(result["level"])
+
+    async def get_nb_level(self, receiver: int = 0) -> int:
+        """Get noise blanker level (0 = OFF, 1–10 = level)."""
+        return await self.read_nb_level(receiver)
 
     async def set_nb_level(self, level: int, receiver: int = 0) -> None:
         """Set noise blanker level (0 = OFF, 1–10 = level)."""
         await self._write("set_nb_level", level=level)
 
-    async def get_nr_level(self, receiver: int = 0) -> int:
-        """Get noise reduction level (0 = OFF, 1–15 = level)."""
+    async def read_nr_level(self, receiver: int = 0) -> int:
+        """Read noise reduction level without mutating legacy state.
+
+        The FTX-1 has a single noise-reduction path (``RL0``); the ``receiver``
+        argument is accepted for protocol symmetry but does not select a
+        per-receiver command (no ``RL1`` exists).
+
+        Returns:
+            NR level (0 = OFF, 1–15 = level).
+        """
         result = await self._query("get_nr_level")
         return int(result["level"])
+
+    async def get_nr_level(self, receiver: int = 0) -> int:
+        """Get noise reduction level (0 = OFF, 1–15 = level)."""
+        return await self.read_nr_level(receiver)
 
     async def set_nr_level(self, level: int, receiver: int = 0) -> None:
         """Set noise reduction level (0 = OFF, 1–15 = level)."""
         await self._write("set_nr_level", level=level)
 
-    async def get_auto_notch(self, receiver: int = 0) -> bool:
-        """Get auto notch state (True = ON)."""
+    async def read_auto_notch(self, receiver: int = 0) -> bool:
+        """Read auto notch state without mutating legacy state.
+
+        The FTX-1 has a single auto-notch path (``BC0``); the ``receiver``
+        argument is accepted for protocol symmetry but does not select a
+        per-receiver command (no ``BC1`` exists).
+
+        Returns:
+            ``True`` when auto notch is ON.
+        """
         result = await self._query("get_auto_notch")
         return bool(result["state"] == "1")
+
+    async def get_auto_notch(self, receiver: int = 0) -> bool:
+        """Get auto notch state (True = ON)."""
+        return await self.read_auto_notch(receiver)
 
     async def set_auto_notch(self, state: bool, receiver: int = 0) -> None:
         """Set auto notch state."""
         await self._write("set_auto_notch", state="1" if state else "0")
+
+    async def read_manual_notch(self, receiver: int = 0) -> bool:
+        """Read manual notch ON/OFF state without mutating legacy state.
+
+        Issues a single ``BP00`` read. The FTX-1 has a single manual-notch
+        path; the ``receiver`` argument is accepted for protocol symmetry but
+        does not select a per-receiver command (no ``BP10`` exists). Use
+        :meth:`read_manual_notch_freq` for the freq index in a separate read.
+
+        Returns:
+            ``True`` when the manual notch is enabled.
+        """
+        result = await self._query("get_manual_notch")
+        return bool(result["state"])
 
     async def get_manual_notch(self, receiver: int = 0) -> tuple[bool, int]:
         """Get manual notch state and frequency index.
@@ -1073,14 +1123,26 @@ class YaesuCatRadio:
         """Set manual notch ON/OFF (BP00)."""
         await self._write("set_manual_notch", state=1 if state else 0)
 
+    async def read_manual_notch_freq(self, receiver: int = 0) -> int:
+        """Read manual notch frequency index without mutating legacy state.
+
+        Issues a single ``BP01`` read. The FTX-1 has a single manual-notch
+        path; the ``receiver`` argument is accepted for protocol symmetry but
+        does not select a per-receiver command (no ``BP11`` exists).
+
+        Returns:
+            Manual notch frequency index (0–255).
+        """
+        result = await self._query("get_manual_notch_freq")
+        return int(result["freq"])
+
     async def get_manual_notch_freq(self, receiver: int = 0) -> int:
         """Get manual notch frequency index (0–255, BP01).
 
         Standalone freq-only getter for symmetry with :meth:`set_manual_notch_freq`.
         Use :meth:`get_manual_notch` to fetch state+freq together in one call.
         """
-        result = await self._query("get_manual_notch_freq")
-        return int(result["freq"])
+        return await self.read_manual_notch_freq(receiver)
 
     async def set_manual_notch_freq(self, freq: int, receiver: int = 0) -> None:
         """Set manual notch frequency index (0–255, BP01)."""

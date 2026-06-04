@@ -986,6 +986,11 @@ def _receiver_specs(receiver_id: str) -> tuple[FieldSpec, ...]:
             writable=True,
         ),
         spec(
+            FieldPath.receiver(receiver_id, "operator_controls", "manual_notch_freq"),
+            "int",
+            writable=True,
+        ),
+        spec(
             FieldPath.receiver(receiver_id, "operator_toggles", "auto_notch"),
             "bool",
             writable=True,

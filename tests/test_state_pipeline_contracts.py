@@ -510,6 +510,13 @@ _ICOM_V2_FIELD_FAMILIES: tuple[tuple[FieldPath, str, str | None, Any], ...] = (
         "main",
         True,
     ),
+    # manual_notch_freq promoted as a neutral DSP control (MOR-444).
+    (
+        FieldPath.receiver("main", "operator_controls", "manual_notch_freq"),
+        "manualNotchFreq",
+        "main",
+        128,
+    ),
     # IF-shift / narrow promoted as neutral DSP controls (MOR-445).
     (
         FieldPath.receiver("main", "operator_controls", "if_shift"),

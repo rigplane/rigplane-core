@@ -61,6 +61,24 @@ _FILTER_WIDTH_CASES = (
     ("receiver.main.active.freq_mode.filter_width", "main.filterWidth", 500),
 )
 
+# (store path, public fieldStatus key, expected value) for the MAIN-only NB/NR
+# levels + derived toggles, auto/manual notch + manual notch freq DSP controls
+# (MOR-444), emitted in the slow-control lane. The nb/nr toggles are derived
+# from a non-zero level read in the same cycle (``level > 0`` → ON).
+_NB_NR_NOTCH_CASES = (
+    ("receiver.main.operator_controls.nb_level", "main.nbLevel", 5),
+    ("receiver.main.operator_toggles.nb", "main.nb", True),
+    ("receiver.main.operator_controls.nr_level", "main.nrLevel", 9),
+    ("receiver.main.operator_toggles.nr", "main.nr", True),
+    ("receiver.main.operator_toggles.auto_notch", "main.autoNotch", True),
+    ("receiver.main.operator_toggles.manual_notch", "main.manualNotch", True),
+    (
+        "receiver.main.operator_controls.manual_notch_freq",
+        "main.manualNotchFreq",
+        128,
+    ),
+)
+
 
 def _clock() -> float:
     return 123.456
@@ -87,6 +105,9 @@ def _make_radio() -> MagicMock:
         "squelch",
         "filter_width",
         "if_shift",
+        "nb",
+        "nr",
+        "notch",
     }
     # Power emits the watt SETPOINT (read_power), not the RM5 meter.
     radio.read_power = AsyncMock(return_value=(2, 55))
@@ -116,6 +137,13 @@ def _make_radio() -> MagicMock:
     radio.read_filter_width = AsyncMock(return_value=500)
     radio.read_if_shift = AsyncMock(return_value=200)
     radio.read_narrow = AsyncMock(return_value=True)
+    # NB/NR levels + derived toggles, auto/manual notch + manual notch freq
+    # (MOR-444). Non-zero levels derive nb/nr toggles ON in the same cycle.
+    radio.read_nb_level = AsyncMock(return_value=5)
+    radio.read_nr_level = AsyncMock(return_value=9)
+    radio.read_auto_notch = AsyncMock(return_value=True)
+    radio.read_manual_notch = AsyncMock(return_value=True)
+    radio.read_manual_notch_freq = AsyncMock(return_value=128)
     return radio
 
 
@@ -371,6 +399,55 @@ async def test_filter_width_projects_available() -> None:
     )
 
     for _store_path, public_path, _expected in _FILTER_WIDTH_CASES:
+        status = payload["fieldStatus"][public_path]
+        assert status["observed"] is True
+        assert status["availability"] == "available"
+
+
+@pytest.mark.asyncio
+async def test_nb_nr_notch_observation_value() -> None:
+    store = StateStore()
+    radio = _make_radio()
+
+    await _apply_slow_controls(store, radio)
+
+    snapshot = store.snapshot()
+    for store_path, _public_path, expected in _NB_NR_NOTCH_CASES:
+        assert snapshot.field(store_path).value == expected
+
+
+@pytest.mark.asyncio
+async def test_nb_nr_notch_survive_unrelated_observation() -> None:
+    store = StateStore()
+    radio = _make_radio()
+
+    await _apply_slow_controls(store, radio)
+    # An unrelated RX-meter observation on a later cycle must not disturb the
+    # NB/NR + notch controls (no snap-back to the default snapshot value).
+    for observation in await _adapter(radio).poll_rx_meters():
+        store.apply(observation)
+
+    snapshot = store.snapshot()
+    for store_path, _public_path, expected in _NB_NR_NOTCH_CASES:
+        assert snapshot.field(store_path).value == expected
+
+
+@pytest.mark.asyncio
+async def test_nb_nr_notch_project_available() -> None:
+    store = StateStore()
+    radio = _make_radio()
+
+    await _apply_slow_controls(store, radio)
+    for observation in await _adapter(radio).poll_rx_meters():
+        store.apply(observation)
+
+    payload = build_public_state_payload_from_snapshot(
+        store.snapshot(),
+        radio=None,
+        receiver_count=2,
+    )
+
+    for _store_path, public_path, _expected in _NB_NR_NOTCH_CASES:
         status = payload["fieldStatus"][public_path]
         assert status["observed"] is True
         assert status["availability"] == "available"
