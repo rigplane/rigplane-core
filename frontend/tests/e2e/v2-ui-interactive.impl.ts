@@ -1055,12 +1055,12 @@ async function buildAuditCases(capabilities: Capabilities): Promise<AuditCase[]>
       control: 'CW Pitch',
       action: 'set 700',
       expected: 'set_cw_pitch { value: 700 }',
-      locate: (page) => page.locator('input[aria-label="CW Pitch"]:visible'),
+      locate: (page) => page.getByRole('slider', { name: 'CW Pitch' }),
       prepare: ensureCwPitchVisible,
       onMissing: async () => ({
         status: 'KNOWN FAIL',
         actual: 'control missing from DOM',
-        details: 'CW Pitch did not render after switching MAIN to CW mode with a direct set_mode command.',
+        details: 'CW Pitch slider was not found or not visible in the DSP panel.',
       }),
       act: async (page, locator) => setRangeValue(page, locator, 700),
       verify: (_ctx, commands) =>
