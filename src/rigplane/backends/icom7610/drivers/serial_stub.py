@@ -4,14 +4,23 @@ from __future__ import annotations
 
 import asyncio
 import time
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
+from ....core.state_pipeline_contracts import (
+    FieldPath,
+    Observation,
+    SourceMetadata,
+)
 from ....exceptions import CommandError
 from ....profiles import RadioProfile, resolve_radio_profile
 from ....radio_state import RadioState
 from ...._state_cache import StateCache
 from ....types import Mode
+
+if TYPE_CHECKING:
+    from ...._poller_types import CommandQueue, CommandQueueEntry
 
 
 class SerialFrameError(RuntimeError):
@@ -146,7 +155,7 @@ class _ReceiverState:
     mode: Mode = Mode.USB
     filter_width: int | None = 1
     data_mode: bool = False
-    rf_gain: int = 255
+    rf_gain: int = 200
     af_level: int = 200
     squelch: int = 0
     nb_on: bool = False
@@ -155,6 +164,16 @@ class _ReceiverState:
     ip_plus_on: bool = False
     attenuator_db: int = 0
     preamp_level: int = 1
+    # Slow-state / operator-control defaults observation-backed by the mock so
+    # the v2 availability gate (MOR-429) renders these controls in the live
+    # Playwright audit (MOR-437). Values mirror realistic IC-7610 readings.
+    agc: int = 2  # 0=off, 1=FAST, 2=MID, 3=SLOW
+    agc_time_constant: int = 2
+    nr_level: int = 5
+    nb_level: int = 5
+    auto_notch: bool = False
+    manual_notch: bool = False
+    filter_width_hz: int = 2400  # SSB default passband in Hz
 
 
 class SerialMockRadio:
@@ -171,6 +190,20 @@ class SerialMockRadio:
         self._data_mode = False
         self._ptt = False
         self._power = 100
+        # Global slow-state / TX defaults, observation-backed by the mock so the
+        # v2 availability gate (MOR-429) renders these controls in the live
+        # Playwright audit (MOR-437). Realistic IC-7610 idle readings.
+        self._mic_gain = 128
+        self._compressor_level = 0
+        self._monitor_gain = 128
+        self._cw_pitch = 600
+        self._tuner_status = 0  # 0=off, 1=on, 2=tuning
+        self._split = False
+        self._compressor_on = False
+        self._monitor_on = False
+        self._vox_on = False
+        self._dual_watch = False
+        self._tx_freq_monitor = False
         self._state_cache = StateCache()
         self._radio_state = RadioState()
         self._scope_callback: Any = None
@@ -418,6 +451,173 @@ class SerialMockRadio:
     async def set_ip_plus(self, on: bool, receiver: int = 0) -> None:
         await self.set_ipplus(on, receiver=receiver)
 
+    # --- Slow-state / operator-control setters (observation-backed; MOR-437) ---
+
+    async def set_agc(self, value: int, receiver: int = 0) -> None:
+        self._receiver_state(receiver, operation="set_agc").agc = value
+
+    async def set_agc_time_constant(self, value: int, receiver: int = 0) -> None:
+        self._receiver_state(
+            receiver, operation="set_agc_time_constant"
+        ).agc_time_constant = value
+
+    async def set_nr_level(self, level: int, receiver: int = 0) -> None:
+        self._receiver_state(receiver, operation="set_nr_level").nr_level = level
+
+    async def set_nb_level(self, level: int, receiver: int = 0) -> None:
+        self._receiver_state(receiver, operation="set_nb_level").nb_level = level
+
+    async def set_auto_notch(self, on: bool, receiver: int = 0) -> None:
+        self._receiver_state(receiver, operation="set_auto_notch").auto_notch = on
+
+    async def set_manual_notch(self, on: bool, receiver: int = 0) -> None:
+        self._receiver_state(receiver, operation="set_manual_notch").manual_notch = on
+
+    async def set_filter_width(self, width: int, receiver: int = 0) -> None:
+        self._receiver_state(
+            receiver, operation="set_filter_width"
+        ).filter_width_hz = width
+
+    async def set_mic_gain(self, level: int) -> None:
+        self._mic_gain = level
+
+    async def set_compressor_level(self, level: int) -> None:
+        self._compressor_level = level
+
+    async def set_monitor_gain(self, level: int) -> None:
+        self._monitor_gain = level
+
+    async def set_cw_pitch(self, value: int) -> None:
+        self._cw_pitch = value
+
+    async def set_tuner_status(self, value: int) -> None:
+        self._tuner_status = value
+
+    async def set_split(self, on: bool) -> None:
+        self._split = on
+
+    async def set_compressor(self, on: bool) -> None:
+        self._compressor_on = on
+
+    async def set_monitor(self, on: bool) -> None:
+        self._monitor_on = on
+
+    async def set_vox(self, on: bool) -> None:
+        self._vox_on = on
+
+    async def set_dual_watch(self, on: bool) -> None:
+        self._dual_watch = on
+
+    async def set_tx_freq_monitor(self, on: bool) -> None:
+        self._tx_freq_monitor = on
+
+    def create_observation_poller(
+        self,
+        *,
+        callback: Callable[[Sequence[Observation]], None],
+        command_queue: "CommandQueue | None" = None,
+    ) -> "_MockObservationPoller":
+        """Construct a baseline observation poller for the serial mock.
+
+        The mock cannot back state from a CI-V RX stream (``send_civ`` is a
+        no-op), so without this the web StateStore stays empty and the v2
+        availability gate (MOR-429) strips every non-observation-backed
+        control from the DOM, hanging the live Playwright audit (MOR-437).
+        The poller emits one honest baseline ``Observation`` per v2-rendered
+        field with ``max_age=None`` (never decays) and drains the web command
+        queue so the audit's ``set_*`` commands still execute, re-emitting
+        the baseline afterwards so values reflect the change without snap-back.
+        """
+        return _MockObservationPoller(
+            self,
+            callback=callback,
+            command_queue=command_queue,
+        )
+
+    def baseline_observations(self) -> tuple[Observation, ...]:
+        """Snapshot every v2-rendered field as a confirmed Observation.
+
+        See ``create_observation_poller``. Receivers are emitted for each
+        configured receiver (MAIN, plus SUB on dual-RX profiles).
+        """
+        now = time.monotonic()
+        meta = SourceMetadata(
+            source="state_poller",
+            provider="serial_mock",
+            native_id="baseline",
+        )
+        observations: list[Observation] = []
+
+        def _obs(path: FieldPath, value: Any) -> None:
+            observations.append(
+                Observation(
+                    path=path,
+                    value=value,
+                    source=meta,
+                    timestamp_monotonic=now,
+                    max_age=None,
+                )
+            )
+
+        for receiver in sorted(self._rx):
+            rid = str(receiver)
+            rx = self._rx[receiver]
+            # freq_mode family (active slot)
+            _obs(FieldPath.active(rid, "freq_mode", "freq_hz"), rx.freq)
+            _obs(FieldPath.active(rid, "freq_mode", "mode"), rx.mode.name)
+            _obs(
+                FieldPath.active(rid, "freq_mode", "data_mode"),
+                int(rx.data_mode),
+            )
+            # operator_controls family
+            controls: dict[str, Any] = {
+                "af_level": rx.af_level,
+                "rf_gain": rx.rf_gain,
+                "squelch": rx.squelch,
+                "att": rx.attenuator_db,
+                "preamp": rx.preamp_level,
+                "agc": rx.agc,
+                "agc_time_constant": rx.agc_time_constant,
+                "nr_level": rx.nr_level,
+                "nb_level": rx.nb_level,
+                "filter_width": rx.filter_width_hz,
+            }
+            for name, value in controls.items():
+                _obs(FieldPath.receiver(rid, "operator_controls", name), value)
+            # operator_toggles family
+            toggles: dict[str, bool] = {
+                "nr": rx.nr_on,
+                "nb": rx.nb_on,
+                "auto_notch": rx.auto_notch,
+                "manual_notch": rx.manual_notch,
+            }
+            for name, flag in toggles.items():
+                _obs(FieldPath.receiver(rid, "operator_toggles", name), flag)
+
+        # Global operator_controls
+        global_controls: dict[str, Any] = {
+            "mic_gain": self._mic_gain,
+            "compressor_level": self._compressor_level,
+            "monitor_gain": self._monitor_gain,
+            "cw_pitch": self._cw_pitch,
+            "tuner_status": self._tuner_status,
+        }
+        for name, value in global_controls.items():
+            _obs(FieldPath.global_("operator_controls", name), value)
+        # Global tx_state toggles
+        global_toggles: dict[str, bool] = {
+            "split": self._split,
+            "compressor_on": self._compressor_on,
+            "monitor_on": self._monitor_on,
+            "vox_on": self._vox_on,
+            "dual_watch": self._dual_watch,
+            "tx_freq_monitor": self._tx_freq_monitor,
+        }
+        for name, flag in global_toggles.items():
+            _obs(FieldPath.global_("tx_state", name), flag)
+
+        return tuple(observations)
+
     async def set_vfo(self, vfo: str) -> None:
         return None
 
@@ -444,6 +644,203 @@ class SerialMockRadio:
 
     async def stop_audio_rx_opus(self) -> None:
         return None
+
+
+class _MockObservationPoller:
+    """Baseline observation poller for :class:`SerialMockRadio` (MOR-437).
+
+    Emits the mock's honest baseline observations once at start (so the web
+    StateStore observation-backs every v2-rendered field with ``max_age=None``
+    — they never decay to stale/missing), then drains the web command queue so
+    the live audit's ``set_*`` commands execute against the mock. After each
+    drain that mutates state, the baseline is re-emitted so observed values
+    track the change without snapping back to a default.
+    """
+
+    _DRAIN_INTERVAL: float = 0.05
+
+    def __init__(
+        self,
+        radio: SerialMockRadio,
+        *,
+        callback: Callable[[Sequence[Observation]], None],
+        command_queue: "CommandQueue | None" = None,
+    ) -> None:
+        self._radio = radio
+        self._callback = callback
+        self._command_queue = command_queue
+        self._task: asyncio.Task[None] | None = None
+
+    async def start(self) -> None:
+        if self._task is not None and not self._task.done():
+            return
+        # Seed the StateStore immediately so the first /api/v1/state read after
+        # startup already observation-backs the v2 fields.
+        self._callback(self._radio.baseline_observations())
+        self._task = asyncio.get_running_loop().create_task(
+            self._run(), name="serial-mock-observation-poller"
+        )
+
+    async def stop(self) -> None:
+        if self._task is not None:
+            self._task.cancel()
+            try:
+                await self._task
+            except asyncio.CancelledError:
+                pass
+            self._task = None
+
+    @property
+    def running(self) -> bool:
+        return self._task is not None and not self._task.done()
+
+    async def _run(self) -> None:
+        try:
+            while True:
+                if self._command_queue is not None and self._command_queue.has_commands:
+                    changed = await self._drain_commands()
+                    if changed:
+                        self._callback(self._radio.baseline_observations())
+                if self._command_queue is not None:
+                    await self._command_queue.wait(timeout=self._DRAIN_INTERVAL)
+                else:
+                    await asyncio.sleep(self._DRAIN_INTERVAL)
+        except asyncio.CancelledError:
+            pass
+
+    async def _drain_commands(self) -> bool:
+        assert self._command_queue is not None
+        changed = False
+        for entry in self._command_queue.drain_entries():
+            if entry.future is not None and entry.future.cancelled():
+                continue
+            try:
+                await self._execute_command(entry.command)
+                changed = True
+                if entry.future is not None and not entry.future.done():
+                    entry.future.set_result(None)
+            except Exception as exc:  # noqa: BLE001 — surface to the waiter
+                self._mark_queued_command_failed(entry, exc)
+                if entry.future is not None and not entry.future.done():
+                    entry.future.set_exception(exc)
+        return changed
+
+    async def _execute_command(self, cmd: Any) -> None:
+        from ...._poller_types import (
+            PttOff,
+            PttOn,
+            SetAfLevel,
+            SetAgc,
+            SetAgcTimeConstant,
+            SetAttenuator,
+            SetAutoNotch,
+            SetCompressor,
+            SetCompressorLevel,
+            SetCwPitch,
+            SetDataMode,
+            SetDualWatch,
+            SetFilterWidth,
+            SetFreq,
+            SetManualNotch,
+            SetMicGain,
+            SetMode,
+            SetMonitor,
+            SetMonitorGain,
+            SetNB,
+            SetNBLevel,
+            SetNR,
+            SetNRLevel,
+            SetPreamp,
+            SetRfGain,
+            SetSplit,
+            SetSquelch,
+            SetTunerStatus,
+            SetTxFreqMonitor,
+            SetVox,
+        )
+
+        radio = self._radio
+        match cmd:
+            case SetFreq(freq=freq, receiver=rx):
+                await radio.set_freq(freq, receiver=rx)
+            case SetMode(mode=mode, filter_width=fw, receiver=rx):
+                await radio.set_mode(mode, filter_width=fw, receiver=rx)
+            case SetDataMode(mode=mode_on, receiver=rx):
+                await radio.set_data_mode(mode_on, receiver=rx)
+            case PttOn():
+                await radio.set_ptt(True)
+            case PttOff():
+                await radio.set_ptt(False)
+            case SetRfGain(level=level, receiver=rx):
+                await radio.set_rf_gain(level, receiver=rx)
+            case SetAfLevel(level=level, receiver=rx):
+                await radio.set_af_level(level, receiver=rx)
+            case SetSquelch(level=level, receiver=rx):
+                await radio.set_squelch(level, receiver=rx)
+            case SetAttenuator(db=db, receiver=rx):
+                await radio.set_attenuator_level(db, receiver=rx)
+            case SetPreamp(level=level, receiver=rx):
+                await radio.set_preamp(level, receiver=rx)
+            case SetAgc(mode=value, receiver=rx):
+                await radio.set_agc(value, receiver=rx)
+            case SetAgcTimeConstant(value=value, receiver=rx):
+                await radio.set_agc_time_constant(value, receiver=rx)
+            case SetNRLevel(level=level, receiver=rx):
+                await radio.set_nr_level(level, receiver=rx)
+            case SetNBLevel(level=level, receiver=rx):
+                await radio.set_nb_level(level, receiver=rx)
+            case SetNR(on=on, receiver=rx):
+                await radio.set_nr(on, receiver=rx)
+            case SetNB(on=on, receiver=rx):
+                await radio.set_nb(on, receiver=rx)
+            case SetAutoNotch(on=on, receiver=rx):
+                await radio.set_auto_notch(on, receiver=rx)
+            case SetManualNotch(on=on, receiver=rx):
+                await radio.set_manual_notch(on, receiver=rx)
+            case SetFilterWidth(width=width, receiver=rx):
+                await radio.set_filter_width(width, receiver=rx)
+            case SetMicGain(level=level):
+                await radio.set_mic_gain(level)
+            case SetCompressorLevel(level=level):
+                await radio.set_compressor_level(level)
+            case SetMonitorGain(level=level):
+                await radio.set_monitor_gain(level)
+            case SetCwPitch(value=value):
+                await radio.set_cw_pitch(value)
+            case SetTunerStatus(value=value):
+                await radio.set_tuner_status(value)
+            case SetSplit(on=on):
+                await radio.set_split(on)
+            case SetCompressor(on=on):
+                await radio.set_compressor(on)
+            case SetMonitor(on=on):
+                await radio.set_monitor(on)
+            case SetVox(on=on):
+                await radio.set_vox(on)
+            case SetDualWatch(on=on):
+                await radio.set_dual_watch(on)
+            case SetTxFreqMonitor(on=on):
+                await radio.set_tx_freq_monitor(on)
+            case _:
+                # Unsupported commands are intentionally ignored — the mock only
+                # backs the v2-rendered field surface, not the full CI-V map.
+                return
+
+    @staticmethod
+    def _mark_queued_command_failed(
+        entry: "CommandQueueEntry",
+        exc: BaseException,
+    ) -> None:
+        service = entry.command_service
+        if service is None or entry.command_id is None:
+            return
+        params: dict[str, Any] = {
+            "message": str(exc) or None,
+            "session_id": entry.session_id,
+        }
+        if entry.source is not None:
+            params["source"] = entry.source
+        service.fail_command(entry.command_id, **params)
 
 
 __all__ = [
