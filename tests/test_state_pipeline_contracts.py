@@ -19,6 +19,7 @@ from rigplane.core.state_pipeline_contracts import (
     FieldFamily,
     FieldPath,
     FieldRegistry,
+    FieldSpec,
     Observation,
     SourceMetadata,
 )
@@ -969,3 +970,91 @@ def test_dcd_deprecated_alias_seeds_missing_when_unobserved() -> None:
         field_status = payload["fieldStatus"][status_path]
         assert field_status["observed"] is False
         assert field_status["availability"] == "missing"
+
+
+# --- MOR-464 Phase 1: calibrated-domain unit vocabulary ------------------
+
+
+def _meters_path(name: str) -> FieldPath:
+    return FieldPath.global_("meters", name)
+
+
+def test_field_spec_rejects_unknown_unit() -> None:
+    """An out-of-vocabulary unit token raises ``ValueError``."""
+    with pytest.raises(ValueError, match="unknown field unit"):
+        FieldSpec(
+            path=FieldPath.global_("meters", "swr"),
+            family=FieldFamily.METERS,
+            value_type="int",
+            unit="bogus",
+        )
+
+
+@pytest.mark.parametrize(
+    "unit", ["hz", "centihz", "normalized", "db", "w", "ratio", "v", "a"]
+)
+def test_field_spec_accepts_declared_units(unit: str) -> None:
+    """Every declared vocabulary token is accepted."""
+    spec = FieldSpec(
+        path=FieldPath.global_("meters", "swr"),
+        family=FieldFamily.METERS,
+        value_type="int",
+        unit=unit,
+    )
+    assert spec.unit == unit
+
+
+def test_field_spec_accepts_unit_none() -> None:
+    """``unit=None`` (the default) remains valid."""
+    spec = FieldSpec(
+        path=FieldPath.global_("meters", "swr"),
+        family=FieldFamily.METERS,
+        value_type="int",
+        unit=None,
+    )
+    assert spec.unit is None
+
+
+@pytest.mark.parametrize("receiver_id", ["main", "sub"])
+@pytest.mark.parametrize("field", ["tone_freq", "tsql_freq"])
+def test_tone_and_tsql_freq_units_are_centihz(receiver_id: str, field: str) -> None:
+    """CTCSS tone/TSQL frequencies declare ``centihz`` (value_type stays int)."""
+    path = FieldPath.receiver(receiver_id, "operator_controls", field)
+    spec = DEFAULT_FIELD_REGISTRY.require(path)
+    assert spec.unit == "centihz"
+    assert spec.value_type == "int"
+
+
+def test_power_level_unit_is_normalized() -> None:
+    """``power_level`` declares ``normalized`` and stays ``value_type='int'``."""
+    spec = DEFAULT_FIELD_REGISTRY.require(
+        FieldPath.global_("operator_controls", "power_level")
+    )
+    assert spec.unit == "normalized"
+    assert spec.value_type == "int"
+
+
+@pytest.mark.parametrize(
+    "name,expected_unit",
+    [
+        ("power", "w"),
+        ("swr", "ratio"),
+        ("alc", "normalized"),
+        ("comp", "db"),
+        ("vd", "v"),
+        ("id", "a"),
+    ],
+)
+def test_global_meter_units(name: str, expected_unit: str) -> None:
+    """Global meters carry their calibrated-domain units."""
+    spec = DEFAULT_FIELD_REGISTRY.require(_meters_path(name))
+    assert spec.unit == expected_unit
+
+
+@pytest.mark.parametrize("receiver_id", ["main", "sub"])
+def test_s_meter_unit_is_db(receiver_id: str) -> None:
+    """The receiver-scoped S-meter declares ``db``."""
+    spec = DEFAULT_FIELD_REGISTRY.require(
+        FieldPath.receiver(receiver_id, "meters", "s_meter")
+    )
+    assert spec.unit == "db"

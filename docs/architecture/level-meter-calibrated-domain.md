@@ -93,6 +93,16 @@ device-specific.
   `tsql_freq` for consistency); decide whether calibration lives inside `FieldSpec` or
   is referenced from the rig profile by path; add a single shared conversion helper
   alongside `runtime/meter_cal.py`; define the no-table fallback policy.
+  *Realized outcomes (MOR-464):* the vocabulary is the `_FIELD_UNITS` frozenset in
+  `core/state_pipeline_contracts.py` — `{"hz", "centihz", "normalized", "db", "w",
+  "ratio", "v", "a"}` (including `"v"`/`"a"` for the `vd`/`id` supply meters), enforced
+  in `FieldSpec.__post_init__`. Calibration stays in `rigs/*.toml` and is referenced by
+  a field-name→meter-key convention (no `calibration_ref` attribute on `FieldSpec`; the
+  spec carries `unit` only). The shared converter is `interpolate_meter(raw,
+  meter_calibrations, meter_key) -> (value, calibrated)`; `interpolate_swr` is now a thin
+  wrapper over it. No-table policy: see Q6 — `swr` keeps its legacy-linear fallback,
+  other meters emit the device-scale value with `calibrated=False` (no fabricated
+  reading). This phase is contract-only; no per-backend value was converted (Phase 2).
 - **Phase 2 (per-backend conversion)** — convert at the observation boundary, one
   field-class at a time, each with regressions: Icom `runtime/_civ_rx.py`, Yaesu
   `backends/yaesu_cat/observations.py`, and `backends/rigctld_client`. The existing
@@ -114,19 +124,28 @@ device-specific.
 - The migration is cross-cutting but stays decomposed per field-class (mirroring the
   field-path-promotion approach), and it is NOT release-gating.
 
-## Open questions (deferred to Phase 1 — product/architecture decisions, not derivable from code)
+## Open questions (RESOLVED in Phase 1 — MOR-464)
 
-1. Control domain confirmed 0.0-1.0 [ratified] vs revisit.
-2. `power_level` unit — fraction of `[power].max_watts` vs explicit `unit="w"` (the
-   biggest current incomparability).
-3. `s_meter` unit — dB-rel-S9 vs absolute dBm vs S-units (three consumers disagree
-   today).
-4. alc/comp unit — dB vs normalized.
-5. Calibration location — embedded in `FieldSpec` vs referenced from the rig profile
-   by path.
-6. No-table fallback policy — identity-on-device-scale vs linear default vs mark
-   missing.
-7. rigctld backward-compat — may the wire output change, or must rigctld convert back
-   to preserve exact current behavior for WSJT-X / hamlib clients.
-8. Interim MOR-451/452 fields (`apf_type_level`, raw att / `tuner_status` /
-   `break_in` / `rit_freq`) — re-scale in the same passes or revisit individually.
+1. **Control domain — RESOLVED:** 0.0-1.0 ratified (no change).
+2. **`power_level` unit — RESOLVED:** fraction of `[power].max_watts`, declared
+   `unit="normalized"`. The transmit-power *meter* (`meters.power`) stays in watts
+   (`unit="w"`) — these are distinct fields.
+3. **`s_meter` unit — RESOLVED:** dB-rel-S9, declared `unit="db"` (stays
+   `value_type="int"`).
+4. **alc/comp/vd/id units — RESOLVED:** `alc` = normalized; `comp` = dB; `vd` = volts
+   (`unit="v"`); `id` = amps (`unit="a"`). The volt/amp tokens were added to the
+   vocabulary so the supply meters are declared uniformly with the rest.
+5. **Calibration location — RESOLVED:** referenced by path. Curves stay in
+   `rigs/*.toml`; `FieldSpec` carries `unit` only (no `calibration_ref` attribute). The
+   meter key is the field name by convention (e.g. `meters.s_meter` → `[meters.s_meter]`
+   table).
+6. **No-table fallback policy — RESOLVED:** `swr` keeps its legacy-linear fallback
+   (`1.0 + raw/255 * 8.9`) for back-compat. Non-linear no-table meters emit the
+   device-scale value with an `uncalibrated` marker (the `calibrated=False` element of
+   `interpolate_meter`'s return tuple) — never a fabricated calibrated value.
+   `power_level` as a fraction needs no table.
+7. **rigctld backward-compat — RESOLVED (direction):** converge on hamlib semantics;
+   the concrete wire/conversion work gates Phase 3 (consumers), not Phase 1.
+8. **Interim MOR-451/452 fields — RESOLVED (deferral):** `apf_type_level`, raw `att` /
+   `tuner_status` / `break_in` / `rit_freq` are left unannotated here and revisited
+   individually in Phase 2.

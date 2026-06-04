@@ -117,6 +117,11 @@ def _validate_token(value: str, *, label: str) -> str:
     return value
 
 
+# Calibrated-domain unit vocabulary (MOR-464 Phase 1). ``v`` (volts) and ``a``
+# (amps) are included for the supply-voltage / drain-current meters.
+_FIELD_UNITS = frozenset({"hz", "centihz", "normalized", "db", "w", "ratio", "v", "a"})
+
+
 def _validate_family(value: str) -> FieldFamily:
     _validate_token(value, label="family")
     try:
@@ -448,6 +453,8 @@ class FieldSpec:
                 f"path family {self.path.family.value!r}"
             )
         _validate_token(self.value_type, label="value_type")
+        if self.unit is not None and self.unit not in _FIELD_UNITS:
+            raise ValueError(f"unknown field unit: {self.unit!r}")
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -914,7 +921,11 @@ def _receiver_specs(receiver_id: str) -> tuple[FieldSpec, ...]:
             writable=True,
         ),
         spec(FieldPath.active_slot(receiver_id), "str", writable=True),
-        spec(FieldPath.receiver(receiver_id, "meters", "s_meter"), "int"),
+        spec(
+            FieldPath.receiver(receiver_id, "meters", "s_meter"),
+            "int",
+            unit="db",
+        ),
         spec(
             FieldPath.receiver(receiver_id, "operator_toggles", "nr"),
             "bool",
@@ -1019,11 +1030,13 @@ def _receiver_specs(receiver_id: str) -> tuple[FieldSpec, ...]:
             FieldPath.receiver(receiver_id, "operator_controls", "tone_freq"),
             "int",
             writable=True,
+            unit="centihz",
         ),
         spec(
             FieldPath.receiver(receiver_id, "operator_controls", "tsql_freq"),
             "int",
             writable=True,
+            unit="centihz",
         ),
         spec(
             FieldPath.receiver(receiver_id, "operator_controls", "audio_peak_filter"),
@@ -1089,7 +1102,10 @@ def _global_specs() -> tuple[FieldSpec, ...]:
         spec(FieldPath.global_("tx_state", "vox_on"), "bool", writable=True),
         spec(FieldPath.global_("tx_state", "tx_freq_monitor"), "bool", writable=True),
         spec(
-            FieldPath.global_("operator_controls", "power_level"), "int", writable=True
+            FieldPath.global_("operator_controls", "power_level"),
+            "int",
+            writable=True,
+            unit="normalized",
         ),
         spec(
             FieldPath.global_("operator_controls", "rit_freq"),
@@ -1173,12 +1189,12 @@ def _global_specs() -> tuple[FieldSpec, ...]:
             "bool",
             writable=True,
         ),
-        spec(FieldPath.global_("meters", "alc"), "int"),
-        spec(FieldPath.global_("meters", "power"), "int"),
-        spec(FieldPath.global_("meters", "swr"), "int"),
-        spec(FieldPath.global_("meters", "comp"), "int"),
-        spec(FieldPath.global_("meters", "vd"), "int"),
-        spec(FieldPath.global_("meters", "id"), "int"),
+        spec(FieldPath.global_("meters", "alc"), "int", unit="normalized"),
+        spec(FieldPath.global_("meters", "power"), "int", unit="w"),
+        spec(FieldPath.global_("meters", "swr"), "int", unit="ratio"),
+        spec(FieldPath.global_("meters", "comp"), "int", unit="db"),
+        spec(FieldPath.global_("meters", "vd"), "int", unit="v"),
+        spec(FieldPath.global_("meters", "id"), "int", unit="a"),
         spec(
             FieldPath.scope_control("display", "span", receiver_id="main"),
             "int",

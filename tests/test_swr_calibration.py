@@ -11,7 +11,7 @@ from pathlib import Path
 
 import pytest
 
-from rigplane.meter_cal import interpolate_swr
+from rigplane.meter_cal import interpolate_meter, interpolate_swr
 from rigplane.rig_loader import load_rig
 
 RIGS_DIR = Path(__file__).resolve().parent.parent / "rigs"
@@ -126,3 +126,57 @@ def test_interpolate_swr_yaesu_path_unchanged() -> None:
     first = pts[0]
     swr = interpolate_swr(first["raw"], rig.meter_calibrations)
     assert swr == pytest.approx(first["actual"])
+
+
+# --- MOR-464 Phase 1: generic ``interpolate_meter`` ----------------------
+
+
+def _ic7610_s_meter_table() -> dict[str, list[dict[str, float]]]:
+    rig = load_rig(RIGS_DIR / "ic7610.toml")
+    return {"s_meter": rig.meter_calibrations["s_meter"]}
+
+
+def test_interpolate_meter_table_anchor_round_trip() -> None:
+    """A table hit returns ``(actual, True)`` at the calibration anchors."""
+    table = _ic7610_s_meter_table()
+    value, calibrated = interpolate_meter(130, table, "s_meter")
+    assert calibrated is True
+    assert value == pytest.approx(0.0)  # S9 anchor
+    value, calibrated = interpolate_meter(0, table, "s_meter")
+    assert calibrated is True
+    assert value == pytest.approx(-54.0)  # S0 anchor
+
+
+def test_interpolate_meter_table_midpoint() -> None:
+    """A midpoint between two anchors interpolates linearly, calibrated."""
+    table = _ic7610_s_meter_table()
+    # Leg (0, -54.0) -> (26, -48.0); midpoint raw=13 -> -51.0.
+    value, calibrated = interpolate_meter(13, table, "s_meter")
+    assert calibrated is True
+    assert value == pytest.approx(-51.0)
+
+
+def test_interpolate_meter_no_table_returns_device_scale() -> None:
+    """Absent/empty table yields ``(float(raw), False)`` (uncalibrated)."""
+    assert interpolate_meter(42, None, "s_meter") == (42.0, False)
+    assert interpolate_meter(42, {}, "s_meter") == (42.0, False)
+    assert interpolate_meter(42, {"s_meter": []}, "s_meter") == (42.0, False)
+
+
+def test_interpolate_meter_clamps_outside_endpoints_calibrated() -> None:
+    """Values past the table endpoints clamp, still flagged calibrated."""
+    table = _ic7610_s_meter_table()
+    value, calibrated = interpolate_meter(-5, table, "s_meter")
+    assert calibrated is True
+    assert value == pytest.approx(-54.0)  # clamped to first anchor (S0)
+    value, calibrated = interpolate_meter(999, table, "s_meter")
+    assert calibrated is True
+    assert value == pytest.approx(40.0)  # clamped to last anchor (S9+40)
+
+
+def test_interpolate_swr_delegates_to_interpolate_meter() -> None:
+    """``interpolate_swr`` resolves the table path via ``interpolate_meter``."""
+    rig = load_rig(RIGS_DIR / "ic7610.toml")
+    expected, calibrated = interpolate_meter(64, rig.meter_calibrations, "swr")
+    assert calibrated is True
+    assert interpolate_swr(64, rig.meter_calibrations) == pytest.approx(expected)
