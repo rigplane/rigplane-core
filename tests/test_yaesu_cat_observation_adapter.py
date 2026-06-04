@@ -164,6 +164,11 @@ def _make_radio() -> MagicMock:
     # DEC OFF) derives repeater_tone=True, repeater_tsql=False.
     radio.get_sql_type = AsyncMock(return_value=1)
     radio.read_sql_type = AsyncMock(return_value=1)
+    # CTCSS tone frequency observation read (MOR-458). ``read_ctcss_tone_index``
+    # returns the CAT ``CN`` P3 tone-chart index (0-49); the default index 8 maps
+    # to 88.5 Hz -> 8850 centiHz, emitted to BOTH tone_freq and tsql_freq.
+    radio.get_ctcss_tone = AsyncMock(return_value=8850)
+    radio.read_ctcss_tone_index = AsyncMock(return_value=8)
     return radio
 
 
@@ -233,6 +238,10 @@ class _SideEffectingYaesuRadio:
         self.radio_state.cw_spot = False
         self.radio_state.main.repeater_tone = True
         self.radio_state.main.repeater_tsql = True
+        # CTCSS tone freq (MOR-458): pre-seed sentinel centiHz values; a pure
+        # read_ctcss_tone_index must not overwrite these from legacy state.
+        self.radio_state.main.tone_freq = 11111
+        self.radio_state.main.tsql_freq = 22222
 
     async def read_freq(self, receiver: int = 0) -> int:
         return 14_074_000 if receiver == 0 else 7_074_000
@@ -508,6 +517,13 @@ class _SideEffectingYaesuRadio:
     async def get_sql_type(self, receiver: int = 0) -> int:
         return await self.read_sql_type(receiver)
 
+    async def read_ctcss_tone_index(self, receiver: int = 0) -> int:
+        # CAT ``CN`` P3 tone-chart index 8 = 88.5 Hz. Pure read: the derived
+        # centiHz value must come from the observation pipeline, not from any
+        # legacy-state write (the pre-seeded sentinel tone_freq/tsql_freq prove
+        # no mutation).
+        return 8
+
 
 @pytest.mark.asyncio
 async def test_medium_poll_emits_frequency_mode_and_ptt_observations() -> None:
@@ -596,6 +612,13 @@ async def test_slow_poll_emits_declared_control_observations_only() -> None:
         # cycle. Gated on the ``sql_type`` cap.
         ("receiver.main.operator_toggles.repeater_tone", True),
         ("receiver.main.operator_toggles.repeater_tsql", False),
+        # CTCSS tone frequency (MOR-458): MAIN-only, a single ``read_ctcss_tone_index``
+        # CAT ``CN`` read mapped index -> Hz -> centiHz. The FTX-1 has one CTCSS
+        # tone (CN P2=0) used for both TONE and TSQL, so the same centiHz value
+        # (default index 8 = 88.5 Hz = 8850) is emitted to BOTH paths. Gated on
+        # the ``sql_type`` cap.
+        ("receiver.main.operator_controls.tone_freq", 8850),
+        ("receiver.main.operator_controls.tsql_freq", 8850),
         # active-slot (MOR-446): the global "which receiver is active" field,
         # emitted in the slow-control lane, unconditional (no FTX-1 cap gate)
         # like the legacy poller's always-on ``get_vfo_select`` read. The int
@@ -628,6 +651,10 @@ async def test_slow_poll_emits_declared_control_observations_only() -> None:
     # Tone/CTCSS: a SINGLE read_sql_type feeds both derived booleans (MOR-457).
     assert radio.read_sql_type.await_count == 1
     radio.get_sql_type.assert_not_awaited()
+    # CTCSS tone freq: a SINGLE read_ctcss_tone_index feeds both tone_freq and
+    # tsql_freq in centiHz (MOR-458).
+    assert radio.read_ctcss_tone_index.await_count == 1
+    radio.get_ctcss_tone.assert_not_awaited()
     radio.get_af_level.assert_not_awaited()
     radio.get_rf_gain.assert_not_awaited()
     radio.get_squelch.assert_not_awaited()
@@ -681,6 +708,8 @@ async def test_slow_poll_skips_sub_controls_without_matching_runtime_capability(
     radio.read_manual_notch_freq.assert_not_awaited()
     # Tone/CTCSS dropped: the ``sql_type`` runtime cap is absent here (MOR-457).
     radio.read_sql_type.assert_not_awaited()
+    # CTCSS tone freq dropped likewise — same ``sql_type`` cap gate (MOR-458).
+    radio.read_ctcss_tone_index.assert_not_awaited()
     radio.get_af_level.assert_not_awaited()
     radio.get_rf_gain.assert_not_awaited()
     radio.get_squelch.assert_not_awaited()
@@ -982,6 +1011,12 @@ async def test_adapter_uses_read_only_yaesu_paths_when_getters_mutate_state() ->
         # both booleans and does not mutate legacy state.
         ("receiver.main.operator_toggles.repeater_tone", True),
         ("receiver.main.operator_toggles.repeater_tsql", False),
+        # CTCSS tone freq (MOR-458): gated on the ``sql_type`` cap (present
+        # here); a single ``read_ctcss_tone_index`` (index 8 = 88.5 Hz) maps to
+        # 8850 centiHz, emitted to BOTH tone_freq and tsql_freq, and does not
+        # mutate legacy state.
+        ("receiver.main.operator_controls.tone_freq", 8850),
+        ("receiver.main.operator_controls.tsql_freq", 8850),
         # active-slot (MOR-446); unconditional like AGC/narrow, the SUB index
         # coerces to the neutral "SUB" str.
         ("global.slow_state.active", "SUB"),
@@ -1068,6 +1103,10 @@ async def test_adapter_uses_read_only_yaesu_paths_when_getters_mutate_state() ->
     # pre-seeded impossible-via-CT combination (both True) is preserved.
     assert radio.radio_state.main.repeater_tone is True
     assert radio.radio_state.main.repeater_tsql is True
+    # CTCSS tone freq read_ctcss_tone_index must not mutate legacy state
+    # (MOR-458). The pre-seeded sentinel centiHz values are preserved.
+    assert radio.radio_state.main.tone_freq == 11111
+    assert radio.radio_state.main.tsql_freq == 22222
 
 
 @pytest.mark.asyncio
@@ -1271,6 +1310,61 @@ async def test_sql_type_skipped_without_ctcss_capability() -> None:
     assert "receiver.main.operator_toggles.repeater_tone" not in paths
     assert "receiver.main.operator_toggles.repeater_tsql" not in paths
     radio.read_sql_type.assert_not_awaited()
+
+
+@pytest.mark.parametrize(
+    ("index", "expected_centihz"),
+    [
+        (0, 6700),  # 67.0 Hz
+        (8, 8850),  # 88.5 Hz (default CTCSS tone)
+        (49, 25410),  # 254.1 Hz (highest standard EIA tone)
+    ],
+)
+@pytest.mark.asyncio
+async def test_ctcss_tone_freq_emits_both_paths_in_centihz(
+    index: int, expected_centihz: int
+) -> None:
+    """MOR-458: one CN read feeds BOTH tone_freq and tsql_freq in centiHz.
+
+    The FTX-1 has a single CTCSS tone frequency (CN P2=0) used for both encode
+    (TONE) and decode (TSQL), so the same centiHz value is emitted to both
+    neutral paths from a single ``read_ctcss_tone_index`` read. Gated on the
+    ``sql_type`` cap (present here) + can_poll.
+    """
+    radio = _make_radio()
+    radio.read_ctcss_tone_index = AsyncMock(return_value=index)
+    adapter = YaesuObservationAdapter(
+        radio,
+        profile=_profile_state_acquisition(),
+        clock=_clock,
+    )
+
+    observations = await adapter.poll_slow_controls()
+    by_path = {str(item.path): item.value for item in observations}
+
+    assert by_path["receiver.main.operator_controls.tone_freq"] == expected_centihz
+    assert by_path["receiver.main.operator_controls.tsql_freq"] == expected_centihz
+    # A SINGLE CN read feeds both emissions.
+    assert radio.read_ctcss_tone_index.await_count == 1
+
+
+@pytest.mark.asyncio
+async def test_ctcss_tone_freq_skipped_without_ctcss_capability() -> None:
+    """MOR-458: neither tone_freq nor tsql_freq emits without the ``sql_type`` cap."""
+    radio = _make_radio()
+    radio.capabilities = radio.capabilities - {"sql_type"}
+    adapter = YaesuObservationAdapter(
+        radio,
+        profile=_profile_state_acquisition(),
+        clock=_clock,
+    )
+
+    observations = await adapter.poll_slow_controls()
+    paths = {str(item.path) for item in observations}
+
+    assert "receiver.main.operator_controls.tone_freq" not in paths
+    assert "receiver.main.operator_controls.tsql_freq" not in paths
+    radio.read_ctcss_tone_index.assert_not_awaited()
 
 
 @pytest.mark.asyncio

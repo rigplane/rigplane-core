@@ -102,6 +102,8 @@ polling_only = [
     "global.slow_state.cw_spot",
     "receiver.main.operator_toggles.repeater_tone",
     "receiver.main.operator_toggles.repeater_tsql",
+    "receiver.main.operator_controls.tone_freq",
+    "receiver.main.operator_controls.tsql_freq",
 ]
 stream_like_meters = [
     "receiver.main.meters.s_meter",
@@ -332,6 +334,21 @@ cadence_seconds = 30.0
 freshness_ttl_seconds = 120.0
 
 [state_acquisition.field_policies."receiver.main.operator_toggles.repeater_tsql"]
+cadence_seconds = 30.0
+freshness_ttl_seconds = 120.0
+
+# CTCSS tone frequency (MOR-458). The MAIN-only CAT ``CN`` "CTCSS TONE
+# FREQUENCY" read (FTX-1_CAT_OM_ENG_2507) maps a 0-49 tone-chart index → Hz →
+# centiHz onto the neutral tone_freq/tsql_freq paths. The FTX-1 has a single
+# CTCSS tone shared by TONE (encode) and TSQL (decode), so both paths receive
+# the same centiHz value from one read. Slow-changing per-receiver operator
+# controls, so they use the slow-control cadence like the other receiver DSP
+# controls above.
+[state_acquisition.field_policies."receiver.main.operator_controls.tone_freq"]
+cadence_seconds = 30.0
+freshness_ttl_seconds = 120.0
+
+[state_acquisition.field_policies."receiver.main.operator_controls.tsql_freq"]
 cadence_seconds = 30.0
 freshness_ttl_seconds = 120.0
 
@@ -749,6 +766,10 @@ set_clarifier_freq = { cat = { write = "CF001{sign}{offset:04d};" } }
 # ── Tone / CTCSS ──
 get_sql_type   = { cat = { read = "CT0;", parse = "CT0{type:02d};" } }
 set_sql_type   = { cat = { write = "CT0{type:02d};" } }
+# CTCSS TONE FREQUENCY (MOR-458). CN P1=0 MAIN, P2=0 CTCSS; the answer's P3
+# (000-049) is the standard 50-tone EIA tone-chart index. Read-only here (the
+# observation pipeline maps the index → centiHz onto tone_freq/tsql_freq).
+get_ctcss_tone = { cat = { read = "CN00;", parse = "CN00{code:03d};" } }
 
 # ── Bulk Status ──
 # IF; returns composite status: freq(9)+sign(1)+rit_offset(4)+rit(1)+xit(1)

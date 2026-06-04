@@ -38,6 +38,81 @@ logger = logging.getLogger(__name__)
 # Path to rigs/ directory: src/rigplane/backends/yaesu_cat/radio.py → 4 levels up
 _RIGS_DIR = Path(__file__).parents[4] / "rigs"
 
+# CTCSS tone chart (MOR-458). The FTX-1 CAT ``CN`` "CTCSS TONE FREQUENCY"
+# command reports the tone as a 0-49 INDEX into the standard 50-tone EIA CTCSS
+# set, NOT as an absolute frequency (unlike the Icom 0x1B BCD-Hz encoding). The
+# index → Hz chart is verbatim from the official FTX-1 CAT manual
+# (``FTX-1_CAT_OM_ENG_2507``). Values are stored directly in centiHz
+# (round(Hz * 100)) so the neutral emission matches the Icom convention
+# (``round(_decode_tone_freq(...) * 100)``, MOR-451) with no float rounding
+# ambiguity at the call site. There is no shared cross-vendor CTCSS table in
+# the codebase (Icom decodes raw BCD Hz; the generic ``table_index_to_hz``
+# helper carries no table of its own), so this Yaesu-local table is the single
+# source of truth for the index → centiHz mapping.
+_CTCSS_TONE_CENTIHZ: tuple[int, ...] = (
+    6700,  # 000 = 67.0 Hz
+    6930,  # 001 = 69.3 Hz
+    7190,  # 002 = 71.9 Hz
+    7440,  # 003 = 74.4 Hz
+    7700,  # 004 = 77.0 Hz
+    7970,  # 005 = 79.7 Hz
+    8250,  # 006 = 82.5 Hz
+    8540,  # 007 = 85.4 Hz
+    8850,  # 008 = 88.5 Hz
+    9150,  # 009 = 91.5 Hz
+    9480,  # 010 = 94.8 Hz
+    9740,  # 011 = 97.4 Hz
+    10000,  # 012 = 100.0 Hz
+    10350,  # 013 = 103.5 Hz
+    10720,  # 014 = 107.2 Hz
+    11090,  # 015 = 110.9 Hz
+    11480,  # 016 = 114.8 Hz
+    11880,  # 017 = 118.8 Hz
+    12300,  # 018 = 123.0 Hz
+    12730,  # 019 = 127.3 Hz
+    13180,  # 020 = 131.8 Hz
+    13650,  # 021 = 136.5 Hz
+    14130,  # 022 = 141.3 Hz
+    14620,  # 023 = 146.2 Hz
+    15140,  # 024 = 151.4 Hz
+    15670,  # 025 = 156.7 Hz
+    15980,  # 026 = 159.8 Hz
+    16220,  # 027 = 162.2 Hz
+    16550,  # 028 = 165.5 Hz
+    16790,  # 029 = 167.9 Hz
+    17130,  # 030 = 171.3 Hz
+    17380,  # 031 = 173.8 Hz
+    17730,  # 032 = 177.3 Hz
+    17990,  # 033 = 179.9 Hz
+    18350,  # 034 = 183.5 Hz
+    18620,  # 035 = 186.2 Hz
+    18990,  # 036 = 189.9 Hz
+    19280,  # 037 = 192.8 Hz
+    19660,  # 038 = 196.6 Hz
+    19950,  # 039 = 199.5 Hz
+    20350,  # 040 = 203.5 Hz
+    20650,  # 041 = 206.5 Hz
+    21070,  # 042 = 210.7 Hz
+    21810,  # 043 = 218.1 Hz
+    22570,  # 044 = 225.7 Hz
+    22910,  # 045 = 229.1 Hz
+    23360,  # 046 = 233.6 Hz
+    24180,  # 047 = 241.8 Hz
+    25030,  # 048 = 250.3 Hz
+    25410,  # 049 = 254.1 Hz
+)
+
+
+def _ctcss_index_to_centihz(index: int) -> int:
+    """Map a CAT ``CN`` CTCSS tone-chart index (0-49) to centiHz.
+
+    Pure lookup into :data:`_CTCSS_TONE_CENTIHZ`, reusing the generic
+    :func:`table_index_to_hz` index-into-a-table helper. The result is in
+    centiHz (e.g. index 8 → 88.5 Hz → ``8850``) to match the Icom MOR-451
+    convention. Raises ``ValueError`` for out-of-range indices.
+    """
+    return int(table_index_to_hz(index, table=_CTCSS_TONE_CENTIHZ))
+
 
 def _load_config(profile: Any) -> "RigConfig":
     """Load RigConfig from a profile name or return an existing RigConfig."""
@@ -1880,6 +1955,28 @@ class YaesuCatRadio:
     async def set_sql_type(self, type_code: int, receiver: int = 0) -> None:
         """Set squelch type code (CT0)."""
         await self._write("set_sql_type", type=type_code)
+
+    async def read_ctcss_tone_index(self, receiver: int = 0) -> int:
+        """Read the MAIN CTCSS tone-chart index (CN command) — pure read.
+
+        Sends ``CN00;`` (P1=0 MAIN, P2=0 CTCSS) and parses the ``CN00nnn;``
+        answer, returning the 000-049 tone-chart index per the FTX-1 CAT
+        Operation Reference Manual (``FTX-1_CAT_OM_ENG_2507``). Pure CAT read
+        used by the observation pipeline: it does NOT mutate ``radio_state``.
+        MAIN only (CN P1=0); the SUB receiver would need CN10, out of scope.
+        """
+        result = await self._query("get_ctcss_tone")
+        return int(result["code"])
+
+    async def get_ctcss_tone(self, receiver: int = 0) -> int:
+        """Get the MAIN CTCSS tone frequency in centiHz (CN command).
+
+        Delegates to :meth:`read_ctcss_tone_index` and maps the tone-chart
+        index to centiHz (e.g. index 8 → 88.5 Hz → ``8850``) to match the Icom
+        MOR-451 convention. The FTX-1 has a single CTCSS tone (CN P2=0) shared
+        by both TONE (encode) and TSQL (decode).
+        """
+        return _ctcss_index_to_centihz(await self.read_ctcss_tone_index(receiver))
 
     # -- D10: System --------------------------------------------------------
 

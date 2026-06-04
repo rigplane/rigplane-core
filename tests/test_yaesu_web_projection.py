@@ -137,6 +137,16 @@ _CTCSS_CASES = (
     ("receiver.main.operator_toggles.repeater_tsql", "main.repeaterTsql", True),
 )
 
+# (store path, public fieldStatus key, expected value) for the CTCSS tone
+# frequency (MOR-458). MAIN-only per-receiver operator controls (public
+# ``main.toneFreq``/``main.tsqlFreq``) derived from a single CAT ``CN`` read on
+# the slow-control lane. The fixture returns tone-chart index 8 (88.5 Hz), so
+# both tone_freq and tsql_freq project as 8850 centiHz (single Yaesu tone).
+_TONE_FREQ_CASES = (
+    ("receiver.main.operator_controls.tone_freq", "main.toneFreq", 8850),
+    ("receiver.main.operator_controls.tsql_freq", "main.tsqlFreq", 8850),
+)
+
 
 def _clock() -> float:
     return 123.456
@@ -236,6 +246,10 @@ def _make_radio() -> MagicMock:
     # returns the CAT ``CT`` P2 code; code 2 ("TSQL": ENC+DEC) derives
     # repeater_tone=False, repeater_tsql=True. MAIN-only, slow-control lane.
     radio.read_sql_type = AsyncMock(return_value=2)
+    # CTCSS tone frequency observation read (MOR-458). ``read_ctcss_tone_index``
+    # returns the CAT ``CN`` P3 tone-chart index; index 8 (88.5 Hz) maps to 8850
+    # centiHz, emitted to BOTH tone_freq and tsql_freq (single Yaesu tone).
+    radio.read_ctcss_tone_index = AsyncMock(return_value=8)
     return radio
 
 
@@ -883,6 +897,55 @@ async def test_ctcss_projects_available() -> None:
     )
 
     for _store_path, public_path, _expected in _CTCSS_CASES:
+        status = payload["fieldStatus"][public_path]
+        assert status["observed"] is True
+        assert status["availability"] == "available"
+
+
+@pytest.mark.asyncio
+async def test_tone_freq_observation_value() -> None:
+    store = StateStore()
+    radio = _make_radio()
+
+    await _apply_slow_controls(store, radio)
+
+    snapshot = store.snapshot()
+    for store_path, _public_path, expected in _TONE_FREQ_CASES:
+        assert snapshot.field(store_path).value == expected
+
+
+@pytest.mark.asyncio
+async def test_tone_freq_survives_unrelated_observation() -> None:
+    store = StateStore()
+    radio = _make_radio()
+
+    await _apply_slow_controls(store, radio)
+    # An unrelated RX-meter observation on a later cycle must not disturb the
+    # CTCSS tone-frequency fields (no snap-back to the default snapshot value).
+    for observation in await _adapter(radio).poll_rx_meters():
+        store.apply(observation)
+
+    snapshot = store.snapshot()
+    for store_path, _public_path, expected in _TONE_FREQ_CASES:
+        assert snapshot.field(store_path).value == expected
+
+
+@pytest.mark.asyncio
+async def test_tone_freq_projects_available() -> None:
+    store = StateStore()
+    radio = _make_radio()
+
+    await _apply_slow_controls(store, radio)
+    for observation in await _adapter(radio).poll_rx_meters():
+        store.apply(observation)
+
+    payload = build_public_state_payload_from_snapshot(
+        store.snapshot(),
+        radio=None,
+        receiver_count=2,
+    )
+
+    for _store_path, public_path, _expected in _TONE_FREQ_CASES:
         status = payload["fieldStatus"][public_path]
         assert status["observed"] is True
         assert status["availability"] == "available"

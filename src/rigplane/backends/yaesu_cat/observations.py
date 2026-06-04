@@ -11,6 +11,8 @@ from rigplane.core.observation_adapter import ProviderObservationAdapter
 from rigplane.core.state_acquisition_policy import RadioAcquisitionProfile
 from rigplane.core.state_pipeline_contracts import FieldPath, Observation
 
+from .radio import _ctcss_index_to_centihz
+
 if TYPE_CHECKING:
     from rigplane.core.types import BreakInMode
 
@@ -140,6 +142,22 @@ _CW_SPOT = FieldPath.global_("slow_state", "cw_spot")
 # limitation. Raw device code (cross-vendor calibration is MOR-453).
 _MAIN_REPEATER_TONE = FieldPath.receiver("main", "operator_toggles", "repeater_tone")
 _MAIN_REPEATER_TSQL = FieldPath.receiver("main", "operator_toggles", "repeater_tsql")
+# CTCSS tone FREQUENCY (MOR-458). The FTX-1 CAT ``CN`` "CTCSS TONE FREQUENCY"
+# command (FTX-1_CAT_OM_ENG_2507) reports the MAIN tone as a 0-49 INDEX into
+# the standard 50-tone EIA chart (NOT an absolute frequency; cf. Icom 0x1B
+# BCD-Hz). The radio maps that index → Hz → centiHz (the index→Hz Tone Chart
+# is verbatim from the manual; see ``radio._CTCSS_TONE_CENTIHZ``). The neutral
+# value is centiHz = round(Hz * 100), matching the Icom MOR-451 convention
+# (``round(_decode_tone_freq(...) * 100)``) so consumers see one unit.
+# SINGLE-YAESU-TONE: unlike Icom (which can carry distinct TONE/TSQL freqs),
+# the FTX-1 has ONE CTCSS tone frequency (CN P2=0) used for BOTH encode (TONE)
+# and decode (TSQL). So the SAME centiHz value is emitted to BOTH tone_freq and
+# tsql_freq from a SINGLE CN read. Emitted ALWAYS (the configured setpoint,
+# like Icom's tone_freq readback) — independent of whether CTCSS is currently
+# active. MAIN only (CN P1=0): the SUB receiver would need CN10, out of scope.
+# DCS (CN P2=1) is a documented limitation — NO neutral DCS path is emitted.
+_MAIN_TONE_FREQ = FieldPath.receiver("main", "operator_controls", "tone_freq")
+_MAIN_TSQL_FREQ = FieldPath.receiver("main", "operator_controls", "tsql_freq")
 YAESU_PTT_PATH = _PTT
 
 
@@ -221,6 +239,8 @@ class YaesuObservationRadio(Protocol):
     async def read_cw_spot(self) -> bool: ...
 
     async def read_sql_type(self, receiver: int = 0) -> int: ...
+
+    async def read_ctcss_tone_index(self, receiver: int = 0) -> int: ...
 
 
 @dataclass(slots=True)
@@ -585,6 +605,44 @@ class YaesuObservationAdapter:
                         _MAIN_REPEATER_TSQL,
                         sql_type == 2,
                         native_id="read_sql_type",
+                    )
+                )
+        # CTCSS tone FREQUENCY (MOR-458) — MAIN-only per-receiver
+        # ``operator_controls``, grouped with the CTCSS squelch-type toggles
+        # above. A SINGLE ``read_ctcss_tone_index(0)`` CAT ``CN`` read
+        # (FTX-1_CAT_OM_ENG_2507) yields the 0-49 standard-EIA tone-chart index,
+        # which ``_ctcss_index_to_centihz`` maps index → Hz → centiHz (the
+        # index→Hz Tone Chart is verbatim from the manual). The neutral unit is
+        # centiHz = round(Hz * 100), matching the Icom MOR-451 convention so
+        # consumers see one unit. SINGLE-YAESU-TONE: the FTX-1 has ONE CTCSS
+        # tone frequency (CN P2=0) used for BOTH encode (TONE) and decode
+        # (TSQL) — Icom can carry distinct freqs, Yaesu cannot — so the SAME
+        # centiHz value is emitted to BOTH tone_freq and tsql_freq from one
+        # read. Emitted ALWAYS (the configured setpoint, like Icom's tone_freq
+        # readback), independent of whether CTCSS is currently active. Gated on
+        # the same ``sql_type`` readback capability as the CTCSS toggles (the
+        # FTX-1 CTCSS readback surface; the Icom-style ``tone_freq``/``tsql``
+        # SET capabilities are intentionally off — no false advertising, bug
+        # #550). MAIN only (CN P1=0). DCS (CN P2=1) is a documented limitation:
+        # NO neutral DCS path is emitted.
+        if self._has_runtime_capability("sql_type"):
+            tone_centihz = _ctcss_index_to_centihz(
+                await self.radio.read_ctcss_tone_index(0)
+            )
+            if self._can_poll(_MAIN_TONE_FREQ):
+                observations.append(
+                    adapter.observation(
+                        _MAIN_TONE_FREQ,
+                        tone_centihz,
+                        native_id="read_ctcss_tone_index",
+                    )
+                )
+            if self._can_poll(_MAIN_TSQL_FREQ):
+                observations.append(
+                    adapter.observation(
+                        _MAIN_TSQL_FREQ,
+                        tone_centihz,
+                        native_id="read_ctcss_tone_index",
                     )
                 )
         # active-slot (MOR-446) — the GLOBAL "which receiver is active" field.
