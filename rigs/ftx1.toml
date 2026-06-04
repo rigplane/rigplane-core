@@ -43,6 +43,7 @@ features = [
     "tuner",
     "meters",
     "dial_lock",
+    "sql_type",
 ]
 
 [state_acquisition]
@@ -99,6 +100,8 @@ polling_only = [
     "global.operator_controls.break_in",
     "global.operator_controls.break_in_delay",
     "global.slow_state.cw_spot",
+    "receiver.main.operator_toggles.repeater_tone",
+    "receiver.main.operator_toggles.repeater_tsql",
 ]
 stream_like_meters = [
     "receiver.main.meters.s_meter",
@@ -316,6 +319,19 @@ cadence_seconds = 30.0
 freshness_ttl_seconds = 120.0
 
 [state_acquisition.field_policies."global.slow_state.cw_spot"]
+cadence_seconds = 30.0
+freshness_ttl_seconds = 120.0
+
+# Tone / CTCSS squelch-type (MOR-457). The MAIN-only CAT ``CT`` "SQL TYPE" read
+# (FTX-1_CAT_OM_ENG_2507) is mapped onto the neutral, mutually-exclusive CTCSS
+# booleans repeater_tone (CTCSS ENC, "TONE") and repeater_tsql (CTCSS ENC+DEC,
+# "TSQL"). Slow-changing per-receiver operator toggles, so they use the
+# slow-control cadence, matching the other receiver DSP toggles above.
+[state_acquisition.field_policies."receiver.main.operator_toggles.repeater_tone"]
+cadence_seconds = 30.0
+freshness_ttl_seconds = 120.0
+
+[state_acquisition.field_policies."receiver.main.operator_toggles.repeater_tsql"]
 cadence_seconds = 30.0
 freshness_ttl_seconds = 120.0
 

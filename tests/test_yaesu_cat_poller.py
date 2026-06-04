@@ -778,7 +778,7 @@ def test_legacy_yaesu_state_writes_are_observed_or_explicit_limitations() -> Non
         "main.att": "observation:receiver.main.operator_controls.att",
         "main.preamp": "observation:receiver.main.operator_controls.preamp",
         "tuner_status": "observation:global.operator_controls.tuner_status",
-        "main.contour": "limitation: contour lacks canonical acquisition profile coverage",
+        "main.contour": "limitation: Yaesu Contour (S-DX) is vendor-specific tone-shaping with no Icom/neutral equivalent; kept vendor-namespaced/compat-only per docs/architecture/field-path-promotion-criterion.md",
         "main.if_shift": "observation:receiver.main.operator_controls.if_shift",
         "rit_on": "observation:global.tx_state.rit_on",
         "rit_tx": "observation:global.tx_state.rit_tx",

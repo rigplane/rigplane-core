@@ -43,6 +43,7 @@ def _make_radio() -> MagicMock:
         "tuner",
         "dial_lock",
         "cw",
+        "sql_type",
     }
     radio.get_freq = AsyncMock(
         side_effect=lambda receiver=0: 14_074_000 if receiver == 0 else 7_074_000
@@ -158,6 +159,11 @@ def _make_radio() -> MagicMock:
     radio.read_break_in_delay = AsyncMock(return_value=300)
     radio.get_cw_spot = AsyncMock(return_value=True)
     radio.read_cw_spot = AsyncMock(return_value=True)
+    # Tone / CTCSS squelch-type observation read (MOR-457). ``read_sql_type``
+    # returns the CAT ``CT`` P2 code; the default value 1 ("TONE": ENC ON /
+    # DEC OFF) derives repeater_tone=True, repeater_tsql=False.
+    radio.get_sql_type = AsyncMock(return_value=1)
+    radio.read_sql_type = AsyncMock(return_value=1)
     return radio
 
 
@@ -181,6 +187,7 @@ class _SideEffectingYaesuRadio:
         "tuner",
         "dial_lock",
         "cw",
+        "sql_type",
     }
 
     def __init__(self) -> None:
@@ -224,6 +231,8 @@ class _SideEffectingYaesuRadio:
         self.radio_state.break_in = 2
         self.radio_state.break_in_delay = 888
         self.radio_state.cw_spot = False
+        self.radio_state.main.repeater_tone = True
+        self.radio_state.main.repeater_tsql = True
 
     async def read_freq(self, receiver: int = 0) -> int:
         return 14_074_000 if receiver == 0 else 7_074_000
@@ -489,6 +498,16 @@ class _SideEffectingYaesuRadio:
         self.radio_state.cw_spot = value
         return value
 
+    async def read_sql_type(self, receiver: int = 0) -> int:
+        # CAT ``CT`` P2 code 1 = "TONE" (ENC ON / DEC OFF). Pure read: the
+        # derived neutral booleans must come from the observation pipeline, not
+        # from any legacy-state write (the pre-seeded main.repeater_tone/tsql=True
+        # is the impossible-via-CT combination that proves no mutation).
+        return 1
+
+    async def get_sql_type(self, receiver: int = 0) -> int:
+        return await self.read_sql_type(receiver)
+
 
 @pytest.mark.asyncio
 async def test_medium_poll_emits_frequency_mode_and_ptt_observations() -> None:
@@ -570,6 +589,13 @@ async def test_slow_poll_emits_declared_control_observations_only() -> None:
         ("receiver.main.operator_toggles.auto_notch", True),
         ("receiver.main.operator_toggles.manual_notch", True),
         ("receiver.main.operator_controls.manual_notch_freq", 128),
+        # Tone / CTCSS squelch-type (MOR-457): MAIN-only per-receiver toggles
+        # grouped with the other receiver DSP toggles, derived from a single
+        # ``read_sql_type(0)`` CAT ``CT`` read. The default code 1 ("TONE")
+        # yields repeater_tone=True, repeater_tsql=False; both are emitted every
+        # cycle. Gated on the ``sql_type`` cap.
+        ("receiver.main.operator_toggles.repeater_tone", True),
+        ("receiver.main.operator_toggles.repeater_tsql", False),
         # active-slot (MOR-446): the global "which receiver is active" field,
         # emitted in the slow-control lane, unconditional (no FTX-1 cap gate)
         # like the legacy poller's always-on ``get_vfo_select`` read. The int
@@ -599,6 +625,9 @@ async def test_slow_poll_emits_declared_control_observations_only() -> None:
     assert radio.read_auto_notch.await_count == 1
     assert radio.read_manual_notch.await_count == 1
     assert radio.read_manual_notch_freq.await_count == 1
+    # Tone/CTCSS: a SINGLE read_sql_type feeds both derived booleans (MOR-457).
+    assert radio.read_sql_type.await_count == 1
+    radio.get_sql_type.assert_not_awaited()
     radio.get_af_level.assert_not_awaited()
     radio.get_rf_gain.assert_not_awaited()
     radio.get_squelch.assert_not_awaited()
@@ -650,6 +679,8 @@ async def test_slow_poll_skips_sub_controls_without_matching_runtime_capability(
     radio.read_auto_notch.assert_not_awaited()
     radio.read_manual_notch.assert_not_awaited()
     radio.read_manual_notch_freq.assert_not_awaited()
+    # Tone/CTCSS dropped: the ``sql_type`` runtime cap is absent here (MOR-457).
+    radio.read_sql_type.assert_not_awaited()
     radio.get_af_level.assert_not_awaited()
     radio.get_rf_gain.assert_not_awaited()
     radio.get_squelch.assert_not_awaited()
@@ -946,8 +977,13 @@ async def test_adapter_uses_read_only_yaesu_paths_when_getters_mutate_state() ->
         # are skipped because this radio lacks the ``filter_width`` /
         # ``if_shift`` runtime caps.
         ("receiver.main.operator_toggles.narrow", True),
-        # active-slot (MOR-446) closes the slow-control lane; unconditional like
-        # AGC/narrow, the SUB index coerces to the neutral "SUB" str.
+        # Tone / CTCSS squelch-type (MOR-457): gated on the ``sql_type`` cap
+        # (present here); a single ``read_sql_type`` (code 1 = "TONE") derives
+        # both booleans and does not mutate legacy state.
+        ("receiver.main.operator_toggles.repeater_tone", True),
+        ("receiver.main.operator_toggles.repeater_tsql", False),
+        # active-slot (MOR-446); unconditional like AGC/narrow, the SUB index
+        # coerces to the neutral "SUB" str.
         ("global.slow_state.active", "SUB"),
         # cw_spot (MOR-456) — global slow_state bool, gated on the ``cw`` cap
         # (present here); ``read_cw_spot`` does not mutate legacy state.
@@ -1028,6 +1064,10 @@ async def test_adapter_uses_read_only_yaesu_paths_when_getters_mutate_state() ->
     assert radio.radio_state.break_in == 2
     assert radio.radio_state.break_in_delay == 888
     assert radio.radio_state.cw_spot is False
+    # Tone/CTCSS read_sql_type must not mutate legacy state (MOR-457). The
+    # pre-seeded impossible-via-CT combination (both True) is preserved.
+    assert radio.radio_state.main.repeater_tone is True
+    assert radio.radio_state.main.repeater_tsql is True
 
 
 @pytest.mark.asyncio
@@ -1145,6 +1185,92 @@ async def test_read_cw_keyer_family_are_pure_reads() -> None:
     radio._query = AsyncMock(return_value={"state": "1"})  # type: ignore[method-assign]
     assert await radio.read_cw_spot() is True
     assert radio.radio_state.cw_spot is False
+
+
+@pytest.mark.asyncio
+async def test_read_sql_type_is_a_pure_read() -> None:
+    """MOR-457: ``read_sql_type`` is a pure CAT read.
+
+    It delegates to the same ``CT0`` query/parse path as ``get_sql_type`` but
+    must NOT write ``self._state`` — only the ``read_*`` variant feeds the
+    observation pipeline (MOR-434 pattern). It returns the raw FTX-1 ``CT`` P2
+    "SQL TYPE" code (FTX-1_CAT_OM_ENG_2507); the neutral-boolean derivation
+    happens in the adapter, never here.
+    """
+    radio = YaesuCatRadio("/dev/null", audio_driver=MagicMock())
+    radio.radio_state.main.repeater_tone = True
+    radio.radio_state.main.repeater_tsql = True
+    state_before = radio.radio_state
+
+    radio._query = AsyncMock(return_value={"type": "02"})  # type: ignore[method-assign]
+    assert await radio.read_sql_type() == 2
+    assert radio.radio_state is state_before
+    # The impossible-via-CT pre-seeded combination is untouched.
+    assert radio.radio_state.main.repeater_tone is True
+    assert radio.radio_state.main.repeater_tsql is True
+
+    # get_sql_type delegates to the same pure read.
+    radio._query = AsyncMock(return_value={"type": "01"})  # type: ignore[method-assign]
+    assert await radio.get_sql_type() == 1
+
+
+@pytest.mark.parametrize(
+    ("code", "expected_tone", "expected_tsql"),
+    [
+        # CAT ``CT`` P2 "SQL TYPE" codes (FTX-1_CAT_OM_ENG_2507) → neutral
+        # mutually-exclusive CTCSS booleans (Hamlib/Icom convention):
+        (0, False, False),  # CTCSS OFF
+        (1, True, False),  # CTCSS ENC ON / DEC OFF ("TONE")
+        (2, False, True),  # CTCSS ENC ON / DEC ON ("TSQL")
+        (3, False, False),  # DCS — no neutral CTCSS-boolean representation
+        (4, False, False),  # PR FREQ — no neutral CTCSS-boolean representation
+        (5, False, False),  # REV TONE — no neutral CTCSS-boolean representation
+    ],
+)
+@pytest.mark.asyncio
+async def test_sql_type_code_maps_to_ctcss_booleans(
+    code: int, expected_tone: bool, expected_tsql: bool
+) -> None:
+    """MOR-457: each ``CT`` P2 code derives the correct CTCSS boolean pair.
+
+    Both ``repeater_tone`` and ``repeater_tsql`` are emitted every cycle (incl.
+    the False derivations) so the store always reflects current state. Gated on
+    the ``sql_type`` cap (present here) + can_poll.
+    """
+    radio = _make_radio()
+    radio.read_sql_type = AsyncMock(return_value=code)
+    adapter = YaesuObservationAdapter(
+        radio,
+        profile=_profile_state_acquisition(),
+        clock=_clock,
+    )
+
+    observations = await adapter.poll_slow_controls()
+    by_path = {str(item.path): item.value for item in observations}
+
+    assert by_path["receiver.main.operator_toggles.repeater_tone"] is expected_tone
+    assert by_path["receiver.main.operator_toggles.repeater_tsql"] is expected_tsql
+    # A single read feeds both derived booleans.
+    assert radio.read_sql_type.await_count == 1
+
+
+@pytest.mark.asyncio
+async def test_sql_type_skipped_without_ctcss_capability() -> None:
+    """MOR-457: neither CTCSS path emits when the ``sql_type`` cap is absent."""
+    radio = _make_radio()
+    radio.capabilities = radio.capabilities - {"sql_type"}
+    adapter = YaesuObservationAdapter(
+        radio,
+        profile=_profile_state_acquisition(),
+        clock=_clock,
+    )
+
+    observations = await adapter.poll_slow_controls()
+    paths = {str(item.path) for item in observations}
+
+    assert "receiver.main.operator_toggles.repeater_tone" not in paths
+    assert "receiver.main.operator_toggles.repeater_tsql" not in paths
+    radio.read_sql_type.assert_not_awaited()
 
 
 @pytest.mark.asyncio

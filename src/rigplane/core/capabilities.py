@@ -48,6 +48,7 @@ __all__ = [
     "CAP_TSQL",
     "CAP_DTCS",
     "CAP_CSQL",
+    "CAP_SQL_TYPE",
     "CAP_VOICE_TX",
     "CAP_DATA_MODE",
     "CAP_AGC",
@@ -143,6 +144,13 @@ CAP_TSQL = "tsql"
 CAP_DTCS = "dtcs"
 CAP_CSQL = "csql"
 CAP_VOICE_TX = "voice_tx"
+# Squelch-type readback (Yaesu FTX-1 CAT ``CT`` "SQL TYPE"). Distinct from the
+# Icom-style ``repeater_tone``/``tsql`` SET-command capabilities: ``sql_type``
+# gates only the observation-pipeline readback that maps the ``CT`` P2 code onto
+# the neutral CTCSS booleans (MOR-457). The Icom-spelled ``set_repeater_tone``/
+# ``set_repeater_tsql`` API is NOT implemented on the FTX-1, so those tags stay
+# off (see ``TestCapabilitiesNoFalseAdvertising``).
+CAP_SQL_TYPE = "sql_type"
 
 # Data
 CAP_DATA_MODE = "data_mode"
@@ -223,6 +231,7 @@ KNOWN_CAPABILITIES: frozenset[str] = frozenset(
         CAP_TSQL,
         CAP_DTCS,
         CAP_CSQL,
+        CAP_SQL_TYPE,
         CAP_VOICE_TX,
         # Data
         CAP_DATA_MODE,

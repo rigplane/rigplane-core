@@ -1862,10 +1862,20 @@ class YaesuCatRadio:
 
     # -- D9: Tone/TSQL ------------------------------------------------------
 
-    async def get_sql_type(self, receiver: int = 0) -> int:
-        """Get squelch type code (CT0)."""
+    async def read_sql_type(self, receiver: int = 0) -> int:
+        """Read squelch type code (CT0) without mutating legacy state.
+
+        Pure CAT read used by the observation pipeline. Returns the FTX-1
+        ``CT`` P2 code (0=CTCSS OFF, 1=ENC ON/DEC OFF "TONE", 2=ENC ON/DEC ON
+        "TSQL", 3=DCS, 4=PR FREQ, 5=REV TONE) per the FTX-1 CAT Operation
+        Reference Manual (``FTX-1_CAT_OM_ENG_2507``). MAIN only (CT0).
+        """
         result = await self._query("get_sql_type")
         return int(result["type"])
+
+    async def get_sql_type(self, receiver: int = 0) -> int:
+        """Get squelch type code (CT0)."""
+        return await self.read_sql_type(receiver)
 
     async def set_sql_type(self, type_code: int, receiver: int = 0) -> None:
         """Set squelch type code (CT0)."""

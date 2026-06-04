@@ -127,6 +127,16 @@ _CW_KEYER_CASES = (
 # global slow_state bool emitted on the slow-control lane beside active-slot.
 _CW_SPOT_CASES = (("global.slow_state.cw_spot", "cwSpot", True),)
 
+# (store path, public fieldStatus key, expected value) for the tone / CTCSS
+# squelch-type booleans (MOR-457). MAIN-only per-receiver operator toggles
+# (public ``main.repeaterTone``/``main.repeaterTsql``) derived from a single CAT
+# ``CT`` read on the slow-control lane. The fixture returns P2 code 2 ("TSQL"),
+# so repeater_tone=False and repeater_tsql=True.
+_CTCSS_CASES = (
+    ("receiver.main.operator_toggles.repeater_tone", "main.repeaterTone", False),
+    ("receiver.main.operator_toggles.repeater_tsql", "main.repeaterTsql", True),
+)
+
 
 def _clock() -> float:
     return 123.456
@@ -161,6 +171,7 @@ def _make_radio() -> MagicMock:
         "tuner",
         "dial_lock",
         "cw",
+        "sql_type",
     }
     # Power emits the watt SETPOINT (read_power), not the RM5 meter.
     radio.read_power = AsyncMock(return_value=(2, 55))
@@ -221,6 +232,10 @@ def _make_radio() -> MagicMock:
     radio.read_break_in = AsyncMock(return_value=BreakInMode.SEMI)
     radio.read_break_in_delay = AsyncMock(return_value=300)
     radio.read_cw_spot = AsyncMock(return_value=True)
+    # Tone / CTCSS squelch-type observation read (MOR-457). ``read_sql_type``
+    # returns the CAT ``CT`` P2 code; code 2 ("TSQL": ENC+DEC) derives
+    # repeater_tone=False, repeater_tsql=True. MAIN-only, slow-control lane.
+    radio.read_sql_type = AsyncMock(return_value=2)
     return radio
 
 
@@ -819,6 +834,55 @@ async def test_cw_spot_projects_available() -> None:
     )
 
     for _store_path, public_path, _expected in _CW_SPOT_CASES:
+        status = payload["fieldStatus"][public_path]
+        assert status["observed"] is True
+        assert status["availability"] == "available"
+
+
+@pytest.mark.asyncio
+async def test_ctcss_observation_value() -> None:
+    store = StateStore()
+    radio = _make_radio()
+
+    await _apply_slow_controls(store, radio)
+
+    snapshot = store.snapshot()
+    for store_path, _public_path, expected in _CTCSS_CASES:
+        assert snapshot.field(store_path).value == expected
+
+
+@pytest.mark.asyncio
+async def test_ctcss_survives_unrelated_observation() -> None:
+    store = StateStore()
+    radio = _make_radio()
+
+    await _apply_slow_controls(store, radio)
+    # An unrelated RX-meter observation on a later cycle must not disturb the
+    # CTCSS booleans (no snap-back to the default snapshot value).
+    for observation in await _adapter(radio).poll_rx_meters():
+        store.apply(observation)
+
+    snapshot = store.snapshot()
+    for store_path, _public_path, expected in _CTCSS_CASES:
+        assert snapshot.field(store_path).value == expected
+
+
+@pytest.mark.asyncio
+async def test_ctcss_projects_available() -> None:
+    store = StateStore()
+    radio = _make_radio()
+
+    await _apply_slow_controls(store, radio)
+    for observation in await _adapter(radio).poll_rx_meters():
+        store.apply(observation)
+
+    payload = build_public_state_payload_from_snapshot(
+        store.snapshot(),
+        radio=None,
+        receiver_count=2,
+    )
+
+    for _store_path, public_path, _expected in _CTCSS_CASES:
         status = payload["fieldStatus"][public_path]
         assert status["observed"] is True
         assert status["availability"] == "available"

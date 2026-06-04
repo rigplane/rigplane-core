@@ -122,6 +122,24 @@ _CW_PITCH = FieldPath.global_("operator_controls", "cw_pitch")
 _BREAK_IN = FieldPath.global_("operator_controls", "break_in")
 _BREAK_IN_DELAY = FieldPath.global_("operator_controls", "break_in_delay")
 _CW_SPOT = FieldPath.global_("slow_state", "cw_spot")
+# Tone / CTCSS squelch-type (MOR-457). The FTX-1 CAT ``CT`` "SQL TYPE" command
+# (FTX-1_CAT_OM_ENG_2507) is a single MAIN-only read (CT0); its P2 code is
+# mapped onto the neutral, mutually-exclusive CTCSS booleans, matching the
+# Hamlib/Icom convention where ``repeater_tone`` = CTCSS tone ENCODE ("TONE")
+# and ``repeater_tsql`` = CTCSS tone SQUELCH (decode):
+#   P2 code 1 (ENC ON / DEC OFF, "TONE")  -> repeater_tone=True,  repeater_tsql=False
+#   P2 code 2 (ENC ON / DEC ON,  "TSQL")  -> repeater_tone=False, repeater_tsql=True
+#   P2 codes 0/3/4/5 (OFF / DCS / PR-FREQ / REV-TONE) -> both False (these have no
+#       neutral CTCSS-boolean representation, so they collapse to "neither on").
+# Both paths are emitted every cycle (including the False derivations) so the
+# store always reflects current state. Per-receiver ``operator_toggles`` like
+# nb/nr/auto_notch, emitted in the slow-control lane. MAIN only (CT0): the SUB
+# receiver would need CT1, which is out of scope here. The CTCSS tone FREQUENCY
+# (CAT ``CN`` by index → ``tone_freq``/``tsql_freq``) is intentionally NOT
+# emitted here: that is a deferred follow-up (wiring ``CN``), NOT a hardware
+# limitation. Raw device code (cross-vendor calibration is MOR-453).
+_MAIN_REPEATER_TONE = FieldPath.receiver("main", "operator_toggles", "repeater_tone")
+_MAIN_REPEATER_TSQL = FieldPath.receiver("main", "operator_toggles", "repeater_tsql")
 YAESU_PTT_PATH = _PTT
 
 
@@ -201,6 +219,8 @@ class YaesuObservationRadio(Protocol):
     async def read_break_in_delay(self) -> int: ...
 
     async def read_cw_spot(self) -> bool: ...
+
+    async def read_sql_type(self, receiver: int = 0) -> int: ...
 
 
 @dataclass(slots=True)
@@ -532,6 +552,41 @@ class YaesuObservationAdapter:
                     native_id="read_manual_notch_freq",
                 )
             )
+        # Tone / CTCSS squelch-type (MOR-457) — MAIN-only per-receiver
+        # ``operator_toggles``, grouped with the other receiver toggles
+        # (nb/nr/auto_notch/manual_notch) above. A SINGLE ``read_sql_type(0)``
+        # CAT ``CT`` read (FTX-1_CAT_OM_ENG_2507) yields the P2 "SQL TYPE" code,
+        # from which the two mutually-exclusive neutral CTCSS booleans are
+        # DERIVED (Hamlib/Icom convention; see the module-level mapping comment):
+        # code 1 → tone only, code 2 → tsql only, codes 0/3/4/5 → both False.
+        # Both paths are emitted every cycle (incl. the False derivations) so
+        # the store always reflects current state. Gated on the ``sql_type``
+        # runtime capability (``CAP_SQL_TYPE``), a dedicated readback capability:
+        # ``"ctcss"`` is not a known capability tag (rejected by the rig loader),
+        # and the Icom-style ``"repeater_tone"``/``"tsql"`` SET capabilities are
+        # intentionally OFF on the FTX-1 because ``set_repeater_tone``/
+        # ``set_repeater_tsql`` are not implemented (no false advertising, bug
+        # #550). Each emission is gated independently by per-field policy. The
+        # CTCSS tone FREQUENCY (CAT ``CN``) is a deferred follow-up, not emitted
+        # here.
+        if self._has_runtime_capability("sql_type"):
+            sql_type = await self.radio.read_sql_type(0)
+            if self._can_poll(_MAIN_REPEATER_TONE):
+                observations.append(
+                    adapter.observation(
+                        _MAIN_REPEATER_TONE,
+                        sql_type == 1,
+                        native_id="read_sql_type",
+                    )
+                )
+            if self._can_poll(_MAIN_REPEATER_TSQL):
+                observations.append(
+                    adapter.observation(
+                        _MAIN_REPEATER_TSQL,
+                        sql_type == 2,
+                        native_id="read_sql_type",
+                    )
+                )
         # active-slot (MOR-446) — the GLOBAL "which receiver is active" field.
         # Polled unconditionally (gated by policy only), mirroring the legacy
         # poller's always-on ``get_vfo_select`` read, like AGC/narrow. The
