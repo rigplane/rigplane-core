@@ -309,3 +309,30 @@ def test_freshness_clock_rejects_backwards_time() -> None:
 
     with pytest.raises(ValueError, match="backwards"):
         clock.advance(-0.1)
+
+
+def test_conflicting_sources_at_equal_freshness_resolve_last_writer_wins() -> None:
+    """Two sources, same path, same timestamp, different values: last write wins.
+
+    ``StateStore.apply`` unconditionally overwrites value and source for the
+    path (state_store.py:275-281); there is no source-priority or freshness
+    tie-break, so resolution is deterministic last-writer-by-observation-seq.
+    """
+
+    store = StateStore()
+    path = FieldPath.receiver("main", "meters", "s_meter")
+    poll_source = SourceMetadata(source="poll_response", provider="poller")
+    civ_source = SourceMetadata(source="civ_unsolicited", provider="radio")
+
+    first = store.apply(
+        Observation(path=path, value=10, source=poll_source, timestamp_monotonic=5.0)
+    )
+    second = store.apply(
+        Observation(path=path, value=20, source=civ_source, timestamp_monotonic=5.0)
+    )
+
+    field = store.snapshot().field(path)
+    assert first.observation_seq == 1
+    assert second.observation_seq == 2
+    assert field.value == 20
+    assert field.source == civ_source

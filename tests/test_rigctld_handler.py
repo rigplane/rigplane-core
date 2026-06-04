@@ -289,6 +289,33 @@ async def test_get_freq_prefers_radio_state(
 
 
 @pytest.mark.asyncio
+async def test_get_freq_radio_state_fallback_records_state_store_observation(
+    handler: RigctldHandler, mock_radio: AsyncMock
+) -> None:
+    """The RadioState fallback must persist its readback into the StateStore.
+
+    ``_cmd_get_freq`` calls ``_record_state_sample(..., source="state_poller")``
+    on the main-receiver compatibility branch (handler.py:1025-1033) before
+    returning, so the readback side-effect lands an observation that later
+    GETs can project. The sibling ``_prefers_radio_state`` test only checks the
+    returned value, not this write-back.
+    """
+
+    state = RadioState()
+    state.main.freq = 14_074_000
+    mock_radio.radio_state = state
+
+    resp = await handler.execute(get_cmd("get_freq"))
+
+    assert resp.values == ["14074000"]
+    field = handler._state_store.snapshot().field(  # noqa: SLF001
+        "receiver.main.active.freq_mode.freq_hz"
+    )
+    assert field.value == 14_074_000
+    assert field.source.source == "state_poller"
+
+
+@pytest.mark.asyncio
 async def test_get_freq_ensure_fresh_requests_bounded_projection(
     mock_radio: AsyncMock,
 ) -> None:

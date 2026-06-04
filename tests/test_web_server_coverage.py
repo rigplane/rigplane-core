@@ -1807,6 +1807,44 @@ def test_legacy_state_store_sync_preserves_receiver_fields() -> None:
     assert public_state["main"]["nrLevel"] == 42
 
 
+def test_legacy_sync_does_not_override_present_store_value_on_contended_path() -> None:
+    """Legacy sync must not re-apply over a present Store value on a shared path.
+
+    ``sync_state_store_from_radio_state`` short-circuits a path that the Store
+    already holds at the legacy value (server.py:1374-1375), so no competing
+    ``state_poller`` observation is emitted. The earlier Store observation's
+    value and source survive and the observation sequence does not advance,
+    unlike the existing legacy-sync tests that only fill UNtouched paths.
+    """
+
+    srv = WebServer(None)
+    path = FieldPath.global_("tx_state", "ptt")
+    store_source = SourceMetadata(
+        source="civ_unsolicited",
+        provider="radio",
+        transport="fake",
+        native_id="unsolicited",
+    )
+    srv.command_state_store.apply(
+        Observation(
+            path=path,
+            value=True,
+            source=store_source,
+            timestamp_monotonic=1.0,
+        )
+    )
+    seq_before_sync = srv.command_state_store.snapshot().observation_seq
+
+    legacy = RadioState()
+    legacy.ptt = True
+    srv.sync_state_store_from_radio_state(legacy)
+
+    field = srv.command_state_store.snapshot().field(path)
+    assert field.value is True
+    assert field.source == store_source
+    assert srv.command_state_store.snapshot().observation_seq == seq_before_sync
+
+
 def test_legacy_state_store_sync_can_clear_default_receiver_values() -> None:
     srv = WebServer(None)
     legacy = RadioState()
