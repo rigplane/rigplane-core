@@ -92,6 +92,8 @@ polling_only = [
     "global.tx_state.rit_on",
     "global.tx_state.rit_tx",
     "global.operator_controls.rit_freq",
+    "global.operator_controls.tuner_status",
+    "global.tx_state.dial_lock",
 ]
 stream_like_meters = [
     "receiver.main.meters.s_meter",
@@ -272,6 +274,18 @@ cadence_seconds = 30.0
 freshness_ttl_seconds = 120.0
 
 [state_acquisition.field_policies."global.operator_controls.rit_freq"]
+cadence_seconds = 30.0
+freshness_ttl_seconds = 120.0
+
+# Tuner + dial-lock controls (MOR-455). Slow-changing global operator/TX state:
+# tuner_status (global operator-control antenna-tuner int, CAT ``AC``) and
+# dial_lock (global tx_state bool, CAT ``LK``). Both use the slow-control
+# cadence, matching the other global TX/operator setpoints above.
+[state_acquisition.field_policies."global.operator_controls.tuner_status"]
+cadence_seconds = 30.0
+freshness_ttl_seconds = 120.0
+
+[state_acquisition.field_policies."global.tx_state.dial_lock"]
 cadence_seconds = 30.0
 freshness_ttl_seconds = 120.0
 

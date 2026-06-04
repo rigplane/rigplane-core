@@ -100,6 +100,15 @@ _RIT_CASES = (
     ("global.operator_controls.rit_freq", "ritFreq", -250),
 )
 
+# (store path, public fieldStatus key, expected value) for the tuner + dial-lock
+# controls (MOR-455), emitted in the tx-control lane. tuner_status is the global
+# operator-control antenna-tuner int (raw device scale 0-3; cross-vendor
+# calibration is MOR-453); dial_lock is a global tx_state bool.
+_TUNER_LOCK_CASES = (
+    ("global.operator_controls.tuner_status", "tunerStatus", 2),
+    ("global.tx_state.dial_lock", "dialLock", True),
+)
+
 
 def _clock() -> float:
     return 123.456
@@ -131,6 +140,8 @@ def _make_radio() -> MagicMock:
         "notch",
         "split",
         "rit",
+        "tuner",
+        "dial_lock",
     }
     # Power emits the watt SETPOINT (read_power), not the RM5 meter.
     radio.read_power = AsyncMock(return_value=(2, 55))
@@ -177,6 +188,11 @@ def _make_radio() -> MagicMock:
     # operator-control signed Hz offset on the device scale.
     radio.read_clarifier = AsyncMock(return_value=(True, False))
     radio.read_clarifier_freq = AsyncMock(return_value=-250)
+    # Tuner + dial-lock observation reads (MOR-455). tuner_status is a global
+    # operator-control int (raw device scale, 0-3); dial_lock is a global
+    # tx_state bool — both ride the tx-control lane.
+    radio.read_tuner = AsyncMock(return_value=2)
+    radio.read_lock = AsyncMock(return_value=True)
     return radio
 
 
@@ -628,6 +644,55 @@ async def test_rit_projects_available() -> None:
     )
 
     for _store_path, public_path, _expected in _RIT_CASES:
+        status = payload["fieldStatus"][public_path]
+        assert status["observed"] is True
+        assert status["availability"] == "available"
+
+
+@pytest.mark.asyncio
+async def test_tuner_lock_observation_value() -> None:
+    store = StateStore()
+    radio = _make_radio()
+
+    await _apply_tx_controls(store, radio)
+
+    snapshot = store.snapshot()
+    for store_path, _public_path, expected in _TUNER_LOCK_CASES:
+        assert snapshot.field(store_path).value == expected
+
+
+@pytest.mark.asyncio
+async def test_tuner_lock_survives_unrelated_observation() -> None:
+    store = StateStore()
+    radio = _make_radio()
+
+    await _apply_tx_controls(store, radio)
+    # An unrelated RX-meter observation on a later cycle must not disturb the
+    # tuner / dial-lock controls (no snap-back to the default snapshot value).
+    for observation in await _adapter(radio).poll_rx_meters():
+        store.apply(observation)
+
+    snapshot = store.snapshot()
+    for store_path, _public_path, expected in _TUNER_LOCK_CASES:
+        assert snapshot.field(store_path).value == expected
+
+
+@pytest.mark.asyncio
+async def test_tuner_lock_projects_available() -> None:
+    store = StateStore()
+    radio = _make_radio()
+
+    await _apply_tx_controls(store, radio)
+    for observation in await _adapter(radio).poll_rx_meters():
+        store.apply(observation)
+
+    payload = build_public_state_payload_from_snapshot(
+        store.snapshot(),
+        radio=None,
+        receiver_count=2,
+    )
+
+    for _store_path, public_path, _expected in _TUNER_LOCK_CASES:
         status = payload["fieldStatus"][public_path]
         assert status["observed"] is True
         assert status["availability"] == "available"

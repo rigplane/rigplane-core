@@ -1865,10 +1865,14 @@ class YaesuCatRadio:
         """Set VOX state."""
         await self._write("set_vox", state="1" if state else "0")
 
-    async def get_lock(self) -> bool:
-        """Get dial lock state."""
+    async def read_lock(self) -> bool:
+        """Read dial lock state (LK) without mutating legacy state."""
         result = await self._query("get_lock")
         return bool(result["state"] == "1")
+
+    async def get_lock(self) -> bool:
+        """Get dial lock state."""
+        return await self.read_lock()
 
     async def set_lock(self, state: bool) -> None:
         """Set dial lock state."""
@@ -1876,14 +1880,22 @@ class YaesuCatRadio:
 
     # -- Tuner (AC) --------------------------------------------------------
 
-    async def get_tuner(self) -> int:
-        """Get antenna tuner state (AC).
+    async def read_tuner(self) -> int:
+        """Read antenna tuner state (AC) without mutating legacy state.
 
         Returns:
             0=OFF, 1=ON, 2=tuning, 3=tune-start.
         """
         result = await self._query("get_tuner")
         return int(result["state"])
+
+    async def get_tuner(self) -> int:
+        """Get antenna tuner state (AC).
+
+        Returns:
+            0=OFF, 1=ON, 2=tuning, 3=tune-start.
+        """
+        return await self.read_tuner()
 
     async def set_tuner(self, state: int, src: int = 0, typ: int = 0) -> None:
         """Set antenna tuner (AC). state: 0=OFF, 1=ON, 2=tune."""

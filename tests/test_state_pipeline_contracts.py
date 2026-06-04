@@ -246,6 +246,21 @@ def test_default_registry_contains_representative_state_families() -> None:
     )
 
 
+def test_global_dial_lock_registered_as_tx_state_bool() -> None:
+    """MOR-455: ``global.tx_state.dial_lock`` is a registered tx_state bool.
+
+    The observation-backed FTX-1 dial-lock field (CAT ``LK``) needs a canonical
+    FieldSpec so the acquisition profile and store accept it. It is a global
+    tx_state bool, alongside the clarifier RIT/XIT flags.
+    """
+    path = FieldPath.global_("tx_state", "dial_lock")
+    spec = DEFAULT_FIELD_REGISTRY.require(path)
+    assert spec.path == path
+    assert spec.family is FieldFamily.TX_STATE
+    assert spec.value_type == "bool"
+    assert spec.writable is True
+
+
 def test_observation_and_changeset_serialization_round_trip() -> None:
     source = SourceMetadata(
         source="civ_unsolicited",

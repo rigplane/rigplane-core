@@ -39,6 +39,8 @@ def _make_radio() -> MagicMock:
         "notch",
         "split",
         "rit",
+        "tuner",
+        "dial_lock",
     }
     radio.get_freq = AsyncMock(
         side_effect=lambda receiver=0: 14_074_000 if receiver == 0 else 7_074_000
@@ -132,6 +134,13 @@ def _make_radio() -> MagicMock:
     radio.read_clarifier = AsyncMock(return_value=(True, False))
     radio.get_clarifier_freq = AsyncMock(return_value=-250)
     radio.read_clarifier_freq = AsyncMock(return_value=-250)
+    # Tuner + dial-lock observation reads (MOR-455). ``read_tuner`` returns the
+    # raw device int (0=OFF, 1=ON, 2=tuning, 3=tune-start); ``read_lock``
+    # returns the dial-lock bool.
+    radio.get_tuner = AsyncMock(return_value=2)
+    radio.read_tuner = AsyncMock(return_value=2)
+    radio.get_lock = AsyncMock(return_value=True)
+    radio.read_lock = AsyncMock(return_value=True)
     return radio
 
 
@@ -152,6 +161,8 @@ class _SideEffectingYaesuRadio:
         "vox",
         "compressor",
         "rit",
+        "tuner",
+        "dial_lock",
     }
 
     def __init__(self) -> None:
@@ -188,6 +199,8 @@ class _SideEffectingYaesuRadio:
         self.radio_state.rit_on = False
         self.radio_state.rit_tx = False
         self.radio_state.rit_freq = 21
+        self.radio_state.tuner_status = 0
+        self.radio_state.dial_lock = False
 
     async def read_freq(self, receiver: int = 0) -> int:
         return 14_074_000 if receiver == 0 else 7_074_000
@@ -395,6 +408,22 @@ class _SideEffectingYaesuRadio:
     async def get_clarifier_freq(self, receiver: int = 0) -> int:
         value = await self.read_clarifier_freq(receiver)
         self.radio_state.rit_freq = value
+        return value
+
+    async def read_tuner(self) -> int:
+        return 2
+
+    async def get_tuner(self) -> int:
+        value = await self.read_tuner()
+        self.radio_state.tuner_status = value
+        return value
+
+    async def read_lock(self) -> bool:
+        return True
+
+    async def get_lock(self) -> bool:
+        value = await self.read_lock()
+        self.radio_state.dial_lock = value
         return value
 
 
@@ -718,6 +747,13 @@ async def test_tx_controls_poll_emits_global_setpoints() -> None:
         ("global.tx_state.rit_on", True),
         ("global.tx_state.rit_tx", False),
         ("global.operator_controls.rit_freq", -250),
+        # Tuner + dial-lock (MOR-455): tuner_status is a global operator-control
+        # int (raw device scale, 0-3) gated on the ``tuner`` capability;
+        # dial_lock is a global tx_state bool gated on the ``dial_lock``
+        # capability — mirroring the legacy poller's ``"tuner" in caps`` /
+        # ``"dial_lock" in caps`` gates.
+        ("global.operator_controls.tuner_status", 2),
+        ("global.tx_state.dial_lock", True),
     ]
     assert all(item.source.source == "yaesu_poll_response" for item in observations)
     assert all(item.max_age == 120.0 for item in observations)
@@ -731,6 +767,9 @@ async def test_tx_controls_poll_emits_global_setpoints() -> None:
     # Single CAT read pair for the clarifier — flags share one read.
     radio.read_clarifier.assert_awaited_once()
     radio.read_clarifier_freq.assert_awaited_once()
+    # Tuner + dial-lock each use a single read (MOR-455).
+    radio.read_tuner.assert_awaited_once()
+    radio.read_lock.assert_awaited_once()
     radio.get_power.assert_not_awaited()
     radio.get_mic_gain.assert_not_awaited()
     radio.get_processor.assert_not_awaited()
@@ -739,6 +778,8 @@ async def test_tx_controls_poll_emits_global_setpoints() -> None:
     radio.get_split.assert_not_awaited()
     radio.get_clarifier.assert_not_awaited()
     radio.get_clarifier_freq.assert_not_awaited()
+    radio.get_tuner.assert_not_awaited()
+    radio.get_lock.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -768,6 +809,9 @@ async def test_tx_controls_poll_skips_fields_without_matching_runtime_capability
     # RIT/XIT is dropped: the ``rit`` runtime cap is absent here (MOR-454).
     radio.read_clarifier.assert_not_awaited()
     radio.read_clarifier_freq.assert_not_awaited()
+    # Tuner + dial-lock are dropped: ``tuner``/``dial_lock`` caps absent (MOR-455).
+    radio.read_tuner.assert_not_awaited()
+    radio.read_lock.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -826,6 +870,11 @@ async def test_adapter_uses_read_only_yaesu_paths_when_getters_mutate_state() ->
         ("global.tx_state.rit_on", True),
         ("global.tx_state.rit_tx", False),
         ("global.operator_controls.rit_freq", -250),
+        # Tuner + dial-lock (MOR-455): gated on the ``tuner``/``dial_lock`` caps
+        # (present here); a single ``read_tuner``/``read_lock`` each — neither
+        # mutates legacy state. tuner_status is the raw device int (0-3).
+        ("global.operator_controls.tuner_status", 2),
+        ("global.tx_state.dial_lock", True),
     ]
     assert radio.radio_state.main.freq == 1
     assert radio.radio_state.main.mode == "INIT-MAIN"
@@ -867,6 +916,9 @@ async def test_adapter_uses_read_only_yaesu_paths_when_getters_mutate_state() ->
     assert radio.radio_state.rit_on is False
     assert radio.radio_state.rit_tx is False
     assert radio.radio_state.rit_freq == 21
+    # Tuner + dial-lock read_* paths must not mutate legacy state (MOR-455).
+    assert radio.radio_state.tuner_status == 0
+    assert radio.radio_state.dial_lock is False
 
 
 @pytest.mark.asyncio
@@ -919,6 +971,30 @@ async def test_read_clarifier_and_freq_are_pure_reads() -> None:
     )
     assert await radio.read_clarifier_freq(0) == -250
     assert radio.radio_state.rit_freq == 99
+
+
+@pytest.mark.asyncio
+async def test_read_tuner_and_lock_are_pure_reads() -> None:
+    """MOR-455: ``read_tuner`` / ``read_lock`` are pure CAT reads.
+
+    Both delegate to the underlying ``get_*`` query/parse path but must NOT
+    write ``self._state`` — only the ``read_*`` variants feed the observation
+    pipeline (MOR-434 pattern). ``read_tuner`` returns the raw device int (0-3);
+    ``read_lock`` returns the dial-lock bool.
+    """
+    radio = YaesuCatRadio("/dev/null", audio_driver=MagicMock())
+    radio.radio_state.tuner_status = 0
+    radio.radio_state.dial_lock = False
+    state_before = radio.radio_state
+
+    radio._query = AsyncMock(return_value={"state": "2"})  # type: ignore[method-assign]
+    assert await radio.read_tuner() == 2
+    assert radio.radio_state is state_before
+    assert radio.radio_state.tuner_status == 0
+
+    radio._query = AsyncMock(return_value={"state": "1"})  # type: ignore[method-assign]
+    assert await radio.read_lock() is True
+    assert radio.radio_state.dial_lock is False
 
 
 @pytest.mark.asyncio

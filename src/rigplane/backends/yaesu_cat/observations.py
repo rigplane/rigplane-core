@@ -94,6 +94,16 @@ _ACTIVE_INDEX_TO_STR = {0: "MAIN", 1: "SUB"}
 _RIT_ON = FieldPath.global_("tx_state", "rit_on")
 _RIT_TX = FieldPath.global_("tx_state", "rit_tx")
 _RIT_FREQ = FieldPath.global_("operator_controls", "rit_freq")
+# Tuner + dial-lock controls (MOR-455). GLOBAL slow-changing operator/TX
+# controls: ``tuner_status`` is the global operator-control antenna-tuner state
+# (CAT ``AC``: 0=OFF, 1=ON, 2=tuning, 3=tune-start) emitted as the raw device
+# int (cross-vendor calibration is MOR-453); ``dial_lock`` is a global tx_state
+# bool (CAT ``LK``). Both are emitted in the global TX-control lane alongside
+# split/VOX, gated on the ``tuner``/``dial_lock`` runtime capabilities, mirroring
+# the legacy poller's ``"tuner" in caps``/``"dial_lock" in caps`` gates and its
+# single ``get_tuner``/``get_lock`` reads.
+_TUNER = FieldPath.global_("operator_controls", "tuner_status")
+_DIAL_LOCK = FieldPath.global_("tx_state", "dial_lock")
 YAESU_PTT_PATH = _PTT
 
 
@@ -159,6 +169,10 @@ class YaesuObservationRadio(Protocol):
     async def read_clarifier(self, receiver: int = 0) -> tuple[bool, bool]: ...
 
     async def read_clarifier_freq(self, receiver: int = 0) -> int: ...
+
+    async def read_tuner(self) -> int: ...
+
+    async def read_lock(self) -> bool: ...
 
 
 @dataclass(slots=True)
@@ -611,6 +625,29 @@ class YaesuObservationAdapter:
                         native_id="read_clarifier_freq",
                     )
                 )
+        # Antenna tuner (MOR-455) — GLOBAL operator-control state (CAT ``AC``),
+        # gated on the ``tuner`` runtime capability, mirroring the legacy
+        # poller's ``"tuner" in caps`` gate. Emitted as the raw device int
+        # (0-3); cross-vendor calibration is MOR-453.
+        if self._has_runtime_capability("tuner") and self._can_poll(_TUNER):
+            observations.append(
+                adapter.observation(
+                    _TUNER,
+                    int(await self.radio.read_tuner()),
+                    native_id="read_tuner",
+                )
+            )
+        # Dial lock (MOR-455) — GLOBAL tx_state bool (CAT ``LK``), gated on the
+        # ``dial_lock`` runtime capability, mirroring the legacy poller's
+        # ``"dial_lock" in caps`` gate.
+        if self._has_runtime_capability("dial_lock") and self._can_poll(_DIAL_LOCK):
+            observations.append(
+                adapter.observation(
+                    _DIAL_LOCK,
+                    bool(await self.radio.read_lock()),
+                    native_id="read_lock",
+                )
+            )
         return tuple(observations)
 
     def _adapter(self) -> ProviderObservationAdapter:
