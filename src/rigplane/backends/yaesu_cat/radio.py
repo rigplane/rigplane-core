@@ -693,6 +693,12 @@ class YaesuCatRadio:
         On Yaesu radios, DATA mode is embedded in the mode string (e.g.
         ``USB-D``).  We derive it from the current mode name rather than
         issuing a separate CAT query.
+
+        This is a read-only derivation: it returns a flat ``bool`` and does
+        not synthesize or mutate the private ``self._state`` mirror. The
+        consumer pipeline is fed by ``YaesuObservationAdapter`` via the
+        non-mutating ``read_*`` paths; ``_state`` is legacy compat only
+        (MOR-434).
         """
         mode = self._state.main.mode or ""
         return mode.endswith("-D") or "DATA" in mode.upper()

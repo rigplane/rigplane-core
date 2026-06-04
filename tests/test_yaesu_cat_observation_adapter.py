@@ -12,6 +12,7 @@ from rigplane.profiles import get_radio_profile
 from rigplane.radio_state import RadioState
 
 from rigplane.backends.yaesu_cat.observations import YaesuObservationAdapter
+from rigplane.backends.yaesu_cat.radio import YaesuCatRadio
 
 
 def _clock() -> float:
@@ -303,3 +304,30 @@ async def test_adapter_uses_read_only_yaesu_paths_when_getters_mutate_state() ->
     assert radio.radio_state.sub.af_level == 10
     assert radio.radio_state.sub.rf_gain == 11
     assert radio.radio_state.sub.squelch == 12
+
+
+@pytest.mark.asyncio
+async def test_public_get_data_mode_returns_flat_value_without_state_synthesis() -> None:
+    """MOR-434: a public ``get_*`` returns a flat value, not synthesized state.
+
+    ``get_data_mode`` is the representative public read called out for the
+    provider backends. It derives a flat ``bool`` from the existing mode and
+    must not fabricate or hand out a synthesized ``RadioState`` as consumer
+    state. The consumer pipeline is fed by :class:`YaesuObservationAdapter`
+    (which uses the non-mutating ``read_*`` paths); the private ``self._state``
+    mirror is legacy compat only.
+    """
+    # Real backend; only the USB audio driver is stubbed (not under test).
+    radio = YaesuCatRadio("/dev/null", audio_driver=MagicMock())
+    radio.radio_state.main.mode = "USB-D"
+    state_before = radio.radio_state
+
+    result = await radio.get_data_mode()
+
+    # Flat derived bool, never a RadioState object.
+    assert result is True
+    assert isinstance(result, bool)
+    # No synthesized RadioState handed back as consumer state.
+    assert radio.radio_state is state_before
+    # The read derives from the mirror without mutating it.
+    assert radio.radio_state.main.mode == "USB-D"

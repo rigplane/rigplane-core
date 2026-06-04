@@ -524,6 +524,10 @@ class RigctldClientRadio:
         self._state.main.filter_width = filter_width
 
     async def get_data_mode(self) -> bool:
+        # Flat unavailable value — external rigctld has no data-mode read.
+        # Deliberately does NOT synthesize or mutate ``self._state``: the
+        # consumer pipeline is fed by ``RigctldClientObservationAdapter``,
+        # and the private ``_state`` mirror is legacy compat only (MOR-434).
         return False
 
     async def set_data_mode(self, on: int | bool, receiver: int = 0) -> None:
