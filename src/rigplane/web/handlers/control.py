@@ -18,7 +18,6 @@ from ...core.command_service import (
 from ...core.state_pipeline_contracts import CommandIntent, CommandSource
 from ...core.state_store import StateStore
 from ...profiles import RadioProfile
-from ...radio_state import RadioState
 from ..protocol import (  # noqa: TID251
     decode_json,
     encode_json,
@@ -144,7 +143,6 @@ from ..radio_poller import (  # noqa: TID251
     Speak,
 )
 from ..runtime_helpers import (  # noqa: TID251
-    build_public_state_payload,
     radio_ready,
     runtime_capabilities,
 )
@@ -790,53 +788,19 @@ class ControlHandler:
                 self._subscribed_streams.discard(str(s))
 
     async def _send_state_snapshot(self) -> None:
-        payload: dict[str, Any] | None = None
-        builder = (
-            getattr(self._server, "build_public_state", None)
-            if self._server is not None
-            else None
-        )
-        if callable(builder):
-            try:
-                payload = cast(dict[str, Any], builder())
-            except Exception as exc:
-                logger.debug("control: public state build failed: %s", exc)
-
-        if payload is None:
-            raw_radio_state = (
-                getattr(self._radio, "radio_state", None)
-                if self._radio is not None
-                else None
-            )
-            radio_state = (
-                raw_radio_state
-                if isinstance(raw_radio_state, RadioState)
-                else RadioState()
-            )
-            raw_profile = (
-                getattr(self._radio, "profile", None)
-                if self._radio is not None
-                else None
-            )
-            if isinstance(raw_profile, RadioProfile):
-                receiver_count = raw_profile.receiver_count
-            else:
-                receiver_count = 2 if "dual_rx" in self._capabilities() else 1
-            payload = build_public_state_payload(
-                radio_state,
-                radio=self._radio,
-                revision=0,
-                receiver_count=receiver_count,
-            )
+        # The initial WS full state has a single canonical shape: the
+        # snapshot-based envelope from the server's StateStore. When a server is
+        # attached (production), that envelope is authoritative.
+        payload: dict[str, Any]
+        if self._server is not None:
+            payload = self._server.build_state_update_envelope(force_full=True)
+        else:
+            # Server-less handler-test path only: no StateStore is available, so
+            # emit a minimal empty full-state envelope. Production always takes
+            # the branch above; this fallback never runs with a live server.
+            payload = {"type": "full", "data": {}}
 
         msg_out = {"type": "state_update", "data": payload}
-        if self._server is not None:
-            try:
-                msg_out["data"] = self._server.build_state_update_envelope(
-                    force_full=True
-                )
-            except Exception as exc:
-                logger.debug("control: state_update envelope build failed: %s", exc)
         await self._ws.send_text(encode_json(msg_out))
         # Send current DX spots if available
         if self._server is not None and hasattr(self._server, "_spot_buffer"):

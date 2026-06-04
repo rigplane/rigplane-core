@@ -805,96 +805,37 @@ async def test_subscribe_unsubscribe_and_subscribed_streams_property() -> None:
     await handler._handle_unsubscribe({"streams": "not-a-list"})
 
 
-async def test_send_state_snapshot_uses_server_public_state() -> None:
+async def test_send_state_snapshot_uses_canonical_envelope() -> None:
+    # With a server attached (production), the initial WS full state is the
+    # canonical snapshot-based envelope from build_state_update_envelope.
     ws = SimpleNamespace(send_text=AsyncMock())
-    payload = {
-        "revision": 7,
-        "updatedAt": "2026-03-17T12:00:00+00:00",
-        "active": "MAIN",
-        "ptt": True,
-        "split": False,
-        "dualWatch": False,
-        "tunerStatus": 0,
-        "main": {
-            "freqHz": 14_074_000,
-            "mode": "USB",
-            "filter": 2,
-            "dataMode": False,
-            "att": 0,
-            "preamp": 0,
-            "nb": False,
-            "nr": False,
-            "afLevel": 0,
-            "rfGain": 0,
-            "squelch": 0,
-            "sMeter": 0,
-        },
-        "sub": {
-            "freqHz": 7_074_000,
-            "mode": "LSB",
-            "filter": 1,
-            "dataMode": False,
-            "att": 0,
-            "preamp": 0,
-            "nb": False,
-            "nr": False,
-            "afLevel": 0,
-            "rfGain": 0,
-            "squelch": 0,
-            "sMeter": 0,
-        },
-        "connection": {
-            "rigConnected": True,
-            "radioReady": True,
-            "controlConnected": False,
-        },
-    }
+    envelope = {"type": "full", "data": {"active": "MAIN", "stateRevision": 3}}
     handler = _control_handler(
         ws=ws,
         radio=SimpleNamespace(connected=True, radio_ready=True),
-        server=SimpleNamespace(build_public_state=MagicMock(return_value=payload)),
-    )
-    await handler._send_state_snapshot()
-    msg = decode_json(ws.send_text.await_args_list[-1].args[0])
-    assert msg["type"] == "state_update"
-    assert msg["data"] == payload
-
-
-async def test_send_state_snapshot_uses_canonical_fallback_when_server_missing() -> (
-    None
-):
-    ws = SimpleNamespace(send_text=AsyncMock())
-    radio = SimpleNamespace(
-        connected=True,
-        radio_ready=False,
-    )
-    handler = _control_handler(
-        ws=ws,
-        radio=radio,
-        server=None,
-    )
-    await handler._send_state_snapshot()
-    msg = decode_json(ws.send_text.await_args_list[-1].args[0])
-    assert msg["type"] == "state_update"
-    assert msg["data"]["active"] == "MAIN"
-    assert msg["data"]["connection"]["rigConnected"] is True
-    assert msg["data"]["connection"]["radioReady"] is False
-    assert "main" in msg["data"]
-
-
-async def test_send_state_snapshot_builder_errors_are_ignored() -> None:
-    ws = SimpleNamespace(send_text=AsyncMock())
-    handler = _control_handler(
-        ws=ws,
         server=SimpleNamespace(
-            build_public_state=MagicMock(side_effect=RuntimeError("boom"))
+            build_state_update_envelope=MagicMock(return_value=envelope)
         ),
     )
     await handler._send_state_snapshot()
     msg = decode_json(ws.send_text.await_args_list[-1].args[0])
     assert msg["type"] == "state_update"
-    assert msg["data"]["active"] == "MAIN"
-    assert "connection" in msg["data"]
+    assert msg["data"] == envelope
+
+
+async def test_send_state_snapshot_minimal_fallback_when_server_missing() -> None:
+    # Server-less handler path (handler tests only): no StateStore is available,
+    # so a minimal empty full-state envelope is emitted.
+    ws = SimpleNamespace(send_text=AsyncMock())
+    handler = _control_handler(
+        ws=ws,
+        radio=SimpleNamespace(connected=True, radio_ready=False),
+        server=None,
+    )
+    await handler._send_state_snapshot()
+    msg = decode_json(ws.send_text.await_args_list[-1].args[0])
+    assert msg["type"] == "state_update"
+    assert msg["data"] == {"type": "full", "data": {}}
 
 
 async def test_wait_radio_ready_returns_immediately_when_ready() -> None:
