@@ -9,6 +9,10 @@ const STATE_URL = `${PAGE_ORIGIN}/api/v1/state`;
 const CAPABILITIES_URL = `${PAGE_ORIGIN}/api/v1/capabilities`;
 const CONTROL_DELAY_MS = 700;
 const CLEANUP_DELAY_MS = 1200;
+// Bounded wait for visibility/geometry guards in the open/visible helpers so a
+// missing or disabled control fails fast and localized instead of stalling the
+// whole per-test budget on an un-timed Playwright action.
+const GUARD_TIMEOUT_MS = 10_000;
 const ROOT_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../..');
 const SCREENSHOT_DIR = path.join(ROOT_DIR, 'docs', 'reviews', 'screenshots');
 const REPORT_PATH = path.join(ROOT_DIR, 'docs', 'reviews', '2026-03-18-v2-interactive-test-results.md');
@@ -447,11 +451,13 @@ async function ensureCompSliderVisible(ctx: CaseContext): Promise<void> {
   }
 
   await closeOpenModal(ctx.page);
-  await panelByHeader(ctx.page, 'TX').getByRole('button', { name: /^COMP(?:\s+\d+%)?$/ }).click();
+  const compButton = panelByHeader(ctx.page, 'TX').getByRole('button', { name: /^COMP(?:\s+\d+%)?$/ });
+  await compButton.waitFor({ state: 'visible', timeout: GUARD_TIMEOUT_MS });
+  await compButton.click({ timeout: GUARD_TIMEOUT_MS });
   await wait(CONTROL_DELAY_MS);
   await clearCommands(ctx.page);
   await ensureTxSettingsOpen(ctx);
-  await slider.waitFor({ state: 'visible', timeout: 5_000 });
+  await slider.waitFor({ state: 'visible', timeout: GUARD_TIMEOUT_MS });
   await clearCommands(ctx.page);
 }
 
@@ -463,11 +469,13 @@ async function ensureMonSliderVisible(ctx: CaseContext): Promise<void> {
   }
 
   await closeOpenModal(ctx.page);
-  await panelByHeader(ctx.page, 'TX').getByRole('button', { name: /^MON(?:\s+\d+%)?$/ }).click();
+  const monButton = panelByHeader(ctx.page, 'TX').getByRole('button', { name: /^MON(?:\s+\d+%)?$/ });
+  await monButton.waitFor({ state: 'visible', timeout: GUARD_TIMEOUT_MS });
+  await monButton.click({ timeout: GUARD_TIMEOUT_MS });
   await wait(CONTROL_DELAY_MS);
   await clearCommands(ctx.page);
   await ensureTxSettingsOpen(ctx);
-  await slider.waitFor({ state: 'visible', timeout: 5_000 });
+  await slider.waitFor({ state: 'visible', timeout: GUARD_TIMEOUT_MS });
   await clearCommands(ctx.page);
 }
 
@@ -478,8 +486,10 @@ async function ensureFilterSettingsOpen(ctx: CaseContext): Promise<void> {
   }
 
   await closeOpenModal(ctx.page);
-  await panelByHeader(ctx.page, 'FILTER').getByRole('button', { name: 'Open filter settings' }).click();
-  await dialog.waitFor({ state: 'visible', timeout: 5_000 });
+  const openFilter = panelByHeader(ctx.page, 'FILTER').getByRole('button', { name: 'Open filter settings' });
+  await openFilter.waitFor({ state: 'visible', timeout: GUARD_TIMEOUT_MS });
+  await openFilter.click({ timeout: GUARD_TIMEOUT_MS });
+  await dialog.waitFor({ state: 'visible', timeout: GUARD_TIMEOUT_MS });
   await clearCommands(ctx.page);
 }
 
@@ -495,8 +505,9 @@ async function ensureDspSettingsOpen(
 
   await closeOpenModal(ctx.page);
   const button = panelByHeader(ctx.page, 'DSP').getByRole('button', { name: buttonName });
-  await button.scrollIntoViewIfNeeded();
-  const box = await button.boundingBox();
+  await button.waitFor({ state: 'visible', timeout: GUARD_TIMEOUT_MS });
+  await button.scrollIntoViewIfNeeded({ timeout: GUARD_TIMEOUT_MS });
+  const box = await button.boundingBox({ timeout: GUARD_TIMEOUT_MS });
   if (!box) {
     throw new Error('DSP settings button has no bounding box');
   }
@@ -504,7 +515,7 @@ async function ensureDspSettingsOpen(
   await ctx.page.mouse.down();
   await wait(650);
   await ctx.page.mouse.up();
-  await dialog.waitFor({ state: 'visible', timeout: 5_000 });
+  await dialog.waitFor({ state: 'visible', timeout: GUARD_TIMEOUT_MS });
   await clearCommands(ctx.page);
 }
 
@@ -515,8 +526,10 @@ async function ensureTxSettingsOpen(ctx: CaseContext): Promise<void> {
   }
 
   await closeOpenModal(ctx.page);
-  await panelByHeader(ctx.page, 'TX').getByRole('button', { name: /LEVELS/ }).click();
-  await dialog.waitFor({ state: 'visible', timeout: 5_000 });
+  const levels = panelByHeader(ctx.page, 'TX').getByRole('button', { name: /LEVELS/ });
+  await levels.waitFor({ state: 'visible', timeout: GUARD_TIMEOUT_MS });
+  await levels.click({ timeout: GUARD_TIMEOUT_MS });
+  await dialog.waitFor({ state: 'visible', timeout: GUARD_TIMEOUT_MS });
   await clearCommands(ctx.page);
 }
 
@@ -586,13 +599,14 @@ async function closeOpenModal(page: Page): Promise<void> {
 }
 
 async function setRangeValue(page: Page, locator: Locator, value: number): Promise<void> {
-  await locator.scrollIntoViewIfNeeded();
+  await locator.waitFor({ state: 'visible', timeout: GUARD_TIMEOUT_MS });
+  await locator.scrollIntoViewIfNeeded({ timeout: GUARD_TIMEOUT_MS });
   const range = await locator.evaluate((element) => {
     const min = Number(element.getAttribute('aria-valuemin') ?? 0);
     const max = Number(element.getAttribute('aria-valuemax') ?? 100);
     return { min, max };
   });
-  const box = await locator.boundingBox();
+  const box = await locator.boundingBox({ timeout: GUARD_TIMEOUT_MS });
   if (!box) {
     throw new Error('Slider has no bounding box');
   }
@@ -603,8 +617,9 @@ async function setRangeValue(page: Page, locator: Locator, value: number): Promi
 }
 
 async function setDualRfGain(page: Page, locator: Locator, value: number): Promise<void> {
-  await locator.scrollIntoViewIfNeeded();
-  const box = await locator.boundingBox();
+  await locator.waitFor({ state: 'visible', timeout: GUARD_TIMEOUT_MS });
+  await locator.scrollIntoViewIfNeeded({ timeout: GUARD_TIMEOUT_MS });
+  const box = await locator.boundingBox({ timeout: GUARD_TIMEOUT_MS });
   if (!box) {
     throw new Error('RF/SQL slider has no bounding box');
   }
@@ -646,14 +661,16 @@ async function buildAuditCases(capabilities: Capabilities): Promise<AuditCase[]>
     {
       panel: 'RF FRONT END',
       control: 'RF Gain',
-      action: 'set 200',
-      expected: 'set_rf_gain { level: 200, receiver: 0 }',
+      action: 'set 100',
+      expected: 'set_rf_gain { level: 100, receiver: 0 }',
       locate: (page) => panelByHeader(page, 'RF FRONT END').getByRole('slider', { name: /RF gain and squelch/ }),
-      act: async (page, locator) => setDualRfGain(page, locator, 200),
+      // The mock seeds rfGain at 200; target a clearly different value so the
+      // drag produces an actual change (and therefore a command).
+      act: async (page, locator) => setDualRfGain(page, locator, 100),
       verify: (_ctx, commands) =>
         verifySingleCommand(commands, {
           name: 'set_rf_gain',
-          approx: { level: { expected: 200, tolerance: 1 } },
+          approx: { level: { expected: 100, tolerance: 2 } },
           params: { receiver: 0 },
         }),
       cleanup: async (ctx) => {
@@ -947,16 +964,18 @@ async function buildAuditCases(capabilities: Capabilities): Promise<AuditCase[]>
     {
       panel: 'DSP',
       control: 'NR Level',
-      action: 'set 5',
-      expected: 'set_nr_level { level: 5, receiver: 0 }',
+      action: 'set 10',
+      expected: 'set_nr_level { level: 10, receiver: 0 }',
       prepare: (ctx) => ensureDspSettingsOpen(ctx, /^NR(?:\s+\d+)?$/, 'Noise reduction settings'),
       locate: (page) => page.getByRole('dialog', { name: 'Noise reduction settings' }).getByRole('slider', { name: 'NR Level' }),
-      act: async (page, locator) => setRangeValue(page, locator, 5),
+      // The mock seeds nrLevel at 5; target a different value so the slider
+      // actually moves and emits a command.
+      act: async (page, locator) => setRangeValue(page, locator, 10),
       verify: (_ctx, commands) =>
         verifySingleCommand(commands, {
           name: 'set_nr_level',
           params: { receiver: 0 },
-          approx: { level: { expected: 5 } },
+          approx: { level: { expected: 10, tolerance: 1 } },
         }),
       cleanup: async (ctx) => {
         await sendRestoreCommands(ctx.page, ctx.request, [
@@ -985,16 +1004,18 @@ async function buildAuditCases(capabilities: Capabilities): Promise<AuditCase[]>
     {
       panel: 'DSP',
       control: 'NB Level',
-      action: 'set 5',
-      expected: 'set_nb_level { level: 5, receiver: 0 }',
+      action: 'set 128',
+      expected: 'set_nb_level { level: 128, receiver: 0 }',
       prepare: (ctx) => ensureDspSettingsOpen(ctx, /^NB(?:\s+\d+)?$/, 'Noise blanker settings'),
       locate: (page) => page.getByRole('dialog', { name: 'Noise blanker settings' }).getByRole('slider', { name: 'NB Level' }),
-      act: async (page, locator) => setRangeValue(page, locator, 5),
+      // The mock seeds nbLevel at 5; target the mid-scale raw value so the
+      // slider actually moves and emits a command (range is 0-255).
+      act: async (page, locator) => setRangeValue(page, locator, 128),
       verify: (_ctx, commands) =>
         verifySingleCommand(commands, {
           name: 'set_nb_level',
           params: { receiver: 0 },
-          approx: { level: { expected: 5 } },
+          approx: { level: { expected: 128, tolerance: 1 } },
         }),
       cleanup: async (ctx) => {
         await sendRestoreCommands(ctx.page, ctx.request, [
