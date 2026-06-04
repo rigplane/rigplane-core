@@ -2111,13 +2111,13 @@ def test_update_radio_state_cmd16_ipplus(radio_with_state: IcomRadio) -> None:
 @pytest.mark.parametrize(  # type: ignore[untyped-decorator]
     ("cmd", "sub", "data", "receiver", "target", "field", "expected"),
     [
-        (0x15, 0x01, b"\x01", 0x01, "sub", "s_meter_sql_open", True),
         (0x15, 0x07, b"\x01", None, "radio", "overflow", True),
-        # 0x41 auto_notch, 0x44 compressor_on, 0x45 monitor_on, 0x46 vox_on,
-        # 0x48 manual_notch (MOR-437); 0x12 agc + 0x1A/0x04 agc_time_constant
-        # (BE-2); and 0x32 audio_peak_filter + 0x4F twin_peak_filter (MOR-452)
-        # are now observation-backed — the legacy RadioState mirror was removed,
-        # so they no longer belong here.
+        # 0x15/0x01 + 0x15/0x05 s_meter_sql_open promoted to the neutral ``dcd``
+        # receiver toggle (MOR-466); 0x41 auto_notch, 0x44 compressor_on,
+        # 0x45 monitor_on, 0x46 vox_on, 0x48 manual_notch (MOR-437); 0x12 agc +
+        # 0x1A/0x04 agc_time_constant (BE-2); and 0x32 audio_peak_filter +
+        # 0x4F twin_peak_filter (MOR-452) are now observation-backed — the legacy
+        # RadioState mirror was removed, so they no longer belong here.
         (0x16, 0x47, b"\x02", None, "radio", "break_in", 2),
         (0x16, 0x50, b"\x01", None, "radio", "dial_lock", True),
         (0x16, 0x56, b"\x01", 0x01, "sub", "filter_shape", 1),
@@ -2823,10 +2823,37 @@ def test_update_radio_state_alc_meter(radio_with_state: IcomRadio) -> None:
     assert radio_with_state._radio_state.alc_meter == 120
 
 
-def test_update_radio_state_various_squelch(radio_with_state: IcomRadio) -> None:
-    """Various squelch (0x15 0x05) → ReceiverState.s_meter_sql_open."""
-    frame = CivFrame(0xE0, 0x98, 0x15, 0x05, b"\x01")
-    radio_with_state._civ_runtime._update_radio_state_from_frame(frame)
+@pytest.mark.parametrize(  # type: ignore[untyped-decorator]
+    "sub",
+    [0x01, 0x05],
+)
+def test_update_radio_state_cmd15_dcd_observation_backed(
+    radio_with_state: IcomRadio,
+    sub: int,
+) -> None:
+    """MOR-466: cmd 0x15 sub 0x01/0x05 squelch-open mirror removed; store is truth.
+
+    The squelch-open / DCD (RX-busy) status is promoted to the neutral
+    ``receiver.<id>.operator_toggles.dcd`` bool; the legacy
+    ``ReceiverState.s_meter_sql_open`` mirror is no longer written and stays at
+    its default ``False`` while the StateStore carries the decoded bool. Both
+    subs feed the same ``dcd`` path.
+    """
+    frame = CivFrame(0xE0, 0x98, 0x15, sub, b"\x01")
+    radio_with_state._civ_runtime._update_state_cache_from_frame(frame)
     rs = radio_with_state._radio_state
-    # Various squelch updates the active receiver's s_meter_sql_open
-    assert rs.receiver(rs.active).s_meter_sql_open is True
+    assert rs.receiver(rs.active).s_meter_sql_open is False
+    field = radio_with_state._state_store.snapshot().field(
+        "receiver.0.operator_toggles.dcd"
+    )
+    assert field.value is True
+
+
+def test_update_radio_state_cmd15_dcd_false(radio_with_state: IcomRadio) -> None:
+    """MOR-466: a zero squelch-open byte observes ``dcd`` as False."""
+    frame = CivFrame(0xE0, 0x98, 0x15, 0x05, b"\x00")
+    radio_with_state._civ_runtime._update_state_cache_from_frame(frame)
+    field = radio_with_state._state_store.snapshot().field(
+        "receiver.0.operator_toggles.dcd"
+    )
+    assert field.value is False

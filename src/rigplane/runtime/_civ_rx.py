@@ -322,6 +322,14 @@ _OBSERVABLE_CMD15_FIELDS = {
     0x16: ("global", "meters", "id"),
 }
 
+# Squelch-open / DCD (RX-busy) status. Unlike the 2-byte BCD meter levels above,
+# this is a single-byte bool reported under cmd 0x15 sub 0x01 and sub 0x05; both
+# subs feed the same neutral ``dcd`` receiver toggle (MOR-466). Handled by a
+# dedicated bool branch in ``_observations_from_frame`` (the level branch is
+# gated on ``len(frame.data) >= 2`` and never matches a single byte).
+_OBSERVABLE_CMD15_SQL_OPEN_SUBS = frozenset({0x01, 0x05})
+_CMD15_DCD_FIELD = ("receiver", "operator_toggles", "dcd")
+
 _OBSERVABLE_CMD16_FIELDS = {
     0x22: ("receiver", "operator_toggles", "nb"),
     0x40: ("receiver", "operator_toggles", "nr"),
@@ -1515,6 +1523,22 @@ class CivRuntime:
                             frame=frame,
                         )
                     )
+        elif (
+            frame.command == 0x15
+            and frame.sub in _OBSERVABLE_CMD15_SQL_OPEN_SUBS
+            and frame.data
+        ):
+            # Squelch-open / DCD (RX-busy): single-byte bool under sub 0x01 and
+            # sub 0x05, both promoted to the neutral receiver ``dcd`` toggle
+            # (MOR-466). The legacy ``RadioState.s_meter_sql_open`` mirror write
+            # in ``_handle_15`` is removed; the StateStore is the source of truth.
+            observations.append(
+                self._observation(
+                    self._field_path(_CMD15_DCD_FIELD, receiver_id=receiver_id),
+                    bool(frame.data[0]),
+                    frame=frame,
+                )
+            )
         elif frame.command == 0x15 and len(frame.data) >= 2:
             mapping = _OBSERVABLE_CMD15_FIELDS.get(frame.sub or 0)
             if mapping is not None:
@@ -2045,11 +2069,12 @@ class CivRuntime:
         slot_override: str | None,
     ) -> None:
         # cmd 0x15: meter/SQL reads.
-        if frame.sub == 0x01 and frame.data:
-            rx.s_meter_sql_open = bool(frame.data[0])
-        elif frame.sub == 0x05 and frame.data:
-            rx.s_meter_sql_open = bool(frame.data[0])
-        elif frame.sub == 0x07 and frame.data:
+        # The squelch-open / DCD status (sub 0x01 and sub 0x05) mirror writes
+        # were migrated to the StateStore observation pipeline (MOR-466);
+        # ``_observations_from_frame`` is the source of truth and emits the
+        # neutral ``receiver.<id>.operator_toggles.dcd`` bool from the same byte.
+        # ``RadioState.s_meter_sql_open`` is no longer written here.
+        if frame.sub == 0x07 and frame.data:
             rs.overflow = bool(frame.data[0])
         elif len(frame.data) >= 2:
             b0, b1 = frame.data[0], frame.data[1]

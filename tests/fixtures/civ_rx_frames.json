@@ -50,10 +50,10 @@
   },
   {
     "name": "cmd15_sub05_sql_open_active_main",
-    "comment": "0x15/0x05 SQL open flag (alternate sub for s_meter_sql_open)",
+    "comment": "0x15/0x05 SQL open flag: legacy RadioState mirror removed (MOR-466); promoted to observation receiver.0.operator_toggles.dcd, so the mirror stays at its default false",
     "frame": {"command": 21, "sub": 5, "data": "01"},
     "expected_state": {
-      "main.s_meter_sql_open": true
+      "main.s_meter_sql_open": false
     }
   },
   {

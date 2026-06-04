@@ -16,7 +16,8 @@ export interface ReceiverState {
   // Extended fields — optional (not all radio models expose these)
   digisel?: boolean;
   ipplus?: boolean;
-  sMeterSqlOpen?: boolean;
+  dcd?: boolean;
+  sMeterSqlOpen?: boolean; // deprecated alias of dcd (MOR-466)
   agc?: number;
   audioPeakFilter?: number;
   autoNotch?: boolean;

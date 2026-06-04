@@ -217,7 +217,9 @@ _LEGACY_RECEIVER_TOGGLE_FIELDS: tuple[tuple[str, str], ...] = (
     ("twin_peak_filter", "twin_peak_filter"),
     ("af_mute", "af_mute"),
     ("ipplus", "ipplus"),
-    ("s_meter_sql_open", "s_meter_sql_open"),
+    # ``s_meter_sql_open`` was promoted to the neutral ``dcd`` receiver toggle
+    # (MOR-466); the StateStore observation + projection alias are now the single
+    # source, so the legacy RadioState bridge no longer mirrors it.
     ("apf_on", "apf_on"),
     ("narrow", "narrow"),
     ("repeater_tone", "repeater_tone"),

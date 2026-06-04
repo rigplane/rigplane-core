@@ -1040,6 +1040,12 @@ def _receiver_specs(receiver_id: str) -> tuple[FieldSpec, ...]:
             "bool",
             writable=True,
         ),
+        # Squelch-open / DCD (RX-busy) status: read-only observation, the RX
+        # counterpart of the first-class TX ``ptt`` (MOR-466).
+        spec(
+            FieldPath.receiver(receiver_id, "operator_toggles", "dcd"),
+            "bool",
+        ),
         spec(
             FieldPath.active(receiver_id, "freq_mode", "data_mode"),
             "int",

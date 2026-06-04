@@ -91,7 +91,7 @@ _RECEIVER_OPERATOR_TOGGLE_FIELDS = {
     "twin_peak_filter",
     "af_mute",
     "ipplus",
-    "s_meter_sql_open",
+    "dcd",
     "apf_on",
     "narrow",
     "repeater_tone",
@@ -227,7 +227,20 @@ def _snapshot_field_public_paths(path: FieldPath) -> tuple[str, ...]:
             path.family is FieldFamily.OPERATOR_TOGGLES
             and path.name in _RECEIVER_OPERATOR_TOGGLE_FIELDS
         ):
-            return (_public_field_path(receiver_key, _receiver_public_key(path.name)),)
+            public_key = _public_field_path(
+                receiver_key, _receiver_public_key(path.name)
+            )
+            if path.name == "dcd":
+                # DEPRECATED alias (MOR-466): remove after migration window.
+                # ``dcd`` is the neutral promotion of the legacy squelch-open
+                # status; project it under both ``dcd`` and the old
+                # ``sMeterSqlOpen`` public key (same value + same availability)
+                # so existing frontend consumers keep working during migration.
+                return (
+                    public_key,
+                    _public_field_path(receiver_key, "sMeterSqlOpen"),
+                )
+            return (public_key,)
         if (
             path.family is FieldFamily.SLOW_STATE
             and path.name in _RECEIVER_SLOW_STATE_FIELDS
@@ -343,6 +356,15 @@ def _default_receiver_field_status(
             _public_field_path(receiver_key, _receiver_public_key(name)),
             FieldPath.receiver(receiver_key, "operator_toggles", name),
         )
+        if name == "dcd":
+            # DEPRECATED alias (MOR-466): remove after migration window. Seed the
+            # legacy ``sMeterSqlOpen`` public key ``missing`` from the same ``dcd``
+            # FieldPath so an absent observation does not resolve to ``available``.
+            _set_missing_field_status(
+                statuses,
+                _public_field_path(receiver_key, "sMeterSqlOpen"),
+                FieldPath.receiver(receiver_key, "operator_toggles", "dcd"),
+            )
     for name in _RECEIVER_SLOW_STATE_FIELDS:
         _set_missing_field_status(
             statuses,
@@ -728,6 +750,13 @@ def _apply_snapshot_field(
                 _set_receiver_value(state, receiver_key, "auto_notch", value)
             elif path.name == "af_mute":
                 _set_receiver_value(state, receiver_key, "af_mute", value)
+            elif path.name == "dcd":
+                _set_receiver_value(state, receiver_key, "dcd", value)
+                # DEPRECATED alias (MOR-466): remove after migration window. Also
+                # publish the value under the legacy ``s_meter_sql_open`` key
+                # (camel-cased to ``sMeterSqlOpen``) so existing frontend
+                # consumers keep working during migration.
+                _set_receiver_value(state, receiver_key, "s_meter_sql_open", value)
             else:
                 _set_receiver_value(state, receiver_key, path.name, value)
             return

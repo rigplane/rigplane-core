@@ -400,6 +400,22 @@ def test_global_id_meter_registered_as_read_only_meter_int() -> None:
     assert spec.writable is False
 
 
+def test_receiver_dcd_registered_as_read_only_operator_toggle_bool() -> None:
+    """MOR-466: ``receiver.<id>.operator_toggles.dcd`` is a read-only bool.
+
+    The squelch-open / DCD (RX-busy) status (Icom CI-V 0x15 sub 0x01 and 0x05)
+    is the RX counterpart of the first-class TX ``ptt`` and matches hamlib
+    ``get_dcd``. It is a backend-neutral, observation-only receiver toggle:
+    read-only (NOT writable) — there is no CAT command to set it.
+    """
+    path = FieldPath.receiver("main", "operator_toggles", "dcd")
+    spec = DEFAULT_FIELD_REGISTRY.require(path)
+    assert spec.path == path
+    assert spec.family is FieldFamily.OPERATOR_TOGGLES
+    assert spec.value_type == "bool"
+    assert spec.writable is False
+
+
 def test_global_cw_spot_registered_as_slow_state_bool() -> None:
     """MOR-456: ``global.slow_state.cw_spot`` is a registered slow_state bool.
 
@@ -771,6 +787,14 @@ _ICOM_V2_FIELD_FAMILIES: tuple[tuple[FieldPath, str, str | None, Any], ...] = (
         "main",
         True,
     ),
+    # Squelch-open / DCD (RX-busy) promoted as a neutral read-only receiver
+    # toggle — projects to the new ``dcd`` public key (MOR-466).
+    (
+        FieldPath.receiver("main", "operator_toggles", "dcd"),
+        "dcd",
+        "main",
+        True,
+    ),
     # receiver freq_mode (active slot)
     (FieldPath.active("main", "freq_mode", "data_mode"), "dataMode", "main", 1),
     (
@@ -902,3 +926,46 @@ def test_icom_v2_field_family_seeds_missing_when_unobserved(
     field_status = payload["fieldStatus"][status_path]
     assert field_status["observed"] is False
     assert field_status["availability"] == "missing"
+
+
+def test_dcd_projects_deprecated_smeter_sql_open_alias() -> None:
+    """MOR-466: the ``dcd`` observation also projects the legacy alias.
+
+    During the migration window the neutral ``dcd`` receiver toggle is projected
+    under BOTH ``dcd`` and the deprecated ``sMeterSqlOpen`` public key, with the
+    same value and the same ``available`` availability, so existing frontend
+    consumers keep working.
+    """
+    path = FieldPath.receiver("main", "operator_toggles", "dcd")
+    store = StateStore()
+    store.apply(_store_observation(path, True, at=1.0))
+    payload = build_public_state_payload_from_snapshot(
+        store.snapshot(),
+        radio=None,
+        receiver_count=2,
+    )
+
+    assert payload["main"]["dcd"] is True
+    assert payload["main"]["sMeterSqlOpen"] is True
+    for status_path in ("main.dcd", "main.sMeterSqlOpen"):
+        field_status = payload["fieldStatus"][status_path]
+        assert field_status["observed"] is True
+        assert field_status["availability"] == "available"
+
+
+def test_dcd_deprecated_alias_seeds_missing_when_unobserved() -> None:
+    """MOR-466: the deprecated ``sMeterSqlOpen`` alias seeds ``missing`` too.
+
+    An absent ``dcd`` observation must leave the legacy alias ``missing`` (not
+    resolve to ``available`` on its default), mirroring the primary ``dcd`` key.
+    """
+    payload = build_public_state_payload_from_snapshot(
+        StateStore().snapshot(),
+        radio=None,
+        receiver_count=2,
+    )
+
+    for status_path in ("main.dcd", "main.sMeterSqlOpen"):
+        field_status = payload["fieldStatus"][status_path]
+        assert field_status["observed"] is False
+        assert field_status["availability"] == "missing"

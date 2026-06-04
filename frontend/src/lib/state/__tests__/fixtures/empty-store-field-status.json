@@ -197,6 +197,12 @@
     "observed": false,
     "storePath": "receiver.main.active.freq_mode.data_mode"
   },
+  "main.dcd": {
+    "availability": "missing",
+    "freshness": "unknown",
+    "observed": false,
+    "storePath": "receiver.main.operator_toggles.dcd"
+  },
   "main.digisel": {
     "availability": "missing",
     "freshness": "unknown",
@@ -363,7 +369,7 @@
     "availability": "missing",
     "freshness": "unknown",
     "observed": false,
-    "storePath": "receiver.main.operator_toggles.s_meter_sql_open"
+    "storePath": "receiver.main.operator_toggles.dcd"
   },
   "main.squelch": {
     "availability": "missing",
@@ -755,6 +761,12 @@
     "observed": false,
     "storePath": "receiver.sub.active.freq_mode.data_mode"
   },
+  "sub.dcd": {
+    "availability": "missing",
+    "freshness": "unknown",
+    "observed": false,
+    "storePath": "receiver.sub.operator_toggles.dcd"
+  },
   "sub.digisel": {
     "availability": "missing",
     "freshness": "unknown",
@@ -921,7 +933,7 @@
     "availability": "missing",
     "freshness": "unknown",
     "observed": false,
-    "storePath": "receiver.sub.operator_toggles.s_meter_sql_open"
+    "storePath": "receiver.sub.operator_toggles.dcd"
   },
   "sub.squelch": {
     "availability": "missing",
