@@ -131,6 +131,8 @@ class _SideEffectingYaesuRadio:
         "squelch",
         "meters",
         "tx",
+        "vox",
+        "compressor",
     }
 
     def __init__(self) -> None:
@@ -147,6 +149,11 @@ class _SideEffectingYaesuRadio:
         self.radio_state.sub.af_level = 8
         self.radio_state.sub.rf_gain = 9
         self.radio_state.sub.squelch = 10
+        self.radio_state.power_level = 11
+        self.radio_state.mic_gain = 12
+        self.radio_state.compressor_on = False
+        self.radio_state.compressor_level = 13
+        self.radio_state.vox_on = False
         self.profile = get_radio_profile("FTX-1")
         self.legacy_getter_calls = 0
 
@@ -217,6 +224,51 @@ class _SideEffectingYaesuRadio:
         value = await self.read_squelch(receiver)
         target = self.radio_state.main if receiver == 0 else self.radio_state.sub
         target.squelch = value
+        return value
+
+    async def read_power(self) -> tuple[int, int]:
+        return (2, 55)
+
+    async def get_power(self) -> tuple[int, int]:
+        self.legacy_getter_calls += 1
+        head, watts = await self.read_power()
+        self.radio_state.power_level = watts
+        return head, watts
+
+    async def read_mic_gain(self) -> int:
+        return 40
+
+    async def get_mic_gain(self) -> int:
+        self.legacy_getter_calls += 1
+        value = await self.read_mic_gain()
+        self.radio_state.mic_gain = value
+        return value
+
+    async def read_processor(self) -> bool:
+        return True
+
+    async def get_processor(self) -> bool:
+        self.legacy_getter_calls += 1
+        value = await self.read_processor()
+        self.radio_state.compressor_on = value
+        return value
+
+    async def read_processor_level(self) -> int:
+        return 25
+
+    async def get_processor_level(self) -> int:
+        self.legacy_getter_calls += 1
+        value = await self.read_processor_level()
+        self.radio_state.compressor_level = value
+        return value
+
+    async def read_vox(self) -> bool:
+        return True
+
+    async def get_vox(self) -> bool:
+        self.legacy_getter_calls += 1
+        value = await self.read_vox()
+        self.radio_state.vox_on = value
         return value
 
 
@@ -522,6 +574,11 @@ async def test_observation_poller_uses_read_only_paths_when_getters_mutate_state
         ("receiver.sub.operator_controls.af_level", 64),
         ("receiver.sub.operator_controls.rf_gain", 90),
         ("receiver.sub.operator_controls.squelch", 8),
+        ("global.operator_controls.power_level", 55),
+        ("global.operator_controls.mic_gain", 40),
+        ("global.tx_state.compressor_on", True),
+        ("global.operator_controls.compressor_level", 25),
+        ("global.tx_state.vox_on", True),
     ]
     assert radio.legacy_getter_calls == 0
     assert radio.radio_state.main.freq == 1
@@ -537,6 +594,11 @@ async def test_observation_poller_uses_read_only_paths_when_getters_mutate_state
     assert radio.radio_state.sub.af_level == 8
     assert radio.radio_state.sub.rf_gain == 9
     assert radio.radio_state.sub.squelch == 10
+    assert radio.radio_state.power_level == 11
+    assert radio.radio_state.mic_gain == 12
+    assert radio.radio_state.compressor_on is False
+    assert radio.radio_state.compressor_level == 13
+    assert radio.radio_state.vox_on is False
 
 
 @pytest.mark.asyncio
@@ -596,13 +658,13 @@ def test_legacy_yaesu_state_writes_are_observed_or_explicit_limitations() -> Non
         "main.nr_level": "limitation: NR level lacks canonical acquisition profile coverage",
         "main.nr": "limitation: NR toggle lacks FTX-1 pollable acquisition policy",
         "main.auto_notch": "limitation: notch toggle lacks FTX-1 pollable acquisition policy",
-        "power_level": "limitation: TX power level lacks FTX-1 pollable acquisition policy",
-        "mic_gain": "limitation: mic gain lacks canonical acquisition profile coverage",
+        "power_level": "observation:global.operator_controls.power_level",
+        "mic_gain": "observation:global.operator_controls.mic_gain",
         "split": "limitation: split lacks FTX-1 pollable acquisition policy",
-        "vox_on": "limitation: VOX lacks canonical acquisition profile coverage",
+        "vox_on": "observation:global.tx_state.vox_on",
         "dial_lock": "limitation: dial lock lacks canonical acquisition profile coverage",
-        "compressor_on": "limitation: compressor toggle lacks canonical acquisition profile coverage",
-        "compressor_level": "limitation: compressor level lacks canonical acquisition profile coverage",
+        "compressor_on": "observation:global.tx_state.compressor_on",
+        "compressor_level": "observation:global.operator_controls.compressor_level",
         "main.att": "limitation: attenuator lacks FTX-1 pollable acquisition policy",
         "main.preamp": "limitation: preamp lacks FTX-1 pollable acquisition policy",
         "tuner_status": "limitation: tuner status lacks canonical acquisition profile coverage",

@@ -1445,14 +1445,24 @@ class YaesuCatRadio:
 
     # -- D6: TX Stack -------------------------------------------------------
 
+    async def read_power(self) -> tuple[int, int]:
+        """Read the TX power setpoint without mutating legacy state.
+
+        Returns:
+            Tuple of (head: int, watts: int).  This is the configured
+            (SET) power level via the ``PC`` command — the watt setpoint,
+            distinct from the measured ``RM5`` power meter.
+        """
+        result = await self._query("get_power")
+        return int(result["head"]), result["watts"]
+
     async def get_power(self) -> tuple[int, int]:
         """Get TX power setting.
 
         Returns:
             Tuple of (head: int, watts: int).
         """
-        result = await self._query("get_power")
-        return int(result["head"]), result["watts"]
+        return await self.read_power()
 
     async def set_power(self, watts: int, head: int = 2) -> None:
         """Set TX power.
@@ -1472,28 +1482,40 @@ class YaesuCatRadio:
         """
         await self.set_power(watts=level)
 
-    async def get_mic_gain(self) -> int:
-        """Get microphone gain (0–100)."""
+    async def read_mic_gain(self) -> int:
+        """Read microphone gain without mutating legacy state (0–100)."""
         result = await self._query("get_mic_gain")
         return int(result["level"])
+
+    async def get_mic_gain(self) -> int:
+        """Get microphone gain (0–100)."""
+        return await self.read_mic_gain()
 
     async def set_mic_gain(self, level: int) -> None:
         """Set microphone gain (0–100)."""
         await self._write("set_mic_gain", level=level)
 
-    async def get_processor(self) -> bool:
-        """Get speech processor state."""
+    async def read_processor(self) -> bool:
+        """Read speech processor (compressor) state without mutating state."""
         result = await self._query("get_processor")
         return bool(result["state"] == "1")
+
+    async def get_processor(self) -> bool:
+        """Get speech processor state."""
+        return await self.read_processor()
 
     async def set_processor(self, state: bool) -> None:
         """Set speech processor state."""
         await self._write("set_processor", state="1" if state else "0")
 
-    async def get_processor_level(self) -> int:
-        """Get processor level (0-100)."""
+    async def read_processor_level(self) -> int:
+        """Read processor (compressor) level without mutating state (0-100)."""
         result = await self._query("get_processor_level")
         return int(result["level"])
+
+    async def get_processor_level(self) -> int:
+        """Get processor level (0-100)."""
+        return await self.read_processor_level()
 
     async def set_processor_level(self, level: int) -> None:
         """Set processor level (0-100)."""
@@ -1677,10 +1699,14 @@ class YaesuCatRadio:
         """Set auto-info (AI) state."""
         await self._write("set_auto_info", state="1" if state else "0")
 
-    async def get_vox(self) -> bool:
-        """Get VOX state."""
+    async def read_vox(self) -> bool:
+        """Read VOX state without mutating legacy state."""
         result = await self._query("get_vox")
         return bool(result["state"] == "1")
+
+    async def get_vox(self) -> bool:
+        """Get VOX state."""
+        return await self.read_vox()
 
     async def set_vox(self, state: bool) -> None:
         """Set VOX state."""

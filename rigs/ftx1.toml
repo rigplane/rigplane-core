@@ -69,6 +69,11 @@ polling_only = [
     "receiver.sub.operator_controls.af_level",
     "receiver.sub.operator_controls.rf_gain",
     "receiver.sub.operator_controls.squelch",
+    "global.operator_controls.power_level",
+    "global.operator_controls.mic_gain",
+    "global.tx_state.compressor_on",
+    "global.operator_controls.compressor_level",
+    "global.tx_state.vox_on",
 ]
 stream_like_meters = [
     "receiver.main.meters.s_meter",
@@ -136,6 +141,26 @@ cadence_seconds = 30.0
 freshness_ttl_seconds = 120.0
 
 [state_acquisition.field_policies."receiver.sub.operator_controls.squelch"]
+cadence_seconds = 30.0
+freshness_ttl_seconds = 120.0
+
+[state_acquisition.field_policies."global.operator_controls.power_level"]
+cadence_seconds = 30.0
+freshness_ttl_seconds = 120.0
+
+[state_acquisition.field_policies."global.operator_controls.mic_gain"]
+cadence_seconds = 30.0
+freshness_ttl_seconds = 120.0
+
+[state_acquisition.field_policies."global.tx_state.compressor_on"]
+cadence_seconds = 30.0
+freshness_ttl_seconds = 120.0
+
+[state_acquisition.field_policies."global.operator_controls.compressor_level"]
+cadence_seconds = 30.0
+freshness_ttl_seconds = 120.0
+
+[state_acquisition.field_policies."global.tx_state.vox_on"]
 cadence_seconds = 30.0
 freshness_ttl_seconds = 120.0
 

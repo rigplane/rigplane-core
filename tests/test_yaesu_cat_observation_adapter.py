@@ -29,6 +29,8 @@ def _make_radio() -> MagicMock:
         "meters",
         "filter_width",
         "tx",
+        "vox",
+        "compressor",
     }
     radio.get_freq = AsyncMock(
         side_effect=lambda receiver=0: 14_074_000 if receiver == 0 else 7_074_000
@@ -62,6 +64,17 @@ def _make_radio() -> MagicMock:
     radio.read_squelch = AsyncMock(
         side_effect=lambda receiver=0: 12 if receiver == 0 else 8
     )
+    # Global TX / operator-control setpoints (MOR-447).
+    radio.get_power = AsyncMock(return_value=(2, 55))
+    radio.read_power = AsyncMock(return_value=(2, 55))
+    radio.get_mic_gain = AsyncMock(return_value=40)
+    radio.read_mic_gain = AsyncMock(return_value=40)
+    radio.get_processor = AsyncMock(return_value=True)
+    radio.read_processor = AsyncMock(return_value=True)
+    radio.get_processor_level = AsyncMock(return_value=25)
+    radio.read_processor_level = AsyncMock(return_value=25)
+    radio.get_vox = AsyncMock(return_value=True)
+    radio.read_vox = AsyncMock(return_value=True)
     return radio
 
 
@@ -79,6 +92,8 @@ class _SideEffectingYaesuRadio:
         "squelch",
         "meters",
         "tx",
+        "vox",
+        "compressor",
     }
 
     def __init__(self) -> None:
@@ -97,6 +112,11 @@ class _SideEffectingYaesuRadio:
         self.radio_state.sub.af_level = 10
         self.radio_state.sub.rf_gain = 11
         self.radio_state.sub.squelch = 12
+        self.radio_state.power_level = 13
+        self.radio_state.mic_gain = 14
+        self.radio_state.compressor_on = False
+        self.radio_state.compressor_level = 15
+        self.radio_state.vox_on = False
 
     async def read_freq(self, receiver: int = 0) -> int:
         return 14_074_000 if receiver == 0 else 7_074_000
@@ -174,6 +194,46 @@ class _SideEffectingYaesuRadio:
         value = await self.read_squelch(receiver)
         target = self.radio_state.main if receiver == 0 else self.radio_state.sub
         target.squelch = value
+        return value
+
+    async def read_power(self) -> tuple[int, int]:
+        return (2, 55)
+
+    async def get_power(self) -> tuple[int, int]:
+        head, watts = await self.read_power()
+        self.radio_state.power_level = watts
+        return head, watts
+
+    async def read_mic_gain(self) -> int:
+        return 40
+
+    async def get_mic_gain(self) -> int:
+        value = await self.read_mic_gain()
+        self.radio_state.mic_gain = value
+        return value
+
+    async def read_processor(self) -> bool:
+        return True
+
+    async def get_processor(self) -> bool:
+        value = await self.read_processor()
+        self.radio_state.compressor_on = value
+        return value
+
+    async def read_processor_level(self) -> int:
+        return 25
+
+    async def get_processor_level(self) -> int:
+        value = await self.read_processor_level()
+        self.radio_state.compressor_level = value
+        return value
+
+    async def read_vox(self) -> bool:
+        return True
+
+    async def get_vox(self) -> bool:
+        value = await self.read_vox()
+        self.radio_state.vox_on = value
         return value
 
 
@@ -257,6 +317,63 @@ async def test_slow_poll_skips_sub_controls_without_matching_runtime_capability(
 
 
 @pytest.mark.asyncio
+async def test_tx_controls_poll_emits_global_setpoints() -> None:
+    radio = _make_radio()
+    adapter = YaesuObservationAdapter(
+        radio,
+        profile=_profile_state_acquisition(),
+        clock=_clock,
+    )
+
+    observations = await adapter.poll_tx_controls()
+
+    assert [(str(item.path), item.value) for item in observations] == [
+        ("global.operator_controls.power_level", 55),
+        ("global.operator_controls.mic_gain", 40),
+        ("global.tx_state.compressor_on", True),
+        ("global.operator_controls.compressor_level", 25),
+        ("global.tx_state.vox_on", True),
+    ]
+    assert all(item.source.source == "yaesu_poll_response" for item in observations)
+    assert all(item.max_age == 120.0 for item in observations)
+    # Power emits the watt SETPOINT (read_power), never the RM5 meter.
+    radio.read_power.assert_awaited_once()
+    radio.read_mic_gain.assert_awaited_once()
+    radio.read_processor.assert_awaited_once()
+    radio.read_processor_level.assert_awaited_once()
+    radio.read_vox.assert_awaited_once()
+    radio.get_power.assert_not_awaited()
+    radio.get_mic_gain.assert_not_awaited()
+    radio.get_processor.assert_not_awaited()
+    radio.get_processor_level.assert_not_awaited()
+    radio.get_vox.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_tx_controls_poll_skips_fields_without_matching_runtime_capability() -> (
+    None
+):
+    radio = _make_radio()
+    # Drop tx/vox/compressor; mic_gain is unconditional, so it remains.
+    radio.capabilities = {"dual_rx", "af_level", "rf_gain", "squelch", "meters"}
+    adapter = YaesuObservationAdapter(
+        radio,
+        profile=_profile_state_acquisition(),
+        clock=_clock,
+    )
+
+    observations = await adapter.poll_tx_controls()
+
+    assert [(str(item.path), item.value) for item in observations] == [
+        ("global.operator_controls.mic_gain", 40),
+    ]
+    radio.read_power.assert_not_awaited()
+    radio.read_processor.assert_not_awaited()
+    radio.read_processor_level.assert_not_awaited()
+    radio.read_vox.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_adapter_uses_read_only_yaesu_paths_when_getters_mutate_state() -> None:
     radio = _SideEffectingYaesuRadio()
     adapter = YaesuObservationAdapter(
@@ -270,6 +387,7 @@ async def test_adapter_uses_read_only_yaesu_paths_when_getters_mutate_state() ->
         + await adapter.poll_rx_meters()
         + await adapter.poll_tx_meters()
         + await adapter.poll_slow_controls()
+        + await adapter.poll_tx_controls()
     )
 
     assert [(str(item.path), item.value) for item in observations] == [
@@ -288,6 +406,11 @@ async def test_adapter_uses_read_only_yaesu_paths_when_getters_mutate_state() ->
         ("receiver.sub.operator_controls.af_level", 64),
         ("receiver.sub.operator_controls.rf_gain", 90),
         ("receiver.sub.operator_controls.squelch", 8),
+        ("global.operator_controls.power_level", 55),
+        ("global.operator_controls.mic_gain", 40),
+        ("global.tx_state.compressor_on", True),
+        ("global.operator_controls.compressor_level", 25),
+        ("global.tx_state.vox_on", True),
     ]
     assert radio.radio_state.main.freq == 1
     assert radio.radio_state.main.mode == "INIT-MAIN"
@@ -304,6 +427,12 @@ async def test_adapter_uses_read_only_yaesu_paths_when_getters_mutate_state() ->
     assert radio.radio_state.sub.af_level == 10
     assert radio.radio_state.sub.rf_gain == 11
     assert radio.radio_state.sub.squelch == 12
+    # The new read_* TX-control paths must not mutate legacy state either.
+    assert radio.radio_state.power_level == 13
+    assert radio.radio_state.mic_gain == 14
+    assert radio.radio_state.compressor_on is False
+    assert radio.radio_state.compressor_level == 15
+    assert radio.radio_state.vox_on is False
 
 
 @pytest.mark.asyncio

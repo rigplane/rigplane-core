@@ -30,6 +30,13 @@ _MAIN_S_METER = FieldPath.receiver("main", "meters", "s_meter")
 _SUB_S_METER = FieldPath.receiver("sub", "meters", "s_meter")
 _POWER_METER = FieldPath.global_("meters", "power")
 _SWR_METER = FieldPath.global_("meters", "swr")
+# Global TX / operator-control setpoints (MOR-447). ``power_level`` is the
+# watt SETPOINT (CAT ``PC``), distinct from the ``global.meters.power`` meter.
+_POWER_LEVEL = FieldPath.global_("operator_controls", "power_level")
+_MIC_GAIN = FieldPath.global_("operator_controls", "mic_gain")
+_COMPRESSOR_ON = FieldPath.global_("tx_state", "compressor_on")
+_COMPRESSOR_LEVEL = FieldPath.global_("operator_controls", "compressor_level")
+_VOX_ON = FieldPath.global_("tx_state", "vox_on")
 YAESU_PTT_PATH = _PTT
 
 
@@ -53,6 +60,16 @@ class YaesuObservationRadio(Protocol):
     async def read_power_meter(self) -> int: ...
 
     async def read_swr_meter(self) -> int: ...
+
+    async def read_power(self) -> tuple[int, int]: ...
+
+    async def read_mic_gain(self) -> int: ...
+
+    async def read_processor(self) -> bool: ...
+
+    async def read_processor_level(self) -> int: ...
+
+    async def read_vox(self) -> bool: ...
 
 
 @dataclass(slots=True)
@@ -237,6 +254,68 @@ class YaesuObservationAdapter:
                     _SUB_SQL,
                     await self.radio.read_squelch(1),
                     native_id="read_squelch",
+                )
+            )
+        return tuple(observations)
+
+    async def poll_tx_controls(self) -> tuple[Observation, ...]:
+        """Emit global TX / operator-control setpoints (MOR-447).
+
+        Mirrors the per-receiver ``poll_slow_controls`` lane but covers
+        the GLOBAL-scoped TX setpoints (power, mic gain, compressor,
+        VOX). Each emission is gated by BOTH a runtime capability and the
+        profile's per-field ``can_poll`` policy, matching the legacy
+        poller's capability gates (``tx`` for power, unconditional mic
+        gain, ``vox``, ``compressor`` for both compressor fields).
+
+        ``power_level`` is the watt SETPOINT (CAT ``PC``), distinct from
+        the ``global.meters.power`` meter handled by ``poll_tx_meters``.
+        """
+        adapter = self._adapter()
+        observations: list[Observation] = []
+        if self._has_runtime_capability("tx") and self._can_poll(_POWER_LEVEL):
+            _, watts = await self.radio.read_power()
+            observations.append(
+                adapter.observation(
+                    _POWER_LEVEL,
+                    watts,
+                    native_id="read_power",
+                )
+            )
+        if self._can_poll(_MIC_GAIN):
+            observations.append(
+                adapter.observation(
+                    _MIC_GAIN,
+                    await self.radio.read_mic_gain(),
+                    native_id="read_mic_gain",
+                )
+            )
+        if self._has_runtime_capability("compressor") and self._can_poll(
+            _COMPRESSOR_ON
+        ):
+            observations.append(
+                adapter.observation(
+                    _COMPRESSOR_ON,
+                    await self.radio.read_processor(),
+                    native_id="read_processor",
+                )
+            )
+        if self._has_runtime_capability("compressor") and self._can_poll(
+            _COMPRESSOR_LEVEL
+        ):
+            observations.append(
+                adapter.observation(
+                    _COMPRESSOR_LEVEL,
+                    await self.radio.read_processor_level(),
+                    native_id="read_processor_level",
+                )
+            )
+        if self._has_runtime_capability("vox") and self._can_poll(_VOX_ON):
+            observations.append(
+                adapter.observation(
+                    _VOX_ON,
+                    await self.radio.read_vox(),
+                    native_id="read_vox",
                 )
             )
         return tuple(observations)

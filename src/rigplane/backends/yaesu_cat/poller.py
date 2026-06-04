@@ -193,9 +193,10 @@ class YaesuCatPoller:
             return False
         from .observations import YaesuObservationAdapter
 
-        observations = await YaesuObservationAdapter.from_radio(
-            self._radio
-        ).poll_slow_controls()
+        adapter = YaesuObservationAdapter.from_radio(self._radio)
+        observations = (
+            await adapter.poll_slow_controls() + await adapter.poll_tx_controls()
+        )
         self._observation_callback(observations)
         return True
 
