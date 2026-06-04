@@ -383,6 +383,21 @@ def test_web_poller_public_revision_delivery_api_remains_absent() -> None:
     assert not hasattr(RadioPoller, "revision")
 
 
+def test_web_poller_command_response_no_op_remains_removed() -> None:
+    # MOR-437 deleted the pure no-op ``_apply_command_response_observation`` and
+    # the migrated per-family legacy mirror helpers. Setter success records
+    # CommandService lifecycle/overlays only; it never confirms StateStore.
+    import rigplane.web.radio_poller as radio_poller_module
+
+    assert not hasattr(RadioPoller, "_apply_command_response_observation")
+    assert not hasattr(radio_poller_module, "_apply_att_compatibility_mirror")
+    assert not hasattr(radio_poller_module, "_apply_preamp_compatibility_mirror")
+    # The real BSR readback observation emitter must stay (the BAND audit relies
+    # on it) along with the generic deferred compatibility-mirror helper.
+    assert hasattr(RadioPoller, "_apply_bsr_readback_observations")
+    assert hasattr(RadioPoller, "_apply_compatibility_mirror")
+
+
 @pytest.mark.asyncio
 async def test_web_delivery_payloads_use_snapshot_not_legacy_state_or_revision() -> None:
     server, snapshot = _server_with_conflicting_legacy_state()

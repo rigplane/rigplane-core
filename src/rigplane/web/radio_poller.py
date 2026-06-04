@@ -194,30 +194,6 @@ def _audio_tx_codec_and_rate(radio: Any) -> tuple[AudioCodec | None, int]:
     return tx_codec, tx_sr
 
 
-def _apply_att_compatibility_mirror(
-    state: "RadioState",
-    *,
-    db: int,
-    receiver: int,
-) -> None:
-    target = state.sub if receiver != 0 else state.main
-    target.att = db
-    if db > 0:
-        target.preamp = 0
-
-
-def _apply_preamp_compatibility_mirror(
-    state: "RadioState",
-    *,
-    level: int,
-    receiver: int,
-) -> None:
-    target = state.sub if receiver != 0 else state.main
-    target.preamp = level
-    if level > 0:
-        target.att = 0
-
-
 # ------------------------------------------------------------------
 # Command types — canonical definitions live in rigplane._poller_types.
 # Re-exported here for backward compatibility.
@@ -429,20 +405,6 @@ class RadioPoller:
         # than once per _UNSELECTED_SLOT_INTERVAL.
         self._last_user_write_ts: float = 0.0
         self._last_unselected_poll: dict[int, float] = {}
-
-    def _apply_command_response_observation(
-        self,
-        name: str,
-        params: dict[str, Any],
-        *,
-        command_id: str | None = None,
-        source: CommandSource = "websocket",
-        session_id: str | None = None,
-        command_service: CommandService | None = None,
-    ) -> None:
-        """Setter success is lifecycle acknowledgment, not confirmed radio state."""
-
-        del name, params, command_id, source, session_id, command_service
 
     def _apply_bsr_readback_observations(
         self,
@@ -984,14 +946,6 @@ class RadioPoller:
                     if current != "MAIN" and self._profile.vfo_sub_code is not None:
                         await asyncio.sleep(self._gap)
                         await self._civ(0x07, data=bytes([self._profile.vfo_sub_code]))
-                self._apply_command_response_observation(
-                    "set_freq",
-                    {"freq": freq, "receiver": rx},
-                    command_id=command_id,
-                    source=source,
-                    session_id=session_id,
-                    command_service=command_service,
-                )
                 # Compatibility mirror until web state delivery reads StateStore.
                 if self._radio_state:
                     target = (
@@ -1032,14 +986,6 @@ class RadioPoller:
                     if current != "MAIN" and self._profile.vfo_sub_code is not None:
                         await asyncio.sleep(self._gap)
                         await self._civ(0x07, data=bytes([self._profile.vfo_sub_code]))
-                self._apply_command_response_observation(
-                    "set_mode",
-                    {"mode": mode, "filter_width": fw, "receiver": rx},
-                    command_id=command_id,
-                    source=source,
-                    session_id=session_id,
-                    command_service=command_service,
-                )
                 # Compatibility mirror until web state delivery reads StateStore.
                 if self._radio_state:
                     target = (
@@ -1054,14 +1000,6 @@ class RadioPoller:
                 if CAP_FILTER_WIDTH in self._caps:
                     self._ensure_receiver_supported(rx, operation="set_filter")
                     await radio.set_filter(fn, receiver=rx)
-                    self._apply_command_response_observation(
-                        "set_filter",
-                        {"filter_num": fn, "receiver": rx},
-                        command_id=command_id,
-                        source=source,
-                        session_id=session_id,
-                        command_service=command_service,
-                    )
             case SetFilterWidth(width=width, receiver=rx):
                 self._ensure_receiver_supported(rx, operation="set_filter_width")
                 if not 50 <= width <= 10000:
@@ -1071,21 +1009,9 @@ class RadioPoller:
                 # Hz↔index translation, profile-aware bounds + cmd29 wrapping
                 # are owned by the backend (P2-04). Issue #1101.
                 await radio.set_filter_width(width, receiver=rx)
-                self._apply_command_response_observation(
-                    "set_filter_width",
-                    {"width": width, "receiver": rx},
-                    command_id=command_id,
-                    source=source,
-                    session_id=session_id,
-                    command_service=command_service,
-                )
-                self._apply_compatibility_mirror(
-                    lambda state: setattr(
-                        state.sub if rx != 0 else state.main,
-                        "filter_width",
-                        width,
-                    )
-                )
+                # filter_width read-after-write now flows through CommandService
+                # pending overlays + the 0x1A 0x03 StateStore observation emitted
+                # by ``_civ_rx.py`` (MOR-437); no legacy RadioState mirror needed.
                 if self._on_state_event:
                     self._on_state_event(
                         "filter_width_changed", {"width": width, "receiver": rx}
@@ -1128,25 +1054,9 @@ class RadioPoller:
                     except Exception as e:
                         logger.warning("poller: start TX audio failed: %s", e)
                 await radio.set_ptt(True)
-                self._apply_command_response_observation(
-                    "ptt_on",
-                    {},
-                    command_id=command_id,
-                    source=source,
-                    session_id=session_id,
-                    command_service=command_service,
-                )
             case PttOff():
                 logger.info("poller: PTT OFF")
                 await radio.set_ptt(False)
-                self._apply_command_response_observation(
-                    "ptt_off",
-                    {},
-                    command_id=command_id,
-                    source=source,
-                    session_id=session_id,
-                    command_service=command_service,
-                )
                 # Stop TX audio stream after PTT, then restart RX
                 if CAP_AUDIO in self._caps:
                     try:
@@ -1173,90 +1083,32 @@ class RadioPoller:
                     )
                 if CAP_POWER_CONTROL in self._caps:
                     await radio.set_rf_power(level)
-                    self._apply_command_response_observation(
-                        "set_rf_power",
-                        {"level": level},
-                        command_id=command_id,
-                        source=source,
-                        session_id=session_id,
-                        command_service=command_service,
-                    )
             case SetRfGain(level=level, receiver=rx):
                 if CAP_RF_GAIN in self._caps:
                     self._ensure_receiver_supported(rx, operation="set_rf_gain")
                     await radio.set_rf_gain(level, receiver=rx)
-                    self._apply_command_response_observation(
-                        "set_rf_gain",
-                        {"level": level, "receiver": rx},
-                        command_id=command_id,
-                        source=source,
-                        session_id=session_id,
-                        command_service=command_service,
-                    )
             case SetAfLevel(level=level, receiver=rx):
                 if CAP_AF_LEVEL in self._caps:
                     self._ensure_receiver_supported(rx, operation="set_af_level")
                     await radio.set_af_level(level, receiver=rx)
-                    self._apply_command_response_observation(
-                        "set_af_level",
-                        {"level": level, "receiver": rx},
-                        command_id=command_id,
-                        source=source,
-                        session_id=session_id,
-                        command_service=command_service,
-                    )
             case SetSquelch(level=level, receiver=rx):
                 if CAP_SQUELCH in self._caps:
                     self._ensure_receiver_supported(rx, operation="set_squelch")
                     await radio.set_squelch(level, receiver=rx)
-                    self._apply_command_response_observation(
-                        "set_squelch",
-                        {"level": level, "receiver": rx},
-                        command_id=command_id,
-                        source=source,
-                        session_id=session_id,
-                        command_service=command_service,
-                    )
             case SetNB(on=on, receiver=rx):
                 self._ensure_receiver_supported(rx, operation="set_nb")
                 if CAP_NB in self._caps:
                     await radio.set_nb(on, receiver=rx)
-                    self._apply_command_response_observation(
-                        "set_nb",
-                        {"on": on, "receiver": rx},
-                        command_id=command_id,
-                        source=source,
-                        session_id=session_id,
-                        command_service=command_service,
-                    )
-                self._apply_compatibility_mirror(
-                    lambda state: setattr(
-                        state.sub if rx != 0 else state.main,
-                        "nb",
-                        on,
-                    )
-                )
+                # nb read-after-write now flows through CommandService pending
+                # overlays + the 0x16 0x22 StateStore observation (MOR-437).
                 if self._on_state_event:
                     self._on_state_event("nb_changed", {"on": on, "receiver": rx})
             case SetNR(on=on, receiver=rx):
                 self._ensure_receiver_supported(rx, operation="set_nr")
                 if CAP_NR in self._caps:
                     await radio.set_nr(on, receiver=rx)
-                    self._apply_command_response_observation(
-                        "set_nr",
-                        {"on": on, "receiver": rx},
-                        command_id=command_id,
-                        source=source,
-                        session_id=session_id,
-                        command_service=command_service,
-                    )
-                self._apply_compatibility_mirror(
-                    lambda state: setattr(
-                        state.sub if rx != 0 else state.main,
-                        "nr",
-                        on,
-                    )
-                )
+                # nr read-after-write now flows through CommandService pending
+                # overlays + the 0x16 0x40 StateStore observation (MOR-437).
                 if self._on_state_event:
                     self._on_state_event("nr_changed", {"on": on, "receiver": rx})
             case SetDigiSel(on=on, receiver=rx):
@@ -1275,21 +1127,8 @@ class RadioPoller:
                 self._ensure_receiver_supported(rx, operation="set_attenuator")
                 if CAP_ATTENUATOR in self._caps:
                     await radio.set_attenuator_level(db, receiver=rx)
-                self._apply_command_response_observation(
-                    "set_attenuator_level",
-                    {"db": db, "receiver": rx},
-                    command_id=command_id,
-                    source=source,
-                    session_id=session_id,
-                    command_service=command_service,
-                )
-                self._apply_compatibility_mirror(
-                    lambda state: _apply_att_compatibility_mirror(
-                        state,
-                        db=db,
-                        receiver=rx,
-                    )
-                )
+                # att read-after-write now flows through CommandService pending
+                # overlays + the 0x11 StateStore observation (MOR-437).
                 if self._on_state_event:
                     self._on_state_event(
                         "attenuator_changed", {"db": db, "receiver": rx}
@@ -1298,35 +1137,14 @@ class RadioPoller:
                 self._ensure_receiver_supported(rx, operation="set_preamp")
                 if CAP_PREAMP in self._caps:
                     await radio.set_preamp(level, receiver=rx)
-                self._apply_command_response_observation(
-                    "set_preamp",
-                    {"level": level, "receiver": rx},
-                    command_id=command_id,
-                    source=source,
-                    session_id=session_id,
-                    command_service=command_service,
-                )
-                self._apply_compatibility_mirror(
-                    lambda state: _apply_preamp_compatibility_mirror(
-                        state,
-                        level=level,
-                        receiver=rx,
-                    )
-                )
+                # preamp read-after-write now flows through CommandService pending
+                # overlays + the 0x16 0x02 StateStore observation (MOR-437).
                 if self._on_state_event:
                     self._on_state_event(
                         "preamp_changed", {"level": level, "receiver": rx}
                     )
             case SetPbtInner(level=level, receiver=rx):
                 await _r.set_pbt_inner(level, receiver=rx)
-                self._apply_command_response_observation(
-                    "set_pbt_inner",
-                    {"level": level, "receiver": rx},
-                    command_id=command_id,
-                    source=source,
-                    session_id=session_id,
-                    command_service=command_service,
-                )
                 self._apply_compatibility_mirror(
                     lambda state: setattr(
                         state.sub if rx != 0 else state.main,
@@ -1340,14 +1158,6 @@ class RadioPoller:
                     )
             case SetPbtOuter(level=level, receiver=rx):
                 await _r.set_pbt_outer(level, receiver=rx)
-                self._apply_command_response_observation(
-                    "set_pbt_outer",
-                    {"level": level, "receiver": rx},
-                    command_id=command_id,
-                    source=source,
-                    session_id=session_id,
-                    command_service=command_service,
-                )
                 self._apply_compatibility_mirror(
                     lambda state: setattr(
                         state.sub if rx != 0 else state.main,
@@ -1371,44 +1181,25 @@ class RadioPoller:
                         "if_shift_changed", {"offset": offset, "receiver": rx}
                     )
             case SetNRLevel(level=level, receiver=rx):
+                # nr_level read-after-write via overlays + 0x14 0x06 observation.
                 await _r.set_nr_level(level, receiver=rx)
-                if self._radio_state:
-                    target = (
-                        self._radio_state.sub if rx != 0 else self._radio_state.main
-                    )
-                    target.nr_level = level
             case SetNBLevel(level=level, receiver=rx):
+                # nb_level read-after-write via overlays + 0x14 0x12 observation.
                 await _r.set_nb_level(level, receiver=rx)
-                if self._radio_state:
-                    target = (
-                        self._radio_state.sub if rx != 0 else self._radio_state.main
-                    )
-                    target.nb_level = level
             case SetAutoNotch(on=on, receiver=rx):
+                # auto_notch read-after-write via overlays + 0x16 0x41 observation.
                 await _r.set_auto_notch(on, receiver=rx)
-                if self._radio_state:
-                    target = (
-                        self._radio_state.sub if rx != 0 else self._radio_state.main
-                    )
-                    target.auto_notch = on
             case SetManualNotch(on=on, receiver=rx):
+                # manual_notch read-after-write via overlays + 0x16 0x48 observation.
                 await _r.set_manual_notch(on, receiver=rx)
-                if self._radio_state:
-                    target = (
-                        self._radio_state.sub if rx != 0 else self._radio_state.main
-                    )
-                    target.manual_notch = on
             case SetNotchFilter(level=level):
                 await _r.set_notch_filter(level)
                 if self._radio_state:
                     self._radio_state.notch_filter = level
             case SetAgcTimeConstant(value=value, receiver=rx):
+                # agc_time_constant read-after-write via overlays + 0x1A 0x04
+                # StateStore observation (MOR-437).
                 await _r.set_agc_time_constant(value, receiver=rx)
-                if self._radio_state:
-                    target = (
-                        self._radio_state.sub if rx != 0 else self._radio_state.main
-                    )
-                    target.agc_time_constant = value
             case SetCwPitch(value=value):
                 await _r.set_cw_pitch(value)
                 if self._radio_state:
@@ -1462,35 +1253,26 @@ class RadioPoller:
                 if not 0 <= mode <= 3:
                     raise CommandError(f"set_data_mode mode must be 0-3, got {mode}")
                 await radio.set_data_mode(mode, receiver=rx)
-                if self._radio_state:
-                    target = (
-                        self._radio_state.sub if rx != 0 else self._radio_state.main
-                    )
-                    target.data_mode = mode
+                # data_mode read-after-write via overlays + 0x1A 0x06 observation.
                 if self._on_state_event:
                     self._on_state_event(
                         "data_mode_changed", {"mode": mode, "receiver": rx}
                     )
             case SetMicGain(level=level):
+                # mic_gain read-after-write via overlays + 0x14 0x0B observation.
                 await _r.set_mic_gain(level)
-                if self._radio_state:
-                    self._radio_state.mic_gain = level
             case SetVox(on=on):
+                # vox_on read-after-write via overlays + 0x16 0x46 observation.
                 await _r.set_vox(on)
-                if self._radio_state:
-                    self._radio_state.vox_on = on
             case SetCompressorLevel(level=level):
+                # compressor_level read-after-write via overlays + 0x14 0x0E obs.
                 await _r.set_compressor_level(level)
-                if self._radio_state:
-                    self._radio_state.compressor_level = level
             case SetMonitor(on=on):
+                # monitor_on read-after-write via overlays + 0x16 0x45 observation.
                 await _r.set_monitor(on)
-                if self._radio_state:
-                    self._radio_state.monitor_on = on
             case SetMonitorGain(level=level):
+                # monitor_gain read-after-write via overlays + 0x14 0x15 observation.
                 await _r.set_monitor_gain(level)
-                if self._radio_state:
-                    self._radio_state.monitor_gain = level
             case SetDialLock(on=on):
                 await _r.set_dial_lock(on)
                 if self._radio_state:
@@ -1502,11 +1284,7 @@ class RadioPoller:
                 else:
                     # Wire bytes from TOML: set_agc = [0x16, 0x12]
                     await self._send_cmd("set_agc", bytes([mode]), receiver=rx)
-                if self._radio_state:
-                    target = (
-                        self._radio_state.sub if rx != 0 else self._radio_state.main
-                    )
-                    target.agc = mode
+                # agc read-after-write via overlays + 0x16 0x12 observation.
                 if self._on_state_event:
                     self._on_state_event("agc_changed", {"mode": mode, "receiver": rx})
             case SetRitStatus(on=on):
@@ -1529,18 +1307,8 @@ class RadioPoller:
                     self._on_state_event("rit_freq_changed", {"hz": freq})
             case SetSplit(on=on):
                 await _r.set_split(on)
-                self._apply_command_response_observation(
-                    "set_split",
-                    {"on": on},
-                    command_id=command_id,
-                    source=source,
-                    session_id=session_id,
-                    command_service=command_service,
-                )
-                if self._radio_state:
-                    # Compatibility mirror until web state delivery reads
-                    # split directly from StateStore.
-                    self._radio_state.split = on
+                # split read-after-write via overlays + 0x0F StateStore
+                # observation (MOR-437).
                 if self._on_state_event:
                     self._on_state_event("split_changed", {"on": on})
             case SetBand(band=band):
@@ -1714,14 +1482,6 @@ class RadioPoller:
                                 "radio-poller: scope follow failed",
                                 exc_info=True,
                             )
-                self._apply_command_response_observation(
-                    "set_vfo",
-                    {"vfo": vfo},
-                    command_id=command_id,
-                    source=source,
-                    session_id=session_id,
-                    command_service=command_service,
-                )
                 if self._radio_state is not None:
                     # Compatibility mirror until web state delivery reads the
                     # active-slot projection from StateStore.
@@ -1834,14 +1594,6 @@ class RadioPoller:
             case SetPowerstat(on=on):
                 if CAP_POWER_CONTROL in self._caps:
                     await radio.set_powerstat(on)
-                    self._apply_command_response_observation(
-                        "set_powerstat",
-                        {"on": on},
-                        command_id=command_id,
-                        source=source,
-                        session_id=session_id,
-                        command_service=command_service,
-                    )
                     # Optimistic update: radio won't respond to polls when off
                     if self._radio_state is not None:
                         self._radio_state.power_on = on
@@ -1850,8 +1602,8 @@ class RadioPoller:
             case SetTunerStatus(value=value):
                 if CAP_TUNER in self._caps:
                     await radio.set_tuner_status(value)
-                    if self._radio_state is not None:
-                        self._radio_state.tuner_status = value
+                    # tuner_status read-after-write via overlays + 0x1C 0x01
+                    # StateStore observation (MOR-437).
                     self._emit("tuner_changed", {"value": value})
             case SetAntenna1(on=on):
                 # IC-7610: 0x12 0x00 selects ANT1, data byte encodes RX-ANT OFF/ON.

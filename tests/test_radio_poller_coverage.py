@@ -254,9 +254,10 @@ def _acquisition_profile(
 
 
 @pytest.mark.asyncio
-async def test_execute_set_data_mode_updates_sub_receiver_state_and_sends_wire_value() -> (
-    None
-):
+async def test_execute_set_data_mode_sends_wire_value_and_emits_event() -> None:
+    # data_mode is observation-backed (0x1A 0x06); the legacy RadioState mirror
+    # was removed (MOR-437). The poller must still send the wire value and emit
+    # the change event, but it must not write the RadioState mirror.
     events: list[tuple[str, dict]] = []
     radio = _make_radio(active="MAIN")
     state = RadioState()
@@ -272,7 +273,7 @@ async def test_execute_set_data_mode_updates_sub_receiver_state_and_sends_wire_v
 
     radio.set_data_mode.assert_awaited_once_with(3, receiver=1)
     assert state.main.data_mode == 0
-    assert state.sub.data_mode == 3
+    assert state.sub.data_mode == 0  # no legacy mirror write
     assert ("data_mode_changed", {"mode": 3, "receiver": 1}) in events
 
 
@@ -878,21 +879,27 @@ async def test_execute_receiver_routed_set_commands_use_backend_receiver_and_tar
     radio.set_nb.assert_awaited_once_with(True, receiver=1)
     radio.set_nr.assert_awaited_once_with(True, receiver=1)
     radio.set_data_mode.assert_awaited_once_with(3, receiver=1)
+    # nb/nr/data_mode are observation-backed (MOR-437): the poller routes the
+    # wire command to the correct receiver and emits the change event, but it
+    # no longer writes the legacy RadioState mirror. The pre-seeded values are
+    # therefore left untouched.
     assert state.main.nb is False
-    assert state.sub.nb is True
+    assert state.sub.nb is False
     assert state.main.nr is True
-    assert state.sub.nr is True
+    assert state.sub.nr is False
     assert state.main.data_mode == 0
-    assert state.sub.data_mode == 3
+    assert state.sub.data_mode == 0
     assert ("nb_changed", {"on": True, "receiver": 1}) in events
     assert ("nr_changed", {"on": True, "receiver": 1}) in events
     assert ("data_mode_changed", {"mode": 3, "receiver": 1}) in events
 
 
 @pytest.mark.asyncio
-async def test_execute_set_attenuator_updates_sub_receiver_state_and_radio_call() -> (
-    None
-):
+async def test_execute_set_attenuator_sends_wire_value_without_legacy_mirror() -> None:
+    # att is observation-backed (0x11); the legacy RadioState mirror (and its
+    # preamp/att mutual-exclusion side effect) was removed (MOR-437). The poller
+    # routes the wire command to the correct receiver and emits the event but
+    # leaves RadioState untouched — confirmation comes from the readback.
     events: list[tuple[str, dict]] = []
     radio = _make_radio(active="MAIN")
     state = RadioState()
@@ -911,13 +918,17 @@ async def test_execute_set_attenuator_updates_sub_receiver_state_and_radio_call(
     radio.set_attenuator_level.assert_awaited_once_with(12, receiver=1)
     assert state.main.att == 0
     assert state.main.preamp == 2
-    assert state.sub.att == 12
-    assert state.sub.preamp == 0
+    assert state.sub.att == 0  # no legacy mirror write
+    assert state.sub.preamp == 1  # preamp side effect no longer applied
     assert ("attenuator_changed", {"db": 12, "receiver": 1}) in events
 
 
 @pytest.mark.asyncio
-async def test_execute_set_preamp_updates_sub_receiver_state_and_radio_call() -> None:
+async def test_execute_set_preamp_sends_wire_value_without_legacy_mirror() -> None:
+    # preamp is observation-backed (0x16 0x02); the legacy RadioState mirror
+    # (and its att/preamp mutual-exclusion side effect) was removed (MOR-437).
+    # The poller routes the wire command and emits the event but leaves
+    # RadioState untouched.
     events: list[tuple[str, dict]] = []
     radio = _make_radio(active="MAIN")
     state = RadioState()
@@ -936,8 +947,8 @@ async def test_execute_set_preamp_updates_sub_receiver_state_and_radio_call() ->
     radio.set_preamp.assert_awaited_once_with(2, receiver=1)
     assert state.main.preamp == 0
     assert state.main.att == 9
-    assert state.sub.preamp == 2
-    assert state.sub.att == 0
+    assert state.sub.preamp == 0  # no legacy mirror write
+    assert state.sub.att == 12  # att side effect no longer applied
     assert ("preamp_changed", {"level": 2, "receiver": 1}) in events
 
 
@@ -960,8 +971,11 @@ async def test_execute_set_filter_width_dispatches_to_radio_protocol() -> None:
 
     # Layering: protocol method, not raw CI-V (P2-04).
     radio.set_filter_width.assert_awaited_once_with(1500, receiver=1)
+    # filter_width is observation-backed (0x1A 0x03); the legacy RadioState
+    # mirror was removed (MOR-437). The poller emits the change event but does
+    # not write the mirror — both slots stay at their default None.
     assert state.main.filter_width is None
-    assert state.sub.filter_width == 1500
+    assert state.sub.filter_width is None
     assert ("filter_width_changed", {"width": 1500, "receiver": 1}) in events
 
 
@@ -991,7 +1005,10 @@ async def test_execute_set_filter_shape_updates_sub_receiver_state_and_radio_cal
 
 
 @pytest.mark.asyncio
-async def test_execute_set_agc_updates_sub_receiver_state_and_radio_call() -> None:
+async def test_execute_set_agc_sends_wire_value_without_legacy_mirror() -> None:
+    # agc is observation-backed (0x16 0x12); the legacy RadioState mirror was
+    # removed (MOR-437). The poller routes the wire command and emits the event
+    # but leaves the pre-seeded RadioState values untouched.
     events: list[tuple[str, dict]] = []
     radio = _make_radio(active="MAIN")
     state = RadioState()
@@ -1009,7 +1026,7 @@ async def test_execute_set_agc_updates_sub_receiver_state_and_radio_call() -> No
 
     radio.set_agc.assert_awaited_once_with(2, receiver=1)
     assert state.main.agc == 1
-    assert state.sub.agc == 2
+    assert state.sub.agc == 1  # no legacy mirror write
     assert ("agc_changed", {"mode": 2, "receiver": 1}) in events
 
 
@@ -1405,8 +1422,16 @@ async def test_non_readback_queue_commands_do_not_apply_state_store_observations
         store.snapshot().field(expected_path)
 
 
+# MOR-437: families whose legacy RadioState mirror was removed because they
+# are now observation-backed in ``_civ_rx.py``. Read-after-write for these is
+# guaranteed by the CommandService scoped pending overlay (proven below by the
+# overlay value) plus the StateStore observation emitted on the next poll
+# readback — not by a poller-side ``RadioState`` write. ``mirror_present`` is
+# False for them; pbt_inner/pbt_outer keep a deferred compatibility mirror
+# because their 0x14 sub-commands are not yet on the observation mirror-skip
+# list.
 @pytest.mark.parametrize(  # type: ignore[untyped-decorator]
-    ("name", "params", "command", "expected_path", "expected_mirror"),
+    ("name", "params", "command", "expected_path", "expected_mirror", "mirror_present"),
     [
         (
             "set_filter_width",
@@ -1414,6 +1439,7 @@ async def test_non_readback_queue_commands_do_not_apply_state_store_observations
             SetFilterWidth(1500, receiver=1),
             "receiver.1.freq_mode.filter_width",
             ("filter_width", 1500),
+            False,
         ),
         (
             "set_nb",
@@ -1421,6 +1447,7 @@ async def test_non_readback_queue_commands_do_not_apply_state_store_observations
             SetNB(True, receiver=1),
             "receiver.1.operator_toggles.nb",
             ("nb", True),
+            False,
         ),
         (
             "set_nr",
@@ -1428,6 +1455,7 @@ async def test_non_readback_queue_commands_do_not_apply_state_store_observations
             SetNR(False, receiver=1),
             "receiver.1.operator_toggles.nr",
             ("nr", False),
+            False,
         ),
         (
             "set_att",
@@ -1435,6 +1463,7 @@ async def test_non_readback_queue_commands_do_not_apply_state_store_observations
             SetAttenuator(12, receiver=1),
             "receiver.1.operator_controls.att",
             ("att", 12),
+            False,
         ),
         (
             "set_preamp",
@@ -1442,6 +1471,7 @@ async def test_non_readback_queue_commands_do_not_apply_state_store_observations
             SetPreamp(2, receiver=1),
             "receiver.1.operator_controls.preamp",
             ("preamp", 2),
+            False,
         ),
         (
             "set_pbt_inner",
@@ -1449,6 +1479,7 @@ async def test_non_readback_queue_commands_do_not_apply_state_store_observations
             SetPbtInner(140, receiver=1),
             "receiver.1.operator_controls.pbt_inner",
             ("pbt_inner", 140),
+            True,
         ),
         (
             "set_pbt_outer",
@@ -1456,6 +1487,7 @@ async def test_non_readback_queue_commands_do_not_apply_state_store_observations
             SetPbtOuter(116, receiver=1),
             "receiver.1.operator_controls.pbt_outer",
             ("pbt_outer", 116),
+            True,
         ),
     ],
 )
@@ -1466,6 +1498,7 @@ async def test_compatibility_mirror_commands_do_not_confirm_state_without_readba
     command: object,
     expected_path: str,
     expected_mirror: tuple[str, object],
+    mirror_present: bool,
 ) -> None:
     radio = _make_radio()
     state = RadioState()
@@ -1495,10 +1528,32 @@ async def test_compatibility_mirror_commands_do_not_confirm_state_without_readba
         command_service=service,
     )
 
+    # Setter success never confirms StateStore — confirmation requires readback.
     with pytest.raises(KeyError):
         store.snapshot().field(expected_path)
-    assert service.pending_overlays(source="websocket", session_id=None) != ()
-    assert getattr(state.sub, expected_mirror[0]) == expected_mirror[1]
+
+    # Read-after-write stays guaranteed by the scoped pending overlay, which
+    # still carries the written value after the poller executes the command.
+    overlays = service.pending_overlays(source="websocket", session_id=None)
+    assert overlays != ()
+    overlay_values = {
+        str(overlay.path): overlay.value
+        for overlay in overlays
+        if str(overlay.path) == expected_path
+    }
+    assert overlay_values.get(expected_path) == expected_mirror[1]
+
+    field, value = expected_mirror
+    if mirror_present:
+        # Deferred compatibility families still write the legacy RadioState
+        # mirror until their observation mirror-skip migration lands.
+        assert getattr(state.sub, field) == value
+    else:
+        # Migrated families no longer write the legacy RadioState mirror; the
+        # field stays at its fresh-RadioState default (the poller did not
+        # touch it). The observation pipeline + overlay above own
+        # read-after-write.
+        assert getattr(state.sub, field) == getattr(RadioState().sub, field)
 
 
 @pytest.mark.asyncio

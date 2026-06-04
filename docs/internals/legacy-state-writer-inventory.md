@@ -1,6 +1,6 @@
 # Legacy State Writer Inventory
 
-Status: MOR-407 final cleanup status
+Status: MOR-407 final cleanup status, updated for MOR-437 dead-code/mirror cleanup
 Date: 2026-06-03
 Spec: `docs/superpowers/specs/2026-06-02-radio-state-pipeline-design.md`
 
@@ -39,21 +39,21 @@ Decision statuses:
 | Path | MOR-407 status | Current replacement / guard | Remaining constraint |
 |---|---|---|---|
 | `runtime/_civ_rx.py::_update_state_cache_from_frame` | `migrated` plus `executor_cache_keep` | Supported CI-V frames call `_apply_state_store_observations(...)` before legacy mirrors; private `_state_cache` updates remain executor fallback. Covered by `tests/test_civ_rx_coverage.py`, Web meter/freshness regressions, and state pipeline diagnostics. | Keep cache reads private to executors; do not expose `_state_cache` as consumer delivery truth. |
-| `runtime/_civ_rx.py::_RADIO_STATE_HANDLERS` | `compatibility_only` | `StateStore.apply(...)` is canonical for supported field families; handlers still mirror into `RadioState` for public API/backward test compatibility. | `deferred_follow_up`: delete handler mirrors only after every public `RadioState` field family has a documented snapshot projection and compatibility tests. |
+| `runtime/_civ_rx.py::_RADIO_STATE_HANDLERS` | `migrated` plus `compatibility_only` | MOR-437 made the in-scope Icom field families observation-backed: `_observations_from_frame(...)` emits `StateStore` observations for freq/mode, att (0x11), filter_width/agc_time_constant/data_mode (0x1A 03/04/06), power/ptt/tuner/tx-monitor (0x18/0x1C), active/dual-watch/split (0x07/0x0F), RIT (0x21), the 0x14 levels in `_CMD14_OBSERVATION_BACKED_SUBS` (af/rf-gain/squelch/nr/nb/mic/comp/monitor levels + cw_pitch), the 0x15 meters, and the 0x16 toggles/values in `_CMD16_OBSERVATION_BACKED_SUBS`/`_CMD16_OBSERVATION_BACKED_VALUE_SUBS` (nb/nr/auto-notch/manual-notch/comp-on/monitor-on/vox-on/preamp/agc). `_handle_*` skips the redundant `RadioState` mirror for those subs. | `deferred_follow_up`: handlers still mirror into `RadioState` for field families with no observation emitter yet (e.g. pbt_inner/pbt_outer 0x14 07/08, antenna 0x12, repeater tone/tsql, digisel, twin-peak, ipplus, apf, filter_shape, dial_lock, break_in, ssb_tx_bandwidth, tuning_step, scan, scope controls). Delete those mirrors only after each gains a documented snapshot projection and compatibility tests. |
 | `runtime/_civ_rx.py::_notify_change` | `compatibility_only` | `state_store_changed` carries canonical revision/freshness delivery; legacy event names remain for Web event notifications and older callback consumers. | Do not use notify events to produce Web state revisions. MOR-347 static tests reject reintroducing Web poller revision bumps. |
 | `runtime/_civ_rx.py::_publish_scope_frame` and `_scope_frame_queue` | `protocol_local_keep` | Scope sample streaming remains a separate sample protocol, not semantic radio state. | Scope controls are state fields; scope samples are not. |
 | `runtime/_dual_rx_runtime.py` main getters/setters | `executor_cache_keep` plus `compatibility_only` | VFO switch/restore sequencing and `_last_*` cache use remain private executor behavior; confirmed values are also represented by `StateStore` where supported. | `deferred_follow_up`: remove direct active-slot `RadioState` writes after dual-RX slot projections cover all public consumers. |
 | `runtime/radio_initial_state.py` | `migrated` | Initial sweeps flow through runtime receive/observation paths and seed `StateStore` for supported fields. | Keep hardware-dependent validation manual where profiles require it. |
 | `runtime/radio_state_snapshot.py` | `executor_cache_keep` | Best-effort restore fallback may use `_last_*` caches but does not define consumer freshness. | No Web/rigctld delivery path may prefer this cache over `StateStore`. |
 | `core/_state_cache.py` and re-export `_state_cache.py` | `executor_cache_keep` plus `compatibility_only` | Retained for runtime timeout fallback and import compatibility. | Public `state_cache` exposure is compatibility-only; new delivery code must use snapshots/projections. |
-| `backends/icom7610/drivers/serial_stub.py` | `compatibility_only` | Fake serial backend still mirrors into `RadioState`/`StateCache` for legacy tests. | `deferred_follow_up`: migrate to provider observation test harness when serial stub tests no longer depend on mutable mirrors. |
+| `backends/icom7610/drivers/serial_stub.py` | `migrated` plus `compatibility_only` | MOR-437: the fake serial backend is now `ObservationPollable` — `SerialMockRadio.create_observation_poller(...)` feeds the provider observation pipeline, so production reads no longer depend on `StateStore` bulk sync from the stub. The internal `RadioState`/`StateCache` mirrors remain only to drive the stub's deterministic CI-V responses and legacy `radio_state`/`state_cache` test accessors. | Keep the internal mirrors scoped to CI-V simulation/legacy accessors; new stub state must be observable via the observation poller, not consumed from the mutable mirrors. |
 
 ## Web Runtime, Revisions, and Frontend Store
 
 | Path | MOR-407 status | Current replacement / guard | Remaining constraint |
 |---|---|---|---|
 | `web/radio_poller.py::_revision` / `bump_revision` | `deleted` | Removed in MOR-347. Web state revisions come from `StateStore.snapshot().state_revision`; `tests/test_state_pipeline_contracts.py` rejects reintroducing poller revision API or server callback bumps. | Public Web payload still includes legacy `revision`, but it aliases canonical `stateRevision`. |
-| `web/radio_poller.py::_execute` command ACK paths | `compatibility_only` | Setter success records CommandService lifecycle/pending overlays only; it no longer confirms `StateStore` values. The remaining `RadioState` writes are legacy read-after-write mirrors and Web delivery ignores them when `StateStore` has a value. BSR is the exception because it has register readback and emits explicit `poll_response` observations. | Keep compatibility mirrors out of delivery/model ownership. `deferred_follow_up`: migrate remaining legacy mirror fields to typed readback observations or pending overlays field-family by field-family. |
+| `web/radio_poller.py::_execute` command ACK paths | `deleted` no-op plus `migrated`/`compatibility_only` mirrors | MOR-437 deleted the pure no-op `_apply_command_response_observation(...)` and every call site (~15): setter success was already lifecycle-only, so the no-op carried no behavior. The per-family legacy `RadioState` mirrors for now observation-backed families were also removed — att, preamp, agc, rf_gain, squelch, nr/nb levels, mic_gain, compressor/monitor level+on, vox_on, split, tuner_status, filter_width, data_mode, agc_time_constant, auto/manual notch. Read-after-write for these is owned by CommandService scoped pending overlays plus the `_civ_rx.py` observation emitters. BSR keeps its real `_apply_bsr_readback_observations(...)` `poll_response` emitter (the BAND audit relies on it). | Setter success must never confirm `StateStore`. `deferred_follow_up`: the mirrors listed in "MOR-437 intentionally-kept compatibility mirrors" below remain because those families have no observation emitter yet; migrate them field-family by field-family. |
 | `web/radio_poller.py::_last_polled` and `_send_query` | `executor_cache_keep` | Poll cadence is acquisition/runtime local. Meter and state query observations feed `StateStore` where supported. | Do not use poll cadence markers as delivery freshness for Web consumers. |
 | `web/radio_poller.py::_poll_unselected_slot` / host `_vfo_slot_override` | `migrated` plus `protocol_local_keep` | VFO swap mechanics remain protocol-local; returned values are slot-scoped observations where supported. | Keep swap/restore invisible to consumer state except via confirmed observations. |
 | `web/server.py::_radio_state` and `build_public_state` | `migrated` plus `compatibility_only` | HTTP and WS state build from `command_state_store.snapshot()`. `sync_state_store_from_radio_state(...)` is a compatibility ingress for legacy state-poller snapshots and startup composition points. HTTP power keeps only a legacy public mirror; it does not confirm `StateStore`. | Normal delivery must not call compatibility sync or read backend/poller/legacy state to build radio values. Legacy ingress is allowed only at explicit startup/poller callback boundaries. |
@@ -108,6 +108,65 @@ from Store, or returns `EIO` when readback is unavailable.
 | VFO path precision | `migrated` plus `protocol_local_keep` | `FieldPath` includes receiver and active/fixed slot dimensions; Hamlib VFO labels remain protocol-local. | Continue migrating dual-RX public fields to slot-aware projections. |
 | Hamlib wire assumptions | `protocol_local_keep` plus `compatibility_only` | `chk_vfo`, split TX labels, dump-state constants, and text formatting remain Hamlib compatibility. | Preserve wire behavior while values move to `StateStore` projections. |
 
+## MOR-437 Dead-Code and Migrated-Mirror Cleanup
+
+MOR-437 (acceptance criterion #4) removed the now-dead command-response no-op
+and the legacy `RadioState` mirror writes in `web/radio_poller.py` for the Icom
+field families that earlier lanes made observation-backed in
+`runtime/_civ_rx.py`.
+
+Removed:
+
+- `web/radio_poller.py::_apply_command_response_observation` — a pure no-op
+  (it `del`'d its arguments). Deleted with all ~15 call sites.
+- `web/radio_poller.py::_apply_att_compatibility_mirror` /
+  `_apply_preamp_compatibility_mirror` — the per-family mirror helpers for the
+  migrated att/preamp families.
+- The inline `RadioState` mirror writes in `_execute(...)` for the migrated
+  families: att (0x11), preamp (0x16 02), agc (0x16 12), nr_level (0x14 06),
+  nb_level (0x14 12), auto_notch (0x16 41), manual_notch (0x16 48),
+  agc_time_constant (0x1A 04), data_mode (0x1A 06), mic_gain (0x14 0B),
+  vox_on (0x16 46), compressor_level (0x14 0E), monitor_on (0x16 45),
+  monitor_gain (0x14 15), filter_width (0x1A 03), split (0x0F), nb (0x16 22),
+  nr (0x16 40), tuner_status (0x1C 01). rf_gain/squelch had only the no-op and
+  no mirror.
+
+Read-after-write for the removed families is guaranteed by two layers, with no
+poller-side `RadioState` write: (1) CommandService records a scoped pending
+overlay carrying the written value on `execute(intent)`; (2) the next poll
+readback produces a typed `StateStore` observation from `_civ_rx.py` that
+reconciles the overlay. `tests/test_radio_poller_coverage.py::
+test_compatibility_mirror_commands_do_not_confirm_state_without_readback` proves
+the overlay still carries the value after the poller executes the command and
+that the legacy mirror is no longer written for migrated families.
+
+Kept (real emitter — must NOT be removed):
+
+- `web/radio_poller.py::_apply_bsr_readback_observations` — emits explicit
+  `poll_response` freq/mode observations from the BSR register readback; the
+  BAND audit relies on it.
+
+MOR-437 intentionally-kept compatibility mirrors (`deferred_follow_up`, not yet
+observation-backed — leave until each family gains an observation emitter):
+
+- pbt_inner / pbt_outer (0x14 07/08 — emit-capable in `_civ_rx.py` but still on
+  the `_handle_14` mirror path, not the mirror-skip set; mirror kept via
+  `_apply_compatibility_mirror`).
+- notch_filter, if_shift, filter_shape (0x16 56), cw_pitch (0x14 09 mirror in
+  poller kept although observation-backed — not in this lane's family list),
+  dial_lock (0x16 50), break_in (0x16 47), drive_gain, ref_adjust,
+  tx_freq_monitor (0x1C 03), af_mute, tuning_step (0x10), scan state
+  (scanning/scan_type/scan_resume_mode, 0x0E), main_sub_tracking,
+  ssb_tx_bandwidth (0x16 58), repeater_tone/tsql (0x16 42/43) and tone/tsql
+  freq (0x1B), antenna (0x12: tx_antenna/rx_antenna_1/2), apf (0x16 32),
+  twin_peak_filter (0x16 4F), digisel, ipplus (0x16 65), vox_gain/anti_vox_gain/
+  vox_delay, nb_depth/nb_width, dash_ratio, RIT toggles/freq poller mirrors,
+  scope controls (0x27 sub-commands), and the optimistic `power_on` write in
+  `SetPowerstat` (radio stops answering polls when off). The active-slot mirror
+  in `SelectVfo` (`receiver.0.vfo.active_slot`) is also kept — the 0x07 0xD2
+  observation writes `global.slow_state.active`, a different path.
+- Private `_state_cache` executor fallbacks remain `executor_cache_keep`.
+
 ## MOR-407 Cleanup Guards and Regression Coverage
 
 - `tests/test_state_pipeline_contracts.py` keeps a narrow public API guard for
@@ -116,8 +175,17 @@ from Store, or returns `EIO` when readback is unavailable.
   canonical `StateStore` snapshot without delivery-time legacy sync or direct
   `StateStore` mutation.
 - `tests/test_radio_poller_coverage.py` verifies Web setter success does not
-  confirm StateStore fields without readback, while preserving legacy mirrors
-  and scoped pending overlays for read-after-write behavior.
+  confirm StateStore fields without readback. After MOR-437 it also asserts the
+  migrated families no longer write the legacy `RadioState` mirror while scoped
+  pending overlays still carry the written value for read-after-write, and that
+  the kept `deferred_follow_up` mirrors (pbt_inner/pbt_outer) plus the BSR
+  readback emitter remain.
+- `tests/test_state_pipeline_contracts.py::
+  test_web_poller_command_response_no_op_remains_removed` is the MOR-437 static
+  guard: it rejects reintroducing `_apply_command_response_observation` or the
+  `_apply_att_compatibility_mirror`/`_apply_preamp_compatibility_mirror`
+  helpers, and asserts `_apply_bsr_readback_observations` and the generic
+  `_apply_compatibility_mirror` helper are still present.
 - `tests/test_web_server_coverage.py` verifies observation-capable startup uses
   observation pollers instead of legacy bulk sync, and HTTP power does not seed
   confirmed StateStore state from a command ACK.
