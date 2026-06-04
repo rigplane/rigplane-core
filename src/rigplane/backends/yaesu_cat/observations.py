@@ -26,6 +26,13 @@ _MAIN_SQL = FieldPath.receiver("main", "operator_controls", "squelch")
 _SUB_AF = FieldPath.receiver("sub", "operator_controls", "af_level")
 _SUB_RF = FieldPath.receiver("sub", "operator_controls", "rf_gain")
 _SUB_SQL = FieldPath.receiver("sub", "operator_controls", "squelch")
+# RF front-end + AGC controls (MOR-443). MAIN-only: the FTX-1 has no
+# per-receiver CAT command for these (no RA1/PA1/GT1), so emitting them for
+# the sub receiver would mislabel the shared front-end read. This mirrors the
+# legacy poller, which only writes ``main.{att,preamp,agc}``.
+_MAIN_ATT = FieldPath.receiver("main", "operator_controls", "att")
+_MAIN_PREAMP = FieldPath.receiver("main", "operator_controls", "preamp")
+_MAIN_AGC = FieldPath.receiver("main", "operator_controls", "agc")
 _MAIN_S_METER = FieldPath.receiver("main", "meters", "s_meter")
 _SUB_S_METER = FieldPath.receiver("sub", "meters", "s_meter")
 _POWER_METER = FieldPath.global_("meters", "power")
@@ -54,6 +61,12 @@ class YaesuObservationRadio(Protocol):
     async def read_rf_gain(self, receiver: int = 0) -> int: ...
 
     async def read_squelch(self, receiver: int = 0) -> int: ...
+
+    async def read_attenuator(self, receiver: int = 0) -> bool: ...
+
+    async def read_preamp(self, band: int = 0) -> int: ...
+
+    async def read_agc(self, receiver: int = 0) -> int: ...
 
     async def read_s_meter(self, receiver: int = 0) -> int: ...
 
@@ -254,6 +267,37 @@ class YaesuObservationAdapter:
                     _SUB_SQL,
                     await self.radio.read_squelch(1),
                     native_id="read_squelch",
+                )
+            )
+        # RF front-end + AGC (MOR-443) — MAIN-only. ATT/preamp gate on their
+        # runtime capabilities (matching the legacy poller's ``attenuator`` /
+        # ``preamp`` gates); AGC has no FTX-1 capability tag and is polled
+        # unconditionally (gated by policy only), mirroring the legacy poller.
+        # The ``RA0`` attenuator read returns a bool; the int registry path
+        # receives the coerced ``int(on_off)`` (0/1) — no scaling beyond the
+        # bool→int match (cross-vendor calibration is MOR-453).
+        if self._has_runtime_capability("attenuator") and self._can_poll(_MAIN_ATT):
+            observations.append(
+                adapter.observation(
+                    _MAIN_ATT,
+                    int(await self.radio.read_attenuator(0)),
+                    native_id="read_attenuator",
+                )
+            )
+        if self._has_runtime_capability("preamp") and self._can_poll(_MAIN_PREAMP):
+            observations.append(
+                adapter.observation(
+                    _MAIN_PREAMP,
+                    await self.radio.read_preamp(0),
+                    native_id="read_preamp",
+                )
+            )
+        if self._can_poll(_MAIN_AGC):
+            observations.append(
+                adapter.observation(
+                    _MAIN_AGC,
+                    await self.radio.read_agc(0),
+                    native_id="read_agc",
                 )
             )
         return tuple(observations)

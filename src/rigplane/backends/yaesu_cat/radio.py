@@ -973,10 +973,20 @@ class YaesuCatRadio:
 
     # -- D2: RF Front-End ---------------------------------------------------
 
-    async def get_attenuator(self, receiver: int = 0) -> bool:
-        """Get attenuator state (False = OFF, True = ON)."""
+    async def read_attenuator(self, receiver: int = 0) -> bool:
+        """Read attenuator state without mutating legacy state.
+
+        Returns ``True`` when the attenuator is ON.  The FTX-1 has a single
+        on/off attenuator path (``RA0``); the ``receiver`` argument is
+        accepted for protocol symmetry but does not select a per-receiver
+        command (no ``RA1`` exists).
+        """
         result = await self._query("get_attenuator")
         return bool(int(result["state"]))
+
+    async def get_attenuator(self, receiver: int = 0) -> bool:
+        """Get attenuator state (False = OFF, True = ON)."""
+        return await self.read_attenuator(receiver)
 
     async def set_attenuator(self, state: int, receiver: int = 0) -> None:
         """Set attenuator state (0 = OFF, 1 = ON)."""
@@ -989,14 +999,22 @@ class YaesuCatRadio:
         """
         await self.set_attenuator(1 if db > 0 else 0, receiver=receiver)
 
-    async def get_preamp(self, band: int = 0) -> int:
-        """Get preamp setting (0–2).
+    async def read_preamp(self, band: int = 0) -> int:
+        """Read preamp setting (0–2) without mutating legacy state.
 
         Args:
             band: 0 = HF/50 MHz (PA0). Sub-band variants not yet supported.
         """
         result = await self._query("get_preamp")
         return int(result["value"])
+
+    async def get_preamp(self, band: int = 0) -> int:
+        """Get preamp setting (0–2).
+
+        Args:
+            band: 0 = HF/50 MHz (PA0). Sub-band variants not yet supported.
+        """
+        return await self.read_preamp(band)
 
     async def set_preamp(self, level: int, receiver: int = 0, *, band: int = 0) -> None:
         """Set preamp setting.
@@ -1798,14 +1816,22 @@ class YaesuCatRadio:
 
     # -- AGC ----------------------------------------------------------------
 
-    async def get_agc(self, receiver: int = 0) -> int:
-        """Get AGC mode (GT0).
+    async def read_agc(self, receiver: int = 0) -> int:
+        """Read AGC mode (GT0) without mutating legacy state.
 
         Returns:
             0=OFF, 1=FAST, 2=MID, 3=SLOW, 4=AUTO-F, 5=AUTO-M, 6=AUTO-S.
         """
         result = await self._query("get_agc")
         return int(result["mode"])
+
+    async def get_agc(self, receiver: int = 0) -> int:
+        """Get AGC mode (GT0).
+
+        Returns:
+            0=OFF, 1=FAST, 2=MID, 3=SLOW, 4=AUTO-F, 5=AUTO-M, 6=AUTO-S.
+        """
+        return await self.read_agc(receiver)
 
     async def set_agc(self, mode: int, receiver: int = 0) -> None:
         """Set AGC mode (GT0, 0–6)."""

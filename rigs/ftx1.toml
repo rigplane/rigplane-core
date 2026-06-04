@@ -69,6 +69,9 @@ polling_only = [
     "receiver.sub.operator_controls.af_level",
     "receiver.sub.operator_controls.rf_gain",
     "receiver.sub.operator_controls.squelch",
+    "receiver.main.operator_controls.att",
+    "receiver.main.operator_controls.preamp",
+    "receiver.main.operator_controls.agc",
     "global.operator_controls.power_level",
     "global.operator_controls.mic_gain",
     "global.tx_state.compressor_on",
@@ -141,6 +144,18 @@ cadence_seconds = 30.0
 freshness_ttl_seconds = 120.0
 
 [state_acquisition.field_policies."receiver.sub.operator_controls.squelch"]
+cadence_seconds = 30.0
+freshness_ttl_seconds = 120.0
+
+[state_acquisition.field_policies."receiver.main.operator_controls.att"]
+cadence_seconds = 30.0
+freshness_ttl_seconds = 120.0
+
+[state_acquisition.field_policies."receiver.main.operator_controls.preamp"]
+cadence_seconds = 30.0
+freshness_ttl_seconds = 120.0
+
+[state_acquisition.field_policies."receiver.main.operator_controls.agc"]
 cadence_seconds = 30.0
 freshness_ttl_seconds = 120.0
 

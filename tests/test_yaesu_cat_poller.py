@@ -154,6 +154,9 @@ class _SideEffectingYaesuRadio:
         self.radio_state.compressor_on = False
         self.radio_state.compressor_level = 13
         self.radio_state.vox_on = False
+        self.radio_state.main.att = 14
+        self.radio_state.main.preamp = 15
+        self.radio_state.main.agc = 16
         self.profile = get_radio_profile("FTX-1")
         self.legacy_getter_calls = 0
 
@@ -269,6 +272,33 @@ class _SideEffectingYaesuRadio:
         self.legacy_getter_calls += 1
         value = await self.read_vox()
         self.radio_state.vox_on = value
+        return value
+
+    async def read_attenuator(self, receiver: int = 0) -> bool:
+        return True
+
+    async def get_attenuator(self, receiver: int = 0) -> bool:
+        self.legacy_getter_calls += 1
+        value = await self.read_attenuator(receiver)
+        self.radio_state.main.att = int(value)
+        return value
+
+    async def read_preamp(self, receiver: int = 0) -> int:
+        return 2
+
+    async def get_preamp(self, band: int = 0) -> int:
+        self.legacy_getter_calls += 1
+        value = await self.read_preamp(band)
+        self.radio_state.main.preamp = value
+        return value
+
+    async def read_agc(self, receiver: int = 0) -> int:
+        return 3
+
+    async def get_agc(self, receiver: int = 0) -> int:
+        self.legacy_getter_calls += 1
+        value = await self.read_agc(receiver)
+        self.radio_state.main.agc = value
         return value
 
 
@@ -574,6 +604,9 @@ async def test_observation_poller_uses_read_only_paths_when_getters_mutate_state
         ("receiver.sub.operator_controls.af_level", 64),
         ("receiver.sub.operator_controls.rf_gain", 90),
         ("receiver.sub.operator_controls.squelch", 8),
+        # ATT/preamp need their runtime caps (absent here); AGC is
+        # unconditional and MAIN-only, mirroring the legacy poller.
+        ("receiver.main.operator_controls.agc", 3),
         ("global.operator_controls.power_level", 55),
         ("global.operator_controls.mic_gain", 40),
         ("global.tx_state.compressor_on", True),
@@ -599,6 +632,9 @@ async def test_observation_poller_uses_read_only_paths_when_getters_mutate_state
     assert radio.radio_state.compressor_on is False
     assert radio.radio_state.compressor_level == 13
     assert radio.radio_state.vox_on is False
+    assert radio.radio_state.main.att == 14
+    assert radio.radio_state.main.preamp == 15
+    assert radio.radio_state.main.agc == 16
 
 
 @pytest.mark.asyncio
@@ -652,7 +688,7 @@ def test_legacy_yaesu_state_writes_are_observed_or_explicit_limitations() -> Non
         "alc_meter": "limitation: FTX-1 acquisition profile does not mark global.meters.alc pollable",
         "comp_meter": "limitation: no canonical comp meter FieldPath in DEFAULT_FIELD_REGISTRY",
         "main.filter_width": "limitation: filter_width lacks FTX-1 pollable acquisition policy",
-        "main.agc": "limitation: AGC lacks FTX-1 pollable acquisition policy",
+        "main.agc": "observation:receiver.main.operator_controls.agc",
         "main.nb_level": "limitation: NB level lacks canonical acquisition profile coverage",
         "main.nb": "limitation: NB toggle lacks FTX-1 pollable acquisition policy",
         "main.nr_level": "limitation: NR level lacks canonical acquisition profile coverage",
@@ -665,8 +701,8 @@ def test_legacy_yaesu_state_writes_are_observed_or_explicit_limitations() -> Non
         "dial_lock": "limitation: dial lock lacks canonical acquisition profile coverage",
         "compressor_on": "observation:global.tx_state.compressor_on",
         "compressor_level": "observation:global.operator_controls.compressor_level",
-        "main.att": "limitation: attenuator lacks FTX-1 pollable acquisition policy",
-        "main.preamp": "limitation: preamp lacks FTX-1 pollable acquisition policy",
+        "main.att": "observation:receiver.main.operator_controls.att",
+        "main.preamp": "observation:receiver.main.operator_controls.preamp",
         "tuner_status": "limitation: tuner status lacks canonical acquisition profile coverage",
         "main.contour": "limitation: contour lacks canonical acquisition profile coverage",
         "main.if_shift": "limitation: IF shift lacks canonical acquisition profile coverage",

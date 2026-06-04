@@ -32,6 +32,15 @@ _TX_CONTROL_CASES = (
     ("global.tx_state.vox_on", "voxOn", True),
 )
 
+# (store path, public fieldStatus key, expected value) for the MAIN-only RF
+# front-end + AGC controls (MOR-443). The attenuator getter returns a bool;
+# the int registry path receives the coerced ``int(True) == 1``.
+_RF_FRONT_END_CASES = (
+    ("receiver.main.operator_controls.att", "main.att", 1),
+    ("receiver.main.operator_controls.preamp", "main.preamp", 2),
+    ("receiver.main.operator_controls.agc", "main.agc", 3),
+)
+
 
 def _clock() -> float:
     return 123.456
@@ -45,13 +54,32 @@ def _profile_state_acquisition() -> RadioAcquisitionProfile:
 
 def _make_radio() -> MagicMock:
     radio = MagicMock()
-    radio.capabilities = {"dual_rx", "meters", "tx", "vox", "compressor"}
+    radio.capabilities = {
+        "dual_rx",
+        "meters",
+        "tx",
+        "vox",
+        "compressor",
+        "attenuator",
+        "preamp",
+        "af_level",
+        "rf_gain",
+        "squelch",
+    }
     # Power emits the watt SETPOINT (read_power), not the RM5 meter.
     radio.read_power = AsyncMock(return_value=(2, 55))
     radio.read_mic_gain = AsyncMock(return_value=40)
     radio.read_processor = AsyncMock(return_value=True)
     radio.read_processor_level = AsyncMock(return_value=25)
     radio.read_vox = AsyncMock(return_value=True)
+    # RF front-end + AGC reads (MOR-443). Attenuator returns a bool.
+    radio.read_attenuator = AsyncMock(return_value=True)
+    radio.read_preamp = AsyncMock(return_value=2)
+    radio.read_agc = AsyncMock(return_value=3)
+    # Per-receiver RX controls so poll_slow_controls runs cleanly.
+    radio.read_af_level = AsyncMock(side_effect=lambda receiver=0: 128)
+    radio.read_rf_gain = AsyncMock(side_effect=lambda receiver=0: 180)
+    radio.read_squelch = AsyncMock(side_effect=lambda receiver=0: 12)
     # An unrelated RX-meter read used to prove no snap-back.
     radio.read_s_meter = AsyncMock(return_value=150)
     return radio
@@ -67,6 +95,11 @@ def _adapter(radio: MagicMock) -> YaesuObservationAdapter:
 
 async def _apply_tx_controls(store: StateStore, radio: MagicMock) -> None:
     for observation in await _adapter(radio).poll_tx_controls():
+        store.apply(observation)
+
+
+async def _apply_slow_controls(store: StateStore, radio: MagicMock) -> None:
+    for observation in await _adapter(radio).poll_slow_controls():
         store.apply(observation)
 
 
@@ -115,6 +148,56 @@ async def test_tx_controls_project_available() -> None:
     )
 
     for _store_path, public_path, _expected in _TX_CONTROL_CASES:
+        status = payload["fieldStatus"][public_path]
+        assert status["observed"] is True
+        assert status["availability"] == "available"
+
+
+@pytest.mark.asyncio
+async def test_rf_front_end_observation_value() -> None:
+    store = StateStore()
+    radio = _make_radio()
+
+    await _apply_slow_controls(store, radio)
+
+    snapshot = store.snapshot()
+    for store_path, _public_path, expected in _RF_FRONT_END_CASES:
+        assert snapshot.field(store_path).value == expected
+
+
+@pytest.mark.asyncio
+async def test_rf_front_end_survive_unrelated_observation() -> None:
+    store = StateStore()
+    radio = _make_radio()
+
+    await _apply_slow_controls(store, radio)
+    # An unrelated RX-meter observation on a later cycle must not disturb the
+    # RF front-end controls (no snap-back to the default snapshot value).
+    for observation in await _adapter(radio).poll_rx_meters():
+        store.apply(observation)
+
+    snapshot = store.snapshot()
+    for store_path, _public_path, expected in _RF_FRONT_END_CASES:
+        assert snapshot.field(store_path).value == expected
+
+
+@pytest.mark.asyncio
+async def test_rf_front_end_project_available() -> None:
+    store = StateStore()
+    radio = _make_radio()
+
+    await _apply_slow_controls(store, radio)
+    # An unrelated observation must not re-gate the projected availability.
+    for observation in await _adapter(radio).poll_rx_meters():
+        store.apply(observation)
+
+    payload = build_public_state_payload_from_snapshot(
+        store.snapshot(),
+        radio=None,
+        receiver_count=2,
+    )
+
+    for _store_path, public_path, _expected in _RF_FRONT_END_CASES:
         status = payload["fieldStatus"][public_path]
         assert status["observed"] is True
         assert status["availability"] == "available"

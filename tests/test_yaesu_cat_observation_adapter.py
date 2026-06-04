@@ -31,6 +31,8 @@ def _make_radio() -> MagicMock:
         "tx",
         "vox",
         "compressor",
+        "attenuator",
+        "preamp",
     }
     radio.get_freq = AsyncMock(
         side_effect=lambda receiver=0: 14_074_000 if receiver == 0 else 7_074_000
@@ -64,6 +66,14 @@ def _make_radio() -> MagicMock:
     radio.read_squelch = AsyncMock(
         side_effect=lambda receiver=0: 12 if receiver == 0 else 8
     )
+    # RF front-end + AGC controls (MOR-443). The FTX-1 attenuator getter
+    # returns a bool; the registry FieldPath is int, so the adapter coerces.
+    radio.get_attenuator = AsyncMock(return_value=True)
+    radio.read_attenuator = AsyncMock(return_value=True)
+    radio.get_preamp = AsyncMock(return_value=2)
+    radio.read_preamp = AsyncMock(return_value=2)
+    radio.get_agc = AsyncMock(return_value=3)
+    radio.read_agc = AsyncMock(return_value=3)
     # Global TX / operator-control setpoints (MOR-447).
     radio.get_power = AsyncMock(return_value=(2, 55))
     radio.read_power = AsyncMock(return_value=(2, 55))
@@ -117,6 +127,9 @@ class _SideEffectingYaesuRadio:
         self.radio_state.compressor_on = False
         self.radio_state.compressor_level = 15
         self.radio_state.vox_on = False
+        self.radio_state.main.att = 16
+        self.radio_state.main.preamp = 17
+        self.radio_state.main.agc = 18
 
     async def read_freq(self, receiver: int = 0) -> int:
         return 14_074_000 if receiver == 0 else 7_074_000
@@ -236,6 +249,30 @@ class _SideEffectingYaesuRadio:
         self.radio_state.vox_on = value
         return value
 
+    async def read_attenuator(self, receiver: int = 0) -> bool:
+        return True
+
+    async def get_attenuator(self, receiver: int = 0) -> bool:
+        value = await self.read_attenuator(receiver)
+        self.radio_state.main.att = int(value)
+        return value
+
+    async def read_preamp(self, receiver: int = 0) -> int:
+        return 2
+
+    async def get_preamp(self, band: int = 0) -> int:
+        value = await self.read_preamp(band)
+        self.radio_state.main.preamp = value
+        return value
+
+    async def read_agc(self, receiver: int = 0) -> int:
+        return 3
+
+    async def get_agc(self, receiver: int = 0) -> int:
+        value = await self.read_agc(receiver)
+        self.radio_state.main.agc = value
+        return value
+
 
 @pytest.mark.asyncio
 async def test_medium_poll_emits_frequency_mode_and_ptt_observations() -> None:
@@ -274,6 +311,11 @@ async def test_slow_poll_emits_declared_control_observations_only() -> None:
 
     observations = await adapter.poll_slow_controls()
 
+    # ATT/preamp/AGC are MAIN-only: the FTX-1 has no per-receiver CAT
+    # command for these front-end controls (no RA1/PA1/GT1), matching the
+    # legacy poller which only writes ``main.{att,preamp,agc}``. The
+    # attenuator ``read`` returns a bool; the int registry path receives the
+    # coerced ``int(True) == 1``.
     assert [(str(item.path), item.value) for item in observations] == [
         ("receiver.main.operator_controls.af_level", 128),
         ("receiver.main.operator_controls.rf_gain", 180),
@@ -281,15 +323,25 @@ async def test_slow_poll_emits_declared_control_observations_only() -> None:
         ("receiver.sub.operator_controls.af_level", 64),
         ("receiver.sub.operator_controls.rf_gain", 90),
         ("receiver.sub.operator_controls.squelch", 8),
+        ("receiver.main.operator_controls.att", 1),
+        ("receiver.main.operator_controls.preamp", 2),
+        ("receiver.main.operator_controls.agc", 3),
     ]
     assert all(item.source.source == "yaesu_poll_response" for item in observations)
     assert all(item.max_age == 120.0 for item in observations)
     assert radio.read_af_level.await_count == 2
     assert radio.read_rf_gain.await_count == 2
     assert radio.read_squelch.await_count == 2
+    assert radio.read_attenuator.await_count == 1
+    assert radio.read_preamp.await_count == 1
+    assert radio.read_agc.await_count == 1
+    assert all(isinstance(item.value, int) for item in observations)
     radio.get_af_level.assert_not_awaited()
     radio.get_rf_gain.assert_not_awaited()
     radio.get_squelch.assert_not_awaited()
+    radio.get_attenuator.assert_not_awaited()
+    radio.get_preamp.assert_not_awaited()
+    radio.get_agc.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -304,16 +356,46 @@ async def test_slow_poll_skips_sub_controls_without_matching_runtime_capability(
 
     observations = await adapter.poll_slow_controls()
 
+    # ATT/preamp are gated by their runtime capabilities (dropped here);
+    # AGC has no FTX-1 capability tag and mirrors the legacy poller's
+    # unconditional poll, so it still emits when its policy is pollable.
     assert [(str(item.path), item.value) for item in observations] == [
         ("receiver.main.operator_controls.af_level", 128),
         ("receiver.sub.operator_controls.af_level", 64),
+        ("receiver.main.operator_controls.agc", 3),
     ]
     assert radio.read_af_level.await_count == 2
     radio.read_rf_gain.assert_not_awaited()
     radio.read_squelch.assert_not_awaited()
+    radio.read_attenuator.assert_not_awaited()
+    radio.read_preamp.assert_not_awaited()
+    assert radio.read_agc.await_count == 1
     radio.get_af_level.assert_not_awaited()
     radio.get_rf_gain.assert_not_awaited()
     radio.get_squelch.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_slow_poll_coerces_attenuator_bool_to_registry_int() -> None:
+    """The FTX-1 attenuator getter returns a bool; the int FieldPath gets 0/1."""
+    radio = _make_radio()
+    radio.read_attenuator = AsyncMock(return_value=False)
+    adapter = YaesuObservationAdapter(
+        radio,
+        profile=_profile_state_acquisition(),
+        clock=_clock,
+    )
+
+    observations = await adapter.poll_slow_controls()
+
+    att = next(
+        item
+        for item in observations
+        if str(item.path) == "receiver.main.operator_controls.att"
+    )
+    assert att.value == 0
+    assert isinstance(att.value, int)
+    assert not isinstance(att.value, bool)
 
 
 @pytest.mark.asyncio
@@ -406,6 +488,9 @@ async def test_adapter_uses_read_only_yaesu_paths_when_getters_mutate_state() ->
         ("receiver.sub.operator_controls.af_level", 64),
         ("receiver.sub.operator_controls.rf_gain", 90),
         ("receiver.sub.operator_controls.squelch", 8),
+        # AGC has no FTX-1 capability tag → unconditional, MAIN-only; ATT and
+        # preamp are skipped because this radio lacks those runtime caps.
+        ("receiver.main.operator_controls.agc", 3),
         ("global.operator_controls.power_level", 55),
         ("global.operator_controls.mic_gain", 40),
         ("global.tx_state.compressor_on", True),
@@ -433,6 +518,10 @@ async def test_adapter_uses_read_only_yaesu_paths_when_getters_mutate_state() ->
     assert radio.radio_state.compressor_on is False
     assert radio.radio_state.compressor_level == 15
     assert radio.radio_state.vox_on is False
+    # RF front-end + AGC read_* paths must not mutate legacy state (MOR-443).
+    assert radio.radio_state.main.att == 16
+    assert radio.radio_state.main.preamp == 17
+    assert radio.radio_state.main.agc == 18
 
 
 @pytest.mark.asyncio
