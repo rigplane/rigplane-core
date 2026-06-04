@@ -90,6 +90,16 @@ _SPLIT_CASES = (("global.tx_state.split", "split", True),)
 # coerces to "SUB".
 _ACTIVE_SLOT_CASES = (("global.slow_state.active", "active", "SUB"),)
 
+# (store path, public fieldStatus key, expected value) for the clarifier RIT/XIT
+# controls (MOR-454), emitted in the tx-control lane. rit_on/rit_tx are global
+# tx_state bools (RX/TX clarifier flags); rit_freq is the global operator-control
+# signed Hz offset on the device scale (cross-vendor calibration is MOR-453).
+_RIT_CASES = (
+    ("global.tx_state.rit_on", "ritOn", True),
+    ("global.tx_state.rit_tx", "ritTx", False),
+    ("global.operator_controls.rit_freq", "ritFreq", -250),
+)
+
 
 def _clock() -> float:
     return 123.456
@@ -120,6 +130,7 @@ def _make_radio() -> MagicMock:
         "nr",
         "notch",
         "split",
+        "rit",
     }
     # Power emits the watt SETPOINT (read_power), not the RM5 meter.
     radio.read_power = AsyncMock(return_value=(2, 55))
@@ -161,6 +172,11 @@ def _make_radio() -> MagicMock:
     # returns the active receiver index (1=SUB) → neutral "SUB" str.
     radio.read_split = AsyncMock(return_value=True)
     radio.read_vfo_select = AsyncMock(return_value=1)
+    # Clarifier RIT/XIT observation reads (MOR-454). rit_on/rit_tx ride the
+    # tx-control lane (global tx_state bools); rit_freq is the global
+    # operator-control signed Hz offset on the device scale.
+    radio.read_clarifier = AsyncMock(return_value=(True, False))
+    radio.read_clarifier_freq = AsyncMock(return_value=-250)
     return radio
 
 
@@ -563,6 +579,55 @@ async def test_active_slot_projects_available() -> None:
     )
 
     for _store_path, public_path, _expected in _ACTIVE_SLOT_CASES:
+        status = payload["fieldStatus"][public_path]
+        assert status["observed"] is True
+        assert status["availability"] == "available"
+
+
+@pytest.mark.asyncio
+async def test_rit_observation_value() -> None:
+    store = StateStore()
+    radio = _make_radio()
+
+    await _apply_tx_controls(store, radio)
+
+    snapshot = store.snapshot()
+    for store_path, _public_path, expected in _RIT_CASES:
+        assert snapshot.field(store_path).value == expected
+
+
+@pytest.mark.asyncio
+async def test_rit_survives_unrelated_observation() -> None:
+    store = StateStore()
+    radio = _make_radio()
+
+    await _apply_tx_controls(store, radio)
+    # An unrelated RX-meter observation on a later cycle must not disturb the
+    # RIT/XIT controls (no snap-back to the default snapshot value).
+    for observation in await _adapter(radio).poll_rx_meters():
+        store.apply(observation)
+
+    snapshot = store.snapshot()
+    for store_path, _public_path, expected in _RIT_CASES:
+        assert snapshot.field(store_path).value == expected
+
+
+@pytest.mark.asyncio
+async def test_rit_projects_available() -> None:
+    store = StateStore()
+    radio = _make_radio()
+
+    await _apply_tx_controls(store, radio)
+    for observation in await _adapter(radio).poll_rx_meters():
+        store.apply(observation)
+
+    payload = build_public_state_payload_from_snapshot(
+        store.snapshot(),
+        radio=None,
+        receiver_count=2,
+    )
+
+    for _store_path, public_path, _expected in _RIT_CASES:
         status = payload["fieldStatus"][public_path]
         assert status["observed"] is True
         assert status["availability"] == "available"

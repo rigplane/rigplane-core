@@ -89,6 +89,9 @@ polling_only = [
     "global.tx_state.vox_on",
     "global.tx_state.split",
     "global.slow_state.active",
+    "global.tx_state.rit_on",
+    "global.tx_state.rit_tx",
+    "global.operator_controls.rit_freq",
 ]
 stream_like_meters = [
     "receiver.main.meters.s_meter",
@@ -253,6 +256,22 @@ cadence_seconds = 30.0
 freshness_ttl_seconds = 120.0
 
 [state_acquisition.field_policies."global.slow_state.active"]
+cadence_seconds = 30.0
+freshness_ttl_seconds = 120.0
+
+# Clarifier RIT/XIT controls (MOR-454). Slow-changing global operator/TX state:
+# rit_on/rit_tx (global tx_state bools, CAT ``CF000``) and rit_freq (global
+# operator-control signed Hz offset, CAT ``CF001``). All use the slow-control
+# cadence, matching the other global TX/operator setpoints above.
+[state_acquisition.field_policies."global.tx_state.rit_on"]
+cadence_seconds = 30.0
+freshness_ttl_seconds = 120.0
+
+[state_acquisition.field_policies."global.tx_state.rit_tx"]
+cadence_seconds = 30.0
+freshness_ttl_seconds = 120.0
+
+[state_acquisition.field_policies."global.operator_controls.rit_freq"]
 cadence_seconds = 30.0
 freshness_ttl_seconds = 120.0
 

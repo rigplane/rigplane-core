@@ -1746,14 +1746,22 @@ class YaesuCatRadio:
 
     # -- D8: Clarifier (RIT/XIT) --------------------------------------------
 
-    async def get_clarifier(self, receiver: int = 0) -> tuple[bool, bool]:
-        """Get clarifier state (CF000).
+    async def read_clarifier(self, receiver: int = 0) -> tuple[bool, bool]:
+        """Read clarifier state (CF000) without mutating legacy state.
 
         Returns:
             Tuple of (rx_clar: bool, tx_clar: bool).
         """
         result = await self._query("get_clarifier")
         return result["rx"] == "1", result["tx"] == "1"
+
+    async def get_clarifier(self, receiver: int = 0) -> tuple[bool, bool]:
+        """Get clarifier state (CF000).
+
+        Returns:
+            Tuple of (rx_clar: bool, tx_clar: bool).
+        """
+        return await self.read_clarifier(receiver)
 
     async def set_clarifier(
         self, rx_clar: bool, tx_clar: bool, receiver: int = 0
@@ -1766,11 +1774,18 @@ class YaesuCatRadio:
             pad=0,
         )
 
-    async def get_clarifier_freq(self, receiver: int = 0) -> int:
-        """Get clarifier offset frequency in Hz (signed, CF001)."""
+    async def read_clarifier_freq(self, receiver: int = 0) -> int:
+        """Read clarifier offset frequency in Hz (signed, CF001).
+
+        Pure CAT read: returns the signed offset without mutating legacy state.
+        """
         result = await self._query("get_clarifier_freq")
         offset: int = result["offset"]
         return -offset if result["sign"] == "-" else offset
+
+    async def get_clarifier_freq(self, receiver: int = 0) -> int:
+        """Get clarifier offset frequency in Hz (signed, CF001)."""
+        return await self.read_clarifier_freq(receiver)
 
     async def set_clarifier_freq(self, offset: int, receiver: int = 0) -> None:
         """Set clarifier offset frequency in Hz (signed, CF001)."""

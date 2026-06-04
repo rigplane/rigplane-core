@@ -38,6 +38,7 @@ def _make_radio() -> MagicMock:
         "nr",
         "notch",
         "split",
+        "rit",
     }
     radio.get_freq = AsyncMock(
         side_effect=lambda receiver=0: 14_074_000 if receiver == 0 else 7_074_000
@@ -124,6 +125,13 @@ def _make_radio() -> MagicMock:
     radio.read_split = AsyncMock(return_value=True)
     radio.get_vfo_select = AsyncMock(return_value=1)
     radio.read_vfo_select = AsyncMock(return_value=1)
+    # Clarifier RIT/XIT observation reads (MOR-454). ``read_clarifier`` returns
+    # the (rx, tx) clarifier flags; ``read_clarifier_freq`` returns the signed
+    # Hz offset on the device scale.
+    radio.get_clarifier = AsyncMock(return_value=(True, False))
+    radio.read_clarifier = AsyncMock(return_value=(True, False))
+    radio.get_clarifier_freq = AsyncMock(return_value=-250)
+    radio.read_clarifier_freq = AsyncMock(return_value=-250)
     return radio
 
 
@@ -143,6 +151,7 @@ class _SideEffectingYaesuRadio:
         "tx",
         "vox",
         "compressor",
+        "rit",
     }
 
     def __init__(self) -> None:
@@ -176,6 +185,9 @@ class _SideEffectingYaesuRadio:
         self.radio_state.split = False
         self.radio_state.active = "MAIN"
         self.radio_state.vfo_select = 0
+        self.radio_state.rit_on = False
+        self.radio_state.rit_tx = False
+        self.radio_state.rit_freq = 21
 
     async def read_freq(self, receiver: int = 0) -> int:
         return 14_074_000 if receiver == 0 else 7_074_000
@@ -366,6 +378,23 @@ class _SideEffectingYaesuRadio:
         value = await self.read_vfo_select()
         self.radio_state.vfo_select = value
         self.radio_state.active = "SUB" if value else "MAIN"
+        return value
+
+    async def read_clarifier(self, receiver: int = 0) -> tuple[bool, bool]:
+        return True, False
+
+    async def get_clarifier(self, receiver: int = 0) -> tuple[bool, bool]:
+        rx_clar, tx_clar = await self.read_clarifier(receiver)
+        self.radio_state.rit_on = rx_clar
+        self.radio_state.rit_tx = tx_clar
+        return rx_clar, tx_clar
+
+    async def read_clarifier_freq(self, receiver: int = 0) -> int:
+        return -250
+
+    async def get_clarifier_freq(self, receiver: int = 0) -> int:
+        value = await self.read_clarifier_freq(receiver)
+        self.radio_state.rit_freq = value
         return value
 
 
@@ -681,6 +710,14 @@ async def test_tx_controls_poll_emits_global_setpoints() -> None:
         # split (MOR-446) is a global tx_state bool, gated on the ``split``
         # capability — mirroring the legacy poller's ``"split" in caps`` gate.
         ("global.tx_state.split", True),
+        # Clarifier RIT/XIT (MOR-454): global tx_state bools + global
+        # operator-control signed Hz offset, gated on the ``rit`` capability —
+        # mirroring the legacy poller's ``"rit" in caps`` gate. A single
+        # ``read_clarifier`` read feeds both flags; ``read_clarifier_freq``
+        # feeds the signed offset on the device scale.
+        ("global.tx_state.rit_on", True),
+        ("global.tx_state.rit_tx", False),
+        ("global.operator_controls.rit_freq", -250),
     ]
     assert all(item.source.source == "yaesu_poll_response" for item in observations)
     assert all(item.max_age == 120.0 for item in observations)
@@ -691,12 +728,17 @@ async def test_tx_controls_poll_emits_global_setpoints() -> None:
     radio.read_processor_level.assert_awaited_once()
     radio.read_vox.assert_awaited_once()
     radio.read_split.assert_awaited_once()
+    # Single CAT read pair for the clarifier — flags share one read.
+    radio.read_clarifier.assert_awaited_once()
+    radio.read_clarifier_freq.assert_awaited_once()
     radio.get_power.assert_not_awaited()
     radio.get_mic_gain.assert_not_awaited()
     radio.get_processor.assert_not_awaited()
     radio.get_processor_level.assert_not_awaited()
     radio.get_vox.assert_not_awaited()
     radio.get_split.assert_not_awaited()
+    radio.get_clarifier.assert_not_awaited()
+    radio.get_clarifier_freq.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -723,6 +765,9 @@ async def test_tx_controls_poll_skips_fields_without_matching_runtime_capability
     radio.read_vox.assert_not_awaited()
     # split is dropped: the ``split`` runtime cap is absent here.
     radio.read_split.assert_not_awaited()
+    # RIT/XIT is dropped: the ``rit`` runtime cap is absent here (MOR-454).
+    radio.read_clarifier.assert_not_awaited()
+    radio.read_clarifier_freq.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -775,6 +820,12 @@ async def test_adapter_uses_read_only_yaesu_paths_when_getters_mutate_state() ->
         ("global.operator_controls.compressor_level", 25),
         ("global.tx_state.vox_on", True),
         # split is skipped: this radio lacks the ``split`` runtime cap.
+        # Clarifier RIT/XIT (MOR-454): gated on the ``rit`` cap (present here);
+        # a single ``read_clarifier`` feeds both flags, ``read_clarifier_freq``
+        # the signed Hz offset — none of which mutate legacy state.
+        ("global.tx_state.rit_on", True),
+        ("global.tx_state.rit_tx", False),
+        ("global.operator_controls.rit_freq", -250),
     ]
     assert radio.radio_state.main.freq == 1
     assert radio.radio_state.main.mode == "INIT-MAIN"
@@ -812,6 +863,10 @@ async def test_adapter_uses_read_only_yaesu_paths_when_getters_mutate_state() ->
     assert radio.radio_state.split is False
     assert radio.radio_state.active == "MAIN"
     assert radio.radio_state.vfo_select == 0
+    # Clarifier RIT/XIT read_* paths must not mutate legacy state (MOR-454).
+    assert radio.radio_state.rit_on is False
+    assert radio.radio_state.rit_tx is False
+    assert radio.radio_state.rit_freq == 21
 
 
 @pytest.mark.asyncio
@@ -834,6 +889,36 @@ async def test_read_split_and_vfo_select_are_pure_reads() -> None:
     radio._query = AsyncMock(return_value={"vfo": "1"})  # type: ignore[method-assign]
     assert await radio.read_vfo_select() == 1
     assert radio.radio_state.active == "MAIN"
+
+
+@pytest.mark.asyncio
+async def test_read_clarifier_and_freq_are_pure_reads() -> None:
+    """MOR-454: ``read_clarifier`` / ``read_clarifier_freq`` are pure CAT reads.
+
+    Both delegate to the underlying ``get_*`` query/parse path but must NOT
+    write ``self._state`` — only the ``read_*`` variants feed the observation
+    pipeline (MOR-434 pattern). The signed Hz offset is returned on the device
+    scale (cross-vendor calibration is MOR-453).
+    """
+    radio = YaesuCatRadio("/dev/null", audio_driver=MagicMock())
+    radio.radio_state.rit_on = False
+    radio.radio_state.rit_tx = False
+    radio.radio_state.rit_freq = 99
+    state_before = radio.radio_state
+
+    radio._query = AsyncMock(  # type: ignore[method-assign]
+        return_value={"rx": "1", "tx": "0"}
+    )
+    assert await radio.read_clarifier(0) == (True, False)
+    assert radio.radio_state is state_before
+    assert radio.radio_state.rit_on is False
+    assert radio.radio_state.rit_tx is False
+
+    radio._query = AsyncMock(  # type: ignore[method-assign]
+        return_value={"sign": "-", "offset": 250}
+    )
+    assert await radio.read_clarifier_freq(0) == -250
+    assert radio.radio_state.rit_freq == 99
 
 
 @pytest.mark.asyncio

@@ -83,6 +83,17 @@ _MAIN_MANUAL_NOTCH_FREQ = FieldPath.receiver(
 _SPLIT = FieldPath.global_("tx_state", "split")
 _ACTIVE = FieldPath.global_("slow_state", "active")
 _ACTIVE_INDEX_TO_STR = {0: "MAIN", 1: "SUB"}
+# Clarifier (RIT/XIT) controls (MOR-454). GLOBAL slow-changing operator/TX
+# controls (CAT ``CF000``/``CF001``): ``rit_on``/``rit_tx`` are global tx_state
+# bools (RX/TX clarifier flags), ``rit_freq`` is the global operator-control
+# signed Hz offset. Emitted in the global TX-control lane alongside split/VOX,
+# gated on the ``rit`` runtime capability, mirroring the legacy poller's
+# ``"rit" in caps`` gate and its single ``get_clarifier``/``get_clarifier_freq``
+# read pair. The signed Hz offset is emitted on the device scale (cross-vendor
+# calibration is MOR-453).
+_RIT_ON = FieldPath.global_("tx_state", "rit_on")
+_RIT_TX = FieldPath.global_("tx_state", "rit_tx")
+_RIT_FREQ = FieldPath.global_("operator_controls", "rit_freq")
 YAESU_PTT_PATH = _PTT
 
 
@@ -144,6 +155,10 @@ class YaesuObservationRadio(Protocol):
     async def read_split(self) -> bool: ...
 
     async def read_vfo_select(self) -> int: ...
+
+    async def read_clarifier(self, receiver: int = 0) -> tuple[bool, bool]: ...
+
+    async def read_clarifier_freq(self, receiver: int = 0) -> int: ...
 
 
 @dataclass(slots=True)
@@ -562,6 +577,40 @@ class YaesuObservationAdapter:
                     native_id="read_split",
                 )
             )
+        # Clarifier RIT/XIT (MOR-454) — GLOBAL slow-changing operator/TX
+        # controls (CAT ``CF000``/``CF001``), gated on the ``rit`` runtime
+        # capability, mirroring the legacy poller's ``"rit" in caps`` gate. The
+        # ``rit_on``/``rit_tx`` flags come from a single ``read_clarifier`` read
+        # (rx,tx), and ``rit_freq`` from a single ``read_clarifier_freq`` read —
+        # exactly the poller's read pair, never an extra query. The signed Hz
+        # offset is emitted on the device scale (cross-vendor calibration is
+        # MOR-453); each emission is gated independently by per-field policy.
+        if self._has_runtime_capability("rit"):
+            rx_clar, tx_clar = await self.radio.read_clarifier(0)
+            if self._can_poll(_RIT_ON):
+                observations.append(
+                    adapter.observation(
+                        _RIT_ON,
+                        rx_clar,
+                        native_id="read_clarifier",
+                    )
+                )
+            if self._can_poll(_RIT_TX):
+                observations.append(
+                    adapter.observation(
+                        _RIT_TX,
+                        tx_clar,
+                        native_id="read_clarifier",
+                    )
+                )
+            if self._can_poll(_RIT_FREQ):
+                observations.append(
+                    adapter.observation(
+                        _RIT_FREQ,
+                        await self.radio.read_clarifier_freq(0),
+                        native_id="read_clarifier_freq",
+                    )
+                )
         return tuple(observations)
 
     def _adapter(self) -> ProviderObservationAdapter:
