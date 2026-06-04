@@ -1220,6 +1220,30 @@ _VALUE_CONTROL_CASES = (
         "main.apfTypeLevel",
         90,
     ),
+    # 0x14 0x16 vox_gain: 4-digit BCD pair (interim device scale — MOR-453)
+    # promoted to a global operator-control int (MOR-459).
+    (
+        _make_frame(cmd=0x14, sub=0x16, data=_bcd2(50)),
+        "global.operator_controls.vox_gain",
+        "voxGain",
+        50,
+    ),
+    # 0x14 0x17 anti_vox_gain: 4-digit BCD pair (interim device scale — MOR-453)
+    # promoted to a global operator-control int (MOR-459).
+    (
+        _make_frame(cmd=0x14, sub=0x17, data=_bcd2(30)),
+        "global.operator_controls.anti_vox_gain",
+        "antiVoxGain",
+        30,
+    ),
+    # 0x1A 0x05 0x02 0x92 vox_delay: 1-byte BCD ctl-mem level (0-20) promoted to
+    # a global operator-control int (MOR-459).
+    (
+        _make_frame(cmd=0x1A, sub=0x05, data=b"\x02\x92\x12"),
+        "global.operator_controls.vox_delay",
+        "voxDelay",
+        12,
+    ),
 )
 
 
@@ -1891,8 +1915,6 @@ def test_update_radio_state_cmd14_receiver_dsp_levels_observation_backed(
         (0x0D, 102, "notch_filter", 102),
         (0x0F, 104, "break_in_delay", 104),
         (0x14, 105, "drive_gain", 105),
-        (0x16, 107, "vox_gain", 107),
-        (0x17, 108, "anti_vox_gain", 108),
     ],
 )
 def test_update_radio_state_cmd14_global_dsp_levels(
@@ -1916,6 +1938,9 @@ def test_update_radio_state_cmd14_global_dsp_levels(
         (0x0B, 101, "mic_gain", 101),
         (0x0E, 103, "compressor_level", 103),
         (0x15, 106, "monitor_gain", 106),
+        # VOX gain trio promoted to neutral observations (MOR-459); device scale.
+        (0x16, 107, "vox_gain", 107),
+        (0x17, 108, "anti_vox_gain", 108),
     ],
 )
 def test_update_radio_state_cmd14_global_dsp_levels_observation_backed(
@@ -1925,8 +1950,9 @@ def test_update_radio_state_cmd14_global_dsp_levels_observation_backed(
     field: str,
     expected: int,
 ) -> None:
-    """MOR-437: cw_pitch/mic_gain/compressor_level/monitor_gain are
-    observation-backed; the legacy global RadioState mirror was removed.
+    """MOR-437/MOR-459: cw_pitch/mic_gain/compressor_level/monitor_gain and the
+    VOX gain pair (vox_gain/anti_vox_gain) are observation-backed; the legacy
+    global RadioState mirror was removed.
 
     cw_pitch in particular asserts the exact non-linear raw→Hz mapping
     (level 128 → 600 Hz) the mirror and ``set_cw_pitch`` use.
@@ -2210,6 +2236,25 @@ def test_update_radio_state_cmd1a_ctl_mem_dsp_levels(
     frame = _make_frame(cmd=0x1A, sub=0x05, data=data)
     radio_with_state._civ_runtime._update_radio_state_from_frame(frame)
     assert getattr(rs, field) == expected
+
+
+def test_update_radio_state_cmd1a_vox_delay_observation_backed(
+    radio_with_state: IcomRadio,
+) -> None:
+    """MOR-459: cmd 0x1A/0x05 0x02 0x92 vox_delay mirror removed; store is truth.
+
+    VOX hang delay is promoted to a neutral global operator-control int; the
+    legacy ``RadioState.vox_delay`` mirror is no longer written and stays at its
+    default 0 while the StateStore carries the decoded value.
+    """
+    rs = radio_with_state._radio_state
+    frame = _make_frame(cmd=0x1A, sub=0x05, data=b"\x02\x92\x12")
+    radio_with_state._civ_runtime._update_state_cache_from_frame(frame)
+    assert rs.vox_delay == 0
+    store_field = radio_with_state._state_store.snapshot().field(
+        "global.operator_controls.vox_delay"
+    )
+    assert store_field.value == 12
 
 
 def test_update_radio_state_cmd1a_af_mute(radio_with_state: IcomRadio) -> None:

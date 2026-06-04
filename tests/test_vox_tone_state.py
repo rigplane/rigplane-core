@@ -254,21 +254,33 @@ def _bcd_level(value: int) -> bytes:
 
 
 def test_civ_rx_0x14_0x16_sets_vox_gain(tmp_path: object) -> None:
-    """0x14 0x16 updates rs.vox_gain."""
+    """0x14 0x16 observes global vox_gain (MOR-459).
+
+    The legacy RadioState mirror was removed; the StateStore is the source of
+    truth and ``RadioState.vox_gain`` stays at its default 0.
+    """
     r = _make_radio_with_state()
     rs = r._radio_state
     frame = _make_frame(cmd=0x14, sub=0x16, data=_bcd_level(128))
-    r._civ_runtime._update_radio_state_from_frame(frame)
-    assert rs.vox_gain == 128
+    r._civ_runtime._update_state_cache_from_frame(frame)
+    assert rs.vox_gain == 0
+    field = r._state_store.snapshot().field("global.operator_controls.vox_gain")
+    assert field.value == 128
 
 
 def test_civ_rx_0x14_0x17_sets_anti_vox_gain(tmp_path: object) -> None:
-    """0x14 0x17 updates rs.anti_vox_gain."""
+    """0x14 0x17 observes global anti_vox_gain (MOR-459).
+
+    The legacy RadioState mirror was removed; the StateStore is the source of
+    truth and ``RadioState.anti_vox_gain`` stays at its default 0.
+    """
     r = _make_radio_with_state()
     rs = r._radio_state
     frame = _make_frame(cmd=0x14, sub=0x17, data=_bcd_level(64))
-    r._civ_runtime._update_radio_state_from_frame(frame)
-    assert rs.anti_vox_gain == 64
+    r._civ_runtime._update_state_cache_from_frame(frame)
+    assert rs.anti_vox_gain == 0
+    field = r._state_store.snapshot().field("global.operator_controls.anti_vox_gain")
+    assert field.value == 64
 
 
 # ---------------------------------------------------------------------------
@@ -284,13 +296,19 @@ def _ctl_mem_bcd(prefix: bytes, value: int) -> bytes:
 
 
 def test_civ_rx_0x1a_0x05_vox_delay(tmp_path: object) -> None:
-    """0x1A 0x05 with prefix 0x02 0x92 updates rs.vox_delay."""
+    """0x1A 0x05 prefix 0x02 0x92 observes global vox_delay (MOR-459).
+
+    The legacy RadioState mirror was removed; the StateStore is the source of
+    truth and ``RadioState.vox_delay`` stays at its default 0.
+    """
     r = _make_radio_with_state()
     rs = r._radio_state
     data = _ctl_mem_bcd(b"\x02\x92", 10)  # 10 = 1.0 sec
     frame = _make_frame(cmd=0x1A, sub=0x05, data=data)
-    r._civ_runtime._update_radio_state_from_frame(frame)
-    assert rs.vox_delay == 10
+    r._civ_runtime._update_state_cache_from_frame(frame)
+    assert rs.vox_delay == 0
+    field = r._state_store.snapshot().field("global.operator_controls.vox_delay")
+    assert field.value == 10
 
 
 # ---------------------------------------------------------------------------

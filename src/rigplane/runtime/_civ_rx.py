@@ -246,6 +246,8 @@ _OBSERVABLE_CMD14_FIELDS = {
     0x0E: ("global", "operator_controls", "compressor_level"),
     0x12: ("receiver", "operator_controls", "nb_level"),
     0x15: ("global", "operator_controls", "monitor_gain"),
+    0x16: ("global", "operator_controls", "vox_gain"),
+    0x17: ("global", "operator_controls", "anti_vox_gain"),
 }
 
 # 0x14 cw_pitch (sub 0x09) is observation-backed too, but its raw level → Hz
@@ -269,6 +271,8 @@ _CMD14_OBSERVATION_BACKED_SUBS = frozenset(
         0x0E,  # compressor_level (global)
         0x15,  # monitor_gain (global)
         0x09,  # cw_pitch (global)
+        0x16,  # vox_gain (global, interim device scale — MOR-459)
+        0x17,  # anti_vox_gain (global, interim device scale — MOR-459)
     }
 )
 
@@ -447,6 +451,12 @@ _CMD1A_CTL_MEM_LEVEL_FIELDS = {
     b"\x02\x91": ("nb_width", 2),
     b"\x02\x92": ("vox_delay", 1),
 }
+
+# 0x1A/0x05 ctl-mem prefix whose RadioState mirror write was migrated to the
+# StateStore observation pipeline (MOR-459). ``_handle_1a`` skips the redundant
+# ``setattr`` mirror for this prefix; ``_observations_from_frame`` is the source
+# of truth and reuses the identical ``parse_level_response`` decode.
+_CTL_MEM_VOX_DELAY_PREFIX = b"\x02\x92"
 
 # CI-V data watchdog (wfview icomudpcivdata::watchdog)
 # If no CI-V data for this long, send open_close to restart the stream.
@@ -1588,6 +1598,27 @@ class CivRuntime:
                     frame=frame,
                 )
             )
+        elif (
+            frame.command == 0x1A
+            and frame.sub == 0x05
+            and frame.data.startswith(_CTL_MEM_VOX_DELAY_PREFIX)
+        ):
+            # VOX hang delay: 1-byte BCD ctl-mem level, reusing the exact decode
+            # of ``_handle_1a`` (``parse_level_response`` with the 0x02 0x92
+            # prefix). Promoted to a global operator-control int (MOR-459).
+            observations.append(
+                self._observation(
+                    FieldPath.global_("operator_controls", "vox_delay"),
+                    parse_level_response(
+                        frame,
+                        command=0x1A,
+                        sub=0x05,
+                        prefix=_CTL_MEM_VOX_DELAY_PREFIX,
+                        bcd_bytes=1,
+                    ),
+                    frame=frame,
+                )
+            )
         elif frame.command == 0x1B and len(frame.data) >= 3:
             # Tone/TSQL freq: BCD freq → centiHz, reusing the exact decode of
             # ``_handle_1b`` (``round(_decode_tone_freq(...) * 100)``) (MOR-451).
@@ -2065,6 +2096,11 @@ class CivRuntime:
                 bcd_bytes,
             ) in _CMD1A_CTL_MEM_LEVEL_FIELDS.items():
                 if frame.data.startswith(prefix):
+                    # vox_delay's mirror write was migrated to the StateStore
+                    # observation pipeline (MOR-459); ``_observations_from_frame``
+                    # is the source of truth and reuses the identical decode.
+                    if prefix == _CTL_MEM_VOX_DELAY_PREFIX:
+                        break
                     setattr(
                         rs,
                         field,

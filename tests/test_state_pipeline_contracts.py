@@ -307,6 +307,51 @@ def test_global_break_in_delay_registered_as_operator_control_int() -> None:
     assert spec.writable is True
 
 
+def test_global_vox_gain_registered_as_operator_control_int() -> None:
+    """MOR-459: ``global.operator_controls.vox_gain`` is a registered int.
+
+    The observation-backed VOX gain (Icom CI-V ``get_vox_gain`` 0x14 0x16) is
+    promoted to a backend-neutral operator-control int on the interim device
+    scale (cross-vendor calibration tracked in MOR-453).
+    """
+    path = FieldPath.global_("operator_controls", "vox_gain")
+    spec = DEFAULT_FIELD_REGISTRY.require(path)
+    assert spec.path == path
+    assert spec.family is FieldFamily.OPERATOR_CONTROLS
+    assert spec.value_type == "int"
+    assert spec.writable is True
+
+
+def test_global_anti_vox_gain_registered_as_operator_control_int() -> None:
+    """MOR-459: ``global.operator_controls.anti_vox_gain`` is a registered int.
+
+    The observation-backed anti-VOX gain (Icom CI-V ``get_anti_vox_gain``
+    0x14 0x17) is a backend-neutral operator-control int on the interim device
+    scale (cross-vendor calibration tracked in MOR-453).
+    """
+    path = FieldPath.global_("operator_controls", "anti_vox_gain")
+    spec = DEFAULT_FIELD_REGISTRY.require(path)
+    assert spec.path == path
+    assert spec.family is FieldFamily.OPERATOR_CONTROLS
+    assert spec.value_type == "int"
+    assert spec.writable is True
+
+
+def test_global_vox_delay_registered_as_operator_control_int() -> None:
+    """MOR-459: ``global.operator_controls.vox_delay`` is a registered int.
+
+    The observation-backed VOX hang delay (Icom CI-V ``get_vox_delay``
+    0x1A 0x05 0x02 0x92) is a backend-neutral operator-control int on the
+    interim device scale (cross-vendor calibration tracked in MOR-453).
+    """
+    path = FieldPath.global_("operator_controls", "vox_delay")
+    spec = DEFAULT_FIELD_REGISTRY.require(path)
+    assert spec.path == path
+    assert spec.family is FieldFamily.OPERATOR_CONTROLS
+    assert spec.value_type == "int"
+    assert spec.writable is True
+
+
 def test_global_cw_spot_registered_as_slow_state_bool() -> None:
     """MOR-456: ``global.slow_state.cw_spot`` is a registered slow_state bool.
 
@@ -633,6 +678,15 @@ _ICOM_V2_FIELD_FAMILIES: tuple[tuple[FieldPath, str, str | None, Any], ...] = (
         None,
         1,
     ),
+    # VOX trio promoted as neutral operator-control ints (MOR-459).
+    (FieldPath.global_("operator_controls", "vox_gain"), "voxGain", None, 50),
+    (
+        FieldPath.global_("operator_controls", "anti_vox_gain"),
+        "antiVoxGain",
+        None,
+        30,
+    ),
+    (FieldPath.global_("operator_controls", "vox_delay"), "voxDelay", None, 12),
     # global tx_state
     (FieldPath.global_("tx_state", "split"), "split", None, True),
     (FieldPath.global_("tx_state", "compressor_on"), "compressorOn", None, True),
