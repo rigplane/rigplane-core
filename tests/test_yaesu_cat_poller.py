@@ -111,6 +111,9 @@ def make_radio(
     radio.get_if_shift = AsyncMock(return_value=0)
     radio.read_if_shift = AsyncMock(return_value=0)
     radio.get_vfo_select = AsyncMock(return_value=vfo_select)
+    radio.read_vfo_select = AsyncMock(return_value=vfo_select)
+    radio.get_split = AsyncMock(return_value=False)
+    radio.read_split = AsyncMock(return_value=False)
     radio.get_alc_meter = AsyncMock(return_value=0)
     radio.read_alc_meter = AsyncMock(return_value=0)
     radio.get_power_meter = AsyncMock(return_value=0)
@@ -336,6 +339,16 @@ class _SideEffectingYaesuRadio:
         self.legacy_getter_calls += 1
         value = await self.read_narrow(receiver)
         self.radio_state.main.narrow = value
+        return value
+
+    async def read_vfo_select(self) -> int:
+        return 1
+
+    async def get_vfo_select(self) -> int:
+        self.legacy_getter_calls += 1
+        value = await self.read_vfo_select()
+        self.radio_state.vfo_select = value
+        self.radio_state.active = "SUB" if value else "MAIN"
         return value
 
 
@@ -650,6 +663,10 @@ async def test_observation_poller_uses_read_only_paths_when_getters_mutate_state
         # filter_width/if_shift need their runtime caps (absent here); narrow
         # is unconditional and MAIN-only, like AGC (MOR-445).
         ("receiver.main.operator_toggles.narrow", True),
+        # active-slot (MOR-446) closes the slow-control lane; unconditional like
+        # AGC/narrow, the SUB index coerces to the neutral "SUB" str. split is
+        # skipped: this radio lacks the ``split`` runtime cap.
+        ("global.slow_state.active", "SUB"),
         ("global.operator_controls.power_level", 55),
         ("global.operator_controls.mic_gain", 40),
         ("global.tx_state.compressor_on", True),
@@ -683,6 +700,10 @@ async def test_observation_poller_uses_read_only_paths_when_getters_mutate_state
     assert radio.radio_state.main.filter_width == 17
     assert radio.radio_state.main.if_shift == 18
     assert radio.radio_state.main.narrow is False
+    # Split + active-slot read_* paths must not mutate legacy state (MOR-446).
+    assert radio.radio_state.split is False
+    assert radio.radio_state.active == "MAIN"
+    assert radio.radio_state.vfo_select == 0
 
 
 @pytest.mark.asyncio
@@ -749,7 +770,7 @@ def test_legacy_yaesu_state_writes_are_observed_or_explicit_limitations() -> Non
         "main.auto_notch": "observation:receiver.main.operator_toggles.auto_notch",
         "power_level": "observation:global.operator_controls.power_level",
         "mic_gain": "observation:global.operator_controls.mic_gain",
-        "split": "limitation: split lacks FTX-1 pollable acquisition policy",
+        "split": "observation:global.tx_state.split",
         "vox_on": "observation:global.tx_state.vox_on",
         "dial_lock": "limitation: dial lock lacks canonical acquisition profile coverage",
         "compressor_on": "observation:global.tx_state.compressor_on",
@@ -773,7 +794,7 @@ def test_legacy_yaesu_state_writes_are_observed_or_explicit_limitations() -> Non
         "yaesu": "limitation: Yaesu extension namespace is backend-specific compatibility state",
         "yaesu.rx_func_mode": "limitation: Yaesu FR mode is backend-specific compatibility state",
         "yaesu.tx_func_mode": "limitation: Yaesu FT mode is backend-specific compatibility state",
-        "vfo_select": "limitation: Yaesu VFO select lacks canonical active-slot policy mapping",
+        "vfo_select": "observation:global.slow_state.active",
     }
 
     assert _yaesu_poller_state_write_targets() == set(decisions)

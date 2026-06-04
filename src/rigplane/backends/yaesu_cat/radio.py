@@ -1375,19 +1375,39 @@ class YaesuCatRadio:
         await self.select_receiver(rx_xcvr)  # VS{rx_xcvr}: focus active receiver
         await self.set_tx_source(tx_xcvr)  # FT{tx_xcvr}: route TX
 
-    async def get_split(self) -> bool:
-        """Get split operation state."""
+    async def read_split(self) -> bool:
+        """Read split operation state without mutating legacy state.
+
+        Issues a single ``ST`` read. Feeds the observation pipeline via
+        :class:`YaesuObservationAdapter`; the legacy ``self._state`` mirror is
+        not written (MOR-434 / MOR-446).
+        """
         result = await self._query("get_split")
         return bool(result["state"] == "1")
+
+    async def get_split(self) -> bool:
+        """Get split operation state."""
+        return await self.read_split()
 
     async def set_split(self, state: bool) -> None:
         """Set split operation state."""
         await self._write("set_split", state="1" if state else "0")
 
-    async def get_vfo_select(self) -> int:
-        """Get VFO selection (0 = MAIN, 1 = SUB)."""
+    async def read_vfo_select(self) -> int:
+        """Read VFO/receiver selection without mutating legacy state.
+
+        Issues a single ``VS`` read and returns the active receiver index
+        (0 = MAIN, 1 = SUB). Feeds the observation pipeline via
+        :class:`YaesuObservationAdapter`, which coerces the index to the neutral
+        ``global.slow_state.active`` ``"MAIN"``/``"SUB"`` string; the legacy
+        ``self._state`` mirror is not written (MOR-434 / MOR-446).
+        """
         result = await self._query("get_vfo_select")
         return int(result["vfo"])
+
+    async def get_vfo_select(self) -> int:
+        """Get VFO selection (0 = MAIN, 1 = SUB)."""
+        return await self.read_vfo_select()
 
     async def set_vfo_select(self, vfo: int) -> None:
         """Set VFO selection (0 = MAIN, 1 = SUB)."""

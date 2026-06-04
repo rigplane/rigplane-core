@@ -87,6 +87,8 @@ polling_only = [
     "global.tx_state.compressor_on",
     "global.operator_controls.compressor_level",
     "global.tx_state.vox_on",
+    "global.tx_state.split",
+    "global.slow_state.active",
 ]
 stream_like_meters = [
     "receiver.main.meters.s_meter",
@@ -239,6 +241,18 @@ cadence_seconds = 30.0
 freshness_ttl_seconds = 120.0
 
 [state_acquisition.field_policies."global.tx_state.vox_on"]
+cadence_seconds = 30.0
+freshness_ttl_seconds = 120.0
+
+# Split + active-slot controls (MOR-446). Slow-changing operator state: split
+# (global tx_state bool, CAT ``ST``) and the active receiver/VFO field (global
+# slow_state, CAT ``VS`` → neutral "MAIN"/"SUB"). Both use the slow-control
+# cadence, matching the other global TX/operator setpoints above.
+[state_acquisition.field_policies."global.tx_state.split"]
+cadence_seconds = 30.0
+freshness_ttl_seconds = 120.0
+
+[state_acquisition.field_policies."global.slow_state.active"]
 cadence_seconds = 30.0
 freshness_ttl_seconds = 120.0
 

@@ -79,6 +79,17 @@ _NB_NR_NOTCH_CASES = (
     ),
 )
 
+# (store path, public fieldStatus key, expected value) for split (MOR-446),
+# a global tx_state bool emitted in the tx-control lane.
+_SPLIT_CASES = (("global.tx_state.split", "split", True),)
+
+# (store path, public fieldStatus key, expected value) for the active-slot /
+# "which receiver is active" field (MOR-446), emitted in the slow-control lane.
+# The neutral target is the global ``slow_state.active`` "MAIN"/"SUB" str (the
+# rigctld VFOA/VFOB mapping + dual-RX runtime consume it); the ``VS`` index 1
+# coerces to "SUB".
+_ACTIVE_SLOT_CASES = (("global.slow_state.active", "active", "SUB"),)
+
 
 def _clock() -> float:
     return 123.456
@@ -108,6 +119,7 @@ def _make_radio() -> MagicMock:
         "nb",
         "nr",
         "notch",
+        "split",
     }
     # Power emits the watt SETPOINT (read_power), not the RM5 meter.
     radio.read_power = AsyncMock(return_value=(2, 55))
@@ -144,6 +156,11 @@ def _make_radio() -> MagicMock:
     radio.read_auto_notch = AsyncMock(return_value=True)
     radio.read_manual_notch = AsyncMock(return_value=True)
     radio.read_manual_notch_freq = AsyncMock(return_value=128)
+    # Split + active-slot observation reads (MOR-446). split rides the
+    # tx-control lane; active-slot the slow-control lane. ``read_vfo_select``
+    # returns the active receiver index (1=SUB) → neutral "SUB" str.
+    radio.read_split = AsyncMock(return_value=True)
+    radio.read_vfo_select = AsyncMock(return_value=1)
     return radio
 
 
@@ -448,6 +465,104 @@ async def test_nb_nr_notch_project_available() -> None:
     )
 
     for _store_path, public_path, _expected in _NB_NR_NOTCH_CASES:
+        status = payload["fieldStatus"][public_path]
+        assert status["observed"] is True
+        assert status["availability"] == "available"
+
+
+@pytest.mark.asyncio
+async def test_split_observation_value() -> None:
+    store = StateStore()
+    radio = _make_radio()
+
+    await _apply_tx_controls(store, radio)
+
+    snapshot = store.snapshot()
+    for store_path, _public_path, expected in _SPLIT_CASES:
+        assert snapshot.field(store_path).value == expected
+
+
+@pytest.mark.asyncio
+async def test_split_survives_unrelated_observation() -> None:
+    store = StateStore()
+    radio = _make_radio()
+
+    await _apply_tx_controls(store, radio)
+    # An unrelated RX-meter observation on a later cycle must not disturb split
+    # (no snap-back to the default snapshot value).
+    for observation in await _adapter(radio).poll_rx_meters():
+        store.apply(observation)
+
+    snapshot = store.snapshot()
+    for store_path, _public_path, expected in _SPLIT_CASES:
+        assert snapshot.field(store_path).value == expected
+
+
+@pytest.mark.asyncio
+async def test_split_projects_available() -> None:
+    store = StateStore()
+    radio = _make_radio()
+
+    await _apply_tx_controls(store, radio)
+    for observation in await _adapter(radio).poll_rx_meters():
+        store.apply(observation)
+
+    payload = build_public_state_payload_from_snapshot(
+        store.snapshot(),
+        radio=None,
+        receiver_count=2,
+    )
+
+    for _store_path, public_path, _expected in _SPLIT_CASES:
+        status = payload["fieldStatus"][public_path]
+        assert status["observed"] is True
+        assert status["availability"] == "available"
+
+
+@pytest.mark.asyncio
+async def test_active_slot_observation_value() -> None:
+    store = StateStore()
+    radio = _make_radio()
+
+    await _apply_slow_controls(store, radio)
+
+    snapshot = store.snapshot()
+    for store_path, _public_path, expected in _ACTIVE_SLOT_CASES:
+        assert snapshot.field(store_path).value == expected
+
+
+@pytest.mark.asyncio
+async def test_active_slot_survives_unrelated_observation() -> None:
+    store = StateStore()
+    radio = _make_radio()
+
+    await _apply_slow_controls(store, radio)
+    # An unrelated RX-meter observation on a later cycle must not disturb the
+    # active-slot field (no snap-back to the default snapshot value).
+    for observation in await _adapter(radio).poll_rx_meters():
+        store.apply(observation)
+
+    snapshot = store.snapshot()
+    for store_path, _public_path, expected in _ACTIVE_SLOT_CASES:
+        assert snapshot.field(store_path).value == expected
+
+
+@pytest.mark.asyncio
+async def test_active_slot_projects_available() -> None:
+    store = StateStore()
+    radio = _make_radio()
+
+    await _apply_slow_controls(store, radio)
+    for observation in await _adapter(radio).poll_rx_meters():
+        store.apply(observation)
+
+    payload = build_public_state_payload_from_snapshot(
+        store.snapshot(),
+        radio=None,
+        receiver_count=2,
+    )
+
+    for _store_path, public_path, _expected in _ACTIVE_SLOT_CASES:
         status = payload["fieldStatus"][public_path]
         assert status["observed"] is True
         assert status["availability"] == "available"

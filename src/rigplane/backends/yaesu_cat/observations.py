@@ -70,6 +70,19 @@ _MAIN_MANUAL_NOTCH = FieldPath.receiver("main", "operator_toggles", "manual_notc
 _MAIN_MANUAL_NOTCH_FREQ = FieldPath.receiver(
     "main", "operator_controls", "manual_notch_freq"
 )
+# Split + active-slot controls (MOR-446). ``split`` is a GLOBAL tx_state bool
+# (CAT ``ST``), emitted in the global TX-control lane alongside compressor/VOX.
+# ``active`` is the GLOBAL "which receiver is active" field (CAT ``VS``): the
+# backend-neutral target is ``global.slow_state.active`` — a ``"MAIN"``/``"SUB"``
+# str consumed by the rigctld VFOA/VFOB mapping and the dual-RX runtime. The
+# ``VS`` index (0/1) is coerced to that str; the per-receiver
+# ``receiver.<rx>.vfo.active_slot`` ("A"/"B") field is a DIFFERENT concept
+# (which VFO slot within a receiver) and is NOT the target. FR/FT routing
+# (``get_rx_func``/``get_tx_func``) has no backend-neutral FieldPath and stays
+# vendor-namespaced compat-only per the promotion-criterion ADR — not observed.
+_SPLIT = FieldPath.global_("tx_state", "split")
+_ACTIVE = FieldPath.global_("slow_state", "active")
+_ACTIVE_INDEX_TO_STR = {0: "MAIN", 1: "SUB"}
 YAESU_PTT_PATH = _PTT
 
 
@@ -127,6 +140,10 @@ class YaesuObservationRadio(Protocol):
     async def read_processor_level(self) -> int: ...
 
     async def read_vox(self) -> bool: ...
+
+    async def read_split(self) -> bool: ...
+
+    async def read_vfo_select(self) -> int: ...
 
 
 @dataclass(slots=True)
@@ -458,6 +475,20 @@ class YaesuObservationAdapter:
                     native_id="read_manual_notch_freq",
                 )
             )
+        # active-slot (MOR-446) — the GLOBAL "which receiver is active" field.
+        # Polled unconditionally (gated by policy only), mirroring the legacy
+        # poller's always-on ``get_vfo_select`` read, like AGC/narrow. The
+        # ``VS`` index (0=MAIN, 1=SUB) is coerced to the neutral
+        # ``global.slow_state.active`` ``"MAIN"``/``"SUB"`` str.
+        if self._can_poll(_ACTIVE):
+            index = await self.radio.read_vfo_select()
+            observations.append(
+                adapter.observation(
+                    _ACTIVE,
+                    _ACTIVE_INDEX_TO_STR.get(index, "MAIN"),
+                    native_id="read_vfo_select",
+                )
+            )
         return tuple(observations)
 
     async def poll_tx_controls(self) -> tuple[Observation, ...]:
@@ -518,6 +549,17 @@ class YaesuObservationAdapter:
                     _VOX_ON,
                     await self.radio.read_vox(),
                     native_id="read_vox",
+                )
+            )
+        # split (MOR-446) — GLOBAL tx_state bool (CAT ``ST``), gated on the
+        # ``split`` runtime capability, mirroring the legacy poller's
+        # ``"split" in caps`` gate.
+        if self._has_runtime_capability("split") and self._can_poll(_SPLIT):
+            observations.append(
+                adapter.observation(
+                    _SPLIT,
+                    await self.radio.read_split(),
+                    native_id="read_split",
                 )
             )
         return tuple(observations)

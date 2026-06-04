@@ -37,6 +37,7 @@ def _make_radio() -> MagicMock:
         "nb",
         "nr",
         "notch",
+        "split",
     }
     radio.get_freq = AsyncMock(
         side_effect=lambda receiver=0: 14_074_000 if receiver == 0 else 7_074_000
@@ -116,6 +117,13 @@ def _make_radio() -> MagicMock:
     radio.read_processor_level = AsyncMock(return_value=25)
     radio.get_vox = AsyncMock(return_value=True)
     radio.read_vox = AsyncMock(return_value=True)
+    # Split + active-slot observation reads (MOR-446). ``read_split`` is a
+    # global tx_state bool; ``read_vfo_select`` returns the active receiver
+    # index (0=MAIN, 1=SUB) which coerces to the neutral "MAIN"/"SUB" str.
+    radio.get_split = AsyncMock(return_value=True)
+    radio.read_split = AsyncMock(return_value=True)
+    radio.get_vfo_select = AsyncMock(return_value=1)
+    radio.read_vfo_select = AsyncMock(return_value=1)
     return radio
 
 
@@ -165,6 +173,9 @@ class _SideEffectingYaesuRadio:
         self.radio_state.main.filter_width = 19
         self.radio_state.main.if_shift = 20
         self.radio_state.main.narrow = False
+        self.radio_state.split = False
+        self.radio_state.active = "MAIN"
+        self.radio_state.vfo_select = 0
 
     async def read_freq(self, receiver: int = 0) -> int:
         return 14_074_000 if receiver == 0 else 7_074_000
@@ -340,6 +351,23 @@ class _SideEffectingYaesuRadio:
         self.radio_state.main.narrow = value
         return value
 
+    async def read_split(self) -> bool:
+        return True
+
+    async def get_split(self) -> bool:
+        value = await self.read_split()
+        self.radio_state.split = value
+        return value
+
+    async def read_vfo_select(self) -> int:
+        return 1
+
+    async def get_vfo_select(self) -> int:
+        value = await self.read_vfo_select()
+        self.radio_state.vfo_select = value
+        self.radio_state.active = "SUB" if value else "MAIN"
+        return value
+
 
 @pytest.mark.asyncio
 async def test_medium_poll_emits_frequency_mode_and_ptt_observations() -> None:
@@ -421,9 +449,16 @@ async def test_slow_poll_emits_declared_control_observations_only() -> None:
         ("receiver.main.operator_toggles.auto_notch", True),
         ("receiver.main.operator_toggles.manual_notch", True),
         ("receiver.main.operator_controls.manual_notch_freq", 128),
+        # active-slot (MOR-446): the global "which receiver is active" field,
+        # emitted last in the slow-control lane, unconditional (no FTX-1 cap
+        # gate) like the legacy poller's always-on ``get_vfo_select`` read. The
+        # int receiver index (1=SUB) coerces to the neutral "MAIN"/"SUB" str.
+        ("global.slow_state.active", "SUB"),
     ]
     assert all(item.source.source == "yaesu_poll_response" for item in observations)
     assert all(item.max_age == 120.0 for item in observations)
+    assert radio.read_vfo_select.await_count == 1
+    radio.get_vfo_select.assert_not_awaited()
     assert radio.read_af_level.await_count == 2
     assert radio.read_rf_gain.await_count == 2
     assert radio.read_squelch.await_count == 2
@@ -471,6 +506,9 @@ async def test_slow_poll_skips_sub_controls_without_matching_runtime_capability(
         ("receiver.sub.operator_controls.af_level", 64),
         ("receiver.main.operator_controls.agc", 3),
         ("receiver.main.operator_toggles.narrow", True),
+        # active-slot is unconditional (like AGC/narrow), so it still emits when
+        # policy is pollable even though no FTX-1 capability tag gates it.
+        ("global.slow_state.active", "SUB"),
     ]
     assert radio.read_af_level.await_count == 2
     radio.read_rf_gain.assert_not_awaited()
@@ -640,6 +678,9 @@ async def test_tx_controls_poll_emits_global_setpoints() -> None:
         ("global.tx_state.compressor_on", True),
         ("global.operator_controls.compressor_level", 25),
         ("global.tx_state.vox_on", True),
+        # split (MOR-446) is a global tx_state bool, gated on the ``split``
+        # capability — mirroring the legacy poller's ``"split" in caps`` gate.
+        ("global.tx_state.split", True),
     ]
     assert all(item.source.source == "yaesu_poll_response" for item in observations)
     assert all(item.max_age == 120.0 for item in observations)
@@ -649,11 +690,13 @@ async def test_tx_controls_poll_emits_global_setpoints() -> None:
     radio.read_processor.assert_awaited_once()
     radio.read_processor_level.assert_awaited_once()
     radio.read_vox.assert_awaited_once()
+    radio.read_split.assert_awaited_once()
     radio.get_power.assert_not_awaited()
     radio.get_mic_gain.assert_not_awaited()
     radio.get_processor.assert_not_awaited()
     radio.get_processor_level.assert_not_awaited()
     radio.get_vox.assert_not_awaited()
+    radio.get_split.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -678,6 +721,8 @@ async def test_tx_controls_poll_skips_fields_without_matching_runtime_capability
     radio.read_processor.assert_not_awaited()
     radio.read_processor_level.assert_not_awaited()
     radio.read_vox.assert_not_awaited()
+    # split is dropped: the ``split`` runtime cap is absent here.
+    radio.read_split.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -721,11 +766,15 @@ async def test_adapter_uses_read_only_yaesu_paths_when_getters_mutate_state() ->
         # are skipped because this radio lacks the ``filter_width`` /
         # ``if_shift`` runtime caps.
         ("receiver.main.operator_toggles.narrow", True),
+        # active-slot (MOR-446) closes the slow-control lane; unconditional like
+        # AGC/narrow, the SUB index coerces to the neutral "SUB" str.
+        ("global.slow_state.active", "SUB"),
         ("global.operator_controls.power_level", 55),
         ("global.operator_controls.mic_gain", 40),
         ("global.tx_state.compressor_on", True),
         ("global.operator_controls.compressor_level", 25),
         ("global.tx_state.vox_on", True),
+        # split is skipped: this radio lacks the ``split`` runtime cap.
     ]
     assert radio.radio_state.main.freq == 1
     assert radio.radio_state.main.mode == "INIT-MAIN"
@@ -759,6 +808,59 @@ async def test_adapter_uses_read_only_yaesu_paths_when_getters_mutate_state() ->
     assert radio.radio_state.main.filter_width == 19
     assert radio.radio_state.main.if_shift == 20
     assert radio.radio_state.main.narrow is False
+    # Split + active-slot read_* paths must not mutate legacy state (MOR-446).
+    assert radio.radio_state.split is False
+    assert radio.radio_state.active == "MAIN"
+    assert radio.radio_state.vfo_select == 0
+
+
+@pytest.mark.asyncio
+async def test_read_split_and_vfo_select_are_pure_reads() -> None:
+    """MOR-446: ``read_split`` / ``read_vfo_select`` are pure CAT reads.
+
+    Both delegate to the underlying ``get_*`` query path but must NOT write
+    ``self._state`` — the public ``get_split`` / ``get_vfo_select`` getters keep
+    the legacy mutation; only the ``read_*`` variants feed the observation
+    pipeline (MOR-434 pattern).
+    """
+    radio = YaesuCatRadio("/dev/null", audio_driver=MagicMock())
+    radio.radio_state.split = False
+    radio.radio_state.active = "MAIN"
+
+    radio._query = AsyncMock(return_value={"state": "1"})  # type: ignore[method-assign]
+    assert await radio.read_split() is True
+    assert radio.radio_state.split is False
+
+    radio._query = AsyncMock(return_value={"vfo": "1"})  # type: ignore[method-assign]
+    assert await radio.read_vfo_select() == 1
+    assert radio.radio_state.active == "MAIN"
+
+
+@pytest.mark.asyncio
+async def test_active_slot_coerces_main_index_to_neutral_str() -> None:
+    """MOR-446: the int receiver index (0=MAIN) coerces to the neutral str.
+
+    The neutral ``global.slow_state.active`` field is a ``"MAIN"``/``"SUB"`` str
+    (consumed by the rigctld VFOA/VFOB mapping and the dual-RX runtime), so the
+    adapter maps the ``VS`` index 0 → ``"MAIN"`` rather than emitting the raw int.
+    """
+    radio = _make_radio()
+    radio.read_vfo_select = AsyncMock(return_value=0)
+    adapter = YaesuObservationAdapter(
+        radio,
+        profile=_profile_state_acquisition(),
+        clock=_clock,
+    )
+
+    observations = await adapter.poll_slow_controls()
+
+    active = next(
+        item
+        for item in observations
+        if str(item.path) == "global.slow_state.active"
+    )
+    assert active.value == "MAIN"
+    assert isinstance(active.value, str)
 
 
 @pytest.mark.asyncio
