@@ -35,6 +35,7 @@ _MAIN_PREAMP = FieldPath.receiver("main", "operator_controls", "preamp")
 _MAIN_AGC = FieldPath.receiver("main", "operator_controls", "agc")
 _MAIN_S_METER = FieldPath.receiver("main", "meters", "s_meter")
 _SUB_S_METER = FieldPath.receiver("sub", "meters", "s_meter")
+_ALC_METER = FieldPath.global_("meters", "alc")
 _POWER_METER = FieldPath.global_("meters", "power")
 _SWR_METER = FieldPath.global_("meters", "swr")
 # Global TX / operator-control setpoints (MOR-447). ``power_level`` is the
@@ -69,6 +70,8 @@ class YaesuObservationRadio(Protocol):
     async def read_agc(self, receiver: int = 0) -> int: ...
 
     async def read_s_meter(self, receiver: int = 0) -> int: ...
+
+    async def read_alc_meter(self) -> int: ...
 
     async def read_power_meter(self) -> int: ...
 
@@ -188,6 +191,16 @@ class YaesuObservationAdapter:
     async def poll_tx_meters(self) -> tuple[Observation, ...]:
         adapter = self._adapter()
         observations: list[Observation] = []
+        # ALC is a stream-like TX meter (MOR-448), emitted in the same lane and
+        # under the same meter freshness/coalescing policy as power/swr.
+        if self._has_runtime_capability("meters") and self._can_poll(_ALC_METER):
+            observations.append(
+                adapter.observation(
+                    _ALC_METER,
+                    await self.radio.read_alc_meter(),
+                    native_id="read_alc_meter",
+                )
+            )
         if self._has_runtime_capability("meters") and self._can_poll(_POWER_METER):
             observations.append(
                 adapter.observation(

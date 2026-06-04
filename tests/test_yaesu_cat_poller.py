@@ -106,6 +106,7 @@ def make_radio(
     radio.get_narrow = AsyncMock(return_value=narrow)
     radio.get_vfo_select = AsyncMock(return_value=vfo_select)
     radio.get_alc_meter = AsyncMock(return_value=0)
+    radio.read_alc_meter = AsyncMock(return_value=0)
     radio.get_power_meter = AsyncMock(return_value=0)
     radio.read_power_meter = AsyncMock(return_value=0)
     radio.get_comp_meter = AsyncMock(return_value=0)
@@ -641,6 +642,7 @@ async def test_observation_poller_uses_read_only_paths_when_getters_mutate_state
 async def test_fast_poll_emits_profiled_tx_meter_observations_only() -> None:
     radio = make_radio(ptt=True)
     radio.profile.state_acquisition = _profile_state_acquisition()
+    radio.read_alc_meter = AsyncMock(return_value=42)
     radio.read_power_meter = AsyncMock(return_value=180)
     radio.read_swr_meter = AsyncMock(return_value=120)
     radio.get_alc_meter = AsyncMock(return_value=42)
@@ -661,7 +663,10 @@ async def test_fast_poll_emits_profiled_tx_meter_observations_only() -> None:
     observations.clear()
     await poller._poll_fast()  # noqa: SLF001
 
+    # ALC is now an observation-backed stream-like meter (MOR-448); COMP has
+    # no neutral FieldPath and stays legacy-only, so it never emits here.
     assert [(str(item.path), item.value) for item in observations] == [
+        ("global.meters.alc", 42),
         ("global.meters.power", 180),
         ("global.meters.swr", 120),
     ]
@@ -669,6 +674,7 @@ async def test_fast_poll_emits_profiled_tx_meter_observations_only() -> None:
     radio.get_power_meter.assert_not_awaited()
     radio.get_comp_meter.assert_not_awaited()
     radio.get_swr_meter.assert_not_awaited()
+    assert radio.radio_state.alc_meter == 0
     assert radio.radio_state.power_meter == 0
     assert radio.radio_state.swr_meter == 0
 
@@ -685,7 +691,7 @@ def test_legacy_yaesu_state_writes_are_observed_or_explicit_limitations() -> Non
         "sub.af_level": "observation:receiver.sub.operator_controls.af_level",
         "sub.rf_gain": "observation:receiver.sub.operator_controls.rf_gain",
         "sub.squelch": "observation:receiver.sub.operator_controls.squelch",
-        "alc_meter": "limitation: FTX-1 acquisition profile does not mark global.meters.alc pollable",
+        "alc_meter": "observation:global.meters.alc",
         "comp_meter": "limitation: no canonical comp meter FieldPath in DEFAULT_FIELD_REGISTRY",
         "main.filter_width": "limitation: filter_width lacks FTX-1 pollable acquisition policy",
         "main.agc": "observation:receiver.main.operator_controls.agc",

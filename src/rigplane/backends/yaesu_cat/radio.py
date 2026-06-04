@@ -815,10 +815,14 @@ class YaesuCatRadio:
         main, _ = await self._read_meter(3)
         return main
 
-    async def get_alc_meter(self) -> int:
-        """Get ALC meter reading (0–255)."""
+    async def read_alc_meter(self) -> int:
+        """Read ALC meter without mutating legacy state."""
         main, _ = await self._read_meter(4)
         return main
+
+    async def get_alc_meter(self) -> int:
+        """Get ALC meter reading (0–255)."""
+        return await self.read_alc_meter()
 
     async def read_power_meter(self) -> int:
         """Read TX power meter without mutating legacy state."""

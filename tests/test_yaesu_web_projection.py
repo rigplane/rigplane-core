@@ -41,6 +41,12 @@ _RF_FRONT_END_CASES = (
     ("receiver.main.operator_controls.agc", "main.agc", 3),
 )
 
+# (store path, public fieldStatus key, expected value) for the ALC stream-like
+# TX meter (MOR-448). Unlike the slow controls, meters expire on a short
+# freshness TTL; a freshly applied sample still reports FRESH (no decay tick
+# has run), so it projects ``available`` exactly like power/swr.
+_TX_METER_CASES = (("global.meters.alc", "alcMeter", 42),)
+
 
 def _clock() -> float:
     return 123.456
@@ -80,6 +86,10 @@ def _make_radio() -> MagicMock:
     radio.read_af_level = AsyncMock(side_effect=lambda receiver=0: 128)
     radio.read_rf_gain = AsyncMock(side_effect=lambda receiver=0: 180)
     radio.read_squelch = AsyncMock(side_effect=lambda receiver=0: 12)
+    # ALC stream-like TX meter (MOR-448) plus power/swr for the same lane.
+    radio.read_alc_meter = AsyncMock(return_value=42)
+    radio.read_power_meter = AsyncMock(return_value=180)
+    radio.read_swr_meter = AsyncMock(return_value=120)
     # An unrelated RX-meter read used to prove no snap-back.
     radio.read_s_meter = AsyncMock(return_value=150)
     return radio
@@ -100,6 +110,11 @@ async def _apply_tx_controls(store: StateStore, radio: MagicMock) -> None:
 
 async def _apply_slow_controls(store: StateStore, radio: MagicMock) -> None:
     for observation in await _adapter(radio).poll_slow_controls():
+        store.apply(observation)
+
+
+async def _apply_tx_meters(store: StateStore, radio: MagicMock) -> None:
+    for observation in await _adapter(radio).poll_tx_meters():
         store.apply(observation)
 
 
@@ -198,6 +213,39 @@ async def test_rf_front_end_project_available() -> None:
     )
 
     for _store_path, public_path, _expected in _RF_FRONT_END_CASES:
+        status = payload["fieldStatus"][public_path]
+        assert status["observed"] is True
+        assert status["availability"] == "available"
+
+
+@pytest.mark.asyncio
+async def test_tx_meter_observation_value() -> None:
+    store = StateStore()
+    radio = _make_radio()
+
+    await _apply_tx_meters(store, radio)
+
+    snapshot = store.snapshot()
+    for store_path, _public_path, expected in _TX_METER_CASES:
+        assert snapshot.field(store_path).value == expected
+
+
+@pytest.mark.asyncio
+async def test_tx_meter_project_available_for_fresh_sample() -> None:
+    store = StateStore()
+    radio = _make_radio()
+
+    await _apply_tx_meters(store, radio)
+
+    payload = build_public_state_payload_from_snapshot(
+        store.snapshot(),
+        radio=None,
+        receiver_count=2,
+    )
+
+    # Meters expire on a short TTL, but a freshly applied sample still reports
+    # FRESH (no decay tick) and therefore projects ``available``.
+    for _store_path, public_path, _expected in _TX_METER_CASES:
         status = payload["fieldStatus"][public_path]
         assert status["observed"] is True
         assert status["availability"] == "available"

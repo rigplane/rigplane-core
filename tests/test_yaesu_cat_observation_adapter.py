@@ -74,6 +74,13 @@ def _make_radio() -> MagicMock:
     radio.read_preamp = AsyncMock(return_value=2)
     radio.get_agc = AsyncMock(return_value=3)
     radio.read_agc = AsyncMock(return_value=3)
+    # TX meters: ALC mirrors power/swr as a stream-like meter (MOR-448).
+    radio.get_alc_meter = AsyncMock(return_value=42)
+    radio.read_alc_meter = AsyncMock(return_value=42)
+    radio.get_power_meter = AsyncMock(return_value=180)
+    radio.read_power_meter = AsyncMock(return_value=180)
+    radio.get_swr_meter = AsyncMock(return_value=120)
+    radio.read_swr_meter = AsyncMock(return_value=120)
     # Global TX / operator-control setpoints (MOR-447).
     radio.get_power = AsyncMock(return_value=(2, 55))
     radio.read_power = AsyncMock(return_value=(2, 55))
@@ -114,6 +121,7 @@ class _SideEffectingYaesuRadio:
         self.radio_state.sub.mode = "INIT-SUB"
         self.radio_state.main.s_meter = 3
         self.radio_state.sub.s_meter = 4
+        self.radio_state.alc_meter = 5
         self.radio_state.power_meter = 5
         self.radio_state.swr_meter = 6
         self.radio_state.main.af_level = 7
@@ -164,6 +172,14 @@ class _SideEffectingYaesuRadio:
         value = await self.read_s_meter(receiver)
         target = self.radio_state.main if receiver == 0 else self.radio_state.sub
         target.s_meter = value
+        return value
+
+    async def read_alc_meter(self) -> int:
+        return 200
+
+    async def get_alc_meter(self) -> int:
+        value = await self.read_alc_meter()
+        self.radio_state.alc_meter = value
         return value
 
     async def read_power_meter(self) -> int:
@@ -399,6 +415,57 @@ async def test_slow_poll_coerces_attenuator_bool_to_registry_int() -> None:
 
 
 @pytest.mark.asyncio
+async def test_tx_meters_poll_emits_alc_power_swr_stream_like_meters() -> None:
+    """ALC joins power/swr as a stream-like TX meter (MOR-448).
+
+    ALC is read via the non-mutating ``read_alc_meter`` and emitted with the
+    same short ``max_age`` (the meter freshness TTL) as power/swr — NOT the
+    indefinite slow-control treatment.
+    """
+    radio = _make_radio()
+    adapter = YaesuObservationAdapter(
+        radio,
+        profile=_profile_state_acquisition(),
+        clock=_clock,
+    )
+
+    observations = await adapter.poll_tx_meters()
+
+    assert [(str(item.path), item.value) for item in observations] == [
+        ("global.meters.alc", 42),
+        ("global.meters.power", 180),
+        ("global.meters.swr", 120),
+    ]
+    assert all(item.source.source == "yaesu_poll_response" for item in observations)
+    # Stream-like meters expire on a short TTL — same freshness TTL as power/swr.
+    assert all(item.max_age == 0.8 for item in observations)
+    radio.read_alc_meter.assert_awaited_once()
+    radio.read_power_meter.assert_awaited_once()
+    radio.read_swr_meter.assert_awaited_once()
+    radio.get_alc_meter.assert_not_awaited()
+    radio.get_power_meter.assert_not_awaited()
+    radio.get_swr_meter.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_tx_meters_poll_skips_alc_without_meters_capability() -> None:
+    radio = _make_radio()
+    radio.capabilities = {"dual_rx", "tx", "vox", "compressor"}
+    adapter = YaesuObservationAdapter(
+        radio,
+        profile=_profile_state_acquisition(),
+        clock=_clock,
+    )
+
+    observations = await adapter.poll_tx_meters()
+
+    assert observations == ()
+    radio.read_alc_meter.assert_not_awaited()
+    radio.read_power_meter.assert_not_awaited()
+    radio.read_swr_meter.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_tx_controls_poll_emits_global_setpoints() -> None:
     radio = _make_radio()
     adapter = YaesuObservationAdapter(
@@ -480,6 +547,7 @@ async def test_adapter_uses_read_only_yaesu_paths_when_getters_mutate_state() ->
         ("global.tx_state.ptt", True),
         ("receiver.main.meters.s_meter", 150),
         ("receiver.sub.meters.s_meter", 75),
+        ("global.meters.alc", 200),
         ("global.meters.power", 180),
         ("global.meters.swr", 120),
         ("receiver.main.operator_controls.af_level", 128),
@@ -504,6 +572,7 @@ async def test_adapter_uses_read_only_yaesu_paths_when_getters_mutate_state() ->
     assert radio.radio_state.ptt is False
     assert radio.radio_state.main.s_meter == 3
     assert radio.radio_state.sub.s_meter == 4
+    assert radio.radio_state.alc_meter == 5
     assert radio.radio_state.power_meter == 5
     assert radio.radio_state.swr_meter == 6
     assert radio.radio_state.main.af_level == 7

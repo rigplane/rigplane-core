@@ -81,6 +81,7 @@ polling_only = [
 stream_like_meters = [
     "receiver.main.meters.s_meter",
     "receiver.sub.meters.s_meter",
+    "global.meters.alc",
     "global.meters.power",
     "global.meters.swr",
 ]
@@ -106,6 +107,12 @@ adaptive_decay = false
 meter_coalescing_window_seconds = 0.2
 
 [state_acquisition.field_policies."receiver.sub.meters.s_meter"]
+cadence_seconds = 0.2
+freshness_ttl_seconds = 0.8
+adaptive_decay = false
+meter_coalescing_window_seconds = 0.2
+
+[state_acquisition.field_policies."global.meters.alc"]
 cadence_seconds = 0.2
 freshness_ttl_seconds = 0.8
 adaptive_decay = false
