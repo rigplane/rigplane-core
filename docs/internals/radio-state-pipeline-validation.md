@@ -200,3 +200,116 @@ operator, command log, and observed latency/cadence notes.
 | Legacy `RadioState` mutable object remains public compatibility surface. | Removal/deprecation requires a separate API issue. | No |
 | `StateCacheCapable` and rigctld cache fallback remain for older backends. | Must not be preferred over fresh shared state where `StateStore` exists. | No |
 | Hardware latency targets are not yet universal numeric guarantees. | Current policy is fake-backend/CI defined plus hardware-measured notes. | No, unless release claims numeric hardware latency. |
+
+## Live hardware run — IC-7610 — 2026-06-04
+
+Deferred P0 LIVE hardware validation of the MOR-334 Radio State Pipeline against
+a real IC-7610 (MOR-348 / MOR-408 hardware gate). RX-side only; no transmit, no
+band/frequency/mode changes. Branch `codex/mor-334-radio-state-pipeline` @
+`fad94e75` (clean). Operator present.
+
+**Setup.** `rigplane web` launched against the live radio over LAN (IC-7610 at
+`192.168.55.40`, CI-V `0x98`, UDP control `50001`), bound to
+`127.0.0.1:18080`, `--no-rigctld --no-discovery`. Credentials injected via BWS
+(never printed). Server PID confirmed listening; `/api/v1/info` reported
+`radio: IC-7610`, version `2.9.0a1`, capabilities populated (`af_level`,
+`rf_gain`, `squelch`, dual RX, scope, audio, …).
+
+**Connection result: PASS.** After the initial Are-You-There handshake the
+control link established; `connection` block = `{rigConnected: true, radioReady:
+true, controlConnected: true}`. Continuous CI-V RX frames observed in
+`logs/rigplane.log` (`cmd=0x15` meter reads, `cmd=0x1C` PTT, `cmd=0x07` VFO),
+each driving `state_store_changed` notifications.
+
+**Observed live state (raw, from `GET /api/v1/state`).**
+
+| Field | MAIN (rx0) | SUB (rx1) |
+|---|---|---|
+| `freqHz` | `14074000` (14.074 MHz, 20m FT8) | `14325000` (14.325 MHz) |
+| `mode` | `USB` | `USB` |
+| `sMeter` | live, varied across polls: `91, 94, 99, 95, 94, 91` | `0` |
+| `dcd` (MOR-466) | `true` (RX busy) | `false` (quiet) |
+| `afLevel` | `23` | `145` |
+| `rfGain` | `219` | `207` |
+| `squelch` | `0` | `0` |
+| `agc` | `3` | `0` |
+
+`stateRevision` advanced on every poll (136 → 250 over the run);
+`freshnessRevision` advanced independently. The S-meter stream is genuinely
+live — values fluctuate poll-to-poll with off-air signal. `dcd` correctly
+reflects RX-busy: MAIN open (busy 20m FT8), SUB closed. WebSocket `/api/v1/ws`
+handshook `101 Switching Protocols`; ~40 frames in ~6 s, 39 carrying S-meter
+deltas — the delta channel streams live telemetry.
+
+**fieldStatus (v2 / MOR-429): PASS.** 184 entries, each with
+`observed`/`freshness`/`availability` plus a `source` provenance block
+(`provider: icom_civ`, `transport: civ`, `nativeId` like `civ:15:02`,
+`capabilityId`). Representative live fields:
+
+| Public field | observed | freshness | availability | storePath |
+|---|---|---|---|---|
+| `main.sMeter` | true | fresh | available | `receiver.0.meters.s_meter` |
+| `main.dcd` | true | fresh | available | `receiver.0.operator_toggles.dcd` |
+| `main.squelch` | true | fresh | available | `receiver.0.operator_controls.squelch` |
+| `ptt` | true | fresh | available | `global.tx_state.ptt` |
+| `active` | true | fresh | available | `global.slow_state.active` |
+| `main.freqHz` | true | stale | stale | `receiver.0.active.freq_mode.freq_hz` |
+| `main.mode` | true | stale | stale | `receiver.0.active.freq_mode.mode` |
+| `sub.sMeter` | false | unknown | missing | `receiver.sub.meters.s_meter` |
+
+Note: `freqHz`/`mode` show `observed=true` but `freshness=stale` while idle —
+the scheduler does not re-poll freq/mode within their `maxAge` (10 s) when
+nothing is tuning, so the last-observed (correct) value is retained and honestly
+flagged stale. This is the freshness model behaving as designed, not stale data
+masquerading as fresh.
+
+**No-snap-back test (benign RX control, `set_af_level` on MAIN): PASS.**
+af_level is headphone/speaker level only — zero RF emission, fully reversible.
+
+| Step | Action | Radio readback (CI-V `0x14 0x01`, BCD) | Public `/api/v1/state` `main.afLevel` |
+|---|---|---|---|
+| original | — | `0023` (=23) | `23` |
+| set | `POST /api/v1/commands {name:set_af_level, params:{level:35, receiver:0}}` → `ok:true` | `0035` (=35) | converged to `35` after readback |
+| observe | poll while idle | radio holds `0035` (repeated at +2/+4/+10 s) — no revert | `35`, no revert to `23` |
+| restore | `POST … {level:23}` → `ok:true` | `0023` (=23) | `23` |
+
+The radio applied the SET and held it (no hardware snap-back); the readback
+observation (`cmd=0x14 sub=0x01 data=0035` → `state_store_changed paths=
+['receiver.0.operator_controls.af_level']`) propagated into the StateStore and
+the public projection converged to the radio's new value, then restored exactly
+to the original `23`. Caveat observed and resolved during the run: the public
+projection converges only when the command readback arrives (read-after-write
+via the radio echo), which lagged the first 3 s poll window; a direct CI-V read
+confirmed the radio value, and a subsequent poll confirmed the projection caught
+up. No separate re-poll path refreshes af_level absent that echo, so the field
+sits `stale` between readbacks — consistent with the documented freshness shim.
+
+**UI smoke (best-effort, v2 frontend): PASS.** `frontend` built
+(`npm run build`, Vite OK), `frontend/dist` staged to
+`src/rigplane/web/static`, loaded `http://127.0.0.1:18080/?ui=v2` under
+headless Playwright (chromium 1.58.2). The LCD cockpit rendered live data:
+MAIN `14.074.000 USB 20M` with S-meter `S7 −7 dBm`; SUB `14.325.000 USB 20M`
+with `S0 −54 dBm`; split panel `RX 14.325 / TX 14.074`; a live panadapter +
+waterfall showing real 20m FT8 traffic. All values match the API/WS data.
+Screenshot: `/tmp/rigval/ui_smoke.png`. Console showed only benign noise (a CSP
+inline-script notice; 404/405 on optional rigctld/audio endpoints that are
+disabled in this run) — none blocking.
+
+**Anomalies / notes.**
+- freq/mode held `stale` while idle (freshness model, not a data defect; values
+  correct and corroborated by the UI and a direct CI-V read).
+- af_level public convergence depends on the command-echo readback; there is no
+  independent re-poll, so the field is `stale` between writes (documented shim,
+  non-blocking).
+- Initial Are-You-There retries before the link came up are normal handshake
+  behavior.
+
+**Overall verdict: PASS.** The live pipeline reflects the real IC-7610 — both
+receivers' freq/mode, the live fluctuating S-meter, `dcd` RX-busy, and operator
+controls populate from the radio with plausible non-default values; `fieldStatus`
+honestly marks observed/fresh vs stale/missing; the benign RX control round-trip
+converged to the radio's readback with no snap-back and was restored exactly; and
+the v2 UI renders the same live state including a live waterfall. The freq/mode
+idle-staleness and af_level read-after-write dependence are existing,
+documented freshness-model behaviors, not regressions. No transmit occurred; the
+radio was left in its original state.
