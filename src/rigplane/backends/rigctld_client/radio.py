@@ -435,6 +435,13 @@ class RigctldClientRadio:
 
     @property
     def capabilities(self) -> set[str]:
+        # ``"tx"`` here advertises PTT key/un-key only (``get_ptt`` /
+        # ``set_ptt``). It deliberately does NOT imply power control:
+        # external rigctld exposes no power-state read/set surface, so
+        # ``"power_control"`` is omitted and this backend does not
+        # implement ``PowerControlCapable``. The acquisition profile
+        # mirrors the gap by declaring ``power_on`` UNSUPPORTED rather
+        # than synthesizing a default value (MOR-433).
         caps = {"tx", "rf_gain", "af_level", "preamp", "attenuator", "nb", "nr"}
         if self._vfo_supported:
             caps.add("vfo")

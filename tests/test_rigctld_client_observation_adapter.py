@@ -27,6 +27,9 @@ from rigplane.backends.rigctld_client.observations import (
     build_external_rigctld_acquisition_profile,
 )
 from rigplane.core.acquisition_scheduler import AcquisitionScheduler, AcquisitionStatus
+from rigplane.core.capabilities import CAP_POWER_CONTROL, CAP_TX
+from rigplane.core.radio_protocol import PowerControlCapable
+from rigplane.core.state_acquisition_policy import FieldAvailability
 from rigplane.core.command_service import (
     CommandExecutionResult,
     CommandService,
@@ -716,6 +719,42 @@ def test_capability_gaps_are_explicit_for_external_rigctld_profile() -> None:
     assert "power state" in power_result.message
     assert vfo_result.status is AcquisitionStatus.UNAVAILABLE
     assert "VFO slot" in vfo_result.message
+
+
+@pytest.mark.asyncio
+async def test_tx_capability_excludes_power_control_with_unsupported_power() -> None:
+    """MOR-433: the rigctld-client TX capability never claims power control.
+
+    The backend advertises ``CAP_TX`` (PTT key/un-key) but deliberately
+    omits ``CAP_POWER_CONTROL`` and does not structurally satisfy
+    :class:`PowerControlCapable`, because external rigctld exposes no
+    power-state read/set surface. The acquisition profile mirrors this by
+    declaring the ``power_on`` field ``UNSUPPORTED`` rather than emitting a
+    synthesized/default observed value, so consumers see the gap explicitly
+    instead of a fabricated ``power_on=True``.
+    """
+    power_path = FieldPath.global_("tx_state", "power_on")
+    async with FakeRigctldServer() as server:
+        radio = RigctldClientRadio(host=server.host, port=server.port)
+        await radio.connect()
+        try:
+            # Capability set advertises PTT TX but never power control.
+            assert CAP_TX in radio.capabilities
+            assert CAP_POWER_CONTROL not in radio.capabilities
+            assert "power" not in radio.capabilities
+            # The backend cannot honor power-set/get, so it must not
+            # structurally satisfy the PowerControlCapable contract.
+            assert not isinstance(radio, PowerControlCapable)
+
+            # The acquisition profile surfaces power as UNSUPPORTED — not a
+            # default or observed value — and excludes it from polling.
+            profile = build_external_rigctld_acquisition_profile(vfo_supported=True)
+            power_capability = profile.capability_for(power_path)
+            assert power_capability.availability is FieldAvailability.UNSUPPORTED
+            assert power_capability.can_poll is False
+            assert power_capability.supported_controls == ()
+        finally:
+            await radio.disconnect()
 
 
 def test_filter_width_command_response_metadata_matches_adapter_behavior() -> None:
