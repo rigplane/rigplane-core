@@ -211,6 +211,37 @@ def test_freshness_service_marks_stale_and_queues_reconciliation_without_web() -
     assert requests[0].reason == "stale"
 
 
+def test_freshness_decay_requires_wired_running_service_not_intrinsic() -> None:
+    """MOR-432: decay is not intrinsic to the store — it requires a wired
+    StateFreshnessService to be driven (here via tick()). A bare store left
+    undriven over the same elapsed time keeps the field FRESH.
+    """
+
+    clock = FreshnessClock(start=80.0)
+    path = FieldPath.global_("tx_state", "ptt")
+
+    # Wired + driven: the service ticks the store and the field decays.
+    wired_store = StateStore(freshness_clock=clock)
+    scheduler = AcquisitionScheduler(
+        profile=_acquisition_profile(path),
+        clock=clock,
+    )
+    service = StateFreshnessService(store=wired_store, scheduler=scheduler)
+    wired_store.apply(_observation(path, False, at=clock.now(), max_age=0.5))
+
+    # Undriven bare store with the same observation and clock — no service runs
+    # over it, so nothing calls mark_stale_due on it.
+    bare_store = StateStore(freshness_clock=clock)
+    bare_store.apply(_observation(path, False, at=80.0, max_age=0.5))
+
+    clock.advance(0.6)
+    service.tick()
+
+    # Wired store decayed; bare undriven store did not (still FRESH).
+    assert wired_store.snapshot().field(path).freshness is FreshnessState.STALE
+    assert bare_store.snapshot().field(path).freshness is FreshnessState.FRESH
+
+
 def test_observation_refreshes_stale_field_without_semantic_state_change() -> None:
     clock = FreshnessClock(start=30.0)
     store = StateStore(freshness_clock=clock)

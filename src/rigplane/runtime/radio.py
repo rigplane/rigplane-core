@@ -791,6 +791,13 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
             float(os.environ.get("ICOM_CIV_RETRY_SLICE_MS", "150")) / 1000.0
         )
         self._state_cache: StateCache = StateCache()
+        # Canonical state-ingress store exposed via ``state_store``. It is
+        # constructed bare here and does NOT decay on its own (MOR-432):
+        # freshness aging requires a StateFreshnessService wired over this
+        # store and driven by a running loop. In production the web/rigctld
+        # server wires and runs that service against this same store at
+        # startup. Used headless without a server, this store never ages
+        # fields to STALE.
         self._state_store: StateStore = StateStore()
         self._state_model_service: RadioStateModelService | None = None
         self._state_diagnostics: StateDiagnosticsRecorder | None = None

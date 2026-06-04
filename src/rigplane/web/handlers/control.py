@@ -461,6 +461,12 @@ class ControlHandler:
         else:
             state_store = getattr(server, "command_state_store", None)
             if not isinstance(state_store, StateStore):
+                # Non-canonical, non-decaying fallback (MOR-432): only reached
+                # when the server exposes neither a shared CommandService nor a
+                # command_state_store. The production control channel uses the
+                # server's shared service/store, over which the web server
+                # drives a StateFreshnessService; this bare store has no such
+                # driver and never ages fields to STALE.
                 state_store = StateStore()
             self._command_service = CommandService(
                 executor=_ControlCommandExecutor(self),

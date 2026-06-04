@@ -209,6 +209,17 @@ class StateStore:
     Delta replay keeps at most ``max_history_count`` history entries. Requests
     older than the retained semantic or freshness floor return a replay miss
     marker so consumers can recover by requesting a full snapshot.
+
+    Freshness decay is **not intrinsic** (MOR-432). The store never ages fields
+    on its own: a field only transitions ``FRESH -> STALE`` when an external
+    driver calls :meth:`mark_stale_due` (typically the periodic
+    :class:`~rigplane.core.acquisition_scheduler.StateFreshnessService.run`
+    loop wired over this store). A bare ``StateStore()`` with no such running
+    service therefore reports last-observed values as ``FRESH`` indefinitely.
+    This is acceptable only for non-canonical fallback stores; the production
+    delivery stores (web server, rigctld server) always wire and drive a
+    ``StateFreshnessService`` over the canonical store. See that service and
+    :meth:`mark_stale_due`.
     """
 
     __slots__ = (
@@ -300,7 +311,14 @@ class StateStore:
         return changeset
 
     def mark_stale_due(self, *, now: float | None = None) -> SnapshotDelta:
-        """Mark overdue fresh fields stale and emit reconciliation hints."""
+        """Mark overdue fresh fields stale and emit reconciliation hints.
+
+        This is the **sole** freshness-decay entry point: the store does not
+        age fields automatically (MOR-432). It must be driven externally — in
+        production by the periodic
+        :class:`~rigplane.core.acquisition_scheduler.StateFreshnessService`
+        loop. If nothing calls this, fields never go ``STALE``.
+        """
 
         timestamp = self._freshness_clock.now() if now is None else now
         transitions: list[FreshnessTransition] = []

@@ -525,6 +525,12 @@ class RigctldHandler:
         if state_store is None and isinstance(radio, StateStoreCapable):
             state_store = radio.state_store
         if not isinstance(state_store, StateStore):
+            # Non-canonical, non-decaying fallback (MOR-432): used only when the
+            # radio exposes no StateStore. Freshness decay requires a wired,
+            # running StateFreshnessService over the store; this bare store has
+            # none, so it never ages fields to STALE. The production rigctld
+            # delivery path injects the radio's canonical store (with the
+            # server-driven freshness service) via ``state_store``.
             state_store = StateStore()
         self._state_store = state_store
         if state_model_service is None and isinstance(radio, StateModelCapable):

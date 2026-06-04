@@ -137,6 +137,12 @@ class IcomRadio:
             audio_codec=audio_codec,
             audio_sample_rate=audio_sample_rate,
         )
+        # Non-canonical, non-decaying store (MOR-432): the synchronous client
+        # facade has no async event loop running a StateFreshnessService, so
+        # this store never ages fields to STALE. It backs the local
+        # CommandService only and is not a production state-delivery store
+        # (the web/rigctld servers wire and drive freshness over their own
+        # canonical stores).
         self._state_store = StateStore()
         self._command_service = CommandService(
             executor=_SyncCommandExecutor(self),

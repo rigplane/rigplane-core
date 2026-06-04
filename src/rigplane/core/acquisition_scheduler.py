@@ -1262,7 +1262,17 @@ class MeterObservationCoalescer:
 
 
 class StateFreshnessService:
-    """Advance StateStore freshness and enqueue reconciliation requests."""
+    """Advance StateStore freshness and enqueue reconciliation requests.
+
+    This service supplies the freshness decay that :class:`StateStore` does
+    NOT perform on its own (MOR-432). Decay only happens while this service is
+    driven: either by awaiting :meth:`run` (the production path — the web and
+    rigctld servers create a background task for it over the canonical store)
+    or by calling :meth:`tick` directly (tests). A store with no wired+running
+    ``StateFreshnessService`` never ages its fields to ``STALE``; bare
+    ``StateStore()`` fallback sites are non-decaying by design and are not the
+    production delivery store.
+    """
 
     __slots__ = ("_interval_seconds", "_on_delta", "_scheduler", "_store")
 
