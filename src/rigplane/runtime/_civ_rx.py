@@ -196,6 +196,20 @@ _CMD16_GLOBAL_VALUE_FIELDS = {
     0x58: ("ssb_tx_bandwidth", 1),
 }
 
+# 0x16 toggle sub-commands whose RadioState mirror write was migrated to the
+# StateStore observation pipeline (MOR-437). These still fire legacy
+# ``_notify_change`` web/poller events, but the redundant ``setattr`` mirror is
+# skipped because ``_observations_from_frame`` is the source of truth.
+_CMD16_OBSERVATION_BACKED_SUBS = frozenset(
+    {
+        0x41,  # auto_notch
+        0x48,  # manual_notch
+        0x44,  # compressor_on
+        0x45,  # monitor_on
+        0x46,  # vox_on
+    }
+)
+
 # Sub-command to state-change event name for unsolicited 0x16 updates (web/poller).
 _CMD16_NOTIFY_EVENTS = {
     0x12: "agc_changed",
@@ -233,6 +247,11 @@ _OBSERVABLE_CMD15_FIELDS = {
 _OBSERVABLE_CMD16_FIELDS = {
     0x22: ("receiver", "operator_toggles", "nb"),
     0x40: ("receiver", "operator_toggles", "nr"),
+    0x41: ("receiver", "operator_toggles", "auto_notch"),
+    0x48: ("receiver", "operator_toggles", "manual_notch"),
+    0x44: ("global", "tx_state", "compressor_on"),
+    0x45: ("global", "tx_state", "monitor_on"),
+    0x46: ("global", "tx_state", "vox_on"),
 }
 
 
@@ -1459,6 +1478,22 @@ class CivRuntime:
                     frame=frame,
                 )
             )
+        elif frame.command == 0x1C and frame.sub == 0x01 and frame.data:
+            observations.append(
+                self._observation(
+                    FieldPath.global_("operator_controls", "tuner_status"),
+                    frame.data[0],
+                    frame=frame,
+                )
+            )
+        elif frame.command == 0x1C and frame.sub == 0x03 and frame.data:
+            observations.append(
+                self._observation(
+                    FieldPath.global_("tx_state", "tx_freq_monitor"),
+                    bool(frame.data[0]),
+                    frame=frame,
+                )
+            )
         elif frame.command == 0x07 and len(frame.data) >= 2:
             sub07 = frame.data[0]
             val07 = frame.data[1]
@@ -1470,6 +1505,22 @@ class CivRuntime:
                         frame=frame,
                     )
                 )
+            elif sub07 == 0xC2:
+                observations.append(
+                    self._observation(
+                        FieldPath.global_("tx_state", "dual_watch"),
+                        bool(val07),
+                        frame=frame,
+                    )
+                )
+        elif frame.command == 0x0F and frame.data:
+            observations.append(
+                self._observation(
+                    FieldPath.global_("tx_state", "split"),
+                    bool(frame.data[0]),
+                    frame=frame,
+                )
+            )
         elif frame.command == 0x21:
             if frame.sub == 0x00 and len(frame.data) >= 3:
                 observations.append(
@@ -1639,7 +1690,8 @@ class CivRuntime:
         rs: "RadioState",
         slot_override: str | None,
     ) -> None:
-        # cmd 0x07: VFO/dual-watch sub-subs (0xD2 active, 0xC2 dual-watch).
+        # cmd 0x07: VFO active sub-sub (0xD2). Dual-watch (0xC2) is now
+        # observation-backed (MOR-437); only the 0xD2 active mirror remains.
         if len(frame.data) >= 2:
             sub07 = frame.data[0]
             val07 = frame.data[1]
@@ -1651,12 +1703,6 @@ class CivRuntime:
                     self._notify_change(
                         "active_receiver_changed", {"active": new_active}
                     )
-            elif sub07 == 0xC2:
-                new_dw = bool(val07)
-                if rs.dual_watch != new_dw:
-                    rs.dual_watch = new_dw
-                    logger.debug("civ-rx: dual watch → %s", "ON" if new_dw else "OFF")
-                    self._notify_change("dual_watch_changed", {"on": new_dw})
 
     def _handle_0e(
         self,
@@ -1671,17 +1717,6 @@ class CivRuntime:
             # 0xA1-0xA7 (ΔF span) and 0xD0-0xD3 (resume) are config-only
             if sub_0e <= 0x23:
                 rs.scanning = bool(sub_0e)
-
-    def _handle_0f(
-        self,
-        frame: CivFrame,
-        rx: Any,
-        rs: "RadioState",
-        slot_override: str | None,
-    ) -> None:
-        # cmd 0x0F: split on/off.
-        if frame.data:
-            rs.split = bool(frame.data[0])
 
     def _handle_10(
         self,
@@ -1797,7 +1832,11 @@ class CivRuntime:
             data = data[1:]
         if data:
             val = data[0]
-            if sub == 0x02:
+            if sub in _CMD16_OBSERVATION_BACKED_SUBS:
+                # Mirror write migrated to the StateStore observation pipeline
+                # (MOR-437); only the legacy notify event below still fires.
+                pass
+            elif sub == 0x02:
                 rx.preamp = val
             elif sub in _CMD16_RECEIVER_BOOL_FIELDS:
                 setattr(rx, _CMD16_RECEIVER_BOOL_FIELDS[sub], bool(val))
@@ -1909,16 +1948,11 @@ class CivRuntime:
         rs: "RadioState",
         slot_override: str | None,
     ) -> None:
-        # cmd 0x1C: PTT (sub 0x00), tuner status (0x01), tx-freq monitor (0x03).
+        # cmd 0x1C: PTT (sub 0x00). Tuner status (0x01) and tx-freq monitor
+        # (0x03) are now observation-backed (MOR-437); only PTT mirrors here.
         if frame.sub == 0x00:
             if frame.data:
                 rs.ptt = bool(frame.data[0])
-        elif frame.sub == 0x01:
-            if frame.data:
-                rs.tuner_status = frame.data[0]
-        elif frame.sub == 0x03:
-            if frame.data:
-                rs.tx_freq_monitor = bool(frame.data[0])
 
     def _handle_1e(
         self,
@@ -2065,7 +2099,6 @@ class CivRuntime:
         0x04: _handle_mode,
         0x07: _handle_07,
         0x0E: _handle_0e,
-        0x0F: _handle_0f,
         0x10: _handle_10,
         0x11: _handle_11,
         0x12: _handle_12,

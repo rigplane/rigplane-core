@@ -926,6 +926,145 @@ def test_update_state_cache_projects_supported_fields_into_state_store(
     assert field.source.source == expected_source
 
 
+# ---------------------------------------------------------------------------
+# MOR-437: slow-state bool/status families observation-backed
+# ---------------------------------------------------------------------------
+
+# (frame, store path, public status path, expected value)
+_SLOW_STATE_TOGGLE_CASES = (
+    (
+        _make_frame(cmd=0x16, sub=0x41, data=b"\x01", receiver=0x00),
+        "receiver.0.operator_toggles.auto_notch",
+        "main.autoNotch",
+        True,
+    ),
+    (
+        _make_frame(cmd=0x16, sub=0x48, data=b"\x01", receiver=0x00),
+        "receiver.0.operator_toggles.manual_notch",
+        "main.manualNotch",
+        True,
+    ),
+    (
+        _make_frame(cmd=0x16, sub=0x44, data=b"\x01"),
+        "global.tx_state.compressor_on",
+        "compressorOn",
+        True,
+    ),
+    (
+        _make_frame(cmd=0x16, sub=0x45, data=b"\x01"),
+        "global.tx_state.monitor_on",
+        "monitorOn",
+        True,
+    ),
+    (
+        _make_frame(cmd=0x16, sub=0x46, data=b"\x01"),
+        "global.tx_state.vox_on",
+        "voxOn",
+        True,
+    ),
+    (
+        _make_frame(cmd=0x0F, data=b"\x01"),
+        "global.tx_state.split",
+        "split",
+        True,
+    ),
+    (
+        _make_frame(cmd=0x07, data=bytes([0xC2, 0x01])),
+        "global.tx_state.dual_watch",
+        "dualWatch",
+        True,
+    ),
+    (
+        _make_frame(cmd=0x1C, sub=0x01, data=b"\x02"),
+        "global.operator_controls.tuner_status",
+        "tunerStatus",
+        2,
+    ),
+    (
+        _make_frame(cmd=0x1C, sub=0x03, data=b"\x01"),
+        "global.tx_state.tx_freq_monitor",
+        "txFreqMonitor",
+        True,
+    ),
+)
+
+
+@pytest.mark.parametrize(  # type: ignore[untyped-decorator]
+    ("frame", "store_path", "public_path", "expected"),
+    _SLOW_STATE_TOGGLE_CASES,
+    ids=[entry[1] for entry in _SLOW_STATE_TOGGLE_CASES],
+)
+def test_slow_state_toggle_observation_backed(
+    radio: IcomRadio,
+    frame: CivFrame,
+    store_path: str,
+    public_path: str,
+    expected: object,
+) -> None:
+    """MOR-437: 0x16/0x0F/0x07/0x1C slow-state families emit StateStore observations."""
+    radio._civ_runtime._update_state_cache_from_frame(frame)
+
+    field = radio._state_store.snapshot().field(store_path)
+    assert field.value == expected
+    # Slow-state toggles never expire — no max_age, so the freshness service
+    # cannot mark them stale and re-gate the frontend ``missing`` (MOR-437).
+    assert field.max_age is None
+    assert field.freshness is FreshnessState.FRESH
+
+
+@pytest.mark.parametrize(  # type: ignore[untyped-decorator]
+    ("frame", "store_path", "public_path", "expected"),
+    _SLOW_STATE_TOGGLE_CASES,
+    ids=[entry[1] for entry in _SLOW_STATE_TOGGLE_CASES],
+)
+def test_slow_state_toggle_survives_unrelated_poll_cycle(
+    radio: IcomRadio,
+    frame: CivFrame,
+    store_path: str,
+    public_path: str,
+    expected: object,
+) -> None:
+    """The observed value must not snap back when an unrelated frame arrives."""
+    radio._civ_runtime._update_state_cache_from_frame(frame)
+    # An unrelated S-meter poll on the next cycle must not disturb the toggle.
+    radio._civ_runtime._update_state_cache_from_frame(
+        _make_frame(cmd=0x15, sub=0x02, data=_bcd2(120), receiver=0x00)
+    )
+
+    field = radio._state_store.snapshot().field(store_path)
+    assert field.value == expected
+    assert field.freshness is FreshnessState.FRESH
+
+
+@pytest.mark.parametrize(  # type: ignore[untyped-decorator]
+    ("frame", "store_path", "public_path", "expected"),
+    _SLOW_STATE_TOGGLE_CASES,
+    ids=[entry[1] for entry in _SLOW_STATE_TOGGLE_CASES],
+)
+def test_slow_state_toggle_projects_available(
+    radio: IcomRadio,
+    frame: CivFrame,
+    store_path: str,
+    public_path: str,
+    expected: object,
+) -> None:
+    """Once observed, the public key projects to availability=available."""
+    from rigplane.web.runtime_helpers import (
+        build_public_state_payload_from_snapshot,
+    )
+
+    radio._civ_runtime._update_state_cache_from_frame(frame)
+    payload = build_public_state_payload_from_snapshot(
+        radio._state_store.snapshot(),
+        radio=None,
+        receiver_count=2,
+    )
+
+    status = payload["fieldStatus"][public_path]
+    assert status["observed"] is True
+    assert status["availability"] == "available"
+
+
 def test_civ_projected_active_rit_xit_fields_become_stale(
     radio: IcomRadio,
 ) -> None:
@@ -1572,12 +1711,10 @@ def test_update_radio_state_cmd16_ipplus(radio_with_state: IcomRadio) -> None:
         (0x15, 0x07, b"\x01", None, "radio", "overflow", True),
         (0x16, 0x12, b"\x03", 0x01, "sub", "agc", 3),
         (0x16, 0x32, b"\x02", 0x01, "sub", "audio_peak_filter", 2),
-        (0x16, 0x41, b"\x01", 0x01, "sub", "auto_notch", True),
-        (0x16, 0x44, b"\x01", None, "radio", "compressor_on", True),
-        (0x16, 0x45, b"\x01", None, "radio", "monitor_on", True),
-        (0x16, 0x46, b"\x01", None, "radio", "vox_on", True),
+        # 0x41 auto_notch, 0x44 compressor_on, 0x45 monitor_on, 0x46 vox_on,
+        # 0x48 manual_notch are now observation-backed (MOR-437) — the legacy
+        # RadioState mirror was removed, so they no longer belong here.
         (0x16, 0x47, b"\x02", None, "radio", "break_in", 2),
-        (0x16, 0x48, b"\x01", 0x01, "sub", "manual_notch", True),
         (0x16, 0x4F, b"\x01", 0x01, "sub", "twin_peak_filter", True),
         (0x16, 0x50, b"\x01", None, "radio", "dial_lock", True),
         (0x16, 0x56, b"\x01", 0x01, "sub", "filter_shape", 1),
@@ -1666,11 +1803,11 @@ def test_update_radio_state_cmd1c_ptt(radio_with_state: IcomRadio) -> None:
 
 
 def test_update_radio_state_cmd0f_split(radio_with_state: IcomRadio) -> None:
-    """cmd 0x0F updates global split (lines 590-593)."""
-    rs = radio_with_state._radio_state
+    """cmd 0x0F split is now observation-backed (MOR-437) → StateStore."""
     frame = _make_frame(cmd=0x0F, data=bytes([0x01]))
-    radio_with_state._civ_runtime._update_radio_state_from_frame(frame)
-    assert rs.split is True
+    radio_with_state._civ_runtime._update_state_cache_from_frame(frame)
+    field = radio_with_state._state_store.snapshot().field("global.tx_state.split")
+    assert field.value is True
 
 
 def test_update_radio_state_cmd07_active_receiver(radio_with_state: IcomRadio) -> None:
@@ -1684,12 +1821,13 @@ def test_update_radio_state_cmd07_active_receiver(radio_with_state: IcomRadio) -
 
 
 def test_update_radio_state_cmd07_dual_watch(radio_with_state: IcomRadio) -> None:
-    """cmd 0x07 sub 0xC2 updates dual watch (lines 609-619)."""
-    rs = radio_with_state._radio_state
-    assert rs.dual_watch is False
+    """cmd 0x07 sub 0xC2 dual watch is observation-backed (MOR-437)."""
     frame = _make_frame(cmd=0x07, data=bytes([0xC2, 0x01]))
-    radio_with_state._civ_runtime._update_radio_state_from_frame(frame)
-    assert rs.dual_watch is True
+    radio_with_state._civ_runtime._update_state_cache_from_frame(frame)
+    field = radio_with_state._state_store.snapshot().field(
+        "global.tx_state.dual_watch"
+    )
+    assert field.value is True
 
 
 def test_update_radio_state_cmd07_active_receiver_main(
@@ -1968,17 +2106,23 @@ def test_check_connected_raises_when_civ_transport_none(radio: IcomRadio) -> Non
 
 
 def test_update_radio_state_tuner_status(radio_with_state: IcomRadio) -> None:
-    """Tuner/ATU status (0x1C 0x01) → RadioState.tuner_status."""
+    """Tuner/ATU status (0x1C 0x01) is observation-backed (MOR-437)."""
     frame = CivFrame(0xE0, 0x98, 0x1C, 0x01, b"\x02")
-    radio_with_state._civ_runtime._update_radio_state_from_frame(frame)
-    assert radio_with_state._radio_state.tuner_status == 2
+    radio_with_state._civ_runtime._update_state_cache_from_frame(frame)
+    field = radio_with_state._state_store.snapshot().field(
+        "global.operator_controls.tuner_status"
+    )
+    assert field.value == 2
 
 
 def test_update_radio_state_tx_freq_monitor(radio_with_state: IcomRadio) -> None:
-    """TX freq monitor (0x1C 0x03) → RadioState.tx_freq_monitor."""
+    """TX freq monitor (0x1C 0x03) is observation-backed (MOR-437)."""
     frame = CivFrame(0xE0, 0x98, 0x1C, 0x03, b"\x01")
-    radio_with_state._civ_runtime._update_radio_state_from_frame(frame)
-    assert radio_with_state._radio_state.tx_freq_monitor is True
+    radio_with_state._civ_runtime._update_state_cache_from_frame(frame)
+    field = radio_with_state._state_store.snapshot().field(
+        "global.tx_state.tx_freq_monitor"
+    )
+    assert field.value is True
 
 
 def test_update_radio_state_rit_frequency(radio_with_state: IcomRadio) -> None:

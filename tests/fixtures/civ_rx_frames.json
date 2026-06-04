@@ -122,10 +122,10 @@
   },
   {
     "name": "cmd16_sub44_compressor_global_bool",
-    "comment": "0x16/0x44 global compressor_on (covers _CMD16_GLOBAL_BOOL_FIELDS branch)",
+    "comment": "0x16/0x44 compressor_on is observation-backed (MOR-437); the legacy RadioState mirror is no longer written and stays at its default.",
     "frame": {"command": 22, "sub": 68, "data": "01"},
     "expected_state": {
-      "compressor_on": true
+      "compressor_on": false
     }
   },
   {
@@ -171,18 +171,18 @@
   },
   {
     "name": "cmd1C_sub01_tuner_status",
-    "comment": "0x1C/0x01 tuner status byte",
+    "comment": "0x1C/0x01 tuner status is observation-backed (MOR-437); the legacy RadioState mirror is no longer written and stays at its default.",
     "frame": {"command": 28, "sub": 1, "data": "02"},
     "expected_state": {
-      "tuner_status": 2
+      "tuner_status": 0
     }
   },
   {
     "name": "cmd1C_sub03_tx_freq_monitor",
-    "comment": "0x1C/0x03 TX-frequency-monitor flag",
+    "comment": "0x1C/0x03 TX-frequency-monitor is observation-backed (MOR-437); the legacy RadioState mirror is no longer written and stays at its default.",
     "frame": {"command": 28, "sub": 3, "data": "01"},
     "expected_state": {
-      "tx_freq_monitor": true
+      "tx_freq_monitor": false
     }
   },
   {
