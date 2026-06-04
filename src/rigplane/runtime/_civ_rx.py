@@ -96,6 +96,9 @@ _OBSERVATION_MAX_AGE_SECONDS: dict[tuple[str, str, str], float] = {
     ("global", "meters", "alc"): 0.6,
     ("global", "meters", "power"): 0.6,
     ("global", "meters", "swr"): 0.6,
+    ("global", "meters", "comp"): 0.6,
+    ("global", "meters", "vd"): 0.6,
+    ("global", "meters", "id"): 0.6,
 }
 
 _CIV_STATE_FIELD_FAMILIES = {
@@ -310,6 +313,13 @@ _OBSERVABLE_CMD15_FIELDS = {
     0x11: ("global", "meters", "power"),
     0x12: ("global", "meters", "swr"),
     0x13: ("global", "meters", "alc"),
+    # PA-telemetry meters promoted to neutral observations (MOR-460). ``comp``
+    # is the cross-vendor case (also Yaesu FTX-1 RM3); ``vd``/``id`` are Icom
+    # CI-V ingress (``vd`` shared by Xiegu X6200 via the same backend). The
+    # legacy ``RadioState`` mirror writes in ``_handle_15`` are removed.
+    0x14: ("global", "meters", "comp"),
+    0x15: ("global", "meters", "vd"),
+    0x16: ("global", "meters", "id"),
 }
 
 _OBSERVABLE_CMD16_FIELDS = {
@@ -2025,12 +2035,11 @@ class CivRuntime:
                 rs.swr_meter = raw
             elif frame.sub == 0x13:
                 rs.alc_meter = raw
-            elif frame.sub == 0x14:
-                rs.comp_meter = raw
-            elif frame.sub == 0x15:
-                rs.vd_meter = raw
-            elif frame.sub == 0x16:
-                rs.id_meter = raw
+            # The comp (0x14), vd (0x15), id (0x16) PA-telemetry meter mirror
+            # writes were migrated to the StateStore observation pipeline
+            # (MOR-460); ``_OBSERVABLE_CMD15_FIELDS`` is the source of truth and
+            # reuses this same BCD decode. ``RadioState.{comp,vd,id}_meter`` are
+            # no longer written here.
 
     def _handle_16(
         self,

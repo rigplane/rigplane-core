@@ -74,26 +74,26 @@
   },
   {
     "name": "cmd15_sub14_comp_meter",
-    "comment": "0x15/0x14 compressor meter raw value",
+    "comment": "0x15/0x14 compressor meter: legacy RadioState mirror removed (MOR-460); promoted to observation global.meters.comp, so the mirror stays at its default 0",
     "frame": {"command": 21, "sub": 20, "data": "0123"},
     "expected_state": {
-      "comp_meter": 123
+      "comp_meter": 0
     }
   },
   {
     "name": "cmd15_sub15_vd_meter",
-    "comment": "0x15/0x15 supply voltage meter",
+    "comment": "0x15/0x15 supply voltage meter: legacy RadioState mirror removed (MOR-460); promoted to observation global.meters.vd, so the mirror stays at its default 0",
     "frame": {"command": 21, "sub": 21, "data": "0241"},
     "expected_state": {
-      "vd_meter": 241
+      "vd_meter": 0
     }
   },
   {
     "name": "cmd15_sub16_id_meter",
-    "comment": "0x15/0x16 drain current meter",
+    "comment": "0x15/0x16 drain current meter: legacy RadioState mirror removed (MOR-460); promoted to observation global.meters.id, so the mirror stays at its default 0",
     "frame": {"command": 21, "sub": 22, "data": "0089"},
     "expected_state": {
-      "id_meter": 89
+      "id_meter": 0
     }
   },
   {

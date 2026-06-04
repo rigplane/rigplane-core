@@ -42,11 +42,15 @@ _RF_FRONT_END_CASES = (
     ("receiver.main.operator_controls.agc", "main.agc", 3),
 )
 
-# (store path, public fieldStatus key, expected value) for the ALC stream-like
-# TX meter (MOR-448). Unlike the slow controls, meters expire on a short
-# freshness TTL; a freshly applied sample still reports FRESH (no decay tick
-# has run), so it projects ``available`` exactly like power/swr.
-_TX_METER_CASES = (("global.meters.alc", "alcMeter", 42),)
+# (store path, public fieldStatus key, expected value) for the ALC/COMP
+# stream-like TX meters (MOR-448/460). Unlike the slow controls, meters expire
+# on a short freshness TTL; a freshly applied sample still reports FRESH (no
+# decay tick has run), so it projects ``available`` exactly like power/swr.
+# ``comp`` projects to the public ``compMeter`` key.
+_TX_METER_CASES = (
+    ("global.meters.alc", "alcMeter", 42),
+    ("global.meters.comp", "compMeter", 30),
+)
 
 # (store path, public fieldStatus key, expected value) for the MAIN-only
 # IF-shift / narrow DSP controls (MOR-445), emitted in the slow-control lane.
@@ -197,8 +201,9 @@ def _make_radio() -> MagicMock:
     radio.read_af_level = AsyncMock(side_effect=lambda receiver=0: 128)
     radio.read_rf_gain = AsyncMock(side_effect=lambda receiver=0: 180)
     radio.read_squelch = AsyncMock(side_effect=lambda receiver=0: 12)
-    # ALC stream-like TX meter (MOR-448) plus power/swr for the same lane.
+    # ALC/COMP stream-like TX meters (MOR-448/460) plus power/swr for the lane.
     radio.read_alc_meter = AsyncMock(return_value=42)
+    radio.read_comp_meter = AsyncMock(return_value=30)
     radio.read_power_meter = AsyncMock(return_value=180)
     radio.read_swr_meter = AsyncMock(return_value=120)
     # An unrelated RX-meter read used to prove no snap-back.

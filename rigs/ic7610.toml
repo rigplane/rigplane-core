@@ -146,6 +146,9 @@ stream_like_meters = [
     "global.meters.power",
     "global.meters.swr",
     "global.meters.alc",
+    "global.meters.comp",
+    "global.meters.vd",
+    "global.meters.id",
 ]
 command_response_observable = [
     "receiver.main.active.freq_mode.freq_hz",
@@ -181,6 +184,24 @@ adaptive_decay = false
 meter_coalescing_window_seconds = 0.2
 
 [state_acquisition.field_policies."global.meters.alc"]
+cadence_seconds = 0.2
+freshness_ttl_seconds = 0.8
+adaptive_decay = false
+meter_coalescing_window_seconds = 0.2
+
+[state_acquisition.field_policies."global.meters.comp"]
+cadence_seconds = 0.2
+freshness_ttl_seconds = 0.8
+adaptive_decay = false
+meter_coalescing_window_seconds = 0.2
+
+[state_acquisition.field_policies."global.meters.vd"]
+cadence_seconds = 0.2
+freshness_ttl_seconds = 0.8
+adaptive_decay = false
+meter_coalescing_window_seconds = 0.2
+
+[state_acquisition.field_policies."global.meters.id"]
 cadence_seconds = 0.2
 freshness_ttl_seconds = 0.8
 adaptive_decay = false

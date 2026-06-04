@@ -850,6 +850,25 @@ def test_update_state_cache_exception_suppressed(radio: IcomRadio) -> None:
             98,
             "command_response",
         ),
+        # PA-telemetry meters promoted to neutral observations (MOR-460).
+        (
+            _make_frame(cmd=0x15, sub=0x14, data=_bcd2(42)),
+            "global.meters.comp",
+            42,
+            "command_response",
+        ),
+        (
+            _make_frame(cmd=0x15, sub=0x15, data=_bcd2(130)),
+            "global.meters.vd",
+            130,
+            "command_response",
+        ),
+        (
+            _make_frame(cmd=0x15, sub=0x16, data=_bcd2(55)),
+            "global.meters.id",
+            55,
+            "command_response",
+        ),
         (
             _make_frame(cmd=0x14, sub=0x01, data=_bcd2(87), receiver=0x01),
             "receiver.1.operator_controls.af_level",
@@ -2624,26 +2643,56 @@ def test_update_radio_state_rit_tx_status(radio_with_state: IcomRadio) -> None:
     assert radio_with_state._radio_state.rit_tx is True
 
 
-def test_update_radio_state_comp_meter(radio_with_state: IcomRadio) -> None:
-    """Comp meter (0x15 0x14) → RadioState.comp_meter."""
+def test_update_radio_state_comp_meter_observation_backed(
+    radio_with_state: IcomRadio,
+) -> None:
+    """MOR-460: comp meter (0x15 0x14) mirror removed; the StateStore is truth.
+
+    The PA compression meter is promoted to ``global.meters.comp``; the legacy
+    ``RadioState.comp_meter`` mirror is no longer written and stays at its
+    default 0 while the StateStore carries the decoded value.
+    """
+    rs = radio_with_state._radio_state
     # 42 BCD: 0x00 0x42
     frame = CivFrame(0xE0, 0x98, 0x15, 0x14, b"\x00\x42")
-    radio_with_state._civ_runtime._update_radio_state_from_frame(frame)
-    assert radio_with_state._radio_state.comp_meter == 42
+    radio_with_state._civ_runtime._update_state_cache_from_frame(frame)
+    assert rs.comp_meter == 0
+    field = radio_with_state._state_store.snapshot().field("global.meters.comp")
+    assert field.value == 42
 
 
-def test_update_radio_state_vd_meter(radio_with_state: IcomRadio) -> None:
-    """Vd meter (0x15 0x15) → RadioState.vd_meter."""
+def test_update_radio_state_vd_meter_observation_backed(
+    radio_with_state: IcomRadio,
+) -> None:
+    """MOR-460: vd meter (0x15 0x15) mirror removed; the StateStore is truth.
+
+    The PA supply-voltage meter is promoted to ``global.meters.vd``; the legacy
+    ``RadioState.vd_meter`` mirror is no longer written and stays at its default
+    0 while the StateStore carries the decoded value.
+    """
+    rs = radio_with_state._radio_state
     frame = CivFrame(0xE0, 0x98, 0x15, 0x15, b"\x01\x30")
-    radio_with_state._civ_runtime._update_radio_state_from_frame(frame)
-    assert radio_with_state._radio_state.vd_meter == 130
+    radio_with_state._civ_runtime._update_state_cache_from_frame(frame)
+    assert rs.vd_meter == 0
+    field = radio_with_state._state_store.snapshot().field("global.meters.vd")
+    assert field.value == 130
 
 
-def test_update_radio_state_id_meter(radio_with_state: IcomRadio) -> None:
-    """Id meter (0x15 0x16) → RadioState.id_meter."""
+def test_update_radio_state_id_meter_observation_backed(
+    radio_with_state: IcomRadio,
+) -> None:
+    """MOR-460: id meter (0x15 0x16) mirror removed; the StateStore is truth.
+
+    The PA drain-current meter is promoted to ``global.meters.id``; the legacy
+    ``RadioState.id_meter`` mirror is no longer written and stays at its default
+    0 while the StateStore carries the decoded value.
+    """
+    rs = radio_with_state._radio_state
     frame = CivFrame(0xE0, 0x98, 0x15, 0x16, b"\x00\x55")
-    radio_with_state._civ_runtime._update_radio_state_from_frame(frame)
-    assert radio_with_state._radio_state.id_meter == 55
+    radio_with_state._civ_runtime._update_state_cache_from_frame(frame)
+    assert rs.id_meter == 0
+    field = radio_with_state._state_store.snapshot().field("global.meters.id")
+    assert field.value == 55
 
 
 def test_update_radio_state_power_meter(radio_with_state: IcomRadio) -> None:

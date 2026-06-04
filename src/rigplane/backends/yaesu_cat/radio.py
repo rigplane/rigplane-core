@@ -885,10 +885,14 @@ class YaesuCatRadio:
         sub_val = int(body[4:7])
         return main_val, sub_val
 
-    async def get_comp_meter(self) -> int:
-        """Get COMP (compression) meter reading (0–255)."""
+    async def read_comp_meter(self) -> int:
+        """Read COMP (compression) meter without mutating legacy state."""
         main, _ = await self._read_meter(3)
         return main
+
+    async def get_comp_meter(self) -> int:
+        """Get COMP (compression) meter reading (0–255)."""
+        return await self.read_comp_meter()
 
     async def read_alc_meter(self) -> int:
         """Read ALC meter without mutating legacy state."""

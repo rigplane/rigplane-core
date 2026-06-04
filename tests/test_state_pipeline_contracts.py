@@ -352,6 +352,54 @@ def test_global_vox_delay_registered_as_operator_control_int() -> None:
     assert spec.writable is True
 
 
+def test_global_comp_meter_registered_as_read_only_meter_int() -> None:
+    """MOR-460: ``global.meters.comp`` is a registered read-only meter int.
+
+    The PA compression meter is cross-vendor (Icom CI-V ``get_comp_meter``
+    0x15 0x14 AND Yaesu FTX-1 ``get_comp_meter`` RM3) and is promoted to a
+    backend-neutral meter int, matching the alc/power/swr meter form: read-only
+    (NOT writable) on the interim device scale (calibration is MOR-453).
+    """
+    path = FieldPath.global_("meters", "comp")
+    spec = DEFAULT_FIELD_REGISTRY.require(path)
+    assert spec.path == path
+    assert spec.family is FieldFamily.METERS
+    assert spec.value_type == "int"
+    assert spec.writable is False
+
+
+def test_global_vd_meter_registered_as_read_only_meter_int() -> None:
+    """MOR-460: ``global.meters.vd`` is a registered read-only meter int.
+
+    The PA supply-voltage meter (Icom CI-V ``get_vd_meter`` 0x15 0x15; Xiegu
+    X6200 shares the Icom ingress) is promoted to a backend-neutral meter int,
+    matching the alc/power/swr meter form: read-only (NOT writable) on the
+    interim device scale (calibration is MOR-453).
+    """
+    path = FieldPath.global_("meters", "vd")
+    spec = DEFAULT_FIELD_REGISTRY.require(path)
+    assert spec.path == path
+    assert spec.family is FieldFamily.METERS
+    assert spec.value_type == "int"
+    assert spec.writable is False
+
+
+def test_global_id_meter_registered_as_read_only_meter_int() -> None:
+    """MOR-460: ``global.meters.id`` is a registered read-only meter int.
+
+    The PA drain-current meter (Icom CI-V ``get_id_meter`` 0x15 0x16; Icom-only)
+    is promoted to a backend-neutral meter int, matching the alc/power/swr meter
+    form: read-only (NOT writable) on the interim device scale (calibration is
+    MOR-453).
+    """
+    path = FieldPath.global_("meters", "id")
+    spec = DEFAULT_FIELD_REGISTRY.require(path)
+    assert spec.path == path
+    assert spec.family is FieldFamily.METERS
+    assert spec.value_type == "int"
+    assert spec.writable is False
+
+
 def test_global_cw_spot_registered_as_slow_state_bool() -> None:
     """MOR-456: ``global.slow_state.cw_spot`` is a registered slow_state bool.
 

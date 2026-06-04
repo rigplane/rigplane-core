@@ -105,9 +105,11 @@ def _make_radio() -> MagicMock:
     radio.read_auto_notch = AsyncMock(return_value=True)
     radio.read_manual_notch = AsyncMock(return_value=True)
     radio.read_manual_notch_freq = AsyncMock(return_value=128)
-    # TX meters: ALC mirrors power/swr as a stream-like meter (MOR-448).
+    # TX meters: ALC/COMP mirror power/swr as stream-like meters (MOR-448/460).
     radio.get_alc_meter = AsyncMock(return_value=42)
     radio.read_alc_meter = AsyncMock(return_value=42)
+    radio.get_comp_meter = AsyncMock(return_value=30)
+    radio.read_comp_meter = AsyncMock(return_value=30)
     radio.get_power_meter = AsyncMock(return_value=180)
     radio.read_power_meter = AsyncMock(return_value=180)
     radio.get_swr_meter = AsyncMock(return_value=120)
@@ -204,6 +206,7 @@ class _SideEffectingYaesuRadio:
         self.radio_state.main.s_meter = 3
         self.radio_state.sub.s_meter = 4
         self.radio_state.alc_meter = 5
+        self.radio_state.comp_meter = 5
         self.radio_state.power_meter = 5
         self.radio_state.swr_meter = 6
         self.radio_state.main.af_level = 7
@@ -284,6 +287,14 @@ class _SideEffectingYaesuRadio:
     async def get_alc_meter(self) -> int:
         value = await self.read_alc_meter()
         self.radio_state.alc_meter = value
+        return value
+
+    async def read_comp_meter(self) -> int:
+        return 90
+
+    async def get_comp_meter(self) -> int:
+        value = await self.read_comp_meter()
+        self.radio_state.comp_meter = value
         return value
 
     async def read_power_meter(self) -> int:
@@ -797,12 +808,13 @@ async def test_slow_poll_coerces_attenuator_bool_to_registry_int() -> None:
 
 
 @pytest.mark.asyncio
-async def test_tx_meters_poll_emits_alc_power_swr_stream_like_meters() -> None:
-    """ALC joins power/swr as a stream-like TX meter (MOR-448).
+async def test_tx_meters_poll_emits_alc_power_swr_comp_stream_like_meters() -> None:
+    """ALC/COMP join power/swr as stream-like TX meters (MOR-448/460).
 
-    ALC is read via the non-mutating ``read_alc_meter`` and emitted with the
-    same short ``max_age`` (the meter freshness TTL) as power/swr — NOT the
-    indefinite slow-control treatment.
+    The PA compression meter (FTX-1 RM3) is the cross-vendor case (also Icom
+    0x15 0x14); it is read via the non-mutating ``read_comp_meter`` and emitted
+    with the same short ``max_age`` (the meter freshness TTL) as power/swr/alc —
+    NOT the indefinite slow-control treatment.
     """
     radio = _make_radio()
     adapter = YaesuObservationAdapter(
@@ -817,6 +829,7 @@ async def test_tx_meters_poll_emits_alc_power_swr_stream_like_meters() -> None:
         ("global.meters.alc", 42),
         ("global.meters.power", 180),
         ("global.meters.swr", 120),
+        ("global.meters.comp", 30),
     ]
     assert all(item.source.source == "yaesu_poll_response" for item in observations)
     # Stream-like meters expire on a short TTL — same freshness TTL as power/swr.
@@ -824,13 +837,15 @@ async def test_tx_meters_poll_emits_alc_power_swr_stream_like_meters() -> None:
     radio.read_alc_meter.assert_awaited_once()
     radio.read_power_meter.assert_awaited_once()
     radio.read_swr_meter.assert_awaited_once()
+    radio.read_comp_meter.assert_awaited_once()
     radio.get_alc_meter.assert_not_awaited()
     radio.get_power_meter.assert_not_awaited()
     radio.get_swr_meter.assert_not_awaited()
+    radio.get_comp_meter.assert_not_awaited()
 
 
 @pytest.mark.asyncio
-async def test_tx_meters_poll_skips_alc_without_meters_capability() -> None:
+async def test_tx_meters_poll_skips_alc_comp_without_meters_capability() -> None:
     radio = _make_radio()
     radio.capabilities = {"dual_rx", "tx", "vox", "compressor"}
     adapter = YaesuObservationAdapter(
@@ -845,6 +860,7 @@ async def test_tx_meters_poll_skips_alc_without_meters_capability() -> None:
     radio.read_alc_meter.assert_not_awaited()
     radio.read_power_meter.assert_not_awaited()
     radio.read_swr_meter.assert_not_awaited()
+    radio.read_comp_meter.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -993,6 +1009,7 @@ async def test_adapter_uses_read_only_yaesu_paths_when_getters_mutate_state() ->
         ("global.meters.alc", 200),
         ("global.meters.power", 180),
         ("global.meters.swr", 120),
+        ("global.meters.comp", 90),
         ("receiver.main.operator_controls.af_level", 128),
         ("receiver.main.operator_controls.rf_gain", 180),
         ("receiver.main.operator_controls.squelch", 12),
@@ -1058,6 +1075,7 @@ async def test_adapter_uses_read_only_yaesu_paths_when_getters_mutate_state() ->
     assert radio.radio_state.main.s_meter == 3
     assert radio.radio_state.sub.s_meter == 4
     assert radio.radio_state.alc_meter == 5
+    assert radio.radio_state.comp_meter == 5
     assert radio.radio_state.power_meter == 5
     assert radio.radio_state.swr_meter == 6
     assert radio.radio_state.main.af_level == 7

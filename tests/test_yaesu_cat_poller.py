@@ -119,6 +119,7 @@ def make_radio(
     radio.get_power_meter = AsyncMock(return_value=0)
     radio.read_power_meter = AsyncMock(return_value=0)
     radio.get_comp_meter = AsyncMock(return_value=0)
+    radio.read_comp_meter = AsyncMock(return_value=0)
     radio.get_swr_meter = AsyncMock(return_value=0)
     radio.read_swr_meter = AsyncMock(return_value=0)
     radio._read_meter = AsyncMock(return_value=(0, 0))
@@ -713,6 +714,7 @@ async def test_fast_poll_emits_profiled_tx_meter_observations_only() -> None:
     radio.read_alc_meter = AsyncMock(return_value=42)
     radio.read_power_meter = AsyncMock(return_value=180)
     radio.read_swr_meter = AsyncMock(return_value=120)
+    radio.read_comp_meter = AsyncMock(return_value=30)
     radio.get_alc_meter = AsyncMock(return_value=42)
     radio.get_power_meter = AsyncMock(return_value=180)
     radio.get_comp_meter = AsyncMock(return_value=30)
@@ -731,18 +733,21 @@ async def test_fast_poll_emits_profiled_tx_meter_observations_only() -> None:
     observations.clear()
     await poller._poll_fast()  # noqa: SLF001
 
-    # ALC is now an observation-backed stream-like meter (MOR-448); COMP has
-    # no neutral FieldPath and stays legacy-only, so it never emits here.
+    # ALC and COMP are now observation-backed stream-like meters
+    # (MOR-448/460); both emit via the non-mutating read_* path.
     assert [(str(item.path), item.value) for item in observations] == [
         ("global.meters.alc", 42),
         ("global.meters.power", 180),
         ("global.meters.swr", 120),
+        ("global.meters.comp", 30),
     ]
     radio.get_alc_meter.assert_not_awaited()
     radio.get_power_meter.assert_not_awaited()
     radio.get_comp_meter.assert_not_awaited()
     radio.get_swr_meter.assert_not_awaited()
+    radio.read_comp_meter.assert_awaited_once()
     assert radio.radio_state.alc_meter == 0
+    assert radio.radio_state.comp_meter == 0
     assert radio.radio_state.power_meter == 0
     assert radio.radio_state.swr_meter == 0
 
@@ -760,7 +765,7 @@ def test_legacy_yaesu_state_writes_are_observed_or_explicit_limitations() -> Non
         "sub.rf_gain": "observation:receiver.sub.operator_controls.rf_gain",
         "sub.squelch": "observation:receiver.sub.operator_controls.squelch",
         "alc_meter": "observation:global.meters.alc",
-        "comp_meter": "limitation: no canonical comp meter FieldPath in DEFAULT_FIELD_REGISTRY",
+        "comp_meter": "observation:global.meters.comp",
         "main.filter_width": "observation:receiver.main.active.freq_mode.filter_width",
         "main.agc": "observation:receiver.main.operator_controls.agc",
         "main.nb_level": "observation:receiver.main.operator_controls.nb_level",

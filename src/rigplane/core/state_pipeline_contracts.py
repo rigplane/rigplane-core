@@ -1150,6 +1150,9 @@ def _global_specs() -> tuple[FieldSpec, ...]:
         spec(FieldPath.global_("meters", "alc"), "int"),
         spec(FieldPath.global_("meters", "power"), "int"),
         spec(FieldPath.global_("meters", "swr"), "int"),
+        spec(FieldPath.global_("meters", "comp"), "int"),
+        spec(FieldPath.global_("meters", "vd"), "int"),
+        spec(FieldPath.global_("meters", "id"), "int"),
         spec(
             FieldPath.scope_control("display", "span", receiver_id="main"),
             "int",

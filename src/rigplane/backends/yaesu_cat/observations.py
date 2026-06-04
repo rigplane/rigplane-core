@@ -43,6 +43,10 @@ _SUB_S_METER = FieldPath.receiver("sub", "meters", "s_meter")
 _ALC_METER = FieldPath.global_("meters", "alc")
 _POWER_METER = FieldPath.global_("meters", "power")
 _SWR_METER = FieldPath.global_("meters", "swr")
+# PA compression meter (MOR-460). Cross-vendor neutral meter (also Icom CI-V
+# 0x15 0x14); the FTX-1 reads it via RM3. Emitted as a stream-like TX meter in
+# the same lane and under the same freshness/coalescing policy as alc/power/swr.
+_COMP_METER = FieldPath.global_("meters", "comp")
 # Global TX / operator-control setpoints (MOR-447). ``power_level`` is the
 # watt SETPOINT (CAT ``PC``), distinct from the ``global.meters.power`` meter.
 _POWER_LEVEL = FieldPath.global_("operator_controls", "power_level")
@@ -201,6 +205,8 @@ class YaesuObservationRadio(Protocol):
     async def read_s_meter(self, receiver: int = 0) -> int: ...
 
     async def read_alc_meter(self) -> int: ...
+
+    async def read_comp_meter(self) -> int: ...
 
     async def read_power_meter(self) -> int: ...
 
@@ -384,6 +390,16 @@ class YaesuObservationAdapter:
                     _SWR_METER,
                     await self.radio.read_swr_meter(),
                     native_id="read_swr_meter",
+                )
+            )
+        # COMP is the cross-vendor PA meter (MOR-460), emitted in the same lane
+        # and under the same meter freshness/coalescing policy as alc/power/swr.
+        if self._has_runtime_capability("meters") and self._can_poll(_COMP_METER):
+            observations.append(
+                adapter.observation(
+                    _COMP_METER,
+                    await self.radio.read_comp_meter(),
+                    native_id="read_comp_meter",
                 )
             )
         return tuple(observations)
