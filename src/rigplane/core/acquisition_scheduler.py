@@ -140,7 +140,27 @@ class AcquisitionRequest:
 
 @dataclass(frozen=True, slots=True)
 class EnsureFreshResult:
-    """Model-service result for a freshness request."""
+    """Model-service result for a synchronous (fire-and-queue) freshness request.
+
+    Returned by :meth:`StateModelService.ensure_fresh`. The call never awaits
+    a backend read, so this result describes only the *state at request time*:
+
+    - ``FRESH`` — the requested fields were already fresh and are returned
+      inline in :attr:`fields`; no acquisition was scheduled.
+    - ``QUEUED`` — acquisition was enqueued; :attr:`request` carries the
+      :class:`AcquisitionRequest` (including its ``timeout``, which bounds the
+      *backend executor's* in-flight read, not any caller await). The fields
+      are NOT yet fresh; the caller must re-project later or read back.
+    - ``DEFERRED`` — acquisition was held off (e.g. external CAT ownership);
+      :attr:`message` explains why. Also not yet fresh.
+    - ``UNAVAILABLE`` — the path cannot be acquired (unsupported / no hook);
+      :attr:`message` carries the diagnostic. The caller must use its own
+      fallback or surface unavailability.
+
+    In every non-``FRESH`` case the requested data has not been delivered yet:
+    a separate async poller drives the executor afterwards. Callers must not
+    treat this result as a completed read.
+    """
 
     status: AcquisitionStatus
     fields: tuple[FieldSnapshot, ...] = ()
@@ -382,7 +402,13 @@ class AcquisitionScheduler:
         reason: str,
         timeout: float | None = None,
     ) -> EnsureFreshResult:
-        """Queue acquisition for one or more field paths if policy allows it."""
+        """Queue acquisition for one or more field paths if policy allows it.
+
+        Synchronous and fire-and-queue: this only records the request (or
+        defers it under external CAT ownership) and returns immediately. The
+        enqueued :class:`AcquisitionRequest` carries ``timeout`` for the
+        backend executor's later in-flight read; nothing here awaits it.
+        """
 
         normalized_paths = _normalize_paths(paths)
         _validate_positive(max_age, label="max_age")
@@ -1314,7 +1340,15 @@ class RadioStateModelService:
         reason: str,
         timeout: float | None = None,
     ) -> EnsureFreshResult:
-        """Return fresh snapshots or queue acquisition through the scheduler."""
+        """Return fresh snapshots or queue acquisition through the scheduler.
+
+        Synchronous and non-blocking (see :class:`StateModelService`). Fresh
+        fields are returned inline; otherwise the request is delegated to
+        :meth:`AcquisitionScheduler.ensure_fresh`, which only *enqueues* the
+        backend request and returns at once. ``timeout`` is forwarded onto the
+        enqueued ``AcquisitionRequest`` for the backend executor; this method
+        never awaits the read.
+        """
 
         normalized_paths = _normalize_paths(paths)
         _validate_positive(max_age, label="max_age")

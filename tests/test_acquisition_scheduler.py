@@ -154,6 +154,45 @@ def test_model_service_queues_backend_neutral_request_for_stale_field() -> None:
     assert scheduler.pending_requests() == (result.request,)
 
 
+def test_ensure_fresh_is_synchronous_fire_and_queue_contract() -> None:
+    """MOR-431: ensure_fresh is a plain method (not a coroutine), returns a
+    concrete result synchronously, and only *enqueues* the backend request.
+
+    Asserts the documented contract: callers must NOT await it, the request is
+    queued (not yet executed), and ``timeout`` lands on the AcquisitionRequest
+    for the backend executor — there is no caller await for that timeout.
+    """
+
+    clock = FreshnessClock(start=70.0)
+    freq = FieldPath.active("main", "freq_mode", "freq_hz")
+    store = StateStore(freshness_clock=clock)
+    scheduler = AcquisitionScheduler(profile=_profile([freq]), clock=clock)
+    service = RadioStateModelService(store=store, scheduler=scheduler, clock=clock)
+
+    # Not a coroutine function: a caller that ``await``-ed it would crash.
+    assert not asyncio.iscoroutinefunction(service.ensure_fresh)
+
+    result = service.ensure_fresh(
+        freq,
+        max_age=0.25,
+        priority=AcquisitionPriority.USER,
+        reason="contract-check",
+        timeout=2.0,
+    )
+
+    # Returns a concrete (non-awaitable) result synchronously.
+    assert not asyncio.iscoroutine(result)
+    # The field was missing, so acquisition is only queued — never executed
+    # inline. No backend read has happened on return.
+    assert result.status is AcquisitionStatus.QUEUED
+    assert result.fields == ()
+    assert result.request is not None
+    # timeout is carried for the backend executor, not consumed as a caller
+    # await budget.
+    assert result.request.timeout == 2.0
+    assert scheduler.pending_requests() == (result.request,)
+
+
 def test_duplicate_requests_coalesce_with_highest_priority_and_urgent_deadline() -> (
     None
 ):

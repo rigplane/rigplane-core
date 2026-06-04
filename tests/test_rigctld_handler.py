@@ -372,6 +372,57 @@ async def test_get_freq_ensure_fresh_queues_canonical_request_with_real_service(
 
 
 @pytest.mark.asyncio
+async def test_ensure_fresh_skips_coroutine_service_per_sync_contract(
+    mock_radio: AsyncMock,
+) -> None:
+    """MOR-431: a service whose ensure_fresh is a coroutine violates the
+    synchronous StateModelService contract, so the handler skips it rather
+    than awaiting it, and still serves the request via store/readback.
+    """
+
+    class _AsyncContractViolatingService:
+        def __init__(self) -> None:
+            self.called = False
+
+        async def ensure_fresh(
+            self,
+            paths: object,
+            *,
+            max_age: float,
+            priority: str,
+            reason: str,
+            timeout: float | None = None,
+        ) -> object:  # pragma: no cover - must never be invoked
+            self.called = True
+            return object()
+
+    service = _AsyncContractViolatingService()
+    store = StateStore()
+    _apply_store_value(
+        store,
+        "receiver.main.active.freq_mode.freq_hz",
+        14_074_000,
+        max_age=1.0,
+    )
+    handler = RigctldHandler(
+        mock_radio,
+        RigctldConfig(cache_ttl=0.25),
+        state_store=store,
+        state_model_service=service,
+    )
+
+    freq_path = FieldPath.active("main", "freq_mode", "freq_hz")
+    result = handler._ensure_fresh((freq_path,), reason="rigctld.get_freq")  # noqa: SLF001
+
+    # Coroutine service is skipped (returns None), never awaited or called.
+    assert result is None
+    assert service.called is False
+    # The handler still serves the value from the fresh store projection.
+    resp = await handler.execute(get_cmd("get_freq"))
+    assert resp.values == ["14074000"]
+
+
+@pytest.mark.asyncio
 async def test_get_freq_stale_store_value_falls_through_to_radio_readback(
     mock_radio: AsyncMock,
 ) -> None:

@@ -611,7 +611,16 @@ class ObservationPollable(Protocol):
 
 @runtime_checkable
 class StateModelService(Protocol):
-    """Service capable of requesting fresh StateStore-backed fields."""
+    """Service capable of requesting fresh StateStore-backed fields.
+
+    ``ensure_fresh`` is a **synchronous, fire-and-queue** contract: it is a
+    plain (non-``async``) method and callers MUST NOT ``await`` it. See the
+    method docstring for the precise await/timeout semantics. Implementations
+    that need to schedule backend reads do so by enqueueing an
+    :class:`~rigplane.core.acquisition_scheduler.AcquisitionRequest`; the
+    backend executor runs later on a separate poller loop. A conforming
+    implementation never blocks the caller waiting for the read to complete.
+    """
 
     def ensure_fresh(
         self,
@@ -622,7 +631,34 @@ class StateModelService(Protocol):
         reason: str,
         timeout: float | None = None,
     ) -> EnsureFreshResult:
-        """Return fresh fields or enqueue acquisition for stale/missing fields."""
+        """Request freshness for ``paths`` and return immediately (no await).
+
+        Contract (callers depend on every clause):
+
+        - **Synchronous / non-blocking.** This is a regular method, not a
+          coroutine. It returns synchronously and does NOT ``await`` the
+          acquisition. If a field is already fresh it is returned inline
+          (``status == FRESH``); otherwise the request is *enqueued*
+          (``status == QUEUED``/``DEFERRED``) or rejected as
+          ``UNAVAILABLE`` — in none of these cases has a backend read yet
+          completed.
+        - **Fire-and-queue.** A non-``FRESH`` result means acquisition has
+          only been *scheduled*. The actual backend read is driven later by
+          a separate async poller loop (e.g. the web radio poller draining
+          ``scheduler.pending_requests()`` through the backend executor).
+        - **``timeout`` governs the backend executor, not a caller await.**
+          It is carried on the enqueued ``AcquisitionRequest.timeout`` and is
+          interpreted by the executor/poller as a deadline for the in-flight
+          backend read (after which the request is expired and a failure is
+          recorded). It is NOT a budget for any await inside this call —
+          there is no such await.
+        - **Callers must handle "not yet fresh".** Because freshness is not
+          guaranteed on return, callers re-project the StateStore on the next
+          observation and, on a miss, fall back to their own readback or
+          surface unavailability (rigctld returns the value once observed, or
+          ``EIO``/``ENIMPL`` per command). Do not assume the field is fresh
+          immediately after this returns.
+        """
         ...
 
 

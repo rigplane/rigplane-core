@@ -701,6 +701,20 @@ class RigctldHandler:
     def _ensure_fresh(
         self, paths: Sequence[FieldPath], *, reason: str
     ) -> EnsureFreshResult | None:
+        """Request freshness synchronously for ``paths`` (fire-and-queue).
+
+        The :class:`~rigplane.core.radio_protocol.StateModelService` contract
+        is synchronous: ``ensure_fresh`` enqueues acquisition and returns at
+        once without awaiting the backend read. This handler therefore calls
+        it inline and never awaits the result. A service whose ``ensure_fresh``
+        is a coroutine violates that contract, so it is skipped here (returning
+        ``None``) rather than awaited — the caller falls through to its normal
+        StateStore re-projection / readback path. ``cache_ttl <= 0`` disables
+        freshness entirely. On an ``UNAVAILABLE`` result a diagnostic is
+        recorded; in all cases the caller re-projects the StateStore (see
+        :meth:`_project_with_freshness`) and reads back on a miss, because the
+        request being queued does not mean the field is fresh yet.
+        """
         service = self._state_model_service
         if service is None or self._config.cache_ttl <= 0:
             return None
