@@ -28,6 +28,7 @@ def _make_radio() -> MagicMock:
         "squelch",
         "meters",
         "filter_width",
+        "if_shift",
         "tx",
         "vox",
         "compressor",
@@ -74,6 +75,15 @@ def _make_radio() -> MagicMock:
     radio.read_preamp = AsyncMock(return_value=2)
     radio.get_agc = AsyncMock(return_value=3)
     radio.read_agc = AsyncMock(return_value=3)
+    # Filter / IF-shift / narrow DSP controls (MOR-445). MAIN-only: the
+    # ``read_filter_width`` decode reads (but never writes) legacy state, and
+    # IF-shift/narrow have no per-receiver CAT command (no IS1/NA1).
+    radio.get_filter_width = AsyncMock(return_value=500)
+    radio.read_filter_width = AsyncMock(return_value=500)
+    radio.get_if_shift = AsyncMock(return_value=200)
+    radio.read_if_shift = AsyncMock(return_value=200)
+    radio.get_narrow = AsyncMock(return_value=True)
+    radio.read_narrow = AsyncMock(return_value=True)
     # TX meters: ALC mirrors power/swr as a stream-like meter (MOR-448).
     radio.get_alc_meter = AsyncMock(return_value=42)
     radio.read_alc_meter = AsyncMock(return_value=42)
@@ -138,6 +148,9 @@ class _SideEffectingYaesuRadio:
         self.radio_state.main.att = 16
         self.radio_state.main.preamp = 17
         self.radio_state.main.agc = 18
+        self.radio_state.main.filter_width = 19
+        self.radio_state.main.if_shift = 20
+        self.radio_state.main.narrow = False
 
     async def read_freq(self, receiver: int = 0) -> int:
         return 14_074_000 if receiver == 0 else 7_074_000
@@ -289,6 +302,30 @@ class _SideEffectingYaesuRadio:
         self.radio_state.main.agc = value
         return value
 
+    async def read_filter_width(self, receiver: int = 0) -> int:
+        return 500
+
+    async def get_filter_width(self, receiver: int = 0) -> int:
+        value = await self.read_filter_width(receiver)
+        self.radio_state.main.filter_width = value
+        return value
+
+    async def read_if_shift(self, receiver: int = 0) -> int:
+        return 200
+
+    async def get_if_shift(self, receiver: int = 0) -> int:
+        value = await self.read_if_shift(receiver)
+        self.radio_state.main.if_shift = value
+        return value
+
+    async def read_narrow(self, receiver: int = 0) -> bool:
+        return True
+
+    async def get_narrow(self, receiver: int = 0) -> bool:
+        value = await self.read_narrow(receiver)
+        self.radio_state.main.narrow = value
+        return value
+
 
 @pytest.mark.asyncio
 async def test_medium_poll_emits_frequency_mode_and_ptt_observations() -> None:
@@ -301,18 +338,30 @@ async def test_medium_poll_emits_frequency_mode_and_ptt_observations() -> None:
 
     observations = await adapter.poll_medium()
 
+    # filter_width is a ``freq_mode`` field emitted in the freq/mode lane
+    # (MOR-445), MAIN-only and gated on the ``filter_width`` capability, after
+    # PTT — mirroring the legacy poller which reads it in ``_poll_medium``.
     assert [(str(item.path), item.value) for item in observations] == [
         ("receiver.main.active.freq_mode.freq_hz", 14_074_000),
         ("receiver.main.active.freq_mode.mode", "USB"),
         ("receiver.sub.active.freq_mode.freq_hz", 7_074_000),
         ("receiver.sub.active.freq_mode.mode", "LSB"),
         ("global.tx_state.ptt", False),
+        ("receiver.main.active.freq_mode.filter_width", 500),
     ]
+    radio.read_filter_width.assert_awaited_once()
+    radio.get_filter_width.assert_not_awaited()
     assert {item.source.source for item in observations} == {"yaesu_poll_response"}
     assert {item.source.provider for item in observations} == {"yaesu_cat"}
     assert {item.source.transport for item in observations} == {"serial"}
     assert all(item.timestamp_monotonic == 123.456 for item in observations)
-    assert all(item.max_age == 8.0 for item in observations)
+    # freq/mode/ptt use the default 8.0s freshness TTL; filter_width carries
+    # its own slow-control TTL (120.0s) from the per-field policy, even though
+    # it shares the freq/mode lane (MOR-445).
+    by_path = {str(item.path): item for item in observations}
+    assert by_path["global.tx_state.ptt"].max_age == 8.0
+    assert by_path["receiver.main.active.freq_mode.freq_hz"].max_age == 8.0
+    assert by_path["receiver.main.active.freq_mode.filter_width"].max_age == 120.0
     assert all(item.source.capability_id == str(item.path) for item in observations)
 
 
@@ -332,6 +381,9 @@ async def test_slow_poll_emits_declared_control_observations_only() -> None:
     # legacy poller which only writes ``main.{att,preamp,agc}``. The
     # attenuator ``read`` returns a bool; the int registry path receives the
     # coerced ``int(True) == 1``.
+    # IF-shift (operator_controls, gated on ``if_shift`` cap) and narrow
+    # (operator_toggles, unconditional like AGC) are MAIN-only DSP controls
+    # (MOR-445), emitted after the RF front-end in the slow-control lane.
     assert [(str(item.path), item.value) for item in observations] == [
         ("receiver.main.operator_controls.af_level", 128),
         ("receiver.main.operator_controls.rf_gain", 180),
@@ -342,6 +394,8 @@ async def test_slow_poll_emits_declared_control_observations_only() -> None:
         ("receiver.main.operator_controls.att", 1),
         ("receiver.main.operator_controls.preamp", 2),
         ("receiver.main.operator_controls.agc", 3),
+        ("receiver.main.operator_controls.if_shift", 200),
+        ("receiver.main.operator_toggles.narrow", True),
     ]
     assert all(item.source.source == "yaesu_poll_response" for item in observations)
     assert all(item.max_age == 120.0 for item in observations)
@@ -351,13 +405,16 @@ async def test_slow_poll_emits_declared_control_observations_only() -> None:
     assert radio.read_attenuator.await_count == 1
     assert radio.read_preamp.await_count == 1
     assert radio.read_agc.await_count == 1
-    assert all(isinstance(item.value, int) for item in observations)
+    assert radio.read_if_shift.await_count == 1
+    assert radio.read_narrow.await_count == 1
     radio.get_af_level.assert_not_awaited()
     radio.get_rf_gain.assert_not_awaited()
     radio.get_squelch.assert_not_awaited()
     radio.get_attenuator.assert_not_awaited()
     radio.get_preamp.assert_not_awaited()
     radio.get_agc.assert_not_awaited()
+    radio.get_if_shift.assert_not_awaited()
+    radio.get_narrow.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -372,13 +429,14 @@ async def test_slow_poll_skips_sub_controls_without_matching_runtime_capability(
 
     observations = await adapter.poll_slow_controls()
 
-    # ATT/preamp are gated by their runtime capabilities (dropped here);
-    # AGC has no FTX-1 capability tag and mirrors the legacy poller's
-    # unconditional poll, so it still emits when its policy is pollable.
+    # ATT/preamp/if_shift are gated by their runtime capabilities (dropped
+    # here); AGC and narrow have no FTX-1 capability tag and mirror the legacy
+    # poller's unconditional poll, so they still emit when policy is pollable.
     assert [(str(item.path), item.value) for item in observations] == [
         ("receiver.main.operator_controls.af_level", 128),
         ("receiver.sub.operator_controls.af_level", 64),
         ("receiver.main.operator_controls.agc", 3),
+        ("receiver.main.operator_toggles.narrow", True),
     ]
     assert radio.read_af_level.await_count == 2
     radio.read_rf_gain.assert_not_awaited()
@@ -386,6 +444,8 @@ async def test_slow_poll_skips_sub_controls_without_matching_runtime_capability(
     radio.read_attenuator.assert_not_awaited()
     radio.read_preamp.assert_not_awaited()
     assert radio.read_agc.await_count == 1
+    radio.read_if_shift.assert_not_awaited()
+    assert radio.read_narrow.await_count == 1
     radio.get_af_level.assert_not_awaited()
     radio.get_rf_gain.assert_not_awaited()
     radio.get_squelch.assert_not_awaited()
@@ -559,6 +619,10 @@ async def test_adapter_uses_read_only_yaesu_paths_when_getters_mutate_state() ->
         # AGC has no FTX-1 capability tag → unconditional, MAIN-only; ATT and
         # preamp are skipped because this radio lacks those runtime caps.
         ("receiver.main.operator_controls.agc", 3),
+        # narrow is unconditional (like AGC) → emits; filter_width and if_shift
+        # are skipped because this radio lacks the ``filter_width`` /
+        # ``if_shift`` runtime caps.
+        ("receiver.main.operator_toggles.narrow", True),
         ("global.operator_controls.power_level", 55),
         ("global.operator_controls.mic_gain", 40),
         ("global.tx_state.compressor_on", True),
@@ -591,6 +655,12 @@ async def test_adapter_uses_read_only_yaesu_paths_when_getters_mutate_state() ->
     assert radio.radio_state.main.att == 16
     assert radio.radio_state.main.preamp == 17
     assert radio.radio_state.main.agc == 18
+    # Filter / IF-shift / narrow read_* paths must not mutate legacy state
+    # either — even ``read_filter_width``, which READS the mode mirror for its
+    # width-table decode but never writes ``self._state`` (MOR-445).
+    assert radio.radio_state.main.filter_width == 19
+    assert radio.radio_state.main.if_shift == 20
+    assert radio.radio_state.main.narrow is False
 
 
 @pytest.mark.asyncio
@@ -618,3 +688,47 @@ async def test_public_get_data_mode_returns_flat_value_without_state_synthesis()
     assert radio.radio_state is state_before
     # The read derives from the mirror without mutating it.
     assert radio.radio_state.main.mode == "USB-D"
+
+
+@pytest.mark.asyncio
+async def test_read_filter_width_reads_mode_without_mutating_state() -> None:
+    """MOR-445: ``read_filter_width`` may READ the mode mirror for its
+    width-table decode, but it must NOT WRITE ``self._state``.
+
+    ``get_filter_width`` (the public, mutating path) and ``read_filter_width``
+    return the same Hz value, but only ``read_filter_width`` is wired into the
+    observation adapter so that legacy state is never mutated by polling.
+    """
+    radio = YaesuCatRadio("/dev/null", audio_driver=MagicMock())
+    # SSB table → code 12 decodes to 2400 Hz (see rigs/ftx1.toml SSB table).
+    radio.radio_state.main.mode = "USB"
+    radio.radio_state.main.filter_width = 999
+    radio._query = AsyncMock(return_value={"code": 12})  # type: ignore[method-assign]
+    state_before = radio.radio_state
+
+    value = await radio.read_filter_width(0)
+
+    assert value == 2400
+    assert isinstance(value, int)
+    # Read of the mode mirror is fine; a write to legacy state is not.
+    assert radio.radio_state is state_before
+    assert radio.radio_state.main.mode == "USB"
+    assert radio.radio_state.main.filter_width == 999
+
+
+@pytest.mark.asyncio
+async def test_read_if_shift_and_narrow_are_pure_reads() -> None:
+    """MOR-445: ``read_if_shift`` / ``read_narrow`` are pure CAT reads."""
+    radio = YaesuCatRadio("/dev/null", audio_driver=MagicMock())
+    radio.radio_state.main.if_shift = 111
+    radio.radio_state.main.narrow = False
+
+    radio._query = AsyncMock(  # type: ignore[method-assign]
+        return_value={"sign": "+", "offset": 200}
+    )
+    assert await radio.read_if_shift(0) == 200
+    assert radio.radio_state.main.if_shift == 111
+
+    radio._query = AsyncMock(return_value={"state": "1"})  # type: ignore[method-assign]
+    assert await radio.read_narrow(0) is True
+    assert radio.radio_state.main.narrow is False

@@ -510,6 +510,19 @@ _ICOM_V2_FIELD_FAMILIES: tuple[tuple[FieldPath, str, str | None, Any], ...] = (
         "main",
         True,
     ),
+    # IF-shift / narrow promoted as neutral DSP controls (MOR-445).
+    (
+        FieldPath.receiver("main", "operator_controls", "if_shift"),
+        "ifShift",
+        "main",
+        200,
+    ),
+    (
+        FieldPath.receiver("main", "operator_toggles", "narrow"),
+        "narrow",
+        "main",
+        True,
+    ),
     # receiver freq_mode (active slot)
     (FieldPath.active("main", "freq_mode", "data_mode"), "dataMode", "main", 1),
     (

@@ -45,6 +45,14 @@ _MIC_GAIN = FieldPath.global_("operator_controls", "mic_gain")
 _COMPRESSOR_ON = FieldPath.global_("tx_state", "compressor_on")
 _COMPRESSOR_LEVEL = FieldPath.global_("operator_controls", "compressor_level")
 _VOX_ON = FieldPath.global_("tx_state", "vox_on")
+# Filter / IF-shift / narrow DSP controls (MOR-445). MAIN-only: the FTX-1 has
+# no per-receiver CAT command for IF-shift/narrow (no IS1/NA1), and the legacy
+# poller only writes ``main.{filter_width,if_shift,narrow}``. ``filter_width``
+# is a ``freq_mode`` ACTIVE-slot field emitted in the freq/mode lane; IF-shift
+# and narrow are per-receiver operator controls emitted in the slow lane.
+_MAIN_FILTER_WIDTH = FieldPath.active("main", "freq_mode", "filter_width")
+_MAIN_IF_SHIFT = FieldPath.receiver("main", "operator_controls", "if_shift")
+_MAIN_NARROW = FieldPath.receiver("main", "operator_toggles", "narrow")
 YAESU_PTT_PATH = _PTT
 
 
@@ -68,6 +76,12 @@ class YaesuObservationRadio(Protocol):
     async def read_preamp(self, band: int = 0) -> int: ...
 
     async def read_agc(self, receiver: int = 0) -> int: ...
+
+    async def read_filter_width(self, receiver: int = 0) -> int: ...
+
+    async def read_if_shift(self, receiver: int = 0) -> int: ...
+
+    async def read_narrow(self, receiver: int = 0) -> bool: ...
 
     async def read_s_meter(self, receiver: int = 0) -> int: ...
 
@@ -151,6 +165,20 @@ class YaesuObservationAdapter:
                     _PTT,
                     await self.radio.read_ptt(),
                     native_id="read_ptt",
+                )
+            )
+        # filter_width (MOR-445) is a ``freq_mode`` ACTIVE-slot field, so it
+        # belongs in the freq/mode lane — mirroring the legacy poller, which
+        # reads it in ``_poll_medium`` for responsive knob tracking. MAIN-only
+        # and gated on the ``filter_width`` runtime capability.
+        if self._has_runtime_capability("filter_width") and self._can_poll(
+            _MAIN_FILTER_WIDTH
+        ):
+            observations.append(
+                adapter.observation(
+                    _MAIN_FILTER_WIDTH,
+                    await self.radio.read_filter_width(0),
+                    native_id="read_filter_width",
                 )
             )
         return tuple(observations)
@@ -311,6 +339,27 @@ class YaesuObservationAdapter:
                     _MAIN_AGC,
                     await self.radio.read_agc(0),
                     native_id="read_agc",
+                )
+            )
+        # IF-shift / narrow (MOR-445) — MAIN-only DSP controls. IF-shift gates
+        # on the ``if_shift`` capability (matching the legacy poller's
+        # ``if_shift`` gate); narrow has no FTX-1 capability tag and is polled
+        # unconditionally (gated by policy only), mirroring the legacy poller's
+        # "always — lightweight query" treatment, like AGC.
+        if self._has_runtime_capability("if_shift") and self._can_poll(_MAIN_IF_SHIFT):
+            observations.append(
+                adapter.observation(
+                    _MAIN_IF_SHIFT,
+                    await self.radio.read_if_shift(0),
+                    native_id="read_if_shift",
+                )
+            )
+        if self._can_poll(_MAIN_NARROW):
+            observations.append(
+                adapter.observation(
+                    _MAIN_NARROW,
+                    await self.radio.read_narrow(0),
+                    native_id="read_narrow",
                 )
             )
         return tuple(observations)

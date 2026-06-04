@@ -1118,12 +1118,14 @@ class YaesuCatRadio:
             return cast("tuple[int, ...]", rule.table)
         return None
 
-    async def get_filter_width(self, receiver: int = 0) -> int:
-        """Get filter width in Hz (SH0/SH1).
+    async def read_filter_width(self, receiver: int = 0) -> int:
+        """Read filter width in Hz (SH0/SH1) without mutating legacy state.
 
         Translates the radio's table-index code to Hz using the active
-        profile's filter rule for the current mode. When no table is
-        defined, the raw index is returned (compat fallback).
+        profile's filter rule for the current mode. The current mode is READ
+        from the legacy ``self._state`` mirror to pick the right width table,
+        but the mirror is never written. When no table is defined, the raw
+        index is returned (compat fallback).
 
         Args:
             receiver: 0=MAIN, 1=SUB.
@@ -1151,6 +1153,17 @@ class YaesuCatRadio:
         except ValueError:
             return index
 
+    async def get_filter_width(self, receiver: int = 0) -> int:
+        """Get filter width in Hz (SH0/SH1).
+
+        Args:
+            receiver: 0=MAIN, 1=SUB.
+
+        Returns:
+            Filter width in Hz.
+        """
+        return await self.read_filter_width(receiver)
+
     async def set_filter_width(self, width_hz: int, receiver: int = 0) -> None:
         """Set filter width in Hz (SH0/SH1).
 
@@ -1163,8 +1176,12 @@ class YaesuCatRadio:
         index = width_hz if table is None else hz_to_table_index(width_hz, table=table)
         await self._write(cmd, code=index)
 
-    async def get_if_shift(self, receiver: int = 0) -> int:
-        """Get IF shift offset in Hz (signed, IS0).
+    async def read_if_shift(self, receiver: int = 0) -> int:
+        """Read IF shift offset in Hz without mutating legacy state.
+
+        The FTX-1 has a single IF-shift path (``IS0``); the ``receiver``
+        argument is accepted for protocol symmetry but does not select a
+        per-receiver command (no ``IS1`` exists).
 
         Returns:
             Signed offset in Hz (negative = downshift).
@@ -1173,15 +1190,32 @@ class YaesuCatRadio:
         offset: int = result["offset"]
         return -offset if result["sign"] == "-" else offset
 
+    async def get_if_shift(self, receiver: int = 0) -> int:
+        """Get IF shift offset in Hz (signed, IS0).
+
+        Returns:
+            Signed offset in Hz (negative = downshift).
+        """
+        return await self.read_if_shift(receiver)
+
     async def set_if_shift(self, offset: int, receiver: int = 0) -> None:
         """Set IF shift offset in Hz (signed, IS0)."""
         sign = "+" if offset >= 0 else "-"
         await self._write("set_if_shift", sign=sign, offset=abs(offset))
 
-    async def get_narrow(self, receiver: int = 0) -> bool:
-        """Get narrow filter state (True = narrow)."""
+    async def read_narrow(self, receiver: int = 0) -> bool:
+        """Read narrow filter state without mutating legacy state.
+
+        The FTX-1 has a single narrow path (``NA0``); the ``receiver``
+        argument is accepted for protocol symmetry but does not select a
+        per-receiver command (no ``NA1`` exists).
+        """
         result = await self._query("get_narrow")
         return bool(result["state"] == "1")
+
+    async def get_narrow(self, receiver: int = 0) -> bool:
+        """Get narrow filter state (True = narrow)."""
+        return await self.read_narrow(receiver)
 
     async def set_narrow(self, state: bool, receiver: int = 0) -> None:
         """Set narrow filter state."""

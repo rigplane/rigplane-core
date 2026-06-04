@@ -104,6 +104,12 @@ def make_radio(
     radio.get_clarifier_freq = AsyncMock(return_value=clarifier_freq)
     radio.get_manual_notch = AsyncMock(return_value=manual_notch)
     radio.get_narrow = AsyncMock(return_value=narrow)
+    radio.read_narrow = AsyncMock(return_value=narrow)
+    # Filter / IF-shift DSP control reads (MOR-445).
+    radio.get_filter_width = AsyncMock(return_value=2400)
+    radio.read_filter_width = AsyncMock(return_value=2400)
+    radio.get_if_shift = AsyncMock(return_value=0)
+    radio.read_if_shift = AsyncMock(return_value=0)
     radio.get_vfo_select = AsyncMock(return_value=vfo_select)
     radio.get_alc_meter = AsyncMock(return_value=0)
     radio.read_alc_meter = AsyncMock(return_value=0)
@@ -158,6 +164,9 @@ class _SideEffectingYaesuRadio:
         self.radio_state.main.att = 14
         self.radio_state.main.preamp = 15
         self.radio_state.main.agc = 16
+        self.radio_state.main.filter_width = 17
+        self.radio_state.main.if_shift = 18
+        self.radio_state.main.narrow = False
         self.profile = get_radio_profile("FTX-1")
         self.legacy_getter_calls = 0
 
@@ -300,6 +309,33 @@ class _SideEffectingYaesuRadio:
         self.legacy_getter_calls += 1
         value = await self.read_agc(receiver)
         self.radio_state.main.agc = value
+        return value
+
+    async def read_filter_width(self, receiver: int = 0) -> int:
+        return 2400
+
+    async def get_filter_width(self, receiver: int = 0) -> int:
+        self.legacy_getter_calls += 1
+        value = await self.read_filter_width(receiver)
+        self.radio_state.main.filter_width = value
+        return value
+
+    async def read_if_shift(self, receiver: int = 0) -> int:
+        return 200
+
+    async def get_if_shift(self, receiver: int = 0) -> int:
+        self.legacy_getter_calls += 1
+        value = await self.read_if_shift(receiver)
+        self.radio_state.main.if_shift = value
+        return value
+
+    async def read_narrow(self, receiver: int = 0) -> bool:
+        return True
+
+    async def get_narrow(self, receiver: int = 0) -> bool:
+        self.legacy_getter_calls += 1
+        value = await self.read_narrow(receiver)
+        self.radio_state.main.narrow = value
         return value
 
 
@@ -532,12 +568,15 @@ async def test_medium_poll_emits_observations_without_legacy_state_callback() ->
     await poller._poll_medium()  # noqa: SLF001
 
     assert legacy_calls == []
+    # filter_width shares the freq/mode lane (MOR-445); ``make_radio`` declares
+    # the ``filter_width`` cap, so it emits after PTT, MAIN-only.
     assert [(str(item.path), item.value) for item in observations] == [
         ("receiver.main.active.freq_mode.freq_hz", 14_074_000),
         ("receiver.main.active.freq_mode.mode", "USB"),
         ("receiver.sub.active.freq_mode.freq_hz", 7_074_000),
         ("receiver.sub.active.freq_mode.mode", "LSB"),
         ("global.tx_state.ptt", True),
+        ("receiver.main.active.freq_mode.filter_width", 2400),
     ]
     assert {item.source.source for item in observations} == {"yaesu_poll_response"}
 
@@ -608,6 +647,9 @@ async def test_observation_poller_uses_read_only_paths_when_getters_mutate_state
         # ATT/preamp need their runtime caps (absent here); AGC is
         # unconditional and MAIN-only, mirroring the legacy poller.
         ("receiver.main.operator_controls.agc", 3),
+        # filter_width/if_shift need their runtime caps (absent here); narrow
+        # is unconditional and MAIN-only, like AGC (MOR-445).
+        ("receiver.main.operator_toggles.narrow", True),
         ("global.operator_controls.power_level", 55),
         ("global.operator_controls.mic_gain", 40),
         ("global.tx_state.compressor_on", True),
@@ -636,6 +678,11 @@ async def test_observation_poller_uses_read_only_paths_when_getters_mutate_state
     assert radio.radio_state.main.att == 14
     assert radio.radio_state.main.preamp == 15
     assert radio.radio_state.main.agc == 16
+    # Filter / IF-shift / narrow read_* paths must not mutate legacy state
+    # (MOR-445), including read_filter_width which reads but never writes mode.
+    assert radio.radio_state.main.filter_width == 17
+    assert radio.radio_state.main.if_shift == 18
+    assert radio.radio_state.main.narrow is False
 
 
 @pytest.mark.asyncio
@@ -693,7 +740,7 @@ def test_legacy_yaesu_state_writes_are_observed_or_explicit_limitations() -> Non
         "sub.squelch": "observation:receiver.sub.operator_controls.squelch",
         "alc_meter": "observation:global.meters.alc",
         "comp_meter": "limitation: no canonical comp meter FieldPath in DEFAULT_FIELD_REGISTRY",
-        "main.filter_width": "limitation: filter_width lacks FTX-1 pollable acquisition policy",
+        "main.filter_width": "observation:receiver.main.active.freq_mode.filter_width",
         "main.agc": "observation:receiver.main.operator_controls.agc",
         "main.nb_level": "limitation: NB level lacks canonical acquisition profile coverage",
         "main.nb": "limitation: NB toggle lacks FTX-1 pollable acquisition policy",
@@ -711,13 +758,13 @@ def test_legacy_yaesu_state_writes_are_observed_or_explicit_limitations() -> Non
         "main.preamp": "observation:receiver.main.operator_controls.preamp",
         "tuner_status": "limitation: tuner status lacks canonical acquisition profile coverage",
         "main.contour": "limitation: contour lacks canonical acquisition profile coverage",
-        "main.if_shift": "limitation: IF shift lacks canonical acquisition profile coverage",
+        "main.if_shift": "observation:receiver.main.operator_controls.if_shift",
         "rit_on": "limitation: RIT state lacks canonical acquisition profile coverage",
         "rit_tx": "limitation: XIT state lacks canonical acquisition profile coverage",
         "rit_freq": "limitation: clarifier offset lacks canonical acquisition profile coverage",
         "main.manual_notch": "limitation: manual notch lacks canonical acquisition profile coverage",
         "main.manual_notch_freq": "limitation: manual notch frequency lacks canonical acquisition profile coverage",
-        "main.narrow": "limitation: Yaesu narrow flag lacks canonical acquisition profile coverage",
+        "main.narrow": "observation:receiver.main.operator_toggles.narrow",
         "key_speed": "limitation: CW key speed lacks canonical acquisition profile coverage",
         "cw_pitch": "limitation: CW pitch lacks canonical acquisition profile coverage",
         "break_in": "limitation: break-in lacks canonical acquisition profile coverage",

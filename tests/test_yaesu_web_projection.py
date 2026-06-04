@@ -47,6 +47,20 @@ _RF_FRONT_END_CASES = (
 # has run), so it projects ``available`` exactly like power/swr.
 _TX_METER_CASES = (("global.meters.alc", "alcMeter", 42),)
 
+# (store path, public fieldStatus key, expected value) for the MAIN-only
+# IF-shift / narrow DSP controls (MOR-445), emitted in the slow-control lane.
+_DSP_CONTROL_CASES = (
+    ("receiver.main.operator_controls.if_shift", "main.ifShift", 200),
+    ("receiver.main.operator_toggles.narrow", "main.narrow", True),
+)
+
+# (store path, public fieldStatus key, expected value) for filter_width
+# (MOR-445). It is a ``freq_mode`` ACTIVE-slot field, emitted in the freq/mode
+# (medium) lane rather than the slow-control lane.
+_FILTER_WIDTH_CASES = (
+    ("receiver.main.active.freq_mode.filter_width", "main.filterWidth", 500),
+)
+
 
 def _clock() -> float:
     return 123.456
@@ -71,6 +85,8 @@ def _make_radio() -> MagicMock:
         "af_level",
         "rf_gain",
         "squelch",
+        "filter_width",
+        "if_shift",
     }
     # Power emits the watt SETPOINT (read_power), not the RM5 meter.
     radio.read_power = AsyncMock(return_value=(2, 55))
@@ -92,6 +108,14 @@ def _make_radio() -> MagicMock:
     radio.read_swr_meter = AsyncMock(return_value=120)
     # An unrelated RX-meter read used to prove no snap-back.
     radio.read_s_meter = AsyncMock(return_value=150)
+    # Filter / IF-shift / narrow DSP controls (MOR-445). filter_width is read
+    # in the medium (freq/mode) lane; if_shift/narrow in the slow lane.
+    radio.read_freq = AsyncMock(side_effect=lambda receiver=0: 14_074_000)
+    radio.read_mode = AsyncMock(side_effect=lambda receiver=0: ("USB", None))
+    radio.read_ptt = AsyncMock(return_value=False)
+    radio.read_filter_width = AsyncMock(return_value=500)
+    radio.read_if_shift = AsyncMock(return_value=200)
+    radio.read_narrow = AsyncMock(return_value=True)
     return radio
 
 
@@ -115,6 +139,11 @@ async def _apply_slow_controls(store: StateStore, radio: MagicMock) -> None:
 
 async def _apply_tx_meters(store: StateStore, radio: MagicMock) -> None:
     for observation in await _adapter(radio).poll_tx_meters():
+        store.apply(observation)
+
+
+async def _apply_medium(store: StateStore, radio: MagicMock) -> None:
+    for observation in await _adapter(radio).poll_medium():
         store.apply(observation)
 
 
@@ -246,6 +275,102 @@ async def test_tx_meter_project_available_for_fresh_sample() -> None:
     # Meters expire on a short TTL, but a freshly applied sample still reports
     # FRESH (no decay tick) and therefore projects ``available``.
     for _store_path, public_path, _expected in _TX_METER_CASES:
+        status = payload["fieldStatus"][public_path]
+        assert status["observed"] is True
+        assert status["availability"] == "available"
+
+
+@pytest.mark.asyncio
+async def test_dsp_controls_observation_value() -> None:
+    store = StateStore()
+    radio = _make_radio()
+
+    await _apply_slow_controls(store, radio)
+
+    snapshot = store.snapshot()
+    for store_path, _public_path, expected in _DSP_CONTROL_CASES:
+        assert snapshot.field(store_path).value == expected
+
+
+@pytest.mark.asyncio
+async def test_dsp_controls_survive_unrelated_observation() -> None:
+    store = StateStore()
+    radio = _make_radio()
+
+    await _apply_slow_controls(store, radio)
+    # An unrelated RX-meter observation on a later cycle must not disturb the
+    # IF-shift / narrow controls (no snap-back to the default snapshot value).
+    for observation in await _adapter(radio).poll_rx_meters():
+        store.apply(observation)
+
+    snapshot = store.snapshot()
+    for store_path, _public_path, expected in _DSP_CONTROL_CASES:
+        assert snapshot.field(store_path).value == expected
+
+
+@pytest.mark.asyncio
+async def test_dsp_controls_project_available() -> None:
+    store = StateStore()
+    radio = _make_radio()
+
+    await _apply_slow_controls(store, radio)
+    for observation in await _adapter(radio).poll_rx_meters():
+        store.apply(observation)
+
+    payload = build_public_state_payload_from_snapshot(
+        store.snapshot(),
+        radio=None,
+        receiver_count=2,
+    )
+
+    for _store_path, public_path, _expected in _DSP_CONTROL_CASES:
+        status = payload["fieldStatus"][public_path]
+        assert status["observed"] is True
+        assert status["availability"] == "available"
+
+
+@pytest.mark.asyncio
+async def test_filter_width_observation_value_lands_at_active_slot_path() -> None:
+    store = StateStore()
+    radio = _make_radio()
+
+    await _apply_medium(store, radio)
+
+    snapshot = store.snapshot()
+    for store_path, _public_path, expected in _FILTER_WIDTH_CASES:
+        assert snapshot.field(store_path).value == expected
+
+
+@pytest.mark.asyncio
+async def test_filter_width_survives_unrelated_observation() -> None:
+    store = StateStore()
+    radio = _make_radio()
+
+    await _apply_medium(store, radio)
+    for observation in await _adapter(radio).poll_rx_meters():
+        store.apply(observation)
+
+    snapshot = store.snapshot()
+    for store_path, _public_path, expected in _FILTER_WIDTH_CASES:
+        assert snapshot.field(store_path).value == expected
+
+
+@pytest.mark.asyncio
+async def test_filter_width_projects_available() -> None:
+    store = StateStore()
+    radio = _make_radio()
+
+    await _apply_medium(store, radio)
+    for observation in await _adapter(radio).poll_rx_meters():
+        store.apply(observation)
+
+    payload = build_public_state_payload_from_snapshot(
+        store.snapshot(),
+        radio=None,
+        receiver_count=2,
+    )
+
+    for _store_path, public_path, _expected in _FILTER_WIDTH_CASES:
         status = payload["fieldStatus"][public_path]
         assert status["observed"] is True
         assert status["availability"] == "available"

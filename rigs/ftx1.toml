@@ -72,6 +72,9 @@ polling_only = [
     "receiver.main.operator_controls.att",
     "receiver.main.operator_controls.preamp",
     "receiver.main.operator_controls.agc",
+    "receiver.main.operator_controls.if_shift",
+    "receiver.main.operator_toggles.narrow",
+    "receiver.main.active.freq_mode.filter_width",
     "global.operator_controls.power_level",
     "global.operator_controls.mic_gain",
     "global.tx_state.compressor_on",
@@ -163,6 +166,21 @@ cadence_seconds = 30.0
 freshness_ttl_seconds = 120.0
 
 [state_acquisition.field_policies."receiver.main.operator_controls.agc"]
+cadence_seconds = 30.0
+freshness_ttl_seconds = 120.0
+
+# IF-shift / narrow / filter_width DSP controls (MOR-445). filter_width is a
+# slow-changing control (not a meter), so it uses the slow-control cadence
+# even though it is emitted in the freq/mode lane.
+[state_acquisition.field_policies."receiver.main.operator_controls.if_shift"]
+cadence_seconds = 30.0
+freshness_ttl_seconds = 120.0
+
+[state_acquisition.field_policies."receiver.main.operator_toggles.narrow"]
+cadence_seconds = 30.0
+freshness_ttl_seconds = 120.0
+
+[state_acquisition.field_policies."receiver.main.active.freq_mode.filter_width"]
 cadence_seconds = 30.0
 freshness_ttl_seconds = 120.0
 
