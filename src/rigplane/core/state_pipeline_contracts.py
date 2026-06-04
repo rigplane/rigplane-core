@@ -1011,6 +1011,21 @@ def _receiver_specs(receiver_id: str) -> tuple[FieldSpec, ...]:
             writable=True,
         ),
         spec(
+            FieldPath.receiver(receiver_id, "operator_controls", "audio_peak_filter"),
+            "int",
+            writable=True,
+        ),
+        spec(
+            FieldPath.receiver(receiver_id, "operator_controls", "apf_type_level"),
+            "int",
+            writable=True,
+        ),
+        spec(
+            FieldPath.receiver(receiver_id, "operator_toggles", "twin_peak_filter"),
+            "bool",
+            writable=True,
+        ),
+        spec(
             FieldPath.active(receiver_id, "freq_mode", "data_mode"),
             "int",
             writable=True,

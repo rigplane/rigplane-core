@@ -970,6 +970,12 @@ _SLOW_STATE_TOGGLE_CASES = (
         True,
     ),
     (
+        _make_frame(cmd=0x16, sub=0x4F, data=b"\x01", receiver=0x00),
+        "receiver.0.operator_toggles.twin_peak_filter",
+        "main.twinPeakFilter",
+        True,
+    ),
+    (
         _make_frame(cmd=0x16, sub=0x44, data=b"\x01"),
         "global.tx_state.compressor_on",
         "compressorOn",
@@ -1198,6 +1204,21 @@ _VALUE_CONTROL_CASES = (
         "receiver.0.operator_controls.tsql_freq",
         "main.tsqlFreq",
         8850,
+    ),
+    # 0x16 0x32 audio_peak_filter: BCD-nibble mode 0x02 → 2 (MID) (MOR-452).
+    (
+        _make_frame(cmd=0x16, sub=0x32, data=b"\x02", receiver=0x00),
+        "receiver.0.operator_controls.audio_peak_filter",
+        "main.audioPeakFilter",
+        2,
+    ),
+    # 0x14 0x05 apf_type_level: 4-digit BCD pair (interim 0-255 device scale,
+    # re-scaling tracked in MOR-453) (MOR-452).
+    (
+        _make_frame(cmd=0x14, sub=0x05, data=_bcd2(90), receiver=0x00),
+        "receiver.0.operator_controls.apf_type_level",
+        "main.apfTypeLevel",
+        90,
     ),
 )
 
@@ -1821,7 +1842,6 @@ def test_update_radio_state_cmd14_power_level(radio_with_state: IcomRadio) -> No
 @pytest.mark.parametrize(  # type: ignore[untyped-decorator]
     ("sub", "value", "field"),
     [
-        (0x05, 90, "apf_type_level"),
         (0x07, 92, "pbt_inner"),
         (0x08, 93, "pbt_outer"),
         (0x13, 95, "digisel_shift"),
@@ -1842,6 +1862,7 @@ def test_update_radio_state_cmd14_receiver_dsp_levels(
 @pytest.mark.parametrize(  # type: ignore[untyped-decorator]
     ("sub", "value", "field"),
     [
+        (0x05, 90, "apf_type_level"),
         (0x06, 91, "nr_level"),
         (0x12, 94, "nb_level"),
     ],
@@ -1852,7 +1873,7 @@ def test_update_radio_state_cmd14_receiver_dsp_levels_observation_backed(
     value: int,
     field: str,
 ) -> None:
-    """MOR-437: nr_level/nb_level mirror removed; StateStore is source of truth."""
+    """MOR-437/MOR-452: apf_type_level/nr_level/nb_level mirror removed; store is truth."""
     rs = radio_with_state._radio_state
     frame = _make_frame(cmd=0x14, sub=sub, data=_bcd2(value), receiver=0x01)
     radio_with_state._civ_runtime._update_state_cache_from_frame(frame)
@@ -2003,13 +2024,12 @@ def test_update_radio_state_cmd16_ipplus(radio_with_state: IcomRadio) -> None:
     [
         (0x15, 0x01, b"\x01", 0x01, "sub", "s_meter_sql_open", True),
         (0x15, 0x07, b"\x01", None, "radio", "overflow", True),
-        (0x16, 0x32, b"\x02", 0x01, "sub", "audio_peak_filter", 2),
         # 0x41 auto_notch, 0x44 compressor_on, 0x45 monitor_on, 0x46 vox_on,
-        # 0x48 manual_notch (MOR-437) and 0x12 agc + 0x1A/0x04 agc_time_constant
-        # (this lane) are now observation-backed — the legacy RadioState mirror
-        # was removed, so they no longer belong here.
+        # 0x48 manual_notch (MOR-437); 0x12 agc + 0x1A/0x04 agc_time_constant
+        # (BE-2); and 0x32 audio_peak_filter + 0x4F twin_peak_filter (MOR-452)
+        # are now observation-backed — the legacy RadioState mirror was removed,
+        # so they no longer belong here.
         (0x16, 0x47, b"\x02", None, "radio", "break_in", 2),
-        (0x16, 0x4F, b"\x01", 0x01, "sub", "twin_peak_filter", True),
         (0x16, 0x50, b"\x01", None, "radio", "dial_lock", True),
         (0x16, 0x56, b"\x01", 0x01, "sub", "filter_shape", 1),
         (0x16, 0x58, b"\x02", None, "radio", "ssb_tx_bandwidth", 2),
@@ -2046,6 +2066,36 @@ def test_update_radio_state_cmd16_agc_observation_backed(
         "receiver.1.operator_controls.agc"
     )
     assert field.value == 3
+
+
+def test_update_radio_state_cmd16_audio_peak_filter_observation_backed(
+    radio_with_state: IcomRadio,
+) -> None:
+    """MOR-452: cmd 0x16/0x32 mirror removed; StateStore is source of truth."""
+    rs = radio_with_state._radio_state
+    frame = _make_frame(cmd=0x16, sub=0x32, data=b"\x02", receiver=0x01)
+    radio_with_state._civ_runtime._update_state_cache_from_frame(frame)
+    # BCD-nibble decode of 0x02 == 2 (MID), matching the removed legacy mirror.
+    assert rs.sub.audio_peak_filter == 0
+    field = radio_with_state._state_store.snapshot().field(
+        "receiver.1.operator_controls.audio_peak_filter"
+    )
+    assert field.value == 2
+
+
+def test_update_radio_state_cmd16_twin_peak_filter_observation_backed(
+    radio_with_state: IcomRadio,
+) -> None:
+    """MOR-452: cmd 0x16/0x4F mirror removed; StateStore is source of truth."""
+    rs = radio_with_state._radio_state
+    frame = _make_frame(cmd=0x16, sub=0x4F, data=b"\x01", receiver=0x01)
+    radio_with_state._civ_runtime._update_state_cache_from_frame(frame)
+    # Legacy ReceiverState mirror stays at its default; the store carries truth.
+    assert rs.sub.twin_peak_filter is False
+    field = radio_with_state._state_store.snapshot().field(
+        "receiver.1.operator_toggles.twin_peak_filter"
+    )
+    assert field.value is True
 
 
 @pytest.mark.parametrize(  # type: ignore[untyped-decorator]

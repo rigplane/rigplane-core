@@ -207,6 +207,7 @@ _CMD16_OBSERVATION_BACKED_SUBS = frozenset(
         0x42,  # repeater_tone (MOR-451)
         0x43,  # repeater_tsql (MOR-451)
         0x48,  # manual_notch
+        0x4F,  # twin_peak_filter (MOR-452)
         0x44,  # compressor_on
         0x45,  # monitor_on
         0x46,  # vox_on
@@ -236,6 +237,7 @@ _OBSERVABLE_CMD14_FIELDS = {
     0x01: ("receiver", "operator_controls", "af_level"),
     0x02: ("receiver", "operator_controls", "rf_gain"),
     0x03: ("receiver", "operator_controls", "squelch"),
+    0x05: ("receiver", "operator_controls", "apf_type_level"),
     0x06: ("receiver", "operator_controls", "nr_level"),
     0x07: ("receiver", "operator_controls", "pbt_inner"),
     0x08: ("receiver", "operator_controls", "pbt_outer"),
@@ -260,6 +262,7 @@ _CMD14_OBSERVATION_BACKED_SUBS = frozenset(
     {
         0x02,  # rf_gain (receiver)
         0x03,  # squelch (receiver)
+        0x05,  # apf_type_level (receiver, interim 0-255 scale — MOR-452)
         0x06,  # nr_level (receiver)
         0x12,  # nb_level (receiver)
         0x0B,  # mic_gain (global)
@@ -277,6 +280,7 @@ _CMD16_OBSERVATION_BACKED_VALUE_SUBS = frozenset(
     {
         0x02,  # preamp (receiver, raw byte)
         0x12,  # agc (receiver, BCD nibble)
+        0x32,  # audio_peak_filter (receiver, BCD nibble — MOR-452)
     }
 )
 
@@ -311,6 +315,7 @@ _OBSERVABLE_CMD16_FIELDS = {
     0x42: ("receiver", "operator_toggles", "repeater_tone"),
     0x43: ("receiver", "operator_toggles", "repeater_tsql"),
     0x48: ("receiver", "operator_toggles", "manual_notch"),
+    0x4F: ("receiver", "operator_toggles", "twin_peak_filter"),
     0x44: ("global", "tx_state", "compressor_on"),
     0x45: ("global", "tx_state", "monitor_on"),
     0x46: ("global", "tx_state", "vox_on"),
@@ -322,6 +327,7 @@ _OBSERVABLE_CMD16_FIELDS = {
 _OBSERVABLE_CMD16_VALUE_FIELDS = {
     0x02: (("receiver", "operator_controls", "preamp"), "raw"),
     0x12: (("receiver", "operator_controls", "agc"), "bcd_nibble"),
+    0x32: (("receiver", "operator_controls", "audio_peak_filter"), "bcd_nibble"),
 }
 
 
