@@ -17,7 +17,6 @@ ignore_imports =
     rigplane.core.radio_protocol -> rigplane.audio_bus
     rigplane.core.radio_protocol -> rigplane.scope
     rigplane.core.radio_protocol -> rigplane.runtime._poller_types
-    rigplane.core.radio_protocol -> rigplane.rigctld.routing
     rigplane.backends.yaesu_cat.radio -> rigplane.rigctld.routing
 
 [importlinter:contract:independence-top]
@@ -27,7 +26,6 @@ modules =
     rigplane.web
     rigplane.rigctld
 ignore_imports =
-    rigplane.core.radio_protocol -> rigplane.rigctld.routing
     rigplane.backends.yaesu_cat.radio -> rigplane.rigctld.routing
 
 [importlinter:contract:independence-mid]

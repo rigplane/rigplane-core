@@ -63,15 +63,6 @@ if TYPE_CHECKING:
     from .state_pipeline_contracts import FieldPath, Observation
     from .state_store import StateStore
     from rigplane.audio_bus import AudioBus
-
-    # ``_FallbackRigState`` actually lives in ``rigctld.handler`` and is
-    # re-exported through ``rigctld.routing``'s TYPE_CHECKING namespace; a
-    # single import edge keeps the import-linter exemption count to one
-    # per contract.
-    from rigplane.rigctld.routing import (  # noqa: TID251
-        RigctldRouting,
-        _FallbackRigState,
-    )
     from rigplane.runtime._poller_types import CommandQueue
     from rigplane.scope import ScopeFrame
     from .types import BandStackRegister, MemoryChannel, ScopeFixedEdge
@@ -102,7 +93,9 @@ __all__ = [
     "LevelsCapable",
     "MetersCapable",
     "PowerControlCapable",
+    "RigctldFallbackCache",
     "RigctldRoutable",
+    "RigctldRoutingStrategy",
     "SplitCapable",
     "StateNotifyCapable",
     "ObservationPollable",
@@ -654,15 +647,70 @@ class StateModelCapable(StateStoreCapable, Protocol):
 
 
 @runtime_checkable
+class RigctldFallbackCache(Protocol):
+    """Neutral contract for the rigctld handler's fallback meter/level cache.
+
+    A routing strategy (see :class:`RigctldRoutingStrategy`) is handed this
+    object so it can remember the last-known meter/level values it read,
+    letting the rigctld handler answer subsequent queries from cache when
+    the radio cannot. ``core`` only passes the cache through to the strategy
+    and never inspects it; this Protocol captures the structural write
+    surface a strategy relies on so the contract stays in ``core`` without
+    naming the rigctld layer's concrete cache type.
+
+    The shipping :class:`~rigplane.rigctld.handler._FallbackRigState`
+    structurally satisfies this Protocol.
+    """
+
+    def update_s_meter(self, raw: int) -> None:
+        """Record the last-known raw S-meter reading."""
+        ...
+
+    def update_rf_power(self, value: float) -> None:
+        """Record the last-known normalised RF-power reading."""
+        ...
+
+    def update_swr(self, value: float) -> None:
+        """Record the last-known SWR reading."""
+        ...
+
+
+@runtime_checkable
+class RigctldRoutingStrategy(Protocol):
+    """Neutral contract for a vendor-specific rigctld command-routing strategy.
+
+    Captures the get/set level, get/set func, ``dump_state``, and
+    ``get_info`` surface that the rigctld handler drives, without ``core``
+    naming the rigctld layer's :class:`~rigplane.rigctld.contract.RigctldResponse`
+    type. The response-bearing methods are typed :class:`~typing.Any`
+    because the concrete response object is a rigctld-layer type; the
+    rigctld handler narrows it back to its own contract.
+
+    The shipping :class:`~rigplane.rigctld.routing.RigctldRouting` Protocol
+    (and its implementations) structurally satisfy this contract.
+    """
+
+    async def get_level(self, level: str, *, vfo: str | None = None) -> Any: ...
+    async def set_level(
+        self, level: str, value: float, *, vfo: str | None = None
+    ) -> Any: ...
+    async def get_func(self, func: str, *, vfo: str | None = None) -> Any: ...
+    async def set_func(
+        self, func: str, on: bool, *, vfo: str | None = None
+    ) -> Any: ...
+    def dump_state(self) -> list[str]: ...
+    def get_info(self) -> str: ...
+
+
+@runtime_checkable
 class RigctldRoutable(Protocol):
     """Radio that provides a custom rigctld command-routing strategy.
 
     The rigctld TCP server's handler ships with a built-in default
     routing that works for Icom CI-V radios. Backends with significantly
     different command semantics (Yaesu CAT today; future Kenwood TS-590
-    or other vendors) expose their own
-    :class:`~rigplane.rigctld.routing.RigctldRouting` implementation via
-    this method.
+    or other vendors) expose their own :class:`RigctldRoutingStrategy`
+    implementation via this method.
 
     Consumers (rigctld handler) check this with ``isinstance`` and pick
     up the vendor-specific routing without importing concrete backend
@@ -676,21 +724,21 @@ class RigctldRoutable(Protocol):
 
     def rigctld_routing(
         self,
-        cache: "_FallbackRigState",
+        cache: RigctldFallbackCache,
         max_power_w: float = 100.0,
-    ) -> "RigctldRouting":
-        """Construct a :class:`RigctldRouting` bound to this radio.
+    ) -> RigctldRoutingStrategy:
+        """Construct a :class:`RigctldRoutingStrategy` bound to this radio.
 
         Args:
-            cache: Shared :class:`_FallbackRigState` cache used by the
+            cache: Shared :class:`RigctldFallbackCache` used by the
                 rigctld handler to remember last-known meter/level
                 values when the radio cannot answer.
             max_power_w: Rated maximum TX power in watts; used to scale
                 normalised RFPOWER readings (defaults to 100 W).
 
         Returns:
-            A :class:`RigctldRouting` ready to serve get/set level,
-            get/set func, ``dump_state``, and ``get_info`` calls.
+            A :class:`RigctldRoutingStrategy` ready to serve get/set
+            level, get/set func, ``dump_state``, and ``get_info`` calls.
         """
         ...
 
