@@ -120,7 +120,7 @@ describe('panel prop field availability', () => {
     expect(props.micGainAvailable).toBe(true);
   });
 
-  it('hides RF front-end controls whose active receiver fields are missing or stale', () => {
+  it('shows RF front-end controls that are stale-but-known and hides only missing ones', () => {
     const props = toRfFrontEndProps(
       makeState({
         fieldStatus: {
@@ -137,8 +137,119 @@ describe('panel prop field availability', () => {
     );
 
     expect(props.showRfGain).toBe(false);
-    expect(props.showAtt).toBe(false);
+    expect(props.showAtt).toBe(true);
     expect(props.showPre).toBe(true);
+    expect(props.att).toBe(0);
+    expect(props.rfGain).toBe(255);
+  });
+
+  it('renders all four operator controls at last-known value when stale (no flap)', () => {
+    const props = toRfFrontEndProps(
+      makeState({
+        main: {
+          freqHz: 14_074_000,
+          mode: 'USB',
+          filter: 1,
+          dataMode: 0,
+          sMeter: 50,
+          rfGain: 100,
+          squelch: 40,
+          att: 6,
+          preamp: 1,
+          nb: false,
+          nr: false,
+          afLevel: 128,
+          agc: 2,
+          nbLevel: 0,
+          nrLevel: 0,
+          autoNotch: false,
+          manualNotch: false,
+          agcTimeConstant: 0,
+        },
+        fieldStatus: {
+          'main.rfGain': fieldStatus('stale'),
+          'main.squelch': fieldStatus('stale'),
+          'main.att': fieldStatus('stale'),
+          'main.preamp': fieldStatus('stale'),
+        },
+      }),
+      {
+        capabilities: ['rf_gain', 'squelch', 'attenuator', 'preamp'],
+        attValues: [0, 6, 12],
+        preValues: [0, 1, 2],
+      } as any,
+    );
+
+    expect(props.showRfGain).toBe(true);
+    expect(props.showSquelch).toBe(true);
+    expect(props.showAtt).toBe(true);
+    expect(props.showPre).toBe(true);
+    expect(props.rfGain).toBe(100);
+    expect(props.squelch).toBe(40);
+    expect(props.att).toBe(6);
+    expect(props.pre).toBe(1);
+  });
+
+  it('keeps preDisabled when preamp is stale and DIGI-SEL is on', () => {
+    const props = toRfFrontEndProps(
+      makeState({
+        main: {
+          freqHz: 14_074_000,
+          mode: 'USB',
+          filter: 1,
+          dataMode: 0,
+          sMeter: 50,
+          att: 0,
+          preamp: 0,
+          digisel: true,
+          nb: false,
+          nr: false,
+          afLevel: 128,
+          rfGain: 255,
+          squelch: 0,
+          agc: 2,
+          nbLevel: 0,
+          nrLevel: 0,
+          autoNotch: false,
+          manualNotch: false,
+          agcTimeConstant: 0,
+        },
+        fieldStatus: {
+          'main.preamp': fieldStatus('stale'),
+        },
+      }),
+      {
+        capabilities: ['preamp'],
+        preValues: [0, 1, 2],
+      } as any,
+    );
+
+    expect(props.showPre).toBe(true);
+    expect(props.preDisabled).toBe(true);
+    expect(props.preDisabledReason).toMatch(/DIGI-SEL/);
+  });
+
+  it('hides operator controls that were never observed (missing)', () => {
+    const props = toRfFrontEndProps(
+      makeState({
+        fieldStatus: {
+          'main.rfGain': fieldStatus('missing', false),
+          'main.squelch': fieldStatus('missing', false),
+          'main.att': fieldStatus('missing', false),
+          'main.preamp': fieldStatus('missing', false),
+        },
+      }),
+      {
+        capabilities: ['rf_gain', 'squelch', 'attenuator', 'preamp'],
+        attValues: [0, 6, 12],
+        preValues: [0, 1, 2],
+      } as any,
+    );
+
+    expect(props.showRfGain).toBe(false);
+    expect(props.showSquelch).toBe(false);
+    expect(props.showAtt).toBe(false);
+    expect(props.showPre).toBe(false);
   });
 
   it('does not present missing AGC as the default MID mode', () => {

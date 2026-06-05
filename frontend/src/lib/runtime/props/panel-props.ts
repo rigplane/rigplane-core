@@ -14,7 +14,7 @@
 import type { ServerState, ReceiverState } from '$lib/types/state';
 import type { Capabilities, FilterModeConfig } from '$lib/types/capabilities';
 import { deriveIfShift, pbtRawToHz } from '$lib/radio/filter-controls';
-import { isFieldAvailable } from '$lib/state/field-status';
+import { isFieldAvailable, getFieldAvailability } from '$lib/state/field-status';
 
 /* ── Private helpers ─────────────────────────────────────────── */
 
@@ -37,6 +37,13 @@ function topFieldAvailable(state: ServerState | null, field: string): boolean {
 function activeFieldAvailable(state: ServerState | null, field: string): boolean {
   if (!state) return false;
   return isFieldAvailable(state, `${activeReceiverKey(state)}.${field}`);
+}
+
+function activeFieldShown(state: ServerState | null, field: string): boolean {
+  if (!state) return false;
+  return (
+    getFieldAvailability(state, `${activeReceiverKey(state)}.${field}`) !== 'missing'
+  );
 }
 
 /* ── VFO ─────────────────────────────────────────────────────── */
@@ -193,10 +200,10 @@ export function toRfFrontEndProps(
   const attLabels = caps?.attLabels ?? {};
   const preValues = caps?.preValues ?? [0, 1, 2];
   const preLabels = caps?.preLabels ?? {};
-  const rfGainAvailable = activeFieldAvailable(state, 'rfGain');
-  const squelchAvailable = activeFieldAvailable(state, 'squelch');
-  const attAvailable = activeFieldAvailable(state, 'att');
-  const preAvailable = activeFieldAvailable(state, 'preamp');
+  const rfGainAvailable = activeFieldShown(state, 'rfGain');
+  const squelchAvailable = activeFieldShown(state, 'squelch');
+  const attAvailable = activeFieldShown(state, 'att');
+  const preAvailable = activeFieldShown(state, 'preamp');
   const digiSelAvailable = activeFieldAvailable(state, 'digisel');
   const ipPlusAvailable = activeFieldAvailable(state, 'ipplus');
   // IC-7610 hardware mutex: PREAMP and DIGI-SEL are mutually exclusive — the radio
