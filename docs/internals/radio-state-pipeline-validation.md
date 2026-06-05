@@ -437,3 +437,111 @@ so the public state surfaces none of them and shows no live S-meter. Two parser
 fixes (CT 1-digit, SM1 tolerance) plus per-field lane resilience are required
 before MOR-454..458 can be called live-validated. No transmit occurred; the
 radio was left in its original state (af_level 11, 14.074 MHz, RX).
+
+## Live hardware run — FTX-1 re-validation (post-MOR-473) — 2026-06-04
+
+Re-ran the live FTX-1 validation AFTER the MOR-473 fixes landed. Branch
+`codex/mor-334-radio-state-pipeline` @ `efcb7025` (both fix commits present:
+`e835020c` CT/mode-code parser fixes, `efcb7025` per-field poll-lane
+resilience). RX-only; no transmit. CAT port `/dev/cu.usbserial-01AE340D0` @
+38400 8N1, model `FTX-1`, backend `yaesu-cat`. Web server on
+`127.0.0.1:8771 --no-rigctld --no-discovery`. Ports were free, no RigPlane Pro
+running, CPU free.
+
+**Connection result: ESTABLISHED.** `/healthz` ok (v2.9.0a1), `/readyz`
+`{"status":"ready","radioReady":true}`, observation poller + `YaesuCatPoller`
+started. (The composite `IF;` bulk query at connect still fails non-fatally, as
+before; freq/mode are polled individually.)
+
+**HEADLINE — the fixes UNBLOCKED the pipeline. `/api/v1/state` `fieldStatus`
+went from 6 observed fields to 45** (out of 184 known paths), all
+`observed:true / freshness:fresh / availability:available`, all with
+`source: yaesu_poll_response`. The 6 fields the prior run surfaced
+(`main.freqHz`, `main.mode`, `main.filterWidth`, `sub.freqHz`, `sub.mode`,
+`ptt`) are now joined by the entire slow lane and the MAIN s-meter.
+
+Now-available fields (directly observed, with live values):
+- **Slow-lane RX controls (MAIN):** `main.afLevel = 11`, `main.rfGain = 255`,
+  `main.agc = 5`, `main.att = 0`, `main.preamp = 0`, `main.squelch = 0`,
+  plus `main.nb/nbLevel/nr/nrLevel/autoNotch/manualNotch/manualNotchFreq/
+  narrow/ifShift` — all observed. SUB exposes `sub.afLevel = 20`,
+  `sub.rfGain = 255`, `sub.squelch = 64`.
+- **MOR-454 RIT/XIT:** `ritOn = False`, `ritTx = False`, `ritFreq = 0` — observed
+  (`read_clarifier` / `read_clarifier_freq`).
+- **MOR-455 tuner / dial-lock:** `tunerStatus = 1` (ATU state 1),
+  `dialLock = False` — observed (`read_tuner` / `read_lock`).
+- **MOR-456 CW keyer:** `keySpeed = 26` wpm, `cwSpot = False`, `breakIn = 1` —
+  observed (`read_keyer_speed` / `read_cw_spot` / `read_break_in`).
+- **MOR-457 SQL type / repeater tone:** `main.repeaterTone = False`,
+  `main.repeaterTsql = False` — observed (`read_sql_type`). The CT 1-digit parse
+  fix means `CT0;` → `CT00;` now decodes instead of raising; the slow lane no
+  longer aborts here.
+- **MOR-458 CTCSS tone freq:** `main.toneFreq` / `main.tsqlFreq` observed
+  (`read_ctcss_tone_index`).
+- **Other operator controls now observed:** `powerLevel`, `micGain`, `cwPitch`,
+  `compressorOn`, `compressorLevel`, `voxOn`, `split`, `active`.
+
+**MAIN s-meter SURVIVES the SUB s-meter failure (per-field resilience works).**
+In the SAME state snapshot:
+- `main.sMeter`: `observed:true / fresh / available`, value `0`. The fast lane
+  is actively running (`observationSeq` advanced 4512 → 4683 across samples);
+  value 0 is legitimate (no signal on the FT8 calling frequency at sample time).
+- `sub.sMeter`: `observed:false / freshness:unknown / availability:missing`.
+  Degraded CLEANLY — the body shows the default `0` but `fieldStatus` honestly
+  reports it as missing, NOT a false "fresh 0". The SUB `SM1;` → `SM0000;`
+  mismatch no longer aborts the MAIN s-meter emission.
+
+**MAIN mode decodes correctly: `main.mode = "DATA-U"`** (was `UNKNOWN(C)` in the
+prior run). The hex mode-map fix decodes `MD0;` byte `C` (hex 12) → `DATA-U`.
+This is consistent with the radio sitting on 14.074 MHz / 20m FT8 (data-mode
+upper). **Operator: please confirm the front panel reads DATA-U on MAIN.**
+
+**af_level end-to-end no-snap-back — PASS THROUGH `/api/v1/state` (now that the
+slow lane emits af_level).** Original `main.afLevel = 11` (public state) →
+`POST /api/v1/commands {set_af_level, level:16}` (`{"ok":true,...}`) → public
+state converged to `16` within 2 polls and HELD `16` across 6 consecutive polls
+(~3 s, no revert) → `set_af_level level:11` (restore) → public state converged
+back to `11`. Final independent re-read: `main.afLevel = 11`,
+`main.freqHz = 14074000`, `main.mode = "DATA-U"`, `ptt = False`. The radio
+honored the write, did NOT snap back, and was restored exactly — and this time
+the convergence was observed END-TO-END through the public state, not just at
+the backend.
+
+**`_safe_read` graceful-degradation logging confirmed (not silent).** The server
+log shows exactly two distinct field-level skip WARNs, repeated each poll cycle
+(1189 total over the run), with NO lane abort, traceback, or other error:
+- `Skipping field sub.s_meter — malformed CAT response: Parse error for
+  'SM1{raw:03d};' against 'SM0000;': Response does not match pattern
+  '^SM1(?P<raw>\d{3});$'` (1080×) — the known SUB s-meter mismatch.
+- `Skipping field break_in_delay — malformed CAT response: Parse error for
+  'SD{delay:04d};' against 'SD09;': Response does not match pattern
+  '^SD(?P<delay>\d{4});$'` (109×) — a NEW field-level mismatch the resilience
+  surfaced: the FTX-1 answers `SD;` with a 2-digit value (`SD09;`) but the parse
+  expects 4 digits. Previously this would have been masked by the whole-lane
+  abort; now it skips cleanly and its siblings emit. `breakInDelay` correctly
+  shows `observed:false / missing` in `fieldStatus`.
+
+**Still missing (honest):**
+- `sub.sMeter` — degrades cleanly (see above); SUB has no independent s-meter on
+  this single-RX firmware state (`SM1;` echoes a MAIN `SM0` frame).
+- `breakInDelay` — a residual parser-width mismatch (`SD09;` is 2 digits, parse
+  wants 4). A follow-up `SD` 2-digit parse fix would recover it; non-blocking.
+- The per-VFO nested slots (`main.vfoA/vfoB.*`, `sub.vfoA/vfoB.*`) remain
+  default/stale (freqHz 0, USB) and `missing` — only the ACTIVE-slot projection
+  (`main.freqHz`/`main.mode`) is observed. Meters other than s-meter
+  (`swrMeter`/`alcMeter`/`powerMeter`/`idMeter`/`vdMeter`/`compMeter`) are
+  TX-domain and stay `missing` on RX (expected). Scope controls, band edges,
+  antenna, scan, tuning-step, dual-watch remain `missing` (not in the FTX-1 poll
+  set / unsupported).
+
+**Overall verdict: FIXED / UNBLOCKED.** The MOR-473 fixes resolve all three
+prior blockers. The CT 1-digit parse fix stops the slow lane aborting; the
+per-field `_safe_read` resilience lets the MAIN s-meter survive the SUB s-meter
+failure (and surfaces the previously-masked `break_in_delay` skip without
+killing its lane); the hex mode-map fix decodes `MD0C` → `DATA-U` instead of
+`UNKNOWN(C)`. The public `/api/v1/state` now surfaces 45 live observed fields
+(up from 6), including the full MOR-454..458 obs-backed set, and the af_level RX
+round-trip converges and does NOT snap back END-TO-END through the public state.
+`fieldStatus` remains honest — the two genuinely-unreadable fields (`sub.sMeter`,
+`break_in_delay`) are marked `missing`, not falsely fresh. No transmit occurred;
+the radio was left in its original state (af_level 11, 14.074 MHz, DATA-U, RX).
