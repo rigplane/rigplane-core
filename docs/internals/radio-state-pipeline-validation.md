@@ -313,3 +313,127 @@ the v2 UI renders the same live state including a live waterfall. The freq/mode
 idle-staleness and af_level read-after-write dependence are existing,
 documented freshness-model behaviors, not regressions. No transmit occurred; the
 radio was left in its original state.
+
+## Live hardware run — FTX-1 (Yaesu CAT) — 2026-06-04
+
+First live check of the FTX-1 obs-backing work (MOR-454..458) against a REAL
+Yaesu FTX-1. Branch `codex/mor-334-radio-state-pipeline` @ `9b117728`. The radio
+is on a Silicon Labs CP2105 dual UART; macOS exposed two candidate ports. A heavy
+RigPlane Pro PyInstaller build ran concurrently (1-min load average ~14.6,
+Spotlight `mds`/`mdworker` also saturating CPU) — relevant to the timeout notes
+below. RX-side only; no transmit.
+
+**CAT port + baud: `/dev/cu.usbserial-01AE340D0` @ 38400 8N1.** Decisive raw
+pyserial probe: `ID;` → `ID0840;` (FTX-1), `FA;` → `FA014074000;`
+(VFO-A = 14.074000 MHz, 20m FT8). The sibling channel
+`/dev/cu.usbserial-01AE340D1` opened but returned NO bytes to `ID;`/`FA;` (the
+non-CAT CP2105 channel). Note: the first one-shot `rigplane status` against D0
+returned empty (1.0 s CAT read-timeout missed) — attributable to CPU load, not a
+wrong port; the raw 2 s-window probe and the web server both read D0 cleanly.
+
+**Connection result: ESTABLISHED.** `rigplane --backend yaesu-cat --serial-port
+/dev/cu.usbserial-01AE340D0 --serial-baud 38400 --model FTX-1 web --host
+127.0.0.1 --port 8108 --no-rigctld --no-discovery` came up:
+`web server listening on http://127.0.0.1:8108`, `/healthz` ok (v2.9.0a1),
+`/readyz` `{"status":"ready","radioReady":true}`, observation poller +
+`YaesuCatPoller` started. (`IF;` bulk query at connect failed non-fatally — the
+FTX-1 does not answer the composite `IF;` the same way; freq/mode are polled
+individually instead.)
+
+**Observed live values (directly from the radio, `source: yaesu_poll_response`):**
+- MAIN `freqHz = 14074000` (14.074 MHz) — `observed:true / fresh / available`,
+  `nativeId: read_freq`. Corroborated by the raw `FA;` probe.
+- MAIN `mode = "UNKNOWN(C)"` — `observed:true / fresh`, but the raw `MD0;` mode
+  byte `C` is NOT in the mode map (decode gap; see anomalies).
+- MAIN `filterWidth = 3000` Hz — `observed:true / fresh` (slow lane, maxAge 120 s).
+- SUB `freqHz = 144000000` (144.000 MHz), `mode = FM` — both
+  `observed:true / fresh`, `read_freq`/`read_mode` (plausible default sub-VFO).
+- `ptt = False` — `observed:true / fresh` (RX confirmed; never transmitted).
+
+**MOR-454..458 fields — backend reads WORK, public-state projection BLOCKED.**
+A direct backend round-trip (`YaesuCatRadio` on D0) proves the new reads decode
+correctly off the live radio:
+- MOR-454 RIT/XIT: `read_clarifier(0)` → `(rit_on=False, rit_tx=False)`;
+  `read_clarifier_freq(0)` → `0`. OK.
+- MOR-455 tuner/dial-lock: `read_tuner` → `1` (ATU state 1); `read_lock` →
+  `False`. OK.
+- MOR-456 CW keyer: `read_keyer_speed` → `26` wpm; `read_cw_spot` → `False`;
+  `read_break_in` → `1`. OK.
+- MOR-458 CTCSS tone freq: `read_ctcss_tone_index(0)` → `12` (tone-chart index).
+  OK.
+- MOR-457 SQL type: `read_sql_type(0)` → **CatParseError**. The FTX-1 answers
+  `CT0;` with `CT00;` (P2 is ONE digit, value 0), but the profile parse pattern
+  is `^CT0(?P<type>\d{2});$` (expects TWO digits). This read RAISES.
+
+  Despite every other MOR-454..456/458 read succeeding at the backend, NONE of
+  these fields reach the public `/api/v1/state` — all show
+  `observed:false / availability:missing`. Root cause is a **cascading-lane
+  abort**: `poll_slow_controls()` (observations.py) calls `read_sql_type(0)`
+  (MOR-457) which raises, so the entire slow-lane observation tuple — built from
+  af_level/rf_gain/att/preamp/agc AND the MOR-454/455/456/458 reads that PRECEDE
+  it or follow via `poll_tx_controls()` — is discarded before emission. Likewise
+  the **fast lane**: `poll_rx_meters()` reads MAIN s-meter fine (`SM0;` →
+  `SM0001` etc.) but then `read_s_meter(1)` (SUB) raises CatParseError
+  (`SM1;` → `SM0000;` — the radio echoes a MAIN-shaped `SM0` frame to the SUB
+  query, failing `^SM1(?P<raw>\d{3});$`), so the already-collected MAIN s-meter
+  observation is dropped too. Net effect: only 6 fields ever populate —
+  `main.freqHz`, `main.mode`, `main.filterWidth`, `sub.freqHz`, `sub.mode`,
+  `ptt` (all from the medium/freq-mode lane). S-meters and all operator
+  controls/toggles, including the entire MOR-454..458 set, stay `missing`.
+
+**fieldStatus result: HONEST but mostly missing.** `fieldStatus` correctly
+marks the 6 populated fields `observed:true / freshness:fresh /
+availability:available` with full `source` provenance, and correctly marks all
+non-populated fields `observed:false / freshness:unknown / availability:missing`.
+The contract is faithful — it does not falsely advertise the broken fields as
+fresh; it just has almost nothing to report because two parse failures abort
+their lanes.
+
+**No-snap-back test (af_level, MAIN) — PASS at the radio/backend level.**
+Because the slow lane aborts, the PUBLIC state never projects af_level (stays
+`missing`), so end-to-end pipeline convergence could NOT be exercised through
+`/api/v1/state` on this firmware. The reversible round-trip was therefore run
+directly against `YaesuCatRadio` on D0:
+`af_original = 11` → `set_af_level(16)` → `af_readback_after_set = 16`
+(`set_took_effect:true`, `snapped_back:false`) → `set_af_level(11)` (restore) →
+`af_after_restore = 11` (`restored_ok:true`). A final independent re-read
+confirmed `af_level = 11`, MAIN `14.074 MHz`, `ptt = False`. The radio honored
+the write, did NOT snap back, and was restored exactly. Yaesu read-after-write
+echo behaved correctly (the AG read returns the set value).
+
+**Anomalies / notes.**
+1. **MOR-457 SQL-type parser/firmware mismatch (BLOCKER for the obs lane).**
+   FTX-1 `CT0;` → `CT00;` (1-digit P2); profile pattern expects 2 digits. Fix
+   the `get_sql_type` parse (`^CT0(?P<type>\d);$` or tolerate variable width),
+   AND make `poll_slow_controls()` resilient so one unparseable field does not
+   discard the whole lane.
+2. **SUB S-meter parser/firmware mismatch (BLOCKER for the fast lane).** `SM1;`
+   → `SM0000;` (radio replies with a MAIN `SM0` frame; possibly no independent
+   SUB S-meter in the current single-RX state). The SUB read should be tolerated
+   / made optional so it does not abort the MAIN S-meter emission.
+3. **MAIN mode decode gap.** `MD0;` mode byte `C` is unmapped →
+   `mode = "UNKNOWN(C)"`. The radio was on a DATA/FT8-style mode; the mode table
+   is missing this code. Non-fatal but user-visible.
+4. **Lane-abort fragility (design).** Both blockers above are amplified by
+   poll lanes returning a single all-or-nothing tuple: any one read raising
+   discards every sibling observation already collected in that lane. Per-field
+   try/except (emit what parsed) would have surfaced ~10+ live fields here
+   instead of 0 from those lanes.
+5. **CPU-load caveat.** The concurrent Pro PyInstaller build + Spotlight kept
+   load ~14.6; the initial `status` 1.0 s timeout miss is attributable to that,
+   not the radio. The persistent parse errors are NOT load-related — they
+   reproduce deterministically in a direct backend probe.
+
+**Overall verdict: PARTIAL / BLOCKED.** The CAT link is solid on D0 @ 38400 and
+the pipeline DOES reflect the real radio for MAIN/SUB freq+mode, MAIN filter
+width, and PTT (directly observed, correct values, honest fieldStatus). The
+benign af_level RX round-trip converged and did not snap back at the radio level
+and was restored exactly. HOWEVER, the headline MOR-454..458 obs-backing is NOT
+yet observable end-to-end on this FTX-1: the new backend reads decode correctly
+in isolation (RIT/XIT, tuner, dial-lock, keyer speed, CW spot, break-in, CTCSS
+tone index all read real values), but a single MOR-457 `CT` parse failure aborts
+the entire slow lane and a SUB-S-meter `SM1` parse failure aborts the fast lane,
+so the public state surfaces none of them and shows no live S-meter. Two parser
+fixes (CT 1-digit, SM1 tolerance) plus per-field lane resilience are required
+before MOR-454..458 can be called live-validated. No transmit occurred; the
+radio was left in its original state (af_level 11, 14.074 MHz, RX).
