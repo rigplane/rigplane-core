@@ -6,10 +6,10 @@ import FrequencyDisplayInteractive from '../FrequencyDisplayInteractive.svelte';
 import { toVfoProps } from '../../wiring/state-adapter';
 
 // This test exercises the REAL radio store + REAL state-adapter so the freq
-// fix (MOR-475) is verified end-to-end: a causally-newer snapshot must drop the
-// unlocked optimistic overlay so click-to-tune steps from the SERVER freq, not
-// the stale overlay. We import the real store dynamically per test to reset its
-// module-level optimistic/lock maps between cases.
+// fix (MOR-475) is verified end-to-end: an in-flight causally-newer STALE poll
+// must NOT drop the unlocked optimistic overlay, so click-to-tune steps from the
+// COMMANDED freq, not the stale server value (no flash). We import the real store
+// dynamically per test to reset its module-level optimistic/lock maps between cases.
 
 let store: typeof import('$lib/stores/radio.svelte');
 
@@ -83,7 +83,7 @@ afterEach(() => {
 });
 
 describe('FrequencyDisplayInteractive click-to-tune over the radio store (MOR-475)', () => {
-  it('scroll after a causal-advance snapshot steps from the SERVER freq, not the overlay', () => {
+  it('scroll after an in-flight stale causal poll steps from the COMMANDED freq, not the stale server value', () => {
     // Initial server freq.
     store.setRadioState(makeMinimalState({
       revision: 1,
@@ -96,25 +96,27 @@ describe('FrequencyDisplayInteractive click-to-tune over the radio store (MOR-47
     // Unlocked optimistic patch (click-to-tune) to 14100000.
     store.patchActiveReceiver({ freqHz: 14100000 });
 
-    // Server then reports a causally-newer snapshot at 14200000.
+    // An in-flight poll captured before the click lands: causally newer
+    // (observationSeq + freshnessRevision advance) but still the OLD freq.
     store.setRadioState(makeMinimalState({
       revision: 1,
       stateRevision: 1,
       observationSeq: 2,
       freshnessRevision: 2,
-      main: { ...makeMinimalState().main, freqHz: 14200000 },
+      main: { ...makeMinimalState().main, freqHz: 14074000 },
     }));
 
-    // Drive the prop through the real adapter — the overlay must be cleared so
-    // this reflects the confirmed server freq (14200000), not the stale 14100000.
+    // Drive the prop through the real adapter — the overlay must SURVIVE the
+    // stale poll so this reflects the commanded freq (14100000), no flash.
     const vfo = toVfoProps(store.getRadioState(), 'main');
-    expect(vfo.freq).toBe(14200000);
+    expect(vfo.freq).toBe(14100000);
 
     const onFreqChange = vi.fn();
     const t = mountDisplay({ freq: vfo.freq, onFreqChange });
 
-    // Digits in DOM order for 14200000: MHz[1,4] kHz[2,0,0] Hz[0,0,0].
-    // The 1 kHz digit (multiplier 1000) is the 5th .digit (index 4).
+    // Digits in DOM order for 14100000: MHz[1,4] kHz[1,0,0] Hz[0,0,0].
+    // The 1 kHz digit (multiplier 1000) is the 5th .digit (index 4) — re-derived
+    // against splitFrequencyToDigits/groupDigitsForDisplay for 14100000.
     const digits = Array.from(t.querySelectorAll<HTMLElement>('.digit'));
     const oneKhzDigit = digits[4];
     expect(oneKhzDigit).toBeDefined();
@@ -122,8 +124,9 @@ describe('FrequencyDisplayInteractive click-to-tune over the radio store (MOR-47
     oneKhzDigit.dispatchEvent(new WheelEvent('wheel', { deltaY: -1, bubbles: true }));
     flushSync();
 
+    // Relative tune steps from the commanded 14100000, not the stale 14074000.
     expect(onFreqChange).toHaveBeenCalledTimes(1);
-    expect(onFreqChange).toHaveBeenCalledWith(14201000);
-    expect(onFreqChange).not.toHaveBeenCalledWith(14101000);
+    expect(onFreqChange).toHaveBeenCalledWith(14101000);
+    expect(onFreqChange).not.toHaveBeenCalledWith(14075000);
   });
 });

@@ -101,7 +101,7 @@ const optimisticTopLevel = new Map<string, { value: unknown; expires: number }>(
 // Top-level structural keys that should never be held optimistically
 const STRUCTURAL_KEYS = new Set(['revision', 'main', 'sub', 'active', 'connection', 'updatedAt']);
 
-function applyOptimistic(state: ServerState, freqObservationAdvanced: boolean): ServerState {
+function applyOptimistic(state: ServerState): ServerState {
   const now = Date.now();
   let result = state;
 
@@ -140,21 +140,14 @@ function applyOptimistic(state: ServerState, freqObservationAdvanced: boolean): 
         }
       }
 
-      // Frequency only: a causally-newer observation (advanced observationSeq /
-      // freshnessRevision) carrying a numeric freq drops the unlocked overlay even
-      // when the value differs. This is an additional clear condition, distinct from
-      // value-equality: it means the server has reported a freq newer than our patch,
-      // so relative tuning must step from the confirmed server freq, not the overlay.
-      // The lock `continue` above guarantees this runs for unlocked overlays only.
-      if (!confirmed && field === 'freqHz' && freqObservationAdvanced && typeof serverVal === 'number') {
-        confirmed = true;
-      }
-
       // NOTE: Do NOT treat "server value changed from patch-time value" as confirmation.
       // With rapid discrete input (wheel/keyboard), a stale intermediate poll can differ from the
       // previous optimistic value while still not matching the latest target, which causes a false
-      // confirmation and visible snap-back. We only clear on exact confirmation/tolerance or timeout
-      // — except for freq, where a causally-newer observation (see above) is also a clear condition.
+      // confirmation and visible snap-back. We only clear on exact confirmation/tolerance or timeout.
+      // For freq specifically, the overlay clears ONLY via the tolerance/value-match check above
+      // (|serverVal - overlay| < 500) or the lowered freq TTL — never on a mere causal advance,
+      // because an in-flight poll captured before an unlocked optimistic patch can carry the OLD
+      // freq with an advanced observationSeq and would otherwise flash the stale value for one cycle.
 
       if (confirmed) {
         map.delete(field);
@@ -238,10 +231,7 @@ export function setRadioState(state: ServerState): void {
     lastFreshnessRevision = nextFreshnessRevision;
     lastObservationSeq = nextObservationSeq;
     lastHealthRevision = nextHealthRevision;
-    radio.current = applyOptimistic(
-      state,
-      (freshnessAdvanced || observationAdvanced) && typeof state.main?.freqHz === 'number',
-    );
+    radio.current = applyOptimistic(state);
     notifyRadioStateSubscribers();
     // Sync power status to connection store
     if (state.powerOn !== undefined) {

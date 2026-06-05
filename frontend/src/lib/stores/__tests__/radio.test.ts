@@ -584,7 +584,7 @@ describe('radio store', () => {
 
   // --- freq optimistic overlay vs causal advance (MOR-475) ---
 
-  it('clears freqHz overlay when a causally-newer differing snapshot arrives', () => {
+  it('keeps an unlocked freqHz overlay when a causally-newer DIFFERING snapshot arrives (no false clear)', () => {
     store.setRadioState(makeState({
       revision: 1,
       stateRevision: 1,
@@ -599,6 +599,8 @@ describe('radio store', () => {
 
     // Server emits a causally-newer snapshot (observationSeq + freshnessRevision
     // advance) reporting a DIFFERENT freq well outside the 500 Hz tolerance.
+    // This is the classic in-flight stale poll: causal advance alone must NOT
+    // drop the unlocked overlay, or the commanded freq would flash away.
     store.setRadioState(makeState({
       revision: 1,
       stateRevision: 1,
@@ -607,10 +609,47 @@ describe('radio store', () => {
       main: { ...makeState().main, freqHz: 14200000 },
     }));
 
-    // The unlocked overlay must drop; the confirmed server freq wins so relative
-    // tuning steps from 14200000, not the stale optimistic 14100000.
-    expect(store.getMainReceiver()?.freqHz).toBe(14200000);
-    expect(store.getFrequency()).toBe(14200000);
+    // The overlay must HOLD the commanded value — value-match (tolerance) or the
+    // freq TTL are the only legitimate clear conditions, not a bare causal advance.
+    expect(store.getMainReceiver()?.freqHz).toBe(14100000);
+    expect(store.getFrequency()).toBe(14100000);
+  });
+
+  it('does not flash the stale freq: unlocked overlay survives an in-flight causal stale poll, clears on value-match', () => {
+    store.setRadioState(makeState({
+      revision: 1,
+      stateRevision: 1,
+      observationSeq: 1,
+      freshnessRevision: 1,
+      main: { ...makeState().main, freqHz: 14074000 },
+    }));
+
+    // Click-to-tune: unlocked optimistic patch to the commanded freq.
+    store.patchActiveReceiver({ freqHz: 14100000 });
+    expect(store.getMainReceiver()?.freqHz).toBe(14100000);
+
+    // An in-flight poll captured BEFORE the click lands: causally newer
+    // (observationSeq + freshnessRevision advance) but still carrying the OLD freq.
+    // The overlay must survive — otherwise the display flashes the stale 14074000.
+    store.setRadioState(makeState({
+      revision: 1,
+      stateRevision: 1,
+      observationSeq: 2,
+      freshnessRevision: 2,
+      main: { ...makeState().main, freqHz: 14074000 },
+    }));
+    expect(store.getMainReceiver()?.freqHz).toBe(14100000);
+
+    // The backend (post MOR-484) now reports the live commanded freq: value-match
+    // within tolerance clears the overlay and the display equals the server value.
+    store.setRadioState(makeState({
+      revision: 1,
+      stateRevision: 1,
+      observationSeq: 3,
+      freshnessRevision: 3,
+      main: { ...makeState().main, freqHz: 14100000 },
+    }));
+    expect(store.getMainReceiver()?.freqHz).toBe(14100000);
   });
 
   it('keeps a locked freqHz overlay despite a causally-newer differing snapshot', () => {
