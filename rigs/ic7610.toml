@@ -147,6 +147,24 @@ polling_only = [
     "receiver.main.active.freq_mode.mode",
     "receiver.sub.active.freq_mode.freq_hz",
     "receiver.sub.active.freq_mode.mode",
+    "receiver.main.operator_toggles.digisel",
+    "receiver.main.operator_toggles.ipplus",
+    "receiver.main.operator_toggles.nb",
+    "receiver.main.operator_toggles.nr",
+    "receiver.main.operator_toggles.auto_notch",
+    "receiver.main.operator_toggles.manual_notch",
+    "receiver.main.operator_toggles.twin_peak_filter",
+    "receiver.main.operator_controls.agc",
+    "receiver.main.operator_controls.audio_peak_filter",
+    "receiver.sub.operator_toggles.digisel",
+    "receiver.sub.operator_toggles.ipplus",
+    "receiver.sub.operator_toggles.nb",
+    "receiver.sub.operator_toggles.nr",
+    "receiver.sub.operator_toggles.auto_notch",
+    "receiver.sub.operator_toggles.manual_notch",
+    "receiver.sub.operator_toggles.twin_peak_filter",
+    "receiver.sub.operator_controls.agc",
+    "receiver.sub.operator_controls.audio_peak_filter",
 ]
 stream_like_meters = [
     "receiver.main.meters.s_meter",
@@ -239,6 +257,96 @@ adaptive_decay = false
 [state_acquisition.field_policies."receiver.main.operator_controls.preamp"]
 cadence_seconds = 3.0
 freshness_ttl_seconds = 4.0
+adaptive_decay = false
+
+[state_acquisition.field_policies."receiver.main.operator_toggles.digisel"]
+cadence_seconds = 1.5
+freshness_ttl_seconds = 3.0
+adaptive_decay = false
+
+[state_acquisition.field_policies."receiver.main.operator_toggles.ipplus"]
+cadence_seconds = 1.5
+freshness_ttl_seconds = 3.0
+adaptive_decay = false
+
+[state_acquisition.field_policies."receiver.main.operator_toggles.nb"]
+cadence_seconds = 1.5
+freshness_ttl_seconds = 3.0
+adaptive_decay = false
+
+[state_acquisition.field_policies."receiver.main.operator_toggles.nr"]
+cadence_seconds = 1.5
+freshness_ttl_seconds = 3.0
+adaptive_decay = false
+
+[state_acquisition.field_policies."receiver.main.operator_toggles.auto_notch"]
+cadence_seconds = 1.5
+freshness_ttl_seconds = 3.0
+adaptive_decay = false
+
+[state_acquisition.field_policies."receiver.main.operator_toggles.manual_notch"]
+cadence_seconds = 1.5
+freshness_ttl_seconds = 3.0
+adaptive_decay = false
+
+[state_acquisition.field_policies."receiver.main.operator_toggles.twin_peak_filter"]
+cadence_seconds = 1.5
+freshness_ttl_seconds = 3.0
+adaptive_decay = false
+
+[state_acquisition.field_policies."receiver.main.operator_controls.agc"]
+cadence_seconds = 1.5
+freshness_ttl_seconds = 3.0
+adaptive_decay = false
+
+[state_acquisition.field_policies."receiver.main.operator_controls.audio_peak_filter"]
+cadence_seconds = 1.5
+freshness_ttl_seconds = 3.0
+adaptive_decay = false
+
+[state_acquisition.field_policies."receiver.sub.operator_toggles.digisel"]
+cadence_seconds = 1.5
+freshness_ttl_seconds = 3.0
+adaptive_decay = false
+
+[state_acquisition.field_policies."receiver.sub.operator_toggles.ipplus"]
+cadence_seconds = 1.5
+freshness_ttl_seconds = 3.0
+adaptive_decay = false
+
+[state_acquisition.field_policies."receiver.sub.operator_toggles.nb"]
+cadence_seconds = 1.5
+freshness_ttl_seconds = 3.0
+adaptive_decay = false
+
+[state_acquisition.field_policies."receiver.sub.operator_toggles.nr"]
+cadence_seconds = 1.5
+freshness_ttl_seconds = 3.0
+adaptive_decay = false
+
+[state_acquisition.field_policies."receiver.sub.operator_toggles.auto_notch"]
+cadence_seconds = 1.5
+freshness_ttl_seconds = 3.0
+adaptive_decay = false
+
+[state_acquisition.field_policies."receiver.sub.operator_toggles.manual_notch"]
+cadence_seconds = 1.5
+freshness_ttl_seconds = 3.0
+adaptive_decay = false
+
+[state_acquisition.field_policies."receiver.sub.operator_toggles.twin_peak_filter"]
+cadence_seconds = 1.5
+freshness_ttl_seconds = 3.0
+adaptive_decay = false
+
+[state_acquisition.field_policies."receiver.sub.operator_controls.agc"]
+cadence_seconds = 1.5
+freshness_ttl_seconds = 3.0
+adaptive_decay = false
+
+[state_acquisition.field_policies."receiver.sub.operator_controls.audio_peak_filter"]
+cadence_seconds = 1.5
+freshness_ttl_seconds = 3.0
 adaptive_decay = false
 
 # ── Parameterized Capabilities ───────────────────────────────────
@@ -558,6 +666,7 @@ routes = [
     [0x15, 0x02],     # S-meter level
     [0x15, 0x05],     # Various squelch
     [0x16, 0x02],     # Preamp
+    [0x16, 0x12],     # AGC mode
     [0x16, 0x22],     # NB on/off
     [0x16, 0x32],     # Audio Peak Filter
     [0x16, 0x40],     # NR on/off

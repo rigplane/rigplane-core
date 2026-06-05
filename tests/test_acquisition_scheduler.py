@@ -1301,3 +1301,130 @@ def test_meter_coalescing_flush_due_defers_same_path_until_latest_window() -> No
     diagnostics = coalescer.diagnostics()
     assert diagnostics["coalescedSampleCount"] == 1
     assert diagnostics["pendingSampleCount"] == 0
+
+
+def test_ic7610_real_profile_rf_dsp_toggle_query_for_path() -> None:
+    sent: list[tuple[int, int | None, int | None]] = []
+
+    async def send_query(
+        command: int,
+        sub: int | None,
+        receiver: int | None,
+    ) -> None:
+        sent.append((command, sub, receiver))
+
+    executor = IcomCivAcquisitionExecutor(send_query)
+
+    # cmd16 receiver toggles (operator_toggles family) — MAIN (receiver 0).
+    digisel = FieldPath.receiver("main", "operator_toggles", "digisel")
+    ipplus = FieldPath.receiver("main", "operator_toggles", "ipplus")
+    nb = FieldPath.receiver("main", "operator_toggles", "nb")
+    nr = FieldPath.receiver("main", "operator_toggles", "nr")
+    auto_notch = FieldPath.receiver("main", "operator_toggles", "auto_notch")
+    manual_notch = FieldPath.receiver("main", "operator_toggles", "manual_notch")
+    twin_peak_filter = FieldPath.receiver(
+        "main", "operator_toggles", "twin_peak_filter"
+    )
+    # cmd16 receiver operator_controls values — MAIN (receiver 0).
+    agc = FieldPath.receiver("main", "operator_controls", "agc")
+    audio_peak_filter = FieldPath.receiver(
+        "main", "operator_controls", "audio_peak_filter"
+    )
+
+    assert executor.query_for_path(digisel) == (0x16, 0x4E, 0)
+    assert executor.query_for_path(ipplus) == (0x16, 0x65, 0)
+    assert executor.query_for_path(nb) == (0x16, 0x22, 0)
+    assert executor.query_for_path(nr) == (0x16, 0x40, 0)
+    assert executor.query_for_path(auto_notch) == (0x16, 0x41, 0)
+    assert executor.query_for_path(manual_notch) == (0x16, 0x48, 0)
+    assert executor.query_for_path(twin_peak_filter) == (0x16, 0x4F, 0)
+    assert executor.query_for_path(agc) == (0x16, 0x12, 0)
+    assert executor.query_for_path(audio_peak_filter) == (0x16, 0x32, 0)
+
+    # SUB receiver targeting (receiver 1).
+    digisel_sub = FieldPath.receiver("sub", "operator_toggles", "digisel")
+    assert executor.query_for_path(digisel_sub) == (0x16, 0x4E, 1)
+
+    # Regression guard: the pre-existing operator_controls mappings still hold.
+    att = FieldPath.receiver("main", "operator_controls", "att")
+    preamp = FieldPath.receiver("main", "operator_controls", "preamp")
+    squelch = FieldPath.receiver("main", "operator_controls", "squelch")
+    assert executor.query_for_path(att) == (0x11, None, 0)
+    assert executor.query_for_path(preamp) == (0x16, 0x02, 0)
+    assert executor.query_for_path(squelch) == (0x14, 0x03, 0)
+
+
+def test_ic7610_real_profile_rf_dsp_toggles_pollable_and_emit_reads() -> None:
+    acquisition = load_rig(RIGS_DIR / "ic7610.toml").to_profile().state_acquisition
+    assert acquisition is not None
+
+    target_paths: tuple[FieldPath, ...] = tuple(
+        FieldPath.receiver(receiver, "operator_toggles", name)
+        for receiver in ("main", "sub")
+        for name in (
+            "digisel",
+            "ipplus",
+            "nb",
+            "nr",
+            "auto_notch",
+            "manual_notch",
+            "twin_peak_filter",
+        )
+    ) + tuple(
+        FieldPath.receiver(receiver, "operator_controls", name)
+        for receiver in ("main", "sub")
+        for name in ("agc", "audio_peak_filter")
+    )
+
+    for path in target_paths:
+        assert acquisition.capability_for(path).can_poll is True
+        policy = acquisition.policy_for(path)
+        assert policy.cadence_seconds == 1.5
+        assert policy.freshness_ttl_seconds == 3.0
+        assert policy.adaptive_decay.enabled is False
+
+    clock = FreshnessClock(start=300.0)
+    scheduler = AcquisitionScheduler(profile=acquisition, clock=clock)
+    requests = scheduler.due_requests()
+    due_paths = {path for request in requests for path in request.paths}
+    assert set(target_paths) <= due_paths
+
+    sent: list[tuple[int, int | None, int | None]] = []
+
+    async def send_query(
+        command: int,
+        sub: int | None,
+        receiver: int | None,
+    ) -> None:
+        sent.append((command, sub, receiver))
+
+    executor = IcomCivAcquisitionExecutor(send_query)
+    for request in requests:
+        if not any(path in target_paths for path in request.paths):
+            continue
+        execution = asyncio.run(
+            executor.execute(request, already_sent_paths=frozenset())
+        )
+        assert execution.failed_paths == ()
+
+    expected = {
+        (0x16, 0x4E, 0),
+        (0x16, 0x65, 0),
+        (0x16, 0x22, 0),
+        (0x16, 0x40, 0),
+        (0x16, 0x41, 0),
+        (0x16, 0x48, 0),
+        (0x16, 0x4F, 0),
+        (0x16, 0x12, 0),
+        (0x16, 0x32, 0),
+        (0x16, 0x4E, 1),
+        (0x16, 0x65, 1),
+        (0x16, 0x22, 1),
+        (0x16, 0x40, 1),
+        (0x16, 0x41, 1),
+        (0x16, 0x48, 1),
+        (0x16, 0x4F, 1),
+        (0x16, 0x12, 1),
+        (0x16, 0x32, 1),
+    }
+    assert expected <= set(sent)

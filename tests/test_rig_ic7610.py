@@ -143,6 +143,7 @@ class TestProfileParity:
                 (0x15, 0x02),
                 (0x15, 0x05),
                 (0x16, 0x02),
+                (0x16, 0x12),
                 (0x16, 0x22),
                 (0x16, 0x32),
                 (0x16, 0x40),
@@ -165,7 +166,7 @@ class TestProfileParity:
         assert profile.cmd29_routes == expected
 
     def test_cmd29_routes_count(self, profile):
-        assert len(profile.cmd29_routes) == 33
+        assert len(profile.cmd29_routes) == 34
 
     def test_vfo_main_code(self, profile):
         assert profile.vfo_main_code == 0xD0

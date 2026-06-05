@@ -229,6 +229,17 @@ _RECEIVER_LEVEL_QUERY_SUBS: dict[str, int] = {
 _RECEIVER_NONLEVEL_QUERIES: dict[str, tuple[int, int | None]] = {
     "att": (0x11, None),
     "preamp": (0x16, 0x02),
+    "agc": (0x16, 0x12),
+    "audio_peak_filter": (0x16, 0x32),
+}
+_RECEIVER_TOGGLE_QUERIES: dict[str, tuple[int, int | None]] = {
+    "digisel": (0x16, 0x4E),
+    "ipplus": (0x16, 0x65),
+    "nb": (0x16, 0x22),
+    "nr": (0x16, 0x40),
+    "auto_notch": (0x16, 0x41),
+    "manual_notch": (0x16, 0x48),
+    "twin_peak_filter": (0x16, 0x4F),
 }
 _GLOBAL_LEVEL_QUERY_SUBS: dict[str, int] = {
     "power_level": 0x0A,
@@ -297,6 +308,9 @@ class IcomCivAcquisitionExecutor:
             if path.name == "s_meter":
                 return (0x15, 0x02, receiver)
             return None
+        if path.scope.value == "receiver" and path.family.value == "operator_toggles":
+            toggle = _RECEIVER_TOGGLE_QUERIES.get(path.name)
+            return None if toggle is None else (toggle[0], toggle[1], receiver)
         if path.scope.value == "receiver" and path.family.value == "operator_controls":
             nonlevel = _RECEIVER_NONLEVEL_QUERIES.get(path.name)
             if nonlevel is not None:
