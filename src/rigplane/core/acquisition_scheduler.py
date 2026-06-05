@@ -304,6 +304,8 @@ class IcomCivAcquisitionExecutor:
                 return (0x25, None, receiver)
             if path.name == "mode":
                 return (0x26, None, receiver)
+            if path.name == "filter_width":
+                return (0x1A, 0x03, receiver)
             return None
         if path.scope.value == "receiver" and path.family.value == "meters":
             if path.name == "s_meter":

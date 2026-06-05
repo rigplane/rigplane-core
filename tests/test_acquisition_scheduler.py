@@ -1569,3 +1569,70 @@ def test_ic7610_real_profile_levels_pollable_and_emit_reads() -> None:
         (0x14, 0x09, None),
     }
     assert expected <= set(sent)
+
+
+def test_ic7610_real_profile_filter_width_query_for_path() -> None:
+    sent: list[tuple[int, int | None, int | None]] = []
+
+    async def send_query(
+        command: int,
+        sub: int | None,
+        receiver: int | None,
+    ) -> None:
+        sent.append((command, sub, receiver))
+
+    executor = IcomCivAcquisitionExecutor(send_query)
+
+    filter_width_main = FieldPath.active("main", "freq_mode", "filter_width")
+    filter_width_sub = FieldPath.active("sub", "freq_mode", "filter_width")
+    assert executor.query_for_path(filter_width_main) == (0x1A, 0x03, 0)
+    assert executor.query_for_path(filter_width_sub) == (0x1A, 0x03, 1)
+
+    # Regression guard: sibling freq_mode mappings stay byte-identical.
+    freq_hz = FieldPath.active("main", "freq_mode", "freq_hz")
+    mode = FieldPath.active("main", "freq_mode", "mode")
+    assert executor.query_for_path(freq_hz) == (0x25, None, 0)
+    assert executor.query_for_path(mode) == (0x26, None, 0)
+
+
+def test_ic7610_real_profile_filter_width_pollable_and_emit_reads() -> None:
+    acquisition = load_rig(RIGS_DIR / "ic7610.toml").to_profile().state_acquisition
+    assert acquisition is not None
+
+    target_paths: tuple[FieldPath, ...] = (
+        FieldPath.active("main", "freq_mode", "filter_width"),
+        FieldPath.active("sub", "freq_mode", "filter_width"),
+    )
+
+    for path in target_paths:
+        assert acquisition.capability_for(path).can_poll is True
+        policy = acquisition.policy_for(path)
+        assert policy.cadence_seconds == 1.5
+        assert policy.freshness_ttl_seconds == 3.0
+        assert policy.adaptive_decay.enabled is False
+
+    clock = FreshnessClock(start=300.0)
+    scheduler = AcquisitionScheduler(profile=acquisition, clock=clock)
+    requests = scheduler.due_requests()
+    due_paths = {path for request in requests for path in request.paths}
+    assert set(target_paths) <= due_paths
+
+    sent: list[tuple[int, int | None, int | None]] = []
+
+    async def send_query(
+        command: int,
+        sub: int | None,
+        receiver: int | None,
+    ) -> None:
+        sent.append((command, sub, receiver))
+
+    executor = IcomCivAcquisitionExecutor(send_query)
+    for request in requests:
+        if not any(path in target_paths for path in request.paths):
+            continue
+        execution = asyncio.run(
+            executor.execute(request, already_sent_paths=frozenset())
+        )
+        assert execution.failed_paths == ()
+
+    assert {(0x1A, 0x03, 0), (0x1A, 0x03, 1)} <= set(sent)

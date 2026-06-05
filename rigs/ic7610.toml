@@ -147,6 +147,8 @@ polling_only = [
     "receiver.main.active.freq_mode.mode",
     "receiver.sub.active.freq_mode.freq_hz",
     "receiver.sub.active.freq_mode.mode",
+    "receiver.main.active.freq_mode.filter_width",
+    "receiver.sub.active.freq_mode.filter_width",
     "receiver.main.operator_toggles.digisel",
     "receiver.main.operator_toggles.ipplus",
     "receiver.main.operator_toggles.nb",
@@ -449,6 +451,16 @@ adaptive_decay = false
 [state_acquisition.field_policies."global.operator_controls.cw_pitch"]
 cadence_seconds = 3.0
 freshness_ttl_seconds = 5.0
+adaptive_decay = false
+
+[state_acquisition.field_policies."receiver.main.active.freq_mode.filter_width"]
+cadence_seconds = 1.5
+freshness_ttl_seconds = 3.0
+adaptive_decay = false
+
+[state_acquisition.field_policies."receiver.sub.active.freq_mode.filter_width"]
+cadence_seconds = 1.5
+freshness_ttl_seconds = 3.0
 adaptive_decay = false
 
 # ── Parameterized Capabilities ───────────────────────────────────
