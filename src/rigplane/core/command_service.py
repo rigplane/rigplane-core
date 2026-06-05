@@ -734,7 +734,6 @@ def command_intent_from_request(
                 )
             else:
                 normalized["filter_num"] = int(raw_filter)
-        normalized["filter_width"] = int(normalized["filter_num"])
     elif command_name == "set_filter_width":
         normalized["filter_width"] = int(normalized["width"])
     elif command_name in ("set_ptt", "ptt"):
@@ -872,7 +871,7 @@ def _command_target(name: str, params: Mapping[str, Any]) -> FieldPath | None:
     if name == "set_mode":
         return FieldPath.receiver(receiver, "freq_mode", "mode")
     if name == "set_filter":
-        return FieldPath.receiver(receiver, "freq_mode", "filter_width")
+        return FieldPath.receiver(receiver, "freq_mode", "filter_num")
     if name == "set_filter_width":
         return FieldPath.receiver(receiver, "freq_mode", "filter_width")
     if name in ("set_ptt", "ptt", "ptt_on", "ptt_off"):
@@ -957,8 +956,6 @@ def _value_for_observable_intent(intent: CommandIntent) -> Any:
         return params[intent.target.name]
     if intent.target.name == "freq_hz" and "freq" in params:
         return params["freq"]
-    if intent.target.name == "filter_width" and "filter_num" in params:
-        return params["filter_num"]
     if "value" in params:
         return params["value"]
     raise KeyError(intent.target.name)

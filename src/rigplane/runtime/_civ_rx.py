@@ -1477,7 +1477,7 @@ class CivRuntime:
                     )
                 )
         elif frame.command in (0x01, 0x04):
-            mode_val, _ = parse_mode_response(frame)
+            mode_val, filt = parse_mode_response(frame)
             observations.append(
                 self._observation(
                     self._freq_mode_path(
@@ -1489,6 +1489,18 @@ class CivRuntime:
                     frame=frame,
                 )
             )
+            if filt is not None:
+                observations.append(
+                    self._observation(
+                        self._freq_mode_path(
+                            receiver_id=receiver_id,
+                            slot_override=slot_override,
+                            name="filter_num",
+                        ),
+                        int(filt),
+                        frame=frame,
+                    )
+                )
         elif frame.command == 0x25 and len(frame.data) >= 6:
             from rigplane.types import bcd_decode
 
@@ -1509,6 +1521,14 @@ class CivRuntime:
                     frame=frame,
                 )
             )
+            if len(frame.data) >= 4:
+                observations.append(
+                    self._observation(
+                        FieldPath.active(target_receiver, "freq_mode", "filter_num"),
+                        int(frame.data[3]),
+                        frame=frame,
+                    )
+                )
         elif frame.command == 0x14 and len(frame.data) >= 2:
             sub14 = frame.sub or 0
             if sub14 == _OBSERVABLE_CMD14_CW_PITCH_SUB:

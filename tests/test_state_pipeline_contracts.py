@@ -432,6 +432,19 @@ def test_receiver_digisel_registered_as_writable_operator_toggle_bool() -> None:
     assert spec.writable is True
 
 
+def test_receiver_filter_num_registered_as_writable_freq_mode_int() -> None:
+    """MOR-478: ``receiver.<id>.active.freq_mode.filter_num`` is a writable int.
+
+    The FIL selector (FIL1/2/3) has a CAT set command (``set_filter``), so the
+    spec is writable so the command-overlay path can observe + overlay it.
+    """
+    path = FieldPath.active("main", "freq_mode", "filter_num")
+    spec = DEFAULT_FIELD_REGISTRY.require(path)
+    assert spec.value_type == "int"
+    assert spec.writable is True
+    assert spec.family is FieldFamily.FREQ_MODE
+
+
 def test_receiver_ipplus_registered_as_writable_operator_toggle_bool() -> None:
     """MOR-477: ``receiver.<id>.operator_toggles.ipplus`` is a writable bool.
 

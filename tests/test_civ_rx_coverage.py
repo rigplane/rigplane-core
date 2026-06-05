@@ -817,6 +817,18 @@ def test_update_state_cache_exception_suppressed(radio: IcomRadio) -> None:
             "command_response",
         ),
         (
+            _make_frame(cmd=0x04, data=bytes([Mode.LSB.value, 2])),
+            "receiver.0.active.freq_mode.filter_num",
+            2,
+            "command_response",
+        ),
+        (
+            _make_frame(cmd=0x01, data=bytes([Mode.USB.value, 1])),
+            "receiver.0.active.freq_mode.filter_num",
+            1,
+            "civ_unsolicited",
+        ),
+        (
             _make_frame(cmd=0x25, data=bytes([0x01]) + bcd_encode(21_074_000)),
             "receiver.1.active.freq_mode.freq_hz",
             21_074_000,
@@ -826,6 +838,12 @@ def test_update_state_cache_exception_suppressed(radio: IcomRadio) -> None:
             _make_frame(cmd=0x26, data=bytes([0x01, Mode.CW.value, 0x00, 3])),
             "receiver.1.active.freq_mode.mode",
             "CW",
+            "command_response",
+        ),
+        (
+            _make_frame(cmd=0x26, data=bytes([0x01, Mode.CW.value, 0x00, 3])),
+            "receiver.1.active.freq_mode.filter_num",
+            3,
             "command_response",
         ),
         (
@@ -958,6 +976,30 @@ def test_update_state_cache_projects_supported_fields_into_state_store(
 
     assert field.value == expected
     assert field.source.source == expected_source
+
+
+@pytest.mark.parametrize(  # type: ignore[untyped-decorator]
+    "frame",
+    [
+        _make_frame(cmd=0x04, data=bytes([Mode.USB.value])),
+        _make_frame(cmd=0x26, data=bytes([0x00, Mode.USB.value])),
+        _make_frame(cmd=0x26, data=bytes([0x00, Mode.USB.value, 0x00])),
+    ],
+)
+def test_update_state_cache_omits_filter_num_when_byte_absent(
+    radio: IcomRadio,
+    frame: CivFrame,
+) -> None:
+    """MOR-478: mode-only frames must not emit a filter_num observation."""
+    radio._civ_runtime._update_state_cache_from_frame(frame)
+
+    target_receiver = "1" if frame.command == 0x26 and frame.data[0] else "0"
+    snapshot = radio._state_store.snapshot()
+    # The mode observation still lands.
+    snapshot.field(f"receiver.{target_receiver}.active.freq_mode.mode")
+    # No filter_num observation is emitted (no crash, KeyError on lookup).
+    with pytest.raises(KeyError):
+        snapshot.field(f"receiver.{target_receiver}.active.freq_mode.filter_num")
 
 
 # ---------------------------------------------------------------------------
@@ -1699,7 +1741,12 @@ def test_update_state_cache_applies_state_store_before_legacy_cache_mirror(
     ):
         radio._civ_runtime._update_state_cache_from_frame(frame)
 
-    assert seen_legacy_values == [initial_value]
+    # The 0x04 mode frame now also emits a filter_num observation (MOR-478), so
+    # ``apply`` is invoked once per observation. Every apply must still observe
+    # the *pre-mirror* legacy value, proving the store projection precedes the
+    # legacy cache mutation regardless of how many observations a frame yields.
+    assert seen_legacy_values
+    assert all(value == initial_value for value in seen_legacy_values)
 
 
 def test_update_state_cache_uses_slot_specific_observation_path_when_override_active(

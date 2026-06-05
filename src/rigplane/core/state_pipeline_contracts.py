@@ -1082,6 +1082,11 @@ def _receiver_specs(receiver_id: str) -> tuple[FieldSpec, ...]:
             writable=True,
             unit="hz",
         ),
+        spec(
+            FieldPath.active(receiver_id, "freq_mode", "filter_num"),
+            "int",
+            writable=True,
+        ),
     )
 
 

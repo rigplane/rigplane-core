@@ -1072,7 +1072,8 @@ def test_command_response_observation_carries_session_metadata() -> None:
 @pytest.mark.parametrize(  # type: ignore[untyped-decorator]
     ("name", "params", "expected_path", "expected_value"),
     [
-        ("set_filter", {"filter_num": 2}, "receiver.0.freq_mode.filter_width", 2),
+        ("set_filter", {"filter_num": 2}, "receiver.0.freq_mode.filter_num", 2),
+        ("set_filter", {"filter": "FIL3"}, "receiver.0.freq_mode.filter_num", 3),
         ("set_ptt", {"on": True}, "global.tx_state.ptt", True),
         ("ptt", {"state": True}, "global.tx_state.ptt", True),
         ("ptt_on", {}, "global.tx_state.ptt", True),
