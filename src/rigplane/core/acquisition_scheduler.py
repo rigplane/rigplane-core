@@ -232,6 +232,8 @@ _RECEIVER_NONLEVEL_QUERIES: dict[str, tuple[int, int | None]] = {
     "agc": (0x16, 0x12),
     "audio_peak_filter": (0x16, 0x32),
     "agc_time_constant": (0x1A, 0x04),
+    "tone_freq": (0x1B, 0x00),
+    "tsql_freq": (0x1B, 0x01),
 }
 _GLOBAL_TX_TOGGLE_QUERIES: dict[str, tuple[int, int | None]] = {
     "compressor_on": (0x16, 0x44),
@@ -248,6 +250,8 @@ _RECEIVER_TOGGLE_QUERIES: dict[str, tuple[int, int | None]] = {
     "auto_notch": (0x16, 0x41),
     "manual_notch": (0x16, 0x48),
     "twin_peak_filter": (0x16, 0x4F),
+    "repeater_tone": (0x16, 0x42),
+    "repeater_tsql": (0x16, 0x43),
 }
 _GLOBAL_LEVEL_QUERY_SUBS: dict[str, int] = {
     "power_level": 0x0A,
@@ -260,6 +264,13 @@ _GLOBAL_LEVEL_QUERY_SUBS: dict[str, int] = {
     "monitor_gain": 0x15,
     "vox_gain": 0x16,
     "anti_vox_gain": 0x17,
+}
+# Global operator-control reads that are NOT 0x14 levels. tuner_status is a
+# 0x1C 0x01 read with NO data byte; the set form (0x1C 0x01 + 0x00/0x01/0x02)
+# is never used here, so a poll only READS ATU status and can never turn the
+# tuner on or start a tune (MOR-488 batch 5).
+_GLOBAL_NONLEVEL_QUERIES: dict[str, tuple[int, int | None]] = {
+    "tuner_status": (0x1C, 0x01),
 }
 _GLOBAL_METER_QUERY_SUBS: dict[str, int] = {
     "power": 0x11,
@@ -349,6 +360,9 @@ class IcomCivAcquisitionExecutor:
         if path.scope.value == "global" and path.family.value == "operator_controls":
             if path.name == "rit_freq":
                 return (0x21, 0x00, None)
+            nonlevel = _GLOBAL_NONLEVEL_QUERIES.get(path.name)
+            if nonlevel is not None:
+                return (nonlevel[0], nonlevel[1], None)
             sub = _GLOBAL_LEVEL_QUERY_SUBS.get(path.name)
             return None if sub is None else (0x14, sub, None)
         return None

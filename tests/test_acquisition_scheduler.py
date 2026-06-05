@@ -1845,3 +1845,135 @@ def test_ic7610_real_profile_vfo_global_pollable_and_emit_reads() -> None:
         (0x10, None, None),
     }
     assert expected <= set(sent)
+
+
+def test_ic7610_real_profile_tone_tuner_query_for_path() -> None:
+    sent: list[tuple[int, int | None, int | None]] = []
+
+    async def send_query(
+        command: int,
+        sub: int | None,
+        receiver: int | None,
+    ) -> None:
+        sent.append((command, sub, receiver))
+
+    executor = IcomCivAcquisitionExecutor(send_query)
+
+    # cmd16 receiver toggles (operator_toggles family) — MAIN (receiver 0).
+    repeater_tone = FieldPath.receiver("main", "operator_toggles", "repeater_tone")
+    repeater_tsql = FieldPath.receiver("main", "operator_toggles", "repeater_tsql")
+    # cmd1B receiver tone/TSQL freq (operator_controls family) — MAIN (receiver 0).
+    tone_freq = FieldPath.receiver("main", "operator_controls", "tone_freq")
+    tsql_freq = FieldPath.receiver("main", "operator_controls", "tsql_freq")
+    # GLOBAL operator_controls tuner_status — cmd 0x1C sub 0x01, NO data byte
+    # (read form), receiver None. The set form (0x1C 0x01 + 0x00/0x01/0x02) is
+    # never used by polling, so a poll cannot turn the tuner on or start a tune.
+    tuner_status = FieldPath.global_("operator_controls", "tuner_status")
+
+    assert executor.query_for_path(repeater_tone) == (0x16, 0x42, 0)
+    assert executor.query_for_path(repeater_tsql) == (0x16, 0x43, 0)
+    assert executor.query_for_path(tone_freq) == (0x1B, 0x00, 0)
+    assert executor.query_for_path(tsql_freq) == (0x1B, 0x01, 0)
+    assert executor.query_for_path(tuner_status) == (0x1C, 0x01, None)
+
+    # SUB receiver targeting (receiver 1).
+    repeater_tone_sub = FieldPath.receiver(
+        "sub", "operator_toggles", "repeater_tone"
+    )
+    repeater_tsql_sub = FieldPath.receiver(
+        "sub", "operator_toggles", "repeater_tsql"
+    )
+    tone_freq_sub = FieldPath.receiver("sub", "operator_controls", "tone_freq")
+    tsql_freq_sub = FieldPath.receiver("sub", "operator_controls", "tsql_freq")
+    assert executor.query_for_path(repeater_tone_sub) == (0x16, 0x42, 1)
+    assert executor.query_for_path(repeater_tsql_sub) == (0x16, 0x43, 1)
+    assert executor.query_for_path(tone_freq_sub) == (0x1B, 0x00, 1)
+    assert executor.query_for_path(tsql_freq_sub) == (0x1B, 0x01, 1)
+
+    # Regression guard: pre-existing receiver toggle/nonlevel mappings hold.
+    digisel = FieldPath.receiver("main", "operator_toggles", "digisel")
+    att = FieldPath.receiver("main", "operator_controls", "att")
+    preamp = FieldPath.receiver("main", "operator_controls", "preamp")
+    agc = FieldPath.receiver("main", "operator_controls", "agc")
+    agc_time_constant = FieldPath.receiver(
+        "main", "operator_controls", "agc_time_constant"
+    )
+    assert executor.query_for_path(digisel) == (0x16, 0x4E, 0)
+    assert executor.query_for_path(att) == (0x11, None, 0)
+    assert executor.query_for_path(preamp) == (0x16, 0x02, 0)
+    assert executor.query_for_path(agc) == (0x16, 0x12, 0)
+    assert executor.query_for_path(agc_time_constant) == (0x1A, 0x04, 0)
+
+    # Regression guard: pre-existing global level mapping (0x14) still holds.
+    power_level = FieldPath.global_("operator_controls", "power_level")
+    assert executor.query_for_path(power_level) == (0x14, 0x0A, None)
+
+
+def test_ic7610_real_profile_tone_tuner_pollable_and_emit_reads() -> None:
+    acquisition = load_rig(RIGS_DIR / "ic7610.toml").to_profile().state_acquisition
+    assert acquisition is not None
+
+    fast_paths: tuple[FieldPath, ...] = (
+        FieldPath.global_("operator_controls", "tuner_status"),
+    )
+    med_paths: tuple[FieldPath, ...] = tuple(
+        FieldPath.receiver(receiver, "operator_toggles", name)
+        for receiver in ("main", "sub")
+        for name in ("repeater_tone", "repeater_tsql")
+    ) + tuple(
+        FieldPath.receiver(receiver, "operator_controls", name)
+        for receiver in ("main", "sub")
+        for name in ("tone_freq", "tsql_freq")
+    )
+    target_paths = fast_paths + med_paths
+
+    for path in fast_paths:
+        assert acquisition.capability_for(path).can_poll is True
+        policy = acquisition.policy_for(path)
+        assert policy.cadence_seconds == 1.5
+        assert policy.freshness_ttl_seconds == 3.0
+        assert policy.adaptive_decay.enabled is False
+
+    for path in med_paths:
+        assert acquisition.capability_for(path).can_poll is True
+        policy = acquisition.policy_for(path)
+        assert policy.cadence_seconds == 3.0
+        assert policy.freshness_ttl_seconds == 5.0
+        assert policy.adaptive_decay.enabled is False
+
+    clock = FreshnessClock(start=500.0)
+    scheduler = AcquisitionScheduler(profile=acquisition, clock=clock)
+    requests = scheduler.due_requests()
+    due_paths = {path for request in requests for path in request.paths}
+    assert set(target_paths) <= due_paths
+
+    sent: list[tuple[int, int | None, int | None]] = []
+
+    async def send_query(
+        command: int,
+        sub: int | None,
+        receiver: int | None,
+    ) -> None:
+        sent.append((command, sub, receiver))
+
+    executor = IcomCivAcquisitionExecutor(send_query)
+    for request in requests:
+        if not any(path in target_paths for path in request.paths):
+            continue
+        execution = asyncio.run(
+            executor.execute(request, already_sent_paths=frozenset())
+        )
+        assert execution.failed_paths == ()
+
+    expected = {
+        (0x16, 0x42, 0),
+        (0x16, 0x43, 0),
+        (0x1B, 0x00, 0),
+        (0x1B, 0x01, 0),
+        (0x16, 0x42, 1),
+        (0x16, 0x43, 1),
+        (0x1B, 0x00, 1),
+        (0x1B, 0x01, 1),
+        (0x1C, 0x01, None),
+    }
+    assert expected <= set(sent)

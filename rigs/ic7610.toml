@@ -192,6 +192,15 @@ polling_only = [
     "global.tx_state.split",
     "global.tx_state.dual_watch",
     "global.slow_state.tuning_step",
+    "receiver.main.operator_toggles.repeater_tone",
+    "receiver.main.operator_toggles.repeater_tsql",
+    "receiver.sub.operator_toggles.repeater_tone",
+    "receiver.sub.operator_toggles.repeater_tsql",
+    "receiver.main.operator_controls.tone_freq",
+    "receiver.main.operator_controls.tsql_freq",
+    "receiver.sub.operator_controls.tone_freq",
+    "receiver.sub.operator_controls.tsql_freq",
+    "global.operator_controls.tuner_status",
 ]
 stream_like_meters = [
     "receiver.main.meters.s_meter",
@@ -507,6 +516,51 @@ freshness_ttl_seconds = 3.0
 adaptive_decay = false
 
 [state_acquisition.field_policies."global.slow_state.tuning_step"]
+cadence_seconds = 3.0
+freshness_ttl_seconds = 5.0
+adaptive_decay = false
+
+[state_acquisition.field_policies."global.operator_controls.tuner_status"]
+cadence_seconds = 1.5
+freshness_ttl_seconds = 3.0
+adaptive_decay = false
+
+[state_acquisition.field_policies."receiver.main.operator_toggles.repeater_tone"]
+cadence_seconds = 3.0
+freshness_ttl_seconds = 5.0
+adaptive_decay = false
+
+[state_acquisition.field_policies."receiver.main.operator_toggles.repeater_tsql"]
+cadence_seconds = 3.0
+freshness_ttl_seconds = 5.0
+adaptive_decay = false
+
+[state_acquisition.field_policies."receiver.sub.operator_toggles.repeater_tone"]
+cadence_seconds = 3.0
+freshness_ttl_seconds = 5.0
+adaptive_decay = false
+
+[state_acquisition.field_policies."receiver.sub.operator_toggles.repeater_tsql"]
+cadence_seconds = 3.0
+freshness_ttl_seconds = 5.0
+adaptive_decay = false
+
+[state_acquisition.field_policies."receiver.main.operator_controls.tone_freq"]
+cadence_seconds = 3.0
+freshness_ttl_seconds = 5.0
+adaptive_decay = false
+
+[state_acquisition.field_policies."receiver.main.operator_controls.tsql_freq"]
+cadence_seconds = 3.0
+freshness_ttl_seconds = 5.0
+adaptive_decay = false
+
+[state_acquisition.field_policies."receiver.sub.operator_controls.tone_freq"]
+cadence_seconds = 3.0
+freshness_ttl_seconds = 5.0
+adaptive_decay = false
+
+[state_acquisition.field_policies."receiver.sub.operator_controls.tsql_freq"]
 cadence_seconds = 3.0
 freshness_ttl_seconds = 5.0
 adaptive_decay = false
