@@ -172,3 +172,62 @@ describe('panel prop field availability', () => {
     expect(props.hasAgcTime).toBe(false);
   });
 });
+
+describe('RF front-end preamp/digisel mutex', () => {
+  it('disables the preamp control while DIGI-SEL is on but keeps the panel laid out', () => {
+    const props = toRfFrontEndProps(
+      makeState({
+        main: {
+          freqHz: 14_074_000,
+          mode: 'USB',
+          filter: 1,
+          dataMode: 0,
+          sMeter: 50,
+          att: 0,
+          preamp: 0,
+          digisel: true,
+          nb: false,
+          nr: false,
+          afLevel: 128,
+          rfGain: 255,
+          squelch: 0,
+          agc: 2,
+          nbLevel: 0,
+          nrLevel: 0,
+          autoNotch: false,
+          manualNotch: false,
+          agcTimeConstant: 0,
+        },
+        fieldStatus: {
+          'main.preamp': fieldStatus('available'),
+        },
+      }),
+      {
+        capabilities: ['preamp'],
+        preValues: [0, 1, 2],
+      } as any,
+    );
+
+    expect(props.showPre).toBe(true);
+    expect(props.preDisabled).toBe(true);
+    expect(props.preDisabledReason).toMatch(/DIGI-SEL/);
+  });
+
+  it('leaves the preamp control enabled while DIGI-SEL is off', () => {
+    const props = toRfFrontEndProps(
+      makeState({
+        fieldStatus: {
+          'main.preamp': fieldStatus('available'),
+        },
+      }),
+      {
+        capabilities: ['preamp'],
+        preValues: [0, 1, 2],
+      } as any,
+    );
+
+    expect(props.showPre).toBe(true);
+    expect(props.preDisabled).toBe(false);
+    expect(props.preDisabledReason).toBe('');
+  });
+});

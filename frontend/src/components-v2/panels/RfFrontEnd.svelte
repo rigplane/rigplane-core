@@ -15,6 +15,8 @@
   let squelch = $derived(p.squelch);
   let att = $derived(p.att);
   let pre = $derived(p.pre);
+  let preDisabled = $derived(p.preDisabled);
+  let preDisabledReason = $derived(p.preDisabledReason);
   let digiSel = $derived(p.digiSel);
   let ipPlus = $derived(p.ipPlus);
   const onRfGainChange = handlers.onRfGainChange;
@@ -106,7 +108,8 @@
               active={pre === option.value}
               indicator="edge-left"
               color="cyan"
-              title={preShortcut}
+              disabled={preDisabled}
+              title={preDisabled ? preDisabledReason : preShortcut}
               shortcutHint={preShortcut}
               onclick={() => onPreChange(option.value)}
             >

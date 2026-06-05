@@ -172,6 +172,8 @@ export interface RfFrontEndProps {
   showSquelch: boolean;
   showAtt: boolean;
   showPre: boolean;
+  preDisabled: boolean;
+  preDisabledReason: string;
   showDigiSel: boolean;
   showIpPlus: boolean;
 }
@@ -197,6 +199,13 @@ export function toRfFrontEndProps(
   const preAvailable = activeFieldAvailable(state, 'preamp');
   const digiSelAvailable = activeFieldAvailable(state, 'digisel');
   const ipPlusAvailable = activeFieldAvailable(state, 'ipplus');
+  // IC-7610 hardware mutex: PREAMP and DIGI-SEL are mutually exclusive — the radio
+  // ignores a PREAMP set while DIGI-SEL is ON. Mirror the radio by disabling the PRE
+  // control so it does not light optimistically (MOR-479). Sourced from the profile
+  // rule rigs/ic7610.toml [[rules]] kind="disables" when_active="digisel"
+  // disables=["preamp"]; targeted here rather than plumbed through capabilities
+  // (rules are not yet serialized to the client).
+  const preDisabled = rx?.digisel ?? false;
   return {
     rfGain: rx?.rfGain ?? 255,
     squelch: rx?.squelch ?? 0,
@@ -221,6 +230,8 @@ export function toRfFrontEndProps(
     showSquelch: hasCap(caps, 'squelch') && squelchAvailable,
     showAtt: hasCap(caps, 'attenuator') && attAvailable,
     showPre: hasCap(caps, 'preamp') && preAvailable,
+    preDisabled,
+    preDisabledReason: preDisabled ? 'DIGI-SEL is ON — turn it off to use the preamp' : '',
     showDigiSel: hasCap(caps, 'digisel') && digiSelAvailable,
     showIpPlus: hasCap(caps, 'ip_plus') && ipPlusAvailable,
   };
