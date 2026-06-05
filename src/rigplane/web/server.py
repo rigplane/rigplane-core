@@ -410,7 +410,33 @@ class _SharedControlCommandExecutor:
             source=intent.source,
             command_service=self.server.command_service,
         )
-        return CommandExecutionResult(details=result)
+        # MOR-485: publish an optimistic command-response overlay for set_freq
+        # so the projected snapshot reflects the commanded freq immediately
+        # instead of snapping back until the deferred readback lands. Emitted
+        # only on enqueue SUCCESS (a raised enqueue never reaches here, so the
+        # optimistic value is never written for a failed set). The ACTIVE slot
+        # matches the readback emitters in runtime/_civ_rx.py and the projection
+        # in web/runtime_helpers.py.
+        observations: tuple[Observation, ...] = ()
+        if intent.name == "set_freq":
+            receiver = str(int(intent.params.get("receiver", 0)))
+            observations = (
+                Observation(
+                    path=FieldPath.active(receiver, "freq_mode", "freq_hz"),
+                    value=int(intent.params["freq_hz"]),
+                    source=SourceMetadata(
+                        source="command_response",
+                        provider="web_command",
+                        command_source=intent.source,
+                        session_id=str(intent.params["session_id"])
+                        if intent.params.get("session_id")
+                        else None,
+                    ),
+                    timestamp_monotonic=time.monotonic(),
+                    correlation_id=intent.id,
+                ),
+            )
+        return CommandExecutionResult(details=result, observations=observations)
 
 
 async def _read_capped_body(

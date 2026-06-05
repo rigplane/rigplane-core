@@ -912,6 +912,146 @@ async def test_http_command_batch_preparation_uses_shared_command_service(
 
 
 @pytest.mark.asyncio
+async def test_set_freq_publishes_command_overlay_for_main_before_readback() -> None:
+    # MOR-485: a set_freq through the shared (WS) command executor must write
+    # the commanded freq into the command_state_store and projected public
+    # state immediately, with no readback observation applied first. The stored
+    # receiver_id is numeric ("0") to match the readback emitters in
+    # runtime/_civ_rx.py; the projection maps "0" -> main.freqHz.
+    radio = SimpleNamespace(connected=True, capabilities=set())
+    srv = WebServer(radio, WebConfig())
+    srv.command_queue.put = lambda *a, **k: None  # type: ignore[method-assign]
+
+    intent = command_intent_from_request(
+        "set_freq",
+        {"freq": 14_074_000, "receiver": 0},
+        source="websocket",
+        command_id="ws-freq-main",
+    )
+    await srv.command_service.execute(intent)
+
+    snapshot = srv.command_state_store.snapshot()
+    assert (
+        snapshot.field(FieldPath.active("0", "freq_mode", "freq_hz")).value
+        == 14_074_000
+    )
+    assert srv.build_public_state()["main"]["freqHz"] == 14_074_000
+
+
+@pytest.mark.asyncio
+async def test_set_freq_publishes_command_overlay_for_sub_before_readback() -> None:
+    # MOR-485: receiver 1 must project to the sub slot / sub.freqHz.
+    radio = SimpleNamespace(
+        connected=True,
+        capabilities={"dual_rx"},
+        profile=resolve_radio_profile(model="IC-7610"),
+    )
+    srv = WebServer(radio, WebConfig())
+    srv.command_queue.put = lambda *a, **k: None  # type: ignore[method-assign]
+
+    intent = command_intent_from_request(
+        "set_freq",
+        {"freq": 7_074_000, "receiver": 1},
+        source="websocket",
+        command_id="ws-freq-sub",
+    )
+    await srv.command_service.execute(intent)
+
+    snapshot = srv.command_state_store.snapshot()
+    assert (
+        snapshot.field(FieldPath.active("1", "freq_mode", "freq_hz")).value == 7_074_000
+    )
+    assert srv.build_public_state()["sub"]["freqHz"] == 7_074_000
+
+
+@pytest.mark.asyncio
+async def test_set_freq_command_overlay_reconciles_with_matching_readback() -> None:
+    # MOR-485: a poll readback carrying the same freq must not leak an overlay
+    # or change the stored value (reconcile, not regress).
+    radio = SimpleNamespace(connected=True, capabilities=set())
+    srv = WebServer(radio, WebConfig())
+    srv.command_queue.put = lambda *a, **k: None  # type: ignore[method-assign]
+
+    intent = command_intent_from_request(
+        "set_freq",
+        {"freq": 14_074_000, "receiver": 0},
+        source="websocket",
+        command_id="ws-freq-reconcile",
+    )
+    await srv.command_service.execute(intent)
+
+    freq_path = FieldPath.active("0", "freq_mode", "freq_hz")
+    srv.command_service.apply_observation(
+        Observation(
+            path=freq_path,
+            value=14_074_000,
+            source=SourceMetadata(source="poll_response", provider="icom_civ"),
+            timestamp_monotonic=time.monotonic(),
+            correlation_id=None,
+        )
+    )
+
+    assert srv.command_state_store.snapshot().field(freq_path).value == 14_074_000
+
+
+@pytest.mark.asyncio
+async def test_set_freq_command_overlay_yields_to_newer_external_readback() -> None:
+    # MOR-484 guard: a later front-panel readback with a DIFFERENT value must
+    # win (last-writer-wins); the optimistic overlay must not pin the value.
+    radio = SimpleNamespace(connected=True, capabilities=set())
+    srv = WebServer(radio, WebConfig())
+    srv.command_queue.put = lambda *a, **k: None  # type: ignore[method-assign]
+
+    intent = command_intent_from_request(
+        "set_freq",
+        {"freq": 14_074_000, "receiver": 0},
+        source="websocket",
+        command_id="ws-freq-external",
+    )
+    await srv.command_service.execute(intent)
+
+    freq_path = FieldPath.active("0", "freq_mode", "freq_hz")
+    srv.command_service.apply_observation(
+        Observation(
+            path=freq_path,
+            value=14_200_000,
+            source=SourceMetadata(source="poll_response", provider="icom_civ"),
+            timestamp_monotonic=time.monotonic(),
+            correlation_id=None,
+        )
+    )
+
+    assert srv.command_state_store.snapshot().field(freq_path).value == 14_200_000
+
+
+@pytest.mark.asyncio
+async def test_set_freq_failure_does_not_publish_command_overlay() -> None:
+    # MOR-485: the optimistic overlay is emitted ONLY on enqueue success — a
+    # raised enqueue must leave the command_state_store untouched.
+    radio = SimpleNamespace(connected=True, capabilities=set())
+    srv = WebServer(radio, WebConfig())
+
+    def _boom(*_a: object, **_k: object) -> None:
+        raise RuntimeError("radio rejected command")
+
+    srv.command_queue.put = _boom  # type: ignore[method-assign]
+
+    intent = command_intent_from_request(
+        "set_freq",
+        {"freq": 14_074_000, "receiver": 0},
+        source="websocket",
+        command_id="ws-freq-fail",
+    )
+    with pytest.raises(RuntimeError, match="radio rejected command"):
+        await srv.command_service.execute(intent)
+
+    freq_path = FieldPath.active("0", "freq_mode", "freq_hz")
+    snapshot = srv.command_state_store.snapshot()
+    with pytest.raises(KeyError):
+        snapshot.field(freq_path)
+
+
+@pytest.mark.asyncio
 async def test_websocket_reused_command_ids_are_scoped_per_connection() -> None:
     radio = SimpleNamespace(connected=True, capabilities=set())
     srv = WebServer(radio, WebConfig())
