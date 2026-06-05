@@ -2,21 +2,27 @@
 
 from __future__ import annotations
 
+import logging
 import time
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Protocol
+from typing import TYPE_CHECKING, Protocol, TypeVar
 
 from rigplane.core.observation_adapter import ProviderObservationAdapter
 from rigplane.core.state_acquisition_policy import RadioAcquisitionProfile
 from rigplane.core.state_pipeline_contracts import FieldPath, Observation
 
+from .parser import CatFormatError, CatParseError
 from .radio import _ctcss_index_to_centihz
+from .transport import CatCommandRejected
 
 if TYPE_CHECKING:
     from rigplane.core.types import BreakInMode
 
+logger = logging.getLogger(__name__)
+
 Clock = Callable[[], float]
+_T = TypeVar("_T")
 
 __all__ = ["YAESU_PTT_PATH", "YaesuObservationAdapter"]
 
@@ -275,47 +281,35 @@ class YaesuObservationAdapter:
         adapter = self._adapter()
         observations: list[Observation] = []
         if self._can_poll(_MAIN_FREQ):
-            observations.append(
-                adapter.observation(
-                    _MAIN_FREQ,
-                    await self.radio.read_freq(0),
-                    native_id="read_freq",
+            ok, value = await self._safe_read("main.freq", self.radio.read_freq(0))
+            if ok:
+                observations.append(
+                    adapter.observation(_MAIN_FREQ, value, native_id="read_freq")
                 )
-            )
         if self._can_poll(_MAIN_MODE):
-            mode, _ = await self.radio.read_mode(0)
-            observations.append(
-                adapter.observation(
-                    _MAIN_MODE,
-                    mode,
-                    native_id="read_mode",
+            ok, result = await self._safe_read("main.mode", self.radio.read_mode(0))
+            if ok and result is not None:
+                observations.append(
+                    adapter.observation(_MAIN_MODE, result[0], native_id="read_mode")
                 )
-            )
         if self._has_runtime_capability("dual_rx") and self._can_poll(_SUB_FREQ):
-            observations.append(
-                adapter.observation(
-                    _SUB_FREQ,
-                    await self.radio.read_freq(1),
-                    native_id="read_freq",
+            ok, value = await self._safe_read("sub.freq", self.radio.read_freq(1))
+            if ok:
+                observations.append(
+                    adapter.observation(_SUB_FREQ, value, native_id="read_freq")
                 )
-            )
         if self._has_runtime_capability("dual_rx") and self._can_poll(_SUB_MODE):
-            mode, _ = await self.radio.read_mode(1)
-            observations.append(
-                adapter.observation(
-                    _SUB_MODE,
-                    mode,
-                    native_id="read_mode",
+            ok, result = await self._safe_read("sub.mode", self.radio.read_mode(1))
+            if ok and result is not None:
+                observations.append(
+                    adapter.observation(_SUB_MODE, result[0], native_id="read_mode")
                 )
-            )
         if self._can_poll(_PTT):
-            observations.append(
-                adapter.observation(
-                    _PTT,
-                    await self.radio.read_ptt(),
-                    native_id="read_ptt",
+            ok, value = await self._safe_read("ptt", self.radio.read_ptt())
+            if ok:
+                observations.append(
+                    adapter.observation(_PTT, value, native_id="read_ptt")
                 )
-            )
         # filter_width (MOR-445) is a ``freq_mode`` ACTIVE-slot field, so it
         # belongs in the freq/mode lane — mirroring the legacy poller, which
         # reads it in ``_poll_medium`` for responsive knob tracking. MAIN-only
@@ -323,13 +317,15 @@ class YaesuObservationAdapter:
         if self._has_runtime_capability("filter_width") and self._can_poll(
             _MAIN_FILTER_WIDTH
         ):
-            observations.append(
-                adapter.observation(
-                    _MAIN_FILTER_WIDTH,
-                    await self.radio.read_filter_width(0),
-                    native_id="read_filter_width",
-                )
+            ok, value = await self._safe_read(
+                "main.filter_width", self.radio.read_filter_width(0)
             )
+            if ok:
+                observations.append(
+                    adapter.observation(
+                        _MAIN_FILTER_WIDTH, value, native_id="read_filter_width"
+                    )
+                )
         return tuple(observations)
 
     async def poll_rx_meters(
@@ -340,29 +336,31 @@ class YaesuObservationAdapter:
         adapter = self._adapter()
         observations: list[Observation] = []
         if self._has_runtime_capability("meters") and self._can_poll(_MAIN_S_METER):
-            raw = await self.radio.read_s_meter(0)
-            value = smooth_s_meter(0, raw) if smooth_s_meter is not None else raw
-            observations.append(
-                adapter.observation(
-                    _MAIN_S_METER,
-                    value,
-                    native_id="read_s_meter",
+            ok, raw = await self._safe_read("main.s_meter", self.radio.read_s_meter(0))
+            if ok and raw is not None:
+                value = smooth_s_meter(0, raw) if smooth_s_meter is not None else raw
+                observations.append(
+                    adapter.observation(
+                        _MAIN_S_METER,
+                        value,
+                        native_id="read_s_meter",
+                    )
                 )
-            )
         if (
             self._has_runtime_capability("meters")
             and self._has_runtime_capability("dual_rx")
             and self._can_poll(_SUB_S_METER)
         ):
-            raw = await self.radio.read_s_meter(1)
-            value = smooth_s_meter(1, raw) if smooth_s_meter is not None else raw
-            observations.append(
-                adapter.observation(
-                    _SUB_S_METER,
-                    value,
-                    native_id="read_s_meter",
+            ok, raw = await self._safe_read("sub.s_meter", self.radio.read_s_meter(1))
+            if ok and raw is not None:
+                value = smooth_s_meter(1, raw) if smooth_s_meter is not None else raw
+                observations.append(
+                    adapter.observation(
+                        _SUB_S_METER,
+                        value,
+                        native_id="read_s_meter",
+                    )
                 )
-            )
         return tuple(observations)
 
     async def poll_tx_meters(self) -> tuple[Observation, ...]:
@@ -371,104 +369,94 @@ class YaesuObservationAdapter:
         # ALC is a stream-like TX meter (MOR-448), emitted in the same lane and
         # under the same meter freshness/coalescing policy as power/swr.
         if self._has_runtime_capability("meters") and self._can_poll(_ALC_METER):
-            observations.append(
-                adapter.observation(
-                    _ALC_METER,
-                    await self.radio.read_alc_meter(),
-                    native_id="read_alc_meter",
+            ok, value = await self._safe_read("alc", self.radio.read_alc_meter())
+            if ok:
+                observations.append(
+                    adapter.observation(_ALC_METER, value, native_id="read_alc_meter")
                 )
-            )
         if self._has_runtime_capability("meters") and self._can_poll(_POWER_METER):
-            observations.append(
-                adapter.observation(
-                    _POWER_METER,
-                    await self.radio.read_power_meter(),
-                    native_id="read_power_meter",
+            ok, value = await self._safe_read("power", self.radio.read_power_meter())
+            if ok:
+                observations.append(
+                    adapter.observation(
+                        _POWER_METER, value, native_id="read_power_meter"
+                    )
                 )
-            )
         if self._has_runtime_capability("meters") and self._can_poll(_SWR_METER):
-            observations.append(
-                adapter.observation(
-                    _SWR_METER,
-                    await self.radio.read_swr_meter(),
-                    native_id="read_swr_meter",
+            ok, value = await self._safe_read("swr", self.radio.read_swr_meter())
+            if ok:
+                observations.append(
+                    adapter.observation(_SWR_METER, value, native_id="read_swr_meter")
                 )
-            )
         # COMP is the cross-vendor PA meter (MOR-460), emitted in the same lane
         # and under the same meter freshness/coalescing policy as alc/power/swr.
         if self._has_runtime_capability("meters") and self._can_poll(_COMP_METER):
-            observations.append(
-                adapter.observation(
-                    _COMP_METER,
-                    await self.radio.read_comp_meter(),
-                    native_id="read_comp_meter",
+            ok, value = await self._safe_read("comp", self.radio.read_comp_meter())
+            if ok:
+                observations.append(
+                    adapter.observation(_COMP_METER, value, native_id="read_comp_meter")
                 )
-            )
         return tuple(observations)
 
     async def poll_slow_controls(self) -> tuple[Observation, ...]:
         adapter = self._adapter()
         observations: list[Observation] = []
         if self._has_runtime_capability("af_level") and self._can_poll(_MAIN_AF):
-            observations.append(
-                adapter.observation(
-                    _MAIN_AF,
-                    await self.radio.read_af_level(0),
-                    native_id="read_af_level",
-                )
+            ok, value = await self._safe_read(
+                "main.af_level", self.radio.read_af_level(0)
             )
+            if ok:
+                observations.append(
+                    adapter.observation(_MAIN_AF, value, native_id="read_af_level")
+                )
         if self._has_runtime_capability("rf_gain") and self._can_poll(_MAIN_RF):
-            observations.append(
-                adapter.observation(
-                    _MAIN_RF,
-                    await self.radio.read_rf_gain(0),
-                    native_id="read_rf_gain",
-                )
+            ok, value = await self._safe_read(
+                "main.rf_gain", self.radio.read_rf_gain(0)
             )
+            if ok:
+                observations.append(
+                    adapter.observation(_MAIN_RF, value, native_id="read_rf_gain")
+                )
         if self._has_runtime_capability("squelch") and self._can_poll(_MAIN_SQL):
-            observations.append(
-                adapter.observation(
-                    _MAIN_SQL,
-                    await self.radio.read_squelch(0),
-                    native_id="read_squelch",
-                )
+            ok, value = await self._safe_read(
+                "main.squelch", self.radio.read_squelch(0)
             )
+            if ok:
+                observations.append(
+                    adapter.observation(_MAIN_SQL, value, native_id="read_squelch")
+                )
         if (
             self._has_runtime_capability("dual_rx")
             and self._has_runtime_capability("af_level")
             and self._can_poll(_SUB_AF)
         ):
-            observations.append(
-                adapter.observation(
-                    _SUB_AF,
-                    await self.radio.read_af_level(1),
-                    native_id="read_af_level",
-                )
+            ok, value = await self._safe_read(
+                "sub.af_level", self.radio.read_af_level(1)
             )
+            if ok:
+                observations.append(
+                    adapter.observation(_SUB_AF, value, native_id="read_af_level")
+                )
         if (
             self._has_runtime_capability("dual_rx")
             and self._has_runtime_capability("rf_gain")
             and self._can_poll(_SUB_RF)
         ):
-            observations.append(
-                adapter.observation(
-                    _SUB_RF,
-                    await self.radio.read_rf_gain(1),
-                    native_id="read_rf_gain",
+            ok, value = await self._safe_read("sub.rf_gain", self.radio.read_rf_gain(1))
+            if ok:
+                observations.append(
+                    adapter.observation(_SUB_RF, value, native_id="read_rf_gain")
                 )
-            )
         if (
             self._has_runtime_capability("dual_rx")
             and self._has_runtime_capability("squelch")
             and self._can_poll(_SUB_SQL)
         ):
-            observations.append(
-                adapter.observation(
-                    _SUB_SQL,
-                    await self.radio.read_squelch(1),
-                    native_id="read_squelch",
+            ok, value = await self._safe_read("sub.squelch", self.radio.read_squelch(1))
+            if ok:
+                observations.append(
+                    adapter.observation(_SUB_SQL, value, native_id="read_squelch")
                 )
-            )
         # RF front-end + AGC (MOR-443) — MAIN-only. ATT/preamp gate on their
         # runtime capabilities (matching the legacy poller's ``attenuator`` /
         # ``preamp`` gates); AGC has no FTX-1 capability tag and is polled
@@ -477,50 +465,46 @@ class YaesuObservationAdapter:
         # receives the coerced ``int(on_off)`` (0/1) — no scaling beyond the
         # bool→int match (cross-vendor calibration is MOR-453).
         if self._has_runtime_capability("attenuator") and self._can_poll(_MAIN_ATT):
-            observations.append(
-                adapter.observation(
-                    _MAIN_ATT,
-                    int(await self.radio.read_attenuator(0)),
-                    native_id="read_attenuator",
+            ok, value = await self._safe_read("main.att", self.radio.read_attenuator(0))
+            if ok and value is not None:
+                observations.append(
+                    adapter.observation(
+                        _MAIN_ATT, int(value), native_id="read_attenuator"
+                    )
                 )
-            )
         if self._has_runtime_capability("preamp") and self._can_poll(_MAIN_PREAMP):
-            observations.append(
-                adapter.observation(
-                    _MAIN_PREAMP,
-                    await self.radio.read_preamp(0),
-                    native_id="read_preamp",
+            ok, value = await self._safe_read("main.preamp", self.radio.read_preamp(0))
+            if ok:
+                observations.append(
+                    adapter.observation(_MAIN_PREAMP, value, native_id="read_preamp")
                 )
-            )
         if self._can_poll(_MAIN_AGC):
-            observations.append(
-                adapter.observation(
-                    _MAIN_AGC,
-                    await self.radio.read_agc(0),
-                    native_id="read_agc",
+            ok, value = await self._safe_read("main.agc", self.radio.read_agc(0))
+            if ok:
+                observations.append(
+                    adapter.observation(_MAIN_AGC, value, native_id="read_agc")
                 )
-            )
         # IF-shift / narrow (MOR-445) — MAIN-only DSP controls. IF-shift gates
         # on the ``if_shift`` capability (matching the legacy poller's
         # ``if_shift`` gate); narrow has no FTX-1 capability tag and is polled
         # unconditionally (gated by policy only), mirroring the legacy poller's
         # "always — lightweight query" treatment, like AGC.
         if self._has_runtime_capability("if_shift") and self._can_poll(_MAIN_IF_SHIFT):
-            observations.append(
-                adapter.observation(
-                    _MAIN_IF_SHIFT,
-                    await self.radio.read_if_shift(0),
-                    native_id="read_if_shift",
-                )
+            ok, value = await self._safe_read(
+                "main.if_shift", self.radio.read_if_shift(0)
             )
+            if ok:
+                observations.append(
+                    adapter.observation(
+                        _MAIN_IF_SHIFT, value, native_id="read_if_shift"
+                    )
+                )
         if self._can_poll(_MAIN_NARROW):
-            observations.append(
-                adapter.observation(
-                    _MAIN_NARROW,
-                    await self.radio.read_narrow(0),
-                    native_id="read_narrow",
+            ok, value = await self._safe_read("main.narrow", self.radio.read_narrow(0))
+            if ok:
+                observations.append(
+                    adapter.observation(_MAIN_NARROW, value, native_id="read_narrow")
                 )
-            )
         # NB/NR levels + derived toggles, auto/manual notch (MOR-444) —
         # MAIN-only DSP controls. NB/NR gate on their runtime capabilities
         # (matching the legacy poller's ``nb``/``nr`` gates); both notch
@@ -529,67 +513,81 @@ class YaesuObservationAdapter:
         # read in the same cycle (``level > 0``), a single CAT read each —
         # exactly as the legacy poller derives them; no second query.
         if self._has_runtime_capability("nb"):
-            nb_level = await self.radio.read_nb_level(0)
-            if self._can_poll(_MAIN_NB_LEVEL):
-                observations.append(
-                    adapter.observation(
-                        _MAIN_NB_LEVEL,
-                        nb_level,
-                        native_id="read_nb_level",
+            ok, nb_level = await self._safe_read(
+                "main.nb_level", self.radio.read_nb_level(0)
+            )
+            if ok and nb_level is not None:
+                if self._can_poll(_MAIN_NB_LEVEL):
+                    observations.append(
+                        adapter.observation(
+                            _MAIN_NB_LEVEL,
+                            nb_level,
+                            native_id="read_nb_level",
+                        )
                     )
-                )
-            if self._can_poll(_MAIN_NB):
-                observations.append(
-                    adapter.observation(
-                        _MAIN_NB,
-                        nb_level > 0,
-                        native_id="read_nb_level",
+                if self._can_poll(_MAIN_NB):
+                    observations.append(
+                        adapter.observation(
+                            _MAIN_NB,
+                            nb_level > 0,
+                            native_id="read_nb_level",
+                        )
                     )
-                )
         if self._has_runtime_capability("nr"):
-            nr_level = await self.radio.read_nr_level(0)
-            if self._can_poll(_MAIN_NR_LEVEL):
-                observations.append(
-                    adapter.observation(
-                        _MAIN_NR_LEVEL,
-                        nr_level,
-                        native_id="read_nr_level",
+            ok, nr_level = await self._safe_read(
+                "main.nr_level", self.radio.read_nr_level(0)
+            )
+            if ok and nr_level is not None:
+                if self._can_poll(_MAIN_NR_LEVEL):
+                    observations.append(
+                        adapter.observation(
+                            _MAIN_NR_LEVEL,
+                            nr_level,
+                            native_id="read_nr_level",
+                        )
                     )
-                )
-            if self._can_poll(_MAIN_NR):
-                observations.append(
-                    adapter.observation(
-                        _MAIN_NR,
-                        nr_level > 0,
-                        native_id="read_nr_level",
+                if self._can_poll(_MAIN_NR):
+                    observations.append(
+                        adapter.observation(
+                            _MAIN_NR,
+                            nr_level > 0,
+                            native_id="read_nr_level",
+                        )
                     )
-                )
         if self._has_runtime_capability("notch") and self._can_poll(_MAIN_AUTO_NOTCH):
-            observations.append(
-                adapter.observation(
-                    _MAIN_AUTO_NOTCH,
-                    await self.radio.read_auto_notch(0),
-                    native_id="read_auto_notch",
-                )
+            ok, value = await self._safe_read(
+                "main.auto_notch", self.radio.read_auto_notch(0)
             )
+            if ok:
+                observations.append(
+                    adapter.observation(
+                        _MAIN_AUTO_NOTCH, value, native_id="read_auto_notch"
+                    )
+                )
         if self._has_runtime_capability("notch") and self._can_poll(_MAIN_MANUAL_NOTCH):
-            observations.append(
-                adapter.observation(
-                    _MAIN_MANUAL_NOTCH,
-                    await self.radio.read_manual_notch(0),
-                    native_id="read_manual_notch",
-                )
+            ok, value = await self._safe_read(
+                "main.manual_notch", self.radio.read_manual_notch(0)
             )
+            if ok:
+                observations.append(
+                    adapter.observation(
+                        _MAIN_MANUAL_NOTCH, value, native_id="read_manual_notch"
+                    )
+                )
         if self._has_runtime_capability("notch") and self._can_poll(
             _MAIN_MANUAL_NOTCH_FREQ
         ):
-            observations.append(
-                adapter.observation(
-                    _MAIN_MANUAL_NOTCH_FREQ,
-                    await self.radio.read_manual_notch_freq(0),
-                    native_id="read_manual_notch_freq",
-                )
+            ok, value = await self._safe_read(
+                "main.manual_notch_freq", self.radio.read_manual_notch_freq(0)
             )
+            if ok:
+                observations.append(
+                    adapter.observation(
+                        _MAIN_MANUAL_NOTCH_FREQ,
+                        value,
+                        native_id="read_manual_notch_freq",
+                    )
+                )
         # Tone / CTCSS squelch-type (MOR-457) — MAIN-only per-receiver
         # ``operator_toggles``, grouped with the other receiver toggles
         # (nb/nr/auto_notch/manual_notch) above. A SINGLE ``read_sql_type(0)``
@@ -608,23 +606,26 @@ class YaesuObservationAdapter:
         # CTCSS tone FREQUENCY (CAT ``CN``) is a deferred follow-up, not emitted
         # here.
         if self._has_runtime_capability("sql_type"):
-            sql_type = await self.radio.read_sql_type(0)
-            if self._can_poll(_MAIN_REPEATER_TONE):
-                observations.append(
-                    adapter.observation(
-                        _MAIN_REPEATER_TONE,
-                        sql_type == 1,
-                        native_id="read_sql_type",
+            ok, sql_type = await self._safe_read(
+                "main.sql_type", self.radio.read_sql_type(0)
+            )
+            if ok and sql_type is not None:
+                if self._can_poll(_MAIN_REPEATER_TONE):
+                    observations.append(
+                        adapter.observation(
+                            _MAIN_REPEATER_TONE,
+                            sql_type == 1,
+                            native_id="read_sql_type",
+                        )
                     )
-                )
-            if self._can_poll(_MAIN_REPEATER_TSQL):
-                observations.append(
-                    adapter.observation(
-                        _MAIN_REPEATER_TSQL,
-                        sql_type == 2,
-                        native_id="read_sql_type",
+                if self._can_poll(_MAIN_REPEATER_TSQL):
+                    observations.append(
+                        adapter.observation(
+                            _MAIN_REPEATER_TSQL,
+                            sql_type == 2,
+                            native_id="read_sql_type",
+                        )
                     )
-                )
         # CTCSS tone FREQUENCY (MOR-458) — MAIN-only per-receiver
         # ``operator_controls``, grouped with the CTCSS squelch-type toggles
         # above. A SINGLE ``read_ctcss_tone_index(0)`` CAT ``CN`` read
@@ -644,51 +645,56 @@ class YaesuObservationAdapter:
         # #550). MAIN only (CN P1=0). DCS (CN P2=1) is a documented limitation:
         # NO neutral DCS path is emitted.
         if self._has_runtime_capability("sql_type"):
-            tone_centihz = _ctcss_index_to_centihz(
-                await self.radio.read_ctcss_tone_index(0)
+            ok, tone_index = await self._safe_read(
+                "main.ctcss_tone_index", self.radio.read_ctcss_tone_index(0)
             )
-            if self._can_poll(_MAIN_TONE_FREQ):
-                observations.append(
-                    adapter.observation(
-                        _MAIN_TONE_FREQ,
-                        tone_centihz,
-                        native_id="read_ctcss_tone_index",
+            if ok and tone_index is not None:
+                tone_centihz = _ctcss_index_to_centihz(tone_index)
+                if self._can_poll(_MAIN_TONE_FREQ):
+                    observations.append(
+                        adapter.observation(
+                            _MAIN_TONE_FREQ,
+                            tone_centihz,
+                            native_id="read_ctcss_tone_index",
+                        )
                     )
-                )
-            if self._can_poll(_MAIN_TSQL_FREQ):
-                observations.append(
-                    adapter.observation(
-                        _MAIN_TSQL_FREQ,
-                        tone_centihz,
-                        native_id="read_ctcss_tone_index",
+                if self._can_poll(_MAIN_TSQL_FREQ):
+                    observations.append(
+                        adapter.observation(
+                            _MAIN_TSQL_FREQ,
+                            tone_centihz,
+                            native_id="read_ctcss_tone_index",
+                        )
                     )
-                )
         # active-slot (MOR-446) — the GLOBAL "which receiver is active" field.
         # Polled unconditionally (gated by policy only), mirroring the legacy
         # poller's always-on ``get_vfo_select`` read, like AGC/narrow. The
         # ``VS`` index (0=MAIN, 1=SUB) is coerced to the neutral
         # ``global.slow_state.active`` ``"MAIN"``/``"SUB"`` str.
         if self._can_poll(_ACTIVE):
-            index = await self.radio.read_vfo_select()
-            observations.append(
-                adapter.observation(
-                    _ACTIVE,
-                    _ACTIVE_INDEX_TO_STR.get(index, "MAIN"),
-                    native_id="read_vfo_select",
+            ok, index = await self._safe_read("active", self.radio.read_vfo_select())
+            if ok and index is not None:
+                observations.append(
+                    adapter.observation(
+                        _ACTIVE,
+                        _ACTIVE_INDEX_TO_STR.get(index, "MAIN"),
+                        native_id="read_vfo_select",
+                    )
                 )
-            )
         # CW spot (MOR-456) — GLOBAL slow_state bool (CAT ``CS``), gated on the
         # legacy poller's single ``"cw" in caps`` gate (the same block that feeds
         # key_speed/cw_pitch/break_in). Emitted in the slow-control lane beside
         # ``slow_state.active``, the only other global slow_state observation.
         if self._has_runtime_capability("cw") and self._can_poll(_CW_SPOT):
-            observations.append(
-                adapter.observation(
-                    _CW_SPOT,
-                    bool(await self.radio.read_cw_spot()),
-                    native_id="read_cw_spot",
+            ok, value = await self._safe_read("cw_spot", self.radio.read_cw_spot())
+            if ok:
+                observations.append(
+                    adapter.observation(
+                        _CW_SPOT,
+                        bool(value),
+                        native_id="read_cw_spot",
+                    )
                 )
-            )
         return tuple(observations)
 
     async def poll_tx_controls(self) -> tuple[Observation, ...]:
@@ -707,61 +713,60 @@ class YaesuObservationAdapter:
         adapter = self._adapter()
         observations: list[Observation] = []
         if self._has_runtime_capability("tx") and self._can_poll(_POWER_LEVEL):
-            _, watts = await self.radio.read_power()
-            observations.append(
-                adapter.observation(
-                    _POWER_LEVEL,
-                    watts,
-                    native_id="read_power",
+            ok, result = await self._safe_read("power_level", self.radio.read_power())
+            if ok and result is not None:
+                observations.append(
+                    adapter.observation(
+                        _POWER_LEVEL,
+                        result[1],
+                        native_id="read_power",
+                    )
                 )
-            )
         if self._can_poll(_MIC_GAIN):
-            observations.append(
-                adapter.observation(
-                    _MIC_GAIN,
-                    await self.radio.read_mic_gain(),
-                    native_id="read_mic_gain",
+            ok, value = await self._safe_read("mic_gain", self.radio.read_mic_gain())
+            if ok:
+                observations.append(
+                    adapter.observation(_MIC_GAIN, value, native_id="read_mic_gain")
                 )
-            )
         if self._has_runtime_capability("compressor") and self._can_poll(
             _COMPRESSOR_ON
         ):
-            observations.append(
-                adapter.observation(
-                    _COMPRESSOR_ON,
-                    await self.radio.read_processor(),
-                    native_id="read_processor",
-                )
+            ok, value = await self._safe_read(
+                "compressor_on", self.radio.read_processor()
             )
+            if ok:
+                observations.append(
+                    adapter.observation(
+                        _COMPRESSOR_ON, value, native_id="read_processor"
+                    )
+                )
         if self._has_runtime_capability("compressor") and self._can_poll(
             _COMPRESSOR_LEVEL
         ):
-            observations.append(
-                adapter.observation(
-                    _COMPRESSOR_LEVEL,
-                    await self.radio.read_processor_level(),
-                    native_id="read_processor_level",
-                )
+            ok, value = await self._safe_read(
+                "compressor_level", self.radio.read_processor_level()
             )
+            if ok:
+                observations.append(
+                    adapter.observation(
+                        _COMPRESSOR_LEVEL, value, native_id="read_processor_level"
+                    )
+                )
         if self._has_runtime_capability("vox") and self._can_poll(_VOX_ON):
-            observations.append(
-                adapter.observation(
-                    _VOX_ON,
-                    await self.radio.read_vox(),
-                    native_id="read_vox",
+            ok, value = await self._safe_read("vox", self.radio.read_vox())
+            if ok:
+                observations.append(
+                    adapter.observation(_VOX_ON, value, native_id="read_vox")
                 )
-            )
         # split (MOR-446) — GLOBAL tx_state bool (CAT ``ST``), gated on the
         # ``split`` runtime capability, mirroring the legacy poller's
         # ``"split" in caps`` gate.
         if self._has_runtime_capability("split") and self._can_poll(_SPLIT):
-            observations.append(
-                adapter.observation(
-                    _SPLIT,
-                    await self.radio.read_split(),
-                    native_id="read_split",
+            ok, value = await self._safe_read("split", self.radio.read_split())
+            if ok:
+                observations.append(
+                    adapter.observation(_SPLIT, value, native_id="read_split")
                 )
-            )
         # Clarifier RIT/XIT (MOR-454) — GLOBAL slow-changing operator/TX
         # controls (CAT ``CF000``/``CF001``), gated on the ``rit`` runtime
         # capability, mirroring the legacy poller's ``"rit" in caps`` gate. The
@@ -771,54 +776,64 @@ class YaesuObservationAdapter:
         # offset is emitted on the device scale (cross-vendor calibration is
         # MOR-453); each emission is gated independently by per-field policy.
         if self._has_runtime_capability("rit"):
-            rx_clar, tx_clar = await self.radio.read_clarifier(0)
-            if self._can_poll(_RIT_ON):
-                observations.append(
-                    adapter.observation(
-                        _RIT_ON,
-                        rx_clar,
-                        native_id="read_clarifier",
+            ok, clar = await self._safe_read("clarifier", self.radio.read_clarifier(0))
+            if ok and clar is not None:
+                rx_clar, tx_clar = clar
+                if self._can_poll(_RIT_ON):
+                    observations.append(
+                        adapter.observation(
+                            _RIT_ON,
+                            rx_clar,
+                            native_id="read_clarifier",
+                        )
                     )
-                )
-            if self._can_poll(_RIT_TX):
-                observations.append(
-                    adapter.observation(
-                        _RIT_TX,
-                        tx_clar,
-                        native_id="read_clarifier",
+                if self._can_poll(_RIT_TX):
+                    observations.append(
+                        adapter.observation(
+                            _RIT_TX,
+                            tx_clar,
+                            native_id="read_clarifier",
+                        )
                     )
-                )
             if self._can_poll(_RIT_FREQ):
-                observations.append(
-                    adapter.observation(
-                        _RIT_FREQ,
-                        await self.radio.read_clarifier_freq(0),
-                        native_id="read_clarifier_freq",
-                    )
+                ok, freq = await self._safe_read(
+                    "clarifier_freq", self.radio.read_clarifier_freq(0)
                 )
+                if ok:
+                    observations.append(
+                        adapter.observation(
+                            _RIT_FREQ,
+                            freq,
+                            native_id="read_clarifier_freq",
+                        )
+                    )
         # Antenna tuner (MOR-455) — GLOBAL operator-control state (CAT ``AC``),
         # gated on the ``tuner`` runtime capability, mirroring the legacy
         # poller's ``"tuner" in caps`` gate. Emitted as the raw device int
         # (0-3); cross-vendor calibration is MOR-453.
         if self._has_runtime_capability("tuner") and self._can_poll(_TUNER):
-            observations.append(
-                adapter.observation(
-                    _TUNER,
-                    int(await self.radio.read_tuner()),
-                    native_id="read_tuner",
+            ok, value = await self._safe_read("tuner", self.radio.read_tuner())
+            if ok and value is not None:
+                observations.append(
+                    adapter.observation(
+                        _TUNER,
+                        int(value),
+                        native_id="read_tuner",
+                    )
                 )
-            )
         # Dial lock (MOR-455) — GLOBAL tx_state bool (CAT ``LK``), gated on the
         # ``dial_lock`` runtime capability, mirroring the legacy poller's
         # ``"dial_lock" in caps`` gate.
         if self._has_runtime_capability("dial_lock") and self._can_poll(_DIAL_LOCK):
-            observations.append(
-                adapter.observation(
-                    _DIAL_LOCK,
-                    bool(await self.radio.read_lock()),
-                    native_id="read_lock",
+            ok, value = await self._safe_read("dial_lock", self.radio.read_lock())
+            if ok:
+                observations.append(
+                    adapter.observation(
+                        _DIAL_LOCK,
+                        bool(value),
+                        native_id="read_lock",
+                    )
                 )
-            )
         # CW keyer family (MOR-456) — GLOBAL operator-control setpoints, all
         # gated on the legacy poller's single ``"cw" in caps`` gate, mirroring
         # its ``key_speed``/``cw_pitch``/``break_in``/``break_in_delay`` reads in
@@ -831,38 +846,84 @@ class YaesuObservationAdapter:
         # independently by per-field policy.
         if self._has_runtime_capability("cw"):
             if self._can_poll(_KEY_SPEED):
-                observations.append(
-                    adapter.observation(
-                        _KEY_SPEED,
-                        int(await self.radio.read_keyer_speed()),
-                        native_id="read_keyer_speed",
-                    )
+                ok, value = await self._safe_read(
+                    "key_speed", self.radio.read_keyer_speed()
                 )
+                if ok and value is not None:
+                    observations.append(
+                        adapter.observation(
+                            _KEY_SPEED,
+                            int(value),
+                            native_id="read_keyer_speed",
+                        )
+                    )
             if self._can_poll(_CW_PITCH):
-                observations.append(
-                    adapter.observation(
-                        _CW_PITCH,
-                        int(await self.radio.read_cw_pitch()),
-                        native_id="read_cw_pitch",
-                    )
+                ok, value = await self._safe_read(
+                    "cw_pitch", self.radio.read_cw_pitch()
                 )
+                if ok and value is not None:
+                    observations.append(
+                        adapter.observation(
+                            _CW_PITCH,
+                            int(value),
+                            native_id="read_cw_pitch",
+                        )
+                    )
             if self._can_poll(_BREAK_IN):
-                observations.append(
-                    adapter.observation(
-                        _BREAK_IN,
-                        int(await self.radio.read_break_in()),
-                        native_id="read_break_in",
-                    )
+                ok, value = await self._safe_read(
+                    "break_in", self.radio.read_break_in()
                 )
+                if ok and value is not None:
+                    observations.append(
+                        adapter.observation(
+                            _BREAK_IN,
+                            int(value),
+                            native_id="read_break_in",
+                        )
+                    )
             if self._can_poll(_BREAK_IN_DELAY):
-                observations.append(
-                    adapter.observation(
-                        _BREAK_IN_DELAY,
-                        int(await self.radio.read_break_in_delay()),
-                        native_id="read_break_in_delay",
-                    )
+                ok, value = await self._safe_read(
+                    "break_in_delay", self.radio.read_break_in_delay()
                 )
+                if ok and value is not None:
+                    observations.append(
+                        adapter.observation(
+                            _BREAK_IN_DELAY,
+                            int(value),
+                            native_id="read_break_in_delay",
+                        )
+                    )
         return tuple(observations)
+
+    async def _safe_read(
+        self, label: str, read: Awaitable[_T]
+    ) -> tuple[bool, _T | None]:
+        """Await one field read, tolerating FIELD-level CAT failures (MOR-473).
+
+        Returns ``(ok, value)``. On a field-level malformed/unsupported answer
+        the read is skipped: the warning is logged (the field ``label`` plus the
+        exception, which already embeds the offending CAT template + frame) and
+        ``(False, None)`` is returned so the caller drops just that field (or the
+        whole derived group it feeds).
+
+        CONNECTION/timeout errors are NOT caught — they RE-RAISE so the poller's
+        ``_run_poll_cycle`` reconnect/backoff still fires; a dead link must never
+        be masked as a skipped field. ``CatCommandRejected`` and
+        ``CatTimeoutError`` both subclass ``CatTransportError``, so the SPECIFIC
+        ``CatCommandRejected`` (a ``?;`` reject = unsupported command on this
+        radio) is caught while the base/timeout propagates.
+        """
+        try:
+            return True, await read
+        except (CatParseError, CatFormatError, ValueError, KeyError) as exc:
+            # ValueError covers _read_meter / int() malformed-frame failures;
+            # CatParse/FormatError subclass ValueError but are listed for clarity.
+            logger.warning("Skipping field %s — malformed CAT response: %s", label, exc)
+            return False, None
+        except CatCommandRejected as exc:
+            # ``?;`` reject = command unsupported on this radio -> skip the field.
+            logger.warning("Skipping field %s — command rejected (?;): %s", label, exc)
+            return False, None
 
     def _adapter(self) -> ProviderObservationAdapter:
         return ProviderObservationAdapter(

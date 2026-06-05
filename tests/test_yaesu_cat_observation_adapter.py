@@ -13,7 +13,8 @@ from rigplane.profiles import get_radio_profile
 from rigplane.radio_state import RadioState
 
 from rigplane.backends.yaesu_cat.observations import YaesuObservationAdapter
-from rigplane.backends.yaesu_cat.radio import YaesuCatRadio
+from rigplane.backends.yaesu_cat.parser import CatParseError
+from rigplane.backends.yaesu_cat.radio import RadioConnectionError, YaesuCatRadio
 
 
 def _clock() -> float:
@@ -1483,3 +1484,139 @@ async def test_read_if_shift_and_narrow_are_pure_reads() -> None:
     radio._query = AsyncMock(return_value={"state": "1"})  # type: ignore[method-assign]
     assert await radio.read_narrow(0) is True
     assert radio.radio_state.main.narrow is False
+
+
+# ---------------------------------------------------------------------------
+# MOR-473: per-field poll-lane resilience (_safe_read)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_rx_meters_emit_main_when_sub_s_meter_raises_parse_error() -> None:
+    """MOR-473: a malformed SUB ``SM1;`` answer must not drop the MAIN meter.
+
+    The live FTX-1 can answer ``SM1;`` with a non-SM1 frame (no dual-RX), which
+    raises ``CatParseError`` from the SUB s-meter read. The fast lane must skip
+    that single field and still emit the MAIN s-meter.
+    """
+    radio = _make_radio()
+    radio.read_s_meter = AsyncMock(
+        side_effect=lambda receiver=0: (
+            120 if receiver == 0 else _raise(CatParseError("SM1{...};", "SM0000;", "x"))
+        )
+    )
+    adapter = YaesuObservationAdapter(
+        radio,
+        profile=_profile_state_acquisition(),
+        clock=_clock,
+    )
+
+    observations = await adapter.poll_rx_meters()
+
+    assert [(str(item.path), item.value) for item in observations] == [
+        ("receiver.main.meters.s_meter", 120),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_slow_poll_skips_raising_sql_type_but_emits_rest() -> None:
+    """MOR-473: a raising ``read_sql_type`` must not abort the whole slow lane.
+
+    A field-level malformed/unsupported answer (``CatParseError``) skips the
+    derived CTCSS toggle group but leaves af_level/rf_gain/agc/etc. intact.
+    """
+    radio = _make_radio()
+    radio.read_sql_type = AsyncMock(
+        side_effect=CatParseError("CT0{type};", "?;", "rejected")
+    )
+    adapter = YaesuObservationAdapter(
+        radio,
+        profile=_profile_state_acquisition(),
+        clock=_clock,
+    )
+
+    observations = await adapter.poll_slow_controls()
+    paths = [str(item.path) for item in observations]
+
+    # The whole derived CTCSS-toggle group is skipped together (one read,
+    # N observations invariant).
+    assert "receiver.main.operator_toggles.repeater_tone" not in paths
+    assert "receiver.main.operator_toggles.repeater_tsql" not in paths
+    # Everything else in the lane still emits.
+    assert "receiver.main.operator_controls.af_level" in paths
+    assert "receiver.main.operator_controls.rf_gain" in paths
+    assert "receiver.main.operator_controls.agc" in paths
+    assert "receiver.main.operator_controls.tone_freq" in paths
+    assert "global.slow_state.active" in paths
+
+
+@pytest.mark.asyncio
+async def test_slow_poll_propagates_connection_error() -> None:
+    """MOR-473: a connection/OS error must PROPAGATE for the poller to reconnect.
+
+    ``_safe_read`` only swallows field-level parse/reject errors; a dead link
+    (``RadioConnectionError``/``OSError``) must surface to the poll cycle so the
+    reconnect/backoff path still fires — never masked as a skipped field.
+    """
+    radio = _make_radio()
+    radio.read_af_level = AsyncMock(side_effect=RadioConnectionError("link down"))
+    adapter = YaesuObservationAdapter(
+        radio,
+        profile=_profile_state_acquisition(),
+        clock=_clock,
+    )
+
+    with pytest.raises(RadioConnectionError):
+        await adapter.poll_slow_controls()
+
+    radio.read_af_level = AsyncMock(side_effect=OSError("device disconnected"))
+    with pytest.raises(OSError):
+        await adapter.poll_slow_controls()
+
+
+@pytest.mark.asyncio
+async def test_happy_path_slow_poll_unchanged_when_all_reads_succeed() -> None:
+    """MOR-473 regression: guarding must not change the happy-path output.
+
+    When every read succeeds, the emitted observation set AND order is
+    byte-identical to the pre-_safe_read behaviour.
+    """
+    radio = _make_radio()
+    adapter = YaesuObservationAdapter(
+        radio,
+        profile=_profile_state_acquisition(),
+        clock=_clock,
+    )
+
+    observations = await adapter.poll_slow_controls()
+
+    assert [(str(item.path), item.value) for item in observations] == [
+        ("receiver.main.operator_controls.af_level", 128),
+        ("receiver.main.operator_controls.rf_gain", 180),
+        ("receiver.main.operator_controls.squelch", 12),
+        ("receiver.sub.operator_controls.af_level", 64),
+        ("receiver.sub.operator_controls.rf_gain", 90),
+        ("receiver.sub.operator_controls.squelch", 8),
+        ("receiver.main.operator_controls.att", 1),
+        ("receiver.main.operator_controls.preamp", 2),
+        ("receiver.main.operator_controls.agc", 3),
+        ("receiver.main.operator_controls.if_shift", 200),
+        ("receiver.main.operator_toggles.narrow", True),
+        ("receiver.main.operator_controls.nb_level", 5),
+        ("receiver.main.operator_toggles.nb", True),
+        ("receiver.main.operator_controls.nr_level", 9),
+        ("receiver.main.operator_toggles.nr", True),
+        ("receiver.main.operator_toggles.auto_notch", True),
+        ("receiver.main.operator_toggles.manual_notch", True),
+        ("receiver.main.operator_controls.manual_notch_freq", 128),
+        ("receiver.main.operator_toggles.repeater_tone", True),
+        ("receiver.main.operator_toggles.repeater_tsql", False),
+        ("receiver.main.operator_controls.tone_freq", 8850),
+        ("receiver.main.operator_controls.tsql_freq", 8850),
+        ("global.slow_state.active", "SUB"),
+        ("global.slow_state.cw_spot", True),
+    ]
+
+
+def _raise(exc: Exception) -> object:
+    raise exc
