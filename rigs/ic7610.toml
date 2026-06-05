@@ -140,6 +140,10 @@ polling_only = [
     "global.tx_state.rit_tx",
     "receiver.main.operator_controls.af_level",
     "receiver.main.operator_controls.rf_gain",
+    "receiver.main.active.freq_mode.freq_hz",
+    "receiver.main.active.freq_mode.mode",
+    "receiver.sub.active.freq_mode.freq_hz",
+    "receiver.sub.active.freq_mode.mode",
 ]
 stream_like_meters = [
     "receiver.main.meters.s_meter",
@@ -153,6 +157,8 @@ stream_like_meters = [
 command_response_observable = [
     "receiver.main.active.freq_mode.freq_hz",
     "receiver.main.active.freq_mode.mode",
+    "receiver.sub.active.freq_mode.freq_hz",
+    "receiver.sub.active.freq_mode.mode",
     "global.slow_state.active",
     "global.operator_controls.rit_freq",
     "global.tx_state.ptt",
@@ -162,6 +168,8 @@ command_response_observable = [
 supported_controls = [
     "receiver.main.active.freq_mode.freq_hz",
     "receiver.main.active.freq_mode.mode",
+    "receiver.sub.active.freq_mode.freq_hz",
+    "receiver.sub.active.freq_mode.mode",
     "global.tx_state.ptt",
 ]
 
@@ -206,6 +214,14 @@ cadence_seconds = 0.2
 freshness_ttl_seconds = 0.8
 adaptive_decay = false
 meter_coalescing_window_seconds = 0.2
+
+[state_acquisition.field_policies."receiver.main.active.freq_mode.freq_hz"]
+cadence_seconds = 0.5
+freshness_ttl_seconds = 2.0
+
+[state_acquisition.field_policies."receiver.sub.active.freq_mode.freq_hz"]
+cadence_seconds = 0.5
+freshness_ttl_seconds = 2.0
 
 # ── Parameterized Capabilities ───────────────────────────────────
 

@@ -838,6 +838,47 @@ def test_ic7610_real_profile_stale_active_rit_xit_acquisition_can_send_queries()
     }
 
 
+def test_ic7610_real_profile_freq_mode_are_pollable_and_emit_25_26() -> None:
+    acquisition = load_rig(RIGS_DIR / "ic7610.toml").to_profile().state_acquisition
+    assert acquisition is not None
+    freq_mode_paths = (
+        FieldPath.active("main", "freq_mode", "freq_hz"),
+        FieldPath.active("main", "freq_mode", "mode"),
+        FieldPath.active("sub", "freq_mode", "freq_hz"),
+        FieldPath.active("sub", "freq_mode", "mode"),
+    )
+    for path in freq_mode_paths:
+        assert acquisition.capability_for(path).can_poll is True
+
+    clock = FreshnessClock(start=300.0)
+    scheduler = AcquisitionScheduler(profile=acquisition, clock=clock)
+    requests = scheduler.due_requests()
+    due_paths = {path for request in requests for path in request.paths}
+    assert set(freq_mode_paths) <= due_paths
+
+    sent: list[tuple[int, int | None, int | None]] = []
+
+    async def send_query(
+        command: int,
+        sub: int | None,
+        receiver: int | None,
+    ) -> None:
+        sent.append((command, sub, receiver))
+
+    executor = IcomCivAcquisitionExecutor(send_query)
+    for request in requests:
+        if not any(path in freq_mode_paths for path in request.paths):
+            continue
+        execution = asyncio.run(
+            executor.execute(request, already_sent_paths=frozenset())
+        )
+        assert execution.failed_paths == ()
+
+    assert {(0x25, None, 0), (0x25, None, 1), (0x26, None, 0), (0x26, None, 1)} <= set(
+        sent
+    )
+
+
 def test_due_polling_emits_only_pollable_cadence_fields_and_groups_by_existing_key() -> (
     None
 ):
