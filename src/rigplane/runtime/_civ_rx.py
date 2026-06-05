@@ -439,7 +439,9 @@ def _changeset_for_request_paths(
             request_paths=request_paths,
         )
         remapped.append(
-            change if replacement is None else _replace_dataclass(change, path=replacement)
+            change
+            if replacement is None
+            else _replace_dataclass(change, path=replacement)
         )
     return _replace_dataclass(
         changeset,
@@ -461,6 +463,7 @@ def _request_path_for_observed_path(
         if _field_paths_match(request_path, path):
             return request_path
     return None
+
 
 _CMD1A_CTL_MEM_LEVEL_FIELDS = {
     b"\x00\x70": ("ref_adjust", 2),
@@ -1322,9 +1325,7 @@ class CivRuntime:
 
         for observation in observations:
             try:
-                self.flush_due_meter_observations(
-                    now=observation.timestamp_monotonic
-                )
+                self.flush_due_meter_observations(now=observation.timestamp_monotonic)
                 if self._record_coalesced_meter_observation(observation):
                     continue
                 changeset = self._host._state_store.apply(observation)
@@ -1349,7 +1350,9 @@ class CivRuntime:
         profile = getattr(scheduler, "_profile", None)
         if profile is None:
             return False
-        policy = profile.policy_for(_profile_path_for_observation(profile, observation.path))
+        policy = profile.policy_for(
+            _profile_path_for_observation(profile, observation.path)
+        )
         if policy.meter_coalescing is None:
             return False
         coalescer = getattr(self._host, "_meter_observation_coalescer", None)
@@ -1364,7 +1367,9 @@ class CivRuntime:
         self.flush_due_meter_observations(now=observation.timestamp_monotonic)
         return True
 
-    def flush_due_meter_observations(self, *, now: float | None = None) -> ChangeSet | None:
+    def flush_due_meter_observations(
+        self, *, now: float | None = None
+    ) -> ChangeSet | None:
         coalescer = getattr(self._host, "_meter_observation_coalescer", None)
         if not isinstance(coalescer, MeterObservationCoalescer):
             return None
@@ -1391,7 +1396,9 @@ class CivRuntime:
             return
         for request in scheduler.pending_requests():
             matched_paths = tuple(
-                path for path in request.paths if _field_paths_match(path, observation.path)
+                path
+                for path in request.paths
+                if _field_paths_match(path, observation.path)
             )
             if not matched_paths:
                 continue
@@ -1827,8 +1834,7 @@ class CivRuntime:
         rx = self._resolve_filter_width_receiver(frame)
         if (
             profile is not None
-            and getattr(profile, "filter_width_encoding", None)
-            == "segmented_bcd_index"
+            and getattr(profile, "filter_width_encoding", None) == "segmented_bcd_index"
         ):
             rule = profile.resolve_filter_rule(
                 getattr(rx, "mode", None),
@@ -1873,7 +1879,9 @@ class CivRuntime:
             return FieldPath.vfo_slot(receiver_id, slot_override, "freq_mode", name)
         return FieldPath.active(receiver_id, "freq_mode", name)
 
-    def _observation(self, path: FieldPath, value: Any, *, frame: CivFrame) -> Observation:
+    def _observation(
+        self, path: FieldPath, value: Any, *, frame: CivFrame
+    ) -> Observation:
         source: ObservationSource = (
             "civ_unsolicited"
             if frame.to_addr == 0x00 or frame.command in (0x00, 0x01)

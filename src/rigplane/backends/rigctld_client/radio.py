@@ -278,7 +278,11 @@ async def _read_drained_slow_control_readbacks(
 def _readback_correlation_for_entry(
     entry: "CommandQueueEntry",
 ) -> _ReadbackCorrelation | None:
-    if entry.command_service is None or entry.command_id is None or entry.source is None:
+    if (
+        entry.command_service is None
+        or entry.command_id is None
+        or entry.source is None
+    ):
         return None
     expectations = entry.command_service.readback_expectations(
         source=entry.source,
@@ -324,9 +328,8 @@ def _entry_matches_observation(
 ) -> bool:
     if not _is_external_rigctld_readback(observation.source):
         return False
-    return (
-        entry.value == observation.value
-        and _readback_paths_match(observation.path, entry.path)
+    return entry.value == observation.value and _readback_paths_match(
+        observation.path, entry.path
     )
 
 

@@ -581,9 +581,7 @@ class SourceMetadata:
                 else _command_source(value["commandSource"])
             ),
             session_id=(
-                None
-                if value.get("sessionId") is None
-                else str(value["sessionId"])
+                None if value.get("sessionId") is None else str(value["sessionId"])
             ),
         )
 
@@ -1113,9 +1111,7 @@ def _global_specs() -> tuple[FieldSpec, ...]:
             writable=True,
             unit="hz",
         ),
-        spec(
-            FieldPath.global_("operator_controls", "mic_gain"), "int", writable=True
-        ),
+        spec(FieldPath.global_("operator_controls", "mic_gain"), "int", writable=True),
         spec(
             FieldPath.global_("operator_controls", "compressor_level"),
             "int",

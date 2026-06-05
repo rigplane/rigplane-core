@@ -680,7 +680,9 @@ async def test_slow_poll_emits_declared_control_observations_only() -> None:
 
 
 @pytest.mark.asyncio
-async def test_slow_poll_skips_sub_controls_without_matching_runtime_capability() -> None:
+async def test_slow_poll_skips_sub_controls_without_matching_runtime_capability() -> (
+    None
+):
     radio = _make_radio()
     radio.capabilities = {"dual_rx", "af_level", "tx"}
     adapter = YaesuObservationAdapter(
@@ -1404,16 +1406,16 @@ async def test_active_slot_coerces_main_index_to_neutral_str() -> None:
     observations = await adapter.poll_slow_controls()
 
     active = next(
-        item
-        for item in observations
-        if str(item.path) == "global.slow_state.active"
+        item for item in observations if str(item.path) == "global.slow_state.active"
     )
     assert active.value == "MAIN"
     assert isinstance(active.value, str)
 
 
 @pytest.mark.asyncio
-async def test_public_get_data_mode_returns_flat_value_without_state_synthesis() -> None:
+async def test_public_get_data_mode_returns_flat_value_without_state_synthesis() -> (
+    None
+):
     """MOR-434: a public ``get_*`` returns a flat value, not synthesized state.
 
     ``get_data_mode`` is the representative public read called out for the

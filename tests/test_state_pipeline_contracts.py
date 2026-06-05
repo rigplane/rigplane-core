@@ -548,7 +548,11 @@ def test_observation_and_changeset_serialization_round_trip() -> None:
 @pytest.mark.parametrize(  # type: ignore[untyped-decorator]
     "payload",
     [
-        {"path": "receiver.main.meters.s_meter", "source": {}, "timestampMonotonic": 1.0},
+        {
+            "path": "receiver.main.meters.s_meter",
+            "source": {},
+            "timestampMonotonic": 1.0,
+        },
         {"path": "receiver.main.meters.s_meter", "previous": 1},
         {"path": "receiver.main.meters.s_meter", "current": 2},
     ],
@@ -657,7 +661,9 @@ def test_web_poller_command_response_no_op_remains_removed() -> None:
 
 
 @pytest.mark.asyncio
-async def test_web_delivery_payloads_use_snapshot_not_legacy_state_or_revision() -> None:
+async def test_web_delivery_payloads_use_snapshot_not_legacy_state_or_revision() -> (
+    None
+):
     server, snapshot = _server_with_conflicting_legacy_state()
 
     public_payload = server.build_public_state()

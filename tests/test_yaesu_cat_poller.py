@@ -596,7 +596,9 @@ async def test_medium_poll_emits_observations_without_legacy_state_callback() ->
 
 
 @pytest.mark.asyncio
-async def test_fast_poll_emits_rx_meter_observations_without_legacy_state_callback() -> None:
+async def test_fast_poll_emits_rx_meter_observations_without_legacy_state_callback() -> (
+    None
+):
     radio = make_radio(s_meter_main=150, s_meter_sub=75, ptt=False)
     radio.profile.state_acquisition = _profile_state_acquisition()
     legacy_calls: list[RadioState] = []
@@ -624,7 +626,9 @@ async def test_fast_poll_emits_rx_meter_observations_without_legacy_state_callba
 
 
 @pytest.mark.asyncio
-async def test_observation_poller_uses_read_only_paths_when_getters_mutate_state() -> None:
+async def test_observation_poller_uses_read_only_paths_when_getters_mutate_state() -> (
+    None
+):
     radio = _SideEffectingYaesuRadio()
     legacy_calls: list[RadioState] = []
     observations: list[Observation] = []

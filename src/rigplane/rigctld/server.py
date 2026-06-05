@@ -174,7 +174,9 @@ class RigctldServer:
         task.add_done_callback(self._bg_tasks.discard)
         return task
 
-    def _handler_execute_call(self, cmd: Any, *, session_id: str) -> Coroutine[Any, Any, Any]:
+    def _handler_execute_call(
+        self, cmd: Any, *, session_id: str
+    ) -> Coroutine[Any, Any, Any]:
         execute = getattr(self._rig_handler, "execute")
         try:
             signature = inspect.signature(execute)
@@ -184,9 +186,13 @@ class RigctldServer:
         if signature is not None:
             for parameter in signature.parameters.values():
                 if parameter.kind is inspect.Parameter.VAR_KEYWORD:
-                    return cast(Coroutine[Any, Any, Any], execute(cmd, session_id=session_id))
+                    return cast(
+                        Coroutine[Any, Any, Any], execute(cmd, session_id=session_id)
+                    )
                 if parameter.name == "session_id":
-                    return cast(Coroutine[Any, Any, Any], execute(cmd, session_id=session_id))
+                    return cast(
+                        Coroutine[Any, Any, Any], execute(cmd, session_id=session_id)
+                    )
         return cast(Coroutine[Any, Any, Any], execute(cmd))
 
     def __del__(self) -> None:
@@ -232,7 +238,9 @@ class RigctldServer:
 
             profile = resolve_radio_profile(model=model)
         except Exception:
-            logger.debug("rigctld state acquisition: failed to resolve profile", exc_info=True)
+            logger.debug(
+                "rigctld state acquisition: failed to resolve profile", exc_info=True
+            )
             return None
         return cast(RadioAcquisitionProfile | None, profile.state_acquisition)
 
@@ -339,8 +347,8 @@ class RigctldServer:
         self._state_model_service = model_service
         self._state_freshness_service = freshness_service
         if self._acquisition_executor is None:
-            self._acquisition_executor = self._default_acquisition_executor_for_scheduler(
-                scheduler
+            self._acquisition_executor = (
+                self._default_acquisition_executor_for_scheduler(scheduler)
             )
         self._attach_state_acquisition_services(
             store=self._state_store,
@@ -514,10 +522,9 @@ class RigctldServer:
 
             executor = self._acquisition_executor
             if executor is None:
-                if (
-                    self._provider_uses_civ_executor(request.provider)
-                    and not isinstance(self._radio, CivCommandCapable)
-                ):
+                if self._provider_uses_civ_executor(
+                    request.provider
+                ) and not isinstance(self._radio, CivCommandCapable):
                     reason = "acquisition_executor_unavailable"
                     kind = reason
                 else:

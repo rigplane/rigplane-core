@@ -35,7 +35,11 @@ from rigplane.core.command_service import (
     CommandService,
     command_intent_from_request,
 )
-from rigplane.core.state_pipeline_contracts import FieldPath, Observation, SourceMetadata
+from rigplane.core.state_pipeline_contracts import (
+    FieldPath,
+    Observation,
+    SourceMetadata,
+)
 from rigplane.core.state_store import FreshnessClock, StateStore
 from rigplane.exceptions import CommandError
 
@@ -125,9 +129,7 @@ async def test_observation_poller_drains_web_commands_before_readback() -> None:
             assert values["receiver.main.operator_controls.att"] == 18
             assert values["receiver.main.operator_toggles.nb"] is True
             assert values["receiver.main.operator_toggles.nr"] is True
-            assert all(
-                item.source.source == "hamlib_response" for item in observations
-            )
+            assert all(item.source.source == "hamlib_response" for item in observations)
         finally:
             await radio.disconnect()
 
@@ -182,11 +184,14 @@ async def test_observation_poller_set_success_waits_for_rigctld_readback() -> No
             for observation in observations:
                 service.apply_observation(observation)
 
-            assert service.pending_overlays(
-                source="websocket",
-                session_id=None,
-                command_id="ws-rigctld-set-freq",
-            ) == ()
+            assert (
+                service.pending_overlays(
+                    source="websocket",
+                    session_id=None,
+                    command_id="ws-rigctld-set-freq",
+                )
+                == ()
+            )
             assert [
                 event.state
                 for event in service.lifecycle_events()
@@ -309,17 +314,23 @@ async def test_observation_poller_discards_nonmatching_readback_expectation() ->
             for observation in observations:
                 service.apply_observation(observation)
 
-            assert service.readback_expectations(
-                source="websocket",
-                session_id=None,
-                command_id=command_id,
-            ) == ()
+            assert (
+                service.readback_expectations(
+                    source="websocket",
+                    session_id=None,
+                    command_id=command_id,
+                )
+                == ()
+            )
             clock.advance(2.01)
-            assert service.pending_overlays(
-                source="websocket",
-                session_id=None,
-                command_id=command_id,
-            ) == ()
+            assert (
+                service.pending_overlays(
+                    source="websocket",
+                    session_id=None,
+                    command_id=command_id,
+                )
+                == ()
+            )
             stale_matching_observation = next(
                 item
                 for item in observations
@@ -351,7 +362,9 @@ async def test_observation_poller_discards_nonmatching_readback_expectation() ->
 
 
 @pytest.mark.asyncio
-async def test_observation_poller_discards_expectation_when_readback_unavailable() -> None:
+async def test_observation_poller_discards_expectation_when_readback_unavailable() -> (
+    None
+):
     async with FakeRigctldServer() as server:
         radio = RigctldClientRadio(host=server.host, port=server.port)
         await radio.connect()
@@ -383,11 +396,14 @@ async def test_observation_poller_discards_expectation_when_readback_unavailable
             await poller._drain_commands()  # noqa: SLF001
             poller._annotate_readback_observations(())  # noqa: SLF001
 
-            assert service.readback_expectations(
-                source="websocket",
-                session_id=None,
-                command_id=command_id,
-            ) == ()
+            assert (
+                service.readback_expectations(
+                    source="websocket",
+                    session_id=None,
+                    command_id=command_id,
+                )
+                == ()
+            )
         finally:
             await radio.disconnect()
 
@@ -472,17 +488,22 @@ async def test_observation_poller_reconciles_slow_control_set_without_waiting_fo
             for observation in observations:
                 service.apply_observation(observation)
 
-            assert service.pending_overlays(
-                source="websocket",
-                session_id=None,
-                command_id=command_id,
-            ) == ()
+            assert (
+                service.pending_overlays(
+                    source="websocket",
+                    session_id=None,
+                    command_id=command_id,
+                )
+                == ()
+            )
             assert [
                 event.state
                 for event in service.lifecycle_events()
                 if event.command_id == command_id
             ] == ["accepted", "queued", "sent", "acknowledged", "reconciled"]
-            readback = next(item for item in observations if str(item.path) == path_text)
+            readback = next(
+                item for item in observations if str(item.path) == path_text
+            )
             assert readback.value == expected_value
             assert readback.source.source == "hamlib_response"
             assert readback.correlation_id == command_id
@@ -491,7 +512,9 @@ async def test_observation_poller_reconciles_slow_control_set_without_waiting_fo
 
 
 @pytest.mark.asyncio
-async def test_observation_poller_correlates_slow_control_after_overlay_ttl_edge() -> None:
+async def test_observation_poller_correlates_slow_control_after_overlay_ttl_edge() -> (
+    None
+):
     async with FakeRigctldServer() as server:
         radio = RigctldClientRadio(host=server.host, port=server.port)
         await radio.connect()
@@ -513,11 +536,14 @@ async def test_observation_poller_correlates_slow_control_after_overlay_ttl_edge
             )
             await service.execute(intent)
             clock.advance(2.01)
-            assert service.pending_overlays(
-                source="websocket",
-                session_id=None,
-                command_id=command_id,
-            ) == ()
+            assert (
+                service.pending_overlays(
+                    source="websocket",
+                    session_id=None,
+                    command_id=command_id,
+                )
+                == ()
+            )
             queue.put_ordered(
                 SetPreamp(2),
                 command_id=command_id,
@@ -601,9 +627,13 @@ async def test_observation_poller_reconciles_only_matching_source_session() -> N
                 command_id="shared-rigctld-set",
             )
             reconciled = [
-                event for event in service.lifecycle_events() if event.state == "reconciled"
+                event
+                for event in service.lifecycle_events()
+                if event.state == "reconciled"
             ]
-            assert [(event.source, event.details.get("session_id")) for event in reconciled] == [
+            assert [
+                (event.source, event.details.get("session_id")) for event in reconciled
+            ] == [
                 ("http", None),
             ]
         finally:

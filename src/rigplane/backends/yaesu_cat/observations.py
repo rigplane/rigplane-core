@@ -266,7 +266,9 @@ class YaesuObservationAdapter:
     ) -> YaesuObservationAdapter:
         profile = getattr(radio, "profile").state_acquisition
         if profile is None:
-            raise ValueError("radio profile does not declare state_acquisition metadata")
+            raise ValueError(
+                "radio profile does not declare state_acquisition metadata"
+            )
         return cls(radio, profile=profile, clock=clock)
 
     async def poll_medium(self) -> tuple[Observation, ...]:

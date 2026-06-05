@@ -533,9 +533,7 @@ async def test_serial_mock_observation_backs_all_v2_fields() -> None:
         from rigplane.runtime._poller_types import SetRfGain
 
         future: asyncio.Future[None] = asyncio.get_running_loop().create_future()
-        server.command_queue.put_ordered(
-            SetRfGain(level=42, receiver=0), future=future
-        )
+        server.command_queue.put_ordered(SetRfGain(level=42, receiver=0), future=future)
         await asyncio.wait_for(future, timeout=2.0)
         await asyncio.sleep(0.1)
         updated = server.build_public_state()

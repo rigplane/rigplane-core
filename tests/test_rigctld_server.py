@@ -664,9 +664,9 @@ class TestLifecycle:
                 )
                 assert executor.calls
                 assert srv._state_store.snapshot().field(freq).value == 14_110_000
-                assert srv._acquisition_scheduler.diagnostics()[
-                    "queuedRequestCount"
-                ] == 0
+                assert (
+                    srv._acquisition_scheduler.diagnostics()["queuedRequestCount"] == 0
+                )
             finally:
                 await srv.stop()
 
@@ -708,9 +708,12 @@ class TestLifecycle:
                     lambda: srv._acquisition_scheduler.pending_requests() == ()
                 )
                 scheduler_diagnostics = srv._acquisition_scheduler.diagnostics()
-                assert scheduler_diagnostics["failureCountByReason"][
-                    "acquisition_executor_missing"
-                ] == 1
+                assert (
+                    scheduler_diagnostics["failureCountByReason"][
+                        "acquisition_executor_missing"
+                    ]
+                    == 1
+                )
                 assert any(
                     event.kind == "acquisition_executor_missing"
                     and event.source == "rigctld.server"
@@ -763,9 +766,12 @@ class TestLifecycle:
                 assert srv._state_acquisition_drain_task is not None
                 assert not srv._state_acquisition_drain_task.done()
                 scheduler_diagnostics = srv._acquisition_scheduler.diagnostics()
-                assert scheduler_diagnostics["failureCountByReason"][
-                    "acquisition_executor_error"
-                ] == 1
+                assert (
+                    scheduler_diagnostics["failureCountByReason"][
+                        "acquisition_executor_error"
+                    ]
+                    == 1
+                )
                 assert any(
                     event.kind == "acquisition_request_failed"
                     and event.source == "rigctld.server"
@@ -819,9 +825,12 @@ class TestLifecycle:
                     lambda: srv._acquisition_scheduler.pending_requests() == ()
                 )
                 scheduler_diagnostics = srv._acquisition_scheduler.diagnostics()
-                assert scheduler_diagnostics["failureCountByReason"][
-                    "acquisition_executor_unavailable"
-                ] == 1
+                assert (
+                    scheduler_diagnostics["failureCountByReason"][
+                        "acquisition_executor_unavailable"
+                    ]
+                    == 1
+                )
                 assert any(
                     event.kind == "acquisition_executor_unavailable"
                     and event.source == "rigctld.server"

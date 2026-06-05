@@ -685,7 +685,7 @@ def _parse_acquisition_policy(
                         defaults.adaptive_decay.idle_multiplier
                         if defaults is not None
                         else 1.0,
-                    )
+                    ),
                 ),
                 max_cadence_seconds=(
                     None

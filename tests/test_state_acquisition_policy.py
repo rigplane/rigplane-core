@@ -146,10 +146,14 @@ def test_schema_from_dict_rejects_unknown_and_coerced_values() -> None:
     with pytest.raises(ValueError, match="polling must be a bool"):
         FieldCapability.from_dict({"path": freq, "polling": "false"})
 
-    with pytest.raises(ValueError, match="supportedControls must be a sequence of strings"):
+    with pytest.raises(
+        ValueError, match="supportedControls must be a sequence of strings"
+    ):
         FieldCapability.from_dict({"path": freq, "supportedControls": "set_freq"})
 
-    with pytest.raises(ValueError, match="supportedControls must be a sequence of strings"):
+    with pytest.raises(
+        ValueError, match="supportedControls must be a sequence of strings"
+    ):
         FieldCapability.from_dict({"path": freq, "supportedControls": [1]})
 
     with pytest.raises(ValueError, match="cadenceSeconds must be a number"):
@@ -172,10 +176,14 @@ def test_schema_from_dict_rejects_unknown_and_coerced_values() -> None:
 def test_field_capability_direct_construction_rejects_coerced_controls() -> None:
     freq = FieldPath.active("main", "freq_mode", "freq_hz")
 
-    with pytest.raises(ValueError, match="supported_controls must be a sequence of strings"):
+    with pytest.raises(
+        ValueError, match="supported_controls must be a sequence of strings"
+    ):
         FieldCapability(path=freq, supported_controls="set_freq")
 
-    with pytest.raises(ValueError, match="supported_controls must be a sequence of strings"):
+    with pytest.raises(
+        ValueError, match="supported_controls must be a sequence of strings"
+    ):
         FieldCapability(path=freq, supported_controls=cast(tuple[str, ...], (123,)))
 
 
@@ -445,7 +453,5 @@ def test_ftx1_profile_declares_slow_control_policies_for_polling_adapter() -> No
     assert ftx1.state_acquisition.capability_for(af_level).can_poll is True
     assert ftx1.state_acquisition.capability_for(squelch).can_poll is True
     assert ftx1.state_acquisition.capability_for(ptt).can_poll is True
-    assert (
-        ftx1.state_acquisition.policy_for(af_level).freshness_ttl_seconds == 120.0
-    )
+    assert ftx1.state_acquisition.policy_for(af_level).freshness_ttl_seconds == 120.0
     assert ftx1.state_acquisition.policy_for(af_level).cadence_seconds == 30.0

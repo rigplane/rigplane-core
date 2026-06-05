@@ -424,9 +424,8 @@ def _build_snapshot_field_status(
             previous = statuses.get(public_path)
             if previous is not None:
                 raw_previous_at = previous.get("lastObservedMonotonic")
-                if (
-                    isinstance(raw_previous_at, (int, float))
-                    and not isinstance(raw_previous_at, bool)
+                if isinstance(raw_previous_at, (int, float)) and not isinstance(
+                    raw_previous_at, bool
                 ):
                     previous_at = float(raw_previous_at)
             if (

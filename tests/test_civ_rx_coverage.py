@@ -119,7 +119,9 @@ def _acquisition_profile(
     return RadioAcquisitionProfile(
         provider="icom_civ",
         capabilities=tuple(
-            FieldCapability(path=path, polling=True, stream_like=path.family.value == "meters")
+            FieldCapability(
+                path=path, polling=True, stream_like=path.family.value == "meters"
+            )
             for path in paths
         ),
         default_policy=acquisition_policy,
@@ -1613,9 +1615,9 @@ def test_same_value_coalesced_meter_flush_completes_scheduler_request(
     assert changeset is not None
     assert changeset.changes == ()
     assert scheduler.pending_requests() == ()
-    assert scheduler.diagnostics()["cadenceByPath"][str(path)][
-        "nextDueMonotonic"
-    ] == 101.0
+    assert (
+        scheduler.diagnostics()["cadenceByPath"][str(path)]["nextDueMonotonic"] == 101.0
+    )
     assert any(
         event.kind == "acquisition_result"
         and event.details["paths"] == [str(path)]
@@ -1695,9 +1697,7 @@ def test_update_state_cache_uses_slot_specific_observation_path_when_override_ac
     )
 
     assert (
-        radio._state_store.snapshot()
-        .field("receiver.0.slot.B.freq_mode.freq_hz")
-        .value
+        radio._state_store.snapshot().field("receiver.0.slot.B.freq_mode.freq_hz").value
         == 14_250_000
     )
 
@@ -2420,9 +2420,7 @@ def test_update_radio_state_cmd07_dual_watch(radio_with_state: IcomRadio) -> Non
     """cmd 0x07 sub 0xC2 dual watch is observation-backed (MOR-437)."""
     frame = _make_frame(cmd=0x07, data=bytes([0xC2, 0x01]))
     radio_with_state._civ_runtime._update_state_cache_from_frame(frame)
-    field = radio_with_state._state_store.snapshot().field(
-        "global.tx_state.dual_watch"
-    )
+    field = radio_with_state._state_store.snapshot().field("global.tx_state.dual_watch")
     assert field.value is True
 
 

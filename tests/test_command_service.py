@@ -105,7 +105,9 @@ def _states(events: Sequence[CommandLifecycleEvent]) -> list[str]:
 
 
 @pytest.mark.asyncio  # type: ignore[untyped-decorator]
-async def test_execute_emits_lifecycle_events_and_applies_response_observations() -> None:
+async def test_execute_emits_lifecycle_events_and_applies_response_observations() -> (
+    None
+):
     clock = FreshnessClock(start=10.0)
     store = StateStore(freshness_clock=clock)
     executor = FakeExecutor(
@@ -129,7 +131,9 @@ async def test_execute_emits_lifecycle_events_and_applies_response_observations(
 
 
 @pytest.mark.asyncio  # type: ignore[untyped-decorator]
-async def test_execute_acknowledges_without_confirming_state_when_executor_has_no_observation() -> None:
+async def test_execute_acknowledges_without_confirming_state_when_executor_has_no_observation() -> (
+    None
+):
     clock = FreshnessClock(start=10.0)
     store = StateStore(freshness_clock=clock)
     service = CommandService(
@@ -213,12 +217,15 @@ def test_pending_overlays_are_projected_by_source_session_command_and_path() -> 
         session_id="rig-a",
         paths=(mode,),
     ) == {mode: "USB"}
-    assert service.pending_overlays(
-        source="websocket",
-        session_id="ws-a",
-        command_id="cmd-1",
-        path=freq,
-    )[0].value == 14_074_000
+    assert (
+        service.pending_overlays(
+            source="websocket",
+            session_id="ws-a",
+            command_id="cmd-1",
+            path=freq,
+        )[0].value
+        == 14_074_000
+    )
 
 
 @pytest.mark.asyncio  # type: ignore[untyped-decorator]
@@ -238,9 +245,7 @@ async def test_late_matching_observation_reconciles_pending_overlay_once() -> No
         paths=(_freq_path(),),
     ) == {_freq_path(): 14_074_000}
 
-    first = service.apply_observation(
-        _observation(_freq_path(), 14_074_000, at=30.5)
-    )
+    first = service.apply_observation(_observation(_freq_path(), 14_074_000, at=30.5))
     duplicate = service.apply_observation(
         _observation(_freq_path(), 14_074_000, at=30.6)
     )
@@ -298,7 +303,9 @@ async def test_core_timeout_error_is_classified_as_timed_out() -> None:
 
 
 @pytest.mark.asyncio  # type: ignore[untyped-decorator]
-async def test_execute_failure_with_reused_command_id_expires_only_matching_scope() -> None:
+async def test_execute_failure_with_reused_command_id_expires_only_matching_scope() -> (
+    None
+):
     clock = FreshnessClock(start=41.0)
     service = CommandService(
         executor=FakeExecutor(fail=RuntimeError("radio rejected command")),
@@ -357,7 +364,9 @@ def test_fail_command_with_reused_command_id_expires_only_matching_scope() -> No
             )
         )
 
-    service.emit_lifecycle(_intent(command_id="cmd-shared", session_id="ws-a"), "queued")
+    service.emit_lifecycle(
+        _intent(command_id="cmd-shared", session_id="ws-a"), "queued"
+    )
     service.emit_lifecycle(
         _intent(command_id="cmd-shared", session_id="ws-b"),
         "queued",
@@ -417,11 +426,14 @@ def test_expired_pending_overlays_do_not_project_or_leak() -> None:
 
     clock.advance(0.6)
 
-    assert service.project_pending_values(
-        source="public_api",
-        session_id=None,
-        paths=(_freq_path(),),
-    ) == {}
+    assert (
+        service.project_pending_values(
+            source="public_api",
+            session_id=None,
+            paths=(_freq_path(),),
+        )
+        == {}
+    )
     assert service.pending_overlays(source="public_api", session_id=None) == ()
 
 
@@ -466,7 +478,9 @@ def test_same_path_value_across_sessions_reconciles_only_correlated_overlay() ->
     assert [event.command_id for event in reconciled] == ["cmd-a"]
 
 
-def test_same_path_value_across_command_ids_reconciles_only_correlated_command() -> None:
+def test_same_path_value_across_command_ids_reconciles_only_correlated_command() -> (
+    None
+):
     clock = FreshnessClock(start=56.0)
     service = CommandService(
         executor=FakeExecutor(),
@@ -490,11 +504,14 @@ def test_same_path_value_across_command_ids_reconciles_only_correlated_command()
         _observation(freq, 14_074_000, at=56.2, correlation_id="cmd-a")
     )
 
-    assert service.pending_overlays(
-        source="websocket",
-        session_id="ws-a",
-        command_id="cmd-a",
-    ) == ()
+    assert (
+        service.pending_overlays(
+            source="websocket",
+            session_id="ws-a",
+            command_id="cmd-a",
+        )
+        == ()
+    )
     assert service.pending_overlays(
         source="websocket",
         session_id="ws-a",
@@ -515,7 +532,9 @@ def test_same_path_value_across_command_ids_reconciles_only_correlated_command()
     assert [event.command_id for event in reconciled] == ["cmd-a"]
 
 
-def test_uncorrelated_duplicate_observation_does_not_reconcile_pending_overlay() -> None:
+def test_uncorrelated_duplicate_observation_does_not_reconcile_pending_overlay() -> (
+    None
+):
     clock = FreshnessClock(start=57.0)
     service = CommandService(
         executor=FakeExecutor(),
@@ -537,9 +556,7 @@ def test_uncorrelated_duplicate_observation_does_not_reconcile_pending_overlay()
         _observation(freq, 14_074_000, at=57.2, correlation_id=None)
     )
 
-    assert service.pending_overlays(source="websocket", session_id="ws-a") == (
-        overlay,
-    )
+    assert service.pending_overlays(source="websocket", session_id="ws-a") == (overlay,)
     assert [
         event for event in service.lifecycle_events() if event.state == "reconciled"
     ] == []
@@ -567,13 +584,9 @@ def test_uncorrelated_same_value_boolean_does_not_reconcile_overlay() -> None:
     service.record_pending_overlay(overlay)
 
     # Coincidental boolean readback carrying the same value but no correlation.
-    service.apply_observation(
-        _observation(split, True, at=57.2, correlation_id=None)
-    )
+    service.apply_observation(_observation(split, True, at=57.2, correlation_id=None))
 
-    assert service.pending_overlays(source="websocket", session_id="ws-a") == (
-        overlay,
-    )
+    assert service.pending_overlays(source="websocket", session_id="ws-a") == (overlay,)
     assert [
         event for event in service.lifecycle_events() if event.state == "reconciled"
     ] == []
@@ -663,7 +676,9 @@ def test_correlated_receiver_zero_overlay_reconciles_main_readback_alias() -> No
 
 
 @pytest.mark.asyncio  # type: ignore[untyped-decorator]
-async def test_expired_overlay_still_reconciles_correlated_external_rigctld_readback() -> None:
+async def test_expired_overlay_still_reconciles_correlated_external_rigctld_readback() -> (
+    None
+):
     clock = FreshnessClock(start=58.6)
     service = CommandService(
         executor=FakeExecutor(observations=()),
@@ -673,11 +688,14 @@ async def test_expired_overlay_still_reconciles_correlated_external_rigctld_read
     command_id = "cmd-expired-rigctld"
     await service.execute(_intent(command_id=command_id, session_id="ws-a"))
     clock.advance(2.01)
-    assert service.pending_overlays(
-        source="websocket",
-        session_id="ws-a",
-        command_id=command_id,
-    ) == ()
+    assert (
+        service.pending_overlays(
+            source="websocket",
+            session_id="ws-a",
+            command_id=command_id,
+        )
+        == ()
+    )
 
     service.apply_observation(
         Observation(
@@ -776,9 +794,7 @@ def test_correlated_receiver_zero_overlay_does_not_alias_non_rigctld_readback() 
         )
     )
 
-    assert service.pending_overlays(source="websocket", session_id="ws-a") == (
-        overlay,
-    )
+    assert service.pending_overlays(source="websocket", session_id="ws-a") == (overlay,)
     assert [
         event for event in service.lifecycle_events() if event.state == "reconciled"
     ] == []
@@ -819,9 +835,7 @@ def test_correlated_receiver_zero_overlay_does_not_alias_rigctld_ack_metadata() 
         )
     )
 
-    assert service.pending_overlays(source="websocket", session_id="ws-a") == (
-        overlay,
-    )
+    assert service.pending_overlays(source="websocket", session_id="ws-a") == (overlay,)
     assert [
         event for event in service.lifecycle_events() if event.state == "reconciled"
     ] == []
@@ -1086,7 +1100,12 @@ def test_command_response_observation_carries_session_metadata() -> None:
         ("set_powerstat", {"on": False}, "global.tx_state.power_on", False),
         ("set_rf_power", {"level": 88}, "global.operator_controls.power_level", 88),
         ("set_power", {"level": 77}, "global.operator_controls.power_level", 77),
-        ("set_filter_width", {"width": 1500}, "receiver.0.freq_mode.filter_width", 1500),
+        (
+            "set_filter_width",
+            {"width": 1500},
+            "receiver.0.freq_mode.filter_width",
+            1500,
+        ),
         ("set_split", {"on": True}, "global.tx_state.split", True),
         ("set_rit", {"hz": 500}, "global.operator_controls.rit_freq", 500),
         ("set_xit", {"hz": -250}, "global.operator_controls.rit_freq", -250),
@@ -1188,11 +1207,14 @@ async def test_rit_xit_intents_record_all_scoped_readback_targets(
         session_id="client-a",
         paths=paths,
     ) == {path: value for path, (_path, value) in zip(paths, expected)}
-    assert service.project_pending_values(
-        source="rigctld",
-        session_id="client-b",
-        paths=paths,
-    ) == {}
+    assert (
+        service.project_pending_values(
+            source="rigctld",
+            session_id="client-b",
+            paths=paths,
+        )
+        == {}
+    )
     assert {
         overlay.path: overlay.value
         for overlay in service.readback_expectations(

@@ -246,9 +246,7 @@ def _acquisition_profile(
     )
     return RadioAcquisitionProfile(
         provider=provider,
-        capabilities=tuple(
-            FieldCapability(path=path, polling=True) for path in paths
-        ),
+        capabilities=tuple(FieldCapability(path=path, polling=True) for path in paths),
         default_policy=acquisition_policy,
     )
 
@@ -384,7 +382,9 @@ async def test_scheduler_due_request_timeout_is_terminal_not_resent_each_tick() 
 
 
 @pytest.mark.asyncio
-async def test_scheduler_request_execution_uses_injected_executor_not_web_mapping() -> None:
+async def test_scheduler_request_execution_uses_injected_executor_not_web_mapping() -> (
+    None
+):
     radio = _make_radio(active="MAIN")
     path = FieldPath.global_("slow_state", "value")
     scheduler = AcquisitionScheduler(profile=_acquisition_profile(path))
@@ -408,7 +408,9 @@ async def test_scheduler_request_execution_uses_injected_executor_not_web_mappin
 
 
 @pytest.mark.asyncio
-async def test_non_icom_scheduler_without_executor_fails_instead_of_web_civ_send() -> None:
+async def test_non_icom_scheduler_without_executor_fails_instead_of_web_civ_send() -> (
+    None
+):
     radio = _make_radio(active="MAIN")
     path = FieldPath.receiver("main", "meters", "s_meter")
     scheduler = AcquisitionScheduler(
@@ -427,16 +429,19 @@ async def test_non_icom_scheduler_without_executor_fails_instead_of_web_civ_send
         radio,
         CommandQueue(),
         radio_state=RadioState(),
-        diagnostics=SimpleNamespace(record=lambda *args, **kwargs: diagnostics.append((args, kwargs))),  # type: ignore[arg-type]
+        diagnostics=SimpleNamespace(
+            record=lambda *args, **kwargs: diagnostics.append((args, kwargs))
+        ),  # type: ignore[arg-type]
     )
 
     await poller._send_query()  # noqa: SLF001
 
     radio.send_civ.assert_not_awaited()
     assert scheduler.pending_requests() == ()
-    assert scheduler.diagnostics()["failureCountByReason"][
-        "acquisition_executor_missing"
-    ] == 1
+    assert (
+        scheduler.diagnostics()["failureCountByReason"]["acquisition_executor_missing"]
+        == 1
+    )
     assert any(
         args[:2] == ("acquisition_executor_missing", "web.radio_poller")
         and kwargs["provider"] == "test_provider"
@@ -487,7 +492,9 @@ async def test_scheduler_unknown_query_mapping_is_recorded_and_failed() -> None:
         radio,
         CommandQueue(),
         radio_state=RadioState(),
-        diagnostics=SimpleNamespace(record=lambda *args, **kwargs: diagnostics.append((args, kwargs))),  # type: ignore[arg-type]
+        diagnostics=SimpleNamespace(
+            record=lambda *args, **kwargs: diagnostics.append((args, kwargs))
+        ),  # type: ignore[arg-type]
     )
 
     await poller._send_query()  # noqa: SLF001
@@ -495,9 +502,7 @@ async def test_scheduler_unknown_query_mapping_is_recorded_and_failed() -> None:
 
     radio.send_civ.assert_not_awaited()
     assert scheduler.pending_requests() == ()
-    assert scheduler.diagnostics()["failureCountByReason"][
-        "no_civ_query_mapping"
-    ] == 1
+    assert scheduler.diagnostics()["failureCountByReason"]["no_civ_query_mapping"] == 1
     assert any(
         args[:2] == ("acquisition_request_failed", "web.radio_poller")
         and kwargs["request_id"] == "acq-1"
@@ -1332,7 +1337,9 @@ async def test_command_error_propagates_from_execute() -> None:
 
 
 @pytest.mark.asyncio
-async def test_set_freq_success_does_not_apply_confirmed_state_store_observation() -> None:
+async def test_set_freq_success_does_not_apply_confirmed_state_store_observation() -> (
+    None
+):
     radio = _make_radio()
     state = RadioState()
     store = StateStore()
@@ -1639,7 +1646,10 @@ async def test_set_freq_success_does_not_reconcile_reused_command_id_without_rea
     assert len(service.pending_overlays(source="websocket", session_id="ws-b")) == 1
     with pytest.raises(KeyError):
         store.snapshot().field("receiver.0.freq_mode.freq_hz")
-    assert service.pending_overlays(source="websocket", session_id="ws-b")[0].value == 14_074_000
+    assert (
+        service.pending_overlays(source="websocket", session_id="ws-b")[0].value
+        == 14_074_000
+    )
 
 
 @pytest.mark.asyncio
@@ -1764,7 +1774,9 @@ async def test_queued_core_timeout_emits_timed_out_lifecycle_and_expires_overlay
         await poller._run()  # noqa: SLF001
 
     events = [
-        event for event in service.lifecycle_events() if event.command_id == "ws-timeout"
+        event
+        for event in service.lifecycle_events()
+        if event.command_id == "ws-timeout"
     ]
     assert [event.state for event in events] == [
         "accepted",
@@ -1817,7 +1829,9 @@ async def test_mark_queued_command_failed_scopes_reused_command_ids_by_source() 
 
     assert service.pending_overlays(source="websocket", session_id=None) == ()
     assert len(service.pending_overlays(source="http", session_id=None)) == 1
-    assert service.pending_overlays(source="http", session_id=None)[0].value == 7_074_000
+    assert (
+        service.pending_overlays(source="http", session_id=None)[0].value == 7_074_000
+    )
 
 
 @pytest.mark.asyncio
@@ -1865,7 +1879,10 @@ async def test_mark_queued_command_failed_scopes_reused_command_ids_by_session(
 
     assert service.pending_overlays(source="websocket", session_id="ws-a") == ()
     assert len(service.pending_overlays(source="websocket", session_id="ws-b")) == 1
-    assert service.pending_overlays(source="websocket", session_id="ws-b")[0].value == 14_074_000
+    assert (
+        service.pending_overlays(source="websocket", session_id="ws-b")[0].value
+        == 14_074_000
+    )
 
     terminal_events = [
         event

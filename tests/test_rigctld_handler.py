@@ -130,9 +130,7 @@ class _RecordingStateModelService:
                 str(path) if isinstance(path, FieldPath) else path for path in paths
             )
         else:
-            normalized = (
-                str(paths) if isinstance(paths, FieldPath) else paths,
-            )
+            normalized = (str(paths) if isinstance(paths, FieldPath) else paths,)
         self.calls.append(
             {
                 "paths": normalized,
@@ -938,10 +936,13 @@ async def test_get_mode_read_after_write_uses_pending_overlays_until_reconciled(
         correlation_id=overlay_ids["receiver.main.active.freq_mode.data_mode"],
     )
 
-    assert handler._command_service.pending_overlays(  # noqa: SLF001
-        source="rigctld",
-        session_id=None,
-    ) == ()
+    assert (
+        handler._command_service.pending_overlays(  # noqa: SLF001
+            source="rigctld",
+            session_id=None,
+        )
+        == ()
+    )
 
     after = await handler.execute(get_cmd("get_mode"))
     assert after.values == ["PKTUSB", "2400"]
@@ -1661,11 +1662,14 @@ async def test_set_rit_projects_pending_offset_and_status_by_session(
         session_id="rigctld-client-a",
         paths=paths,
     ) == {paths[0]: 500, paths[1]: True}
-    assert handler._command_service.project_pending_values(  # noqa: SLF001
-        source="rigctld",
-        session_id="rigctld-client-b",
-        paths=paths,
-    ) == {}
+    assert (
+        handler._command_service.project_pending_values(  # noqa: SLF001
+            source="rigctld",
+            session_id="rigctld-client-b",
+            paths=paths,
+        )
+        == {}
+    )
     client_a = await handler.execute(
         get_cmd("get_rit"),
         session_id="rigctld-client-a",
@@ -1869,11 +1873,14 @@ async def test_set_xit_projects_pending_offset_and_status_by_session(
         session_id="rigctld-client-a",
         paths=paths,
     ) == {paths[0]: 750, paths[1]: True}
-    assert handler._command_service.project_pending_values(  # noqa: SLF001
-        source="rigctld",
-        session_id="rigctld-client-b",
-        paths=paths,
-    ) == {}
+    assert (
+        handler._command_service.project_pending_values(  # noqa: SLF001
+            source="rigctld",
+            session_id="rigctld-client-b",
+            paths=paths,
+        )
+        == {}
+    )
     client_a = await handler.execute(
         get_cmd("get_xit"),
         session_id="rigctld-client-a",
@@ -3820,11 +3827,14 @@ async def test_set_vfo_dual_rx_projects_pending_active_receiver_by_session(
         session_id="rigctld-client-a",
         paths=(path,),
     ) == {path: "SUB"}
-    assert handler._command_service.project_pending_values(  # noqa: SLF001
-        source="rigctld",
-        session_id="rigctld-client-b",
-        paths=(path,),
-    ) == {}
+    assert (
+        handler._command_service.project_pending_values(  # noqa: SLF001
+            source="rigctld",
+            session_id="rigctld-client-b",
+            paths=(path,),
+        )
+        == {}
+    )
     client_a = await handler.execute(
         get_cmd("get_vfo"),
         session_id="rigctld-client-a",

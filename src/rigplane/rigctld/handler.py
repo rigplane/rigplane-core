@@ -30,7 +30,12 @@ from ..core.command_service import (
     command_intent_from_request,
 )
 from ..core.state_diagnostics import StateDiagnosticsRecorder
-from ..core.state_pipeline_contracts import CommandIntent, FieldPath, Observation, SourceMetadata
+from ..core.state_pipeline_contracts import (
+    CommandIntent,
+    FieldPath,
+    Observation,
+    SourceMetadata,
+)
 from ..core.state_store import FreshnessState, StateStore, StateSnapshot
 from ..exceptions import ConnectionError, TimeoutError as RigplaneTimeoutError
 from ..radio_protocol import StateModelCapable, StateModelService, StateStoreCapable
@@ -629,7 +634,9 @@ class RigctldHandler:
         return FieldPath.active(self._receiver_id(receiver), "freq_mode", "mode")
 
     def _filter_path(self, receiver: int) -> FieldPath:
-        return FieldPath.active(self._receiver_id(receiver), "freq_mode", "filter_width")
+        return FieldPath.active(
+            self._receiver_id(receiver), "freq_mode", "filter_width"
+        )
 
     def _data_mode_path(self, receiver: int) -> FieldPath:
         return FieldPath.active(self._receiver_id(receiver), "freq_mode", "data_mode")
@@ -675,7 +682,9 @@ class RigctldHandler:
         name = names.get(level)
         if name is None:
             return None
-        return FieldPath.receiver(self._receiver_id(receiver), "operator_controls", name)
+        return FieldPath.receiver(
+            self._receiver_id(receiver), "operator_controls", name
+        )
 
     def _func_path(self, func: str, *, receiver: int) -> FieldPath:
         return FieldPath.receiver(
@@ -734,9 +743,8 @@ class RigctldHandler:
         )
         status = getattr(result, "status", None)
         status_value = getattr(status, "value", str(status))
-        if (
-            status_value == "unavailable"
-            and isinstance(self._state_diagnostics, StateDiagnosticsRecorder)
+        if status_value == "unavailable" and isinstance(
+            self._state_diagnostics, StateDiagnosticsRecorder
         ):
             self._state_diagnostics.record(
                 "acquisition_unavailable",
@@ -1111,9 +1119,7 @@ class RigctldHandler:
         ):
             mode_str = str(projected_mode.value).upper()
             passband = _filter_to_passband(
-                None
-                if projected_filter.value is None
-                else int(projected_filter.value)
+                None if projected_filter.value is None else int(projected_filter.value)
             )
             data_mode = bool(projected_data_mode.value)
             if data_mode:
@@ -2112,7 +2118,11 @@ class RigctldHandler:
                     )
                     await self._rollback_split(set_split)
                     return HamlibError.EIO
-                except (RigplaneTimeoutError, TimeoutError, asyncio.TimeoutError) as exc:
+                except (
+                    RigplaneTimeoutError,
+                    TimeoutError,
+                    asyncio.TimeoutError,
+                ) as exc:
                     logger.warning(
                         "set_split_vfo: set_vfo(%s) timed out (%s); rolling back split",
                         target,
