@@ -165,6 +165,23 @@ polling_only = [
     "receiver.sub.operator_toggles.twin_peak_filter",
     "receiver.sub.operator_controls.agc",
     "receiver.sub.operator_controls.audio_peak_filter",
+    "receiver.main.operator_controls.nr_level",
+    "receiver.main.operator_controls.nb_level",
+    "receiver.main.operator_controls.pbt_inner",
+    "receiver.main.operator_controls.pbt_outer",
+    "receiver.main.operator_controls.apf_type_level",
+    "receiver.sub.operator_controls.nr_level",
+    "receiver.sub.operator_controls.nb_level",
+    "receiver.sub.operator_controls.pbt_inner",
+    "receiver.sub.operator_controls.pbt_outer",
+    "receiver.sub.operator_controls.apf_type_level",
+    "global.operator_controls.power_level",
+    "global.operator_controls.mic_gain",
+    "global.operator_controls.compressor_level",
+    "global.operator_controls.monitor_gain",
+    "global.operator_controls.vox_gain",
+    "global.operator_controls.anti_vox_gain",
+    "global.operator_controls.cw_pitch",
 ]
 stream_like_meters = [
     "receiver.main.meters.s_meter",
@@ -347,6 +364,91 @@ adaptive_decay = false
 [state_acquisition.field_policies."receiver.sub.operator_controls.audio_peak_filter"]
 cadence_seconds = 1.5
 freshness_ttl_seconds = 3.0
+adaptive_decay = false
+
+[state_acquisition.field_policies."receiver.main.operator_controls.nr_level"]
+cadence_seconds = 3.0
+freshness_ttl_seconds = 5.0
+adaptive_decay = false
+
+[state_acquisition.field_policies."receiver.main.operator_controls.nb_level"]
+cadence_seconds = 3.0
+freshness_ttl_seconds = 5.0
+adaptive_decay = false
+
+[state_acquisition.field_policies."receiver.main.operator_controls.pbt_inner"]
+cadence_seconds = 3.0
+freshness_ttl_seconds = 5.0
+adaptive_decay = false
+
+[state_acquisition.field_policies."receiver.main.operator_controls.pbt_outer"]
+cadence_seconds = 3.0
+freshness_ttl_seconds = 5.0
+adaptive_decay = false
+
+[state_acquisition.field_policies."receiver.main.operator_controls.apf_type_level"]
+cadence_seconds = 3.0
+freshness_ttl_seconds = 5.0
+adaptive_decay = false
+
+[state_acquisition.field_policies."receiver.sub.operator_controls.nr_level"]
+cadence_seconds = 3.0
+freshness_ttl_seconds = 5.0
+adaptive_decay = false
+
+[state_acquisition.field_policies."receiver.sub.operator_controls.nb_level"]
+cadence_seconds = 3.0
+freshness_ttl_seconds = 5.0
+adaptive_decay = false
+
+[state_acquisition.field_policies."receiver.sub.operator_controls.pbt_inner"]
+cadence_seconds = 3.0
+freshness_ttl_seconds = 5.0
+adaptive_decay = false
+
+[state_acquisition.field_policies."receiver.sub.operator_controls.pbt_outer"]
+cadence_seconds = 3.0
+freshness_ttl_seconds = 5.0
+adaptive_decay = false
+
+[state_acquisition.field_policies."receiver.sub.operator_controls.apf_type_level"]
+cadence_seconds = 3.0
+freshness_ttl_seconds = 5.0
+adaptive_decay = false
+
+[state_acquisition.field_policies."global.operator_controls.power_level"]
+cadence_seconds = 3.0
+freshness_ttl_seconds = 5.0
+adaptive_decay = false
+
+[state_acquisition.field_policies."global.operator_controls.mic_gain"]
+cadence_seconds = 3.0
+freshness_ttl_seconds = 5.0
+adaptive_decay = false
+
+[state_acquisition.field_policies."global.operator_controls.compressor_level"]
+cadence_seconds = 3.0
+freshness_ttl_seconds = 5.0
+adaptive_decay = false
+
+[state_acquisition.field_policies."global.operator_controls.monitor_gain"]
+cadence_seconds = 3.0
+freshness_ttl_seconds = 5.0
+adaptive_decay = false
+
+[state_acquisition.field_policies."global.operator_controls.vox_gain"]
+cadence_seconds = 3.0
+freshness_ttl_seconds = 5.0
+adaptive_decay = false
+
+[state_acquisition.field_policies."global.operator_controls.anti_vox_gain"]
+cadence_seconds = 3.0
+freshness_ttl_seconds = 5.0
+adaptive_decay = false
+
+[state_acquisition.field_policies."global.operator_controls.cw_pitch"]
+cadence_seconds = 3.0
+freshness_ttl_seconds = 5.0
 adaptive_decay = false
 
 # ── Parameterized Capabilities ───────────────────────────────────

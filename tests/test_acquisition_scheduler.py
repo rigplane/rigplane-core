@@ -1428,3 +1428,144 @@ def test_ic7610_real_profile_rf_dsp_toggles_pollable_and_emit_reads() -> None:
         (0x16, 0x32, 1),
     }
     assert expected <= set(sent)
+
+
+def test_ic7610_real_profile_level_query_for_path() -> None:
+    sent: list[tuple[int, int | None, int | None]] = []
+
+    async def send_query(
+        command: int,
+        sub: int | None,
+        receiver: int | None,
+    ) -> None:
+        sent.append((command, sub, receiver))
+
+    executor = IcomCivAcquisitionExecutor(send_query)
+
+    # Receiver levels (cmd 0x14, operator_controls family) — MAIN (receiver 0).
+    nr_level = FieldPath.receiver("main", "operator_controls", "nr_level")
+    nb_level = FieldPath.receiver("main", "operator_controls", "nb_level")
+    pbt_inner = FieldPath.receiver("main", "operator_controls", "pbt_inner")
+    pbt_outer = FieldPath.receiver("main", "operator_controls", "pbt_outer")
+    apf_type_level = FieldPath.receiver("main", "operator_controls", "apf_type_level")
+
+    assert executor.query_for_path(nr_level) == (0x14, 0x06, 0)
+    assert executor.query_for_path(nb_level) == (0x14, 0x12, 0)
+    assert executor.query_for_path(pbt_inner) == (0x14, 0x07, 0)
+    assert executor.query_for_path(pbt_outer) == (0x14, 0x08, 0)
+    assert executor.query_for_path(apf_type_level) == (0x14, 0x05, 0)
+
+    # SUB receiver targeting (receiver 1).
+    nr_level_sub = FieldPath.receiver("sub", "operator_controls", "nr_level")
+    assert executor.query_for_path(nr_level_sub) == (0x14, 0x06, 1)
+
+    # Global levels (cmd 0x14, single global path) — receiver is None.
+    power_level = FieldPath.global_("operator_controls", "power_level")
+    mic_gain = FieldPath.global_("operator_controls", "mic_gain")
+    compressor_level = FieldPath.global_("operator_controls", "compressor_level")
+    monitor_gain = FieldPath.global_("operator_controls", "monitor_gain")
+    vox_gain = FieldPath.global_("operator_controls", "vox_gain")
+    anti_vox_gain = FieldPath.global_("operator_controls", "anti_vox_gain")
+    cw_pitch = FieldPath.global_("operator_controls", "cw_pitch")
+
+    assert executor.query_for_path(power_level) == (0x14, 0x0A, None)
+    assert executor.query_for_path(mic_gain) == (0x14, 0x0B, None)
+    assert executor.query_for_path(compressor_level) == (0x14, 0x0E, None)
+    assert executor.query_for_path(monitor_gain) == (0x14, 0x15, None)
+    assert executor.query_for_path(vox_gain) == (0x14, 0x16, None)
+    assert executor.query_for_path(anti_vox_gain) == (0x14, 0x17, None)
+    assert executor.query_for_path(cw_pitch) == (0x14, 0x09, None)
+
+    # Regression guard: Batch-1 toggles and att/preamp/squelch still map.
+    digisel = FieldPath.receiver("main", "operator_toggles", "digisel")
+    att = FieldPath.receiver("main", "operator_controls", "att")
+    preamp = FieldPath.receiver("main", "operator_controls", "preamp")
+    squelch = FieldPath.receiver("main", "operator_controls", "squelch")
+    assert executor.query_for_path(digisel) == (0x16, 0x4E, 0)
+    assert executor.query_for_path(att) == (0x11, None, 0)
+    assert executor.query_for_path(preamp) == (0x16, 0x02, 0)
+    assert executor.query_for_path(squelch) == (0x14, 0x03, 0)
+
+
+def test_ic7610_real_profile_levels_pollable_and_emit_reads() -> None:
+    acquisition = load_rig(RIGS_DIR / "ic7610.toml").to_profile().state_acquisition
+    assert acquisition is not None
+
+    receiver_paths: tuple[FieldPath, ...] = tuple(
+        FieldPath.receiver(receiver, "operator_controls", name)
+        for receiver in ("main", "sub")
+        for name in (
+            "nr_level",
+            "nb_level",
+            "pbt_inner",
+            "pbt_outer",
+            "apf_type_level",
+        )
+    )
+    global_paths: tuple[FieldPath, ...] = tuple(
+        FieldPath.global_("operator_controls", name)
+        for name in (
+            "power_level",
+            "mic_gain",
+            "compressor_level",
+            "monitor_gain",
+            "vox_gain",
+            "anti_vox_gain",
+            "cw_pitch",
+        )
+    )
+    target_paths = receiver_paths + global_paths
+
+    for path in target_paths:
+        assert acquisition.capability_for(path).can_poll is True
+        policy = acquisition.policy_for(path)
+        assert policy.cadence_seconds == 3.0
+        assert policy.freshness_ttl_seconds == 5.0
+        assert policy.adaptive_decay.enabled is False
+
+    clock = FreshnessClock(start=300.0)
+    scheduler = AcquisitionScheduler(profile=acquisition, clock=clock)
+    requests = scheduler.due_requests()
+    due_paths = {path for request in requests for path in request.paths}
+    assert set(target_paths) <= due_paths
+
+    sent: list[tuple[int, int | None, int | None]] = []
+
+    async def send_query(
+        command: int,
+        sub: int | None,
+        receiver: int | None,
+    ) -> None:
+        sent.append((command, sub, receiver))
+
+    executor = IcomCivAcquisitionExecutor(send_query)
+    for request in requests:
+        if not any(path in target_paths for path in request.paths):
+            continue
+        execution = asyncio.run(
+            executor.execute(request, already_sent_paths=frozenset())
+        )
+        assert execution.failed_paths == ()
+
+    expected = {
+        # Receiver levels — main (0) + sub (1).
+        (0x14, 0x06, 0),
+        (0x14, 0x12, 0),
+        (0x14, 0x07, 0),
+        (0x14, 0x08, 0),
+        (0x14, 0x05, 0),
+        (0x14, 0x06, 1),
+        (0x14, 0x12, 1),
+        (0x14, 0x07, 1),
+        (0x14, 0x08, 1),
+        (0x14, 0x05, 1),
+        # Global levels — once.
+        (0x14, 0x0A, None),
+        (0x14, 0x0B, None),
+        (0x14, 0x0E, None),
+        (0x14, 0x15, None),
+        (0x14, 0x16, None),
+        (0x14, 0x17, None),
+        (0x14, 0x09, None),
+    }
+    assert expected <= set(sent)
