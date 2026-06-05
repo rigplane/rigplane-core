@@ -545,3 +545,53 @@ round-trip converges and does NOT snap back END-TO-END through the public state.
 `fieldStatus` remains honest — the two genuinely-unreadable fields (`sub.sMeter`,
 `break_in_delay`) are marked `missing`, not falsely fresh. No transmit occurred;
 the radio was left in its original state (af_level 11, 14.074 MHz, DATA-U, RX).
+
+## Live hardware run — freq-pipeline trilogy (MOR-475/484/485) — IC-7610 — 2026-06-05
+
+Live IC-7610 validation of the v2 click-to-tune snap-back fix, which turned out
+to be a 3-layer freq-pipeline defect (the original MOR-475 "frontend-only, no
+backend change" diagnosis was incomplete). Branch
+`codex/mor-334-radio-state-pipeline` @ `84e8417a`.
+
+**Context.** Live IC-7610 over LAN (`192.168.55.40`, CI-V `0x98`), v2 Web UI
+served from `frontend/dist`. Validated via instrumented Playwright (WebSocket
+frames + rendered VFO DOM + `/api/v1/state`, all at ms resolution) plus operator
+front-panel knob turns.
+
+**Defect.** v2 click-to-tune snap-back: clicking to tune showed the commanded
+frequency briefly, then reverted to the old value. Three independent layers
+contributed; each was fixed and shipped separately.
+
+**Fixes (each: independent-review PASS + worktree falsification + green
+`uv run` gate + ff-pushed).**
+- **MOR-475 frontend** (commits `339031a4`, `6ca9e24d`): `OPTIMISTIC_FREQ_TTL`
+  lowered to 1500 ms; the freq optimistic overlay now clears on value-match or
+  TTL, not on a bare causal advance. The causal-advance clear flashed the old
+  freq by reverting to a stale in-flight poll.
+- **MOR-484** (commit `97c94f58`): IC-7610 freq/mode were not in the
+  `polling_only` tier in `rigs/ic7610.toml`, so the readback was frozen at the
+  connect-time value (the optimistic overlay had masked this). Added
+  `receiver.{main,sub}.active.freq_mode.{freq_hz,mode}` to `polling_only` plus a
+  0.5 s freq `field_policy`.
+- **MOR-485** (commit `84e8417a`): the web `set_freq` executor
+  (`_SharedControlCommandExecutor.execute`) returned no observation, so the
+  commanded freq was never published into the command `StateStore` until a
+  `pause_polling`-deferred readback (~2–4.3 s). It now emits a freq
+  command-response `Observation` at `FieldPath.active("0"/"1","freq_mode",
+  "freq_hz")` (the numeric-receiver key the CI-V readback emits), reconciled by
+  the later poll via last-writer-wins.
+
+**Live results (two instrumented runs).** Commanded freq published to
+`/api/v1/state` in +102 ms (and +13 ms on the other run); first WS frame
+carrying the commanded freq at +42 ms; ZERO snap-back/revert events across ~6 s
+(API, WS, and rendered VFO); rendered VFO settles on the commanded freq at
+~+26 ms. Front-panel knob turns move `main.freqHz` within the 0.5 s cadence
+(MOR-484), and server == VFO == commanded after settle.
+
+**Method note.** Systematic instrumented timeline debugging was decisive: two
+hypothesis-driven frontend-only patch rounds did not fix the UX; the ms-timeline
+isolated the backend (no-poll + no set-overlay) as the dominant cause.
+
+**Open follow-up.** `set_mode` has the identical web-executor command-overlay
+gap (only freq was shipped); a fast clone of the MOR-485 fix applies if a mode
+snap-back is observed.
