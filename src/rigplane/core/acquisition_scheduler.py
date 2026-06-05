@@ -231,6 +231,12 @@ _RECEIVER_NONLEVEL_QUERIES: dict[str, tuple[int, int | None]] = {
     "preamp": (0x16, 0x02),
     "agc": (0x16, 0x12),
     "audio_peak_filter": (0x16, 0x32),
+    "agc_time_constant": (0x1A, 0x04),
+}
+_GLOBAL_TX_TOGGLE_QUERIES: dict[str, tuple[int, int | None]] = {
+    "compressor_on": (0x16, 0x44),
+    "monitor_on": (0x16, 0x45),
+    "vox_on": (0x16, 0x46),
 }
 _RECEIVER_TOGGLE_QUERIES: dict[str, tuple[int, int | None]] = {
     "digisel": (0x16, 0x4E),
@@ -334,7 +340,8 @@ class IcomCivAcquisitionExecutor:
                 return (0x21, 0x01, None)
             if path.name == "rit_tx":
                 return (0x21, 0x02, None)
-            return None
+            toggle = _GLOBAL_TX_TOGGLE_QUERIES.get(path.name)
+            return None if toggle is None else (toggle[0], toggle[1], None)
         if path.scope.value == "global" and path.family.value == "operator_controls":
             if path.name == "rit_freq":
                 return (0x21, 0x00, None)

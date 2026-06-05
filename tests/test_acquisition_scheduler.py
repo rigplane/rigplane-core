@@ -1636,3 +1636,111 @@ def test_ic7610_real_profile_filter_width_pollable_and_emit_reads() -> None:
         assert execution.failed_paths == ()
 
     assert {(0x1A, 0x03, 0), (0x1A, 0x03, 1)} <= set(sent)
+
+
+def test_ic7610_real_profile_tx_vox_toggle_query_for_path() -> None:
+    sent: list[tuple[int, int | None, int | None]] = []
+
+    async def send_query(
+        command: int,
+        sub: int | None,
+        receiver: int | None,
+    ) -> None:
+        sent.append((command, sub, receiver))
+
+    executor = IcomCivAcquisitionExecutor(send_query)
+
+    # GLOBAL cmd16 tx_state toggles — receiver is None (global path).
+    compressor_on = FieldPath.global_("tx_state", "compressor_on")
+    monitor_on = FieldPath.global_("tx_state", "monitor_on")
+    vox_on = FieldPath.global_("tx_state", "vox_on")
+    # RECEIVER cmd1A/04 operator_controls value — MAIN/SUB.
+    agc_tc_main = FieldPath.receiver("main", "operator_controls", "agc_time_constant")
+    agc_tc_sub = FieldPath.receiver("sub", "operator_controls", "agc_time_constant")
+
+    assert executor.query_for_path(compressor_on) == (0x16, 0x44, None)
+    assert executor.query_for_path(monitor_on) == (0x16, 0x45, None)
+    assert executor.query_for_path(vox_on) == (0x16, 0x46, None)
+    assert executor.query_for_path(agc_tc_main) == (0x1A, 0x04, 0)
+    assert executor.query_for_path(agc_tc_sub) == (0x1A, 0x04, 1)
+
+    # Regression guard: pre-existing global tx_state mappings still hold.
+    ptt = FieldPath.global_("tx_state", "ptt")
+    rit_on = FieldPath.global_("tx_state", "rit_on")
+    rit_tx = FieldPath.global_("tx_state", "rit_tx")
+    assert executor.query_for_path(ptt) == (0x1C, 0x00, None)
+    assert executor.query_for_path(rit_on) == (0x21, 0x01, None)
+    assert executor.query_for_path(rit_tx) == (0x21, 0x02, None)
+
+    # Regression guard: pre-existing operator_controls mappings still hold.
+    att = FieldPath.receiver("main", "operator_controls", "att")
+    preamp = FieldPath.receiver("main", "operator_controls", "preamp")
+    agc = FieldPath.receiver("main", "operator_controls", "agc")
+    squelch = FieldPath.receiver("main", "operator_controls", "squelch")
+    assert executor.query_for_path(att) == (0x11, None, 0)
+    assert executor.query_for_path(preamp) == (0x16, 0x02, 0)
+    assert executor.query_for_path(agc) == (0x16, 0x12, 0)
+    assert executor.query_for_path(squelch) == (0x14, 0x03, 0)
+
+
+def test_ic7610_real_profile_tx_vox_pollable_and_emit_reads() -> None:
+    acquisition = load_rig(RIGS_DIR / "ic7610.toml").to_profile().state_acquisition
+    assert acquisition is not None
+
+    global_toggles: tuple[FieldPath, ...] = (
+        FieldPath.global_("tx_state", "compressor_on"),
+        FieldPath.global_("tx_state", "monitor_on"),
+        FieldPath.global_("tx_state", "vox_on"),
+    )
+    agc_tc_paths: tuple[FieldPath, ...] = tuple(
+        FieldPath.receiver(receiver, "operator_controls", "agc_time_constant")
+        for receiver in ("main", "sub")
+    )
+    target_paths = global_toggles + agc_tc_paths
+
+    for path in global_toggles:
+        assert acquisition.capability_for(path).can_poll is True
+        policy = acquisition.policy_for(path)
+        assert policy.cadence_seconds == 1.5
+        assert policy.freshness_ttl_seconds == 3.0
+        assert policy.adaptive_decay.enabled is False
+
+    for path in agc_tc_paths:
+        assert acquisition.capability_for(path).can_poll is True
+        policy = acquisition.policy_for(path)
+        assert policy.cadence_seconds == 3.0
+        assert policy.freshness_ttl_seconds == 5.0
+        assert policy.adaptive_decay.enabled is False
+
+    clock = FreshnessClock(start=300.0)
+    scheduler = AcquisitionScheduler(profile=acquisition, clock=clock)
+    requests = scheduler.due_requests()
+    due_paths = {path for request in requests for path in request.paths}
+    assert set(target_paths) <= due_paths
+
+    sent: list[tuple[int, int | None, int | None]] = []
+
+    async def send_query(
+        command: int,
+        sub: int | None,
+        receiver: int | None,
+    ) -> None:
+        sent.append((command, sub, receiver))
+
+    executor = IcomCivAcquisitionExecutor(send_query)
+    for request in requests:
+        if not any(path in target_paths for path in request.paths):
+            continue
+        execution = asyncio.run(
+            executor.execute(request, already_sent_paths=frozenset())
+        )
+        assert execution.failed_paths == ()
+
+    expected = {
+        (0x16, 0x44, None),
+        (0x16, 0x45, None),
+        (0x16, 0x46, None),
+        (0x1A, 0x04, 0),
+        (0x1A, 0x04, 1),
+    }
+    assert expected <= set(sent)

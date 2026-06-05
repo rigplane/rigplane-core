@@ -184,6 +184,11 @@ polling_only = [
     "global.operator_controls.vox_gain",
     "global.operator_controls.anti_vox_gain",
     "global.operator_controls.cw_pitch",
+    "global.tx_state.compressor_on",
+    "global.tx_state.monitor_on",
+    "global.tx_state.vox_on",
+    "receiver.main.operator_controls.agc_time_constant",
+    "receiver.sub.operator_controls.agc_time_constant",
 ]
 stream_like_meters = [
     "receiver.main.meters.s_meter",
@@ -461,6 +466,31 @@ adaptive_decay = false
 [state_acquisition.field_policies."receiver.sub.active.freq_mode.filter_width"]
 cadence_seconds = 1.5
 freshness_ttl_seconds = 3.0
+adaptive_decay = false
+
+[state_acquisition.field_policies."global.tx_state.compressor_on"]
+cadence_seconds = 1.5
+freshness_ttl_seconds = 3.0
+adaptive_decay = false
+
+[state_acquisition.field_policies."global.tx_state.monitor_on"]
+cadence_seconds = 1.5
+freshness_ttl_seconds = 3.0
+adaptive_decay = false
+
+[state_acquisition.field_policies."global.tx_state.vox_on"]
+cadence_seconds = 1.5
+freshness_ttl_seconds = 3.0
+adaptive_decay = false
+
+[state_acquisition.field_policies."receiver.main.operator_controls.agc_time_constant"]
+cadence_seconds = 3.0
+freshness_ttl_seconds = 5.0
+adaptive_decay = false
+
+[state_acquisition.field_policies."receiver.sub.operator_controls.agc_time_constant"]
+cadence_seconds = 3.0
+freshness_ttl_seconds = 5.0
 adaptive_decay = false
 
 # ── Parameterized Capabilities ───────────────────────────────────
