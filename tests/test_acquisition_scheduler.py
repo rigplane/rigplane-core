@@ -879,6 +879,70 @@ def test_ic7610_real_profile_freq_mode_are_pollable_and_emit_25_26() -> None:
     )
 
 
+def test_ic7610_real_profile_att_preamp_squelch_query_for_path() -> None:
+    sent: list[tuple[int, int | None, int | None]] = []
+
+    async def send_query(
+        command: int,
+        sub: int | None,
+        receiver: int | None,
+    ) -> None:
+        sent.append((command, sub, receiver))
+
+    executor = IcomCivAcquisitionExecutor(send_query)
+
+    att = FieldPath.receiver("main", "operator_controls", "att")
+    preamp = FieldPath.receiver("main", "operator_controls", "preamp")
+    squelch = FieldPath.receiver("main", "operator_controls", "squelch")
+
+    assert executor.query_for_path(att) == (0x11, None, 0)
+    assert executor.query_for_path(preamp) == (0x16, 0x02, 0)
+    assert executor.query_for_path(squelch) == (0x14, 0x03, 0)
+
+
+def test_ic7610_real_profile_sql_att_pre_are_pollable_and_emit_reads() -> None:
+    acquisition = load_rig(RIGS_DIR / "ic7610.toml").to_profile().state_acquisition
+    assert acquisition is not None
+
+    att = FieldPath.receiver("main", "operator_controls", "att")
+    preamp = FieldPath.receiver("main", "operator_controls", "preamp")
+    squelch = FieldPath.receiver("main", "operator_controls", "squelch")
+    target_paths = (att, squelch, preamp)
+
+    for path in target_paths:
+        assert acquisition.capability_for(path).can_poll is True
+        policy = acquisition.policy_for(path)
+        assert policy.cadence_seconds == 3.0
+        assert policy.freshness_ttl_seconds == 4.0
+        assert policy.adaptive_decay.enabled is False
+
+    clock = FreshnessClock(start=300.0)
+    scheduler = AcquisitionScheduler(profile=acquisition, clock=clock)
+    requests = scheduler.due_requests()
+    due_paths = {path for request in requests for path in request.paths}
+    assert set(target_paths) <= due_paths
+
+    sent: list[tuple[int, int | None, int | None]] = []
+
+    async def send_query(
+        command: int,
+        sub: int | None,
+        receiver: int | None,
+    ) -> None:
+        sent.append((command, sub, receiver))
+
+    executor = IcomCivAcquisitionExecutor(send_query)
+    for request in requests:
+        if not any(path in target_paths for path in request.paths):
+            continue
+        execution = asyncio.run(
+            executor.execute(request, already_sent_paths=frozenset())
+        )
+        assert execution.failed_paths == ()
+
+    assert {(0x11, None, 0), (0x16, 0x02, 0), (0x14, 0x03, 0)} <= set(sent)
+
+
 def test_due_polling_emits_only_pollable_cadence_fields_and_groups_by_existing_key() -> (
     None
 ):

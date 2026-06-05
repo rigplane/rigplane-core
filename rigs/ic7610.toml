@@ -140,6 +140,9 @@ polling_only = [
     "global.tx_state.rit_tx",
     "receiver.main.operator_controls.af_level",
     "receiver.main.operator_controls.rf_gain",
+    "receiver.main.operator_controls.squelch",
+    "receiver.main.operator_controls.att",
+    "receiver.main.operator_controls.preamp",
     "receiver.main.active.freq_mode.freq_hz",
     "receiver.main.active.freq_mode.mode",
     "receiver.sub.active.freq_mode.freq_hz",
@@ -222,6 +225,21 @@ freshness_ttl_seconds = 2.0
 [state_acquisition.field_policies."receiver.sub.active.freq_mode.freq_hz"]
 cadence_seconds = 0.5
 freshness_ttl_seconds = 2.0
+
+[state_acquisition.field_policies."receiver.main.operator_controls.squelch"]
+cadence_seconds = 3.0
+freshness_ttl_seconds = 4.0
+adaptive_decay = false
+
+[state_acquisition.field_policies."receiver.main.operator_controls.att"]
+cadence_seconds = 3.0
+freshness_ttl_seconds = 4.0
+adaptive_decay = false
+
+[state_acquisition.field_policies."receiver.main.operator_controls.preamp"]
+cadence_seconds = 3.0
+freshness_ttl_seconds = 4.0
+adaptive_decay = false
 
 # ── Parameterized Capabilities ───────────────────────────────────
 

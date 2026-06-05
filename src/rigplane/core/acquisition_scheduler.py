@@ -226,6 +226,10 @@ _RECEIVER_LEVEL_QUERY_SUBS: dict[str, int] = {
     "nb_level": 0x12,
     "digisel_shift": 0x13,
 }
+_RECEIVER_NONLEVEL_QUERIES: dict[str, tuple[int, int | None]] = {
+    "att": (0x11, None),
+    "preamp": (0x16, 0x02),
+}
 _GLOBAL_LEVEL_QUERY_SUBS: dict[str, int] = {
     "power_level": 0x0A,
     "mic_gain": 0x0B,
@@ -294,6 +298,9 @@ class IcomCivAcquisitionExecutor:
                 return (0x15, 0x02, receiver)
             return None
         if path.scope.value == "receiver" and path.family.value == "operator_controls":
+            nonlevel = _RECEIVER_NONLEVEL_QUERIES.get(path.name)
+            if nonlevel is not None:
+                return (nonlevel[0], nonlevel[1], receiver)
             sub = _RECEIVER_LEVEL_QUERY_SUBS.get(path.name)
             return None if sub is None else (0x14, sub, receiver)
         if path.scope.value == "global" and path.family.value == "meters":
