@@ -189,6 +189,9 @@ polling_only = [
     "global.tx_state.vox_on",
     "receiver.main.operator_controls.agc_time_constant",
     "receiver.sub.operator_controls.agc_time_constant",
+    "global.tx_state.split",
+    "global.tx_state.dual_watch",
+    "global.slow_state.tuning_step",
 ]
 stream_like_meters = [
     "receiver.main.meters.s_meter",
@@ -489,6 +492,21 @@ freshness_ttl_seconds = 5.0
 adaptive_decay = false
 
 [state_acquisition.field_policies."receiver.sub.operator_controls.agc_time_constant"]
+cadence_seconds = 3.0
+freshness_ttl_seconds = 5.0
+adaptive_decay = false
+
+[state_acquisition.field_policies."global.tx_state.split"]
+cadence_seconds = 1.5
+freshness_ttl_seconds = 3.0
+adaptive_decay = false
+
+[state_acquisition.field_policies."global.tx_state.dual_watch"]
+cadence_seconds = 1.5
+freshness_ttl_seconds = 3.0
+adaptive_decay = false
+
+[state_acquisition.field_policies."global.slow_state.tuning_step"]
 cadence_seconds = 3.0
 freshness_ttl_seconds = 5.0
 adaptive_decay = false

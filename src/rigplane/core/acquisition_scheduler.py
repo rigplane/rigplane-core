@@ -237,6 +237,8 @@ _GLOBAL_TX_TOGGLE_QUERIES: dict[str, tuple[int, int | None]] = {
     "compressor_on": (0x16, 0x44),
     "monitor_on": (0x16, 0x45),
     "vox_on": (0x16, 0x46),
+    "split": (0x0F, None),
+    "dual_watch": (0x07, 0xC2),
 }
 _RECEIVER_TOGGLE_QUERIES: dict[str, tuple[int, int | None]] = {
     "digisel": (0x16, 0x4E),
@@ -332,6 +334,8 @@ class IcomCivAcquisitionExecutor:
         if path.scope.value == "global" and path.family.value == "slow_state":
             if path.name == "active":
                 return (0x07, 0xD2, None)
+            if path.name == "tuning_step":
+                return (0x10, None, None)
             return None
         if path.scope.value == "global" and path.family.value == "tx_state":
             if path.name == "ptt":

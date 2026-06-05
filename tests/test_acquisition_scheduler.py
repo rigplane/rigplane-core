@@ -1744,3 +1744,104 @@ def test_ic7610_real_profile_tx_vox_pollable_and_emit_reads() -> None:
         (0x1A, 0x04, 1),
     }
     assert expected <= set(sent)
+
+
+def test_ic7610_real_profile_vfo_global_query_for_path() -> None:
+    sent: list[tuple[int, int | None, int | None]] = []
+
+    async def send_query(
+        command: int,
+        sub: int | None,
+        receiver: int | None,
+    ) -> None:
+        sent.append((command, sub, receiver))
+
+    executor = IcomCivAcquisitionExecutor(send_query)
+
+    # GLOBAL tx_state split — cmd 0x0F, no sub (no-data read), receiver None.
+    split = FieldPath.global_("tx_state", "split")
+    # GLOBAL tx_state dual_watch — cmd 0x07, sub 0xC2 (query byte), receiver None.
+    dual_watch = FieldPath.global_("tx_state", "dual_watch")
+    # GLOBAL slow_state tuning_step — cmd 0x10, no sub, receiver None.
+    tuning_step = FieldPath.global_("slow_state", "tuning_step")
+
+    assert executor.query_for_path(split) == (0x0F, None, None)
+    assert executor.query_for_path(dual_watch) == (0x07, 0xC2, None)
+    assert executor.query_for_path(tuning_step) == (0x10, None, None)
+
+    # Regression guard: pre-existing global tx_state mappings still hold.
+    ptt = FieldPath.global_("tx_state", "ptt")
+    rit_on = FieldPath.global_("tx_state", "rit_on")
+    rit_tx = FieldPath.global_("tx_state", "rit_tx")
+    compressor_on = FieldPath.global_("tx_state", "compressor_on")
+    monitor_on = FieldPath.global_("tx_state", "monitor_on")
+    vox_on = FieldPath.global_("tx_state", "vox_on")
+    assert executor.query_for_path(ptt) == (0x1C, 0x00, None)
+    assert executor.query_for_path(rit_on) == (0x21, 0x01, None)
+    assert executor.query_for_path(rit_tx) == (0x21, 0x02, None)
+    assert executor.query_for_path(compressor_on) == (0x16, 0x44, None)
+    assert executor.query_for_path(monitor_on) == (0x16, 0x45, None)
+    assert executor.query_for_path(vox_on) == (0x16, 0x46, None)
+
+    # Regression guard: pre-existing global slow_state mapping still holds.
+    active = FieldPath.global_("slow_state", "active")
+    assert executor.query_for_path(active) == (0x07, 0xD2, None)
+
+
+def test_ic7610_real_profile_vfo_global_pollable_and_emit_reads() -> None:
+    acquisition = load_rig(RIGS_DIR / "ic7610.toml").to_profile().state_acquisition
+    assert acquisition is not None
+
+    fast_paths: tuple[FieldPath, ...] = (
+        FieldPath.global_("tx_state", "split"),
+        FieldPath.global_("tx_state", "dual_watch"),
+    )
+    med_paths: tuple[FieldPath, ...] = (
+        FieldPath.global_("slow_state", "tuning_step"),
+    )
+    target_paths = fast_paths + med_paths
+
+    for path in fast_paths:
+        assert acquisition.capability_for(path).can_poll is True
+        policy = acquisition.policy_for(path)
+        assert policy.cadence_seconds == 1.5
+        assert policy.freshness_ttl_seconds == 3.0
+        assert policy.adaptive_decay.enabled is False
+
+    for path in med_paths:
+        assert acquisition.capability_for(path).can_poll is True
+        policy = acquisition.policy_for(path)
+        assert policy.cadence_seconds == 3.0
+        assert policy.freshness_ttl_seconds == 5.0
+        assert policy.adaptive_decay.enabled is False
+
+    clock = FreshnessClock(start=400.0)
+    scheduler = AcquisitionScheduler(profile=acquisition, clock=clock)
+    requests = scheduler.due_requests()
+    due_paths = {path for request in requests for path in request.paths}
+    assert set(target_paths) <= due_paths
+
+    sent: list[tuple[int, int | None, int | None]] = []
+
+    async def send_query(
+        command: int,
+        sub: int | None,
+        receiver: int | None,
+    ) -> None:
+        sent.append((command, sub, receiver))
+
+    executor = IcomCivAcquisitionExecutor(send_query)
+    for request in requests:
+        if not any(path in target_paths for path in request.paths):
+            continue
+        execution = asyncio.run(
+            executor.execute(request, already_sent_paths=frozenset())
+        )
+        assert execution.failed_paths == ()
+
+    expected = {
+        (0x0F, None, None),
+        (0x07, 0xC2, None),
+        (0x10, None, None),
+    }
+    assert expected <= set(sent)
