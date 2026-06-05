@@ -996,6 +996,20 @@ _SLOW_STATE_TOGGLE_CASES = (
         "main.twinPeakFilter",
         True,
     ),
+    # DIGI-SEL (0x4E) and IP+ (0x65) receiver toggles — previously had no
+    # StateStore observation, so they were invisible on IC-7610 (MOR-477).
+    (
+        _make_frame(cmd=0x16, sub=0x4E, data=b"\x01", receiver=0x00),
+        "receiver.0.operator_toggles.digisel",
+        "main.digisel",
+        True,
+    ),
+    (
+        _make_frame(cmd=0x16, sub=0x65, data=b"\x01", receiver=0x00),
+        "receiver.0.operator_toggles.ipplus",
+        "main.ipplus",
+        True,
+    ),
     (
         _make_frame(cmd=0x16, sub=0x44, data=b"\x01"),
         "global.tx_state.compressor_on",

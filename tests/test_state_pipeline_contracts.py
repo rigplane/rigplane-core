@@ -417,6 +417,36 @@ def test_receiver_dcd_registered_as_read_only_operator_toggle_bool() -> None:
     assert spec.writable is False
 
 
+def test_receiver_digisel_registered_as_writable_operator_toggle_bool() -> None:
+    """MOR-477: ``receiver.<id>.operator_toggles.digisel`` is a writable bool.
+
+    DIGI-SEL (Icom CI-V 0x16 sub 0x4E) is a backend-neutral receiver toggle.
+    Unlike ``dcd`` it has a CAT set command (``set_digisel``), so the spec is
+    writable so the command-overlay path can observe + overlay it.
+    """
+    path = FieldPath.receiver("main", "operator_toggles", "digisel")
+    spec = DEFAULT_FIELD_REGISTRY.require(path)
+    assert spec.path == path
+    assert spec.family is FieldFamily.OPERATOR_TOGGLES
+    assert spec.value_type == "bool"
+    assert spec.writable is True
+
+
+def test_receiver_ipplus_registered_as_writable_operator_toggle_bool() -> None:
+    """MOR-477: ``receiver.<id>.operator_toggles.ipplus`` is a writable bool.
+
+    IP+ (Icom CI-V 0x16 sub 0x65) is a backend-neutral receiver toggle. Unlike
+    ``dcd`` it has a CAT set command (``set_ip_plus``), so the spec is writable
+    so the command-overlay path can observe + overlay it.
+    """
+    path = FieldPath.receiver("main", "operator_toggles", "ipplus")
+    spec = DEFAULT_FIELD_REGISTRY.require(path)
+    assert spec.path == path
+    assert spec.family is FieldFamily.OPERATOR_TOGGLES
+    assert spec.value_type == "bool"
+    assert spec.writable is True
+
+
 def test_global_cw_spot_registered_as_slow_state_bool() -> None:
     """MOR-456: ``global.slow_state.cw_spot`` is a registered slow_state bool.
 

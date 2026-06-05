@@ -233,6 +233,7 @@ _CMD16_NOTIFY_EVENTS = {
     0x50: "dial_lock_changed",
     0x47: "break_in_changed",
     0x58: "ssb_tx_bandwidth_changed",
+    0x4E: "digisel_changed",
     0x65: "ipplus_changed",
 }
 
@@ -337,7 +338,9 @@ _OBSERVABLE_CMD16_FIELDS = {
     0x42: ("receiver", "operator_toggles", "repeater_tone"),
     0x43: ("receiver", "operator_toggles", "repeater_tsql"),
     0x48: ("receiver", "operator_toggles", "manual_notch"),
+    0x4E: ("receiver", "operator_toggles", "digisel"),
     0x4F: ("receiver", "operator_toggles", "twin_peak_filter"),
+    0x65: ("receiver", "operator_toggles", "ipplus"),
     0x44: ("global", "tx_state", "compressor_on"),
     0x45: ("global", "tx_state", "monitor_on"),
     0x46: ("global", "tx_state", "vox_on"),

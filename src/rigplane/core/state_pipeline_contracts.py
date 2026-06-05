@@ -1057,6 +1057,20 @@ def _receiver_specs(receiver_id: str) -> tuple[FieldSpec, ...]:
             FieldPath.receiver(receiver_id, "operator_toggles", "dcd"),
             "bool",
         ),
+        # DIGI-SEL and IP+ receiver toggles: read-WRITE bools — unlike ``dcd``
+        # these have CAT set commands (``set_digisel``/``set_ip_plus``), so the
+        # command-overlay path needs a writable spec to observe + overlay them
+        # (MOR-477).
+        spec(
+            FieldPath.receiver(receiver_id, "operator_toggles", "digisel"),
+            "bool",
+            writable=True,
+        ),
+        spec(
+            FieldPath.receiver(receiver_id, "operator_toggles", "ipplus"),
+            "bool",
+            writable=True,
+        ),
         spec(
             FieldPath.active(receiver_id, "freq_mode", "data_mode"),
             "int",

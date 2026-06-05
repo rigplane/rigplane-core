@@ -767,6 +767,10 @@ def command_intent_from_request(
         normalized["nb"] = bool(normalized["on"])
     elif command_name == "set_nr":
         normalized["nr"] = bool(normalized["on"])
+    elif command_name == "set_digisel":
+        normalized["digisel"] = bool(normalized["on"])
+    elif command_name in ("set_ip_plus", "set_ipplus"):
+        normalized["ipplus"] = bool(normalized["on"])
     elif command_name == "set_pbt_inner":
         raw_level = (
             normalized["value"] if "value" in normalized else normalized["level"]
@@ -887,6 +891,10 @@ def _command_target(name: str, params: Mapping[str, Any]) -> FieldPath | None:
         return FieldPath.receiver(receiver, "operator_toggles", "nb")
     if name == "set_nr":
         return FieldPath.receiver(receiver, "operator_toggles", "nr")
+    if name == "set_digisel":
+        return FieldPath.receiver(receiver, "operator_toggles", "digisel")
+    if name in ("set_ip_plus", "set_ipplus"):
+        return FieldPath.receiver(receiver, "operator_toggles", "ipplus")
     if name == "set_pbt_inner":
         return FieldPath.receiver(receiver, "operator_controls", "pbt_inner")
     if name == "set_pbt_outer":

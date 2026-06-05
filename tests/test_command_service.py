@@ -1086,6 +1086,18 @@ def test_command_response_observation_carries_session_metadata() -> None:
         ("set_nb", {"on": True}, "receiver.0.operator_toggles.nb", True),
         ("set_nr", {"on": False}, "receiver.0.operator_toggles.nr", False),
         (
+            "set_digisel",
+            {"on": True},
+            "receiver.0.operator_toggles.digisel",
+            True,
+        ),
+        (
+            "set_ip_plus",
+            {"on": False},
+            "receiver.0.operator_toggles.ipplus",
+            False,
+        ),
+        (
             "set_pbt_inner",
             {"level": 140},
             "receiver.0.operator_controls.pbt_inner",
