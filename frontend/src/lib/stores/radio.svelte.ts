@@ -101,7 +101,7 @@ const optimisticTopLevel = new Map<string, { value: unknown; expires: number }>(
 // Top-level structural keys that should never be held optimistically
 const STRUCTURAL_KEYS = new Set(['revision', 'main', 'sub', 'active', 'connection', 'updatedAt']);
 
-function applyOptimistic(state: ServerState): ServerState {
+function applyOptimistic(state: ServerState, freqObservationAdvanced: boolean): ServerState {
   const now = Date.now();
   let result = state;
 
@@ -140,10 +140,21 @@ function applyOptimistic(state: ServerState): ServerState {
         }
       }
 
+      // Frequency only: a causally-newer observation (advanced observationSeq /
+      // freshnessRevision) carrying a numeric freq drops the unlocked overlay even
+      // when the value differs. This is an additional clear condition, distinct from
+      // value-equality: it means the server has reported a freq newer than our patch,
+      // so relative tuning must step from the confirmed server freq, not the overlay.
+      // The lock `continue` above guarantees this runs for unlocked overlays only.
+      if (!confirmed && field === 'freqHz' && freqObservationAdvanced && typeof serverVal === 'number') {
+        confirmed = true;
+      }
+
       // NOTE: Do NOT treat "server value changed from patch-time value" as confirmation.
       // With rapid discrete input (wheel/keyboard), a stale intermediate poll can differ from the
       // previous optimistic value while still not matching the latest target, which causes a false
-      // confirmation and visible snap-back. We only clear on exact confirmation/tolerance or timeout.
+      // confirmation and visible snap-back. We only clear on exact confirmation/tolerance or timeout
+      // — except for freq, where a causally-newer observation (see above) is also a clear condition.
 
       if (confirmed) {
         map.delete(field);
@@ -227,7 +238,10 @@ export function setRadioState(state: ServerState): void {
     lastFreshnessRevision = nextFreshnessRevision;
     lastObservationSeq = nextObservationSeq;
     lastHealthRevision = nextHealthRevision;
-    radio.current = applyOptimistic(state);
+    radio.current = applyOptimistic(
+      state,
+      (freshnessAdvanced || observationAdvanced) && typeof state.main?.freqHz === 'number',
+    );
     notifyRadioStateSubscribers();
     // Sync power status to connection store
     if (state.powerOn !== undefined) {
@@ -246,6 +260,7 @@ export function setRadioState(state: ServerState): void {
 }
 
 const OPTIMISTIC_TTL = 5000; // hard timeout — normally cleared by server confirmation
+const OPTIMISTIC_FREQ_TTL = 1500; // shorter timeout for freq overlay — falls back to server sooner
 const INPUT_LOCK_TTL = 1500; // cover command latency / polling lag for discrete inputs like wheel
 
 /**
@@ -260,9 +275,8 @@ export function patchActiveReceiver(patch: Partial<ReceiverState>, lock = false)
   if (!s) return;
   const key = s.active === 'SUB' ? 'sub' : 'main';
   const map = key === 'sub' ? optimisticSub : optimisticMain;
-  const expires = Date.now() + OPTIMISTIC_TTL;
   const currentRx = s[key];
-  
+
   for (const [field, value] of Object.entries(patch)) {
     // Skip updating locked fields from WS echo (preserve user input lock)
     const lockKey = `${key}.${field}`;
@@ -271,12 +285,13 @@ export function patchActiveReceiver(patch: Partial<ReceiverState>, lock = false)
       // Field is locked by user input, don't overwrite with WS echo
       continue;
     }
-    
+
     if (lock) {
       // Lock this field long enough to survive normal command latency + poll lag.
       // Drag keeps refreshing the lock continuously; wheel/keyboard are discrete and need longer.
       lockedFields.set(lockKey, Date.now() + INPUT_LOCK_TTL);
     }
+    const expires = Date.now() + (field === 'freqHz' ? OPTIMISTIC_FREQ_TTL : OPTIMISTIC_TTL);
     map.set(field, { value, expires, serverValueAtPatch: (currentRx as any)[field] });
   }
   radio.current = {
@@ -296,7 +311,6 @@ export function patchReceiver(receiver: 0 | 1, patch: Partial<ReceiverState>, lo
   if (!s) return;
   const key = receiver === 1 ? 'sub' : 'main';
   const map = key === 'sub' ? optimisticSub : optimisticMain;
-  const expires = Date.now() + OPTIMISTIC_TTL;
   const currentRx = s[key];
 
   for (const [field, value] of Object.entries(patch)) {
@@ -308,6 +322,7 @@ export function patchReceiver(receiver: 0 | 1, patch: Partial<ReceiverState>, lo
     if (lock) {
       lockedFields.set(lockKey, Date.now() + INPUT_LOCK_TTL);
     }
+    const expires = Date.now() + (field === 'freqHz' ? OPTIMISTIC_FREQ_TTL : OPTIMISTIC_TTL);
     map.set(field, { value, expires, serverValueAtPatch: (currentRx as any)[field] });
   }
   radio.current = {

@@ -581,4 +581,111 @@ describe('radio store', () => {
   it('getActiveReceiver returns null when state is null', () => {
     expect(store.getActiveReceiver()).toBeNull();
   });
+
+  // --- freq optimistic overlay vs causal advance (MOR-475) ---
+
+  it('clears freqHz overlay when a causally-newer differing snapshot arrives', () => {
+    store.setRadioState(makeState({
+      revision: 1,
+      stateRevision: 1,
+      observationSeq: 1,
+      freshnessRevision: 1,
+      main: { ...makeState().main, freqHz: 14074000 },
+    }));
+
+    // Unlocked optimistic patch (click-to-tune) to a new freq.
+    store.patchActiveReceiver({ freqHz: 14100000 });
+    expect(store.getMainReceiver()?.freqHz).toBe(14100000);
+
+    // Server emits a causally-newer snapshot (observationSeq + freshnessRevision
+    // advance) reporting a DIFFERENT freq well outside the 500 Hz tolerance.
+    store.setRadioState(makeState({
+      revision: 1,
+      stateRevision: 1,
+      observationSeq: 2,
+      freshnessRevision: 2,
+      main: { ...makeState().main, freqHz: 14200000 },
+    }));
+
+    // The unlocked overlay must drop; the confirmed server freq wins so relative
+    // tuning steps from 14200000, not the stale optimistic 14100000.
+    expect(store.getMainReceiver()?.freqHz).toBe(14200000);
+    expect(store.getFrequency()).toBe(14200000);
+  });
+
+  it('keeps a locked freqHz overlay despite a causally-newer differing snapshot', () => {
+    store.setRadioState(makeState({
+      revision: 1,
+      stateRevision: 1,
+      observationSeq: 1,
+      freshnessRevision: 1,
+      main: { ...makeState().main, freqHz: 14074000 },
+    }));
+
+    // Locked optimistic patch (rapid input) — must survive the lock window.
+    store.patchActiveReceiver({ freqHz: 14100000 }, true);
+    expect(store.getMainReceiver()?.freqHz).toBe(14100000);
+
+    // Causally-newer differing snapshot arrives within the lock window.
+    store.setRadioState(makeState({
+      revision: 1,
+      stateRevision: 1,
+      observationSeq: 2,
+      freshnessRevision: 2,
+      main: { ...makeState().main, freqHz: 14150000 },
+    }));
+
+    // Lock holds: causal advance must NOT override a locked overlay.
+    expect(store.getMainReceiver()?.freqHz).toBe(14100000);
+  });
+
+  it('falls back to server freq after the lowered freq TTL with no causal advance', () => {
+    vi.useFakeTimers();
+    store.setRadioState(makeState({
+      revision: 1,
+      stateRevision: 1,
+      observationSeq: 1,
+      freshnessRevision: 1,
+      main: { ...makeState().main, freqHz: 14074000 },
+    }));
+
+    // Unlocked freq patch.
+    store.patchActiveReceiver({ freqHz: 14100000 });
+    expect(store.getMainReceiver()?.freqHz).toBe(14100000);
+
+    // Advance past the lowered freq TTL (1500ms) but under the old 5000ms TTL.
+    vi.advanceTimersByTime(2000);
+
+    // Same observationSeq (no causal advance), differing server freq.
+    store.setRadioState(makeState({
+      revision: 2,
+      stateRevision: 2,
+      observationSeq: 1,
+      freshnessRevision: 1,
+      main: { ...makeState().main, freqHz: 14080000 },
+    }));
+
+    // Freq TTL elapsed → server value wins.
+    expect(store.getMainReceiver()?.freqHz).toBe(14080000);
+
+    vi.useRealTimers();
+  });
+
+  it('non-freq optimistic overlays still use the 5s TTL (no regression)', () => {
+    vi.useFakeTimers();
+    store.setRadioState(makeState({ revision: 1, ptt: false }));
+    store.patchRadioState({ ptt: true });
+
+    // Past the freq TTL (1500ms) but well under the 5s TTL — ptt optimistic holds.
+    vi.advanceTimersByTime(2000);
+    store.setRadioState(makeState({ revision: 2, ptt: false }));
+    expect(store.getRadioState()?.ptt).toBe(true);
+
+    // Past the 5s TTL — ptt optimistic clears, server wins.
+    vi.advanceTimersByTime(4000);
+    store.setRadioState(makeState({ revision: 3, ptt: false }));
+    expect(store.getRadioState()?.ptt).toBe(false);
+
+    vi.useRealTimers();
+  });
 });
