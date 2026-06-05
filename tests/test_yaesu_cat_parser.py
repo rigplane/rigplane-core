@@ -156,6 +156,13 @@ class TestCatCommandParser:
         result = parser.parse("VX1;")
         assert result == {"state": "1"}
 
+    def test_parse_sql_type_single_digit(self):
+        # MOR-473: the live FTX-1 answers ``CT0;`` with a SINGLE-digit P2
+        # ("CT00;", not "CT000;"), so the read template is ``CT0{type};``.
+        parser = CatCommandParser("CT0{type};")
+        assert parser.parse("CT00;") == {"type": "0"}
+        assert parser.parse("CT01;") == {"type": "1"}
+
 
 # ---------------------------------------------------------------------------
 # CatCommandParser — mismatch / error cases

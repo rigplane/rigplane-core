@@ -771,7 +771,10 @@ get_clarifier_freq = { cat = { read = "CF001;", parse = "CF001{sign}{offset:04d}
 set_clarifier_freq = { cat = { write = "CF001{sign}{offset:04d};" } }
 
 # ── Tone / CTCSS ──
-get_sql_type   = { cat = { read = "CT0;", parse = "CT0{type:02d};" } }
+# MOR-473: the live FTX-1 answers ``CT0;`` with a SINGLE-digit P2 ("CT00;"),
+# so the READ parse takes one digit. The write width is left as ``{type:02d}``
+# (an unconfirmed residual) until a live write capture confirms otherwise.
+get_sql_type   = { cat = { read = "CT0;", parse = "CT0{type};" } }
 set_sql_type   = { cat = { write = "CT0{type:02d};" } }
 # CTCSS TONE FREQUENCY (MOR-458). CN P1=0 MAIN, P2=0 CTCSS; the answer's P3
 # (000-049) is the standard 50-tone EIA tone-chart index. Read-only here (the

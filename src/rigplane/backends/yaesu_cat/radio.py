@@ -213,11 +213,16 @@ class YaesuCatRadio:
             self._audio_driver = audio_driver
 
         # Build bidirectional mode code ↔ name maps.
-        # FTX-1 CAT codes are 1-based: index 0 in modes list → code "1".
+        # FTX-1 CAT MD codes are 1-based HEX nibbles (MOR-473): index 0 in the
+        # modes list → code "1", index 9 → "A", index 11 → "C" (DATA-U), etc.
+        # The decimal map silently broke every mode at index >= 10. Codes 1-9
+        # are unchanged (hex == dec). Multi-char hex (C4FM at 16-17 → "10"/"11")
+        # is a pre-existing OUT-OF-SCOPE limitation: the MD parser's single-char
+        # ``{mode}`` group cannot carry a two-char code.
         self._code_to_mode: dict[str, str] = {}
         self._mode_to_code: dict[str, str] = {}
-        for i, name in enumerate(self._config.modes, start=1):
-            code = str(i)
+        for i, name in enumerate(self._config.modes):
+            code = format(i + 1, "X")
             self._code_to_mode[code] = name
             self._mode_to_code[name] = code
 

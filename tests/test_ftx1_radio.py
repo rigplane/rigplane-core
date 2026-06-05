@@ -220,6 +220,44 @@ async def test_get_set_mode_roundtrip(connected_radio):
     assert mode == "CW-U"
 
 
+def test_mode_map_hex_codes(radio):
+    """MOR-473: Yaesu MD codes are HEX nibbles, so codes 10-15 are A-F.
+
+    The decimal map silently broke every mode with index >= 10
+    (DATA-FM/FM-N/DATA-U/AM-N/PSK/DATA-FM-N). Codes 1-9 are unchanged
+    (hex == dec).
+    """
+    assert radio._code_to_mode["A"] == "DATA-FM"
+    assert radio._code_to_mode["B"] == "FM-N"
+    assert radio._code_to_mode["C"] == "DATA-U"
+    assert radio._code_to_mode["D"] == "AM-N"
+    assert radio._code_to_mode["E"] == "PSK"
+    assert radio._code_to_mode["F"] == "DATA-FM-N"
+    assert radio._mode_to_code["DATA-FM"] == "A"
+    assert radio._mode_to_code["DATA-U"] == "C"
+    assert radio._mode_to_code["AM-N"] == "D"
+    assert radio._mode_to_code["PSK"] == "E"
+    assert radio._mode_to_code["DATA-FM-N"] == "F"
+
+
+@pytest.mark.asyncio
+async def test_get_mode_data_u(connected_radio):
+    """MOR-473: ``MD0C;`` (hex C = 12) decodes to DATA-U, not UNKNOWN(C)."""
+    connected_radio._transport.query = AsyncMock(return_value="MD0C")
+    mode, _ = await connected_radio.get_mode(receiver=0)
+    assert mode == "DATA-U"
+    assert connected_radio.radio_state.main.mode == "DATA-U"
+
+
+@pytest.mark.asyncio
+async def test_set_mode_data_u(connected_radio):
+    """MOR-473: set_mode("DATA-U") writes the hex code ``MD0C;``."""
+    connected_radio._transport.write = AsyncMock()
+    await connected_radio.set_mode("DATA-U", receiver=0)
+    connected_radio._transport.write.assert_called_once_with("MD0C;")
+    assert connected_radio.radio_state.main.mode == "DATA-U"
+
+
 # ---------------------------------------------------------------------------
 # Power switch (PS)
 # ---------------------------------------------------------------------------
@@ -1153,8 +1191,18 @@ async def test_set_audio_peak_filter_mode_2_raises(connected_radio):
 
 @pytest.mark.asyncio
 async def test_get_sql_type(connected_radio):
-    connected_radio._transport.query = AsyncMock(return_value="CT002")
-    assert await connected_radio.get_sql_type() == 2
+    # MOR-473: the live FTX-1 answers ``CT0;`` with a SINGLE-digit code
+    # ("CT00;"), so the read parse is ``CT0{type};`` (one digit, not two).
+    connected_radio._transport.query = AsyncMock(return_value="CT00")
+    assert await connected_radio.get_sql_type() == 0
+    connected_radio._transport.query.assert_called_once_with("CT0;")
+
+
+@pytest.mark.asyncio
+async def test_get_sql_type_tone(connected_radio):
+    # MOR-473: single-digit "TONE" code (1) parses to int 1.
+    connected_radio._transport.query = AsyncMock(return_value="CT01")
+    assert await connected_radio.get_sql_type() == 1
     connected_radio._transport.query.assert_called_once_with("CT0;")
 
 
