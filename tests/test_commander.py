@@ -84,6 +84,161 @@ async def test_normal_command_preempts_queued_backgrounds() -> None:
 
 
 @pytest.mark.asyncio
+async def test_send_wait_dispatch_false_returns_before_dispatch() -> None:
+    """MOR-497(ii): a fire-and-forget send (wait_dispatch=False) must return
+    immediately even while the worker is parked on a prior in-flight item.
+
+    The poller relies on this so the poll burst does not park the poll loop;
+    the response still arrives via the RX path, not the commander future.
+    """
+    started = asyncio.Event()
+    release = asyncio.Event()
+    dispatched: list[bytes] = []
+
+    async def execute(cmd: bytes, wait_response: bool = True) -> CivFrame | None:
+        if cmd == b"gate":
+            started.set()
+            await release.wait()
+        dispatched.append(cmd)
+        return CivFrame(to_addr=0xE0, from_addr=0x98, command=0xFB, sub=None, data=b"")
+
+    c = IcomCommander(execute, min_interval=0.0)
+    c.start()
+    try:
+        # Park the worker on the gate item.
+        gate = asyncio.create_task(c.send(b"gate", priority=Priority.NORMAL))
+        await asyncio.wait_for(started.wait(), timeout=1.0)
+
+        # Fire-and-forget background send must return promptly (None), even
+        # though the worker is still blocked on `gate` so nothing has
+        # actually dispatched the poll yet.
+        result = await asyncio.wait_for(
+            c.send(
+                b"poll",
+                priority=Priority.BACKGROUND,
+                wait_response=False,
+                wait_dispatch=False,
+            ),
+            timeout=0.5,
+        )
+        assert result is None
+        assert b"poll" not in dispatched  # did NOT wait for dispatch
+
+        release.set()
+        await asyncio.gather(gate)
+    finally:
+        await c.stop()
+
+
+@pytest.mark.asyncio
+async def test_wait_dispatch_true_still_awaits_result() -> None:
+    """Default path (wait_dispatch=True) still awaits and returns the execute
+    result — regression guard that the additive param does not change the
+    blocking contract for commands."""
+    sentinel = CivFrame(
+        to_addr=0xE0, from_addr=0x98, command=0x03, sub=None, data=b"\x01\x02"
+    )
+
+    async def execute(cmd: bytes, wait_response: bool = True) -> CivFrame | None:
+        return sentinel
+
+    c = IcomCommander(execute, min_interval=0.0)
+    c.start()
+    try:
+        result = await c.send(b"cmd", priority=Priority.NORMAL)
+        assert result is sentinel
+        result2 = await c.send(b"cmd", priority=Priority.NORMAL, wait_dispatch=True)
+        assert result2 is sentinel
+    finally:
+        await c.stop()
+
+
+@pytest.mark.asyncio
+async def test_background_inflight_cap_bounds_queue() -> None:
+    """MOR-497(ii): bounded growth. With the worker gated, enqueuing more than
+    ``_MAX_BG_INFLIGHT`` fire-and-forget BACKGROUND sends must drop-newest so
+    the commander queue never exceeds the cap (plus the one in-flight item)."""
+    from rigplane.commands.commander import _MAX_BG_INFLIGHT
+
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    async def execute(cmd: bytes, wait_response: bool = True) -> CivFrame | None:
+        if cmd == b"gate":
+            started.set()
+            await release.wait()
+        return CivFrame(to_addr=0xE0, from_addr=0x98, command=0xFB, sub=None, data=b"")
+
+    c = IcomCommander(execute, min_interval=0.0)
+    c.start()
+    try:
+        # Park the worker so nothing drains.
+        gate = asyncio.create_task(c.send(b"gate", priority=Priority.NORMAL))
+        await asyncio.wait_for(started.wait(), timeout=1.0)
+
+        overflow = 10
+        for i in range(_MAX_BG_INFLIGHT + overflow):
+            result = await asyncio.wait_for(
+                c.send(
+                    f"bg-{i}".encode(),
+                    priority=Priority.BACKGROUND,
+                    wait_response=False,
+                    wait_dispatch=False,
+                ),
+                timeout=0.5,
+            )
+            assert result is None
+
+        # Queue holds at most the cap (the gate item is already in-flight,
+        # popped off the queue, so it is not counted here).
+        assert c._queue is not None
+        assert c._queue.qsize() <= _MAX_BG_INFLIGHT
+
+        release.set()
+        await asyncio.gather(gate)
+    finally:
+        await c.stop()
+
+
+@pytest.mark.asyncio
+async def test_dedupe_with_wait_dispatch_false_registers_and_cleans_key() -> None:
+    """A fire-and-forget send with a key still registers in ``_pending_by_key``
+    and is cleaned up by the worker — dedupe bookkeeping is unaffected."""
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    async def execute(cmd: bytes, wait_response: bool = True) -> CivFrame | None:
+        if cmd == b"gate":
+            started.set()
+            await release.wait()
+        return CivFrame(to_addr=0xE0, from_addr=0x98, command=0xFB, sub=None, data=b"")
+
+    c = IcomCommander(execute, min_interval=0.0)
+    c.start()
+    try:
+        gate = asyncio.create_task(c.send(b"gate", priority=Priority.NORMAL))
+        await asyncio.wait_for(started.wait(), timeout=1.0)
+
+        await c.send(
+            b"poll",
+            priority=Priority.BACKGROUND,
+            key="meter",
+            wait_response=False,
+            wait_dispatch=False,
+        )
+        # Key registered while the item is queued/in-flight.
+        assert "meter" in c._pending_by_key
+
+        release.set()
+        await asyncio.gather(gate)
+        # Let the worker drain the background item and run its finally cleanup.
+        await asyncio.sleep(0.02)
+        assert "meter" not in c._pending_by_key
+    finally:
+        await c.stop()
+
+
+@pytest.mark.asyncio
 async def test_transaction_restores_on_error() -> None:
     async def execute(cmd: bytes, wait_response: bool = True) -> CivFrame | None:
         return CivFrame(to_addr=0xE0, from_addr=0x98, command=0xFB, sub=None, data=b"")
