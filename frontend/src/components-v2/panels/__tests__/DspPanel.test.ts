@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { mount, unmount, flushSync } from 'svelte';
 import { buildNrOptions, buildNotchOptions } from '../dsp-utils';
+import { rawToPercentDisplay } from '../../controls/value-control';
 
 const mockProps = {
   nrMode: 0,
@@ -169,6 +170,15 @@ describe('NB toggle', () => {
     nbBtn?.click();
     flushSync();
     expect(mockHandlers.onNbToggle).toHaveBeenCalledWith(false);
+  });
+
+  it('shows the NB level as the same percent the NB-Level slider uses (not raw)', () => {
+    const t = mountPanel({ nbActive: true, nbLevel: 76 });
+    const nbBtn = getFillButtons(t).find((b) => b.textContent?.trim().startsWith('NB'));
+    const label = nbBtn?.textContent?.trim();
+    // rawToPercentDisplay(76) === '30%'
+    expect(label).toBe(`NB ${rawToPercentDisplay(76)}`);
+    expect(label).not.toContain('76');
   });
 });
 

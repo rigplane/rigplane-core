@@ -197,7 +197,7 @@
           onpointerup={endLongPressPointer}
           onpointercancel={endLongPressPointer}
           onpointerleave={endLongPressPointer}
-        >NB{nbActive ? ` ${nbLevel}` : ''}</HardwareButton>
+        >NB{nbActive ? ` ${rawToPercentDisplay(nbLevel)}` : ''}</HardwareButton>
       </div>
     {/if}
 
