@@ -114,11 +114,12 @@
   // source values are omitted entirely so the grid re-flows.
   let tiles = $derived.by<Tile[]>(() => {
     const out: Tile[] = [];
-    // TX-only meters (Po/SWR/ALC/Id/COMP) are gated on `txActive`: on RX they
-    // are NOT rendered (hidden), rather than dimmed, so a stale last-TX reading
-    // can never linger as garbage (MOR-483 part-1). The S tile (RX indicator)
-    // and Vd tile (continuous supply rail) stay rendered in both states.
-    if (powerMeter !== undefined && txActive) {
+    // TX-only meters (Po/SWR/ALC/Id/COMP) always render; on RX they are DIMMED
+    // (relevant: txActive -> data-relevant='false') rather than hidden, so the
+    // dock layout never reflows on an RX<->TX transition (MOR-485 reverts the
+    // MOR-483 part-1 hide-on-RX). The S tile (RX indicator) and Vd tile
+    // (continuous supply rail) likewise stay rendered in both states.
+    if (powerMeter !== undefined) {
       out.push({
         key: 'po',
         label: 'Po',
@@ -129,7 +130,7 @@
         relevant: txActive,
       });
     }
-    if (swrMeter !== undefined && txActive) {
+    if (swrMeter !== undefined) {
       out.push({
         key: 'swr',
         label: 'SWR',
@@ -141,7 +142,7 @@
         fault: txActive && isSwrFault(swrMeter),
       });
     }
-    if (alcMeter !== undefined && txActive) {
+    if (alcMeter !== undefined) {
       out.push({
         key: 'alc',
         label: 'ALC',
@@ -153,7 +154,7 @@
         fault: txActive && isAlcFault(alcMeter),
       });
     }
-    if (idMeter !== undefined && txActive) {
+    if (idMeter !== undefined) {
       out.push({
         key: 'id',
         label: 'Id',
@@ -177,7 +178,7 @@
         relevant: true,
       });
     }
-    if (compMeter !== undefined && compressorOn === true && txActive) {
+    if (compMeter !== undefined && compressorOn === true) {
       out.push({
         key: 'comp',
         label: 'COMP',
