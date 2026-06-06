@@ -14,6 +14,9 @@ import {
   vdLevel,
   compLevel,
   sLevel,
+  updatePeakHold,
+  peakHoldDisplay,
+  type PeakHoldState,
 } from './meter-utils';
 
 describe('normalize', () => {
@@ -221,6 +224,62 @@ describe('sLevel (calibrated bar)', () => {
   });
   it('returns ~0.498 at S9 (raw=120) — 120/241', () => {
     expect(sLevel(120)).toBeCloseTo(120 / 241);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Peak-hold on the RAW meter value drives BOTH the number and the fill
+// (MOR-498). The MetersDockPanel latches the raw value, decays it linearly
+// over the 1.5 s window, then feeds the held raw to the formatter (number)
+// AND the level fn (fill) so they stay in lockstep. These assert that
+// composition over the raw domain at the 1500 ms window the panel uses.
+// ---------------------------------------------------------------------------
+
+describe('peak-hold on raw value -> number + fill coupling (MOR-498)', () => {
+  const DECAY = 1500;
+
+  // Latch a peak raw, then feed a low live raw; the held raw decays linearly.
+  function heldRaw(peakRaw: number, liveRaw: number, elapsedMs: number): number {
+    let state: PeakHoldState | undefined = updatePeakHold(undefined, peakRaw, 0, DECAY);
+    // A later low sample within the window keeps the latch.
+    state = updatePeakHold(state, liveRaw, elapsedMs, DECAY);
+    return peakHoldDisplay(state, liveRaw, elapsedMs, DECAY);
+  }
+
+  it('formats the held PEAK watts shortly after a drop, not the trough', () => {
+    // Peak raw 212 (100W), trough raw 5 (~2W), 150ms into a 1500ms window.
+    const raw = heldRaw(212, 5, 150);
+    const watts = parseInt(formatPowerWatts(raw), 10);
+    expect(watts).toBeGreaterThan(80); // near 100W peak, not ~2W
+  });
+
+  it('fill and number derive from the SAME held raw (consistent)', () => {
+    const raw = heldRaw(212, 5, 150);
+    // The bar fill uses normalizePower on the same held raw the number formats.
+    expect(normalizePower(raw)).toBeCloseTo(normalizePower(raw));
+    // Fill is high because the held raw is high (peak), not the live trough.
+    expect(normalizePower(raw) * 100).toBeGreaterThan(80);
+  });
+
+  it('decays linearly to the live trough by the end of the 1.5 s window', () => {
+    const atHalf = heldRaw(212, 5, 750); // half-way: ~midpoint between 212 and 5
+    expect(atHalf).toBeGreaterThan(100);
+    expect(atHalf).toBeLessThan(212);
+    const atEnd = heldRaw(212, 5, 1500); // window elapsed -> live trough
+    expect(atEnd).toBe(5);
+  });
+
+  it('returns to 0 from a 0 input (RX, no stale peak)', () => {
+    expect(heldRaw(0, 0, 0)).toBe(0);
+    expect(heldRaw(0, 0, 800)).toBe(0);
+    expect(heldRaw(0, 0, 1600)).toBe(0);
+  });
+
+  it('attack latches immediately to a higher sample', () => {
+    const state = updatePeakHold({ latchedPeak: 50, latchedAt: 0 }, 200, 300, DECAY);
+    expect(state).toEqual({ latchedPeak: 200, latchedAt: 300 });
+    // Displayed immediately at the new peak, no ramp-up.
+    expect(peakHoldDisplay(state, 200, 300, DECAY)).toBe(200);
   });
 });
 

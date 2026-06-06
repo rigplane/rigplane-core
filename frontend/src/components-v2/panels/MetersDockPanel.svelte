@@ -58,7 +58,7 @@
     txActive,
   }: Props = $props();
 
-  type PeakKey = 'po' | 'swr' | 'alc';
+  type PeakKey = 'po' | 'swr' | 'alc' | 'id';
 
   interface Tile {
     key: 'po' | 'swr' | 'alc' | 's' | 'id' | 'vd' | 'comp';
@@ -71,9 +71,24 @@
     fault?: boolean;
   }
 
-  // Peak-hold state for Po/SWR/ALC. Stores the latched peak + timestamp only;
-  // the displayed decay is computed per-render from `now` so it stays linear
-  // across the 2 s window instead of compounding tick-by-tick.
+  // TX-meter display ballistics (MOR-498): a real analog Po/ALC/SWR/Id meter
+  // peaks on each voice syllable and decays slowly, so the operator reads the
+  // peak rather than the instantaneous trough. The web meters previously showed
+  // the INSTANTANEOUS sample, so the Po number collapsed to ~1 W in the gaps
+  // between syllables even though the radio's own needle held ~50 W.
+  //
+  // Fix: peak-hold the RAW meter value (fast attack, ~1.5 s linear decay) and
+  // derive BOTH the formatted number and the bar fill from that single held raw
+  // value, so the digits and the fill stay consistent. On RX the raw values are
+  // 0, so the held peak naturally decays to 0 within the window (no stale TX
+  // peak bleed). Vd (steady supply rail), COMP (not requested) and S (the RX
+  // indicator) keep instantaneous display.
+  const PEAK_DECAY_MS = 1500;
+
+  // Peak-hold state for Po/SWR/ALC/Id, latched on the RAW meter value. Stores
+  // the latched peak + timestamp only; the decayed value is recomputed per
+  // render from `now` so it stays linear across the decay window instead of
+  // compounding tick-by-tick.
   let peaks = $state<Partial<Record<PeakKey, PeakHoldState>>>({});
   let now = $state(Date.now());
 
@@ -82,7 +97,7 @@
       if (peaks[key] !== undefined) peaks[key] = undefined;
       return;
     }
-    const next = updatePeakHold(peaks[key], current, t);
+    const next = updatePeakHold(peaks[key], current, t, PEAK_DECAY_MS);
     // Only write back on a re-latch / anchor reset — otherwise skip to avoid
     // flagging a reactive read-then-write cycle. The display recomputes from
     // `now` regardless.
@@ -92,9 +107,18 @@
   function stepAllPeaks() {
     const t = Date.now();
     now = t;
-    steppeak('po', powerMeter !== undefined ? normalizePower(powerMeter) * 100 : undefined, t);
-    steppeak('swr', swrMeter !== undefined ? swrLevel(swrMeter) * 100 : undefined, t);
-    steppeak('alc', alcMeter !== undefined ? alcLevel(alcMeter) * 100 : undefined, t);
+    // Latch on the RAW meter value so the held value drives both the number
+    // (formatter) and the fill (level fn) coherently.
+    steppeak('po', powerMeter, t);
+    steppeak('swr', swrMeter, t);
+    steppeak('alc', alcMeter, t);
+    steppeak('id', idMeter, t);
+  }
+
+  // Returns the peak-held RAW value for a TX meter for the current render
+  // frame, decayed linearly toward the live raw sample across PEAK_DECAY_MS.
+  function heldRaw(key: PeakKey, liveRaw: number): number {
+    return peakHoldDisplay(peaks[key], liveRaw, now, PEAK_DECAY_MS);
   }
 
   // A 100ms interval drives both the decay and the latch from fresh
@@ -119,47 +143,56 @@
     // dock layout never reflows on an RX<->TX transition (MOR-485 reverts the
     // MOR-483 part-1 hide-on-RX). The S tile (RX indicator) and Vd tile
     // (continuous supply rail) likewise stay rendered in both states.
+    // Po/SWR/ALC/Id are peak-held: the formatted number and the bar fill both
+    // derive from the SAME held raw value (`heldRaw(...)`), so they stay in
+    // lockstep through the decay. Read `now` so the derived recomputes each
+    // 100 ms tick as the held peak decays.
+    void now;
     if (powerMeter !== undefined) {
+      const raw = heldRaw('po', powerMeter);
       out.push({
         key: 'po',
         label: 'Po',
-        display: formatPowerWatts(powerMeter),
-        fillPct: normalizePower(powerMeter) * 100,
+        display: formatPowerWatts(raw),
+        fillPct: normalizePower(raw) * 100,
         fill: 'var(--v2-meter-power-fill)',
         track: 'var(--v2-meter-power-track)',
         relevant: txActive,
       });
     }
     if (swrMeter !== undefined) {
+      const raw = heldRaw('swr', swrMeter);
       out.push({
         key: 'swr',
         label: 'SWR',
-        display: formatSwr(swrMeter),
-        fillPct: swrLevel(swrMeter) * 100,
+        display: formatSwr(raw),
+        fillPct: swrLevel(raw) * 100,
         fill: 'var(--v2-meter-swr-fill)',
         track: 'var(--v2-meter-swr-track)',
         relevant: txActive,
-        fault: txActive && isSwrFault(swrMeter),
+        fault: txActive && isSwrFault(raw),
       });
     }
     if (alcMeter !== undefined) {
+      const raw = heldRaw('alc', alcMeter);
       out.push({
         key: 'alc',
         label: 'ALC',
-        display: formatAlc(alcMeter),
-        fillPct: alcLevel(alcMeter) * 100,
+        display: formatAlc(raw),
+        fillPct: alcLevel(raw) * 100,
         fill: 'var(--v2-meter-alc-fill)',
         track: 'var(--v2-meter-alc-track)',
         relevant: txActive,
-        fault: txActive && isAlcFault(alcMeter),
+        fault: txActive && isAlcFault(raw),
       });
     }
     if (idMeter !== undefined) {
+      const raw = heldRaw('id', idMeter);
       out.push({
         key: 'id',
         label: 'Id',
-        display: formatAmps(idMeter),
-        fillPct: idLevel(idMeter) * 100,
+        display: formatAmps(raw),
+        fillPct: idLevel(raw) * 100,
         fill: 'var(--v2-meter-id-fill)',
         track: 'var(--v2-meter-id-track)',
         relevant: txActive,
@@ -256,9 +289,9 @@
   <div class="dock-grid">
     {#each tiles as tile (tile.key)}
       {@const peakPct =
-        tile.key === 'po' || tile.key === 'swr' || tile.key === 'alc'
+        tile.key === 'po' || tile.key === 'swr' || tile.key === 'alc' || tile.key === 'id'
           ? peaks[tile.key] !== undefined
-            ? peakHoldDisplay(peaks[tile.key], tile.fillPct, now)
+            ? tile.fillPct
             : undefined
           : undefined}
       {@const displayPct = smoothers.get(tile.key)?.value ?? tile.fillPct}
@@ -270,7 +303,12 @@
         data-relevant={tile.relevant}
         data-fault={tile.fault ? 'true' : 'false'}
         ondblclick={() => {
-          if (tile.key === 'po' || tile.key === 'swr' || tile.key === 'alc') {
+          if (
+            tile.key === 'po' ||
+            tile.key === 'swr' ||
+            tile.key === 'alc' ||
+            tile.key === 'id'
+          ) {
             resetPeak(tile.key);
           }
         }}
