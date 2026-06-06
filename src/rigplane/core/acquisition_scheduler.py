@@ -277,6 +277,9 @@ _GLOBAL_METER_QUERY_SUBS: dict[str, int] = {
     "power": 0x11,
     "swr": 0x12,
     "alc": 0x13,
+    "comp": 0x14,
+    "vd": 0x15,
+    "id": 0x16,
 }
 _CIV_ACQUISITION_PROVIDERS = frozenset(("icom_civ", "xiegu_civ"))
 

@@ -900,6 +900,83 @@ def test_ic7610_real_profile_att_preamp_squelch_query_for_path() -> None:
     assert executor.query_for_path(squelch) == (0x14, 0x03, 0)
 
 
+def test_ic7610_global_meter_query_for_path() -> None:
+    """MOR-485: comp/Vd/Id global meters must map to 0x15 sub-reads.
+
+    power/swr/alc already mapped; comp/vd/id were missing, so on a
+    scheduler-only radio (IC-7610) they were never polled and rendered 0.
+    """
+    sent: list[tuple[int, int | None, int | None]] = []
+
+    async def send_query(
+        command: int,
+        sub: int | None,
+        receiver: int | None,
+    ) -> None:
+        sent.append((command, sub, receiver))
+
+    executor = IcomCivAcquisitionExecutor(send_query)
+
+    power = FieldPath.global_("meters", "power")
+    swr = FieldPath.global_("meters", "swr")
+    alc = FieldPath.global_("meters", "alc")
+    comp = FieldPath.global_("meters", "comp")
+    vd = FieldPath.global_("meters", "vd")
+    id_ = FieldPath.global_("meters", "id")
+
+    assert executor.query_for_path(power) == (0x15, 0x11, None)
+    assert executor.query_for_path(swr) == (0x15, 0x12, None)
+    assert executor.query_for_path(alc) == (0x15, 0x13, None)
+    assert executor.query_for_path(comp) == (0x15, 0x14, None)
+    assert executor.query_for_path(vd) == (0x15, 0x15, None)
+    assert executor.query_for_path(id_) == (0x15, 0x16, None)
+
+
+def test_ic7610_real_profile_comp_vd_id_meters_are_enrolled_and_sent() -> None:
+    """MOR-485: comp/vd/id are enrolled via stream_like_meters and now poll.
+
+    With the query mapping present they must reach the executor's sent_paths
+    (no `no_civ_query_mapping` failure), proving the scheduler can emit them.
+    """
+    acquisition = load_rig(RIGS_DIR / "ic7610.toml").to_profile().state_acquisition
+    assert acquisition is not None
+    meter_paths = (
+        FieldPath.global_("meters", "comp"),
+        FieldPath.global_("meters", "vd"),
+        FieldPath.global_("meters", "id"),
+    )
+    for path in meter_paths:
+        assert acquisition.capability_for(path).can_poll is True
+
+    clock = FreshnessClock(start=500.0)
+    scheduler = AcquisitionScheduler(profile=acquisition, clock=clock)
+    requests = scheduler.due_requests()
+    due_paths = {path for request in requests for path in request.paths}
+    assert set(meter_paths) <= due_paths
+
+    sent: list[FieldPath] = []
+    failed: list[FieldPath] = []
+
+    async def send_query(
+        command: int,
+        sub: int | None,
+        receiver: int | None,
+    ) -> None:
+        return None
+
+    executor = IcomCivAcquisitionExecutor(send_query)
+    for request in requests:
+        execution = asyncio.run(
+            executor.execute(request, already_sent_paths=frozenset())
+        )
+        sent.extend(execution.sent_paths)
+        failed.extend(execution.failed_paths)
+
+    for path in meter_paths:
+        assert path in sent
+        assert path not in failed
+
+
 def test_ic7610_real_profile_sub_operator_controls_query_for_path() -> None:
     """MOR-488 batch 6: SUB receiver (receiver 1) operator-control reads.
 
