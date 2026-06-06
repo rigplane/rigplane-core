@@ -879,6 +879,54 @@ def test_ic7610_real_profile_freq_mode_are_pollable_and_emit_25_26() -> None:
     )
 
 
+def test_ic7610_real_profile_ptt_is_pollable_and_emits_bare_1c00_read() -> None:
+    """MOR-496: front-panel TX must reach the v2 UI, so ptt must be polled.
+
+    The IC-7610 does NOT emit unsolicited 0x1C/00 transceive frames, so ptt
+    only refreshed via slow one-shot stale reconciliation and the STATION
+    METERS header stayed "RX" while keying from the front panel. Adding ptt to
+    ``polling_only`` + a fast field policy enrolls it in the poll cadence
+    groups. The poll query MUST be a bare 0x1C 0x00 READ (no data byte) so a
+    poll can never key the transmitter.
+    """
+    acquisition = load_rig(RIGS_DIR / "ic7610.toml").to_profile().state_acquisition
+    assert acquisition is not None
+
+    ptt = FieldPath.global_("tx_state", "ptt")
+    assert acquisition.capability_for(ptt).can_poll is True
+
+    clock = FreshnessClock(start=700.0)
+    scheduler = AcquisitionScheduler(profile=acquisition, clock=clock)
+    requests = scheduler.due_requests()
+    due_paths = {path for request in requests for path in request.paths}
+    assert ptt in due_paths
+
+    sent: list[tuple[int, int | None, int | None]] = []
+
+    async def send_query(
+        command: int,
+        sub: int | None,
+        receiver: int | None,
+    ) -> None:
+        sent.append((command, sub, receiver))
+
+    executor = IcomCivAcquisitionExecutor(send_query)
+
+    # The poll query is a pure READ of 0x1C 0x00 with no receiver/data byte;
+    # a data byte would key TX, and the third tuple element is the receiver
+    # index (None here), never a payload.
+    assert executor.query_for_path(ptt) == (0x1C, 0x00, None)
+
+    for request in requests:
+        if ptt not in request.paths:
+            continue
+        execution = asyncio.run(
+            executor.execute(request, already_sent_paths=frozenset())
+        )
+        assert execution.failed_paths == ()
+    assert (0x1C, 0x00, None) in sent
+
+
 def test_ic7610_real_profile_att_preamp_squelch_query_for_path() -> None:
     sent: list[tuple[int, int | None, int | None]] = []
 

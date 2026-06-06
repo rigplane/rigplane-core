@@ -135,6 +135,13 @@ unsolicited_push = [
 ]
 polling_only = [
     "global.slow_state.active",
+    # MOR-496: the IC-7610 does NOT emit unsolicited 0x1C/00 transceive frames,
+    # so ptt must be regularly polled or the v2 UI never sees front-panel TX.
+    # ptt stays in unsolicited_push + command_response_observable +
+    # supported_controls (web-initiated PTT optimistic behavior unchanged); the
+    # loader unions all path lists into one capability with both polling=True
+    # and unsolicited_push=True, so listing it here only adds the poll hook.
+    "global.tx_state.ptt",
     "global.operator_controls.rit_freq",
     "global.tx_state.rit_on",
     "global.tx_state.rit_tx",
@@ -526,6 +533,13 @@ adaptive_decay = false
 [state_acquisition.field_policies."receiver.sub.active.freq_mode.filter_width"]
 cadence_seconds = 1.5
 freshness_ttl_seconds = 3.0
+adaptive_decay = false
+
+# MOR-496: poll ptt fast enough to track front-panel TX on the v2 UI. A bare
+# 0x1C 0x00 READ (~3 q/s) is a negligible lane load; do NOT go below 0.2s.
+[state_acquisition.field_policies."global.tx_state.ptt"]
+cadence_seconds = 0.3
+freshness_ttl_seconds = 1.0
 adaptive_decay = false
 
 [state_acquisition.field_policies."global.tx_state.compressor_on"]
