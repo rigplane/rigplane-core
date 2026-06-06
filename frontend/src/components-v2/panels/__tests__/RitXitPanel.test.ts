@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { mount, unmount, flushSync } from 'svelte';
-import { formatOffset, shouldShowPanel } from '../rit-utils';
+import { formatOffset, formatOffsetKHz, shouldShowPanel } from '../rit-utils';
 
 const mockProps = {
   ritActive: false,
@@ -108,6 +108,44 @@ it('returns "±0 Hz" for zero', () => {
 
   it('negative sign is Unicode minus U+2212 not ASCII hyphen', () => {
     expect(formatOffset(-100).charCodeAt(0)).toBe(0x2212);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// formatOffsetKHz (MOR-480 — RIT/XIT display in kHz; value stays Hz)
+// ---------------------------------------------------------------------------
+
+describe('formatOffsetKHz', () => {
+  it('returns "±0 kHz" for zero', () => {
+    expect(formatOffsetKHz(0)).toBe('±0 kHz');
+  });
+
+  it('returns "+5.00 kHz" for +5000 Hz', () => {
+    expect(formatOffsetKHz(5000)).toBe('+5.00 kHz');
+  });
+
+  it('returns "−5.00 kHz" for -5000 Hz (Unicode minus)', () => {
+    expect(formatOffsetKHz(-5000)).toBe('−5.00 kHz');
+  });
+
+  it('returns "+0.05 kHz" for +50 Hz', () => {
+    expect(formatOffsetKHz(50)).toBe('+0.05 kHz');
+  });
+
+  it('returns "+10.00 kHz" for +9999 Hz (2-dp rounding)', () => {
+    expect(formatOffsetKHz(9999)).toBe('+10.00 kHz');
+  });
+
+  it('returns "−10.00 kHz" for -9999 Hz (2-dp rounding)', () => {
+    expect(formatOffsetKHz(-9999)).toBe('−10.00 kHz');
+  });
+
+  it('positive sign is ASCII + not Unicode', () => {
+    expect(formatOffsetKHz(100)[0]).toBe('+');
+  });
+
+  it('negative sign is Unicode minus U+2212 not ASCII hyphen', () => {
+    expect(formatOffsetKHz(-100).charCodeAt(0)).toBe(0x2212);
   });
 });
 

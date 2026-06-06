@@ -1,7 +1,7 @@
 <script lang="ts">
   import { ValueControl } from '../controls/value-control';
   import { HardwareButton, HardwarePlainButton } from '../../lib/Button';
-  import { formatOffset, shouldShowPanel } from './rit-utils';
+  import { formatOffsetKHz, shouldShowPanel } from './rit-utils';
   import { getShortcutHint } from '../layout/shortcut-hints';
 
   import { deriveRitXitProps, getRitXitHandlers } from '$lib/runtime/adapters/panel-adapters';
@@ -41,13 +41,13 @@
       {#if hasRit}
         <div class="row">
           <HardwareButton indicator="dot" active={ritActive} color="cyan" onclick={onRitToggle} shortcutHint={ritShortcut} title={ritShortcut}>RIT</HardwareButton>
-          <span class="offset" class:active={ritActive}>{formatOffset(ritOffset)}</span>
+          <span class="offset" class:active={ritActive}>{formatOffsetKHz(ritOffset)}</span>
         </div>
       {/if}
       {#if hasXit}
         <div class="row">
           <HardwareButton indicator="dot" active={xitActive} color="orange" onclick={onXitToggle} shortcutHint={xitShortcut} title={xitShortcut}>XIT</HardwareButton>
-          <span class="offset" class:active={xitActive}>{formatOffset(xitOffset)}</span>
+          <span class="offset" class:active={xitActive}>{formatOffsetKHz(xitOffset)}</span>
         </div>
       {/if}
       <ValueControl
@@ -56,7 +56,8 @@
         min={-9999}
         max={9999}
         step={50}
-        unit="Hz"
+        unit="kHz"
+        displayFn={formatOffsetKHz}
         renderer="bipolar"
         accentColor="var(--v2-accent-cyan)"
         onChange={handleOffsetChange}

@@ -86,9 +86,11 @@ export function formatBadges(
 }
 
 /**
- * Formats a RIT/XIT offset in Hz as a compact signed string, e.g. '+120 Hz'.
+ * Formats a RIT/XIT offset (given in Hz) as a compact signed kHz string,
+ * e.g. '+0.12 kHz'. The value stays in Hz; only the display is kHz. (MOR-480)
  */
 export function formatRitOffset(offsetHz: number): string {
   const sign = offsetHz >= 0 ? '+' : '−';
-  return `${sign}${Math.abs(offsetHz)} Hz`;
+  const khz = (Math.abs(offsetHz) / 1000).toFixed(2);
+  return `${sign}${khz} kHz`;
 }

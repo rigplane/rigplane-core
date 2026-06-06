@@ -16,6 +16,7 @@
   import type { IndToken } from './AmberIndStrip.svelte';
   import { runtime } from '$lib/runtime';
   import { isFieldAvailable } from '$lib/state/field-status';
+  import { formatOffsetKHz } from '../rit-utils';
 
   const handlers = getAmberCockpitHandlers();
 
@@ -324,7 +325,7 @@
       {#if ritXit.ritActive || ritXit.xitActive}
         <div class="lcd-rit-row">
           <span class="rit-label">{ritXit.ritActive ? 'RIT' : 'XIT'}</span>
-          <span class="rit-value">{ritXit.ritOffset >= 0 ? '+' : ''}{ritXit.ritOffset} Hz</span>
+          <span class="rit-value">{formatOffsetKHz(ritXit.ritOffset)}</span>
         </div>
       {/if}
 
