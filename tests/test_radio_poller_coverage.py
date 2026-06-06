@@ -8,6 +8,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from rigplane.commands.commander import Priority
 from rigplane.core.acquisition_scheduler import (
     AcquisitionScheduler,
     MeterObservationCoalescer,
@@ -291,6 +292,7 @@ async def test_scheduler_due_request_sends_supported_civ_query_once() -> None:
         sub=None,
         data=b"\x00\x15\x02",
         wait_response=False,
+        priority=Priority.BACKGROUND,
     )
     assert scheduler.pending_requests()[0].paths == (path,)
 
@@ -315,24 +317,28 @@ async def test_x6200_scheduler_due_request_sends_civ_query_from_profile() -> Non
         sub=None,
         data=b"\x00",
         wait_response=False,
+        priority=Priority.BACKGROUND,
     )
     radio.send_civ.assert_any_await(
         0x26,
         sub=None,
         data=b"\x00",
         wait_response=False,
+        priority=Priority.BACKGROUND,
     )
     radio.send_civ.assert_any_await(
         0x29,
         sub=None,
         data=b"\x00\x15\x02",
         wait_response=False,
+        priority=Priority.BACKGROUND,
     )
     radio.send_civ.assert_any_await(
         0x15,
         sub=0x11,
         data=b"",
         wait_response=False,
+        priority=Priority.BACKGROUND,
     )
     assert scheduler.pending_requests()
 
@@ -354,6 +360,7 @@ async def test_xiegu_civ_scheduler_due_request_uses_civ_executor() -> None:
         sub=None,
         data=b"\x00",
         wait_response=False,
+        priority=Priority.BACKGROUND,
     )
 
 
@@ -477,6 +484,7 @@ async def test_scheduler_active_freq_mode_requests_use_receiver_payload(
         sub=None,
         data=bytes([expected_receiver]),
         wait_response=False,
+        priority=Priority.BACKGROUND,
     )
     assert scheduler.pending_requests()[0].paths == (path,)
 
@@ -526,6 +534,7 @@ async def test_scheduler_ptt_request_sends_civ_ptt_query() -> None:
         sub=0x00,
         data=b"",
         wait_response=False,
+        priority=Priority.BACKGROUND,
     )
     assert scheduler.pending_requests()[0].paths == (path,)
 
@@ -771,8 +780,13 @@ async def test_execute_event_emitting_commands_and_vfo_paths() -> None:
         0x07, sub=None, data=bytes([0xD1]), wait_response=False
     )
     # Scope follows the selected receiver (0x27 0x12 0x01 = SUB).
+    # User-command path stays at NORMAL priority (not de-prioritized).
     radio.send_civ.assert_any_await(
-        0x27, sub=0x12, data=bytes([0x01]), wait_response=False
+        0x27,
+        sub=0x12,
+        data=bytes([0x01]),
+        wait_response=False,
+        priority=Priority.NORMAL,
     )
     await poller._execute(SelectVfo("MAIN"))  # noqa: SLF001
     assert radio._radio_state.active == "MAIN"
@@ -780,7 +794,11 @@ async def test_execute_event_emitting_commands_and_vfo_paths() -> None:
         0x07, sub=None, data=bytes([0xD0]), wait_response=False
     )
     radio.send_civ.assert_any_await(
-        0x27, sub=0x12, data=bytes([0x00]), wait_response=False
+        0x27,
+        sub=0x12,
+        data=bytes([0x00]),
+        wait_response=False,
+        priority=Priority.NORMAL,
     )
     # Re-clicking the active receiver is a no-op CI-V-wise but still emits
     # the state event so UI listeners can refresh.

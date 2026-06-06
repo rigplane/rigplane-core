@@ -32,6 +32,58 @@ async def test_priority_ordering() -> None:
 
 
 @pytest.mark.asyncio
+async def test_normal_command_preempts_queued_backgrounds() -> None:
+    """A NORMAL command enqueued after several BACKGROUND polls must dispatch
+    before them (priority preemption, not FIFO).
+
+    This is the queue-level invariant behind MOR-497(i): polls run at
+    BACKGROUND so a user command never queues behind a burst of polls.
+    """
+    order: list[bytes] = []
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    async def execute(cmd: bytes, wait_response: bool = True) -> CivFrame | None:
+        # Block the worker on the very first dispatched item so the rest of
+        # the items are all queued together before any of them dispatch.
+        if cmd == b"gate":
+            started.set()
+            await release.wait()
+        order.append(cmd)
+        return CivFrame(to_addr=0xE0, from_addr=0x98, command=0xFB, sub=None, data=b"")
+
+    c = IcomCommander(execute, min_interval=0.0)
+    c.start()
+    try:
+        gate = asyncio.create_task(c.send(b"gate", priority=Priority.NORMAL))
+        await asyncio.wait_for(started.wait(), timeout=1.0)
+
+        # Several BACKGROUND polls queue first, then one NORMAL command.
+        bgs = [
+            asyncio.create_task(
+                c.send(f"bg-{i}".encode(), priority=Priority.BACKGROUND)
+            )
+            for i in range(5)
+        ]
+        await asyncio.sleep(0.01)  # let backgrounds enqueue
+        normal = asyncio.create_task(c.send(b"normal-1", priority=Priority.NORMAL))
+        await asyncio.sleep(0.01)  # let the normal enqueue
+
+        release.set()
+        await asyncio.gather(gate, normal, *bgs)
+    finally:
+        await c.stop()
+
+    # gate dispatched first (it was in-flight). The NORMAL command, though
+    # enqueued AFTER all five backgrounds, must dispatch before every one of
+    # them.
+    assert order[0] == b"gate"
+    normal_idx = order.index(b"normal-1")
+    bg_indices = [order.index(f"bg-{i}".encode()) for i in range(5)]
+    assert all(normal_idx < bg_idx for bg_idx in bg_indices)
+
+
+@pytest.mark.asyncio
 async def test_transaction_restores_on_error() -> None:
     async def execute(cmd: bytes, wait_response: bool = True) -> CivFrame | None:
         return CivFrame(to_addr=0xE0, from_addr=0x98, command=0xFB, sub=None, data=b"")

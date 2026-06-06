@@ -69,6 +69,7 @@ from ..capabilities import (
     CAP_VOX,
 )
 from .._queue_pressure import PRESSURE_THRESHOLD
+from ..commands.commander import Priority
 from ..core.command_service import (
     CommandService,
 )
@@ -644,24 +645,33 @@ class RadioPoller:
         cmd_byte: int,
         sub_byte: int | None,
         receiver: int | None,
+        *,
+        priority: Priority = Priority.BACKGROUND,
     ) -> None:
-        """Send a single state query (shared by initial fetch and slow rotation)."""
+        """Send a single state query (shared by initial fetch and slow rotation).
+
+        Defaults to ``Priority.BACKGROUND`` so both the odd-cycle state poll
+        and the acquisition-scheduler executor (which is bound to this method)
+        yield to user commands on the shared CI-V lane (MOR-497i).
+        """
         if receiver is not None:
             if cmd_byte in (0x25, 0x26):
-                await self._civ(cmd_byte, data=bytes([receiver]))
+                await self._civ(cmd_byte, data=bytes([receiver]), priority=priority)
             else:
                 inner = bytes([receiver, cmd_byte])
                 if sub_byte is not None:
                     inner += bytes([sub_byte])
-                await self._civ(0x29, data=inner)
+                await self._civ(0x29, data=inner, priority=priority)
         elif cmd_byte == 0x27 and sub_byte in self._SCOPE_RECEIVER_PREFIX_SUBS:
             # Scope control queries need receiver prefix (00=MAIN, 01=SUB)
             scope_rx = 0
             if self._radio_state:
                 scope_rx = self._radio_state.scope_controls.receiver
-            await self._civ(cmd_byte, sub=sub_byte, data=bytes([scope_rx]))
+            await self._civ(
+                cmd_byte, sub=sub_byte, data=bytes([scope_rx]), priority=priority
+            )
         else:
-            await self._civ(cmd_byte, sub=sub_byte, data=b"")
+            await self._civ(cmd_byte, sub=sub_byte, data=b"", priority=priority)
 
     # Per-getter timeout for scope-control fetches.  The IC-7610 scope stream
     # (~225 pkt/s) sometimes drops individual control responses; a long wait
@@ -863,11 +873,17 @@ class RadioPoller:
         sub: int | None = None,
         data: bytes = b"",
         wait_response: bool = False,
+        priority: Priority = Priority.NORMAL,
     ) -> Any:
         """Send a raw CI-V command if the backend provides a CI-V transport.
 
         For non-Icom backends this is a no-op — scope/meter polling simply
         won't happen, which is acceptable.
+
+        ``priority`` defaults to NORMAL so user-command call sites (e.g. the
+        in-``_execute`` VFO switch) are never de-prioritized; background poll
+        call sites pass ``Priority.BACKGROUND`` explicitly so polls yield to
+        user commands on the shared CI-V lane (MOR-497i).
 
         Returns:
             CivFrame response if wait_response=True and backend supports it,
@@ -881,6 +897,7 @@ class RadioPoller:
                 sub=sub,
                 data=data,
                 wait_response=wait_response,
+                priority=priority,
             )
         return None
 
@@ -2053,7 +2070,9 @@ class RadioPoller:
                 command=f"0x{cmd_byte:02x}",
                 sub=None if sub_byte is None else f"0x{sub_byte:02x}",
             )
-            await self._civ(cmd_byte, sub=sub_byte, data=b"")
+            await self._civ(
+                cmd_byte, sub=sub_byte, data=b"", priority=Priority.BACKGROUND
+            )
         else:
             if not self._STATE_QUERIES:
                 self._poll_index += 1
@@ -2142,17 +2161,19 @@ class RadioPoller:
                 return  # host refuses attribute — skip silently
         try:
             if pre_code is not None:
-                await self._civ(0x07, data=bytes([pre_code]))
+                await self._civ(
+                    0x07, data=bytes([pre_code]), priority=Priority.BACKGROUND
+                )
                 await asyncio.sleep(self._adaptive_gap())
                 pre_switched = True
             # Swap A/B within the selected receiver.
-            await self._civ(0x07, data=bytes([swap_code]))
+            await self._civ(0x07, data=bytes([swap_code]), priority=Priority.BACKGROUND)
             await asyncio.sleep(self._adaptive_gap())
             # Responses for the queries below must route to the opposite slot.
             override_map[rx_name] = target_slot
-            await self._civ(0x03, data=b"")
+            await self._civ(0x03, data=b"", priority=Priority.BACKGROUND)
             await asyncio.sleep(self._adaptive_gap())
-            await self._civ(0x04, data=b"")
+            await self._civ(0x04, data=b"", priority=Priority.BACKGROUND)
             # Give the CI-V RX pump a moment to drain responses before we
             # swap back (the override stays set until *after* swap-back
             # so any late 0x03/0x04 response still routes to the
@@ -2164,7 +2185,9 @@ class RadioPoller:
             # slot even when a query errored.  Override is cleared after
             # the swap-back send + a gap to cover in-flight responses.
             try:
-                await self._civ(0x07, data=bytes([swap_code]))
+                await self._civ(
+                    0x07, data=bytes([swap_code]), priority=Priority.BACKGROUND
+                )
             except Exception:
                 logger.warning(
                     "radio-poller: failed to restore VFO A/B on receiver=%d",
@@ -2175,7 +2198,9 @@ class RadioPoller:
             override_map.pop(rx_name, None)
             if pre_switched and post_code is not None:
                 try:
-                    await self._civ(0x07, data=bytes([post_code]))
+                    await self._civ(
+                        0x07, data=bytes([post_code]), priority=Priority.BACKGROUND
+                    )
                 except Exception:
                     logger.warning(
                         "radio-poller: failed to restore MAIN/SUB selection",

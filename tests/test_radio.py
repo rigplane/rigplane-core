@@ -22,6 +22,7 @@ from rigplane.commands import (
     build_civ_frame,
     build_cmd29_frame,
 )
+from rigplane.commander import Priority
 from rigplane.exceptions import ConnectionError, TimeoutError
 from rigplane.radio import IcomRadio
 from rigplane.types import (
@@ -702,6 +703,17 @@ class TestPtt:
         """set_ptt is fire-and-forget — no ACK response needed."""
         await radio.set_ptt(False)
         assert len(mock_transport.sent_packets) > 0
+
+    @pytest.mark.asyncio
+    async def test_set_ptt_uses_immediate_priority(
+        self, radio: IcomRadio, mock_transport: MockTransport
+    ) -> None:
+        """Regression (MOR-497i): set_ptt must stay at Priority.IMMEDIATE so
+        the BACKGROUND poll change never demotes TX keying."""
+        with patch.object(radio, "_send_civ_raw", autospec=True) as mock_raw:
+            await radio.set_ptt(True)
+        assert mock_raw.call_count == 1
+        assert mock_raw.call_args.kwargs["priority"] == Priority.IMMEDIATE
 
     @pytest.mark.asyncio
     async def test_set_ptt_updates_state_cache(

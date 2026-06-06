@@ -1303,6 +1303,7 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
         data: bytes | None = None,
         *,
         wait_response: bool = True,
+        priority: Priority = Priority.NORMAL,
     ) -> CivFrame | None:
         """Send a CI-V command.
 
@@ -1311,6 +1312,9 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
             sub: Optional sub-command byte.
             data: Optional payload data.
             wait_response: If False, fire-and-forget (no response wait).
+            priority: Commander lane priority. Defaults to NORMAL so user
+                commands are not de-prioritized; background pollers pass
+                ``Priority.BACKGROUND`` so polls yield to user commands.
 
         Returns:
             Parsed response CivFrame, or None if wait_response=False.
@@ -1319,7 +1323,9 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
         frame = build_civ_frame(
             self._radio_addr, CONTROLLER_ADDR, command, sub=sub, data=data
         )
-        return await self._send_civ_raw(frame, wait_response=wait_response)
+        return await self._send_civ_raw(
+            frame, wait_response=wait_response, priority=priority
+        )
 
     # ------------------------------------------------------------------
     # Raw CI-V pipe (MOR-164) — transparent byte transport for Hamlib A1

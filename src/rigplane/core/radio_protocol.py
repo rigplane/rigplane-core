@@ -934,8 +934,15 @@ class CivCommandCapable(Protocol):
         data: bytes | None = None,
         *,
         wait_response: bool = True,
+        priority: Any = ...,
     ) -> Any:
-        """Send a CI-V command through the active backend transport."""
+        """Send a CI-V command through the active backend transport.
+
+        ``priority`` selects the Commander lane priority (``Priority`` enum,
+        typed ``Any`` here to keep ``core`` free of the ``commands`` import).
+        Background pollers pass ``Priority.BACKGROUND``; user commands keep
+        the implementation's NORMAL default (MOR-497i).
+        """
         ...
 
 
