@@ -345,8 +345,6 @@ class IcomCivAcquisitionExecutor:
         if path.scope.value == "global" and path.family.value == "slow_state":
             if path.name == "active":
                 return (0x07, 0xD2, None)
-            if path.name == "tuning_step":
-                return (0x10, None, None)
             return None
         if path.scope.value == "global" and path.family.value == "tx_state":
             if path.name == "ptt":

@@ -143,6 +143,11 @@ polling_only = [
     "receiver.main.operator_controls.squelch",
     "receiver.main.operator_controls.att",
     "receiver.main.operator_controls.preamp",
+    "receiver.sub.operator_controls.af_level",
+    "receiver.sub.operator_controls.rf_gain",
+    "receiver.sub.operator_controls.squelch",
+    "receiver.sub.operator_controls.att",
+    "receiver.sub.operator_controls.preamp",
     "receiver.main.active.freq_mode.freq_hz",
     "receiver.main.active.freq_mode.mode",
     "receiver.sub.active.freq_mode.freq_hz",
@@ -191,7 +196,6 @@ polling_only = [
     "receiver.sub.operator_controls.agc_time_constant",
     "global.tx_state.split",
     "global.tx_state.dual_watch",
-    "global.slow_state.tuning_step",
     "receiver.main.operator_toggles.repeater_tone",
     "receiver.main.operator_toggles.repeater_tsql",
     "receiver.sub.operator_toggles.repeater_tone",
@@ -280,19 +284,57 @@ freshness_ttl_seconds = 2.0
 cadence_seconds = 0.5
 freshness_ttl_seconds = 2.0
 
+# MOR-488 batch 6: operator found RFG/SQL laggy at the MOR-487 cadence (3.0s /
+# 4.0s); rf_gain/af_level/squelch/att/preamp now poll FAST (1.5s / 3.0s) on both
+# receivers so a front-panel turn reaches the v2 UI within ~one fast cycle.
+[state_acquisition.field_policies."receiver.main.operator_controls.af_level"]
+cadence_seconds = 1.5
+freshness_ttl_seconds = 3.0
+adaptive_decay = false
+
+[state_acquisition.field_policies."receiver.main.operator_controls.rf_gain"]
+cadence_seconds = 1.5
+freshness_ttl_seconds = 3.0
+adaptive_decay = false
+
 [state_acquisition.field_policies."receiver.main.operator_controls.squelch"]
-cadence_seconds = 3.0
-freshness_ttl_seconds = 4.0
+cadence_seconds = 1.5
+freshness_ttl_seconds = 3.0
 adaptive_decay = false
 
 [state_acquisition.field_policies."receiver.main.operator_controls.att"]
-cadence_seconds = 3.0
-freshness_ttl_seconds = 4.0
+cadence_seconds = 1.5
+freshness_ttl_seconds = 3.0
 adaptive_decay = false
 
 [state_acquisition.field_policies."receiver.main.operator_controls.preamp"]
-cadence_seconds = 3.0
-freshness_ttl_seconds = 4.0
+cadence_seconds = 1.5
+freshness_ttl_seconds = 3.0
+adaptive_decay = false
+
+[state_acquisition.field_policies."receiver.sub.operator_controls.af_level"]
+cadence_seconds = 1.5
+freshness_ttl_seconds = 3.0
+adaptive_decay = false
+
+[state_acquisition.field_policies."receiver.sub.operator_controls.rf_gain"]
+cadence_seconds = 1.5
+freshness_ttl_seconds = 3.0
+adaptive_decay = false
+
+[state_acquisition.field_policies."receiver.sub.operator_controls.squelch"]
+cadence_seconds = 1.5
+freshness_ttl_seconds = 3.0
+adaptive_decay = false
+
+[state_acquisition.field_policies."receiver.sub.operator_controls.att"]
+cadence_seconds = 1.5
+freshness_ttl_seconds = 3.0
+adaptive_decay = false
+
+[state_acquisition.field_policies."receiver.sub.operator_controls.preamp"]
+cadence_seconds = 1.5
+freshness_ttl_seconds = 3.0
 adaptive_decay = false
 
 [state_acquisition.field_policies."receiver.main.operator_toggles.digisel"]
@@ -513,11 +555,6 @@ adaptive_decay = false
 [state_acquisition.field_policies."global.tx_state.dual_watch"]
 cadence_seconds = 1.5
 freshness_ttl_seconds = 3.0
-adaptive_decay = false
-
-[state_acquisition.field_policies."global.slow_state.tuning_step"]
-cadence_seconds = 3.0
-freshness_ttl_seconds = 5.0
 adaptive_decay = false
 
 [state_acquisition.field_policies."global.operator_controls.tuner_status"]

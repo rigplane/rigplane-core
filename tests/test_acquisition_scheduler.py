@@ -900,20 +900,55 @@ def test_ic7610_real_profile_att_preamp_squelch_query_for_path() -> None:
     assert executor.query_for_path(squelch) == (0x14, 0x03, 0)
 
 
+def test_ic7610_real_profile_sub_operator_controls_query_for_path() -> None:
+    """MOR-488 batch 6: SUB receiver (receiver 1) operator-control reads.
+
+    rf_gain/af_level/squelch route through the 0x14 level subs; att/preamp
+    through the non-level mappings — all with the SUB receiver byte (1).
+    """
+    sent: list[tuple[int, int | None, int | None]] = []
+
+    async def send_query(
+        command: int,
+        sub: int | None,
+        receiver: int | None,
+    ) -> None:
+        sent.append((command, sub, receiver))
+
+    executor = IcomCivAcquisitionExecutor(send_query)
+
+    rf_gain = FieldPath.receiver("sub", "operator_controls", "rf_gain")
+    af_level = FieldPath.receiver("sub", "operator_controls", "af_level")
+    squelch = FieldPath.receiver("sub", "operator_controls", "squelch")
+    att = FieldPath.receiver("sub", "operator_controls", "att")
+    preamp = FieldPath.receiver("sub", "operator_controls", "preamp")
+
+    assert executor.query_for_path(rf_gain) == (0x14, 0x02, 1)
+    assert executor.query_for_path(af_level) == (0x14, 0x01, 1)
+    assert executor.query_for_path(squelch) == (0x14, 0x03, 1)
+    assert executor.query_for_path(att) == (0x11, None, 1)
+    assert executor.query_for_path(preamp) == (0x16, 0x02, 1)
+
+
 def test_ic7610_real_profile_sql_att_pre_are_pollable_and_emit_reads() -> None:
     acquisition = load_rig(RIGS_DIR / "ic7610.toml").to_profile().state_acquisition
     assert acquisition is not None
 
+    # MOR-488 batch 6 retune: MAIN rf_gain/af_level/squelch/att/preamp now FAST
+    # (cadence 1.5s, ttl 3.0s, adaptive_decay off) — operator found RFG/SQL laggy
+    # at the MOR-487 cadence (3.0s / 4.0s).
+    rf_gain = FieldPath.receiver("main", "operator_controls", "rf_gain")
+    af_level = FieldPath.receiver("main", "operator_controls", "af_level")
     att = FieldPath.receiver("main", "operator_controls", "att")
     preamp = FieldPath.receiver("main", "operator_controls", "preamp")
     squelch = FieldPath.receiver("main", "operator_controls", "squelch")
-    target_paths = (att, squelch, preamp)
+    target_paths = (rf_gain, af_level, att, squelch, preamp)
 
     for path in target_paths:
         assert acquisition.capability_for(path).can_poll is True
         policy = acquisition.policy_for(path)
-        assert policy.cadence_seconds == 3.0
-        assert policy.freshness_ttl_seconds == 4.0
+        assert policy.cadence_seconds == 1.5
+        assert policy.freshness_ttl_seconds == 3.0
         assert policy.adaptive_decay.enabled is False
 
     clock = FreshnessClock(start=300.0)
@@ -940,7 +975,65 @@ def test_ic7610_real_profile_sql_att_pre_are_pollable_and_emit_reads() -> None:
         )
         assert execution.failed_paths == ()
 
-    assert {(0x11, None, 0), (0x16, 0x02, 0), (0x14, 0x03, 0)} <= set(sent)
+    assert {
+        (0x14, 0x02, 0),
+        (0x14, 0x01, 0),
+        (0x11, None, 0),
+        (0x16, 0x02, 0),
+        (0x14, 0x03, 0),
+    } <= set(sent)
+
+
+def test_ic7610_real_profile_sub_operator_controls_pollable_and_emit_reads() -> None:
+    """MOR-488 batch 6: SUB rf_gain/af_level/squelch/att/preamp poll at FAST."""
+    acquisition = load_rig(RIGS_DIR / "ic7610.toml").to_profile().state_acquisition
+    assert acquisition is not None
+
+    rf_gain = FieldPath.receiver("sub", "operator_controls", "rf_gain")
+    af_level = FieldPath.receiver("sub", "operator_controls", "af_level")
+    att = FieldPath.receiver("sub", "operator_controls", "att")
+    preamp = FieldPath.receiver("sub", "operator_controls", "preamp")
+    squelch = FieldPath.receiver("sub", "operator_controls", "squelch")
+    target_paths = (rf_gain, af_level, att, squelch, preamp)
+
+    for path in target_paths:
+        assert acquisition.capability_for(path).can_poll is True
+        policy = acquisition.policy_for(path)
+        assert policy.cadence_seconds == 1.5
+        assert policy.freshness_ttl_seconds == 3.0
+        assert policy.adaptive_decay.enabled is False
+
+    clock = FreshnessClock(start=300.0)
+    scheduler = AcquisitionScheduler(profile=acquisition, clock=clock)
+    requests = scheduler.due_requests()
+    due_paths = {path for request in requests for path in request.paths}
+    assert set(target_paths) <= due_paths
+
+    sent: list[tuple[int, int | None, int | None]] = []
+
+    async def send_query(
+        command: int,
+        sub: int | None,
+        receiver: int | None,
+    ) -> None:
+        sent.append((command, sub, receiver))
+
+    executor = IcomCivAcquisitionExecutor(send_query)
+    for request in requests:
+        if not any(path in target_paths for path in request.paths):
+            continue
+        execution = asyncio.run(
+            executor.execute(request, already_sent_paths=frozenset())
+        )
+        assert execution.failed_paths == ()
+
+    assert {
+        (0x14, 0x02, 1),
+        (0x14, 0x01, 1),
+        (0x11, None, 1),
+        (0x16, 0x02, 1),
+        (0x14, 0x03, 1),
+    } <= set(sent)
 
 
 def test_due_polling_emits_only_pollable_cadence_fields_and_groups_by_existing_key() -> (
@@ -1762,12 +1855,14 @@ def test_ic7610_real_profile_vfo_global_query_for_path() -> None:
     split = FieldPath.global_("tx_state", "split")
     # GLOBAL tx_state dual_watch — cmd 0x07, sub 0xC2 (query byte), receiver None.
     dual_watch = FieldPath.global_("tx_state", "dual_watch")
-    # GLOBAL slow_state tuning_step — cmd 0x10, no sub, receiver None.
+    # MOR-488 batch 6: tuning_step polling removed (the web does its own
+    # frequency-stepping and never reads the radio's tuning-step), so the
+    # slow_state branch no longer maps it — query_for_path returns None.
     tuning_step = FieldPath.global_("slow_state", "tuning_step")
 
     assert executor.query_for_path(split) == (0x0F, None, None)
     assert executor.query_for_path(dual_watch) == (0x07, 0xC2, None)
-    assert executor.query_for_path(tuning_step) == (0x10, None, None)
+    assert executor.query_for_path(tuning_step) is None
 
     # Regression guard: pre-existing global tx_state mappings still hold.
     ptt = FieldPath.global_("tx_state", "ptt")
@@ -1796,10 +1891,7 @@ def test_ic7610_real_profile_vfo_global_pollable_and_emit_reads() -> None:
         FieldPath.global_("tx_state", "split"),
         FieldPath.global_("tx_state", "dual_watch"),
     )
-    med_paths: tuple[FieldPath, ...] = (
-        FieldPath.global_("slow_state", "tuning_step"),
-    )
-    target_paths = fast_paths + med_paths
+    target_paths = fast_paths
 
     for path in fast_paths:
         assert acquisition.capability_for(path).can_poll is True
@@ -1808,18 +1900,17 @@ def test_ic7610_real_profile_vfo_global_pollable_and_emit_reads() -> None:
         assert policy.freshness_ttl_seconds == 3.0
         assert policy.adaptive_decay.enabled is False
 
-    for path in med_paths:
-        assert acquisition.capability_for(path).can_poll is True
-        policy = acquisition.policy_for(path)
-        assert policy.cadence_seconds == 3.0
-        assert policy.freshness_ttl_seconds == 5.0
-        assert policy.adaptive_decay.enabled is False
+    # MOR-488 batch 6: tuning_step is no longer polled — not in polling_only and
+    # its slow_state read mapping was removed.
+    tuning_step = FieldPath.global_("slow_state", "tuning_step")
+    assert acquisition.capability_for(tuning_step).can_poll is False
 
     clock = FreshnessClock(start=400.0)
     scheduler = AcquisitionScheduler(profile=acquisition, clock=clock)
     requests = scheduler.due_requests()
     due_paths = {path for request in requests for path in request.paths}
     assert set(target_paths) <= due_paths
+    assert tuning_step not in due_paths
 
     sent: list[tuple[int, int | None, int | None]] = []
 
@@ -1842,9 +1933,10 @@ def test_ic7610_real_profile_vfo_global_pollable_and_emit_reads() -> None:
     expected = {
         (0x0F, None, None),
         (0x07, 0xC2, None),
-        (0x10, None, None),
     }
     assert expected <= set(sent)
+    # MOR-488 batch 6: tuning_step read (0x10) is no longer emitted.
+    assert (0x10, None, None) not in set(sent)
 
 
 def test_ic7610_real_profile_tone_tuner_query_for_path() -> None:
@@ -1877,12 +1969,8 @@ def test_ic7610_real_profile_tone_tuner_query_for_path() -> None:
     assert executor.query_for_path(tuner_status) == (0x1C, 0x01, None)
 
     # SUB receiver targeting (receiver 1).
-    repeater_tone_sub = FieldPath.receiver(
-        "sub", "operator_toggles", "repeater_tone"
-    )
-    repeater_tsql_sub = FieldPath.receiver(
-        "sub", "operator_toggles", "repeater_tsql"
-    )
+    repeater_tone_sub = FieldPath.receiver("sub", "operator_toggles", "repeater_tone")
+    repeater_tsql_sub = FieldPath.receiver("sub", "operator_toggles", "repeater_tsql")
     tone_freq_sub = FieldPath.receiver("sub", "operator_controls", "tone_freq")
     tsql_freq_sub = FieldPath.receiver("sub", "operator_controls", "tsql_freq")
     assert executor.query_for_path(repeater_tone_sub) == (0x16, 0x42, 1)
