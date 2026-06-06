@@ -24,7 +24,7 @@ import { audioManager } from '$lib/audio/audio-manager';
 import { setMuted, setVolume } from '$lib/stores/audio.svelte';
 import { consumePendingFocus } from '$lib/radio/pending-focus';
 import { getModeFilter } from '$lib/radio/mode-filter-memory';
-import { nrDisplayToRaw } from '$lib/radio/filter-controls';
+import { nbDepthDisplayToRaw, nrDisplayToRaw } from '$lib/radio/filter-controls';
 
 /* ── Shared helpers ──────────────────────────────────────────────── */
 
@@ -373,8 +373,12 @@ export function makeDspHandlers() {
       cmd('set_notch_filter', { value, receiver });
     },
     onNbDepthChange: (level: number) => {
-      patchRadioState({ nbDepth: level });
-      cmd('set_nb_depth', { level });
+      // MOR-498: slider is 1-10 (front-panel scale); wire is 0-9.  Store the
+      // wire value optimistically so it matches the polled/NB-B readback
+      // (which the adapter offsets wire -> display).
+      const wire = nbDepthDisplayToRaw(level);
+      patchRadioState({ nbDepth: wire });
+      cmd('set_nb_depth', { level: wire });
     },
     onNbWidthChange: (level: number) => {
       patchRadioState({ nbWidth: level });

@@ -12,7 +12,7 @@ import type { Capabilities, FilterModeConfig } from '$lib/types/capabilities';
 import type { VfoStateProps } from '../layout/layout-utils';
 import { isFieldAvailable } from '$lib/state/field-status';
 import { deriveIfShift, pbtRawToHz } from '../panels/filter-controls';
-import { nrRawToDisplay } from '$lib/radio/filter-controls';
+import { nbDepthRawToDisplay, nrRawToDisplay } from '$lib/radio/filter-controls';
 
 /* ── Helpers ─────────────────────────────────────────────────── */
 
@@ -383,7 +383,8 @@ export function toDspProps(
     nrLevel: nrRawToDisplay(rx?.nrLevel ?? 0),
     nbActive: rx?.nb ?? false,
     nbLevel: rx?.nbLevel ?? 0,
-    nbDepth: state?.nbDepth ?? 0,
+    // MOR-498: store holds the 0-9 wire value; the slider is 1-10.
+    nbDepth: nbDepthRawToDisplay(state?.nbDepth ?? 0),
     nbWidth: state?.nbWidth ?? 0,
     notchMode,
     notchFreq: state?.notchFilter ?? 0,

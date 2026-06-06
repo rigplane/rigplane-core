@@ -13,7 +13,12 @@
 
 import type { ServerState, ReceiverState } from '$lib/types/state';
 import type { Capabilities, FilterModeConfig } from '$lib/types/capabilities';
-import { deriveIfShift, nrRawToDisplay, pbtRawToHz } from '$lib/radio/filter-controls';
+import {
+  deriveIfShift,
+  nbDepthRawToDisplay,
+  nrRawToDisplay,
+  pbtRawToHz,
+} from '$lib/radio/filter-controls';
 import { isFieldAvailable, getFieldAvailability } from '$lib/state/field-status';
 
 /* ── Private helpers ─────────────────────────────────────────── */
@@ -449,7 +454,8 @@ export function toDspProps(
     nrLevel: nrRawToDisplay(rx?.nrLevel ?? 0),
     nbActive: rx?.nb ?? false,
     nbLevel: rx?.nbLevel ?? 0,
-    nbDepth: state?.nbDepth ?? 0,
+    // MOR-498: store holds the 0-9 wire value; the slider is 1-10.
+    nbDepth: nbDepthRawToDisplay(state?.nbDepth ?? 0),
     nbWidth: state?.nbWidth ?? 0,
     notchMode,
     notchFreq: state?.notchFilter ?? 0,

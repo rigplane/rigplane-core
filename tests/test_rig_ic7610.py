@@ -378,3 +378,17 @@ class TestControlRanges:
         nr = rig.controls["nr_level"]
         assert nr["display_min"] == 0
         assert nr["display_max"] == 15
+
+    def test_nb_depth_wire_range_is_zero_based(self, rig):
+        # The NB-depth CI-V wire value is 0-9 on the IC-7610; the front
+        # panel shows it 1-based (1-10).  raw range stays 0-9.
+        nb = rig.controls["nb_depth"]
+        assert nb["raw_min"] == 0
+        assert nb["raw_max"] == 9
+
+    def test_nb_depth_display_range_matches_front_panel(self, rig):
+        # The front panel shows NB depth as 1-10; record that display
+        # mapping so the web slider can convert wire 0-9 <-> display 1-10.
+        nb = rig.controls["nb_depth"]
+        assert nb["display_min"] == 1
+        assert nb["display_max"] == 10

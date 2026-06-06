@@ -229,3 +229,12 @@ describe('toDspProps NR-level scaling (MOR-490)', () => {
     expect(toDspProps({ active: 'MAIN', main: { nrLevel: 255 } } as any, null).nrLevel).toBe(15);
   });
 });
+
+describe('toDspProps NB-depth offset (MOR-498)', () => {
+  it('offsets the 0-9 NB-depth wire value up to the 1-10 slider value', () => {
+    // Store holds the wire value (0-9); the slider is 1-10.
+    expect(toDspProps({ active: 'MAIN', nbDepth: 0 } as any, null).nbDepth).toBe(1);
+    expect(toDspProps({ active: 'MAIN', nbDepth: 5 } as any, null).nbDepth).toBe(6);
+    expect(toDspProps({ active: 'MAIN', nbDepth: 9 } as any, null).nbDepth).toBe(10);
+  });
+});

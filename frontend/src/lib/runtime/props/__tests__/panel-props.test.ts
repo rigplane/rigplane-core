@@ -291,6 +291,13 @@ describe('panel prop field availability', () => {
     expect(toDspProps(makeState({ main: { nrLevel: 128 } }), null).nrLevel).toBe(8);
     expect(toDspProps(makeState({ main: { nrLevel: 255 } }), null).nrLevel).toBe(15);
   });
+
+  it('offsets the 0-9 NB-depth wire value up to the 1-10 slider value (MOR-498)', () => {
+    // Store holds the wire value (0-9); the slider is 1-10.
+    expect(toDspProps(makeState({ nbDepth: 0 }), null).nbDepth).toBe(1);
+    expect(toDspProps(makeState({ nbDepth: 5 }), null).nbDepth).toBe(6);
+    expect(toDspProps(makeState({ nbDepth: 9 }), null).nbDepth).toBe(10);
+  });
 });
 
 describe('RF front-end preamp/digisel mutex', () => {

@@ -1294,6 +1294,14 @@ display_max = 15
 raw_min = 0
 raw_max = 255
 
+# NB depth: CI-V wire value is 0-9; the IC-7610 front panel shows it as 1-10.
+# Record both so the web slider can convert wire <-> display (MOR-498).
+[controls.nb_depth]
+raw_min = 0
+raw_max = 9
+display_min = 1
+display_max = 10
+
 [controls.mic_gain]
 raw_min = 0
 raw_max = 255
