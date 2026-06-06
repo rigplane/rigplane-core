@@ -782,15 +782,14 @@ export function toMemoryPanelProps(state: ServerState | null): MemoryPanelProps 
 export interface AmberTelemetryProps {
   vdRaw: number | null;
   idRaw: number | null;
-  tempRaw: number | null;
 }
 
 export function toAmberTelemetryProps(state: ServerState | null): AmberTelemetryProps {
+  // No temp field: the IC-7610 exposes no temperature over CI-V and
+  // `ServerState` carries none, so the dead TEMP tile was dropped (MOR-483).
   return {
     vdRaw: state?.vdMeter ?? null,
     idRaw: state?.idMeter ?? null,
-    // tempMeter isn't yet on ServerState; read defensively for forward compat.
-    tempRaw: (state as { tempMeter?: number } | null)?.tempMeter ?? null,
   };
 }
 

@@ -15,6 +15,11 @@ vi.mock('$lib/stores/capabilities.svelte', () => ({
   hasAudioFft: () => false,
   hasDualReceiver: () => false,
   getCapabilities: () => null,
+  // meter-utils calibrated formatters resolve through these; null → the
+  // hardcoded IC-7610 fallback knots (matching the formatters under test).
+  getMeterCalibration: () => null,
+  getMeterRedline: () => null,
+  getControlRange: () => null,
 }));
 
 vi.mock('$lib/stores/radio.svelte', () => ({
@@ -44,6 +49,12 @@ vi.mock('../../wiring/state-adapter', () => ({
 
 import AmberFrequency from '../AmberFrequency.svelte';
 import AmberSmeter from '../AmberSmeter.svelte';
+import {
+  formatPowerWatts,
+  formatSwr,
+  formatAlc,
+  formatCompDb,
+} from '../../meter-utils';
 
 let target: HTMLDivElement;
 
@@ -211,6 +222,36 @@ describe('AmberSmeter', () => {
     // At S9 (raw=162), dBm should be 0
     expect(dbm.textContent).toContain('0');
     expect(dbm.textContent).toContain('dBm');
+    unmount(component);
+  });
+
+  // ── MOR-483 part 2: PO/SWR/ALC/COMP readouts use calibrated formatters ──
+
+  it('PO readout uses calibrated formatPowerWatts, not raw/255*100', () => {
+    const component = mount(AmberSmeter, { target, props: { value: 143, source: 'PO' } });
+    const sub = target.querySelector('.readout-dbm')!;
+    expect(sub.textContent).toBe(formatPowerWatts(143)); // '50W', not '56W'
+    unmount(component);
+  });
+
+  it('SWR readout uses calibrated formatSwr, not 1.0+raw/255*8.9', () => {
+    const component = mount(AmberSmeter, { target, props: { value: 80, source: 'SWR' } });
+    const sub = target.querySelector('.readout-dbm')!;
+    expect(sub.textContent).toBe(formatSwr(80)); // '2.0', not '3.8'
+    unmount(component);
+  });
+
+  it('ALC readout uses calibrated formatAlc, not raw/255*100', () => {
+    const component = mount(AmberSmeter, { target, props: { value: 60, source: 'ALC' } });
+    const sub = target.querySelector('.readout-dbm')!;
+    expect(sub.textContent).toBe(formatAlc(60)); // '50%', not '24%'
+    unmount(component);
+  });
+
+  it('COMP readout uses calibrated formatCompDb, not raw/255*20', () => {
+    const component = mount(AmberSmeter, { target, props: { value: 75, source: 'COMP' } });
+    const sub = target.querySelector('.readout-dbm')!;
+    expect(sub.textContent).toBe(formatCompDb(75)); // '15 dB', not '6dB'
     unmount(component);
   });
 });

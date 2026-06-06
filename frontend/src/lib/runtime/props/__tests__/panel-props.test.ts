@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import {
   toAgcProps,
+  toAmberTelemetryProps,
   toDspProps,
   toRfFrontEndProps,
   toTxProps,
@@ -340,5 +341,24 @@ describe('RF front-end preamp/digisel mutex', () => {
     expect(props.showPre).toBe(true);
     expect(props.preDisabled).toBe(false);
     expect(props.preDisabledReason).toBe('');
+  });
+});
+
+describe('AmberTelemetry props (MOR-483: drop dead TEMP tile)', () => {
+  it('surfaces vd/id raw meter values', () => {
+    const props = toAmberTelemetryProps(makeState({ vdMeter: 157, idMeter: 151 }));
+    expect(props.vdRaw).toBe(157);
+    expect(props.idRaw).toBe(151);
+  });
+
+  it('does not expose a tempRaw field — IC-7610 has no CI-V temperature', () => {
+    const props = toAmberTelemetryProps(makeState({ vdMeter: 157, idMeter: 151 }));
+    expect('tempRaw' in props).toBe(false);
+  });
+
+  it('falls back to null raws when meters are absent', () => {
+    const props = toAmberTelemetryProps(makeState());
+    expect(props.vdRaw).toBeNull();
+    expect(props.idRaw).toBeNull();
   });
 });
