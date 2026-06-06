@@ -360,3 +360,21 @@ class TestMeterCalibrations:
         pts = rig.meter_calibrations["alc"]
         assert pts[0]["raw"] == 0 and pts[0]["actual"] == 0.0
         assert pts[-1]["raw"] == 120 and pts[-1]["actual"] == 100.0
+
+
+class TestControlRanges:
+    """[controls.*] raw/display ranges (MOR-490)."""
+
+    def test_nr_level_wire_range_is_full_bcd(self, rig):
+        # The NR-level CI-V wire value is 0-255 BCD on the IC-7610, like
+        # every other rig.  raw_max must be 255, not the front-panel 0-15.
+        nr = rig.controls["nr_level"]
+        assert nr["raw_min"] == 0
+        assert nr["raw_max"] == 255
+
+    def test_nr_level_display_range_matches_front_panel(self, rig):
+        # The front panel shows NR as 0-15; record that display mapping so
+        # the web slider can convert wire 0-255 <-> display 0-15.
+        nr = rig.controls["nr_level"]
+        assert nr["display_min"] == 0
+        assert nr["display_max"] == 15

@@ -18,6 +18,7 @@ import { audioManager } from '$lib/audio/audio-manager';
 import { setMuted, setVolume } from '$lib/stores/audio.svelte';
 import type { KeyboardActionConfig } from '../layout/keyboard-map';
 import { mapIfShiftToPbt, pbtHzToRaw } from '../panels/filter-controls';
+import { nrDisplayToRaw } from '$lib/radio/filter-controls';
 import { clampRef, clampSpan } from '../../components/spectrum/spectrum-toolbar-logic';
 import { consumePendingFocus, setPendingFocus } from '$lib/radio/pending-focus';
 import { getModeFilter } from '$lib/radio/mode-filter-memory';
@@ -392,8 +393,12 @@ export function makeDspHandlers() {
     },
     onNrLevelChange: (level: number) => {
       const receiver = activeReceiverParam();
-      patchActiveReceiver({ nrLevel: level }, true);
-      cmd('set_nr_level', { level, receiver });
+      // MOR-490: slider is 0-15 (front-panel scale); wire is 0-255 BCD.
+      // Store the raw wire value optimistically so it matches the polled
+      // readback (which the adapter scales raw -> display).
+      const raw = nrDisplayToRaw(level);
+      patchActiveReceiver({ nrLevel: raw }, true);
+      cmd('set_nr_level', { level: raw, receiver });
     },
     onNbToggle: (on: boolean) => {
       const receiver = activeReceiverParam();

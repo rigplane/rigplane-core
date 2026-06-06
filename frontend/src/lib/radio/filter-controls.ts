@@ -50,6 +50,57 @@ export function pbtHzToRaw(hz: number): number {
   return Math.max(0, Math.min(255, raw));
 }
 
+// NR-level display <-> CI-V wire conversion (MOR-490)
+// The NR-level wire value is a 0-255 BCD level, but the IC-7610 front panel
+// (and our slider) shows NR as 0-15.  Read the range from capabilities if
+// available, falling back to the IC-7610 mapping so the helper stays safe in
+// tests where the runtime is absent.
+//
+// NOTE: the 0-15 <-> 0-255 mapping quantises 256 wire steps onto 16 physical
+// steps, so individual steps may need hardware fine-tuning if the operator
+// sees off-by-one step drift on the front panel.
+const NR_DEFAULTS = { rawMin: 0, rawMax: 255, displayMin: 0, displayMax: 15 } as const;
+
+function nrRange() {
+  try {
+    const ctrl = getControlRange('nr_level');
+    if (
+      ctrl &&
+      ctrl.display_min !== undefined &&
+      ctrl.display_max !== undefined &&
+      ctrl.display_max > ctrl.display_min
+    ) {
+      return {
+        rawMin: ctrl.raw_min,
+        rawMax: ctrl.raw_max,
+        displayMin: ctrl.display_min,
+        displayMax: ctrl.display_max,
+      };
+    }
+  } catch {
+    // capabilities store not available (e.g. in tests)
+  }
+  return NR_DEFAULTS;
+}
+
+/** Convert a raw 0-255 NR wire value to the 0-15 display value. */
+export function nrRawToDisplay(raw: number): number {
+  const { rawMin, rawMax, displayMin, displayMax } = nrRange();
+  const span = rawMax - rawMin;
+  if (span <= 0) return displayMin;
+  const display = Math.round(((raw - rawMin) / span) * (displayMax - displayMin) + displayMin);
+  return Math.max(displayMin, Math.min(displayMax, display));
+}
+
+/** Convert a 0-15 display value to the raw 0-255 NR wire value. */
+export function nrDisplayToRaw(display: number): number {
+  const { rawMin, rawMax, displayMin, displayMax } = nrRange();
+  const span = displayMax - displayMin;
+  if (span <= 0) return rawMin;
+  const raw = Math.round(((display - displayMin) / span) * (rawMax - rawMin) + rawMin);
+  return Math.max(rawMin, Math.min(rawMax, raw));
+}
+
 function clampToBipolarRange(value: number): number {
   return Math.max(FILTER_BIPOLAR_MIN, Math.min(FILTER_BIPOLAR_MAX, Math.round(value)));
 }

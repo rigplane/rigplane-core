@@ -284,6 +284,13 @@ describe('panel prop field availability', () => {
     expect(props.hasNr).toBe(true);
     expect(props.hasAgcTime).toBe(false);
   });
+
+  it('scales the raw 0-255 NR wire value down to the 0-15 slider value (MOR-490)', () => {
+    // Store holds the raw CI-V wire value; the slider is 0-15.
+    expect(toDspProps(makeState({ main: { nrLevel: 0 } }), null).nrLevel).toBe(0);
+    expect(toDspProps(makeState({ main: { nrLevel: 128 } }), null).nrLevel).toBe(8);
+    expect(toDspProps(makeState({ main: { nrLevel: 255 } }), null).nrLevel).toBe(15);
+  });
 });
 
 describe('RF front-end preamp/digisel mutex', () => {

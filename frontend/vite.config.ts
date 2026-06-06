@@ -69,6 +69,7 @@ export default defineConfig({
           exclude: [
             'src/components-v2/wiring/__tests__/keyboard-wiring.test.ts',
             'src/components-v2/wiring/__tests__/vfo-wiring.test.ts',
+            'src/components-v2/wiring/__tests__/dsp-nr-level.test.ts',
             'src/components-v2/wiring/__tests__/focus-mode-race.test.ts',
             'src/components-v2/vfo/__tests__/VfoOps.test.ts',
             'src/components-v2/panels/__tests__/AudioRoutingControl.test.ts',
@@ -108,6 +109,7 @@ export default defineConfig({
           include: [
             'src/components-v2/wiring/__tests__/keyboard-wiring.test.ts',
             'src/components-v2/wiring/__tests__/vfo-wiring.test.ts',
+            'src/components-v2/wiring/__tests__/dsp-nr-level.test.ts',
             'src/components-v2/wiring/__tests__/focus-mode-race.test.ts',
             'src/components-v2/vfo/__tests__/VfoOps.test.ts',
             'src/components-v2/panels/__tests__/AudioRoutingControl.test.ts',

@@ -12,6 +12,7 @@ import type { Capabilities, FilterModeConfig } from '$lib/types/capabilities';
 import type { VfoStateProps } from '../layout/layout-utils';
 import { isFieldAvailable } from '$lib/state/field-status';
 import { deriveIfShift, pbtRawToHz } from '../panels/filter-controls';
+import { nrRawToDisplay } from '$lib/radio/filter-controls';
 
 /* ── Helpers ─────────────────────────────────────────────────── */
 
@@ -378,7 +379,8 @@ export function toDspProps(
 
   return {
     nrMode: rx?.nr ? 1 : 0,
-    nrLevel: rx?.nrLevel ?? 0,
+    // MOR-490: store holds the raw 0-255 wire value; the slider is 0-15.
+    nrLevel: nrRawToDisplay(rx?.nrLevel ?? 0),
     nbActive: rx?.nb ?? false,
     nbLevel: rx?.nbLevel ?? 0,
     nbDepth: state?.nbDepth ?? 0,

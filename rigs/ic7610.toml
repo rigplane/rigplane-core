@@ -1281,9 +1281,14 @@ raw_max = 255
 raw_min = 0
 raw_max = 255
 
+# NR level: CI-V wire value is 0-255 BCD (like every other rig); the IC-7610
+# front panel shows it as 0-15.  Record both so the web slider can convert
+# wire <-> display (MOR-490).
 [controls.nr_level]
 raw_min = 0
-raw_max = 15
+raw_max = 255
+display_min = 0
+display_max = 15
 
 [controls.nb_level]
 raw_min = 0

@@ -13,7 +13,7 @@
 
 import type { ServerState, ReceiverState } from '$lib/types/state';
 import type { Capabilities, FilterModeConfig } from '$lib/types/capabilities';
-import { deriveIfShift, pbtRawToHz } from '$lib/radio/filter-controls';
+import { deriveIfShift, nrRawToDisplay, pbtRawToHz } from '$lib/radio/filter-controls';
 import { isFieldAvailable, getFieldAvailability } from '$lib/state/field-status';
 
 /* ── Private helpers ─────────────────────────────────────────── */
@@ -445,7 +445,8 @@ export function toDspProps(
   const autoNotchAvailable = activeFieldAvailable(state, 'autoNotch');
   return {
     nrMode: rx?.nr ? 1 : 0,
-    nrLevel: rx?.nrLevel ?? 0,
+    // MOR-490: store holds the raw 0-255 wire value; the slider is 0-15.
+    nrLevel: nrRawToDisplay(rx?.nrLevel ?? 0),
     nbActive: rx?.nb ?? false,
     nbLevel: rx?.nbLevel ?? 0,
     nbDepth: state?.nbDepth ?? 0,

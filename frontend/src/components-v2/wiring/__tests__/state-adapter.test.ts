@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 
 import {
   resolveFilterModeConfig,
+  toDspProps,
   toFilterProps,
   toModeProps,
   toVfoProps,
@@ -217,5 +218,14 @@ describe('toRxAudioProps', () => {
     const live = toRxAudioProps(state, caps, { muted: false, rxEnabled: true, volume: 50 });
     expect(live.monitorMode).toBe('live');
     expect(live.afLevel).toBe(Math.round(50 / 100 * 255));
+  });
+});
+
+describe('toDspProps NR-level scaling (MOR-490)', () => {
+  it('scales the raw 0-255 NR wire value down to the 0-15 slider value', () => {
+    // Store holds the raw CI-V wire value; the slider is 0-15.
+    expect(toDspProps({ active: 'MAIN', main: { nrLevel: 0 } } as any, null).nrLevel).toBe(0);
+    expect(toDspProps({ active: 'MAIN', main: { nrLevel: 128 } } as any, null).nrLevel).toBe(8);
+    expect(toDspProps({ active: 'MAIN', main: { nrLevel: 255 } } as any, null).nrLevel).toBe(15);
   });
 });
