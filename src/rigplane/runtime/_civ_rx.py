@@ -44,7 +44,7 @@ from rigplane.commands import (
     parse_scope_speed_response,
     parse_scope_vbw_response,
 )
-from rigplane.commands.levels import _cw_pitch_from_level
+from rigplane.commands.levels import _cw_pitch_from_level, _key_speed_from_level
 from rigplane.core.exceptions import ConnectionError, TimeoutError
 from rigplane.core.state_pipeline_contracts import (
     ChangeSet,
@@ -260,6 +260,13 @@ _OBSERVABLE_CMD14_FIELDS = {
 _OBSERVABLE_CMD14_CW_PITCH_SUB = 0x09
 _CMD14_CW_PITCH_FIELD = ("global", "operator_controls", "cw_pitch")
 
+# 0x14 key_speed (sub 0x0C) is observation-backed too; its raw level → WPM
+# mapping is linear (``round(level / 6.071 + 6)``, range 6-48), so it is decoded
+# via ``_key_speed_from_level`` rather than the plain BCD ``_decode_level`` used
+# for the other 0x14 levels (MOR-493).
+_OBSERVABLE_CMD14_KEY_SPEED_SUB = 0x0C
+_CMD14_KEY_SPEED_FIELD = ("global", "operator_controls", "key_speed")
+
 # 0x14 level sub-commands whose RadioState mirror write was migrated to the
 # StateStore observation pipeline (MOR-437). ``_handle_14`` skips the redundant
 # ``setattr`` mirror for these; ``_observations_from_frame`` is the source of
@@ -275,6 +282,7 @@ _CMD14_OBSERVATION_BACKED_SUBS = frozenset(
         0x0E,  # compressor_level (global)
         0x15,  # monitor_gain (global)
         0x09,  # cw_pitch (global)
+        0x0C,  # key_speed (global, raw level → WPM — MOR-493)
         0x16,  # vox_gain (global, interim device scale — MOR-459)
         0x17,  # anti_vox_gain (global, interim device scale — MOR-459)
     }
@@ -1542,6 +1550,18 @@ class CivRuntime:
                             _CMD14_CW_PITCH_FIELD, receiver_id=receiver_id
                         ),
                         _cw_pitch_from_level(self._decode_level(frame.data)),
+                        frame=frame,
+                    )
+                )
+            elif sub14 == _OBSERVABLE_CMD14_KEY_SPEED_SUB:
+                # key_speed raw level → WPM (linear) — reuse the exact decode
+                # the legacy mirror and ``set_key_speed`` use (MOR-493).
+                observations.append(
+                    self._observation(
+                        self._field_path(
+                            _CMD14_KEY_SPEED_FIELD, receiver_id=receiver_id
+                        ),
+                        _key_speed_from_level(self._decode_level(frame.data)),
                         frame=frame,
                     )
                 )

@@ -106,10 +106,10 @@
   },
   {
     "name": "cmd14_sub0c_key_speed",
-    "comment": "0x14/0x0C key speed (WPM derived from raw/6.071 + 6, rounded)",
+    "comment": "0x14/0x0C key speed is observation-backed (MOR-493); the legacy RadioState mirror (WPM via raw/6.071 + 6, rounded) is no longer written and stays at its default.",
     "frame": {"command": 20, "sub": 12, "data": "0128"},
     "expected_state": {
-      "key_speed": 27
+      "key_speed": 0
     }
   },
   {

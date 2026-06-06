@@ -1261,6 +1261,13 @@ _VALUE_CONTROL_CASES = (
         "cwPitch",
         600,
     ),
+    # 0x14 0x0C key_speed: raw level → WPM (level 146 → 30 WPM) (MOR-493).
+    (
+        _make_frame(cmd=0x14, sub=0x0C, data=_bcd2(146)),
+        "global.operator_controls.key_speed",
+        "keySpeed",
+        30,
+    ),
     # 0x1A 0x03 filter_width: profile-dependent index → Hz (USB index 19 → 1500).
     (
         _make_frame(cmd=0x1A, sub=0x03, data=b"\x00\x19", receiver=0x00),
@@ -2021,7 +2028,6 @@ def test_update_radio_state_cmd14_receiver_dsp_levels_observation_backed(
 @pytest.mark.parametrize(  # type: ignore[untyped-decorator]
     ("sub", "raw", "field", "expected"),
     [
-        (0x0C, 146, "key_speed", 30),
         (0x0D, 102, "notch_filter", 102),
         (0x0F, 104, "break_in_delay", 104),
         (0x14, 105, "drive_gain", 105),
@@ -2051,6 +2057,8 @@ def test_update_radio_state_cmd14_global_dsp_levels(
         # VOX gain trio promoted to neutral observations (MOR-459); device scale.
         (0x16, 107, "vox_gain", 107),
         (0x17, 108, "anti_vox_gain", 108),
+        # key_speed raw level 146 → 30 WPM via the linear key-speed map (MOR-493).
+        (0x0C, 146, "key_speed", 30),
     ],
 )
 def test_update_radio_state_cmd14_global_dsp_levels_observation_backed(

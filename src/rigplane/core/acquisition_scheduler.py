@@ -257,6 +257,7 @@ _GLOBAL_LEVEL_QUERY_SUBS: dict[str, int] = {
     "power_level": 0x0A,
     "mic_gain": 0x0B,
     "cw_pitch": 0x09,
+    "key_speed": 0x0C,
     "notch_filter": 0x0D,
     "compressor_level": 0x0E,
     "break_in_delay": 0x0F,

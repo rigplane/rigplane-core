@@ -1560,6 +1560,7 @@ def test_ic7610_real_profile_level_query_for_path() -> None:
     vox_gain = FieldPath.global_("operator_controls", "vox_gain")
     anti_vox_gain = FieldPath.global_("operator_controls", "anti_vox_gain")
     cw_pitch = FieldPath.global_("operator_controls", "cw_pitch")
+    key_speed = FieldPath.global_("operator_controls", "key_speed")
 
     assert executor.query_for_path(power_level) == (0x14, 0x0A, None)
     assert executor.query_for_path(mic_gain) == (0x14, 0x0B, None)
@@ -1568,6 +1569,7 @@ def test_ic7610_real_profile_level_query_for_path() -> None:
     assert executor.query_for_path(vox_gain) == (0x14, 0x16, None)
     assert executor.query_for_path(anti_vox_gain) == (0x14, 0x17, None)
     assert executor.query_for_path(cw_pitch) == (0x14, 0x09, None)
+    assert executor.query_for_path(key_speed) == (0x14, 0x0C, None)
 
     # Regression guard: Batch-1 toggles and att/preamp/squelch still map.
     digisel = FieldPath.receiver("main", "operator_toggles", "digisel")
@@ -1605,6 +1607,7 @@ def test_ic7610_real_profile_levels_pollable_and_emit_reads() -> None:
             "vox_gain",
             "anti_vox_gain",
             "cw_pitch",
+            "key_speed",
         )
     )
     target_paths = receiver_paths + global_paths
@@ -1660,6 +1663,7 @@ def test_ic7610_real_profile_levels_pollable_and_emit_reads() -> None:
         (0x14, 0x16, None),
         (0x14, 0x17, None),
         (0x14, 0x09, None),
+        (0x14, 0x0C, None),
     }
     assert expected <= set(sent)
 
