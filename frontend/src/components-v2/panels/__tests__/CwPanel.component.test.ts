@@ -9,6 +9,8 @@ const mockProps = {
   apfMode: 0,
   twinPeak: false,
   currentMode: 'CW',
+  apfDisabled: false,
+  tpfDisabled: false,
   hasCw: true,
   hasBreakIn: true,
   hasApf: true,
@@ -50,8 +52,10 @@ beforeEach(() => {
   Object.assign(mockProps, {
     cwPitch: 600, keySpeed: 12, breakIn: 0, breakInDelay: 0,
     apfMode: 0, twinPeak: false, currentMode: 'CW',
+    apfDisabled: false, tpfDisabled: false,
     hasCw: true, hasBreakIn: true, hasApf: true, hasTwinPeak: true,
   });
+  Object.values(mockHandlers).forEach((fn) => fn.mockClear());
 });
 
 afterEach(() => {
@@ -117,5 +121,46 @@ describe('CwPanel component rendering', () => {
     const comp = components.pop()!;
     unmount(comp);
     expect(t.innerHTML).toBe('');
+  });
+});
+
+function findButton(t: HTMLElement, label: string): HTMLButtonElement {
+  const buttons = Array.from(t.querySelectorAll('button'));
+  const btn = buttons.find((b) => b.textContent?.trim() === label);
+  if (!btn) throw new Error(`button ${label} not found`);
+  return btn as HTMLButtonElement;
+}
+
+describe('CwPanel APF/TPF mode gating (MOR-492)', () => {
+  it('enables the APF button when apfDisabled is false (CW) and forwards clicks', () => {
+    const t = mountPanel({ currentMode: 'CW', apfDisabled: false });
+    const apf = findButton(t, 'APF');
+    expect(apf.disabled).toBe(false);
+    apf.click();
+    expect(mockHandlers.onApfChange).toHaveBeenCalled();
+  });
+
+  it('disables the APF button when apfDisabled is true and swallows clicks', () => {
+    const t = mountPanel({ currentMode: 'USB', apfDisabled: true });
+    const apf = findButton(t, 'APF');
+    expect(apf.disabled).toBe(true);
+    apf.click();
+    expect(mockHandlers.onApfChange).not.toHaveBeenCalled();
+  });
+
+  it('enables the TPF button when tpfDisabled is false (RTTY) and forwards clicks', () => {
+    const t = mountPanel({ currentMode: 'RTTY', tpfDisabled: false });
+    const tpf = findButton(t, 'TPF');
+    expect(tpf.disabled).toBe(false);
+    tpf.click();
+    expect(mockHandlers.onTwinPeakToggle).toHaveBeenCalled();
+  });
+
+  it('disables the TPF button when tpfDisabled is true and swallows clicks', () => {
+    const t = mountPanel({ currentMode: 'USB', tpfDisabled: true });
+    const tpf = findButton(t, 'TPF');
+    expect(tpf.disabled).toBe(true);
+    tpf.click();
+    expect(mockHandlers.onTwinPeakToggle).not.toHaveBeenCalled();
   });
 });

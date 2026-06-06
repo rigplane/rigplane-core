@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import {
   toAgcProps,
   toAmberTelemetryProps,
+  toCwProps,
   toDspProps,
   toRfFrontEndProps,
   toTxProps,
@@ -341,6 +342,57 @@ describe('RF front-end preamp/digisel mutex', () => {
     expect(props.showPre).toBe(true);
     expect(props.preDisabled).toBe(false);
     expect(props.preDisabledReason).toBe('');
+  });
+});
+
+describe('CW panel APF/TPF mode gating (MOR-492)', () => {
+  const caps = {
+    capabilities: ['cw', 'break_in', 'apf', 'twin_peak'],
+  } as any;
+
+  function cwPropsForMode(mode: string) {
+    return toCwProps(makeState({ main: { mode } }), caps);
+  }
+
+  it('enables APF and disables TPF in CW', () => {
+    const props = cwPropsForMode('CW');
+    expect(props.apfDisabled).toBe(false);
+    expect(props.tpfDisabled).toBe(true);
+  });
+
+  it('enables APF in CW-R (reverse)', () => {
+    const props = cwPropsForMode('CW-R');
+    expect(props.apfDisabled).toBe(false);
+  });
+
+  it('enables TPF and disables APF in RTTY', () => {
+    const props = cwPropsForMode('RTTY');
+    expect(props.tpfDisabled).toBe(false);
+    expect(props.apfDisabled).toBe(true);
+  });
+
+  it('enables TPF in RTTY-R (reverse)', () => {
+    const props = cwPropsForMode('RTTY-R');
+    expect(props.tpfDisabled).toBe(false);
+  });
+
+  it('disables both APF and TPF in USB', () => {
+    const props = cwPropsForMode('USB');
+    expect(props.apfDisabled).toBe(true);
+    expect(props.tpfDisabled).toBe(true);
+  });
+
+  it('follows the SUB receiver mode when it is active', () => {
+    const props = toCwProps(
+      makeState({
+        active: 'SUB',
+        main: { mode: 'USB' },
+        sub: { mode: 'RTTY' },
+      }),
+      caps,
+    );
+    expect(props.tpfDisabled).toBe(false);
+    expect(props.apfDisabled).toBe(true);
   });
 });
 

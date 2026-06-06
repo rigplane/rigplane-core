@@ -542,6 +542,8 @@ export interface CwProps {
   apfMode: number;
   twinPeak: boolean;
   currentMode: string;
+  apfDisabled: boolean;
+  tpfDisabled: boolean;
   wpm: number;
   breakInActive: boolean;
   breakInDelay: number;
@@ -561,13 +563,22 @@ export function toCwProps(
 ): CwProps {
   const rx = state ? activeRx(state) : null;
   const breakInVal = state?.breakIn ?? 0;
+  const mode = rx?.mode ?? 'USB';
+  // Mode-gated CW filters (MOR-492): APF (Audio Peak Filter) is only meaningful
+  // in CW/CW-R; TPF (Twin Peak Filter) only in RTTY/RTTY-R. Disable the control
+  // outside its mode so it greys out and no-ops — mirrors the MOR-479 preamp
+  // mutex. Includes the -R reverse variants in both predicates.
+  const apfDisabled = !(mode === 'CW' || mode === 'CW-R');
+  const tpfDisabled = !(mode === 'RTTY' || mode === 'RTTY-R');
   return {
     cwPitch: state?.cwPitch ?? 600,
     keySpeed: state?.keySpeed ?? 12,
     breakIn: breakInVal,
     apfMode: rx?.apfTypeLevel ?? 0,
     twinPeak: rx?.twinPeakFilter ?? false,
-    currentMode: rx?.mode ?? 'USB',
+    currentMode: mode,
+    apfDisabled,
+    tpfDisabled,
     wpm: state?.keySpeed ?? 12,
     breakInActive: breakInVal > 0,
     breakInDelay: state?.breakInDelay ?? 0,

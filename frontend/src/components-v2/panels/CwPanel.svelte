@@ -16,6 +16,8 @@
   let apfMode = $derived(p.apfMode ?? 0);
   let twinPeak = $derived(p.twinPeak ?? false);
   let currentMode = $derived(p.currentMode ?? 'CW');
+  let apfDisabled = $derived(p.apfDisabled ?? false);
+  let tpfDisabled = $derived(p.tpfDisabled ?? false);
   const onCwPitchChange = handlers.onCwPitchChange;
   const onKeySpeedChange = handlers.onKeySpeedChange;
   const onBreakInToggle = handlers.onBreakInToggle;
@@ -77,12 +79,12 @@
         </HardwareButton>
       {/if}
       {#if showApf}
-        <HardwareButton indicator="edge-left" active={apfActive} color="cyan" onclick={() => onApfChange(apfMode > 0 ? 0 : 1)}>
+        <HardwareButton indicator="edge-left" active={apfActive} disabled={apfDisabled} title={apfDisabled ? 'APF only works in CW/CW-R' : null} color="cyan" onclick={() => onApfChange(apfMode > 0 ? 0 : 1)}>
           APF
         </HardwareButton>
       {/if}
       {#if showTwinPeak}
-        <HardwareButton indicator="edge-left" active={twinPeak} color="cyan" onclick={() => onTwinPeakToggle()}>
+        <HardwareButton indicator="edge-left" active={twinPeak} disabled={tpfDisabled} title={tpfDisabled ? 'Twin Peak Filter only works in RTTY/RTTY-R' : null} color="cyan" onclick={() => onTwinPeakToggle()}>
           TPF
         </HardwareButton>
       {/if}
