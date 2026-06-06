@@ -1434,8 +1434,17 @@ class ControlHandler:
                 mode = str(params["mode"])
                 rx = int(params.get("receiver", 0))
                 self._ensure_receiver_supported(rx)
-                q.put(SetMode(mode, receiver=rx))
-                return {"mode": mode, "receiver": rx}
+                # MOR-495: an optional filter (1-3) recalls the destination
+                # mode's remembered filter, mirroring the radio front panel.
+                # Accept either `filter` or `filter_num`; absent → mode-only
+                # (radio applies its mode-default filter).
+                fil_raw = params.get("filter", params.get("filter_num"))
+                fil_num = None if fil_raw is None else int(fil_raw)
+                q.put(SetMode(mode, filter_width=fil_num, receiver=rx))
+                result: dict[str, Any] = {"mode": mode, "receiver": rx}
+                if fil_num is not None:
+                    result["filter"] = fil_num
+                return result
             case "set_filter":
                 fil_str = str(params.get("filter", "FIL1"))
                 fil_num = int(fil_str[-1]) if fil_str[-1].isdigit() else 1

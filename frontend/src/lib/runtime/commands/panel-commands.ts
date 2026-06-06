@@ -23,6 +23,7 @@ import { getCapabilities, getControlRange } from '$lib/stores/capabilities.svelt
 import { audioManager } from '$lib/audio/audio-manager';
 import { setMuted, setVolume } from '$lib/stores/audio.svelte';
 import { consumePendingFocus } from '$lib/radio/pending-focus';
+import { getModeFilter } from '$lib/radio/mode-filter-memory';
 
 /* ── Shared helpers ──────────────────────────────────────────────── */
 
@@ -110,8 +111,16 @@ export function makeModeHandlers() {
     onModeChange: (mode: string) => {
       const pending = consumePendingFocus();
       const receiver: Receiver = pending ? (pending === 'SUB' ? 1 : 0) : activeReceiverParam();
+      // MOR-495: recall the destination mode's remembered filter so the web
+      // mirrors the front panel (mode-only 0x06 would force the radio's
+      // mode-default filter, e.g. USB → FIL2).  Unseen mode → mode-only.
+      const filter = getModeFilter(mode);
       patchActiveReceiver({ mode }, true);
-      cmd('set_mode', { mode, receiver });
+      if (filter !== undefined) {
+        cmd('set_mode', { mode, filter, receiver });
+      } else {
+        cmd('set_mode', { mode, receiver });
+      }
     },
     onDataModeChange: (mode: number) => {
       const receiver = activeReceiverParam();

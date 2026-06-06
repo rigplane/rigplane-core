@@ -313,8 +313,18 @@ def _scope_frame() -> ScopeFrame:
             "set_mode",
             {"mode": "LSB", "receiver": 1},
             SetMode,
+            {"mode": "LSB", "filter_width": None, "receiver": 1},
             {"mode": "LSB", "receiver": 1},
-            {"mode": "LSB", "receiver": 1},
+        ),
+        # MOR-495: an explicit ``filter`` param is threaded onto
+        # SetMode.filter_width so the wire emits the 2-byte 0x06 form and the
+        # radio recalls the destination mode's filter instead of its default.
+        (
+            "set_mode",
+            {"mode": "USB", "filter": 1, "receiver": 0},
+            SetMode,
+            {"mode": "USB", "filter_width": 1, "receiver": 0},
+            {"mode": "USB", "filter": 1, "receiver": 0},
         ),
         (
             "set_filter",

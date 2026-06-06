@@ -435,13 +435,39 @@ class TestSetModeSelected0x26:
         self, mock_transport: MockTransport
     ) -> None:
         # IC-7610 must NOT declare set_selected_mode → unchanged 0x06 path.
-        # This locks zero flagship regression.
+        # This locks zero flagship regression (MOR-184): the flagship uses
+        # the plain 0x06 mode set, never the 0x26 selected-mode form.
+        #
+        # MOR-495: the lock is INTENTIONALLY relaxed to permit an optional
+        # filter byte (the 2-byte 0x06 form), because the web mode-change now
+        # recalls the destination mode's remembered filter to mirror the front
+        # panel.  The hard invariant — "0x06, NOT 0x26 selected-mode" — is
+        # preserved in both the mode-only and mode+filter cases below.
         radio = self._make_radio("IC-7610", mock_transport)
         try:
             assert radio._profile.set_mode_via_selected is False
+            # Mode-only change → 1-byte 0x06 (radio applies its own default).
             await radio.set_mode(Mode.LSB)
             sent = mock_transport.sent_packets[-1]
             assert sent.endswith(b"\xfe\xfe\x98\xe0\x06\x00\xfd")
+            assert b"\x26\x00" not in sent
+        finally:
+            radio._connected = False
+
+    @pytest.mark.asyncio
+    async def test_ic7610_mode_with_filter_emits_two_byte_0x06(
+        self, mock_transport: MockTransport
+    ) -> None:
+        # MOR-495: a mode change carrying a remembered filter must reach the
+        # wire as the 2-byte 0x06 form (mode byte + filter byte), so the radio
+        # lands on the requested filter rather than the mode-default filter.
+        # USB=0x01, FIL1=0x01 → ``... 06 01 01 FD``.  Still 0x06, never 0x26.
+        radio = self._make_radio("IC-7610", mock_transport)
+        try:
+            assert radio._profile.set_mode_via_selected is False
+            await radio.set_mode(Mode.USB, filter_width=1)
+            sent = mock_transport.sent_packets[-1]
+            assert sent.endswith(b"\xfe\xfe\x98\xe0\x06\x01\x01\xfd")
             assert b"\x26\x00" not in sent
         finally:
             radio._connected = False

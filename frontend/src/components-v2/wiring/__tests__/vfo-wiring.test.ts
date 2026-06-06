@@ -29,6 +29,7 @@ import {
 import { audioManager } from '$lib/audio/audio-manager';
 import { toVfoOpsProps } from '../state-adapter';
 import { makeBandHandlers, makeFilterHandlers, makeModeHandlers, makeRitXitHandlers, makeVfoHandlers } from '../command-bus';
+import { recordModeFilter, _resetModeFilterMemory } from '$lib/radio/mode-filter-memory';
 
 const originalDocumentQuerySelector = document.querySelector.bind(document);
 
@@ -220,6 +221,7 @@ describe('makeVfoHandlers', () => {
 describe('makeModeHandlers', () => {
   beforeEach(() => {
     vi.mocked(sendCommand).mockClear();
+    _resetModeFilterMemory();
   });
 
   it('emits set_mode for the active receiver', () => {
@@ -228,6 +230,25 @@ describe('makeModeHandlers', () => {
     makeModeHandlers().onModeChange('CW');
 
     expect(sendCommand).toHaveBeenCalledWith('set_mode', { mode: 'CW', receiver: 1 });
+  });
+
+  it('recalls the remembered filter for a previously-observed mode (MOR-495)', () => {
+    // The radio kept USB on FIL1; switching back to USB must re-send that
+    // filter (2-byte 0x06) instead of letting the radio apply its USB default.
+    vi.mocked(getRadioState).mockReturnValue({ active: 'MAIN' } as any);
+    recordModeFilter('USB', 1);
+
+    makeModeHandlers().onModeChange('USB');
+
+    expect(sendCommand).toHaveBeenCalledWith('set_mode', { mode: 'USB', filter: 1, receiver: 0 });
+  });
+
+  it('emits mode-only set_mode for an unseen mode (MOR-495)', () => {
+    vi.mocked(getRadioState).mockReturnValue({ active: 'MAIN' } as any);
+
+    makeModeHandlers().onModeChange('AM');
+
+    expect(sendCommand).toHaveBeenCalledWith('set_mode', { mode: 'AM', receiver: 0 });
   });
 
   it('emits numeric set_data_mode values for the active receiver', () => {

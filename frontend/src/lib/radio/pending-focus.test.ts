@@ -61,6 +61,7 @@ import { sendCommand } from '$lib/transport/ws-client';
 import { getRadioState } from '$lib/stores/radio.svelte';
 import { makeVfoHandlers } from '../../components-v2/wiring/command-bus';
 import { makeModeHandlers } from '../runtime/commands/panel-commands';
+import { recordModeFilter, _resetModeFilterMemory } from './mode-filter-memory';
 
 const originalDocumentQuerySelector = document.querySelector.bind(document);
 
@@ -78,6 +79,7 @@ function stubModePanel(): void {
 describe('shared pending-focus — cross-module handoff (#1044)', () => {
   beforeEach(() => {
     vi.mocked(sendCommand).mockClear();
+    _resetModeFilterMemory();
     stubModePanel();
     // Drain any lingering pending-focus from previous tests
     vi.mocked(getRadioState).mockReturnValue({ active: 'MAIN' } as any);
@@ -138,6 +140,19 @@ describe('shared pending-focus — cross-module handoff (#1044)', () => {
 
     expect(sendCommand).toHaveBeenNthCalledWith(1, 'set_mode', { mode: 'CW', receiver: 1 });
     expect(sendCommand).toHaveBeenNthCalledWith(2, 'set_mode', { mode: 'USB', receiver: 0 });
+  });
+
+  it('recalls the remembered filter on the panel-commands path (MOR-495)', () => {
+    // Desktop-v2 live path: ModePanel → panel-commands.makeModeHandlers.
+    // A previously-observed USB(FIL1) must re-send filter 1 (2-byte 0x06)
+    // rather than emit a mode-only frame that the radio defaults to FIL2.
+    recordModeFilter('USB', 1);
+    vi.mocked(getRadioState).mockReturnValue({ active: 'MAIN' } as any);
+    vi.mocked(sendCommand).mockClear();
+
+    makeModeHandlers().onModeChange('USB');
+
+    expect(sendCommand).toHaveBeenCalledWith('set_mode', { mode: 'USB', filter: 1, receiver: 0 });
   });
 
   it('pending focus expires after 300ms and falls back to activeReceiverParam', () => {

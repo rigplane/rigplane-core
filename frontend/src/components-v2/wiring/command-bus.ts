@@ -20,6 +20,7 @@ import type { KeyboardActionConfig } from '../layout/keyboard-map';
 import { mapIfShiftToPbt, pbtHzToRaw } from '../panels/filter-controls';
 import { clampRef, clampSpan } from '../../components/spectrum/spectrum-toolbar-logic';
 import { consumePendingFocus, setPendingFocus } from '$lib/radio/pending-focus';
+import { getModeFilter } from '$lib/radio/mode-filter-memory';
 
 /* ── Helpers ─────────────────────────────────────────────────── */
 
@@ -155,8 +156,16 @@ export function makeModeHandlers() {
       const receiver: Receiver = pending
         ? (pending === 'SUB' ? 1 : 0)
         : activeReceiverParam();
+      // MOR-495: recall the destination mode's remembered filter so the web
+      // mirrors the front panel (mode-only 0x06 would force the radio's
+      // mode-default filter, e.g. USB → FIL2).  Unseen mode → mode-only.
+      const filter = getModeFilter(mode);
       patchActiveReceiver({ mode }, true);
-      cmd('set_mode', { mode, receiver });
+      if (filter !== undefined) {
+        cmd('set_mode', { mode, filter, receiver });
+      } else {
+        cmd('set_mode', { mode, receiver });
+      }
     },
     onDataModeChange: (mode: number) => {
       const receiver = activeReceiverParam();
