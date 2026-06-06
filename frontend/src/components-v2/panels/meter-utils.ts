@@ -179,12 +179,18 @@ export function formatAmps(raw: number): string {
 
 /**
  * Formats raw Vd (drain voltage) value as volts string.
- * IC-7610 CI-V Reference p.4: 00 00=0 V, 00 13=10 V, 02 41=16 V.
- * Nominal reading on-air is ~13.8 V.
+ * IC-7610 CI-V Reference p.4 lists 00 00=0 V, 00 13=10 V, 02 41=16 V, but the
+ * manual's raw-13=10 V point is anomalous: interpolating it against the 16 V
+ * top knot reads 14.5 V at raw 184, whereas the operator's bench supply is
+ * exactly 13.8 V at that same raw value (live-confirmed on a real IC-7610 via
+ * /api/v1/state vdMeter:184). The empirical anchor (raw 184 = 13.8 V) corrects
+ * the curve while preserving the origin, the documented top, and monotonicity.
  */
 const VD_KNOTS: [number, number][] = [
   [0, 0],
   [13, 10],
+  [184, 13.8], // operator-measured: raw 184 = 13.8 V supply (the manual's
+  // raw-13=10 V point gave a wrong 14.5 V at this reading)
   [241, 16],
 ];
 

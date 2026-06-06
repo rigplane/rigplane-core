@@ -5,6 +5,7 @@ import {
   normalizePower,
   formatSwr,
   formatAlc,
+  formatVolts,
   formatSMeter,
   getNeedleMarks,
   swrLevel,
@@ -181,12 +182,27 @@ describe('idLevel (calibrated bar)', () => {
   });
 });
 
+describe('formatVolts (Vd calibration)', () => {
+  it('returns 13.8 V at the operator-measured anchor (raw=184)', () => {
+    expect(formatVolts(184)).toBe('13.8 V');
+  });
+  it('returns 0.0 V at the origin (raw=0)', () => {
+    expect(formatVolts(0)).toBe('0.0 V');
+  });
+  it('returns 16.0 V at the full-scale knot (raw=241)', () => {
+    expect(formatVolts(241)).toBe('16.0 V');
+  });
+});
+
 describe('vdLevel (calibrated bar)', () => {
   it('returns 1.0 at the 16 V full-scale knot (raw=241)', () => {
     expect(vdLevel(241)).toBeCloseTo(1.0);
   });
   it('returns 0.625 at 10 V (raw=13), not 13/255=0.05', () => {
     expect(vdLevel(13)).toBeCloseTo(10 / 16);
+  });
+  it('returns ~0.86 at the operator anchor (raw=184) — 13.8/16', () => {
+    expect(vdLevel(184)).toBeCloseTo(13.8 / 16);
   });
 });
 

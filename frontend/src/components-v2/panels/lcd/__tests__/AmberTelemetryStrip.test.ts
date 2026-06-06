@@ -14,8 +14,10 @@ import { mount, unmount } from 'svelte';
 
 import { formatVolts, formatAmps } from '../../meter-utils';
 
-// Nominal IC-7610 supply: raw 157 → ~13.8 V (calibrated), NOT ~9.8 V (raw/255*16).
-const VD_RAW = 157;
+// Nominal IC-7610 supply: raw 184 → 13.8 V (calibrated), NOT ~11.5 V (raw/255*16).
+// 184 is the operator's live-confirmed anchor (real IC-7610, /api/v1/state
+// vdMeter:184 = 13.8 V bench supply); see VD_KNOTS in meter-utils.ts.
+const VD_RAW = 184;
 const ID_RAW = 151; // → 10.0 A calibrated
 
 vi.mock('$lib/runtime/adapters/panel-adapters', () => ({
