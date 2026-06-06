@@ -7,6 +7,12 @@ import {
   formatAlc,
   formatSMeter,
   getNeedleMarks,
+  swrLevel,
+  alcLevel,
+  idLevel,
+  vdLevel,
+  compLevel,
+  sLevel,
 } from './meter-utils';
 
 describe('normalize', () => {
@@ -132,6 +138,73 @@ describe('formatSMeter', () => {
   it('handles raw=255 (above S9+60 range)', () => {
     const result = formatSMeter(255);
     expect(result).toMatch(/^S9\+\d+$/);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Calibrated bar-fill level normalizers (MOR-482)
+// ---------------------------------------------------------------------------
+
+describe('swrLevel (calibrated bar)', () => {
+  it('returns 1.0 at SWR 3.0 (raw=120), not 120/255=0.47', () => {
+    expect(swrLevel(120)).toBeCloseTo(1.0);
+  });
+  it('returns ~0.667 at SWR 2.0 (raw=80) — ratio 2.0/3.0', () => {
+    expect(swrLevel(80)).toBeCloseTo(2.0 / 3.0);
+  });
+  it('returns 1.0 for infinite SWR (raw=255)', () => {
+    expect(swrLevel(255)).toBe(1.0);
+  });
+  it('returns ~0.333 at SWR 1.0 (raw=0)', () => {
+    expect(swrLevel(0)).toBeCloseTo(1.0 / 3.0);
+  });
+});
+
+describe('alcLevel (calibrated bar)', () => {
+  it('returns 0 for raw=0', () => {
+    expect(alcLevel(0)).toBe(0);
+  });
+  it('returns 1.0 at the redline (raw=120)', () => {
+    expect(alcLevel(120)).toBeCloseTo(1.0);
+  });
+  it('returns 0.5 at half redline (raw=60)', () => {
+    expect(alcLevel(60)).toBeCloseTo(0.5);
+  });
+});
+
+describe('idLevel (calibrated bar)', () => {
+  it('returns 1.0 at the 25 A full-scale knot (raw=212)', () => {
+    expect(idLevel(212)).toBeCloseTo(1.0);
+  });
+  it('returns 0.4 at 10 A (raw=151) — 10/25', () => {
+    expect(idLevel(151)).toBeCloseTo(10 / 25);
+  });
+});
+
+describe('vdLevel (calibrated bar)', () => {
+  it('returns 1.0 at the 16 V full-scale knot (raw=241)', () => {
+    expect(vdLevel(241)).toBeCloseTo(1.0);
+  });
+  it('returns 0.625 at 10 V (raw=13), not 13/255=0.05', () => {
+    expect(vdLevel(13)).toBeCloseTo(10 / 16);
+  });
+});
+
+describe('compLevel (calibrated bar)', () => {
+  it('returns 1.0 at the 30 dB full-scale knot (raw=150)', () => {
+    expect(compLevel(150)).toBeCloseTo(1.0);
+  });
+  it('returns 0.5 at 15 dB (raw=75) — 15/30', () => {
+    expect(compLevel(75)).toBeCloseTo(15 / 30);
+  });
+});
+
+describe('sLevel (calibrated bar)', () => {
+  it('returns ~1.0 at S9+60 (raw=241), not 241/255=0.945', () => {
+    expect(sLevel(241)).toBeCloseTo(1.0);
+  });
+  it('returns ~0.498 at S9 (raw=120) — 120/241', () => {
+    expect(sLevel(120)).toBeCloseTo(120 / 241);
   });
 });
 

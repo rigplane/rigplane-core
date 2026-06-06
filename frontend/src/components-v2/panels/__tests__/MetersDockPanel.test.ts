@@ -189,13 +189,14 @@ describe('MetersDockPanel structure', () => {
     expect(t.querySelector('.dock-title')?.textContent).toBe('STATION METERS');
   });
 
-  it('renders four tiles when all four state fields are defined', () => {
-    const t = mountPanel(fullProps);
+  it('renders four tiles on TX when all four state fields are defined', () => {
+    // TX-only tiles (Po/SWR/ALC) only render on TX (MOR-483 part-1).
+    const t = mountPanel({ ...fullProps, txActive: true });
     expect(t.querySelectorAll('.dock-tile')).toHaveLength(4);
   });
 
-  it('renders tiles in fixed priority order Po, SWR, ALC, S', () => {
-    const t = mountPanel(fullProps);
+  it('renders tiles in fixed priority order Po, SWR, ALC, S (TX)', () => {
+    const t = mountPanel({ ...fullProps, txActive: true });
     const keys = Array.from(t.querySelectorAll('.dock-tile')).map((el) =>
       el.getAttribute('data-meter'),
     );
@@ -218,19 +219,22 @@ describe('MetersDockPanel structure', () => {
 });
 
 describe('MetersDockPanel capability gating', () => {
+  // TX-only tiles (Po/SWR/ALC/Id/COMP) only render on TX (MOR-483 part-1), so
+  // these undefined-gating cases run with txActive:true to isolate capability
+  // gating from the TX/RX hide behavior (covered separately below).
   it('hides Po tile when powerMeter is undefined', () => {
-    const t = mountPanel({ ...fullProps, powerMeter: undefined });
+    const t = mountPanel({ ...fullProps, txActive: true, powerMeter: undefined });
     expect(t.querySelector('[data-meter="po"]')).toBeNull();
     expect(t.querySelectorAll('.dock-tile')).toHaveLength(3);
   });
 
   it('hides SWR tile when swrMeter is undefined', () => {
-    const t = mountPanel({ ...fullProps, swrMeter: undefined });
+    const t = mountPanel({ ...fullProps, txActive: true, swrMeter: undefined });
     expect(t.querySelector('[data-meter="swr"]')).toBeNull();
   });
 
   it('hides ALC tile when alcMeter is undefined', () => {
-    const t = mountPanel({ ...fullProps, alcMeter: undefined });
+    const t = mountPanel({ ...fullProps, txActive: true, alcMeter: undefined });
     expect(t.querySelector('[data-meter="alc"]')).toBeNull();
   });
 
@@ -261,15 +265,15 @@ describe('MetersDockPanel capability gating', () => {
     expect(t.querySelector('.dock-title')?.textContent).toBe('STATION METERS');
   });
 
-  it('renders Id tile when idMeter is defined', () => {
-    const t = mountPanel({ ...fullProps, idMeter: 151 });
+  it('renders Id tile when idMeter is defined (TX)', () => {
+    const t = mountPanel({ ...fullProps, txActive: true, idMeter: 151 });
     const tile = t.querySelector('[data-meter="id"]');
     expect(tile).not.toBeNull();
     expect(tile?.querySelector('.tile-value')?.textContent).toBe('10.0 A');
   });
 
   it('hides Id tile when idMeter is undefined', () => {
-    const t = mountPanel({ ...fullProps, idMeter: undefined });
+    const t = mountPanel({ ...fullProps, txActive: true, idMeter: undefined });
     expect(t.querySelector('[data-meter="id"]')).toBeNull();
   });
 
@@ -285,31 +289,32 @@ describe('MetersDockPanel capability gating', () => {
     expect(t.querySelector('[data-meter="vd"]')).toBeNull();
   });
 
-  it('renders COMP tile when compMeter is defined and compressorOn=true', () => {
-    const t = mountPanel({ ...fullProps, compMeter: 75, compressorOn: true });
+  it('renders COMP tile when compMeter is defined and compressorOn=true (TX)', () => {
+    const t = mountPanel({ ...fullProps, txActive: true, compMeter: 75, compressorOn: true });
     const tile = t.querySelector('[data-meter="comp"]');
     expect(tile).not.toBeNull();
     expect(tile?.querySelector('.tile-value')?.textContent).toBe('15 dB');
   });
 
   it('hides COMP tile when compressorOn is false', () => {
-    const t = mountPanel({ ...fullProps, compMeter: 75, compressorOn: false });
+    const t = mountPanel({ ...fullProps, txActive: true, compMeter: 75, compressorOn: false });
     expect(t.querySelector('[data-meter="comp"]')).toBeNull();
   });
 
   it('hides COMP tile when compressorOn is undefined (gating)', () => {
-    const t = mountPanel({ ...fullProps, compMeter: 75 });
+    const t = mountPanel({ ...fullProps, txActive: true, compMeter: 75 });
     expect(t.querySelector('[data-meter="comp"]')).toBeNull();
   });
 
   it('hides COMP tile when compMeter is undefined even with compressorOn=true', () => {
-    const t = mountPanel({ ...fullProps, compMeter: undefined, compressorOn: true });
+    const t = mountPanel({ ...fullProps, txActive: true, compMeter: undefined, compressorOn: true });
     expect(t.querySelector('[data-meter="comp"]')).toBeNull();
   });
 
-  it('renders all seven tiles when all state fields are defined', () => {
+  it('renders all seven tiles when all state fields are defined (TX)', () => {
     const t = mountPanel({
       ...fullProps,
+      txActive: true,
       idMeter: 100,
       vdMeter: 13,
       compMeter: 75,
@@ -323,29 +328,93 @@ describe('MetersDockPanel capability gating', () => {
   });
 });
 
-describe('MetersDockPanel relevance dimming', () => {
-  it('marks TX tiles as relevant when txActive=true', () => {
-    const t = mountPanel({ ...fullProps, txActive: true });
+describe('MetersDockPanel TX-only tile visibility (MOR-483 part-1)', () => {
+  // Intentional behavior change: TX-only tiles (Po/SWR/ALC/Id/COMP) are now
+  // HIDDEN on RX rather than dimmed (data-relevant='false'). Dimming let a
+  // stale last-TX reading linger as garbage; hiding removes it entirely.
+  it('renders TX-only tiles and marks them relevant when txActive=true', () => {
+    const t = mountPanel({
+      ...fullProps,
+      txActive: true,
+      idMeter: 100,
+      compMeter: 75,
+      compressorOn: true,
+    });
     expect(t.querySelector('[data-meter="po"]')?.getAttribute('data-relevant')).toBe('true');
     expect(t.querySelector('[data-meter="swr"]')?.getAttribute('data-relevant')).toBe('true');
     expect(t.querySelector('[data-meter="alc"]')?.getAttribute('data-relevant')).toBe('true');
+    expect(t.querySelector('[data-meter="id"]')?.getAttribute('data-relevant')).toBe('true');
+    expect(t.querySelector('[data-meter="comp"]')?.getAttribute('data-relevant')).toBe('true');
+    // S is the RX indicator — not relevant during TX, but still rendered.
     expect(t.querySelector('[data-meter="s"]')?.getAttribute('data-relevant')).toBe('false');
   });
 
-  it('marks S tile as relevant when txActive=false', () => {
-    const t = mountPanel({ ...fullProps, txActive: false });
-    expect(t.querySelector('[data-meter="s"]')?.getAttribute('data-relevant')).toBe('true');
-    expect(t.querySelector('[data-meter="po"]')?.getAttribute('data-relevant')).toBe('false');
+  it('does NOT render TX-only tiles when txActive=false (hidden, not dimmed)', () => {
+    const t = mountPanel({
+      ...fullProps,
+      txActive: false,
+      idMeter: 100,
+      compMeter: 75,
+      compressorOn: true,
+    });
+    expect(t.querySelector('[data-meter="po"]')).toBeNull();
+    expect(t.querySelector('[data-meter="swr"]')).toBeNull();
+    expect(t.querySelector('[data-meter="alc"]')).toBeNull();
+    expect(t.querySelector('[data-meter="id"]')).toBeNull();
+    expect(t.querySelector('[data-meter="comp"]')).toBeNull();
   });
 
-  it('keeps Vd tile relevant in RX idle (supply voltage is always readable)', () => {
-    const t = mountPanel({ ...fullProps, vdMeter: 180, txActive: false });
-    expect(t.querySelector('[data-meter="vd"]')?.getAttribute('data-relevant')).toBe('true');
+  it('renders S tile in both RX and TX', () => {
+    const rx = mountPanel({ ...fullProps, txActive: false });
+    expect(rx.querySelector('[data-meter="s"]')).not.toBeNull();
+    expect(rx.querySelector('[data-meter="s"]')?.getAttribute('data-relevant')).toBe('true');
+    const tx = mountPanel({ ...fullProps, txActive: true });
+    expect(tx.querySelector('[data-meter="s"]')).not.toBeNull();
   });
 
-  it('keeps Vd tile relevant during TX as well', () => {
-    const t = mountPanel({ ...fullProps, vdMeter: 180, txActive: true });
-    expect(t.querySelector('[data-meter="vd"]')?.getAttribute('data-relevant')).toBe('true');
+  it('renders Vd tile in both RX and TX (supply rail always readable)', () => {
+    const rx = mountPanel({ ...fullProps, vdMeter: 180, txActive: false });
+    expect(rx.querySelector('[data-meter="vd"]')).not.toBeNull();
+    expect(rx.querySelector('[data-meter="vd"]')?.getAttribute('data-relevant')).toBe('true');
+    const tx = mountPanel({ ...fullProps, vdMeter: 180, txActive: true });
+    expect(tx.querySelector('[data-meter="vd"]')).not.toBeNull();
+    expect(tx.querySelector('[data-meter="vd"]')?.getAttribute('data-relevant')).toBe('true');
+  });
+
+  it('shows only S and Vd on RX when every meter has a value', () => {
+    const t = mountPanel({
+      ...fullProps,
+      txActive: false,
+      idMeter: 100,
+      vdMeter: 13,
+      compMeter: 75,
+      compressorOn: true,
+    });
+    const keys = Array.from(t.querySelectorAll('.dock-tile')).map((el) =>
+      el.getAttribute('data-meter'),
+    );
+    expect(keys).toEqual(['vd', 's']);
+  });
+});
+
+describe('MetersDockPanel calibrated bar fill (MOR-482)', () => {
+  it('fills the SWR bar to ~100% at SWR 3.0 (raw=120), not ~47%', () => {
+    // The bar must agree with the calibrated number, not raw/255.
+    const t = mountPanel({ ...fullProps, txActive: true, swrMeter: 120 });
+    const fill = t.querySelector('[data-meter="swr"] .tile-bar-fill') as HTMLElement;
+    expect(parseFloat(fill.style.width)).toBeGreaterThan(95);
+  });
+
+  it('fills the Vd bar near full at the 16 V knot (raw=241), not ~5%', () => {
+    const t = mountPanel({ ...fullProps, vdMeter: 241, txActive: false });
+    const fill = t.querySelector('[data-meter="vd"] .tile-bar-fill') as HTMLElement;
+    expect(parseFloat(fill.style.width)).toBeGreaterThan(95);
+  });
+
+  it('fills the S bar to ~100% at S9+60 (raw=241), not ~94.5%', () => {
+    const t = mountPanel({ ...fullProps, sValue: 241, txActive: false });
+    const fill = t.querySelector('[data-meter="s"] .tile-bar-fill') as HTMLElement;
+    expect(parseFloat(fill.style.width)).toBeGreaterThan(99);
   });
 });
 
@@ -355,9 +424,10 @@ describe('MetersDockPanel fault highlighting', () => {
     expect(t.querySelector('[data-meter="swr"]')?.getAttribute('data-fault')).toBe('true');
   });
 
-  it('does not flag SWR fault during RX', () => {
+  it('does not render the SWR tile during RX (no stale fault to flag)', () => {
+    // SWR is TX-only; on RX the tile is hidden entirely (MOR-483 part-1).
     const t = mountPanel({ ...fullProps, swrMeter: 120, txActive: false });
-    expect(t.querySelector('[data-meter="swr"]')?.getAttribute('data-fault')).toBe('false');
+    expect(t.querySelector('[data-meter="swr"]')).toBeNull();
   });
 
   it('flags ALC tile as fault when raw above 90% of redline during TX', () => {
@@ -389,8 +459,8 @@ describe('MetersDockPanel peak-hold', () => {
     expect(marker).toBeNull();
   });
 
-  it('hides peak marker when tile is not relevant', () => {
-    // Po is not relevant during RX (txActive=false) -> no peak shown
+  it('shows no Po peak marker during RX (Po tile is hidden)', () => {
+    // Po is TX-only and not rendered during RX (txActive=false) -> no peak.
     const t = mountPanel({ ...fullProps, txActive: false });
     const marker = t.querySelector('[data-meter="po"] [data-testid="peak-marker"]');
     expect(marker).toBeNull();
@@ -408,18 +478,18 @@ describe('MetersDockPanel peak-hold', () => {
 });
 
 describe('MetersDockPanel formatted values', () => {
-  it('displays Po in watts', () => {
-    const t = mountPanel(fullProps);
+  it('displays Po in watts (TX)', () => {
+    const t = mountPanel({ ...fullProps, txActive: true });
     expect(t.querySelector('[data-meter="po"] .tile-value')?.textContent).toBe('50W');
   });
 
-  it('displays SWR ratio', () => {
-    const t = mountPanel(fullProps);
+  it('displays SWR ratio (TX)', () => {
+    const t = mountPanel({ ...fullProps, txActive: true });
     expect(t.querySelector('[data-meter="swr"] .tile-value')?.textContent).toBe('1.5');
   });
 
-  it('displays ALC percentage', () => {
-    const t = mountPanel(fullProps);
+  it('displays ALC percentage (TX)', () => {
+    const t = mountPanel({ ...fullProps, txActive: true });
     expect(t.querySelector('[data-meter="alc"] .tile-value')?.textContent).toBe('50%');
   });
 

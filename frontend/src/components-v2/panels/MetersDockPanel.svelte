@@ -2,6 +2,8 @@
   import { onMount, untrack } from 'svelte';
   import { createSmoother } from '$lib/utils/smoothing.svelte';
   import {
+    alcLevel,
+    compLevel,
     formatAlc,
     formatAmps,
     formatCompDb,
@@ -9,12 +11,15 @@
     formatSMeter,
     formatSwr,
     formatVolts,
+    idLevel,
     isAlcFault,
     isSwrFault,
-    normalize,
     normalizePower,
     peakHoldDisplay,
+    sLevel,
+    swrLevel,
     updatePeakHold,
+    vdLevel,
     type PeakHoldState,
   } from './meter-utils';
 
@@ -88,8 +93,8 @@
     const t = Date.now();
     now = t;
     steppeak('po', powerMeter !== undefined ? normalizePower(powerMeter) * 100 : undefined, t);
-    steppeak('swr', swrMeter !== undefined ? normalize(swrMeter) * 100 : undefined, t);
-    steppeak('alc', alcMeter !== undefined ? normalize(alcMeter) * 100 : undefined, t);
+    steppeak('swr', swrMeter !== undefined ? swrLevel(swrMeter) * 100 : undefined, t);
+    steppeak('alc', alcMeter !== undefined ? alcLevel(alcMeter) * 100 : undefined, t);
   }
 
   // A 100ms interval drives both the decay and the latch from fresh
@@ -109,7 +114,11 @@
   // source values are omitted entirely so the grid re-flows.
   let tiles = $derived.by<Tile[]>(() => {
     const out: Tile[] = [];
-    if (powerMeter !== undefined) {
+    // TX-only meters (Po/SWR/ALC/Id/COMP) are gated on `txActive`: on RX they
+    // are NOT rendered (hidden), rather than dimmed, so a stale last-TX reading
+    // can never linger as garbage (MOR-483 part-1). The S tile (RX indicator)
+    // and Vd tile (continuous supply rail) stay rendered in both states.
+    if (powerMeter !== undefined && txActive) {
       out.push({
         key: 'po',
         label: 'Po',
@@ -120,36 +129,36 @@
         relevant: txActive,
       });
     }
-    if (swrMeter !== undefined) {
+    if (swrMeter !== undefined && txActive) {
       out.push({
         key: 'swr',
         label: 'SWR',
         display: formatSwr(swrMeter),
-        fillPct: normalize(swrMeter) * 100,
+        fillPct: swrLevel(swrMeter) * 100,
         fill: 'var(--v2-meter-swr-fill)',
         track: 'var(--v2-meter-swr-track)',
         relevant: txActive,
         fault: txActive && isSwrFault(swrMeter),
       });
     }
-    if (alcMeter !== undefined) {
+    if (alcMeter !== undefined && txActive) {
       out.push({
         key: 'alc',
         label: 'ALC',
         display: formatAlc(alcMeter),
-        fillPct: normalize(alcMeter) * 100,
+        fillPct: alcLevel(alcMeter) * 100,
         fill: 'var(--v2-meter-alc-fill)',
         track: 'var(--v2-meter-alc-track)',
         relevant: txActive,
         fault: txActive && isAlcFault(alcMeter),
       });
     }
-    if (idMeter !== undefined) {
+    if (idMeter !== undefined && txActive) {
       out.push({
         key: 'id',
         label: 'Id',
         display: formatAmps(idMeter),
-        fillPct: normalize(idMeter) * 100,
+        fillPct: idLevel(idMeter) * 100,
         fill: 'var(--v2-meter-id-fill)',
         track: 'var(--v2-meter-id-track)',
         relevant: txActive,
@@ -160,7 +169,7 @@
         key: 'vd',
         label: 'Vd',
         display: formatVolts(vdMeter),
-        fillPct: normalize(vdMeter) * 100,
+        fillPct: vdLevel(vdMeter) * 100,
         fill: 'var(--v2-meter-vd-fill)',
         track: 'var(--v2-meter-vd-track)',
         // Vd (drain voltage) is a continuous supply/PSU health metric,
@@ -168,12 +177,12 @@
         relevant: true,
       });
     }
-    if (compMeter !== undefined && compressorOn === true) {
+    if (compMeter !== undefined && compressorOn === true && txActive) {
       out.push({
         key: 'comp',
         label: 'COMP',
         display: formatCompDb(compMeter),
-        fillPct: normalize(compMeter) * 100,
+        fillPct: compLevel(compMeter) * 100,
         fill: 'var(--v2-meter-comp-fill)',
         track: 'var(--v2-meter-comp-track)',
         relevant: txActive,
@@ -184,7 +193,7 @@
         key: 's',
         label: 'S',
         display: formatSMeter(sValue),
-        fillPct: normalize(sValue) * 100,
+        fillPct: sLevel(sValue) * 100,
         fill: 'var(--v2-meter-s-fill)',
         track: 'var(--v2-meter-s-track)',
         relevant: !txActive,

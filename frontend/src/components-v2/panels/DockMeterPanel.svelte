@@ -1,10 +1,13 @@
 <script lang="ts">
   import {
+    alcLevel,
     formatAlc,
     formatPowerWatts,
     formatSMeter,
     formatSwr,
-    normalize,
+    normalizePower,
+    sLevel,
+    swrLevel,
     type MeterSource,
   } from './meter-utils';
 
@@ -37,12 +40,18 @@
         : { label: 'Po', value: formatPowerWatts(rfPower) },
   );
 
+  // Each row carries its own calibrated 0-1 bar-fill normalizer (MOR-482).
+  // Previously every row used `normalize(value)` = raw/255, so the bar
+  // disagreed with the calibrated number (e.g. SWR 3.0 → 47% bar instead of
+  // ~100%). `fillPct` maps each meter to its matching calibrated normalizer:
+  // S→sLevel, Po→normalizePower, SWR→swrLevel, ALC→alcLevel.
   let rows = $derived([
     {
       key: 'S',
       label: 'S',
       value: sValue,
       display: formatSMeter(sValue),
+      fillPct: sLevel(sValue) * 100,
       fill: 'var(--v2-meter-s-fill)',
       track: 'var(--v2-meter-s-track)',
       valueClass: 's',
@@ -53,6 +62,7 @@
       label: 'Po',
       value: rfPower,
       display: formatPowerWatts(rfPower),
+      fillPct: normalizePower(rfPower) * 100,
       fill: 'var(--v2-meter-power-fill)',
       track: 'var(--v2-meter-power-track)',
       valueClass: 'po',
@@ -63,6 +73,7 @@
       label: 'SWR',
       value: swr,
       display: formatSwr(swr),
+      fillPct: swrLevel(swr) * 100,
       fill: 'var(--v2-meter-swr-fill)',
       track: 'var(--v2-meter-swr-track)',
       valueClass: 'swr',
@@ -73,6 +84,7 @@
       label: 'ALC',
       value: alc,
       display: formatAlc(alc).replace('%', ''),
+      fillPct: alcLevel(alc) * 100,
       fill: 'var(--v2-meter-alc-fill)',
       track: 'var(--v2-meter-alc-track)',
       valueClass: 'alc',
@@ -121,7 +133,7 @@
       <div class="dock-row" data-active={row.key === meterSource} data-relevant={row.relevant}>
         <span class="dock-row-label">{row.label}</span>
         <div class="dock-bar" style:background={row.track}>
-          <div class="dock-bar-fill" style:width={`${normalize(row.value) * 100}%`} style:background={row.fill}></div>
+          <div class="dock-bar-fill" style:width={`${row.fillPct}%`} style:background={row.fill}></div>
         </div>
         <span class={`dock-row-value ${row.valueClass}`}>{row.display}</span>
       </div>
