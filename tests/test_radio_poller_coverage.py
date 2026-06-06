@@ -2408,3 +2408,122 @@ async def test_poll_demand_does_not_pile_duplicates() -> None:
     assert len(executor.calls) == 1, (
         f"in-flight group re-queued: {len(executor.calls)} executor calls"
     )
+
+
+# ---------------------------------------------------------------------------
+# MOR-491-B: NB depth/width initial-connect readback (Option B, direct getter).
+#
+# NB depth/width are global menu items (0x1A 05 02 90/91) whose 4-byte READ
+# query cannot ride the poll-query envelope, so the continuous poller never
+# tracks them. ``_fetch_nb_controls`` reads them once at connect via the direct
+# getters and applies the real values as StateStore observations so the web
+# sliders seed correctly. A purpose-built fake radio (not MagicMock) is used so
+# a getter-signature regression would surface as a real TypeError.
+# ---------------------------------------------------------------------------
+
+
+class _FakeNbRadio:
+    """Minimal NB-capable radio fake for ``_fetch_nb_controls`` tests.
+
+    ``get_nb_*`` either return a canned value or raise to exercise the
+    resilient error path; calls are counted so the test can assert each
+    getter is invoked exactly once.
+    """
+
+    def __init__(
+        self,
+        *,
+        depth: int | Exception = 0,
+        width: int | Exception = 0,
+        capabilities: set[str] | None = None,
+    ) -> None:
+        self.model = "IC-7610"
+        self.capabilities = (
+            capabilities if capabilities is not None else {"nb", "dual_rx"}
+        )
+        self._depth = depth
+        self._width = width
+        self.depth_calls = 0
+        self.width_calls = 0
+
+    async def get_nb_depth(self) -> int:
+        self.depth_calls += 1
+        if isinstance(self._depth, Exception):
+            raise self._depth
+        return self._depth
+
+    async def get_nb_width(self) -> int:
+        self.width_calls += 1
+        if isinstance(self._width, Exception):
+            raise self._width
+        return self._width
+
+
+@pytest.mark.asyncio
+async def test_fetch_nb_controls_seeds_state_store_and_public_state() -> None:
+    """Initial fetch reads both getters and the values reach web state."""
+    from rigplane.web.runtime_helpers import (
+        build_public_state_payload_from_snapshot,
+    )
+
+    radio = _FakeNbRadio(depth=7, width=200)
+    store = StateStore()
+    poller = RadioPoller(radio, CommandQueue(), state_store=store)
+
+    await poller._fetch_nb_controls()  # noqa: SLF001
+
+    assert radio.depth_calls == 1
+    assert radio.width_calls == 1
+
+    snapshot = store.snapshot()
+    assert (
+        snapshot.field(FieldPath.global_("operator_controls", "nb_depth")).value == 7
+    )
+    assert (
+        snapshot.field(FieldPath.global_("operator_controls", "nb_width")).value == 200
+    )
+
+    # The public projection (what /api/v1/state serves) exposes the values.
+    payload = build_public_state_payload_from_snapshot(
+        snapshot,
+        radio=None,
+        receiver_count=2,
+    )
+    assert payload["nbDepth"] == 7
+    assert payload["nbWidth"] == 200
+
+
+@pytest.mark.asyncio
+async def test_fetch_nb_controls_skips_without_nb_capability() -> None:
+    """No NB capability => no getter calls, no observations."""
+    radio = _FakeNbRadio(depth=7, width=200, capabilities={"dual_rx"})
+    store = StateStore()
+    poller = RadioPoller(radio, CommandQueue(), state_store=store)
+
+    await poller._fetch_nb_controls()  # noqa: SLF001
+
+    assert radio.depth_calls == 0
+    assert radio.width_calls == 0
+    with pytest.raises(KeyError):
+        store.snapshot().field(FieldPath.global_("operator_controls", "nb_depth"))
+
+
+@pytest.mark.asyncio
+async def test_fetch_nb_controls_is_resilient_to_getter_failure() -> None:
+    """A failing depth getter must not block the width readback."""
+    radio = _FakeNbRadio(depth=RuntimeError("boom"), width=120)
+    store = StateStore()
+    poller = RadioPoller(radio, CommandQueue(), state_store=store)
+
+    await poller._fetch_nb_controls()  # noqa: SLF001
+
+    assert radio.depth_calls == 1
+    assert radio.width_calls == 1
+    snapshot = store.snapshot()
+    # Depth read failed => no observation applied.
+    with pytest.raises(KeyError):
+        snapshot.field(FieldPath.global_("operator_controls", "nb_depth"))
+    # Width readback still succeeded.
+    assert (
+        snapshot.field(FieldPath.global_("operator_controls", "nb_width")).value == 120
+    )

@@ -763,6 +763,73 @@ class RadioPoller:
             await asyncio.sleep(self._adaptive_gap())
         logger.info("radio-poller: scope controls fetched (receiver=%d)", scope_rx)
 
+    def _apply_global_control_observation(
+        self,
+        name: str,
+        value: Any,
+        *,
+        command_id: str | None = None,
+        source: CommandSource | None = None,
+        session_id: str | None = None,
+        command_service: CommandService | None = None,
+    ) -> None:
+        """Apply a confirmed global operator-control value to the StateStore.
+
+        Forward-consistent route (mirrors ``_apply_bsr_readback_observations``):
+        the web public-state projection reads ``global.operator_controls.<name>``
+        from the StateStore, so a readback observation is the source of truth —
+        not the legacy ``RadioState`` mirror. Used for NB depth/width whose
+        4-byte menu GET (0x1A 05 02 90/91) cannot ride the poll-query envelope
+        (MOR-491-B).
+        """
+        observation = Observation(
+            path=FieldPath.global_("operator_controls", name),
+            value=value,
+            source=SourceMetadata(
+                source="poll_response",
+                provider="web_poller",
+                native_id=f"{name}_readback",
+                command_source=source,
+                session_id=session_id,
+            ),
+            timestamp_monotonic=time.monotonic(),
+            correlation_id=f"{command_id}:{name}" if command_id else None,
+        )
+        if command_service is not None:
+            command_service.apply_observation(observation)
+        else:
+            self._state_store.apply(observation)
+
+    async def _fetch_nb_controls(self) -> None:
+        """One-shot readback of NB depth/width into the StateStore (MOR-491-B).
+
+        NB depth (0x1A 05 02 90) and width (0x1A 05 02 91) are global menu
+        items whose 4-byte READ query cannot be expressed in the poll-query
+        envelope, so they are not tracked by the continuous poller. Read them
+        once at connect via the existing direct getters and apply the real
+        values as StateStore observations so the web sliders seed correctly.
+
+        Each getter is resilient: a read error or timeout is logged at debug
+        and never kills the poller (mirrors ``_fetch_scope_controls``).
+        """
+        if CAP_NB not in self._caps:
+            return
+        radio: Any = self._radio
+        getters: tuple[tuple[str, str, Any], ...] = (
+            ("nb_depth", "get_nb_depth", getattr(radio, "get_nb_depth", None)),
+            ("nb_width", "get_nb_width", getattr(radio, "get_nb_width", None)),
+        )
+        for name, label, getter in getters:
+            if getter is None:
+                continue
+            try:
+                value = await getter()
+            except Exception:
+                logger.debug("radio-poller: %s failed", label, exc_info=True)
+                continue
+            self._apply_global_control_observation(name, value)
+        logger.info("radio-poller: NB controls fetched")
+
     async def _run(self) -> None:
         _backoff = 0.0
         _MAX_BACKOFF = 5.0  # max pause when radio is disconnected
@@ -771,6 +838,13 @@ class RadioPoller:
         # during connect(). Just signal readiness immediately.
         self._scope_enable_deferred = False
         self._initial_fetch_done.set()
+
+        # NB depth/width are global menu items that cannot ride the poll-query
+        # envelope, so seed them once at connect via direct getters (MOR-491-B).
+        try:
+            await self._fetch_nb_controls()
+        except Exception:
+            logger.debug("radio-poller: NB controls initial fetch failed", exc_info=True)
 
         try:
             while True:
@@ -944,6 +1018,11 @@ class RadioPoller:
     ) -> None:
         radio = self._radio
         _r: Any = radio  # cast for capability methods not on base Radio protocol
+        # Alias the command source under a distinct name: ``source`` is reused as
+        # a match capture variable by several ``case Set*ModInput(source=...)``
+        # arms below, so referencing the parameter directly inside the match
+        # would make mypy collapse the two into one (conflicting) type.
+        command_source = source
         from ..radio_protocol import (
             MemoryCapable,
         )
@@ -1757,16 +1836,49 @@ class RadioPoller:
                     # NB depth is a GLOBAL menu item (0x1A 05 02 90), not
                     # per-receiver: the setter takes no ``receiver`` argument.
                     await radio.set_nb_depth(level)
-                if self._radio_state:
-                    self._radio_state.nb_depth = level
+                    # Write-through readback (MOR-491-B): confirm the value the
+                    # radio actually took (clamp/quantization) instead of a blind
+                    # optimistic mirror. Resilient: a failed readback never kills
+                    # the command path.
+                    try:
+                        confirmed = await radio.get_nb_depth()
+                    except Exception:
+                        logger.debug(
+                            "radio-poller: get_nb_depth readback failed",
+                            exc_info=True,
+                        )
+                    else:
+                        self._apply_global_control_observation(
+                            "nb_depth",
+                            confirmed,
+                            command_id=command_id,
+                            source=command_source,
+                            session_id=session_id,
+                            command_service=command_service,
+                        )
             case SetNbWidth(level=level, receiver=rx):
                 self._ensure_receiver_supported(rx, operation="set_nb_width")
                 if CAP_NB in self._caps:
                     # NB width is a GLOBAL menu item (0x1A 05 02 91), not
                     # per-receiver: the setter takes no ``receiver`` argument.
                     await radio.set_nb_width(level)
-                if self._radio_state:
-                    self._radio_state.nb_width = level
+                    # Write-through readback (MOR-491-B): confirm the real value.
+                    try:
+                        confirmed = await radio.get_nb_width()
+                    except Exception:
+                        logger.debug(
+                            "radio-poller: get_nb_width readback failed",
+                            exc_info=True,
+                        )
+                    else:
+                        self._apply_global_control_observation(
+                            "nb_width",
+                            confirmed,
+                            command_id=command_id,
+                            source=command_source,
+                            session_id=session_id,
+                            command_service=command_service,
+                        )
             case SetDashRatio(value=value):
                 if CAP_CW in self._caps:
                     await radio.set_dash_ratio(value)

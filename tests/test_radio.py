@@ -1918,31 +1918,79 @@ class TestNbDepthWidthPollerDispatch:
 
     @pytest.mark.asyncio
     async def test_execute_set_nb_depth_sends_global_frame(
-        self, radio: IcomRadio, mock_transport: MockTransport
+        self, mock_transport: MockTransport
     ) -> None:
+        from rigplane.core.state_pipeline_contracts import FieldPath
+        from rigplane.core.state_store import StateStore
         from rigplane.web.radio_poller import (
             CommandQueue,
             RadioPoller,
             SetNbDepth,
         )
 
-        poller = RadioPoller(radio, CommandQueue())
-        await poller._execute(SetNbDepth(level=9, receiver=0))  # noqa: SLF001
-        assert mock_transport.sent_packets[-1].endswith(b"\x1a\x05\x02\x90\x09\xfd")
+        # Post-set write-through readback (MOR-491-B): the radio reports back
+        # depth=4 even though 5 was sent (clamp/quantization). The web state
+        # must reflect the radio's REAL value, not the sent value. The readback
+        # response is released only after the GET send (send #2) so the
+        # fire-and-forget SET (send #1) does not consume it.
+        radio = IcomRadio("192.168.1.100", timeout=0.5)
+        radio._civ_transport = mock_transport
+        radio._ctrl_transport = mock_transport
+        radio._connected = True
+        mock_transport.queue_response_on_send(
+            2, _ctl_mem_response(0x05, b"\x04", prefix=b"\x02\x90")
+        )
+        store = StateStore()
+        poller = RadioPoller(radio, CommandQueue(), state_store=store)
+        await poller._execute(SetNbDepth(level=5, receiver=0))  # noqa: SLF001
+        radio._connected = False
+        assert any(
+            pkt.endswith(b"\x1a\x05\x02\x90\x05\xfd")
+            for pkt in mock_transport.sent_packets
+        )
+        assert (
+            store.snapshot()
+            .field(FieldPath.global_("operator_controls", "nb_depth"))
+            .value
+            == 4
+        )
 
     @pytest.mark.asyncio
     async def test_execute_set_nb_width_sends_global_frame(
-        self, radio: IcomRadio, mock_transport: MockTransport
+        self, mock_transport: MockTransport
     ) -> None:
+        from rigplane.core.state_pipeline_contracts import FieldPath
+        from rigplane.core.state_store import StateStore
         from rigplane.web.radio_poller import (
             CommandQueue,
             RadioPoller,
             SetNbWidth,
         )
 
-        poller = RadioPoller(radio, CommandQueue())
+        # Post-set write-through readback (MOR-491-B): radio reports 200 even
+        # though 255 was sent. The web state reflects the radio's real value.
+        # Release the readback response only after the GET send (send #2).
+        radio = IcomRadio("192.168.1.100", timeout=0.5)
+        radio._civ_transport = mock_transport
+        radio._ctrl_transport = mock_transport
+        radio._connected = True
+        mock_transport.queue_response_on_send(
+            2, _ctl_mem_response(0x05, b"\x02\x00", prefix=b"\x02\x91")
+        )
+        store = StateStore()
+        poller = RadioPoller(radio, CommandQueue(), state_store=store)
         await poller._execute(SetNbWidth(level=255, receiver=0))  # noqa: SLF001
-        assert mock_transport.sent_packets[-1].endswith(b"\x1a\x05\x02\x91\x02\x55\xfd")
+        radio._connected = False
+        assert any(
+            pkt.endswith(b"\x1a\x05\x02\x91\x02\x55\xfd")
+            for pkt in mock_transport.sent_packets
+        )
+        assert (
+            store.snapshot()
+            .field(FieldPath.global_("operator_controls", "nb_width"))
+            .value
+            == 200
+        )
 
 
 class TestOperatorToggleParity:
