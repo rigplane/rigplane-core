@@ -1905,6 +1905,46 @@ class TestDspLevelParity:
             await radio.set_nb_width(256)
 
 
+class TestNbDepthWidthPollerDispatch:
+    """Poller-level NB depth/width SET against the REAL IcomRadio signature.
+
+    NB depth/width are GLOBAL menu items (0x1A 05 02 90 / 0x1A 05 02 91),
+    so ``IcomRadio.set_nb_depth``/``set_nb_width`` take ``(self, value)`` with
+    no ``receiver`` parameter (unlike per-receiver ``set_nb_level``). The
+    poller's ``_execute`` must therefore call them WITHOUT ``receiver``.
+    Driving the real radio (not an arg-swallowing AsyncMock) catches the
+    ``TypeError`` that previously silenced these sliders (MOR-491).
+    """
+
+    @pytest.mark.asyncio
+    async def test_execute_set_nb_depth_sends_global_frame(
+        self, radio: IcomRadio, mock_transport: MockTransport
+    ) -> None:
+        from rigplane.web.radio_poller import (
+            CommandQueue,
+            RadioPoller,
+            SetNbDepth,
+        )
+
+        poller = RadioPoller(radio, CommandQueue())
+        await poller._execute(SetNbDepth(level=9, receiver=0))  # noqa: SLF001
+        assert mock_transport.sent_packets[-1].endswith(b"\x1a\x05\x02\x90\x09\xfd")
+
+    @pytest.mark.asyncio
+    async def test_execute_set_nb_width_sends_global_frame(
+        self, radio: IcomRadio, mock_transport: MockTransport
+    ) -> None:
+        from rigplane.web.radio_poller import (
+            CommandQueue,
+            RadioPoller,
+            SetNbWidth,
+        )
+
+        poller = RadioPoller(radio, CommandQueue())
+        await poller._execute(SetNbWidth(level=255, receiver=0))  # noqa: SLF001
+        assert mock_transport.sent_packets[-1].endswith(b"\x1a\x05\x02\x91\x02\x55\xfd")
+
+
 class TestOperatorToggleParity:
     """Test high-level operator toggle/status parity methods."""
 

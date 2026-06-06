@@ -1754,13 +1754,17 @@ class RadioPoller:
             case SetNbDepth(level=level, receiver=rx):
                 self._ensure_receiver_supported(rx, operation="set_nb_depth")
                 if CAP_NB in self._caps:
-                    await radio.set_nb_depth(level, receiver=rx)
+                    # NB depth is a GLOBAL menu item (0x1A 05 02 90), not
+                    # per-receiver: the setter takes no ``receiver`` argument.
+                    await radio.set_nb_depth(level)
                 if self._radio_state:
                     self._radio_state.nb_depth = level
             case SetNbWidth(level=level, receiver=rx):
                 self._ensure_receiver_supported(rx, operation="set_nb_width")
                 if CAP_NB in self._caps:
-                    await radio.set_nb_width(level, receiver=rx)
+                    # NB width is a GLOBAL menu item (0x1A 05 02 91), not
+                    # per-receiver: the setter takes no ``receiver`` argument.
+                    await radio.set_nb_width(level)
                 if self._radio_state:
                     self._radio_state.nb_width = level
             case SetDashRatio(value=value):
