@@ -1,4 +1,6 @@
 import { describe, it, expect } from 'vitest';
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 import {
   rawToSegments,
   rawToSUnit,
@@ -157,5 +159,31 @@ describe('segment rendering logic', () => {
   it('fractional segment for mid-S-unit value', () => {
     const segs = rawToSegments(27); // halfway between S1 and S2
     expect(segs % 1).toBeGreaterThan(0);
+  });
+});
+
+// ── Smoother release τ (MOR-481) ───────────────────────────────────────────
+// The bar fill must track the fast numeric readout within ~150 ms. The
+// falling-edge time constant is the second arg to createSmoother(); a slow
+// release (e.g. 0.25 ≈ 250 ms) makes the bar visibly lag the number on
+// downward steps. Pin the snappier release here so a regression is caught.
+
+describe('LinearSMeter smoother release τ', () => {
+  const source = readFileSync(
+    resolve(process.cwd(), 'src/components-v2/meters/LinearSMeter.svelte'),
+    'utf8',
+  );
+
+  it('calls createSmoother with the snappy release τ (0.10), not the slow 0.25', () => {
+    const match = source.match(/createSmoother\(\s*([0-9.]+)\s*,\s*([0-9.]+)/);
+    expect(match).not.toBeNull();
+    const attack = Number(match![1]);
+    const release = Number(match![2]);
+    // Attack unchanged (fast punch-in).
+    expect(attack).toBeCloseTo(0.06, 5);
+    // Release reduced from 0.25 → 0.10 so the bar reaches the target within
+    // ~150 ms. Anything ≥ 0.25 reintroduces the visible lag (MOR-481).
+    expect(release).toBeCloseTo(0.1, 5);
+    expect(release).toBeLessThan(0.25);
   });
 });
