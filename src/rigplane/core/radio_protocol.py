@@ -935,6 +935,7 @@ class CivCommandCapable(Protocol):
         *,
         wait_response: bool = True,
         priority: Any = ...,
+        wait_dispatch: bool = True,
     ) -> Any:
         """Send a CI-V command through the active backend transport.
 
@@ -942,6 +943,11 @@ class CivCommandCapable(Protocol):
         typed ``Any`` here to keep ``core`` free of the ``commands`` import).
         Background pollers pass ``Priority.BACKGROUND``; user commands keep
         the implementation's NORMAL default (MOR-497i).
+
+        ``wait_dispatch`` controls whether the caller awaits the Commander
+        dispatching the frame.  Defaults to True (blocking, user-command
+        contract); background pollers pass False so the poll burst is
+        fire-and-forget and does not park the poll loop (MOR-497ii).
         """
         ...
 

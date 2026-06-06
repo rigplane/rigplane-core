@@ -42,6 +42,11 @@ def _priority_of(call) -> Priority | None:
     return call.kwargs.get("priority")
 
 
+def _wait_dispatch_of(call) -> object:
+    """Extract the ``wait_dispatch`` kwarg from a ``send_civ`` call (None if absent)."""
+    return call.kwargs.get("wait_dispatch")
+
+
 @pytest.mark.asyncio
 async def test_meter_poll_sends_background_priority() -> None:
     radio = _make_radio(active="MAIN")
@@ -84,9 +89,29 @@ async def test_unselected_slot_poll_sends_background_priority() -> None:
 
 
 @pytest.mark.asyncio
+async def test_state_query_sends_fire_and_forget() -> None:
+    """MOR-497(ii): the state-query poll path must be fire-and-forget so the
+    poll burst does not park the poll loop on the commander future.
+
+    Every ``send_civ`` from ``_send_one_state_query`` must be BACKGROUND AND
+    carry ``wait_dispatch=False``.
+    """
+    radio = _make_radio(active="MAIN")
+    poller = RadioPoller(radio, CommandQueue(), radio_state=RadioState())
+
+    await poller._send_one_state_query(0x03, None, None)  # noqa: SLF001
+
+    assert radio.send_civ.await_count >= 1
+    for call in radio.send_civ.await_args_list:
+        assert _priority_of(call) == Priority.BACKGROUND
+        assert _wait_dispatch_of(call) is False
+
+
+@pytest.mark.asyncio
 async def test_user_command_stays_normal_priority() -> None:
     """KEY GUARD: a user command's CI-V sends (including the in-command VFO
-    switch) must NOT be de-prioritized to BACKGROUND."""
+    switch) must NOT be de-prioritized to BACKGROUND, and must NEVER be made
+    fire-and-forget (``wait_dispatch`` must stay blocking)."""
     # active="SUB" so SetFreq(receiver=0) triggers the in-command VFO switch
     # (_civ(0x07, vfo_main_code)) at radio_poller.py and its restore.
     radio = _make_radio(active="SUB")
@@ -94,10 +119,15 @@ async def test_user_command_stays_normal_priority() -> None:
 
     await poller._execute(SetFreq(14_074_000, receiver=0))  # noqa: SLF001
 
-    # The VFO switch + restore fire via send_civ; none may be BACKGROUND.
+    # The VFO switch + restore fire via send_civ; none may be BACKGROUND, and
+    # NONE may be fire-and-forget — user commands stay blocking/awaited.
     assert radio.send_civ.await_count >= 1
     for call in radio.send_civ.await_args_list:
         prio = _priority_of(call)
         assert prio in (None, Priority.NORMAL), (
             f"user command send_civ used {prio!r}, must not be BACKGROUND"
+        )
+        wd = _wait_dispatch_of(call)
+        assert wd in (None, True), (
+            f"user command send_civ used wait_dispatch={wd!r}, must not be False"
         )

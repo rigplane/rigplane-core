@@ -695,6 +695,7 @@ class CivRuntime:
         dedupe: bool = False,
         wait_response: bool = True,
         timeout: "float | None" = None,
+        wait_dispatch: bool = True,
     ) -> "CivFrame | None":
         """Enqueue a CI-V command and wait for its response (public API)."""
         return await self._send_civ_raw(
@@ -704,6 +705,7 @@ class CivRuntime:
             dedupe=dedupe,
             wait_response=wait_response,
             timeout=timeout,
+            wait_dispatch=wait_dispatch,
         )
 
     async def _send_civ_frame_now(self, civ_frame: bytes) -> None:
@@ -2532,6 +2534,7 @@ class CivRuntime:
         dedupe: bool = False,
         wait_response: bool = True,
         timeout: "float | None" = None,
+        wait_dispatch: bool = True,
     ) -> "CivFrame | None":
         """Enqueue a CI-V command and wait for its response."""
         if self._host._civ_transport is None or not self._host._connected:
@@ -2552,6 +2555,7 @@ class CivRuntime:
             dedupe=dedupe,
             wait_response=wait_response,
             timeout=timeout,
+            wait_dispatch=wait_dispatch,
         )
 
     @staticmethod

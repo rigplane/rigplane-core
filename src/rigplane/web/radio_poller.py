@@ -652,26 +652,46 @@ class RadioPoller:
 
         Defaults to ``Priority.BACKGROUND`` so both the odd-cycle state poll
         and the acquisition-scheduler executor (which is bound to this method)
-        yield to user commands on the shared CI-V lane (MOR-497i).
+        yield to user commands on the shared CI-V lane (MOR-497i).  All sends
+        here are fire-and-forget (``wait_dispatch=False``) so the poll burst
+        does not park the poll loop on the commander future (MOR-497ii); the
+        response still arrives via the CI-V RX path.
         """
         if receiver is not None:
             if cmd_byte in (0x25, 0x26):
-                await self._civ(cmd_byte, data=bytes([receiver]), priority=priority)
+                await self._civ(
+                    cmd_byte,
+                    data=bytes([receiver]),
+                    priority=priority,
+                    wait_dispatch=False,
+                )
             else:
                 inner = bytes([receiver, cmd_byte])
                 if sub_byte is not None:
                     inner += bytes([sub_byte])
-                await self._civ(0x29, data=inner, priority=priority)
+                await self._civ(
+                    0x29, data=inner, priority=priority, wait_dispatch=False
+                )
         elif cmd_byte == 0x27 and sub_byte in self._SCOPE_RECEIVER_PREFIX_SUBS:
             # Scope control queries need receiver prefix (00=MAIN, 01=SUB)
             scope_rx = 0
             if self._radio_state:
                 scope_rx = self._radio_state.scope_controls.receiver
             await self._civ(
-                cmd_byte, sub=sub_byte, data=bytes([scope_rx]), priority=priority
+                cmd_byte,
+                sub=sub_byte,
+                data=bytes([scope_rx]),
+                priority=priority,
+                wait_dispatch=False,
             )
         else:
-            await self._civ(cmd_byte, sub=sub_byte, data=b"", priority=priority)
+            await self._civ(
+                cmd_byte,
+                sub=sub_byte,
+                data=b"",
+                priority=priority,
+                wait_dispatch=False,
+            )
 
     # Per-getter timeout for scope-control fetches.  The IC-7610 scope stream
     # (~225 pkt/s) sometimes drops individual control responses; a long wait
@@ -874,6 +894,7 @@ class RadioPoller:
         data: bytes = b"",
         wait_response: bool = False,
         priority: Priority = Priority.NORMAL,
+        wait_dispatch: bool = True,
     ) -> Any:
         """Send a raw CI-V command if the backend provides a CI-V transport.
 
@@ -884,6 +905,11 @@ class RadioPoller:
         in-``_execute`` VFO switch) are never de-prioritized; background poll
         call sites pass ``Priority.BACKGROUND`` explicitly so polls yield to
         user commands on the shared CI-V lane (MOR-497i).
+
+        ``wait_dispatch`` defaults to True so user-command call sites keep the
+        blocking/awaited contract; background poll call sites pass False so the
+        poll burst is fire-and-forget and does not park the poll loop on the
+        commander future (MOR-497ii).
 
         Returns:
             CivFrame response if wait_response=True and backend supports it,
@@ -898,6 +924,7 @@ class RadioPoller:
                 data=data,
                 wait_response=wait_response,
                 priority=priority,
+                wait_dispatch=wait_dispatch,
             )
         return None
 
@@ -2071,7 +2098,11 @@ class RadioPoller:
                 sub=None if sub_byte is None else f"0x{sub_byte:02x}",
             )
             await self._civ(
-                cmd_byte, sub=sub_byte, data=b"", priority=Priority.BACKGROUND
+                cmd_byte,
+                sub=sub_byte,
+                data=b"",
+                priority=Priority.BACKGROUND,
+                wait_dispatch=False,
             )
         else:
             if not self._STATE_QUERIES:
@@ -2162,18 +2193,30 @@ class RadioPoller:
         try:
             if pre_code is not None:
                 await self._civ(
-                    0x07, data=bytes([pre_code]), priority=Priority.BACKGROUND
+                    0x07,
+                    data=bytes([pre_code]),
+                    priority=Priority.BACKGROUND,
+                    wait_dispatch=False,
                 )
                 await asyncio.sleep(self._adaptive_gap())
                 pre_switched = True
             # Swap A/B within the selected receiver.
-            await self._civ(0x07, data=bytes([swap_code]), priority=Priority.BACKGROUND)
+            await self._civ(
+                0x07,
+                data=bytes([swap_code]),
+                priority=Priority.BACKGROUND,
+                wait_dispatch=False,
+            )
             await asyncio.sleep(self._adaptive_gap())
             # Responses for the queries below must route to the opposite slot.
             override_map[rx_name] = target_slot
-            await self._civ(0x03, data=b"", priority=Priority.BACKGROUND)
+            await self._civ(
+                0x03, data=b"", priority=Priority.BACKGROUND, wait_dispatch=False
+            )
             await asyncio.sleep(self._adaptive_gap())
-            await self._civ(0x04, data=b"", priority=Priority.BACKGROUND)
+            await self._civ(
+                0x04, data=b"", priority=Priority.BACKGROUND, wait_dispatch=False
+            )
             # Give the CI-V RX pump a moment to drain responses before we
             # swap back (the override stays set until *after* swap-back
             # so any late 0x03/0x04 response still routes to the
@@ -2186,7 +2229,10 @@ class RadioPoller:
             # the swap-back send + a gap to cover in-flight responses.
             try:
                 await self._civ(
-                    0x07, data=bytes([swap_code]), priority=Priority.BACKGROUND
+                    0x07,
+                    data=bytes([swap_code]),
+                    priority=Priority.BACKGROUND,
+                    wait_dispatch=False,
                 )
             except Exception:
                 logger.warning(
@@ -2199,7 +2245,10 @@ class RadioPoller:
             if pre_switched and post_code is not None:
                 try:
                     await self._civ(
-                        0x07, data=bytes([post_code]), priority=Priority.BACKGROUND
+                        0x07,
+                        data=bytes([post_code]),
+                        priority=Priority.BACKGROUND,
+                        wait_dispatch=False,
                     )
                 except Exception:
                     logger.warning(

@@ -1226,6 +1226,7 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
         dedupe: bool = False,
         wait_response: bool = True,
         timeout: float | None = None,
+        wait_dispatch: bool = True,
     ) -> CivFrame | None:
         """Delegate to CI-V runtime (keeps existing call sites unchanged)."""
         return await self._civ_runtime.send_civ_raw(
@@ -1235,6 +1236,7 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
             dedupe=dedupe,
             wait_response=wait_response,
             timeout=timeout,
+            wait_dispatch=wait_dispatch,
         )
 
     async def _send_civ_expect(
@@ -1304,6 +1306,7 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
         *,
         wait_response: bool = True,
         priority: Priority = Priority.NORMAL,
+        wait_dispatch: bool = True,
     ) -> CivFrame | None:
         """Send a CI-V command.
 
@@ -1315,6 +1318,12 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
             priority: Commander lane priority. Defaults to NORMAL so user
                 commands are not de-prioritized; background pollers pass
                 ``Priority.BACKGROUND`` so polls yield to user commands.
+            wait_dispatch: If False, return immediately after enqueueing
+                instead of awaiting the commander dispatching this frame.
+                Background pollers pass False so the poll burst does not park
+                the poll loop on the commander future (the response still
+                arrives via the RX path). Defaults to True so user commands
+                keep their blocking contract.
 
         Returns:
             Parsed response CivFrame, or None if wait_response=False.
@@ -1324,7 +1333,10 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
             self._radio_addr, CONTROLLER_ADDR, command, sub=sub, data=data
         )
         return await self._send_civ_raw(
-            frame, wait_response=wait_response, priority=priority
+            frame,
+            wait_response=wait_response,
+            priority=priority,
+            wait_dispatch=wait_dispatch,
         )
 
     # ------------------------------------------------------------------

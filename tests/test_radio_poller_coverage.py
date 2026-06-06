@@ -8,7 +8,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from rigplane.commands.commander import Priority
+from rigplane.commands.commander import IcomCommander, Priority
 from rigplane.core.acquisition_scheduler import (
     AcquisitionScheduler,
     MeterObservationCoalescer,
@@ -20,6 +20,7 @@ from rigplane.core.state_acquisition_policy import (
 )
 from rigplane.core.state_pipeline_contracts import FieldPath
 from rigplane.core.state_store import StateStore
+from rigplane.core.types import CivFrame
 from rigplane.core.command_service import (
     CommandExecutionResult,
     CommandService,
@@ -293,6 +294,7 @@ async def test_scheduler_due_request_sends_supported_civ_query_once() -> None:
         data=b"\x00\x15\x02",
         wait_response=False,
         priority=Priority.BACKGROUND,
+        wait_dispatch=False,
     )
     assert scheduler.pending_requests()[0].paths == (path,)
 
@@ -318,6 +320,7 @@ async def test_x6200_scheduler_due_request_sends_civ_query_from_profile() -> Non
         data=b"\x00",
         wait_response=False,
         priority=Priority.BACKGROUND,
+        wait_dispatch=False,
     )
     radio.send_civ.assert_any_await(
         0x26,
@@ -325,6 +328,7 @@ async def test_x6200_scheduler_due_request_sends_civ_query_from_profile() -> Non
         data=b"\x00",
         wait_response=False,
         priority=Priority.BACKGROUND,
+        wait_dispatch=False,
     )
     radio.send_civ.assert_any_await(
         0x29,
@@ -332,6 +336,7 @@ async def test_x6200_scheduler_due_request_sends_civ_query_from_profile() -> Non
         data=b"\x00\x15\x02",
         wait_response=False,
         priority=Priority.BACKGROUND,
+        wait_dispatch=False,
     )
     radio.send_civ.assert_any_await(
         0x15,
@@ -339,6 +344,7 @@ async def test_x6200_scheduler_due_request_sends_civ_query_from_profile() -> Non
         data=b"",
         wait_response=False,
         priority=Priority.BACKGROUND,
+        wait_dispatch=False,
     )
     assert scheduler.pending_requests()
 
@@ -361,6 +367,7 @@ async def test_xiegu_civ_scheduler_due_request_uses_civ_executor() -> None:
         data=b"\x00",
         wait_response=False,
         priority=Priority.BACKGROUND,
+        wait_dispatch=False,
     )
 
 
@@ -485,6 +492,7 @@ async def test_scheduler_active_freq_mode_requests_use_receiver_payload(
         data=bytes([expected_receiver]),
         wait_response=False,
         priority=Priority.BACKGROUND,
+        wait_dispatch=False,
     )
     assert scheduler.pending_requests()[0].paths == (path,)
 
@@ -535,6 +543,7 @@ async def test_scheduler_ptt_request_sends_civ_ptt_query() -> None:
         data=b"",
         wait_response=False,
         priority=Priority.BACKGROUND,
+        wait_dispatch=False,
     )
     assert scheduler.pending_requests()[0].paths == (path,)
 
@@ -780,13 +789,15 @@ async def test_execute_event_emitting_commands_and_vfo_paths() -> None:
         0x07, sub=None, data=bytes([0xD1]), wait_response=False
     )
     # Scope follows the selected receiver (0x27 0x12 0x01 = SUB).
-    # User-command path stays at NORMAL priority (not de-prioritized).
+    # User-command path stays at NORMAL priority (not de-prioritized) and
+    # blocking (wait_dispatch=True, never fire-and-forget).
     radio.send_civ.assert_any_await(
         0x27,
         sub=0x12,
         data=bytes([0x01]),
         wait_response=False,
         priority=Priority.NORMAL,
+        wait_dispatch=True,
     )
     await poller._execute(SelectVfo("MAIN"))  # noqa: SLF001
     assert radio._radio_state.active == "MAIN"
@@ -799,6 +810,7 @@ async def test_execute_event_emitting_commands_and_vfo_paths() -> None:
         data=bytes([0x00]),
         wait_response=False,
         priority=Priority.NORMAL,
+        wait_dispatch=True,
     )
     # Re-clicking the active receiver is a no-op CI-V-wise but still emits
     # the state event so UI listeners can refresh.
@@ -2303,3 +2315,96 @@ async def test_fetch_scope_controls_repeated_timeouts_do_not_accumulate() -> Non
     # Each getter was attempted exactly 3 times (no early exit).
     assert radio.get_scope_receiver.await_count == 3
     assert radio.get_scope_rbw.await_count == 3
+
+
+@pytest.mark.asyncio
+async def test_command_preempts_in_flight_poll_burst() -> None:
+    """MOR-497(ii) end-to-end analogue: with a real ``IcomCommander``, a burst
+    of fire-and-forget BACKGROUND poll sends followed by a NORMAL command must
+    let the NORMAL command dispatch before the remaining BACKGROUND polls.
+
+    Because the poll sends are ``wait_dispatch=False`` they return immediately
+    (do not park the caller), so the NORMAL command is enqueued promptly and
+    the PriorityQueue preempts the queued backgrounds.
+    """
+    order: list[bytes] = []
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    async def execute(cmd: bytes, wait_response: bool = True) -> CivFrame | None:
+        # Park the worker on the gate item so the burst + command all queue
+        # together before any of them dispatch.
+        if cmd == b"gate":
+            started.set()
+            await release.wait()
+        order.append(cmd)
+        return CivFrame(to_addr=0xE0, from_addr=0x98, command=0xFB, sub=None, data=b"")
+
+    c = IcomCommander(execute, min_interval=0.0)
+    c.start()
+    try:
+        gate = asyncio.create_task(c.send(b"gate", priority=Priority.NORMAL))
+        await asyncio.wait_for(started.wait(), timeout=1.0)
+
+        # Fire-and-forget BACKGROUND poll burst: each returns immediately.
+        for i in range(5):
+            await asyncio.wait_for(
+                c.send(
+                    f"bg-{i}".encode(),
+                    priority=Priority.BACKGROUND,
+                    wait_response=False,
+                    wait_dispatch=False,
+                ),
+                timeout=0.5,
+            )
+
+        # A NORMAL command enqueued AFTER the burst.
+        command = asyncio.create_task(c.send(b"cmd", priority=Priority.NORMAL))
+        await asyncio.sleep(0.01)  # let it enqueue
+
+        release.set()
+        await asyncio.gather(gate, command)
+        await asyncio.sleep(0.02)  # drain remaining backgrounds
+    finally:
+        await c.stop()
+
+    assert order[0] == b"gate"
+    cmd_idx = order.index(b"cmd")
+    bg_indices = [order.index(f"bg-{i}".encode()) for i in range(5)]
+    assert all(cmd_idx < bg_idx for bg_idx in bg_indices), (
+        f"NORMAL command did not preempt queued backgrounds: order={order}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_poll_demand_does_not_pile_duplicates() -> None:
+    """MOR-497(ii): scheduler backpressure holds when poll sends return
+    immediately.  Running several ``_send_scheduler_requests`` cycles without
+    delivering responses must NOT re-queue the in-flight group — the in-flight
+    set and pending requests stay bounded (no duplicate re-queue)."""
+    radio = _make_radio(active="MAIN")
+    path = FieldPath.receiver("main", "meters", "s_meter")
+    scheduler = AcquisitionScheduler(profile=_acquisition_profile(path))
+    radio._acquisition_scheduler = scheduler
+    executor = _InjectedAcquisitionExecutor()
+    poller = RadioPoller(
+        radio,
+        CommandQueue(),
+        radio_state=RadioState(),
+        acquisition_executor=executor,
+    )
+
+    # Run many cycles WITHOUT delivering any response (scheduler clears
+    # in-flight only on response, so an undelivered group must not re-queue).
+    for _ in range(6):
+        await poller._send_scheduler_requests()  # noqa: SLF001
+
+    # Exactly one request stays pending (the single cadence group), and the
+    # executor was invoked at most once for it (the in-flight guard prevents
+    # re-sending the same already-sent paths).
+    pending = scheduler.pending_requests()
+    assert len(pending) == 1
+    assert len(poller._acquisition_in_flight) <= 1  # noqa: SLF001
+    assert len(executor.calls) == 1, (
+        f"in-flight group re-queued: {len(executor.calls)} executor calls"
+    )

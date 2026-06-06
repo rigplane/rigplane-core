@@ -112,11 +112,22 @@ async def test_dual_profile_poller_routes_main_mode_via_vfo_switch_when_active_s
     main_code = bytes([radio.profile.vfo_main_code])
     sub_code = bytes([radio.profile.vfo_sub_code])
     # User-command VFO switch stays at NORMAL priority (MOR-497i: only
-    # background polls are demoted to BACKGROUND).
+    # background polls are demoted to BACKGROUND) and blocking
+    # (MOR-497ii: wait_dispatch=True, never fire-and-forget).
     radio.send_civ.assert_any_await(
-        0x07, sub=None, data=main_code, wait_response=False, priority=Priority.NORMAL
+        0x07,
+        sub=None,
+        data=main_code,
+        wait_response=False,
+        priority=Priority.NORMAL,
+        wait_dispatch=True,
     )
     radio.send_civ.assert_any_await(
-        0x07, sub=None, data=sub_code, wait_response=False, priority=Priority.NORMAL
+        0x07,
+        sub=None,
+        data=sub_code,
+        wait_response=False,
+        priority=Priority.NORMAL,
+        wait_dispatch=True,
     )
     radio.set_mode.assert_awaited_once_with("USB", None)
