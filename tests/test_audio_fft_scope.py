@@ -34,6 +34,54 @@ def _make_pcm_noise(num_samples: int, amplitude: int = 1000) -> bytes:
     return samples.tobytes()
 
 
+def _make_pcm_weak_band(
+    num_windows: int,
+    fft_size: int = 2048,
+    sample_rate: int = 48000,
+    sig_amp: int = 200,
+    noise_amp: float = 0.3,
+    seed: int = 7,
+) -> bytes:
+    """Generate a band-limited (100–3000 Hz) speech-like signal at FTX-1 levels.
+
+    Reproduces the live FTX-1 measurement (MOR-512): per-bin in-band dB of
+    roughly ``max -85.9 / mean -90`` sitting over a noise floor near -126 dB
+    under the exact scope FFT math. Under the OLD fixed -70 dB display floor
+    every in-band bin renders at ~0 (invisible); the adaptive window must lift
+    them well above baseline.
+
+    Args:
+        num_windows: How many ``fft_size`` windows of audio to emit.
+        fft_size: FFT window size (must match the scope's).
+        sample_rate: Audio sample rate.
+        sig_amp: Per-band signal amplitude (int16 scale).
+        noise_amp: Broadband noise stddev (int16 scale) — sets the floor.
+        seed: RNG seed for reproducibility.
+
+    Returns:
+        Raw PCM16 mono bytes covering ``num_windows`` FFT windows.
+    """
+    rng = np.random.default_rng(seed)
+    total = fft_size * num_windows
+    t = np.arange(total) / sample_rate
+    sig = np.zeros(total)
+    freqs = np.arange(100, 3001, 100)  # 30 in-band tones spanning 100–3000 Hz
+    for f in freqs:
+        sig += np.sin(2 * np.pi * f * t + rng.uniform(0, 2 * np.pi))
+    sig = sig / len(freqs) * sig_amp
+    noise = rng.standard_normal(total) * noise_amp
+    return (sig + noise).astype(np.int16).tobytes()
+
+
+def _make_pcm_lowlevel_noise(
+    num_samples: int, noise_amp: float = 0.3, seed: int = 11
+) -> bytes:
+    """Generate pure low-level broadband noise (no signal), FTX-1 floor level."""
+    rng = np.random.default_rng(seed)
+    samples = (rng.standard_normal(num_samples) * noise_amp).astype(np.int16)
+    return samples.tobytes()
+
+
 # ── Basic construction ───────────────────────────────────────────────────────
 
 
@@ -569,3 +617,161 @@ class TestAudioFftScopeModeBandwidth:
         bin_res = sample_rate / fft_size
         expected = 2 * int((3600 / 2) / bin_res) + 1
         assert len(frames[0].pixels) == expected
+
+
+# ── Adaptive auto-range (MOR-512) ─────────────────────────────────────────────
+
+_PIXEL_MAX = 160
+
+
+class TestAudioFftScopeAdaptiveAutoRange:
+    """The dB→pixel window must adapt to the actual signal level.
+
+    A fixed -70/-15 dB window left weak-but-clean signals (FTX-1 audio levels)
+    entirely below the display floor — the scope rendered nearly empty. The
+    adaptive window must track the per-stream noise floor and signal ceiling so
+    that ANY radio level is visible, without amplifying pure noise during
+    silence.
+    """
+
+    def _feed_get_last(self, scope: AudioFftScope, pcm: bytes) -> ScopeFrame:
+        frames: list[ScopeFrame] = []
+        scope.on_frame(frames.append)
+        scope.feed_audio(pcm)
+        assert len(frames) >= 1, "no frames produced"
+        return frames[-1]
+
+    def test_weak_band_renders_well_above_baseline(self):
+        """FTX-1-level weak band (-86 dB/bin) must lift well above the floor.
+
+        Under the OLD fixed -70 dB floor every in-band bin renders at ~0
+        (invisible). The adaptive window must put the in-band peak above ~40%
+        of the pixel range. This test FAILS on the old fixed-window code.
+        """
+        fft_size = 2048
+        sample_rate = 48000
+        center = 14_074_000
+        scope = AudioFftScope(
+            fft_size=fft_size, fps=100, avg_count=1, sample_rate=sample_rate
+        )
+        scope.set_center_freq(center)
+
+        # Several windows so the EMA can settle on the real floor/ceil.
+        pcm = _make_pcm_weak_band(
+            num_windows=10, fft_size=fft_size, sample_rate=sample_rate
+        )
+        frame = self._feed_get_last(scope, pcm)
+        pixels = np.frombuffer(frame.pixels, dtype=np.uint8)
+
+        # In-band region around DC (the 100–3000 Hz band maps near center).
+        center_px = len(pixels) // 2
+        bin_res = sample_rate / fft_size
+        hi_bin = int(3000 / bin_res)
+        inband = pixels[center_px - hi_bin : center_px + hi_bin + 1]
+
+        assert int(np.max(inband)) > 0.40 * _PIXEL_MAX, (
+            f"weak in-band signal only reached {int(np.max(inband))}/"
+            f"{_PIXEL_MAX} px — should be lifted well above baseline"
+        )
+
+    def test_loud_input_not_permanently_saturated(self):
+        """A near-full-scale tone must not blow the whole display to max.
+
+        The ceiling adapts upward so a strong signal still shows structure
+        (peak high, surrounding bins lower) rather than clipping everything.
+        """
+        fft_size = 2048
+        sample_rate = 48000
+        scope = AudioFftScope(
+            fft_size=fft_size, fps=100, avg_count=1, sample_rate=sample_rate
+        )
+        scope.set_center_freq(14_074_000)
+
+        # Near full-scale tone (amplitude 30000 of 32767).
+        t = np.arange(fft_size * 10) / sample_rate
+        loud = (np.sin(2 * np.pi * 1500 * t) * 30000).astype(np.int16)
+        frame = self._feed_get_last(scope, loud.tobytes())
+        pixels = np.frombuffer(frame.pixels, dtype=np.uint8)
+
+        # The vast majority of bins (off the tone) must NOT be saturated.
+        saturated = int(np.sum(pixels >= _PIXEL_MAX))
+        assert saturated < 0.25 * len(pixels), (
+            f"{saturated}/{len(pixels)} bins saturated — window did not adapt "
+            "to the loud input"
+        )
+        # The tone peak should still be present and high.
+        assert int(np.max(pixels)) > 0.7 * _PIXEL_MAX
+
+    def test_lowlevel_noise_only_stays_low(self):
+        """Pure low-level noise must NOT be amplified to fill the screen.
+
+        The minimum-window-span guard keeps noise near the bottom when there
+        is no signal above it.
+        """
+        fft_size = 2048
+        sample_rate = 48000
+        scope = AudioFftScope(
+            fft_size=fft_size, fps=100, avg_count=1, sample_rate=sample_rate
+        )
+        scope.set_center_freq(7_000_000)
+
+        pcm = _make_pcm_lowlevel_noise(fft_size * 12, noise_amp=0.3)
+        frame = self._feed_get_last(scope, pcm)
+        pixels = np.frombuffer(frame.pixels, dtype=np.uint8)
+
+        # Noise-only: bulk of bins must sit low (min-span guard prevents the
+        # auto-range from stretching a flat noise floor across the screen).
+        assert int(np.median(pixels)) < 0.30 * _PIXEL_MAX, (
+            f"noise-only median {int(np.median(pixels))}/{_PIXEL_MAX} too high "
+            "— min-span guard failed, noise was amplified"
+        )
+
+    def test_adaptive_window_converges_and_is_stable(self):
+        """Under steady input the auto-range converges (no runaway/pumping).
+
+        Frames are driven through the scope's internal chunk processor with
+        monotonically increasing timestamps so the count is deterministic and
+        independent of the wall-clock frame-rate limiter (which would otherwise
+        drop windows fed back-to-back). This isolates the convergence property
+        of the adaptive dB window.
+        """
+        fft_size = 2048
+        sample_rate = 48000
+        scope = AudioFftScope(
+            fft_size=fft_size, fps=20, avg_count=1, sample_rate=sample_rate
+        )
+        scope.set_center_freq(14_074_000)
+
+        frames: list[ScopeFrame] = []
+        scope.on_frame(frames.append)
+
+        # Many identical-statistics windows of the weak band, each emitted as
+        # its own frame with a fresh timestamp past the frame-rate interval.
+        pcm = _make_pcm_weak_band(
+            num_windows=20, fft_size=fft_size, sample_rate=sample_rate
+        )
+        chunks = np.frombuffer(pcm, dtype=np.int16).astype(np.float32) / 32768.0
+        for i in range(20):
+            chunk = chunks[i * fft_size : (i + 1) * fft_size]
+            # Timestamps spaced by > 1/fps so every chunk emits a frame.
+            scope._process_chunk(chunk, now=float(i))
+
+        assert len(frames) == 20, f"expected 20 frames, got {len(frames)}"
+
+        # Compare the in-band peak of the last few frames — must be stable.
+        bin_res = sample_rate / fft_size
+        hi_bin = int(3000 / bin_res)
+
+        def inband_peak(fr: ScopeFrame) -> int:
+            px = np.frombuffer(fr.pixels, dtype=np.uint8)
+            c = len(px) // 2
+            return int(np.max(px[c - hi_bin : c + hi_bin + 1]))
+
+        tail = [inband_peak(f) for f in frames[-5:]]
+        spread = max(tail) - min(tail)
+        # Once converged, the rendered peak should not pump wildly.
+        assert spread < 0.20 * _PIXEL_MAX, (
+            f"in-band peak pumping across frames: {tail} (spread {spread})"
+        )
+        # And it should be a meaningful, visible level (not collapsed to 0).
+        assert min(tail) > 0.30 * _PIXEL_MAX, f"converged peak too low: {tail}"
