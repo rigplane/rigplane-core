@@ -381,6 +381,41 @@ def _tolerant_equal(tol: int) -> Callable[[int, int], bool]:
     return _eq
 
 
+# Below this value a filter-width readback is a discrete table index (0-23 on
+# the FTX-1), not a width in Hz. The smallest realistic Hz width is 50 (Icom
+# ``filter_width_min``), so the threshold cleanly separates the two encodings.
+_FILTER_WIDTH_INDEX_MAX = 30
+
+
+def _nudge_filter(width: int) -> int:
+    """Mutate a filter width to a DIFFERENT value the radio will accept.
+
+    Two encodings share this check:
+
+    * Discrete *table index* (FTX-1, ``width <= 30``, valid range 0-23): pick a
+      different in-range index by stepping toward the middle of the range. The
+      old ``width + 200`` produced an out-of-range index (e.g. 19 -> 219) that
+      the radio silently ignored, so the check falsely reported "did not react".
+    * Width in *Hz* (Icom, ``width > 30``): keep the historical ±200 Hz nudge.
+    """
+    if width <= _FILTER_WIDTH_INDEX_MAX:
+        # Table index: a small in-range delta toward 0 (wrap up near the floor).
+        return width - 5 if width >= 5 else width + 5
+    return width + 200 if width <= 2600 else width - 200
+
+
+def _filter_width_equal(a: int, b: int) -> bool:
+    """Encoding-aware filter-width comparator.
+
+    A table index (FTX-1) reads back exactly, so require an exact match; an Hz
+    width (Icom) may be quantized by the radio, so allow a 50 Hz tolerance.
+    Both operands are small (index) only when neither exceeds the index ceiling.
+    """
+    if int(a) <= _FILTER_WIDTH_INDEX_MAX and int(b) <= _FILTER_WIDTH_INDEX_MAX:
+        return int(a) == int(b)
+    return abs(int(a) - int(b)) <= 50
+
+
 async def _read_modify_verify_restore(
     radio: Radio,
     entry: CapabilityDeclarationEntry,
@@ -739,8 +774,8 @@ async def _check_filter_width_set(
         entry,
         read=lambda: dsp.get_filter_width(0),
         write=lambda value: dsp.set_filter_width(value, 0),
-        make_changed=lambda w: w + 200 if w <= 2600 else w - 200,
-        equal=_tolerant_equal(50),
+        make_changed=_nudge_filter,
+        equal=_filter_width_equal,
         per_check_timeout=per_check_timeout,
     )
 
@@ -842,13 +877,81 @@ async def _check_notch_set(
     if gate is not None:
         return gate
     dsp = cast(DspControlCapable, radio)
+
+    async def _read_notch_bool() -> bool:
+        # The Yaesu/FTX-1 backend returns a compound ``(state, freq_index)``;
+        # the Icom backend returns a plain bool. The check only toggles the
+        # on/off state, so collapse the read to its bool component. ``freq`` is
+        # preserved because ``set_manual_notch`` writes only the on/off state.
+        value = await dsp.get_manual_notch(0)
+        if isinstance(value, tuple):
+            return bool(value[0])
+        return bool(value)
+
     return await _read_modify_verify_restore(
         radio,
         entry,
-        read=lambda: dsp.get_manual_notch(0),
+        read=_read_notch_bool,
         write=lambda value: dsp.set_manual_notch(value, 0),
         make_changed=lambda b: not b,
         per_check_timeout=per_check_timeout,
+    )
+
+
+# A representative "on" level used when toggling a level-encoded NB/NR control
+# whose original value is 0 (off). Within range for both NB (0-10) and NR (0-15).
+_NB_NR_TEST_LEVEL = 5
+
+
+async def _check_blanker_reduction_set(
+    radio: Radio,
+    entry: CapabilityDeclarationEntry,
+    *,
+    name: str,
+    per_check_timeout: float,
+) -> CheckResult:
+    """RMVR a noise blanker / noise reduction control.
+
+    Prefers the boolean getter/setter (``get_nb``/``set_nb`` on Icom). When the
+    radio exposes only the level variants (``get_nb_level``/``set_nb_level`` on
+    the Yaesu/FTX-1 backend), fall back to those: toggle the level between off
+    (0) and a representative on level, treating ``level > 0`` as "on" for the
+    reaction comparison. Restores the original level on the way out.
+    """
+    bool_read = getattr(radio, f"get_{name}", None)
+    bool_write = getattr(radio, f"set_{name}", None)
+    if callable(bool_read) and callable(bool_write):
+        return await _read_modify_verify_restore(
+            radio,
+            entry,
+            read=lambda: cast(Awaitable[bool], bool_read()),
+            write=cast(Callable[[bool], Awaitable[None]], bool_write),
+            make_changed=lambda b: not b,
+            per_check_timeout=per_check_timeout,
+        )
+
+    level_read = getattr(radio, f"get_{name}_level", None)
+    level_write = getattr(radio, f"set_{name}_level", None)
+    if callable(level_read) and callable(level_write):
+        return await _read_modify_verify_restore(
+            radio,
+            entry,
+            read=lambda: cast(Awaitable[int], level_read()),
+            write=cast(Callable[[int], Awaitable[None]], level_write),
+            make_changed=lambda v: 0 if v > 0 else _NB_NR_TEST_LEVEL,
+            per_check_timeout=per_check_timeout,
+            extra_evidence={"readback_via": f"get_{name}_level"},
+        )
+
+    return _base_result(
+        entry,
+        CheckStatus.UNSUPPORTED,
+        evidence={
+            "reason": (
+                f"radio exposes set_{name} but no get_{name} or "
+                f"get_{name}_level readback"
+            )
+        },
     )
 
 
@@ -862,21 +965,8 @@ async def _check_nb_set(
     gate = _write_gate(radio, entry, allow_writes=allow_writes)
     if gate is not None:
         return gate
-    read_fn = getattr(radio, "get_nb", None)
-    if not callable(read_fn):
-        return _base_result(
-            entry,
-            CheckStatus.UNSUPPORTED,
-            evidence={"reason": "radio exposes set_nb but no get_nb readback"},
-        )
-    write_fn = cast(Callable[[bool], Awaitable[None]], getattr(radio, "set_nb"))
-    return await _read_modify_verify_restore(
-        radio,
-        entry,
-        read=lambda: cast(Awaitable[bool], read_fn()),
-        write=write_fn,
-        make_changed=lambda b: not b,
-        per_check_timeout=per_check_timeout,
+    return await _check_blanker_reduction_set(
+        radio, entry, name="nb", per_check_timeout=per_check_timeout
     )
 
 
@@ -890,21 +980,8 @@ async def _check_nr_set(
     gate = _write_gate(radio, entry, allow_writes=allow_writes)
     if gate is not None:
         return gate
-    read_fn = getattr(radio, "get_nr", None)
-    if not callable(read_fn):
-        return _base_result(
-            entry,
-            CheckStatus.UNSUPPORTED,
-            evidence={"reason": "radio exposes set_nr but no get_nr readback"},
-        )
-    write_fn = cast(Callable[[bool], Awaitable[None]], getattr(radio, "set_nr"))
-    return await _read_modify_verify_restore(
-        radio,
-        entry,
-        read=lambda: cast(Awaitable[bool], read_fn()),
-        write=write_fn,
-        make_changed=lambda b: not b,
-        per_check_timeout=per_check_timeout,
+    return await _check_blanker_reduction_set(
+        radio, entry, name="nr", per_check_timeout=per_check_timeout
     )
 
 
@@ -1002,7 +1079,7 @@ _WRITE_ONLY_RESTORE: dict[str, Any] = {
 _VALUE_RULE_FNS: dict[str, Callable[[Any], Any]] = {
     ValueRule.TOGGLE_BOOL: lambda b: not b,
     ValueRule.STEP_LEVEL_255: lambda v: 200 if v < 128 else 50,
-    ValueRule.NUDGE_FILTER: lambda w: w + 200 if w <= 2600 else w - 200,
+    ValueRule.NUDGE_FILTER: _nudge_filter,
     ValueRule.PREAMP_CYCLE: lambda v: 1 if v == 0 else 0,
     ValueRule.AGC_FLIP: lambda m: (
         int(AgcMode.SLOW) if m != AgcMode.SLOW else int(AgcMode.FAST)
