@@ -318,6 +318,27 @@ class AudioBus:
         except Exception:
             logger.exception("audio-bus: failed to start RX")
 
+    async def restart_rx(self) -> None:
+        """Re-establish RX on the radio using the bus's own callback.
+
+        Used after a half-duplex TX cycle (e.g. the web poller's PTT-off
+        transition on Icom CI-V backends): the radio's single-slot RX
+        callback must be restored to :meth:`_on_opus_packet` so subscribers
+        keep receiving frames. No-op when the bus has no active subscribers.
+        """
+        async with self._lock:
+            if not self._subscribers:
+                return
+            try:
+                await self._radio.start_audio_rx_opus(
+                    self._on_opus_packet,
+                    jitter_depth=self._jitter_depth,
+                )
+                self._rx_active = True
+                logger.info("audio-bus: RX re-armed after TX")
+            except Exception:
+                logger.exception("audio-bus: failed to re-arm RX")
+
     async def _stop_rx(self) -> None:
         """Stop receiving audio from the radio."""
         if not self._rx_active:

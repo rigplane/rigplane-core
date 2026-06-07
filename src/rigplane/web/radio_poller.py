@@ -1192,11 +1192,12 @@ class RadioPoller:
                             await radio.stop_audio_tx_opus()
                         logger.info("poller: TX audio stream stopped")
 
-                        # Restart RX audio after TX (IC-7610 doesn't support full duplex)
-                        async def _noop_rx(_pkt: Any) -> None:
-                            pass
-
-                        await radio.start_audio_rx_opus(_noop_rx)
+                        # Restart RX audio after TX (IC-7610 doesn't support
+                        # full duplex). Re-arm through the AudioBus so the
+                        # real subscriber callback is reinstated rather than a
+                        # throwaway no-op clobbering the single-slot RX callback
+                        # (MOR-506).
+                        await radio.audio_bus.restart_rx()
                         logger.info("poller: RX audio stream restarted")
                     except Exception as e:
                         logger.debug("poller: audio stream transition failed: %s", e)
