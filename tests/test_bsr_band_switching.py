@@ -343,3 +343,72 @@ class TestRigProfileBSRCodes:
                     )
                     return
         pytest.fail(f"Band {band_name} not found in {model} profile")
+
+
+# ---------------------------------------------------------------------------
+# FTX-1 (Yaesu) band-stacking codes (MOR-503)
+# ---------------------------------------------------------------------------
+
+
+class TestFtx1BandStackingCodes:
+    """Verify the FTX-1 HF bands carry CI-V band codes for set_band.
+
+    Without ``bsr_code`` the v2 UI band buttons fall through to
+    ``set_freq(default_hz)`` instead of issuing ``set_band``, which loses the
+    radio's per-band last-used frequency (MOR-503).  The codes must be valid
+    keys of ``YaesuCatPoller._CIV_TO_YAESU_BAND`` so they map to a Yaesu
+    ``BS0{nn};`` band-stack recall.
+    """
+
+    # CI-V band code per HF band (Yaesu scheme: 160m=0 … 10m=9).
+    _EXPECTED_FTX1_BSR: dict[str, int] = {
+        "160m": 0,
+        "80m": 1,
+        "60m": 2,
+        "40m": 3,
+        "30m": 4,
+        "20m": 5,
+        "17m": 6,
+        "15m": 7,
+        "12m": 8,
+        "10m": 9,
+    }
+
+    def _ftx1_bands(self) -> dict[str, int | None]:
+        profile = resolve_radio_profile(model="FTX-1")
+        return {bi.name: bi.bsr_code for fr in profile.freq_ranges for bi in fr.bands}
+
+    def test_all_hf_bands_have_bsr_code(self) -> None:
+        """Every FTX-1 HF band must define a band code (none left None)."""
+        bands = self._ftx1_bands()
+        for name in self._EXPECTED_FTX1_BSR:
+            assert bands.get(name) is not None, (
+                f"FTX-1 {name} is missing bsr_code; band-switch would fall back "
+                f"to default_hz instead of set_band"
+            )
+
+    @pytest.mark.parametrize(
+        "band_name,expected_bsr",
+        list(_EXPECTED_FTX1_BSR.items()),
+    )
+    def test_specific_ftx1_bsr_codes(self, band_name: str, expected_bsr: int) -> None:
+        """FTX-1 band codes must match the Yaesu CI-V band scheme."""
+        bands = self._ftx1_bands()
+        assert band_name in bands, f"Band {band_name} not found in FTX-1 profile"
+        assert bands[band_name] == expected_bsr, (
+            f"FTX-1 {band_name}: expected bsr_code {expected_bsr}, "
+            f"got {bands[band_name]}"
+        )
+
+    def test_bsr_codes_are_valid_yaesu_band_keys(self) -> None:
+        """Each FTX-1 bsr_code must map through _CIV_TO_YAESU_BAND for set_band."""
+        from rigplane.backends.yaesu_cat.poller import YaesuCatPoller
+
+        bands = self._ftx1_bands()
+        for name, code in bands.items():
+            if code is None:
+                continue
+            assert code in YaesuCatPoller._CIV_TO_YAESU_BAND, (  # noqa: SLF001
+                f"FTX-1 {name} bsr_code {code} is not a valid Yaesu band key; "
+                f"set_band would silently no-op"
+            )
