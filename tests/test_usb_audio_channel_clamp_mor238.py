@@ -71,6 +71,7 @@ class _StrictChannelBackend:
         channels: int = 1,
         frame_ms: int = 20,
         deliver_channels: int | None = None,
+        rx_audio_channel: str = "mix",
     ) -> FakeRxStream:
         self.rx_open_channels.append(channels)
         self.rx_deliver_channels.append(deliver_channels)

@@ -73,6 +73,8 @@ class _MonoUsbAudioBackend:
         sample_rate: int = 48_000,
         channels: int = 1,
         frame_ms: int = 20,
+        deliver_channels: int | None = None,
+        rx_audio_channel: str = "mix",
     ) -> FakeRxStream:
         stream = FakeRxStream()
         self.rx_streams.append(stream)

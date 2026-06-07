@@ -383,6 +383,7 @@ class UsbAudioDriver:
         channels: int = 1,
         frame_ms: int = 20,
         backend: AudioBackend | None = None,
+        rx_audio_channel: str = "mix",
     ) -> None:
         self._rx_device_override = rx_device
         self._tx_device_override = tx_device
@@ -391,6 +392,12 @@ class UsbAudioDriver:
         self._channels = channels
         self._frame_ms = frame_ms
         self._backend: AudioBackend = backend or PortAudioBackend()
+        # Stereo→mono downmix channel selection (MOR-508): "mix" = (L+R)//2
+        # (default, unchanged for every rig), "left"/"right" = that channel at
+        # full level. Only consulted when a mono request opens a stereo-native
+        # device (MOR-504 under-request downmix). The FTX-1 sets "left" because
+        # its USB RX audio is on the LEFT channel only.
+        self._rx_audio_channel = rx_audio_channel
 
         self._selected_rx: UsbAudioDevice | None = None
         self._selected_tx: UsbAudioDevice | None = None
@@ -705,6 +712,7 @@ class UsbAudioDriver:
                 channels=contract.effective_open_channels,
                 frame_ms=fm,
                 deliver_channels=contract.channels,
+                rx_audio_channel=self._rx_audio_channel,
             )
             await self._rx_stream.start(callback)
             self._store_stream_contract(contract)
