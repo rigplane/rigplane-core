@@ -82,6 +82,60 @@ def _make_pcm_lowlevel_noise(
     return samples.tobytes()
 
 
+def _make_bimodal_db_spectrum(
+    fft_size: int = 2048,
+    sample_rate: int = 48000,
+    inband_lo_hz: float = 100.0,
+    inband_hi_hz: float = 3200.0,
+    inband_db: float = -102.1,
+    inband_spread: float = 2.0,
+    outband_db: float = -126.0,
+    tone_hz: float | None = None,
+    tone_db: float | None = None,
+    seed: int = 0,
+) -> np.ndarray:
+    """Synthesize a per-bin dB spectrum matching the live FTX-1 capture (MOR-512).
+
+    Radio RX audio is bimodal: the demodulated audio baseband (here
+    ``inband_lo_hz..inband_hi_hz``) carries receiver band-noise (~-102 dB
+    median, ~-96.5 max in the live capture) while the out-of-band region sits far
+    lower near the true noise floor (~-126 dB median). This is the exact shape
+    that made the OLD full-spectrum percentile floor latch onto the quiet
+    out-of-band and render the in-band band-noise at ~68% of screen height with
+    no signal present.
+
+    Returns the rfft-shaped ``avg_db`` array (DC..Nyquist) for direct injection
+    into :meth:`AudioFftScope._update_db_window`. An optional tone bin models a
+    real signal ``tone_db`` above the band-noise.
+    """
+    rng = np.random.default_rng(seed)
+    bin_res = sample_rate / fft_size
+    n_bins = fft_size // 2 + 1
+    freqs = np.arange(n_bins) * bin_res
+    avg_db = np.full(n_bins, outband_db, dtype=np.float64)
+    inband = (freqs >= inband_lo_hz) & (freqs <= inband_hi_hz)
+    avg_db[inband] = inband_db + rng.standard_normal(int(inband.sum())) * inband_spread
+    avg_db = np.clip(avg_db, -150.0, avg_db.max())
+    # DC bin runs a little hot (DC leakage), as on real captures.
+    avg_db[0] = -100.0
+    if tone_hz is not None and tone_db is not None:
+        avg_db[int(tone_hz / bin_res)] = tone_db
+    return avg_db
+
+
+def _db_window_to_pixels(scope: AudioFftScope, avg_db: np.ndarray) -> np.ndarray:
+    """Map a per-bin dB array through the scope's adaptive window to pixels.
+
+    Replicates the exact mapping in ``_process_chunk`` (``db_floor`` → 0,
+    ``db_ceil`` → ``_PIXEL_MAX``, clipped) so a synthesized spectrum can be
+    tested against the live-measured screen-height percentages.
+    """
+    db_floor, db_ceil = scope._update_db_window(avg_db)
+    db_range = db_ceil - db_floor
+    pixels_float = (avg_db - db_floor) / db_range * _PIXEL_MAX
+    return np.clip(pixels_float, 0, _PIXEL_MAX)
+
+
 # ── Basic construction ───────────────────────────────────────────────────────
 
 
@@ -640,6 +694,99 @@ class TestAudioFftScopeAdaptiveAutoRange:
         scope.feed_audio(pcm)
         assert len(frames) >= 1, "no frames produced"
         return frames[-1]
+
+    def test_bimodal_no_signal_inband_noise_maps_low(self):
+        """Bimodal no-signal band-noise must map LOW (the MOR-512 regression).
+
+        Live FTX-1 capture, no signal present: in-band band-noise median -102.1
+        dB sits over quiet out-of-band -125.9 dB. The OLD full-spectrum
+        percentile floor latched onto the quiet out-of-band majority (p10
+        ~-128) and stretched the min-span window so the ever-present in-band
+        band-noise rendered at ~68% of screen height. Estimating the floor over
+        the IN-BAND region instead must keep that band-noise well under ~30% so
+        the operator does not see a "high noise floor regardless of signal".
+
+        This test FAILS on the merged full-spectrum code (in-band ~65%).
+        """
+        fft_size = 2048
+        sample_rate = 48000
+        scope = AudioFftScope(
+            fft_size=fft_size, fps=100, avg_count=1, sample_rate=sample_rate
+        )
+        scope.set_center_freq(14_074_000)
+
+        avg_db = _make_bimodal_db_spectrum(fft_size=fft_size, sample_rate=sample_rate)
+        # Let the EMA settle on the bimodal frame (seed makes it immediate).
+        for _ in range(10):
+            pixels = _db_window_to_pixels(scope, avg_db)
+
+        bin_res = sample_rate / fft_size
+        freqs = np.arange(len(avg_db)) * bin_res
+        inband = (freqs >= 100) & (freqs <= 3200)
+        outband = freqs > 5000
+
+        inband_median_pct = float(np.median(pixels[inband])) / _PIXEL_MAX
+        inband_max_pct = float(np.max(pixels[inband])) / _PIXEL_MAX
+
+        assert inband_median_pct < 0.30, (
+            f"no-signal in-band band-noise renders at "
+            f"{inband_median_pct * 100:.0f}% of screen — the floor is latched "
+            "to the quiet out-of-band (MOR-512 regression), should be <30%"
+        )
+        # Sanity: a real signal would have headroom above this band-noise.
+        assert inband_max_pct < 0.40, (
+            f"no-signal in-band max {inband_max_pct * 100:.0f}% leaves no "
+            "headroom for an actual signal"
+        )
+        # Out-of-band wings correctly fall to the bottom of the display.
+        assert float(np.median(pixels[outband])) < 0.10 * _PIXEL_MAX
+
+    def test_bimodal_with_signal_tone_rises_above_band_noise(self):
+        """A real tone ~25 dB over the band-noise must render clearly above it.
+
+        Same bimodal band-noise as the no-signal case plus a real in-band tone
+        25 dB above the band-noise. Good contrast means the tone pixel sits far
+        above the band-noise pixels (which still map low).
+        """
+        fft_size = 2048
+        sample_rate = 48000
+        scope = AudioFftScope(
+            fft_size=fft_size, fps=100, avg_count=1, sample_rate=sample_rate
+        )
+        scope.set_center_freq(14_074_000)
+
+        tone_hz = 1500.0
+        avg_db = _make_bimodal_db_spectrum(
+            fft_size=fft_size,
+            sample_rate=sample_rate,
+            tone_hz=tone_hz,
+            tone_db=-102.1 + 25.0,  # 25 dB above the in-band band-noise
+        )
+        for _ in range(10):
+            pixels = _db_window_to_pixels(scope, avg_db)
+
+        bin_res = sample_rate / fft_size
+        tone_bin = int(tone_hz / bin_res)
+        freqs = np.arange(len(avg_db)) * bin_res
+        inband = (freqs >= 100) & (freqs <= 3200)
+        noise_mask = inband.copy()
+        noise_mask[tone_bin] = False  # exclude the tone bin
+
+        tone_px = float(pixels[tone_bin])
+        noise_median_px = float(np.median(pixels[noise_mask]))
+
+        # Band-noise stays low …
+        assert noise_median_px < 0.30 * _PIXEL_MAX, (
+            f"band-noise median {noise_median_px:.0f}/{_PIXEL_MAX} too high"
+        )
+        # … and the tone rises clearly above it (strong contrast).
+        assert tone_px > 0.60 * _PIXEL_MAX, (
+            f"tone only reached {tone_px:.0f}/{_PIXEL_MAX} — poor contrast"
+        )
+        assert tone_px > noise_median_px + 0.35 * _PIXEL_MAX, (
+            f"tone {tone_px:.0f} not separated from band-noise "
+            f"{noise_median_px:.0f} by enough contrast"
+        )
 
     def test_weak_band_renders_well_above_baseline(self):
         """FTX-1-level weak band (-86 dB/bin) must lift well above the floor.
