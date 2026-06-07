@@ -178,21 +178,32 @@ class DiscoveryResponder:
     def build_response(self, remote_addr: str) -> bytes:
         """Build the JSON discovery response payload."""
         local_ip = _get_local_ip_for(remote_addr)
-        scheme = "https" if self._tls else "http"
 
         radio_info = self._radio_provider() if self._radio_provider else None
         fleet = self._fleet_provider() if self._fleet_provider else None
 
-        # Back-compat: keep the single-radio top-level block populated from the
-        # first/selected fleet member when no dedicated radio_provider is set,
-        # so legacy parsers still resolve a valid station_server.
-        if radio_info is None and fleet:
+        # Derive the effective web_port/tls for the legacy single-radio url/urls
+        # block. When a fleet is present, the primary member (fleet[0]) owns the
+        # legacy block, so its port/tls must drive these URLs — otherwise the
+        # top-level url stays stuck on the responder's static web_port even
+        # though the radio it describes lives elsewhere.
+        web_port = self._web_port
+        tls = self._tls
+        if fleet:
             first = fleet[0]
-            radio_info = RadioInfo(
-                model=first.model,
-                connected=first.connected,
-                radio_ready=first.connected,
-            )
+            web_port = first.web_port
+            tls = first.tls if first.tls is not None else self._tls
+            # Back-compat: keep the single-radio top-level block populated from
+            # the primary fleet member when no dedicated radio_provider is set,
+            # so legacy parsers still resolve a valid station_server.
+            if radio_info is None:
+                radio_info = RadioInfo(
+                    model=first.model,
+                    connected=first.connected,
+                    radio_ready=first.connected,
+                )
+
+        scheme = "https" if tls else "http"
 
         if self._name:
             name = self._name
@@ -206,13 +217,13 @@ class DiscoveryResponder:
             "service": "rigplane",
             "kind": "station_server",
             "version": __version__,
-            "url": f"{scheme}://{local_ip}:{self._web_port}",
+            "url": f"{scheme}://{local_ip}:{web_port}",
             "urls": {
-                "base": f"{scheme}://{local_ip}:{self._web_port}",
-                "health": f"{scheme}://{local_ip}:{self._web_port}/healthz",
-                "readiness": f"{scheme}://{local_ip}:{self._web_port}/readyz",
-                "runtime": (f"{scheme}://{local_ip}:{self._web_port}/api/v1/runtime"),
-                "station": (f"{scheme}://{local_ip}:{self._web_port}/api/v1/station"),
+                "base": f"{scheme}://{local_ip}:{web_port}",
+                "health": f"{scheme}://{local_ip}:{web_port}/healthz",
+                "readiness": f"{scheme}://{local_ip}:{web_port}/readyz",
+                "runtime": (f"{scheme}://{local_ip}:{web_port}/api/v1/runtime"),
+                "station": (f"{scheme}://{local_ip}:{web_port}/api/v1/station"),
             },
             "name": name,
             "displayName": name,

@@ -259,9 +259,40 @@ class TestDiscoveryResponderFleet:
         assert data["radio"]["connected"] is True
         assert data["name"] == "IC-7610"
         assert data["url"].startswith("http://")
-        assert ":8080" in data["url"]
+        # Legacy url must reflect the primary fleet member's port (8081),
+        # not the responder's static web_port (8080).
+        assert ":8081" in data["url"]
         assert data["station"]["radioAvailable"] is True
         assert data["station"]["readiness"] == "ready_with_radio"
+
+    async def test_legacy_url_uses_fleet_member_port_and_tls(self) -> None:
+        """Legacy url/urls.* derive scheme+port from the primary fleet member."""
+        fleet = [
+            FleetRadioInfo(
+                id="radio-a",
+                model="IC-7610",
+                web_port=8443,
+                connected=True,
+                tls=True,
+            ),
+        ]
+        r = await self._fleet_responder(fleet)
+        try:
+            raw = await _query(r.port, MAGIC)
+        finally:
+            await r.stop()
+        assert raw is not None
+        data = json.loads(raw)
+
+        assert data["url"].startswith("https://")
+        assert data["url"].endswith(":8443")
+        for key in ("base", "health", "readiness", "runtime", "station"):
+            url = data["urls"][key]
+            assert url.startswith("https://")
+            assert ":8443" in url
+        # Back-compat: legacy radio block still derives from fleet[0].
+        assert data["radio"]["model"] == "IC-7610"
+        assert data["radio"]["connected"] is True
 
     async def test_radio_provider_overrides_top_level_with_fleet(self) -> None:
         """When both providers are set, top-level uses radio_provider."""
@@ -324,3 +355,6 @@ class TestDiscoveryResponderFleet:
         assert data["kind"] == "station_server"
         assert "radios" not in data
         assert data["radio"]["model"] == "IC-7610"
+        # No-fleet path: legacy url uses the responder's static web_port.
+        assert data["url"].startswith("http://")
+        assert ":8080" in data["url"]
