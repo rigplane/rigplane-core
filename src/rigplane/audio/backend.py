@@ -191,6 +191,7 @@ class AudioBackend(Protocol):
         sample_rate: int = 48_000,
         channels: int = 1,
         frame_ms: int = 20,
+        deliver_channels: int | None = None,
     ) -> RxStream: ...
 
     def open_tx(
@@ -224,6 +225,38 @@ def _ensure_portaudio_deps() -> tuple[Any, Any]:
     except ImportError as exc:
         raise ImportError(_DEPENDENCY_HINT) from exc
     return sd, np
+
+
+def _downmix_stereo_to_mono_s16le(pcm: bytes) -> bytes:
+    """Downmix L+R interleaved s16le → mono s16le via the per-pair average.
+
+    Mirrors ``rigplane.audio.bridge._downmix_stereo_to_mono`` but is dependency-
+    free (stdlib ``array``) so it can run on the PortAudio audio thread without
+    importing numpy. Used by :class:`_PortAudioRxStream` when a stereo-native
+    device is opened at 2 channels but the consumer wants mono (MOR-504):
+    passing interleaved stereo straight through would halve the effective
+    sample-rate and compress the spectrum 2x — the same bug the bridge downmix
+    guards (issue #1381). Trailing bytes that do not form a whole L/R sample
+    pair are dropped (an incomplete frame cannot satisfy the fixed contract).
+    """
+    from array import array
+
+    usable = len(pcm) - (len(pcm) % 4)  # whole L/R pairs (2 ch × 2 bytes)
+    if usable <= 0:
+        return b""
+    samples = array("h")
+    samples.frombytes(pcm[:usable])
+    import sys
+
+    if sys.byteorder != "little":
+        samples.byteswap()
+    mono = array("h", bytes(len(samples)))  # len(samples)//2 mono samples
+    for i in range(0, len(samples), 2):
+        # Average in a wider int to avoid s16 overflow before truncation.
+        mono[i // 2] = (samples[i] + samples[i + 1]) // 2
+    if sys.byteorder != "little":
+        mono.byteswap()
+    return mono.tobytes()
 
 
 class _PortAudioRxStream:
@@ -265,21 +298,37 @@ class _PortAudioRxStream:
         channels: int,
         blocksize: int,
         frame_ms: int,
+        deliver_channels: int | None = None,
     ) -> None:
         self._sd = sd
         self._device_index = device_index
         self._sample_rate = sample_rate
+        # ``channels`` is the OS open count; ``_deliver_channels`` is what the
+        # consumer receives. When deliver < open (mono request on a stereo-
+        # native device, MOR-504) the callback downmixes interleaved s16le to
+        # the deliver count before chunking. Default: deliver == open.
         self._channels = channels
+        self._deliver_channels = (
+            channels if deliver_channels is None else deliver_channels
+        )
+        # Software downmix only fires for the stereo-native → mono case. Any
+        # other deliver/open relationship passes interleaved PCM through
+        # unchanged (over-request already clamps open == deliver upstream).
+        self._downmix_stereo_to_mono = (
+            self._channels == 2 and self._deliver_channels == 1
+        )
         # Capture is callback-driven with blocksize=0 (engine-native period),
         # mirroring a clean sd.rec. blocksize=0 was previously rejected by the
         # WDM-KS capture face (PortAudioError -9999), but companion device
         # selection now forces the WASAPI face, on which blocksize=0 opens.
         self._blocksize = blocksize
         # Fixed delivered-frame size: frame_ms worth of audio frames, each
-        # ``channels`` interleaved s16le samples (2 bytes/sample). The PortAudio
-        # stream stays blocksize=0; only the size handed to ``cb`` is fixed.
+        # ``_deliver_channels`` interleaved s16le samples (2 bytes/sample). The
+        # downstream PCM validator expects the DELIVER count (1920 bytes = 20 ms
+        # mono @ 48 kHz), not the native open count. The PortAudio stream stays
+        # blocksize=0; only the size handed to ``cb`` is fixed.
         frame_samples = (sample_rate * frame_ms) // 1000
-        self._frame_bytes = max(1, frame_samples * channels * 2)
+        self._frame_bytes = max(1, frame_samples * self._deliver_channels * 2)
         self._stream: Any = None
         self._running = False
         self._callback: Callable[[bytes], None] | None = None
@@ -355,6 +404,20 @@ class _PortAudioRxStream:
             return
         if not pcm:
             return
+        if self._downmix_stereo_to_mono:
+            # Device opened at 2 ch (native) but consumer wants mono (MOR-504):
+            # collapse interleaved L/R → mono average BEFORE chunking, so the
+            # accumulator/fixed-frame slicing operates on mono bytes and the
+            # FFT scope + broadcaster receive the mono contract they expect.
+            try:
+                pcm = _downmix_stereo_to_mono_s16le(pcm)
+            except Exception:
+                logger.warning(
+                    "portaudio-rx: stereo→mono downmix failed", exc_info=True
+                )
+                return
+            if not pcm:
+                return
         acc = self._accumulator
         acc.extend(pcm)
         frame_bytes = self._frame_bytes
@@ -852,6 +915,7 @@ class PortAudioBackend:
         sample_rate: int = 48_000,
         channels: int = 1,
         frame_ms: int = 20,
+        deliver_channels: int | None = None,
     ) -> RxStream:
         sd, _ = self._ensure_deps()
         # blocksize=0 lets PortAudio use the engine-native period, mirroring a
@@ -860,6 +924,12 @@ class PortAudioBackend:
         # rejected blocksize=0 with PortAudioError -9999 is no longer chosen).
         # The PortAudio capture period stays engine-native; frame_ms only sizes
         # the fixed frames re-chunked out to the consumer callback.
+        #
+        # ``channels`` is the OS open count; ``deliver_channels`` is what the
+        # consumer receives. When ``deliver_channels`` < ``channels`` (mono
+        # request on a stereo-native device, MOR-504) the stream software-
+        # downmixes before chunking, so the consumer still sees the mono
+        # fixed-frame contract while CoreAudio/AUHAL opens the device natively.
         return _PortAudioRxStream(
             sd,
             device_index=int(device),
@@ -867,6 +937,7 @@ class PortAudioBackend:
             channels=channels,
             blocksize=0,
             frame_ms=frame_ms,
+            deliver_channels=deliver_channels,
         )
 
     def open_tx(
@@ -1040,9 +1111,13 @@ class FakeAudioBackend:
         sample_rate: int = 48_000,
         channels: int = 1,
         frame_ms: int = 20,
+        deliver_channels: int | None = None,
     ) -> FakeRxStream:
         if not any(d.id == device for d in self._devices):
             raise ValueError(f"Unknown device id {device}")
+        # ``deliver_channels`` selects the software downmix in the real
+        # PortAudio stream; FakeRxStream is a verbatim pass-through, so it only
+        # records what it was opened at for assertions.
         stream = FakeRxStream()
         self.rx_streams.append(stream)
         return stream

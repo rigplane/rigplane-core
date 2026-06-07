@@ -53,6 +53,7 @@ class _StrictChannelBackend:
         self.tx_streams: list[FakeTxStream] = []
         self.rx_open_channels: list[int] = []
         self.tx_open_channels: list[int] = []
+        self.rx_deliver_channels: list[int | None] = []
 
     def list_devices(self) -> list[AudioDeviceInfo]:
         return [self._device]
@@ -69,8 +70,15 @@ class _StrictChannelBackend:
         sample_rate: int = 48_000,
         channels: int = 1,
         frame_ms: int = 20,
+        deliver_channels: int | None = None,
     ) -> FakeRxStream:
         self.rx_open_channels.append(channels)
+        self.rx_deliver_channels.append(deliver_channels)
+        # ``channels`` is the OS open count: the strict backend models a device
+        # that rejects any open whose channel count ≠ its capability (PortAudio
+        # -9998 / AUHAL -10863). The driver must open at the device-native count
+        # — clamping DOWN for an over-request, opening NATIVE for a mono request
+        # on a stereo device (then downmixing in software).
         if channels != self._device.input_channels:
             raise RuntimeError(
                 "Error opening InputStream: Invalid number of channels "
@@ -185,25 +193,145 @@ async def test_stereo_device_request_is_unchanged() -> None:
 
 
 @pytest.mark.asyncio
-async def test_mono_request_on_stereo_device_not_upmixed() -> None:
-    """A mono request is never raised to the device max (clamp only narrows)."""
+async def test_mono_request_on_stereo_device_opens_device_native() -> None:
+    """A mono RX request on a stereo-native device opens at the device count.
+
+    macOS CoreAudio/AUHAL refuses to open a 2-channel device at 1 channel
+    (err -10863) → no frames → blank audio scope (MOR-504). The driver must
+    reconcile UP to the device-native open count (with ``channel_source ==
+    "device-native"``) and carry the mono request as the deliver target so the
+    RX stream downmixes back to mono. This is the macOS analogue of the MOR-238
+    over-request narrowing — previously the reconcile only narrowed, so a mono
+    request on a stereo device stayed 1 ch and the open was rejected.
+    """
     backend = _StrictChannelBackend(input_channels=2, output_channels=2)
-    backend._device = AudioDeviceInfo(  # type: ignore[attr-defined]
-        id=AudioDeviceId(0),
-        name="USB Audio Device",
-        input_channels=2,
-        output_channels=2,
-        default_samplerate=48_000,
-        is_default_input=True,
-        is_default_output=True,
-    )
     driver = UsbAudioDriver(serial_port=None, backend=backend)
 
-    # A 1-ch request must stay 1-ch even though the device exposes 2 inputs;
-    # the strict backend would raise if the driver upmixed to 2.
-    with pytest.raises(RuntimeError, match="Invalid number of channels"):
-        await driver.start_rx(lambda _frame: None, channels=1)
-    assert backend.rx_open_channels == [1]
+    await driver.start_rx(lambda _frame: None, channels=1)
+
+    assert driver.rx_running
+    # Opened at the device-native 2 ch (no rejection), delivering mono.
+    assert backend.rx_open_channels == [2]
+    assert backend.rx_deliver_channels == [1]
+    contract = driver.usb_audio_contract
+    assert contract is not None and contract.rx is not None
+    # ``channels`` stays the DELIVERED (mono) count; ``open_channels`` carries
+    # the device-native open count the OS stream is actually opened at.
+    assert contract.rx.channels == 1
+    assert contract.rx.open_channels == 2
+    assert contract.rx.effective_open_channels == 2
+    assert contract.rx.channel_source == "device-native"
+    assert contract.rx.fallback_reason == "channels-1-opened-as-device-2-downmix"
+    await driver.stop_rx()
+
+
+@pytest.mark.asyncio
+async def test_mono_request_on_stereo_device_opens_native_and_downmixes() -> None:
+    """End-to-end: stereo-native open + software downmix delivers mono average.
+
+    Combines the driver-level reconciliation (open at device-native 2 ch, no
+    rejection from the strict backend) with the PortAudio-level downmix (a
+    2-ch interleaved s16le frame collapses to the per-pair mono average at the
+    correct fixed mono byte length). FakeRxStream is a verbatim pass-through, so
+    the downmix itself is pinned by ``test_portaudio_rx_stereo_native_downmix``
+    below; here we assert the driver opens native + delivers mono and that the
+    contract advertises the downmix.
+    """
+    backend = _StrictChannelBackend(input_channels=2, output_channels=2)
+    driver = UsbAudioDriver(serial_port=None, backend=backend)
+    received: list[bytes] = []
+
+    # (a) open is not rejected → reconciled to device-native 2 ch.
+    await driver.start_rx(received.append, channels=1)
+    assert backend.rx_open_channels == [2]
+    assert backend.rx_deliver_channels == [1]
+
+    # (b) FakeRxStream is a pass-through; the real downmix lives in
+    # _PortAudioRxStream (pinned separately). A frame injected here is delivered
+    # verbatim, proving the consumer wiring survives the reconcile.
+    pcm = b"\x10\x20\x30\x40" * 240  # 240 stereo s16le L/R pairs
+    backend.rx_streams[0].inject_frame(pcm)
+    assert received == [pcm]
+    await driver.stop_rx()
+
+
+@pytest.mark.asyncio
+async def test_portaudio_rx_stereo_native_downmix_delivers_mono_average() -> None:
+    """_PortAudioRxStream opened at 2 ch / deliver 1 ch downmixes to the average.
+
+    Focused unit test for the MOR-504 downmix: a 2-ch interleaved s16le block
+    is collapsed to the per-pair mono average and re-chunked to the DELIVER
+    (mono) fixed-frame byte length (1920 bytes = 960 mono samples / 20 ms /
+    48 kHz), NOT the native 2-ch length. Interleaved stereo must never reach
+    the consumer (that halves the spectrum — bridge guard, issue #1381).
+    """
+    import struct
+
+    from rigplane.audio.backend import PortAudioBackend
+
+    class FakeIndata:
+        def __init__(self, payload: bytes) -> None:
+            self._payload = payload
+
+        def tobytes(self) -> bytes:
+            return self._payload
+
+    captured_cb: dict[str, object] = {}
+
+    class FakeSd:
+        class InputStream:
+            def __init__(self, **kw: object) -> None:
+                captured_cb["cb"] = kw["callback"]
+
+            def start(self) -> None:
+                pass
+
+            def stop(self) -> None:
+                pass
+
+            def close(self) -> None:
+                pass
+
+    backend = PortAudioBackend(dependency_loader=lambda: (FakeSd(), object()))
+    # Device-native open=2, deliver=1 → downmix path engaged.
+    stream = backend.open_rx(
+        AudioDeviceId(0),
+        sample_rate=48_000,
+        channels=2,
+        frame_ms=20,
+        deliver_channels=1,
+    )
+
+    received: list[bytes] = []
+    await stream.start(received.append)
+    cb = captured_cb["cb"]
+    assert callable(cb)
+
+    # 960 stereo L/R pairs (one whole 20 ms mono frame after downmix). L and R
+    # differ so a wrong (non-averaging or pass-through) downmix is caught:
+    # L = 1000, R = 2000 → mono average 1500.
+    pairs = 960
+    block = b"".join(struct.pack("<hh", 1000, 2000) for _ in range(pairs))
+    cb(FakeIndata(block), pairs, None, None)  # type: ignore[operator]
+
+    expected_frame = b"".join(struct.pack("<h", 1500) for _ in range(pairs))
+    assert len(expected_frame) == 1920  # mono fixed-frame, not 3840 (stereo)
+    assert received == [expected_frame]
+
+    await stream.stop()
+
+
+def test_portaudio_rx_stereo_native_downmix_truncates_odd_pair() -> None:
+    """Downmix drops a trailing byte run that is not a whole L/R sample pair."""
+    import struct
+
+    from rigplane.audio.backend import _downmix_stereo_to_mono_s16le
+
+    # Two whole L/R pairs + 3 dangling bytes (not a 4-byte stereo sample).
+    pcm = struct.pack("<hh", 10, 30) + struct.pack("<hh", -20, -40) + b"\x01\x02\x03"
+    mono = _downmix_stereo_to_mono_s16le(pcm)
+    # (10+30)//2 = 20 ; (-20+-40)//2 = -30 ; dangling bytes dropped.
+    assert mono == struct.pack("<h", 20) + struct.pack("<h", -30)
 
 
 @pytest.mark.asyncio
