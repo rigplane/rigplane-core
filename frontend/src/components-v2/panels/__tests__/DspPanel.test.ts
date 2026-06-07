@@ -16,6 +16,10 @@ const mockProps = {
   agcTimeConstant: 0,
   hasNr: true,
   hasNb: true,
+  hasNbDepth: true,
+  hasNbWidth: true,
+  nbLevelMax: 255,
+  nbLevelPercent: true,
 };
 
 const mockHandlers = {
@@ -105,6 +109,7 @@ beforeEach(() => {
     notchMode: 'off', notchFreq: 1000, nbDepth: 0, nbWidth: 0,
     manualNotchWidth: 0, agcTimeConstant: 0,
     hasNr: true, hasNb: true,
+    hasNbDepth: true, hasNbWidth: true, nbLevelMax: 255, nbLevelPercent: true,
   });
   mockHandlers.onNrModeChange = vi.fn();
   mockHandlers.onNrLevelChange = vi.fn();
@@ -172,13 +177,63 @@ describe('NB toggle', () => {
     expect(mockHandlers.onNbToggle).toHaveBeenCalledWith(false);
   });
 
-  it('shows the NB level as the same percent the NB-Level slider uses (not raw)', () => {
-    const t = mountPanel({ nbActive: true, nbLevel: 76 });
+  it('shows the NB level as percent on a 0-255 rig (IC-7610) when nbLevelPercent is set', () => {
+    const t = mountPanel({ nbActive: true, nbLevel: 76, nbLevelPercent: true, nbLevelMax: 255 });
     const nbBtn = getFillButtons(t).find((b) => b.textContent?.trim().startsWith('NB'));
     const label = nbBtn?.textContent?.trim();
     // rawToPercentDisplay(76) === '30%'
     expect(label).toBe(`NB ${rawToPercentDisplay(76)}`);
     expect(label).not.toContain('76');
+  });
+
+  it('shows the NB level as the raw native value on a 0-10 rig (FTX-1) when nbLevelPercent is false', () => {
+    // MOR-502: FTX-1 NB is a native 0-10 level — no nb_level 0-255 control
+    // range — so the label must show the raw integer, matching the LCD skin.
+    const t = mountPanel({ nbActive: true, nbLevel: 5, nbLevelPercent: false, nbLevelMax: 10 });
+    const nbBtn = getFillButtons(t).find((b) => b.textContent?.trim().startsWith('NB'));
+    const label = nbBtn?.textContent?.trim();
+    expect(label).toBe('NB 5');
+    expect(label).not.toContain('%');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// NB depth/width capability gating (MOR-502)
+// ---------------------------------------------------------------------------
+
+function openNbModal(t: HTMLElement): void {
+  vi.useFakeTimers();
+  try {
+    const nbBtn = getFillButtons(t).find((b) => b.textContent?.trim().startsWith('NB'));
+    nbBtn?.dispatchEvent(new Event('pointerdown', { bubbles: true }));
+    vi.advanceTimersByTime(600);
+    flushSync();
+  } finally {
+    vi.useRealTimers();
+  }
+}
+
+describe('NB depth/width capability gating', () => {
+  it('shows NB Depth and NB Width controls when hasNbDepth/hasNbWidth are true (IC-7610)', () => {
+    const t = mountPanel({ nbActive: true, hasNbDepth: true, hasNbWidth: true });
+    openNbModal(t);
+    const modal = t.querySelector('[aria-label="Noise blanker settings"]');
+    expect(modal).not.toBeNull();
+    const text = modal?.textContent ?? '';
+    expect(text).toContain('NB Depth');
+    expect(text).toContain('NB Width');
+  });
+
+  it('hides NB Depth and NB Width controls when hasNbDepth/hasNbWidth are false (FTX-1)', () => {
+    const t = mountPanel({ nbActive: true, hasNbDepth: false, hasNbWidth: false });
+    openNbModal(t);
+    const modal = t.querySelector('[aria-label="Noise blanker settings"]');
+    expect(modal).not.toBeNull();
+    const text = modal?.textContent ?? '';
+    expect(text).not.toContain('NB Depth');
+    expect(text).not.toContain('NB Width');
+    // NB Level remains present regardless of depth/width.
+    expect(text).toContain('NB Level');
   });
 });
 

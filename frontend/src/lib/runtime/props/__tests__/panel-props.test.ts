@@ -298,6 +298,43 @@ describe('panel prop field availability', () => {
     expect(toDspProps(makeState({ nbDepth: 5 }), null).nbDepth).toBe(6);
     expect(toDspProps(makeState({ nbDepth: 9 }), null).nbDepth).toBe(10);
   });
+
+  it('gates NB depth/width on the nb_depth control range (MOR-502)', () => {
+    const withDepth = toDspProps(
+      makeState(),
+      { capabilities: ['nb'], controls: { nb_depth: { raw_min: 0, raw_max: 9 } } } as any,
+    );
+    expect(withDepth.hasNbDepth).toBe(true);
+    expect(withDepth.hasNbWidth).toBe(true);
+
+    const withoutDepth = toDspProps(
+      makeState(),
+      { capabilities: ['nb'], controls: { nb_level: { raw_min: 0, raw_max: 10 } } } as any,
+    );
+    expect(withoutDepth.hasNbDepth).toBe(false);
+    expect(withoutDepth.hasNbWidth).toBe(false);
+
+    const noCaps = toDspProps(makeState(), null);
+    expect(noCaps.hasNbDepth).toBe(false);
+    expect(noCaps.hasNbWidth).toBe(false);
+  });
+
+  it('derives the NB-level scale from the nb_level control range (MOR-502)', () => {
+    const icom = toDspProps(
+      makeState(),
+      { capabilities: ['nb'], controls: { nb_level: { raw_min: 0, raw_max: 255 } } } as any,
+    );
+    expect(icom.nbLevelMax).toBe(255);
+    expect(icom.nbLevelPercent).toBe(true);
+
+    const ftx1 = toDspProps(makeState(), { capabilities: ['nb'], controls: {} } as any);
+    expect(ftx1.nbLevelMax).toBe(10);
+    expect(ftx1.nbLevelPercent).toBe(false);
+
+    const noCaps = toDspProps(makeState(), null);
+    expect(noCaps.nbLevelMax).toBe(10);
+    expect(noCaps.nbLevelPercent).toBe(false);
+  });
 });
 
 describe('RF front-end preamp/digisel mutex', () => {
