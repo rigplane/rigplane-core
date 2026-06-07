@@ -1077,8 +1077,13 @@ class YaesuCatRadio:
         return await self.read_attenuator(receiver)
 
     async def set_attenuator(self, state: int, receiver: int = 0) -> None:
-        """Set attenuator state (0 = OFF, 1 = ON)."""
-        await self._write("set_attenuator", state=str(state))
+        """Set attenuator state (0 = OFF, 1 = ON).
+
+        Callers (and the hardware validator) may pass a Python ``bool``;
+        ``str(True)`` would render the malformed ``RA0True;`` and the radio
+        silently ignores it. Coerce to ``int`` first so ``RA0{0,1};`` is sent.
+        """
+        await self._write("set_attenuator", state=str(int(state)))
 
     async def set_attenuator_level(self, db: int, receiver: int = 0) -> None:
         """Set attenuator by dB level.
@@ -2132,8 +2137,17 @@ class YaesuCatRadio:
         return await self.read_agc(receiver)
 
     async def set_agc(self, mode: int, receiver: int = 0) -> None:
-        """Set AGC mode (GT0, 0–6)."""
-        await self._write("set_agc", mode=str(mode))
+        """Set AGC mode (GT0).
+
+        The FTX-1 read side reports 0–6 (4/5/6 = the auto-selected
+        A-FAST/A-MID/A-SLOW for the current mode), but the SET side only
+        accepts 0–4 where ``4`` means AUTO; writing ``GT05;``/``GT06;`` is
+        rejected and the value sticks at the prior setting. Manual modes
+        (0–3) are sent verbatim; any AUTO request (4, 5, or 6) is collapsed
+        to ``GT04;`` (AUTO), letting the radio re-derive the auto speed.
+        """
+        wire_mode = 4 if mode >= 4 else mode
+        await self._write("set_agc", mode=str(wire_mode))
 
     # -- Key speed (KS) -------------------------------------------------------
 

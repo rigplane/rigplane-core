@@ -462,6 +462,32 @@ async def test_set_attenuator_on(connected_radio):
 
 
 @pytest.mark.asyncio
+async def test_set_attenuator_off(connected_radio):
+    connected_radio._transport.write = AsyncMock()
+    await connected_radio.set_attenuator(0)
+    connected_radio._transport.write.assert_called_once_with("RA00;")
+
+
+@pytest.mark.asyncio
+async def test_set_attenuator_bool_true_coerced_to_int(connected_radio):
+    """MOR-498: callers/validator pass a Python bool; ``str(True)`` would
+    render the malformed ``RA0True;`` and the radio would silently ignore it.
+    The bool must be coerced to int so the CAT write is ``RA01;``."""
+    connected_radio._transport.write = AsyncMock()
+    await connected_radio.set_attenuator(True)
+    connected_radio._transport.write.assert_called_once_with("RA01;")
+
+
+@pytest.mark.asyncio
+async def test_set_attenuator_bool_false_coerced_to_int(connected_radio):
+    """MOR-498: ``set_attenuator(False)`` must render ``RA00;``, not
+    ``RA0False;``."""
+    connected_radio._transport.write = AsyncMock()
+    await connected_radio.set_attenuator(False)
+    connected_radio._transport.write.assert_called_once_with("RA00;")
+
+
+@pytest.mark.asyncio
 async def test_get_preamp(connected_radio):
     connected_radio._transport.query = AsyncMock(return_value="PA01")
     assert await connected_radio.get_preamp() == 1
@@ -1383,6 +1409,26 @@ async def test_set_agc(connected_radio):
     connected_radio._transport.write = AsyncMock()
     await connected_radio.set_agc(2)
     connected_radio._transport.write.assert_called_once_with("GT02;")
+
+
+@pytest.mark.parametrize("mode", [0, 1, 2, 3])
+@pytest.mark.asyncio
+async def test_set_agc_manual_modes_passthrough(connected_radio, mode):
+    """MOR-498: manual AGC modes 0-3 are sent verbatim as ``GT0{mode};``."""
+    connected_radio._transport.write = AsyncMock()
+    await connected_radio.set_agc(mode)
+    connected_radio._transport.write.assert_called_once_with(f"GT0{mode};")
+
+
+@pytest.mark.parametrize("mode", [4, 5, 6])
+@pytest.mark.asyncio
+async def test_set_agc_auto_modes_map_to_gt04(connected_radio, mode):
+    """MOR-498: live FTX-1 only accepts ``GT04;`` (AUTO) on SET; ``GT05;``/
+    ``GT06;`` are rejected and stick at the prior value. Any AUTO request
+    (read-side 4/5/6) must therefore be written as ``GT04;``."""
+    connected_radio._transport.write = AsyncMock()
+    await connected_radio.set_agc(mode)
+    connected_radio._transport.write.assert_called_once_with("GT04;")
 
 
 # ---------------------------------------------------------------------------
