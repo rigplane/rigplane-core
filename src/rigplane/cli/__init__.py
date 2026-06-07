@@ -1006,7 +1006,7 @@ def _build_parser() -> argparse.ArgumentParser:
 
     # discover
     discover_p = sub.add_parser(
-        "discover", help="Discover Icom radios on LAN and serial ports"
+        "discover", help="Discover radios on LAN and serial ports"
     )
     discover_scope = discover_p.add_mutually_exclusive_group()
     discover_scope.add_argument(
@@ -3511,7 +3511,7 @@ async def _cmd_web(radio: Radio, args: argparse.Namespace) -> int:
 
 
 async def _cmd_discover(_radio: Radio | None, args: argparse.Namespace) -> int:
-    """Discover Icom radios on LAN and/or serial ports."""
+    """Discover radios on LAN and/or serial ports."""
     from rigplane.discovery import (
         build_setup_discovery_payload,
         dedupe_radios,
@@ -3547,11 +3547,11 @@ async def _cmd_discover(_radio: Radio | None, args: argparse.Namespace) -> int:
     if json_output:
         pass
     elif not serial_only and not lan_only:
-        print(f"Scanning for Icom radios ({timeout:.0f}s LAN + serial)...")
+        print(f"Scanning for radios ({timeout:.0f}s LAN + serial)...")
     elif serial_only:
-        print("Scanning serial ports for Icom radios...")
+        print("Scanning serial ports for radios...")
     else:
-        print(f"Scanning LAN for Icom radios ({timeout:.0f}s)...")
+        print(f"Scanning LAN for radios ({timeout:.0f}s)...")
 
     results = await asyncio.gather(*tasks, return_exceptions=True)
 

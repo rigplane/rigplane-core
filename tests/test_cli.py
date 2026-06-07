@@ -1385,7 +1385,8 @@ class TestBackendAwareDiscover:
                         main()
         assert exc_info.value.code == 0
         captured = capsys.readouterr()
-        assert "Scanning for Icom radios" in captured.out
+        assert "Scanning for radios" in captured.out
+        assert "Icom radios" not in captured.out
         assert "serial" in captured.out.lower()
 
     def test_discover_serial_error_mentions_lan(self, capsys):
@@ -1401,7 +1402,8 @@ class TestBackendAwareDiscover:
                         main()
         assert exc_info.value.code == 0
         captured = capsys.readouterr()
-        assert "Scanning for Icom radios" in captured.out
+        assert "Scanning for radios" in captured.out
+        assert "Icom radios" not in captured.out
         assert "lan" in captured.out.lower()
 
 
