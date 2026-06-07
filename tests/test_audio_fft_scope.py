@@ -873,6 +873,105 @@ class TestAudioFftScopeAdaptiveAutoRange:
             "— min-span guard failed, noise was amplified"
         )
 
+    def test_am_wide_crop_narrow_audio_band_noise_maps_low(self):
+        """Wide-crop AM with NARROW audio must not re-include the quiet tail (MOR-528).
+
+        IC-7610 AM reports ``max_hz=10000`` → the displayed passband edge is
+        5000 Hz. The in-band floor estimate (MOR-512) followed that crop edge up
+        to 5000 Hz, re-including the quiet out-of-band tail (>~3.2 kHz) that the
+        MOR-512 fix had excluded: if the real AM audio is NARROW (band-noise only
+        ~0–3.2 kHz, quiet above), ~36% of the 50 Hz…5000 Hz estimation slice is
+        that quiet tail, the 30th-percentile floor latches to ~-131 dB and the
+        ever-present band-noise renders at ~64% of screen — the original "high
+        noise floor regardless of signal" regression, on AM only.
+
+        Capping the in-band upper edge at ~3500 Hz (``_INBAND_FALLBACK_HI_HZ``)
+        even for wide crops keeps the estimate on the band-noise so it maps LOW.
+
+        Calibrated to the same live FTX-1 bimodal numbers (band-noise -102.1 dB,
+        out-of-band -126 dB) as the MOR-512 tests. FAILS on the uncapped code
+        (in-band ~64%).
+        """
+        fft_size = 2048
+        sample_rate = 48000
+        scope = AudioFftScope(
+            fft_size=fft_size, fps=100, avg_count=1, sample_rate=sample_rate
+        )
+        scope.set_center_freq(7_200_000)
+        scope.set_mode_bandwidth(10000)  # AM → crop edge 5000 Hz
+
+        # Narrow audio: band-noise only over 100–3200 Hz, quiet -126 dB above —
+        # quiet out-of-band tail (3200–5000 Hz) sits inside the 5000 Hz crop edge.
+        avg_db = _make_bimodal_db_spectrum(fft_size=fft_size, sample_rate=sample_rate)
+        for _ in range(10):
+            pixels = _db_window_to_pixels(scope, avg_db)
+
+        bin_res = sample_rate / fft_size
+        freqs = np.arange(len(avg_db)) * bin_res
+        inband = (freqs >= 100) & (freqs <= 3200)
+
+        inband_median_pct = float(np.median(pixels[inband])) / _PIXEL_MAX
+        inband_max_pct = float(np.max(pixels[inband])) / _PIXEL_MAX
+
+        assert inband_median_pct < 0.30, (
+            f"wide-crop AM narrow-audio band-noise renders at "
+            f"{inband_median_pct * 100:.0f}% of screen — the in-band estimate "
+            "followed the 5000 Hz crop edge into the quiet out-of-band "
+            "(MOR-528 regression), should be <30%"
+        )
+        assert inband_max_pct < 0.40, (
+            f"no-signal in-band max {inband_max_pct * 100:.0f}% leaves no "
+            "headroom for an actual AM signal"
+        )
+
+    def test_am_wide_crop_wide_audio_signal_still_renders(self):
+        """A genuinely WIDE AM signal (audio filling 0–5 kHz) is not broken by the cap.
+
+        The ~3500 Hz cap (MOR-528) only changes the noise-floor *estimation*
+        slice — it must not suppress an actual wide AM signal. Band-noise filling
+        the full 5000 Hz crop plus a real tone 25 dB above it should still map
+        the band-noise LOW and lift the tone clearly above it. Same live bimodal
+        levels as the MOR-512 tests.
+        """
+        fft_size = 2048
+        sample_rate = 48000
+        scope = AudioFftScope(
+            fft_size=fft_size, fps=100, avg_count=1, sample_rate=sample_rate
+        )
+        scope.set_center_freq(7_200_000)
+        scope.set_mode_bandwidth(10000)  # AM → crop edge 5000 Hz
+
+        tone_hz = 1500.0
+        # Wide audio: band-noise fills the whole 100–5000 Hz crop, plus a tone.
+        avg_db = _make_bimodal_db_spectrum(
+            fft_size=fft_size,
+            sample_rate=sample_rate,
+            inband_hi_hz=5000.0,
+            tone_hz=tone_hz,
+            tone_db=-102.1 + 25.0,
+        )
+        for _ in range(10):
+            pixels = _db_window_to_pixels(scope, avg_db)
+
+        bin_res = sample_rate / fft_size
+        tone_bin = int(tone_hz / bin_res)
+        freqs = np.arange(len(avg_db)) * bin_res
+        inband = (freqs >= 100) & (freqs <= 5000)
+        noise_mask = inband.copy()
+        noise_mask[tone_bin] = False
+
+        tone_px = float(pixels[tone_bin])
+        noise_median_px = float(np.median(pixels[noise_mask]))
+
+        assert noise_median_px < 0.30 * _PIXEL_MAX, (
+            f"wide-AM band-noise median {noise_median_px:.0f}/{_PIXEL_MAX} too "
+            "high — the cap should not lift band-noise"
+        )
+        assert tone_px > 0.60 * _PIXEL_MAX, (
+            f"wide-AM tone only reached {tone_px:.0f}/{_PIXEL_MAX} — the cap "
+            "broke a genuinely wide AM signal"
+        )
+
     def test_adaptive_window_converges_and_is_stable(self):
         """Under steady input the auto-range converges (no runaway/pumping).
 

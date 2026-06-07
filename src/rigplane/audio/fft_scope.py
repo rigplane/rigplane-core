@@ -344,14 +344,21 @@ class AudioFftScope:
 
         ``avg_db`` is the rfft per-bin dB array, indexed DC..Nyquist; bin ``i``
         sits at ``i * sample_rate / fft_size`` Hz of audio. The in-band region
-        is ``_INBAND_LO_HZ <= freq <= upper``, where ``upper`` is the displayed
-        passband (``_crop_max_hz / 2``) when the mode bandwidth is known and the
-        fixed ``_INBAND_FALLBACK_HI_HZ`` otherwise. Falls back to the full array
-        if the mask would be empty (degenerate fft_size / sample_rate).
+        is ``_INBAND_LO_HZ <= freq <= upper``. When the mode bandwidth is known
+        ``upper`` is the displayed passband (``_crop_max_hz / 2``) capped at
+        ``_INBAND_FALLBACK_HI_HZ`` (MOR-528): a wide-crop mode (AM) would
+        otherwise re-include the quiet out-of-band tail that MOR-512 excluded.
+        When it is unknown the fixed ``_INBAND_FALLBACK_HI_HZ`` is used. Falls
+        back to the full array if the mask would be empty (degenerate fft_size /
+        sample_rate).
         """
         bin_res = self._sample_rate / self._fft_size
         if self._crop_max_hz:
-            upper_hz = self._crop_max_hz / 2.0
+            # Cap the upper edge even when a wider crop is known (MOR-528): a
+            # wide-crop mode (IC-7610 AM, max_hz=10000 → 5000 Hz edge) would
+            # otherwise re-include the quiet out-of-band tail above ~3.2 kHz that
+            # MOR-512 excluded, latching the floor back onto it for NARROW audio.
+            upper_hz = min(self._crop_max_hz / 2.0, _INBAND_FALLBACK_HI_HZ)
         else:
             upper_hz = _INBAND_FALLBACK_HI_HZ
         lo_bin = int(_INBAND_LO_HZ / bin_res)
