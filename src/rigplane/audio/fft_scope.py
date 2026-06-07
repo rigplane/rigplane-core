@@ -31,12 +31,43 @@ _log = logging.getLogger(__name__)
 # Scope mode: center (matches SpectrumPanel expected mode)
 _SCOPE_MODE_CENTER = 0
 
-# Amplitude mapping: FFT dB range → 0-160 pixel range (ScopeFrame convention)
-# Range tuned for typical radio RX audio levels.
-# 55 dB span ≈ 2.9 px/dB — good contrast between noise floor and signals.
+# Amplitude mapping: FFT dB range → 0-160 pixel range (ScopeFrame convention).
+#
+# The dB→pixel window is ADAPTIVE (MOR-512): a fixed window was tuned for one
+# radio's RX audio level and rendered nearly empty for radios at a different
+# level (e.g. FTX-1, whose clean in-band signal sat ~16-20 dB below a fixed
+# -70 dB floor). Instead we track the per-stream noise floor and signal ceiling
+# and slide the window to follow them, so any radio/level stays visible.
 _PIXEL_MAX = 160
-_DB_FLOOR = -70.0  # noise floor dB
-_DB_CEIL = -15.0  # clipping level dB
+
+# Robust per-frame floor/ceil estimators (percentiles of the dB array).
+# A low percentile rejects the few near-silent bins; a high percentile rejects
+# single-bin spikes (DC leakage etc.) that would otherwise inflate the ceiling.
+_FLOOR_PCT = 10.0
+_CEIL_PCT = 99.0
+
+# EMA / attack-decay smoothing of the tracked floor & ceil. The floor adapts
+# SLOWLY for a stable baseline; the ceil rises fast (attack) but falls slowly
+# (decay) so a vanishing signal does not snap the window down and re-amplify
+# noise. Values are per-frame blend factors in (0, 1].
+_FLOOR_ALPHA = 0.05
+_CEIL_ATTACK = 0.30
+_CEIL_DECAY = 0.05
+
+# Margins placed below the tracked floor / above the tracked ceil (dB).
+_FLOOR_MARGIN = 5.0
+_CEIL_MARGIN = 3.0
+
+# Minimum display-window span (dB). During silence the observed floor and ceil
+# collapse together; without a floor on the span the auto-range would stretch a
+# flat noise field across the whole screen. Enforcing a wide minimum span keeps
+# noise pinned near the bottom until a real signal rises above it.
+_MIN_SPAN_DB = 45.0
+
+# Absolute sanity clamps on the window endpoints (dB, on the /fft_size scale).
+_ABS_FLOOR_MIN = -160.0
+_ABS_FLOOR_MAX = -20.0
+_ABS_CEIL_MAX = 0.0
 
 
 def _import_numpy() -> Any:
@@ -92,6 +123,11 @@ class AudioFftScope:
 
         # Rolling average buffer
         self._avg_buf: list[object] = []  # list of numpy arrays
+
+        # Adaptive dB→pixel window state (MOR-512). None until seeded from the
+        # first processed frame, then EMA-tracked toward the live floor/ceil.
+        self._db_floor_ema: float | None = None
+        self._db_ceil_ema: float | None = None
 
         # Frame rate limiting
         self._min_interval = 1.0 / self._fps
@@ -230,10 +266,11 @@ class AudioFftScope:
         else:
             avg_db = db
 
-        # Map dB to pixel values (0-160)
-        # Linear mapping: _DB_FLOOR → 0, _DB_CEIL → _PIXEL_MAX
-        db_range = _DB_CEIL - _DB_FLOOR
-        pixels_float = (avg_db - _DB_FLOOR) / db_range * _PIXEL_MAX
+        # Map dB to pixel values (0-160) through the ADAPTIVE window.
+        # Linear mapping: db_floor → 0, db_ceil → _PIXEL_MAX.
+        db_floor, db_ceil = self._update_db_window(avg_db)
+        db_range = db_ceil - db_floor
+        pixels_float = (avg_db - db_floor) / db_range * _PIXEL_MAX
         pixels_uint8 = np.clip(pixels_float, 0, _PIXEL_MAX).astype(np.uint8)
 
         # rfft produces fft_size//2 + 1 bins from DC to Nyquist.
@@ -278,11 +315,58 @@ class AudioFftScope:
         except Exception:
             _log.exception("AudioFftScope: frame callback error")
 
+    def _update_db_window(self, avg_db: Any) -> tuple[float, float]:
+        """Adapt the dB→pixel window to the current frame and return it.
+
+        Tracks a robust noise floor (low percentile) and signal ceiling (high
+        percentile) of ``avg_db``, smooths each with an EMA / attack-decay so
+        the window neither jitters nor pumps, then applies margins, a minimum
+        span (so silence does not amplify noise) and absolute clamps.
+
+        Args:
+            avg_db: The (averaged) per-bin dB array for this frame.
+
+        Returns:
+            ``(db_floor, db_ceil)`` — the window endpoints to map to pixels.
+        """
+        np = self._np
+
+        obs_floor = float(np.percentile(avg_db, _FLOOR_PCT))
+        obs_ceil = float(np.percentile(avg_db, _CEIL_PCT))
+
+        if self._db_floor_ema is None or self._db_ceil_ema is None:
+            # Seed from the first frame so startup is immediately sane.
+            self._db_floor_ema = obs_floor
+            self._db_ceil_ema = obs_ceil
+        else:
+            # Floor: slow EMA → stable baseline.
+            self._db_floor_ema += (obs_floor - self._db_floor_ema) * _FLOOR_ALPHA
+            # Ceil: fast attack up, slow decay down → no pump when signal drops.
+            ceil_alpha = _CEIL_ATTACK if obs_ceil > self._db_ceil_ema else _CEIL_DECAY
+            self._db_ceil_ema += (obs_ceil - self._db_ceil_ema) * ceil_alpha
+
+        # Apply display margins.
+        db_floor = self._db_floor_ema - _FLOOR_MARGIN
+        db_ceil = self._db_ceil_ema + _CEIL_MARGIN
+
+        # Absolute sanity clamps.
+        db_floor = min(max(db_floor, _ABS_FLOOR_MIN), _ABS_FLOOR_MAX)
+        db_ceil = min(db_ceil, _ABS_CEIL_MAX)
+
+        # Minimum span: never let the window collapse onto a flat noise field
+        # (silence) — keep noise pinned near the bottom.
+        if db_ceil - db_floor < _MIN_SPAN_DB:
+            db_ceil = db_floor + _MIN_SPAN_DB
+
+        return db_floor, db_ceil
+
     def stop(self) -> None:
         """Stop the scope and clear buffers."""
         self._callback = None
         self._buf = self._np.zeros(0, dtype=self._np.float32)
         self._avg_buf.clear()
+        self._db_floor_ema = None
+        self._db_ceil_ema = None
         _log.info("AudioFftScope stopped")
 
     @property
