@@ -8,17 +8,27 @@ Expected flow:
   2. PTT ON → stop RX, start TX
   3. PTT OFF → stop TX, restart RX  ← THIS WAS BROKEN
 
-Fix: radio_poller.py PttOff case now calls start_audio_rx_opus() after stop_audio_tx_opus()
+Fix: radio_poller.py PttOff case restarts RX after stop_audio_tx_opus().
+
+MOR-506: the restart must go through ``radio.audio_bus.restart_rx()`` so the
+real subscriber callback is reinstated. The earlier fix passed a throwaway
+``_noop_rx`` to ``start_audio_rx_opus``, which — because RX uses a single-slot
+callback — clobbered the AudioBus consumer and silenced browser RX after the
+first transmit.
 """
 
 from __future__ import annotations
 
 from types import SimpleNamespace
+from typing import Any, Callable
 from unittest.mock import AsyncMock
 
 import pytest
 
+from rigplane.audio import AudioPacket
 from rigplane.audio.route import AudioConfigSource, AudioStreamContract
+from rigplane.audio_bus import AudioBus
+from rigplane.core.radio_protocol import AudioCapable
 from rigplane.profiles import resolve_radio_profile
 from rigplane.rigctld.state_cache import StateCache
 from rigplane.types import AudioCodec
@@ -47,7 +57,9 @@ def _make_audio_capable_radio() -> SimpleNamespace:
         set_ptt=AsyncMock(),
         # AudioCapable protocol attrs (required for isinstance(radio, AudioCapable))
         # All async methods use AsyncMock so assert_awaited_* and await_count work.
-        audio_bus=SimpleNamespace(),
+        # RX is re-armed after TX through the AudioBus (MOR-506), not via a
+        # throwaway no-op passed to start_audio_rx_opus.
+        audio_bus=SimpleNamespace(restart_rx=AsyncMock()),
         start_audio_rx_opus=AsyncMock(),
         stop_audio_rx_opus=AsyncMock(),
         push_audio_tx_opus=AsyncMock(),
@@ -121,13 +133,15 @@ async def test_ptt_off_restarts_rx_audio(
     # Verify TX audio stopped
     radio.stop_audio_tx_opus.assert_awaited_once()
 
-    # CRITICAL: Verify RX audio restarted (this was the bug)
-    radio.start_audio_rx_opus.assert_awaited_once()
+    # CRITICAL: Verify RX audio restarted through the bus (MOR-506).
+    # Must NOT clobber the single-slot RX callback with a no-op.
+    radio.audio_bus.restart_rx.assert_awaited_once()
+    radio.start_audio_rx_opus.assert_not_awaited()
 
-    # Verify call order: PTT off → stop TX → start RX
+    # Verify call order: PTT off → stop TX → restart RX via bus
     assert radio.set_ptt.await_count == 1
     assert radio.stop_audio_tx_opus.await_count == 1
-    assert radio.start_audio_rx_opus.await_count == 1
+    assert radio.audio_bus.restart_rx.await_count == 1
 
 
 @pytest.mark.asyncio
@@ -147,8 +161,9 @@ async def test_ptt_cycle_full_sequence(
     assert radio.stop_audio_tx_opus.await_count == 1
     assert radio.set_ptt.call_args_list[-1][0][0] is False  # Last call was False
 
-    # CRITICAL: RX audio должен быть восстановлен
-    assert radio.start_audio_rx_opus.await_count == 1
+    # CRITICAL: RX audio должен быть восстановлен через bus (MOR-506)
+    assert radio.audio_bus.restart_rx.await_count == 1
+    radio.start_audio_rx_opus.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -180,7 +195,8 @@ async def test_multiple_ptt_cycles(poller: RadioPoller, radio: SimpleNamespace) 
     # Each cycle should call all methods
     assert radio.start_audio_tx_opus.await_count == 3
     assert radio.stop_audio_tx_opus.await_count == 3
-    assert radio.start_audio_rx_opus.await_count == 3
+    assert radio.audio_bus.restart_rx.await_count == 3  # RX re-armed via bus
+    radio.start_audio_rx_opus.assert_not_awaited()
     assert radio.set_ptt.await_count == 6  # 3 ON + 3 OFF
 
 
@@ -209,3 +225,125 @@ async def test_ptt_cycle_uses_pcm_when_audio_contract_tx_codec_is_pcm(
     radio.start_audio_tx_opus.assert_not_awaited()
     radio.stop_audio_tx_pcm.assert_awaited_once()
     radio.stop_audio_tx_opus.assert_not_awaited()
+
+
+# ---------------------------------------------------------------------------
+# MOR-506: end-to-end clobber regression with a *real* AudioBus
+# ---------------------------------------------------------------------------
+
+
+class _SingleSlotAudioRadio:
+    """Fake radio with realistic single-slot RX callback semantics.
+
+    Mirrors ``_audio_runtime_mixin``: ``start_audio_rx_opus`` overwrites the
+    single active RX callback, and TX start/stop never touch the RX callback.
+    A test-only :meth:`deliver` invokes whatever RX callback is currently
+    installed, modelling an incoming audio frame from the radio.
+    """
+
+    def __init__(self) -> None:
+        profile = resolve_radio_profile(model="IC-7610")
+        self.profile = profile
+        self.model = profile.model
+        self.capabilities = set(profile.capabilities)
+        self._radio_state = SimpleNamespace(active="MAIN")
+        self._rx_callback: Callable[[AudioPacket | None], None] | None = None
+        self._audio_bus: AudioBus | None = None
+
+    async def start_audio_rx_opus(
+        self,
+        callback: Callable[[AudioPacket | None], None],
+        *,
+        jitter_depth: int = 5,
+    ) -> None:
+        self._rx_callback = callback
+
+    async def stop_audio_rx_opus(self) -> None:
+        self._rx_callback = None
+
+    async def start_audio_tx_opus(self) -> None:
+        pass
+
+    async def stop_audio_tx_opus(self) -> None:
+        pass
+
+    async def start_audio_tx_pcm(self, *, sample_rate: int) -> None:
+        pass
+
+    async def stop_audio_tx_pcm(self) -> None:
+        pass
+
+    async def push_audio_tx_opus(self, data: bytes) -> None:
+        pass
+
+    async def push_audio_tx_pcm(self, data: bytes) -> None:
+        pass
+
+    async def start_audio_rx_pcm(self, callback: Any, **kwargs: Any) -> None:
+        pass
+
+    async def stop_audio_rx_pcm(self) -> None:
+        pass
+
+    async def get_audio_stats(self) -> dict[str, Any]:
+        return {}
+
+    @property
+    def audio_codec(self) -> Any:
+        return self.profile.audio_codec
+
+    @property
+    def audio_sample_rate(self) -> int:
+        return 48000
+
+    @property
+    def audio_bus(self) -> AudioBus:
+        if self._audio_bus is None:
+            self._audio_bus = AudioBus(self)
+        return self._audio_bus
+
+    async def send_civ(self, *args: Any, **kwargs: Any) -> None:
+        pass
+
+    async def set_ptt(self, on: bool) -> None:
+        pass
+
+    def deliver(self, packet: AudioPacket) -> None:
+        """Simulate one incoming RX audio frame from the radio."""
+        if self._rx_callback is not None:
+            self._rx_callback(packet)
+
+
+@pytest.mark.asyncio
+async def test_ptt_off_does_not_clobber_audio_bus_subscriber() -> None:
+    """A bus subscriber must keep receiving RX frames after a PTT TX cycle.
+
+    Regression for MOR-506: drives a *real* :class:`AudioBus` plus a fake
+    radio that faithfully models the single-slot RX callback, through the real
+    poller ``PttOff`` transition, and asserts a subscriber still receives audio
+    frames after TX. With the no-op bug the post-TX frame is swallowed.
+    """
+    radio = _SingleSlotAudioRadio()
+    # The fake must structurally satisfy AudioCapable so the poller runs the
+    # PTT audio transitions.
+    assert isinstance(radio, AudioCapable)
+
+    poller = RadioPoller(radio, StateCache(), CommandQueue())
+
+    sub = radio.audio_bus.subscribe(name="browser")
+    await sub.start()
+    assert radio.audio_bus.rx_active
+
+    pkt = AudioPacket(ident=0x01, send_seq=1, data=b"frame")
+    radio.deliver(pkt)
+    assert sub.get_nowait() is pkt
+
+    await poller._execute(PttOn())
+    await poller._execute(PttOff())
+
+    pkt2 = AudioPacket(ident=0x01, send_seq=2, data=b"frame2")
+    radio.deliver(pkt2)
+    assert sub.get_nowait() is pkt2, (
+        "RX frame after PTT-off did not reach the bus subscriber — "
+        "the poller clobbered the AudioBus callback with a no-op"
+    )
