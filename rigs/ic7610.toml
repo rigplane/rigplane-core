@@ -116,6 +116,512 @@ features = [
     "system_settings",
 ]
 
+[state_acquisition]
+provider = "icom_civ"
+default_cadence_seconds = 2.0
+default_freshness_ttl_seconds = 8.0
+default_reconciliation_priority = "unsolicited"
+adaptive_decay = true
+adaptive_decay_idle_multiplier = 4.0
+adaptive_decay_max_cadence_seconds = 30.0
+external_cat_pause = "pause_polling"
+meter_coalescing_window_seconds = 0.2
+
+[state_acquisition.capabilities]
+unsolicited_push = [
+    "receiver.main.active.freq_mode.freq_hz",
+    "receiver.main.active.freq_mode.mode",
+    "global.tx_state.ptt",
+]
+polling_only = [
+    "global.slow_state.active",
+    # MOR-496: the IC-7610 does NOT emit unsolicited 0x1C/00 transceive frames,
+    # so ptt must be regularly polled or the v2 UI never sees front-panel TX.
+    # ptt stays in unsolicited_push + command_response_observable +
+    # supported_controls (web-initiated PTT optimistic behavior unchanged); the
+    # loader unions all path lists into one capability with both polling=True
+    # and unsolicited_push=True, so listing it here only adds the poll hook.
+    "global.tx_state.ptt",
+    "global.operator_controls.rit_freq",
+    "global.tx_state.rit_on",
+    "global.tx_state.rit_tx",
+    "receiver.main.operator_controls.af_level",
+    "receiver.main.operator_controls.rf_gain",
+    "receiver.main.operator_controls.squelch",
+    "receiver.main.operator_controls.att",
+    "receiver.main.operator_controls.preamp",
+    "receiver.sub.operator_controls.af_level",
+    "receiver.sub.operator_controls.rf_gain",
+    "receiver.sub.operator_controls.squelch",
+    "receiver.sub.operator_controls.att",
+    "receiver.sub.operator_controls.preamp",
+    "receiver.main.active.freq_mode.freq_hz",
+    "receiver.main.active.freq_mode.mode",
+    "receiver.sub.active.freq_mode.freq_hz",
+    "receiver.sub.active.freq_mode.mode",
+    "receiver.main.active.freq_mode.filter_width",
+    "receiver.sub.active.freq_mode.filter_width",
+    "receiver.main.operator_toggles.digisel",
+    "receiver.main.operator_toggles.ipplus",
+    "receiver.main.operator_toggles.nb",
+    "receiver.main.operator_toggles.nr",
+    "receiver.main.operator_toggles.auto_notch",
+    "receiver.main.operator_toggles.manual_notch",
+    "receiver.main.operator_toggles.twin_peak_filter",
+    "receiver.main.operator_controls.agc",
+    "receiver.main.operator_controls.audio_peak_filter",
+    "receiver.sub.operator_toggles.digisel",
+    "receiver.sub.operator_toggles.ipplus",
+    "receiver.sub.operator_toggles.nb",
+    "receiver.sub.operator_toggles.nr",
+    "receiver.sub.operator_toggles.auto_notch",
+    "receiver.sub.operator_toggles.manual_notch",
+    "receiver.sub.operator_toggles.twin_peak_filter",
+    "receiver.sub.operator_controls.agc",
+    "receiver.sub.operator_controls.audio_peak_filter",
+    "receiver.main.operator_controls.nr_level",
+    "receiver.main.operator_controls.nb_level",
+    "receiver.main.operator_controls.pbt_inner",
+    "receiver.main.operator_controls.pbt_outer",
+    "receiver.main.operator_controls.apf_type_level",
+    "receiver.sub.operator_controls.nr_level",
+    "receiver.sub.operator_controls.nb_level",
+    "receiver.sub.operator_controls.pbt_inner",
+    "receiver.sub.operator_controls.pbt_outer",
+    "receiver.sub.operator_controls.apf_type_level",
+    "global.operator_controls.power_level",
+    "global.operator_controls.mic_gain",
+    "global.operator_controls.compressor_level",
+    "global.operator_controls.monitor_gain",
+    "global.operator_controls.vox_gain",
+    "global.operator_controls.anti_vox_gain",
+    "global.operator_controls.cw_pitch",
+    "global.operator_controls.key_speed",
+    "global.tx_state.compressor_on",
+    "global.tx_state.monitor_on",
+    "global.tx_state.vox_on",
+    "receiver.main.operator_controls.agc_time_constant",
+    "receiver.sub.operator_controls.agc_time_constant",
+    "global.tx_state.split",
+    "global.tx_state.dual_watch",
+    "receiver.main.operator_toggles.repeater_tone",
+    "receiver.main.operator_toggles.repeater_tsql",
+    "receiver.sub.operator_toggles.repeater_tone",
+    "receiver.sub.operator_toggles.repeater_tsql",
+    "receiver.main.operator_controls.tone_freq",
+    "receiver.main.operator_controls.tsql_freq",
+    "receiver.sub.operator_controls.tone_freq",
+    "receiver.sub.operator_controls.tsql_freq",
+    "global.operator_controls.tuner_status",
+]
+stream_like_meters = [
+    "receiver.main.meters.s_meter",
+    "global.meters.power",
+    "global.meters.swr",
+    "global.meters.alc",
+    "global.meters.comp",
+    "global.meters.vd",
+    "global.meters.id",
+]
+command_response_observable = [
+    "receiver.main.active.freq_mode.freq_hz",
+    "receiver.main.active.freq_mode.mode",
+    "receiver.sub.active.freq_mode.freq_hz",
+    "receiver.sub.active.freq_mode.mode",
+    "global.slow_state.active",
+    "global.operator_controls.rit_freq",
+    "global.tx_state.ptt",
+    "global.tx_state.rit_on",
+    "global.tx_state.rit_tx",
+]
+supported_controls = [
+    "receiver.main.active.freq_mode.freq_hz",
+    "receiver.main.active.freq_mode.mode",
+    "receiver.sub.active.freq_mode.freq_hz",
+    "receiver.sub.active.freq_mode.mode",
+    "global.tx_state.ptt",
+]
+
+[state_acquisition.field_policies."receiver.main.meters.s_meter"]
+cadence_seconds = 0.2
+freshness_ttl_seconds = 0.8
+adaptive_decay = false
+meter_coalescing_window_seconds = 0.2
+
+[state_acquisition.field_policies."global.meters.power"]
+cadence_seconds = 0.2
+freshness_ttl_seconds = 0.8
+adaptive_decay = false
+meter_coalescing_window_seconds = 0.2
+
+[state_acquisition.field_policies."global.meters.swr"]
+cadence_seconds = 0.2
+freshness_ttl_seconds = 0.8
+adaptive_decay = false
+meter_coalescing_window_seconds = 0.2
+
+[state_acquisition.field_policies."global.meters.alc"]
+cadence_seconds = 0.2
+freshness_ttl_seconds = 0.8
+adaptive_decay = false
+meter_coalescing_window_seconds = 0.2
+
+[state_acquisition.field_policies."global.meters.comp"]
+cadence_seconds = 0.2
+freshness_ttl_seconds = 0.8
+adaptive_decay = false
+meter_coalescing_window_seconds = 0.2
+
+[state_acquisition.field_policies."global.meters.vd"]
+cadence_seconds = 0.2
+freshness_ttl_seconds = 0.8
+adaptive_decay = false
+meter_coalescing_window_seconds = 0.2
+
+[state_acquisition.field_policies."global.meters.id"]
+cadence_seconds = 0.2
+freshness_ttl_seconds = 0.8
+adaptive_decay = false
+meter_coalescing_window_seconds = 0.2
+
+[state_acquisition.field_policies."receiver.main.active.freq_mode.freq_hz"]
+cadence_seconds = 0.5
+freshness_ttl_seconds = 2.0
+
+[state_acquisition.field_policies."receiver.sub.active.freq_mode.freq_hz"]
+cadence_seconds = 0.5
+freshness_ttl_seconds = 2.0
+
+# MOR-488 batch 6: operator found RFG/SQL laggy at the MOR-487 cadence (3.0s /
+# 4.0s); rf_gain/af_level/squelch/att/preamp now poll FAST (1.5s / 3.0s) on both
+# receivers so a front-panel turn reaches the v2 UI within ~one fast cycle.
+[state_acquisition.field_policies."receiver.main.operator_controls.af_level"]
+cadence_seconds = 1.5
+freshness_ttl_seconds = 3.0
+adaptive_decay = false
+
+[state_acquisition.field_policies."receiver.main.operator_controls.rf_gain"]
+cadence_seconds = 1.5
+freshness_ttl_seconds = 3.0
+adaptive_decay = false
+
+[state_acquisition.field_policies."receiver.main.operator_controls.squelch"]
+cadence_seconds = 1.5
+freshness_ttl_seconds = 3.0
+adaptive_decay = false
+
+[state_acquisition.field_policies."receiver.main.operator_controls.att"]
+cadence_seconds = 1.5
+freshness_ttl_seconds = 3.0
+adaptive_decay = false
+
+[state_acquisition.field_policies."receiver.main.operator_controls.preamp"]
+cadence_seconds = 1.5
+freshness_ttl_seconds = 3.0
+adaptive_decay = false
+
+[state_acquisition.field_policies."receiver.sub.operator_controls.af_level"]
+cadence_seconds = 1.5
+freshness_ttl_seconds = 3.0
+adaptive_decay = false
+
+[state_acquisition.field_policies."receiver.sub.operator_controls.rf_gain"]
+cadence_seconds = 1.5
+freshness_ttl_seconds = 3.0
+adaptive_decay = false
+
+[state_acquisition.field_policies."receiver.sub.operator_controls.squelch"]
+cadence_seconds = 1.5
+freshness_ttl_seconds = 3.0
+adaptive_decay = false
+
+[state_acquisition.field_policies."receiver.sub.operator_controls.att"]
+cadence_seconds = 1.5
+freshness_ttl_seconds = 3.0
+adaptive_decay = false
+
+[state_acquisition.field_policies."receiver.sub.operator_controls.preamp"]
+cadence_seconds = 1.5
+freshness_ttl_seconds = 3.0
+adaptive_decay = false
+
+[state_acquisition.field_policies."receiver.main.operator_toggles.digisel"]
+cadence_seconds = 1.5
+freshness_ttl_seconds = 3.0
+adaptive_decay = false
+
+[state_acquisition.field_policies."receiver.main.operator_toggles.ipplus"]
+cadence_seconds = 1.5
+freshness_ttl_seconds = 3.0
+adaptive_decay = false
+
+[state_acquisition.field_policies."receiver.main.operator_toggles.nb"]
+cadence_seconds = 1.5
+freshness_ttl_seconds = 3.0
+adaptive_decay = false
+
+[state_acquisition.field_policies."receiver.main.operator_toggles.nr"]
+cadence_seconds = 1.5
+freshness_ttl_seconds = 3.0
+adaptive_decay = false
+
+[state_acquisition.field_policies."receiver.main.operator_toggles.auto_notch"]
+cadence_seconds = 1.5
+freshness_ttl_seconds = 3.0
+adaptive_decay = false
+
+[state_acquisition.field_policies."receiver.main.operator_toggles.manual_notch"]
+cadence_seconds = 1.5
+freshness_ttl_seconds = 3.0
+adaptive_decay = false
+
+[state_acquisition.field_policies."receiver.main.operator_toggles.twin_peak_filter"]
+cadence_seconds = 1.5
+freshness_ttl_seconds = 3.0
+adaptive_decay = false
+
+[state_acquisition.field_policies."receiver.main.operator_controls.agc"]
+cadence_seconds = 1.5
+freshness_ttl_seconds = 3.0
+adaptive_decay = false
+
+[state_acquisition.field_policies."receiver.main.operator_controls.audio_peak_filter"]
+cadence_seconds = 1.5
+freshness_ttl_seconds = 3.0
+adaptive_decay = false
+
+[state_acquisition.field_policies."receiver.sub.operator_toggles.digisel"]
+cadence_seconds = 1.5
+freshness_ttl_seconds = 3.0
+adaptive_decay = false
+
+[state_acquisition.field_policies."receiver.sub.operator_toggles.ipplus"]
+cadence_seconds = 1.5
+freshness_ttl_seconds = 3.0
+adaptive_decay = false
+
+[state_acquisition.field_policies."receiver.sub.operator_toggles.nb"]
+cadence_seconds = 1.5
+freshness_ttl_seconds = 3.0
+adaptive_decay = false
+
+[state_acquisition.field_policies."receiver.sub.operator_toggles.nr"]
+cadence_seconds = 1.5
+freshness_ttl_seconds = 3.0
+adaptive_decay = false
+
+[state_acquisition.field_policies."receiver.sub.operator_toggles.auto_notch"]
+cadence_seconds = 1.5
+freshness_ttl_seconds = 3.0
+adaptive_decay = false
+
+[state_acquisition.field_policies."receiver.sub.operator_toggles.manual_notch"]
+cadence_seconds = 1.5
+freshness_ttl_seconds = 3.0
+adaptive_decay = false
+
+[state_acquisition.field_policies."receiver.sub.operator_toggles.twin_peak_filter"]
+cadence_seconds = 1.5
+freshness_ttl_seconds = 3.0
+adaptive_decay = false
+
+[state_acquisition.field_policies."receiver.sub.operator_controls.agc"]
+cadence_seconds = 1.5
+freshness_ttl_seconds = 3.0
+adaptive_decay = false
+
+[state_acquisition.field_policies."receiver.sub.operator_controls.audio_peak_filter"]
+cadence_seconds = 1.5
+freshness_ttl_seconds = 3.0
+adaptive_decay = false
+
+[state_acquisition.field_policies."receiver.main.operator_controls.nr_level"]
+cadence_seconds = 3.0
+freshness_ttl_seconds = 5.0
+adaptive_decay = false
+
+[state_acquisition.field_policies."receiver.main.operator_controls.nb_level"]
+cadence_seconds = 3.0
+freshness_ttl_seconds = 5.0
+adaptive_decay = false
+
+[state_acquisition.field_policies."receiver.main.operator_controls.pbt_inner"]
+cadence_seconds = 3.0
+freshness_ttl_seconds = 5.0
+adaptive_decay = false
+
+[state_acquisition.field_policies."receiver.main.operator_controls.pbt_outer"]
+cadence_seconds = 3.0
+freshness_ttl_seconds = 5.0
+adaptive_decay = false
+
+[state_acquisition.field_policies."receiver.main.operator_controls.apf_type_level"]
+cadence_seconds = 3.0
+freshness_ttl_seconds = 5.0
+adaptive_decay = false
+
+[state_acquisition.field_policies."receiver.sub.operator_controls.nr_level"]
+cadence_seconds = 3.0
+freshness_ttl_seconds = 5.0
+adaptive_decay = false
+
+[state_acquisition.field_policies."receiver.sub.operator_controls.nb_level"]
+cadence_seconds = 3.0
+freshness_ttl_seconds = 5.0
+adaptive_decay = false
+
+[state_acquisition.field_policies."receiver.sub.operator_controls.pbt_inner"]
+cadence_seconds = 3.0
+freshness_ttl_seconds = 5.0
+adaptive_decay = false
+
+[state_acquisition.field_policies."receiver.sub.operator_controls.pbt_outer"]
+cadence_seconds = 3.0
+freshness_ttl_seconds = 5.0
+adaptive_decay = false
+
+[state_acquisition.field_policies."receiver.sub.operator_controls.apf_type_level"]
+cadence_seconds = 3.0
+freshness_ttl_seconds = 5.0
+adaptive_decay = false
+
+[state_acquisition.field_policies."global.operator_controls.power_level"]
+cadence_seconds = 3.0
+freshness_ttl_seconds = 5.0
+adaptive_decay = false
+
+[state_acquisition.field_policies."global.operator_controls.mic_gain"]
+cadence_seconds = 3.0
+freshness_ttl_seconds = 5.0
+adaptive_decay = false
+
+[state_acquisition.field_policies."global.operator_controls.compressor_level"]
+cadence_seconds = 3.0
+freshness_ttl_seconds = 5.0
+adaptive_decay = false
+
+[state_acquisition.field_policies."global.operator_controls.monitor_gain"]
+cadence_seconds = 3.0
+freshness_ttl_seconds = 5.0
+adaptive_decay = false
+
+[state_acquisition.field_policies."global.operator_controls.vox_gain"]
+cadence_seconds = 3.0
+freshness_ttl_seconds = 5.0
+adaptive_decay = false
+
+[state_acquisition.field_policies."global.operator_controls.anti_vox_gain"]
+cadence_seconds = 3.0
+freshness_ttl_seconds = 5.0
+adaptive_decay = false
+
+[state_acquisition.field_policies."global.operator_controls.cw_pitch"]
+cadence_seconds = 3.0
+freshness_ttl_seconds = 5.0
+adaptive_decay = false
+
+[state_acquisition.field_policies."global.operator_controls.key_speed"]
+cadence_seconds = 3.0
+freshness_ttl_seconds = 5.0
+adaptive_decay = false
+
+[state_acquisition.field_policies."receiver.main.active.freq_mode.filter_width"]
+cadence_seconds = 1.5
+freshness_ttl_seconds = 3.0
+adaptive_decay = false
+
+[state_acquisition.field_policies."receiver.sub.active.freq_mode.filter_width"]
+cadence_seconds = 1.5
+freshness_ttl_seconds = 3.0
+adaptive_decay = false
+
+# MOR-496: poll ptt fast enough to track front-panel TX on the v2 UI. A bare
+# 0x1C 0x00 READ (~3 q/s) is a negligible lane load; do NOT go below 0.2s.
+[state_acquisition.field_policies."global.tx_state.ptt"]
+cadence_seconds = 0.3
+freshness_ttl_seconds = 1.0
+adaptive_decay = false
+
+[state_acquisition.field_policies."global.tx_state.compressor_on"]
+cadence_seconds = 1.5
+freshness_ttl_seconds = 3.0
+adaptive_decay = false
+
+[state_acquisition.field_policies."global.tx_state.monitor_on"]
+cadence_seconds = 1.5
+freshness_ttl_seconds = 3.0
+adaptive_decay = false
+
+[state_acquisition.field_policies."global.tx_state.vox_on"]
+cadence_seconds = 1.5
+freshness_ttl_seconds = 3.0
+adaptive_decay = false
+
+[state_acquisition.field_policies."receiver.main.operator_controls.agc_time_constant"]
+cadence_seconds = 3.0
+freshness_ttl_seconds = 5.0
+adaptive_decay = false
+
+[state_acquisition.field_policies."receiver.sub.operator_controls.agc_time_constant"]
+cadence_seconds = 3.0
+freshness_ttl_seconds = 5.0
+adaptive_decay = false
+
+[state_acquisition.field_policies."global.tx_state.split"]
+cadence_seconds = 1.5
+freshness_ttl_seconds = 3.0
+adaptive_decay = false
+
+[state_acquisition.field_policies."global.tx_state.dual_watch"]
+cadence_seconds = 1.5
+freshness_ttl_seconds = 3.0
+adaptive_decay = false
+
+[state_acquisition.field_policies."global.operator_controls.tuner_status"]
+cadence_seconds = 1.5
+freshness_ttl_seconds = 3.0
+adaptive_decay = false
+
+[state_acquisition.field_policies."receiver.main.operator_toggles.repeater_tone"]
+cadence_seconds = 3.0
+freshness_ttl_seconds = 5.0
+adaptive_decay = false
+
+[state_acquisition.field_policies."receiver.main.operator_toggles.repeater_tsql"]
+cadence_seconds = 3.0
+freshness_ttl_seconds = 5.0
+adaptive_decay = false
+
+[state_acquisition.field_policies."receiver.sub.operator_toggles.repeater_tone"]
+cadence_seconds = 3.0
+freshness_ttl_seconds = 5.0
+adaptive_decay = false
+
+[state_acquisition.field_policies."receiver.sub.operator_toggles.repeater_tsql"]
+cadence_seconds = 3.0
+freshness_ttl_seconds = 5.0
+adaptive_decay = false
+
+[state_acquisition.field_policies."receiver.main.operator_controls.tone_freq"]
+cadence_seconds = 3.0
+freshness_ttl_seconds = 5.0
+adaptive_decay = false
+
+[state_acquisition.field_policies."receiver.main.operator_controls.tsql_freq"]
+cadence_seconds = 3.0
+freshness_ttl_seconds = 5.0
+adaptive_decay = false
+
+[state_acquisition.field_policies."receiver.sub.operator_controls.tone_freq"]
+cadence_seconds = 3.0
+freshness_ttl_seconds = 5.0
+adaptive_decay = false
+
+[state_acquisition.field_policies."receiver.sub.operator_controls.tsql_freq"]
+cadence_seconds = 3.0
+freshness_ttl_seconds = 5.0
+adaptive_decay = false
+
 # ── Parameterized Capabilities ───────────────────────────────────
 
 [attenuator]
@@ -433,6 +939,7 @@ routes = [
     [0x15, 0x02],     # S-meter level
     [0x15, 0x05],     # Various squelch
     [0x16, 0x02],     # Preamp
+    [0x16, 0x12],     # AGC mode
     [0x16, 0x22],     # NB on/off
     [0x16, 0x32],     # Audio Peak Filter
     [0x16, 0x40],     # NR on/off
@@ -774,13 +1281,26 @@ raw_max = 255
 raw_min = 0
 raw_max = 255
 
+# NR level: CI-V wire value is 0-255 BCD (like every other rig); the IC-7610
+# front panel shows it as 0-15.  Record both so the web slider can convert
+# wire <-> display (MOR-490).
 [controls.nr_level]
 raw_min = 0
-raw_max = 15
+raw_max = 255
+display_min = 0
+display_max = 15
 
 [controls.nb_level]
 raw_min = 0
 raw_max = 255
+
+# NB depth: CI-V wire value is 0-9; the IC-7610 front panel shows it as 1-10.
+# Record both so the web slider can convert wire <-> display (MOR-498).
+[controls.nb_depth]
+raw_min = 0
+raw_max = 9
+display_min = 1
+display_max = 10
 
 [controls.mic_gain]
 raw_min = 0

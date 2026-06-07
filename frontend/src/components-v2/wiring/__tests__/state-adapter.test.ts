@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 
 import {
   resolveFilterModeConfig,
+  toDspProps,
   toFilterProps,
   toModeProps,
   toVfoProps,
@@ -217,5 +218,23 @@ describe('toRxAudioProps', () => {
     const live = toRxAudioProps(state, caps, { muted: false, rxEnabled: true, volume: 50 });
     expect(live.monitorMode).toBe('live');
     expect(live.afLevel).toBe(Math.round(50 / 100 * 255));
+  });
+});
+
+describe('toDspProps NR-level scaling (MOR-490)', () => {
+  it('scales the raw 0-255 NR wire value down to the 0-15 slider value', () => {
+    // Store holds the raw CI-V wire value; the slider is 0-15.
+    expect(toDspProps({ active: 'MAIN', main: { nrLevel: 0 } } as any, null).nrLevel).toBe(0);
+    expect(toDspProps({ active: 'MAIN', main: { nrLevel: 128 } } as any, null).nrLevel).toBe(8);
+    expect(toDspProps({ active: 'MAIN', main: { nrLevel: 255 } } as any, null).nrLevel).toBe(15);
+  });
+});
+
+describe('toDspProps NB-depth offset (MOR-498)', () => {
+  it('offsets the 0-9 NB-depth wire value up to the 1-10 slider value', () => {
+    // Store holds the wire value (0-9); the slider is 1-10.
+    expect(toDspProps({ active: 'MAIN', nbDepth: 0 } as any, null).nbDepth).toBe(1);
+    expect(toDspProps({ active: 'MAIN', nbDepth: 5 } as any, null).nbDepth).toBe(6);
+    expect(toDspProps({ active: 'MAIN', nbDepth: 9 } as any, null).nbDepth).toBe(10);
   });
 });

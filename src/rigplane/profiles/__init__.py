@@ -12,6 +12,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Required, TypedDict
 
+from rigplane.core.state_acquisition_policy import RadioAcquisitionProfile
+
 __all__ = [
     "ControlSpec",
     "FilterWidthSegment",
@@ -204,6 +206,10 @@ class RadioProfile:
     # driven from ``[validation].write_only_controls`` in the rig TOML (MOR-208).
     # Empty by default: every control uses the standard RMVR path.
     write_only_controls: frozenset[str] = frozenset()
+    # Provider-specific state acquisition metadata (MOR-344). This is profile
+    # data only; future schedulers/adapters consume it instead of Web or
+    # rigctld delivery code branching on radio model.
+    state_acquisition: RadioAcquisitionProfile | None = None
 
     @property
     def vfo_swap_code(self) -> int | None:

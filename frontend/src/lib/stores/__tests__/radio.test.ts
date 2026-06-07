@@ -1,9 +1,20 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import type { ServerState } from '../../types/state';
 
-function makeState(overrides: Partial<ServerState> = {}): ServerState {
+type ServerStateWithObservation = ServerState & {
+  observationSeq?: number;
+  publicStateSeq?: number;
+  fieldStatus?: Record<string, unknown>;
+};
+
+function makeState(overrides: Partial<ServerStateWithObservation> = {}): ServerStateWithObservation {
+  const revision = overrides.stateRevision ?? overrides.revision ?? 1;
+  const freshnessRevision = overrides.freshnessRevision ?? 1;
   return {
-    revision: 1,
+    revision,
+    stateRevision: revision,
+    freshnessRevision,
+    observationSeq: overrides.observationSeq ?? revision,
     updatedAt: '2026-03-07T00:00:00Z',
     active: 'MAIN',
     ptt: false,
@@ -73,6 +84,7 @@ function makeState(overrides: Partial<ServerState> = {}): ServerState {
       afMute: false,
     },
     connection: { rigConnected: true, radioReady: true, controlConnected: true },
+    wsClients: { scope: 0, control: 1, audio: 0 },
     powerLevel: 255,
     scanning: false,
     tuningStep: 0,
@@ -189,6 +201,175 @@ describe('radio store', () => {
     expect(store.getRadioState()?.radioHealth?.likelyCause).toBe('radio_not_responding');
     expect(connection.getRadioReady()).toBe(false);
     expect(connection.getRadioHealth()?.readiness).toBe('delayed');
+  });
+
+  it('accepts freshness-only updates when freshnessRevision advances', () => {
+    store.setRadioState(makeState({ revision: 5, stateRevision: 5, freshnessRevision: 1 }));
+    store.setRadioState(makeState({
+      revision: 5,
+      stateRevision: 5,
+      freshnessRevision: 2,
+      main: {
+        ...makeState().main,
+        sMeter: 77,
+      },
+    }));
+
+    expect(store.getRadioState()?.freshnessRevision).toBe(2);
+    expect(store.getRadioState()?.main.sMeter).toBe(77);
+  });
+
+  it('accepts same-value fieldStatus metadata when observationSeq advances', () => {
+    store.setRadioState(makeState({
+      revision: 5,
+      stateRevision: 5,
+      freshnessRevision: 1,
+      healthRevision: 1,
+      observationSeq: 1,
+      fieldStatus: {
+        'main.freqHz': {
+          storePath: 'receiver.main.active.freq_mode.freq_hz',
+          observed: true,
+          freshness: 'fresh',
+          availability: 'available',
+          lastObservedMonotonic: 1,
+          source: { provider: 'first' },
+        },
+      },
+    }));
+
+    const nextFieldStatus = {
+      'main.freqHz': {
+        storePath: 'receiver.main.active.freq_mode.freq_hz',
+        observed: true,
+        freshness: 'fresh',
+        availability: 'available',
+        lastObservedMonotonic: 2,
+        source: { provider: 'second' },
+      },
+    } as const;
+    store.setRadioState(makeState({
+      revision: 5,
+      stateRevision: 5,
+      freshnessRevision: 1,
+      healthRevision: 1,
+      observationSeq: 2,
+      fieldStatus: nextFieldStatus,
+    }));
+
+    expect(store.getRadioState()?.stateRevision).toBe(5);
+    expect(store.getRadioState()?.freshnessRevision).toBe(1);
+    expect(store.getRadioState()?.observationSeq).toBe(2);
+    expect(store.getRadioState()?.fieldStatus?.['main.freqHz']).toEqual(
+      nextFieldStatus['main.freqHz'],
+    );
+  });
+
+  it('accepts wsClients metadata when publicStateSeq advances without semantic revisions', () => {
+    store.setRadioState(makeState({
+      revision: 5,
+      stateRevision: 5,
+      freshnessRevision: 1,
+      observationSeq: 1,
+      publicStateSeq: 1,
+      wsClients: { scope: 0, control: 1, audio: 0 },
+    }));
+
+    store.setRadioState(makeState({
+      revision: 5,
+      stateRevision: 5,
+      freshnessRevision: 1,
+      observationSeq: 1,
+      publicStateSeq: 2,
+      wsClients: { scope: 0, control: 2, audio: 0 },
+    }));
+
+    expect(store.getRadioState()?.stateRevision).toBe(5);
+    expect(store.getRadioState()?.freshnessRevision).toBe(1);
+    expect(store.getRadioState()?.observationSeq).toBe(1);
+    expect(store.getRadioState()?.publicStateSeq).toBe(2);
+    expect(store.getRadioState()?.wsClients?.control).toBe(2);
+  });
+
+  it('ignores equal-revision semantic changes even when publicStateSeq advances', () => {
+    store.setRadioState(makeState({
+      revision: 5,
+      stateRevision: 5,
+      publicStateSeq: 1,
+      ptt: true,
+      wsClients: { scope: 0, control: 1, audio: 0 },
+    }));
+
+    store.setRadioState(makeState({
+      revision: 5,
+      stateRevision: 5,
+      publicStateSeq: 2,
+      ptt: false,
+      wsClients: { scope: 0, control: 2, audio: 0 },
+    }));
+
+    expect(store.getRadioState()?.publicStateSeq).toBe(1);
+    expect(store.getRadioState()?.wsClients?.control).toBe(1);
+    expect(store.getRadioState()?.ptt).toBe(true);
+  });
+
+  it('ignores stale semantic state even when freshnessRevision advances', () => {
+    store.setRadioState(makeState({ revision: 6, stateRevision: 6, freshnessRevision: 1, ptt: true }));
+    store.setRadioState(makeState({
+      revision: 5,
+      stateRevision: 5,
+      freshnessRevision: 2,
+      ptt: false,
+      main: {
+        ...makeState().main,
+        freqHz: 7100000,
+      },
+    }));
+
+    expect(store.getRadioState()?.stateRevision).toBe(6);
+    expect(store.getRadioState()?.freshnessRevision).toBe(1);
+    expect(store.getRadioState()?.ptt).toBe(true);
+    expect(store.getRadioState()?.main.freqHz).toBe(14074000);
+  });
+
+  it('ignores stale semantic state even when observationSeq advances', () => {
+    store.setRadioState(makeState({
+      revision: 6,
+      stateRevision: 6,
+      observationSeq: 6,
+      ptt: true,
+    }));
+    store.setRadioState(makeState({
+      revision: 5,
+      stateRevision: 5,
+      observationSeq: 7,
+      ptt: false,
+      main: {
+        ...makeState().main,
+        freqHz: 7100000,
+      },
+    }));
+
+    expect(store.getRadioState()?.stateRevision).toBe(6);
+    expect(store.getRadioState()?.observationSeq).toBe(6);
+    expect(store.getRadioState()?.ptt).toBe(true);
+    expect(store.getRadioState()?.main.freqHz).toBe(14074000);
+  });
+
+  it('ignores stale semantic state even when healthRevision advances', () => {
+    store.setRadioState(makeState({ revision: 6, stateRevision: 6, healthRevision: 1, ptt: true }));
+    store.setRadioState(makeState({
+      revision: 5,
+      stateRevision: 5,
+      healthRevision: 2,
+      ptt: false,
+      connection: { rigConnected: true, radioReady: false, controlConnected: true },
+    }));
+
+    expect(store.getRadioState()?.stateRevision).toBe(6);
+    expect(store.getRadioState()?.healthRevision).toBe(1);
+    expect(store.getRadioState()?.ptt).toBe(true);
+    expect(store.getRadioState()?.connection.radioReady).toBe(true);
   });
 
   it('getFrequency returns active receiver frequency (MAIN)', () => {
@@ -314,6 +495,42 @@ describe('radio store', () => {
     vi.useRealTimers();
   });
 
+  it('exposes missing field status after optimistic top-level TTL expires', () => {
+    vi.useFakeTimers();
+    store.setRadioState(makeState({
+      revision: 1,
+      powerLevel: 128,
+      fieldStatus: {
+        powerLevel: {
+          storePath: 'global.operator_controls.power_level',
+          observed: true,
+          freshness: 'fresh',
+          availability: 'available',
+        },
+      },
+    }));
+    store.patchRadioState({ powerLevel: 220 });
+
+    vi.advanceTimersByTime(6000);
+    store.setRadioState(makeState({
+      revision: 2,
+      powerLevel: 128,
+      fieldStatus: {
+        powerLevel: {
+          storePath: 'global.operator_controls.power_level',
+          observed: false,
+          freshness: 'unknown',
+          availability: 'missing',
+        },
+      },
+    }));
+
+    expect(store.getRadioState()?.powerLevel).toBe(128);
+    expect(store.isRadioFieldAvailable('powerLevel')).toBe(false);
+
+    vi.useRealTimers();
+  });
+
   it('patchRadioState: optimistic for one field does not affect other top-level fields', () => {
     store.setRadioState(makeState({ revision: 1, ptt: false, split: false }));
     store.patchRadioState({ ptt: true });
@@ -363,5 +580,151 @@ describe('radio store', () => {
 
   it('getActiveReceiver returns null when state is null', () => {
     expect(store.getActiveReceiver()).toBeNull();
+  });
+
+  // --- freq optimistic overlay vs causal advance (MOR-475) ---
+
+  it('keeps an unlocked freqHz overlay when a causally-newer DIFFERING snapshot arrives (no false clear)', () => {
+    store.setRadioState(makeState({
+      revision: 1,
+      stateRevision: 1,
+      observationSeq: 1,
+      freshnessRevision: 1,
+      main: { ...makeState().main, freqHz: 14074000 },
+    }));
+
+    // Unlocked optimistic patch (click-to-tune) to a new freq.
+    store.patchActiveReceiver({ freqHz: 14100000 });
+    expect(store.getMainReceiver()?.freqHz).toBe(14100000);
+
+    // Server emits a causally-newer snapshot (observationSeq + freshnessRevision
+    // advance) reporting a DIFFERENT freq well outside the 500 Hz tolerance.
+    // This is the classic in-flight stale poll: causal advance alone must NOT
+    // drop the unlocked overlay, or the commanded freq would flash away.
+    store.setRadioState(makeState({
+      revision: 1,
+      stateRevision: 1,
+      observationSeq: 2,
+      freshnessRevision: 2,
+      main: { ...makeState().main, freqHz: 14200000 },
+    }));
+
+    // The overlay must HOLD the commanded value — value-match (tolerance) or the
+    // freq TTL are the only legitimate clear conditions, not a bare causal advance.
+    expect(store.getMainReceiver()?.freqHz).toBe(14100000);
+    expect(store.getFrequency()).toBe(14100000);
+  });
+
+  it('does not flash the stale freq: unlocked overlay survives an in-flight causal stale poll, clears on value-match', () => {
+    store.setRadioState(makeState({
+      revision: 1,
+      stateRevision: 1,
+      observationSeq: 1,
+      freshnessRevision: 1,
+      main: { ...makeState().main, freqHz: 14074000 },
+    }));
+
+    // Click-to-tune: unlocked optimistic patch to the commanded freq.
+    store.patchActiveReceiver({ freqHz: 14100000 });
+    expect(store.getMainReceiver()?.freqHz).toBe(14100000);
+
+    // An in-flight poll captured BEFORE the click lands: causally newer
+    // (observationSeq + freshnessRevision advance) but still carrying the OLD freq.
+    // The overlay must survive — otherwise the display flashes the stale 14074000.
+    store.setRadioState(makeState({
+      revision: 1,
+      stateRevision: 1,
+      observationSeq: 2,
+      freshnessRevision: 2,
+      main: { ...makeState().main, freqHz: 14074000 },
+    }));
+    expect(store.getMainReceiver()?.freqHz).toBe(14100000);
+
+    // The backend (post MOR-484) now reports the live commanded freq: value-match
+    // within tolerance clears the overlay and the display equals the server value.
+    store.setRadioState(makeState({
+      revision: 1,
+      stateRevision: 1,
+      observationSeq: 3,
+      freshnessRevision: 3,
+      main: { ...makeState().main, freqHz: 14100000 },
+    }));
+    expect(store.getMainReceiver()?.freqHz).toBe(14100000);
+  });
+
+  it('keeps a locked freqHz overlay despite a causally-newer differing snapshot', () => {
+    store.setRadioState(makeState({
+      revision: 1,
+      stateRevision: 1,
+      observationSeq: 1,
+      freshnessRevision: 1,
+      main: { ...makeState().main, freqHz: 14074000 },
+    }));
+
+    // Locked optimistic patch (rapid input) — must survive the lock window.
+    store.patchActiveReceiver({ freqHz: 14100000 }, true);
+    expect(store.getMainReceiver()?.freqHz).toBe(14100000);
+
+    // Causally-newer differing snapshot arrives within the lock window.
+    store.setRadioState(makeState({
+      revision: 1,
+      stateRevision: 1,
+      observationSeq: 2,
+      freshnessRevision: 2,
+      main: { ...makeState().main, freqHz: 14150000 },
+    }));
+
+    // Lock holds: causal advance must NOT override a locked overlay.
+    expect(store.getMainReceiver()?.freqHz).toBe(14100000);
+  });
+
+  it('falls back to server freq after the lowered freq TTL with no causal advance', () => {
+    vi.useFakeTimers();
+    store.setRadioState(makeState({
+      revision: 1,
+      stateRevision: 1,
+      observationSeq: 1,
+      freshnessRevision: 1,
+      main: { ...makeState().main, freqHz: 14074000 },
+    }));
+
+    // Unlocked freq patch.
+    store.patchActiveReceiver({ freqHz: 14100000 });
+    expect(store.getMainReceiver()?.freqHz).toBe(14100000);
+
+    // Advance past the lowered freq TTL (1500ms) but under the old 5000ms TTL.
+    vi.advanceTimersByTime(2000);
+
+    // Same observationSeq (no causal advance), differing server freq.
+    store.setRadioState(makeState({
+      revision: 2,
+      stateRevision: 2,
+      observationSeq: 1,
+      freshnessRevision: 1,
+      main: { ...makeState().main, freqHz: 14080000 },
+    }));
+
+    // Freq TTL elapsed → server value wins.
+    expect(store.getMainReceiver()?.freqHz).toBe(14080000);
+
+    vi.useRealTimers();
+  });
+
+  it('non-freq optimistic overlays still use the 5s TTL (no regression)', () => {
+    vi.useFakeTimers();
+    store.setRadioState(makeState({ revision: 1, ptt: false }));
+    store.patchRadioState({ ptt: true });
+
+    // Past the freq TTL (1500ms) but well under the 5s TTL — ptt optimistic holds.
+    vi.advanceTimersByTime(2000);
+    store.setRadioState(makeState({ revision: 2, ptt: false }));
+    expect(store.getRadioState()?.ptt).toBe(true);
+
+    // Past the 5s TTL — ptt optimistic clears, server wins.
+    vi.advanceTimersByTime(4000);
+    store.setRadioState(makeState({ revision: 3, ptt: false }));
+    expect(store.getRadioState()?.ptt).toBe(false);
+
+    vi.useRealTimers();
   });
 });

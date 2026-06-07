@@ -1,0 +1,2196 @@
+"""Minimal acquisition scheduler behavior for MOR-339."""
+
+from __future__ import annotations
+
+import asyncio
+from collections.abc import Iterable
+from dataclasses import replace
+from pathlib import Path
+from typing import Any
+
+from rigplane.core.acquisition_scheduler import (
+    AcquisitionPriority,
+    AcquisitionScheduler,
+    AcquisitionStatus,
+    IcomCivAcquisitionExecutor,
+    MeterObservationCoalescer,
+    RadioStateModelService,
+)
+from rigplane.core.state_acquisition_policy import (
+    AcquisitionPolicy,
+    AdaptiveDecayPolicy,
+    ExternalCatPauseBehavior,
+    FieldAvailability,
+    FieldCapability,
+    MeterCoalescingPolicy,
+    RadioAcquisitionProfile,
+    ReconciliationPriority,
+)
+from rigplane.core.state_pipeline_contracts import (
+    ChangeSet,
+    FieldChange,
+    FieldPath,
+    Observation,
+    SourceMetadata,
+)
+from rigplane.core.state_store import FreshnessClock, FreshnessState, StateStore
+from rigplane.profiles.rig_loader import load_rig
+
+
+RIGS_DIR = Path(__file__).parents[1] / "rigs"
+
+
+def _source() -> SourceMetadata:
+    return SourceMetadata(source="poll_response", provider="test", transport="fake")
+
+
+def _observation(
+    path: FieldPath,
+    value: Any,
+    *,
+    at: float,
+    max_age: float | None = None,
+) -> Observation:
+    return Observation(
+        path=path,
+        value=value,
+        source=_source(),
+        timestamp_monotonic=at,
+        max_age=max_age,
+    )
+
+
+def _changeset(
+    *,
+    changes: tuple[FieldChange, ...] = (),
+    at: float,
+) -> ChangeSet:
+    return ChangeSet(
+        revision=1 if changes else 0,
+        freshness_revision=1,
+        observation_seq=1,
+        changes=changes,
+        timestamp_monotonic=at,
+        sources=(_source(),),
+    )
+
+
+def _profile(
+    paths: Iterable[FieldPath],
+    *,
+    default_policy: AcquisitionPolicy | None = None,
+    field_policies: dict[FieldPath, AcquisitionPolicy] | None = None,
+) -> RadioAcquisitionProfile:
+    return RadioAcquisitionProfile(
+        provider="test_provider",
+        capabilities=tuple(
+            FieldCapability(
+                path=path,
+                polling=True,
+                stream_like=path.family.value == "meters",
+                command_response_observable=path.family.value == "operator_controls",
+                supported_controls=(
+                    ("set_level",) if path.family.value == "operator_controls" else ()
+                ),
+            )
+            for path in paths
+        ),
+        default_policy=default_policy or AcquisitionPolicy(),
+        field_policies=field_policies or {},
+    )
+
+
+def test_model_service_returns_fresh_snapshot_without_queueing_acquisition() -> None:
+    clock = FreshnessClock(start=10.0)
+    freq = FieldPath.active("main", "freq_mode", "freq_hz")
+    store = StateStore(freshness_clock=clock)
+    store.apply(_observation(freq, 14_074_000, at=clock.now(), max_age=5.0))
+    scheduler = AcquisitionScheduler(profile=_profile([freq]), clock=clock)
+    service = RadioStateModelService(store=store, scheduler=scheduler, clock=clock)
+
+    result = service.ensure_fresh(
+        freq,
+        max_age=2.0,
+        priority=AcquisitionPriority.USER,
+        reason="rigctld-get",
+    )
+
+    assert result.status is AcquisitionStatus.FRESH
+    assert result.fields[0].path == freq
+    assert result.fields[0].value == 14_074_000
+    assert result.request is None
+    assert scheduler.pending_requests() == ()
+
+
+def test_model_service_queues_backend_neutral_request_for_stale_field() -> None:
+    clock = FreshnessClock(start=20.0)
+    freq = FieldPath.active("main", "freq_mode", "freq_hz")
+    store = StateStore(freshness_clock=clock)
+    store.apply(_observation(freq, 7_074_000, at=clock.now(), max_age=0.5))
+    scheduler = AcquisitionScheduler(profile=_profile([freq]), clock=clock)
+    service = RadioStateModelService(store=store, scheduler=scheduler, clock=clock)
+    clock.advance(0.6)
+    store.mark_stale_due()
+
+    result = service.ensure_fresh(
+        freq,
+        max_age=0.25,
+        priority="user",
+        reason="web-snapshot",
+        timeout=1.5,
+    )
+
+    assert result.status is AcquisitionStatus.QUEUED
+    assert result.request is not None
+    assert result.request.paths == (freq,)
+    assert result.request.provider == "test_provider"
+    assert result.request.priority is AcquisitionPriority.USER
+    assert result.request.reason == "web-snapshot"
+    assert result.request.max_age == 0.25
+    assert result.request.timeout == 1.5
+    assert result.request.deadline_monotonic == 20.85
+    assert result.request.acquisition_method == "poll"
+    assert result.request.policy.freshness_ttl_seconds == 15.0
+    assert scheduler.pending_requests() == (result.request,)
+
+
+def test_ensure_fresh_is_synchronous_fire_and_queue_contract() -> None:
+    """MOR-431: ensure_fresh is a plain method (not a coroutine), returns a
+    concrete result synchronously, and only *enqueues* the backend request.
+
+    Asserts the documented contract: callers must NOT await it, the request is
+    queued (not yet executed), and ``timeout`` lands on the AcquisitionRequest
+    for the backend executor — there is no caller await for that timeout.
+    """
+
+    clock = FreshnessClock(start=70.0)
+    freq = FieldPath.active("main", "freq_mode", "freq_hz")
+    store = StateStore(freshness_clock=clock)
+    scheduler = AcquisitionScheduler(profile=_profile([freq]), clock=clock)
+    service = RadioStateModelService(store=store, scheduler=scheduler, clock=clock)
+
+    # Not a coroutine function: a caller that ``await``-ed it would crash.
+    assert not asyncio.iscoroutinefunction(service.ensure_fresh)
+
+    result = service.ensure_fresh(
+        freq,
+        max_age=0.25,
+        priority=AcquisitionPriority.USER,
+        reason="contract-check",
+        timeout=2.0,
+    )
+
+    # Returns a concrete (non-awaitable) result synchronously.
+    assert not asyncio.iscoroutine(result)
+    # The field was missing, so acquisition is only queued — never executed
+    # inline. No backend read has happened on return.
+    assert result.status is AcquisitionStatus.QUEUED
+    assert result.fields == ()
+    assert result.request is not None
+    # timeout is carried for the backend executor, not consumed as a caller
+    # await budget.
+    assert result.request.timeout == 2.0
+    assert scheduler.pending_requests() == (result.request,)
+
+
+def test_duplicate_requests_coalesce_with_highest_priority_and_urgent_deadline() -> (
+    None
+):
+    clock = FreshnessClock(start=30.0)
+    freq = FieldPath.active("main", "freq_mode", "freq_hz")
+    scheduler = AcquisitionScheduler(profile=_profile([freq]), clock=clock)
+
+    low = scheduler.ensure_fresh(
+        freq,
+        max_age=5.0,
+        priority=AcquisitionPriority.BACKGROUND,
+        reason="telemetry",
+        timeout=10.0,
+    )
+    clock.advance(1.0)
+    high = scheduler.ensure_fresh(
+        freq,
+        max_age=0.5,
+        priority=AcquisitionPriority.USER,
+        reason="user-read",
+        timeout=2.0,
+    )
+
+    assert low.status is AcquisitionStatus.QUEUED
+    assert high.status is AcquisitionStatus.QUEUED
+    assert high.request is not None
+    assert low.request is not None
+    assert high.request.id == low.request.id
+    assert high.request.priority is AcquisitionPriority.USER
+    assert high.request.max_age == 0.5
+    assert high.request.deadline_monotonic == 31.5
+    assert high.request.reasons == ("telemetry", "user-read")
+    assert scheduler.pending_requests() == (high.request,)
+
+
+def test_same_family_requests_share_one_acquisition_request() -> None:
+    clock = FreshnessClock(start=35.0)
+    freq = FieldPath.active("main", "freq_mode", "freq_hz")
+    mode = FieldPath.active("main", "freq_mode", "mode")
+    scheduler = AcquisitionScheduler(profile=_profile([freq, mode]), clock=clock)
+
+    freq_result = scheduler.ensure_fresh(
+        freq,
+        max_age=5.0,
+        priority="background",
+        reason="background-freq",
+        timeout=10.0,
+    )
+    clock.advance(1.0)
+    mode_result = scheduler.ensure_fresh(
+        mode,
+        max_age=0.5,
+        priority="user",
+        reason="visible-mode",
+        timeout=2.0,
+    )
+
+    assert freq_result.request is not None
+    assert mode_result.request is not None
+    assert mode_result.request.id == freq_result.request.id
+    assert mode_result.request.paths == (freq, mode)
+    assert mode_result.request.priority is AcquisitionPriority.USER
+    assert mode_result.request.deadline_monotonic == 36.5
+    assert mode_result.request.max_age == 0.5
+    assert mode_result.request.timeout == 2.0
+    assert mode_result.request.reasons == ("background-freq", "visible-mode")
+    assert scheduler.pending_requests() == (mode_result.request,)
+
+
+def test_recording_older_coalesced_request_preserves_newer_pending_paths() -> None:
+    clock = FreshnessClock(start=36.0)
+    freq = FieldPath.active("main", "freq_mode", "freq_hz")
+    mode = FieldPath.active("main", "freq_mode", "mode")
+    scheduler = AcquisitionScheduler(profile=_profile([freq, mode]), clock=clock)
+
+    freq_result = scheduler.ensure_fresh(
+        freq,
+        max_age=5.0,
+        priority="background",
+        reason="background-freq",
+        timeout=10.0,
+    )
+    assert freq_result.request is not None
+    stale_executor_copy = freq_result.request
+    mode_result = scheduler.ensure_fresh(
+        mode,
+        max_age=0.5,
+        priority="user",
+        reason="visible-mode",
+        timeout=2.0,
+    )
+    assert mode_result.request is not None
+    assert mode_result.request.id == stale_executor_copy.id
+    assert mode_result.request.paths == (freq, mode)
+
+    scheduler.record_acquisition_result(
+        stale_executor_copy,
+        _changeset(
+            changes=(FieldChange(path=freq, previous=7_074_000, current=14_074_000),),
+            at=clock.now(),
+        ),
+    )
+
+    pending = scheduler.pending_requests()
+    assert len(pending) == 1
+    assert pending[0].id == stale_executor_copy.id
+    assert pending[0].paths == (mode,)
+
+
+def test_user_facing_requests_preempt_background_telemetry() -> None:
+    clock = FreshnessClock(start=40.0)
+    meter = FieldPath.receiver("main", "meters", "s_meter")
+    mode = FieldPath.active("main", "freq_mode", "mode")
+    scheduler = AcquisitionScheduler(profile=_profile([meter, mode]), clock=clock)
+
+    background = scheduler.ensure_fresh(
+        meter,
+        max_age=1.0,
+        priority="background",
+        reason="meter-tick",
+    )
+    user = scheduler.ensure_fresh(
+        mode,
+        max_age=1.0,
+        priority="user",
+        reason="visible-mode",
+    )
+
+    assert background.request is not None
+    assert user.request is not None
+    assert scheduler.pending_requests() == (user.request, background.request)
+
+
+def test_external_cat_pause_defers_conflicting_polling_and_resume_queues_it() -> None:
+    clock = FreshnessClock(start=50.0)
+    freq = FieldPath.active("main", "freq_mode", "freq_hz")
+    scheduler = AcquisitionScheduler(profile=_profile([freq]), clock=clock)
+
+    scheduler.pause_external_cat(owner="hamlib-client", reason="raw-cat-session")
+    paused = scheduler.ensure_fresh(
+        freq,
+        max_age=0.5,
+        priority="user",
+        reason="rigctld-get",
+    )
+
+    assert paused.status is AcquisitionStatus.DEFERRED
+    assert paused.request is None
+    assert scheduler.pending_requests() == ()
+    resumed = scheduler.resume_external_cat()
+    assert len(resumed) == 1
+    assert resumed[0].paths == (freq,)
+    assert resumed[0].external_cat_owner == "hamlib-client"
+    assert scheduler.pending_requests() == resumed
+
+
+def test_external_cat_pause_hides_existing_conflicting_poll_request() -> None:
+    clock = FreshnessClock(start=51.0)
+    freq = FieldPath.active("main", "freq_mode", "freq_hz")
+    scheduler = AcquisitionScheduler(profile=_profile([freq]), clock=clock)
+
+    result = scheduler.ensure_fresh(
+        freq,
+        max_age=0.5,
+        priority="background",
+        reason="background-poll",
+    )
+    assert result.request is not None
+    assert scheduler.pending_requests() == (result.request,)
+
+    scheduler.pause_external_cat(owner="hamlib-client", reason="raw-cat-session")
+
+    assert scheduler.pending_requests() == ()
+
+
+def test_external_cat_continue_policy_allows_non_conflicting_request() -> None:
+    clock = FreshnessClock(start=60.0)
+    ptt = FieldPath.global_("tx_state", "ptt")
+    profile = _profile(
+        [ptt],
+        default_policy=AcquisitionPolicy(
+            external_cat_pause=ExternalCatPauseBehavior.CONTINUE,
+        ),
+    )
+    scheduler = AcquisitionScheduler(profile=profile, clock=clock)
+
+    scheduler.pause_external_cat(owner="hamlib-client")
+    result = scheduler.ensure_fresh(
+        ptt,
+        max_age=1.0,
+        priority="reconciliation",
+        reason="ptt-reconcile",
+    )
+
+    assert result.status is AcquisitionStatus.QUEUED
+    assert result.request is not None
+    assert result.request.external_cat_paused is True
+
+
+def test_external_cat_pause_preserves_existing_continue_policy_request() -> None:
+    clock = FreshnessClock(start=61.0)
+    ptt = FieldPath.global_("tx_state", "ptt")
+    profile = _profile(
+        [ptt],
+        default_policy=AcquisitionPolicy(
+            external_cat_pause=ExternalCatPauseBehavior.CONTINUE,
+        ),
+    )
+    scheduler = AcquisitionScheduler(profile=profile, clock=clock)
+
+    result = scheduler.ensure_fresh(
+        ptt,
+        max_age=1.0,
+        priority="reconciliation",
+        reason="ptt-reconcile",
+    )
+    assert result.request is not None
+
+    scheduler.pause_external_cat(owner="hamlib-client", reason="raw-cat-session")
+
+    assert scheduler.pending_requests() == (result.request,)
+
+
+def test_external_cat_pause_defers_only_pause_policy_groups() -> None:
+    clock = FreshnessClock(start=62.0)
+    freq = FieldPath.active("main", "freq_mode", "freq_hz")
+    ptt = FieldPath.global_("tx_state", "ptt")
+    profile = _profile(
+        [freq, ptt],
+        field_policies={
+            freq: AcquisitionPolicy(
+                external_cat_pause=ExternalCatPauseBehavior.PAUSE_POLLING,
+            ),
+            ptt: AcquisitionPolicy(
+                external_cat_pause=ExternalCatPauseBehavior.CONTINUE,
+            ),
+        },
+    )
+    scheduler = AcquisitionScheduler(profile=profile, clock=clock)
+
+    scheduler.pause_external_cat(owner="hamlib-client")
+    result = scheduler.ensure_fresh(
+        [ptt, freq],
+        max_age=1.0,
+        priority="user",
+        reason="mixed-snapshot",
+    )
+
+    assert result.status is AcquisitionStatus.QUEUED
+    assert result.request is not None
+    assert result.request.paths == (ptt,)
+    assert result.request.external_cat_paused is True
+    assert scheduler.pending_requests() == (result.request,)
+
+    resumed = scheduler.resume_external_cat()
+
+    assert len(resumed) == 1
+    assert resumed[0].paths == (freq,)
+    assert scheduler.pending_requests() == (result.request, resumed[0])
+
+
+def test_external_cat_resume_requeues_existing_deferred_request_once() -> None:
+    clock = FreshnessClock(start=62.5)
+    freq = FieldPath.active("main", "freq_mode", "freq_hz")
+    scheduler = AcquisitionScheduler(profile=_profile([freq]), clock=clock)
+
+    result = scheduler.ensure_fresh(
+        freq,
+        max_age=0.5,
+        priority="background",
+        reason="background-poll",
+        timeout=2.0,
+    )
+    assert result.request is not None
+
+    scheduler.pause_external_cat(owner="hamlib-client", reason="raw-cat-session")
+    assert scheduler.pending_requests() == ()
+
+    resumed = scheduler.resume_external_cat()
+
+    assert len(resumed) == 1
+    assert resumed[0].paths == (freq,)
+    assert resumed[0].priority is AcquisitionPriority.BACKGROUND
+    assert resumed[0].reason == "background-poll"
+    assert resumed[0].reasons == ("background-poll",)
+    assert resumed[0].max_age == 0.5
+    assert resumed[0].timeout == 2.0
+    assert resumed[0].requested_at_monotonic == 62.5
+    assert resumed[0].deadline_monotonic == 63.0
+    assert resumed[0].external_cat_owner == "hamlib-client"
+    assert scheduler.pending_requests() == resumed
+    assert scheduler.resume_external_cat() == ()
+    assert scheduler.pending_requests() == resumed
+
+
+def test_external_cat_resume_dedupes_same_family_deferred_requests() -> None:
+    clock = FreshnessClock(start=63.0)
+    freq = FieldPath.active("main", "freq_mode", "freq_hz")
+    mode = FieldPath.active("main", "freq_mode", "mode")
+    scheduler = AcquisitionScheduler(profile=_profile([freq, mode]), clock=clock)
+
+    scheduler.pause_external_cat(owner="hamlib-client")
+    freq_result = scheduler.ensure_fresh(
+        freq,
+        max_age=5.0,
+        priority="background",
+        reason="background-freq",
+    )
+    clock.advance(1.0)
+    mode_result = scheduler.ensure_fresh(
+        mode,
+        max_age=0.5,
+        priority="user",
+        reason="visible-mode",
+    )
+
+    assert freq_result.status is AcquisitionStatus.DEFERRED
+    assert mode_result.status is AcquisitionStatus.DEFERRED
+    assert scheduler.pending_requests() == ()
+
+    resumed = scheduler.resume_external_cat()
+
+    assert len(resumed) == 1
+    assert resumed[0].paths == (freq, mode)
+    assert resumed[0].priority is AcquisitionPriority.USER
+    assert resumed[0].max_age == 0.5
+    assert resumed[0].deadline_monotonic == 64.5
+    assert resumed[0].reasons == ("background-freq", "visible-mode")
+    assert scheduler.pending_requests() == resumed
+
+
+def test_capability_metadata_reports_unavailable_without_backend_delivery() -> None:
+    clock = FreshnessClock(start=70.0)
+    power = FieldPath.global_("tx_state", "power_on")
+    profile = RadioAcquisitionProfile(
+        provider="external_rigctld",
+        capabilities=(
+            FieldCapability(
+                path=power,
+                availability=FieldAvailability.UNSUPPORTED,
+                diagnostic="Hamlib model does not expose power state",
+            ),
+        ),
+    )
+    scheduler = AcquisitionScheduler(profile=profile, clock=clock)
+
+    result = scheduler.ensure_fresh(
+        power,
+        max_age=1.0,
+        priority="user",
+        reason="startup-read",
+    )
+
+    assert result.status is AcquisitionStatus.UNAVAILABLE
+    assert result.request is None
+    assert "does not expose power state" in result.message
+
+
+def test_policy_inputs_for_meters_and_slow_controls_are_preserved_on_request() -> None:
+    clock = FreshnessClock(start=80.0)
+    meter = FieldPath.receiver("main", "meters", "s_meter")
+    af_level = FieldPath.receiver("main", "operator_controls", "af_level")
+    profile = _profile(
+        [meter, af_level],
+        field_policies={
+            meter: AcquisitionPolicy(
+                cadence_seconds=0.2,
+                freshness_ttl_seconds=0.6,
+                meter_coalescing=MeterCoalescingPolicy(window_seconds=0.1),
+            ),
+            af_level: AcquisitionPolicy(
+                cadence_seconds=30.0,
+                freshness_ttl_seconds=120.0,
+            ),
+        },
+    )
+    scheduler = AcquisitionScheduler(profile=profile, clock=clock)
+
+    meter_result = scheduler.ensure_fresh(
+        meter,
+        max_age=0.3,
+        priority="background",
+        reason="meter-refresh",
+    )
+    control_result = scheduler.ensure_fresh(
+        af_level,
+        max_age=60.0,
+        priority="normal",
+        reason="settings-panel",
+    )
+
+    assert meter_result.request is not None
+    assert control_result.request is not None
+    assert meter_result.request.policy.meter_coalescing is not None
+    assert meter_result.request.policy.meter_coalescing.window_seconds == 0.1
+    assert control_result.request.policy.cadence_seconds == 30.0
+    assert control_result.request.acquisition_method == "poll"
+
+
+def test_mixed_pollable_and_unsolicited_paths_are_not_emitted_as_one_poll() -> None:
+    clock = FreshnessClock(start=85.0)
+    freq = FieldPath.active("main", "freq_mode", "freq_hz")
+    ptt = FieldPath.global_("tx_state", "ptt")
+    profile = RadioAcquisitionProfile(
+        provider="test_provider",
+        capabilities=(
+            FieldCapability(path=freq, polling=True),
+            FieldCapability(path=ptt, unsolicited_push=True),
+        ),
+    )
+    scheduler = AcquisitionScheduler(profile=profile, clock=clock)
+
+    result = scheduler.ensure_fresh(
+        [freq, ptt],
+        max_age=1.0,
+        priority="user",
+        reason="snapshot",
+    )
+
+    assert result.status is AcquisitionStatus.QUEUED
+    requests = scheduler.pending_requests()
+    assert len(requests) == 2
+    assert not any(
+        request.acquisition_method == "poll" and set(request.paths) == {freq, ptt}
+        for request in requests
+    )
+    requests_by_path = {request.paths: request for request in requests}
+    assert requests_by_path[(freq,)].acquisition_method == "poll"
+    assert requests_by_path[(ptt,)].acquisition_method == "wait_for_unsolicited"
+
+
+def test_policy_preferred_command_response_beats_polling_capability() -> None:
+    clock = FreshnessClock(start=85.5)
+    mode = FieldPath.active("main", "freq_mode", "mode")
+    profile = RadioAcquisitionProfile(
+        provider="x6200_like",
+        capabilities=(
+            FieldCapability(
+                path=mode,
+                polling=True,
+                command_response_observable=True,
+            ),
+        ),
+        field_policies={
+            mode: AcquisitionPolicy(
+                reconciliation_priority=ReconciliationPriority.COMMAND_RESPONSE,
+            ),
+        },
+    )
+    scheduler = AcquisitionScheduler(profile=profile, clock=clock)
+
+    result = scheduler.ensure_fresh(
+        mode,
+        max_age=1.0,
+        priority="reconciliation",
+        reason="x6200-mode-reconcile",
+    )
+
+    assert result.status is AcquisitionStatus.QUEUED
+    assert result.request is not None
+    assert result.request.acquisition_method == "command_response"
+
+
+def test_mixed_meter_and_frequency_request_preserves_meter_coalescing_policy() -> None:
+    clock = FreshnessClock(start=86.0)
+    meter = FieldPath.receiver("main", "meters", "s_meter")
+    freq = FieldPath.active("main", "freq_mode", "freq_hz")
+    profile = _profile(
+        [meter, freq],
+        field_policies={
+            meter: AcquisitionPolicy(
+                cadence_seconds=0.2,
+                freshness_ttl_seconds=0.6,
+                meter_coalescing=MeterCoalescingPolicy(window_seconds=0.1),
+            ),
+            freq: AcquisitionPolicy(
+                cadence_seconds=5.0,
+                freshness_ttl_seconds=15.0,
+            ),
+        },
+    )
+    scheduler = AcquisitionScheduler(profile=profile, clock=clock)
+
+    result = scheduler.ensure_fresh(
+        [meter, freq],
+        max_age=1.0,
+        priority="normal",
+        reason="mixed-panel",
+    )
+
+    assert result.status is AcquisitionStatus.QUEUED
+    requests = scheduler.pending_requests()
+    assert len(requests) == 2
+    requests_by_path = {request.paths: request for request in requests}
+    meter_request = requests_by_path[(meter,)]
+    freq_request = requests_by_path[(freq,)]
+    assert meter_request.policy.meter_coalescing is not None
+    assert meter_request.policy.meter_coalescing.window_seconds == 0.1
+    assert freq_request.policy.meter_coalescing is None
+
+
+def test_scheduler_output_can_return_observation_applied_through_state_store() -> None:
+    clock = FreshnessClock(start=90.0)
+    freq = FieldPath.active("main", "freq_mode", "freq_hz")
+    store = StateStore(freshness_clock=clock)
+    scheduler = AcquisitionScheduler(profile=_profile([freq]), clock=clock)
+    service = RadioStateModelService(store=store, scheduler=scheduler, clock=clock)
+
+    result = service.ensure_fresh(
+        freq,
+        max_age=1.0,
+        priority="user",
+        reason="initial-snapshot",
+    )
+    assert result.request is not None
+
+    change = store.apply(
+        Observation(
+            path=result.request.paths[0],
+            value=14_074_000,
+            source=SourceMetadata(
+                source="poll_response",
+                provider=result.request.provider,
+                transport="fake",
+                capability_id=result.request.capability_ids[0],
+            ),
+            timestamp_monotonic=clock.now(),
+            max_age=result.request.max_age,
+        )
+    )
+
+    assert change.revision == 1
+    assert store.snapshot().field(freq).value == 14_074_000
+
+
+def test_model_service_queues_when_field_observation_max_age_expired_without_mark_stale() -> (
+    None
+):
+    clock = FreshnessClock(start=100.0)
+    freq = FieldPath.active("main", "freq_mode", "freq_hz")
+    store = StateStore(freshness_clock=clock)
+    store.apply(_observation(freq, 14_074_000, at=clock.now(), max_age=1.0))
+    scheduler = AcquisitionScheduler(profile=_profile([freq]), clock=clock)
+    service = RadioStateModelService(store=store, scheduler=scheduler, clock=clock)
+    clock.advance(1.1)
+
+    result = service.ensure_fresh(
+        freq,
+        max_age=10.0,
+        priority="user",
+        reason="snapshot",
+    )
+
+    assert result.status is AcquisitionStatus.QUEUED
+    assert result.fields == ()
+    assert result.request is not None
+    assert result.request.paths == (freq,)
+
+
+def test_stale_unsolicited_field_queues_reconciliation_and_accepts_readback() -> None:
+    clock = FreshnessClock(start=110.0)
+    freq = FieldPath.active("main", "freq_mode", "freq_hz")
+    store = StateStore(freshness_clock=clock)
+    scheduler = AcquisitionScheduler(profile=_profile([freq]), clock=clock)
+    service = RadioStateModelService(store=store, scheduler=scheduler, clock=clock)
+
+    store.apply(_observation(freq, 14_074_000, at=clock.now(), max_age=0.5))
+    clock.advance(0.6)
+
+    stale = store.mark_stale_due()
+    queued = service.ensure_fresh(
+        freq,
+        max_age=0.5,
+        priority="reconciliation",
+        reason="missed-unsolicited",
+    )
+    reconciled = store.apply(
+        _observation(freq, 14_076_000, at=clock.now(), max_age=0.5)
+    )
+
+    assert stale.changes == ()
+    assert stale.reconciliation_requests[0].path == freq
+    assert queued.status is AcquisitionStatus.QUEUED
+    assert queued.request is not None
+    assert queued.request.paths == (freq,)
+    assert reconciled.revision == 2
+    assert store.snapshot().field(freq).freshness is FreshnessState.FRESH
+    assert store.snapshot().field(freq).value == 14_076_000
+
+
+def test_ic7610_real_profile_stale_active_rit_xit_acquisition_can_send_queries() -> (
+    None
+):
+    acquisition = load_rig(RIGS_DIR / "ic7610.toml").to_profile().state_acquisition
+    assert acquisition is not None
+    clock = FreshnessClock(start=120.0)
+    store = StateStore(freshness_clock=clock)
+    paths_and_values = (
+        (FieldPath.global_("slow_state", "active"), "SUB"),
+        (FieldPath.global_("operator_controls", "rit_freq"), -200),
+        (FieldPath.global_("tx_state", "rit_on"), True),
+        (FieldPath.global_("tx_state", "rit_tx"), True),
+    )
+    for path, value in paths_and_values:
+        store.apply(_observation(path, value, at=clock.now(), max_age=0.5))
+    clock.advance(0.6)
+    store.mark_stale_due()
+    scheduler = AcquisitionScheduler(profile=acquisition, clock=clock)
+    service = RadioStateModelService(store=store, scheduler=scheduler, clock=clock)
+    sent: list[tuple[int, int | None, int | None]] = []
+
+    async def send_query(
+        command: int,
+        sub: int | None,
+        receiver: int | None,
+    ) -> None:
+        sent.append((command, sub, receiver))
+
+    result = service.ensure_fresh(
+        tuple(path for path, _value in paths_and_values),
+        max_age=0.5,
+        priority="user",
+        reason="rigctld.active-rit",
+    )
+
+    assert result.status is AcquisitionStatus.QUEUED
+    requests = scheduler.pending_requests()
+    requested_paths = {path for request in requests for path in request.paths}
+    assert requested_paths >= {path for path, _value in paths_and_values}
+    executor = IcomCivAcquisitionExecutor(send_query)
+    for request in requests:
+        execution = asyncio.run(
+            executor.execute(request, already_sent_paths=frozenset())
+        )
+        assert execution.failed_paths == ()
+
+    assert len(sent) == 4
+    assert set(sent) == {
+        (0x07, 0xD2, None),
+        (0x21, 0x00, None),
+        (0x21, 0x01, None),
+        (0x21, 0x02, None),
+    }
+
+
+def test_ic7610_real_profile_freq_mode_are_pollable_and_emit_25_26() -> None:
+    acquisition = load_rig(RIGS_DIR / "ic7610.toml").to_profile().state_acquisition
+    assert acquisition is not None
+    freq_mode_paths = (
+        FieldPath.active("main", "freq_mode", "freq_hz"),
+        FieldPath.active("main", "freq_mode", "mode"),
+        FieldPath.active("sub", "freq_mode", "freq_hz"),
+        FieldPath.active("sub", "freq_mode", "mode"),
+    )
+    for path in freq_mode_paths:
+        assert acquisition.capability_for(path).can_poll is True
+
+    clock = FreshnessClock(start=300.0)
+    scheduler = AcquisitionScheduler(profile=acquisition, clock=clock)
+    requests = scheduler.due_requests()
+    due_paths = {path for request in requests for path in request.paths}
+    assert set(freq_mode_paths) <= due_paths
+
+    sent: list[tuple[int, int | None, int | None]] = []
+
+    async def send_query(
+        command: int,
+        sub: int | None,
+        receiver: int | None,
+    ) -> None:
+        sent.append((command, sub, receiver))
+
+    executor = IcomCivAcquisitionExecutor(send_query)
+    for request in requests:
+        if not any(path in freq_mode_paths for path in request.paths):
+            continue
+        execution = asyncio.run(
+            executor.execute(request, already_sent_paths=frozenset())
+        )
+        assert execution.failed_paths == ()
+
+    assert {(0x25, None, 0), (0x25, None, 1), (0x26, None, 0), (0x26, None, 1)} <= set(
+        sent
+    )
+
+
+def test_ic7610_real_profile_ptt_is_pollable_and_emits_bare_1c00_read() -> None:
+    """MOR-496: front-panel TX must reach the v2 UI, so ptt must be polled.
+
+    The IC-7610 does NOT emit unsolicited 0x1C/00 transceive frames, so ptt
+    only refreshed via slow one-shot stale reconciliation and the STATION
+    METERS header stayed "RX" while keying from the front panel. Adding ptt to
+    ``polling_only`` + a fast field policy enrolls it in the poll cadence
+    groups. The poll query MUST be a bare 0x1C 0x00 READ (no data byte) so a
+    poll can never key the transmitter.
+    """
+    acquisition = load_rig(RIGS_DIR / "ic7610.toml").to_profile().state_acquisition
+    assert acquisition is not None
+
+    ptt = FieldPath.global_("tx_state", "ptt")
+    assert acquisition.capability_for(ptt).can_poll is True
+
+    clock = FreshnessClock(start=700.0)
+    scheduler = AcquisitionScheduler(profile=acquisition, clock=clock)
+    requests = scheduler.due_requests()
+    due_paths = {path for request in requests for path in request.paths}
+    assert ptt in due_paths
+
+    sent: list[tuple[int, int | None, int | None]] = []
+
+    async def send_query(
+        command: int,
+        sub: int | None,
+        receiver: int | None,
+    ) -> None:
+        sent.append((command, sub, receiver))
+
+    executor = IcomCivAcquisitionExecutor(send_query)
+
+    # The poll query is a pure READ of 0x1C 0x00 with no receiver/data byte;
+    # a data byte would key TX, and the third tuple element is the receiver
+    # index (None here), never a payload.
+    assert executor.query_for_path(ptt) == (0x1C, 0x00, None)
+
+    for request in requests:
+        if ptt not in request.paths:
+            continue
+        execution = asyncio.run(
+            executor.execute(request, already_sent_paths=frozenset())
+        )
+        assert execution.failed_paths == ()
+    assert (0x1C, 0x00, None) in sent
+
+
+def test_ic7610_real_profile_att_preamp_squelch_query_for_path() -> None:
+    sent: list[tuple[int, int | None, int | None]] = []
+
+    async def send_query(
+        command: int,
+        sub: int | None,
+        receiver: int | None,
+    ) -> None:
+        sent.append((command, sub, receiver))
+
+    executor = IcomCivAcquisitionExecutor(send_query)
+
+    att = FieldPath.receiver("main", "operator_controls", "att")
+    preamp = FieldPath.receiver("main", "operator_controls", "preamp")
+    squelch = FieldPath.receiver("main", "operator_controls", "squelch")
+
+    assert executor.query_for_path(att) == (0x11, None, 0)
+    assert executor.query_for_path(preamp) == (0x16, 0x02, 0)
+    assert executor.query_for_path(squelch) == (0x14, 0x03, 0)
+
+
+def test_ic7610_global_meter_query_for_path() -> None:
+    """MOR-485: comp/Vd/Id global meters must map to 0x15 sub-reads.
+
+    power/swr/alc already mapped; comp/vd/id were missing, so on a
+    scheduler-only radio (IC-7610) they were never polled and rendered 0.
+    """
+    sent: list[tuple[int, int | None, int | None]] = []
+
+    async def send_query(
+        command: int,
+        sub: int | None,
+        receiver: int | None,
+    ) -> None:
+        sent.append((command, sub, receiver))
+
+    executor = IcomCivAcquisitionExecutor(send_query)
+
+    power = FieldPath.global_("meters", "power")
+    swr = FieldPath.global_("meters", "swr")
+    alc = FieldPath.global_("meters", "alc")
+    comp = FieldPath.global_("meters", "comp")
+    vd = FieldPath.global_("meters", "vd")
+    id_ = FieldPath.global_("meters", "id")
+
+    assert executor.query_for_path(power) == (0x15, 0x11, None)
+    assert executor.query_for_path(swr) == (0x15, 0x12, None)
+    assert executor.query_for_path(alc) == (0x15, 0x13, None)
+    assert executor.query_for_path(comp) == (0x15, 0x14, None)
+    assert executor.query_for_path(vd) == (0x15, 0x15, None)
+    assert executor.query_for_path(id_) == (0x15, 0x16, None)
+
+
+def test_ic7610_real_profile_comp_vd_id_meters_are_enrolled_and_sent() -> None:
+    """MOR-485: comp/vd/id are enrolled via stream_like_meters and now poll.
+
+    With the query mapping present they must reach the executor's sent_paths
+    (no `no_civ_query_mapping` failure), proving the scheduler can emit them.
+    """
+    acquisition = load_rig(RIGS_DIR / "ic7610.toml").to_profile().state_acquisition
+    assert acquisition is not None
+    meter_paths = (
+        FieldPath.global_("meters", "comp"),
+        FieldPath.global_("meters", "vd"),
+        FieldPath.global_("meters", "id"),
+    )
+    for path in meter_paths:
+        assert acquisition.capability_for(path).can_poll is True
+
+    clock = FreshnessClock(start=500.0)
+    scheduler = AcquisitionScheduler(profile=acquisition, clock=clock)
+    requests = scheduler.due_requests()
+    due_paths = {path for request in requests for path in request.paths}
+    assert set(meter_paths) <= due_paths
+
+    sent: list[FieldPath] = []
+    failed: list[FieldPath] = []
+
+    async def send_query(
+        command: int,
+        sub: int | None,
+        receiver: int | None,
+    ) -> None:
+        return None
+
+    executor = IcomCivAcquisitionExecutor(send_query)
+    for request in requests:
+        execution = asyncio.run(
+            executor.execute(request, already_sent_paths=frozenset())
+        )
+        sent.extend(execution.sent_paths)
+        failed.extend(execution.failed_paths)
+
+    for path in meter_paths:
+        assert path in sent
+        assert path not in failed
+
+
+def test_ic7610_real_profile_sub_operator_controls_query_for_path() -> None:
+    """MOR-488 batch 6: SUB receiver (receiver 1) operator-control reads.
+
+    rf_gain/af_level/squelch route through the 0x14 level subs; att/preamp
+    through the non-level mappings — all with the SUB receiver byte (1).
+    """
+    sent: list[tuple[int, int | None, int | None]] = []
+
+    async def send_query(
+        command: int,
+        sub: int | None,
+        receiver: int | None,
+    ) -> None:
+        sent.append((command, sub, receiver))
+
+    executor = IcomCivAcquisitionExecutor(send_query)
+
+    rf_gain = FieldPath.receiver("sub", "operator_controls", "rf_gain")
+    af_level = FieldPath.receiver("sub", "operator_controls", "af_level")
+    squelch = FieldPath.receiver("sub", "operator_controls", "squelch")
+    att = FieldPath.receiver("sub", "operator_controls", "att")
+    preamp = FieldPath.receiver("sub", "operator_controls", "preamp")
+
+    assert executor.query_for_path(rf_gain) == (0x14, 0x02, 1)
+    assert executor.query_for_path(af_level) == (0x14, 0x01, 1)
+    assert executor.query_for_path(squelch) == (0x14, 0x03, 1)
+    assert executor.query_for_path(att) == (0x11, None, 1)
+    assert executor.query_for_path(preamp) == (0x16, 0x02, 1)
+
+
+def test_ic7610_real_profile_sql_att_pre_are_pollable_and_emit_reads() -> None:
+    acquisition = load_rig(RIGS_DIR / "ic7610.toml").to_profile().state_acquisition
+    assert acquisition is not None
+
+    # MOR-488 batch 6 retune: MAIN rf_gain/af_level/squelch/att/preamp now FAST
+    # (cadence 1.5s, ttl 3.0s, adaptive_decay off) — operator found RFG/SQL laggy
+    # at the MOR-487 cadence (3.0s / 4.0s).
+    rf_gain = FieldPath.receiver("main", "operator_controls", "rf_gain")
+    af_level = FieldPath.receiver("main", "operator_controls", "af_level")
+    att = FieldPath.receiver("main", "operator_controls", "att")
+    preamp = FieldPath.receiver("main", "operator_controls", "preamp")
+    squelch = FieldPath.receiver("main", "operator_controls", "squelch")
+    target_paths = (rf_gain, af_level, att, squelch, preamp)
+
+    for path in target_paths:
+        assert acquisition.capability_for(path).can_poll is True
+        policy = acquisition.policy_for(path)
+        assert policy.cadence_seconds == 1.5
+        assert policy.freshness_ttl_seconds == 3.0
+        assert policy.adaptive_decay.enabled is False
+
+    clock = FreshnessClock(start=300.0)
+    scheduler = AcquisitionScheduler(profile=acquisition, clock=clock)
+    requests = scheduler.due_requests()
+    due_paths = {path for request in requests for path in request.paths}
+    assert set(target_paths) <= due_paths
+
+    sent: list[tuple[int, int | None, int | None]] = []
+
+    async def send_query(
+        command: int,
+        sub: int | None,
+        receiver: int | None,
+    ) -> None:
+        sent.append((command, sub, receiver))
+
+    executor = IcomCivAcquisitionExecutor(send_query)
+    for request in requests:
+        if not any(path in target_paths for path in request.paths):
+            continue
+        execution = asyncio.run(
+            executor.execute(request, already_sent_paths=frozenset())
+        )
+        assert execution.failed_paths == ()
+
+    assert {
+        (0x14, 0x02, 0),
+        (0x14, 0x01, 0),
+        (0x11, None, 0),
+        (0x16, 0x02, 0),
+        (0x14, 0x03, 0),
+    } <= set(sent)
+
+
+def test_ic7610_real_profile_sub_operator_controls_pollable_and_emit_reads() -> None:
+    """MOR-488 batch 6: SUB rf_gain/af_level/squelch/att/preamp poll at FAST."""
+    acquisition = load_rig(RIGS_DIR / "ic7610.toml").to_profile().state_acquisition
+    assert acquisition is not None
+
+    rf_gain = FieldPath.receiver("sub", "operator_controls", "rf_gain")
+    af_level = FieldPath.receiver("sub", "operator_controls", "af_level")
+    att = FieldPath.receiver("sub", "operator_controls", "att")
+    preamp = FieldPath.receiver("sub", "operator_controls", "preamp")
+    squelch = FieldPath.receiver("sub", "operator_controls", "squelch")
+    target_paths = (rf_gain, af_level, att, squelch, preamp)
+
+    for path in target_paths:
+        assert acquisition.capability_for(path).can_poll is True
+        policy = acquisition.policy_for(path)
+        assert policy.cadence_seconds == 1.5
+        assert policy.freshness_ttl_seconds == 3.0
+        assert policy.adaptive_decay.enabled is False
+
+    clock = FreshnessClock(start=300.0)
+    scheduler = AcquisitionScheduler(profile=acquisition, clock=clock)
+    requests = scheduler.due_requests()
+    due_paths = {path for request in requests for path in request.paths}
+    assert set(target_paths) <= due_paths
+
+    sent: list[tuple[int, int | None, int | None]] = []
+
+    async def send_query(
+        command: int,
+        sub: int | None,
+        receiver: int | None,
+    ) -> None:
+        sent.append((command, sub, receiver))
+
+    executor = IcomCivAcquisitionExecutor(send_query)
+    for request in requests:
+        if not any(path in target_paths for path in request.paths):
+            continue
+        execution = asyncio.run(
+            executor.execute(request, already_sent_paths=frozenset())
+        )
+        assert execution.failed_paths == ()
+
+    assert {
+        (0x14, 0x02, 1),
+        (0x14, 0x01, 1),
+        (0x11, None, 1),
+        (0x16, 0x02, 1),
+        (0x14, 0x03, 1),
+    } <= set(sent)
+
+
+def test_due_polling_emits_only_pollable_cadence_fields_and_groups_by_existing_key() -> (
+    None
+):
+    clock = FreshnessClock(start=200.0)
+    freq = FieldPath.active("main", "freq_mode", "freq_hz")
+    mode = FieldPath.active("main", "freq_mode", "mode")
+    ptt = FieldPath.global_("tx_state", "ptt")
+    profile = RadioAcquisitionProfile(
+        provider="test_provider",
+        capabilities=(
+            FieldCapability(path=freq, polling=True, unsolicited_push=True),
+            FieldCapability(path=mode, polling=True),
+            FieldCapability(path=ptt, unsolicited_push=True),
+        ),
+        default_policy=AcquisitionPolicy(
+            cadence_seconds=2.0,
+            freshness_ttl_seconds=6.0,
+        ),
+    )
+    scheduler = AcquisitionScheduler(profile=profile, clock=clock)
+
+    requests = scheduler.due_requests()
+
+    assert len(requests) == 1
+    assert requests[0].paths == (freq, mode)
+    assert requests[0].priority is AcquisitionPriority.BACKGROUND
+    assert requests[0].reason == "policy-cadence"
+    assert requests[0].acquisition_method == "poll"
+    assert scheduler.pending_requests() == requests
+
+
+def test_due_polling_does_not_reemit_pending_cadence_request() -> None:
+    clock = FreshnessClock(start=202.0)
+    freq = FieldPath.active("main", "freq_mode", "freq_hz")
+    scheduler = AcquisitionScheduler(
+        profile=_profile(
+            [freq],
+            default_policy=AcquisitionPolicy(cadence_seconds=1.0),
+        ),
+        clock=clock,
+    )
+
+    first = scheduler.due_requests(now=clock.now())
+    second = scheduler.due_requests(now=clock.now())
+
+    assert len(first) == 1
+    assert first[0].paths == (freq,)
+    assert second == ()
+    assert scheduler.pending_requests() == first
+
+
+def test_due_polling_skips_unsupported_unhooked_and_unsolicited_only_fields() -> None:
+    clock = FreshnessClock(start=205.0)
+    supported = FieldPath.active("main", "freq_mode", "freq_hz")
+    unsupported = FieldPath.global_("tx_state", "power_on")
+    unhooked = FieldPath.global_("health", "state")
+    unsolicited_only = FieldPath.global_("tx_state", "ptt")
+    profile = RadioAcquisitionProfile(
+        provider="test_provider",
+        capabilities=(
+            FieldCapability(path=supported, polling=True),
+            FieldCapability(
+                path=unsupported,
+                availability=FieldAvailability.UNSUPPORTED,
+                diagnostic="not exposed",
+            ),
+            FieldCapability(path=unhooked),
+            FieldCapability(path=unsolicited_only, unsolicited_push=True),
+        ),
+        default_policy=AcquisitionPolicy(cadence_seconds=1.0),
+    )
+    scheduler = AcquisitionScheduler(profile=profile, clock=clock)
+
+    requests = scheduler.due_requests()
+
+    assert len(requests) == 1
+    assert requests[0].paths == (supported,)
+
+
+def test_unchanged_acquisition_result_decays_cadence_exponentially_and_caps() -> None:
+    clock = FreshnessClock(start=210.0)
+    freq = FieldPath.active("main", "freq_mode", "freq_hz")
+    policy = AcquisitionPolicy(
+        cadence_seconds=2.0,
+        freshness_ttl_seconds=10.0,
+        adaptive_decay=AdaptiveDecayPolicy(
+            enabled=True,
+            idle_multiplier=2.0,
+            max_cadence_seconds=6.0,
+        ),
+    )
+    scheduler = AcquisitionScheduler(
+        profile=_profile([freq], default_policy=policy),
+        clock=clock,
+    )
+
+    first = scheduler.due_requests()[0]
+    scheduler.record_acquisition_result(first, _changeset(at=clock.now()))
+
+    diagnostics = scheduler.diagnostics()
+    assert diagnostics["cadenceByPath"][str(freq)]["currentCadenceSeconds"] == 4.0
+    assert diagnostics["cadenceByPath"][str(freq)]["nextDueMonotonic"] == 214.0
+    clock.advance(3.9)
+    assert scheduler.due_requests() == ()
+    clock.advance(0.1)
+
+    second = scheduler.due_requests()[0]
+    scheduler.record_acquisition_result(second, _changeset(at=clock.now()))
+
+    diagnostics = scheduler.diagnostics()
+    assert diagnostics["cadenceByPath"][str(freq)]["currentCadenceSeconds"] == 6.0
+    assert diagnostics["cadenceByPath"][str(freq)]["nextDueMonotonic"] == 220.0
+
+
+def test_semantic_change_resets_adaptive_cadence_to_base_policy() -> None:
+    clock = FreshnessClock(start=220.0)
+    freq = FieldPath.active("main", "freq_mode", "freq_hz")
+    policy = AcquisitionPolicy(
+        cadence_seconds=2.0,
+        freshness_ttl_seconds=10.0,
+        adaptive_decay=AdaptiveDecayPolicy(
+            enabled=True,
+            idle_multiplier=2.0,
+            max_cadence_seconds=8.0,
+        ),
+    )
+    scheduler = AcquisitionScheduler(
+        profile=_profile([freq], default_policy=policy),
+        clock=clock,
+    )
+    first = scheduler.due_requests()[0]
+    scheduler.record_acquisition_result(first, _changeset(at=clock.now()))
+    clock.advance(4.0)
+
+    second = scheduler.due_requests()[0]
+    scheduler.record_acquisition_result(
+        second,
+        _changeset(
+            changes=(FieldChange(path=freq, previous=7_074_000, current=14_074_000),),
+            at=clock.now(),
+        ),
+    )
+
+    diagnostics = scheduler.diagnostics()
+    assert diagnostics["cadenceByPath"][str(freq)]["currentCadenceSeconds"] == 2.0
+    assert diagnostics["cadenceByPath"][str(freq)]["nextDueMonotonic"] == 226.0
+    clock.advance(1.9)
+    assert scheduler.due_requests() == ()
+    clock.advance(0.1)
+    assert scheduler.due_requests()[0].paths == (freq,)
+
+
+def test_grouped_partial_semantic_change_resets_adaptive_cadence_after_all_paths_complete() -> (
+    None
+):
+    policy = AcquisitionPolicy(
+        cadence_seconds=2.0,
+        freshness_ttl_seconds=10.0,
+        adaptive_decay=AdaptiveDecayPolicy(
+            enabled=True,
+            idle_multiplier=2.0,
+            max_cadence_seconds=8.0,
+        ),
+    )
+    freq = FieldPath.active("main", "freq_mode", "freq_hz")
+    mode = FieldPath.active("main", "freq_mode", "mode")
+    cases = (
+        (
+            FreshnessClock(start=230.0),
+            freq,
+            mode,
+            FieldChange(path=freq, previous=7_074_000, current=14_074_000),
+        ),
+        (
+            FreshnessClock(start=250.0),
+            mode,
+            freq,
+            FieldChange(path=mode, previous="USB", current="LSB"),
+        ),
+    )
+
+    for clock, changed_path, unchanged_path, change in cases:
+        scheduler = AcquisitionScheduler(
+            profile=_profile([changed_path, unchanged_path], default_policy=policy),
+            clock=clock,
+        )
+
+        first = scheduler.due_requests()[0]
+        scheduler.record_acquisition_result(first, _changeset(at=clock.now()))
+        clock.advance(4.0)
+
+        grouped = scheduler.due_requests()[0]
+        changed_slice = replace(
+            grouped,
+            paths=(changed_path,),
+            capability_ids=(str(changed_path),),
+        )
+        scheduler.record_acquisition_result(
+            changed_slice,
+            _changeset(changes=(change,), at=clock.now()),
+        )
+        unchanged_slice = scheduler.pending_requests()[0]
+        assert unchanged_slice.paths == (unchanged_path,)
+
+        scheduler.record_acquisition_result(
+            unchanged_slice,
+            _changeset(at=clock.now()),
+        )
+
+        diagnostics = scheduler.diagnostics()
+        assert (
+            diagnostics["cadenceByPath"][str(changed_path)]["currentCadenceSeconds"]
+            == 2.0
+        )
+        assert (
+            diagnostics["cadenceByPath"][str(unchanged_path)]["currentCadenceSeconds"]
+            == 2.0
+        )
+
+
+def test_diagnostics_include_cadence_next_due_pending_pressure_and_counts() -> None:
+    clock = FreshnessClock(start=230.0)
+    freq = FieldPath.active("main", "freq_mode", "freq_hz")
+    meter = FieldPath.receiver("main", "meters", "s_meter")
+    profile = _profile(
+        [freq, meter],
+        field_policies={
+            meter: AcquisitionPolicy(
+                external_cat_pause=ExternalCatPauseBehavior.CONTINUE,
+            ),
+        },
+    )
+    scheduler = AcquisitionScheduler(profile=profile, clock=clock)
+
+    scheduler.due_requests()
+    scheduler.pause_external_cat(owner="external")
+    scheduler.ensure_fresh(
+        freq,
+        max_age=1.0,
+        priority="user",
+        reason="deferred-user-read",
+    )
+
+    diagnostics = scheduler.diagnostics()
+
+    assert diagnostics["queuedRequestCount"] == 1
+    assert diagnostics["deferredRequestCount"] == 1
+    assert diagnostics["cadenceByPath"][str(freq)]["baseCadenceSeconds"] == 5.0
+    assert diagnostics["cadenceByPath"][str(freq)]["nextDueMonotonic"] == 230.0
+    assert diagnostics["requestPressureByPriorityFamily"]["background:meters"] == 1
+    assert diagnostics["requestPressureByPriorityFamily"]["user:freq_mode"] == 1
+
+
+def test_meter_coalescing_latest_sample_wins_and_exposes_drop_counts() -> None:
+    clock = FreshnessClock(start=240.0)
+    store = StateStore(freshness_clock=clock)
+    meter = FieldPath.receiver("main", "meters", "s_meter")
+    policy = MeterCoalescingPolicy(window_seconds=0.2, max_samples=2)
+    coalescer = MeterObservationCoalescer()
+
+    coalescer.record(_observation(meter, 40, at=clock.now()), policy)
+    clock.advance(0.05)
+    coalescer.record(_observation(meter, 41, at=clock.now()), policy)
+    clock.advance(0.05)
+    coalescer.record(_observation(meter, 42, at=clock.now()), policy)
+
+    assert coalescer.flush_due(store, now=clock.now() + 0.14) is None
+    changeset = coalescer.flush_due(store, now=clock.now() + 0.2)
+
+    assert changeset is not None
+    assert changeset.coalesced is True
+    assert changeset.changes[0].current == 42
+    assert store.snapshot().field(meter).value == 42
+    assert store.snapshot().state_revision == 1
+    diagnostics = coalescer.diagnostics()
+    assert diagnostics["droppedSampleCount"] == 1
+    assert diagnostics["coalescedSampleCount"] == 1
+    assert diagnostics["pendingSampleCount"] == 0
+
+
+def test_meter_coalescing_flush_uses_latest_batch_timestamp_not_last_path() -> None:
+    clock = FreshnessClock(start=250.0)
+    store = StateStore(freshness_clock=clock)
+    power = FieldPath.receiver("main", "meters", "power")
+    s_meter = FieldPath.receiver("main", "meters", "s_meter")
+    policy = MeterCoalescingPolicy(window_seconds=0.1)
+    coalescer = MeterObservationCoalescer()
+
+    coalescer.record(_observation(s_meter, 3, at=10.0), policy)
+    coalescer.record(_observation(power, 40, at=10.5), policy)
+
+    changeset = coalescer.flush(store)
+
+    assert changeset is not None
+    assert changeset.coalesced is True
+    assert changeset.timestamp_monotonic == 10.5
+    assert changeset.revision == 2
+    assert changeset.observation_seq == 2
+    assert {change.path for change in changeset.changes} == {power, s_meter}
+
+
+def test_meter_coalescing_flush_due_leaves_longer_window_samples_pending() -> None:
+    clock = FreshnessClock(start=260.0)
+    store = StateStore(freshness_clock=clock)
+    power = FieldPath.receiver("main", "meters", "power")
+    s_meter = FieldPath.receiver("main", "meters", "s_meter")
+    short_policy = MeterCoalescingPolicy(window_seconds=0.1)
+    long_policy = MeterCoalescingPolicy(window_seconds=1.0)
+    coalescer = MeterObservationCoalescer()
+
+    coalescer.record(_observation(power, 40, at=clock.now()), short_policy)
+    coalescer.record(_observation(s_meter, 3, at=clock.now()), long_policy)
+
+    first = coalescer.flush_due(store, now=clock.now() + 0.1)
+
+    assert first is not None
+    assert [change.path for change in first.changes] == [power]
+    assert store.snapshot().field(power).value == 40
+    diagnostics = coalescer.diagnostics()
+    assert diagnostics["pendingSampleCount"] == 1
+    assert diagnostics["pendingPaths"] == [str(s_meter)]
+
+    second = coalescer.flush_due(store, now=clock.now() + 1.0)
+
+    assert second is not None
+    assert [change.path for change in second.changes] == [s_meter]
+    assert store.snapshot().field(s_meter).value == 3
+    assert coalescer.diagnostics()["pendingSampleCount"] == 0
+
+
+def test_meter_coalescing_flush_due_defers_same_path_until_latest_window() -> None:
+    clock = FreshnessClock(start=270.0)
+    store = StateStore(freshness_clock=clock)
+    meter = FieldPath.receiver("main", "meters", "s_meter")
+    policy = MeterCoalescingPolicy(window_seconds=0.2)
+    coalescer = MeterObservationCoalescer()
+
+    coalescer.record(_observation(meter, 40, at=clock.now()), policy)
+    clock.advance(0.05)
+    coalescer.record(_observation(meter, 41, at=clock.now()), policy)
+
+    assert coalescer.flush_due(store, now=270.2) is None
+    diagnostics = coalescer.diagnostics()
+    assert diagnostics["coalescedSampleCount"] == 0
+    assert diagnostics["pendingSampleCount"] == 2
+    assert diagnostics["pendingPaths"] == [str(meter), str(meter)]
+    assert diagnostics["nextFlushMonotonic"] == 270.25
+
+    changeset = coalescer.flush_due(store, now=270.25)
+
+    assert changeset is not None
+    assert changeset.coalesced is True
+    assert changeset.changes[0].current == 41
+    assert store.snapshot().field(meter).value == 41
+    assert store.snapshot().state_revision == 1
+    diagnostics = coalescer.diagnostics()
+    assert diagnostics["coalescedSampleCount"] == 1
+    assert diagnostics["pendingSampleCount"] == 0
+
+
+def test_ic7610_real_profile_rf_dsp_toggle_query_for_path() -> None:
+    sent: list[tuple[int, int | None, int | None]] = []
+
+    async def send_query(
+        command: int,
+        sub: int | None,
+        receiver: int | None,
+    ) -> None:
+        sent.append((command, sub, receiver))
+
+    executor = IcomCivAcquisitionExecutor(send_query)
+
+    # cmd16 receiver toggles (operator_toggles family) — MAIN (receiver 0).
+    digisel = FieldPath.receiver("main", "operator_toggles", "digisel")
+    ipplus = FieldPath.receiver("main", "operator_toggles", "ipplus")
+    nb = FieldPath.receiver("main", "operator_toggles", "nb")
+    nr = FieldPath.receiver("main", "operator_toggles", "nr")
+    auto_notch = FieldPath.receiver("main", "operator_toggles", "auto_notch")
+    manual_notch = FieldPath.receiver("main", "operator_toggles", "manual_notch")
+    twin_peak_filter = FieldPath.receiver(
+        "main", "operator_toggles", "twin_peak_filter"
+    )
+    # cmd16 receiver operator_controls values — MAIN (receiver 0).
+    agc = FieldPath.receiver("main", "operator_controls", "agc")
+    audio_peak_filter = FieldPath.receiver(
+        "main", "operator_controls", "audio_peak_filter"
+    )
+
+    assert executor.query_for_path(digisel) == (0x16, 0x4E, 0)
+    assert executor.query_for_path(ipplus) == (0x16, 0x65, 0)
+    assert executor.query_for_path(nb) == (0x16, 0x22, 0)
+    assert executor.query_for_path(nr) == (0x16, 0x40, 0)
+    assert executor.query_for_path(auto_notch) == (0x16, 0x41, 0)
+    assert executor.query_for_path(manual_notch) == (0x16, 0x48, 0)
+    assert executor.query_for_path(twin_peak_filter) == (0x16, 0x4F, 0)
+    assert executor.query_for_path(agc) == (0x16, 0x12, 0)
+    assert executor.query_for_path(audio_peak_filter) == (0x16, 0x32, 0)
+
+    # SUB receiver targeting (receiver 1).
+    digisel_sub = FieldPath.receiver("sub", "operator_toggles", "digisel")
+    assert executor.query_for_path(digisel_sub) == (0x16, 0x4E, 1)
+
+    # Regression guard: the pre-existing operator_controls mappings still hold.
+    att = FieldPath.receiver("main", "operator_controls", "att")
+    preamp = FieldPath.receiver("main", "operator_controls", "preamp")
+    squelch = FieldPath.receiver("main", "operator_controls", "squelch")
+    assert executor.query_for_path(att) == (0x11, None, 0)
+    assert executor.query_for_path(preamp) == (0x16, 0x02, 0)
+    assert executor.query_for_path(squelch) == (0x14, 0x03, 0)
+
+
+def test_ic7610_real_profile_rf_dsp_toggles_pollable_and_emit_reads() -> None:
+    acquisition = load_rig(RIGS_DIR / "ic7610.toml").to_profile().state_acquisition
+    assert acquisition is not None
+
+    target_paths: tuple[FieldPath, ...] = tuple(
+        FieldPath.receiver(receiver, "operator_toggles", name)
+        for receiver in ("main", "sub")
+        for name in (
+            "digisel",
+            "ipplus",
+            "nb",
+            "nr",
+            "auto_notch",
+            "manual_notch",
+            "twin_peak_filter",
+        )
+    ) + tuple(
+        FieldPath.receiver(receiver, "operator_controls", name)
+        for receiver in ("main", "sub")
+        for name in ("agc", "audio_peak_filter")
+    )
+
+    for path in target_paths:
+        assert acquisition.capability_for(path).can_poll is True
+        policy = acquisition.policy_for(path)
+        assert policy.cadence_seconds == 1.5
+        assert policy.freshness_ttl_seconds == 3.0
+        assert policy.adaptive_decay.enabled is False
+
+    clock = FreshnessClock(start=300.0)
+    scheduler = AcquisitionScheduler(profile=acquisition, clock=clock)
+    requests = scheduler.due_requests()
+    due_paths = {path for request in requests for path in request.paths}
+    assert set(target_paths) <= due_paths
+
+    sent: list[tuple[int, int | None, int | None]] = []
+
+    async def send_query(
+        command: int,
+        sub: int | None,
+        receiver: int | None,
+    ) -> None:
+        sent.append((command, sub, receiver))
+
+    executor = IcomCivAcquisitionExecutor(send_query)
+    for request in requests:
+        if not any(path in target_paths for path in request.paths):
+            continue
+        execution = asyncio.run(
+            executor.execute(request, already_sent_paths=frozenset())
+        )
+        assert execution.failed_paths == ()
+
+    expected = {
+        (0x16, 0x4E, 0),
+        (0x16, 0x65, 0),
+        (0x16, 0x22, 0),
+        (0x16, 0x40, 0),
+        (0x16, 0x41, 0),
+        (0x16, 0x48, 0),
+        (0x16, 0x4F, 0),
+        (0x16, 0x12, 0),
+        (0x16, 0x32, 0),
+        (0x16, 0x4E, 1),
+        (0x16, 0x65, 1),
+        (0x16, 0x22, 1),
+        (0x16, 0x40, 1),
+        (0x16, 0x41, 1),
+        (0x16, 0x48, 1),
+        (0x16, 0x4F, 1),
+        (0x16, 0x12, 1),
+        (0x16, 0x32, 1),
+    }
+    assert expected <= set(sent)
+
+
+def test_ic7610_real_profile_level_query_for_path() -> None:
+    sent: list[tuple[int, int | None, int | None]] = []
+
+    async def send_query(
+        command: int,
+        sub: int | None,
+        receiver: int | None,
+    ) -> None:
+        sent.append((command, sub, receiver))
+
+    executor = IcomCivAcquisitionExecutor(send_query)
+
+    # Receiver levels (cmd 0x14, operator_controls family) — MAIN (receiver 0).
+    nr_level = FieldPath.receiver("main", "operator_controls", "nr_level")
+    nb_level = FieldPath.receiver("main", "operator_controls", "nb_level")
+    pbt_inner = FieldPath.receiver("main", "operator_controls", "pbt_inner")
+    pbt_outer = FieldPath.receiver("main", "operator_controls", "pbt_outer")
+    apf_type_level = FieldPath.receiver("main", "operator_controls", "apf_type_level")
+
+    assert executor.query_for_path(nr_level) == (0x14, 0x06, 0)
+    assert executor.query_for_path(nb_level) == (0x14, 0x12, 0)
+    assert executor.query_for_path(pbt_inner) == (0x14, 0x07, 0)
+    assert executor.query_for_path(pbt_outer) == (0x14, 0x08, 0)
+    assert executor.query_for_path(apf_type_level) == (0x14, 0x05, 0)
+
+    # SUB receiver targeting (receiver 1).
+    nr_level_sub = FieldPath.receiver("sub", "operator_controls", "nr_level")
+    assert executor.query_for_path(nr_level_sub) == (0x14, 0x06, 1)
+
+    # Global levels (cmd 0x14, single global path) — receiver is None.
+    power_level = FieldPath.global_("operator_controls", "power_level")
+    mic_gain = FieldPath.global_("operator_controls", "mic_gain")
+    compressor_level = FieldPath.global_("operator_controls", "compressor_level")
+    monitor_gain = FieldPath.global_("operator_controls", "monitor_gain")
+    vox_gain = FieldPath.global_("operator_controls", "vox_gain")
+    anti_vox_gain = FieldPath.global_("operator_controls", "anti_vox_gain")
+    cw_pitch = FieldPath.global_("operator_controls", "cw_pitch")
+    key_speed = FieldPath.global_("operator_controls", "key_speed")
+
+    assert executor.query_for_path(power_level) == (0x14, 0x0A, None)
+    assert executor.query_for_path(mic_gain) == (0x14, 0x0B, None)
+    assert executor.query_for_path(compressor_level) == (0x14, 0x0E, None)
+    assert executor.query_for_path(monitor_gain) == (0x14, 0x15, None)
+    assert executor.query_for_path(vox_gain) == (0x14, 0x16, None)
+    assert executor.query_for_path(anti_vox_gain) == (0x14, 0x17, None)
+    assert executor.query_for_path(cw_pitch) == (0x14, 0x09, None)
+    assert executor.query_for_path(key_speed) == (0x14, 0x0C, None)
+
+    # Regression guard: Batch-1 toggles and att/preamp/squelch still map.
+    digisel = FieldPath.receiver("main", "operator_toggles", "digisel")
+    att = FieldPath.receiver("main", "operator_controls", "att")
+    preamp = FieldPath.receiver("main", "operator_controls", "preamp")
+    squelch = FieldPath.receiver("main", "operator_controls", "squelch")
+    assert executor.query_for_path(digisel) == (0x16, 0x4E, 0)
+    assert executor.query_for_path(att) == (0x11, None, 0)
+    assert executor.query_for_path(preamp) == (0x16, 0x02, 0)
+    assert executor.query_for_path(squelch) == (0x14, 0x03, 0)
+
+
+def test_ic7610_real_profile_levels_pollable_and_emit_reads() -> None:
+    acquisition = load_rig(RIGS_DIR / "ic7610.toml").to_profile().state_acquisition
+    assert acquisition is not None
+
+    receiver_paths: tuple[FieldPath, ...] = tuple(
+        FieldPath.receiver(receiver, "operator_controls", name)
+        for receiver in ("main", "sub")
+        for name in (
+            "nr_level",
+            "nb_level",
+            "pbt_inner",
+            "pbt_outer",
+            "apf_type_level",
+        )
+    )
+    global_paths: tuple[FieldPath, ...] = tuple(
+        FieldPath.global_("operator_controls", name)
+        for name in (
+            "power_level",
+            "mic_gain",
+            "compressor_level",
+            "monitor_gain",
+            "vox_gain",
+            "anti_vox_gain",
+            "cw_pitch",
+            "key_speed",
+        )
+    )
+    target_paths = receiver_paths + global_paths
+
+    for path in target_paths:
+        assert acquisition.capability_for(path).can_poll is True
+        policy = acquisition.policy_for(path)
+        assert policy.cadence_seconds == 3.0
+        assert policy.freshness_ttl_seconds == 5.0
+        assert policy.adaptive_decay.enabled is False
+
+    clock = FreshnessClock(start=300.0)
+    scheduler = AcquisitionScheduler(profile=acquisition, clock=clock)
+    requests = scheduler.due_requests()
+    due_paths = {path for request in requests for path in request.paths}
+    assert set(target_paths) <= due_paths
+
+    sent: list[tuple[int, int | None, int | None]] = []
+
+    async def send_query(
+        command: int,
+        sub: int | None,
+        receiver: int | None,
+    ) -> None:
+        sent.append((command, sub, receiver))
+
+    executor = IcomCivAcquisitionExecutor(send_query)
+    for request in requests:
+        if not any(path in target_paths for path in request.paths):
+            continue
+        execution = asyncio.run(
+            executor.execute(request, already_sent_paths=frozenset())
+        )
+        assert execution.failed_paths == ()
+
+    expected = {
+        # Receiver levels — main (0) + sub (1).
+        (0x14, 0x06, 0),
+        (0x14, 0x12, 0),
+        (0x14, 0x07, 0),
+        (0x14, 0x08, 0),
+        (0x14, 0x05, 0),
+        (0x14, 0x06, 1),
+        (0x14, 0x12, 1),
+        (0x14, 0x07, 1),
+        (0x14, 0x08, 1),
+        (0x14, 0x05, 1),
+        # Global levels — once.
+        (0x14, 0x0A, None),
+        (0x14, 0x0B, None),
+        (0x14, 0x0E, None),
+        (0x14, 0x15, None),
+        (0x14, 0x16, None),
+        (0x14, 0x17, None),
+        (0x14, 0x09, None),
+        (0x14, 0x0C, None),
+    }
+    assert expected <= set(sent)
+
+
+def test_ic7610_real_profile_filter_width_query_for_path() -> None:
+    sent: list[tuple[int, int | None, int | None]] = []
+
+    async def send_query(
+        command: int,
+        sub: int | None,
+        receiver: int | None,
+    ) -> None:
+        sent.append((command, sub, receiver))
+
+    executor = IcomCivAcquisitionExecutor(send_query)
+
+    filter_width_main = FieldPath.active("main", "freq_mode", "filter_width")
+    filter_width_sub = FieldPath.active("sub", "freq_mode", "filter_width")
+    assert executor.query_for_path(filter_width_main) == (0x1A, 0x03, 0)
+    assert executor.query_for_path(filter_width_sub) == (0x1A, 0x03, 1)
+
+    # Regression guard: sibling freq_mode mappings stay byte-identical.
+    freq_hz = FieldPath.active("main", "freq_mode", "freq_hz")
+    mode = FieldPath.active("main", "freq_mode", "mode")
+    assert executor.query_for_path(freq_hz) == (0x25, None, 0)
+    assert executor.query_for_path(mode) == (0x26, None, 0)
+
+
+def test_ic7610_real_profile_filter_width_pollable_and_emit_reads() -> None:
+    acquisition = load_rig(RIGS_DIR / "ic7610.toml").to_profile().state_acquisition
+    assert acquisition is not None
+
+    target_paths: tuple[FieldPath, ...] = (
+        FieldPath.active("main", "freq_mode", "filter_width"),
+        FieldPath.active("sub", "freq_mode", "filter_width"),
+    )
+
+    for path in target_paths:
+        assert acquisition.capability_for(path).can_poll is True
+        policy = acquisition.policy_for(path)
+        assert policy.cadence_seconds == 1.5
+        assert policy.freshness_ttl_seconds == 3.0
+        assert policy.adaptive_decay.enabled is False
+
+    clock = FreshnessClock(start=300.0)
+    scheduler = AcquisitionScheduler(profile=acquisition, clock=clock)
+    requests = scheduler.due_requests()
+    due_paths = {path for request in requests for path in request.paths}
+    assert set(target_paths) <= due_paths
+
+    sent: list[tuple[int, int | None, int | None]] = []
+
+    async def send_query(
+        command: int,
+        sub: int | None,
+        receiver: int | None,
+    ) -> None:
+        sent.append((command, sub, receiver))
+
+    executor = IcomCivAcquisitionExecutor(send_query)
+    for request in requests:
+        if not any(path in target_paths for path in request.paths):
+            continue
+        execution = asyncio.run(
+            executor.execute(request, already_sent_paths=frozenset())
+        )
+        assert execution.failed_paths == ()
+
+    assert {(0x1A, 0x03, 0), (0x1A, 0x03, 1)} <= set(sent)
+
+
+def test_ic7610_real_profile_tx_vox_toggle_query_for_path() -> None:
+    sent: list[tuple[int, int | None, int | None]] = []
+
+    async def send_query(
+        command: int,
+        sub: int | None,
+        receiver: int | None,
+    ) -> None:
+        sent.append((command, sub, receiver))
+
+    executor = IcomCivAcquisitionExecutor(send_query)
+
+    # GLOBAL cmd16 tx_state toggles — receiver is None (global path).
+    compressor_on = FieldPath.global_("tx_state", "compressor_on")
+    monitor_on = FieldPath.global_("tx_state", "monitor_on")
+    vox_on = FieldPath.global_("tx_state", "vox_on")
+    # RECEIVER cmd1A/04 operator_controls value — MAIN/SUB.
+    agc_tc_main = FieldPath.receiver("main", "operator_controls", "agc_time_constant")
+    agc_tc_sub = FieldPath.receiver("sub", "operator_controls", "agc_time_constant")
+
+    assert executor.query_for_path(compressor_on) == (0x16, 0x44, None)
+    assert executor.query_for_path(monitor_on) == (0x16, 0x45, None)
+    assert executor.query_for_path(vox_on) == (0x16, 0x46, None)
+    assert executor.query_for_path(agc_tc_main) == (0x1A, 0x04, 0)
+    assert executor.query_for_path(agc_tc_sub) == (0x1A, 0x04, 1)
+
+    # Regression guard: pre-existing global tx_state mappings still hold.
+    ptt = FieldPath.global_("tx_state", "ptt")
+    rit_on = FieldPath.global_("tx_state", "rit_on")
+    rit_tx = FieldPath.global_("tx_state", "rit_tx")
+    assert executor.query_for_path(ptt) == (0x1C, 0x00, None)
+    assert executor.query_for_path(rit_on) == (0x21, 0x01, None)
+    assert executor.query_for_path(rit_tx) == (0x21, 0x02, None)
+
+    # Regression guard: pre-existing operator_controls mappings still hold.
+    att = FieldPath.receiver("main", "operator_controls", "att")
+    preamp = FieldPath.receiver("main", "operator_controls", "preamp")
+    agc = FieldPath.receiver("main", "operator_controls", "agc")
+    squelch = FieldPath.receiver("main", "operator_controls", "squelch")
+    assert executor.query_for_path(att) == (0x11, None, 0)
+    assert executor.query_for_path(preamp) == (0x16, 0x02, 0)
+    assert executor.query_for_path(agc) == (0x16, 0x12, 0)
+    assert executor.query_for_path(squelch) == (0x14, 0x03, 0)
+
+
+def test_ic7610_real_profile_tx_vox_pollable_and_emit_reads() -> None:
+    acquisition = load_rig(RIGS_DIR / "ic7610.toml").to_profile().state_acquisition
+    assert acquisition is not None
+
+    global_toggles: tuple[FieldPath, ...] = (
+        FieldPath.global_("tx_state", "compressor_on"),
+        FieldPath.global_("tx_state", "monitor_on"),
+        FieldPath.global_("tx_state", "vox_on"),
+    )
+    agc_tc_paths: tuple[FieldPath, ...] = tuple(
+        FieldPath.receiver(receiver, "operator_controls", "agc_time_constant")
+        for receiver in ("main", "sub")
+    )
+    target_paths = global_toggles + agc_tc_paths
+
+    for path in global_toggles:
+        assert acquisition.capability_for(path).can_poll is True
+        policy = acquisition.policy_for(path)
+        assert policy.cadence_seconds == 1.5
+        assert policy.freshness_ttl_seconds == 3.0
+        assert policy.adaptive_decay.enabled is False
+
+    for path in agc_tc_paths:
+        assert acquisition.capability_for(path).can_poll is True
+        policy = acquisition.policy_for(path)
+        assert policy.cadence_seconds == 3.0
+        assert policy.freshness_ttl_seconds == 5.0
+        assert policy.adaptive_decay.enabled is False
+
+    clock = FreshnessClock(start=300.0)
+    scheduler = AcquisitionScheduler(profile=acquisition, clock=clock)
+    requests = scheduler.due_requests()
+    due_paths = {path for request in requests for path in request.paths}
+    assert set(target_paths) <= due_paths
+
+    sent: list[tuple[int, int | None, int | None]] = []
+
+    async def send_query(
+        command: int,
+        sub: int | None,
+        receiver: int | None,
+    ) -> None:
+        sent.append((command, sub, receiver))
+
+    executor = IcomCivAcquisitionExecutor(send_query)
+    for request in requests:
+        if not any(path in target_paths for path in request.paths):
+            continue
+        execution = asyncio.run(
+            executor.execute(request, already_sent_paths=frozenset())
+        )
+        assert execution.failed_paths == ()
+
+    expected = {
+        (0x16, 0x44, None),
+        (0x16, 0x45, None),
+        (0x16, 0x46, None),
+        (0x1A, 0x04, 0),
+        (0x1A, 0x04, 1),
+    }
+    assert expected <= set(sent)
+
+
+def test_ic7610_real_profile_vfo_global_query_for_path() -> None:
+    sent: list[tuple[int, int | None, int | None]] = []
+
+    async def send_query(
+        command: int,
+        sub: int | None,
+        receiver: int | None,
+    ) -> None:
+        sent.append((command, sub, receiver))
+
+    executor = IcomCivAcquisitionExecutor(send_query)
+
+    # GLOBAL tx_state split — cmd 0x0F, no sub (no-data read), receiver None.
+    split = FieldPath.global_("tx_state", "split")
+    # GLOBAL tx_state dual_watch — cmd 0x07, sub 0xC2 (query byte), receiver None.
+    dual_watch = FieldPath.global_("tx_state", "dual_watch")
+    # MOR-488 batch 6: tuning_step polling removed (the web does its own
+    # frequency-stepping and never reads the radio's tuning-step), so the
+    # slow_state branch no longer maps it — query_for_path returns None.
+    tuning_step = FieldPath.global_("slow_state", "tuning_step")
+
+    assert executor.query_for_path(split) == (0x0F, None, None)
+    assert executor.query_for_path(dual_watch) == (0x07, 0xC2, None)
+    assert executor.query_for_path(tuning_step) is None
+
+    # Regression guard: pre-existing global tx_state mappings still hold.
+    ptt = FieldPath.global_("tx_state", "ptt")
+    rit_on = FieldPath.global_("tx_state", "rit_on")
+    rit_tx = FieldPath.global_("tx_state", "rit_tx")
+    compressor_on = FieldPath.global_("tx_state", "compressor_on")
+    monitor_on = FieldPath.global_("tx_state", "monitor_on")
+    vox_on = FieldPath.global_("tx_state", "vox_on")
+    assert executor.query_for_path(ptt) == (0x1C, 0x00, None)
+    assert executor.query_for_path(rit_on) == (0x21, 0x01, None)
+    assert executor.query_for_path(rit_tx) == (0x21, 0x02, None)
+    assert executor.query_for_path(compressor_on) == (0x16, 0x44, None)
+    assert executor.query_for_path(monitor_on) == (0x16, 0x45, None)
+    assert executor.query_for_path(vox_on) == (0x16, 0x46, None)
+
+    # Regression guard: pre-existing global slow_state mapping still holds.
+    active = FieldPath.global_("slow_state", "active")
+    assert executor.query_for_path(active) == (0x07, 0xD2, None)
+
+
+def test_ic7610_real_profile_vfo_global_pollable_and_emit_reads() -> None:
+    acquisition = load_rig(RIGS_DIR / "ic7610.toml").to_profile().state_acquisition
+    assert acquisition is not None
+
+    fast_paths: tuple[FieldPath, ...] = (
+        FieldPath.global_("tx_state", "split"),
+        FieldPath.global_("tx_state", "dual_watch"),
+    )
+    target_paths = fast_paths
+
+    for path in fast_paths:
+        assert acquisition.capability_for(path).can_poll is True
+        policy = acquisition.policy_for(path)
+        assert policy.cadence_seconds == 1.5
+        assert policy.freshness_ttl_seconds == 3.0
+        assert policy.adaptive_decay.enabled is False
+
+    # MOR-488 batch 6: tuning_step is no longer polled — not in polling_only and
+    # its slow_state read mapping was removed.
+    tuning_step = FieldPath.global_("slow_state", "tuning_step")
+    assert acquisition.capability_for(tuning_step).can_poll is False
+
+    clock = FreshnessClock(start=400.0)
+    scheduler = AcquisitionScheduler(profile=acquisition, clock=clock)
+    requests = scheduler.due_requests()
+    due_paths = {path for request in requests for path in request.paths}
+    assert set(target_paths) <= due_paths
+    assert tuning_step not in due_paths
+
+    sent: list[tuple[int, int | None, int | None]] = []
+
+    async def send_query(
+        command: int,
+        sub: int | None,
+        receiver: int | None,
+    ) -> None:
+        sent.append((command, sub, receiver))
+
+    executor = IcomCivAcquisitionExecutor(send_query)
+    for request in requests:
+        if not any(path in target_paths for path in request.paths):
+            continue
+        execution = asyncio.run(
+            executor.execute(request, already_sent_paths=frozenset())
+        )
+        assert execution.failed_paths == ()
+
+    expected = {
+        (0x0F, None, None),
+        (0x07, 0xC2, None),
+    }
+    assert expected <= set(sent)
+    # MOR-488 batch 6: tuning_step read (0x10) is no longer emitted.
+    assert (0x10, None, None) not in set(sent)
+
+
+def test_ic7610_real_profile_tone_tuner_query_for_path() -> None:
+    sent: list[tuple[int, int | None, int | None]] = []
+
+    async def send_query(
+        command: int,
+        sub: int | None,
+        receiver: int | None,
+    ) -> None:
+        sent.append((command, sub, receiver))
+
+    executor = IcomCivAcquisitionExecutor(send_query)
+
+    # cmd16 receiver toggles (operator_toggles family) — MAIN (receiver 0).
+    repeater_tone = FieldPath.receiver("main", "operator_toggles", "repeater_tone")
+    repeater_tsql = FieldPath.receiver("main", "operator_toggles", "repeater_tsql")
+    # cmd1B receiver tone/TSQL freq (operator_controls family) — MAIN (receiver 0).
+    tone_freq = FieldPath.receiver("main", "operator_controls", "tone_freq")
+    tsql_freq = FieldPath.receiver("main", "operator_controls", "tsql_freq")
+    # GLOBAL operator_controls tuner_status — cmd 0x1C sub 0x01, NO data byte
+    # (read form), receiver None. The set form (0x1C 0x01 + 0x00/0x01/0x02) is
+    # never used by polling, so a poll cannot turn the tuner on or start a tune.
+    tuner_status = FieldPath.global_("operator_controls", "tuner_status")
+
+    assert executor.query_for_path(repeater_tone) == (0x16, 0x42, 0)
+    assert executor.query_for_path(repeater_tsql) == (0x16, 0x43, 0)
+    assert executor.query_for_path(tone_freq) == (0x1B, 0x00, 0)
+    assert executor.query_for_path(tsql_freq) == (0x1B, 0x01, 0)
+    assert executor.query_for_path(tuner_status) == (0x1C, 0x01, None)
+
+    # SUB receiver targeting (receiver 1).
+    repeater_tone_sub = FieldPath.receiver("sub", "operator_toggles", "repeater_tone")
+    repeater_tsql_sub = FieldPath.receiver("sub", "operator_toggles", "repeater_tsql")
+    tone_freq_sub = FieldPath.receiver("sub", "operator_controls", "tone_freq")
+    tsql_freq_sub = FieldPath.receiver("sub", "operator_controls", "tsql_freq")
+    assert executor.query_for_path(repeater_tone_sub) == (0x16, 0x42, 1)
+    assert executor.query_for_path(repeater_tsql_sub) == (0x16, 0x43, 1)
+    assert executor.query_for_path(tone_freq_sub) == (0x1B, 0x00, 1)
+    assert executor.query_for_path(tsql_freq_sub) == (0x1B, 0x01, 1)
+
+    # Regression guard: pre-existing receiver toggle/nonlevel mappings hold.
+    digisel = FieldPath.receiver("main", "operator_toggles", "digisel")
+    att = FieldPath.receiver("main", "operator_controls", "att")
+    preamp = FieldPath.receiver("main", "operator_controls", "preamp")
+    agc = FieldPath.receiver("main", "operator_controls", "agc")
+    agc_time_constant = FieldPath.receiver(
+        "main", "operator_controls", "agc_time_constant"
+    )
+    assert executor.query_for_path(digisel) == (0x16, 0x4E, 0)
+    assert executor.query_for_path(att) == (0x11, None, 0)
+    assert executor.query_for_path(preamp) == (0x16, 0x02, 0)
+    assert executor.query_for_path(agc) == (0x16, 0x12, 0)
+    assert executor.query_for_path(agc_time_constant) == (0x1A, 0x04, 0)
+
+    # Regression guard: pre-existing global level mapping (0x14) still holds.
+    power_level = FieldPath.global_("operator_controls", "power_level")
+    assert executor.query_for_path(power_level) == (0x14, 0x0A, None)
+
+
+def test_ic7610_real_profile_tone_tuner_pollable_and_emit_reads() -> None:
+    acquisition = load_rig(RIGS_DIR / "ic7610.toml").to_profile().state_acquisition
+    assert acquisition is not None
+
+    fast_paths: tuple[FieldPath, ...] = (
+        FieldPath.global_("operator_controls", "tuner_status"),
+    )
+    med_paths: tuple[FieldPath, ...] = tuple(
+        FieldPath.receiver(receiver, "operator_toggles", name)
+        for receiver in ("main", "sub")
+        for name in ("repeater_tone", "repeater_tsql")
+    ) + tuple(
+        FieldPath.receiver(receiver, "operator_controls", name)
+        for receiver in ("main", "sub")
+        for name in ("tone_freq", "tsql_freq")
+    )
+    target_paths = fast_paths + med_paths
+
+    for path in fast_paths:
+        assert acquisition.capability_for(path).can_poll is True
+        policy = acquisition.policy_for(path)
+        assert policy.cadence_seconds == 1.5
+        assert policy.freshness_ttl_seconds == 3.0
+        assert policy.adaptive_decay.enabled is False
+
+    for path in med_paths:
+        assert acquisition.capability_for(path).can_poll is True
+        policy = acquisition.policy_for(path)
+        assert policy.cadence_seconds == 3.0
+        assert policy.freshness_ttl_seconds == 5.0
+        assert policy.adaptive_decay.enabled is False
+
+    clock = FreshnessClock(start=500.0)
+    scheduler = AcquisitionScheduler(profile=acquisition, clock=clock)
+    requests = scheduler.due_requests()
+    due_paths = {path for request in requests for path in request.paths}
+    assert set(target_paths) <= due_paths
+
+    sent: list[tuple[int, int | None, int | None]] = []
+
+    async def send_query(
+        command: int,
+        sub: int | None,
+        receiver: int | None,
+    ) -> None:
+        sent.append((command, sub, receiver))
+
+    executor = IcomCivAcquisitionExecutor(send_query)
+    for request in requests:
+        if not any(path in target_paths for path in request.paths):
+            continue
+        execution = asyncio.run(
+            executor.execute(request, already_sent_paths=frozenset())
+        )
+        assert execution.failed_paths == ()
+
+    expected = {
+        (0x16, 0x42, 0),
+        (0x16, 0x43, 0),
+        (0x1B, 0x00, 0),
+        (0x1B, 0x01, 0),
+        (0x16, 0x42, 1),
+        (0x16, 0x43, 1),
+        (0x1B, 0x00, 1),
+        (0x1B, 0x01, 1),
+        (0x1C, 0x01, None),
+    }
+    assert expected <= set(sent)

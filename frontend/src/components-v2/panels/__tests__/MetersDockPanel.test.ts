@@ -323,29 +323,102 @@ describe('MetersDockPanel capability gating', () => {
   });
 });
 
-describe('MetersDockPanel relevance dimming', () => {
-  it('marks TX tiles as relevant when txActive=true', () => {
-    const t = mountPanel({ ...fullProps, txActive: true });
+describe('MetersDockPanel relevance dimming (MOR-485 revert of MOR-483 p1)', () => {
+  // MOR-483 part-1 HID TX-only tiles on RX, which made the dock layout JUMP on
+  // every RX<->TX transition. Reverted to the prior DIMMED behavior: all meter
+  // tiles always render; non-relevant ones carry data-relevant='false' (dimmed)
+  // but stay in the layout, so switching RX<->TX never reflows the grid.
+  it('renders TX-only tiles and marks them relevant when txActive=true', () => {
+    const t = mountPanel({
+      ...fullProps,
+      txActive: true,
+      idMeter: 100,
+      compMeter: 75,
+      compressorOn: true,
+    });
     expect(t.querySelector('[data-meter="po"]')?.getAttribute('data-relevant')).toBe('true');
     expect(t.querySelector('[data-meter="swr"]')?.getAttribute('data-relevant')).toBe('true');
     expect(t.querySelector('[data-meter="alc"]')?.getAttribute('data-relevant')).toBe('true');
+    expect(t.querySelector('[data-meter="id"]')?.getAttribute('data-relevant')).toBe('true');
+    expect(t.querySelector('[data-meter="comp"]')?.getAttribute('data-relevant')).toBe('true');
+    // S is the RX indicator — not relevant during TX, but still rendered.
     expect(t.querySelector('[data-meter="s"]')?.getAttribute('data-relevant')).toBe('false');
   });
 
-  it('marks S tile as relevant when txActive=false', () => {
-    const t = mountPanel({ ...fullProps, txActive: false });
-    expect(t.querySelector('[data-meter="s"]')?.getAttribute('data-relevant')).toBe('true');
+  it('renders TX-only tiles DIMMED (present, not relevant) when txActive=false', () => {
+    const t = mountPanel({
+      ...fullProps,
+      txActive: false,
+      idMeter: 100,
+      compMeter: 75,
+      compressorOn: true,
+    });
+    // Tiles stay in the layout (no reflow) but are dimmed via data-relevant.
+    expect(t.querySelector('[data-meter="po"]')).not.toBeNull();
     expect(t.querySelector('[data-meter="po"]')?.getAttribute('data-relevant')).toBe('false');
+    expect(t.querySelector('[data-meter="swr"]')?.getAttribute('data-relevant')).toBe('false');
+    expect(t.querySelector('[data-meter="alc"]')?.getAttribute('data-relevant')).toBe('false');
+    expect(t.querySelector('[data-meter="id"]')?.getAttribute('data-relevant')).toBe('false');
+    expect(t.querySelector('[data-meter="comp"]')?.getAttribute('data-relevant')).toBe('false');
+    // S is the RX indicator — relevant (bright) on RX.
+    expect(t.querySelector('[data-meter="s"]')?.getAttribute('data-relevant')).toBe('true');
   });
 
-  it('keeps Vd tile relevant in RX idle (supply voltage is always readable)', () => {
-    const t = mountPanel({ ...fullProps, vdMeter: 180, txActive: false });
-    expect(t.querySelector('[data-meter="vd"]')?.getAttribute('data-relevant')).toBe('true');
+  it('renders S tile in both RX and TX', () => {
+    const rx = mountPanel({ ...fullProps, txActive: false });
+    expect(rx.querySelector('[data-meter="s"]')).not.toBeNull();
+    expect(rx.querySelector('[data-meter="s"]')?.getAttribute('data-relevant')).toBe('true');
+    const tx = mountPanel({ ...fullProps, txActive: true });
+    expect(tx.querySelector('[data-meter="s"]')).not.toBeNull();
+    expect(tx.querySelector('[data-meter="s"]')?.getAttribute('data-relevant')).toBe('false');
   });
 
-  it('keeps Vd tile relevant during TX as well', () => {
-    const t = mountPanel({ ...fullProps, vdMeter: 180, txActive: true });
-    expect(t.querySelector('[data-meter="vd"]')?.getAttribute('data-relevant')).toBe('true');
+  it('keeps Vd tile relevant in both RX and TX (supply rail always readable)', () => {
+    const rx = mountPanel({ ...fullProps, vdMeter: 180, txActive: false });
+    expect(rx.querySelector('[data-meter="vd"]')).not.toBeNull();
+    expect(rx.querySelector('[data-meter="vd"]')?.getAttribute('data-relevant')).toBe('true');
+    const tx = mountPanel({ ...fullProps, vdMeter: 180, txActive: true });
+    expect(tx.querySelector('[data-meter="vd"]')).not.toBeNull();
+    expect(tx.querySelector('[data-meter="vd"]')?.getAttribute('data-relevant')).toBe('true');
+  });
+
+  it('renders the same tile set on RX and TX (no reflow on transition)', () => {
+    const props = {
+      ...fullProps,
+      idMeter: 100,
+      vdMeter: 13,
+      compMeter: 75,
+      compressorOn: true,
+    };
+    const rxKeys = Array.from(
+      mountPanel({ ...props, txActive: false }).querySelectorAll('.dock-tile'),
+    ).map((el) => el.getAttribute('data-meter'));
+    const txKeys = Array.from(
+      mountPanel({ ...props, txActive: true }).querySelectorAll('.dock-tile'),
+    ).map((el) => el.getAttribute('data-meter'));
+    expect(rxKeys).toEqual(['po', 'swr', 'alc', 'id', 'vd', 'comp', 's']);
+    expect(txKeys).toEqual(rxKeys);
+  });
+});
+
+describe('MetersDockPanel calibrated bar fill (MOR-482)', () => {
+  it('fills the SWR bar to ~100% at SWR 3.0 (raw=120), not ~47%', () => {
+    // The bar must agree with the calibrated number, not raw/255.
+    const t = mountPanel({ ...fullProps, txActive: true, swrMeter: 120 });
+    const fill = t.querySelector('[data-meter="swr"] .tile-bar-fill') as HTMLElement;
+    expect(parseFloat(fill.style.width)).toBeGreaterThan(95);
+  });
+
+  it('fills the Vd bar near full at the 16 V knot (raw=241), not ~5%', () => {
+    const t = mountPanel({ ...fullProps, vdMeter: 241, txActive: false });
+    const fill = t.querySelector('[data-meter="vd"] .tile-bar-fill') as HTMLElement;
+    expect(parseFloat(fill.style.width)).toBeGreaterThan(95);
+  });
+
+  it('fills the S bar to ~100% at S9+60 (raw=241), not ~94.5%', () => {
+    const t = mountPanel({ ...fullProps, sValue: 241, txActive: false });
+    const fill = t.querySelector('[data-meter="s"] .tile-bar-fill') as HTMLElement;
+    expect(parseFloat(fill.style.width)).toBeGreaterThan(99);
   });
 });
 
@@ -355,7 +428,8 @@ describe('MetersDockPanel fault highlighting', () => {
     expect(t.querySelector('[data-meter="swr"]')?.getAttribute('data-fault')).toBe('true');
   });
 
-  it('does not flag SWR fault during RX', () => {
+  it('does not flag SWR fault during RX (tile dimmed, no fault)', () => {
+    // SWR is TX-only; on RX the tile is DIMMED (present) and never faulted.
     const t = mountPanel({ ...fullProps, swrMeter: 120, txActive: false });
     expect(t.querySelector('[data-meter="swr"]')?.getAttribute('data-fault')).toBe('false');
   });
@@ -390,8 +464,10 @@ describe('MetersDockPanel peak-hold', () => {
   });
 
   it('hides peak marker when tile is not relevant', () => {
-    // Po is not relevant during RX (txActive=false) -> no peak shown
+    // Po is dimmed (not relevant) during RX (txActive=false) -> no peak shown.
     const t = mountPanel({ ...fullProps, txActive: false });
+    const tile = t.querySelector('[data-meter="po"]');
+    expect(tile).not.toBeNull();
     const marker = t.querySelector('[data-meter="po"] [data-testid="peak-marker"]');
     expect(marker).toBeNull();
   });

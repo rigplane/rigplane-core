@@ -87,16 +87,20 @@ describe('formatBadges', () => {
 // ---------------------------------------------------------------------------
 
 describe('formatRitOffset', () => {
-  it('positive offset shows + sign', () => {
-    expect(formatRitOffset(120)).toBe('+120 Hz');
+  it('positive offset shows + sign in kHz', () => {
+    expect(formatRitOffset(120)).toBe('+0.12 kHz');
   });
 
-  it('negative offset shows − sign', () => {
-    expect(formatRitOffset(-250)).toBe('−250 Hz');
+  it('negative offset shows − sign in kHz', () => {
+    expect(formatRitOffset(-250)).toBe('−0.25 kHz');
   });
 
-  it('zero offset shows + sign', () => {
-    expect(formatRitOffset(0)).toBe('+0 Hz');
+  it('zero offset shows + sign in kHz', () => {
+    expect(formatRitOffset(0)).toBe('+0.00 kHz');
+  });
+
+  it('formats a multi-kHz offset with 2 decimals', () => {
+    expect(formatRitOffset(5000)).toBe('+5.00 kHz');
   });
 });
 
@@ -272,14 +276,14 @@ describe('RIT display', () => {
     expect(t.querySelector('.rit-row')).not.toBeNull();
   });
 
-  it('shows formatted RIT offset when active', () => {
+  it('shows formatted RIT offset in kHz when active', () => {
     const t = mountPanel({ ...baseProps, rit: { active: true, offset: 120 } });
-    expect(t.querySelector('.rit-offset')?.textContent?.trim()).toBe('+120 Hz');
+    expect(t.querySelector('.rit-offset')?.textContent?.trim()).toBe('+0.12 kHz');
   });
 
-  it('shows negative RIT offset correctly', () => {
+  it('shows negative RIT offset in kHz correctly', () => {
     const t = mountPanel({ ...baseProps, rit: { active: true, offset: -250 } });
-    expect(t.querySelector('.rit-offset')?.textContent?.trim()).toBe('−250 Hz');
+    expect(t.querySelector('.rit-offset')?.textContent?.trim()).toBe('−0.25 kHz');
   });
 });
 

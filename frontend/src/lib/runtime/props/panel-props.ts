@@ -13,7 +13,13 @@
 
 import type { ServerState, ReceiverState } from '$lib/types/state';
 import type { Capabilities, FilterModeConfig } from '$lib/types/capabilities';
-import { deriveIfShift, pbtRawToHz } from '$lib/radio/filter-controls';
+import {
+  deriveIfShift,
+  nbDepthRawToDisplay,
+  nrRawToDisplay,
+  pbtRawToHz,
+} from '$lib/radio/filter-controls';
+import { isFieldAvailable, getFieldAvailability } from '$lib/state/field-status';
 
 /* ── Private helpers ─────────────────────────────────────────── */
 
@@ -21,8 +27,28 @@ function activeRx(state: ServerState): ReceiverState {
   return state.active === 'SUB' ? state.sub : state.main;
 }
 
+function activeReceiverKey(state: ServerState): 'main' | 'sub' {
+  return state.active === 'SUB' ? 'sub' : 'main';
+}
+
 function hasCap(caps: Capabilities | null, name: string): boolean {
   return caps?.capabilities?.includes(name) ?? false;
+}
+
+function topFieldAvailable(state: ServerState | null, field: string): boolean {
+  return isFieldAvailable(state, field);
+}
+
+function activeFieldAvailable(state: ServerState | null, field: string): boolean {
+  if (!state) return false;
+  return isFieldAvailable(state, `${activeReceiverKey(state)}.${field}`);
+}
+
+function activeFieldShown(state: ServerState | null, field: string): boolean {
+  if (!state) return false;
+  return (
+    getFieldAvailability(state, `${activeReceiverKey(state)}.${field}`) !== 'missing'
+  );
 }
 
 /* ── VFO ─────────────────────────────────────────────────────── */
@@ -144,6 +170,12 @@ export interface RfFrontEndProps {
   pre: number;
   digiSel: boolean;
   ipPlus: boolean;
+  rfGainAvailable: boolean;
+  squelchAvailable: boolean;
+  attAvailable: boolean;
+  preAvailable: boolean;
+  digiSelAvailable: boolean;
+  ipPlusAvailable: boolean;
   attValues: number[];
   attLabels: Record<string, string>;
   preValues: number[];
@@ -152,6 +184,8 @@ export interface RfFrontEndProps {
   showSquelch: boolean;
   showAtt: boolean;
   showPre: boolean;
+  preDisabled: boolean;
+  preDisabledReason: string;
   showDigiSel: boolean;
   showIpPlus: boolean;
 }
@@ -171,6 +205,19 @@ export function toRfFrontEndProps(
   const attLabels = caps?.attLabels ?? {};
   const preValues = caps?.preValues ?? [0, 1, 2];
   const preLabels = caps?.preLabels ?? {};
+  const rfGainAvailable = activeFieldShown(state, 'rfGain');
+  const squelchAvailable = activeFieldShown(state, 'squelch');
+  const attAvailable = activeFieldShown(state, 'att');
+  const preAvailable = activeFieldShown(state, 'preamp');
+  const digiSelAvailable = activeFieldAvailable(state, 'digisel');
+  const ipPlusAvailable = activeFieldAvailable(state, 'ipplus');
+  // IC-7610 hardware mutex: PREAMP and DIGI-SEL are mutually exclusive — the radio
+  // ignores a PREAMP set while DIGI-SEL is ON. Mirror the radio by disabling the PRE
+  // control so it does not light optimistically (MOR-479). Sourced from the profile
+  // rule rigs/ic7610.toml [[rules]] kind="disables" when_active="digisel"
+  // disables=["preamp"]; targeted here rather than plumbed through capabilities
+  // (rules are not yet serialized to the client).
+  const preDisabled = rx?.digisel ?? false;
   return {
     rfGain: rx?.rfGain ?? 255,
     squelch: rx?.squelch ?? 0,
@@ -178,6 +225,12 @@ export function toRfFrontEndProps(
     digiSel: rx?.digisel ?? false,
     ipPlus: rx?.ipplus ?? false,
     pre: rx?.preamp ?? 0,
+    rfGainAvailable,
+    squelchAvailable,
+    attAvailable,
+    preAvailable,
+    digiSelAvailable,
+    ipPlusAvailable,
     attValues,
     attLabels,
     preValues,
@@ -185,12 +238,14 @@ export function toRfFrontEndProps(
       value,
       label: formatPreLabel(value, preLabels),
     })),
-    showRfGain: hasCap(caps, 'rf_gain'),
-    showSquelch: hasCap(caps, 'squelch'),
-    showAtt: hasCap(caps, 'attenuator'),
-    showPre: hasCap(caps, 'preamp'),
-    showDigiSel: hasCap(caps, 'digisel'),
-    showIpPlus: hasCap(caps, 'ip_plus'),
+    showRfGain: hasCap(caps, 'rf_gain') && rfGainAvailable,
+    showSquelch: hasCap(caps, 'squelch') && squelchAvailable,
+    showAtt: hasCap(caps, 'attenuator') && attAvailable,
+    showPre: hasCap(caps, 'preamp') && preAvailable,
+    preDisabled,
+    preDisabledReason: preDisabled ? 'DIGI-SEL is ON — turn it off to use the preamp' : '',
+    showDigiSel: hasCap(caps, 'digisel') && digiSelAvailable,
+    showIpPlus: hasCap(caps, 'ip_plus') && ipPlusAvailable,
   };
 }
 
@@ -290,6 +345,7 @@ export interface AgcProps {
   agcMode: number;
   agcModes: number[];
   agcLabels: Record<string, string>;
+  hasAgc: boolean;
 }
 
 export function toAgcProps(
@@ -301,6 +357,7 @@ export function toAgcProps(
     agcMode: rx?.agc ?? 2,
     agcModes: caps?.agcModes ?? [1, 2, 3],
     agcLabels: caps?.agcLabels ?? { '1': 'FAST', '2': 'MID', '3': 'SLOW' },
+    hasAgc: hasCap(caps, 'agc') && activeFieldAvailable(state, 'agc'),
   };
 }
 
@@ -372,6 +429,9 @@ export interface DspProps {
   agcTimeConstant: number;
   hasNr: boolean;
   hasNb: boolean;
+  hasNotch: boolean;
+  hasAutoNotch: boolean;
+  hasAgcTime: boolean;
 }
 
 export function toDspProps(
@@ -384,19 +444,28 @@ export function toDspProps(
   if (rx?.autoNotch) notchMode = 'auto';
   else if (rx?.manualNotch) notchMode = 'manual';
 
+  const nbAvailable = activeFieldAvailable(state, 'nb');
+  const nrAvailable = activeFieldAvailable(state, 'nr');
+  const manualNotchAvailable = activeFieldAvailable(state, 'manualNotch');
+  const autoNotchAvailable = activeFieldAvailable(state, 'autoNotch');
   return {
     nrMode: rx?.nr ? 1 : 0,
-    nrLevel: rx?.nrLevel ?? 0,
+    // MOR-490: store holds the raw 0-255 wire value; the slider is 0-15.
+    nrLevel: nrRawToDisplay(rx?.nrLevel ?? 0),
     nbActive: rx?.nb ?? false,
     nbLevel: rx?.nbLevel ?? 0,
-    nbDepth: state?.nbDepth ?? 0,
+    // MOR-498: store holds the 0-9 wire value; the slider is 1-10.
+    nbDepth: nbDepthRawToDisplay(state?.nbDepth ?? 0),
     nbWidth: state?.nbWidth ?? 0,
     notchMode,
     notchFreq: state?.notchFilter ?? 0,
     manualNotchWidth: rx?.manualNotchWidth ?? 0,
     agcTimeConstant: rx?.agcTimeConstant ?? 0,
-    hasNr: hasCap(caps, 'nr'),
-    hasNb: hasCap(caps, 'nb'),
+    hasNr: hasCap(caps, 'nr') && nrAvailable,
+    hasNb: hasCap(caps, 'nb') && nbAvailable,
+    hasNotch: (hasCap(caps, 'notch') || caps === null) && manualNotchAvailable,
+    hasAutoNotch: (hasCap(caps, 'notch') || caps === null) && autoNotchAvailable,
+    hasAgcTime: activeFieldAvailable(state, 'agcTimeConstant'),
   };
 }
 
@@ -417,12 +486,32 @@ export interface TxProps {
   hasTx: boolean;
   hasTuner: boolean;
   hasMonitor: boolean;
+  txActiveAvailable: boolean;
+  rfPowerAvailable: boolean;
+  micGainAvailable: boolean;
+  atuAvailable: boolean;
+  voxAvailable: boolean;
+  compAvailable: boolean;
+  compLevelAvailable: boolean;
+  monAvailable: boolean;
+  monLevelAvailable: boolean;
+  driveGainAvailable: boolean;
 }
 
 export function toTxProps(
   state: ServerState | null,
   caps: Capabilities | null,
 ): TxProps {
+  const txActiveAvailable = topFieldAvailable(state, 'ptt');
+  const rfPowerAvailable = topFieldAvailable(state, 'powerLevel');
+  const micGainAvailable = topFieldAvailable(state, 'micGain');
+  const atuAvailable = topFieldAvailable(state, 'tunerStatus');
+  const voxAvailable = topFieldAvailable(state, 'voxOn');
+  const compAvailable = topFieldAvailable(state, 'compressorOn');
+  const compLevelAvailable = topFieldAvailable(state, 'compressorLevel');
+  const monAvailable = topFieldAvailable(state, 'monitorOn');
+  const monLevelAvailable = topFieldAvailable(state, 'monitorGain');
+  const driveGainAvailable = topFieldAvailable(state, 'driveGain');
   return {
     txActive: state?.ptt ?? false,
     rfPower: state?.powerLevel ?? 128,
@@ -436,8 +525,18 @@ export function toTxProps(
     monLevel: state?.monitorGain ?? 128,
     driveGain: state?.driveGain ?? 128,
     hasTx: caps?.tx ?? false,
-    hasTuner: hasCap(caps, 'tuner'),
-    hasMonitor: hasCap(caps, 'monitor'),
+    hasTuner: hasCap(caps, 'tuner') && atuAvailable,
+    hasMonitor: hasCap(caps, 'monitor') && monAvailable,
+    txActiveAvailable,
+    rfPowerAvailable,
+    micGainAvailable,
+    atuAvailable,
+    voxAvailable,
+    compAvailable,
+    compLevelAvailable,
+    monAvailable,
+    monLevelAvailable,
+    driveGainAvailable,
   };
 }
 
@@ -450,6 +549,8 @@ export interface CwProps {
   apfMode: number;
   twinPeak: boolean;
   currentMode: string;
+  apfDisabled: boolean;
+  tpfDisabled: boolean;
   wpm: number;
   breakInActive: boolean;
   breakInDelay: number;
@@ -469,13 +570,22 @@ export function toCwProps(
 ): CwProps {
   const rx = state ? activeRx(state) : null;
   const breakInVal = state?.breakIn ?? 0;
+  const mode = rx?.mode ?? 'USB';
+  // Mode-gated CW filters (MOR-492): APF (Audio Peak Filter) is only meaningful
+  // in CW/CW-R; TPF (Twin Peak Filter) only in RTTY/RTTY-R. Disable the control
+  // outside its mode so it greys out and no-ops — mirrors the MOR-479 preamp
+  // mutex. Includes the -R reverse variants in both predicates.
+  const apfDisabled = !(mode === 'CW' || mode === 'CW-R');
+  const tpfDisabled = !(mode === 'RTTY' || mode === 'RTTY-R');
   return {
     cwPitch: state?.cwPitch ?? 600,
     keySpeed: state?.keySpeed ?? 12,
     breakIn: breakInVal,
     apfMode: rx?.apfTypeLevel ?? 0,
     twinPeak: rx?.twinPeakFilter ?? false,
-    currentMode: rx?.mode ?? 'USB',
+    currentMode: mode,
+    apfDisabled,
+    tpfDisabled,
     wpm: state?.keySpeed ?? 12,
     breakInActive: breakInVal > 0,
     breakInDelay: state?.breakInDelay ?? 0,
@@ -531,6 +641,8 @@ export function toMeterProps(
 export interface RxAudioProps {
   monitorMode: 'local' | 'live' | 'mute';
   afLevel: number;
+  /** Radio AF-level control capability; independent from browser live audio. */
+  hasAfLevel: boolean;
   hasLiveAudio: boolean;
   /** Audio-WS connection health — used to render a "link lost" indicator. */
   isAudioConnected: boolean;
@@ -552,6 +664,7 @@ export function toRxAudioProps(
 ): RxAudioProps {
   const rx = state ? activeRx(state) : null;
   const hasLiveAudio = hasCap(caps, 'audio');
+  const hasAfLevel = hasCap(caps, 'af_level') || hasLiveAudio;
   const monitorMode = audioState.muted
     ? 'mute'
     : audioState.rxEnabled && hasLiveAudio
@@ -565,6 +678,7 @@ export function toRxAudioProps(
   return {
     monitorMode,
     afLevel,
+    hasAfLevel,
     hasLiveAudio,
     isAudioConnected: audioConnected,
     hasDualReceiver,
@@ -686,15 +800,14 @@ export function toMemoryPanelProps(state: ServerState | null): MemoryPanelProps 
 export interface AmberTelemetryProps {
   vdRaw: number | null;
   idRaw: number | null;
-  tempRaw: number | null;
 }
 
 export function toAmberTelemetryProps(state: ServerState | null): AmberTelemetryProps {
+  // No temp field: the IC-7610 exposes no temperature over CI-V and
+  // `ServerState` carries none, so the dead TEMP tile was dropped (MOR-483).
   return {
     vdRaw: state?.vdMeter ?? null,
     idRaw: state?.idMeter ?? null,
-    // tempMeter isn't yet on ServerState; read defensively for forward compat.
-    tempRaw: (state as { tempMeter?: number } | null)?.tempMeter ?? null,
   };
 }
 

@@ -23,6 +23,7 @@ if TYPE_CHECKING:
     from typing import Any, Awaitable, Callable
 
     from rigplane._runtime_protocols import ControlPhaseHost
+    from rigplane.core.acquisition_scheduler import RadioStateModelService
 
 from . import radio_initial_state as _initial_state
 from . import radio_reconnect as _reconnect
@@ -274,9 +275,11 @@ from rigplane.commands import set_tone_freq as _set_tone_freq_cmd
 from rigplane.commands import set_tsql_freq as _set_tsql_freq_cmd
 from rigplane.commands import set_vfo as _select_vfo_cmd
 from rigplane.core.exceptions import CommandError, TimeoutError
+from rigplane.core.state_store import StateStore
 from rigplane.runtime.meter_cal import interpolate_swr
 from rigplane.profiles import RadioProfile, resolve_radio_profile
 from rigplane.core.radio_state import RadioState
+from rigplane.core.state_diagnostics import StateDiagnosticsRecorder
 from rigplane.core._state_cache import StateCache
 from rigplane.scope import ScopeAssembler, ScopeFrame
 from rigplane.core.transport import IcomTransport
@@ -788,6 +791,16 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
             float(os.environ.get("ICOM_CIV_RETRY_SLICE_MS", "150")) / 1000.0
         )
         self._state_cache: StateCache = StateCache()
+        # Canonical state-ingress store exposed via ``state_store``. It is
+        # constructed bare here and does NOT decay on its own (MOR-432):
+        # freshness aging requires a StateFreshnessService wired over this
+        # store and driven by a running loop. In production the web/rigctld
+        # server wires and runs that service against this same store at
+        # startup. Used headless without a server, this store never ages
+        # fields to STALE.
+        self._state_store: StateStore = StateStore()
+        self._state_model_service: RadioStateModelService | None = None
+        self._state_diagnostics: StateDiagnosticsRecorder | None = None
         self._on_state_change: Callable[[str, dict[str, Any]], None] | None = (
             None  # set by server
         )
@@ -973,6 +986,22 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
         non-blocking snapshot of recent state.
         """
         return self._state_cache
+
+    @property
+    def state_store(self) -> StateStore:
+        """Canonical confirmed-observation store for runtime state ingress."""
+
+        return self._state_store
+
+    @property
+    def state_model_service(self) -> "RadioStateModelService | None":
+        """Optional StateStore freshness/acquisition service for consumers."""
+
+        return self._state_model_service
+
+    @state_model_service.setter
+    def state_model_service(self, service: "RadioStateModelService | None") -> None:
+        self._state_model_service = service
 
     @property
     def radio_state(self) -> RadioState:
@@ -1197,6 +1226,7 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
         dedupe: bool = False,
         wait_response: bool = True,
         timeout: float | None = None,
+        wait_dispatch: bool = True,
     ) -> CivFrame | None:
         """Delegate to CI-V runtime (keeps existing call sites unchanged)."""
         return await self._civ_runtime.send_civ_raw(
@@ -1206,6 +1236,7 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
             dedupe=dedupe,
             wait_response=wait_response,
             timeout=timeout,
+            wait_dispatch=wait_dispatch,
         )
 
     async def _send_civ_expect(
@@ -1274,6 +1305,8 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
         data: bytes | None = None,
         *,
         wait_response: bool = True,
+        priority: Priority = Priority.NORMAL,
+        wait_dispatch: bool = True,
     ) -> CivFrame | None:
         """Send a CI-V command.
 
@@ -1282,6 +1315,15 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
             sub: Optional sub-command byte.
             data: Optional payload data.
             wait_response: If False, fire-and-forget (no response wait).
+            priority: Commander lane priority. Defaults to NORMAL so user
+                commands are not de-prioritized; background pollers pass
+                ``Priority.BACKGROUND`` so polls yield to user commands.
+            wait_dispatch: If False, return immediately after enqueueing
+                instead of awaiting the commander dispatching this frame.
+                Background pollers pass False so the poll burst does not park
+                the poll loop on the commander future (the response still
+                arrives via the RX path). Defaults to True so user commands
+                keep their blocking contract.
 
         Returns:
             Parsed response CivFrame, or None if wait_response=False.
@@ -1290,7 +1332,12 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
         frame = build_civ_frame(
             self._radio_addr, CONTROLLER_ADDR, command, sub=sub, data=data
         )
-        return await self._send_civ_raw(frame, wait_response=wait_response)
+        return await self._send_civ_raw(
+            frame,
+            wait_response=wait_response,
+            priority=priority,
+            wait_dispatch=wait_dispatch,
+        )
 
     # ------------------------------------------------------------------
     # Raw CI-V pipe (MOR-164) — transparent byte transport for Hamlib A1

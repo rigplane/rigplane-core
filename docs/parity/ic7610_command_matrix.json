@@ -1145,7 +1145,7 @@
       "test_patterns": [
         "tests/test_commands.py::test_get_various_squelch_main",
         "tests/test_radio.py::test_get_various_squelch",
-        "tests/test_civ_rx_coverage.py::test_update_radio_state_various_squelch"
+        "tests/test_civ_rx_coverage.py::test_update_radio_state_cmd15_dcd_observation_backed"
       ],
       "notes": ""
     },

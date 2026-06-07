@@ -16,7 +16,8 @@ export interface ReceiverState {
   // Extended fields — optional (not all radio models expose these)
   digisel?: boolean;
   ipplus?: boolean;
-  sMeterSqlOpen?: boolean;
+  dcd?: boolean;
+  sMeterSqlOpen?: boolean; // deprecated alias of dcd (MOR-466)
   agc?: number;
   audioPeakFilter?: number;
   autoNotch?: boolean;
@@ -58,8 +59,26 @@ export interface ScopeControls {
   };
 }
 
+export type FieldFreshness = 'unknown' | 'fresh' | 'stale';
+export type FieldAvailability = 'missing' | 'available' | 'stale';
+
+export interface FieldStatus {
+  storePath: string;
+  observed: boolean;
+  freshness: FieldFreshness;
+  availability: FieldAvailability;
+  lastObservedMonotonic?: number;
+  maxAge?: number | null;
+  source?: Record<string, unknown>;
+}
+
 export interface ServerState {
   revision: number;
+  stateRevision?: number;
+  freshnessRevision?: number;
+  observationSeq?: number;
+  publicStateSeq?: number;
+  transportSeq?: number;
   healthRevision?: number;
   updatedAt: string;
 
@@ -103,6 +122,8 @@ export interface ServerState {
     control: number;
     audio: number;
   };
+
+  fieldStatus?: Record<string, FieldStatus>;
 
   // Extended fields — optional (not all radio models expose these)
   powerLevel?: number;

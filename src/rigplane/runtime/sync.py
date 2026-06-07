@@ -13,9 +13,19 @@ Example::
 """
 
 import asyncio
+import time
+from dataclasses import dataclass
 from typing import Any, Callable, Coroutine, TypeVar
 
 from rigplane.audio import AudioPacket
+from rigplane.core.command_service import (
+    CommandExecutionResult,
+    CommandService,
+    command_intent_from_request,
+    command_response_observation,
+)
+from rigplane.core.state_pipeline_contracts import CommandIntent
+from rigplane.core.state_store import StateStore
 from .ic705 import (
     prepare_ic705_data_profile as _prepare_ic705_data_profile,
     restore_ic705_data_profile as _restore_ic705_data_profile,
@@ -27,6 +37,62 @@ from rigplane.core.types import AudioCodec, Mode, ScopeCompletionPolicy
 T = TypeVar("T")
 
 __all__ = ["IcomRadio"]
+
+
+@dataclass(slots=True)
+class _SyncCommandExecutor:
+    wrapper: "IcomRadio"
+
+    async def execute(self, intent: CommandIntent) -> CommandExecutionResult:
+        radio = self.wrapper._radio
+        params = intent.params
+        if intent.name == "set_freq":
+            await radio.set_freq(int(params["freq_hz"]))
+        elif intent.name == "set_filter":
+            await radio.set_filter(int(params["filter_num"]))
+        elif intent.name == "set_mode":
+            await radio.set_mode(params["mode"], params.get("filter_width"))
+        elif intent.name == "set_data_mode":
+            await radio.set_data_mode(
+                params["value"],
+                receiver=int(params.get("receiver", 0)),
+            )
+        elif intent.name == "set_rf_power":
+            await radio.set_rf_power(int(params["value"]))
+        elif intent.name == "set_ptt":
+            await radio.set_ptt(bool(params["ptt"]))
+        elif intent.name == "set_split":
+            await radio.set_split(bool(params["split"]))
+        elif intent.name == "set_attenuator_level":
+            await radio.set_attenuator_level(
+                int(params["att"]),
+                receiver=int(params.get("receiver", 0)),
+            )
+        elif intent.name == "set_preamp":
+            await radio.set_preamp(
+                int(params["preamp"]),
+                receiver=int(params.get("receiver", 0)),
+            )
+        elif intent.name == "set_squelch":
+            await radio.set_squelch(
+                int(params["squelch"]),
+                receiver=int(params.get("receiver", 0)),
+            )
+        elif intent.name == "set_powerstat":
+            await radio.set_powerstat(bool(params["power_on"]))
+        else:
+            raise ValueError(f"unsupported public API command intent: {intent.name!r}")
+
+        observations = ()
+        if intent.target is not None:
+            observations = (
+                command_response_observation(
+                    intent,
+                    timestamp_monotonic=time.monotonic(),
+                    provider="public_api",
+                ),
+            )
+        return CommandExecutionResult(observations=observations)
 
 
 class IcomRadio:
@@ -71,6 +137,17 @@ class IcomRadio:
             audio_codec=audio_codec,
             audio_sample_rate=audio_sample_rate,
         )
+        # Non-canonical, non-decaying store (MOR-432): the synchronous client
+        # facade has no async event loop running a StateFreshnessService, so
+        # this store never ages fields to STALE. It backs the local
+        # CommandService only and is not a production state-delivery store
+        # (the web/rigctld servers wire and drive freshness over their own
+        # canonical stores).
+        self._state_store = StateStore()
+        self._command_service = CommandService(
+            executor=_SyncCommandExecutor(self),
+            state_store=self._state_store,
+        )
 
     def _run(self, coro: Coroutine[Any, Any, T]) -> T:
         """Run a coroutine on the internal event loop."""
@@ -111,7 +188,15 @@ class IcomRadio:
 
     def set_freq(self, freq_hz: int) -> None:
         """Set the operating frequency in Hz."""
-        self._run(self._radio.set_freq(freq_hz))
+        self._run(
+            self._command_service.execute(
+                command_intent_from_request(
+                    "set_freq",
+                    {"freq": freq_hz, "receiver": 0},
+                    source="public_api",
+                )
+            )
+        )
 
     # Backward-compat aliases
     get_frequency = get_freq
@@ -135,11 +220,28 @@ class IcomRadio:
 
     def set_filter(self, filter_width: int) -> None:
         """Set filter number (1-3) while keeping current mode."""
-        self._run(self._radio.set_filter(filter_width))
+        self._run(
+            self._command_service.execute(
+                command_intent_from_request(
+                    "set_filter",
+                    {"filter_num": filter_width, "receiver": 0},
+                    source="public_api",
+                )
+            )
+        )
 
     def set_mode(self, mode: str | Mode, filter_width: int | None = None) -> None:
         """Set the operating mode."""
-        self._run(self._radio.set_mode(mode, filter_width))
+        mode_name = mode.name if isinstance(mode, Mode) else str(mode)
+        self._run(
+            self._command_service.execute(
+                command_intent_from_request(
+                    "set_mode",
+                    {"mode": mode_name, "filter_width": filter_width, "receiver": 0},
+                    source="public_api",
+                )
+            )
+        )
 
     def get_data_mode(self) -> bool:
         """Read whether DATA mode is enabled."""
@@ -147,7 +249,15 @@ class IcomRadio:
 
     def set_data_mode(self, on: int | bool, receiver: int = 0) -> None:
         """Set DATA mode for the selected receiver."""
-        self._run(self._radio.set_data_mode(on, receiver=receiver))
+        self._run(
+            self._command_service.execute(
+                command_intent_from_request(
+                    "set_data_mode",
+                    {"value": on, "receiver": receiver},
+                    source="public_api",
+                )
+            )
+        )
 
     # ------------------------------------------------------------------
     # Power
@@ -167,7 +277,15 @@ class IcomRadio:
             raise AttributeError(
                 "set_rf_power requires a radio that implements PowerControlCapable"
             )
-        self._run(self._radio.set_rf_power(level))
+        self._run(
+            self._command_service.execute(
+                command_intent_from_request(
+                    "set_rf_power",
+                    {"value": level},
+                    source="public_api",
+                )
+            )
+        )
 
     # Backward-compat aliases
     get_power = get_rf_power
@@ -229,7 +347,15 @@ class IcomRadio:
 
     def set_ptt(self, on: bool) -> None:
         """Enable or disable PTT."""
-        self._run(self._radio.set_ptt(on))
+        self._run(
+            self._command_service.execute(
+                command_intent_from_request(
+                    "set_ptt",
+                    {"on": on},
+                    source="public_api",
+                )
+            )
+        )
 
     # ------------------------------------------------------------------
     # VFO / Split
@@ -258,7 +384,15 @@ class IcomRadio:
 
     def set_split(self, on: bool) -> None:
         """Enable or disable split mode."""
-        self._run(self._radio.set_split(on))
+        self._run(
+            self._command_service.execute(
+                command_intent_from_request(
+                    "set_split",
+                    {"on": on},
+                    source="public_api",
+                )
+            )
+        )
 
     def get_split(self) -> bool:
         """Read split mode state."""
@@ -278,7 +412,15 @@ class IcomRadio:
 
     def set_attenuator_level(self, db: int) -> None:
         """Set attenuator level in dB."""
-        self._run(self._radio.set_attenuator_level(db))
+        self._run(
+            self._command_service.execute(
+                command_intent_from_request(
+                    "set_attenuator_level",
+                    {"db": db, "receiver": 0},
+                    source="public_api",
+                )
+            )
+        )
 
     def set_attenuator(self, on: bool) -> None:
         """Enable or disable the attenuator."""
@@ -290,7 +432,15 @@ class IcomRadio:
 
     def set_preamp(self, level: int = 1) -> None:
         """Set preamp level (0=off, 1=PREAMP1, 2=PREAMP2)."""
-        self._run(self._radio.set_preamp(level))
+        self._run(
+            self._command_service.execute(
+                command_intent_from_request(
+                    "set_preamp",
+                    {"level": level, "receiver": 0},
+                    source="public_api",
+                )
+            )
+        )
 
     def get_digisel(self) -> bool:
         """Read DIGI-SEL status."""
@@ -302,7 +452,15 @@ class IcomRadio:
 
     def set_squelch(self, level: int, receiver: int = 0) -> None:
         """Set squelch level (0-255, 0=open)."""
-        self._run(self._radio.set_squelch(level, receiver=receiver))
+        self._run(
+            self._command_service.execute(
+                command_intent_from_request(
+                    "set_squelch",
+                    {"level": level, "receiver": receiver},
+                    source="public_api",
+                )
+            )
+        )
 
     def get_data_off_mod_input(self) -> int:
         """Read the Data Off modulation input source."""
@@ -401,7 +559,15 @@ class IcomRadio:
             raise AttributeError(
                 "power_control requires a radio that implements PowerControlCapable"
             )
-        self._run(self._radio.set_powerstat(on))
+        self._run(
+            self._command_service.execute(
+                command_intent_from_request(
+                    "set_powerstat",
+                    {"on": on},
+                    source="public_api",
+                )
+            )
+        )
 
     # ------------------------------------------------------------------
     # Scope

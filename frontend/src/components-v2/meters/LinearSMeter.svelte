@@ -131,7 +131,11 @@
   const TOTAL_HEIGHT  = $derived(TRACK_Y + TRACK_H + SCALE_LABEL_Y);
 
   // ── Smoother ────────────────────────────────────────────────────────────────
-  const smoother = createSmoother(0.06, 0.25);
+  // MOR-481: keep the fast attack (0.06) but shorten the release τ to ~100 ms
+  // so the bar fill tracks the (raw) numeric readout instead of lagging it on
+  // downward steps. The previous 0.25 (~250 ms) release was visibly behind the
+  // number; AmberSmeter already uses a comparably snappy 0.15 release.
+  const smoother = createSmoother(0.06, 0.1);
 
   $effect(() => {
     smoother.update(rawToSegments(value));

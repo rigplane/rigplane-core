@@ -47,8 +47,10 @@ from typing import (
     AsyncIterator,
     Awaitable,
     Callable,
+    Iterable,
     Literal,
     Protocol,
+    Sequence,
     runtime_checkable,
 )
 
@@ -57,16 +59,10 @@ from .types import AudioCodec, BreakInMode, Mode
 
 if TYPE_CHECKING:
     from ._state_cache import StateCache
+    from .acquisition_scheduler import AcquisitionPriority, EnsureFreshResult
+    from .state_pipeline_contracts import FieldPath, Observation
+    from .state_store import StateStore
     from rigplane.audio_bus import AudioBus
-
-    # ``_FallbackRigState`` actually lives in ``rigctld.handler`` and is
-    # re-exported through ``rigctld.routing``'s TYPE_CHECKING namespace; a
-    # single import edge keeps the import-linter exemption count to one
-    # per contract.
-    from rigplane.rigctld.routing import (  # type: ignore[attr-defined]  # noqa: TID251
-        RigctldRouting,
-        _FallbackRigState,
-    )
     from rigplane.runtime._poller_types import CommandQueue
     from rigplane.scope import ScopeFrame
     from .types import BandStackRegister, MemoryChannel, ScopeFixedEdge
@@ -84,6 +80,8 @@ __all__ = [
     "TransceiverBankCapable",
     "VfoSlotCapable",
     "StateCacheCapable",
+    "StateModelCapable",
+    "StateModelService",
     "RecoverableConnection",
     "AdvancedControlCapable",
     "DspControlCapable",
@@ -95,11 +93,16 @@ __all__ = [
     "LevelsCapable",
     "MetersCapable",
     "PowerControlCapable",
+    "RigctldFallbackCache",
     "RigctldRoutable",
+    "RigctldRoutingStrategy",
     "SplitCapable",
     "StateNotifyCapable",
+    "ObservationPollable",
+    "ObservationPoller",
     "StatePollable",
     "StatePoller",
+    "StateStoreCapable",
     "RitXitCapable",
     "TransceiverStatusCapable",
     "UsbAudioCapable",
@@ -580,15 +583,168 @@ class StatePollable(Protocol):
 
 
 @runtime_checkable
+class ObservationPoller(Protocol):
+    """Coroutine-driven request-response observation poller."""
+
+    async def start(self) -> None:
+        """Start the polling loops."""
+        ...
+
+    async def stop(self) -> None:
+        """Stop the polling loops and wait for them to finish."""
+        ...
+
+
+@runtime_checkable
+class ObservationPollable(Protocol):
+    """Radio that can emit backend-neutral observations from poll reads."""
+
+    def create_observation_poller(
+        self,
+        *,
+        callback: Callable[[Sequence["Observation"]], None],
+        command_queue: "CommandQueue | None" = None,
+    ) -> ObservationPoller:
+        """Construct an observation poller bound to this radio."""
+        ...
+
+
+@runtime_checkable
+class StateModelService(Protocol):
+    """Service capable of requesting fresh StateStore-backed fields.
+
+    ``ensure_fresh`` is a **synchronous, fire-and-queue** contract: it is a
+    plain (non-``async``) method and callers MUST NOT ``await`` it. See the
+    method docstring for the precise await/timeout semantics. Implementations
+    that need to schedule backend reads do so by enqueueing an
+    :class:`~rigplane.core.acquisition_scheduler.AcquisitionRequest`; the
+    backend executor runs later on a separate poller loop. A conforming
+    implementation never blocks the caller waiting for the read to complete.
+    """
+
+    def ensure_fresh(
+        self,
+        paths: FieldPath | str | Iterable[FieldPath | str],
+        *,
+        max_age: float,
+        priority: AcquisitionPriority | str,
+        reason: str,
+        timeout: float | None = None,
+    ) -> EnsureFreshResult:
+        """Request freshness for ``paths`` and return immediately (no await).
+
+        Contract (callers depend on every clause):
+
+        - **Synchronous / non-blocking.** This is a regular method, not a
+          coroutine. It returns synchronously and does NOT ``await`` the
+          acquisition. If a field is already fresh it is returned inline
+          (``status == FRESH``); otherwise the request is *enqueued*
+          (``status == QUEUED``/``DEFERRED``) or rejected as
+          ``UNAVAILABLE`` — in none of these cases has a backend read yet
+          completed.
+        - **Fire-and-queue.** A non-``FRESH`` result means acquisition has
+          only been *scheduled*. The actual backend read is driven later by
+          a separate async poller loop (e.g. the web radio poller draining
+          ``scheduler.pending_requests()`` through the backend executor).
+        - **``timeout`` governs the backend executor, not a caller await.**
+          It is carried on the enqueued ``AcquisitionRequest.timeout`` and is
+          interpreted by the executor/poller as a deadline for the in-flight
+          backend read (after which the request is expired and a failure is
+          recorded). It is NOT a budget for any await inside this call —
+          there is no such await.
+        - **Callers must handle "not yet fresh".** Because freshness is not
+          guaranteed on return, callers re-project the StateStore on the next
+          observation and, on a miss, fall back to their own readback or
+          surface unavailability (rigctld returns the value once observed, or
+          ``EIO``/``ENIMPL`` per command). Do not assume the field is fresh
+          immediately after this returns.
+        """
+        ...
+
+
+@runtime_checkable
+class StateStoreCapable(Protocol):
+    """Radio exposes the canonical StateStore through a public capability."""
+
+    @property
+    def state_store(self) -> "StateStore":
+        """Canonical confirmed-observation store for runtime state ingress."""
+        ...
+
+
+@runtime_checkable
+class StateModelCapable(StateStoreCapable, Protocol):
+    """Radio exposes StateStore-backed acquisition through a public capability."""
+
+    @property
+    def state_model_service(self) -> StateModelService | None:
+        """Optional service for StateStore freshness/acquisition requests."""
+        ...
+
+
+@runtime_checkable
+class RigctldFallbackCache(Protocol):
+    """Neutral contract for the rigctld handler's fallback meter/level cache.
+
+    A routing strategy (see :class:`RigctldRoutingStrategy`) is handed this
+    object so it can remember the last-known meter/level values it read,
+    letting the rigctld handler answer subsequent queries from cache when
+    the radio cannot. ``core`` only passes the cache through to the strategy
+    and never inspects it; this Protocol captures the structural write
+    surface a strategy relies on so the contract stays in ``core`` without
+    naming the rigctld layer's concrete cache type.
+
+    The shipping :class:`~rigplane.rigctld.handler._FallbackRigState`
+    structurally satisfies this Protocol.
+    """
+
+    def update_s_meter(self, raw: int) -> None:
+        """Record the last-known raw S-meter reading."""
+        ...
+
+    def update_rf_power(self, value: float) -> None:
+        """Record the last-known normalised RF-power reading."""
+        ...
+
+    def update_swr(self, value: float) -> None:
+        """Record the last-known SWR reading."""
+        ...
+
+
+@runtime_checkable
+class RigctldRoutingStrategy(Protocol):
+    """Neutral contract for a vendor-specific rigctld command-routing strategy.
+
+    Captures the get/set level, get/set func, ``dump_state``, and
+    ``get_info`` surface that the rigctld handler drives, without ``core``
+    naming the rigctld layer's :class:`~rigplane.rigctld.contract.RigctldResponse`
+    type. The response-bearing methods are typed :class:`~typing.Any`
+    because the concrete response object is a rigctld-layer type; the
+    rigctld handler narrows it back to its own contract.
+
+    The shipping :class:`~rigplane.rigctld.routing.RigctldRouting` Protocol
+    (and its implementations) structurally satisfy this contract.
+    """
+
+    async def get_level(self, level: str, *, vfo: str | None = None) -> Any: ...
+    async def set_level(
+        self, level: str, value: float, *, vfo: str | None = None
+    ) -> Any: ...
+    async def get_func(self, func: str, *, vfo: str | None = None) -> Any: ...
+    async def set_func(self, func: str, on: bool, *, vfo: str | None = None) -> Any: ...
+    def dump_state(self) -> list[str]: ...
+    def get_info(self) -> str: ...
+
+
+@runtime_checkable
 class RigctldRoutable(Protocol):
     """Radio that provides a custom rigctld command-routing strategy.
 
     The rigctld TCP server's handler ships with a built-in default
     routing that works for Icom CI-V radios. Backends with significantly
     different command semantics (Yaesu CAT today; future Kenwood TS-590
-    or other vendors) expose their own
-    :class:`~rigplane.rigctld.routing.RigctldRouting` implementation via
-    this method.
+    or other vendors) expose their own :class:`RigctldRoutingStrategy`
+    implementation via this method.
 
     Consumers (rigctld handler) check this with ``isinstance`` and pick
     up the vendor-specific routing without importing concrete backend
@@ -602,21 +758,21 @@ class RigctldRoutable(Protocol):
 
     def rigctld_routing(
         self,
-        cache: "_FallbackRigState",
+        cache: RigctldFallbackCache,
         max_power_w: float = 100.0,
-    ) -> "RigctldRouting":
-        """Construct a :class:`RigctldRouting` bound to this radio.
+    ) -> RigctldRoutingStrategy:
+        """Construct a :class:`RigctldRoutingStrategy` bound to this radio.
 
         Args:
-            cache: Shared :class:`_FallbackRigState` cache used by the
+            cache: Shared :class:`RigctldFallbackCache` used by the
                 rigctld handler to remember last-known meter/level
                 values when the radio cannot answer.
             max_power_w: Rated maximum TX power in watts; used to scale
                 normalised RFPOWER readings (defaults to 100 W).
 
         Returns:
-            A :class:`RigctldRouting` ready to serve get/set level,
-            get/set func, ``dump_state``, and ``get_info`` calls.
+            A :class:`RigctldRoutingStrategy` ready to serve get/set
+            level, get/set func, ``dump_state``, and ``get_info`` calls.
         """
         ...
 
@@ -778,8 +934,21 @@ class CivCommandCapable(Protocol):
         data: bytes | None = None,
         *,
         wait_response: bool = True,
+        priority: Any = ...,
+        wait_dispatch: bool = True,
     ) -> Any:
-        """Send a CI-V command through the active backend transport."""
+        """Send a CI-V command through the active backend transport.
+
+        ``priority`` selects the Commander lane priority (``Priority`` enum,
+        typed ``Any`` here to keep ``core`` free of the ``commands`` import).
+        Background pollers pass ``Priority.BACKGROUND``; user commands keep
+        the implementation's NORMAL default (MOR-497i).
+
+        ``wait_dispatch`` controls whether the caller awaits the Commander
+        dispatching the frame.  Defaults to True (blocking, user-command
+        contract); background pollers pass False so the poll burst is
+        fire-and-forget and does not park the poll loop (MOR-497ii).
+        """
         ...
 
 

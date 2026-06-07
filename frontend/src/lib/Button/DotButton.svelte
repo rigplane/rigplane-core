@@ -12,7 +12,13 @@
     compact = false,
     color = 'cyan',
     glow = 'color',
+    title = null,
+    shortcutHint = null,
     onclick,
+    onpointerdown,
+    onpointerup,
+    onpointercancel,
+    onpointerleave,
     children
   }: Props = $props();
 </script>
@@ -24,7 +30,13 @@
   indicatorStyle="dot"
   indicatorColor={color}
   {glow}
+  {title}
+  {shortcutHint}
   {onclick}
+  {onpointerdown}
+  {onpointerup}
+  {onpointercancel}
+  {onpointerleave}
 >
   {@render children?.()}
 </ControlButton>

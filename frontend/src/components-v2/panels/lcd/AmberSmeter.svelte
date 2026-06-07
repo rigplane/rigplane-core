@@ -2,6 +2,7 @@
   import { onMount } from 'svelte';
   import { createSmoother } from '$lib/utils/smoothing.svelte';
   import { getCalibrationPoints, getS9Raw, rawToSUnit, rawToDbm } from '../../meters/smeter-scale';
+  import { formatPowerWatts, formatSwr, formatAlc, formatCompDb } from '../meter-utils';
 
   type MeterSource = 'S' | 'PO' | 'SWR' | 'ALC' | 'COMP';
 
@@ -67,12 +68,15 @@
 
   let filledSegs = $derived(Math.round(smoother.value));
 
+  // Sub-readouts use the calibrated piecewise converters from meter-utils
+  // (shared with the desktop meters) instead of crude raw/255 maps, so the
+  // LCD agrees with the rest of the UI (MOR-483 part 2).
   let sReadout = $derived.by(() => {
     if (source === 'S') return { label: rawToSUnit(value), sub: rawToDbm(value) + ' dBm' };
-    if (source === 'PO') return { label: 'PO', sub: Math.round(value / 255 * 100) + 'W' };
-    if (source === 'SWR') return { label: 'SWR', sub: (1.0 + value / 255 * 8.9).toFixed(1) };
-    if (source === 'ALC') return { label: 'ALC', sub: Math.round(value / 255 * 100) + '%' };
-    if (source === 'COMP') return { label: 'COMP', sub: Math.round(value / 255 * 20) + 'dB' };
+    if (source === 'PO') return { label: 'PO', sub: formatPowerWatts(value) };
+    if (source === 'SWR') return { label: 'SWR', sub: formatSwr(value) };
+    if (source === 'ALC') return { label: 'ALC', sub: formatAlc(value) };
+    if (source === 'COMP') return { label: 'COMP', sub: formatCompDb(value) };
     return { label: rawToSUnit(value), sub: rawToDbm(value) + ' dBm' };
   });
 </script>

@@ -733,8 +733,8 @@
         <CollapsiblePanel title="TX" panelId="m-tx" collapsible={false}>
           <div class="m-tx-compact">
             <!-- Power readout (tap → power modal) -->
-            <button type="button" class="m-tx-info" onclick={() => (powerModalOpen = true)}>
-              <span class="m-tx-power-value">{formatPower(tx.rfPower)}</span>
+            <button type="button" class="m-tx-info" disabled={!tx.rfPowerAvailable} onclick={() => (powerModalOpen = true)}>
+              <span class="m-tx-power-value">{tx.rfPowerAvailable ? formatPower(tx.rfPower) : '—'}</span>
               {#if tx.txActive || pttActive}
                 <span class="m-tx-swr-value">SWR {meter.swr > 0 ? (meter.swr / 10).toFixed(1) : '—'}</span>
               {/if}
@@ -750,6 +750,7 @@
               ontouchcancel={atuTouchEnd}
               onmousedown={atuTouchStart}
               onmouseup={atuTouchEnd}
+              disabled={!tx.atuAvailable}
             >
               ATU
             </button>
@@ -908,6 +909,7 @@
             accentColor="var(--v2-accent-red)"
             onChange={txHandlers.onRfPowerChange}
             variant="hardware-illuminated"
+            disabled={!tx.rfPowerAvailable}
           />
   </BottomSheet>
 

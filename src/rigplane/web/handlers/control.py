@@ -6,11 +6,18 @@ import asyncio
 import logging
 import time
 from collections.abc import Awaitable, Callable
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, ClassVar, cast
 
 from ..._bounded_queue import BoundedQueue
+from ...core.command_service import (
+    CommandExecutionResult,
+    CommandService,
+    command_intent_from_request,
+)
+from ...core.state_pipeline_contracts import CommandIntent, CommandSource
+from ...core.state_store import StateStore
 from ...profiles import RadioProfile
-from ...radio_state import RadioState
 from ..protocol import (  # noqa: TID251
     decode_json,
     encode_json,
@@ -136,7 +143,6 @@ from ..radio_poller import (  # noqa: TID251
     Speak,
 )
 from ..runtime_helpers import (  # noqa: TID251
-    build_public_state_payload,
     radio_ready,
     runtime_capabilities,
 )
@@ -169,6 +175,62 @@ __all__ = ["ControlHandler"]
 
 logger = logging.getLogger(__name__)
 _MAX_CW_TEXT_CHARS = 512
+
+
+@dataclass(slots=True)
+class _ControlCommandExecutor:
+    handler: "ControlHandler"
+
+    async def execute(self, intent: CommandIntent) -> CommandExecutionResult:
+        params = dict(intent.params)
+        params.pop("_control_server", None)
+        result = await self.handler._enqueue_legacy_command(  # noqa: SLF001
+            intent.name,
+            params,
+            command_id=intent.id,
+            source=intent.source,
+            command_service=self.handler._command_service,  # noqa: SLF001
+        )
+        return CommandExecutionResult(details=result)
+
+
+@dataclass(frozen=True, slots=True)
+class _CommandMetadataQueue:
+    queue: Any
+    command_id: str
+    source: CommandSource
+    session_id: str | None
+    command_service: CommandService
+
+    def put(self, command: Any) -> None:
+        try:
+            self.queue.put(
+                command,
+                command_id=self.command_id,
+                source=self.source,
+                session_id=self.session_id,
+                command_service=self.command_service,
+            )
+        except TypeError:
+            self.queue.put(command)
+
+    def put_ordered(
+        self,
+        command: Any,
+        *,
+        future: asyncio.Future[None] | None = None,
+    ) -> None:
+        try:
+            self.queue.put_ordered(
+                command,
+                future=future,
+                command_id=self.command_id,
+                source=self.source,
+                session_id=self.session_id,
+                command_service=self.command_service,
+            )
+        except TypeError:
+            self.queue.put_ordered(command, future=future)
 
 
 class ControlHandler:
@@ -372,6 +434,7 @@ class ControlHandler:
         radio_model: str,
         server: Any = None,
         read_only: bool = False,
+        session_id: str | None = None,
     ) -> None:
         self._ws = ws
         self._radio = radio
@@ -379,6 +442,9 @@ class ControlHandler:
         self._radio_model = radio_model
         self._server = server
         self._read_only = read_only
+        self._session_id = (
+            session_id if session_id is not None else f"websocket-{time.monotonic_ns()}"
+        )
         self._subscribed_streams: set[str] = set()
         self._event_queue: BoundedQueue[dict[str, Any]] = BoundedQueue(
             maxsize=100,
@@ -389,6 +455,23 @@ class ControlHandler:
         # Minimum interval between same command (seconds).
         # Continuous slider/knob drag sends dozens of set_* per second.
         self._CMD_MIN_INTERVAL = 0.05  # 50ms = max 20 commands/sec per client
+        shared_service = getattr(server, "command_service", None)
+        if isinstance(shared_service, CommandService):
+            self._command_service = shared_service
+        else:
+            state_store = getattr(server, "command_state_store", None)
+            if not isinstance(state_store, StateStore):
+                # Non-canonical, non-decaying fallback (MOR-432): only reached
+                # when the server exposes neither a shared CommandService nor a
+                # command_state_store. The production control channel uses the
+                # server's shared service/store, over which the web server
+                # drives a StateFreshnessService; this bare store has no such
+                # driver and never ages fields to STALE.
+                state_store = StateStore()
+            self._command_service = CommandService(
+                executor=_ControlCommandExecutor(self),
+                state_store=state_store,
+            )
 
     async def run(self) -> None:
         """Run the control channel lifecycle."""
@@ -400,17 +483,15 @@ class ControlHandler:
         # Sent directly (not via event queue) so it arrives right after hello
         # and before the recv loop — no interleaving with command responses.
         if self._server is not None:
+            self._server.register_control_event_queue(self._event_queue)
             try:
-                initial_state = self._server.build_public_state()
-                rev = self._server._delta_encoder.revision
                 msg = {
                     "type": "state_update",
-                    "data": {"type": "full", "data": initial_state, "revision": rev},
+                    "data": self._server.build_state_update_envelope(force_full=True),
                 }
                 await self._ws.send_text(encode_json(msg))
             except Exception:
                 logger.debug("control: failed to send initial state", exc_info=True)
-            self._server.register_control_event_queue(self._event_queue)
         event_task: asyncio.Task[None] = asyncio.create_task(self._event_sender_loop())
         try:
             while True:
@@ -713,44 +794,17 @@ class ControlHandler:
                 self._subscribed_streams.discard(str(s))
 
     async def _send_state_snapshot(self) -> None:
-        payload: dict[str, Any] | None = None
-        builder = (
-            getattr(self._server, "build_public_state", None)
-            if self._server is not None
-            else None
-        )
-        if callable(builder):
-            try:
-                payload = cast(dict[str, Any], builder())
-            except Exception as exc:
-                logger.debug("control: public state build failed: %s", exc)
-
-        if payload is None:
-            raw_radio_state = (
-                getattr(self._radio, "radio_state", None)
-                if self._radio is not None
-                else None
-            )
-            radio_state = (
-                raw_radio_state
-                if isinstance(raw_radio_state, RadioState)
-                else RadioState()
-            )
-            raw_profile = (
-                getattr(self._radio, "profile", None)
-                if self._radio is not None
-                else None
-            )
-            if isinstance(raw_profile, RadioProfile):
-                receiver_count = raw_profile.receiver_count
-            else:
-                receiver_count = 2 if "dual_rx" in self._capabilities() else 1
-            payload = build_public_state_payload(
-                radio_state,
-                radio=self._radio,
-                revision=0,
-                receiver_count=receiver_count,
-            )
+        # The initial WS full state has a single canonical shape: the
+        # snapshot-based envelope from the server's StateStore. When a server is
+        # attached (production), that envelope is authoritative.
+        payload: dict[str, Any]
+        if self._server is not None:
+            payload = self._server.build_state_update_envelope(force_full=True)
+        else:
+            # Server-less handler-test path only: no StateStore is available, so
+            # emit a minimal empty full-state envelope. Production always takes
+            # the branch above; this fallback never runs with a live server.
+            payload = {"type": "full", "data": {}}
 
         msg_out = {"type": "state_update", "data": payload}
         await self._ws.send_text(encode_json(msg_out))
@@ -824,7 +878,12 @@ class ControlHandler:
             return
 
         try:
-            result = await self._enqueue_command(name, params)
+            result = await self._enqueue_command(
+                name,
+                params,
+                command_id=str(cmd_id),
+                source="websocket",
+            )
             await self._ws.send_text(
                 encode_json(
                     {
@@ -856,7 +915,34 @@ class ControlHandler:
             )
 
     async def _enqueue_command(
-        self, name: str, params: dict[str, Any]
+        self,
+        name: str,
+        params: dict[str, Any],
+        *,
+        command_id: str | None = None,
+        source: CommandSource = "websocket",
+    ) -> dict[str, Any]:
+        intent_params = dict(params)
+        if self._server is not None:
+            intent_params["_control_server"] = self._server
+        intent = command_intent_from_request(
+            name,
+            intent_params,
+            source=source,
+            command_id=command_id,
+            session_id=self._session_id if source == "websocket" else None,
+        )
+        result = await self._command_service.execute(intent)
+        return dict(result.executor_result.details or {})
+
+    async def _enqueue_legacy_command(
+        self,
+        name: str,
+        params: dict[str, Any],
+        *,
+        command_id: str,
+        source: CommandSource,
+        command_service: CommandService,
     ) -> dict[str, Any]:
         """Build a Command dataclass, enqueue it, and return the ack result.
 
@@ -877,6 +963,15 @@ class ControlHandler:
         q = self._server.command_queue if self._server is not None else None
         if q is None:
             raise RuntimeError("no command queue available")
+        q = _CommandMetadataQueue(
+            q,
+            command_id=command_id,
+            source=source,
+            session_id=None
+            if params.get("session_id") is None
+            else str(params["session_id"]),
+            command_service=command_service,
+        )
 
         # Dispatch to group handlers
         for handler in (
@@ -1339,8 +1434,17 @@ class ControlHandler:
                 mode = str(params["mode"])
                 rx = int(params.get("receiver", 0))
                 self._ensure_receiver_supported(rx)
-                q.put(SetMode(mode, receiver=rx))
-                return {"mode": mode, "receiver": rx}
+                # MOR-495: an optional filter (1-3) recalls the destination
+                # mode's remembered filter, mirroring the radio front panel.
+                # Accept either `filter` or `filter_num`; absent → mode-only
+                # (radio applies its mode-default filter).
+                fil_raw = params.get("filter", params.get("filter_num"))
+                fil_num = None if fil_raw is None else int(fil_raw)
+                q.put(SetMode(mode, filter_width=fil_num, receiver=rx))
+                result: dict[str, Any] = {"mode": mode, "receiver": rx}
+                if fil_num is not None:
+                    result["filter"] = fil_num
+                return result
             case "set_filter":
                 fil_str = str(params.get("filter", "FIL1"))
                 fil_num = int(fil_str[-1]) if fil_str[-1].isdigit() else 1
@@ -2106,7 +2210,9 @@ class ControlHandler:
                     )
                 from ...types import MemoryChannel
 
-                mem = MemoryChannel(**params)
+                mem_params = dict(params)
+                mem_params.pop("session_id", None)
+                mem = MemoryChannel(**mem_params)
                 q.put(SetMemoryContents(mem))
                 return {"channel": mem.channel}
             case "set_bsr":
@@ -2117,7 +2223,9 @@ class ControlHandler:
                     )
                 from ...types import BandStackRegister
 
-                bsr = BandStackRegister(**params)
+                bsr_params = dict(params)
+                bsr_params.pop("session_id", None)
+                bsr = BandStackRegister(**bsr_params)
                 q.put(SetBsr(bsr))
                 return {"band": bsr.band, "register": bsr.register}
             case _:

@@ -69,6 +69,8 @@ export default defineConfig({
           exclude: [
             'src/components-v2/wiring/__tests__/keyboard-wiring.test.ts',
             'src/components-v2/wiring/__tests__/vfo-wiring.test.ts',
+            'src/components-v2/wiring/__tests__/dsp-nr-level.test.ts',
+            'src/components-v2/wiring/__tests__/dsp-nb-depth.test.ts',
             'src/components-v2/wiring/__tests__/focus-mode-race.test.ts',
             'src/components-v2/vfo/__tests__/VfoOps.test.ts',
             'src/components-v2/panels/__tests__/AudioRoutingControl.test.ts',
@@ -76,6 +78,9 @@ export default defineConfig({
             'src/lib/runtime/__tests__/frontend-runtime.test.ts',
             'src/lib/audio/__tests__/audio-manager.test.ts',
             'src/lib/radio/pending-focus.test.ts',
+            'src/lib/i18n/__tests__/runtime.test.ts',
+            'src/lib/i18n/__tests__/plural.test.ts',
+            'src/lib/i18n/__tests__/pseudo.test.ts',
             // *.component(.svelte).test.ts mount real Svelte components and
             // depend on store mocks that vary across the suite. Under
             // ``isolate: false`` sibling tests' inconsistent ``vi.mock(...)``
@@ -105,6 +110,8 @@ export default defineConfig({
           include: [
             'src/components-v2/wiring/__tests__/keyboard-wiring.test.ts',
             'src/components-v2/wiring/__tests__/vfo-wiring.test.ts',
+            'src/components-v2/wiring/__tests__/dsp-nr-level.test.ts',
+            'src/components-v2/wiring/__tests__/dsp-nb-depth.test.ts',
             'src/components-v2/wiring/__tests__/focus-mode-race.test.ts',
             'src/components-v2/vfo/__tests__/VfoOps.test.ts',
             'src/components-v2/panels/__tests__/AudioRoutingControl.test.ts',
@@ -112,6 +119,9 @@ export default defineConfig({
             'src/lib/runtime/__tests__/frontend-runtime.test.ts',
             'src/lib/audio/__tests__/audio-manager.test.ts',
             'src/lib/radio/pending-focus.test.ts',
+            'src/lib/i18n/__tests__/runtime.test.ts',
+            'src/lib/i18n/__tests__/plural.test.ts',
+            'src/lib/i18n/__tests__/pseudo.test.ts',
             'src/**/*.component.test.ts',
             'src/**/*.component.svelte.test.ts',
           ],

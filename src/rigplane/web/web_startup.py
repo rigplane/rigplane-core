@@ -12,10 +12,12 @@ from __future__ import annotations
 import asyncio
 import logging
 import sys
+from collections.abc import Sequence
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from ..core.radio_protocol import StatePollable
+from ..core.radio_protocol import ObservationPollable, StatePollable
+from ..core.state_pipeline_contracts import Observation
 from ..radio_state import RadioState
 from ..startup_checks import assert_radio_startup_ready
 from .discovery import DiscoveryResponder, RadioInfo  # noqa: TID251
@@ -84,17 +86,43 @@ async def start_web_server(server: WebServer) -> None:
         reuse_address=True,
         reuse_port=_reuse_port_supported(),
     )
+    server._server_was_running = True
     addr = server._server.sockets[0].getsockname()
     scheme = "https" if ssl_ctx else "http"
     logger.info("web server listening on %s://%s:%d", scheme, addr[0], addr[1])
     if server._radio is not None:
         from ..radio_protocol import StateNotifyCapable
 
-        # --- Request-response state poller (Yaesu CAT et al.) ---
-        if isinstance(server._radio, StatePollable):
+        # --- Request-response observation poller (Yaesu CAT, rigctld client, etc.) ---
+        if isinstance(server._radio, ObservationPollable):
+
+            def _observation_cb(observations: Sequence[Observation]) -> None:
+                for observation in observations:
+                    server.command_service.apply_observation(observation)
+                server.state_diagnostics.record(
+                    "backend_read",
+                    "web.observation_poller",
+                    backend=getattr(server._radio, "backend_id", None),
+                )
+                server._broadcast_state_update()
+
+            server._state_poller = server._radio.create_observation_poller(
+                callback=_observation_cb,
+                command_queue=server._command_queue,
+            )
+            server._spawn(server._state_poller.start())
+            logger.info("observation poller started")
+        # --- Legacy request-response state poller compatibility path ---
+        elif isinstance(server._radio, StatePollable):
 
             def _state_cb(state: RadioState) -> None:
                 server._radio_state = state
+                server.sync_state_store_from_radio_state(state)
+                server.state_diagnostics.record(
+                    "backend_read",
+                    "web.state_poller",
+                    backend=getattr(server._radio, "backend_id", None),
+                )
                 server._broadcast_state_update()
 
             server._state_poller = server._radio.create_state_poller(
@@ -115,6 +143,8 @@ async def start_web_server(server: WebServer) -> None:
                 server._command_queue,
                 on_state_event=server._on_poller_state_event,
                 radio_state=server._radio_state,
+                diagnostics=server.state_diagnostics,
+                state_store=server.command_state_store,
             )
             server._radio_poller.start()
         if _supports_scope_local(server):
@@ -140,6 +170,9 @@ async def start_web_server(server: WebServer) -> None:
             server._config.dx_cluster_port,
             server._config.dx_callsign,
         )
+    server._state_store_freshness_task = asyncio.get_running_loop().create_task(
+        server._state_freshness_service.run(), name="web-state-freshness"
+    )
 
     # Start UDP discovery responder
     if server._config.discovery:
@@ -188,6 +221,13 @@ async def stop_web_server(server: WebServer) -> None:
         except TimeoutError:
             logger.warning("state poller stop timed out")
         server._state_poller = None
+    if server._state_store_freshness_task is not None:
+        server._state_store_freshness_task.cancel()
+        try:
+            await server._state_store_freshness_task
+        except asyncio.CancelledError:
+            pass
+        server._state_store_freshness_task = None
 
     # 2. Stop audio relay (stops AudioBus subscription → stop_audio_rx_opus)
     try:
@@ -254,6 +294,7 @@ async def stop_web_server(server: WebServer) -> None:
         except TimeoutError:
             logger.warning("server.wait_closed() timed out after 2s")
         server._server = None
+    server._server_was_running = False
 
     # 8. Wait for cancelled tasks to finish (with timeout)
     if all_tasks:

@@ -220,6 +220,44 @@ async def test_get_set_mode_roundtrip(connected_radio):
     assert mode == "CW-U"
 
 
+def test_mode_map_hex_codes(radio):
+    """MOR-473: Yaesu MD codes are HEX nibbles, so codes 10-15 are A-F.
+
+    The decimal map silently broke every mode with index >= 10
+    (DATA-FM/FM-N/DATA-U/AM-N/PSK/DATA-FM-N). Codes 1-9 are unchanged
+    (hex == dec).
+    """
+    assert radio._code_to_mode["A"] == "DATA-FM"
+    assert radio._code_to_mode["B"] == "FM-N"
+    assert radio._code_to_mode["C"] == "DATA-U"
+    assert radio._code_to_mode["D"] == "AM-N"
+    assert radio._code_to_mode["E"] == "PSK"
+    assert radio._code_to_mode["F"] == "DATA-FM-N"
+    assert radio._mode_to_code["DATA-FM"] == "A"
+    assert radio._mode_to_code["DATA-U"] == "C"
+    assert radio._mode_to_code["AM-N"] == "D"
+    assert radio._mode_to_code["PSK"] == "E"
+    assert radio._mode_to_code["DATA-FM-N"] == "F"
+
+
+@pytest.mark.asyncio
+async def test_get_mode_data_u(connected_radio):
+    """MOR-473: ``MD0C;`` (hex C = 12) decodes to DATA-U, not UNKNOWN(C)."""
+    connected_radio._transport.query = AsyncMock(return_value="MD0C")
+    mode, _ = await connected_radio.get_mode(receiver=0)
+    assert mode == "DATA-U"
+    assert connected_radio.radio_state.main.mode == "DATA-U"
+
+
+@pytest.mark.asyncio
+async def test_set_mode_data_u(connected_radio):
+    """MOR-473: set_mode("DATA-U") writes the hex code ``MD0C;``."""
+    connected_radio._transport.write = AsyncMock()
+    await connected_radio.set_mode("DATA-U", receiver=0)
+    connected_radio._transport.write.assert_called_once_with("MD0C;")
+    assert connected_radio.radio_state.main.mode == "DATA-U"
+
+
 # ---------------------------------------------------------------------------
 # Power switch (PS)
 # ---------------------------------------------------------------------------
@@ -1153,8 +1191,18 @@ async def test_set_audio_peak_filter_mode_2_raises(connected_radio):
 
 @pytest.mark.asyncio
 async def test_get_sql_type(connected_radio):
-    connected_radio._transport.query = AsyncMock(return_value="CT002")
-    assert await connected_radio.get_sql_type() == 2
+    # MOR-473: the live FTX-1 answers ``CT0;`` with a SINGLE-digit code
+    # ("CT00;"), so the read parse is ``CT0{type};`` (one digit, not two).
+    connected_radio._transport.query = AsyncMock(return_value="CT00")
+    assert await connected_radio.get_sql_type() == 0
+    connected_radio._transport.query.assert_called_once_with("CT0;")
+
+
+@pytest.mark.asyncio
+async def test_get_sql_type_tone(connected_radio):
+    # MOR-473: single-digit "TONE" code (1) parses to int 1.
+    connected_radio._transport.query = AsyncMock(return_value="CT01")
+    assert await connected_radio.get_sql_type() == 1
     connected_radio._transport.query.assert_called_once_with("CT0;")
 
 
@@ -1163,6 +1211,80 @@ async def test_set_sql_type(connected_radio):
     connected_radio._transport.write = AsyncMock()
     await connected_radio.set_sql_type(3)
     connected_radio._transport.write.assert_called_once_with("CT003;")
+
+
+# -- CTCSS tone frequency (CN command, MOR-458) -----------------------------
+
+
+@pytest.mark.asyncio
+async def test_read_ctcss_tone_index_main(connected_radio):
+    """MAIN CTCSS tone index read sends ``CN00;`` and parses ``CN00nnn;``.
+
+    CN P1=0 (MAIN) P2=0 (CTCSS); the answer's P3 (000-049) is the tone-chart
+    index. FTX-1_CAT_OM_ENG_2507.
+    """
+    connected_radio._transport.query = AsyncMock(return_value="CN00008")
+    assert await connected_radio.read_ctcss_tone_index() == 8
+    connected_radio._transport.query.assert_called_once_with("CN00;")
+
+
+@pytest.mark.asyncio
+async def test_read_ctcss_tone_index_is_a_pure_read(connected_radio):
+    """``read_ctcss_tone_index`` must not mutate legacy ``radio_state``.
+
+    Pre-seed an impossible combination and confirm the read leaves the
+    state object identity and tone_freq/tsql_freq untouched (MOR-434 pattern).
+    """
+    connected_radio.radio_state.main.tone_freq = 12345
+    connected_radio.radio_state.main.tsql_freq = 54321
+    state_before = connected_radio.radio_state
+
+    connected_radio._transport.query = AsyncMock(return_value="CN00049")
+    assert await connected_radio.read_ctcss_tone_index() == 49
+    assert connected_radio.radio_state is state_before
+    assert connected_radio.radio_state.main.tone_freq == 12345
+    assert connected_radio.radio_state.main.tsql_freq == 54321
+
+
+@pytest.mark.asyncio
+async def test_get_ctcss_tone_returns_centihz(connected_radio):
+    """``get_ctcss_tone`` delegates to the index read and maps to centiHz.
+
+    Index 8 -> 88.5 Hz -> 8850 centiHz (Icom MOR-451 convention).
+    """
+    connected_radio._transport.query = AsyncMock(return_value="CN00008")
+    assert await connected_radio.get_ctcss_tone() == 8850
+
+
+@pytest.mark.parametrize(
+    ("index", "expected_centihz"),
+    [
+        (0, 6700),  # 67.0 Hz
+        (8, 8850),  # 88.5 Hz (default CTCSS tone)
+        (12, 10000),  # 100.0 Hz
+        (15, 11090),  # 110.9 Hz
+        (25, 15670),  # 156.7 Hz
+        (49, 25410),  # 254.1 Hz (highest standard EIA tone)
+    ],
+)
+def test_ctcss_index_to_centihz_matches_chart(index, expected_centihz):
+    """Spot-check the index -> Hz -> centiHz mapping against the tone chart.
+
+    The 50-tone EIA CTCSS chart is verbatim from FTX-1_CAT_OM_ENG_2507; the
+    centiHz emission matches the Icom convention (round(Hz * 100)).
+    """
+    from rigplane.backends.yaesu_cat.radio import _ctcss_index_to_centihz
+
+    assert _ctcss_index_to_centihz(index) == expected_centihz
+
+
+def test_ctcss_table_has_50_standard_tones():
+    """The FTX-1 CTCSS chart is the standard 50-tone EIA set (indices 0-49)."""
+    from rigplane.backends.yaesu_cat.radio import _CTCSS_TONE_CENTIHZ
+
+    assert len(_CTCSS_TONE_CENTIHZ) == 50
+    assert _CTCSS_TONE_CENTIHZ[0] == 6700
+    assert _CTCSS_TONE_CENTIHZ[49] == 25410
 
 
 # ---------------------------------------------------------------------------

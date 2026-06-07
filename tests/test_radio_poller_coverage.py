@@ -8,6 +8,26 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from rigplane.commands.commander import IcomCommander, Priority
+from rigplane.core.acquisition_scheduler import (
+    AcquisitionScheduler,
+    MeterObservationCoalescer,
+)
+from rigplane.core.state_acquisition_policy import (
+    AcquisitionPolicy,
+    FieldCapability,
+    RadioAcquisitionProfile,
+)
+from rigplane.core.state_pipeline_contracts import FieldPath
+from rigplane.core.state_store import StateStore
+from rigplane.core.types import CivFrame
+from rigplane.core.command_service import (
+    CommandExecutionResult,
+    CommandService,
+    command_intent_from_request,
+)
+from rigplane.core.exceptions import TimeoutError as RigplaneTimeoutError
+from rigplane.core.state_pipeline_contracts import CommandIntent
 from rigplane.exceptions import CommandError
 from rigplane.profiles import resolve_radio_profile
 from rigplane.radio_state import RadioState
@@ -23,6 +43,7 @@ from rigplane.web.radio_poller import (
     RadioPoller,
     SelectVfo,
     SendCiv,
+    SetAfLevel,
     SetAgc,
     SetAttenuator,
     SetDataMode,
@@ -34,15 +55,68 @@ from rigplane.web.radio_poller import (
     SetMode,
     SetNB,
     SetNR,
+    SetPbtInner,
+    SetPbtOuter,
     SetPower,
     SetPreamp,
+    SetRfGain,
     SetScopeEdge,
     SetScopeRbw,
     SetScopeVbw,
+    SetSplit,
+    SetSquelch,
     SwitchScopeReceiver,
     VfoEqualize,
     VfoSwap,
 )
+
+
+class _NoopCommandExecutor:
+    async def execute(self, intent: object) -> CommandExecutionResult:
+        del intent
+        return CommandExecutionResult()
+
+
+class _QueuedAckExecutor:
+    def __init__(self, queue: CommandQueue) -> None:
+        self.queue = queue
+        self.command_service: CommandService | None = None
+
+    async def execute(self, intent: CommandIntent) -> CommandExecutionResult:
+        assert self.command_service is not None
+        if intent.name != "set_freq":
+            raise AssertionError(f"unexpected intent {intent.name!r}")
+        self.queue.put_ordered(
+            SetFreq(
+                int(intent.params["freq_hz"]),
+                receiver=int(intent.params.get("receiver", 0)),
+            ),
+            command_id=intent.id,
+            source=intent.source,
+            session_id=None
+            if intent.params.get("session_id") is None
+            else str(intent.params["session_id"]),
+            command_service=self.command_service,
+        )
+        return CommandExecutionResult(details={"queued": True})
+
+
+class _InjectedAcquisitionExecutor:
+    def __init__(self) -> None:
+        self.calls: list[tuple[object, frozenset[FieldPath]]] = []
+
+    async def execute(
+        self,
+        request: object,
+        *,
+        already_sent_paths: frozenset[FieldPath],
+    ) -> object:
+        self.calls.append((request, already_sent_paths))
+        return SimpleNamespace(
+            sent_paths=tuple(getattr(request, "paths")),
+            failed_paths=(),
+            failure_reason="",
+        )
 
 
 def _make_radio(active: str = "MAIN") -> MagicMock:
@@ -74,6 +148,8 @@ def _make_radio(active: str = "MAIN") -> MagicMock:
     radio.set_preamp = AsyncMock()
     radio.get_preamp = AsyncMock(return_value=0)
     radio.set_agc = AsyncMock()
+    radio.set_pbt_inner = AsyncMock()
+    radio.set_pbt_outer = AsyncMock()
     radio.set_antenna_1 = AsyncMock()
     radio.set_antenna_2 = AsyncMock()
     radio.set_rx_antenna_ant1 = AsyncMock()
@@ -161,10 +237,27 @@ def _make_radio(active: str = "MAIN") -> MagicMock:
     return radio
 
 
+def _acquisition_profile(
+    *paths: FieldPath,
+    policy: AcquisitionPolicy | None = None,
+    provider: str = "icom_civ",
+) -> RadioAcquisitionProfile:
+    acquisition_policy = policy or AcquisitionPolicy(
+        cadence_seconds=1.0,
+        freshness_ttl_seconds=4.0,
+    )
+    return RadioAcquisitionProfile(
+        provider=provider,
+        capabilities=tuple(FieldCapability(path=path, polling=True) for path in paths),
+        default_policy=acquisition_policy,
+    )
+
+
 @pytest.mark.asyncio
-async def test_execute_set_data_mode_updates_sub_receiver_state_and_sends_wire_value() -> (
-    None
-):
+async def test_execute_set_data_mode_sends_wire_value_and_emits_event() -> None:
+    # data_mode is observation-backed (0x1A 0x06); the legacy RadioState mirror
+    # was removed (MOR-437). The poller must still send the wire value and emit
+    # the change event, but it must not write the RadioState mirror.
     events: list[tuple[str, dict]] = []
     radio = _make_radio(active="MAIN")
     state = RadioState()
@@ -180,8 +273,354 @@ async def test_execute_set_data_mode_updates_sub_receiver_state_and_sends_wire_v
 
     radio.set_data_mode.assert_awaited_once_with(3, receiver=1)
     assert state.main.data_mode == 0
-    assert state.sub.data_mode == 3
+    assert state.sub.data_mode == 0  # no legacy mirror write
     assert ("data_mode_changed", {"mode": 3, "receiver": 1}) in events
+
+
+@pytest.mark.asyncio
+async def test_scheduler_due_request_sends_supported_civ_query_once() -> None:
+    radio = _make_radio(active="MAIN")
+    path = FieldPath.receiver("main", "meters", "s_meter")
+    scheduler = AcquisitionScheduler(profile=_acquisition_profile(path))
+    radio._acquisition_scheduler = scheduler
+    poller = RadioPoller(radio, CommandQueue(), radio_state=RadioState())
+
+    await poller._send_query()  # noqa: SLF001
+    await poller._send_query()  # noqa: SLF001
+
+    radio.send_civ.assert_awaited_once_with(
+        0x29,
+        sub=None,
+        data=b"\x00\x15\x02",
+        wait_response=False,
+        priority=Priority.BACKGROUND,
+        wait_dispatch=False,
+    )
+    assert scheduler.pending_requests()[0].paths == (path,)
+
+
+@pytest.mark.asyncio
+async def test_x6200_scheduler_due_request_sends_civ_query_from_profile() -> None:
+    radio = _make_radio(active="MAIN")
+    profile = resolve_radio_profile(model="X6200")
+    assert profile.state_acquisition is not None
+    radio.profile = profile
+    radio.model = profile.model
+    radio.capabilities = set(profile.capabilities)
+    scheduler = AcquisitionScheduler(profile=profile.state_acquisition)
+    radio._acquisition_scheduler = scheduler
+    poller = RadioPoller(radio, CommandQueue(), radio_state=RadioState())
+
+    await poller._send_query()  # noqa: SLF001
+
+    assert radio.send_civ.await_count == 4
+    radio.send_civ.assert_any_await(
+        0x25,
+        sub=None,
+        data=b"\x00",
+        wait_response=False,
+        priority=Priority.BACKGROUND,
+        wait_dispatch=False,
+    )
+    radio.send_civ.assert_any_await(
+        0x26,
+        sub=None,
+        data=b"\x00",
+        wait_response=False,
+        priority=Priority.BACKGROUND,
+        wait_dispatch=False,
+    )
+    radio.send_civ.assert_any_await(
+        0x29,
+        sub=None,
+        data=b"\x00\x15\x02",
+        wait_response=False,
+        priority=Priority.BACKGROUND,
+        wait_dispatch=False,
+    )
+    radio.send_civ.assert_any_await(
+        0x15,
+        sub=0x11,
+        data=b"",
+        wait_response=False,
+        priority=Priority.BACKGROUND,
+        wait_dispatch=False,
+    )
+    assert scheduler.pending_requests()
+
+
+@pytest.mark.asyncio
+async def test_xiegu_civ_scheduler_due_request_uses_civ_executor() -> None:
+    radio = _make_radio(active="MAIN")
+    path = FieldPath.active("main", "freq_mode", "mode")
+    scheduler = AcquisitionScheduler(
+        profile=_acquisition_profile(path, provider="xiegu_civ")
+    )
+    radio._acquisition_scheduler = scheduler
+    poller = RadioPoller(radio, CommandQueue(), radio_state=RadioState())
+
+    await poller._send_query()  # noqa: SLF001
+
+    radio.send_civ.assert_awaited_once_with(
+        0x26,
+        sub=None,
+        data=b"\x00",
+        wait_response=False,
+        priority=Priority.BACKGROUND,
+        wait_dispatch=False,
+    )
+
+
+@pytest.mark.asyncio
+async def test_scheduler_due_request_timeout_is_terminal_not_resent_each_tick() -> None:
+    radio = _make_radio(active="MAIN")
+    path = FieldPath.receiver("main", "meters", "s_meter")
+    policy = AcquisitionPolicy(cadence_seconds=1.0, freshness_ttl_seconds=1.0)
+    scheduler = AcquisitionScheduler(profile=_acquisition_profile(path, policy=policy))
+    radio._acquisition_scheduler = scheduler
+    poller = RadioPoller(radio, CommandQueue(), radio_state=RadioState())
+
+    with patch(
+        "rigplane.web.radio_poller.time.monotonic",
+        side_effect=(100.0, 101.1, 101.2),
+    ):
+        await poller._send_query()  # noqa: SLF001
+        await poller._send_query()  # noqa: SLF001
+        await poller._send_query()  # noqa: SLF001
+
+    radio.send_civ.assert_awaited_once()
+    assert scheduler.pending_requests() == ()
+    diagnostics = scheduler.diagnostics()
+    assert diagnostics["failedRequestCount"] == 1
+    assert diagnostics["failureCountByReason"]["acquisition_request_timeout"] == 1
+
+
+@pytest.mark.asyncio
+async def test_scheduler_request_execution_uses_injected_executor_not_web_mapping() -> (
+    None
+):
+    radio = _make_radio(active="MAIN")
+    path = FieldPath.global_("slow_state", "value")
+    scheduler = AcquisitionScheduler(profile=_acquisition_profile(path))
+    radio._acquisition_scheduler = scheduler
+    executor = _InjectedAcquisitionExecutor()
+    poller = RadioPoller(
+        radio,
+        CommandQueue(),
+        radio_state=RadioState(),
+        acquisition_executor=executor,
+    )
+
+    await poller._send_query()  # noqa: SLF001
+
+    radio.send_civ.assert_not_awaited()
+    assert len(executor.calls) == 1
+    request, already_sent_paths = executor.calls[0]
+    assert getattr(request, "paths") == (path,)
+    assert already_sent_paths == frozenset()
+    assert scheduler.pending_requests()[0].paths == (path,)
+
+
+@pytest.mark.asyncio
+async def test_non_icom_scheduler_without_executor_fails_instead_of_web_civ_send() -> (
+    None
+):
+    radio = _make_radio(active="MAIN")
+    path = FieldPath.receiver("main", "meters", "s_meter")
+    scheduler = AcquisitionScheduler(
+        profile=RadioAcquisitionProfile(
+            provider="test_provider",
+            capabilities=(FieldCapability(path=path, polling=True),),
+            default_policy=AcquisitionPolicy(
+                cadence_seconds=1.0,
+                freshness_ttl_seconds=4.0,
+            ),
+        )
+    )
+    radio._acquisition_scheduler = scheduler
+    diagnostics = []
+    poller = RadioPoller(
+        radio,
+        CommandQueue(),
+        radio_state=RadioState(),
+        diagnostics=SimpleNamespace(
+            record=lambda *args, **kwargs: diagnostics.append((args, kwargs))
+        ),  # type: ignore[arg-type]
+    )
+
+    await poller._send_query()  # noqa: SLF001
+
+    radio.send_civ.assert_not_awaited()
+    assert scheduler.pending_requests() == ()
+    assert (
+        scheduler.diagnostics()["failureCountByReason"]["acquisition_executor_missing"]
+        == 1
+    )
+    assert any(
+        args[:2] == ("acquisition_executor_missing", "web.radio_poller")
+        and kwargs["provider"] == "test_provider"
+        for args, kwargs in diagnostics
+    )
+
+
+@pytest.mark.parametrize(  # type: ignore[untyped-decorator]
+    ("path", "expected_cmd", "expected_receiver"),
+    [
+        (FieldPath.active("main", "freq_mode", "freq_hz"), 0x25, 0),
+        (FieldPath.active("main", "freq_mode", "mode"), 0x26, 0),
+        (FieldPath.active("sub", "freq_mode", "freq_hz"), 0x25, 1),
+        (FieldPath.active("sub", "freq_mode", "mode"), 0x26, 1),
+    ],
+)
+@pytest.mark.asyncio
+async def test_scheduler_active_freq_mode_requests_use_receiver_payload(
+    path: FieldPath,
+    expected_cmd: int,
+    expected_receiver: int,
+) -> None:
+    radio = _make_radio(active="MAIN")
+    scheduler = AcquisitionScheduler(profile=_acquisition_profile(path))
+    radio._acquisition_scheduler = scheduler
+    poller = RadioPoller(radio, CommandQueue(), radio_state=RadioState())
+
+    await poller._send_query()  # noqa: SLF001
+    await poller._send_query()  # noqa: SLF001
+
+    radio.send_civ.assert_awaited_once_with(
+        expected_cmd,
+        sub=None,
+        data=bytes([expected_receiver]),
+        wait_response=False,
+        priority=Priority.BACKGROUND,
+        wait_dispatch=False,
+    )
+    assert scheduler.pending_requests()[0].paths == (path,)
+
+
+@pytest.mark.asyncio
+async def test_scheduler_unknown_query_mapping_is_recorded_and_failed() -> None:
+    radio = _make_radio(active="MAIN")
+    path = FieldPath.global_("slow_state", "overflow")
+    scheduler = AcquisitionScheduler(profile=_acquisition_profile(path))
+    radio._acquisition_scheduler = scheduler
+    diagnostics = []
+    poller = RadioPoller(
+        radio,
+        CommandQueue(),
+        radio_state=RadioState(),
+        diagnostics=SimpleNamespace(
+            record=lambda *args, **kwargs: diagnostics.append((args, kwargs))
+        ),  # type: ignore[arg-type]
+    )
+
+    await poller._send_query()  # noqa: SLF001
+    await poller._send_query()  # noqa: SLF001
+
+    radio.send_civ.assert_not_awaited()
+    assert scheduler.pending_requests() == ()
+    assert scheduler.diagnostics()["failureCountByReason"]["no_civ_query_mapping"] == 1
+    assert any(
+        args[:2] == ("acquisition_request_failed", "web.radio_poller")
+        and kwargs["request_id"] == "acq-1"
+        and kwargs["reason"] == "no_civ_query_mapping"
+        for args, kwargs in diagnostics
+    )
+
+
+@pytest.mark.asyncio
+async def test_scheduler_ptt_request_sends_civ_ptt_query() -> None:
+    radio = _make_radio(active="MAIN")
+    path = FieldPath.global_("tx_state", "ptt")
+    scheduler = AcquisitionScheduler(profile=_acquisition_profile(path))
+    radio._acquisition_scheduler = scheduler
+    poller = RadioPoller(radio, CommandQueue(), radio_state=RadioState())
+
+    await poller._send_query()  # noqa: SLF001
+
+    radio.send_civ.assert_awaited_once_with(
+        0x1C,
+        sub=0x00,
+        data=b"",
+        wait_response=False,
+        priority=Priority.BACKGROUND,
+        wait_dispatch=False,
+    )
+    assert scheduler.pending_requests()[0].paths == (path,)
+
+
+@pytest.mark.asyncio
+async def test_poller_falls_back_to_legacy_query_without_scheduler() -> None:
+    radio = _make_radio(active="MAIN")
+    poller = RadioPoller(radio, CommandQueue(), radio_state=RadioState())
+
+    await poller._send_query()  # noqa: SLF001
+
+    assert radio.send_civ.await_count == 1
+
+
+@pytest.mark.asyncio
+async def test_poller_flushes_due_meter_coalescer_on_query_tick() -> None:
+    radio = _make_radio(active="MAIN")
+    radio._meter_observation_coalescer = MeterObservationCoalescer()
+    radio._civ_runtime = SimpleNamespace(flush_due_meter_observations=MagicMock())
+    poller = RadioPoller(radio, CommandQueue(), radio_state=RadioState())
+
+    await poller._send_query()  # noqa: SLF001
+
+    radio._civ_runtime.flush_due_meter_observations.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_scheduler_polling_does_not_starve_user_command_queue() -> None:
+    order: list[str] = []
+    radio = _make_radio(active="MAIN")
+    radio.set_freq = AsyncMock(side_effect=lambda *args, **kwargs: order.append("cmd"))
+
+    async def _send_civ(*args: object, **kwargs: object) -> None:
+        order.append("poll")
+
+    radio.send_civ = AsyncMock(side_effect=_send_civ)
+    path = FieldPath.receiver("main", "meters", "s_meter")
+    radio._acquisition_scheduler = AcquisitionScheduler(
+        profile=_acquisition_profile(path)
+    )
+    queue = CommandQueue()
+    queue.put_ordered(SetFreq(14_074_000))
+    poller = RadioPoller(radio, queue, radio_state=RadioState())
+
+    async def _stop_after_first_wait(*args: object, **kwargs: object) -> None:
+        raise asyncio.CancelledError
+
+    queue.wait = _stop_after_first_wait  # type: ignore[method-assign]
+
+    await poller._run()  # noqa: SLF001
+
+    assert order[:2] == ["cmd", "poll"]
+    assert radio.send_civ.await_count == 1
+
+
+@pytest.mark.asyncio
+async def test_run_does_not_raw_poll_unselected_slot_when_scheduler_attached() -> None:
+    radio = _make_radio(active="MAIN")
+    path = FieldPath.receiver("main", "meters", "s_meter")
+    radio._acquisition_scheduler = AcquisitionScheduler(
+        profile=_acquisition_profile(path)
+    )
+    queue = CommandQueue()
+    poller = RadioPoller(radio, queue, radio_state=RadioState())
+    poller._send_query = AsyncMock(return_value=None)  # noqa: SLF001
+    poller._poll_unselected_slot = AsyncMock(return_value=None)  # noqa: SLF001
+    poller._unselected_slot_gate = MagicMock(return_value=True)  # noqa: SLF001
+
+    async def _stop_after_first_wait(*args: object, **kwargs: object) -> None:
+        raise asyncio.CancelledError
+
+    queue.wait = _stop_after_first_wait  # type: ignore[method-assign]
+
+    await poller._run()  # noqa: SLF001
+
+    poller._unselected_slot_gate.assert_not_called()  # type: ignore[attr-defined]
+    poller._poll_unselected_slot.assert_not_awaited()  # type: ignore[attr-defined]
 
 
 @pytest.mark.asyncio
@@ -218,6 +657,28 @@ async def test_command_queue_ordered_lane_preserves_repeated_commands() -> None:
         PttOn(),
         PttOff(),
     ]
+
+
+def test_command_queue_entries_preserve_command_correlation_metadata() -> None:
+    q = CommandQueue()
+    q.put(
+        SetFreq(14_030_000),
+        command_id="ws-freq",
+        source="websocket",
+        session_id="ws-a",
+    )
+    q.put_ordered(SetMode("USB"), command_id="http-mode", source="http")
+
+    entries = q.drain_entries()
+
+    assert entries[0].command == SetFreq(14_030_000)
+    assert entries[0].command_id == "ws-freq"
+    assert entries[0].source == "websocket"
+    assert entries[0].session_id == "ws-a"
+    assert entries[1].command == SetMode("USB")
+    assert entries[1].command_id == "http-mode"
+    assert entries[1].source == "http"
+    assert entries[1].session_id is None
 
 
 @pytest.mark.asyncio
@@ -328,8 +789,15 @@ async def test_execute_event_emitting_commands_and_vfo_paths() -> None:
         0x07, sub=None, data=bytes([0xD1]), wait_response=False
     )
     # Scope follows the selected receiver (0x27 0x12 0x01 = SUB).
+    # User-command path stays at NORMAL priority (not de-prioritized) and
+    # blocking (wait_dispatch=True, never fire-and-forget).
     radio.send_civ.assert_any_await(
-        0x27, sub=0x12, data=bytes([0x01]), wait_response=False
+        0x27,
+        sub=0x12,
+        data=bytes([0x01]),
+        wait_response=False,
+        priority=Priority.NORMAL,
+        wait_dispatch=True,
     )
     await poller._execute(SelectVfo("MAIN"))  # noqa: SLF001
     assert radio._radio_state.active == "MAIN"
@@ -337,7 +805,12 @@ async def test_execute_event_emitting_commands_and_vfo_paths() -> None:
         0x07, sub=None, data=bytes([0xD0]), wait_response=False
     )
     radio.send_civ.assert_any_await(
-        0x27, sub=0x12, data=bytes([0x00]), wait_response=False
+        0x27,
+        sub=0x12,
+        data=bytes([0x00]),
+        wait_response=False,
+        priority=Priority.NORMAL,
+        wait_dispatch=True,
     )
     # Re-clicking the active receiver is a no-op CI-V-wise but still emits
     # the state event so UI listeners can refresh.
@@ -441,21 +914,27 @@ async def test_execute_receiver_routed_set_commands_use_backend_receiver_and_tar
     radio.set_nb.assert_awaited_once_with(True, receiver=1)
     radio.set_nr.assert_awaited_once_with(True, receiver=1)
     radio.set_data_mode.assert_awaited_once_with(3, receiver=1)
+    # nb/nr/data_mode are observation-backed (MOR-437): the poller routes the
+    # wire command to the correct receiver and emits the change event, but it
+    # no longer writes the legacy RadioState mirror. The pre-seeded values are
+    # therefore left untouched.
     assert state.main.nb is False
-    assert state.sub.nb is True
+    assert state.sub.nb is False
     assert state.main.nr is True
-    assert state.sub.nr is True
+    assert state.sub.nr is False
     assert state.main.data_mode == 0
-    assert state.sub.data_mode == 3
+    assert state.sub.data_mode == 0
     assert ("nb_changed", {"on": True, "receiver": 1}) in events
     assert ("nr_changed", {"on": True, "receiver": 1}) in events
     assert ("data_mode_changed", {"mode": 3, "receiver": 1}) in events
 
 
 @pytest.mark.asyncio
-async def test_execute_set_attenuator_updates_sub_receiver_state_and_radio_call() -> (
-    None
-):
+async def test_execute_set_attenuator_sends_wire_value_without_legacy_mirror() -> None:
+    # att is observation-backed (0x11); the legacy RadioState mirror (and its
+    # preamp/att mutual-exclusion side effect) was removed (MOR-437). The poller
+    # routes the wire command to the correct receiver and emits the event but
+    # leaves RadioState untouched — confirmation comes from the readback.
     events: list[tuple[str, dict]] = []
     radio = _make_radio(active="MAIN")
     state = RadioState()
@@ -474,13 +953,17 @@ async def test_execute_set_attenuator_updates_sub_receiver_state_and_radio_call(
     radio.set_attenuator_level.assert_awaited_once_with(12, receiver=1)
     assert state.main.att == 0
     assert state.main.preamp == 2
-    assert state.sub.att == 12
-    assert state.sub.preamp == 0
+    assert state.sub.att == 0  # no legacy mirror write
+    assert state.sub.preamp == 1  # preamp side effect no longer applied
     assert ("attenuator_changed", {"db": 12, "receiver": 1}) in events
 
 
 @pytest.mark.asyncio
-async def test_execute_set_preamp_updates_sub_receiver_state_and_radio_call() -> None:
+async def test_execute_set_preamp_sends_wire_value_without_legacy_mirror() -> None:
+    # preamp is observation-backed (0x16 0x02); the legacy RadioState mirror
+    # (and its att/preamp mutual-exclusion side effect) was removed (MOR-437).
+    # The poller routes the wire command and emits the event but leaves
+    # RadioState untouched.
     events: list[tuple[str, dict]] = []
     radio = _make_radio(active="MAIN")
     state = RadioState()
@@ -499,8 +982,8 @@ async def test_execute_set_preamp_updates_sub_receiver_state_and_radio_call() ->
     radio.set_preamp.assert_awaited_once_with(2, receiver=1)
     assert state.main.preamp == 0
     assert state.main.att == 9
-    assert state.sub.preamp == 2
-    assert state.sub.att == 0
+    assert state.sub.preamp == 0  # no legacy mirror write
+    assert state.sub.att == 12  # att side effect no longer applied
     assert ("preamp_changed", {"level": 2, "receiver": 1}) in events
 
 
@@ -523,8 +1006,11 @@ async def test_execute_set_filter_width_dispatches_to_radio_protocol() -> None:
 
     # Layering: protocol method, not raw CI-V (P2-04).
     radio.set_filter_width.assert_awaited_once_with(1500, receiver=1)
+    # filter_width is observation-backed (0x1A 0x03); the legacy RadioState
+    # mirror was removed (MOR-437). The poller emits the change event but does
+    # not write the mirror — both slots stay at their default None.
     assert state.main.filter_width is None
-    assert state.sub.filter_width == 1500
+    assert state.sub.filter_width is None
     assert ("filter_width_changed", {"width": 1500, "receiver": 1}) in events
 
 
@@ -554,7 +1040,10 @@ async def test_execute_set_filter_shape_updates_sub_receiver_state_and_radio_cal
 
 
 @pytest.mark.asyncio
-async def test_execute_set_agc_updates_sub_receiver_state_and_radio_call() -> None:
+async def test_execute_set_agc_sends_wire_value_without_legacy_mirror() -> None:
+    # agc is observation-backed (0x16 0x12); the legacy RadioState mirror was
+    # removed (MOR-437). The poller routes the wire command and emits the event
+    # but leaves the pre-seeded RadioState values untouched.
     events: list[tuple[str, dict]] = []
     radio = _make_radio(active="MAIN")
     state = RadioState()
@@ -572,7 +1061,7 @@ async def test_execute_set_agc_updates_sub_receiver_state_and_radio_call() -> No
 
     radio.set_agc.assert_awaited_once_with(2, receiver=1)
     assert state.main.agc == 1
-    assert state.sub.agc == 2
+    assert state.sub.agc == 1  # no legacy mirror write
     assert ("agc_changed", {"mode": 2, "receiver": 1}) in events
 
 
@@ -664,7 +1153,8 @@ def test_state_queries_include_operator_toggle_reads_for_ic7610() -> None:
         (0x15, 0x01, 0x00),
         (0x15, 0x01, 0x01),
         (0x15, 0x07, None),
-        (0x16, 0x12, None),
+        (0x16, 0x12, 0x00),
+        (0x16, 0x12, 0x01),
         (0x16, 0x32, 0x00),
         (0x16, 0x32, 0x01),
         (0x16, 0x41, 0x00),
@@ -875,6 +1365,602 @@ async def test_command_error_propagates_from_execute() -> None:
     radio.set_freq.reset_mock()
     await poller._execute(SetFreq(freq=7_074_000, receiver=0))  # noqa: SLF001
     radio.set_freq.assert_awaited_once_with(7_074_000)
+
+
+@pytest.mark.asyncio
+async def test_set_freq_success_does_not_apply_confirmed_state_store_observation() -> (
+    None
+):
+    radio = _make_radio()
+    state = RadioState()
+    store = StateStore()
+    poller = RadioPoller(
+        radio,
+        StateCache(),
+        CommandQueue(),
+        radio_state=state,
+        state_store=store,
+    )
+
+    await poller._execute(SetFreq(freq=14_074_000, receiver=0))  # noqa: SLF001
+
+    with pytest.raises(KeyError):
+        store.snapshot().field("receiver.0.freq_mode.freq_hz")
+    assert state.main.freq == 14_074_000
+
+
+@pytest.mark.parametrize(  # type: ignore[untyped-decorator]
+    ("command", "expected_path"),
+    [
+        (SetMode(mode="USB", receiver=0), "receiver.0.freq_mode.mode"),
+        (PttOn(), "global.tx_state.ptt"),
+        (PttOff(), "global.tx_state.ptt"),
+        (SetSplit(on=True), "global.tx_state.split"),
+        (SelectVfo(vfo="SUB"), "receiver.0.vfo.active_slot"),
+    ],
+)
+@pytest.mark.asyncio
+async def test_release_critical_web_setters_do_not_confirm_state_without_readback(
+    command: object,
+    expected_path: str,
+) -> None:
+    radio = _make_radio()
+    store = StateStore()
+    poller = RadioPoller(
+        radio,
+        StateCache(),
+        CommandQueue(),
+        radio_state=RadioState(),
+        state_store=store,
+    )
+
+    await poller._execute(command)  # noqa: SLF001
+
+    with pytest.raises(KeyError):
+        store.snapshot().field(expected_path)
+
+
+@pytest.mark.parametrize(  # type: ignore[untyped-decorator]
+    ("command", "expected_path"),
+    [
+        (SetRfGain(level=120, receiver=1), "receiver.1.operator_controls.rf_gain"),
+        (SetAfLevel(level=90, receiver=1), "receiver.1.operator_controls.af_level"),
+        (SetSquelch(level=33, receiver=1), "receiver.1.operator_controls.squelch"),
+        (SetNB(on=True, receiver=1), "receiver.1.operator_toggles.nb"),
+        (SetNR(on=False, receiver=1), "receiver.1.operator_toggles.nr"),
+        (
+            SetPbtInner(level=140, receiver=1),
+            "receiver.1.operator_controls.pbt_inner",
+        ),
+        (
+            SetPbtOuter(level=116, receiver=1),
+            "receiver.1.operator_controls.pbt_outer",
+        ),
+    ],
+)
+@pytest.mark.asyncio
+async def test_non_readback_queue_commands_do_not_apply_state_store_observations(
+    command: object,
+    expected_path: str,
+) -> None:
+    radio = _make_radio()
+    state = RadioState()
+    store = StateStore()
+    poller = RadioPoller(
+        radio,
+        StateCache(),
+        CommandQueue(),
+        radio_state=state,
+        state_store=store,
+    )
+
+    await poller._execute(command)  # noqa: SLF001
+
+    with pytest.raises(KeyError):
+        store.snapshot().field(expected_path)
+
+
+# MOR-437: families whose legacy RadioState mirror was removed because they
+# are now observation-backed in ``_civ_rx.py``. Read-after-write for these is
+# guaranteed by the CommandService scoped pending overlay (proven below by the
+# overlay value) plus the StateStore observation emitted on the next poll
+# readback — not by a poller-side ``RadioState`` write. ``mirror_present`` is
+# False for them; pbt_inner/pbt_outer keep a deferred compatibility mirror
+# because their 0x14 sub-commands are not yet on the observation mirror-skip
+# list.
+@pytest.mark.parametrize(  # type: ignore[untyped-decorator]
+    ("name", "params", "command", "expected_path", "expected_mirror", "mirror_present"),
+    [
+        (
+            "set_filter_width",
+            {"width": 1500, "receiver": 1},
+            SetFilterWidth(1500, receiver=1),
+            "receiver.1.freq_mode.filter_width",
+            ("filter_width", 1500),
+            False,
+        ),
+        (
+            "set_nb",
+            {"on": True, "receiver": 1},
+            SetNB(True, receiver=1),
+            "receiver.1.operator_toggles.nb",
+            ("nb", True),
+            False,
+        ),
+        (
+            "set_nr",
+            {"on": False, "receiver": 1},
+            SetNR(False, receiver=1),
+            "receiver.1.operator_toggles.nr",
+            ("nr", False),
+            False,
+        ),
+        (
+            "set_att",
+            {"db": 12, "receiver": 1},
+            SetAttenuator(12, receiver=1),
+            "receiver.1.operator_controls.att",
+            ("att", 12),
+            False,
+        ),
+        (
+            "set_preamp",
+            {"level": 2, "receiver": 1},
+            SetPreamp(2, receiver=1),
+            "receiver.1.operator_controls.preamp",
+            ("preamp", 2),
+            False,
+        ),
+        (
+            "set_pbt_inner",
+            {"level": 140, "receiver": 1},
+            SetPbtInner(140, receiver=1),
+            "receiver.1.operator_controls.pbt_inner",
+            ("pbt_inner", 140),
+            True,
+        ),
+        (
+            "set_pbt_outer",
+            {"level": 116, "receiver": 1},
+            SetPbtOuter(116, receiver=1),
+            "receiver.1.operator_controls.pbt_outer",
+            ("pbt_outer", 116),
+            True,
+        ),
+    ],
+)
+@pytest.mark.asyncio
+async def test_compatibility_mirror_commands_do_not_confirm_state_without_readback(
+    name: str,
+    params: dict[str, object],
+    command: object,
+    expected_path: str,
+    expected_mirror: tuple[str, object],
+    mirror_present: bool,
+) -> None:
+    radio = _make_radio()
+    state = RadioState()
+    store = StateStore()
+    service = CommandService(executor=_NoopCommandExecutor(), state_store=store)
+    poller = RadioPoller(
+        radio,
+        StateCache(),
+        CommandQueue(),
+        radio_state=state,
+        state_store=store,
+    )
+    await service.execute(
+        command_intent_from_request(
+            name,
+            params,
+            source="websocket",
+            command_id="ws-compat",
+        )
+    )
+    assert service.pending_overlays(source="websocket", session_id=None) != ()
+
+    await poller._execute(  # noqa: SLF001
+        command,
+        command_id="ws-compat",
+        source="websocket",
+        command_service=service,
+    )
+
+    # Setter success never confirms StateStore — confirmation requires readback.
+    with pytest.raises(KeyError):
+        store.snapshot().field(expected_path)
+
+    # Read-after-write stays guaranteed by the scoped pending overlay, which
+    # still carries the written value after the poller executes the command.
+    overlays = service.pending_overlays(source="websocket", session_id=None)
+    assert overlays != ()
+    overlay_values = {
+        str(overlay.path): overlay.value
+        for overlay in overlays
+        if str(overlay.path) == expected_path
+    }
+    assert overlay_values.get(expected_path) == expected_mirror[1]
+
+    field, value = expected_mirror
+    if mirror_present:
+        # Deferred compatibility families still write the legacy RadioState
+        # mirror until their observation mirror-skip migration lands.
+        assert getattr(state.sub, field) == value
+    else:
+        # Migrated families no longer write the legacy RadioState mirror; the
+        # field stays at its fresh-RadioState default (the poller did not
+        # touch it). The observation pipeline + overlay above own
+        # read-after-write.
+        assert getattr(state.sub, field) == getattr(RadioState().sub, field)
+
+
+@pytest.mark.asyncio
+async def test_set_freq_success_keeps_pending_overlay_until_observation() -> None:
+    radio = _make_radio()
+    state = RadioState()
+    store = StateStore()
+    service = CommandService(
+        executor=_NoopCommandExecutor(),
+        state_store=store,
+    )
+    poller = RadioPoller(
+        radio,
+        StateCache(),
+        CommandQueue(),
+        radio_state=state,
+        state_store=store,
+    )
+    await service.execute(
+        command_intent_from_request(
+            "set_freq",
+            {"freq": 14_074_000, "receiver": 0},
+            source="websocket",
+            command_id="ws-set-freq",
+        )
+    )
+    assert service.pending_overlays(source="websocket", session_id=None) != ()
+
+    await poller._execute(  # noqa: SLF001
+        SetFreq(freq=14_074_000, receiver=0),
+        command_id="ws-set-freq",
+        source="websocket",
+        command_service=service,
+    )
+
+    with pytest.raises(KeyError):
+        store.snapshot().field("receiver.0.freq_mode.freq_hz")
+    assert service.pending_overlays(source="websocket", session_id=None) != ()
+
+
+@pytest.mark.asyncio
+async def test_set_freq_success_does_not_reconcile_reused_command_id_without_readback() -> (
+    None
+):
+    radio = _make_radio()
+    store = StateStore()
+    queue = CommandQueue()
+    executor = _QueuedAckExecutor(queue)
+    service = CommandService(executor=executor, state_store=store)
+    executor.command_service = service
+    poller = RadioPoller(
+        radio,
+        StateCache(),
+        queue,
+        radio_state=RadioState(),
+        state_store=store,
+    )
+
+    for session_id in ("ws-a", "ws-b"):
+        await service.execute(
+            command_intent_from_request(
+                "set_freq",
+                {"freq": 14_074_000, "receiver": 0},
+                source="websocket",
+                command_id="shared-id",
+                session_id=session_id,
+            )
+        )
+
+    assert len(service.pending_overlays(source="websocket", session_id="ws-a")) == 1
+    assert len(service.pending_overlays(source="websocket", session_id="ws-b")) == 1
+
+    entry = queue.drain_entries()[0]
+    await poller._execute(  # noqa: SLF001
+        entry.command,
+        command_id=entry.command_id,
+        source=entry.source or "websocket",
+        session_id=entry.session_id,
+        command_service=entry.command_service,
+    )
+
+    assert len(service.pending_overlays(source="websocket", session_id="ws-a")) == 1
+    assert len(service.pending_overlays(source="websocket", session_id="ws-b")) == 1
+    with pytest.raises(KeyError):
+        store.snapshot().field("receiver.0.freq_mode.freq_hz")
+    assert (
+        service.pending_overlays(source="websocket", session_id="ws-b")[0].value
+        == 14_074_000
+    )
+
+
+@pytest.mark.asyncio
+async def test_set_split_success_keeps_pending_overlay_until_observation() -> None:
+    radio = _make_radio()
+    state = RadioState()
+    store = StateStore()
+    service = CommandService(
+        executor=_NoopCommandExecutor(),
+        state_store=store,
+    )
+    poller = RadioPoller(
+        radio,
+        StateCache(),
+        CommandQueue(),
+        radio_state=state,
+        state_store=store,
+    )
+    await service.execute(
+        command_intent_from_request(
+            "set_split",
+            {"on": True},
+            source="websocket",
+            command_id="ws-set-split",
+        )
+    )
+    assert service.pending_overlays(source="websocket", session_id=None) != ()
+
+    await poller._execute(  # noqa: SLF001
+        SetSplit(on=True),
+        command_id="ws-set-split",
+        source="websocket",
+        command_service=service,
+    )
+
+    with pytest.raises(KeyError):
+        store.snapshot().field("global.tx_state.split")
+    assert service.pending_overlays(source="websocket", session_id=None) != ()
+
+
+@pytest.mark.asyncio
+async def test_queued_command_failure_emits_failed_lifecycle_and_expires_overlay() -> (
+    None
+):
+    radio = _make_radio()
+    radio.set_freq.side_effect = ConnectionError("down")
+    state = RadioState()
+    store = StateStore()
+    queue = CommandQueue()
+    executor = _QueuedAckExecutor(queue)
+    service = CommandService(executor=executor, state_store=store)
+    executor.command_service = service
+    poller = RadioPoller(
+        radio,
+        StateCache(),
+        queue,
+        radio_state=state,
+        state_store=store,
+    )
+
+    await service.execute(
+        command_intent_from_request(
+            "set_freq",
+            {"freq": 14_074_000, "receiver": 0},
+            source="websocket",
+            command_id="ws-fail",
+        )
+    )
+    assert service.pending_overlays(source="websocket", session_id=None) != ()
+
+    poller._send_query = AsyncMock(return_value=None)  # noqa: SLF001
+    poller._queue.wait = AsyncMock(side_effect=asyncio.CancelledError())  # noqa: SLF001
+    with patch("rigplane.web.radio_poller.asyncio.sleep", new=AsyncMock()):
+        await poller._run()  # noqa: SLF001
+
+    events = [
+        event for event in service.lifecycle_events() if event.command_id == "ws-fail"
+    ]
+    assert [event.state for event in events] == [
+        "accepted",
+        "queued",
+        "sent",
+        "acknowledged",
+        "failed",
+    ]
+    assert service.pending_overlays(source="websocket", session_id=None) == ()
+
+
+@pytest.mark.asyncio
+async def test_queued_core_timeout_emits_timed_out_lifecycle_and_expires_overlay() -> (
+    None
+):
+    radio = _make_radio()
+    radio.set_freq.side_effect = RigplaneTimeoutError("backend timed out")
+    state = RadioState()
+    store = StateStore()
+    queue = CommandQueue()
+    executor = _QueuedAckExecutor(queue)
+    service = CommandService(executor=executor, state_store=store)
+    executor.command_service = service
+    poller = RadioPoller(
+        radio,
+        StateCache(),
+        queue,
+        radio_state=state,
+        state_store=store,
+    )
+
+    await service.execute(
+        command_intent_from_request(
+            "set_freq",
+            {"freq": 14_074_000, "receiver": 0},
+            source="websocket",
+            command_id="ws-timeout",
+        )
+    )
+    assert service.pending_overlays(source="websocket", session_id=None) != ()
+
+    poller._send_query = AsyncMock(return_value=None)  # noqa: SLF001
+    poller._queue.wait = AsyncMock(side_effect=asyncio.CancelledError())  # noqa: SLF001
+    with patch("rigplane.web.radio_poller.asyncio.sleep", new=AsyncMock()):
+        await poller._run()  # noqa: SLF001
+
+    events = [
+        event
+        for event in service.lifecycle_events()
+        if event.command_id == "ws-timeout"
+    ]
+    assert [event.state for event in events] == [
+        "accepted",
+        "queued",
+        "sent",
+        "acknowledged",
+        "timed_out",
+    ]
+    assert service.pending_overlays(source="websocket", session_id=None) == ()
+
+
+@pytest.mark.asyncio
+async def test_mark_queued_command_failed_scopes_reused_command_ids_by_source() -> None:
+    radio = _make_radio()
+    store = StateStore()
+    queue = CommandQueue()
+    executor = _QueuedAckExecutor(queue)
+    service = CommandService(executor=executor, state_store=store)
+    executor.command_service = service
+    poller = RadioPoller(
+        radio,
+        StateCache(),
+        queue,
+        radio_state=RadioState(),
+        state_store=store,
+    )
+
+    await service.execute(
+        command_intent_from_request(
+            "set_freq",
+            {"freq": 14_074_000, "receiver": 0},
+            source="websocket",
+            command_id="shared-id",
+        )
+    )
+    await service.execute(
+        command_intent_from_request(
+            "set_freq",
+            {"freq": 7_074_000, "receiver": 0},
+            source="http",
+            command_id="shared-id",
+        )
+    )
+
+    entries = queue.drain_entries()
+    poller._mark_queued_command_failed(  # noqa: SLF001
+        entries[0],
+        RuntimeError("radio rejected command"),
+    )
+
+    assert service.pending_overlays(source="websocket", session_id=None) == ()
+    assert len(service.pending_overlays(source="http", session_id=None)) == 1
+    assert (
+        service.pending_overlays(source="http", session_id=None)[0].value == 7_074_000
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("timed_out", "expected_state"),
+    [(False, "failed"), (True, "timed_out")],
+)
+async def test_mark_queued_command_failed_scopes_reused_command_ids_by_session(
+    timed_out: bool,
+    expected_state: str,
+) -> None:
+    radio = _make_radio()
+    store = StateStore()
+    queue = CommandQueue()
+    executor = _QueuedAckExecutor(queue)
+    service = CommandService(executor=executor, state_store=store)
+    executor.command_service = service
+    poller = RadioPoller(
+        radio,
+        StateCache(),
+        queue,
+        radio_state=RadioState(),
+        state_store=store,
+    )
+
+    for session_id in ("ws-a", "ws-b"):
+        await service.execute(
+            command_intent_from_request(
+                "set_freq",
+                {"freq": 14_074_000, "receiver": 0},
+                source="websocket",
+                command_id="shared-id",
+                session_id=session_id,
+            )
+        )
+
+    entries = queue.drain_entries()
+    poller._mark_queued_command_failed(  # noqa: SLF001
+        entries[0],
+        TimeoutError("command timed out")
+        if timed_out
+        else RuntimeError("radio rejected command"),
+        timed_out=timed_out,
+    )
+
+    assert service.pending_overlays(source="websocket", session_id="ws-a") == ()
+    assert len(service.pending_overlays(source="websocket", session_id="ws-b")) == 1
+    assert (
+        service.pending_overlays(source="websocket", session_id="ws-b")[0].value
+        == 14_074_000
+    )
+
+    terminal_events = [
+        event
+        for event in service.lifecycle_events()
+        if event.command_id == "shared-id" and event.state == expected_state
+    ]
+    assert len(terminal_events) == 1
+    assert terminal_events[0].source == "websocket"
+    assert terminal_events[0].details["session_id"] == "ws-a"
+
+
+@pytest.mark.asyncio
+async def test_select_vfo_success_keeps_pending_overlay_until_observation() -> None:
+    radio = _make_radio()
+    state = RadioState()
+    store = StateStore()
+    service = CommandService(
+        executor=_NoopCommandExecutor(),
+        state_store=store,
+    )
+    poller = RadioPoller(
+        radio,
+        StateCache(),
+        CommandQueue(),
+        radio_state=state,
+        state_store=store,
+    )
+    await service.execute(
+        command_intent_from_request(
+            "set_vfo",
+            {"vfo": "SUB"},
+            source="websocket",
+            command_id="ws-set-vfo",
+        )
+    )
+    assert service.pending_overlays(source="websocket", session_id=None) != ()
+
+    await poller._execute(  # noqa: SLF001
+        SelectVfo(vfo="SUB"),
+        command_id="ws-set-vfo",
+        source="websocket",
+        command_service=service,
+    )
+
+    with pytest.raises(KeyError):
+        store.snapshot().field("receiver.0.vfo.active_slot")
+    assert service.pending_overlays(source="websocket", session_id=None) != ()
 
 
 @pytest.mark.asyncio
@@ -1229,3 +2315,213 @@ async def test_fetch_scope_controls_repeated_timeouts_do_not_accumulate() -> Non
     # Each getter was attempted exactly 3 times (no early exit).
     assert radio.get_scope_receiver.await_count == 3
     assert radio.get_scope_rbw.await_count == 3
+
+
+@pytest.mark.asyncio
+async def test_command_preempts_in_flight_poll_burst() -> None:
+    """MOR-497(ii) end-to-end analogue: with a real ``IcomCommander``, a burst
+    of fire-and-forget BACKGROUND poll sends followed by a NORMAL command must
+    let the NORMAL command dispatch before the remaining BACKGROUND polls.
+
+    Because the poll sends are ``wait_dispatch=False`` they return immediately
+    (do not park the caller), so the NORMAL command is enqueued promptly and
+    the PriorityQueue preempts the queued backgrounds.
+    """
+    order: list[bytes] = []
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    async def execute(cmd: bytes, wait_response: bool = True) -> CivFrame | None:
+        # Park the worker on the gate item so the burst + command all queue
+        # together before any of them dispatch.
+        if cmd == b"gate":
+            started.set()
+            await release.wait()
+        order.append(cmd)
+        return CivFrame(to_addr=0xE0, from_addr=0x98, command=0xFB, sub=None, data=b"")
+
+    c = IcomCommander(execute, min_interval=0.0)
+    c.start()
+    try:
+        gate = asyncio.create_task(c.send(b"gate", priority=Priority.NORMAL))
+        await asyncio.wait_for(started.wait(), timeout=1.0)
+
+        # Fire-and-forget BACKGROUND poll burst: each returns immediately.
+        for i in range(5):
+            await asyncio.wait_for(
+                c.send(
+                    f"bg-{i}".encode(),
+                    priority=Priority.BACKGROUND,
+                    wait_response=False,
+                    wait_dispatch=False,
+                ),
+                timeout=0.5,
+            )
+
+        # A NORMAL command enqueued AFTER the burst.
+        command = asyncio.create_task(c.send(b"cmd", priority=Priority.NORMAL))
+        await asyncio.sleep(0.01)  # let it enqueue
+
+        release.set()
+        await asyncio.gather(gate, command)
+        await asyncio.sleep(0.02)  # drain remaining backgrounds
+    finally:
+        await c.stop()
+
+    assert order[0] == b"gate"
+    cmd_idx = order.index(b"cmd")
+    bg_indices = [order.index(f"bg-{i}".encode()) for i in range(5)]
+    assert all(cmd_idx < bg_idx for bg_idx in bg_indices), (
+        f"NORMAL command did not preempt queued backgrounds: order={order}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_poll_demand_does_not_pile_duplicates() -> None:
+    """MOR-497(ii): scheduler backpressure holds when poll sends return
+    immediately.  Running several ``_send_scheduler_requests`` cycles without
+    delivering responses must NOT re-queue the in-flight group — the in-flight
+    set and pending requests stay bounded (no duplicate re-queue)."""
+    radio = _make_radio(active="MAIN")
+    path = FieldPath.receiver("main", "meters", "s_meter")
+    scheduler = AcquisitionScheduler(profile=_acquisition_profile(path))
+    radio._acquisition_scheduler = scheduler
+    executor = _InjectedAcquisitionExecutor()
+    poller = RadioPoller(
+        radio,
+        CommandQueue(),
+        radio_state=RadioState(),
+        acquisition_executor=executor,
+    )
+
+    # Run many cycles WITHOUT delivering any response (scheduler clears
+    # in-flight only on response, so an undelivered group must not re-queue).
+    for _ in range(6):
+        await poller._send_scheduler_requests()  # noqa: SLF001
+
+    # Exactly one request stays pending (the single cadence group), and the
+    # executor was invoked at most once for it (the in-flight guard prevents
+    # re-sending the same already-sent paths).
+    pending = scheduler.pending_requests()
+    assert len(pending) == 1
+    assert len(poller._acquisition_in_flight) <= 1  # noqa: SLF001
+    assert len(executor.calls) == 1, (
+        f"in-flight group re-queued: {len(executor.calls)} executor calls"
+    )
+
+
+# ---------------------------------------------------------------------------
+# MOR-491-B: NB depth/width initial-connect readback (Option B, direct getter).
+#
+# NB depth/width are global menu items (0x1A 05 02 90/91) whose 4-byte READ
+# query cannot ride the poll-query envelope, so the continuous poller never
+# tracks them. ``_fetch_nb_controls`` reads them once at connect via the direct
+# getters and applies the real values as StateStore observations so the web
+# sliders seed correctly. A purpose-built fake radio (not MagicMock) is used so
+# a getter-signature regression would surface as a real TypeError.
+# ---------------------------------------------------------------------------
+
+
+class _FakeNbRadio:
+    """Minimal NB-capable radio fake for ``_fetch_nb_controls`` tests.
+
+    ``get_nb_*`` either return a canned value or raise to exercise the
+    resilient error path; calls are counted so the test can assert each
+    getter is invoked exactly once.
+    """
+
+    def __init__(
+        self,
+        *,
+        depth: int | Exception = 0,
+        width: int | Exception = 0,
+        capabilities: set[str] | None = None,
+    ) -> None:
+        self.model = "IC-7610"
+        self.capabilities = (
+            capabilities if capabilities is not None else {"nb", "dual_rx"}
+        )
+        self._depth = depth
+        self._width = width
+        self.depth_calls = 0
+        self.width_calls = 0
+
+    async def get_nb_depth(self) -> int:
+        self.depth_calls += 1
+        if isinstance(self._depth, Exception):
+            raise self._depth
+        return self._depth
+
+    async def get_nb_width(self) -> int:
+        self.width_calls += 1
+        if isinstance(self._width, Exception):
+            raise self._width
+        return self._width
+
+
+@pytest.mark.asyncio
+async def test_fetch_nb_controls_seeds_state_store_and_public_state() -> None:
+    """Initial fetch reads both getters and the values reach web state."""
+    from rigplane.web.runtime_helpers import (
+        build_public_state_payload_from_snapshot,
+    )
+
+    radio = _FakeNbRadio(depth=7, width=200)
+    store = StateStore()
+    poller = RadioPoller(radio, CommandQueue(), state_store=store)
+
+    await poller._fetch_nb_controls()  # noqa: SLF001
+
+    assert radio.depth_calls == 1
+    assert radio.width_calls == 1
+
+    snapshot = store.snapshot()
+    assert snapshot.field(FieldPath.global_("operator_controls", "nb_depth")).value == 7
+    assert (
+        snapshot.field(FieldPath.global_("operator_controls", "nb_width")).value == 200
+    )
+
+    # The public projection (what /api/v1/state serves) exposes the values.
+    payload = build_public_state_payload_from_snapshot(
+        snapshot,
+        radio=None,
+        receiver_count=2,
+    )
+    assert payload["nbDepth"] == 7
+    assert payload["nbWidth"] == 200
+
+
+@pytest.mark.asyncio
+async def test_fetch_nb_controls_skips_without_nb_capability() -> None:
+    """No NB capability => no getter calls, no observations."""
+    radio = _FakeNbRadio(depth=7, width=200, capabilities={"dual_rx"})
+    store = StateStore()
+    poller = RadioPoller(radio, CommandQueue(), state_store=store)
+
+    await poller._fetch_nb_controls()  # noqa: SLF001
+
+    assert radio.depth_calls == 0
+    assert radio.width_calls == 0
+    with pytest.raises(KeyError):
+        store.snapshot().field(FieldPath.global_("operator_controls", "nb_depth"))
+
+
+@pytest.mark.asyncio
+async def test_fetch_nb_controls_is_resilient_to_getter_failure() -> None:
+    """A failing depth getter must not block the width readback."""
+    radio = _FakeNbRadio(depth=RuntimeError("boom"), width=120)
+    store = StateStore()
+    poller = RadioPoller(radio, CommandQueue(), state_store=store)
+
+    await poller._fetch_nb_controls()  # noqa: SLF001
+
+    assert radio.depth_calls == 1
+    assert radio.width_calls == 1
+    snapshot = store.snapshot()
+    # Depth read failed => no observation applied.
+    with pytest.raises(KeyError):
+        snapshot.field(FieldPath.global_("operator_controls", "nb_depth"))
+    # Width readback still succeeded.
+    assert (
+        snapshot.field(FieldPath.global_("operator_controls", "nb_width")).value == 120
+    )

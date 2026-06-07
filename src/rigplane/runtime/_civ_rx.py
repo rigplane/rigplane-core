@@ -6,9 +6,14 @@ import asyncio
 import logging
 import time
 from dataclasses import dataclass
+from dataclasses import replace as _replace_dataclass
 from typing import TYPE_CHECKING, Any, cast
 from typing import Literal
 
+from rigplane.core.acquisition_scheduler import (
+    AcquisitionScheduler,
+    MeterObservationCoalescer,
+)
 from rigplane.core.civ import (
     CivEvent,
     CivEventType,
@@ -24,6 +29,7 @@ from rigplane.commands import (
     parse_frequency_response,
     parse_level_response,
     parse_mode_response,
+    parse_rit_frequency_response,
     parse_scope_center_type_response,
     parse_scope_during_tx_response,
     parse_scope_edge_response,
@@ -38,9 +44,19 @@ from rigplane.commands import (
     parse_scope_speed_response,
     parse_scope_vbw_response,
 )
+from rigplane.commands.levels import _cw_pitch_from_level, _key_speed_from_level
 from rigplane.core.exceptions import ConnectionError, TimeoutError
+from rigplane.core.state_pipeline_contracts import (
+    ChangeSet,
+    FieldChange,
+    FieldPath,
+    Observation,
+    ObservationSource,
+    SourceMetadata,
+)
+from rigplane.core.state_diagnostics import StateDiagnosticsRecorder
 from rigplane.scope import ScopeFrame
-from rigplane.core.types import CivFrame
+from rigplane.core.types import CivFrame, Mode
 
 if TYPE_CHECKING:
     from ._runtime_protocols import CivRuntimeHost
@@ -58,6 +74,56 @@ _FREQ_BCD_LEN = 5
 _SCOPE_BACKLOG_SHED_THRESHOLD = 256
 _SCOPE_BACKLOG_KEEP_LATEST = 64
 _RAW_RECEIVED_FRAME_BYTES_LIMIT = 256
+
+_OBSERVATION_MAX_AGE_SECONDS: dict[tuple[str, str, str], float] = {
+    ("receiver", "freq_mode", "freq_hz"): 5.0,
+    ("receiver", "freq_mode", "mode"): 5.0,
+    ("receiver", "vfo", "active_slot"): 5.0,
+    ("receiver", "meters", "s_meter"): 0.6,
+    ("receiver", "operator_toggles", "nb"): 10.0,
+    ("receiver", "operator_toggles", "nr"): 10.0,
+    ("receiver", "operator_controls", "af_level"): 10.0,
+    ("receiver", "operator_controls", "rf_gain"): 10.0,
+    ("receiver", "operator_controls", "pbt_inner"): 10.0,
+    ("receiver", "operator_controls", "pbt_outer"): 10.0,
+    ("global", "slow_state", "active"): 5.0,
+    ("global", "tx_state", "ptt"): 1.0,
+    ("global", "tx_state", "rit_on"): 10.0,
+    ("global", "tx_state", "rit_tx"): 10.0,
+    ("global", "tx_state", "power_on"): 30.0,
+    ("global", "operator_controls", "rit_freq"): 10.0,
+    ("global", "operator_controls", "power_level"): 30.0,
+    ("global", "meters", "alc"): 0.6,
+    ("global", "meters", "power"): 0.6,
+    ("global", "meters", "swr"): 0.6,
+    ("global", "meters", "comp"): 0.6,
+    ("global", "meters", "vd"): 0.6,
+    ("global", "meters", "id"): 0.6,
+}
+
+_CIV_STATE_FIELD_FAMILIES = {
+    0x00: "freq_mode",
+    0x01: "freq_mode",
+    0x03: "freq_mode",
+    0x04: "freq_mode",
+    0x07: "vfo",
+    0x0E: "slow_state",
+    0x0F: "operator_toggles",
+    0x10: "operator_controls",
+    0x11: "operator_controls",
+    0x12: "operator_controls",
+    0x14: "operator_controls",
+    0x15: "meters",
+    0x16: "operator_toggles",
+    0x1A: "operator_controls",
+    0x1B: "operator_controls",
+    0x1C: "tx_state",
+    0x1E: "slow_state",
+    0x21: "operator_controls",
+    0x25: "freq_mode",
+    0x26: "freq_mode",
+    0x27: "scope_controls",
+}
 
 __all__ = [
     "CivRuntime",
@@ -134,6 +200,23 @@ _CMD16_GLOBAL_VALUE_FIELDS = {
     0x58: ("ssb_tx_bandwidth", 1),
 }
 
+# 0x16 toggle sub-commands whose RadioState mirror write was migrated to the
+# StateStore observation pipeline (MOR-437). These still fire legacy
+# ``_notify_change`` web/poller events, but the redundant ``setattr`` mirror is
+# skipped because ``_observations_from_frame`` is the source of truth.
+_CMD16_OBSERVATION_BACKED_SUBS = frozenset(
+    {
+        0x41,  # auto_notch
+        0x42,  # repeater_tone (MOR-451)
+        0x43,  # repeater_tsql (MOR-451)
+        0x48,  # manual_notch
+        0x4F,  # twin_peak_filter (MOR-452)
+        0x44,  # compressor_on
+        0x45,  # monitor_on
+        0x46,  # vox_on
+    }
+)
+
 # Sub-command to state-change event name for unsolicited 0x16 updates (web/poller).
 _CMD16_NOTIFY_EVENTS = {
     0x12: "agc_changed",
@@ -150,8 +233,248 @@ _CMD16_NOTIFY_EVENTS = {
     0x50: "dial_lock_changed",
     0x47: "break_in_changed",
     0x58: "ssb_tx_bandwidth_changed",
+    0x4E: "digisel_changed",
     0x65: "ipplus_changed",
 }
+
+_OBSERVABLE_CMD14_FIELDS = {
+    0x01: ("receiver", "operator_controls", "af_level"),
+    0x02: ("receiver", "operator_controls", "rf_gain"),
+    0x03: ("receiver", "operator_controls", "squelch"),
+    0x05: ("receiver", "operator_controls", "apf_type_level"),
+    0x06: ("receiver", "operator_controls", "nr_level"),
+    0x07: ("receiver", "operator_controls", "pbt_inner"),
+    0x08: ("receiver", "operator_controls", "pbt_outer"),
+    0x0A: ("global", "operator_controls", "power_level"),
+    0x0B: ("global", "operator_controls", "mic_gain"),
+    0x0E: ("global", "operator_controls", "compressor_level"),
+    0x12: ("receiver", "operator_controls", "nb_level"),
+    0x15: ("global", "operator_controls", "monitor_gain"),
+    0x16: ("global", "operator_controls", "vox_gain"),
+    0x17: ("global", "operator_controls", "anti_vox_gain"),
+}
+
+# 0x14 cw_pitch (sub 0x09) is observation-backed too, but its raw level → Hz
+# mapping is non-linear, so it is decoded via ``_cw_pitch_from_level`` rather
+# than the plain BCD ``_decode_level`` used for the other 0x14 levels (MOR-437).
+_OBSERVABLE_CMD14_CW_PITCH_SUB = 0x09
+_CMD14_CW_PITCH_FIELD = ("global", "operator_controls", "cw_pitch")
+
+# 0x14 key_speed (sub 0x0C) is observation-backed too; its raw level → WPM
+# mapping is linear (``round(level / 6.071 + 6)``, range 6-48), so it is decoded
+# via ``_key_speed_from_level`` rather than the plain BCD ``_decode_level`` used
+# for the other 0x14 levels (MOR-493).
+_OBSERVABLE_CMD14_KEY_SPEED_SUB = 0x0C
+_CMD14_KEY_SPEED_FIELD = ("global", "operator_controls", "key_speed")
+
+# 0x14 level sub-commands whose RadioState mirror write was migrated to the
+# StateStore observation pipeline (MOR-437). ``_handle_14`` skips the redundant
+# ``setattr`` mirror for these; ``_observations_from_frame`` is the source of
+# truth and reuses the identical decode.
+_CMD14_OBSERVATION_BACKED_SUBS = frozenset(
+    {
+        0x02,  # rf_gain (receiver)
+        0x03,  # squelch (receiver)
+        0x05,  # apf_type_level (receiver, interim 0-255 scale — MOR-452)
+        0x06,  # nr_level (receiver)
+        0x12,  # nb_level (receiver)
+        0x0B,  # mic_gain (global)
+        0x0E,  # compressor_level (global)
+        0x15,  # monitor_gain (global)
+        0x09,  # cw_pitch (global)
+        0x0C,  # key_speed (global, raw level → WPM — MOR-493)
+        0x16,  # vox_gain (global, interim device scale — MOR-459)
+        0x17,  # anti_vox_gain (global, interim device scale — MOR-459)
+    }
+)
+
+# 0x16 value sub-commands whose RadioState mirror write was migrated to the
+# StateStore observation pipeline (MOR-437). ``_handle_16`` skips the redundant
+# ``setattr`` mirror for these (while still firing the legacy notify event);
+# ``_observations_from_frame`` is the source of truth.
+_CMD16_OBSERVATION_BACKED_VALUE_SUBS = frozenset(
+    {
+        0x02,  # preamp (receiver, raw byte)
+        0x12,  # agc (receiver, BCD nibble)
+        0x32,  # audio_peak_filter (receiver, BCD nibble — MOR-452)
+    }
+)
+
+# 0x1B tone/TSQL-freq sub-commands whose RadioState mirror write was migrated to
+# the StateStore observation pipeline (MOR-451). ``_handle_1b`` skips the
+# redundant ``setattr`` mirror for these; ``_observations_from_frame`` is the
+# source of truth and reuses the identical ``_decode_tone_freq`` decode.
+_CMD1B_OBSERVATION_BACKED_SUBS = frozenset(
+    {
+        0x00,  # tone_freq (receiver)
+        0x01,  # tsql_freq (receiver)
+    }
+)
+
+# 0x1B sub-command → receiver FieldPath spec for tone/TSQL freq observations.
+_OBSERVABLE_CMD1B_FIELDS = {
+    0x00: ("receiver", "operator_controls", "tone_freq"),
+    0x01: ("receiver", "operator_controls", "tsql_freq"),
+}
+
+_OBSERVABLE_CMD15_FIELDS = {
+    0x02: ("receiver", "meters", "s_meter"),
+    0x11: ("global", "meters", "power"),
+    0x12: ("global", "meters", "swr"),
+    0x13: ("global", "meters", "alc"),
+    # PA-telemetry meters promoted to neutral observations (MOR-460). ``comp``
+    # is the cross-vendor case (also Yaesu FTX-1 RM3); ``vd``/``id`` are Icom
+    # CI-V ingress (``vd`` shared by Xiegu X6200 via the same backend). The
+    # legacy ``RadioState`` mirror writes in ``_handle_15`` are removed.
+    0x14: ("global", "meters", "comp"),
+    0x15: ("global", "meters", "vd"),
+    0x16: ("global", "meters", "id"),
+}
+
+# Squelch-open / DCD (RX-busy) status. Unlike the 2-byte BCD meter levels above,
+# this is a single-byte bool reported under cmd 0x15 sub 0x01 and sub 0x05; both
+# subs feed the same neutral ``dcd`` receiver toggle (MOR-466). Handled by a
+# dedicated bool branch in ``_observations_from_frame`` (the level branch is
+# gated on ``len(frame.data) >= 2`` and never matches a single byte).
+_OBSERVABLE_CMD15_SQL_OPEN_SUBS = frozenset({0x01, 0x05})
+_CMD15_DCD_FIELD = ("receiver", "operator_toggles", "dcd")
+
+_OBSERVABLE_CMD16_FIELDS = {
+    0x22: ("receiver", "operator_toggles", "nb"),
+    0x40: ("receiver", "operator_toggles", "nr"),
+    0x41: ("receiver", "operator_toggles", "auto_notch"),
+    0x42: ("receiver", "operator_toggles", "repeater_tone"),
+    0x43: ("receiver", "operator_toggles", "repeater_tsql"),
+    0x48: ("receiver", "operator_toggles", "manual_notch"),
+    0x4E: ("receiver", "operator_toggles", "digisel"),
+    0x4F: ("receiver", "operator_toggles", "twin_peak_filter"),
+    0x65: ("receiver", "operator_toggles", "ipplus"),
+    0x44: ("global", "tx_state", "compressor_on"),
+    0x45: ("global", "tx_state", "monitor_on"),
+    0x46: ("global", "tx_state", "vox_on"),
+}
+
+# 0x16 value sub-commands → (FieldPath spec, decode mode). ``raw`` keeps the
+# data byte verbatim (preamp), ``bcd_nibble`` decodes the BCD-nibble pair the
+# legacy mirror used for agc. Both reuse the exact decode of ``_handle_16``.
+_OBSERVABLE_CMD16_VALUE_FIELDS = {
+    0x02: (("receiver", "operator_controls", "preamp"), "raw"),
+    0x12: (("receiver", "operator_controls", "agc"), "bcd_nibble"),
+    0x32: (("receiver", "operator_controls", "audio_peak_filter"), "bcd_nibble"),
+}
+
+
+def _decode_bcd_nibble(value: int) -> int:
+    """Decode a single BCD-nibble byte (matches ``_handle_16``/``_handle_11``)."""
+    return ((value >> 4) & 0x0F) * 10 + (value & 0x0F)
+
+
+def _frame_native_id(frame: CivFrame) -> str:
+    if frame.sub is None:
+        return f"civ:{frame.command:02x}"
+    return f"civ:{frame.command:02x}:{frame.sub:02x}"
+
+
+_RECEIVER_ALIASES: dict[str, str] = {
+    "0": "main",
+    "main": "0",
+    "1": "sub",
+    "sub": "1",
+}
+
+
+def _field_paths_match(expected: FieldPath, observed: FieldPath) -> bool:
+    if expected == observed:
+        return True
+    if (
+        expected.scope != observed.scope
+        or expected.family != observed.family
+        or expected.name != observed.name
+        or expected.slot != observed.slot
+    ):
+        return False
+    if expected.receiver_id is None or observed.receiver_id is None:
+        return bool(expected.receiver_id == observed.receiver_id)
+    return bool(_RECEIVER_ALIASES.get(expected.receiver_id) == observed.receiver_id)
+
+
+def _profile_path_for_observation(profile: Any, path: FieldPath) -> FieldPath:
+    if path.receiver_id is None:
+        return path
+    candidates = [path]
+    alias = _RECEIVER_ALIASES.get(path.receiver_id)
+    if alias is not None:
+        candidates.append(_replace_dataclass(path, receiver_id=alias))
+    for candidate in candidates:
+        capability = profile.capability_for(candidate)
+        if capability.availability.value != "unknown":
+            return candidate
+    return path
+
+
+def _changeset_for_request_paths(
+    changeset: ChangeSet,
+    *,
+    observed_path: FieldPath,
+    request_paths: tuple[FieldPath, ...],
+) -> ChangeSet:
+    if (
+        not changeset.changes
+        and not changeset.observed_paths
+        and not changeset.freshness_paths
+    ):
+        return changeset
+    remapped_observed_paths = tuple(
+        _request_path_for_observed_path(
+            path,
+            observed_path=observed_path,
+            request_paths=request_paths,
+        )
+        or path
+        for path in changeset.observed_paths
+    )
+    remapped_freshness_paths = tuple(
+        _request_path_for_observed_path(
+            path,
+            observed_path=observed_path,
+            request_paths=request_paths,
+        )
+        or path
+        for path in changeset.freshness_paths
+    )
+    remapped: list[FieldChange] = []
+    for change in changeset.changes:
+        replacement = _request_path_for_observed_path(
+            change.path,
+            observed_path=observed_path,
+            request_paths=request_paths,
+        )
+        remapped.append(
+            change
+            if replacement is None
+            else _replace_dataclass(change, path=replacement)
+        )
+    return _replace_dataclass(
+        changeset,
+        changes=tuple(remapped),
+        observed_paths=remapped_observed_paths,
+        freshness_paths=remapped_freshness_paths,
+    )
+
+
+def _request_path_for_observed_path(
+    path: FieldPath,
+    *,
+    observed_path: FieldPath,
+    request_paths: tuple[FieldPath, ...],
+) -> FieldPath | None:
+    if not _field_paths_match(path, observed_path):
+        return None
+    for request_path in request_paths:
+        if _field_paths_match(request_path, path):
+            return request_path
+    return None
+
 
 _CMD1A_CTL_MEM_LEVEL_FIELDS = {
     b"\x00\x70": ("ref_adjust", 2),
@@ -160,6 +483,12 @@ _CMD1A_CTL_MEM_LEVEL_FIELDS = {
     b"\x02\x91": ("nb_width", 2),
     b"\x02\x92": ("vox_delay", 1),
 }
+
+# 0x1A/0x05 ctl-mem prefix whose RadioState mirror write was migrated to the
+# StateStore observation pipeline (MOR-459). ``_handle_1a`` skips the redundant
+# ``setattr`` mirror for this prefix; ``_observations_from_frame`` is the source
+# of truth and reuses the identical ``parse_level_response`` decode.
+_CTL_MEM_VOX_DELAY_PREFIX = b"\x02\x92"
 
 # CI-V data watchdog (wfview icomudpcivdata::watchdog)
 # If no CI-V data for this long, send open_close to restart the stream.
@@ -374,6 +703,7 @@ class CivRuntime:
         dedupe: bool = False,
         wait_response: bool = True,
         timeout: "float | None" = None,
+        wait_dispatch: bool = True,
     ) -> "CivFrame | None":
         """Enqueue a CI-V command and wait for its response (public API)."""
         return await self._send_civ_raw(
@@ -383,6 +713,7 @@ class CivRuntime:
             dedupe=dedupe,
             wait_response=wait_response,
             timeout=timeout,
+            wait_dispatch=wait_dispatch,
         )
 
     async def _send_civ_frame_now(self, civ_frame: bytes) -> None:
@@ -799,6 +1130,8 @@ class CivRuntime:
 
     def _update_state_cache_from_frame(self, frame: CivFrame) -> None:
         """Best-effort update of state cache from an incoming CI-V frame."""
+        self._apply_state_store_observations(frame)
+
         host = self._host
         _rs = getattr(host, "_radio_state", None)
         _rx = None
@@ -838,55 +1171,36 @@ class CivRuntime:
                 if _rs is not None:
                     _rs.power_on = power_on
                 self._notify_change("powerstat_changed", {"power_on": power_on})
-            elif frame.command == 0x11 and frame.data and _rx is not None:
-                # Attenuator response (plain CI-V, no cmd29)
-                val = frame.data[0]
-                _rx.att = ((val >> 4) & 0x0F) * 10 + (val & 0x0F)
-            elif frame.command == 0x12 and frame.data and _rs is not None:
-                # Antenna select / RX-ANT state (plain CI-V)
-                # IC-7610 CI-V reference:
-                #   0x12 0x00 <00|01> = select ANT1, data = RX ANT OFF/ON
-                #   0x12 0x01 <00|01> = select ANT2, data = RX ANT OFF/ON
-                # NOTE: This command is NOT safe to poll.
-                sub = frame.sub or 0
-                val = bool(frame.data[0])
-                if sub == 0x00:
-                    _rs.tx_antenna = 1
-                    _rs.rx_antenna_1 = val
-                elif sub == 0x01:
-                    _rs.tx_antenna = 2
-                    _rs.rx_antenna_2 = val
+            elif frame.command == 0x12:
+                # Antenna select / RX-ANT state (plain CI-V): 0x12 0x00/0x01.
+                # The RadioState mirror write (tx_antenna / rx_antenna_1/2) was
+                # migrated to the StateStore observation pipeline (MOR-462);
+                # ``_observations_from_frame`` is the source of truth and reuses
+                # the identical sub→TX-antenna and data-byte→RX-ANT decode. This
+                # command is NOT safe to poll, so the fields are ingress-gated.
+                pass
             elif (
                 frame.command == 0x14
                 and frame.data
                 and len(frame.data) >= 2
                 and _rx is not None
             ):
-                # Level response (plain CI-V, no cmd29)
+                # Level response (plain CI-V, no cmd29). rf_gain (0x02), squelch
+                # (0x03), nr_level (0x06) and nb_level (0x12) are now
+                # observation-backed (MOR-437); only af_level (0x01) still
+                # mirrors into legacy RadioState here.
                 sub = frame.sub or 0
                 raw = ((frame.data[0] >> 4) & 0x0F) * 100 + (frame.data[0] & 0x0F) * 10
                 if len(frame.data) > 1:
                     raw += (frame.data[1] >> 4) & 0x0F
                 if sub == 0x01:
                     _rx.af_level = raw
-                elif sub == 0x02:
-                    _rx.rf_gain = raw
-                elif sub == 0x03:
-                    _rx.squelch = raw
-                elif sub == 0x06:
-                    _rx.nr_level = raw
-                elif sub == 0x12:
-                    _rx.nb_level = raw
             elif frame.command == 0x16:
                 data = frame.data
                 sub = frame.sub or 0
-                if data and sub == 0x02 and _rx is not None:
-                    # Preamp response (plain CI-V)
-                    _rx.preamp = data[0]
-                elif data and sub == 0x12 and _rx is not None:
-                    # AGC mode response (plain CI-V)
-                    _rx.agc = data[0]
-                elif data and sub == 0x22 and _rx is not None:
+                # preamp (0x02) and agc (0x12) are now observation-backed
+                # (MOR-437); their legacy RadioState mirror was removed here.
+                if data and sub == 0x22 and _rx is not None:
                     # NB on/off (plain CI-V)
                     _rx.nb = bool(data[0])
                     self._notify_change("nb_changed", {"on": bool(data[0])})
@@ -906,28 +1220,10 @@ class CivRuntime:
                 and frame.data
                 and _rx is not None
             ):
-                from rigplane.commands import _bcd_decode_value, filter_index_to_hz
-
-                filter_index = _bcd_decode_value(frame.data)
-                profile = getattr(host, "_profile", None)
-                if (
-                    profile is not None
-                    and getattr(profile, "filter_width_encoding", None)
-                    == "segmented_bcd_index"
-                ):
-                    rule = profile.resolve_filter_rule(
-                        getattr(_rx, "mode", None),
-                        data_mode=int(getattr(_rx, "data_mode", 0) or 0),
-                    )
-                    if rule is not None and rule.segments:
-                        decoded_width = filter_index_to_hz(
-                            filter_index, segments=rule.segments
-                        )
-                    else:
-                        decoded_width = filter_index
-                else:
-                    decoded_width = filter_index
-                _rx.filter_width = decoded_width
+                # filter_width RadioState mirror is now observation-backed
+                # (MOR-437); only the private executor _state_cache fallback
+                # (main receiver) is kept here, reusing the identical decode.
+                decoded_width = self._decode_filter_width(frame)
                 if getattr(frame, "receiver", None) in (None, 0x00):
                     host._state_cache.filter_width = decoded_width
             elif frame.command == 0x07 and frame.data and len(frame.data) >= 2:
@@ -965,12 +1261,11 @@ class CivRuntime:
         self._update_radio_state_from_frame(frame)
 
     def _update_radio_state_from_frame(self, frame: CivFrame) -> None:
-        """Update RadioState from a CI-V frame (additive alongside StateCache).
+        """Mirror confirmed observations into legacy RadioState compatibility.
 
-        Top-level dispatch via ``_RADIO_STATE_HANDLERS`` (cmd-keyed). Each
-        handler is a small private method that performs the same mutations
-        as the original if/elif ladder. Behavior is fenced by the golden
-        tests in ``tests/test_civ_rx_dispatch_golden.py``.
+        ``StateStore.apply(...)`` is the canonical semantic write path. These
+        handlers remain only as compatibility shims for MOR-341/MOR-347 until
+        Web and other consumers stop reading mutable ``RadioState`` directly.
         """
         rs: "RadioState | None" = getattr(self._host, "_radio_state", None)
         if rs is None:
@@ -996,6 +1291,17 @@ class CivRuntime:
 
             handler = self._RADIO_STATE_HANDLERS.get(frame.command)
             if handler is not None:
+                self._record_state_diagnostic(
+                    "direct_state_write",
+                    "civ_rx",
+                    command=f"0x{frame.command:02x}",
+                    sub=None if frame.sub is None else f"0x{frame.sub:02x}",
+                    receiver=rx_name,
+                    field_family=_CIV_STATE_FIELD_FAMILIES.get(
+                        frame.command, "unknown"
+                    ),
+                    slot_override=slot_override,
+                )
                 handler(self, frame, rx, rs, slot_override)
 
         except (ValueError, IndexError, KeyError, AttributeError, TypeError) as exc:
@@ -1007,6 +1313,640 @@ class CivRuntime:
             )
         except Exception:
             logger.warning("civ-rx: unexpected error in state update", exc_info=True)
+
+    def _apply_state_store_observations(self, frame: CivFrame) -> None:
+        """Project supported CI-V ingress fields into the runtime StateStore."""
+
+        try:
+            observations = self._observations_from_frame(frame)
+        except (ValueError, IndexError, KeyError, AttributeError, TypeError) as exc:
+            logger.debug(
+                "civ-rx: observation decode failed for cmd=0x%02x sub=0x%02x: %s",
+                frame.command,
+                frame.sub or 0,
+                exc,
+            )
+            return
+        except Exception:
+            logger.warning(
+                "civ-rx: unexpected observation decode error for cmd=0x%02x sub=0x%02x",
+                frame.command,
+                frame.sub or 0,
+                exc_info=True,
+            )
+            return
+
+        for observation in observations:
+            try:
+                self.flush_due_meter_observations(now=observation.timestamp_monotonic)
+                if self._record_coalesced_meter_observation(observation):
+                    continue
+                changeset = self._host._state_store.apply(observation)
+                self._record_scheduler_result_for_observation(
+                    observation,
+                    changeset,
+                )
+                self._notify_state_store_changed(changeset)
+            except Exception:
+                logger.warning(
+                    "civ-rx: state-store apply failed for %s",
+                    observation.path,
+                    exc_info=True,
+                )
+
+    def _record_coalesced_meter_observation(self, observation: Observation) -> bool:
+        if observation.path.family.value != "meters":
+            return False
+        scheduler = getattr(self._host, "_acquisition_scheduler", None)
+        if not isinstance(scheduler, AcquisitionScheduler):
+            return False
+        profile = getattr(scheduler, "_profile", None)
+        if profile is None:
+            return False
+        policy = profile.policy_for(
+            _profile_path_for_observation(profile, observation.path)
+        )
+        if policy.meter_coalescing is None:
+            return False
+        coalescer = getattr(self._host, "_meter_observation_coalescer", None)
+        if not isinstance(coalescer, MeterObservationCoalescer):
+            return False
+        coalescer.record(observation, policy.meter_coalescing)
+        self._record_state_diagnostic(
+            "meter_coalescing",
+            "civ_rx.coalescer",
+            **coalescer.diagnostics(),
+        )
+        self.flush_due_meter_observations(now=observation.timestamp_monotonic)
+        return True
+
+    def flush_due_meter_observations(
+        self, *, now: float | None = None
+    ) -> ChangeSet | None:
+        coalescer = getattr(self._host, "_meter_observation_coalescer", None)
+        if not isinstance(coalescer, MeterObservationCoalescer):
+            return None
+        timestamp = time.monotonic() if now is None else now
+        changeset = coalescer.flush_due(self._host._state_store, now=timestamp)
+        if changeset is None:
+            return None
+        self._record_scheduler_results_for_changeset(changeset)
+        self._record_state_diagnostic(
+            "meter_coalescing",
+            "civ_rx.coalescer",
+            **coalescer.diagnostics(),
+        )
+        self._notify_state_store_changed(changeset)
+        return changeset
+
+    def _record_scheduler_result_for_observation(
+        self,
+        observation: Observation,
+        changeset: ChangeSet,
+    ) -> None:
+        scheduler = getattr(self._host, "_acquisition_scheduler", None)
+        if not isinstance(scheduler, AcquisitionScheduler):
+            return
+        for request in scheduler.pending_requests():
+            matched_paths = tuple(
+                path
+                for path in request.paths
+                if _field_paths_match(path, observation.path)
+            )
+            if not matched_paths:
+                continue
+            scheduler.record_acquisition_result(
+                _replace_dataclass(request, paths=matched_paths),
+                _changeset_for_request_paths(
+                    changeset,
+                    observed_path=observation.path,
+                    request_paths=matched_paths,
+                ),
+            )
+            self._record_state_diagnostic(
+                "acquisition_result",
+                "civ_rx.scheduler",
+                request_id=request.id,
+                paths=[str(path) for path in matched_paths],
+                changed=bool(changeset.changes),
+            )
+
+    def _record_scheduler_results_for_changeset(self, changeset: ChangeSet) -> None:
+        scheduler = getattr(self._host, "_acquisition_scheduler", None)
+        if not isinstance(scheduler, AcquisitionScheduler):
+            return
+        change_by_path = {change.path: change for change in changeset.changes}
+        paths = changeset.observed_paths or tuple(change_by_path)
+        for path in paths:
+            change = change_by_path.get(path)
+            observation = Observation(
+                path=path,
+                value=None if change is None else change.current,
+                source=changeset.sources[0]
+                if changeset.sources
+                else SourceMetadata(
+                    source="command_response",
+                    provider="icom_civ",
+                    transport="civ",
+                    native_id="coalesced",
+                ),
+                timestamp_monotonic=changeset.timestamp_monotonic,
+            )
+            self._record_scheduler_result_for_observation(observation, changeset)
+
+    def _notify_state_store_changed(self, changeset: ChangeSet) -> None:
+        paths = {change.path for change in changeset.changes}
+        paths.update(changeset.freshness_paths)
+        if not paths:
+            return
+        self._notify_change(
+            "state_store_changed",
+            {
+                "coalesced": changeset.coalesced,
+                "paths": sorted(str(path) for path in paths),
+            },
+        )
+
+    def _observations_from_frame(self, frame: CivFrame) -> tuple[Observation, ...]:
+        """Decode one CI-V frame into supported observation contracts."""
+
+        receiver_id, _, slot_override = self._receiver_context(frame)
+        observations: list[Observation] = []
+
+        if frame.command in (0x00, 0x03):
+            if len(frame.data) == _FREQ_BCD_LEN:
+                observations.append(
+                    self._observation(
+                        self._freq_mode_path(
+                            receiver_id=receiver_id,
+                            slot_override=slot_override,
+                            name="freq_hz",
+                        ),
+                        parse_frequency_response(frame),
+                        frame=frame,
+                    )
+                )
+        elif frame.command in (0x01, 0x04):
+            mode_val, filt = parse_mode_response(frame)
+            observations.append(
+                self._observation(
+                    self._freq_mode_path(
+                        receiver_id=receiver_id,
+                        slot_override=slot_override,
+                        name="mode",
+                    ),
+                    mode_val.name,
+                    frame=frame,
+                )
+            )
+            if filt is not None:
+                observations.append(
+                    self._observation(
+                        self._freq_mode_path(
+                            receiver_id=receiver_id,
+                            slot_override=slot_override,
+                            name="filter_num",
+                        ),
+                        int(filt),
+                        frame=frame,
+                    )
+                )
+        elif frame.command == 0x25 and len(frame.data) >= 6:
+            from rigplane.types import bcd_decode
+
+            target_receiver = "1" if frame.data[0] else "0"
+            observations.append(
+                self._observation(
+                    FieldPath.active(target_receiver, "freq_mode", "freq_hz"),
+                    bcd_decode(frame.data[1:6]),
+                    frame=frame,
+                )
+            )
+        elif frame.command == 0x26 and len(frame.data) >= 2:
+            target_receiver = "1" if frame.data[0] else "0"
+            observations.append(
+                self._observation(
+                    FieldPath.active(target_receiver, "freq_mode", "mode"),
+                    Mode(frame.data[1]).name,
+                    frame=frame,
+                )
+            )
+            if len(frame.data) >= 4:
+                observations.append(
+                    self._observation(
+                        FieldPath.active(target_receiver, "freq_mode", "filter_num"),
+                        int(frame.data[3]),
+                        frame=frame,
+                    )
+                )
+        elif frame.command == 0x14 and len(frame.data) >= 2:
+            sub14 = frame.sub or 0
+            if sub14 == _OBSERVABLE_CMD14_CW_PITCH_SUB:
+                # cw_pitch raw level → Hz (non-linear) — reuse the exact decode
+                # the legacy mirror and ``set_cw_pitch`` use (MOR-437).
+                observations.append(
+                    self._observation(
+                        self._field_path(
+                            _CMD14_CW_PITCH_FIELD, receiver_id=receiver_id
+                        ),
+                        _cw_pitch_from_level(self._decode_level(frame.data)),
+                        frame=frame,
+                    )
+                )
+            elif sub14 == _OBSERVABLE_CMD14_KEY_SPEED_SUB:
+                # key_speed raw level → WPM (linear) — reuse the exact decode
+                # the legacy mirror and ``set_key_speed`` use (MOR-493).
+                observations.append(
+                    self._observation(
+                        self._field_path(
+                            _CMD14_KEY_SPEED_FIELD, receiver_id=receiver_id
+                        ),
+                        _key_speed_from_level(self._decode_level(frame.data)),
+                        frame=frame,
+                    )
+                )
+            else:
+                mapping = _OBSERVABLE_CMD14_FIELDS.get(sub14)
+                if mapping is not None:
+                    observations.append(
+                        self._observation(
+                            self._field_path(mapping, receiver_id=receiver_id),
+                            self._decode_level(frame.data),
+                            frame=frame,
+                        )
+                    )
+        elif (
+            frame.command == 0x15
+            and frame.sub in _OBSERVABLE_CMD15_SQL_OPEN_SUBS
+            and frame.data
+        ):
+            # Squelch-open / DCD (RX-busy): single-byte bool under sub 0x01 and
+            # sub 0x05, both promoted to the neutral receiver ``dcd`` toggle
+            # (MOR-466). The legacy ``RadioState.s_meter_sql_open`` mirror write
+            # in ``_handle_15`` is removed; the StateStore is the source of truth.
+            observations.append(
+                self._observation(
+                    self._field_path(_CMD15_DCD_FIELD, receiver_id=receiver_id),
+                    bool(frame.data[0]),
+                    frame=frame,
+                )
+            )
+        elif frame.command == 0x15 and len(frame.data) >= 2:
+            mapping = _OBSERVABLE_CMD15_FIELDS.get(frame.sub or 0)
+            if mapping is not None:
+                observations.append(
+                    self._observation(
+                        self._field_path(mapping, receiver_id=receiver_id),
+                        self._decode_level(frame.data),
+                        frame=frame,
+                    )
+                )
+        elif frame.command == 0x16:
+            sub = frame.sub or 0
+            data = frame.data
+            if sub == 0 and len(data) >= 2:
+                sub = data[0]
+                data = data[1:]
+            mapping = _OBSERVABLE_CMD16_FIELDS.get(sub)
+            value_mapping = _OBSERVABLE_CMD16_VALUE_FIELDS.get(sub)
+            if mapping is not None and data:
+                observations.append(
+                    self._observation(
+                        self._field_path(mapping, receiver_id=receiver_id),
+                        bool(data[0]),
+                        frame=frame,
+                    )
+                )
+            elif value_mapping is not None and data:
+                spec, decode_mode = value_mapping
+                value = (
+                    _decode_bcd_nibble(data[0])
+                    if decode_mode == "bcd_nibble"
+                    else data[0]
+                )
+                observations.append(
+                    self._observation(
+                        self._field_path(spec, receiver_id=receiver_id),
+                        value,
+                        frame=frame,
+                    )
+                )
+        elif frame.command == 0x11 and frame.data:
+            # Attenuator value (BCD nibbles → dB) — same decode as ``_handle_11``.
+            observations.append(
+                self._observation(
+                    FieldPath.receiver(receiver_id, "operator_controls", "att"),
+                    _decode_bcd_nibble(frame.data[0]),
+                    frame=frame,
+                )
+            )
+        elif frame.command == 0x12 and frame.sub in (0x00, 0x01):
+            # Antenna selection (0x12): sub 0x00 → ANT1, 0x01 → ANT2; the data
+            # byte (when present) carries the RX-ANT OFF/ON state for that
+            # connector. Reuse the exact decode of ``_handle_12`` (and the inline
+            # ``_update_state_cache_from_frame`` mirror), promoting both halves to
+            # neutral global fields (MOR-462). TX-antenna selection is a global
+            # operator-control int (1/2); the per-connector RX-ANT toggle is a
+            # global slow-state bool. NOT safe to poll — ingress-gated only.
+            observations.append(
+                self._observation(
+                    FieldPath.global_("operator_controls", "tx_antenna"),
+                    frame.sub + 1,  # 0x00 → 1, 0x01 → 2
+                    frame=frame,
+                )
+            )
+            if frame.data:
+                rx_ant_name = "rx_antenna_1" if frame.sub == 0x00 else "rx_antenna_2"
+                observations.append(
+                    self._observation(
+                        FieldPath.global_("slow_state", rx_ant_name),
+                        bool(frame.data[0]),
+                        frame=frame,
+                    )
+                )
+        elif frame.command == 0x1A and frame.sub == 0x03 and frame.data:
+            # Filter width: profile-dependent CI-V index → Hz, reusing the exact
+            # decode + receiver/profile context of ``_handle_1a`` (MOR-437).
+            observations.append(
+                self._observation(
+                    self._freq_mode_path(
+                        receiver_id=receiver_id,
+                        slot_override=slot_override,
+                        name="filter_width",
+                    ),
+                    self._decode_filter_width(frame),
+                    frame=frame,
+                )
+            )
+        elif frame.command == 0x1A and frame.sub == 0x04 and frame.data:
+            # AGC time constant: 1-byte BCD, same decode as ``_handle_1a``.
+            observations.append(
+                self._observation(
+                    FieldPath.receiver(
+                        receiver_id, "operator_controls", "agc_time_constant"
+                    ),
+                    parse_level_response(frame, command=0x1A, sub=0x04, bcd_bytes=1),
+                    frame=frame,
+                )
+            )
+        elif frame.command == 0x1A and frame.sub == 0x06 and frame.data:
+            # Data mode: raw byte, same as ``_handle_1a``.
+            observations.append(
+                self._observation(
+                    self._freq_mode_path(
+                        receiver_id=receiver_id,
+                        slot_override=slot_override,
+                        name="data_mode",
+                    ),
+                    frame.data[0],
+                    frame=frame,
+                )
+            )
+        elif (
+            frame.command == 0x1A
+            and frame.sub == 0x05
+            and frame.data.startswith(_CTL_MEM_VOX_DELAY_PREFIX)
+        ):
+            # VOX hang delay: 1-byte BCD ctl-mem level, reusing the exact decode
+            # of ``_handle_1a`` (``parse_level_response`` with the 0x02 0x92
+            # prefix). Promoted to a global operator-control int (MOR-459).
+            observations.append(
+                self._observation(
+                    FieldPath.global_("operator_controls", "vox_delay"),
+                    parse_level_response(
+                        frame,
+                        command=0x1A,
+                        sub=0x05,
+                        prefix=_CTL_MEM_VOX_DELAY_PREFIX,
+                        bcd_bytes=1,
+                    ),
+                    frame=frame,
+                )
+            )
+        elif frame.command == 0x1B and len(frame.data) >= 3:
+            # Tone/TSQL freq: BCD freq → centiHz, reusing the exact decode of
+            # ``_handle_1b`` (``round(_decode_tone_freq(...) * 100)``) (MOR-451).
+            mapping = _OBSERVABLE_CMD1B_FIELDS.get(frame.sub or 0)
+            if mapping is not None:
+                from rigplane.commands import _decode_tone_freq
+
+                observations.append(
+                    self._observation(
+                        self._field_path(mapping, receiver_id=receiver_id),
+                        round(_decode_tone_freq(frame.data) * 100),
+                        frame=frame,
+                    )
+                )
+        elif frame.command == 0x18 and len(frame.data) == 1:
+            observations.append(
+                self._observation(
+                    FieldPath.global_("tx_state", "power_on"),
+                    bool(frame.data[0]),
+                    frame=frame,
+                )
+            )
+        elif frame.command == 0x1C and frame.sub == 0x00 and frame.data:
+            observations.append(
+                self._observation(
+                    FieldPath.global_("tx_state", "ptt"),
+                    bool(frame.data[0]),
+                    frame=frame,
+                )
+            )
+        elif frame.command == 0x1C and frame.sub == 0x01 and frame.data:
+            observations.append(
+                self._observation(
+                    FieldPath.global_("operator_controls", "tuner_status"),
+                    frame.data[0],
+                    frame=frame,
+                )
+            )
+        elif frame.command == 0x1C and frame.sub == 0x03 and frame.data:
+            observations.append(
+                self._observation(
+                    FieldPath.global_("tx_state", "tx_freq_monitor"),
+                    bool(frame.data[0]),
+                    frame=frame,
+                )
+            )
+        elif frame.command == 0x07 and len(frame.data) >= 2:
+            sub07 = frame.data[0]
+            val07 = frame.data[1]
+            if sub07 == 0xD2:
+                observations.append(
+                    self._observation(
+                        FieldPath.global_("slow_state", "active"),
+                        "SUB" if val07 else "MAIN",
+                        frame=frame,
+                    )
+                )
+            elif sub07 == 0xC2:
+                observations.append(
+                    self._observation(
+                        FieldPath.global_("tx_state", "dual_watch"),
+                        bool(val07),
+                        frame=frame,
+                    )
+                )
+        elif frame.command == 0x0F and frame.data:
+            observations.append(
+                self._observation(
+                    FieldPath.global_("tx_state", "split"),
+                    bool(frame.data[0]),
+                    frame=frame,
+                )
+            )
+        elif frame.command == 0x10 and frame.data:
+            # Tuning step: device step index (0-8), BCD nibble-pair byte.
+            # Reuse the exact decode of ``_handle_10`` / ``get_tuning_step``;
+            # the value is a device step code, not Hz (MOR-461). Promoted to a
+            # neutral global slow-state int; Hz mapping is deferred to MOR-453.
+            b = frame.data[0]
+            observations.append(
+                self._observation(
+                    FieldPath.global_("slow_state", "tuning_step"),
+                    ((b >> 4) & 0x0F) * 10 + (b & 0x0F),
+                    frame=frame,
+                )
+            )
+        elif frame.command == 0x21:
+            if frame.sub == 0x00 and len(frame.data) >= 3:
+                observations.append(
+                    self._observation(
+                        FieldPath.global_("operator_controls", "rit_freq"),
+                        parse_rit_frequency_response(frame.data),
+                        frame=frame,
+                    )
+                )
+            elif frame.sub == 0x01 and frame.data:
+                observations.append(
+                    self._observation(
+                        FieldPath.global_("tx_state", "rit_on"),
+                        bool(frame.data[0]),
+                        frame=frame,
+                    )
+                )
+            elif frame.sub == 0x02 and frame.data:
+                observations.append(
+                    self._observation(
+                        FieldPath.global_("tx_state", "rit_tx"),
+                        bool(frame.data[0]),
+                        frame=frame,
+                    )
+                )
+
+        return tuple(observations)
+
+    def _receiver_context(self, frame: CivFrame) -> tuple[str, str, str | None]:
+        """Return receiver id/name plus any temporary VFO-slot override."""
+
+        rs = getattr(self._host, "_radio_state", None)
+        if frame.receiver is not None:
+            receiver_name = "SUB" if frame.receiver else "MAIN"
+            receiver_id = "1" if frame.receiver else "0"
+        else:
+            receiver_name = "SUB" if getattr(rs, "active", "MAIN") == "SUB" else "MAIN"
+            receiver_id = "1" if receiver_name == "SUB" else "0"
+
+        slot_override: str | None = None
+        override_map = getattr(self._host, "_vfo_slot_override", None)
+        if isinstance(override_map, dict):
+            candidate = override_map.get(receiver_name)
+            if candidate in ("A", "B"):
+                slot_override = candidate
+
+        return receiver_id, receiver_name, slot_override
+
+    @staticmethod
+    def _decode_level(data: bytes) -> int:
+        b0, b1 = data[0], data[1]
+        return (b0 >> 4) * 1000 + (b0 & 0x0F) * 100 + (b1 >> 4) * 10 + (b1 & 0x0F)
+
+    def _decode_filter_width(self, frame: CivFrame) -> int:
+        """Decode a 0x1A/0x03 filter-width frame to Hz.
+
+        Profile-dependent: when the active profile encodes filter width as a
+        ``segmented_bcd_index``, the BCD index is mapped to Hz via the
+        mode/data-mode filter rule; otherwise the raw index is returned. Shared
+        by ``_observations_from_frame`` and ``_handle_1a`` so both produce a
+        byte-for-byte identical value (MOR-437).
+        """
+
+        from rigplane.commands import _bcd_decode_value, filter_index_to_hz
+
+        filter_index = _bcd_decode_value(frame.data)
+        profile = getattr(self._host, "_profile", None)
+        rx = self._resolve_filter_width_receiver(frame)
+        if (
+            profile is not None
+            and getattr(profile, "filter_width_encoding", None) == "segmented_bcd_index"
+        ):
+            rule = profile.resolve_filter_rule(
+                getattr(rx, "mode", None),
+                data_mode=int(getattr(rx, "data_mode", 0) or 0),
+            )
+            if rule is not None and rule.segments:
+                return int(filter_index_to_hz(filter_index, segments=rule.segments))
+            return filter_index
+        return filter_index
+
+    def _resolve_filter_width_receiver(self, frame: CivFrame) -> Any:
+        """Resolve the RadioState receiver providing mode/data_mode context."""
+
+        rs = getattr(self._host, "_radio_state", None)
+        if rs is None:
+            return None
+        if frame.receiver is not None:
+            rx_name = "MAIN" if frame.receiver == 0x00 else "SUB"
+        else:
+            rx_name = rs.active
+        return rs.receiver(rx_name)
+
+    @staticmethod
+    def _field_path(
+        mapping: tuple[str, str, str],
+        *,
+        receiver_id: str,
+    ) -> FieldPath:
+        scope, family, name = mapping
+        if scope == "global":
+            return FieldPath.global_(family, name)
+        return FieldPath.receiver(receiver_id, family, name)
+
+    @staticmethod
+    def _freq_mode_path(
+        *,
+        receiver_id: str,
+        slot_override: str | None,
+        name: str,
+    ) -> FieldPath:
+        if slot_override is not None:
+            return FieldPath.vfo_slot(receiver_id, slot_override, "freq_mode", name)
+        return FieldPath.active(receiver_id, "freq_mode", name)
+
+    def _observation(
+        self, path: FieldPath, value: Any, *, frame: CivFrame
+    ) -> Observation:
+        source: ObservationSource = (
+            "civ_unsolicited"
+            if frame.to_addr == 0x00 or frame.command in (0x00, 0x01)
+            else "command_response"
+        )
+        return Observation(
+            path=path,
+            value=value,
+            source=SourceMetadata(
+                source=source,
+                provider="icom_civ",
+                transport="civ",
+                native_id=_frame_native_id(frame),
+                capability_id=str(path),
+            ),
+            timestamp_monotonic=time.monotonic(),
+            max_age=_OBSERVATION_MAX_AGE_SECONDS.get(
+                (path.scope.value, path.family.value, path.name)
+            ),
+        )
 
     # ------------------------------------------------------------------
     # Per-command handlers for _update_radio_state_from_frame.
@@ -1080,7 +2020,8 @@ class CivRuntime:
         rs: "RadioState",
         slot_override: str | None,
     ) -> None:
-        # cmd 0x07: VFO/dual-watch sub-subs (0xD2 active, 0xC2 dual-watch).
+        # cmd 0x07: VFO active sub-sub (0xD2). Dual-watch (0xC2) is now
+        # observation-backed (MOR-437); only the 0xD2 active mirror remains.
         if len(frame.data) >= 2:
             sub07 = frame.data[0]
             val07 = frame.data[1]
@@ -1092,12 +2033,6 @@ class CivRuntime:
                     self._notify_change(
                         "active_receiver_changed", {"active": new_active}
                     )
-            elif sub07 == 0xC2:
-                new_dw = bool(val07)
-                if rs.dual_watch != new_dw:
-                    rs.dual_watch = new_dw
-                    logger.debug("civ-rx: dual watch → %s", "ON" if new_dw else "OFF")
-                    self._notify_change("dual_watch_changed", {"on": new_dw})
 
     def _handle_0e(
         self,
@@ -1113,17 +2048,6 @@ class CivRuntime:
             if sub_0e <= 0x23:
                 rs.scanning = bool(sub_0e)
 
-    def _handle_0f(
-        self,
-        frame: CivFrame,
-        rx: Any,
-        rs: "RadioState",
-        slot_override: str | None,
-    ) -> None:
-        # cmd 0x0F: split on/off.
-        if frame.data:
-            rs.split = bool(frame.data[0])
-
     def _handle_10(
         self,
         frame: CivFrame,
@@ -1132,9 +2056,12 @@ class CivRuntime:
         slot_override: str | None,
     ) -> None:
         # cmd 0x10: tuning step (BCD nibble pair).
-        if frame.data:
-            b = frame.data[0]
-            rs.tuning_step = ((b >> 4) & 0x0F) * 10 + (b & 0x0F)
+        # Mirror write migrated to the StateStore observation pipeline (MOR-461);
+        # ``_observations_from_frame`` is the source of truth and reuses the
+        # identical device-step-index decode. The legacy ``tuning_step_changed``
+        # ``_notify_change`` event (in ``_update_state_cache_from_frame``) is kept
+        # for back-compat, mirroring the MOR-437 slow-state toggle events.
+        return
 
     def _handle_11(
         self,
@@ -1144,9 +2071,9 @@ class CivRuntime:
         slot_override: str | None,
     ) -> None:
         # cmd 0x11: attenuator value (BCD nibbles → dB).
-        if frame.data:
-            val = frame.data[0]
-            rx.att = ((val >> 4) & 0x0F) * 10 + (val & 0x0F)
+        # Mirror write migrated to the StateStore observation pipeline (MOR-437);
+        # ``_observations_from_frame`` is the source of truth.
+        return
 
     def _handle_12(
         self,
@@ -1155,18 +2082,11 @@ class CivRuntime:
         rs: "RadioState",
         slot_override: str | None,
     ) -> None:
-        # cmd 0x12: antenna selection.
-        # Sub 0x00 → ANT1, 0x01 → ANT2.
-        # Data byte: 0x00 = RX ANT OFF, 0x01 = RX ANT ON.
-        sub12 = frame.sub
-        if sub12 in (0x00, 0x01):
-            rs.tx_antenna = sub12 + 1  # 0x00→1, 0x01→2
-            if frame.data:
-                rx_ant_on = bool(frame.data[0])
-                if sub12 == 0x00:
-                    rs.rx_antenna_1 = rx_ant_on
-                else:
-                    rs.rx_antenna_2 = rx_ant_on
+        # cmd 0x12: antenna selection (sub 0x00 → ANT1, 0x01 → ANT2; data byte
+        # → RX-ANT OFF/ON). Mirror write migrated to the StateStore observation
+        # pipeline (MOR-462); ``_observations_from_frame`` is the source of truth
+        # and reuses the identical TX-antenna / RX-ANT decode.
+        return
 
     def _handle_14(
         self,
@@ -1180,12 +2100,15 @@ class CivRuntime:
             b0, b1 = frame.data[0], frame.data[1]
             raw = (b0 >> 4) * 1000 + (b0 & 0x0F) * 100 + (b1 >> 4) * 10 + (b1 & 0x0F)
             sub = frame.sub
+            if sub in _CMD14_OBSERVATION_BACKED_SUBS:
+                # rf_gain/squelch/nr_level/nb_level/mic_gain/compressor_level/
+                # monitor_gain/cw_pitch mirror writes migrated to the StateStore
+                # observation pipeline (MOR-437).
+                return
             if sub in _CMD14_RECEIVER_LEVEL_FIELDS:
                 setattr(rx, _CMD14_RECEIVER_LEVEL_FIELDS[sub], raw)
             elif sub == 0x0A:
                 rs.power_level = raw
-            elif sub == 0x09:
-                rs.cw_pitch = int(round((((600.0 / 255.0) * raw) + 300) / 5.0) * 5.0)
             elif sub == 0x0C:
                 rs.key_speed = round((raw / 6.071) + 6)
             elif sub in _CMD14_GLOBAL_LEVEL_FIELDS:
@@ -1199,11 +2122,12 @@ class CivRuntime:
         slot_override: str | None,
     ) -> None:
         # cmd 0x15: meter/SQL reads.
-        if frame.sub == 0x01 and frame.data:
-            rx.s_meter_sql_open = bool(frame.data[0])
-        elif frame.sub == 0x05 and frame.data:
-            rx.s_meter_sql_open = bool(frame.data[0])
-        elif frame.sub == 0x07 and frame.data:
+        # The squelch-open / DCD status (sub 0x01 and sub 0x05) mirror writes
+        # were migrated to the StateStore observation pipeline (MOR-466);
+        # ``_observations_from_frame`` is the source of truth and emits the
+        # neutral ``receiver.<id>.operator_toggles.dcd`` bool from the same byte.
+        # ``RadioState.s_meter_sql_open`` is no longer written here.
+        if frame.sub == 0x07 and frame.data:
             rs.overflow = bool(frame.data[0])
         elif len(frame.data) >= 2:
             b0, b1 = frame.data[0], frame.data[1]
@@ -1216,12 +2140,11 @@ class CivRuntime:
                 rs.swr_meter = raw
             elif frame.sub == 0x13:
                 rs.alc_meter = raw
-            elif frame.sub == 0x14:
-                rs.comp_meter = raw
-            elif frame.sub == 0x15:
-                rs.vd_meter = raw
-            elif frame.sub == 0x16:
-                rs.id_meter = raw
+            # The comp (0x14), vd (0x15), id (0x16) PA-telemetry meter mirror
+            # writes were migrated to the StateStore observation pipeline
+            # (MOR-460); ``_OBSERVABLE_CMD15_FIELDS`` is the source of truth and
+            # reuses this same BCD decode. ``RadioState.{comp,vd,id}_meter`` are
+            # no longer written here.
 
     def _handle_16(
         self,
@@ -1238,8 +2161,13 @@ class CivRuntime:
             data = data[1:]
         if data:
             val = data[0]
-            if sub == 0x02:
-                rx.preamp = val
+            if (
+                sub in _CMD16_OBSERVATION_BACKED_SUBS
+                or sub in _CMD16_OBSERVATION_BACKED_VALUE_SUBS
+            ):
+                # Mirror write migrated to the StateStore observation pipeline
+                # (MOR-437); only the legacy notify event below still fires.
+                pass
             elif sub in _CMD16_RECEIVER_BOOL_FIELDS:
                 setattr(rx, _CMD16_RECEIVER_BOOL_FIELDS[sub], bool(val))
             elif sub in _CMD16_RECEIVER_VALUE_FIELDS:
@@ -1271,43 +2199,22 @@ class CivRuntime:
         rs: "RadioState",
         slot_override: str | None,
     ) -> None:
-        # cmd 0x1A: CTL mem levels + filter width + data mode + AF mute.
+        # cmd 0x1A: CTL mem levels + AF mute. Filter width (0x03), AGC time
+        # constant (0x04) and data mode (0x06) are now observation-backed
+        # (MOR-437); only the CTL-mem levels (0x05) and AF mute (0x09) still
+        # mirror into RadioState here.
         sub = frame.sub
-        if sub == 0x04:
-            rx.agc_time_constant = parse_level_response(
-                frame,
-                command=0x1A,
-                sub=0x04,
-                bcd_bytes=1,
-            )
-        if sub == 0x03 and frame.data:
-            from rigplane.commands import _bcd_decode_value, filter_index_to_hz
-
-            filter_index = _bcd_decode_value(frame.data)
-            profile = getattr(self._host, "_profile", None)
-            if (
-                profile is not None
-                and getattr(profile, "filter_width_encoding", None)
-                == "segmented_bcd_index"
-            ):
-                rule = profile.resolve_filter_rule(
-                    rx.mode,
-                    data_mode=int(getattr(rx, "data_mode", 0) or 0),
-                )
-                if rule is not None and rule.segments:
-                    rx.filter_width = filter_index_to_hz(
-                        filter_index, segments=rule.segments
-                    )
-                else:
-                    rx.filter_width = filter_index
-            else:
-                rx.filter_width = filter_index
-        elif sub == 0x05:
+        if sub == 0x05:
             for prefix, (
                 field,
                 bcd_bytes,
             ) in _CMD1A_CTL_MEM_LEVEL_FIELDS.items():
                 if frame.data.startswith(prefix):
+                    # vox_delay's mirror write was migrated to the StateStore
+                    # observation pipeline (MOR-459); ``_observations_from_frame``
+                    # is the source of truth and reuses the identical decode.
+                    if prefix == _CTL_MEM_VOX_DELAY_PREFIX:
+                        break
                     setattr(
                         rs,
                         field,
@@ -1320,8 +2227,6 @@ class CivRuntime:
                         ),
                     )
                     break
-        elif sub == 0x06 and frame.data:
-            rx.data_mode = frame.data[0]
         elif sub == 0x09:
             rx.af_mute = parse_bool_response(frame, command=0x1A, sub=0x09)
 
@@ -1332,16 +2237,12 @@ class CivRuntime:
         rs: "RadioState",
         slot_override: str | None,
     ) -> None:
-        # cmd 0x1B: tone/TSQL freq (frequency-encoded).
-        if len(frame.data) >= 3:
-            from rigplane.commands import _decode_tone_freq
-
-            freq_hz = _decode_tone_freq(frame.data)
-            freq_centihz = round(freq_hz * 100)
-            if frame.sub == 0x00:
-                rx.tone_freq = freq_centihz
-            elif frame.sub == 0x01:
-                rx.tsql_freq = freq_centihz
+        # cmd 0x1B: tone/TSQL freq (frequency-encoded). The mirror write for
+        # both subs was migrated to the StateStore observation pipeline
+        # (MOR-451); ``_observations_from_frame`` is the source of truth and
+        # reuses the identical ``_decode_tone_freq`` decode.
+        if frame.sub in _CMD1B_OBSERVATION_BACKED_SUBS:
+            return
 
     def _handle_1c(
         self,
@@ -1350,16 +2251,11 @@ class CivRuntime:
         rs: "RadioState",
         slot_override: str | None,
     ) -> None:
-        # cmd 0x1C: PTT (sub 0x00), tuner status (0x01), tx-freq monitor (0x03).
+        # cmd 0x1C: PTT (sub 0x00). Tuner status (0x01) and tx-freq monitor
+        # (0x03) are now observation-backed (MOR-437); only PTT mirrors here.
         if frame.sub == 0x00:
             if frame.data:
                 rs.ptt = bool(frame.data[0])
-        elif frame.sub == 0x01:
-            if frame.data:
-                rs.tuner_status = frame.data[0]
-        elif frame.sub == 0x03:
-            if frame.data:
-                rs.tx_freq_monitor = bool(frame.data[0])
 
     def _handle_1e(
         self,
@@ -1506,7 +2402,6 @@ class CivRuntime:
         0x04: _handle_mode,
         0x07: _handle_07,
         0x0E: _handle_0e,
-        0x0F: _handle_0f,
         0x10: _handle_10,
         0x11: _handle_11,
         0x12: _handle_12,
@@ -1525,6 +2420,12 @@ class CivRuntime:
 
     def _notify_change(self, event_name: str, data: dict[str, Any]) -> None:
         """Notify server of state change (best-effort)."""
+        self._record_state_diagnostic(
+            "revision_producing_event",
+            "civ_rx.notify",
+            event=event_name,
+            data=data,
+        )
         cb = getattr(self._host, "_on_state_change", None)
         if cb is not None:
             logger.debug("civ-rx: notify %s %s", event_name, data)
@@ -1534,6 +2435,11 @@ class CivRuntime:
                 logger.warning("civ-rx: notify failed", exc_info=True)
         else:
             logger.debug("civ-rx: no callback for %s", event_name)
+
+    def _record_state_diagnostic(self, kind: str, source: str, **details: Any) -> None:
+        recorder = getattr(self._host, "_state_diagnostics", None)
+        if isinstance(recorder, StateDiagnosticsRecorder):
+            recorder.record(kind, source, **details)
 
     def _publish_scope_frame(self, frame: ScopeFrame) -> None:
         """Publish a complete scope frame to callback and bounded queue."""
@@ -1648,6 +2554,7 @@ class CivRuntime:
         dedupe: bool = False,
         wait_response: bool = True,
         timeout: "float | None" = None,
+        wait_dispatch: bool = True,
     ) -> "CivFrame | None":
         """Enqueue a CI-V command and wait for its response."""
         if self._host._civ_transport is None or not self._host._connected:
@@ -1668,6 +2575,7 @@ class CivRuntime:
             dedupe=dedupe,
             wait_response=wait_response,
             timeout=timeout,
+            wait_dispatch=wait_dispatch,
         )
 
     @staticmethod

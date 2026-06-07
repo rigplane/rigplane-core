@@ -147,6 +147,53 @@ class TestDeltaEncoder:
         delta3 = encoder.encode(state)
         assert delta3["revision"] == 3
 
+    def test_transport_sequence_is_split_from_canonical_state_revision(self):
+        """Canonical state revision must not be backed by the transport counter."""
+        encoder = DeltaEncoder()
+        state = {"freq": 14200000, "stateRevision": 10, "revision": 10}
+
+        full = encoder.encode(state, state_revision=10, freshness_revision=1)
+        delta = encoder.encode(state, state_revision=10, freshness_revision=1)
+
+        assert full["revision"] == 10
+        assert full["stateRevision"] == 10
+        assert full["freshnessRevision"] == 1
+        assert full["transportSeq"] == 1
+        assert delta["revision"] == 10
+        assert delta["stateRevision"] == 10
+        assert delta["freshnessRevision"] == 1
+        assert delta["transportSeq"] == 2
+
+    def test_observation_sequence_is_carried_without_changing_semantic_revision(self):
+        """Observation metadata sequence is distinct from state revision."""
+        encoder = DeltaEncoder()
+        state = {
+            "freq": 14200000,
+            "stateRevision": 10,
+            "revision": 10,
+            "observationSeq": 3,
+        }
+
+        full = encoder.encode(
+            state,
+            state_revision=10,
+            freshness_revision=1,
+            observation_seq=3,
+        )
+        delta = encoder.encode(
+            {**state, "observationSeq": 4},
+            state_revision=10,
+            freshness_revision=1,
+            observation_seq=4,
+        )
+
+        assert full["revision"] == 10
+        assert full["stateRevision"] == 10
+        assert full["observationSeq"] == 3
+        assert delta["revision"] == 10
+        assert delta["stateRevision"] == 10
+        assert delta["observationSeq"] == 4
+
     def test_reset_encoder(self):
         """reset() should clear state tracking."""
         encoder = DeltaEncoder()

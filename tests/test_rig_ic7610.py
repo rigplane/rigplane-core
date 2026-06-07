@@ -143,6 +143,7 @@ class TestProfileParity:
                 (0x15, 0x02),
                 (0x15, 0x05),
                 (0x16, 0x02),
+                (0x16, 0x12),
                 (0x16, 0x22),
                 (0x16, 0x32),
                 (0x16, 0x40),
@@ -165,7 +166,7 @@ class TestProfileParity:
         assert profile.cmd29_routes == expected
 
     def test_cmd29_routes_count(self, profile):
-        assert len(profile.cmd29_routes) == 33
+        assert len(profile.cmd29_routes) == 34
 
     def test_vfo_main_code(self, profile):
         assert profile.vfo_main_code == 0xD0
@@ -359,3 +360,35 @@ class TestMeterCalibrations:
         pts = rig.meter_calibrations["alc"]
         assert pts[0]["raw"] == 0 and pts[0]["actual"] == 0.0
         assert pts[-1]["raw"] == 120 and pts[-1]["actual"] == 100.0
+
+
+class TestControlRanges:
+    """[controls.*] raw/display ranges (MOR-490)."""
+
+    def test_nr_level_wire_range_is_full_bcd(self, rig):
+        # The NR-level CI-V wire value is 0-255 BCD on the IC-7610, like
+        # every other rig.  raw_max must be 255, not the front-panel 0-15.
+        nr = rig.controls["nr_level"]
+        assert nr["raw_min"] == 0
+        assert nr["raw_max"] == 255
+
+    def test_nr_level_display_range_matches_front_panel(self, rig):
+        # The front panel shows NR as 0-15; record that display mapping so
+        # the web slider can convert wire 0-255 <-> display 0-15.
+        nr = rig.controls["nr_level"]
+        assert nr["display_min"] == 0
+        assert nr["display_max"] == 15
+
+    def test_nb_depth_wire_range_is_zero_based(self, rig):
+        # The NB-depth CI-V wire value is 0-9 on the IC-7610; the front
+        # panel shows it 1-based (1-10).  raw range stays 0-9.
+        nb = rig.controls["nb_depth"]
+        assert nb["raw_min"] == 0
+        assert nb["raw_max"] == 9
+
+    def test_nb_depth_display_range_matches_front_panel(self, rig):
+        # The front panel shows NB depth as 1-10; record that display
+        # mapping so the web slider can convert wire 0-9 <-> display 1-10.
+        nb = rig.controls["nb_depth"]
+        assert nb["display_min"] == 1
+        assert nb["display_max"] == 10

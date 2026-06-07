@@ -42,6 +42,9 @@
 
   let showNr = $derived(p.hasNr);
   let showNb = $derived(p.hasNb);
+  let showNotch = $derived(p.hasNotch ?? true);
+  let showAutoNotch = $derived(p.hasAutoNotch ?? true);
+  let showAgcTime = $derived(p.hasAgcTime ?? true);
 
   let nrOptions = $derived(buildNrOptions());
   let notchOptions = $derived(buildNotchOptions());
@@ -194,7 +197,7 @@
           onpointerup={endLongPressPointer}
           onpointercancel={endLongPressPointer}
           onpointerleave={endLongPressPointer}
-        >NB{nbActive ? ` ${nbLevel}` : ''}</HardwareButton>
+        >NB{nbActive ? ` ${rawToPercentDisplay(nbLevel)}` : ''}</HardwareButton>
       </div>
     {/if}
 
@@ -214,38 +217,44 @@
       </div>
     {/if}
 
-    <div class="dsp-btn-wrap" bind:this={notchAnchorEl}>
-      <HardwareButton
-        active={notchMode === 'manual'}
-        indicator="edge-left"
-        color="cyan"
-        title="Manual Notch — click to toggle; long-press for settings"
-        onclick={onNotchClick}
-        onpointerdown={() => startLongPress('notch')}
-        onpointerup={endLongPressPointer}
-        onpointercancel={endLongPressPointer}
-        onpointerleave={endLongPressPointer}
-      >NOTCH</HardwareButton>
-    </div>
+    {#if showNotch}
+      <div class="dsp-btn-wrap" bind:this={notchAnchorEl}>
+        <HardwareButton
+          active={notchMode === 'manual'}
+          indicator="edge-left"
+          color="cyan"
+          title="Manual Notch — click to toggle; long-press for settings"
+          onclick={onNotchClick}
+          onpointerdown={() => startLongPress('notch')}
+          onpointerup={endLongPressPointer}
+          onpointercancel={endLongPressPointer}
+          onpointerleave={endLongPressPointer}
+        >NOTCH</HardwareButton>
+      </div>
+    {/if}
 
-    <div class="dsp-btn-wrap">
-      <HardwareButton
-        active={notchMode === 'auto'}
-        indicator="edge-left"
-        color="green"
-        title="Auto Notch"
-        onclick={() => onNotchModeChange(notchMode === 'auto' ? 'off' : 'auto')}
-      >A-NOTCH</HardwareButton>
-    </div>
+    {#if showAutoNotch}
+      <div class="dsp-btn-wrap">
+        <HardwareButton
+          active={notchMode === 'auto'}
+          indicator="edge-left"
+          color="green"
+          title="Auto Notch"
+          onclick={() => onNotchModeChange(notchMode === 'auto' ? 'off' : 'auto')}
+        >A-NOTCH</HardwareButton>
+      </div>
+    {/if}
 
-    <div class="dsp-btn-wrap" bind:this={agcAnchorEl}>
-      <HardwareButton
-        indicator="edge-left"
-        color="gray"
-        title="AGC Time — click for settings"
-        onclick={() => openModalFor('agc')}
-      >AGC-T {formatAgcTime(agcTimeConstant)}s</HardwareButton>
-    </div>
+    {#if showAgcTime}
+      <div class="dsp-btn-wrap" bind:this={agcAnchorEl}>
+        <HardwareButton
+          indicator="edge-left"
+          color="gray"
+          title="AGC Time — click for settings"
+          onclick={() => openModalFor('agc')}
+        >AGC-T {formatAgcTime(agcTimeConstant)}s</HardwareButton>
+      </div>
+    {/if}
   </div>
 </div>
 
@@ -317,8 +326,8 @@
     <ValueControl
       label="NB Depth"
       value={nbDepth}
-      min={0}
-      max={9}
+      min={1}
+      max={10}
       step={1}
       renderer="discrete"
       tickStyle="notch"

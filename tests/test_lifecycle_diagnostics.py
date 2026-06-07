@@ -85,6 +85,8 @@ async def _force_gc_ready(server: WebServer) -> None:
         "_scope_health_task",
         "_scope_reenable_task",
         "_dx_client_task",
+        "_state_store_freshness_task",
+        "_pending_state_broadcast_task",
     ):
         task = getattr(server, attr, None)
         if task is not None and not task.done():
@@ -138,7 +140,9 @@ async def test_web_server_gc_after_stop_does_not_log_warning(
     with caplog.at_level(logging.WARNING, logger="rigplane.web.server"):
         server = WebServer(config=WebConfig(port=0, discovery=False))
         await server.start()
+        assert server._server_was_running is True  # type: ignore[attr-defined]
         await server.stop()
+        assert server._server_was_running is False  # type: ignore[attr-defined]
         del server
         gc.collect()
 
@@ -153,6 +157,23 @@ async def test_web_server_gc_after_stop_does_not_log_warning(
 # ---------------------------------------------------------------------------
 
 
+async def _force_rigctld_gc_ready(server: RigctldServer) -> None:
+    """Release asyncio references that otherwise delay RigctldServer GC."""
+    for attr in (
+        "_state_store_freshness_task",
+        "_state_acquisition_drain_task",
+    ):
+        task = getattr(server, attr, None)
+        if task is not None and not task.done():
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+            setattr(server, attr, None)
+    await asyncio.sleep(0)
+
+
 async def test_rigctld_server_gc_while_running_logs_warning(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
@@ -165,6 +186,9 @@ async def test_rigctld_server_gc_while_running_logs_warning(
         assert server._server is not None
         server._server.close()
         await server._server.wait_closed()
+        await _force_rigctld_gc_ready(server)
+        assert server._server_was_running is True  # type: ignore[attr-defined]
+        server._server = None
         del server
         gc.collect()
 

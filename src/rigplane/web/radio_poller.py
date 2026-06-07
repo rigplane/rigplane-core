@@ -15,8 +15,9 @@ reply.
 
 How it works:
 1. RadioPoller sends fire-and-forget CI-V queries (get_freq, get_mode, etc.)
-2. The CI-V RX loop receives all packets and projects them into RadioState.
-3. RadioState is the canonical source of truth for web consumers.
+2. The CI-V RX loop receives packets and applies observations to StateStore.
+3. StateStore snapshots are the canonical source of truth for web consumers.
+   RadioState mirrors remain compatibility surfaces only.
 4. Poll freshness stays local to the poller; broadcast events notify on changes.
 
 DO NOT add request-response (await get_frequency, await get_mode, etc.)
@@ -28,10 +29,11 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
-from typing import TYPE_CHECKING, Any, Callable
+from typing import TYPE_CHECKING, Any, Callable, cast
 
 from ..exceptions import CommandError
 from ..exceptions import ConnectionError as RadioConnectionError
+from ..core.exceptions import TimeoutError as RigplaneTimeoutError
 from ..capabilities import (
     CAP_AF_LEVEL,
     CAP_AGC,
@@ -67,6 +69,25 @@ from ..capabilities import (
     CAP_VOX,
 )
 from .._queue_pressure import PRESSURE_THRESHOLD
+from ..commands.commander import Priority
+from ..core.command_service import (
+    CommandService,
+)
+from ..core.acquisition_scheduler import (
+    AcquisitionExecutor,
+    AcquisitionRequest,
+    AcquisitionScheduler,
+    MeterObservationCoalescer,
+    civ_acquisition_executor_for_provider,
+)
+from ..core.state_pipeline_contracts import (
+    CommandSource,
+    FieldPath,
+    Observation,
+    SourceMetadata,
+)
+from ..core.state_diagnostics import StateDiagnosticsRecorder
+from ..core.state_store import StateStore
 from .._state_queries import build_state_queries
 from ..profiles import RadioProfile, resolve_radio_profile
 from ..types import AudioCodec
@@ -78,6 +99,7 @@ if TYPE_CHECKING:
 __all__ = [
     "RadioPoller",
     "CommandQueue",
+    "CommandQueueEntry",
     "SetAgcTimeConstant",
     "SetDataMode",
     "SetFilterWidth",
@@ -181,6 +203,7 @@ def _audio_tx_codec_and_rate(radio: Any) -> tuple[AudioCodec | None, int]:
 from .._poller_types import (  # noqa: E402
     Command,
     CommandQueue,
+    CommandQueueEntry,
     DisableScope,
     EnableScope,
     MemoryClear,
@@ -313,8 +336,9 @@ from .._poller_types import (  # noqa: E402
 class RadioPoller:
     """Fire-and-forget CI-V poller.
 
-    State is updated from the CI-V RX stream into RadioState,
-    NOT from polling responses.
+    Executes queued commands and acquisition work, applying observations and
+    readbacks through StateStore/CommandService while maintaining compatibility
+    mirrors where required.
     """
 
     def __init__(
@@ -325,14 +349,24 @@ class RadioPoller:
         *,
         on_state_event: Callable[[str, dict[str, Any]], None] | None = None,
         radio_state: "RadioState | None" = None,
+        diagnostics: StateDiagnosticsRecorder | None = None,
+        state_store: StateStore | None = None,
+        acquisition_executor: AcquisitionExecutor | None = None,
     ) -> None:
         queue = legacy_queue if legacy_queue is not None else command_queue
         self._radio = radio
         self._radio_state = radio_state
+        self._state_diagnostics = diagnostics
+        self._state_store = state_store or StateStore()
+        raw_scheduler = getattr(radio, "_acquisition_scheduler", None)
+        self._acquisition_scheduler = (
+            raw_scheduler if isinstance(raw_scheduler, AcquisitionScheduler) else None
+        )
+        self._acquisition_executor = acquisition_executor
+        self._acquisition_in_flight: dict[str, tuple[frozenset[FieldPath], float]] = {}
         self._queue = queue
         self._on_state_event = on_state_event
         self._poll_index: int = 0
-        self._revision: int = 0
         self._task: asyncio.Task[None] | None = None
         self._last_polled: dict[str, float] = {}
         self._caps: set[str] = self._radio_capabilities()
@@ -348,6 +382,19 @@ class RadioPoller:
             self._FAST_CMDS_SERIAL if self._is_serial else self._FAST_CMDS_LAN
         )
         self._STATE_QUERIES = self._build_state_queries()
+        if self._acquisition_executor is None:
+            raw_executor = getattr(radio, "__dict__", {}).get("_acquisition_executor")
+            execute = getattr(raw_executor, "execute", None)
+            if callable(execute):
+                self._acquisition_executor = cast(AcquisitionExecutor, raw_executor)
+        if (
+            self._acquisition_executor is None
+            and self._acquisition_scheduler is not None
+        ):
+            self._acquisition_executor = civ_acquisition_executor_for_provider(
+                self._acquisition_scheduler.provider,
+                self._send_one_state_query,
+            )
         # Set by default — cleared at _run() start, re-set after initial fetch.
         # This prevents EnableScope from hanging in tests that don't call start().
         self._initial_fetch_done = asyncio.Event()
@@ -359,6 +406,84 @@ class RadioPoller:
         # than once per _UNSELECTED_SLOT_INTERVAL.
         self._last_user_write_ts: float = 0.0
         self._last_unselected_poll: dict[int, float] = {}
+
+    def _apply_bsr_readback_observations(
+        self,
+        *,
+        freq: int,
+        mode: str,
+        command_id: str | None,
+        source: CommandSource,
+        session_id: str | None,
+        command_service: CommandService | None,
+    ) -> None:
+        observed_at = time.monotonic()
+        metadata = SourceMetadata(
+            source="poll_response",
+            provider="web_poller",
+            native_id="bsr_readback",
+            command_source=source,
+            session_id=session_id,
+        )
+        observations = (
+            Observation(
+                path=FieldPath.active("0", "freq_mode", "freq_hz"),
+                value=freq,
+                source=metadata,
+                timestamp_monotonic=observed_at,
+                correlation_id=f"{command_id}:freq" if command_id else None,
+            ),
+            Observation(
+                path=FieldPath.active("0", "freq_mode", "mode"),
+                value=mode,
+                source=metadata,
+                timestamp_monotonic=observed_at,
+                correlation_id=f"{command_id}:mode" if command_id else None,
+            ),
+        )
+        for observation in observations:
+            if command_service is not None:
+                command_service.apply_observation(observation)
+            else:
+                self._state_store.apply(observation)
+
+    def _apply_compatibility_mirror(
+        self,
+        apply: Callable[["RadioState"], None],
+    ) -> None:
+        """Mirror confirmed state into legacy RadioState delivery surfaces.
+
+        CommandService/StateStore observations remain the source of truth for
+        lifecycle, overlays, and reconciliation. This mirror only keeps the
+        existing web delivery path fed until MOR-341 finishes that migration.
+        """
+
+        state = self._radio_state
+        if state is None:
+            return
+        apply(state)
+
+    def _mark_queued_command_failed(
+        self,
+        entry: CommandQueueEntry,
+        exc: BaseException,
+        *,
+        timed_out: bool = False,
+    ) -> None:
+        if entry.command_service is None or entry.command_id is None:
+            return
+        message = str(exc) or None
+        params: dict[str, Any] = {
+            "message": message,
+            "timed_out": timed_out,
+            "session_id": entry.session_id,
+        }
+        if entry.source is not None:
+            params["source"] = entry.source
+        entry.command_service.fail_command(
+            entry.command_id,
+            **params,
+        )
 
     def start(self) -> None:
         if self._task is not None and not self._task.done():
@@ -377,11 +502,6 @@ class RadioPoller:
     @property
     def running(self) -> bool:
         return self._task is not None and not self._task.done()
-
-    @property
-    def revision(self) -> int:
-        """Monotonic counter incremented on every radio state change."""
-        return self._revision
 
     def _adaptive_gap(self) -> float:
         """Return gap adjusted for queue pressure.
@@ -404,10 +524,6 @@ class RadioPoller:
         # Linear interpolation between 0.5 and threshold
         t: float = (pressure - 0.5) / (PRESSURE_THRESHOLD - 0.5)
         return self._gap * (1.0 + t)
-
-    def bump_revision(self) -> None:
-        """Increment the revision counter (called on each state change)."""
-        self._revision += 1
 
     def mark_polled(self, field: str) -> None:
         """Record the last successful poll time for a logical field."""
@@ -529,24 +645,53 @@ class RadioPoller:
         cmd_byte: int,
         sub_byte: int | None,
         receiver: int | None,
+        *,
+        priority: Priority = Priority.BACKGROUND,
     ) -> None:
-        """Send a single state query (shared by initial fetch and slow rotation)."""
+        """Send a single state query (shared by initial fetch and slow rotation).
+
+        Defaults to ``Priority.BACKGROUND`` so both the odd-cycle state poll
+        and the acquisition-scheduler executor (which is bound to this method)
+        yield to user commands on the shared CI-V lane (MOR-497i).  All sends
+        here are fire-and-forget (``wait_dispatch=False``) so the poll burst
+        does not park the poll loop on the commander future (MOR-497ii); the
+        response still arrives via the CI-V RX path.
+        """
         if receiver is not None:
             if cmd_byte in (0x25, 0x26):
-                await self._civ(cmd_byte, data=bytes([receiver]))
+                await self._civ(
+                    cmd_byte,
+                    data=bytes([receiver]),
+                    priority=priority,
+                    wait_dispatch=False,
+                )
             else:
                 inner = bytes([receiver, cmd_byte])
                 if sub_byte is not None:
                     inner += bytes([sub_byte])
-                await self._civ(0x29, data=inner)
+                await self._civ(
+                    0x29, data=inner, priority=priority, wait_dispatch=False
+                )
         elif cmd_byte == 0x27 and sub_byte in self._SCOPE_RECEIVER_PREFIX_SUBS:
             # Scope control queries need receiver prefix (00=MAIN, 01=SUB)
             scope_rx = 0
             if self._radio_state:
                 scope_rx = self._radio_state.scope_controls.receiver
-            await self._civ(cmd_byte, sub=sub_byte, data=bytes([scope_rx]))
+            await self._civ(
+                cmd_byte,
+                sub=sub_byte,
+                data=bytes([scope_rx]),
+                priority=priority,
+                wait_dispatch=False,
+            )
         else:
-            await self._civ(cmd_byte, sub=sub_byte, data=b"")
+            await self._civ(
+                cmd_byte,
+                sub=sub_byte,
+                data=b"",
+                priority=priority,
+                wait_dispatch=False,
+            )
 
     # Per-getter timeout for scope-control fetches.  The IC-7610 scope stream
     # (~225 pkt/s) sometimes drops individual control responses; a long wait
@@ -618,6 +763,73 @@ class RadioPoller:
             await asyncio.sleep(self._adaptive_gap())
         logger.info("radio-poller: scope controls fetched (receiver=%d)", scope_rx)
 
+    def _apply_global_control_observation(
+        self,
+        name: str,
+        value: Any,
+        *,
+        command_id: str | None = None,
+        source: CommandSource | None = None,
+        session_id: str | None = None,
+        command_service: CommandService | None = None,
+    ) -> None:
+        """Apply a confirmed global operator-control value to the StateStore.
+
+        Forward-consistent route (mirrors ``_apply_bsr_readback_observations``):
+        the web public-state projection reads ``global.operator_controls.<name>``
+        from the StateStore, so a readback observation is the source of truth —
+        not the legacy ``RadioState`` mirror. Used for NB depth/width whose
+        4-byte menu GET (0x1A 05 02 90/91) cannot ride the poll-query envelope
+        (MOR-491-B).
+        """
+        observation = Observation(
+            path=FieldPath.global_("operator_controls", name),
+            value=value,
+            source=SourceMetadata(
+                source="poll_response",
+                provider="web_poller",
+                native_id=f"{name}_readback",
+                command_source=source,
+                session_id=session_id,
+            ),
+            timestamp_monotonic=time.monotonic(),
+            correlation_id=f"{command_id}:{name}" if command_id else None,
+        )
+        if command_service is not None:
+            command_service.apply_observation(observation)
+        else:
+            self._state_store.apply(observation)
+
+    async def _fetch_nb_controls(self) -> None:
+        """One-shot readback of NB depth/width into the StateStore (MOR-491-B).
+
+        NB depth (0x1A 05 02 90) and width (0x1A 05 02 91) are global menu
+        items whose 4-byte READ query cannot be expressed in the poll-query
+        envelope, so they are not tracked by the continuous poller. Read them
+        once at connect via the existing direct getters and apply the real
+        values as StateStore observations so the web sliders seed correctly.
+
+        Each getter is resilient: a read error or timeout is logged at debug
+        and never kills the poller (mirrors ``_fetch_scope_controls``).
+        """
+        if CAP_NB not in self._caps:
+            return
+        radio: Any = self._radio
+        getters: tuple[tuple[str, str, Any], ...] = (
+            ("nb_depth", "get_nb_depth", getattr(radio, "get_nb_depth", None)),
+            ("nb_width", "get_nb_width", getattr(radio, "get_nb_width", None)),
+        )
+        for name, label, getter in getters:
+            if getter is None:
+                continue
+            try:
+                value = await getter()
+            except Exception:
+                logger.debug("radio-poller: %s failed", label, exc_info=True)
+                continue
+            self._apply_global_control_observation(name, value)
+        logger.info("radio-poller: NB controls fetched")
+
     async def _run(self) -> None:
         _backoff = 0.0
         _MAX_BACKOFF = 5.0  # max pause when radio is disconnected
@@ -626,6 +838,15 @@ class RadioPoller:
         # during connect(). Just signal readiness immediately.
         self._scope_enable_deferred = False
         self._initial_fetch_done.set()
+
+        # NB depth/width are global menu items that cannot ride the poll-query
+        # envelope, so seed them once at connect via direct getters (MOR-491-B).
+        try:
+            await self._fetch_nb_controls()
+        except Exception:
+            logger.debug(
+                "radio-poller: NB controls initial fetch failed", exc_info=True
+            )
 
         try:
             while True:
@@ -650,15 +871,36 @@ class RadioPoller:
                             )
                             continue
                         try:
-                            await self._execute(cmd)
+                            await self._execute(
+                                cmd,
+                                command_id=entry.command_id,
+                                source=entry.source or "websocket",
+                                session_id=entry.session_id,
+                                command_service=entry.command_service,
+                            )
                             if entry.future is not None and not entry.future.done():
                                 entry.future.set_result(None)
                             _backoff = 0.0
+                        except (TimeoutError, RigplaneTimeoutError) as exc:
+                            self._mark_queued_command_failed(
+                                entry,
+                                exc,
+                                timed_out=True,
+                            )
+                            if entry.future is not None and not entry.future.done():
+                                entry.future.set_exception(exc)
+                            logger.warning(
+                                "radio-poller: cmd timeout: %s",
+                                type(cmd).__name__,
+                                exc_info=True,
+                            )
                         except (ConnectionError, RadioConnectionError) as exc:
+                            self._mark_queued_command_failed(entry, exc)
                             if entry.future is not None and not entry.future.done():
                                 entry.future.set_exception(exc)
                             _backoff = min(_backoff + 0.5, _MAX_BACKOFF)
                         except Exception as exc:
+                            self._mark_queued_command_failed(entry, exc)
                             if entry.future is not None and not entry.future.done():
                                 entry.future.set_exception(exc)
                             logger.warning(
@@ -698,16 +940,18 @@ class RadioPoller:
                 # VFO slot on each receiver.  Fully gated (PTT, queue
                 # pressure, debounce, per-rx interval) so it cannot
                 # regress fast-poll cadence.
-                for _rx in range(self._profile.receiver_count):
-                    try:
-                        await self._poll_unselected_slot(_rx)
-                    except (ConnectionError, RadioConnectionError):
-                        _backoff = min(_backoff + 0.5, _MAX_BACKOFF)
-                        break
-                    except Exception:
-                        logger.debug(
-                            "radio-poller: unselected-slot poll error", exc_info=True
-                        )
+                if self._acquisition_scheduler is None:
+                    for _rx in range(self._profile.receiver_count):
+                        try:
+                            await self._poll_unselected_slot(_rx)
+                        except (ConnectionError, RadioConnectionError):
+                            _backoff = min(_backoff + 0.5, _MAX_BACKOFF)
+                            break
+                        except Exception:
+                            logger.debug(
+                                "radio-poller: unselected-slot poll error",
+                                exc_info=True,
+                            )
 
                 # 4. Wait for next cycle
                 await self._queue.wait(timeout=self._fast_interval)
@@ -725,11 +969,23 @@ class RadioPoller:
         sub: int | None = None,
         data: bytes = b"",
         wait_response: bool = False,
+        priority: Priority = Priority.NORMAL,
+        wait_dispatch: bool = True,
     ) -> Any:
         """Send a raw CI-V command if the backend provides a CI-V transport.
 
         For non-Icom backends this is a no-op — scope/meter polling simply
         won't happen, which is acceptable.
+
+        ``priority`` defaults to NORMAL so user-command call sites (e.g. the
+        in-``_execute`` VFO switch) are never de-prioritized; background poll
+        call sites pass ``Priority.BACKGROUND`` explicitly so polls yield to
+        user commands on the shared CI-V lane (MOR-497i).
+
+        ``wait_dispatch`` defaults to True so user-command call sites keep the
+        blocking/awaited contract; background poll call sites pass False so the
+        poll burst is fire-and-forget and does not park the poll loop on the
+        commander future (MOR-497ii).
 
         Returns:
             CivFrame response if wait_response=True and backend supports it,
@@ -743,6 +999,8 @@ class RadioPoller:
                 sub=sub,
                 data=data,
                 wait_response=wait_response,
+                priority=priority,
+                wait_dispatch=wait_dispatch,
             )
         return None
 
@@ -751,9 +1009,22 @@ class RadioPoller:
         _active = getattr(rs, "active", None) if rs is not None else None
         return _active if isinstance(_active, str) else "MAIN"
 
-    async def _execute(self, cmd: Command) -> None:
+    async def _execute(
+        self,
+        cmd: Command,
+        *,
+        command_id: str | None = None,
+        source: CommandSource = "websocket",
+        session_id: str | None = None,
+        command_service: CommandService | None = None,
+    ) -> None:
         radio = self._radio
         _r: Any = radio  # cast for capability methods not on base Radio protocol
+        # Alias the command source under a distinct name: ``source`` is reused as
+        # a match capture variable by several ``case Set*ModInput(source=...)``
+        # arms below, so referencing the parameter directly inside the match
+        # would make mypy collapse the two into one (conflicting) type.
+        command_source = source
         from ..radio_protocol import (
             MemoryCapable,
         )
@@ -800,14 +1071,13 @@ class RadioPoller:
                     if current != "MAIN" and self._profile.vfo_sub_code is not None:
                         await asyncio.sleep(self._gap)
                         await self._civ(0x07, data=bytes([self._profile.vfo_sub_code]))
-                # Optimistic state update for frequency
+                # Compatibility mirror until web state delivery reads StateStore.
                 if self._radio_state:
                     target = (
                         self._radio_state.sub if rx != 0 else self._radio_state.main
                     )
                     if target:
                         target.freq = freq
-                    self.bump_revision()
                     self.mark_polled("freq")
                 if self._on_state_event:
                     self._on_state_event("freq_changed", {"freq": freq, "receiver": rx})
@@ -841,14 +1111,13 @@ class RadioPoller:
                     if current != "MAIN" and self._profile.vfo_sub_code is not None:
                         await asyncio.sleep(self._gap)
                         await self._civ(0x07, data=bytes([self._profile.vfo_sub_code]))
-                # Optimistic state update for mode
+                # Compatibility mirror until web state delivery reads StateStore.
                 if self._radio_state:
                     target = (
                         self._radio_state.sub if rx != 0 else self._radio_state.main
                     )
                     if target:
                         target.mode = mode
-                    self.bump_revision()
                     self.mark_polled("mode")
                 if self._on_state_event:
                     self._on_state_event("mode_changed", {"mode": mode, "receiver": rx})
@@ -865,12 +1134,9 @@ class RadioPoller:
                 # Hz↔index translation, profile-aware bounds + cmd29 wrapping
                 # are owned by the backend (P2-04). Issue #1101.
                 await radio.set_filter_width(width, receiver=rx)
-                if self._radio_state:
-                    target = (
-                        self._radio_state.sub if rx != 0 else self._radio_state.main
-                    )
-                    target.filter_width = width
-                    self.bump_revision()
+                # filter_width read-after-write now flows through CommandService
+                # pending overlays + the 0x1A 0x03 StateStore observation emitted
+                # by ``_civ_rx.py`` (MOR-437); no legacy RadioState mirror needed.
                 if self._on_state_event:
                     self._on_state_event(
                         "filter_width_changed", {"width": width, "receiver": rx}
@@ -891,7 +1157,6 @@ class RadioPoller:
                         self._radio_state.sub if rx != 0 else self._radio_state.main
                     )
                     target.filter_shape = shape
-                    self.bump_revision()
                 if self._on_state_event:
                     self._on_state_event(
                         "filter_shape_changed", {"shape": shape, "receiver": rx}
@@ -959,24 +1224,16 @@ class RadioPoller:
                 self._ensure_receiver_supported(rx, operation="set_nb")
                 if CAP_NB in self._caps:
                     await radio.set_nb(on, receiver=rx)
-                if self._radio_state:
-                    target = (
-                        self._radio_state.sub if rx != 0 else self._radio_state.main
-                    )
-                    target.nb = on
-                    self.bump_revision()
+                # nb read-after-write now flows through CommandService pending
+                # overlays + the 0x16 0x22 StateStore observation (MOR-437).
                 if self._on_state_event:
                     self._on_state_event("nb_changed", {"on": on, "receiver": rx})
             case SetNR(on=on, receiver=rx):
                 self._ensure_receiver_supported(rx, operation="set_nr")
                 if CAP_NR in self._caps:
                     await radio.set_nr(on, receiver=rx)
-                if self._radio_state:
-                    target = (
-                        self._radio_state.sub if rx != 0 else self._radio_state.main
-                    )
-                    target.nr = on
-                    self.bump_revision()
+                # nr read-after-write now flows through CommandService pending
+                # overlays + the 0x16 0x40 StateStore observation (MOR-437).
                 if self._on_state_event:
                     self._on_state_event("nr_changed", {"on": on, "receiver": rx})
             case SetDigiSel(on=on, receiver=rx):
@@ -995,14 +1252,8 @@ class RadioPoller:
                 self._ensure_receiver_supported(rx, operation="set_attenuator")
                 if CAP_ATTENUATOR in self._caps:
                     await radio.set_attenuator_level(db, receiver=rx)
-                if self._radio_state:
-                    target = (
-                        self._radio_state.sub if rx != 0 else self._radio_state.main
-                    )
-                    target.att = db
-                    if db > 0:
-                        target.preamp = 0
-                    self.bump_revision()
+                # att read-after-write now flows through CommandService pending
+                # overlays + the 0x11 StateStore observation (MOR-437).
                 if self._on_state_event:
                     self._on_state_event(
                         "attenuator_changed", {"db": db, "receiver": rx}
@@ -1011,38 +1262,34 @@ class RadioPoller:
                 self._ensure_receiver_supported(rx, operation="set_preamp")
                 if CAP_PREAMP in self._caps:
                     await radio.set_preamp(level, receiver=rx)
-                if self._radio_state:
-                    target = (
-                        self._radio_state.sub if rx != 0 else self._radio_state.main
-                    )
-                    target.preamp = level
-                    if level > 0:
-                        target.att = 0
-                    self.bump_revision()
+                # preamp read-after-write now flows through CommandService pending
+                # overlays + the 0x16 0x02 StateStore observation (MOR-437).
                 if self._on_state_event:
                     self._on_state_event(
                         "preamp_changed", {"level": level, "receiver": rx}
                     )
             case SetPbtInner(level=level, receiver=rx):
                 await _r.set_pbt_inner(level, receiver=rx)
-                if self._radio_state:
-                    target = (
-                        self._radio_state.sub if rx != 0 else self._radio_state.main
+                self._apply_compatibility_mirror(
+                    lambda state: setattr(
+                        state.sub if rx != 0 else state.main,
+                        "pbt_inner",
+                        level,
                     )
-                    target.pbt_inner = level
-                    self.bump_revision()
+                )
                 if self._on_state_event:
                     self._on_state_event(
                         "pbt_inner_changed", {"level": level, "receiver": rx}
                     )
             case SetPbtOuter(level=level, receiver=rx):
                 await _r.set_pbt_outer(level, receiver=rx)
-                if self._radio_state:
-                    target = (
-                        self._radio_state.sub if rx != 0 else self._radio_state.main
+                self._apply_compatibility_mirror(
+                    lambda state: setattr(
+                        state.sub if rx != 0 else state.main,
+                        "pbt_outer",
+                        level,
                     )
-                    target.pbt_outer = level
-                    self.bump_revision()
+                )
                 if self._on_state_event:
                     self._on_state_event(
                         "pbt_outer_changed", {"level": level, "receiver": rx}
@@ -1054,71 +1301,42 @@ class RadioPoller:
                         self._radio_state.sub if rx != 0 else self._radio_state.main
                     )
                     target.if_shift = offset
-                    self.bump_revision()
                 if self._on_state_event:
                     self._on_state_event(
                         "if_shift_changed", {"offset": offset, "receiver": rx}
                     )
             case SetNRLevel(level=level, receiver=rx):
+                # nr_level read-after-write via overlays + 0x14 0x06 observation.
                 await _r.set_nr_level(level, receiver=rx)
-                if self._radio_state:
-                    target = (
-                        self._radio_state.sub if rx != 0 else self._radio_state.main
-                    )
-                    target.nr_level = level
-                    self.bump_revision()
             case SetNBLevel(level=level, receiver=rx):
+                # nb_level read-after-write via overlays + 0x14 0x12 observation.
                 await _r.set_nb_level(level, receiver=rx)
-                if self._radio_state:
-                    target = (
-                        self._radio_state.sub if rx != 0 else self._radio_state.main
-                    )
-                    target.nb_level = level
-                    self.bump_revision()
             case SetAutoNotch(on=on, receiver=rx):
+                # auto_notch read-after-write via overlays + 0x16 0x41 observation.
                 await _r.set_auto_notch(on, receiver=rx)
-                if self._radio_state:
-                    target = (
-                        self._radio_state.sub if rx != 0 else self._radio_state.main
-                    )
-                    target.auto_notch = on
-                    self.bump_revision()
             case SetManualNotch(on=on, receiver=rx):
+                # manual_notch read-after-write via overlays + 0x16 0x48 observation.
                 await _r.set_manual_notch(on, receiver=rx)
-                if self._radio_state:
-                    target = (
-                        self._radio_state.sub if rx != 0 else self._radio_state.main
-                    )
-                    target.manual_notch = on
-                    self.bump_revision()
             case SetNotchFilter(level=level):
                 await _r.set_notch_filter(level)
                 if self._radio_state:
                     self._radio_state.notch_filter = level
-                    self.bump_revision()
             case SetAgcTimeConstant(value=value, receiver=rx):
+                # agc_time_constant read-after-write via overlays + 0x1A 0x04
+                # StateStore observation (MOR-437).
                 await _r.set_agc_time_constant(value, receiver=rx)
-                if self._radio_state:
-                    target = (
-                        self._radio_state.sub if rx != 0 else self._radio_state.main
-                    )
-                    target.agc_time_constant = value
-                    self.bump_revision()
             case SetCwPitch(value=value):
                 await _r.set_cw_pitch(value)
                 if self._radio_state:
                     self._radio_state.cw_pitch = value
-                    self.bump_revision()
             case SetKeySpeed(speed=speed):
                 await _r.set_key_speed(speed)
                 if self._radio_state:
                     self._radio_state.key_speed = speed
-                    self.bump_revision()
             case SetBreakIn(mode=mode):
                 await _r.set_break_in(mode)
                 if self._radio_state:
                     self._radio_state.break_in = mode
-                    self.bump_revision()
             case SetApf(mode=mode, receiver=rx):
                 self._ensure_receiver_supported(rx, operation="set_apf")
                 await _r.set_audio_peak_filter(mode, receiver=rx)
@@ -1127,7 +1345,6 @@ class RadioPoller:
                         self._radio_state.sub if rx != 0 else self._radio_state.main
                     )
                     target.apf_type_level = mode
-                    self.bump_revision()
             case SetTwinPeak(on=on, receiver=rx):
                 self._ensure_receiver_supported(rx, operation="set_twin_peak")
                 await _r.set_twin_peak_filter(on, receiver=rx)
@@ -1136,78 +1353,55 @@ class RadioPoller:
                         self._radio_state.sub if rx != 0 else self._radio_state.main
                     )
                     target.twin_peak_filter = on
-                    self.bump_revision()
             case SetDriveGain(level=level):
                 await _r.set_drive_gain(level)
                 if self._radio_state:
                     self._radio_state.drive_gain = level
-                    self.bump_revision()
             case ScanStart(scan_type=st):
                 await _r.scan_start(mode=st)
                 if self._radio_state:
                     self._radio_state.scanning = True
                     self._radio_state.scan_type = st
-                    self.bump_revision()
             case ScanStop():
                 await _r.scan_stop()
                 if self._radio_state:
                     self._radio_state.scanning = False
                     self._radio_state.scan_type = 0
-                    self.bump_revision()
             case ScanSetDfSpan(span=span):
                 await _r.scan_set_df_span(span)
-                if self._radio_state:
-                    self.bump_revision()
             case ScanSetResume(mode=resume_mode):
                 await _r.scan_set_resume(resume_mode)
                 if self._radio_state:
                     self._radio_state.scan_resume_mode = resume_mode & 0x0F
-                    self.bump_revision()
             case SetDataMode(mode=mode, receiver=rx):
                 self._ensure_receiver_supported(rx, operation="set_data_mode")
                 if not 0 <= mode <= 3:
                     raise CommandError(f"set_data_mode mode must be 0-3, got {mode}")
                 await radio.set_data_mode(mode, receiver=rx)
-                if self._radio_state:
-                    target = (
-                        self._radio_state.sub if rx != 0 else self._radio_state.main
-                    )
-                    target.data_mode = mode
-                    self.bump_revision()
+                # data_mode read-after-write via overlays + 0x1A 0x06 observation.
                 if self._on_state_event:
                     self._on_state_event(
                         "data_mode_changed", {"mode": mode, "receiver": rx}
                     )
             case SetMicGain(level=level):
+                # mic_gain read-after-write via overlays + 0x14 0x0B observation.
                 await _r.set_mic_gain(level)
-                if self._radio_state:
-                    self._radio_state.mic_gain = level
-                    self.bump_revision()
             case SetVox(on=on):
+                # vox_on read-after-write via overlays + 0x16 0x46 observation.
                 await _r.set_vox(on)
-                if self._radio_state:
-                    self._radio_state.vox_on = on
-                    self.bump_revision()
             case SetCompressorLevel(level=level):
+                # compressor_level read-after-write via overlays + 0x14 0x0E obs.
                 await _r.set_compressor_level(level)
-                if self._radio_state:
-                    self._radio_state.compressor_level = level
-                    self.bump_revision()
             case SetMonitor(on=on):
+                # monitor_on read-after-write via overlays + 0x16 0x45 observation.
                 await _r.set_monitor(on)
-                if self._radio_state:
-                    self._radio_state.monitor_on = on
-                    self.bump_revision()
             case SetMonitorGain(level=level):
+                # monitor_gain read-after-write via overlays + 0x14 0x15 observation.
                 await _r.set_monitor_gain(level)
-                if self._radio_state:
-                    self._radio_state.monitor_gain = level
-                    self.bump_revision()
             case SetDialLock(on=on):
                 await _r.set_dial_lock(on)
                 if self._radio_state:
                     self._radio_state.dial_lock = on
-                    self.bump_revision()
             case SetAgc(mode=mode, receiver=rx):
                 if CAP_AGC in self._caps:
                     self._ensure_receiver_supported(rx, operation="set_agc")
@@ -1215,40 +1409,31 @@ class RadioPoller:
                 else:
                     # Wire bytes from TOML: set_agc = [0x16, 0x12]
                     await self._send_cmd("set_agc", bytes([mode]), receiver=rx)
-                if self._radio_state:
-                    target = (
-                        self._radio_state.sub if rx != 0 else self._radio_state.main
-                    )
-                    target.agc = mode
-                    self.bump_revision()
+                # agc read-after-write via overlays + 0x16 0x12 observation.
                 if self._on_state_event:
                     self._on_state_event("agc_changed", {"mode": mode, "receiver": rx})
             case SetRitStatus(on=on):
                 await _r.set_rit_status(on)
                 if self._radio_state:
                     self._radio_state.rit_on = on
-                    self.bump_revision()
                 if self._on_state_event:
                     self._on_state_event("rit_changed", {"on": on})
             case SetRitTxStatus(on=on):
                 await _r.set_rit_tx_status(on)
                 if self._radio_state:
                     self._radio_state.rit_tx = on
-                    self.bump_revision()
                 if self._on_state_event:
                     self._on_state_event("rit_tx_changed", {"on": on})
             case SetRitFrequency(freq=freq):
                 await _r.set_rit_frequency(freq)
                 if self._radio_state:
                     self._radio_state.rit_freq = freq
-                    self.bump_revision()
                 if self._on_state_event:
                     self._on_state_event("rit_freq_changed", {"hz": freq})
             case SetSplit(on=on):
                 await _r.set_split(on)
-                if self._radio_state:
-                    self._radio_state.split = on
-                    self.bump_revision()
+                # split read-after-write via overlays + 0x0F StateStore
+                # observation (MOR-437).
                 if self._on_state_event:
                     self._on_state_event("split_changed", {"on": on})
             case SetBand(band=band):
@@ -1291,13 +1476,20 @@ class RadioPoller:
                         await radio.set_freq(freq)
                         await asyncio.sleep(self._gap)
                         await radio.set_mode(mode_name, filter_num)
+                        self._apply_bsr_readback_observations(
+                            freq=freq,
+                            mode=mode_name,
+                            command_id=command_id,
+                            source=source,
+                            session_id=session_id,
+                            command_service=command_service,
+                        )
                         # Update local state immediately (don't wait for transceive echo)
                         if self._radio_state:
                             target = self._radio_state.main
                             if target:
                                 target.freq = freq
                                 target.mode = mode_name
-                            self.bump_revision()
                             self.mark_polled("freq")
                             self.mark_polled("mode")
                         if self._on_state_event:
@@ -1415,6 +1607,10 @@ class RadioPoller:
                                 "radio-poller: scope follow failed",
                                 exc_info=True,
                             )
+                if self._radio_state is not None:
+                    # Compatibility mirror until web state delivery reads the
+                    # active-slot projection from StateStore.
+                    self._radio_state.main.active_slot = "B" if is_sub else "A"
                 if self._on_state_event:
                     self._on_state_event("vfo_changed", {"vfo": vfo})
             case VfoSwap():
@@ -1463,13 +1659,11 @@ class RadioPoller:
                     await radio.set_scope_during_tx(on)
                     if self._radio_state:
                         self._radio_state.scope_controls.during_tx = on
-                    self.bump_revision()
             case SetScopeCenterType(center_type=center_type):
                 if CAP_SCOPE in self._caps:
                     await radio.set_scope_center_type(center_type)
                     if self._radio_state:
                         self._radio_state.scope_controls.center_type = center_type
-                    self.bump_revision()
             case SetScopeFixedEdge(edge=edge, start_hz=start_hz, end_hz=end_hz):
                 if CAP_SCOPE in self._caps:
                     await radio.set_scope_fixed_edge(
@@ -1482,55 +1676,46 @@ class RadioPoller:
                     await radio.set_scope_dual(dual)
                     if self._radio_state:
                         self._radio_state.scope_controls.dual = dual
-                    self.bump_revision()
             case SetScopeMode(mode=mode):
                 if CAP_SCOPE in self._caps:
                     await radio.set_scope_mode(mode)
                     if self._radio_state:
                         self._radio_state.scope_controls.mode = mode
-                    self.bump_revision()
             case SetScopeSpan(span=span):
                 if CAP_SCOPE in self._caps:
                     await radio.set_scope_span(span)
                     if self._radio_state:
                         self._radio_state.scope_controls.span = span
-                    self.bump_revision()
             case SetScopeSpeed(speed=speed):
                 if CAP_SCOPE in self._caps:
                     await radio.set_scope_speed(speed)
                     if self._radio_state:
                         self._radio_state.scope_controls.speed = speed
-                    self.bump_revision()
             case SetScopeRef(ref=ref):
                 if CAP_SCOPE in self._caps:
                     await radio.set_scope_ref(ref)
                     if self._radio_state:
                         self._radio_state.scope_controls.ref_db = float(ref)
-                    self.bump_revision()
             case SetScopeHold(on=on):
                 if CAP_SCOPE in self._caps:
                     await radio.set_scope_hold(on)
                     if self._radio_state:
                         self._radio_state.scope_controls.hold = on
-                    self.bump_revision()
             case SetScopeEdge(edge=edge):
                 if CAP_SCOPE in self._caps:
                     await radio.set_scope_edge(edge)
                     if self._radio_state:
                         self._radio_state.scope_controls.edge = edge
-                    self.bump_revision()
             case SetScopeVbw(narrow=narrow):
                 if CAP_SCOPE in self._caps:
                     await radio.set_scope_vbw(narrow)
                     if self._radio_state:
                         self._radio_state.scope_controls.vbw_narrow = narrow
-                    self.bump_revision()
             case SetScopeRbw(rbw=rbw):
                 if CAP_SCOPE in self._caps:
                     await radio.set_scope_rbw(rbw)
                     if self._radio_state:
                         self._radio_state.scope_controls.rbw = rbw
-                    self.bump_revision()
             case SetPowerstat(on=on):
                 if CAP_POWER_CONTROL in self._caps:
                     await radio.set_powerstat(on)
@@ -1538,15 +1723,13 @@ class RadioPoller:
                     if self._radio_state is not None:
                         self._radio_state.power_on = on
                     self._emit("powerstat_changed", {"power_on": on})
-                    self.bump_revision()
                     logger.info("radio-poller: power %s", "ON" if on else "OFF")
             case SetTunerStatus(value=value):
                 if CAP_TUNER in self._caps:
                     await radio.set_tuner_status(value)
-                    if self._radio_state is not None:
-                        self._radio_state.tuner_status = value
+                    # tuner_status read-after-write via overlays + 0x1C 0x01
+                    # StateStore observation (MOR-437).
                     self._emit("tuner_changed", {"value": value})
-                    self.bump_revision()
             case SetAntenna1(on=on):
                 # IC-7610: 0x12 0x00 selects ANT1, data byte encodes RX-ANT OFF/ON.
                 if CAP_ANTENNA in self._caps:
@@ -1554,14 +1737,12 @@ class RadioPoller:
                     if self._radio_state is not None:
                         self._radio_state.tx_antenna = 1
                         self._radio_state.rx_antenna_1 = on
-                    self.bump_revision()
             case SetAntenna2(on=on):
                 if CAP_ANTENNA in self._caps:
                     await radio.set_antenna_2(on)
                     if self._radio_state is not None:
                         self._radio_state.tx_antenna = 2
                         self._radio_state.rx_antenna_2 = on
-                    self.bump_revision()
             case SetRxAntennaAnt1(on=on):
                 # IC-7610 RX-ANT is encoded as data byte on 0x12 0x00.
                 # WARNING: This selects ANT1 as TX.
@@ -1570,7 +1751,6 @@ class RadioPoller:
                     if self._radio_state is not None:
                         self._radio_state.tx_antenna = 1
                         self._radio_state.rx_antenna_1 = on
-                    self.bump_revision()
             case SetRxAntennaAnt2(on=on):
                 # IC-7610 RX-ANT is encoded as data byte on 0x12 0x01.
                 # WARNING: This selects ANT2 as TX.
@@ -1579,7 +1759,6 @@ class RadioPoller:
                     if self._radio_state is not None:
                         self._radio_state.tx_antenna = 2
                         self._radio_state.rx_antenna_2 = on
-                    self.bump_revision()
             case SetSystemDate(year=year, month=month, day=day):
                 if CAP_SYSTEM_SETTINGS in self._caps:
                     await radio.set_system_date(year, month, day)
@@ -1610,7 +1789,6 @@ class RadioPoller:
                         self._radio_state.sub if rx != 0 else self._radio_state.main
                     )
                     target.tone_freq = freq
-                    self.bump_revision()
             case SetTsqlFreq(freq_hz=freq, receiver=rx):
                 self._ensure_receiver_supported(rx, operation="set_tsql_freq")
                 if CAP_TSQL in self._caps:
@@ -1620,68 +1798,94 @@ class RadioPoller:
                         self._radio_state.sub if rx != 0 else self._radio_state.main
                     )
                     target.tsql_freq = freq
-                    self.bump_revision()
             case SetMainSubTracking(on=on):
                 if CAP_MAIN_SUB_TRACKING in self._caps:
                     await radio.set_main_sub_tracking(on)
                 if self._radio_state:
                     self._radio_state.main_sub_tracking = on
-                    self.bump_revision()
             case SetSsbTxBandwidth(value=value):
                 if CAP_SSB_TX_BW in self._caps:
                     await radio.set_ssb_tx_bandwidth(value)
                 if self._radio_state:
                     self._radio_state.ssb_tx_bandwidth = value
-                    self.bump_revision()
             case SetManualNotchWidth(value=value, receiver=rx):
                 self._ensure_receiver_supported(rx, operation="set_manual_notch_width")
                 if CAP_NOTCH in self._caps:
                     await radio.set_manual_notch_width(value, receiver=rx)
-                self.bump_revision()
             case SetBreakInDelay(level=level):
                 if CAP_BREAK_IN in self._caps:
                     await radio.set_break_in_delay(level)
                 if self._radio_state:
                     self._radio_state.break_in_delay = level
-                    self.bump_revision()
             case SetVoxGain(level=level):
                 if CAP_VOX in self._caps:
                     await radio.set_vox_gain(level)
                 if self._radio_state:
                     self._radio_state.vox_gain = level
-                    self.bump_revision()
             case SetAntiVoxGain(level=level):
                 if CAP_VOX in self._caps:
                     await radio.set_anti_vox_gain(level)
                 if self._radio_state:
                     self._radio_state.anti_vox_gain = level
-                    self.bump_revision()
             case SetVoxDelay(level=level):
                 if CAP_VOX in self._caps:
                     await radio.set_vox_delay(level)
                 if self._radio_state:
                     self._radio_state.vox_delay = level
-                    self.bump_revision()
             case SetNbDepth(level=level, receiver=rx):
                 self._ensure_receiver_supported(rx, operation="set_nb_depth")
                 if CAP_NB in self._caps:
-                    await radio.set_nb_depth(level, receiver=rx)
-                if self._radio_state:
-                    self._radio_state.nb_depth = level
-                    self.bump_revision()
+                    # NB depth is a GLOBAL menu item (0x1A 05 02 90), not
+                    # per-receiver: the setter takes no ``receiver`` argument.
+                    await radio.set_nb_depth(level)
+                    # Write-through readback (MOR-491-B): confirm the value the
+                    # radio actually took (clamp/quantization) instead of a blind
+                    # optimistic mirror. Resilient: a failed readback never kills
+                    # the command path.
+                    try:
+                        confirmed = await radio.get_nb_depth()
+                    except Exception:
+                        logger.debug(
+                            "radio-poller: get_nb_depth readback failed",
+                            exc_info=True,
+                        )
+                    else:
+                        self._apply_global_control_observation(
+                            "nb_depth",
+                            confirmed,
+                            command_id=command_id,
+                            source=command_source,
+                            session_id=session_id,
+                            command_service=command_service,
+                        )
             case SetNbWidth(level=level, receiver=rx):
                 self._ensure_receiver_supported(rx, operation="set_nb_width")
                 if CAP_NB in self._caps:
-                    await radio.set_nb_width(level, receiver=rx)
-                if self._radio_state:
-                    self._radio_state.nb_width = level
-                    self.bump_revision()
+                    # NB width is a GLOBAL menu item (0x1A 05 02 91), not
+                    # per-receiver: the setter takes no ``receiver`` argument.
+                    await radio.set_nb_width(level)
+                    # Write-through readback (MOR-491-B): confirm the real value.
+                    try:
+                        confirmed = await radio.get_nb_width()
+                    except Exception:
+                        logger.debug(
+                            "radio-poller: get_nb_width readback failed",
+                            exc_info=True,
+                        )
+                    else:
+                        self._apply_global_control_observation(
+                            "nb_width",
+                            confirmed,
+                            command_id=command_id,
+                            source=command_source,
+                            session_id=session_id,
+                            command_service=command_service,
+                        )
             case SetDashRatio(value=value):
                 if CAP_CW in self._caps:
                     await radio.set_dash_ratio(value)
                 if self._radio_state:
                     self._radio_state.dash_ratio = value
-                    self.bump_revision()
             case SetRepeaterTone(on=on, receiver=rx):
                 self._ensure_receiver_supported(rx, operation="set_repeater_tone")
                 if CAP_REPEATER_TONE in self._caps:
@@ -1691,7 +1895,6 @@ class RadioPoller:
                         self._radio_state.sub if rx != 0 else self._radio_state.main
                     )
                     target.repeater_tone = on
-                    self.bump_revision()
             case SetRepeaterTsql(on=on, receiver=rx):
                 self._ensure_receiver_supported(rx, operation="set_repeater_tsql")
                 if CAP_TSQL in self._caps:
@@ -1701,14 +1904,12 @@ class RadioPoller:
                         self._radio_state.sub if rx != 0 else self._radio_state.main
                     )
                     target.repeater_tsql = on
-                    self.bump_revision()
             case SetRxAntenna(antenna=antenna, on=on):
                 if CAP_RX_ANTENNA in self._caps:
                     if antenna == 1:
                         await radio.set_rx_antenna_ant1(on)
                     else:
                         await radio.set_rx_antenna_ant2(on)
-                self.bump_revision()
             case SetMemoryMode(channel=channel):
                 if isinstance(radio, MemoryCapable):
                     await radio.set_memory_mode(channel)
@@ -1751,7 +1952,6 @@ class RadioPoller:
                 await _r.set_ref_adjust(value)
                 if self._radio_state:
                     self._radio_state.ref_adjust = value
-                    self.bump_revision()
             case SetCivTransceive(on=on):
                 await _r.set_civ_transceive(on)
             case SetCivOutputAnt(on=on):
@@ -1763,19 +1963,16 @@ class RadioPoller:
                         self._radio_state.sub if rx != 0 else self._radio_state.main
                     )
                     target.af_mute = on
-                    self.bump_revision()
             case SetTuningStep(step=step):
                 await _r.set_tuning_step(step)
                 if self._radio_state:
                     self._radio_state.tuning_step = step
-                    self.bump_revision()
             case SetXfcStatus(on=on):
                 await _r.set_xfc_status(on)
             case SetTxFreqMonitor(on=on):
                 await _r.set_tx_freq_monitor(on)
                 if self._radio_state:
                     self._radio_state.tx_freq_monitor = on
-                    self.bump_revision()
             case SetUtcOffset(hours=hours, minutes=minutes, is_negative=is_negative):
                 await _r.set_utc_offset(hours, minutes, is_negative)
             case QuickSplit():
@@ -1798,7 +1995,6 @@ class RadioPoller:
                     logger.info("radio-poller: quick SPLIT (equalize + SPLIT ON)")
                     if self._radio_state:
                         self._radio_state.split = True
-                        self.bump_revision()
                     if self._on_state_event:
                         self._on_state_event("split_changed", {"on": True})
             case Speak(mode=what):
@@ -1858,7 +2054,133 @@ class RadioPoller:
             return self._HIGH_TIER_RX[0]
         return self._HIGH_TIER_TX[high_idx % len(self._HIGH_TIER_TX)]
 
+    def _flush_due_meter_observations(self) -> None:
+        coalescer = getattr(self._radio, "_meter_observation_coalescer", None)
+        if not isinstance(coalescer, MeterObservationCoalescer):
+            return
+        runtime = getattr(self._radio, "_civ_runtime", None)
+        flush_due = getattr(runtime, "flush_due_meter_observations", None)
+        if not callable(flush_due):
+            return
+        try:
+            flush_due(now=time.monotonic())
+        except Exception:
+            logger.debug("radio-poller: meter coalescer flush failed", exc_info=True)
+
+    def _acquisition_request_expired(
+        self,
+        request: AcquisitionRequest,
+        *,
+        sent_at: float,
+        now: float,
+    ) -> bool:
+        deadlines = [request.deadline_monotonic]
+        if request.timeout is not None:
+            deadlines.append(sent_at + request.timeout)
+        deadline: float = min(deadlines)
+        return now >= deadline
+
+    async def _send_scheduler_requests(self) -> None:
+        scheduler = self._acquisition_scheduler
+        if scheduler is None:
+            return
+        now = time.monotonic()
+        scheduler.due_requests(now=now)
+        pending = scheduler.pending_requests()
+        pending_ids = {request.id for request in pending}
+        for request_id in tuple(self._acquisition_in_flight):
+            if request_id not in pending_ids:
+                del self._acquisition_in_flight[request_id]
+
+        for request in pending:
+            sent_paths: frozenset[FieldPath] = frozenset()
+            sent_at = 0.0
+            existing = self._acquisition_in_flight.get(request.id)
+            if existing is not None:
+                sent_paths, sent_at = existing
+                if self._acquisition_request_expired(
+                    request,
+                    sent_at=sent_at,
+                    now=now,
+                ):
+                    self._record_state_diagnostic(
+                        "acquisition_request_failed",
+                        "web.radio_poller",
+                        request_id=request.id,
+                        paths=[str(path) for path in request.paths],
+                        reason="acquisition_request_timeout",
+                    )
+                    scheduler.record_acquisition_failure(
+                        request,
+                        reason="acquisition_request_timeout",
+                        failed_paths=sent_paths or frozenset(request.paths),
+                        now=now,
+                    )
+                    self._acquisition_in_flight.pop(request.id, None)
+                    continue
+                else:
+                    sent_paths = sent_paths.intersection(request.paths)
+
+            if all(path in sent_paths for path in request.paths):
+                continue
+
+            executor = self._acquisition_executor
+            if executor is None:
+                self._record_state_diagnostic(
+                    "acquisition_executor_missing",
+                    "web.radio_poller",
+                    request_id=request.id,
+                    paths=[str(path) for path in request.paths],
+                    provider=request.provider,
+                )
+                scheduler.record_acquisition_failure(
+                    request,
+                    reason="acquisition_executor_missing",
+                    now=now,
+                )
+                continue
+
+            result = await executor.execute(
+                request,
+                already_sent_paths=sent_paths,
+            )
+            newly_sent = tuple(result.sent_paths)
+            failed_paths = tuple(result.failed_paths)
+            if failed_paths:
+                reason = result.failure_reason or "acquisition_request_failed"
+                self._record_state_diagnostic(
+                    "acquisition_request_failed",
+                    "web.radio_poller",
+                    request_id=request.id,
+                    paths=[str(path) for path in failed_paths],
+                    reason=reason,
+                    provider=request.provider,
+                )
+                scheduler.record_acquisition_failure(
+                    request,
+                    reason=reason,
+                    failed_paths=failed_paths,
+                    now=now,
+                )
+
+            if newly_sent:
+                self._acquisition_in_flight[request.id] = (
+                    sent_paths.union(newly_sent),
+                    now,
+                )
+                self._record_state_diagnostic(
+                    "acquisition_request_sent",
+                    "web.radio_poller",
+                    request_id=request.id,
+                    paths=[str(path) for path in newly_sent],
+                    pending_request_count=len(scheduler.pending_requests()),
+                )
+
     async def _send_query(self) -> None:
+        self._flush_due_meter_observations()
+        if self._acquisition_scheduler is not None:
+            await self._send_scheduler_requests()
+            return
         # Even cycles → meter query; odd cycles → state query.
         if self._poll_index % 2 == 0:
             if self._is_serial:
@@ -1878,13 +2200,42 @@ class RadioPoller:
                     cmd_byte, sub_byte = self._LOW_TIER[low_idx]
                 else:
                     cmd_byte, sub_byte = self._pick_high_meter(high_idx)
-            await self._civ(cmd_byte, sub=sub_byte, data=b"")
+            self._record_state_diagnostic(
+                "meter_cadence",
+                "web.radio_poller",
+                command=f"0x{cmd_byte:02x}",
+                sub=None if sub_byte is None else f"0x{sub_byte:02x}",
+                poll_index=self._poll_index,
+                serial=self._is_serial,
+            )
+            self._record_state_diagnostic(
+                "backend_read",
+                "web.radio_poller",
+                family="meters",
+                command=f"0x{cmd_byte:02x}",
+                sub=None if sub_byte is None else f"0x{sub_byte:02x}",
+            )
+            await self._civ(
+                cmd_byte,
+                sub=sub_byte,
+                data=b"",
+                priority=Priority.BACKGROUND,
+                wait_dispatch=False,
+            )
         else:
             if not self._STATE_QUERIES:
                 self._poll_index += 1
                 return
             state_idx = (self._poll_index // 2) % len(self._STATE_QUERIES)
             cmd_byte, sub_byte, receiver = self._STATE_QUERIES[state_idx]
+            self._record_state_diagnostic(
+                "backend_read",
+                "web.radio_poller",
+                family="state",
+                command=f"0x{cmd_byte:02x}",
+                sub=None if sub_byte is None else f"0x{sub_byte:02x}",
+                receiver=receiver,
+            )
             await self._send_one_state_query(cmd_byte, sub_byte, receiver)
         self._poll_index += 1
 
@@ -1959,17 +2310,31 @@ class RadioPoller:
                 return  # host refuses attribute — skip silently
         try:
             if pre_code is not None:
-                await self._civ(0x07, data=bytes([pre_code]))
+                await self._civ(
+                    0x07,
+                    data=bytes([pre_code]),
+                    priority=Priority.BACKGROUND,
+                    wait_dispatch=False,
+                )
                 await asyncio.sleep(self._adaptive_gap())
                 pre_switched = True
             # Swap A/B within the selected receiver.
-            await self._civ(0x07, data=bytes([swap_code]))
+            await self._civ(
+                0x07,
+                data=bytes([swap_code]),
+                priority=Priority.BACKGROUND,
+                wait_dispatch=False,
+            )
             await asyncio.sleep(self._adaptive_gap())
             # Responses for the queries below must route to the opposite slot.
             override_map[rx_name] = target_slot
-            await self._civ(0x03, data=b"")
+            await self._civ(
+                0x03, data=b"", priority=Priority.BACKGROUND, wait_dispatch=False
+            )
             await asyncio.sleep(self._adaptive_gap())
-            await self._civ(0x04, data=b"")
+            await self._civ(
+                0x04, data=b"", priority=Priority.BACKGROUND, wait_dispatch=False
+            )
             # Give the CI-V RX pump a moment to drain responses before we
             # swap back (the override stays set until *after* swap-back
             # so any late 0x03/0x04 response still routes to the
@@ -1981,7 +2346,12 @@ class RadioPoller:
             # slot even when a query errored.  Override is cleared after
             # the swap-back send + a gap to cover in-flight responses.
             try:
-                await self._civ(0x07, data=bytes([swap_code]))
+                await self._civ(
+                    0x07,
+                    data=bytes([swap_code]),
+                    priority=Priority.BACKGROUND,
+                    wait_dispatch=False,
+                )
             except Exception:
                 logger.warning(
                     "radio-poller: failed to restore VFO A/B on receiver=%d",
@@ -1992,7 +2362,12 @@ class RadioPoller:
             override_map.pop(rx_name, None)
             if pre_switched and post_code is not None:
                 try:
-                    await self._civ(0x07, data=bytes([post_code]))
+                    await self._civ(
+                        0x07,
+                        data=bytes([post_code]),
+                        priority=Priority.BACKGROUND,
+                        wait_dispatch=False,
+                    )
                 except Exception:
                     logger.warning(
                         "radio-poller: failed to restore MAIN/SUB selection",
@@ -2003,3 +2378,7 @@ class RadioPoller:
     def _emit(self, name: str, data: dict[str, Any]) -> None:
         if self._on_state_event is not None:
             self._on_state_event(name, data)
+
+    def _record_state_diagnostic(self, kind: str, source: str, **details: Any) -> None:
+        if self._state_diagnostics is not None:
+            self._state_diagnostics.record(kind, source, **details)

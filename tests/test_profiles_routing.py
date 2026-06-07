@@ -8,6 +8,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from rigplane import IcomRadio
+from rigplane.commands.commander import Priority
 from rigplane.exceptions import CommandError
 from rigplane.profiles import resolve_radio_profile
 from rigplane.rigctld.state_cache import StateCache
@@ -110,6 +111,23 @@ async def test_dual_profile_poller_routes_main_mode_via_vfo_switch_when_active_s
 
     main_code = bytes([radio.profile.vfo_main_code])
     sub_code = bytes([radio.profile.vfo_sub_code])
-    radio.send_civ.assert_any_await(0x07, sub=None, data=main_code, wait_response=False)
-    radio.send_civ.assert_any_await(0x07, sub=None, data=sub_code, wait_response=False)
+    # User-command VFO switch stays at NORMAL priority (MOR-497i: only
+    # background polls are demoted to BACKGROUND) and blocking
+    # (MOR-497ii: wait_dispatch=True, never fire-and-forget).
+    radio.send_civ.assert_any_await(
+        0x07,
+        sub=None,
+        data=main_code,
+        wait_response=False,
+        priority=Priority.NORMAL,
+        wait_dispatch=True,
+    )
+    radio.send_civ.assert_any_await(
+        0x07,
+        sub=None,
+        data=sub_code,
+        wait_response=False,
+        priority=Priority.NORMAL,
+        wait_dispatch=True,
+    )
     radio.set_mode.assert_awaited_once_with("USB", None)

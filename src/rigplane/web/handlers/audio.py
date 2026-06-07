@@ -76,9 +76,15 @@ class AudioBroadcaster:
 
     HIGH_WATERMARK: int = 10
 
-    def __init__(self, radio: "Radio | None") -> None:
+    def __init__(
+        self,
+        radio: "Radio | None",
+        *,
+        on_client_count_change: Callable[[], None] | None = None,
+    ) -> None:
         self.HIGH_WATERMARK = get_audio_broadcaster_high_watermark()
         self._radio = radio
+        self._on_client_count_change = on_client_count_change
         self._clients: dict[int, asyncio.Queue[bytes]] = {}
         self._client_ws: dict[int, Connection] = {}
         self._client_rx_codec: dict[int, int] = {}
@@ -143,14 +149,16 @@ class AudioBroadcaster:
                     await self._start_relay()
             elif preferred_rx_codec is not None:
                 self.invalidate_codec_state()
+        self._notify_client_count_change()
         logger.info("audio-broadcaster: client added (total=%d)", len(self._clients))
         return queue
 
     async def unsubscribe(self, queue: asyncio.Queue[bytes]) -> None:
         """Unregister a client and stop relay if last (unless PCM tap is active)."""
         client_id = id(queue)
+        removed = False
         async with self._lock:
-            self._clients.pop(client_id, None)
+            removed = self._clients.pop(client_id, None) is not None
             self._client_ws.pop(client_id, None)
             removed_codec = self._client_rx_codec.pop(client_id, None)
             if removed_codec is not None:
@@ -161,7 +169,19 @@ class AudioBroadcaster:
                 and not self._tap_registry.active
             ):
                 await self._stop_relay()
+        if removed:
+            self._notify_client_count_change()
         logger.info("audio-broadcaster: client removed (total=%d)", len(self._clients))
+
+    def _notify_client_count_change(self) -> None:
+        if self._on_client_count_change is None:
+            return
+        try:
+            self._on_client_count_change()
+        except Exception:
+            logger.debug(
+                "audio-broadcaster: client count callback failed", exc_info=True
+            )
 
     def set_pcm_tap(self, callback: "Callable[[bytes], None] | None") -> None:
         """Register a tap that receives decoded PCM16 audio data.
@@ -248,6 +268,7 @@ class AudioBroadcaster:
                 await self._stop_relay()
             remaining = len(self._clients)
         if dead_ids:
+            self._notify_client_count_change()
             logger.info(
                 "audio-broadcaster: reaped %d dead clients (total=%d)",
                 len(dead_ids),
@@ -533,6 +554,8 @@ class AudioBroadcaster:
                     self._clients.pop(client_id, None)
                     self._client_ws.pop(client_id, None)
                     logger.info("audio-broadcaster: removed dead client during relay")
+                if dead_ids:
+                    self._notify_client_count_change()
         except asyncio.CancelledError:
             pass
         except Exception:

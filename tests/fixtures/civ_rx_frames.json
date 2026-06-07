@@ -50,10 +50,10 @@
   },
   {
     "name": "cmd15_sub05_sql_open_active_main",
-    "comment": "0x15/0x05 SQL open flag (alternate sub for s_meter_sql_open)",
+    "comment": "0x15/0x05 SQL open flag: legacy RadioState mirror removed (MOR-466); promoted to observation receiver.0.operator_toggles.dcd, so the mirror stays at its default false",
     "frame": {"command": 21, "sub": 5, "data": "01"},
     "expected_state": {
-      "main.s_meter_sql_open": true
+      "main.s_meter_sql_open": false
     }
   },
   {
@@ -74,42 +74,42 @@
   },
   {
     "name": "cmd15_sub14_comp_meter",
-    "comment": "0x15/0x14 compressor meter raw value",
+    "comment": "0x15/0x14 compressor meter: legacy RadioState mirror removed (MOR-460); promoted to observation global.meters.comp, so the mirror stays at its default 0",
     "frame": {"command": 21, "sub": 20, "data": "0123"},
     "expected_state": {
-      "comp_meter": 123
+      "comp_meter": 0
     }
   },
   {
     "name": "cmd15_sub15_vd_meter",
-    "comment": "0x15/0x15 supply voltage meter",
+    "comment": "0x15/0x15 supply voltage meter: legacy RadioState mirror removed (MOR-460); promoted to observation global.meters.vd, so the mirror stays at its default 0",
     "frame": {"command": 21, "sub": 21, "data": "0241"},
     "expected_state": {
-      "vd_meter": 241
+      "vd_meter": 0
     }
   },
   {
     "name": "cmd15_sub16_id_meter",
-    "comment": "0x15/0x16 drain current meter",
+    "comment": "0x15/0x16 drain current meter: legacy RadioState mirror removed (MOR-460); promoted to observation global.meters.id, so the mirror stays at its default 0",
     "frame": {"command": 21, "sub": 22, "data": "0089"},
     "expected_state": {
-      "id_meter": 89
+      "id_meter": 0
     }
   },
   {
     "name": "cmd14_sub09_cw_pitch",
-    "comment": "0x14/0x09 CW pitch (computed from raw via 600/255 mapping then snapped to 5 Hz)",
+    "comment": "0x14/0x09 CW pitch is observation-backed (MOR-437); the legacy RadioState mirror (600 Hz via the 600/255 mapping) is no longer written and stays at its default.",
     "frame": {"command": 20, "sub": 9, "data": "0128"},
     "expected_state": {
-      "cw_pitch": 600
+      "cw_pitch": 0
     }
   },
   {
     "name": "cmd14_sub0c_key_speed",
-    "comment": "0x14/0x0C key speed (WPM derived from raw/6.071 + 6, rounded)",
+    "comment": "0x14/0x0C key speed is observation-backed (MOR-493); the legacy RadioState mirror (WPM via raw/6.071 + 6, rounded) is no longer written and stays at its default.",
     "frame": {"command": 20, "sub": 12, "data": "0128"},
     "expected_state": {
-      "key_speed": 27
+      "key_speed": 0
     }
   },
   {
@@ -122,10 +122,10 @@
   },
   {
     "name": "cmd16_sub44_compressor_global_bool",
-    "comment": "0x16/0x44 global compressor_on (covers _CMD16_GLOBAL_BOOL_FIELDS branch)",
+    "comment": "0x16/0x44 compressor_on is observation-backed (MOR-437); the legacy RadioState mirror is no longer written and stays at its default.",
     "frame": {"command": 22, "sub": 68, "data": "01"},
     "expected_state": {
-      "compressor_on": true
+      "compressor_on": false
     }
   },
   {
@@ -138,51 +138,51 @@
   },
   {
     "name": "cmd1A_sub03_filter_width_no_profile",
-    "comment": "0x1A/0x03 filter index → raw filter_width when host has no segmented profile (lines 1023-1025)",
+    "comment": "0x1A/0x03 filter_width is observation-backed (MOR-437); the legacy RadioState mirror (raw index 21 with no segmented profile) is no longer written and stays at its default.",
     "host_setup": {"clear_profile": true},
     "frame": {"command": 26, "sub": 3, "data": "21"},
     "expected_state": {
-      "main.filter_width": 21
+      "main.filter_width": null
     }
   },
   {
     "name": "cmd1A_sub03_filter_width_segmented_profile",
-    "comment": "0x1A/0x03 filter index → resolved Hz via IC-7610 segmented profile (USB rule). Covers lines 1009-1022.",
+    "comment": "0x1A/0x03 filter_width is observation-backed (MOR-437); the legacy RadioState mirror (1700 Hz resolved via the IC-7610 segmented USB rule) is no longer written and stays at its default. The profile-dependent decode itself is asserted on the StateStore path in test_civ_rx_coverage.",
     "frame": {"command": 26, "sub": 3, "data": "21"},
     "expected_state": {
-      "main.filter_width": 1700
+      "main.filter_width": null
     }
   },
   {
     "name": "cmd1B_sub00_tone_freq_centihz",
-    "comment": "0x1B/0x00 repeater tone freq → centihz (88.5 Hz → 8850)",
+    "comment": "0x1B/0x00 tone freq is observation-backed (MOR-451); the legacy RadioState mirror is no longer written and stays at its default 0.",
     "frame": {"command": 27, "sub": 0, "data": "008805"},
     "expected_state": {
-      "main.tone_freq": 8850
+      "main.tone_freq": 0
     }
   },
   {
     "name": "cmd1B_sub01_tsql_freq_centihz",
-    "comment": "0x1B/0x01 TSQL freq → centihz (123.0 Hz → 12300)",
+    "comment": "0x1B/0x01 TSQL freq is observation-backed (MOR-451); the legacy RadioState mirror is no longer written and stays at its default 0.",
     "frame": {"command": 27, "sub": 1, "data": "012300"},
     "expected_state": {
-      "main.tsql_freq": 12300
+      "main.tsql_freq": 0
     }
   },
   {
     "name": "cmd1C_sub01_tuner_status",
-    "comment": "0x1C/0x01 tuner status byte",
+    "comment": "0x1C/0x01 tuner status is observation-backed (MOR-437); the legacy RadioState mirror is no longer written and stays at its default.",
     "frame": {"command": 28, "sub": 1, "data": "02"},
     "expected_state": {
-      "tuner_status": 2
+      "tuner_status": 0
     }
   },
   {
     "name": "cmd1C_sub03_tx_freq_monitor",
-    "comment": "0x1C/0x03 TX-frequency-monitor flag",
+    "comment": "0x1C/0x03 TX-frequency-monitor is observation-backed (MOR-437); the legacy RadioState mirror is no longer written and stays at its default.",
     "frame": {"command": 28, "sub": 3, "data": "01"},
     "expected_state": {
-      "tx_freq_monitor": true
+      "tx_freq_monitor": false
     }
   },
   {
@@ -243,10 +243,10 @@
   },
   {
     "name": "cmd10_tuning_step",
-    "comment": "0x10 tuning step decoded from BCD nibble pair",
+    "comment": "0x10 tuning step is observation-backed (MOR-461); the legacy RadioState mirror is no longer written and stays at its default.",
     "frame": {"command": 16, "sub": null, "data": "12"},
     "expected_state": {
-      "tuning_step": 12
+      "tuning_step": 0
     }
   },
   {
@@ -430,7 +430,7 @@
   },
   {
     "name": "cmd12_unknown_sub_no_op",
-    "comment": "0x12 with sub=0x05 is not 0/1 — covers `sub12 in (0x00, 0x01)` false (line 895). RadioState default tx_antenna=1 is preserved.",
+    "comment": "0x12 with sub=0x05 is not 0/1 — _handle_12 is a no-op for it. Antenna is observation-backed (MOR-462); the legacy RadioState mirror is no longer written and stays at its defaults (tx_antenna=1, rx_antenna_1/2=false).",
     "frame": {"command": 18, "sub": 5, "data": "01"},
     "expected_state": {
       "tx_antenna": 1,
@@ -440,7 +440,7 @@
   },
   {
     "name": "cmd12_sub00_no_data",
-    "comment": "0x12/0x00 with empty data — covers `if frame.data` false (line 897); tx_antenna still set.",
+    "comment": "0x12/0x00 with empty data. Antenna is observation-backed (MOR-462); the legacy RadioState mirror is no longer written and stays at its default tx_antenna=1.",
     "frame": {"command": 18, "sub": 0, "data": ""},
     "expected_state": {
       "tx_antenna": 1,
@@ -448,11 +448,20 @@
     }
   },
   {
+    "name": "cmd12_sub01_ant2_mirror_removed",
+    "comment": "0x12/0x01 0x01 = select ANT2 + RX-ANT ON. Antenna is observation-backed (MOR-462); the legacy RadioState mirror is no longer written, so tx_antenna stays at its default 1 (not 2) and rx_antenna_2 stays false on the mirror path.",
+    "frame": {"command": 18, "sub": 1, "data": "01"},
+    "expected_state": {
+      "tx_antenna": 1,
+      "rx_antenna_2": false
+    }
+  },
+  {
     "name": "cmd16_sub12_agc_value_with_notify",
-    "comment": "0x16/0x12 AGC value-field + agc_changed notify — covers value-notify branch (line 931).",
+    "comment": "0x16/0x12 AGC is observation-backed (MOR-437); the legacy RadioState mirror is no longer written (stays at default), but the agc_changed notify still fires.",
     "frame": {"command": 22, "sub": 18, "data": "02"},
     "expected_state": {
-      "main.agc": 2
+      "main.agc": 0
     }
   },
   {

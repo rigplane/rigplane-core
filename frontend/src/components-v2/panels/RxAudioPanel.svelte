@@ -20,7 +20,7 @@
   );
 </script>
 
-{#if props.hasLiveAudio}
+{#if props.hasAfLevel || props.hasLiveAudio}
     <div class="panel-body">
       <div class="button-group">
         {#each options as option}

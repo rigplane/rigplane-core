@@ -15,8 +15,18 @@
   import AmberMemoryStrip from './AmberMemoryStrip.svelte';
   import type { IndToken } from './AmberIndStrip.svelte';
   import { runtime } from '$lib/runtime';
+  import { isFieldAvailable } from '$lib/state/field-status';
+  import { formatOffsetKHz } from '../rit-utils';
 
   const handlers = getAmberCockpitHandlers();
+
+  // MOR-429: gate per-receiver indicators on fieldStatus availability so an
+  // unobserved/stale/default value is never presented as a confirmed reading.
+  // The cockpit's VFO A strip always renders MAIN, VFO B always SUB, so each
+  // token gates on its own receiver path (e.g. `main.agc` / `sub.agc`).
+  function rxAvailable(rxKey: 'main' | 'sub', field: string): boolean {
+    return isFieldAvailable(radioState, `${rxKey}.${field}`);
+  }
 
   // Band lookup by frequency (LCD-specific)
   const BANDS: [string, number, number][] = [
@@ -138,94 +148,71 @@
     return AGC_LABELS[agcMode] ?? `${agcMode}`;
   }
 
+  // Per-receiver token builder — gates every indicator on fieldStatus
+  // availability (MOR-429). Unavailable fields are suppressed entirely rather
+  // than shown as confirmed defaults; AGC in particular no longer emits
+  // `active: true` when `${rxKey}.agc` is missing/stale.
+  function vfoTokens(rxKey: 'main' | 'sub'): IndToken[] {
+    const rxState = radioState?.[rxKey];
+    return [
+      ...(hasCap('attenuator') && rxAvailable(rxKey, 'att') ? [{
+        id: 'att' as const, label: 'ATT', active: (rxState?.att ?? 0) > 0,
+      }] : []),
+      ...(hasCap('preamp') && rxAvailable(rxKey, 'preamp') ? [{
+        id: 'pre' as const,
+        label: (rxState?.preamp ?? 0) === 0 ? 'IPO'
+             : (rxState?.preamp ?? 0) === 1 ? 'AMP1' : 'AMP2',
+        active: true,
+      }] : []),
+      ...(hasCap('digisel') && rxAvailable(rxKey, 'digisel') ? [{
+        id: 'digisel' as const, label: 'DIGI-SEL', active: rxState?.digisel ?? false,
+      }] : []),
+      ...(hasCap('nb') && rxAvailable(rxKey, 'nb') ? [{
+        id: 'nb' as const,
+        label: (rxState?.nb ?? false) || (rxState?.nbLevel ?? 0) > 0
+          ? `NB ${rxState?.nbLevel ?? 0}` : 'NB',
+        active: (rxState?.nb ?? false) || (rxState?.nbLevel ?? 0) > 0,
+      }] : []),
+      ...(hasCap('nr') && rxAvailable(rxKey, 'nr') ? [{
+        id: 'nr' as const,
+        label: (rxState?.nr ?? false) || (rxState?.nrLevel ?? 0) > 0
+          ? `NR ${rxState?.nrLevel ?? 0}` : 'NR',
+        active: (rxState?.nr ?? false) || (rxState?.nrLevel ?? 0) > 0,
+      }] : []),
+      ...(hasCap('contour') && rxAvailable(rxKey, 'contour') ? [{
+        id: 'cont' as const, label: 'CONT',
+        active: (rxState?.contour ?? 0) > 0,
+      }] : []),
+      ...(hasCap('notch') ? [
+        ...(rxAvailable(rxKey, 'manualNotch')
+          ? [{ id: 'notch' as const, label: 'NOTCH', active: rxState?.manualNotch ?? false }]
+          : []),
+        ...(rxAvailable(rxKey, 'autoNotch')
+          ? [{ id: 'anf' as const, label: 'ANF', active: rxState?.autoNotch ?? false }]
+          : []),
+      ] : []),
+      ...(rxAvailable(rxKey, 'agc')
+        ? [{ id: 'agc' as const, label: `AGC ${agcLabelFor(rxState?.agc ?? 2)}`, active: true }]
+        : []),
+      ...(hasCap('rf_gain') && rxAvailable(rxKey, 'rfGain') ? [{
+        id: 'rfg' as const, label: 'RFG', active: (rxState?.rfGain ?? 255) < 255,
+      }] : []),
+      ...(hasCap('squelch') && rxAvailable(rxKey, 'squelch') ? [{
+        id: 'sql' as const, label: 'SQL', active: (rxState?.squelch ?? 0) > 0,
+      }] : []),
+    ];
+  }
+
   // vfoATokens: per-receiver indicators for VFO A (main)
   let vfoATokens = $derived<IndToken[]>([
-    ...(hasCap('attenuator') ? [{
-      id: 'att' as const, label: 'ATT', active: (radioState?.main?.att ?? 0) > 0,
-    }] : []),
-    ...(hasCap('preamp') ? [{
-      id: 'pre' as const,
-      label: (radioState?.main?.preamp ?? 0) === 0 ? 'IPO'
-           : (radioState?.main?.preamp ?? 0) === 1 ? 'AMP1' : 'AMP2',
-      active: true,
-    }] : []),
-    ...(hasCap('digisel') ? [{
-      id: 'digisel' as const, label: 'DIGI-SEL', active: radioState?.main?.digisel ?? false,
-    }] : []),
-    ...(hasCap('nb') ? [{
-      id: 'nb' as const,
-      label: (radioState?.main?.nb ?? false) || (radioState?.main?.nbLevel ?? 0) > 0
-        ? `NB ${radioState?.main?.nbLevel ?? 0}` : 'NB',
-      active: (radioState?.main?.nb ?? false) || (radioState?.main?.nbLevel ?? 0) > 0,
-    }] : []),
-    ...(hasCap('nr') ? [{
-      id: 'nr' as const,
-      label: (radioState?.main?.nr ?? false) || (radioState?.main?.nrLevel ?? 0) > 0
-        ? `NR ${radioState?.main?.nrLevel ?? 0}` : 'NR',
-      active: (radioState?.main?.nr ?? false) || (radioState?.main?.nrLevel ?? 0) > 0,
-    }] : []),
-    ...(hasCap('contour') ? [{
-      id: 'cont' as const, label: 'CONT',
-      active: (radioState?.main?.contour ?? 0) > 0,
-    }] : []),
-    ...(hasCap('notch') ? [
-      { id: 'notch' as const, label: 'NOTCH', active: radioState?.main?.manualNotch ?? false },
-      { id: 'anf' as const, label: 'ANF', active: radioState?.main?.autoNotch ?? false },
-    ] : []),
-    { id: 'agc' as const, label: `AGC ${agcLabelFor(radioState?.main?.agc ?? 2)}`, active: true },
-    ...(hasCap('rf_gain') ? [{
-      id: 'rfg' as const, label: 'RFG', active: (radioState?.main?.rfGain ?? 255) < 255,
-    }] : []),
-    ...(hasCap('squelch') ? [{
-      id: 'sql' as const, label: 'SQL', active: (radioState?.main?.squelch ?? 0) > 0,
-    }] : []),
+    ...vfoTokens('main'),
     ...(hasCap('rit') ? [{
       id: 'rit' as const, label: 'RIT', active: ritXit.ritActive,
     }] : []),
   ]);
 
   // vfoBTokens: per-receiver indicators for VFO B (sub)
-  let vfoBTokens = $derived<IndToken[]>([
-    ...(hasCap('attenuator') ? [{
-      id: 'att' as const, label: 'ATT', active: (radioState?.sub?.att ?? 0) > 0,
-    }] : []),
-    ...(hasCap('preamp') ? [{
-      id: 'pre' as const,
-      label: (radioState?.sub?.preamp ?? 0) === 0 ? 'IPO'
-           : (radioState?.sub?.preamp ?? 0) === 1 ? 'AMP1' : 'AMP2',
-      active: true,
-    }] : []),
-    ...(hasCap('digisel') ? [{
-      id: 'digisel' as const, label: 'DIGI-SEL', active: radioState?.sub?.digisel ?? false,
-    }] : []),
-    ...(hasCap('nb') ? [{
-      id: 'nb' as const,
-      label: (radioState?.sub?.nb ?? false) || (radioState?.sub?.nbLevel ?? 0) > 0
-        ? `NB ${radioState?.sub?.nbLevel ?? 0}` : 'NB',
-      active: (radioState?.sub?.nb ?? false) || (radioState?.sub?.nbLevel ?? 0) > 0,
-    }] : []),
-    ...(hasCap('nr') ? [{
-      id: 'nr' as const,
-      label: (radioState?.sub?.nr ?? false) || (radioState?.sub?.nrLevel ?? 0) > 0
-        ? `NR ${radioState?.sub?.nrLevel ?? 0}` : 'NR',
-      active: (radioState?.sub?.nr ?? false) || (radioState?.sub?.nrLevel ?? 0) > 0,
-    }] : []),
-    ...(hasCap('contour') ? [{
-      id: 'cont' as const, label: 'CONT',
-      active: (radioState?.sub?.contour ?? 0) > 0,
-    }] : []),
-    ...(hasCap('notch') ? [
-      { id: 'notch' as const, label: 'NOTCH', active: radioState?.sub?.manualNotch ?? false },
-      { id: 'anf' as const, label: 'ANF', active: radioState?.sub?.autoNotch ?? false },
-    ] : []),
-    { id: 'agc' as const, label: `AGC ${agcLabelFor(radioState?.sub?.agc ?? 2)}`, active: true },
-    ...(hasCap('rf_gain') ? [{
-      id: 'rfg' as const, label: 'RFG', active: (radioState?.sub?.rfGain ?? 255) < 255,
-    }] : []),
-    ...(hasCap('squelch') ? [{
-      id: 'sql' as const, label: 'SQL', active: (radioState?.sub?.squelch ?? 0) > 0,
-    }] : []),
-  ]);
+  let vfoBTokens = $derived<IndToken[]>(vfoTokens('sub'));
 
   // Scope subscription — delegates lifecycle to ScopeController (ADR INV-2, INV-5)
   $effect(() => {
@@ -338,7 +325,7 @@
       {#if ritXit.ritActive || ritXit.xitActive}
         <div class="lcd-rit-row">
           <span class="rit-label">{ritXit.ritActive ? 'RIT' : 'XIT'}</span>
-          <span class="rit-value">{ritXit.ritOffset >= 0 ? '+' : ''}{ritXit.ritOffset} Hz</span>
+          <span class="rit-value">{formatOffsetKHz(ritXit.ritOffset)}</span>
         </div>
       {/if}
 

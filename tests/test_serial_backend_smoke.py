@@ -437,3 +437,107 @@ async def test_audio_bridge_smoke_with_serial_backend_audio_driver() -> None:
         await bridge.stop()
     finally:
         await radio.disconnect()
+
+
+# Public ``fieldStatus`` keys the v2 desktop skin gates on for control
+# rendering. With MOR-429 availability gating, a key that is not
+# ``available`` strips its control from the DOM, hanging the live audit.
+# Every key here must be observation-backed by the mock (MOR-437).
+_V2_RECEIVER_FIELDS = (
+    "freqHz",
+    "mode",
+    "dataMode",
+    "rfGain",
+    "squelch",
+    "att",
+    "preamp",
+    "agc",
+    "agcTimeConstant",
+    "nrLevel",
+    "nbLevel",
+    "autoNotch",
+    "manualNotch",
+    "filterWidth",
+    "afLevel",
+    "nr",
+    "nb",
+)
+_V2_GLOBAL_FIELDS = (
+    "micGain",
+    "compressorLevel",
+    "monitorGain",
+    "cwPitch",
+    "tunerStatus",
+    "split",
+    "compressorOn",
+    "monitorOn",
+    "voxOn",
+    "dualWatch",
+    "txFreqMonitor",
+)
+
+
+def _required_v2_field_keys(receiver_count: int) -> list[str]:
+    keys: list[str] = []
+    receivers = ["main"] + (["sub"] if receiver_count >= 2 else [])
+    for receiver in receivers:
+        keys.extend(f"{receiver}.{field}" for field in _V2_RECEIVER_FIELDS)
+    keys.extend(_V2_GLOBAL_FIELDS)
+    return keys
+
+
+@pytest.mark.asyncio
+async def test_serial_mock_observation_backs_all_v2_fields() -> None:
+    """Gate-8 regression: ``WebServer(SerialMockRadio())`` must observation-back
+    every v2-rendered field so the desktop-v2 availability gate (MOR-429)
+    renders the controls the live Playwright audit exercises (MOR-437).
+    """
+    radio = SerialMockRadio()  # dual-RX IC-7610 profile by default
+    await radio.connect()
+    server = WebServer(
+        radio,
+        WebConfig(host="127.0.0.1", port=0, keepalive_interval=9999.0),
+    )
+    await server.start()
+    try:
+        # Let the observation poller seed the StateStore baseline.
+        await asyncio.sleep(0.1)
+        state = server.build_public_state()
+        field_status = state["fieldStatus"]
+        receiver_count = server._get_profile().receiver_count
+        assert receiver_count >= 2, "IC-7610 mock is dual-RX"
+
+        for key in _required_v2_field_keys(receiver_count):
+            status = field_status.get(key)
+            assert status is not None, f"{key} missing from fieldStatus"
+            assert status["observed"] is True, f"{key} not observed"
+            assert status["availability"] == "available", (
+                f"{key} availability={status.get('availability')!r}, expected available"
+            )
+            # max_age=None means the field never decays to stale/missing.
+            assert status.get("maxAge") is None, f"{key} must not expire (maxAge=None)"
+
+        # Sensible IC-7610 defaults reach the public state (not RadioState
+        # defaults masquerading as missing).
+        assert state["main"]["rfGain"] == 200
+        assert state["main"]["agc"] == 2  # MID
+        assert state["main"]["preamp"] == 1
+        assert state["main"]["filterWidth"] == 2400
+        assert state["micGain"] == 128
+        assert state["cwPitch"] == 600
+        assert state["monitorGain"] == 128
+
+        # Command execution still works alongside the observation poller: a
+        # queued set_* drains, executes on the mock, and the observed value
+        # updates without snapping back to the baseline.
+        from rigplane.runtime._poller_types import SetRfGain
+
+        future: asyncio.Future[None] = asyncio.get_running_loop().create_future()
+        server.command_queue.put_ordered(SetRfGain(level=42, receiver=0), future=future)
+        await asyncio.wait_for(future, timeout=2.0)
+        await asyncio.sleep(0.1)
+        updated = server.build_public_state()
+        assert updated["main"]["rfGain"] == 42
+        assert updated["fieldStatus"]["main.rfGain"]["availability"] == "available"
+    finally:
+        await server.stop()

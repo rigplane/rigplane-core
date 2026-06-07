@@ -23,6 +23,8 @@ import { getCapabilities, getControlRange } from '$lib/stores/capabilities.svelt
 import { audioManager } from '$lib/audio/audio-manager';
 import { setMuted, setVolume } from '$lib/stores/audio.svelte';
 import { consumePendingFocus } from '$lib/radio/pending-focus';
+import { getModeFilter } from '$lib/radio/mode-filter-memory';
+import { nbDepthDisplayToRaw, nrDisplayToRaw } from '$lib/radio/filter-controls';
 
 /* ── Shared helpers ──────────────────────────────────────────────── */
 
@@ -110,8 +112,16 @@ export function makeModeHandlers() {
     onModeChange: (mode: string) => {
       const pending = consumePendingFocus();
       const receiver: Receiver = pending ? (pending === 'SUB' ? 1 : 0) : activeReceiverParam();
+      // MOR-495: recall the destination mode's remembered filter so the web
+      // mirrors the front panel (mode-only 0x06 would force the radio's
+      // mode-default filter, e.g. USB → FIL2).  Unseen mode → mode-only.
+      const filter = getModeFilter(mode);
       patchActiveReceiver({ mode }, true);
-      cmd('set_mode', { mode, receiver });
+      if (filter !== undefined) {
+        cmd('set_mode', { mode, filter, receiver });
+      } else {
+        cmd('set_mode', { mode, receiver });
+      }
     },
     onDataModeChange: (mode: number) => {
       const receiver = activeReceiverParam();
@@ -327,8 +337,12 @@ export function makeDspHandlers() {
     },
     onNrLevelChange: (level: number) => {
       const receiver = activeReceiverParam();
-      patchActiveReceiver({ nrLevel: level }, true);
-      cmd('set_nr_level', { level, receiver });
+      // MOR-490: slider is 0-15 (front-panel scale); wire is 0-255 BCD.
+      // Store the raw wire value optimistically so it matches the polled
+      // readback (which the adapter scales raw -> display).
+      const raw = nrDisplayToRaw(level);
+      patchActiveReceiver({ nrLevel: raw }, true);
+      cmd('set_nr_level', { level: raw, receiver });
     },
     onNbToggle: (on: boolean) => {
       const receiver = activeReceiverParam();
@@ -359,8 +373,12 @@ export function makeDspHandlers() {
       cmd('set_notch_filter', { value, receiver });
     },
     onNbDepthChange: (level: number) => {
-      patchRadioState({ nbDepth: level });
-      cmd('set_nb_depth', { level });
+      // MOR-498: slider is 1-10 (front-panel scale); wire is 0-9.  Store the
+      // wire value optimistically so it matches the polled/NB-B readback
+      // (which the adapter offsets wire -> display).
+      const wire = nbDepthDisplayToRaw(level);
+      patchRadioState({ nbDepth: wire });
+      cmd('set_nb_depth', { level: wire });
     },
     onNbWidthChange: (level: number) => {
       patchRadioState({ nbWidth: level });

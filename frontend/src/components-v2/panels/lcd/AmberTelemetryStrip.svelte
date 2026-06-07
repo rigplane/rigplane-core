@@ -1,12 +1,19 @@
 <!--
-  AmberTelemetryStrip — 3 compact tiles (VD · TEMP · ID) with inline
+  AmberTelemetryStrip — 2 compact tiles (VD · ID) with inline
   sparklines showing the last ~30 samples. Mounted in the LCD aux
   grid-area (#894 reserved the slot; #887 twin-skin lays the cockpit).
 
-  Data source: `ServerState.vdMeter` / `idMeter` and `tempMeter`
-  (when the backend surfaces it — not all rigs do). Missing fields
+  Data source: `ServerState.vdMeter` / `idMeter`. Missing fields
   produce a "—" placeholder tile but keep the strip visible so the
   grid row doesn't collapse under the user.
+
+  The IC-7610 exposes NO temperature over CI-V (no 0x15 temp sub, no
+  MetersCapable.get_temp, no RadioState/ServerState temp field), so the
+  previously-blank TEMP tile was dropped (MOR-483).
+
+  Numeric labels use the calibrated converters from `meter-utils`
+  (piecewise IC-7610 knots) — the same math the desktop meters use —
+  rather than a crude raw/255 linear map (MOR-483 part 2).
 
   Sample history is kept per-tile in a local ring buffer (no store).
   `$effect` watches the live values and pushes new samples when they
@@ -16,6 +23,7 @@
 -->
 <script lang="ts">
   import { deriveAmberTelemetryProps } from '$lib/runtime/adapters/panel-adapters';
+  import { formatVolts, formatAmps } from '../meter-utils';
   import AmberSparkline from './AmberSparkline.svelte';
 
   const BUFFER_SIZE = 30;
@@ -28,15 +36,13 @@
 
   let p = $derived(deriveAmberTelemetryProps());
 
-  // Raw readings (nullable — backend may not provide all three).
+  // Raw readings (nullable — backend may not provide both).
   let vdRaw = $derived<number | null>(p.vdRaw);
   let idRaw = $derived<number | null>(p.idRaw);
-  let tempRaw = $derived<number | null>(p.tempRaw);
 
   // Local ring buffers — $state so Svelte tracks them as arrays.
   let vdHistory = $state<number[]>([]);
   let idHistory = $state<number[]>([]);
-  let tempHistory = $state<number[]>([]);
 
   function pushBuffer(buf: number[], value: number): number[] {
     const next = buf.length >= BUFFER_SIZE ? buf.slice(1) : [...buf];
@@ -53,24 +59,18 @@
     const interval = setInterval(() => {
       if (vdRaw !== null) vdHistory = pushBuffer(vdHistory, vdRaw);
       if (idRaw !== null) idHistory = pushBuffer(idHistory, idRaw);
-      if (tempRaw !== null) tempHistory = pushBuffer(tempHistory, tempRaw);
     }, PUSH_MIN_INTERVAL_MS);
     return () => clearInterval(interval);
   });
 
-  // Display conversions — rigs report raw 0..255; label text is best-effort.
+  // Display conversions — rigs report raw 0..255; the calibrated piecewise
+  // converters (shared with the desktop meters) turn that into engineering
+  // units so the LCD strip agrees with the rest of the UI (MOR-483 part 2).
   function vdLabel(raw: number | null): string {
-    if (raw === null) return '—';
-    // Rough linear mapping 0..255 → 0..16 V. Adjust per rig in a followup.
-    return `${((raw / 255) * 16).toFixed(1)}V`;
+    return raw === null ? '—' : formatVolts(raw);
   }
   function idLabel(raw: number | null): string {
-    if (raw === null) return '—';
-    return `${((raw / 255) * 25).toFixed(1)}A`;
-  }
-  function tempLabel(raw: number | null): string {
-    if (raw === null) return '—';
-    return `${Math.round((raw / 255) * 100)}°`;
+    return raw === null ? '—' : formatAmps(raw);
   }
 </script>
 
@@ -82,16 +82,6 @@
     </div>
     <div class="tile-spark">
       <AmberSparkline data={vdHistory} min={0} max={255} />
-    </div>
-  </div>
-
-  <div class="tile" class:tile-empty={tempRaw === null}>
-    <div class="tile-head">
-      <span class="tile-tag">TEMP</span>
-      <span class="tile-value">{tempLabel(tempRaw)}</span>
-    </div>
-    <div class="tile-spark">
-      <AmberSparkline data={tempHistory} min={0} max={255} />
     </div>
   </div>
 
@@ -109,7 +99,7 @@
 <style>
   .amber-telemetry-strip {
     display: grid;
-    grid-template-columns: repeat(3, minmax(0, 1fr));
+    grid-template-columns: repeat(2, minmax(0, 1fr));
     gap: 6px;
     width: 100%;
     height: 100%;

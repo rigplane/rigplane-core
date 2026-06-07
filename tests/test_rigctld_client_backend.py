@@ -169,6 +169,34 @@ async def test_radio_rejects_unsupported_data_mode() -> None:
             await radio.disconnect()
 
 
+async def test_get_data_mode_does_not_synthesize_private_radio_state() -> None:
+    """MOR-434: a public read returns a flat value, not synthesized state.
+
+    ``get_data_mode`` is the representative public read with no live
+    rigctld query: it returns a flat ``False`` and must not fabricate or
+    mutate the private ``self._state`` ``RadioState`` mirror. The consumer
+    pipeline is fed by ``RigctldClientObservationAdapter`` instead; the
+    ``_state`` mirror is legacy compat only and stays untouched by reads
+    that have no observation to apply.
+    """
+    async with FakeRigctldServer() as server:
+        radio = RigctldClientRadio(host=server.host, port=server.port)
+        await radio.connect()
+        try:
+            state_before = radio.radio_state
+            data_mode_before = state_before.main.data_mode
+
+            result = await radio.get_data_mode()
+
+            assert result is False
+            # No new RadioState synthesized — same object identity.
+            assert radio.radio_state is state_before
+            # No mutation of the legacy private mirror.
+            assert radio.radio_state.main.data_mode == data_mode_before
+        finally:
+            await radio.disconnect()
+
+
 def test_config_factory_builds_rigctld_client_backend() -> None:
     config = RigctldBackendConfig(host="localhost")
 

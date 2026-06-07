@@ -22,6 +22,7 @@ from rigplane.commands import (
     build_civ_frame,
     build_cmd29_frame,
 )
+from rigplane.commander import Priority
 from rigplane.exceptions import ConnectionError, TimeoutError
 from rigplane.radio import IcomRadio
 from rigplane.types import (
@@ -434,13 +435,39 @@ class TestSetModeSelected0x26:
         self, mock_transport: MockTransport
     ) -> None:
         # IC-7610 must NOT declare set_selected_mode → unchanged 0x06 path.
-        # This locks zero flagship regression.
+        # This locks zero flagship regression (MOR-184): the flagship uses
+        # the plain 0x06 mode set, never the 0x26 selected-mode form.
+        #
+        # MOR-495: the lock is INTENTIONALLY relaxed to permit an optional
+        # filter byte (the 2-byte 0x06 form), because the web mode-change now
+        # recalls the destination mode's remembered filter to mirror the front
+        # panel.  The hard invariant — "0x06, NOT 0x26 selected-mode" — is
+        # preserved in both the mode-only and mode+filter cases below.
         radio = self._make_radio("IC-7610", mock_transport)
         try:
             assert radio._profile.set_mode_via_selected is False
+            # Mode-only change → 1-byte 0x06 (radio applies its own default).
             await radio.set_mode(Mode.LSB)
             sent = mock_transport.sent_packets[-1]
             assert sent.endswith(b"\xfe\xfe\x98\xe0\x06\x00\xfd")
+            assert b"\x26\x00" not in sent
+        finally:
+            radio._connected = False
+
+    @pytest.mark.asyncio
+    async def test_ic7610_mode_with_filter_emits_two_byte_0x06(
+        self, mock_transport: MockTransport
+    ) -> None:
+        # MOR-495: a mode change carrying a remembered filter must reach the
+        # wire as the 2-byte 0x06 form (mode byte + filter byte), so the radio
+        # lands on the requested filter rather than the mode-default filter.
+        # USB=0x01, FIL1=0x01 → ``... 06 01 01 FD``.  Still 0x06, never 0x26.
+        radio = self._make_radio("IC-7610", mock_transport)
+        try:
+            assert radio._profile.set_mode_via_selected is False
+            await radio.set_mode(Mode.USB, filter_width=1)
+            sent = mock_transport.sent_packets[-1]
+            assert sent.endswith(b"\xfe\xfe\x98\xe0\x06\x01\x01\xfd")
             assert b"\x26\x00" not in sent
         finally:
             radio._connected = False
@@ -702,6 +729,17 @@ class TestPtt:
         """set_ptt is fire-and-forget — no ACK response needed."""
         await radio.set_ptt(False)
         assert len(mock_transport.sent_packets) > 0
+
+    @pytest.mark.asyncio
+    async def test_set_ptt_uses_immediate_priority(
+        self, radio: IcomRadio, mock_transport: MockTransport
+    ) -> None:
+        """Regression (MOR-497i): set_ptt must stay at Priority.IMMEDIATE so
+        the BACKGROUND poll change never demotes TX keying."""
+        with patch.object(radio, "_send_civ_raw", autospec=True) as mock_raw:
+            await radio.set_ptt(True)
+        assert mock_raw.call_count == 1
+        assert mock_raw.call_args.kwargs["priority"] == Priority.IMMEDIATE
 
     @pytest.mark.asyncio
     async def test_set_ptt_updates_state_cache(
@@ -1865,6 +1903,94 @@ class TestDspLevelParity:
     ) -> None:
         with pytest.raises(ValueError, match="0-255"):
             await radio.set_nb_width(256)
+
+
+class TestNbDepthWidthPollerDispatch:
+    """Poller-level NB depth/width SET against the REAL IcomRadio signature.
+
+    NB depth/width are GLOBAL menu items (0x1A 05 02 90 / 0x1A 05 02 91),
+    so ``IcomRadio.set_nb_depth``/``set_nb_width`` take ``(self, value)`` with
+    no ``receiver`` parameter (unlike per-receiver ``set_nb_level``). The
+    poller's ``_execute`` must therefore call them WITHOUT ``receiver``.
+    Driving the real radio (not an arg-swallowing AsyncMock) catches the
+    ``TypeError`` that previously silenced these sliders (MOR-491).
+    """
+
+    @pytest.mark.asyncio
+    async def test_execute_set_nb_depth_sends_global_frame(
+        self, mock_transport: MockTransport
+    ) -> None:
+        from rigplane.core.state_pipeline_contracts import FieldPath
+        from rigplane.core.state_store import StateStore
+        from rigplane.web.radio_poller import (
+            CommandQueue,
+            RadioPoller,
+            SetNbDepth,
+        )
+
+        # Post-set write-through readback (MOR-491-B): the radio reports back
+        # depth=4 even though 5 was sent (clamp/quantization). The web state
+        # must reflect the radio's REAL value, not the sent value. The readback
+        # response is released only after the GET send (send #2) so the
+        # fire-and-forget SET (send #1) does not consume it.
+        radio = IcomRadio("192.168.1.100", timeout=0.5)
+        radio._civ_transport = mock_transport
+        radio._ctrl_transport = mock_transport
+        radio._connected = True
+        mock_transport.queue_response_on_send(
+            2, _ctl_mem_response(0x05, b"\x04", prefix=b"\x02\x90")
+        )
+        store = StateStore()
+        poller = RadioPoller(radio, CommandQueue(), state_store=store)
+        await poller._execute(SetNbDepth(level=5, receiver=0))  # noqa: SLF001
+        radio._connected = False
+        assert any(
+            pkt.endswith(b"\x1a\x05\x02\x90\x05\xfd")
+            for pkt in mock_transport.sent_packets
+        )
+        assert (
+            store.snapshot()
+            .field(FieldPath.global_("operator_controls", "nb_depth"))
+            .value
+            == 4
+        )
+
+    @pytest.mark.asyncio
+    async def test_execute_set_nb_width_sends_global_frame(
+        self, mock_transport: MockTransport
+    ) -> None:
+        from rigplane.core.state_pipeline_contracts import FieldPath
+        from rigplane.core.state_store import StateStore
+        from rigplane.web.radio_poller import (
+            CommandQueue,
+            RadioPoller,
+            SetNbWidth,
+        )
+
+        # Post-set write-through readback (MOR-491-B): radio reports 200 even
+        # though 255 was sent. The web state reflects the radio's real value.
+        # Release the readback response only after the GET send (send #2).
+        radio = IcomRadio("192.168.1.100", timeout=0.5)
+        radio._civ_transport = mock_transport
+        radio._ctrl_transport = mock_transport
+        radio._connected = True
+        mock_transport.queue_response_on_send(
+            2, _ctl_mem_response(0x05, b"\x02\x00", prefix=b"\x02\x91")
+        )
+        store = StateStore()
+        poller = RadioPoller(radio, CommandQueue(), state_store=store)
+        await poller._execute(SetNbWidth(level=255, receiver=0))  # noqa: SLF001
+        radio._connected = False
+        assert any(
+            pkt.endswith(b"\x1a\x05\x02\x91\x02\x55\xfd")
+            for pkt in mock_transport.sent_packets
+        )
+        assert (
+            store.snapshot()
+            .field(FieldPath.global_("operator_controls", "nb_width"))
+            .value
+            == 200
+        )
 
 
 class TestOperatorToggleParity:

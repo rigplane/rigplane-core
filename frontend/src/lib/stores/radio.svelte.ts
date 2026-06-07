@@ -1,5 +1,6 @@
 import type { ServerState, ReceiverState } from '../types/state';
 import { setRadioPowerOn, setRigConnected, setRadioReady, setControlConnected, setRadioHealth } from './connection.svelte';
+import { getFieldStatus, isFieldAvailable } from '../state/field-status';
 
 /**
  * Shared radio state — class-based $state pattern for cross-module reactivity.
@@ -13,8 +14,62 @@ class RadioStore {
 export const radio = new RadioStore();
 
 let lastRevision = -1;
+let lastFreshnessRevision = -1;
+let lastObservationSeq = -1;
 let lastHealthRevision = -1;
 const stateSubscribers = new Set<(state: ServerState | null) => void>();
+const LIVE_METADATA_KEYS = new Set([
+  'connection',
+  'fieldStatus',
+  'healthRevision',
+  'publicStateSeq',
+  'radioHealth',
+  'transportSeq',
+  'updatedAt',
+  'wsClients',
+]);
+
+function stateRevision(state: ServerState): number {
+  return state.stateRevision ?? state.revision;
+}
+
+function freshnessRevision(state: ServerState): number {
+  return state.freshnessRevision ?? 0;
+}
+
+function observationSeq(state: ServerState): number {
+  return state.observationSeq ?? 0;
+}
+
+function deliverySeq(state: ServerState | null): number {
+  if (!state) return -1;
+  return Math.max(state.publicStateSeq ?? 0, state.transportSeq ?? 0);
+}
+
+function valuesEqual(left: unknown, right: unknown): boolean {
+  if (Object.is(left, right)) return true;
+  try {
+    return JSON.stringify(left) === JSON.stringify(right);
+  } catch {
+    return false;
+  }
+}
+
+function hasOnlyLiveMetadataChanges(current: ServerState | null, next: ServerState): boolean {
+  if (!current) return false;
+  const currentRecord = current as unknown as Record<string, unknown>;
+  const nextRecord = next as unknown as Record<string, unknown>;
+  const keys = new Set([...Object.keys(current), ...Object.keys(next)]);
+  for (const key of keys) {
+    if (valuesEqual(currentRecord[key], nextRecord[key])) {
+      continue;
+    }
+    if (!LIVE_METADATA_KEYS.has(key)) {
+      return false;
+    }
+  }
+  return true;
+}
 
 function notifyRadioStateSubscribers(): void {
   for (const handler of stateSubscribers) {
@@ -89,6 +144,10 @@ function applyOptimistic(state: ServerState): ServerState {
       // With rapid discrete input (wheel/keyboard), a stale intermediate poll can differ from the
       // previous optimistic value while still not matching the latest target, which causes a false
       // confirmation and visible snap-back. We only clear on exact confirmation/tolerance or timeout.
+      // For freq specifically, the overlay clears ONLY via the tolerance/value-match check above
+      // (|serverVal - overlay| < 500) or the lowered freq TTL — never on a mere causal advance,
+      // because an in-flight poll captured before an unlocked optimistic patch can carry the OLD
+      // freq with an advanced observationSeq and would otherwise flash the stale value for one cycle.
 
       if (confirmed) {
         map.delete(field);
@@ -126,6 +185,8 @@ function applyOptimistic(state: ServerState): ServerState {
 export function resetRadioState(): void {
   radio.current = null;
   lastRevision = -1;
+  lastFreshnessRevision = -1;
+  lastObservationSeq = -1;
   lastHealthRevision = -1;
   optimisticMain.clear();
   optimisticSub.clear();
@@ -135,17 +196,40 @@ export function resetRadioState(): void {
 }
 
 export function setRadioState(state: ServerState): void {
-  const isReset = lastRevision > 10 && state.revision < lastRevision / 2;
+  const nextStateRevision = stateRevision(state);
+  const nextFreshnessRevision = freshnessRevision(state);
+  const nextObservationSeq = observationSeq(state);
+  const isReset = lastRevision > 10 && nextStateRevision < lastRevision / 2;
   const isInitial = radio.current === null;
   const nextHealthRevision = state.healthRevision ?? 0;
   const healthAdvanced = nextHealthRevision > lastHealthRevision;
+  const freshnessAdvanced = nextFreshnessRevision > lastFreshnessRevision;
+  const observationAdvanced = nextObservationSeq > lastObservationSeq;
+  const semanticAdvanced = nextStateRevision > lastRevision;
+  const semanticCurrent = nextStateRevision === lastRevision;
+  const liveMetadataAdvanced = semanticCurrent
+    && deliverySeq(state) > deliverySeq(radio.current)
+    && hasOnlyLiveMetadataChanges(radio.current, state);
+  const metadataAdvanced = semanticCurrent && (
+    freshnessAdvanced
+    || observationAdvanced
+    || healthAdvanced
+    || liveMetadataAdvanced
+  );
   if (isReset) {
     console.warn(
-      `Detected server restart: revision reset from ${lastRevision} to ${state.revision}`,
+      `Detected server restart: revision reset from ${lastRevision} to ${nextStateRevision}`,
     );
   }
-  if (isInitial || state.revision > lastRevision || healthAdvanced || isReset) {
-    lastRevision = state.revision;
+  if (
+    isInitial
+    || semanticAdvanced
+    || metadataAdvanced
+    || isReset
+  ) {
+    lastRevision = nextStateRevision;
+    lastFreshnessRevision = nextFreshnessRevision;
+    lastObservationSeq = nextObservationSeq;
     lastHealthRevision = nextHealthRevision;
     radio.current = applyOptimistic(state);
     notifyRadioStateSubscribers();
@@ -166,6 +250,7 @@ export function setRadioState(state: ServerState): void {
 }
 
 const OPTIMISTIC_TTL = 5000; // hard timeout — normally cleared by server confirmation
+const OPTIMISTIC_FREQ_TTL = 1500; // shorter timeout for freq overlay — falls back to server sooner
 const INPUT_LOCK_TTL = 1500; // cover command latency / polling lag for discrete inputs like wheel
 
 /**
@@ -180,9 +265,8 @@ export function patchActiveReceiver(patch: Partial<ReceiverState>, lock = false)
   if (!s) return;
   const key = s.active === 'SUB' ? 'sub' : 'main';
   const map = key === 'sub' ? optimisticSub : optimisticMain;
-  const expires = Date.now() + OPTIMISTIC_TTL;
   const currentRx = s[key];
-  
+
   for (const [field, value] of Object.entries(patch)) {
     // Skip updating locked fields from WS echo (preserve user input lock)
     const lockKey = `${key}.${field}`;
@@ -191,12 +275,13 @@ export function patchActiveReceiver(patch: Partial<ReceiverState>, lock = false)
       // Field is locked by user input, don't overwrite with WS echo
       continue;
     }
-    
+
     if (lock) {
       // Lock this field long enough to survive normal command latency + poll lag.
       // Drag keeps refreshing the lock continuously; wheel/keyboard are discrete and need longer.
       lockedFields.set(lockKey, Date.now() + INPUT_LOCK_TTL);
     }
+    const expires = Date.now() + (field === 'freqHz' ? OPTIMISTIC_FREQ_TTL : OPTIMISTIC_TTL);
     map.set(field, { value, expires, serverValueAtPatch: (currentRx as any)[field] });
   }
   radio.current = {
@@ -216,7 +301,6 @@ export function patchReceiver(receiver: 0 | 1, patch: Partial<ReceiverState>, lo
   if (!s) return;
   const key = receiver === 1 ? 'sub' : 'main';
   const map = key === 'sub' ? optimisticSub : optimisticMain;
-  const expires = Date.now() + OPTIMISTIC_TTL;
   const currentRx = s[key];
 
   for (const [field, value] of Object.entries(patch)) {
@@ -228,6 +312,7 @@ export function patchReceiver(receiver: 0 | 1, patch: Partial<ReceiverState>, lo
     if (lock) {
       lockedFields.set(lockKey, Date.now() + INPUT_LOCK_TTL);
     }
+    const expires = Date.now() + (field === 'freqHz' ? OPTIMISTIC_FREQ_TTL : OPTIMISTIC_TTL);
     map.set(field, { value, expires, serverValueAtPatch: (currentRx as any)[field] });
   }
   radio.current = {
@@ -258,6 +343,14 @@ export function patchRadioState(patch: Partial<ServerState>): void {
 // Convenience getters (still work in non-reactive contexts like callbacks)
 export function getRadioState(): ServerState | null {
   return radio.current;
+}
+
+export function getRadioFieldStatus(path: string) {
+  return getFieldStatus(radio.current, path);
+}
+
+export function isRadioFieldAvailable(path: string): boolean {
+  return isFieldAvailable(radio.current, path);
 }
 
 export function getMainReceiver(): ReceiverState | null {

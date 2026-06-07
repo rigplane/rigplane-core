@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Callable, Literal, cast
+from typing import TYPE_CHECKING, Any, Callable, Literal, Sequence, cast
 
 from ...audio import AudioPacket
 from ...command_spec import CatCommandSpec
@@ -25,6 +25,7 @@ if TYPE_CHECKING:
     from ..._poller_types import CommandQueue
     from ...audio.usb_driver import UsbAudioDriver
     from ...audio_bus import AudioBus
+    from ...core.state_pipeline_contracts import Observation
     from ...profiles import RadioProfile
     from ...profiles.rig_loader import RigConfig
     from ...types import BandStackRegister, MemoryChannel
@@ -36,6 +37,81 @@ logger = logging.getLogger(__name__)
 
 # Path to rigs/ directory: src/rigplane/backends/yaesu_cat/radio.py → 4 levels up
 _RIGS_DIR = Path(__file__).parents[4] / "rigs"
+
+# CTCSS tone chart (MOR-458). The FTX-1 CAT ``CN`` "CTCSS TONE FREQUENCY"
+# command reports the tone as a 0-49 INDEX into the standard 50-tone EIA CTCSS
+# set, NOT as an absolute frequency (unlike the Icom 0x1B BCD-Hz encoding). The
+# index → Hz chart is verbatim from the official FTX-1 CAT manual
+# (``FTX-1_CAT_OM_ENG_2507``). Values are stored directly in centiHz
+# (round(Hz * 100)) so the neutral emission matches the Icom convention
+# (``round(_decode_tone_freq(...) * 100)``, MOR-451) with no float rounding
+# ambiguity at the call site. There is no shared cross-vendor CTCSS table in
+# the codebase (Icom decodes raw BCD Hz; the generic ``table_index_to_hz``
+# helper carries no table of its own), so this Yaesu-local table is the single
+# source of truth for the index → centiHz mapping.
+_CTCSS_TONE_CENTIHZ: tuple[int, ...] = (
+    6700,  # 000 = 67.0 Hz
+    6930,  # 001 = 69.3 Hz
+    7190,  # 002 = 71.9 Hz
+    7440,  # 003 = 74.4 Hz
+    7700,  # 004 = 77.0 Hz
+    7970,  # 005 = 79.7 Hz
+    8250,  # 006 = 82.5 Hz
+    8540,  # 007 = 85.4 Hz
+    8850,  # 008 = 88.5 Hz
+    9150,  # 009 = 91.5 Hz
+    9480,  # 010 = 94.8 Hz
+    9740,  # 011 = 97.4 Hz
+    10000,  # 012 = 100.0 Hz
+    10350,  # 013 = 103.5 Hz
+    10720,  # 014 = 107.2 Hz
+    11090,  # 015 = 110.9 Hz
+    11480,  # 016 = 114.8 Hz
+    11880,  # 017 = 118.8 Hz
+    12300,  # 018 = 123.0 Hz
+    12730,  # 019 = 127.3 Hz
+    13180,  # 020 = 131.8 Hz
+    13650,  # 021 = 136.5 Hz
+    14130,  # 022 = 141.3 Hz
+    14620,  # 023 = 146.2 Hz
+    15140,  # 024 = 151.4 Hz
+    15670,  # 025 = 156.7 Hz
+    15980,  # 026 = 159.8 Hz
+    16220,  # 027 = 162.2 Hz
+    16550,  # 028 = 165.5 Hz
+    16790,  # 029 = 167.9 Hz
+    17130,  # 030 = 171.3 Hz
+    17380,  # 031 = 173.8 Hz
+    17730,  # 032 = 177.3 Hz
+    17990,  # 033 = 179.9 Hz
+    18350,  # 034 = 183.5 Hz
+    18620,  # 035 = 186.2 Hz
+    18990,  # 036 = 189.9 Hz
+    19280,  # 037 = 192.8 Hz
+    19660,  # 038 = 196.6 Hz
+    19950,  # 039 = 199.5 Hz
+    20350,  # 040 = 203.5 Hz
+    20650,  # 041 = 206.5 Hz
+    21070,  # 042 = 210.7 Hz
+    21810,  # 043 = 218.1 Hz
+    22570,  # 044 = 225.7 Hz
+    22910,  # 045 = 229.1 Hz
+    23360,  # 046 = 233.6 Hz
+    24180,  # 047 = 241.8 Hz
+    25030,  # 048 = 250.3 Hz
+    25410,  # 049 = 254.1 Hz
+)
+
+
+def _ctcss_index_to_centihz(index: int) -> int:
+    """Map a CAT ``CN`` CTCSS tone-chart index (0-49) to centiHz.
+
+    Pure lookup into :data:`_CTCSS_TONE_CENTIHZ`, reusing the generic
+    :func:`table_index_to_hz` index-into-a-table helper. The result is in
+    centiHz (e.g. index 8 → 88.5 Hz → ``8850``) to match the Icom MOR-451
+    convention. Raises ``ValueError`` for out-of-range indices.
+    """
+    return int(table_index_to_hz(index, table=_CTCSS_TONE_CENTIHZ))
 
 
 def _load_config(profile: Any) -> "RigConfig":
@@ -137,11 +213,16 @@ class YaesuCatRadio:
             self._audio_driver = audio_driver
 
         # Build bidirectional mode code ↔ name maps.
-        # FTX-1 CAT codes are 1-based: index 0 in modes list → code "1".
+        # FTX-1 CAT MD codes are 1-based HEX nibbles (MOR-473): index 0 in the
+        # modes list → code "1", index 9 → "A", index 11 → "C" (DATA-U), etc.
+        # The decimal map silently broke every mode at index >= 10. Codes 1-9
+        # are unchanged (hex == dec). Multi-char hex (C4FM at 16-17 → "10"/"11")
+        # is a pre-existing OUT-OF-SCOPE limitation: the MD parser's single-char
+        # ``{mode}`` group cannot carry a two-char code.
         self._code_to_mode: dict[str, str] = {}
         self._mode_to_code: dict[str, str] = {}
-        for i, name in enumerate(self._config.modes, start=1):
-            code = str(i)
+        for i, name in enumerate(self._config.modes):
+            code = format(i + 1, "X")
             self._code_to_mode[code] = name
             self._mode_to_code[name] = code
 
@@ -592,15 +673,23 @@ class YaesuCatRadio:
 
     # -- Frequency ----------------------------------------------------------
 
-    async def get_freq(self, receiver: int = 0) -> int:
-        """Get the current VFO frequency in Hz.
+    async def read_freq(self, receiver: int = 0) -> int:
+        """Read the current VFO frequency without mutating legacy state.
 
         Args:
             receiver: 0 = main (VFO-A), 1 = sub (VFO-B).
         """
         cmd = "get_freq" if receiver == 0 else "get_freq_sub"
         result = await self._query(cmd)
-        freq: int = result["freq"]
+        return int(result["freq"])
+
+    async def get_freq(self, receiver: int = 0) -> int:
+        """Get the current VFO frequency in Hz.
+
+        Args:
+            receiver: 0 = main (VFO-A), 1 = sub (VFO-B).
+        """
+        freq = await self.read_freq(receiver)
         if receiver == 0:
             self._state.main.freq = freq
         else:
@@ -623,8 +712,8 @@ class YaesuCatRadio:
 
     # -- Mode ---------------------------------------------------------------
 
-    async def get_mode(self, receiver: int = 0) -> tuple[str, int | None]:
-        """Get the current operating mode.
+    async def read_mode(self, receiver: int = 0) -> tuple[str, int | None]:
+        """Read the current operating mode without mutating legacy state.
 
         Returns:
             Tuple of (mode_name, None).  Mode names are from the rig
@@ -634,11 +723,21 @@ class YaesuCatRadio:
         result = await self._query(cmd)
         code: str = result["mode"]
         mode_name = self._code_to_mode.get(code, f"UNKNOWN({code})")
+        return mode_name, None
+
+    async def get_mode(self, receiver: int = 0) -> tuple[str, int | None]:
+        """Get the current operating mode.
+
+        Returns:
+            Tuple of (mode_name, None).  Mode names are from the rig
+            profile (e.g. ``"USB"``, ``"LSB"``, ``"CW-U"``).
+        """
+        mode_name, filter_width = await self.read_mode(receiver)
         if receiver == 0:
             self._state.main.mode = mode_name
         else:
             self._state.sub.mode = mode_name
-        return mode_name, None
+        return mode_name, filter_width
 
     async def set_mode(
         self,
@@ -674,6 +773,12 @@ class YaesuCatRadio:
         On Yaesu radios, DATA mode is embedded in the mode string (e.g.
         ``USB-D``).  We derive it from the current mode name rather than
         issuing a separate CAT query.
+
+        This is a read-only derivation: it returns a flat ``bool`` and does
+        not synthesize or mutate the private ``self._state`` mirror. The
+        consumer pipeline is fed by ``YaesuObservationAdapter`` via the
+        non-mutating ``read_*`` paths; ``_state`` is legacy compat only
+        (MOR-434).
         """
         mode = self._state.main.mode or ""
         return mode.endswith("-D") or "DATA" in mode.upper()
@@ -721,18 +826,39 @@ class YaesuCatRadio:
         await self._write("set_ptt", state="1" if on else "0")
         self._state.ptt = on
 
+    async def read_ptt(self) -> bool:
+        """Read the current PTT state without mutating legacy state.
+
+        Returns:
+            ``True`` if transmitting, ``False`` if receiving.
+        """
+        result = await self._query("get_ptt")
+        return bool(result["state"] == "1")
+
     async def get_ptt(self) -> bool:
         """Query the current PTT state.
 
         Returns:
             ``True`` if transmitting, ``False`` if receiving.
         """
-        result = await self._query("get_ptt")
-        ptt: bool = result["state"] == "1"
+        ptt = await self.read_ptt()
         self._state.ptt = ptt
         return ptt
 
     # -- S-meter ------------------------------------------------------------
+
+    async def read_s_meter(self, receiver: int = 0) -> int:
+        """Read the S-meter raw value without mutating legacy state.
+
+        Args:
+            receiver: 0 = main, 1 = sub.
+
+        Returns:
+            Raw S-meter reading (0–255, vendor scale).
+        """
+        cmd = "get_s_meter" if receiver == 0 else "get_s_meter_sub"
+        result = await self._query(cmd)
+        return int(result["raw"])
 
     async def get_s_meter(self, receiver: int = 0) -> int:
         """Get the S-meter raw value.
@@ -743,9 +869,7 @@ class YaesuCatRadio:
         Returns:
             Raw S-meter reading (0–255, vendor scale).
         """
-        cmd = "get_s_meter" if receiver == 0 else "get_s_meter_sub"
-        result = await self._query(cmd)
-        raw: int = result["raw"]
+        raw = await self.read_s_meter(receiver)
         if receiver == 0:
             self._state.main.s_meter = raw
         else:
@@ -766,25 +890,41 @@ class YaesuCatRadio:
         sub_val = int(body[4:7])
         return main_val, sub_val
 
+    async def read_comp_meter(self) -> int:
+        """Read COMP (compression) meter without mutating legacy state."""
+        main, _ = await self._read_meter(3)
+        return main
+
     async def get_comp_meter(self) -> int:
         """Get COMP (compression) meter reading (0–255)."""
-        main, _ = await self._read_meter(3)
+        return await self.read_comp_meter()
+
+    async def read_alc_meter(self) -> int:
+        """Read ALC meter without mutating legacy state."""
+        main, _ = await self._read_meter(4)
         return main
 
     async def get_alc_meter(self) -> int:
         """Get ALC meter reading (0–255)."""
-        main, _ = await self._read_meter(4)
+        return await self.read_alc_meter()
+
+    async def read_power_meter(self) -> int:
+        """Read TX power meter without mutating legacy state."""
+        main, _ = await self._read_meter(5)
         return main
 
     async def get_power_meter(self) -> int:
         """Get TX power meter reading (0–255)."""
-        main, _ = await self._read_meter(5)
+        return await self.read_power_meter()
+
+    async def read_swr_meter(self) -> int:
+        """Read SWR meter without mutating legacy state."""
+        main, _ = await self._read_meter(6)
         return main
 
     async def get_swr_meter(self) -> int:
         """Get SWR meter raw reading (0–255)."""
-        main, _ = await self._read_meter(6)
-        return main
+        return await self.read_swr_meter()
 
     async def get_swr(self) -> float:
         """Get SWR as a ratio (>= 1.0).
@@ -859,11 +999,15 @@ class YaesuCatRadio:
 
     # -- D1: RX Audio Controls ----------------------------------------------
 
-    async def get_af_level(self, receiver: int = 0) -> int:
-        """Get the AF (audio) level (0–255)."""
+    async def read_af_level(self, receiver: int = 0) -> int:
+        """Read the AF (audio) level without mutating legacy state."""
         cmd = "get_af_level" if receiver == 0 else "get_af_level_sub"
         result = await self._query(cmd)
-        level = int(result["level"])
+        return int(result["level"])
+
+    async def get_af_level(self, receiver: int = 0) -> int:
+        """Get the AF (audio) level (0–255)."""
+        level = await self.read_af_level(receiver)
         rx = self._state.main if receiver == 0 else self._state.sub
         rx.af_level = level
         return level
@@ -875,11 +1019,15 @@ class YaesuCatRadio:
         rx = self._state.main if receiver == 0 else self._state.sub
         rx.af_level = level
 
-    async def get_rf_gain(self, receiver: int = 0) -> int:
-        """Get the RF gain (0–255)."""
+    async def read_rf_gain(self, receiver: int = 0) -> int:
+        """Read the RF gain without mutating legacy state."""
         cmd = "get_rf_gain" if receiver == 0 else "get_rf_gain_sub"
         result = await self._query(cmd)
-        level = int(result["level"])
+        return int(result["level"])
+
+    async def get_rf_gain(self, receiver: int = 0) -> int:
+        """Get the RF gain (0–255)."""
+        level = await self.read_rf_gain(receiver)
         rx = self._state.main if receiver == 0 else self._state.sub
         rx.rf_gain = level
         return level
@@ -891,11 +1039,15 @@ class YaesuCatRadio:
         rx = self._state.main if receiver == 0 else self._state.sub
         rx.rf_gain = level
 
-    async def get_squelch(self, receiver: int = 0) -> int:
-        """Get the squelch level (0–255)."""
+    async def read_squelch(self, receiver: int = 0) -> int:
+        """Read the squelch level without mutating legacy state."""
         cmd = "get_squelch" if receiver == 0 else "get_squelch_sub"
         result = await self._query(cmd)
-        level = int(result["level"])
+        return int(result["level"])
+
+    async def get_squelch(self, receiver: int = 0) -> int:
+        """Get the squelch level (0–255)."""
+        level = await self.read_squelch(receiver)
         rx = self._state.main if receiver == 0 else self._state.sub
         rx.squelch = level
         return level
@@ -909,10 +1061,20 @@ class YaesuCatRadio:
 
     # -- D2: RF Front-End ---------------------------------------------------
 
-    async def get_attenuator(self, receiver: int = 0) -> bool:
-        """Get attenuator state (False = OFF, True = ON)."""
+    async def read_attenuator(self, receiver: int = 0) -> bool:
+        """Read attenuator state without mutating legacy state.
+
+        Returns ``True`` when the attenuator is ON.  The FTX-1 has a single
+        on/off attenuator path (``RA0``); the ``receiver`` argument is
+        accepted for protocol symmetry but does not select a per-receiver
+        command (no ``RA1`` exists).
+        """
         result = await self._query("get_attenuator")
         return bool(int(result["state"]))
+
+    async def get_attenuator(self, receiver: int = 0) -> bool:
+        """Get attenuator state (False = OFF, True = ON)."""
+        return await self.read_attenuator(receiver)
 
     async def set_attenuator(self, state: int, receiver: int = 0) -> None:
         """Set attenuator state (0 = OFF, 1 = ON)."""
@@ -925,14 +1087,22 @@ class YaesuCatRadio:
         """
         await self.set_attenuator(1 if db > 0 else 0, receiver=receiver)
 
-    async def get_preamp(self, band: int = 0) -> int:
-        """Get preamp setting (0–2).
+    async def read_preamp(self, band: int = 0) -> int:
+        """Read preamp setting (0–2) without mutating legacy state.
 
         Args:
             band: 0 = HF/50 MHz (PA0). Sub-band variants not yet supported.
         """
         result = await self._query("get_preamp")
         return int(result["value"])
+
+    async def get_preamp(self, band: int = 0) -> int:
+        """Get preamp setting (0–2).
+
+        Args:
+            band: 0 = HF/50 MHz (PA0). Sub-band variants not yet supported.
+        """
+        return await self.read_preamp(band)
 
     async def set_preamp(self, level: int, receiver: int = 0, *, band: int = 0) -> None:
         """Set preamp setting.
@@ -946,32 +1116,82 @@ class YaesuCatRadio:
 
     # -- D3: DSP (NB/NR/Notch) ----------------------------------------------
 
-    async def get_nb_level(self, receiver: int = 0) -> int:
-        """Get noise blanker level (0 = OFF, 1–10 = level)."""
+    async def read_nb_level(self, receiver: int = 0) -> int:
+        """Read noise blanker level without mutating legacy state.
+
+        The FTX-1 has a single noise-blanker path (``NL0``); the ``receiver``
+        argument is accepted for protocol symmetry but does not select a
+        per-receiver command (no ``NL1`` exists).
+
+        Returns:
+            NB level (0 = OFF, 1–10 = level).
+        """
         result = await self._query("get_nb_level")
         return int(result["level"])
+
+    async def get_nb_level(self, receiver: int = 0) -> int:
+        """Get noise blanker level (0 = OFF, 1–10 = level)."""
+        return await self.read_nb_level(receiver)
 
     async def set_nb_level(self, level: int, receiver: int = 0) -> None:
         """Set noise blanker level (0 = OFF, 1–10 = level)."""
         await self._write("set_nb_level", level=level)
 
-    async def get_nr_level(self, receiver: int = 0) -> int:
-        """Get noise reduction level (0 = OFF, 1–15 = level)."""
+    async def read_nr_level(self, receiver: int = 0) -> int:
+        """Read noise reduction level without mutating legacy state.
+
+        The FTX-1 has a single noise-reduction path (``RL0``); the ``receiver``
+        argument is accepted for protocol symmetry but does not select a
+        per-receiver command (no ``RL1`` exists).
+
+        Returns:
+            NR level (0 = OFF, 1–15 = level).
+        """
         result = await self._query("get_nr_level")
         return int(result["level"])
+
+    async def get_nr_level(self, receiver: int = 0) -> int:
+        """Get noise reduction level (0 = OFF, 1–15 = level)."""
+        return await self.read_nr_level(receiver)
 
     async def set_nr_level(self, level: int, receiver: int = 0) -> None:
         """Set noise reduction level (0 = OFF, 1–15 = level)."""
         await self._write("set_nr_level", level=level)
 
-    async def get_auto_notch(self, receiver: int = 0) -> bool:
-        """Get auto notch state (True = ON)."""
+    async def read_auto_notch(self, receiver: int = 0) -> bool:
+        """Read auto notch state without mutating legacy state.
+
+        The FTX-1 has a single auto-notch path (``BC0``); the ``receiver``
+        argument is accepted for protocol symmetry but does not select a
+        per-receiver command (no ``BC1`` exists).
+
+        Returns:
+            ``True`` when auto notch is ON.
+        """
         result = await self._query("get_auto_notch")
         return bool(result["state"] == "1")
+
+    async def get_auto_notch(self, receiver: int = 0) -> bool:
+        """Get auto notch state (True = ON)."""
+        return await self.read_auto_notch(receiver)
 
     async def set_auto_notch(self, state: bool, receiver: int = 0) -> None:
         """Set auto notch state."""
         await self._write("set_auto_notch", state="1" if state else "0")
+
+    async def read_manual_notch(self, receiver: int = 0) -> bool:
+        """Read manual notch ON/OFF state without mutating legacy state.
+
+        Issues a single ``BP00`` read. The FTX-1 has a single manual-notch
+        path; the ``receiver`` argument is accepted for protocol symmetry but
+        does not select a per-receiver command (no ``BP10`` exists). Use
+        :meth:`read_manual_notch_freq` for the freq index in a separate read.
+
+        Returns:
+            ``True`` when the manual notch is enabled.
+        """
+        result = await self._query("get_manual_notch")
+        return bool(result["state"])
 
     async def get_manual_notch(self, receiver: int = 0) -> tuple[bool, int]:
         """Get manual notch state and frequency index.
@@ -987,14 +1207,26 @@ class YaesuCatRadio:
         """Set manual notch ON/OFF (BP00)."""
         await self._write("set_manual_notch", state=1 if state else 0)
 
+    async def read_manual_notch_freq(self, receiver: int = 0) -> int:
+        """Read manual notch frequency index without mutating legacy state.
+
+        Issues a single ``BP01`` read. The FTX-1 has a single manual-notch
+        path; the ``receiver`` argument is accepted for protocol symmetry but
+        does not select a per-receiver command (no ``BP11`` exists).
+
+        Returns:
+            Manual notch frequency index (0–255).
+        """
+        result = await self._query("get_manual_notch_freq")
+        return int(result["freq"])
+
     async def get_manual_notch_freq(self, receiver: int = 0) -> int:
         """Get manual notch frequency index (0–255, BP01).
 
         Standalone freq-only getter for symmetry with :meth:`set_manual_notch_freq`.
         Use :meth:`get_manual_notch` to fetch state+freq together in one call.
         """
-        result = await self._query("get_manual_notch_freq")
-        return int(result["freq"])
+        return await self.read_manual_notch_freq(receiver)
 
     async def set_manual_notch_freq(self, freq: int, receiver: int = 0) -> None:
         """Set manual notch frequency index (0–255, BP01)."""
@@ -1032,12 +1264,14 @@ class YaesuCatRadio:
             return cast("tuple[int, ...]", rule.table)
         return None
 
-    async def get_filter_width(self, receiver: int = 0) -> int:
-        """Get filter width in Hz (SH0/SH1).
+    async def read_filter_width(self, receiver: int = 0) -> int:
+        """Read filter width in Hz (SH0/SH1) without mutating legacy state.
 
         Translates the radio's table-index code to Hz using the active
-        profile's filter rule for the current mode. When no table is
-        defined, the raw index is returned (compat fallback).
+        profile's filter rule for the current mode. The current mode is READ
+        from the legacy ``self._state`` mirror to pick the right width table,
+        but the mirror is never written. When no table is defined, the raw
+        index is returned (compat fallback).
 
         Args:
             receiver: 0=MAIN, 1=SUB.
@@ -1065,6 +1299,17 @@ class YaesuCatRadio:
         except ValueError:
             return index
 
+    async def get_filter_width(self, receiver: int = 0) -> int:
+        """Get filter width in Hz (SH0/SH1).
+
+        Args:
+            receiver: 0=MAIN, 1=SUB.
+
+        Returns:
+            Filter width in Hz.
+        """
+        return await self.read_filter_width(receiver)
+
     async def set_filter_width(self, width_hz: int, receiver: int = 0) -> None:
         """Set filter width in Hz (SH0/SH1).
 
@@ -1077,8 +1322,12 @@ class YaesuCatRadio:
         index = width_hz if table is None else hz_to_table_index(width_hz, table=table)
         await self._write(cmd, code=index)
 
-    async def get_if_shift(self, receiver: int = 0) -> int:
-        """Get IF shift offset in Hz (signed, IS0).
+    async def read_if_shift(self, receiver: int = 0) -> int:
+        """Read IF shift offset in Hz without mutating legacy state.
+
+        The FTX-1 has a single IF-shift path (``IS0``); the ``receiver``
+        argument is accepted for protocol symmetry but does not select a
+        per-receiver command (no ``IS1`` exists).
 
         Returns:
             Signed offset in Hz (negative = downshift).
@@ -1087,15 +1336,32 @@ class YaesuCatRadio:
         offset: int = result["offset"]
         return -offset if result["sign"] == "-" else offset
 
+    async def get_if_shift(self, receiver: int = 0) -> int:
+        """Get IF shift offset in Hz (signed, IS0).
+
+        Returns:
+            Signed offset in Hz (negative = downshift).
+        """
+        return await self.read_if_shift(receiver)
+
     async def set_if_shift(self, offset: int, receiver: int = 0) -> None:
         """Set IF shift offset in Hz (signed, IS0)."""
         sign = "+" if offset >= 0 else "-"
         await self._write("set_if_shift", sign=sign, offset=abs(offset))
 
-    async def get_narrow(self, receiver: int = 0) -> bool:
-        """Get narrow filter state (True = narrow)."""
+    async def read_narrow(self, receiver: int = 0) -> bool:
+        """Read narrow filter state without mutating legacy state.
+
+        The FTX-1 has a single narrow path (``NA0``); the ``receiver``
+        argument is accepted for protocol symmetry but does not select a
+        per-receiver command (no ``NA1`` exists).
+        """
         result = await self._query("get_narrow")
         return bool(result["state"] == "1")
+
+    async def get_narrow(self, receiver: int = 0) -> bool:
+        """Get narrow filter state (True = narrow)."""
+        return await self.read_narrow(receiver)
 
     async def set_narrow(self, state: bool, receiver: int = 0) -> None:
         """Set narrow filter state."""
@@ -1193,19 +1459,39 @@ class YaesuCatRadio:
         await self.select_receiver(rx_xcvr)  # VS{rx_xcvr}: focus active receiver
         await self.set_tx_source(tx_xcvr)  # FT{tx_xcvr}: route TX
 
-    async def get_split(self) -> bool:
-        """Get split operation state."""
+    async def read_split(self) -> bool:
+        """Read split operation state without mutating legacy state.
+
+        Issues a single ``ST`` read. Feeds the observation pipeline via
+        :class:`YaesuObservationAdapter`; the legacy ``self._state`` mirror is
+        not written (MOR-434 / MOR-446).
+        """
         result = await self._query("get_split")
         return bool(result["state"] == "1")
+
+    async def get_split(self) -> bool:
+        """Get split operation state."""
+        return await self.read_split()
 
     async def set_split(self, state: bool) -> None:
         """Set split operation state."""
         await self._write("set_split", state="1" if state else "0")
 
-    async def get_vfo_select(self) -> int:
-        """Get VFO selection (0 = MAIN, 1 = SUB)."""
+    async def read_vfo_select(self) -> int:
+        """Read VFO/receiver selection without mutating legacy state.
+
+        Issues a single ``VS`` read and returns the active receiver index
+        (0 = MAIN, 1 = SUB). Feeds the observation pipeline via
+        :class:`YaesuObservationAdapter`, which coerces the index to the neutral
+        ``global.slow_state.active`` ``"MAIN"``/``"SUB"`` string; the legacy
+        ``self._state`` mirror is not written (MOR-434 / MOR-446).
+        """
         result = await self._query("get_vfo_select")
         return int(result["vfo"])
+
+    async def get_vfo_select(self) -> int:
+        """Get VFO selection (0 = MAIN, 1 = SUB)."""
+        return await self.read_vfo_select()
 
     async def set_vfo_select(self, vfo: int) -> None:
         """Set VFO selection (0 = MAIN, 1 = SUB)."""
@@ -1381,14 +1667,24 @@ class YaesuCatRadio:
 
     # -- D6: TX Stack -------------------------------------------------------
 
+    async def read_power(self) -> tuple[int, int]:
+        """Read the TX power setpoint without mutating legacy state.
+
+        Returns:
+            Tuple of (head: int, watts: int).  This is the configured
+            (SET) power level via the ``PC`` command — the watt setpoint,
+            distinct from the measured ``RM5`` power meter.
+        """
+        result = await self._query("get_power")
+        return int(result["head"]), result["watts"]
+
     async def get_power(self) -> tuple[int, int]:
         """Get TX power setting.
 
         Returns:
             Tuple of (head: int, watts: int).
         """
-        result = await self._query("get_power")
-        return int(result["head"]), result["watts"]
+        return await self.read_power()
 
     async def set_power(self, watts: int, head: int = 2) -> None:
         """Set TX power.
@@ -1408,28 +1704,40 @@ class YaesuCatRadio:
         """
         await self.set_power(watts=level)
 
-    async def get_mic_gain(self) -> int:
-        """Get microphone gain (0–100)."""
+    async def read_mic_gain(self) -> int:
+        """Read microphone gain without mutating legacy state (0–100)."""
         result = await self._query("get_mic_gain")
         return int(result["level"])
+
+    async def get_mic_gain(self) -> int:
+        """Get microphone gain (0–100)."""
+        return await self.read_mic_gain()
 
     async def set_mic_gain(self, level: int) -> None:
         """Set microphone gain (0–100)."""
         await self._write("set_mic_gain", level=level)
 
-    async def get_processor(self) -> bool:
-        """Get speech processor state."""
+    async def read_processor(self) -> bool:
+        """Read speech processor (compressor) state without mutating state."""
         result = await self._query("get_processor")
         return bool(result["state"] == "1")
+
+    async def get_processor(self) -> bool:
+        """Get speech processor state."""
+        return await self.read_processor()
 
     async def set_processor(self, state: bool) -> None:
         """Set speech processor state."""
         await self._write("set_processor", state="1" if state else "0")
 
-    async def get_processor_level(self) -> int:
-        """Get processor level (0-100)."""
+    async def read_processor_level(self) -> int:
+        """Read processor (compressor) level without mutating state (0-100)."""
         result = await self._query("get_processor_level")
         return int(result["level"])
+
+    async def get_processor_level(self) -> int:
+        """Get processor level (0-100)."""
+        return await self.read_processor_level()
 
     async def set_processor_level(self, level: int) -> None:
         """Set processor level (0-100)."""
@@ -1453,23 +1761,51 @@ class YaesuCatRadio:
 
     # -- D7: CW -------------------------------------------------------------
 
-    async def get_keyer_speed(self) -> int:
-        """Get CW keyer speed in WPM (4–60)."""
+    async def read_keyer_speed(self) -> int:
+        """Read CW keyer speed in WPM (4–60) without mutating legacy state."""
         result = await self._query("get_keyer_speed")
         return int(result["wpm"])
+
+    async def get_keyer_speed(self) -> int:
+        """Get CW keyer speed in WPM (4–60)."""
+        return await self.read_keyer_speed()
 
     async def set_keyer_speed(self, wpm: int) -> None:
         """Set CW keyer speed in WPM (4–60)."""
         await self._write("set_keyer_speed", wpm=wpm)
 
-    async def get_key_pitch(self) -> int:
-        """Get CW pitch index (0–75, maps to 300–1050 Hz)."""
+    async def read_key_pitch(self) -> int:
+        """Read CW pitch index (0–75) without mutating legacy state."""
         result = await self._query("get_key_pitch")
         return int(result["idx"])
+
+    async def get_key_pitch(self) -> int:
+        """Get CW pitch index (0–75, maps to 300–1050 Hz)."""
+        return await self.read_key_pitch()
 
     async def set_key_pitch(self, idx: int) -> None:
         """Set CW pitch index (0–75)."""
         await self._write("set_key_pitch", idx=idx)
+
+    async def read_cw_pitch(self) -> int:
+        """Read CW pitch in Hz (300-1050) without mutating legacy state.
+
+        Maps the FTX-1 idx (0-75) to Hz (``idx → 300 + idx * 10``), matching
+        :meth:`get_cw_pitch`. Pure CAT read used by the observation pipeline.
+        """
+        idx = await self.read_key_pitch()
+        return 300 + idx * 10
+
+    async def read_break_in(self) -> BreakInMode:
+        """Read CW break-in mode without mutating legacy state.
+
+        FTX-1 CAT exposes only binary on/off; map ``"1"`` to
+        :attr:`BreakInMode.SEMI` and ``"0"`` to :attr:`BreakInMode.OFF`.
+        :class:`BreakInMode` is an :class:`IntEnum` and remains
+        bool-compatible at runtime.
+        """
+        result = await self._query("get_break_in")
+        return BreakInMode.SEMI if result["state"] == "1" else BreakInMode.OFF
 
     async def get_break_in(self) -> BreakInMode:
         """Get CW break-in mode.
@@ -1479,8 +1815,7 @@ class YaesuCatRadio:
         :class:`BreakInMode` is an :class:`IntEnum` and remains
         bool-compatible at runtime.
         """
-        result = await self._query("get_break_in")
-        return BreakInMode.SEMI if result["state"] == "1" else BreakInMode.OFF
+        return await self.read_break_in()
 
     async def set_break_in(self, mode: BreakInMode | int | bool) -> None:
         """Set CW break-in mode.
@@ -1493,10 +1828,14 @@ class YaesuCatRadio:
         on = BreakInMode(int(mode)) != BreakInMode.OFF
         await self._write("set_break_in", state="1" if on else "0")
 
-    async def get_cw_spot(self) -> bool:
-        """Get CW spot tone state."""
+    async def read_cw_spot(self) -> bool:
+        """Read CW spot tone state without mutating legacy state."""
         result = await self._query("get_cw_spot")
         return bool(result["state"] == "1")
+
+    async def get_cw_spot(self) -> bool:
+        """Get CW spot tone state."""
+        return await self.read_cw_spot()
 
     async def set_cw_spot(self, state: bool) -> None:
         """Set CW spot tone state."""
@@ -1511,10 +1850,14 @@ class YaesuCatRadio:
         """
         await self._write("send_cw", type=msg_type, mem=mem)
 
-    async def get_break_in_delay(self) -> int:
-        """Get CW break-in delay in milliseconds (30–3000)."""
+    async def read_break_in_delay(self) -> int:
+        """Read CW break-in delay in ms (30–3000) without mutating legacy state."""
         result = await self._query("get_break_in_delay")
         return int(result["delay"])
+
+    async def get_break_in_delay(self) -> int:
+        """Get CW break-in delay in milliseconds (30–3000)."""
+        return await self.read_break_in_delay()
 
     async def set_break_in_delay(self, delay: int) -> None:
         """Set CW break-in delay in milliseconds (30–3000)."""
@@ -1522,14 +1865,22 @@ class YaesuCatRadio:
 
     # -- D8: Clarifier (RIT/XIT) --------------------------------------------
 
-    async def get_clarifier(self, receiver: int = 0) -> tuple[bool, bool]:
-        """Get clarifier state (CF000).
+    async def read_clarifier(self, receiver: int = 0) -> tuple[bool, bool]:
+        """Read clarifier state (CF000) without mutating legacy state.
 
         Returns:
             Tuple of (rx_clar: bool, tx_clar: bool).
         """
         result = await self._query("get_clarifier")
         return result["rx"] == "1", result["tx"] == "1"
+
+    async def get_clarifier(self, receiver: int = 0) -> tuple[bool, bool]:
+        """Get clarifier state (CF000).
+
+        Returns:
+            Tuple of (rx_clar: bool, tx_clar: bool).
+        """
+        return await self.read_clarifier(receiver)
 
     async def set_clarifier(
         self, rx_clar: bool, tx_clar: bool, receiver: int = 0
@@ -1542,11 +1893,18 @@ class YaesuCatRadio:
             pad=0,
         )
 
-    async def get_clarifier_freq(self, receiver: int = 0) -> int:
-        """Get clarifier offset frequency in Hz (signed, CF001)."""
+    async def read_clarifier_freq(self, receiver: int = 0) -> int:
+        """Read clarifier offset frequency in Hz (signed, CF001).
+
+        Pure CAT read: returns the signed offset without mutating legacy state.
+        """
         result = await self._query("get_clarifier_freq")
         offset: int = result["offset"]
         return -offset if result["sign"] == "-" else offset
+
+    async def get_clarifier_freq(self, receiver: int = 0) -> int:
+        """Get clarifier offset frequency in Hz (signed, CF001)."""
+        return await self.read_clarifier_freq(receiver)
 
     async def set_clarifier_freq(self, offset: int, receiver: int = 0) -> None:
         """Set clarifier offset frequency in Hz (signed, CF001)."""
@@ -1588,14 +1946,46 @@ class YaesuCatRadio:
 
     # -- D9: Tone/TSQL ------------------------------------------------------
 
-    async def get_sql_type(self, receiver: int = 0) -> int:
-        """Get squelch type code (CT0)."""
+    async def read_sql_type(self, receiver: int = 0) -> int:
+        """Read squelch type code (CT0) without mutating legacy state.
+
+        Pure CAT read used by the observation pipeline. Returns the FTX-1
+        ``CT`` P2 code (0=CTCSS OFF, 1=ENC ON/DEC OFF "TONE", 2=ENC ON/DEC ON
+        "TSQL", 3=DCS, 4=PR FREQ, 5=REV TONE) per the FTX-1 CAT Operation
+        Reference Manual (``FTX-1_CAT_OM_ENG_2507``). MAIN only (CT0).
+        """
         result = await self._query("get_sql_type")
         return int(result["type"])
+
+    async def get_sql_type(self, receiver: int = 0) -> int:
+        """Get squelch type code (CT0)."""
+        return await self.read_sql_type(receiver)
 
     async def set_sql_type(self, type_code: int, receiver: int = 0) -> None:
         """Set squelch type code (CT0)."""
         await self._write("set_sql_type", type=type_code)
+
+    async def read_ctcss_tone_index(self, receiver: int = 0) -> int:
+        """Read the MAIN CTCSS tone-chart index (CN command) — pure read.
+
+        Sends ``CN00;`` (P1=0 MAIN, P2=0 CTCSS) and parses the ``CN00nnn;``
+        answer, returning the 000-049 tone-chart index per the FTX-1 CAT
+        Operation Reference Manual (``FTX-1_CAT_OM_ENG_2507``). Pure CAT read
+        used by the observation pipeline: it does NOT mutate ``radio_state``.
+        MAIN only (CN P1=0); the SUB receiver would need CN10, out of scope.
+        """
+        result = await self._query("get_ctcss_tone")
+        return int(result["code"])
+
+    async def get_ctcss_tone(self, receiver: int = 0) -> int:
+        """Get the MAIN CTCSS tone frequency in centiHz (CN command).
+
+        Delegates to :meth:`read_ctcss_tone_index` and maps the tone-chart
+        index to centiHz (e.g. index 8 → 88.5 Hz → ``8850``) to match the Icom
+        MOR-451 convention. The FTX-1 has a single CTCSS tone (CN P2=0) shared
+        by both TONE (encode) and TSQL (decode).
+        """
+        return _ctcss_index_to_centihz(await self.read_ctcss_tone_index(receiver))
 
     # -- D10: System --------------------------------------------------------
 
@@ -1613,19 +2003,27 @@ class YaesuCatRadio:
         """Set auto-info (AI) state."""
         await self._write("set_auto_info", state="1" if state else "0")
 
-    async def get_vox(self) -> bool:
-        """Get VOX state."""
+    async def read_vox(self) -> bool:
+        """Read VOX state without mutating legacy state."""
         result = await self._query("get_vox")
         return bool(result["state"] == "1")
+
+    async def get_vox(self) -> bool:
+        """Get VOX state."""
+        return await self.read_vox()
 
     async def set_vox(self, state: bool) -> None:
         """Set VOX state."""
         await self._write("set_vox", state="1" if state else "0")
 
-    async def get_lock(self) -> bool:
-        """Get dial lock state."""
+    async def read_lock(self) -> bool:
+        """Read dial lock state (LK) without mutating legacy state."""
         result = await self._query("get_lock")
         return bool(result["state"] == "1")
+
+    async def get_lock(self) -> bool:
+        """Get dial lock state."""
+        return await self.read_lock()
 
     async def set_lock(self, state: bool) -> None:
         """Set dial lock state."""
@@ -1633,14 +2031,22 @@ class YaesuCatRadio:
 
     # -- Tuner (AC) --------------------------------------------------------
 
-    async def get_tuner(self) -> int:
-        """Get antenna tuner state (AC).
+    async def read_tuner(self) -> int:
+        """Read antenna tuner state (AC) without mutating legacy state.
 
         Returns:
             0=OFF, 1=ON, 2=tuning, 3=tune-start.
         """
         result = await self._query("get_tuner")
         return int(result["state"])
+
+    async def get_tuner(self) -> int:
+        """Get antenna tuner state (AC).
+
+        Returns:
+            0=OFF, 1=ON, 2=tuning, 3=tune-start.
+        """
+        return await self.read_tuner()
 
     async def set_tuner(self, state: int, src: int = 0, typ: int = 0) -> None:
         """Set antenna tuner (AC). state: 0=OFF, 1=ON, 2=tune."""
@@ -1708,14 +2114,22 @@ class YaesuCatRadio:
 
     # -- AGC ----------------------------------------------------------------
 
-    async def get_agc(self, receiver: int = 0) -> int:
-        """Get AGC mode (GT0).
+    async def read_agc(self, receiver: int = 0) -> int:
+        """Read AGC mode (GT0) without mutating legacy state.
 
         Returns:
             0=OFF, 1=FAST, 2=MID, 3=SLOW, 4=AUTO-F, 5=AUTO-M, 6=AUTO-S.
         """
         result = await self._query("get_agc")
         return int(result["mode"])
+
+    async def get_agc(self, receiver: int = 0) -> int:
+        """Get AGC mode (GT0).
+
+        Returns:
+            0=OFF, 1=FAST, 2=MID, 3=SLOW, 4=AUTO-F, 5=AUTO-M, 6=AUTO-S.
+        """
+        return await self.read_agc(receiver)
 
     async def set_agc(self, mode: int, receiver: int = 0) -> None:
         """Set AGC mode (GT0, 0–6)."""
@@ -1725,8 +2139,7 @@ class YaesuCatRadio:
 
     async def get_key_speed(self) -> int:
         """Get CW keyer speed in WPM (KS)."""
-        result = await self._query("get_keyer_speed")
-        return int(result["wpm"])
+        return await self.read_keyer_speed()
 
     async def set_key_speed(self, speed: int) -> None:
         """Set CW keyer speed in WPM (KS)."""
@@ -1737,13 +2150,12 @@ class YaesuCatRadio:
     async def get_cw_pitch(self) -> int:
         """CW pitch in Hz (300-1050).
 
-        ``get_key_pitch`` is the Yaesu-internal helper and returns the FTX-1
+        ``read_key_pitch`` is the Yaesu-internal helper and returns the FTX-1
         idx (0-75). The Icom-spelled ``CwControlCapable`` contract is Hz, so
         we map ``idx → 300 + idx * 10`` (FTX-1 documented mapping: 0=300 Hz,
         75=1050 Hz, 10 Hz step).
         """
-        idx = await self.get_key_pitch()
-        return 300 + idx * 10
+        return await self.read_cw_pitch()
 
     async def set_cw_pitch(self, freq: int) -> None:
         """Set CW pitch in Hz (300-1050).
@@ -2053,6 +2465,21 @@ class YaesuCatRadio:
         return YaesuCatPoller(
             self,
             callback=callback,
+            command_queue=command_queue,
+        )
+
+    def create_observation_poller(
+        self,
+        *,
+        callback: Callable[[Sequence["Observation"]], None],
+        command_queue: "CommandQueue | None" = None,
+    ) -> "YaesuCatPoller":
+        """Construct a backend-neutral observation poller for this radio."""
+        from .poller import YaesuCatPoller
+
+        return YaesuCatPoller(
+            self,
+            observation_callback=callback,
             command_queue=command_queue,
         )
 

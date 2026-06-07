@@ -179,12 +179,18 @@ export function formatAmps(raw: number): string {
 
 /**
  * Formats raw Vd (drain voltage) value as volts string.
- * IC-7610 CI-V Reference p.4: 00 00=0 V, 00 13=10 V, 02 41=16 V.
- * Nominal reading on-air is ~13.8 V.
+ * IC-7610 CI-V Reference p.4 lists 00 00=0 V, 00 13=10 V, 02 41=16 V, but the
+ * manual's raw-13=10 V point is anomalous: interpolating it against the 16 V
+ * top knot reads 14.5 V at raw 184, whereas the operator's bench supply is
+ * exactly 13.8 V at that same raw value (live-confirmed on a real IC-7610 via
+ * /api/v1/state vdMeter:184). The empirical anchor (raw 184 = 13.8 V) corrects
+ * the curve while preserving the origin, the documented top, and monotonicity.
  */
 const VD_KNOTS: [number, number][] = [
   [0, 0],
   [13, 10],
+  [184, 13.8], // operator-measured: raw 184 = 13.8 V supply (the manual's
+  // raw-13=10 V point gave a wrong 14.5 V at this reading)
   [241, 16],
 ];
 
@@ -227,6 +233,54 @@ export function swrRatio(raw: number): number {
 export function alcLevel(raw: number): number {
   const alcMax = getMeterRedline('alc') ?? ALC_MAX_DEFAULT;
   return Math.max(0, Math.min(alcMax, raw)) / alcMax;
+}
+
+/**
+ * Bar-fill level normalizers (0-1) in the CALIBRATED domain (MOR-482).
+ *
+ * The numeric readouts (`formatSwr`/`formatAmps`/…) are already calibrated via
+ * the piecewise knots, but the bar fill historically used `normalize(raw)` =
+ * raw/255, so the bar disagreed with the number (e.g. Vd 13.8 V → ~5% bar,
+ * SWR 3.0 → 47% bar). These helpers convert the raw value to its engineering
+ * quantity, then normalize against that meter's full-scale / redline knot so
+ * the bar matches the number. Written in the calibrated domain so the Phase-2
+ * cutover (backend emitting engineering units) is a one-line change per meter.
+ */
+
+/** Bar level for SWR: ratio relative to the 3.0 full-scale knot. ∞ → 1.0. */
+export function swrLevel(raw: number): number {
+  const ratio = swrRatio(raw);
+  if (!Number.isFinite(ratio)) return 1;
+  const knots = getKnots('swr', SWR_KNOTS);
+  const maxRatio = knots[knots.length - 1][1];
+  return maxRatio > 0 ? Math.max(0, Math.min(1, ratio / maxRatio)) : 0;
+}
+
+/** Bar level for Id: amps relative to the 25 A full-scale knot. */
+export function idLevel(raw: number): number {
+  const knots = getKnots('id', ID_KNOTS);
+  const maxAmps = knots[knots.length - 1][1];
+  return maxAmps > 0 ? Math.max(0, Math.min(1, piecewise(raw, knots) / maxAmps)) : 0;
+}
+
+/** Bar level for Vd: volts relative to the 16 V full-scale knot. */
+export function vdLevel(raw: number): number {
+  const knots = getKnots('vd', VD_KNOTS);
+  const maxVolts = knots[knots.length - 1][1];
+  return maxVolts > 0 ? Math.max(0, Math.min(1, piecewise(raw, knots) / maxVolts)) : 0;
+}
+
+/** Bar level for COMP: dB relative to the 30 dB full-scale knot. */
+export function compLevel(raw: number): number {
+  const knots = getKnots('comp', COMP_KNOTS);
+  const maxDb = knots[knots.length - 1][1];
+  return maxDb > 0 ? Math.max(0, Math.min(1, piecewise(raw, knots) / maxDb)) : 0;
+}
+
+/** Bar level for S-meter: raw relative to the S9+60 full-scale calibration. */
+export function sLevel(raw: number): number {
+  const [, s9Plus60Raw] = getSmeterBounds();
+  return s9Plus60Raw > 0 ? Math.max(0, Math.min(1, raw / s9Plus60Raw)) : 0;
 }
 
 /** True when SWR exceeds the 2.0 TX-safety threshold. */

@@ -43,7 +43,321 @@ features = [
     "tuner",
     "meters",
     "dial_lock",
+    "sql_type",
 ]
+
+[state_acquisition]
+provider = "yaesu_cat"
+default_cadence_seconds = 2.0
+default_freshness_ttl_seconds = 8.0
+default_reconciliation_priority = "poll"
+adaptive_decay = true
+adaptive_decay_idle_multiplier = 3.0
+adaptive_decay_max_cadence_seconds = 20.0
+external_cat_pause = "pause_polling"
+meter_coalescing_window_seconds = 0.2
+
+[state_acquisition.capabilities]
+polling_only = [
+    "receiver.main.active.freq_mode.freq_hz",
+    "receiver.main.active.freq_mode.mode",
+    "receiver.sub.active.freq_mode.freq_hz",
+    "receiver.sub.active.freq_mode.mode",
+    "global.tx_state.ptt",
+    "receiver.main.operator_controls.af_level",
+    "receiver.main.operator_controls.rf_gain",
+    "receiver.main.operator_controls.squelch",
+    "receiver.sub.operator_controls.af_level",
+    "receiver.sub.operator_controls.rf_gain",
+    "receiver.sub.operator_controls.squelch",
+    "receiver.main.operator_controls.att",
+    "receiver.main.operator_controls.preamp",
+    "receiver.main.operator_controls.agc",
+    "receiver.main.operator_controls.if_shift",
+    "receiver.main.operator_toggles.narrow",
+    "receiver.main.active.freq_mode.filter_width",
+    "receiver.main.operator_controls.nb_level",
+    "receiver.main.operator_toggles.nb",
+    "receiver.main.operator_controls.nr_level",
+    "receiver.main.operator_toggles.nr",
+    "receiver.main.operator_toggles.auto_notch",
+    "receiver.main.operator_toggles.manual_notch",
+    "receiver.main.operator_controls.manual_notch_freq",
+    "global.operator_controls.power_level",
+    "global.operator_controls.mic_gain",
+    "global.tx_state.compressor_on",
+    "global.operator_controls.compressor_level",
+    "global.tx_state.vox_on",
+    "global.tx_state.split",
+    "global.slow_state.active",
+    "global.tx_state.rit_on",
+    "global.tx_state.rit_tx",
+    "global.operator_controls.rit_freq",
+    "global.operator_controls.tuner_status",
+    "global.tx_state.dial_lock",
+    "global.operator_controls.key_speed",
+    "global.operator_controls.cw_pitch",
+    "global.operator_controls.break_in",
+    "global.operator_controls.break_in_delay",
+    "global.slow_state.cw_spot",
+    "receiver.main.operator_toggles.repeater_tone",
+    "receiver.main.operator_toggles.repeater_tsql",
+    "receiver.main.operator_controls.tone_freq",
+    "receiver.main.operator_controls.tsql_freq",
+]
+stream_like_meters = [
+    "receiver.main.meters.s_meter",
+    "receiver.sub.meters.s_meter",
+    "global.meters.alc",
+    "global.meters.power",
+    "global.meters.swr",
+    "global.meters.comp",
+]
+command_response_observable = [
+    "receiver.main.active.freq_mode.freq_hz",
+    "receiver.main.active.freq_mode.mode",
+    "receiver.sub.active.freq_mode.freq_hz",
+    "receiver.sub.active.freq_mode.mode",
+]
+supported_controls = [
+    "receiver.main.active.freq_mode.freq_hz",
+    "receiver.main.active.freq_mode.mode",
+    "receiver.sub.active.freq_mode.freq_hz",
+    "receiver.sub.active.freq_mode.mode",
+    "global.tx_state.ptt",
+]
+unsupported = ["global.tx_state.power_on"]
+
+[state_acquisition.field_policies."receiver.main.meters.s_meter"]
+cadence_seconds = 0.2
+freshness_ttl_seconds = 0.8
+adaptive_decay = false
+meter_coalescing_window_seconds = 0.2
+
+[state_acquisition.field_policies."receiver.sub.meters.s_meter"]
+cadence_seconds = 0.2
+freshness_ttl_seconds = 0.8
+adaptive_decay = false
+meter_coalescing_window_seconds = 0.2
+
+[state_acquisition.field_policies."global.meters.alc"]
+cadence_seconds = 0.2
+freshness_ttl_seconds = 0.8
+adaptive_decay = false
+meter_coalescing_window_seconds = 0.2
+
+[state_acquisition.field_policies."global.meters.power"]
+cadence_seconds = 0.2
+freshness_ttl_seconds = 0.8
+adaptive_decay = false
+meter_coalescing_window_seconds = 0.2
+
+[state_acquisition.field_policies."global.meters.swr"]
+cadence_seconds = 0.2
+freshness_ttl_seconds = 0.8
+adaptive_decay = false
+meter_coalescing_window_seconds = 0.2
+
+[state_acquisition.field_policies."global.meters.comp"]
+cadence_seconds = 0.2
+freshness_ttl_seconds = 0.8
+adaptive_decay = false
+meter_coalescing_window_seconds = 0.2
+
+[state_acquisition.field_policies."receiver.main.operator_controls.af_level"]
+cadence_seconds = 30.0
+freshness_ttl_seconds = 120.0
+
+[state_acquisition.field_policies."receiver.main.operator_controls.rf_gain"]
+cadence_seconds = 30.0
+freshness_ttl_seconds = 120.0
+
+[state_acquisition.field_policies."receiver.main.operator_controls.squelch"]
+cadence_seconds = 30.0
+freshness_ttl_seconds = 120.0
+
+[state_acquisition.field_policies."receiver.sub.operator_controls.af_level"]
+cadence_seconds = 30.0
+freshness_ttl_seconds = 120.0
+
+[state_acquisition.field_policies."receiver.sub.operator_controls.rf_gain"]
+cadence_seconds = 30.0
+freshness_ttl_seconds = 120.0
+
+[state_acquisition.field_policies."receiver.sub.operator_controls.squelch"]
+cadence_seconds = 30.0
+freshness_ttl_seconds = 120.0
+
+[state_acquisition.field_policies."receiver.main.operator_controls.att"]
+cadence_seconds = 30.0
+freshness_ttl_seconds = 120.0
+
+[state_acquisition.field_policies."receiver.main.operator_controls.preamp"]
+cadence_seconds = 30.0
+freshness_ttl_seconds = 120.0
+
+[state_acquisition.field_policies."receiver.main.operator_controls.agc"]
+cadence_seconds = 30.0
+freshness_ttl_seconds = 120.0
+
+# IF-shift / narrow / filter_width DSP controls (MOR-445). filter_width is a
+# slow-changing control (not a meter), so it uses the slow-control cadence
+# even though it is emitted in the freq/mode lane.
+[state_acquisition.field_policies."receiver.main.operator_controls.if_shift"]
+cadence_seconds = 30.0
+freshness_ttl_seconds = 120.0
+
+[state_acquisition.field_policies."receiver.main.operator_toggles.narrow"]
+cadence_seconds = 30.0
+freshness_ttl_seconds = 120.0
+
+[state_acquisition.field_policies."receiver.main.active.freq_mode.filter_width"]
+cadence_seconds = 30.0
+freshness_ttl_seconds = 120.0
+
+# NB/NR levels + derived toggles, auto/manual notch DSP controls (MOR-444).
+# Slow-changing operator controls, MAIN-only (no per-receiver CAT command). The
+# ``nb``/``nr`` toggles are derived from the level read in the same poll cycle.
+[state_acquisition.field_policies."receiver.main.operator_controls.nb_level"]
+cadence_seconds = 30.0
+freshness_ttl_seconds = 120.0
+
+[state_acquisition.field_policies."receiver.main.operator_toggles.nb"]
+cadence_seconds = 30.0
+freshness_ttl_seconds = 120.0
+
+[state_acquisition.field_policies."receiver.main.operator_controls.nr_level"]
+cadence_seconds = 30.0
+freshness_ttl_seconds = 120.0
+
+[state_acquisition.field_policies."receiver.main.operator_toggles.nr"]
+cadence_seconds = 30.0
+freshness_ttl_seconds = 120.0
+
+[state_acquisition.field_policies."receiver.main.operator_toggles.auto_notch"]
+cadence_seconds = 30.0
+freshness_ttl_seconds = 120.0
+
+[state_acquisition.field_policies."receiver.main.operator_toggles.manual_notch"]
+cadence_seconds = 30.0
+freshness_ttl_seconds = 120.0
+
+[state_acquisition.field_policies."receiver.main.operator_controls.manual_notch_freq"]
+cadence_seconds = 30.0
+freshness_ttl_seconds = 120.0
+
+[state_acquisition.field_policies."global.operator_controls.power_level"]
+cadence_seconds = 30.0
+freshness_ttl_seconds = 120.0
+
+[state_acquisition.field_policies."global.operator_controls.mic_gain"]
+cadence_seconds = 30.0
+freshness_ttl_seconds = 120.0
+
+[state_acquisition.field_policies."global.tx_state.compressor_on"]
+cadence_seconds = 30.0
+freshness_ttl_seconds = 120.0
+
+[state_acquisition.field_policies."global.operator_controls.compressor_level"]
+cadence_seconds = 30.0
+freshness_ttl_seconds = 120.0
+
+[state_acquisition.field_policies."global.tx_state.vox_on"]
+cadence_seconds = 30.0
+freshness_ttl_seconds = 120.0
+
+# Split + active-slot controls (MOR-446). Slow-changing operator state: split
+# (global tx_state bool, CAT ``ST``) and the active receiver/VFO field (global
+# slow_state, CAT ``VS`` → neutral "MAIN"/"SUB"). Both use the slow-control
+# cadence, matching the other global TX/operator setpoints above.
+[state_acquisition.field_policies."global.tx_state.split"]
+cadence_seconds = 30.0
+freshness_ttl_seconds = 120.0
+
+[state_acquisition.field_policies."global.slow_state.active"]
+cadence_seconds = 30.0
+freshness_ttl_seconds = 120.0
+
+# Clarifier RIT/XIT controls (MOR-454). Slow-changing global operator/TX state:
+# rit_on/rit_tx (global tx_state bools, CAT ``CF000``) and rit_freq (global
+# operator-control signed Hz offset, CAT ``CF001``). All use the slow-control
+# cadence, matching the other global TX/operator setpoints above.
+[state_acquisition.field_policies."global.tx_state.rit_on"]
+cadence_seconds = 30.0
+freshness_ttl_seconds = 120.0
+
+[state_acquisition.field_policies."global.tx_state.rit_tx"]
+cadence_seconds = 30.0
+freshness_ttl_seconds = 120.0
+
+[state_acquisition.field_policies."global.operator_controls.rit_freq"]
+cadence_seconds = 30.0
+freshness_ttl_seconds = 120.0
+
+# Tuner + dial-lock controls (MOR-455). Slow-changing global operator/TX state:
+# tuner_status (global operator-control antenna-tuner int, CAT ``AC``) and
+# dial_lock (global tx_state bool, CAT ``LK``). Both use the slow-control
+# cadence, matching the other global TX/operator setpoints above.
+[state_acquisition.field_policies."global.operator_controls.tuner_status"]
+cadence_seconds = 30.0
+freshness_ttl_seconds = 120.0
+
+[state_acquisition.field_policies."global.tx_state.dial_lock"]
+cadence_seconds = 30.0
+freshness_ttl_seconds = 120.0
+
+# CW keyer family (MOR-456). Slow-changing global operator/slow controls:
+# key_speed (keyer WPM, CAT ``KS``), cw_pitch (sidetone Hz, CAT ``KP``),
+# break_in (break-in mode int, CAT ``BI``), break_in_delay (QSK delay ms, CAT
+# ``SD``), and cw_spot (global slow_state bool, CAT ``CS``). All use the
+# slow-control cadence, matching the other global TX/operator setpoints above.
+[state_acquisition.field_policies."global.operator_controls.key_speed"]
+cadence_seconds = 30.0
+freshness_ttl_seconds = 120.0
+
+[state_acquisition.field_policies."global.operator_controls.cw_pitch"]
+cadence_seconds = 30.0
+freshness_ttl_seconds = 120.0
+
+[state_acquisition.field_policies."global.operator_controls.break_in"]
+cadence_seconds = 30.0
+freshness_ttl_seconds = 120.0
+
+[state_acquisition.field_policies."global.operator_controls.break_in_delay"]
+cadence_seconds = 30.0
+freshness_ttl_seconds = 120.0
+
+[state_acquisition.field_policies."global.slow_state.cw_spot"]
+cadence_seconds = 30.0
+freshness_ttl_seconds = 120.0
+
+# Tone / CTCSS squelch-type (MOR-457). The MAIN-only CAT ``CT`` "SQL TYPE" read
+# (FTX-1_CAT_OM_ENG_2507) is mapped onto the neutral, mutually-exclusive CTCSS
+# booleans repeater_tone (CTCSS ENC, "TONE") and repeater_tsql (CTCSS ENC+DEC,
+# "TSQL"). Slow-changing per-receiver operator toggles, so they use the
+# slow-control cadence, matching the other receiver DSP toggles above.
+[state_acquisition.field_policies."receiver.main.operator_toggles.repeater_tone"]
+cadence_seconds = 30.0
+freshness_ttl_seconds = 120.0
+
+[state_acquisition.field_policies."receiver.main.operator_toggles.repeater_tsql"]
+cadence_seconds = 30.0
+freshness_ttl_seconds = 120.0
+
+# CTCSS tone frequency (MOR-458). The MAIN-only CAT ``CN`` "CTCSS TONE
+# FREQUENCY" read (FTX-1_CAT_OM_ENG_2507) maps a 0-49 tone-chart index → Hz →
+# centiHz onto the neutral tone_freq/tsql_freq paths. The FTX-1 has a single
+# CTCSS tone shared by TONE (encode) and TSQL (decode), so both paths receive
+# the same centiHz value from one read. Slow-changing per-receiver operator
+# controls, so they use the slow-control cadence like the other receiver DSP
+# controls above.
+[state_acquisition.field_policies."receiver.main.operator_controls.tone_freq"]
+cadence_seconds = 30.0
+freshness_ttl_seconds = 120.0
+
+[state_acquisition.field_policies."receiver.main.operator_controls.tsql_freq"]
+cadence_seconds = 30.0
+freshness_ttl_seconds = 120.0
 
 [modes]
 list = [
@@ -457,8 +771,15 @@ get_clarifier_freq = { cat = { read = "CF001;", parse = "CF001{sign}{offset:04d}
 set_clarifier_freq = { cat = { write = "CF001{sign}{offset:04d};" } }
 
 # ── Tone / CTCSS ──
-get_sql_type   = { cat = { read = "CT0;", parse = "CT0{type:02d};" } }
+# MOR-473: the live FTX-1 answers ``CT0;`` with a SINGLE-digit P2 ("CT00;"),
+# so the READ parse takes one digit. The write width is left as ``{type:02d}``
+# (an unconfirmed residual) until a live write capture confirms otherwise.
+get_sql_type   = { cat = { read = "CT0;", parse = "CT0{type};" } }
 set_sql_type   = { cat = { write = "CT0{type:02d};" } }
+# CTCSS TONE FREQUENCY (MOR-458). CN P1=0 MAIN, P2=0 CTCSS; the answer's P3
+# (000-049) is the standard 50-tone EIA tone-chart index. Read-only here (the
+# observation pipeline maps the index → centiHz onto tone_freq/tsql_freq).
+get_ctcss_tone = { cat = { read = "CN00;", parse = "CN00{code:03d};" } }
 
 # ── Bulk Status ──
 # IF; returns composite status: freq(9)+sign(1)+rit_offset(4)+rit(1)+xit(1)

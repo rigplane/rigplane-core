@@ -33,11 +33,14 @@ None. Plan §3 matrix row `core`: every column is `—`. The single contract
 test `tests/contracts/test_lazy_imports.py` plus `import-linter`'s layered
 contract police this.
 
-`radio_protocol` carries four named exceptions in `.importlinter`'s
+`radio_protocol` carries three named exceptions in `.importlinter`'s
 `ignore_imports`: `→ rigplane.audio_bus` and `→ rigplane.scope` (both
 `TYPE_CHECKING`-only string annotations — see `radio_protocol.py:58`),
-plus `→ rigplane.runtime._poller_types` and `→ rigplane.rigctld.routing`
-(also `TYPE_CHECKING`, added by epic #1322).
+plus `→ rigplane.runtime._poller_types` (also `TYPE_CHECKING`). The
+former `→ rigplane.rigctld.routing` edge was retired (MOR-440):
+`RigctldRoutable` now types its `rigctld_routing` surface against the
+neutral in-`core` `RigctldFallbackCache` / `RigctldRoutingStrategy`
+Protocols instead of the rigctld layer's concrete types.
 
 ## Forbidden patterns
 

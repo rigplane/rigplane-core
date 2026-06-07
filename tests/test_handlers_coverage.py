@@ -259,10 +259,18 @@ def _control_handler(
     ws: object | None = None,
     radio: object | None = None,
     server: object | None = None,
+    session_id: str | None = None,
 ) -> ControlHandler:
     if ws is None:
         ws = SimpleNamespace(send_text=AsyncMock(), recv=AsyncMock())
-    return ControlHandler(ws, radio, "9.9.9", "IC-7610", server=server)
+    return ControlHandler(
+        ws,
+        radio,
+        "9.9.9",
+        "IC-7610",
+        server=server,
+        session_id=session_id,
+    )
 
 
 @pytest.mark.asyncio
@@ -305,8 +313,18 @@ def _scope_frame() -> ScopeFrame:
             "set_mode",
             {"mode": "LSB", "receiver": 1},
             SetMode,
+            {"mode": "LSB", "filter_width": None, "receiver": 1},
             {"mode": "LSB", "receiver": 1},
-            {"mode": "LSB", "receiver": 1},
+        ),
+        # MOR-495: an explicit ``filter`` param is threaded onto
+        # SetMode.filter_width so the wire emits the 2-byte 0x06 form and the
+        # radio recalls the destination mode's filter instead of its default.
+        (
+            "set_mode",
+            {"mode": "USB", "filter": 1, "receiver": 0},
+            SetMode,
+            {"mode": "USB", "filter_width": 1, "receiver": 0},
+            {"mode": "USB", "filter": 1, "receiver": 0},
         ),
         (
             "set_filter",
@@ -797,96 +815,37 @@ async def test_subscribe_unsubscribe_and_subscribed_streams_property() -> None:
     await handler._handle_unsubscribe({"streams": "not-a-list"})
 
 
-async def test_send_state_snapshot_uses_server_public_state() -> None:
+async def test_send_state_snapshot_uses_canonical_envelope() -> None:
+    # With a server attached (production), the initial WS full state is the
+    # canonical snapshot-based envelope from build_state_update_envelope.
     ws = SimpleNamespace(send_text=AsyncMock())
-    payload = {
-        "revision": 7,
-        "updatedAt": "2026-03-17T12:00:00+00:00",
-        "active": "MAIN",
-        "ptt": True,
-        "split": False,
-        "dualWatch": False,
-        "tunerStatus": 0,
-        "main": {
-            "freqHz": 14_074_000,
-            "mode": "USB",
-            "filter": 2,
-            "dataMode": False,
-            "att": 0,
-            "preamp": 0,
-            "nb": False,
-            "nr": False,
-            "afLevel": 0,
-            "rfGain": 0,
-            "squelch": 0,
-            "sMeter": 0,
-        },
-        "sub": {
-            "freqHz": 7_074_000,
-            "mode": "LSB",
-            "filter": 1,
-            "dataMode": False,
-            "att": 0,
-            "preamp": 0,
-            "nb": False,
-            "nr": False,
-            "afLevel": 0,
-            "rfGain": 0,
-            "squelch": 0,
-            "sMeter": 0,
-        },
-        "connection": {
-            "rigConnected": True,
-            "radioReady": True,
-            "controlConnected": False,
-        },
-    }
+    envelope = {"type": "full", "data": {"active": "MAIN", "stateRevision": 3}}
     handler = _control_handler(
         ws=ws,
         radio=SimpleNamespace(connected=True, radio_ready=True),
-        server=SimpleNamespace(build_public_state=MagicMock(return_value=payload)),
-    )
-    await handler._send_state_snapshot()
-    msg = decode_json(ws.send_text.await_args_list[-1].args[0])
-    assert msg["type"] == "state_update"
-    assert msg["data"] == payload
-
-
-async def test_send_state_snapshot_uses_canonical_fallback_when_server_missing() -> (
-    None
-):
-    ws = SimpleNamespace(send_text=AsyncMock())
-    radio = SimpleNamespace(
-        connected=True,
-        radio_ready=False,
-    )
-    handler = _control_handler(
-        ws=ws,
-        radio=radio,
-        server=None,
-    )
-    await handler._send_state_snapshot()
-    msg = decode_json(ws.send_text.await_args_list[-1].args[0])
-    assert msg["type"] == "state_update"
-    assert msg["data"]["active"] == "MAIN"
-    assert msg["data"]["connection"]["rigConnected"] is True
-    assert msg["data"]["connection"]["radioReady"] is False
-    assert "main" in msg["data"]
-
-
-async def test_send_state_snapshot_builder_errors_are_ignored() -> None:
-    ws = SimpleNamespace(send_text=AsyncMock())
-    handler = _control_handler(
-        ws=ws,
         server=SimpleNamespace(
-            build_public_state=MagicMock(side_effect=RuntimeError("boom"))
+            build_state_update_envelope=MagicMock(return_value=envelope)
         ),
     )
     await handler._send_state_snapshot()
     msg = decode_json(ws.send_text.await_args_list[-1].args[0])
     assert msg["type"] == "state_update"
-    assert msg["data"]["active"] == "MAIN"
-    assert "connection" in msg["data"]
+    assert msg["data"] == envelope
+
+
+async def test_send_state_snapshot_minimal_fallback_when_server_missing() -> None:
+    # Server-less handler path (handler tests only): no StateStore is available,
+    # so a minimal empty full-state envelope is emitted.
+    ws = SimpleNamespace(send_text=AsyncMock())
+    handler = _control_handler(
+        ws=ws,
+        radio=SimpleNamespace(connected=True, radio_ready=False),
+        server=None,
+    )
+    await handler._send_state_snapshot()
+    msg = decode_json(ws.send_text.await_args_list[-1].args[0])
+    assert msg["type"] == "state_update"
+    assert msg["data"] == {"type": "full", "data": {}}
 
 
 async def test_wait_radio_ready_returns_immediately_when_ready() -> None:
@@ -973,6 +932,38 @@ async def test_handle_command_response_paths() -> None:
     await handler._handle_command({"id": "d", "name": "set_freq", "params": {}})
     msg = decode_json(ws.send_text.await_args_list[-1].args[0])
     assert msg["ok"] is False and msg["error"] == "command_failed"
+
+
+async def test_websocket_set_freq_enters_command_service_and_preserves_queue() -> None:
+    ws = SimpleNamespace(send_text=AsyncMock())
+    queue = _QueueRecorder()
+    handler = _control_handler(
+        ws=ws,
+        radio=SimpleNamespace(connected=True),
+        server=SimpleNamespace(command_queue=queue),
+    )
+
+    await handler._handle_command(
+        {
+            "id": "ws-set-freq",
+            "name": "set_freq",
+            "params": {"freq": 14_074_000, "receiver": 0},
+        }
+    )
+
+    msg = decode_json(ws.send_text.await_args_list[-1].args[0])
+    assert msg["ok"] is True
+    assert msg["result"] == {"freq": 14_074_000, "receiver": 0}
+    assert isinstance(queue.items[-1], SetFreq)
+    events = handler._command_service.lifecycle_events()  # noqa: SLF001
+    assert [event.state for event in events[:4]] == [
+        "accepted",
+        "queued",
+        "sent",
+        "acknowledged",
+    ]
+    assert events[0].command_id == "ws-set-freq"
+    assert events[0].source == "websocket"
 
 
 async def test_radio_connect_paths() -> None:

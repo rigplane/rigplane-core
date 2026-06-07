@@ -20,6 +20,15 @@ class Priority(IntEnum):
 
 T = TypeVar("T")
 
+# Defensive upper bound on outstanding fire-and-forget BACKGROUND sends
+# (``wait_dispatch=False``).  Background polls are already bounded by the
+# scheduler's in-flight guard (~25 cadence groups), so this is a safety net
+# against pathological growth, not a normal-operation limit.  When the cap is
+# reached, the newest BACKGROUND fire-and-forget send is dropped (its future is
+# resolved with ``None`` so the caller still returns immediately).  The cap
+# NEVER applies to NORMAL/IMMEDIATE sends or to ``wait_dispatch=True`` sends.
+_MAX_BG_INFLIGHT = 64
+
 
 @dataclass(slots=True)
 class _QueueItem:
@@ -29,6 +38,9 @@ class _QueueItem:
     future: asyncio.Future[CivFrame | None]
     key: str | None = None
     wait_response: bool = True
+    # True only for fire-and-forget BACKGROUND sends counted against the
+    # ``_MAX_BG_INFLIGHT`` cap; the worker decrements the counter for these.
+    counts_bg_inflight: bool = False
 
 
 class IcomCommander:
@@ -54,6 +66,10 @@ class IcomCommander:
         self._seq = 0
         self._last_send = 0.0
         self._pending_by_key: dict[str, asyncio.Future[CivFrame | None]] = {}
+        # Count of outstanding fire-and-forget BACKGROUND sends (see
+        # ``_MAX_BG_INFLIGHT``).  Incremented at enqueue, decremented in the
+        # worker's ``finally`` for items flagged ``counts_bg_inflight``.
+        self._bg_inflight = 0
 
     def start(self) -> None:
         if self._worker is None or self._worker.done():
@@ -83,6 +99,7 @@ class IcomCommander:
         self._worker = None
         self._queue = None
         self._pending_by_key.clear()
+        self._bg_inflight = 0
 
     async def send(
         self,
@@ -93,7 +110,22 @@ class IcomCommander:
         dedupe: bool = False,
         timeout: float | None = None,
         wait_response: bool = True,
+        wait_dispatch: bool = True,
     ) -> CivFrame | None:
+        """Enqueue a CI-V command.
+
+        Args:
+            wait_dispatch: When True (default), await the worker dispatching
+                this item and return its result — the historical blocking
+                contract for user commands.  When False, return ``None``
+                immediately after enqueueing without awaiting the worker; the
+                item is still paced, executed, and its future resolved by the
+                worker, but the caller does not observe it.  Used by the
+                background poller so the poll burst does not park the poll loop
+                (responses arrive via the RX path, not this future).  For
+                ``Priority.BACKGROUND`` fire-and-forget sends a defensive
+                ``_MAX_BG_INFLIGHT`` cap bounds outstanding work (drop-newest).
+        """
         if self._queue is None or self._worker is None:
             raise ConnectionError("Commander is not started")
 
@@ -107,14 +139,38 @@ class IcomCommander:
         loop = asyncio.get_running_loop()
         fut: asyncio.Future[CivFrame | None] = loop.create_future()
         self._seq += 1
+
+        # Defensive cap on fire-and-forget BACKGROUND sends only.  NORMAL,
+        # IMMEDIATE, and any wait_dispatch=True send is never capped.
+        counts_bg_inflight = not wait_dispatch and priority == Priority.BACKGROUND
+        if counts_bg_inflight and self._bg_inflight >= _MAX_BG_INFLIGHT:
+            # Drop-newest: resolve the future so the caller still returns
+            # immediately, and do NOT enqueue (so no key registration either).
+            fut.set_result(None)
+            return None
+
         item = _QueueItem(
-            int(priority), self._seq, payload, fut, key=key, wait_response=wait_response
+            int(priority),
+            self._seq,
+            payload,
+            fut,
+            key=key,
+            wait_response=wait_response,
+            counts_bg_inflight=counts_bg_inflight,
         )
 
         if key is not None:
             self._pending_by_key[key] = fut
 
+        if counts_bg_inflight:
+            self._bg_inflight += 1
+
         await self._queue.put((item.priority, item.seq, item))
+
+        if not wait_dispatch:
+            # Fire-and-forget: the worker still paces, executes, and resolves
+            # the future, but the caller does not wait for dispatch.
+            return None
 
         try:
             if timeout is not None:
@@ -212,6 +268,8 @@ class IcomCommander:
                     if not item.future.done():
                         item.future.set_exception(exc)
                 finally:
+                    if item.counts_bg_inflight and self._bg_inflight > 0:
+                        self._bg_inflight -= 1
                     if (
                         item.key is not None
                         and self._pending_by_key.get(item.key) is item.future

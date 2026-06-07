@@ -432,12 +432,13 @@ async def server_serial_radio() -> tuple[WebServer, SerialMockRadio]:
     """WebServer running on top of a real SerialMockRadio core."""
     radio = SerialMockRadio()
     await radio.connect()
-    # Seed RadioState so /api/v1/state exposes non-trivial freq/mode.
+    # Seed legacy RadioState, then ingest it before delivery snapshots.
     radio.radio_state.main.freq = 14_074_000
     radio.radio_state.main.mode = "USB"
 
     config = WebConfig(host="127.0.0.1", port=0, keepalive_interval=9999.0)
     srv = WebServer(radio, config)
+    srv.sync_state_store_from_radio_state(radio.radio_state)
     await srv.start()
     try:
         yield srv, radio
@@ -741,7 +742,7 @@ class TestControlChannel:
                 writer, json.dumps({"type": "subscribe", "streams": []})
             )
             _, payload = await _ws_recv_frame(reader)
-            data = json.loads(payload)["data"]
+            data = json.loads(payload)["data"]["data"]
             assert "active" in data
             assert "main" in data
             assert "ptt" in data
@@ -2788,7 +2789,6 @@ class TestRadioPoller:
         radio.set_key_speed.assert_awaited_once_with(24)
         assert poller._radio_state is not None
         assert poller._radio_state.key_speed == 24
-        assert poller.revision > 0
 
     async def test_set_break_in_updates_radio_and_state(self) -> None:
         """SetBreakIn(mode) calls radio.set_break_in and updates RadioState.break_in."""
@@ -2807,7 +2807,6 @@ class TestRadioPoller:
         radio.set_break_in.assert_awaited_once_with(1)
         assert poller._radio_state is not None
         assert poller._radio_state.break_in == 1
-        assert poller.revision > 0
 
 
 # ---------------------------------------------------------------------------
@@ -3001,8 +3000,12 @@ class TestSwitchScopeReceiver:
         ]
         assert len(select_calls) == 0, "Should NOT emit 0x07 select when already MAIN"
 
-    async def test_set_split_updates_radio_and_state(self) -> None:
-        """SetSplit(on) calls radio.set_split and updates RadioState.split."""
+    async def test_set_split_sends_wire_without_legacy_mirror(self) -> None:
+        """SetSplit(on) sends the wire command; split is observation-backed (0x0F).
+
+        The legacy RadioState.split mirror was removed (MOR-437); read-after-write
+        is owned by CommandService overlays + the 0x0F StateStore observation.
+        """
         from rigplane.web.radio_poller import CommandQueue, RadioPoller, SetSplit
 
         radio = self._make_radio()
@@ -3017,8 +3020,7 @@ class TestSwitchScopeReceiver:
 
         radio.set_split.assert_awaited_once_with(True)
         assert poller._radio_state is not None
-        assert poller._radio_state.split is True
-        assert poller.revision > 0
+        assert poller._radio_state.split is False  # no legacy mirror write
 
     async def test_set_rit_status_updates_radio_and_state(self) -> None:
         """SetRitStatus(on) calls radio.set_rit_status and updates RadioState.rit_on."""
@@ -3037,7 +3039,6 @@ class TestSwitchScopeReceiver:
         radio.set_rit_status.assert_awaited_once_with(True)
         assert poller._radio_state is not None
         assert poller._radio_state.rit_on is True
-        assert poller.revision > 0
 
     async def test_set_rit_tx_status_updates_radio_and_state(self) -> None:
         """SetRitTxStatus(on) calls radio.set_rit_tx_status and updates RadioState.rit_tx."""
@@ -3056,7 +3057,6 @@ class TestSwitchScopeReceiver:
         radio.set_rit_tx_status.assert_awaited_once_with(True)
         assert poller._radio_state is not None
         assert poller._radio_state.rit_tx is True
-        assert poller.revision > 0
 
     async def test_set_rit_frequency_updates_radio_and_state(self) -> None:
         """SetRitFrequency(freq) calls radio.set_rit_frequency and updates RadioState.rit_freq."""
@@ -3075,7 +3075,6 @@ class TestSwitchScopeReceiver:
         radio.set_rit_frequency.assert_awaited_once_with(-200)
         assert poller._radio_state is not None
         assert poller._radio_state.rit_freq == -200
-        assert poller.revision > 0
 
     async def test_set_pbt_inner_updates_radio_and_state(self) -> None:
         """SetPbtInner(level) calls radio.set_pbt_inner and updates receiver state."""
@@ -3094,7 +3093,6 @@ class TestSwitchScopeReceiver:
         radio.set_pbt_inner.assert_awaited_once_with(150, receiver=0)
         assert poller._radio_state is not None
         assert poller._radio_state.main.pbt_inner == 150
-        assert poller.revision > 0
 
     async def test_set_pbt_outer_updates_radio_and_state(self) -> None:
         """SetPbtOuter(level) calls radio.set_pbt_outer and updates receiver state."""
@@ -3113,10 +3111,12 @@ class TestSwitchScopeReceiver:
         radio.set_pbt_outer.assert_awaited_once_with(200, receiver=0)
         assert poller._radio_state is not None
         assert poller._radio_state.main.pbt_outer == 200
-        assert poller.revision > 0
 
-    async def test_set_nr_level_updates_radio_and_state(self) -> None:
-        """SetNRLevel(level) calls radio.set_nr_level and updates receiver state."""
+    async def test_set_nr_level_sends_wire_without_legacy_mirror(self) -> None:
+        """SetNRLevel sends the wire command; nr_level is observation-backed (0x14 0x06).
+
+        The legacy receiver-state mirror was removed (MOR-437).
+        """
         from rigplane.web.radio_poller import CommandQueue, RadioPoller, SetNRLevel
 
         radio = self._make_radio()
@@ -3131,11 +3131,13 @@ class TestSwitchScopeReceiver:
 
         radio.set_nr_level.assert_awaited_once_with(42, receiver=0)
         assert poller._radio_state is not None
-        assert poller._radio_state.main.nr_level == 42
-        assert poller.revision > 0
+        assert poller._radio_state.main.nr_level == 0  # no legacy mirror write
 
-    async def test_set_nb_level_updates_radio_and_state(self) -> None:
-        """SetNBLevel(level) calls radio.set_nb_level and updates receiver state."""
+    async def test_set_nb_level_sends_wire_without_legacy_mirror(self) -> None:
+        """SetNBLevel sends the wire command; nb_level is observation-backed (0x14 0x12).
+
+        The legacy receiver-state mirror was removed (MOR-437).
+        """
         from rigplane.web.radio_poller import CommandQueue, RadioPoller, SetNBLevel
 
         radio = self._make_radio()
@@ -3150,11 +3152,13 @@ class TestSwitchScopeReceiver:
 
         radio.set_nb_level.assert_awaited_once_with(17, receiver=0)
         assert poller._radio_state is not None
-        assert poller._radio_state.main.nb_level == 17
-        assert poller.revision > 0
+        assert poller._radio_state.main.nb_level == 0  # no legacy mirror write
 
-    async def test_set_auto_notch_updates_radio_and_state(self) -> None:
-        """SetAutoNotch(on) calls radio.set_auto_notch and updates receiver state."""
+    async def test_set_auto_notch_sends_wire_without_legacy_mirror(self) -> None:
+        """SetAutoNotch sends the wire command; auto_notch is observation-backed (0x16 0x41).
+
+        The legacy receiver-state mirror was removed (MOR-437).
+        """
         from rigplane.web.radio_poller import CommandQueue, RadioPoller, SetAutoNotch
 
         radio = self._make_radio()
@@ -3169,11 +3173,13 @@ class TestSwitchScopeReceiver:
 
         radio.set_auto_notch.assert_awaited_once_with(True, receiver=0)
         assert poller._radio_state is not None
-        assert poller._radio_state.main.auto_notch is True
-        assert poller.revision > 0
+        assert poller._radio_state.main.auto_notch is False  # no legacy mirror write
 
-    async def test_set_manual_notch_updates_radio_and_state(self) -> None:
-        """SetManualNotch(on) calls radio.set_manual_notch and updates receiver state."""
+    async def test_set_manual_notch_sends_wire_without_legacy_mirror(self) -> None:
+        """SetManualNotch sends the wire command; manual_notch is observation-backed (0x16 0x48).
+
+        The legacy receiver-state mirror was removed (MOR-437).
+        """
         from rigplane.web.radio_poller import CommandQueue, RadioPoller, SetManualNotch
 
         radio = self._make_radio()
@@ -3188,8 +3194,7 @@ class TestSwitchScopeReceiver:
 
         radio.set_manual_notch.assert_awaited_once_with(True, receiver=0)
         assert poller._radio_state is not None
-        assert poller._radio_state.main.manual_notch is True
-        assert poller.revision > 0
+        assert poller._radio_state.main.manual_notch is False  # no legacy mirror write
 
     async def test_set_notch_filter_updates_radio_and_state(self) -> None:
         """SetNotchFilter(level) calls radio.set_notch_filter and updates RadioState.notch_filter."""
@@ -3208,10 +3213,12 @@ class TestSwitchScopeReceiver:
         radio.set_notch_filter.assert_awaited_once_with(91)
         assert poller._radio_state is not None
         assert poller._radio_state.notch_filter == 91
-        assert poller.revision > 0
 
-    async def test_set_agc_time_constant_updates_radio_and_state(self) -> None:
-        """SetAgcTimeConstant(value) calls radio.set_agc_time_constant and updates receiver state."""
+    async def test_set_agc_time_constant_sends_wire_without_legacy_mirror(self) -> None:
+        """SetAgcTimeConstant sends the wire command; agc_time_constant is observation-backed (0x1A 0x04).
+
+        The legacy receiver-state mirror was removed (MOR-437).
+        """
         from rigplane.web.radio_poller import (
             CommandQueue,
             RadioPoller,
@@ -3230,8 +3237,7 @@ class TestSwitchScopeReceiver:
 
         radio.set_agc_time_constant.assert_awaited_once_with(9, receiver=0)
         assert poller._radio_state is not None
-        assert poller._radio_state.main.agc_time_constant == 9
-        assert poller.revision > 0
+        assert poller._radio_state.main.agc_time_constant == 0  # no legacy mirror write
 
     async def test_set_cw_pitch_updates_radio_and_state(self) -> None:
         """SetCwPitch(value) calls radio.set_cw_pitch and updates RadioState.cw_pitch."""
@@ -3250,10 +3256,12 @@ class TestSwitchScopeReceiver:
         radio.set_cw_pitch.assert_awaited_once_with(600)
         assert poller._radio_state is not None
         assert poller._radio_state.cw_pitch == 600
-        assert poller.revision > 0
 
-    async def test_set_mic_gain_updates_radio_and_state(self) -> None:
-        """SetMicGain(level) calls radio.set_mic_gain and updates RadioState.mic_gain."""
+    async def test_set_mic_gain_sends_wire_without_legacy_mirror(self) -> None:
+        """SetMicGain sends the wire command; mic_gain is observation-backed (0x14 0x0B).
+
+        The legacy RadioState.mic_gain mirror was removed (MOR-437).
+        """
         from rigplane.web.radio_poller import CommandQueue, RadioPoller, SetMicGain
 
         radio = self._make_radio()
@@ -3268,11 +3276,13 @@ class TestSwitchScopeReceiver:
 
         radio.set_mic_gain.assert_awaited_once_with(123)
         assert poller._radio_state is not None
-        assert poller._radio_state.mic_gain == 123
-        assert poller.revision > 0
+        assert poller._radio_state.mic_gain == 0  # no legacy mirror write
 
-    async def test_set_vox_updates_radio_and_state(self) -> None:
-        """SetVox(on) calls radio.set_vox and updates RadioState.vox_on."""
+    async def test_set_vox_sends_wire_without_legacy_mirror(self) -> None:
+        """SetVox sends the wire command; vox_on is observation-backed (0x16 0x46).
+
+        The legacy RadioState.vox_on mirror was removed (MOR-437).
+        """
         from rigplane.web.radio_poller import CommandQueue, RadioPoller, SetVox
 
         radio = self._make_radio()
@@ -3287,11 +3297,13 @@ class TestSwitchScopeReceiver:
 
         radio.set_vox.assert_awaited_once_with(True)
         assert poller._radio_state is not None
-        assert poller._radio_state.vox_on is True
-        assert poller.revision > 0
+        assert poller._radio_state.vox_on is False  # no legacy mirror write
 
-    async def test_set_compressor_level_updates_radio_and_state(self) -> None:
-        """SetCompressorLevel(level) calls radio.set_compressor_level and updates RadioState.compressor_level."""
+    async def test_set_compressor_level_sends_wire_without_legacy_mirror(self) -> None:
+        """SetCompressorLevel sends the wire command; compressor_level is observation-backed (0x14 0x0E).
+
+        The legacy RadioState.compressor_level mirror was removed (MOR-437).
+        """
         from rigplane.web.radio_poller import (
             CommandQueue,
             RadioPoller,
@@ -3310,11 +3322,13 @@ class TestSwitchScopeReceiver:
 
         radio.set_compressor_level.assert_awaited_once_with(88)
         assert poller._radio_state is not None
-        assert poller._radio_state.compressor_level == 88
-        assert poller.revision > 0
+        assert poller._radio_state.compressor_level == 0  # no legacy mirror write
 
-    async def test_set_monitor_updates_radio_and_state(self) -> None:
-        """SetMonitor(on) calls radio.set_monitor and updates RadioState.monitor_on."""
+    async def test_set_monitor_sends_wire_without_legacy_mirror(self) -> None:
+        """SetMonitor sends the wire command; monitor_on is observation-backed (0x16 0x45).
+
+        The legacy RadioState.monitor_on mirror was removed (MOR-437).
+        """
         from rigplane.web.radio_poller import CommandQueue, RadioPoller, SetMonitor
 
         radio = self._make_radio()
@@ -3329,11 +3343,13 @@ class TestSwitchScopeReceiver:
 
         radio.set_monitor.assert_awaited_once_with(True)
         assert poller._radio_state is not None
-        assert poller._radio_state.monitor_on is True
-        assert poller.revision > 0
+        assert poller._radio_state.monitor_on is False  # no legacy mirror write
 
-    async def test_set_monitor_gain_updates_radio_and_state(self) -> None:
-        """SetMonitorGain(level) calls radio.set_monitor_gain and updates RadioState.monitor_gain."""
+    async def test_set_monitor_gain_sends_wire_without_legacy_mirror(self) -> None:
+        """SetMonitorGain sends the wire command; monitor_gain is observation-backed (0x14 0x15).
+
+        The legacy RadioState.monitor_gain mirror was removed (MOR-437).
+        """
         from rigplane.web.radio_poller import CommandQueue, RadioPoller, SetMonitorGain
 
         radio = self._make_radio()
@@ -3348,8 +3364,7 @@ class TestSwitchScopeReceiver:
 
         radio.set_monitor_gain.assert_awaited_once_with(55)
         assert poller._radio_state is not None
-        assert poller._radio_state.monitor_gain == 55
-        assert poller.revision > 0
+        assert poller._radio_state.monitor_gain == 0  # no legacy mirror write
 
     async def test_set_dial_lock_updates_radio_and_state(self) -> None:
         """SetDialLock(on) calls radio.set_dial_lock and updates RadioState.dial_lock."""
@@ -3368,7 +3383,6 @@ class TestSwitchScopeReceiver:
         radio.set_dial_lock.assert_awaited_once_with(True)
         assert poller._radio_state is not None
         assert poller._radio_state.dial_lock is True
-        assert poller.revision > 0
 
 
 class TestSwitchScopeReceiverCommand:

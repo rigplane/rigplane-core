@@ -136,30 +136,38 @@ def test_radio_state_to_dict_includes_receiver_tone_tsql_via_asdict() -> None:
 def test_civ_rx_0x16_0x42_sets_repeater_tone_main(
     tmp_path: object,
 ) -> None:
-    """0x16 0x42 with receiver=0 sets main.repeater_tone."""
+    """0x16 0x42 with receiver=0 observes main repeater_tone (MOR-451).
+
+    The legacy RadioState mirror was removed; the StateStore is the source of
+    truth and the ReceiverState mirror stays at its default.
+    """
     r = _make_radio_with_state()
     rs = r._radio_state
     frame = _make_frame(cmd=0x16, sub=0x42, data=bytes([0x01]), receiver=0x00)
-    r._civ_runtime._update_radio_state_from_frame(frame)
-    assert rs.main.repeater_tone is True
+    r._civ_runtime._update_state_cache_from_frame(frame)
+    assert rs.main.repeater_tone is False
+    field = r._state_store.snapshot().field("receiver.0.operator_toggles.repeater_tone")
+    assert field.value is True
 
 
 def test_civ_rx_0x16_0x42_sets_repeater_tone_off(tmp_path: object) -> None:
+    """0x16 0x42 off observation lands in the store (MOR-451)."""
     r = _make_radio_with_state()
-    rs = r._radio_state
-    rs.main.repeater_tone = True
     frame = _make_frame(cmd=0x16, sub=0x42, data=bytes([0x00]), receiver=0x00)
-    r._civ_runtime._update_radio_state_from_frame(frame)
-    assert rs.main.repeater_tone is False
+    r._civ_runtime._update_state_cache_from_frame(frame)
+    field = r._state_store.snapshot().field("receiver.0.operator_toggles.repeater_tone")
+    assert field.value is False
 
 
 def test_civ_rx_0x16_0x43_sets_repeater_tsql_sub(tmp_path: object) -> None:
-    """0x16 0x43 with receiver=1 sets sub.repeater_tsql."""
+    """0x16 0x43 with receiver=1 observes sub repeater_tsql (MOR-451)."""
     r = _make_radio_with_state()
     rs = r._radio_state
     frame = _make_frame(cmd=0x16, sub=0x43, data=bytes([0x01]), receiver=0x01)
-    r._civ_runtime._update_radio_state_from_frame(frame)
-    assert rs.sub.repeater_tsql is True
+    r._civ_runtime._update_state_cache_from_frame(frame)
+    assert rs.sub.repeater_tsql is False
+    field = r._state_store.snapshot().field("receiver.1.operator_toggles.repeater_tsql")
+    assert field.value is True
 
 
 def test_civ_rx_0x16_0x42_notify_event(tmp_path: object) -> None:
@@ -196,25 +204,33 @@ def _bcd_tone_freq(hundreds: int, tens_units: int, tenths: int) -> bytes:
 
 
 def test_civ_rx_0x1b_0x00_sets_tone_freq_main(tmp_path: object) -> None:
-    """0x1B 0x00 with receiver=0 sets main.tone_freq (centihz)."""
+    """0x1B 0x00 with receiver=0 observes main tone_freq in centihz (MOR-451).
+
+    The legacy RadioState mirror was removed; the StateStore is the source of
+    truth and the ReceiverState mirror stays at its default 0.
+    """
     r = _make_radio_with_state()
     rs = r._radio_state
     # 88.5 Hz → [0x00, 0x88, 0x05]
     data = _bcd_tone_freq(0, 88, 5)
     frame = _make_frame(cmd=0x1B, sub=0x00, data=data, receiver=0x00)
-    r._civ_runtime._update_radio_state_from_frame(frame)
-    assert rs.main.tone_freq == 8850  # 88.50 Hz in centihz
+    r._civ_runtime._update_state_cache_from_frame(frame)
+    assert rs.main.tone_freq == 0
+    field = r._state_store.snapshot().field("receiver.0.operator_controls.tone_freq")
+    assert field.value == 8850  # 88.50 Hz in centihz
 
 
 def test_civ_rx_0x1b_0x01_sets_tsql_freq_sub(tmp_path: object) -> None:
-    """0x1B 0x01 with receiver=1 sets sub.tsql_freq (centihz)."""
+    """0x1B 0x01 with receiver=1 observes sub tsql_freq in centihz (MOR-451)."""
     r = _make_radio_with_state()
     rs = r._radio_state
     # 100.0 Hz → [0x01, 0x00, 0x00]
     data = _bcd_tone_freq(1, 0, 0)
     frame = _make_frame(cmd=0x1B, sub=0x01, data=data, receiver=0x01)
-    r._civ_runtime._update_radio_state_from_frame(frame)
-    assert rs.sub.tsql_freq == 10000  # 100.00 Hz in centihz
+    r._civ_runtime._update_state_cache_from_frame(frame)
+    assert rs.sub.tsql_freq == 0
+    field = r._state_store.snapshot().field("receiver.1.operator_controls.tsql_freq")
+    assert field.value == 10000  # 100.00 Hz in centihz
 
 
 def test_civ_rx_0x1b_short_data_ignored(tmp_path: object) -> None:
@@ -238,21 +254,33 @@ def _bcd_level(value: int) -> bytes:
 
 
 def test_civ_rx_0x14_0x16_sets_vox_gain(tmp_path: object) -> None:
-    """0x14 0x16 updates rs.vox_gain."""
+    """0x14 0x16 observes global vox_gain (MOR-459).
+
+    The legacy RadioState mirror was removed; the StateStore is the source of
+    truth and ``RadioState.vox_gain`` stays at its default 0.
+    """
     r = _make_radio_with_state()
     rs = r._radio_state
     frame = _make_frame(cmd=0x14, sub=0x16, data=_bcd_level(128))
-    r._civ_runtime._update_radio_state_from_frame(frame)
-    assert rs.vox_gain == 128
+    r._civ_runtime._update_state_cache_from_frame(frame)
+    assert rs.vox_gain == 0
+    field = r._state_store.snapshot().field("global.operator_controls.vox_gain")
+    assert field.value == 128
 
 
 def test_civ_rx_0x14_0x17_sets_anti_vox_gain(tmp_path: object) -> None:
-    """0x14 0x17 updates rs.anti_vox_gain."""
+    """0x14 0x17 observes global anti_vox_gain (MOR-459).
+
+    The legacy RadioState mirror was removed; the StateStore is the source of
+    truth and ``RadioState.anti_vox_gain`` stays at its default 0.
+    """
     r = _make_radio_with_state()
     rs = r._radio_state
     frame = _make_frame(cmd=0x14, sub=0x17, data=_bcd_level(64))
-    r._civ_runtime._update_radio_state_from_frame(frame)
-    assert rs.anti_vox_gain == 64
+    r._civ_runtime._update_state_cache_from_frame(frame)
+    assert rs.anti_vox_gain == 0
+    field = r._state_store.snapshot().field("global.operator_controls.anti_vox_gain")
+    assert field.value == 64
 
 
 # ---------------------------------------------------------------------------
@@ -268,13 +296,19 @@ def _ctl_mem_bcd(prefix: bytes, value: int) -> bytes:
 
 
 def test_civ_rx_0x1a_0x05_vox_delay(tmp_path: object) -> None:
-    """0x1A 0x05 with prefix 0x02 0x92 updates rs.vox_delay."""
+    """0x1A 0x05 prefix 0x02 0x92 observes global vox_delay (MOR-459).
+
+    The legacy RadioState mirror was removed; the StateStore is the source of
+    truth and ``RadioState.vox_delay`` stays at its default 0.
+    """
     r = _make_radio_with_state()
     rs = r._radio_state
     data = _ctl_mem_bcd(b"\x02\x92", 10)  # 10 = 1.0 sec
     frame = _make_frame(cmd=0x1A, sub=0x05, data=data)
-    r._civ_runtime._update_radio_state_from_frame(frame)
-    assert rs.vox_delay == 10
+    r._civ_runtime._update_state_cache_from_frame(frame)
+    assert rs.vox_delay == 0
+    field = r._state_store.snapshot().field("global.operator_controls.vox_delay")
+    assert field.value == 10
 
 
 # ---------------------------------------------------------------------------

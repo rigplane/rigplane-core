@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { mount, unmount, flushSync } from 'svelte';
 import { buildNrOptions, buildNotchOptions } from '../dsp-utils';
+import { rawToPercentDisplay } from '../../controls/value-control';
 
 const mockProps = {
   nrMode: 0,
@@ -170,6 +171,15 @@ describe('NB toggle', () => {
     flushSync();
     expect(mockHandlers.onNbToggle).toHaveBeenCalledWith(false);
   });
+
+  it('shows the NB level as the same percent the NB-Level slider uses (not raw)', () => {
+    const t = mountPanel({ nbActive: true, nbLevel: 76 });
+    const nbBtn = getFillButtons(t).find((b) => b.textContent?.trim().startsWith('NB'));
+    const label = nbBtn?.textContent?.trim();
+    // rawToPercentDisplay(76) === '30%'
+    expect(label).toBe(`NB ${rawToPercentDisplay(76)}`);
+    expect(label).not.toContain('76');
+  });
 });
 
 describe('Notch toggle', () => {
@@ -217,6 +227,22 @@ describe('modal initial state', () => {
   it('no Notch modal when no modal is open', () => {
     const t = mountPanel();
     expect(t.querySelector('[aria-label="Notch filter settings"]')).toBeNull();
+  });
+
+  it('opens NR settings on long press', () => {
+    vi.useFakeTimers();
+    try {
+      const t = mountPanel();
+      const nrBtn = getFillButtons(t).find((b) => b.textContent?.trim().startsWith('NR'));
+
+      nrBtn?.dispatchEvent(new Event('pointerdown', { bubbles: true }));
+      vi.advanceTimersByTime(600);
+      flushSync();
+
+      expect(t.querySelector('[aria-label="Noise reduction settings"]')).not.toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('renders the A-NOTCH button', () => {
