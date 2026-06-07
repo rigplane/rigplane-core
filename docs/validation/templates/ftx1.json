@@ -105,8 +105,8 @@
       "check_id": "agc.set",
       "capability": "agc",
       "level": 3,
-      "declaration": "unsupported_pending_evidence",
-      "summary": "agc.set not declared in the FTX-1 profile; pending evidence.",
+      "declaration": "supported",
+      "summary": "Set AGC mode via CI-V write.",
       "tx_adjacent": false
     },
     {
@@ -121,8 +121,8 @@
       "check_id": "xit.set",
       "capability": "xit",
       "level": 3,
-      "declaration": "unsupported_pending_evidence",
-      "summary": "xit.set not declared in the FTX-1 profile; pending evidence.",
+      "declaration": "supported",
+      "summary": "Toggle XIT (TX clarifier) via CI-V write.",
       "tx_adjacent": false
     },
     {
