@@ -380,6 +380,9 @@ async def test_yaesu_get_filter_width_translates_index_to_hz(
     ftx1_radio: YaesuCatRadio,
 ) -> None:
     """FTX-1 USB table: index 12 → 2400 Hz."""
+    # The width table is resolved from the radio's CURRENT mode, read fresh via
+    # CAT (MOR-507) — not the legacy state mirror.
+    ftx1_radio.read_mode = AsyncMock(return_value=("USB", None))  # type: ignore[method-assign]
     ftx1_radio._transport.query = AsyncMock(return_value="SH0012")
     assert await ftx1_radio.get_filter_width() == 2400
 
@@ -399,6 +402,8 @@ async def test_yaesu_filter_width_round_trip(ftx1_radio: YaesuCatRadio) -> None:
     # Use the captured command's index payload as the response stub.
     # Format: "SH0{code:03d};" so payload is chars [3:6].
     code = captured["cmd"][3:6]
+    # The readback resolves its table from the current mode, read fresh (MOR-507).
+    ftx1_radio.read_mode = AsyncMock(return_value=("USB", None))  # type: ignore[method-assign]
     ftx1_radio._transport.query = AsyncMock(return_value=f"SH0{code}")
     assert await ftx1_radio.get_filter_width() == 2400
 

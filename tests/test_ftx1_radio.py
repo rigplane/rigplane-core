@@ -594,10 +594,17 @@ async def test_get_notch_filter_returns_freq_index(connected_radio):
 @pytest.mark.asyncio
 async def test_get_filter_width(connected_radio):
     """get_filter_width returns Hz (issue #1101): index 10 → 2100 Hz on USB."""
-    connected_radio._transport.query = AsyncMock(return_value="SH0010")
-    # Default mode is "USB"; USB table index 10 → 2100 Hz.
+
+    # The width table is resolved from the radio's CURRENT mode, read fresh via
+    # CAT (MOR-507): get_filter_width issues a mode query (MD0;) then the
+    # filter query (SH0;). Mode code "2" → USB; USB table index 10 → 2100 Hz.
+    async def fake_query(cmd: str) -> str:
+        return "MD02" if cmd.startswith("MD") else "SH0010"
+
+    connected_radio._transport.query = AsyncMock(side_effect=fake_query)
     assert await connected_radio.get_filter_width() == 2100
-    connected_radio._transport.query.assert_called_once_with("SH0;")
+    connected_radio._transport.query.assert_any_call("SH0;")
+    connected_radio._transport.query.assert_any_call("MD0;")
 
 
 @pytest.mark.asyncio

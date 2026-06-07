@@ -405,7 +405,9 @@ class _SideEffectingYaesuRadio:
         self.radio_state.main.agc = value
         return value
 
-    async def read_filter_width(self, receiver: int = 0) -> int:
+    async def read_filter_width(
+        self, receiver: int = 0, mode: str | None = None
+    ) -> int:
         return 500
 
     async def get_filter_width(self, receiver: int = 0) -> int:
@@ -1443,18 +1445,21 @@ async def test_public_get_data_mode_returns_flat_value_without_state_synthesis()
 
 
 @pytest.mark.asyncio
-async def test_read_filter_width_reads_mode_without_mutating_state() -> None:
-    """MOR-445: ``read_filter_width`` may READ the mode mirror for its
-    width-table decode, but it must NOT WRITE ``self._state``.
+async def test_read_filter_width_does_not_mutate_state() -> None:
+    """MOR-445/MOR-507: ``read_filter_width`` resolves its width-table from the
+    radio's CURRENT mode (read fresh, not from the stale mirror) and must NOT
+    WRITE ``self._state``.
 
-    ``get_filter_width`` (the public, mutating path) and ``read_filter_width``
-    return the same Hz value, but only ``read_filter_width`` is wired into the
-    observation adapter so that legacy state is never mutated by polling.
+    ``get_filter_width`` (the public path) and ``read_filter_width`` return the
+    same Hz value, but only ``read_filter_width`` is wired into the observation
+    adapter so that legacy state is never mutated by polling.
     """
     radio = YaesuCatRadio("/dev/null", audio_driver=MagicMock())
-    # SSB table → code 12 decodes to 2400 Hz (see rigs/ftx1.toml SSB table).
+    # Current mode read fresh via CAT (MOR-507); the legacy mirror is ignored.
+    radio.read_mode = AsyncMock(return_value=("USB", None))  # type: ignore[method-assign]
     radio.radio_state.main.mode = "USB"
     radio.radio_state.main.filter_width = 999
+    # SSB table → code 12 decodes to 2400 Hz (see rigs/ftx1.toml SSB table).
     radio._query = AsyncMock(return_value={"code": 12})  # type: ignore[method-assign]
     state_before = radio.radio_state
 
@@ -1462,10 +1467,44 @@ async def test_read_filter_width_reads_mode_without_mutating_state() -> None:
 
     assert value == 2400
     assert isinstance(value, int)
-    # Read of the mode mirror is fine; a write to legacy state is not.
+    # A write to legacy state is not permitted.
     assert radio.radio_state is state_before
     assert radio.radio_state.main.mode == "USB"
     assert radio.radio_state.main.filter_width == 999
+
+
+@pytest.mark.asyncio
+async def test_read_filter_width_uses_current_mode_not_stale_state() -> None:
+    """MOR-507: ``read_filter_width`` must resolve the width table from the
+    radio's CURRENT mode, not the stale legacy ``self._state`` mirror.
+
+    The observation adapter never writes ``self._state``, so during polling
+    the mode mirror is stale. Resolving the table from the mirror picks the
+    wrong table (or none), so the raw SH index leaks out as the "Hz" value.
+
+    Setup: the mirror says ``USB`` (where SH code 20 = 3200 Hz), but the rig's
+    ACTUAL mode is ``CW`` (where SH code 20 = 4000 Hz; see rigs/ftx1.toml).
+    A correct readback decodes against the CW table → 4000 Hz. The old code
+    decodes against the stale USB table → 3200 Hz (wrong table), and if no
+    table resolved at all it would return the raw code 20.
+    """
+    radio = YaesuCatRadio("/dev/null", audio_driver=MagicMock())
+    # Stale legacy mirror — wrong mode (and never updated by polling).
+    radio.radio_state.main.mode = "USB"
+    # The CAT layer reports the rig's true current mode.
+    radio.read_mode = AsyncMock(return_value=("CW", None))  # type: ignore[method-assign]
+    radio._query = AsyncMock(return_value={"code": 20})  # type: ignore[method-assign]
+
+    # Threaded-mode call (the poll path passes the freshly-read mode).
+    value_threaded = await radio.read_filter_width(0, mode="CW")
+    # Fallback call (no mode supplied) must read the mode fresh, not use state.
+    value_fallback = await radio.read_filter_width(0)
+
+    assert value_threaded == 4000
+    assert value_fallback == 4000
+    # Must NOT be the stale-USB-table decode (3200) nor the raw code (20).
+    assert value_threaded != 3200
+    assert value_threaded != 20
 
 
 @pytest.mark.asyncio

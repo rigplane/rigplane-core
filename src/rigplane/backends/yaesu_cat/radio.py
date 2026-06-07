@@ -1257,38 +1257,56 @@ class YaesuCatRadio:
 
     # -- D4: Filters --------------------------------------------------------
 
-    def _filter_width_table(self, receiver: int = 0) -> tuple[int, ...] | None:
-        """Return the filter-width table for the current mode, or None."""
+    def _filter_width_table(
+        self, receiver: int = 0, mode: str | None = None
+    ) -> tuple[int, ...] | None:
+        """Return the filter-width table for a mode, or None.
+
+        When ``mode`` is given it is used directly (the caller already knows the
+        current mode); otherwise the mode is read from the legacy ``self._state``
+        mirror. SET callers pass no mode (the mirror is updated synchronously on
+        ``set_mode``), while the read/poll path threads the freshly-read mode.
+        """
         profile = self.profile
         if profile.filter_width_encoding != "table_index":
             return None
-        target = self._state.receiver("SUB" if receiver else "MAIN")
-        mode = getattr(target, "mode", None)
+        if mode is None:
+            target = self._state.receiver("SUB" if receiver else "MAIN")
+            mode = getattr(target, "mode", None)
         rule = profile.resolve_filter_rule(mode)
         if rule and rule.table:
             return cast("tuple[int, ...]", rule.table)
         return None
 
-    async def read_filter_width(self, receiver: int = 0) -> int:
+    async def read_filter_width(
+        self, receiver: int = 0, mode: str | None = None
+    ) -> int:
         """Read filter width in Hz (SH0/SH1) without mutating legacy state.
 
         Translates the radio's table-index code to Hz using the active
-        profile's filter rule for the current mode. The current mode is READ
-        from the legacy ``self._state`` mirror to pick the right width table,
-        but the mirror is never written. When no table is defined, the raw
-        index is returned (compat fallback).
+        profile's filter rule for the radio's CURRENT mode. The width table is
+        mode-specific (SSB/CW/DATA/RTTY differ), so the table MUST be resolved
+        from the live mode, not the legacy ``self._state`` mirror — the
+        observation adapter never writes that mirror, so during polling it is
+        stale and would select the wrong table, leaking the raw SH code as the
+        "Hz" value (MOR-507).
 
         Args:
             receiver: 0=MAIN, 1=SUB.
+            mode: The radio's current mode name. When provided (the poll path
+                reads the mode immediately before this call), it is used
+                directly so no extra CAT round-trip is issued. When omitted
+                (other call sites), the mode is read fresh via ``read_mode``.
 
         Returns:
-            Filter width in Hz.
+            Filter width in Hz. When no table is defined for the encoding/mode,
+            the raw index is returned (compat fallback).
         """
+        if mode is None and self.profile.filter_width_encoding == "table_index":
+            mode, _ = await self.read_mode(receiver)
         cmd = "get_filter_width" if receiver == 0 else "get_filter_width_sub"
         result = await self._query(cmd)
         index = int(result["code"])
-        target = self._state.receiver("SUB" if receiver else "MAIN")
-        mode = getattr(target, "mode", None)
         rule = (
             self.profile.resolve_filter_rule(mode)
             if self.profile.filter_width_encoding == "table_index"
@@ -1296,7 +1314,7 @@ class YaesuCatRadio:
         )
         if rule and rule.fixed and rule.defaults:
             return int(rule.defaults[0])
-        table = self._filter_width_table(receiver)
+        table = self._filter_width_table(receiver, mode)
         if table is None:
             return index
         try:

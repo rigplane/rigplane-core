@@ -192,7 +192,9 @@ class YaesuObservationRadio(Protocol):
 
     async def read_agc(self, receiver: int = 0) -> int: ...
 
-    async def read_filter_width(self, receiver: int = 0) -> int: ...
+    async def read_filter_width(
+        self, receiver: int = 0, mode: str | None = None
+    ) -> int: ...
 
     async def read_if_shift(self, receiver: int = 0) -> int: ...
 
@@ -286,9 +288,14 @@ class YaesuObservationAdapter:
                 observations.append(
                     adapter.observation(_MAIN_FREQ, value, native_id="read_freq")
                 )
+        # Capture the MAIN mode so filter_width (below) can resolve its
+        # mode-specific width table from the freshly-read mode rather than
+        # issuing a redundant CAT mode query on the hot poll path (MOR-507).
+        main_mode: str | None = None
         if self._can_poll(_MAIN_MODE):
             ok, result = await self._safe_read("main.mode", self.radio.read_mode(0))
             if ok and result is not None:
+                main_mode = result[0]
                 observations.append(
                     adapter.observation(_MAIN_MODE, result[0], native_id="read_mode")
                 )
@@ -318,7 +325,7 @@ class YaesuObservationAdapter:
             _MAIN_FILTER_WIDTH
         ):
             ok, value = await self._safe_read(
-                "main.filter_width", self.radio.read_filter_width(0)
+                "main.filter_width", self.radio.read_filter_width(0, mode=main_mode)
             )
             if ok:
                 observations.append(
