@@ -14,6 +14,10 @@ const mockProps = {
   agcTimeConstant: 0,
   hasNr: true,
   hasNb: true,
+  hasNbDepth: true,
+  hasNbWidth: true,
+  nbLevelMax: 255,
+  nbLevelPercent: true,
 };
 
 const mockHandlers = {
@@ -55,6 +59,7 @@ beforeEach(() => {
     notchMode: 'off', notchFreq: 1000, nbDepth: 0, nbWidth: 0,
     manualNotchWidth: 0, agcTimeConstant: 0,
     hasNr: true, hasNb: true,
+    hasNbDepth: true, hasNbWidth: true, nbLevelMax: 255, nbLevelPercent: true,
   });
   mockHandlers.onNrModeChange = vi.fn();
   mockHandlers.onNrLevelChange = vi.fn();
@@ -114,5 +119,38 @@ describe('DspPanel component rendering', () => {
     const comp = components.pop()!;
     unmount(comp);
     expect(t.innerHTML).toBe('');
+  });
+});
+
+describe('DspPanel NB modal depth/width gating (MOR-502)', () => {
+  function openNbModal(t: HTMLElement): void {
+    vi.useFakeTimers();
+    try {
+      const nbBtn = Array.from(t.querySelectorAll<HTMLButtonElement>('.dsp-btn-wrap button')).find(
+        (b) => b.textContent?.trim().startsWith('NB'),
+      );
+      nbBtn?.dispatchEvent(new Event('pointerdown', { bubbles: true }));
+      vi.advanceTimersByTime(600);
+      flushSync();
+    } finally {
+      vi.useRealTimers();
+    }
+  }
+
+  it('renders NB Depth and NB Width in the modal when both capabilities are present', () => {
+    const t = mountPanel({ nbActive: true, hasNbDepth: true, hasNbWidth: true });
+    openNbModal(t);
+    const modal = t.querySelector('[aria-label="Noise blanker settings"]');
+    expect(modal?.textContent).toContain('NB Depth');
+    expect(modal?.textContent).toContain('NB Width');
+  });
+
+  it('omits NB Depth and NB Width in the modal when both capabilities are absent', () => {
+    const t = mountPanel({ nbActive: true, hasNbDepth: false, hasNbWidth: false });
+    openNbModal(t);
+    const modal = t.querySelector('[aria-label="Noise blanker settings"]');
+    expect(modal?.textContent).not.toContain('NB Depth');
+    expect(modal?.textContent).not.toContain('NB Width');
+    expect(modal?.textContent).toContain('NB Level');
   });
 });

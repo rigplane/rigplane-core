@@ -238,3 +238,51 @@ describe('toDspProps NB-depth offset (MOR-498)', () => {
     expect(toDspProps({ active: 'MAIN', nbDepth: 9 } as any, null).nbDepth).toBe(10);
   });
 });
+
+describe('toDspProps NB-depth/width capability gating (MOR-502)', () => {
+  const state = { active: 'MAIN', main: {} } as any;
+
+  it('reports NB depth/width as available only when an nb_depth control range exists (IC-7610)', () => {
+    const caps = { capabilities: ['nb'], controls: { nb_depth: { raw_min: 0, raw_max: 9 } } } as any;
+    const props = toDspProps(state, caps);
+    expect(props.hasNbDepth).toBe(true);
+    expect(props.hasNbWidth).toBe(true);
+  });
+
+  it('hides NB depth/width when there is no nb_depth control range (FTX-1, X6200)', () => {
+    const caps = { capabilities: ['nb'], controls: { nb_level: { raw_min: 0, raw_max: 10 } } } as any;
+    const props = toDspProps(state, caps);
+    expect(props.hasNbDepth).toBe(false);
+    expect(props.hasNbWidth).toBe(false);
+  });
+
+  it('hides NB depth/width when capabilities are absent', () => {
+    const props = toDspProps(state, null);
+    expect(props.hasNbDepth).toBe(false);
+    expect(props.hasNbWidth).toBe(false);
+  });
+});
+
+describe('toDspProps NB-level scale (MOR-502)', () => {
+  const state = { active: 'MAIN', main: {} } as any;
+
+  it('uses the nb_level control raw_max and percent display when a 0-255 range exists (IC-7610)', () => {
+    const caps = { capabilities: ['nb'], controls: { nb_level: { raw_min: 0, raw_max: 255 } } } as any;
+    const props = toDspProps(state, caps);
+    expect(props.nbLevelMax).toBe(255);
+    expect(props.nbLevelPercent).toBe(true);
+  });
+
+  it('falls back to the native 0-10 raw scale when no nb_level control range exists (FTX-1)', () => {
+    const caps = { capabilities: ['nb'], controls: {} } as any;
+    const props = toDspProps(state, caps);
+    expect(props.nbLevelMax).toBe(10);
+    expect(props.nbLevelPercent).toBe(false);
+  });
+
+  it('falls back to the native 0-10 raw scale when capabilities are absent', () => {
+    const props = toDspProps(state, null);
+    expect(props.nbLevelMax).toBe(10);
+    expect(props.nbLevelPercent).toBe(false);
+  });
+});

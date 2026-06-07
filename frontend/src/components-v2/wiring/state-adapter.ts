@@ -359,6 +359,12 @@ export interface DspProps {
   agcTimeConstant: number;
   hasNr: boolean;
   hasNb: boolean;
+  hasNbDepth: boolean;
+  hasNbWidth: boolean;
+  /** Slider/scale ceiling for NB level: 255 (IC-7610) or 10 (FTX-1 native). */
+  nbLevelMax: number;
+  /** Render NB level as a percent (IC-7610 0-255) vs. raw integer (FTX-1 0-10). */
+  nbLevelPercent: boolean;
   hasNotch: boolean;
   hasAutoNotch: boolean;
   hasAgcTime: boolean;
@@ -376,6 +382,17 @@ export function toDspProps(
   else if (rx?.manualNotch) notchMode = 'manual';
   const manualNotchAvailable = activeFieldAvailable(state, 'manualNotch');
   const autoNotchAvailable = activeFieldAvailable(state, 'autoNotch');
+  // MOR-502: NB depth/width exist only on rigs that expose an nb_depth control
+  // range (IC-7610). FTX-1 (native 0-10 NB) and X6200 (nb_level only) must not
+  // render phantom depth/width controls.
+  const nbDepthRange = caps?.controls?.nb_depth ?? null;
+  const hasNbDepth = nbDepthRange !== null;
+  // The NB-level scale follows the nb_level control range: a 0-255 range
+  // (IC-7610) renders as a percent; its absence means the native 0-10 raw
+  // scale (FTX-1) and the label shows the raw integer.
+  const nbLevelRange = caps?.controls?.nb_level ?? null;
+  const nbLevelPercent = nbLevelRange !== null;
+  const nbLevelMax = nbLevelRange?.raw_max ?? 10;
 
   return {
     nrMode: rx?.nr ? 1 : 0,
@@ -392,6 +409,10 @@ export function toDspProps(
     agcTimeConstant: rx?.agcTimeConstant ?? 0,
     hasNr: hasCap(caps, 'nr') && activeFieldAvailable(state, 'nr'),
     hasNb: hasCap(caps, 'nb') && activeFieldAvailable(state, 'nb'),
+    hasNbDepth,
+    hasNbWidth: hasNbDepth,
+    nbLevelMax,
+    nbLevelPercent,
     hasNotch: (hasCap(caps, 'notch') || caps === null) && manualNotchAvailable,
     hasAutoNotch: (hasCap(caps, 'notch') || caps === null) && autoNotchAvailable,
     hasAgcTime: activeFieldAvailable(state, 'agcTimeConstant'),

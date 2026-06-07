@@ -23,6 +23,15 @@
   let nbLevel = $derived(p.nbLevel);
   let nbDepth = $derived(p.nbDepth ?? 0);
   let nbWidth = $derived(p.nbWidth ?? 0);
+  // MOR-502: NB level scale — IC-7610 reports a 0-255 control range (percent
+  // display); FTX-1 has none → native 0-10 raw integer (matches LCD skin).
+  let nbLevelMax = $derived(p.nbLevelMax ?? 255);
+  let nbLevelPercent = $derived(p.nbLevelPercent ?? true);
+  let hasNbDepth = $derived(p.hasNbDepth ?? false);
+  let hasNbWidth = $derived(p.hasNbWidth ?? false);
+  let nbLevelDisplayFn = $derived(
+    nbLevelPercent ? (v: number) => rawToPercentDisplay(v, 0, nbLevelMax) : (v: number) => `${v}`,
+  );
   let notchMode = $derived(p.notchMode);
   let notchFreq = $derived(p.notchFreq);
   let manualNotchWidth = $derived(p.manualNotchWidth ?? 0);
@@ -197,7 +206,7 @@
           onpointerup={endLongPressPointer}
           onpointercancel={endLongPressPointer}
           onpointerleave={endLongPressPointer}
-        >NB{nbActive ? ` ${rawToPercentDisplay(nbLevel)}` : ''}</HardwareButton>
+        >NB{nbActive ? ` ${nbLevelDisplayFn(nbLevel)}` : ''}</HardwareButton>
       </div>
     {/if}
 
@@ -315,38 +324,42 @@
       label="NB Level"
       value={nbLevel}
       min={0}
-      max={255}
+      max={nbLevelMax}
       step={1}
       renderer="hbar"
-      displayFn={rawToPercentDisplay}
+      displayFn={nbLevelDisplayFn}
       accentColor="var(--v2-accent-yellow)"
       onChange={onNbLevelChange}
       variant="hardware-illuminated"
     />
-    <ValueControl
-      label="NB Depth"
-      value={nbDepth}
-      min={1}
-      max={10}
-      step={1}
-      renderer="discrete"
-      tickStyle="notch"
-      accentColor="var(--v2-accent-orange)"
-      onChange={onNbDepthChange}
-      variant="hardware-illuminated"
-    />
-    <ValueControl
-      label="NB Width"
-      value={nbWidth}
-      min={0}
-      max={255}
-      step={1}
-      renderer="hbar"
-      displayFn={rawToPercentDisplay}
-      accentColor="var(--v2-accent-orange)"
-      onChange={onNbWidthChange}
-      variant="hardware-illuminated"
-    />
+    {#if hasNbDepth}
+      <ValueControl
+        label="NB Depth"
+        value={nbDepth}
+        min={1}
+        max={10}
+        step={1}
+        renderer="discrete"
+        tickStyle="notch"
+        accentColor="var(--v2-accent-orange)"
+        onChange={onNbDepthChange}
+        variant="hardware-illuminated"
+      />
+    {/if}
+    {#if hasNbWidth}
+      <ValueControl
+        label="NB Width"
+        value={nbWidth}
+        min={0}
+        max={255}
+        step={1}
+        renderer="hbar"
+        displayFn={rawToPercentDisplay}
+        accentColor="var(--v2-accent-orange)"
+        onChange={onNbWidthChange}
+        variant="hardware-illuminated"
+      />
+    {/if}
   </div>
 {/if}
 
