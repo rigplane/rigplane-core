@@ -90,6 +90,7 @@ from .radio_poller import (  # noqa: TID251
 from .runtime_helpers import (  # noqa: TID251
     build_public_state_payload_from_snapshot,
     classify_radio_health,
+    primary_receiver_snapshot_ids,
     radio_ready,
     runtime_capabilities,
 )
@@ -1064,16 +1065,33 @@ class WebServer:
             len(self._audio_scope_handlers),
         )
 
+    @staticmethod
+    def _active_primary_freq_mode_value(
+        snapshot: StateSnapshot, name: str
+    ) -> Any | None:
+        """Read a primary-receiver freq/mode field, scheme-agnostic.
+
+        Snapshots key the primary receiver under ``"0"`` (legacy Icom poller)
+        or ``"main"`` (Yaesu CAT / rigctld). Try each canonical primary id in
+        order and return the first present value; return ``None`` if no
+        candidate id carries the field.
+        """
+        for receiver_id in primary_receiver_snapshot_ids():
+            try:
+                return snapshot.field(
+                    FieldPath.active(receiver_id, "freq_mode", name)
+                ).value
+            except KeyError:
+                continue
+        return None
+
     def _update_fft_scope_freq(self, snapshot: StateSnapshot | None = None) -> None:
         """Sync AudioFftScope center frequency from a StateStore snapshot."""
         if self._audio_fft_scope is None:
             return
         if snapshot is None:
             snapshot = self.command_state_store.snapshot()
-        try:
-            freq = snapshot.field(FieldPath.active("0", "freq_mode", "freq_hz")).value
-        except KeyError:
-            return
+        freq = self._active_primary_freq_mode_value(snapshot, "freq_hz")
         if isinstance(freq, int) and freq > 0:
             self._audio_fft_scope.set_center_freq(freq)
 
@@ -1083,18 +1101,10 @@ class WebServer:
             return
         if snapshot is None:
             snapshot = self.command_state_store.snapshot()
-        try:
-            mode = snapshot.field(FieldPath.active("0", "freq_mode", "mode")).value
-        except KeyError:
-            return
+        mode = self._active_primary_freq_mode_value(snapshot, "mode")
         if not isinstance(mode, str):
             return
-        try:
-            data_mode = snapshot.field(
-                FieldPath.active("0", "freq_mode", "data_mode")
-            ).value
-        except KeyError:
-            data_mode = 0
+        data_mode = self._active_primary_freq_mode_value(snapshot, "data_mode")
         if not isinstance(data_mode, int):
             data_mode = 0
         profile = self._get_profile()

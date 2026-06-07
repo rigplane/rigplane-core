@@ -24,6 +24,7 @@ __all__ = [
     "classify_radio_health",
     "build_public_state_payload",
     "build_public_state_payload_from_snapshot",
+    "primary_receiver_snapshot_ids",
 ]
 
 _RECEIVER_KEY_MAP = {"freq": "freqHz"}
@@ -683,6 +684,28 @@ def _snapshot_receiver_key(receiver_id: str | None) -> str | None:
     if receiver_id is None:
         return None
     return _SNAPSHOT_RECEIVER_IDS.get(receiver_id)
+
+
+def primary_receiver_snapshot_ids() -> tuple[str, ...]:
+    """Return the backend-native receiver-ids for the primary receiver.
+
+    Snapshots key the primary receiver under different ids depending on the
+    backend: the legacy Icom state poller uses ``"0"`` while Yaesu CAT and
+    rigctld backends use ``"main"``. Both normalize to the canonical public
+    key ``"main"`` via :data:`_SNAPSHOT_RECEIVER_IDS`.
+
+    Consumers that need a single freq/mode (e.g. the audio FFT scope center
+    frequency) should try these ids in order and use the first one present in
+    the snapshot, rather than hardcoding a scheme-specific id.
+
+    The order is significant: ``"0"`` precedes ``"main"`` to preserve the
+    historical Icom-first lookup behavior.
+    """
+    return tuple(
+        receiver_id
+        for receiver_id, canonical in _SNAPSHOT_RECEIVER_IDS.items()
+        if canonical == "main"
+    )
 
 
 def _set_receiver_value(
