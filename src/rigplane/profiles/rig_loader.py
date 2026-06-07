@@ -53,6 +53,7 @@ VALID_RULE_KINDS = {"mutex", "disables", "requires", "value_limit"}
 VALID_KEYBOARD_MODIFIERS = {"SHIFT", "CTRL", "ALT", "META"}
 VALID_AUDIO_SAMPLE_RATES_HZ = {8000, 12000, 16000, 24000, 48000}
 VALID_BROWSER_RX_TRANSPORTS = {"auto", "pcm", "opus"}
+VALID_RX_AUDIO_CHANNELS = {"mix", "left", "right"}
 DEFAULT_KEYBOARD_PROFILE_NAME = "_keyboard-default.toml"
 
 _REQUIRED_SECTIONS = ("radio", "capabilities", "modes", "filters", "vfo")
@@ -125,6 +126,11 @@ class RigConfig:
     sample_rate_by_codec: dict[str, int] | None = None
     browser_rx_transport: str | None = None
     browser_rx_transcode_to_opus: bool | None = None
+    # Stereo→mono RX downmix channel selection (MOR-508). "mix" = (L+R)//2
+    # average (default, unchanged for every rig); "left"/"right" = that channel
+    # at full level. The FTX-1 sets "left" (USB RX audio is on L only, so the
+    # average with a silent R loses 6 dB).
+    rx_audio_channel: str = "mix"
     write_only_controls: tuple[str, ...] = ()
     state_acquisition: RadioAcquisitionProfile | None = None
 
@@ -1243,6 +1249,7 @@ def load_rig(path: Path) -> RigConfig:
     sample_rate_by_codec: dict[str, int] | None = None
     browser_rx_transport: str | None = None
     browser_rx_transcode_to_opus: bool | None = None
+    rx_audio_channel: str = "mix"
     audio_section = data.get("audio")
     if audio_section is not None:
         if not isinstance(audio_section, dict):
@@ -1325,6 +1332,17 @@ def load_rig(path: Path) -> RigConfig:
                     f"{filename}: [audio].browser_rx_transcode_to_opus must be a boolean"
                 )
             browser_rx_transcode_to_opus = transcode_raw
+        if "rx_audio_channel" in audio_section:
+            rx_channel_raw = audio_section["rx_audio_channel"]
+            if (
+                not isinstance(rx_channel_raw, str)
+                or rx_channel_raw not in VALID_RX_AUDIO_CHANNELS
+            ):
+                raise RigLoadError(
+                    f"{filename}: [audio].rx_audio_channel must be one of "
+                    f"{sorted(VALID_RX_AUDIO_CHANNELS)}, got {rx_channel_raw!r}"
+                )
+            rx_audio_channel = rx_channel_raw
 
     state_acquisition = _parse_state_acquisition(
         filename,
@@ -1387,6 +1405,7 @@ def load_rig(path: Path) -> RigConfig:
         sample_rate_by_codec=sample_rate_by_codec,
         browser_rx_transport=browser_rx_transport,
         browser_rx_transcode_to_opus=browser_rx_transcode_to_opus,
+        rx_audio_channel=rx_audio_channel,
         write_only_controls=write_only_controls,
         state_acquisition=state_acquisition,
     )

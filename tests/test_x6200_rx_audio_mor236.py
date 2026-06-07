@@ -70,6 +70,7 @@ class _MonoUsbAudioBackend:
         channels: int = 1,
         frame_ms: int = 20,
         deliver_channels: int | None = None,
+        rx_audio_channel: str = "mix",
     ) -> FakeRxStream:
         # ``deliver_channels`` is the post-downmix consumer count (MOR-504); the
         # mono Xiegu device opens at its single native channel, so it is unused

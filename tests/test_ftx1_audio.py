@@ -79,6 +79,9 @@ def test_audio_driver_default_construction():
             sample_rate=48000,
             channels=1,
             backend=None,
+            # FTX-1 profile selects the LEFT channel for the stereo→mono RX
+            # downmix (MOR-508); USB RX audio is on L only.
+            rx_audio_channel="left",
         )
 
 

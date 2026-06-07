@@ -17,6 +17,14 @@ default_baud = 38400
 [protocol]
 type = "yaesu_cat"
 
+[audio]
+# The FTX-1 USB Audio CODEC is stereo-native but presents RX audio on the
+# LEFT channel only (right channel is the silent noise floor). The default
+# stereo→mono downmix averages (L + R) // 2, which halves the live L with a
+# silent R → −6 dB (quiet audio + low FFT scope). Take L at full level instead
+# (MOR-508). Other rigs omit this and keep the default "mix" average.
+rx_audio_channel = "left"
+
 [capabilities]
 features = [
     "audio",

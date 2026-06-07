@@ -192,6 +192,7 @@ class AudioBackend(Protocol):
         channels: int = 1,
         frame_ms: int = 20,
         deliver_channels: int | None = None,
+        rx_audio_channel: str = "mix",
     ) -> RxStream: ...
 
     def open_tx(
@@ -227,8 +228,8 @@ def _ensure_portaudio_deps() -> tuple[Any, Any]:
     return sd, np
 
 
-def _downmix_stereo_to_mono_s16le(pcm: bytes) -> bytes:
-    """Downmix L+R interleaved s16le → mono s16le via the per-pair average.
+def _downmix_stereo_to_mono_s16le(pcm: bytes, *, channel: str = "mix") -> bytes:
+    """Collapse L+R interleaved s16le → mono s16le via the selected ``channel``.
 
     Mirrors ``rigplane.audio.bridge._downmix_stereo_to_mono`` but is dependency-
     free (stdlib ``array``) so it can run on the PortAudio audio thread without
@@ -238,6 +239,20 @@ def _downmix_stereo_to_mono_s16le(pcm: bytes) -> bytes:
     sample-rate and compress the spectrum 2x — the same bug the bridge downmix
     guards (issue #1381). Trailing bytes that do not form a whole L/R sample
     pair are dropped (an incomplete frame cannot satisfy the fixed contract).
+
+    ``channel`` picks how each L/R pair collapses to one mono sample (MOR-508):
+
+    - ``"mix"`` (default) — the per-pair average ``(L + R) // 2``. Correct for a
+      dual-mono source (``L == R``); the historical behavior preserved verbatim
+      for every rig that does not opt out, so IC-7610/X6200 etc. are unchanged.
+    - ``"left"`` — take L at FULL level. The FTX-1 presents its USB RX audio on
+      the LEFT channel only (R is the silent noise floor); ``mix`` averaging the
+      live L with a silent R halves the level (−6 dB → quiet audio + low FFT
+      scope). Selecting L delivers it undivided.
+    - ``"right"`` — take R at FULL level (the mirror case).
+
+    Single-channel selection cannot clip: it copies one existing s16 sample
+    per pair, so the output stays in range with no widening/averaging.
     """
     from array import array
 
@@ -251,9 +266,16 @@ def _downmix_stereo_to_mono_s16le(pcm: bytes) -> bytes:
     if sys.byteorder != "little":
         samples.byteswap()
     mono = array("h", bytes(len(samples)))  # len(samples)//2 mono samples
-    for i in range(0, len(samples), 2):
-        # Average in a wider int to avoid s16 overflow before truncation.
-        mono[i // 2] = (samples[i] + samples[i + 1]) // 2
+    if channel == "left":
+        for i in range(0, len(samples), 2):
+            mono[i // 2] = samples[i]
+    elif channel == "right":
+        for i in range(0, len(samples), 2):
+            mono[i // 2] = samples[i + 1]
+    else:  # "mix" — per-pair average (default; legacy behavior)
+        for i in range(0, len(samples), 2):
+            # Average in a wider int to avoid s16 overflow before truncation.
+            mono[i // 2] = (samples[i] + samples[i + 1]) // 2
     if sys.byteorder != "little":
         mono.byteswap()
     return mono.tobytes()
@@ -299,6 +321,7 @@ class _PortAudioRxStream:
         blocksize: int,
         frame_ms: int,
         deliver_channels: int | None = None,
+        rx_audio_channel: str = "mix",
     ) -> None:
         self._sd = sd
         self._device_index = device_index
@@ -311,6 +334,11 @@ class _PortAudioRxStream:
         self._deliver_channels = (
             channels if deliver_channels is None else deliver_channels
         )
+        # How the stereo→mono downmix collapses each L/R pair (MOR-508):
+        # "mix" = (L+R)//2 (legacy default), "left"/"right" = that channel at
+        # full level. The FTX-1 carries RX audio on L only, so averaging with a
+        # silent R halves the level (−6 dB); "left" delivers it undivided.
+        self._rx_audio_channel = rx_audio_channel
         # Software downmix only fires for the stereo-native → mono case. Any
         # other deliver/open relationship passes interleaved PCM through
         # unchanged (over-request already clamps open == deliver upstream).
@@ -410,7 +438,7 @@ class _PortAudioRxStream:
             # accumulator/fixed-frame slicing operates on mono bytes and the
             # FFT scope + broadcaster receive the mono contract they expect.
             try:
-                pcm = _downmix_stereo_to_mono_s16le(pcm)
+                pcm = _downmix_stereo_to_mono_s16le(pcm, channel=self._rx_audio_channel)
             except Exception:
                 logger.warning(
                     "portaudio-rx: stereo→mono downmix failed", exc_info=True
@@ -916,6 +944,7 @@ class PortAudioBackend:
         channels: int = 1,
         frame_ms: int = 20,
         deliver_channels: int | None = None,
+        rx_audio_channel: str = "mix",
     ) -> RxStream:
         sd, _ = self._ensure_deps()
         # blocksize=0 lets PortAudio use the engine-native period, mirroring a
@@ -938,6 +967,7 @@ class PortAudioBackend:
             blocksize=0,
             frame_ms=frame_ms,
             deliver_channels=deliver_channels,
+            rx_audio_channel=rx_audio_channel,
         )
 
     def open_tx(
@@ -1112,6 +1142,7 @@ class FakeAudioBackend:
         channels: int = 1,
         frame_ms: int = 20,
         deliver_channels: int | None = None,
+        rx_audio_channel: str = "mix",
     ) -> FakeRxStream:
         if not any(d.id == device for d in self._devices):
             raise ValueError(f"Unknown device id {device}")
