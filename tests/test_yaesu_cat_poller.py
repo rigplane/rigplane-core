@@ -315,7 +315,9 @@ class _SideEffectingYaesuRadio:
         self.radio_state.main.agc = value
         return value
 
-    async def read_filter_width(self, receiver: int = 0) -> int:
+    async def read_filter_width(
+        self, receiver: int = 0, mode: str | None = None
+    ) -> int:
         return 2400
 
     async def get_filter_width(self, receiver: int = 0) -> int:
