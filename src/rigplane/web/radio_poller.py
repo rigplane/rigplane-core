@@ -844,7 +844,9 @@ class RadioPoller:
         try:
             await self._fetch_nb_controls()
         except Exception:
-            logger.debug("radio-poller: NB controls initial fetch failed", exc_info=True)
+            logger.debug(
+                "radio-poller: NB controls initial fetch failed", exc_info=True
+            )
 
         try:
             while True:

@@ -2476,9 +2476,7 @@ async def test_fetch_nb_controls_seeds_state_store_and_public_state() -> None:
     assert radio.width_calls == 1
 
     snapshot = store.snapshot()
-    assert (
-        snapshot.field(FieldPath.global_("operator_controls", "nb_depth")).value == 7
-    )
+    assert snapshot.field(FieldPath.global_("operator_controls", "nb_depth")).value == 7
     assert (
         snapshot.field(FieldPath.global_("operator_controls", "nb_width")).value == 200
     )
