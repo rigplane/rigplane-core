@@ -214,7 +214,16 @@ async def test_usb_audio_driver_auto_sample_rate_falls_back_and_reports_contract
     assert contract is not None
     assert contract.rx.sample_rate_hz == 16_000
     assert contract.rx.sample_rate_source == "fallback"
-    assert contract.rx.fallback_reason == "sample-rate-48000-unsupported"
+    # The default RX device "USB Audio CODEC" exposes 2 input channels while the
+    # driver's default request is mono. The capture opens at the device-native
+    # 2 ch and software-downmixes to mono (MOR-504), so the fallback reason now
+    # carries both the sample-rate negotiation and the channel reconciliation.
+    assert (
+        contract.rx.fallback_reason
+        == "sample-rate-48000-unsupported; channels-1-opened-as-device-2-downmix"
+    )
+    assert contract.rx.channels == 1
+    assert contract.rx.open_channels == 2
     assert contract.rx.device.name == "USB Audio CODEC"
     assert contract.to_dict()["rx"]["sample_rate_hz"] == 16_000
     assert contract.to_dict()["rx"]["sample_rate_source"] == "fallback"

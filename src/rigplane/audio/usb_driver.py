@@ -113,6 +113,21 @@ class UsbAudioStreamContract:
     sample_rate_source: str
     channel_source: str = "requested"
     fallback_reason: str | None = None
+    open_channels: int | None = None
+    """Device-native channel count the OS stream is opened at.
+
+    ``None`` means the stream opens at ``channels`` (open == deliver). It is set
+    only when the device is opened at MORE channels than downstream consumes —
+    i.e. a mono (deliver=1) request on a stereo-native device (open=2): the
+    stream opens at the native count and software-downmixes back to ``channels``
+    (MOR-504). ``channels`` always stays the DELIVERED count (downstream DSP is
+    48 kHz mono), so diagnostics and the fixed-frame contract see the mono path.
+    """
+
+    @property
+    def effective_open_channels(self) -> int:
+        """Channel count to open the OS stream at (defaults to ``channels``)."""
+        return self.channels if self.open_channels is None else self.open_channels
 
     def to_dict(self) -> dict[str, object]:
         payload: dict[str, object] = {
@@ -126,6 +141,8 @@ class UsbAudioStreamContract:
         }
         if self.fallback_reason:
             payload["fallback_reason"] = self.fallback_reason
+        if self.open_channels is not None:
+            payload["open_channels"] = self.open_channels
         return payload
 
 
@@ -488,28 +505,50 @@ class UsbAudioDriver:
         direction: str,
         device: UsbAudioDevice,
         requested_channels: int,
-    ) -> tuple[int, str, str | None]:
-        """Clamp requested channels to the device's real capability (MOR-238).
+    ) -> tuple[int, int, str, str | None]:
+        """Reconcile requested channels with the device's real capability.
 
-        A profile / codec may request stereo from a device that only exposes a
-        mono capture (or playback) endpoint. PortAudio rejects that open with
-        PaErrorCode -9998 ("Invalid number of channels"). Mirroring the
-        sample-rate negotiation, the effective channel count is clamped down to
-        what the device advertises so any mono/stereo USB codec self-heals
-        without a per-profile ``codec_preference`` entry. Downstream DSP is
-        48 kHz mono, so a 1-channel capture feeds the broadcaster cleanly.
+        Returns ``(deliver_channels, open_channels, channel_source,
+        fallback_reason)``:
+
+        - ``deliver_channels`` — the count delivered downstream (the broadcaster
+          / FFT scope contract is 48 kHz mono).
+        - ``open_channels`` — the count the OS stream is opened at.
+
+        Two reconciliation directions, both healing a codec/device mismatch that
+        PortAudio otherwise rejects with PaErrorCode -9998 ("Invalid number of
+        channels") on Windows, or AUHAL -10863 on macOS CoreAudio:
+
+        - **Over-request (MOR-238)** — a profile / codec asks for MORE channels
+          than the device exposes (stereo request on a mono capture endpoint).
+          Both open and deliver clamp DOWN to ``device_max``; downstream is mono,
+          so a 1-channel capture feeds the broadcaster cleanly.
+        - **Under-request (MOR-504)** — a mono (deliver=1) request on a
+          stereo-NATIVE device. macOS AUHAL refuses to open a 2-channel device at
+          1 channel (err -10863), so the stream opens at the device-native count
+          and the RX stream software-downmixes back to mono before delivery. RX
+          path only (TX never up-opens — there is no mix-up direction for
+          playback).
         """
 
         device_max = (
             device.input_channels if direction == "rx" else device.output_channels
         )
         # A device advertising zero channels for this direction is a selection
-        # bug, not a clamp target — leave the request untouched and let the
+        # bug, not a reconcile target — leave the request untouched and let the
         # open surface the real error.
-        if device_max >= 1 and requested_channels > device_max:
+        if device_max < 1:
+            return requested_channels, requested_channels, "requested", None
+        if requested_channels > device_max:
             reason = f"channels-{requested_channels}-clamped-to-device-{device_max}"
-            return device_max, "device-clamp", reason
-        return requested_channels, "requested", None
+            return device_max, device_max, "device-clamp", reason
+        if direction == "rx" and requested_channels < device_max:
+            # Open native, deliver the (mono) request via software downmix.
+            reason = (
+                f"channels-{requested_channels}-opened-as-device-{device_max}-downmix"
+            )
+            return requested_channels, device_max, "device-native", reason
+        return requested_channels, requested_channels, "requested", None
 
     def _resolve_stream_contract(
         self,
@@ -522,11 +561,19 @@ class UsbAudioDriver:
         allow_sample_rate_fallback: bool,
     ) -> UsbAudioStreamContract:
         device_id = AudioDeviceId(device.index)
-        effective_channels, channel_source, channel_reason = self._clamp_channels(
+        (
+            deliver_channels,
+            open_channels,
+            channel_source,
+            channel_reason,
+        ) = self._clamp_channels(
             direction=direction,
             device=device,
             requested_channels=channels,
         )
+        # Only carry ``open_channels`` when it differs from the delivered count
+        # (under-request downmix); otherwise the OS stream opens at ``channels``.
+        open_field = open_channels if open_channels != deliver_channels else None
         if self._backend.check_sample_rate(
             device_id,
             requested_sample_rate,
@@ -537,11 +584,12 @@ class UsbAudioDriver:
                 direction=direction,
                 device=device,
                 sample_rate_hz=requested_sample_rate,
-                channels=effective_channels,
+                channels=deliver_channels,
                 frame_ms=frame_ms,
                 sample_rate_source=source,
                 channel_source=channel_source,
                 fallback_reason=channel_reason,
+                open_channels=open_field,
             )
 
         if not allow_sample_rate_fallback:
@@ -569,11 +617,12 @@ class UsbAudioDriver:
                     direction=direction,
                     device=device,
                     sample_rate_hz=candidate,
-                    channels=effective_channels,
+                    channels=deliver_channels,
                     frame_ms=frame_ms,
                     sample_rate_source="fallback",
                     channel_source=channel_source,
                     fallback_reason=fallback_reason,
+                    open_channels=open_field,
                 )
 
         raise AudioDriverLifecycleError(
@@ -638,11 +687,12 @@ class UsbAudioDriver:
             # RX frames reaching the browser.
             logger.info(
                 "usb-audio: opening RX capture — device=[%d] %s, %d Hz, "
-                "%d ch (requested %d, source=%s), %d ms "
+                "open %d ch / deliver %d ch (requested %d, source=%s), %d ms "
                 "(device input_channels=%d)",
                 selected_rx.index,
                 selected_rx.name,
                 contract.sample_rate_hz,
+                contract.effective_open_channels,
                 contract.channels,
                 ch,
                 contract.channel_source,
@@ -652,8 +702,9 @@ class UsbAudioDriver:
             self._rx_stream = self._backend.open_rx(
                 AudioDeviceId(selected_rx.index),
                 sample_rate=contract.sample_rate_hz,
-                channels=contract.channels,
+                channels=contract.effective_open_channels,
                 frame_ms=fm,
+                deliver_channels=contract.channels,
             )
             await self._rx_stream.start(callback)
             self._store_stream_contract(contract)

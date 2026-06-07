@@ -69,7 +69,11 @@ class _MonoUsbAudioBackend:
         sample_rate: int = 48_000,
         channels: int = 1,
         frame_ms: int = 20,
+        deliver_channels: int | None = None,
     ) -> FakeRxStream:
+        # ``deliver_channels`` is the post-downmix consumer count (MOR-504); the
+        # mono Xiegu device opens at its single native channel, so it is unused
+        # here. ``channels`` is the OS open count the device validates.
         if channels != self._device.input_channels:
             raise RuntimeError(
                 "Error opening InputStream: Invalid number of channels "
