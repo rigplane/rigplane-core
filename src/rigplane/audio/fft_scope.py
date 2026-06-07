@@ -40,11 +40,35 @@ _SCOPE_MODE_CENTER = 0
 # and slide the window to follow them, so any radio/level stays visible.
 _PIXEL_MAX = 160
 
-# Robust per-frame floor/ceil estimators (percentiles of the dB array).
-# A low percentile rejects the few near-silent bins; a high percentile rejects
-# single-bin spikes (DC leakage etc.) that would otherwise inflate the ceiling.
-_FLOOR_PCT = 10.0
+# Robust per-frame floor/ceil estimators (percentiles of the IN-BAND dB array).
+#
+# Radio RX audio is BIMODAL (MOR-512): the demodulated audio baseband
+# (~0-3.2 kHz) always carries receiver band-noise, while the out-of-band region
+# (>~4-5 kHz) sits far lower, near the true noise floor. Estimating the floor
+# over the FULL spectrum latches it onto the quiet out-of-band majority, which
+# drags the floor way down and pushes the ever-present in-band band-noise up to
+# ~68% of the screen with NO signal present ("high noise floor regardless of
+# signal"). We therefore estimate floor and ceil over the IN-BAND region only —
+# the bins that actually carry radio audio (and that the display shows) — so the
+# band-noise maps LOW and a real signal stands out above it.
+#
+# Floor: a low-ish percentile of the in-band bins (rejects the quietest bins
+# without latching onto out-of-band). Ceil: a high percentile (rejects single-bin
+# DC-leakage spikes that would otherwise inflate the ceiling).
+_FLOOR_PCT = 30.0
 _CEIL_PCT = 99.0
+
+# In-band (audio baseband) region used for the floor/ceil estimate.
+#
+# Lower edge: skip DC / sub-sonic bins (hum, DC leakage) that do not represent
+# band-noise. Upper edge: when the mode bandwidth is known the in-band region is
+# the displayed passband (``_crop_max_hz / 2`` of audio, since the crop keeps
+# ±half on each side of center); when it is unknown (e.g. FTX-1, which reports no
+# filter ``max_hz`` and shows the full spectrum) fall back to a fixed audio
+# baseband limit that covers a typical voice passband without reaching into the
+# quiet out-of-band tail that caused the regression.
+_INBAND_LO_HZ = 50.0
+_INBAND_FALLBACK_HI_HZ = 3500.0
 
 # EMA / attack-decay smoothing of the tracked floor & ceil. The floor adapts
 # SLOWLY for a stable baseline; the ceil rises fast (attack) but falls slowly
@@ -315,13 +339,39 @@ class AudioFftScope:
         except Exception:
             _log.exception("AudioFftScope: frame callback error")
 
+    def _inband_db(self, avg_db: Any) -> Any:
+        """Return the in-band (audio baseband) slice of ``avg_db``.
+
+        ``avg_db`` is the rfft per-bin dB array, indexed DC..Nyquist; bin ``i``
+        sits at ``i * sample_rate / fft_size`` Hz of audio. The in-band region
+        is ``_INBAND_LO_HZ <= freq <= upper``, where ``upper`` is the displayed
+        passband (``_crop_max_hz / 2``) when the mode bandwidth is known and the
+        fixed ``_INBAND_FALLBACK_HI_HZ`` otherwise. Falls back to the full array
+        if the mask would be empty (degenerate fft_size / sample_rate).
+        """
+        bin_res = self._sample_rate / self._fft_size
+        if self._crop_max_hz:
+            upper_hz = self._crop_max_hz / 2.0
+        else:
+            upper_hz = _INBAND_FALLBACK_HI_HZ
+        lo_bin = int(_INBAND_LO_HZ / bin_res)
+        hi_bin = int(upper_hz / bin_res)
+        hi_bin = min(hi_bin, len(avg_db) - 1)
+        if hi_bin <= lo_bin:
+            return avg_db
+        return avg_db[lo_bin : hi_bin + 1]
+
     def _update_db_window(self, avg_db: Any) -> tuple[float, float]:
         """Adapt the dB→pixel window to the current frame and return it.
 
         Tracks a robust noise floor (low percentile) and signal ceiling (high
-        percentile) of ``avg_db``, smooths each with an EMA / attack-decay so
-        the window neither jitters nor pumps, then applies margins, a minimum
-        span (so silence does not amplify noise) and absolute clamps.
+        percentile) of the IN-BAND region of ``avg_db`` (the audio baseband that
+        carries radio audio — see :meth:`_inband_db`), smooths each with an EMA /
+        attack-decay so the window neither jitters nor pumps, then applies
+        margins, a minimum span (so silence does not amplify noise) and absolute
+        clamps. Estimating over the in-band region rather than the full spectrum
+        keeps the ever-present in-band band-noise mapped LOW so a real signal
+        stands out above it (MOR-512).
 
         Args:
             avg_db: The (averaged) per-bin dB array for this frame.
@@ -331,8 +381,9 @@ class AudioFftScope:
         """
         np = self._np
 
-        obs_floor = float(np.percentile(avg_db, _FLOOR_PCT))
-        obs_ceil = float(np.percentile(avg_db, _CEIL_PCT))
+        inband_db = self._inband_db(avg_db)
+        obs_floor = float(np.percentile(inband_db, _FLOOR_PCT))
+        obs_ceil = float(np.percentile(inband_db, _CEIL_PCT))
 
         if self._db_floor_ema is None or self._db_ceil_ema is None:
             # Seed from the first frame so startup is immediately sane.
