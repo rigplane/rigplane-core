@@ -21,6 +21,7 @@ from .backend import (
     AudioBackend,
     AudioDeviceId,
     AudioDeviceInfo,
+    DuplexStream,
     PortAudioBackend,
     RxStream,
     TxStream,
@@ -404,6 +405,10 @@ class UsbAudioDriver:
 
         self._rx_stream: RxStream | None = None
         self._tx_stream: TxStream | None = None
+        # Single full-duplex stream for the same-device RX+TX case (MOR-531):
+        # opening separate InputStream + OutputStream on one C-Media CODEC fails
+        # with macOS CoreAudio AUHAL -50. When set, it drives BOTH directions.
+        self._duplex_stream: DuplexStream | None = None
         self._usb_audio_contract = UsbAudioContract()
 
         self._rx_lock = asyncio.Lock()
@@ -411,10 +416,14 @@ class UsbAudioDriver:
 
     @property
     def rx_running(self) -> bool:
+        if self._duplex_stream is not None:
+            return self._duplex_stream.running
         return self._rx_stream is not None and self._rx_stream.running
 
     @property
     def tx_running(self) -> bool:
+        if self._duplex_stream is not None:
+            return self._duplex_stream.running
         return self._tx_stream is not None and self._tx_stream.running
 
     @property
@@ -768,12 +777,117 @@ class UsbAudioDriver:
             await self._tx_stream.start()
             self._store_stream_contract(contract)
 
+    async def start_duplex(
+        self,
+        callback: Callable[[bytes], None] | None = None,
+        *,
+        sample_rate: int | None = None,
+        channels: int | None = None,
+        frame_ms: int | None = None,
+        allow_sample_rate_fallback: bool = True,
+    ) -> None:
+        """Start a single full-duplex RX+TX stream on the SAME USB CODEC.
+
+        Opens ONE ``sd.Stream`` via :meth:`AudioBackend.open_duplex` when RX and
+        TX resolve to the same device, so a USB-CODEC radio can transmit while RX
+        capture keeps running — avoiding the macOS CoreAudio AUHAL -50 that two
+        separate streams cause on one C-Media device (MOR-531). RX frames go to
+        *callback*; TX frames are pushed via :meth:`_push_tx_pcm` (routed through
+        the duplex stream's TX queue). The two-stream :meth:`start_rx` /
+        :meth:`start_tx` path is unchanged for separate-device use.
+        """
+        if callback is None:
+            raise AudioDriverLifecycleError("Audio RX callback is required.")
+        if not callable(callback):
+            raise TypeError("Audio RX callback must be callable.")
+
+        async with self._rx_lock, self._tx_lock:
+            if self.rx_running or self.tx_running:
+                raise AudioDriverLifecycleError(
+                    "Duplex stream requires both RX and TX idle."
+                )
+
+            selected_rx, selected_tx = self._ensure_selected_devices()
+            if selected_rx.index != selected_tx.index:
+                raise AudioDriverLifecycleError(
+                    "Duplex stream requires RX and TX on the SAME device "
+                    f"(got RX=[{selected_rx.index}] {selected_rx.name}, "
+                    f"TX=[{selected_tx.index}] {selected_tx.name}); "
+                    "use start_rx/start_tx for separate devices."
+                )
+
+            sr = self._sample_rate if sample_rate is None else sample_rate
+            ch = self._channels if channels is None else channels
+            fm = self._frame_ms if frame_ms is None else frame_ms
+            if (sr * fm) % 1000 != 0:
+                raise AudioDriverLifecycleError(
+                    "Invalid duplex frame format: sample_rate * frame_ms must "
+                    "be divisible by 1000."
+                )
+
+            rx_contract = self._resolve_stream_contract(
+                direction="rx",
+                device=selected_rx,
+                requested_sample_rate=sr,
+                channels=ch,
+                frame_ms=fm,
+                allow_sample_rate_fallback=allow_sample_rate_fallback,
+            )
+            tx_contract = self._resolve_stream_contract(
+                direction="tx",
+                device=selected_tx,
+                requested_sample_rate=rx_contract.sample_rate_hz,
+                channels=ch,
+                frame_ms=fm,
+                allow_sample_rate_fallback=False,
+            )
+            logger.info(
+                "usb-audio: opening DUPLEX — device=[%d] %s, %d Hz, RX open %d ch "
+                "/ deliver %d ch, TX %d ch, %d ms",
+                selected_rx.index,
+                selected_rx.name,
+                rx_contract.sample_rate_hz,
+                rx_contract.effective_open_channels,
+                rx_contract.channels,
+                tx_contract.channels,
+                fm,
+            )
+            self._duplex_stream = self._backend.open_duplex(
+                AudioDeviceId(selected_rx.index),
+                sample_rate=rx_contract.sample_rate_hz,
+                channels=rx_contract.effective_open_channels,
+                frame_ms=fm,
+                deliver_channels=rx_contract.channels,
+                rx_audio_channel=self._rx_audio_channel,
+                tx_channels=tx_contract.channels,
+            )
+            await self._duplex_stream.start(callback)
+            self._store_stream_contract(rx_contract)
+            self._store_stream_contract(tx_contract)
+            logger.info(
+                "usb-audio: DUPLEX running — device=[%d] %s",
+                selected_rx.index,
+                selected_rx.name,
+            )
+
+    async def stop_duplex(self) -> None:
+        """Stop and close the full-duplex stream."""
+        async with self._rx_lock, self._tx_lock:
+            stream = self._duplex_stream
+            self._duplex_stream = None
+            if stream is not None and stream.running:
+                await stream.stop()
+
     async def _push_tx_pcm(self, frame: bytes) -> None:
         """Queue one PCM frame for playback."""
         if not self.tx_running:
             raise AudioDriverLifecycleError("Audio TX stream is not started.")
         if not isinstance(frame, (bytes, bytearray, memoryview)):
             raise TypeError("PCM TX frame must be bytes-like.")
+        # Same-device duplex: TX rides the single stream's TX queue.
+        if self._duplex_stream is not None:
+            await self._duplex_stream.write(bytes(frame))
+            return
         assert self._tx_stream is not None
         await self._tx_stream.write(bytes(frame))
 
