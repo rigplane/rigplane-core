@@ -141,6 +141,35 @@ class TxStream(Protocol):
         ...
 
 
+@runtime_checkable
+class DuplexStream(Protocol):
+    """Bidirectional audio stream — RX capture and TX playback on ONE device.
+
+    Backed by a single PortAudio full-duplex stream so a USB-CODEC radio can
+    transmit (computer audio → radio) while RX capture keeps running on the
+    same device, without the two-separate-stream macOS CoreAudio AUHAL ``-50``
+    (MOR-531). Combines the :class:`RxStream` consumer contract (``start``
+    registers a PCM s16le frame callback) with the :class:`TxStream` producer
+    contract (``write`` queues a playback frame).
+    """
+
+    @property
+    def running(self) -> bool: ...
+
+    @property
+    def write_health(self) -> TxStreamHealth: ...
+
+    async def start(self, callback: Callable[[bytes], None]) -> None:
+        """Begin duplex I/O; deliver captured PCM frames to *callback*."""
+        ...
+
+    async def stop(self) -> None: ...
+
+    async def write(self, frame: bytes) -> None:
+        """Queue one PCM s16le frame for playback."""
+        ...
+
+
 # ---------------------------------------------------------------------------
 # Backend protocol
 # ---------------------------------------------------------------------------
@@ -203,6 +232,28 @@ class AudioBackend(Protocol):
         channels: int = 1,
         frame_ms: int = 20,
     ) -> TxStream: ...
+
+    def open_duplex(
+        self,
+        device: AudioDeviceId,
+        *,
+        sample_rate: int = 48_000,
+        channels: int = 1,
+        frame_ms: int = 20,
+        deliver_channels: int | None = None,
+        rx_audio_channel: str = "mix",
+        tx_channels: int | None = None,
+    ) -> DuplexStream:
+        """Open a single full-duplex RX+TX stream on one *device* (MOR-531).
+
+        Additive: ``open_rx`` / ``open_tx`` are unchanged. ``channels`` is the
+        RX-leg native open count; ``deliver_channels`` is the RX-delivered count
+        (the duplex stream software-downmixes when delivering fewer than it
+        opens, identically to ``open_rx``). ``tx_channels`` is the TX-leg channel
+        count (defaults to ``channels``) — a ``sd.Stream`` accepts an
+        ``(in, out)`` channel pair, so RX and TX legs need not match.
+        """
+        ...
 
 
 # ---------------------------------------------------------------------------
@@ -281,6 +332,87 @@ def _downmix_stereo_to_mono_s16le(pcm: bytes, *, channel: str = "mix") -> bytes:
     return mono.tobytes()
 
 
+class _RxFramer:
+    """Shared RX data-path: downmix → accumulate → re-chunk into fixed frames.
+
+    Factored out of :class:`_PortAudioRxStream` so the duplex stream
+    (:class:`_PortAudioDuplexStream`) can reuse the *exact* same capture
+    semantics — the stereo→mono ``rx_audio_channel`` downmix (MOR-504/508) plus
+    the lossless re-chunking of engine-native variable-size blocks into fixed
+    ``frame_ms`` frames (the downstream PCM-TX validator rejects any other size).
+    The owning stream is the single audio-thread writer, so no lock is needed;
+    the consumer ``callback`` is contractually cheap and thread-safe.
+    """
+
+    def __init__(
+        self,
+        *,
+        channels: int,
+        deliver_channels: int,
+        sample_rate: int,
+        frame_ms: int,
+        rx_audio_channel: str,
+    ) -> None:
+        self._rx_audio_channel = rx_audio_channel
+        # Software downmix only fires for the stereo-native → mono case. Any
+        # other deliver/open relationship passes interleaved PCM through
+        # unchanged (over-request already clamps open == deliver upstream).
+        self._downmix_stereo_to_mono = channels == 2 and deliver_channels == 1
+        frame_samples = (sample_rate * frame_ms) // 1000
+        self._frame_bytes = max(1, frame_samples * deliver_channels * 2)
+        self._accumulator = bytearray()
+
+    @property
+    def frame_bytes(self) -> int:
+        return self._frame_bytes
+
+    def reset(self) -> None:
+        self._accumulator = bytearray()
+
+    def feed(self, indata: Any, callback: Callable[[bytes], None]) -> None:
+        """Downmix + re-chunk *indata*; deliver each whole frame to *callback*.
+
+        Runs on PortAudio's audio thread: keep it non-blocking. Copies the PCM
+        out of the (reused, variable-size) input buffer, optionally downmixes
+        stereo→mono, accumulates, then slices whole fixed-size frames out and
+        hands each to the consumer. Re-chunking a continuous callback stream is
+        lossless and adds no scheduling seam.
+        """
+        try:
+            pcm = (
+                bytes(indata.tobytes()) if hasattr(indata, "tobytes") else bytes(indata)
+            )
+        except Exception:
+            logger.warning("portaudio-rx: capture copy failed", exc_info=True)
+            return
+        if not pcm:
+            return
+        if self._downmix_stereo_to_mono:
+            # Device opened at 2 ch (native) but consumer wants mono (MOR-504):
+            # collapse interleaved L/R → mono BEFORE chunking, so the
+            # accumulator/fixed-frame slicing operates on mono bytes and the
+            # FFT scope + broadcaster receive the mono contract they expect.
+            try:
+                pcm = _downmix_stereo_to_mono_s16le(pcm, channel=self._rx_audio_channel)
+            except Exception:
+                logger.warning(
+                    "portaudio-rx: stereo→mono downmix failed", exc_info=True
+                )
+                return
+            if not pcm:
+                return
+        acc = self._accumulator
+        acc.extend(pcm)
+        frame_bytes = self._frame_bytes
+        try:
+            while len(acc) >= frame_bytes:
+                frame = bytes(acc[:frame_bytes])
+                del acc[:frame_bytes]
+                callback(frame)
+        except Exception:
+            logger.warning("portaudio-rx: consumer callback failed", exc_info=True)
+
+
 class _PortAudioRxStream:
     """RxStream backed by a callback-driven sounddevice InputStream.
 
@@ -328,41 +460,30 @@ class _PortAudioRxStream:
         self._sample_rate = sample_rate
         # ``channels`` is the OS open count; ``_deliver_channels`` is what the
         # consumer receives. When deliver < open (mono request on a stereo-
-        # native device, MOR-504) the callback downmixes interleaved s16le to
+        # native device, MOR-504) the framer downmixes interleaved s16le to
         # the deliver count before chunking. Default: deliver == open.
         self._channels = channels
         self._deliver_channels = (
             channels if deliver_channels is None else deliver_channels
-        )
-        # How the stereo→mono downmix collapses each L/R pair (MOR-508):
-        # "mix" = (L+R)//2 (legacy default), "left"/"right" = that channel at
-        # full level. The FTX-1 carries RX audio on L only, so averaging with a
-        # silent R halves the level (−6 dB); "left" delivers it undivided.
-        self._rx_audio_channel = rx_audio_channel
-        # Software downmix only fires for the stereo-native → mono case. Any
-        # other deliver/open relationship passes interleaved PCM through
-        # unchanged (over-request already clamps open == deliver upstream).
-        self._downmix_stereo_to_mono = (
-            self._channels == 2 and self._deliver_channels == 1
         )
         # Capture is callback-driven with blocksize=0 (engine-native period),
         # mirroring a clean sd.rec. blocksize=0 was previously rejected by the
         # WDM-KS capture face (PortAudioError -9999), but companion device
         # selection now forces the WASAPI face, on which blocksize=0 opens.
         self._blocksize = blocksize
-        # Fixed delivered-frame size: frame_ms worth of audio frames, each
-        # ``_deliver_channels`` interleaved s16le samples (2 bytes/sample). The
-        # downstream PCM validator expects the DELIVER count (1920 bytes = 20 ms
-        # mono @ 48 kHz), not the native open count. The PortAudio stream stays
-        # blocksize=0; only the size handed to ``cb`` is fixed.
-        frame_samples = (sample_rate * frame_ms) // 1000
-        self._frame_bytes = max(1, frame_samples * self._deliver_channels * 2)
+        # The framer owns the downmix + fixed-frame re-chunking (shared with the
+        # duplex stream). It carries the sub-frame remainder between audio-thread
+        # callbacks; the audio thread is the only writer, so no lock is needed.
+        self._framer = _RxFramer(
+            channels=self._channels,
+            deliver_channels=self._deliver_channels,
+            sample_rate=sample_rate,
+            frame_ms=frame_ms,
+            rx_audio_channel=rx_audio_channel,
+        )
         self._stream: Any = None
         self._running = False
         self._callback: Callable[[bytes], None] | None = None
-        # Sub-frame remainder carried between audio-thread callbacks. The audio
-        # thread is the only writer, so no lock is needed.
-        self._accumulator = bytearray()
 
     @property
     def running(self) -> bool:
@@ -372,7 +493,7 @@ class _PortAudioRxStream:
         if self.running:
             raise RuntimeError("RX stream already running.")
         self._callback = callback
-        self._accumulator = bytearray()
+        self._framer.reset()
         # blocksize=0 (engine-native period) mirrors a clean sd.rec on the
         # WASAPI face. latency="low" matches the (clean) output stream.
         self._stream = self._sd.InputStream(
@@ -394,7 +515,7 @@ class _PortAudioRxStream:
         self._callback = None
         # Drop any sub-frame remainder: an incomplete trailing frame cannot
         # satisfy the fixed-size contract and is discarded at teardown.
-        self._accumulator = bytearray()
+        self._framer.reset()
         if stream is not None:
             try:
                 stream.stop()
@@ -412,50 +533,17 @@ class _PortAudioRxStream:
         _time_info: Any,
         _status: Any,
     ) -> None:
-        # Runs on PortAudio's audio thread: keep it non-blocking. Copy the
-        # captured PCM (s16le) out of the (reused, variable-size) input buffer,
-        # append it to the running accumulator, then slice off whole fixed-size
-        # frames and deliver each to the consumer. Re-chunking a continuous
-        # callback stream is lossless (every sample reaches the consumer in
-        # order) and adds no scheduling seam, so it keeps the fixed-frame
-        # contract without re-introducing the comb. The consumer is
-        # contractually cheap/thread-safe.
+        # Runs on PortAudio's audio thread: keep it non-blocking. The shared
+        # framer copies the captured PCM out of the (reused, variable-size) input
+        # buffer, optionally downmixes stereo→mono, accumulates, and delivers
+        # whole fixed-size frames to the consumer. Re-chunking a continuous
+        # callback stream is lossless and adds no scheduling seam, so it keeps
+        # the fixed-frame contract without re-introducing the comb. The consumer
+        # is contractually cheap/thread-safe.
         cb = self._callback
         if cb is None:
             return
-        try:
-            pcm = (
-                bytes(indata.tobytes()) if hasattr(indata, "tobytes") else bytes(indata)
-            )
-        except Exception:
-            logger.warning("portaudio-rx: capture copy failed", exc_info=True)
-            return
-        if not pcm:
-            return
-        if self._downmix_stereo_to_mono:
-            # Device opened at 2 ch (native) but consumer wants mono (MOR-504):
-            # collapse interleaved L/R → mono average BEFORE chunking, so the
-            # accumulator/fixed-frame slicing operates on mono bytes and the
-            # FFT scope + broadcaster receive the mono contract they expect.
-            try:
-                pcm = _downmix_stereo_to_mono_s16le(pcm, channel=self._rx_audio_channel)
-            except Exception:
-                logger.warning(
-                    "portaudio-rx: stereo→mono downmix failed", exc_info=True
-                )
-                return
-            if not pcm:
-                return
-        acc = self._accumulator
-        acc.extend(pcm)
-        frame_bytes = self._frame_bytes
-        try:
-            while len(acc) >= frame_bytes:
-                frame = bytes(acc[:frame_bytes])
-                del acc[:frame_bytes]
-                cb(frame)
-        except Exception:
-            logger.warning("portaudio-rx: consumer callback failed", exc_info=True)
+        self._framer.feed(indata, cb)
 
 
 class _PortAudioTxStream:
@@ -846,6 +934,155 @@ class _PortAudioTxStream:
             logger.debug("portaudio-tx: stream close failed", exc_info=True)
 
 
+class _PortAudioDuplexStream:
+    """Full-duplex stream backed by ONE callback-driven sounddevice ``Stream``.
+
+    Wraps a single ``sd.Stream(device=(idx, idx), channels=(open, open), ...)``
+    so a USB-CODEC radio can do digital-mode TX (computer audio → radio via USB
+    MOD) WHILE RX capture (browser audio + FFT scope) keeps running — without
+    the macOS CoreAudio AUHAL ``-50`` that two separate streams
+    (``sd.InputStream`` + ``sd.OutputStream``) cause on one C-Media device
+    (MOR-531).
+
+    Reuses the existing data paths rather than duplicating them:
+
+    - **RX leg** delegates to the shared :class:`_RxFramer` — the *same*
+      ``rx_audio_channel`` downmix (MOR-504/508) and lossless re-chunking into
+      fixed ``frame_ms`` frames that :class:`_PortAudioRxStream` uses. Delivered
+      frames are marshalled to the consumer exactly as the RX stream is (the
+      consumer is contractually cheap/thread-safe; the bridge marshals onto its
+      event loop via ``call_soon_threadsafe``).
+    - **TX leg** delegates to an embedded :class:`_PortAudioTxStream` — the
+      *same* bounded ring + ``write()`` producer and ring-drain consumer. The
+      duplex callback fills ``outdata`` by invoking the TX stream's output
+      callback (silence when the queue is empty), and ``write_health`` proxies
+      the embedded TX stream so diagnostics are identical to the split path.
+    """
+
+    def __init__(
+        self,
+        sd: Any,
+        np: Any,
+        device_index: int,
+        sample_rate: int,
+        channels: int,
+        blocksize: int,
+        frame_ms: int,
+        deliver_channels: int | None = None,
+        rx_audio_channel: str = "mix",
+        tx_channels: int | None = None,
+    ) -> None:
+        self._sd = sd
+        self._device_index = device_index
+        self._sample_rate = sample_rate
+        # RX leg opens at the native ``channels`` count and delivers
+        # ``deliver_channels`` (downmix when fewer, MOR-504). The TX leg opens at
+        # its own ``tx_channels`` count (the mono playback the radio's USB MOD
+        # consumes); ``sd.Stream`` accepts a ``(in, out)`` channel pair so the
+        # two legs need not match.
+        self._channels = channels
+        self._deliver_channels = (
+            channels if deliver_channels is None else deliver_channels
+        )
+        self._tx_channels = channels if tx_channels is None else tx_channels
+        self._blocksize = blocksize
+        self._framer = _RxFramer(
+            channels=self._channels,
+            deliver_channels=self._deliver_channels,
+            sample_rate=sample_rate,
+            frame_ms=frame_ms,
+            rx_audio_channel=rx_audio_channel,
+        )
+        # Embed a TX stream purely for its ring + write()/output-callback; its
+        # own ``sd`` stream is never opened (we drive its ``_output_callback``
+        # from the duplex callback). It opens at ``tx_channels`` so the ring's
+        # frame accounting and ``outdata`` interleaving match the TX leg.
+        self._tx = _PortAudioTxStream(
+            sd,
+            np,
+            device_index=device_index,
+            sample_rate=sample_rate,
+            channels=self._tx_channels,
+            blocksize=blocksize,
+        )
+        self._stream: Any = None
+        self._running = False
+        self._callback: Callable[[bytes], None] | None = None
+
+    @property
+    def running(self) -> bool:
+        return self._running
+
+    @property
+    def write_health(self) -> TxStreamHealth:
+        return self._tx.write_health
+
+    async def start(self, callback: Callable[[bytes], None]) -> None:
+        if self.running:
+            raise RuntimeError("Duplex stream already running.")
+        self._callback = callback
+        self._framer.reset()
+        # The embedded TX stream's ring must be marked running so ``write()``
+        # accepts frames; its OWN sounddevice stream stays unopened — the duplex
+        # callback drives playback.
+        self._tx._running = True
+        # ONE full-duplex stream: device=(idx, idx), channels=(open, open).
+        # blocksize=0 (engine-native period) mirrors a clean sd.rec/playback.
+        self._stream = self._sd.Stream(
+            samplerate=self._sample_rate,
+            channels=(self._channels, self._tx_channels),
+            dtype="int16",
+            device=(self._device_index, self._device_index),
+            blocksize=self._blocksize,
+            latency="low",
+            callback=self._duplex_callback,
+        )
+        self._stream.start()
+        self._running = True
+
+    async def stop(self) -> None:
+        stream = self._stream
+        self._stream = None
+        self._running = False
+        self._callback = None
+        self._framer.reset()
+        self._tx._running = False
+        self._tx._clear_buffer()
+        if stream is not None:
+            try:
+                stream.stop()
+            except Exception:
+                logger.debug("portaudio-duplex: stream stop failed", exc_info=True)
+            try:
+                stream.close()
+            except Exception:
+                logger.debug("portaudio-duplex: stream close failed", exc_info=True)
+
+    async def write(self, frame: bytes) -> None:
+        """Queue one PCM s16le playback frame (TX leg, via the shared ring)."""
+        if not self.running:
+            raise RuntimeError("Duplex stream is not running.")
+        await self._tx.write(frame)
+
+    def _duplex_callback(
+        self,
+        indata: Any,
+        outdata: Any,
+        frames: int,
+        _time_info: Any,
+        status: Any,
+    ) -> None:
+        # ONE audio-thread callback handles BOTH directions:
+        #  (a) RX fan — hand captured ``indata`` to the shared framer, which
+        #      downmixes + re-chunks and delivers fixed frames to the consumer;
+        #  (b) TX pull — fill ``outdata`` from the embedded TX ring (silence when
+        #      the producer is behind), reusing the TX stream's output callback.
+        cb = self._callback
+        if cb is not None:
+            self._framer.feed(indata, cb)
+        self._tx._output_callback(outdata, frames, _time_info, status)
+
+
 class PortAudioBackend:
     """AudioBackend backed by PortAudio via *sounddevice*.
 
@@ -989,6 +1226,34 @@ class PortAudioBackend:
             blocksize=blocksize,
         )
 
+    def open_duplex(
+        self,
+        device: AudioDeviceId,
+        *,
+        sample_rate: int = 48_000,
+        channels: int = 1,
+        frame_ms: int = 20,
+        deliver_channels: int | None = None,
+        rx_audio_channel: str = "mix",
+        tx_channels: int | None = None,
+    ) -> DuplexStream:
+        sd, np = self._ensure_deps()
+        # TX uses a fixed blocksize (frame_ms) so the duplex callback's
+        # ``outdata`` window matches a whole playback frame, mirroring open_tx.
+        blocksize = (sample_rate * frame_ms) // 1000
+        return _PortAudioDuplexStream(
+            sd,
+            np,
+            device_index=int(device),
+            sample_rate=sample_rate,
+            channels=channels,
+            blocksize=blocksize,
+            frame_ms=frame_ms,
+            deliver_channels=deliver_channels,
+            rx_audio_channel=rx_audio_channel,
+            tx_channels=tx_channels,
+        )
+
 
 # ---------------------------------------------------------------------------
 # FakeAudioBackend (for tests)
@@ -1084,6 +1349,55 @@ class FakeTxStream:
         self.written_frames.append(frame)
 
 
+class FakeDuplexStream:
+    """Test double: one full-duplex stream — RX fan + TX queue (MOR-531).
+
+    Combines :class:`FakeRxStream` (delivers injected capture frames to the
+    registered callback) and :class:`FakeTxStream` (captures written playback
+    frames) so the same-device duplex path can be exercised without PortAudio.
+    """
+
+    def __init__(self) -> None:
+        self._running = False
+        self._callback: Callable[[bytes], None] | None = None
+        self.started_count = 0
+        self.stopped_count = 0
+        self.written_frames: list[bytes] = []
+
+    @property
+    def running(self) -> bool:
+        return self._running
+
+    @property
+    def write_health(self) -> TxStreamHealth:
+        return TxStreamHealth(
+            frames_queued=len(self.written_frames),
+            writes_completed=len(self.written_frames),
+        )
+
+    async def start(self, callback: Callable[[bytes], None]) -> None:
+        if self._running:
+            raise RuntimeError("FakeDuplexStream already running.")
+        self._callback = callback
+        self._running = True
+        self.started_count += 1
+
+    async def stop(self) -> None:
+        self._running = False
+        self._callback = None
+        self.stopped_count += 1
+
+    async def write(self, frame: bytes) -> None:
+        if not self._running:
+            raise RuntimeError("FakeDuplexStream is not running.")
+        self.written_frames.append(frame)
+
+    def inject_frame(self, frame: bytes) -> None:
+        """Push an RX capture frame to the registered callback (test helper)."""
+        if self._callback is not None:
+            self._callback(frame)
+
+
 class FakeAudioBackend:
     """Deterministic AudioBackend for tests — no real audio hardware.
 
@@ -1113,6 +1427,7 @@ class FakeAudioBackend:
         }
         self.rx_streams: list[FakeRxStream] = []
         self.tx_streams: list[FakeTxStream] = []
+        self.duplex_streams: list[FakeDuplexStream] = []
 
     def list_devices(self) -> list[AudioDeviceInfo]:
         return list(self._devices)
@@ -1167,12 +1482,31 @@ class FakeAudioBackend:
         self.tx_streams.append(stream)
         return stream
 
+    def open_duplex(
+        self,
+        device: AudioDeviceId,
+        *,
+        sample_rate: int = 48_000,
+        channels: int = 1,
+        frame_ms: int = 20,
+        deliver_channels: int | None = None,
+        rx_audio_channel: str = "mix",
+        tx_channels: int | None = None,
+    ) -> FakeDuplexStream:
+        if not any(d.id == device for d in self._devices):
+            raise ValueError(f"Unknown device id {device}")
+        stream = FakeDuplexStream()
+        self.duplex_streams.append(stream)
+        return stream
+
 
 __all__ = [
     "AudioBackend",
     "AudioDeviceId",
     "AudioDeviceInfo",
+    "DuplexStream",
     "FakeAudioBackend",
+    "FakeDuplexStream",
     "FakeRxStream",
     "FakeTxStream",
     "PortAudioBackend",

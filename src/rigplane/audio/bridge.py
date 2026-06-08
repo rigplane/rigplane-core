@@ -48,6 +48,7 @@ from ._bridge_state import BridgeState, BridgeStateChange
 from .backend import (
     AudioBackend,
     AudioDeviceInfo,
+    DuplexStream,
     PortAudioBackend,
     RxStream,
     TxStream,
@@ -212,6 +213,18 @@ def _find_device_in_backend(
     return None
 
 
+def _is_virtual_loopback_device(dev: AudioDeviceInfo) -> bool:
+    """Whether *dev* is a virtual loopback (BlackHole/VB-Cable/PipeWire/…).
+
+    The same-device full-duplex path (MOR-531) exists to dodge the macOS
+    CoreAudio AUHAL -50 that two separate streams cause on one *real* C-Media
+    USB CODEC. Virtual loopback drivers do not have that limitation and work
+    fine as two separate streams, so they stay on the two-stream path.
+    """
+    lowered = dev.name.lower()
+    return any(candidate.lower() in lowered for candidate in _LOOPBACK_CANDIDATES)
+
+
 class AudioBridge:
     """Bidirectional PCM audio bridge between radio and a system audio device.
 
@@ -281,6 +294,12 @@ class AudioBridge:
         self._input_channels: int = 1
         self._rx_stream: TxStream | None = None  # radio → device (playback)
         self._tx_stream: RxStream | None = None  # device → radio (capture)
+        # Single full-duplex stream for the same-device CODEC case (MOR-531):
+        # opening separate playback + capture streams on one C-Media device
+        # fails with macOS CoreAudio AUHAL -50. When set, it serves BOTH the
+        # radio→device playback (``write``) and device→radio capture (``start``
+        # callback), replacing the separate ``_rx_stream`` + ``_tx_stream`` pair.
+        self._duplex_stream: DuplexStream | None = None
         self._rx_task: asyncio.Task[None] | None = None
         self._tx_task: asyncio.Task[None] | None = None
         self._loop: asyncio.AbstractEventLoop | None = None
@@ -427,14 +446,19 @@ class AudioBridge:
         dev_id = dev.id
         logger.info("%s: using device %r (id %d)", self._label, dev.name, int(dev_id))
 
-        # --- RX path: radio → virtual device output ---
-        self._rx_stream = self._backend.open_tx(
-            dev_id,
-            sample_rate=self._sample_rate,
-            channels=self._channels,
-            frame_ms=self._frame_ms,
-        )
-        await self._rx_stream.start()
+        # Resolve the TX-capture device up front: it shares the RX-playback
+        # device unless an explicit TX device name resolves to a different one.
+        tx_dev_id = dev_id
+        if self._tx_device_name:
+            tx_dev = _find_device_in_backend(self._backend, self._tx_device_name)
+            if tx_dev is None:
+                logger.warning(
+                    "%s: TX device %r not found, using RX device",
+                    self._label,
+                    self._tx_device_name,
+                )
+            else:
+                tx_dev_id = tx_dev.id
 
         # Codec detection
         from rigplane.types import AudioCodec
@@ -470,13 +494,13 @@ class AudioBridge:
         else:
             self._decoder = None
 
-        # Subscribe to AudioBus
-        bus = self._radio.audio_bus
-        self._subscription = bus.subscribe(name="audio-bridge")
-        await self._subscription.start()
-        self._rx_task = asyncio.create_task(self._rx_loop())
-
-        # --- TX path: virtual device input → radio ---
+        # --- Arm the radio TX path BEFORE choosing the device-stream topology.
+        # The radio may reject TX (serial backend with no USB-audio TX path):
+        # degrade to RX-only and use a plain output stream, never a duplex one
+        # (MOR-242). Only when TX is armed AND the capture leg targets the SAME
+        # device as the playback leg do we open ONE full-duplex stream (MOR-531):
+        # separate playback + capture on one C-Media CODEC fails with AUHAL -50.
+        tx_armed = False
         if self._tx_enabled:
             try:
                 await self._radio.start_audio_tx_pcm(
@@ -485,10 +509,6 @@ class AudioBridge:
                     frame_ms=self._frame_ms,
                 )
             except (RuntimeError, NotImplementedError) as exc:
-                # The radio cannot arm a PCM TX stream (e.g. a serial backend
-                # that never set up its USB-audio TX path). Degrade to RX-only
-                # instead of spinning a _tx_loop that would reject — and log —
-                # every captured frame (MOR-242).
                 self._tx_enabled = False
                 self._tx_started = False
                 logger.warning(
@@ -496,30 +516,67 @@ class AudioBridge:
                     self._label,
                     exc,
                 )
-                return
-            self._tx_started = True
+            else:
+                tx_armed = True
+                self._tx_started = True
 
-            tx_dev_id = dev_id
-            if self._tx_device_name:
-                tx_dev = _find_device_in_backend(self._backend, self._tx_device_name)
-                if tx_dev is None:
-                    logger.warning(
-                        "%s: TX device %r not found, using RX device",
-                        self._label,
-                        self._tx_device_name,
-                    )
-                else:
-                    tx_dev_id = tx_dev.id
+        # Same-device duplex only for a REAL CODEC: a virtual loopback
+        # (BlackHole/VB-Cable/PipeWire) has no AUHAL -50 limitation and stays on
+        # the two-stream path (MOR-531 targets the C-Media same-device case).
+        use_duplex = (
+            tx_armed
+            and int(tx_dev_id) == int(dev_id)
+            and not _is_virtual_loopback_device(dev)
+        )
 
-            self._tx_queue = asyncio.Queue(maxsize=64)
-            self._tx_stream = self._backend.open_rx(
-                tx_dev_id,
+        # --- RX path: radio → device output (playback) ---
+        if use_duplex:
+            logger.info(
+                "%s: same-device RX+TX (id %d) — opening single full-duplex "
+                "stream (MOR-531)",
+                self._label,
+                int(dev_id),
+            )
+            self._duplex_stream = self._backend.open_duplex(
+                dev_id,
                 sample_rate=self._sample_rate,
                 channels=self._channels,
                 frame_ms=self._frame_ms,
             )
-            await self._tx_stream.start(self._on_tx_capture)
+        else:
+            self._rx_stream = self._backend.open_tx(
+                dev_id,
+                sample_rate=self._sample_rate,
+                channels=self._channels,
+                frame_ms=self._frame_ms,
+            )
+            await self._rx_stream.start()
+
+        # Subscribe to AudioBus
+        bus = self._radio.audio_bus
+        self._subscription = bus.subscribe(name="audio-bridge")
+        await self._subscription.start()
+
+        # --- TX path: device input → radio (capture) ---
+        if tx_armed:
+            self._tx_queue = asyncio.Queue(maxsize=64)
+            if use_duplex:
+                # The single duplex stream serves BOTH playback (write) and
+                # capture (start callback). Starting it arms both directions.
+                assert self._duplex_stream is not None
+                await self._duplex_stream.start(self._on_tx_capture)
+            else:
+                self._tx_stream = self._backend.open_rx(
+                    tx_dev_id,
+                    sample_rate=self._sample_rate,
+                    channels=self._channels,
+                    frame_ms=self._frame_ms,
+                )
+                await self._tx_stream.start(self._on_tx_capture)
             self._tx_task = asyncio.create_task(self._tx_loop())
+
+        # Start the RX playback loop last so the streams above are live.
+        self._rx_task = asyncio.create_task(self._rx_loop())
 
     async def _teardown_streams(self) -> None:
         """Cancel tasks and stop streams.
@@ -560,6 +617,14 @@ class AudioBridge:
             except Exception:
                 logger.debug("%s: RX stream stop error", self._label, exc_info=True)
             self._rx_stream = None
+
+        # The single duplex stream serves both directions — stop it once.
+        if self._duplex_stream is not None:
+            try:
+                await self._duplex_stream.stop()
+            except Exception:
+                logger.debug("%s: duplex stream stop error", self._label, exc_info=True)
+            self._duplex_stream = None
 
     # ------------------------------------------------------------------
     # Reconnect
@@ -743,6 +808,19 @@ class AudioBridge:
             self._tx_overruns += 1
             self._tx_queue.put_nowait(frame)
 
+    @property
+    def _playback_stream(self) -> TxStream | DuplexStream | None:
+        """Active radio→device playback stream.
+
+        The single duplex stream (same-device RX+TX, MOR-531) supplies the
+        ``write`` playback contract too, so the RX loop writes to it directly;
+        otherwise the separate output stream (``_rx_stream``) is used. Both
+        expose ``running`` and ``write``.
+        """
+        if self._duplex_stream is not None:
+            return self._duplex_stream
+        return self._rx_stream
+
     async def _rx_loop(self) -> None:
         """Read packets from AudioBus subscription, decode, write to device."""
         try:
@@ -755,8 +833,9 @@ class AudioBridge:
                         logger.debug(
                             "%s: None packet (gap) #%d", self._label, self._rx_drops
                         )
-                    if self._rx_stream and self._rx_stream.running:
-                        await self._rx_stream.write(self._silence_bytes)
+                    playback = self._playback_stream
+                    if playback and playback.running:
+                        await playback.write(self._silence_bytes)
                     continue
 
                 opus_data = getattr(packet, "data", None)
@@ -781,11 +860,12 @@ class AudioBridge:
                     self._last_rx_level_dbfs = _rms_dbfs(pcm_data)
                     if self._rx_frames % 50 == 0:
                         self._emit_metrics()
-                    if self._rx_stream and self._rx_stream.running:
+                    playback = self._playback_stream
+                    if playback and playback.running:
                         out_data = pcm_data
                         if self._input_channels == 2:
                             out_data = _downmix_stereo_to_mono(out_data)
-                        await self._rx_stream.write(out_data)
+                        await playback.write(out_data)
                 except OSError:
                     raise  # device-level error → outer handler → reconnect
                 except Exception as exc:
@@ -810,8 +890,11 @@ class AudioBridge:
 
         try:
             while self._running:
-                # Check TX capture stream health periodically
-                if self._tx_stream is not None and not self._tx_stream.running:
+                # Check TX capture stream health periodically. In the same-device
+                # duplex case (MOR-531) the capture rides the single duplex
+                # stream; otherwise it is the dedicated capture stream.
+                capture = self._duplex_stream or self._tx_stream
+                if capture is not None and not capture.running:
                     raise OSError("TX capture stream stopped unexpectedly")
 
                 try:
