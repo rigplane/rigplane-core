@@ -15,6 +15,7 @@ from typing import TYPE_CHECKING, Callable, Protocol
 
 from .._connection_state import RadioConnectionState
 from ..audio import AudioPacket
+from ..audio.lan_stream import SYNTHETIC_RX_IDENT
 from ..commands import parse_ack_nak, scope_off as _scope_off_cmd
 from ..exceptions import AudioFormatError, CommandError, ConnectionError
 from ..radio import CoreRadio
@@ -373,27 +374,25 @@ class _IcomSerialRadioBase(CoreRadio):
             raise CommandError("Radio rejected scope disable")
 
     # ------------------------------------------------------------------
-    # Audio RX
+    # Neutral AudioTransport surface (MOR-532 epic, MOR-540)
     # ------------------------------------------------------------------
 
-    async def start_audio_rx_opus(
+    async def start_rx(
         self,
         callback: Callable[[AudioPacket | None], None],
-        *,
-        jitter_depth: int = 5,
     ) -> None:
+        """Start RX capture from the USB CODEC (``AudioTransport.start_rx``).
+
+        Locally captured PCM (transcoded to Opus when the negotiated codec
+        is an Opus variant) is framed into synthetic :class:`AudioPacket`
+        instances marked with ``SYNTHETIC_RX_IDENT`` — there is no LAN wire
+        header on this path.
+        """
         if not callable(callback):
             raise TypeError("callback must be callable and accept AudioPacket | None.")
-        if isinstance(jitter_depth, bool) or not isinstance(jitter_depth, int):
-            raise TypeError(
-                f"jitter_depth must be an int, got {type(jitter_depth).__name__}."
-            )
-        if jitter_depth < 0:
-            raise ValueError(f"jitter_depth must be >= 0, got {jitter_depth}.")
         self._check_connected()
 
         self._opus_rx_user_callback = callback
-        self._opus_rx_jitter_depth = jitter_depth
 
         sample_rate = self.audio_sample_rate
         channels = self._serial_audio_channels_for_codec()
@@ -420,7 +419,7 @@ class _IcomSerialRadioBase(CoreRadio):
                     )
                     return
             packet = AudioPacket(
-                ident=0x9781,
+                ident=SYNTHETIC_RX_IDENT,
                 send_seq=self._serial_audio_seq,
                 data=payload,
             )
@@ -434,9 +433,65 @@ class _IcomSerialRadioBase(CoreRadio):
             frame_ms=frame_ms,
         )
 
-    async def stop_audio_rx_opus(self) -> None:
+    async def stop_rx(self) -> None:
+        """Stop RX capture (``AudioTransport.stop_rx``)."""
         self._opus_rx_user_callback = None
         await self._serial_audio_driver.stop_rx()
+
+    async def start_tx(self) -> None:
+        """Arm the USB CODEC TX path (``AudioTransport.start_tx``)."""
+        self._check_connected()
+        await self._serial_audio_driver.start_tx(
+            sample_rate=self.audio_sample_rate,
+            channels=self._serial_audio_channels_for_codec(),
+            frame_ms=20,
+        )
+
+    async def push_tx(self, data: bytes) -> None:
+        """Push one TX frame (``AudioTransport.push_tx``).
+
+        Opus input is transcoded to PCM when the negotiated codec is an
+        Opus variant; the USB CODEC driver always consumes PCM.
+        """
+        self._check_connected()
+        if not self._serial_audio_driver.tx_running:
+            raise RuntimeError("Audio TX not started")
+        payload = bytes(data)
+        if self._serial_codec_is_opus():
+            transcoder = self._get_pcm_transcoder(
+                sample_rate=self.audio_sample_rate,
+                channels=self._serial_audio_channels_for_codec(),
+                frame_ms=20,
+            )
+            payload = transcoder.opus_to_pcm(payload)
+        await self._serial_audio_driver._push_tx_pcm(payload)
+
+    async def stop_tx(self) -> None:
+        """Close the TX path (``AudioTransport.stop_tx``)."""
+        await self._serial_audio_driver.stop_tx()
+        self._pcm_tx_fmt = None
+
+    # ------------------------------------------------------------------
+    # Audio RX (legacy opus-family shims -> neutral AudioTransport)
+    # ------------------------------------------------------------------
+
+    async def start_audio_rx_opus(
+        self,
+        callback: Callable[[AudioPacket | None], None],
+        *,
+        jitter_depth: int = 5,
+    ) -> None:
+        if isinstance(jitter_depth, bool) or not isinstance(jitter_depth, int):
+            raise TypeError(
+                f"jitter_depth must be an int, got {type(jitter_depth).__name__}."
+            )
+        if jitter_depth < 0:
+            raise ValueError(f"jitter_depth must be >= 0, got {jitter_depth}.")
+        self._opus_rx_jitter_depth = jitter_depth
+        await self.start_rx(callback)
+
+    async def stop_audio_rx_opus(self) -> None:
+        await self.stop_rx()
 
     async def start_audio_rx_pcm(
         self,
@@ -483,34 +538,17 @@ class _IcomSerialRadioBase(CoreRadio):
         await self._serial_audio_driver.stop_rx()
 
     # ------------------------------------------------------------------
-    # Audio TX (Opus)
+    # Audio TX (legacy opus-family shims -> neutral AudioTransport)
     # ------------------------------------------------------------------
 
     async def start_audio_tx_opus(self) -> None:
-        self._check_connected()
-        await self._serial_audio_driver.start_tx(
-            sample_rate=self.audio_sample_rate,
-            channels=self._serial_audio_channels_for_codec(),
-            frame_ms=20,
-        )
+        await self.start_tx()
 
     async def push_audio_tx_opus(self, opus_data: bytes) -> None:
-        self._check_connected()
-        if not self._serial_audio_driver.tx_running:
-            raise RuntimeError("Audio TX not started")
-        payload = bytes(opus_data)
-        if self._serial_codec_is_opus():
-            transcoder = self._get_pcm_transcoder(
-                sample_rate=self.audio_sample_rate,
-                channels=self._serial_audio_channels_for_codec(),
-                frame_ms=20,
-            )
-            payload = transcoder.opus_to_pcm(payload)
-        await self._serial_audio_driver._push_tx_pcm(payload)
+        await self.push_tx(opus_data)
 
     async def stop_audio_tx_opus(self) -> None:
-        await self._serial_audio_driver.stop_tx()
-        self._pcm_tx_fmt = None
+        await self.stop_tx()
 
     # ------------------------------------------------------------------
     # Audio TX (PCM) — arms ``_pcm_tx_fmt`` so ``push_audio_tx_pcm`` works
