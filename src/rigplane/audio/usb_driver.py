@@ -15,7 +15,7 @@ import asyncio
 import logging
 import sys
 from dataclasses import dataclass
-from typing import Any, Callable
+from typing import Any, Callable, Literal
 
 from .backend import (
     AudioBackend,
@@ -446,6 +446,44 @@ def _extract_sounddevice_module(backend: AudioBackend) -> Any | None:
     return None
 
 
+def resolve_usb_duplex_mode(
+    rx_dev: UsbAudioDevice,
+    tx_dev: UsbAudioDevice,
+) -> Literal["full", "exclusive"]:
+    """Resolve the USB duplex policy for a selected RX/TX device pair.
+
+    Returns ``"exclusive"`` iff the platform is macOS AND RX and TX resolve
+    to the same device index AND the device is a real CODEC (not a virtual
+    loopback such as BlackHole/VB-Cable). On macOS CoreAudio, two separate
+    streams on one real C-Media USB CODEC fail with AUHAL -50 (MOR-531), so
+    such a device must be owned exclusively by ONE full-duplex stream.
+    Everything else — separate devices, virtual loopbacks, non-macOS
+    platforms — supports the two-stream path: ``"full"``.
+
+    Pure read-only policy (MOR-534, AudioTransport 1/12): nothing consumes
+    it yet; later epic steps route stream setup through it.
+    """
+    if sys.platform != "darwin":
+        return "full"
+    if rx_dev.index != tx_dev.index:
+        return "full"
+    # Single source of truth with the bridge path: reuse (not move) the
+    # virtual-loopback predicate. Imported lazily and called via the module
+    # attribute so existing monkeypatch targets on ``rigplane.audio.bridge``
+    # keep steering both consumers.
+    from rigplane.audio import bridge
+
+    info = AudioDeviceInfo(
+        id=AudioDeviceId(rx_dev.index),
+        name=rx_dev.name,
+        input_channels=rx_dev.input_channels,
+        output_channels=rx_dev.output_channels,
+    )
+    if bridge._is_virtual_loopback_device(info):
+        return "full"
+    return "exclusive"
+
+
 class UsbAudioDriver:
     """Stateful USB audio driver with deterministic device selection.
 
@@ -514,6 +552,18 @@ class UsbAudioDriver:
     @property
     def selected_tx_device(self) -> UsbAudioDevice | None:
         return self._selected_tx
+
+    @property
+    def duplex_mode(self) -> Literal["full", "exclusive"]:
+        """USB duplex policy for the resolved RX/TX pair (lazy, read-only).
+
+        Resolves devices via the normal selection path on first access; see
+        :func:`resolve_usb_duplex_mode` for the policy itself.
+        """
+        rx, tx = self._selected_rx, self._selected_tx
+        if rx is None or tx is None:
+            rx, tx = self._ensure_selected_devices()
+        return resolve_usb_duplex_mode(rx, tx)
 
     @property
     def usb_audio_contract(self) -> UsbAudioContract | None:
@@ -989,5 +1039,6 @@ __all__ = [
     "UsbAudioDriver",
     "UsbAudioStreamContract",
     "list_usb_audio_devices",
+    "resolve_usb_duplex_mode",
     "select_usb_audio_devices",
 ]
