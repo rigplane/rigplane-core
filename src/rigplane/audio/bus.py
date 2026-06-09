@@ -28,14 +28,18 @@ Usage::
             save(packet)
 
 Lifecycle:
-    - First subscriber triggers ``radio.start_audio_rx_opus()``
-    - Last subscriber removal triggers ``radio.stop_audio_rx_opus()``
+    - First subscriber triggers ``radio.start_rx()`` (or the legacy
+      ``radio.start_audio_rx_opus()`` for radios without the neutral
+      AudioTransport surface)
+    - Last subscriber removal triggers ``radio.stop_rx()`` (or the legacy
+      ``radio.stop_audio_rx_opus()``)
     - Subscribers can join/leave at any time
 """
 
 from __future__ import annotations
 
 import asyncio
+import inspect
 import logging
 from typing import TYPE_CHECKING, Any
 
@@ -48,6 +52,22 @@ __all__ = ["AudioBus", "AudioSubscription"]
 
 _DEFAULT_QUEUE_SIZE = 64
 _DEFAULT_CLOSE_TIMEOUT = 2.0
+
+
+def _accepts_jitter_depth(start_rx: Any) -> bool:
+    """True when *start_rx* accepts a ``jitter_depth`` keyword argument.
+
+    The neutral ``AudioTransport.start_rx`` is minimal (callback only); the
+    LAN mixin widens it with a keyword-optional ``jitter_depth`` (MOR-539)
+    while the serial and Yaesu implementations do not (MOR-540/541).
+    """
+    try:
+        parameters = inspect.signature(start_rx).parameters
+    except (TypeError, ValueError):  # pragma: no cover — exotic callables
+        return False
+    if "jitter_depth" in parameters:
+        return True
+    return any(p.kind is inspect.Parameter.VAR_KEYWORD for p in parameters.values())
 
 
 class AudioSubscription:
@@ -304,15 +324,32 @@ class AudioBus:
                 # to prevent new subscribers from seeing a dying stream
                 await self._stop_rx()
 
+    async def _begin_rx(self) -> None:
+        """Invoke radio RX start, preferring the neutral AudioTransport surface.
+
+        Falls back to the legacy ``start_audio_rx_opus`` for radios that only
+        implement the Opus-specific surface (third-party/Pro radios, MOR-542).
+        ``jitter_depth`` is threaded through only when the implementation
+        accepts it — the minimal ``AudioTransport.start_rx`` takes the
+        callback alone.
+        """
+        start_rx = getattr(self._radio, "start_rx", None)
+        if start_rx is None:
+            await self._radio.start_audio_rx_opus(
+                self._on_opus_packet,
+                jitter_depth=self._jitter_depth,
+            )
+        elif _accepts_jitter_depth(start_rx):
+            await start_rx(self._on_opus_packet, jitter_depth=self._jitter_depth)
+        else:
+            await start_rx(self._on_opus_packet)
+
     async def _start_rx(self) -> None:
         """Start receiving audio from the radio."""
         if self._rx_active:
             return
         try:
-            await self._radio.start_audio_rx_opus(
-                self._on_opus_packet,
-                jitter_depth=self._jitter_depth,
-            )
+            await self._begin_rx()
             self._rx_active = True
             logger.info("audio-bus: RX started")
         except Exception:
@@ -330,10 +367,7 @@ class AudioBus:
             if not self._subscribers:
                 return
             try:
-                await self._radio.start_audio_rx_opus(
-                    self._on_opus_packet,
-                    jitter_depth=self._jitter_depth,
-                )
+                await self._begin_rx()
                 self._rx_active = True
                 logger.info("audio-bus: RX re-armed after TX")
             except Exception:
@@ -345,7 +379,11 @@ class AudioBus:
             return
         self._rx_active = False
         try:
-            await self._radio.stop_audio_rx_opus()
+            stop_rx = getattr(self._radio, "stop_rx", None)
+            if stop_rx is not None:
+                await stop_rx()
+            else:
+                await self._radio.stop_audio_rx_opus()
             logger.info("audio-bus: RX stopped")
         except Exception:
             logger.debug("audio-bus: stop RX error", exc_info=True)

@@ -367,3 +367,75 @@ async def test_remove_nonexistent_subscriber(bus):
     sub = AudioSubscription(bus, name="ghost")
     # Should not raise
     await bus._remove_subscriber(sub)
+
+
+# ---------------------------------------------------------------------------
+# Neutral AudioTransport surface (MOR-542)
+# ---------------------------------------------------------------------------
+
+
+class _NeutralRadio:
+    """Fake exposing the neutral surface; ``start_rx`` takes callback only."""
+
+    def __init__(self):
+        self.start_calls: list[tuple] = []
+        self.stop_calls = 0
+        self.start_audio_rx_opus = AsyncMock()
+        self.stop_audio_rx_opus = AsyncMock()
+
+    async def start_rx(self, callback):
+        self.start_calls.append((callback,))
+
+    async def stop_rx(self):
+        self.stop_calls += 1
+
+
+class _NeutralJitterRadio(_NeutralRadio):
+    """Fake whose ``start_rx`` accepts the optional ``jitter_depth`` kwarg."""
+
+    async def start_rx(self, callback, *, jitter_depth=5):
+        self.start_calls.append((callback, jitter_depth))
+
+
+async def test_bus_prefers_neutral_surface_over_legacy():
+    radio = _NeutralRadio()
+    bus = AudioBus(radio)
+    sub = bus.subscribe(name="s1")
+    await sub.start()
+    assert radio.start_calls == [(bus._on_opus_packet,)]
+    radio.start_audio_rx_opus.assert_not_awaited()
+
+    await sub.aclose()
+    assert radio.stop_calls == 1
+    radio.stop_audio_rx_opus.assert_not_awaited()
+
+
+async def test_neutral_start_rx_threads_jitter_depth_when_accepted():
+    radio = _NeutralJitterRadio()
+    bus = AudioBus(radio, jitter_depth=9)
+    sub = bus.subscribe(name="s1")
+    await sub.start()
+    assert radio.start_calls == [(bus._on_opus_packet, 9)]
+    await sub.aclose()
+
+
+async def test_restart_rx_rearm_uses_neutral_surface():
+    radio = _NeutralRadio()
+    bus = AudioBus(radio)
+    sub = bus.subscribe(name="s1")
+    await sub.start()
+
+    await bus.restart_rx()  # MOR-506 re-arm after a TX cycle
+
+    assert radio.start_calls == [(bus._on_opus_packet,)] * 2
+    assert bus.rx_active
+    radio.start_audio_rx_opus.assert_not_awaited()
+    await sub.aclose()
+
+
+async def test_restart_rx_noop_without_subscribers_neutral():
+    radio = _NeutralRadio()
+    bus = AudioBus(radio)
+    await bus.restart_rx()
+    assert radio.start_calls == []
+    assert not bus.rx_active
