@@ -187,12 +187,32 @@ _SLOW_INTERVAL: float = 0.25  # levels/settings — rarely change
 
 
 def _audio_tx_codec_and_rate(radio: Any) -> tuple[AudioCodec | None, int]:
+    """Legacy TX-format resolution for radios WITHOUT the neutral
+    ``AudioTransport`` surface; only reachable from the PTT fallback path
+    (MOR-543). Radios exposing ``start_tx``/``stop_tx`` resolve the format
+    themselves from their negotiated contract.
+    """
     contract = getattr(radio, "audio_stream_contract", None)
     tx_codec = getattr(contract, "tx_codec", None)
     tx_sr = getattr(contract, "tx_sample_rate_hz", None)
     if not isinstance(tx_sr, int) or isinstance(tx_sr, bool) or tx_sr <= 0:
         tx_sr = 48000
     return tx_codec, tx_sr
+
+
+def _should_restart_rx(mode: str) -> bool:
+    """Whether the RX path must be re-armed after a PTT TX cycle.
+
+    *mode* is the radio's ``audio_duplex_mode`` descriptor. Returns True
+    for ALL modes for now, preserving the MOR-506 unconditional re-arm
+    semantics exactly: the re-arm reinstates the single-slot RX callback
+    through the AudioBus, and skipping it for ``"full"`` transports is
+    deferred to a hardware-gated follow-up (verify on a real IC-7610
+    first). When that flip lands, this helper is the one-line decision
+    point (MOR-543).
+    """
+    logger.debug("poller: audio_duplex_mode=%s -> restart_rx=True", mode)
+    return True
 
 
 # ------------------------------------------------------------------
@@ -1166,16 +1186,28 @@ class RadioPoller:
                 # Start TX audio stream before PTT (LAN audio requires this)
                 if CAP_AUDIO in self._caps:
                     try:
-                        tx_codec, tx_sr = _audio_tx_codec_and_rate(radio)
-                        if tx_codec == AudioCodec.PCM_1CH_16BIT:
-                            await radio.start_audio_tx_pcm(sample_rate=tx_sr)
+                        start_tx = getattr(radio, "start_tx", None)
+                        if start_tx is not None:
+                            # Neutral AudioTransport surface (MOR-543): the
+                            # backend resolves the TX format from its
+                            # negotiated contract.
+                            await start_tx()
+                            logger.info(
+                                "poller: TX audio stream started (neutral start_tx)"
+                            )
                         else:
-                            await radio.start_audio_tx_opus()
-                        logger.info(
-                            "poller: TX audio stream started (tx_codec=%s, sr=%d)",
-                            tx_codec,
-                            tx_sr,
-                        )
+                            # Legacy per-codec fallback for radios without
+                            # the neutral surface.
+                            tx_codec, tx_sr = _audio_tx_codec_and_rate(radio)
+                            if tx_codec == AudioCodec.PCM_1CH_16BIT:
+                                await radio.start_audio_tx_pcm(sample_rate=tx_sr)
+                            else:
+                                await radio.start_audio_tx_opus()
+                            logger.info(
+                                "poller: TX audio stream started (tx_codec=%s, sr=%d)",
+                                tx_codec,
+                                tx_sr,
+                            )
                     except Exception as e:
                         logger.warning("poller: start TX audio failed: %s", e)
                 await radio.set_ptt(True)
@@ -1185,20 +1217,32 @@ class RadioPoller:
                 # Stop TX audio stream after PTT, then restart RX
                 if CAP_AUDIO in self._caps:
                     try:
-                        tx_codec, _tx_sr = _audio_tx_codec_and_rate(radio)
-                        if tx_codec == AudioCodec.PCM_1CH_16BIT:
-                            await radio.stop_audio_tx_pcm()
+                        stop_tx = getattr(radio, "stop_tx", None)
+                        if stop_tx is not None:
+                            # Neutral AudioTransport surface (MOR-543).
+                            await stop_tx()
                         else:
-                            await radio.stop_audio_tx_opus()
+                            # Legacy per-codec fallback.
+                            tx_codec, _tx_sr = _audio_tx_codec_and_rate(radio)
+                            if tx_codec == AudioCodec.PCM_1CH_16BIT:
+                                await radio.stop_audio_tx_pcm()
+                            else:
+                                await radio.stop_audio_tx_opus()
                         logger.info("poller: TX audio stream stopped")
 
-                        # Restart RX audio after TX (IC-7610 doesn't support
-                        # full duplex). Re-arm through the AudioBus so the
-                        # real subscriber callback is reinstated rather than a
-                        # throwaway no-op clobbering the single-slot RX callback
-                        # (MOR-506).
-                        await radio.audio_bus.restart_rx()
-                        logger.info("poller: RX audio stream restarted")
+                        # Re-arm RX through the AudioBus so the real
+                        # subscriber callback is reinstated rather than a
+                        # throwaway no-op clobbering the single-slot RX
+                        # callback (MOR-506). The LAN stream itself IS
+                        # full-duplex; the re-arm currently fires for every
+                        # audio_duplex_mode (including "full") until skipping
+                        # it is verified on real IC-7610 hardware — that flip
+                        # is a hardware-gated follow-up to MOR-543, one line
+                        # inside _should_restart_rx.
+                        duplex_mode = getattr(radio, "audio_duplex_mode", "half")
+                        if _should_restart_rx(duplex_mode):
+                            await radio.audio_bus.restart_rx()
+                            logger.info("poller: RX audio stream restarted")
                     except Exception as e:
                         logger.debug("poller: audio stream transition failed: %s", e)
             case SetPower(level=level, unit=unit):

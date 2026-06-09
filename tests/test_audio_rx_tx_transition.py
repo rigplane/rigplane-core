@@ -37,6 +37,7 @@ from rigplane.web.radio_poller import (
     PttOff,
     PttOn,
     RadioPoller,
+    _should_restart_rx,
 )
 
 
@@ -225,6 +226,89 @@ async def test_ptt_cycle_uses_pcm_when_audio_contract_tx_codec_is_pcm(
     radio.start_audio_tx_opus.assert_not_awaited()
     radio.stop_audio_tx_pcm.assert_awaited_once()
     radio.stop_audio_tx_opus.assert_not_awaited()
+
+
+# ---------------------------------------------------------------------------
+# MOR-543: PTT path on the neutral AudioTransport surface (no behavior flip)
+# ---------------------------------------------------------------------------
+
+
+def _make_neutral_radio(duplex_mode: str | None = "full") -> SimpleNamespace:
+    """Stub radio exposing the neutral AudioTransport TX surface.
+
+    Keeps the legacy per-codec mocks so tests can assert they are NOT
+    used once ``start_tx``/``stop_tx`` are present. ``duplex_mode=None``
+    models a radio without the ``audio_duplex_mode`` descriptor.
+    """
+    radio = _make_audio_capable_radio()
+    radio.start_tx = AsyncMock()
+    radio.stop_tx = AsyncMock()
+    if duplex_mode is not None:
+        radio.audio_duplex_mode = duplex_mode
+    return radio
+
+
+@pytest.mark.asyncio
+async def test_ptt_on_neutral_radio_uses_start_tx() -> None:
+    """PTT ON on a neutral radio calls start_tx() with no codec branching."""
+    radio = _make_neutral_radio()
+    poller = RadioPoller(radio, StateCache(), CommandQueue())
+
+    await poller._execute(PttOn())
+
+    radio.start_tx.assert_awaited_once_with()
+    radio.start_audio_tx_opus.assert_not_awaited()
+    radio.start_audio_tx_pcm.assert_not_awaited()
+    radio.set_ptt.assert_awaited_once_with(True)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("duplex_mode", ["full", "exclusive", None])
+async def test_ptt_off_neutral_radio_stops_tx_then_restarts_rx(
+    duplex_mode: str | None,
+) -> None:
+    """PTT OFF calls stop_tx() then re-arms RX via the bus for EVERY mode.
+
+    Pins the MOR-543 no-flip decision: even ``"full"`` (and a missing
+    ``audio_duplex_mode`` attribute) must still re-arm RX, preserving
+    the MOR-506 unconditional restart semantics exactly.
+    """
+    radio = _make_neutral_radio(duplex_mode)
+    order: list[str] = []
+    radio.stop_tx.side_effect = lambda: order.append("stop_tx")
+    radio.audio_bus.restart_rx.side_effect = lambda: order.append("restart_rx")
+    poller = RadioPoller(radio, StateCache(), CommandQueue())
+
+    await poller._execute(PttOff())
+
+    radio.set_ptt.assert_awaited_once_with(False)
+    radio.stop_tx.assert_awaited_once_with()
+    radio.stop_audio_tx_opus.assert_not_awaited()
+    radio.stop_audio_tx_pcm.assert_not_awaited()
+    radio.audio_bus.restart_rx.assert_awaited_once()
+    assert order == ["stop_tx", "restart_rx"]
+
+
+@pytest.mark.asyncio
+async def test_legacy_radio_without_neutral_methods_uses_codec_fallback(
+    poller: RadioPoller, radio: SimpleNamespace
+) -> None:
+    """A radio lacking start_tx/stop_tx still uses the per-codec path."""
+    assert not hasattr(radio, "start_tx")
+    assert not hasattr(radio, "stop_tx")
+
+    await poller._execute(PttOn())
+    await poller._execute(PttOff())
+
+    radio.start_audio_tx_opus.assert_awaited_once()
+    radio.stop_audio_tx_opus.assert_awaited_once()
+    radio.audio_bus.restart_rx.assert_awaited_once()
+
+
+def test_should_restart_rx_returns_true_for_all_modes() -> None:
+    """No behavior flip in MOR-543: RX re-arm fires for every duplex mode."""
+    for mode in ("full", "half", "exclusive"):
+        assert _should_restart_rx(mode) is True
 
 
 # ---------------------------------------------------------------------------
