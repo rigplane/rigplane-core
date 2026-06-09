@@ -71,6 +71,7 @@ __all__ = [
     "Radio",
     "VfoSlotState",
     "AudioCapable",
+    "AudioTransport",
     "CivCommandCapable",
     "CivTransactionCapable",
     "ModeInfoCapable",
@@ -870,6 +871,99 @@ class AudioCapable(Protocol):
     async def get_audio_stats(self) -> dict[str, Any]: ...
     async def start_audio_tx_opus(self) -> None: ...
     async def stop_audio_tx_opus(self) -> None: ...
+
+
+@runtime_checkable
+class AudioTransport(Protocol):
+    """Codec/transport-neutral audio surface (MOR-532 epic, MOR-538).
+
+    This is the target audio interface for all backends: descriptors
+    (``audio_codec`` / ``audio_tx_codec`` / ``audio_sample_rate`` /
+    ``audio_duplex_mode``) declare the negotiated format, and the
+    ``start_rx``/``push_tx`` methods move bytes already encoded in that
+    format. No method carries codec or format arguments — backends own
+    format resolution from their negotiated contracts (e.g. the Icom
+    ``AudioStreamContract``), so :meth:`start_tx` takes none.
+
+    RX delivery keeps the existing packet shape by design decision:
+    *callback* receives an :class:`~rigplane.audio.AudioPacket` whose
+    ``data`` is encoded per :attr:`audio_codec`. Retaining
+    ``AudioPacket`` keeps the audio bus, the web broadcaster, and the
+    bridge byte-compatible with the legacy path.
+
+    The existing ``*_opus``/``*_pcm`` methods on :class:`AudioCapable`
+    remain as permanent back-compat shims; new consumers should target
+    this protocol once backends implement it in the later MOR-532
+    steps. Until then no shipping backend satisfies
+    ``isinstance(radio, AudioTransport)`` — the neutral methods land
+    backend-by-backend after this definition step.
+    """
+
+    @property
+    def audio_bus(self) -> "AudioBus":
+        """AudioBus instance for pub/sub audio distribution.
+
+        Same bus as :attr:`AudioCapable.audio_bus`; packets on the bus
+        carry ``data`` encoded per :attr:`audio_codec`.
+        """
+        ...
+
+    @property
+    def audio_codec(self) -> AudioCodec:
+        """Negotiated RX codec — the encoding of every RX packet."""
+        ...
+
+    @property
+    def audio_tx_codec(self) -> AudioCodec:
+        """Negotiated TX codec — the encoding :meth:`push_tx` expects."""
+        ...
+
+    @property
+    def audio_sample_rate(self) -> int:
+        """Negotiated audio sample rate in Hz (RX and TX clock)."""
+        ...
+
+    @property
+    def audio_duplex_mode(self) -> Literal["full", "half", "exclusive"]:
+        """Duplex capability of the audio transport.
+
+        * ``"full"`` — RX keeps flowing while TX is active (Icom LAN UDP).
+        * ``"half"`` — RESERVED: alternating RX/TX on a shared channel;
+          no shipping backend maps to it yet.
+        * ``"exclusive"`` — starting TX requires stopping RX first
+          (single shared OS audio device).
+        """
+        ...
+
+    async def start_rx(self, callback: Callable[..., Awaitable[None]]) -> None:
+        """Start receiving audio.
+
+        *callback* receives :class:`~rigplane.audio.AudioPacket`
+        instances whose ``data`` is encoded per :attr:`audio_codec`.
+        Prefer :attr:`audio_bus` for multi-consumer scenarios.
+        """
+        ...
+
+    async def stop_rx(self) -> None:
+        """Stop receiving audio."""
+        ...
+
+    async def start_tx(self) -> None:
+        """Open the TX path.
+
+        Takes no format arguments: the backend resolves the TX format
+        from its negotiated contract (see :attr:`audio_tx_codec` and
+        :attr:`audio_sample_rate`).
+        """
+        ...
+
+    async def push_tx(self, data: bytes) -> None:
+        """Send audio for transmission, encoded per :attr:`audio_tx_codec`."""
+        ...
+
+    async def stop_tx(self) -> None:
+        """Close the TX path."""
+        ...
 
 
 @runtime_checkable
