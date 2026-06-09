@@ -1691,6 +1691,123 @@ async def test_audio_handler_pushes_pcm_browser_tx_directly() -> None:
     radio.push_audio_tx_opus.assert_not_awaited()
 
 
+def _make_neutral_tx_radio(contract: AudioStreamContract) -> SimpleNamespace:
+    """Legacy fake radio extended with the neutral AudioTransport surface."""
+    radio = _make_web_tx_radio(contract)
+    radio.audio_tx_codec = contract.tx_codec
+    radio.audio_duplex_mode = "full"
+    radio.start_tx = AsyncMock()
+    radio.push_tx = AsyncMock()
+    radio.stop_tx = AsyncMock()
+    return radio
+
+
+async def test_audio_handler_neutral_radio_uses_start_tx_and_stop_tx() -> None:
+    """audio_start/audio_stop tx use the neutral surface, no codec branching."""
+    contract = _make_web_tx_contract(AudioCodec.PCM_1CH_16BIT)
+    radio = _make_neutral_tx_radio(contract)
+    ws = SimpleNamespace(recv=AsyncMock(), send_binary=AsyncMock())
+    handler = AudioHandler(ws, radio, None)
+
+    await handler._handle_control({"type": "audio_start", "direction": "tx"})
+    assert handler._tx_active is True
+    radio.start_tx.assert_awaited_once_with()
+    radio.start_audio_tx_pcm.assert_not_awaited()
+    radio.start_audio_tx_opus.assert_not_awaited()
+
+    await handler._handle_control({"type": "audio_stop", "direction": "tx"})
+    assert handler._tx_active is False
+    radio.stop_tx.assert_awaited_once_with()
+    radio.stop_audio_tx_pcm.assert_not_awaited()
+    radio.stop_audio_tx_opus.assert_not_awaited()
+
+
+async def test_audio_handler_legacy_radio_keeps_per_codec_branches() -> None:
+    """Radios without the neutral surface traverse the legacy codec branches."""
+    contract = _make_web_tx_contract(AudioCodec.PCM_1CH_16BIT)
+    radio = _make_web_tx_radio(contract)
+    ws = SimpleNamespace(recv=AsyncMock(), send_binary=AsyncMock())
+    handler = AudioHandler(ws, radio, None)
+
+    await handler._handle_control({"type": "audio_start", "direction": "tx"})
+    radio.start_audio_tx_pcm.assert_awaited_once_with(sample_rate=16000)
+    radio.start_audio_tx_opus.assert_not_awaited()
+
+    await handler._handle_control({"type": "audio_stop", "direction": "tx"})
+    radio.stop_audio_tx_pcm.assert_awaited_once()
+    radio.stop_audio_tx_opus.assert_not_awaited()
+
+
+def test_tx_codec_prefers_first_class_audio_tx_codec() -> None:
+    """First-class audio_tx_codec wins over the contract's tx_codec."""
+    contract = _make_web_tx_contract(AudioCodec.OPUS_1CH)
+    radio = _make_web_tx_radio(contract)
+    radio.audio_tx_codec = AudioCodec.PCM_1CH_16BIT
+    handler = AudioHandler(SimpleNamespace(), radio, None)
+    assert handler._tx_codec() == AudioCodec.PCM_1CH_16BIT
+
+
+def test_tx_codec_falls_back_to_contract_tx_codec() -> None:
+    contract = _make_web_tx_contract(AudioCodec.OPUS_1CH)
+    radio = _make_web_tx_radio(contract)  # no audio_tx_codec attribute
+    handler = AudioHandler(SimpleNamespace(), radio, None)
+    assert handler._tx_codec() == AudioCodec.OPUS_1CH
+
+
+def test_tx_codec_falls_back_to_audio_codec() -> None:
+    radio = SimpleNamespace(
+        capabilities={"audio"},
+        audio_codec=AudioCodec.OPUS_2CH,
+    )
+    handler = AudioHandler(SimpleNamespace(), radio, None)
+    assert handler._tx_codec() == AudioCodec.OPUS_2CH
+
+
+async def test_audio_handler_push_tx_byte_compatible_with_legacy_pcm_push() -> None:
+    """Browser PCM frame on a PCM radio: push_tx gets the same bytes as
+    push_audio_tx_pcm did on the legacy path."""
+    contract = _make_web_tx_contract(AudioCodec.PCM_1CH_16BIT, tx_sample_rate_hz=48000)
+    pcm_bytes = b"pcm-payload-\x01\x02\x03"
+    frame = _make_web_tx_audio_frame(AUDIO_CODEC_PCM16, pcm_bytes)
+    ws = SimpleNamespace(recv=AsyncMock(), send_binary=AsyncMock())
+
+    legacy = _make_web_tx_radio(contract)
+    legacy_handler = AudioHandler(ws, legacy, None)
+    legacy_handler._tx_active = True
+    await legacy_handler._handle_tx_audio(frame)
+    legacy.push_audio_tx_pcm.assert_awaited_once_with(pcm_bytes)
+
+    neutral = _make_neutral_tx_radio(contract)
+    neutral_handler = AudioHandler(ws, neutral, None)
+    neutral_handler._tx_active = True
+    await neutral_handler._handle_tx_audio(frame)
+    neutral.push_tx.assert_awaited_once_with(pcm_bytes)
+    neutral.push_audio_tx_pcm.assert_not_awaited()
+    neutral.push_audio_tx_opus.assert_not_awaited()
+    # Byte-for-byte identical to what the legacy per-codec path pushed.
+    assert neutral.push_tx.await_args.args == legacy.push_audio_tx_pcm.await_args.args
+
+
+async def test_audio_handler_tolerates_usb_lifecycle_double_start() -> None:
+    """Poller-first double start on USB radios raises
+    AudioDriverLifecycleError('TX stream already started.') — the handler
+    must treat it as the benign already-transmitting case (MOR-541/MOR-544)."""
+    from rigplane.audio.usb_driver import AudioDriverLifecycleError
+
+    contract = _make_web_tx_contract(AudioCodec.PCM_1CH_16BIT)
+    radio = _make_neutral_tx_radio(contract)
+    radio.start_tx = AsyncMock(
+        side_effect=AudioDriverLifecycleError("TX stream already started.")
+    )
+    ws = SimpleNamespace(recv=AsyncMock(), send_binary=AsyncMock())
+    handler = AudioHandler(ws, radio, None)
+
+    await handler._handle_control({"type": "audio_start", "direction": "tx"})
+
+    assert handler._tx_active is True
+    radio.start_tx.assert_awaited_once()
+
+
 async def test_audio_handler_drops_non_tx_or_unknown_browser_audio_frames() -> None:
     radio = SimpleNamespace(
         capabilities={"audio"},
