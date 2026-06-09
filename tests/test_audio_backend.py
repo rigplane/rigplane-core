@@ -358,6 +358,27 @@ class TestPortAudioBackendDeps:
         assert devices[1].is_default_output is True
         assert devices[1].output_channels == 2
 
+    def test_list_devices_extracts_alsa_hardware_identifier(self) -> None:
+        class FakeSd:
+            class default:
+                device = [-1, -1]
+
+            @staticmethod
+            def query_devices() -> list[dict]:
+                return [
+                    {
+                        "index": 3,
+                        "name": "USB Audio CODEC: Audio (hw:3,0)",
+                        "max_input_channels": 2,
+                        "max_output_channels": 2,
+                        "default_samplerate": 48000,
+                    },
+                ]
+
+        backend = PortAudioBackend(dependency_loader=lambda: (FakeSd(), object()))
+        devices = backend.list_devices()
+        assert devices[0].platform_uid == "hw:3,0"
+
     def test_open_rx_returns_rx_stream(self) -> None:
         class FakeSd:
             class InputStream:
