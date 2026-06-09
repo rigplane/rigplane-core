@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import logging
 import math
+import re
 import threading
 import time
 from collections import deque
@@ -29,6 +30,15 @@ _TX_BUFFER_MS = 1_000
 AudioDeviceId = NewType("AudioDeviceId", int)
 """Opaque device identifier (maps to a host-API device index)."""
 
+_ALSA_HW_RE = re.compile(r"(?:plug)?(hw:\d+,\d+)")
+
+
+def _platform_uid_from_device_name(name: str) -> str:
+    match = _ALSA_HW_RE.search(name)
+    if match is None:
+        return ""
+    return match.group(1)
+
 
 @dataclass(frozen=True, slots=True)
 class AudioDeviceInfo:
@@ -41,6 +51,7 @@ class AudioDeviceInfo:
     default_samplerate: int = 48_000
     is_default_input: bool = False
     is_default_output: bool = False
+    platform_uid: str = ""
 
     @property
     def supports_rx(self) -> bool:
@@ -1150,6 +1161,9 @@ class PortAudioBackend:
                     is_default_input=(default_in is not None and dev_idx == default_in),
                     is_default_output=(
                         default_out is not None and dev_idx == default_out
+                    ),
+                    platform_uid=_platform_uid_from_device_name(
+                        str(raw.get("name", f"device-{dev_idx}"))
                     ),
                 )
             )
