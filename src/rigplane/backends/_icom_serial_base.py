@@ -178,6 +178,35 @@ class _IcomSerialRadioBase(CoreRadio):
 
         return getattr(self._serial_audio_driver, "usb_audio_contract", None)
 
+    @property
+    def audio_tx_codec(self) -> AudioCodec:
+        """Effective TX codec (MOR-532 codec descriptor surface).
+
+        The serial USB CODEC mic input is mono-only by hardware:
+        ``start_audio_tx_pcm`` clamps the PortAudio output stream to one
+        channel (GH#1382), so the TX payload is always mono 16-bit PCM
+        regardless of the configured RX codec. Consumed by later MOR-532
+        epic steps.
+        """
+        return AudioCodec.PCM_1CH_16BIT
+
+    @property
+    def audio_duplex_mode(self) -> str:
+        """Duplex capability (MOR-532 duplex descriptor surface).
+
+        Delegates to the USB audio driver's ``duplex_mode`` policy (MOR-534)
+        via ``getattr`` so the internal ``_SerialAudioDriver`` protocol stays
+        narrow. Falls back to ``"full"`` when the driver does not expose the
+        property or when resolving it raises (device enumeration may fail on
+        offline hosts and test doubles). Single source of duplex policy for
+        later MOR-532 epic steps.
+        """
+        try:
+            mode = getattr(self._serial_audio_driver, "duplex_mode", None)
+        except Exception:
+            return "full"
+        return mode if isinstance(mode, str) else "full"
+
     # ------------------------------------------------------------------
     # Connection properties
     # ------------------------------------------------------------------
