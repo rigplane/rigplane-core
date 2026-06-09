@@ -11,6 +11,7 @@ import pytest
 
 from rigplane.audio import AudioPacket
 from rigplane.audio.backend import AudioDeviceId, AudioDeviceInfo, FakeAudioBackend
+from rigplane.audio.lan_stream import SYNTHETIC_RX_IDENT
 from rigplane.audio.usb_driver import UsbAudioDriver
 from rigplane.backends.yaesu_cat.radio import YaesuCatRadio
 from rigplane.exceptions import AudioFormatError
@@ -498,3 +499,192 @@ class TestMetersCapableProtocol:
         assert isinstance(radio, MetersCapable)
         for name in ("get_power_meter", "get_alc_meter", "get_swr_meter"):
             assert callable(getattr(radio, name)), f"{name} missing"
+
+
+# ---------------------------------------------------------------------------
+# Neutral AudioTransport surface — MOR-541 (AudioTransport epic step 8/12)
+# ---------------------------------------------------------------------------
+
+_RX_FRAMES = [b"\x01\x02" * 480, b"\x03\x04" * 480]
+_TX_FRAME = b"\x11\x22" * 480
+
+
+class TracingAudioDriver(FakeAudioDriver):
+    """FakeAudioDriver that records the driver-call trace.
+
+    Used to prove the legacy ``*_opus`` family and the neutral
+    AudioTransport methods drive the USB audio driver identically
+    (delegates only — no divergent framing/format logic).
+    """
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.rx_start_calls: list[dict[str, int | None]] = []
+        self.tx_start_calls: list[dict[str, int | None]] = []
+        self.tx_frames: list[bytes] = []
+
+    async def start_rx(
+        self,
+        callback: Callable[[bytes], None] | None = None,
+        *,
+        sample_rate: int | None = None,
+        channels: int | None = None,
+        frame_ms: int | None = None,
+    ) -> None:
+        self.rx_start_calls.append(
+            {"sample_rate": sample_rate, "channels": channels, "frame_ms": frame_ms}
+        )
+        await super().start_rx(
+            callback, sample_rate=sample_rate, channels=channels, frame_ms=frame_ms
+        )
+
+    async def start_tx(
+        self,
+        *,
+        sample_rate: int | None = None,
+        channels: int | None = None,
+        frame_ms: int | None = None,
+    ) -> None:
+        self.tx_start_calls.append(
+            {"sample_rate": sample_rate, "channels": channels, "frame_ms": frame_ms}
+        )
+        await super().start_tx(
+            sample_rate=sample_rate, channels=channels, frame_ms=frame_ms
+        )
+
+    async def _push_tx_pcm(self, frame: bytes) -> None:
+        await super()._push_tx_pcm(frame)
+        self.tx_frames.append(frame)
+
+
+def _make_traced_radio(
+    monkeypatch: pytest.MonkeyPatch,
+) -> tuple[YaesuCatRadio, TracingAudioDriver]:
+    """Build a YaesuCatRadio over a TracingAudioDriver (transport faked)."""
+    monkeypatch.setattr(
+        "rigplane.backends.yaesu_cat.transport.YaesuCatTransport.connect",
+        AsyncMock(),
+    )
+    monkeypatch.setattr(
+        "rigplane.backends.yaesu_cat.transport.YaesuCatTransport.close",
+        AsyncMock(),
+    )
+    monkeypatch.setattr(
+        "rigplane.backends.yaesu_cat.transport.YaesuCatTransport.connected",
+        True,
+    )
+    driver = TracingAudioDriver()
+    r = YaesuCatRadio(device="/dev/fake0", audio_driver=driver)  # type: ignore[arg-type]
+    return r, driver
+
+
+class TestAudioTransportNeutral:
+    """YaesuCatRadio implements the neutral AudioTransport surface."""
+
+    def test_satisfies_audio_transport_protocol(self, radio: YaesuCatRadio) -> None:
+        from rigplane.core.radio_protocol import AudioTransport
+
+        assert isinstance(radio, AudioTransport)
+
+    @pytest.mark.asyncio
+    async def test_start_rx_packets_carry_synthetic_ident(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Byte-compat lock: start_rx frames keep ident 0x9781 + wrapping seq."""
+        assert SYNTHETIC_RX_IDENT == 0x9781
+
+        r, driver = _make_traced_radio(monkeypatch)
+        await r.connect()
+        packets: list[AudioPacket] = []
+        await r.start_rx(packets.append)
+        for frame in _RX_FRAMES:
+            driver.inject_rx_frame(frame)
+        await r.stop_rx()
+
+        assert [p.ident for p in packets] == [SYNTHETIC_RX_IDENT, SYNTHETIC_RX_IDENT]
+        assert [p.send_seq for p in packets] == [0, 1]
+        assert [p.data for p in packets] == _RX_FRAMES
+        assert driver.rx_running is False
+
+    async def _run_rx_session(
+        self, monkeypatch: pytest.MonkeyPatch, *, neutral: bool
+    ) -> tuple[list[AudioPacket], TracingAudioDriver]:
+        r, driver = _make_traced_radio(monkeypatch)
+        await r.connect()
+        packets: list[AudioPacket] = []
+        if neutral:
+            await r.start_rx(packets.append)
+        else:
+            await r.start_audio_rx_opus(packets.append)
+        for frame in _RX_FRAMES:
+            driver.inject_rx_frame(frame)
+        if neutral:
+            await r.stop_rx()
+        else:
+            await r.stop_audio_rx_opus()
+        return packets, driver
+
+    @pytest.mark.asyncio
+    async def test_neutral_rx_matches_legacy_packet_framing(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Legacy and neutral RX produce identical AudioPackets + driver calls."""
+        legacy_packets, legacy_driver = await self._run_rx_session(
+            monkeypatch, neutral=False
+        )
+        neutral_packets, neutral_driver = await self._run_rx_session(
+            monkeypatch, neutral=True
+        )
+
+        assert neutral_packets == legacy_packets
+        assert legacy_packets, "expected RX packets in both sessions"
+        assert neutral_driver.rx_start_calls == legacy_driver.rx_start_calls
+
+    async def _run_tx_session(
+        self, monkeypatch: pytest.MonkeyPatch, *, neutral: bool
+    ) -> TracingAudioDriver:
+        r, driver = _make_traced_radio(monkeypatch)
+        await r.connect()
+        if neutral:
+            await r.start_tx()
+            await r.push_tx(_TX_FRAME)
+            await r.stop_tx()
+        else:
+            await r.start_audio_tx_opus()
+            await r.push_audio_tx_opus(_TX_FRAME)
+            await r.stop_audio_tx_opus()
+        return driver
+
+    @pytest.mark.asyncio
+    async def test_neutral_tx_matches_legacy_driver_calls(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Legacy opus family and neutral TX arm the driver identically."""
+        legacy_driver = await self._run_tx_session(monkeypatch, neutral=False)
+        neutral_driver = await self._run_tx_session(monkeypatch, neutral=True)
+
+        assert neutral_driver.tx_start_calls == legacy_driver.tx_start_calls
+        assert len(legacy_driver.tx_start_calls) == 1
+        assert neutral_driver.tx_frames == legacy_driver.tx_frames == [_TX_FRAME]
+        assert legacy_driver.tx_running is False
+        assert neutral_driver.tx_running is False
+
+    @pytest.mark.asyncio
+    async def test_start_audio_tx_opus_arms_tx(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Regression (MOR-541): start_audio_tx_opus was a silent no-op.
+
+        The web handler's opus TX branch calls ``start_audio_tx_opus()``;
+        before MOR-541 that silently did nothing on YaesuCatRadio, leaving
+        the driver TX path unarmed. It must now delegate to ``start_tx()``.
+        """
+        r, driver = _make_traced_radio(monkeypatch)
+        await r.connect()
+        await r.start_audio_tx_opus()
+
+        assert driver.tx_running is True
+        assert len(driver.tx_start_calls) == 1
+
+        await r.stop_audio_tx_opus()
+        assert driver.tx_running is False

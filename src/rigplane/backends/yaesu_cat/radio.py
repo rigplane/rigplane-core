@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable, Literal, Sequence, cast
 
 from ...audio import AudioPacket
+from ...audio.lan_stream import SYNTHETIC_RX_IDENT
 from ...command_spec import CatCommandSpec
 from ...commands import hz_to_table_index, table_index_to_hz
 from ...types import AudioCodec, BreakInMode
@@ -369,29 +370,30 @@ class YaesuCatRadio:
             self._audio_bus = AudioBus(self)
         return self._audio_bus
 
-    # -- AudioCapable methods -----------------------------------------------
+    # -- Neutral AudioTransport surface (MOR-532 epic, MOR-541) --------------
 
-    async def start_audio_rx_opus(
+    async def start_rx(
         self,
         callback: Callable[[AudioPacket | None], None],
-        *,
-        jitter_depth: int = 5,
     ) -> None:
+        """Start RX capture from the USB audio device (``AudioTransport.start_rx``).
+
+        Frames carry raw PCM encoded per :attr:`audio_codec`
+        (``PCM_1CH_16BIT``) — the FTX-1 USB path has no Opus framing.
+        Each captured frame is wrapped in a synthetic
+        :class:`AudioPacket` marked with ``SYNTHETIC_RX_IDENT`` and a
+        locally counted wrapping uint16 ``send_seq`` — there is no LAN
+        wire header on this path.
+        """
         if not callable(callback):
             raise TypeError("callback must be callable and accept AudioPacket | None.")
-        if isinstance(jitter_depth, bool) or not isinstance(jitter_depth, int):
-            raise TypeError(
-                f"jitter_depth must be an int, got {type(jitter_depth).__name__}."
-            )
-        if jitter_depth < 0:
-            raise ValueError(f"jitter_depth must be >= 0, got {jitter_depth}.")
         self._require_connected()
 
         self._opus_rx_user_callback = callback
 
         def _on_pcm_frame(pcm_frame: bytes) -> None:
             packet = AudioPacket(
-                ident=0x9781,
+                ident=SYNTHETIC_RX_IDENT,
                 send_seq=self._audio_seq,
                 data=pcm_frame,
             )
@@ -400,9 +402,64 @@ class YaesuCatRadio:
 
         await self._audio_driver.start_rx(_on_pcm_frame)
 
-    async def stop_audio_rx_opus(self) -> None:
+    async def stop_rx(self) -> None:
+        """Stop RX capture (``AudioTransport.stop_rx``)."""
         self._opus_rx_user_callback = None
         await self._audio_driver.stop_rx()
+
+    async def start_tx(self) -> None:
+        """Arm the USB audio TX path (``AudioTransport.start_tx``).
+
+        Resolves the TX format from the backend contract — mono PCM at
+        :attr:`audio_sample_rate`, 20 ms frames — exactly what the legacy
+        ``start_audio_tx_pcm()`` defaults open today. On double start the
+        driver raises ``AudioDriverLifecycleError`` (a ``RuntimeError``
+        subclass), the same exception the legacy PCM path raises.
+        """
+        self._require_connected()
+        await self._audio_driver.start_tx(
+            sample_rate=self._audio_sample_rate,
+            channels=1,
+            frame_ms=20,
+        )
+
+    async def push_tx(self, data: bytes) -> None:
+        """Push one TX frame (``AudioTransport.push_tx``).
+
+        The payload must be raw PCM per :attr:`audio_tx_codec`; the USB
+        audio driver consumes PCM directly (no transcoding on this path).
+        """
+        await self._push_pcm_tx(data)
+
+    async def stop_tx(self) -> None:
+        """Close the TX path (``AudioTransport.stop_tx``)."""
+        await self._audio_driver.stop_tx()
+
+    # -- AudioCapable methods (legacy shims -> neutral AudioTransport) -------
+
+    async def start_audio_rx_opus(
+        self,
+        callback: Callable[[AudioPacket | None], None],
+        *,
+        jitter_depth: int = 5,
+    ) -> None:
+        """Deprecated shim — delegates to :meth:`start_rx`.
+
+        Despite the historical name, packets carry raw PCM per
+        :attr:`audio_codec` (no Opus framing exists on the USB path).
+        *jitter_depth* is validated for back-compat but unused.
+        """
+        if isinstance(jitter_depth, bool) or not isinstance(jitter_depth, int):
+            raise TypeError(
+                f"jitter_depth must be an int, got {type(jitter_depth).__name__}."
+            )
+        if jitter_depth < 0:
+            raise ValueError(f"jitter_depth must be >= 0, got {jitter_depth}.")
+        await self.start_rx(callback)
+
+    async def stop_audio_rx_opus(self) -> None:
+        """Deprecated shim — delegates to :meth:`stop_rx`."""
+        await self.stop_rx()
 
     async def start_audio_rx_pcm(
         self,
@@ -471,9 +528,13 @@ class YaesuCatRadio:
         )
 
     async def stop_audio_tx_pcm(self) -> None:
-        await self._audio_driver.stop_tx()
+        """Deprecated shim — delegates to :meth:`stop_tx`."""
+        await self.stop_tx()
 
     async def _push_pcm_tx(self, frame: bytes) -> None:
+        # Private terminal helper (MOR-539 pattern): every push path —
+        # neutral push_tx and both legacy shims — funnels here, so the
+        # delegation chain cannot recurse.
         if not isinstance(frame, bytes):
             raise TypeError(f"frame must be bytes, got {type(frame).__name__}.")
         if len(frame) == 0:
@@ -482,25 +543,33 @@ class YaesuCatRadio:
         self._require_connected()
         await self._audio_driver._push_tx_pcm(frame)
 
-    # -- AudioCapable TX methods --------------------------------------------
+    # -- AudioCapable TX methods (legacy shims) -------------------------------
 
     async def push_audio_tx_opus(self, data: bytes) -> None:
-        """Forward Opus TX data as PCM (USB audio is always PCM)."""
-        # Browser sends Opus; AudioBroadcaster transcodes to PCM before calling.
-        # If raw Opus arrives here, just push as-is (driver handles it).
-        await self._push_pcm_tx(data)
+        """Legacy shim — pushes the payload as PCM via :meth:`push_tx`.
+
+        Historical oddity kept on purpose: despite the name, the bytes are
+        forwarded unchanged. AudioBroadcaster transcodes browser Opus to PCM
+        before calling; if raw Opus ever arrives here it is pushed as-is.
+        """
+        await self.push_tx(data)
 
     async def push_audio_tx_pcm(self, data: bytes) -> None:
-        """Push raw PCM TX data."""
-        await self._push_pcm_tx(data)
+        """Deprecated shim — delegates to :meth:`push_tx` (raw PCM)."""
+        await self.push_tx(data)
 
     async def start_audio_tx_opus(self) -> None:
-        """No-op: USB audio TX is started via start_audio_tx_pcm."""
-        pass
+        """Deprecated shim — delegates to :meth:`start_tx`.
+
+        BEHAVIOR CHANGE (MOR-541): this was a silent no-op (``pass``),
+        so the web handler's opus TX branch never armed the driver TX
+        path on Yaesu backends. It now arms TX like the PCM path.
+        """
+        await self.start_tx()
 
     async def stop_audio_tx_opus(self) -> None:
-        """Stop TX audio."""
-        await self.stop_audio_tx_pcm()
+        """Deprecated shim — delegates to :meth:`stop_tx`."""
+        await self.stop_tx()
 
     async def get_audio_stats(self) -> dict[str, Any]:
         """Return basic audio stats."""
