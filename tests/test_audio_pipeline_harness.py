@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 import asyncio
-from unittest.mock import AsyncMock, MagicMock
+import dataclasses
+from unittest.mock import AsyncMock
 
 from rigplane.audio.backend import AudioDeviceId, AudioDeviceInfo, FakeAudioBackend
 from rigplane.audio.lan_stream import AudioStream, MAX_AUDIO_PAYLOAD, TX_IDENT
@@ -90,20 +91,28 @@ async def test_bridge_tx_pipeline_sends_raw_pcm_when_tx_codec_is_pcm() -> None:
     assert_contiguous_sequences(packets)
 
 
-async def test_bridge_tx_pipeline_encodes_pcm_only_when_tx_codec_is_opus() -> None:
+async def test_bridge_tx_pipeline_degrades_to_rx_only_when_tx_codec_is_opus() -> None:
+    """Non-PCM negotiated TX codec → the bridge runs RX-only (MOR-545).
+
+    The bridge captures raw PCM only. Before the neutral AudioTransport
+    migration the legacy ``push_audio_tx_pcm`` path transcoded PCM→Opus
+    on the LAN mixin; on the neutral surface ``push_tx`` expects bytes
+    already encoded per ``audio_tx_codec``, so the bridge degrades to
+    RX-only with a warning instead of pushing mis-typed bytes. No
+    shipping backend negotiates a non-PCM TX codec for the bridge.
+    """
     transport = _RecordingAudioTransport()
     radio = IcomRadio("192.0.2.10", username="u", password="p", timeout=0.05)
     radio._connected = True
     radio._civ_transport = object()
     radio._conn_state = RadioConnectionState.CONNECTED
+    # Custom profile negotiating a non-PCM TX codec: the descriptor surface
+    # (``audio_tx_codec``) resolves from the negotiated contract.
     radio._audio_tx_codec = AudioCodec.OPUS_1CH
+    radio._audio_stream_contract = dataclasses.replace(
+        radio._audio_stream_contract, tx_codec=AudioCodec.OPUS_1CH
+    )
     radio._audio_stream = AudioStream(transport)  # type: ignore[arg-type]
-
-    class _FakeTranscoder:
-        def pcm_to_opus(self, frame: bytes) -> bytes:
-            return b"OPUS" + frame[:24]
-
-    radio._get_pcm_transcoder = MagicMock(return_value=_FakeTranscoder())  # type: ignore[method-assign]
 
     backend = FakeAudioBackend(
         [
@@ -122,20 +131,14 @@ async def test_bridge_tx_pipeline_encodes_pcm_only_when_tx_codec_is_opus() -> No
         backend=backend,
     )
 
-    tone_frame = sine_pcm16_mono(1000.0, samples=SAMPLES_PER_FRAME)
-
     await bridge.start()
     try:
-        backend.rx_streams[0].inject_frame(tone_frame)
-        await asyncio.sleep(0.01)
+        assert bridge._tx_enabled is False
+        # RX-only: no TX capture stream is opened at all.
+        assert backend.rx_streams == []
     finally:
         await bridge.stop()
         radio._connected = False
 
     packets = collect_tx_audio_packets(transport.send_tracked.await_args_list)
-    payload = b"".join(packet.data for packet in packets)
-
-    assert payload == b"OPUS" + tone_frame[:24]
-    assert payload != tone_frame
-    assert [len(packet.data) for packet in packets] == [28]
-    assert_contiguous_sequences(packets)
+    assert packets == []
