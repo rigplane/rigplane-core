@@ -272,6 +272,10 @@ class AudioBridge:
         self._frame_ms = frame_ms
         self._tx_enabled = tx_enabled
         self._tx_started = False
+        # True when TX was armed via the neutral AudioTransport surface
+        # (``start_tx``/``push_tx``/``stop_tx``, MOR-545); False on the
+        # legacy ``*_audio_tx_pcm`` path.
+        self._use_neutral_tx = False
         self._tx_executor = tx_executor
         self._backend: AudioBackend = backend or PortAudioBackend()
 
@@ -478,12 +482,15 @@ class AudioBridge:
             self._input_channels = 1
 
         logger.info(
-            "%s: bridge codec=%s input_channels=%d output_channels=%d sample_rate=%d",
+            "%s: bridge codec=%s input_channels=%d output_channels=%d "
+            "sample_rate=%d duplex_mode=%s",
             self._label,
             _codec.name if isinstance(_codec, AudioCodec) else _codec,
             self._input_channels,
             self._channels,
             self._sample_rate,
+            # Diagnosis aid for --bridge-rx-only cases (MOR-545).
+            getattr(self._radio, "audio_duplex_mode", "unknown"),
         )
 
         if self._is_opus:
@@ -501,24 +508,49 @@ class AudioBridge:
         # device as the playback leg do we open ONE full-duplex stream (MOR-531):
         # separate playback + capture on one C-Media CODEC fails with AUHAL -50.
         tx_armed = False
+        self._use_neutral_tx = False
         if self._tx_enabled:
-            try:
-                await self._radio.start_audio_tx_pcm(
-                    sample_rate=self._sample_rate,
-                    channels=self._channels,
-                    frame_ms=self._frame_ms,
-                )
-            except (RuntimeError, NotImplementedError) as exc:
+            start_tx = getattr(self._radio, "start_tx", None)
+            tx_codec = getattr(self._radio, "audio_tx_codec", None)
+            if start_tx is not None and tx_codec is not AudioCodec.PCM_1CH_16BIT:
+                # Neutral surface with a non-PCM negotiated TX codec: the
+                # bridge captures raw PCM s16le, so pushing it through
+                # ``push_tx`` would impersonate the codec. No shipping
+                # backend negotiates non-PCM TX here — degrade to RX-only
+                # (MOR-545).
                 self._tx_enabled = False
                 self._tx_started = False
                 logger.warning(
-                    "%s: radio rejected TX start (%s); running RX-only",
+                    "%s: radio negotiated non-PCM TX codec (%s) but the "
+                    "bridge produces raw PCM; running RX-only",
                     self._label,
-                    exc,
+                    getattr(tx_codec, "name", tx_codec),
                 )
             else:
-                tx_armed = True
-                self._tx_started = True
+                try:
+                    if start_tx is not None:
+                        # Neutral AudioTransport surface (MOR-545): the
+                        # backend owns format resolution from its
+                        # negotiated contract — no format arguments.
+                        await start_tx()
+                    else:
+                        await self._radio.start_audio_tx_pcm(
+                            sample_rate=self._sample_rate,
+                            channels=self._channels,
+                            frame_ms=self._frame_ms,
+                        )
+                except (RuntimeError, NotImplementedError) as exc:
+                    self._tx_enabled = False
+                    self._tx_started = False
+                    logger.warning(
+                        "%s: radio rejected TX start (%s); running RX-only",
+                        self._label,
+                        exc,
+                    )
+                else:
+                    tx_armed = True
+                    self._tx_started = True
+                    self._use_neutral_tx = start_tx is not None
 
         # Same-device duplex only for a REAL CODEC: a virtual loopback
         # (BlackHole/VB-Cable/PipeWire) has no AUHAL -50 limitation and stays on
@@ -761,7 +793,12 @@ class AudioBridge:
         if self._tx_started:
             self._tx_started = False
             try:
-                await self._radio.stop_audio_tx_pcm()
+                stop_tx = getattr(self._radio, "stop_tx", None)
+                if self._use_neutral_tx and stop_tx is not None:
+                    # Neutral AudioTransport surface (MOR-545).
+                    await stop_tx()
+                else:
+                    await self._radio.stop_audio_tx_pcm()
             except Exception:
                 logger.debug("%s: stop TX error", self._label, exc_info=True)
 
@@ -929,7 +966,14 @@ class AudioBridge:
                     )
 
                 try:
-                    await self._radio.push_audio_tx_pcm(pcm_bytes)
+                    push_tx = getattr(self._radio, "push_tx", None)
+                    if self._use_neutral_tx and push_tx is not None:
+                        # Neutral AudioTransport surface (MOR-545); only
+                        # armed when the negotiated TX codec is raw PCM —
+                        # see the guard in _setup_streams.
+                        await push_tx(pcm_bytes)
+                    else:
+                        await self._radio.push_audio_tx_pcm(pcm_bytes)
                 except (RuntimeError, NotImplementedError) as exc:
                     # The radio cannot accept PCM TX frames (TX path not armed).
                     # Degrade to RX-only and stop the loop instead of rejecting
