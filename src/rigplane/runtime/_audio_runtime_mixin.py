@@ -49,23 +49,26 @@ class AudioRuntimeMixin(_MixinBase):  # type: ignore[misc]
     _audio_stream_contract: AudioStreamContract
 
     # ------------------------------------------------------------------
-    # Audio streaming
+    # Neutral AudioTransport surface (MOR-532 epic, MOR-539)
     # ------------------------------------------------------------------
 
-    async def start_audio_rx_opus(
+    async def start_rx(
         self,
         callback: Callable[[AudioPacket | None], None],
         *,
         jitter_depth: int = 5,
     ) -> None:
-        """Start receiving Opus audio from the radio.
+        """Start receiving audio from the radio (codec-neutral).
 
-        Connects the audio transport if not already connected,
-        then begins streaming RX audio to the callback.
+        Connects the audio transport if not already connected, then begins
+        streaming RX audio to the callback. Packets carry ``data`` encoded
+        per :attr:`audio_codec`.
 
         Args:
             callback: Called with each :class:`AudioPacket`.
             jitter_depth: Jitter buffer depth (0 to disable, default 5).
+                Implementation-specific widening of the minimal
+                ``AudioTransport.start_rx(callback)`` signature.
 
         Raises:
             ConnectionError: If not connected or audio port unavailable.
@@ -76,6 +79,79 @@ class AudioRuntimeMixin(_MixinBase):  # type: ignore[misc]
         self._opus_rx_user_callback = callback
         self._opus_rx_jitter_depth = jitter_depth
         await self._audio_stream.start_rx(callback, jitter_depth=jitter_depth)
+
+    async def stop_rx(self) -> None:
+        """Stop receiving audio from the radio (codec-neutral)."""
+        self._opus_rx_user_callback = None
+        if self._audio_stream is not None:
+            await self._audio_stream.stop_rx()
+
+    async def start_tx(self) -> None:
+        """Open the TX path, resolving format from the negotiated contract.
+
+        Codec-neutral (no format arguments): when the negotiated TX codec is
+        ``PCM_1CH_16BIT`` (direct Icom LAN conninfo) this follows the
+        contract-driven :meth:`start_audio_tx_pcm` path; otherwise the raw
+        stream-start (legacy opus) path.
+
+        Raises:
+            ConnectionError: If not connected or audio port unavailable.
+        """
+        if self.audio_tx_codec == AudioCodec.PCM_1CH_16BIT:
+            await self.start_audio_tx_pcm()
+        else:
+            await self._start_tx_stream()
+
+    async def push_tx(self, data: bytes) -> None:
+        """Send one audio frame encoded per :attr:`audio_tx_codec`.
+
+        Args:
+            data: Wire-codec audio frame bytes.
+
+        Raises:
+            ConnectionError: If not connected.
+            RuntimeError: If audio TX not started.
+        """
+        self._check_connected()
+        if self._audio_stream is None:
+            raise RuntimeError("Audio TX not started")
+        await self._audio_stream.push_tx(data)
+
+    async def stop_tx(self) -> None:
+        """Close the TX path (codec-neutral)."""
+        if self._audio_stream is not None:
+            await self._audio_stream.stop_tx()
+        self._pcm_tx_fmt = None
+
+    async def _start_tx_stream(self) -> None:
+        """Raw TX stream start (the legacy ``start_audio_tx_opus`` body).
+
+        Deliberately does NOT touch ``_pcm_tx_fmt``: recovery snapshots rely
+        on it staying ``None`` for opus-only TX users.
+
+        Raises:
+            ConnectionError: If not connected or audio port unavailable.
+        """
+        self._check_connected()
+        await self._ensure_audio_transport()
+        assert self._audio_stream is not None
+        await self._audio_stream.start_tx()
+
+    # ------------------------------------------------------------------
+    # Audio streaming (legacy opus-family delegates + PCM conveniences)
+    # ------------------------------------------------------------------
+
+    async def start_audio_rx_opus(
+        self,
+        callback: Callable[[AudioPacket | None], None],
+        *,
+        jitter_depth: int = 5,
+    ) -> None:
+        """Start receiving Opus audio from the radio.
+
+        Back-compat delegate for :meth:`start_rx` (MOR-539).
+        """
+        await self.start_rx(callback, jitter_depth=jitter_depth)
 
     async def start_audio_rx_pcm(
         self,
@@ -146,10 +222,11 @@ class AudioRuntimeMixin(_MixinBase):  # type: ignore[misc]
         await self.stop_audio_rx_opus()
 
     async def stop_audio_rx_opus(self) -> None:
-        """Stop receiving Opus audio from the radio."""
-        self._opus_rx_user_callback = None
-        if self._audio_stream is not None:
-            await self._audio_stream.stop_rx()
+        """Stop receiving Opus audio from the radio.
+
+        Back-compat delegate for :meth:`stop_rx` (MOR-539).
+        """
+        await self.stop_rx()
 
     def _add_opus_rx_tap(
         self,
@@ -170,15 +247,11 @@ class AudioRuntimeMixin(_MixinBase):  # type: ignore[misc]
     async def start_audio_tx_opus(self) -> None:
         """Start transmitting Opus audio to the radio.
 
-        Connects the audio transport if not already connected.
-
-        Raises:
-            ConnectionError: If not connected or audio port unavailable.
+        Back-compat delegate for the raw stream start (MOR-539). Unlike the
+        neutral :meth:`start_tx`, this never routes through the PCM path —
+        it must not set ``_pcm_tx_fmt`` (recovery snapshot semantics).
         """
-        self._check_connected()
-        await self._ensure_audio_transport()
-        assert self._audio_stream is not None
-        await self._audio_stream.start_tx()
+        await self._start_tx_stream()
 
     async def start_audio_tx_pcm(
         self,
@@ -251,19 +324,11 @@ class AudioRuntimeMixin(_MixinBase):  # type: ignore[misc]
         self._pcm_tx_fmt = (sample_rate, channels, frame_ms)
 
     async def push_audio_tx_opus(self, opus_data: bytes) -> None:
-        """Send an Opus-encoded audio frame to the radio.
+        """Send one wire-codec audio frame to the radio.
 
-        Args:
-            opus_data: Opus-encoded audio data.
-
-        Raises:
-            ConnectionError: If not connected.
-            RuntimeError: If audio TX not started.
+        Back-compat delegate for :meth:`push_tx` (MOR-539).
         """
-        self._check_connected()
-        if self._audio_stream is None:
-            raise RuntimeError("Audio TX not started")
-        await self._audio_stream.push_tx(opus_data)
+        await self.push_tx(opus_data)
 
     async def push_audio_tx_pcm(
         self,
@@ -298,10 +363,11 @@ class AudioRuntimeMixin(_MixinBase):  # type: ignore[misc]
         await self.stop_audio_tx_opus()
 
     async def stop_audio_tx_opus(self) -> None:
-        """Stop transmitting Opus audio to the radio."""
-        if self._audio_stream is not None:
-            await self._audio_stream.stop_tx()
-        self._pcm_tx_fmt = None
+        """Stop transmitting Opus audio to the radio.
+
+        Back-compat delegate for :meth:`stop_tx` (MOR-539).
+        """
+        await self.stop_tx()
 
     async def start_audio_opus(
         self,
