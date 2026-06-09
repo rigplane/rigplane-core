@@ -7,6 +7,7 @@ import asyncio
 import pytest
 
 from rigplane import IcomRadio, RadioConnectionState
+from rigplane.backends.ic705 import Ic705SerialRadio
 from rigplane.backends.icom7610 import Icom7610SerialRadio
 from rigplane import IC_7610_ADDR
 from rigplane.commands import (
@@ -631,3 +632,73 @@ async def test_serial_tx_accepts_none_args_resolving_to_defaults() -> None:
     assert usb_audio.tx_start_kwargs.get("channels") == 1
     await radio.stop_audio_tx_pcm()
     await radio.disconnect()
+
+
+class _DuplexAwareUsbAudioDriver(_FakeUsbAudioDriver):
+    """Fake USB driver that exposes the MOR-534 ``duplex_mode`` property."""
+
+    def __init__(self, mode: str = "exclusive") -> None:
+        super().__init__()
+        self._duplex_mode = mode
+
+    @property
+    def duplex_mode(self) -> str:
+        return self._duplex_mode
+
+
+class _RaisingDuplexUsbAudioDriver(_FakeUsbAudioDriver):
+    """Fake USB driver whose ``duplex_mode`` raises (offline enumeration)."""
+
+    @property
+    def duplex_mode(self) -> str:
+        raise RuntimeError("PortAudio device enumeration failed")
+
+
+def test_serial_audio_descriptors_present_on_serial_backends() -> None:
+    """MOR-536: both MOR-532 descriptors exist on the Icom serial backends."""
+    for radio_cls in (Icom7610SerialRadio, Ic705SerialRadio):
+        radio = radio_cls(
+            device="/dev/ttyUSB0",
+            civ_link=_FakeSerialCivLink(),
+            audio_driver=_FakeUsbAudioDriver(),
+        )
+        assert radio.audio_tx_codec == AudioCodec.PCM_1CH_16BIT
+        assert radio.audio_duplex_mode == "full"
+
+
+def test_serial_audio_tx_codec_is_mono_pcm_regardless_of_rx_codec() -> None:
+    """The serial USB CODEC TX path is always mono PCM (GH#1382 clamp)."""
+    radio = Icom7610SerialRadio(
+        device="/dev/ttyUSB0",
+        civ_link=_FakeSerialCivLink(),
+        audio_driver=_FakeUsbAudioDriver(),
+        audio_codec=AudioCodec.PCM_2CH_16BIT,
+    )
+    assert radio.audio_tx_codec == AudioCodec.PCM_1CH_16BIT
+
+
+def test_serial_audio_duplex_mode_delegates_to_driver() -> None:
+    """``audio_duplex_mode`` returns the driver's MOR-534 duplex policy."""
+    radio = Icom7610SerialRadio(
+        device="/dev/ttyUSB0",
+        civ_link=_FakeSerialCivLink(),
+        audio_driver=_DuplexAwareUsbAudioDriver("exclusive"),
+    )
+    assert radio.audio_duplex_mode == "exclusive"
+
+    radio_full = Icom7610SerialRadio(
+        device="/dev/ttyUSB0",
+        civ_link=_FakeSerialCivLink(),
+        audio_driver=_DuplexAwareUsbAudioDriver("full"),
+    )
+    assert radio_full.audio_duplex_mode == "full"
+
+
+def test_serial_audio_duplex_mode_defaults_to_full_when_driver_raises() -> None:
+    """Device enumeration failures (offline hosts) fall back to ``"full"``."""
+    radio = Icom7610SerialRadio(
+        device="/dev/ttyUSB0",
+        civ_link=_FakeSerialCivLink(),
+        audio_driver=_RaisingDuplexUsbAudioDriver(),
+    )
+    assert radio.audio_duplex_mode == "full"
