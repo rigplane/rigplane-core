@@ -24,6 +24,7 @@ __all__ = [
     "AUDIO_HEADER_SIZE",
     "TX_IDENT",
     "RX_IDENT_0xA0",
+    "SYNTHETIC_RX_IDENT",
 ]
 
 logger = logging.getLogger(__name__)
@@ -40,6 +41,17 @@ MAX_AUDIO_PAYLOAD = 1364
 
 # RX ident for 0xa0-length frames
 RX_IDENT_0xA0 = 0x9781
+
+#: Ident marking locally-framed (synthetic, non-LAN-wire) AudioPackets.
+#:
+#: USB-codec backends (Icom serial base, Yaesu CAT) capture PCM from the OS
+#: audio device — there is no Icom LAN UDP header to parse — and fabricate
+#: :class:`AudioPacket` instances to feed the same audio bus as LAN RX.
+#: They stamp this ident on every synthetic packet (with a locally counted
+#: wrapping uint16 ``send_seq``). The value intentionally equals
+#: ``RX_IDENT_0xA0`` so downstream consumers treat synthetic frames exactly
+#: like ordinary LAN RX audio (MOR-540).
+SYNTHETIC_RX_IDENT = 0x9781
 
 
 @dataclass(frozen=True, slots=True)
