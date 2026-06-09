@@ -200,6 +200,48 @@ class TestNegotiatedContractDrivesWireCodec:
 
 
 # ---------------------------------------------------------------------------
+# Guard — MOR-535 (AudioTransport 2/12): codec/duplex descriptor surface.
+# ---------------------------------------------------------------------------
+
+
+class TestMor535AudioDescriptorSurface:
+    def test_icom_radio_exposes_descriptor_properties(self) -> None:
+        """IcomRadio carries the MOR-532 codec/duplex descriptor surface."""
+        radio = IcomRadio("192.168.1.100", model="IC-7300")
+        assert isinstance(radio.audio_tx_codec, AudioCodec)
+        assert radio.audio_duplex_mode == "full"
+
+    def test_audio_tx_codec_prefers_negotiated_contract(self) -> None:
+        """After negotiation the contract's ``tx_codec`` wins over the default."""
+        radio = IcomRadio("192.168.1.100", model="IC-7300")
+        assert radio.audio_tx_codec == radio.audio_stream_contract.tx_codec
+        # Perturb the internal default: the negotiated contract still wins,
+        # mirroring the precedence resolved in ``IcomRadio.__init__``.
+        radio._audio_tx_codec = AudioCodec.OPUS_1CH
+        assert radio.audio_tx_codec == radio.audio_stream_contract.tx_codec
+
+    def test_audio_tx_codec_falls_back_before_negotiation(self) -> None:
+        """Without a contract the internal ``_audio_tx_codec`` default applies."""
+        harness = _ContractValidatorHarness(
+            tx_codec=AudioCodec.OPUS_1CH,
+            sample_rate=48000,
+            channels=1,
+            frame_ms=20,
+        )
+        # The harness never negotiates an ``AudioStreamContract``.
+        assert harness.audio_tx_codec == AudioCodec.OPUS_1CH
+        assert harness.audio_duplex_mode == "full"
+
+    def test_audio_tx_codec_safe_on_bare_mixin_host(self) -> None:
+        """A mixin host with neither attr resolves the wire-default codec."""
+
+        class _Bare(AudioRuntimeMixin):
+            pass
+
+        assert _Bare().audio_tx_codec == AudioCodec.PCM_1CH_16BIT
+
+
+# ---------------------------------------------------------------------------
 # Guard 3 — contract rate/channels feed the validator's frame size.
 # ---------------------------------------------------------------------------
 

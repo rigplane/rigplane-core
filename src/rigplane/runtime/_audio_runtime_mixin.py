@@ -451,6 +451,32 @@ class AudioRuntimeMixin(_MixinBase):  # type: ignore[misc]
         return self._audio_codec
 
     @property
+    def audio_tx_codec(self) -> AudioCodec:
+        """Effective TX codec (MOR-532 codec descriptor surface).
+
+        Prefers the negotiated ``AudioStreamContract.tx_codec`` when a
+        contract exists, falling back to the internal ``_audio_tx_codec``
+        default (``PCM_1CH_16BIT``) — the same precedence resolved in
+        ``IcomRadio.__init__``. Consumed by later MOR-532 epic steps.
+        """
+        contract = getattr(self, "_audio_stream_contract", None)
+        tx_codec = getattr(contract, "tx_codec", None)
+        if tx_codec is not None:
+            return AudioCodec(tx_codec)
+        return getattr(self, "_audio_tx_codec", AudioCodec.PCM_1CH_16BIT)
+
+    @property
+    def audio_duplex_mode(self) -> str:
+        """Duplex capability (MOR-532 duplex descriptor surface).
+
+        The Icom LAN UDP audio stream is genuinely full-duplex: RX frames
+        keep flowing while TX is active, and ``stop_tx`` reverts the stream
+        state to RECEIVING. Single source of duplex policy for later MOR-532
+        epic steps.
+        """
+        return "full"
+
+    @property
     def audio_sample_rate(self) -> int:
         """Configured audio sample rate in Hz."""
         return self._audio_sample_rate
