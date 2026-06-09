@@ -3,12 +3,15 @@
 from __future__ import annotations
 
 import asyncio
+import sys
 from typing import Callable
 from unittest.mock import AsyncMock
 
 import pytest
 
 from rigplane.audio import AudioPacket
+from rigplane.audio.backend import AudioDeviceId, AudioDeviceInfo, FakeAudioBackend
+from rigplane.audio.usb_driver import UsbAudioDriver
 from rigplane.backends.yaesu_cat.radio import YaesuCatRadio
 from rigplane.exceptions import AudioFormatError
 from rigplane.types import AudioCodec
@@ -137,6 +140,60 @@ class TestAudioCodecProperty:
 
     def test_is_not_opus(self, radio: YaesuCatRadio) -> None:
         assert radio.audio_codec not in (AudioCodec.OPUS_1CH, AudioCodec.OPUS_2CH)
+
+
+# ---------------------------------------------------------------------------
+# Audio descriptors — MOR-537 (AudioTransport epic step 4/12)
+# ---------------------------------------------------------------------------
+
+
+class TestAudioDescriptors:
+    """MOR-532 descriptor surface: ``audio_tx_codec`` + ``audio_duplex_mode``."""
+
+    def test_descriptors_present(self, radio: YaesuCatRadio) -> None:
+        assert hasattr(radio, "audio_tx_codec")
+        assert hasattr(radio, "audio_duplex_mode")
+
+    def test_audio_tx_codec_is_raw_pcm(self, radio: YaesuCatRadio) -> None:
+        assert radio.audio_tx_codec == AudioCodec.PCM_1CH_16BIT
+
+    def test_duplex_mode_same_device_macos_is_exclusive(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(sys, "platform", "darwin")
+        backend = FakeAudioBackend(
+            [
+                AudioDeviceInfo(
+                    id=AudioDeviceId(1),
+                    name="USB Audio CODEC",
+                    input_channels=2,
+                    output_channels=2,
+                ),
+            ]
+        )
+        r = YaesuCatRadio(
+            device="/dev/fake0",
+            audio_driver=UsbAudioDriver(backend=backend),
+        )
+        assert r.audio_duplex_mode == "exclusive"
+
+    def test_duplex_mode_falls_back_to_full_without_driver_support(
+        self, radio: YaesuCatRadio
+    ) -> None:
+        # FakeAudioDriver has no ``duplex_mode`` — descriptor must not blow up.
+        assert radio.audio_duplex_mode == "full"
+
+    def test_duplex_mode_falls_back_to_full_when_driver_raises(self) -> None:
+        class RaisingDriver(FakeAudioDriver):
+            @property
+            def duplex_mode(self) -> str:
+                raise RuntimeError("no devices resolvable offline")
+
+        r = YaesuCatRadio(
+            device="/dev/fake0",
+            audio_driver=RaisingDriver(),  # type: ignore[arg-type]
+        )
+        assert r.audio_duplex_mode == "full"
 
 
 # ---------------------------------------------------------------------------
