@@ -44,6 +44,7 @@ TIER1_SYMBOLS: tuple[str, ...] = (
     "PowerControlCapable",
     "StateNotifyCapable",
     "AudioCapable",
+    "AudioTransport",
     "CivCommandCapable",
     "ModeInfoCapable",
     "ScopeCapable",

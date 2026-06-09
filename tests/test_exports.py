@@ -33,6 +33,7 @@ def test_public_api_surface() -> None:
         "AdvancedControlCapable",
         "AntennaControlCapable",
         "AudioCapable",
+        "AudioTransport",
         "CivCommandCapable",
         "CwControlCapable",
         "DspControlCapable",

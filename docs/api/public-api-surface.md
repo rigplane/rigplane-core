@@ -24,7 +24,8 @@ This page defines the **officially supported** public API of `rigplane`. Use the
 
 | Symbol | Description |
 |--------|-------------|
-| `AudioCapable` | Protocol for radios that support audio streaming. |
+| `AudioCapable` | Protocol for radios that support audio streaming (legacy `*_opus`/`*_pcm` surface; permanent back-compat shims). |
+| `AudioTransport` | Codec/transport-neutral audio protocol (new, MOR-532): format descriptors (`audio_codec`, `audio_tx_codec`, `audio_sample_rate`, `audio_duplex_mode`) plus `start_rx`/`stop_rx`/`start_tx`/`push_tx`/`stop_tx`. Backends implement it in later MOR-532 steps. |
 | `ScopeCapable` | Protocol for radios that support scope/waterfall. |
 | `DualReceiverCapable` | Protocol for dual-receiver (MAIN/SUB) support. |
 | `LevelsCapable` | Protocol for setting receiver levels: AF, RF gain, squelch. |
@@ -110,6 +111,7 @@ available directly via `from rigplane import …`.
 - `TransceiverStatusCapable`, `RitXitCapable`, `MemoryCapable`
 - `SplitCapable` (new in v0.19)
 - `UsbAudioCapable` (new in v0.19)
+- `AudioTransport` (new in v2.9 — codec-neutral audio surface, MOR-532/MOR-538)
 
 **Exceptions (from `rigplane.exceptions`)**
 
