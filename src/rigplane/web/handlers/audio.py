@@ -41,6 +41,20 @@ logger = logging.getLogger(__name__)
 _TX_CLEANUP_STOP_TIMEOUT_SECONDS = 2.0
 
 
+def _is_benign_tx_restart(exc: RuntimeError) -> bool:
+    """True when TX start failed only because the stream is already open.
+
+    The Icom LAN stream raises ``RuntimeError("Already transmitting")``
+    while the USB driver raises
+    ``AudioDriverLifecycleError("TX stream already started.")`` (a
+    ``RuntimeError`` subclass). Both mean the poller (or a prior client)
+    already opened TX and the handler can simply reuse it — re-raising
+    would close the audio WebSocket (MOR-541 review note, MOR-544).
+    """
+    text = str(exc).lower()
+    return "already transmitting" in text or "already started" in text
+
+
 def _parse_preferred_rx_codec(msg: dict[str, Any]) -> int | None:
     value = msg.get("preferred_rx_codec")
     if value in ("pcm16", "pcm", "raw"):
@@ -703,14 +717,16 @@ class AudioHandler:
                 if self._radio and CAP_AUDIO in self._radio.capabilities:
                     self._ensure_tx_transcoder()
                     try:
-                        if self._tx_codec() == AudioCodec.PCM_1CH_16BIT:
-                            await self._radio.start_audio_tx_pcm(  # type: ignore[attr-defined]
-                                sample_rate=self._tx_sample_rate()
-                            )
+                        start_tx = getattr(self._radio, "start_tx", None)
+                        if start_tx is not None:
+                            # Neutral AudioTransport surface (MOR-544): the
+                            # backend resolves the TX format from its
+                            # negotiated contract.
+                            await start_tx()
                         else:
-                            await self._radio.start_audio_tx_opus()  # type: ignore[attr-defined]
+                            await self._legacy_tx_lifecycle("start")
                     except RuntimeError as exc:
-                        if "Already transmitting" in str(exc):
+                        if _is_benign_tx_restart(exc):
                             logger.info("audio: TX already started by poller, reusing")
                         else:
                             raise
@@ -745,10 +761,12 @@ class AudioHandler:
                 return
 
             try:
-                if self._tx_codec() == AudioCodec.PCM_1CH_16BIT:
-                    stop_tx = self._radio.stop_audio_tx_pcm()  # type: ignore[attr-defined]
+                stop_tx_method = getattr(self._radio, "stop_tx", None)
+                if stop_tx_method is not None:
+                    # Neutral AudioTransport surface (MOR-544).
+                    stop_tx: Awaitable[None] = stop_tx_method()
                 else:
-                    stop_tx = self._radio.stop_audio_tx_opus()  # type: ignore[attr-defined]
+                    stop_tx = self._legacy_tx_lifecycle("stop")
                 if timeout is None:
                     await stop_tx
                 else:
@@ -908,13 +926,7 @@ class AudioHandler:
         and the radio silently dropped TX audio. Called on ``audio_start
         direction=tx``, when the rate is guaranteed available.
         """
-        contract = getattr(self._radio, "audio_stream_contract", None)
-        sr = getattr(contract, "tx_sample_rate_hz", None)
-        if not isinstance(sr, int) or isinstance(sr, bool) or sr <= 0:
-            sr = getattr(self._radio, "audio_sample_rate", None)
-        rate = (
-            sr if isinstance(sr, int) and not isinstance(sr, bool) and sr > 0 else 48000
-        )
+        rate = self._tx_sample_rate()
         if self._transcoder is not None and self._transcoder_rate == rate:
             return
         try:
@@ -935,6 +947,12 @@ class AudioHandler:
         # carrying a runtime-redundant ``cast``.  ``warn_unused_ignores`` is
         # off for ``rigplane.web.*``, so the ignore stays safe in any future
         # non-strict context.
+        #
+        # Preference order (MOR-544): first-class ``audio_tx_codec``
+        # (AudioTransport) → contract ``tx_codec`` → RX ``audio_codec``.
+        tx_codec = getattr(self._radio, "audio_tx_codec", None)
+        if tx_codec is not None:
+            return tx_codec  # type: ignore[no-any-return]
         contract = getattr(self._radio, "audio_stream_contract", None)
         tx_codec = getattr(contract, "tx_codec", None)
         if tx_codec is not None:
@@ -942,11 +960,42 @@ class AudioHandler:
         return getattr(self._radio, "audio_codec", None)  # type: ignore[no-any-return]
 
     def _tx_sample_rate(self) -> int:
+        """Resolve the TX sample rate: contract → radio property → 48000.
+
+        Single source for both the legacy ``start_audio_tx_pcm`` call and
+        the TX transcoder (the two used to carry half-duplicated fallback
+        chains; unified in MOR-544)."""
         contract = getattr(self._radio, "audio_stream_contract", None)
-        tx_sr = getattr(contract, "tx_sample_rate_hz", None)
-        if isinstance(tx_sr, int) and not isinstance(tx_sr, bool) and tx_sr > 0:
-            return tx_sr
+        sr = getattr(contract, "tx_sample_rate_hz", None)
+        if not isinstance(sr, int) or isinstance(sr, bool) or sr <= 0:
+            sr = getattr(self._radio, "audio_sample_rate", None)
+        if isinstance(sr, int) and not isinstance(sr, bool) and sr > 0:
+            return sr
         return 48000
+
+    async def _legacy_tx_lifecycle(self, op: str) -> None:
+        """Per-codec TX ``"start"``/``"stop"`` fallback for radios without
+        the neutral ``AudioTransport`` surface (MOR-544)."""
+        if self._tx_codec() == AudioCodec.PCM_1CH_16BIT:
+            if op == "start":
+                await self._radio.start_audio_tx_pcm(  # type: ignore[union-attr]
+                    sample_rate=self._tx_sample_rate()
+                )
+            else:
+                await self._radio.stop_audio_tx_pcm()  # type: ignore[union-attr]
+        elif op == "start":
+            await self._radio.start_audio_tx_opus()  # type: ignore[union-attr]
+        else:
+            await self._radio.stop_audio_tx_opus()  # type: ignore[union-attr]
+
+    async def _push_tx(self, data: bytes, *, legacy_method: str) -> None:
+        """Push TX bytes via neutral ``push_tx``; fall back to the named
+        legacy per-codec push method (MOR-544)."""
+        push_tx = getattr(self._radio, "push_tx", None)
+        if push_tx is not None:
+            await push_tx(data)
+        else:
+            await getattr(self._radio, legacy_method)(data)
 
     async def _start_rx(self, *, preferred_rx_codec: int | None = None) -> None:
         """Subscribe to audio broadcaster for RX frames."""
@@ -999,7 +1048,7 @@ class AudioHandler:
             try:
                 tx_codec = self._tx_codec()
                 if browser_codec == AUDIO_CODEC_PCM16:
-                    await self._radio.push_audio_tx_pcm(audio_data)  # type: ignore[attr-defined]
+                    await self._push_tx(audio_data, legacy_method="push_audio_tx_pcm")
                     tx_data_desc = f"{len(audio_data)} bytes pcm"
                 elif (
                     browser_codec == AUDIO_CODEC_OPUS
@@ -1017,7 +1066,7 @@ class AudioHandler:
                     try:
                         # Decode Opus → PCM16
                         pcm_data = self._transcoder.opus_to_pcm(audio_data)
-                        await self._radio.push_audio_tx_pcm(pcm_data)  # type: ignore[attr-defined]
+                        await self._push_tx(pcm_data, legacy_method="push_audio_tx_pcm")
                         tx_data_desc = f"{len(pcm_data)} bytes pcm"
                     except Exception as e:
                         logger.warning(
@@ -1031,7 +1080,7 @@ class AudioHandler:
                         return
                 elif browser_codec == AUDIO_CODEC_OPUS:
                     # Radio uses Opus or PCM_1CH_8BIT/etc → send Opus as-is
-                    await self._radio.push_audio_tx_opus(audio_data)  # type: ignore[attr-defined]
+                    await self._push_tx(audio_data, legacy_method="push_audio_tx_opus")
                     tx_data_desc = f"{len(audio_data)} bytes opus"
                 else:
                     logger.warning(
