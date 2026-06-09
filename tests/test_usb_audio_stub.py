@@ -69,6 +69,100 @@ def test_select_usb_audio_devices_explicit_overrides_take_precedence() -> None:
     assert selected_tx.name == "A"
 
 
+def test_select_usb_audio_devices_override_accepts_device_index() -> None:
+    devices = [
+        UsbAudioDevice(
+            index=1, name="USB Audio CODEC", input_channels=2, output_channels=2
+        ),
+        UsbAudioDevice(
+            index=3, name="USB Audio CODEC", input_channels=2, output_channels=2
+        ),
+    ]
+    selected_rx, selected_tx = select_usb_audio_devices(
+        devices,
+        rx_device="3",
+        tx_device="3",
+    )
+    assert selected_rx.index == 3
+    assert selected_tx.index == 3
+
+
+def test_select_usb_audio_devices_override_accepts_hardware_identifier() -> None:
+    devices = [
+        UsbAudioDevice(
+            index=1,
+            name="USB Audio CODEC",
+            input_channels=2,
+            output_channels=2,
+            platform_uid="alsa:hw:1,0",
+        ),
+        UsbAudioDevice(
+            index=3,
+            name="USB Audio CODEC",
+            input_channels=2,
+            output_channels=2,
+            platform_uid="alsa:hw:3,0",
+        ),
+    ]
+    selected_rx, selected_tx = select_usb_audio_devices(
+        devices,
+        rx_device="hw:3,0",
+        tx_device="hw:3,0",
+    )
+    assert selected_rx.index == 3
+    assert selected_tx.index == 3
+
+
+def test_select_usb_audio_devices_duplicate_name_override_is_ambiguous() -> None:
+    devices = [
+        UsbAudioDevice(
+            index=1, name="USB Audio CODEC", input_channels=2, output_channels=2
+        ),
+        UsbAudioDevice(
+            index=3, name="USB Audio CODEC", input_channels=2, output_channels=2
+        ),
+    ]
+    with pytest.raises(AudioDeviceSelectionError, match="Ambiguous RX device override"):
+        select_usb_audio_devices(devices, rx_device="USB Audio CODEC")
+
+
+@pytest.mark.asyncio
+async def test_usb_audio_driver_override_uses_backend_hardware_identifier() -> None:
+    backend = FakeAudioBackend(
+        [
+            AudioDeviceInfo(
+                id=AudioDeviceId(1),
+                name="USB Audio CODEC",
+                input_channels=2,
+                output_channels=2,
+                platform_uid="alsa:hw:1,0",
+            ),
+            AudioDeviceInfo(
+                id=AudioDeviceId(3),
+                name="USB Audio CODEC",
+                input_channels=2,
+                output_channels=2,
+                platform_uid="alsa:hw:3,0",
+            ),
+        ]
+    )
+    driver = UsbAudioDriver(
+        backend=backend,
+        rx_device="hw:3,0",
+        tx_device="hw:3,0",
+    )
+
+    await driver.start_rx(lambda _: None)
+    await driver.start_tx()
+
+    assert driver.selected_rx_device is not None
+    assert driver.selected_rx_device.index == 3
+    assert driver.selected_tx_device is not None
+    assert driver.selected_tx_device.index == 3
+    await driver.stop_tx()
+    await driver.stop_rx()
+
+
 def test_select_usb_audio_devices_auto_detect_prefers_usb_audio_codec() -> None:
     # Generic "USB Audio CODEC" now ranks above vendor-specific names so the
     # driver works equally well for Icom, Yaesu and Kenwood radios (all use
