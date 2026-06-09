@@ -319,6 +319,37 @@ class YaesuCatRadio:
         return AudioCodec.PCM_1CH_16BIT
 
     @property
+    def audio_tx_codec(self) -> AudioCodec:
+        """Effective TX codec (MOR-532 codec descriptor surface).
+
+        The FTX-1 TX path pushes raw PCM straight to the OS USB audio
+        device — there is no in-band Opus framing — so this is always
+        ``PCM_1CH_16BIT``. Consumed by later MOR-532 epic steps.
+        """
+        return AudioCodec.PCM_1CH_16BIT
+
+    @property
+    def audio_duplex_mode(self) -> str:
+        """Duplex capability (MOR-532 duplex descriptor surface).
+
+        Delegates to ``UsbAudioDriver.duplex_mode`` (MOR-534):
+        ``"exclusive"`` when macOS AUHAL would reject concurrent RX+TX
+        streams against the same physical USB CODEC (paramErr -50 — the
+        same-device reality previously encoded only in the
+        ``--bridge-rx-only`` flag), ``"full"`` otherwise. Falls back to
+        ``"full"`` when the driver does not expose the policy or device
+        resolution fails (offline / test doubles). Single source of duplex
+        policy for later MOR-532 epic steps.
+        """
+        try:
+            mode = getattr(self._audio_driver, "duplex_mode", None)
+        except Exception:
+            return "full"
+        if isinstance(mode, str):
+            return mode
+        return "full"
+
+    @property
     def audio_sample_rate(self) -> int:
         """Configured audio sample rate in Hz (default 48000)."""
         return self._audio_sample_rate
