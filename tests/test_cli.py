@@ -1465,7 +1465,7 @@ class TestListAudioDevices:
         mock_sd.query_devices.return_value = [
             {
                 "index": 0,
-                "name": "IC-7610 USB Audio",
+                "name": "IC-7610 USB Audio (hw:3,0)",
                 "max_input_channels": 1,
                 "max_output_channels": 1,
                 "default_samplerate": 48000,
@@ -1482,8 +1482,9 @@ class TestListAudioDevices:
         assert result == 0
         captured = capsys.readouterr()
         data = json_module.loads(captured.out.strip())
-        assert data[0]["name"] == "IC-7610 USB Audio"
+        assert data[0]["name"] == "IC-7610 USB Audio (hw:3,0)"
         assert data[0]["index"] == 0
+        assert data[0]["platform_uid"] == "hw:3,0"
 
 
 class TestCheckPortsAvailable:
