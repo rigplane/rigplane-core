@@ -388,6 +388,11 @@ Use `rigplane --list-audio-devices` to find the correct indices.
 1. Menu → Set → Connectors → USB Audio → **USB Audio TX** → **Enabled**
 2. Check PTT is active before transmitting audio
 3. Verify `--tx-device` matches the USB audio device name
+4. Check **Menu → Set → Connectors → MOD Input** for the active mode group —
+   for USB audio TX the source must be `USB`. If MIC is in the source list,
+   the open microphone modulates instead of (or on top of) the computer
+   audio. The same trap affects network (LAN) voice TX — see
+   [Network Voice TX Is Noise, a Squeal, or Silent (IC-7610 MOD Input)](troubleshooting.md#network-voice-tx-is-noise-a-squeal-or-silent-ic-7610-mod-input)
 
 ### TX appears dirty / multiple peaks on waterfall during the first seconds
 

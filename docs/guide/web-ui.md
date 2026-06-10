@@ -429,6 +429,15 @@ Practical rule:
 - If audio send blocks for too long, server closes stale audio WS path and client
   reconnect logic re-establishes the stream.
 
+!!! danger "IC-7610: set MOD Input to LAN before voice TX"
+    For network (LAN) voice TX the radio's **MOD Input** source for the active
+    mode group must be `LAN` (**Menu → Set → Connectors → MOD Input**,
+    `DATA OFF MOD` for regular SSB/AM/FM). If it is `MIC` — or any option that
+    includes MIC — the open microphone modulates the moment PTT is keyed from
+    the network, producing broadband noise or a rising feedback squeal instead
+    of your audio. See
+    [Network Voice TX Is Noise, a Squeal, or Silent (IC-7610 MOD Input)](troubleshooting.md#network-voice-tx-is-noise-a-squeal-or-silent-ic-7610-mod-input).
+
 ## Frontend Runtime Workflow (Current Implementation)
 
 The browser app startup path is implemented in `frontend/src/App.svelte` and
