@@ -172,6 +172,10 @@ class TestAdaptiveDegrade:
             "(MOR-588 headline behavior)"
         )
         assert frame[AUDIO_HEADER_SIZE:] == b"opus-frame"
+        state = broadcaster._client_adaptive[id(handler._frame_queue)]
+        assert state.codec == AUDIO_CODEC_OPUS, (
+            "the controller DECISION itself must be Opus — not just the wire"
+        )
         assert [a["codec"] for a in _acks(ws)] == ["pcm16", "opus"]
 
     async def test_isolated_burst_does_not_flip(self) -> None:
@@ -192,6 +196,17 @@ class TestAdaptiveDegrade:
         frame = handler._frame_queue.get_nowait()
         assert frame[1] == AUDIO_CODEC_PCM16
         assert broadcaster._client_opus_transcoders == {}
+        # The wire frame alone cannot discriminate here: without libopus
+        # the MOR-584 fallback emits PCM16 + a clean encoder pool EVEN IF
+        # the controller wrongly switched. Assert the controller's own
+        # decision so a neutered DEGRADE_WINDOW_S gate or a removed
+        # degrade-episode reset fails this test (mutation-testing gap).
+        state = broadcaster._client_adaptive[id(handler._frame_queue)]
+        assert state.codec == AUDIO_CODEC_PCM16, (
+            "non-continuous evidence must not flip the controller decision: "
+            "PCM16->Opus requires a CONTINUOUS episode >= DEGRADE_WINDOW_S, "
+            "and an evidence gap > DEGRADE_WINDOW_S must reset the episode"
+        )
 
     async def test_server_side_queue_drops_alone_flip_without_stats_uplink(
         self,
@@ -241,6 +256,8 @@ class TestAdaptiveUpgrade:
         assert broadcaster._client_opus_transcoders == {}, (
             "upgrade must tear down the per-client encoder (MOR-584 pool)"
         )
+        state = broadcaster._client_adaptive[id(handler._frame_queue)]
+        assert state.codec == AUDIO_CODEC_PCM16
         assert [a["codec"] for a in _acks(ws)] == ["pcm16", "opus", "pcm16"]
 
     async def test_clean_window_not_met_stays_opus(self) -> None:
