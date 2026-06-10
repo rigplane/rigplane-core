@@ -749,6 +749,7 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
         self._auto_recover_audio = auto_recover_audio
         self._on_audio_recovery = on_audio_recovery
         self._on_reconnect: Callable[[], None] | None = None
+        self._on_reconnect_status: Callable[[dict[str, Any]], None] | None = None
         self._civ_stream_ready: bool = False
         self._civ_recovering: bool = False
         self._last_civ_data_received: float | None = None
@@ -1085,6 +1086,19 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
     def set_reconnect_callback(self, callback: Callable[[], None] | None) -> None:
         """Register callback invoked after successful soft reconnect."""
         self._on_reconnect = callback
+
+    def set_reconnect_status_callback(
+        self, callback: Callable[[dict[str, Any]], None] | None
+    ) -> None:
+        """Register callback for reconnect-status updates (MOR-594).
+
+        The callback receives a small structured payload at each meaningful
+        reconnect edge: ``{"state": "reconnecting" | "connected" |
+        "disconnected", "attempt": int, "next_retry_seconds": float | None}``.
+        Invocation is best-effort — a raising callback never breaks the
+        watchdog/reconnect loops.
+        """
+        self._on_reconnect_status = callback
 
     def civ_stats(self) -> dict[str, int]:
         """Return CI-V request tracker statistics for monitoring.
