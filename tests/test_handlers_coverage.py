@@ -1808,6 +1808,28 @@ async def test_audio_handler_tolerates_usb_lifecycle_double_start() -> None:
     radio.start_tx.assert_awaited_once()
 
 
+async def test_audio_handler_tolerates_typed_already_started_by_type() -> None:
+    """AudioAlreadyStartedError is benign by TYPE, not by message text —
+    a message without the legacy magic substrings must still be tolerated
+    (MOR-563)."""
+    from rigplane.audio.usb_driver import AudioAlreadyStartedError
+    from rigplane.web.handlers.audio import _is_benign_tx_restart
+
+    exc = AudioAlreadyStartedError("wording with no magic substrings")
+    assert _is_benign_tx_restart(exc) is True
+
+    contract = _make_web_tx_contract(AudioCodec.PCM_1CH_16BIT)
+    radio = _make_neutral_tx_radio(contract)
+    radio.start_tx = AsyncMock(side_effect=exc)
+    ws = SimpleNamespace(recv=AsyncMock(), send_binary=AsyncMock())
+    handler = AudioHandler(ws, radio, None)
+
+    await handler._handle_control({"type": "audio_start", "direction": "tx"})
+
+    assert handler._tx_active is True
+    radio.start_tx.assert_awaited_once()
+
+
 async def test_audio_handler_drops_non_tx_or_unknown_browser_audio_frames() -> None:
     radio = SimpleNamespace(
         capabilities={"audio"},

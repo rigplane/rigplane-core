@@ -14,6 +14,7 @@ from typing import Callable
 
 from ..transport import IcomTransport
 from ..types import PacketType
+from .usb_driver import AudioAlreadyStartedError, AudioNotStartedError
 
 __all__ = [
     "AudioStream",
@@ -517,10 +518,10 @@ class AudioStream:
                 Defaults to the value set at construction time.
 
         Raises:
-            RuntimeError: If already receiving or transmitting.
+            AudioAlreadyStartedError: If already receiving or transmitting.
         """
         if self._state != AudioState.IDLE:
-            raise RuntimeError(f"Cannot start RX in state {self._state}")
+            raise AudioAlreadyStartedError(f"Cannot start RX in state {self._state}")
 
         depth = jitter_depth if jitter_depth is not None else self._jitter_depth
         self._reset_rx_stats()
@@ -596,10 +597,10 @@ class AudioStream:
         Can be called while already receiving (full-duplex).
 
         Raises:
-            RuntimeError: If already transmitting.
+            AudioAlreadyStartedError: If already transmitting.
         """
         if self._state == AudioState.TRANSMITTING:
-            raise RuntimeError("Already transmitting")
+            raise AudioAlreadyStartedError("Already transmitting")
         self._state = AudioState.TRANSMITTING
         self._tx_seq = 0
         self._tx_packets_sent = 0
@@ -616,10 +617,10 @@ class AudioStream:
             audio_data: Payload encoded with the negotiated TX audio codec.
 
         Raises:
-            RuntimeError: If not in transmitting state.
+            AudioNotStartedError: If not in transmitting state.
         """
         if self._state != AudioState.TRANSMITTING:
-            raise RuntimeError(f"Cannot push TX in state {self._state}")
+            raise AudioNotStartedError(f"Cannot push TX in state {self._state}")
 
         data = audio_data
         offset = 0
