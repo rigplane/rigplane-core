@@ -1834,8 +1834,54 @@ class CivRuntime:
                         frame=frame,
                     )
                 )
+        elif frame.command == 0x27 and frame.sub:
+            observations.extend(self._scope_control_observations(frame))
 
         return tuple(observations)
+
+    def _scope_control_observations(self, frame: CivFrame) -> list[Observation]:
+        """Decode a 0x27 scope-control response into StateStore observations.
+
+        Mirrors the ``_handle_27`` sub-command dispatch for the leaves the web
+        layer publishes as ``scopeControls.*`` (MOR-557): receiver/dual/mode/
+        span/edge/hold/ref_db/speed. Sub 0x00 (waterfall pixel data) never
+        reaches here — ``_route_civ_frame`` short-circuits it — and command
+        echoes are dropped earlier by the ``from_addr`` filter. Malformed
+        payloads raise ``ValueError`` in the parse helpers and are swallowed
+        by ``_apply_state_store_observations``.
+        """
+        receiver: int | None = None
+        pairs: list[tuple[str, Any]] = []
+        if frame.sub == 0x12:
+            pairs.append(("receiver", parse_scope_main_sub_response(frame)))
+        elif frame.sub == 0x13:
+            pairs.append(("dual", parse_scope_single_dual_response(frame)))
+        elif frame.sub == 0x14:
+            receiver, mode = parse_scope_mode_response(frame)
+            pairs.append(("mode", mode))
+        elif frame.sub == 0x15:
+            receiver, span = parse_scope_span_response(frame)
+            pairs.append(("span", span))
+        elif frame.sub == 0x16:
+            receiver, edge = parse_scope_edge_response(frame)
+            pairs.append(("edge", edge))
+        elif frame.sub == 0x17:
+            receiver, hold = parse_scope_hold_response(frame)
+            pairs.append(("hold", hold))
+        elif frame.sub == 0x19:
+            receiver, ref_db = parse_scope_ref_response(frame)
+            pairs.append(("ref_db", ref_db))
+        elif frame.sub == 0x1A:
+            receiver, speed = parse_scope_speed_response(frame)
+            pairs.append(("speed", speed))
+        if receiver is not None:
+            pairs.append(("receiver", receiver))
+        return [
+            self._observation(
+                FieldPath.scope_control("display", name), value, frame=frame
+            )
+            for name, value in pairs
+        ]
 
     def _receiver_context(self, frame: CivFrame) -> tuple[str, str, str | None]:
         """Return receiver id/name plus any temporary VFO-slot override."""

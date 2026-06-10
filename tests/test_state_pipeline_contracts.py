@@ -262,6 +262,32 @@ def test_global_dial_lock_registered_as_tx_state_bool() -> None:
     assert spec.writable is True
 
 
+def test_global_scope_control_display_leaves_registered() -> None:
+    """MOR-557: the public scope-control leaves have canonical FieldSpecs.
+
+    The 0x27 ingress decoder emits observations at
+    ``scope_controls.global.display.<leaf>`` for every leaf the web layer
+    publishes as ``scopeControls.*``; each needs a registered read-only spec.
+    """
+    expected = {
+        "receiver": "int",
+        "dual": "bool",
+        "mode": "int",
+        "span": "int",
+        "edge": "int",
+        "hold": "bool",
+        "ref_db": "float",
+        "speed": "int",
+    }
+    for name, value_type in expected.items():
+        path = FieldPath.scope_control("display", name)
+        spec = DEFAULT_FIELD_REGISTRY.require(path)
+        assert spec.path == path
+        assert spec.family is FieldFamily.DISPLAY
+        assert spec.value_type == value_type
+        assert spec.writable is False
+
+
 def test_global_key_speed_registered_as_operator_control_int() -> None:
     """MOR-456: ``global.operator_controls.key_speed`` is a registered int.
 

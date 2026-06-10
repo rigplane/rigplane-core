@@ -1220,6 +1220,17 @@ def _global_specs() -> tuple[FieldSpec, ...]:
             "int",
             writable=True,
         ),
+        # Global scope-control display leaves (MOR-557): read-only ingress
+        # observations decoded from CI-V 0x27 answers; writes go through the
+        # scope command path, not the store.
+        spec(FieldPath.scope_control("display", "receiver"), "int"),
+        spec(FieldPath.scope_control("display", "dual"), "bool"),
+        spec(FieldPath.scope_control("display", "mode"), "int"),
+        spec(FieldPath.scope_control("display", "span"), "int"),
+        spec(FieldPath.scope_control("display", "edge"), "int"),
+        spec(FieldPath.scope_control("display", "hold"), "bool"),
+        spec(FieldPath.scope_control("display", "ref_db"), "float", unit="db"),
+        spec(FieldPath.scope_control("display", "speed"), "int"),
     )
 
 

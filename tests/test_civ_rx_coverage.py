@@ -2549,6 +2549,127 @@ def test_update_radio_state_advanced_scope_family(
     assert rs.scope_controls.rbw == 2
 
 
+# ---------------------------------------------------------------------------
+# MOR-557: 0x27 scope-control answers must reach the StateStore, not only the
+# legacy RadioState mirror — otherwise the v2 scope toolbar gates every
+# control on ``availability: missing`` and goes dead.
+# (frame, {store path: expected decoded value})
+# ---------------------------------------------------------------------------
+_SCOPE_CONTROL_OBSERVATION_CASES = (
+    (
+        _make_frame(cmd=0x27, sub=0x12, data=b"\x01"),
+        {"scope_controls.global.display.receiver": 1},
+    ),
+    (
+        _make_frame(cmd=0x27, sub=0x13, data=b"\x01"),
+        {"scope_controls.global.display.dual": True},
+    ),
+    (
+        _make_frame(cmd=0x27, sub=0x14, data=b"\x00\x03"),
+        {
+            "scope_controls.global.display.mode": 3,
+            "scope_controls.global.display.receiver": 0,
+        },
+    ),
+    (
+        _make_frame(cmd=0x27, sub=0x15, data=b"\x00" + bcd_encode(250_000)),
+        {
+            "scope_controls.global.display.span": 6,
+            "scope_controls.global.display.receiver": 0,
+        },
+    ),
+    (
+        _make_frame(cmd=0x27, sub=0x16, data=b"\x00\x04"),
+        {
+            "scope_controls.global.display.edge": 4,
+            "scope_controls.global.display.receiver": 0,
+        },
+    ),
+    (
+        _make_frame(cmd=0x27, sub=0x17, data=b"\x00\x01"),
+        {
+            "scope_controls.global.display.hold": True,
+            "scope_controls.global.display.receiver": 0,
+        },
+    ),
+    (
+        _make_frame(cmd=0x27, sub=0x19, data=b"\x00\x10\x50\x01"),
+        {
+            "scope_controls.global.display.ref_db": -10.5,
+            "scope_controls.global.display.receiver": 0,
+        },
+    ),
+    (
+        _make_frame(cmd=0x27, sub=0x1A, data=b"\x00\x02"),
+        {
+            "scope_controls.global.display.speed": 2,
+            "scope_controls.global.display.receiver": 0,
+        },
+    ),
+)
+
+
+@pytest.mark.parametrize(  # type: ignore[untyped-decorator]
+    ("frame", "expected"),
+    _SCOPE_CONTROL_OBSERVATION_CASES,
+    ids=[f"sub_0x{entry[0].sub:02x}" for entry in _SCOPE_CONTROL_OBSERVATION_CASES],
+)
+def test_scope_control_observation_backed(
+    radio: IcomRadio,
+    frame: CivFrame,
+    expected: dict[str, object],
+) -> None:
+    """MOR-557: 0x27 scope-control responses emit StateStore observations."""
+    radio._civ_runtime._update_state_cache_from_frame(frame)
+
+    snapshot = radio._state_store.snapshot()
+    for store_path, value in expected.items():
+        field = snapshot.field(store_path)
+        assert field.value == value
+        assert field.freshness is FreshnessState.FRESH
+        # Scope controls only change on user/poller action — no decay window,
+        # matching the slow-state toggle pattern (MOR-437).
+        assert field.max_age is None
+
+
+def test_scope_waterfall_data_emits_no_observations(radio: IcomRadio) -> None:
+    """0x27 sub 0x00 (waterfall pixel data) must never reach the StateStore."""
+    frame = _make_frame(cmd=0x27, sub=0x00, data=b"\x00\x01\x01" + b"\x00" * 16)
+    assert radio._civ_runtime._observations_from_frame(frame) == ()
+
+
+def test_scope_control_observations_project_public(radio: IcomRadio) -> None:
+    """MOR-557: observed scope controls surface as scopeControls.* available."""
+    from rigplane.web.runtime_helpers import (
+        build_public_state_payload_from_snapshot,
+    )
+
+    for frame, _expected in _SCOPE_CONTROL_OBSERVATION_CASES:
+        radio._civ_runtime._update_state_cache_from_frame(frame)
+
+    payload = build_public_state_payload_from_snapshot(
+        radio._state_store.snapshot(),
+        radio=None,
+        receiver_count=2,
+    )
+
+    sc = payload["scopeControls"]
+    assert sc["receiver"] == 0
+    assert sc["dual"] is True
+    assert sc["mode"] == 3
+    assert sc["span"] == 6
+    assert sc["edge"] == 4
+    assert sc["hold"] is True
+    assert sc["refDb"] == -10.5
+    assert sc["speed"] == 2
+
+    suffixes = ("receiver", "dual", "mode", "span", "edge", "hold", "refDb", "speed")
+    for suffix in suffixes:
+        status = payload["fieldStatus"][f"scopeControls.{suffix}"]
+        assert status["observed"] is True, suffix
+        assert status["availability"] == "available", suffix
+
+
 def test_civ_expects_response_scope_get(
     radio_with_state: IcomRadio,
 ) -> None:
