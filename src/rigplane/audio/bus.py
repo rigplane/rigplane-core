@@ -355,6 +355,9 @@ class AudioBus:
         # ``rx.pcm`` stage tap (MOR-565): passive observer of radio-native
         # frames, fed after subscriber delivery so the hot path is untouched.
         # The empty-registry check keeps the no-tap cost to one attribute read.
+        # NOTE: despite the stage name, this carries RADIO-NATIVE wire bytes
+        # (not guaranteed s16le); the decode-at-ingress s16le path is the
+        # MOR-591 PcmFrame ingress on the runtime audio mixin.
         if packet is not None and self._rx_pcm_taps.active:
             self._rx_pcm_taps.feed(packet.data)
 
