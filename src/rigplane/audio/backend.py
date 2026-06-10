@@ -1274,14 +1274,58 @@ class PortAudioBackend:
 # ---------------------------------------------------------------------------
 
 
+def _exclusive_device_busy(device: int) -> OSError:
+    """The -50-shaped error strict mode raises (MOR-566).
+
+    Models the macOS CoreAudio AUHAL ``paramErr -50`` kill observed live when
+    a second PortAudio stream opens a device that already drives one
+    (MOR-531/559): an :class:`OSError` with ``errno == -50`` and the PaMacCore
+    marker in the message, mirroring the ``||PaMacCore (AUHAL)|| err='-50'``
+    line PortAudio logs on the real failure.
+    """
+    return OSError(
+        -50,
+        f"PaMacCore (AUHAL) err='-50' (paramErr): device {device} already "
+        "has an open stream (strict_device_exclusive)",
+    )
+
+
+def _claim_exclusive_device(
+    registry: dict[int, object] | None, device: int | None, stream: object
+) -> None:
+    """Claim *device* for *stream*; raise the -50 error if another holds it."""
+    if registry is None or device is None:
+        return
+    holder = registry.get(device)
+    if holder is not None and holder is not stream:
+        raise _exclusive_device_busy(device)
+    registry[device] = stream
+
+
+def _release_exclusive_device(
+    registry: dict[int, object] | None, device: int | None, stream: object
+) -> None:
+    """Free *device* if *stream* holds it — closing frees the device."""
+    if registry is not None and device is not None and registry.get(device) is stream:
+        del registry[device]
+
+
 class FakeRxStream:
     """Test double: records lifecycle and delivers injected frames."""
 
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        *,
+        device: int | None = None,
+        exclusive: dict[int, object] | None = None,
+    ) -> None:
         self._running = False
         self._callback: Callable[[bytes], None] | None = None
+        self._device = device
+        self._exclusive = exclusive
         self.started_count = 0
         self.stopped_count = 0
+        self.heartbeat_count = 0
         self.fail_on_inject: Exception | None = None
 
     @property
@@ -1291,11 +1335,13 @@ class FakeRxStream:
     async def start(self, callback: Callable[[bytes], None]) -> None:
         if self._running:
             raise RuntimeError("FakeRxStream already running.")
+        _claim_exclusive_device(self._exclusive, self._device, self)
         self._callback = callback
         self._running = True
         self.started_count += 1
 
     async def stop(self) -> None:
+        _release_exclusive_device(self._exclusive, self._device, self)
         self._running = False
         self._callback = None
         self.stopped_count += 1
@@ -1312,12 +1358,31 @@ class FakeRxStream:
         if self._callback is not None:
             self._callback(frame)
 
+    def inject_heartbeat(self, frame: bytes = b"\x00\x00") -> None:
+        """Advance RX liveness by one synthetic capture tick (MOR-566).
+
+        Opt-in test helper: increments :attr:`heartbeat_count` and, when a
+        callback is registered, delivers *frame* (default: one s16le zero
+        sample) exactly like a live capture callback would. Tests that never
+        call it see no behavior change.
+        """
+        self.heartbeat_count += 1
+        if self._callback is not None:
+            self._callback(frame)
+
 
 class FakeTxStream:
     """Test double: records lifecycle and captures written frames."""
 
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        *,
+        device: int | None = None,
+        exclusive: dict[int, object] | None = None,
+    ) -> None:
         self._running = False
+        self._device = device
+        self._exclusive = exclusive
         self.started_count = 0
         self.stopped_count = 0
         self.written_frames: list[bytes] = []
@@ -1344,10 +1409,12 @@ class FakeTxStream:
     async def start(self) -> None:
         if self._running:
             raise RuntimeError("FakeTxStream already running.")
+        _claim_exclusive_device(self._exclusive, self._device, self)
         self._running = True
         self.started_count += 1
 
     async def stop(self) -> None:
+        _release_exclusive_device(self._exclusive, self._device, self)
         self._running = False
         self.stopped_count += 1
 
@@ -1371,9 +1438,16 @@ class FakeDuplexStream:
     frames) so the same-device duplex path can be exercised without PortAudio.
     """
 
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        *,
+        device: int | None = None,
+        exclusive: dict[int, object] | None = None,
+    ) -> None:
         self._running = False
         self._callback: Callable[[bytes], None] | None = None
+        self._device = device
+        self._exclusive = exclusive
         self.started_count = 0
         self.stopped_count = 0
         self.written_frames: list[bytes] = []
@@ -1392,11 +1466,13 @@ class FakeDuplexStream:
     async def start(self, callback: Callable[[bytes], None]) -> None:
         if self._running:
             raise RuntimeError("FakeDuplexStream already running.")
+        _claim_exclusive_device(self._exclusive, self._device, self)
         self._callback = callback
         self._running = True
         self.started_count += 1
 
     async def stop(self) -> None:
+        _release_exclusive_device(self._exclusive, self._device, self)
         self._running = False
         self._callback = None
         self.stopped_count += 1
@@ -1421,6 +1497,13 @@ class FakeAudioBackend:
     :class:`FakeTxStream` doubles so consumer code can be exercised without
     PortAudio or any optional extras.
 
+    ``strict_device_exclusive`` (MOR-566, default OFF — behavior identical to
+    before): when ON, opening or starting a second stream (rx/tx/duplex) on a
+    device id that already has an open (started, not yet stopped) stream
+    raises the -50-shaped :class:`OSError` modeling the macOS CoreAudio AUHAL
+    ``paramErr -50`` kill (MOR-531/559). Stopping the holding stream frees
+    the device.
+
     Stability: breaking changes require a CHANGELOG note plus a minor version
     bump per ``docs/api/public-api-surface.md``. No strict semver guarantee.
     """
@@ -1430,6 +1513,7 @@ class FakeAudioBackend:
         devices: list[AudioDeviceInfo] | None = None,
         *,
         supported_sample_rates: set[int] | None = None,
+        strict_device_exclusive: bool = False,
     ) -> None:
         self._devices: list[AudioDeviceInfo] = devices or []
         self._supported_rates: set[int] = supported_sample_rates or {
@@ -1439,9 +1523,26 @@ class FakeAudioBackend:
             48_000,
             96_000,
         }
+        self._strict_device_exclusive = strict_device_exclusive
+        self._exclusive_streams: dict[int, object] = {}
         self.rx_streams: list[FakeRxStream] = []
         self.tx_streams: list[FakeTxStream] = []
         self.duplex_streams: list[FakeDuplexStream] = []
+
+    def _strict_stream_kwargs(self, device: AudioDeviceId) -> dict[str, Any]:
+        """Strict-mode plumbing for a new fake stream (MOR-566).
+
+        With ``strict_device_exclusive`` ON, opening a stream on a device
+        that already has an open (started, not stopped) stream raises the
+        -50-shaped error immediately; otherwise the returned kwargs let the
+        stream enforce exclusivity at ``start()``/``stop()`` time. Default
+        mode returns no kwargs — streams behave exactly as before.
+        """
+        if not self._strict_device_exclusive:
+            return {}
+        if int(device) in self._exclusive_streams:
+            raise _exclusive_device_busy(int(device))
+        return {"device": int(device), "exclusive": self._exclusive_streams}
 
     def list_devices(self) -> list[AudioDeviceInfo]:
         return list(self._devices)
@@ -1478,7 +1579,7 @@ class FakeAudioBackend:
         # ``deliver_channels`` selects the software downmix in the real
         # PortAudio stream; FakeRxStream is a verbatim pass-through, so it only
         # records what it was opened at for assertions.
-        stream = FakeRxStream()
+        stream = FakeRxStream(**self._strict_stream_kwargs(device))
         self.rx_streams.append(stream)
         return stream
 
@@ -1492,7 +1593,7 @@ class FakeAudioBackend:
     ) -> FakeTxStream:
         if not any(d.id == device for d in self._devices):
             raise ValueError(f"Unknown device id {device}")
-        stream = FakeTxStream()
+        stream = FakeTxStream(**self._strict_stream_kwargs(device))
         self.tx_streams.append(stream)
         return stream
 
@@ -1509,7 +1610,7 @@ class FakeAudioBackend:
     ) -> FakeDuplexStream:
         if not any(d.id == device for d in self._devices):
             raise ValueError(f"Unknown device id {device}")
-        stream = FakeDuplexStream()
+        stream = FakeDuplexStream(**self._strict_stream_kwargs(device))
         self.duplex_streams.append(stream)
         return stream
 
