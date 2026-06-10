@@ -12,8 +12,8 @@ from dataclasses import dataclass
 from enum import StrEnum
 from typing import Callable
 
-from ..transport import IcomTransport
-from ..types import PacketType
+from rigplane.core.transport import IcomTransport
+from rigplane.core.types import PacketType
 from .usb_driver import AudioAlreadyStartedError, AudioNotStartedError
 
 __all__ = [

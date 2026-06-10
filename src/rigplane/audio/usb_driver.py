@@ -480,8 +480,9 @@ def resolve_usb_duplex_mode(
     Everything else — separate devices, virtual loopbacks, non-macOS
     platforms — supports the two-stream path: ``"full"``.
 
-    Pure read-only policy (MOR-534, AudioTransport 1/12): nothing consumes
-    it yet; later epic steps route stream setup through it.
+    Pure read-only policy (MOR-534, AudioTransport 1/12). Consumed via
+    :attr:`UsbAudioDriver.duplex_mode`, which the backends expose as
+    ``audio_duplex_mode`` for the AudioSession's setup-order sequencing.
     """
     if sys.platform != "darwin":
         return "full"

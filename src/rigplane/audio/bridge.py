@@ -35,7 +35,6 @@ import logging
 import sys
 import time
 from array import array
-from concurrent.futures import Executor
 from typing import TYPE_CHECKING, Any, Callable
 
 import math
@@ -56,7 +55,9 @@ from .backend import (
 from .session import AudioSession, AudioSessionState, RxSubscription, TxLease
 
 if TYPE_CHECKING:
-    from rigplane.radio_protocol import AudioCapable
+    from concurrent.futures import Executor
+
+    from rigplane.core.radio_protocol import AudioCapable
 
 logger = logging.getLogger(__name__)
 
@@ -236,7 +237,8 @@ class AudioBridge:
         channels: Number of audio channels (default 1, mono).
         frame_ms: PCM frame duration in milliseconds (default 20).
         tx_enabled: Whether to bridge TX audio (device → radio). Default True.
-        tx_executor: Deprecated — backend now owns threading.
+        tx_executor: Accepted but ignored (deprecated) — the backend owns
+            threading. Kept only so existing callers passing it keep working.
         label: Descriptive label used in log messages (default ``"rigplane"``).
         backend: Audio backend for device discovery and stream I/O.
         max_retries: Maximum reconnect attempts (0 = infinite).
@@ -273,7 +275,6 @@ class AudioBridge:
         self._frame_ms = frame_ms
         self._tx_enabled = tx_enabled
         self._tx_started = False
-        self._tx_executor = tx_executor
         self._backend: AudioBackend = backend or PortAudioBackend()
 
         # State machine
@@ -470,7 +471,7 @@ class AudioBridge:
                 tx_dev_id = tx_dev.id
 
         # Codec detection
-        from rigplane.types import AudioCodec
+        from rigplane.core.types import AudioCodec
 
         _codec = getattr(self._radio, "audio_codec", None)
         self._is_opus = isinstance(_codec, AudioCodec) and _codec in (

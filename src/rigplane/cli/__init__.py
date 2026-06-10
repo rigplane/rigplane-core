@@ -3084,7 +3084,7 @@ async def _cmd_scope(radio: Radio, args: argparse.Namespace) -> int:
 async def _cmd_audio_bridge(radio: Radio, args: argparse.Namespace) -> int:
     """Bridge radio audio to a virtual audio device."""
     try:
-        from rigplane.audio_bridge import (
+        from rigplane.audio.bridge import (
             AudioBridge,
             derive_bridge_label,
             list_audio_devices,
@@ -3178,7 +3178,7 @@ async def _cmd_audio_bridge(radio: Radio, args: argparse.Namespace) -> int:
 def _detect_loopback_hint() -> str | None:
     """Try to detect a loopback audio device; return a hint string or None."""
     try:
-        from rigplane.audio_bridge import find_loopback_device
+        from rigplane.audio.bridge import find_loopback_device
 
         dev = find_loopback_device()
         if dev:
@@ -3387,7 +3387,7 @@ async def _cmd_web(radio: Radio, args: argparse.Namespace) -> int:
         tx_device_name = getattr(args, "web_bridge_tx_device", None)
         rx_only = getattr(args, "web_bridge_rx_only", False)
         bridge_label = getattr(args, "web_bridge_label", None)
-        from rigplane.audio_bridge import LoopbackNotFoundError
+        from rigplane.audio.bridge import LoopbackNotFoundError
 
         try:
             await server.start_audio_bridge(

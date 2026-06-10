@@ -62,6 +62,7 @@ from ..core.state_store import StateSnapshot, StateStore
 from ..radio_state import RadioState
 from ..capabilities import CAP_AUDIO, CAP_SCOPE
 from ..exceptions import TimeoutError as RigplaneTimeoutError
+from ..audio.bus import STAGE_RX_POST_DSP
 from ..audio.session import AudioSession, AudioSessionEvent
 from ..audio_analyzer import AudioAnalyzer
 from ..audio_fft_scope import AudioFftScope
@@ -104,7 +105,8 @@ from .websocket import (  # noqa: TID251
 from ..radio_protocol import CivTransactionCapable, StateStoreCapable
 
 if TYPE_CHECKING:
-    from ..audio_bridge import AudioBridge
+    from rigplane.audio.bridge import AudioBridge
+
     from ..profiles import RadioProfile
     from ..radio_protocol import Radio
     from .transport.webrtc_session import WebRtcSessionManager  # noqa: TID251
@@ -783,9 +785,9 @@ class WebServer:
         self._audio_analyzer: AudioAnalyzer | None = None
         if radio is not None and _has_audio:
             self._audio_analyzer = AudioAnalyzer()
-            self._audio_analyzer_tap = self._audio_broadcaster._tap_registry.register(
-                "audio-analyzer", self._audio_analyzer.feed_audio
-            )
+            self._audio_analyzer_tap = self._audio_broadcaster.taps(
+                STAGE_RX_POST_DSP
+            ).register("audio-analyzer", self._audio_analyzer.feed_audio)
         self._command_queue: CommandQueue = CommandQueue()
         self._radio_poller: RadioPoller | None = None
         self._state_poller: Any | None = None  # StatePoller (lazy, optional)
@@ -1926,7 +1928,7 @@ class WebServer:
             tx_enabled: Whether to bridge TX (device → radio).
             label: Descriptive label for log messages. If ``None``, derived from radio model.
         """
-        from ..audio_bridge import AudioBridge, derive_bridge_label
+        from rigplane.audio.bridge import AudioBridge, derive_bridge_label
 
         if self._audio_bridge is not None and self._audio_bridge.running:
             logger.warning("audio-bridge: already running")
