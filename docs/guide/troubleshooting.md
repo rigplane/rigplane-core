@@ -390,6 +390,54 @@ VPN paths.
 5. Re-run `rigplane audio probe --candidate-cooldown 35 --retry-rejected 1`
    after changing MTU and confirm packet counts are stable.
 
+## Network Voice TX Is Noise, a Squeal, or Silent (IC-7610 MOD Input)
+
+**Symptom:** Voice transmitted from the Web UI (or any network/LAN audio
+client) comes out as broadband noise across the whole passband, as a rising
+squeal (acoustic feedback — "the amplifier howls"), or as nothing audible at
+all — while RX audio works perfectly.
+
+**Cause:** The radio's **MOD Input** source for the **active mode group** is
+set to `MIC` (or a combined option that includes MIC) instead of `LAN`.
+
+MOD Input decides which audio source modulates the transmitter. The
+microphone's PTT button only gates *keying* — it does not control whether the
+mic is a modulation source. With MIC in the source list, the open microphone
+modulates whenever TX is keyed by **any** source, including network/CI-V PTT
+from rigplane. The result is open-mic room noise or speaker-to-mic feedback
+(the rising squeal), while the clean LAN audio stream is ignored or mixed
+underneath it.
+
+**Fix:** Set the MOD Input source to `LAN` for the mode group you transmit
+in. On the IC-7610: **Menu → Set → Connectors → MOD Input**, then pick the
+entry for your mode group:
+
+| Setting | Active when | Value for network voice TX |
+|---------|-------------|----------------------------|
+| **DATA OFF MOD** | SSB / CW / AM / FM with DATA off (normal voice) | `LAN` |
+| **DATA1 MOD** | DATA1 sub-mode | `LAN` (only if you send network audio in DATA1) |
+| **DATA2 MOD** | DATA2 sub-mode | `LAN` (rigplane manages this for WSJT-X packet modes) |
+| **DATA3 MOD** | DATA3 sub-mode | `LAN` (only if used) |
+
+For plain voice operation the setting that matters is **DATA OFF MOD** — that
+is the group active in regular SSB/AM/FM.
+
+!!! danger "Any option that includes MIC keeps the mic open"
+    `LAN` is the option **without** MIC. Combined options (`MIC` plus
+    anything) leave the microphone live during network-keyed TX, so room
+    noise and feedback are transmitted even though you never pressed the
+    mic's PTT button.
+
+!!! note "This is a radio menu setting, not a rigplane problem"
+    rigplane delivers a byte-perfect PCM stream to the radio (verified
+    end-to-end). If network voice TX sounds wrong, check MOD Input first.
+    A planned rigplane update will surface the current MOD Input source in
+    the Web UI and warn before network voice TX when the active mode group is
+    not set to `LAN`, with a one-click **Set LAN** action (epic MOR-614) — so
+    the misconfiguration cannot bite silently.
+
+Switching back to the hand mic later: set **DATA OFF MOD** back to `MIC`.
+
 ## TX Audio Has No Modulation on macOS (Web UI / Bridge)
 
 **Symptom:** PTT toggles ON, but transmitted audio is silent or very weak.
