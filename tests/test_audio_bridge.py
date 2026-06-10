@@ -392,6 +392,35 @@ async def test_bridge_rx_only_on_exclusive_duplex_still_starts_rx():
 
 
 # ---------------------------------------------------------------------------
+# Radio-side RX/TX demand is declared on the AudioSession (MOR-577)
+# ---------------------------------------------------------------------------
+
+
+async def test_bridge_routes_radio_side_through_audio_session():
+    """MOR-577: the bridge declares RX demand + a TX lease on an AudioSession
+    wrapping the radio's SHARED bus; the session owns the arming order."""
+    from rigplane.audio.session import AudioSession, AudioSessionState
+
+    radio = LanLikeRadio()
+    backend = _bridge_backend()
+    bridge = AudioBridge(radio, device_name="BlackHole", backend=backend)
+    await bridge.start()
+    try:
+        assert isinstance(bridge._session, AudioSession)
+        # Same bus the web/scope consumers use — never a second bus.
+        assert bridge._session.bus is radio.audio_bus
+        assert bridge._session.state is AudioSessionState.RX_TX
+        assert bridge._session.rx_demand == 1
+        assert bridge._session.tx_demand == 1
+        assert bridge._tx_lease is not None and not bridge._tx_lease.released
+    finally:
+        await bridge.stop()
+    assert bridge._session.state is AudioSessionState.IDLE
+    assert bridge._session.rx_demand == 0
+    assert bridge._session.tx_demand == 0
+
+
+# ---------------------------------------------------------------------------
 # Failed initial start must release the bus subscription (MOR-560)
 # ---------------------------------------------------------------------------
 
@@ -400,8 +429,8 @@ class _RxStartFailRadio:
     """Radio stub whose RX start fails.
 
     The AudioBus swallows the ``start_rx`` error (logs "audio-bus: failed to
-    start RX") and leaves ``rx_active`` False — ``_subscribe_bus`` then raises
-    AFTER the subscription is already registered with the bus.
+    start RX") and leaves ``rx_active`` False — the session's RX arm then
+    raises, with the just-registered bus subscription unwound.
     """
 
     def __init__(self) -> None:
@@ -426,8 +455,8 @@ class _OpenFailBackend(FakeAudioBackend):
 
 
 async def test_bridge_failed_rx_start_releases_bus_subscription():
-    """Regression MOR-560: the ``_subscribe_bus`` rx_active=False raise must
-    not leak the just-registered bus subscription.
+    """Regression MOR-560: the session's rx_active=False raise must not
+    leak the just-registered bus subscription.
 
     ``start()`` reverts to IDLE on failure and ``stop()`` early-returns on
     IDLE, so without teardown in the failure path the orphaned subscriber
@@ -445,8 +474,8 @@ async def test_bridge_failed_rx_start_releases_bus_subscription():
 
 
 async def test_bridge_failed_stream_open_releases_bus_subscription():
-    """Regression MOR-560: a device-stream open failure AFTER the rx-first
-    bus subscribe must tear the subscription down — otherwise the leaked
+    """Regression MOR-560: a device-stream open failure AFTER the session
+    RX subscribe must tear the subscription down — otherwise the leaked
     subscriber keeps radio RX running with no consumer draining the queue.
     """
     radio = _make_radio()
@@ -487,10 +516,10 @@ async def test_bridge_rx_via_bus():
 
     packet = AudioPacket(ident=0x80, send_seq=0, data=b"\x01\x02\x03")
     radio.audio_bus._on_opus_packet(packet)
-    assert bridge._subscription._received == 1
+    assert bridge._rx_sub._inner._received == 1
 
     radio.audio_bus._on_opus_packet(None)
-    assert bridge._subscription._received == 2
+    assert bridge._rx_sub._inner._received == 2
 
     await bridge.stop()
 

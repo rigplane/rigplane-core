@@ -105,6 +105,11 @@ class ExclusiveUsbRadio:
     """
 
     audio_duplex_mode = "exclusive"
+    # MOR-575 descriptor, mirroring the shipping backend derivation
+    # ("exclusive" → "atomic"). Declared here since MOR-577 — the bridge
+    # routes radio-side demand through the AudioSession, which reads the
+    # arming order from this descriptor instead of audio_duplex_mode.
+    audio_setup_order = "atomic"
 
     def __init__(self) -> None:
         self.rx_running = False
