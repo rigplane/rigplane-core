@@ -501,14 +501,22 @@ class AudioBridge:
         else:
             self._decoder = None
 
-        # --- Subscribe to AudioBus BEFORE arming radio TX (MOR-556). The
-        # first subscriber triggers radio RX start, and the LAN stream state
-        # machine supports RX-then-TX only: arming TX first puts it in
-        # TRANSMITTING and the later RX start raises, leaving RX dead and the
-        # transport packet queue undrained (regression from #1735).
-        bus = self._radio.audio_bus
-        self._subscription = bus.subscribe(name="audio-bridge")
-        await self._subscription.start()
+        # --- Bus-subscribe vs radio-TX-arm order is backend-dependent
+        # (MOR-559); the first bus subscriber triggers radio RX start:
+        #
+        # - "full"/missing (LAN, MOR-556): subscribe BEFORE arming TX. The
+        #   LAN stream state machine supports RX-then-TX only — arming TX
+        #   first puts it in TRANSMITTING and the later RX start raises,
+        #   leaving RX dead and the packet queue undrained (#1735 regression).
+        # - "exclusive" (same-device macOS USB CODEC, MOR-531/534): arm TX
+        #   FIRST and subscribe only after the device streams are up. Adding
+        #   the TX leg to an already-running RX capture on one C-Media device
+        #   triggers CoreAudio AUHAL paramErr -50 and silently kills the
+        #   capture; the reverse order (RX onto a running TX leg) is the
+        #   MOR-531 live-validated path.
+        rx_first = getattr(self._radio, "audio_duplex_mode", "full") != "exclusive"
+        if rx_first:
+            await self._subscribe_bus()
 
         # --- Arm the radio TX path BEFORE choosing the device-stream topology.
         # The radio may reject TX (serial backend with no USB-audio TX path):
@@ -593,6 +601,11 @@ class AudioBridge:
             )
             await self._rx_stream.start()
 
+        # Exclusive same-device duplex: the radio TX leg is armed and the
+        # device streams are open — radio RX may start now (MOR-559).
+        if not rx_first:
+            await self._subscribe_bus()
+
         # --- TX path: device input → radio (capture) ---
         if tx_armed:
             self._tx_queue = asyncio.Queue(maxsize=64)
@@ -613,6 +626,23 @@ class AudioBridge:
 
         # Start the RX playback loop last so the streams above are live.
         self._rx_task = asyncio.create_task(self._rx_loop())
+
+    async def _subscribe_bus(self) -> None:
+        """Subscribe to the radio's AudioBus; first subscriber starts radio RX.
+
+        The bus swallows radio RX-start failures (logs "audio-bus: failed to
+        start RX" and keeps ``rx_active`` False) — surface them here instead
+        of letting the bridge report "started" with dead capture (MOR-559).
+        """
+        bus = self._radio.audio_bus
+        self._subscription = bus.subscribe(name="audio-bridge")
+        await self._subscription.start()
+        if getattr(bus, "rx_active", True) is False:
+            raise RuntimeError(
+                "radio RX failed to start for the bridge subscription "
+                "(AudioBus.rx_active is False after subscribe); see "
+                "'audio-bus: failed to start RX' in the log"
+            )
 
     async def _teardown_streams(self) -> None:
         """Cancel tasks and stop streams.

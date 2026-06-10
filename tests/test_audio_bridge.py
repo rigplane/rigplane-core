@@ -396,6 +396,99 @@ async def test_bridge_rx_only_never_arms_tx_on_lan_state_machine():
 
 
 # ---------------------------------------------------------------------------
+# TX-before-RX start order on same-device exclusive USB duplex (MOR-559)
+# ---------------------------------------------------------------------------
+
+
+class _ExclusiveUsbRadio:
+    """Radio stub mirroring the FTX-1 same-device USB CODEC (MOR-559).
+
+    ``audio_duplex_mode == "exclusive"`` (MOR-534): RX and TX resolve to ONE
+    physical macOS C-Media device. Per the MOR-531 live de-risk, adding the
+    TX playback leg to an ALREADY-RUNNING RX capture triggers CoreAudio AUHAL
+    paramErr -50 and silently kills the capture (no Python exception — live,
+    the bridge then reported "started (RX+TX)" with dead RX). Adding RX to a
+    running TX leg is clean. The stub reproduces the silent capture death so
+    the wrong order fails the test the same way it failed live.
+    """
+
+    audio_duplex_mode = "exclusive"
+
+    def __init__(self) -> None:
+        from rigplane.audio_bus import AudioBus
+        from rigplane.types import AudioCodec
+
+        self.rx_running = False
+        self.tx_running = False
+        self.calls: list[str] = []
+        self.rx_callback: object | None = None
+        self.audio_tx_codec = AudioCodec.PCM_1CH_16BIT
+        self.audio_bus = AudioBus(self)
+
+    async def start_rx(
+        self, callback: object, *, jitter_depth: int | None = None
+    ) -> None:
+        self.calls.append("start_rx")
+        self.rx_callback = callback
+        self.rx_running = True
+
+    async def stop_rx(self) -> None:
+        self.rx_running = False
+        self.rx_callback = None
+
+    async def start_tx(self) -> None:
+        self.calls.append("start_tx")
+        if self.rx_running:
+            # ||PaMacCore (AUHAL)|| err='-50': the TX open nominally succeeds
+            # but the device's running RX capture dies silently.
+            self.rx_running = False
+        self.tx_running = True
+
+    async def stop_tx(self) -> None:
+        self.tx_running = False
+
+    async def push_tx(self, audio_data: bytes) -> None:
+        if not self.tx_running:
+            raise RuntimeError("TX not armed")
+
+
+async def test_bridge_arms_tx_before_rx_on_exclusive_duplex():
+    """Regression MOR-559: ``audio_duplex_mode == "exclusive"`` radios need
+    the radio TX leg armed BEFORE the bus RX subscribe (pre-MOR-556 order) —
+    the same-device TX open kills an already-running RX capture (-50).
+    """
+    radio = _ExclusiveUsbRadio()
+    backend = _bridge_backend()
+    bridge = AudioBridge(radio, device_name="BlackHole", backend=backend)
+    await bridge.start()
+    try:
+        assert radio.calls == ["start_tx", "start_rx"]
+        # RX capture must survive bridge start — the regression killed it.
+        assert radio.rx_running
+        assert radio.audio_bus.rx_active
+        assert radio.tx_running
+        assert bridge._tx_started
+    finally:
+        await bridge.stop()
+    assert radio.audio_bus.subscriber_count == 0
+
+
+async def test_bridge_rx_only_on_exclusive_duplex_still_starts_rx():
+    """rx_only on an exclusive-duplex radio: RX starts, TX never armed."""
+    radio = _ExclusiveUsbRadio()
+    backend = _bridge_backend()
+    bridge = AudioBridge(
+        radio, device_name="BlackHole", tx_enabled=False, backend=backend
+    )
+    await bridge.start()
+    try:
+        assert radio.rx_running
+        assert "start_tx" not in radio.calls
+    finally:
+        await bridge.stop()
+
+
+# ---------------------------------------------------------------------------
 # RX callback — packets flow from bus to backend TxStream
 # ---------------------------------------------------------------------------
 
