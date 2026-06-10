@@ -501,6 +501,15 @@ class AudioBridge:
         else:
             self._decoder = None
 
+        # --- Subscribe to AudioBus BEFORE arming radio TX (MOR-556). The
+        # first subscriber triggers radio RX start, and the LAN stream state
+        # machine supports RX-then-TX only: arming TX first puts it in
+        # TRANSMITTING and the later RX start raises, leaving RX dead and the
+        # transport packet queue undrained (regression from #1735).
+        bus = self._radio.audio_bus
+        self._subscription = bus.subscribe(name="audio-bridge")
+        await self._subscription.start()
+
         # --- Arm the radio TX path BEFORE choosing the device-stream topology.
         # The radio may reject TX (serial backend with no USB-audio TX path):
         # degrade to RX-only and use a plain output stream, never a duplex one
@@ -583,11 +592,6 @@ class AudioBridge:
                 frame_ms=self._frame_ms,
             )
             await self._rx_stream.start()
-
-        # Subscribe to AudioBus
-        bus = self._radio.audio_bus
-        self._subscription = bus.subscribe(name="audio-bridge")
-        await self._subscription.start()
 
         # --- TX path: device input → radio (capture) ---
         if tx_armed:
