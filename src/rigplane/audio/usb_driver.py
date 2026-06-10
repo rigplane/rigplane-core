@@ -19,6 +19,7 @@ from typing import Any, Callable, Literal
 
 from .backend import (
     AudioBackend,
+    AudioDeviceConfig,
     AudioDeviceId,
     AudioDeviceInfo,
     DuplexStream,
@@ -514,6 +515,7 @@ class UsbAudioDriver:
 
     def __init__(
         self,
+        config: AudioDeviceConfig | None = None,
         *,
         rx_device: str | None = None,
         tx_device: str | None = None,
@@ -524,19 +526,34 @@ class UsbAudioDriver:
         backend: AudioBackend | None = None,
         rx_audio_channel: str = "mix",
     ) -> None:
-        self._rx_device_override = rx_device
-        self._tx_device_override = tx_device
+        # ONE per-device config carrier (MOR-578). Callers either hand a
+        # ready-made :class:`AudioDeviceConfig` or use the historical keyword
+        # parameters, from which an identical carrier is built (back-compat:
+        # when ``config`` is provided it is authoritative and the per-keyword
+        # equivalents are ignored). ``serial_port`` (topology-resolution hint)
+        # and ``backend`` (stream implementation) are not device config and
+        # stay separate keywords.
+        #
+        # ``rx_audio_channel`` — stereo→mono downmix selection (MOR-508):
+        # "mix" = (L+R)//2 (default, unchanged for every rig), "left"/"right"
+        # = that channel at full level. Only consulted when a mono request
+        # opens a stereo-native device (MOR-504 under-request downmix). The
+        # FTX-1 sets "left" because its USB RX audio is on the LEFT channel
+        # only.
+        self._config = (
+            config
+            if config is not None
+            else AudioDeviceConfig(
+                rx_device=rx_device,
+                tx_device=tx_device,
+                sample_rate=sample_rate,
+                channels=channels,
+                frame_ms=frame_ms,
+                rx_audio_channel=rx_audio_channel,
+            )
+        )
         self._serial_port = serial_port
-        self._sample_rate = sample_rate
-        self._channels = channels
-        self._frame_ms = frame_ms
         self._backend: AudioBackend = backend or PortAudioBackend()
-        # Stereo→mono downmix channel selection (MOR-508): "mix" = (L+R)//2
-        # (default, unchanged for every rig), "left"/"right" = that channel at
-        # full level. Only consulted when a mono request opens a stereo-native
-        # device (MOR-504 under-request downmix). The FTX-1 sets "left" because
-        # its USB RX audio is on the LEFT channel only.
-        self._rx_audio_channel = rx_audio_channel
 
         self._selected_rx: UsbAudioDevice | None = None
         self._selected_tx: UsbAudioDevice | None = None
@@ -597,8 +614,8 @@ class UsbAudioDriver:
         # topology-based resolution to find the correct audio pair.
         if (
             self._serial_port
-            and self._rx_device_override is None
-            and self._tx_device_override is None
+            and self._config.rx_device is None
+            and self._config.tx_device is None
         ):
             resolved = self._try_resolve_from_serial(devices)
             if resolved is not None:
@@ -607,8 +624,8 @@ class UsbAudioDriver:
 
         selected_rx, selected_tx = select_usb_audio_devices(
             devices,
-            rx_device=self._rx_device_override,
-            tx_device=self._tx_device_override,
+            rx_device=self._config.rx_device,
+            tx_device=self._config.tx_device,
         )
         self._selected_rx = selected_rx
         self._selected_tx = selected_tx
@@ -828,9 +845,9 @@ class UsbAudioDriver:
                 raise AudioAlreadyStartedError("RX stream already started.")
 
             selected_rx, _ = self._ensure_selected_devices()
-            sr = self._sample_rate if sample_rate is None else sample_rate
-            ch = self._channels if channels is None else channels
-            fm = self._frame_ms if frame_ms is None else frame_ms
+            sr = self._config.sample_rate if sample_rate is None else sample_rate
+            ch = self._config.channels if channels is None else channels
+            fm = self._config.frame_ms if frame_ms is None else frame_ms
             if (sr * fm) % 1000 != 0:
                 raise AudioDriverLifecycleError(
                     "Invalid RX frame format: sample_rate * frame_ms must be divisible by 1000."
@@ -871,7 +888,7 @@ class UsbAudioDriver:
                 channels=contract.effective_open_channels,
                 frame_ms=fm,
                 deliver_channels=contract.channels,
-                rx_audio_channel=self._rx_audio_channel,
+                rx_audio_channel=self._config.rx_audio_channel,
             )
             await self._rx_stream.start(callback)
             self._store_stream_contract(contract)
@@ -903,9 +920,9 @@ class UsbAudioDriver:
                 raise AudioAlreadyStartedError("TX stream already started.")
 
             _, selected_tx = self._ensure_selected_devices()
-            sr = self._sample_rate if sample_rate is None else sample_rate
-            ch = self._channels if channels is None else channels
-            fm = self._frame_ms if frame_ms is None else frame_ms
+            sr = self._config.sample_rate if sample_rate is None else sample_rate
+            ch = self._config.channels if channels is None else channels
+            fm = self._config.frame_ms if frame_ms is None else frame_ms
             if (sr * fm) % 1000 != 0:
                 raise AudioDriverLifecycleError(
                     "Invalid TX frame format: sample_rate * frame_ms must be divisible by 1000."
@@ -966,9 +983,9 @@ class UsbAudioDriver:
                     "use start_rx/start_tx for separate devices."
                 )
 
-            sr = self._sample_rate if sample_rate is None else sample_rate
-            ch = self._channels if channels is None else channels
-            fm = self._frame_ms if frame_ms is None else frame_ms
+            sr = self._config.sample_rate if sample_rate is None else sample_rate
+            ch = self._config.channels if channels is None else channels
+            fm = self._config.frame_ms if frame_ms is None else frame_ms
             if (sr * fm) % 1000 != 0:
                 raise AudioDriverLifecycleError(
                     "Invalid duplex frame format: sample_rate * frame_ms must "
@@ -1008,7 +1025,7 @@ class UsbAudioDriver:
                 channels=rx_contract.effective_open_channels,
                 frame_ms=fm,
                 deliver_channels=rx_contract.channels,
-                rx_audio_channel=self._rx_audio_channel,
+                rx_audio_channel=self._config.rx_audio_channel,
                 tx_channels=tx_contract.channels,
             )
             await self._duplex_stream.start(callback)
@@ -1052,6 +1069,7 @@ class UsbAudioDriver:
 
 __all__ = [
     "AudioAlreadyStartedError",
+    "AudioDeviceConfig",
     "AudioDeviceSelectionError",
     "AudioDriverLifecycleError",
     "AudioNotStartedError",

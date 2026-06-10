@@ -200,20 +200,24 @@ class YaesuCatRadio:
         if audio_driver is None:
             # Lazy import: avoids pulling rigplane.audio.backend (PortAudio,
             # numpy DSP) into top-level package import. PR #1200 / #1194.
+            from ...audio.usb_driver import AudioDeviceConfig as _AudioDeviceConfig
             from ...audio.usb_driver import UsbAudioDriver as _UsbAudioDriver
 
             self._audio_driver: UsbAudioDriver = _UsbAudioDriver(
+                _AudioDeviceConfig(
+                    rx_device=rx_device,
+                    tx_device=tx_device,
+                    sample_rate=audio_sample_rate,
+                    channels=1,
+                    # The FTX-1 presents USB RX audio on the LEFT channel only;
+                    # the profile's [audio].rx_audio_channel selects which
+                    # channel the stereo→mono downmix keeps at full level
+                    # (MOR-508). Defaults to "mix" (legacy (L+R)//2) for any
+                    # profile that omits it.
+                    rx_audio_channel=self._config.rx_audio_channel,
+                ),
                 serial_port=device,
-                rx_device=rx_device,
-                tx_device=tx_device,
-                sample_rate=audio_sample_rate,
-                channels=1,
                 backend=None,  # default PortAudioBackend
-                # The FTX-1 presents USB RX audio on the LEFT channel only; the
-                # profile's [audio].rx_audio_channel selects which channel the
-                # stereo→mono downmix keeps at full level (MOR-508). Defaults to
-                # "mix" (legacy (L+R)//2) for any profile that omits it.
-                rx_audio_channel=self._config.rx_audio_channel,
             )
         else:
             self._audio_driver = audio_driver

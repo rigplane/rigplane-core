@@ -39,6 +39,7 @@ from .lan_stream import (  # noqa: F401
 _LAZY_MAP: dict[str, tuple[str, str]] = {
     # Audio backend abstraction (protocol + implementations)
     "AudioBackend": ("rigplane.audio.backend", "AudioBackend"),
+    "AudioDeviceConfig": ("rigplane.audio.backend", "AudioDeviceConfig"),
     "AudioDeviceId": ("rigplane.audio.backend", "AudioDeviceId"),
     "AudioDeviceInfo": ("rigplane.audio.backend", "AudioDeviceInfo"),
     "FakeAudioBackend": ("rigplane.audio.backend", "FakeAudioBackend"),
@@ -110,6 +111,7 @@ def __dir__() -> list[str]:
 __all__ = [
     # Audio backend abstraction
     "AudioBackend",
+    "AudioDeviceConfig",
     "AudioDeviceId",
     "AudioDeviceInfo",
     "FakeAudioBackend",
