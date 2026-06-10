@@ -115,8 +115,13 @@ class AudioBroadcaster:
         self._radio_codec: AudioCodec | None = None
         self._sample_rate: int = 48000
         self._channels: int = 1
-        self._browser_opus_transcoder: PcmOpusTranscoder | None = None
-        self._browser_opus_transcoder_key: tuple[int, int, int] | None = None
+        # Per-client egress encoder pool (MOR-584, ADR §3.6): each Opus
+        # WS client owns a dedicated transcoder (Opus encoders are
+        # stateful), keyed by client id and torn down on disconnect.
+        # Value: (transcoder, (sample_rate, channels, frame_ms)).
+        self._client_opus_transcoders: dict[
+            int, tuple[PcmOpusTranscoder, tuple[int, int, int]]
+        ] = {}
         self._browser_opus_warned: bool = False
         self._lock = asyncio.Lock()
         # Optional DSP pipeline (inserted between codec decode and tap/distribute).
@@ -173,8 +178,6 @@ class AudioBroadcaster:
                     self._subscription = None
                 if self._radio:
                     await self._start_relay()
-            elif preferred_rx_codec is not None:
-                self.invalidate_codec_state()
         self._notify_client_count_change()
         logger.info("audio-broadcaster: client added (total=%d)", len(self._clients))
         return queue
@@ -186,9 +189,8 @@ class AudioBroadcaster:
         async with self._lock:
             removed = self._clients.pop(client_id, None) is not None
             self._client_ws.pop(client_id, None)
-            removed_codec = self._client_rx_codec.pop(client_id, None)
-            if removed_codec is not None:
-                self.invalidate_codec_state()
+            self._client_rx_codec.pop(client_id, None)
+            self._client_opus_transcoders.pop(client_id, None)
             if (
                 not self._clients
                 and self._subscription is not None
@@ -295,6 +297,8 @@ class AudioBroadcaster:
             for cid in dead_ids:
                 self._clients.pop(cid, None)
                 self._client_ws.pop(cid, None)
+                self._client_rx_codec.pop(cid, None)
+                self._client_opus_transcoders.pop(cid, None)
             # Stop relay if no clients remain (and no PCM tap active)
             if (
                 not self._clients
@@ -372,16 +376,14 @@ class AudioBroadcaster:
         self._maybe_warn_dsp_opus_gate()
 
     def _resolve_web_rx_codec(self, radio_codec: AudioCodec) -> int:
-        """Resolve browser RX transport codec from profile consumer policy."""
+        """Resolve the DEFAULT browser RX transport from profile policy.
+
+        Applies to clients that sent no ``preferred_rx_codec``; clients
+        with an explicit preference are resolved per-connection in
+        :meth:`_client_egress_codec` (MOR-584).
+        """
         if radio_codec in (AudioCodec.OPUS_1CH, AudioCodec.OPUS_2CH):
             return AUDIO_CODEC_OPUS
-
-        # The frontend can explicitly ask for PCM16 when its WebView/browser
-        # cannot decode Opus with WebCodecs.  Keep this as an aggregate
-        # transport decision because the relay currently builds one shared
-        # frame for all browser clients.
-        if AUDIO_CODEC_PCM16 in self._client_rx_codec.values():
-            return AUDIO_CODEC_PCM16
 
         default_codec = {
             AudioCodec.PCM_1CH_16BIT: AUDIO_CODEC_PCM16,
@@ -405,30 +407,67 @@ class AudioBroadcaster:
             return AUDIO_CODEC_OPUS
         return default_codec
 
-    def _encode_browser_rx_frame(
+    def _client_egress_codec(self, client_id: int) -> int:
+        """Resolve one client's egress codec (MOR-584, static per connection).
+
+        Ladder: client-requested (``preferred_rx_codec`` at negotiation)
+        → profile policy default (``_resolve_web_rx_codec`` cached in
+        ``_web_codec``) → PCM16.  Opus-native radios pass through
+        un-decoded for every client — there is no PCM to re-encode
+        (issue #762).
+        """
+        if self._radio_codec in (AudioCodec.OPUS_1CH, AudioCodec.OPUS_2CH):
+            return AUDIO_CODEC_OPUS
+        return self._client_rx_codec.get(client_id, self._web_codec)
+
+    def negotiated_rx_format(self, queue: asyncio.Queue[bytes]) -> dict[str, Any]:
+        """Describe the egress format a subscribed client will receive.
+
+        Backs the ``audio_format`` ack sent after ``audio_start``
+        (MOR-584).  ``frame_ms`` is the 20 ms nominal — advisory like
+        the wire header; consumers must size buffers from actual
+        payloads (#765).
+        """
+        codec = self._client_egress_codec(id(queue))
+        return {
+            "codec": "opus" if codec == AUDIO_CODEC_OPUS else "pcm16",
+            "sample_rate": self._sample_rate,
+            "channels": self._channels,
+            "frame_ms": 20,
+        }
+
+    def _encode_client_rx_frame(
         self,
+        client_id: int,
         pcm_data: bytes,
         frame_ms: int,
     ) -> tuple[int, bytes]:
-        """Apply browser-only RX transport encoding after PCM consumers run."""
-        if self._web_codec != AUDIO_CODEC_OPUS:
-            return self._web_codec, pcm_data
+        """Apply ONE client's RX transport encoding after PCM consumers run.
+
+        Sits downstream of the PCM spine (decode → DSP → tap fan-out):
+        only browser WS clients reach here.  The AudioBridge, FFT scope
+        and other taps consume PCM upstream and never touch these
+        encoders (T1a digital-path invariant).
+        """
+        if self._client_egress_codec(client_id) != AUDIO_CODEC_OPUS:
+            return AUDIO_CODEC_PCM16, pcm_data
         if self._radio_codec in (AudioCodec.OPUS_1CH, AudioCodec.OPUS_2CH):
             return AUDIO_CODEC_OPUS, pcm_data
 
         key = (self._sample_rate, self._channels, frame_ms)
         try:
-            if (
-                self._browser_opus_transcoder is None
-                or self._browser_opus_transcoder_key != key
-            ):
-                self._browser_opus_transcoder = create_pcm_opus_transcoder(
-                    sample_rate=self._sample_rate,
-                    channels=self._channels,
-                    frame_ms=frame_ms,
+            entry = self._client_opus_transcoders.get(client_id)
+            if entry is None or entry[1] != key:
+                entry = (
+                    create_pcm_opus_transcoder(
+                        sample_rate=self._sample_rate,
+                        channels=self._channels,
+                        frame_ms=frame_ms,
+                    ),
+                    key,
                 )
-                self._browser_opus_transcoder_key = key
-            return AUDIO_CODEC_OPUS, self._browser_opus_transcoder.pcm_to_opus(pcm_data)
+                self._client_opus_transcoders[client_id] = entry
+            return AUDIO_CODEC_OPUS, entry[0].pcm_to_opus(pcm_data)
         except Exception as exc:
             if not self._browser_opus_warned:
                 logger.warning(
@@ -436,8 +475,7 @@ class AudioBroadcaster:
                     exc,
                 )
                 self._browser_opus_warned = True
-            self._browser_opus_transcoder = None
-            self._browser_opus_transcoder_key = None
+            self._client_opus_transcoders.pop(client_id, None)
             return AUDIO_CODEC_PCM16, pcm_data
 
     async def _apply_phones_mix_off(self) -> None:
@@ -580,26 +618,34 @@ class AudioBroadcaster:
                 _bytes_per_sample = 2
                 _denom = max(1, self._sample_rate * self._channels * _bytes_per_sample)
                 _frame_ms = max(1, min((len(audio_data) * 1000) // _denom, 255))
-                _frame_codec, _frame_audio_data = self._encode_browser_rx_frame(
-                    audio_data,
-                    _frame_ms,
-                )
-                frame = encode_audio_frame(
-                    MSG_TYPE_AUDIO_RX,
-                    _frame_codec,
-                    self._seq,
-                    self._sample_rate // 100,
-                    self._channels,
-                    _frame_ms,
-                    _frame_audio_data,
-                )
-                self._seq = (self._seq + 1) & 0xFFFF
+                # Per-client egress encode (MOR-584): the PCM spine above
+                # (decode → DSP → taps) is shared; from here each browser
+                # WS client gets its own negotiated wire codec.  Pass-
+                # through payloads (PCM16, Opus-native) reuse one cached
+                # frame per codec; Opus transcodes are per-client.
+                shared_frames: dict[int, bytes] = {}
                 dead_ids: list[int] = []
                 for client_id, q in list(self._clients.items()):
                     ws = self._client_ws.get(client_id)
                     if ws is not None and not ws.is_alive():
                         dead_ids.append(client_id)
                         continue
+                    codec, payload = self._encode_client_rx_frame(
+                        client_id, audio_data, _frame_ms
+                    )
+                    frame = shared_frames.get(codec) if payload is audio_data else None
+                    if frame is None:
+                        frame = encode_audio_frame(
+                            MSG_TYPE_AUDIO_RX,
+                            codec,
+                            self._seq,
+                            self._sample_rate // 100,
+                            self._channels,
+                            _frame_ms,
+                            payload,
+                        )
+                        if payload is audio_data:
+                            shared_frames[codec] = frame
                     try:
                         q.put_nowait(frame)
                     except asyncio.QueueFull:
@@ -611,9 +657,12 @@ class AudioBroadcaster:
                             q.put_nowait(frame)
                         except asyncio.QueueFull:
                             pass
+                self._seq = (self._seq + 1) & 0xFFFF
                 for client_id in dead_ids:
                     self._clients.pop(client_id, None)
                     self._client_ws.pop(client_id, None)
+                    self._client_rx_codec.pop(client_id, None)
+                    self._client_opus_transcoders.pop(client_id, None)
                     logger.info("audio-broadcaster: removed dead client during relay")
                 if dead_ids:
                     self._notify_client_count_change()
@@ -1092,6 +1141,16 @@ class AudioHandler:
         self._frame_queue = await self._broadcaster.subscribe(
             ws=self._ws,
             preferred_rx_codec=preferred_rx_codec,
+        )
+        # Per-connection negotiation ack (MOR-584): tell the client which
+        # wire codec/format it will receive.  Advisory and fire-and-forget
+        # — legacy clients ignore text frames on the audio WS and keep
+        # decoding from the per-frame binary header.
+        await self._send_json(
+            {
+                "type": "audio_format",
+                **self._broadcaster.negotiated_rx_format(self._frame_queue),
+            }
         )
         logger.info("audio: subscribed to RX broadcast")
 
