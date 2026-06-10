@@ -44,12 +44,35 @@ import logging
 import time
 from typing import TYPE_CHECKING, Any
 
+from rigplane.dsp.tap_registry import TapRegistry
+
 if TYPE_CHECKING:
     from rigplane.audio import AudioPacket
 
 logger = logging.getLogger(__name__)
 
-__all__ = ["AudioBus", "AudioSubscription"]
+__all__ = ["STAGE_RX_PCM", "STAGE_RX_POST_DSP", "AudioBus", "AudioSubscription"]
+
+# ── Named RX tap stages (MOR-565, ADR §3.7 "observable by construction") ─────
+#
+# Uniform stage-naming scheme for passive PCM tap points along the RX tract.
+# Only stages with a live frame source today have an instantiated
+# :class:`~rigplane.dsp.tap_registry.TapRegistry`:
+#
+#   ``rx.pcm``      — radio-native RX frames at the AudioBus fan-out
+#                     (post jitter-buffer/decode by the radio transport,
+#                     pre-DSP). Hosted on :class:`AudioBus`.
+#   ``rx.post_dsp`` — decoded PCM16 after the broadcaster's optional DSP
+#                     pipeline. Hosted on ``AudioBroadcaster``
+#                     (``rigplane.web.handlers.audio``) — this is the
+#                     pre-existing ``_tap_registry``, renamed into the scheme.
+#
+# Reserved stage names (documented, NOT instantiated — no producer yet):
+# ``rx.raw`` (pre jitter-buffer wire payload), ``rx.egress`` (per-consumer
+# transport frames), ``tx.pcm`` / ``tx.egress`` (TX-side mirror stages).
+# Asking a host for a reserved stage raises ``KeyError`` by design.
+STAGE_RX_PCM = "rx.pcm"
+STAGE_RX_POST_DSP = "rx.post_dsp"
 
 _DEFAULT_QUEUE_SIZE = 64
 _DEFAULT_CLOSE_TIMEOUT = 2.0
@@ -266,6 +289,11 @@ class AudioBus:
         self._rx_active = False
         self._lock = asyncio.Lock()
         self._last_rx_frame_monotonic: float | None = None
+        # Named RX tap stages (MOR-565): the bus hosts ``rx.pcm`` — a passive
+        # observer of radio-native frames, fed alongside (never instead of)
+        # the subscriber fan-out. Local-only, no telemetry (open-core).
+        self._rx_pcm_taps = TapRegistry()
+        self._stage_taps: dict[str, TapRegistry] = {STAGE_RX_PCM: self._rx_pcm_taps}
 
     @property
     def subscriber_count(self) -> int:
@@ -300,11 +328,25 @@ class AudioBus:
         """Create a new subscription (not yet active — call start() or use as context manager)."""
         return AudioSubscription(self, name=name, queue_size=queue_size)
 
+    def taps(self, stage: str) -> TapRegistry:
+        """Return the :class:`TapRegistry` for a named RX stage on this bus.
+
+        Only ``STAGE_RX_PCM`` is hosted here; reserved stage names raise
+        ``KeyError``. Taps are attachable/detachable at runtime and add no
+        cost when empty (the registry no-ops without subscribers).
+        """
+        return self._stage_taps[stage]
+
     def _on_opus_packet(self, packet: "AudioPacket | None") -> None:
         """Internal callback — distributes packet to all active subscribers."""
         self._last_rx_frame_monotonic = time.monotonic()
         for sub in self._subscribers:
             sub.deliver(packet)
+        # ``rx.pcm`` stage tap (MOR-565): passive observer of radio-native
+        # frames, fed after subscriber delivery so the hot path is untouched.
+        # The empty-registry check keeps the no-tap cost to one attribute read.
+        if packet is not None and self._rx_pcm_taps.active:
+            self._rx_pcm_taps.feed(packet.data)
 
     async def _add_subscriber(self, sub: AudioSubscription) -> None:
         """Register a subscriber and start RX if this is the first one."""
