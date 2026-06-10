@@ -291,6 +291,11 @@ _LEGACY_GLOBAL_SLOW_STATE_FIELDS: tuple[tuple[str, str], ...] = (
     ("tx_band_edges", "tx_band_edges"),
     ("scope_controls", "scope_controls"),
     ("yaesu", "yaesu"),
+    # Per-DATA-group MOD-input sources (IC-7610 0x1A 05 00 0x91-0x94, MOR-615).
+    ("data_off_mod_input", "data_off_mod_input"),
+    ("data1_mod_input", "data1_mod_input"),
+    ("data2_mod_input", "data2_mod_input"),
+    ("data3_mod_input", "data3_mod_input"),
 )
 
 _CivTransactionExpect = Literal["none", "ack", "data"]

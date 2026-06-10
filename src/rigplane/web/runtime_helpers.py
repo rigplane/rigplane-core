@@ -164,6 +164,11 @@ _GLOBAL_SLOW_STATE_FIELDS = {
     "tx_band_edges",
     "scope_controls",
     "yaesu",
+    # Per-DATA-group MOD-input sources (IC-7610 0x1A 05 00 0x91-0x94, MOR-615).
+    "data_off_mod_input",
+    "data1_mod_input",
+    "data2_mod_input",
+    "data3_mod_input",
 }
 # Public ``scopeControls.<suffix>`` leaves the toolbar/LCD gate on, mapped to
 # their backend scope-control field name. The whole group is unobserved until

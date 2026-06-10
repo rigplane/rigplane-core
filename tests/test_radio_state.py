@@ -201,6 +201,10 @@ def test_to_dict_structure() -> None:
         "tx_antenna",
         "rx_antenna_1",
         "rx_antenna_2",
+        "data_off_mod_input",
+        "data1_mod_input",
+        "data2_mod_input",
+        "data3_mod_input",
         "tx_band_edges",
         "scope_controls",
         "main",
@@ -514,3 +518,37 @@ class TestYaesuStateExtension:
         rs.yaesu = YaesuStateExtension(rx_func_mode=1, tx_func_mode=1)
         d = rs.to_dict()
         assert d["yaesu"] == {"rx_func_mode": 1, "tx_func_mode": 1}
+
+
+class TestModInputState:
+    """MOR-615: per-DATA-group MOD-input source fields (IC-7610 0x1A 05 00 91-94).
+
+    Values use the rig enum 0=MIC, 1=ACC, 2=MIC+ACC, 3=USB, 4=MIC+USB, 5=LAN;
+    ``None`` means "not yet read from the radio".
+    """
+
+    def test_defaults_are_none(self) -> None:
+        rs = RadioState()
+        assert rs.data_off_mod_input is None
+        assert rs.data1_mod_input is None
+        assert rs.data2_mod_input is None
+        assert rs.data3_mod_input is None
+
+    def test_to_dict_serialises_unknown_as_none(self) -> None:
+        d = RadioState().to_dict()
+        assert d["data_off_mod_input"] is None
+        assert d["data1_mod_input"] is None
+        assert d["data2_mod_input"] is None
+        assert d["data3_mod_input"] is None
+
+    def test_to_dict_serialises_assigned_sources(self) -> None:
+        rs = RadioState()
+        rs.data_off_mod_input = 0  # MIC
+        rs.data1_mod_input = 3  # USB
+        rs.data2_mod_input = 1  # ACC
+        rs.data3_mod_input = 5  # LAN
+        d = rs.to_dict()
+        assert d["data_off_mod_input"] == 0
+        assert d["data1_mod_input"] == 3
+        assert d["data2_mod_input"] == 1
+        assert d["data3_mod_input"] == 5

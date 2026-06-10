@@ -46,6 +46,7 @@ from rigplane.web.radio_poller import (
     SetAfLevel,
     SetAgc,
     SetAttenuator,
+    SetData1ModInput,
     SetDataMode,
     SetDigiSel,
     SetFilterShape,
@@ -2525,3 +2526,215 @@ async def test_fetch_nb_controls_is_resilient_to_getter_failure() -> None:
     assert (
         snapshot.field(FieldPath.global_("operator_controls", "nb_width")).value == 120
     )
+
+
+# ---------------------------------------------------------------------------
+# MOR-615: current MOD-input source readback (DATA OFF/1/2/3 MOD, 0x1A 05 00
+# 0x91-0x94). Same Option-B direct-getter route as the NB controls above: the
+# four values are global menu items the continuous poller never tracks, so the
+# poller reads them at connect, when data_mode changes, and after a web set,
+# and applies the confirmed values as ``global.slow_state`` observations plus
+# legacy RadioState mirror writes. Gated on CAP_DATA_MODE so non-IC-7610
+# radios are unaffected.
+# ---------------------------------------------------------------------------
+
+
+class _FakeModInputRadio:
+    """Minimal DATA-mode-capable radio fake for MOD-input readback tests.
+
+    Getters either return a canned source value or raise to exercise the
+    resilient error path; calls are counted so tests can assert each getter
+    is invoked exactly the expected number of times.
+    """
+
+    def __init__(
+        self,
+        *,
+        sources: dict[str, int | Exception] | None = None,
+        capabilities: set[str] | None = None,
+    ) -> None:
+        self.model = "IC-7610"
+        self.capabilities = (
+            capabilities if capabilities is not None else {"data_mode", "dual_rx"}
+        )
+        self._sources: dict[str, int | Exception] = {
+            "data_off_mod_input": 0,
+            "data1_mod_input": 3,
+            "data2_mod_input": 3,
+            "data3_mod_input": 5,
+        }
+        if sources:
+            self._sources.update(sources)
+        self.get_calls: dict[str, int] = dict.fromkeys(self._sources, 0)
+        self.set_calls: list[tuple[str, int]] = []
+
+    def _get(self, name: str) -> int:
+        self.get_calls[name] += 1
+        value = self._sources[name]
+        if isinstance(value, Exception):
+            raise value
+        return value
+
+    async def get_data_off_mod_input(self) -> int:
+        return self._get("data_off_mod_input")
+
+    async def get_data1_mod_input(self) -> int:
+        return self._get("data1_mod_input")
+
+    async def get_data2_mod_input(self) -> int:
+        return self._get("data2_mod_input")
+
+    async def get_data3_mod_input(self) -> int:
+        return self._get("data3_mod_input")
+
+    async def set_data1_mod_input(self, source: int) -> None:
+        self.set_calls.append(("data1_mod_input", source))
+        self._sources["data1_mod_input"] = source
+
+
+_MOD_INPUT_FIELD_NAMES = (
+    "data_off_mod_input",
+    "data1_mod_input",
+    "data2_mod_input",
+    "data3_mod_input",
+)
+
+
+@pytest.mark.asyncio
+async def test_fetch_mod_inputs_seeds_state_store_mirror_and_public_state() -> None:
+    """Initial fetch reads all four getters; values reach store + web state."""
+    from rigplane.web.runtime_helpers import (
+        build_public_state_payload_from_snapshot,
+    )
+
+    radio = _FakeModInputRadio(
+        sources={
+            "data_off_mod_input": 0,
+            "data1_mod_input": 3,
+            "data2_mod_input": 1,
+            "data3_mod_input": 5,
+        }
+    )
+    store = StateStore()
+    state = RadioState()
+    poller = RadioPoller(radio, CommandQueue(), radio_state=state, state_store=store)
+
+    await poller._fetch_mod_inputs()  # noqa: SLF001
+
+    assert all(count == 1 for count in radio.get_calls.values())
+    snapshot = store.snapshot()
+    expected = {
+        "data_off_mod_input": 0,
+        "data1_mod_input": 3,
+        "data2_mod_input": 1,
+        "data3_mod_input": 5,
+    }
+    for name, value in expected.items():
+        assert snapshot.field(FieldPath.global_("slow_state", name)).value == value
+    # Legacy RadioState mirror stays coherent for compatibility consumers.
+    assert state.data_off_mod_input == 0
+    assert state.data1_mod_input == 3
+    assert state.data2_mod_input == 1
+    assert state.data3_mod_input == 5
+
+    # The public projection (the ``state_update`` snapshot body) exposes them.
+    payload = build_public_state_payload_from_snapshot(
+        snapshot,
+        radio=None,
+        receiver_count=2,
+    )
+    assert payload["dataOffModInput"] == 0
+    assert payload["data1ModInput"] == 3
+    assert payload["data2ModInput"] == 1
+    assert payload["data3ModInput"] == 5
+
+
+@pytest.mark.asyncio
+async def test_fetch_mod_inputs_skips_without_data_mode_capability() -> None:
+    """No data_mode capability => no getter calls, no observations."""
+    radio = _FakeModInputRadio(capabilities={"dual_rx"})
+    store = StateStore()
+    poller = RadioPoller(radio, CommandQueue(), state_store=store)
+
+    await poller._fetch_mod_inputs()  # noqa: SLF001
+
+    assert all(count == 0 for count in radio.get_calls.values())
+    with pytest.raises(KeyError):
+        store.snapshot().field(FieldPath.global_("slow_state", "data1_mod_input"))
+
+
+@pytest.mark.asyncio
+async def test_fetch_mod_inputs_is_resilient_to_getter_failure() -> None:
+    """A failing getter must not block the remaining readbacks."""
+    radio = _FakeModInputRadio(sources={"data1_mod_input": RuntimeError("boom")})
+    store = StateStore()
+    poller = RadioPoller(radio, CommandQueue(), state_store=store)
+
+    await poller._fetch_mod_inputs()  # noqa: SLF001
+
+    assert all(count == 1 for count in radio.get_calls.values())
+    snapshot = store.snapshot()
+    # data1 read failed => no observation applied.
+    with pytest.raises(KeyError):
+        snapshot.field(FieldPath.global_("slow_state", "data1_mod_input"))
+    # The other readbacks still succeeded.
+    assert snapshot.field(FieldPath.global_("slow_state", "data3_mod_input")).value == 5
+
+
+def test_unread_mod_inputs_project_as_null_with_missing_status() -> None:
+    """The public payload always carries the MOD-input keys (null until read)."""
+    from rigplane.web.runtime_helpers import (
+        build_public_state_payload_from_snapshot,
+    )
+
+    payload = build_public_state_payload_from_snapshot(
+        StateStore().snapshot(),
+        radio=None,
+        receiver_count=2,
+    )
+    for key in ("dataOffModInput", "data1ModInput", "data2ModInput", "data3ModInput"):
+        assert key in payload
+        assert payload[key] is None
+        assert payload["fieldStatus"][key]["availability"] == "missing"
+
+
+@pytest.mark.asyncio
+async def test_data_mode_change_triggers_mod_input_refetch() -> None:
+    """A data_mode change observed in the mirror (0x26 poll) => refetch."""
+    radio = _FakeModInputRadio()
+    store = StateStore()
+    state = RadioState()
+    poller = RadioPoller(radio, CommandQueue(), radio_state=state, state_store=store)
+
+    await poller._fetch_mod_inputs()  # noqa: SLF001
+    assert all(count == 1 for count in radio.get_calls.values())
+
+    # No data_mode change => no refetch.
+    await poller._refresh_mod_inputs_on_data_mode_change()  # noqa: SLF001
+    assert all(count == 1 for count in radio.get_calls.values())
+
+    # data_mode change (0x26 poll response landing in the mirror) => refetch.
+    state.main.data_mode = 1
+    await poller._refresh_mod_inputs_on_data_mode_change()  # noqa: SLF001
+    assert all(count == 2 for count in radio.get_calls.values())
+
+    # Stable again afterwards => no further refetch.
+    await poller._refresh_mod_inputs_on_data_mode_change()  # noqa: SLF001
+    assert all(count == 2 for count in radio.get_calls.values())
+
+
+@pytest.mark.asyncio
+async def test_set_data1_mod_input_dispatch_reads_back_confirmed_value() -> None:
+    """SetData1ModInput sends the set, then reads back the confirmed value."""
+    radio = _FakeModInputRadio(sources={"data1_mod_input": 0})
+    store = StateStore()
+    state = RadioState()
+    poller = RadioPoller(radio, CommandQueue(), radio_state=state, state_store=store)
+
+    await poller._execute(SetData1ModInput(5))  # noqa: SLF001
+
+    assert radio.set_calls == [("data1_mod_input", 5)]
+    assert radio.get_calls["data1_mod_input"] == 1
+    snapshot = store.snapshot()
+    assert snapshot.field(FieldPath.global_("slow_state", "data1_mod_input")).value == 5
+    assert state.data1_mod_input == 5
