@@ -54,6 +54,12 @@ DEGRADE_WINDOW_S = 3.0
 CLEAN_WINDOW_S = 30.0
 DWELL_S = 10.0
 
+# Fixed Opus egress frame duration (MOR-596).  Radio RX packets are not
+# Opus-frame-aligned (IC-7610 LAN @48k stereo ≈1280 B ≈6.67 ms), while
+# ``PcmOpusTranscoder`` accepts exactly one fixed frame per encode call —
+# per-client PCM is therefore reframed into exact 20 ms frames before encode.
+OPUS_EGRESS_FRAME_MS = 20
+
 
 @dataclass
 class _AdaptiveEgressState:
@@ -159,6 +165,11 @@ class AudioBroadcaster:
         self._client_opus_transcoders: dict[
             int, tuple[PcmOpusTranscoder, tuple[int, int, int]]
         ] = {}
+        # Per-client PCM reframing accumulators for Opus egress (MOR-596):
+        # s16le bytes buffered until a full 20 ms frame is available.
+        # Cleared on unsubscribe/reap, adaptive switch to PCM16, and any
+        # codec-state refresh (sample rate / channel changes).
+        self._client_opus_pcm_buffers: dict[int, bytearray] = {}
         # Per-client link-quality state (MOR-585, ADR §3.6): the latest
         # client-reported ``audio_stats`` snapshot plus the server-side
         # drop-oldest eviction counter for the bounded WS queue.  Stats
@@ -255,6 +266,7 @@ class AudioBroadcaster:
             self._client_ws.pop(client_id, None)
             self._client_rx_codec.pop(client_id, None)
             self._client_opus_transcoders.pop(client_id, None)
+            self._client_opus_pcm_buffers.pop(client_id, None)
             self._client_link_quality.pop(client_id, None)
             self._client_queue_drops.pop(client_id, None)
             self._client_adaptive.pop(client_id, None)
@@ -366,6 +378,7 @@ class AudioBroadcaster:
                 self._client_ws.pop(cid, None)
                 self._client_rx_codec.pop(cid, None)
                 self._client_opus_transcoders.pop(cid, None)
+                self._client_opus_pcm_buffers.pop(cid, None)
                 self._client_link_quality.pop(cid, None)
                 self._client_queue_drops.pop(cid, None)
                 self._client_adaptive.pop(cid, None)
@@ -441,6 +454,9 @@ class AudioBroadcaster:
             self._sample_rate,
             self._channels,
         )
+        # Format may have changed — drop partial reframing buffers so no
+        # stale PCM concatenates across a codec/format switch (MOR-596).
+        self._client_opus_pcm_buffers.clear()
         # Re-check DSP-on-Opus after the codec may have just flipped.
         # Issue #762.
         self._maybe_warn_dsp_opus_gate()
@@ -623,6 +639,7 @@ class AudioBroadcaster:
         state.degrade_since = None
         if codec != AUDIO_CODEC_OPUS:
             self._client_opus_transcoders.pop(client_id, None)
+            self._client_opus_pcm_buffers.pop(client_id, None)
         logger.info(
             "audio-broadcaster: adaptive egress switch → %s (client=%d)",
             "opus" if codec == AUDIO_CODEC_OPUS else "pcm16",
@@ -669,20 +686,30 @@ class AudioBroadcaster:
         client_id: int,
         pcm_data: bytes,
         frame_ms: int,
-    ) -> tuple[int, bytes]:
+    ) -> list[tuple[int, int, bytes]]:
         """Apply ONE client's RX transport encoding after PCM consumers run.
 
         Sits downstream of the PCM spine (decode → DSP → tap fan-out):
         only browser WS clients reach here.  The AudioBridge, FFT scope
         and other taps consume PCM upstream and never touch these
         encoders (T1a digital-path invariant).
+
+        Returns 0..N ``(codec, frame_ms, payload)`` frames.  PCM16 and
+        Opus-native pass-through stay strictly 1:1; Opus egress on PCM
+        radios buffers s16le per client and emits exact 20 ms Opus
+        frames (MOR-596) — radio packets are not Opus-frame-aligned, so
+        per-packet encode raised ``AudioFormatError`` on every frame and
+        silently fell back to PCM16.
         """
         if self._client_egress_codec(client_id) != AUDIO_CODEC_OPUS:
-            return AUDIO_CODEC_PCM16, pcm_data
+            return [(AUDIO_CODEC_PCM16, frame_ms, pcm_data)]
         if self._radio_codec in (AudioCodec.OPUS_1CH, AudioCodec.OPUS_2CH):
-            return AUDIO_CODEC_OPUS, pcm_data
+            return [(AUDIO_CODEC_OPUS, frame_ms, pcm_data)]
 
-        key = (self._sample_rate, self._channels, frame_ms)
+        key = (self._sample_rate, self._channels, OPUS_EGRESS_FRAME_MS)
+        frame_bytes = (
+            self._sample_rate * OPUS_EGRESS_FRAME_MS // 1000 * self._channels * 2
+        )
         try:
             entry = self._client_opus_transcoders.get(client_id)
             if entry is None or entry[1] != key:
@@ -690,12 +717,20 @@ class AudioBroadcaster:
                     create_pcm_opus_transcoder(
                         sample_rate=self._sample_rate,
                         channels=self._channels,
-                        frame_ms=frame_ms,
+                        frame_ms=OPUS_EGRESS_FRAME_MS,
                     ),
                     key,
                 )
                 self._client_opus_transcoders[client_id] = entry
-            return AUDIO_CODEC_OPUS, entry[0].pcm_to_opus(pcm_data)
+            buf = self._client_opus_pcm_buffers.setdefault(client_id, bytearray())
+            buf.extend(pcm_data)
+            frames: list[tuple[int, int, bytes]] = []
+            while len(buf) >= frame_bytes:
+                chunk = bytes(buf[:frame_bytes])
+                del buf[:frame_bytes]
+                opus = entry[0].pcm_to_opus(chunk)
+                frames.append((AUDIO_CODEC_OPUS, OPUS_EGRESS_FRAME_MS, opus))
+            return frames
         except Exception as exc:
             if not self._browser_opus_warned:
                 logger.warning(
@@ -704,7 +739,8 @@ class AudioBroadcaster:
                 )
                 self._browser_opus_warned = True
             self._client_opus_transcoders.pop(client_id, None)
-            return AUDIO_CODEC_PCM16, pcm_data
+            self._client_opus_pcm_buffers.pop(client_id, None)
+            return [(AUDIO_CODEC_PCM16, frame_ms, pcm_data)]
 
     async def _apply_phones_mix_off(self) -> None:
         """Force Phones L/R Mix = OFF so the LAN stream is separated stereo.
@@ -850,7 +886,10 @@ class AudioBroadcaster:
                 # (decode → DSP → taps) is shared; from here each browser
                 # WS client gets its own negotiated wire codec.  Pass-
                 # through payloads (PCM16, Opus-native) reuse one cached
-                # frame per codec; Opus transcodes are per-client.
+                # frame per codec and stay strictly 1:1; Opus transcodes
+                # are per-client and N:M — the reframing accumulator may
+                # emit 0..N exact 20 ms frames per radio packet (MOR-596),
+                # all carrying this packet's seq.
                 shared_frames: dict[int, bytes] = {}
                 dead_ids: list[int] = []
                 for client_id, q in list(self._clients.items()):
@@ -862,46 +901,49 @@ class AudioBroadcaster:
                     # client opted into adaptation on a flag-on broadcaster.
                     if self._client_adaptive:
                         self._adaptive_evaluate(client_id)
-                    codec, payload = self._encode_client_rx_frame(
+                    out_frames = self._encode_client_rx_frame(
                         client_id, audio_data, _frame_ms
                     )
-                    frame = shared_frames.get(codec) if payload is audio_data else None
-                    if frame is None:
-                        frame = encode_audio_frame(
-                            MSG_TYPE_AUDIO_RX,
-                            codec,
-                            self._seq,
-                            self._sample_rate // 100,
-                            self._channels,
-                            _frame_ms,
-                            payload,
-                        )
-                        if payload is audio_data:
-                            shared_frames[codec] = frame
-                    try:
-                        q.put_nowait(frame)
-                    except asyncio.QueueFull:
-                        # Drop-oldest eviction: count it per client — this
-                        # is the server-side WS congestion signal for the
-                        # adaptive egress codec controller (MOR-585,
-                        # ADR §3.6 detection-signals table).
-                        self._client_queue_drops[client_id] = (
-                            self._client_queue_drops.get(client_id, 0) + 1
-                        )
-                        try:
-                            q.get_nowait()
-                        except asyncio.QueueEmpty:
-                            pass
+                    for codec, hdr_frame_ms, payload in out_frames:
+                        shared = payload is audio_data
+                        frame = shared_frames.get(codec) if shared else None
+                        if frame is None:
+                            frame = encode_audio_frame(
+                                MSG_TYPE_AUDIO_RX,
+                                codec,
+                                self._seq,
+                                self._sample_rate // 100,
+                                self._channels,
+                                hdr_frame_ms,
+                                payload,
+                            )
+                            if shared:
+                                shared_frames[codec] = frame
                         try:
                             q.put_nowait(frame)
                         except asyncio.QueueFull:
-                            pass
+                            # Drop-oldest eviction: count it per client —
+                            # this is the server-side WS congestion signal
+                            # for the adaptive egress codec controller
+                            # (MOR-585, ADR §3.6 detection-signals table).
+                            self._client_queue_drops[client_id] = (
+                                self._client_queue_drops.get(client_id, 0) + 1
+                            )
+                            try:
+                                q.get_nowait()
+                            except asyncio.QueueEmpty:
+                                pass
+                            try:
+                                q.put_nowait(frame)
+                            except asyncio.QueueFull:
+                                pass
                 self._seq = (self._seq + 1) & 0xFFFF
                 for client_id in dead_ids:
                     self._clients.pop(client_id, None)
                     self._client_ws.pop(client_id, None)
                     self._client_rx_codec.pop(client_id, None)
                     self._client_opus_transcoders.pop(client_id, None)
+                    self._client_opus_pcm_buffers.pop(client_id, None)
                     self._client_link_quality.pop(client_id, None)
                     self._client_queue_drops.pop(client_id, None)
                     self._client_adaptive.pop(client_id, None)
