@@ -1334,6 +1334,7 @@ async def test_audio_handler_reader_control_tx_and_sender_paths(
     broadcaster = SimpleNamespace(
         subscribe=AsyncMock(return_value=asyncio.Queue()),
         unsubscribe=AsyncMock(),
+        negotiated_rx_format=lambda _q: {"codec": "pcm16"},
     )
     # Mock radio needs to pass isinstance(AudioCapable) check
     radio = MagicMock(spec=AudioCapable)
@@ -1430,6 +1431,7 @@ async def test_audio_handler_control_and_tx_guard_paths() -> None:
     broadcaster = SimpleNamespace(
         subscribe=AsyncMock(return_value=asyncio.Queue()),
         unsubscribe=AsyncMock(),
+        negotiated_rx_format=lambda _q: {"codec": "pcm16"},
     )
     handler = AudioHandler(ws, radio, broadcaster)
 
