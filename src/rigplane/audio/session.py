@@ -17,7 +17,13 @@ at the source — MOR-556/MOR-559).
 
 State machine (ADR §3.3)::
 
-    IDLE ⇄ RX_ONLY ⇄ RX_TX          RECOVERING / FAILED reserved (step 14)
+    IDLE ⇄ RX_ONLY ⇄ RX_TX ⇄ RECOVERING        FAILED reserved (step 20)
+
+RECOVERING (MOR-581, ADR §3.4, tenet T3 "no silent audio death"): a ~1 s
+watchdog task — decoupled from the keep-alives — reads the bus RX heartbeat
+(MOR-564); ~3 s of silence ⇒ RECOVERING + a local
+:class:`AudioSessionEvent`; frames resuming return the demand-derived
+state. Step 14 only SURFACES the death — the recovery loop is step 20.
 
 Arming order is transport-owned via the MOR-575 descriptor
 ``audio_setup_order`` (read with ``getattr(radio, ..., "rx_first")``):
@@ -43,9 +49,12 @@ poller PTT hooks, and the web handlers through the session is steps
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
+import time
+from dataclasses import dataclass
 from enum import Enum
-from typing import TYPE_CHECKING, Any, AsyncIterator, Literal, cast
+from typing import TYPE_CHECKING, Any, AsyncIterator, Callable, Literal, cast
 
 from rigplane.audio.bus import AudioBus, AudioSubscription
 
@@ -54,7 +63,13 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-__all__ = ["AudioSession", "AudioSessionState", "RxSubscription", "TxLease"]
+__all__ = [
+    "AudioSession",
+    "AudioSessionEvent",
+    "AudioSessionState",
+    "RxSubscription",
+    "TxLease",
+]
 
 _SetupOrder = Literal["rx_first", "tx_first", "atomic"]
 _VALID_SETUP_ORDERS: frozenset[str] = frozenset({"rx_first", "tx_first", "atomic"})
@@ -67,6 +82,13 @@ _VALID_SETUP_ORDERS: frozenset[str] = frozenset({"rx_first", "tx_first", "atomic
 # the re-arm on "rx_first" transports is hardware-validated.
 _REARM_RX_AFTER_TX_DROP: frozenset[str] = _VALID_SETUP_ORDERS
 
+# Health watchdog (MOR-581, ADR §3.4): cadence fully DECOUPLED from the keep-
+# alive loops (~500 ms control / ~100 ms audio) — it only READS the bus
+# heartbeat (MOR-564) and never touches the radio link.
+WATCHDOG_INTERVAL_S: float = 1.0
+#: Bus heartbeat older than this while RX should be live ⇒ RECOVERING.
+RX_LIVENESS_TIMEOUT_S: float = 3.0
+
 
 class AudioSessionState(Enum):
     """Session lifecycle states (ADR §3.3)."""
@@ -74,10 +96,28 @@ class AudioSessionState(Enum):
     IDLE = "idle"
     RX_ONLY = "rx_only"
     RX_TX = "rx_tx"
-    #: Reserved — the health/recovery loop lands in step 14 (no transitions
-    #: into these states yet).
+    #: Watchdog-detected silent RX death (MOR-581; recovery loop = step 20).
     RECOVERING = "recovering"
+    #: Reserved for the step-20 recovery loop (no transitions in yet).
     FAILED = "failed"
+
+
+#: States in which RX frames are supposed to be flowing (watchdog runs).
+_WATCHED_STATES: frozenset[AudioSessionState] = frozenset(AudioSessionState) - {
+    AudioSessionState.IDLE,
+    AudioSessionState.FAILED,
+}
+
+
+@dataclass(frozen=True, slots=True)
+class AudioSessionEvent:
+    """Local liveness event (NO telemetry — open-core). ``timestamp`` is
+    ``time.monotonic()``, comparable to ``AudioBus.last_rx_frame_monotonic``."""
+
+    state: AudioSessionState
+    reason: str
+    leg: str
+    timestamp: float
 
 
 class RxSubscription:
@@ -143,7 +183,14 @@ class AudioSession:
             fresh :class:`AudioBus`.
     """
 
-    def __init__(self, radio: Any, *, bus: AudioBus | None = None) -> None:
+    def __init__(
+        self,
+        radio: Any,
+        *,
+        bus: AudioBus | None = None,
+        watchdog_interval: float = WATCHDOG_INTERVAL_S,
+        rx_liveness_timeout: float = RX_LIVENESS_TIMEOUT_S,
+    ) -> None:
         self._radio = radio
         self._bus: AudioBus = (
             bus if bus is not None else getattr(radio, "audio_bus", None)
@@ -152,6 +199,13 @@ class AudioSession:
         self._state = AudioSessionState.IDLE
         self._rx_subs: list[RxSubscription] = []
         self._tx_leases: list[TxLease] = []
+        self._watchdog_interval = watchdog_interval
+        self._rx_liveness_timeout = rx_liveness_timeout
+        self._watchdog_task: asyncio.Task[None] | None = None
+        self._rx_armed_at: float = 0.0
+        self._recovering_from: AudioSessionState | None = None
+        self._listeners: list[Callable[[AudioSessionEvent], None]] = []
+        self._last_event: AudioSessionEvent | None = None
 
     @property
     def state(self) -> AudioSessionState:
@@ -171,6 +225,11 @@ class AudioSession:
         return self._bus
 
     @property
+    def last_event(self) -> AudioSessionEvent | None:
+        """Most recent liveness event, or None (MOR-581)."""
+        return self._last_event
+
+    @property
     def stats(self) -> dict[str, Any]:
         return {
             "state": self._state.value,
@@ -179,6 +238,29 @@ class AudioSession:
             "setup_order": self._setup_order(),
             "bus": self._bus.stats,
         }
+
+    # ── Liveness events (local listeners only — no telemetry) ───────────
+
+    def add_listener(self, listener: Callable[[AudioSessionEvent], None]) -> None:
+        """Register a local :class:`AudioSessionEvent` listener (idempotent)."""
+        if listener not in self._listeners:
+            self._listeners.append(listener)
+
+    def remove_listener(self, listener: Callable[[AudioSessionEvent], None]) -> None:
+        """Unregister a listener. No-op if not registered."""
+        with contextlib.suppress(ValueError):
+            self._listeners.remove(listener)
+
+    def _emit(self, reason: str, leg: str = "rx") -> None:
+        event = AudioSessionEvent(
+            state=self._state, reason=reason, leg=leg, timestamp=time.monotonic()
+        )
+        self._last_event = event
+        for listener in list(self._listeners):
+            try:
+                listener(event)
+            except Exception:
+                logger.warning("audio-session: event listener error", exc_info=True)
 
     # ── Demand API ───────────────────────────────────────────────────────
 
@@ -258,15 +340,31 @@ class AudioSession:
         return cast(_SetupOrder, order)
 
     async def _apply(self) -> None:
+        try:
+            await self._reconcile()
+        finally:
+            if self._state is not AudioSessionState.RECOVERING:
+                self._recovering_from = None
+            await self._sync_watchdog()
+
+    async def _reconcile(self) -> None:
         desired = self._desired()
-        if desired is self._state:
+        # RECOVERING (watchdog-owned, MOR-581) shadows the live transport
+        # state: demand transitions act on the shadowed state (TX still
+        # disarms); the watchdog re-detects silence after any demand edge.
+        effective = (
+            (self._recovering_from or AudioSessionState.RX_ONLY)
+            if self._state is AudioSessionState.RECOVERING
+            else self._state
+        )
+        if desired is effective:
             if desired is not AudioSessionState.IDLE:
                 await self._arm_rx()  # new subscribers join the live RX leg
             return
         if desired is AudioSessionState.RX_TX:
-            await self._enter_rx_tx(self._setup_order())
+            await self._enter_rx_tx(self._setup_order(), effective)
         elif desired is AudioSessionState.RX_ONLY:
-            if self._state is AudioSessionState.RX_TX:
+            if effective is AudioSessionState.RX_TX:
                 await self._disarm_tx()
                 if self._setup_order() in _REARM_RX_AFTER_TX_DROP:
                     await self._bus.restart_rx()
@@ -274,17 +372,19 @@ class AudioSession:
                 await self._arm_rx()
             self._state = AudioSessionState.RX_ONLY
         else:  # IDLE
-            if self._state is AudioSessionState.RX_TX:
+            if effective is AudioSessionState.RX_TX:
                 await self._disarm_tx()  # MOR-574: TX down BEFORE RX drops
             await self._drop_rx()
             self._state = AudioSessionState.IDLE
 
-    async def _enter_rx_tx(self, order: _SetupOrder) -> None:
-        if self._state is AudioSessionState.IDLE:
+    async def _enter_rx_tx(
+        self, order: _SetupOrder, current: AudioSessionState
+    ) -> None:
+        if current is AudioSessionState.IDLE:
             # Reached only via subscribe_rx (TX demand was deferred at
             # IDLE), so a TX arm failure here has no demanding caller to
             # raise to: log, settle at RX_ONLY, keep the leases — the next
-            # demand edge retries (the step-14 recovery loop owns more).
+            # demand edge retries (the step-20 recovery loop owns more).
             if order == "rx_first":
                 await self._arm_rx()
                 try:
@@ -354,3 +454,50 @@ class AudioSession:
         for sub in list(self._rx_subs):
             await sub._inner.aclose()
         self._rx_subs.clear()
+
+    # ── Health watchdog (MOR-581 — surface only, recovery is step 20) ────
+
+    async def _sync_watchdog(self) -> None:
+        """Run the watchdog while RX should flow; on return to IDLE the task
+        is cancelled AND awaited — no leaked task (MOR-567 conformance)."""
+        task = self._watchdog_task
+        if self._state in _WATCHED_STATES:
+            if task is None or task.done():
+                # Silence is measured from this arm point until the first
+                # heartbeat ("starting" — the MOR-559 verified-start idea).
+                self._rx_armed_at = time.monotonic()
+                self._watchdog_task = asyncio.get_running_loop().create_task(
+                    self._watchdog_loop(), name="audio-session-watchdog"
+                )
+        elif task is not None:
+            self._watchdog_task = None
+            task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await task
+
+    async def _watchdog_loop(self) -> None:
+        """Liveness loop — reads ONLY the bus heartbeat (MOR-564)."""
+        while True:
+            await asyncio.sleep(self._watchdog_interval)
+            async with self._lock:
+                self._check_liveness_locked()
+
+    def _check_liveness_locked(self) -> None:
+        now = time.monotonic()
+        last = self._bus.last_rx_frame_monotonic
+        if self._state in (AudioSessionState.RX_ONLY, AudioSessionState.RX_TX):
+            # Reference = the later of the last heartbeat and the arm point, so
+            # a stale stamp from a previous run never false-positives a freshly
+            # armed (still "starting") RX leg.
+            ref = self._rx_armed_at if last is None else max(last, self._rx_armed_at)
+            if now - ref >= self._rx_liveness_timeout:
+                self._recovering_from = self._state
+                self._state = AudioSessionState.RECOVERING
+                logger.warning("audio-session: RX silent %.1fs — RECOVERING", now - ref)
+                self._emit("rx_silent")
+        elif self._state is AudioSessionState.RECOVERING:
+            if last is not None and now - last < self._rx_liveness_timeout:
+                self._recovering_from = None
+                self._state = self._desired()
+                logger.info("audio-session: RX frames resumed — %s", self._state.value)
+                self._emit("rx_resumed")

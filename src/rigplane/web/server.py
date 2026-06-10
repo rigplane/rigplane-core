@@ -62,6 +62,7 @@ from ..core.state_store import StateSnapshot, StateStore
 from ..radio_state import RadioState
 from ..capabilities import CAP_AUDIO, CAP_SCOPE
 from ..exceptions import TimeoutError as RigplaneTimeoutError
+from ..audio.session import AudioSession, AudioSessionEvent
 from ..audio_analyzer import AudioAnalyzer
 from ..audio_fft_scope import AudioFftScope
 from ..env_config import (
@@ -581,6 +582,16 @@ def _supports_audio(radio: "Radio | None") -> bool:
     return "audio" in runtime_capabilities(radio)
 
 
+def _audio_session_event_json(event: AudioSessionEvent) -> dict[str, Any]:
+    """JSON shape shared by the runtime payload and the WS event (MOR-581)."""
+    return {
+        "state": event.state.value,
+        "reason": event.reason,
+        "leg": event.leg,
+        "timestamp": event.timestamp,
+    }
+
+
 @dataclass
 class WebConfig:
     """Configuration for :class:`WebServer`.
@@ -791,6 +802,8 @@ class WebServer:
         self._health_since_monotonic: float = time.monotonic()
         # Audio bridge (virtual device integration)
         self._audio_bridge: "AudioBridge | None" = None
+        # AudioSession whose liveness events are forwarded to WS (MOR-581)
+        self._watched_audio_session: AudioSession | None = None
         # Scope health monitor
         self._scope_last_nonzero: float = 0.0
         self._scope_health_task: asyncio.Task[None] | None = None
@@ -1856,11 +1869,34 @@ class WebServer:
         self.broadcast_event(name, data)
         self._broadcast_state_update()
 
+    def _attach_audio_session_listener(self) -> None:
+        """Forward AudioSession liveness events to control WS clients
+        (MOR-581) via the radio-owned singleton ``radio.audio_session``
+        (MOR-579). Local-only — the existing WS surface, no telemetry."""
+        radio = self._radio
+        session = getattr(radio, "audio_session", None) if radio is not None else None
+        if not isinstance(session, AudioSession):
+            return
+        if self._watched_audio_session is session:
+            return
+        self._detach_audio_session_listener()
+        session.add_listener(self._on_audio_session_event)
+        self._watched_audio_session = session
+
+    def _detach_audio_session_listener(self) -> None:
+        if self._watched_audio_session is not None:
+            self._watched_audio_session.remove_listener(self._on_audio_session_event)
+            self._watched_audio_session = None
+
+    def _on_audio_session_event(self, event: "AudioSessionEvent") -> None:
+        self.broadcast_event("audio_session", _audio_session_event_json(event))
+
     async def start(self) -> None:
         """Start the HTTP/WS listener and RadioPoller (if radio is connected)."""
         from .web_startup import start_web_server  # noqa: TID251
 
         self._stopping = False
+        self._attach_audio_session_listener()
         await start_web_server(self)
 
     # ------------------------------------------------------------------
@@ -1941,6 +1977,7 @@ class WebServer:
         from .web_startup import stop_web_server  # noqa: TID251
 
         self._stopping = True
+        self._detach_audio_session_listener()
         await stop_web_server(self)
 
     async def serve_forever(self) -> None:
@@ -2383,6 +2420,21 @@ class WebServer:
             "stats": stats,
         }
 
+    def _runtime_audio_session_payload(self) -> dict[str, Any]:
+        # Read the private slot (not the lazy ``audio_session`` property) so
+        # a runtime poll never instantiates the session as a side effect
+        # (the MOR-564 pattern, applied to MOR-581).
+        radio = self._radio
+        session = getattr(radio, "_audio_session", None) if radio is not None else None
+        if not isinstance(session, AudioSession):
+            return {"enabled": False}
+        event = session.last_event
+        return {
+            "enabled": True,
+            "state": session.state.value,
+            "lastEvent": None if event is None else _audio_session_event_json(event),
+        }
+
     def _state_acquisition_diagnostics_payload(self) -> dict[str, Any]:
         radio = self._radio
         scheduler = (
@@ -2429,6 +2481,7 @@ class WebServer:
                 },
                 "bridge": self._runtime_bridge_payload(),
                 "audioBus": self._runtime_audio_bus_payload(),
+                "audioSession": self._runtime_audio_session_payload(),
                 "stateAcquisition": self._state_acquisition_diagnostics_payload(),
                 "lastError": self._runtime_last_error,
             },
