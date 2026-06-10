@@ -11,7 +11,7 @@
 
 import { sendCommand } from '$lib/transport/ws-client';
 import { getActiveReceiver, getRadioState, patchActiveReceiver, patchRadioState, patchReceiver } from '$lib/stores/radio.svelte';
-import type { ReceiverState } from '$lib/types/state';
+import type { ReceiverState, ServerState } from '$lib/types/state';
 import { getCapabilities } from '$lib/stores/capabilities.svelte';
 import { adjustTuningStep, getTuningStep } from '$lib/stores/tuning.svelte';
 import { audioManager } from '$lib/audio/audio-manager';
@@ -22,6 +22,7 @@ import { nbDepthDisplayToRaw, nrDisplayToRaw } from '$lib/radio/filter-controls'
 import { clampRef, clampSpan } from '../../components/spectrum/spectrum-toolbar-logic';
 import { consumePendingFocus, setPendingFocus } from '$lib/radio/pending-focus';
 import { getModeFilter } from '$lib/radio/mode-filter-memory';
+import { modInputCommand, modInputStateKey } from '$lib/radio/mod-input';
 
 /* ── Helpers ─────────────────────────────────────────────────── */
 
@@ -172,6 +173,15 @@ export function makeModeHandlers() {
       const receiver = activeReceiverParam();
       patchActiveReceiver({ dataMode: mode }, true);
       cmd('set_data_mode', { mode, receiver });
+    },
+    onModInputChange: (source: number) => {
+      // MOR-616: route the new source to the active receiver's DATA group
+      // (DATA OFF/1/2/3 MOD, CI-V 0x1A 05 00 0x91-0x94). Optimistic
+      // top-level patch; the backend confirms via write-through readback
+      // (MOR-615), which also reverts the patch if the radio rejects it.
+      const dataMode = getActiveReceiver()?.dataMode ?? 0;
+      patchRadioState({ [modInputStateKey(dataMode)]: source } as Partial<ServerState>);
+      cmd(modInputCommand(dataMode), { source });
     },
   };
 }

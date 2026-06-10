@@ -165,6 +165,9 @@
   "core.mobile.setupButton": "Setup",
   "core.mobile.closeStepPicker": "Close step picker",
 
+  "core.modePanel.modInputLabel": "MOD IN",
+  "core.modePanel.modInputAria": "Modulation input source",
+
   "core.error.transport.timeout.title": "Connection Timed Out",
   "core.error.transport.timeout.body": "No response from {host}. Check that the radio is powered on and reachable.",
   "core.error.literalBrace.example": "Use '{'name} to refer to a placeholder.",

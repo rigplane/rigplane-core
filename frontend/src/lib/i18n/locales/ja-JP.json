@@ -165,6 +165,9 @@
   "core.mobile.setupButton": "セットアップ",
   "core.mobile.closeStepPicker": "ステップ選択を閉じる",
 
+  "core.modePanel.modInputLabel": "MOD IN",
+  "core.modePanel.modInputAria": "変調入力ソース",
+
   "core.error.transport.timeout.title": "接続がタイムアウトしました",
   "core.error.transport.timeout.body": "{host} から応答がありません。トランシーバーの電源が入っており、到達可能であることを確認してください。",
   "core.error.literalBrace.example": "プレースホルダーを参照するには '{'name} と書きます。",

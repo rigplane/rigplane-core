@@ -24,7 +24,9 @@ import { audioManager } from '$lib/audio/audio-manager';
 import { setMuted, setVolume } from '$lib/stores/audio.svelte';
 import { consumePendingFocus } from '$lib/radio/pending-focus';
 import { getModeFilter } from '$lib/radio/mode-filter-memory';
+import { modInputCommand, modInputStateKey } from '$lib/radio/mod-input';
 import { nbDepthDisplayToRaw, nrDisplayToRaw } from '$lib/radio/filter-controls';
+import type { ServerState } from '$lib/types/state';
 
 /* ── Shared helpers ──────────────────────────────────────────────── */
 
@@ -127,6 +129,15 @@ export function makeModeHandlers() {
       const receiver = activeReceiverParam();
       patchActiveReceiver({ dataMode: mode }, true);
       cmd('set_data_mode', { mode, receiver });
+    },
+    onModInputChange: (source: number) => {
+      // MOR-616: route the new source to the active receiver's DATA group
+      // (DATA OFF/1/2/3 MOD, CI-V 0x1A 05 00 0x91-0x94). Optimistic
+      // top-level patch; the backend confirms via write-through readback
+      // (MOR-615), which also reverts the patch if the radio rejects it.
+      const dataMode = getActiveReceiver()?.dataMode ?? 0;
+      patchRadioState({ [modInputStateKey(dataMode)]: source } as Partial<ServerState>);
+      cmd(modInputCommand(dataMode), { source });
     },
   };
 }

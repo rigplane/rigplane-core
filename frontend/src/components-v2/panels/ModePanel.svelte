@@ -2,6 +2,8 @@
   import { HardwareButton } from '$lib/Button';
   import { getShortcutHint } from '../layout/shortcut-hints';
   import { deriveModeProps, getModeHandlers } from '$lib/runtime/adapters/panel-adapters';
+  import { MOD_INPUT_SOURCES } from '$lib/radio/mod-input';
+  import { t } from '$lib/i18n';
 
   const handlers = getModeHandlers();
   let p = $derived(deriveModeProps());
@@ -13,8 +15,12 @@
   let hasDataMode = $derived(p.hasDataMode);
   let dataModeCount = $derived(p.dataModeCount ?? 0);
   let dataModeLabels = $derived(p.dataModeLabels ?? { '0': 'OFF', '1': 'D1', '2': 'D2', '3': 'D3' });
+  // MOR-616: MOD-input source of the active DATA group (null until read).
+  let modInputSource = $derived(p.modInputSource ?? null);
+  let hasModInput = $derived(p.hasModInput ?? false);
   const onModeChange = handlers.onModeChange;
   const onDataModeChange = handlers.onDataModeChange;
+  const onModInputChange = handlers.onModInputChange;
 
   // Canonical display order — covers both IC-7610 and Yaesu naming conventions.
   const modeOrder = [
@@ -88,6 +94,30 @@
         {/each}
       </div>
     {/if}
+
+    {#if hasModInput}
+      <!-- MOR-616: MOD-input source of the active DATA group (DATA OFF/D1/D2/D3).
+           Tracks front-panel changes via the backend readback; selecting a
+           source emits the matching set_data*_mod_input command. -->
+      <div class="mod-input-row">
+        <span class="section-label">{t('core.modePanel.modInputLabel')}</span>
+        <select
+          class="mod-input-select"
+          data-testid="mod-input-select"
+          aria-label={t('core.modePanel.modInputAria')}
+          title={t('core.modePanel.modInputAria')}
+          value={modInputSource === null ? '' : String(modInputSource)}
+          onchange={(e) => onModInputChange(Number(e.currentTarget.value))}
+        >
+          {#if modInputSource === null}
+            <option value="" disabled>—</option>
+          {/if}
+          {#each MOD_INPUT_SOURCES as option (option.value)}
+            <option value={String(option.value)}>{option.label}</option>
+          {/each}
+        </select>
+      </div>
+    {/if}
   </div>
 
 <style>
@@ -116,5 +146,28 @@
   .mode-grid > :global(button),
   .data-grid > :global(button) {
     min-width: 0;
+  }
+
+  .mod-input-row {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+
+  .mod-input-select {
+    flex: 1;
+    min-width: 0;
+    background: var(--v2-bg-input, #111);
+    color: var(--v2-text-primary, #ddd);
+    border: 1px solid var(--v2-border, #333);
+    border-radius: 3px;
+    font-family: 'Roboto Mono', monospace;
+    font-size: 11px;
+    padding: 3px 4px;
+  }
+
+  .mod-input-select:focus-visible {
+    outline: 1px solid var(--v2-accent-cyan, #0ff);
+    outline-offset: 1px;
   }
   </style>
