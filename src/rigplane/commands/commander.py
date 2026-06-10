@@ -41,6 +41,26 @@ class _QueueItem:
     # True only for fire-and-forget BACKGROUND sends counted against the
     # ``_MAX_BG_INFLIGHT`` cap; the worker decrements the counter for these.
     counts_bg_inflight: bool = False
+    # True for any fire-and-forget send (``wait_dispatch=False``): no caller
+    # ever awaits ``future``, so whoever fails it must retrieve the exception
+    # itself or GC logs "Future exception was never retrieved" (MOR-595).
+    fire_and_forget: bool = False
+
+
+def _fail_item(item: _QueueItem, exc: BaseException) -> None:
+    """Fail a queue item's future, retrieving the exception for orphans.
+
+    Fire-and-forget futures have no consumer, so teardown (``stop()`` and
+    worker cancellation) marks their exception as retrieved immediately to
+    keep a failed ``connect()``/disconnect from flooding the log with
+    ``Future exception was never retrieved: ConnectionError('Commander
+    stopped')`` warnings at GC time (MOR-595).
+    """
+    if item.future.done():
+        return
+    item.future.set_exception(exc)
+    if item.fire_and_forget:
+        item.future.exception()
 
 
 class IcomCommander:
@@ -85,8 +105,7 @@ class IcomCommander:
                     break
                 if item.key is not None:
                     self._pending_by_key.pop(item.key, None)
-                if not item.future.done():
-                    item.future.set_exception(ConnectionError("Commander stopped"))
+                _fail_item(item, ConnectionError("Commander stopped"))
                 self._queue.task_done()
 
         if self._worker is not None and not self._worker.done():
@@ -157,6 +176,7 @@ class IcomCommander:
             key=key,
             wait_response=wait_response,
             counts_bg_inflight=counts_bg_inflight,
+            fire_and_forget=not wait_dispatch,
         )
 
         if key is not None:
@@ -261,12 +281,10 @@ class IcomCommander:
                 except asyncio.CancelledError:
                     if execute_task is not None and not execute_task.done():
                         execute_task.cancel()
-                    if not item.future.done():
-                        item.future.set_exception(ConnectionError("Commander stopped"))
+                    _fail_item(item, ConnectionError("Commander stopped"))
                     raise
                 except Exception as exc:
-                    if not item.future.done():
-                        item.future.set_exception(exc)
+                    _fail_item(item, exc)
                 finally:
                     if item.counts_bg_inflight and self._bg_inflight > 0:
                         self._bg_inflight -= 1
