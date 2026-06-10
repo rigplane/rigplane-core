@@ -1,7 +1,9 @@
 # Target Audio Architecture — Universal Audio Path ADR
 
 **Date:** 2026-06-09
-**Status:** Proposed — rev 2. Operator approved the overall direction
+**Status:** Implemented (2026-06-10) — see **As-built status** below for the
+step → issue → PR mapping and the deferred items. Design history: rev 2.
+Operator approved the overall direction
 (AudioSession + desired-state machine + PCM spine + edge-only lossy) and added
 three requirements folded in below: adaptive/opt-in lossy egress with a strict
 lossless digital-path invariant (T1a, §3.6), a tract-wide debug/analytics tap
@@ -12,6 +14,74 @@ MOR-556/559 (stream-order regressions), MOR-241/506 (single-slot callback bugs),
 MOR-307/#104 (WebRTC DataChannel transport)
 **Format model:** `docs/plans/2026-04-12-target-frontend-architecture.md`
 **Base commit:** `467f40bd` (main)
+
+## As-built status (2026-06-10, main @ `1cc5e72a`)
+
+The MOR-562 epic is **implemented**: 17 of the 20 §4 migration steps plus one
+added step (9b) are merged to `main`; the exceptions are steps 11, 12, and 15
+plus the live hardware re-validations, all listed below. Where the realized
+code deviates from a step's "files (indicative)" column, the merged PR is
+authoritative (notable deviations noted inline).
+
+### Merged (§4 step → issue → PR)
+
+| §4 step | Issue | PR | As-built notes |
+|---|---|---|---|
+| 1 — bridge teardown on failed start | MOR-560 | #1755 | |
+| 2 — typed lifecycle errors | MOR-563 | #1757 | `AudioAlreadyStartedError`/`AudioNotStartedError` live in `audio/usb_driver.py` (subclassing `AudioDriverLifecycleError`), not `core/exceptions.py` |
+| 3 — AudioBus RX heartbeat | MOR-564 | #1756 | `AudioBus.last_rx_frame_monotonic` in the runtime payload |
+| 4 — tap-surface skeleton | MOR-565 | #1758 | `STAGE_RX_PCM`/`STAGE_RX_POST_DSP` in `audio/bus.py`; `rx.pcm` hosted on the bus, `rx.post_dsp` on the broadcaster |
+| 5 — stateful test fakes | MOR-566 | #1759 | `FakeAudioBackend(strict_device_exclusive=True)` + shared order-sensitive radio stubs |
+| 6 — lifecycle conformance suite | MOR-567 | #1760 | `tests/contracts/test_audio_lifecycle_conformance.py` |
+| 7 — `audio_setup_order` descriptor | MOR-575 | #1761 | Additive on the backends, derived from `audio_duplex_mode`; conformance-pinned to stay OUT of the frozen 10-member `AudioTransport` — consumers read it via `getattr(radio, "audio_setup_order", "rx_first")` |
+| 8 — `AudioSession` skeleton | MOR-576 | #1763 | `audio/session.py`, single-lock `_apply()` reconciliation |
+| 9 — bridge on session | MOR-577 | #1765 | `rx_first` branch + `_subscribe_bus` band-aid deleted |
+| 9b — radio-owned session singleton *(added step)* | MOR-579 | #1766 | Lazy `radio.audio_session` (`runtime/radio.py`) — resolves open question 1 |
+| 10 — bus surfaces RX-start failures | MOR-582 | #1769 | Subscriber rollback in the bus + broadcaster error envelope to WS clients |
+| 13 — web TX through session lease | MOR-580 | #1767 | `session.acquire_tx("web")` |
+| 14 — health watchdog + events | MOR-581 | #1768 | ~1 s watchdog on the bus heartbeat; ~3 s silence ⇒ RECOVERING + local `AudioSessionEvent` |
+| 16 — `AudioDeviceConfig` carrier | MOR-578 | #1764 | Frozen dataclass in `audio/backend.py` |
+| 17 — per-connection egress codecs | MOR-584 | #1771 | Per-client encoder pool + `audio_format` ack |
+| 18 — client link-quality uplink | MOR-585 | #1773 | `audio_stats` every ~1.5 s per client |
+| 19 — adaptive egress controller | MOR-588 | #1775 | Flag-gated `WebConfig.audio_adaptive_egress` (default off); T1a pinned by `tests/contracts/test_adaptive_egress_conformance.py` |
+| 20 — recovery unification | MOR-586 | #1772 | `AudioSession.reestablish()` from live demand; legacy snapshot replay retired |
+
+Found and fixed along the way (not §4 steps): MOR-574 (#1762) — bridge
+`stop()` with TX armed leaked the running LAN RX stream, surfaced by the
+step-6 conformance suite; MOR-583 (#1770) — end-to-end audio-path smoke tests
+over fakes.
+
+### Deferred / not yet merged
+
+- **Step 11 — `UsbAudioDriver.ensure()` exclusive-duplex wiring (MOR-546).**
+  Hardware-gated (FTX-1 / X6200). `start_duplex` still has no production
+  caller; the session's `tx_first`/`atomic` sequencing is the prepared seam.
+- **Step 12 — poller PTT through the session + the `_should_restart_rx` flip
+  (MOR-554).** Hardware-gated (IC-7610). As-built the poller PTT path still
+  arms `radio.start_tx` directly on the neutral surface (MOR-543, #1747) and
+  re-arms RX for every duplex mode — the one remaining audio-arming path not
+  routed through `AudioSession`. The session's `_REARM_RX_AFTER_TX_DROP` seam
+  is pre-built for the flip.
+- **Step 15 — decode-at-ingress / `PcmFrame` (MOR-591, open).** The
+  per-consumer decoders are still in place (bridge opuslib decoder,
+  broadcaster uLaw branch, Opus DSP/tap gates — #762). Dormant in practice:
+  every shipping default delivers PCM natively. Planned as additive PR-1
+  (carrier + dual-publish) then PR-2 (per-consumer-decoder removal).
+- **All live hardware re-validations** (radio offline 2026-06-10): IC-7610
+  LAN full-duplex + reconnect `reestablish()`, FTX-1 exclusive duplex +
+  WSJT-X FT8 through the bridge, browser TX over the session lease, adaptive
+  egress over a real WAN.
+
+### CI/infra fixes found along the way
+
+- **MOR-587** (#1774): quick.yml swallowed the pytest exit code (`tee`
+  without `pipefail`) — CI failures were masked.
+- **MOR-589** (#1776): `discover --serial` raised `SystemExit(2)` on
+  Python 3.11/3.13.0 (argparse prefix abbreviation) — `allow_abbrev=False`.
+- **MOR-590** (open): quick.yml's "Set up Python 3.11" does not pin the
+  pytest interpreter (runs 3.13.0), and real 3.11 hides 136 latent
+  AsyncMock / runtime-`Protocol` test failures that must be fixed before
+  pinning.
 
 ## Purpose
 
@@ -901,7 +971,7 @@ test-gated. **[BP]** = behavior-preserving, **[BC]** = behavior-changing.
 Steps 1–6 are pure de-risking and can ship this week — the tap surface
 (step 4) lands early deliberately: it is behavior-preserving and makes every
 later step observable. Steps 7–9 build the session without changing
-behavior. Steps 10–12, 14, 15, and 19 are the behavior changes, each
+behavior. Steps 10–12, 14, 15, 17, and 19 are the behavior changes, each
 individually flagged and hardware-gated where noted. The legacy
 `AudioCapable` shims and `rigplane.audio` export pins are untouched throughout
 (constraint 1/2).
