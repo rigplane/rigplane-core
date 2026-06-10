@@ -487,9 +487,34 @@ class AudioBroadcaster:
             self._subscription = cast(_AudioBus, bus).subscribe(name="web-audio")
             await self._subscription.start()
             self._relay_task = asyncio.create_task(self._relay_loop())
-        except Exception:
+        except Exception as exc:
             logger.exception("audio-broadcaster: failed to start relay")
             self._subscription = None
+            await self._notify_relay_start_failure(exc)
+
+    async def _notify_relay_start_failure(self, exc: Exception) -> None:
+        """Surface a relay/RX start failure to connected WS clients (MOR-582).
+
+        Without this the browser was told nothing and waited on dead air
+        forever (ADR §3.4 problem P2: "subscribed" with zero frames). Reuses
+        the handler's error envelope shape: ``{"type": "error", "message"}``.
+        """
+        if not self._client_ws:
+            return
+        payload = encode_json(
+            {
+                "type": "error",
+                "message": f"audio_start: RX audio failed to start: {exc}",
+            }
+        )
+        for ws in list(self._client_ws.values()):
+            try:
+                await ws.send_text(payload)
+            except Exception:
+                logger.debug(
+                    "audio-broadcaster: failed to notify client of RX start failure",
+                    exc_info=True,
+                )
 
     async def _relay_loop(self) -> None:
         """Read packets from AudioBus subscription and fan out to WS clients."""

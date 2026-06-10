@@ -342,15 +342,32 @@ async def test_bus_stats(bus, mock_radio):
 # ---------------------------------------------------------------------------
 
 
-async def test_rx_start_failure_handled(mock_radio):
+async def test_rx_start_failure_raises_to_first_subscriber(mock_radio):
+    """[BC] MOR-582: the demanding subscriber's RX-start failure PROPAGATES.
+
+    Pre-MOR-582 the bus swallowed the error and left the subscriber
+    registered-but-silent (dead air). Now ``start()`` raises (RuntimeError
+    chained from the radio error) and the registration is rolled back.
+    """
     mock_radio.start_audio_rx_opus = AsyncMock(
         side_effect=ConnectionError("not connected")
     )
     bus = AudioBus(mock_radio)
     sub = bus.subscribe(name="s1")
-    await sub.start()
-    # Should not crash, rx_active stays False
+    with pytest.raises(RuntimeError, match="radio RX failed to start") as excinfo:
+        await sub.start()
+    assert isinstance(excinfo.value.__cause__, ConnectionError)
     assert not bus.rx_active
+    assert not sub.active  # never falsely "attached"
+    assert bus.subscriber_count == 0  # registration rolled back
+
+    # No poisoned state: repair the radio and the same subscription recovers.
+    mock_radio.start_audio_rx_opus = AsyncMock()
+    await sub.start()
+    assert bus.rx_active
+    assert sub.active
+    assert bus.subscriber_count == 1
+    await sub.aclose()
 
 
 async def test_get_with_timeout(bus, mock_radio):
@@ -439,3 +456,24 @@ async def test_restart_rx_noop_without_subscribers_neutral():
     await bus.restart_rx()
     assert radio.start_calls == []
     assert not bus.rx_active
+
+
+async def test_restart_rx_failure_nonfatal_but_observable():
+    """MOR-582: a re-arm failure must not crash an established session,
+    but must not be masked as success — ``rx_active`` reflects reality."""
+    radio = _NeutralRadio()
+    bus = AudioBus(radio)
+    sub = bus.subscribe(name="s1")
+    await sub.start()
+    assert bus.rx_active
+
+    async def _failing_start_rx(callback):
+        raise ConnectionError("re-arm hiccup")
+
+    radio.start_rx = _failing_start_rx
+    await bus.restart_rx()  # non-fatal: must NOT raise
+
+    assert not bus.rx_active  # observable (step-14 watchdog input)
+    assert sub.active  # established subscriber survives
+    assert bus.subscriber_count == 1
+    await sub.aclose()

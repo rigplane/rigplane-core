@@ -44,6 +44,7 @@ import logging
 import time
 from typing import TYPE_CHECKING, Any
 
+from rigplane.audio.usb_driver import AudioAlreadyStartedError
 from rigplane.dsp.tap_registry import TapRegistry
 
 if TYPE_CHECKING:
@@ -137,13 +138,22 @@ class AudioSubscription:
         }
 
     async def start(self) -> None:
-        """Activate this subscription (registers with the bus)."""
+        """Activate this subscription (registers with the bus).
+
+        Raises if this subscription's demand triggers the radio RX start
+        and the start fails (MOR-582): the subscription is left inactive
+        and unregistered — never "attached" to a bus that is not receiving.
+        """
         if self._active:
             return
         if self._close_task is not None and not self._close_task.done():
             await self._close_task
         self._active = True
-        await self._bus._add_subscriber(self)
+        try:
+            await self._bus._add_subscriber(self)
+        except BaseException:
+            self._active = False
+            raise
 
     def stop(self) -> None:
         """Deactivate this subscription and schedule bus removal.
@@ -349,9 +359,16 @@ class AudioBus:
             self._rx_pcm_taps.feed(packet.data)
 
     async def _add_subscriber(self, sub: AudioSubscription) -> None:
-        """Register a subscriber and start RX if this is the first one."""
+        """Register a subscriber and start RX if this is the first one.
+
+        When this subscriber's demand triggers the RX start and the start
+        fails, the registration is rolled back before the error propagates
+        (MOR-582, ADR §3.4 rule 3): a subscriber must never be left
+        registered on a bus that is not actually receiving.
+        """
         async with self._lock:
-            if sub not in self._subscribers:
+            added = sub not in self._subscribers
+            if added:
                 self._subscribers.append(sub)
                 logger.info(
                     "audio-bus: +subscriber %r (%d total)",
@@ -359,7 +376,12 @@ class AudioBus:
                     len(self._subscribers),
                 )
             if not self._rx_active and len(self._subscribers) > 0:
-                await self._start_rx()
+                try:
+                    await self._start_rx()
+                except BaseException:
+                    if added:
+                        self._subscribers.remove(sub)
+                    raise
 
     async def _remove_subscriber(self, sub: AudioSubscription) -> None:
         """Unregister a subscriber. Stops RX if no subscribers remain."""
@@ -399,15 +421,23 @@ class AudioBus:
             await start_rx(self._on_opus_packet)
 
     async def _start_rx(self) -> None:
-        """Start receiving audio from the radio."""
+        """Start receiving audio from the radio.
+
+        A start failure is NOT swallowed (MOR-582, ADR §3.4 rule 3): the
+        demanding caller must never believe it is attached to a live
+        stream. The radio error is chained into a ``RuntimeError`` so every
+        backend surfaces the same exception type to subscribers;
+        ``rx_active`` stays False, reflecting reality.
+        """
         if self._rx_active:
             return
         try:
             await self._begin_rx()
-            self._rx_active = True
-            logger.info("audio-bus: RX started")
-        except Exception:
+        except Exception as exc:
             logger.exception("audio-bus: failed to start RX")
+            raise RuntimeError(f"radio RX failed to start: {exc}") from exc
+        self._rx_active = True
+        logger.info("audio-bus: RX started")
 
     async def restart_rx(self) -> None:
         """Re-establish RX on the radio using the bus's own callback.
@@ -416,16 +446,29 @@ class AudioBus:
         transition on Icom CI-V backends): the radio's single-slot RX
         callback must be restored to :meth:`_on_opus_packet` so subscribers
         keep receiving frames. No-op when the bus has no active subscribers.
+
+        A re-arm failure is non-fatal for the established session (a hiccup
+        must not crash healthy subscribers) but never masked as success:
+        ``rx_active`` drops to False so stats and the recovery watchdog see
+        the dead RX leg (MOR-582). The typed already-started case is benign
+        — RX stayed live through the TX cycle (LAN) and remains wired to
+        this bus, so it stays marked live.
         """
         async with self._lock:
             if not self._subscribers:
                 return
             try:
                 await self._begin_rx()
+            except AudioAlreadyStartedError:
                 self._rx_active = True
-                logger.info("audio-bus: RX re-armed after TX")
+                logger.debug("audio-bus: RX already live on re-arm", exc_info=True)
+                return
             except Exception:
+                self._rx_active = False
                 logger.exception("audio-bus: failed to re-arm RX")
+                return
+            self._rx_active = True
+            logger.info("audio-bus: RX re-armed after TX")
 
     async def _stop_rx(self) -> None:
         """Stop receiving audio from the radio."""
