@@ -168,6 +168,10 @@
   "core.modePanel.modInputLabel": "MOD IN",
   "core.modePanel.modInputAria": "Modulation input source",
 
+  "core.txGuard.modInputNotLan": "MOD input is {source}, not LAN — your voice from the web will not be transmitted (TX).",
+  "core.txGuard.setLan": "Set LAN",
+  "core.txGuard.dismiss": "Dismiss MOD input warning",
+
   "core.error.transport.timeout.title": "Connection Timed Out",
   "core.error.transport.timeout.body": "No response from {host}. Check that the radio is powered on and reachable.",
   "core.error.literalBrace.example": "Use '{'name} to refer to a placeholder.",

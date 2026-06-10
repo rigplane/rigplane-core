@@ -89,6 +89,14 @@ vi.mock('$lib/runtime/adapters/tx-adapter', () => ({
   getTxAudioControl: () => mockTxAudioControl,
 }));
 
+// MOR-617: TxPanel mounts ModInputTxWarning, whose real adapter pulls in the
+// real transport/stores. Mock it so this fast-pool test never pins those
+// modules in the shared (isolate: false) cache — see vite.config.ts / #771.
+vi.mock('$lib/runtime/adapters/mod-input-tx-guard.svelte', () => ({
+  deriveModInputTxGuardProps: () => ({ visible: false, sourceLabel: null }),
+  getModInputTxGuardHandlers: () => ({ onSetLan: vi.fn(), onDismiss: vi.fn() }),
+}));
+
 import TxPanel from '../TxPanel.svelte';
 
 let components: ReturnType<typeof mount>[] = [];
