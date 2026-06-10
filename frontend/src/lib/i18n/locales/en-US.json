@@ -171,6 +171,8 @@
   "core.txGuard.modInputNotLan": "MOD input is {source}, not LAN — your voice from the web will not be transmitted (TX).",
   "core.txGuard.setLan": "Set LAN",
   "core.txGuard.dismiss": "Dismiss MOD input warning",
+  "core.txGuard.autoLanLabel": "Auto-switch MOD input to LAN for web TX",
+  "core.txGuard.autoLanHelp": "When TX starts from the web, the active mode group's MOD input is switched to LAN and restored after TX. If the connection drops mid-TX, the input stays on LAN until the next session restores it.",
 
   "core.error.transport.timeout.title": "Connection Timed Out",
   "core.error.transport.timeout.body": "No response from {host}. Check that the radio is powered on and reachable.",

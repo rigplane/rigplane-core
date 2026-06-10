@@ -42,6 +42,8 @@ vi.mock('$lib/stores/radio.svelte', () => ({
   patchActiveReceiver: vi.fn(),
   patchRadioState: vi.fn(),
   resetRadioState: vi.fn(),
+  // MOR-618: imported by adapters/mod-input-auto.svelte (bootstrap step 6).
+  subscribeRadioState: vi.fn(() => () => {}),
 }));
 
 vi.mock('$lib/stores/connection.svelte', () => ({

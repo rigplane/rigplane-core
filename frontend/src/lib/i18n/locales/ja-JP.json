@@ -171,6 +171,8 @@
   "core.txGuard.modInputNotLan": "MOD 入力が {source} のため LAN 経由の音声は送信 (TX) されません。",
   "core.txGuard.setLan": "LAN に設定",
   "core.txGuard.dismiss": "MOD 入力の警告を閉じる",
+  "core.txGuard.autoLanLabel": "ウェブからの送信 (TX) 時に MOD 入力を自動的に LAN へ切り替える",
+  "core.txGuard.autoLanHelp": "ウェブから TX を開始すると、アクティブなモードグループの MOD 入力が自動的に LAN に切り替わり、TX 終了後に元の設定へ戻ります。TX 中に接続が切れた場合、次回接続時に復元されるまで LAN のままになります。",
 
   "core.error.transport.timeout.title": "接続がタイムアウトしました",
   "core.error.transport.timeout.body": "{host} から応答がありません。トランシーバーの電源が入っており、到達可能であることを確認してください。",

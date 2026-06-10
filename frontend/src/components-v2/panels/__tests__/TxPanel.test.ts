@@ -97,6 +97,15 @@ vi.mock('$lib/runtime/adapters/mod-input-tx-guard.svelte', () => ({
   getModInputTxGuardHandlers: () => ({ onSetLan: vi.fn(), onDismiss: vi.fn() }),
 }));
 
+// MOR-618: same #771 rationale for the auto LAN MOD-input toggle adapter.
+const mockAutoLanProps = vi.hoisted(() => ({ available: false, enabled: false }));
+const mockSetAutoLan = vi.hoisted(() => vi.fn());
+
+vi.mock('$lib/runtime/adapters/mod-input-auto.svelte', () => ({
+  deriveAutoLanModInputProps: () => ({ ...mockAutoLanProps }),
+  setAutoLanModInputEnabled: mockSetAutoLan,
+}));
+
 import TxPanel from '../TxPanel.svelte';
 
 let components: ReturnType<typeof mount>[] = [];
@@ -141,6 +150,9 @@ beforeEach(() => {
   mockTxAudioControl.startTx.mockReset();
   mockTxAudioControl.stopTx.mockReset();
   mockTxAudioControl.startTx.mockResolvedValue(null);
+  mockAutoLanProps.available = false;
+  mockAutoLanProps.enabled = false;
+  mockSetAutoLan.mockReset();
 });
 
 afterEach(() => {
@@ -238,6 +250,33 @@ describe('MON slider visibility', () => {
     openTxSettings(t);
     const labels = Array.from(t.querySelectorAll('.vc-label')).map((el) => el.textContent);
     expect(labels).toContain('Mon Level');
+  });
+});
+
+describe('auto LAN MOD-input toggle (MOR-618)', () => {
+  it('is hidden when the adapter reports unavailable', () => {
+    const t = mountPanel();
+    openTxSettings(t);
+    expect(t.querySelector('[data-testid="auto-lan-toggle"]')).toBeNull();
+  });
+
+  it('renders unchecked (opt-in default OFF) when available', () => {
+    mockAutoLanProps.available = true;
+    const t = mountPanel();
+    openTxSettings(t);
+    const toggle = t.querySelector<HTMLInputElement>('[data-testid="auto-lan-toggle"]');
+    expect(toggle).not.toBeNull();
+    expect(toggle!.checked).toBe(false);
+  });
+
+  it('calls setAutoLanModInputEnabled when toggled', () => {
+    mockAutoLanProps.available = true;
+    const t = mountPanel();
+    openTxSettings(t);
+    const toggle = t.querySelector<HTMLInputElement>('[data-testid="auto-lan-toggle"]')!;
+    toggle.click();
+    flushSync();
+    expect(mockSetAutoLan).toHaveBeenCalledWith(true);
   });
 });
 
