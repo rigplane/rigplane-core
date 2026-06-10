@@ -502,6 +502,10 @@ def _build_parser() -> argparse.ArgumentParser:
     p = _RigplaneArgumentParser(
         prog="rigplane",
         description="Control Icom transceivers over LAN",
+        # Abbreviation matching makes the discover subparser's --serial alias
+        # ambiguous against the global --serial-port/--serial-baud/
+        # --serial-ptt-mode options on Python 3.11 (ArgumentError, exit 2).
+        allow_abbrev=False,
         epilog=(
             "examples:\n"
             "  rigplane web                          # auto-discover radio, start web UI\n"
