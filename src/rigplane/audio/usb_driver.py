@@ -59,6 +59,25 @@ class AudioDriverLifecycleError(RuntimeError):
     """Raised on invalid USB audio lifecycle operations."""
 
 
+class AudioAlreadyStartedError(AudioDriverLifecycleError):
+    """Raised when starting an audio stream that is already running.
+
+    Shared by the USB driver and the Icom LAN stream (MOR-563) so
+    consumers can match the benign double-start case by type instead of
+    message text. Subclasses :class:`AudioDriverLifecycleError` (and thus
+    ``RuntimeError``) so existing ``except`` clauses keep catching it.
+    """
+
+
+class AudioNotStartedError(AudioDriverLifecycleError):
+    """Raised when using an audio stream that has not been started.
+
+    Shared by the USB driver and the Icom LAN stream (MOR-563).
+    Subclasses :class:`AudioDriverLifecycleError` (and thus
+    ``RuntimeError``) so existing ``except`` clauses keep catching it.
+    """
+
+
 _DEFAULT_SAMPLE_RATE_CANDIDATES: tuple[int, ...] = (48_000, 24_000, 16_000, 8_000)
 
 
@@ -806,7 +825,7 @@ class UsbAudioDriver:
 
         async with self._rx_lock:
             if self.rx_running:
-                raise AudioDriverLifecycleError("RX stream already started.")
+                raise AudioAlreadyStartedError("RX stream already started.")
 
             selected_rx, _ = self._ensure_selected_devices()
             sr = self._sample_rate if sample_rate is None else sample_rate
@@ -881,7 +900,7 @@ class UsbAudioDriver:
         """Start playback loop for outgoing PCM frames."""
         async with self._tx_lock:
             if self.tx_running:
-                raise AudioDriverLifecycleError("TX stream already started.")
+                raise AudioAlreadyStartedError("TX stream already started.")
 
             _, selected_tx = self._ensure_selected_devices()
             sr = self._sample_rate if sample_rate is None else sample_rate
@@ -1012,7 +1031,7 @@ class UsbAudioDriver:
     async def _push_tx_pcm(self, frame: bytes) -> None:
         """Queue one PCM frame for playback."""
         if not self.tx_running:
-            raise AudioDriverLifecycleError("Audio TX stream is not started.")
+            raise AudioNotStartedError("Audio TX stream is not started.")
         if not isinstance(frame, (bytes, bytearray, memoryview)):
             raise TypeError("PCM TX frame must be bytes-like.")
         # Same-device duplex: TX rides the single stream's TX queue.
@@ -1032,8 +1051,10 @@ class UsbAudioDriver:
 
 
 __all__ = [
+    "AudioAlreadyStartedError",
     "AudioDeviceSelectionError",
     "AudioDriverLifecycleError",
+    "AudioNotStartedError",
     "UsbAudioDevice",
     "UsbAudioContract",
     "UsbAudioDriver",

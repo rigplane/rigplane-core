@@ -165,3 +165,17 @@ class TestAudioStreamState:
         with pytest.raises(RuntimeError, match="Already transmitting"):
             await stream.start_tx()
         await stream.stop_tx()
+
+    @pytest.mark.asyncio
+    async def test_double_start_tx_raises_typed_error(
+        self, mock_transport: MockTransport
+    ) -> None:
+        """Double TX start raises AudioAlreadyStartedError — a typed
+        lifecycle error, not a bare RuntimeError (MOR-563)."""
+        from rigplane.audio.usb_driver import AudioAlreadyStartedError
+
+        stream = AudioStream(mock_transport)
+        await stream.start_tx()
+        with pytest.raises(AudioAlreadyStartedError):
+            await stream.start_tx()
+        await stream.stop_tx()

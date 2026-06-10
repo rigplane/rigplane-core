@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING, Any, Callable, Protocol, cast
 
 from ..._audio_codecs import decode_ulaw_to_pcm16
 from ..._audio_transcoder import PcmOpusTranscoder, create_pcm_opus_transcoder
+from ...audio.usb_driver import AudioAlreadyStartedError
 from ...dsp.tap_registry import TapHandle, TapRegistry
 from ...env_config import (
     get_audio_broadcaster_high_watermark,
@@ -44,13 +45,16 @@ _TX_CLEANUP_STOP_TIMEOUT_SECONDS = 2.0
 def _is_benign_tx_restart(exc: RuntimeError) -> bool:
     """True when TX start failed only because the stream is already open.
 
-    The Icom LAN stream raises ``RuntimeError("Already transmitting")``
-    while the USB driver raises
-    ``AudioDriverLifecycleError("TX stream already started.")`` (a
-    ``RuntimeError`` subclass). Both mean the poller (or a prior client)
-    already opened TX and the handler can simply reuse it — re-raising
-    would close the audio WebSocket (MOR-541 review note, MOR-544).
+    The Icom LAN stream and the USB driver raise
+    :class:`~rigplane.audio.usb_driver.AudioAlreadyStartedError` (a
+    ``RuntimeError`` subclass, MOR-563), meaning the poller (or a prior
+    client) already opened TX and the handler can simply reuse it —
+    re-raising would close the audio WebSocket (MOR-541 review note,
+    MOR-544). The substring fallback covers not-yet-migrated raisers that
+    still signal the same condition with a bare ``RuntimeError``.
     """
+    if isinstance(exc, AudioAlreadyStartedError):
+        return True
     text = str(exc).lower()
     return "already transmitting" in text or "already started" in text
 
