@@ -38,6 +38,9 @@ export class RxPlayer {
   private decoder: AudioDecoder | null = null;
   private nextPlayTime = 0;
   private opusTs = 0;
+  // Codec byte of the previously fed frame — detects a mid-stream
+  // adaptive egress switch (MOR-588, ADR §3.6).
+  private lastCodec: number | null = null;
   private _volume = 1.0;
 
   // Routing state — applied whenever any of the nodes exist.
@@ -157,10 +160,8 @@ export class RxPlayer {
   }
 
   stop(): void {
-    if (this.decoder) {
-      try { this.decoder.close(); } catch { /* ok */ }
-      this.decoder = null;
-    }
+    this.resetDecoder();
+    this.lastCodec = null;
     this._detachResumeListeners();
     if (this.ctx) {
       this.ctx.close().catch(() => {});
@@ -260,11 +261,33 @@ export class RxPlayer {
     const hdr = parseRxHeader(buffer);
     if (!hdr) return;
 
+    if (this.lastCodec !== null && hdr.codec !== this.lastCodec) {
+      // Mid-stream adaptive egress switch (MOR-588, ADR §3.6): the
+      // server starts a FRESH Opus encoder stream on every PCM16↔Opus
+      // switch, so the WebCodecs decoder must be re-initialised —
+      // feeding a new stream into stale decoder state yields garbage.
+      // The playback schedule (nextPlayTime) is intentionally NOT
+      // rebased: decoded frames keep landing on the same timeline, so
+      // the switch stays seamless.
+      this.resetDecoder();
+    }
+    this.lastCodec = hdr.codec;
+
     if (hdr.codec === CODEC_PCM16) {
       this.playPcm16(hdr.payload, hdr.sampleRate, hdr.channels);
     } else if (hdr.codec === CODEC_OPUS) {
       this.decodeOpus(hdr.payload, hdr.sampleRate, hdr.channels);
     }
+  }
+
+  /** Close the Opus decoder (if any) and restart its timestamp clock —
+   *  the next Opus frame lazily configures a fresh decoder. */
+  private resetDecoder(): void {
+    if (this.decoder) {
+      try { this.decoder.close(); } catch { /* ok */ }
+      this.decoder = null;
+    }
+    this.opusTs = 0;
   }
 
   /** Flush pipeline (e.g. on reconnect) */

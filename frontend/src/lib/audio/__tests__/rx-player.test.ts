@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { RxPlayer } from '../rx-player';
-import { AUDIO_HEADER_SIZE, MSG_TYPE_RX, CODEC_PCM16, SAMPLE_RATE, FRAME_DURATION_MS } from '../constants';
+import { AUDIO_HEADER_SIZE, MSG_TYPE_RX, CODEC_OPUS, CODEC_PCM16, SAMPLE_RATE, FRAME_DURATION_MS } from '../constants';
 
 let ctx: any;
 beforeEach(() => {
@@ -397,6 +397,105 @@ describe('RxPlayer link-quality stats (MOR-585)', () => {
     p.feed(pcm16(480));           // 1 underrun
     p.stop();
     expect(p.stats()).toEqual({ underruns: 0, bufferDepthMs: 0, droppedFrames: 0 });
+  });
+});
+
+describe('RxPlayer mid-stream codec switch (MOR-588)', () => {
+  // Adaptive egress (server-side controller) switches PCM16↔Opus
+  // mid-stream; the codec byte travels per frame. The player must
+  // re-init the WebCodecs Opus decoder on every switch (the server
+  // starts a fresh encoder stream) without rebasing the schedule.
+  class FakeAudioDecoder {
+    static instances: FakeAudioDecoder[] = [];
+    state = 'unconfigured';
+    config: any = null;
+    chunks: any[] = [];
+    constructor(public init: any) { FakeAudioDecoder.instances.push(this); }
+    configure(cfg: any) { this.config = cfg; this.state = 'configured'; }
+    decode(chunk: any) {
+      this.chunks.push(chunk);
+      // Synchronously emit one decoded 480-frame mono buffer.
+      this.init.output({
+        numberOfFrames: 480, numberOfChannels: 1, sampleRate: SAMPLE_RATE,
+        copyTo: vi.fn(), close: vi.fn(),
+      });
+    }
+    close() { this.state = 'closed'; }
+  }
+  class FakeEncodedAudioChunk {
+    constructor(public init: any) {}
+  }
+
+  function opus(): ArrayBuffer {
+    const buf = new ArrayBuffer(AUDIO_HEADER_SIZE + 40);
+    const v = new DataView(buf);
+    v.setUint8(0, MSG_TYPE_RX); v.setUint8(1, CODEC_OPUS);
+    v.setUint16(4, SAMPLE_RATE / 100, true); v.setUint8(6, 1); v.setUint8(7, FRAME_DURATION_MS);
+    return buf;
+  }
+
+  beforeEach(() => {
+    FakeAudioDecoder.instances = [];
+    vi.stubGlobal('AudioDecoder', FakeAudioDecoder);
+    vi.stubGlobal('EncodedAudioChunk', FakeEncodedAudioChunk);
+  });
+  afterEach(() => { vi.unstubAllGlobals(); });
+
+  it('PCM16→Opus switch initialises a fresh Opus decoder', () => {
+    const p = new RxPlayer(); p.start();
+    p.feed(pcm16(480));
+    expect(FakeAudioDecoder.instances.length).toBe(0);
+    p.feed(opus());
+    expect(FakeAudioDecoder.instances.length).toBe(1);
+    expect(FakeAudioDecoder.instances[0].config?.codec).toBe('opus');
+    p.stop();
+  });
+
+  it('Opus→PCM16 switch closes the stale Opus decoder and keeps playing', () => {
+    const p = new RxPlayer(); p.start();
+    p.feed(opus());
+    const dec = FakeAudioDecoder.instances[0];
+    expect(dec.state).toBe('configured');
+    p.feed(pcm16(480));
+    expect(dec.state).toBe('closed');
+    // PCM frame still scheduled — switch is seamless.
+    expect(ctx._lastSrc.start).toHaveBeenCalled();
+    p.stop();
+  });
+
+  it('Opus→PCM16→Opus re-init builds a NEW decoder for the fresh server stream', () => {
+    const p = new RxPlayer(); p.start();
+    p.feed(opus());
+    p.feed(pcm16(480));
+    p.feed(opus());
+    expect(FakeAudioDecoder.instances.length).toBe(2);
+    expect(FakeAudioDecoder.instances[0].state).toBe('closed');
+    expect(FakeAudioDecoder.instances[1].state).toBe('configured');
+    // The fresh decoder's timestamps restart at 0 (fresh encoder stream).
+    expect(FakeAudioDecoder.instances[1].chunks[0].init.timestamp).toBe(0);
+    p.stop();
+  });
+
+  it('does not rebase the playback schedule on a switch (no audible gap)', () => {
+    const p = new RxPlayer(); p.start();
+    ctx.currentTime = 0;
+    p.feed(pcm16(480));   // primes: floor 0.05 + 10 ms → nextPlayTime 0.06
+    p.feed(opus());        // decoded buffer must continue at 0.06, not re-floor
+    const calls = ctx._lastSrc.start.mock.calls;
+    expect(calls[0][0]).toBeCloseTo(0.06, 5);
+    expect(p.stats().underruns).toBe(0);
+    p.stop();
+  });
+
+  it('stop() resets codec tracking — restart does not misread a switch', () => {
+    const p = new RxPlayer(); p.start();
+    p.feed(opus());
+    p.stop();
+    p.start();
+    p.feed(opus());
+    expect(FakeAudioDecoder.instances.length).toBe(2);
+    expect(FakeAudioDecoder.instances[1].state).toBe('configured');
+    p.stop();
   });
 });
 
