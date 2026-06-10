@@ -237,7 +237,10 @@ def test_bridge_init_custom():
         assert bridge._channels == 2
         assert bridge._frame_ms == 40
         assert bridge._tx_enabled is False
-        assert bridge._tx_executor is custom_executor
+        # tx_executor is deprecated and ignored (backend owns threading):
+        # the contract is that the kwarg is still ACCEPTED — constructing
+        # with it must not raise. Nothing is stored, so there is no
+        # attribute to assert.
 
 
 # ---------------------------------------------------------------------------
