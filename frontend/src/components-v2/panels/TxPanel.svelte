@@ -4,11 +4,18 @@
   import { txStatusColor } from './tx-utils';
   import { getTxAudioControl } from '$lib/runtime/adapters/tx-adapter';
   import { deriveTxProps, getTxHandlers } from '$lib/runtime/adapters/panel-adapters';
+  import {
+    deriveAutoLanModInputProps,
+    setAutoLanModInputEnabled,
+  } from '$lib/runtime/adapters/mod-input-auto.svelte';
+  import { t } from '$lib/i18n';
   import ModInputTxWarning from './ModInputTxWarning.svelte';
 
   const txAudio = getTxAudioControl();
   const handlers = getTxHandlers();
   let p = $derived(deriveTxProps());
+  // MOR-618: opt-in auto LAN MOD-input toggle (shown in the settings modal).
+  let autoLan = $derived(deriveAutoLanModInputProps());
 
   let txActive = $derived(p.txActive);
   let rfPower = $derived(p.rfPower);
@@ -247,6 +254,21 @@
       <ValueControl label="Drive Gain" value={driveGain} min={0} max={255} step={1}
         renderer="hbar" displayFn={rawToPercentDisplay} accentColor="var(--v2-accent-orange)"
         onChange={onDriveGainChange} variant="hardware-illuminated" disabled={!driveGainAvailable} />
+      {#if autoLan.available}
+        <!-- MOR-618: opt-in auto LAN MOD-input for web TX (default OFF) -->
+        <div class="auto-lan-section">
+          <label class="auto-lan-row">
+            <input
+              type="checkbox"
+              data-testid="auto-lan-toggle"
+              checked={autoLan.enabled}
+              onchange={(e) => setAutoLanModInputEnabled(e.currentTarget.checked)}
+            />
+            <span>{t('core.txGuard.autoLanLabel')}</span>
+          </label>
+          <p class="auto-lan-help">{t('core.txGuard.autoLanHelp')}</p>
+        </div>
+      {/if}
     </div>
   </div>
 {/if}
@@ -386,5 +408,34 @@
     flex-direction: column;
     gap: 10px;
     padding: 10px;
+  }
+
+  .auto-lan-section {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    padding-top: 8px;
+    border-top: 1px solid var(--v2-border);
+  }
+
+  .auto-lan-row {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 11px;
+    color: var(--v2-text-primary, #e5e7eb);
+    cursor: pointer;
+  }
+
+  .auto-lan-row input {
+    margin: 0;
+    accent-color: var(--v2-accent-orange, #f59e0b);
+  }
+
+  .auto-lan-help {
+    margin: 0;
+    font-size: 10px;
+    line-height: 1.35;
+    color: var(--v2-text-dim, #888);
   }
 </style>
