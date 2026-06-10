@@ -8,6 +8,7 @@ import types
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from _order_sensitive_radios import ExclusiveUsbRadio, LanLikeRadio
 
 from rigplane.audio._bridge_metrics import BridgeMetrics
 from rigplane.audio._bridge_state import BridgeState, BridgeStateChange
@@ -15,6 +16,7 @@ from rigplane.audio.backend import (
     AudioDeviceId,
     AudioDeviceInfo,
     FakeAudioBackend,
+    FakeRxStream,
 )
 from rigplane.audio.lan_stream import AudioPacket
 from rigplane.audio_bridge import (
@@ -301,57 +303,10 @@ async def test_bridge_stop_when_not_running():
 
 # ---------------------------------------------------------------------------
 # RX-before-TX start order against a LAN-like state machine (MOR-556)
+#
+# The order-sensitive radio stubs live in tests/_order_sensitive_radios.py
+# (shared fixtures with declared transition graphs, MOR-566).
 # ---------------------------------------------------------------------------
-
-
-class _LanLikeRadio:
-    """Radio stub mirroring ``LanAudioStream``'s RX/TX state machine.
-
-    The real LAN stream supports RX-then-TX only: ``start_rx`` requires
-    IDLE state, while ``start_tx`` flips the single state field to
-    "transmitting". Arming radio TX before the AudioBus RX subscribe
-    therefore kills RX entirely (regression from #1735, MOR-556).
-    ``FakeAudioBackend``-style order-insensitive stubs cannot catch this.
-    """
-
-    def __init__(self) -> None:
-        from rigplane.audio_bus import AudioBus
-        from rigplane.types import AudioCodec
-
-        self.state = "idle"
-        self.calls: list[str] = []
-        self.rx_callback: object | None = None
-        self.audio_tx_codec = AudioCodec.PCM_1CH_16BIT
-        self.audio_bus = AudioBus(self)
-
-    async def start_rx(
-        self, callback: object, *, jitter_depth: int | None = None
-    ) -> None:
-        self.calls.append("start_rx")
-        if self.state != "idle":
-            raise RuntimeError(f"Cannot start RX in state {self.state}")
-        self.rx_callback = callback
-        self.state = "receiving"
-
-    async def stop_rx(self) -> None:
-        if self.state == "receiving":
-            self.state = "idle"
-        self.rx_callback = None
-
-    async def start_tx(self) -> None:
-        self.calls.append("start_tx")
-        if self.state == "transmitting":
-            raise RuntimeError("Already transmitting")
-        self.state = "transmitting"
-
-    async def stop_tx(self) -> None:
-        if self.state != "transmitting":
-            return
-        self.state = "receiving" if self.rx_callback is not None else "idle"
-
-    async def push_tx(self, audio_data: bytes) -> None:
-        if self.state != "transmitting":
-            raise RuntimeError(f"Cannot push TX in state {self.state}")
 
 
 async def test_bridge_subscribes_rx_before_arming_tx():
@@ -360,7 +315,7 @@ async def test_bridge_subscribes_rx_before_arming_tx():
     On LAN, ``start_tx`` puts the stream in TRANSMITTING and a subsequent
     ``start_rx`` raises — leaving RX dead and the packet queue undrained.
     """
-    radio = _LanLikeRadio()
+    radio = LanLikeRadio()
     backend = _bridge_backend()
     bridge = AudioBridge(radio, device_name="BlackHole", backend=backend)
     await bridge.start()
@@ -380,7 +335,7 @@ async def test_bridge_subscribes_rx_before_arming_tx():
 
 async def test_bridge_rx_only_never_arms_tx_on_lan_state_machine():
     """rx_only semantics are preserved by the MOR-556 reorder: no TX arm."""
-    radio = _LanLikeRadio()
+    radio = LanLikeRadio()
     backend = _bridge_backend()
     bridge = AudioBridge(
         radio, device_name="BlackHole", tx_enabled=False, backend=backend
@@ -400,64 +355,12 @@ async def test_bridge_rx_only_never_arms_tx_on_lan_state_machine():
 # ---------------------------------------------------------------------------
 
 
-class _ExclusiveUsbRadio:
-    """Radio stub mirroring the FTX-1 same-device USB CODEC (MOR-559).
-
-    ``audio_duplex_mode == "exclusive"`` (MOR-534): RX and TX resolve to ONE
-    physical macOS C-Media device. Per the MOR-531 live de-risk, adding the
-    TX playback leg to an ALREADY-RUNNING RX capture triggers CoreAudio AUHAL
-    paramErr -50 and silently kills the capture (no Python exception — live,
-    the bridge then reported "started (RX+TX)" with dead RX). Adding RX to a
-    running TX leg is clean. The stub reproduces the silent capture death so
-    the wrong order fails the test the same way it failed live.
-    """
-
-    audio_duplex_mode = "exclusive"
-
-    def __init__(self) -> None:
-        from rigplane.audio_bus import AudioBus
-        from rigplane.types import AudioCodec
-
-        self.rx_running = False
-        self.tx_running = False
-        self.calls: list[str] = []
-        self.rx_callback: object | None = None
-        self.audio_tx_codec = AudioCodec.PCM_1CH_16BIT
-        self.audio_bus = AudioBus(self)
-
-    async def start_rx(
-        self, callback: object, *, jitter_depth: int | None = None
-    ) -> None:
-        self.calls.append("start_rx")
-        self.rx_callback = callback
-        self.rx_running = True
-
-    async def stop_rx(self) -> None:
-        self.rx_running = False
-        self.rx_callback = None
-
-    async def start_tx(self) -> None:
-        self.calls.append("start_tx")
-        if self.rx_running:
-            # ||PaMacCore (AUHAL)|| err='-50': the TX open nominally succeeds
-            # but the device's running RX capture dies silently.
-            self.rx_running = False
-        self.tx_running = True
-
-    async def stop_tx(self) -> None:
-        self.tx_running = False
-
-    async def push_tx(self, audio_data: bytes) -> None:
-        if not self.tx_running:
-            raise RuntimeError("TX not armed")
-
-
 async def test_bridge_arms_tx_before_rx_on_exclusive_duplex():
     """Regression MOR-559: ``audio_duplex_mode == "exclusive"`` radios need
     the radio TX leg armed BEFORE the bus RX subscribe (pre-MOR-556 order) —
     the same-device TX open kills an already-running RX capture (-50).
     """
-    radio = _ExclusiveUsbRadio()
+    radio = ExclusiveUsbRadio()
     backend = _bridge_backend()
     bridge = AudioBridge(radio, device_name="BlackHole", backend=backend)
     await bridge.start()
@@ -475,7 +378,7 @@ async def test_bridge_arms_tx_before_rx_on_exclusive_duplex():
 
 async def test_bridge_rx_only_on_exclusive_duplex_still_starts_rx():
     """rx_only on an exclusive-duplex radio: RX starts, TX never armed."""
-    radio = _ExclusiveUsbRadio()
+    radio = ExclusiveUsbRadio()
     backend = _bridge_backend()
     bridge = AudioBridge(
         radio, device_name="BlackHole", tx_enabled=False, backend=backend
@@ -1073,3 +976,132 @@ async def test_on_metrics_callback():
     assert len(metrics_list) >= 1
     assert isinstance(metrics_list[0], BridgeMetrics)
     assert metrics_list[0].rx_frames > 0
+
+
+# ---------------------------------------------------------------------------
+# FakeAudioBackend strict device exclusivity + RX heartbeat (MOR-566)
+# ---------------------------------------------------------------------------
+
+_CODEC_DEVICE = AudioDeviceInfo(
+    id=AudioDeviceId(7),
+    name="USB Audio CODEC",
+    input_channels=2,
+    output_channels=2,
+)
+
+
+def _strict_backend() -> FakeAudioBackend:
+    return FakeAudioBackend([_CODEC_DEVICE], strict_device_exclusive=True)
+
+
+async def test_strict_open_on_device_with_running_stream_raises_minus_50():
+    """MOR-566: a second open on a busy device fails like CoreAudio AUHAL -50."""
+    backend = _strict_backend()
+    rx = backend.open_rx(_CODEC_DEVICE.id)
+    await rx.start(lambda _frame: None)
+    with pytest.raises(OSError) as tx_err:
+        backend.open_tx(_CODEC_DEVICE.id)
+    assert tx_err.value.errno == -50
+    assert "-50" in str(tx_err.value)
+    with pytest.raises(OSError) as duplex_err:
+        backend.open_duplex(_CODEC_DEVICE.id)
+    assert duplex_err.value.errno == -50
+
+
+async def test_strict_start_of_second_preopened_stream_raises_minus_50():
+    """Streams opened up-front still collide at start() — where -50 fires live."""
+    backend = _strict_backend()
+    rx = backend.open_rx(_CODEC_DEVICE.id)
+    tx = backend.open_tx(_CODEC_DEVICE.id)
+    await rx.start(lambda _frame: None)
+    with pytest.raises(OSError) as err:
+        await tx.start()
+    assert err.value.errno == -50
+    assert not tx.running
+    assert rx.running
+
+
+async def test_strict_stop_frees_device_for_next_stream():
+    """Closing the holding stream frees the device for a new open+start."""
+    backend = _strict_backend()
+    rx = backend.open_rx(_CODEC_DEVICE.id)
+    await rx.start(lambda _frame: None)
+    await rx.stop()
+    tx = backend.open_tx(_CODEC_DEVICE.id)
+    await tx.start()
+    assert tx.running
+    await tx.stop()
+
+
+async def test_strict_streams_on_different_devices_coexist():
+    """Exclusivity is per-device: distinct device ids never collide."""
+    backend = FakeAudioBackend(
+        [_CODEC_DEVICE, _BH_DEVICE], strict_device_exclusive=True
+    )
+    rx = backend.open_rx(_CODEC_DEVICE.id)
+    tx = backend.open_tx(_BH_DEVICE.id)
+    await rx.start(lambda _frame: None)
+    await tx.start()
+    assert rx.running and tx.running
+
+
+async def test_default_mode_allows_concurrent_same_device_streams():
+    """Default (strict OFF) keeps the historical permissive fake behavior."""
+    backend = FakeAudioBackend([_CODEC_DEVICE])
+    rx = backend.open_rx(_CODEC_DEVICE.id)
+    tx = backend.open_tx(_CODEC_DEVICE.id)
+    await rx.start(lambda _frame: None)
+    await tx.start()
+    assert rx.running and tx.running
+
+
+async def test_fake_rx_stream_inject_heartbeat_advances_liveness():
+    """MOR-566: opt-in heartbeat injection — counter + synthetic frame."""
+    backend = _bridge_backend()
+    stream = backend.open_rx(AudioDeviceId(1))
+    assert stream.heartbeat_count == 0  # unused -> no behavior change
+    frames: list[bytes] = []
+    await stream.start(frames.append)
+    stream.inject_heartbeat()
+    stream.inject_heartbeat(b"\x01\x02")
+    assert stream.heartbeat_count == 2
+    assert frames == [b"\x00\x00", b"\x01\x02"]
+    # Without a registered callback the counter still advances (liveness only).
+    bare = FakeRxStream()
+    bare.inject_heartbeat()
+    assert bare.heartbeat_count == 1
+
+
+# ---------------------------------------------------------------------------
+# Shared order-sensitive stubs reproduce both ordering constraints (MOR-566)
+# ---------------------------------------------------------------------------
+
+
+async def test_lan_like_radio_rejects_rx_start_from_transmitting():
+    """Declared LAN graph edge: transmitting --start_rx--> raises (MOR-556)."""
+    from rigplane.audio.usb_driver import AudioAlreadyStartedError
+
+    radio = LanLikeRadio()
+    await radio.start_tx()
+    with pytest.raises(AudioAlreadyStartedError, match="Cannot start RX"):
+        await radio.start_rx(lambda _packet: None)
+    assert radio.state == "transmitting"
+
+
+async def test_exclusive_usb_radio_tx_start_kills_running_rx():
+    """Declared exclusive graph edge: TX on running RX -> silent kill (MOR-559)."""
+    radio = ExclusiveUsbRadio()
+    await radio.start_rx(lambda _packet: None)
+    assert radio.rx_running
+    await radio.start_tx()
+    # The -50 kill is silent: no exception, the capture just dies.
+    assert not radio.rx_running
+    assert radio.tx_running
+
+
+async def test_exclusive_usb_radio_rx_after_tx_is_clean():
+    """Declared exclusive graph edge: RX onto a running TX leg is clean."""
+    radio = ExclusiveUsbRadio()
+    await radio.start_tx()
+    await radio.start_rx(lambda _packet: None)
+    assert radio.rx_running and radio.tx_running
