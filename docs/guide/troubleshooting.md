@@ -431,10 +431,10 @@ is the group active in regular SSB/AM/FM.
 !!! note "This is a radio menu setting, not a rigplane problem"
     rigplane delivers a byte-perfect PCM stream to the radio (verified
     end-to-end). If network voice TX sounds wrong, check MOD Input first.
-    The Web UI also surfaces the current MOD Input source and warns before
-    network voice TX when the active mode group is not set to `LAN`, with a
-    one-click **Set LAN** action (epic MOR-614) — so the misconfiguration
-    cannot bite silently.
+    A planned rigplane update will surface the current MOD Input source in
+    the Web UI and warn before network voice TX when the active mode group is
+    not set to `LAN`, with a one-click **Set LAN** action (epic MOR-614) — so
+    the misconfiguration cannot bite silently.
 
 Switching back to the hand mic later: set **DATA OFF MOD** back to `MIC`.
 
