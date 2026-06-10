@@ -625,6 +625,10 @@ class WebConfig:
     emit_startup_event: bool = False  # emit JSON runtime startup event to stdout
     webrtc_enabled: bool = False  # enable the gated WebRTC transport entrypoint
     state_diagnostics: bool = False  # enable behavior-neutral state diagnostics
+    # Adaptive per-client egress codec controller (MOR-588, ADR §3.6):
+    # PCM16↔Opus switching on detected slow/lossy links. Off (default) =
+    # static MOR-584 per-connection codecs, never switched mid-stream.
+    audio_adaptive_egress: bool = False
 
 
 class ConnectionManager:
@@ -749,6 +753,7 @@ class WebServer:
         self._audio_broadcaster = AudioBroadcaster(
             radio,
             on_client_count_change=self._broadcast_ws_client_state_update,
+            adaptive_egress=self._config.audio_adaptive_egress,
         )
         # Gated WebRTC transport session manager (A2.3 / MOR-307). Lazily
         # constructed on first use so the import stays out of the no-extra path.

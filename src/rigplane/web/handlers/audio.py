@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from collections.abc import AsyncIterator, Awaitable
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Callable, Protocol, cast
 
 from ..._audio_codecs import decode_ulaw_to_pcm16
@@ -42,6 +44,40 @@ __all__ = ["AudioBroadcaster", "AudioHandler"]
 logger = logging.getLogger(__name__)
 
 _TX_CLEANUP_STOP_TIMEOUT_SECONDS = 2.0
+
+# Adaptive egress codec controller windows (MOR-588, ADR §3.6).
+# Degradation must be SUSTAINED for DEGRADE_WINDOW_S before PCM16→Opus
+# engages; Opus→PCM16 requires a fully clean CLEAN_WINDOW_S; DWELL_S is
+# the minimum hold after ANY switch (anti-flap). Per-instance copies on
+# the broadcaster make them injectable for deterministic tests.
+DEGRADE_WINDOW_S = 3.0
+CLEAN_WINDOW_S = 30.0
+DWELL_S = 10.0
+
+
+@dataclass
+class _AdaptiveEgressState:
+    """Per-client adaptive egress controller state (MOR-588, ADR §3.6).
+
+    Exists ONLY for browser WS clients that declared Opus decode
+    capability (``preferred_rx_codec=opus``) on an adaptive-enabled
+    broadcaster. The initial codec is always PCM16 — Opus is never the
+    initial codec and engages only on sustained link degradation.
+    """
+
+    codec: int = AUDIO_CODEC_PCM16
+    # time.monotonic() of the last codec switch (dwell anchor); None
+    # until the first switch.
+    last_switch: float | None = None
+    # Start of the current continuous degradation episode; reset when
+    # evidence stops for longer than the degrade window.
+    degrade_since: float | None = None
+    # Most recent degradation evidence (clean-window anchor).
+    last_evidence: float | None = None
+    # High-water marks of the cumulative MOR-585 counters; a counter
+    # rising past its mark is one unit of degradation evidence.
+    seen_underruns: int = 0
+    seen_queue_drops: int = 0
 
 
 def _is_benign_tx_restart(exc: RuntimeError) -> bool:
@@ -101,6 +137,7 @@ class AudioBroadcaster:
         radio: "Radio | None",
         *,
         on_client_count_change: Callable[[], None] | None = None,
+        adaptive_egress: bool = False,
     ) -> None:
         self.HIGH_WATERMARK = get_audio_broadcaster_high_watermark()
         self._radio = radio
@@ -129,6 +166,19 @@ class AudioBroadcaster:
         # controller; nothing here changes codec selection or behavior.
         self._client_link_quality: dict[int, dict[str, int | float]] = {}
         self._client_queue_drops: dict[int, int] = {}
+        # Adaptive egress codec controller (MOR-588, ADR §3.6): per-client
+        # PCM16↔Opus switching driven by the MOR-585 link-quality signals.
+        # INERT when ``adaptive_egress`` is off (the default) — egress
+        # stays the static MOR-584 per-connection choice and a client's
+        # codec never changes mid-stream. Windows/dwell and the clock are
+        # per-instance so tests can drive them deterministically.
+        self._adaptive_egress = adaptive_egress
+        self._adaptive_degrade_window_s: float = DEGRADE_WINDOW_S
+        self._adaptive_clean_window_s: float = CLEAN_WINDOW_S
+        self._adaptive_dwell_s: float = DWELL_S
+        self._adaptive_monotonic: Callable[[], float] = time.monotonic
+        self._client_adaptive: dict[int, _AdaptiveEgressState] = {}
+        self._ack_tasks: set[asyncio.Task[None]] = set()
         self._browser_opus_warned: bool = False
         self._lock = asyncio.Lock()
         # Optional DSP pipeline (inserted between codec decode and tap/distribute).
@@ -172,6 +222,13 @@ class AudioBroadcaster:
                 self._client_ws[client_id] = ws
             if preferred_rx_codec is not None:
                 self._client_rx_codec[client_id] = preferred_rx_codec
+            if self._adaptive_egress and preferred_rx_codec == AUDIO_CODEC_OPUS:
+                # Adaptive eligibility (MOR-588): only clients that
+                # DECLARED Opus decode capability adapt; explicit-PCM16
+                # and no-preference clients keep the static MOR-584
+                # choice (clients without Opus decode are pinned PCM16,
+                # ADR §3.6). Initial state is always PCM16.
+                self._client_adaptive[client_id] = _AdaptiveEgressState()
             # Start relay if no active subscription, or if relay task died
             relay_alive = self._relay_task is not None and not self._relay_task.done()
             if self._subscription is None or not relay_alive:
@@ -200,6 +257,7 @@ class AudioBroadcaster:
             self._client_opus_transcoders.pop(client_id, None)
             self._client_link_quality.pop(client_id, None)
             self._client_queue_drops.pop(client_id, None)
+            self._client_adaptive.pop(client_id, None)
             if (
                 not self._clients
                 and self._subscription is not None
@@ -310,6 +368,7 @@ class AudioBroadcaster:
                 self._client_opus_transcoders.pop(cid, None)
                 self._client_link_quality.pop(cid, None)
                 self._client_queue_drops.pop(cid, None)
+                self._client_adaptive.pop(cid, None)
             # Stop relay if no clients remain (and no PCM tap active)
             if (
                 not self._clients
@@ -421,14 +480,18 @@ class AudioBroadcaster:
     def _client_egress_codec(self, client_id: int) -> int:
         """Resolve one client's egress codec (MOR-584, static per connection).
 
-        Ladder: client-requested (``preferred_rx_codec`` at negotiation)
-        → profile policy default (``_resolve_web_rx_codec`` cached in
-        ``_web_codec``) → PCM16.  Opus-native radios pass through
-        un-decoded for every client — there is no PCM to re-encode
-        (issue #762).
+        Ladder: adaptive controller state (MOR-588, flag-gated; PCM16
+        initial, Opus only on sustained degradation) → client-requested
+        (``preferred_rx_codec`` at negotiation) → profile policy default
+        (``_resolve_web_rx_codec`` cached in ``_web_codec``) → PCM16.
+        Opus-native radios pass through un-decoded for every client —
+        there is no PCM to re-encode (issue #762).
         """
         if self._radio_codec in (AudioCodec.OPUS_1CH, AudioCodec.OPUS_2CH):
             return AUDIO_CODEC_OPUS
+        adaptive = self._client_adaptive.get(client_id)
+        if adaptive is not None:
+            return adaptive.codec
         return self._client_rx_codec.get(client_id, self._web_codec)
 
     def negotiated_rx_format(self, queue: asyncio.Queue[bytes]) -> dict[str, Any]:
@@ -463,6 +526,7 @@ class AudioBroadcaster:
         if client_id not in self._clients:
             return
         self._client_link_quality[client_id] = dict(stats)
+        self._adaptive_evaluate(client_id)
 
     def client_link_quality(
         self, queue: asyncio.Queue[bytes]
@@ -481,6 +545,124 @@ class AudioBroadcaster:
         )
         snapshot["ws_queue_drops"] = self._client_queue_drops.get(client_id, 0)
         return snapshot
+
+    def _adaptive_evaluate(self, client_id: int) -> None:
+        """Run one adaptive controller step for one client (MOR-588).
+
+        Called per ``audio_stats`` uplink and per relay-loop frame (the
+        latter covers the server-side ``ws_queue_drops`` signal for
+        clients whose stats uplink is absent or stalled). No-op for
+        non-adaptive clients, so the flag-off path stays MOR-584 static.
+
+        Evidence = either MOR-585 cumulative counter rising (client
+        playback ``underruns``, server ``ws_queue_drops``). A degradation
+        episode is continuous evidence with gaps shorter than the degrade
+        window; PCM16→Opus fires once an episode spans the window, Opus→
+        PCM16 once no evidence arrives for the clean window — both gated
+        by the dwell since the previous switch.
+        """
+        state = self._client_adaptive.get(client_id)
+        if state is None:
+            return
+        if self._radio_codec in (AudioCodec.OPUS_1CH, AudioCodec.OPUS_2CH):
+            return  # pass-through for everyone — nothing to adapt (#762)
+        now = self._adaptive_monotonic()
+        stats = self._client_link_quality.get(client_id, {})
+        underruns = int(stats.get("underruns", 0))
+        queue_drops = self._client_queue_drops.get(client_id, 0)
+        evidence = (
+            underruns > state.seen_underruns or queue_drops > state.seen_queue_drops
+        )
+        state.seen_underruns = max(state.seen_underruns, underruns)
+        state.seen_queue_drops = max(state.seen_queue_drops, queue_drops)
+        if evidence:
+            state.last_evidence = now
+            if state.degrade_since is None:
+                state.degrade_since = now
+        elif (
+            state.degrade_since is not None
+            and state.last_evidence is not None
+            and now - state.last_evidence > self._adaptive_degrade_window_s
+        ):
+            state.degrade_since = None  # episode over — evidence stopped
+
+        dwell_ok = (
+            state.last_switch is None
+            or now - state.last_switch >= self._adaptive_dwell_s
+        )
+        if (
+            state.codec == AUDIO_CODEC_PCM16
+            and dwell_ok
+            and state.degrade_since is not None
+            and now - state.degrade_since >= self._adaptive_degrade_window_s
+        ):
+            self._adaptive_switch(client_id, state, AUDIO_CODEC_OPUS, now)
+        elif (
+            state.codec == AUDIO_CODEC_OPUS
+            and dwell_ok
+            and (
+                state.last_evidence is None
+                or now - state.last_evidence >= self._adaptive_clean_window_s
+            )
+        ):
+            self._adaptive_switch(client_id, state, AUDIO_CODEC_PCM16, now)
+
+    def _adaptive_switch(
+        self, client_id: int, state: _AdaptiveEgressState, codec: int, now: float
+    ) -> None:
+        """Apply one adaptive codec switch (MOR-588).
+
+        Changing ``state.codec`` re-routes ``_client_egress_codec`` and
+        thereby the MOR-584 encoder pool: the next Opus frame lazily
+        constructs a FRESH per-client transcoder; switching back to
+        PCM16 tears the encoder down here. A fresh ``audio_format`` ack
+        mirrors the new codec to the client.
+        """
+        state.codec = codec
+        state.last_switch = now
+        state.degrade_since = None
+        if codec != AUDIO_CODEC_OPUS:
+            self._client_opus_transcoders.pop(client_id, None)
+        logger.info(
+            "audio-broadcaster: adaptive egress switch → %s (client=%d)",
+            "opus" if codec == AUDIO_CODEC_OPUS else "pcm16",
+            client_id,
+        )
+        self._send_adaptive_format_ack(client_id)
+
+    def _send_adaptive_format_ack(self, client_id: int) -> None:
+        """Send a fresh ``audio_format`` ack after an adaptive switch.
+
+        Advisory and fire-and-forget, like the ``audio_start`` ack
+        (MOR-584): the browser decodes from the per-frame header codec
+        byte regardless; this only refreshes its negotiated-format view.
+        Never blocks the relay loop — whole WS frames are written
+        atomically, so a text send may interleave with the sender loop's
+        binary frames but never corrupt them.
+        """
+        ws = self._client_ws.get(client_id)
+        queue = self._clients.get(client_id)
+        if ws is None or queue is None:
+            return
+        payload = encode_json(
+            {"type": "audio_format", **self.negotiated_rx_format(queue)}
+        )
+
+        async def _send() -> None:
+            try:
+                await ws.send_text(payload)
+            except Exception:
+                logger.debug(
+                    "audio-broadcaster: adaptive audio_format ack failed",
+                    exc_info=True,
+                )
+
+        try:
+            task = asyncio.get_running_loop().create_task(_send())
+        except RuntimeError:
+            return  # no running loop (sync test context) — ack is advisory
+        self._ack_tasks.add(task)
+        task.add_done_callback(self._ack_tasks.discard)
 
     def _encode_client_rx_frame(
         self,
@@ -676,6 +858,10 @@ class AudioBroadcaster:
                     if ws is not None and not ws.is_alive():
                         dead_ids.append(client_id)
                         continue
+                    # Adaptive controller step (MOR-588): no-op unless the
+                    # client opted into adaptation on a flag-on broadcaster.
+                    if self._client_adaptive:
+                        self._adaptive_evaluate(client_id)
                     codec, payload = self._encode_client_rx_frame(
                         client_id, audio_data, _frame_ms
                     )
@@ -718,6 +904,7 @@ class AudioBroadcaster:
                     self._client_opus_transcoders.pop(client_id, None)
                     self._client_link_quality.pop(client_id, None)
                     self._client_queue_drops.pop(client_id, None)
+                    self._client_adaptive.pop(client_id, None)
                     logger.info("audio-broadcaster: removed dead client during relay")
                 if dead_ids:
                     self._notify_client_count_change()
