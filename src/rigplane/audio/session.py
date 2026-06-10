@@ -17,7 +17,7 @@ at the source — MOR-556/MOR-559).
 
 State machine (ADR §3.3)::
 
-    IDLE ⇄ RX_ONLY ⇄ RX_TX ⇄ RECOVERING        FAILED reserved (step 20)
+    IDLE ⇄ RX_ONLY ⇄ RX_TX ⇄ RECOVERING        FAILED defined, not yet entered
 
 RECOVERING (MOR-581, ADR §3.4, tenet T3 "no silent audio death"): a ~1 s
 watchdog task — decoupled from the keep-alives — reads the bus RX heartbeat
@@ -99,9 +99,13 @@ class AudioSessionState(Enum):
     IDLE = "idle"
     RX_ONLY = "rx_only"
     RX_TX = "rx_tx"
-    #: Watchdog-detected silent RX death (MOR-581; recovery loop = step 20).
+    #: Watchdog-detected silent RX death (MOR-581). Surface-only as built:
+    #: recovery currently rides the transport reconnect (MOR-586
+    #: :meth:`AudioSession.reestablish`); a session-owned retry loop is a
+    #: follow-up (MOR-609).
     RECOVERING = "recovering"
-    #: Reserved for the step-20 recovery loop (no transitions in yet).
+    #: Defined but never entered yet — no transitions target FAILED. The
+    #: MOR-609 follow-up tracks adding a session-owned retry/FAILED path.
     FAILED = "failed"
 
 

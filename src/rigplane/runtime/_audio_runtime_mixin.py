@@ -691,8 +691,8 @@ class AudioRuntimeMixin(_MixinBase):  # type: ignore[misc]
         ``"rx_first"``. ``"exclusive"`` would map to ``"atomic"`` (one
         duplex stream — setup does not decompose into rx/tx-first);
         ``"half"`` or any unexpected/raising duplex mode degrades to the
-        ``"rx_first"`` safe default. Nothing consumes this yet — the
-        AudioSession (MOR-562 step 8) and bridge (step 9) will read it.
+        ``"rx_first"`` safe default. Consumed by the AudioSession
+        (``audio/session.py`` ``_setup_order``) to sequence RX/TX arming.
         """
         try:
             mode = self.audio_duplex_mode
