@@ -18,6 +18,7 @@ vi.mock('../../stores/connection.svelte', () => ({
   setHttpConnected: vi.fn(),
   markStateUpdated: vi.fn(),
   setReconnecting: vi.fn(),
+  setRadioStatus: vi.fn(),
   isLiveRadioAvailable: vi.fn(() => true),
 }));
 
@@ -73,7 +74,7 @@ vi.mock('../../stores/radio.svelte', () => ({
   }),
 }));
 
-import { isLiveRadioAvailable, setWsConnected } from '../../stores/connection.svelte';
+import { isLiveRadioAvailable, setRadioStatus, setWsConnected } from '../../stores/connection.svelte';
 import { patchActiveReceiver, patchRadioState, resetRadioState, setRadioState } from '../../stores/radio.svelte';
 
 beforeEach(() => {
@@ -735,6 +736,33 @@ describe('control channel singleton', () => {
     expect(radioStoreMock.current?.stateRevision).toBe(6);
     expect(radioStoreMock.current?.observationSeq).toBe(6);
     expect(radioStoreMock.current?.ptt).toBe(true);
+  });
+
+  it('feeds connection_status events into the radio status store (MOR-620)', async () => {
+    vi.mocked(setRadioStatus).mockClear();
+    const { connect } = await import('../ws-client');
+    connect('ws://test/api/v1/ws');
+    instances[0].simulateOpen();
+
+    instances[0].simulateMessage(JSON.stringify({
+      type: 'event',
+      name: 'connection_status',
+      data: { state: 'reconnecting', attempt: 2, next_retry_seconds: 5 },
+    }));
+    expect(setRadioStatus).toHaveBeenCalledWith('reconnecting');
+
+    instances[0].simulateMessage(JSON.stringify({
+      type: 'event',
+      name: 'connection_status',
+      data: { state: 'connected' },
+    }));
+    expect(setRadioStatus).toHaveBeenLastCalledWith('connected');
+
+    // Malformed payloads must be ignored, not crash the handler.
+    vi.mocked(setRadioStatus).mockClear();
+    instances[0].simulateMessage(JSON.stringify({ type: 'event', name: 'connection_status' }));
+    instances[0].simulateMessage(JSON.stringify({ type: 'event', name: 'connection_status', data: { state: 7 } }));
+    expect(setRadioStatus).not.toHaveBeenCalled();
   });
 
   it('replaces accumulated state when a full snapshot follows a revision reset', async () => {

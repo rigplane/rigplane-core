@@ -171,10 +171,21 @@ from ...capabilities import (
 )
 from ...radio_protocol import CivCommandCapable, MemoryCapable, PowerControlCapable
 
-__all__ = ["ControlHandler"]
+__all__ = ["ControlHandler", "RadioNotReadyError"]
 
 logger = logging.getLogger(__name__)
 _MAX_CW_TEXT_CHARS = 512
+
+
+class RadioNotReadyError(RuntimeError):
+    """PTT keying rejected because the radio session is degraded (MOR-620).
+
+    Raised when the backend explicitly reports ``radio_ready`` False (CI-V
+    stream unhealthy — the command would be enqueued but never executed) or
+    a connect/reconnect cycle is in flight. Mapped to the ``radio_not_ready``
+    error code on the control WebSocket so the client gets a truthful
+    failure instead of a silent enqueue-ACK.
+    """
 
 
 @dataclass(slots=True)
@@ -622,6 +633,25 @@ class ControlHandler:
         connected_bool = connected if isinstance(connected, bool) else False
         return bool(connected_bool and not self._radio_ready())
 
+    def _ensure_tx_session_ready(self) -> None:
+        """Reject PTT keying when the session is degraded (MOR-620).
+
+        Only an explicit ``radio_ready: False`` bool from the backend (or an
+        in-flight connect/reconnect cycle per ``_backend_recovering``) blocks
+        keying; radios that expose no ``radio_ready`` bool are not gated.
+        PTT OFF intentionally bypasses this gate — unkeying is the safe
+        direction and must always be attempted.
+        """
+        if self._radio is None:
+            return
+        ready = getattr(self._radio, "radio_ready", None)
+        explicitly_not_ready = isinstance(ready, bool) and not ready
+        if explicitly_not_ready or self._backend_recovering():
+            raise RadioNotReadyError(
+                "radio session is not ready (CI-V link degraded or "
+                "reconnecting); PTT keying rejected"
+            )
+
     async def _handle_text(self, text: str) -> None:
         try:
             msg = decode_json(text)
@@ -897,11 +927,12 @@ class ControlHandler:
         except Exception as exc:
             logger.warning("control: command %r failed: %s", name, exc)
             message = str(exc)
-            error = (
-                "unsupported_command"
-                if "does not support" in message or "not supported" in message
-                else "command_failed"
-            )
+            if isinstance(exc, RadioNotReadyError):
+                error = "radio_not_ready"
+            elif "does not support" in message or "not supported" in message:
+                error = "unsupported_command"
+            else:
+                error = "command_failed"
             await self._ws.send_text(
                 encode_json(
                     {
@@ -1528,12 +1559,15 @@ class ControlHandler:
                 if self._read_only:
                     raise PermissionError("read-only mode: PTT rejected")
                 on = bool(params["state"])
+                if on:
+                    self._ensure_tx_session_ready()
                 logger.info("handler: PTT %s received", "ON" if on else "OFF")
                 q.put(PttOn() if on else PttOff())
                 return {"state": on}
             case "ptt_on":
                 if self._read_only:
                     raise PermissionError("read-only mode: PTT rejected")
+                self._ensure_tx_session_ready()
                 q.put(PttOn())
                 return {}
             case "ptt_off":

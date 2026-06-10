@@ -31,6 +31,7 @@
   "core.statusbar.health.radioPoweredOff": "трансивер выключен или недоступен",
   "core.statusbar.health.serverUnreachable": "сервер недоступен",
   "core.statusbar.health.rigOffline": "трансивер не в сети",
+  "core.statusbar.health.radioNotReady": "связь с трансивером деградировала — трансивер не готов",
   "core.statusbar.power.toggleOn": "Переключить питание (трансивер ВКЛЮЧЁН — нажмите, чтобы выключить)",
   "core.statusbar.power.toggleOff": "Переключить питание (трансивер ВЫКЛЮЧЕН — нажмите, чтобы включить)",
   "core.statusbar.power.toggleUnknown": "Переключить питание (состояние трансивера неизвестно — нажмите для переключения)",
