@@ -41,6 +41,7 @@ from __future__ import annotations
 import asyncio
 import inspect
 import logging
+import time
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
@@ -264,6 +265,7 @@ class AudioBus:
         self._subscribers: list[AudioSubscription] = []
         self._rx_active = False
         self._lock = asyncio.Lock()
+        self._last_rx_frame_monotonic: float | None = None
 
     @property
     def subscriber_count(self) -> int:
@@ -274,10 +276,19 @@ class AudioBus:
         return self._rx_active
 
     @property
+    def last_rx_frame_monotonic(self) -> float | None:
+        """``time.monotonic()`` of the most recent RX fan-out, or None.
+
+        RX liveness heartbeat (MOR-564): observability only, no watchdog.
+        """
+        return self._last_rx_frame_monotonic
+
+    @property
     def stats(self) -> dict[str, Any]:
         return {
             "rx_active": self._rx_active,
             "subscriber_count": len(self._subscribers),
+            "last_rx_frame_monotonic": self._last_rx_frame_monotonic,
             "subscribers": [s.stats for s in self._subscribers],
         }
 
@@ -291,6 +302,7 @@ class AudioBus:
 
     def _on_opus_packet(self, packet: "AudioPacket | None") -> None:
         """Internal callback — distributes packet to all active subscribers."""
+        self._last_rx_frame_monotonic = time.monotonic()
         for sub in self._subscribers:
             sub.deliver(packet)
 

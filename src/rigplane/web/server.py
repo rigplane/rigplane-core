@@ -2367,6 +2367,22 @@ class WebServer:
             "stats": stats,
         }
 
+    def _runtime_audio_bus_payload(self) -> dict[str, Any]:
+        # Read the private slot (not the lazy ``audio_bus`` property) so a
+        # runtime poll never instantiates the bus as a side effect (MOR-564).
+        radio = self._radio
+        bus = getattr(radio, "_audio_bus", None) if radio is not None else None
+        if bus is None:
+            return {"enabled": False}
+        stats = getattr(bus, "stats", None)
+        if not isinstance(stats, dict):
+            stats = {}
+        return {
+            "enabled": True,
+            "lastRxFrameMonotonic": getattr(bus, "last_rx_frame_monotonic", None),
+            "stats": stats,
+        }
+
     def _state_acquisition_diagnostics_payload(self) -> dict[str, Any]:
         radio = self._radio
         scheduler = (
@@ -2412,6 +2428,7 @@ class WebServer:
                     "address": self._runtime_rigctld_addr,
                 },
                 "bridge": self._runtime_bridge_payload(),
+                "audioBus": self._runtime_audio_bus_payload(),
                 "stateAcquisition": self._state_acquisition_diagnostics_payload(),
                 "lastError": self._runtime_last_error,
             },
