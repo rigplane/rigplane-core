@@ -122,6 +122,13 @@ class AudioBroadcaster:
         self._client_opus_transcoders: dict[
             int, tuple[PcmOpusTranscoder, tuple[int, int, int]]
         ] = {}
+        # Per-client link-quality state (MOR-585, ADR §3.6): the latest
+        # client-reported ``audio_stats`` snapshot plus the server-side
+        # drop-oldest eviction counter for the bounded WS queue.  Stats
+        # collection only — read by the step-19 adaptive egress codec
+        # controller; nothing here changes codec selection or behavior.
+        self._client_link_quality: dict[int, dict[str, int | float]] = {}
+        self._client_queue_drops: dict[int, int] = {}
         self._browser_opus_warned: bool = False
         self._lock = asyncio.Lock()
         # Optional DSP pipeline (inserted between codec decode and tap/distribute).
@@ -191,6 +198,8 @@ class AudioBroadcaster:
             self._client_ws.pop(client_id, None)
             self._client_rx_codec.pop(client_id, None)
             self._client_opus_transcoders.pop(client_id, None)
+            self._client_link_quality.pop(client_id, None)
+            self._client_queue_drops.pop(client_id, None)
             if (
                 not self._clients
                 and self._subscription is not None
@@ -299,6 +308,8 @@ class AudioBroadcaster:
                 self._client_ws.pop(cid, None)
                 self._client_rx_codec.pop(cid, None)
                 self._client_opus_transcoders.pop(cid, None)
+                self._client_link_quality.pop(cid, None)
+                self._client_queue_drops.pop(cid, None)
             # Stop relay if no clients remain (and no PCM tap active)
             if (
                 not self._clients
@@ -435,6 +446,41 @@ class AudioBroadcaster:
             "channels": self._channels,
             "frame_ms": 20,
         }
+
+    def record_client_stats(
+        self,
+        queue: asyncio.Queue[bytes],
+        stats: dict[str, int | float],
+    ) -> None:
+        """Record one client's latest self-reported link-quality (MOR-585).
+
+        Latest-wins snapshot from the periodic ``audio_stats`` uplink
+        (underruns, buffer depth, client-side drops).  Ignored for
+        queues not (or no longer) subscribed, so a stats message racing
+        a disconnect cannot leak per-client state.
+        """
+        client_id = id(queue)
+        if client_id not in self._clients:
+            return
+        self._client_link_quality[client_id] = dict(stats)
+
+    def client_link_quality(
+        self, queue: asyncio.Queue[bytes]
+    ) -> dict[str, int | float]:
+        """One client's link-quality snapshot (MOR-585, ADR §3.6).
+
+        The latest client-reported ``audio_stats`` fields merged with the
+        server-side ``ws_queue_drops`` counter (drop-oldest evictions of
+        the bounded per-client WS queue).  This is the signal surface the
+        step-19 adaptive egress codec controller and the ``rx.egress``
+        taps read; nothing in this step consumes it.
+        """
+        client_id = id(queue)
+        snapshot: dict[str, int | float] = dict(
+            self._client_link_quality.get(client_id, {})
+        )
+        snapshot["ws_queue_drops"] = self._client_queue_drops.get(client_id, 0)
+        return snapshot
 
     def _encode_client_rx_frame(
         self,
@@ -649,6 +695,13 @@ class AudioBroadcaster:
                     try:
                         q.put_nowait(frame)
                     except asyncio.QueueFull:
+                        # Drop-oldest eviction: count it per client — this
+                        # is the server-side WS congestion signal for the
+                        # adaptive egress codec controller (MOR-585,
+                        # ADR §3.6 detection-signals table).
+                        self._client_queue_drops[client_id] = (
+                            self._client_queue_drops.get(client_id, 0) + 1
+                        )
                         try:
                             q.get_nowait()
                         except asyncio.QueueEmpty:
@@ -663,6 +716,8 @@ class AudioBroadcaster:
                     self._client_ws.pop(client_id, None)
                     self._client_rx_codec.pop(client_id, None)
                     self._client_opus_transcoders.pop(client_id, None)
+                    self._client_link_quality.pop(client_id, None)
+                    self._client_queue_drops.pop(client_id, None)
                     logger.info("audio-broadcaster: removed dead client during relay")
                 if dead_ids:
                     self._notify_client_count_change()
@@ -718,6 +773,10 @@ class AudioHandler:
         self._tx_lease: TxLease | None = None
         self._tx_stop_lock = asyncio.Lock()
         self._seq: int = 0
+        # Latest client-reported link-quality snapshot from the periodic
+        # ``audio_stats`` uplink (MOR-585) — mirrored per client on the
+        # broadcaster while RX is subscribed.
+        self._link_quality: dict[str, int | float] = {}
         self._frame_queue: asyncio.Queue[bytes] = asyncio.Queue()
         self._done = asyncio.Event()
         # Opus decoder for TX when radio uses PCM codec.
@@ -806,8 +865,14 @@ class AudioHandler:
 
     async def _handle_control(self, msg: dict[str, Any]) -> None:
         """Handle audio_start / audio_stop messages."""
-        logger.info("audio: control msg: %s", msg)
         msg_type = msg.get("type", "")
+        # Periodic audio_stats (~1.5 s per client, MOR-585) stays at DEBUG;
+        # everything else keeps the established INFO trace.
+        logger.log(
+            logging.DEBUG if msg_type == "audio_stats" else logging.INFO,
+            "audio: control msg: %s",
+            msg,
+        )
         direction = msg.get("direction", "rx")
 
         if msg_type == "audio_start":
@@ -854,6 +919,28 @@ class AudioHandler:
                 await self._stop_tx(reason="client request", force=True)
         elif msg_type == "audio_config":
             await self._handle_audio_config(msg)
+        elif msg_type == "audio_stats":
+            self._handle_audio_stats(msg)
+
+    def _handle_audio_stats(self, msg: dict[str, Any]) -> None:
+        """Record the client's periodic link-quality report (MOR-585).
+
+        Stats collection only (ADR §3.6 step 18): the browser player
+        reports playback ``underruns``, ``buffer_depth_ms`` and
+        ``dropped_frames`` every ~1.5 s; only numeric fields are kept
+        (latest-wins), and unknown numeric fields pass through so future
+        carriers (WebRTC RTCP, step 19) can reuse the envelope.  Clients
+        that never send ``audio_stats`` are entirely unaffected.
+        """
+        stats: dict[str, int | float] = {}
+        for key, value in msg.items():
+            if key == "type" or isinstance(value, bool):
+                continue
+            if isinstance(value, (int, float)):
+                stats[key] = value
+        self._link_quality = stats
+        if self._rx_active and self._broadcaster is not None:
+            self._broadcaster.record_client_stats(self._frame_queue, stats)
 
     async def _stop_tx(
         self,

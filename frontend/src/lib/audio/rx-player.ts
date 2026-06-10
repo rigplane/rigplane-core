@@ -57,6 +57,14 @@ export class RxPlayer {
   private _droppedSuspendedFrames = 0;
   private _resumeListenersAttached = false;
 
+  // Link-quality counters for the periodic audio_stats uplink (MOR-585,
+  // ADR §3.6). Real playback underruns (the jitter buffer ran dry while
+  // playing — NOT the priming rebase after start()/flush()) plus all
+  // frames the player dropped (suspended context, jitter ceiling).
+  // Cumulative since start(); reset on stop().
+  private _underruns = 0;
+  private _droppedFrames = 0;
+
   get volume(): number {
     return this._volume;
   }
@@ -167,6 +175,24 @@ export class RxPlayer {
     this.nextPlayTime = 0;
     this.opusTs = 0;
     this._droppedSuspendedFrames = 0;
+    this._underruns = 0;
+    this._droppedFrames = 0;
+  }
+
+  /** Link-quality snapshot for the periodic audio_stats uplink (MOR-585).
+   *  bufferDepthMs is the audio currently scheduled ahead of playback —
+   *  the live jitter-buffer depth; 0 when idle or stopped. */
+  stats(): { underruns: number; bufferDepthMs: number; droppedFrames: number } {
+    let depthMs = 0;
+    if (this.ctx) {
+      const depth = (this.nextPlayTime - this.ctx.currentTime) * 1000;
+      if (depth > 0) depthMs = Math.round(depth);
+    }
+    return {
+      underruns: this._underruns,
+      bufferDepthMs: depthMs,
+      droppedFrames: this._droppedFrames,
+    };
   }
 
   /** Best-effort resume of a suspended context. Safe to call repeatedly. */
@@ -218,6 +244,7 @@ export class RxPlayer {
     if (this.ctx.state === 'suspended') {
       this._resume();
       this._droppedSuspendedFrames++;
+      this._droppedFrames++;
       if (this._droppedSuspendedFrames <= 3 || this._droppedSuspendedFrames % 200 === 0) {
         console.warn(
           `RxPlayer: AudioContext suspended — dropped ${this._droppedSuspendedFrames} ` +
@@ -323,9 +350,16 @@ export class RxPlayer {
 
     const now = this.ctx.currentTime;
     if (this.nextPlayTime < now + this._floorSec / 2) {
+      // A rebase while a schedule exists means playback caught up with
+      // the buffered audio — a real underrun (MOR-585), distinct from
+      // the priming rebase after start()/flush() where nextPlayTime is 0.
+      if (this.nextPlayTime > 0) this._underruns++;
       this.nextPlayTime = now + this._floorSec;
     }
-    if (this.nextPlayTime > now + this._ceilingSec) return;
+    if (this.nextPlayTime > now + this._ceilingSec) {
+      this._droppedFrames++;
+      return;
+    }
 
     src.start(this.nextPlayTime);
     this.nextPlayTime += buf.duration;

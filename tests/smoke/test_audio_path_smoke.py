@@ -372,7 +372,16 @@ async def test_web_audio_ws_relays_nonsilent_rx_frames(usb_rig: _UsbSerialRig) -
                 usb_rig.inject_rx(_NONSILENT_PCM)
                 await asyncio.sleep(0)
 
-            opcode, payload = await _ws_recv_frame(reader)
+            # The server may send JSON text control messages on the same WS
+            # before the first audio frame — e.g. the per-connection
+            # ``audio_format`` ack (MOR-584). This smoke test pins binary
+            # audio FLOW, not the control-message choreography: skip the
+            # bounded text preamble. (Pre-existing #1770×#1771 semantic
+            # conflict on main; surfaced while landing MOR-585.)
+            for _ in range(10):
+                opcode, payload = await _ws_recv_frame(reader)
+                if opcode != 0x1:
+                    break
             assert opcode == 0x2, "audio frames must arrive as binary WS frames"
             assert payload[0] == MSG_TYPE_AUDIO_RX
             audio = payload[AUDIO_HEADER_SIZE:]
