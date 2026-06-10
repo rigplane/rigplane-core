@@ -181,6 +181,12 @@ _SCOPE_CONTROL_PUBLIC_FIELDS = {
     "dual": "dual",
     "receiver": "receiver",
 }
+# Inverse map: backend scope-control leaf name → public ``scopeControls.``
+# suffix, used to project store snapshot fields back out (MOR-557).
+_SCOPE_CONTROL_PUBLIC_SUFFIXES = {
+    control_name: public_suffix
+    for public_suffix, control_name in _SCOPE_CONTROL_PUBLIC_FIELDS.items()
+}
 
 
 def _receiver_public_key(name: str) -> str:
@@ -270,8 +276,11 @@ def _snapshot_field_public_paths(path: FieldPath) -> tuple[str, ...]:
         paths: list[str] = []
         if path.receiver_id is not None and _snapshot_receiver_key(path.receiver_id):
             paths.append("scopeControls.receiver")
-        if path.name == "span":
-            paths.append("scopeControls.span")
+        public_suffix = _SCOPE_CONTROL_PUBLIC_SUFFIXES.get(path.name)
+        if public_suffix is not None:
+            public_path = f"scopeControls.{public_suffix}"
+            if public_path not in paths:
+                paths.append(public_path)
         return tuple(paths)
 
     return ()
@@ -819,8 +828,8 @@ def _apply_snapshot_field(
                 scope_controls["receiver"] = 0
             elif receiver_key == "sub":
                 scope_controls["receiver"] = 1
-        if path.name == "span":
-            scope_controls["span"] = value
+        if path.name in _SCOPE_CONTROL_PUBLIC_SUFFIXES:
+            scope_controls[path.name] = value
 
 
 def _project_snapshot_state_dict(snapshot: StateSnapshot) -> dict[str, Any]:

@@ -335,3 +335,55 @@ def test_public_state_projection_uses_snapshot_revisions_and_meter_values() -> N
     assert payload["freshnessRevision"] == 2
     assert payload["main"]["freqHz"] == 14_074_000
     assert payload["main"]["sMeter"] == 42
+
+
+def test_public_state_projection_covers_all_scope_control_leaves() -> None:
+    """MOR-557: every scope_controls.global.display leaf must project.
+
+    The v2 scope toolbar gates each control on
+    ``fieldStatus["scopeControls.<leaf>"]``; before MOR-557 only ``span`` and
+    ``receiver`` were mapped, so observed mode/edge/speed/hold/ref_db/dual
+    stayed ``missing`` and the toolbar rendered dead.
+    """
+    clock = FreshnessClock(start=10.0)
+    store = StateStore(freshness_clock=clock)
+    leaves: dict[str, Any] = {
+        "receiver": 1,
+        "dual": True,
+        "mode": 3,
+        "span": 6,
+        "edge": 4,
+        "hold": True,
+        "ref_db": -10.5,
+        "speed": 2,
+    }
+    for name, value in leaves.items():
+        store.apply(
+            _observation(
+                FieldPath.scope_control("display", name),
+                value,
+                at=clock.now(),
+            )
+        )
+
+    payload = build_public_state_payload_from_snapshot(
+        store.snapshot(),
+        radio=None,
+        receiver_count=2,
+    )
+
+    sc = payload["scopeControls"]
+    assert sc["receiver"] == 1
+    assert sc["dual"] is True
+    assert sc["mode"] == 3
+    assert sc["span"] == 6
+    assert sc["edge"] == 4
+    assert sc["hold"] is True
+    assert sc["refDb"] == -10.5
+    assert sc["speed"] == 2
+
+    suffixes = ("receiver", "dual", "mode", "span", "edge", "hold", "refDb", "speed")
+    for suffix in suffixes:
+        status = payload["fieldStatus"][f"scopeControls.{suffix}"]
+        assert status["observed"] is True, suffix
+        assert status["availability"] == "available", suffix
