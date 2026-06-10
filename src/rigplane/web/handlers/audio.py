@@ -30,6 +30,7 @@ from ..transport import Connection  # noqa: TID251
 from ..websocket import WS_OP_BINARY, WS_OP_TEXT  # noqa: TID251
 
 if TYPE_CHECKING:
+    from ...audio.session import TxLease
     from ...capabilities import CAP_AUDIO as _CAP_AUDIO_TYPE  # noqa: F401
     from ...dsp.pipeline import DSPPipeline
     from ...radio_protocol import Radio
@@ -637,6 +638,10 @@ class AudioHandler:
         self._broadcaster = broadcaster
         self._rx_active = False
         self._tx_active = False
+        # TX lease on the radio-owned AudioSession singleton (MOR-580,
+        # ADR §3.3). None when the radio lacks a session (legacy direct
+        # path) or when TX is not active.
+        self._tx_lease: TxLease | None = None
         self._tx_stop_lock = asyncio.Lock()
         self._seq: int = 0
         self._frame_queue: asyncio.Queue[bytes] = asyncio.Queue()
@@ -737,20 +742,35 @@ class AudioHandler:
             elif direction == "tx":
                 if self._radio and CAP_AUDIO in self._radio.capabilities:
                     self._ensure_tx_transcoder()
-                    try:
-                        start_tx = getattr(self._radio, "start_tx", None)
-                        if start_tx is not None:
-                            # Neutral AudioTransport surface (MOR-544): the
-                            # backend resolves the TX format from its
-                            # negotiated contract.
-                            await start_tx()
-                        else:
-                            await self._legacy_tx_lifecycle("start")
-                    except RuntimeError as exc:
-                        if _is_benign_tx_restart(exc):
-                            logger.info("audio: TX already started by poller, reusing")
-                        else:
-                            raise
+                    session = getattr(self._radio, "audio_session", None)
+                    if session is not None:
+                        # Shared AudioSession lease (MOR-580, ADR §3.3): the
+                        # session's single-lock refcount serializes arming
+                        # with other lease holders (bridge, poller PTT), so
+                        # the double-start benign-tolerance below is
+                        # unnecessary on this path.
+                        if self._tx_lease is None or self._tx_lease.released:
+                            self._tx_lease = await session.acquire_tx("web")
+                    else:
+                        # Legacy direct-arm fallback for radios without a
+                        # session (bare test doubles, not-yet-migrated
+                        # backends).
+                        try:
+                            start_tx = getattr(self._radio, "start_tx", None)
+                            if start_tx is not None:
+                                # Neutral AudioTransport surface (MOR-544):
+                                # the backend resolves the TX format from
+                                # its negotiated contract.
+                                await start_tx()
+                            else:
+                                await self._legacy_tx_lifecycle("start")
+                        except RuntimeError as exc:
+                            if _is_benign_tx_restart(exc):
+                                logger.info(
+                                    "audio: TX already started by poller, reusing"
+                                )
+                            else:
+                                raise
                 self._tx_active = True
                 logger.info("audio: TX active")
         elif msg_type == "audio_stop":
@@ -771,7 +791,7 @@ class AudioHandler:
     ) -> None:
         """Release this handler's active TX ownership, optionally bounded."""
         async with self._tx_stop_lock:
-            if not self._tx_active and not force:
+            if not self._tx_active and not force and self._tx_lease is None:
                 return
             self._tx_active = False
 
@@ -782,12 +802,28 @@ class AudioHandler:
                 return
 
             try:
-                stop_tx_method = getattr(self._radio, "stop_tx", None)
-                if stop_tx_method is not None:
-                    # Neutral AudioTransport surface (MOR-544).
-                    stop_tx: Awaitable[None] = stop_tx_method()
+                lease = self._tx_lease
+                if lease is not None:
+                    # Session path (MOR-580): drop this handler's TX demand;
+                    # the session disarms radio TX only when the lease
+                    # refcount reaches zero (release is idempotent).
+                    self._tx_lease = None
+                    stop_tx: Awaitable[None] = lease.release()
+                elif getattr(self._radio, "audio_session", None) is not None:
+                    # Session radio with no held lease: this handler owns no
+                    # TX demand — never direct-stop the radio out from under
+                    # other lease holders (bridge, poller PTT). MOR-580.
+                    logger.info(
+                        "audio: TX stop skipped (%s, no session lease held)", reason
+                    )
+                    return
                 else:
-                    stop_tx = self._legacy_tx_lifecycle("stop")
+                    stop_tx_method = getattr(self._radio, "stop_tx", None)
+                    if stop_tx_method is not None:
+                        # Neutral AudioTransport surface (MOR-544).
+                        stop_tx = stop_tx_method()
+                    else:
+                        stop_tx = self._legacy_tx_lifecycle("stop")
                 if timeout is None:
                     await stop_tx
                 else:
@@ -1010,8 +1046,13 @@ class AudioHandler:
             await self._radio.stop_audio_tx_opus()  # type: ignore[union-attr]
 
     async def _push_tx(self, data: bytes, *, legacy_method: str) -> None:
-        """Push TX bytes via neutral ``push_tx``; fall back to the named
-        legacy per-codec push method (MOR-544)."""
+        """Push TX bytes via the held session lease (MOR-580); without one,
+        via neutral ``push_tx``, falling back to the named legacy per-codec
+        push method (MOR-544)."""
+        lease = self._tx_lease
+        if lease is not None and not lease.released:
+            await lease.push(data)
+            return
         push_tx = getattr(self._radio, "push_tx", None)
         if push_tx is not None:
             await push_tx(data)
