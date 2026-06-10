@@ -12,6 +12,7 @@
     getHttpConnected,
     getRadioPowerOn,
     getRigConnected,
+    getRadioReady,
     getRadioHealth,
   } from '$lib/stores/connection.svelte';
   import { getFrequency } from '$lib/stores/radio.svelte';
@@ -65,6 +66,7 @@
   let audioState = $derived(isPoweredOff ? 'disconnected' : (isAudioConnected() ? 'connected' : 'disconnected'));
   let httpState = $derived(getHttpConnected() ? 'connected' : 'disconnected'); // server link — always real
   let rigConnected = $derived(getRigConnected());
+  let radioReady = $derived(getRadioReady());
   let radioHealth = $derived(getRadioHealth());
   // Effective radio indicator: downgrade to 'disconnected' when rigCtld reports radio offline
   let radioIndicatorState = $derived.by(() => {
@@ -74,7 +76,9 @@
     if (radioHealth?.readiness === 'delayed' || radioHealth?.readiness === 'stalled') {
       return 'degraded';
     }
-    return radioState === 'connected' && !rigConnected ? 'degraded' : radioState;
+    // MOR-620: a session that is connected but not radio-ready (CI-V link
+    // degraded) must be visibly degraded, not silently green.
+    return radioState === 'connected' && (!rigConnected || !radioReady) ? 'degraded' : radioState;
   });
   let radioHealthLabel = $derived.by(() => {
     switch (radioHealth?.likelyCause) {
@@ -89,9 +93,13 @@
       case 'server_unreachable':
         return t('core.statusbar.health.serverUnreachable');
       default:
-        return !rigConnected && radioState === 'connected'
-          ? t('core.statusbar.health.rigOffline')
-          : '';
+        if (!rigConnected && radioState === 'connected') {
+          return t('core.statusbar.health.rigOffline');
+        }
+        if (!radioReady && radioState === 'connected') {
+          return t('core.statusbar.health.radioNotReady');
+        }
+        return '';
     }
   });
 

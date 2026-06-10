@@ -1,6 +1,6 @@
 import type { WsCommand, WsIncoming } from '../types/protocol';
 import { makeCommandId } from '../types/protocol';
-import { isLiveRadioAvailable, setWsConnected, setHttpConnected, markStateUpdated, setReconnecting } from '../stores/connection.svelte';
+import { isLiveRadioAvailable, setWsConnected, setHttpConnected, markStateUpdated, setReconnecting, setRadioStatus } from '../stores/connection.svelte';
 import { getRadioState, patchActiveReceiver, patchRadioState, resetRadioState, setRadioState } from '../stores/radio.svelte';
 
 export type ConnectionState = 'disconnected' | 'connecting' | 'connected' | 'reconnecting';
@@ -384,6 +384,17 @@ _ctrl.onMessage((msg) => {
       setRadioState(state as any);
       setHttpConnected(true);
       markStateUpdated();
+    }
+  }
+  // Radio reconnect/degraded status (MOR-594 backend event, consumed for
+  // the StatusBar radio indicator — MOR-620). Shape:
+  // { type: 'event', name: 'connection_status',
+  //   data: { state, attempt, next_retry_seconds } }
+  if (msg.type === 'event') {
+    const ev = msg as { name?: string; data?: Record<string, unknown> };
+    if (ev.name === 'connection_status') {
+      const state = ev.data?.state;
+      if (typeof state === 'string') setRadioStatus(state);
     }
   }
   // Companion-injected state (RC-28 tuning step, etc.)

@@ -31,6 +31,7 @@
   "core.statusbar.health.radioPoweredOff": "トランシーバーの電源が切れているか到達できません",
   "core.statusbar.health.serverUnreachable": "サーバーに接続できません",
   "core.statusbar.health.rigOffline": "リグがオフラインです",
+  "core.statusbar.health.radioNotReady": "トランシーバーとの通信が低下しています — 準備未完了",
   "core.statusbar.power.toggleOn": "電源切り替え (トランシーバーは ON — クリックで電源オフ)",
   "core.statusbar.power.toggleOff": "電源切り替え (トランシーバーは OFF — クリックで電源オン)",
   "core.statusbar.power.toggleUnknown": "電源切り替え (トランシーバーの状態は不明 — クリックで切り替え)",

@@ -2227,3 +2227,112 @@ async def test_event_sender_loop_forwards_notifications_without_subscription() -
     finally:
         task.cancel()
         await task
+
+
+# ── MOR-620: PTT truthfulness on a degraded session ──────────────────────
+
+
+def _degraded_server() -> SimpleNamespace:
+    return SimpleNamespace(command_queue=_QueueRecorder())
+
+
+@pytest.mark.asyncio
+async def test_ptt_on_rejected_when_radio_not_ready() -> None:
+    """connected:true + radio_ready:false (degraded LAN session) must not
+    silently ACK a PTT ON the radio will never execute (MOR-620)."""
+    ws = SimpleNamespace(send_text=AsyncMock())
+    server = _degraded_server()
+    radio = _capable_radio()
+    radio.connected = True
+    radio.radio_ready = False
+    handler = _control_handler(ws=ws, radio=radio, server=server)
+
+    await handler._handle_command(
+        {"id": "p1", "name": "ptt", "params": {"state": True}}
+    )
+
+    msg = decode_json(ws.send_text.await_args_list[-1].args[0])
+    assert msg["ok"] is False
+    assert msg["error"] == "radio_not_ready"
+    assert server.command_queue.items == []
+
+
+@pytest.mark.asyncio
+async def test_ptt_on_alias_rejected_when_radio_not_ready() -> None:
+    """The bare ptt_on command honors the same degraded-session gate."""
+    ws = SimpleNamespace(send_text=AsyncMock())
+    server = _degraded_server()
+    radio = _capable_radio()
+    radio.connected = True
+    radio.radio_ready = False
+    handler = _control_handler(ws=ws, radio=radio, server=server)
+
+    await handler._handle_command({"id": "p2", "name": "ptt_on", "params": {}})
+
+    msg = decode_json(ws.send_text.await_args_list[-1].args[0])
+    assert msg["ok"] is False
+    assert msg["error"] == "radio_not_ready"
+    assert server.command_queue.items == []
+
+
+@pytest.mark.asyncio
+async def test_ptt_on_rejected_while_backend_reconnecting() -> None:
+    """A reconnect cycle in flight (conn_state=reconnecting) blocks PTT ON."""
+    ws = SimpleNamespace(send_text=AsyncMock())
+    server = _degraded_server()
+    radio = _capable_radio()
+    radio.conn_state = SimpleNamespace(value="reconnecting")
+    handler = _control_handler(ws=ws, radio=radio, server=server)
+
+    await handler._handle_command(
+        {"id": "p3", "name": "ptt", "params": {"state": True}}
+    )
+
+    msg = decode_json(ws.send_text.await_args_list[-1].args[0])
+    assert msg["ok"] is False
+    assert msg["error"] == "radio_not_ready"
+    assert server.command_queue.items == []
+
+
+@pytest.mark.asyncio
+async def test_ptt_off_allowed_when_radio_not_ready() -> None:
+    """Unkeying is the safe direction: PTT OFF must always be attempted, even
+    on a degraded session (never strand the radio transmitting)."""
+    ws = SimpleNamespace(send_text=AsyncMock())
+    server = _degraded_server()
+    radio = _capable_radio()
+    radio.connected = True
+    radio.radio_ready = False
+    handler = _control_handler(ws=ws, radio=radio, server=server)
+
+    await handler._handle_command(
+        {"id": "p4", "name": "ptt", "params": {"state": False}}
+    )
+    msg = decode_json(ws.send_text.await_args_list[-1].args[0])
+    assert msg["ok"] is True
+    assert isinstance(server.command_queue.items[-1], PttOff)
+
+    await handler._handle_command({"id": "p5", "name": "ptt_off", "params": {}})
+    msg = decode_json(ws.send_text.await_args_list[-1].args[0])
+    assert msg["ok"] is True
+    assert isinstance(server.command_queue.items[-1], PttOff)
+
+
+@pytest.mark.asyncio
+async def test_ptt_on_allowed_when_radio_ready() -> None:
+    """A healthy session keys normally."""
+    ws = SimpleNamespace(send_text=AsyncMock())
+    server = _degraded_server()
+    radio = _capable_radio()
+    radio.connected = True
+    radio.radio_ready = True
+    handler = _control_handler(ws=ws, radio=radio, server=server)
+
+    await handler._handle_command(
+        {"id": "p6", "name": "ptt", "params": {"state": True}}
+    )
+
+    msg = decode_json(ws.send_text.await_args_list[-1].args[0])
+    assert msg["ok"] is True
+    assert msg["result"] == {"state": True}
+    assert isinstance(server.command_queue.items[-1], PttOn)
