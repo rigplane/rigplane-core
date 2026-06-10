@@ -112,7 +112,7 @@ class _IcomSerialRadioBase(CoreRadio):
     ) -> None:
         from .icom7610.drivers.serial_civ_link import SerialCivLink
         from .icom7610.drivers.serial_session import SerialSessionDriver
-        from ..audio.usb_driver import UsbAudioDriver
+        from ..audio.usb_driver import AudioDeviceConfig, UsbAudioDriver
 
         if session_driver is not None and civ_link is not None:
             raise ValueError("Provide either civ_link or session_driver, not both.")
@@ -154,12 +154,14 @@ class _IcomSerialRadioBase(CoreRadio):
         serial_link = civ_link or SerialCivLink(device=device, baudrate=baudrate)
         self._serial_session = session_driver or SerialSessionDriver(serial_link)
         self._serial_audio_driver = audio_driver or UsbAudioDriver(
-            rx_device=rx_device,
-            tx_device=tx_device,
+            AudioDeviceConfig(
+                rx_device=rx_device,
+                tx_device=tx_device,
+                sample_rate=audio_sample_rate,
+                channels=self._serial_audio_channels_for_codec(),
+                frame_ms=20,
+            ),
             serial_port=device,
-            sample_rate=audio_sample_rate,
-            channels=self._serial_audio_channels_for_codec(),
-            frame_ms=20,
             backend=None,  # default PortAudioBackend
         )
         self._serial_audio_seq = 0

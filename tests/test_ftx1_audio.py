@@ -60,7 +60,12 @@ def test_audio_driver_default_construction():
     The driver is imported lazily inside ``__init__`` (so the top-level
     ``rigplane`` import doesn't pull ``audio.backend``), so we patch the
     canonical module path rather than a re-export.
+
+    Since MOR-578 the per-device knobs travel as ONE ``AudioDeviceConfig``
+    carrier; the pinned effective values are unchanged.
     """
+    from rigplane.audio.usb_driver import AudioDeviceConfig
+
     with (
         patch("rigplane.backends.yaesu_cat.radio.YaesuCatTransport"),
         patch("rigplane.audio.usb_driver.UsbAudioDriver") as MockDriver,
@@ -73,15 +78,18 @@ def test_audio_driver_default_construction():
             audio_sample_rate=48000,
         )
         MockDriver.assert_called_once_with(
+            AudioDeviceConfig(
+                rx_device="hw:1,0",
+                tx_device="hw:1,1",
+                sample_rate=48000,
+                channels=1,
+                frame_ms=20,
+                # FTX-1 profile selects the LEFT channel for the stereo→mono RX
+                # downmix (MOR-508); USB RX audio is on L only.
+                rx_audio_channel="left",
+            ),
             serial_port="/dev/ttyUSB0",
-            rx_device="hw:1,0",
-            tx_device="hw:1,1",
-            sample_rate=48000,
-            channels=1,
             backend=None,
-            # FTX-1 profile selects the LEFT channel for the stereo→mono RX
-            # downmix (MOR-508); USB RX audio is on L only.
-            rx_audio_channel="left",
         )
 
 

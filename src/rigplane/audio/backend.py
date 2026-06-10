@@ -41,6 +41,35 @@ def _platform_uid_from_device_name(name: str) -> str:
 
 
 @dataclass(frozen=True, slots=True)
+class AudioDeviceConfig:
+    """Per-device audio configuration carrier (MOR-578).
+
+    Bundles the per-device audio knobs that historically travelled as six
+    separate keyword parameters across every layer (``rigs/*.toml [audio]`` →
+    rig loader → backend ctor → :class:`UsbAudioDriver` → ``open_rx`` →
+    ``_RxFramer`` → downmix) into ONE frozen object, so adding a knob no
+    longer means threading a new keyword through each hop. Fields and
+    defaults mirror the historical per-keyword plumbing 1:1.
+
+    ``channels`` keeps the exact per-layer meaning the ``channels=`` keyword
+    had: the requested capture/playback channel count at the driver level,
+    and the OS-open channel count for the per-stream copy the backend hands
+    to its internal streams (the delivered count stays a separate
+    ``deliver_channels`` value, as before — it is a derived downmix
+    instruction, not device config). ``rx_device``/``tx_device`` are the
+    driver-level selection overrides; they are not consulted below the
+    driver, exactly like the old keywords.
+    """
+
+    rx_device: str | None = None
+    tx_device: str | None = None
+    sample_rate: int = 48_000
+    channels: int = 1
+    frame_ms: int = 20
+    rx_audio_channel: str = "mix"
+
+
+@dataclass(frozen=True, slots=True)
 class AudioDeviceInfo:
     """Normalized audio device descriptor returned by a backend."""
 
@@ -358,18 +387,16 @@ class _RxFramer:
     def __init__(
         self,
         *,
-        channels: int,
+        config: AudioDeviceConfig,
         deliver_channels: int,
-        sample_rate: int,
-        frame_ms: int,
-        rx_audio_channel: str,
     ) -> None:
-        self._rx_audio_channel = rx_audio_channel
+        self._rx_audio_channel = config.rx_audio_channel
         # Software downmix only fires for the stereo-native → mono case. Any
         # other deliver/open relationship passes interleaved PCM through
         # unchanged (over-request already clamps open == deliver upstream).
-        self._downmix_stereo_to_mono = channels == 2 and deliver_channels == 1
-        frame_samples = (sample_rate * frame_ms) // 1000
+        # ``config.channels`` is the OS-open count in this per-stream scope.
+        self._downmix_stereo_to_mono = config.channels == 2 and deliver_channels == 1
+        frame_samples = (config.sample_rate * config.frame_ms) // 1000
         self._frame_bytes = max(1, frame_samples * deliver_channels * 2)
         self._accumulator = bytearray()
 
@@ -459,23 +486,21 @@ class _PortAudioRxStream:
         self,
         sd: Any,
         device_index: int,
-        sample_rate: int,
-        channels: int,
+        *,
+        config: AudioDeviceConfig,
         blocksize: int,
-        frame_ms: int,
         deliver_channels: int | None = None,
-        rx_audio_channel: str = "mix",
     ) -> None:
         self._sd = sd
         self._device_index = device_index
-        self._sample_rate = sample_rate
-        # ``channels`` is the OS open count; ``_deliver_channels`` is what the
-        # consumer receives. When deliver < open (mono request on a stereo-
-        # native device, MOR-504) the framer downmixes interleaved s16le to
-        # the deliver count before chunking. Default: deliver == open.
-        self._channels = channels
+        self._sample_rate = config.sample_rate
+        # ``config.channels`` is the OS open count; ``_deliver_channels`` is
+        # what the consumer receives. When deliver < open (mono request on a
+        # stereo-native device, MOR-504) the framer downmixes interleaved
+        # s16le to the deliver count before chunking. Default: deliver == open.
+        self._channels = config.channels
         self._deliver_channels = (
-            channels if deliver_channels is None else deliver_channels
+            config.channels if deliver_channels is None else deliver_channels
         )
         # Capture is callback-driven with blocksize=0 (engine-native period),
         # mirroring a clean sd.rec. blocksize=0 was previously rejected by the
@@ -486,11 +511,8 @@ class _PortAudioRxStream:
         # duplex stream). It carries the sub-frame remainder between audio-thread
         # callbacks; the audio thread is the only writer, so no lock is needed.
         self._framer = _RxFramer(
-            channels=self._channels,
+            config=config,
             deliver_channels=self._deliver_channels,
-            sample_rate=sample_rate,
-            frame_ms=frame_ms,
-            rx_audio_channel=rx_audio_channel,
         )
         self._stream: Any = None
         self._running = False
@@ -975,34 +997,29 @@ class _PortAudioDuplexStream:
         sd: Any,
         np: Any,
         device_index: int,
-        sample_rate: int,
-        channels: int,
+        *,
+        config: AudioDeviceConfig,
         blocksize: int,
-        frame_ms: int,
         deliver_channels: int | None = None,
-        rx_audio_channel: str = "mix",
         tx_channels: int | None = None,
     ) -> None:
         self._sd = sd
         self._device_index = device_index
-        self._sample_rate = sample_rate
-        # RX leg opens at the native ``channels`` count and delivers
+        self._sample_rate = config.sample_rate
+        # RX leg opens at the native ``config.channels`` count and delivers
         # ``deliver_channels`` (downmix when fewer, MOR-504). The TX leg opens at
         # its own ``tx_channels`` count (the mono playback the radio's USB MOD
         # consumes); ``sd.Stream`` accepts a ``(in, out)`` channel pair so the
         # two legs need not match.
-        self._channels = channels
+        self._channels = config.channels
         self._deliver_channels = (
-            channels if deliver_channels is None else deliver_channels
+            config.channels if deliver_channels is None else deliver_channels
         )
-        self._tx_channels = channels if tx_channels is None else tx_channels
+        self._tx_channels = config.channels if tx_channels is None else tx_channels
         self._blocksize = blocksize
         self._framer = _RxFramer(
-            channels=self._channels,
+            config=config,
             deliver_channels=self._deliver_channels,
-            sample_rate=sample_rate,
-            frame_ms=frame_ms,
-            rx_audio_channel=rx_audio_channel,
         )
         # Embed a TX stream purely for its ring + write()/output-callback; its
         # own ``sd`` stream is never opened (we drive its ``_output_callback``
@@ -1012,7 +1029,7 @@ class _PortAudioDuplexStream:
             sd,
             np,
             device_index=device_index,
-            sample_rate=sample_rate,
+            sample_rate=config.sample_rate,
             channels=self._tx_channels,
             blocksize=blocksize,
         )
@@ -1213,12 +1230,14 @@ class PortAudioBackend:
         return _PortAudioRxStream(
             sd,
             device_index=int(device),
-            sample_rate=sample_rate,
-            channels=channels,
+            config=AudioDeviceConfig(
+                sample_rate=sample_rate,
+                channels=channels,
+                frame_ms=frame_ms,
+                rx_audio_channel=rx_audio_channel,
+            ),
             blocksize=0,
-            frame_ms=frame_ms,
             deliver_channels=deliver_channels,
-            rx_audio_channel=rx_audio_channel,
         )
 
     def open_tx(
@@ -1259,12 +1278,14 @@ class PortAudioBackend:
             sd,
             np,
             device_index=int(device),
-            sample_rate=sample_rate,
-            channels=channels,
+            config=AudioDeviceConfig(
+                sample_rate=sample_rate,
+                channels=channels,
+                frame_ms=frame_ms,
+                rx_audio_channel=rx_audio_channel,
+            ),
             blocksize=blocksize,
-            frame_ms=frame_ms,
             deliver_channels=deliver_channels,
-            rx_audio_channel=rx_audio_channel,
             tx_channels=tx_channels,
         )
 
@@ -1617,6 +1638,7 @@ class FakeAudioBackend:
 
 __all__ = [
     "AudioBackend",
+    "AudioDeviceConfig",
     "AudioDeviceId",
     "AudioDeviceInfo",
     "DuplexStream",
