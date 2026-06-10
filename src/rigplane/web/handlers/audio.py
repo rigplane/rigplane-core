@@ -12,6 +12,7 @@ from typing import TYPE_CHECKING, Any, Callable, Protocol, cast
 from ..._audio_codecs import decode_ulaw_to_pcm16
 from ..._audio_transcoder import PcmOpusTranscoder, create_pcm_opus_transcoder
 from ...audio.bus import STAGE_RX_POST_DSP
+from ...audio.session import RxSubscription
 from ...audio.usb_driver import AudioAlreadyStartedError
 from ...dsp.tap_registry import TapHandle, TapRegistry
 from ...env_config import (
@@ -151,7 +152,12 @@ class AudioBroadcaster:
         self._clients: dict[int, asyncio.Queue[bytes]] = {}
         self._client_ws: dict[int, Connection] = {}
         self._client_rx_codec: dict[int, int] = {}
-        self._subscription: _AudioSubscription | None = None
+        # RX source handle: a session-routed RxSubscription when the radio
+        # owns an AudioSession (MOR-608 — registers RX demand so the
+        # MOR-581 watchdog covers browser-only listeners), or a legacy
+        # bus AudioSubscription for radios without one. Both yield the
+        # same AudioPacket|None stream via ``async for``.
+        self._subscription: _AudioSubscription | RxSubscription | None = None
         self._relay_task: asyncio.Task[None] | None = None
         self._seq: int = 0
         self._web_codec: int = AUDIO_CODEC_PCM16
@@ -249,8 +255,7 @@ class AudioBroadcaster:
                     if self._relay_task is not None:
                         self._relay_task.cancel()
                         self._relay_task = None
-                    self._subscription.stop()
-                    self._subscription = None
+                    await self._release_subscription()
                 if self._radio:
                     await self._start_relay()
         self._notify_client_count_change()
@@ -364,6 +369,9 @@ class AudioBroadcaster:
         async with self._lock:
             relay_alive = self._relay_task is not None and not self._relay_task.done()
             if not relay_alive and self._radio:
+                # A dead relay may leave a stale handle behind — release it
+                # so session RX demand never leaks across a restart.
+                await self._release_subscription()
                 await self._start_relay()
                 logger.info("audio-broadcaster: relay started for PCM tap")
 
@@ -785,9 +793,22 @@ class AudioBroadcaster:
         self._refresh_codec_state(first=True)
 
         try:
-            bus = self._radio.audio_bus  # type: ignore[attr-defined]
-            self._subscription = cast(_AudioBus, bus).subscribe(name="web-audio")
-            await self._subscription.start()
+            session = getattr(self._radio, "audio_session", None)
+            if session is not None:
+                # Session-routed RX demand (MOR-608, ADR §3.2 option a):
+                # subscribing through the radio-owned AudioSession registers
+                # this relay's demand (session leaves IDLE → RX_ONLY), so
+                # the MOR-581 health watchdog covers browser-only listeners
+                # and reconnects go through ``AudioSession.reestablish()``.
+                # Mirrors the MOR-580 TX-lease pattern in AudioHandler.
+                self._subscription = await session.subscribe_rx("web-audio")
+            else:
+                # Legacy bus path for radios without a session (bare test
+                # doubles, not-yet-migrated backends).
+                bus = self._radio.audio_bus  # type: ignore[attr-defined]
+                subscription = cast(_AudioBus, bus).subscribe(name="web-audio")
+                await subscription.start()
+                self._subscription = subscription
             self._relay_task = asyncio.create_task(self._relay_loop())
         except Exception as exc:
             logger.exception("audio-broadcaster: failed to start relay")
@@ -955,6 +976,25 @@ class AudioBroadcaster:
         except Exception:
             logger.exception("audio-broadcaster: relay loop error")
 
+    async def _release_subscription(self) -> None:
+        """Release the RX source handle, whichever path owns it (MOR-608).
+
+        Session-routed handles drop their RX demand via the ASYNC
+        ``RxSubscription.release()`` (serialized by the session lock);
+        legacy bus handles keep the sync ``stop()``. Awaiting the release
+        while holding the broadcaster ``_lock`` is safe: the session lock
+        and ``_lock`` are distinct and the session never calls back into
+        the broadcaster, so there is no inverse acquisition order.
+        """
+        subscription = self._subscription
+        self._subscription = None
+        if subscription is None:
+            return
+        if isinstance(subscription, RxSubscription):
+            await subscription.release()
+        else:
+            subscription.stop()
+
     async def _stop_relay(self) -> None:
         if self._relay_task is not None:
             self._relay_task.cancel()
@@ -963,9 +1003,7 @@ class AudioBroadcaster:
             except asyncio.CancelledError:
                 pass
             self._relay_task = None
-        if self._subscription is not None:
-            self._subscription.stop()
-            self._subscription = None
+        await self._release_subscription()
         logger.info("audio-broadcaster: relay stopped")
 
 
