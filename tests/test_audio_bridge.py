@@ -300,6 +300,102 @@ async def test_bridge_stop_when_not_running():
 
 
 # ---------------------------------------------------------------------------
+# RX-before-TX start order against a LAN-like state machine (MOR-556)
+# ---------------------------------------------------------------------------
+
+
+class _LanLikeRadio:
+    """Radio stub mirroring ``LanAudioStream``'s RX/TX state machine.
+
+    The real LAN stream supports RX-then-TX only: ``start_rx`` requires
+    IDLE state, while ``start_tx`` flips the single state field to
+    "transmitting". Arming radio TX before the AudioBus RX subscribe
+    therefore kills RX entirely (regression from #1735, MOR-556).
+    ``FakeAudioBackend``-style order-insensitive stubs cannot catch this.
+    """
+
+    def __init__(self) -> None:
+        from rigplane.audio_bus import AudioBus
+        from rigplane.types import AudioCodec
+
+        self.state = "idle"
+        self.calls: list[str] = []
+        self.rx_callback: object | None = None
+        self.audio_tx_codec = AudioCodec.PCM_1CH_16BIT
+        self.audio_bus = AudioBus(self)
+
+    async def start_rx(
+        self, callback: object, *, jitter_depth: int | None = None
+    ) -> None:
+        self.calls.append("start_rx")
+        if self.state != "idle":
+            raise RuntimeError(f"Cannot start RX in state {self.state}")
+        self.rx_callback = callback
+        self.state = "receiving"
+
+    async def stop_rx(self) -> None:
+        if self.state == "receiving":
+            self.state = "idle"
+        self.rx_callback = None
+
+    async def start_tx(self) -> None:
+        self.calls.append("start_tx")
+        if self.state == "transmitting":
+            raise RuntimeError("Already transmitting")
+        self.state = "transmitting"
+
+    async def stop_tx(self) -> None:
+        if self.state != "transmitting":
+            return
+        self.state = "receiving" if self.rx_callback is not None else "idle"
+
+    async def push_tx(self, audio_data: bytes) -> None:
+        if self.state != "transmitting":
+            raise RuntimeError(f"Cannot push TX in state {self.state}")
+
+
+async def test_bridge_subscribes_rx_before_arming_tx():
+    """Regression MOR-556: bus RX subscribe must happen BEFORE radio TX arm.
+
+    On LAN, ``start_tx`` puts the stream in TRANSMITTING and a subsequent
+    ``start_rx`` raises — leaving RX dead and the packet queue undrained.
+    """
+    radio = _LanLikeRadio()
+    backend = _bridge_backend()
+    bridge = AudioBridge(radio, device_name="BlackHole", backend=backend)
+    await bridge.start()
+    try:
+        # RX must be live on the radio — the regression left it dead.
+        assert radio.audio_bus.rx_active
+        assert radio.rx_callback is not None
+        # TX is still armed for non-rx_only configs — after RX, never before.
+        assert radio.state == "transmitting"
+        assert radio.calls == ["start_rx", "start_tx"]
+        assert bridge._tx_started
+    finally:
+        await bridge.stop()
+    assert radio.audio_bus.subscriber_count == 0
+    assert radio.state == "idle"
+
+
+async def test_bridge_rx_only_never_arms_tx_on_lan_state_machine():
+    """rx_only semantics are preserved by the MOR-556 reorder: no TX arm."""
+    radio = _LanLikeRadio()
+    backend = _bridge_backend()
+    bridge = AudioBridge(
+        radio, device_name="BlackHole", tx_enabled=False, backend=backend
+    )
+    await bridge.start()
+    try:
+        assert radio.audio_bus.rx_active
+        assert radio.state == "receiving"
+        assert "start_tx" not in radio.calls
+    finally:
+        await bridge.stop()
+    assert radio.state == "idle"
+
+
+# ---------------------------------------------------------------------------
 # RX callback — packets flow from bus to backend TxStream
 # ---------------------------------------------------------------------------
 
