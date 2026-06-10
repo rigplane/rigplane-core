@@ -11,7 +11,7 @@ import asyncio
 import logging
 import os
 import time
-from typing import TYPE_CHECKING, Callable, Protocol
+from typing import TYPE_CHECKING, Callable, Literal, Protocol
 
 from .._connection_state import RadioConnectionState
 from ..audio import AudioPacket
@@ -207,6 +207,29 @@ class _IcomSerialRadioBase(CoreRadio):
         except Exception:
             return "full"
         return mode if isinstance(mode, str) else "full"
+
+    @property
+    def audio_setup_order(self) -> Literal["rx_first", "tx_first", "atomic"]:
+        """Setup ordering descriptor (MOR-575, ADR §3.3).
+
+        Derived from :attr:`audio_duplex_mode` — single source of truth,
+        so the two descriptors never drift: ``"exclusive"`` (same-device
+        macOS: one duplex stream, setup does not decompose into
+        rx/tx-first) → ``"atomic"``; ``"full"`` (separate RX/TX devices,
+        order-indifferent) → ``"rx_first"``; ``"half"`` or any
+        unexpected/raising duplex mode degrades to the ``"rx_first"``
+        safe default — the same robustness ``audio_duplex_mode`` has
+        toward the driver. Nothing consumes this yet — the AudioSession
+        (MOR-562 step 8) and bridge (step 9) will read it.
+        """
+        try:
+            mode = self.audio_duplex_mode
+        except Exception:
+            return "rx_first"
+        if mode == "exclusive":
+            return "atomic"
+        # "full", "half", and anything unexpected → rx_first (safe default).
+        return "rx_first"
 
     # ------------------------------------------------------------------
     # Connection properties
