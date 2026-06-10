@@ -57,7 +57,7 @@ from .session import AudioSession, AudioSessionState, RxSubscription, TxLease
 if TYPE_CHECKING:
     from concurrent.futures import Executor
 
-    from rigplane.radio_protocol import AudioCapable
+    from rigplane.core.radio_protocol import AudioCapable
 
 logger = logging.getLogger(__name__)
 
@@ -471,7 +471,7 @@ class AudioBridge:
                 tx_dev_id = tx_dev.id
 
         # Codec detection
-        from rigplane.types import AudioCodec
+        from rigplane.core.types import AudioCodec
 
         _codec = getattr(self._radio, "audio_codec", None)
         self._is_opus = isinstance(_codec, AudioCodec) and _codec in (

@@ -9,8 +9,8 @@ from collections.abc import AsyncIterator, Awaitable
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Callable, Protocol, cast
 
-from ..._audio_codecs import decode_ulaw_to_pcm16
-from ..._audio_transcoder import PcmOpusTranscoder, create_pcm_opus_transcoder
+from rigplane.audio._codecs import decode_ulaw_to_pcm16
+from rigplane.audio._transcoder import PcmOpusTranscoder, create_pcm_opus_transcoder
 from ...audio.bus import STAGE_RX_POST_DSP
 from ...audio.session import RxSubscription
 from ...audio.usb_driver import AudioAlreadyStartedError

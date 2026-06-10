@@ -1018,7 +1018,7 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
     def audio_bus(self) -> Any:
         """Lazy-initialized AudioBus for pub/sub audio distribution."""
         if self._audio_bus is None:
-            from rigplane.audio_bus import AudioBus
+            from rigplane.audio.bus import AudioBus
 
             self._audio_bus = AudioBus(self)
         return self._audio_bus

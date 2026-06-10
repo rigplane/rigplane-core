@@ -104,7 +104,8 @@ from .websocket import (  # noqa: TID251
 from ..radio_protocol import CivTransactionCapable, StateStoreCapable
 
 if TYPE_CHECKING:
-    from ..audio_bridge import AudioBridge
+    from rigplane.audio.bridge import AudioBridge
+
     from ..profiles import RadioProfile
     from ..radio_protocol import Radio
     from .transport.webrtc_session import WebRtcSessionManager  # noqa: TID251
@@ -1926,7 +1927,7 @@ class WebServer:
             tx_enabled: Whether to bridge TX (device → radio).
             label: Descriptive label for log messages. If ``None``, derived from radio model.
         """
-        from ..audio_bridge import AudioBridge, derive_bridge_label
+        from rigplane.audio.bridge import AudioBridge, derive_bridge_label
 
         if self._audio_bridge is not None and self._audio_bridge.running:
             logger.warning("audio-bridge: already running")
