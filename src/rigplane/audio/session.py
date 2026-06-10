@@ -23,7 +23,9 @@ RECOVERING (MOR-581, ADR §3.4, tenet T3 "no silent audio death"): a ~1 s
 watchdog task — decoupled from the keep-alives — reads the bus RX heartbeat
 (MOR-564); ~3 s of silence ⇒ RECOVERING + a local
 :class:`AudioSessionEvent`; frames resuming return the demand-derived
-state. Step 14 only SURFACES the death — the recovery loop is step 20.
+state. Step 14 only SURFACES the death; step 20 (MOR-586) adds
+:meth:`AudioSession.reestablish` — the radio-side reconnect re-arms the
+session's LIVE demand instead of replaying the legacy snapshot.
 
 Arming order is transport-owned via the MOR-575 descriptor
 ``audio_setup_order`` (read with ``getattr(radio, ..., "rx_first")``):
@@ -57,6 +59,7 @@ from enum import Enum
 from typing import TYPE_CHECKING, Any, AsyncIterator, Callable, Literal, cast
 
 from rigplane.audio.bus import AudioBus, AudioSubscription
+from rigplane.audio.usb_driver import AudioAlreadyStartedError
 
 if TYPE_CHECKING:
     from rigplane.audio import AudioPacket
@@ -454,6 +457,79 @@ class AudioSession:
         for sub in list(self._rx_subs):
             await sub._inner.aclose()
         self._rx_subs.clear()
+
+    # ── Reconnect re-establishment (MOR-586, ADR §3.4 rule 4) ────────────
+
+    async def reestablish(self) -> None:
+        """Re-arm the radio RX/TX legs from LIVE demand after a reconnect.
+
+        The radio-side reconnect (``runtime/_audio_recovery.py``) rebuilds
+        the audio transport underneath the session: demand handles (bus
+        subscriptions, TX leases) survive the outage, but the radio's RX
+        callback and TX leg do not. The target state is derived from the
+        CURRENT demand counters — never from a pre-disconnect snapshot —
+        so demand dropped during the outage stays dropped, and the re-arm
+        runs in the transport-declared order under the session lock.
+        Idempotent: already-live legs are benign typed no-ops.
+
+        Raises:
+            RuntimeError: when demanded RX fails to come back live, so the
+                recovery caller can surface FAILED. Demand is preserved —
+                the next reconnect or demand edge retries.
+        """
+        async with self._lock:
+            self._recovering_from = None
+            desired = self._desired()
+            if desired is AudioSessionState.IDLE:
+                # Demand dropped during the outage — nothing to resurrect.
+                self._state = AudioSessionState.IDLE
+                await self._sync_watchdog()
+                return
+            order = self._setup_order()
+            tx_wanted = desired is AudioSessionState.RX_TX
+            tx_live = False
+            if tx_wanted and order != "rx_first":
+                # "tx_first"/"atomic": the TX leg must be up before RX
+                # joins the device (the MOR-559 live-validated order).
+                tx_live = await self._try_rearm_tx()
+            await self._bus.restart_rx()
+            if not self._bus.rx_active:
+                if tx_live:
+                    await self._disarm_tx()  # never leave TX without RX
+                self._state = AudioSessionState.RX_ONLY
+                self._rx_armed_at = time.monotonic()
+                await self._sync_watchdog()
+                raise RuntimeError(
+                    "radio RX failed to re-establish after reconnect "
+                    "(AudioBus.rx_active is False after re-arm); see "
+                    "'audio-bus: failed to re-arm RX' in the log"
+                )
+            if tx_wanted and order == "rx_first":
+                tx_live = await self._try_rearm_tx()
+            self._state = (
+                AudioSessionState.RX_TX if tx_live else AudioSessionState.RX_ONLY
+            )
+            # Fresh liveness reference: silence is measured from this
+            # re-arm, not from the stale pre-outage heartbeat.
+            self._rx_armed_at = time.monotonic()
+            await self._sync_watchdog()
+
+    async def _try_rearm_tx(self) -> bool:
+        """Best-effort TX re-arm for :meth:`reestablish`; True when live.
+
+        Mirrors the deferred-arm policy in :meth:`_enter_rx_tx`: a TX
+        failure here has no demanding caller to raise to — settle at
+        RX_ONLY, keep the leases, and let the next demand edge (or the
+        next reconnect) retry.
+        """
+        try:
+            await self._radio.start_tx()
+        except AudioAlreadyStartedError:
+            logger.debug("audio-session: TX already live on re-arm", exc_info=True)
+        except Exception:
+            logger.warning("audio-session: TX re-arm failed — RX_ONLY", exc_info=True)
+            return False
+        return True
 
     # ── Health watchdog (MOR-581 — surface only, recovery is step 20) ────
 
