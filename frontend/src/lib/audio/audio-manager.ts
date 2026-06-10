@@ -25,6 +25,9 @@ export interface AudioRoutingConfig {
 
 const BACKOFF_MIN = 500;
 const BACKOFF_MAX = 10000;
+// Link-quality uplink rate (MOR-585, ADR §3.6): low — one audio_stats
+// message per 1.5 s while RX is active.
+const AUDIO_STATS_INTERVAL_MS = 1500;
 
 function preferredRxCodec(): 'opus' | 'pcm16' {
   const globals = globalThis as typeof globalThis & {
@@ -45,6 +48,7 @@ class AudioManager {
   private _txEnabled = false;
   private backoff = BACKOFF_MIN;
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+  private statsTimer: ReturnType<typeof setInterval> | null = null;
   private _listeners: Set<() => void> = new Set();
 
   // Reactive state (read externally)
@@ -248,6 +252,7 @@ class AudioManager {
       if (this._audioConfigPending) {
         this._flushPendingAudioConfig();
       }
+      this._startStatsTimer();
       this.rxPlayer.flush();
       this.notify();
     };
@@ -265,6 +270,7 @@ class AudioManager {
 
     ws.onclose = (ev) => {
       console.warn(`[audio-ws] closed code=${ev.code} reason=${ev.reason}`);
+      this._clearStatsTimer();
       this.ws = null;
       setAudioConnected(false);
       this.notify();
@@ -276,7 +282,38 @@ class AudioManager {
     };
   }
 
+  // ── Link-quality uplink (MOR-585, ADR §3.6) ──
+  //
+  // While RX is active, periodically reports the player's link-quality
+  // counters so the server can record them per client (the step-19
+  // adaptive codec controller's client-side signal). Stats only — the
+  // server changes no behavior on receipt.
+
+  private _startStatsTimer(): void {
+    if (this.statsTimer) return;
+    this.statsTimer = setInterval(() => this._sendAudioStats(), AUDIO_STATS_INTERVAL_MS);
+  }
+
+  private _clearStatsTimer(): void {
+    if (this.statsTimer) {
+      clearInterval(this.statsTimer);
+      this.statsTimer = null;
+    }
+  }
+
+  private _sendAudioStats(): void {
+    if (!this._rxEnabled || this.ws?.readyState !== WebSocket.OPEN) return;
+    const stats = this.rxPlayer.stats();
+    this.ws.send(JSON.stringify({
+      type: 'audio_stats',
+      underruns: stats.underruns,
+      buffer_depth_ms: stats.bufferDepthMs,
+      dropped_frames: stats.droppedFrames,
+    }));
+  }
+
   private close(): void {
+    this._clearStatsTimer();
     if (this.reconnectTimer) {
       clearTimeout(this.reconnectTimer);
       this.reconnectTimer = null;

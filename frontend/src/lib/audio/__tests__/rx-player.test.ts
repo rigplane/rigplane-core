@@ -307,6 +307,99 @@ describe('RxPlayer suspended-context recovery (MOR-239)', () => {
   });
 });
 
+describe('RxPlayer link-quality stats (MOR-585)', () => {
+  it('starts with zeroed stats', () => {
+    const p = new RxPlayer();
+    p.start();
+    expect(p.stats()).toEqual({ underruns: 0, bufferDepthMs: 0, droppedFrames: 0 });
+    p.stop();
+  });
+
+  it('does NOT count the initial priming rebase as an underrun', () => {
+    const p = new RxPlayer();
+    p.start();
+    ctx.currentTime = 0;
+    p.feed(pcm16(480));           // first frame: nextPlayTime 0 → floor rebase
+    expect(p.stats().underruns).toBe(0);
+    p.stop();
+  });
+
+  it('counts a real underrun when playback catches up with the schedule', () => {
+    const p = new RxPlayer();
+    p.start();
+    ctx.currentTime = 0;
+    p.feed(pcm16(480));           // primes: nextPlayTime ≈ 0.06
+    ctx.currentTime = 10;         // playback ran past the buffer — it drained
+    p.feed(pcm16(480));           // late frame → rebase = underrun
+    expect(p.stats().underruns).toBe(1);
+    p.stop();
+  });
+
+  it('flush() rebase after reconnect is not an underrun', () => {
+    const p = new RxPlayer();
+    p.start();
+    ctx.currentTime = 0;
+    p.feed(pcm16(480));
+    p.flush();                    // reconnect path resets the schedule
+    ctx.currentTime = 10;
+    p.feed(pcm16(480));
+    expect(p.stats().underruns).toBe(0);
+    p.stop();
+  });
+
+  it('reports current jitter-buffer depth in ms', () => {
+    const p = new RxPlayer();
+    p.start();
+    ctx.currentTime = 0;
+    p.feed(pcm16(480));           // floor 50 ms + 10 ms frame → 60 ms ahead
+    expect(p.stats().bufferDepthMs).toBe(60);
+    p.stop();
+  });
+
+  it('buffer depth is 0 when idle or stopped', () => {
+    const p = new RxPlayer();
+    expect(p.stats().bufferDepthMs).toBe(0);
+    p.start();
+    expect(p.stats().bufferDepthMs).toBe(0);
+    p.stop();
+    expect(p.stats().bufferDepthMs).toBe(0);
+  });
+
+  it('counts frames dropped at the jitter ceiling', () => {
+    const p = new RxPlayer();
+    p.start();
+    p.setJitterBounds(50, 65);    // ceiling between frame boundaries (no FP ties)
+    ctx.currentTime = 0;
+    p.feed(pcm16(480));           // → 0.06
+    p.feed(pcm16(480));           // 0.06 < 0.065 → scheduled → 0.07
+    p.feed(pcm16(480));           // 0.07 > 0.065 → dropped
+    expect(p.stats().droppedFrames).toBe(1);
+    p.stop();
+  });
+
+  it('counts frames dropped while the context is suspended', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    ctx.state = 'suspended';
+    const p = new RxPlayer();
+    p.start();
+    p.feed(pcm16(480));
+    expect(p.stats().droppedFrames).toBe(1);
+    p.stop();
+    warn.mockRestore();
+  });
+
+  it('stop() resets all counters', () => {
+    const p = new RxPlayer();
+    p.start();
+    ctx.currentTime = 0;
+    p.feed(pcm16(480));
+    ctx.currentTime = 10;
+    p.feed(pcm16(480));           // 1 underrun
+    p.stop();
+    expect(p.stats()).toEqual({ underruns: 0, bufferDepthMs: 0, droppedFrames: 0 });
+  });
+});
+
 describe('RxPlayer mono routing (MOR-239)', () => {
   it('routes a mono (1-ch) PCM16 buffer to the audible MAIN channel', () => {
     const p = new RxPlayer();
