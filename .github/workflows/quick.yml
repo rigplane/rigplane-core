@@ -112,11 +112,18 @@ jobs:
       - name: Run tests
         id: tests
         run: |
+          # Without pipefail the pipe's exit status is tee's (always 0), so
+          # pytest failures were swallowed and the step reported success.
+          # Capture pytest's exit code via PIPESTATUS, extract the summary
+          # (still needed for the badge, including on failure), then exit
+          # with pytest's code so failing tests fail the step.
           uv run pytest tests/ --ignore=tests/integration -n auto --tb=short --timeout=300 --timeout-method=thread \
             | tee pytest-output.txt
+          rc=${PIPESTATUS[0]}
           SUMMARY=$(tail -1 pytest-output.txt)
           PASSED=$(echo "$SUMMARY" | grep -oP '\d+ passed' | grep -oP '\d+' || echo "0")
           echo "passed=$PASSED" >> "$GITHUB_OUTPUT"
+          exit "$rc"
 
       - name: Extract version
         if: github.ref == 'refs/heads/main'
