@@ -1,14 +1,19 @@
 """Tests for watchdog and auto-reconnect."""
 
 import asyncio
+from types import SimpleNamespace
+from typing import Any
 from unittest.mock import AsyncMock, patch
 
 import pytest
 
+from rigplane.core._bounded_queue import BoundedQueue
 from rigplane.runtime._connection_state import RadioConnectionState
 from rigplane.exceptions import AuthenticationError
 from rigplane.radio import IcomRadio
+from rigplane.web.server import WebConfig, WebServer
 
+from test_audio_session_health import _FakeWriter, _response_json
 from test_radio import MockTransport
 
 
@@ -229,3 +234,163 @@ class TestExternalCatSessionResetOnConnect:
         ):
             await radio.connect()
         assert radio.external_cat_session_active is False
+
+
+class TestReconnectStatusCallback:
+    """MOR-594: reconnect status surfaced via callback at each meaningful edge."""
+
+    @pytest.mark.asyncio
+    async def test_reports_each_attempt_then_connected(self, radio: IcomRadio) -> None:
+        """Each attempt emits ``reconnecting`` with attempt + backoff; success
+        emits ``connected``."""
+        statuses: list[dict[str, Any]] = []
+        radio.set_reconnect_status_callback(statuses.append)
+        radio._connected = False
+        radio._intentional_disconnect = False
+        with patch.object(radio, "connect", new_callable=AsyncMock) as mock_connect:
+            mock_connect.side_effect = [OSError("down"), OSError("down"), None]
+            radio._reconnect_task = asyncio.create_task(radio._reconnect_loop())
+            await asyncio.wait_for(radio._reconnect_task, timeout=5.0)
+        reconnecting = [s for s in statuses if s["state"] == "reconnecting"]
+        assert [s["attempt"] for s in reconnecting] == [1, 2, 3]
+        # Backoff: reconnect_delay=0.1 doubling toward reconnect_max_delay=0.5.
+        assert [s["next_retry_seconds"] for s in reconnecting] == [0.1, 0.2, 0.4]
+        assert statuses[-1] == {
+            "state": "connected",
+            "attempt": 3,
+            "next_retry_seconds": None,
+        }
+
+    @pytest.mark.asyncio
+    async def test_raising_callback_does_not_break_reconnect(
+        self, radio: IcomRadio
+    ) -> None:
+        """A raising status callback must never break the reconnect loop."""
+
+        def _boom(_status: dict[str, Any]) -> None:
+            raise RuntimeError("boom")
+
+        radio.set_reconnect_status_callback(_boom)
+        radio._connected = False
+        radio._intentional_disconnect = False
+        with patch.object(radio, "connect", new_callable=AsyncMock) as mock_connect:
+            mock_connect.side_effect = [OSError("down"), None]
+            radio._reconnect_task = asyncio.create_task(radio._reconnect_loop())
+            await asyncio.wait_for(radio._reconnect_task, timeout=5.0)
+        assert mock_connect.call_count == 2
+
+    @pytest.mark.asyncio
+    async def test_permanent_error_reports_disconnected(self, radio: IcomRadio) -> None:
+        """A permanent-error abort must not leave the status stuck at
+        ``reconnecting`` (no silent problems)."""
+        statuses: list[dict[str, Any]] = []
+        radio.set_reconnect_status_callback(statuses.append)
+        radio._connected = False
+        radio._intentional_disconnect = False
+        with patch.object(radio, "connect", new_callable=AsyncMock) as mock_connect:
+            mock_connect.side_effect = AuthenticationError("wrong password")
+            radio._reconnect_task = asyncio.create_task(radio._reconnect_loop())
+            await asyncio.wait_for(radio._reconnect_task, timeout=5.0)
+        assert statuses[-1] == {
+            "state": "disconnected",
+            "attempt": 1,
+            "next_retry_seconds": None,
+        }
+
+    @pytest.mark.asyncio
+    async def test_watchdog_trigger_reports_first_attempt(
+        self, radio: IcomRadio
+    ) -> None:
+        """The watchdog trigger point surfaces ``reconnecting`` immediately."""
+        statuses: list[dict[str, Any]] = []
+        radio.set_reconnect_status_callback(statuses.append)
+        radio._control_phase._start_watchdog()
+        await asyncio.sleep(0.6)  # > watchdog_timeout (0.3 s), no activity
+        assert statuses, "watchdog trigger must surface a reconnecting status"
+        assert statuses[0]["state"] == "reconnecting"
+        assert statuses[0]["attempt"] == 1
+        assert statuses[0]["next_retry_seconds"] == 0.1
+        # Clean up
+        radio._intentional_disconnect = True
+        radio._control_phase._stop_reconnect()
+        radio._control_phase._stop_watchdog()
+        await asyncio.sleep(0.05)
+
+
+def _web_radio_stub() -> SimpleNamespace:
+    """Minimal radio surface for WebServer runtime-payload tests (MOR-581 shape)."""
+    return SimpleNamespace(
+        model="IC-7610",
+        backend_id="rigplane",
+        connected=True,
+        control_connected=True,
+        radio_ready=True,
+        capabilities=set(),
+    )
+
+
+class TestWebReconnectStatusSurface:
+    """MOR-594: runtime payload ``connection`` block + ``connection_status``
+    WS event — local-only surfacing, no telemetry."""
+
+    @pytest.mark.asyncio
+    async def test_runtime_payload_defaults_to_radio_connected(self) -> None:
+        srv = WebServer(_web_radio_stub(), WebConfig(host="127.0.0.1", port=0))
+        writer = _FakeWriter()
+        await srv._handle_http(writer, "GET", "/api/v1/runtime")
+        status, data = _response_json(writer)
+        assert status == 200
+        assert data["connection"] == {
+            "state": "connected",
+            "attempt": 0,
+            "next_retry_seconds": None,
+        }
+
+    @pytest.mark.asyncio
+    async def test_runtime_payload_reflects_latest_status(self) -> None:
+        srv = WebServer(_web_radio_stub(), WebConfig(host="127.0.0.1", port=0))
+        srv._on_reconnect_status(
+            {"state": "reconnecting", "attempt": 3, "next_retry_seconds": 4.0}
+        )
+        writer = _FakeWriter()
+        await srv._handle_http(writer, "GET", "/api/v1/runtime")
+        status, data = _response_json(writer)
+        assert status == 200
+        assert data["connection"] == {
+            "state": "reconnecting",
+            "attempt": 3,
+            "next_retry_seconds": 4.0,
+        }
+
+    @pytest.mark.asyncio
+    async def test_status_events_broadcast_on_control_ws_queues(
+        self, radio: IcomRadio
+    ) -> None:
+        """Reconnect statuses are forwarded as ``connection_status`` events on
+        the EXISTING control-WS event surface."""
+        srv = WebServer(radio, WebConfig(host="127.0.0.1", port=0))
+        srv._attach_reconnect_status_listener()  # start() wiring
+        q: BoundedQueue[dict[str, Any]] = BoundedQueue(maxsize=16)
+        srv.register_control_event_queue(q)
+        radio._connected = False
+        radio._intentional_disconnect = False
+        with patch.object(radio, "connect", new_callable=AsyncMock) as mock_connect:
+            mock_connect.side_effect = [OSError("down"), None]
+            radio._reconnect_task = asyncio.create_task(radio._reconnect_loop())
+            await asyncio.wait_for(radio._reconnect_task, timeout=5.0)
+        events: list[dict[str, Any]] = []
+        while not q.empty():
+            events.append(q.get_nowait())
+        conn = [e for e in events if e.get("name") == "connection_status"]
+        assert [e["data"]["state"] for e in conn] == [
+            "reconnecting",
+            "reconnecting",
+            "connected",
+        ]
+        assert [e["data"]["attempt"] for e in conn] == [1, 2, 2]
+        assert conn[0]["data"]["next_retry_seconds"] == 0.1
+        assert conn[-1]["data"]["next_retry_seconds"] is None
+        srv.unregister_control_event_queue(q)
+        # stop() detaches — the radio must not keep a stale server reference.
+        srv._detach_reconnect_status_listener()
+        assert radio._on_reconnect_status is None

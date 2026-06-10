@@ -811,6 +811,8 @@ class WebServer:
         self._audio_bridge: "AudioBridge | None" = None
         # AudioSession whose liveness events are forwarded to WS (MOR-581)
         self._watched_audio_session: AudioSession | None = None
+        # Latest reconnect status forwarded from the radio (MOR-594)
+        self._connection_status: dict[str, Any] | None = None
         # Scope health monitor
         self._scope_last_nonzero: float = 0.0
         self._scope_health_task: asyncio.Task[None] | None = None
@@ -1898,12 +1900,40 @@ class WebServer:
     def _on_audio_session_event(self, event: "AudioSessionEvent") -> None:
         self.broadcast_event("audio_session", _audio_session_event_json(event))
 
+    def _attach_reconnect_status_listener(self) -> None:
+        """Forward radio reconnect-status updates to control WS clients and
+        the runtime payload (MOR-594). Local-only — the existing WS surface,
+        no telemetry."""
+        radio = self._radio
+        setter = (
+            getattr(radio, "set_reconnect_status_callback", None)
+            if radio is not None
+            else None
+        )
+        if callable(setter):
+            setter(self._on_reconnect_status)
+
+    def _detach_reconnect_status_listener(self) -> None:
+        radio = self._radio
+        setter = (
+            getattr(radio, "set_reconnect_status_callback", None)
+            if radio is not None
+            else None
+        )
+        if callable(setter):
+            setter(None)
+
+    def _on_reconnect_status(self, status: dict[str, Any]) -> None:
+        self._connection_status = dict(status)
+        self.broadcast_event("connection_status", dict(status))
+
     async def start(self) -> None:
         """Start the HTTP/WS listener and RadioPoller (if radio is connected)."""
         from .web_startup import start_web_server  # noqa: TID251
 
         self._stopping = False
         self._attach_audio_session_listener()
+        self._attach_reconnect_status_listener()
         await start_web_server(self)
 
     # ------------------------------------------------------------------
@@ -1985,6 +2015,7 @@ class WebServer:
 
         self._stopping = True
         self._detach_audio_session_listener()
+        self._detach_reconnect_status_listener()
         await stop_web_server(self)
 
     async def serve_forever(self) -> None:
@@ -2442,6 +2473,25 @@ class WebServer:
             "lastEvent": None if event is None else _audio_session_event_json(event),
         }
 
+    def _runtime_connection_payload(self) -> dict[str, Any]:
+        """Connection/reconnect status block for the runtime payload (MOR-594).
+
+        Mirrors the latest reconnect-status callback payload; before any
+        status arrives it is derived from the radio's ``connected`` flag.
+        """
+        status = self._connection_status
+        if status is not None:
+            return dict(status)
+        radio = self._radio
+        connected = (
+            bool(getattr(radio, "connected", False)) if radio is not None else False
+        )
+        return {
+            "state": "connected" if connected else "disconnected",
+            "attempt": 0,
+            "next_retry_seconds": None,
+        }
+
     def _state_acquisition_diagnostics_payload(self) -> dict[str, Any]:
         radio = self._radio
         scheduler = (
@@ -2489,6 +2539,7 @@ class WebServer:
                 "bridge": self._runtime_bridge_payload(),
                 "audioBus": self._runtime_audio_bus_payload(),
                 "audioSession": self._runtime_audio_session_payload(),
+                "connection": self._runtime_connection_payload(),
                 "stateAcquisition": self._state_acquisition_diagnostics_payload(),
                 "lastError": self._runtime_last_error,
             },

@@ -30,6 +30,33 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+def _emit_reconnect_status(
+    radio: IcomRadio,
+    state: str,
+    attempt: int,
+    next_retry_seconds: float | None,
+) -> None:
+    """Best-effort reconnect-status notification (MOR-594).
+
+    A raising callback must never break the watchdog/reconnect path, so
+    failures are logged at debug level and swallowed — mirroring how
+    ``_on_reconnect`` is invoked after a soft reconnect.
+    """
+    callback = getattr(radio, "_on_reconnect_status", None)
+    if callback is None:
+        return
+    try:
+        callback(
+            {
+                "state": state,
+                "attempt": attempt,
+                "next_retry_seconds": next_retry_seconds,
+            }
+        )
+    except Exception:
+        logger.debug("reconnect: status callback failed", exc_info=True)
+
+
 async def watchdog_loop(radio: IcomRadio) -> None:
     """Monitor connection health via transport packet queue activity.
 
@@ -82,6 +109,13 @@ async def watchdog_loop(radio: IcomRadio) -> None:
                     idle,
                 )
                 radio._conn_state = RadioConnectionState.RECONNECTING
+                # Surface the trigger immediately — first attempt is imminent.
+                _emit_reconnect_status(
+                    radio,
+                    "reconnecting",
+                    attempt=1,
+                    next_retry_seconds=radio._reconnect_delay,
+                )
                 radio._civ_runtime.advance_generation("watchdog-timeout")
                 radio._reconnect_task = asyncio.create_task(radio._reconnect_loop())
                 return
@@ -97,6 +131,9 @@ async def reconnect_loop(radio: IcomRadio) -> None:
         while radio._conn_state != RadioConnectionState.DISCONNECTED:
             attempt += 1
             logger.info("Reconnect attempt %d (delay=%.1fs)", attempt, delay)
+            _emit_reconnect_status(
+                radio, "reconnecting", attempt=attempt, next_retry_seconds=delay
+            )
             try:
                 radio._civ_runtime.advance_generation("reconnect-attempt")
                 # Capture audio state for auto-recovery.
@@ -145,6 +182,9 @@ async def reconnect_loop(radio: IcomRadio) -> None:
                 radio._ctrl_transport = IcomTransport()
                 await radio.connect()
                 logger.info("Reconnected successfully after %d attempts", attempt)
+                _emit_reconnect_status(
+                    radio, "connected", attempt=attempt, next_retry_seconds=None
+                )
                 if radio._auto_recover_audio and audio_snapshot is not None:
                     await radio._audio_runtime.recover(audio_snapshot)
                 return
@@ -155,6 +195,10 @@ async def reconnect_loop(radio: IcomRadio) -> None:
                     exc,
                 )
                 radio._conn_state = RadioConnectionState.DISCONNECTED
+                # Do not leave the surfaced status stuck at "reconnecting".
+                _emit_reconnect_status(
+                    radio, "disconnected", attempt=attempt, next_retry_seconds=None
+                )
                 return
             except Exception as exc:
                 radio._conn_state = RadioConnectionState.RECONNECTING
