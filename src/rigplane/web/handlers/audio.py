@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING, Any, Callable, Protocol, cast
 
 from ..._audio_codecs import decode_ulaw_to_pcm16
 from ..._audio_transcoder import PcmOpusTranscoder, create_pcm_opus_transcoder
+from ...audio.bus import STAGE_RX_POST_DSP
 from ...audio.usb_driver import AudioAlreadyStartedError
 from ...dsp.tap_registry import TapHandle, TapRegistry
 from ...env_config import (
@@ -129,8 +130,14 @@ class AudioBroadcaster:
         # One-shot flag so the Opus-DSP warning log fires at most once per
         # broadcaster lifetime, regardless of whether DSP or codec is set first.
         self._dsp_opus_warned: bool = False
-        # Multi-consumer PCM tap registry (replaces single _pcm_tap)
-        self._tap_registry = TapRegistry()
+        # Named RX tap stages (MOR-565): the broadcaster hosts ``rx.post_dsp``
+        # — decoded PCM16 after the optional DSP pipeline. This is the
+        # pre-existing multi-consumer tap registry, renamed into the
+        # stage scheme; ``_tap_registry`` stays as a compat alias for
+        # existing consumers (CW auto-tuner, tests). The pre-DSP ``rx.pcm``
+        # stage lives on AudioBus (see ``rigplane.audio.bus``).
+        self._stage_taps: dict[str, TapRegistry] = {STAGE_RX_POST_DSP: TapRegistry()}
+        self._tap_registry = self._stage_taps[STAGE_RX_POST_DSP]
         self._legacy_tap_handle: TapHandle | None = None
         # Flag raised by invalidate_codec_state(); checked at top of each
         # _relay_loop iteration to pick up mid-stream mono↔stereo switches
@@ -201,12 +208,22 @@ class AudioBroadcaster:
                 "audio-broadcaster: client count callback failed", exc_info=True
             )
 
+    def taps(self, stage: str) -> TapRegistry:
+        """Return the :class:`TapRegistry` for a named RX stage (MOR-565).
+
+        Only ``STAGE_RX_POST_DSP`` is hosted on the broadcaster; reserved
+        stage names raise ``KeyError``. Same accessor shape as
+        :meth:`rigplane.audio.bus.AudioBus.taps`.
+        """
+        return self._stage_taps[stage]
+
     def set_pcm_tap(self, callback: "Callable[[bytes], None] | None") -> None:
         """Register a tap that receives decoded PCM16 audio data.
 
-        Compatibility wrapper around :class:`TapRegistry`. Manages a
-        single "legacy" tap slot. For new consumers prefer
-        ``_tap_registry.register()`` directly.
+        Compatibility wrapper around :class:`TapRegistry` (Pro-stable
+        surface). Manages a single "legacy" tap slot on the
+        ``rx.post_dsp`` stage. For new consumers prefer
+        ``taps(STAGE_RX_POST_DSP).register()`` directly.
 
         Args:
             callback: Function receiving PCM16 bytes, or None to unregister.
