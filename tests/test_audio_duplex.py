@@ -335,11 +335,14 @@ class _FakeRadio:
 
 
 class _FakeSubscription:
+    def __init__(self) -> None:
+        self.active = False  # mirrors AudioSubscription.active (MOR-577)
+
     async def start(self) -> None:
-        pass
+        self.active = True
 
     async def aclose(self) -> None:
-        pass
+        self.active = False
 
     def __aiter__(self) -> "_FakeSubscription":
         return self
@@ -352,6 +355,8 @@ class _FakeSubscription:
 
 
 class _FakeBus:
+    rx_active = True  # mirrors AudioBus.rx_active (read by the session)
+
     def subscribe(self, *, name: str) -> _FakeSubscription:
         return _FakeSubscription()
 

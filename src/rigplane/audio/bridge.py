@@ -53,6 +53,7 @@ from .backend import (
     RxStream,
     TxStream,
 )
+from .session import AudioSession, AudioSessionState, RxSubscription, TxLease
 
 if TYPE_CHECKING:
     from rigplane.radio_protocol import AudioCapable
@@ -272,10 +273,6 @@ class AudioBridge:
         self._frame_ms = frame_ms
         self._tx_enabled = tx_enabled
         self._tx_started = False
-        # True when TX was armed via the neutral AudioTransport surface
-        # (``start_tx``/``push_tx``/``stop_tx``, MOR-545); False on the
-        # legacy ``*_audio_tx_pcm`` path.
-        self._use_neutral_tx = False
         self._tx_executor = tx_executor
         self._backend: AudioBackend = backend or PortAudioBackend()
 
@@ -308,7 +305,15 @@ class AudioBridge:
         self._tx_task: asyncio.Task[None] | None = None
         self._loop: asyncio.AbstractEventLoop | None = None
         self._decoder: Any = None
-        self._subscription: Any = None
+        # Radio-side demand handles (MOR-577): the bridge declares RX demand
+        # + a TX lease on the AudioSession (which wraps the radio's shared
+        # AudioBus); the SESSION owns the bus-subscribe vs radio-TX-arm
+        # ordering, read from the transport's ``audio_setup_order``
+        # descriptor (MOR-575). The legacy ``*_audio_tx_pcm`` TX path (no
+        # neutral surface) stays bridge-owned: ``_tx_lease`` is None there.
+        self._session: AudioSession | None = None
+        self._rx_sub: RxSubscription | None = None
+        self._tx_lease: TxLease | None = None
         self._samples_per_frame = sample_rate * frame_ms // 1000
         self._tx_queue: asyncio.Queue[bytes] = asyncio.Queue(maxsize=64)
 
@@ -432,7 +437,7 @@ class AudioBridge:
     # ------------------------------------------------------------------
 
     async def _setup_streams(self) -> None:
-        """Find device, open streams, subscribe to bus, create tasks.
+        """Find device, declare session demands, open streams, create tasks.
 
         Raises on failure (RuntimeError, ValueError, OSError, etc.).
         """
@@ -501,31 +506,27 @@ class AudioBridge:
         else:
             self._decoder = None
 
-        # --- Bus-subscribe vs radio-TX-arm order is backend-dependent
-        # (MOR-559); the first bus subscriber triggers radio RX start:
+        # --- Radio-side RX/TX demand is DECLARED on the AudioSession
+        # (MOR-577, ADR §3.3); the session owns the bus-subscribe vs
+        # radio-TX-arm order, read from the transport's ``audio_setup_order``
+        # descriptor (MOR-575):
         #
-        # - "full"/missing (LAN, MOR-556): subscribe BEFORE arming TX. The
-        #   LAN stream state machine supports RX-then-TX only — arming TX
-        #   first puts it in TRANSMITTING and the later RX start raises,
-        #   leaving RX dead and the packet queue undrained (#1735 regression).
-        # - "exclusive" (same-device macOS USB CODEC, MOR-531/534): arm TX
-        #   FIRST and subscribe only after the device streams are up. Adding
-        #   the TX leg to an already-running RX capture on one C-Media device
-        #   triggers CoreAudio AUHAL paramErr -50 and silently kills the
-        #   capture; the reverse order (RX onto a running TX leg) is the
-        #   MOR-531 live-validated path.
-        rx_first = getattr(self._radio, "audio_duplex_mode", "full") != "exclusive"
-        if rx_first:
-            await self._subscribe_bus()
+        # - "rx_first" (LAN, MOR-556): RX up, then arm TX — arming TX first
+        #   puts the LAN stream in TRANSMITTING and the later RX start
+        #   raises, leaving RX dead and the queue undrained (#1735).
+        # - "atomic"/"tx_first" (same-device macOS USB CODEC, MOR-531/559):
+        #   the TX leg comes up before RX joins the device — TX onto an
+        #   already-running RX capture triggers CoreAudio AUHAL paramErr
+        #   -50 and silently kills the capture.
+        #
+        # The TX lease is acquired BEFORE the RX subscription: at IDLE the
+        # session defers arming to the RX-demand edge and then sequences
+        # both legs in the declared order under its single lock.
+        session = self._session
+        if session is None:
+            session = AudioSession(self._radio)  # wraps radio.audio_bus
+            self._session = session
 
-        # --- Arm the radio TX path BEFORE choosing the device-stream topology.
-        # The radio may reject TX (serial backend with no USB-audio TX path):
-        # degrade to RX-only and use a plain output stream, never a duplex one
-        # (MOR-242). Only when TX is armed AND the capture leg targets the SAME
-        # device as the playback leg do we open ONE full-duplex stream (MOR-531):
-        # separate playback + capture on one C-Media CODEC fails with AUHAL -50.
-        tx_armed = False
-        self._use_neutral_tx = False
         if self._tx_enabled:
             start_tx = getattr(self._radio, "start_tx", None)
             tx_codec = getattr(self._radio, "audio_tx_codec", None)
@@ -543,31 +544,53 @@ class AudioBridge:
                     self._label,
                     getattr(tx_codec, "name", tx_codec),
                 )
+            elif start_tx is not None:
+                self._tx_lease = await session.acquire_tx("audio-bridge")
+
+        self._rx_sub = await session.subscribe_rx("audio-bridge")
+
+        # The radio may reject TX (serial backend with no USB-audio TX
+        # path): degrade to RX-only and use a plain output stream, never a
+        # duplex one (MOR-242). Only when TX is armed AND the capture leg
+        # targets the SAME device as the playback leg do we open ONE
+        # full-duplex stream (MOR-531): separate playback + capture on one
+        # C-Media CODEC fails with AUHAL -50.
+        tx_armed = False
+        if self._tx_lease is not None:
+            if session.state is AudioSessionState.RX_TX:
+                tx_armed = True
+                self._tx_started = True
             else:
-                try:
-                    if start_tx is not None:
-                        # Neutral AudioTransport surface (MOR-545): the
-                        # backend owns format resolution from its
-                        # negotiated contract — no format arguments.
-                        await start_tx()
-                    else:
-                        await self._radio.start_audio_tx_pcm(
-                            sample_rate=self._sample_rate,
-                            channels=self._channels,
-                            frame_ms=self._frame_ms,
-                        )
-                except (RuntimeError, NotImplementedError) as exc:
-                    self._tx_enabled = False
-                    self._tx_started = False
-                    logger.warning(
-                        "%s: radio rejected TX start (%s); running RX-only",
-                        self._label,
-                        exc,
-                    )
-                else:
-                    tx_armed = True
-                    self._tx_started = True
-                    self._use_neutral_tx = start_tx is not None
+                # The session's deferred TX arm failed (radio rejected TX):
+                # drop the lease and degrade to RX-only — RX stays live.
+                await self._tx_lease.release()
+                self._tx_lease = None
+                self._tx_enabled = False
+                self._tx_started = False
+                logger.warning(
+                    "%s: radio rejected TX start; running RX-only",
+                    self._label,
+                )
+        elif self._tx_enabled:
+            # Legacy ``*_audio_tx_pcm`` TX path (no neutral AudioTransport
+            # surface) — armed directly, outside the session.
+            try:
+                await self._radio.start_audio_tx_pcm(
+                    sample_rate=self._sample_rate,
+                    channels=self._channels,
+                    frame_ms=self._frame_ms,
+                )
+            except (RuntimeError, NotImplementedError) as exc:
+                self._tx_enabled = False
+                self._tx_started = False
+                logger.warning(
+                    "%s: radio rejected TX start (%s); running RX-only",
+                    self._label,
+                    exc,
+                )
+            else:
+                tx_armed = True
+                self._tx_started = True
 
         # Same-device duplex only for a REAL CODEC: a virtual loopback
         # (BlackHole/VB-Cable/PipeWire) has no AUHAL -50 limitation and stays on
@@ -601,11 +624,6 @@ class AudioBridge:
             )
             await self._rx_stream.start()
 
-        # Exclusive same-device duplex: the radio TX leg is armed and the
-        # device streams are open — radio RX may start now (MOR-559).
-        if not rx_first:
-            await self._subscribe_bus()
-
         # --- TX path: device input → radio (capture) ---
         if tx_armed:
             self._tx_queue = asyncio.Queue(maxsize=64)
@@ -627,27 +645,13 @@ class AudioBridge:
         # Start the RX playback loop last so the streams above are live.
         self._rx_task = asyncio.create_task(self._rx_loop())
 
-    async def _subscribe_bus(self) -> None:
-        """Subscribe to the radio's AudioBus; first subscriber starts radio RX.
-
-        The bus swallows radio RX-start failures (logs "audio-bus: failed to
-        start RX" and keeps ``rx_active`` False) — surface them here instead
-        of letting the bridge report "started" with dead capture (MOR-559).
-        """
-        bus = self._radio.audio_bus
-        self._subscription = bus.subscribe(name="audio-bridge")
-        await self._subscription.start()
-        if getattr(bus, "rx_active", True) is False:
-            raise RuntimeError(
-                "radio RX failed to start for the bridge subscription "
-                "(AudioBus.rx_active is False after subscribe); see "
-                "'audio-bus: failed to start RX' in the log"
-            )
-
     async def _teardown_streams(self) -> None:
-        """Cancel tasks and stop streams.
+        """Cancel tasks, release session demands, stop device streams.
 
-        Does NOT call ``radio.stop_audio_tx_pcm()`` — that belongs in
+        Radio-side teardown goes through the AudioSession: releasing the RX
+        demand makes the session stop the radio TX leg BEFORE dropping RX
+        (MOR-574) — RX is never stopped from a TRANSMITTING transport. The
+        legacy ``*_audio_tx_pcm`` TX stop (no session lease) belongs in
         :meth:`stop` only.
         """
         if self._rx_task and not self._rx_task.done():
@@ -658,10 +662,8 @@ class AudioBridge:
                 pass
         self._rx_task = None
 
-        if self._subscription is not None:
-            await self._subscription.aclose()
-            self._subscription = None
-
+        # Cancel the TX loop BEFORE releasing the demands so it cannot push
+        # a captured frame into a just-stopped radio TX path.
         if self._tx_task and not self._tx_task.done():
             self._tx_task.cancel()
             try:
@@ -669,6 +671,16 @@ class AudioBridge:
             except asyncio.CancelledError:
                 pass
         self._tx_task = None
+
+        # Release the RX demand with the TX lease still held: the session
+        # sequences stop_tx → RX drop (MOR-574); the lease release after
+        # that is a no-op state-wise.
+        if self._rx_sub is not None:
+            await self._rx_sub.release()
+            self._rx_sub = None
+        if self._tx_lease is not None:
+            await self._tx_lease.release()
+            self._tx_lease = None
 
         if self._tx_stream is not None:
             try:
@@ -787,8 +799,8 @@ class AudioBridge:
         try:
             await self._setup_streams()
         except Exception:
-            # _setup_streams may fail AFTER the bus subscription is registered
-            # (the rx-first path subscribes early, MOR-556). Tear down before
+            # _setup_streams may fail AFTER the session demands are declared
+            # (device streams open after subscribe_rx). Tear down before
             # re-raising — stop() early-returns on IDLE, so a leaked
             # subscriber would keep radio RX running with no consumer
             # draining the queue (MOR-560).
@@ -835,14 +847,8 @@ class AudioBridge:
                 pass
         self._reconnect_task = None
 
-        # Stop the radio TX leg BEFORE _teardown_streams() drops the RX
-        # demand (closes the bus subscription) — teardown is the inverse of
-        # the MOR-556 setup order. On LAN, closing the subscription while
-        # the stream is TRANSMITTING makes ``stop_rx`` early-return; the
-        # later ``stop_tx`` would then resurrect RECEIVING with a live RX
-        # task and zero bus subscribers — a leaked RX stream (MOR-574).
         # Cancel the bridge TX loop first so it cannot push a captured
-        # frame into the just-stopped radio TX path.
+        # frame into a just-stopped radio TX path.
         if self._tx_task and not self._tx_task.done():
             self._tx_task.cancel()
             try:
@@ -853,15 +859,18 @@ class AudioBridge:
 
         if self._tx_started:
             self._tx_started = False
-            try:
-                stop_tx = getattr(self._radio, "stop_tx", None)
-                if self._use_neutral_tx and stop_tx is not None:
-                    # Neutral AudioTransport surface (MOR-545).
-                    await stop_tx()
-                else:
+            if self._tx_lease is None:
+                # Legacy ``*_audio_tx_pcm`` TX path — armed outside the
+                # session, stopped here BEFORE teardown drops the RX
+                # demand (MOR-574). Session-managed TX needs no call:
+                # _teardown_streams releases the demands and the session
+                # stops radio TX before dropping RX — on LAN the reverse
+                # order leaks a running RX stream (``stop_rx``
+                # early-returns while TRANSMITTING).
+                try:
                     await self._radio.stop_audio_tx_pcm()
-            except Exception:
-                logger.debug("%s: stop TX error", self._label, exc_info=True)
+                except Exception:
+                    logger.debug("%s: stop TX error", self._label, exc_info=True)
 
         await self._teardown_streams()
 
@@ -922,9 +931,12 @@ class AudioBridge:
         return self._rx_stream
 
     async def _rx_loop(self) -> None:
-        """Read packets from AudioBus subscription, decode, write to device."""
+        """Read packets from the session RX subscription, decode, write to device."""
+        sub = self._rx_sub
+        if sub is None:  # pragma: no cover — task is created after subscribe_rx
+            return
         try:
-            async for packet in self._subscription:
+            async for packet in sub:
                 if not self._running:
                     break
                 if packet is None:
@@ -1029,12 +1041,12 @@ class AudioBridge:
                     )
 
                 try:
-                    push_tx = getattr(self._radio, "push_tx", None)
-                    if self._use_neutral_tx and push_tx is not None:
-                        # Neutral AudioTransport surface (MOR-545); only
-                        # armed when the negotiated TX codec is raw PCM —
-                        # see the guard in _setup_streams.
-                        await push_tx(pcm_bytes)
+                    lease = self._tx_lease
+                    if lease is not None:
+                        # Session-managed TX lease (MOR-577); only acquired
+                        # when the negotiated TX codec is raw PCM — see the
+                        # guard in _setup_streams.
+                        await lease.push(pcm_bytes)
                     else:
                         await self._radio.push_audio_tx_pcm(pcm_bytes)
                 except (RuntimeError, NotImplementedError) as exc:
