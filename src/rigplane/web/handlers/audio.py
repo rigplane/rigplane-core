@@ -34,7 +34,6 @@ from ..websocket import WS_OP_BINARY, WS_OP_TEXT  # noqa: TID251
 
 if TYPE_CHECKING:
     from ...audio.session import TxLease
-    from ...capabilities import CAP_AUDIO as _CAP_AUDIO_TYPE  # noqa: F401
     from ...dsp.pipeline import DSPPipeline
     from ...radio_protocol import Radio
 
