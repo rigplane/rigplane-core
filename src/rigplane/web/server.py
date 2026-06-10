@@ -62,6 +62,7 @@ from ..core.state_store import StateSnapshot, StateStore
 from ..radio_state import RadioState
 from ..capabilities import CAP_AUDIO, CAP_SCOPE
 from ..exceptions import TimeoutError as RigplaneTimeoutError
+from ..audio.bus import STAGE_RX_POST_DSP
 from ..audio.session import AudioSession, AudioSessionEvent
 from ..audio_analyzer import AudioAnalyzer
 from ..audio_fft_scope import AudioFftScope
@@ -784,9 +785,9 @@ class WebServer:
         self._audio_analyzer: AudioAnalyzer | None = None
         if radio is not None and _has_audio:
             self._audio_analyzer = AudioAnalyzer()
-            self._audio_analyzer_tap = self._audio_broadcaster._tap_registry.register(
-                "audio-analyzer", self._audio_analyzer.feed_audio
-            )
+            self._audio_analyzer_tap = self._audio_broadcaster.taps(
+                STAGE_RX_POST_DSP
+            ).register("audio-analyzer", self._audio_analyzer.feed_audio)
         self._command_queue: CommandQueue = CommandQueue()
         self._radio_poller: RadioPoller | None = None
         self._state_poller: Any | None = None  # StatePoller (lazy, optional)
