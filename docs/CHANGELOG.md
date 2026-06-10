@@ -11,6 +11,66 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Breaking changes
+
+- **CLI: option abbreviations are no longer accepted.** The `rigplane`
+  argument parser now sets `allow_abbrev=False`, so abbreviated long options
+  (e.g. `--ser-port` for `--serial-port`) are rejected — scripts must spell
+  options out in full. This also fixes `rigplane discover --serial` exiting
+  with an argparse ambiguity error on Python 3.11, where prefix matching
+  collided with the global `--serial-port`/`--serial-baud`/`--serial-ptt-mode`
+  options (MOR-589, #1776, 878ff355).
+
+### Added
+
+- Adaptive audio egress codec (opt-in): new `WebConfig.audio_adaptive_egress`
+  flag, **default off**. When enabled, the server switches each browser
+  client between PCM16 and Opus per connection based on observed link
+  quality (client-reported playback underruns + server-side send-queue
+  drops), with dwell windows to prevent flapping; bridge/digital paths stay
+  lossless. With the flag off (the default) egress behavior is unchanged and
+  a client's codec never changes mid-stream (MOR-588, #1775, 1cc5e72a;
+  link-quality `audio_stats` uplink MOR-585, #1773, 2dc28f84).
+
+### Changed
+
+- Per-client web RX audio codec: each browser client now gets its own egress
+  codec (client preference → profile policy → PCM16 default) instead of one
+  aggregate codec for all clients — a PCM16-only client no longer forces
+  PCM16 on an Opus-capable client. After `audio_start` the server sends an
+  advisory `audio_format` ack `{codec, sample_rate, channels, frame_ms}`;
+  legacy clients ignore it and keep header-driven decode (MOR-584, #1771,
+  ddd8c232).
+- Audio RX-start failures now surface instead of being swallowed: a failed
+  radio RX start raises to the demanding consumer, and the web audio handler
+  sends an `error` envelope to subscribed clients instead of presenting a
+  "subscribed" stream that never delivers frames (MOR-582, #1769, 593e0815).
+- Audio TX lifecycle is now owned by a radio-owned `AudioSession`: web TX
+  and the audio bridge share one refcounted session per radio, so a stray
+  `audio_stop` from one consumer can no longer disarm another consumer's
+  active TX (MOR-576/577/579/580, #1763/#1765/#1766/#1767). Related internal
+  work in this cycle — session health watchdog + liveness events (MOR-581),
+  unified reconnect recovery via `AudioSession.reestablish()` (MOR-586), RX
+  tap surface (MOR-565), additive `PcmFrame` decode-at-ingress carrier
+  (MOR-591) — changes no default behavior.
+- Audio bridge degrades to RX-only (with a warning) when a neutral-surface
+  radio negotiates a non-PCM TX codec, instead of pushing mis-typed raw PCM;
+  no shipping backend produces this configuration (MOR-545, #1749, a52263d9).
+
+### Fixed
+
+- FTX-1 / Yaesu CAT: `start_audio_tx_opus` was a silent no-op, so the web
+  handler's Opus TX branch did nothing on Yaesu backends; it now arms real
+  TX via the neutral transport surface (MOR-541, #1745, d9b8caad).
+- Web audio TX double-start: the benign poller-first re-arm on USB-audio
+  radios (`AudioDriverLifecycleError("TX stream already started.")`) is now
+  tolerated instead of closing the audio WebSocket (MOR-544, #1748,
+  438930e7).
+- Audio bridge stop ordering: stopping the bridge with TX armed leaked a
+  running LAN RX stream (RX demand was dropped before radio TX was stopped);
+  the bridge now stops TX first, then tears down RX (MOR-574, #1762,
+  3f08f659).
+
 ## [2.8.0] — 2026-06-02
 
 ### Added

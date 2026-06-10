@@ -43,9 +43,9 @@ never stopped from a TRANSMITTING transport. TX never runs without RX
 (there is no TX_ONLY state); leases held across an RX gap are re-armed
 when RX demand returns.
 
-This module is consumed by NOTHING in src yet — wiring the bridge, the
-poller PTT hooks, and the web handlers through the session is steps
-9/11/12 of epic MOR-562.
+As-built, the session is consumed via the radio-owned singleton
+``radio.audio_session`` (MOR-579) by the AudioBridge (MOR-577), the web
+TX handler (MOR-580), and the reconnect/recovery path (MOR-586).
 """
 
 from __future__ import annotations
