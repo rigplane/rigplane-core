@@ -15,10 +15,11 @@ MOR-307/#104 (WebRTC DataChannel transport)
 **Format model:** `docs/plans/2026-04-12-target-frontend-architecture.md`
 **Base commit:** `467f40bd` (main)
 
-## As-built status (2026-06-10, main @ `1cc5e72a`)
+## As-built status (2026-06-10, main @ `314c0df9`)
 
 The MOR-562 epic is **implemented**: 17 of the 20 §4 migration steps plus one
-added step (9b) are merged to `main`; the exceptions are steps 11, 12, and 15
+added step (9b) are fully merged to `main`, and step 15 is half-merged (PR-1
+of 2, MOR-591); the remaining exceptions are steps 11 and 12, step 15 PR-2,
 plus the live hardware re-validations, all listed below. Where the realized
 code deviates from a step's "files (indicative)" column, the merged PR is
 authoritative (notable deviations noted inline).
@@ -40,6 +41,7 @@ authoritative (notable deviations noted inline).
 | 10 — bus surfaces RX-start failures | MOR-582 | #1769 | Subscriber rollback in the bus + broadcaster error envelope to WS clients |
 | 13 — web TX through session lease | MOR-580 | #1767 | `session.acquire_tx("web")` |
 | 14 — health watchdog + events | MOR-581 | #1768 | ~1 s watchdog on the bus heartbeat; ~3 s silence ⇒ RECOVERING + local `AudioSessionEvent` |
+| 15 (PR-1 of 2) — `PcmFrame` carrier + LAN decode-at-ingress | MOR-591 | #1778 | Additive dual-publish: legacy `AudioPacket` path byte-identical; decoded `PcmFrame` fans out to registered PCM taps; decode skipped with no taps. PR-2 (decoder removal) is MOR-592, deferred |
 | 16 — `AudioDeviceConfig` carrier | MOR-578 | #1764 | Frozen dataclass in `audio/backend.py` |
 | 17 — per-connection egress codecs | MOR-584 | #1771 | Per-client encoder pool + `audio_format` ack |
 | 18 — client link-quality uplink | MOR-585 | #1773 | `audio_stats` every ~1.5 s per client |
@@ -62,11 +64,14 @@ over fakes.
   re-arms RX for every duplex mode — the one remaining audio-arming path not
   routed through `AudioSession`. The session's `_REARM_RX_AFTER_TX_DROP` seam
   is pre-built for the flip.
-- **Step 15 — decode-at-ingress / `PcmFrame` (MOR-591, open).** The
+- **Step 15 PR-2 — per-consumer decoder removal + the #762 fix (MOR-592,
+  deferred).** PR-1 (MOR-591, #1778, `314c0df9`) merged the additive
+  `PcmFrame` carrier and LAN decode-at-ingress dual-publish; the
   per-consumer decoders are still in place (bridge opuslib decoder,
-  broadcaster uLaw branch, Opus DSP/tap gates — #762). Dormant in practice:
-  every shipping default delivers PCM natively. Planned as additive PR-1
-  (carrier + dual-publish) then PR-2 (per-consumer-decoder removal).
+  broadcaster uLaw branch, Opus DSP/tap gates — #762) until consumers read
+  `PcmFrame`. Dormant in practice: every shipping default delivers PCM
+  natively. PR-2 is the [BC] half (#762 pass-through replaced by re-encode;
+  FFT scope lights up on Opus-native radios).
 - **All live hardware re-validations** (radio offline 2026-06-10): IC-7610
   LAN full-duplex + reconnect `reestablish()`, FTX-1 exclusive duplex +
   WSJT-X FT8 through the bridge, browser TX over the session lease, adaptive
