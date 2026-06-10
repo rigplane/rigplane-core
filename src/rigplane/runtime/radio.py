@@ -765,6 +765,8 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
         self._opus_rx_jitter_depth: int = 5
         # AudioBus — lazy-initialized pub/sub for multi-consumer audio
         self._audio_bus: Any = None
+        # AudioSession — lazy-initialized radio-owned singleton (MOR-579)
+        self._audio_session: Any = None
         self._scope_assembler: ScopeAssembler = ScopeAssembler()
         self._scope_callback: Callable[[ScopeFrame], Any] | None = None
         # Raw CI-V pipe listeners (MOR-164): receive inbound on-wire frame bytes.
@@ -1020,6 +1022,20 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
 
             self._audio_bus = AudioBus(self)
         return self._audio_bus
+
+    @property
+    def audio_session(self) -> Any:
+        """Lazy-initialized radio-owned AudioSession singleton (MOR-579).
+
+        ONE session per radio, shared by every consumer (bridge, web TX
+        handler, poller PTT hooks) so the TX refcount can never split
+        across independent sessions. Wraps the shared :attr:`audio_bus`.
+        """
+        if self._audio_session is None:
+            from rigplane.audio.session import AudioSession
+
+            self._audio_session = AudioSession(self)
+        return self._audio_session
 
     @property
     def profile(self) -> RadioProfile:

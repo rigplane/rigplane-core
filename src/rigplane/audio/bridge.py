@@ -524,7 +524,14 @@ class AudioBridge:
         # both legs in the declared order under its single lock.
         session = self._session
         if session is None:
-            session = AudioSession(self._radio)  # wraps radio.audio_bus
+            # Prefer the radio-owned session singleton (MOR-579): ONE
+            # session per radio shared by all consumers, so TX refcounts
+            # never split across independent sessions. The duck-typed
+            # fallback keeps bare radio doubles (no ``audio_session``
+            # property) working with a bridge-local session.
+            session = getattr(self._radio, "audio_session", None) or AudioSession(
+                self._radio
+            )
             self._session = session
 
         if self._tx_enabled:

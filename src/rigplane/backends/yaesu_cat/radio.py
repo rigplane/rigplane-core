@@ -24,6 +24,7 @@ from .transport import YaesuCatTransport
 
 if TYPE_CHECKING:
     from ..._poller_types import CommandQueue
+    from ...audio.session import AudioSession
     from ...audio.usb_driver import UsbAudioDriver
     from ...audio_bus import AudioBus
     from ...core.state_pipeline_contracts import Observation
@@ -193,6 +194,7 @@ class YaesuCatRadio:
         self._transport = YaesuCatTransport(device=device, baudrate=baudrate)
         self._state = RadioState()
         self._audio_bus: AudioBus | None = None
+        self._audio_session: AudioSession | None = None
         self._audio_seq = 0
         self._opus_rx_user_callback: Callable[[AudioPacket | None], None] | None = None
         self._pcm_rx_user_callback: Callable[[bytes | None], None] | None = None
@@ -396,6 +398,20 @@ class YaesuCatRadio:
 
             self._audio_bus = AudioBus(self)
         return self._audio_bus
+
+    @property
+    def audio_session(self) -> "AudioSession":
+        """Radio-owned AudioSession singleton (MOR-579).
+
+        ONE session per radio, shared by every consumer (bridge, web TX
+        handler, poller PTT hooks) so the TX refcount can never split
+        across independent sessions. Wraps the shared :attr:`audio_bus`.
+        """
+        if self._audio_session is None:
+            from ...audio.session import AudioSession
+
+            self._audio_session = AudioSession(self)
+        return self._audio_session
 
     # -- Neutral AudioTransport surface (MOR-532 epic, MOR-541) --------------
 
