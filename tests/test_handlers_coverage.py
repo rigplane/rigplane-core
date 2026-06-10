@@ -1222,8 +1222,61 @@ async def test_audio_broadcaster_start_relay_failure() -> None:
 
     bad = AudioBroadcaster(failing_radio)
     await bad._start_relay()
-    # Bus subscription exists but RX failed to start
+    # RX failed to start: not active, and the bus subscription was rolled
+    # back (MOR-582) — no registered-but-silent subscriber remains.
     assert not bus.rx_active
+    assert bus.subscriber_count == 0
+
+
+async def test_audio_broadcaster_start_relay_failure_notifies_ws_client() -> None:
+    """MOR-582: a failed RX start sends an ``error`` envelope to the WS
+    client instead of presenting "subscribed" with dead air forever."""
+    from rigplane.audio_bus import AudioBus
+
+    failing_radio = SimpleNamespace(
+        capabilities={"audio"},
+        audio_codec=AudioCodec.PCM_1CH_16BIT,
+        audio_sample_rate=48_000,
+        start_audio_rx_opus=AsyncMock(side_effect=RuntimeError("start fail")),
+        stop_audio_rx_opus=AsyncMock(),
+    )
+    bus = AudioBus(failing_radio)
+    failing_radio.audio_bus = bus
+
+    ws = SimpleNamespace(send_text=AsyncMock(), is_alive=lambda: True)
+    broadcaster = AudioBroadcaster(failing_radio)
+    queue = await broadcaster.subscribe(ws=ws)
+    assert isinstance(queue, asyncio.Queue)
+    assert not bus.rx_active
+
+    ws.send_text.assert_awaited_once()
+    envelope = decode_json(ws.send_text.await_args.args[0])
+    assert envelope["type"] == "error"
+    assert "RX audio failed to start" in envelope["message"]
+    assert "start fail" in envelope["message"]
+
+
+async def test_audio_broadcaster_subscribe_success_sends_no_error_envelope() -> None:
+    """MOR-582 success path unchanged: no spurious error on normal subscribe."""
+    from rigplane.audio_bus import AudioBus
+
+    radio = SimpleNamespace(
+        capabilities={"audio"},
+        audio_codec=AudioCodec.PCM_1CH_16BIT,
+        audio_sample_rate=48_000,
+        start_audio_rx_opus=AsyncMock(),
+        stop_audio_rx_opus=AsyncMock(),
+    )
+    bus = AudioBus(radio)
+    radio.audio_bus = bus
+
+    ws = SimpleNamespace(send_text=AsyncMock(), is_alive=lambda: True)
+    broadcaster = AudioBroadcaster(radio)
+    queue = await broadcaster.subscribe(ws=ws)
+    assert bus.rx_active
+    ws.send_text.assert_not_awaited()
+    await broadcaster.unsubscribe(queue)
+    await asyncio.sleep(0.05)  # let the scheduled bus unsubscribe complete
 
 
 async def test_audio_broadcaster_without_radio_noops() -> None:
