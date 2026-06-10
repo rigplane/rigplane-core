@@ -5,6 +5,7 @@ import {
   toAmberTelemetryProps,
   toCwProps,
   toDspProps,
+  toModeProps,
   toRfFrontEndProps,
   toTxProps,
 } from '../panel-props';
@@ -463,5 +464,70 @@ describe('AmberTelemetry props (MOR-483: drop dead TEMP tile)', () => {
     const props = toAmberTelemetryProps(makeState());
     expect(props.vdRaw).toBeNull();
     expect(props.idRaw).toBeNull();
+  });
+});
+
+describe('Mode panel MOD-input source (MOR-616)', () => {
+  const caps = { capabilities: ['data_mode'], dataModeCount: 3 } as any;
+
+  function modInputState(overrides: Record<string, unknown> = {}) {
+    return makeState({
+      dataOffModInput: 0,
+      data1ModInput: 3,
+      data2ModInput: 1,
+      data3ModInput: 5,
+      fieldStatus: {
+        dataOffModInput: fieldStatus('available'),
+        data1ModInput: fieldStatus('available'),
+        data2ModInput: fieldStatus('available'),
+        data3ModInput: fieldStatus('available'),
+      },
+      ...overrides,
+    });
+  }
+
+  it('exposes the DATA OFF group source when data mode is off', () => {
+    const props = toModeProps(modInputState(), caps);
+    expect(props.modInputSource).toBe(0);
+    expect(props.hasModInput).toBe(true);
+  });
+
+  it('follows the active receiver into its DATA group (D1 on SUB)', () => {
+    const state = modInputState({ active: 'SUB' });
+    state.sub.dataMode = 1;
+    const props = toModeProps(state, caps);
+    expect(props.modInputSource).toBe(3);
+  });
+
+  it('hides the control without the data_mode capability', () => {
+    const props = toModeProps(modInputState(), { capabilities: [] } as any);
+    expect(props.hasModInput).toBe(false);
+  });
+
+  it('hides the control while the active group is unread (missing)', () => {
+    const props = toModeProps(
+      modInputState({
+        dataOffModInput: null,
+        fieldStatus: { dataOffModInput: fieldStatus('missing', false) },
+      }),
+      caps,
+    );
+    expect(props.hasModInput).toBe(false);
+    expect(props.modInputSource).toBeNull();
+  });
+
+  it('keeps a stale-but-known source visible', () => {
+    const props = toModeProps(
+      modInputState({ fieldStatus: { dataOffModInput: fieldStatus('stale') } }),
+      caps,
+    );
+    expect(props.hasModInput).toBe(true);
+    expect(props.modInputSource).toBe(0);
+  });
+
+  it('defaults to hidden/null when state is missing', () => {
+    const props = toModeProps(null, caps);
+    expect(props.hasModInput).toBe(false);
+    expect(props.modInputSource).toBeNull();
   });
 });

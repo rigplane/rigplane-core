@@ -165,6 +165,9 @@
   "core.mobile.setupButton": "Настройка",
   "core.mobile.closeStepPicker": "Закрыть выбор шага",
 
+  "core.modePanel.modInputLabel": "MOD IN",
+  "core.modePanel.modInputAria": "Источник входной модуляции",
+
   "core.error.transport.timeout.title": "Время ожидания соединения истекло",
   "core.error.transport.timeout.body": "Нет ответа от {host}. Убедитесь, что трансивер включён и доступен.",
   "core.error.literalBrace.example": "Используйте '{'name} для обозначения подстановки.",

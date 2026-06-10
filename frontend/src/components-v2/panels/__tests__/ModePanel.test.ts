@@ -8,11 +8,14 @@ const mockProps = {
   hasDataMode: true,
   dataModeCount: 3,
   dataModeLabels: { '0': 'OFF', '1': 'D1', '2': 'D2', '3': 'D3' } as Record<string, string>,
+  modInputSource: null as number | null,
+  hasModInput: false,
 };
 
 const mockHandlers = {
   onModeChange: vi.fn(),
   onDataModeChange: vi.fn(),
+  onModInputChange: vi.fn(),
 };
 
 vi.mock('$lib/runtime/adapters/panel-adapters', () => ({
@@ -42,8 +45,11 @@ beforeEach(() => {
   mockProps.hasDataMode = true;
   mockProps.dataModeCount = 3;
   mockProps.dataModeLabels = { '0': 'OFF', '1': 'D1', '2': 'D2', '3': 'D3' };
+  mockProps.modInputSource = null;
+  mockProps.hasModInput = false;
   mockHandlers.onModeChange = vi.fn();
   mockHandlers.onDataModeChange = vi.fn();
+  mockHandlers.onModInputChange = vi.fn();
 });
 
 afterEach(() => {
@@ -90,5 +96,51 @@ describe('ModePanel', () => {
     dataButtons.find((b) => b.textContent?.trim() === 'D3')?.click();
     flushSync();
     expect(mockHandlers.onDataModeChange).toHaveBeenCalledWith(3);
+  });
+
+  describe('MOD-input source control (MOR-616)', () => {
+    function modInputSelect(target: HTMLElement): HTMLSelectElement | null {
+      return target.querySelector<HTMLSelectElement>('[data-testid="mod-input-select"]');
+    }
+
+    it('renders the dropdown with all six sources and the current one selected', () => {
+      const target = mountPanel({ hasModInput: true, modInputSource: 5 });
+      const select = modInputSelect(target);
+      expect(select).not.toBeNull();
+      expect(select!.value).toBe('5');
+      const labels = Array.from(select!.options)
+        .filter((option) => option.value !== '')
+        .map((option) => option.textContent?.trim());
+      expect(labels).toEqual(['MIC', 'ACC', 'MIC+ACC', 'USB', 'MIC+USB', 'LAN']);
+    });
+
+    it('shows an empty placeholder before the first readback', () => {
+      const target = mountPanel({ hasModInput: true, modInputSource: null });
+      const select = modInputSelect(target);
+      expect(select).not.toBeNull();
+      expect(select!.value).toBe('');
+    });
+
+    it('is hidden when the radio does not expose MOD-input routing', () => {
+      const target = mountPanel({ hasModInput: false, modInputSource: 3 });
+      expect(modInputSelect(target)).toBeNull();
+    });
+
+    it('fires onModInputChange with the numeric source', () => {
+      const target = mountPanel({ hasModInput: true, modInputSource: 0 });
+      const select = modInputSelect(target)!;
+      select.value = '5';
+      select.dispatchEvent(new Event('change', { bubbles: true }));
+      flushSync();
+      expect(mockHandlers.onModInputChange).toHaveBeenCalledWith(5);
+    });
+
+    it('reflects external state changes in the selected value', () => {
+      const target = mountPanel({ hasModInput: true, modInputSource: 0 });
+      expect(modInputSelect(target)!.value).toBe('0');
+
+      const updated = mountPanel({ modInputSource: 3 });
+      expect(modInputSelect(updated)!.value).toBe('3');
+    });
   });
 });

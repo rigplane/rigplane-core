@@ -40,6 +40,58 @@ describe('toModeProps', () => {
     expect(props.modes).toEqual(['USB', 'LSB', 'CW', 'CW-R', 'AM', 'FM', 'RTTY', 'RTTY-R', 'PSK', 'PSK-R']);
     expect(props.dataMode).toBe(0);
     expect(props.hasDataMode).toBe(false);
+    expect(props.modInputSource).toBeNull();
+    expect(props.hasModInput).toBe(false);
+  });
+
+  it('exposes the active DATA group MOD-input source (MOR-616)', () => {
+    const props = toModeProps(
+      {
+        active: 'MAIN',
+        main: { mode: 'USB', dataMode: 2 },
+        sub: { mode: 'LSB', dataMode: 0 },
+        data2ModInput: 5,
+        fieldStatus: {
+          data2ModInput: {
+            storePath: 'global.slow_state.data2_mod_input',
+            observed: true,
+            freshness: 'fresh',
+            availability: 'available',
+          },
+        },
+      } as any,
+      { capabilities: ['data_mode'] } as any,
+    );
+
+    expect(props.modInputSource).toBe(5);
+    expect(props.hasModInput).toBe(true);
+  });
+
+  it('hides the MOD-input control without the capability or before first read (MOR-616)', () => {
+    const unreadState = {
+      active: 'MAIN',
+      main: { mode: 'USB', dataMode: 0 },
+      sub: { mode: 'LSB', dataMode: 0 },
+      dataOffModInput: null,
+      fieldStatus: {
+        dataOffModInput: {
+          storePath: 'global.slow_state.data_off_mod_input',
+          observed: false,
+          freshness: 'unknown',
+          availability: 'missing',
+        },
+      },
+    } as any;
+
+    const unread = toModeProps(unreadState, { capabilities: ['data_mode'] } as any);
+    expect(unread.hasModInput).toBe(false);
+    expect(unread.modInputSource).toBeNull();
+
+    const noCap = toModeProps(
+      { ...unreadState, dataOffModInput: 3, fieldStatus: {} } as any,
+      { capabilities: [] } as any,
+    );
+    expect(noCap.hasModInput).toBe(false);
   });
 });
 

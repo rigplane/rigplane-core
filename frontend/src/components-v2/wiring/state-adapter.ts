@@ -10,7 +10,8 @@
 import type { ServerState, ReceiverState } from '$lib/types/state';
 import type { Capabilities, FilterModeConfig } from '$lib/types/capabilities';
 import type { VfoStateProps } from '../layout/layout-utils';
-import { isFieldAvailable } from '$lib/state/field-status';
+import { isFieldAvailable, getFieldAvailability } from '$lib/state/field-status';
+import { modInputStateKey } from '$lib/radio/mod-input';
 import { deriveIfShift, pbtRawToHz } from '../panels/filter-controls';
 import { nbDepthRawToDisplay, nrRawToDisplay } from '$lib/radio/filter-controls';
 
@@ -327,6 +328,10 @@ export interface ModeProps {
   hasDataMode: boolean;
   dataModeCount: number;
   dataModeLabels: Record<string, string>;
+  /** Active DATA group's MOD-input source (IC-7610 enum, MOR-616); null until read. */
+  modInputSource: number | null;
+  /** Show the MOD-input control: data_mode cap + the active group has been observed. */
+  hasModInput: boolean;
 }
 
 export function toModeProps(
@@ -334,6 +339,12 @@ export function toModeProps(
   caps: Capabilities | null,
 ): ModeProps {
   const rx = state ? activeRx(state) : null;
+  // MOR-616: surface the MOD-input source of the active receiver's DATA
+  // group (data_mode 0→DATA OFF, 1→D1, 2→D2, 3→D3). Hidden until the
+  // backend has actually read the group (fieldStatus !== missing), so
+  // radios with a data_mode capability but no MOD-input routing (e.g.
+  // IC-7300) never render a dead dropdown.
+  const modInputKey = modInputStateKey(rx?.dataMode ?? 0);
   return {
     currentMode: rx?.mode ?? 'USB',
     modes: caps?.modes ?? ['USB', 'LSB', 'CW', 'CW-R', 'AM', 'FM', 'RTTY', 'RTTY-R', 'PSK', 'PSK-R'],
@@ -341,6 +352,11 @@ export function toModeProps(
     hasDataMode: hasCap(caps, 'data_mode'),
     dataModeCount: caps?.dataModeCount ?? 0,
     dataModeLabels: caps?.dataModeLabels ?? { '0': 'OFF', '1': 'D1', '2': 'D2', '3': 'D3' },
+    modInputSource: state?.[modInputKey] ?? null,
+    hasModInput:
+      hasCap(caps, 'data_mode') &&
+      state !== null &&
+      getFieldAvailability(state, modInputKey) !== 'missing',
   };
 }
 

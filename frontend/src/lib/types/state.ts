@@ -169,6 +169,12 @@ export interface ServerState {
   rxAntenna2?: boolean;
   meterSource?: 'S' | 'SWR' | 'POWER';
   scopeControls?: ScopeControls;
+  // Per-DATA-group MOD-input sources (IC-7610, MOR-615/616). Mirror
+  // `global.slow_state.data*_mod_input`; null until the first readback.
+  dataOffModInput?: number | null;
+  data1ModInput?: number | null;
+  data2ModInput?: number | null;
+  data3ModInput?: number | null;
 }
 
 export interface UiState {
