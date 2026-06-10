@@ -4,6 +4,7 @@
   import { txStatusColor } from './tx-utils';
   import { getTxAudioControl } from '$lib/runtime/adapters/tx-adapter';
   import { deriveTxProps, getTxHandlers } from '$lib/runtime/adapters/panel-adapters';
+  import ModInputTxWarning from './ModInputTxWarning.svelte';
 
   const txAudio = getTxAudioControl();
   const handlers = getTxHandlers();
@@ -165,6 +166,9 @@
     {#if txError}
       <div class="tx-error">{txError}</div>
     {/if}
+
+    <!-- MOR-617: warn when TX was keyed with a non-LAN MOD input -->
+    <ModInputTxWarning />
 
     <div class="tx-button-grid">
       {#if showTuner}

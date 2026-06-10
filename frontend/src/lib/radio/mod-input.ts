@@ -30,6 +30,9 @@ export const MOD_INPUT_SOURCES: readonly ModInputOption[] = [
   { value: 5, label: 'LAN' },
 ];
 
+/** Source value that routes network (web) audio into the modulator. */
+export const LAN_MOD_INPUT_SOURCE = 5;
+
 /** camelCase `ServerState` keys of the four DATA-group sources. */
 export type ModInputStateKey =
   | 'dataOffModInput'

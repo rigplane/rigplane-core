@@ -168,6 +168,10 @@
   "core.modePanel.modInputLabel": "MOD IN",
   "core.modePanel.modInputAria": "Источник входной модуляции",
 
+  "core.txGuard.modInputNotLan": "Вход MOD установлен в {source}, а не LAN — голос из веб-интерфейса не уйдёт в эфир (TX).",
+  "core.txGuard.setLan": "Включить LAN",
+  "core.txGuard.dismiss": "Скрыть предупреждение о входе MOD",
+
   "core.error.transport.timeout.title": "Время ожидания соединения истекло",
   "core.error.transport.timeout.body": "Нет ответа от {host}. Убедитесь, что трансивер включён и доступен.",
   "core.error.literalBrace.example": "Используйте '{'name} для обозначения подстановки.",

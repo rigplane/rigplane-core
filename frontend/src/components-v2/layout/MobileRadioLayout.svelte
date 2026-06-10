@@ -25,6 +25,7 @@
   import MobileChipBar from './mobile-chip-bar.svelte';
   import EssentialsPanel from '../panels/EssentialsPanel.svelte';
   import PttFab from '../controls/PttFab.svelte';
+  import ModInputTxWarning from '../panels/ModInputTxWarning.svelte';
   import { ValueControl, rawToPercentDisplay } from '../controls/value-control';
   import {
     Settings, ChevronLeft, ChevronRight, ChevronsLeft, ChevronsRight,
@@ -923,6 +924,16 @@
 <!-- Toast notifications — rendered in fixed position overlay -->
 <Toast />
 
+<!-- MOR-617: floating MOD-input TX warning — keying happens via the FAB or
+     the landscape strip, so the banner must be visible outside the TX
+     settings sheet (where TxPanel renders its inline copy). The wrapper is
+     pointer-transparent; the banner itself stays clickable. -->
+{#if txCapable}
+  <div class="m-mod-input-warning">
+    <ModInputTxWarning />
+  </div>
+{/if}
+
 {#if txCapable && !isLandscape}
   <!-- Guarded sticky PTT FAB (#840) — persistent 1-tap TX in portrait only.
        Landscape has its own guarded `.m-ls-ptt` button (#843); mounting
@@ -938,6 +949,20 @@
 {/if}
 
 <style>
+  /* ── MOD-input TX warning overlay (MOR-617) ── */
+  .m-mod-input-warning {
+    position: fixed;
+    left: max(12px, env(safe-area-inset-left, 0px));
+    right: max(12px, env(safe-area-inset-right, 0px));
+    bottom: calc(96px + env(safe-area-inset-bottom, 0px));
+    z-index: 9000;
+    pointer-events: none;
+  }
+
+  .m-mod-input-warning > :global(*) {
+    pointer-events: auto;
+  }
+
   /* ── Landscape layout ── */
   .m-landscape {
     position: fixed;

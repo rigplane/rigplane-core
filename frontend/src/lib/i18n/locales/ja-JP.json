@@ -168,6 +168,10 @@
   "core.modePanel.modInputLabel": "MOD IN",
   "core.modePanel.modInputAria": "変調入力ソース",
 
+  "core.txGuard.modInputNotLan": "MOD 入力が {source} のため LAN 経由の音声は送信 (TX) されません。",
+  "core.txGuard.setLan": "LAN に設定",
+  "core.txGuard.dismiss": "MOD 入力の警告を閉じる",
+
   "core.error.transport.timeout.title": "接続がタイムアウトしました",
   "core.error.transport.timeout.body": "{host} から応答がありません。トランシーバーの電源が入っており、到達可能であることを確認してください。",
   "core.error.literalBrace.example": "プレースホルダーを参照するには '{'name} と書きます。",
