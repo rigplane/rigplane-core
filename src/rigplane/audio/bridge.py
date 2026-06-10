@@ -835,7 +835,21 @@ class AudioBridge:
                 pass
         self._reconnect_task = None
 
-        await self._teardown_streams()
+        # Stop the radio TX leg BEFORE _teardown_streams() drops the RX
+        # demand (closes the bus subscription) — teardown is the inverse of
+        # the MOR-556 setup order. On LAN, closing the subscription while
+        # the stream is TRANSMITTING makes ``stop_rx`` early-return; the
+        # later ``stop_tx`` would then resurrect RECEIVING with a live RX
+        # task and zero bus subscribers — a leaked RX stream (MOR-574).
+        # Cancel the bridge TX loop first so it cannot push a captured
+        # frame into the just-stopped radio TX path.
+        if self._tx_task and not self._tx_task.done():
+            self._tx_task.cancel()
+            try:
+                await self._tx_task
+            except asyncio.CancelledError:
+                pass
+        self._tx_task = None
 
         if self._tx_started:
             self._tx_started = False
@@ -848,6 +862,8 @@ class AudioBridge:
                     await self._radio.stop_audio_tx_pcm()
             except Exception:
                 logger.debug("%s: stop TX error", self._label, exc_info=True)
+
+        await self._teardown_streams()
 
         logger.info(
             "%s: stopped (rx=%d frames, tx=%d frames, drops=%d)",
