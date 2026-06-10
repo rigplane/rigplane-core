@@ -19,12 +19,14 @@ if TYPE_CHECKING:
 else:
     _MixinBase = object
 
+from rigplane.audio._codecs import decode_ulaw_to_pcm16
 from rigplane.audio._transcoder import (
     PcmAudioFormat,
     PcmOpusTranscoder,
     create_pcm_opus_transcoder,
 )
 from rigplane.audio import AudioStats, AudioStream
+from rigplane.audio.pcm import PcmFrame
 from rigplane.core.exceptions import AudioFormatError, ConnectionError
 from rigplane.core.transport import IcomTransport
 from rigplane.core.types import AudioCodec
@@ -47,6 +49,13 @@ class AudioRuntimeMixin(_MixinBase):  # type: ignore[misc]
     _audio_sample_rate: int
     _audio_stream_request: AudioStreamRequest
     _audio_stream_contract: AudioStreamContract
+
+    # -- PCM-spine ingress state (MOR-591) — lazily initialized ----------
+    _pcm_rx_taps: list[Callable[[PcmFrame | None], None]]
+    _pcm_ingress_seq: int
+    _pcm_ingress_transcoder: PcmOpusTranscoder
+    _pcm_ingress_transcoder_fmt: tuple[int, int, int]
+    _pcm_ingress_opus_dead: bool
 
     # ------------------------------------------------------------------
     # Neutral AudioTransport surface (MOR-532 epic, MOR-539)
@@ -78,6 +87,7 @@ class AudioRuntimeMixin(_MixinBase):  # type: ignore[misc]
         assert self._audio_stream is not None
         self._opus_rx_user_callback = callback
         self._opus_rx_jitter_depth = jitter_depth
+        self._arm_pcm_ingress()
         await self._audio_stream.start_rx(callback, jitter_depth=jitter_depth)
 
     async def stop_rx(self) -> None:
@@ -136,6 +146,150 @@ class AudioRuntimeMixin(_MixinBase):  # type: ignore[misc]
         await self._ensure_audio_transport()
         assert self._audio_stream is not None
         await self._audio_stream.start_tx()
+
+    # ------------------------------------------------------------------
+    # PCM-spine ingress: decode-at-ingress dual-publish (MOR-591, ADR §3.5)
+    # ------------------------------------------------------------------
+
+    def add_pcm_rx_tap(self, callback: Callable[[PcmFrame | None], None]) -> None:
+        """Register a PCM-spine listener fed decoded frames at LAN ingress.
+
+        The LAN adapter decodes the radio-negotiated RX wire codec
+        (PCM16 / uLaw / Opus) to s16le ONCE and feeds every registered
+        tap a :class:`PcmFrame` per delivered RX packet (``None`` for
+        jitter-buffer gap placeholders) — in parallel with, never
+        instead of, the legacy :class:`AudioPacket` callback
+        (dual-publish during the spine migration, tenet T1). With no
+        taps registered the decode is skipped entirely, so the default
+        AudioPacket-only path stays byte- and cost-identical.
+        """
+        taps = getattr(self, "_pcm_rx_taps", None)
+        if taps is None:
+            taps = []
+            self._pcm_rx_taps = taps
+        if callback not in taps:
+            taps.append(callback)
+
+    def remove_pcm_rx_tap(self, callback: Callable[[PcmFrame | None], None]) -> None:
+        """Remove a PCM-spine listener (no-op if not registered)."""
+        taps = getattr(self, "_pcm_rx_taps", None)
+        if taps is None:
+            return
+        try:
+            taps.remove(callback)
+        except ValueError:
+            pass
+
+    def _arm_pcm_ingress(self) -> None:
+        """Arm the PCM ingress tap for a new RX session (MOR-591).
+
+        Registers a single parallel RX tap on the LAN stream (duck-typed:
+        stream doubles without ``add_rx_tap`` simply skip the PCM spine)
+        and resets the per-session monotonic frame sequence. The legacy
+        AudioPacket callback handed to ``AudioStream.start_rx`` is never
+        wrapped or replaced — dual-publish, not substitution.
+        """
+        self._pcm_ingress_seq = 0
+        self._pcm_ingress_opus_dead = False
+        add_rx_tap = getattr(self._audio_stream, "add_rx_tap", None)
+        if add_rx_tap is not None:
+            add_rx_tap(self._on_pcm_ingress_packet)
+
+    def _on_pcm_ingress_packet(self, packet: AudioPacket | None) -> None:
+        """LAN-stream RX tap: decode once at ingress, fan out PcmFrames.
+
+        Runs for every delivered RX packet, including jitter-buffer gap
+        placeholders (forwarded as ``None``). Never raises — the stream
+        RX loop has no exception guard around tap dispatch.
+        """
+        taps = getattr(self, "_pcm_rx_taps", None)
+        if not taps:
+            return
+        frame: PcmFrame | None
+        if packet is None:
+            frame = None
+        else:
+            try:
+                frame = self._decode_pcm_ingress(packet)
+            except Exception:
+                logger.debug("PCM ingress: decode failed", exc_info=True)
+                return
+            if frame is None:
+                return
+        for tap in list(taps):
+            try:
+                tap(frame)
+            except Exception:
+                logger.debug("PCM ingress: tap error", exc_info=True)
+
+    def _decode_pcm_ingress(self, packet: AudioPacket) -> PcmFrame | None:
+        """Decode one wire packet to s16le per the negotiated RX codec.
+
+        Returns ``None`` for wire codecs without an s16le mapping here
+        (8-bit PCM — no shipping profile negotiates it) and for Opus
+        when the codec backend is unavailable; the legacy AudioPacket
+        carrier keeps flowing either way.
+        """
+        codec = self.audio_codec
+        if codec in (AudioCodec.PCM_1CH_16BIT, AudioCodec.PCM_2CH_16BIT):
+            channels = 2 if codec == AudioCodec.PCM_2CH_16BIT else 1
+            payload = packet.data  # already s16le — zero-copy passthrough
+        elif codec in (AudioCodec.ULAW_1CH, AudioCodec.ULAW_2CH):
+            channels = 2 if codec == AudioCodec.ULAW_2CH else 1
+            payload = decode_ulaw_to_pcm16(packet.data)
+        elif codec in (AudioCodec.OPUS_1CH, AudioCodec.OPUS_2CH):
+            channels = 2 if codec == AudioCodec.OPUS_2CH else 1
+            opus_payload = self._decode_opus_ingress(packet.data, channels)
+            if opus_payload is None:
+                return None
+            payload = opus_payload
+        else:
+            return None
+        seq = self._pcm_ingress_seq
+        self._pcm_ingress_seq = seq + 1
+        return PcmFrame(
+            sample_rate=self.audio_sample_rate,
+            channels=channels,
+            payload=payload,
+            seq=seq,
+        )
+
+    def _decode_opus_ingress(self, data: bytes, channels: int) -> bytes | None:
+        """Decode one Opus wire frame to s16le with a session-cached decoder.
+
+        Uses a DEDICATED transcoder (not the ``_get_pcm_transcoder``
+        cache) so the stateful Opus decoder is never evicted by the
+        user-facing PCM RX/TX APIs. A failed backend init dead-flags the
+        ingress for the session (reset on the next ``start_rx``) instead
+        of retrying per frame.
+        """
+        if getattr(self, "_pcm_ingress_opus_dead", False):
+            return None
+        fmt = (self.audio_sample_rate, channels, 20)
+        transcoder = getattr(self, "_pcm_ingress_transcoder", None)
+        if (
+            transcoder is None
+            or getattr(self, "_pcm_ingress_transcoder_fmt", None) != fmt
+        ):
+            try:
+                transcoder = create_pcm_opus_transcoder(
+                    sample_rate=fmt[0], channels=fmt[1], frame_ms=fmt[2]
+                )
+            except Exception:
+                logger.warning(
+                    "PCM ingress: Opus decode unavailable — "
+                    "PcmFrame publishing disabled for this RX session",
+                    exc_info=True,
+                )
+                self._pcm_ingress_opus_dead = True
+                return None
+            self._pcm_ingress_transcoder = transcoder
+            self._pcm_ingress_transcoder_fmt = fmt
+        try:
+            return transcoder.opus_to_pcm(data)
+        except Exception:
+            logger.debug("PCM ingress: Opus frame decode failed", exc_info=True)
+            return None
 
     # ------------------------------------------------------------------
     # Audio streaming (legacy opus-family delegates + PCM conveniences)
