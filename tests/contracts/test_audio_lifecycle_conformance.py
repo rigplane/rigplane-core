@@ -28,19 +28,20 @@ running TX is clean, TX onto running RX dies with AUHAL -50) while
 That graph is therefore exercised via ``ExclusiveUsbRadio`` (declared
 from the MOR-531 live de-risk), not a real backend row.
 
-Known shipping bug surfaced by this suite (kept as a strict xfail, not
-fixed here — MOR-567 is tests-only): ``AudioBridge.stop()`` drops the
-RX demand BEFORE stopping radio TX, and ``LanAudioStream.stop_rx``
-early-returns while TRANSMITTING — so on the LAN backend a bridge stop
-with TX armed leaks the running RX stream (state ends RECEIVING with a
-live ``_rx_task`` and zero bus subscribers). Stop-side instance of the
-MOR-556 ordering class.
+Shipping bug surfaced by this suite and fixed in MOR-574 (was a strict
+xfail): ``AudioBridge.stop()`` dropped the RX demand BEFORE stopping
+radio TX, and ``LanAudioStream.stop_rx`` early-returns while
+TRANSMITTING — so on the LAN backend a bridge stop with TX armed leaked
+the running RX stream (state ended RECEIVING with a live ``_rx_task``
+and zero bus subscribers). Stop-side instance of the MOR-556 ordering
+class; the bridge now stops radio TX before closing the bus
+subscription, and the round-trip test asserts the clean end state.
 """
 
 from __future__ import annotations
 
 import asyncio
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any, Awaitable, Callable
 
 import pytest
@@ -98,7 +99,6 @@ class _Harness:
     close: Callable[[], Awaitable[None]] | None = None
     # LAN single-state stream: RX can only start from IDLE (MOR-556 edge).
     rx_while_tx_raises: bool = False
-    marks: list[str] = field(default_factory=list)
 
 
 def _lan_harness() -> _Harness:
@@ -130,7 +130,6 @@ def _lan_harness() -> _Harness:
         ),
         close=_close,
         rx_while_tx_raises=True,
-        marks=["lan-bridge-stop-leak"],
     )
 
 
@@ -301,12 +300,9 @@ async def _assert_bridge_roundtrip(h: _Harness) -> None:
     await bridge.stop()
     assert h.radio.audio_bus.subscriber_count == 0
     assert not h.tx_live()
-    if "lan-bridge-stop-leak" in h.marks:
-        # Known shipping bug (see module docstring): bridge.stop() drops the
-        # RX demand while the LAN state is TRANSMITTING, LanAudioStream
-        # .stop_rx early-returns, and the RX loop leaks. Encoded, not fixed.
-        assert h.rx_live() and h.open_streams() == 1
-        pytest.xfail("LAN bridge.stop() leaks the running RX stream")
+    # MOR-574: stop with TX armed must not leak the RX stream — the bridge
+    # stops radio TX before dropping the RX demand, so even the LAN state
+    # machine (stop_rx early-returns while TRANSMITTING) ends clean.
     assert not h.rx_live()
     assert h.open_streams() == 0
 
