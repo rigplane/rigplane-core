@@ -8,6 +8,7 @@ that production code and tests interact with:
     start_tx()
     stop_tx()
     push_tx(opus_data)
+    add_rx_tap(callback) / remove_rx_tap(callback)
 
 Call-tracking attributes allow assertions without MagicMock:
 
@@ -42,6 +43,7 @@ class FakeAudioStream:
         self.last_start_rx_callback: Callable[..., Any] | None = None
         self.last_start_rx_jitter_depth: int | None = None
 
+        self.rx_taps: list[Callable[..., Any]] = []
         self.tx_frames: list[bytes] = []
 
     async def start_rx(
@@ -65,3 +67,22 @@ class FakeAudioStream:
 
     async def push_tx(self, opus_data: bytes) -> None:
         self.tx_frames.append(opus_data)
+
+    def add_rx_tap(self, callback: Callable[..., Any]) -> None:
+        """Mirror of ``AudioStream.add_rx_tap`` (parallel RX listener)."""
+        if callback not in self.rx_taps:
+            self.rx_taps.append(callback)
+
+    def remove_rx_tap(self, callback: Callable[..., Any]) -> None:
+        """Mirror of ``AudioStream.remove_rx_tap``."""
+        try:
+            self.rx_taps.remove(callback)
+        except ValueError:
+            pass
+
+    def emit_rx(self, packet: Any) -> None:
+        """Deliver one RX packet to the callback and all taps (real fan-out order)."""
+        if self.last_start_rx_callback is not None:
+            self.last_start_rx_callback(packet)
+        for tap in list(self.rx_taps):
+            tap(packet)

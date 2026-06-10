@@ -58,6 +58,8 @@ _LAZY_MAP: dict[str, tuple[str, str]] = {
     "Limiter": ("rigplane.audio.dsp", "Limiter"),
     "NoiseGate": ("rigplane.audio.dsp", "NoiseGate"),
     "RmsNormalizer": ("rigplane.audio.dsp", "RmsNormalizer"),
+    # PCM spine carrier (MOR-591, ADR §3.5)
+    "PcmFrame": ("rigplane.audio.pcm", "PcmFrame"),
     # Resampling
     "PcmResampler": ("rigplane.audio.resample", "PcmResampler"),
     "SampleRateNegotiation": (
@@ -139,6 +141,8 @@ __all__ = [
     "Limiter",
     "NoiseGate",
     "RmsNormalizer",
+    # PCM spine carrier
+    "PcmFrame",
     # Resampling
     "PcmResampler",
     "SampleRateNegotiation",
