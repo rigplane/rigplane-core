@@ -301,6 +301,13 @@ class RadioState:
     tx_antenna: int = 1  # 1 or 2
     rx_antenna_1: bool = False
     rx_antenna_2: bool = False
+    # MOD-input source per DATA mode group (IC-7610 0x1A 05 00 0x91-0x94):
+    #   0=MIC, 1=ACC, 2=MIC+ACC, 3=USB, 4=MIC+USB, 5=LAN
+    # None = not yet read from the radio (MOR-615).
+    data_off_mod_input: int | None = None
+    data1_mod_input: int | None = None
+    data2_mod_input: int | None = None
+    data3_mod_input: int | None = None
     tx_band_edges: list[TxBandEdge] = field(default_factory=list)
     scope_controls: ScopeControlsState = field(default_factory=ScopeControlsState)
 
@@ -364,6 +371,10 @@ class RadioState:
             "tx_antenna": self.tx_antenna,
             "rx_antenna_1": self.rx_antenna_1,
             "rx_antenna_2": self.rx_antenna_2,
+            "data_off_mod_input": self.data_off_mod_input,
+            "data1_mod_input": self.data1_mod_input,
+            "data2_mod_input": self.data2_mod_input,
+            "data3_mod_input": self.data3_mod_input,
             "tx_band_edges": [
                 {"start_hz": e.start_hz, "end_hz": e.end_hz} for e in self.tx_band_edges
             ],

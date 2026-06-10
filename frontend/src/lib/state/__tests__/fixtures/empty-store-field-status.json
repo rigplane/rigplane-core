@@ -65,6 +65,30 @@
     "observed": false,
     "storePath": "global.operator_controls.dash_ratio"
   },
+  "data1ModInput": {
+    "availability": "missing",
+    "freshness": "unknown",
+    "observed": false,
+    "storePath": "global.slow_state.data1_mod_input"
+  },
+  "data2ModInput": {
+    "availability": "missing",
+    "freshness": "unknown",
+    "observed": false,
+    "storePath": "global.slow_state.data2_mod_input"
+  },
+  "data3ModInput": {
+    "availability": "missing",
+    "freshness": "unknown",
+    "observed": false,
+    "storePath": "global.slow_state.data3_mod_input"
+  },
+  "dataOffModInput": {
+    "availability": "missing",
+    "freshness": "unknown",
+    "observed": false,
+    "storePath": "global.slow_state.data_off_mod_input"
+  },
   "dialLock": {
     "availability": "missing",
     "freshness": "unknown",

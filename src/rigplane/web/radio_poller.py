@@ -185,6 +185,16 @@ _FAST_INTERVAL: float = 0.025  # meters — wfview queue interval for LAN (25ms)
 _FAST_INTERVAL_SERIAL: float = 0.100  # serial: 10 polls/sec for responsive meters
 _SLOW_INTERVAL: float = 0.25  # levels/settings — rarely change
 
+# MOR-615: per-DATA-group MOD-input source fields (IC-7610 0x1A 05 00
+# 0x91-0x94). Field name == ``get_<name>`` / ``set_<name>`` radio method
+# suffix == legacy RadioState attribute == StateStore slow_state leaf.
+_MOD_INPUT_FIELDS: tuple[str, ...] = (
+    "data_off_mod_input",
+    "data1_mod_input",
+    "data2_mod_input",
+    "data3_mod_input",
+)
+
 
 def _audio_tx_codec_and_rate(radio: Any) -> tuple[AudioCodec | None, int]:
     """Legacy TX-format resolution for radios WITHOUT the neutral
@@ -426,6 +436,9 @@ class RadioPoller:
         # than once per _UNSELECTED_SLOT_INTERVAL.
         self._last_user_write_ts: float = 0.0
         self._last_unselected_poll: dict[int, float] = {}
+        # MOR-615: (main, sub) data_mode pair seen at the last MOD-input fetch;
+        # a change triggers a refetch of the per-DATA-group MOD-input sources.
+        self._mod_input_data_modes: tuple[int, int] | None = None
 
     def _apply_bsr_readback_observations(
         self,
@@ -788,22 +801,23 @@ class RadioPoller:
         name: str,
         value: Any,
         *,
+        family: str = "operator_controls",
         command_id: str | None = None,
         source: CommandSource | None = None,
         session_id: str | None = None,
         command_service: CommandService | None = None,
     ) -> None:
-        """Apply a confirmed global operator-control value to the StateStore.
+        """Apply a confirmed global readback value to the StateStore.
 
         Forward-consistent route (mirrors ``_apply_bsr_readback_observations``):
-        the web public-state projection reads ``global.operator_controls.<name>``
+        the web public-state projection reads ``global.<family>.<name>``
         from the StateStore, so a readback observation is the source of truth —
         not the legacy ``RadioState`` mirror. Used for NB depth/width whose
         4-byte menu GET (0x1A 05 02 90/91) cannot ride the poll-query envelope
-        (MOR-491-B).
+        (MOR-491-B) and for the MOD-input sources (``slow_state``, MOR-615).
         """
         observation = Observation(
-            path=FieldPath.global_("operator_controls", name),
+            path=FieldPath.global_(family, name),
             value=value,
             source=SourceMetadata(
                 source="poll_response",
@@ -850,6 +864,76 @@ class RadioPoller:
             self._apply_global_control_observation(name, value)
         logger.info("radio-poller: NB controls fetched")
 
+    async def _read_mod_input(
+        self,
+        name: str,
+        *,
+        command_id: str | None = None,
+        source: CommandSource | None = None,
+        session_id: str | None = None,
+        command_service: CommandService | None = None,
+    ) -> None:
+        """Read one DATA-group MOD-input source into the StateStore + mirror.
+
+        Resilient: a read error or timeout is logged at debug and never kills
+        the caller (mirrors ``_fetch_nb_controls``).
+        """
+        getter = getattr(self._radio, f"get_{name}", None)
+        if getter is None:
+            return
+        try:
+            value = int(await getter())
+        except Exception:
+            logger.debug("radio-poller: get_%s failed", name, exc_info=True)
+            return
+        if self._radio_state is not None:
+            setattr(self._radio_state, name, value)
+        self._apply_global_control_observation(
+            name,
+            value,
+            family="slow_state",
+            command_id=command_id,
+            source=source,
+            session_id=session_id,
+            command_service=command_service,
+        )
+
+    async def _fetch_mod_inputs(self) -> None:
+        """Readback of the per-DATA-group MOD-input sources (MOR-615).
+
+        DATA OFF/1/2/3 MOD (0x1A 05 00 0x91-0x94) are global menu items the
+        continuous poller never tracks. Read them via the direct getters and
+        apply the confirmed values as StateStore observations (+ legacy
+        RadioState mirror) so the web state exposes the radio's current MOD
+        routing. Gated on CAP_DATA_MODE so non-IC-7610 radios are unaffected.
+        """
+        if CAP_DATA_MODE not in self._caps:
+            return
+        if self._radio_state is not None:
+            self._mod_input_data_modes = (
+                self._radio_state.main.data_mode,
+                self._radio_state.sub.data_mode,
+            )
+        for name in _MOD_INPUT_FIELDS:
+            await self._read_mod_input(name)
+
+    async def _refresh_mod_inputs_on_data_mode_change(self) -> None:
+        """Refetch the MOD-input sources when any receiver's data_mode changed.
+
+        The legacy RadioState mirror's ``data_mode`` is kept current by the
+        regular 0x26 poll (``_handle_26``), so this catches both web-initiated
+        and front-panel data-mode changes within one poll cycle (MOR-615).
+        """
+        if CAP_DATA_MODE not in self._caps or self._radio_state is None:
+            return
+        current = (
+            self._radio_state.main.data_mode,
+            self._radio_state.sub.data_mode,
+        )
+        if current == self._mod_input_data_modes:
+            return
+        await self._fetch_mod_inputs()
+
     async def _run(self) -> None:
         _backoff = 0.0
         _MAX_BACKOFF = 5.0  # max pause when radio is disconnected
@@ -867,6 +951,13 @@ class RadioPoller:
             logger.debug(
                 "radio-poller: NB controls initial fetch failed", exc_info=True
             )
+
+        # Per-DATA-group MOD-input sources are global menu items the continuous
+        # poller never tracks; seed them once at connect (MOR-615).
+        try:
+            await self._fetch_mod_inputs()
+        except Exception:
+            logger.debug("radio-poller: MOD-input initial fetch failed", exc_info=True)
 
         try:
             while True:
@@ -955,6 +1046,13 @@ class RadioPoller:
                     continue
                 except Exception:
                     logger.debug("radio-poller: query error", exc_info=True)
+
+                # 2b. data_mode changed (web command or front panel) => refetch
+                # the per-DATA-group MOD-input sources (MOR-615).
+                try:
+                    await self._refresh_mod_inputs_on_data_mode_change()
+                except Exception:
+                    logger.debug("radio-poller: MOD-input refresh error", exc_info=True)
 
                 # 3. Issue #715: opportunistically refresh the unselected
                 # VFO slot on each receiver.  Fully gated (PTT, queue
@@ -1976,15 +2074,45 @@ class RadioPoller:
             case SetDataOffModInput(source=source):
                 if CAP_DATA_MODE in self._caps:
                     await radio.set_data_off_mod_input(source)
+                    # Write-through readback (MOR-615): confirm the value the
+                    # radio actually took, mirroring the NB depth/width route.
+                    await self._read_mod_input(
+                        "data_off_mod_input",
+                        command_id=command_id,
+                        source=command_source,
+                        session_id=session_id,
+                        command_service=command_service,
+                    )
             case SetData1ModInput(source=source):
                 if CAP_DATA_MODE in self._caps:
                     await radio.set_data1_mod_input(source)
+                    await self._read_mod_input(
+                        "data1_mod_input",
+                        command_id=command_id,
+                        source=command_source,
+                        session_id=session_id,
+                        command_service=command_service,
+                    )
             case SetData2ModInput(source=source):
                 if CAP_DATA_MODE in self._caps:
                     await radio.set_data2_mod_input(source)
+                    await self._read_mod_input(
+                        "data2_mod_input",
+                        command_id=command_id,
+                        source=command_source,
+                        session_id=session_id,
+                        command_service=command_service,
+                    )
             case SetData3ModInput(source=source):
                 if CAP_DATA_MODE in self._caps:
                     await radio.set_data3_mod_input(source)
+                    await self._read_mod_input(
+                        "data3_mod_input",
+                        command_id=command_id,
+                        source=command_source,
+                        session_id=session_id,
+                        command_service=command_service,
+                    )
             case SetAudioPeakFilter(on=on, receiver=rx):
                 self._ensure_receiver_supported(rx, operation="set_audio_peak_filter")
                 if CAP_APF in self._caps:
