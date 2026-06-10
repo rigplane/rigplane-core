@@ -15,7 +15,10 @@ pins:
    guard different files);
 4. uint16 wrap of the serial synthetic RX sequence (0xFFFF -> 0);
 5. the AudioBridge radio-side TX path on the neutral surface, including
-   the non-PCM degrade.
+   the non-PCM degrade;
+6. the additive ``audio_setup_order`` descriptor (MOR-575, ADR §3.3) —
+   derived from ``audio_duplex_mode``, duck-typed (NOT on the
+   ``AudioTransport`` Protocol; the 10-member pin stays frozen).
 
 Known edge (documented per the MOR-544 review note): a custom LAN
 profile that negotiates a non-PCM ``tx_codec`` combined with PCM input
@@ -35,7 +38,12 @@ import types
 from unittest.mock import AsyncMock
 
 import pytest
-from test_icom7610_serial_radio import _FakeSerialCivLink, _FakeUsbAudioDriver
+from test_icom7610_serial_radio import (
+    _DuplexAwareUsbAudioDriver,
+    _FakeSerialCivLink,
+    _FakeUsbAudioDriver,
+    _RaisingDuplexUsbAudioDriver,
+)
 
 import rigplane.audio
 from rigplane.audio.backend import AudioDeviceId, AudioDeviceInfo, FakeAudioBackend
@@ -339,3 +347,82 @@ async def test_bridge_legacy_radio_keeps_pcm_path() -> None:
 
     radio.push_audio_tx_pcm.assert_awaited_with(_LOUD_FRAME)
     radio.stop_audio_tx_pcm.assert_awaited_once()
+
+
+# ---------------------------------------------------------------------------
+# 6. audio_setup_order descriptor derived from audio_duplex_mode (MOR-575)
+# ---------------------------------------------------------------------------
+
+# ADR §3.3 derivation, pinned explicitly: ``"full"`` -> ``"rx_first"``
+# (the LAN UDP stream reverts RX state from TRANSMITTING, so RX must be
+# armed before TX; USB separate-devices "full" is order-indifferent and
+# keeps the same value), ``"exclusive"`` -> ``"atomic"`` (one same-device
+# duplex stream — setup does not decompose into rx/tx-first), ``"half"``
+# -> ``"rx_first"`` (safe default). Additive duck-typed descriptor: NOT
+# on the AudioTransport Protocol (the 10-member pin above stays frozen);
+# consumers read it via ``getattr(radio, "audio_setup_order",
+# "rx_first")`` — exactly how the bridge reads ``audio_duplex_mode``.
+# Nothing consumes it yet (the bridge keeps its own rx-first branch
+# until MOR-562 steps 8/9).
+DUPLEX_TO_SETUP_ORDER = {
+    "full": "rx_first",
+    "exclusive": "atomic",
+    "half": "rx_first",
+}
+
+
+@pytest.mark.parametrize("backend_cls", SHIPPING_BACKENDS)
+def test_shipping_backend_exposes_audio_setup_order(backend_cls: type) -> None:
+    """Every shipping backend class carries the MOR-575 descriptor."""
+    assert hasattr(backend_cls, "audio_setup_order"), (
+        f"{backend_cls.__name__} lacks the audio_setup_order descriptor"
+    )
+
+
+def test_lan_radio_setup_order_is_rx_first() -> None:
+    """LAN duplex mode is hard-``"full"`` -> setup order ``"rx_first"``."""
+    radio = IcomRadio("192.168.1.100", model="IC-7300")
+    assert radio.audio_duplex_mode == "full"
+    assert radio.audio_setup_order == "rx_first"
+
+
+@pytest.mark.parametrize("duplex_mode", sorted(DUPLEX_TO_SETUP_ORDER))
+def test_serial_setup_order_consistent_with_duplex_mode(duplex_mode: str) -> None:
+    """Serial backends derive setup order from the driver duplex policy."""
+    radio = Icom7610SerialRadio(
+        device="/dev/ttyUSB0",
+        civ_link=_FakeSerialCivLink(),
+        audio_driver=_DuplexAwareUsbAudioDriver(duplex_mode),
+    )
+    assert radio.audio_duplex_mode == duplex_mode
+    assert radio.audio_setup_order == DUPLEX_TO_SETUP_ORDER[duplex_mode]
+
+
+def test_serial_setup_order_defaults_to_rx_first_when_driver_raises() -> None:
+    """Raising duplex enumeration degrades like duplex_mode: full/rx_first."""
+    radio = Icom7610SerialRadio(
+        device="/dev/ttyUSB0",
+        civ_link=_FakeSerialCivLink(),
+        audio_driver=_RaisingDuplexUsbAudioDriver(),
+    )
+    assert radio.audio_duplex_mode == "full"
+    assert radio.audio_setup_order == "rx_first"
+
+
+@pytest.mark.parametrize("duplex_mode", sorted(DUPLEX_TO_SETUP_ORDER))
+def test_yaesu_setup_order_consistent_with_duplex_mode(duplex_mode: str) -> None:
+    """YaesuCatRadio (the "exclusive"-capable backend) maps per the table."""
+    radio = YaesuCatRadio(
+        device="/dev/fake0",
+        audio_driver=_DuplexAwareUsbAudioDriver(duplex_mode),  # type: ignore[arg-type]
+    )
+    assert radio.audio_duplex_mode == duplex_mode
+    assert radio.audio_setup_order == DUPLEX_TO_SETUP_ORDER[duplex_mode]
+
+
+def test_setup_order_not_on_audio_transport_protocol() -> None:
+    """MOR-575 is duck-typed — the Protocol member pin must NOT grow."""
+    assert "audio_setup_order" not in AUDIO_TRANSPORT_MEMBERS
+    protocol_attrs = getattr(AudioTransport, "__protocol_attrs__", None)
+    if protocol_attrs is not None:
+        assert "audio_setup_order" not in protocol_attrs

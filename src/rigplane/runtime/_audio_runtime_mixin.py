@@ -7,7 +7,7 @@ Part of the radio.py decomposition (#505). All methods are accessed via
 from __future__ import annotations
 
 import logging
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal
 
 if TYPE_CHECKING:
     from typing import Callable
@@ -541,6 +541,29 @@ class AudioRuntimeMixin(_MixinBase):  # type: ignore[misc]
         epic steps.
         """
         return "full"
+
+    @property
+    def audio_setup_order(self) -> Literal["rx_first", "tx_first", "atomic"]:
+        """Setup ordering descriptor (MOR-575, ADR §3.3).
+
+        Derived from :attr:`audio_duplex_mode` — single source of truth,
+        so the two descriptors never drift. The LAN UDP stream is
+        ``"full"``-duplex, but ``stop_tx`` reverts the stream state from
+        TRANSMITTING back to RECEIVING, so RX must be armed before TX →
+        ``"rx_first"``. ``"exclusive"`` would map to ``"atomic"`` (one
+        duplex stream — setup does not decompose into rx/tx-first);
+        ``"half"`` or any unexpected/raising duplex mode degrades to the
+        ``"rx_first"`` safe default. Nothing consumes this yet — the
+        AudioSession (MOR-562 step 8) and bridge (step 9) will read it.
+        """
+        try:
+            mode = self.audio_duplex_mode
+        except Exception:
+            return "rx_first"
+        if mode == "exclusive":
+            return "atomic"
+        # "full", "half", and anything unexpected → rx_first (safe default).
+        return "rx_first"
 
     @property
     def audio_sample_rate(self) -> int:
