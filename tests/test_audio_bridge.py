@@ -489,6 +489,87 @@ async def test_bridge_rx_only_on_exclusive_duplex_still_starts_rx():
 
 
 # ---------------------------------------------------------------------------
+# Failed initial start must release the bus subscription (MOR-560)
+# ---------------------------------------------------------------------------
+
+
+class _RxStartFailRadio:
+    """Radio stub whose RX start fails.
+
+    The AudioBus swallows the ``start_rx`` error (logs "audio-bus: failed to
+    start RX") and leaves ``rx_active`` False — ``_subscribe_bus`` then raises
+    AFTER the subscription is already registered with the bus.
+    """
+
+    def __init__(self) -> None:
+        from rigplane.audio_bus import AudioBus
+
+        self.audio_bus = AudioBus(self)
+
+    async def start_rx(
+        self, callback: object, *, jitter_depth: int | None = None
+    ) -> None:
+        raise RuntimeError("RX hardware unavailable")
+
+    async def stop_rx(self) -> None:
+        pass
+
+
+class _OpenFailBackend(FakeAudioBackend):
+    """FakeAudioBackend whose playback-stream open raises (post-subscribe)."""
+
+    def open_tx(self, device: AudioDeviceId, **kwargs: object) -> object:
+        raise OSError("simulated PortAudio open failure")
+
+
+async def test_bridge_failed_rx_start_releases_bus_subscription():
+    """Regression MOR-560: the ``_subscribe_bus`` rx_active=False raise must
+    not leak the just-registered bus subscription.
+
+    ``start()`` reverts to IDLE on failure and ``stop()`` early-returns on
+    IDLE, so without teardown in the failure path the orphaned subscriber
+    stays on the bus forever.
+    """
+    radio = _RxStartFailRadio()
+    backend = _bridge_backend()
+    bridge = AudioBridge(
+        radio, device_name="BlackHole", tx_enabled=False, backend=backend
+    )
+    with pytest.raises(RuntimeError, match="radio RX failed to start"):
+        await bridge.start()
+    assert bridge.bridge_state == BridgeState.IDLE
+    assert radio.audio_bus.subscriber_count == 0
+
+
+async def test_bridge_failed_stream_open_releases_bus_subscription():
+    """Regression MOR-560: a device-stream open failure AFTER the rx-first
+    bus subscribe must tear the subscription down — otherwise the leaked
+    subscriber keeps radio RX running with no consumer draining the queue.
+    """
+    radio = _make_radio()
+    backend = _OpenFailBackend(
+        [
+            AudioDeviceInfo(
+                id=AudioDeviceId(0),
+                name="Built-in Output",
+                output_channels=2,
+            ),
+            _BH_DEVICE,
+        ]
+    )
+    bridge = AudioBridge(
+        radio, device_name="BlackHole", tx_enabled=False, backend=backend
+    )
+    with pytest.raises(OSError, match="simulated PortAudio open failure"):
+        await bridge.start()
+    assert bridge.bridge_state == BridgeState.IDLE
+    assert radio.audio_bus.subscriber_count == 0
+    # Last-subscriber removal must have stopped radio RX too.
+    assert radio.audio_bus.rx_active is False
+    radio.stop_audio_rx_opus.assert_awaited_once()
+
+
+# ---------------------------------------------------------------------------
 # RX callback — packets flow from bus to backend TxStream
 # ---------------------------------------------------------------------------
 

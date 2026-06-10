@@ -787,6 +787,19 @@ class AudioBridge:
         try:
             await self._setup_streams()
         except Exception:
+            # _setup_streams may fail AFTER the bus subscription is registered
+            # (the rx-first path subscribes early, MOR-556). Tear down before
+            # re-raising — stop() early-returns on IDLE, so a leaked
+            # subscriber would keep radio RX running with no consumer
+            # draining the queue (MOR-560).
+            try:
+                await self._teardown_streams()
+            except Exception:
+                logger.debug(
+                    "%s: teardown after failed start error",
+                    self._label,
+                    exc_info=True,
+                )
             self._set_state(BridgeState.IDLE, "start_failed")
             raise
 
