@@ -338,13 +338,23 @@ class IcomTransport:
         logger.warning("No explicit 'I Am Ready' reply, proceeding")
 
     async def disconnect(self) -> None:
-        """Close the UDP connection and stop background tasks."""
-        if self._ping_task and not self._ping_task.done():
-            self._ping_task.cancel()
-        if self._idle_task and not self._idle_task.done():
-            self._idle_task.cancel()
-        if self._retransmit_task and not self._retransmit_task.done():
-            self._retransmit_task.cancel()
+        """Close the UDP connection and stop background tasks.
+
+        Keepalive tasks are cancelled AND awaited so that when this
+        coroutine returns nothing from this transport is left pending in
+        the event loop and a follow-up ``connect()`` on the same instance
+        restarts the loops from a clean slate (MOR-595).  Idempotent —
+        safe to call again after a partial start.
+        """
+        tasks = [
+            task
+            for task in (self._ping_task, self._idle_task, self._retransmit_task)
+            if task is not None
+            and not task.done()
+            and task is not asyncio.current_task()
+        ]
+        for task in tasks:
+            task.cancel()
 
         if self.state != ConnectionState.DISCONNECTED and self.remote_id:
             pkt = self._build_control(ptype=PacketType.DISCONNECT, seq=0)
@@ -355,6 +365,14 @@ class IcomTransport:
             self._udp_transport = None
 
         self.state = ConnectionState.DISCONNECTED
+
+        for task in tasks:
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+            except Exception:
+                logger.debug("keepalive task raised during disconnect", exc_info=True)
         logger.info("Disconnected")
 
     def start_ping_loop(self) -> None:
