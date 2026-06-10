@@ -118,8 +118,10 @@ _WATCHED_STATES: frozenset[AudioSessionState] = frozenset(AudioSessionState) - {
 
 @dataclass(frozen=True, slots=True)
 class AudioSessionEvent:
-    """Local liveness event (NO telemetry — open-core). ``timestamp`` is
-    ``time.monotonic()``, comparable to ``AudioBus.last_rx_frame_monotonic``."""
+    """Local liveness event (NO telemetry — open-core). ``timestamp`` comes
+    from the session's monotonic clock (``time.monotonic`` by default) and is
+    comparable to ``AudioBus.last_rx_frame_monotonic`` — see the
+    ``AudioSession`` ``monotonic`` argument for the clock-injection caveat."""
 
     state: AudioSessionState
     reason: str
@@ -188,6 +190,13 @@ class AudioSession:
             :class:`AudioBus` — no import-matrix change).
         bus: Existing bus to wrap; defaults to ``radio.audio_bus`` or a
             fresh :class:`AudioBus`.
+        monotonic: Monotonic clock used for the liveness watchdog and the
+            :class:`AudioSessionEvent` timestamps; defaults to
+            :func:`time.monotonic` — production behavior is unchanged.
+            Test-only seam (MOR-607): liveness compares this clock against
+            ``AudioBus.last_rx_frame_monotonic``, and the bus stamps real
+            ``time.monotonic()`` on its own — callers injecting a fake
+            clock MUST also feed the bus heartbeat from that SAME clock.
     """
 
     def __init__(
@@ -197,6 +206,7 @@ class AudioSession:
         bus: AudioBus | None = None,
         watchdog_interval: float = WATCHDOG_INTERVAL_S,
         rx_liveness_timeout: float = RX_LIVENESS_TIMEOUT_S,
+        monotonic: Callable[[], float] = time.monotonic,
     ) -> None:
         self._radio = radio
         self._bus: AudioBus = (
@@ -208,6 +218,7 @@ class AudioSession:
         self._tx_leases: list[TxLease] = []
         self._watchdog_interval = watchdog_interval
         self._rx_liveness_timeout = rx_liveness_timeout
+        self._monotonic: Callable[[], float] = monotonic
         self._watchdog_task: asyncio.Task[None] | None = None
         self._rx_armed_at: float = 0.0
         self._recovering_from: AudioSessionState | None = None
@@ -260,7 +271,7 @@ class AudioSession:
 
     def _emit(self, reason: str, leg: str = "rx") -> None:
         event = AudioSessionEvent(
-            state=self._state, reason=reason, leg=leg, timestamp=time.monotonic()
+            state=self._state, reason=reason, leg=leg, timestamp=self._monotonic()
         )
         self._last_event = event
         for listener in list(self._listeners):
@@ -501,7 +512,7 @@ class AudioSession:
                 if tx_live:
                     await self._disarm_tx()  # never leave TX without RX
                 self._state = AudioSessionState.RX_ONLY
-                self._rx_armed_at = time.monotonic()
+                self._rx_armed_at = self._monotonic()
                 await self._sync_watchdog()
                 raise RuntimeError(
                     "radio RX failed to re-establish after reconnect "
@@ -515,7 +526,7 @@ class AudioSession:
             )
             # Fresh liveness reference: silence is measured from this
             # re-arm, not from the stale pre-outage heartbeat.
-            self._rx_armed_at = time.monotonic()
+            self._rx_armed_at = self._monotonic()
             await self._sync_watchdog()
 
     async def _try_rearm_tx(self) -> bool:
@@ -545,7 +556,7 @@ class AudioSession:
             if task is None or task.done():
                 # Silence is measured from this arm point until the first
                 # heartbeat ("starting" — the MOR-559 verified-start idea).
-                self._rx_armed_at = time.monotonic()
+                self._rx_armed_at = self._monotonic()
                 self._watchdog_task = asyncio.get_running_loop().create_task(
                     self._watchdog_loop(), name="audio-session-watchdog"
                 )
@@ -563,7 +574,7 @@ class AudioSession:
                 self._check_liveness_locked()
 
     def _check_liveness_locked(self) -> None:
-        now = time.monotonic()
+        now = self._monotonic()
         last = self._bus.last_rx_frame_monotonic
         if self._state in (AudioSessionState.RX_ONLY, AudioSessionState.RX_TX):
             # Reference = the later of the last heartbeat and the arm point, so

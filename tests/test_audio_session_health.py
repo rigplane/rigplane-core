@@ -60,6 +60,48 @@ async def _wait_for(predicate: Callable[[], bool], deadline_s: float = 2.0) -> b
     return predicate()
 
 
+class _ManualClock:
+    """Deterministic ``time.monotonic`` stand-in (MOR-607).
+
+    The watchdog still wakes on the real event loop, but every liveness
+    comparison reads THIS clock — time only moves when the test says so,
+    so the assertions are immune to scheduling jitter under xdist load.
+    ``calls`` counts reads, letting tests wait until the watchdog has
+    observed a given clock state without real-time assumptions.
+    """
+
+    def __init__(self, start: float = 1000.0) -> None:
+        self.now = start
+        self.calls = 0
+
+    def __call__(self) -> float:
+        self.calls += 1
+        return self.now
+
+    def advance(self, seconds: float) -> None:
+        self.now += seconds
+
+
+def _clocked_session(radio: Any, clock: _ManualClock) -> AudioSession:
+    return AudioSession(
+        radio,
+        watchdog_interval=_INTERVAL,
+        rx_liveness_timeout=_TIMEOUT,
+        monotonic=clock,
+    )
+
+
+def _stamp_heartbeat(radio: Any, session: AudioSession, clock: _ManualClock) -> None:
+    """Deliver a frame, then re-stamp the bus heartbeat from the test clock.
+
+    The bus stamps real ``time.monotonic()`` internally; the session's
+    liveness math runs on the injected clock, so the heartbeat must be fed
+    from the SAME clock (see the ``AudioSession`` ``monotonic`` docs).
+    """
+    radio.rx_callback(_PACKET)  # type: ignore[operator]
+    session.bus._last_rx_frame_monotonic = clock.now  # noqa: SLF001
+
+
 class _FakeWriter:
     """Minimal writer capturing the HTTP response bytes."""
 
@@ -122,20 +164,22 @@ async def test_silent_rx_after_start_surfaces_recovering_and_event() -> None:
 
 
 async def test_frames_resuming_returns_to_demand_state() -> None:
+    """Deterministic via the injected clock (MOR-607): the old real-time
+    version could grow a third spurious ``rx_silent`` if the feeder starved
+    past the timeout between the last frame and the events assert."""
+    clock = _ManualClock()
     radio = LanLikeRadio()
-    session = _fast_session(radio)
+    session = _clocked_session(radio, clock)
     events: list[AudioSessionEvent] = []
     session.add_listener(events.append)
     sub = await session.subscribe_rx("a")
+    # No frame ever lands; jump the clock past the timeout → rx_silent.
+    clock.advance(2 * _TIMEOUT)
     assert await _wait_for(lambda: session.state is AudioSessionState.RECOVERING)
-    # Frames resume — keep the heartbeat advancing while we wait.
-    deadline = time.monotonic() + 2.0
-    while (
-        session.state is not AudioSessionState.RX_ONLY and time.monotonic() < deadline
-    ):
-        radio.rx_callback(_PACKET)  # type: ignore[operator]
-        await asyncio.sleep(0.005)
-    assert session.state is AudioSessionState.RX_ONLY  # demand-derived state
+    # Frames resume — one fresh same-clock heartbeat is enough.
+    _stamp_heartbeat(radio, session, clock)
+    assert await _wait_for(lambda: session.state is AudioSessionState.RX_ONLY)
+    # The clock no longer moves, so no further event can possibly fire.
     assert [e.reason for e in events] == ["rx_silent", "rx_resumed"]
     await sub.release()
 
@@ -146,16 +190,49 @@ async def test_frames_resuming_returns_to_demand_state() -> None:
 
 
 async def test_healthy_heartbeat_never_false_positives() -> None:
+    """A healthy, recently-heartbeat RX leg must NEVER go RECOVERING.
+
+    Deterministic (MOR-607): the old version fed real-time heartbeats from
+    a coroutine loop and flaked under parallel load whenever that loop
+    starved past ``rx_liveness_timeout`` — by wall clock the heartbeat WAS
+    stale, so the watchdog fired per its contract. Here time is the
+    injected clock: each step advances to just under the threshold, lands
+    a fresh same-clock heartbeat, then waits until the watchdog has read
+    the clock again. No assertion depends on real sleep durations.
+    """
+    clock = _ManualClock()
     radio = LanLikeRadio()
-    session = _fast_session(radio)
+    session = _clocked_session(radio, clock)
     events: list[AudioSessionEvent] = []
     session.add_listener(events.append)
     sub = await session.subscribe_rx("a")
-    deadline = time.monotonic() + max(0.3, 6 * _TIMEOUT)
-    while time.monotonic() < deadline:
-        radio.rx_callback(_PACKET)  # type: ignore[operator]
+    for _ in range(6):
+        clock.advance(_TIMEOUT * 0.9)  # close to, but under, the threshold
+        _stamp_heartbeat(radio, session, clock)
+        reads = clock.calls
+        # ≥1 watchdog liveness check at exactly this clock state.
+        assert await _wait_for(lambda: clock.calls > reads)
         assert session.state is AudioSessionState.RX_ONLY
-        await asyncio.sleep(_INTERVAL / 2)
+    assert events == []
+    await sub.release()
+
+
+async def test_watchdog_overrun_with_fresh_heartbeat_does_not_misfire() -> None:
+    """The MOR-607 jitter shape, pinned: the clock jumps FAR past the
+    timeout in one step (a starved watchdog waking late), but the heartbeat
+    is fresh on the same clock — the ``max(last, _rx_armed_at)`` reference
+    in ``_check_liveness_locked`` must not declare RECOVERING."""
+    clock = _ManualClock()
+    radio = LanLikeRadio()
+    session = _clocked_session(radio, clock)
+    events: list[AudioSessionEvent] = []
+    session.add_listener(events.append)
+    sub = await session.subscribe_rx("a")
+    clock.advance(10 * _TIMEOUT)  # one giant scheduling-jitter jump
+    _stamp_heartbeat(radio, session, clock)
+    reads = clock.calls
+    assert await _wait_for(lambda: clock.calls > reads)
+    assert session.state is AudioSessionState.RX_ONLY
     assert events == []
     await sub.release()
 
