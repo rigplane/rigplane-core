@@ -19,7 +19,7 @@ from rigplane.core.state_pipeline_contracts import (
     Observation,
     SourceMetadata,
 )
-from rigplane.core.state_store import FreshnessClock, StateStore
+from rigplane.core.state_store import FreshnessClock, StateSnapshot, StateStore
 
 
 class _FakeWriter:
@@ -387,3 +387,72 @@ def test_public_state_projection_covers_all_scope_control_leaves() -> None:
         status = payload["fieldStatus"][f"scopeControls.{suffix}"]
         assert status["observed"] is True, suffix
         assert status["availability"] == "available", suffix
+
+
+_SCOPE_TOOLBAR_SUFFIXES = (
+    "mode",
+    "edge",
+    "span",
+    "speed",
+    "hold",
+    "refDb",
+    "dual",
+    "receiver",
+)
+
+
+def _frontend_availability(field_status: dict[str, dict[str, Any]], path: str) -> str:
+    """Frontend MOR-429 resolver: nearest missing/stale ancestor vetoes a leaf."""
+    ancestors = (path[:i] for i in range(len(path) - 1, 0, -1) if path[i] == ".")
+    parent = next((field_status[p] for p in ancestors if p in field_status), None)
+    own = field_status.get(path)
+    if own is None:
+        return parent["availability"] if parent else "available"
+    if (
+        own["availability"] == "available"
+        and parent
+        and parent["availability"] != "available"
+    ):
+        return parent["availability"]
+    return own["availability"]
+
+
+def test_default_field_status_has_no_scope_controls_group_entry() -> None:
+    """MOR-557 fix 2: a bare ``scopeControls`` group entry, keyed to the
+    never-written ``global.slow_state.scope_controls`` path, stays ``missing``
+    forever and the frontend parent-veto disables every observed leaf. Only
+    the eight per-leaf entries may be seeded."""
+    payload = build_public_state_payload_from_snapshot(
+        StateSnapshot.empty(), radio=None, receiver_count=2
+    )
+    field_status = payload["fieldStatus"]
+    assert "scopeControls" not in field_status
+    for suffix in _SCOPE_TOOLBAR_SUFFIXES:
+        status = field_status[f"scopeControls.{suffix}"]
+        assert status["availability"] == "missing", suffix
+        assert status["observed"] is False, suffix
+
+
+def test_observed_scope_control_leaves_survive_frontend_parent_veto() -> None:
+    """MOR-557 fix 2: once scope-control observations land, every toolbar leaf
+    resolves ``available`` through the frontend parent-availability walk —
+    no never-observed ancestor entry may veto it."""
+    clock = FreshnessClock(start=10.0)
+    store = StateStore(freshness_clock=clock)
+    leaves: dict[str, Any] = {
+        "receiver": 0, "dual": False, "mode": 0, "span": 0,
+        "edge": 1, "hold": False, "ref_db": 0.0, "speed": 1,
+    }  # fmt: skip
+    for name, value in leaves.items():
+        store.apply(
+            _observation(
+                FieldPath.scope_control("display", name), value, at=clock.now()
+            )
+        )
+    payload = build_public_state_payload_from_snapshot(
+        store.snapshot(), radio=None, receiver_count=2
+    )
+    field_status = payload["fieldStatus"]
+    for suffix in _SCOPE_TOOLBAR_SUFFIXES:
+        path = f"scopeControls.{suffix}"
+        assert _frontend_availability(field_status, path) == "available", suffix

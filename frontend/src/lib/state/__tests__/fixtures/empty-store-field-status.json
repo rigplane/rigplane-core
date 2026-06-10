@@ -593,12 +593,6 @@
     "observed": false,
     "storePath": "global.slow_state.scanning"
   },
-  "scopeControls": {
-    "availability": "missing",
-    "freshness": "unknown",
-    "observed": false,
-    "storePath": "global.slow_state.scope_controls"
-  },
   "scopeControls.dual": {
     "availability": "missing",
     "freshness": "unknown",

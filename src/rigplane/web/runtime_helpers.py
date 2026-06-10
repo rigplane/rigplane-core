@@ -407,6 +407,15 @@ def _default_snapshot_field_status(receiver_count: int) -> dict[str, dict[str, A
             FieldPath.global_("meters", name),
         )
     for name in _GLOBAL_SLOW_STATE_FIELDS:
+        if name == "scope_controls":
+            # No observation ever writes ``global.slow_state.scope_controls``
+            # (scope-control observations land under
+            # ``scope_controls.global.display.*``), so a group-level
+            # ``scopeControls`` entry would stay ``missing`` forever and the
+            # frontend MOR-429 parent-veto rule would disable every observed
+            # ``scopeControls.<leaf>`` (MOR-557). The eight per-leaf entries
+            # seeded below are the real gate.
+            continue
         _set_missing_field_status(
             statuses,
             _to_camel(name),
