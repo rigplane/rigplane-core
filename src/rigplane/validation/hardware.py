@@ -734,6 +734,20 @@ async def _guard(
             failure_domain=FailureDomain.COMMAND_EXECUTION,
             error=str(exc),
         )
+    except NotImplementedError as exc:
+        # MOR-670: a radio op may deliberately ``raise NotImplementedError`` to
+        # signal "this model does not implement this op" (e.g.
+        # ``FtX1Radio.get_vfo_slot`` — no VFO-slot concept). That is
+        # semantically UNSUPPORTED, NOT a COMMAND_EXECUTION failure: no command
+        # ever reached the radio. Resolve the check to UNSUPPORTED (no
+        # failure_domain) with the reason captured for the artifact.
+        return None, _base_result(
+            entry,
+            CheckStatus.UNSUPPORTED,
+            failure_domain=None,
+            evidence={"reason": f"{entry.check_id} not implemented on this radio"},
+            error=str(exc),
+        )
     except RigplaneError as exc:
         return None, _base_result(
             entry,
