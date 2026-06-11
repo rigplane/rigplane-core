@@ -135,6 +135,36 @@ _PERCEPTION_PROMPTS: dict[str, str] = {
 }
 
 
+# MOR-666 — TX actuation. The pre-TX gate prompt is asked ONCE per run via the
+# MOR-667 ``confirm()`` primitive, which ALWAYS reads a real answer and IGNORES
+# ``--assume-yes`` — an unattended run can therefore never key the transmitter.
+_TX_ACTUATE_CONFIRM_PROMPT = (
+    "About to TRANSMIT on the connected antenna/dummy load at MINIMUM power "
+    "for ~1-2s (PTT key + tuner tune-cycle). Type YES to proceed: "
+)
+# Minimum TX power on the normalised 0-255 scale (lowest practical key).
+_TX_MIN_POWER = 0
+# Brief PTT key duration (seconds) — shortest practical key for a valid check.
+_TX_PTT_KEY_SECONDS = 1.0
+# Tuner status codes (mirror ``commands/system.py``): 0=off, 1=on, 2=tune.
+_TUNER_STATUS_TUNE = 2
+# Bounded wait for the tune-cycle to settle before reading status back.
+_TUNER_SETTLE_SECONDS = 1.0
+
+# The check_ids whose actuation transmits; gated by ``--tx-actuate`` + confirm.
+# VOX is deliberately excluded (stays MANUAL — out of MOR-666 scope).
+_TX_ACTUATE_CHECK_IDS = frozenset({"tx.ptt", "tuner.tune"})
+
+
+def _template_has_tx_check(template: MatrixTemplate) -> bool:
+    """True if the template contains a TX-actuatable check (tx.ptt/tuner.tune).
+
+    Used to decide whether to ask the single pre-TX confirm at all — a run with
+    no TX check never prompts the operator.
+    """
+    return any(entry.check_id in _TX_ACTUATE_CHECK_IDS for entry in template.entries)
+
+
 def _utcnow_iso() -> str:
     """Return the current UTC time as an ISO-8601 millisecond ``...Z`` string."""
     return (
@@ -153,6 +183,7 @@ async def execute_hardware_checks(
     per_check_timeout: float = DEFAULT_PER_CHECK_TIMEOUT,
     write_only_capabilities: frozenset[str] = frozenset(),
     prompter: InteractivePrompter | None = None,
+    tx_actuate: bool = False,
 ) -> list[LevelResult]:
     """Run a template's checks against an already-connected ``radio``.
 
@@ -162,7 +193,22 @@ async def execute_hardware_checks(
     stamped with ISO-8601 ``started_at``/``finished_at`` timestamps and a single
     INFO log line is emitted per check. The radio is assumed connected; this
     function neither connects nor disconnects.
+
+    When *tx_actuate* is ``True`` (the caller has already verified the full
+    opt-in gate stack, MOR-666) AND a *prompter* is supplied, the TX checks
+    (``tx.ptt``/``tuner.tune``) may ACTUALLY transmit — but only after the
+    operator types YES to a single pre-TX ``confirm()`` gate asked ONCE here,
+    before any check runs. Without ``tx_actuate``, without a prompter, or on a
+    declined confirm, the TX checks keep their MANUAL_REQUIRED behaviour and
+    NEVER key the transmitter.
     """
+    # MOR-666: resolve the single pre-TX confirmation up front so it is asked at
+    # most once per run (not per check). ``confirm()`` ignores ``--assume-yes``,
+    # so an unattended run can never authorise transmission.
+    tx_actuate_confirmed = False
+    if tx_actuate and prompter is not None and _template_has_tx_check(template):
+        tx_actuate_confirmed = prompter.confirm(_TX_ACTUATE_CONFIRM_PROMPT)
+
     by_level: dict[ValidationLevel, list[CheckResult]] = {}
     for entry in template.entries:
         started = _utcnow_iso()
@@ -175,6 +221,7 @@ async def execute_hardware_checks(
                 per_check_timeout=per_check_timeout,
                 write_only_capabilities=write_only_capabilities,
                 prompter=prompter,
+                tx_actuate_confirmed=tx_actuate_confirmed,
             )
         except Exception as exc:
             # Backstop (MOR-659): one raising check must never abort the
@@ -251,6 +298,7 @@ async def _run_one_check(
     per_check_timeout: float,
     write_only_capabilities: frozenset[str] = frozenset(),
     prompter: InteractivePrompter | None = None,
+    tx_actuate_confirmed: bool = False,
 ) -> CheckResult:
     """Execute a single template entry, applying universal pre-gates first."""
     # Pre-gate 1: authorization for TX-adjacent checks.
@@ -261,6 +309,22 @@ async def _run_one_check(
             failure_domain=FailureDomain.COMMAND_EXECUTION,
             evidence={"reason": "operator authorization required"},
         )
+
+    # MOR-666: TX actuation. ONLY when the operator affirmatively confirmed the
+    # pre-TX gate AND this is a TX-actuatable check, ACTUALLY transmit (key PTT
+    # at minimum power / run a tune-cycle). This runs AFTER pre-gate 1, so the
+    # operator must STILL be authorized (tx_allowed/tuner_allowed). Without an
+    # affirmative confirm this branch is skipped and the check falls through to
+    # MANUAL_REQUIRED below — the transmitter is never keyed.
+    if tx_actuate_confirmed and entry.check_id in _TX_ACTUATE_CHECK_IDS:
+        if entry.check_id == "tx.ptt":
+            return await _actuate_tx_ptt(
+                radio, entry, per_check_timeout=per_check_timeout
+            )
+        if entry.check_id == "tuner.tune":
+            return await _actuate_tuner_tune(
+                radio, entry, per_check_timeout=per_check_timeout
+            )
 
     # Pre-gate 2: manual-required (authorized / non-TX-adjacent).
     if entry.declaration == CapabilityDeclaration.MANUAL_REQUIRED:
@@ -393,6 +457,196 @@ def _manual_required_result(
             evidence["scope_capability_present"] = scope_present
         return _base_result(entry, CheckStatus.MANUAL_REQUIRED, evidence=evidence)
     return _base_result(entry, CheckStatus.MANUAL_REQUIRED)
+
+
+# ---------------------------------------------------------------------------
+# TX actuation handlers (MOR-666) — reached ONLY after the full gate stack and
+# an explicit interactive confirm() YES. Each guarantees the radio is left in a
+# safe (un-keyed, power-restored) state via a finally that never raises.
+# ---------------------------------------------------------------------------
+
+
+async def _actuate_tx_ptt(
+    radio: Radio,
+    entry: CapabilityDeclarationEntry,
+    *,
+    per_check_timeout: float,
+) -> CheckResult:
+    """ACTUALLY key PTT briefly at minimum power, verify, then always unkey.
+
+    Sequence: read original TX power → set power to MINIMUM → key PTT → brief
+    wait → read ``radio_state.ptt`` to verify it keyed → unkey → restore power.
+    The unkey AND power-restore run in a ``finally`` that ALWAYS executes and
+    never raises (contained by ``_RESTORE_ERRORS``, which includes ``OSError``),
+    so a mid-check exception/timeout/LAN drop can never leave the radio keyed or
+    at the wrong power.
+    """
+    _set_ptt_attr = getattr(radio, "set_ptt", None)
+    if not callable(_set_ptt_attr):
+        return _base_result(
+            entry,
+            CheckStatus.UNSUPPORTED,
+            evidence={"reason": "radio has no set_ptt op"},
+        )
+    set_ptt = cast(Callable[[bool], Awaitable[None]], _set_ptt_attr)
+
+    _get_power_attr = getattr(radio, "get_rf_power", None)
+    _set_power_attr = getattr(radio, "set_rf_power", None)
+    has_power = callable(_get_power_attr) and callable(_set_power_attr)
+    get_power = cast(Callable[[], Awaitable[int]], _get_power_attr)
+    set_power = cast(Callable[[int], Awaitable[None]], _set_power_attr)
+
+    evidence: dict[str, object] = {"tx_actuated": True, "keyed": False}
+    original_power: int | None = None
+    power_set_to_min = False
+    keyed = False
+    verify_error: str | None = None
+
+    if has_power:
+        original_power, fail = await _guard(
+            get_power(), entry, per_check_timeout=per_check_timeout
+        )
+        if fail is None and original_power is not None:
+            evidence["original_power"] = original_power
+            _, pf = await _guard(
+                set_power(_TX_MIN_POWER),
+                entry,
+                per_check_timeout=per_check_timeout,
+            )
+            power_set_to_min = pf is None
+            evidence["power_set_to_min"] = power_set_to_min
+            if pf is not None:
+                evidence["power_set_error"] = pf.error
+        else:
+            if fail is not None:
+                evidence["power_read_error"] = fail.error
+
+    # Harm reduction: if the radio HAS power control but we could not confirm
+    # it is at minimum (read or set failed), refuse to transmit at an unknown
+    # (possibly full) power. Minimum-power-first is part of the TX-actuate
+    # safety contract, not just best-effort. (A radio with no power API at all
+    # still actuates — power can't be controlled there; the operator opted in.)
+    if has_power and not power_set_to_min:
+        return _base_result(
+            entry,
+            CheckStatus.FAIL,
+            failure_domain=FailureDomain.COMMAND_EXECUTION,
+            evidence=evidence,
+            error="refusing to transmit: could not set TX power to minimum",
+        )
+
+    try:
+        # Key the transmitter.
+        await asyncio.wait_for(set_ptt(True), timeout=per_check_timeout)
+        keyed = True
+        # Brief, bounded key window.
+        await asyncio.sleep(_TX_PTT_KEY_SECONDS)
+        # Verify the keyed state from published radio state (best-effort).
+        evidence["ptt_state"] = bool(radio.radio_state.ptt)
+        keyed = bool(radio.radio_state.ptt)
+        evidence["keyed"] = keyed
+    except _RESTORE_ERRORS as exc:
+        verify_error = str(exc)
+        evidence["actuate_error"] = verify_error
+    finally:
+        # ALWAYS unkey, no matter what — the radio must never be left keyed.
+        unkeyed = False
+        try:
+            await asyncio.wait_for(set_ptt(False), timeout=per_check_timeout)
+            unkeyed = True
+        except _RESTORE_ERRORS as exc:
+            evidence["unkey_error"] = str(exc)
+        evidence["unkeyed"] = unkeyed
+        # ALWAYS restore the original power if we lowered it.
+        power_restored = not power_set_to_min
+        if has_power and power_set_to_min and original_power is not None:
+            try:
+                _, rf = await _guard(
+                    set_power(original_power),
+                    entry,
+                    per_check_timeout=per_check_timeout,
+                )
+                power_restored = rf is None
+                if rf is not None:
+                    evidence["power_restore_error"] = rf.error
+            except _RESTORE_ERRORS as exc:
+                evidence["power_restore_error"] = str(exc)
+        evidence["power_restored"] = power_restored
+
+    if verify_error is not None:
+        return _base_result(
+            entry,
+            CheckStatus.FAIL,
+            failure_domain=FailureDomain.COMMAND_EXECUTION,
+            evidence=evidence,
+            error=f"tx actuation failed: {verify_error}",
+        )
+    if keyed and bool(evidence.get("unkeyed")):
+        return _base_result(entry, CheckStatus.PASS, evidence=evidence)
+    return _base_result(
+        entry,
+        CheckStatus.FAIL,
+        failure_domain=FailureDomain.COMMAND_EXECUTION,
+        evidence=evidence,
+        error="PTT did not key/unkey cleanly",
+    )
+
+
+async def _actuate_tuner_tune(
+    radio: Radio,
+    entry: CapabilityDeclarationEntry,
+    *,
+    per_check_timeout: float,
+) -> CheckResult:
+    """ACTUALLY run a tuner tune-cycle (``set_tuner_status(2)``) and verify.
+
+    The tuner keys TX into the connected load; this is gated behind the same
+    pre-TX confirm as ``tx.ptt``. After triggering the cycle we wait a bounded
+    settle window, read the tuner status back (best-effort), and record it. A
+    NAK/timeout-free trigger is the PASS signal — the radio's own readback can
+    report transient/idle states once the cycle completes.
+    """
+    _set_tuner_attr = getattr(radio, "set_tuner_status", None)
+    if not callable(_set_tuner_attr):
+        return _base_result(
+            entry,
+            CheckStatus.UNSUPPORTED,
+            evidence={"reason": "radio has no set_tuner_status op"},
+        )
+    set_tuner = cast(Callable[[int], Awaitable[None]], _set_tuner_attr)
+
+    evidence: dict[str, object] = {"tx_actuated": True}
+    _, fail = await _guard(
+        set_tuner(_TUNER_STATUS_TUNE),
+        entry,
+        per_check_timeout=per_check_timeout,
+    )
+    if fail is not None:
+        evidence["tune_error"] = fail.error
+        return _base_result(
+            entry,
+            CheckStatus.FAIL,
+            failure_domain=fail.failure_domain,
+            evidence=evidence,
+            error=fail.error,
+        )
+    evidence["tune_triggered"] = True
+
+    # Bounded settle, then best-effort readback (never the pass/fail driver).
+    await asyncio.sleep(_TUNER_SETTLE_SECONDS)
+    _get_tuner_attr = getattr(radio, "get_tuner_status", None)
+    if callable(_get_tuner_attr):
+        get_tuner = cast(Callable[[], Awaitable[int]], _get_tuner_attr)
+        status, sf = await _guard(
+            get_tuner(),
+            entry,
+            per_check_timeout=per_check_timeout,
+        )
+        if sf is None:
+            evidence["tuner_status_readback"] = status
+        else:
+            evidence["tuner_status_read_error"] = sf.error
+    return _base_result(entry, CheckStatus.PASS, evidence=evidence)
 
 
 async def _guard(
