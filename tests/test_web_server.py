@@ -3641,6 +3641,54 @@ class TestGetProfileRouting:
         assert isinstance(profile, RadioProfile)
         assert "IC-7610" in profile.model
 
+    def test_unresolved_radio_model_warns_and_names_model(self, caplog):
+        """Unknown radio model logs a WARNING naming it instead of silently
+        impersonating IC-7610 (MOR-174)."""
+        import logging
+
+        from rigplane.profiles import RadioProfile, resolve_radio_profile
+
+        radio = SimpleNamespace(model="ACME-9000", capabilities=set())
+        with caplog.at_level(logging.WARNING, logger="rigplane.web.server"):
+            srv = self._make_server(radio, radio_model="ACME-9000")
+            profile = srv._get_profile()
+
+        assert isinstance(profile, RadioProfile)
+        warnings = [
+            r.getMessage()
+            for r in caplog.records
+            if r.levelno == logging.WARNING and "ACME-9000" in r.getMessage()
+        ]
+        assert warnings, "expected a WARNING naming the unresolved radio model"
+        # Fallback must be the library-wide default resolution chain, and the
+        # warning must name the profile actually used — never a silent
+        # hard-coded IC-7610.
+        assert profile == resolve_radio_profile()
+        assert profile.model in warnings[0]
+
+    def test_unresolved_config_model_warns_when_no_radio(self, caplog):
+        """Unresolvable config radio_model (no radio) warns and still yields a
+        profile via the default resolution chain (MOR-174)."""
+        import logging
+
+        from rigplane.profiles import RadioProfile
+
+        with caplog.at_level(logging.WARNING, logger="rigplane.web.server"):
+            srv = self._make_server(radio=None, radio_model="NOT-A-RADIO")
+            profile = srv._get_profile()
+
+        assert isinstance(profile, RadioProfile)
+        assert any(
+            "NOT-A-RADIO" in r.getMessage()
+            for r in caplog.records
+            if r.levelno == logging.WARNING
+        )
+
+    def test_default_config_radio_model_is_not_ic7610(self):
+        """WebConfig.radio_model defaults to a neutral sentinel, not a silent
+        IC-7610 (MOR-174)."""
+        assert WebConfig().radio_model != "IC-7610"
+
 
 class TestGetMeterCalPayload:
     """Unit tests for WebServer._get_meter_cal_payload()."""
