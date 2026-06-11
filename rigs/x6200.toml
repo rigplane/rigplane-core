@@ -56,10 +56,19 @@ codec_preference = ["PCM_1CH_16BIT", "ULAW_1CH"]
 # narrower than the IC-705 envelope:
 #   - no ``power_control`` (no documented CI-V 0x18)
 #   - no ``scope`` (no documented 0x27 family)
-#   - no ``filter_width`` SET (PDF table 5 documents widths but encoding
-#     is the segmented BCD index family; mirror x6100.toml's "feature not
-#     advertised until tables are confirmed on hardware" stance — see
-#     issue #1159 referenced in x6100.toml)
+#   - no tone family (``repeater_tone`` / ``tsql``): the backend would send
+#     ``0x16 0x42/0x43`` + ``0x1B 0x00``, none of which the X6200 firmware
+#     answers. A live X6200 capture (CI-V 0xA4) confirmed all four tone
+#     RMVR checks (repeater_tone/tone_freq/tsql/tsql_freq) time out, so the
+#     caps are dropped — the checks now resolve UNSUPPORTED, not FAIL
+#     (MOR-683, supersedes the audit's gap-list D tone row).
+#   - no ``filter_width`` SET: a live X6200 capture (CI-V 0xA4) showed
+#     ``0x1A 0x03`` cannot be round-tripped by the harness — ``get`` reads
+#     back a passband index (live: 27) while the USB setter guards
+#     50-9999 Hz, so the nudge produces an out-of-range write (units
+#     mismatch), and Hamlib marks ``x1ax03_supported = 0``. The cap stays
+#     UNDECLARED pending a setter units fix + a clean live round-trip
+#     (MOR-683 defers; tracked as a filter_width follow-up).
 features = [
     "audio",
     "af_level",
@@ -81,8 +90,6 @@ features = [
     "xit",
     "tuner",
     "meters",
-    "repeater_tone",
-    "tsql",
     "data_mode",
     "scan",
     "dial_lock",

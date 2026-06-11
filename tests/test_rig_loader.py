@@ -807,3 +807,17 @@ class TestWriteOnlyControls:
     def test_x6200_declares_rit_xit_notch_write_only(self):
         profile = get_radio_profile("X6200")
         assert profile.write_only_controls >= {"rit", "xit", "notch"}
+
+    def test_x6200_drops_tone_family_and_does_not_declare_filter_width(self):
+        # MOR-683: a live X6200 capture (CI-V 0xA4) confirmed the tone family
+        # (repeater_tone / tsql, driving 0x16 0x42/0x43 + 0x1B) times out, so
+        # those caps are dropped → the four tone RMVR checks resolve
+        # UNSUPPORTED instead of FAIL. filter_width stays UNDECLARED: the same
+        # live capture showed 0x1A 0x03 cannot be round-tripped (get reads a
+        # passband index, the USB setter guards 50-9999 Hz) and Hamlib marks
+        # x1ax03_supported=0. rit/xit/notch and the DSP toggles stay untouched.
+        caps = get_radio_profile("X6200").capabilities
+        assert "repeater_tone" not in caps
+        assert "tsql" not in caps
+        assert "filter_width" not in caps
+        assert {"rit", "xit", "notch", "nr", "nb", "compressor"} <= caps
