@@ -28,8 +28,8 @@ from rigplane.validation.schema import FailureDomain, ValidationLevel
 # ---------------------------------------------------------------------------
 
 
-def test_registry_has_21_entries():
-    assert len(REGISTRY) == 21
+def test_registry_has_24_entries():
+    assert len(REGISTRY) == 24
 
 
 def test_check_ids_unique():
@@ -39,7 +39,8 @@ def test_check_ids_unique():
 
 def test_check_id_set_unchanged_after_domain_split():
     """MOR-637 guard: the per-domain package split must not lose, duplicate,
-    or rename any check. Frozen snapshot of the pre-split REGISTRY ids."""
+    or rename any check. Frozen snapshot of the pre-split REGISTRY ids, plus
+    the append-only audio-probe family (GH #1650, MOR-639/640/641)."""
     expected = {
         "discovery.identify",
         "freq.write",
@@ -62,6 +63,10 @@ def test_check_id_set_unchanged_after_domain_split():
         "meters.read",
         "tuner.tune",
         "tx.ptt",
+        # Appended audio-probe family (CI-automated, GH #1650):
+        "audio.rx.rms",
+        "audio.tx.byte_perfect",
+        "scope.fft.presence",
     }
     assert {spec.check_id for spec in REGISTRY} == expected
 
@@ -88,9 +93,10 @@ def test_tx_adjacent_blocked_implies_tx_adjacent():
             assert spec.tx_adjacent is True, (
                 f"{spec.check_id!r}: TX_ADJACENT_BLOCKED but tx_adjacent is False"
             )
-    # ONLY tuner.tune and tx.ptt should have tx_adjacent=True
+    # tuner.tune, tx.ptt, and the TX-audio probe (GH #1650: TX audio stays
+    # behind explicit operator safety enablement) are the only tx_adjacent ids.
     tx_adjacent_ids = {spec.check_id for spec in REGISTRY if spec.tx_adjacent}
-    assert tx_adjacent_ids == {"tuner.tune", "tx.ptt"}
+    assert tx_adjacent_ids == {"tuner.tune", "tx.ptt", "audio.tx.byte_perfect"}
 
 
 def test_manual_and_blocked_have_no_set_op():

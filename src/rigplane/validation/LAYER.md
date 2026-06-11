@@ -46,6 +46,38 @@ every lower layer (`web`, `rigctld`, `backends`, `runtime`, `profiles`,
 `audio`, `commands`, `scope`, `dsp`, `core`) from importing
 `rigplane.validation`. Only `cli/` may consume it.
 
+## Automated audio probes (`audio_checks.py`)
+
+The `AUDIO_PROBE` check kind (GH #1650; MOR-639/640/641) is the CI-automated
+counterpart of the MANUAL `audio.rx` / `scope.capture` operator checks:
+
+- `run_rx_rms_check` — injects a reference tone through
+  `FakeAudioBackend`/`FakeRxStream` and verifies the delivered PCM RMS
+  (`failure_domain=audio`).
+- `run_tx_byte_perfect_check` — pushes captured frames through the REAL
+  `AudioStream` LAN packetization and requires a byte-perfect reassembled
+  payload (`failure_domain=audio`).
+- `run_scope_presence_check` — feeds PCM to the REAL `AudioFftScope` and
+  requires in-band bins above the out-of-band baseline
+  (`failure_domain=scope_waterfall`; MOR-512/528 regression guard).
+
+Integration decision: the pre-existing MANUAL `audio.rx`/`scope.capture`
+entries are KEPT for real-hardware operator confirmation; the probes are
+additive. Generated hardware templates carry `AUDIO_PROBE` checks as
+`MANUAL_REQUIRED` (they are never auto-run on a live radio; `hardware.py`
+SKIPs them defensively), while the CI harness executes them via
+`run_audio_probe_checks()` + `audio_probe_level_results()` and folds the
+results into `build_validation_artifact` → `gate_artifacts`, so audio
+regressions gate exactly like command regressions. `audio.tx.byte_perfect`
+is `tx_adjacent=True` per GH #1650 (TX audio stays behind explicit operator
+safety enablement on real hardware).
+
+This module imports `rigplane.audio` (the deterministic fakes, the LAN audio
+packetizer, the FFT scope) and `rigplane.scope` (`ScopeFrame`) — permitted:
+`validation` is a top-level consumer outside the layer DAG, and only the CI
+harness imports `audio_checks` (the `rigplane.validation` facade does not
+re-export it).
+
 ## Contract
 
 The template and artifact shapes are a public, versioned contract — see

@@ -1258,6 +1258,23 @@ async def _check_from_spec(
     if spec.kind is CheckKind.MANUAL:
         return _manual_required_result(radio, entry)
 
+    if spec.kind is CheckKind.AUDIO_PROBE:
+        # Automated audio probes run in CI against FakeAudioBackend via
+        # ``rigplane.validation.audio_checks`` — never auto-run on a live
+        # radio. Generated templates declare them MANUAL_REQUIRED (pre-gate 2
+        # above); this branch only fires for custom templates that mark an
+        # AUDIO_PROBE check as supported.
+        return _base_result(
+            entry,
+            CheckStatus.SKIP,
+            evidence={
+                "reason": (
+                    "automated audio probe runs in CI via "
+                    "rigplane.validation.audio_checks"
+                )
+            },
+        )
+
     # CheckKind.TX_ADJACENT_BLOCKED (defensive)
     return _base_result(
         entry,

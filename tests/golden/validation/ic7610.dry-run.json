@@ -37,6 +37,17 @@
       "declaration": "manual_required"
     },
     {
+      "check_id": "audio.rx.rms",
+      "status": "manual_required",
+      "declaration": "manual_required"
+    },
+    {
+      "check_id": "audio.tx.byte_perfect",
+      "status": "blocked",
+      "declaration": "manual_required",
+      "failure_domain": "command_execution"
+    },
+    {
       "check_id": "band_edge.presence",
       "status": "unsupported",
       "declaration": "unsupported_pending_evidence"
@@ -203,6 +214,11 @@
     },
     {
       "check_id": "scope.capture",
+      "status": "manual_required",
+      "declaration": "manual_required"
+    },
+    {
+      "check_id": "scope.fft.presence",
       "status": "manual_required",
       "declaration": "manual_required"
     },
