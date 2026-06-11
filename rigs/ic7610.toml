@@ -100,6 +100,10 @@ features = [
     # repeater-tone / TSQL family is intentionally NOT declared (MOR-661).
     # Data
     "data_mode",
+    # Modulation input routing — USB/LAN/DATA MOD source select (1A 05
+    # 0089-0094). Gates the mod_input.set RMVR guard behind the "web voice
+    # TX = noise" surface (DATA-OFF MOD must be LAN, not MIC; MOR-678).
+    "mod_input_routing",
     # AGC
     "agc",
     # System

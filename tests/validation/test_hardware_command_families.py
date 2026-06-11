@@ -360,6 +360,57 @@ async def test_dial_lock_set_rmvr_roundtrip():
 
 
 # ---------------------------------------------------------------------------
+# MOR-678 — IC-7610 MOD-input routing (1A 05 0089-0094) RMVR guard
+# ---------------------------------------------------------------------------
+
+
+async def test_mod_input_set_rmvr_roundtrip_flips_and_restores():
+    """RMVR over the DATA-OFF MOD-input source: flip USB(2) -> LAN(3),
+    verify readback, restore the original."""
+    radio, store = _stateful_value_radio(
+        capability="mod_input_routing",
+        get_op="get_data_off_mod_input",
+        set_op="set_data_off_mod_input",
+        start=2,  # USB
+        receiver_kw=False,
+    )
+    result = await _run(radio, "mod_input.set")
+    assert result.status is CheckStatus.PASS
+    assert result.evidence["restored"] is True
+    assert store["value"] == 2  # restored to original USB
+    assert 3 in store["writes"]  # flipped to LAN during the check
+
+
+async def test_mod_input_set_flips_away_from_lan_when_already_lan():
+    """When the source is already LAN(3), the flip must pick a DIFFERENT valid
+    source (USB=2) — never write an invalid value and never write the same one."""
+    radio, store = _stateful_value_radio(
+        capability="mod_input_routing",
+        get_op="get_data_off_mod_input",
+        set_op="set_data_off_mod_input",
+        start=3,  # LAN
+        receiver_kw=False,
+    )
+    result = await _run(radio, "mod_input.set")
+    assert result.status is CheckStatus.PASS
+    assert store["value"] == 3  # restored to original LAN
+    changed = [v for v in store["writes"] if v != 3]
+    assert changed and changed[0] == 2  # flipped to USB
+    # never writes an out-of-range source
+    assert all(0 <= v <= 5 for v in store["writes"])
+
+
+async def test_mod_input_check_unsupported_when_radio_lacks_op():
+    """A radio that declares the cap but lacks the get/set op reports
+    UNSUPPORTED without crashing."""
+    radio = _bare_radio({"mod_input_routing"})
+    radio.get_data_off_mod_input = None
+    radio.set_data_off_mod_input = None
+    result = await _run(radio, "mod_input.set")
+    assert result.status is CheckStatus.UNSUPPORTED
+
+
+# ---------------------------------------------------------------------------
 # T11 / MOR-646 — scope-control SET commands
 # ---------------------------------------------------------------------------
 
@@ -645,6 +696,7 @@ def test_new_family_levels_are_correct():
         "vox.set": ValidationLevel.STRESS_RECOVERY,
         "vox_gain.set": ValidationLevel.STRESS_RECOVERY,
         "dial_lock.set": matrix,
+        "mod_input.set": matrix,
     }
     for check_id, level in expectations.items():
         spec = REGISTRY_BY_ID[check_id]

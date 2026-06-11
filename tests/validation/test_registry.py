@@ -81,6 +81,8 @@ _EXPECTED_CHECK_IDS = {
     "vox.set",
     "vox_gain.set",
     "dial_lock.set",
+    # MOR-678 — IC-7610 MOD-input routing RMVR guard (1A 05 0089-0094)
+    "mod_input.set",
     # T11 / MOR-646 — scope-control SET commands
     "scope_receiver.set",
     "scope_dual.set",
@@ -99,7 +101,7 @@ _EXPECTED_CHECK_IDS = {
 
 
 def test_registry_has_expected_entry_count():
-    assert len(REGISTRY) == len(_EXPECTED_CHECK_IDS) == 54
+    assert len(REGISTRY) == len(_EXPECTED_CHECK_IDS) == 55
 
 
 def test_check_ids_unique():
@@ -237,6 +239,22 @@ def test_import_guard_runs():
 # ---------------------------------------------------------------------------
 
 _EXPECTED: list[tuple[str, dict]] = [
+    (
+        "mod_input.set",
+        {
+            "kind": CheckKind.RMVR_SAFE_WRITE,
+            "level": ValidationLevel.CAPABILITY_MATRIX,
+            "capability": "mod_input_routing",
+            "get_op": "get_data_off_mod_input",
+            "set_op": "set_data_off_mod_input",
+            "value_rule": ValueRule.MOD_SRC_FLIP,
+            "tolerance": 0,
+            "hamlib_token": None,
+            "protocol": "mod_input_routing",
+            "failure_domain": FailureDomain.AUDIO,
+            "tx_adjacent": False,
+        },
+    ),
     (
         "freq.write",
         {
