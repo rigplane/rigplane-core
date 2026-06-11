@@ -16,6 +16,7 @@ from rigplane.validation.gating import (
     normalize_artifact,
 )
 from rigplane.validation.hardware import execute_hardware_checks
+from rigplane.validation.interactive import InteractivePrompter, is_affirmative
 from rigplane.validation.overrides import (
     EXCLUDED,
     MergeReport,
@@ -79,6 +80,8 @@ __all__ = [
     "build_validation_artifact",
     "human_summary",
     "execute_hardware_checks",
+    "InteractivePrompter",
+    "is_affirmative",
     "compute_comparison_dimensions",
     "GateReport",
     "format_gate_report",
