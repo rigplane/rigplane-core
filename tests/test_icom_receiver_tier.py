@@ -308,10 +308,16 @@ class TestSetVfoSlot:
     async def test_ic7610_sub_uses_select_restore_pattern(
         self, ic7610: IcomRadio, mock_transport: MockTransport
     ) -> None:
-        # Dual-RX SUB path: select SUB → emit slot → restore MAIN. Two
-        # set_vfo() calls need ACKs.
-        mock_transport.queue_response(ACK_IC7610)
-        mock_transport.queue_response(ACK_IC7610)
+        # Dual-RX SUB path: select SUB → emit slot → restore MAIN.
+        # Release each ACK only after its own send (1=select SUB, 2=slot
+        # fire-and-forget, 3=restore MAIN). Pre-queueing ACKs upfront lets the
+        # rx pump race them into the wrong consumer (fire-and-forget ACK sink
+        # vs restore waiter); the race winner differs between 3.11 and 3.12+
+        # because pre-3.12 asyncio.wait_for wraps the awaitable in an extra
+        # Task (gh-96764), changing scheduling order.
+        mock_transport.queue_response_on_send(1, ACK_IC7610)
+        mock_transport.queue_response_on_send(2, ACK_IC7610)
+        mock_transport.queue_response_on_send(3, ACK_IC7610)
         await ic7610.set_vfo_slot("B", receiver=1)
         frames = _civ_bytes(mock_transport.sent_packets)
         sel_idx = next((i for i, f in enumerate(frames) if f == SEL_SUB_7610), None)
@@ -340,8 +346,11 @@ class TestSetVfoSlot:
     async def test_ic9700_sub_uses_select_restore_pattern(
         self, ic9700: IcomRadio, mock_transport: MockTransport
     ) -> None:
-        mock_transport.queue_response(ACK_IC9700)
-        mock_transport.queue_response(ACK_IC9700)
+        # Per-send ACK release — see test_ic7610_sub_uses_select_restore_
+        # pattern for the 3.11-vs-3.12+ scheduling rationale.
+        mock_transport.queue_response_on_send(1, ACK_IC9700)
+        mock_transport.queue_response_on_send(2, ACK_IC9700)
+        mock_transport.queue_response_on_send(3, ACK_IC9700)
         await ic9700.set_vfo_slot("A", receiver=1)
         frames = _civ_bytes(mock_transport.sent_packets)
         assert SEL_SUB_9700 in frames

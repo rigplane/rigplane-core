@@ -141,6 +141,19 @@ def _addr_from_asyncio_server(server: asyncio.Server) -> tuple[str, int]:
     return server.sockets[0].getsockname()
 
 
+async def _yield_until(predicate, timeout: float = 1.0) -> None:  # type: ignore[no-untyped-def]
+    """Yield to the event loop until ``predicate()`` is truthy (or timeout).
+
+    A fixed number of ``asyncio.sleep(0)`` yields is interpreter-sensitive:
+    pre-3.12 ``asyncio.wait_for`` wraps its awaitable in an extra Task
+    (gh-96764), so frame propagation through AudioBus → bridge loops needs
+    more event-loop iterations on 3.11 than on 3.12+.
+    """
+    deadline = asyncio.get_running_loop().time() + timeout
+    while not predicate() and asyncio.get_running_loop().time() < deadline:
+        await asyncio.sleep(0)
+
+
 async def _http_get(
     host: str, port: int, path: str
 ) -> tuple[int, dict[str, str], bytes]:
@@ -417,9 +430,11 @@ async def test_audio_bridge_smoke_with_serial_backend_audio_driver() -> None:
         # Yield once so _rx_loop and _tx_loop tasks actually start running.
         await asyncio.sleep(0)
 
-        # RX path: serial driver → AudioBus → _rx_loop → FakeTxStream
+        # RX path: serial driver → AudioBus → _rx_loop → FakeTxStream.
+        # _yield_until: the number of event-loop hops differs across Python
+        # versions (see helper docstring), so poll instead of a fixed yield.
         serial_audio.emit_rx_pcm(b"\x10\x20" * 960)
-        await asyncio.sleep(0)  # let _rx_loop process the queued packet
+        await _yield_until(lambda: backend.tx_streams[0].written_frames)
         assert backend.tx_streams[0].written_frames, (
             "RX frame did not reach bridge output"
         )
@@ -428,10 +443,9 @@ async def test_audio_bridge_smoke_with_serial_backend_audio_driver() -> None:
         # PCM value 100 (> silence threshold of 10) so it is not filtered.
         pcm_tx = bytes([0, 100] * 960)  # 960 int16 samples, each = 0x6400 = 25600
         backend.rx_streams[0].inject_frame(pcm_tx)
-        # inject_frame calls _on_tx_capture via call_soon_threadsafe; need two
-        # yields: one to run _enqueue_tx, one to let _tx_loop process the frame.
-        await asyncio.sleep(0)
-        await asyncio.sleep(0)
+        # inject_frame calls _on_tx_capture via call_soon_threadsafe, then
+        # _tx_loop must process the queued frame — again hop-count-sensitive.
+        await _yield_until(lambda: serial_audio.tx_frames)
         assert serial_audio.tx_frames, "TX frame did not reach radio"
 
         await bridge.stop()
