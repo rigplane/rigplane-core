@@ -815,6 +815,29 @@ _IF_SHIFT_LIMIT_HZ = 1200
 _IF_SHIFT_NUDGE_HZ = 200
 
 
+# MOR-679 — CW pitch is a sidetone frequency in Hz, NOT a 0-255 level. The Icom
+# encoder (``commands/levels.py::_cw_pitch_to_level``) raises ValueError outside
+# 300-900 Hz, and the getter snaps the readback to the nearest 5 Hz. The RMVR
+# mutation must stay inside that band so the written test value is always
+# restorable and never out of range.
+_CW_PITCH_MIN_HZ = 300
+_CW_PITCH_MAX_HZ = 900
+_CW_PITCH_NUDGE_HZ = 50
+
+
+def _nudge_cw_pitch(pitch_hz: int) -> int:
+    """Mutate a CW pitch (Hz) to a DIFFERENT in-range value on the 5 Hz grid.
+
+    Nudge by +50 Hz, but if that would exceed the 900 Hz ceiling, step the other
+    way (-50 Hz) instead. The original is assumed in-band (300-900 Hz), so the
+    result is always within 300-900 Hz, on the radio's 5 Hz grid, and always
+    differs from the original. NEVER writes out of range.
+    """
+    if int(pitch_hz) + _CW_PITCH_NUDGE_HZ <= _CW_PITCH_MAX_HZ:
+        return int(pitch_hz) + _CW_PITCH_NUDGE_HZ
+    return int(pitch_hz) - _CW_PITCH_NUDGE_HZ
+
+
 def _nudge_if_shift(offset: int) -> int:
     """Mutate an IF-shift offset to a DIFFERENT in-range value.
 
@@ -1617,6 +1640,8 @@ _WRITE_ONLY_TEST_VALUES: dict[str, Any] = {
     # MOR-678 — MOD-input routing: LAN (index 3) is the documented digital
     # source and always a valid setting on DATA-OFF/1/2/3.
     ValueRule.MOD_SRC_FLIP: 3,
+    # MOR-679 — CW pitch: a mid-band 600 Hz is always in 300-900 and on-grid.
+    ValueRule.CW_PITCH_HZ: 600,
 }
 
 # Benign value to restore a write-only control to afterwards (best-effort).
@@ -1663,6 +1688,8 @@ _VALUE_RULE_FNS: dict[str, Callable[[Any], Any]] = {
     # Flip between two always-valid digital sources: USB (2) <-> LAN (3).
     # Never writes an invalid source; restores the original afterwards.
     ValueRule.MOD_SRC_FLIP: lambda v: 3 if int(v) != 3 else 2,
+    # MOR-679 — CW pitch: nudge +/-50 Hz, clamped to 300-900 (never OOR).
+    ValueRule.CW_PITCH_HZ: _nudge_cw_pitch,
 }
 
 # Restore-safety predicates (MOR-659): when the CURRENT value of an RMVR
