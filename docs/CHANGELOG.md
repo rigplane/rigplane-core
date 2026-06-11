@@ -11,6 +11,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.9.0] — 2026-06-11
+
 ### Breaking changes
 
 - **CLI: option abbreviations are no longer accepted.** The `rigplane`
@@ -31,6 +33,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   lossless. With the flag off (the default) egress behavior is unchanged and
   a client's codec never changes mid-stream (MOR-588, #1775, 1cc5e72a;
   link-quality `audio_stats` uplink MOR-585, #1773, 2dc28f84).
+- IC-7610 MOD-input routing in the Web UI (epic MOR-614, #1786–#1791): the
+  current MOD Input source for each DATA group (DATA OFF/D1/D2/D3 MOD, CI-V
+  `0x1A 05 00 0x91`–`0x94`) is now read into state and exposed in the web
+  `state_update` snapshot (MOR-615, #1788, 5bbf22d2), and the ModePanel shows
+  a "MOD IN" selector for the active DATA group with the six IC-7610 sources
+  (MIC/ACC/MIC+ACC/USB/MIC+USB/LAN) (MOR-616, #1789, dcd7f8e5). Radios
+  without MOD-input routing never render the control.
+- Network-voice-TX preflight guard: keying web voice TX while the active
+  mode group's MOD input is not LAN now shows a warn-only banner with a
+  one-click "Set LAN" action — TX is never blocked or delayed (MOR-617,
+  #1790, 87cd5f58). An **opt-in** (off by default) auto-set-LAN-on-TX
+  setting switches the active group to LAN when TX starts and restores the
+  previous source when TX stops (MOR-618, #1791, 1b9cfc14).
+- Docs: new troubleshooting section for the IC-7610 MOD-input requirement —
+  why network voice TX produces broadband noise, feedback squeal, or silence
+  when MIC is in the MOD-input source list, with the per-mode-group fix
+  (MOR-619, #1786, 25ead3ba).
 
 ### Changed
 
@@ -56,6 +75,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Audio bridge degrades to RX-only (with a warning) when a neutral-surface
   radio negotiates a non-PCM TX codec, instead of pushing mis-typed raw PCM;
   no shipping backend produces this configuration (MOR-545, #1749, a52263d9).
+- PTT over the web control channel is now truthful: keying is rejected with
+  a `radio_not_ready` error envelope when the radio session is not ready or
+  a reconnect cycle is in flight, instead of falsely reporting success while
+  the radio never keyed; unkeying always goes through. The status bar now
+  degrades the radio indicator (with a tooltip) on a connected-but-not-ready
+  session, built on the new reconnect-status surface (MOR-620, #1787,
+  58781f6d; reconnect status + attempt countdown MOR-594, #1784, 88a3b9b6).
 
 ### Fixed
 
@@ -70,6 +96,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   running LAN RX stream (RX demand was dropped before radio TX was stopped);
   the bridge now stops TX first, then tears down RX (MOR-574, #1762,
   3f08f659).
+- FM/AM-family waterfall passband (FM, FM-N, WFM, DATA-FM, AM-N, and the
+  digital FM modes) now renders symmetric about the carrier (±width/2)
+  instead of one-sided to the right like USB; display geometry only, no
+  audio or filter behavior change (#1719, #1792, 4a082e17).
+- A failed `connect()` now fully unwinds the commander and keep-alive tasks
+  it started, eliminating orphaned-future warnings after a connection
+  failure (MOR-595, #1785, 49c5ff93).
 
 ## [2.8.0] — 2026-06-02
 
@@ -1663,7 +1696,8 @@ These deprecation closures were announced in v0.19 and dropped on schedule.
 - Transport layer, authentication, CI-V commands, meters, PTT, keep-alive.
 - Clean-room Icom LAN UDP protocol implementation.
 
-[Unreleased]: https://github.com/rigplane/rigplane-core/compare/v2.8.0...HEAD
+[Unreleased]: https://github.com/rigplane/rigplane-core/compare/v2.9.0...HEAD
+[2.9.0]: https://github.com/rigplane/rigplane-core/compare/v2.8.0...v2.9.0
 [2.8.0]: https://github.com/rigplane/rigplane-core/compare/v2.7.3...v2.8.0
 [2.7.3]: https://github.com/rigplane/rigplane-core/compare/v2.7.2...v2.7.3
 [2.7.2]: https://github.com/rigplane/rigplane-core/compare/v2.7.1...v2.7.2
