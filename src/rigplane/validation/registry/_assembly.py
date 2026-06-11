@@ -11,6 +11,7 @@ from __future__ import annotations
 from rigplane.core.capabilities import KNOWN_CAPABILITIES
 from rigplane.validation.registry._dsp import CHECKS as _DSP_CHECKS
 from rigplane.validation.registry._levels import CHECKS as _LEVELS_CHECKS
+from rigplane.validation.registry._memory import CHECKS as _MEMORY_CHECKS
 from rigplane.validation.registry._structural import CHECKS as _STRUCTURAL_CHECKS
 from rigplane.validation.registry._surfaces import CHECKS as _SURFACES_CHECKS
 from rigplane.validation.registry._tone import CHECKS as _TONE_CHECKS
@@ -34,6 +35,7 @@ REGISTRY: tuple[CheckSpec, ...] = (
     # stable-sort by level so new checks slot in without reordering 1-21) ---
     + _TONE_CHECKS  # T7: repeater_tone, tone_freq, tsql, tsql_freq
     + _VFO_CHECKS  # T8: split, vfo_slot, dual_watch
+    + _MEMORY_CHECKS  # T9: bsr (manual; CI-V memory surface is SET-only)
 )
 
 

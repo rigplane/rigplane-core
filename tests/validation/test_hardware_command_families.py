@@ -241,3 +241,25 @@ async def test_vfo_slot_unsupported_when_radio_lacks_op():
     radio.set_vfo_slot = None
     result = await _run(radio, "vfo_slot.set")
     assert result.status is CheckStatus.UNSUPPORTED
+
+
+# ---------------------------------------------------------------------------
+# T9 / MOR-644 — memory / band-stack
+# ---------------------------------------------------------------------------
+
+
+async def test_bsr_select_is_manual_and_touches_nothing():
+    radio = _bare_radio({"bsr"})
+    radio.set_bsr = AsyncMock()
+    radio.set_memory_mode = AsyncMock()
+    result = await _run(radio, "bsr.select")
+    assert result.status is CheckStatus.MANUAL_REQUIRED
+    radio.set_bsr.assert_not_called()
+    radio.set_memory_mode.assert_not_called()
+
+
+def test_bsr_select_spec_is_manual_with_no_ops():
+    spec = REGISTRY_BY_ID["bsr.select"]
+    assert spec.kind is CheckKind.MANUAL
+    assert spec.get_op is None
+    assert spec.set_op is None
