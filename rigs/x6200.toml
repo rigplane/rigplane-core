@@ -62,11 +62,13 @@ codec_preference = ["PCM_1CH_16BIT", "ULAW_1CH"]
 #     RMVR checks (repeater_tone/tone_freq/tsql/tsql_freq) time out, so the
 #     caps are dropped — the checks now resolve UNSUPPORTED, not FAIL
 #     (MOR-683, supersedes the audit's gap-list D tone row).
-#   - ``filter_width`` IS declared: ``0x1A 0x03`` is wired
-#     (``get/set_filter_width``) and the live X6200 capture confirmed the
-#     radio answers it (MOR-683 — the earlier "deferred until tables
-#     confirmed on hardware" stance from x6100.toml/#1159 is now resolved
-#     for the X6200).
+#   - no ``filter_width`` SET: a live X6200 capture (CI-V 0xA4) showed
+#     ``0x1A 0x03`` cannot be round-tripped by the harness — ``get`` reads
+#     back a passband index (live: 27) while the USB setter guards
+#     50-9999 Hz, so the nudge produces an out-of-range write (units
+#     mismatch), and Hamlib marks ``x1ax03_supported = 0``. The cap stays
+#     UNDECLARED pending a setter units fix + a clean live round-trip
+#     (MOR-683 defers; tracked as a filter_width follow-up).
 features = [
     "audio",
     "af_level",
@@ -88,7 +90,6 @@ features = [
     "xit",
     "tuner",
     "meters",
-    "filter_width",
     "data_mode",
     "scan",
     "dial_lock",
@@ -390,7 +391,6 @@ get_transceiver_id = [0x19, 0x00]
 # 0x1A family — PDF pages 8-9 (band/spectrum, filter width)
 get_band_spectrum_display = [0x1A, 0x01]
 get_filter_width          = [0x1A, 0x03]
-set_filter_width          = [0x1A, 0x03]
 
 # PTT / tuner — PDF page 9 (0x1C family)
 ptt_on           = [0x1C, 0x00]

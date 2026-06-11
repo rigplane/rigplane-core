@@ -89,8 +89,8 @@
     },
     {
       "check_id": "filter_width.set",
-      "status": "skip",
-      "declaration": "supported"
+      "status": "unsupported",
+      "declaration": "unsupported_pending_evidence"
     },
     {
       "check_id": "freq.reverse_sync",
