@@ -808,6 +808,26 @@ def _nudge_filter(width: int) -> int:
     return width + 200 if width <= 2600 else width - 200
 
 
+# MOR-671 — IF-shift offset is signed Hz with a symmetric settable band of
+# roughly +/-1200 Hz on the FTX-1. The RMVR mutation must stay inside that band
+# so the written test value is always restorable and never out of range.
+_IF_SHIFT_LIMIT_HZ = 1200
+_IF_SHIFT_NUDGE_HZ = 200
+
+
+def _nudge_if_shift(offset: int) -> int:
+    """Mutate an IF-shift offset to a DIFFERENT in-range value.
+
+    Nudge by +200 Hz, but if that would exceed the +1200 Hz ceiling, step the
+    other way (-200 Hz) instead. The original is assumed in-band (|offset| <=
+    1200), so the result is always within +/-1200 Hz and always differs from
+    the original. NEVER writes out of range.
+    """
+    if int(offset) + _IF_SHIFT_NUDGE_HZ <= _IF_SHIFT_LIMIT_HZ:
+        return int(offset) + _IF_SHIFT_NUDGE_HZ
+    return int(offset) - _IF_SHIFT_NUDGE_HZ
+
+
 def _filter_width_equal(a: int, b: int) -> bool:
     """Encoding-aware filter-width comparator.
 
@@ -1591,6 +1611,9 @@ _WRITE_ONLY_TEST_VALUES: dict[str, Any] = {
     ValueRule.SCOPE_INDEX_FLIP: 1,
     ValueRule.SCOPE_EDGE_CYCLE: 1,
     ValueRule.SCOPE_REF_DB: 0.0,
+    # MOR-671 — IF-shift in-band test value; contour on-state.
+    ValueRule.SHIFT_HZ: 600,
+    ValueRule.CONTOUR_FLIP: 1,
 }
 
 # Benign value to restore a write-only control to afterwards (best-effort).
@@ -1629,6 +1652,10 @@ _VALUE_RULE_FNS: dict[str, Callable[[Any], Any]] = {
     # Reference level in dB on the radio's 0.5 dB grid: hop between two
     # exact grid values so the readback comparison can stay exact.
     ValueRule.SCOPE_REF_DB: lambda r: 5.0 if float(r) != 5.0 else 0.0,
+    # MOR-671 — IF-shift: nudge +/-200 Hz, clamped to +/-1200 (never OOR).
+    ValueRule.SHIFT_HZ: _nudge_if_shift,
+    # MOR-671 — contour on/off: flip 0 <-> 1 (off <-> a valid on level).
+    ValueRule.CONTOUR_FLIP: lambda v: 1 if int(v) == 0 else 0,
 }
 
 # Restore-safety predicates (MOR-659): when the CURRENT value of an RMVR

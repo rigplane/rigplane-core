@@ -53,9 +53,9 @@
       "declaration": "unsupported_pending_evidence"
     },
     {
-      "check_id": "contour.presence",
-      "status": "pass",
-      "declaration": "unsupported_pending_evidence"
+      "check_id": "contour.set",
+      "status": "skip",
+      "declaration": "supported"
     },
     {
       "check_id": "dial_lock.set",
@@ -93,9 +93,9 @@
       "declaration": "supported"
     },
     {
-      "check_id": "if_shift.presence",
-      "status": "pass",
-      "declaration": "unsupported_pending_evidence"
+      "check_id": "if_shift.set",
+      "status": "skip",
+      "declaration": "supported"
     },
     {
       "check_id": "key_speed.set",

@@ -47,6 +47,9 @@ _EXPECTED_CHECK_IDS = {
     "nb.set",
     "nr.set",
     "agc.set",
+    # MOR-671 — FTX-1 DSP RMVR checks (appended to the DSP family)
+    "if_shift.set",
+    "contour.set",
     "rit.set",
     "xit.set",
     "squelch.set",
@@ -96,7 +99,7 @@ _EXPECTED_CHECK_IDS = {
 
 
 def test_registry_has_expected_entry_count():
-    assert len(REGISTRY) == len(_EXPECTED_CHECK_IDS) == 52
+    assert len(REGISTRY) == len(_EXPECTED_CHECK_IDS) == 54
 
 
 def test_check_ids_unique():
