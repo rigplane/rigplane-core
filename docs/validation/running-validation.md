@@ -109,8 +109,97 @@ Global (before the `validate` subcommand):
 | `--tx-allowed` / `--tuner-allowed` | Authorize the TX/tuner checks (still operator-verified, never auto-keyed). |
 | `--provider {native,hamlib}` | `native` = RigPlane's own backend; `hamlib` = via the rigctld bridge. |
 | `--compare <artifact.json>` | Diff this run against a prior artifact. |
+| `--gate <golden.json>` | Gate this run against a golden normalized artifact: exit 1 on any regression. |
+| `--regen-golden <path>` | Write the normalized artifact to `<path>` as a new `--gate` golden baseline. |
 | `--operator-id <id>` | Record the operator in the artifact. |
 | `--json` / `--output <path>` | Emit JSON (to stdout or a file) instead of the human summary. |
+
+---
+
+## Golden gate: dry-run regression protection
+
+A **golden** is a normalized dry-run artifact (volatile fields stripped)
+committed to the repo. Gating a run against it turns the validation matrix into
+a regression check: any check that goes `pass`→`fail`, any new `fail`/`blocked`
+check, any missing check, or any declaration drift exits `1`. Improvements
+never block.
+
+Committed goldens live in `tests/golden/validation/`. Today only the IC-7610
+dry-run golden is committed (`ic7610.dry-run.json`); X6200 and FTX-1 goldens
+are a known loose end.
+
+### Run the dry-run gate
+
+```bash
+uv run rigplane --model IC-7610 validate --provider native --dry-run \
+  --gate tests/golden/validation/ic7610.dry-run.json
+```
+
+Exit `0` = no regression; exit `1` = regression (a diff summary is printed to
+stderr); exit `2` = golden missing/unreadable.
+
+### Regenerate a golden after an intentional matrix change
+
+When you intentionally change the registry, a profile's declared capabilities,
+or an override file, the gate (and
+`tests/test_validation_gating.py::test_committed_ic7610_golden_matches_live_dry_run`)
+will fail until the golden is refreshed:
+
+```bash
+uv run rigplane --model IC-7610 validate --dry-run \
+  --regen-golden tests/golden/validation/ic7610.dry-run.json
+```
+
+Review the resulting diff carefully before committing — the golden is the
+contract; regenerating it to silence a gate failure you do not understand
+defeats the purpose.
+
+### CI
+
+`.github/workflows/quick.yml` runs the IC-7610 native dry-run gate on every
+push/PR that touches `src/**`, `tests/**`, etc. — so a registry or
+profile-declaration regression fails CI without any hardware. It is dry-run
+only and takes under a second.
+
+---
+
+## Pre-release validation runner
+
+`scripts/validate-release.sh` bundles the pre-release validation pass across
+the owned radios (IC-7610, X6200, FTX-1).
+
+**Default (CI-safe, no hardware):**
+
+```bash
+scripts/validate-release.sh
+```
+
+For each radio it runs the native dry-run matrix; where a committed golden
+exists it gates against it, otherwise it notes the missing golden (with the
+exact `--regen-golden` command) and still verifies the matrix generates. Exits
+non-zero on any gate regression or matrix-generation error; skips never fail
+the run.
+
+**Hardware (opt-in, pre-release):**
+
+```bash
+RIGPLANE_VALIDATION_ALLOW_HARDWARE=1 \
+ICOM_HOST=192.168.55.40 ICOM_USER=<user> ICOM_PASS_FILE=/path/to/secret \
+X6200_SERIAL_PORT=/dev/cu.usbmodem58910181093 \
+FTX1_SERIAL_PORT=/dev/cu.usbserial-XXXX \
+scripts/validate-release.sh --hardware
+```
+
+Hardware execution requires **both** the `--hardware` script flag **and**
+`RIGPLANE_VALIDATION_ALLOW_HARDWARE=1` (the script then passes the CLI's own
+`--hardware --allow-hardware` gates through). Each radio additionally needs
+its connection environment — `ICOM_HOST`/`ICOM_USER`/`ICOM_PASS_FILE` for the
+IC-7610, `X6200_SERIAL_PORT` (optionally `X6200_SERIAL_BAUD`, default 19200)
+for the X6200, `FTX1_SERIAL_PORT` (optionally `FTX1_SERIAL_BAUD`, default
+38400) for the FTX-1. Radios without configuration are skipped with a note, so
+you can validate whatever subset is on the bench. Hardware artifacts are
+written to `/tmp/<radio>-hw-<timestamp>.json`; the per-radio invocations match
+the recipes above (RMVR writes with restore, TX/tuner never auto-actuated).
 
 ---
 
