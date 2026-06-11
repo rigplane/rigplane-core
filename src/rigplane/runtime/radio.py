@@ -1110,6 +1110,26 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
         """
         return self._civ_request_tracker.snapshot_stats()
 
+    def update_credentials(
+        self, *, username: str | None = None, password: str | None = None
+    ) -> None:
+        """Update the stored login credentials for future full reconnects.
+
+        The new values are used the next time a full ``connect()`` performs
+        authentication (the login packet is built from the stored
+        credentials). ``soft_reconnect()`` intentionally reuses the existing
+        session token and does NOT re-authenticate, so a rotated credential
+        only takes effect on a full reconnect.
+
+        Args:
+            username: New username, or ``None`` to keep the current one.
+            password: New password, or ``None`` to keep the current one.
+        """
+        if username is not None:
+            self._username = username
+        if password is not None:
+            self._password = password
+
     async def connect(self) -> None:
         """Open connection to the radio and authenticate.
 
