@@ -31,17 +31,20 @@ both opt-in gates are open. No transport, radio, or audio I/O happens here.
 
 ## Dependencies
 
-Imports only `rigplane.core.capabilities` (`KNOWN_CAPABILITIES`) and the
-standard library. It must not import from upper layers (`web/`, `rigctld/`,
-`backends/`, `runtime/`, `cli/`). The `cli._validate` module is the sole
-consumer wiring `validate` into the CLI.
+`validation` is a top-layer consumer (it sits alongside `cli/`): it MAY
+import `core`, `runtime`, `backends` — including `backends.rigctld_client`,
+used by the hamlib-external provider — `profiles`, `audio`, and `commands`.
+Today it imports only `rigplane.core.*` (`capabilities`, `exceptions`,
+`radio_protocol`, `types`) plus the standard library. It must not import
+`web/`, `rigctld/`, or `cli/`; that boundary is enforced by the ruff TID251
+banned-import rule. The `cli._validate` module is the sole consumer wiring
+`validate` into the CLI.
 
-The upward-import boundary (no imports from `web/`, `rigctld/`, `cli/`) is
-governed by this charter and enforced by the ruff TID251 banned-import rule.
-`rigplane.validation` is not currently listed in `.importlinter` — it sits
-outside the layer DAG, mirroring `rigplane.diagnostics`. Adding it to the
-import-linter contract is deferred; do not claim import-linter enforcement
-that does not exist.
+The leaf-consumer boundary is enforced by import-linter: the
+`validation-leaf` forbidden contract in the repo-root `.importlinter` bans
+every lower layer (`web`, `rigctld`, `backends`, `runtime`, `profiles`,
+`audio`, `commands`, `scope`, `dsp`, `core`) from importing
+`rigplane.validation`. Only `cli/` may consume it.
 
 ## Contract
 
