@@ -545,6 +545,22 @@ class TestToCommandMap:
         cm = load_rig(TEMPLATE_PATH).to_command_map()
         assert len(cm) > 50  # template has ~100 commands
 
+    def test_ic7610_drops_dead_tone_commands(self):
+        """MOR-682: IC-7610 has no FM-repeater tone capability, so the
+        repeater-tone / TSQL command entries must not be in the command map."""
+        cm = load_rig(TEMPLATE_PATH).to_command_map()
+        for key in (
+            "get_repeater_tone",
+            "set_repeater_tone",
+            "get_repeater_tsql",
+            "set_repeater_tsql",
+            "get_tone_freq",
+            "set_tone_freq",
+            "get_tsql_freq",
+            "set_tsql_freq",
+        ):
+            assert not cm.has(key), f"dead tone command {key!r} still present"
+
 
 # ── discover_rigs ────────────────────────────────────────────────
 

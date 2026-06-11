@@ -1088,14 +1088,12 @@ get_vd_meter = [0x15, 0x15]
 get_id_meter = [0x15, 0x16]
 
 # ── Tone / TSQL ──
-get_repeater_tone = [0x16, 0x42]          # 0=OFF, 1=ON
-set_repeater_tone = [0x16, 0x42]
-get_repeater_tsql = [0x16, 0x43]          # 0=OFF, 1=ON
-set_repeater_tsql = [0x16, 0x43]
-get_tone_freq = [0x1B, 0x00]
-set_tone_freq = [0x1B, 0x00]
-get_tsql_freq = [0x1B, 0x01]
-set_tsql_freq = [0x1B, 0x01]
+# Intentionally absent: the IC-7610 (HF/6m) has no FM-repeater CTCSS tone
+# feature, so the repeater-tone / TSQL family is NOT declared as a capability
+# (MOR-660/661). With no declared capability and no registry check referencing
+# them, the get/set_repeater_tone, get/set_repeater_tsql, get/set_tone_freq,
+# and get/set_tsql_freq command entries were dead/orphaned and were removed
+# (MOR-682). Do not re-add them without first declaring the capability.
 
 # ── Data Mode ──
 get_data_mode = [0x1A, 0x06]
