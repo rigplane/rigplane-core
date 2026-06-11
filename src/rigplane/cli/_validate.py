@@ -229,14 +229,45 @@ def add_subparser(sub: Any) -> argparse.ArgumentParser:
     )
     p.add_argument(
         "--provider",
-        choices=["native", "hamlib", "both"],
+        choices=["native", "hamlib", "both", "hamlib-external"],
         default="native",
         help=(
             "Validation provider: native (default) drives the radio directly; "
             "hamlib drives it through an internally-spawned Hamlib rigctld and "
             "compares results; both runs native then hamlib sequentially and "
             "attaches cross-implementation comparison dimensions to the primary "
-            "(native) artifact. Model is auto-detected (or use --model)."
+            "(native) artifact. hamlib-external runs the matrix against an "
+            "ARBITRARY external rigctld already listening (any Hamlib rig) via "
+            "--rigctld-host/--rigctld-port; no RigPlane profile required. "
+            "Model is auto-detected (or use --model)."
+        ),
+    )
+    p.add_argument(
+        "--rigctld-host",
+        dest="rigctld_host",
+        default="127.0.0.1",
+        help=(
+            "Host of an external Hamlib rigctld to validate against "
+            "(--provider hamlib-external). Default 127.0.0.1."
+        ),
+    )
+    p.add_argument(
+        "--rigctld-port",
+        dest="rigctld_port",
+        type=int,
+        default=4532,
+        help=(
+            "TCP port of the external Hamlib rigctld "
+            "(--provider hamlib-external). Default 4532."
+        ),
+    )
+    p.add_argument(
+        "--rigctld-model",
+        dest="rigctld_model",
+        default=None,
+        help=(
+            "Optional human label for the external rig, recorded in the "
+            "artifact (--provider hamlib-external). Default 'External rigctld'."
         ),
     )
     p.add_argument(
@@ -335,6 +366,18 @@ def _generate_template(
     )
 
 
+def _registry_capabilities() -> frozenset[str]:
+    """Return the full set of functional capabilities the registry can exercise.
+
+    Used by the ``hamlib-external`` provider to build a profile-free upfront
+    template (for the dry-run and safety-block paths). The hardware path
+    rebuilds the template from the connected rig's advertised capabilities.
+    """
+    from rigplane.validation.registry import REGISTRY
+
+    return frozenset(spec.capability for spec in REGISTRY if spec.capability)
+
+
 def run(args: argparse.Namespace) -> int:
     provider = getattr(args, "provider", "native")
 
@@ -345,6 +388,21 @@ def run(args: argparse.Namespace) -> int:
             print(f"Error: cannot load template: {exc}", file=sys.stderr)
             return 2
         profile = None
+    elif provider == "hamlib-external":
+        # Arbitrary external rig: no RigPlane profile required. Build a
+        # profile-free upfront template from the full registry capability set
+        # so dry-run / safety paths work; the hardware path rebuilds the
+        # template from the connected rig's advertised capabilities.
+        from rigplane.validation.registry import build_template_from_capabilities
+
+        model_label = getattr(args, "rigctld_model", None) or "External rigctld"
+        template = build_template_from_capabilities(
+            _registry_capabilities(),
+            model=model_label,
+            profile_id="hamlib_external",
+        )
+        profile = None
+        args._overrides_audit = None
     else:
         if not getattr(args, "model", None):
             print("Error: provide --template or --model", file=sys.stderr)
@@ -391,7 +449,9 @@ def run(args: argparse.Namespace) -> int:
         if provider == "both":
             return asyncio.run(_run_hardware_both(args, profile, safety))
 
-        if provider == "hamlib":
+        if provider == "hamlib-external":
+            rc, artifact = asyncio.run(_run_hardware_hamlib_external(args, safety))
+        elif provider == "hamlib":
             rc, artifact = asyncio.run(_run_hardware_hamlib(args, template, safety))
         else:
             rc, artifact = asyncio.run(_run_hardware(args, template, safety))
@@ -878,6 +938,112 @@ def _build_hamlib_artifact(
     if profile is not None:
         metadata["profile_id"] = profile.id
     return dataclasses.replace(artifact, metadata=metadata, generated_at=_utcnow_iso())
+
+
+async def _run_hardware_hamlib_external(
+    args: argparse.Namespace,
+    safety: OperatorSafetyBlock,
+) -> tuple[int, ValidationArtifact]:
+    """Run the matrix against an ARBITRARY external Hamlib ``rigctld``.
+
+    Unlike the ``hamlib`` provider (which spawns its own rigctld over a
+    RigPlane-owned radio), this connects :class:`RigctldClientRadio` directly
+    to a rigctld already listening on ``--rigctld-host:--rigctld-port`` — any
+    Hamlib-supported rig, no RigPlane profile required (goal 2 of the harness).
+
+    The template is rebuilt from the connected rig's advertised capabilities so
+    only the controls the backend actually implements are exercised; every
+    other registry check resolves to ``unsupported`` cleanly (the hardware
+    runner already maps a missing op to UNSUPPORTED, never crashing). Imports
+    are deferred to function scope to keep backend assembly off this module's
+    import graph (matching ``_run_hardware``).
+    """
+    from rigplane.backends.config import RigctldBackendConfig
+    from rigplane.backends.factory import create_radio
+    from rigplane.core.exceptions import (
+        AuthenticationError,
+        ConnectionError as RigConnectionError,
+        RigplaneError,
+    )
+    from rigplane.validation.hardware import execute_hardware_checks
+    from rigplane.validation.registry import build_template_from_capabilities
+
+    host = getattr(args, "rigctld_host", None) or "127.0.0.1"
+    port = int(getattr(args, "rigctld_port", None) or 4532)
+    model_label = getattr(args, "rigctld_model", None) or None
+    timeout = getattr(args, "timeout", 5.0) or 5.0
+
+    try:
+        config = RigctldBackendConfig(
+            host=host, port=port, timeout=timeout, model=model_label
+        )
+    except ValueError as exc:
+        print(f"Error: cannot build backend config: {exc}", file=sys.stderr)
+        placeholder = build_template_from_capabilities(
+            _registry_capabilities(),
+            model=model_label or "External rigctld",
+            profile_id="hamlib_external",
+        )
+        transport = TransportInfo(backend="rigctld")
+        levels = _transport_failure_levels(placeholder, exc)
+        return 3, _build_hamlib_external_artifact(
+            placeholder, levels, transport, safety
+        )
+
+    transport = _transport_info_from_config(config)
+    radio = create_radio(config)
+    exit_code = 0
+    try:
+        async with radio:
+            # Rebuild the template from the rig's LIVE advertised capabilities
+            # (includes the post-connect VFO probe); no profile needed.
+            template = build_template_from_capabilities(
+                frozenset(radio.capabilities),
+                model=radio.model,
+                profile_id="hamlib_external",
+            )
+            levels = await execute_hardware_checks(
+                radio,
+                template,
+                safety,
+                allow_writes=not bool(getattr(args, "read_only", False)),
+                per_check_timeout=timeout,
+            )
+    except (RigConnectionError, AuthenticationError, OSError, RigplaneError) as exc:
+        template = build_template_from_capabilities(
+            _registry_capabilities(),
+            model=model_label or "External rigctld",
+            profile_id="hamlib_external",
+        )
+        levels = _transport_failure_levels(template, exc)
+        exit_code = 3
+
+    return exit_code, _build_hamlib_external_artifact(
+        template, levels, transport, safety
+    )
+
+
+def _build_hamlib_external_artifact(
+    template: MatrixTemplate,
+    levels: list[LevelResult],
+    transport: TransportInfo,
+    safety: OperatorSafetyBlock,
+) -> ValidationArtifact:
+    """Assemble a hardware artifact stamped with hamlib-external metadata."""
+    artifact = build_validation_artifact(
+        template=template,
+        levels=levels,
+        transport=transport,
+        safety=safety,
+        core_version=__version__,
+        core_commit=None,
+        mode="hardware",
+    )
+    return dataclasses.replace(
+        artifact,
+        metadata={**artifact.metadata, "provider": "hamlib-external"},
+        generated_at=_utcnow_iso(),
+    )
 
 
 def _check_status_map(artifact: ValidationArtifact) -> dict[str, str]:
