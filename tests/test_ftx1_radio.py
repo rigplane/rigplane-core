@@ -1497,11 +1497,15 @@ async def test_set_nb_off_sends_level_zero(connected_radio):
 async def test_set_nr_on_calls_set_nr_level_with_default_when_current_is_zero(
     connected_radio,
 ):
-    """set_nr(True) uses midpoint default (7) when nr_level is 0."""
+    """set_nr(True) uses midpoint default (5) when nr_level is 0.
+
+    The NR range is 0-10 per the FTX-1 CAT OM (MOR-695 corrected it from a
+    wrong 1-15), so the midpoint default is ``10 // 2 = 5``.
+    """
     connected_radio._transport.write = AsyncMock()
     assert connected_radio._state.main.nr_level == 0
     await connected_radio.set_nr(True)
-    connected_radio._transport.write.assert_called_once_with("RL007;")
+    connected_radio._transport.write.assert_called_once_with("RL005;")
 
 
 @pytest.mark.asyncio

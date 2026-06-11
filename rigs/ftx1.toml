@@ -441,8 +441,16 @@ range_max = 10
 
 [controls.nr]
 style = "level_is_toggle"
-range_min = 1
-range_max = 15
+# NR/DNR (RL) level per the FTX-1 CAT OM is 0-10, NOT 1-15 (MOR-695).
+range_min = 0
+range_max = 10
+
+# Speech processor (PL) level is 0-100 on the FTX-1 (CAT OM). Declared so the
+# range-aware level RMVR nudges inside the band instead of the 0-255 default
+# (MOR-695). Key matches the IC-7610 ``compressor_level`` candidate.
+[controls.compressor_level]
+range_min = 0
+range_max = 100
 
 [[freq_ranges.ranges]]
 label = "HF"
