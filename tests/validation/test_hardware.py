@@ -132,12 +132,18 @@ async def test_default_run_produces_artifact_with_expected_statuses(connected_ra
     assert checks["attenuator.set"].status is CheckStatus.PASS
     assert checks["freq.reverse_sync"].status is CheckStatus.PASS
     assert checks["audio.rx"].status is CheckStatus.MANUAL_REQUIRED
-    assert checks["scope.capture"].status is CheckStatus.UNSUPPORTED
+    # MOR-660: scope.capture is declared unsupported_pending_evidence, but the
+    # mock declares the ``scope`` capability — presence confirms support → PASS.
+    assert checks["scope.capture"].status is CheckStatus.PASS
+    assert checks["scope.capture"].evidence["scope_capability_present"] is True
     assert checks["tuner.tune"].status is CheckStatus.BLOCKED
     assert checks["tx.ptt"].status is CheckStatus.BLOCKED
 
-    # filter_width is declared unsupported_pending_evidence on the X6200.
-    assert checks["filter_width.set"].status is CheckStatus.UNSUPPORTED
+    # MOR-660: filter_width is declared unsupported_pending_evidence on the
+    # X6200 template, but the IcomRadio fixture satisfies DspControlCapable, so
+    # the capability-present pre-gate resolves it to PASS.
+    assert checks["filter_width.set"].status is CheckStatus.PASS
+    assert checks["filter_width.set"].evidence["capability_present"] is True
 
     # Controls the IC-7610 mock cannot read back are NAKed (FAIL), never PASS.
     for nak_check in ("rf_gain.set", "af_level.set", "notch.set", "agc.set"):
@@ -393,6 +399,49 @@ async def test_unsupported_when_capability_absent():
     assert check.status is CheckStatus.UNSUPPORTED
     assert check.evidence["capability_present"] is False
     radio.set_preamp.assert_not_called()
+
+
+async def test_presence_check_passes_when_capability_present():
+    """MOR-660: an ``unsupported_pending_evidence`` presence check whose
+    capability IS present resolves PASS — presence is the pending evidence."""
+    radio = MagicMock(spec=Radio)
+    radio.connected = True
+    radio.model = "X6200"
+    radio.capabilities = {"preamp"}
+    template = _single_entry_template(
+        check_id="preamp.presence",
+        capability="preamp",
+        level=ValidationLevel.STATIC_PROFILE,
+        declaration=CapabilityDeclaration.UNSUPPORTED_PENDING_EVIDENCE,
+    )
+    levels = await execute_hardware_checks(
+        radio, template, OperatorSafetyBlock(), allow_writes=True
+    )
+    check = _flatten(levels)["preamp.presence"]
+    assert check.status is CheckStatus.PASS
+    assert check.evidence["capability_present"] is True
+    assert check.evidence["declared"] == "unsupported_pending_evidence"
+
+
+async def test_presence_check_stays_unsupported_when_capability_absent():
+    """MOR-660: a presence check whose capability is NOT declared stays
+    UNSUPPORTED."""
+    radio = MagicMock(spec=Radio)
+    radio.connected = True
+    radio.model = "X6200"
+    radio.capabilities = set()
+    template = _single_entry_template(
+        check_id="preamp.presence",
+        capability="preamp",
+        level=ValidationLevel.STATIC_PROFILE,
+        declaration=CapabilityDeclaration.UNSUPPORTED_PENDING_EVIDENCE,
+    )
+    levels = await execute_hardware_checks(
+        radio, template, OperatorSafetyBlock(), allow_writes=True
+    )
+    check = _flatten(levels)["preamp.presence"]
+    assert check.status is CheckStatus.UNSUPPORTED
+    assert check.evidence["capability_present"] is False
 
 
 async def test_tx_and_tuner_blocked_without_flags_and_manual_with():
