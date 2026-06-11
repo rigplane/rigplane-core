@@ -2,7 +2,9 @@
 # This file defines the IC-7300 radio profile in TOML format.
 # See _schema.md for field documentation.
 #
-# Source: IC-7300MK2 CI-V Reference Guide (PDF)
+# Source: IC-7300 Full Manual (English) v6, §19 CONTROL COMMAND
+#         (original IC-7300, CI-V addr 0x94 — NOT the IC-7300MK2, which has a
+#         different command set)
 #         wfview IC-7300.rig
 #         Hardware testing
 
@@ -335,7 +337,7 @@ bsr_code = 0x0A
 
 # ── CI-V Commands ────────────────────────────────────────────────
 # Grouped by capability area. Wire bytes as integer arrays.
-# Source: IC-7300MK2 CI-V Reference Guide
+# Source: IC-7300 Full Manual (English) v6, §19 CONTROL COMMAND (original IC-7300)
 #
 # IC-7300 has NO Command29 support (single receiver).
 
@@ -405,8 +407,10 @@ get_manual_notch_width = [0x16, 0x57]     # 0=WIDE, 1=MID, 2=NAR
 set_manual_notch_width = [0x16, 0x57]
 get_audio_peak_filter = [0x16, 0x32]      # IC-7300: 0=OFF, 1=ON only
 set_audio_peak_filter = [0x16, 0x32]
-get_apf_type_level = [0x14, 0x05]         # NOT_IMPLEMENTED — APF position (not in 7300 wfview)
-set_apf_type_level = [0x14, 0x05]
+# NOTE: no apf_type_level on the IC-7300. The 7300 APF is a plain 0x16 0x32
+# ON/OFF toggle (above); there is no 0x14 0x05 APF position like the IC-7610's
+# WIDE/MID/NAR 3-level control. The dead 0x14 0x05 command string was removed
+# (MOR-681) so it cannot be emitted to a radio that ignores it.
 get_twin_peak_filter = [0x16, 0x4F]
 set_twin_peak_filter = [0x16, 0x4F]
 

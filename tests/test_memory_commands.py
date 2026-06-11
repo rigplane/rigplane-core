@@ -354,6 +354,112 @@ class TestIcomRadioMemoryMethods:
 
 
 # ---------------------------------------------------------------------------
+# Band-stack READ (get_bsr) — MOR-681
+# ---------------------------------------------------------------------------
+
+
+class TestIcomRadioGetBsr:
+    """Verify IcomRadio.get_bsr issues 0x1A 0x01 and parses the response.
+
+    The IC-7300 (and other Icom rigs) firmware DOES answer a band-stack read;
+    the previous NotImplementedError was a stale IC-7610-era assumption.
+    get_bsr is shared backend code, so it must behave identically for both
+    the IC-7300 (addr 0x94) and the IC-7610 (addr 0x98).
+    """
+
+    IC7300_ADDR = 0x94
+    IC7610_ADDR = 0x98
+
+    def _make_radio(self, radio_addr: int) -> MagicMock:
+        radio = MagicMock()
+        radio._radio_addr = radio_addr
+        radio._check_connected = MagicMock()
+        radio._send_civ_expect = AsyncMock()
+        return radio
+
+    def _band_stack_frame(self, radio_addr: int) -> CivFrame:
+        from rigplane.types import bcd_encode
+
+        # Band 5 / register 1 / 14.074 MHz / mode USB(0x01) / filter 1.
+        data = bytes([0x05, 0x01])
+        data += bcd_encode(14_074_000)
+        data += bcd_encode_value(0x01, byte_count=1)
+        data += bcd_encode_value(0x01, byte_count=1)
+        return CivFrame(
+            to_addr=CONTROLLER_ADDR,
+            from_addr=radio_addr,
+            command=0x1A,
+            sub=0x01,
+            data=data,
+        )
+
+    @pytest.mark.asyncio
+    async def test_get_bsr_ic7300_parses_band_stack_entry(self) -> None:
+        from rigplane.radio import IcomRadio
+
+        radio = self._make_radio(self.IC7300_ADDR)
+        radio._send_civ_expect.return_value = self._band_stack_frame(self.IC7300_ADDR)
+        bound = IcomRadio.get_bsr.__get__(radio, type(radio))
+
+        result = await bound(5, 1)
+
+        assert isinstance(result, BandStackRegister)
+        assert result.band == 5
+        assert result.register == 1
+        assert result.frequency_hz == 14_074_000
+        assert result.mode == 0x01
+        assert result.filter == 1
+        # It must actually issue a 0x1A 0x01 read frame.
+        radio._send_civ_expect.assert_awaited_once()
+        sent_frame = radio._send_civ_expect.call_args[0][0]
+        assert sent_frame[4] == 0x1A
+        assert sent_frame[5] == 0x01
+
+    @pytest.mark.asyncio
+    async def test_get_bsr_ic7610_still_works(self) -> None:
+        """Regression: shared path must not break the IC-7610."""
+        from rigplane.radio import IcomRadio
+
+        radio = self._make_radio(self.IC7610_ADDR)
+        radio._send_civ_expect.return_value = self._band_stack_frame(self.IC7610_ADDR)
+        bound = IcomRadio.get_bsr.__get__(radio, type(radio))
+
+        result = await bound(5, 1)
+
+        assert isinstance(result, BandStackRegister)
+        assert result.frequency_hz == 14_074_000
+        radio._send_civ_expect.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_get_bsr_no_longer_raises_not_implemented(self) -> None:
+        from rigplane.radio import IcomRadio
+
+        radio = self._make_radio(self.IC7300_ADDR)
+        radio._send_civ_expect.return_value = self._band_stack_frame(self.IC7300_ADDR)
+        bound = IcomRadio.get_bsr.__get__(radio, type(radio))
+        # Must not raise NotImplementedError anymore.
+        await bound(5, 1)
+
+    @pytest.mark.asyncio
+    async def test_get_bsr_rejects_invalid_band(self) -> None:
+        from rigplane.radio import IcomRadio
+
+        radio = self._make_radio(self.IC7300_ADDR)
+        bound = IcomRadio.get_bsr.__get__(radio, type(radio))
+        with pytest.raises(ValueError, match="Band must be 0-24"):
+            await bound(25, 1)
+
+    @pytest.mark.asyncio
+    async def test_get_bsr_rejects_invalid_register(self) -> None:
+        from rigplane.radio import IcomRadio
+
+        radio = self._make_radio(self.IC7300_ADDR)
+        bound = IcomRadio.get_bsr.__get__(radio, type(radio))
+        with pytest.raises(ValueError, match="Register must be 1-3"):
+            await bound(5, 4)
+
+
+# ---------------------------------------------------------------------------
 # Web handler dispatch tests
 # ---------------------------------------------------------------------------
 
