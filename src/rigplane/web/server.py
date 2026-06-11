@@ -165,7 +165,10 @@ def _install_shutdown_signal_handlers(
 
 
 _DEFAULT_STATIC_DIR = pathlib.Path(__file__).parent / "static"
-_RADIO_MODEL = "IC-7610"
+# Sentinel default for WebConfig.radio_model. Deliberately not a real rig
+# model: callers (CLI) inject the connected radio's model, and an
+# unconfigured server must not silently impersonate IC-7610 (MOR-174).
+_RADIO_MODEL_UNSPECIFIED = "unspecified"
 _MAX_POST_BODY = 256 * 1024  # 256 KiB — hard ceiling for all POST body reads
 _MAX_COMMAND_BATCH_STEPS = 128
 _COMMAND_BATCH_STEP_TIMEOUT = 10.0
@@ -616,7 +619,7 @@ class WebConfig:
     host: str = "0.0.0.0"
     port: int = 8080
     static_dir: pathlib.Path = field(default_factory=lambda: _DEFAULT_STATIC_DIR)
-    radio_model: str = _RADIO_MODEL
+    radio_model: str = _RADIO_MODEL_UNSPECIFIED
     max_clients: int = 100
     keepalive_interval: float = WS_KEEPALIVE_INTERVAL
     dx_cluster_host: str = ""
@@ -708,6 +711,7 @@ class WebServer:
     ) -> None:
         self._radio = radio
         self._config = config or WebConfig()
+        self._profile_fallback_warned = False
         self._state_diagnostics = StateDiagnosticsRecorder(
             enabled=self._config.state_diagnostics
         )
@@ -889,18 +893,31 @@ class WebServer:
         raw_profile = getattr(self._radio, "profile", None) if self._radio else None
         if isinstance(raw_profile, RadioProfile):
             return raw_profile
-        # Try resolving from the radio's own model name
+        # Try the radio's own model name first, then the configured one.
         radio_model = getattr(self._radio, "model", None) if self._radio else None
-        if isinstance(radio_model, str):
+        candidates = [
+            m
+            for m in (radio_model, self._config.radio_model)
+            if isinstance(m, str) and m != _RADIO_MODEL_UNSPECIFIED
+        ]
+        for candidate in candidates:
             try:
-                return resolve_radio_profile(model=radio_model)
+                return resolve_radio_profile(model=candidate)
             except KeyError:
-                pass
-        # Last resort: config default
-        try:
-            return resolve_radio_profile(model=self._config.radio_model)
-        except KeyError:
-            return resolve_radio_profile(model="IC-7610")
+                continue
+        # Unknown model: use the library-wide default resolution chain
+        # (reference LAN rig → any LAN rig → first loaded profile) and say
+        # so — never silently impersonate IC-7610 (MOR-174).
+        fallback = resolve_radio_profile()
+        if not self._profile_fallback_warned:
+            self._profile_fallback_warned = True
+            logger.warning(
+                "No rig profile matches radio model %r; falling back to %r — "
+                "capabilities, scope and CI-V behavior may not match the radio",
+                candidates[0] if candidates else self._config.radio_model,
+                fallback.model,
+            )
+        return fallback
 
     def _bootstrap_state_acquisition(self) -> None:
         """Attach shared StateStore-backed acquisition services when profiled."""

@@ -13,6 +13,7 @@ from rigplane.backends.config import (
     SerialBackendConfig,
     YaesuCatBackendConfig,
 )
+from rigplane.backends.ic7300.serial import Ic7300SerialRadio
 from rigplane.backends.icom7610 import Icom7610SerialRadio
 from rigplane.backends.yaesu_cat.radio import YaesuCatRadio
 from rigplane.backends.rigctld_client.radio import RigctldClientRadio
@@ -134,6 +135,35 @@ class TestCreateRadioFactory:
         radio = create_radio(RigctldBackendConfig(host="localhost"))
         assert isinstance(radio, RigctldClientRadio)
         assert radio.backend_id == "rigctld"
+
+    def test_create_radio_serial_unknown_model_raises(self) -> None:
+        """Regression for MOR-174: an unknown serial --model must ERROR, not
+        silently impersonate an IC-7610 against real hardware."""
+        with pytest.raises(ValueError, match="Unsupported serial model") as excinfo:
+            create_radio(SerialBackendConfig(device="/dev/ttyUSB0", model="TX-500"))
+        message = str(excinfo.value)
+        assert "TX-500" in message
+        for supported in ("IC-705", "IC-7300", "IC-7610", "IC-9700", "X6200"):
+            assert supported in message
+
+    def test_create_radio_serial_known_model_dispatches_to_its_class(self) -> None:
+        radio = create_radio(
+            SerialBackendConfig(device="/dev/ttyUSB0", model="IC-7300")
+        )
+        assert isinstance(radio, Ic7300SerialRadio)
+        assert radio.model == "IC-7300"
+
+    def test_create_radio_serial_explicit_ic7610_no_unknown_model_warning(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """Explicit --model IC-7610 is a supported model, not a fallback;
+        it must dispatch without any 'Unknown model' warning."""
+        with caplog.at_level("WARNING", logger="rigplane.backends.factory"):
+            radio = create_radio(
+                SerialBackendConfig(device="/dev/ttyUSB0", model="IC-7610")
+            )
+        assert isinstance(radio, Icom7610SerialRadio)
+        assert not any("Unknown model" in rec.getMessage() for rec in caplog.records)
 
     def test_create_radio_rejects_unknown_backend(self) -> None:
         @dataclass(slots=True)

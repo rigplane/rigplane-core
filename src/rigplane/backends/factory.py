@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import logging
-
 from ..radio import IcomRadio  # noqa: TID251
 from ..radio_protocol import Radio
 from .config import (
@@ -97,13 +95,16 @@ def create_radio(config: BackendConfig) -> Radio:
             serial_class = Ic7300SerialRadio
         elif model == "IC-9700":
             serial_class = Ic9700SerialRadio
-        else:
-            # Default to IC-7610 for compatibility
-            logging.getLogger(__name__).warning(
-                "Unknown model %r, defaulting to IC-7610",
-                model,
-            )
+        elif model == "IC-7610":
             serial_class = Icom7610SerialRadio
+        else:
+            # MOR-174: never silently impersonate an IC-7610 — driving real
+            # hardware with the wrong CI-V personality is a foot-gun.
+            raise ValueError(
+                f"Unsupported serial model {model!r}; supported: "
+                "IC-705, IC-7300, IC-7610, IC-9700, X6200, "
+                "and Yaesu FT-series (FTX-1, FT-710, ...)."
+            )
 
         return serial_class(
             device=config.device,
