@@ -39,7 +39,7 @@
     },
     {
       "check_id": "break_in.presence",
-      "status": "unsupported",
+      "status": "pass",
       "declaration": "unsupported_pending_evidence"
     },
     {
@@ -49,12 +49,12 @@
     },
     {
       "check_id": "compressor.presence",
-      "status": "unsupported",
+      "status": "pass",
       "declaration": "unsupported_pending_evidence"
     },
     {
       "check_id": "data_mode.presence",
-      "status": "unsupported",
+      "status": "pass",
       "declaration": "unsupported_pending_evidence"
     },
     {
@@ -119,7 +119,7 @@
     },
     {
       "check_id": "pbt.presence",
-      "status": "unsupported",
+      "status": "pass",
       "declaration": "unsupported_pending_evidence"
     },
     {
@@ -144,7 +144,7 @@
     },
     {
       "check_id": "scan.presence",
-      "status": "unsupported",
+      "status": "pass",
       "declaration": "unsupported_pending_evidence"
     },
     {

@@ -27,6 +27,17 @@ def test_templates_dir_has_templates() -> None:
 @pytest.mark.parametrize("path", _template_paths(), ids=lambda p: p.stem)
 def test_template_parses_and_validates(path: Path) -> None:
     data = json.loads(path.read_text(encoding="utf-8"))
+    # Sparse override patches (``"override": true``) are not full templates:
+    # they carry partial entries (e.g. exclusion sentinels) and are parsed by
+    # the override layer, not the template validator. Validate them as patches.
+    if isinstance(data, dict) and data.get("override") is True:
+        from rigplane.validation import parse_override_dict
+
+        patch = parse_override_dict(data)
+        for entry in patch.entries:
+            if entry.capability:
+                assert entry.capability in KNOWN_CAPABILITIES
+        return
     template = validate_template_dict(data)
     for entry in template.entries:
         if entry.capability:

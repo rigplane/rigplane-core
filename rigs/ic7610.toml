@@ -96,9 +96,8 @@ features = [
     "meters",
     # Scope
     "scope",
-    # Tone
-    "repeater_tone",
-    "tsql",
+    # Tone: the IC-7610 (HF/6m) has no FM-repeater CTCSS tone feature, so the
+    # repeater-tone / TSQL family is intentionally NOT declared (MOR-661).
     # Data
     "data_mode",
     # AGC
@@ -204,14 +203,6 @@ polling_only = [
     "receiver.sub.operator_controls.agc_time_constant",
     "global.tx_state.split",
     "global.tx_state.dual_watch",
-    "receiver.main.operator_toggles.repeater_tone",
-    "receiver.main.operator_toggles.repeater_tsql",
-    "receiver.sub.operator_toggles.repeater_tone",
-    "receiver.sub.operator_toggles.repeater_tsql",
-    "receiver.main.operator_controls.tone_freq",
-    "receiver.main.operator_controls.tsql_freq",
-    "receiver.sub.operator_controls.tone_freq",
-    "receiver.sub.operator_controls.tsql_freq",
     "global.operator_controls.tuner_status",
 ]
 stream_like_meters = [
@@ -580,46 +571,6 @@ adaptive_decay = false
 [state_acquisition.field_policies."global.operator_controls.tuner_status"]
 cadence_seconds = 1.5
 freshness_ttl_seconds = 3.0
-adaptive_decay = false
-
-[state_acquisition.field_policies."receiver.main.operator_toggles.repeater_tone"]
-cadence_seconds = 3.0
-freshness_ttl_seconds = 5.0
-adaptive_decay = false
-
-[state_acquisition.field_policies."receiver.main.operator_toggles.repeater_tsql"]
-cadence_seconds = 3.0
-freshness_ttl_seconds = 5.0
-adaptive_decay = false
-
-[state_acquisition.field_policies."receiver.sub.operator_toggles.repeater_tone"]
-cadence_seconds = 3.0
-freshness_ttl_seconds = 5.0
-adaptive_decay = false
-
-[state_acquisition.field_policies."receiver.sub.operator_toggles.repeater_tsql"]
-cadence_seconds = 3.0
-freshness_ttl_seconds = 5.0
-adaptive_decay = false
-
-[state_acquisition.field_policies."receiver.main.operator_controls.tone_freq"]
-cadence_seconds = 3.0
-freshness_ttl_seconds = 5.0
-adaptive_decay = false
-
-[state_acquisition.field_policies."receiver.main.operator_controls.tsql_freq"]
-cadence_seconds = 3.0
-freshness_ttl_seconds = 5.0
-adaptive_decay = false
-
-[state_acquisition.field_policies."receiver.sub.operator_controls.tone_freq"]
-cadence_seconds = 3.0
-freshness_ttl_seconds = 5.0
-adaptive_decay = false
-
-[state_acquisition.field_policies."receiver.sub.operator_controls.tsql_freq"]
-cadence_seconds = 3.0
-freshness_ttl_seconds = 5.0
 adaptive_decay = false
 
 # ── Parameterized Capabilities ───────────────────────────────────

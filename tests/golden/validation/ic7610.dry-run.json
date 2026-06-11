@@ -18,12 +18,12 @@
     },
     {
       "check_id": "antenna.presence",
-      "status": "unsupported",
+      "status": "pass",
       "declaration": "unsupported_pending_evidence"
     },
     {
       "check_id": "apf.presence",
-      "status": "unsupported",
+      "status": "pass",
       "declaration": "unsupported_pending_evidence"
     },
     {
@@ -49,12 +49,12 @@
     },
     {
       "check_id": "band_edge.presence",
-      "status": "unsupported",
+      "status": "pass",
       "declaration": "unsupported_pending_evidence"
     },
     {
       "check_id": "break_in.presence",
-      "status": "unsupported",
+      "status": "pass",
       "declaration": "unsupported_pending_evidence"
     },
     {
@@ -64,12 +64,12 @@
     },
     {
       "check_id": "compressor.presence",
-      "status": "unsupported",
+      "status": "pass",
       "declaration": "unsupported_pending_evidence"
     },
     {
       "check_id": "data_mode.presence",
-      "status": "unsupported",
+      "status": "pass",
       "declaration": "unsupported_pending_evidence"
     },
     {
@@ -79,7 +79,7 @@
     },
     {
       "check_id": "digisel.presence",
-      "status": "unsupported",
+      "status": "pass",
       "declaration": "unsupported_pending_evidence"
     },
     {
@@ -89,12 +89,12 @@
     },
     {
       "check_id": "drive_gain.presence",
-      "status": "unsupported",
+      "status": "pass",
       "declaration": "unsupported_pending_evidence"
     },
     {
       "check_id": "dual_rx.presence",
-      "status": "unsupported",
+      "status": "pass",
       "declaration": "unsupported_pending_evidence"
     },
     {
@@ -104,7 +104,7 @@
     },
     {
       "check_id": "filter_shape.presence",
-      "status": "unsupported",
+      "status": "pass",
       "declaration": "unsupported_pending_evidence"
     },
     {
@@ -124,7 +124,7 @@
     },
     {
       "check_id": "ip_plus.presence",
-      "status": "unsupported",
+      "status": "pass",
       "declaration": "unsupported_pending_evidence"
     },
     {
@@ -134,12 +134,12 @@
     },
     {
       "check_id": "lan_dual_rx_audio_routing.presence",
-      "status": "unsupported",
+      "status": "pass",
       "declaration": "unsupported_pending_evidence"
     },
     {
       "check_id": "main_sub_tracking.presence",
-      "status": "unsupported",
+      "status": "pass",
       "declaration": "unsupported_pending_evidence"
     },
     {
@@ -154,7 +154,7 @@
     },
     {
       "check_id": "monitor.presence",
-      "status": "unsupported",
+      "status": "pass",
       "declaration": "unsupported_pending_evidence"
     },
     {
@@ -174,21 +174,16 @@
     },
     {
       "check_id": "pbt.presence",
-      "status": "unsupported",
+      "status": "pass",
       "declaration": "unsupported_pending_evidence"
     },
     {
       "check_id": "power_control.presence",
-      "status": "unsupported",
+      "status": "pass",
       "declaration": "unsupported_pending_evidence"
     },
     {
       "check_id": "preamp.set",
-      "status": "skip",
-      "declaration": "supported"
-    },
-    {
-      "check_id": "repeater_tone.set",
       "status": "skip",
       "declaration": "supported"
     },
@@ -204,12 +199,12 @@
     },
     {
       "check_id": "rx_antenna.presence",
-      "status": "unsupported",
+      "status": "pass",
       "declaration": "unsupported_pending_evidence"
     },
     {
       "check_id": "scan.presence",
-      "status": "unsupported",
+      "status": "pass",
       "declaration": "unsupported_pending_evidence"
     },
     {
@@ -299,7 +294,7 @@
     },
     {
       "check_id": "ssb_tx_bw.presence",
-      "status": "unsupported",
+      "status": "pass",
       "declaration": "unsupported_pending_evidence"
     },
     {
@@ -313,21 +308,6 @@
       "declaration": "supported"
     },
     {
-      "check_id": "tone_freq.set",
-      "status": "skip",
-      "declaration": "supported"
-    },
-    {
-      "check_id": "tsql.set",
-      "status": "skip",
-      "declaration": "supported"
-    },
-    {
-      "check_id": "tsql_freq.set",
-      "status": "skip",
-      "declaration": "supported"
-    },
-    {
       "check_id": "tuner.tune",
       "status": "blocked",
       "declaration": "manual_required",
@@ -335,12 +315,12 @@
     },
     {
       "check_id": "tuning_step.presence",
-      "status": "unsupported",
+      "status": "pass",
       "declaration": "unsupported_pending_evidence"
     },
     {
       "check_id": "twin_peak.presence",
-      "status": "unsupported",
+      "status": "pass",
       "declaration": "unsupported_pending_evidence"
     },
     {
@@ -373,7 +353,7 @@
     },
     {
       "check_id": "xfc.presence",
-      "status": "unsupported",
+      "status": "pass",
       "declaration": "unsupported_pending_evidence"
     },
     {

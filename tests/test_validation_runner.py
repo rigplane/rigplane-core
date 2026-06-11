@@ -52,6 +52,36 @@ def test_dry_run_declaration_mapping() -> None:
     assert checks["scope.capture"].status is CheckStatus.SKIP
 
 
+def test_dry_run_presence_check_resolves_pass() -> None:
+    """MOR-660: a synthetic ``<cap>.presence`` entry (declared capability, no
+    registry check) resolves PASS in dry-run — presence confirms the cap."""
+    template = MatrixTemplate(
+        radio=RadioTarget(model="IC-7300", profile_id="ic7300"),
+        entries=[
+            CapabilityDeclarationEntry(
+                check_id="scan.presence",
+                capability="scan",
+                level=ValidationLevel.STATIC_PROFILE,
+                declaration=CapabilityDeclaration.UNSUPPORTED_PENDING_EVIDENCE,
+                summary="presence",
+            ),
+            CapabilityDeclarationEntry(
+                check_id="bsr.select",
+                capability="bsr",
+                level=ValidationLevel.CAPABILITY_MATRIX,
+                declaration=CapabilityDeclaration.UNSUPPORTED_PENDING_EVIDENCE,
+                summary="undeclared functional",
+            ),
+        ],
+    )
+    levels = dry_run_results(template, OperatorSafetyBlock())
+    checks = _checks_by_id(levels)
+    # presence entry for a declared cap → PASS
+    assert checks["scan.presence"].status is CheckStatus.PASS
+    # a non-presence pending-evidence entry (undeclared cap) stays UNSUPPORTED
+    assert checks["bsr.select"].status is CheckStatus.UNSUPPORTED
+
+
 def test_tx_adjacent_blocked_without_authorization() -> None:
     template = load_template(_TEMPLATE)
     levels = dry_run_results(template, OperatorSafetyBlock())

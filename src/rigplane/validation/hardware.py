@@ -249,7 +249,10 @@ async def _run_one_check(
             evidence["scope_capability_present"] = present
         elif present is not None:
             evidence["capability_present"] = present
-        return _base_result(entry, CheckStatus.UNSUPPORTED, evidence=evidence)
+        # MOR-660: a confirmed-present capability IS the evidence the
+        # declaration was "pending" — resolve PASS, not UNSUPPORTED.
+        status = CheckStatus.PASS if present is True else CheckStatus.UNSUPPORTED
+        return _base_result(entry, status, evidence=evidence)
 
     # Per-radio write-only classification (MOR-208): controls whose capability
     # is declared write-only route through set-and-observe (no read-first),

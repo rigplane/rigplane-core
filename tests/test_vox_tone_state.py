@@ -316,8 +316,15 @@ def test_civ_rx_0x1a_0x05_vox_delay(tmp_path: object) -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_build_state_queries_includes_repeater_tone_and_tsql() -> None:
-    """_build_state_queries includes 0x16/0x42, 0x16/0x43, 0x1B/0x00, 0x1B/0x01."""
+def test_build_state_queries_omits_repeater_tone_and_tsql_on_ic7610() -> None:
+    """MOR-661: the IC-7610 (HF/6m) has no FM-repeater CTCSS tone feature, so
+    the capability-gated tone/tsql queries (0x16/0x42, 0x16/0x43, 0x1B/0x00,
+    0x1B/0x01) are NOT polled — they read garbage (16.5 Hz) on this radio.
+
+    The capability-gated tone/tsql query rows remain in the shared query table
+    for radios that DO declare the capability (IC-9700 / IC-705); they are
+    simply filtered out here because the IC-7610 profile no longer declares it.
+    """
     profile = resolve_radio_profile(model="IC-7610")
     radio = MagicMock()
     radio.profile = profile
@@ -329,10 +336,11 @@ def test_build_state_queries_includes_repeater_tone_and_tsql() -> None:
 
     queries = poller._STATE_QUERIES  # noqa: SLF001
     cmd_sub_pairs = {(cmd, sub) for cmd, sub, _ in queries}
-    assert (0x16, 0x42) in cmd_sub_pairs, "repeater_tone not polled"
-    assert (0x16, 0x43) in cmd_sub_pairs, "repeater_tsql not polled"
-    assert (0x1B, 0x00) in cmd_sub_pairs, "tone_freq not polled"
-    assert (0x1B, 0x01) in cmd_sub_pairs, "tsql_freq not polled"
+    assert (0x16, 0x42) not in cmd_sub_pairs, "repeater_tone should not be polled"
+    assert (0x16, 0x43) not in cmd_sub_pairs, "repeater_tsql should not be polled"
+    assert (0x1B, 0x00) not in cmd_sub_pairs, "tone_freq should not be polled"
+    assert (0x1B, 0x01) not in cmd_sub_pairs, "tsql_freq should not be polled"
+    # vox queries are unrelated and must still be polled.
     assert (0x14, 0x16) in cmd_sub_pairs, "vox_gain not polled"
     assert (0x14, 0x17) in cmd_sub_pairs, "anti_vox_gain not polled"
 

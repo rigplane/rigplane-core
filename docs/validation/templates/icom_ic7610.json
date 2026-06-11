@@ -1,0 +1,26 @@
+{
+  "schema_version": 1,
+  "override": true,
+  "radio": {
+    "model": "IC-7610",
+    "profile_id": "icom_ic7610"
+  },
+  "entries": [
+    {
+      "check_id": "repeater_tone.set",
+      "declaration": "excluded"
+    },
+    {
+      "check_id": "tone_freq.set",
+      "declaration": "excluded"
+    },
+    {
+      "check_id": "tsql.set",
+      "declaration": "excluded"
+    },
+    {
+      "check_id": "tsql_freq.set",
+      "declaration": "excluded"
+    }
+  ]
+}

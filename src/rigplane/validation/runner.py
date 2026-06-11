@@ -114,6 +114,18 @@ def dry_run_results(
     by_level: dict[ValidationLevel, list[CheckResult]] = {}
     for entry in template.entries:
         status = _DECLARATION_TO_STATUS[entry.declaration]
+        # MOR-660: a synthetic ``<cap>.presence`` entry is emitted ONLY for a
+        # declared capability that has no registry check, so its presence IS the
+        # evidence the ``unsupported_pending_evidence`` declaration was pending —
+        # resolve PASS, mirroring the hardware pre-gate. Registry-backed
+        # ``*.presence`` probes (e.g. ``scope.fft.presence``) keep their mapped
+        # status: they have a spec and may not be declared.
+        if (
+            entry.declaration == CapabilityDeclaration.UNSUPPORTED_PENDING_EVIDENCE
+            and entry.check_id.endswith(".presence")
+            and get_spec(entry.check_id) is None
+        ):
+            status = CheckStatus.PASS
         failure_domain: FailureDomain | None = None
         if _is_safety_gated(entry) and not _is_authorized(entry, safety):
             status = CheckStatus.BLOCKED

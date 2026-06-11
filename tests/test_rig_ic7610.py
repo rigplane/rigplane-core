@@ -100,9 +100,9 @@ class TestProfileParity:
                 # Metering / Scope
                 "meters",
                 "scope",
-                # Tone
-                "repeater_tone",
-                "tsql",
+                # Tone: the IC-7610 (HF/6m) has no FM-repeater CTCSS tone
+                # feature, so repeater_tone / tsql are intentionally absent
+                # (MOR-661).
                 # Data / System
                 "data_mode",
                 "power_control",
@@ -122,7 +122,8 @@ class TestProfileParity:
         assert profile.capabilities == expected
 
     def test_capabilities_count(self, profile):
-        assert len(profile.capabilities) == 48
+        # MOR-661: dropped repeater_tone + tsql (48 → 46).
+        assert len(profile.capabilities) == 46
 
     def test_cmd29_routes_exact(self, profile):
         expected = frozenset(
