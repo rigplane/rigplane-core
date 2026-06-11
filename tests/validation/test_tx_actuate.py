@@ -156,6 +156,27 @@ async def test_full_gate_stack_and_confirm_yes_keys_ptt_and_tunes():
     assert 2 in tuner_set_calls
 
 
+async def test_refuses_to_transmit_when_min_power_set_fails():
+    """If the radio HAS power control but lowering to minimum fails, the handler
+    must NOT key the transmitter (harm reduction: never TX at unknown power)."""
+    from rigplane.core.exceptions import CommandError
+
+    radio, power = _tx_radio(start_power=200)
+    # get_rf_power succeeds, but set_rf_power(min) fails -> can't confirm minimum.
+    radio.set_rf_power = AsyncMock(side_effect=CommandError("power set NAK"))
+    prompter, seen = _confirm_prompter(True)
+
+    levels = await _run(radio, safety=_FULL_SAFETY, tx_actuate=True, prompter=prompter)
+    ptt = _flatten(levels)["tx.ptt"]
+
+    assert ptt.status is CheckStatus.FAIL
+    assert "minimum" in (ptt.error or "")
+    assert ptt.evidence.get("power_set_to_min") is False
+    # Crucially: the transmitter was NEVER keyed.
+    radio.set_ptt.assert_not_called()
+    assert radio.radio_state.ptt is False
+
+
 async def test_confirm_declined_no_transmission():
     radio, _ = _tx_radio()
     prompter, seen = _confirm_prompter(False)

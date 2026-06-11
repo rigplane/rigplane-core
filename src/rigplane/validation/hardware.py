@@ -521,6 +521,20 @@ async def _actuate_tx_ptt(
             if fail is not None:
                 evidence["power_read_error"] = fail.error
 
+    # Harm reduction: if the radio HAS power control but we could not confirm
+    # it is at minimum (read or set failed), refuse to transmit at an unknown
+    # (possibly full) power. Minimum-power-first is part of the TX-actuate
+    # safety contract, not just best-effort. (A radio with no power API at all
+    # still actuates — power can't be controlled there; the operator opted in.)
+    if has_power and not power_set_to_min:
+        return _base_result(
+            entry,
+            CheckStatus.FAIL,
+            failure_domain=FailureDomain.COMMAND_EXECUTION,
+            evidence=evidence,
+            error="refusing to transmit: could not set TX power to minimum",
+        )
+
     try:
         # Key the transmitter.
         await asyncio.wait_for(set_ptt(True), timeout=per_check_timeout)
