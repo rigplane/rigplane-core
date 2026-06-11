@@ -444,3 +444,60 @@ def test_build_prompter_assume_yes_propagates(monkeypatch: Any) -> None:
     prompter = _validate._build_prompter(args)
     assert prompter is not None
     assert prompter.assume_yes is True
+
+
+# ---------------------------------------------------------------------------
+# MOR-666: --tx-actuate gate stack (no hardware; pure flag/env logic)
+# ---------------------------------------------------------------------------
+
+_OPT_IN_ENV = "RIGPLANE_VALIDATION_ALLOW_HARDWARE"
+
+
+def _actuate_args(*flags: str) -> Any:
+    return _parse(["--model", MODEL, "validate", "--hardware", *flags])
+
+
+def test_tx_actuate_enabled_full_stack(monkeypatch: Any) -> None:
+    monkeypatch.setenv(_OPT_IN_ENV, "1")
+    args = _actuate_args("--allow-hardware", "--tx-allowed", "--tx-actuate")
+    assert _validate._tx_actuate_enabled(args) is True
+
+
+def test_tx_actuate_disabled_without_flag(monkeypatch: Any) -> None:
+    monkeypatch.setenv(_OPT_IN_ENV, "1")
+    args = _actuate_args("--allow-hardware", "--tx-allowed")
+    assert _validate._tx_actuate_enabled(args) is False
+
+
+def test_tx_actuate_disabled_without_tx_allowed(monkeypatch: Any) -> None:
+    monkeypatch.setenv(_OPT_IN_ENV, "1")
+    args = _actuate_args("--allow-hardware", "--tx-actuate")
+    assert _validate._tx_actuate_enabled(args) is False
+
+
+def test_tx_actuate_disabled_without_allow_hardware(monkeypatch: Any) -> None:
+    monkeypatch.setenv(_OPT_IN_ENV, "1")
+    args = _actuate_args("--tx-allowed", "--tx-actuate")
+    assert _validate._tx_actuate_enabled(args) is False
+
+
+def test_tx_actuate_disabled_without_env(monkeypatch: Any) -> None:
+    monkeypatch.delenv(_OPT_IN_ENV, raising=False)
+    args = _actuate_args("--allow-hardware", "--tx-allowed", "--tx-actuate")
+    assert _validate._tx_actuate_enabled(args) is False
+
+
+def test_tx_actuate_disabled_without_hardware(monkeypatch: Any) -> None:
+    monkeypatch.setenv(_OPT_IN_ENV, "1")
+    # No --hardware: not running against real hardware.
+    args = _parse(
+        [
+            "--model",
+            MODEL,
+            "validate",
+            "--allow-hardware",
+            "--tx-allowed",
+            "--tx-actuate",
+        ]
+    )
+    assert _validate._tx_actuate_enabled(args) is False

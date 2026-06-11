@@ -193,6 +193,27 @@ def _build_prompter(args: argparse.Namespace) -> InteractivePrompter | None:
     return InteractivePrompter(assume_yes=bool(getattr(args, "assume_yes", False)))
 
 
+def _tx_actuate_enabled(args: argparse.Namespace) -> bool:
+    """Whether the TX checks may ACTUALLY transmit (MOR-666).
+
+    Returns ``True`` only when EVERY gate in the opt-in stack is open:
+    ``--tx-actuate`` AND ``--tx-allowed`` AND ``--allow-hardware`` AND
+    ``RIGPLANE_VALIDATION_ALLOW_HARDWARE=1`` AND ``--hardware`` (running on real
+    hardware). Missing ANY gate → ``False`` → today's behaviour (the TX checks
+    stay MANUAL_REQUIRED/BLOCKED and never key the transmitter). This is only the
+    *static* gate stack; the actuating handlers additionally require an explicit
+    interactive ``confirm()`` YES at runtime before any transmission, so even an
+    all-gates-open unattended run cannot transmit.
+    """
+    return (
+        bool(getattr(args, "tx_actuate", False))
+        and bool(getattr(args, "tx_allowed", False))
+        and bool(getattr(args, "allow_hardware", False))
+        and bool(getattr(args, "hardware", False))
+        and os.environ.get(HARDWARE_OPT_IN_ENV) == "1"
+    )
+
+
 def add_subparser(sub: Any) -> argparse.ArgumentParser:
     """Register the ``validate`` subparser on ``sub`` (an ``_SubParsersAction``).
 
@@ -239,6 +260,19 @@ def add_subparser(sub: Any) -> argparse.ArgumentParser:
         dest="tuner_allowed",
         action="store_true",
         help="Authorize tuner tune-cycle checks.",
+    )
+    p.add_argument(
+        "--tx-actuate",
+        dest="tx_actuate",
+        action="store_true",
+        help=(
+            "ACTUALLY exercise the TX checks (tx.ptt keys PTT at MINIMUM power "
+            "for ~1s then unkeys/restores; tuner.tune runs a tune-cycle). "
+            "Quadruple-gated: also requires --tx-allowed, --allow-hardware, "
+            f"{HARDWARE_OPT_IN_ENV}=1, and --hardware, PLUS an explicit "
+            "interactive confirm YES at runtime. Missing any → MANUAL_REQUIRED "
+            "(no transmission). VOX stays manual."
+        ),
     )
     p.add_argument(
         "--read-only",
@@ -766,6 +800,7 @@ async def _run_hardware(
                 per_check_timeout=getattr(args, "timeout", 5.0) or 5.0,
                 write_only_capabilities=write_only_capabilities,
                 prompter=_build_prompter(args),
+                tx_actuate=_tx_actuate_enabled(args),
             )
     except (RigConnectionError, AuthenticationError, OSError, RigplaneError) as exc:
         levels = _transport_failure_levels(template, exc)
@@ -956,6 +991,7 @@ async def _run_hardware_hamlib(
                             profile.write_only_controls if profile else frozenset()
                         ),
                         prompter=_build_prompter(args),
+                        tx_actuate=_tx_actuate_enabled(args),
                     )
             finally:
                 await bridge.stop()
@@ -1070,6 +1106,7 @@ async def _run_hardware_hamlib_external(
                 allow_writes=not bool(getattr(args, "read_only", False)),
                 per_check_timeout=timeout,
                 prompter=_build_prompter(args),
+                tx_actuate=_tx_actuate_enabled(args),
             )
     except (RigConnectionError, AuthenticationError, OSError, RigplaneError) as exc:
         template = build_template_from_capabilities(
