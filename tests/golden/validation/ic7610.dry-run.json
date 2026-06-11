@@ -42,6 +42,12 @@
       "declaration": "manual_required"
     },
     {
+      "check_id": "audio.tx.byte_perfect",
+      "status": "blocked",
+      "declaration": "manual_required",
+      "failure_domain": "command_execution"
+    },
+    {
       "check_id": "band_edge.presence",
       "status": "unsupported",
       "declaration": "unsupported_pending_evidence"

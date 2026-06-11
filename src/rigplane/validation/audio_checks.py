@@ -29,8 +29,16 @@ from __future__ import annotations
 import datetime
 import math
 from collections.abc import Callable
+from typing import cast
 
 from rigplane.audio.backend import AudioDeviceId, AudioDeviceInfo, FakeAudioBackend
+from rigplane.audio.lan_stream import (
+    TX_IDENT,
+    AudioPacket,
+    AudioStream,
+    parse_audio_packet,
+)
+from rigplane.core.transport import IcomTransport
 from rigplane.validation.registry import CheckSpec, get_spec
 from rigplane.validation.schema import (
     CapabilityDeclaration,
@@ -48,6 +56,7 @@ __all__ = [
     "RX_RMS_TOLERANCE",
     "PcmTransform",
     "run_rx_rms_check",
+    "run_tx_byte_perfect_check",
 ]
 
 # Probe signal parameters. They mirror the audio-bridge PCM contract
@@ -246,6 +255,123 @@ async def run_rx_rms_check(
     return _probe_result(
         "audio.rx.rms",
         passed=in_band,
+        evidence=evidence,
+        error=error,
+        started_at=started_at,
+    )
+
+
+# ---------------------------------------------------------------------------
+# T5 / MOR-640 — TX byte-perfect probe
+# ---------------------------------------------------------------------------
+
+
+class _RecordingAudioTransport:
+    """Minimal in-memory audio transport: records every tracked send.
+
+    Duck-types the slice of :class:`IcomTransport` that
+    :meth:`AudioStream.push_tx` uses (``my_id``, ``remote_id``,
+    ``send_tracked``). A plain class, not a mock — signature drift fails
+    loudly instead of being absorbed.
+    """
+
+    my_id = 0xAABBCCDD
+    remote_id = 0x11223344
+
+    def __init__(self) -> None:
+        self.sent: list[bytes] = []
+
+    async def send_tracked(self, data: bytes) -> None:
+        self.sent.append(bytes(data))
+
+
+async def run_tx_byte_perfect_check(
+    *,
+    backend: FakeAudioBackend | None = None,
+    frame_count: int = 4,
+    pcm_transform: PcmTransform | None = None,
+) -> CheckResult:
+    """Verify captured TX PCM survives LAN packetization byte-perfect.
+
+    Mirrors the in-process TX harness (``tests/test_audio_pipeline_harness``,
+    real-hardware byte-perfectness proven in MOR-614): a reference tone is
+    injected into the fake capture stream (the bridge's TX source), every
+    delivered frame is pushed through the REAL :class:`AudioStream` TX
+    packetization, and the reassembled packet payload must equal the
+    reference PCM byte-for-byte — with TX idents and contiguous audio-level
+    sequence numbers.
+    """
+    started_at = _utcnow_iso()
+    fake = backend if backend is not None else _default_backend()
+    capture = fake.open_rx(
+        _first_device(fake),
+        sample_rate=PROBE_SAMPLE_RATE,
+        channels=1,
+        frame_ms=PROBE_FRAME_MS,
+    )
+
+    reference = _sine_pcm16_mono(PROBE_TONE_HZ, samples=PROBE_SAMPLES_PER_FRAME)
+    expected_pcm = reference * frame_count
+
+    transport = _RecordingAudioTransport()
+    stream = AudioStream(cast(IcomTransport, transport))
+    await stream.start_tx()
+
+    delivered: list[bytes] = []
+    await capture.start(delivered.append)
+    try:
+        for _ in range(frame_count):
+            frame = reference if pcm_transform is None else pcm_transform(reference)
+            capture.inject_frame(frame)
+        for frame in delivered:
+            await stream.push_tx(frame)
+    finally:
+        await capture.stop()
+        await stream.stop_tx()
+
+    packets: list[AudioPacket] = []
+    for raw in transport.sent:
+        packet = parse_audio_packet(raw)
+        if packet is not None:
+            packets.append(packet)
+
+    payload = b"".join(packet.data for packet in packets)
+    payload_matches = payload == expected_pcm
+    idents = sorted({packet.ident for packet in packets})
+    sequences_contiguous = [packet.send_seq for packet in packets] == list(
+        range(len(packets))
+    )
+    passed = (
+        payload_matches
+        and bool(packets)
+        and idents == [TX_IDENT]
+        and sequences_contiguous
+    )
+
+    evidence: dict[str, object] = {
+        "tone_hz": PROBE_TONE_HZ,
+        "frames_captured": len(delivered),
+        "packets_sent": len(packets),
+        "packet_sizes": [len(packet.data) for packet in packets],
+        "payload_bytes": len(payload),
+        "expected_bytes": len(expected_pcm),
+        "payload_matches": payload_matches,
+        "idents": idents,
+        "sequences_contiguous": sequences_contiguous,
+    }
+    error = (
+        None
+        if passed
+        else (
+            "TX payload is not byte-perfect: "
+            f"{len(payload)}/{len(expected_pcm)} bytes reassembled, "
+            f"match={payload_matches}, idents={idents}, "
+            f"contiguous={sequences_contiguous}"
+        )
+    )
+    return _probe_result(
+        "audio.tx.byte_perfect",
+        passed=passed,
         evidence=evidence,
         error=error,
         started_at=started_at,

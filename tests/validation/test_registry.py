@@ -28,8 +28,8 @@ from rigplane.validation.schema import FailureDomain, ValidationLevel
 # ---------------------------------------------------------------------------
 
 
-def test_registry_has_22_entries():
-    assert len(REGISTRY) == 22
+def test_registry_has_23_entries():
+    assert len(REGISTRY) == 23
 
 
 def test_check_ids_unique():
@@ -65,6 +65,7 @@ def test_check_id_set_unchanged_after_domain_split():
         "tx.ptt",
         # Appended audio-probe family (CI-automated, GH #1650):
         "audio.rx.rms",
+        "audio.tx.byte_perfect",
     }
     assert {spec.check_id for spec in REGISTRY} == expected
 
@@ -91,9 +92,10 @@ def test_tx_adjacent_blocked_implies_tx_adjacent():
             assert spec.tx_adjacent is True, (
                 f"{spec.check_id!r}: TX_ADJACENT_BLOCKED but tx_adjacent is False"
             )
-    # ONLY tuner.tune and tx.ptt should have tx_adjacent=True
+    # tuner.tune, tx.ptt, and the TX-audio probe (GH #1650: TX audio stays
+    # behind explicit operator safety enablement) are the only tx_adjacent ids.
     tx_adjacent_ids = {spec.check_id for spec in REGISTRY if spec.tx_adjacent}
-    assert tx_adjacent_ids == {"tuner.tune", "tx.ptt"}
+    assert tx_adjacent_ids == {"tuner.tune", "tx.ptt", "audio.tx.byte_perfect"}
 
 
 def test_manual_and_blocked_have_no_set_op():

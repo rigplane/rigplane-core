@@ -36,4 +36,26 @@ CHECKS: tuple[CheckSpec, ...] = (
         hamlib_token=None,
         tx_adjacent=False,
     ),
+    # 23 — audio.tx.byte_perfect (T5 / MOR-640)
+    CheckSpec(
+        check_id="audio.tx.byte_perfect",
+        capability="audio",
+        kind=CheckKind.AUDIO_PROBE,
+        level=ValidationLevel.COMPATIBILITY_SURFACES,
+        failure_domain=FailureDomain.AUDIO,
+        summary=(
+            "Automated CI probe: verify captured TX audio PCM survives the "
+            "LAN audio packetization pipeline byte-perfect."
+        ),
+        protocol="audio",
+        get_op=None,
+        set_op=None,
+        value_rule=ValueRule.TOGGLE_BOOL,
+        tolerance=0,
+        hamlib_token=None,
+        # GH #1650: TX audio requires explicit operator safety enablement on
+        # real hardware. The CI probe never keys anything, but the template
+        # entry stays behind the tx_allowed operator gate like tx.ptt.
+        tx_adjacent=True,
+    ),
 )

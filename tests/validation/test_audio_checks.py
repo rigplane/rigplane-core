@@ -12,10 +12,13 @@ from __future__ import annotations
 from array import array
 
 from rigplane.audio.backend import AudioDeviceId, AudioDeviceInfo, FakeAudioBackend
+from rigplane.audio.lan_stream import MAX_AUDIO_PAYLOAD, TX_IDENT
 from rigplane.validation.audio_checks import (
+    PROBE_FRAME_BYTES,
     PROBE_SAMPLES_PER_FRAME,
     PROBE_TONE_HZ,
     run_rx_rms_check,
+    run_tx_byte_perfect_check,
 )
 from rigplane.validation.registry import (
     REGISTRY_BY_ID,
@@ -152,3 +155,77 @@ async def test_rx_rms_check_fails_on_attenuated_pipeline() -> None:
     expected_rms = result.evidence["expected_rms"]
     assert isinstance(rms, float) and isinstance(expected_rms, float)
     assert 0.0 < rms < expected_rms
+
+
+# ---------------------------------------------------------------------------
+# T5 / MOR-640 — TX byte-perfect probe
+# ---------------------------------------------------------------------------
+
+
+def test_audio_tx_byte_perfect_spec_registered() -> None:
+    spec = REGISTRY_BY_ID["audio.tx.byte_perfect"]
+    assert spec.kind is CheckKind.AUDIO_PROBE
+    assert spec.capability == "audio"
+    assert spec.level == ValidationLevel.COMPATIBILITY_SURFACES
+    assert spec.failure_domain is FailureDomain.AUDIO
+    assert spec.set_op is None
+    # GH #1650: TX audio stays behind explicit operator safety enablement
+    # on real hardware, exactly like tuner.tune / tx.ptt.
+    assert spec.tx_adjacent is True
+
+
+async def test_tx_byte_perfect_check_passes_on_clean_pipeline() -> None:
+    backend = _backend()
+    frame_count = 4
+    result = await run_tx_byte_perfect_check(backend=backend, frame_count=frame_count)
+
+    assert result.check_id == "audio.tx.byte_perfect"
+    assert result.status is CheckStatus.PASS
+    assert result.failure_domain is None
+    assert result.error is None
+
+    # Mirrors the byte-perfect TX harness contract: each 1920-byte PCM frame
+    # splits into a MAX_AUDIO_PAYLOAD chunk plus the remainder, all packets
+    # carry TX_IDENT, and sequence numbers are contiguous.
+    assert result.evidence["payload_matches"] is True
+    assert result.evidence["payload_bytes"] == frame_count * PROBE_FRAME_BYTES
+    assert result.evidence["packet_sizes"] == [
+        size
+        for _ in range(frame_count)
+        for size in (MAX_AUDIO_PAYLOAD, PROBE_FRAME_BYTES - MAX_AUDIO_PAYLOAD)
+    ]
+    assert result.evidence["idents"] == [TX_IDENT]
+    assert result.evidence["sequences_contiguous"] is True
+
+    # The fake capture stream was started and stopped exactly once.
+    assert len(backend.rx_streams) == 1
+    assert backend.rx_streams[0].stopped_count == 1
+
+
+async def test_tx_byte_perfect_check_fails_on_corrupted_payload() -> None:
+    def corrupt(pcm: bytes) -> bytes:
+        # Flip one byte mid-frame: same length, different payload.
+        mutated = bytearray(pcm)
+        mutated[len(mutated) // 2] ^= 0xFF
+        return bytes(mutated)
+
+    result = await run_tx_byte_perfect_check(backend=_backend(), pcm_transform=corrupt)
+    assert result.status is CheckStatus.FAIL
+    assert result.failure_domain is FailureDomain.AUDIO
+    assert result.error is not None
+    assert result.evidence["payload_matches"] is False
+
+
+async def test_tx_byte_perfect_check_fails_on_dropped_frames() -> None:
+    dropped: dict[str, int] = {"count": 0}
+
+    def drop_every_other(pcm: bytes) -> bytes:
+        dropped["count"] += 1
+        return pcm if dropped["count"] % 2 else b""
+
+    result = await run_tx_byte_perfect_check(
+        backend=_backend(), pcm_transform=drop_every_other
+    )
+    assert result.status is CheckStatus.FAIL
+    assert result.failure_domain is FailureDomain.AUDIO
+    assert result.evidence["payload_matches"] is False
