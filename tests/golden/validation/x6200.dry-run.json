@@ -48,14 +48,19 @@
       "declaration": "unsupported_pending_evidence"
     },
     {
-      "check_id": "compressor.presence",
-      "status": "pass",
-      "declaration": "unsupported_pending_evidence"
+      "check_id": "comp_level.set",
+      "status": "skip",
+      "declaration": "supported"
     },
     {
       "check_id": "contour.set",
       "status": "unsupported",
       "declaration": "unsupported_pending_evidence"
+    },
+    {
+      "check_id": "cw_pitch.set",
+      "status": "skip",
+      "declaration": "supported"
     },
     {
       "check_id": "data_mode.presence",
@@ -108,6 +113,11 @@
       "declaration": "supported"
     },
     {
+      "check_id": "mic_gain.set",
+      "status": "unsupported",
+      "declaration": "unsupported_pending_evidence"
+    },
+    {
       "check_id": "mod_input.set",
       "status": "unsupported",
       "declaration": "unsupported_pending_evidence"
@@ -123,12 +133,22 @@
       "declaration": "supported"
     },
     {
+      "check_id": "nb_level.set",
+      "status": "skip",
+      "declaration": "supported"
+    },
+    {
       "check_id": "notch.set",
       "status": "skip",
       "declaration": "supported"
     },
     {
       "check_id": "nr.set",
+      "status": "skip",
+      "declaration": "supported"
+    },
+    {
+      "check_id": "nr_level.set",
       "status": "skip",
       "declaration": "supported"
     },
@@ -151,6 +171,11 @@
       "check_id": "rf_gain.set",
       "status": "skip",
       "declaration": "supported"
+    },
+    {
+      "check_id": "rf_power.set",
+      "status": "unsupported",
+      "declaration": "unsupported_pending_evidence"
     },
     {
       "check_id": "rit.set",

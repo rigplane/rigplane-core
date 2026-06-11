@@ -97,11 +97,18 @@ _EXPECTED_CHECK_IDS = {
     "scope_vbw.set",
     "scope_rbw.set",
     "scope_fixed_edge.read",
+    # MOR-679 — Icom level RMVR cluster (shared CoreRadio: IC-7610 + IC-7300)
+    "rf_power.set",
+    "mic_gain.set",
+    "comp_level.set",
+    "nr_level.set",
+    "nb_level.set",
+    "cw_pitch.set",
 }
 
 
 def test_registry_has_expected_entry_count():
-    assert len(REGISTRY) == len(_EXPECTED_CHECK_IDS) == 55
+    assert len(REGISTRY) == len(_EXPECTED_CHECK_IDS) == 61
 
 
 def test_check_ids_unique():
@@ -388,6 +395,91 @@ _EXPECTED: list[tuple[str, dict]] = [
             "protocol": None,
             "failure_domain": FailureDomain.COMMAND_EXECUTION,
             "tx_adjacent": True,
+        },
+    ),
+    # MOR-679 — Icom level RMVR cluster
+    (
+        "rf_power.set",
+        {
+            "kind": CheckKind.RMVR_SAFE_WRITE,
+            "level": ValidationLevel.CAPABILITY_MATRIX,
+            "capability": "power_control",
+            "get_op": "get_rf_power",
+            "set_op": "set_rf_power",
+            "value_rule": ValueRule.STEP_LEVEL_255,
+            "tolerance": 3,
+            "failure_domain": FailureDomain.READBACK,
+            "tx_adjacent": False,
+        },
+    ),
+    (
+        "mic_gain.set",
+        {
+            "kind": CheckKind.RMVR_SAFE_WRITE,
+            "level": ValidationLevel.CAPABILITY_MATRIX,
+            "capability": "power_control",
+            "get_op": "get_mic_gain",
+            "set_op": "set_mic_gain",
+            "value_rule": ValueRule.STEP_LEVEL_255,
+            "tolerance": 3,
+            "failure_domain": FailureDomain.READBACK,
+            "tx_adjacent": False,
+        },
+    ),
+    (
+        "comp_level.set",
+        {
+            "kind": CheckKind.RMVR_SAFE_WRITE,
+            "level": ValidationLevel.CAPABILITY_MATRIX,
+            "capability": "compressor",
+            "get_op": "get_compressor_level",
+            "set_op": "set_compressor_level",
+            "value_rule": ValueRule.STEP_LEVEL_255,
+            "tolerance": 3,
+            "failure_domain": FailureDomain.READBACK,
+            "tx_adjacent": False,
+        },
+    ),
+    (
+        "nr_level.set",
+        {
+            "kind": CheckKind.RMVR_SAFE_WRITE,
+            "level": ValidationLevel.CAPABILITY_MATRIX,
+            "capability": "nr",
+            "get_op": "get_nr_level",
+            "set_op": "set_nr_level",
+            "value_rule": ValueRule.STEP_LEVEL_255,
+            "tolerance": 3,
+            "failure_domain": FailureDomain.READBACK,
+            "tx_adjacent": False,
+        },
+    ),
+    (
+        "nb_level.set",
+        {
+            "kind": CheckKind.RMVR_SAFE_WRITE,
+            "level": ValidationLevel.CAPABILITY_MATRIX,
+            "capability": "nb",
+            "get_op": "get_nb_level",
+            "set_op": "set_nb_level",
+            "value_rule": ValueRule.STEP_LEVEL_255,
+            "tolerance": 3,
+            "failure_domain": FailureDomain.READBACK,
+            "tx_adjacent": False,
+        },
+    ),
+    (
+        "cw_pitch.set",
+        {
+            "kind": CheckKind.RMVR_SAFE_WRITE,
+            "level": ValidationLevel.CAPABILITY_MATRIX,
+            "capability": "cw",
+            "get_op": "get_cw_pitch",
+            "set_op": "set_cw_pitch",
+            "value_rule": ValueRule.CW_PITCH_HZ,
+            "tolerance": 5,
+            "failure_domain": FailureDomain.READBACK,
+            "tx_adjacent": False,
         },
     ),
 ]

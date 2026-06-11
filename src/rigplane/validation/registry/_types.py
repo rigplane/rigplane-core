@@ -62,6 +62,9 @@ class ValueRule(StrEnum):
     CONTOUR_FLIP = "contour_flip"
     # MOR-678 — IC-7610 MOD-input routing source select (enumerated 0-5)
     MOD_SRC_FLIP = "mod_src_flip"
+    # MOR-679 — CW pitch is Hz (300-900), not a 0-255 level; nudge on the 5 Hz
+    # grid inside the documented band so the write is always restorable.
+    CW_PITCH_HZ = "cw_pitch_hz"
 
 
 # ---------------------------------------------------------------------------
