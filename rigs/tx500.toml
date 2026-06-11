@@ -1,7 +1,25 @@
-# Rig Configuration — Lab599 TX-500
-# Lab599 TX-500 QRP portable transceiver.
-# Protocol: Kenwood CAT (text-based)
-# Source: TX-500 CAT interface documentation
+# Rig Configuration — Lab599 Discovery TX-500
+# Lab599 TX-500 ultra-compact QRP HF/50 MHz SDR transceiver.
+#
+# Protocol: Kenwood-style ASCII CAT (semicolon-terminated, "FA00014200000;"),
+#           modeled on the Kenwood TS-2000 set with Lab599 extensions. NOT CI-V.
+#
+# Source of truth: Lab599 CAT Protocol rev. 2 (official) — see the verbatim
+# extract and audit at docs/validation/cat-audits/{manuals/tx500.txt,tx500.md}.
+#
+# CANONICAL PROFILE (MOR-684): this is the single source of truth for the
+# TX-500. The previous reference sketch rigs/examples/lab599_tx500.toml was
+# removed because (a) it was never loaded — rigs/examples/ is not scanned by
+# discover_rigs and the sketch failed schema validation, (b) its
+# [protocol.commands] block is silently ignored by the loader (commands live in
+# the top-level [commands] table), and (c) it carried rev.2 errors (FSK/RTTY
+# modes, "power NOT controllable via CAT") that this file corrects. Do not
+# reintroduce a divergent second profile.
+#
+# NOTE: the TX-500 has no backend yet (backends/factory raises ValueError for
+# model="TX-500"). The [commands] CAT strings below are wired in the
+# loader-supported `{ cat = { read/write/parse } }` format so the future
+# kenwood_cat backend has a rev.2-accurate command surface to bind to.
 
 [radio]
 id = "lab599_tx500"
@@ -13,46 +31,83 @@ default_baud = 38400
 
 [protocol]
 type = "kenwood_cat"
+# variant "lab599" enables the Lab599 extension commands (FL, IS, RM, VL, AL,
+# MR/MW) on top of the TS-2000-compatible base set. ID; answers ID500 (TX-500)
+# / ID505 (TX-500 MP) in native mode, or ID019 in TS-2000-compat mode.
+variant = "lab599"
 
 [capabilities]
 features = [
     "audio",
-    "af_level",
-    "rf_gain",
-    "squelch",
-    "attenuator",
-    "preamp",
-    "nb",
-    "nr",
-    "filter_width",
-    "tx",
-    "split",
-    "cw",
-    "rit",
-    "tuner",
-    "meters",
-    "scan",
-    "dial_lock",
+    "af_level",      # AG  000-250
+    "rf_gain",       # RG  000-100
+    "squelch",       # SQ  000-255
+    "attenuator",    # RA  00/01 (ON/OFF)
+    "preamp",        # PA  0/1  (ON/OFF)
+    "nb",            # NB / NL
+    "nr",            # NR / RL
+    "notch",         # NT  0=OFF 1=Auto
+    "filter_width",  # FL  RX 0-3 / TX 0-1
+    "tx",            # RX / TX / PT
+    "split",         # SP  0/1  (TX-500)
+    "vox",           # VX / VG / VD
+    "cw",            # KS  keyer speed 004-060
+    "rit",           # RT  0/1
+    "xit",           # XT  0/1  (TX-500)
+    "power_control", # PC  010-100 (output power) · TP 005-050 (TX-tune)
+    "tuner",         # AC  internal ATU (TX-500 MP)
+    "meters",        # SM / RM
+    "scan",          # SC (status via IF P11)
+    "dial_lock",     # LK  0/1
 ]
 
 [modes]
-list = ["LSB", "USB", "CW", "CW-R", "AM", "FM", "DIGI"]
+# rev.2 MD register map (manufacturer protocol doc, full table):
+#   1=LSB  2=USB  3=CW  4=FM  5=AM  6=DIG  7=CW-R
+# There is NO FSK / RTTY mode and NO register 8 or 9 on the TX-500. The list
+# below is the operator-facing label set; the set_mode/get_mode templates below
+# carry the single-digit register. (Was wrongly 6=FSK / 9=FSK-R with RTTY
+# labels and a "DIGI" label — corrected per MOR-684 / audit gap D.)
+list = ["LSB", "USB", "CW", "FM", "AM", "DIG", "CW-R"]
 
 [filters]
-list = ["FIL1", "FIL2"]
+# FL command: RX filter 0-3 (P1), TX filter 0-1 (P2).
+list = ["FIL1", "FIL2", "FIL3", "FIL4"]
 
 [vfo]
 scheme = "ab"
 
 [attenuator]
 values = [0, 1]
+labels = { "0" = "OFF", "1" = "ON" }
 
 [preamp]
 values = [0, 1]
+labels = { "0" = "OFF", "1" = "ON" }
 
 [controls.attenuator]
 style = "toggle"
 
+# ATT and PREAMP are mutually exclusive on the TX-500 front end.
+[[rules]]
+kind = "mutex"
+fields = ["attenuator", "preamp"]
+
+# ─── Meters ──────────────────────────────────────────────────────────────────
+# SM reads the S-meter (RX) / power-out (TX) in dots (0000-0030). RM selects the
+# meter (0=POWER 1=SWR 2=MIC/DIG 3=ALC) and reads its dot value.
+[meters.s_meter]
+type = "linear"
+raw_max = 30
+unit = "dots"
+
+[meters.power]
+type = "linear"
+raw_max = 30
+max_watts = 10
+unit = "W"
+
+# ─── Bands ───────────────────────────────────────────────────────────────────
 [[freq_ranges.ranges]]
 label = "HF"
 start_hz = 100000
@@ -118,6 +173,76 @@ start_hz = 50000000
 end_hz = 54000000
 default_hz = 51000000
 
+# ─── CAT commands (Lab599 CAT Protocol rev. 2) ───────────────────────────────
+# Wired in the loader-supported `{ cat = { read/write/parse } }` form. Parameter
+# widths follow rev.2 exactly: FA/FB 11-digit Hz, MD 1-digit register, PC/TP/AG
+# 3-digit, RA 2-digit, PA/NB/NR/NT/RT/XT/SP 1-digit. The future kenwood_cat
+# backend binds to these names.
 [commands]
-# Kenwood CAT minimal command set
-# ID FA FB MD FR FT PA RA
+# Frequency (FA/FB) — 11-digit Hz.
+get_freq        = { cat = { read = "FA;", parse = "FA{freq:011d};" } }
+set_freq        = { cat = { write = "FA{freq:011d};" } }
+get_freq_b      = { cat = { read = "FB;", parse = "FB{freq:011d};" } }
+set_freq_b      = { cat = { write = "FB{freq:011d};" } }
+# Mode (MD) — single register digit: 1=LSB 2=USB 3=CW 4=FM 5=AM 6=DIG 7=CW-R.
+get_mode        = { cat = { read = "MD;", parse = "MD{mode};" } }
+set_mode        = { cat = { write = "MD{mode};" } }
+# Full status (IF) — freq + RIT/XIT + mode + split + tone in one read.
+get_info        = { cat = { read = "IF;" } }
+# VFO / Memory select (FR/FT) — 0=VFO-A 1=VFO-B 2=Memory.
+get_vfo_select  = { cat = { read = "FR;", parse = "FR{vfo};" } }
+set_vfo_select  = { cat = { write = "FR{vfo};" } }
+# PTT — RX/TX are parameterless; PT reads PTT state (0=RX 1=TX).
+ptt_on          = { cat = { write = "TX;" } }
+ptt_off         = { cat = { write = "RX;" } }
+get_ptt         = { cat = { read = "PT;", parse = "PT{ptt};" } }
+# Split (SP) — 0=OFF 1=ON.
+get_split       = { cat = { read = "SP;", parse = "SP{split};" } }
+set_split       = { cat = { write = "SP{split};" } }
+# Output power (PC) — 010-100. TX-tune power (TP) — 005-050.
+get_power       = { cat = { read = "PC;", parse = "PC{power:03d};" } }
+set_power       = { cat = { write = "PC{power:03d};" } }
+get_tune_power  = { cat = { read = "TP;", parse = "TP{power:03d};" } }
+set_tune_power  = { cat = { write = "TP{power:03d};" } }
+# AF gain (AG) 000-250 · RF gain (RG) 000-100 · squelch (SQ) 000-255.
+get_af_level    = { cat = { read = "AG;", parse = "AG{level:03d};" } }
+set_af_level    = { cat = { write = "AG0{level:03d};" } }
+get_rf_gain     = { cat = { read = "RG;", parse = "RG{level:03d};" } }
+set_rf_gain     = { cat = { write = "RG{level:03d};" } }
+get_squelch     = { cat = { read = "SQ;", parse = "SQ0{level:03d};" } }
+set_squelch     = { cat = { write = "SQ0{level:03d};" } }
+# Preamp (PA) 0/1 · attenuator (RA) 00/01.
+get_preamp      = { cat = { read = "PA;", parse = "PA{val};" } }
+set_preamp      = { cat = { write = "PA{val};" } }
+get_att         = { cat = { read = "RA;", parse = "RA{val:02d};" } }
+set_att         = { cat = { write = "RA{val:02d};" } }
+# Filter (FL) — RX 0-3 / TX 0-1.
+get_filter      = { cat = { read = "FL;" } }
+set_filter      = { cat = { write = "FL{rx}{tx};" } }
+# DSP — noise blanker (NB/NL), noise reduction (NR/RL), notch (NT 0=OFF 1=Auto).
+get_nb          = { cat = { read = "NB;", parse = "NB{val};" } }
+set_nb          = { cat = { write = "NB{val};" } }
+get_nr          = { cat = { read = "NR;", parse = "NR{val};" } }
+set_nr          = { cat = { write = "NR{val};" } }
+get_notch       = { cat = { read = "NT;", parse = "NT{val};" } }
+set_notch       = { cat = { write = "NT{val};" } }
+# RIT (RT) / XIT (XT) — 0=OFF 1=ON.
+get_rit         = { cat = { read = "RT;", parse = "RT{val};" } }
+set_rit         = { cat = { write = "RT{val};" } }
+get_xit         = { cat = { read = "XT;", parse = "XT{val};" } }
+set_xit         = { cat = { write = "XT{val};" } }
+# CW keyer speed (KS) 004-060.
+get_keyer_speed = { cat = { read = "KS;", parse = "KS{wpm:03d};" } }
+set_keyer_speed = { cat = { write = "KS{wpm:03d};" } }
+# Internal antenna tuner (AC, TX-500 MP).
+get_tuner       = { cat = { read = "AC;" } }
+set_tuner       = { cat = { write = "AC0{state}{tune};" } }
+# Dial lock (LK) 0/1.
+get_lock        = { cat = { read = "LK;", parse = "LK{val}0;" } }
+set_lock        = { cat = { write = "LK{val}0;" } }
+# S-meter (SM) / meter select (RM, Lab599) / supply voltage (VL, Lab599).
+get_smeter      = { cat = { read = "SM0;", parse = "SM0{value:04d};" } }
+get_meter       = { cat = { read = "RM;", parse = "RM{meter}{value:04d};" } }
+get_voltage     = { cat = { read = "VL;", parse = "VL{volts:04d};" } }
+# Transceiver ID (ID) — 019 / 500 / 505.
+get_id          = { cat = { read = "ID;", parse = "ID{id};" } }

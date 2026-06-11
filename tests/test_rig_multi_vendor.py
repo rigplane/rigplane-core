@@ -11,6 +11,7 @@ from pathlib import Path
 
 import pytest
 
+from rigplane.commands.command_spec import CatCommandSpec
 from rigplane.profiles import RadioProfile
 from rigplane.rig_loader import (
     VALID_CONTROL_STYLES,
@@ -363,12 +364,55 @@ class TestMultiVendorProfiles:
         disables_rules = [r for r in rig.rules if r["kind"] == "disables"]
         assert len(disables_rules) >= 1
 
-    def test_tx500_no_commands(self):
-        """Empty or minimal commands section is OK for kenwood_cat."""
+    def test_tx500_commands_are_wired(self):
+        """MOR-684: kenwood_cat CAT command strings are wired in [commands].
+
+        Previously [commands] was an empty stub; the loaded profile now carries
+        the rev.2 CAT command set as ``CatCommandSpec`` entries.
+        """
         rig = load_rig(RIGS_DIR / "tx500.toml")
         assert isinstance(rig.commands, dict)
-        # Commands may be empty or minimal
-        assert rig.commands is not None
+        assert rig.commands  # no longer empty
+        for spec in rig.commands.values():
+            assert isinstance(spec, CatCommandSpec)
+
+    def test_tx500_mode_map_matches_rev2(self):
+        """MOR-684: mode list matches Lab599 CAT Protocol rev.2 exactly.
+
+        rev.2 MD register map: 1=LSB 2=USB 3=CW 4=FM 5=AM 6=DIG 7=CW-R.
+        No FSK / RTTY / register 8 / register 9 exist for the TX-500.
+        """
+        rig = load_rig(RIGS_DIR / "tx500.toml")
+        modes = set(rig.modes)
+        assert "DIG" in modes  # rev.2 label (was "DIGI")
+        assert "CW-R" in modes
+        # FSK / RTTY are NOT TX-500 modes per rev.2.
+        assert "RTTY" not in modes
+        assert "RTTY-R" not in modes
+        assert "FSK" not in modes
+        assert "FSK-R" not in modes
+        # The seven documented modes, nothing else.
+        assert modes == {"LSB", "USB", "CW", "FM", "AM", "DIG", "CW-R"}
+
+    def test_tx500_set_mode_register_comment_documents_rev2(self):
+        """MOR-684: set_mode write template encodes the single mode register."""
+        rig = load_rig(RIGS_DIR / "tx500.toml")
+        set_mode = rig.commands["set_mode"]
+        assert isinstance(set_mode, CatCommandSpec)
+        assert set_mode.write == "MD{mode};"
+
+    def test_tx500_power_is_cat_settable(self):
+        """MOR-684: power is CAT-controllable via PC (010-100) per rev.2.
+
+        The audit's gap D flagged the old "NOT controllable via CAT" note as
+        wrong; rev.2 documents the PC output-power command.
+        """
+        rig = load_rig(RIGS_DIR / "tx500.toml")
+        assert "power_control" in rig.capabilities
+        set_power = rig.commands["set_power"]
+        assert isinstance(set_power, CatCommandSpec)
+        assert set_power.write == "PC{power:03d};"
+        assert rig.commands["get_power"].read == "PC;"
 
     def test_backward_compat_existing_tests_still_pass(self):
         """IC-7610 and IC-7300 load without errors."""
