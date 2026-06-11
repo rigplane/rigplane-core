@@ -360,6 +360,269 @@ async def test_dial_lock_set_rmvr_roundtrip():
 
 
 # ---------------------------------------------------------------------------
+# T11 / MOR-646 — scope-control SET commands
+# ---------------------------------------------------------------------------
+
+
+async def test_scope_dual_set_rmvr_roundtrip():
+    radio, store = _stateful_value_radio(
+        capability="scope",
+        get_op="get_scope_dual",
+        set_op="set_scope_dual",
+        start=False,
+        receiver_kw=False,
+    )
+    result = await _run(radio, "scope_dual.set")
+    assert result.status is CheckStatus.PASS
+    assert result.evidence["restored"] is True
+    assert store["value"] is False  # restored to original
+    assert True in store["writes"]  # toggled on during the check
+
+
+async def test_scope_hold_set_rmvr_roundtrip():
+    radio, store = _stateful_value_radio(
+        capability="scope",
+        get_op="get_scope_hold",
+        set_op="set_scope_hold",
+        start=True,
+        receiver_kw=False,
+    )
+    result = await _run(radio, "scope_hold.set")
+    assert result.status is CheckStatus.PASS
+    assert store["value"] is True
+    assert False in store["writes"]
+
+
+async def test_scope_mode_set_flips_index_and_restores():
+    radio, store = _stateful_value_radio(
+        capability="scope",
+        get_op="get_scope_mode",
+        set_op="set_scope_mode",
+        start=0,  # center mode
+        receiver_kw=False,
+    )
+    result = await _run(radio, "scope_mode.set")
+    assert result.status is CheckStatus.PASS
+    assert store["value"] == 0  # restored
+    changed = [v for v in store["writes"] if v != 0]
+    assert changed and changed[0] == 1  # flipped to fixed mode
+
+
+async def test_scope_mode_set_flips_nonzero_index_to_zero():
+    radio, store = _stateful_value_radio(
+        capability="scope",
+        get_op="get_scope_mode",
+        set_op="set_scope_mode",
+        start=3,  # scroll-F
+        receiver_kw=False,
+    )
+    result = await _run(radio, "scope_mode.set")
+    assert result.status is CheckStatus.PASS
+    assert store["value"] == 3
+    assert 0 in store["writes"]
+
+
+async def test_scope_span_set_stays_in_preset_range():
+    radio, store = _stateful_value_radio(
+        capability="scope",
+        get_op="get_scope_span",
+        set_op="set_scope_span",
+        start=4,
+        receiver_kw=False,
+    )
+    result = await _run(radio, "scope_span.set")
+    assert result.status is CheckStatus.PASS
+    assert store["value"] == 4  # restored
+    # All written values must be valid preset indexes (0..7).
+    assert all(0 <= v <= 7 for v in store["writes"])
+
+
+async def test_scope_speed_set_stays_in_preset_range():
+    radio, store = _stateful_value_radio(
+        capability="scope",
+        get_op="get_scope_speed",
+        set_op="set_scope_speed",
+        start=2,  # slow
+        receiver_kw=False,
+    )
+    result = await _run(radio, "scope_speed.set")
+    assert result.status is CheckStatus.PASS
+    assert store["value"] == 2
+    assert all(0 <= v <= 2 for v in store["writes"])
+
+
+async def test_scope_receiver_set_flips_main_sub():
+    radio, store = _stateful_value_radio(
+        capability="scope",
+        get_op="get_scope_receiver",
+        set_op="set_scope_receiver",
+        start=0,  # MAIN
+        receiver_kw=False,
+    )
+    result = await _run(radio, "scope_receiver.set")
+    assert result.status is CheckStatus.PASS
+    assert store["value"] == 0  # restored to MAIN
+    assert 1 in store["writes"]  # flipped to SUB during the check
+
+
+async def test_scope_edge_set_cycles_within_valid_edges():
+    radio, store = _stateful_value_radio(
+        capability="scope",
+        get_op="get_scope_edge",
+        set_op="set_scope_edge",
+        start=1,
+        receiver_kw=False,
+    )
+    result = await _run(radio, "scope_edge.set")
+    assert result.status is CheckStatus.PASS
+    assert store["value"] == 1  # restored
+    changed = [v for v in store["writes"] if v != 1]
+    assert changed, "edge was never mutated"
+    # Edge selection is 1-based (1..4) — 0 is never a valid write.
+    assert all(1 <= v <= 4 for v in store["writes"])
+
+
+async def test_scope_edge_set_mutates_edge_two_to_one():
+    radio, store = _stateful_value_radio(
+        capability="scope",
+        get_op="get_scope_edge",
+        set_op="set_scope_edge",
+        start=2,
+        receiver_kw=False,
+    )
+    result = await _run(radio, "scope_edge.set")
+    assert result.status is CheckStatus.PASS
+    assert store["value"] == 2
+    assert 1 in store["writes"]
+
+
+async def test_scope_ref_set_moves_on_half_db_grid_and_restores():
+    radio, store = _stateful_value_radio(
+        capability="scope",
+        get_op="get_scope_ref",
+        set_op="set_scope_ref",
+        start=-10.0,
+        receiver_kw=False,
+    )
+    result = await _run(radio, "scope_ref.set")
+    assert result.status is CheckStatus.PASS
+    assert store["value"] == -10.0  # restored
+    changed = [v for v in store["writes"] if v != -10.0]
+    assert changed, "ref level was never mutated"
+    # The mutated value must sit on the radio's 0.5 dB grid.
+    assert all(float(v) * 2 == int(float(v) * 2) for v in store["writes"])
+
+
+async def test_scope_during_tx_set_rmvr_roundtrip():
+    radio, store = _stateful_value_radio(
+        capability="scope",
+        get_op="get_scope_during_tx",
+        set_op="set_scope_during_tx",
+        start=False,
+        receiver_kw=False,
+    )
+    result = await _run(radio, "scope_during_tx.set")
+    assert result.status is CheckStatus.PASS
+    assert store["value"] is False
+    assert True in store["writes"]
+
+
+async def test_scope_center_type_set_flips_and_restores():
+    radio, store = _stateful_value_radio(
+        capability="scope",
+        get_op="get_scope_center_type",
+        set_op="set_scope_center_type",
+        start=0,
+        receiver_kw=False,
+    )
+    result = await _run(radio, "scope_center_type.set")
+    assert result.status is CheckStatus.PASS
+    assert store["value"] == 0
+    assert all(0 <= v <= 2 for v in store["writes"])
+
+
+async def test_scope_vbw_set_rmvr_roundtrip():
+    radio, store = _stateful_value_radio(
+        capability="scope",
+        get_op="get_scope_vbw",
+        set_op="set_scope_vbw",
+        start=False,
+        receiver_kw=False,
+    )
+    result = await _run(radio, "scope_vbw.set")
+    assert result.status is CheckStatus.PASS
+    assert store["value"] is False
+    assert True in store["writes"]
+
+
+async def test_scope_rbw_set_stays_in_preset_range():
+    radio, store = _stateful_value_radio(
+        capability="scope",
+        get_op="get_scope_rbw",
+        set_op="set_scope_rbw",
+        start=1,  # mid
+        receiver_kw=False,
+    )
+    result = await _run(radio, "scope_rbw.set")
+    assert result.status is CheckStatus.PASS
+    assert store["value"] == 1
+    assert all(0 <= v <= 2 for v in store["writes"])
+
+
+async def test_scope_fixed_edge_read_passes_with_value():
+    radio = _bare_radio({"scope"})
+    fixed_edge = MagicMock()  # stand-in for the ScopeFixedEdge dataclass
+    radio.get_scope_fixed_edge = AsyncMock(return_value=fixed_edge)
+    result = await _run(radio, "scope_fixed_edge.read")
+    assert result.status is CheckStatus.PASS
+    assert result.evidence["value"] is fixed_edge
+
+
+async def test_scope_fixed_edge_read_unsupported_when_op_missing():
+    radio = _bare_radio({"scope"})
+    radio.get_scope_fixed_edge = None
+    result = await _run(radio, "scope_fixed_edge.read")
+    assert result.status is CheckStatus.UNSUPPORTED
+
+
+async def test_scope_check_unsupported_when_radio_lacks_op():
+    radio = _bare_radio({"scope"})
+    radio.get_scope_span = None
+    radio.set_scope_span = None
+    result = await _run(radio, "scope_span.set")
+    assert result.status is CheckStatus.UNSUPPORTED
+
+
+def test_scope_family_levels_and_safety():
+    """All scope-control checks live in CAPABILITY_MATRIX and none is
+    TX-adjacent: they only change what the scope DISPLAYS (including the
+    during-TX display flag) and can never key the transmitter."""
+    scope_ids = [
+        "scope_receiver.set",
+        "scope_dual.set",
+        "scope_mode.set",
+        "scope_span.set",
+        "scope_edge.set",
+        "scope_hold.set",
+        "scope_ref.set",
+        "scope_speed.set",
+        "scope_during_tx.set",
+        "scope_center_type.set",
+        "scope_vbw.set",
+        "scope_rbw.set",
+        "scope_fixed_edge.read",
+    ]
+    for check_id in scope_ids:
+        spec = REGISTRY_BY_ID[check_id]
+        assert spec.level is ValidationLevel.CAPABILITY_MATRIX, check_id
+        assert spec.tx_adjacent is False, check_id
+        assert spec.capability == "scope", check_id
+    read_only = REGISTRY_BY_ID["scope_fixed_edge.read"]
+    assert read_only.kind is CheckKind.READ_ONLY
+    assert read_only.set_op is None
+
+
+# ---------------------------------------------------------------------------
 # Cross-family registry wiring
 # ---------------------------------------------------------------------------
 

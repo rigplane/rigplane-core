@@ -53,6 +53,10 @@ class ValueRule(StrEnum):
     TONE_FREQ_CYCLE = "tone_freq_cycle"
     VFO_AB_FLIP = "vfo_ab_flip"
     KEY_SPEED_WPM = "key_speed_wpm"
+    # T11 / MOR-646 — scope-control SET commands
+    SCOPE_INDEX_FLIP = "scope_index_flip"
+    SCOPE_EDGE_CYCLE = "scope_edge_cycle"
+    SCOPE_REF_DB = "scope_ref_db"
 
 
 # ---------------------------------------------------------------------------
