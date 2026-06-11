@@ -446,3 +446,93 @@ async def test_xit_set_toggles_bool():
     assert check.evidence["readback"] is True
     assert check.evidence["restored"] is True
     assert store["on"] is False
+
+
+# ---------------------------------------------------------------------------
+# MOR-672 — FTX-1 tone surface: sql_type (CT) RMVR + ctcss_tone (CN) read-only
+# ---------------------------------------------------------------------------
+
+
+def _stateful_sql_type_mock(*, start: int):
+    """FTX-1-shaped SQL type: get/set_sql_type round-trip a 0/1/2 code.
+
+    Mirrors the Yaesu ``CT`` SQL-type select (0=off / 1=TONE / 2=TSQL). The
+    setter rejects (no-ops) any code outside 0-2 so an invalid mutation can
+    never be restored from."""
+    radio = MagicMock(spec=Radio)
+    radio.connected = True
+    radio.model = "FTX-1"
+    radio.capabilities = {"sql_type"}
+    store = {"value": start}
+
+    async def _get(receiver: int = 0) -> int:
+        return store["value"]
+
+    async def _set(type_code: int, receiver: int = 0) -> None:
+        if 0 <= type_code <= 2:
+            store["value"] = type_code
+
+    radio.get_sql_type = AsyncMock(side_effect=_get)
+    radio.set_sql_type = AsyncMock(side_effect=_set)
+    return radio, store
+
+
+async def test_sql_type_rmvr_passes_and_restores():
+    """sql_type.set is a real RMVR: flips TONE<->TSQL, verifies, restores."""
+    radio, store = _stateful_sql_type_mock(start=1)  # TONE
+    check = await _run(radio, check_id="sql_type.set", capability="sql_type")
+    assert check.status is CheckStatus.PASS
+    assert check.evidence["original"] == 1
+    assert check.evidence["changed"] == 2  # TSQL
+    assert check.evidence["readback"] == 2
+    assert check.evidence["restored"] is True
+    assert store["value"] == 1  # restored
+
+
+async def test_sql_type_flip_stays_in_valid_range():
+    """The sql_type mutation must always land on a valid 0/1/2 code, never OOR."""
+    from rigplane.validation.hardware import _VALUE_RULE_FNS
+    from rigplane.validation.registry import ValueRule
+
+    flip = _VALUE_RULE_FNS[ValueRule.SQL_TYPE_CYCLE]
+    for current in range(0, 3):
+        changed = int(flip(current))
+        assert 0 <= changed <= 2, f"sql_type flip from {current} must stay 0-2"
+        assert changed != current, f"sql_type flip from {current} must change"
+
+
+async def test_sql_type_from_off_reacts():
+    """Starting at OFF (0), the flip lands on a valid active code and restores."""
+    radio, store = _stateful_sql_type_mock(start=0)  # off
+    check = await _run(radio, check_id="sql_type.set", capability="sql_type")
+    assert check.status is CheckStatus.PASS
+    assert check.evidence["original"] == 0
+    assert int(check.evidence["changed"]) in (1, 2)
+    assert check.evidence["readback"] == check.evidence["changed"]
+    assert store["value"] == 0  # restored
+
+
+async def test_ctcss_tone_read_resolves_read_only():
+    """ctcss_tone.read is a READ_ONLY check via get_ctcss_tone — no setter used."""
+    radio = MagicMock(spec=Radio)
+    radio.connected = True
+    radio.model = "FTX-1"
+    radio.capabilities = {"sql_type"}
+    radio.get_ctcss_tone = AsyncMock(return_value=8850)  # 88.5 Hz in centiHz
+    # No set_ctcss_tone exists on the backend; the read check must not need it.
+    check = await _run(radio, check_id="ctcss_tone.read", capability="sql_type")
+    assert check.status is CheckStatus.PASS
+    assert check.evidence["value"] == 8850
+    assert check.evidence["op"] == "get_ctcss_tone"
+    radio.get_ctcss_tone.assert_awaited_once()
+
+
+async def test_ctcss_tone_read_unsupported_without_getter():
+    """Absent get_ctcss_tone -> UNSUPPORTED (honest), not a crash."""
+    radio = MagicMock(spec=Radio)
+    radio.connected = True
+    radio.model = "FTX-1"
+    radio.capabilities = {"sql_type"}
+    del radio.get_ctcss_tone
+    check = await _run(radio, check_id="ctcss_tone.read", capability="sql_type")
+    assert check.status is CheckStatus.UNSUPPORTED

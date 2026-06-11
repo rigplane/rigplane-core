@@ -1690,6 +1690,10 @@ _VALUE_RULE_FNS: dict[str, Callable[[Any], Any]] = {
     ValueRule.MOD_SRC_FLIP: lambda v: 3 if int(v) != 3 else 2,
     # MOR-679 — CW pitch: nudge +/-50 Hz, clamped to 300-900 (never OOR).
     ValueRule.CW_PITCH_HZ: _nudge_cw_pitch,
+    # MOR-672 — FTX-1 SQL-type select (CAT ``CT``): 0=off / 1=TONE / 2=TSQL.
+    # Flip between the two always-valid active codes TONE (1) <-> TSQL (2);
+    # never writes an invalid code; restores the original afterwards.
+    ValueRule.SQL_TYPE_CYCLE: lambda v: 2 if int(v) != 2 else 1,
 }
 
 # Restore-safety predicates (MOR-659): when the CURRENT value of an RMVR
@@ -1700,6 +1704,9 @@ _VALUE_RULE_FNS: dict[str, Callable[[Any], Any]] = {
 # (tone not configured), which aborted an entire validation run.
 _VALUE_RULE_RESTORABLE: dict[str, Callable[[Any], bool]] = {
     ValueRule.TONE_FREQ_CYCLE: lambda v: 67.0 <= float(v) <= 254.1,
+    # MOR-672 — only the valid ``CT`` SQL-type codes (0=off / 1=TONE / 2=TSQL)
+    # are restorable; an out-of-range read must SKIP rather than write.
+    ValueRule.SQL_TYPE_CYCLE: lambda v: 0 <= int(v) <= 2,
 }
 
 

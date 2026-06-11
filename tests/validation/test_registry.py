@@ -62,11 +62,14 @@ _EXPECTED_CHECK_IDS = {
     "audio.rx.rms",
     "audio.tx.byte_perfect",
     "scope.fft.presence",
-    # T7 / MOR-642 — tone / TSQL
+    # T7 / MOR-642 — tone / TSQL (Icom abstraction)
     "repeater_tone.set",
     "tone_freq.set",
     "tsql.set",
     "tsql_freq.set",
+    # MOR-672 — FTX-1 ``CT``/``CN`` tone surface (Yaesu abstraction)
+    "sql_type.set",
+    "ctcss_tone.read",
     # T8 / MOR-643 — split / VFO / dual-watch
     "split.set",
     "vfo_slot.set",
@@ -108,7 +111,7 @@ _EXPECTED_CHECK_IDS = {
 
 
 def test_registry_has_expected_entry_count():
-    assert len(REGISTRY) == len(_EXPECTED_CHECK_IDS) == 61
+    assert len(REGISTRY) == len(_EXPECTED_CHECK_IDS) == 63
 
 
 def test_check_ids_unique():

@@ -58,6 +58,11 @@
       "declaration": "supported"
     },
     {
+      "check_id": "ctcss_tone.read",
+      "status": "skip",
+      "declaration": "supported"
+    },
+    {
       "check_id": "cw_pitch.set",
       "status": "skip",
       "declaration": "supported"
@@ -258,9 +263,9 @@
       "declaration": "supported"
     },
     {
-      "check_id": "sql_type.presence",
-      "status": "pass",
-      "declaration": "unsupported_pending_evidence"
+      "check_id": "sql_type.set",
+      "status": "skip",
+      "declaration": "supported"
     },
     {
       "check_id": "squelch.set",
