@@ -46,6 +46,7 @@ class ValueRule(StrEnum):
     MODE_CYCLE = "mode_cycle"
     # MOR-642..645 command-coverage families
     TONE_FREQ_CYCLE = "tone_freq_cycle"
+    VFO_AB_FLIP = "vfo_ab_flip"
 
 
 # ---------------------------------------------------------------------------

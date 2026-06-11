@@ -16,6 +16,7 @@ edit disjoint files (MOR-637):
 - ``_surfaces`` — audio, scope, meters (17-19)
 - ``_tx`` — tuner, PTT (20-21)
 - ``_tone`` — CTCSS repeater tone, TSQL, tone frequencies (MOR-642)
+- ``_vfo`` — split, VFO A/B slot, dual watch (MOR-643)
 
 ``_assembly`` concatenates them into ``REGISTRY`` (order-preserving) and runs
 the import-time invariant guard; ``_builders`` holds the template generators.

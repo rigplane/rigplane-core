@@ -17,6 +17,7 @@ from rigplane.validation.registry._tone import CHECKS as _TONE_CHECKS
 from rigplane.validation.registry._tuning import CHECKS as _TUNING_CHECKS
 from rigplane.validation.registry._tx import CHECKS as _TX_CHECKS
 from rigplane.validation.registry._types import VALUE_RULES, CheckKind, CheckSpec
+from rigplane.validation.registry._vfo import CHECKS as _VFO_CHECKS
 
 # ---------------------------------------------------------------------------
 # REGISTRY
@@ -32,6 +33,7 @@ REGISTRY: tuple[CheckSpec, ...] = (
     # --- MOR-642..645 command-coverage families (append-only; generators
     # stable-sort by level so new checks slot in without reordering 1-21) ---
     + _TONE_CHECKS  # T7: repeater_tone, tone_freq, tsql, tsql_freq
+    + _VFO_CHECKS  # T8: split, vfo_slot, dual_watch
 )
 
 

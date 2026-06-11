@@ -173,3 +173,71 @@ async def test_tone_check_unsupported_when_radio_lacks_op():
     radio.set_repeater_tone = None
     result = await _run(radio, "repeater_tone.set")
     assert result.status is CheckStatus.UNSUPPORTED
+
+
+# ---------------------------------------------------------------------------
+# T8 / MOR-643 — split / VFO / dual-watch
+# ---------------------------------------------------------------------------
+
+
+async def test_split_set_rmvr_roundtrip():
+    radio, store = _stateful_value_radio(
+        capability="split",
+        get_op="get_split",
+        set_op="set_split",
+        start=False,
+        receiver_kw=False,
+    )
+    result = await _run(radio, "split.set")
+    assert result.status is CheckStatus.PASS
+    assert result.evidence["restored"] is True
+    assert store["value"] is False
+    assert True in store["writes"]
+
+
+async def test_vfo_slot_set_flips_a_b_and_restores():
+    radio, store = _stateful_value_radio(
+        capability="",
+        get_op="get_vfo_slot",
+        set_op="set_vfo_slot",
+        start="A",
+    )
+    result = await _run(radio, "vfo_slot.set")
+    assert result.status is CheckStatus.PASS
+    assert store["value"] == "A"  # restored
+    assert "B" in store["writes"]
+
+
+async def test_vfo_slot_set_flips_b_to_a():
+    radio, store = _stateful_value_radio(
+        capability="",
+        get_op="get_vfo_slot",
+        set_op="set_vfo_slot",
+        start="B",
+    )
+    result = await _run(radio, "vfo_slot.set")
+    assert result.status is CheckStatus.PASS
+    assert store["value"] == "B"
+    assert "A" in store["writes"]
+
+
+async def test_dual_watch_set_rmvr_roundtrip():
+    radio, store = _stateful_value_radio(
+        capability="dual_watch",
+        get_op="get_dual_watch",
+        set_op="set_dual_watch",
+        start=False,
+        receiver_kw=False,
+    )
+    result = await _run(radio, "dual_watch.set")
+    assert result.status is CheckStatus.PASS
+    assert store["value"] is False
+    assert True in store["writes"]
+
+
+async def test_vfo_slot_unsupported_when_radio_lacks_op():
+    radio = _bare_radio(set())
+    radio.get_vfo_slot = None
+    radio.set_vfo_slot = None
+    result = await _run(radio, "vfo_slot.set")
+    assert result.status is CheckStatus.UNSUPPORTED

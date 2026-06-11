@@ -1064,6 +1064,7 @@ _WRITE_ONLY_TEST_VALUES: dict[str, Any] = {
     ValueRule.PREAMP_CYCLE: 1,
     ValueRule.AGC_FLIP: int(AgcMode.FAST),
     ValueRule.TONE_FREQ_CYCLE: 88.5,
+    ValueRule.VFO_AB_FLIP: "A",
 }
 
 # Benign value to restore a write-only control to afterwards (best-effort).
@@ -1089,6 +1090,8 @@ _VALUE_RULE_FNS: dict[str, Callable[[Any], Any]] = {
     # MOR-642..645 command-coverage families.
     # Flip between two standard CTCSS tones (Hz).
     ValueRule.TONE_FREQ_CYCLE: lambda f: 100.0 if float(f) == 88.5 else 88.5,
+    # VFO slot select: "A" <-> "B".
+    ValueRule.VFO_AB_FLIP: lambda s: "B" if str(s).upper() == "A" else "A",
 }
 
 
