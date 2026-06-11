@@ -543,6 +543,19 @@ async def _run_hardware_both(
     return _apply_golden_flags(art_n, args, rc_n if rc_n else rc_h)
 
 
+def _json_default(obj: object) -> object:
+    """Last-resort JSON coercion so artifact emission can never crash.
+
+    ``CheckResult.to_dict`` already coerces evidence to JSON-safe types; this
+    is belt-and-suspenders for any unforeseen object that still reaches
+    ``json.dumps`` (mirrors the "always produce output" principle): a
+    dataclass becomes its ``asdict``, anything else its ``str``.
+    """
+    if dataclasses.is_dataclass(obj) and not isinstance(obj, type):
+        return dataclasses.asdict(obj)
+    return str(obj)
+
+
 def _apply_golden_flags(
     artifact: ValidationArtifact, args: argparse.Namespace, exit_code: int
 ) -> int:
@@ -560,7 +573,10 @@ def _apply_golden_flags(
         normalized = normalize_artifact(artifact.to_dict())
         path = Path(regen_path)
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps(normalized, indent=2) + "\n", encoding="utf-8")
+        path.write_text(
+            json.dumps(normalized, indent=2, default=_json_default) + "\n",
+            encoding="utf-8",
+        )
         print(f"Golden written to: {regen_path}", file=sys.stderr)
 
     gate_path = getattr(args, "gate", None)
@@ -597,11 +613,11 @@ def _stamp_overrides(
 def _emit_artifact(artifact: ValidationArtifact, args: argparse.Namespace) -> None:
     """Render the artifact: file on --output, JSON on --json, else human text."""
     if args.output:
-        text = json.dumps(artifact.to_dict(), indent=2)
+        text = json.dumps(artifact.to_dict(), indent=2, default=_json_default)
         Path(args.output).write_text(text + "\n", encoding="utf-8")
         print(f"Artifact written to: {args.output}", file=sys.stderr)
     elif args.json:
-        print(json.dumps(artifact.to_dict(), indent=2))
+        print(json.dumps(artifact.to_dict(), indent=2, default=_json_default))
     else:
         print(human_summary(artifact))
 
