@@ -49,6 +49,7 @@ from rigplane.core.radio_protocol import (
     UsbAudioCapable,
 )
 from rigplane.core.types import AgcMode
+from rigplane.validation.interactive import InteractivePrompter
 from rigplane.validation.registry import CheckKind, CheckSpec, ValueRule, get_spec
 from rigplane.validation.runner import _is_authorized, _is_safety_gated
 from rigplane.validation.schema import (
@@ -113,6 +114,27 @@ _CAP_PROTOCOL: dict[str, type] = {
 }
 
 
+# Operator-perception prompts (MOR-667). These checks have NO software readback
+# — only a human watching the rig can confirm them — so in ``--interactive`` mode
+# the harness asks the operator a yes/no question and records PASS/FAIL instead of
+# the default MANUAL_REQUIRED. A check_id without an entry here keeps
+# MANUAL_REQUIRED even under ``--interactive``.
+_PERCEPTION_PROMPTS: dict[str, str] = {
+    "audio.rx": (
+        "Listen to the radio's RX audio (speaker/headphones). "
+        "Do you hear receive audio? [y/N] "
+    ),
+    "scope.capture": (
+        "Look at the radio's panadapter/spectrum scope. "
+        "Do you see the spectrum sweeping? [y/N] "
+    ),
+    "bsr.select": (
+        "Trigger the band-stack select on the rig and watch the band display. "
+        "Did the band change as expected? [y/N] "
+    ),
+}
+
+
 def _utcnow_iso() -> str:
     """Return the current UTC time as an ISO-8601 millisecond ``...Z`` string."""
     return (
@@ -130,6 +152,7 @@ async def execute_hardware_checks(
     allow_writes: bool,
     per_check_timeout: float = DEFAULT_PER_CHECK_TIMEOUT,
     write_only_capabilities: frozenset[str] = frozenset(),
+    prompter: InteractivePrompter | None = None,
 ) -> list[LevelResult]:
     """Run a template's checks against an already-connected ``radio``.
 
@@ -151,6 +174,7 @@ async def execute_hardware_checks(
                 allow_writes=allow_writes,
                 per_check_timeout=per_check_timeout,
                 write_only_capabilities=write_only_capabilities,
+                prompter=prompter,
             )
         except Exception as exc:
             # Backstop (MOR-659): one raising check must never abort the
@@ -226,6 +250,7 @@ async def _run_one_check(
     allow_writes: bool,
     per_check_timeout: float,
     write_only_capabilities: frozenset[str] = frozenset(),
+    prompter: InteractivePrompter | None = None,
 ) -> CheckResult:
     """Execute a single template entry, applying universal pre-gates first."""
     # Pre-gate 1: authorization for TX-adjacent checks.
@@ -239,7 +264,7 @@ async def _run_one_check(
 
     # Pre-gate 2: manual-required (authorized / non-TX-adjacent).
     if entry.declaration == CapabilityDeclaration.MANUAL_REQUIRED:
-        return _manual_required_result(radio, entry)
+        return _manual_required_result(radio, entry, prompter=prompter)
 
     # Pre-gate 3: declared unsupported pending evidence.
     if entry.declaration == CapabilityDeclaration.UNSUPPORTED_PENDING_EVIDENCE:
@@ -278,6 +303,7 @@ async def _run_one_check(
                 spec,
                 allow_writes=allow_writes,
                 per_check_timeout=per_check_timeout,
+                prompter=prompter,
             )
         return _base_result(
             entry,
@@ -292,14 +318,46 @@ async def _run_one_check(
     )
 
 
+def _interactive_perception_result(
+    entry: CapabilityDeclarationEntry, prompter: InteractivePrompter, prompt: str
+) -> CheckResult:
+    """Resolve a manual-perception check via an operator yes/no prompt (MOR-667).
+
+    Asks the operator the perception question and records PASS (yes) or FAIL
+    (no) with ``{operator_confirmed: <bool>, prompt: <text>}`` evidence. Performs
+    NO actuation itself — the operator triggers and observes the rig; the harness
+    only collects the verdict.
+    """
+    confirmed = prompter.ask(prompt)
+    return _base_result(
+        entry,
+        CheckStatus.PASS if confirmed else CheckStatus.FAIL,
+        failure_domain=None if confirmed else FailureDomain.COMMAND_EXECUTION,
+        evidence={"operator_confirmed": confirmed, "prompt": prompt.strip()},
+    )
+
+
 def _manual_required_result(
-    radio: Radio, entry: CapabilityDeclarationEntry
+    radio: Radio,
+    entry: CapabilityDeclarationEntry,
+    *,
+    prompter: InteractivePrompter | None = None,
 ) -> CheckResult:
     """Build a MANUAL_REQUIRED result with read-only evidence enrichment.
 
     Performs NO actuation: never keys TX, never triggers a tune cycle, never
-    starts a stream.
+    starts a stream. When a *prompter* is supplied and this check has a
+    perception prompt (``audio.rx``/``scope.capture``/``bsr.select``), resolve it
+    to PASS/FAIL from the operator's answer instead of MANUAL_REQUIRED (MOR-667).
     """
+    # MOR-667: operator-confirmed perception checks. TX-adjacent checks
+    # (``tx.ptt``/``tuner.tune``) deliberately have NO perception prompt, so they
+    # never become an auto-yes target and fall through to MANUAL_REQUIRED below.
+    if prompter is not None:
+        prompt = _PERCEPTION_PROMPTS.get(entry.check_id)
+        if prompt is not None:
+            return _interactive_perception_result(entry, prompter, prompt)
+
     if entry.check_id == "audio.rx":
         present = (
             isinstance(radio, AudioCapable | UsbAudioCapable)
@@ -1348,6 +1406,7 @@ async def _check_from_spec(
     *,
     allow_writes: bool,
     per_check_timeout: float,
+    prompter: InteractivePrompter | None = None,
 ) -> CheckResult:
     """Execute a check using a registry CheckSpec when no named handler exists."""
     if spec.kind is CheckKind.READ_ONLY:
@@ -1435,7 +1494,7 @@ async def _check_from_spec(
         )
 
     if spec.kind is CheckKind.MANUAL:
-        return _manual_required_result(radio, entry)
+        return _manual_required_result(radio, entry, prompter=prompter)
 
     if spec.kind is CheckKind.AUDIO_PROBE:
         # Automated audio probes run in CI against FakeAudioBackend via

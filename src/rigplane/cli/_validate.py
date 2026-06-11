@@ -48,6 +48,7 @@ if TYPE_CHECKING:
 from rigplane import __version__
 from rigplane.validation import (
     HARDWARE_OPT_IN_ENV,
+    InteractivePrompter,
     MatrixTemplate,
     OperatorSafetyBlock,
     TransportInfo,
@@ -168,6 +169,28 @@ def _utcnow_iso() -> str:
         .isoformat(timespec="milliseconds")
         .replace("+00:00", "Z")
     )
+
+
+def _build_prompter(args: argparse.Namespace) -> InteractivePrompter | None:
+    """Construct an :class:`InteractivePrompter` for ``--interactive`` runs.
+
+    Returns ``None`` (→ unchanged MANUAL_REQUIRED behaviour) unless ``--interactive``
+    is set AND stdin is a real TTY. The TTY guard is the no-hang safeguard
+    (MOR-667): a CI/piped run must never block on ``input()``, so without a TTY
+    the perception checks stay MANUAL_REQUIRED. ``--assume-yes`` only auto-answers
+    perception prompts; it never satisfies the prompter's ``confirm`` gate (used by
+    the MOR-666 TX prompt), which always reads a real answer.
+    """
+    if not getattr(args, "interactive", False):
+        return None
+    if not sys.stdin.isatty():
+        print(
+            "Warning: --interactive ignored (stdin is not a TTY); "
+            "manual-perception checks stay MANUAL_REQUIRED.",
+            file=sys.stderr,
+        )
+        return None
+    return InteractivePrompter(assume_yes=bool(getattr(args, "assume_yes", False)))
 
 
 def add_subparser(sub: Any) -> argparse.ArgumentParser:
@@ -308,6 +331,26 @@ def add_subparser(sub: Any) -> argparse.ArgumentParser:
             "Skip auto-applying the per-profile override file "
             "(docs/validation/templates/<profile_id>.json). Escape hatch for "
             "deterministic CI runs. No effect when --template is given."
+        ),
+    )
+    p.add_argument(
+        "--interactive",
+        action="store_true",
+        help=(
+            "Prompt the operator for the manual-perception checks "
+            "(audio.rx, scope.capture, bsr.select) and record their y/n answer "
+            "as PASS/FAIL instead of MANUAL_REQUIRED. Requires a TTY on stdin; "
+            "with no TTY (CI/piped) these stay MANUAL_REQUIRED and never block."
+        ),
+    )
+    p.add_argument(
+        "--assume-yes",
+        dest="assume_yes",
+        action="store_true",
+        help=(
+            "With --interactive, auto-answer YES to non-TX perception prompts "
+            "for unattended runs. Does NOT apply to any TX-transmit gate, which "
+            "always requires a real interactive YES."
         ),
     )
     p.add_argument(
@@ -722,6 +765,7 @@ async def _run_hardware(
                 allow_writes=not bool(getattr(args, "read_only", False)),
                 per_check_timeout=getattr(args, "timeout", 5.0) or 5.0,
                 write_only_capabilities=write_only_capabilities,
+                prompter=_build_prompter(args),
             )
     except (RigConnectionError, AuthenticationError, OSError, RigplaneError) as exc:
         levels = _transport_failure_levels(template, exc)
@@ -911,6 +955,7 @@ async def _run_hardware_hamlib(
                         write_only_capabilities=(
                             profile.write_only_controls if profile else frozenset()
                         ),
+                        prompter=_build_prompter(args),
                     )
             finally:
                 await bridge.stop()
@@ -1024,6 +1069,7 @@ async def _run_hardware_hamlib_external(
                 safety,
                 allow_writes=not bool(getattr(args, "read_only", False)),
                 per_check_timeout=timeout,
+                prompter=_build_prompter(args),
             )
     except (RigConnectionError, AuthenticationError, OSError, RigplaneError) as exc:
         template = build_template_from_capabilities(

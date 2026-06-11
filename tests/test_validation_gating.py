@@ -405,3 +405,42 @@ def test_cli_gate_against_committed_golden_exits_zero(capsys: Any) -> None:
     )
     assert rc == 0
     assert "PASS" in err
+
+
+# ---------------------------------------------------------------------------
+# MOR-667: --interactive prompter construction (TTY gate, no-hang)
+# ---------------------------------------------------------------------------
+
+
+def test_build_prompter_none_without_interactive_flag() -> None:
+    args = _parse(["--model", MODEL, "validate", "--hardware"])
+    assert _validate._build_prompter(args) is None
+
+
+def test_build_prompter_none_when_stdin_not_a_tty(
+    monkeypatch: Any, capsys: Any
+) -> None:
+    """--interactive without a TTY must NOT build a prompter (no stdin hang)."""
+    monkeypatch.setattr("sys.stdin.isatty", lambda: False)
+    args = _parse(["--model", MODEL, "validate", "--hardware", "--interactive"])
+    assert _validate._build_prompter(args) is None
+    err = capsys.readouterr().err
+    assert "not a TTY" in err
+
+
+def test_build_prompter_built_when_interactive_and_tty(monkeypatch: Any) -> None:
+    monkeypatch.setattr("sys.stdin.isatty", lambda: True)
+    args = _parse(["--model", MODEL, "validate", "--hardware", "--interactive"])
+    prompter = _validate._build_prompter(args)
+    assert prompter is not None
+    assert prompter.assume_yes is False
+
+
+def test_build_prompter_assume_yes_propagates(monkeypatch: Any) -> None:
+    monkeypatch.setattr("sys.stdin.isatty", lambda: True)
+    args = _parse(
+        ["--model", MODEL, "validate", "--hardware", "--interactive", "--assume-yes"]
+    )
+    prompter = _validate._build_prompter(args)
+    assert prompter is not None
+    assert prompter.assume_yes is True

@@ -761,6 +761,155 @@ async def test_artifact_round_trips():
 
 
 # ---------------------------------------------------------------------------
+# MOR-667: interactive operator-confirmed manual-perception checks
+# ---------------------------------------------------------------------------
+
+
+def _perception_template(check_id: str, capability: str) -> MatrixTemplate:
+    return _single_entry_template(
+        check_id=check_id,
+        capability=capability,
+        declaration=CapabilityDeclaration.MANUAL_REQUIRED,
+        summary="perception",
+    )
+
+
+def _canned_prompter(answer: bool):
+    """Build an InteractivePrompter returning *answer*, recording prompts seen."""
+    from rigplane.validation.interactive import InteractivePrompter
+
+    seen: list[str] = []
+
+    def _input(prompt: str) -> str:
+        seen.append(prompt)
+        return "y" if answer else "n"
+
+    return (
+        InteractivePrompter(input_fn=_input, output_fn=lambda _msg: None),
+        seen,
+    )
+
+
+async def test_interactive_audio_rx_yes_passes():
+    radio = _make_mock_radio()
+    prompter, seen = _canned_prompter(True)
+    levels = await execute_hardware_checks(
+        radio,
+        _perception_template("audio.rx", "audio"),
+        OperatorSafetyBlock(),
+        allow_writes=False,
+        prompter=prompter,
+    )
+    check = _flatten(levels)["audio.rx"]
+    assert check.status is CheckStatus.PASS
+    assert check.evidence["operator_confirmed"] is True
+    assert "RX audio" in check.evidence["prompt"]
+    assert len(seen) == 1  # exactly one prompt read
+
+
+async def test_interactive_scope_capture_no_fails():
+    radio = _make_mock_radio()
+    prompter, _ = _canned_prompter(False)
+    levels = await execute_hardware_checks(
+        radio,
+        _perception_template("scope.capture", "scope"),
+        OperatorSafetyBlock(),
+        allow_writes=False,
+        prompter=prompter,
+    )
+    check = _flatten(levels)["scope.capture"]
+    assert check.status is CheckStatus.FAIL
+    assert check.evidence["operator_confirmed"] is False
+    assert check.failure_domain is FailureDomain.COMMAND_EXECUTION
+
+
+async def test_interactive_bsr_select_yes_passes():
+    radio = _make_mock_radio()
+    prompter, _ = _canned_prompter(True)
+    levels = await execute_hardware_checks(
+        radio,
+        _perception_template("bsr.select", "bsr"),
+        OperatorSafetyBlock(),
+        allow_writes=False,
+        prompter=prompter,
+    )
+    check = _flatten(levels)["bsr.select"]
+    assert check.status is CheckStatus.PASS
+    assert check.evidence["operator_confirmed"] is True
+
+
+async def test_no_prompter_keeps_manual_required_and_reads_no_stdin():
+    """Regression guard: without a prompter, perception checks stay
+    MANUAL_REQUIRED and nothing ever reads stdin (no hang)."""
+    radio = _make_mock_radio()
+    levels = await execute_hardware_checks(
+        radio,
+        _perception_template("audio.rx", "audio"),
+        OperatorSafetyBlock(),
+        allow_writes=False,
+    )
+    check = _flatten(levels)["audio.rx"]
+    assert check.status is CheckStatus.MANUAL_REQUIRED
+    assert "operator_confirmed" not in check.evidence
+
+
+async def test_assume_yes_auto_passes_without_reading_stdin():
+    """``--assume-yes`` (assume_yes prompter) PASSes a perception check without
+    ever calling input — proves an unattended run never blocks on stdin."""
+    from rigplane.validation.interactive import InteractivePrompter
+
+    def _input(_prompt: str) -> str:  # pragma: no cover - must never run
+        raise AssertionError("stdin must not be read under assume_yes")
+
+    prompter = InteractivePrompter(
+        input_fn=_input, output_fn=lambda _msg: None, assume_yes=True
+    )
+    radio = _make_mock_radio()
+    levels = await execute_hardware_checks(
+        radio,
+        _perception_template("audio.rx", "audio"),
+        OperatorSafetyBlock(),
+        allow_writes=False,
+        prompter=prompter,
+    )
+    check = _flatten(levels)["audio.rx"]
+    assert check.status is CheckStatus.PASS
+    assert check.evidence["operator_confirmed"] is True
+
+
+async def test_interactive_does_not_actuate_tx_or_tuner():
+    """Perception interactivity must not turn TX/tuner manual checks into a
+    prompt — they have no perception entry and stay MANUAL_REQUIRED (authorized)
+    or BLOCKED, never auto-yes-able and never actuated."""
+    radio = _make_mock_radio()
+    prompter, seen = _canned_prompter(True)
+    template = MatrixTemplate(
+        radio=RadioTarget(model="X6200", profile_id="x6200"),
+        entries=[
+            CapabilityDeclarationEntry(
+                check_id="tx.ptt",
+                capability="tx",
+                level=ValidationLevel.STRESS_RECOVERY,
+                declaration=CapabilityDeclaration.MANUAL_REQUIRED,
+                summary="ptt",
+                tx_adjacent=True,
+            ),
+        ],
+    )
+    levels = await execute_hardware_checks(
+        radio,
+        template,
+        OperatorSafetyBlock(tx_allowed=True),
+        allow_writes=False,
+        prompter=prompter,
+    )
+    check = _flatten(levels)["tx.ptt"]
+    assert check.status is CheckStatus.MANUAL_REQUIRED
+    assert seen == []  # no perception prompt for tx.ptt
+    radio.set_ptt.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
 # MOR-199: generic _check_from_spec dispatch tests
 # ---------------------------------------------------------------------------
 
