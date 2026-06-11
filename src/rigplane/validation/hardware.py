@@ -958,24 +958,32 @@ async def _check_preamp_set(
     try:
         result = await _preamp_rmvr(radio, entry, per_check_timeout=per_check_timeout)
     finally:
+        # Best-effort restore that must never raise (mirrors
+        # ``_read_modify_verify_restore``): ``_guard`` maps the rig-error family,
+        # and the surrounding ``except _RESTORE_ERRORS`` additionally contains a
+        # bare ``OSError`` from the UDP send path so a mid-restore LAN drop can
+        # never escape and leave DIGI-SEL in the wrong state.
         restored = False
-        _, restore_fail = await _guard(
-            cast(Awaitable[None], set_digisel(True)),
-            entry,
-            per_check_timeout=per_check_timeout,
-        )
-        if restore_fail is not None:
-            extra["digisel_restore_error"] = restore_fail.error
-        else:
-            ctrl, ctrl_fail = await _guard(
-                cast(Awaitable[bool], get_digisel()),
+        try:
+            _, restore_fail = await _guard(
+                cast(Awaitable[None], set_digisel(True)),
                 entry,
                 per_check_timeout=per_check_timeout,
             )
-            if ctrl_fail is not None:
-                extra["digisel_restore_read_error"] = ctrl_fail.error
+            if restore_fail is not None:
+                extra["digisel_restore_error"] = restore_fail.error
             else:
-                restored = bool(ctrl)
+                ctrl, ctrl_fail = await _guard(
+                    cast(Awaitable[bool], get_digisel()),
+                    entry,
+                    per_check_timeout=per_check_timeout,
+                )
+                if ctrl_fail is not None:
+                    extra["digisel_restore_read_error"] = ctrl_fail.error
+                else:
+                    restored = bool(ctrl)
+        except _RESTORE_ERRORS as exc:
+            extra["digisel_restore_error"] = str(exc)
         extra["digisel_restored"] = restored
 
     return _merge_evidence(result, extra)

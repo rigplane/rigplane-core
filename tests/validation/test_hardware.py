@@ -432,6 +432,34 @@ async def test_preamp_restores_digisel_even_when_rmvr_fails():
     assert calls == [False, True]
 
 
+async def test_preamp_digisel_restore_oserror_never_escapes():
+    """A bare OSError from the UDP send path during the DIGI-SEL restore must be
+    contained (it is in _RESTORE_ERRORS), not escape and abort the run."""
+    radio, _preamp_store, _digisel_store = _digisel_preamp_mock(
+        preamp_start=0, digisel_on=True
+    )
+    calls: list[bool] = []
+
+    async def _set_digisel(on: bool, receiver: int = 0) -> None:
+        calls.append(on)
+        if on:  # the restore call -> simulate a mid-restore LAN drop
+            raise OSError("sendto: network is down")
+
+    radio.set_digisel = AsyncMock(side_effect=_set_digisel)
+
+    template = _single_entry_template(check_id="preamp.set", capability="preamp")
+    # Must not raise despite the OSError in the finally restore.
+    levels = await execute_hardware_checks(
+        radio, template, OperatorSafetyBlock(), allow_writes=True
+    )
+    check = _flatten(levels)["preamp.set"]
+
+    assert check.evidence["digisel_was_on"] is True
+    assert check.evidence["digisel_restored"] is False
+    assert "digisel_restore_error" in check.evidence
+    assert calls == [False, True]  # cleared, then restore attempted
+
+
 async def test_preamp_falls_back_when_get_digisel_unsupported():
     """A radio without get_digisel (or whose read raises) falls back to plain
     RMVR with no DIGI-SEL evidence and no crash."""
