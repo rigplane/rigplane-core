@@ -885,4 +885,5 @@ class YaesuCatPoller:
         except Exception:
             logger.debug("YaesuCatPoller: get_vfo_select failed", exc_info=True)
 
-        self._callback(state)
+        if self._callback is not None:
+            self._callback(state)

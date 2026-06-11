@@ -7,7 +7,7 @@ import logging
 import time
 from dataclasses import dataclass
 from dataclasses import replace as _replace_dataclass
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, Any
 from typing import Literal
 
 from rigplane.core.acquisition_scheduler import (
@@ -731,15 +731,12 @@ class CivRuntime:
     @staticmethod
     def _civ_frame_to_bytes(frame: CivFrame) -> bytes:
         """Rebuild canonical CI-V bytes from a parsed frame."""
-        return cast(
-            bytes,
-            build_civ_frame(
-                frame.to_addr,
-                frame.from_addr,
-                frame.command,
-                sub=frame.sub,
-                data=frame.data,
-            ),
+        return build_civ_frame(
+            frame.to_addr,
+            frame.from_addr,
+            frame.command,
+            sub=frame.sub,
+            data=frame.data,
         )
 
     def _remember_raw_received_frame_bytes(

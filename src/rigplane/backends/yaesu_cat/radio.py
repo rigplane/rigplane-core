@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Callable, Literal, Sequence, cast
+from typing import TYPE_CHECKING, Any, Callable, Literal, Sequence
 
 from ...audio import AudioPacket
 from ...audio.lan_stream import SYNTHETIC_RX_IDENT
@@ -710,13 +710,15 @@ class YaesuCatRadio:
     def _default_nb_level(self) -> int:
         """Default NB level for turning on when current level is 0."""
         ctrl = (self._config.controls or {}).get("nb", {})
-        range_max = int(ctrl.get("range_max", 10))
+        raw_max = ctrl.get("range_max", 10)
+        range_max = int(raw_max) if isinstance(raw_max, (int, float, str)) else 10
         return max(1, range_max // 2)
 
     def _default_nr_level(self) -> int:
         """Default NR level for turning on when current level is 0."""
         ctrl = (self._config.controls or {}).get("nr", {})
-        range_max = int(ctrl.get("range_max", 15))
+        raw_max = ctrl.get("range_max", 15)
+        range_max = int(raw_max) if isinstance(raw_max, (int, float, str)) else 15
         return max(1, range_max // 2)
 
     # -- Internal helpers ---------------------------------------------------
@@ -1423,7 +1425,7 @@ class YaesuCatRadio:
             mode = getattr(target, "mode", None)
         rule = profile.resolve_filter_rule(mode)
         if rule and rule.table:
-            return cast("tuple[int, ...]", rule.table)
+            return rule.table
         return None
 
     async def read_filter_width(

@@ -24,7 +24,7 @@ from rigplane.core.command_service import (
     command_intent_from_request,
     command_response_observation,
 )
-from rigplane.core.state_pipeline_contracts import CommandIntent
+from rigplane.core.state_pipeline_contracts import CommandIntent, Observation
 from rigplane.core.state_store import StateStore
 from .ic705 import (
     prepare_ic705_data_profile as _prepare_ic705_data_profile,
@@ -83,7 +83,7 @@ class _SyncCommandExecutor:
         else:
             raise ValueError(f"unsupported public API command intent: {intent.name!r}")
 
-        observations = ()
+        observations: tuple[Observation, ...] = ()
         if intent.target is not None:
             observations = (
                 command_response_observation(

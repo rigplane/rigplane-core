@@ -405,8 +405,14 @@ class _IcomSerialRadioBase(CoreRadio):
     async def start_rx(
         self,
         callback: Callable[[AudioPacket | None], None],
+        *,
+        jitter_depth: int = 5,
     ) -> None:
         """Start RX capture from the USB CODEC (``AudioTransport.start_rx``).
+
+        ``jitter_depth`` is accepted for ``AudioRuntimeMixin.start_rx`` signature
+        compatibility but unused: this is a locally captured CODEC stream with no
+        network wire, so there is no inter-packet jitter to buffer against.
 
         Locally captured PCM (transcoded to Opus when the negotiated codec
         is an Opus variant) is framed into synthetic :class:`AudioPacket`

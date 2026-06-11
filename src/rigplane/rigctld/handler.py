@@ -1121,7 +1121,7 @@ class RigctldHandler:
             passband = _filter_to_passband(
                 None if projected_filter.value is None else int(projected_filter.value)
             )
-            data_mode = bool(projected_data_mode.value)
+            data_mode: int = bool(projected_data_mode.value)
             if data_mode:
                 if mode_str == "USB":
                     mode_str = "PKTUSB"
@@ -1881,7 +1881,9 @@ class RigctldHandler:
         vfo_arg: str | None,
     ) -> HamlibError:
         if self._routing is not None:
-            return (await self._routing.set_level(level, value, vfo=vfo_arg)).error
+            return HamlibError(
+                (await self._routing.set_level(level, value, vfo=vfo_arg)).error
+            )
 
         if level == "RFPOWER":
             await self._radio.set_rf_power(round(value * 255))
@@ -2017,7 +2019,9 @@ class RigctldHandler:
         vfo_arg: str | None,
     ) -> HamlibError:
         if self._routing is not None:
-            return (await self._routing.set_func(func, on, vfo=vfo_arg)).error
+            return HamlibError(
+                (await self._routing.set_func(func, on, vfo=vfo_arg)).error
+            )
 
         if func not in _FUNC_SET:
             return HamlibError.EINVAL
