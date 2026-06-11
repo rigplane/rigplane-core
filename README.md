@@ -2,9 +2,9 @@
 
 [![PyPI](https://img.shields.io/pypi/v/rigplane.svg)](https://pypi.org/project/rigplane/)
 [![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-blue.svg)](https://www.python.org/downloads/)
-[![CI](https://github.com/rigplane/rigplane-core/actions/workflows/test.yml/badge.svg)](https://github.com/rigplane/rigplane-core/actions/workflows/test.yml)
+[![CI](https://github.com/rigplane/rigplane-core/actions/workflows/quick.yml/badge.svg)](https://github.com/rigplane/rigplane-core/actions/workflows/quick.yml)
 [![Docs](https://img.shields.io/badge/docs-rigplane.dev-blue.svg)](https://rigplane.dev)
-[![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
+[![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](https://github.com/rigplane/rigplane-core/blob/main/LICENSE)
 
 > **v2.0.0 — renamed from `icom-lan`.** The package, console script, repo,
 > and docs now ship as `rigplane`. Existing `from icom_lan import ...` calls
@@ -20,7 +20,7 @@ network bridge across every backend that honours the public `Radio` protocol.
 Tested in production against WSJT-X, fldigi, and JS8Call.
 
 <p align="center">
-  <img src="docs/screenshots/hero.png" alt="rigplane Web UI — IC-7610 dual-RX desktop with scope and waterfall" width="100%">
+  <img src="https://raw.githubusercontent.com/rigplane/rigplane-core/main/docs/screenshots/hero.png" alt="rigplane Web UI — IC-7610 dual-RX desktop with scope and waterfall" width="100%">
 </p>
 
 ## Quickstart
@@ -76,11 +76,11 @@ probing where possible. See [adding a new radio](https://rigplane.dev/guide/rig-
   `MetersCapable`, `LevelsCapable`, `StatePollable`, `RigctldRoutable`,
   `UsbAudioCapable`, …), `create_radio` / `BackendConfig`, and the
   `local-extensions/` host API — is now under SemVer. See
-  [`docs/api/public-api-surface.md`](docs/api/public-api-surface.md).
+  [`docs/api/public-api-surface.md`](https://github.com/rigplane/rigplane-core/blob/main/docs/api/public-api-surface.md).
 - **Capability-driven multi-radio architecture.** Implement the relevant
   Capability Protocols and your backend slots into the runtime, Web UI,
   and rigctld layers without any of those layers knowing about your
-  radio. See [`ARCHITECTURE.md`](ARCHITECTURE.md).
+  radio. See [`ARCHITECTURE.md`](https://github.com/rigplane/rigplane-core/blob/main/ARCHITECTURE.md).
 - **5,600+ unit tests.** `import-linter` enforces 11-layer package
   boundaries; mypy is clean across the public surface; ruff lints in CI.
 - **Verified against the digital-mode ecosystem.** WSJT-X, fldigi, and
@@ -106,8 +106,8 @@ Four user-facing skins resolve from `frontend/src/skins/registry.ts`:
   responsive layout.
 
 <p align="center">
-  <img src="docs/screenshots/lcd-scope.png" alt="LCD Scope skin — dual-RX with vintage-LCD typography and scope panel" width="49%">
-  <img src="docs/screenshots/amber-lcd.png" alt="LCD Cockpit (amber) skin with vintage-LCD typography and AmberScope" width="49%">
+  <img src="https://raw.githubusercontent.com/rigplane/rigplane-core/main/docs/screenshots/lcd-scope.png" alt="LCD Scope skin — dual-RX with vintage-LCD typography and scope panel" width="49%">
+  <img src="https://raw.githubusercontent.com/rigplane/rigplane-core/main/docs/screenshots/amber-lcd.png" alt="LCD Cockpit (amber) skin with vintage-LCD typography and AmberScope" width="49%">
 </p>
 
 <!-- SCREENSHOT: Mobile skin — ESSENTIALS panel + PTT FAB (TBD, pending device) -->
@@ -118,7 +118,7 @@ Four user-facing skins resolve from `frontend/src/skins/registry.ts`:
 (`core/`, `commands/`, `profiles/`, `audio/`, `scope/`, `dsp/`,
 `runtime/`, `backends/`, `web/`, `rigctld/`, `cli/`) with explicit
 boundaries enforced by `import-linter`. Higher layers depend on lower
-ones; siblings are independent. See [`ARCHITECTURE.md`](ARCHITECTURE.md)
+ones; siblings are independent. See [`ARCHITECTURE.md`](https://github.com/rigplane/rigplane-core/blob/main/ARCHITECTURE.md)
 for the layout and per-layer charters in `src/rigplane/<layer>/LAYER.md`.
 
 Extensibility is centred on **Capability Protocols** in
@@ -129,7 +129,7 @@ The `Radio` protocol plus the capability suite is the **stable contract**
 between the open core and downstream consumers.
 
 The frontend extension surface lives at
-[`frontend/src/lib/local-extensions/`](frontend/src/lib/local-extensions/) —
+[`frontend/src/lib/local-extensions/`](https://github.com/rigplane/rigplane-core/tree/main/frontend/src/lib/local-extensions) —
 a Tier 1 contract for embedders shipping panels, dock items, or keyboard
 scopes into the open-core shell.
 
@@ -137,17 +137,17 @@ scopes into the open-core shell.
 
 - [Quickstart](https://rigplane.dev/guide/quickstart/)
 - [CLI reference](https://rigplane.dev/guide/cli/)
-- [Public API surface (Tier 1 stability)](docs/api/public-api-surface.md)
+- [Public API surface (Tier 1 stability)](https://github.com/rigplane/rigplane-core/blob/main/docs/api/public-api-surface.md)
 - [Adding a new radio (TOML profiles)](https://rigplane.dev/guide/rig-profiles/)
-- [Architecture overview](ARCHITECTURE.md)
-- [Open-core policy](docs/architecture/open-core-policy.md)
-- [Diagnostic reports guide](docs/guide/diagnostic-reports.md) — how to send a one-click bug report when you hit an issue.
+- [Architecture overview](https://github.com/rigplane/rigplane-core/blob/main/ARCHITECTURE.md)
+- [Open-core policy](https://github.com/rigplane/rigplane-core/blob/main/docs/architecture/open-core-policy.md)
+- [Diagnostic reports guide](https://github.com/rigplane/rigplane-core/blob/main/docs/guide/diagnostic-reports.md) — how to send a one-click bug report when you hit an issue.
 - [Protocol internals](https://rigplane.dev/internals/protocol/)
-- [Security](docs/SECURITY.md)
+- [Security](https://github.com/rigplane/rigplane-core/blob/main/docs/SECURITY.md)
 
 ## License
 
-MIT — see [LICENSE](LICENSE). Protocol knowledge derived from the
+MIT — see [LICENSE](https://github.com/rigplane/rigplane-core/blob/main/LICENSE). Protocol knowledge derived from the
 [wfview](https://wfview.org/) project's reverse-engineering work; this is
 an independent clean-room implementation, not a derivative of wfview's
 GPLv3 code. Icom™ and IC-* product names are registered trademarks of
@@ -160,7 +160,7 @@ proprietary commercial layer (`rigplane-pro`) is under active development
 and will integrate with this library through the public `Radio` protocol
 and the `local-extensions/` host API. Open-core constraints — no
 telemetry, headless mode is sacred, no hollowing out — are codified in
-[`docs/architecture/open-core-policy.md`](docs/architecture/open-core-policy.md).
+[`docs/architecture/open-core-policy.md`](https://github.com/rigplane/rigplane-core/blob/main/docs/architecture/open-core-policy.md).
 
 ## Status
 
