@@ -242,7 +242,7 @@ class RigctldServer:
                 "rigctld state acquisition: failed to resolve profile", exc_info=True
             )
             return None
-        return cast(RadioAcquisitionProfile | None, profile.state_acquisition)
+        return profile.state_acquisition
 
     def _radio_state_store(self) -> StateStore | None:
         if not isinstance(self._radio, StateStoreCapable):

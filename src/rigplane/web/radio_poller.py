@@ -2071,9 +2071,9 @@ class RadioPoller:
             case SetBsr(bsr=bsr):
                 if isinstance(radio, MemoryCapable):
                     await radio.set_bsr(bsr)
-            case SetDataOffModInput(source=source):
+            case SetDataOffModInput(source=mod_source):
                 if CAP_DATA_MODE in self._caps:
-                    await radio.set_data_off_mod_input(source)
+                    await radio.set_data_off_mod_input(mod_source)
                     # Write-through readback (MOR-615): confirm the value the
                     # radio actually took, mirroring the NB depth/width route.
                     await self._read_mod_input(
@@ -2083,9 +2083,9 @@ class RadioPoller:
                         session_id=session_id,
                         command_service=command_service,
                     )
-            case SetData1ModInput(source=source):
+            case SetData1ModInput(source=mod_source):
                 if CAP_DATA_MODE in self._caps:
-                    await radio.set_data1_mod_input(source)
+                    await radio.set_data1_mod_input(mod_source)
                     await self._read_mod_input(
                         "data1_mod_input",
                         command_id=command_id,
@@ -2093,9 +2093,9 @@ class RadioPoller:
                         session_id=session_id,
                         command_service=command_service,
                     )
-            case SetData2ModInput(source=source):
+            case SetData2ModInput(source=mod_source):
                 if CAP_DATA_MODE in self._caps:
-                    await radio.set_data2_mod_input(source)
+                    await radio.set_data2_mod_input(mod_source)
                     await self._read_mod_input(
                         "data2_mod_input",
                         command_id=command_id,
@@ -2103,9 +2103,9 @@ class RadioPoller:
                         session_id=session_id,
                         command_service=command_service,
                     )
-            case SetData3ModInput(source=source):
+            case SetData3ModInput(source=mod_source):
                 if CAP_DATA_MODE in self._caps:
-                    await radio.set_data3_mod_input(source)
+                    await radio.set_data3_mod_input(mod_source)
                     await self._read_mod_input(
                         "data3_mod_input",
                         command_id=command_id,

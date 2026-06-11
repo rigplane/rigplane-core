@@ -172,7 +172,8 @@ YAESU_PTT_PATH = _PTT
 
 
 class YaesuObservationRadio(Protocol):
-    capabilities: set[str]
+    @property
+    def capabilities(self) -> set[str]: ...
 
     async def read_freq(self, receiver: int = 0) -> int: ...
 
