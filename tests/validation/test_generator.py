@@ -242,6 +242,28 @@ def test_realistic_ic7300():
         )
 
 
+def test_ic7610_drops_repeater_tone_family():
+    """MOR-661: the IC-7610 (HF/6m) has no FM-repeater CTCSS tone feature.
+
+    The profile must not declare the ``repeater_tone`` / ``tsql`` capabilities,
+    and the dry-run matrix must omit the four tone/tsql check_ids entirely
+    (absent, via the per-profile exclusion override) — not merely SKIP them.
+    """
+    profile = get_radio_profile("IC-7610")
+    assert "repeater_tone" not in profile.capabilities
+    assert "tsql" not in profile.capabilities
+
+    args = _make_args(model="IC-7610")
+    buf = io.StringIO()
+    with redirect_stdout(buf):
+        rc = _validate.run(args)
+    assert rc == 0
+    payload = json.loads(buf.getvalue())
+    check_ids = {c["check_id"] for level in payload["levels"] for c in level["checks"]}
+    for cid in ("repeater_tone.set", "tone_freq.set", "tsql.set", "tsql_freq.set"):
+        assert cid not in check_ids, f"{cid} should be absent from the IC-7610 matrix"
+
+
 # ---------------------------------------------------------------------------
 # CLI tests (dry-run, no hardware)
 # ---------------------------------------------------------------------------

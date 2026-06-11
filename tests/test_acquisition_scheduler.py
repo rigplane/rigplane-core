@@ -2126,14 +2126,18 @@ def test_ic7610_real_profile_tone_tuner_query_for_path() -> None:
     assert executor.query_for_path(power_level) == (0x14, 0x0A, None)
 
 
-def test_ic7610_real_profile_tone_tuner_pollable_and_emit_reads() -> None:
+def test_ic7610_real_profile_tuner_pollable_tone_absent() -> None:
+    """MOR-661: the IC-7610 has no FM-repeater CTCSS tone feature, so its
+    tone/tsql state-acquisition paths are removed — they are no longer pollable
+    and never scheduled. The unrelated tuner_status fast path still polls."""
     acquisition = load_rig(RIGS_DIR / "ic7610.toml").to_profile().state_acquisition
     assert acquisition is not None
 
     fast_paths: tuple[FieldPath, ...] = (
         FieldPath.global_("operator_controls", "tuner_status"),
     )
-    med_paths: tuple[FieldPath, ...] = tuple(
+    # Tone/tsql paths were removed from the profile: not pollable anymore.
+    removed_tone_paths: tuple[FieldPath, ...] = tuple(
         FieldPath.receiver(receiver, "operator_toggles", name)
         for receiver in ("main", "sub")
         for name in ("repeater_tone", "repeater_tsql")
@@ -2142,7 +2146,6 @@ def test_ic7610_real_profile_tone_tuner_pollable_and_emit_reads() -> None:
         for receiver in ("main", "sub")
         for name in ("tone_freq", "tsql_freq")
     )
-    target_paths = fast_paths + med_paths
 
     for path in fast_paths:
         assert acquisition.capability_for(path).can_poll is True
@@ -2151,18 +2154,16 @@ def test_ic7610_real_profile_tone_tuner_pollable_and_emit_reads() -> None:
         assert policy.freshness_ttl_seconds == 3.0
         assert policy.adaptive_decay.enabled is False
 
-    for path in med_paths:
-        assert acquisition.capability_for(path).can_poll is True
-        policy = acquisition.policy_for(path)
-        assert policy.cadence_seconds == 3.0
-        assert policy.freshness_ttl_seconds == 5.0
-        assert policy.adaptive_decay.enabled is False
+    for path in removed_tone_paths:
+        assert acquisition.capability_for(path).can_poll is False
 
     clock = FreshnessClock(start=500.0)
     scheduler = AcquisitionScheduler(profile=acquisition, clock=clock)
     requests = scheduler.due_requests()
     due_paths = {path for request in requests for path in request.paths}
-    assert set(target_paths) <= due_paths
+    assert set(fast_paths) <= due_paths
+    # No removed tone/tsql path is ever scheduled.
+    assert not (set(removed_tone_paths) & due_paths)
 
     sent: list[tuple[int, int | None, int | None]] = []
 
@@ -2175,22 +2176,18 @@ def test_ic7610_real_profile_tone_tuner_pollable_and_emit_reads() -> None:
 
     executor = IcomCivAcquisitionExecutor(send_query)
     for request in requests:
-        if not any(path in target_paths for path in request.paths):
+        if not any(path in fast_paths for path in request.paths):
             continue
         execution = asyncio.run(
             executor.execute(request, already_sent_paths=frozenset())
         )
         assert execution.failed_paths == ()
 
-    expected = {
-        (0x16, 0x42, 0),
-        (0x16, 0x43, 0),
-        (0x1B, 0x00, 0),
-        (0x1B, 0x01, 0),
-        (0x16, 0x42, 1),
-        (0x16, 0x43, 1),
-        (0x1B, 0x00, 1),
-        (0x1B, 0x01, 1),
-        (0x1C, 0x01, None),
+    # tuner_status (0x1C/0x01) is still emitted; no tone/tsql commands ever are.
+    assert (0x1C, 0x01, None) in set(sent)
+    tone_tsql_cmds = {
+        (cmd, sub)
+        for cmd, sub, _ in sent
+        if (cmd, sub) in {(0x16, 0x42), (0x16, 0x43), (0x1B, 0x00), (0x1B, 0x01)}
     }
-    assert expected <= set(sent)
+    assert tone_tsql_cmds == set()
