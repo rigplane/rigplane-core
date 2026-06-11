@@ -23,6 +23,14 @@ from rigplane.web.server import WebConfig, WebServer
 
 def _make_radio() -> MagicMock:
     radio = MagicMock(name="radio")
+    # Python 3.11 runtime-checkable Protocol isinstance() uses hasattr(), which
+    # a bare MagicMock always satisfies — start_web_server would then spawn the
+    # auto-generated MagicMock poller.start() as a coroutine (TypeError).
+    # Python 3.12+ uses inspect.getattr_static() (gh-102433) and is immune.
+    # Deleting the factory attrs makes both interpreters take the RadioPoller
+    # branch.
+    del radio.create_observation_poller
+    del radio.create_state_poller
     radio.connected = True
     radio.radio_ready = True
     radio.control_connected = True

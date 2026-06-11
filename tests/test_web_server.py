@@ -255,6 +255,22 @@ async def _close_ws(writer: asyncio.StreamWriter) -> None:
 # ---------------------------------------------------------------------------
 
 
+def _del_poller_factory_attrs(radio: MagicMock) -> MagicMock:
+    """Make a MagicMock radio fail ObservationPollable/StatePollable checks.
+
+    Python 3.11's runtime-checkable Protocol ``isinstance()`` uses
+    ``hasattr()``, which a bare MagicMock always satisfies, so
+    ``start_web_server`` would take the observation-poller branch and try to
+    spawn the auto-generated MagicMock ``poller.start()`` as a coroutine
+    (``TypeError: a coroutine was expected``). Python 3.12+ uses
+    ``inspect.getattr_static()`` (gh-102433) and is immune. Deleting the
+    factory attributes makes both interpreters take the RadioPoller branch.
+    """
+    del radio.create_observation_poller
+    del radio.create_state_poller
+    return radio
+
+
 def _add_scope_capable_attrs(radio: MagicMock) -> MagicMock:
     """Explicitly set all ScopeCapable protocol attrs on a MagicMock.
 
@@ -331,6 +347,7 @@ def mock_radio() -> MagicMock:
         "ip_plus",
     }
     _add_scope_capable_attrs(radio)
+    _del_poller_factory_attrs(radio)
     radio.get_freq = AsyncMock(return_value=14_074_000)
     radio.get_mode = AsyncMock(return_value=MagicMock(name="USB"))
     radio.get_mode.return_value.name = "USB"
@@ -2468,6 +2485,7 @@ class TestScopeEnableAtomic:
         config = WebConfig(host="127.0.0.1", port=0, keepalive_interval=9999.0)
         radio = MagicMock()
         _add_scope_capable_attrs(radio)
+        _del_poller_factory_attrs(radio)
         radio.connected = True
         radio.radio_ready = True
 

@@ -374,7 +374,13 @@ class _SingleSlotAudioRadio:
 
     @property
     def audio_codec(self) -> Any:
-        return self.profile.audio_codec
+        # NOTE: must not raise. ``RadioProfile`` has no ``audio_codec``
+        # attribute, so returning ``self.profile.audio_codec`` raised
+        # AttributeError — invisible on Python 3.12+ where the AudioCapable
+        # isinstance() check uses inspect.getattr_static() (gh-102433), but
+        # fatal on 3.11 where the hasattr()-based check invokes this getter
+        # and the AttributeError makes the Protocol check fail.
+        return AudioCodec[self.profile.codec_preference[0]]
 
     @property
     def audio_sample_rate(self) -> int:
