@@ -84,6 +84,7 @@ class _StatefulLevelRadio:
         controls: dict[str, dict] | None,
         initial: dict[str, int],
         bands: dict[str, tuple[int, int]],
+        quantize: dict[str, int] | None = None,
     ) -> None:
         self.connected = True
         self.model = "FAKE"
@@ -92,6 +93,9 @@ class _StatefulLevelRadio:
         self.profile = _FakeProfile(controls) if controls is not None else None
         self._values = dict(initial)
         self._bands = bands
+        # Per-control quantization grid step: an in-band write snaps to the
+        # nearest multiple (e.g. IC-7610 nr_level snaps to a 16-unit grid).
+        self._quantize = quantize or {}
         self.writes: dict[str, list[int]] = {k: [] for k in initial}
 
     def _set(self, key: str, level: int) -> None:
@@ -99,7 +103,8 @@ class _StatefulLevelRadio:
         lo, hi = self._bands[key]
         # A real radio ignores an out-of-band write -> value unchanged.
         if lo <= level <= hi:
-            self._values[key] = level
+            step = self._quantize.get(key)
+            self._values[key] = int(round(level / step) * step) if step else level
 
     async def get_rf_power(self) -> int:
         return self._values["rf_power"]
@@ -140,6 +145,7 @@ def _make_radio(
     controls: dict[str, dict] | None,
     initial: dict[str, int] | None = None,
     bands: dict[str, tuple[int, int]] | None = None,
+    quantize: dict[str, int] | None = None,
 ) -> _StatefulLevelRadio:
     return _StatefulLevelRadio(
         capabilities=_ALL_CAPS,
@@ -153,6 +159,7 @@ def _make_radio(
             "nr": (0, 255),
             "nb": (0, 255),
         },
+        quantize=quantize,
     )
 
 
@@ -268,6 +275,46 @@ async def test_small_range_levels_pass_react_restore_and_stay_in_band():
                 f"{check_id}: wrote {value} outside resolved band [{lo}, {hi}]"
             )
         assert writes[-1] == mid, f"{check_id}: not restored to original {mid}"
+
+
+async def test_coarse_quantized_level_passes_within_widened_tolerance():
+    """A 0-255 level that snaps to a coarse grid (IC-7610 nr_level: ~16-unit
+    grid, live-found in MOR-695) reads back off the written value. The
+    range-proportional tolerance ``max(base, (hi - lo) // 24) == 10`` for a
+    0-255 band keeps the RMVR PASSing where the base tolerance of 3 would not.
+    """
+    radio = _make_radio(
+        controls={"nr_level": {"raw_min": 0, "raw_max": 255}},
+        initial={"rf_power": 100, "mic_gain": 100, "comp": 50, "nr": 12, "nb": 5},
+        bands={
+            "rf_power": (0, 255),
+            "mic_gain": (0, 255),
+            "comp": (0, 255),
+            "nr": (0, 255),
+            "nb": (0, 255),
+        },
+        quantize={"nr": 16},
+    )
+    template = _single_entry_template(
+        model="IC-7610",
+        profile_id="ic7610",
+        check_id="nr_level.set",
+        capability="nr",
+    )
+    levels = await execute_hardware_checks(
+        radio, template, OperatorSafetyBlock(), allow_writes=True
+    )
+    check = _flatten(levels)["nr_level.set"]
+    assert check.status is CheckStatus.PASS, (
+        f"expected PASS under quantization, got {check.status} ({check.error})"
+    )
+    assert check.evidence["tolerance"] == 10  # max(3, 255 // 24)
+    written = int(check.evidence["changed"])
+    readback = int(check.evidence["readback"])
+    # The grid snap moved the readback off the written value by more than the
+    # base tolerance of 3 — the widened tolerance is what made this PASS.
+    assert abs(readback - written) > 3
+    assert check.evidence["restored"] is True
 
 
 async def test_small_range_level_at_ceiling_steps_down_and_passes():

@@ -1951,15 +1951,24 @@ async def _check_from_spec(
         # control's settable band, not the fixed 0-255 ICOM scale. Resolve the
         # band from the radio profile and SKIP an out-of-band original rather
         # than risk an unrestorable write.
+        equal: Callable[[Any, Any], bool] = (
+            _tolerant_equal(spec.tolerance) if spec.tolerance else _default_equal
+        )
         if spec.value_rule == ValueRule.STEP_LEVEL_255:
             lo, hi = _resolve_level_range(radio, entry.check_id)
             make_changed = _range_aware_level_nudge(lo, hi)
             restorable = lambda v: lo <= int(v) <= hi  # noqa: E731
             extra_evidence["range_min"] = lo
             extra_evidence["range_max"] = hi
-        equal: Callable[[Any, Any], bool] = (
-            _tolerant_equal(spec.tolerance) if spec.tolerance else _default_equal
-        )
+            # MOR-695 — some radios quantize the level to a coarse grid (e.g.
+            # the IC-7610 nr_level snaps to a 16-unit grid on the 0-255 scale),
+            # so an arbitrary written value can never read back exactly. Widen
+            # the readback tolerance to ~half the grid step, scaled to the band,
+            # while keeping the base tolerance for fine-grained controls
+            # (e.g. FTX-1 levels on a 0-10 band, where ``(hi - lo) // 24 == 0``).
+            level_tol = max(spec.tolerance or 3, (hi - lo) // 24)
+            extra_evidence["tolerance"] = level_tol
+            equal = _tolerant_equal(level_tol)
         _read_fn = read_fn
         _write_fn = write_fn
         return await _read_modify_verify_restore(
