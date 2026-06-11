@@ -1081,6 +1081,64 @@ class TestAdvancedScopeControls:
         assert len(mock_transport.sent_packets) > 0
 
 
+class TestScopeSetterReceiverPrefix:
+    """MOR-664: SET receiver-prefix must mirror the matching GETTER.
+
+    Live-proven on the real IC-7610 (raw CI-V traces): vbw/rbw GET reads the
+    selected receiver (sends a receiver-prefix byte) while the SET wrote WITHOUT
+    the prefix — so the radio never reflected the write ("did not react"). The
+    fix adds the receiver prefix to set_scope_vbw / set_scope_rbw. Conversely,
+    single/dual is a GLOBAL scope setting: get_scope_dual sends NO prefix, but
+    the SET was sending one, malforming the write — the fix drops the prefix
+    from set_scope_dual so it matches the getter.
+
+    These assertions pin the EXACT CI-V frame bytes (cmd 0x27, sub, optional
+    receiver prefix, value) embedded in the UDP-wrapped packet.
+    """
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("receiver", [0, 1])
+    async def test_set_scope_vbw_includes_receiver_prefix(
+        self, radio: IcomRadio, mock_transport: MockTransport, receiver: int
+    ) -> None:
+        """set_scope_vbw sends sub 0x1D with the receiver-prefix byte then value
+        (mirrors get_scope_vbw, which passes receiver=)."""
+        radio.radio_state.scope_controls.receiver = receiver
+        await radio.set_scope_vbw(narrow=True)
+        sent = bytes(mock_transport.sent_packets[-1])
+        # 0x27 0x1D <receiver> 0x01 0xFD — prefix byte present, value last.
+        assert bytes([0x27, 0x1D, receiver, 0x01, 0xFD]) in sent
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("receiver", [0, 1])
+    async def test_set_scope_rbw_includes_receiver_prefix(
+        self, radio: IcomRadio, mock_transport: MockTransport, receiver: int
+    ) -> None:
+        """set_scope_rbw sends sub 0x1F with the receiver-prefix byte then value
+        (mirrors get_scope_rbw, which passes receiver=)."""
+        radio.radio_state.scope_controls.receiver = receiver
+        await radio.set_scope_rbw(2)
+        sent = bytes(mock_transport.sent_packets[-1])
+        # 0x27 0x1F <receiver> 0x02 0xFD — prefix byte present, value last.
+        assert bytes([0x27, 0x1F, receiver, 0x02, 0xFD]) in sent
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("receiver", [0, 1])
+    async def test_set_scope_dual_omits_receiver_prefix(
+        self, radio: IcomRadio, mock_transport: MockTransport, receiver: int
+    ) -> None:
+        """set_scope_dual sends sub 0x13 with NO receiver prefix regardless of
+        the selected receiver (single/dual is global; matches get_scope_dual's
+        prefix-less frame shape)."""
+        radio.radio_state.scope_controls.receiver = receiver
+        await radio.set_scope_dual(True)
+        sent = bytes(mock_transport.sent_packets[-1])
+        # Corrected frame: 0x27 0x13 0x01 0xFD (no receiver byte between sub and
+        # value). The old buggy frame was 0x27 0x13 <receiver> 0x01.
+        assert bytes([0x27, 0x13, 0x01, 0xFD]) in sent
+        assert bytes([0x27, 0x13, receiver, 0x01, 0xFD]) not in sent
+
+
 # ---------------------------------------------------------------------------
 # set_mode fire-and-forget (IC-7610 ACK quirk fix)
 # ---------------------------------------------------------------------------
