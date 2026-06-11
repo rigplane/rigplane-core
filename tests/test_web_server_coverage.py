@@ -201,6 +201,18 @@ def _scope_radio(*, ready: bool = True, connected: bool = True) -> MagicMock:
 class _StateNotifyRadio(MagicMock):
     """Minimal mock that satisfies StateNotifyCapable so server registers callbacks."""
 
+    def __init__(self, *args: object, **kwargs: object) -> None:
+        super().__init__(*args, **kwargs)
+        # Python 3.11 runtime-checkable Protocol isinstance() uses hasattr(),
+        # which the MagicMock base always satisfies — start_web_server would
+        # then take the observation-poller branch and spawn the auto-generated
+        # MagicMock poller.start() as a coroutine (TypeError). Python 3.12+
+        # uses inspect.getattr_static() (gh-102433) and is immune. Deleting
+        # the factory attrs makes both interpreters take the RadioPoller
+        # branch, which is what this fake's StateNotifyCapable methods test.
+        del self.create_observation_poller
+        del self.create_state_poller
+
     def set_state_change_callback(self, callback: object) -> None:
         self._state_change_callback = callback
 
