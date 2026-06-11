@@ -57,6 +57,9 @@ class ValueRule(StrEnum):
     SCOPE_INDEX_FLIP = "scope_index_flip"
     SCOPE_EDGE_CYCLE = "scope_edge_cycle"
     SCOPE_REF_DB = "scope_ref_db"
+    # MOR-671 — FTX-1 DSP RMVR checks
+    SHIFT_HZ = "shift_hz"
+    CONTOUR_FLIP = "contour_flip"
 
 
 # ---------------------------------------------------------------------------

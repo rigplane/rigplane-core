@@ -68,6 +68,11 @@
       "declaration": "unsupported_pending_evidence"
     },
     {
+      "check_id": "contour.set",
+      "status": "unsupported",
+      "declaration": "unsupported_pending_evidence"
+    },
+    {
       "check_id": "data_mode.presence",
       "status": "pass",
       "declaration": "unsupported_pending_evidence"
@@ -121,6 +126,11 @@
       "check_id": "freq.write",
       "status": "skip",
       "declaration": "supported"
+    },
+    {
+      "check_id": "if_shift.set",
+      "status": "unsupported",
+      "declaration": "unsupported_pending_evidence"
     },
     {
       "check_id": "ip_plus.presence",
