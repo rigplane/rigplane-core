@@ -221,9 +221,11 @@ class ScopeRuntimeMixin(_MixinBase):  # type: ignore[misc]
     async def set_scope_dual(self, dual: bool) -> None:
         """Enable or disable dual scope mode."""
         self._check_connected()
-        receiver = self._scope_controls().receiver
+        # Single/dual is a GLOBAL scope setting — get_scope_dual sends no
+        # receiver prefix, so the setter must not either (MOR-664). A stray
+        # receiver byte malforms the write and the radio ignores it.
         await self._send_civ_raw(
-            _scope_single_dual_cmd(dual, to_addr=self._radio_addr, receiver=receiver),
+            _scope_single_dual_cmd(dual, to_addr=self._radio_addr),
             wait_response=False,
         )
         self._scope_controls().dual = dual
@@ -423,8 +425,12 @@ class ScopeRuntimeMixin(_MixinBase):  # type: ignore[misc]
     async def set_scope_vbw(self, narrow: bool) -> None:
         """Enable or disable narrow scope VBW."""
         self._check_connected()
+        # get_scope_vbw reads the selected receiver (sends a receiver prefix),
+        # so the setter must address the same receiver or the write never
+        # reflects back (MOR-664).
+        receiver = self._scope_controls().receiver
         await self._send_civ_raw(
-            _scope_set_vbw_cmd(narrow, to_addr=self._radio_addr),
+            _scope_set_vbw_cmd(narrow, to_addr=self._radio_addr, receiver=receiver),
             wait_response=False,
         )
         self._scope_controls().vbw_narrow = narrow
@@ -486,8 +492,12 @@ class ScopeRuntimeMixin(_MixinBase):  # type: ignore[misc]
     async def set_scope_rbw(self, rbw: int) -> None:
         """Set the scope RBW preset (0=wide, 1=mid, 2=narrow)."""
         self._check_connected()
+        # get_scope_rbw reads the selected receiver (sends a receiver prefix),
+        # so the setter must address the same receiver or the write never
+        # reflects back (MOR-664).
+        receiver = self._scope_controls().receiver
         await self._send_civ_raw(
-            _scope_set_rbw_cmd(rbw, to_addr=self._radio_addr),
+            _scope_set_rbw_cmd(rbw, to_addr=self._radio_addr, receiver=receiver),
             wait_response=False,
         )
         self._scope_controls().rbw = rbw
