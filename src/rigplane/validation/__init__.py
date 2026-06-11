@@ -9,6 +9,12 @@ path that plans checks from a template without touching hardware.
 from __future__ import annotations
 
 from rigplane.validation.comparison import compute_comparison_dimensions
+from rigplane.validation.gating import (
+    GateReport,
+    format_gate_report,
+    gate_artifacts,
+    normalize_artifact,
+)
 from rigplane.validation.hardware import execute_hardware_checks
 from rigplane.validation.overrides import (
     EXCLUDED,
@@ -74,6 +80,10 @@ __all__ = [
     "human_summary",
     "execute_hardware_checks",
     "compute_comparison_dimensions",
+    "GateReport",
+    "format_gate_report",
+    "gate_artifacts",
+    "normalize_artifact",
     "EXCLUDED",
     "OverrideEntry",
     "OverridePatch",
