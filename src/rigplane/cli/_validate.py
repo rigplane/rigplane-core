@@ -259,6 +259,17 @@ def add_subparser(sub: Any) -> argparse.ArgumentParser:
         ),
     )
     p.add_argument(
+        "--regen-golden",
+        dest="regen_golden",
+        default=None,
+        metavar="PATH",
+        help=(
+            "Write the NORMALIZED artifact (volatile fields stripped) to PATH "
+            "for use as a --gate golden baseline. Parent directories are "
+            "created as needed."
+        ),
+    )
+    p.add_argument(
         "--no-overrides",
         dest="no_overrides",
         action="store_true",
@@ -475,13 +486,23 @@ async def _run_hardware_both(
 def _apply_golden_flags(
     artifact: ValidationArtifact, args: argparse.Namespace, exit_code: int
 ) -> int:
-    """Apply ``--gate`` after the artifact is emitted.
+    """Apply ``--regen-golden`` and ``--gate`` after the artifact is emitted.
 
-    Normalizes both sides (the golden may be stored normalized already — the
-    projection is idempotent), prints a concise diff summary to stderr, and
-    elevates a successful run to exit code ``1`` on any regression. Existing
-    non-zero exit codes are preserved; a missing/unreadable golden is ``2``.
+    ``--regen-golden`` writes the normalized artifact to the given path (the
+    golden baseline format). ``--gate`` normalizes both sides (the golden may
+    be stored normalized already — the projection is idempotent), prints a
+    concise diff summary to stderr, and elevates a successful run to exit code
+    ``1`` on any regression. Existing non-zero exit codes are preserved; a
+    missing/unreadable golden is ``2``.
     """
+    regen_path = getattr(args, "regen_golden", None)
+    if regen_path:
+        normalized = normalize_artifact(artifact.to_dict())
+        path = Path(regen_path)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(normalized, indent=2) + "\n", encoding="utf-8")
+        print(f"Golden written to: {regen_path}", file=sys.stderr)
+
     gate_path = getattr(args, "gate", None)
     if not gate_path:
         return exit_code

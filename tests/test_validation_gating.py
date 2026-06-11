@@ -10,7 +10,9 @@ Covers the pure layer (``rigplane.validation.gating``) and its CLI wiring in
 * ``gate_artifacts`` classifies regressions (pass->fail, new failing check,
   missing check, declaration drift) vs non-blocking improvements/additions;
 * ``rigplane validate --gate`` exits 0 against a matching golden and 1 on a
-  regression.
+  regression; ``--regen-golden`` writes the normalized artifact;
+* the committed IC-7610 dry-run golden (``tests/golden/validation/``) matches
+  the live generated matrix and gates clean.
 
 All tests are dry-run / no-hardware and use the REAL schema dataclasses
 (MagicMock hides signature bugs).
@@ -44,6 +46,14 @@ from rigplane.validation.schema import (
 )
 
 MODEL = "IC-7610"
+
+_GOLDEN_FIXTURE = (
+    Path(__file__).resolve().parent / "golden" / "validation" / "ic7610.dry-run.json"
+)
+_REGEN_COMMAND = (
+    "uv run rigplane --model IC-7610 validate --dry-run "
+    "--regen-golden tests/golden/validation/ic7610.dry-run.json"
+)
 
 
 def _make_artifact(
@@ -323,3 +333,75 @@ def test_cli_gate_missing_golden_exits_two(tmp_path: Path, capsys: Any) -> None:
     )
     assert rc == 2
     assert "cannot load golden" in err
+
+
+# ---------------------------------------------------------------------------
+# CLI wiring: --regen-golden
+# ---------------------------------------------------------------------------
+
+
+def test_cli_regen_golden_writes_normalized_artifact(
+    tmp_path: Path, capsys: Any
+) -> None:
+    golden = tmp_path / "nested" / "golden.json"
+    rc, _out, err = _run_validate(
+        ["--model", MODEL, "validate", "--dry-run", "--regen-golden", str(golden)],
+        capsys,
+    )
+    assert rc == 0
+    assert "Golden written to" in err
+    data = json.loads(golden.read_text(encoding="utf-8"))
+    assert "levels" not in data
+    assert "core_version" not in data
+    assert "transport" not in data
+    assert data["mode"] == "dry-run"
+    assert data["radio"] == {"model": MODEL, "profile_id": "icom_ic7610"}
+    rows = data["checks"]
+    assert rows and all("check_id" in row and "status" in row for row in rows)
+
+
+def test_cli_regen_then_gate_round_trips(tmp_path: Path, capsys: Any) -> None:
+    """A freshly regenerated golden gates its own dry-run clean (exit 0)."""
+    golden = tmp_path / "golden.json"
+    rc, _out, _err = _run_validate(
+        ["--model", MODEL, "validate", "--dry-run", "--regen-golden", str(golden)],
+        capsys,
+    )
+    assert rc == 0
+    rc, _out, err = _run_validate(
+        ["--model", MODEL, "validate", "--dry-run", "--gate", str(golden)],
+        capsys,
+    )
+    assert rc == 0
+    assert "PASS" in err
+
+
+# ---------------------------------------------------------------------------
+# Committed IC-7610 dry-run golden fixture
+# ---------------------------------------------------------------------------
+
+
+def test_committed_ic7610_golden_matches_live_dry_run(capsys: Any) -> None:
+    """The committed golden equals the live normalized dry-run output exactly.
+
+    Regenerate after an intentional matrix change with::
+
+        uv run rigplane --model IC-7610 validate --dry-run \
+          --regen-golden tests/golden/validation/ic7610.dry-run.json
+    """
+    rc, out, _err = _run_validate(
+        ["--model", MODEL, "validate", "--dry-run", "--json"], capsys
+    )
+    assert rc == 0
+    live = normalize_artifact(json.loads(out))
+    committed = json.loads(_GOLDEN_FIXTURE.read_text(encoding="utf-8"))
+    assert live == committed, f"Golden fixture is stale; regen: {_REGEN_COMMAND}"
+
+
+def test_cli_gate_against_committed_golden_exits_zero(capsys: Any) -> None:
+    rc, _out, err = _run_validate(
+        ["--model", MODEL, "validate", "--dry-run", "--gate", str(_GOLDEN_FIXTURE)],
+        capsys,
+    )
+    assert rc == 0
+    assert "PASS" in err
