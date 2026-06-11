@@ -201,6 +201,11 @@ describe('auto-set at TX start (MOR-618)', () => {
       key: 'data1ModInput',
       source: 0,
     });
+    // MOR-624: backend session-teardown net armed alongside the LAN set.
+    expect(sendCommand).toHaveBeenCalledWith('arm_mod_input_restore', {
+      command: 'set_data1_mod_input',
+      source: 0,
+    });
   });
 
   it('routes to the ACTIVE receiver group (SUB on D2)', async () => {
@@ -216,6 +221,11 @@ describe('auto-set at TX start (MOR-618)', () => {
     await getTxAudioControl().startTx();
 
     expect(sendCommand).toHaveBeenCalledWith('set_data2_mod_input', { source: 5 });
+    // MOR-624: the armed backend net carries the same group + previous source.
+    expect(sendCommand).toHaveBeenCalledWith('arm_mod_input_restore', {
+      command: 'set_data2_mod_input',
+      source: 3,
+    });
   });
 
   it('does nothing when the source is already LAN', async () => {
@@ -272,6 +282,8 @@ describe('restore at TX stop (MOR-618)', () => {
 
     expect(runtime.stopTx).toHaveBeenCalledTimes(1);
     expect(sendCommand).toHaveBeenCalledWith('set_data1_mod_input', { source: 0 });
+    // MOR-624: a clean stop owns the restore — backend teardown net cleared.
+    expect(sendCommand).toHaveBeenCalledWith('disarm_mod_input_restore', {});
     expect(getRadioState()?.data1ModInput).toBe(0);
     expect(pendingInStorage()).toBeNull();
 
@@ -293,7 +305,11 @@ describe('restore at TX stop (MOR-618)', () => {
 
     getTxAudioControl().stopTx();
 
-    expect(sendCommand).not.toHaveBeenCalled();
+    // The manual choice wins: no restore SET — but the backend teardown net
+    // is still cleared (MOR-624), the clean stop owns the restore decision.
+    expect(sendCommand).toHaveBeenCalledTimes(1);
+    expect(sendCommand).toHaveBeenCalledWith('disarm_mod_input_restore', {});
+    expect(sendCommand).not.toHaveBeenCalledWith('set_data1_mod_input', expect.anything());
     expect(pendingInStorage()).toBeNull();
   });
 
