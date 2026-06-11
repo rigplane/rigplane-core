@@ -19,8 +19,10 @@ Exit codes:
 
 * ``0`` — success (dry-run or hardware artifact emitted). Failed/blocked checks
   do NOT change the exit code.
+* ``1`` — ``--gate`` detected a regression against the golden artifact.
 * ``2`` — template missing, unreadable, or schema-invalid; or ``--template``
-  and ``--model`` both absent; or model name is unknown.
+  and ``--model`` both absent; or model name is unknown; or the ``--gate``
+  golden file is missing/unreadable.
 * ``3`` — hardware run requested but blocked (gates closed), or the radio could
   not connect / authenticate / build a backend config (artifact still emitted
   on connect failure).
@@ -53,8 +55,11 @@ from rigplane.validation import (
     build_validation_artifact,
     compute_comparison_dimensions,
     dry_run_results,
+    format_gate_report,
+    gate_artifacts,
     human_summary,
     load_template,
+    normalize_artifact,
 )
 from rigplane.validation.schema import (
     CapabilityDeclaration,
@@ -243,6 +248,17 @@ def add_subparser(sub: Any) -> argparse.ArgumentParser:
         ),
     )
     p.add_argument(
+        "--gate",
+        default=None,
+        metavar="GOLDEN",
+        help=(
+            "Gate this run against a golden normalized artifact JSON: print a "
+            "diff summary and exit 1 on any regression (a check that went "
+            "pass->fail, a new fail/blocked check, a missing check, or "
+            "declaration drift). Improvements never block."
+        ),
+    )
+    p.add_argument(
         "--no-overrides",
         dest="no_overrides",
         action="store_true",
@@ -372,7 +388,7 @@ def run(args: argparse.Namespace) -> int:
         if getattr(args, "compare", None):
             artifact = _attach_comparison(artifact, args.compare)
         _emit_artifact(artifact, args)
-        return rc
+        return _apply_golden_flags(artifact, args, rc)
 
     levels = dry_run_results(template, safety)
     transport = TransportInfo(backend="fixture")
@@ -394,7 +410,7 @@ def run(args: argparse.Namespace) -> int:
     if getattr(args, "compare", None):
         artifact = _attach_comparison(artifact, args.compare)
     _emit_artifact(artifact, args)
-    return 0
+    return _apply_golden_flags(artifact, args, 0)
 
 
 async def _run_hardware_both(
@@ -453,7 +469,37 @@ async def _run_hardware_both(
         metadata["overrides"] = overrides_audit
     art_n = dataclasses.replace(art_n, metadata=metadata)
     _emit_artifact(art_n, args)
-    return rc_n if rc_n else rc_h
+    return _apply_golden_flags(art_n, args, rc_n if rc_n else rc_h)
+
+
+def _apply_golden_flags(
+    artifact: ValidationArtifact, args: argparse.Namespace, exit_code: int
+) -> int:
+    """Apply ``--gate`` after the artifact is emitted.
+
+    Normalizes both sides (the golden may be stored normalized already — the
+    projection is idempotent), prints a concise diff summary to stderr, and
+    elevates a successful run to exit code ``1`` on any regression. Existing
+    non-zero exit codes are preserved; a missing/unreadable golden is ``2``.
+    """
+    gate_path = getattr(args, "gate", None)
+    if not gate_path:
+        return exit_code
+    try:
+        golden_obj = json.loads(Path(gate_path).read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        print(f"Error: cannot load golden artifact: {exc}", file=sys.stderr)
+        return 2
+    if not isinstance(golden_obj, dict):
+        print("Error: cannot load golden artifact: not a JSON object", file=sys.stderr)
+        return 2
+    report = gate_artifacts(
+        normalize_artifact(artifact.to_dict()), normalize_artifact(golden_obj)
+    )
+    print(format_gate_report(report, golden_path=str(gate_path)), file=sys.stderr)
+    if not report.ok and exit_code == 0:
+        return 1
+    return exit_code
 
 
 def _stamp_overrides(
