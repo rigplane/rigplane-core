@@ -56,10 +56,17 @@ codec_preference = ["PCM_1CH_16BIT", "ULAW_1CH"]
 # narrower than the IC-705 envelope:
 #   - no ``power_control`` (no documented CI-V 0x18)
 #   - no ``scope`` (no documented 0x27 family)
-#   - no ``filter_width`` SET (PDF table 5 documents widths but encoding
-#     is the segmented BCD index family; mirror x6100.toml's "feature not
-#     advertised until tables are confirmed on hardware" stance — see
-#     issue #1159 referenced in x6100.toml)
+#   - no tone family (``repeater_tone`` / ``tsql``): the backend would send
+#     ``0x16 0x42/0x43`` + ``0x1B 0x00``, none of which the X6200 firmware
+#     answers. A live X6200 capture (CI-V 0xA4) confirmed all four tone
+#     RMVR checks (repeater_tone/tone_freq/tsql/tsql_freq) time out, so the
+#     caps are dropped — the checks now resolve UNSUPPORTED, not FAIL
+#     (MOR-683, supersedes the audit's gap-list D tone row).
+#   - ``filter_width`` IS declared: ``0x1A 0x03`` is wired
+#     (``get/set_filter_width``) and the live X6200 capture confirmed the
+#     radio answers it (MOR-683 — the earlier "deferred until tables
+#     confirmed on hardware" stance from x6100.toml/#1159 is now resolved
+#     for the X6200).
 features = [
     "audio",
     "af_level",
@@ -81,8 +88,7 @@ features = [
     "xit",
     "tuner",
     "meters",
-    "repeater_tone",
-    "tsql",
+    "filter_width",
     "data_mode",
     "scan",
     "dial_lock",
@@ -384,6 +390,7 @@ get_transceiver_id = [0x19, 0x00]
 # 0x1A family — PDF pages 8-9 (band/spectrum, filter width)
 get_band_spectrum_display = [0x1A, 0x01]
 get_filter_width          = [0x1A, 0x03]
+set_filter_width          = [0x1A, 0x03]
 
 # PTT / tuner — PDF page 9 (0x1C family)
 ptt_on           = [0x1C, 0x00]

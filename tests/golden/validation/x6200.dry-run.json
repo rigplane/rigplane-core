@@ -89,8 +89,8 @@
     },
     {
       "check_id": "filter_width.set",
-      "status": "unsupported",
-      "declaration": "unsupported_pending_evidence"
+      "status": "skip",
+      "declaration": "supported"
     },
     {
       "check_id": "freq.reverse_sync",
@@ -169,8 +169,8 @@
     },
     {
       "check_id": "repeater_tone.set",
-      "status": "skip",
-      "declaration": "supported"
+      "status": "unsupported",
+      "declaration": "unsupported_pending_evidence"
     },
     {
       "check_id": "rf_gain.set",
@@ -294,18 +294,18 @@
     },
     {
       "check_id": "tone_freq.set",
-      "status": "skip",
-      "declaration": "supported"
+      "status": "unsupported",
+      "declaration": "unsupported_pending_evidence"
     },
     {
       "check_id": "tsql.set",
-      "status": "skip",
-      "declaration": "supported"
+      "status": "unsupported",
+      "declaration": "unsupported_pending_evidence"
     },
     {
       "check_id": "tsql_freq.set",
-      "status": "skip",
-      "declaration": "supported"
+      "status": "unsupported",
+      "declaration": "unsupported_pending_evidence"
     },
     {
       "check_id": "tuner.tune",
