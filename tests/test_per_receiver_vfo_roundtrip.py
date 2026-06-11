@@ -111,10 +111,16 @@ class TestPerReceiverFreq:
     async def test_ic7610_set_freq_sub_uses_fallback_select_restore(
         self, ic7610: IcomRadio, mock_transport: MockTransport
     ) -> None:
-        # Fallback path: set_vfo("SUB") → set_freq → set_vfo("MAIN"); two
-        # set_vfo calls each await an ACK.
-        mock_transport.queue_response(ACK_IC7610)
-        mock_transport.queue_response(ACK_IC7610)
+        # Fallback path: set_vfo("SUB") → set_freq → set_vfo("MAIN").
+        # Release each ACK only after its own send (1=select SUB, 2=set-freq
+        # fire-and-forget, 3=restore MAIN). Pre-queueing ACKs upfront lets the
+        # rx pump race them into the wrong consumer (fire-and-forget ACK sink
+        # vs restore waiter); the race winner differs between 3.11 and 3.12+
+        # because pre-3.12 asyncio.wait_for wraps the awaitable in an extra
+        # Task (gh-96764), changing scheduling order.
+        mock_transport.queue_response_on_send(1, ACK_IC7610)
+        mock_transport.queue_response_on_send(2, ACK_IC7610)
+        mock_transport.queue_response_on_send(3, ACK_IC7610)
         await ic7610.set_freq(7_074_000, receiver=1)
         frames = _civ_bytes(mock_transport.sent_packets)
         # Expect: select SUB → 0x05 set-freq → restore MAIN.
@@ -173,8 +179,11 @@ class TestPerReceiverMode:
     async def test_ic7610_set_mode_sub_uses_fallback(
         self, ic7610: IcomRadio, mock_transport: MockTransport
     ) -> None:
-        mock_transport.queue_response(ACK_IC7610)
-        mock_transport.queue_response(ACK_IC7610)
+        # Per-send ACK release — see test_ic7610_set_freq_sub_uses_fallback_
+        # select_restore for the 3.11-vs-3.12+ scheduling rationale.
+        mock_transport.queue_response_on_send(1, ACK_IC7610)
+        mock_transport.queue_response_on_send(2, ACK_IC7610)
+        mock_transport.queue_response_on_send(3, ACK_IC7610)
         await ic7610.set_mode(Mode.LSB, receiver=1)
         frames = _civ_bytes(mock_transport.sent_packets)
         sel_idx = next((i for i, f in enumerate(frames) if f == SEL_SUB), None)
