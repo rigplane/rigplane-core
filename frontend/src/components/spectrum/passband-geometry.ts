@@ -10,6 +10,29 @@ function clamp(value: number, min: number, max: number): number {
   return value < min ? min : value > max ? max : value;
 }
 
+// Modes whose passband is centered on the carrier (±width/2): CW/RTTY by
+// display convention, and double-sideband / FM-family modes (#1719).
+const SYMMETRIC_PASSBAND_MODES = new Set([
+  'CW',
+  'CW-R',
+  'RTTY',
+  'RTTY-R',
+  'AM',
+  'AM-N',
+  'FM',
+  'FM-N',
+  'WFM',
+  'DATA-FM',
+  'DATA-FM-N',
+  'C4FM-DN',
+  'C4FM-VW',
+  'DV',
+]);
+
+function isSymmetricPassbandMode(normalizedMode: string): boolean {
+  return SYMMETRIC_PASSBAND_MODES.has(normalizedMode);
+}
+
 export function getPassbandEdgesHz(mode: string, passbandHz: number, shiftHz: number): {
   leftHz: number;
   rightHz: number;
@@ -23,13 +46,7 @@ export function getPassbandEdgesHz(mode: string, passbandHz: number, shiftHz: nu
     };
   }
 
-  if (
-    normalizedMode === 'CW' ||
-    normalizedMode === 'CW-R' ||
-    normalizedMode === 'RTTY' ||
-    normalizedMode === 'RTTY-R' ||
-    normalizedMode === 'AM'
-  ) {
+  if (isSymmetricPassbandMode(normalizedMode)) {
     return {
       leftHz: shiftHz - passbandHz / 2,
       rightHz: shiftHz + passbandHz / 2,
@@ -94,13 +111,7 @@ export function getFilterWidthFromRightEdgePx(
   const normalizedMode = mode.toUpperCase();
 
   let widthHz: number;
-  if (
-    normalizedMode === 'CW' ||
-    normalizedMode === 'CW-R' ||
-    normalizedMode === 'RTTY' ||
-    normalizedMode === 'RTTY-R' ||
-    normalizedMode === 'AM'
-  ) {
+  if (isSymmetricPassbandMode(normalizedMode)) {
     widthHz = (rightEdgeHz - shiftHz) * 2;
   } else {
     widthHz = rightEdgeHz - shiftHz;

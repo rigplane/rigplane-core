@@ -28,8 +28,25 @@ describe('getPassbandEdgesHz', () => {
     expect(getPassbandEdgesHz('CW-R', 500, 0)).toEqual({ leftHz: -250, rightHz: 250 });
   });
 
-  it('places FM passband above carrier (same as USB)', () => {
-    expect(getPassbandEdgesHz('FM', 15000, 0)).toEqual({ leftHz: 0, rightHz: 15000 });
+  it('centers FM passband around carrier (#1719)', () => {
+    expect(getPassbandEdgesHz('FM', 15000, 0)).toEqual({ leftHz: -7500, rightHz: 7500 });
+  });
+
+  it('centers narrow/wide FM variants around carrier (#1719)', () => {
+    expect(getPassbandEdgesHz('FM-N', 10000, 0)).toEqual({ leftHz: -5000, rightHz: 5000 });
+    expect(getPassbandEdgesHz('WFM', 200000, 0)).toEqual({ leftHz: -100000, rightHz: 100000 });
+    expect(getPassbandEdgesHz('DATA-FM', 15000, 0)).toEqual({ leftHz: -7500, rightHz: 7500 });
+    expect(getPassbandEdgesHz('DATA-FM-N', 10000, 0)).toEqual({ leftHz: -5000, rightHz: 5000 });
+  });
+
+  it('centers digital FM-based modes around carrier (#1719)', () => {
+    expect(getPassbandEdgesHz('DV', 7000, 0)).toEqual({ leftHz: -3500, rightHz: 3500 });
+    expect(getPassbandEdgesHz('C4FM-DN', 12500, 0)).toEqual({ leftHz: -6250, rightHz: 6250 });
+    expect(getPassbandEdgesHz('C4FM-VW', 12500, 0)).toEqual({ leftHz: -6250, rightHz: 6250 });
+  });
+
+  it('centers narrow AM around carrier (#1719)', () => {
+    expect(getPassbandEdgesHz('AM-N', 6000, 0)).toEqual({ leftHz: -3000, rightHz: 3000 });
   });
 
   it('applies IF shift to both passband edges', () => {
@@ -132,6 +149,10 @@ describe('getFilterWidthFromRightEdgePx', () => {
 
   it('derives symmetric AM width from the right edge', () => {
     expect(getFilterWidthFromRightEdgePx('AM', 0, 12000, 600, 375)).toBe(3000);
+  });
+
+  it('derives symmetric FM width from the right edge (#1719)', () => {
+    expect(getFilterWidthFromRightEdgePx('FM', 0, 12000, 600, 375, 15000)).toBe(3000);
   });
 
   it('disables right-edge resize for LSB', () => {
