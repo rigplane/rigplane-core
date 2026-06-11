@@ -105,6 +105,8 @@ class TestProfileParity:
                 # (MOR-661).
                 # Data / System
                 "data_mode",
+                # MOR-678: USB/LAN/DATA MOD-input routing source-select guard.
+                "mod_input_routing",
                 "power_control",
                 "dial_lock",
                 "scan",
@@ -123,7 +125,8 @@ class TestProfileParity:
 
     def test_capabilities_count(self, profile):
         # MOR-661: dropped repeater_tone + tsql (48 → 46).
-        assert len(profile.capabilities) == 46
+        # MOR-678: added mod_input_routing (46 → 47).
+        assert len(profile.capabilities) == 47
 
     def test_cmd29_routes_exact(self, profile):
         expected = frozenset(

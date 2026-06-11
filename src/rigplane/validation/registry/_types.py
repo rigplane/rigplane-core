@@ -60,6 +60,8 @@ class ValueRule(StrEnum):
     # MOR-671 — FTX-1 DSP RMVR checks
     SHIFT_HZ = "shift_hz"
     CONTOUR_FLIP = "contour_flip"
+    # MOR-678 — IC-7610 MOD-input routing source select (enumerated 0-5)
+    MOD_SRC_FLIP = "mod_src_flip"
 
 
 # ---------------------------------------------------------------------------

@@ -1614,6 +1614,9 @@ _WRITE_ONLY_TEST_VALUES: dict[str, Any] = {
     # MOR-671 — IF-shift in-band test value; contour on-state.
     ValueRule.SHIFT_HZ: 600,
     ValueRule.CONTOUR_FLIP: 1,
+    # MOR-678 — MOD-input routing: LAN (index 3) is the documented digital
+    # source and always a valid setting on DATA-OFF/1/2/3.
+    ValueRule.MOD_SRC_FLIP: 3,
 }
 
 # Benign value to restore a write-only control to afterwards (best-effort).
@@ -1656,6 +1659,10 @@ _VALUE_RULE_FNS: dict[str, Callable[[Any], Any]] = {
     ValueRule.SHIFT_HZ: _nudge_if_shift,
     # MOR-671 — contour on/off: flip 0 <-> 1 (off <-> a valid on level).
     ValueRule.CONTOUR_FLIP: lambda v: 1 if int(v) == 0 else 0,
+    # MOR-678 — MOD-input routing source select (enumerated, range 0-5).
+    # Flip between two always-valid digital sources: USB (2) <-> LAN (3).
+    # Never writes an invalid source; restores the original afterwards.
+    ValueRule.MOD_SRC_FLIP: lambda v: 3 if int(v) != 3 else 2,
 }
 
 # Restore-safety predicates (MOR-659): when the CURRENT value of an RMVR

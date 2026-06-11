@@ -158,6 +158,11 @@
       "declaration": "supported"
     },
     {
+      "check_id": "mod_input.set",
+      "status": "skip",
+      "declaration": "supported"
+    },
+    {
       "check_id": "mode.set",
       "status": "skip",
       "declaration": "supported"

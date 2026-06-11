@@ -15,6 +15,13 @@ Safety classification:
   raising its gain while the operator has VOX armed) can key the transmitter
   from ambient microphone audio, so both require explicit operator
   authorization and are never auto-actuated.
+* ``mod_input.set`` (MOR-678) is an RMVR round-trip over the DATA-OFF
+  modulation-input source select (Icom ``1A 05 0091``). It guards the
+  TX-audio routing surface behind the "web voice TX = noise" failure mode
+  (the documented fix is DATA-OFF MOD = LAN): a regression that silently
+  flipped the source back to MIC would otherwise be invisible. The flip stays
+  between two always-valid digital sources (USB <-> LAN) and restores the
+  original; it does NOT key the transmitter, so it is a safe RMVR write.
 """
 
 from __future__ import annotations
@@ -137,6 +144,30 @@ CHECKS: tuple[CheckSpec, ...] = (
         get_op="get_dial_lock",
         set_op="set_dial_lock",
         value_rule=ValueRule.TOGGLE_BOOL,
+        tolerance=0,
+        hamlib_token=None,
+        tx_adjacent=False,
+    ),
+    # mod_input.set (MOR-678) — DATA-OFF MOD-input routing source select
+    # (Icom 1A 05 0091). RMVR over an enumerated source; the flip stays between
+    # two always-valid digital sources (USB <-> LAN) and restores the original.
+    # Guards the "web voice TX = noise" regression (DATA-OFF MOD must be LAN,
+    # not MIC). Does not key the transmitter — safe RMVR write.
+    CheckSpec(
+        check_id="mod_input.set",
+        capability="mod_input_routing",
+        kind=CheckKind.RMVR_SAFE_WRITE,
+        level=ValidationLevel.CAPABILITY_MATRIX,
+        failure_domain=FailureDomain.AUDIO,
+        summary=(
+            "Flip the DATA-OFF MOD-input routing source (USB <-> LAN), verify "
+            "readback, and restore the original; guards the TX-audio routing "
+            "regression behind the 'web voice TX = noise' failure mode."
+        ),
+        protocol="mod_input_routing",
+        get_op="get_data_off_mod_input",
+        set_op="set_data_off_mod_input",
+        value_rule=ValueRule.MOD_SRC_FLIP,
         tolerance=0,
         hamlib_token=None,
         tx_adjacent=False,

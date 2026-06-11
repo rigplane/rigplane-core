@@ -51,6 +51,7 @@ __all__ = [
     "CAP_SQL_TYPE",
     "CAP_VOICE_TX",
     "CAP_DATA_MODE",
+    "CAP_MOD_INPUT_ROUTING",
     "CAP_AGC",
     "CAP_POWER_CONTROL",
     "CAP_DIAL_LOCK",
@@ -155,6 +156,11 @@ CAP_SQL_TYPE = "sql_type"
 # Data
 CAP_DATA_MODE = "data_mode"
 
+# Modulation input routing — USB/LAN/DATA MOD source select (Icom 1A 05
+# 0089-0094). Guards the TX-audio routing surface behind the "web voice TX =
+# noise" failure mode (the documented fix is DATA-OFF MOD = LAN; MOR-678).
+CAP_MOD_INPUT_ROUTING = "mod_input_routing"
+
 # AGC
 CAP_AGC = "agc"
 
@@ -235,6 +241,8 @@ KNOWN_CAPABILITIES: frozenset[str] = frozenset(
         CAP_VOICE_TX,
         # Data
         CAP_DATA_MODE,
+        # Modulation input routing
+        CAP_MOD_INPUT_ROUTING,
         # AGC
         CAP_AGC,
         # System

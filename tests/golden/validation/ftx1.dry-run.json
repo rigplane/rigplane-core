@@ -108,6 +108,11 @@
       "declaration": "supported"
     },
     {
+      "check_id": "mod_input.set",
+      "status": "unsupported",
+      "declaration": "unsupported_pending_evidence"
+    },
+    {
       "check_id": "mode.set",
       "status": "skip",
       "declaration": "supported"

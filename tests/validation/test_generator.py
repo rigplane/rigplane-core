@@ -121,6 +121,30 @@ def test_undeclared_functional_pending():
     )
 
 
+def test_mod_input_supported_when_cap_declared():
+    """MOR-678: mod_input.set is SUPPORTED when mod_input_routing is declared
+    (IC-7610), and UNSUPPORTED_PENDING_EVIDENCE otherwise (X6200/FTX-1)."""
+    declared = build_template_from_capabilities(
+        frozenset({"mod_input_routing"}),
+        model="IC-7610",
+        profile_id="ic7610",
+    )
+    by_id = {e.check_id: e for e in declared.entries}
+    assert by_id["mod_input.set"].declaration == CapabilityDeclaration.SUPPORTED
+
+    undeclared = build_template_from_capabilities(
+        frozenset(),
+        model="X6200",
+        profile_id="x6200",
+    )
+    by_id2 = {e.check_id: e for e in undeclared.entries}
+    assert "mod_input.set" in by_id2
+    assert (
+        by_id2["mod_input.set"].declaration
+        == CapabilityDeclaration.UNSUPPORTED_PENDING_EVIDENCE
+    )
+
+
 def test_manual_kind_manual_required():
     """MANUAL checks map to CapabilityDeclaration.MANUAL_REQUIRED when capability declared.
 
