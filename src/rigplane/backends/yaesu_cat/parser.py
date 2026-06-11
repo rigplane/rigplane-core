@@ -116,7 +116,11 @@ _PLACEHOLDER_REGEX: dict[str, tuple[str, Any]] = {
     "wpm:03d": (r"(?P<wpm>\d{3})", int),
     "code:03d": (r"(?P<code>\d{3})", int),
     "idx:02d": (r"(?P<idx>\d{2})", int),
-    "delay:04d": (r"(?P<delay>\d{4})", int),
+    # MOR-561: the FTX-1 answers ``SD;`` with a short ``SD09;`` (2-digit) form
+    # while the template is the canonical ``SD{delay:04d};`` (4-digit). Accept
+    # 2–4 digits so the QSK-delay read parses instead of warning every cycle.
+    # ``delay`` is FTX-1-only, so this does not affect any other radio.
+    "delay:04d": (r"(?P<delay>\d{2,4})", int),
     "head": (r"(?P<head>.)", str),
     "watts:03d": (r"(?P<watts>\d{3})", int),
     "model:04d": (r"(?P<model>\d{4})", int),
