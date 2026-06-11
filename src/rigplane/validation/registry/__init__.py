@@ -16,6 +16,10 @@ edit disjoint files (MOR-637):
 - ``_surfaces`` — audio, scope, meters (17-19)
 - ``_tx`` — tuner, PTT (20-21)
 - ``_audio`` — appended CI-automated audio probes (GH #1650, MOR-639/640/641)
+- ``_tone`` — CTCSS repeater tone, TSQL, tone frequencies (MOR-642)
+- ``_vfo`` — split, VFO A/B slot, dual watch (MOR-643)
+- ``_memory`` — band-stack manual check (MOR-644)
+- ``_system`` — system clock, CW keyer speed, VOX, dial lock (MOR-645)
 
 ``_assembly`` concatenates them into ``REGISTRY`` (order-preserving) and runs
 the import-time invariant guard; ``_builders`` holds the template generators.

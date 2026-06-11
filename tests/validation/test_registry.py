@@ -28,8 +28,61 @@ from rigplane.validation.schema import FailureDomain, ValidationLevel
 # ---------------------------------------------------------------------------
 
 
-def test_registry_has_24_entries():
-    assert len(REGISTRY) == 24
+# Frozen snapshot of the REGISTRY check ids. Deliberately updated for the
+# append-only audio-probe family (GH #1650, MOR-639/640/641) and the
+# MOR-642..645 command-coverage families (tone/TSQL, split/VFO/dual-watch,
+# band-stack, system) on top of the pre-split 21 (MOR-637 guard).
+_EXPECTED_CHECK_IDS = {
+    # Pre-split 21 (MOR-637)
+    "discovery.identify",
+    "freq.write",
+    "freq.reverse_sync",
+    "mode.set",
+    "filter_width.set",
+    "rf_gain.set",
+    "af_level.set",
+    "preamp.set",
+    "attenuator.set",
+    "notch.set",
+    "nb.set",
+    "nr.set",
+    "agc.set",
+    "rit.set",
+    "xit.set",
+    "squelch.set",
+    "audio.rx",
+    "scope.capture",
+    "meters.read",
+    "tuner.tune",
+    "tx.ptt",
+    # Appended audio-probe family (CI-automated, GH #1650 / MOR-639/640/641)
+    "audio.rx.rms",
+    "audio.tx.byte_perfect",
+    "scope.fft.presence",
+    # T7 / MOR-642 — tone / TSQL
+    "repeater_tone.set",
+    "tone_freq.set",
+    "tsql.set",
+    "tsql_freq.set",
+    # T8 / MOR-643 — split / VFO / dual-watch
+    "split.set",
+    "vfo_slot.set",
+    "dual_watch.set",
+    # T9 / MOR-644 — memory / band-stack
+    "bsr.select",
+    # T10 / MOR-645 — system
+    "system_date.read",
+    "system_time.read",
+    "key_speed.set",
+    "vox.read",
+    "vox.set",
+    "vox_gain.set",
+    "dial_lock.set",
+}
+
+
+def test_registry_has_expected_entry_count():
+    assert len(REGISTRY) == len(_EXPECTED_CHECK_IDS) == 39
 
 
 def test_check_ids_unique():
@@ -38,37 +91,10 @@ def test_check_ids_unique():
 
 
 def test_check_id_set_unchanged_after_domain_split():
-    """MOR-637 guard: the per-domain package split must not lose, duplicate,
-    or rename any check. Frozen snapshot of the pre-split REGISTRY ids, plus
-    the append-only audio-probe family (GH #1650, MOR-639/640/641)."""
-    expected = {
-        "discovery.identify",
-        "freq.write",
-        "freq.reverse_sync",
-        "mode.set",
-        "filter_width.set",
-        "rf_gain.set",
-        "af_level.set",
-        "preamp.set",
-        "attenuator.set",
-        "notch.set",
-        "nb.set",
-        "nr.set",
-        "agc.set",
-        "rit.set",
-        "xit.set",
-        "squelch.set",
-        "audio.rx",
-        "scope.capture",
-        "meters.read",
-        "tuner.tune",
-        "tx.ptt",
-        # Appended audio-probe family (CI-automated, GH #1650):
-        "audio.rx.rms",
-        "audio.tx.byte_perfect",
-        "scope.fft.presence",
-    }
-    assert {spec.check_id for spec in REGISTRY} == expected
+    """Guard: the per-domain package split (MOR-637), the audio-probe family
+    (GH #1650, MOR-639/640/641), and the coverage families (MOR-642..645)
+    must not lose, duplicate, or rename any check."""
+    assert {spec.check_id for spec in REGISTRY} == _EXPECTED_CHECK_IDS
 
 
 def test_all_capabilities_known():
@@ -93,10 +119,18 @@ def test_tx_adjacent_blocked_implies_tx_adjacent():
             assert spec.tx_adjacent is True, (
                 f"{spec.check_id!r}: TX_ADJACENT_BLOCKED but tx_adjacent is False"
             )
-    # tuner.tune, tx.ptt, and the TX-audio probe (GH #1650: TX audio stays
-    # behind explicit operator safety enablement) are the only tx_adjacent ids.
+    # Closed set of TX-adjacent checks: tuner.tune + tx.ptt; the TX-audio probe
+    # (GH #1650: TX audio stays behind explicit operator safety enablement);
+    # and vox.set / vox_gain.set (MOR-645: an enabled or gain-boosted VOX can
+    # key TX from ambient audio).
     tx_adjacent_ids = {spec.check_id for spec in REGISTRY if spec.tx_adjacent}
-    assert tx_adjacent_ids == {"tuner.tune", "tx.ptt", "audio.tx.byte_perfect"}
+    assert tx_adjacent_ids == {
+        "tuner.tune",
+        "tx.ptt",
+        "audio.tx.byte_perfect",
+        "vox.set",
+        "vox_gain.set",
+    }
 
 
 def test_manual_and_blocked_have_no_set_op():
