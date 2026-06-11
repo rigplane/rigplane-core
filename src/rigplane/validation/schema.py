@@ -13,13 +13,50 @@ indexing so the public API stays type-safe without ``type: ignore``.
 
 from __future__ import annotations
 
+import dataclasses
 from dataclasses import dataclass, field
-from enum import IntEnum, StrEnum
+from enum import Enum, IntEnum, StrEnum
 
 from rigplane.core.capabilities import KNOWN_CAPABILITIES
 
 SCHEMA_VERSION = 1
 TOOL_NAME = "rigplane-validation-matrix"
+
+
+def _jsonify(value: object) -> object:
+    """Recursively coerce ``value`` into JSON-serializable types.
+
+    Evidence dicts can hold non-primitive objects (a ``ScopeFixedEdge``
+    dataclass, an ``Enum``, ``bytes``) that ``json.dumps`` cannot encode.
+    This walker normalizes them so the artifact can ALWAYS be emitted:
+
+    - dataclass instance -> its ``to_dict()`` if present, else ``asdict`` (recurse);
+    - ``Enum`` -> its ``.value``;
+    - ``bytes``/``bytearray`` -> hex string;
+    - ``set``/``tuple`` -> list of recursed elements;
+    - ``dict`` -> recursed values (non-str keys coerced via ``str``);
+    - ``list`` -> recursed elements;
+    - primitives (str/int/float/bool/None) -> unchanged.
+    """
+    if value is None or isinstance(value, (str, bool, int, float)):
+        return value
+    if isinstance(value, Enum):
+        return _jsonify(value.value)
+    if isinstance(value, (bytes, bytearray)):
+        return value.hex()
+    if dataclasses.is_dataclass(value) and not isinstance(value, type):
+        to_dict = getattr(value, "to_dict", None)
+        if callable(to_dict):
+            return _jsonify(to_dict())
+        return _jsonify(dataclasses.asdict(value))
+    if isinstance(value, dict):
+        return {
+            (key if isinstance(key, str) else str(key)): _jsonify(item)
+            for key, item in value.items()
+        }
+    if isinstance(value, (list, tuple, set, frozenset)):
+        return [_jsonify(item) for item in value]
+    return value
 
 
 class CheckStatus(StrEnum):
@@ -94,7 +131,9 @@ class CheckResult:
         if self.failure_domain is not None:
             payload["failure_domain"] = self.failure_domain.value
         if self.evidence:
-            payload["evidence"] = dict(self.evidence)
+            payload["evidence"] = {
+                key: _jsonify(value) for key, value in self.evidence.items()
+            }
         if self.error:
             payload["error"] = self.error
         if self.started_at is not None:
