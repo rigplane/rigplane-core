@@ -72,6 +72,8 @@ _LOGGER = logging.getLogger("rigplane.validation")
 T = TypeVar("T")
 
 # Exceptions handled by the best-effort restore path; never escapes ``finally``.
+# ``ValueError``/``TypeError`` are included because command encoders raise them
+# for out-of-band values (MOR-659: a 16.5 Hz tone readback aborted a whole run).
 _RESTORE_ERRORS = (
     asyncio.TimeoutError,
     RigTimeoutError,
@@ -80,6 +82,8 @@ _RESTORE_ERRORS = (
     AuthenticationError,
     CommandError,
     OSError,
+    ValueError,
+    TypeError,
 )
 
 # Capability tag -> capability Protocol used for runtime ``isinstance`` checks.
@@ -139,14 +143,26 @@ async def execute_hardware_checks(
     by_level: dict[ValidationLevel, list[CheckResult]] = {}
     for entry in template.entries:
         started = _utcnow_iso()
-        result = await _run_one_check(
-            radio,
-            entry,
-            safety,
-            allow_writes=allow_writes,
-            per_check_timeout=per_check_timeout,
-            write_only_capabilities=write_only_capabilities,
-        )
+        try:
+            result = await _run_one_check(
+                radio,
+                entry,
+                safety,
+                allow_writes=allow_writes,
+                per_check_timeout=per_check_timeout,
+                write_only_capabilities=write_only_capabilities,
+            )
+        except Exception as exc:
+            # Backstop (MOR-659): one raising check must never abort the
+            # matrix — the artifact is ALWAYS produced. ``BaseException``
+            # (KeyboardInterrupt/SystemExit/CancelledError) still propagates.
+            _LOGGER.exception("validate check %s raised unexpectedly", entry.check_id)
+            result = _base_result(
+                entry,
+                CheckStatus.FAIL,
+                failure_domain=FailureDomain.COMMAND_EXECUTION,
+                error=repr(exc),
+            )
         finished = _utcnow_iso()
         result = dataclasses.replace(result, started_at=started, finished_at=finished)
         _LOGGER.info(
@@ -360,6 +376,15 @@ async def _guard(
             failure_domain=FailureDomain.COMMAND_EXECUTION,
             error=str(exc),
         )
+    except (ValueError, TypeError) as exc:
+        # Command encoders raise these for out-of-band values (MOR-659:
+        # set_tone_freq(16.5) -> ValueError); contain them per-check.
+        return None, _base_result(
+            entry,
+            CheckStatus.FAIL,
+            failure_domain=FailureDomain.COMMAND_EXECUTION,
+            error=str(exc),
+        )
 
 
 def _default_equal(a: T, b: T) -> bool:
@@ -426,18 +451,37 @@ async def _read_modify_verify_restore(
     per_check_timeout: float,
     equal: Callable[[T, T], bool] = _default_equal,
     extra_evidence: dict[str, object] | None = None,
+    restorable: Callable[[T], bool] | None = None,
 ) -> CheckResult:
     """Read-modify-verify-restore an RX-safe control and report the outcome.
 
     Reads the original value, writes a different value, verifies the readback
     reacted, and always restores the original in a ``finally`` that never
     raises. The original is restored even if the write or readback failed.
+
+    When ``restorable`` is given and rejects the original value (it is outside
+    the control's settable band, so it could never be written back), the check
+    SKIPs BEFORE any write — a non-destructive harness must never mutate the
+    radio to a state it cannot restore from (MOR-659).
     """
     original, fail = await _guard(read(), entry, per_check_timeout=per_check_timeout)
     if fail is not None:
         return fail
     # ``original`` is a valid value (bool/0 included); cast for typing.
     original = cast(T, original)
+
+    if restorable is not None and not restorable(original):
+        return _base_result(
+            entry,
+            CheckStatus.SKIP,
+            evidence={
+                "original": original,
+                "reason": (
+                    "current value outside settable range; not mutated to "
+                    "keep the run non-destructive"
+                ),
+            },
+        )
 
     changed = make_changed(original)
     evidence: dict[str, object] = {"original": original, "changed": changed}
@@ -1111,6 +1155,16 @@ _VALUE_RULE_FNS: dict[str, Callable[[Any], Any]] = {
     ValueRule.SCOPE_REF_DB: lambda r: 5.0 if float(r) != 5.0 else 0.0,
 }
 
+# Restore-safety predicates (MOR-659): when the CURRENT value of an RMVR
+# control is outside the encoder's settable band, the check must SKIP without
+# writing — a test value could never be restored from. Bounds mirror the real
+# encoder: ``commands/tone.py::_encode_tone_freq`` (67.0-254.1 Hz, shared by
+# ``set_tone_freq`` and ``set_tsql_freq``). The live IC-7610 read back 16.5 Hz
+# (tone not configured), which aborted an entire validation run.
+_VALUE_RULE_RESTORABLE: dict[str, Callable[[Any], bool]] = {
+    ValueRule.TONE_FREQ_CYCLE: lambda v: 67.0 <= float(v) <= 254.1,
+}
+
 
 async def _set_and_observe(
     radio: Radio,
@@ -1269,6 +1323,7 @@ async def _check_from_spec(
                 "value_rule": str(spec.value_rule),
                 "kind": str(spec.kind),
             },
+            restorable=_VALUE_RULE_RESTORABLE.get(spec.value_rule),
         )
 
     if spec.kind is CheckKind.WRITE_ONLY_OBSERVE:
