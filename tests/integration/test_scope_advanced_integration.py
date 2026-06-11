@@ -148,14 +148,14 @@ class ScopeMockRadio(MockIcomRadio):
 
         # --- 0x27 0x1E: scope fixed edge ---
         if sub == _SUB_SCOPE_FIXED_EDGE:
-            if rest:  # SET: 12-byte payload
-                if len(rest) >= 12:
-                    self._fixed_range_index = _bcd_byte_decode(rest[0])
-                    self._fixed_edge = _bcd_byte_decode(rest[1])
-                    self._fixed_start_hz = _bcd_decode_freq(rest[2:7])
-                    self._fixed_end_hz = _bcd_decode_freq(rest[7:12])
+            if len(rest) >= 12:  # SET: <range><edge> + start(5) + end(5)
+                self._fixed_range_index = _bcd_byte_decode(rest[0])
+                self._fixed_edge = _bcd_byte_decode(rest[1])
+                self._fixed_start_hz = _bcd_decode_freq(rest[2:7])
+                self._fixed_end_hz = _bcd_decode_freq(rest[7:12])
                 return self._civ_ack(to, frm)
-            # GET: 12-byte response
+            # GET: a <range><edge> selector (2 bytes) is required by the
+            # IC-7610 (MOR-662); respond with the 12-byte fixed-edge bounds.
             data = (
                 bytes([_bcd_byte(self._fixed_range_index)])
                 + bytes([_bcd_byte(self._fixed_edge)])

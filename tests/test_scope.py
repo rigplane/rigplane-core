@@ -838,8 +838,20 @@ class TestScopeCommandBuilders:
         assert frame == b"\xfe\xfe\x98\xe0\x27\x1d\xfd"
 
     def test_get_scope_fixed_edge(self) -> None:
+        # IC-7610 NAKs a bare 0x27 0x1E query; it requires a <range><edge>
+        # selector. Defaults are range=1, edge=1 (MOR-662).
         frame = get_scope_fixed_edge()
-        assert frame == b"\xfe\xfe\x98\xe0\x27\x1e\xfd"
+        assert frame == b"\xfe\xfe\x98\xe0\x27\x1e\x01\x01\xfd"
+
+    def test_get_scope_fixed_edge_selector(self) -> None:
+        frame = get_scope_fixed_edge(range_index=6, edge=4)
+        assert frame == b"\xfe\xfe\x98\xe0\x27\x1e\x06\x04\xfd"
+
+    def test_get_scope_fixed_edge_rejects_bad_edge(self) -> None:
+        with pytest.raises(ValueError):
+            get_scope_fixed_edge(edge=5)
+        with pytest.raises(ValueError):
+            get_scope_fixed_edge(edge=0)
 
     def test_scope_set_fixed_edge(self) -> None:
         frame = scope_set_fixed_edge(edge=4, start_hz=14_000_000, end_hz=14_350_000)

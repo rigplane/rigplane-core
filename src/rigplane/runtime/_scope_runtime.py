@@ -433,7 +433,9 @@ class ScopeRuntimeMixin(_MixinBase):  # type: ignore[misc]
         """Read the fixed-edge scope bounds."""
         self._check_connected()
         resp = await self._send_civ_expect(
-            _get_scope_fixed_edge_cmd(to_addr=self._radio_addr),
+            # IC-7610 requires a <range><edge> selector or it NAKs the read
+            # (MOR-662). Use range 1, edge 1.
+            _get_scope_fixed_edge_cmd(to_addr=self._radio_addr, range_index=1, edge=1),
             label="get_scope_fixed_edge",
         )
         fixed_edge = parse_scope_fixed_edge_response(resp)

@@ -1249,6 +1249,25 @@ class TestAdvancedScopeParsers:
         assert bounds.start_hz == 14_000_000
         assert bounds.end_hz == 14_350_000
 
+    def test_parse_scope_fixed_edge_response_captured_ic7610(self) -> None:
+        # Raw CI-V captured on the live IC-7610 (MOR-662):
+        #   RX fe fe e0 98 27 1e 01 01 00 00 50 00 00 00 00 50 01 00 fd
+        # Payload after 27 1e: range=01 edge=01 start(5B BCD) end(5B BCD).
+        from rigplane.commands import parse_scope_fixed_edge_response
+
+        frame = CivFrame(
+            0xE0,
+            0x98,
+            0x27,
+            0x1E,
+            bytes.fromhex("0101" + "0000500000" + "0000500100"),
+        )
+        bounds = parse_scope_fixed_edge_response(frame)
+        assert bounds.range_index == 1
+        assert bounds.edge == 1
+        assert bounds.start_hz == 500_000
+        assert bounds.end_hz == 1_500_000
+
     def test_parse_scope_span_response_from_single_byte_index(self) -> None:
         from rigplane.commands import parse_scope_span_response
 
