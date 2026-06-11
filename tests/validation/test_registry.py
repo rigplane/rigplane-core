@@ -37,6 +37,35 @@ def test_check_ids_unique():
     assert len(ids) == len(set(ids))
 
 
+def test_check_id_set_unchanged_after_domain_split():
+    """MOR-637 guard: the per-domain package split must not lose, duplicate,
+    or rename any check. Frozen snapshot of the pre-split REGISTRY ids."""
+    expected = {
+        "discovery.identify",
+        "freq.write",
+        "freq.reverse_sync",
+        "mode.set",
+        "filter_width.set",
+        "rf_gain.set",
+        "af_level.set",
+        "preamp.set",
+        "attenuator.set",
+        "notch.set",
+        "nb.set",
+        "nr.set",
+        "agc.set",
+        "rit.set",
+        "xit.set",
+        "squelch.set",
+        "audio.rx",
+        "scope.capture",
+        "meters.read",
+        "tuner.tune",
+        "tx.ptt",
+    }
+    assert {spec.check_id for spec in REGISTRY} == expected
+
+
 def test_all_capabilities_known():
     allowed = {"", *KNOWN_CAPABILITIES}
     for spec in REGISTRY:
