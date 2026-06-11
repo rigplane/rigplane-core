@@ -3,7 +3,7 @@
 Public facade for the ``rigplane.validation.registry`` package.  Defines the
 closed set of check kinds and value-mutation rules, the ``CheckSpec``
 dataclass (pure data, no hardware dependencies), and ``REGISTRY`` — the
-canonical 21-entry tuple that drives every validation run regardless of radio
+canonical check tuple that drives every validation run regardless of radio
 model or backend.
 
 The check rows live in per-domain submodules so coverage-expansion work can
@@ -15,6 +15,7 @@ edit disjoint files (MOR-637):
 - ``_tuning`` — RIT, XIT, squelch (14-16)
 - ``_surfaces`` — audio, scope, meters (17-19)
 - ``_tx`` — tuner, PTT (20-21)
+- ``_audio`` — appended CI-automated audio probes (GH #1650, MOR-639/640/641)
 
 ``_assembly`` concatenates them into ``REGISTRY`` (order-preserving) and runs
 the import-time invariant guard; ``_builders`` holds the template generators.

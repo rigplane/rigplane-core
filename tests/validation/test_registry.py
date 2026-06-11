@@ -28,8 +28,8 @@ from rigplane.validation.schema import FailureDomain, ValidationLevel
 # ---------------------------------------------------------------------------
 
 
-def test_registry_has_23_entries():
-    assert len(REGISTRY) == 23
+def test_registry_has_24_entries():
+    assert len(REGISTRY) == 24
 
 
 def test_check_ids_unique():
@@ -66,6 +66,7 @@ def test_check_id_set_unchanged_after_domain_split():
         # Appended audio-probe family (CI-automated, GH #1650):
         "audio.rx.rms",
         "audio.tx.byte_perfect",
+        "scope.fft.presence",
     }
     assert {spec.check_id for spec in REGISTRY} == expected
 

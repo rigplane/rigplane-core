@@ -17,9 +17,15 @@ from rigplane.validation.audio_checks import (
     PROBE_FRAME_BYTES,
     PROBE_SAMPLES_PER_FRAME,
     PROBE_TONE_HZ,
+    audio_probe_level_results,
+    run_audio_probe_checks,
     run_rx_rms_check,
+    run_scope_presence_check,
     run_tx_byte_perfect_check,
 )
+from rigplane.validation.gating import gate_artifacts
+from rigplane.validation.runner import build_validation_artifact
+from rigplane.validation.schema import validate_artifact_dict
 from rigplane.validation.registry import (
     REGISTRY_BY_ID,
     CheckKind,
@@ -29,6 +35,8 @@ from rigplane.validation.schema import (
     CapabilityDeclaration,
     CheckStatus,
     FailureDomain,
+    OperatorSafetyBlock,
+    TransportInfo,
     ValidationLevel,
 )
 
@@ -229,3 +237,122 @@ async def test_tx_byte_perfect_check_fails_on_dropped_frames() -> None:
     assert result.status is CheckStatus.FAIL
     assert result.failure_domain is FailureDomain.AUDIO
     assert result.evidence["payload_matches"] is False
+
+
+# ---------------------------------------------------------------------------
+# T6 / MOR-641 — scope-presence probe
+# ---------------------------------------------------------------------------
+
+
+def test_scope_fft_presence_spec_registered() -> None:
+    spec = REGISTRY_BY_ID["scope.fft.presence"]
+    assert spec.kind is CheckKind.AUDIO_PROBE
+    assert spec.capability == "scope"
+    assert spec.level == ValidationLevel.COMPATIBILITY_SURFACES
+    assert spec.failure_domain is FailureDomain.SCOPE_WATERFALL
+    assert spec.tx_adjacent is False
+
+
+def test_manual_scope_capture_check_kept_for_real_hardware() -> None:
+    spec = REGISTRY_BY_ID["scope.capture"]
+    assert spec.kind is CheckKind.MANUAL
+
+
+async def test_scope_presence_check_passes_on_tone() -> None:
+    """A 1 kHz tone raises in-band FFT bins well above the baseline.
+
+    Regression guard for the MOR-512/528 adaptive in-band auto-range: a
+    clean in-band signal must stand out of the (clipped-low) baseline.
+    """
+    result = await run_scope_presence_check(backend=_backend())
+
+    assert result.check_id == "scope.fft.presence"
+    assert result.status is CheckStatus.PASS
+    assert result.failure_domain is None
+    assert result.error is None
+
+    frames = result.evidence["frames_emitted"]
+    assert isinstance(frames, int) and frames >= 1
+    signal_peak = result.evidence["signal_peak"]
+    baseline = result.evidence["baseline_median"]
+    assert isinstance(signal_peak, int) and isinstance(baseline, (int, float))
+    assert signal_peak > baseline
+
+
+async def test_scope_presence_check_fails_on_silence() -> None:
+    result = await run_scope_presence_check(backend=_backend(), pcm_transform=_silence)
+    assert result.status is CheckStatus.FAIL
+    assert result.failure_domain is FailureDomain.SCOPE_WATERFALL
+    assert result.error is not None
+
+
+async def test_scope_presence_check_fails_when_no_frames_emitted() -> None:
+    """Starving the scope below one FFT window emits no frame at all."""
+    result = await run_scope_presence_check(
+        backend=_backend(),
+        frame_count=1,  # 960 samples < 2048-sample FFT window
+    )
+    assert result.status is CheckStatus.FAIL
+    assert result.failure_domain is FailureDomain.SCOPE_WATERFALL
+    assert result.evidence["frames_emitted"] == 0
+
+
+# ---------------------------------------------------------------------------
+# Aggregation: artifact + golden-gate integration
+# ---------------------------------------------------------------------------
+
+
+async def test_run_audio_probe_checks_runs_all_three() -> None:
+    checks = await run_audio_probe_checks()
+    assert [check.check_id for check in checks] == [
+        "audio.rx.rms",
+        "audio.tx.byte_perfect",
+        "scope.fft.presence",
+    ]
+    assert all(check.status is CheckStatus.PASS for check in checks)
+
+
+async def test_probe_results_flow_into_artifact_and_golden_gate() -> None:
+    """Probe CheckResults assemble into a schema-valid ValidationArtifact and
+    regress through gate_artifacts exactly like command checks."""
+    checks = await run_audio_probe_checks()
+    levels = audio_probe_level_results(checks)
+    assert len(levels) == 1
+    assert levels[0].level == ValidationLevel.COMPATIBILITY_SURFACES
+
+    template = build_template_from_capabilities(
+        frozenset({"audio", "scope"}),
+        model="CI Audio Harness",
+        profile_id="ci_audio_harness",
+    )
+    artifact = build_validation_artifact(
+        template=template,
+        levels=levels,
+        transport=TransportInfo(backend="fake-audio"),
+        safety=OperatorSafetyBlock(),
+        core_version="0.0.0-test",
+        mode="ci-audio-probe",
+    )
+    payload = artifact.to_dict()
+    # Round-trips through the strict schema validator.
+    validate_artifact_dict(payload)
+
+    # An all-PASS run gates clean against itself (the golden).
+    report = gate_artifacts(payload, payload)
+    assert report.ok
+    assert report.matched == 3
+
+    # A regressed probe (silent RX pipeline) is a BLOCKING regression.
+    regressed = await run_rx_rms_check(pcm_transform=_silence)
+    regressed_levels = audio_probe_level_results([regressed, *checks[1:]])
+    regressed_artifact = build_validation_artifact(
+        template=template,
+        levels=regressed_levels,
+        transport=TransportInfo(backend="fake-audio"),
+        safety=OperatorSafetyBlock(),
+        core_version="0.0.0-test",
+        mode="ci-audio-probe",
+    )
+    report = gate_artifacts(regressed_artifact.to_dict(), payload)
+    assert not report.ok
+    assert any("audio.rx.rms" in line for line in report.regressions)

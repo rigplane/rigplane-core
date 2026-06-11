@@ -28,7 +28,8 @@ from __future__ import annotations
 
 import datetime
 import math
-from collections.abc import Callable
+import statistics
+from collections.abc import Callable, Sequence
 from typing import cast
 
 from rigplane.audio.backend import AudioDeviceId, AudioDeviceInfo, FakeAudioBackend
@@ -39,11 +40,14 @@ from rigplane.audio.lan_stream import (
     parse_audio_packet,
 )
 from rigplane.core.transport import IcomTransport
+from rigplane.scope import ScopeFrame
 from rigplane.validation.registry import CheckSpec, get_spec
 from rigplane.validation.schema import (
     CapabilityDeclaration,
     CheckResult,
     CheckStatus,
+    LevelResult,
+    ValidationLevel,
 )
 
 __all__ = [
@@ -54,8 +58,13 @@ __all__ = [
     "PROBE_SAMPLES_PER_FRAME",
     "PROBE_TONE_HZ",
     "RX_RMS_TOLERANCE",
+    "SCOPE_MIN_RISE_PIXELS",
+    "SCOPE_MIN_SIGNAL_PIXEL",
     "PcmTransform",
+    "audio_probe_level_results",
+    "run_audio_probe_checks",
     "run_rx_rms_check",
+    "run_scope_presence_check",
     "run_tx_byte_perfect_check",
 ]
 
@@ -74,6 +83,21 @@ PROBE_FRAME_COUNT = 8
 # Relative RMS tolerance band for the RX probe: the fake pipeline delivers
 # byte-identical PCM, so any deviation beyond rounding indicates corruption.
 RX_RMS_TOLERANCE = 0.05
+
+# Scope-presence probe parameters (regression guard for the MOR-512/528
+# adaptive in-band auto-range). The synthetic VFO center is arbitrary —
+# AudioFftScope only needs a positive center frequency for RF mapping.
+SCOPE_CENTER_FREQ_HZ = 14_074_000
+_SCOPE_FFT_SIZE = 2048
+# In-band region inspected for the tone: the audio baseband the adaptive
+# window estimates over (MOR-512's _INBAND_FALLBACK_HI_HZ).
+_SCOPE_INBAND_HZ = 3_500.0
+# Baseline region: bins beyond this audio offset, far outside the passband.
+_SCOPE_BASELINE_MIN_HZ = 8_000.0
+# A real in-band tone must reach this pixel level (0-160 ScopeFrame scale)
+# and rise this far above the out-of-band baseline median.
+SCOPE_MIN_SIGNAL_PIXEL = 80
+SCOPE_MIN_RISE_PIXELS = 40
 
 PcmTransform = Callable[[bytes], bytes]
 """Fault-injection hook: mutates PCM as injected; the reference stays pristine."""
@@ -376,3 +400,164 @@ async def run_tx_byte_perfect_check(
         error=error,
         started_at=started_at,
     )
+
+
+# ---------------------------------------------------------------------------
+# T6 / MOR-641 — scope-presence probe
+# ---------------------------------------------------------------------------
+
+
+async def run_scope_presence_check(
+    *,
+    backend: FakeAudioBackend | None = None,
+    frame_count: int = PROBE_FRAME_COUNT,
+    pcm_transform: PcmTransform | None = None,
+) -> CheckResult:
+    """Feed a reference tone to the audio FFT scope; verify in-band presence.
+
+    Routes the tone through the fake RX capture stream into the REAL
+    :class:`~rigplane.audio.fft_scope.AudioFftScope` (the MOR-512/528
+    adaptive in-band auto-range path) and asserts the in-band pixel peak of
+    the emitted :class:`ScopeFrame` rises above the out-of-band baseline. A
+    silent or missing spectrum fails with ``failure_domain=scope_waterfall``.
+
+    Returns a SKIP result when numpy (the FFT dependency) is unavailable.
+    """
+    started_at = _utcnow_iso()
+    spec = _probe_spec("scope.fft.presence")
+    try:
+        from rigplane.audio.fft_scope import AudioFftScope
+
+        scope = AudioFftScope(
+            fft_size=_SCOPE_FFT_SIZE,
+            fps=1_000,
+            avg_count=1,
+            sample_rate=PROBE_SAMPLE_RATE,
+        )
+    except ImportError as exc:
+        return CheckResult(
+            check_id=spec.check_id,
+            capability=spec.capability,
+            level=spec.level,
+            status=CheckStatus.SKIP,
+            declaration=CapabilityDeclaration.SUPPORTED,
+            summary=spec.summary,
+            evidence={"reason": f"FFT dependency unavailable: {exc}"},
+            started_at=started_at,
+            finished_at=_utcnow_iso(),
+        )
+
+    frames: list[ScopeFrame] = []
+    scope.set_center_freq(SCOPE_CENTER_FREQ_HZ)
+    scope.on_frame(frames.append)
+
+    fake = backend if backend is not None else _default_backend()
+    capture = fake.open_rx(
+        _first_device(fake),
+        sample_rate=PROBE_SAMPLE_RATE,
+        channels=1,
+        frame_ms=PROBE_FRAME_MS,
+    )
+    reference = _sine_pcm16_mono(PROBE_TONE_HZ, samples=PROBE_SAMPLES_PER_FRAME)
+    injected = reference if pcm_transform is None else pcm_transform(reference)
+    await capture.start(scope.feed_audio)
+    try:
+        for _ in range(frame_count):
+            capture.inject_frame(injected)
+    finally:
+        await capture.stop()
+        scope.stop()
+
+    evidence: dict[str, object] = {
+        "tone_hz": PROBE_TONE_HZ,
+        "center_freq_hz": SCOPE_CENTER_FREQ_HZ,
+        "fft_size": _SCOPE_FFT_SIZE,
+        "frames_emitted": len(frames),
+        "min_signal_pixel": SCOPE_MIN_SIGNAL_PIXEL,
+        "min_rise_pixels": SCOPE_MIN_RISE_PIXELS,
+    }
+    if not frames:
+        return _probe_result(
+            "scope.fft.presence",
+            passed=False,
+            evidence=evidence,
+            error=(
+                f"no scope frame emitted from {frame_count} injected "
+                f"frame(s) ({frame_count * PROBE_SAMPLES_PER_FRAME} samples)"
+            ),
+            started_at=started_at,
+        )
+
+    last = frames[-1]
+    pixels = list(last.pixels)
+    span_hz = last.end_freq_hz - last.start_freq_hz
+    bin_hz = span_hz / max(1, len(pixels) - 1)
+    center = len(pixels) // 2
+    inband_half = int(_SCOPE_INBAND_HZ / bin_hz)
+    baseline_from = int(_SCOPE_BASELINE_MIN_HZ / bin_hz)
+
+    inband = pixels[max(0, center - inband_half) : center + inband_half + 1]
+    baseline = (
+        pixels[: max(0, center - baseline_from)] + pixels[center + baseline_from + 1 :]
+    )
+    signal_peak = max(inband) if inband else 0
+    baseline_median = float(statistics.median(baseline)) if baseline else 0.0
+
+    passed = (
+        signal_peak >= SCOPE_MIN_SIGNAL_PIXEL
+        and signal_peak - baseline_median >= SCOPE_MIN_RISE_PIXELS
+    )
+    evidence.update(
+        {
+            "signal_peak": int(signal_peak),
+            "baseline_median": baseline_median,
+            "pixel_bins": len(pixels),
+        }
+    )
+    error = (
+        None
+        if passed
+        else (
+            f"in-band pixel peak {signal_peak} vs baseline median "
+            f"{baseline_median:.1f} below presence thresholds "
+            f"(peak >= {SCOPE_MIN_SIGNAL_PIXEL}, rise >= {SCOPE_MIN_RISE_PIXELS})"
+        )
+    )
+    return _probe_result(
+        "scope.fft.presence",
+        passed=passed,
+        evidence=evidence,
+        error=error,
+        started_at=started_at,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Aggregation — fold probe results into the artifact/golden-gate machinery
+# ---------------------------------------------------------------------------
+
+
+async def run_audio_probe_checks(
+    *,
+    backend_factory: Callable[[], FakeAudioBackend] = _default_backend,
+) -> list[CheckResult]:
+    """Run the full AUDIO_PROBE family, each probe on a fresh fake backend."""
+    return [
+        await run_rx_rms_check(backend=backend_factory()),
+        await run_tx_byte_perfect_check(backend=backend_factory()),
+        await run_scope_presence_check(backend=backend_factory()),
+    ]
+
+
+def audio_probe_level_results(checks: Sequence[CheckResult]) -> list[LevelResult]:
+    """Group probe results by level for ``build_validation_artifact``.
+
+    Mirrors the runner/hardware grouping: ascending level order, original
+    order preserved within a level, empty levels omitted.
+    """
+    by_level: dict[ValidationLevel, list[CheckResult]] = {}
+    for check in checks:
+        by_level.setdefault(check.level, []).append(check)
+    return [
+        LevelResult(level=level, checks=by_level[level]) for level in sorted(by_level)
+    ]

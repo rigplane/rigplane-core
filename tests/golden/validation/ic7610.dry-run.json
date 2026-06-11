@@ -218,6 +218,11 @@
       "declaration": "manual_required"
     },
     {
+      "check_id": "scope.fft.presence",
+      "status": "manual_required",
+      "declaration": "manual_required"
+    },
+    {
       "check_id": "split.presence",
       "status": "unsupported",
       "declaration": "unsupported_pending_evidence"

@@ -58,4 +58,23 @@ CHECKS: tuple[CheckSpec, ...] = (
         # entry stays behind the tx_allowed operator gate like tx.ptt.
         tx_adjacent=True,
     ),
+    # 24 — scope.fft.presence (T6 / MOR-641)
+    CheckSpec(
+        check_id="scope.fft.presence",
+        capability="scope",
+        kind=CheckKind.AUDIO_PROBE,
+        level=ValidationLevel.COMPATIBILITY_SURFACES,
+        failure_domain=FailureDomain.SCOPE_WATERFALL,
+        summary=(
+            "Automated CI probe: feed a reference tone to the audio FFT scope "
+            "and verify in-band bins rise above the out-of-band baseline."
+        ),
+        protocol="scope",
+        get_op=None,
+        set_op=None,
+        value_rule=ValueRule.TOGGLE_BOOL,
+        tolerance=0,
+        hamlib_token=None,
+        tx_adjacent=False,
+    ),
 )
