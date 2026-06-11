@@ -871,16 +871,22 @@ async def _check_af_level_set(
     )
 
 
-async def _check_preamp_set(
+def _merge_evidence(result: CheckResult, extra: dict[str, object]) -> CheckResult:
+    """Return ``result`` with ``extra`` merged into its evidence dict."""
+    if not extra:
+        return result
+    merged = dict(result.evidence)
+    merged.update(extra)
+    return dataclasses.replace(result, evidence=merged)
+
+
+async def _preamp_rmvr(
     radio: Radio,
     entry: CapabilityDeclarationEntry,
     *,
-    allow_writes: bool,
     per_check_timeout: float,
 ) -> CheckResult:
-    gate = _write_gate(radio, entry, allow_writes=allow_writes)
-    if gate is not None:
-        return gate
+    """The plain PREAMP read-modify-verify-restore cycle (no prerequisites)."""
     antenna = cast(AntennaControlCapable, radio)
     return await _read_modify_verify_restore(
         radio,
@@ -890,6 +896,89 @@ async def _check_preamp_set(
         make_changed=lambda v: 1 if v == 0 else 0,
         per_check_timeout=per_check_timeout,
     )
+
+
+async def _check_preamp_set(
+    radio: Radio,
+    entry: CapabilityDeclarationEntry,
+    *,
+    allow_writes: bool,
+    per_check_timeout: float,
+) -> CheckResult:
+    """RMVR the PREAMP, clearing the DIGI-SEL prerequisite first (MOR-665).
+
+    The IC-7610 enforces PREAMP/DIGI-SEL mutual exclusion: setting PREAMP while
+    DIGI-SEL (IP+) is ON raises ``CommandError``. When DIGI-SEL is ON the
+    harness temporarily disables it, runs the normal PREAMP RMVR, then restores
+    DIGI-SEL to its original ON state in a best-effort step that never raises.
+    If DIGI-SEL is already OFF — or the radio does not support reading it —
+    behaviour is identical to the plain RMVR.
+    """
+    gate = _write_gate(radio, entry, allow_writes=allow_writes)
+    if gate is not None:
+        return gate
+
+    get_digisel = getattr(radio, "get_digisel", None)
+    set_digisel = getattr(radio, "set_digisel", None)
+    if not callable(get_digisel) or not callable(set_digisel):
+        # Radio cannot report DIGI-SEL state — fall back to today's behaviour.
+        return await _preamp_rmvr(radio, entry, per_check_timeout=per_check_timeout)
+
+    digisel_on: bool | None = None
+    ds_fail: CheckResult | None = None
+    try:
+        digisel_on, ds_fail = await _guard(
+            cast(Awaitable[bool], get_digisel()),
+            entry,
+            per_check_timeout=per_check_timeout,
+        )
+    except Exception:  # noqa: BLE001 — any DIGI-SEL read error -> safe fallback.
+        ds_fail = _base_result(entry, CheckStatus.FAIL)
+    if ds_fail is not None:
+        # DIGI-SEL read unsupported/failed — fall back, don't crash the check.
+        return await _preamp_rmvr(radio, entry, per_check_timeout=per_check_timeout)
+
+    if not digisel_on:
+        result = await _preamp_rmvr(radio, entry, per_check_timeout=per_check_timeout)
+        return _merge_evidence(result, {"digisel_was_on": False})
+
+    # DIGI-SEL is ON: clear it, run the PREAMP RMVR, then always restore it.
+    extra: dict[str, object] = {"digisel_was_on": True}
+    _, clear_fail = await _guard(
+        cast(Awaitable[None], set_digisel(False)),
+        entry,
+        per_check_timeout=per_check_timeout,
+    )
+    if clear_fail is not None:
+        # Could not clear the prerequisite — fall back so PREAMP still runs.
+        extra["digisel_clear_error"] = clear_fail.error
+        result = await _preamp_rmvr(radio, entry, per_check_timeout=per_check_timeout)
+        return _merge_evidence(result, extra)
+
+    try:
+        result = await _preamp_rmvr(radio, entry, per_check_timeout=per_check_timeout)
+    finally:
+        restored = False
+        _, restore_fail = await _guard(
+            cast(Awaitable[None], set_digisel(True)),
+            entry,
+            per_check_timeout=per_check_timeout,
+        )
+        if restore_fail is not None:
+            extra["digisel_restore_error"] = restore_fail.error
+        else:
+            ctrl, ctrl_fail = await _guard(
+                cast(Awaitable[bool], get_digisel()),
+                entry,
+                per_check_timeout=per_check_timeout,
+            )
+            if ctrl_fail is not None:
+                extra["digisel_restore_read_error"] = ctrl_fail.error
+            else:
+                restored = bool(ctrl)
+        extra["digisel_restored"] = restored
+
+    return _merge_evidence(result, extra)
 
 
 async def _check_attenuator_set(
