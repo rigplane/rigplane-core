@@ -838,6 +838,93 @@ def _nudge_cw_pitch(pitch_hz: int) -> int:
     return int(pitch_hz) - _CW_PITCH_NUDGE_HZ
 
 
+# MOR-695 — level RMVR value rules must respect the control's settable range.
+# The historical ``200 if v < 128 else 50`` nudge assumes a 0-255 ICOM scale;
+# on the Yaesu FTX-1 comp/nr/nb levels have SMALL ranges (nr/nb 0-10, comp
+# 0-100), so the fixed nudge lands out of range, the radio ignores the write,
+# and the readback equals the original -> false FAIL. We resolve each level
+# check's ``[min, max]`` band from ``radio.profile.controls`` and nudge inside
+# it, defaulting to 0-255 when no range is declared.
+_DEFAULT_LEVEL_RANGE: tuple[int, int] = (0, 255)
+
+# Per level check, the ORDERED candidate control keys to look up in
+# ``radio.profile.controls``. The IC-7610 uses ``nr_level``/``nb_level``/
+# ``compressor_level``; the FTX-1 uses the shorter ``nr``/``nb`` (and a
+# ``compressor_level`` block added by MOR-695). First key whose control table
+# carries a min/max wins; otherwise the default 0-255 applies.
+_LEVEL_RANGE_CANDIDATE_KEYS: dict[str, tuple[str, ...]] = {
+    "rf_gain.set": ("rf_gain",),
+    "af_level.set": ("af_level",),
+    "rf_power.set": ("rf_power", "power_control"),
+    "mic_gain.set": ("mic_gain",),
+    "comp_level.set": ("compressor_level", "compressor", "comp"),
+    "nr_level.set": ("nr_level", "nr"),
+    "nb_level.set": ("nb_level", "nb"),
+}
+
+
+def _control_range(control: object) -> tuple[int, int] | None:
+    """Extract a ``(min, max)`` band from one raw control table, or None.
+
+    Accepts both key conventions found in the rig TOMLs: ``range_min``/
+    ``range_max`` (FTX-1) and ``raw_min``/``raw_max`` (IC-7610). A control that
+    declares neither pair (or only one half) yields None so the caller can fall
+    through to the next candidate key.
+    """
+    if not isinstance(control, dict):
+        return None
+    for lo_key, hi_key in (("range_min", "range_max"), ("raw_min", "raw_max")):
+        lo = control.get(lo_key)
+        hi = control.get(hi_key)
+        if lo is not None and hi is not None:
+            try:
+                lo_i, hi_i = int(lo), int(hi)
+            except (TypeError, ValueError):
+                continue
+            if lo_i <= hi_i:
+                return (lo_i, hi_i)
+    return None
+
+
+def _resolve_level_range(radio: Radio, check_id: str) -> tuple[int, int]:
+    """Resolve a level check's settable band from the radio's profile.
+
+    Walks the ordered candidate keys for ``check_id`` against
+    ``radio.profile.controls`` and returns the first declared ``(min, max)``
+    band. Falls back to 0-255 when the radio has no profile, the control is not
+    declared, or no range is present — keeping the historical ICOM behaviour for
+    radios (and tests) that declare nothing.
+    """
+    profile = getattr(radio, "profile", None)
+    controls = getattr(profile, "controls", None)
+    if not isinstance(controls, dict):
+        return _DEFAULT_LEVEL_RANGE
+    for key in _LEVEL_RANGE_CANDIDATE_KEYS.get(check_id, ()):
+        rng = _control_range(controls.get(key))
+        if rng is not None:
+            return rng
+    return _DEFAULT_LEVEL_RANGE
+
+
+def _range_aware_level_nudge(lo: int, hi: int) -> Callable[[int], int]:
+    """Build a ``make_changed`` that nudges a level inside ``[lo, hi]``.
+
+    Steps by ``max(1, (hi - lo) // 10)``; if stepping up would exceed ``hi`` it
+    steps DOWN instead. The result always differs from the original and always
+    stays within ``[lo, hi]`` (the original is assumed in-band — the caller's
+    ``restorable`` predicate SKIPs an out-of-band original before any write).
+    """
+    step = max(1, (hi - lo) // 10)
+
+    def _nudge(orig: int) -> int:
+        value = int(orig)
+        if value + step <= hi:
+            return value + step
+        return value - step
+
+    return _nudge
+
+
 def _nudge_if_shift(offset: int) -> int:
     """Mutate an IF-shift offset to a DIFFERENT in-range value.
 
@@ -1257,14 +1344,16 @@ async def _check_rf_gain_set(
     if gate is not None:
         return gate
     levels = cast(LevelsCapable, radio)
+    lo, hi = _resolve_level_range(radio, entry.check_id)
     return await _read_modify_verify_restore(
         radio,
         entry,
         read=lambda: levels.get_rf_gain(0),
         write=lambda value: levels.set_rf_gain(value, 0),
-        make_changed=lambda v: 200 if v < 128 else 50,
+        make_changed=_range_aware_level_nudge(lo, hi),
         equal=_tolerant_equal(3),
         per_check_timeout=per_check_timeout,
+        restorable=lambda v: lo <= v <= hi,
     )
 
 
@@ -1279,14 +1368,16 @@ async def _check_af_level_set(
     if gate is not None:
         return gate
     levels = cast(LevelsCapable, radio)
+    lo, hi = _resolve_level_range(radio, entry.check_id)
     return await _read_modify_verify_restore(
         radio,
         entry,
         read=lambda: levels.get_af_level(0),
         write=lambda value: levels.set_af_level(value, 0),
-        make_changed=lambda v: 200 if v < 128 else 50,
+        make_changed=_range_aware_level_nudge(lo, hi),
         equal=_tolerant_equal(3),
         per_check_timeout=per_check_timeout,
+        restorable=lambda v: lo <= v <= hi,
     )
 
 
@@ -1850,9 +1941,34 @@ async def _check_from_spec(
                     "reason": f"value_rule {spec.value_rule!r} not supported by generic handler"
                 },
             )
+        restorable = _VALUE_RULE_RESTORABLE.get(spec.value_rule)
+        extra_evidence: dict[str, object] = {
+            "handler": "generic",
+            "value_rule": str(spec.value_rule),
+            "kind": str(spec.kind),
+        }
+        # MOR-695 — level controls (STEP_LEVEL_255) must nudge inside the
+        # control's settable band, not the fixed 0-255 ICOM scale. Resolve the
+        # band from the radio profile and SKIP an out-of-band original rather
+        # than risk an unrestorable write.
         equal: Callable[[Any, Any], bool] = (
             _tolerant_equal(spec.tolerance) if spec.tolerance else _default_equal
         )
+        if spec.value_rule == ValueRule.STEP_LEVEL_255:
+            lo, hi = _resolve_level_range(radio, entry.check_id)
+            make_changed = _range_aware_level_nudge(lo, hi)
+            restorable = lambda v: lo <= int(v) <= hi  # noqa: E731
+            extra_evidence["range_min"] = lo
+            extra_evidence["range_max"] = hi
+            # MOR-695 — some radios quantize the level to a coarse grid (e.g.
+            # the IC-7610 nr_level snaps to a 16-unit grid on the 0-255 scale),
+            # so an arbitrary written value can never read back exactly. Widen
+            # the readback tolerance to ~half the grid step, scaled to the band,
+            # while keeping the base tolerance for fine-grained controls
+            # (e.g. FTX-1 levels on a 0-10 band, where ``(hi - lo) // 24 == 0``).
+            level_tol = max(spec.tolerance or 3, (hi - lo) // 24)
+            extra_evidence["tolerance"] = level_tol
+            equal = _tolerant_equal(level_tol)
         _read_fn = read_fn
         _write_fn = write_fn
         return await _read_modify_verify_restore(
@@ -1863,12 +1979,8 @@ async def _check_from_spec(
             make_changed=make_changed,
             equal=equal,
             per_check_timeout=per_check_timeout,
-            extra_evidence={
-                "handler": "generic",
-                "value_rule": str(spec.value_rule),
-                "kind": str(spec.kind),
-            },
-            restorable=_VALUE_RULE_RESTORABLE.get(spec.value_rule),
+            extra_evidence=extra_evidence,
+            restorable=restorable,
         )
 
     if spec.kind is CheckKind.WRITE_ONLY_OBSERVE:

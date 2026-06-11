@@ -732,10 +732,11 @@ async def test_rf_gain_tolerance_passes_with_off_by_two_readback():
     check = _flatten(levels)["rf_gain.set"]
 
     assert check.status is CheckStatus.PASS
-    # original read: 100 -> 98; make_changed(98) -> 200; readback 200 -> 198.
+    # original read: 100 -> 98; no profile -> default 0-255 band, step 25;
+    # range-aware nudge(98) -> 123 (MOR-695); readback 123 -> 121.
     assert check.evidence["original"] == 98
-    assert check.evidence["changed"] == 200
-    assert check.evidence["readback"] == 198
+    assert check.evidence["changed"] == 123
+    assert check.evidence["readback"] == 121
     assert check.evidence["restored"] is True
     # Restore wrote back the exact original (98); readback is 96.
     assert check.evidence["restore_readback"] == 96
@@ -942,13 +943,16 @@ async def test_generic_squelch_set_rmvr_pass():
     )
     check = _flatten(levels)["squelch.set"]
     assert check.status is CheckStatus.PASS
-    # step_level_255(0) -> 200
+    # MagicMock(spec=Radio) has no profile -> default 0-255 band, step 25;
+    # range-aware nudge(0) -> 25 (MOR-695).
     assert check.evidence["original"] == 0
-    assert check.evidence["changed"] == 200
-    assert check.evidence["readback"] == 200
+    assert check.evidence["changed"] == 25
+    assert check.evidence["readback"] == 25
     assert check.evidence["restored"] is True
     assert check.evidence["handler"] == "generic"
     assert check.evidence["value_rule"] == "step_level_255"
+    assert check.evidence["range_min"] == 0
+    assert check.evidence["range_max"] == 255
 
 
 async def test_generic_squelch_set_fail_no_react():
