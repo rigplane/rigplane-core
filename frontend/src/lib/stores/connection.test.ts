@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, beforeEach } from 'vitest';
 import {
   setRigConnected,
   getRigConnected,
@@ -12,6 +12,16 @@ import {
 } from './connection.svelte';
 
 describe('connection readiness fields', () => {
+  beforeEach(() => {
+    // The store is a module-level singleton shared across tests; reset it to a
+    // known baseline so per-test "defaults to false/null" assertions hold
+    // regardless of execution order (vitest shuffle/parallelism). See MOR-611.
+    setRigConnected(false);
+    setRadioReady(false);
+    setControlConnected(false);
+    setRadioHealth(null);
+  });
+
   it('rigConnected defaults to false and can be set', () => {
     expect(getRigConnected()).toBe(false);
     setRigConnected(true);
