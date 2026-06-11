@@ -694,13 +694,32 @@ def scope_set_vbw(
 
 
 def get_scope_fixed_edge(
-    to_addr: int, from_addr: int = CONTROLLER_ADDR, cmd_map: CommandMap | None = None
+    to_addr: int,
+    from_addr: int = CONTROLLER_ADDR,
+    cmd_map: CommandMap | None = None,
+    *,
+    range_index: int = 1,
+    edge: int = 1,
 ) -> bytes:
+    # The IC-7610 NAKs (0xFA) a bare 0x27 0x1E query — it requires a
+    # <range_index><edge> selector (1-byte BCD each). Mirror the setter's
+    # encoding so the radio answers with the fixed-edge start/end (MOR-662).
+    _validate_scope_range("scope fixed edge range", range_index, 1, 99)
+    _validate_scope_range("scope fixed edge", edge, 1, 4)
+    selector = bcd_encode_value(range_index, byte_count=1) + bcd_encode_value(
+        edge, byte_count=1
+    )
     if cmd_map is not None:
         return _build_from_map(
-            cmd_map, "get_scope_fixed_edge", to_addr=to_addr, from_addr=from_addr
+            cmd_map,
+            "get_scope_fixed_edge",
+            to_addr=to_addr,
+            from_addr=from_addr,
+            data=selector,
         )
-    return _scope_query(_SUB_SCOPE_FIXED_EDGE, to_addr=to_addr, from_addr=from_addr)
+    return build_civ_frame(
+        to_addr, from_addr, _CMD_SCOPE, sub=_SUB_SCOPE_FIXED_EDGE, data=selector
+    )
 
 
 def scope_set_fixed_edge(

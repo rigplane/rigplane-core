@@ -2639,7 +2639,7 @@ class CivRuntime:
             # Scope-control GETs for subs 0x14, 0x15, 0x16, 0x17, 0x19, 0x1A,
             # 0x1D, 0x1F may carry a single receiver-prefix byte (00=MAIN,
             # 01=SUB) and still expect a data response. Subs without prefix
-            # (0x12, 0x13, 0x1B, 0x1C, 0x1E) keep the empty-data heuristic.
+            # (0x12, 0x13, 0x1B, 0x1C) keep the empty-data heuristic.
             _SCOPE_GET_WITH_RX_PREFIX = (
                 0x14,
                 0x15,
@@ -2652,6 +2652,10 @@ class CivRuntime:
             )
             if frame.sub in _SCOPE_GET_WITH_RX_PREFIX:
                 return len(frame.data) <= 1
+            if frame.sub == 0x1E:
+                # Fixed-edge GET requires a 2-byte <range><edge> selector
+                # (MOR-662); the SET carries the 12-byte bounds payload.
+                return len(frame.data) <= 2
             return len(frame.data) == 0
         return len(frame.data) == 0
 
