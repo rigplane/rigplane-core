@@ -75,15 +75,26 @@ jobs:
       - name: Lint architecture (import-linter)
         run: uv run lint-imports
 
-      - name: Validation dry-run golden gate
+      - name: Validation dry-run golden gate (IC-7610)
         # Native dry-run matrix vs the committed golden artifact: a
         # registry/declaration regression fails CI (MOR-648). Dry-run only —
         # no hardware, sub-second. Regen after an intentional matrix change:
         #   uv run rigplane --model IC-7610 validate --dry-run \
         #     --regen-golden tests/golden/validation/ic7610.dry-run.json
+        # (same for X6200 / FTX-1 below — MOR-636.)
         run: >-
           uv run rigplane --model IC-7610 validate --provider native --dry-run
           --gate tests/golden/validation/ic7610.dry-run.json
+
+      - name: Validation dry-run golden gate (X6200)
+        run: >-
+          uv run rigplane --model X6200 validate --provider native --dry-run
+          --gate tests/golden/validation/x6200.dry-run.json
+
+      - name: Validation dry-run golden gate (FTX-1)
+        run: >-
+          uv run rigplane --model FTX-1 validate --provider native --dry-run
+          --gate tests/golden/validation/ftx1.dry-run.json
 
       - name: Set up Node.js
         if: steps.filter.outputs.frontend == 'true'
