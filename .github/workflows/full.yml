@@ -28,6 +28,11 @@ jobs:
     strategy:
       matrix:
         python-version: ["3.11", "3.12", "3.13"]
+    env:
+      # Pin uv to the matrix interpreter. Without this, `uv run` satisfies
+      # requires-python=">=3.11" with the newest interpreter on the runner
+      # (3.13), so every matrix job silently tested 3.13 (MOR-590).
+      UV_PYTHON: ${{ matrix.python-version }}
 
     steps:
       - uses: actions/checkout@v6

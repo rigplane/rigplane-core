@@ -34,6 +34,12 @@ jobs:
     # doc: rigplane-tower/docs/development/mac-mini-self-hosted-runners.md.
     runs-on: [self-hosted, linux, build]
     timeout-minutes: 10
+    env:
+      # Pin uv to the project's minimum Python. Without this, `uv run`
+      # satisfies requires-python=">=3.11" with the newest interpreter on
+      # the runner (3.13), so the "Python 3.11" job silently tested 3.13
+      # (MOR-590).
+      UV_PYTHON: "3.11"
 
     steps:
       - uses: actions/checkout@v6
