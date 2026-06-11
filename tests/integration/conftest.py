@@ -175,6 +175,39 @@ async def radio(radio_config: dict) -> AsyncGenerator[IcomRadio, None]:
         await r.disconnect()
 
 
+# ---------------------------------------------------------------------------
+# Owned-profile enumeration (MOR-647 mock validation matrix)
+# ---------------------------------------------------------------------------
+
+_RIGS_DIR = Path(__file__).resolve().parent.parent.parent / "rigs"
+
+
+def owned_profile_models() -> list[str]:
+    """Model names of every radio profile shipped in ``rigs/``.
+
+    These are the "owned" profiles for the validation matrix: the native
+    dry-run template generator (``build_template_from_capabilities``) only
+    needs ``profile.capabilities``, so it can build a full matrix for any
+    profile the rig loader discovers. Enumerated dynamically — a new rig
+    TOML automatically joins the mock integration matrix.
+    """
+    from rigplane.profiles.rig_loader import discover_rigs
+
+    return sorted(discover_rigs(_RIGS_DIR).keys())
+
+
+@pytest.fixture(scope="session")
+def all_owned_profile_models() -> list[str]:
+    """Session-scoped list of all owned profile model names."""
+    return owned_profile_models()
+
+
+def pytest_generate_tests(metafunc: pytest.Metafunc) -> None:
+    """Parametrize any test requesting ``owned_profile_model`` per owned rig."""
+    if "owned_profile_model" in metafunc.fixturenames:
+        metafunc.parametrize("owned_profile_model", owned_profile_models())
+
+
 # Pytest configuration
 def pytest_configure(config: pytest.Config) -> None:
     """Register integration marker."""
