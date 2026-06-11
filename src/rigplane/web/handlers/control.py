@@ -176,6 +176,15 @@ __all__ = ["ControlHandler", "RadioNotReadyError"]
 logger = logging.getLogger(__name__)
 _MAX_CW_TEXT_CHARS = 512
 
+# MOR-624: maps the per-DATA-group MOD-input SET command name (as sent by the
+# frontend auto-restore) to its poller action, for session-teardown restore.
+_MOD_INPUT_RESTORE_ACTIONS: dict[str, Any] = {
+    "set_data_off_mod_input": SetDataOffModInput,
+    "set_data1_mod_input": SetData1ModInput,
+    "set_data2_mod_input": SetData2ModInput,
+    "set_data3_mod_input": SetData3ModInput,
+}
+
 
 class RadioNotReadyError(RuntimeError):
     """PTT keying rejected because the radio session is degraded (MOR-620).
@@ -457,6 +466,9 @@ class ControlHandler:
             session_id if session_id is not None else f"websocket-{time.monotonic_ns()}"
         )
         self._subscribed_streams: set[str] = set()
+        # MOR-624: (command_name, previous_source) armed by the frontend auto-LAN
+        # feature at TX start; restored on abnormal session teardown. None = nothing armed.
+        self._mod_input_restore: tuple[str, int] | None = None
         self._event_queue: BoundedQueue[dict[str, Any]] = BoundedQueue(
             maxsize=100,
         )
@@ -519,6 +531,7 @@ class ControlHandler:
                 pass
             if self._server is not None:
                 self._server.unregister_control_event_queue(self._event_queue)
+            self._restore_mod_input_on_teardown()
 
     async def _event_sender_loop(self) -> None:
         """Drain event queue and forward events to WebSocket."""
@@ -848,6 +861,18 @@ class ControlHandler:
         name = msg.get("name", "")
         params = msg.get("params", {})
 
+        # MOR-624: session-local arm/disarm of the teardown MOD-input restore.
+        # Bookkeeping only (never a radio command) — intercepted before the
+        # _COMMANDS gate so the command catalog stays untouched.
+        if name in ("arm_mod_input_restore", "disarm_mod_input_restore"):
+            result = self._apply_mod_input_restore_cmd(name, params)
+            await self._ws.send_text(
+                encode_json(
+                    {"type": "response", "id": cmd_id, "ok": True, "result": result}
+                )
+            )
+            return
+
         # ── Server-side rate limiting (per client, per command) ──
         # Only throttle SET commands (continuous slider/knob drag).
         # GET and read-only commands pass through.
@@ -943,6 +968,59 @@ class ControlHandler:
                         "message": message,
                     }
                 )
+            )
+
+    def _apply_mod_input_restore_cmd(
+        self, name: str, params: dict[str, Any]
+    ) -> dict[str, Any]:
+        """Arm/disarm the session MOD-input restore (MOR-624).
+
+        Session-local bookkeeping only — never touches the radio. ``arm`` records
+        the per-group SET command + the previous source to re-apply if this session
+        tears down before a clean disarm; ``disarm`` (clean TX stop owns the
+        restore) clears it.
+        """
+        if name == "disarm_mod_input_restore":
+            self._mod_input_restore = None
+            return {}
+        command = str(params.get("command", ""))
+        if command not in _MOD_INPUT_RESTORE_ACTIONS:
+            self._mod_input_restore = None
+            return {"armed": False}
+        self._mod_input_restore = (command, int(params.get("source", 0)))
+        return {"armed": True}
+
+    def _restore_mod_input_on_teardown(self) -> None:
+        """Restore the armed MOD-input source on abnormal session teardown (MOR-624).
+
+        A clean TX stop disarms (see ``_apply_mod_input_restore_cmd``), so a still-armed
+        restore here means the client vanished mid-TX. Enqueue PttOff first — restoring a
+        non-LAN source while the rig is still keyed would re-trigger the open-mic footgun
+        MOR-614 fixed — then the previous-source SET. Best-effort: the shared poller may be
+        shutting down too.
+        """
+        restore = self._mod_input_restore
+        self._mod_input_restore = None
+        if restore is None or self._server is None or self._radio is None:
+            return
+        queue = getattr(self._server, "command_queue", None)
+        if queue is None:
+            return
+        command, source = restore
+        action = _MOD_INPUT_RESTORE_ACTIONS.get(command)
+        if action is None:
+            return
+        try:
+            queue.put(PttOff())
+            queue.put(action(source))
+        except Exception:
+            logger.debug("control: MOD-input teardown restore failed", exc_info=True)
+        else:
+            logger.info(
+                "control: restored MOD-input %s=%d on session teardown (session=%s)",
+                command,
+                source,
+                self._session_id,
             )
 
     async def _enqueue_command(

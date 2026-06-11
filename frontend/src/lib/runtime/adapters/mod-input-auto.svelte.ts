@@ -171,6 +171,12 @@ export function autoSetLanModInputForTx(): void {
   // (MOR-616); the backend confirms via write-through readback (MOR-615).
   patchRadioState({ [key]: LAN_MOD_INPUT_SOURCE } as Partial<ServerState>);
   sendCommand(pending.command, { source: LAN_MOD_INPUT_SOURCE });
+  // MOR-624: arm a backend session-teardown restore so an abnormal disconnect
+  // mid-TX (this browser never reconnects) still restores the previous source.
+  sendCommand('arm_mod_input_restore', {
+    command: pending.command,
+    source: pending.source,
+  });
 }
 
 /**
@@ -183,6 +189,8 @@ export function restoreModInputAfterTx(): void {
   pending = null;
   clearPersistedPending();
   if (!p) return;
+  // MOR-624: a clean stop owns the restore — clear the backend teardown net.
+  sendCommand('disarm_mod_input_restore', {});
   const current = getRadioState()?.[p.key] ?? null;
   if (current !== null && current !== LAN_MOD_INPUT_SOURCE) return;
   patchRadioState({ [p.key]: p.source } as Partial<ServerState>);
