@@ -160,13 +160,15 @@ def test_tx_adjacent_blocked():
 
 def test_presence_entries():
     """Capabilities with no registry check get a <cap>.presence entry at STATIC_PROFILE."""
+    # NOTE (MOR-642..645): split/vox/cw now have registry checks, so this test
+    # uses capabilities that still lack one.
     tpl = build_template_from_capabilities(
-        frozenset({"split", "vox", "cw"}),
+        frozenset({"scan", "xfc", "band_edge"}),
         model="IC-7300",
         profile_id="ic7300",
     )
     entries_by_id = {e.check_id: e for e in tpl.entries}
-    for cap in ("split", "vox", "cw"):
+    for cap in ("scan", "xfc", "band_edge"):
         cid = f"{cap}.presence"
         assert cid in entries_by_id, f"Expected {cid!r} in template entries"
         entry = entries_by_id[cid]
@@ -176,8 +178,10 @@ def test_presence_entries():
 
 def test_entries_sorted_by_level():
     """Level sequence is non-decreasing; presence entries (level 0) sort first."""
+    # NOTE (MOR-643): "split" gained a registry check, so "scan" provides the
+    # check-less capability that yields the level-0 presence entry.
     tpl = build_template_from_capabilities(
-        frozenset({"split", "rf_gain"}),
+        frozenset({"scan", "rf_gain"}),
         model="IC-7300",
         profile_id="ic7300",
     )

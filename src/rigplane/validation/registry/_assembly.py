@@ -14,6 +14,7 @@ from rigplane.validation.registry._levels import CHECKS as _LEVELS_CHECKS
 from rigplane.validation.registry._memory import CHECKS as _MEMORY_CHECKS
 from rigplane.validation.registry._structural import CHECKS as _STRUCTURAL_CHECKS
 from rigplane.validation.registry._surfaces import CHECKS as _SURFACES_CHECKS
+from rigplane.validation.registry._system import CHECKS as _SYSTEM_CHECKS
 from rigplane.validation.registry._tone import CHECKS as _TONE_CHECKS
 from rigplane.validation.registry._tuning import CHECKS as _TUNING_CHECKS
 from rigplane.validation.registry._tx import CHECKS as _TX_CHECKS
@@ -36,6 +37,7 @@ REGISTRY: tuple[CheckSpec, ...] = (
     + _TONE_CHECKS  # T7: repeater_tone, tone_freq, tsql, tsql_freq
     + _VFO_CHECKS  # T8: split, vfo_slot, dual_watch
     + _MEMORY_CHECKS  # T9: bsr (manual; CI-V memory surface is SET-only)
+    + _SYSTEM_CHECKS  # T10: system clock, key_speed, vox, dial_lock
 )
 
 

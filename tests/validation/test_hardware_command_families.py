@@ -263,3 +263,135 @@ def test_bsr_select_spec_is_manual_with_no_ops():
     assert spec.kind is CheckKind.MANUAL
     assert spec.get_op is None
     assert spec.set_op is None
+
+
+# ---------------------------------------------------------------------------
+# T10 / MOR-645 — system
+# ---------------------------------------------------------------------------
+
+
+async def test_system_date_read_passes_with_tuple_value():
+    radio = _bare_radio({"system_settings"})
+    radio.get_system_date = AsyncMock(return_value=(2026, 6, 11))
+    result = await _run(radio, "system_date.read")
+    assert result.status is CheckStatus.PASS
+    assert result.evidence["value"] == (2026, 6, 11)
+
+
+async def test_system_time_read_passes_with_tuple_value():
+    radio = _bare_radio({"system_settings"})
+    radio.get_system_time = AsyncMock(return_value=(13, 37))
+    result = await _run(radio, "system_time.read")
+    assert result.status is CheckStatus.PASS
+    assert result.evidence["value"] == (13, 37)
+
+
+async def test_system_date_read_unsupported_when_op_missing():
+    radio = _bare_radio({"system_settings"})
+    radio.get_system_date = None
+    result = await _run(radio, "system_date.read")
+    assert result.status is CheckStatus.UNSUPPORTED
+
+
+async def test_key_speed_set_rmvr_roundtrip_in_wpm():
+    radio, store = _stateful_value_radio(
+        capability="cw",
+        get_op="get_key_speed",
+        set_op="set_key_speed",
+        start=28,
+        receiver_kw=False,
+    )
+    result = await _run(radio, "key_speed.set")
+    assert result.status is CheckStatus.PASS
+    assert store["value"] == 28  # restored
+    changed = [v for v in store["writes"] if v != 28]
+    assert changed, "key speed was never mutated"
+    # Mutation must stay inside the keyer's real WPM range (6-48).
+    assert all(6 <= v <= 48 for v in changed)
+
+
+async def test_vox_read_passes():
+    radio = _bare_radio({"vox"})
+    radio.get_vox = AsyncMock(return_value=False)
+    result = await _run(radio, "vox.read")
+    assert result.status is CheckStatus.PASS
+    assert result.evidence["value"] is False
+
+
+async def test_vox_set_blocked_without_authorization():
+    radio = _bare_radio({"vox"})
+    radio.set_vox = AsyncMock()
+    result = await _run(radio, "vox.set")
+    assert result.status is CheckStatus.BLOCKED
+    radio.set_vox.assert_not_called()
+
+
+async def test_vox_gain_set_blocked_without_authorization():
+    radio = _bare_radio({"vox"})
+    radio.set_vox_gain = AsyncMock()
+    result = await _run(radio, "vox_gain.set")
+    assert result.status is CheckStatus.BLOCKED
+    radio.set_vox_gain.assert_not_called()
+
+
+async def test_vox_set_manual_required_when_authorized():
+    """With operator TX authorization the check surfaces as MANUAL_REQUIRED —
+    it still never auto-actuates VOX."""
+    radio = _bare_radio({"vox"})
+    radio.set_vox = AsyncMock()
+    safety = OperatorSafetyBlock(tx_allowed=True, operator_id="test")
+    result = await _run(radio, "vox.set", safety=safety)
+    assert result.status is CheckStatus.MANUAL_REQUIRED
+    radio.set_vox.assert_not_called()
+
+
+async def test_dial_lock_set_rmvr_roundtrip():
+    radio, store = _stateful_value_radio(
+        capability="dial_lock",
+        get_op="get_dial_lock",
+        set_op="set_dial_lock",
+        start=False,
+        receiver_kw=False,
+    )
+    result = await _run(radio, "dial_lock.set")
+    assert result.status is CheckStatus.PASS
+    assert store["value"] is False
+    assert True in store["writes"]
+
+
+# ---------------------------------------------------------------------------
+# Cross-family registry wiring
+# ---------------------------------------------------------------------------
+
+
+def test_new_family_levels_are_correct():
+    matrix = ValidationLevel.CAPABILITY_MATRIX
+    expectations = {
+        "repeater_tone.set": matrix,
+        "tone_freq.set": matrix,
+        "tsql.set": matrix,
+        "tsql_freq.set": matrix,
+        "split.set": matrix,
+        "vfo_slot.set": ValidationLevel.BASIC_CONTROL,
+        "dual_watch.set": matrix,
+        "bsr.select": matrix,
+        "system_date.read": matrix,
+        "system_time.read": matrix,
+        "key_speed.set": matrix,
+        "vox.read": matrix,
+        "vox.set": ValidationLevel.STRESS_RECOVERY,
+        "vox_gain.set": ValidationLevel.STRESS_RECOVERY,
+        "dial_lock.set": matrix,
+    }
+    for check_id, level in expectations.items():
+        spec = REGISTRY_BY_ID[check_id]
+        assert spec.level == level, f"{check_id}: level {spec.level} != {level}"
+
+
+def test_tx_adjacent_vox_checks_have_no_ops():
+    for check_id in ("vox.set", "vox_gain.set"):
+        spec = REGISTRY_BY_ID[check_id]
+        assert spec.kind is CheckKind.TX_ADJACENT_BLOCKED
+        assert spec.tx_adjacent is True
+        assert spec.get_op is None
+        assert spec.set_op is None

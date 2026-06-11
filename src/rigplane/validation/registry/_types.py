@@ -47,6 +47,7 @@ class ValueRule(StrEnum):
     # MOR-642..645 command-coverage families
     TONE_FREQ_CYCLE = "tone_freq_cycle"
     VFO_AB_FLIP = "vfo_ab_flip"
+    KEY_SPEED_WPM = "key_speed_wpm"
 
 
 # ---------------------------------------------------------------------------

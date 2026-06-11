@@ -164,18 +164,20 @@ def test_template_validates():
 
 def test_entries_sorted_by_level():
     """Level sequence is non-decreasing; presence entries (level 0) sort first."""
-    tpl = _build(caps={"split", "rf_gain"}, tokens={"RF"})
+    # NOTE (MOR-643): "split" gained a registry check, so "scan" provides the
+    # check-less capability that yields the level-0 presence entry.
+    tpl = _build(caps={"scan", "rf_gain"}, tokens={"RF"})
     levels = [int(e.level) for e in tpl.entries]
     assert levels == sorted(levels), "Entries are not sorted by level"
-    # 'split' has no registry check → presence entry at STATIC_PROFILE (0)
+    # 'scan' has no registry check → presence entry at STATIC_PROFILE (0)
     first = tpl.entries[0]
     assert first.level == ValidationLevel.STATIC_PROFILE
 
 
 def test_presence_entries():
     """A declared capability with no registry check gets a <cap>.presence entry."""
-    tpl = _build(caps={"split"}, tokens=frozenset())
-    entry = _entry(tpl, "split.presence")
+    tpl = _build(caps={"scan"}, tokens=frozenset())
+    entry = _entry(tpl, "scan.presence")
     assert entry.level == ValidationLevel.STATIC_PROFILE
     assert entry.declaration == CapabilityDeclaration.UNSUPPORTED_PENDING_EVIDENCE
 
