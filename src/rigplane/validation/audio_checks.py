@@ -58,13 +58,16 @@ __all__ = [
     "PROBE_SAMPLES_PER_FRAME",
     "PROBE_TONE_HZ",
     "RX_RMS_TOLERANCE",
+    "LIVE_RX_RMS_MIN",
     "SCOPE_MIN_RISE_PIXELS",
     "SCOPE_MIN_SIGNAL_PIXEL",
     "PcmTransform",
     "audio_probe_level_results",
     "run_audio_probe_checks",
     "run_rx_rms_check",
+    "run_rx_rms_check_on_frames",
     "run_scope_presence_check",
+    "run_scope_presence_check_on_frames",
     "run_tx_byte_perfect_check",
 ]
 
@@ -83,6 +86,14 @@ PROBE_FRAME_COUNT = 8
 # Relative RMS tolerance band for the RX probe: the fake pipeline delivers
 # byte-identical PCM, so any deviation beyond rounding indicates corruption.
 RX_RMS_TOLERANCE = 0.05
+
+# Minimum delivered-PCM RMS for the LIVE RX probe (MOR-668). On real hardware
+# the off-air signal is unknown — there is no reference tone — so the live
+# probe only asserts that decoded RX PCM is non-silent (the dataflow is alive),
+# not a specific RMS. A 16-bit full-scale sample is +/-32767, so this floor is
+# a tiny fraction of full scale: it catches a dead/silent RX path (all-zero or
+# placeholder-only delivery) without demanding any particular band noise level.
+LIVE_RX_RMS_MIN = 1.0
 
 # Scope-presence probe parameters (regression guard for the MOR-512/528
 # adaptive in-band auto-range). The synthetic VFO center is arbitrary —
@@ -285,6 +296,57 @@ async def run_rx_rms_check(
     )
 
 
+async def run_rx_rms_check_on_frames(
+    frames: Sequence[bytes | None],
+    *,
+    min_rms: float = LIVE_RX_RMS_MIN,
+) -> CheckResult:
+    """Run the RX-RMS probe against LIVE captured RX PCM (MOR-668).
+
+    Unlike :func:`run_rx_rms_check` (which injects a known reference tone
+    through the fake pipeline and asserts an exact RMS band), this measures
+    the RMS of PCM ALREADY captured from a real RX audio session. The off-air
+    signal is unknown, so the only assertion is that the delivered PCM is
+    non-silent (RMS >= ``min_rms``) — a dead/silent RX path fails with
+    ``failure_domain="audio"``. Gap placeholders (``None`` frames from jitter
+    loss) are dropped before measurement.
+
+    The caller (the CLI hardware path) owns opening/closing the live session;
+    this function is pure measurement over the captured bytes.
+    """
+    started_at = _utcnow_iso()
+    delivered = b"".join(frame for frame in frames if frame)
+    frames_received = len(frames)
+    gaps = sum(1 for frame in frames if not frame)
+    rms = _pcm_rms(delivered)
+    passed = bool(delivered) and rms >= min_rms
+
+    evidence: dict[str, object] = {
+        "live": True,
+        "frames_received": frames_received,
+        "gap_frames": gaps,
+        "bytes_delivered": len(delivered),
+        "rms": round(rms, 6),
+        "min_rms": min_rms,
+    }
+    error = (
+        None
+        if passed
+        else (
+            f"live RX RMS {rms:.3f} below floor {min_rms:.3f} "
+            f"({len(delivered)} bytes delivered, {gaps} gap frame(s)): "
+            "RX audio path appears silent or dead"
+        )
+    )
+    return _probe_result(
+        "audio.rx.rms",
+        passed=passed,
+        evidence=evidence,
+        error=error,
+        started_at=started_at,
+    )
+
+
 # ---------------------------------------------------------------------------
 # T5 / MOR-640 — TX byte-perfect probe
 # ---------------------------------------------------------------------------
@@ -407,86 +469,38 @@ async def run_tx_byte_perfect_check(
 # ---------------------------------------------------------------------------
 
 
-async def run_scope_presence_check(
-    *,
-    backend: FakeAudioBackend | None = None,
-    frame_count: int = PROBE_FRAME_COUNT,
-    pcm_transform: PcmTransform | None = None,
-) -> CheckResult:
-    """Feed a reference tone to the audio FFT scope; verify in-band presence.
+def _make_fft_scope() -> object | None:
+    """Construct an :class:`AudioFftScope`, or ``None`` when numpy is absent.
 
-    Routes the tone through the fake RX capture stream into the REAL
-    :class:`~rigplane.audio.fft_scope.AudioFftScope` (the MOR-512/528
-    adaptive in-band auto-range path) and asserts the in-band pixel peak of
-    the emitted :class:`ScopeFrame` rises above the out-of-band baseline. A
-    silent or missing spectrum fails with ``failure_domain=scope_waterfall``.
-
-    Returns a SKIP result when numpy (the FFT dependency) is unavailable.
+    Centralises the FFT-dependency import so both the fake and the live probe
+    degrade identically (SKIP) when numpy is unavailable.
     """
-    started_at = _utcnow_iso()
-    spec = _probe_spec("scope.fft.presence")
     try:
         from rigplane.audio.fft_scope import AudioFftScope
-
-        scope = AudioFftScope(
-            fft_size=_SCOPE_FFT_SIZE,
-            fps=1_000,
-            avg_count=1,
-            sample_rate=PROBE_SAMPLE_RATE,
-        )
-    except ImportError as exc:
-        return CheckResult(
-            check_id=spec.check_id,
-            capability=spec.capability,
-            level=spec.level,
-            status=CheckStatus.SKIP,
-            declaration=CapabilityDeclaration.SUPPORTED,
-            summary=spec.summary,
-            evidence={"reason": f"FFT dependency unavailable: {exc}"},
-            started_at=started_at,
-            finished_at=_utcnow_iso(),
-        )
-
-    frames: list[ScopeFrame] = []
-    scope.set_center_freq(SCOPE_CENTER_FREQ_HZ)
-    scope.on_frame(frames.append)
-
-    fake = backend if backend is not None else _default_backend()
-    capture = fake.open_rx(
-        _first_device(fake),
+    except ImportError:
+        return None
+    return AudioFftScope(
+        fft_size=_SCOPE_FFT_SIZE,
+        fps=1_000,
+        avg_count=1,
         sample_rate=PROBE_SAMPLE_RATE,
-        channels=1,
-        frame_ms=PROBE_FRAME_MS,
     )
-    reference = _sine_pcm16_mono(PROBE_TONE_HZ, samples=PROBE_SAMPLES_PER_FRAME)
-    injected = reference if pcm_transform is None else pcm_transform(reference)
-    await capture.start(scope.feed_audio)
-    try:
-        for _ in range(frame_count):
-            capture.inject_frame(injected)
-    finally:
-        await capture.stop()
-        scope.stop()
 
-    evidence: dict[str, object] = {
-        "tone_hz": PROBE_TONE_HZ,
-        "center_freq_hz": SCOPE_CENTER_FREQ_HZ,
-        "fft_size": _SCOPE_FFT_SIZE,
-        "frames_emitted": len(frames),
-        "min_signal_pixel": SCOPE_MIN_SIGNAL_PIXEL,
-        "min_rise_pixels": SCOPE_MIN_RISE_PIXELS,
-    }
+
+def _evaluate_scope_presence(
+    frames: list[ScopeFrame],
+    evidence: dict[str, object],
+) -> tuple[bool, str | None]:
+    """Evaluate in-band-vs-baseline presence from emitted scope frames.
+
+    Shared by the fake-tone probe (:func:`run_scope_presence_check`) and the
+    live probe (:func:`run_scope_presence_check_on_frames`): inspects the last
+    emitted :class:`ScopeFrame`, compares the in-band pixel peak against the
+    out-of-band baseline median, and folds the measured values into
+    ``evidence``. Returns ``(passed, error_or_None)``; mutates ``evidence``.
+    """
     if not frames:
-        return _probe_result(
-            "scope.fft.presence",
-            passed=False,
-            evidence=evidence,
-            error=(
-                f"no scope frame emitted from {frame_count} injected "
-                f"frame(s) ({frame_count * PROBE_SAMPLES_PER_FRAME} samples)"
-            ),
-            started_at=started_at,
-        )
+        return False, "no scope frame emitted from the fed audio frames"
 
     last = frames[-1]
     pixels = list(last.pixels)
@@ -523,6 +537,134 @@ async def run_scope_presence_check(
             f"(peak >= {SCOPE_MIN_SIGNAL_PIXEL}, rise >= {SCOPE_MIN_RISE_PIXELS})"
         )
     )
+    return passed, error
+
+
+async def run_scope_presence_check(
+    *,
+    backend: FakeAudioBackend | None = None,
+    frame_count: int = PROBE_FRAME_COUNT,
+    pcm_transform: PcmTransform | None = None,
+) -> CheckResult:
+    """Feed a reference tone to the audio FFT scope; verify in-band presence.
+
+    Routes the tone through the fake RX capture stream into the REAL
+    :class:`~rigplane.audio.fft_scope.AudioFftScope` (the MOR-512/528
+    adaptive in-band auto-range path) and asserts the in-band pixel peak of
+    the emitted :class:`ScopeFrame` rises above the out-of-band baseline. A
+    silent or missing spectrum fails with ``failure_domain=scope_waterfall``.
+
+    Returns a SKIP result when numpy (the FFT dependency) is unavailable.
+    """
+    started_at = _utcnow_iso()
+    spec = _probe_spec("scope.fft.presence")
+    scope = _make_fft_scope()
+    if scope is None:
+        return CheckResult(
+            check_id=spec.check_id,
+            capability=spec.capability,
+            level=spec.level,
+            status=CheckStatus.SKIP,
+            declaration=CapabilityDeclaration.SUPPORTED,
+            summary=spec.summary,
+            evidence={"reason": "FFT dependency unavailable: numpy"},
+            started_at=started_at,
+            finished_at=_utcnow_iso(),
+        )
+
+    frames: list[ScopeFrame] = []
+    scope.set_center_freq(SCOPE_CENTER_FREQ_HZ)  # type: ignore[attr-defined]
+    scope.on_frame(frames.append)  # type: ignore[attr-defined]
+
+    fake = backend if backend is not None else _default_backend()
+    capture = fake.open_rx(
+        _first_device(fake),
+        sample_rate=PROBE_SAMPLE_RATE,
+        channels=1,
+        frame_ms=PROBE_FRAME_MS,
+    )
+    reference = _sine_pcm16_mono(PROBE_TONE_HZ, samples=PROBE_SAMPLES_PER_FRAME)
+    injected = reference if pcm_transform is None else pcm_transform(reference)
+    await capture.start(scope.feed_audio)  # type: ignore[attr-defined]
+    try:
+        for _ in range(frame_count):
+            capture.inject_frame(injected)
+    finally:
+        await capture.stop()
+        scope.stop()  # type: ignore[attr-defined]
+
+    evidence: dict[str, object] = {
+        "tone_hz": PROBE_TONE_HZ,
+        "center_freq_hz": SCOPE_CENTER_FREQ_HZ,
+        "fft_size": _SCOPE_FFT_SIZE,
+        "frames_emitted": len(frames),
+        "min_signal_pixel": SCOPE_MIN_SIGNAL_PIXEL,
+        "min_rise_pixels": SCOPE_MIN_RISE_PIXELS,
+    }
+    passed, error = _evaluate_scope_presence(frames, evidence)
+    return _probe_result(
+        "scope.fft.presence",
+        passed=passed,
+        evidence=evidence,
+        error=error,
+        started_at=started_at,
+    )
+
+
+async def run_scope_presence_check_on_frames(
+    frames: Sequence[bytes | None],
+) -> CheckResult:
+    """Run the scope-presence probe against LIVE captured RX PCM (MOR-668).
+
+    Feeds the captured RX PCM frames through the REAL
+    :class:`~rigplane.audio.fft_scope.AudioFftScope` (same MOR-512/528
+    adaptive in-band auto-range path the fake probe exercises) and asserts the
+    in-band pixel peak of the emitted :class:`ScopeFrame` rises above the
+    out-of-band baseline — i.e. real off-air spectral energy reached the
+    scope. A silent or missing spectrum fails with
+    ``failure_domain=scope_waterfall``. Gap placeholders (``None``) are
+    dropped. SKIPs when numpy (the FFT dependency) is unavailable.
+
+    The caller (the CLI hardware path) owns the live session lifecycle; this
+    function only feeds the already-captured bytes through the scope.
+    """
+    started_at = _utcnow_iso()
+    spec = _probe_spec("scope.fft.presence")
+    scope = _make_fft_scope()
+    if scope is None:
+        return CheckResult(
+            check_id=spec.check_id,
+            capability=spec.capability,
+            level=spec.level,
+            status=CheckStatus.SKIP,
+            declaration=CapabilityDeclaration.SUPPORTED,
+            summary=spec.summary,
+            evidence={"reason": "FFT dependency unavailable: numpy", "live": True},
+            started_at=started_at,
+            finished_at=_utcnow_iso(),
+        )
+
+    emitted: list[ScopeFrame] = []
+    scope.set_center_freq(SCOPE_CENTER_FREQ_HZ)  # type: ignore[attr-defined]
+    scope.on_frame(emitted.append)  # type: ignore[attr-defined]
+    delivered = [frame for frame in frames if frame]
+    try:
+        for frame in delivered:
+            scope.feed_audio(frame)  # type: ignore[attr-defined]
+    finally:
+        scope.stop()  # type: ignore[attr-defined]
+
+    evidence: dict[str, object] = {
+        "live": True,
+        "center_freq_hz": SCOPE_CENTER_FREQ_HZ,
+        "fft_size": _SCOPE_FFT_SIZE,
+        "frames_fed": len(delivered),
+        "gap_frames": sum(1 for frame in frames if not frame),
+        "frames_emitted": len(emitted),
+        "min_signal_pixel": SCOPE_MIN_SIGNAL_PIXEL,
+        "min_rise_pixels": SCOPE_MIN_RISE_PIXELS,
+    }
+    passed, error = _evaluate_scope_presence(emitted, evidence)
     return _probe_result(
         "scope.fft.presence",
         passed=passed,

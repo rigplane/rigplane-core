@@ -729,6 +729,75 @@ def _transport_failure_levels(
     return [LevelResult(level=ValidationLevel.DISCOVERY, checks=[check])]
 
 
+# MOR-668 — live RX-audio probe capture parameters. A short RX-only window is
+# captured once per hardware run and fed to the audio.rx.rms / scope.fft.presence
+# probes. RX-only: this never opens a TX path and never keys the transmitter.
+_AUDIO_PROBE_SAMPLE_RATE = 48_000
+_AUDIO_PROBE_CHANNELS = 1
+_AUDIO_PROBE_FRAME_MS = 20
+# Number of decoded PCM frames to collect (each ~20 ms → ~0.5 s of audio).
+_AUDIO_PROBE_TARGET_FRAMES = 25
+# Hard wall-clock ceiling so a silent/dead RX path can never hang the run.
+_AUDIO_PROBE_CAPTURE_TIMEOUT = 3.0
+
+
+async def _capture_rx_audio_probe(radio: Any) -> list[bytes | None] | None:
+    """Open a short-lived RX PCM session and capture a real audio window (MOR-668).
+
+    Returns the captured list of decoded PCM frames (``None`` entries are jitter
+    gap placeholders, preserved for the probe's evidence) on success, or ``None``
+    when the radio is not :class:`AudioCapable` (the caller then leaves the audio
+    probes MANUAL_REQUIRED). RX-only — never opens a TX path, never transmits.
+
+    The RX session is ALWAYS stopped in a ``finally`` even if capture raises or
+    times out, so no stream/task leaks. Any capture error degrades to an EMPTY
+    captured window (``[]``), which the probes turn into a clean FAIL with the
+    reason in evidence rather than aborting the run.
+    """
+    from rigplane.core.radio_protocol import AudioCapable
+
+    if not isinstance(radio, AudioCapable):
+        return None
+
+    frames: list[bytes | None] = []
+    done = asyncio.Event()
+
+    def _on_pcm(frame: bytes | None) -> None:
+        frames.append(frame)
+        if len(frames) >= _AUDIO_PROBE_TARGET_FRAMES:
+            done.set()
+
+    started = False
+    try:
+        await radio.start_audio_rx_pcm(
+            _on_pcm,
+            sample_rate=_AUDIO_PROBE_SAMPLE_RATE,
+            channels=_AUDIO_PROBE_CHANNELS,
+            frame_ms=_AUDIO_PROBE_FRAME_MS,
+        )
+        started = True
+        try:
+            await asyncio.wait_for(done.wait(), timeout=_AUDIO_PROBE_CAPTURE_TIMEOUT)
+        except asyncio.TimeoutError:
+            # Partial (or empty) capture: the probes assess whatever arrived.
+            pass
+    except Exception as exc:  # noqa: BLE001 — any capture error → clean probe FAIL.
+        print(
+            f"Warning: live RX-audio probe capture failed: {exc}",
+            file=sys.stderr,
+        )
+    finally:
+        if started:
+            try:
+                await radio.stop_audio_rx_pcm()
+            except Exception as exc:  # noqa: BLE001 — teardown must never raise.
+                print(
+                    f"Warning: live RX-audio probe teardown failed: {exc}",
+                    file=sys.stderr,
+                )
+    return frames
+
+
 async def _run_hardware(
     args: argparse.Namespace,
     template: MatrixTemplate,
@@ -792,6 +861,11 @@ async def _run_hardware(
     exit_code = 0
     try:
         async with radio:
+            # MOR-668: capture a short live RX-audio window so the audio.rx.rms /
+            # scope.fft.presence probes run for real on hardware. RX-only; the
+            # session is always torn down inside the helper's finally. A
+            # non-AudioCapable radio returns None → probes stay MANUAL_REQUIRED.
+            audio_probe_frames = await _capture_rx_audio_probe(radio)
             levels = await execute_hardware_checks(
                 radio,
                 template,
@@ -801,6 +875,7 @@ async def _run_hardware(
                 write_only_capabilities=write_only_capabilities,
                 prompter=_build_prompter(args),
                 tx_actuate=_tx_actuate_enabled(args),
+                audio_probe_frames=audio_probe_frames,
             )
     except (RigConnectionError, AuthenticationError, OSError, RigplaneError) as exc:
         levels = _transport_failure_levels(template, exc)
