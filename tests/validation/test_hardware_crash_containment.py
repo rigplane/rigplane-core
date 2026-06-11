@@ -25,6 +25,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from rigplane.core.exceptions import CommandError
 from rigplane.core.radio_protocol import Radio
 from rigplane.validation import hardware
 from rigplane.validation.hardware import (
@@ -201,6 +202,105 @@ async def test_guard_maps_bare_value_and_type_errors_to_fail(exc_type):
     assert failure.status is CheckStatus.FAIL
     assert failure.failure_domain is FailureDomain.COMMAND_EXECUTION
     assert "16.5" in (failure.error or "")
+
+
+# ---------------------------------------------------------------------------
+# MOR-670 — NotImplementedError from a radio op maps to UNSUPPORTED, not FAIL
+# ---------------------------------------------------------------------------
+
+
+async def test_guard_maps_not_implemented_error_to_unsupported():
+    """A radio op that ``raise NotImplementedError`` (a per-model "not
+    supported" signal, e.g. ``FtX1Radio.get_vfo_slot``) must resolve the check
+    to UNSUPPORTED with the reason in evidence — not a COMMAND_EXECUTION FAIL."""
+
+    async def _raises():
+        raise NotImplementedError(
+            "get_vfo_slot not supported on FTX-1 (no VFO-slot concept)"
+        )
+
+    entry = _entry_for("vfo_slot.set")
+    value, result = await _guard(_raises(), entry, per_check_timeout=1.0)
+    assert value is None
+    assert result is not None
+    assert result.status is CheckStatus.UNSUPPORTED
+    # UNSUPPORTED is not a COMMAND_EXECUTION failure.
+    assert result.failure_domain is None
+    # The deliberate "not supported" message is captured for the artifact.
+    assert "get_vfo_slot not supported on FTX-1" in (result.error or "")
+    assert "not implemented" in str(result.evidence.get("reason", ""))
+
+
+async def test_guard_command_error_still_fails_not_overbroadened():
+    """Regression guard: a real ``CommandError`` (NAK etc.) must still map to a
+    COMMAND_EXECUTION FAIL — the NotImplementedError branch must not swallow it.
+    ``CommandError`` is a sibling of ``NotImplementedError`` under ``Exception``,
+    so an over-broad catch would silently downgrade real failures."""
+
+    async def _raises():
+        raise CommandError("radio NAKed the command")
+
+    entry = _entry_for("vfo_slot.set")
+    value, result = await _guard(_raises(), entry, per_check_timeout=1.0)
+    assert value is None
+    assert result is not None
+    assert result.status is CheckStatus.FAIL
+    assert result.failure_domain is FailureDomain.COMMAND_EXECUTION
+    assert "NAK" in (result.error or "")
+
+
+def _vfo_slot_not_implemented_radio():
+    """An FTX-1-shaped radio whose ``get_vfo_slot`` raises NotImplementedError.
+
+    Mirrors ``FtX1Radio.get_vfo_slot`` which deliberately signals "no VFO-slot
+    concept" via ``NotImplementedError``. The RMVR read happens first, so this
+    short-circuits the whole vfo_slot.set check to UNSUPPORTED before any write.
+    """
+    radio = MagicMock(spec=Radio)
+    radio.connected = True
+    radio.model = "FTX-1"
+    radio.capabilities = set()
+
+    async def _get_vfo_slot(receiver: int = 0):
+        raise NotImplementedError(
+            "get_vfo_slot not supported on FTX-1 (no VFO-slot concept)"
+        )
+
+    async def _set_vfo_slot(slot, receiver: int = 0) -> None:
+        raise AssertionError("set_vfo_slot must never be reached after UNSUPPORTED")
+
+    radio.get_vfo_slot = AsyncMock(side_effect=_get_vfo_slot)
+    radio.set_vfo_slot = AsyncMock(side_effect=_set_vfo_slot)
+
+    freq_store = {"value": 14_074_000}
+
+    async def _get_freq(receiver: int = 0) -> int:
+        return freq_store["value"]
+
+    radio.get_freq = AsyncMock(side_effect=_get_freq)
+    return radio
+
+
+async def test_not_implemented_vfo_slot_is_unsupported_and_run_continues():
+    """End-to-end: an FTX-1 whose ``get_vfo_slot`` raises NotImplementedError →
+    ``vfo_slot.set`` resolves UNSUPPORTED (not FAIL), the matrix does NOT crash,
+    and a result artifact is produced for every entry."""
+    radio = _vfo_slot_not_implemented_radio()
+    template = _template_for("discovery.identify", "vfo_slot.set")
+    levels = await execute_hardware_checks(
+        radio, template, OperatorSafetyBlock(), allow_writes=True
+    )
+    results = _flatten(levels)
+    # Every template entry produced a result (artifact producible).
+    assert set(results) == {"discovery.identify", "vfo_slot.set"}
+    vfo = results["vfo_slot.set"]
+    assert vfo.status is CheckStatus.UNSUPPORTED
+    assert vfo.failure_domain is None
+    assert "get_vfo_slot not supported on FTX-1" in (vfo.error or "")
+    # The unrelated check still ran normally — the run continued.
+    assert results["discovery.identify"].status is CheckStatus.PASS
+    # The write op was never reached (UNSUPPORTED short-circuits before mutation).
+    radio.set_vfo_slot.assert_not_called()
 
 
 class _ControlInterrupt(BaseException):
