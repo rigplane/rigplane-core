@@ -203,12 +203,23 @@ async def test_guard_maps_bare_value_and_type_errors_to_fail(exc_type):
     assert "16.5" in (failure.error or "")
 
 
-async def test_guard_does_not_swallow_keyboard_interrupt():
+class _ControlInterrupt(BaseException):
+    """Stand-in for KeyboardInterrupt/SystemExit-tier interrupts.
+
+    A real ``KeyboardInterrupt`` raised inside a test crashes the pytest-xdist
+    worker (xdist intercepts it as a shutdown signal), so we use a custom
+    ``BaseException`` subclass: ``_guard`` only catches a closed set of
+    ``Exception``-derived rig errors, so any ``BaseException`` propagates —
+    which is exactly the invariant under test.
+    """
+
+
+async def test_guard_does_not_swallow_base_exception_interrupts():
     async def _raises():
-        raise KeyboardInterrupt
+        raise _ControlInterrupt
 
     entry = _entry_for("tone_freq.set")
-    with pytest.raises(KeyboardInterrupt):
+    with pytest.raises(_ControlInterrupt):
         await _guard(_raises(), entry, per_check_timeout=1.0)
 
 
