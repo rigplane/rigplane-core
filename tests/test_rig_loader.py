@@ -821,3 +821,22 @@ class TestWriteOnlyControls:
         assert "tsql" not in caps
         assert "filter_width" not in caps
         assert {"rit", "xit", "notch", "nr", "nb", "compressor"} <= caps
+
+    def test_x6100_drops_unsupported_tone_and_pbt(self):
+        # MOR-634: the X6100 over-declared repeater_tone / tsql / pbt. By the
+        # X6100/X6200 shared-firmware inference (Hamlib xiegu.c reuses the same
+        # x6100_priv_caps struct for RIG_MODEL_X6200=3091) plus live X6200
+        # evidence — tone 0x16 0x42/0x43 + 0x1B (MOR-683) and pbt 0x14 07/08
+        # (MOR-699) both time out on real hardware — these caps are dropped.
+        # NOT live-confirmed on an X6100 (no X6100 hardware exists to capture);
+        # this is a conservative by-inference alignment pending direct
+        # confirmation. The profile must still load and keep its other caps.
+        profile = get_radio_profile("X6100")
+        caps = profile.capabilities
+        assert "repeater_tone" not in caps
+        assert "tsql" not in caps
+        assert "pbt" not in caps
+        # filter_width is already (correctly) not advertised — keep it so.
+        assert "filter_width" not in caps
+        # Unrelated caps stay untouched.
+        assert {"rit", "xit", "notch", "nr", "nb", "compressor"} <= caps
