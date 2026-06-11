@@ -39,6 +39,23 @@ from rigplane.types import CivFrame, Mode
 # ---------------------------------------------------------------------------
 
 
+def make_mock_radio() -> AsyncMock:
+    """Bare radio mock that does NOT satisfy the RigctldRoutable Protocol.
+
+    Python 3.11's runtime-checkable Protocol ``isinstance()`` uses
+    ``hasattr()``, which a bare AsyncMock always satisfies, so
+    ``create_routing()`` would call the auto-generated async
+    ``rigctld_routing()`` and store a *coroutine* as ``handler._routing``.
+    Python 3.12+ uses ``inspect.getattr_static()`` (gh-102433) and is immune.
+    Deleting the attribute makes both interpreters take the built-in Icom
+    routing path. Yaesu tests wire an explicit sync ``rigctld_routing``
+    lambda instead (see ``yaesu_radio``).
+    """
+    radio = AsyncMock()
+    del radio.rigctld_routing
+    return radio
+
+
 @pytest.fixture
 def config() -> RigctldConfig:
     return RigctldConfig()
@@ -47,7 +64,7 @@ def config() -> RigctldConfig:
 @pytest.fixture
 def mock_radio() -> AsyncMock:
     """Radio mock; implements MetersCapable (get_s_meter, get_swr, get_rf_power) for get_level tests."""
-    radio = AsyncMock()
+    radio = make_mock_radio()
     radio.capabilities = set(FULL_ICOM_CAPS)
     radio.get_data_mode.return_value = False
     radio.get_s_meter = AsyncMock(return_value=0)
@@ -778,7 +795,7 @@ async def test_set_mode_uses_core_contract_string_values() -> None:
 
 @pytest.mark.asyncio
 async def test_set_mode_packet_uses_configured_wsjtx_data_mode() -> None:
-    radio = AsyncMock()
+    radio = make_mock_radio()
     radio.set_mode = AsyncMock()
     radio.set_data_mode = AsyncMock()
     radio.set_data2_mod_input = AsyncMock()
@@ -802,7 +819,7 @@ async def test_set_mode_packet_uses_configured_wsjtx_data_mode() -> None:
 async def test_set_mode_packet_configured_data2_falls_back_on_single_data_profile() -> (
     None
 ):
-    radio = AsyncMock()
+    radio = make_mock_radio()
     radio.set_mode = AsyncMock()
     radio.set_data_mode = AsyncMock()
     radio.set_data2_mod_input = AsyncMock()
@@ -825,7 +842,7 @@ async def test_set_mode_packet_configured_data2_falls_back_on_single_data_profil
 async def test_set_mode_packet_without_wsjtx_data_config_does_not_touch_data_mod_input() -> (
     None
 ):
-    radio = AsyncMock()
+    radio = make_mock_radio()
     radio.set_mode = AsyncMock()
     radio.set_data_mode = AsyncMock()
     radio.set_data1_mod_input = AsyncMock()
@@ -1450,7 +1467,7 @@ async def test_get_info(handler: RigctldHandler, mock_radio: AsyncMock) -> None:
 
 @pytest.mark.asyncio
 async def test_get_info_uses_runtime_model(config: RigctldConfig) -> None:
-    radio = AsyncMock()
+    radio = make_mock_radio()
     radio.model = "IC-9700"
     h = RigctldHandler(radio, config)
     resp = await h.execute(get_cmd("get_info"))
@@ -3606,7 +3623,7 @@ class _FakeProfile:
 @pytest.fixture
 def dual_rx_radio() -> AsyncMock:
     """IC-7610-style radio mock: dual-RX profile, main/sub VFO scheme."""
-    radio = AsyncMock()
+    radio = make_mock_radio()
     radio.capabilities = set(FULL_ICOM_CAPS)
     radio.profile = _FakeProfile(receiver_count=2, vfo_scheme="main_sub")
     return radio
@@ -3620,7 +3637,7 @@ def dual_rx_handler(dual_rx_radio: AsyncMock, config: RigctldConfig) -> RigctldH
 @pytest.fixture
 def single_rx_radio() -> AsyncMock:
     """IC-7300-style radio mock: single-RX profile, A/B VFO scheme."""
-    radio = AsyncMock()
+    radio = make_mock_radio()
     radio.capabilities = set(FULL_ICOM_CAPS)
     radio.profile = _FakeProfile(receiver_count=1, vfo_scheme="ab")
     return radio
