@@ -223,6 +223,71 @@
       "declaration": "manual_required"
     },
     {
+      "check_id": "scope_center_type.set",
+      "status": "skip",
+      "declaration": "supported"
+    },
+    {
+      "check_id": "scope_dual.set",
+      "status": "skip",
+      "declaration": "supported"
+    },
+    {
+      "check_id": "scope_during_tx.set",
+      "status": "skip",
+      "declaration": "supported"
+    },
+    {
+      "check_id": "scope_edge.set",
+      "status": "skip",
+      "declaration": "supported"
+    },
+    {
+      "check_id": "scope_fixed_edge.read",
+      "status": "skip",
+      "declaration": "supported"
+    },
+    {
+      "check_id": "scope_hold.set",
+      "status": "skip",
+      "declaration": "supported"
+    },
+    {
+      "check_id": "scope_mode.set",
+      "status": "skip",
+      "declaration": "supported"
+    },
+    {
+      "check_id": "scope_rbw.set",
+      "status": "skip",
+      "declaration": "supported"
+    },
+    {
+      "check_id": "scope_receiver.set",
+      "status": "skip",
+      "declaration": "supported"
+    },
+    {
+      "check_id": "scope_ref.set",
+      "status": "skip",
+      "declaration": "supported"
+    },
+    {
+      "check_id": "scope_span.set",
+      "status": "skip",
+      "declaration": "supported"
+    },
+    {
+      "check_id": "scope_speed.set",
+      "status": "skip",
+      "declaration": "supported"
+    },
+    {
+      "check_id": "scope_vbw.set",
+      "status": "skip",
+      "declaration": "supported"
+    },
+    {
       "check_id": "split.set",
       "status": "skip",
       "declaration": "supported"

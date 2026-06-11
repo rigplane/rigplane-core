@@ -30,8 +30,8 @@ from rigplane.validation.schema import FailureDomain, ValidationLevel
 
 # Frozen snapshot of the REGISTRY check ids. Deliberately updated for the
 # append-only audio-probe family (GH #1650, MOR-639/640/641) and the
-# MOR-642..645 command-coverage families (tone/TSQL, split/VFO/dual-watch,
-# band-stack, system) on top of the pre-split 21 (MOR-637 guard).
+# MOR-642..646 command-coverage families (tone/TSQL, split/VFO/dual-watch,
+# band-stack, system, scope controls) on top of the pre-split 21 (MOR-637 guard).
 _EXPECTED_CHECK_IDS = {
     # Pre-split 21 (MOR-637)
     "discovery.identify",
@@ -78,11 +78,25 @@ _EXPECTED_CHECK_IDS = {
     "vox.set",
     "vox_gain.set",
     "dial_lock.set",
+    # T11 / MOR-646 — scope-control SET commands
+    "scope_receiver.set",
+    "scope_dual.set",
+    "scope_mode.set",
+    "scope_span.set",
+    "scope_edge.set",
+    "scope_hold.set",
+    "scope_ref.set",
+    "scope_speed.set",
+    "scope_during_tx.set",
+    "scope_center_type.set",
+    "scope_vbw.set",
+    "scope_rbw.set",
+    "scope_fixed_edge.read",
 }
 
 
 def test_registry_has_expected_entry_count():
-    assert len(REGISTRY) == len(_EXPECTED_CHECK_IDS) == 39
+    assert len(REGISTRY) == len(_EXPECTED_CHECK_IDS) == 52
 
 
 def test_check_ids_unique():

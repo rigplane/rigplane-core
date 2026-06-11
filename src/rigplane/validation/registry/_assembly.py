@@ -13,6 +13,7 @@ from rigplane.validation.registry._audio import CHECKS as _AUDIO_CHECKS
 from rigplane.validation.registry._dsp import CHECKS as _DSP_CHECKS
 from rigplane.validation.registry._levels import CHECKS as _LEVELS_CHECKS
 from rigplane.validation.registry._memory import CHECKS as _MEMORY_CHECKS
+from rigplane.validation.registry._scope import CHECKS as _SCOPE_CHECKS
 from rigplane.validation.registry._structural import CHECKS as _STRUCTURAL_CHECKS
 from rigplane.validation.registry._surfaces import CHECKS as _SURFACES_CHECKS
 from rigplane.validation.registry._system import CHECKS as _SYSTEM_CHECKS
@@ -43,6 +44,7 @@ REGISTRY: tuple[CheckSpec, ...] = (
     + _VFO_CHECKS  # T8: split, vfo_slot, dual_watch
     + _MEMORY_CHECKS  # T9: bsr (manual; CI-V memory surface is SET-only)
     + _SYSTEM_CHECKS  # T10: system clock, key_speed, vox, dial_lock
+    + _SCOPE_CHECKS  # T11 (MOR-646): scope-control SET commands (cmd 0x27)
 )
 
 

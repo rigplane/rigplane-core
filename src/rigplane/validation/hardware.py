@@ -1066,6 +1066,11 @@ _WRITE_ONLY_TEST_VALUES: dict[str, Any] = {
     ValueRule.TONE_FREQ_CYCLE: 88.5,
     ValueRule.VFO_AB_FLIP: "A",
     ValueRule.KEY_SPEED_WPM: 20,
+    # T11 / MOR-646 — scope controls: index 1 and edge 1 are valid for every
+    # scope preset surface; 0.0 dB is the neutral scope reference level.
+    ValueRule.SCOPE_INDEX_FLIP: 1,
+    ValueRule.SCOPE_EDGE_CYCLE: 1,
+    ValueRule.SCOPE_REF_DB: 0.0,
 }
 
 # Benign value to restore a write-only control to afterwards (best-effort).
@@ -1095,6 +1100,15 @@ _VALUE_RULE_FNS: dict[str, Callable[[Any], Any]] = {
     ValueRule.VFO_AB_FLIP: lambda s: "B" if str(s).upper() == "A" else "A",
     # CW keyer speed in WPM (real range 6-48): pick a DIFFERENT in-range value.
     ValueRule.KEY_SPEED_WPM: lambda w: 24 if int(w) != 24 else 20,
+    # T11 / MOR-646 — scope controls.
+    # Small 0-based preset/enum (receiver 0-1, mode 0-3, span 0-7, speed 0-2,
+    # center_type 0-2, rbw 0-2): flip 0 <-> 1, in range for ALL of them.
+    ValueRule.SCOPE_INDEX_FLIP: lambda v: 1 if int(v) == 0 else 0,
+    # Fixed-edge selection is 1-BASED (1..4): cycle 1 <-> 2, never write 0.
+    ValueRule.SCOPE_EDGE_CYCLE: lambda e: 2 if int(e) != 2 else 1,
+    # Reference level in dB on the radio's 0.5 dB grid: hop between two
+    # exact grid values so the readback comparison can stay exact.
+    ValueRule.SCOPE_REF_DB: lambda r: 5.0 if float(r) != 5.0 else 0.0,
 }
 
 
