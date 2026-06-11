@@ -82,6 +82,8 @@ import subprocess
 from dataclasses import dataclass
 from typing import Any
 
+from rigplane.audio.backend import _ALSA_HW_RE
+
 logger = logging.getLogger(__name__)
 
 __all__ = [
@@ -817,6 +819,32 @@ def _read_sysfs_str(path: str) -> str | None:
 # Helpers
 # ---------------------------------------------------------------------------
 
+# Trailing ALSA decoration PortAudio appends on Linux: " (hw:X,Y)" (or
+# "(plughw:X,Y)"). Anchored variant of backend._ALSA_HW_RE for suffix-stripping.
+_ALSA_NAME_SUFFIX_RE = re.compile(rf"\s*\({_ALSA_HW_RE.pattern}\)\s*$")
+
+
+def _normalize_alsa_device_name(name: str) -> str:
+    """Strip PortAudio's ALSA decoration down to the bare card name (MOR-549).
+
+    On Linux, ``sounddevice.query_devices()`` reports ALSA devices as
+    ``"<card>: <pcm> (hw:X,Y)"`` (e.g. ``"USB Audio CODEC: Audio (hw:2,0)"``),
+    while the sysfs ``product`` attribute — the topology identity key used by
+    :func:`_resolve_linux` — is just ``"<card>"`` (``"USB Audio CODEC"``).
+    Normalising the sounddevice side makes the exact-identity match work.
+
+    Conservative by design: a name without an ``(hw:X,Y)`` suffix is returned
+    unchanged (macOS/Windows names, plain test names, names containing a colon
+    for other reasons). The ``": <pcm>"`` tail is only stripped when the ALSA
+    suffix was present, so legitimate names are never over-stripped.
+    """
+    m = _ALSA_NAME_SUFFIX_RE.search(name)
+    if m is None:
+        return name
+    base = name[: m.start()]
+    head, sep, _ = base.partition(":")
+    return head.strip() if sep else base.strip()
+
 
 def _pair_audio_cluster_by_name_rank(
     devices: list[Any],
@@ -836,7 +864,12 @@ def _pair_audio_cluster_by_name_rank(
     the matched cluster is missing an RX or TX index.
     """
     clusters = _cluster_usb_audio_devices(devices)
-    same_name_clusters = [c for c in clusters if c[0] == audio_name]
+    # Normalise the sounddevice-side name: on Linux/ALSA it carries a
+    # ": <pcm> (hw:X,Y)" decoration absent from the sysfs product string
+    # (MOR-549). A no-op for macOS/Windows names.
+    same_name_clusters = [
+        c for c in clusters if _normalize_alsa_device_name(c[0]) == audio_name
+    ]
     if same_name_rank >= len(same_name_clusters):
         logger.warning(
             "usb-audio-resolve: %r rank %d out of range (%d matching clusters)",

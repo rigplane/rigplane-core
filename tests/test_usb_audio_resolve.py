@@ -17,6 +17,7 @@ from rigplane.usb_audio_resolve import (
     _find_audio_codec_locations,
     _find_serial_location,
     _is_usb_audio_codec,
+    _normalize_alsa_device_name,
     _resolve_linux,
     _resolve_macos,
     _usb_device_node_from_realpath,
@@ -1337,6 +1338,82 @@ class TestResolveLinuxSysfs:
             "/dev/ttyACM0", sounddevice_module=sd, sysfs_root=str(tmp_path)
         )
         assert result is None
+
+
+class TestNormalizeAlsaDeviceName:
+    """MOR-549: strip PortAudio's ALSA decoration down to the card name."""
+
+    def test_full_alsa_form(self) -> None:
+        assert (
+            _normalize_alsa_device_name("USB Audio CODEC: Audio (hw:2,0)")
+            == "USB Audio CODEC"
+        )
+
+    def test_alsa_form_with_pcm_descriptor(self) -> None:
+        assert (
+            _normalize_alsa_device_name("USB Audio Device: USB Audio (hw:1,0)")
+            == "USB Audio Device"
+        )
+
+    def test_plughw_suffix(self) -> None:
+        assert (
+            _normalize_alsa_device_name("USB Audio CODEC: Audio (plughw:2,0)")
+            == "USB Audio CODEC"
+        )
+
+    def test_suffix_without_descriptor(self) -> None:
+        assert _normalize_alsa_device_name("USB Audio CODEC (hw:2,0)") == (
+            "USB Audio CODEC"
+        )
+
+    def test_plain_name_unchanged(self) -> None:
+        assert _normalize_alsa_device_name("USB Audio CODEC") == "USB Audio CODEC"
+
+    def test_macos_name_unchanged(self) -> None:
+        assert _normalize_alsa_device_name("USB Audio Device") == "USB Audio Device"
+
+    def test_colon_without_hw_suffix_unchanged(self) -> None:
+        # Conservative: only strip the ": <descriptor>" tail when the name
+        # carries an ALSA (hw:X,Y) suffix — never over-strip legitimate names.
+        assert (
+            _normalize_alsa_device_name("Radio: Special Edition")
+            == "Radio: Special Edition"
+        )
+
+
+class TestResolveLinuxAlsaDeviceNames:
+    """MOR-549: real ALSA enumerations decorate names as
+    ``"<card>: <pcm> (hw:X,Y)"`` while sysfs ``product`` is the bare card name
+    (``"USB Audio CODEC"``). Topology pairing must match despite the suffix.
+    """
+
+    def test_ftdi_resolves_with_realistic_alsa_names(self, tmp_path: Path) -> None:
+        TestResolveLinuxSysfs._build_tree(tmp_path)
+        sd = _make_mock_sd_two_usb_named(
+            "USB Audio Device: USB Audio (hw:1,0)",
+            "USB Audio CODEC: Audio (hw:2,0)",
+        )
+        result = _resolve_linux(
+            "/dev/ttyUSB0", sounddevice_module=sd, sysfs_root=str(tmp_path)
+        )
+        assert result is not None
+        # sysfs product "USB Audio CODEC" must match the decorated ALSA name
+        # at sounddevice index 2.
+        assert result.rx_device_index == 2
+        assert result.tx_device_index == 2
+
+    def test_x6200_resolves_with_realistic_alsa_names(self, tmp_path: Path) -> None:
+        TestResolveLinuxSysfs._build_tree(tmp_path)
+        sd = _make_mock_sd_two_usb_named(
+            "USB Audio Device: USB Audio (hw:1,0)",
+            "USB Audio CODEC: Audio (hw:2,0)",
+        )
+        result = _resolve_linux(
+            "/dev/ttyACM0", sounddevice_module=sd, sysfs_root=str(tmp_path)
+        )
+        assert result is not None
+        assert result.rx_device_index == 1
+        assert result.tx_device_index == 1
 
 
 class TestResolveLinuxCompositeIdentity:
