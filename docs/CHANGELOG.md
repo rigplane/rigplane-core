@@ -11,6 +11,104 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.10.0] — 2026-06-11
+
+### Added
+
+- **`rigplane validate` — multi-level radio regression-validation harness
+  (epic MOR-634).** A new CLI subcommand that exercises a radio against a
+  universal capability matrix and reports per-check results. Highlights:
+  read-modify-verify-restore (RMVR) round-trip checks for frequency, mode,
+  levels, scope controls and MOD-input routing; a committed **golden gate**
+  (`--gate` / `--regen-golden`) that pins each radio's dry-run plan
+  (MOR-636/648, #1801, #1809, #1814); a **hamlib-external provider**
+  (`--provider hamlib`) to validate arbitrary rigctld-backed rigs
+  (MOR-638, #1805); command-coverage families for scope, tone, VFO, memory
+  and system commands (MOR-642–646, #1811, #1813); automated audio-pipeline
+  probe checks plus live-RX `audio.rx.rms` / `scope.fft.presence` against
+  the hardware stream (MOR-639–641/668, #1810, #1822); `--interactive`
+  operator-confirmed manual-perception checks (MOR-667, #1820); and
+  `--tx-actuate` to key PTT and run a tuner tune-cycle behind a full gate
+  with explicit confirmation (MOR-666, #1821). The registry is split into
+  per-domain modules and its layer boundaries are import-linter-pinned
+  (MOR-649, #1807, #1808).
+- IC-7610 MOD-input routing validation guard — RMVR over `0x1A 05 0089–0094`
+  (MOR-678, #1828).
+- `if_shift.set` and `contour.set` RMVR validation checks (MOR-671, #1825).
+- Backend session-teardown now restores the MOD-input source on an abnormal
+  disconnect (MOR-624, #1796).
+
+### Changed
+
+- **No silent IC-7610 impersonation (behaviour change — MOR-174, #1798).**
+  An unknown/unresolved radio model no longer silently inherits IC-7610
+  capabilities, scope and CI-V address: the serial backend now raises on an
+  unknown model, and the web profile path logs a WARNING and falls through
+  the normal default-resolution chain. The CLI always injects the real model,
+  so CLI runtime behaviour is unchanged — only library/embedding consumers
+  that relied on the old silent `"IC-7610"` default are affected.
+- Capability-accuracy / CAT corrections surfaced by the validation harness:
+  IC-7300 band-stack-register read implemented and dead `apf 14 05` dropped
+  (MOR-681, #1827); TX-500 profile mode-map + power CAT control corrected and
+  divergent profiles consolidated (MOR-684, #1826); scope `vbw`/`rbw`/`dual`
+  receiver-prefix corrected on SET, live-proven on the IC-7610 (MOR-664,
+  #1829); FTX-1 tone checks repointed to `sql_type`/`ctcss_tone` and DT clock
+  command strings added (MOR-672, #1830); Icom level checks upgraded to RMVR
+  round-trips (rf_power, mic_gain, comp, nr/nb, cw_pitch) and made
+  control-range-aware (MOR-679/695, #1831, #1832).
+- A radio operation raising `NotImplementedError` now resolves to UNSUPPORTED
+  in validation instead of FAIL (MOR-670, #1823).
+
+### Removed
+
+These are corrections of **over-declared** capabilities — capabilities the
+profiles advertised but the radios do not actually expose over CI-V, confirmed
+against live hardware. A radio that previously advertised them no longer does;
+this is an accuracy fix, not a feature regression.
+
+- **Xiegu X6200**: dropped the tone family (`repeater_tone` / `tsql`,
+  `0x16 42/43` + `0x1B`) — live-confirmed to time out (MOR-683, #1833) — and
+  twin-PBT (`pbt`, `0x14 07/08`) — live-confirmed to time out in AM and USB
+  (MOR-699, #1835). `filter_width` is intentionally not advertised: the radio
+  uses a raw-hex (non-BCD) filter codec that needs its own implementation,
+  tracked in MOR-706.
+- **Xiegu X6100**: dropped `repeater_tone` / `tsql` / `pbt` by X6100/X6200
+  shared-firmware inference (the two share a CAT caps struct), pending direct
+  X6100-hardware confirmation (MOR-634, #1836).
+- **IC-7610**: removed dead `[commands]` tone/TSQL entries (`0x16 42/43`,
+  `0x1B 00/01`) that had no declared capability (MOR-682, #1839).
+
+### Fixed
+
+- FTX-1 web poller no longer floods the log every cycle with `sub.s_meter`
+  parse warnings (the radio answers the sub `SM1;` query in main form
+  `SM0000;`): the warning is now emitted once per field then demoted to
+  DEBUG, and the `break_in_delay` parse accepts the FTX-1's 2-digit reply
+  (MOR-561, #1838).
+- IC-7610 scope fixed-edge read: send the range + edge selector so the radio
+  answers `get_scope_fixed_edge` (MOR-662, #1816).
+- `preamp.set` validation clears and restores the DIGI-SEL prerequisite before
+  testing PREAMP (MOR-665, #1819); per-check exceptions and non-primitive
+  evidence are contained so one bad RMVR value can't abort the run or crash
+  artifact emission (MOR-659/663, #1815, #1818).
+- Linux USB-audio device pairing: normalize ALSA device names so topology
+  matching succeeds (MOR-549, #1806).
+- Refresh radio credentials on reconnect (MOR-252, #1799).
+- Frontend `connection.test.ts` order-dependent flake fixed with a per-test
+  store reset (MOR-611, #1837).
+- Python 3.11 test-suite fixes — CI-V timeout / serial RX, web-server, audio
+  Protocol/async-mock, and rigctld async-dispatch failures — plus pinning the
+  test interpreter to the matrix version (MOR-590, #1800, #1802, #1803, #1804).
+- Cleared the mypy baseline (all 21 remaining type errors fixed, #1797).
+
+### Docs
+
+- CAT-manual-vs-implementation gap audits for five radios under
+  `docs/validation/cat-audits/` (#1824), plus an X6200 unofficial/community
+  CI-V reference distilled from the Hamlib `xiegu.c` backend (#1834).
+- Mark the IC-9700 as Community-validated (field report #1719, #1795); use
+  absolute README image/badge URLs so they render on PyPI (#1794).
+
 ## [2.9.0] — 2026-06-11
 
 ### Breaking changes
