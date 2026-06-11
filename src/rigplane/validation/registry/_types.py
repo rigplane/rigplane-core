@@ -65,6 +65,8 @@ class ValueRule(StrEnum):
     # MOR-679 — CW pitch is Hz (300-900), not a 0-255 level; nudge on the 5 Hz
     # grid inside the documented band so the write is always restorable.
     CW_PITCH_HZ = "cw_pitch_hz"
+    # MOR-672 — FTX-1 SQL-type select (CAT ``CT``): 0=off / 1=TONE / 2=TSQL
+    SQL_TYPE_CYCLE = "sql_type_cycle"
 
 
 # ---------------------------------------------------------------------------

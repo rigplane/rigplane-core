@@ -73,6 +73,11 @@
       "declaration": "unsupported_pending_evidence"
     },
     {
+      "check_id": "ctcss_tone.read",
+      "status": "unsupported",
+      "declaration": "unsupported_pending_evidence"
+    },
+    {
       "check_id": "cw_pitch.set",
       "status": "skip",
       "declaration": "supported"
@@ -321,6 +326,11 @@
       "check_id": "split.set",
       "status": "skip",
       "declaration": "supported"
+    },
+    {
+      "check_id": "sql_type.set",
+      "status": "unsupported",
+      "declaration": "unsupported_pending_evidence"
     },
     {
       "check_id": "squelch.set",
