@@ -144,11 +144,6 @@ maintainer has not yet completed first-party hardware validation in this repo.
     - **[IC-705 USB Serial Backend Setup](ic705-usb-setup.md)** — Step-by-step USB configuration
     - Use **Menu → Set → Connectors → CI-V → CI-V USB Port** = `Link to [CI-V]`
 
-## Has Rig Profile (Not Yet Backend-Tested)
-
-These radios have complete rig profiles and the CI-V backend should support them, but they
-have not been tested by the maintainers. Community testing and reports welcome!
-
 ### IC-9700
 
 - **CI-V Address:** `0xA2`
@@ -157,7 +152,12 @@ have not been tested by the maintainers. Community testing and reports welcome!
 - **Rig profile:** `rigs/ic9700.toml`
 - **Expected features:** frequency, mode, power, S-meter, scope/waterfall, audio RX/TX,
   independent MAIN/SUB control, dual audio streaming
-- **Status:** Profile complete. Backend untested — reports welcome.
+- **Status:** Community-validated. A community IC-9700 user reported a field
+  issue — the FM/AM waterfall passband rendered asymmetric
+  ([#1719](https://github.com/rigplane/rigplane-core/issues/1719)) — which was
+  fixed in [#1792](https://github.com/rigplane/rigplane-core/pull/1792).
+  First-party maintainer hardware validation is still pending; broader backend
+  coverage still relies on community reports.
 
 !!! tip "Setup Guide"
     **[IC-9700 USB Serial & LAN Setup](ic9700-usb-setup.md)** — Setup guide covering
