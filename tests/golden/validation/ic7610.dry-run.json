@@ -37,6 +37,11 @@
       "declaration": "manual_required"
     },
     {
+      "check_id": "audio.rx.rms",
+      "status": "manual_required",
+      "declaration": "manual_required"
+    },
+    {
       "check_id": "band_edge.presence",
       "status": "unsupported",
       "declaration": "unsupported_pending_evidence"

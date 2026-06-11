@@ -28,8 +28,8 @@ from rigplane.validation.schema import FailureDomain, ValidationLevel
 # ---------------------------------------------------------------------------
 
 
-def test_registry_has_21_entries():
-    assert len(REGISTRY) == 21
+def test_registry_has_22_entries():
+    assert len(REGISTRY) == 22
 
 
 def test_check_ids_unique():
@@ -39,7 +39,8 @@ def test_check_ids_unique():
 
 def test_check_id_set_unchanged_after_domain_split():
     """MOR-637 guard: the per-domain package split must not lose, duplicate,
-    or rename any check. Frozen snapshot of the pre-split REGISTRY ids."""
+    or rename any check. Frozen snapshot of the pre-split REGISTRY ids, plus
+    the append-only audio-probe family (GH #1650, MOR-639/640/641)."""
     expected = {
         "discovery.identify",
         "freq.write",
@@ -62,6 +63,8 @@ def test_check_id_set_unchanged_after_domain_split():
         "meters.read",
         "tuner.tune",
         "tx.ptt",
+        # Appended audio-probe family (CI-automated, GH #1650):
+        "audio.rx.rms",
     }
     assert {spec.check_id for spec in REGISTRY} == expected
 

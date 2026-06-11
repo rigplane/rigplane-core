@@ -28,6 +28,9 @@ _KIND_TO_DECLARATION: dict[CheckKind, CapabilityDeclaration] = {
     CheckKind.WRITE_ONLY_OBSERVE: CapabilityDeclaration.SUPPORTED,
     CheckKind.MANUAL: CapabilityDeclaration.MANUAL_REQUIRED,
     CheckKind.TX_ADJACENT_BLOCKED: CapabilityDeclaration.MANUAL_REQUIRED,
+    # AUDIO_PROBE checks are CI-automated (rigplane.validation.audio_checks);
+    # on a real radio they keep the MANUAL operator-confirmation posture.
+    CheckKind.AUDIO_PROBE: CapabilityDeclaration.MANUAL_REQUIRED,
 }
 
 
