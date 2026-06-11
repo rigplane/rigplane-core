@@ -15,6 +15,7 @@ edit disjoint files (MOR-637):
 - ``_tuning`` — RIT, XIT, squelch (14-16)
 - ``_surfaces`` — audio, scope, meters (17-19)
 - ``_tx`` — tuner, PTT (20-21)
+- ``_audio`` — appended CI-automated audio probes (GH #1650, MOR-639/640/641)
 - ``_tone`` — CTCSS repeater tone, TSQL, tone frequencies (MOR-642)
 - ``_vfo`` — split, VFO A/B slot, dual watch (MOR-643)
 - ``_memory`` — band-stack manual check (MOR-644)

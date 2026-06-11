@@ -72,8 +72,12 @@ references/
 # Mockups (design artifacts, not runtime)
 mockups/
 
-# Scripts (internal dev tools)
-scripts/
+# Scripts (internal dev tools). `scripts/*` (not `scripts/`) so the
+# release-validation runner below can be un-ignored — git never descends
+# into a directory excluded by a trailing-slash pattern.
+scripts/*
+# But the release-validation runner is tracked (MOR-648).
+!scripts/validate-release.sh
 # But CI scripts under .github/ are tracked.
 !.github/scripts/
 # And frontend tooling scripts (e.g. i18n lint) are tracked.

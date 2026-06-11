@@ -42,3 +42,20 @@ modules =
     rigplane.commands
     rigplane.scope
     rigplane.dsp
+
+[importlinter:contract:validation-leaf]
+name = validation is a leaf consumer — no lower layer may import it
+type = forbidden
+source_modules =
+    rigplane.web
+    rigplane.rigctld
+    rigplane.backends
+    rigplane.runtime
+    rigplane.profiles
+    rigplane.audio
+    rigplane.commands
+    rigplane.scope
+    rigplane.dsp
+    rigplane.core
+forbidden_modules =
+    rigplane.validation

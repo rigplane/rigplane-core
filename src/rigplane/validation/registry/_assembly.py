@@ -9,6 +9,7 @@ within each level.
 from __future__ import annotations
 
 from rigplane.core.capabilities import KNOWN_CAPABILITIES
+from rigplane.validation.registry._audio import CHECKS as _AUDIO_CHECKS
 from rigplane.validation.registry._dsp import CHECKS as _DSP_CHECKS
 from rigplane.validation.registry._levels import CHECKS as _LEVELS_CHECKS
 from rigplane.validation.registry._memory import CHECKS as _MEMORY_CHECKS
@@ -32,6 +33,10 @@ REGISTRY: tuple[CheckSpec, ...] = (
     + _TUNING_CHECKS  # 14-16: rit, xit, squelch
     + _SURFACES_CHECKS  # 17-19: audio, scope, meters
     + _TX_CHECKS  # 20-21: tuner, tx
+    # ----- append-only anchor: new check families concatenate BELOW the -----
+    # ----- historical 1-21 block. The template generators stable-sort by ----
+    # ----- level, so appended checks slot into their level untouched. -------
+    + _AUDIO_CHECKS  # 22+: automated audio probes (GH #1650, MOR-639/640/641)
     # --- MOR-642..645 command-coverage families (append-only; generators
     # stable-sort by level so new checks slot in without reordering 1-21) ---
     + _TONE_CHECKS  # T7: repeater_tone, tone_freq, tsql, tsql_freq

@@ -27,6 +27,11 @@ class CheckKind(StrEnum):
     WRITE_ONLY_OBSERVE = "write_only_observe"
     TX_ADJACENT_BLOCKED = "tx_adjacent_blocked"
     MANUAL = "manual"
+    # Automated audio-pipeline probe (GH #1650, MOR-639/640/641): executes in
+    # CI against the deterministic audio fakes via
+    # ``rigplane.validation.audio_checks`` — never auto-run on a live radio
+    # (hardware templates carry these checks as MANUAL_REQUIRED).
+    AUDIO_PROBE = "audio_probe"
 
 
 # ---------------------------------------------------------------------------

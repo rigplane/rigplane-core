@@ -29,6 +29,7 @@ from rigplane.validation.schema import FailureDomain, ValidationLevel
 
 
 # Frozen snapshot of the REGISTRY check ids. Deliberately updated for the
+# append-only audio-probe family (GH #1650, MOR-639/640/641) and the
 # MOR-642..645 command-coverage families (tone/TSQL, split/VFO/dual-watch,
 # band-stack, system) on top of the pre-split 21 (MOR-637 guard).
 _EXPECTED_CHECK_IDS = {
@@ -54,6 +55,10 @@ _EXPECTED_CHECK_IDS = {
     "meters.read",
     "tuner.tune",
     "tx.ptt",
+    # Appended audio-probe family (CI-automated, GH #1650 / MOR-639/640/641)
+    "audio.rx.rms",
+    "audio.tx.byte_perfect",
+    "scope.fft.presence",
     # T7 / MOR-642 — tone / TSQL
     "repeater_tone.set",
     "tone_freq.set",
@@ -77,7 +82,7 @@ _EXPECTED_CHECK_IDS = {
 
 
 def test_registry_has_expected_entry_count():
-    assert len(REGISTRY) == len(_EXPECTED_CHECK_IDS) == 36
+    assert len(REGISTRY) == len(_EXPECTED_CHECK_IDS) == 39
 
 
 def test_check_ids_unique():
@@ -86,8 +91,9 @@ def test_check_ids_unique():
 
 
 def test_check_id_set_unchanged_after_domain_split():
-    """Guard: the per-domain package split (MOR-637) and the coverage
-    families (MOR-642..645) must not lose, duplicate, or rename any check."""
+    """Guard: the per-domain package split (MOR-637), the audio-probe family
+    (GH #1650, MOR-639/640/641), and the coverage families (MOR-642..645)
+    must not lose, duplicate, or rename any check."""
     assert {spec.check_id for spec in REGISTRY} == _EXPECTED_CHECK_IDS
 
 
@@ -113,10 +119,18 @@ def test_tx_adjacent_blocked_implies_tx_adjacent():
             assert spec.tx_adjacent is True, (
                 f"{spec.check_id!r}: TX_ADJACENT_BLOCKED but tx_adjacent is False"
             )
-    # Closed set of TX-adjacent checks. vox.set / vox_gain.set joined in
-    # MOR-645: an enabled (or gain-boosted) VOX can key TX from ambient audio.
+    # Closed set of TX-adjacent checks: tuner.tune + tx.ptt; the TX-audio probe
+    # (GH #1650: TX audio stays behind explicit operator safety enablement);
+    # and vox.set / vox_gain.set (MOR-645: an enabled or gain-boosted VOX can
+    # key TX from ambient audio).
     tx_adjacent_ids = {spec.check_id for spec in REGISTRY if spec.tx_adjacent}
-    assert tx_adjacent_ids == {"tuner.tune", "tx.ptt", "vox.set", "vox_gain.set"}
+    assert tx_adjacent_ids == {
+        "tuner.tune",
+        "tx.ptt",
+        "audio.tx.byte_perfect",
+        "vox.set",
+        "vox_gain.set",
+    }
 
 
 def test_manual_and_blocked_have_no_set_op():
