@@ -68,6 +68,7 @@ from rigplane.commands import (
     build_civ_frame,
     filter_hz_to_index,
     filter_index_to_hz,
+    build_band_stack_get,
     build_memory_clear,
     build_memory_contents_set,
     build_memory_mode_set,
@@ -156,6 +157,7 @@ from rigplane.commands import (
     get_vox_gain,
     get_xfc_status,
     parse_ack_nak,
+    parse_band_stack_response,
     parse_bool_response,
     parse_data_mode_response,
     parse_frequency_response,
@@ -3900,23 +3902,26 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
     async def get_bsr(self, band: int, register: int) -> BandStackRegister:
         """Read band stacking register (band 0-24, register 1-3).
 
+        Issues CI-V ``0x1A 0x01 <band> <register>`` and parses the band-stack
+        response (frequency / mode / filter). Icom firmware (IC-7300,
+        IC-7610, IC-705, IC-9700, X6200, ...) answers this read; the historic
+        ``NotImplementedError`` was a stale IC-7610-era assumption.
+
         Args:
             band: Band number (0-24).
             register: Register number (1-3).
 
-        Raises:
-            NotImplementedError: IC-7610 does not support reading band
-                stacking registers. Command 0x1A 0x01 GET is not documented
-                in the official CI-V Reference Manual.
+        Returns:
+            The decoded band-stack register entry.
         """
         if not 0 <= band <= 24:
             raise ValueError(f"Band must be 0-24, got {band}")
         if not 1 <= register <= 3:
             raise ValueError(f"Register must be 1-3, got {register}")
-        raise NotImplementedError(
-            f"IC-7610 does not support reading band stack register (band={band}, reg={register}). "
-            "Command 0x1A 0x01 GET is not documented in the CI-V Reference Manual."
-        )
+        self._check_connected()
+        civ = build_band_stack_get(band, register, to_addr=self._radio_addr)
+        resp = await self._send_civ_expect(civ, label="get_bsr")
+        return parse_band_stack_response(resp)
 
     async def set_bsr(self, bsr: BandStackRegister) -> None:
         """Write band stacking register."""
