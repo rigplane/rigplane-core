@@ -729,6 +729,112 @@ def _transport_failure_levels(
     return [LevelResult(level=ValidationLevel.DISCOVERY, checks=[check])]
 
 
+# MOR-668 — live RX-audio probe capture parameters. A short RX-only window is
+# captured once per hardware run and fed to the audio.rx.rms / scope.fft.presence
+# probes. RX-only: this never opens a TX path and never keys the transmitter.
+#
+# Capture goes through the radio-owned ``AudioSession`` (``radio.audio_session``)
+# — the SAME codec-negotiated RX path the web server/bridge use — NOT the
+# Opus-only ``start_audio_rx_pcm`` decoder. Direct IC-7610 LAN audio is
+# PCM-first (``rigs/ic7610.toml`` ``codec_preference`` = PCM_*; Opus is only a
+# browser transcode), so the Opus decoder rejected every on-wire PCM frame and
+# the probe saw ZERO frames. Subscribing through the session yields the radio's
+# negotiated on-wire payload, which we decode to s16le PCM here (PCM pass-through,
+# uLaw → PCM16) exactly like the web relay loop.
+# Number of decoded PCM frames to collect (each ~20 ms → ~0.5 s of audio).
+_AUDIO_PROBE_TARGET_FRAMES = 25
+# Hard wall-clock ceiling so a silent/dead RX path can never hang the run.
+_AUDIO_PROBE_CAPTURE_TIMEOUT = 3.0
+
+
+def _decode_probe_frame(data: bytes, codec: Any) -> bytes:
+    """Decode one on-wire RX payload to s16le PCM for the probe (MOR-668).
+
+    Mirrors the web relay loop's RX decode policy: PCM payloads pass through
+    untouched, uLaw is expanded to PCM16, and any other / unknown codec (incl.
+    Opus, which is never on the wire for the PCM-first direct-LAN path the probe
+    targets) is left as-is — the downstream RMS/FFT check then assesses it.
+    """
+    from rigplane.audio._codecs import decode_ulaw_to_pcm16
+    from rigplane.core.types import AudioCodec
+
+    if codec in (AudioCodec.ULAW_1CH, AudioCodec.ULAW_2CH):
+        try:
+            return decode_ulaw_to_pcm16(data)
+        except Exception:  # noqa: BLE001 — fall back to raw on decode failure.
+            return data
+    return data
+
+
+async def _capture_rx_audio_probe(radio: Any) -> list[bytes | None] | None:
+    """Capture a short live RX-audio window via the AudioSession (MOR-668).
+
+    Subscribes RX demand through the radio-owned :class:`AudioSession`
+    (``radio.audio_session``) — the codec-negotiated path the web server and
+    bridge use — and collects decoded s16le PCM frames. This is what makes the
+    probe work on direct IC-7610 LAN audio, which is PCM-first: the previous
+    Opus-only ``start_audio_rx_pcm`` decoder rejected every on-wire PCM frame
+    and captured ZERO frames.
+
+    Returns the captured list of decoded PCM frames (``None`` entries are jitter
+    gap placeholders, preserved for the probe's evidence) on success, or ``None``
+    when the radio is not :class:`AudioCapable` OR exposes no ``audio_session``
+    (the caller then leaves the audio probes MANUAL_REQUIRED). RX-only — never
+    opens a TX path, never transmits.
+
+    The RX subscription is ALWAYS released in a ``finally`` even if capture
+    raises or times out, so no stream/task leaks. Any capture error degrades to
+    an EMPTY captured window (``[]``), which the probes turn into a clean FAIL
+    with the reason in evidence rather than aborting the run.
+    """
+    from rigplane.core.radio_protocol import AudioCapable
+
+    if not isinstance(radio, AudioCapable):
+        return None
+
+    session = getattr(radio, "audio_session", None)
+    if session is None:
+        # No codec-negotiated session for this radio → leave probes MANUAL.
+        return None
+
+    frames: list[bytes | None] = []
+    codec = getattr(radio, "audio_codec", None)
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + _AUDIO_PROBE_CAPTURE_TIMEOUT
+    subscription = None
+    try:
+        # RX demand through the session arms the radio's negotiated RX leg.
+        subscription = await session.subscribe_rx("validate-rx-probe")
+        while len(frames) < _AUDIO_PROBE_TARGET_FRAMES:
+            remaining = deadline - loop.time()
+            if remaining <= 0:
+                break
+            packet = await subscription.get(timeout=remaining)
+            if packet is None:
+                # Jitter gap placeholder — preserved for the probe's evidence.
+                frames.append(None)
+                continue
+            frames.append(_decode_probe_frame(packet.data, codec))
+    except (asyncio.TimeoutError, asyncio.CancelledError):
+        # Partial (or empty) capture: the probes assess whatever arrived.
+        pass
+    except Exception as exc:  # noqa: BLE001 — any capture error → clean probe FAIL.
+        print(
+            f"Warning: live RX-audio probe capture failed: {exc}",
+            file=sys.stderr,
+        )
+    finally:
+        if subscription is not None:
+            try:
+                await subscription.release()
+            except Exception as exc:  # noqa: BLE001 — teardown must never raise.
+                print(
+                    f"Warning: live RX-audio probe teardown failed: {exc}",
+                    file=sys.stderr,
+                )
+    return frames
+
+
 async def _run_hardware(
     args: argparse.Namespace,
     template: MatrixTemplate,
@@ -792,6 +898,11 @@ async def _run_hardware(
     exit_code = 0
     try:
         async with radio:
+            # MOR-668: capture a short live RX-audio window so the audio.rx.rms /
+            # scope.fft.presence probes run for real on hardware. RX-only; the
+            # session is always torn down inside the helper's finally. A
+            # non-AudioCapable radio returns None → probes stay MANUAL_REQUIRED.
+            audio_probe_frames = await _capture_rx_audio_probe(radio)
             levels = await execute_hardware_checks(
                 radio,
                 template,
@@ -801,6 +912,7 @@ async def _run_hardware(
                 write_only_capabilities=write_only_capabilities,
                 prompter=_build_prompter(args),
                 tx_actuate=_tx_actuate_enabled(args),
+                audio_probe_frames=audio_probe_frames,
             )
     except (RigConnectionError, AuthenticationError, OSError, RigplaneError) as exc:
         levels = _transport_failure_levels(template, exc)

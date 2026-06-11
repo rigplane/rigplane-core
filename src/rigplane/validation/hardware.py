@@ -27,7 +27,7 @@ import asyncio
 import dataclasses
 import datetime
 import logging
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Sequence
 from typing import Any, TypeVar, cast
 
 from rigplane.core.exceptions import (
@@ -155,6 +155,11 @@ _TUNER_SETTLE_SECONDS = 1.0
 # VOX is deliberately excluded (stays MANUAL — out of MOR-666 scope).
 _TX_ACTUATE_CHECK_IDS = frozenset({"tx.ptt", "tuner.tune"})
 
+# MOR-668 — RX-audio probes that run for real against a live captured RX-PCM
+# window (supplied via ``audio_probe_frames``). ``audio.tx.byte_perfect`` is
+# deliberately excluded: it needs a TX loopback and stays MANUAL/out of scope.
+_LIVE_AUDIO_PROBE_CHECK_IDS = frozenset({"audio.rx.rms", "scope.fft.presence"})
+
 
 def _template_has_tx_check(template: MatrixTemplate) -> bool:
     """True if the template contains a TX-actuatable check (tx.ptt/tuner.tune).
@@ -184,6 +189,7 @@ async def execute_hardware_checks(
     write_only_capabilities: frozenset[str] = frozenset(),
     prompter: InteractivePrompter | None = None,
     tx_actuate: bool = False,
+    audio_probe_frames: Sequence[bytes | None] | None = None,
 ) -> list[LevelResult]:
     """Run a template's checks against an already-connected ``radio``.
 
@@ -201,6 +207,15 @@ async def execute_hardware_checks(
     before any check runs. Without ``tx_actuate``, without a prompter, or on a
     declined confirm, the TX checks keep their MANUAL_REQUIRED behaviour and
     NEVER key the transmitter.
+
+    When *audio_probe_frames* is supplied (MOR-668), it carries a window of
+    REAL RX PCM already captured from a live audio session by the caller (the
+    CLI hardware path owns opening/closing that RX session). The RX-audio
+    probes (``audio.rx.rms`` / ``scope.fft.presence``) then run for real
+    against those captured frames instead of staying MANUAL_REQUIRED. Without
+    it (dry-run/CI, or a non-AudioCapable radio) those probes keep their
+    MANUAL_REQUIRED behaviour. ``audio.tx.byte_perfect`` is out of scope here
+    and is never run against live hardware (it needs TX loopback).
     """
     # MOR-666: resolve the single pre-TX confirmation up front so it is asked at
     # most once per run (not per check). ``confirm()`` ignores ``--assume-yes``,
@@ -222,6 +237,7 @@ async def execute_hardware_checks(
                 write_only_capabilities=write_only_capabilities,
                 prompter=prompter,
                 tx_actuate_confirmed=tx_actuate_confirmed,
+                audio_probe_frames=audio_probe_frames,
             )
         except Exception as exc:
             # Backstop (MOR-659): one raising check must never abort the
@@ -299,6 +315,7 @@ async def _run_one_check(
     write_only_capabilities: frozenset[str] = frozenset(),
     prompter: InteractivePrompter | None = None,
     tx_actuate_confirmed: bool = False,
+    audio_probe_frames: Sequence[bytes | None] | None = None,
 ) -> CheckResult:
     """Execute a single template entry, applying universal pre-gates first."""
     # Pre-gate 1: authorization for TX-adjacent checks.
@@ -309,6 +326,16 @@ async def _run_one_check(
             failure_domain=FailureDomain.COMMAND_EXECUTION,
             evidence={"reason": "operator authorization required"},
         )
+
+    # MOR-668: live RX-audio probes. When the caller captured a real RX-PCM
+    # window (``audio_probe_frames``), run ``audio.rx.rms`` / ``scope.fft.presence``
+    # for real against it instead of leaving them MANUAL_REQUIRED. Without a
+    # captured window they fall through to MANUAL_REQUIRED below (today's
+    # behaviour). ``audio.tx.byte_perfect`` is excluded (out of scope). This
+    # measurement is pure (no radio I/O here) — the session was already opened
+    # and torn down by the caller.
+    if audio_probe_frames is not None and entry.check_id in _LIVE_AUDIO_PROBE_CHECK_IDS:
+        return await _run_live_audio_probe(entry, audio_probe_frames)
 
     # MOR-666: TX actuation. ONLY when the operator affirmatively confirmed the
     # pre-TX gate AND this is a TX-actuatable check, ACTUALLY transmit (key PTT
@@ -380,6 +407,29 @@ async def _run_one_check(
         allow_writes=allow_writes,
         per_check_timeout=per_check_timeout,
     )
+
+
+async def _run_live_audio_probe(
+    entry: CapabilityDeclarationEntry,
+    frames: Sequence[bytes | None],
+) -> CheckResult:
+    """Run a live RX-audio probe against ``frames`` (MOR-668).
+
+    Delegates to the MOR-639/641 measurement logic, fed the LIVE captured RX
+    PCM window instead of the deterministic fake backend. The probe functions
+    build their own :class:`CheckResult` from the registry spec (same level /
+    summary the template carries). Any unexpected error is contained into a
+    FAIL result so the broader matrix is never aborted (MOR-659 backstop also
+    covers this).
+    """
+    from rigplane.validation.audio_checks import (
+        run_rx_rms_check_on_frames,
+        run_scope_presence_check_on_frames,
+    )
+
+    if entry.check_id == "audio.rx.rms":
+        return await run_rx_rms_check_on_frames(frames)
+    return await run_scope_presence_check_on_frames(frames)
 
 
 def _interactive_perception_result(
