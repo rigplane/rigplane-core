@@ -116,6 +116,29 @@ def _stateful_preamp_mock(*, start: int = 0):
     return radio, store
 
 
+def _digisel_preamp_mock(*, preamp_start: int = 0, digisel_on: bool = True):
+    """A stateful preamp mock that ALSO exposes get/set_digisel.
+
+    ``get_digisel`` is not part of the Radio protocol, so a ``spec=Radio`` mock
+    would not auto-provide it; attach it explicitly so the preamp handler's
+    DIGI-SEL prerequisite path (MOR-665) can be exercised. Returns the radio
+    plus the preamp and digisel state stores.
+    """
+    radio, preamp_store = _stateful_preamp_mock(start=preamp_start)
+    radio.capabilities = {"preamp", "digisel"}
+    digisel_store = {"on": digisel_on}
+
+    async def _get_digisel(receiver: int = 0) -> bool:
+        return digisel_store["on"]
+
+    async def _set_digisel(on: bool, receiver: int = 0) -> None:
+        digisel_store["on"] = on
+
+    radio.get_digisel = AsyncMock(side_effect=_get_digisel)
+    radio.set_digisel = AsyncMock(side_effect=_set_digisel)
+    return radio, preamp_store, digisel_store
+
+
 async def test_default_run_produces_artifact_with_expected_statuses(connected_radio):
     template = _x6200_template()
     safety = OperatorSafetyBlock()
@@ -330,6 +353,139 @@ async def test_rmvr_restore_failure_is_recorded():
     assert check.status is CheckStatus.FAIL
     assert check.failure_domain is FailureDomain.READBACK
     assert "restore_error" in check.evidence
+
+
+# ---------------------------------------------------------------------------
+# MOR-665: preamp.set clears the DIGI-SEL prerequisite, then restores it.
+# The IC-7610 enforces PREAMP/DIGI-SEL mutual exclusion, so when DIGI-SEL is
+# ON the harness must temporarily disable it, run the PREAMP RMVR, then restore
+# DIGI-SEL to its original state.
+# ---------------------------------------------------------------------------
+
+
+async def test_preamp_clears_and_restores_digisel_when_on():
+    radio, _preamp_store, digisel_store = _digisel_preamp_mock(
+        preamp_start=0, digisel_on=True
+    )
+    template = _single_entry_template(check_id="preamp.set", capability="preamp")
+    levels = await execute_hardware_checks(
+        radio, template, OperatorSafetyBlock(), allow_writes=True
+    )
+    check = _flatten(levels)["preamp.set"]
+
+    assert check.status is CheckStatus.PASS
+    assert check.evidence["digisel_was_on"] is True
+    assert check.evidence["digisel_restored"] is True
+    # PREAMP RMVR still ran and reacted/restored.
+    assert check.evidence["original"] == 0
+    assert check.evidence["changed"] == 1
+    assert check.evidence["restored"] is True
+    # DIGI-SEL ended back ON.
+    assert digisel_store["on"] is True
+    # set_digisel called False (clear) then True (restore), in that order.
+    calls = [c.args[0] for c in radio.set_digisel.call_args_list]
+    assert calls == [False, True]
+
+
+async def test_preamp_no_toggle_when_digisel_off():
+    radio, _preamp_store, digisel_store = _digisel_preamp_mock(
+        preamp_start=0, digisel_on=False
+    )
+    template = _single_entry_template(check_id="preamp.set", capability="preamp")
+    levels = await execute_hardware_checks(
+        radio, template, OperatorSafetyBlock(), allow_writes=True
+    )
+    check = _flatten(levels)["preamp.set"]
+
+    assert check.status is CheckStatus.PASS
+    assert check.evidence["digisel_was_on"] is False
+    # No prerequisite toggle when DIGI-SEL was already off.
+    assert "digisel_restored" not in check.evidence
+    radio.set_digisel.assert_not_called()
+    assert digisel_store["on"] is False
+    # PREAMP RMVR ran as today.
+    assert check.evidence["original"] == 0
+    assert check.evidence["changed"] == 1
+
+
+async def test_preamp_restores_digisel_even_when_rmvr_fails():
+    """If the PREAMP write/readback fails mid-check, DIGI-SEL is STILL restored."""
+    radio, _preamp_store, digisel_store = _digisel_preamp_mock(
+        preamp_start=0, digisel_on=True
+    )
+    # Make PREAMP a no-op write so the readback never reacts -> FAIL/READBACK.
+    radio.set_preamp = AsyncMock(return_value=None)
+    radio.get_preamp = AsyncMock(return_value=0)
+
+    template = _single_entry_template(check_id="preamp.set", capability="preamp")
+    levels = await execute_hardware_checks(
+        radio, template, OperatorSafetyBlock(), allow_writes=True
+    )
+    check = _flatten(levels)["preamp.set"]
+
+    assert check.status is CheckStatus.FAIL
+    assert check.failure_domain is FailureDomain.READBACK
+    assert check.evidence["digisel_was_on"] is True
+    assert check.evidence["digisel_restored"] is True
+    assert digisel_store["on"] is True
+    calls = [c.args[0] for c in radio.set_digisel.call_args_list]
+    assert calls == [False, True]
+
+
+async def test_preamp_digisel_restore_oserror_never_escapes():
+    """A bare OSError from the UDP send path during the DIGI-SEL restore must be
+    contained (it is in _RESTORE_ERRORS), not escape and abort the run."""
+    radio, _preamp_store, _digisel_store = _digisel_preamp_mock(
+        preamp_start=0, digisel_on=True
+    )
+    calls: list[bool] = []
+
+    async def _set_digisel(on: bool, receiver: int = 0) -> None:
+        calls.append(on)
+        if on:  # the restore call -> simulate a mid-restore LAN drop
+            raise OSError("sendto: network is down")
+
+    radio.set_digisel = AsyncMock(side_effect=_set_digisel)
+
+    template = _single_entry_template(check_id="preamp.set", capability="preamp")
+    # Must not raise despite the OSError in the finally restore.
+    levels = await execute_hardware_checks(
+        radio, template, OperatorSafetyBlock(), allow_writes=True
+    )
+    check = _flatten(levels)["preamp.set"]
+
+    assert check.evidence["digisel_was_on"] is True
+    assert check.evidence["digisel_restored"] is False
+    assert "digisel_restore_error" in check.evidence
+    assert calls == [False, True]  # cleared, then restore attempted
+
+
+async def test_preamp_falls_back_when_get_digisel_unsupported():
+    """A radio without get_digisel (or whose read raises) falls back to plain
+    RMVR with no DIGI-SEL evidence and no crash."""
+    # No get_digisel attached at all (spec=Radio does not provide it).
+    radio, _store = _stateful_preamp_mock(start=0)
+    template = _single_entry_template(check_id="preamp.set", capability="preamp")
+    levels = await execute_hardware_checks(
+        radio, template, OperatorSafetyBlock(), allow_writes=True
+    )
+    check = _flatten(levels)["preamp.set"]
+
+    assert check.status is CheckStatus.PASS
+    assert "digisel_was_on" not in check.evidence
+    assert "digisel_restored" not in check.evidence
+
+    # And the case where get_digisel exists but raises -> same fallback.
+    radio2, _store2 = _stateful_preamp_mock(start=0)
+    radio2.get_digisel = AsyncMock(side_effect=RuntimeError("not implemented"))
+    radio2.set_digisel = AsyncMock(return_value=None)
+    levels2 = await execute_hardware_checks(
+        radio2, template, OperatorSafetyBlock(), allow_writes=True
+    )
+    check2 = _flatten(levels2)["preamp.set"]
+    assert check2.status is CheckStatus.PASS
+    assert "digisel_was_on" not in check2.evidence
+    radio2.set_digisel.assert_not_called()
 
 
 async def test_read_only_skips_write_checks():
