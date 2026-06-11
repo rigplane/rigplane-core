@@ -821,3 +821,14 @@ class TestWriteOnlyControls:
         assert "tsql" not in caps
         assert "filter_width" not in caps
         assert {"rit", "xit", "notch", "nr", "nb", "compressor"} <= caps
+
+    def test_x6200_drops_over_declared_pbt(self):
+        # MOR-699: a live X6200 probe (CI-V 0xA4) showed twin-PBT (get_pbt_inner
+        # 0x14 0x07 and get_pbt_outer 0x14 0x08) time out in BOTH AM and USB
+        # modes — the front-panel PBT is not exposed over CI-V. The cap is
+        # over-declared (Hamlib xiegu.c declares it without a round-trip), so it
+        # is dropped → the pbt.presence check resolves UNSUPPORTED instead of a
+        # spurious presence-pass. The kept controls stay untouched.
+        caps = get_radio_profile("X6200").capabilities
+        assert "pbt" not in caps
+        assert {"rit", "xit", "notch", "nr", "nb", "compressor"} <= caps
