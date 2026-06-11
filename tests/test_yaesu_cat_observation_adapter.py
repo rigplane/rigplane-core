@@ -1657,5 +1657,73 @@ async def test_happy_path_slow_poll_unchanged_when_all_reads_succeed() -> None:
     ]
 
 
+# ---------------------------------------------------------------------------
+# MOR-561: once-then-suppress for repeated field-level CAT parse failures
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_sub_s_meter_parse_warning_logged_once_then_suppressed(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """MOR-561: the FTX-1 answers ``SM1;`` (sub) with a main-form ``SM0000;``.
+
+    That well-formed-but-wrong-form frame raises ``CatParseError`` every poll
+    cycle. The poller queries it several times per second, so a per-cycle
+    WARNING floods the log. The first occurrence must WARN once; every repeat
+    for the same field must demote to DEBUG (no repeated WARNING).
+    """
+    radio = _make_radio()
+    # The real YaesuCatRadio owns this persistent set; the MagicMock double
+    # must too, so the once-then-suppress dedup has somewhere to record the
+    # already-warned field across poll cycles (MOR-561).
+    radio._poll_warned_fields = set()
+    radio.read_s_meter = AsyncMock(
+        side_effect=lambda receiver=0: (
+            120
+            if receiver == 0
+            else _raise(
+                CatParseError(
+                    "SM1{raw:03d};",
+                    "SM0000;",
+                    "Response does not match pattern",
+                )
+            )
+        )
+    )
+
+    def _poll_meters() -> "object":
+        # Fresh adapter per cycle (matches the poller, which rebuilds the
+        # adapter every poll cycle via YaesuObservationAdapter.from_radio).
+        return YaesuObservationAdapter(
+            radio,
+            profile=_profile_state_acquisition(),
+            clock=_clock,
+        ).poll_rx_meters()
+
+    with caplog.at_level("DEBUG"):
+        for _ in range(5):
+            await _poll_meters()
+
+    sub_warnings = [
+        rec
+        for rec in caplog.records
+        if rec.levelname == "WARNING" and "sub.s_meter" in rec.getMessage()
+    ]
+    sub_debugs = [
+        rec
+        for rec in caplog.records
+        if rec.levelname == "DEBUG" and "sub.s_meter" in rec.getMessage()
+    ]
+    # Exactly one WARNING across all five cycles; repeats demoted to DEBUG.
+    assert len(sub_warnings) == 1
+    assert len(sub_debugs) == 4
+    # The MAIN meter still emits every cycle (sub failure is isolated).
+    observations = await _poll_meters()
+    assert ("receiver.main.meters.s_meter", 120) in [
+        (str(item.path), item.value) for item in observations
+    ]
+
+
 def _raise(exc: Exception) -> object:
     raise exc

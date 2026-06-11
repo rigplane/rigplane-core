@@ -135,6 +135,20 @@ class TestCatCommandParser:
         result = parser.parse("SM0000;")
         assert isinstance(result["raw"], int)
 
+    def test_parse_break_in_delay_two_digit(self):
+        # MOR-561: the FTX-1 answers ``SD;`` with a 2-digit ``SD09;`` form
+        # while the template is ``SD{delay:04d};`` (4-digit). The delay regex
+        # must accept 2–4 digits so the startup read parses without warning.
+        parser = CatCommandParser("SD{delay:04d};")
+        assert parser.parse("SD09;") == {"delay": 9}
+
+    def test_parse_break_in_delay_four_digit_still_parses(self):
+        # MOR-561 regression: the widened delay regex must still accept the
+        # canonical 4-digit ``SD0300;`` form (no behaviour change for radios
+        # that answer in full width).
+        parser = CatCommandParser("SD{delay:04d};")
+        assert parser.parse("SD0300;") == {"delay": 300}
+
     def test_parse_rit_clarifier(self):
         # CF001+0500; — func=1, sign=+, offset=500
         parser = CatCommandParser("CF001{sign}{offset:04d};")

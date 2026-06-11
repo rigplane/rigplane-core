@@ -920,18 +920,42 @@ class YaesuObservationAdapter:
         ``CatTimeoutError`` both subclass ``CatTransportError``, so the SPECIFIC
         ``CatCommandRejected`` (a ``?;`` reject = unsupported command on this
         radio) is caught while the base/timeout propagates.
+
+        MOR-561: a permanently unsupported field (e.g. the FTX-1 answering the
+        SUB ``SM1;`` query with a main-form ``SM0000;`` frame) fails identically
+        every poll cycle, several times a second. The FIRST failure for a given
+        field warns; every repeat is demoted to DEBUG so the log is not flooded.
         """
         try:
             return True, await read
         except (CatParseError, CatFormatError, ValueError, KeyError) as exc:
             # ValueError covers _read_meter / int() malformed-frame failures;
             # CatParse/FormatError subclass ValueError but are listed for clarity.
-            logger.warning("Skipping field %s — malformed CAT response: %s", label, exc)
+            self._log_field_skip(
+                label, "Skipping field %s — malformed CAT response: %s", exc
+            )
             return False, None
         except CatCommandRejected as exc:
             # ``?;`` reject = command unsupported on this radio -> skip the field.
-            logger.warning("Skipping field %s — command rejected (?;): %s", label, exc)
+            self._log_field_skip(
+                label, "Skipping field %s — command rejected (?;): %s", exc
+            )
             return False, None
+
+    def _log_field_skip(self, label: str, message: str, exc: Exception) -> None:
+        """Warn once per field, then demote repeats to DEBUG (MOR-561).
+
+        The warned-field set lives on the radio (persistent across poll cycles)
+        rather than the adapter (rebuilt every cycle). A non-``set`` attribute —
+        e.g. a ``MagicMock`` test double — falls back to always-warn.
+        """
+        warned = getattr(self.radio, "_poll_warned_fields", None)
+        if isinstance(warned, set):
+            if label in warned:
+                logger.debug(message, label, exc)
+                return
+            warned.add(label)
+        logger.warning(message, label, exc)
 
     def _adapter(self) -> ProviderObservationAdapter:
         return ProviderObservationAdapter(
