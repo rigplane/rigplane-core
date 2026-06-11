@@ -158,11 +158,6 @@
       "declaration": "supported"
     },
     {
-      "check_id": "pbt.presence",
-      "status": "pass",
-      "declaration": "unsupported_pending_evidence"
-    },
-    {
       "check_id": "preamp.set",
       "status": "skip",
       "declaration": "supported"

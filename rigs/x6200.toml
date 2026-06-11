@@ -62,6 +62,12 @@ codec_preference = ["PCM_1CH_16BIT", "ULAW_1CH"]
 #     RMVR checks (repeater_tone/tone_freq/tsql/tsql_freq) time out, so the
 #     caps are dropped — the checks now resolve UNSUPPORTED, not FAIL
 #     (MOR-683, supersedes the audit's gap-list D tone row).
+#   - no ``pbt`` (twin passband tuning): the front panel HAS PBT, but a live
+#     X6200 probe (CI-V 0xA4) showed ``get_pbt_inner`` (0x14 0x07) and
+#     ``get_pbt_outer`` (0x14 0x08) both TIME OUT in BOTH AM and USB modes —
+#     the firmware does not expose PBT over CI-V. Hamlib xiegu.c over-declares
+#     it without a round-trip, so the cap is dropped → the pbt.presence check
+#     now resolves UNSUPPORTED, not a spurious presence-pass (MOR-699).
 #   - no ``filter_width`` SET: a live X6200 capture (CI-V 0xA4) showed
 #     ``0x1A 0x03`` cannot be round-tripped by the harness — ``get`` reads
 #     back a passband index (live: 27) while the USB setter guards
@@ -79,7 +85,6 @@ features = [
     "nb",
     "nr",
     "notch",
-    "pbt",
     "tx",
     "split",
     "vox",
@@ -183,22 +188,6 @@ style = "toggle"
 # Level control ranges — CI-V compatible (Xiegu X6200).
 # Every "raw_min/raw_max" pair below is documented in the PDF as
 # "BCD format 0-255" (pages 6-7).
-[controls.pbt_inner]
-raw_min = 0
-raw_max = 255
-raw_center = 128
-display_min = -1200
-display_max = 1200
-display_unit = "Hz"
-
-[controls.pbt_outer]
-raw_min = 0
-raw_max = 255
-raw_center = 128
-display_min = -1200
-display_max = 1200
-display_unit = "Hz"
-
 [controls.af_level]
 raw_min = 0
 raw_max = 255
