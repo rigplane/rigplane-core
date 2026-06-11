@@ -26,6 +26,23 @@ address = 0x70
 # undocumented in wfview and unverified on hardware. Until segment tables
 # are confirmed against an X6100, the capability stays disabled to avoid
 # silently sending wrong indices (CI-V SET is fire-and-forget). Issue #1159.
+#
+# NOTE: the tone family (``repeater_tone`` / ``tsql``) and ``pbt`` are
+# intentionally NOT advertised — dropped by X6100/X6200 shared-firmware
+# inference, PENDING direct X6100 hardware confirmation (we have NO X6100
+# to capture). Rationale (MOR-634):
+#   - Hamlib ``rigs/icom/xiegu.c`` builds the X6200 (``RIG_MODEL_X6200`` =
+#     3091) from the same ``x6100_priv_caps`` struct it uses for the X6100,
+#     i.e. the two radios share one CI-V personality / firmware lineage.
+#   - A live X6200 capture (CI-V 0xA4) then disproved these caps on real
+#     hardware: the tone family's ``0x16 0x42/0x43`` + ``0x1B`` time out
+#     (dropped in MOR-683 / PR #1833), and ``pbt``'s ``0x14 0x07/0x08``
+#     time out in both AM and USB (dropped in MOR-699).
+# By the shared-firmware inference the X6100 almost certainly behaves the
+# same way, so advertising caps we cannot validate is exactly the
+# over-declaration the validation harness exists to catch. These three are
+# dropped here BY INFERENCE, not by a direct X6100 capture — do NOT relabel
+# them "live confirmed" for the X6100 until a real X6100 is actually probed.
 features = [
     "audio",
     "af_level",
@@ -36,7 +53,6 @@ features = [
     "nb",
     "nr",
     "notch",
-    "pbt",
     "tx",
     "split",
     "vox",
@@ -47,8 +63,6 @@ features = [
     "xit",
     "tuner",
     "meters",
-    "repeater_tone",
-    "tsql",
     "data_mode",
     "scan",
     "dial_lock",
@@ -73,22 +87,6 @@ values = [0, 1]
 style = "toggle"
 
 # Level control ranges — CI-V compatible (Xiegu X6100)
-[controls.pbt_inner]
-raw_min = 0
-raw_max = 255
-raw_center = 128
-display_min = -1200
-display_max = 1200
-display_unit = "Hz"
-
-[controls.pbt_outer]
-raw_min = 0
-raw_max = 255
-raw_center = 128
-display_min = -1200
-display_max = 1200
-display_unit = "Hz"
-
 [controls.af_level]
 raw_min = 0
 raw_max = 255
