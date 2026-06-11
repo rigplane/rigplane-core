@@ -44,6 +44,8 @@ class ValueRule(StrEnum):
     PREAMP_CYCLE = "preamp_cycle"
     AGC_FLIP = "agc_flip"
     MODE_CYCLE = "mode_cycle"
+    # MOR-642..645 command-coverage families
+    TONE_FREQ_CYCLE = "tone_freq_cycle"
 
 
 # ---------------------------------------------------------------------------

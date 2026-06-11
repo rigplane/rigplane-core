@@ -13,6 +13,7 @@ from rigplane.validation.registry._dsp import CHECKS as _DSP_CHECKS
 from rigplane.validation.registry._levels import CHECKS as _LEVELS_CHECKS
 from rigplane.validation.registry._structural import CHECKS as _STRUCTURAL_CHECKS
 from rigplane.validation.registry._surfaces import CHECKS as _SURFACES_CHECKS
+from rigplane.validation.registry._tone import CHECKS as _TONE_CHECKS
 from rigplane.validation.registry._tuning import CHECKS as _TUNING_CHECKS
 from rigplane.validation.registry._tx import CHECKS as _TX_CHECKS
 from rigplane.validation.registry._types import VALUE_RULES, CheckKind, CheckSpec
@@ -28,6 +29,9 @@ REGISTRY: tuple[CheckSpec, ...] = (
     + _TUNING_CHECKS  # 14-16: rit, xit, squelch
     + _SURFACES_CHECKS  # 17-19: audio, scope, meters
     + _TX_CHECKS  # 20-21: tuner, tx
+    # --- MOR-642..645 command-coverage families (append-only; generators
+    # stable-sort by level so new checks slot in without reordering 1-21) ---
+    + _TONE_CHECKS  # T7: repeater_tone, tone_freq, tsql, tsql_freq
 )
 
 

@@ -1063,6 +1063,7 @@ _WRITE_ONLY_TEST_VALUES: dict[str, Any] = {
     ValueRule.NUDGE_FILTER: 2800,
     ValueRule.PREAMP_CYCLE: 1,
     ValueRule.AGC_FLIP: int(AgcMode.FAST),
+    ValueRule.TONE_FREQ_CYCLE: 88.5,
 }
 
 # Benign value to restore a write-only control to afterwards (best-effort).
@@ -1085,6 +1086,9 @@ _VALUE_RULE_FNS: dict[str, Callable[[Any], Any]] = {
         int(AgcMode.SLOW) if m != AgcMode.SLOW else int(AgcMode.FAST)
     ),
     ValueRule.BUMP_HZ: lambda v: v + 100,
+    # MOR-642..645 command-coverage families.
+    # Flip between two standard CTCSS tones (Hz).
+    ValueRule.TONE_FREQ_CYCLE: lambda f: 100.0 if float(f) == 88.5 else 88.5,
 }
 
 
