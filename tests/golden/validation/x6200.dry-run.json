@@ -138,22 +138,12 @@
       "declaration": "supported"
     },
     {
-      "check_id": "nb_level.set",
-      "status": "skip",
-      "declaration": "supported"
-    },
-    {
       "check_id": "notch.set",
       "status": "skip",
       "declaration": "supported"
     },
     {
       "check_id": "nr.set",
-      "status": "skip",
-      "declaration": "supported"
-    },
-    {
-      "check_id": "nr_level.set",
       "status": "skip",
       "declaration": "supported"
     },

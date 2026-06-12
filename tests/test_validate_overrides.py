@@ -102,6 +102,28 @@ def test_no_override_file_leaves_matrix_unchanged(
     assert "filter_width.set" in checks
 
 
+def test_shipped_x6200_override_excludes_dead_nr_nb_level_checks(
+    capsys: Any,
+) -> None:
+    """The X6200 shipped override drops dead level registers, not toggles."""
+    args = _parse(["--model", "X6200", "validate", "--json"])
+    rc = _validate.run(args)
+    assert rc == 0
+    artifact = json.loads(capsys.readouterr().out)
+
+    overrides = artifact["metadata"].get("overrides")
+    assert overrides is not None
+    assert "nr_level.set" in overrides["excluded"]
+    assert "nb_level.set" in overrides["excluded"]
+
+    checks = {c["check_id"] for level in artifact["levels"] for c in level["checks"]}
+    assert "nr_level.set" not in checks
+    assert "nb_level.set" not in checks
+    assert "nr.set" in checks
+    assert "nb.set" in checks
+    assert "comp_level.set" in checks
+
+
 def test_full_template_without_flag_is_not_applied(
     tmp_path: Any, monkeypatch: Any, capsys: Any
 ) -> None:
