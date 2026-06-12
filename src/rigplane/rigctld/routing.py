@@ -50,15 +50,17 @@ def _is_normalized_float(value: Any) -> bool:
     )
 
 
-def _format_raw_or_normalized_float(value: Any, *, raw_divisor: float) -> str:
+def _format_normalized_or_raw_float(value: Any, *, raw_divisor: float) -> str:
     if _is_normalized_float(value):
         return f"{value:.6f}"
+    return _format_raw_scaled_float(value, raw_divisor=raw_divisor)
+
+
+def _format_raw_scaled_float(value: Any, *, raw_divisor: float) -> str:
     return f"{int(value) / raw_divisor:.6f}"
 
 
 def _format_strength(value: Any, *, raw_divisor: float) -> str:
-    if _is_normalized_float(value):
-        return f"{value:.6f}"
     raw = int(value)
     return str(round((raw / raw_divisor) * 114.0 - 54.0))
 
@@ -190,15 +192,15 @@ class YaesuRouting:
                 return RigctldResponse(values=[str(int(value))])
             if level in ("AF", "RF", "SQL"):
                 return RigctldResponse(
-                    values=[_format_raw_or_normalized_float(value, raw_divisor=255.0)]
+                    values=[_format_normalized_or_raw_float(value, raw_divisor=255.0)]
                 )
             if level == "NB":
                 return RigctldResponse(
-                    values=[_format_raw_or_normalized_float(value, raw_divisor=10.0)]
+                    values=[_format_raw_scaled_float(value, raw_divisor=10.0)]
                 )
             if level == "NR":
                 return RigctldResponse(
-                    values=[_format_raw_or_normalized_float(value, raw_divisor=15.0)]
+                    values=[_format_raw_scaled_float(value, raw_divisor=15.0)]
                 )
             if level == "PREAMP":
                 return RigctldResponse(values=[str(int(value))])

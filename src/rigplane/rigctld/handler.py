@@ -56,7 +56,8 @@ if TYPE_CHECKING:
 
 from ..capabilities import CAP_METERS, CAP_RIT
 from .routing import (  # noqa: TID251
-    _format_raw_or_normalized_float,
+    _format_normalized_or_raw_float,
+    _format_raw_scaled_float,
     _format_strength,
     create_routing,
 )
@@ -1673,21 +1674,14 @@ class RigctldHandler:
             if projected is not None:
                 if level == "STRENGTH":
                     if "calibrated" in projected.quality:
-                        value = projected.value
-                        if (
-                            isinstance(value, float)
-                            and not isinstance(value, bool)
-                            and 0.0 <= value <= 1.0
-                        ):
-                            return RigctldResponse(values=[f"{value:.6f}"])
-                        return RigctldResponse(values=[str(int(value))])
+                        return RigctldResponse(values=[str(int(projected.value))])
                     return RigctldResponse(
                         values=[_format_strength(projected.value, raw_divisor=241.0)]
                     )
                 if level == "RFPOWER":
                     return RigctldResponse(
                         values=[
-                            _format_raw_or_normalized_float(
+                            _format_normalized_or_raw_float(
                                 projected.value,
                                 raw_divisor=255.0,
                             )
@@ -1698,7 +1692,16 @@ class RigctldHandler:
                 if level in {"RFPOWER_METER", "COMP_METER", "ID_METER", "VD_METER"}:
                     return RigctldResponse(
                         values=[
-                            _format_raw_or_normalized_float(
+                            _format_raw_scaled_float(
+                                projected.value,
+                                raw_divisor=255.0,
+                            )
+                        ]
+                    )
+                if level in {"AF", "RF", "SQL"}:
+                    return RigctldResponse(
+                        values=[
+                            _format_normalized_or_raw_float(
                                 projected.value,
                                 raw_divisor=255.0,
                             )
@@ -1707,7 +1710,7 @@ class RigctldHandler:
                 if level in _GET_LEVEL_FLOAT:
                     return RigctldResponse(
                         values=[
-                            _format_raw_or_normalized_float(
+                            _format_raw_scaled_float(
                                 projected.value,
                                 raw_divisor=255.0,
                             )
