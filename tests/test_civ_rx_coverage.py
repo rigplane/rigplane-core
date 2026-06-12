@@ -777,6 +777,28 @@ def test_update_state_cache_filter_width_decodes_index_to_hz(radio: IcomRadio) -
     assert radio._state_cache.filter_width == 1500
 
 
+def test_update_state_cache_x6200_filter_width_decodes_raw_byte_index() -> None:
+    """X6200 raw 0x1c maps to 1800 Hz; it must not be BCD-decoded."""
+    radio = IcomRadio("192.168.1.100", model="X6200")
+    radio._radio_state = RadioState()
+    radio._radio_state.main.mode = "USB"
+    frame = _make_frame(
+        cmd=0x1A,
+        sub=0x03,
+        data=b"\x1c",
+        from_addr=0xA4,
+        receiver=0x00,
+    )
+
+    radio._civ_runtime._update_state_cache_from_frame(frame)
+
+    field = radio._state_store.snapshot().field(
+        "receiver.0.active.freq_mode.filter_width"
+    )
+    assert field.value == 1800
+    assert radio._state_cache.filter_width == 1800
+
+
 def test_update_state_cache_exception_suppressed(radio: IcomRadio) -> None:
     """Exception in cache update is suppressed (lines 456-457)."""
     # StateCache uses slots=True, so replace the whole object with a MagicMock

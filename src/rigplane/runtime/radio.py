@@ -1637,10 +1637,10 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
     async def set_filter_width(self, width_hz: int, receiver: int = 0) -> None:
         """Set DSP IF filter width in Hz (CI-V 0x1A 0x03).
 
-        Hz is translated to a profile-defined 1-byte BCD index (wfview's
-        ``funcFilterWidth`` segmented formula — see ``icomcommander.cpp:1131``)
-        and wrapped via cmd29 only when the profile lists ``[0x1A, 0x03]`` in
-        its cmd29 routes (IC-7610). IC-705 and IC-9700 send the frame directly.
+        Hz is translated to a profile-defined index and wrapped via cmd29 only
+        when the profile lists ``[0x1A, 0x03]`` in its cmd29 routes
+        (IC-7610). The profile must declare a ``set_filter_width`` command
+        before the runtime sends a write.
 
         Args:
             width_hz: Filter width in Hz. Bounds and step depend on the
@@ -1649,6 +1649,10 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
         """
         self._check_connected()
         self._require_receiver(receiver, operation="set_filter_width")
+        if not self._profile.supports_command("set_filter_width"):
+            raise CommandError(
+                f"set_filter_width is unsupported by profile {self._profile.model}"
+            )
 
         target = self._radio_state.receiver("SUB" if receiver else "MAIN")
         mode_name = getattr(target, "mode", None)
@@ -1699,12 +1703,10 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
     async def get_filter_width(self, receiver: int = 0) -> int:
         """Get DSP IF filter width in Hz (CI-V 0x1A 0x03).
 
-        Per wfview's ``funcFilterWidth`` handler (``icomcommander.cpp:1131``),
-        all Icom rigs return a 1-byte BCD segmented index. The request is
-        cmd29-wrapped only when the profile lists ``[0x1A, 0x03]`` in its
-        cmd29 routes (IC-7610). IC-705 and IC-9700 send the request directly
-        and the response is decoded with the same segmented formula
-        (issue #1156).
+        The response encoding is profile-driven. Icom profiles use a 1-byte
+        BCD segmented index; Xiegu X6200 uses a single raw byte index. The
+        request is cmd29-wrapped only when the profile lists ``[0x1A, 0x03]``
+        in its cmd29 routes.
 
         Args:
             receiver: 0=MAIN, 1=SUB.
@@ -1723,13 +1725,29 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
         else:
             civ = build_civ_frame(self._radio_addr, CONTROLLER_ADDR, 0x1A, sub=0x03)
 
-        value = await self._get_bcd_level(
+        resp = await self._send_civ_expect(
             civ,
             key=f"get_filter_width:{receiver}",
-            command=0x1A,
-            sub=0x03,
-            bcd_bytes=1,
+            dedupe=True,
+            label="get_filter_width",
         )
+        if resp.command != 0x1A or resp.sub != 0x03:
+            raise ValueError(
+                f"Not a filter-width response: command 0x{resp.command:02x} "
+                f"sub 0x{0 if resp.sub is None else resp.sub:02x}"
+            )
+
+        if self._profile.filter_width_encoding == "raw_byte_index":
+            if not resp.data:
+                raise ValueError("Filter-width response payload too short")
+            value = resp.data[0]
+        else:
+            value = parse_level_response(
+                resp,
+                command=0x1A,
+                sub=0x03,
+                bcd_bytes=1,
+            )
 
         target = self._radio_state.receiver("SUB" if receiver else "MAIN")
         mode_name = getattr(target, "mode", None)

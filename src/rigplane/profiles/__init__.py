@@ -158,6 +158,7 @@ class RadioProfile:
     freq_ranges: tuple[FreqRangeInfo, ...] = ()
     modes: tuple[str, ...] = ()
     filters: tuple[str, ...] = ()
+    command_names: frozenset[str] = frozenset()
     filter_width_min: int = 50
     filter_width_max: int = 9999
     filter_width_encoding: str = "segmented_bcd_index"
@@ -240,6 +241,9 @@ class RadioProfile:
             command,
             None,
         ) in self.cmd29_routes
+
+    def supports_command(self, command_name: str) -> bool:
+        return command_name in self.command_names
 
     def resolve_filter_rule(
         self, mode: str | None, *, data_mode: int = 0

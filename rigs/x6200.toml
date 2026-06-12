@@ -124,6 +124,7 @@ stream_like_meters = [
 command_response_observable = [
     "receiver.main.active.freq_mode.freq_hz",
     "receiver.main.active.freq_mode.mode",
+    "receiver.main.active.freq_mode.filter_width",
 ]
 supported_controls = [
     "receiver.main.active.freq_mode.freq_hz",
@@ -158,6 +159,58 @@ list = ["USB", "LSB", "CW", "CW-R", "AM", "FM", "RTTY", "DIGI"]
 
 [filters]
 list = ["FIL1", "FIL2", "FIL3"]
+# MOR-706 live USB CI-V 0xA4 evidence: 0x1A/0x03 returns one raw byte for the
+# active selected FIL slot width, not packed BCD. Examples: 0x1c -> 1800 Hz,
+# 0x22 -> 2400 Hz, 0x27 -> 2900 Hz. The observed formula is:
+#   byte <= 21: Hz = byte * 50 + 50
+#   byte >= 22: Hz = (byte - 10) * 100
+# Keep max_hz at 3600 to match the established Icom SSB/CW/RTTY profile bound;
+# higher X6200 values are not proven by current live evidence.
+encoding = "raw_byte_index"
+width_min_hz = 50
+width_max_hz = 3600
+
+[filters.width.SSB]
+min_hz = 50
+max_hz = 3600
+defaults = [2900, 2400, 1800]
+segments = [
+    { hz_min = 50, hz_max = 1100, step_hz = 50, index_min = 0 },
+    { hz_min = 1200, hz_max = 3600, step_hz = 100, index_min = 22 },
+]
+
+[filters.width.CW]
+min_hz = 50
+max_hz = 3600
+defaults = [2900, 2400, 1800]
+segments = [
+    { hz_min = 50, hz_max = 1100, step_hz = 50, index_min = 0 },
+    { hz_min = 1200, hz_max = 3600, step_hz = 100, index_min = 22 },
+]
+
+[filters.width.RTTY]
+min_hz = 50
+max_hz = 3600
+defaults = [2900, 2400, 1800]
+segments = [
+    { hz_min = 50, hz_max = 1100, step_hz = 50, index_min = 0 },
+    { hz_min = 1200, hz_max = 3600, step_hz = 100, index_min = 22 },
+]
+
+[filters.width.DIGI]
+min_hz = 50
+max_hz = 3600
+defaults = [2900, 2400, 1800]
+segments = [
+    { hz_min = 50, hz_max = 1100, step_hz = 50, index_min = 0 },
+    { hz_min = 1200, hz_max = 3600, step_hz = 100, index_min = 22 },
+]
+
+[filters.width.AM]
+fixed = true
+
+[filters.width.FM]
+fixed = true
 
 [vfo]
 scheme = "ab"
