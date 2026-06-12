@@ -23,6 +23,7 @@ def _clock() -> float:
 
 def _make_radio() -> MagicMock:
     radio = MagicMock()
+    radio.profile = get_radio_profile("FTX-1")
     radio.capabilities = {
         "dual_rx",
         "af_level",
@@ -71,6 +72,9 @@ def _make_radio() -> MagicMock:
     )
     radio.read_rf_gain = AsyncMock(
         side_effect=lambda receiver=0: 180 if receiver == 0 else 90
+    )
+    radio.read_s_meter = AsyncMock(
+        side_effect=lambda receiver=0: 150 if receiver == 0 else 75
     )
     radio.get_squelch = AsyncMock(
         side_effect=lambda receiver=0: 12 if receiver == 0 else 8
@@ -1079,6 +1083,7 @@ async def test_adapter_uses_read_only_yaesu_paths_when_getters_mutate_state() ->
     assert radio.radio_state.ptt is False
     assert radio.radio_state.main.s_meter == 3
     assert radio.radio_state.sub.s_meter == 4
+
     assert radio.radio_state.alc_meter == 5
     assert radio.radio_state.comp_meter == 5
     assert radio.radio_state.power_meter == 5
@@ -1130,6 +1135,25 @@ async def test_adapter_uses_read_only_yaesu_paths_when_getters_mutate_state() ->
     # (MOR-458). The pre-seeded sentinel centiHz values are preserved.
     assert radio.radio_state.main.tone_freq == 11111
     assert radio.radio_state.main.tsql_freq == 22222
+
+
+async def test_rx_meters_emit_calibrated_db_domain() -> None:
+    radio = _make_radio()
+    adapter = YaesuObservationAdapter(
+        radio,
+        profile=_profile_state_acquisition(),
+        clock=_clock,
+    )
+
+    observations = await adapter.poll_rx_meters()
+
+    by_path = {str(item.path): item for item in observations}
+    main = by_path["receiver.main.meters.s_meter"]
+    sub = by_path["receiver.sub.meters.s_meter"]
+    assert main.value == 6
+    assert main.quality == ("confirmed", "calibrated")
+    assert sub.value == -37
+    assert sub.quality == ("confirmed", "calibrated")
 
 
 @pytest.mark.asyncio
@@ -1553,7 +1577,7 @@ async def test_rx_meters_emit_main_when_sub_s_meter_raises_parse_error() -> None
     observations = await adapter.poll_rx_meters()
 
     assert [(str(item.path), item.value) for item in observations] == [
-        ("receiver.main.meters.s_meter", 120),
+        ("receiver.main.meters.s_meter", -7),
     ]
 
 
@@ -1720,7 +1744,7 @@ async def test_sub_s_meter_parse_warning_logged_once_then_suppressed(
     assert len(sub_debugs) == 4
     # The MAIN meter still emits every cycle (sub failure is isolated).
     observations = await _poll_meters()
-    assert ("receiver.main.meters.s_meter", 120) in [
+    assert ("receiver.main.meters.s_meter", -7) in [
         (str(item.path), item.value) for item in observations
     ]
 

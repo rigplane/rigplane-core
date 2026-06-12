@@ -183,6 +183,7 @@ def _apply_store_value(
     command_source: CommandSource | None = None,
     correlation_id: str | None = None,
     max_age: float | None = None,
+    quality: tuple[str, ...] = ("confirmed",),
 ) -> None:
     store.apply(
         Observation(
@@ -196,6 +197,7 @@ def _apply_store_value(
             timestamp_monotonic=1.0,
             correlation_id=correlation_id,
             max_age=max_age,
+            quality=quality,
         )
     )
 
@@ -1214,6 +1216,27 @@ async def test_get_level_strength_projects_state_store_snapshot(
 
     assert resp.ok
     assert int(resp.values[0]) == pytest.approx(3, abs=1)
+    mock_radio.get_s_meter.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_get_level_strength_projects_calibrated_state_store_snapshot(
+    mock_radio: AsyncMock,
+) -> None:
+    store = StateStore()
+    mock_radio.state_store = store
+    _apply_store_value(
+        store,
+        "receiver.0.meters.s_meter",
+        0,
+        quality=("confirmed", "calibrated"),
+    )
+    handler = RigctldHandler(mock_radio, RigctldConfig())
+
+    resp = await handler.execute(get_cmd("get_level", "STRENGTH"))
+
+    assert resp.ok
+    assert int(resp.values[0]) == 0
     mock_radio.get_s_meter.assert_not_awaited()
 
 

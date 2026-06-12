@@ -317,6 +317,7 @@ def _observed_field_status(field: FieldSnapshot) -> dict[str, Any]:
         "lastObservedMonotonic": field.last_observed_monotonic,
         "maxAge": field.max_age,
         "source": field.source.to_dict(),
+        "quality": list(field.quality),
     }
 
 

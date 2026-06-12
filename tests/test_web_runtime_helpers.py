@@ -84,6 +84,7 @@ def _observation(
     *,
     at: float,
     max_age: float | None = None,
+    quality: tuple[str, ...] = ("confirmed",),
 ) -> Observation:
     return Observation(
         path=path,
@@ -91,6 +92,7 @@ def _observation(
         source=_source(),
         timestamp_monotonic=at,
         max_age=max_age,
+        quality=quality,
     )
 
 
@@ -335,6 +337,31 @@ def test_public_state_projection_uses_snapshot_revisions_and_meter_values() -> N
     assert payload["freshnessRevision"] == 2
     assert payload["main"]["freqHz"] == 14_074_000
     assert payload["main"]["sMeter"] == 42
+
+
+def test_public_field_status_exposes_quality_flags() -> None:
+    clock = FreshnessClock(start=10.0)
+    store = StateStore(freshness_clock=clock)
+    store.apply(
+        _observation(
+            FieldPath.receiver("0", "meters", "s_meter"),
+            42,
+            at=clock.now(),
+            max_age=0.5,
+            quality=("confirmed", "uncalibrated"),
+        )
+    )
+
+    payload = build_public_state_payload_from_snapshot(
+        store.snapshot(),
+        radio=None,
+        receiver_count=1,
+    )
+
+    assert payload["fieldStatus"]["main.sMeter"]["quality"] == [
+        "confirmed",
+        "uncalibrated",
+    ]
 
 
 def test_public_state_projection_covers_all_scope_control_leaves() -> None:

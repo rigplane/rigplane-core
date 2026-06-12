@@ -411,6 +411,7 @@ class _RigctldCommandExecutor:
 class _ProjectedField:
     path: str
     value: Any
+    quality: tuple[str, ...] = ()
 
 
 @dataclass(slots=True)
@@ -444,7 +445,9 @@ class _RigctldProjection:
                 ):
                     newest = field
             if newest is not None:
-                return _ProjectedField(path=str(path), value=newest.value)
+                return _ProjectedField(
+                    path=str(path), value=newest.value, quality=newest.quality
+                )
         return None
 
 
@@ -1665,6 +1668,8 @@ class RigctldHandler:
             projected = projection.value(level_path)
             if projected is not None:
                 if level == "STRENGTH":
+                    if "calibrated" in projected.quality:
+                        return RigctldResponse(values=[str(int(projected.value))])
                     raw = int(projected.value)
                     return RigctldResponse(
                         values=[str(round((raw / 241.0) * 114.0 - 54.0))]
