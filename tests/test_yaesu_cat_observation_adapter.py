@@ -3,6 +3,8 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -19,6 +21,14 @@ from rigplane.backends.yaesu_cat.radio import RadioConnectionError, YaesuCatRadi
 
 def _clock() -> float:
     return 123.456
+
+
+def _normalized_255(raw: int) -> float:
+    return raw / 255.0
+
+
+def _normalized_power(raw_watts: int, *, max_watts: int = 100) -> float:
+    return raw_watts / max_watts
 
 
 def _make_radio() -> MagicMock:
@@ -203,6 +213,7 @@ class _SideEffectingYaesuRadio:
     }
 
     def __init__(self) -> None:
+        self.profile = SimpleNamespace(max_watts=100)
         self.radio_state = RadioState()
         self.radio_state.main.freq = 1
         self.radio_state.main.mode = "INIT-MAIN"
@@ -605,12 +616,18 @@ async def test_slow_poll_emits_declared_control_observations_only() -> None:
     # The nb/nr toggles are derived from the level read in the same cycle
     # (``level > 0``); a non-zero level → toggle ON, a single read each.
     assert [(str(item.path), item.value) for item in observations] == [
-        ("receiver.main.operator_controls.af_level", 128),
-        ("receiver.main.operator_controls.rf_gain", 180),
-        ("receiver.main.operator_controls.squelch", 12),
-        ("receiver.sub.operator_controls.af_level", 64),
-        ("receiver.sub.operator_controls.rf_gain", 90),
-        ("receiver.sub.operator_controls.squelch", 8),
+        (
+            "receiver.main.operator_controls.af_level",
+            pytest.approx(_normalized_255(128)),
+        ),
+        (
+            "receiver.main.operator_controls.rf_gain",
+            pytest.approx(_normalized_255(180)),
+        ),
+        ("receiver.main.operator_controls.squelch", pytest.approx(_normalized_255(12))),
+        ("receiver.sub.operator_controls.af_level", pytest.approx(_normalized_255(64))),
+        ("receiver.sub.operator_controls.rf_gain", pytest.approx(_normalized_255(90))),
+        ("receiver.sub.operator_controls.squelch", pytest.approx(_normalized_255(8))),
         ("receiver.main.operator_controls.att", 1),
         ("receiver.main.operator_controls.preamp", 2),
         ("receiver.main.operator_controls.agc", 3),
@@ -704,8 +721,11 @@ async def test_slow_poll_skips_sub_controls_without_matching_runtime_capability(
     # here); AGC and narrow have no FTX-1 capability tag and mirror the legacy
     # poller's unconditional poll, so they still emit when policy is pollable.
     assert [(str(item.path), item.value) for item in observations] == [
-        ("receiver.main.operator_controls.af_level", 128),
-        ("receiver.sub.operator_controls.af_level", 64),
+        (
+            "receiver.main.operator_controls.af_level",
+            pytest.approx(_normalized_255(128)),
+        ),
+        ("receiver.sub.operator_controls.af_level", pytest.approx(_normalized_255(64))),
         ("receiver.main.operator_controls.agc", 3),
         ("receiver.main.operator_toggles.narrow", True),
         # active-slot is unconditional (like AGC/narrow), so it still emits when
@@ -890,7 +910,10 @@ async def test_tx_controls_poll_emits_global_setpoints() -> None:
     observations = await adapter.poll_tx_controls()
 
     assert [(str(item.path), item.value) for item in observations] == [
-        ("global.operator_controls.power_level", 55),
+        (
+            "global.operator_controls.power_level",
+            pytest.approx(_normalized_power(55)),
+        ),
         ("global.operator_controls.mic_gain", 40),
         ("global.tx_state.compressor_on", True),
         ("global.operator_controls.compressor_level", 25),
@@ -960,6 +983,39 @@ async def test_tx_controls_poll_emits_global_setpoints() -> None:
 
 
 @pytest.mark.asyncio
+async def test_tx_controls_poll_skips_power_level_without_valid_profile_max_watts() -> (
+    None
+):
+    radio = _make_radio()
+    radio.profile = replace(radio.profile, max_watts=None)
+    adapter = YaesuObservationAdapter(
+        radio,
+        profile=_profile_state_acquisition(),
+        clock=_clock,
+    )
+
+    observations = await adapter.poll_tx_controls()
+
+    assert [(str(item.path), item.value) for item in observations] == [
+        ("global.operator_controls.mic_gain", 40),
+        ("global.tx_state.compressor_on", True),
+        ("global.operator_controls.compressor_level", 25),
+        ("global.tx_state.vox_on", True),
+        ("global.tx_state.split", True),
+        ("global.tx_state.rit_on", True),
+        ("global.tx_state.rit_tx", False),
+        ("global.operator_controls.rit_freq", -250),
+        ("global.operator_controls.tuner_status", 2),
+        ("global.tx_state.dial_lock", True),
+        ("global.operator_controls.key_speed", 24),
+        ("global.operator_controls.cw_pitch", 600),
+        ("global.operator_controls.break_in", 1),
+        ("global.operator_controls.break_in_delay", 300),
+    ]
+    radio.read_power.assert_awaited_once()
+
+
+@pytest.mark.asyncio
 async def test_tx_controls_poll_skips_fields_without_matching_runtime_capability() -> (
     None
 ):
@@ -1025,12 +1081,30 @@ async def test_adapter_uses_read_only_yaesu_paths_when_getters_mutate_state() ->
         ("global.meters.power", 180),
         ("global.meters.swr", 120),
         ("global.meters.comp", 90),
-        ("receiver.main.operator_controls.af_level", 128),
-        ("receiver.main.operator_controls.rf_gain", 180),
-        ("receiver.main.operator_controls.squelch", 12),
-        ("receiver.sub.operator_controls.af_level", 64),
-        ("receiver.sub.operator_controls.rf_gain", 90),
-        ("receiver.sub.operator_controls.squelch", 8),
+        (
+            "receiver.main.operator_controls.af_level",
+            pytest.approx(_normalized_255(128)),
+        ),
+        (
+            "receiver.main.operator_controls.rf_gain",
+            pytest.approx(_normalized_255(180)),
+        ),
+        (
+            "receiver.main.operator_controls.squelch",
+            pytest.approx(_normalized_255(12)),
+        ),
+        (
+            "receiver.sub.operator_controls.af_level",
+            pytest.approx(_normalized_255(64)),
+        ),
+        (
+            "receiver.sub.operator_controls.rf_gain",
+            pytest.approx(_normalized_255(90)),
+        ),
+        (
+            "receiver.sub.operator_controls.squelch",
+            pytest.approx(_normalized_255(8)),
+        ),
         # AGC has no FTX-1 capability tag → unconditional, MAIN-only; ATT and
         # preamp are skipped because this radio lacks those runtime caps.
         ("receiver.main.operator_controls.agc", 3),
@@ -1055,7 +1129,10 @@ async def test_adapter_uses_read_only_yaesu_paths_when_getters_mutate_state() ->
         # cw_spot (MOR-456) — global slow_state bool, gated on the ``cw`` cap
         # (present here); ``read_cw_spot`` does not mutate legacy state.
         ("global.slow_state.cw_spot", True),
-        ("global.operator_controls.power_level", 55),
+        (
+            "global.operator_controls.power_level",
+            pytest.approx(_normalized_power(55)),
+        ),
         ("global.operator_controls.mic_gain", 40),
         ("global.tx_state.compressor_on", True),
         ("global.operator_controls.compressor_level", 25),
@@ -1660,12 +1737,18 @@ async def test_happy_path_slow_poll_unchanged_when_all_reads_succeed() -> None:
     observations = await adapter.poll_slow_controls()
 
     assert [(str(item.path), item.value) for item in observations] == [
-        ("receiver.main.operator_controls.af_level", 128),
-        ("receiver.main.operator_controls.rf_gain", 180),
-        ("receiver.main.operator_controls.squelch", 12),
-        ("receiver.sub.operator_controls.af_level", 64),
-        ("receiver.sub.operator_controls.rf_gain", 90),
-        ("receiver.sub.operator_controls.squelch", 8),
+        (
+            "receiver.main.operator_controls.af_level",
+            pytest.approx(_normalized_255(128)),
+        ),
+        (
+            "receiver.main.operator_controls.rf_gain",
+            pytest.approx(_normalized_255(180)),
+        ),
+        ("receiver.main.operator_controls.squelch", pytest.approx(_normalized_255(12))),
+        ("receiver.sub.operator_controls.af_level", pytest.approx(_normalized_255(64))),
+        ("receiver.sub.operator_controls.rf_gain", pytest.approx(_normalized_255(90))),
+        ("receiver.sub.operator_controls.squelch", pytest.approx(_normalized_255(8))),
         ("receiver.main.operator_controls.att", 1),
         ("receiver.main.operator_controls.preamp", 2),
         ("receiver.main.operator_controls.agc", 3),

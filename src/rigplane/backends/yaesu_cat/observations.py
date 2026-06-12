@@ -401,6 +401,39 @@ class YaesuObservationAdapter:
             value = value / 100.0
         return value, ("confirmed", "calibrated")
 
+    def _normalize_level_255(self, value: object) -> object:
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, (int, float)):
+            return float(value) / 255.0
+        return value
+
+    def _normalize_power_level(self, watts: object) -> float | None:
+        profile = getattr(self.radio, "profile", None)
+        max_watts = getattr(profile, "max_watts", None)
+        if isinstance(max_watts, bool) or not isinstance(max_watts, (int, float)):
+            self._log_field_skip(
+                "power_level",
+                "Skipping field %s — invalid power metadata: %s",
+                ValueError(f"max_watts must be a positive number, got {max_watts!r}"),
+            )
+            return None
+        if max_watts <= 0:
+            self._log_field_skip(
+                "power_level",
+                "Skipping field %s — invalid power metadata: %s",
+                ValueError(f"max_watts must be > 0, got {max_watts!r}"),
+            )
+            return None
+        if isinstance(watts, bool) or not isinstance(watts, (int, float)):
+            self._log_field_skip(
+                "power_level",
+                "Skipping field %s — invalid CAT value: %s",
+                ValueError(f"watts must be numeric, got {watts!r}"),
+            )
+            return None
+        return float(watts) / float(max_watts)
+
     async def poll_tx_meters(self) -> tuple[Observation, ...]:
         adapter = self._adapter()
         observations: list[Observation] = []
@@ -467,7 +500,11 @@ class YaesuObservationAdapter:
             )
             if ok:
                 observations.append(
-                    adapter.observation(_MAIN_AF, value, native_id="read_af_level")
+                    adapter.observation(
+                        _MAIN_AF,
+                        self._normalize_level_255(value),
+                        native_id="read_af_level",
+                    )
                 )
         if self._has_runtime_capability("rf_gain") and self._can_poll(_MAIN_RF):
             ok, value = await self._safe_read(
@@ -475,7 +512,11 @@ class YaesuObservationAdapter:
             )
             if ok:
                 observations.append(
-                    adapter.observation(_MAIN_RF, value, native_id="read_rf_gain")
+                    adapter.observation(
+                        _MAIN_RF,
+                        self._normalize_level_255(value),
+                        native_id="read_rf_gain",
+                    )
                 )
         if self._has_runtime_capability("squelch") and self._can_poll(_MAIN_SQL):
             ok, value = await self._safe_read(
@@ -483,7 +524,11 @@ class YaesuObservationAdapter:
             )
             if ok:
                 observations.append(
-                    adapter.observation(_MAIN_SQL, value, native_id="read_squelch")
+                    adapter.observation(
+                        _MAIN_SQL,
+                        self._normalize_level_255(value),
+                        native_id="read_squelch",
+                    )
                 )
         if (
             self._has_runtime_capability("dual_rx")
@@ -495,7 +540,11 @@ class YaesuObservationAdapter:
             )
             if ok:
                 observations.append(
-                    adapter.observation(_SUB_AF, value, native_id="read_af_level")
+                    adapter.observation(
+                        _SUB_AF,
+                        self._normalize_level_255(value),
+                        native_id="read_af_level",
+                    )
                 )
         if (
             self._has_runtime_capability("dual_rx")
@@ -505,7 +554,11 @@ class YaesuObservationAdapter:
             ok, value = await self._safe_read("sub.rf_gain", self.radio.read_rf_gain(1))
             if ok:
                 observations.append(
-                    adapter.observation(_SUB_RF, value, native_id="read_rf_gain")
+                    adapter.observation(
+                        _SUB_RF,
+                        self._normalize_level_255(value),
+                        native_id="read_rf_gain",
+                    )
                 )
         if (
             self._has_runtime_capability("dual_rx")
@@ -515,7 +568,11 @@ class YaesuObservationAdapter:
             ok, value = await self._safe_read("sub.squelch", self.radio.read_squelch(1))
             if ok:
                 observations.append(
-                    adapter.observation(_SUB_SQL, value, native_id="read_squelch")
+                    adapter.observation(
+                        _SUB_SQL,
+                        self._normalize_level_255(value),
+                        native_id="read_squelch",
+                    )
                 )
         # RF front-end + AGC (MOR-443) — MAIN-only. ATT/preamp gate on their
         # runtime capabilities (matching the legacy poller's ``attenuator`` /
@@ -775,13 +832,15 @@ class YaesuObservationAdapter:
         if self._has_runtime_capability("tx") and self._can_poll(_POWER_LEVEL):
             ok, result = await self._safe_read("power_level", self.radio.read_power())
             if ok and result is not None:
-                observations.append(
-                    adapter.observation(
-                        _POWER_LEVEL,
-                        result[1],
-                        native_id="read_power",
+                normalized = self._normalize_power_level(result[1])
+                if normalized is not None:
+                    observations.append(
+                        adapter.observation(
+                            _POWER_LEVEL,
+                            normalized,
+                            native_id="read_power",
+                        )
                     )
-                )
         if self._can_poll(_MIC_GAIN):
             ok, value = await self._safe_read("mic_gain", self.radio.read_mic_gain())
             if ok:
