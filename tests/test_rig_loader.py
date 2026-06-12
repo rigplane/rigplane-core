@@ -86,6 +86,23 @@ class TestLoadRig:
         rig = load_rig(p)
         assert rig.model == "IC-7300"
 
+    def test_load_minimal_power_max_watts(self, tmp_path):
+        p = _write_toml(
+            tmp_path,
+            _MINIMAL_TOML
+            + """
+
+[power]
+max_watts = 100
+""",
+        )
+
+        rig = load_rig(p)
+        profile = rig.to_profile()
+
+        assert rig.max_watts == 100
+        assert profile.max_watts == 100
+
     def test_state_acquisition_provider_must_be_string(self, tmp_path):
         p = _write_toml(
             tmp_path,

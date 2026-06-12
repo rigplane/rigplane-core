@@ -163,6 +163,7 @@ class RadioProfile:
     filter_width_max: int = 9999
     filter_width_encoding: str = "segmented_bcd_index"
     filter_config: dict[str, FilterWidthRule] | None = None
+    max_watts: int | None = None
     att_values: tuple[int, ...] | None = None
     att_labels: dict[str, str] | None = None
     pre_values: tuple[int, ...] | None = None
