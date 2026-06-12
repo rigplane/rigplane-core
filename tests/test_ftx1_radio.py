@@ -910,8 +910,9 @@ async def test_send_cw(connected_radio):
 
 @pytest.mark.asyncio
 async def test_get_break_in_delay(connected_radio):
-    connected_radio._transport.query = AsyncMock(return_value="SD0300")
-    assert await connected_radio.get_break_in_delay() == 300
+    # Transport strips the trailing semicolon; live FTX-1 frame is ``SD09;``.
+    connected_radio._transport.query = AsyncMock(return_value="SD09")
+    assert await connected_radio.get_break_in_delay() == 9
     connected_radio._transport.query.assert_called_once_with("SD;")
 
 

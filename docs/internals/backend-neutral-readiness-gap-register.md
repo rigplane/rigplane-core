@@ -36,7 +36,7 @@ evidence stays outside this open-core repository.
 | Limitation class | Tracking decision | Current state |
 |---|---|---|
 | FTX-1 observation backing for legacy-only field families | Split into implementation tasks instead of treating MOR-424 as a hidden code bucket. | MOR-443, MOR-444, MOR-445, MOR-446, MOR-447, MOR-448, MOR-449, MOR-452, MOR-458, MOR-460, MOR-461, MOR-462, and MOR-463 are completed. |
-| FTX-1 live parser/poll resilience defects | File only deterministic CAT/backend defects found by live validation. | MOR-473 is completed; MOR-474 remains open for the non-blocking `break_in_delay` SD parse-width follow-up. |
+| FTX-1 live parser/poll resilience defects | File only deterministic CAT/backend defects found by live validation. | MOR-473 and MOR-474 are completed; `break_in_delay` now accepts the live `SD09;` reply fixture. |
 | Public naming / semantic cleanup | Track as compatibility work, not release blockers. | MOR-465 remains open for RIT/XIT field naming/re-home compatibility. |
 | IC-7610 front-panel readback audit | Treat as model-specific readback coverage, not a broad backend-neutral readiness claim. | MOR-488 remains the audit umbrella; completed child issues are reflected in the project board. |
 | External rigctld power and VFO-slot gaps | Declare unsupported in the provider acquisition profile instead of filing generic code defects. | Implemented in `backends/rigctld_client/observations.py`; no extra code issue is required unless a supported rigctld command misbehaves. |

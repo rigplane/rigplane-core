@@ -536,7 +536,8 @@ log shows exactly two distinct field-level skip WARNs, repeated each poll cycle
 - `sub.sMeter` — degrades cleanly (see above); SUB has no independent s-meter on
   this single-RX firmware state (`SM1;` echoes a MAIN `SM0` frame).
 - `breakInDelay` — a residual parser-width mismatch (`SD09;` is 2 digits, parse
-  wants 4). A follow-up `SD` 2-digit parse fix would recover it; non-blocking.
+  wanted 4 in the original run). MOR-474 closes this residual: the parser
+  accepts the live `SD09;` form and the FTX-1 radio fixture covers it.
 - The per-VFO nested slots (`main.vfoA/vfoB.*`, `sub.vfoA/vfoB.*`) remain
   default/stale (freqHz 0, USB) and `missing` — only the ACTIVE-slot projection
   (`main.freqHz`/`main.mode`) is observed. Meters other than s-meter
