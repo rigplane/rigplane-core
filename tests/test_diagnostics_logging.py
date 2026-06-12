@@ -138,6 +138,23 @@ def test_log_file_writes_to_platformdirs_cache(
     assert "hello" in log_file.read_text(encoding="utf-8")
 
 
+def test_log_file_honors_rigplane_log_dir(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    log_dir = tmp_path / "ram-logs"
+    monkeypatch.setenv("RIGPLANE_LOG_DIR", str(log_dir))
+    monkeypatch.setattr(platformdirs, "user_cache_path", lambda app: tmp_path / "cache")
+
+    configure_diagnostic_logging()
+    logger = logging.getLogger("rigplane.test")
+    logger.debug("hello from env")
+
+    log_file = log_dir / "rigplane.log"
+    assert log_file.exists()
+    assert "hello from env" in log_file.read_text(encoding="utf-8")
+    assert not (tmp_path / "cache" / "logs" / "rigplane.log").exists()
+
+
 def test_preset_logger_level_preserved(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:

@@ -3653,16 +3653,11 @@ async def _cmd_discover(_radio: Radio | None, args: argparse.Namespace) -> int:
 
 def _default_daemon_log_file(*, managed_runtime: bool) -> Path:
     filename = "rigplane-managed.log" if managed_runtime else "rigplane.log"
-    log_dir = os.environ.get("RIGPLANE_LOG_DIR", "").strip()
-    if log_dir:
-        return Path(log_dir).expanduser() / filename
-
-    import platformdirs
-
     from rigplane._platformdirs_migration import migrate_legacy_platformdirs
+    from rigplane.diagnostics._log_paths import resolve_core_log_dir
 
     migrate_legacy_platformdirs()
-    return Path(platformdirs.user_cache_path("rigplane")) / "logs" / filename
+    return resolve_core_log_dir() / filename
 
 
 def main() -> None:

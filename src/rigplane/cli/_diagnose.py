@@ -139,9 +139,10 @@ def _default_log_dir() -> Path:
     # entry point that bypasses that path (or runs before logging init) still
     # benefits from the migration. The helper is idempotent.
     from rigplane._platformdirs_migration import migrate_legacy_platformdirs
+    from rigplane.diagnostics._log_paths import resolve_core_log_dir
 
     migrate_legacy_platformdirs()
-    return Path(platformdirs.user_cache_path("rigplane")) / "logs"
+    return resolve_core_log_dir()
 
 
 def _default_config_dir() -> Path:

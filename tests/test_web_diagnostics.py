@@ -141,6 +141,18 @@ def _register_test_contributor() -> None:
     _discovery._BUILT_IN_CONTRIBUTORS.append(_OkContributor)
 
 
+def test_resolve_diagnostic_dirs_honors_rigplane_log_dir(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    log_dir = tmp_path / "ram-logs"
+    monkeypatch.setenv("RIGPLANE_LOG_DIR", str(log_dir))
+    srv = _make_server()
+
+    _config_dir, resolved_log_dir = srv._resolve_diagnostic_dirs()  # noqa: SLF001
+
+    assert resolved_log_dir == log_dir
+
+
 def _stub_dirs(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     """Replace WebServer._resolve_diagnostic_dirs with a tmp-path version."""
     cfg = tmp_path / "config"

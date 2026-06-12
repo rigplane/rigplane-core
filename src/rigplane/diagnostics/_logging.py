@@ -16,7 +16,7 @@ import os
 import sys
 from logging.handlers import RotatingFileHandler
 
-import platformdirs
+from rigplane.diagnostics._log_paths import resolve_core_log_dir
 
 _DIAGNOSTIC_FORMATTER = logging.Formatter(
     "%(asctime)s %(levelname)s %(name)s %(message)s"
@@ -63,7 +63,7 @@ def configure_diagnostic_logging() -> None:
     except Exception:  # noqa: BLE001 — best-effort, swallow all
         pass
     try:
-        log_dir = platformdirs.user_cache_path("rigplane") / "logs"
+        log_dir = resolve_core_log_dir()
         log_dir.mkdir(parents=True, exist_ok=True)
         handler = SafeRotatingFileHandler(
             log_dir / _LOG_FILE_NAME,
