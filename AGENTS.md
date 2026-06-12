@@ -71,6 +71,8 @@ Default rule for agents:
 - Treat issue bodies as the source of truth for requirements, acceptance
   criteria, compatibility decisions, and test expectations.
 - Treat Project fields as routing/status metadata only.
+- After finishing a task, report the completed status and propose the next best
+  candidate issue from the roadmap/issue queue instead of stopping at "done".
 - Before opening a PR, confirm the linked issue is in the Project and update
   `Status` to `In Progress` or `Done` as appropriate.
 
