@@ -50,6 +50,7 @@ from .backend import (
     DuplexStream,
     PortAudioBackend,
     RxStream,
+    RxStreamHealth,
     TxStream,
 )
 from .session import AudioSession, AudioSessionState, RxSubscription, TxLease
@@ -324,6 +325,12 @@ class AudioBridge:
         self._rx_drops = 0
         self._rx_underruns = 0
         self._tx_overruns = 0
+        self._tx_silence_suppressed = 0
+        self._capture_input_overflows = 0
+        self._capture_input_underflows = 0
+        self._capture_callback_status_flags: dict[str, int] = {}
+        self._capture_health_stream: RxStream | DuplexStream | None = None
+        self._capture_health_last = RxStreamHealth()
         self._rx_latency_samples: list[float] = []
         self._tx_latency_samples: list[float] = []
         self._last_rx_time: float = 0.0
@@ -356,6 +363,7 @@ class AudioBridge:
     @property
     def metrics(self) -> BridgeMetrics:
         """Structured bridge telemetry snapshot."""
+        self._sync_capture_health_metrics()
         uptime = time.monotonic() - self._start_time if self._running else 0.0
         rx_avg = (
             sum(self._rx_latency_samples) / len(self._rx_latency_samples)
@@ -385,8 +393,12 @@ class AudioBridge:
             rx_frames=self._rx_frames,
             tx_frames=self._tx_frames,
             rx_drops=self._rx_drops,
+            tx_silence_suppressed=self._tx_silence_suppressed,
             rx_underruns=self._rx_underruns,
             tx_overruns=self._tx_overruns,
+            capture_input_overflows=self._capture_input_overflows,
+            capture_input_underflows=self._capture_input_underflows,
+            capture_callback_status_flags=dict(self._capture_callback_status_flags),
             uptime_seconds=round(uptime, 1),
             rx_interval_ms=round(rx_avg * 1000, 1),
             tx_interval_ms=round(tx_avg * 1000, 1),
@@ -691,6 +703,7 @@ class AudioBridge:
             self._tx_lease = None
 
         if self._tx_stream is not None:
+            self._sync_capture_health_metrics()
             try:
                 await self._tx_stream.stop()
             except Exception:
@@ -706,6 +719,7 @@ class AudioBridge:
 
         # The single duplex stream serves both directions — stop it once.
         if self._duplex_stream is not None:
+            self._sync_capture_health_metrics()
             try:
                 await self._duplex_stream.stop()
             except Exception:
@@ -926,6 +940,48 @@ class AudioBridge:
             self._tx_queue.put_nowait(frame)
 
     @property
+    def _capture_stream(self) -> RxStream | DuplexStream | None:
+        """Active device→radio capture stream."""
+        if self._duplex_stream is not None:
+            return self._duplex_stream
+        return self._tx_stream
+
+    def _sync_capture_health_metrics(self) -> None:
+        """Accumulate capture callback health into bridge-level counters."""
+        stream = self._capture_stream
+        if stream is None:
+            self._capture_health_stream = None
+            self._capture_health_last = RxStreamHealth()
+            return
+
+        health = getattr(stream, "capture_health", None)
+        if not isinstance(health, RxStreamHealth):
+            return
+
+        if stream is not self._capture_health_stream:
+            self._capture_health_stream = stream
+            self._capture_health_last = RxStreamHealth()
+
+        last = self._capture_health_last
+        if health.input_overflow_events > last.input_overflow_events:
+            self._capture_input_overflows += (
+                health.input_overflow_events - last.input_overflow_events
+            )
+        if health.input_underflow_events > last.input_underflow_events:
+            self._capture_input_underflows += (
+                health.input_underflow_events - last.input_underflow_events
+            )
+        for flag, count in health.callback_status_flags.items():
+            previous = last.callback_status_flags.get(flag, 0)
+            if count > previous:
+                self._capture_callback_status_flags[flag] = (
+                    self._capture_callback_status_flags.get(flag, 0)
+                    + (count - previous)
+                )
+
+        self._capture_health_last = health
+
+    @property
     def _playback_stream(self) -> TxStream | DuplexStream | None:
         """Active radio→device playback stream.
 
@@ -1027,6 +1083,7 @@ class AudioBridge:
                 samples = _pcm16le_samples(pcm_bytes)
                 peak = max((abs(sample) for sample in samples), default=0)
                 if peak < silence_threshold:
+                    self._tx_silence_suppressed += 1
                     continue
 
                 now = time.monotonic()

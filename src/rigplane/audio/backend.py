@@ -1479,7 +1479,13 @@ class FakeRxStream:
         self._callback = None
         self.stopped_count += 1
 
-    def inject_frame(self, frame: bytes) -> None:
+    def inject_frame(
+        self,
+        frame: bytes,
+        *,
+        input_overflow: bool = False,
+        input_underflow: bool = False,
+    ) -> None:
         """Push a frame to the registered callback (test helper).
 
         If *fail_on_inject* is set, raises it once and clears the flag.
@@ -1488,6 +1494,13 @@ class FakeRxStream:
         if exc is not None:
             self.fail_on_inject = None
             raise exc
+        if input_overflow or input_underflow:
+            status = type("_Status", (), {})()
+            if input_overflow:
+                status.input_overflow = True
+            if input_underflow:
+                status.input_underflow = True
+            self._capture_health.record_status(status, input_only=True)
         if self._callback is not None:
             try:
                 self._callback(frame)
@@ -1630,8 +1643,21 @@ class FakeDuplexStream:
             raise RuntimeError("FakeDuplexStream is not running.")
         self.written_frames.append(frame)
 
-    def inject_frame(self, frame: bytes) -> None:
+    def inject_frame(
+        self,
+        frame: bytes,
+        *,
+        input_overflow: bool = False,
+        input_underflow: bool = False,
+    ) -> None:
         """Push an RX capture frame to the registered callback (test helper)."""
+        if input_overflow or input_underflow:
+            status = type("_Status", (), {})()
+            if input_overflow:
+                status.input_overflow = True
+            if input_underflow:
+                status.input_underflow = True
+            self._capture_health.record_status(status, input_only=True)
         if self._callback is not None:
             try:
                 self._callback(frame)

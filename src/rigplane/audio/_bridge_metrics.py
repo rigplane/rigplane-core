@@ -25,10 +25,16 @@ class BridgeMetrics:
     rx_frames: int = 0
     tx_frames: int = 0
     rx_drops: int = 0
+    tx_silence_suppressed: int = 0
 
     # Underrun / overrun
     rx_underruns: int = 0
     tx_overruns: int = 0
+    capture_input_overflows: int = 0
+    capture_input_underflows: int = 0
+    capture_callback_status_flags: dict[str, int] = dataclasses.field(
+        default_factory=dict
+    )
 
     # Timing
     uptime_seconds: float = 0.0
