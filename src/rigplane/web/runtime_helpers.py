@@ -756,21 +756,37 @@ def _set_receiver_value(
     receiver[name] = value
 
 
-def _normalize_public_level_snapshot_value(value: Any) -> Any:
+def _normalize_public_level_snapshot_value(
+    value: Any, *, max_value: float = 255.0
+) -> Any:
     if isinstance(value, bool):
         return value
     if isinstance(value, float) and 0.0 <= value <= 1.0:
         return value
     if isinstance(value, (int, float)):
-        return float(value) / 255
+        return float(value) / max_value
     return value
+
+
+def _power_level_max_value(field: FieldSnapshot, radio: "Radio | None") -> float:
+    if field.source.provider != "yaesu_cat":
+        return 255.0
+    profile = getattr(radio, "profile", None) if radio is not None else None
+    max_watts = getattr(profile, "max_watts", None)
+    if isinstance(max_watts, (int, float)) and not isinstance(max_watts, bool):
+        if max_watts > 0:
+            return float(max_watts)
+    return 255.0
 
 
 def _apply_snapshot_field(
     state: dict[str, Any],
-    path: FieldPath,
-    value: Any,
+    field: FieldSnapshot,
+    *,
+    radio: "Radio | None",
 ) -> None:
+    path = field.path
+    value = field.value
     if path.scope is FieldScope.RECEIVER:
         receiver_key = _snapshot_receiver_key(path.receiver_id)
         if receiver_key is None:
@@ -846,7 +862,10 @@ def _apply_snapshot_field(
             and path.name in _GLOBAL_OPERATOR_CONTROL_FIELDS
         ):
             if path.name in _NORMALIZED_GLOBAL_OPERATOR_CONTROL_FIELDS:
-                value = _normalize_public_level_snapshot_value(value)
+                value = _normalize_public_level_snapshot_value(
+                    value,
+                    max_value=_power_level_max_value(field, radio),
+                )
             state[path.name] = value
             return
         if path.family is FieldFamily.METERS and path.name in _GLOBAL_METER_FIELDS:
@@ -873,10 +892,14 @@ def _apply_snapshot_field(
             scope_controls[path.name] = value
 
 
-def _project_snapshot_state_dict(snapshot: StateSnapshot) -> dict[str, Any]:
+def _project_snapshot_state_dict(
+    snapshot: StateSnapshot,
+    *,
+    radio: "Radio | None",
+) -> dict[str, Any]:
     state = copy.deepcopy(_EMPTY_STATE_DICT)
     for field in snapshot.fields:
-        _apply_snapshot_field(state, field.path, field.value)
+        _apply_snapshot_field(state, field, radio=radio)
     return cast(dict[str, Any], state)
 
 
@@ -991,7 +1014,7 @@ def build_public_state_payload_from_snapshot(
 ) -> dict[str, Any]:
     """Build the public web payload from one StateStore snapshot."""
 
-    state = _project_snapshot_state_dict(snapshot)
+    state = _project_snapshot_state_dict(snapshot, radio=radio)
     state["field_status"] = _build_snapshot_field_status(
         snapshot,
         receiver_count=receiver_count,

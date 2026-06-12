@@ -337,6 +337,24 @@ async def test_tx_controls_project_available() -> None:
 
 
 @pytest.mark.asyncio
+async def test_tx_power_level_projects_watts_against_profile_max() -> None:
+    store = StateStore()
+    radio = _make_radio()
+    radio.profile = get_radio_profile("FTX-1")
+
+    await _apply_tx_controls(store, radio)
+    payload = build_public_state_payload_from_snapshot(
+        store.snapshot(),
+        radio=radio,
+        receiver_count=2,
+    )
+
+    assert store.snapshot().field("global.operator_controls.power_level").value == 55
+    assert radio.profile.max_watts == 100
+    assert payload["powerLevel"] == 0.55
+
+
+@pytest.mark.asyncio
 async def test_rf_front_end_observation_value() -> None:
     store = StateStore()
     radio = _make_radio()

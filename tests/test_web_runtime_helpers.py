@@ -69,10 +69,10 @@ class _FakeRadio:
         self.civ_stats = None
 
 
-def _source() -> SourceMetadata:
+def _source(*, provider: str = "test") -> SourceMetadata:
     return SourceMetadata(
         source="poll_response",
-        provider="test",
+        provider=provider,
         transport="fake",
         native_id="test",
     )
@@ -85,11 +85,12 @@ def _observation(
     at: float,
     max_age: float | None = None,
     quality: tuple[str, ...] = ("confirmed",),
+    provider: str = "test",
 ) -> Observation:
     return Observation(
         path=path,
         value=value,
-        source=_source(),
+        source=_source(provider=provider),
         timestamp_monotonic=at,
         max_age=max_age,
         quality=quality,
@@ -408,6 +409,33 @@ def test_public_state_projection_passes_through_normalized_level_controls() -> N
     assert payload["main"]["rfGain"] == 0.25
     assert payload["sub"]["squelch"] == 0.75
     assert payload["powerLevel"] == 0.8
+
+
+def test_public_power_level_projection_keeps_icom_raw_byte_scale_with_profile() -> None:
+    class _Profile:
+        max_watts = 100
+
+    class _Radio:
+        profile = _Profile()
+
+    clock = FreshnessClock(start=10.0)
+    store = StateStore(freshness_clock=clock)
+    store.apply(
+        _observation(
+            FieldPath.global_("operator_controls", "power_level"),
+            128,
+            at=clock.now(),
+            provider="icom_civ",
+        )
+    )
+
+    payload = build_public_state_payload_from_snapshot(
+        store.snapshot(),
+        radio=_Radio(),  # type: ignore[arg-type]
+        receiver_count=1,
+    )
+
+    assert payload["powerLevel"] == 128 / 255
 
 
 def test_public_state_projection_keeps_unrelated_operator_controls_raw() -> None:
