@@ -15,6 +15,7 @@ from rigplane.audio.backend import (
     FakeRxStream,
     FakeTxStream,
     PortAudioBackend,
+    RxStreamHealth,
     RxStream,
     TxStream,
     TxStreamHealth,
@@ -107,6 +108,14 @@ class TestProtocolConformance:
         assert health["overrun_events"] == 0
         assert health["underrun_events"] == 0
 
+    def test_rx_stream_health_is_exported(self) -> None:
+        health = RxStreamHealth().to_dict()
+        assert health["frames_delivered"] == 0
+        assert health["input_overflow_events"] == 0
+        assert health["input_underflow_events"] == 0
+        assert health["callback_errors"] == 0
+        assert health["callback_status_flags"] == {}
+
     def test_portaudio_backend_is_audio_backend(self) -> None:
         # PortAudioBackend satisfies the protocol structurally (deps not needed here)
         backend = PortAudioBackend(dependency_loader=lambda: (None, None))
@@ -176,11 +185,14 @@ class TestFakeRxStreamLifecycle:
         received: list[bytes] = []
         await stream.start(received.append)
 
+        assert stream.capture_health.frames_delivered == 0
         stream.inject_frame(b"\x00\x01\x02\x03")
         assert received == [b"\x00\x01\x02\x03"]
+        assert stream.capture_health.frames_delivered == 1
 
         stream.inject_frame(b"\xff")
         assert len(received) == 2
+        assert stream.capture_health.frames_delivered == 2
 
         await stream.stop()
 
@@ -201,6 +213,30 @@ class TestFakeRxStreamLifecycle:
         s1 = fake_backend.open_rx(DUPLEX_DEVICE.id)
         s2 = fake_backend.open_rx(INPUT_ONLY_DEVICE.id)
         assert fake_backend.rx_streams == [s1, s2]
+
+
+# ---------------------------------------------------------------------------
+# FakeDuplexStream capture health
+# ---------------------------------------------------------------------------
+
+
+class TestFakeDuplexStreamCaptureHealth:
+    @pytest.mark.asyncio()
+    async def test_inject_frame_updates_capture_health(
+        self, fake_backend: FakeAudioBackend
+    ) -> None:
+        stream = fake_backend.open_duplex(DUPLEX_DEVICE.id)
+        received: list[bytes] = []
+        await stream.start(received.append)
+
+        assert stream.capture_health.frames_delivered == 0
+        stream.inject_frame(b"\x10\x20")
+        assert received == [b"\x10\x20"]
+        assert stream.capture_health.frames_delivered == 1
+        assert stream.capture_health.input_overflow_events == 0
+        assert stream.capture_health.input_underflow_events == 0
+
+        await stream.stop()
 
 
 # ---------------------------------------------------------------------------
@@ -579,6 +615,161 @@ class TestPortAudioBackendDeps:
         assert len(received) == 2
         for frame in received:
             assert len(frame) == 480 * 2  # 960 bytes / 10 ms each
+
+        await stream.stop()
+
+    @pytest.mark.asyncio()
+    async def test_open_rx_capture_health_records_input_overflow(self) -> None:
+        class FakeIndata:
+            def __init__(self, payload: bytes) -> None:
+                self._payload = payload
+
+            def tobytes(self) -> bytes:
+                return self._payload
+
+        captured_cb: dict[str, object] = {}
+
+        class FakeSd:
+            class InputStream:
+                def __init__(self, **kw: object) -> None:
+                    captured_cb["cb"] = kw["callback"]
+
+                def start(self) -> None:
+                    pass
+
+                def stop(self) -> None:
+                    pass
+
+                def close(self) -> None:
+                    pass
+
+        class Status:
+            input_overflow = True
+
+            def __bool__(self) -> bool:
+                return True
+
+        backend = PortAudioBackend(dependency_loader=lambda: (FakeSd(), object()))
+        stream = backend.open_rx(
+            AudioDeviceId(0), sample_rate=48_000, channels=1, frame_ms=20
+        )
+        received: list[bytes] = []
+        await stream.start(received.append)
+
+        cb = captured_cb["cb"]
+        frame = b"\x01\x02" * 960
+        cb(FakeIndata(frame), 960, None, Status())  # type: ignore[operator]
+
+        assert received == [frame]
+        assert stream.capture_health.frames_delivered == 1
+        assert stream.capture_health.input_overflow_events == 1
+        assert stream.capture_health.callback_status_flags == {"input_overflow": 1}
+
+        await stream.stop()
+
+    @pytest.mark.asyncio()
+    async def test_open_rx_capture_health_records_input_underflow(self) -> None:
+        class FakeIndata:
+            def __init__(self, payload: bytes) -> None:
+                self._payload = payload
+
+            def tobytes(self) -> bytes:
+                return self._payload
+
+        captured_cb: dict[str, object] = {}
+
+        class FakeSd:
+            class InputStream:
+                def __init__(self, **kw: object) -> None:
+                    captured_cb["cb"] = kw["callback"]
+
+                def start(self) -> None:
+                    pass
+
+                def stop(self) -> None:
+                    pass
+
+                def close(self) -> None:
+                    pass
+
+        class Status:
+            input_underflow = True
+
+            def __bool__(self) -> bool:
+                return True
+
+        backend = PortAudioBackend(dependency_loader=lambda: (FakeSd(), object()))
+        stream = backend.open_rx(
+            AudioDeviceId(0), sample_rate=48_000, channels=1, frame_ms=20
+        )
+        received: list[bytes] = []
+        await stream.start(received.append)
+
+        cb = captured_cb["cb"]
+        frame = b"\x03\x04" * 960
+        cb(FakeIndata(frame), 960, None, Status())  # type: ignore[operator]
+
+        assert received == [frame]
+        assert stream.capture_health.frames_delivered == 1
+        assert stream.capture_health.input_underflow_events == 1
+        assert stream.capture_health.callback_status_flags == {"input_underflow": 1}
+
+        await stream.stop()
+
+    @pytest.mark.asyncio()
+    async def test_open_duplex_capture_health_records_input_overflow_separately(
+        self,
+    ) -> None:
+        class FakeIndata:
+            def __init__(self, payload: bytes) -> None:
+                self._payload = payload
+
+            def tobytes(self) -> bytes:
+                return self._payload
+
+        captured: dict[str, object] = {}
+
+        class FakeSd:
+            class Stream:
+                def __init__(self, **kw: object) -> None:
+                    captured["cb"] = kw["callback"]
+
+                def start(self) -> None:
+                    pass
+
+                def stop(self) -> None:
+                    pass
+
+                def close(self) -> None:
+                    pass
+
+        class Status:
+            input_overflow = True
+
+            def __bool__(self) -> bool:
+                return True
+
+        backend = PortAudioBackend(dependency_loader=lambda: (FakeSd(), object()))
+        stream = backend.open_duplex(
+            AudioDeviceId(0),
+            sample_rate=48_000,
+            channels=1,
+            frame_ms=20,
+            tx_channels=1,
+        )
+        received: list[bytes] = []
+        await stream.start(received.append)
+
+        cb = captured["cb"]
+        frame = b"\x05\x06" * 960
+        outdata = bytearray(960 * 2)
+        cb(FakeIndata(frame), outdata, 960, None, Status())  # type: ignore[operator]
+
+        assert received == [frame]
+        assert stream.capture_health.frames_delivered == 1
+        assert stream.capture_health.input_overflow_events == 1
+        assert stream.capture_health.callback_status_flags == {"input_overflow": 1}
+        assert stream.write_health.callback_status_flags["input_overflow"] == 1
 
         await stream.stop()
 

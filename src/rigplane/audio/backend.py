@@ -143,6 +143,26 @@ class TxStreamHealth:
         }
 
 
+@dataclass(frozen=True, slots=True)
+class RxStreamHealth:
+    """Snapshot of capture callback delivery and input-side health."""
+
+    frames_delivered: int = 0
+    input_overflow_events: int = 0
+    input_underflow_events: int = 0
+    callback_errors: int = 0
+    callback_status_flags: dict[str, int] = field(default_factory=dict)
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "frames_delivered": self.frames_delivered,
+            "input_overflow_events": self.input_overflow_events,
+            "input_underflow_events": self.input_underflow_events,
+            "callback_errors": self.callback_errors,
+            "callback_status_flags": dict(self.callback_status_flags),
+        }
+
+
 # ---------------------------------------------------------------------------
 # Stream protocols
 # ---------------------------------------------------------------------------
@@ -372,6 +392,97 @@ def _downmix_stereo_to_mono_s16le(pcm: bytes, *, channel: str = "mix") -> bytes:
     return mono.tobytes()
 
 
+def _callback_status_flag_names(status: Any) -> tuple[str, ...]:
+    if status is None:
+        return ()
+    try:
+        if not bool(status):
+            return ()
+    except Exception:
+        pass
+    flags: list[str] = []
+    for name in (
+        "input_underflow",
+        "input_overflow",
+        "output_underflow",
+        "output_overflow",
+        "priming_output",
+    ):
+        try:
+            if bool(getattr(status, name, False)):
+                flags.append(name)
+        except Exception:
+            continue
+    if flags:
+        return tuple(flags)
+    try:
+        label = str(status).strip()
+    except Exception:
+        label = type(status).__name__
+    return (label or type(status).__name__,)
+
+
+@dataclass(slots=True)
+class _RxFeedResult:
+    frames_delivered: int = 0
+    callback_errors: int = 0
+
+
+class _CaptureHealthTracker:
+    """Mutable capture-side counters with snapshot export."""
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._frames_delivered = 0
+        self._input_overflow_events = 0
+        self._input_underflow_events = 0
+        self._callback_errors = 0
+        self._callback_status_flags: dict[str, int] = {}
+
+    def record_status(self, status: Any, *, input_only: bool) -> None:
+        flags = _callback_status_flag_names(status)
+        if input_only:
+            flags = tuple(
+                flag
+                for flag in flags
+                if flag.startswith("input_")
+                or flag not in {"output_underflow", "output_overflow", "priming_output"}
+            )
+        if not flags:
+            return
+        with self._lock:
+            for flag in flags:
+                self._callback_status_flags[flag] = (
+                    self._callback_status_flags.get(flag, 0) + 1
+                )
+                if flag == "input_overflow":
+                    self._input_overflow_events += 1
+                elif flag == "input_underflow":
+                    self._input_underflow_events += 1
+
+    def record_frames_delivered(self, count: int) -> None:
+        if count <= 0:
+            return
+        with self._lock:
+            self._frames_delivered += count
+
+    def record_callback_errors(self, count: int) -> None:
+        if count <= 0:
+            return
+        with self._lock:
+            self._callback_errors += count
+
+    def snapshot(self) -> RxStreamHealth:
+        with self._lock:
+            return RxStreamHealth(
+                frames_delivered=self._frames_delivered,
+                input_overflow_events=self._input_overflow_events,
+                input_underflow_events=self._input_underflow_events,
+                callback_errors=self._callback_errors,
+                callback_status_flags=dict(self._callback_status_flags),
+            )
+
+
 class _RxFramer:
     """Shared RX data-path: downmix → accumulate → re-chunk into fixed frames.
 
@@ -407,7 +518,7 @@ class _RxFramer:
     def reset(self) -> None:
         self._accumulator = bytearray()
 
-    def feed(self, indata: Any, callback: Callable[[bytes], None]) -> None:
+    def feed(self, indata: Any, callback: Callable[[bytes], None]) -> _RxFeedResult:
         """Downmix + re-chunk *indata*; deliver each whole frame to *callback*.
 
         Runs on PortAudio's audio thread: keep it non-blocking. Copies the PCM
@@ -416,15 +527,17 @@ class _RxFramer:
         hands each to the consumer. Re-chunking a continuous callback stream is
         lossless and adds no scheduling seam.
         """
+        result = _RxFeedResult()
         try:
             pcm = (
                 bytes(indata.tobytes()) if hasattr(indata, "tobytes") else bytes(indata)
             )
         except Exception:
             logger.warning("portaudio-rx: capture copy failed", exc_info=True)
-            return
+            result.callback_errors += 1
+            return result
         if not pcm:
-            return
+            return result
         if self._downmix_stereo_to_mono:
             # Device opened at 2 ch (native) but consumer wants mono (MOR-504):
             # collapse interleaved L/R → mono BEFORE chunking, so the
@@ -436,9 +549,10 @@ class _RxFramer:
                 logger.warning(
                     "portaudio-rx: stereo→mono downmix failed", exc_info=True
                 )
-                return
+                result.callback_errors += 1
+                return result
             if not pcm:
-                return
+                return result
         acc = self._accumulator
         acc.extend(pcm)
         frame_bytes = self._frame_bytes
@@ -447,8 +561,11 @@ class _RxFramer:
                 frame = bytes(acc[:frame_bytes])
                 del acc[:frame_bytes]
                 callback(frame)
+                result.frames_delivered += 1
         except Exception:
             logger.warning("portaudio-rx: consumer callback failed", exc_info=True)
+            result.callback_errors += 1
+        return result
 
 
 class _PortAudioRxStream:
@@ -517,10 +634,15 @@ class _PortAudioRxStream:
         self._stream: Any = None
         self._running = False
         self._callback: Callable[[bytes], None] | None = None
+        self._capture_health = _CaptureHealthTracker()
 
     @property
     def running(self) -> bool:
         return self._running
+
+    @property
+    def capture_health(self) -> RxStreamHealth:
+        return self._capture_health.snapshot()
 
     async def start(self, callback: Callable[[bytes], None]) -> None:
         if self.running:
@@ -576,7 +698,10 @@ class _PortAudioRxStream:
         cb = self._callback
         if cb is None:
             return
-        self._framer.feed(indata, cb)
+        self._capture_health.record_status(_status, input_only=True)
+        result = self._framer.feed(indata, cb)
+        self._capture_health.record_frames_delivered(result.frames_delivered)
+        self._capture_health.record_callback_errors(result.callback_errors)
 
 
 class _PortAudioTxStream:
@@ -907,33 +1032,7 @@ class _PortAudioTxStream:
             pass
 
     def _status_flag_names(self, status: Any) -> tuple[str, ...]:
-        if status is None:
-            return ()
-        try:
-            if not bool(status):
-                return ()
-        except Exception:
-            pass
-        flags: list[str] = []
-        for name in (
-            "input_underflow",
-            "input_overflow",
-            "output_underflow",
-            "output_overflow",
-            "priming_output",
-        ):
-            try:
-                if bool(getattr(status, name, False)):
-                    flags.append(name)
-            except Exception:
-                continue
-        if flags:
-            return tuple(flags)
-        try:
-            label = str(status).strip()
-        except Exception:
-            label = type(status).__name__
-        return (label or type(status).__name__,)
+        return _callback_status_flag_names(status)
 
     def _track_write_rate_locked(self) -> None:
         observed_at = time.monotonic()
@@ -1036,6 +1135,7 @@ class _PortAudioDuplexStream:
         self._stream: Any = None
         self._running = False
         self._callback: Callable[[bytes], None] | None = None
+        self._capture_health = _CaptureHealthTracker()
 
     @property
     def running(self) -> bool:
@@ -1044,6 +1144,10 @@ class _PortAudioDuplexStream:
     @property
     def write_health(self) -> TxStreamHealth:
         return self._tx.write_health
+
+    @property
+    def capture_health(self) -> RxStreamHealth:
+        return self._capture_health.snapshot()
 
     async def start(self, callback: Callable[[bytes], None]) -> None:
         if self.running:
@@ -1107,7 +1211,10 @@ class _PortAudioDuplexStream:
         #      the producer is behind), reusing the TX stream's output callback.
         cb = self._callback
         if cb is not None:
-            self._framer.feed(indata, cb)
+            self._capture_health.record_status(status, input_only=True)
+            result = self._framer.feed(indata, cb)
+            self._capture_health.record_frames_delivered(result.frames_delivered)
+            self._capture_health.record_callback_errors(result.callback_errors)
         self._tx._output_callback(outdata, frames, _time_info, status)
 
 
@@ -1348,10 +1455,15 @@ class FakeRxStream:
         self.stopped_count = 0
         self.heartbeat_count = 0
         self.fail_on_inject: Exception | None = None
+        self._capture_health = _CaptureHealthTracker()
 
     @property
     def running(self) -> bool:
         return self._running
+
+    @property
+    def capture_health(self) -> RxStreamHealth:
+        return self._capture_health.snapshot()
 
     async def start(self, callback: Callable[[bytes], None]) -> None:
         if self._running:
@@ -1377,7 +1489,12 @@ class FakeRxStream:
             self.fail_on_inject = None
             raise exc
         if self._callback is not None:
-            self._callback(frame)
+            try:
+                self._callback(frame)
+            except Exception:
+                self._capture_health.record_callback_errors(1)
+                raise
+            self._capture_health.record_frames_delivered(1)
 
     def inject_heartbeat(self, frame: bytes = b"\x00\x00") -> None:
         """Advance RX liveness by one synthetic capture tick (MOR-566).
@@ -1389,7 +1506,12 @@ class FakeRxStream:
         """
         self.heartbeat_count += 1
         if self._callback is not None:
-            self._callback(frame)
+            try:
+                self._callback(frame)
+            except Exception:
+                self._capture_health.record_callback_errors(1)
+                raise
+            self._capture_health.record_frames_delivered(1)
 
 
 class FakeTxStream:
@@ -1472,10 +1594,15 @@ class FakeDuplexStream:
         self.started_count = 0
         self.stopped_count = 0
         self.written_frames: list[bytes] = []
+        self._capture_health = _CaptureHealthTracker()
 
     @property
     def running(self) -> bool:
         return self._running
+
+    @property
+    def capture_health(self) -> RxStreamHealth:
+        return self._capture_health.snapshot()
 
     @property
     def write_health(self) -> TxStreamHealth:
@@ -1506,7 +1633,12 @@ class FakeDuplexStream:
     def inject_frame(self, frame: bytes) -> None:
         """Push an RX capture frame to the registered callback (test helper)."""
         if self._callback is not None:
-            self._callback(frame)
+            try:
+                self._callback(frame)
+            except Exception:
+                self._capture_health.record_callback_errors(1)
+                raise
+            self._capture_health.record_frames_delivered(1)
 
 
 class FakeAudioBackend:
@@ -1647,6 +1779,7 @@ __all__ = [
     "FakeRxStream",
     "FakeTxStream",
     "PortAudioBackend",
+    "RxStreamHealth",
     "RxStream",
     "TxStream",
     "TxStreamHealth",
