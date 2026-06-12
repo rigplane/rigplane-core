@@ -64,12 +64,19 @@ async def test_get_reads_emit_hamlib_observations() -> None:
 
             observations = await adapter.read_freq_mode_controls()
 
-            assert [(str(item.path), item.value) for item in observations] == [
-                ("receiver.main.active.freq_mode.freq_hz", 14_074_000),
-                ("receiver.main.active.freq_mode.mode", "USB"),
-                ("receiver.main.active.freq_mode.filter_width", 2400),
-                ("receiver.main.operator_controls.rf_gain", 128),
-                ("receiver.main.operator_controls.af_level", 76),
+            assert [str(item.path) for item in observations] == [
+                "receiver.main.active.freq_mode.freq_hz",
+                "receiver.main.active.freq_mode.mode",
+                "receiver.main.active.freq_mode.filter_width",
+                "receiver.main.operator_controls.rf_gain",
+                "receiver.main.operator_controls.af_level",
+            ]
+            assert [item.value for item in observations] == [
+                14_074_000,
+                "USB",
+                2400,
+                pytest.approx(128 / 255),
+                pytest.approx(76 / 255),
             ]
             assert all(item.source.source == "hamlib_response" for item in observations)
             assert all(
@@ -118,17 +125,44 @@ async def test_observation_poller_drains_web_commands_before_readback() -> None:
 
             assert all(future.done() and not future.cancelled() for future in futures)
             assert all(future.result() is None for future in futures)
-            values = {str(item.path): item.value for item in observations}
-            assert values["receiver.main.active.freq_mode.freq_hz"] == 7_050_000
-            assert values["receiver.main.active.freq_mode.mode"] == "LSB"
-            assert values["receiver.main.active.freq_mode.filter_width"] == 1800
-            assert values["global.tx_state.ptt"] is True
-            assert values["receiver.main.operator_controls.rf_gain"] == 200
-            assert values["receiver.main.operator_controls.af_level"] == 51
-            assert values["receiver.main.operator_controls.preamp"] == 2
-            assert values["receiver.main.operator_controls.att"] == 18
-            assert values["receiver.main.operator_toggles.nb"] is True
-            assert values["receiver.main.operator_toggles.nr"] is True
+            assert [str(item.path) for item in observations] == [
+                "receiver.main.active.freq_mode.freq_hz",
+                "receiver.main.active.freq_mode.mode",
+                "receiver.main.active.freq_mode.filter_width",
+                "receiver.main.operator_controls.rf_gain",
+                "receiver.main.operator_controls.af_level",
+                "global.tx_state.ptt",
+                "receiver.main.vfo.active_slot",
+                "receiver.main.operator_controls.preamp",
+                "receiver.main.operator_controls.att",
+                "receiver.main.operator_toggles.nb",
+                "receiver.main.operator_toggles.nr",
+                "receiver.main.operator_controls.rf_gain",
+                "receiver.main.operator_controls.af_level",
+                "receiver.main.operator_controls.preamp",
+                "receiver.main.operator_controls.att",
+                "receiver.main.operator_toggles.nb",
+                "receiver.main.operator_toggles.nr",
+            ]
+            assert [item.value for item in observations] == [
+                7_050_000,
+                "LSB",
+                1800,
+                pytest.approx(200 / 255),
+                pytest.approx(51 / 255),
+                True,
+                "A",
+                2,
+                18,
+                True,
+                True,
+                pytest.approx(200 / 255),
+                pytest.approx(51 / 255),
+                2,
+                18,
+                True,
+                True,
+            ]
             assert all(item.source.source == "hamlib_response" for item in observations)
         finally:
             await radio.disconnect()
@@ -413,6 +447,20 @@ async def test_observation_poller_discards_expectation_when_readback_unavailable
     ("command_name", "params", "queue_command", "path_text", "expected_value"),
     (
         (
+            "set_rf_gain",
+            {"level": 200, "receiver": 0},
+            SetRfGain(200),
+            "receiver.main.operator_controls.rf_gain",
+            pytest.approx(200 / 255),
+        ),
+        (
+            "set_af_level",
+            {"level": 51, "receiver": 0},
+            SetAfLevel(51),
+            "receiver.main.operator_controls.af_level",
+            pytest.approx(51 / 255),
+        ),
+        (
             "set_preamp",
             {"level": 2, "receiver": 0},
             SetPreamp(2),
@@ -674,14 +722,23 @@ async def test_radio_observation_poller_emits_adapter_covered_reads() -> None:
 
             await poller._poll_medium()  # noqa: SLF001
 
-            assert [(str(item.path), item.value) for item in observations] == [
-                ("receiver.main.active.freq_mode.freq_hz", 14_074_000),
-                ("receiver.main.active.freq_mode.mode", "USB"),
-                ("receiver.main.active.freq_mode.filter_width", 2400),
-                ("receiver.main.operator_controls.rf_gain", 128),
-                ("receiver.main.operator_controls.af_level", 76),
-                ("global.tx_state.ptt", False),
-                ("receiver.main.vfo.active_slot", "A"),
+            assert [str(item.path) for item in observations] == [
+                "receiver.main.active.freq_mode.freq_hz",
+                "receiver.main.active.freq_mode.mode",
+                "receiver.main.active.freq_mode.filter_width",
+                "receiver.main.operator_controls.rf_gain",
+                "receiver.main.operator_controls.af_level",
+                "global.tx_state.ptt",
+                "receiver.main.vfo.active_slot",
+            ]
+            assert [item.value for item in observations] == [
+                14_074_000,
+                "USB",
+                2400,
+                pytest.approx(128 / 255),
+                pytest.approx(76 / 255),
+                False,
+                "A",
             ]
             assert all(item.source.source == "hamlib_response" for item in observations)
         finally:
@@ -835,14 +892,23 @@ async def test_ptt_and_slow_control_reads_cover_declared_rigctld_capabilities() 
                 *(await adapter.read_slow_controls()),
             )
 
-            assert [(str(item.path), item.value) for item in observations] == [
-                ("global.tx_state.ptt", True),
-                ("receiver.main.operator_controls.rf_gain", 128),
-                ("receiver.main.operator_controls.af_level", 76),
-                ("receiver.main.operator_controls.preamp", 1),
-                ("receiver.main.operator_controls.att", 18),
-                ("receiver.main.operator_toggles.nb", True),
-                ("receiver.main.operator_toggles.nr", False),
+            assert [str(item.path) for item in observations] == [
+                "global.tx_state.ptt",
+                "receiver.main.operator_controls.rf_gain",
+                "receiver.main.operator_controls.af_level",
+                "receiver.main.operator_controls.preamp",
+                "receiver.main.operator_controls.att",
+                "receiver.main.operator_toggles.nb",
+                "receiver.main.operator_toggles.nr",
+            ]
+            assert [item.value for item in observations] == [
+                True,
+                pytest.approx(128 / 255),
+                pytest.approx(76 / 255),
+                1,
+                18,
+                True,
+                False,
             ]
             assert observations[0].max_age == 8.0
             assert all(item.max_age == 120.0 for item in observations[1:])

@@ -40,6 +40,7 @@ _ATT = FieldPath.receiver("main", "operator_controls", "att")
 _NB = FieldPath.receiver("main", "operator_toggles", "nb")
 _NR = FieldPath.receiver("main", "operator_toggles", "nr")
 _POWER = FieldPath.global_("tx_state", "power_on")
+_NORMALIZED_LEVEL_PATHS = frozenset({_RF_GAIN, _AF_LEVEL})
 _SLOW_CONTROL_POLICY = AcquisitionPolicy(
     cadence_seconds=30.0,
     freshness_ttl_seconds=120.0,
@@ -337,6 +338,8 @@ class RigctldClientObservationAdapter:
         native_id: str | None = None,
     ) -> Observation:
         adapter = self._adapter()
+        if path in _NORMALIZED_LEVEL_PATHS:
+            value = _normalize_level_255(value)
         observation: Observation = adapter.observation(
             path,
             value,
@@ -366,3 +369,11 @@ def _normalize_command_path(path: FieldPath) -> FieldPath:
     if path.family.value == "freq_mode" and path.slot is None:
         return FieldPath.active("main", path.family.value, path.name)
     return FieldPath.receiver("main", path.family.value, path.name)
+
+
+def _normalize_level_255(value: object) -> object:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return float(value) / 255.0
+    return value
