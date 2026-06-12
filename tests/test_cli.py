@@ -2,8 +2,11 @@
 
 import argparse
 import io
+import logging
+from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import platformdirs
 import pytest
 
 from rigplane.cli import (
@@ -539,6 +542,76 @@ def _run_main_serve(env_overrides: dict[str, str] | None = None) -> int:
                     with pytest.raises(SystemExit):
                         main()
     return exit_code
+
+
+def _capture_main_serve_log_path(
+    env_overrides: dict[str, str] | None = None,
+) -> Path | None:
+    captured: dict[str, Path] = {}
+
+    class _Handler(logging.NullHandler):
+        def __init__(self, filename: Path, *args: object, **kwargs: object) -> None:
+            super().__init__()
+            captured["path"] = Path(filename)
+
+    env = {"ICOM_PID_FILE": "", "ICOM_LOG_FILE": "", **(env_overrides or {})}
+    with patch.dict("os.environ", env, clear=False):
+        with patch("sys.argv", ["rigplane", "--host", "127.0.0.1", "serve"]):
+            with patch("rigplane.cli._run", new_callable=AsyncMock, return_value=0):
+                with patch(
+                    "rigplane.cli.os._exit",
+                    side_effect=lambda code: (_ for _ in ()).throw(SystemExit(code)),
+                ):
+                    with patch("rigplane.cli.RotatingFileHandler", _Handler):
+                        with pytest.raises(SystemExit):
+                            main()
+    return captured.get("path")
+
+
+class TestDaemonLogDefaults:
+    def test_daemon_log_default_uses_platform_cache_not_cwd(
+        self, tmp_path, monkeypatch
+    ):
+        cache_root = tmp_path / "cache"
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setattr(
+            platformdirs,
+            "user_cache_path",
+            lambda app: cache_root / app,
+        )
+
+        log_path = _capture_main_serve_log_path()
+
+        assert log_path == cache_root / "rigplane" / "logs" / "rigplane.log"
+
+    def test_daemon_log_default_honors_rigplane_log_dir(self, tmp_path):
+        log_dir = tmp_path / "custom-logs"
+
+        log_path = _capture_main_serve_log_path({"RIGPLANE_LOG_DIR": str(log_dir)})
+
+        assert log_path == log_dir / "rigplane.log"
+
+    def test_daemon_log_explicit_icom_log_file_still_wins(self, tmp_path):
+        explicit = tmp_path / "explicit.log"
+
+        log_path = _capture_main_serve_log_path(
+            {
+                "RIGPLANE_LOG_DIR": str(tmp_path / "ignored"),
+                "ICOM_LOG_FILE": str(explicit),
+            }
+        )
+
+        assert log_path == explicit
+
+    def test_daemon_log_off_still_disables_file_handler(self, tmp_path):
+        log_path = _capture_main_serve_log_path(
+            {
+                "RIGPLANE_LOG_DIR": str(tmp_path / "ignored"),
+                "ICOM_LOG_FILE": "off",
+            }
+        )
+
+        assert log_path is None
 
 
 class TestPidFile:
