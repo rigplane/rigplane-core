@@ -55,6 +55,65 @@ print(stats["packet_loss_percent"], stats["reorder_depth_ema_ms"])
 | `stale_packets_dropped` | packets | `>= 0` | Stale/old RX packets dropped |
 | `out_of_order_packets` | packets | `>= 0` | RX packets observed out of sequence |
 
+## Capture Health And Bridge Metrics
+
+PortAudio-backed capture and the PCM TX bridge expose a second set of metrics
+that answer a different question from `get_audio_stats()`: whether the local
+OS audio callback and the bridge TX path are keeping up.
+
+### Capture callback health (`RxStreamHealth`)
+
+`RxStreamHealth` snapshots input-side callback delivery for RX-only and
+full-duplex capture streams.
+
+| Field | Unit | Meaning | Typical next step |
+|------|------|---------|-------------------|
+| `frames_delivered` | frames | PCM frames successfully handed to the bridge/callback | Confirms the callback is running at all |
+| `input_overflow_events` | events | PortAudio reported captured input was dropped because the process/backend could not keep up | Check host CPU pressure, device/driver stability, and callback cadence before blaming RigPlane TX |
+| `input_underflow_events` | events | PortAudio reported the input callback arrived without enough fresh captured samples | Check capture device/driver health and OS scheduling; this is still capture-side, not radio TX failure |
+| `callback_errors` | events | Callback-level errors while processing capture frames | Inspect logs for the paired exception or status context |
+| `callback_status_flags` | map | Per-flag totals such as `input_overflow` / `input_underflow` | Use the exact flag mix to separate capture starvation from other failures |
+
+### Bridge TX path health (`BridgeMetrics`)
+
+These counters are surfaced on `AudioBridge.metrics`, `AudioBridge.stats`, and
+runtime bridge-status consumers such as the Web server's `audio_bridge_stats`.
+
+| Field | Unit | Meaning | Not the same as |
+|------|------|---------|-----------------|
+| `capture_input_overflows` | events | Cumulative `RxStreamHealth.input_overflow_events` observed by the active bridge capture stream | `tx_overruns` queue drops |
+| `capture_input_underflows` | events | Cumulative `RxStreamHealth.input_underflow_events` observed by the active bridge capture stream | TX playback underruns or radio write failures |
+| `capture_callback_status_flags` | map | Bridge-side rollup of capture callback flags, for example `{"input_overflow": 3}` | Silence gating decisions |
+| `tx_silence_suppressed` | frames | Frames intentionally skipped because captured PCM stayed below the bridge silence/noise-gate threshold | Capture overrun or lost OS buffers |
+| `tx_overruns` | events | Bridge TX queue drops: RigPlane evicted stale queued frames to preserve bounded latency before `push_audio_tx_pcm()` | PortAudio callback overflow |
+
+### TX playback write health (`TxStreamHealth`)
+
+These counters live on the writable PortAudio TX stream itself and describe
+playback-side queue pressure after audio has already left the bridge queue.
+
+| Field | Unit | Meaning | Not the same as |
+|------|------|---------|-----------------|
+| `overrun_events` | events | TX playback queue overflow events on the writable stream | `BridgeMetrics.tx_overruns` bridge queue drops |
+| `overrun_audio_ms` | milliseconds | Total playback-queue audio duration dropped during TX stream overflow handling | Bridge capture callback overflow |
+| `frames_dropped` | frames | TX playback frames dropped by the writable stream while preserving bounded latency | Silence gating or radio write failure |
+
+### Interpretation Rules
+
+- `capture_input_overflows > 0` means the OS capture callback already lost input
+  before RigPlane could bridge it. Start with local capture/device pressure.
+- `tx_overruns > 0` with zero capture overflow means capture kept running, but
+  the bridge TX queue backed up and RigPlane dropped stale frames on purpose.
+- `TxStreamHealth.overrun_events > 0`, `overrun_audio_ms > 0`, or
+  `frames_dropped > 0` mean the writable TX playback queue overflowed later in
+  the path; that is distinct from bridge queue pressure and uses different
+  counters.
+- `tx_silence_suppressed > 0` means quiet frames were filtered by policy. This
+  is expected during RX silence and is not evidence of callback starvation.
+- Downstream TX push/write failures live elsewhere: `TxStreamHealth.write_failures`,
+  `last_error`, or radio/backend error logs indicate that RigPlane tried to
+  send audio onward and that stage failed after capture succeeded.
+
 ## AudioPacket
 
 ::: rigplane.audio.lan_stream.AudioPacket
@@ -141,11 +200,18 @@ subscriber.
 
 ## Queue And Frame Semantics
 
-Audio queues are bounded to preserve real-time behavior. When a TX playback or
-bridge capture queue overflows, RigPlane drops the oldest queued audio and
-keeps the newest live frame. This intentionally favors bounded latency over
-perfect delivery of stale audio. Diagnostics count the event as an overrun and
-record dropped/overrun audio duration when that metric is available.
+Audio queues are bounded to preserve real-time behavior. When the bridge TX
+queue overflows, RigPlane drops the oldest queued audio and keeps the newest
+live frame. Diagnostics count that bridge-side event as `tx_overruns`.
+
+When the writable TX playback queue overflows later in the path, `TxStreamHealth`
+tracks it separately via `overrun_events`, `overrun_audio_ms`, and
+`frames_dropped`. Those playback counters are not reported as `tx_overruns`.
+
+Do not confuse bridge queue drops with PortAudio capture callback overflow:
+`tx_overruns` means RigPlane chose to evict stale already-captured audio,
+whereas `capture_input_overflows` / `input_overflow_events` mean the OS/backend
+capture callback reported lost input before the bridge queue decision.
 
 PortAudio capture uses engine-native callback periods (`blocksize=0`) and then
 losslessly re-chunks the continuous callback stream into fixed `frame_ms`
