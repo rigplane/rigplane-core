@@ -914,13 +914,19 @@ def test_update_state_cache_exception_suppressed(radio: IcomRadio) -> None:
         (
             _make_frame(cmd=0x14, sub=0x01, data=_bcd2(87), receiver=0x01),
             "receiver.1.operator_controls.af_level",
-            87,
+            87 / 255.0,
             "command_response",
         ),
         (
             _make_frame(cmd=0x14, sub=0x02, data=_bcd2(111), receiver=0x01),
             "receiver.1.operator_controls.rf_gain",
-            111,
+            111 / 255.0,
+            "command_response",
+        ),
+        (
+            _make_frame(cmd=0x14, sub=0x03, data=_bcd2(45), receiver=0x01),
+            "receiver.1.operator_controls.squelch",
+            45 / 255.0,
             "command_response",
         ),
         (
@@ -1244,7 +1250,25 @@ _VALUE_CONTROL_CASES = (
         _make_frame(cmd=0x14, sub=0x03, data=_bcd2(50), receiver=0x00),
         "receiver.0.operator_controls.squelch",
         "main.squelch",
-        50,
+        50 / 255.0,
+    ),
+    (
+        _make_frame(cmd=0x14, sub=0x01, data=_bcd2(128), receiver=0x00),
+        "receiver.0.operator_controls.af_level",
+        "main.afLevel",
+        128 / 255.0,
+    ),
+    (
+        _make_frame(cmd=0x14, sub=0x02, data=_bcd2(64), receiver=0x00),
+        "receiver.0.operator_controls.rf_gain",
+        "main.rfGain",
+        64 / 255.0,
+    ),
+    (
+        _make_frame(cmd=0x14, sub=0x0A, data=_bcd2(128)),
+        "global.operator_controls.power_level",
+        "powerLevel",
+        128 / 255.0,
     ),
     (
         _make_frame(cmd=0x14, sub=0x06, data=_bcd2(91), receiver=0x00),
@@ -1385,9 +1409,17 @@ _VALUE_CONTROL_CASES = (
 
 def _public_value_control_expected(public_path: str, value: object) -> object:
     if public_path in {"main.afLevel", "main.rfGain", "main.squelch", "powerLevel"}:
-        if isinstance(value, (int, float)) and not isinstance(value, bool):
+        if isinstance(value, int) and not isinstance(value, bool):
             return value / 255
     return value
+
+
+def _expected_value_control_max_age(store_path: str) -> float | None:
+    if store_path.endswith(".af_level") or store_path.endswith(".rf_gain"):
+        return 10.0
+    if store_path == "global.operator_controls.power_level":
+        return 30.0
+    return None
 
 
 @pytest.mark.parametrize(  # type: ignore[untyped-decorator]
@@ -1409,9 +1441,7 @@ def test_value_control_observation_value(
 
     field = radio_with_state._state_store.snapshot().field(store_path)
     assert field.value == expected
-    # These level/value families never expire — no max_age, so the freshness
-    # service cannot re-gate them ``missing`` (MOR-437).
-    assert field.max_age is None
+    assert field.max_age == _expected_value_control_max_age(store_path)
     assert field.freshness is FreshnessState.FRESH
 
 
@@ -2051,7 +2081,7 @@ def test_update_radio_state_cmd14_rf_gain(radio_with_state: IcomRadio) -> None:
     field = radio_with_state._state_store.snapshot().field(
         "receiver.0.operator_controls.rf_gain"
     )
-    assert field.value == 180
+    assert field.value == pytest.approx(180 / 255.0)
 
 
 def test_update_radio_state_cmd14_squelch(radio_with_state: IcomRadio) -> None:
@@ -2063,15 +2093,48 @@ def test_update_radio_state_cmd14_squelch(radio_with_state: IcomRadio) -> None:
     field = radio_with_state._state_store.snapshot().field(
         "receiver.0.operator_controls.squelch"
     )
-    assert field.value == 50
+    assert field.value == pytest.approx(50 / 255.0)
 
 
 def test_update_radio_state_cmd14_power_level(radio_with_state: IcomRadio) -> None:
-    """cmd 0x14 sub 0x0A updates global power level (line 545-546)."""
+    """cmd 0x14 sub 0x0A keeps the raw mirror and stores normalized state."""
     rs = radio_with_state._radio_state
     frame = _make_frame(cmd=0x14, sub=0x0A, data=_bcd2(128))
-    radio_with_state._civ_runtime._update_radio_state_from_frame(frame)
+    radio_with_state._civ_runtime._update_state_cache_from_frame(frame)
     assert rs.power_level == 128
+    field = radio_with_state._state_store.snapshot().field(
+        "global.operator_controls.power_level"
+    )
+    assert field.value == pytest.approx(128 / 255.0)
+
+
+@pytest.mark.parametrize(
+    ("frame", "expected_path", "expected_value"),
+    [
+        (
+            _make_frame(cmd=0x14, sub=0x03, data=_bcd2(45), receiver=0x01),
+            "receiver.1.operator_controls.squelch",
+            45 / 255.0,
+        ),
+        (
+            _make_frame(cmd=0x14, sub=0x0A, data=_bcd2(128)),
+            "global.operator_controls.power_level",
+            128 / 255.0,
+        ),
+    ],
+)
+def test_observations_from_frame_normalizes_selected_cmd14_controls(
+    radio: IcomRadio,
+    frame: CivFrame,
+    expected_path: str,
+    expected_value: float,
+) -> None:
+    observations = radio._civ_runtime._observations_from_frame(frame)
+
+    assert len(observations) == 1
+    observation = observations[0]
+    assert str(observation.path) == expected_path
+    assert observation.value == pytest.approx(expected_value)
 
 
 @pytest.mark.parametrize(  # type: ignore[untyped-decorator]
