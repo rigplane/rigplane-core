@@ -3651,6 +3651,20 @@ async def _cmd_discover(_radio: Radio | None, args: argparse.Namespace) -> int:
     return 0
 
 
+def _default_daemon_log_file(*, managed_runtime: bool) -> Path:
+    filename = "rigplane-managed.log" if managed_runtime else "rigplane.log"
+    log_dir = os.environ.get("RIGPLANE_LOG_DIR", "").strip()
+    if log_dir:
+        return Path(log_dir).expanduser() / filename
+
+    import platformdirs
+
+    from rigplane._platformdirs_migration import migrate_legacy_platformdirs
+
+    migrate_legacy_platformdirs()
+    return Path(platformdirs.user_cache_path("rigplane")) / "logs" / filename
+
+
 def main() -> None:
     import logging
 
@@ -3658,7 +3672,7 @@ def main() -> None:
     args = parser.parse_args()
 
     # Enable debug logging with ICOM_DEBUG=1 or any truthy value
-    # ICOM_LOG_FILE=/path/to/file.log — log to file (default: logs/rigplane.log)
+    # ICOM_LOG_FILE=/path/to/file.log — log to file (default: platform cache logs)
     # ICOM_LOG_MAX_BYTES=50000000 — rotate when file reaches this size (default: 50 MB)
     # ICOM_LOG_BACKUP_COUNT=5 — keep N rotated backups (default: 5; 0 disables rotation)
     # Set ICOM_LOG_FILE=off to disable the default file log on daemon commands.
@@ -3698,10 +3712,10 @@ def main() -> None:
 
     # File handler (if log_file specified, debug mode, or daemon command)
     if (debug_mode or is_daemon) and not log_file and not log_file_disabled:
-        log_file = (
-            "logs/rigplane-managed.log"
-            if getattr(args, "managed_runtime", False)
-            else "logs/rigplane.log"
+        log_file = str(
+            _default_daemon_log_file(
+                managed_runtime=bool(getattr(args, "managed_runtime", False))
+            )
         )
 
     if log_file:
