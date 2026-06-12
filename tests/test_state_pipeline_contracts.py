@@ -1111,12 +1111,12 @@ def test_tone_and_tsql_freq_units_are_centihz(receiver_id: str, field: str) -> N
 
 
 def test_power_level_unit_is_normalized() -> None:
-    """``power_level`` declares ``normalized`` and stays ``value_type='int'``."""
+    """``power_level`` declares ``normalized`` with float observation values."""
     spec = DEFAULT_FIELD_REGISTRY.require(
         FieldPath.global_("operator_controls", "power_level")
     )
     assert spec.unit == "normalized"
-    assert spec.value_type == "int"
+    assert spec.value_type == "float"
 
 
 @pytest.mark.parametrize("receiver_id", ["main", "sub"])
@@ -1125,12 +1125,12 @@ def test_receiver_raw_byte_operator_controls_declare_transitional_normalized_uni
     receiver_id: str,
     field: str,
 ) -> None:
-    """Raw-byte operator controls declare normalized units while staying int."""
+    """Normalized receiver controls declare normalized units with float values."""
     spec = DEFAULT_FIELD_REGISTRY.require(
         FieldPath.receiver(receiver_id, "operator_controls", field)
     )
     assert spec.unit == "normalized"
-    assert spec.value_type == "int"
+    assert spec.value_type == "float"
 
 
 @pytest.mark.parametrize(

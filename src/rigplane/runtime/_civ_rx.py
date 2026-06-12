@@ -254,6 +254,7 @@ _OBSERVABLE_CMD14_FIELDS = {
     0x16: ("global", "operator_controls", "vox_gain"),
     0x17: ("global", "operator_controls", "anti_vox_gain"),
 }
+_NORMALIZED_CMD14_OBSERVATION_SUBS = frozenset({0x01, 0x02, 0x03, 0x0A})
 
 # 0x14 cw_pitch (sub 0x09) is observation-backed too, but its raw level → Hz
 # mapping is non-linear, so it is decoded via ``_cw_pitch_from_level`` rather
@@ -1575,10 +1576,14 @@ class CivRuntime:
             else:
                 mapping = _OBSERVABLE_CMD14_FIELDS.get(sub14)
                 if mapping is not None:
+                    raw_value = self._decode_level(frame.data)
+                    value: int | float = raw_value
+                    if sub14 in _NORMALIZED_CMD14_OBSERVATION_SUBS:
+                        value = raw_value / 255.0
                     observations.append(
                         self._observation(
                             self._field_path(mapping, receiver_id=receiver_id),
-                            self._decode_level(frame.data),
+                            value,
                             frame=frame,
                         )
                     )
