@@ -379,51 +379,51 @@ def test_global_vox_delay_registered_as_operator_control_int() -> None:
     assert spec.writable is True
 
 
-def test_global_comp_meter_registered_as_read_only_meter_int() -> None:
-    """MOR-460: ``global.meters.comp`` is a registered read-only meter int.
+def test_global_comp_meter_registered_as_read_only_meter_float() -> None:
+    """MOR-460/MOR-469: ``global.meters.comp`` is a read-only meter float.
 
     The PA compression meter is cross-vendor (Icom CI-V ``get_comp_meter``
     0x15 0x14 AND Yaesu FTX-1 ``get_comp_meter`` RM3) and is promoted to a
-    backend-neutral meter int, matching the alc/power/swr meter form: read-only
-    (NOT writable) on the interim device scale (calibration is MOR-453).
+    backend-neutral meter in the declared dB domain. Rigs without a table may
+    still emit a device-scale value with ``quality=("confirmed", "uncalibrated")``.
     """
     path = FieldPath.global_("meters", "comp")
     spec = DEFAULT_FIELD_REGISTRY.require(path)
     assert spec.path == path
     assert spec.family is FieldFamily.METERS
-    assert spec.value_type == "int"
+    assert spec.value_type == "float"
     assert spec.writable is False
 
 
-def test_global_vd_meter_registered_as_read_only_meter_int() -> None:
-    """MOR-460: ``global.meters.vd`` is a registered read-only meter int.
+def test_global_vd_meter_registered_as_read_only_meter_float() -> None:
+    """MOR-460/MOR-469: ``global.meters.vd`` is a read-only meter float.
 
     The PA supply-voltage meter (Icom CI-V ``get_vd_meter`` 0x15 0x15; Xiegu
-    X6200 shares the Icom ingress) is promoted to a backend-neutral meter int,
-    matching the alc/power/swr meter form: read-only (NOT writable) on the
-    interim device scale (calibration is MOR-453).
+    X6200 shares the Icom ingress) is promoted to a backend-neutral meter in
+    volts. Rigs without a table may still emit a device-scale value with
+    ``quality=("confirmed", "uncalibrated")``.
     """
     path = FieldPath.global_("meters", "vd")
     spec = DEFAULT_FIELD_REGISTRY.require(path)
     assert spec.path == path
     assert spec.family is FieldFamily.METERS
-    assert spec.value_type == "int"
+    assert spec.value_type == "float"
     assert spec.writable is False
 
 
-def test_global_id_meter_registered_as_read_only_meter_int() -> None:
-    """MOR-460: ``global.meters.id`` is a registered read-only meter int.
+def test_global_id_meter_registered_as_read_only_meter_float() -> None:
+    """MOR-460/MOR-469: ``global.meters.id`` is a read-only meter float.
 
     The PA drain-current meter (Icom CI-V ``get_id_meter`` 0x15 0x16; Icom-only)
-    is promoted to a backend-neutral meter int, matching the alc/power/swr meter
-    form: read-only (NOT writable) on the interim device scale (calibration is
-    MOR-453).
+    is promoted to a backend-neutral meter in amps. Rigs without a table may
+    still emit a device-scale value with
+    ``quality=("confirmed", "uncalibrated")``.
     """
     path = FieldPath.global_("meters", "id")
     spec = DEFAULT_FIELD_REGISTRY.require(path)
     assert spec.path == path
     assert spec.family is FieldFamily.METERS
-    assert spec.value_type == "int"
+    assert spec.value_type == "float"
     assert spec.writable is False
 
 
@@ -1124,6 +1124,7 @@ def test_global_meter_units(name: str, expected_unit: str) -> None:
     """Global meters carry their calibrated-domain units."""
     spec = DEFAULT_FIELD_REGISTRY.require(_meters_path(name))
     assert spec.unit == expected_unit
+    assert spec.value_type == "float"
 
 
 @pytest.mark.parametrize("receiver_id", ["main", "sub"])

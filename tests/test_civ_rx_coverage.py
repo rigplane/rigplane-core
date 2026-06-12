@@ -875,21 +875,21 @@ def test_update_state_cache_exception_suppressed(radio: IcomRadio) -> None:
             "command_response",
         ),
         (
-            _make_frame(cmd=0x15, sub=0x11, data=_bcd2(120)),
+            _make_frame(cmd=0x15, sub=0x11, data=_bcd2(143)),
             "global.meters.power",
-            120,
+            50.0,
             "command_response",
         ),
         (
             _make_frame(cmd=0x15, sub=0x12, data=_bcd2(48)),
             "global.meters.swr",
-            48,
+            1.5,
             "command_response",
         ),
         (
-            _make_frame(cmd=0x15, sub=0x13, data=_bcd2(98)),
+            _make_frame(cmd=0x15, sub=0x13, data=_bcd2(120)),
             "global.meters.alc",
-            98,
+            1.0,
             "command_response",
         ),
         # PA-telemetry meters promoted to neutral observations (MOR-460).
@@ -1983,6 +1983,46 @@ def test_cmd15_smeter_without_calibration_table_marks_uncalibrated() -> None:
 
     field = radio._state_store.snapshot().field("receiver.0.meters.s_meter")
     assert field.value == 42
+    assert field.quality == ("confirmed", "uncalibrated")
+
+
+@pytest.mark.parametrize(  # type: ignore[untyped-decorator]
+    ("sub", "store_path", "raw", "expected_value", "expected_quality"),
+    [
+        (0x11, "global.meters.power", 143, 50.0, ("confirmed", "calibrated")),
+        (0x12, "global.meters.swr", 48, 1.5, ("confirmed", "calibrated")),
+        (0x13, "global.meters.alc", 60, 0.5, ("confirmed", "calibrated")),
+        (0x14, "global.meters.comp", 42, 42, ("confirmed", "uncalibrated")),
+        (0x15, "global.meters.vd", 130, 130, ("confirmed", "uncalibrated")),
+        (0x16, "global.meters.id", 55, 55, ("confirmed", "uncalibrated")),
+    ],
+)
+def test_cmd15_tx_pa_meter_observations_emit_engineering_units(
+    radio_with_state: IcomRadio,
+    sub: int,
+    store_path: str,
+    raw: int,
+    expected_value: float,
+    expected_quality: tuple[str, ...],
+) -> None:
+    frame = _make_frame(cmd=0x15, sub=sub, data=_bcd2(raw))
+
+    radio_with_state._civ_runtime._update_state_cache_from_frame(frame)
+
+    field = radio_with_state._state_store.snapshot().field(store_path)
+    assert field.value == pytest.approx(expected_value)
+    assert field.quality == expected_quality
+
+
+def test_cmd15_tx_pa_meter_without_table_marks_uncalibrated() -> None:
+    radio = IcomRadio("192.168.1.100", model="X6200")
+    radio._radio_state = RadioState()
+    frame = _make_frame(cmd=0x15, sub=0x11, data=_bcd2(143))
+
+    radio._civ_runtime._update_state_cache_from_frame(frame)
+
+    field = radio._state_store.snapshot().field("global.meters.power")
+    assert field.value == 143
     assert field.quality == ("confirmed", "uncalibrated")
 
 

@@ -837,8 +837,14 @@ async def test_tx_meters_poll_emits_alc_power_swr_comp_stream_like_meters() -> N
     assert [(str(item.path), item.value) for item in observations] == [
         ("global.meters.alc", 42),
         ("global.meters.power", 180),
-        ("global.meters.swr", 120),
+        ("global.meters.swr", 2.375),
         ("global.meters.comp", 30),
+    ]
+    assert [(str(item.path), item.quality) for item in observations] == [
+        ("global.meters.alc", ("confirmed", "uncalibrated")),
+        ("global.meters.power", ("confirmed", "uncalibrated")),
+        ("global.meters.swr", ("confirmed", "calibrated")),
+        ("global.meters.comp", ("confirmed", "uncalibrated")),
     ]
     assert all(item.source.source == "yaesu_poll_response" for item in observations)
     # Stream-like meters expire on a short TTL — same freshness TTL as power/swr.

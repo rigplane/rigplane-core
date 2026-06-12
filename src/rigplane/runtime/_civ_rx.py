@@ -331,6 +331,15 @@ _OBSERVABLE_CMD15_FIELDS = {
     0x15: ("global", "meters", "vd"),
     0x16: ("global", "meters", "id"),
 }
+_CMD15_METER_CALIBRATION_KEYS = {
+    ("receiver", "meters", "s_meter"): "s_meter",
+    ("global", "meters", "power"): "power",
+    ("global", "meters", "swr"): "swr",
+    ("global", "meters", "alc"): "alc",
+    ("global", "meters", "comp"): "comp",
+    ("global", "meters", "vd"): "vd",
+    ("global", "meters", "id"): "id",
+}
 
 # Squelch-open / DCD (RX-busy) status. Unlike the 2-byte BCD meter levels above,
 # this is a single-byte bool reported under cmd 0x15 sub 0x01 and sub 0x05; both
@@ -1593,22 +1602,11 @@ class CivRuntime:
             mapping = _OBSERVABLE_CMD15_FIELDS.get(frame.sub or 0)
             if mapping is not None:
                 raw_value = self._decode_level(frame.data)
-                value: int = raw_value
+                value: int | float = raw_value
                 quality = ("confirmed",)
-                if mapping == ("receiver", "meters", "s_meter"):
-                    profile = getattr(self._host, "_profile", None)
-                    meter_calibrations = getattr(profile, "meter_calibrations", None)
-                    if isinstance(meter_calibrations, dict):
-                        calibrated_value, calibrated = interpolate_meter(
-                            raw_value, meter_calibrations, "s_meter"
-                        )
-                        value = int(round(calibrated_value))
-                        quality = (
-                            "confirmed",
-                            "calibrated" if calibrated else "uncalibrated",
-                        )
-                    else:
-                        quality = ("confirmed", "uncalibrated")
+                meter_key = _CMD15_METER_CALIBRATION_KEYS.get(mapping)
+                if meter_key is not None:
+                    value, quality = self._calibrated_meter_value(raw_value, meter_key)
                 observations.append(
                     self._observation(
                         self._field_path(mapping, receiver_id=receiver_id),
@@ -2019,6 +2017,22 @@ class CivRuntime:
             ),
             quality=quality,
         )
+
+    def _calibrated_meter_value(
+        self, raw_value: int, meter_key: str
+    ) -> tuple[int | float, tuple[str, ...]]:
+        profile = getattr(self._host, "_profile", None)
+        meter_calibrations = getattr(profile, "meter_calibrations", None)
+        if not isinstance(meter_calibrations, dict):
+            return raw_value, ("confirmed", "uncalibrated")
+        value, calibrated = interpolate_meter(raw_value, meter_calibrations, meter_key)
+        if not calibrated:
+            return raw_value, ("confirmed", "uncalibrated")
+        if meter_key == "s_meter":
+            value = int(round(value))
+        elif meter_key == "alc":
+            value = value / 100.0
+        return value, ("confirmed", "calibrated")
 
     # ------------------------------------------------------------------
     # Per-command handlers for _update_radio_state_from_frame.
