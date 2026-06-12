@@ -419,12 +419,6 @@
     "observed": false,
     "storePath": "receiver.main.operator_toggles.twin_peak_filter"
   },
-  "main.vfoA": {
-    "availability": "missing",
-    "freshness": "unknown",
-    "observed": false,
-    "storePath": "receiver.main.slow_state.vfo_a"
-  },
   "main.vfoA.dataMode": {
     "availability": "missing",
     "freshness": "unknown",
@@ -448,12 +442,6 @@
     "freshness": "unknown",
     "observed": false,
     "storePath": "receiver.main.slot.A.freq_mode.mode"
-  },
-  "main.vfoB": {
-    "availability": "missing",
-    "freshness": "unknown",
-    "observed": false,
-    "storePath": "receiver.main.slow_state.vfo_b"
   },
   "main.vfoB.dataMode": {
     "availability": "missing",
@@ -977,12 +965,6 @@
     "observed": false,
     "storePath": "receiver.sub.operator_toggles.twin_peak_filter"
   },
-  "sub.vfoA": {
-    "availability": "missing",
-    "freshness": "unknown",
-    "observed": false,
-    "storePath": "receiver.sub.slow_state.vfo_a"
-  },
   "sub.vfoA.dataMode": {
     "availability": "missing",
     "freshness": "unknown",
@@ -1006,12 +988,6 @@
     "freshness": "unknown",
     "observed": false,
     "storePath": "receiver.sub.slot.A.freq_mode.mode"
-  },
-  "sub.vfoB": {
-    "availability": "missing",
-    "freshness": "unknown",
-    "observed": false,
-    "storePath": "receiver.sub.slow_state.vfo_b"
   },
   "sub.vfoB.dataMode": {
     "availability": "missing",

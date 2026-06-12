@@ -399,6 +399,13 @@ _SCOPE_TOOLBAR_SUFFIXES = (
     "dual",
     "receiver",
 )
+_VFO_GROUP_PATHS = ("main.vfoA", "main.vfoB", "sub.vfoA", "sub.vfoB")
+_VFO_LEAF_PATHS = (
+    "main.vfoA.freqHz",
+    "main.vfoB.mode",
+    "sub.vfoA.freqHz",
+    "sub.vfoB.mode",
+)
 
 
 def _frontend_availability(field_status: dict[str, dict[str, Any]], path: str) -> str:
@@ -431,6 +438,44 @@ def test_default_field_status_has_no_scope_controls_group_entry() -> None:
         status = field_status[f"scopeControls.{suffix}"]
         assert status["availability"] == "missing", suffix
         assert status["observed"] is False, suffix
+
+
+def test_default_field_status_has_no_vfo_group_entries() -> None:
+    """MOR-558: slow-state ``vfo_a``/``vfo_b`` group entries are never written.
+
+    Keep the real per-leaf VFO status entries seeded missing, but do not seed
+    bare ``main/sub.vfoA/vfoB`` parents that would veto observed leaves.
+    """
+    payload = build_public_state_payload_from_snapshot(
+        StateSnapshot.empty(), radio=None, receiver_count=2
+    )
+    field_status = payload["fieldStatus"]
+    for path in _VFO_GROUP_PATHS:
+        assert path not in field_status
+    for path in _VFO_LEAF_PATHS:
+        status = field_status[path]
+        assert status["availability"] == "missing", path
+        assert status["observed"] is False, path
+
+
+def test_observed_vfo_slot_leaf_survives_frontend_parent_veto() -> None:
+    """MOR-558: an observed slot leaf must not be hidden by a missing parent."""
+    clock = FreshnessClock(start=10.0)
+    store = StateStore(freshness_clock=clock)
+    store.apply(
+        _observation(
+            FieldPath.vfo_slot("0", "A", "freq_mode", "freq_hz"),
+            14_074_000,
+            at=clock.now(),
+        )
+    )
+
+    payload = build_public_state_payload_from_snapshot(
+        store.snapshot(), radio=None, receiver_count=2
+    )
+    field_status = payload["fieldStatus"]
+    assert payload["main"]["vfoA"]["freqHz"] == 14_074_000
+    assert _frontend_availability(field_status, "main.vfoA.freqHz") == "available"
 
 
 def test_observed_scope_control_leaves_survive_frontend_parent_veto() -> None:
