@@ -26,7 +26,7 @@ from rigplane.backends.yaesu_cat.observations import YaesuObservationAdapter
 
 # (store path, public fieldStatus key, expected value) for the five TX controls.
 _TX_CONTROL_CASES = (
-    ("global.operator_controls.power_level", "powerLevel", 55),
+    ("global.operator_controls.power_level", "powerLevel", 0.55),
     ("global.operator_controls.mic_gain", "micGain", 40),
     ("global.tx_state.compressor_on", "compressorOn", True),
     ("global.operator_controls.compressor_level", "compressorLevel", 25),
@@ -164,6 +164,7 @@ def _profile_state_acquisition() -> RadioAcquisitionProfile:
 
 def _make_radio() -> MagicMock:
     radio = MagicMock()
+    radio.profile = get_radio_profile("FTX-1")
     radio.capabilities = {
         "dual_rx",
         "meters",
@@ -340,7 +341,6 @@ async def test_tx_controls_project_available() -> None:
 async def test_tx_power_level_projects_watts_against_profile_max() -> None:
     store = StateStore()
     radio = _make_radio()
-    radio.profile = get_radio_profile("FTX-1")
 
     await _apply_tx_controls(store, radio)
     payload = build_public_state_payload_from_snapshot(
@@ -349,7 +349,7 @@ async def test_tx_power_level_projects_watts_against_profile_max() -> None:
         receiver_count=2,
     )
 
-    assert store.snapshot().field("global.operator_controls.power_level").value == 55
+    assert store.snapshot().field("global.operator_controls.power_level").value == 0.55
     assert radio.profile.max_watts == 100
     assert payload["powerLevel"] == 0.55
 

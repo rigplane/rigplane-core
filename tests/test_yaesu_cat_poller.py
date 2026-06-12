@@ -134,6 +134,14 @@ def make_radio(
     return radio
 
 
+def _normalized_255(raw: int) -> float:
+    return raw / 255.0
+
+
+def _normalized_power(raw_watts: int, *, max_watts: int = 100) -> float:
+    return raw_watts / max_watts
+
+
 class _SideEffectingYaesuRadio:
     capabilities = {
         "dual_rx",
@@ -658,12 +666,30 @@ async def test_observation_poller_uses_read_only_paths_when_getters_mutate_state
         ("global.tx_state.ptt", False),
         ("receiver.main.meters.s_meter", 6),
         ("receiver.sub.meters.s_meter", -37),
-        ("receiver.main.operator_controls.af_level", 128),
-        ("receiver.main.operator_controls.rf_gain", 180),
-        ("receiver.main.operator_controls.squelch", 12),
-        ("receiver.sub.operator_controls.af_level", 64),
-        ("receiver.sub.operator_controls.rf_gain", 90),
-        ("receiver.sub.operator_controls.squelch", 8),
+        (
+            "receiver.main.operator_controls.af_level",
+            pytest.approx(_normalized_255(128)),
+        ),
+        (
+            "receiver.main.operator_controls.rf_gain",
+            pytest.approx(_normalized_255(180)),
+        ),
+        (
+            "receiver.main.operator_controls.squelch",
+            pytest.approx(_normalized_255(12)),
+        ),
+        (
+            "receiver.sub.operator_controls.af_level",
+            pytest.approx(_normalized_255(64)),
+        ),
+        (
+            "receiver.sub.operator_controls.rf_gain",
+            pytest.approx(_normalized_255(90)),
+        ),
+        (
+            "receiver.sub.operator_controls.squelch",
+            pytest.approx(_normalized_255(8)),
+        ),
         # ATT/preamp need their runtime caps (absent here); AGC is
         # unconditional and MAIN-only, mirroring the legacy poller.
         ("receiver.main.operator_controls.agc", 3),
@@ -674,7 +700,10 @@ async def test_observation_poller_uses_read_only_paths_when_getters_mutate_state
         # AGC/narrow, the SUB index coerces to the neutral "SUB" str. split is
         # skipped: this radio lacks the ``split`` runtime cap.
         ("global.slow_state.active", "SUB"),
-        ("global.operator_controls.power_level", 55),
+        (
+            "global.operator_controls.power_level",
+            pytest.approx(_normalized_power(55)),
+        ),
         ("global.operator_controls.mic_gain", 40),
         ("global.tx_state.compressor_on", True),
         ("global.operator_controls.compressor_level", 25),
