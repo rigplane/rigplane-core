@@ -6,7 +6,7 @@ import asyncio
 import logging
 import time
 from collections.abc import AsyncIterator, Awaitable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Callable, Protocol, cast
 
 from rigplane.audio._codecs import decode_ulaw_to_pcm16
@@ -53,6 +53,8 @@ _TX_CLEANUP_STOP_TIMEOUT_SECONDS = 2.0
 DEGRADE_WINDOW_S = 3.0
 CLEAN_WINDOW_S = 30.0
 DWELL_S = 10.0
+DEGRADE_UNDERRUN_THRESHOLD = 3
+DEGRADE_QUEUE_DROP_THRESHOLD = 5
 
 # Fixed Opus egress frame duration (MOR-596).  Radio RX packets are not
 # Opus-frame-aligned (IC-7610 LAN @48k stereo ≈1280 B ≈6.67 ms), while
@@ -84,6 +86,10 @@ class _AdaptiveEgressState:
     # rising past its mark is one unit of degradation evidence.
     seen_underruns: int = 0
     seen_queue_drops: int = 0
+    # Rolling degradation evidence samples: (monotonic time,
+    # underrun delta, ws_queue_drops delta).
+    degrade_samples: list[tuple[float, int, int]] = field(default_factory=list)
+    degrade_threshold_met: bool = False
 
 
 def _is_benign_tx_restart(exc: RuntimeError) -> bool:
@@ -580,9 +586,10 @@ class AudioBroadcaster:
         Evidence = either MOR-585 cumulative counter rising (client
         playback ``underruns``, server ``ws_queue_drops``). A degradation
         episode is continuous evidence with gaps shorter than the degrade
-        window; PCM16→Opus fires once an episode spans the window, Opus→
-        PCM16 once no evidence arrives for the clean window — both gated
-        by the dwell since the previous switch.
+        window; PCM16→Opus fires once the rolling window contains the ADR
+        §3.6 threshold (>= 3 underruns OR >= 5 queue drops), Opus→PCM16
+        once no evidence arrives for the clean window — both gated by the
+        dwell since the previous switch.
         """
         state = self._client_adaptive.get(client_id)
         if state is None:
@@ -593,21 +600,51 @@ class AudioBroadcaster:
         stats = self._client_link_quality.get(client_id, {})
         underruns = int(stats.get("underruns", 0))
         queue_drops = self._client_queue_drops.get(client_id, 0)
-        evidence = (
-            underruns > state.seen_underruns or queue_drops > state.seen_queue_drops
-        )
+        underrun_delta = max(0, underruns - state.seen_underruns)
+        queue_drop_delta = max(0, queue_drops - state.seen_queue_drops)
+        evidence = underrun_delta > 0 or queue_drop_delta > 0
         state.seen_underruns = max(state.seen_underruns, underruns)
         state.seen_queue_drops = max(state.seen_queue_drops, queue_drops)
         if evidence:
             state.last_evidence = now
             if state.degrade_since is None:
                 state.degrade_since = now
+            state.degrade_samples.append((now, underrun_delta, queue_drop_delta))
+            threshold_cutoff = now - self._adaptive_degrade_window_s
+            threshold_samples = [
+                sample
+                for sample in state.degrade_samples
+                if sample[0] >= threshold_cutoff
+            ]
+            rolling_underruns = sum(sample[1] for sample in threshold_samples)
+            rolling_queue_drops = sum(sample[2] for sample in threshold_samples)
+            if (
+                rolling_underruns >= DEGRADE_UNDERRUN_THRESHOLD
+                or rolling_queue_drops >= DEGRADE_QUEUE_DROP_THRESHOLD
+            ):
+                state.degrade_threshold_met = True
         elif (
             state.degrade_since is not None
             and state.last_evidence is not None
             and now - state.last_evidence > self._adaptive_degrade_window_s
         ):
             state.degrade_since = None  # episode over — evidence stopped
+            state.degrade_samples.clear()
+            state.degrade_threshold_met = False
+
+        cutoff = now - self._adaptive_degrade_window_s
+        state.degrade_samples = [
+            sample for sample in state.degrade_samples if sample[0] >= cutoff
+        ]
+        if (
+            not state.degrade_samples
+            and state.degrade_since is not None
+            and (
+                state.last_evidence is None
+                or now - state.last_evidence > self._adaptive_degrade_window_s
+            )
+        ):
+            state.degrade_since = None
 
         dwell_ok = (
             state.last_switch is None
@@ -618,6 +655,7 @@ class AudioBroadcaster:
             and dwell_ok
             and state.degrade_since is not None
             and now - state.degrade_since >= self._adaptive_degrade_window_s
+            and state.degrade_threshold_met
         ):
             self._adaptive_switch(client_id, state, AUDIO_CODEC_OPUS, now)
         elif (
@@ -644,6 +682,8 @@ class AudioBroadcaster:
         state.codec = codec
         state.last_switch = now
         state.degrade_since = None
+        state.degrade_samples.clear()
+        state.degrade_threshold_met = False
         if codec != AUDIO_CODEC_OPUS:
             self._client_opus_transcoders.pop(client_id, None)
             self._client_opus_pcm_buffers.pop(client_id, None)

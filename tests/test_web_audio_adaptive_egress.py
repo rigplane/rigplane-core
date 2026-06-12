@@ -178,6 +178,69 @@ class TestAdaptiveDegrade:
         )
         assert [a["codec"] for a in _acks(ws)] == ["pcm16", "opus"]
 
+    async def test_threshold_underruns_flip_with_scheduler_jitter(self) -> None:
+        """Once the threshold is met during a continuous episode, normal
+        scheduler jitter after DEGRADE_WINDOW_S must not miss the switch."""
+        radio, bus = _make_radio()
+        broadcaster, clock = _make_adaptive(radio)
+        handler = AudioHandler(_make_ws(), radio, broadcaster)
+        with patch(_TRANSCODER_PATCH, return_value=_FakeTranscoder()):
+            await handler._start_rx(preferred_rx_codec=AUDIO_CODEC_OPUS)
+            await _report(handler, 1)
+            clock.advance(1.0)
+            await _report(handler, 2)
+            clock.advance(1.0)
+            await _report(handler, 3)
+            clock.advance(DEGRADE_WINDOW_S - 2.0 + 0.1)
+            await _report(handler, 3)
+            await _inject(bus)
+
+        frame = handler._frame_queue.get_nowait()
+        assert frame[1] == AUDIO_CODEC_OPUS
+        state = broadcaster._client_adaptive[id(handler._frame_queue)]
+        assert state.codec == AUDIO_CODEC_OPUS
+
+    async def test_sustained_underruns_below_threshold_do_not_flip(self) -> None:
+        """ADR §3.6 requires >= 3 underruns inside the rolling window;
+        sustained evidence below that threshold must remain PCM16."""
+        radio, bus = _make_radio()
+        broadcaster, clock = _make_adaptive(radio)
+        handler = AudioHandler(_make_ws(), radio, broadcaster)
+        await handler._start_rx(preferred_rx_codec=AUDIO_CODEC_OPUS)
+
+        await _report(handler, 1)
+        clock.advance(DEGRADE_WINDOW_S / 2)
+        await _report(handler, 2)
+        clock.advance(DEGRADE_WINDOW_S)
+        await _report(handler, 2)
+        await _inject(bus)
+
+        frame = handler._frame_queue.get_nowait()
+        assert frame[1] == AUDIO_CODEC_PCM16
+        state = broadcaster._client_adaptive[id(handler._frame_queue)]
+        assert state.codec == AUDIO_CODEC_PCM16
+        assert broadcaster._client_opus_transcoders == {}
+
+    async def test_sustained_queue_drops_below_threshold_do_not_flip(self) -> None:
+        """ADR §3.6 requires >= 5 ws_queue_drops inside the rolling window;
+        sustained evidence below that threshold must remain PCM16."""
+        radio, bus = _make_radio()
+        broadcaster, clock = _make_adaptive(radio)
+        broadcaster.HIGH_WATERMARK = 1
+        handler = AudioHandler(_make_ws(), radio, broadcaster)
+        await handler._start_rx(preferred_rx_codec=AUDIO_CODEC_OPUS)
+
+        for _ in range(4):
+            await _inject(bus)
+            clock.advance(DEGRADE_WINDOW_S / 4)
+        clock.advance(DEGRADE_WINDOW_S)
+        await _inject(bus)
+
+        state = broadcaster._client_adaptive[id(handler._frame_queue)]
+        assert state.codec == AUDIO_CODEC_PCM16
+        assert set(_drain_codecs(handler)) == {AUDIO_CODEC_PCM16}
+        assert broadcaster._client_opus_transcoders == {}
+
     async def test_isolated_burst_does_not_flip(self) -> None:
         """A single evidence burst that is NOT sustained (episode gap >
         DEGRADE_WINDOW_S) must not engage Opus."""
@@ -222,9 +285,9 @@ class TestAdaptiveDegrade:
             await handler._start_rx(preferred_rx_codec=AUDIO_CODEC_OPUS)
             # Nobody drains the queue: each relay iteration past the
             # watermark evicts-oldest and increments ws_queue_drops.
-            for _ in range(8):
+            for _ in range(10):
                 await _inject(bus)
-                clock.advance(1.0)
+                clock.advance(0.5)
 
         state = broadcaster._client_adaptive[id(handler._frame_queue)]
         assert state.codec == AUDIO_CODEC_OPUS, (
