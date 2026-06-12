@@ -795,8 +795,18 @@ def test_web_state_change_callback_broadcasts_snapshot_without_revision_path() -
 # leaves or ``None`` for top-level global leaves.
 _ICOM_V2_FIELD_FAMILIES: tuple[tuple[FieldPath, str, str | None, Any], ...] = (
     # receiver operator_controls
-    (FieldPath.receiver("main", "operator_controls", "rf_gain"), "rfGain", "main", 7),
-    (FieldPath.receiver("main", "operator_controls", "squelch"), "squelch", "main", 7),
+    (
+        FieldPath.receiver("main", "operator_controls", "rf_gain"),
+        "rfGain",
+        "main",
+        7 / 255,
+    ),
+    (
+        FieldPath.receiver("main", "operator_controls", "squelch"),
+        "squelch",
+        "main",
+        7 / 255,
+    ),
     (FieldPath.receiver("main", "operator_controls", "att"), "att", "main", 6),
     (FieldPath.receiver("main", "operator_controls", "preamp"), "preamp", "main", 1),
     (FieldPath.receiver("main", "operator_controls", "agc"), "agc", "main", 2),

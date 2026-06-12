@@ -533,7 +533,7 @@ async def test_serial_mock_observation_backs_all_v2_fields() -> None:
 
         # Sensible IC-7610 defaults reach the public state (not RadioState
         # defaults masquerading as missing).
-        assert state["main"]["rfGain"] == 200
+        assert state["main"]["rfGain"] == 200 / 255
         assert state["main"]["agc"] == 2  # MID
         assert state["main"]["preamp"] == 1
         assert state["main"]["filterWidth"] == 2400
@@ -551,7 +551,7 @@ async def test_serial_mock_observation_backs_all_v2_fields() -> None:
         await asyncio.wait_for(future, timeout=2.0)
         await asyncio.sleep(0.1)
         updated = server.build_public_state()
-        assert updated["main"]["rfGain"] == 42
+        assert updated["main"]["rfGain"] == 42 / 255
         assert updated["fieldStatus"]["main.rfGain"]["availability"] == "available"
     finally:
         await server.stop()

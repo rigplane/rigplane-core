@@ -220,7 +220,7 @@ def test_sync_wrappers_delegate_and_return_values() -> None:
     )
     assert (
         r._state_store.snapshot().field("receiver.1.operator_controls.squelch").value  # noqa: SLF001
-        == 100
+        == 100 / 255
     )
     r._loop.close()
 
