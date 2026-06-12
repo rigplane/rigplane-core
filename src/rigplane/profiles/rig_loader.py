@@ -99,6 +99,7 @@ class RigConfig:
     filter_width_max: int = 9999
     filter_width_encoding: str = "segmented_bcd_index"
     filter_config: dict[str, FilterWidthRule] | None = None
+    max_watts: int | None = None
     data_mode_count: int = 0
     data_mode_labels: dict[str, str] | None = None
     protocol_type: str = "civ"
@@ -185,6 +186,7 @@ class RigConfig:
             filter_width_max=self.filter_width_max,
             filter_width_encoding=self.filter_width_encoding,
             filter_config=self.filter_config,
+            max_watts=self.max_watts,
             att_values=self.att_values,
             att_labels=self.att_labels,
             pre_values=self.pre_values,
@@ -1345,6 +1347,19 @@ def load_rig(path: Path) -> RigConfig:
                 )
             rx_audio_channel = rx_channel_raw
 
+    max_watts: int | None = None
+    power_section = data.get("power")
+    if power_section is not None:
+        if not isinstance(power_section, dict):
+            raise RigLoadError(f"{filename}: [power] must be a table")
+        if "max_watts" in power_section:
+            max_watts_raw = power_section["max_watts"]
+            if not isinstance(max_watts_raw, int) or isinstance(max_watts_raw, bool):
+                raise RigLoadError(f"{filename}: [power].max_watts must be an integer")
+            if max_watts_raw <= 0:
+                raise RigLoadError(f"{filename}: [power].max_watts must be > 0")
+            max_watts = max_watts_raw
+
     state_acquisition = _parse_state_acquisition(
         filename,
         data.get("state_acquisition"),
@@ -1367,6 +1382,7 @@ def load_rig(path: Path) -> RigConfig:
         filter_width_max=filter_width_max,
         filter_width_encoding=filter_width_encoding,
         filter_config=filter_config,
+        max_watts=max_watts,
         vfo_scheme=scheme,
         vfo_main_select=vfo_main,
         vfo_sub_select=vfo_sub,

@@ -25,6 +25,9 @@ type = "yaesu_cat"
 # (MOR-508). Other rigs omit this and keep the default "mix" average.
 rx_audio_channel = "left"
 
+[power]
+max_watts = 100
+
 [capabilities]
 features = [
     "audio",

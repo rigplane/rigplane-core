@@ -351,6 +351,10 @@ class TestMultiVendorProfiles:
         assert rig.controls is not None
         assert rig.controls["nb"]["style"] == "level_is_toggle"
 
+    def test_ftx1_profile_exposes_power_max_watts(self):
+        profile = load_rig(RIGS_DIR / "ftx1.toml").to_profile()
+        assert profile.max_watts == 100
+
     def test_ic7610_mutex_rule(self):
         rig = load_rig(RIGS_DIR / "ic7610.toml")
         mutex_rules = [r for r in rig.rules if r["kind"] == "mutex"]
@@ -420,6 +424,11 @@ class TestMultiVendorProfiles:
         ic7300 = load_rig(RIGS_DIR / "ic7300.toml")
         assert ic7610.civ_addr == 0x98
         assert ic7300.civ_addr == 0x94
+
+    def test_tx500_profile_without_power_section_still_loads(self):
+        """Backward compat: profiles without ``[power].max_watts`` still load."""
+        profile = load_rig(RIGS_DIR / "tx500.toml").to_profile()
+        assert profile.max_watts is None
 
 
 class TestProfileBuilding:
