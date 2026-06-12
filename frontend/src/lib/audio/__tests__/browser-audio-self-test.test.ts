@@ -30,6 +30,24 @@ const missingRoute: BrowserAudioRouteState = {
   outputSelectionSupported: true,
   permissionState: 'granted',
   missing: ['input'],
+  output: {
+    kind: 'audiooutput',
+    label: 'Example Bridge Playback',
+    scopedDeviceId: 'scoped-output',
+    isAlias: false,
+  },
+};
+
+const permissionDeniedRoute: BrowserAudioRouteState = {
+  status: 'permission-denied',
+  outputSelectionSupported: true,
+  permissionState: 'denied',
+};
+
+const unsupportedOutputSelectionRoute: BrowserAudioRouteState = {
+  status: 'unsupported-output-selection',
+  outputSelectionSupported: false,
+  permissionState: 'prompt',
 };
 
 const passingAnalyzer: BrowserAudioSelfTestAnalyzerInput = {
@@ -109,14 +127,54 @@ describe('browser audio self-test model', () => {
     expect(state.receive.blockers).toContain('clipping');
   });
 
-  it('fails receive readiness when the route is wrong or missing', () => {
+  it('preserves partial missing endpoint route details', () => {
     const state = evaluateBrowserAudioSelfTest({
       route: missingRoute,
       analyzer: passingAnalyzer,
     });
 
-    expect(state.route.status).toBe('wrong-or-missing');
-    expect(state.route.sourceStatus).toBe('missing-endpoints');
+    expect(state.route).toEqual({
+      status: 'missing-endpoints',
+      outputSelectionSupported: true,
+      permissionState: 'granted',
+      missing: ['input'],
+      output: {
+        kind: 'audiooutput',
+        label: 'Example Bridge Playback',
+        scopedDeviceId: 'scoped-output',
+        isAlias: false,
+      },
+    });
+    expect(state.receive.ready).toBe(false);
+    expect(state.receive.blockers).toContain('wrong-or-missing-route');
+  });
+
+  it('preserves permission-denied as the route cause', () => {
+    const state = evaluateBrowserAudioSelfTest({
+      route: permissionDeniedRoute,
+      analyzer: passingAnalyzer,
+    });
+
+    expect(state.route).toEqual({
+      status: 'permission-denied',
+      outputSelectionSupported: true,
+      permissionState: 'denied',
+    });
+    expect(state.receive.ready).toBe(false);
+    expect(state.receive.blockers).toContain('wrong-or-missing-route');
+  });
+
+  it('preserves unsupported output selection as the route cause', () => {
+    const state = evaluateBrowserAudioSelfTest({
+      route: unsupportedOutputSelectionRoute,
+      analyzer: passingAnalyzer,
+    });
+
+    expect(state.route).toEqual({
+      status: 'unsupported-output-selection',
+      outputSelectionSupported: false,
+      permissionState: 'prompt',
+    });
     expect(state.receive.ready).toBe(false);
     expect(state.receive.blockers).toContain('wrong-or-missing-route');
   });
@@ -189,6 +247,49 @@ describe('browser audio self-test model', () => {
     expect(state.level.status).toBe('out-of-range');
     expect(state.receive.ready).toBe(false);
     expect(state.receive.blockers).toContain('level-out-of-range');
+  });
+
+  it('fails receive readiness when level was not measured', () => {
+    const state = evaluateBrowserAudioSelfTest({
+      route: selectedRoute,
+      analyzer: {
+        ...passingAnalyzer,
+        level: {
+          measured: false,
+        },
+      },
+    });
+
+    expect(state.level).toEqual({
+      status: 'not-measured',
+    });
+    expect(state.receive.ready).toBe(false);
+    expect(state.receive.blockers).toContain('level-not-measured');
+  });
+
+  it('does not treat measured level without a usable range as out-of-range', () => {
+    const state = evaluateBrowserAudioSelfTest({
+      route: selectedRoute,
+      analyzer: {
+        ...passingAnalyzer,
+        level: {
+          measured: true,
+          rmsDbfs: -18,
+          peakDbfs: -6,
+          silenceDetected: false,
+          clippingDetected: false,
+        },
+      },
+    });
+
+    expect(state.level).toEqual({
+      status: 'range-not-available',
+      rmsDbfs: -18,
+      peakDbfs: -6,
+    });
+    expect(state.receive.ready).toBe(false);
+    expect(state.receive.blockers).toContain('level-range-not-available');
+    expect(state.receive.blockers).not.toContain('level-out-of-range');
   });
 
   it('keeps transmit readiness false by default even when receive passes', () => {

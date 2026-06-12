@@ -1,4 +1,4 @@
-import type { BrowserAudioRouteEndpoint, BrowserAudioRouteState } from './browser-audio-route';
+import type { BrowserAudioRouteState } from './browser-audio-route';
 
 export type BrowserAudioSelfTestVerdict = 'pass' | 'fail' | 'blocked';
 
@@ -8,6 +8,7 @@ export type BrowserAudioReceiveBlocker =
   | 'silence'
   | 'clipping'
   | 'level-out-of-range'
+  | 'level-range-not-available'
   | 'level-not-measured';
 
 export type BrowserAudioReceiveCaveat = 'latency-not-measured';
@@ -54,19 +55,7 @@ export interface BrowserAudioSelfTestInput {
   analyzer: BrowserAudioSelfTestAnalyzerInput;
 }
 
-export type BrowserAudioSelfTestRouteResult =
-  | {
-      status: 'selected';
-      sourceStatus: 'selected';
-      routeId: string;
-      input: BrowserAudioRouteEndpoint;
-      output: BrowserAudioRouteEndpoint;
-    }
-  | {
-      status: 'wrong-or-missing';
-      sourceStatus: Exclude<BrowserAudioRouteState['status'], 'selected'>;
-      missing: Array<'input' | 'output'>;
-    };
+export type BrowserAudioSelfTestRouteResult = BrowserAudioRouteState;
 
 export interface BrowserAudioKnownToneResult {
   status: 'detected' | 'missing';
@@ -75,7 +64,13 @@ export interface BrowserAudioKnownToneResult {
 }
 
 export interface BrowserAudioLevelResult {
-  status: 'usable' | 'silence' | 'clipping' | 'out-of-range' | 'not-measured';
+  status:
+    | 'usable'
+    | 'silence'
+    | 'clipping'
+    | 'out-of-range'
+    | 'range-not-available'
+    | 'not-measured';
   rmsDbfs?: number;
   peakDbfs?: number;
   usableRmsDbfs?: {
@@ -120,21 +115,24 @@ function finite(value: unknown): value is number {
 }
 
 function evaluateRoute(route: BrowserAudioRouteState): BrowserAudioSelfTestRouteResult {
-  if (route.status === 'selected') {
-    return {
-      status: 'selected',
-      sourceStatus: route.status,
-      routeId: route.routeId,
-      input: route.input,
-      output: route.output,
-    };
+  switch (route.status) {
+    case 'selected':
+      return {
+        ...route,
+        input: { ...route.input },
+        output: { ...route.output },
+      };
+    case 'missing-endpoints':
+      return {
+        ...route,
+        missing: [...route.missing],
+        ...(route.input ? { input: { ...route.input } } : {}),
+        ...(route.output ? { output: { ...route.output } } : {}),
+      };
+    case 'permission-denied':
+    case 'unsupported-output-selection':
+      return { ...route };
   }
-
-  return {
-    status: 'wrong-or-missing',
-    sourceStatus: route.status,
-    missing: route.status === 'missing-endpoints' ? route.missing : ['input', 'output'],
-  };
 }
 
 function evaluateKnownTone(input: BrowserAudioKnownToneInput): BrowserAudioKnownToneResult {
@@ -164,7 +162,11 @@ function evaluateLevel(input: BrowserAudioLevelInput): BrowserAudioLevelResult {
   if (input.silenceDetected === true) return { ...result, status: 'silence' };
 
   const range = input.usableRmsDbfs;
-  if (!range || input.rmsDbfs < range.min || input.rmsDbfs > range.max) {
+  if (!range || !finite(range.min) || !finite(range.max)) {
+    return { ...result, status: 'range-not-available' };
+  }
+
+  if (input.rmsDbfs < range.min || input.rmsDbfs > range.max) {
     return { ...result, status: 'out-of-range' };
   }
 
@@ -202,6 +204,8 @@ function receiveBlockerForLevel(
       return 'clipping';
     case 'out-of-range':
       return 'level-out-of-range';
+    case 'range-not-available':
+      return 'level-range-not-available';
     case 'not-measured':
       return 'level-not-measured';
   }
