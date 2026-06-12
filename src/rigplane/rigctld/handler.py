@@ -55,7 +55,12 @@ if TYPE_CHECKING:
     from ..radio_protocol import Radio
 
 from ..capabilities import CAP_METERS, CAP_RIT
-from .routing import create_routing  # noqa: TID251
+from .routing import (  # noqa: TID251
+    _format_normalized_or_raw_float,
+    _format_raw_scaled_float,
+    _format_strength,
+    create_routing,
+)
 
 __all__ = ["RigctldHandler"]
 
@@ -663,11 +668,11 @@ class RigctldHandler:
         if level == "RFPOWER_METER":
             return FieldPath.global_("meters", "power")
         if level == "COMP_METER":
-            return FieldPath.global_("meters", "comp_meter")
+            return FieldPath.global_("meters", "comp")
         if level == "ID_METER":
-            return FieldPath.global_("meters", "id_meter")
+            return FieldPath.global_("meters", "id")
         if level == "VD_METER":
-            return FieldPath.global_("meters", "vd_meter")
+            return FieldPath.global_("meters", "vd")
         names = {
             "AF": "af_level",
             "RF": "rf_gain",
@@ -1670,23 +1675,46 @@ class RigctldHandler:
                 if level == "STRENGTH":
                     if "calibrated" in projected.quality:
                         return RigctldResponse(values=[str(int(projected.value))])
-                    raw = int(projected.value)
                     return RigctldResponse(
-                        values=[str(round((raw / 241.0) * 114.0 - 54.0))]
+                        values=[_format_strength(projected.value, raw_divisor=241.0)]
                     )
                 if level == "RFPOWER":
                     return RigctldResponse(
-                        values=[f"{int(projected.value) / 255.0:.6f}"]
+                        values=[
+                            _format_normalized_or_raw_float(
+                                projected.value,
+                                raw_divisor=255.0,
+                            )
+                        ]
                     )
                 if level == "SWR":
                     return RigctldResponse(values=[f"{float(projected.value):.6f}"])
                 if level in {"RFPOWER_METER", "COMP_METER", "ID_METER", "VD_METER"}:
                     return RigctldResponse(
-                        values=[f"{int(projected.value) / 255.0:.6f}"]
+                        values=[
+                            _format_raw_scaled_float(
+                                projected.value,
+                                raw_divisor=255.0,
+                            )
+                        ]
+                    )
+                if level in {"AF", "RF", "SQL"}:
+                    return RigctldResponse(
+                        values=[
+                            _format_normalized_or_raw_float(
+                                projected.value,
+                                raw_divisor=255.0,
+                            )
+                        ]
                     )
                 if level in _GET_LEVEL_FLOAT:
                     return RigctldResponse(
-                        values=[f"{int(projected.value) / 255.0:.6f}"]
+                        values=[
+                            _format_raw_scaled_float(
+                                projected.value,
+                                raw_divisor=255.0,
+                            )
+                        ]
                     )
                 return RigctldResponse(values=[str(projected.value)])
         main_state = self._main_receiver_state()

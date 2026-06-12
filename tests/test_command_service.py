@@ -1154,6 +1154,42 @@ def test_command_intent_targets_observable_production_write_paths(
     assert observation.value == expected_value
 
 
+@pytest.mark.asyncio
+async def test_set_level_command_overlay_keeps_raw_byte_value_for_current_contract() -> (
+    None
+):
+    service = CommandService(
+        executor=FakeExecutor(),
+        state_store=StateStore(),
+    )
+    intent = command_intent_from_request(
+        "set_level",
+        {"level": "AF", "value": 0.5},
+        source="rigctld",
+        command_id="rigctld-set-af",
+        session_id="client-a",
+    )
+    path = FieldPath.receiver("0", "operator_controls", "af_level")
+
+    assert intent.params["af_level"] == 128
+    assert (
+        command_response_observation(
+            intent,
+            timestamp_monotonic=70.0,
+            provider="test",
+        ).value
+        == 128
+    )
+
+    await service.execute(intent)
+
+    assert service.project_pending_values(
+        source="rigctld",
+        session_id="client-a",
+        paths=(path,),
+    ) == {path: 128}
+
+
 @pytest.mark.parametrize(  # type: ignore[untyped-decorator]
     ("name", "params", "expected"),
     [

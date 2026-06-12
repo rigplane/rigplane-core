@@ -44,6 +44,27 @@ def _err(code: HamlibError) -> RigctldResponse:
     return RigctldResponse(error=int(code))
 
 
+def _is_normalized_float(value: Any) -> bool:
+    return (
+        isinstance(value, float) and not isinstance(value, bool) and 0.0 <= value <= 1.0
+    )
+
+
+def _format_normalized_or_raw_float(value: Any, *, raw_divisor: float) -> str:
+    if _is_normalized_float(value):
+        return f"{value:.6f}"
+    return _format_raw_scaled_float(value, raw_divisor=raw_divisor)
+
+
+def _format_raw_scaled_float(value: Any, *, raw_divisor: float) -> str:
+    return f"{int(value) / raw_divisor:.6f}"
+
+
+def _format_strength(value: Any, *, raw_divisor: float) -> str:
+    raw = int(value)
+    return str(round((raw / raw_divisor) * 114.0 - 54.0))
+
+
 # ---------------------------------------------------------------------------
 # Protocol
 # ---------------------------------------------------------------------------
@@ -164,18 +185,23 @@ class YaesuRouting:
 
         try:
             if level == "STRENGTH":
-                raw = int(value)
                 return RigctldResponse(
-                    values=[str(round((raw / 255.0) * 114.0 - 54.0))]
+                    values=[_format_strength(value, raw_divisor=255.0)]
                 )
             if level == "RAWSTR":
                 return RigctldResponse(values=[str(int(value))])
             if level in ("AF", "RF", "SQL"):
-                return RigctldResponse(values=[f"{int(value) / 255.0:.6f}"])
+                return RigctldResponse(
+                    values=[_format_normalized_or_raw_float(value, raw_divisor=255.0)]
+                )
             if level == "NB":
-                return RigctldResponse(values=[f"{int(value) / 10.0:.6f}"])
+                return RigctldResponse(
+                    values=[_format_raw_scaled_float(value, raw_divisor=10.0)]
+                )
             if level == "NR":
-                return RigctldResponse(values=[f"{int(value) / 15.0:.6f}"])
+                return RigctldResponse(
+                    values=[_format_raw_scaled_float(value, raw_divisor=15.0)]
+                )
             if level == "PREAMP":
                 return RigctldResponse(values=[str(int(value))])
             if level == "ATT":

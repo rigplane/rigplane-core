@@ -1220,6 +1220,22 @@ async def test_get_level_strength_projects_state_store_snapshot(
 
 
 @pytest.mark.asyncio
+async def test_get_level_strength_projected_fractional_raw_value_uses_strength_scale(
+    mock_radio: AsyncMock,
+) -> None:
+    store = StateStore()
+    mock_radio.state_store = store
+    _apply_store_value(store, "receiver.0.meters.s_meter", 0.5)
+    handler = RigctldHandler(mock_radio, RigctldConfig())
+
+    resp = await handler.execute(get_cmd("get_level", "STRENGTH"))
+
+    assert resp.ok
+    assert resp.values == ["-54"]
+    mock_radio.get_s_meter.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_get_level_strength_projects_calibrated_state_store_snapshot(
     mock_radio: AsyncMock,
 ) -> None:
@@ -1237,6 +1253,48 @@ async def test_get_level_strength_projects_calibrated_state_store_snapshot(
 
     assert resp.ok
     assert int(resp.values[0]) == 0
+    mock_radio.get_s_meter.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_get_level_strength_projected_fractional_calibrated_db_is_not_normalized(
+    mock_radio: AsyncMock,
+) -> None:
+    store = StateStore()
+    mock_radio.state_store = store
+    _apply_store_value(
+        store,
+        "receiver.0.meters.s_meter",
+        0.5,
+        quality=("confirmed", "calibrated"),
+    )
+    handler = RigctldHandler(mock_radio, RigctldConfig())
+
+    resp = await handler.execute(get_cmd("get_level", "STRENGTH"))
+
+    assert resp.ok
+    assert resp.values == ["0"]
+    mock_radio.get_s_meter.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_get_level_strength_projected_calibrated_db_float_truncates_to_db(
+    mock_radio: AsyncMock,
+) -> None:
+    store = StateStore()
+    mock_radio.state_store = store
+    _apply_store_value(
+        store,
+        "receiver.0.meters.s_meter",
+        -12.5,
+        quality=("confirmed", "calibrated"),
+    )
+    handler = RigctldHandler(mock_radio, RigctldConfig())
+
+    resp = await handler.execute(get_cmd("get_level", "STRENGTH"))
+
+    assert resp.ok
+    assert resp.values == ["-12"]
     mock_radio.get_s_meter.assert_not_awaited()
 
 
@@ -1291,6 +1349,163 @@ async def test_get_level_af_projects_state_store_snapshot(
     assert resp.ok
     assert float(resp.values[0]) == pytest.approx(128 / 255.0, rel=1e-6)
     mock_radio.get_af_level.assert_not_called()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("level", "path"),
+    [
+        ("AF", "receiver.main.operator_controls.af_level"),
+        ("RF", "receiver.main.operator_controls.rf_gain"),
+        ("SQL", "receiver.main.operator_controls.squelch"),
+    ],
+)
+async def test_get_level_operator_control_projected_normalized_float_passes_through(
+    mock_radio: AsyncMock,
+    level: str,
+    path: str,
+) -> None:
+    store = StateStore()
+    mock_radio.state_store = store
+    _apply_store_value(store, path, 0.5)
+    handler = RigctldHandler(mock_radio, RigctldConfig())
+
+    resp = await handler.execute(get_cmd("get_level", level))
+
+    assert resp.ok
+    assert resp.values == ["0.500000"]
+
+
+@pytest.mark.asyncio
+async def test_get_level_non_normalized_operator_control_fractional_float_keeps_raw_format(
+    mock_radio: AsyncMock,
+) -> None:
+    store = StateStore()
+    mock_radio.state_store = store
+    _apply_store_value(store, "receiver.main.operator_controls.nb_level", 0.5)
+    handler = RigctldHandler(mock_radio, RigctldConfig())
+
+    resp = await handler.execute(get_cmd("get_level", "NB"))
+
+    assert resp.ok
+    assert resp.values == ["0.000000"]
+
+
+@pytest.mark.asyncio
+async def test_get_level_rfpower_projects_raw_int_state_store_snapshot(
+    mock_radio: AsyncMock,
+) -> None:
+    store = StateStore()
+    mock_radio.state_store = store
+    _apply_store_value(store, "global.operator_controls.power_level", 128)
+    handler = RigctldHandler(mock_radio, RigctldConfig())
+
+    resp = await handler.execute(get_cmd("get_level", "RFPOWER"))
+
+    assert resp.ok
+    assert resp.values == [f"{128 / 255.0:.6f}"]
+    mock_radio.get_rf_power.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_get_level_rfpower_projected_normalized_float_passes_through(
+    mock_radio: AsyncMock,
+) -> None:
+    store = StateStore()
+    mock_radio.state_store = store
+    _apply_store_value(store, "global.operator_controls.power_level", 0.5)
+    handler = RigctldHandler(mock_radio, RigctldConfig())
+
+    resp = await handler.execute(get_cmd("get_level", "RFPOWER"))
+
+    assert resp.ok
+    assert resp.values == ["0.500000"]
+    mock_radio.get_rf_power.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("level", "path", "getter"),
+    [
+        ("RFPOWER_METER", "global.meters.power", "get_power_meter"),
+        ("COMP_METER", "global.meters.comp", "get_comp_meter"),
+        ("ID_METER", "global.meters.id", "get_id_meter"),
+        ("VD_METER", "global.meters.vd", "get_vd_meter"),
+    ],
+)
+async def test_get_level_physical_meter_projected_fractional_float_keeps_raw_format(
+    mock_radio: AsyncMock,
+    level: str,
+    path: str,
+    getter: str,
+) -> None:
+    store = StateStore()
+    mock_radio.state_store = store
+    _apply_store_value(store, path, 0.5)
+    getattr(mock_radio, getter).return_value = 255
+    handler = RigctldHandler(mock_radio, RigctldConfig())
+
+    resp = await handler.execute(get_cmd("get_level", level))
+
+    assert resp.ok
+    assert resp.values == ["0.000000"]
+    getattr(mock_radio, getter).assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("level", "path", "getter"),
+    [
+        ("COMP_METER", "global.meters.comp", "get_comp_meter"),
+        ("ID_METER", "global.meters.id", "get_id_meter"),
+        ("VD_METER", "global.meters.vd", "get_vd_meter"),
+    ],
+)
+async def test_get_level_physical_meter_uses_canonical_projected_path(
+    mock_radio: AsyncMock,
+    level: str,
+    path: str,
+    getter: str,
+) -> None:
+    store = StateStore()
+    mock_radio.state_store = store
+    _apply_store_value(store, path, 128)
+    getattr(mock_radio, getter).return_value = 255
+    handler = RigctldHandler(mock_radio, RigctldConfig())
+
+    resp = await handler.execute(get_cmd("get_level", level))
+
+    assert resp.ok
+    assert resp.values == [f"{128 / 255.0:.6f}"]
+    getattr(mock_radio, getter).assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("level", "legacy_path", "getter"),
+    [
+        ("COMP_METER", "global.meters.comp_meter", "get_comp_meter"),
+        ("ID_METER", "global.meters.id_meter", "get_id_meter"),
+        ("VD_METER", "global.meters.vd_meter", "get_vd_meter"),
+    ],
+)
+async def test_get_level_physical_meter_ignores_legacy_projected_path_and_falls_back(
+    mock_radio: AsyncMock,
+    level: str,
+    legacy_path: str,
+    getter: str,
+) -> None:
+    store = StateStore()
+    mock_radio.state_store = store
+    _apply_store_value(store, legacy_path, 128)
+    getattr(mock_radio, getter).return_value = 255
+    handler = RigctldHandler(mock_radio, RigctldConfig())
+
+    resp = await handler.execute(get_cmd("get_level", level))
+
+    assert resp.ok
+    assert resp.values == ["1.000000"]
+    getattr(mock_radio, getter).assert_awaited_once_with()
 
 
 @pytest.mark.asyncio
@@ -3034,6 +3249,38 @@ async def test_yaesu_get_level_af_prefers_state_store(
 
     assert resp.ok
     assert float(resp.values[0]) == pytest.approx(64 / 255.0, abs=0.001)
+    yaesu_radio.get_af_level.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_yaesu_get_level_strength_projected_fractional_raw_uses_strength_scale(
+    yaesu_radio: AsyncMock,
+) -> None:
+    store = StateStore()
+    _apply_store_value(store, "receiver.main.meters.s_meter", 0.5)
+    yaesu_radio.get_s_meter.return_value = 128
+    handler = RigctldHandler(yaesu_radio, RigctldConfig(), state_store=store)
+
+    resp = await handler.execute(get_cmd("get_level", "STRENGTH"))
+
+    assert resp.ok
+    assert resp.values == ["-54"]
+    yaesu_radio.get_s_meter.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_yaesu_get_level_af_projected_normalized_float_passes_through(
+    yaesu_radio: AsyncMock,
+) -> None:
+    store = StateStore()
+    _apply_store_value(store, "receiver.main.operator_controls.af_level", 0.25)
+    yaesu_radio.get_af_level.return_value = 128
+    handler = RigctldHandler(yaesu_radio, RigctldConfig(), state_store=store)
+
+    resp = await handler.execute(get_cmd("get_level", "AF"))
+
+    assert resp.ok
+    assert resp.values == ["0.250000"]
     yaesu_radio.get_af_level.assert_not_awaited()
 
 
