@@ -63,6 +63,16 @@ frequency, mode, active slot, S-meter, NR/NB, AF level, RF gain, and PBT, plus
 global TX and meter paths. It is intentionally not a complete `RadioState`
 field map yet; later lanes should extend it as field families migrate.
 
+### FTX-1 `ab_shared` VFO topology note
+
+The FTX-1 profile uses `[vfo] scheme = "ab_shared"`. In this topology there is
+no per-receiver A/B slot concept: `FA` and `FB` are the MAIN and SUB receive
+frequencies, `VS` selects the active receiver focus, `FR` controls dual/single
+RX, and `FT` selects the TX source. The dynamic HF-vs-U/VHF collapse observed
+on the radio is not currently modeled in Core. MOR-558 therefore only removes
+dead Web `fieldStatus` parent seeds for bare `main/sub.vfoA/vfoB`; it keeps the
+existing per-leaf VFO status seeds unchanged.
+
 ## Observation
 
 `Observation` represents one decoded state-bearing sample from CI-V, CAT,

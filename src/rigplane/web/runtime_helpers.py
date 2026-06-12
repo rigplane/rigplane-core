@@ -381,6 +381,12 @@ def _default_receiver_field_status(
                 FieldPath.receiver(receiver_key, "operator_toggles", "dcd"),
             )
     for name in _RECEIVER_SLOW_STATE_FIELDS:
+        if name in {"vfo_a", "vfo_b"}:
+            # Slot observations project to ``<receiver>.vfoA/B.<leaf>``.
+            # No store writer emits the bare slow-state group paths, so
+            # seeding them would let the frontend parent-veto hide real leaves
+            # (MOR-558). Keep the leaf seeds above as the actual gate.
+            continue
         _set_missing_field_status(
             statuses,
             _public_field_path(receiver_key, _receiver_public_key(name)),
