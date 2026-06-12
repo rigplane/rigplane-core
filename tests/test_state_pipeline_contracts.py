@@ -1109,6 +1109,20 @@ def test_power_level_unit_is_normalized() -> None:
     assert spec.value_type == "int"
 
 
+@pytest.mark.parametrize("receiver_id", ["main", "sub"])
+@pytest.mark.parametrize("field", ["af_level", "rf_gain", "squelch"])
+def test_receiver_raw_byte_operator_controls_declare_transitional_normalized_unit(
+    receiver_id: str,
+    field: str,
+) -> None:
+    """Raw-byte operator controls declare normalized units while staying int."""
+    spec = DEFAULT_FIELD_REGISTRY.require(
+        FieldPath.receiver(receiver_id, "operator_controls", field)
+    )
+    assert spec.unit == "normalized"
+    assert spec.value_type == "int"
+
+
 @pytest.mark.parametrize(
     "name,expected_unit",
     [

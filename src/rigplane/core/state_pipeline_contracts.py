@@ -938,11 +938,13 @@ def _receiver_specs(receiver_id: str) -> tuple[FieldSpec, ...]:
             FieldPath.receiver(receiver_id, "operator_controls", "af_level"),
             "int",
             writable=True,
+            unit="normalized",
         ),
         spec(
             FieldPath.receiver(receiver_id, "operator_controls", "rf_gain"),
             "int",
             writable=True,
+            unit="normalized",
         ),
         spec(
             FieldPath.receiver(receiver_id, "operator_controls", "pbt_inner"),
@@ -958,6 +960,7 @@ def _receiver_specs(receiver_id: str) -> tuple[FieldSpec, ...]:
             FieldPath.receiver(receiver_id, "operator_controls", "squelch"),
             "int",
             writable=True,
+            unit="normalized",
         ),
         spec(
             FieldPath.receiver(receiver_id, "operator_controls", "att"),

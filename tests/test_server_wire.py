@@ -22,6 +22,12 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from _caps import FULL_ICOM_CAPS
+from rigplane.core.state_pipeline_contracts import (
+    FieldPath,
+    Observation,
+    SourceMetadata,
+)
+from rigplane.core.state_store import StateStore
 from rigplane.radio_protocol import MetersCapable
 from rigplane.rigctld.contract import RigctldConfig
 from rigplane.rigctld.server import RigctldServer
@@ -617,6 +623,40 @@ class TestLevelWire:
         data = await _read(r)
         assert data == b"1.000000\n"
         await _close(w)
+
+    async def test_get_level_af_projected_normalized_float_wire(self) -> None:
+        """'l AF' with projected normalized 0.5 returns '0.500000\\n'."""
+        from rigplane.rigctld.handler import RigctldHandler
+
+        radio = _make_mock_radio()
+        poller = _make_mock_poller()
+        store = StateStore()
+        store.apply(
+            Observation(
+                path=FieldPath.receiver("main", "operator_controls", "af_level"),
+                value=0.5,
+                source=SourceMetadata(source="test", provider="tests"),
+                timestamp_monotonic=1.0,
+            )
+        )
+        cfg = RigctldConfig(
+            host="127.0.0.1",
+            port=0,
+            client_timeout=2.0,
+            command_timeout=1.0,
+            cache_ttl=0.0,
+        )
+        handler = RigctldHandler(radio, cfg, state_store=store)
+        srv = RigctldServer(radio, cfg, _handler=handler, _poller=poller)
+
+        async with srv:
+            r, w = await _connect(srv)
+            w.write(b"l AF\n")
+            await w.drain()
+
+            data = await _read(r)
+            assert data == b"0.500000\n"
+            await _close(w)
 
     async def test_get_level_swr_wire(self, wire_server: RigctldServer) -> None:
         """'l SWR' with calibrated ratio 1.0 → '1.000000\\n'."""
