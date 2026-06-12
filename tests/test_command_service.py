@@ -1078,9 +1078,24 @@ def test_command_response_observation_carries_session_metadata() -> None:
         ("ptt", {"state": True}, "global.tx_state.ptt", True),
         ("ptt_on", {}, "global.tx_state.ptt", True),
         ("ptt_off", {}, "global.tx_state.ptt", False),
-        ("set_rf_gain", {"level": 111}, "receiver.0.operator_controls.rf_gain", 111),
-        ("set_af_level", {"level": 87}, "receiver.0.operator_controls.af_level", 87),
-        ("set_squelch", {"level": 42}, "receiver.0.operator_controls.squelch", 42),
+        (
+            "set_rf_gain",
+            {"level": 111},
+            "receiver.0.operator_controls.rf_gain",
+            111 / 255,
+        ),
+        (
+            "set_af_level",
+            {"level": 87},
+            "receiver.0.operator_controls.af_level",
+            87 / 255,
+        ),
+        (
+            "set_squelch",
+            {"level": 42},
+            "receiver.0.operator_controls.squelch",
+            42 / 255,
+        ),
         ("set_att", {"db": 12}, "receiver.0.operator_controls.att", 12),
         ("set_attenuator", {"level": 18}, "receiver.0.operator_controls.att", 18),
         ("set_preamp", {"level": 2}, "receiver.0.operator_controls.preamp", 2),
@@ -1111,7 +1126,12 @@ def test_command_response_observation_carries_session_metadata() -> None:
             116,
         ),
         ("set_powerstat", {"on": False}, "global.tx_state.power_on", False),
-        ("set_rf_power", {"level": 88}, "global.operator_controls.power_level", 88),
+        (
+            "set_rf_power",
+            {"level": 88},
+            "global.operator_controls.power_level",
+            88 / 255,
+        ),
         ("set_power", {"level": 77}, "global.operator_controls.power_level", 77),
         (
             "set_filter_width",
@@ -1255,6 +1275,124 @@ async def test_level_command_readback_expectations_are_normalized_but_params_sta
             expires_at_monotonic=4.0,
         ),
     )
+
+
+@pytest.mark.asyncio
+async def test_set_squelch_command_response_reconciles_normalized_overlay() -> None:
+    clock = FreshnessClock(start=10.0)
+    store = StateStore(freshness_clock=clock)
+    intent = command_intent_from_request(
+        "set_squelch",
+        {"level": 128, "receiver": 0},
+        source="websocket",
+        command_id="ws-squelch",
+        session_id="client-a",
+    )
+    path = FieldPath.receiver("0", "operator_controls", "squelch")
+    observation = command_response_observation(
+        intent,
+        timestamp_monotonic=10.0,
+        provider="test",
+    )
+    service = CommandService(
+        executor=FakeExecutor(observations=(observation,)),
+        state_store=store,
+        clock=clock.now,
+    )
+
+    result = await service.execute(intent)
+
+    assert intent.params["level"] == 128
+    assert intent.params["squelch"] == 128
+    assert observation.value == 128 / 255
+    assert store.snapshot().field(path).value == 128 / 255
+    assert (
+        service.pending_overlays(
+            source="websocket",
+            session_id="client-a",
+            command_id="ws-squelch",
+        )
+        == ()
+    )
+    assert (
+        service.readback_expectations(
+            source="websocket",
+            session_id="client-a",
+            command_id="ws-squelch",
+        )
+        == ()
+    )
+    assert _states(result.lifecycle_events) == [
+        "accepted",
+        "queued",
+        "sent",
+        "acknowledged",
+        "reconciled",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_raw_external_rigctld_level_readback_normalizes_before_reconcile() -> (
+    None
+):
+    clock = FreshnessClock(start=20.0)
+    store = StateStore(freshness_clock=clock)
+    service = CommandService(
+        executor=FakeExecutor(),
+        state_store=store,
+        clock=clock.now,
+    )
+    intent = command_intent_from_request(
+        "set_rf_power",
+        {"level": 64},
+        source="rigctld",
+        command_id="rigctld-rf-power",
+        session_id="client-a",
+    )
+    path = FieldPath.global_("operator_controls", "power_level")
+
+    await service.execute(intent)
+    assert intent.params["level"] == 64
+    assert intent.params["power_level"] == 64
+
+    service.apply_observation(
+        Observation(
+            path=path,
+            value=64,
+            source=SourceMetadata(
+                source="hamlib_response",
+                provider="external_rigctld",
+                transport="rigctld",
+                command_source="rigctld",
+                session_id="client-a",
+            ),
+            timestamp_monotonic=20.1,
+            correlation_id="rigctld-rf-power",
+        )
+    )
+
+    assert store.snapshot().field(path).value == 64 / 255
+    assert (
+        service.pending_overlays(
+            source="rigctld",
+            session_id="client-a",
+            command_id="rigctld-rf-power",
+        )
+        == ()
+    )
+    assert (
+        service.readback_expectations(
+            source="rigctld",
+            session_id="client-a",
+            command_id="rigctld-rf-power",
+        )
+        == ()
+    )
+    assert _states(
+        event
+        for event in service.lifecycle_events()
+        if event.command_id == "rigctld-rf-power"
+    ) == ["accepted", "queued", "sent", "acknowledged", "reconciled"]
 
 
 @pytest.mark.parametrize(  # type: ignore[untyped-decorator]
