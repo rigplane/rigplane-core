@@ -198,7 +198,7 @@ main_sub_tracking, tx_inhibit, dpd, lcd_backlight
 | NR style | toggle+level | toggle+level | level_is_toggle | — | — | `[controls.nr]` |
 | TX antennas | 2 | 1 | 1 | 1 | 1 | `[antenna] tx_count` |
 | RX antenna | yes | no | no | no | no | `[antenna] has_rx_ant` |
-| Max power W | 100 | 100 | 5-20 | 8 | 10 | `[power] max_watts` |
+| Max power W | 100 | 100 | 100 | 8 | 10 | `[power] max_watts` |
 | Modes | 10 | 9 | 17 | 8 | 7 | `[modes]` |
 | Receivers | 2 | 1 | 2 | 1 | 1 | `[radio] receiver_count` |
 | VFO scheme | main_sub | ab | ab_shared | ab | ab | `[vfo] scheme` |
