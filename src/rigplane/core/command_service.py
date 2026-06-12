@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import time
 from collections.abc import Callable, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any, Protocol
 
 from rigplane.core.exceptions import TimeoutError as RigplaneTimeoutError
@@ -38,6 +38,12 @@ __all__ = [
 _UNSET = object()
 _MAX_READBACK_EXPECTATIONS = 128
 _READBACK_EXPECTATION_GRACE_SECONDS = 2.0
+_NORMALIZED_LEVEL_EXPECTATION_COMMANDS = {
+    "set_af_level": "af_level",
+    "set_rf_gain": "rf_gain",
+    "set_squelch": "squelch",
+    "set_rf_power": "power_level",
+}
 
 
 Clock = Callable[[], float]
@@ -170,6 +176,7 @@ class CommandService:
     def apply_observation(self, observation: Observation) -> ChangeSet:
         """Apply a confirmed observation and reconcile matching overlays."""
 
+        observation = self._normalize_correlated_readback_observation(observation)
         changeset = self._state_store.apply(observation)
         self._reconcile_observation(observation, changeset)
         return changeset
@@ -412,7 +419,7 @@ class CommandService:
         session_id = _session_id(intent)
         for path in paths:
             try:
-                value = _pending_value_for_path(intent.params, path)
+                value = _expected_value_for_path(intent, path)
             except KeyError:
                 continue
             self.record_pending_overlay(
@@ -560,6 +567,26 @@ class CommandService:
             )
         ]
 
+    def _normalize_correlated_readback_observation(
+        self,
+        observation: Observation,
+    ) -> Observation:
+        if observation.correlation_id is None:
+            return observation
+        if observation.source.command_source is None:
+            return observation
+        self._purge_expired()
+        for expectation in self._readback_expectations:
+            if not _observation_matches_readback_scope(observation, expectation):
+                continue
+            normalized = _normalized_observation_value_for_expectation(
+                observation,
+                expectation,
+            )
+            if normalized is not _UNSET:
+                return replace(observation, value=normalized)
+        return observation
+
     def _purge_expired(self) -> None:
         now = self._clock()
         self._overlays = [
@@ -591,6 +618,61 @@ class CommandService:
 def _pending_value_for_intent(intent: CommandIntent) -> Any:
     assert intent.target is not None
     return _pending_value_for_path(intent.params, intent.target)
+
+
+def _expected_value_for_path(intent: CommandIntent, path: FieldPath) -> Any:
+    value = _pending_value_for_path(intent.params, path)
+    if _should_normalize_level_expectation(intent.name, path):
+        return _normalize_raw_level_value(value)
+    return value
+
+
+def _should_normalize_level_expectation(name: str, path: FieldPath) -> bool:
+    return _NORMALIZED_LEVEL_EXPECTATION_COMMANDS.get(name) == path.name
+
+
+def _normalize_raw_level_value(value: Any) -> Any:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return float(value) / 255
+    return value
+
+
+def _normalize_observed_level_value(value: Any) -> Any:
+    if isinstance(value, float) and 0.0 <= value <= 1.0:
+        return value
+    return _normalize_raw_level_value(value)
+
+
+def _is_normalized_level_value(value: Any) -> bool:
+    return (
+        isinstance(value, (int, float))
+        and not isinstance(value, bool)
+        and 0.0 <= float(value) <= 1.0
+    )
+
+
+def _path_uses_normalized_level_value(path: FieldPath) -> bool:
+    if path.family.value != "operator_controls":
+        return False
+    if path.scope.value == "receiver":
+        return path.name in {"af_level", "rf_gain", "squelch"}
+    return path.scope.value == "global" and path.name == "power_level"
+
+
+def _normalized_observation_value_for_expectation(
+    observation: Observation,
+    expectation: PendingOverlay,
+) -> Any:
+    if not _path_uses_normalized_level_value(expectation.path):
+        return _UNSET
+    if not _is_normalized_level_value(expectation.value):
+        return _UNSET
+    if observation.value == expectation.value:
+        return observation.value
+    normalized = _normalize_observed_level_value(observation.value)
+    return normalized if normalized == expectation.value else _UNSET
 
 
 def _observable_paths_for_intent(intent: CommandIntent) -> tuple[FieldPath, ...]:
@@ -671,6 +753,19 @@ def _observation_reconciles_overlay(
         and observation.correlation_id == overlay.command_id
         and _paths_reconcile(observation, overlay.path)
         and overlay.value == observation.value
+    )
+
+
+def _observation_matches_readback_scope(
+    observation: Observation,
+    overlay: PendingOverlay,
+) -> bool:
+    observed_source = observation.source.command_source
+    return (
+        observed_source == overlay.source
+        and observation.source.session_id == overlay.session_id
+        and observation.correlation_id == overlay.command_id
+        and _paths_reconcile(observation, overlay.path)
     )
 
 
@@ -848,7 +943,11 @@ def command_response_observation(
 
     if intent.target is None:
         raise ValueError(f"command {intent.name!r} has no observable target")
-    observed_value = _value_for_observable_intent(intent) if value is None else value
+    observed_value = (
+        _expected_value_for_path(intent, intent.target)
+        if value is None
+        else _normalize_explicit_command_response_value(intent, value)
+    )
     return Observation(
         path=intent.target,
         value=observed_value,
@@ -948,17 +1047,15 @@ def _command_expected_observations(
     return () if target is None else (target,)
 
 
-def _value_for_observable_intent(intent: CommandIntent) -> Any:
-    if intent.target is None:
-        raise ValueError(f"command {intent.name!r} has no observable target")
-    params = intent.params
-    if intent.target.name in params:
-        return params[intent.target.name]
-    if intent.target.name == "freq_hz" and "freq" in params:
-        return params["freq"]
-    if "value" in params:
-        return params["value"]
-    raise KeyError(intent.target.name)
+def _normalize_explicit_command_response_value(
+    intent: CommandIntent, value: Any
+) -> Any:
+    if intent.target is not None and _should_normalize_level_expectation(
+        intent.name,
+        intent.target,
+    ):
+        return _normalize_observed_level_value(value)
+    return value
 
 
 def _ptt_value(name: str, params: Mapping[str, Any]) -> bool:

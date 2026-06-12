@@ -1383,6 +1383,13 @@ _VALUE_CONTROL_CASES = (
 )
 
 
+def _public_value_control_expected(public_path: str, value: object) -> object:
+    if public_path in {"main.afLevel", "main.rfGain", "main.squelch", "powerLevel"}:
+        if isinstance(value, (int, float)) and not isinstance(value, bool):
+            return value / 255
+    return value
+
+
 @pytest.mark.parametrize(  # type: ignore[untyped-decorator]
     ("frame", "store_path", "public_path", "expected"),
     _VALUE_CONTROL_CASES,
@@ -1467,7 +1474,7 @@ def test_value_control_projects_available(
     node: Any = payload
     for segment in public_path.split("."):
         node = node[segment]
-    assert node == expected
+    assert node == _public_value_control_expected(public_path, expected)
 
 
 def test_civ_projected_active_rit_xit_fields_become_stale(

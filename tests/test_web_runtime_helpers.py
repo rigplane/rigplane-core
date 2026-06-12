@@ -69,10 +69,10 @@ class _FakeRadio:
         self.civ_stats = None
 
 
-def _source() -> SourceMetadata:
+def _source(*, provider: str = "test") -> SourceMetadata:
     return SourceMetadata(
         source="poll_response",
-        provider="test",
+        provider=provider,
         transport="fake",
         native_id="test",
     )
@@ -85,11 +85,12 @@ def _observation(
     at: float,
     max_age: float | None = None,
     quality: tuple[str, ...] = ("confirmed",),
+    provider: str = "test",
 ) -> Observation:
     return Observation(
         path=path,
         value=value,
-        source=_source(),
+        source=_source(provider=provider),
         timestamp_monotonic=at,
         max_age=max_age,
         quality=quality,
@@ -362,6 +363,100 @@ def test_public_field_status_exposes_quality_flags() -> None:
         "confirmed",
         "uncalibrated",
     ]
+
+
+def test_public_state_projection_normalizes_raw_level_control_snapshots() -> None:
+    clock = FreshnessClock(start=10.0)
+    store = StateStore(freshness_clock=clock)
+    for path, value in (
+        (FieldPath.receiver("0", "operator_controls", "af_level"), 128),
+        (FieldPath.receiver("0", "operator_controls", "rf_gain"), 64),
+        (FieldPath.receiver("1", "operator_controls", "squelch"), 32),
+        (FieldPath.global_("operator_controls", "power_level"), 255),
+    ):
+        store.apply(_observation(path, value, at=clock.now()))
+
+    payload = build_public_state_payload_from_snapshot(
+        store.snapshot(),
+        radio=None,
+        receiver_count=2,
+    )
+
+    assert payload["main"]["afLevel"] == 128 / 255
+    assert payload["main"]["rfGain"] == 64 / 255
+    assert payload["sub"]["squelch"] == 32 / 255
+    assert payload["powerLevel"] == 1.0
+
+
+def test_public_state_projection_passes_through_normalized_level_controls() -> None:
+    clock = FreshnessClock(start=10.0)
+    store = StateStore(freshness_clock=clock)
+    for path, value in (
+        (FieldPath.receiver("0", "operator_controls", "af_level"), 0.5),
+        (FieldPath.receiver("0", "operator_controls", "rf_gain"), 0.25),
+        (FieldPath.receiver("1", "operator_controls", "squelch"), 0.75),
+        (FieldPath.global_("operator_controls", "power_level"), 0.8),
+    ):
+        store.apply(_observation(path, value, at=clock.now()))
+
+    payload = build_public_state_payload_from_snapshot(
+        store.snapshot(),
+        radio=None,
+        receiver_count=2,
+    )
+
+    assert payload["main"]["afLevel"] == 0.5
+    assert payload["main"]["rfGain"] == 0.25
+    assert payload["sub"]["squelch"] == 0.75
+    assert payload["powerLevel"] == 0.8
+
+
+def test_public_power_level_projection_keeps_icom_raw_byte_scale_with_profile() -> None:
+    class _Profile:
+        max_watts = 100
+
+    class _Radio:
+        profile = _Profile()
+
+    clock = FreshnessClock(start=10.0)
+    store = StateStore(freshness_clock=clock)
+    store.apply(
+        _observation(
+            FieldPath.global_("operator_controls", "power_level"),
+            128,
+            at=clock.now(),
+            provider="icom_civ",
+        )
+    )
+
+    payload = build_public_state_payload_from_snapshot(
+        store.snapshot(),
+        radio=_Radio(),  # type: ignore[arg-type]
+        receiver_count=1,
+    )
+
+    assert payload["powerLevel"] == 128 / 255
+
+
+def test_public_state_projection_keeps_unrelated_operator_controls_raw() -> None:
+    clock = FreshnessClock(start=10.0)
+    store = StateStore(freshness_clock=clock)
+    for path, value in (
+        (FieldPath.receiver("0", "operator_controls", "mic_gain"), 180),
+        (FieldPath.receiver("1", "operator_controls", "compressor_level"), 150),
+        (FieldPath.global_("operator_controls", "monitor_gain"), 90),
+    ):
+        store.apply(_observation(path, value, at=clock.now()))
+
+    payload = build_public_state_payload_from_snapshot(
+        store.snapshot(),
+        radio=None,
+        receiver_count=2,
+    )
+
+    assert payload["main"]["micGain"] == 180
+    assert payload["sub"]["compressorLevel"] == 150
+    assert payload["monitorGain"] == 90
 
 
 def test_public_state_projection_covers_all_scope_control_leaves() -> None:
