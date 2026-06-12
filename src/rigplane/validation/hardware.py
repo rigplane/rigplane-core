@@ -167,7 +167,11 @@ def _template_has_tx_check(template: MatrixTemplate) -> bool:
     Used to decide whether to ask the single pre-TX confirm at all — a run with
     no TX check never prompts the operator.
     """
-    return any(entry.check_id in _TX_ACTUATE_CHECK_IDS for entry in template.entries)
+    return any(
+        entry.check_id in _TX_ACTUATE_CHECK_IDS
+        and entry.declaration is not CapabilityDeclaration.UNSUPPORTED
+        for entry in template.entries
+    )
 
 
 def _utcnow_iso() -> str:
@@ -318,6 +322,15 @@ async def _run_one_check(
     audio_probe_frames: Sequence[bytes | None] | None = None,
 ) -> CheckResult:
     """Execute a single template entry, applying universal pre-gates first."""
+    # Pre-gate 0: firm unsupported means the capability is absent from the
+    # radio profile. Do not block it on TX authorization and do not touch radio I/O.
+    if entry.declaration == CapabilityDeclaration.UNSUPPORTED:
+        return _base_result(
+            entry,
+            CheckStatus.UNSUPPORTED,
+            evidence={"declared": "unsupported"},
+        )
+
     # Pre-gate 1: authorization for TX-adjacent checks.
     if _is_safety_gated(entry) and not _is_authorized(entry, safety):
         return _base_result(

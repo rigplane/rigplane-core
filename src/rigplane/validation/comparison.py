@@ -25,6 +25,7 @@ _MANUAL_REQUIRED_STATUS = CheckStatus.MANUAL_REQUIRED.value
 _BLOCKED = CheckStatus.BLOCKED.value
 
 _SUPPORTED = CapabilityDeclaration.SUPPORTED.value
+_UNSUPPORTED_DECL = CapabilityDeclaration.UNSUPPORTED.value
 _UNSUPPORTED_PENDING = CapabilityDeclaration.UNSUPPORTED_PENDING_EVIDENCE.value
 _MANUAL_REQUIRED_DECL = CapabilityDeclaration.MANUAL_REQUIRED.value
 
@@ -79,8 +80,8 @@ def _classify_pvr(declaration: str, status: str) -> str:
     Rules (ADR §7.1):
     - SUPPORTED + pass          → agree
     - SUPPORTED + {fail|unsupported} → differ
-    - UNSUPPORTED_PENDING + unsupported → agree
-    - UNSUPPORTED_PENDING + pass        → differ
+    - UNSUPPORTED or UNSUPPORTED_PENDING + unsupported → agree
+    - UNSUPPORTED or UNSUPPORTED_PENDING + pass        → differ
     - everything else (manual_required decl, manual_required/skip/blocked
       status, UNSUPPORTED_PENDING+fail) → na
     """
@@ -91,7 +92,7 @@ def _classify_pvr(declaration: str, status: str) -> str:
             return "differ"
         # skip / manual_required / blocked → na
         return "na"
-    if declaration == _UNSUPPORTED_PENDING:
+    if declaration in (_UNSUPPORTED_DECL, _UNSUPPORTED_PENDING):
         if status == _UNSUPPORTED:
             return "agree"
         if status == _PASS:

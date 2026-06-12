@@ -965,7 +965,8 @@ def _build_level_results(
 ) -> list[Any]:
     """Build a list of LevelResult from (check_id, declaration, status) tuples.
 
-    declaration strings: "supported", "unsupported_pending_evidence", "manual_required"
+    declaration strings: "supported", "unsupported",
+    "unsupported_pending_evidence", "manual_required"
     status strings: "pass", "fail", "skip", "unsupported", "blocked", "manual_required"
     """
     from rigplane.validation.schema import (
@@ -979,6 +980,7 @@ def _build_level_results(
 
     decl_map = {
         "supported": CapabilityDeclaration.SUPPORTED,
+        "unsupported": CapabilityDeclaration.UNSUPPORTED,
         "unsupported_pending_evidence": CapabilityDeclaration.UNSUPPORTED_PENDING_EVIDENCE,
         "manual_required": CapabilityDeclaration.MANUAL_REQUIRED,
     }

@@ -230,6 +230,30 @@ async def test_write_only_cap_routes_to_set_observe():
     assert radio.set_rit_frequency.call_count == 2
 
 
+async def test_firm_unsupported_pre_gates_before_tx_authorization():
+    radio = _make_mock_radio()
+    template = MatrixTemplate(
+        radio=RadioTarget(model="X6200", profile_id="x6200"),
+        entries=[
+            CapabilityDeclarationEntry(
+                check_id="tx.ptt",
+                capability="tx",
+                level=ValidationLevel.CAPABILITY_MATRIX,
+                declaration=CapabilityDeclaration.UNSUPPORTED,
+                summary="absent tx",
+                tx_adjacent=True,
+            )
+        ],
+    )
+    levels = await execute_hardware_checks(
+        radio, template, OperatorSafetyBlock(), allow_writes=True
+    )
+    check = _flatten(levels)["tx.ptt"]
+    assert check.status is CheckStatus.UNSUPPORTED
+    assert check.failure_domain is None
+    radio.set_ptt.assert_not_called()
+
+
 async def test_non_write_only_cap_still_uses_rmvr():
     """A cap NOT in write_only_capabilities keeps the RMVR read-modify-verify
     path even when other caps are classified write-only."""

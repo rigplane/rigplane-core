@@ -45,7 +45,7 @@
     {
       "check_id": "bsr.select",
       "status": "unsupported",
-      "declaration": "unsupported_pending_evidence"
+      "declaration": "unsupported"
     },
     {
       "check_id": "comp_level.set",
@@ -85,7 +85,7 @@
     {
       "check_id": "dual_watch.set",
       "status": "unsupported",
-      "declaration": "unsupported_pending_evidence"
+      "declaration": "unsupported"
     },
     {
       "check_id": "filter_width.set",
@@ -120,12 +120,12 @@
     {
       "check_id": "mic_gain.set",
       "status": "unsupported",
-      "declaration": "unsupported_pending_evidence"
+      "declaration": "unsupported"
     },
     {
       "check_id": "mod_input.set",
       "status": "unsupported",
-      "declaration": "unsupported_pending_evidence"
+      "declaration": "unsupported"
     },
     {
       "check_id": "mode.set",
@@ -165,7 +165,7 @@
     {
       "check_id": "repeater_tone.set",
       "status": "unsupported",
-      "declaration": "unsupported_pending_evidence"
+      "declaration": "unsupported"
     },
     {
       "check_id": "rf_gain.set",
@@ -175,7 +175,7 @@
     {
       "check_id": "rf_power.set",
       "status": "unsupported",
-      "declaration": "unsupported_pending_evidence"
+      "declaration": "unsupported"
     },
     {
       "check_id": "rit.set",
@@ -185,77 +185,77 @@
     {
       "check_id": "scope.capture",
       "status": "unsupported",
-      "declaration": "unsupported_pending_evidence"
+      "declaration": "unsupported"
     },
     {
       "check_id": "scope.fft.presence",
       "status": "unsupported",
-      "declaration": "unsupported_pending_evidence"
+      "declaration": "unsupported"
     },
     {
       "check_id": "scope_center_type.set",
       "status": "unsupported",
-      "declaration": "unsupported_pending_evidence"
+      "declaration": "unsupported"
     },
     {
       "check_id": "scope_dual.set",
       "status": "unsupported",
-      "declaration": "unsupported_pending_evidence"
+      "declaration": "unsupported"
     },
     {
       "check_id": "scope_during_tx.set",
       "status": "unsupported",
-      "declaration": "unsupported_pending_evidence"
+      "declaration": "unsupported"
     },
     {
       "check_id": "scope_edge.set",
       "status": "unsupported",
-      "declaration": "unsupported_pending_evidence"
+      "declaration": "unsupported"
     },
     {
       "check_id": "scope_fixed_edge.read",
       "status": "unsupported",
-      "declaration": "unsupported_pending_evidence"
+      "declaration": "unsupported"
     },
     {
       "check_id": "scope_hold.set",
       "status": "unsupported",
-      "declaration": "unsupported_pending_evidence"
+      "declaration": "unsupported"
     },
     {
       "check_id": "scope_mode.set",
       "status": "unsupported",
-      "declaration": "unsupported_pending_evidence"
+      "declaration": "unsupported"
     },
     {
       "check_id": "scope_rbw.set",
       "status": "unsupported",
-      "declaration": "unsupported_pending_evidence"
+      "declaration": "unsupported"
     },
     {
       "check_id": "scope_receiver.set",
       "status": "unsupported",
-      "declaration": "unsupported_pending_evidence"
+      "declaration": "unsupported"
     },
     {
       "check_id": "scope_ref.set",
       "status": "unsupported",
-      "declaration": "unsupported_pending_evidence"
+      "declaration": "unsupported"
     },
     {
       "check_id": "scope_span.set",
       "status": "unsupported",
-      "declaration": "unsupported_pending_evidence"
+      "declaration": "unsupported"
     },
     {
       "check_id": "scope_speed.set",
       "status": "unsupported",
-      "declaration": "unsupported_pending_evidence"
+      "declaration": "unsupported"
     },
     {
       "check_id": "scope_vbw.set",
       "status": "unsupported",
-      "declaration": "unsupported_pending_evidence"
+      "declaration": "unsupported"
     },
     {
       "check_id": "split.set",
@@ -275,27 +275,27 @@
     {
       "check_id": "system_date.read",
       "status": "unsupported",
-      "declaration": "unsupported_pending_evidence"
+      "declaration": "unsupported"
     },
     {
       "check_id": "system_time.read",
       "status": "unsupported",
-      "declaration": "unsupported_pending_evidence"
+      "declaration": "unsupported"
     },
     {
       "check_id": "tone_freq.set",
       "status": "unsupported",
-      "declaration": "unsupported_pending_evidence"
+      "declaration": "unsupported"
     },
     {
       "check_id": "tsql.set",
       "status": "unsupported",
-      "declaration": "unsupported_pending_evidence"
+      "declaration": "unsupported"
     },
     {
       "check_id": "tsql_freq.set",
       "status": "unsupported",
-      "declaration": "unsupported_pending_evidence"
+      "declaration": "unsupported"
     },
     {
       "check_id": "tuner.tune",

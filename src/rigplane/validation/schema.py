@@ -74,6 +74,7 @@ class CapabilityDeclaration(StrEnum):
     """Declared support posture for a capability in a template."""
 
     SUPPORTED = "supported"
+    UNSUPPORTED = "unsupported"
     UNSUPPORTED_PENDING_EVIDENCE = "unsupported_pending_evidence"
     MANUAL_REQUIRED = "manual_required"
 

@@ -40,6 +40,7 @@ class HardwareExecutionBlocked(RuntimeError):
 
 _DECLARATION_TO_STATUS: dict[CapabilityDeclaration, CheckStatus] = {
     CapabilityDeclaration.SUPPORTED: CheckStatus.SKIP,
+    CapabilityDeclaration.UNSUPPORTED: CheckStatus.UNSUPPORTED,
     CapabilityDeclaration.UNSUPPORTED_PENDING_EVIDENCE: CheckStatus.UNSUPPORTED,
     CapabilityDeclaration.MANUAL_REQUIRED: CheckStatus.MANUAL_REQUIRED,
 }
@@ -101,6 +102,11 @@ def _is_authorized(
     return safety.tx_allowed
 
 
+def _is_capability_absent(check: CheckResult) -> bool:
+    """True when a result is firm unsupported because the capability is absent."""
+    return check.declaration is CapabilityDeclaration.UNSUPPORTED
+
+
 def dry_run_results(
     template: MatrixTemplate, safety: OperatorSafetyBlock
 ) -> list[LevelResult]:
@@ -127,7 +133,11 @@ def dry_run_results(
         ):
             status = CheckStatus.PASS
         failure_domain: FailureDomain | None = None
-        if _is_safety_gated(entry) and not _is_authorized(entry, safety):
+        if (
+            entry.declaration is not CapabilityDeclaration.UNSUPPORTED
+            and _is_safety_gated(entry)
+            and not _is_authorized(entry, safety)
+        ):
             status = CheckStatus.BLOCKED
             failure_domain = FailureDomain.COMMAND_EXECUTION
         result = CheckResult(
@@ -193,13 +203,25 @@ def human_summary(artifact: ValidationArtifact) -> str:
     blocked: list[str] = []
     for level in artifact.levels:
         counts: dict[str, int] = {}
+        capability_absent = 0
         for check in level.checks:
+            if _is_capability_absent(check):
+                capability_absent += 1
+                continue
             counts[check.status.value] = counts.get(check.status.value, 0) + 1
             if check.status is CheckStatus.BLOCKED:
                 blocked.append(check.check_id)
         count_str = ", ".join(
             f"{status}={count}" for status, count in sorted(counts.items())
         )
+        if capability_absent:
+            if count_str:
+                count_str = (
+                    f"{count_str}, not applicable (capability absent): "
+                    f"{capability_absent}"
+                )
+            else:
+                count_str = f"not applicable (capability absent): {capability_absent}"
         lines.append(f"  L{int(level.level)} {level.level.name.lower()}: {count_str}")
     if blocked:
         lines.append("Blocked checks (authorization required):")

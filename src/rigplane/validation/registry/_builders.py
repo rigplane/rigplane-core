@@ -81,9 +81,9 @@ def build_template_from_capabilities(
        the signature for forward-compatibility; do not branch on it.
     2. Every registry entry with ``capability == ""`` (structural) is always emitted
        with ``CapabilityDeclaration.SUPPORTED``.
-    3. Functional entries are emitted with a declaration derived from
-       ``_KIND_TO_DECLARATION`` when the capability is declared, or
-       ``UNSUPPORTED_PENDING_EVIDENCE`` otherwise.
+    3. Registry-backed functional entries are emitted with a declaration derived
+       from ``_KIND_TO_DECLARATION`` when the capability is declared, or
+       firm ``UNSUPPORTED`` otherwise.
     4. Capabilities that appear in *capabilities* but have no registry check receive
        a synthetic ``<cap>.presence`` entry at ``ValidationLevel.STATIC_PROFILE`` with
        ``UNSUPPORTED_PENDING_EVIDENCE`` (they are declared but not yet exercised).
@@ -106,7 +106,7 @@ def build_template_from_capabilities(
             if spec.capability in capabilities:
                 declaration = _KIND_TO_DECLARATION[spec.kind]
             else:
-                declaration = CapabilityDeclaration.UNSUPPORTED_PENDING_EVIDENCE
+                declaration = CapabilityDeclaration.UNSUPPORTED
 
         entries.append(
             CapabilityDeclarationEntry(
@@ -163,15 +163,13 @@ def build_hamlib_template_from_capabilities(
     Algorithm (ADR §6):
 
     1. Walk REGISTRY in order.  For each ``CheckSpec``:
-       - If ``spec.hamlib_token is None`` → ``UNSUPPORTED_PENDING_EVIDENCE``.
-       - elif ``spec.hamlib_token not in available_hamlib_tokens`` →
+       - If ``spec.capability`` is non-empty and absent from ``capabilities`` →
+         firm ``UNSUPPORTED``.
+       - Else if ``spec.hamlib_token is None`` → ``UNSUPPORTED_PENDING_EVIDENCE``.
+       - Else if ``spec.hamlib_token not in available_hamlib_tokens`` →
          ``UNSUPPORTED_PENDING_EVIDENCE``.
-       - else (token present):
-         - If ``spec.capability == ""`` (structural) → ``SUPPORTED``.
-         - elif ``spec.capability in capabilities`` →
-           ``_KIND_TO_DECLARATION[spec.kind]``.
-         - else (token present but cap not declared) →
-           ``UNSUPPORTED_PENDING_EVIDENCE``.
+       - Else if ``spec.capability == ""`` (structural) → ``SUPPORTED``.
+       - Else → ``_KIND_TO_DECLARATION[spec.kind]``.
     2. Track functional caps (non-empty capability) for presence-entry exclusion.
     3. Append ``_presence_entries(capabilities, functional_caps)``.
     4. Stable-sort by level; return ``MatrixTemplate``.
@@ -184,7 +182,9 @@ def build_hamlib_template_from_capabilities(
         if spec.capability:
             functional_caps.add(spec.capability)
 
-        if spec.hamlib_token is None:
+        if spec.capability and spec.capability not in capabilities:
+            declaration = CapabilityDeclaration.UNSUPPORTED
+        elif spec.hamlib_token is None:
             declaration = CapabilityDeclaration.UNSUPPORTED_PENDING_EVIDENCE
         elif spec.hamlib_token not in available_hamlib_tokens:
             declaration = CapabilityDeclaration.UNSUPPORTED_PENDING_EVIDENCE
@@ -192,10 +192,8 @@ def build_hamlib_template_from_capabilities(
             # Token is present — now check structural vs functional.
             if spec.capability == "":
                 declaration = CapabilityDeclaration.SUPPORTED
-            elif spec.capability in capabilities:
-                declaration = _KIND_TO_DECLARATION[spec.kind]
             else:
-                declaration = CapabilityDeclaration.UNSUPPORTED_PENDING_EVIDENCE
+                declaration = _KIND_TO_DECLARATION[spec.kind]
 
         entries.append(
             CapabilityDeclarationEntry(
