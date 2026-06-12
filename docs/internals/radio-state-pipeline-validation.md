@@ -175,6 +175,17 @@ must be recorded separately in the hardware checklist.
 | Reconnect | Web transport sequence may reset; canonical `stateRevision` and `freshnessRevision` must not roll back. | Policy-defined and fake-backend tested. |
 | CI-V watchdog/backlog cleanup | Stale scope backlog is shed while control packets are preserved; stale waiters are cleaned and logged. | Policy-defined and unit tested. |
 
+## Provider Readiness Gap Register
+
+Backend-neutral readiness claims are bounded by
+`docs/internals/backend-neutral-readiness-gap-register.md`. That register is the
+MOR-424 release-claim guard for provider acquisition/profile gaps: it records
+which Yaesu/FTX-1 and external rigctld fields are implemented, explicitly
+unsupported, or tracked by follow-up issues. The hardware checklist below
+remains the place to record pass/fail evidence and release waivers; the gap
+register prevents broad provider claims from outrunning implemented Core
+coverage.
+
 ## Hardware/Human Checklist
 
 Do not run these in default CI. Record date, rig model/firmware, transport,
