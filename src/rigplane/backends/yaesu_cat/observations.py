@@ -387,38 +387,74 @@ class YaesuObservationAdapter:
             ("confirmed", "calibrated" if calibrated else "uncalibrated"),
         )
 
+    def _calibrate_meter(
+        self, raw: int, meter_key: str
+    ) -> tuple[int | float, tuple[str, ...]]:
+        profile = getattr(self.radio, "profile", None)
+        meter_calibrations = getattr(profile, "meter_calibrations", None)
+        if not isinstance(meter_calibrations, dict):
+            return int(raw), ("confirmed", "uncalibrated")
+        value, calibrated = interpolate_meter(raw, meter_calibrations, meter_key)
+        if not calibrated:
+            return int(raw), ("confirmed", "uncalibrated")
+        if meter_key == "alc":
+            value = value / 100.0
+        return value, ("confirmed", "calibrated")
+
     async def poll_tx_meters(self) -> tuple[Observation, ...]:
         adapter = self._adapter()
         observations: list[Observation] = []
         # ALC is a stream-like TX meter (MOR-448), emitted in the same lane and
         # under the same meter freshness/coalescing policy as power/swr.
         if self._has_runtime_capability("meters") and self._can_poll(_ALC_METER):
-            ok, value = await self._safe_read("alc", self.radio.read_alc_meter())
-            if ok:
-                observations.append(
-                    adapter.observation(_ALC_METER, value, native_id="read_alc_meter")
-                )
-        if self._has_runtime_capability("meters") and self._can_poll(_POWER_METER):
-            ok, value = await self._safe_read("power", self.radio.read_power_meter())
-            if ok:
+            ok, raw = await self._safe_read("alc", self.radio.read_alc_meter())
+            if ok and raw is not None:
+                value, quality = self._calibrate_meter(raw, "alc")
                 observations.append(
                     adapter.observation(
-                        _POWER_METER, value, native_id="read_power_meter"
+                        _ALC_METER,
+                        value,
+                        native_id="read_alc_meter",
+                        quality=quality,
+                    )
+                )
+        if self._has_runtime_capability("meters") and self._can_poll(_POWER_METER):
+            ok, raw = await self._safe_read("power", self.radio.read_power_meter())
+            if ok and raw is not None:
+                value, quality = self._calibrate_meter(raw, "power")
+                observations.append(
+                    adapter.observation(
+                        _POWER_METER,
+                        value,
+                        native_id="read_power_meter",
+                        quality=quality,
                     )
                 )
         if self._has_runtime_capability("meters") and self._can_poll(_SWR_METER):
-            ok, value = await self._safe_read("swr", self.radio.read_swr_meter())
-            if ok:
+            ok, raw = await self._safe_read("swr", self.radio.read_swr_meter())
+            if ok and raw is not None:
+                value, quality = self._calibrate_meter(raw, "swr")
                 observations.append(
-                    adapter.observation(_SWR_METER, value, native_id="read_swr_meter")
+                    adapter.observation(
+                        _SWR_METER,
+                        value,
+                        native_id="read_swr_meter",
+                        quality=quality,
+                    )
                 )
         # COMP is the cross-vendor PA meter (MOR-460), emitted in the same lane
         # and under the same meter freshness/coalescing policy as alc/power/swr.
         if self._has_runtime_capability("meters") and self._can_poll(_COMP_METER):
-            ok, value = await self._safe_read("comp", self.radio.read_comp_meter())
-            if ok:
+            ok, raw = await self._safe_read("comp", self.radio.read_comp_meter())
+            if ok and raw is not None:
+                value, quality = self._calibrate_meter(raw, "comp")
                 observations.append(
-                    adapter.observation(_COMP_METER, value, native_id="read_comp_meter")
+                    adapter.observation(
+                        _COMP_METER,
+                        value,
+                        native_id="read_comp_meter",
+                        quality=quality,
+                    )
                 )
         return tuple(observations)
 
