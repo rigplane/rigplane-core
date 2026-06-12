@@ -668,11 +668,11 @@ class RigctldHandler:
         if level == "RFPOWER_METER":
             return FieldPath.global_("meters", "power")
         if level == "COMP_METER":
-            return FieldPath.global_("meters", "comp_meter")
+            return FieldPath.global_("meters", "comp")
         if level == "ID_METER":
-            return FieldPath.global_("meters", "id_meter")
+            return FieldPath.global_("meters", "id")
         if level == "VD_METER":
-            return FieldPath.global_("meters", "vd_meter")
+            return FieldPath.global_("meters", "vd")
         names = {
             "AF": "af_level",
             "RF": "rf_gain",

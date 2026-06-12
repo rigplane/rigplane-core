@@ -1425,28 +1425,87 @@ async def test_get_level_rfpower_projected_normalized_float_passes_through(
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    ("level", "path"),
+    ("level", "path", "getter"),
     [
-        ("RFPOWER_METER", "global.meters.power"),
-        ("COMP_METER", "global.meters.comp_meter"),
-        ("ID_METER", "global.meters.id_meter"),
-        ("VD_METER", "global.meters.vd_meter"),
+        ("RFPOWER_METER", "global.meters.power", "get_power_meter"),
+        ("COMP_METER", "global.meters.comp", "get_comp_meter"),
+        ("ID_METER", "global.meters.id", "get_id_meter"),
+        ("VD_METER", "global.meters.vd", "get_vd_meter"),
     ],
 )
 async def test_get_level_physical_meter_projected_fractional_float_keeps_raw_format(
     mock_radio: AsyncMock,
     level: str,
     path: str,
+    getter: str,
 ) -> None:
     store = StateStore()
     mock_radio.state_store = store
     _apply_store_value(store, path, 0.5)
+    getattr(mock_radio, getter).return_value = 255
     handler = RigctldHandler(mock_radio, RigctldConfig())
 
     resp = await handler.execute(get_cmd("get_level", level))
 
     assert resp.ok
     assert resp.values == ["0.000000"]
+    getattr(mock_radio, getter).assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("level", "path", "getter"),
+    [
+        ("COMP_METER", "global.meters.comp", "get_comp_meter"),
+        ("ID_METER", "global.meters.id", "get_id_meter"),
+        ("VD_METER", "global.meters.vd", "get_vd_meter"),
+    ],
+)
+async def test_get_level_physical_meter_uses_canonical_projected_path(
+    mock_radio: AsyncMock,
+    level: str,
+    path: str,
+    getter: str,
+) -> None:
+    store = StateStore()
+    mock_radio.state_store = store
+    _apply_store_value(store, path, 128)
+    getattr(mock_radio, getter).return_value = 255
+    handler = RigctldHandler(mock_radio, RigctldConfig())
+
+    resp = await handler.execute(get_cmd("get_level", level))
+
+    assert resp.ok
+    assert resp.values == [f"{128 / 255.0:.6f}"]
+    getattr(mock_radio, getter).assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("level", "legacy_path", "getter"),
+    [
+        ("COMP_METER", "global.meters.comp_meter", "get_comp_meter"),
+        ("ID_METER", "global.meters.id_meter", "get_id_meter"),
+        ("VD_METER", "global.meters.vd_meter", "get_vd_meter"),
+    ],
+)
+async def test_get_level_physical_meter_ignores_legacy_projected_path_and_falls_back(
+    mock_radio: AsyncMock,
+    level: str,
+    legacy_path: str,
+    getter: str,
+) -> None:
+    store = StateStore()
+    mock_radio.state_store = store
+    _apply_store_value(store, legacy_path, 128)
+    getattr(mock_radio, getter).return_value = 255
+    handler = RigctldHandler(mock_radio, RigctldConfig())
+
+    resp = await handler.execute(get_cmd("get_level", level))
+
+    assert resp.ok
+    assert resp.values == ["1.000000"]
+    getattr(mock_radio, getter).assert_awaited_once_with()
 
 
 @pytest.mark.asyncio
