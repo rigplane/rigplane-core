@@ -1,0 +1,18 @@
+{
+  "schema_version": 1,
+  "override": true,
+  "radio": {
+    "model": "X6200",
+    "profile_id": "xiegu_x6200"
+  },
+  "entries": [
+    {
+      "check_id": "nr_level.set",
+      "declaration": "excluded"
+    },
+    {
+      "check_id": "nb_level.set",
+      "declaration": "excluded"
+    }
+  ]
+}
