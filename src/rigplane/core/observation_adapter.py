@@ -39,6 +39,7 @@ class ProviderObservationAdapter:
         native_id: str | None = None,
         timestamp_monotonic: float | None = None,
         max_age: float | None = None,
+        quality: tuple[str, ...] = ("confirmed",),
     ) -> Observation:
         return Observation(
             path=path,
@@ -58,6 +59,7 @@ class ProviderObservationAdapter:
                 if max_age is None
                 else max_age
             ),
+            quality=quality,
         )
 
     def command_response(

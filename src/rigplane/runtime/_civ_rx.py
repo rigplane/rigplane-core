@@ -57,6 +57,7 @@ from rigplane.core.state_pipeline_contracts import (
 from rigplane.core.state_diagnostics import StateDiagnosticsRecorder
 from rigplane.scope import ScopeFrame
 from rigplane.core.types import CivFrame, Mode
+from rigplane.runtime.meter_cal import interpolate_meter
 
 if TYPE_CHECKING:
     from ._runtime_protocols import CivRuntimeHost
@@ -1591,11 +1592,29 @@ class CivRuntime:
         elif frame.command == 0x15 and len(frame.data) >= 2:
             mapping = _OBSERVABLE_CMD15_FIELDS.get(frame.sub or 0)
             if mapping is not None:
+                raw_value = self._decode_level(frame.data)
+                value: int = raw_value
+                quality = ("confirmed",)
+                if mapping == ("receiver", "meters", "s_meter"):
+                    profile = getattr(self._host, "_profile", None)
+                    meter_calibrations = getattr(profile, "meter_calibrations", None)
+                    if isinstance(meter_calibrations, dict):
+                        calibrated_value, calibrated = interpolate_meter(
+                            raw_value, meter_calibrations, "s_meter"
+                        )
+                        value = int(round(calibrated_value))
+                        quality = (
+                            "confirmed",
+                            "calibrated" if calibrated else "uncalibrated",
+                        )
+                    else:
+                        quality = ("confirmed", "uncalibrated")
                 observations.append(
                     self._observation(
                         self._field_path(mapping, receiver_id=receiver_id),
-                        self._decode_level(frame.data),
+                        value,
                         frame=frame,
+                        quality=quality,
                     )
                 )
         elif frame.command == 0x16:
@@ -1972,7 +1991,12 @@ class CivRuntime:
         return FieldPath.active(receiver_id, "freq_mode", name)
 
     def _observation(
-        self, path: FieldPath, value: Any, *, frame: CivFrame
+        self,
+        path: FieldPath,
+        value: Any,
+        *,
+        frame: CivFrame,
+        quality: tuple[str, ...] = ("confirmed",),
     ) -> Observation:
         source: ObservationSource = (
             "civ_unsolicited"
@@ -1993,6 +2017,7 @@ class CivRuntime:
             max_age=_OBSERVATION_MAX_AGE_SECONDS.get(
                 (path.scope.value, path.family.value, path.name)
             ),
+            quality=quality,
         )
 
     # ------------------------------------------------------------------

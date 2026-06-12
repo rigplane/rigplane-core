@@ -871,7 +871,7 @@ def test_update_state_cache_exception_suppressed(radio: IcomRadio) -> None:
         (
             _make_frame(cmd=0x15, sub=0x02, data=_bcd2(150), receiver=0x01),
             "receiver.1.meters.s_meter",
-            150,
+            6,
             "command_response",
         ),
         (
@@ -1647,7 +1647,7 @@ def test_meter_coalescing_applies_latest_due_sample_and_records_diagnostics(
 
     radio._civ_runtime.flush_due_meter_observations(now=100.3)
 
-    assert radio._state_store.snapshot().field("receiver.0.meters.s_meter").value == 222
+    assert radio._state_store.snapshot().field("receiver.0.meters.s_meter").value == 31
     assert events == [
         (
             "state_store_changed",
@@ -1681,8 +1681,9 @@ def test_same_value_coalesced_meter_flush_completes_scheduler_request(
     radio._state_store.apply(
         radio._civ_runtime._observation(
             stored_path,
-            111,
+            -8,
             frame=_make_frame(cmd=0x15, sub=0x02, data=_bcd2(111)),
+            quality=("confirmed", "calibrated"),
         )
     )
     scheduler = AcquisitionScheduler(profile=_acquisition_profile(path, policy=policy))
@@ -1959,6 +1960,30 @@ def test_update_radio_state_cmd15_smeter(radio_with_state: IcomRadio) -> None:
     frame = _make_frame(cmd=0x15, sub=0x02, data=_bcd2(150))
     radio_with_state._civ_runtime._update_radio_state_from_frame(frame)
     assert rs.main.s_meter == 150
+
+
+def test_cmd15_smeter_observation_uses_calibrated_db_domain(
+    radio_with_state: IcomRadio,
+) -> None:
+    frame = _make_frame(cmd=0x15, sub=0x02, data=_bcd2(130))
+
+    radio_with_state._civ_runtime._update_state_cache_from_frame(frame)
+
+    field = radio_with_state._state_store.snapshot().field("receiver.0.meters.s_meter")
+    assert field.value == 0
+    assert field.quality == ("confirmed", "calibrated")
+
+
+def test_cmd15_smeter_without_calibration_table_marks_uncalibrated() -> None:
+    radio = IcomRadio("192.168.1.100", model="X6200")
+    radio._radio_state = RadioState()
+    frame = _make_frame(cmd=0x15, sub=0x02, data=_bcd2(42))
+
+    radio._civ_runtime._update_state_cache_from_frame(frame)
+
+    field = radio._state_store.snapshot().field("receiver.0.meters.s_meter")
+    assert field.value == 42
+    assert field.quality == ("confirmed", "uncalibrated")
 
 
 def test_update_radio_state_cmd14_af_level(radio_with_state: IcomRadio) -> None:

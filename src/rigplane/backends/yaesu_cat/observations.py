@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING, Protocol, TypeVar
 from rigplane.core.observation_adapter import ProviderObservationAdapter
 from rigplane.core.state_acquisition_policy import RadioAcquisitionProfile
 from rigplane.core.state_pipeline_contracts import FieldPath, Observation
+from rigplane.runtime.meter_cal import interpolate_meter
 
 from .parser import CatFormatError, CatParseError
 from .radio import _ctcss_index_to_centihz
@@ -346,12 +347,14 @@ class YaesuObservationAdapter:
         if self._has_runtime_capability("meters") and self._can_poll(_MAIN_S_METER):
             ok, raw = await self._safe_read("main.s_meter", self.radio.read_s_meter(0))
             if ok and raw is not None:
-                value = smooth_s_meter(0, raw) if smooth_s_meter is not None else raw
+                raw = smooth_s_meter(0, raw) if smooth_s_meter is not None else raw
+                value, quality = self._calibrate_s_meter(raw)
                 observations.append(
                     adapter.observation(
                         _MAIN_S_METER,
                         value,
                         native_id="read_s_meter",
+                        quality=quality,
                     )
                 )
         if (
@@ -361,15 +364,28 @@ class YaesuObservationAdapter:
         ):
             ok, raw = await self._safe_read("sub.s_meter", self.radio.read_s_meter(1))
             if ok and raw is not None:
-                value = smooth_s_meter(1, raw) if smooth_s_meter is not None else raw
+                raw = smooth_s_meter(1, raw) if smooth_s_meter is not None else raw
+                value, quality = self._calibrate_s_meter(raw)
                 observations.append(
                     adapter.observation(
                         _SUB_S_METER,
                         value,
                         native_id="read_s_meter",
+                        quality=quality,
                     )
                 )
         return tuple(observations)
+
+    def _calibrate_s_meter(self, raw: int) -> tuple[int, tuple[str, ...]]:
+        profile = getattr(self.radio, "profile", None)
+        meter_calibrations = getattr(profile, "meter_calibrations", None)
+        if not isinstance(meter_calibrations, dict):
+            return int(raw), ("confirmed", "uncalibrated")
+        value, calibrated = interpolate_meter(raw, meter_calibrations, "s_meter")
+        return (
+            int(round(value)),
+            ("confirmed", "calibrated" if calibrated else "uncalibrated"),
+        )
 
     async def poll_tx_meters(self) -> tuple[Observation, ...]:
         adapter = self._adapter()

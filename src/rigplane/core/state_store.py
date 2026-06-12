@@ -90,6 +90,7 @@ class FieldSnapshot:
     last_observed_monotonic: float
     max_age: float | None
     source: SourceMetadata
+    quality: tuple[str, ...] = ("confirmed",)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -99,6 +100,7 @@ class FieldSnapshot:
             "lastObservedMonotonic": self.last_observed_monotonic,
             "maxAge": self.max_age,
             "source": self.source.to_dict(),
+            "quality": list(self.quality),
         }
 
 
@@ -179,6 +181,7 @@ class _FieldEntry:
     last_observed_monotonic: float
     max_age: float | None
     source: SourceMetadata
+    quality: tuple[str, ...]
 
 
 class FreshnessClock:
@@ -289,6 +292,7 @@ class StateStore:
             last_observed_monotonic=observation.timestamp_monotonic,
             max_age=observation.max_age,
             source=observation.source,
+            quality=observation.quality,
         )
         changeset = ChangeSet(
             revision=self._state_revision,
@@ -382,6 +386,7 @@ class StateStore:
                     last_observed_monotonic=entry.last_observed_monotonic,
                     max_age=entry.max_age,
                     source=entry.source,
+                    quality=entry.quality,
                 )
                 for path, entry in sorted(
                     self._entries.items(),
