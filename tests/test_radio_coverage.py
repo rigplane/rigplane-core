@@ -36,7 +36,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from rigplane import IC_7610_ADDR
-from rigplane.commands import CONTROLLER_ADDR, build_civ_frame
+from rigplane.commands import CONTROLLER_ADDR, build_civ_frame, build_cmd29_frame
 from rigplane.exceptions import CommandError, ConnectionError, TimeoutError
 from rigplane.radio import IcomRadio
 from rigplane.scope import ScopeFrame
@@ -86,11 +86,23 @@ def _level_response(cmd: int, sub: int, level: int) -> bytes:
     return _wrap_civ_in_udp(civ)
 
 
-def _raw_byte_response(cmd: int, sub: int | None, raw: int) -> bytes:
+def _raw_byte_response(
+    cmd: int, sub: int | None, raw: int, *, receiver: int | None = None
+) -> bytes:
     """CI-V response with a single raw byte (attenuator, preamp, digisel)."""
-    civ = build_civ_frame(
-        CONTROLLER_ADDR, IC_7610_ADDR, cmd, sub=sub, data=bytes([raw])
-    )
+    if receiver is None:
+        civ = build_civ_frame(
+            CONTROLLER_ADDR, IC_7610_ADDR, cmd, sub=sub, data=bytes([raw])
+        )
+    else:
+        civ = build_cmd29_frame(
+            CONTROLLER_ADDR,
+            IC_7610_ADDR,
+            cmd,
+            sub=sub,
+            data=bytes([raw]),
+            receiver=receiver,
+        )
     return _wrap_civ_in_udp(civ)
 
 
@@ -577,6 +589,18 @@ async def test_get_digisel_raises_on_empty_response(
     mock_transport.queue_response(_wrap_civ_in_udp(empty_civ))
     with pytest.raises(CommandError, match="empty DIGI-SEL response"):
         await radio.get_digisel()
+
+
+async def test_get_digisel_sub_routes_to_sub_receiver(
+    radio: IcomRadio, mock_transport: MockTransport
+) -> None:
+    """get_digisel(receiver=1) must query the SUB Command29 receiver route."""
+    mock_transport.queue_response(_raw_byte_response(0x16, 0x4E, 0x01, receiver=1))
+
+    assert await radio.get_digisel(receiver=1) is True
+
+    sent = mock_transport.sent_packets[-1]
+    assert sent.endswith(b"\x29\x01\x16\x4e\xfd")
 
 
 # ---------------------------------------------------------------------------
@@ -1958,20 +1982,29 @@ async def test_set_preamp_propagates_own_digi_sel_error(
             await radio.set_preamp(1)
 
 
-async def test_set_preamp_ignores_unrelated_command_error(
+async def test_set_preamp_propagates_preflight_command_error(
     radio: IcomRadio,
 ) -> None:
-    """set_preamp() ignores CommandError that isn't its own DIGI-SEL error."""
+    """set_preamp() surfaces get_digisel() failures instead of silently writing."""
     from rigplane.exceptions import CommandError
 
-    # Mock get_digisel to raise a different CommandError
     with patch.object(
         radio,
         "get_digisel",
         new=AsyncMock(side_effect=CommandError("radio unreachable")),
     ):
-        # Should NOT raise — it's a different CommandError, not DIGI-SEL
-        await radio.set_preamp(1)
+        with pytest.raises(CommandError, match="radio unreachable"):
+            await radio.set_preamp(1)
+
+
+async def test_set_preamp_checks_digisel_on_target_receiver(
+    radio: IcomRadio,
+) -> None:
+    """set_preamp(receiver=1) must preflight DIGI-SEL on SUB, not MAIN."""
+    with patch.object(radio, "get_digisel", new=AsyncMock(return_value=False)) as check:
+        await radio.set_preamp(1, receiver=1)
+
+    check.assert_awaited_once_with(receiver=1)
 
 
 # ---------------------------------------------------------------------------

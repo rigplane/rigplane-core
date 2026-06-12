@@ -3282,17 +3282,15 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
         )
 
         # Pre-flight: check DIGI-SEL / PREAMP mutual exclusion
-        if level > 0:
+        if level > 0 and "digisel" in self.capabilities:
             try:
-                if await self.get_digisel():
+                if await self.get_digisel(receiver=receiver):
                     raise CommandError(
                         f"Cannot set preamp level {level}: DIGI-SEL (IP+) is ON. "
                         "PREAMP and DIGI-SEL are mutually exclusive — disable DIGI-SEL first."
                     )
-            except CommandError as exc:
-                if "DIGI-SEL" in str(exc) and "mutually exclusive" in str(exc):
-                    raise  # Our own error — propagate
-                # get_digisel() failed (radio doesn't support it, timeout, etc.) — ignore
+            except CommandError:
+                raise
             except Exception:
                 logger.debug(
                     "set_preamp: unexpected error checking DIGI-SEL, proceeding",
@@ -3306,16 +3304,23 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
         await self._send_civ_raw(civ, wait_response=False)
         self._preamp_level = level
 
-    async def get_digisel(self) -> bool:
+    async def get_digisel(self, receiver: int = RECEIVER_MAIN) -> bool:
         """Read DIGI-SEL status (IC-7610 frontend selector)."""
         self._check_connected()
         self._require_capability("digisel", operation="get_digisel")
+        self._require_receiver(receiver, operation="get_digisel")
+        self._require_cmd29_route(
+            0x16,
+            0x4E,
+            receiver=receiver,
+            operation="get_digisel",
+        )
         if not self._profile.supports_cmd29(0x16, 0x4E):
             raise CommandError(
                 f"get_digisel is unsupported by profile {self._profile.model}: "
                 "no cmd29 route for command 0x16/0x4E"
             )
-        civ = get_digisel(to_addr=self._radio_addr)
+        civ = get_digisel(to_addr=self._radio_addr, receiver=receiver)
         resp = await self._send_civ_expect(civ, label="get_digisel")
         if not resp.data:
             raise CommandError("Radio returned empty DIGI-SEL response")
