@@ -16,7 +16,9 @@ PortAudio-level callback semantics are exercised against a tiny in-test fake
 
 from __future__ import annotations
 
+import asyncio
 import struct
+import types
 
 import pytest
 
@@ -28,7 +30,9 @@ from rigplane.audio.backend import (
     FakeAudioBackend,
     FakeDuplexStream,
     PortAudioBackend,
+    RxStreamHealth,
 )
+from rigplane.audio_bridge import AudioBridge
 
 DUPLEX_DEVICE = AudioDeviceInfo(
     id=AudioDeviceId(0),
@@ -96,6 +100,34 @@ class TestFakeDuplexStream:
         assert stream.written_frames == [b"\x03\x04"]
         await stream.stop()
         assert not stream.running
+
+
+def test_bridge_metrics_prefer_active_duplex_capture_health() -> None:
+    bridge = AudioBridge(types.SimpleNamespace())
+    bridge._tx_stream = types.SimpleNamespace(
+        running=True,
+        capture_health=RxStreamHealth(input_overflow_events=9),
+    )
+    bridge._duplex_stream = types.SimpleNamespace(
+        running=True,
+        capture_health=RxStreamHealth(
+            input_overflow_events=3,
+            input_underflow_events=2,
+            callback_status_flags={
+                "input_overflow": 3,
+                "input_underflow": 2,
+            },
+        ),
+    )
+
+    m = bridge.metrics
+
+    assert m.capture_input_overflows == 3
+    assert m.capture_input_underflows == 2
+    assert m.capture_callback_status_flags == {
+        "input_overflow": 3,
+        "input_underflow": 2,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -431,5 +463,34 @@ class TestBridgeDuplexSelection:
             assert backend.duplex_streams == []
             assert len(backend.tx_streams) == 1  # radio→device playback only
             assert backend.rx_streams == []  # no capture leg
+        finally:
+            await bridge.stop()
+
+    @pytest.mark.asyncio()
+    async def test_bridge_duplex_metrics_surface_capture_overflow_separately(
+        self,
+    ) -> None:
+        from rigplane.audio.bridge import AudioBridge
+
+        backend = FakeAudioBackend(devices=[DUPLEX_DEVICE])
+        radio = _FakeRadio()
+        bridge = AudioBridge(
+            radio,  # type: ignore[arg-type]
+            device_name="USB Audio CODEC",
+            backend=backend,
+            tx_enabled=True,
+        )
+        await bridge.start()
+        try:
+            capture = backend.duplex_streams[0]
+            frame = b"\x10\x00" * 960
+            capture.inject_frame(frame, input_overflow=True)
+
+            for _ in range(5):
+                await asyncio.sleep(0)
+
+            assert bridge.metrics.capture_input_overflows == 1
+            assert bridge.metrics.capture_input_underflows == 0
+            assert bridge.metrics.tx_overruns == 0
         finally:
             await bridge.stop()

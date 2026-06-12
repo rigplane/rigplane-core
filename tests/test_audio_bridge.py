@@ -17,6 +17,7 @@ from rigplane.audio.backend import (
     AudioDeviceInfo,
     FakeAudioBackend,
     FakeRxStream,
+    RxStreamHealth,
 )
 from rigplane.audio.lan_stream import AudioPacket
 from rigplane.audio_bridge import (
@@ -116,6 +117,12 @@ def _make_radio() -> types.SimpleNamespace:
 def _bare_radio(**kwargs: object) -> types.SimpleNamespace:
     """Minimal radio stub for tests that don't call bridge.start()."""
     return types.SimpleNamespace(**kwargs)
+
+
+async def _drain_bridge_callbacks() -> None:
+    """Let call_soon_threadsafe + tx loop callbacks run in tests."""
+    for _ in range(5):
+        await asyncio.sleep(0)
 
 
 # ---------------------------------------------------------------------------
@@ -619,6 +626,58 @@ async def test_bridge_tx_queue_overflow_drops_oldest_and_counts_overrun():
     assert bridge._tx_frames == 2
 
 
+def test_metrics_include_dedicated_capture_health_separately_from_queue_overruns():
+    radio = _bare_radio()
+    bridge = AudioBridge(radio)
+    bridge._tx_stream = types.SimpleNamespace(
+        running=True,
+        capture_health=RxStreamHealth(
+            input_overflow_events=2,
+            input_underflow_events=1,
+            callback_status_flags={
+                "input_overflow": 2,
+                "input_underflow": 1,
+            },
+        ),
+    )
+
+    m = bridge.metrics
+
+    assert m.capture_input_overflows == 2
+    assert m.capture_input_underflows == 1
+    assert m.capture_callback_status_flags == {
+        "input_overflow": 2,
+        "input_underflow": 1,
+    }
+    assert m.tx_overruns == 0
+
+
+async def test_bridge_tx_silence_gate_counts_suppressed_frames_separately():
+    radio = _bare_radio(push_audio_tx_pcm=AsyncMock())
+    bridge = AudioBridge(radio)
+    bridge._running = True
+    bridge._tx_stream = types.SimpleNamespace(
+        running=True,
+        capture_health=RxStreamHealth(),
+    )
+
+    silent = b"\x00\x00" * SAMPLES_PER_FRAME
+    bridge._enqueue_tx(silent)
+
+    task = asyncio.create_task(bridge._tx_loop())
+    await asyncio.sleep(0.05)
+    bridge._running = False
+    task.cancel()
+    await task
+
+    m = bridge.metrics
+
+    assert m.tx_silence_suppressed == 1
+    assert m.capture_input_overflows == 0
+    assert m.tx_overruns == 0
+    radio.push_audio_tx_pcm.assert_not_awaited()
+
+
 # ---------------------------------------------------------------------------
 # State machine — BridgeState transitions
 # ---------------------------------------------------------------------------
@@ -969,6 +1028,10 @@ def test_metrics_to_dict_backward_compat():
     assert "rx_jitter_ms" in s
     assert "rx_level_dbfs" in s
     assert "tx_overruns" in s
+    assert "capture_input_overflows" in s
+    assert "capture_input_underflows" in s
+    assert "capture_callback_status_flags" in s
+    assert "tx_silence_suppressed" in s
     assert "bridge_state" in s
 
 
@@ -1008,6 +1071,48 @@ async def test_on_metrics_callback():
     assert len(metrics_list) >= 1
     assert isinstance(metrics_list[0], BridgeMetrics)
     assert metrics_list[0].rx_frames > 0
+
+
+async def test_bridge_metrics_surface_capture_overflow_separately_from_queue_drops():
+    radio = _make_radio()
+    backend = _bridge_backend()
+    bridge = AudioBridge(radio, device_name="BlackHole", backend=backend)
+    await bridge.start()
+    try:
+        capture = backend.rx_streams[0]
+        frame = (1000).to_bytes(2, "little", signed=True) * SAMPLES_PER_FRAME
+        capture.inject_frame(frame, input_overflow=True)
+
+        await _drain_bridge_callbacks()
+
+        assert bridge.metrics.capture_input_overflows == 1
+        assert bridge.metrics.capture_input_underflows == 0
+        assert bridge.metrics.capture_callback_status_flags == {"input_overflow": 1}
+        assert bridge.metrics.tx_overruns == 0
+        radio.push_audio_tx_pcm.assert_awaited_once_with(frame)
+    finally:
+        await bridge.stop()
+
+
+async def test_bridge_metrics_track_silence_suppression_separately_from_capture_health():
+    radio = _make_radio()
+    backend = _bridge_backend()
+    bridge = AudioBridge(radio, device_name="BlackHole", backend=backend)
+    await bridge.start()
+    try:
+        capture = backend.rx_streams[0]
+        silence = b"\x00\x00" * SAMPLES_PER_FRAME
+        capture.inject_frame(silence)
+
+        await _drain_bridge_callbacks()
+
+        assert bridge.metrics.tx_silence_suppressed == 1
+        assert bridge.metrics.capture_input_overflows == 0
+        assert bridge.metrics.capture_input_underflows == 0
+        assert bridge.metrics.tx_overruns == 0
+        radio.push_audio_tx_pcm.assert_not_awaited()
+    finally:
+        await bridge.stop()
 
 
 # ---------------------------------------------------------------------------
