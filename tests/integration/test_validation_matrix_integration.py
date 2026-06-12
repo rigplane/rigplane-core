@@ -128,10 +128,20 @@ def test_dry_run_statuses_are_planned_and_error_free(
 ) -> None:
     """No check errors out and no check claims execution in a dry-run."""
     artifact = _dry_run_artifact(owned_profile_model, capsys, "--no-overrides")
+    registry_ids = {spec.check_id for spec in REGISTRY}
     for check_id, check in _checks_by_id(artifact).items():
         assert check.get("error") is None, (
             f"{owned_profile_model}: {check_id} carries an error: {check['error']}"
         )
+        if (
+            check_id.endswith(".presence")
+            and check_id not in registry_ids
+            and check["status"] == CheckStatus.PASS.value
+        ):
+            # MOR-660: synthetic capability-presence entries are static profile
+            # evidence, not executed probes. Registry-backed checks still must
+            # not PASS/FAIL in dry-run.
+            continue
         assert check["status"] in _DRY_RUN_LEGAL_STATUSES, (
             f"{owned_profile_model}: {check_id} has non-dry-run status "
             f"{check['status']!r}"

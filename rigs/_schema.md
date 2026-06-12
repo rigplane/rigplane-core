@@ -341,7 +341,7 @@ Additional optional fields:
 | Field            | Type   | Required | Description                                      |
 |------------------|--------|----------|--------------------------------------------------|
 | `style`          | string | no       | `"named_slots"` (default) or `"per_mode"`        |
-| `encoding`       | string | no       | `"segmented_bcd_index"` (default, all Icom rigs) or `"table_index"` (Yaesu) |
+| `encoding`       | string | no       | `"segmented_bcd_index"` (default, Icom BCD index), `"raw_byte_index"` (raw byte index), or `"table_index"` (Yaesu) |
 | `width_min_hz`   | int    | no       | Minimum IF filter width in Hz                    |
 | `width_max_hz`   | int    | no       | Maximum IF filter width in Hz                    |
 

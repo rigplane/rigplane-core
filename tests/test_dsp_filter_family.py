@@ -186,6 +186,45 @@ async def test_icom_set_filter_width_rejects_out_of_range() -> None:
     radio.send_civ.assert_not_awaited()
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("payload", "expected_hz"), [(b"\x22", 2400), (b"\x1c", 1800)])
+async def test_x6200_get_filter_width_decodes_raw_byte_index(
+    payload: bytes, expected_hz: int
+) -> None:
+    """X6200 returns a raw byte width index, not packed BCD."""
+    radio = _connected_icom(model="X6200")
+
+    async def fake_expect(civ: bytes, **_: object) -> CivFrame:
+        assert civ.hex() == "fefea4e01a03fd"
+        return CivFrame(
+            to_addr=0xE0,
+            from_addr=0xA4,
+            command=0x1A,
+            sub=0x03,
+            data=payload,
+        )
+
+    radio._send_civ_expect = fake_expect  # type: ignore[method-assign]
+    radio._radio_state.main.mode = "USB"
+
+    assert await radio.get_filter_width(receiver=0) == expected_hz
+
+
+@pytest.mark.asyncio
+async def test_x6200_set_filter_width_requires_profile_setter_command() -> None:
+    """X6200 has no live-proven Hz setter; runtime must not send 0x1A/0x03."""
+    from rigplane.exceptions import CommandError
+
+    radio = _connected_icom(model="X6200")
+    radio.send_civ = AsyncMock()  # type: ignore[method-assign]
+    radio._radio_state.main.mode = "USB"
+
+    with pytest.raises(CommandError, match="unsupported by profile"):
+        await radio.set_filter_width(2400, receiver=0)
+
+    radio.send_civ.assert_not_awaited()
+
+
 # ---------------------------------------------------------------------------
 # get_filter_width — unified 1-byte BCD segmented index per wfview (issue #1156)
 # ---------------------------------------------------------------------------

@@ -180,6 +180,7 @@ class RigConfig:
             freq_ranges=ranges,
             modes=tuple(self.modes),
             filters=tuple(self.filters),
+            command_names=frozenset(self.commands),
             filter_width_min=self.filter_width_min,
             filter_width_max=self.filter_width_max,
             filter_width_encoding=self.filter_width_encoding,

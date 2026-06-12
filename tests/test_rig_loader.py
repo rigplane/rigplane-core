@@ -838,6 +838,27 @@ class TestWriteOnlyControls:
         assert "filter_width" not in caps
         assert {"rit", "xit", "notch", "nr", "nb", "compressor"} <= caps
 
+    def test_x6200_filter_width_is_read_only_raw_byte_profile_mapping(self):
+        # MOR-706: X6200 0x1A/0x03 returns a single raw byte index for the
+        # active FIL slot width. Keep the public capability undeclared because
+        # the Hz setter is not live-proven, but preserve the GET command so
+        # runtime reads can use the profile mapping.
+        rig = load_rig(RIGS_DIR / "x6200.toml")
+        profile = rig.to_profile()
+
+        assert profile.filter_width_encoding == "raw_byte_index"
+        assert "filter_width" not in profile.capabilities
+        assert "get_filter_width" in profile.command_names
+        assert "set_filter_width" not in profile.command_names
+
+        rule = profile.resolve_filter_rule("USB")
+        assert rule is not None
+        assert rule.segments
+        for fixed_mode in ("AM", "FM"):
+            fixed_rule = profile.resolve_filter_rule(fixed_mode)
+            assert fixed_rule is not None
+            assert fixed_rule.fixed is True
+
     def test_x6200_drops_over_declared_pbt(self):
         # MOR-699: a live X6200 probe (CI-V 0xA4) showed twin-PBT (get_pbt_inner
         # 0x14 0x07 and get_pbt_outer 0x14 0x08) time out in BOTH AM and USB

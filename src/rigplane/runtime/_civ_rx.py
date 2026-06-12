@@ -1908,22 +1908,26 @@ class CivRuntime:
     def _decode_filter_width(self, frame: CivFrame) -> int:
         """Decode a 0x1A/0x03 filter-width frame to Hz.
 
-        Profile-dependent: when the active profile encodes filter width as a
-        ``segmented_bcd_index``, the BCD index is mapped to Hz via the
-        mode/data-mode filter rule; otherwise the raw index is returned. Shared
-        by ``_observations_from_frame`` and ``_handle_1a`` so both produce a
-        byte-for-byte identical value (MOR-437).
+        Profile-dependent: ``segmented_bcd_index`` BCD-decodes the response
+        byte, while ``raw_byte_index`` uses the first data byte directly. The
+        resulting index is mapped to Hz via the mode/data-mode filter rule.
+        Shared by ``_observations_from_frame`` and ``_handle_1a`` so both
+        produce a byte-for-byte identical value (MOR-437).
         """
 
         from rigplane.commands import _bcd_decode_value, filter_index_to_hz
 
-        filter_index = _bcd_decode_value(frame.data)
         profile = getattr(self._host, "_profile", None)
+        encoding = getattr(profile, "filter_width_encoding", None)
+        if encoding == "raw_byte_index":
+            filter_index = frame.data[0]
+        else:
+            filter_index = _bcd_decode_value(frame.data)
         rx = self._resolve_filter_width_receiver(frame)
-        if (
-            profile is not None
-            and getattr(profile, "filter_width_encoding", None) == "segmented_bcd_index"
-        ):
+        if profile is not None and encoding in {
+            "segmented_bcd_index",
+            "raw_byte_index",
+        }:
             rule = profile.resolve_filter_rule(
                 getattr(rx, "mode", None),
                 data_mode=int(getattr(rx, "data_mode", 0) or 0),
