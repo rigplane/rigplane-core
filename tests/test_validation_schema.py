@@ -8,10 +8,18 @@ from pathlib import Path
 import pytest
 
 from rigplane.validation import (
+    CapabilityDeclaration,
+    CapabilityDeclarationEntry,
+    CheckResult,
     CheckStatus,
     FailureDomain,
+    LevelResult,
     MatrixTemplate,
+    OperatorSafetyBlock,
+    RadioTarget,
     SchemaValidationError,
+    TransportInfo,
+    ValidationLevel,
     ValidationArtifact,
     validate_artifact_dict,
     validate_template_dict,
@@ -40,6 +48,49 @@ def test_invalid_capability_tag_raises() -> None:
     entries[0]["capability"] = "not_a_real_capability"
     with pytest.raises(SchemaValidationError):
         validate_template_dict(data)
+
+
+def test_template_accepts_firm_unsupported_declaration() -> None:
+    template = MatrixTemplate(
+        radio=RadioTarget(model="IC-TEST", profile_id="ic_test"),
+        entries=[
+            CapabilityDeclarationEntry(
+                check_id="rf_gain.set",
+                capability="rf_gain",
+                level=ValidationLevel.CAPABILITY_MATRIX,
+                declaration=CapabilityDeclaration.UNSUPPORTED,
+                summary="Absent RF gain control.",
+            )
+        ],
+    )
+    parsed = validate_template_dict(template.to_dict())
+    assert parsed.entries[0].declaration is CapabilityDeclaration.UNSUPPORTED
+
+
+def test_artifact_accepts_firm_unsupported_declaration() -> None:
+    artifact = ValidationArtifact(
+        radio=RadioTarget(model="IC-TEST", profile_id="ic_test"),
+        transport=TransportInfo(backend="fixture"),
+        safety=OperatorSafetyBlock(),
+        levels=[
+            LevelResult(
+                level=ValidationLevel.CAPABILITY_MATRIX,
+                checks=[
+                    CheckResult(
+                        check_id="rf_gain.set",
+                        capability="rf_gain",
+                        level=ValidationLevel.CAPABILITY_MATRIX,
+                        status=CheckStatus.UNSUPPORTED,
+                        declaration=CapabilityDeclaration.UNSUPPORTED,
+                        summary="Absent RF gain control.",
+                    )
+                ],
+            )
+        ],
+        core_version="test",
+    )
+    parsed = validate_artifact_dict(artifact.to_dict())
+    assert parsed.levels[0].checks[0].declaration is CapabilityDeclaration.UNSUPPORTED
 
 
 def test_mixed_artifact_fixture_validates() -> None:

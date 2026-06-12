@@ -15,6 +15,7 @@ from rigplane.validation.schema import CapabilityDeclaration, CheckStatus
 # ---------------------------------------------------------------------------
 
 _SUPPORTED = CapabilityDeclaration.SUPPORTED.value
+_UNSUPPORTED_DECL = CapabilityDeclaration.UNSUPPORTED.value
 _UNSUPPORTED_PENDING = CapabilityDeclaration.UNSUPPORTED_PENDING_EVIDENCE.value
 _MANUAL_REQUIRED_DECL = CapabilityDeclaration.MANUAL_REQUIRED.value
 
@@ -92,6 +93,18 @@ class TestProfileVsReality:
         dim = self._get([("ext.feature", _UNSUPPORTED_PENDING, _PASS)])
         assert dim["differ"] == 1
         assert "ext.feature" in dim["differing"]
+
+    def test_unsupported_unsupported_counts_agree(self):
+        dim = self._get([("absent.feature", _UNSUPPORTED_DECL, _UNSUPPORTED)])
+        assert dim["agree"] == 1
+        assert dim["differ"] == 0
+        assert dim["differing"] == []
+
+    def test_unsupported_pass_counts_differ(self):
+        dim = self._get([("absent.feature", _UNSUPPORTED_DECL, _PASS)])
+        assert dim["agree"] == 0
+        assert dim["differ"] == 1
+        assert "absent.feature" in dim["differing"]
 
     def test_manual_required_status_is_na(self):
         """manual_required status → na (not counted in agree/differ)."""
@@ -176,6 +189,18 @@ class TestHamlibVsReality:
         dim = self._get([("rf_gain", _SUPPORTED, _PASS)])
         assert dim["agree"] == 1
         assert dim["differ"] == 0
+
+    def test_unsupported_unsupported_counts_agree(self):
+        dim = self._get([("rf_gain", _UNSUPPORTED_DECL, _UNSUPPORTED)])
+        assert dim["agree"] == 1
+        assert dim["differ"] == 0
+        assert dim["na"] == 0
+
+    def test_unsupported_pass_counts_differ(self):
+        dim = self._get([("rf_gain", _UNSUPPORTED_DECL, _PASS)])
+        assert dim["agree"] == 0
+        assert dim["differ"] == 1
+        assert dim["na"] == 0
 
     def test_supported_fail_counts_differ(self):
         dim = self._get([("mode.set", _SUPPORTED, _FAIL)])

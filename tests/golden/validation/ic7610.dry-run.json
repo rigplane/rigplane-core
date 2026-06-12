@@ -70,12 +70,12 @@
     {
       "check_id": "contour.set",
       "status": "unsupported",
-      "declaration": "unsupported_pending_evidence"
+      "declaration": "unsupported"
     },
     {
       "check_id": "ctcss_tone.read",
       "status": "unsupported",
-      "declaration": "unsupported_pending_evidence"
+      "declaration": "unsupported"
     },
     {
       "check_id": "cw_pitch.set",
@@ -140,7 +140,7 @@
     {
       "check_id": "if_shift.set",
       "status": "unsupported",
-      "declaration": "unsupported_pending_evidence"
+      "declaration": "unsupported"
     },
     {
       "check_id": "ip_plus.presence",
@@ -330,7 +330,7 @@
     {
       "check_id": "sql_type.set",
       "status": "unsupported",
-      "declaration": "unsupported_pending_evidence"
+      "declaration": "unsupported"
     },
     {
       "check_id": "squelch.set",

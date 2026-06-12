@@ -82,6 +82,26 @@ def test_dry_run_presence_check_resolves_pass() -> None:
     assert checks["bsr.select"].status is CheckStatus.UNSUPPORTED
 
 
+def test_dry_run_firm_unsupported_maps_to_unsupported_without_safety_block() -> None:
+    template = MatrixTemplate(
+        radio=RadioTarget(model="Test Radio", profile_id="test"),
+        entries=[
+            CapabilityDeclarationEntry(
+                check_id="tx.ptt",
+                capability="tx",
+                level=ValidationLevel.CAPABILITY_MATRIX,
+                declaration=CapabilityDeclaration.UNSUPPORTED,
+                summary="absent tx",
+                tx_adjacent=True,
+            ),
+        ],
+    )
+    levels = dry_run_results(template, OperatorSafetyBlock())
+    check = _checks_by_id(levels)["tx.ptt"]
+    assert check.status is CheckStatus.UNSUPPORTED
+    assert check.failure_domain is None
+
+
 def test_tx_adjacent_blocked_without_authorization() -> None:
     template = load_template(_TEMPLATE)
     levels = dry_run_results(template, OperatorSafetyBlock())
@@ -131,6 +151,39 @@ def test_human_summary_lists_blocked_items() -> None:
     assert text
     assert "tuner.tune" in text
     assert "tx.ptt" in text
+
+
+def test_human_summary_excludes_capability_na_from_main_counts() -> None:
+    template = MatrixTemplate(
+        radio=RadioTarget(model="Test Radio", profile_id="test"),
+        entries=[
+            CapabilityDeclarationEntry(
+                check_id="rf_gain.set",
+                capability="rf_gain",
+                level=ValidationLevel.CAPABILITY_MATRIX,
+                declaration=CapabilityDeclaration.UNSUPPORTED,
+                summary="absent rf gain",
+            ),
+            CapabilityDeclarationEntry(
+                check_id="agc.set",
+                capability="agc",
+                level=ValidationLevel.CAPABILITY_MATRIX,
+                declaration=CapabilityDeclaration.UNSUPPORTED_PENDING_EVIDENCE,
+                summary="pending agc evidence",
+            ),
+        ],
+    )
+    levels = dry_run_results(template, OperatorSafetyBlock())
+    artifact = build_validation_artifact(
+        template=template,
+        levels=levels,
+        transport=TransportInfo(backend="fixture"),
+        safety=OperatorSafetyBlock(),
+        core_version="2.5.1",
+    )
+    text = human_summary(artifact)
+    assert "L3 capability_matrix: unsupported=1" in text
+    assert "not applicable (capability absent): 1" in text
 
 
 def _make_split_template() -> MatrixTemplate:

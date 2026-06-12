@@ -106,8 +106,8 @@ def test_declared_functional_supported():
     assert entries_by_id["rf_gain.set"].declaration == CapabilityDeclaration.SUPPORTED
 
 
-def test_undeclared_functional_pending():
-    """A functional check whose capability is absent maps to UNSUPPORTED_PENDING_EVIDENCE."""
+def test_undeclared_functional_unsupported():
+    """A registry-backed functional check with an absent cap is firm UNSUPPORTED."""
     tpl = build_template_from_capabilities(
         frozenset(),
         model="IC-7300",
@@ -115,15 +115,12 @@ def test_undeclared_functional_pending():
     )
     entries_by_id = {e.check_id: e for e in tpl.entries}
     assert "rf_gain.set" in entries_by_id
-    assert (
-        entries_by_id["rf_gain.set"].declaration
-        == CapabilityDeclaration.UNSUPPORTED_PENDING_EVIDENCE
-    )
+    assert entries_by_id["rf_gain.set"].declaration == CapabilityDeclaration.UNSUPPORTED
 
 
 def test_mod_input_supported_when_cap_declared():
     """MOR-678: mod_input.set is SUPPORTED when mod_input_routing is declared
-    (IC-7610), and UNSUPPORTED_PENDING_EVIDENCE otherwise (X6200/FTX-1)."""
+    (IC-7610), and firm UNSUPPORTED otherwise (X6200/FTX-1)."""
     declared = build_template_from_capabilities(
         frozenset({"mod_input_routing"}),
         model="IC-7610",
@@ -139,10 +136,7 @@ def test_mod_input_supported_when_cap_declared():
     )
     by_id2 = {e.check_id: e for e in undeclared.entries}
     assert "mod_input.set" in by_id2
-    assert (
-        by_id2["mod_input.set"].declaration
-        == CapabilityDeclaration.UNSUPPORTED_PENDING_EVIDENCE
-    )
+    assert by_id2["mod_input.set"].declaration == CapabilityDeclaration.UNSUPPORTED
 
 
 def test_manual_kind_manual_required():
@@ -262,7 +256,7 @@ def test_realistic_ic7300():
     else:
         assert (
             entries_by_id["filter_width.set"].declaration
-            == CapabilityDeclaration.UNSUPPORTED_PENDING_EVIDENCE
+            == CapabilityDeclaration.UNSUPPORTED
         )
 
 

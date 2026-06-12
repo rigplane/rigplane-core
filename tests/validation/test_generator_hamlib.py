@@ -61,11 +61,18 @@ def test_token_absent_from_available_unsupported():
     assert entry.declaration == CapabilityDeclaration.UNSUPPORTED_PENDING_EVIDENCE
 
 
-def test_undeclared_but_token_present_unsupported():
-    """'RF' token present but rf_gain not in caps → rf_gain.set == UNSUPPORTED_PENDING_EVIDENCE."""
-    tpl = _build(caps=frozenset(), tokens={"RF"})
+def test_declared_cap_with_missing_hamlib_token_stays_pending():
+    """Declared cap without Hamlib evidence remains pending, not firm unsupported."""
+    tpl = _build(caps={"rf_gain"}, tokens={"AF"})
     entry = _entry(tpl, "rf_gain.set")
     assert entry.declaration == CapabilityDeclaration.UNSUPPORTED_PENDING_EVIDENCE
+
+
+def test_undeclared_but_token_present_unsupported():
+    """'RF' token present but rf_gain not in caps → rf_gain.set == UNSUPPORTED."""
+    tpl = _build(caps=frozenset(), tokens={"RF"})
+    entry = _entry(tpl, "rf_gain.set")
+    assert entry.declaration == CapabilityDeclaration.UNSUPPORTED
 
 
 # ---------------------------------------------------------------------------

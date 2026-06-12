@@ -99,8 +99,9 @@ Each `levels[].checks[]` object:
 
 | Declaration                    | Meaning                                                |
 | ------------------------------ | ------------------------------------------------------ |
-| `supported`                    | Capability is declared in the radio profile.           |
-| `unsupported_pending_evidence` | Not declared; absence pending evidence to confirm.     |
+| `supported`                    | Capability is declared and planned for this radio.     |
+| `unsupported`                  | Registry-backed capability is absent from the radio.   |
+| `unsupported_pending_evidence` | Declared support lacks enough provider/live evidence.  |
 | `manual_required`              | Requires manual/operator verification.                 |
 
 ## Levels

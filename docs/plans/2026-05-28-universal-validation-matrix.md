@@ -246,7 +246,7 @@ this ADR fixes the structure, not the final coverage.)
    - If `capability in capabilities` → emit `CapabilityDeclarationEntry` with
      `declaration = SUPPORTED` (or `MANUAL_REQUIRED` when `kind == MANUAL`,
      mirroring the shipped `audio.rx`/`tuner.tune` templates).
-   - Else → emit with `declaration = UNSUPPORTED_PENDING_EVIDENCE`.
+   - Else → emit with firm `declaration = UNSUPPORTED`.
 3. For every `KNOWN_CAPABILITIES` tag declared on the radio but with **no**
    registered functional `CheckSpec`, emit the level-0 presence entry (§2.6).
 4. `tx_adjacent` is copied from the `CheckSpec`; `TX_ADJACENT_BLOCKED` and
@@ -262,11 +262,9 @@ this ADR fixes the structure, not the final coverage.)
 - A capability tag the registry does not know is **impossible** — `RadioProfile`
   rejects unknown tags at load (`rig_loader.py:544`), and the registry keys on
   `KNOWN_CAPABILITIES`. No defensive branch needed.
-- A registered capability the radio does **not** declare → emitted as
-  `UNSUPPORTED_PENDING_EVIDENCE`, which `execute_hardware_checks` already turns
-  into a `UNSUPPORTED` `CheckResult` with `capability_present` evidence
-  (`hardware.py:225`). The matrix stays exhaustive; absence is recorded, not
-  hidden.
+- A registered capability the radio does **not** declare → emitted as firm
+  `UNSUPPORTED`. The matrix stays exhaustive; absence is recorded as
+  capability-not-applicable, not hidden.
 
 ### 3.3 Ordering
 
@@ -400,6 +398,8 @@ everything else is `None` ⇒ N/A on the Hamlib provider (D6).
 
 1. Walk the same registry as Generator A.
 2. For each functional `CheckSpec`:
+   - If the rigplane radio does **not** declare the capability →
+     emit firm `UNSUPPORTED`, even when Hamlib reports a matching token.
    - `hamlib_token is None` → emit `declaration = UNSUPPORTED_PENDING_EVIDENCE`
      with evidence `{"hamlib": "no_token_map"}`. This becomes a `UNSUPPORTED`
      `CheckResult` (N/A), **never** `FAIL` (D6).
