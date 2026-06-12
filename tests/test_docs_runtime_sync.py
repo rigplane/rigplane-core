@@ -109,3 +109,51 @@ def test_docs_sync_web_ui_invariants() -> None:
             r"scope.*(defer|deferred).*radio_ready",
         ],
     )
+
+
+def test_docs_sync_audio_capture_health_invariants() -> None:
+    _assert_doc_patterns(
+        "docs/api/audio.md",
+        [
+            r"RxStreamHealth",
+            r"capture_input_overflows",
+            r"capture_input_underflows",
+            r"capture_callback_status_flags",
+            r"tx_silence_suppressed",
+            r"tx_overruns",
+            r"Bridge TX queue drops",
+            r"TxStreamHealth",
+            r"overrun_events",
+            r"overrun_audio_ms",
+            r"frames_dropped",
+        ],
+    )
+    _assert_doc_patterns(
+        "docs/guide/audio-recipes.md",
+        [
+            r"TX reverse-path health",
+            r"capture_input_overflows",
+            r"tx_overruns",
+            r"tx_silence_suppressed",
+        ],
+    )
+    _assert_doc_patterns(
+        "docs/guide/diagnostic-reports.md",
+        [
+            r"audio/audio\.json",
+            r"contract and device metadata",
+            r"live bridge[- ]health",
+            r"capture_input_overflows",
+            r"tx_overruns",
+        ],
+    )
+    _assert_doc_patterns(
+        "docs/internals/audio-capture-health.md",
+        [
+            r"Deterministic triage order",
+            r"fake PortAudio",
+            r"status flags",
+            r"tx_silence_suppressed",
+            r"write_failures",
+        ],
+    )

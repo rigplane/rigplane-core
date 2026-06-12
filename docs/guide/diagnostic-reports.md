@@ -121,6 +121,15 @@ IC-7610 can request radio-native `PCM_2CH_16BIT` at `48000` Hz from its profile
 while the Web UI emits Opus as a browser transport. That means only the browser
 leg is Opus; the direct radio LAN stream remains PCM.
 
+`audio/audio.json` is contract and device metadata, not a live bridge-health
+snapshot. It tells you which radio-native and browser-facing audio contracts
+were selected, plus whether the bridge was active when the bundle was created.
+Capture callback counters such as `capture_input_overflows`,
+`capture_input_underflows`, `capture_callback_status_flags`, bridge queue drops
+such as `tx_overruns`, and silence-gate counters such as
+`tx_silence_suppressed` come from runtime bridge metrics or logs, not from the
+static diagnostic contributor payload.
+
 ## Privacy
 
 The diagnostic report carve-out in

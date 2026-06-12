@@ -126,6 +126,63 @@ export RIGPLANE_HW_AUDIO_FRAMES=20
 
 ---
 
+## TX reverse-path health: what to check first
+
+When reverse-path audio fails, separate the symptom before changing devices or
+radio mode:
+
+1. `capture_input_overflows` / `capture_input_underflows`
+   PortAudio capture callback trouble. The OS audio input side is already
+   losing or starving samples.
+2. `tx_overruns`
+   Bridge queue pressure. RigPlane captured audio, but dropped stale queued
+   frames to keep latency bounded before TX push.
+3. `tx_silence_suppressed`
+   Intentional silence/noise-gate filtering. Quiet frames were skipped by
+   policy; this is not a capture failure.
+4. Downstream TX push/write failures
+   The capture side succeeded, but the radio/backend TX stage rejected or
+   failed to write audio.
+
+### Quick operator actions
+
+| Signal | What it usually means | Try next |
+| --- | --- | --- |
+| `capture_input_overflows` rising | Local capture callback is missing deadlines | Reduce host CPU pressure, confirm the selected input device is stable, and retry before changing radio settings |
+| `tx_overruns` rising with capture overflow at `0` | The bridge TX queue is backing up, not the input callback | Check the downstream TX path, queue pressure, and whether the consumer is slower than real time |
+| `tx_silence_suppressed` rising while capture overflow stays at `0` | RigPlane is suppressing near-silence on purpose | Confirm your source is actually above the gate threshold before treating this as a transport bug |
+| Capture counters stay at `0`, but TX still fails | The failure is after capture | Inspect radio/backend TX write errors and mode or route policy only after capture looks healthy |
+
+Maintainers and agents debugging saved metrics should follow the deterministic
+[internal capture-health checklist](../internals/audio-capture-health.md).
+
+### Example snapshot
+
+```json
+{
+  "bridge_state": "running",
+  "capture_input_overflows": 4,
+  "capture_input_underflows": 0,
+  "capture_callback_status_flags": {
+    "input_overflow": 4
+  },
+  "tx_overruns": 0,
+  "tx_silence_suppressed": 0
+}
+```
+
+Interpretation: this is a capture-side problem, not a bridge queue problem.
+PortAudio already reported dropped input before RigPlane had a chance to queue
+or suppress anything. Start with the local capture device, driver, and host
+scheduling pressure. Do not treat this as silence gating, and do not assume the
+radio TX path is the first failure point.
+
+If the same snapshot instead showed `tx_overruns: 4` and
+`capture_input_overflows: 0`, capture would be healthy and the bridge would be
+dropping stale queued frames later in the reverse path.
+
+---
+
 ## 1) RX → WAV file (10 seconds)
 
 Saves the incoming audio stream from the radio to `rx.wav`.
