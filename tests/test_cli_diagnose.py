@@ -157,6 +157,18 @@ class TestSaveOnly:
         out = capsys.readouterr().out
         assert "Bundle saved to" in out
 
+    def test_context_log_dir_honors_rigplane_log_dir(
+        self, parsed, fake_build_bundle, fake_upload, monkeypatch, tmp_path
+    ):
+        log_dir = tmp_path / "ram-logs"
+        monkeypatch.setenv("RIGPLANE_LOG_DIR", str(log_dir))
+
+        rc = _diagnose.run(parsed())
+
+        assert rc == 0
+        assert fake_build_bundle["ctx"].log_dir == log_dir
+        fake_upload.assert_not_awaited()
+
     def test_no_upload_never_prompts(
         self, parsed, fake_build_bundle, fake_upload, monkeypatch, force_tty
     ):

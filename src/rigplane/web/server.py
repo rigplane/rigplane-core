@@ -4476,7 +4476,9 @@ class WebServer:
         migrate_legacy_platformdirs()
 
         config_dir = pathlib.Path(platformdirs.user_config_path("rigplane"))
-        log_dir = pathlib.Path(platformdirs.user_cache_path("rigplane")) / "logs"
+        from rigplane.diagnostics._log_paths import resolve_core_log_dir
+
+        log_dir = resolve_core_log_dir()
         return config_dir, log_dir
 
     async def _handle_diagnose_preview(
