@@ -38,6 +38,12 @@ __all__ = [
 _UNSET = object()
 _MAX_READBACK_EXPECTATIONS = 128
 _READBACK_EXPECTATION_GRACE_SECONDS = 2.0
+_NORMALIZED_LEVEL_EXPECTATION_COMMANDS = {
+    "set_af_level": "af_level",
+    "set_rf_gain": "rf_gain",
+    "set_squelch": "squelch",
+    "set_rf_power": "power_level",
+}
 
 
 Clock = Callable[[], float]
@@ -412,7 +418,7 @@ class CommandService:
         session_id = _session_id(intent)
         for path in paths:
             try:
-                value = _pending_value_for_path(intent.params, path)
+                value = _expected_value_for_path(intent, path)
             except KeyError:
                 continue
             self.record_pending_overlay(
@@ -591,6 +597,25 @@ class CommandService:
 def _pending_value_for_intent(intent: CommandIntent) -> Any:
     assert intent.target is not None
     return _pending_value_for_path(intent.params, intent.target)
+
+
+def _expected_value_for_path(intent: CommandIntent, path: FieldPath) -> Any:
+    value = _pending_value_for_path(intent.params, path)
+    if _should_normalize_level_expectation(intent.name, path):
+        return _normalize_raw_level_value(value)
+    return value
+
+
+def _should_normalize_level_expectation(name: str, path: FieldPath) -> bool:
+    return _NORMALIZED_LEVEL_EXPECTATION_COMMANDS.get(name) == path.name
+
+
+def _normalize_raw_level_value(value: Any) -> Any:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return float(value) / 255
+    return value
 
 
 def _observable_paths_for_intent(intent: CommandIntent) -> tuple[FieldPath, ...]:

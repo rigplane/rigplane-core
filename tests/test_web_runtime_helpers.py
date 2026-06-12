@@ -364,6 +364,73 @@ def test_public_field_status_exposes_quality_flags() -> None:
     ]
 
 
+def test_public_state_projection_normalizes_raw_level_control_snapshots() -> None:
+    clock = FreshnessClock(start=10.0)
+    store = StateStore(freshness_clock=clock)
+    for path, value in (
+        (FieldPath.receiver("0", "operator_controls", "af_level"), 128),
+        (FieldPath.receiver("0", "operator_controls", "rf_gain"), 64),
+        (FieldPath.receiver("1", "operator_controls", "squelch"), 32),
+        (FieldPath.global_("operator_controls", "power_level"), 255),
+    ):
+        store.apply(_observation(path, value, at=clock.now()))
+
+    payload = build_public_state_payload_from_snapshot(
+        store.snapshot(),
+        radio=None,
+        receiver_count=2,
+    )
+
+    assert payload["main"]["afLevel"] == 128 / 255
+    assert payload["main"]["rfGain"] == 64 / 255
+    assert payload["sub"]["squelch"] == 32 / 255
+    assert payload["powerLevel"] == 1.0
+
+
+def test_public_state_projection_passes_through_normalized_level_controls() -> None:
+    clock = FreshnessClock(start=10.0)
+    store = StateStore(freshness_clock=clock)
+    for path, value in (
+        (FieldPath.receiver("0", "operator_controls", "af_level"), 0.5),
+        (FieldPath.receiver("0", "operator_controls", "rf_gain"), 0.25),
+        (FieldPath.receiver("1", "operator_controls", "squelch"), 0.75),
+        (FieldPath.global_("operator_controls", "power_level"), 0.8),
+    ):
+        store.apply(_observation(path, value, at=clock.now()))
+
+    payload = build_public_state_payload_from_snapshot(
+        store.snapshot(),
+        radio=None,
+        receiver_count=2,
+    )
+
+    assert payload["main"]["afLevel"] == 0.5
+    assert payload["main"]["rfGain"] == 0.25
+    assert payload["sub"]["squelch"] == 0.75
+    assert payload["powerLevel"] == 0.8
+
+
+def test_public_state_projection_keeps_unrelated_operator_controls_raw() -> None:
+    clock = FreshnessClock(start=10.0)
+    store = StateStore(freshness_clock=clock)
+    for path, value in (
+        (FieldPath.receiver("0", "operator_controls", "mic_gain"), 180),
+        (FieldPath.receiver("1", "operator_controls", "compressor_level"), 150),
+        (FieldPath.global_("operator_controls", "monitor_gain"), 90),
+    ):
+        store.apply(_observation(path, value, at=clock.now()))
+
+    payload = build_public_state_payload_from_snapshot(
+        store.snapshot(),
+        radio=None,
+        receiver_count=2,
+    )
+
+    assert payload["main"]["micGain"] == 180
+    assert payload["sub"]["compressorLevel"] == 150
+    assert payload["monitorGain"] == 90
+
+
 def test_public_state_projection_covers_all_scope_control_leaves() -> None:
     """MOR-557: every scope_controls.global.display leaf must project.
 

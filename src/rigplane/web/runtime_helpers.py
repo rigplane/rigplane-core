@@ -82,6 +82,11 @@ _RECEIVER_OPERATOR_CONTROL_FIELDS = {
     "anti_vox_gain",
     "vox_delay",
 }
+_NORMALIZED_RECEIVER_OPERATOR_CONTROL_FIELDS = {
+    "af_level",
+    "rf_gain",
+    "squelch",
+}
 _RECEIVER_OPERATOR_TOGGLE_FIELDS = {
     "nb",
     "nr",
@@ -142,6 +147,7 @@ _GLOBAL_OPERATOR_CONTROL_FIELDS = {
     "nb_width",
     "tx_antenna",
 }
+_NORMALIZED_GLOBAL_OPERATOR_CONTROL_FIELDS = {"power_level"}
 _GLOBAL_METER_FIELDS = {
     "alc",
     "power",
@@ -750,6 +756,16 @@ def _set_receiver_value(
     receiver[name] = value
 
 
+def _normalize_public_level_snapshot_value(value: Any) -> Any:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, float) and 0.0 <= value <= 1.0:
+        return value
+    if isinstance(value, (int, float)):
+        return float(value) / 255
+    return value
+
+
 def _apply_snapshot_field(
     state: dict[str, Any],
     path: FieldPath,
@@ -788,6 +804,8 @@ def _apply_snapshot_field(
             path.family is FieldFamily.OPERATOR_CONTROLS
             and path.name in _RECEIVER_OPERATOR_CONTROL_FIELDS
         ):
+            if path.name in _NORMALIZED_RECEIVER_OPERATOR_CONTROL_FIELDS:
+                value = _normalize_public_level_snapshot_value(value)
             _set_receiver_value(state, receiver_key, path.name, value)
             return
         if (
@@ -827,6 +845,8 @@ def _apply_snapshot_field(
             path.family is FieldFamily.OPERATOR_CONTROLS
             and path.name in _GLOBAL_OPERATOR_CONTROL_FIELDS
         ):
+            if path.name in _NORMALIZED_GLOBAL_OPERATOR_CONTROL_FIELDS:
+                value = _normalize_public_level_snapshot_value(value)
             state[path.name] = value
             return
         if path.family is FieldFamily.METERS and path.name in _GLOBAL_METER_FIELDS:

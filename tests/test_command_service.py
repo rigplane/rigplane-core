@@ -1190,6 +1190,73 @@ async def test_set_level_command_overlay_keeps_raw_byte_value_for_current_contra
     ) == {path: 128}
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("name", "params", "path"),
+    [
+        (
+            "set_af_level",
+            {"level": 128, "receiver": 0},
+            FieldPath.receiver("0", "operator_controls", "af_level"),
+        ),
+        (
+            "set_rf_gain",
+            {"level": 64, "receiver": 1},
+            FieldPath.receiver("1", "operator_controls", "rf_gain"),
+        ),
+        (
+            "set_squelch",
+            {"level": 32, "receiver": 0},
+            FieldPath.receiver("0", "operator_controls", "squelch"),
+        ),
+        (
+            "set_rf_power",
+            {"level": 255},
+            FieldPath.global_("operator_controls", "power_level"),
+        ),
+    ],
+)
+async def test_level_command_readback_expectations_are_normalized_but_params_stay_raw(
+    name: str,
+    params: dict[str, object],
+    path: FieldPath,
+) -> None:
+    executor = FakeExecutor()
+    clock = FreshnessClock(start=0.0)
+    service = CommandService(
+        executor=executor,
+        state_store=StateStore(),
+        clock=clock.now,
+    )
+    intent = command_intent_from_request(
+        name,
+        params,
+        source="websocket",
+        command_id=f"ws-{name}",
+        session_id="client-a",
+    )
+
+    await service.execute(intent)
+
+    assert executor.intents == [intent]
+    assert executor.intents[0].params["level"] == params["level"]
+    assert executor.intents[0].params[path.name] == params["level"]
+    assert service.readback_expectations(
+        source="websocket",
+        session_id="client-a",
+        command_id=f"ws-{name}",
+    ) == (
+        PendingOverlay(
+            source="websocket",
+            session_id="client-a",
+            command_id=f"ws-{name}",
+            path=path,
+            value=cast(int, params["level"]) / 255,
+            expires_at_monotonic=4.0,
+        ),
+    )
+
+
 @pytest.mark.parametrize(  # type: ignore[untyped-decorator]
     ("name", "params", "expected"),
     [
