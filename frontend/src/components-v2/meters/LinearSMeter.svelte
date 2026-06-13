@@ -6,6 +6,7 @@
     calibratedToSUnit,
     calibratedToDbm,
     formatDbm,
+    getScaleMarks,
     rawToSegments,
   } from './smeter-scale';
 
@@ -53,16 +54,7 @@
   }
 
   // ── Label marks ─────────────────────────────────────────────────────────────
-  const LABEL_MARKS: ReadonlyArray<{ raw: number; text: string; color: string }> = [
-    { raw: 18,  text: 'S1',  color: 'var(--v2-text-bright)' },
-    { raw: 54,  text: 'S3',  color: 'var(--v2-text-bright)' },
-    { raw: 90,  text: 'S5',  color: 'var(--v2-text-bright)' },
-    { raw: 126, text: 'S7',  color: 'var(--v2-text-bright)' },
-    { raw: 162, text: 'S9',  color: 'var(--v2-text-bright)' },
-    { raw: 202, text: '+20', color: 'var(--v2-accent-yellow)' },
-    { raw: 241, text: '+40', color: 'var(--v2-accent-orange-alt)' },
-    { raw: 255, text: '+60', color: 'var(--v2-accent-red-alt)' },
-  ];
+  let labelMarks = $derived(getScaleMarks());
 
   // ── Tick marks ──────────────────────────────────────────────────────────────
   // Generate dense ticks: 9 subdivisions between each labeled S-unit position,
@@ -72,45 +64,49 @@
 
   function generateTicks(): Tick[] {
     const ticks: Tick[] = [];
-    // S-zone anchor points (raw values where labels sit)
-    const sAnchors = [0, 18, 36, 54, 72, 90, 108, 126, 144, 162];
-    // Over-S9 anchors
-    const overAnchors = [162, 182, 202, 222, 241, 255];
+    const anchors = getScaleMarks().map((m) => ({ raw: m.raw, actual: m.actual }));
+    const first = anchors[0];
 
-    function colorForRaw(raw: number): string {
-      if (raw <= 162) return 'var(--v2-text-bright)';
-      if (raw <= 210) return 'var(--v2-accent-yellow)';
-      if (raw <= 245) return 'var(--v2-accent-orange-alt)';
+    if (!first || first.raw > 0) {
+      anchors.unshift({ raw: 0, actual: -54 });
+    }
+
+    function colorForActual(actual: number): string {
+      if (actual <= 0) return 'var(--v2-text-bright)';
+      if (actual <= 20) return 'var(--v2-accent-yellow)';
+      if (actual <= 40) return 'var(--v2-accent-orange-alt)';
       return 'var(--v2-accent-red-alt)';
     }
 
-    function addSubdivisions(startRaw: number, endRaw: number) {
+    function addSubdivisions(startRaw: number, endRaw: number, startActual: number, endActual: number) {
       // Major tick at start
-      ticks.push({ raw: startRaw, kind: 'major', color: colorForRaw(startRaw) });
+      ticks.push({ raw: startRaw, kind: 'major', color: colorForActual(startActual) });
       // 9 subdivision ticks between start and end
       const step = (endRaw - startRaw) / 10;
+      const actualStep = (endActual - startActual) / 10;
       for (let j = 1; j <= 9; j++) {
         const raw = startRaw + step * j;
         const kind: TickKind = j === 5 ? 'mid' : 'minor';
-        ticks.push({ raw, kind, color: colorForRaw(raw) });
+        ticks.push({ raw, kind, color: colorForActual(startActual + actualStep * j) });
       }
     }
 
-    // S0-S9 subdivisions
-    for (let i = 0; i < sAnchors.length - 1; i++) {
-      addSubdivisions(sAnchors[i], sAnchors[i + 1]);
-    }
-    // Over-S9 subdivisions
-    for (let i = 0; i < overAnchors.length - 1; i++) {
-      addSubdivisions(overAnchors[i], overAnchors[i + 1]);
+    for (let i = 0; i < anchors.length - 1; i++) {
+      addSubdivisions(
+        anchors[i].raw,
+        anchors[i + 1].raw,
+        anchors[i].actual,
+        anchors[i + 1].actual,
+      );
     }
     // Final tick at max
-    ticks.push({ raw: 255, kind: 'major', color: 'var(--v2-accent-red-alt)' });
+    const last = anchors[anchors.length - 1];
+    ticks.push({ raw: last.raw, kind: 'major', color: colorForActual(last.actual) });
 
     return ticks;
   }
 
-  const TICK_MARKS = generateTicks();
+  let tickMarks = $derived(generateTicks());
 
   // ── Layout (switches between full / compact) ────────────────────────────────
   //   When label is present: label at top → meter shifted down
@@ -236,7 +232,7 @@
   {/if}
 
   <!-- Scale labels -->
-  {#each LABEL_MARKS as m}
+  {#each labelMarks as m}
     <text
       x={rawToX(m.raw)}
       y={SCALE_LABEL_Y}
@@ -250,7 +246,7 @@
   {/each}
 
   <!-- Tick marks -->
-  {#each TICK_MARKS as t}
+  {#each tickMarks as t}
     {@const tx = rawToX(t.raw)}
     {@const y1 = t.kind === 'major' ? TICK_MAJOR_Y1 : t.kind === 'mid' ? TICK_MID_Y1 : TICK_MINOR_Y1}
     {@const y2 = t.kind === 'major' ? TICK_MAJOR_Y2 : t.kind === 'mid' ? TICK_MID_Y2 : TICK_MINOR_Y2}

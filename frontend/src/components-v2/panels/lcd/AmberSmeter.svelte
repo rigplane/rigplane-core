@@ -7,6 +7,7 @@
     calibratedToSUnit,
     formatDbm,
     getCalibrationPoints,
+    getScaleMaxRaw,
     getS9Raw,
   } from '../../meters/smeter-scale';
   import { formatPowerWatts, formatSwr, formatAlc, formatCompDb } from '../meter-utils';
@@ -21,11 +22,11 @@
 
   let { value, txActive = false, source = 'S' }: Props = $props();
 
-  const MAX_RAW = 255;
   const SEGMENTS = 192;
 
   let s9Raw = $derived(getS9Raw());
-  let s9Seg = $derived(Math.round((s9Raw / MAX_RAW) * SEGMENTS));
+  let scaleMaxRaw = $derived(getScaleMaxRaw());
+  let s9Seg = $derived(Math.round((s9Raw / scaleMaxRaw) * SEGMENTS));
 
   // Build ticks from calibration
   let calPoints = $derived(getCalibrationPoints());
@@ -45,7 +46,7 @@
   // Minor ticks: subdivisions between cal points
   let minorTicks = $derived((() => {
     const ticks: number[] = [];
-    for (let raw = 4; raw < MAX_RAW; raw += 4.5) {
+    for (let raw = 4; raw < scaleMaxRaw; raw += 4.5) {
       const r = Math.round(raw);
       const isMajor = majorTicks.some((t: any) => Math.abs(t.raw - r) < 3);
       const isMedium = mediumTicks.some((t: any) => Math.abs(t.raw - r) < 3);
@@ -61,7 +62,7 @@
   // matches the raw target (no flash to 0 on mount).
   function computeSegs(raw: number): number {
     const scaled = calibratedToRaw(raw);
-    return Math.min(SEGMENTS, Math.max(0, (scaled / MAX_RAW) * SEGMENTS));
+    return Math.min(SEGMENTS, Math.max(0, (scaled / scaleMaxRaw) * SEGMENTS));
   }
 
   // svelte-ignore state_referenced_locally — intentional one-shot seed read
@@ -106,22 +107,22 @@
     <!-- Scale below bar -->
     <div class="meter-scale">
       {#each minorTicks as raw}
-        <div class="tick tick-minor" style="left: {(raw / MAX_RAW) * 100}%"></div>
+        <div class="tick tick-minor" style="left: {(raw / scaleMaxRaw) * 100}%"></div>
       {/each}
       {#each mediumTicks as tick}
-        <div class="tick tick-medium" style="left: {(tick.raw / MAX_RAW) * 100}%"></div>
+        <div class="tick tick-medium" style="left: {(tick.raw / scaleMaxRaw) * 100}%"></div>
       {/each}
       {#each majorTicks as tick}
         <div
           class="tick tick-major"
           class:over-s9={tick.raw > s9Raw}
-          style="left: {(tick.raw / MAX_RAW) * 100}%"
+          style="left: {(tick.raw / scaleMaxRaw) * 100}%"
         >
           <span class="tick-label">{tick.label}</span>
         </div>
       {/each}
       <span class="scale-s-label">S</span>
-      <span class="scale-db-zone" style="left: {(s9Raw / MAX_RAW) * 100}%">dB</span>
+      <span class="scale-db-zone" style="left: {(s9Raw / scaleMaxRaw) * 100}%">dB</span>
     </div>
   </div>
 

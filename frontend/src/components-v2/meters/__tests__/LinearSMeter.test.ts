@@ -38,21 +38,21 @@ describe('rawToSegments', () => {
     expect(rawToSegments(0)).toBe(0);
   });
 
-  it('maps S1 (raw 18) to ~1.22 segments', () => {
-    expect(rawToSegments(18)).toBeCloseTo((18 / 162) * 11, 5);
+  it('maps S1 (raw 26 in the IC-7610 profile) to ~1.22 segments', () => {
+    expect(rawToSegments(26)).toBeCloseTo((1 / 9) * 11, 5);
   });
 
-  it('maps S9 (raw 162) to exactly 11 segments', () => {
-    expect(rawToSegments(162)).toBe(11);
+  it('maps S9 (raw 130 in the IC-7610 profile) to exactly 11 segments', () => {
+    expect(rawToSegments(130)).toBe(11);
   });
 
-  it('maps S9+20 (raw 202) to ~14.87 segments', () => {
-    const expected = 11 + ((202 - 162) / (255 - 162)) * 9;
-    expect(rawToSegments(202)).toBeCloseTo(expected, 5);
+  it('maps S9+20 (raw 200) to its calibrated tick position', () => {
+    const expected = 11 + ((200 - 130) / (240 - 130)) * 9;
+    expect(rawToSegments(200)).toBeCloseTo(expected, 5);
   });
 
-  it('maps max (raw 255) to exactly 20 segments', () => {
-    expect(rawToSegments(255)).toBe(20);
+  it('maps the top calibrated anchor (raw 240) to exactly 20 segments', () => {
+    expect(rawToSegments(240)).toBe(20);
   });
 
   it('clamps values below 0', () => {
@@ -77,28 +77,28 @@ describe('rawToSUnit', () => {
     expect(rawToSUnit(0)).toBe('S0');
   });
 
-  it('returns S1 for raw 18', () => {
-    expect(rawToSUnit(18)).toBe('S1');
+  it('returns S1 for raw 26', () => {
+    expect(rawToSUnit(26)).toBe('S1');
   });
 
-  it('returns S5 for raw 90', () => {
-    expect(rawToSUnit(90)).toBe('S5');
+  it('returns S5 for raw 78', () => {
+    expect(rawToSUnit(78)).toBe('S5');
   });
 
-  it('returns S9 for raw 162', () => {
-    expect(rawToSUnit(162)).toBe('S9');
+  it('returns S9 for raw 130', () => {
+    expect(rawToSUnit(130)).toBe('S9');
   });
 
   it('returns S9+ for raw just above S9 but below S9+10', () => {
-    expect(rawToSUnit(170)).toBe('S9+');
+    expect(rawToSUnit(140)).toBe('S9+');
   });
 
-  it('returns S9+20 for raw 202', () => {
-    expect(rawToSUnit(202)).toBe('S9+20');
+  it('returns S9+20 for raw 200', () => {
+    expect(rawToSUnit(200)).toBe('S9+20');
   });
 
-  it('returns S9+40 for raw 241', () => {
-    expect(rawToSUnit(241)).toBe('S9+40');
+  it('returns S9+40 for raw 240', () => {
+    expect(rawToSUnit(240)).toBe('S9+40');
   });
 
   it('returns S9+40 for raw 255 (max in default cal)', () => {
@@ -118,12 +118,12 @@ describe('rawToDbm', () => {
     expect(rawToDbm(0)).toBe(-54);
   });
 
-  it('returns 0 dBm at S9 (raw 162)', () => {
-    expect(rawToDbm(162)).toBe(0);
+  it('returns 0 dBm at S9 (raw 130)', () => {
+    expect(rawToDbm(130)).toBe(0);
   });
 
-  it('returns 20 dBm at S9+20 (raw 202)', () => {
-    expect(rawToDbm(202)).toBe(20);
+  it('returns 20 dBm at S9+20 (raw 200)', () => {
+    expect(rawToDbm(200)).toBe(20);
   });
 
   it('returns 40 dBm at max (raw 255)', () => {
@@ -131,10 +131,10 @@ describe('rawToDbm', () => {
   });
 
   it('interpolates between breakpoints', () => {
-    // raw 172 is halfway between 162 (0) and 182 (10) → t=0.5 → 5
+    // raw 172 is between 165 (+10) and 200 (+20) in the IC-7610 profile.
     const dbm = rawToDbm(172);
-    expect(dbm).toBeGreaterThanOrEqual(0);
-    expect(dbm).toBeLessThanOrEqual(10);
+    expect(dbm).toBeGreaterThanOrEqual(10);
+    expect(dbm).toBeLessThanOrEqual(20);
   });
 });
 
@@ -161,22 +161,22 @@ describe('segment rendering logic', () => {
     expect(Math.floor(rawToSegments(0))).toBe(0);
   });
 
-  it('~6 segments at S5 (raw 90)', () => {
-    const segs = rawToSegments(90);
+  it('~6 segments at S5 (raw 78)', () => {
+    const segs = rawToSegments(78);
     expect(segs).toBeGreaterThan(6);
     expect(segs).toBeLessThan(7);
   });
 
-  it('11 full segments at S9 (raw 162)', () => {
-    expect(Math.floor(rawToSegments(162))).toBe(11);
+  it('11 full segments at S9 (raw 130)', () => {
+    expect(Math.floor(rawToSegments(130))).toBe(11);
   });
 
-  it('14 full segments at S9+20 (raw 202)', () => {
-    expect(Math.floor(rawToSegments(202))).toBe(14);
+  it('16 full segments at S9+20 (raw 200)', () => {
+    expect(Math.floor(rawToSegments(200))).toBe(16);
   });
 
-  it('20 full segments at max (raw 255)', () => {
-    expect(Math.floor(rawToSegments(255))).toBe(20);
+  it('20 full segments at the top calibrated anchor (raw 240)', () => {
+    expect(Math.floor(rawToSegments(240))).toBe(20);
   });
 
   it('fractional segment for mid-S-unit value', () => {

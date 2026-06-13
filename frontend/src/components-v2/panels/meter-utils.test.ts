@@ -226,7 +226,10 @@ describe('sLevel (calibrated bar)', () => {
     expect(sLevel(40)).toBeCloseTo(1.0);
   });
   it('returns the S9 marker position for a calibrated 0 dB-rel-S9 reading', () => {
-    expect(sLevel(0)).toBeCloseTo(120 / 241);
+    expect(sLevel(0)).toBeCloseTo(130 / 240);
+  });
+  it('returns the +20 marker position for a calibrated +20 dB reading', () => {
+    expect(sLevel(20)).toBeCloseTo(200 / 240);
   });
 });
 
@@ -294,8 +297,8 @@ describe('getNeedleMarks', () => {
     expect(marks[4].label).toBe('S9');
     expect(marks[5].label).toBe('+20');
     expect(marks[6].label).toBe('+40');
-    // S9 pos should be 120/255
-    expect(marks[4].pos).toBeCloseTo(120 / 255);
+    // S9 pos should follow the shared IC-7610 profile scale: 130/240
+    expect(marks[4].pos).toBeCloseTo(130 / 240);
   });
 
   it('returns SWR marks for source "SWR"', () => {

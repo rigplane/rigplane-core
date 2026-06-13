@@ -81,13 +81,19 @@ const SWR_KNOTS: [number, number][] = [
 /** IC-7610 ALC max raw value */
 const ALC_MAX_DEFAULT = 120;
 
-/** IC-7610 S-meter: S9 = raw 120, S9+60 = raw 241 */
-const S9_RAW_DEFAULT = 120;
-const S9_PLUS60_RAW_DEFAULT = 241;
+/** IC-7610 S-meter fallback mirrors rigs/ic7610.toml. */
+const S9_RAW_DEFAULT = 130;
+const S9_SCALE_MAX_RAW_DEFAULT = 240;
 const S_METER_KNOTS_DEFAULT: [number, number][] = [
   [0, -54],
+  [26, -48],
+  [52, -36],
+  [78, -24],
+  [103, -12],
   [S9_RAW_DEFAULT, 0],
-  [S9_PLUS60_RAW_DEFAULT, 40],
+  [165, 10],
+  [200, 20],
+  [S9_SCALE_MAX_RAW_DEFAULT, 40],
 ];
 
 // ---- Public formatters ----
@@ -129,23 +135,26 @@ export function formatAlc(raw: number): string {
 }
 
 /**
- * Returns S-meter calibration boundaries: [s9Raw, s9Plus60Raw].
+ * Returns S-meter calibration boundaries: [s9Raw, scaleMaxRaw].
  */
 function getSmeterBounds(): [number, number] {
   const cal = getMeterCalibration('s_meter');
   if (cal && cal.length >= 2) {
-    // Find S9 and S9+60 calibration points
     const s9 = cal.find((p) => p.label === 'S9');
-    const s9p60 = cal.find((p) => p.label === 'S9+60dB' || p.label === 'S9+60');
-    if (s9) return [s9.raw, s9p60?.raw ?? cal[cal.length - 1].raw];
+    if (s9) return [s9.raw, cal[cal.length - 1].raw];
     // Fallback: first point is floor, last point is max.
     if (cal.length >= 2) return [cal[0].raw, cal[cal.length - 1].raw];
   }
-  return [S9_RAW_DEFAULT, S9_PLUS60_RAW_DEFAULT];
+  return [S9_RAW_DEFAULT, S9_SCALE_MAX_RAW_DEFAULT];
 }
 
 function getSmeterKnots(): [number, number][] {
   return calToKnots('s_meter') ?? S_METER_KNOTS_DEFAULT;
+}
+
+function getSmeterMaxRaw(): number {
+  const knots = getSmeterKnots();
+  return knots[knots.length - 1][0];
 }
 
 function calibratedSmeterToRaw(actual: number): number {
@@ -309,9 +318,9 @@ export function compLevel(raw: number): number {
 
 /** Bar level for calibrated S-meter values relative to the UI scale full-scale. */
 export function sLevel(actual: number): number {
-  const [, s9Plus60Raw] = getSmeterBounds();
+  const scaleMaxRaw = getSmeterMaxRaw();
   const scaled = calibratedSmeterToRaw(actual);
-  return s9Plus60Raw > 0 ? Math.max(0, Math.min(1, scaled / s9Plus60Raw)) : 0;
+  return scaleMaxRaw > 0 ? Math.max(0, Math.min(1, scaled / scaleMaxRaw)) : 0;
 }
 
 /** True when SWR exceeds the 2.0 TX-safety threshold. */
@@ -381,16 +390,13 @@ export function peakHoldDisplay(
 export function getNeedleMarks(source: MeterSource): Mark[] {
   switch (source) {
     case 'S': {
-      const [s9Raw, s9Plus60Raw] = getSmeterBounds();
-      return [
-        { pos: (s9Raw * (1 / 9)) / 255, label: 'S1' },
-        { pos: (s9Raw * (3 / 9)) / 255, label: 'S3' },
-        { pos: (s9Raw * (5 / 9)) / 255, label: 'S5' },
-        { pos: (s9Raw * (7 / 9)) / 255, label: 'S7' },
-        { pos: s9Raw / 255, label: 'S9' },
-        { pos: (s9Raw + (s9Plus60Raw - s9Raw) * (20 / 60)) / 255, label: '+20' },
-        { pos: (s9Raw + (s9Plus60Raw - s9Raw) * (40 / 60)) / 255, label: '+40' },
-      ];
+      const maxRaw = getSmeterMaxRaw();
+      return getSmeterKnots()
+        .filter(([, actual]) => [-48, -36, -24, -12, 0, 20, 40].includes(Math.round(actual)))
+        .map(([raw, actual]) => ({
+          pos: maxRaw > 0 ? Math.max(0, Math.min(1, raw / maxRaw)) : 0,
+          label: actual > 0 ? `+${Math.round(actual)}` : `S${Math.round((actual + 54) / 6)}`,
+        }));
     }
     case 'SWR': {
       const knots = getKnots('swr', SWR_KNOTS);

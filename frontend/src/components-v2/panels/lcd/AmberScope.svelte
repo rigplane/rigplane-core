@@ -7,6 +7,7 @@
   import AmberAfScope from './AmberAfScope.svelte';
   import AmberFilterGhost from './AmberFilterGhost.svelte';
   import AmberIndStrip from './AmberIndStrip.svelte';
+  import AmberSmeter from './AmberSmeter.svelte';
   import type { IndToken } from './AmberIndStrip.svelte';
   import { runtime } from '$lib/runtime';
   import { isFieldAvailable } from '$lib/state/field-status';
@@ -239,6 +240,10 @@
       <AmberIndStrip zone="global" tokens={globalTokens} />
     </div>
 
+    <div class="lcd-meter-row" style:grid-area="meter">
+      <AmberSmeter value={rx?.sMeter ?? -54} source="S" />
+    </div>
+
     <!-- ═══ Scope: dominant AfScope ═══ -->
     <div class="lcd-scope" style:grid-area="scope">
       {#if showFft}
@@ -290,12 +295,13 @@
       0 0 8px rgba(0, 0, 0, 0.5);
     min-height: 0;
 
-    /* Grid: header / indicator-zones / scope (scope-dominant) */
+    /* Grid: header / indicator-zones / S-meter / scope (scope-dominant) */
     display: grid;
-    grid-template-rows: auto auto minmax(0, 1fr);
+    grid-template-rows: auto auto auto minmax(0, 1fr);
     grid-template-areas:
       "header"
       "ind-strips"
+      "meter"
       "scope";
     grid-template-columns: minmax(0, 1fr);
     gap: 4px;
@@ -430,6 +436,42 @@
     flex-shrink: 0;
     margin: 0 6px;
     align-self: center;
+  }
+
+  .lcd-meter-row {
+    position: relative;
+    z-index: 2;
+    min-height: 42px;
+    overflow: hidden;
+    border-top: 1px solid rgba(26, 16, 0, calc(var(--lcd-alpha-ghost) * 2));
+    padding-top: 2px;
+  }
+
+  .lcd-meter-row :global(.lcd-smeter) {
+    align-items: flex-start;
+    gap: 8px;
+  }
+
+  .lcd-meter-row :global(.meter-bar) {
+    height: 11px;
+  }
+
+  .lcd-meter-row :global(.meter-scale) {
+    height: 24px;
+  }
+
+  .lcd-meter-row :global(.tick-label),
+  .lcd-meter-row :global(.scale-s-label),
+  .lcd-meter-row :global(.scale-db-zone) {
+    font-size: 9px;
+  }
+
+  .lcd-meter-row :global(.readout-s) {
+    font-size: 28px;
+  }
+
+  .lcd-meter-row :global(.readout-dbm) {
+    font-size: 10px;
   }
 
   /* ── Scope cell: fills remaining height ── */

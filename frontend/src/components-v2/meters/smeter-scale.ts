@@ -13,22 +13,24 @@ interface CalPoint {
   label: string;
 }
 
-// IC-7610 fallback (original hardcoded values)
+export interface SmeterMark {
+  raw: number;
+  actual: number;
+  text: string;
+  color: string;
+}
+
+// IC-7610 fallback mirrors rigs/ic7610.toml.
 const DEFAULT_CAL: CalPoint[] = [
   { raw: 0, actual: -54, label: 'S0' },
-  { raw: 18, actual: -48, label: 'S1' },
-  { raw: 36, actual: -42, label: 'S2' },
-  { raw: 54, actual: -36, label: 'S3' },
-  { raw: 72, actual: -30, label: 'S4' },
-  { raw: 90, actual: -24, label: 'S5' },
-  { raw: 108, actual: -18, label: 'S6' },
-  { raw: 126, actual: -12, label: 'S7' },
-  { raw: 144, actual: -6, label: 'S8' },
-  { raw: 162, actual: 0, label: 'S9' },
-  { raw: 182, actual: 10, label: 'S9+10' },
-  { raw: 202, actual: 20, label: 'S9+20' },
-  { raw: 222, actual: 30, label: 'S9+30' },
-  { raw: 241, actual: 40, label: 'S9+40' },
+  { raw: 26, actual: -48, label: 'S1' },
+  { raw: 52, actual: -36, label: 'S3' },
+  { raw: 78, actual: -24, label: 'S5' },
+  { raw: 103, actual: -12, label: 'S7' },
+  { raw: 130, actual: 0, label: 'S9' },
+  { raw: 165, actual: 10, label: 'S9+10' },
+  { raw: 200, actual: 20, label: 'S9+20' },
+  { raw: 240, actual: 40, label: 'S9+40' },
 ];
 
 const MAX_RAW = 255;
@@ -42,12 +44,18 @@ function getCal(): CalPoint[] {
 export function getS9Raw(): number {
   const cal = getCal();
   const s9 = cal.find(p => p.label === 'S9');
-  return s9?.raw ?? 162;
+  return s9?.raw ?? 130;
 }
 
 /** Get redline raw value. */
 export function getRedlineRaw(): number {
   return getSmeterRedline() ?? getS9Raw();
+}
+
+/** Last calibration raw knot, used as the right edge of visual S-meter scales. */
+export function getScaleMaxRaw(): number {
+  const cal = getCal();
+  return cal[cal.length - 1]?.raw ?? MAX_RAW;
 }
 
 /** Piecewise linear interpolation over calibration table. */
@@ -116,11 +124,12 @@ function rawToSFloat(raw: number): number {
 /** Map raw 0-255 to fractional segment count 0-20. */
 export function rawToSegments(raw: number): number {
   const s9Raw = getS9Raw();
-  const v = Math.max(0, Math.min(MAX_RAW, raw));
+  const maxRaw = Math.max(s9Raw + 1, getScaleMaxRaw());
+  const v = Math.max(0, Math.min(maxRaw, raw));
   if (v <= s9Raw) {
     return (rawToSFloat(v) / 9) * 11;
   }
-  return 11 + ((v - s9Raw) / (MAX_RAW - s9Raw)) * 9;
+  return 11 + ((v - s9Raw) / (maxRaw - s9Raw)) * 9;
 }
 
 /** Map raw 0-255 to S-unit string, e.g. "S7", "S9+20". */
@@ -173,6 +182,30 @@ export function calibratedToDbm(actual: number): number {
   const maxActual = cal[cal.length - 1]?.actual ?? 40;
   const clamped = Math.max(minActual, Math.min(maxActual, actual));
   return Math.round(S9_DBM + clamped);
+}
+
+function colorForActual(actual: number): string {
+  if (actual <= 0) return 'var(--v2-text-bright)';
+  if (actual <= 20) return 'var(--v2-accent-yellow)';
+  if (actual <= 40) return 'var(--v2-accent-orange-alt)';
+  return 'var(--v2-accent-red-alt)';
+}
+
+function markText(label: string): string {
+  if (label.startsWith('S9+')) return `+${label.slice(3)}`;
+  return label;
+}
+
+/** Major S-meter marks derived from the active calibration table. */
+export function getScaleMarks(): SmeterMark[] {
+  return getCal()
+    .filter((p) => /^S[13579]$/.test(p.label) || /^S9\+/.test(p.label))
+    .map((p) => ({
+      raw: p.raw,
+      actual: p.actual,
+      text: markText(p.label),
+      color: colorForActual(p.actual),
+    }));
 }
 
 /** Format dBm value as display string, e.g. "−67 dBm". Uses Unicode minus. */

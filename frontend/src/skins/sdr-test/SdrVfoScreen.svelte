@@ -14,6 +14,7 @@
 <script lang="ts">
   import { formatFrequency } from '../../components-v2/display/frequency-format';
   import type { VfoStateProps } from '../../components-v2/layout/layout-utils';
+  import { calibratedToRaw, calibratedToSUnit, getScaleMaxRaw, getS9Raw } from '../../components-v2/meters/smeter-scale';
   import { HardwareButton } from '$lib/Button';
 
   /**
@@ -137,21 +138,20 @@
     return `${mhz.toFixed(1)}MHz`;
   }
 
-  // sMeter is RAW 0..255: S9 ≈ 120, S9+60dB ≈ 241 (IC-7610 calibration).
-  // Map to 0..80 sub-segments: S0..S9 → 0..42, S9..S9+60 → 42..80.
-  const S9_RAW = 120;
-  const S9P60_RAW = 241;
-  function sMeterFill(raw: number): number {
-    if (!raw || raw < 0) return 0;
-    if (raw <= S9_RAW) return Math.round((raw / S9_RAW) * 42);
-    const over = Math.min(raw - S9_RAW, S9P60_RAW - S9_RAW);
-    return Math.round(42 + (over / (S9P60_RAW - S9_RAW)) * 38);
+  // sMeter values are calibrated dB relative to S9 from backend state. Convert
+  // through the active calibration table so fill and text agree with the rig.
+  function sMeterFill(actual: number): number {
+    const s9Raw = getS9Raw();
+    const maxRaw = getScaleMaxRaw();
+    const raw = calibratedToRaw(actual);
+    if (raw <= 0 || maxRaw <= 0) return 0;
+    const s9Fill = Math.round((s9Raw / maxRaw) * SEGS * SUB_PER_SEG);
+    if (raw <= s9Raw) return Math.round((raw / s9Raw) * s9Fill);
+    const over = Math.min(raw - s9Raw, maxRaw - s9Raw);
+    return Math.round(s9Fill + (over / (maxRaw - s9Raw)) * (SEGS * SUB_PER_SEG - s9Fill));
   }
-  function sUnitLabel(raw: number): string {
-    if (!raw || raw < 0) return '0';
-    if (raw <= S9_RAW) return String(Math.round((raw / S9_RAW) * 9));
-    const db = Math.round(((raw - S9_RAW) / (S9P60_RAW - S9_RAW)) * 60);
-    return `9+${db}`;
+  function sUnitLabel(actual: number): string {
+    return calibratedToSUnit(actual).replace(/^S/, '');
   }
 
   const SEGS = 40;

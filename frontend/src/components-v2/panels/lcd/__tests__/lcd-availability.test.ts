@@ -92,6 +92,25 @@ afterEach(() => {
 // ── Tests ───────────────────────────────────────────────────────────────────
 
 describe('AmberScope availability gating (MOR-429)', () => {
+  it('renders an S-meter row for the active receiver when scope is shown', () => {
+    const state = {
+      active: 'MAIN',
+      main: baseReceiver(),
+      sub: baseReceiver(),
+      fieldStatus: {
+        'main.agc': {
+          storePath: 'receiver.main.operator_controls.agc',
+          observed: true,
+          freshness: 'fresh',
+          availability: 'available',
+        },
+      },
+    } as unknown as ServerState;
+
+    const target = mountScope(state);
+    expect(target.querySelector('.lcd-smeter')).not.toBeNull();
+  });
+
   it('renders AGC as active when the field is observed/available', () => {
     const state = {
       active: 'MAIN',

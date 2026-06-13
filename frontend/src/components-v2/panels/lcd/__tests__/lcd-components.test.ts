@@ -186,7 +186,7 @@ describe('AmberSmeter', () => {
   it('fills to the top calibrated anchor for the strongest signal', () => {
     const component = mount(AmberSmeter, { target, props: { value: 40 } });
     const filled = target.querySelectorAll('.seg.filled');
-    expect(filled.length).toBe(181);
+    expect(filled.length).toBe(192);
     unmount(component);
   });
 
