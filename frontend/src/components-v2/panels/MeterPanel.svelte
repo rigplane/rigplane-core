@@ -9,6 +9,7 @@
     formatAlc,
     formatSMeter,
     getNeedleMarks,
+    sLevel,
     type MeterSource,
   } from './meter-utils';
 
@@ -36,7 +37,7 @@
 
   let needleValue = $derived(
     meterSource === 'S'
-      ? normalize(sValue)
+      ? sLevel(sValue)
       : meterSource === 'SWR'
         ? normalize(swr)
         : normalize(rfPower),

@@ -1,12 +1,35 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, afterEach } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
+import { mount, unmount, flushSync } from 'svelte';
+import type { ComponentProps } from 'svelte';
+import LinearSMeter from '../LinearSMeter.svelte';
 import {
   rawToSegments,
   rawToSUnit,
   rawToDbm,
   formatDbm,
 } from '../smeter-scale';
+
+let components: ReturnType<typeof mount>[] = [];
+let roots: HTMLElement[] = [];
+
+function mountMeter(props: ComponentProps<typeof LinearSMeter>) {
+  const target = document.createElement('div');
+  document.body.appendChild(target);
+  roots.push(target);
+  const component = mount(LinearSMeter, { target, props });
+  flushSync();
+  components.push(component);
+  return target;
+}
+
+afterEach(() => {
+  components.forEach((component) => unmount(component));
+  roots.forEach((root) => root.remove());
+  components = [];
+  roots = [];
+});
 
 // ── rawToSegments ──────────────────────────────────────────────────────────
 
@@ -185,5 +208,23 @@ describe('LinearSMeter smoother release τ', () => {
     // ~150 ms. Anything ≥ 0.25 reintroduces the visible lag (MOR-481).
     expect(release).toBeCloseTo(0.1, 5);
     expect(release).toBeLessThan(0.25);
+  });
+});
+
+describe('LinearSMeter calibrated S-meter domain', () => {
+  it('renders S9 and -73 dBm for a calibrated 0 dB-rel-S9 reading', () => {
+    const target = mountMeter({ value: 0 });
+    const text = target.textContent ?? '';
+
+    expect(text).toContain('S9');
+    expect(text).toContain('\u221273 dBm');
+  });
+
+  it('renders S9+20 and -53 dBm for a calibrated +20 dB reading', () => {
+    const target = mountMeter({ value: 20 });
+    const text = target.textContent ?? '';
+
+    expect(text).toContain('S9+20');
+    expect(text).toContain('\u221253 dBm');
   });
 });

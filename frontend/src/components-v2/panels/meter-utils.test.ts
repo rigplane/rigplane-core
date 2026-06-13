@@ -119,27 +119,30 @@ describe('formatAlc', () => {
 });
 
 describe('formatSMeter', () => {
-  it('returns S0 for raw=0', () => {
-    expect(formatSMeter(0)).toBe('S0');
+  it('returns S0 for the calibrated floor (-54 dB-rel-S9)', () => {
+    expect(formatSMeter(-54)).toBe('S0');
   });
-  it('returns S9 for raw=120', () => {
-    expect(formatSMeter(120)).toBe('S9');
+  it('returns S9 for a calibrated 0 dB-rel-S9 reading', () => {
+    expect(formatSMeter(0)).toBe('S9');
   });
-  it('returns S9+60 for raw=241', () => {
-    expect(formatSMeter(241)).toBe('S9+60');
+  it('returns S9+20 for a calibrated +20 dB reading', () => {
+    expect(formatSMeter(20)).toBe('S9+20');
   });
-  it('returns S9+dB for values above 120', () => {
-    const result = formatSMeter(180);
+  it('clamps weaker-than-floor readings to S0', () => {
+    expect(formatSMeter(-80)).toBe('S0');
+  });
+  it('returns S9+dB for calibrated values above S9', () => {
+    const result = formatSMeter(33);
     expect(result).toMatch(/^S9\+\d+$/);
     const db = parseInt(result.replace('S9+', ''));
     expect(db).toBeGreaterThan(0);
-    expect(db).toBeLessThan(60);
+    expect(db).toBeLessThanOrEqual(40);
   });
-  it('returns correct S-unit below S9', () => {
-    // raw=60 -> S-unit = round((60/120)*9) = round(4.5) = 5
-    expect(formatSMeter(60)).toBe('S5');
+  it('returns correct S-unit below S9 for calibrated values', () => {
+    // -24 dB-rel-S9 is the S5 anchor on the 6 dB/S-unit scale.
+    expect(formatSMeter(-24)).toBe('S5');
   });
-  it('handles raw=255 (above S9+60 range)', () => {
+  it('handles very strong readings by clamping to the top of the scale', () => {
     const result = formatSMeter(255);
     expect(result).toMatch(/^S9\+\d+$/);
   });
@@ -219,11 +222,11 @@ describe('compLevel (calibrated bar)', () => {
 });
 
 describe('sLevel (calibrated bar)', () => {
-  it('returns ~1.0 at S9+60 (raw=241), not 241/255=0.945', () => {
-    expect(sLevel(241)).toBeCloseTo(1.0);
+  it('returns ~1.0 at the strongest calibrated reading', () => {
+    expect(sLevel(40)).toBeCloseTo(1.0);
   });
-  it('returns ~0.498 at S9 (raw=120) — 120/241', () => {
-    expect(sLevel(120)).toBeCloseTo(120 / 241);
+  it('returns the S9 marker position for a calibrated 0 dB-rel-S9 reading', () => {
+    expect(sLevel(0)).toBeCloseTo(120 / 241);
   });
 });
 
