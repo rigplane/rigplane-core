@@ -105,7 +105,7 @@ export function toVfoProps(
     'NOTCH': rx.manualNotch ?? false,
     'ATT': rx.att > 0,
     'PRE': rx.preamp > 0,
-    'RFG': (rx.rfGain ?? 255) < 255,
+    'RFG': (rx.rfGain ?? 1) < 1,
     'SQL': (rx.squelch ?? 0) > 0,
     'ATU': (state.tunerStatus ?? 0) > 0,
   };
@@ -220,7 +220,7 @@ export function toRfFrontEndProps(
   // (rules are not yet serialized to the client).
   const preDisabled = rx?.digisel ?? false;
   return {
-    rfGain: rx?.rfGain ?? 255,
+    rfGain: rx?.rfGain ?? 1.0,
     squelch: rx?.squelch ?? 0,
     att: rx?.att ?? 0,
     digiSel: rx?.digisel ?? false,
@@ -551,7 +551,7 @@ export function toTxProps(
   const driveGainAvailable = topFieldAvailable(state, 'driveGain');
   return {
     txActive: state?.ptt ?? false,
-    rfPower: state?.powerLevel ?? 128,
+    rfPower: state?.powerLevel ?? 0.5,
     micGain: state?.micGain ?? 128,
     atuActive: (state?.tunerStatus ?? 0) > 0,
     atuTuning: (state?.tunerStatus ?? 0) === 2,
@@ -709,8 +709,8 @@ export function toRxAudioProps(
       : 'local';
   const afLevel =
     monitorMode === 'live'
-      ? Math.round((audioState.volume / 100) * 255)
-      : (rx?.afLevel ?? 128);
+      ? audioState.volume / 100
+      : (rx?.afLevel ?? 0.5);
   const hasDualReceiver = caps?.capabilities?.includes('dual_rx') ?? false;
   return {
     monitorMode,

@@ -45,7 +45,7 @@ it('returns danger red when tuning', () => {
 
 const mockProps = {
   txActive: false,
-  rfPower: 128,
+  rfPower: 0.5,
   micGain: 128,
   atuActive: false,
   atuTuning: false,
@@ -130,7 +130,7 @@ function openTxSettings(container: HTMLElement) {
 beforeEach(() => {
   components = [];
   Object.assign(mockProps, {
-    txActive: false, rfPower: 128, micGain: 128, atuActive: false,
+    txActive: false, rfPower: 0.5, micGain: 128, atuActive: false,
     atuTuning: false, voxActive: false, compActive: false, compLevel: 64,
     monActive: false, monLevel: 64, driveGain: 128,
     hasTx: true, hasTuner: true, hasMonitor: true,

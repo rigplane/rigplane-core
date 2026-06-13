@@ -4,7 +4,7 @@
    * 90%-of-the-time controls: VFO ops, MODE quick, FILTER quick, AUDIO, DSP toggles.
    */
   import { HardwareButton } from '$lib/Button';
-  import { ValueControl, rawToPercentDisplay } from '../controls/value-control';
+  import { ValueControl, normalizedPercentDisplay } from '../controls/value-control';
 
   interface Props {
     vfoOps: { splitActive?: boolean };
@@ -121,10 +121,10 @@
     label="AF Level"
     value={rxAudio.afLevel}
     min={0}
-    max={255}
-    step={1}
+    max={1}
+    step={0.01}
     renderer="hbar"
-    displayFn={rawToPercentDisplay}
+    displayFn={normalizedPercentDisplay}
     accentColor="var(--v2-accent-cyan-alt)"
     onChange={onAfLevelChange}
     variant="hardware-illuminated"

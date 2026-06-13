@@ -1,6 +1,6 @@
 <script lang="ts">
   import { HardwareButton } from '$lib/Button';
-  import { ValueControl, rawToPercentDisplay } from '../controls/value-control';
+  import { ValueControl, normalizedPercentDisplay, rawToPercentDisplay } from '../controls/value-control';
   import { txStatusColor } from './tx-utils';
   import { getTxAudioControl } from '$lib/runtime/adapters/tx-adapter';
   import { deriveTxProps, getTxHandlers } from '$lib/runtime/adapters/panel-adapters';
@@ -235,8 +235,8 @@
       <button class="modal-close" onclick={() => (settingsOpen = false)}>✕</button>
     </div>
     <div class="modal-body">
-      <ValueControl label="RF Power" value={rfPower} min={0} max={255} step={1}
-        renderer="hbar" displayFn={rawToPercentDisplay} accentColor="var(--v2-accent-red)"
+      <ValueControl label="RF Power" value={rfPower} min={0} max={1} step={0.01}
+        renderer="hbar" displayFn={normalizedPercentDisplay} accentColor="var(--v2-accent-red)"
         onChange={onRfPowerChange} variant="hardware-illuminated" disabled={!rfPowerAvailable} />
       <ValueControl label="Mic Gain" value={micGain} min={0} max={255} step={1}
         renderer="hbar" displayFn={rawToPercentDisplay} accentColor="var(--v2-accent-orange)"

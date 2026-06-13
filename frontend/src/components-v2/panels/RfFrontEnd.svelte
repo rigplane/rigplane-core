@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { ValueControl, rawToPercentDisplay } from '../controls/value-control';
+  import { ValueControl, normalizedPercentDisplay } from '../controls/value-control';
   import DualParamRenderer from '../controls/value-control/DualParamRenderer.svelte';
   import AttenuatorControl from '../controls/AttenuatorControl.svelte';
   import { HardwareButton } from '$lib/Button';
@@ -50,8 +50,8 @@
         rfValue={rfGain}
         sqlValue={squelch}
         min={0}
-        max={255}
-        step={1}
+        max={1}
+        step={0.01}
         rfAccentColor="#22C55E"
         sqlAccentColor="#F59E0B"
         shortcutHint={rfGainShortcut}
@@ -65,11 +65,11 @@
         <ValueControl
           value={rfGain}
           min={0}
-          max={255}
-          step={1}
+          max={1}
+          step={0.01}
           label="RF Gain"
           renderer="hbar"
-          displayFn={rawToPercentDisplay}
+          displayFn={normalizedPercentDisplay}
           accentColor="#22C55E"
           shortcutHint={rfGainShortcut}
           title={rfGainShortcut}

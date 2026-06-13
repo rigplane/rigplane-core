@@ -1690,14 +1690,7 @@ class RigctldHandler:
                 if level == "SWR":
                     return RigctldResponse(values=[f"{float(projected.value):.6f}"])
                 if level in {"RFPOWER_METER", "COMP_METER", "ID_METER", "VD_METER"}:
-                    return RigctldResponse(
-                        values=[
-                            _format_raw_scaled_float(
-                                projected.value,
-                                raw_divisor=255.0,
-                            )
-                        ]
-                    )
+                    return RigctldResponse(values=[f"{float(projected.value):.6f}"])
                 if level in {"AF", "RF", "SQL"}:
                     return RigctldResponse(
                         values=[
@@ -1810,14 +1803,14 @@ class RigctldHandler:
 
         if level in {"RFPOWER_METER", "COMP_METER", "ID_METER", "VD_METER"}:
             method = getattr(self._radio, _GET_LEVEL_FLOAT[level])
-            raw = await method()
+            value = float(await method())
             self._record_state_sample(
                 self._level_path(level, receiver=receiver) or "",
-                raw,
+                value,
                 source="hamlib_response",
                 max_age=self._config.cache_ttl,
             )
-            return RigctldResponse(values=[f"{raw / 255.0:.6f}"])
+            return RigctldResponse(values=[f"{value:.6f}"])
 
         # Simple 0-255 → 0.0-1.0 float levels
         if level in _GET_LEVEL_FLOAT:

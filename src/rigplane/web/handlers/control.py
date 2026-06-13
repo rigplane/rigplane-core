@@ -253,6 +253,13 @@ class _CommandMetadataQueue:
             self.queue.put_ordered(command, future=future)
 
 
+def _normalized_or_raw_level(value: Any) -> int:
+    numeric = float(value)
+    if 0.0 <= numeric <= 1.0:
+        return max(0, min(255, round(numeric * 255)))
+    return int(numeric)
+
+
 class ControlHandler:
     """Handles the /api/v1/ws control WebSocket channel.
 
@@ -1661,7 +1668,7 @@ class ControlHandler:
                         "command set_rf_power is not supported by this radio "
                         "(radio does not implement PowerControlCapable)"
                     )
-                level = int(params["level"])
+                level = _normalized_or_raw_level(params["level"])
                 # Tag the unit per radio's wire-level scale. Icom CI-V
                 # backends expose ``native_power_unit = "raw_255"``,
                 # Yaesu CAT exposes ``"watts"`` — see
@@ -1862,7 +1869,7 @@ class ControlHandler:
                         "command set_rf_gain is not supported by this radio "
                         "(missing rf_gain capability)"
                     )
-                level = int(params["level"])
+                level = _normalized_or_raw_level(params["level"])
                 rx = int(params.get("receiver", 0))
                 self._ensure_capability("rf_gain", "set_rf_gain")
                 self._ensure_receiver_supported(rx)
@@ -1876,7 +1883,7 @@ class ControlHandler:
                         "command set_af_level is not supported by this radio "
                         "(missing af_level capability)"
                     )
-                level = int(params["level"])
+                level = _normalized_or_raw_level(params["level"])
                 rx = int(params.get("receiver", 0))
                 self._ensure_capability("af_level", "set_af_level")
                 self._ensure_receiver_supported(rx)
@@ -1890,7 +1897,7 @@ class ControlHandler:
                         f"command {name!r} is not supported by this radio "
                         "(missing squelch capability)"
                     )
-                level = int(params["level"])
+                level = _normalized_or_raw_level(params["level"])
                 rx = int(params.get("receiver", 0))
                 self._ensure_capability("squelch", name)
                 self._ensure_receiver_supported(rx)

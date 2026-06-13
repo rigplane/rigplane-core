@@ -24,26 +24,19 @@ export function formatStep(hz: number): string {
 
 // ── S-meter formatting ──
 
-export function formatSValue(raw: number): string {
-  if (raw <= 0) return 'S0';
-  if (raw <= 120) {
-    const s = Math.round(raw / 120 * 9);
-    return `S${Math.min(9, Math.max(0, s))}`;
-  }
-  const over = Math.round((raw - 120) / 120 * 60);
-  return `S9+${over}`;
+export function formatSValue(dbRelS9: number): string {
+  if (dbRelS9 > 0) return `S9+${Math.round(dbRelS9)}`;
+  const s = Math.round(9 + dbRelS9 / 6);
+  return `S${Math.min(9, Math.max(0, s))}`;
 }
 
-export function formatDbm(raw: number): string {
-  // S9 = -73 dBm, each S-unit = 6 dB
-  const dbm = -73 + (raw - 120) / 120 * 60;
-  return `${Math.round(dbm)} dBm`;
+export function formatDbm(dbRelS9: number): string {
+  return `${Math.round(-73 + dbRelS9)} dBm`;
 }
 
 // ── RF Power display ──
 
 export function formatPower(raw: number): string {
-  // 0-255 → 0-100W (approx for IC-7610)
-  const watts = Math.round(raw / 255 * 100);
-  return `${watts}W`;
+  const pct = Math.round(Math.max(0, Math.min(1, raw)) * 100);
+  return `${pct}%`;
 }

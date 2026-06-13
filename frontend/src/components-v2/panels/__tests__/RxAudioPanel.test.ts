@@ -9,7 +9,7 @@ import RxAudioPanel from '../RxAudioPanel.svelte';
 
 const mockProps = {
   monitorMode: 'local' as 'local' | 'live' | 'mute',
-  afLevel: 128,
+  afLevel: 0.5,
   hasAfLevel: true,
   hasLiveAudio: false,
   isAudioConnected: true,
