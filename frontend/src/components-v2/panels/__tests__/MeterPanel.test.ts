@@ -106,16 +106,16 @@ describe('formatAlc (IC-7610 CI-V p.4: 0=Min, 120=Max)', () => {
 // getNeedleMarks
 // ---------------------------------------------------------------------------
 
-describe('getNeedleMarks S-meter (IC-7610: 120=S9, 241=S9+60)', () => {
+describe('getNeedleMarks S-meter (IC-7610 profile: 130=S9, 240=S9+40)', () => {
   it('returns 7 marks for S source', () => {
     expect(getNeedleMarks('S')).toHaveLength(7);
   });
 
-  it('S9 mark at 120/255', () => {
+  it('S9 mark at 130/240 on the shared calibrated scale', () => {
     const marks = getNeedleMarks('S');
     const s9 = marks.find((m) => m.label === 'S9');
     expect(s9).toBeDefined();
-    expect(s9!.pos).toBeCloseTo(120 / 255, 3);
+    expect(s9!.pos).toBeCloseTo(130 / 240, 3);
   });
 
   it('last mark is +40', () => {

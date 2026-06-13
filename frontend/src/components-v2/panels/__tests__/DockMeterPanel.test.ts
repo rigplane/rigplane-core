@@ -81,8 +81,15 @@ describe('DockMeterPanel calibrated bar fill (MOR-482)', () => {
     expect(pct).toBeLessThan(70);
   });
 
-  it('fills the S bar to ~100% at S9+60 (raw=241), not ~94.5%', () => {
-    const t = mountPanel({ ...baseProps, sValue: 241 });
+  it('fills the S bar to the shared S9 position at calibrated 0 dB-rel-S9', () => {
+    const t = mountPanel({ ...baseProps, sValue: 0 });
+    const pct = fillPctForLabel(t, 'S');
+    expect(pct).toBeGreaterThan(53);
+    expect(pct).toBeLessThan(56);
+  });
+
+  it('fills the S bar to ~100% at the top calibrated S anchor (+40 dB)', () => {
+    const t = mountPanel({ ...baseProps, sValue: 40 });
     expect(fillPctForLabel(t, 'S')).toBeGreaterThan(99);
   });
 

@@ -420,6 +420,14 @@ describe('MetersDockPanel calibrated bar fill (MOR-482)', () => {
     const fill = t.querySelector('[data-meter="s"] .tile-bar-fill') as HTMLElement;
     expect(parseFloat(fill.style.width)).toBeGreaterThan(99);
   });
+
+  it('places the S bar at the shared S9 position for a calibrated 0 dB reading', () => {
+    const t = mountPanel({ ...fullProps, sValue: 0, txActive: false });
+    const fill = t.querySelector('[data-meter="s"] .tile-bar-fill') as HTMLElement;
+    const pct = parseFloat(fill.style.width);
+    expect(pct).toBeGreaterThan(53);
+    expect(pct).toBeLessThan(56);
+  });
 });
 
 describe('MetersDockPanel fault highlighting', () => {
