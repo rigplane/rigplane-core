@@ -24,25 +24,19 @@ export function formatStep(hz: number): string {
 
 // ── S-meter formatting ──
 
-export function formatSValue(raw: number): string {
-  const v = Math.max(0, Math.min(241, raw));
-  if (v <= 0) return 'S0';
-  if (v <= 120) {
-    const s = Math.round((v / 120) * 9);
-    return `S${Math.min(9, Math.max(0, s))}`;
+export function formatSValue(actual: number): string {
+  const v = Math.max(-54, Math.min(40, actual));
+  if (v >= 0) {
+    const over = Math.round(v);
+    return over > 0 ? `S9+${over}` : 'S9';
   }
-  const over = Math.round(((v - 120) / (241 - 120)) * 60);
-  return `S9+${over}`;
+  const s = Math.max(0, Math.min(9, Math.floor((v + 54) / 6)));
+  return `S${s}`;
 }
 
-export function formatDbm(raw: number): string {
-  const v = Math.max(0, Math.min(241, raw));
-  if (v <= 120) {
-    const dbm = -127 + (v / 120) * 54;
-    return `${Math.round(dbm)} dBm`;
-  }
-  const dbm = -73 + ((v - 120) / (241 - 120)) * 60;
-  return `${Math.round(dbm)} dBm`;
+export function formatDbm(actual: number): string {
+  const v = Math.max(-54, Math.min(40, actual));
+  return `${Math.round(-73 + v)} dBm`;
 }
 
 // ── RF Power display ──

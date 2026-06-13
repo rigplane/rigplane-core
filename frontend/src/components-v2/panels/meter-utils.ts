@@ -84,6 +84,11 @@ const ALC_MAX_DEFAULT = 120;
 /** IC-7610 S-meter: S9 = raw 120, S9+60 = raw 241 */
 const S9_RAW_DEFAULT = 120;
 const S9_PLUS60_RAW_DEFAULT = 241;
+const S_METER_KNOTS_DEFAULT: [number, number][] = [
+  [0, -54],
+  [S9_RAW_DEFAULT, 0],
+  [S9_PLUS60_RAW_DEFAULT, 40],
+];
 
 // ---- Public formatters ----
 
@@ -132,26 +137,51 @@ function getSmeterBounds(): [number, number] {
     // Find S9 and S9+60 calibration points
     const s9 = cal.find((p) => p.label === 'S9');
     const s9p60 = cal.find((p) => p.label === 'S9+60dB' || p.label === 'S9+60');
-    if (s9 && s9p60) return [s9.raw, s9p60.raw];
-    // Fallback: last two points as S9 boundary and max
-    if (cal.length >= 2) return [cal[cal.length - 2].raw, cal[cal.length - 1].raw];
+    if (s9) return [s9.raw, s9p60?.raw ?? cal[cal.length - 1].raw];
+    // Fallback: first point is floor, last point is max.
+    if (cal.length >= 2) return [cal[0].raw, cal[cal.length - 1].raw];
   }
   return [S9_RAW_DEFAULT, S9_PLUS60_RAW_DEFAULT];
 }
 
-/**
- * Formats raw S-meter value (BCD 0-255) as an S-unit string.
- */
-export function formatSMeter(raw: number): string {
-  const [s9Raw, s9Plus60Raw] = getSmeterBounds();
-  if (raw >= s9Raw) {
-    // S9+ range
-    const span = s9Plus60Raw - s9Raw;
-    const db = span > 0 ? Math.round(((raw - s9Raw) / span) * 60) : 0;
-    return db > 0 ? `S9+${db}` : 'S9';
+function getSmeterKnots(): [number, number][] {
+  return calToKnots('s_meter') ?? S_METER_KNOTS_DEFAULT;
+}
+
+function calibratedSmeterToRaw(actual: number): number {
+  const knots = getSmeterKnots();
+  const minActual = knots[0][1];
+  const maxActual = knots[knots.length - 1][1];
+  const clamped = Math.max(minActual, Math.min(maxActual, actual));
+
+  for (let i = 0; i < knots.length - 1; i++) {
+    const [raw0, actual0] = knots[i];
+    const [raw1, actual1] = knots[i + 1];
+    if (clamped <= actual1) {
+      const span = actual1 - actual0;
+      const t = span === 0 ? 0 : (clamped - actual0) / span;
+      return raw0 + t * (raw1 - raw0);
+    }
   }
-  // S0-S9 range
-  const s = s9Raw > 0 ? Math.round((raw / s9Raw) * 9) : 0;
+
+  return knots[knots.length - 1][0];
+}
+
+/**
+ * Formats calibrated S-meter value (dB relative to S9) as an S-unit string.
+ */
+export function formatSMeter(actual: number): string {
+  const knots = getSmeterKnots();
+  const minActual = knots[0][1];
+  const maxActual = knots[knots.length - 1][1];
+  const clamped = Math.max(minActual, Math.min(maxActual, actual));
+
+  if (clamped >= 0) {
+    const over = Math.round(clamped);
+    return over > 0 ? `S9+${over}` : 'S9';
+  }
+
+  const s = Math.max(0, Math.min(9, Math.floor((clamped - minActual) / 6)));
   return `S${s}`;
 }
 
@@ -277,10 +307,11 @@ export function compLevel(raw: number): number {
   return maxDb > 0 ? Math.max(0, Math.min(1, piecewise(raw, knots) / maxDb)) : 0;
 }
 
-/** Bar level for S-meter: raw relative to the S9+60 full-scale calibration. */
-export function sLevel(raw: number): number {
+/** Bar level for calibrated S-meter values relative to the UI scale full-scale. */
+export function sLevel(actual: number): number {
   const [, s9Plus60Raw] = getSmeterBounds();
-  return s9Plus60Raw > 0 ? Math.max(0, Math.min(1, raw / s9Plus60Raw)) : 0;
+  const scaled = calibratedSmeterToRaw(actual);
+  return s9Plus60Raw > 0 ? Math.max(0, Math.min(1, scaled / s9Plus60Raw)) : 0;
 }
 
 /** True when SWR exceeds the 2.0 TX-safety threshold. */

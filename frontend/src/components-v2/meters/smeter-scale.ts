@@ -32,6 +32,7 @@ const DEFAULT_CAL: CalPoint[] = [
 ];
 
 const MAX_RAW = 255;
+const S9_DBM = -73;
 
 function getCal(): CalPoint[] {
   return getSmeterCalibration() ?? DEFAULT_CAL;
@@ -64,6 +65,25 @@ function interpolate(raw: number, table: CalPoint[], outKey: 'actual'): number {
     }
   }
   return table[table.length - 1][outKey];
+}
+
+/** Inverse interpolation from calibrated dB-rel-S9 back to the scale raw axis. */
+function interpolateActual(actual: number, table: CalPoint[]): number {
+  if (table.length === 0) return 0;
+  const minActual = table[0].actual;
+  const maxActual = table[table.length - 1].actual;
+  const v = Math.max(minActual, Math.min(maxActual, actual));
+  if (v <= minActual) return table[0].raw;
+  for (let i = 0; i < table.length - 1; i++) {
+    const p0 = table[i];
+    const p1 = table[i + 1];
+    if (v <= p1.actual) {
+      const span = p1.actual - p0.actual;
+      const t = span === 0 ? 0 : (v - p0.actual) / span;
+      return p0.raw + t * (p1.raw - p0.raw);
+    }
+  }
+  return table[table.length - 1].raw;
 }
 
 /** Map raw to fractional S-unit (0.0 - 9.0+ range). */
@@ -129,6 +149,30 @@ export function rawToSUnit(raw: number): string {
 /** Map raw 0-255 to dBm value (linear interpolation between calibration points). */
 export function rawToDbm(raw: number): number {
   return Math.round(interpolate(raw, getCal(), 'actual'));
+}
+
+/** Map calibrated dB-rel-S9 from backend state to the raw axis used by the UI scale. */
+export function calibratedToRaw(actual: number): number {
+  return interpolateActual(actual, getCal());
+}
+
+/** Map calibrated dB-rel-S9 to fractional segment count 0-20 for the top S-meter. */
+export function calibratedToSegments(actual: number): number {
+  return rawToSegments(calibratedToRaw(actual));
+}
+
+/** Map calibrated dB-rel-S9 to an S-unit label, e.g. "S7", "S9+20". */
+export function calibratedToSUnit(actual: number): string {
+  return rawToSUnit(calibratedToRaw(actual));
+}
+
+/** Map calibrated dB-rel-S9 to user-facing dBm referenced to S9=-73 dBm. */
+export function calibratedToDbm(actual: number): number {
+  const cal = getCal();
+  const minActual = cal[0]?.actual ?? -54;
+  const maxActual = cal[cal.length - 1]?.actual ?? 40;
+  const clamped = Math.max(minActual, Math.min(maxActual, actual));
+  return Math.round(S9_DBM + clamped);
 }
 
 /** Format dBm value as display string, e.g. "−67 dBm". Uses Unicode minus. */

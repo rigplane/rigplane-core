@@ -166,8 +166,8 @@ describe('AmberSmeter', () => {
     unmount(component);
   });
 
-  it('handles zero signal — no filled segments', () => {
-    const component = mount(AmberSmeter, { target, props: { value: 0 } });
+  it('handles the calibrated floor — no filled segments', () => {
+    const component = mount(AmberSmeter, { target, props: { value: -54 } });
     const filled = target.querySelectorAll('.seg.filled');
     expect(filled.length).toBe(0);
     // S-unit readout should show S0
@@ -175,24 +175,23 @@ describe('AmberSmeter', () => {
     unmount(component);
   });
 
-  it('fills proportional segments for mid-range signal', () => {
-    const component = mount(AmberSmeter, { target, props: { value: 128 } });
+  it('fills proportional segments for a mid-range calibrated signal', () => {
+    const component = mount(AmberSmeter, { target, props: { value: -24 } });
     const filled = target.querySelectorAll('.seg.filled');
-    // 128/255 * 192 ≈ 97 segments
-    expect(filled.length).toBeGreaterThan(80);
-    expect(filled.length).toBeLessThan(120);
+    expect(filled.length).toBeGreaterThan(35);
+    expect(filled.length).toBeLessThan(75);
     unmount(component);
   });
 
-  it('fills all segments for max signal (255)', () => {
-    const component = mount(AmberSmeter, { target, props: { value: 255 } });
+  it('fills to the top calibrated anchor for the strongest signal', () => {
+    const component = mount(AmberSmeter, { target, props: { value: 40 } });
     const filled = target.querySelectorAll('.seg.filled');
-    expect(filled.length).toBe(192);
+    expect(filled.length).toBe(181);
     unmount(component);
   });
 
   it('marks over-S9 segments with over-s9 class', () => {
-    const component = mount(AmberSmeter, { target, props: { value: 200 } });
+    const component = mount(AmberSmeter, { target, props: { value: 20 } });
     const overS9 = target.querySelectorAll('.seg.filled.over-s9');
     expect(overS9.length).toBeGreaterThan(0);
     unmount(component);
@@ -217,10 +216,9 @@ describe('AmberSmeter', () => {
   });
 
   it('shows dBm in readout', () => {
-    const component = mount(AmberSmeter, { target, props: { value: 162 } });
+    const component = mount(AmberSmeter, { target, props: { value: 0 } });
     const dbm = target.querySelector('.readout-dbm')!;
-    // At S9 (raw=162), dBm should be 0
-    expect(dbm.textContent).toContain('0');
+    expect(dbm.textContent).toContain('\u221273');
     expect(dbm.textContent).toContain('dBm');
     unmount(component);
   });

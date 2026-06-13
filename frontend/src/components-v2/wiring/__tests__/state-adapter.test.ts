@@ -165,16 +165,16 @@ describe('calibrated control defaults', () => {
   });
 });
 
-describe('toMeterProps raw contract', () => {
-  it('keeps sValue and signal on the public raw sMeter domain', () => {
+describe('toMeterProps S-meter contract', () => {
+  it('passes through calibrated sMeter values without re-normalizing them', () => {
     const props = toMeterProps({
       active: 'MAIN',
-      main: { sMeter: 120 },
+      main: { sMeter: -47 },
       sub: { sMeter: 0 },
     } as any);
 
-    expect(props.sValue).toBe(120);
-    expect(props.signal).toBe(120);
+    expect(props.sValue).toBe(-47);
+    expect(props.signal).toBe(-47);
   });
 });
 

@@ -1,10 +1,16 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import { createSmoother } from '$lib/utils/smoothing.svelte';
-  import { rawToSegments, rawToSUnit, rawToDbm, formatDbm } from './smeter-scale';
+  import {
+    calibratedToSegments,
+    calibratedToSUnit,
+    calibratedToDbm,
+    formatDbm,
+    rawToSegments,
+  } from './smeter-scale';
 
   interface Props {
-    value: number;    // raw 0-255 from CI-V get_s_meter
+    value: number;    // calibrated dB relative to S9 from backend state
     compact?: boolean;
     label?: string;
     variant?: string;
@@ -138,7 +144,7 @@
   const smoother = createSmoother(0.06, 0.1);
 
   $effect(() => {
-    smoother.update(rawToSegments(value));
+    smoother.update(calibratedToSegments(value));
   });
 
   onMount(() => {
@@ -196,8 +202,8 @@
   let fullSegs = $derived(Math.floor(smoother.value));
   let fracSeg  = $derived(smoother.value - Math.floor(smoother.value));
 
-  let displaySUnit = $derived(rawToSUnit(value));
-  let displayDbm   = $derived(formatDbm(rawToDbm(value)));
+  let displaySUnit = $derived(calibratedToSUnit(value));
+  let displayDbm   = $derived(formatDbm(calibratedToDbm(value)));
 </script>
 
 <svg

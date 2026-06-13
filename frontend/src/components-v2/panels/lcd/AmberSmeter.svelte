@@ -1,13 +1,20 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import { createSmoother } from '$lib/utils/smoothing.svelte';
-  import { getCalibrationPoints, getS9Raw, rawToSUnit, rawToDbm } from '../../meters/smeter-scale';
+  import {
+    calibratedToDbm,
+    calibratedToRaw,
+    calibratedToSUnit,
+    formatDbm,
+    getCalibrationPoints,
+    getS9Raw,
+  } from '../../meters/smeter-scale';
   import { formatPowerWatts, formatSwr, formatAlc, formatCompDb } from '../meter-utils';
 
   type MeterSource = 'S' | 'PO' | 'SWR' | 'ALC' | 'COMP';
 
   interface Props {
-    value: number;      // Raw meter 0-255
+    value: number;      // calibrated dB relative to S9
     txActive?: boolean;
     source?: MeterSource;
   }
@@ -53,7 +60,8 @@
   // with the current computed segment count so the first synchronous render
   // matches the raw target (no flash to 0 on mount).
   function computeSegs(raw: number): number {
-    return Math.min(SEGMENTS, Math.max(0, (raw / MAX_RAW) * SEGMENTS));
+    const scaled = calibratedToRaw(raw);
+    return Math.min(SEGMENTS, Math.max(0, (scaled / MAX_RAW) * SEGMENTS));
   }
 
   // svelte-ignore state_referenced_locally — intentional one-shot seed read
@@ -72,12 +80,12 @@
   // (shared with the desktop meters) instead of crude raw/255 maps, so the
   // LCD agrees with the rest of the UI (MOR-483 part 2).
   let sReadout = $derived.by(() => {
-    if (source === 'S') return { label: rawToSUnit(value), sub: rawToDbm(value) + ' dBm' };
+    if (source === 'S') return { label: calibratedToSUnit(value), sub: formatDbm(calibratedToDbm(value)) };
     if (source === 'PO') return { label: 'PO', sub: formatPowerWatts(value) };
     if (source === 'SWR') return { label: 'SWR', sub: formatSwr(value) };
     if (source === 'ALC') return { label: 'ALC', sub: formatAlc(value) };
     if (source === 'COMP') return { label: 'COMP', sub: formatCompDb(value) };
-    return { label: rawToSUnit(value), sub: rawToDbm(value) + ' dBm' };
+    return { label: calibratedToSUnit(value), sub: formatDbm(calibratedToDbm(value)) };
   });
 </script>
 

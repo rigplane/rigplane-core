@@ -176,7 +176,7 @@ afterEach(() => {
 });
 
 const fullProps: ComponentProps<typeof MetersDockPanel> = {
-  sValue: 120,
+  sValue: 0,
   powerMeter: 143,
   swrMeter: 48,
   alcMeter: 60,
@@ -415,8 +415,8 @@ describe('MetersDockPanel calibrated bar fill (MOR-482)', () => {
     expect(parseFloat(fill.style.width)).toBeGreaterThan(95);
   });
 
-  it('fills the S bar to ~100% at S9+60 (raw=241), not ~94.5%', () => {
-    const t = mountPanel({ ...fullProps, sValue: 241, txActive: false });
+  it('fills the S bar to ~100% at the strongest calibrated reading', () => {
+    const t = mountPanel({ ...fullProps, sValue: 40, txActive: false });
     const fill = t.querySelector('[data-meter="s"] .tile-bar-fill') as HTMLElement;
     expect(parseFloat(fill.style.width)).toBeGreaterThan(99);
   });
