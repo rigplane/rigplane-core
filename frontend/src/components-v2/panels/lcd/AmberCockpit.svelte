@@ -195,7 +195,7 @@
         ? [{ id: 'agc' as const, label: `AGC ${agcLabelFor(rxState?.agc ?? 2)}`, active: true }]
         : []),
       ...(hasCap('rf_gain') && rxAvailable(rxKey, 'rfGain') ? [{
-        id: 'rfg' as const, label: 'RFG', active: (rxState?.rfGain ?? 255) < 255,
+        id: 'rfg' as const, label: 'RFG', active: (rxState?.rfGain ?? 1) < 1,
       }] : []),
       ...(hasCap('squelch') && rxAvailable(rxKey, 'squelch') ? [{
         id: 'sql' as const, label: 'SQL', active: (rxState?.squelch ?? 0) > 0,

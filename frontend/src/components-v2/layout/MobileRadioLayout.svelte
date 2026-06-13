@@ -26,7 +26,7 @@
   import EssentialsPanel from '../panels/EssentialsPanel.svelte';
   import PttFab from '../controls/PttFab.svelte';
   import ModInputTxWarning from '../panels/ModInputTxWarning.svelte';
-  import { ValueControl, rawToPercentDisplay } from '../controls/value-control';
+  import { ValueControl, normalizedPercentDisplay } from '../controls/value-control';
   import {
     Settings, ChevronLeft, ChevronRight, ChevronsLeft, ChevronsRight,
     Sliders, Radio as RadioIcon,
@@ -903,10 +903,10 @@
             label="RF Power"
             value={tx.rfPower}
             min={0}
-            max={255}
-            step={1}
+            max={1}
+            step={0.01}
             renderer="hbar"
-            displayFn={rawToPercentDisplay}
+            displayFn={normalizedPercentDisplay}
             accentColor="var(--v2-accent-red)"
             onChange={txHandlers.onRfPowerChange}
             variant="hardware-illuminated"

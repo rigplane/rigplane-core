@@ -681,6 +681,33 @@ async def test_enqueue_set_rf_power_yaesu_tags_watts_unit() -> None:
     assert queue2.items[-1].unit == "raw_255"
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("name", "params", "expected_type", "expected_level"),
+    [
+        ("set_rf_power", {"level": 0.5}, SetPower, 128),
+        ("set_rf_gain", {"level": 0.5, "receiver": 0}, SetRfGain, 128),
+        ("set_af_level", {"level": 0.25, "receiver": 0}, SetAfLevel, 64),
+        ("set_squelch", {"level": 0.75, "receiver": 0}, SetSquelch, 191),
+    ],
+)
+async def test_enqueue_normalized_level_controls_convert_to_raw_wire_scale(
+    name: str,
+    params: dict[str, object],
+    expected_type: type,
+    expected_level: int,
+) -> None:
+    queue = _QueueRecorder()
+    server = SimpleNamespace(command_queue=queue)
+    handler = _control_handler(radio=_capable_radio(), server=server)
+
+    result = await handler._enqueue_command(name, params)
+
+    assert result["level"] == expected_level
+    assert isinstance(queue.items[-1], expected_type)
+    assert queue.items[-1].level == expected_level
+
+
 async def test_enqueue_command_errors() -> None:
     handler = _control_handler(server=None)
     with pytest.raises(RuntimeError, match="no command queue"):

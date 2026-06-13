@@ -1443,7 +1443,7 @@ async def test_get_level_icom_projected_normalized_float_passes_through(
         ("VD_METER", "global.meters.vd", "get_vd_meter"),
     ],
 )
-async def test_get_level_physical_meter_projected_fractional_float_keeps_raw_format(
+async def test_get_level_physical_meter_projected_engineering_value_passes_through(
     mock_radio: AsyncMock,
     level: str,
     path: str,
@@ -1451,14 +1451,14 @@ async def test_get_level_physical_meter_projected_fractional_float_keeps_raw_for
 ) -> None:
     store = StateStore()
     mock_radio.state_store = store
-    _apply_store_value(store, path, 0.5)
+    _apply_store_value(store, path, 12.5)
     getattr(mock_radio, getter).return_value = 255
     handler = RigctldHandler(mock_radio, RigctldConfig())
 
     resp = await handler.execute(get_cmd("get_level", level))
 
     assert resp.ok
-    assert resp.values == ["0.000000"]
+    assert resp.values == ["12.500000"]
     getattr(mock_radio, getter).assert_not_awaited()
 
 
@@ -1486,7 +1486,7 @@ async def test_get_level_physical_meter_uses_canonical_projected_path(
     resp = await handler.execute(get_cmd("get_level", level))
 
     assert resp.ok
-    assert resp.values == [f"{128 / 255.0:.6f}"]
+    assert resp.values == ["128.000000"]
     getattr(mock_radio, getter).assert_not_awaited()
 
 
@@ -1514,7 +1514,7 @@ async def test_get_level_physical_meter_ignores_legacy_projected_path_and_falls_
     resp = await handler.execute(get_cmd("get_level", level))
 
     assert resp.ok
-    assert resp.values == ["1.000000"]
+    assert resp.values == ["255.000000"]
     getattr(mock_radio, getter).assert_awaited_once_with()
 
 
@@ -2539,7 +2539,7 @@ async def test_get_level_rfpower_meter(
     mock_radio.get_power_meter = AsyncMock(return_value=255)
     resp = await handler.execute(get_cmd("get_level", "RFPOWER_METER"))
     assert resp.ok
-    assert float(resp.values[0]) == pytest.approx(1.0)
+    assert float(resp.values[0]) == pytest.approx(255.0)
 
 
 @pytest.mark.asyncio
@@ -2549,7 +2549,7 @@ async def test_get_level_comp_meter(
     mock_radio.get_comp_meter = AsyncMock(return_value=128)
     resp = await handler.execute(get_cmd("get_level", "COMP_METER"))
     assert resp.ok
-    assert float(resp.values[0]) == pytest.approx(128 / 255.0, rel=1e-5)
+    assert float(resp.values[0]) == pytest.approx(128.0)
 
 
 @pytest.mark.asyncio
@@ -2569,7 +2569,7 @@ async def test_get_level_vd_meter(
     mock_radio.get_vd_meter = AsyncMock(return_value=200)
     resp = await handler.execute(get_cmd("get_level", "VD_METER"))
     assert resp.ok
-    assert float(resp.values[0]) == pytest.approx(200 / 255.0, rel=1e-5)
+    assert float(resp.values[0]) == pytest.approx(200.0)
 
 
 # ---------------------------------------------------------------------------
@@ -3234,6 +3234,30 @@ async def test_yaesu_get_level_swr(
     resp = await yaesu_handler.execute(get_cmd("get_level", "SWR"))
     assert resp.ok
     assert float(resp.values[0]) == pytest.approx(2.5)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("level", "getter", "value"),
+    [
+        ("COMP_METER", "get_comp_meter", 12.5),
+        ("ID_METER", "get_id_meter", 9.75),
+        ("VD_METER", "get_vd_meter", 13.8),
+    ],
+)
+async def test_yaesu_get_level_physical_meters_pass_through_engineering_units(
+    yaesu_handler: RigctldHandler,
+    yaesu_radio: AsyncMock,
+    level: str,
+    getter: str,
+    value: float,
+) -> None:
+    getattr(yaesu_radio, getter).return_value = value
+
+    resp = await yaesu_handler.execute(get_cmd("get_level", level))
+
+    assert resp.ok
+    assert resp.values == [f"{value:.6f}"]
 
 
 @pytest.mark.asyncio

@@ -2,12 +2,15 @@ import { describe, it, expect } from 'vitest';
 
 import {
   resolveFilterModeConfig,
+  toMeterProps,
   toDspProps,
   toFilterProps,
   toModeProps,
   toVfoProps,
   toVfoOpsProps,
   toRxAudioProps,
+  toRfFrontEndProps,
+  toTxProps,
 } from '../state-adapter';
 
 describe('toModeProps', () => {
@@ -147,6 +150,34 @@ describe('toVfoProps', () => {
   });
 });
 
+describe('calibrated control defaults', () => {
+  it('defaults RF power to the normalized midpoint', () => {
+    const props = toTxProps(null, null);
+
+    expect(props.rfPower).toBe(0.5);
+  });
+
+  it('defaults RF gain and squelch to normalized values', () => {
+    const props = toRfFrontEndProps(null, null);
+
+    expect(props.rfGain).toBe(1);
+    expect(props.squelch).toBe(0);
+  });
+});
+
+describe('toMeterProps raw contract', () => {
+  it('keeps sValue and signal on the public raw sMeter domain', () => {
+    const props = toMeterProps({
+      active: 'MAIN',
+      main: { sMeter: 120 },
+      sub: { sMeter: 0 },
+    } as any);
+
+    expect(props.sValue).toBe(120);
+    expect(props.signal).toBe(120);
+  });
+});
+
 describe('toFilterProps', () => {
   it('resolves data-mode specific filter config for the active receiver', () => {
     const props = toFilterProps(
@@ -262,14 +293,21 @@ describe('toVfoOpsProps', () => {
 });
 
 describe('toRxAudioProps', () => {
-  const state = { active: 'MAIN', main: { afLevel: 200 } } as any;
+  const state = { active: 'MAIN', main: { afLevel: 0.75 } } as any;
   const caps = { capabilities: ['audio'] } as any;
 
   it('returns mute when muted, live with browser volume otherwise', () => {
     expect(toRxAudioProps(state, caps, { muted: true, rxEnabled: true, volume: 80 }).monitorMode).toBe('mute');
     const live = toRxAudioProps(state, caps, { muted: false, rxEnabled: true, volume: 50 });
     expect(live.monitorMode).toBe('live');
-    expect(live.afLevel).toBe(Math.round(50 / 100 * 255));
+    expect(live.afLevel).toBe(0.5);
+  });
+
+  it('returns normalized radio AF level in local mode', () => {
+    const local = toRxAudioProps(state, caps, { muted: false, rxEnabled: false, volume: 50 });
+
+    expect(local.monitorMode).toBe('local');
+    expect(local.afLevel).toBe(0.75);
   });
 });
 

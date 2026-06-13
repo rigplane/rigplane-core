@@ -630,7 +630,7 @@ export function makeRxAudioHandlers() {
         // Save current AF level and mute radio
         const rx = getRadioState();
         const key = rx?.active === 'SUB' ? 'sub' : 'main';
-        const currentAf = rx?.[key]?.afLevel ?? 128;
+        const currentAf = rx?.[key]?.afLevel ?? 0.5;
         if (savedAfLevel === null) savedAfLevel = currentAf;
         cmd('set_af_level', { level: 0, receiver: activeReceiverParam() });
       } else {
@@ -646,8 +646,8 @@ export function makeRxAudioHandlers() {
     onAfLevelChange: (level: number) => {
       if (audioManager.rxEnabled) {
         // Live mode: browser volume only
-        audioManager.setRxVolume(level / 255);
-        setVolume(Math.round(level / 255 * 100));
+        audioManager.setRxVolume(level);
+        setVolume(Math.round(level * 100));
       } else {
         // Radio mode: CI-V AF level
         const receiver = activeReceiverParam();
@@ -999,17 +999,17 @@ export function makeKeyboardHandlers() {
           return;
         }
         case 'adjust_af_level': {
-          const current = getActiveReceiver()?.afLevel ?? 128;
-          const delta = (action.params?.direction === 'down' ? -5 : 5);
-          const level = Math.max(0, Math.min(255, current + delta));
+          const current = getActiveReceiver()?.afLevel ?? 0.5;
+          const delta = (action.params?.direction === 'down' ? -0.05 : 0.05);
+          const level = Math.max(0, Math.min(1, current + delta));
           patchActiveReceiver({ afLevel: level }, true);
           cmd('set_af_level', { level, receiver: activeReceiverParam() });
           return;
         }
         case 'adjust_rf_gain': {
-          const current = getActiveReceiver()?.rfGain ?? 255;
-          const delta = (action.params?.direction === 'down' ? -5 : 5);
-          const level = Math.max(0, Math.min(255, current + delta));
+          const current = getActiveReceiver()?.rfGain ?? 1;
+          const delta = (action.params?.direction === 'down' ? -0.05 : 0.05);
+          const level = Math.max(0, Math.min(1, current + delta));
           patchActiveReceiver({ rfGain: level }, true);
           cmd('set_rf_gain', { level, receiver: activeReceiverParam() });
           return;

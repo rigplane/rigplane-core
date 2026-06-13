@@ -299,7 +299,7 @@ class YaesuRouting:
                 "ID_METER": "get_id_meter",
                 "VD_METER": "get_vd_meter",
             }[level]
-            return RigctldResponse(values=[f"{await getattr(radio, m)() / 255.0:.6f}"])
+            return RigctldResponse(values=[f"{float(await getattr(radio, m)()):.6f}"])
 
         if level == "PREAMP":
             value = await radio.get_preamp()

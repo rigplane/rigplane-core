@@ -24,6 +24,7 @@ import {
   calculateArcPath,
   calculateIndicatorPosition,
   generateTickPositions,
+  normalizedPercentDisplay,
   rawToPercentDisplay,
 } from '../value-control-core';
 
@@ -468,6 +469,19 @@ describe('rawToPercentDisplay', () => {
 
   it('returns 0% when range is zero', () => {
     expect(rawToPercentDisplay(5, 5, 5)).toBe('0%');
+  });
+});
+
+describe('normalizedPercentDisplay', () => {
+  it('formats normalized level values as percent', () => {
+    expect(normalizedPercentDisplay(0)).toBe('0%');
+    expect(normalizedPercentDisplay(0.5)).toBe('50%');
+    expect(normalizedPercentDisplay(1)).toBe('100%');
+  });
+
+  it('clamps out-of-range normalized values', () => {
+    expect(normalizedPercentDisplay(-0.25)).toBe('0%');
+    expect(normalizedPercentDisplay(1.25)).toBe('100%');
   });
 });
 

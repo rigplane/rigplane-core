@@ -25,18 +25,23 @@ export function formatStep(hz: number): string {
 // ── S-meter formatting ──
 
 export function formatSValue(raw: number): string {
-  if (raw <= 0) return 'S0';
-  if (raw <= 120) {
-    const s = Math.round(raw / 120 * 9);
+  const v = Math.max(0, Math.min(241, raw));
+  if (v <= 0) return 'S0';
+  if (v <= 120) {
+    const s = Math.round((v / 120) * 9);
     return `S${Math.min(9, Math.max(0, s))}`;
   }
-  const over = Math.round((raw - 120) / 120 * 60);
+  const over = Math.round(((v - 120) / (241 - 120)) * 60);
   return `S9+${over}`;
 }
 
 export function formatDbm(raw: number): string {
-  // S9 = -73 dBm, each S-unit = 6 dB
-  const dbm = -73 + (raw - 120) / 120 * 60;
+  const v = Math.max(0, Math.min(241, raw));
+  if (v <= 120) {
+    const dbm = -127 + (v / 120) * 54;
+    return `${Math.round(dbm)} dBm`;
+  }
+  const dbm = -73 + ((v - 120) / (241 - 120)) * 60;
   return `${Math.round(dbm)} dBm`;
 }
 

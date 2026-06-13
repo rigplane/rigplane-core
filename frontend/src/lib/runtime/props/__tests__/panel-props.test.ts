@@ -7,6 +7,7 @@ import {
   toDspProps,
   toModeProps,
   toRfFrontEndProps,
+  toRxAudioProps,
   toTxProps,
 } from '../panel-props';
 
@@ -72,7 +73,7 @@ function makeState(overrides: Record<string, unknown> = {}) {
       agcTimeConstant: 0,
     },
     connection: { rigConnected: true, radioReady: true, controlConnected: true },
-    powerLevel: 128,
+    powerLevel: 0.5,
     micGain: 128,
     voxOn: false,
     compressorOn: false,
@@ -85,6 +86,39 @@ function makeState(overrides: Record<string, unknown> = {}) {
 }
 
 describe('panel prop field availability', () => {
+  it('defaults RF power to the normalized midpoint without state', () => {
+    const props = toTxProps(null, { tx: true, capabilities: [] } as any);
+
+    expect(props.rfPower).toBe(0.5);
+  });
+
+  it('defaults RF front-end normalized controls without state', () => {
+    const props = toRfFrontEndProps(null, {
+      capabilities: ['rf_gain', 'squelch'],
+    } as any);
+
+    expect(props.rfGain).toBe(1.0);
+    expect(props.squelch).toBe(0.0);
+  });
+
+  it('returns normalized AF level for local and live RX audio', () => {
+    const local = toRxAudioProps(
+      makeState({ main: { ...makeState().main, afLevel: 0.75 } }),
+      { capabilities: ['audio'] } as any,
+      { muted: false, rxEnabled: false, volume: 50 },
+      true,
+    );
+    const live = toRxAudioProps(
+      makeState({ main: { ...makeState().main, afLevel: 0.75 } }),
+      { capabilities: ['audio'] } as any,
+      { muted: false, rxEnabled: true, volume: 50 },
+      true,
+    );
+
+    expect(local.afLevel).toBe(0.75);
+    expect(live.afLevel).toBe(0.5);
+  });
+
   it('marks top-level TX controls unavailable when fieldStatus is missing or stale', () => {
     const props = toTxProps(
       makeState({
@@ -98,7 +132,7 @@ describe('panel prop field availability', () => {
     );
 
     expect(props.txActive).toBe(false);
-    expect(props.rfPower).toBe(128);
+    expect(props.rfPower).toBe(0.5);
     expect(props.rfPowerAvailable).toBe(false);
     expect(props.micGainAvailable).toBe(false);
     expect(props.txActiveAvailable).toBe(true);
@@ -107,7 +141,7 @@ describe('panel prop field availability', () => {
   it('keeps observed TX controls available', () => {
     const props = toTxProps(
       makeState({
-        powerLevel: 200,
+        powerLevel: 0.75,
         micGain: 90,
         fieldStatus: {
           powerLevel: fieldStatus('available'),
@@ -117,7 +151,7 @@ describe('panel prop field availability', () => {
       { tx: true, capabilities: [] } as any,
     );
 
-    expect(props.rfPower).toBe(200);
+    expect(props.rfPower).toBe(0.75);
     expect(props.micGain).toBe(90);
     expect(props.rfPowerAvailable).toBe(true);
     expect(props.micGainAvailable).toBe(true);

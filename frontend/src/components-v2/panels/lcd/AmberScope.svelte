@@ -145,7 +145,7 @@
         : []),
     ] : []),
     ...(hasCap('rf_gain') && rxAvailable('rfGain') ? [{
-      id: 'rfg' as const, label: 'RFG', active: (rx?.rfGain ?? 255) < 255,
+      id: 'rfg' as const, label: 'RFG', active: (rx?.rfGain ?? 1) < 1,
     }] : []),
   ]);
 

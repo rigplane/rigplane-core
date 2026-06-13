@@ -635,7 +635,7 @@ export function makeRxAudioHandlers() {
         setMuted(true);
         const rx = getRadioState();
         const key = rx?.active === 'SUB' ? 'sub' : 'main';
-        const currentAf = rx?.[key]?.afLevel ?? 128;
+        const currentAf = rx?.[key]?.afLevel ?? 0.5;
         if (savedAfLevel === null) savedAfLevel = currentAf;
         cmd('set_af_level', { level: 0, receiver: activeReceiverParam() });
       } else {
@@ -649,8 +649,8 @@ export function makeRxAudioHandlers() {
     },
     onAfLevelChange: (level: number) => {
       if (audioManager.rxEnabled) {
-        audioManager.setRxVolume(level / 255);
-        setVolume(Math.round((level / 255) * 100));
+        audioManager.setRxVolume(level);
+        setVolume(Math.round(level * 100));
       } else {
         const receiver = activeReceiverParam();
         patchActiveReceiver({ afLevel: level }, true);

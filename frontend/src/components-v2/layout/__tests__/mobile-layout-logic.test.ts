@@ -75,6 +75,14 @@ describe('formatSValue', () => {
     expect(formatSValue(120)).toBe('S9');
   });
 
+  it('returns S9+60 at raw 241', () => {
+    expect(formatSValue(241)).toBe('S9+60');
+  });
+
+  it('clamps values above 241 to S9+60', () => {
+    expect(formatSValue(255)).toBe('S9+60');
+  });
+
   it('returns S9+ for values above 120', () => {
     const result = formatSValue(200);
     expect(result).toMatch(/^S9\+/);
@@ -88,14 +96,18 @@ describe('formatDbm', () => {
 
   it('returns lower dBm for weaker signals', () => {
     const result = formatDbm(0);
-    // raw=0 → -73 + (0-120)/120*60 = -73 + (-60) = -133
-    expect(result).toBe('-133 dBm');
+    // raw=0 → calibration floor near -127 dBm in the mobile view.
+    expect(result).toBe('-127 dBm');
   });
 
   it('returns higher dBm for strong signals', () => {
-    const result = formatDbm(240);
-    // raw=240 → -73 + (240-120)/120*60 = -73 + 60 = -13
+    const result = formatDbm(241);
+    // raw=241 → S9+60 / about -13 dBm.
     expect(result).toBe('-13 dBm');
+  });
+
+  it('clamps values above 241 to the top of the mobile scale', () => {
+    expect(formatDbm(255)).toBe('-13 dBm');
   });
 });
 

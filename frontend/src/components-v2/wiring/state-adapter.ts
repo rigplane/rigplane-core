@@ -119,7 +119,7 @@ export function toVfoProps(
     'NOTCH': rx.manualNotch ?? false,
     'ATT': rx.att > 0,
     'PRE': rx.preamp > 0,
-    'RFG': (rx.rfGain ?? 255) < 255,  // RF Gain reduced from max
+    'RFG': (rx.rfGain ?? 1) < 1,  // RF Gain reduced from max
     'SQL': (rx.squelch ?? 0) > 0,     // Squelch active
     'ATU': (state.tunerStatus ?? 0) > 0,  // Antenna tuner active
   };
@@ -214,7 +214,7 @@ export function toRfFrontEndProps(
   const digiSelAvailable = activeFieldAvailable(state, 'digisel');
   const ipPlusAvailable = activeFieldAvailable(state, 'ipplus');
   return {
-    rfGain: rx?.rfGain ?? 255,
+    rfGain: rx?.rfGain ?? 1,
     squelch: rx?.squelch ?? 0,
     att: rx?.att ?? 0,
     digiSel: rx?.digisel ?? false,
@@ -477,7 +477,7 @@ export function toTxProps(
   const driveGainAvailable = topFieldAvailable(state, 'driveGain');
   return {
     txActive: state?.ptt ?? false,
-    rfPower: state?.powerLevel ?? 128,
+    rfPower: state?.powerLevel ?? 0.5,
     micGain: state?.micGain ?? 128,
     atuActive: (state?.tunerStatus ?? 0) > 0,
     atuTuning: (state?.tunerStatus ?? 0) === 2,
@@ -605,8 +605,8 @@ export function toRxAudioProps(
       : 'local';
   // In live mode, show browser volume; in radio mode, show radio AF level
   const afLevel = monitorMode === 'live'
-    ? Math.round(audioState.volume / 100 * 255)
-    : (rx?.afLevel ?? 128);
+    ? audioState.volume / 100
+    : (rx?.afLevel ?? 0.5);
   return {
     monitorMode,
     afLevel,

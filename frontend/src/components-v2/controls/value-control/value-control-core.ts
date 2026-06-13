@@ -459,3 +459,11 @@ export function rawToPercentDisplay(v: number, min = 0, max = 255): string {
   if (range === 0) return '0%';
   return `${Math.round(((v - min) / range) * 100)}%`;
 }
+
+/**
+ * Display function for normalized 0.0-1.0 level controls.
+ * Pass as `displayFn` to ValueControl / HBarRenderer.
+ */
+export function normalizedPercentDisplay(v: number): string {
+  return `${Math.round(Math.max(0, Math.min(1, v)) * 100)}%`;
+}
