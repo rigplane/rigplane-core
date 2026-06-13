@@ -58,51 +58,70 @@ describe('formatStep', () => {
 });
 
 describe('formatSValue', () => {
-  it('returns S9 for the calibrated S9 point', () => {
-    expect(formatSValue(0)).toBe('S9');
+  it('returns S0 for zero', () => {
+    expect(formatSValue(0)).toBe('S0');
   });
 
-  it('returns S0 for the calibrated low end', () => {
-    expect(formatSValue(-54)).toBe('S0');
+  it('returns S0 for negative values', () => {
+    expect(formatSValue(-10)).toBe('S0');
   });
 
-  it('returns S-unit below S9', () => {
-    expect(formatSValue(-24)).toBe('S5');
+  it('returns S-unit for mid-range', () => {
+    // raw 60 → 60/120*9 = 4.5 → round = 5
+    expect(formatSValue(60)).toBe('S5');
   });
 
-  it('clamps very weak readings at S0', () => {
-    expect(formatSValue(-80)).toBe('S0');
+  it('returns S9 at raw 120', () => {
+    expect(formatSValue(120)).toBe('S9');
   });
 
-  it('returns S9+ for values above S9', () => {
-    expect(formatSValue(20)).toBe('S9+20');
+  it('returns S9+60 at raw 241', () => {
+    expect(formatSValue(241)).toBe('S9+60');
+  });
+
+  it('clamps values above 241 to S9+60', () => {
+    expect(formatSValue(255)).toBe('S9+60');
+  });
+
+  it('returns S9+ for values above 120', () => {
+    const result = formatSValue(200);
+    expect(result).toMatch(/^S9\+/);
   });
 });
 
 describe('formatDbm', () => {
-  it('returns -73 dBm at S9', () => {
-    expect(formatDbm(0)).toBe('-73 dBm');
+  it('returns -73 dBm at S9 (raw=120)', () => {
+    expect(formatDbm(120)).toBe('-73 dBm');
   });
 
   it('returns lower dBm for weaker signals', () => {
-    expect(formatDbm(-54)).toBe('-127 dBm');
+    const result = formatDbm(0);
+    // raw=0 → calibration floor near -127 dBm in the mobile view.
+    expect(result).toBe('-127 dBm');
   });
 
   it('returns higher dBm for strong signals', () => {
-    expect(formatDbm(20)).toBe('-53 dBm');
+    const result = formatDbm(241);
+    // raw=241 → S9+60 / about -13 dBm.
+    expect(result).toBe('-13 dBm');
+  });
+
+  it('clamps values above 241 to the top of the mobile scale', () => {
+    expect(formatDbm(255)).toBe('-13 dBm');
   });
 });
 
 describe('formatPower', () => {
   it('returns 0W for zero', () => {
-    expect(formatPower(0)).toBe('0%');
+    expect(formatPower(0)).toBe('0W');
   });
 
-  it('returns 100% for max normalized value', () => {
-    expect(formatPower(1)).toBe('100%');
+  it('returns 100W for max (255)', () => {
+    expect(formatPower(255)).toBe('100W');
   });
 
-  it('returns percent for mid-range normalized value', () => {
-    expect(formatPower(0.5)).toBe('50%');
+  it('returns approximate wattage for mid-range', () => {
+    // 128/255*100 ≈ 50.2 → round = 50
+    expect(formatPower(128)).toBe('50W');
   });
 });

@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 
 import {
   resolveFilterModeConfig,
+  toMeterProps,
   toDspProps,
   toFilterProps,
   toModeProps,
@@ -161,6 +162,19 @@ describe('calibrated control defaults', () => {
 
     expect(props.rfGain).toBe(1);
     expect(props.squelch).toBe(0);
+  });
+});
+
+describe('toMeterProps raw contract', () => {
+  it('keeps sValue and signal on the public raw sMeter domain', () => {
+    const props = toMeterProps({
+      active: 'MAIN',
+      main: { sMeter: 120 },
+      sub: { sMeter: 0 },
+    } as any);
+
+    expect(props.sValue).toBe(120);
+    expect(props.signal).toBe(120);
   });
 });
 

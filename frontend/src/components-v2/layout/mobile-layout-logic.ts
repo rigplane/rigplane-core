@@ -24,19 +24,31 @@ export function formatStep(hz: number): string {
 
 // ── S-meter formatting ──
 
-export function formatSValue(dbRelS9: number): string {
-  if (dbRelS9 > 0) return `S9+${Math.round(dbRelS9)}`;
-  const s = Math.round(9 + dbRelS9 / 6);
-  return `S${Math.min(9, Math.max(0, s))}`;
+export function formatSValue(raw: number): string {
+  const v = Math.max(0, Math.min(241, raw));
+  if (v <= 0) return 'S0';
+  if (v <= 120) {
+    const s = Math.round((v / 120) * 9);
+    return `S${Math.min(9, Math.max(0, s))}`;
+  }
+  const over = Math.round(((v - 120) / (241 - 120)) * 60);
+  return `S9+${over}`;
 }
 
-export function formatDbm(dbRelS9: number): string {
-  return `${Math.round(-73 + dbRelS9)} dBm`;
+export function formatDbm(raw: number): string {
+  const v = Math.max(0, Math.min(241, raw));
+  if (v <= 120) {
+    const dbm = -127 + (v / 120) * 54;
+    return `${Math.round(dbm)} dBm`;
+  }
+  const dbm = -73 + ((v - 120) / (241 - 120)) * 60;
+  return `${Math.round(dbm)} dBm`;
 }
 
 // ── RF Power display ──
 
 export function formatPower(raw: number): string {
-  const pct = Math.round(Math.max(0, Math.min(1, raw)) * 100);
-  return `${pct}%`;
+  // 0-255 → 0-100W (approx for IC-7610)
+  const watts = Math.round(raw / 255 * 100);
+  return `${watts}W`;
 }
