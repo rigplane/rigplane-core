@@ -94,9 +94,45 @@ playback-side queue pressure after audio has already left the bridge queue.
 
 | Field | Unit | Meaning | Not the same as |
 |------|------|---------|-----------------|
-| `overrun_events` | events | TX playback queue overflow events on the writable stream | `BridgeMetrics.tx_overruns` bridge queue drops |
-| `overrun_audio_ms` | milliseconds | Total playback-queue audio duration dropped during TX stream overflow handling | Bridge capture callback overflow |
+| `frames_queued` | frames | Total frames accepted from the producer/write side | Callback playback completions |
+| `enqueued_audio_ms` | milliseconds | Total audio duration accepted from producer writes | Current live queue depth |
+| `buffered_audio_ms` | milliseconds | Current queued playback audio still buffered in the writable stream | Cumulative accepted or consumed audio |
 | `frames_dropped` | frames | TX playback frames dropped by the writable stream while preserving bounded latency | Silence gating or radio write failure |
+| `dropped_audio_ms` | milliseconds | Total duration represented by dropped playback frames | Callback underruns |
+| `enqueue_overrun_events` | events | TX playback queue overflow events on the writable stream | `BridgeMetrics.tx_overruns` bridge queue drops |
+| `enqueue_overrun_audio_ms` | milliseconds | Total playback-queue audio duration dropped during TX stream overflow handling | Bridge capture callback overflow |
+| `write_attempts` | callbacks | Total playback callback attempts / output fill cycles | Producer `write()` calls |
+| `writes_completed` | callbacks | Playback callbacks that completed their output fill path | Producer enqueue success count |
+| `write_failures` | events | Playback callback failures or fake-stream write failures | Queue overflow or underrun counters |
+| `callback_consumed_audio_ms` | milliseconds | Audio duration actually consumed from the queued ring by the playback callback | Silence padded during underrun |
+| `callback_output_audio_ms` | milliseconds | Total output duration the callback filled, including silence on underrun | Audio duration consumed from the queue |
+| `callback_underrun_events` | events | Playback callbacks that had to pad with silence because queued audio ran short | Bridge queue overflow |
+| `callback_underrun_audio_ms` | milliseconds | Total silence-padded output duration caused by playback underruns | Queue drops on producer overflow |
+| `callback_calls_per_sec_ewma` | callbacks/sec | Smoothed callback cadence estimate for the active PortAudio stream | Producer write rate |
+| `callback_errors` | events | Callback-level errors while filling playback output | Bridge capture callback errors |
+| `callback_status_flags` | map | Per-flag totals such as `output_underflow` from PortAudio status callbacks | Bridge metrics or radio send errors |
+| `last_error` | string or `null` | Most recent callback/write failure summary | Callback status flag counts |
+
+Canonical producer/callback names above are the stable contract. Legacy aliases
+remain available on `TxStreamHealth` attributes and in `TxStreamHealth.to_dict()`
+for compatibility during the deprecation window:
+
+- `queued_audio_ms` -> `enqueued_audio_ms`
+- `consumed_audio_ms` -> `callback_consumed_audio_ms`
+- `written_audio_ms` -> `callback_output_audio_ms`
+- `overrun_audio_ms` -> `enqueue_overrun_audio_ms`
+- `overrun_events` -> `enqueue_overrun_events`
+- `underrun_audio_ms` -> `callback_underrun_audio_ms`
+- `underrun_events` -> `callback_underrun_events`
+- `write_calls_per_sec_ewma` -> `callback_calls_per_sec_ewma`
+
+PortAudio-backed TX streams populate `write_attempts`, `writes_completed`,
+callback cadence, and the callback-duration fields from actual playback-callback
+activity. Fake TX/test-double streams are compatibility helpers rather than
+PortAudio callback simulators: `FakeTxStream` keeps its historical producer-write
+accounting, while duplex test doubles may only report captured write frames and
+leave callback attempt, duration, or cadence fields at their defaults unless
+they explicitly simulate playback.
 
 ### Interpretation Rules
 
@@ -104,10 +140,11 @@ playback-side queue pressure after audio has already left the bridge queue.
   before RigPlane could bridge it. Start with local capture/device pressure.
 - `tx_overruns > 0` with zero capture overflow means capture kept running, but
   the bridge TX queue backed up and RigPlane dropped stale frames on purpose.
-- `TxStreamHealth.overrun_events > 0`, `overrun_audio_ms > 0`, or
-  `frames_dropped > 0` mean the writable TX playback queue overflowed later in
-  the path; that is distinct from bridge queue pressure and uses different
-  counters.
+- `TxStreamHealth.enqueue_overrun_events > 0`,
+  `enqueue_overrun_audio_ms > 0`, or `frames_dropped > 0` mean the writable TX
+  playback queue overflowed later in the path; that is distinct from bridge
+  queue pressure and uses different counters. Legacy alias names still report
+  the same values.
 - `tx_silence_suppressed > 0` means quiet frames were filtered by policy. This
   is expected during RX silence and is not evidence of callback starvation.
 - Downstream TX push/write failures live elsewhere: `TxStreamHealth.write_failures`,
@@ -205,8 +242,10 @@ queue overflows, RigPlane drops the oldest queued audio and keeps the newest
 live frame. Diagnostics count that bridge-side event as `tx_overruns`.
 
 When the writable TX playback queue overflows later in the path, `TxStreamHealth`
-tracks it separately via `overrun_events`, `overrun_audio_ms`, and
-`frames_dropped`. Those playback counters are not reported as `tx_overruns`.
+tracks it separately via `enqueue_overrun_events`,
+`enqueue_overrun_audio_ms`, and `frames_dropped`. Those playback counters are
+not reported as `tx_overruns`. Legacy aliases `overrun_events` and
+`overrun_audio_ms` still mirror the canonical values for compatibility.
 
 Do not confuse bridge queue drops with PortAudio capture callback overflow:
 `tx_overruns` means RigPlane chose to evict stale already-captured audio,

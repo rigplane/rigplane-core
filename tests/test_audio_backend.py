@@ -108,6 +108,129 @@ class TestProtocolConformance:
         assert health["overrun_events"] == 0
         assert health["underrun_events"] == 0
 
+    def test_tx_stream_health_exports_canonical_and_legacy_metric_keys(self) -> None:
+        health = TxStreamHealth(
+            enqueued_audio_ms=1.5,
+            callback_consumed_audio_ms=2.5,
+            callback_output_audio_ms=3.5,
+            enqueue_overrun_audio_ms=4.5,
+            enqueue_overrun_events=6,
+            callback_underrun_audio_ms=7.5,
+            callback_underrun_events=8,
+            callback_calls_per_sec_ewma=9.5,
+        ).to_dict()
+
+        assert health["enqueued_audio_ms"] == 1.5
+        assert health["callback_consumed_audio_ms"] == 2.5
+        assert health["callback_output_audio_ms"] == 3.5
+        assert health["enqueue_overrun_audio_ms"] == 4.5
+        assert health["enqueue_overrun_events"] == 6
+        assert health["callback_underrun_audio_ms"] == 7.5
+        assert health["callback_underrun_events"] == 8
+        assert health["callback_calls_per_sec_ewma"] == 9.5
+        assert health["queued_audio_ms"] == 1.5
+        assert health["consumed_audio_ms"] == 2.5
+        assert health["written_audio_ms"] == 3.5
+        assert health["overrun_audio_ms"] == 4.5
+        assert health["overrun_events"] == 6
+        assert health["underrun_audio_ms"] == 7.5
+        assert health["underrun_events"] == 8
+        assert health["write_calls_per_sec_ewma"] == 9.5
+
+    def test_tx_stream_health_legacy_metric_constructor_mirrors_canonical_keys(
+        self,
+    ) -> None:
+        health = TxStreamHealth(
+            queued_audio_ms=1.5,
+            consumed_audio_ms=2.5,
+            written_audio_ms=3.5,
+            overrun_audio_ms=4.5,
+            overrun_events=6,
+            underrun_audio_ms=7.5,
+            underrun_events=8,
+            write_calls_per_sec_ewma=9.5,
+        )
+
+        assert health.enqueued_audio_ms == 1.5
+        assert health.callback_consumed_audio_ms == 2.5
+        assert health.callback_output_audio_ms == 3.5
+        assert health.enqueue_overrun_audio_ms == 4.5
+        assert health.enqueue_overrun_events == 6
+        assert health.callback_underrun_audio_ms == 7.5
+        assert health.callback_underrun_events == 8
+        assert health.callback_calls_per_sec_ewma == 9.5
+        assert health.to_dict()["enqueued_audio_ms"] == 1.5
+        assert health.to_dict()["callback_calls_per_sec_ewma"] == 9.5
+
+    def test_tx_stream_health_rejects_conflicting_alias_values(self) -> None:
+        with pytest.raises(
+            ValueError,
+            match="enqueued_audio_ms.*queued_audio_ms",
+        ):
+            TxStreamHealth(enqueued_audio_ms=1.0, queued_audio_ms=2.0)
+
+        with pytest.raises(
+            ValueError,
+            match="callback_calls_per_sec_ewma.*write_calls_per_sec_ewma",
+        ):
+            TxStreamHealth(
+                callback_calls_per_sec_ewma=1.0,
+                write_calls_per_sec_ewma=2.0,
+            )
+
+    def test_tx_stream_health_preserves_legacy_positional_constructor_order(
+        self,
+    ) -> None:
+        health = TxStreamHealth(
+            1,
+            2,
+            3,
+            4,
+            5,
+            6,
+            7.5,
+            8.5,
+            9.5,
+            10.5,
+            11.5,
+            12.5,
+            13,
+            14.5,
+            15,
+            16,
+            {"output_underflow": 2},
+            17.5,
+            "backend write failed",
+        )
+
+        assert health.queued_frames == 1
+        assert health.frames_queued == 2
+        assert health.frames_dropped == 3
+        assert health.write_attempts == 4
+        assert health.writes_completed == 5
+        assert health.write_failures == 6
+        assert health.queued_audio_ms == 7.5
+        assert health.buffered_audio_ms == 8.5
+        assert health.consumed_audio_ms == 9.5
+        assert health.written_audio_ms == 10.5
+        assert health.dropped_audio_ms == 11.5
+        assert health.overrun_audio_ms == 12.5
+        assert health.overrun_events == 13
+        assert health.underrun_audio_ms == 14.5
+        assert health.underrun_events == 15
+        assert health.callback_errors == 16
+        assert health.callback_status_flags == {"output_underflow": 2}
+        assert health.write_calls_per_sec_ewma == 17.5
+        assert health.last_error == "backend write failed"
+        assert health.enqueued_audio_ms == 7.5
+        assert health.callback_consumed_audio_ms == 9.5
+        assert health.callback_output_audio_ms == 10.5
+        assert health.enqueue_overrun_audio_ms == 12.5
+        assert health.enqueue_overrun_events == 13
+        assert health.callback_underrun_audio_ms == 14.5
+        assert health.callback_underrun_events == 15
+        assert health.callback_calls_per_sec_ewma == 17.5
+
     def test_rx_stream_health_is_exported(self) -> None:
         health = RxStreamHealth().to_dict()
         assert health["frames_delivered"] == 0
@@ -235,6 +358,24 @@ class TestFakeDuplexStreamCaptureHealth:
         assert stream.capture_health.frames_delivered == 1
         assert stream.capture_health.input_overflow_events == 0
         assert stream.capture_health.input_underflow_events == 0
+
+        await stream.stop()
+
+    @pytest.mark.asyncio()
+    async def test_write_health_preserves_test_double_snapshot_shape(
+        self, fake_backend: FakeAudioBackend
+    ) -> None:
+        stream = fake_backend.open_duplex(DUPLEX_DEVICE.id)
+        await stream.start(lambda _: None)
+
+        await stream.write(b"\x00\x01")
+        health = stream.write_health
+
+        assert health.frames_queued == 1
+        assert health.writes_completed == 1
+        assert health.write_attempts == 0
+        assert health.enqueued_audio_ms == 0.0
+        assert health.callback_calls_per_sec_ewma is None
 
         await stream.stop()
 
@@ -886,12 +1027,17 @@ class TestPortAudioBackendDeps:
         assert health.frames_dropped == 0
         assert health.write_attempts == 50
         assert health.writes_completed == 50
+        assert health.enqueued_audio_ms == pytest.approx(1000.0)
         assert health.queued_audio_ms == pytest.approx(1000.0)
         assert health.buffered_audio_ms == 0.0
+        assert health.callback_consumed_audio_ms == pytest.approx(1000.0)
         assert health.consumed_audio_ms == pytest.approx(1000.0)
+        assert health.callback_output_audio_ms == pytest.approx(1000.0)
         assert health.written_audio_ms == pytest.approx(1000.0)
         assert health.dropped_audio_ms == 0.0
+        assert health.callback_underrun_audio_ms == 0.0
         assert health.underrun_audio_ms == 0.0
+        assert health.callback_calls_per_sec_ewma is not None
         assert health.write_calls_per_sec_ewma is not None
 
         await stream.stop()
@@ -910,9 +1056,13 @@ class TestPortAudioBackendDeps:
         health = stream.write_health
         assert health.write_attempts == 1
         assert health.writes_completed == 1
+        assert health.callback_consumed_audio_ms == 0.0
         assert health.consumed_audio_ms == 0.0
+        assert health.callback_output_audio_ms == pytest.approx(20.0)
         assert health.written_audio_ms == pytest.approx(20.0)
+        assert health.callback_underrun_events == 1
         assert health.underrun_events == 1
+        assert health.callback_underrun_audio_ms == pytest.approx(20.0)
         assert health.underrun_audio_ms == pytest.approx(20.0)
 
     @pytest.mark.asyncio()

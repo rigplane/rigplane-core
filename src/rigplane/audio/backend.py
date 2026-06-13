@@ -118,6 +118,51 @@ class TxStreamHealth:
     callback_status_flags: dict[str, int] = field(default_factory=dict)
     write_calls_per_sec_ewma: float | None = None
     last_error: str | None = None
+    enqueued_audio_ms: float = 0.0
+    callback_consumed_audio_ms: float = 0.0
+    callback_output_audio_ms: float = 0.0
+    enqueue_overrun_audio_ms: float = 0.0
+    enqueue_overrun_events: int = 0
+    callback_underrun_audio_ms: float = 0.0
+    callback_underrun_events: int = 0
+    callback_calls_per_sec_ewma: float | None = None
+
+    def __post_init__(self) -> None:
+        self._sync_alias_pair("enqueued_audio_ms", "queued_audio_ms", 0.0)
+        self._sync_alias_pair("callback_consumed_audio_ms", "consumed_audio_ms", 0.0)
+        self._sync_alias_pair("callback_output_audio_ms", "written_audio_ms", 0.0)
+        self._sync_alias_pair("enqueue_overrun_audio_ms", "overrun_audio_ms", 0.0)
+        self._sync_alias_pair("enqueue_overrun_events", "overrun_events", 0)
+        self._sync_alias_pair("callback_underrun_audio_ms", "underrun_audio_ms", 0.0)
+        self._sync_alias_pair("callback_underrun_events", "underrun_events", 0)
+        self._sync_alias_pair(
+            "callback_calls_per_sec_ewma",
+            "write_calls_per_sec_ewma",
+            None,
+        )
+
+    def _sync_alias_pair(
+        self,
+        canonical_name: str,
+        legacy_name: str,
+        default: float | int | None,
+    ) -> None:
+        canonical_value = getattr(self, canonical_name)
+        legacy_value = getattr(self, legacy_name)
+        if (
+            canonical_value != default
+            and legacy_value != default
+            and canonical_value != legacy_value
+        ):
+            raise ValueError(
+                "Conflicting TxStreamHealth alias values for "
+                f"{canonical_name} and {legacy_name}: "
+                f"{canonical_value!r} != {legacy_value!r}"
+            )
+        if canonical_value == default and legacy_value != default:
+            object.__setattr__(self, canonical_name, legacy_value)
+        elif legacy_value == default and canonical_value != default:
+            object.__setattr__(self, legacy_name, canonical_value)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -127,17 +172,25 @@ class TxStreamHealth:
             "write_attempts": self.write_attempts,
             "writes_completed": self.writes_completed,
             "write_failures": self.write_failures,
+            "enqueued_audio_ms": self.enqueued_audio_ms,
             "queued_audio_ms": self.queued_audio_ms,
             "buffered_audio_ms": self.buffered_audio_ms,
+            "callback_consumed_audio_ms": self.callback_consumed_audio_ms,
             "consumed_audio_ms": self.consumed_audio_ms,
+            "callback_output_audio_ms": self.callback_output_audio_ms,
             "written_audio_ms": self.written_audio_ms,
             "dropped_audio_ms": self.dropped_audio_ms,
+            "enqueue_overrun_audio_ms": self.enqueue_overrun_audio_ms,
             "overrun_audio_ms": self.overrun_audio_ms,
+            "enqueue_overrun_events": self.enqueue_overrun_events,
             "overrun_events": self.overrun_events,
+            "callback_underrun_audio_ms": self.callback_underrun_audio_ms,
             "underrun_audio_ms": self.underrun_audio_ms,
+            "callback_underrun_events": self.callback_underrun_events,
             "underrun_events": self.underrun_events,
             "callback_errors": self.callback_errors,
             "callback_status_flags": dict(self.callback_status_flags),
+            "callback_calls_per_sec_ewma": self.callback_calls_per_sec_ewma,
             "write_calls_per_sec_ewma": self.write_calls_per_sec_ewma,
             "last_error": self.last_error,
         }
@@ -771,18 +824,18 @@ class _PortAudioTxStream:
                 write_attempts=self._write_attempts,
                 writes_completed=self._writes_completed,
                 write_failures=self._write_failures,
-                queued_audio_ms=round(self._queued_audio_ms, 3),
+                enqueued_audio_ms=round(self._queued_audio_ms, 3),
                 buffered_audio_ms=round(buffered_audio_ms, 3),
-                consumed_audio_ms=round(self._consumed_audio_ms, 3),
-                written_audio_ms=round(self._written_audio_ms, 3),
+                callback_consumed_audio_ms=round(self._consumed_audio_ms, 3),
+                callback_output_audio_ms=round(self._written_audio_ms, 3),
                 dropped_audio_ms=round(self._dropped_audio_ms, 3),
-                overrun_audio_ms=round(self._overrun_audio_ms, 3),
-                overrun_events=self._overrun_events,
-                underrun_audio_ms=round(self._underrun_audio_ms, 3),
-                underrun_events=self._underrun_events,
+                enqueue_overrun_audio_ms=round(self._overrun_audio_ms, 3),
+                enqueue_overrun_events=self._overrun_events,
+                callback_underrun_audio_ms=round(self._underrun_audio_ms, 3),
+                callback_underrun_events=self._underrun_events,
                 callback_errors=self._callback_errors,
                 callback_status_flags=dict(self._callback_status_flags),
-                write_calls_per_sec_ewma=(
+                callback_calls_per_sec_ewma=(
                     round(self._write_calls_per_sec_ewma, 3)
                     if self._write_calls_per_sec_ewma is not None
                     else None
