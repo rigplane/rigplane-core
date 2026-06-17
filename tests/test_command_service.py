@@ -1331,6 +1331,57 @@ async def test_set_squelch_command_response_reconciles_normalized_overlay() -> N
     ]
 
 
+@pytest.mark.parametrize(
+    ("name", "path_name"),
+    [
+        ("set_rf_gain", "rf_gain"),
+        ("set_af_level", "af_level"),
+        ("set_squelch", "squelch"),
+    ],
+)
+def test_normalized_level_command_expectation_matches_radio_scale(
+    name: str,
+    path_name: str,
+) -> None:
+    """MOR-334 regression (rf-gain set reverts to 0 / left edge).
+
+    Web level sliders emit a normalized 0.0-1.0 ``level``. The migration
+    coerced the command param with a bare ``int()``, so a slider at 98%
+    (``0.98``) collapsed to ``int(0.98) == 0`` and the StateStore expectation /
+    overlay sat at the *opposite* end of the scale from the value the radio was
+    actually driven to (``round(0.98 * 255) == 250``). The deferred readback
+    (~0.98) then never matched the bogus ``0`` expectation, surfacing as the
+    control snapping back to 0. The expected/overlay value must track the same
+    raw scale the radio is set to via ``_normalized_or_raw_level``.
+    """
+    from rigplane.web.handlers.control import _normalized_or_raw_level
+
+    intent = command_intent_from_request(
+        name,
+        {"level": 0.98, "receiver": 0},
+        source="websocket",
+        command_id=f"ws-{name}",
+        session_id="client-a",
+    )
+    path = FieldPath.receiver("0", "operator_controls", path_name)
+
+    # Param is coerced to the raw scale the radio actually receives — not 0.
+    radio_raw = _normalized_or_raw_level(0.98)
+    assert radio_raw == 250
+    assert intent.params[path_name] == radio_raw
+
+    # The expectation/overlay value the readback reconciles against is the
+    # normalized form of that same raw value (~0.98), not 0.0.
+    observation = command_response_observation(
+        intent,
+        timestamp_monotonic=70.0,
+        provider="test",
+    )
+    assert str(intent.target) == str(path)
+    assert observation.value == pytest.approx(250 / 255)
+    assert observation.value > 0.9
+
+
 @pytest.mark.asyncio
 async def test_raw_external_rigctld_level_readback_normalizes_before_reconcile() -> (
     None

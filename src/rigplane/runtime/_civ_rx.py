@@ -55,6 +55,7 @@ from rigplane.core.state_pipeline_contracts import (
     SourceMetadata,
 )
 from rigplane.core.state_diagnostics import StateDiagnosticsRecorder
+from rigplane.core.state_store import FreshnessState
 from rigplane.scope import ScopeFrame
 from rigplane.core.types import CivFrame, Mode
 from rigplane.runtime.meter_cal import interpolate_meter
@@ -1379,16 +1380,30 @@ class CivRuntime:
         coalescer = getattr(self._host, "_meter_observation_coalescer", None)
         if not isinstance(coalescer, MeterObservationCoalescer):
             return False
-        # MOR-334 regression fix (s_meter stuck at 0): seed-then-coalesce. The
-        # coalescer only flushes a sample once it has aged past its window, and
-        # the post-record flush below runs with ``now`` equal to this sample's
-        # own timestamp — so the very first sample for a path is never flushed
-        # until a *later* sample (or a poll-cycle flush) arrives. Until then the
-        # store has no entry for the meter and the public projection falls back
-        # to the RadioState default (sMeter=0). When the store has no confirmed
-        # value yet for this path, apply this first sample immediately so the
-        # meter is never stuck at its default; subsequent samples coalesce.
-        if not self._state_store_has_path(observation.path):
+        # MOR-334 regression fix (s_meter / rf-readback meters stuck at a stale
+        # low reading): apply-fresh-then-coalesce.
+        #
+        # ``flush_due`` only releases a path once its *latest* pending sample has
+        # aged past the coalescing window, and the post-record flush below runs
+        # with ``now`` equal to this sample's own timestamp — so the latest
+        # sample is never due on its own arrival. With live meters arriving ~1/s
+        # but a short window (0.2s) and a short freshness TTL (0.6-0.8s), the
+        # store value lagged ~1-2 samples *and* decayed to ``stale`` between
+        # arrivals. A stale store entry then drives the public S-meter to its
+        # floor even though the radio is reporting a real value on the wire —
+        # the reported "S0 / S-1 with signal present".
+        #
+        # The earlier seed-only fix (apply immediately *only when the store has
+        # no entry yet*) covered the very first sample but left every later
+        # sample held in the coalescer behind a stale reading. Extend it: when
+        # the store holds no confirmed FRESH value for this path (absent or
+        # already decayed to STALE/UNKNOWN as of this sample's timestamp), apply
+        # the sample immediately so a live meter tracks promptly. Only when the
+        # store value is still FRESH (rapid burst within the window) do we
+        # coalesce, preserving the burst-rate throttling the window is for.
+        if not self._state_store_value_is_fresh(
+            observation.path, now=observation.timestamp_monotonic
+        ):
             changeset = self._host._state_store.apply(observation)
             self._record_scheduler_result_for_observation(observation, changeset)
             self._notify_state_store_changed(changeset)
@@ -1402,13 +1417,21 @@ class CivRuntime:
         self.flush_due_meter_observations(now=observation.timestamp_monotonic)
         return True
 
-    def _state_store_has_path(self, path: FieldPath) -> bool:
-        """Return True if the StateStore already holds a confirmed value."""
+    def _state_store_value_is_fresh(self, path: FieldPath, *, now: float) -> bool:
+        """Return True only if the store holds a FRESH confirmed value for path.
+
+        Freshness in :class:`StateStore` decays solely via ``mark_stale_due``, so
+        evaluate expiry as of ``now`` (this sample's timestamp) before reading the
+        entry — otherwise a value that has aged out since its last apply would
+        still report ``FRESH`` and the meter would stay stuck behind the window.
+        """
+        store = self._host._state_store
+        store.mark_stale_due(now=now)
         try:
-            self._host._state_store.snapshot().field(path)
+            field = store.snapshot().field(path)
         except KeyError:
             return False
-        return True
+        return field.freshness is FreshnessState.FRESH
 
     def flush_due_meter_observations(
         self, *, now: float | None = None
