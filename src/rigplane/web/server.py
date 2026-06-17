@@ -406,6 +406,18 @@ class _HttpCommandExecutor:
         raise ValueError(f"unsupported HTTP command intent: {intent.name!r}")
 
 
+# MOR-616: SET command name -> ``global.slow_state.<field>`` for the
+# per-DATA-group MOD-input selector. The optimistic overlay and the poller
+# readback (radio_poller._apply_global_control_observation) must agree on these
+# paths for last-writer-wins reconciliation to work.
+_MOD_INPUT_COMMAND_FIELDS: dict[str, str] = {
+    "set_data_off_mod_input": "data_off_mod_input",
+    "set_data1_mod_input": "data1_mod_input",
+    "set_data2_mod_input": "data2_mod_input",
+    "set_data3_mod_input": "data3_mod_input",
+}
+
+
 @dataclass(slots=True)
 class _SharedControlCommandExecutor:
     server: "WebServer"
@@ -450,9 +462,9 @@ class _SharedControlCommandExecutor:
             else None
         )
 
-        def _observation(name: str, value: Any) -> Observation:
+        def _observation(path: FieldPath, value: Any) -> Observation:
             return Observation(
-                path=FieldPath.active(receiver, "freq_mode", name),
+                path=path,
                 value=value,
                 source=SourceMetadata(
                     source="command_response",
@@ -464,12 +476,33 @@ class _SharedControlCommandExecutor:
                 correlation_id=intent.id,
             )
 
+        def _active(name: str, value: Any) -> Observation:
+            return _observation(FieldPath.active(receiver, "freq_mode", name), value)
+
         if intent.name == "set_freq":
-            return (_observation("freq_hz", int(intent.params["freq_hz"])),)
+            return (_active("freq_hz", int(intent.params["freq_hz"])),)
         if intent.name == "set_mode":
-            return (_observation("mode", str(intent.params["mode"])),)
+            return (_active("mode", str(intent.params["mode"])),)
         if intent.name == "set_data_mode":
-            return (_observation("data_mode", int(intent.params["mode"])),)
+            return (_active("data_mode", int(intent.params["mode"])),)
+        # MOR-616 regression fix: the per-DATA-group MOD-input selector
+        # (set_data_off/1/2/3_mod_input, payload ``{source: int}``) had the same
+        # snap-back defect — the executor returned an ack with no observation, so
+        # the published source reverted to the stale store value until the
+        # deferred readback (radio_poller._fetch_mod_inputs, gated behind
+        # external_cat_pause and a data_mode-change refetch) landed, longer than
+        # the frontend optimistic TTL. The readback writes the confirmed value to
+        # ``global.slow_state.<field>`` via _apply_global_control_observation, so
+        # the overlay must target the SAME path to keep last-writer-wins
+        # reconciliation (front-panel tracking preserved).
+        mod_input_field = _MOD_INPUT_COMMAND_FIELDS.get(intent.name)
+        if mod_input_field is not None:
+            return (
+                _observation(
+                    FieldPath.global_("slow_state", mod_input_field),
+                    int(intent.params["source"]),
+                ),
+            )
         return ()
 
 
