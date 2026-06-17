@@ -55,7 +55,6 @@ from rigplane.core.state_pipeline_contracts import (
     SourceMetadata,
 )
 from rigplane.core.state_diagnostics import StateDiagnosticsRecorder
-from rigplane.core.state_store import FreshnessState
 from rigplane.scope import ScopeFrame
 from rigplane.core.types import CivFrame, Mode
 from rigplane.runtime.meter_cal import interpolate_meter
@@ -81,7 +80,14 @@ _OBSERVATION_MAX_AGE_SECONDS: dict[tuple[str, str, str], float] = {
     ("receiver", "freq_mode", "freq_hz"): 5.0,
     ("receiver", "freq_mode", "mode"): 5.0,
     ("receiver", "vfo", "active_slot"): 5.0,
-    ("receiver", "meters", "s_meter"): 0.6,
+    # MOR-334 (s_meter stuck-low, 3rd attempt): streaming meters arrive ~1/s on a
+    # live IC-7610 (with occasional multi-second gaps). A 0.6s TTL is SHORTER than
+    # the real inter-arrival interval, so the field decayed to ``stale`` between
+    # every arrival even when the radio was streaming healthily — and a stale/
+    # missing meter floors to S0 on the LCD layout. Use a TTL that exceeds the
+    # real cadence so a streaming meter stays FRESH between samples; it still
+    # expires promptly (2s) once the radio genuinely stops streaming.
+    ("receiver", "meters", "s_meter"): 2.0,
     ("receiver", "operator_toggles", "nb"): 10.0,
     ("receiver", "operator_toggles", "nr"): 10.0,
     ("receiver", "operator_controls", "af_level"): 10.0,
@@ -95,12 +101,14 @@ _OBSERVATION_MAX_AGE_SECONDS: dict[tuple[str, str, str], float] = {
     ("global", "tx_state", "power_on"): 30.0,
     ("global", "operator_controls", "rit_freq"): 10.0,
     ("global", "operator_controls", "power_level"): 30.0,
-    ("global", "meters", "alc"): 0.6,
-    ("global", "meters", "power"): 0.6,
-    ("global", "meters", "swr"): 0.6,
-    ("global", "meters", "comp"): 0.6,
-    ("global", "meters", "vd"): 0.6,
-    ("global", "meters", "id"): 0.6,
+    # See the s_meter note above: streaming TX/PA meters share the same ~1/s live
+    # cadence, so they get the same 2s freshness TTL to avoid chronic staleness.
+    ("global", "meters", "alc"): 2.0,
+    ("global", "meters", "power"): 2.0,
+    ("global", "meters", "swr"): 2.0,
+    ("global", "meters", "comp"): 2.0,
+    ("global", "meters", "vd"): 2.0,
+    ("global", "meters", "id"): 2.0,
 }
 
 _CIV_STATE_FIELD_FAMILIES = {
@@ -1380,29 +1388,30 @@ class CivRuntime:
         coalescer = getattr(self._host, "_meter_observation_coalescer", None)
         if not isinstance(coalescer, MeterObservationCoalescer):
             return False
-        # MOR-334 regression fix (s_meter / rf-readback meters stuck at a stale
-        # low reading): apply-fresh-then-coalesce.
+        # MOR-334 (s_meter stuck-low, 3rd attempt): apply-unless-rapid-burst.
         #
         # ``flush_due`` only releases a path once its *latest* pending sample has
         # aged past the coalescing window, and the post-record flush below runs
         # with ``now`` equal to this sample's own timestamp — so the latest
-        # sample is never due on its own arrival. With live meters arriving ~1/s
-        # but a short window (0.2s) and a short freshness TTL (0.6-0.8s), the
-        # store value lagged ~1-2 samples *and* decayed to ``stale`` between
-        # arrivals. A stale store entry then drives the public S-meter to its
-        # floor even though the radio is reporting a real value on the wire —
-        # the reported "S0 / S-1 with signal present".
+        # sample is never due on its own arrival and stays held in the coalescer
+        # until a *later* sample bypasses it. Coalescing must therefore apply
+        # ONLY to genuine sub-window bursts; a sample that arrives more than one
+        # coalescing window after the stored value must land immediately so the
+        # public S-meter tracks the live reading and never decays to ``stale``
+        # (which floors to S0 on the LCD layout via ``rx.sMeter ?? -54``).
         #
-        # The earlier seed-only fix (apply immediately *only when the store has
-        # no entry yet*) covered the very first sample but left every later
-        # sample held in the coalescer behind a stale reading. Extend it: when
-        # the store holds no confirmed FRESH value for this path (absent or
-        # already decayed to STALE/UNKNOWN as of this sample's timestamp), apply
-        # the sample immediately so a live meter tracks promptly. Only when the
-        # store value is still FRESH (rapid burst within the window) do we
-        # coalesce, preserving the burst-rate throttling the window is for.
-        if not self._state_store_value_is_fresh(
-            observation.path, now=observation.timestamp_monotonic
+        # The previous attempt gated this on the freshness *TTL*
+        # (``_state_store_value_is_fresh``). That conflated two unrelated
+        # timescales: with the meter TTL now raised above the ~1/s live
+        # inter-arrival interval (so the field stays FRESH between arrivals),
+        # a TTL-based gate treats every ~1s-apart sample as a "fresh burst" and
+        # coalesces it — re-introducing the stuck-low lag. Discriminate bursts
+        # by the coalescing *window* instead: only samples within one window of
+        # the stored value's own observation are throttled.
+        if not self._store_value_within_coalescing_window(
+            observation.path,
+            now=observation.timestamp_monotonic,
+            window=policy.meter_coalescing.window_seconds,
         ):
             changeset = self._host._state_store.apply(observation)
             self._record_scheduler_result_for_observation(observation, changeset)
@@ -1417,21 +1426,27 @@ class CivRuntime:
         self.flush_due_meter_observations(now=observation.timestamp_monotonic)
         return True
 
-    def _state_store_value_is_fresh(self, path: FieldPath, *, now: float) -> bool:
-        """Return True only if the store holds a FRESH confirmed value for path.
+    def _store_value_within_coalescing_window(
+        self, path: FieldPath, *, now: float, window: float
+    ) -> bool:
+        """Return True only if the stored value for ``path`` is a rapid burst.
 
-        Freshness in :class:`StateStore` decays solely via ``mark_stale_due``, so
-        evaluate expiry as of ``now`` (this sample's timestamp) before reading the
-        entry — otherwise a value that has aged out since its last apply would
-        still report ``FRESH`` and the meter would stay stuck behind the window.
+        "Rapid burst" means the store's current value for this path was observed
+        within one coalescing ``window`` of ``now`` (this sample's timestamp).
+        Such sub-window samples are throttled by the coalescer; anything older
+        (the common ~1/s live-meter case) must apply immediately so the value
+        tracks the radio and the field never decays to ``stale``.
+
+        Discriminating on the observation timestamp (not the freshness state)
+        decouples burst-throttling from the freshness TTL, so the TTL can exceed
+        the live inter-arrival interval without turning every arrival into a
+        coalesced "burst".
         """
-        store = self._host._state_store
-        store.mark_stale_due(now=now)
         try:
-            field = store.snapshot().field(path)
+            field = self._host._state_store.snapshot().field(path)
         except KeyError:
             return False
-        return field.freshness is FreshnessState.FRESH
+        return now - field.last_observed_monotonic < window
 
     def flush_due_meter_observations(
         self, *, now: float | None = None

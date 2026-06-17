@@ -433,7 +433,15 @@ def test_known_profiles_stream_like_meters_use_fast_non_decaying_policies() -> N
             assert policy.cadence_seconds is not None
             assert policy.cadence_seconds <= 0.25
             assert policy.freshness_ttl_seconds is not None
-            assert policy.freshness_ttl_seconds <= 1.0
+            # MOR-334 (s_meter stuck-low): a streaming meter's freshness TTL must
+            # EXCEED its own cadence so the field stays FRESH between live
+            # arrivals (otherwise it decays to stale between every sample and
+            # floors to S0 on the LCD layout). It must also stay fast-expiring
+            # relative to slow controls so a genuinely stopped stream is detected
+            # promptly. Bound it well below the slow-control TTLs (>= 8.0s) while
+            # comfortably above the streaming cadence.
+            assert policy.cadence_seconds < policy.freshness_ttl_seconds
+            assert policy.freshness_ttl_seconds <= 2.0
             assert policy.adaptive_decay.enabled is False
             assert policy.meter_coalescing is not None
             assert (

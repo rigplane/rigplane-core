@@ -1882,6 +1882,84 @@ def test_fresh_burst_meter_samples_still_coalesce(radio: IcomRadio) -> None:
     assert radio._state_store.snapshot().field(stored_path).value == 31
 
 
+def test_meter_value_survives_freshness_window_between_live_arrivals(
+    radio: IcomRadio,
+) -> None:
+    """MOR-334 (s_meter stuck-low, 3rd attempt): the stale *window*, not apply.
+
+    The prior regression tests projected the payload immediately after applying a
+    sample — while the field is still FRESH — which is exactly the window the live
+    failure hides in. On real hardware the meter arrives ~1/s; if the freshness
+    TTL is SHORTER than that interval the field decays to ``stale`` between every
+    arrival, and a stale/last-known meter floors to S0 on the LCD layout
+    (``rx.sMeter ?? -54``). This test advances the clock PAST the inter-arrival
+    interval, runs the freshness-decay tick (the production
+    ``StateFreshnessService`` path), and asserts the projected WS payload the
+    frontend consumes still carries the real last-known value — not the floor.
+
+    Fail-without: with the meter TTL at the old 0.6s the field is ``stale`` 0.9s
+    after the sample and the public S-meter sits behind a stale reading. Pass-
+    with: the TTL exceeds the live cadence, so a streaming meter stays FRESH and
+    the real value reaches the UI.
+    """
+    from rigplane.web.runtime_helpers import build_public_state_payload_from_snapshot
+
+    path = FieldPath.receiver("main", "meters", "s_meter")
+    # Production cadence: fast nominal cadence, short coalescing window, and the
+    # freshness TTL the shipped IC-7610 CI-V path assigns to s_meter
+    # (``_OBSERVATION_MAX_AGE_SECONDS``). The observation carries that TTL into
+    # the store, so the test asserts against the real shipped value rather than a
+    # synthetic one.
+    from rigplane.runtime._civ_rx import _OBSERVATION_MAX_AGE_SECONDS
+
+    s_meter_ttl = _OBSERVATION_MAX_AGE_SECONDS[("receiver", "meters", "s_meter")]
+    policy = AcquisitionPolicy(
+        cadence_seconds=0.2,
+        freshness_ttl_seconds=4.0,
+        meter_coalescing=MeterCoalescingPolicy(window_seconds=0.2),
+    )
+    radio._acquisition_scheduler = AcquisitionScheduler(
+        profile=_acquisition_profile(path, policy=policy)
+    )
+    radio._meter_observation_coalescer = MeterObservationCoalescer()
+    stored_path = "receiver.0.meters.s_meter"
+
+    # A real mid-scale sample (raw 122 -> calibrated -4 dB-rel-S9 ≈ S8) arrives.
+    with patch("rigplane.runtime._civ_rx.time.monotonic", return_value=300.0):
+        radio._civ_runtime._apply_state_store_observations(
+            _make_frame(cmd=0x15, sub=0x02, data=_bcd2(122))
+        )
+    assert radio._state_store.snapshot().field(stored_path).value == -4
+
+    # The next live frame is ~1s away. Drive the freshness-decay tick (the
+    # production StateFreshnessService loop) to the moment just before that next
+    # arrival — i.e. one full inter-arrival interval after the sample. This is the
+    # exact window the old 0.6s TTL fell into (0.9s age > 0.6s TTL -> STALE); the
+    # prior sim never advanced the clock here, so it missed the failure.
+    inter_arrival = 1.0
+    decay_at = 300.0 + inter_arrival - 0.1  # 0.9s after the sample
+    radio._state_store.mark_stale_due(now=decay_at)
+
+    field = radio._state_store.snapshot().field(stored_path)
+    # The shipped TTL must exceed the ~1s live inter-arrival interval so the field
+    # stays FRESH between arrivals (the actual fix).
+    assert s_meter_ttl > 1.0, (
+        "s_meter freshness TTL must exceed the ~1/s live inter-arrival interval "
+        "or the field decays to stale (S0 floor) between every frame"
+    )
+    assert field.freshness is FreshnessState.FRESH
+
+    # The real last-known value reaches the projected WS payload — never the
+    # floor — across the inter-arrival window.
+    payload = build_public_state_payload_from_snapshot(
+        radio._state_store.snapshot(),
+        radio=None,
+        receiver_count=2,
+    )
+    assert payload["main"]["sMeter"] == -4
+    assert payload["main"]["sMeter"] != -54  # the calibrated S0 floor
+
+
 def test_same_value_coalesced_meter_flush_completes_scheduler_request(
     radio: IcomRadio,
 ) -> None:
