@@ -423,32 +423,54 @@ class _SharedControlCommandExecutor:
             command_service=self.server.command_service,
         )
         # MOR-485: publish an optimistic command-response overlay for set_freq
-        # so the projected snapshot reflects the commanded freq immediately
+        # so the projected snapshot reflects the commanded value immediately
         # instead of snapping back until the deferred readback lands. Emitted
         # only on enqueue SUCCESS (a raised enqueue never reaches here, so the
         # optimistic value is never written for a failed set). The ACTIVE slot
         # matches the readback emitters in runtime/_civ_rx.py and the projection
         # in web/runtime_helpers.py.
-        observations: tuple[Observation, ...] = ()
-        if intent.name == "set_freq":
-            receiver = str(int(intent.params.get("receiver", 0)))
-            observations = (
-                Observation(
-                    path=FieldPath.active(receiver, "freq_mode", "freq_hz"),
-                    value=int(intent.params["freq_hz"]),
-                    source=SourceMetadata(
-                        source="command_response",
-                        provider="web_command",
-                        command_source=intent.source,
-                        session_id=str(intent.params["session_id"])
-                        if intent.params.get("session_id")
-                        else None,
-                    ),
-                    timestamp_monotonic=time.monotonic(),
-                    correlation_id=intent.id,
-                ),
-            )
+        #
+        # MOR-334 regression fix: ``set_mode`` and ``set_data_mode`` had the
+        # identical snap-back defect MOR-485 fixed for freq — the executor
+        # returned an ack with no observation, so the published mode reverted to
+        # the stale store value until the readback (deferred ~2-4.3s by
+        # external_cat_pause=pause_polling, longer than the frontend optimistic
+        # TTL) landed. The same active-slot path keeps later readbacks
+        # reconciling via last-writer-wins (front-panel tracking preserved).
+        observations = self._optimistic_observations(intent)
         return CommandExecutionResult(details=result, observations=observations)
+
+    def _optimistic_observations(
+        self, intent: CommandIntent
+    ) -> tuple[Observation, ...]:
+        receiver = str(int(intent.params.get("receiver", 0)))
+        session_id = (
+            str(intent.params["session_id"])
+            if intent.params.get("session_id")
+            else None
+        )
+
+        def _observation(name: str, value: Any) -> Observation:
+            return Observation(
+                path=FieldPath.active(receiver, "freq_mode", name),
+                value=value,
+                source=SourceMetadata(
+                    source="command_response",
+                    provider="web_command",
+                    command_source=intent.source,
+                    session_id=session_id,
+                ),
+                timestamp_monotonic=time.monotonic(),
+                correlation_id=intent.id,
+            )
+
+        if intent.name == "set_freq":
+            return (_observation("freq_hz", int(intent.params["freq_hz"])),)
+        if intent.name == "set_mode":
+            return (_observation("mode", str(intent.params["mode"])),)
+        if intent.name == "set_data_mode":
+            return (_observation("data_mode", int(intent.params["mode"])),)
+        return ()
 
 
 async def _read_capped_body(

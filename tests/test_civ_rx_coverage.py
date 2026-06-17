@@ -1030,6 +1030,36 @@ def test_update_state_cache_omits_filter_num_when_byte_absent(
         snapshot.field(f"receiver.{target_receiver}.active.freq_mode.filter_num")
 
 
+@pytest.mark.parametrize(  # type: ignore[untyped-decorator]
+    ("frame", "target_receiver", "expected"),
+    [
+        # MAIN, USB, DATA1, filter 2
+        (_make_frame(cmd=0x26, data=bytes([0x00, Mode.USB.value, 0x01, 0x02])), "0", 1),
+        # SUB, CW, DATA3, filter 1
+        (_make_frame(cmd=0x26, data=bytes([0x01, Mode.CW.value, 0x03, 0x01])), "1", 3),
+        # MAIN, USB, DATA OFF (3-byte frame, no filter byte)
+        (_make_frame(cmd=0x26, data=bytes([0x00, Mode.USB.value, 0x00])), "0", 0),
+    ],
+)
+def test_update_state_cache_projects_data_mode_from_cmd26(
+    radio: IcomRadio,
+    frame: CivFrame,
+    target_receiver: str,
+    expected: int,
+) -> None:
+    """MOR-334 regression: the 0x26 answer carries the DATA-mode flag in data[2].
+
+    The StateStore observation path dropped data[2], so D1/D2/D3 never reached
+    the web UI even though the legacy ``_handle_26`` mirror read it.
+    """
+    radio._civ_runtime._update_state_cache_from_frame(frame)
+
+    field = radio._state_store.snapshot().field(
+        f"receiver.{target_receiver}.active.freq_mode.data_mode"
+    )
+    assert field.value == expected
+
+
 # ---------------------------------------------------------------------------
 # MOR-437: slow-state bool/status families observation-backed
 # ---------------------------------------------------------------------------
@@ -1668,28 +1698,45 @@ def test_meter_coalescing_applies_latest_due_sample_and_records_diagnostics(
     events: list[tuple[str, dict[str, object]]] = []
     radio._on_state_change = lambda name, data: events.append((name, data))
 
+    # MOR-334 regression (s_meter stuck at 0): seed-then-coalesce. The FIRST
+    # sample for a path is applied immediately (the store was empty, so holding
+    # it in the coalescer would leave the public projection at the sMeter=0
+    # default until a later sample/flush). Subsequent samples coalesce.
     with patch(
         "rigplane.runtime._civ_rx.time.monotonic",
-        side_effect=[100.0, 100.0, 100.1, 100.1],
+        return_value=100.0,
     ):
         radio._civ_runtime._apply_state_store_observations(
             _make_frame(cmd=0x15, sub=0x02, data=_bcd2(111))
         )
+
+    # First sample applied immediately (calibrated raw 111 -> -8).
+    assert radio._state_store.snapshot().field("receiver.0.meters.s_meter").value == -8
+
+    with patch(
+        "rigplane.runtime._civ_rx.time.monotonic",
+        return_value=100.1,
+    ):
         radio._civ_runtime._apply_state_store_observations(
             _make_frame(cmd=0x15, sub=0x02, data=_bcd2(222))
         )
 
-    with pytest.raises(KeyError):
-        radio._state_store.snapshot().field("receiver.0.meters.s_meter")
+    # Second sample coalesced (store still holds the seeded value until flush).
+    assert radio._state_store.snapshot().field("receiver.0.meters.s_meter").value == -8
 
     radio._civ_runtime.flush_due_meter_observations(now=100.3)
 
+    # After the window elapses the coalesced latest sample lands (raw 222 -> 31).
     assert radio._state_store.snapshot().field("receiver.0.meters.s_meter").value == 31
     assert events == [
         (
             "state_store_changed",
+            {"coalesced": False, "paths": ["receiver.0.meters.s_meter"]},
+        ),
+        (
+            "state_store_changed",
             {"coalesced": True, "paths": ["receiver.0.meters.s_meter"]},
-        )
+        ),
     ]
     meter_events = [
         event
@@ -1700,9 +1747,43 @@ def test_meter_coalescing_applies_latest_due_sample_and_records_diagnostics(
         "pendingSampleCount": 0,
         "pendingPaths": [],
         "droppedSampleCount": 0,
-        "coalescedSampleCount": 1,
+        "coalescedSampleCount": 0,
         "nextFlushMonotonic": None,
     }
+
+
+def test_first_coalesced_meter_sample_seeds_store_immediately(
+    radio: IcomRadio,
+) -> None:
+    """MOR-334 regression (s_meter stuck at 0): the first meter sample for an
+    unseen path is applied immediately rather than held in the coalescer.
+
+    The coalescer only flushes a sample once it has aged past its window, and
+    the post-record flush runs with ``now`` equal to the sample's own
+    timestamp, so the very first sample for a path would otherwise never reach
+    the store until a *later* sample arrived. Until then the public projection
+    falls back to the RadioState ``sMeter=0`` default — the reported stuck-at-0.
+    """
+    path = FieldPath.receiver("main", "meters", "s_meter")
+    policy = AcquisitionPolicy(
+        cadence_seconds=1.0,
+        freshness_ttl_seconds=4.0,
+        meter_coalescing=MeterCoalescingPolicy(window_seconds=0.2),
+    )
+    radio._acquisition_scheduler = AcquisitionScheduler(
+        profile=_acquisition_profile(path, policy=policy)
+    )
+    radio._meter_observation_coalescer = MeterObservationCoalescer()
+
+    # A single sample, no later sample and no explicit flush: the value must
+    # already be in the store (calibrated raw 150 -> 6).
+    radio._civ_runtime._apply_state_store_observations(
+        _make_frame(cmd=0x15, sub=0x02, data=_bcd2(150))
+    )
+
+    assert radio._state_store.snapshot().field("receiver.0.meters.s_meter").value == 6
+    # The seed went straight to the store, not the coalescer.
+    assert radio._meter_observation_coalescer._pending == []  # noqa: SLF001
 
 
 def test_same_value_coalesced_meter_flush_completes_scheduler_request(

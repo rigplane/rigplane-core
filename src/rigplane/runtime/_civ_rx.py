@@ -1379,6 +1379,20 @@ class CivRuntime:
         coalescer = getattr(self._host, "_meter_observation_coalescer", None)
         if not isinstance(coalescer, MeterObservationCoalescer):
             return False
+        # MOR-334 regression fix (s_meter stuck at 0): seed-then-coalesce. The
+        # coalescer only flushes a sample once it has aged past its window, and
+        # the post-record flush below runs with ``now`` equal to this sample's
+        # own timestamp — so the very first sample for a path is never flushed
+        # until a *later* sample (or a poll-cycle flush) arrives. Until then the
+        # store has no entry for the meter and the public projection falls back
+        # to the RadioState default (sMeter=0). When the store has no confirmed
+        # value yet for this path, apply this first sample immediately so the
+        # meter is never stuck at its default; subsequent samples coalesce.
+        if not self._state_store_has_path(observation.path):
+            changeset = self._host._state_store.apply(observation)
+            self._record_scheduler_result_for_observation(observation, changeset)
+            self._notify_state_store_changed(changeset)
+            return True
         coalescer.record(observation, policy.meter_coalescing)
         self._record_state_diagnostic(
             "meter_coalescing",
@@ -1386,6 +1400,14 @@ class CivRuntime:
             **coalescer.diagnostics(),
         )
         self.flush_due_meter_observations(now=observation.timestamp_monotonic)
+        return True
+
+    def _state_store_has_path(self, path: FieldPath) -> bool:
+        """Return True if the StateStore already holds a confirmed value."""
+        try:
+            self._host._state_store.snapshot().field(path)
+        except KeyError:
+            return False
         return True
 
     def flush_due_meter_observations(
@@ -1539,6 +1561,18 @@ class CivRuntime:
                     frame=frame,
                 )
             )
+            if len(frame.data) >= 3:
+                # MOR-334 regression fix: the 0x26 answer carries the DATA-mode
+                # flag in data[2]. The legacy ``_handle_26`` mirror reads it, but
+                # the StateStore observation path dropped it, so D1/D2/D3 never
+                # reached the web UI. Project it as the active-slot data_mode.
+                observations.append(
+                    self._observation(
+                        FieldPath.active(target_receiver, "freq_mode", "data_mode"),
+                        int(frame.data[2]),
+                        frame=frame,
+                    )
+                )
             if len(frame.data) >= 4:
                 observations.append(
                     self._observation(
