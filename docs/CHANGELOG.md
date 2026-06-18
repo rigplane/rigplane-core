@@ -11,6 +11,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.10.2] — 2026-06-18
+
+### Fixed
+
+- IC-7610 state-acquisition regression with an external CAT master: when a
+  separate CAT client (e.g. WSJT-X via rigctld) was polling the radio, false
+  `acquisition_request_timeout`s drove the adaptive cadence of frequency,
+  mode and data-mode polling to decay all the way to 30 s, so the web VFO,
+  mode and DATA readouts went stale and appeared to "revert". The fix makes
+  acquisition deadlines send-relative, gates adaptive decay on transport
+  health, and adds a bounded grace before a healthy-link expiry is treated
+  as a real timeout (rigplane-pro#1198, MOR-874).
+
 ## [2.10.1] — 2026-06-17
 
 ### Fixed
@@ -1818,7 +1831,8 @@ These deprecation closures were announced in v0.19 and dropped on schedule.
 - Transport layer, authentication, CI-V commands, meters, PTT, keep-alive.
 - Clean-room Icom LAN UDP protocol implementation.
 
-[Unreleased]: https://github.com/rigplane/rigplane-core/compare/v2.10.1...HEAD
+[Unreleased]: https://github.com/rigplane/rigplane-core/compare/v2.10.2...HEAD
+[2.10.2]: https://github.com/rigplane/rigplane-core/compare/v2.10.1...v2.10.2
 [2.10.1]: https://github.com/rigplane/rigplane-core/compare/v2.10.0...v2.10.1
 [2.10.0]: https://github.com/rigplane/rigplane-core/compare/v2.9.0...v2.10.0
 [2.9.0]: https://github.com/rigplane/rigplane-core/compare/v2.8.0...v2.9.0
