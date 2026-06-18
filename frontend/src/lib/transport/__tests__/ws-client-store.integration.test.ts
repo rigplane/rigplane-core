@@ -180,6 +180,13 @@ describe('ws-client → real radio store gate (integration)', () => {
     originalWebSocket = globalThis.WebSocket;
     // @ts-expect-error install the mock as the global WebSocket constructor
     globalThis.WebSocket = MockWebSocket;
+    // Reset the module graph BEFORE each test, not only after. Under the
+    // ``fast`` project (``isolate: false``) a sibling test file that imported
+    // ``radio.svelte`` first leaves the real store singleton at a non-zero
+    // revision in the shared module cache; without a pre-test reset the first
+    // ``loadModules()`` here would pick up that stale singleton and the
+    // revision-gate assertions drift (e.g. ``expected 6 to be 5``).
+    vi.resetModules();
   });
 
   afterEach(() => {
