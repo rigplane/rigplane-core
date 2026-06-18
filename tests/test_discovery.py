@@ -20,6 +20,7 @@ from rigplane.discovery import (
     build_setup_discovery_payload,
     _parse_yaesu_id_response,
     dedupe_radios,
+    discover_lan_radios,
     discover_serial_radios,
     enumerate_serial_ports,
     probe_serial_civ,
@@ -1305,3 +1306,153 @@ class TestDiscoverSerialRadios:
         assert len(results) == 2
         protocols = {r.protocol for r in results}
         assert protocols == {"civ", "yaesu_cat"}
+
+
+# ---------------------------------------------------------------------------
+# LAN UDP discovery (discover_lan_radios) — probe retransmit / dedup
+# ---------------------------------------------------------------------------
+
+
+def _i_am_here(remote_id: int) -> bytes:
+    """Build a minimal Icom I_AM_HERE (0x04) reply packet."""
+    import struct
+
+    pkt = bytearray(0x10)
+    struct.pack_into("<I", pkt, 0, 0x10)  # size
+    struct.pack_into("<H", pkt, 4, 0x04)  # I_AM_HERE
+    struct.pack_into("<H", pkt, 6, 0)  # seq
+    struct.pack_into("<I", pkt, 8, remote_id)  # remote_id
+    struct.pack_into("<I", pkt, 0x0C, 0)
+    return bytes(pkt)
+
+
+class _FakeClock:
+    """Monotonic clock that advances a fixed step on every read.
+
+    Lets the scan loop terminate deterministically without real waiting while
+    still crossing the resend thresholds so retransmits fire.
+    """
+
+    def __init__(self, step: float = 0.05) -> None:
+        self._t = 1000.0
+        self._step = step
+
+    def __call__(self) -> float:
+        now = self._t
+        self._t += self._step
+        return now
+
+
+class _FakeUdpSocket:
+    """Fake UDP socket for discover_lan_radios.
+
+    ``responses`` maps a probe index (1-based count of sendto calls so far) to
+    a list of (data, addr) tuples to hand back from the *next* recvfrom calls.
+    Each scripted response is delivered exactly once; otherwise recvfrom raises
+    socket.timeout so the scan keeps looping until the clock passes the
+    deadline.
+    """
+
+    def __init__(self, responses: dict[int, list[tuple[bytes, tuple]]]) -> None:
+        self._responses = {k: list(v) for k, v in responses.items()}
+        self.send_count = 0
+        self.closed = False
+        self._pending: list[tuple[bytes, tuple]] = []
+
+    def setsockopt(self, *_a: object, **_k: object) -> None:
+        pass
+
+    def settimeout(self, *_a: object, **_k: object) -> None:
+        pass
+
+    def sendto(self, _data: bytes, _addr: tuple) -> int:
+        self.send_count += 1
+        # Queue any responses unlocked by reaching this probe count.
+        self._pending.extend(self._responses.pop(self.send_count, []))
+        return len(_data)
+
+    def recvfrom(self, _bufsize: int) -> tuple[bytes, tuple]:
+        import socket as _socket
+
+        if self._pending:
+            return self._pending.pop(0)
+        raise _socket.timeout()
+
+    def close(self) -> None:
+        self.closed = True
+
+
+@contextmanager
+def _patched_lan_socket(fake: _FakeUdpSocket, *, step: float = 0.05):
+    import socket as _socket
+    import time as _time
+
+    with (
+        patch.object(_socket, "socket", return_value=fake),
+        patch.object(_time, "monotonic", _FakeClock(step=step)),
+    ):
+        yield
+
+
+class TestDiscoverLanRadios:
+    async def test_radio_answering_only_later_probe_is_found(self) -> None:
+        # Radio stays silent for probe #1, replies only after the 3rd probe.
+        addr = ("192.168.1.50", 50001)
+        fake = _FakeUdpSocket({3: [(_i_am_here(0xDEADBEEF), addr)]})
+        with _patched_lan_socket(fake):
+            result = await discover_lan_radios(timeout=3.0)
+
+        assert fake.send_count >= 3  # the probe was retransmitted
+        assert result == [{"host": "192.168.1.50", "remote_id": 0xDEADBEEF}]
+
+    async def test_single_probe_would_miss_late_responder(self) -> None:
+        # Sanity-anchor the regression: a radio that ignores the first probe is
+        # only recoverable because of retransmits. With responses gated behind
+        # probe #2+, a single-shot scan (send_count==1) would return nothing.
+        addr = ("192.168.1.51", 50001)
+        fake = _FakeUdpSocket({2: [(_i_am_here(0x11112222), addr)]})
+        with _patched_lan_socket(fake):
+            result = await discover_lan_radios(timeout=3.0)
+
+        assert fake.send_count >= 2
+        assert result == [{"host": "192.168.1.51", "remote_id": 0x11112222}]
+
+    async def test_radio_answering_multiple_probes_is_deduplicated(self) -> None:
+        # Same host replies to probe #1 and probe #2 -> returned exactly once.
+        addr = ("192.168.1.60", 50001)
+        fake = _FakeUdpSocket(
+            {
+                1: [(_i_am_here(0xAABBCCDD), addr)],
+                2: [(_i_am_here(0xAABBCCDD), addr)],
+            }
+        )
+        with _patched_lan_socket(fake):
+            result = await discover_lan_radios(timeout=3.0)
+
+        assert result == [{"host": "192.168.1.60", "remote_id": 0xAABBCCDD}]
+        assert len(result) == 1
+
+    async def test_multiple_distinct_radios_collected(self) -> None:
+        a = ("192.168.1.70", 50001)
+        b = ("192.168.1.71", 50001)
+        fake = _FakeUdpSocket(
+            {
+                1: [(_i_am_here(0x1), a)],
+                2: [(_i_am_here(0x2), b)],
+            }
+        )
+        with _patched_lan_socket(fake):
+            result = await discover_lan_radios(timeout=3.0)
+
+        hosts = {r["host"] for r in result}
+        assert hosts == {"192.168.1.70", "192.168.1.71"}
+        assert len(result) == 2
+
+    async def test_no_responder_returns_empty(self) -> None:
+        fake = _FakeUdpSocket({})
+        with _patched_lan_socket(fake):
+            result = await discover_lan_radios(timeout=3.0)
+
+        assert result == []
+        assert fake.send_count >= 2  # still retransmitted across the window
+        assert fake.closed

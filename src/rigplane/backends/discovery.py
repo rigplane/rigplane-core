@@ -601,6 +601,12 @@ async def discover_lan_radios(timeout: float = 3.0) -> list[dict[str, object]]:
     import struct
     import time
 
+    # Re-send the "Are You There" probe periodically across the listen window
+    # so a single dropped UDP packet (or brief control-port contention) does
+    # not hide a radio for the entire scan. A radio that only answers a later
+    # probe is still discovered; responses are deduplicated by host.
+    RESEND_INTERVAL = 0.6
+
     def _scan() -> list[dict[str, object]]:
         import random
 
@@ -616,32 +622,52 @@ async def discover_lan_radios(timeout: float = 3.0) -> list[dict[str, object]]:
 
         sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
-        sock.settimeout(0.5)
+        sock.settimeout(0.3)
 
-        # Broadcast on common Icom ports
-        for port in [50001]:
-            try:
-                sock.sendto(bytes(pkt), ("255.255.255.255", port))
-            except OSError as exc:
-                logger.warning("discover: broadcast failed on port %d: %s", port, exc)
-                sock.close()
-                return []
+        # Broadcast on common Icom ports. Returns False only if the very first
+        # send fails on every port (no usable socket); a later transient send
+        # failure is logged and tolerated so listening continues.
+        def _broadcast(*, first: bool) -> bool:
+            sent_any = False
+            for port in [50001]:
+                try:
+                    sock.sendto(bytes(pkt), ("255.255.255.255", port))
+                    sent_any = True
+                except OSError as exc:
+                    logger.warning(
+                        "discover: broadcast failed on port %d: %s", port, exc
+                    )
+            return sent_any or not first
+
+        if not _broadcast(first=True):
+            sock.close()
+            return []
 
         found: dict[str, dict[str, object]] = {}
-        deadline = time.monotonic() + timeout
+        start = time.monotonic()
+        deadline = start + timeout
+        next_resend = start + RESEND_INTERVAL
         while time.monotonic() < deadline:
+            # Spread retransmits across the window; keep within `timeout`.
+            now = time.monotonic()
+            if now >= next_resend:
+                _broadcast(first=False)
+                next_resend = now + RESEND_INTERVAL
             try:
                 data, addr = sock.recvfrom(256)
                 if len(data) >= 0x10:
                     ptype = struct.unpack_from("<H", data, 4)[0]
                     if ptype == 0x04:  # I_AM_HERE
                         remote_id = struct.unpack_from("<I", data, 8)[0]
+                        if addr[0] not in found:
+                            logger.info(
+                                "discover_lan_radios: found %s id=0x%08X",
+                                addr[0],
+                                remote_id,
+                            )
+                        # Dedup by host: a radio answering multiple probes is
+                        # recorded once.
                         found[addr[0]] = {"host": addr[0], "remote_id": remote_id}
-                        logger.info(
-                            "discover_lan_radios: found %s id=0x%08X",
-                            addr[0],
-                            remote_id,
-                        )
             except socket.timeout:
                 continue
 
