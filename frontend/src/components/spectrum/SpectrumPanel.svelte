@@ -15,7 +15,7 @@
   import { getChannel, onMessage, sendCommand } from '../../lib/transport/ws-client';
   import { setScopeConnected, markScopeFrame, isScopeConnected } from '../../lib/stores/connection.svelte';
   import { type DxSpot } from '../../lib/types/protocol';
-  import { patchActiveReceiver, radio } from '../../lib/stores/radio.svelte';
+  import { patchActiveReceiver, patchReceiver, radio } from '../../lib/stores/radio.svelte';
   import { getFilterWidthHz } from '../../lib/utils/filter-width';
   import { snapToStep, tuneBy } from '../../lib/stores/tuning.svelte';
   import SpectrumToolbar from './SpectrumToolbar.svelte';
@@ -206,6 +206,7 @@
     const freq = snapToStep(Math.round(hz));
     if (freq <= 0) return;
     const receiver = radio.current?.active === 'SUB' ? 1 : 0;
+    patchReceiver(receiver, { freqHz: freq }, true);
     sendCommand('set_freq', { freq, receiver });
   }
 
@@ -295,6 +296,7 @@
     lastDragSendTime = now;
     lastDragSendFreq = newFreq;
     const receiver = radio.current?.active === 'SUB' ? 1 : 0;
+    patchReceiver(receiver, { freqHz: newFreq }, true);
     sendCommand('set_freq', { freq: newFreq, receiver });
   }
 
@@ -305,6 +307,7 @@
       // Drag-to-pan: send final frequency on release
       if (dragFreq > 0 && dragFreq !== lastDragSendFreq) {
         const receiver = radio.current?.active === 'SUB' ? 1 : 0;
+        patchReceiver(receiver, { freqHz: dragFreq }, true);
         sendCommand('set_freq', { freq: dragFreq, receiver });
       }
     }

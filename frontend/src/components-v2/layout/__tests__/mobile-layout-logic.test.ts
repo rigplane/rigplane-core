@@ -105,16 +105,21 @@ describe('formatDbm', () => {
 });
 
 describe('formatPower', () => {
+  // power_level is served normalized 0.0-1.0 (MOR-334 contract), not raw 0-255.
   it('returns 0W for zero', () => {
     expect(formatPower(0)).toBe('0W');
   });
 
-  it('returns 100W for max (255)', () => {
-    expect(formatPower(255)).toBe('100W');
+  it('returns 100W for max (1.0)', () => {
+    expect(formatPower(1)).toBe('100W');
   });
 
   it('returns approximate wattage for mid-range', () => {
-    // 128/255*100 ≈ 50.2 → round = 50
-    expect(formatPower(128)).toBe('50W');
+    // 0.5 * 100 → 50
+    expect(formatPower(0.5)).toBe('50W');
+  });
+
+  it('clamps out-of-range normalized input', () => {
+    expect(formatPower(1.4)).toBe('100W');
   });
 });

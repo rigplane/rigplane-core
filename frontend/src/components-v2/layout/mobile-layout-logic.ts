@@ -41,8 +41,11 @@ export function formatDbm(actual: number): string {
 
 // ── RF Power display ──
 
-export function formatPower(raw: number): string {
-  // 0-255 → 0-100W (approx for IC-7610)
-  const watts = Math.round(raw / 255 * 100);
+export function formatPower(level: number): string {
+  // power_level arrives normalized 0.0-1.0 from the backend (CI-V raw 0-255 is
+  // divided by 255 at the source — see runtime/_civ_rx.py; matches rf_gain /
+  // af_level / squelch). 1.0 ≈ 100W (approx for IC-7610). Previously this
+  // divided a 0-1 value by 255 again, collapsing 50% to ~0W (MOR-334 class).
+  const watts = Math.round(Math.max(0, Math.min(1, level)) * 100);
   return `${watts}W`;
 }
