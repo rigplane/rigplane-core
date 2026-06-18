@@ -11,6 +11,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.10.1] — 2026-06-17
+
+### Fixed
+
+- IC-7610 S-meter no longer stuck at S0: repaired the MOR-334 state-pipeline
+  reconciliation (1bd57e10), applied the first meter sample immediately
+  instead of holding it in the coalescer (53374bcc), and raised
+  streaming-meter freshness TTLs above the live poll cadence so the value
+  no longer decays to the calibrated floor between frames (8a64942f).
+- Mode, data-mode, RF gain, AF level and squelch no longer revert ~1 s after
+  being set: optimistic command-response overlay plus correct normalized
+  level scaling (53374bcc); digital modes D1/D2/D3 now reflect correctly
+  (1bd57e10).
+- IC-7610 MOD-input source (MIC/ACC/USB/LAN) no longer reverts to a blank
+  value after selection (ae0bd583, MOR-616).
+- Operating-UI control units: RF gain (5ef3d9ef) and the mobile TX-power
+  readout (4e62a5af) now consume the backend's normalized 0–1 scale instead
+  of a raw 0–255 range, so they show the real percentage / watts.
+- Waterfall tuning now holds the commanded frequency via the optimistic
+  overlay instead of snapping back after a click or drag (4e62a5af).
+- LAN radio discovery retransmits the UDP probe within the scan window with
+  dedup, so a network radio is found on the first scan instead of after
+  several attempts (2ea0bf2e).
+
 ## [2.10.0] — 2026-06-11
 
 ### Added
@@ -1794,7 +1818,9 @@ These deprecation closures were announced in v0.19 and dropped on schedule.
 - Transport layer, authentication, CI-V commands, meters, PTT, keep-alive.
 - Clean-room Icom LAN UDP protocol implementation.
 
-[Unreleased]: https://github.com/rigplane/rigplane-core/compare/v2.9.0...HEAD
+[Unreleased]: https://github.com/rigplane/rigplane-core/compare/v2.10.1...HEAD
+[2.10.1]: https://github.com/rigplane/rigplane-core/compare/v2.10.0...v2.10.1
+[2.10.0]: https://github.com/rigplane/rigplane-core/compare/v2.9.0...v2.10.0
 [2.9.0]: https://github.com/rigplane/rigplane-core/compare/v2.8.0...v2.9.0
 [2.8.0]: https://github.com/rigplane/rigplane-core/compare/v2.7.3...v2.8.0
 [2.7.3]: https://github.com/rigplane/rigplane-core/compare/v2.7.2...v2.7.3
