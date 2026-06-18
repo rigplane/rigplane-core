@@ -521,28 +521,136 @@ async def test_healthy_link_false_timeout_does_not_decay_freq_mode_cadence() -> 
         acquisition_executor=executor,
     )
 
-    # Run many cycles. The clock advances 3 s per cycle (well past the 2 s
-    # send-relative window, so the deadline fires every cycle after the first),
-    # but the CI-V link stays healthy (last-civ kept within the 2 s readiness
-    # window of the advancing clock) — i.e. WSJT-X-style load with the radio
-    # answering fast but the deadline racing.
+    # Cycle 1 sends the request. Cycle 2 advances 3 s — past the 2 s
+    # send-relative window so the deadline fires — but the CI-V link stays
+    # healthy (last-civ kept within the 2 s readiness window of the advancing
+    # clock): a WSJT-X-style load with the radio answering fast but the deadline
+    # racing. The expiry is suppressed (still inside the bounded grace window),
+    # then the slightly-late answer arrives and CREDITS the request — the true
+    # happy path the grace exists to protect.
+    from rigplane.core.state_pipeline_contracts import (
+        ChangeSet,
+        FieldChange,
+        SourceMetadata,
+    )
+
     clock = {"t": 700.0}
 
     def _now() -> float:
         return clock["t"]
 
     with patch("rigplane.web.radio_poller.time.monotonic", side_effect=_now):
-        for _ in range(8):
-            # Link stays healthy: last CI-V data is 0.1 s old vs the clock.
-            radio._last_civ_data_received = clock["t"] - 0.1
-            await poller._send_scheduler_requests()  # noqa: SLF001
-            clock["t"] += 3.0
+        # Cycle 1: send.
+        radio._last_civ_data_received = clock["t"] - 0.1
+        await poller._send_scheduler_requests()  # noqa: SLF001
+        request = scheduler.pending_requests()[0]
+        clock["t"] += 3.0
 
+        # Cycle 2: deadline fires while healthy → suppressed within grace, no
+        # re-send (executor still called exactly once).
+        radio._last_civ_data_received = clock["t"] - 0.1
+        await poller._send_scheduler_requests()  # noqa: SLF001
+        assert len(executor.calls) == 1
+
+        # The slightly-late answer lands and credits the request (still well
+        # inside the 6 s grace window). It carries a value change, so cadence
+        # resets to base — proving the credit path ran and the suppressed
+        # false timeout never advanced/decayed cadence.
+        scheduler.record_acquisition_result(
+            request,
+            ChangeSet(
+                revision=1,
+                freshness_revision=1,
+                observation_seq=1,
+                changes=(
+                    FieldChange(path=path, previous=14_000_000, current=14_074_000),
+                ),
+                timestamp_monotonic=clock["t"],
+                sources=(SourceMetadata(source="poll_response", provider="icom_civ"),),
+            ),
+        )
+        clock["t"] += 0.1
+
+        # Next cycle clears the in-flight + grace bookkeeping.
+        radio._last_civ_data_received = clock["t"] - 0.1
+        await poller._send_scheduler_requests()  # noqa: SLF001
+
+    assert poller._acquisition_in_flight == {}  # noqa: SLF001
+    assert poller._acquisition_healthy_grace_started == {}  # noqa: SLF001
     diagnostics = scheduler.diagnostics()
     # No false timeouts counted, cadence pinned at base 2.0 s (no decay).
     assert "acquisition_request_timeout" not in diagnostics["failureCountByReason"]
     assert diagnostics["failedRequestCount"] == 0
     assert diagnostics["cadenceByPath"][str(path)]["currentCadenceSeconds"] == 2.0
+
+
+@pytest.mark.asyncio
+async def test_healthy_link_uncredited_request_is_resent_and_eventually_fails() -> None:
+    # MOR-874 regression (BLOCKING fix): the health gate reads the GLOBAL
+    # last-CI-V timestamp, so under external-CAT load it reads healthy
+    # ~permanently. A request whose SPECIFIC answer is genuinely lost (UDP drop
+    # / radio silently ignores the command) must NOT be pinned in flight
+    # forever. The bounded grace window
+    # (_ACQUISITION_HEALTHY_GRACE_SECONDS) caps the false-timeout suppression:
+    # once it elapses with the request still uncredited, the request is treated
+    # as a REAL timeout — dropped so the scheduler re-queues/re-sends it, with
+    # normal failure accounting. This proves recovery (executor called > 1) and
+    # that the loss is eventually accounted as a real failure (not pinned).
+    from rigplane.web.radio_poller import _ACQUISITION_HEALTHY_GRACE_SECONDS
+
+    path = FieldPath.active("main", "freq_mode", "freq_hz")
+    policy = AcquisitionPolicy(
+        cadence_seconds=2.0,
+        freshness_ttl_seconds=2.0,
+        adaptive_decay=AdaptiveDecayPolicy(
+            enabled=True,
+            idle_multiplier=2.0,
+            max_cadence_seconds=30.0,
+        ),
+    )
+    radio = _healthy_radio(last_civ=900.0)
+    scheduler = AcquisitionScheduler(profile=_acquisition_profile(path, policy=policy))
+    radio._acquisition_scheduler = scheduler
+    executor = _InjectedAcquisitionExecutor()
+    poller = RadioPoller(
+        radio,
+        CommandQueue(),
+        radio_state=RadioState(),
+        acquisition_executor=executor,
+    )
+
+    # The answer is NEVER credited. The link reads healthy every cycle. The
+    # clock advances past the grace window each lap, so each in-flight request
+    # eventually exceeds grace, falls back to a real timeout, is dropped, and
+    # the scheduler re-queues + re-sends it on a later cycle.
+    clock = {"t": 900.0}
+
+    def _now() -> float:
+        return clock["t"]
+
+    # Step well past the grace window per cycle so the bound is provably
+    # crossed within a small, bounded number of cycles.
+    step = _ACQUISITION_HEALTHY_GRACE_SECONDS + 2.0
+
+    with patch("rigplane.web.radio_poller.time.monotonic", side_effect=_now):
+        for _ in range(6):
+            radio._last_civ_data_received = clock["t"] - 0.1
+            await poller._send_scheduler_requests()  # noqa: SLF001
+            clock["t"] += step
+
+    # Recovery proven: the request was re-sent (executor called more than once).
+    assert len(executor.calls) > 1
+    # Eventually accounted as a real failure — NOT pinned forever.
+    diagnostics = scheduler.diagnostics()
+    assert diagnostics["failedRequestCount"] >= 1
+    assert (
+        diagnostics["failureCountByReason"].get("acquisition_request_timeout", 0) >= 1
+    )
+    # Grace bookkeeping for dropped requests does not leak.
+    assert all(
+        rid in {r.id for r in scheduler.pending_requests()}
+        for rid in poller._acquisition_healthy_grace_started  # noqa: SLF001
+    )
 
 
 @pytest.mark.asyncio
