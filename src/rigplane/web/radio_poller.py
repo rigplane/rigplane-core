@@ -2281,9 +2281,11 @@ class RadioPoller:
         # only expired ``timeout`` (or ``max_age`` when no explicit timeout is
         # set) seconds after its SEND time — never relative to enqueue time.
         if sent_at > 0.0:
-            window = request.timeout if request.timeout is not None else request.max_age
-            return now >= sent_at + window
-        return now >= request.deadline_monotonic
+            window: float = (
+                request.timeout if request.timeout is not None else request.max_age
+            )
+            return bool(now >= sent_at + window)
+        return bool(now >= request.deadline_monotonic)
 
     def _civ_link_healthy(self, *, now: float) -> bool:
         """Return True when the CI-V transport is demonstrably alive (MOR-874).
