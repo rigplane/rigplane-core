@@ -672,10 +672,25 @@ class AcquisitionScheduler:
         reason: str,
         failed_paths: Iterable[FieldPath] | None = None,
         now: float | None = None,
+        link_healthy: bool = True,
     ) -> None:
-        """Complete failed paths and advance cadence to avoid immediate resend."""
+        """Complete failed paths and advance cadence to avoid immediate resend.
+
+        ``link_healthy`` gates the false-timeout path (MOR-874): an
+        ``acquisition_request_timeout`` reported while the underlying transport
+        is healthy (sub-second round-trips, no recovery in progress) is not a
+        real backend failure — the radio answered, the deadline simply fired
+        first under load. Such an event must NOT count as a failure, must NOT
+        drop the request from the pending queue, and must NOT advance cadence
+        (which is what later decays ``freq_mode``/``tx_state``/``slow_state`` to
+        the 30 s backoff ceiling). The caller leaves the request in flight so
+        the returning observation can still credit it.
+        """
 
         failure_reason = reason or "acquisition_failed"
+        if failure_reason == "acquisition_request_timeout" and link_healthy:
+            return
+
         requested_paths = frozenset(request.paths)
         failed = requested_paths if failed_paths is None else frozenset(failed_paths)
         failed = failed.intersection(requested_paths)

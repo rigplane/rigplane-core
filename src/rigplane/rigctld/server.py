@@ -477,11 +477,16 @@ class RigctldServer:
         if error_type is not None:
             details["error_type"] = error_type
         self._record_state_diagnostic(kind, "rigctld.server", **details)
+        # MOR-874: keep rigctld failure handling unchanged — the send-relative
+        # deadline + healthy-link gate is scoped to the web radio poller. Pass
+        # link_healthy=False so every reported failure (incl. timeouts) stays
+        # terminal here exactly as before this change.
         scheduler.record_acquisition_failure(
             request,
             reason=reason,
             failed_paths=failed_paths,
             now=now,
+            link_healthy=False,
         )
 
     async def _drain_state_acquisition_once(self) -> None:

@@ -2247,11 +2247,40 @@ class RadioPoller:
         sent_at: float,
         now: float,
     ) -> bool:
-        deadlines = [request.deadline_monotonic]
-        if request.timeout is not None:
-            deadlines.append(sent_at + request.timeout)
-        deadline: float = min(deadlines)
-        return now >= deadline
+        # MOR-874: the deadline must be SEND-relative once the request has
+        # actually been dispatched. The enqueue-relative ``deadline_monotonic``
+        # only bounds requests still waiting to be sent (``sent_at == 0``);
+        # using it (or ``min`` with it) for a sent request fires a false
+        # timeout when the request sat queued under load and the radio's fast
+        # answer lands just after enqueue_time + max_age. A sent request is
+        # only expired ``timeout`` (or ``max_age`` when no explicit timeout is
+        # set) seconds after its SEND time — never relative to enqueue time.
+        if sent_at > 0.0:
+            window = request.timeout if request.timeout is not None else request.max_age
+            return now >= sent_at + window
+        return now >= request.deadline_monotonic
+
+    def _civ_link_healthy(self, *, now: float) -> bool:
+        """Return True when the CI-V transport is demonstrably alive (MOR-874).
+
+        Used to gate false acquisition timeouts: a request deadline that fires
+        while the link is healthy (recent CI-V data, no recovery in progress)
+        is a queueing artifact, not a backend failure, and must not decay the
+        adaptive cadence.
+        """
+
+        radio = self._radio
+        if bool(getattr(radio, "_civ_recovering", False)):
+            return False
+        last_civ = getattr(radio, "_last_civ_data_received", None)
+        if not isinstance(last_civ, (int, float)) or isinstance(last_civ, bool):
+            return False
+        ready_timeout = getattr(radio, "_civ_ready_idle_timeout", 2.0)
+        if not isinstance(ready_timeout, (int, float)) or isinstance(
+            ready_timeout, bool
+        ):
+            ready_timeout = 2.0
+        return (now - float(last_civ)) <= float(ready_timeout)
 
     async def _send_scheduler_requests(self) -> None:
         scheduler = self._acquisition_scheduler
@@ -2276,21 +2305,35 @@ class RadioPoller:
                     sent_at=sent_at,
                     now=now,
                 ):
+                    # MOR-874: when the deadline fires but the CI-V link is
+                    # healthy, this is a false timeout (the radio answered;
+                    # the deadline raced). Keep the request in flight so the
+                    # returning observation credits it, and do not decay
+                    # cadence. Only a genuinely unhealthy link is a real
+                    # acquisition timeout.
+                    link_healthy = self._civ_link_healthy(now=now)
                     self._record_state_diagnostic(
                         "acquisition_request_failed",
                         "web.radio_poller",
                         request_id=request.id,
                         paths=[str(path) for path in request.paths],
                         reason="acquisition_request_timeout",
+                        link_healthy=link_healthy,
                     )
                     scheduler.record_acquisition_failure(
                         request,
                         reason="acquisition_request_timeout",
                         failed_paths=sent_paths or frozenset(request.paths),
                         now=now,
+                        link_healthy=link_healthy,
                     )
-                    self._acquisition_in_flight.pop(request.id, None)
-                    continue
+                    if not link_healthy:
+                        self._acquisition_in_flight.pop(request.id, None)
+                        continue
+                    # Healthy link: leave in flight, skip re-send this cycle.
+                    sent_paths = sent_paths.intersection(request.paths)
+                    if all(path in sent_paths for path in request.paths):
+                        continue
                 else:
                     sent_paths = sent_paths.intersection(request.paths)
 
