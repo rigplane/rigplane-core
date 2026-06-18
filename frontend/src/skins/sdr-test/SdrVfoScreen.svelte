@@ -111,14 +111,16 @@
     const m = num(rx, 'agc');
     return AGC_LABELS[m] ? `AGC ${AGC_LABELS[m]}` : 'AGC';
   }
-  // rfGain is raw 0..255 — convert to 0..100 for display
+  // rfGain is the backend-normalized 0.0..1.0 float (CI-V raw 0-255 is divided
+  // by 255 at the source — see runtime/_civ_rx.py). Convert to 0..100 for
+  // display; 1.0 = 100% = neutral/max. (MOR-334)
   function rfgPercent(rx: Record<string, unknown> | null | undefined): number {
-    const raw = num(rx, 'rfGain', 255);
-    return Math.round((raw / 255) * 100);
+    const level = num(rx, 'rfGain', 1);
+    return Math.round(level * 100);
   }
   function rfgActive(rx: Record<string, unknown> | null | undefined): boolean {
-    // Active = reduced from max (255 = 100% = off/neutral)
-    return num(rx, 'rfGain', 255) < 255;
+    // Active = reduced from max (1.0 = 100% = off/neutral)
+    return num(rx, 'rfGain', 1) < 1;
   }
 
   // Band label (e.g., "20M") derived from freq MHz — coarse, ham-band only.

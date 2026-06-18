@@ -631,6 +631,26 @@ def _should_normalize_level_expectation(name: str, path: FieldPath) -> bool:
     return _NORMALIZED_LEVEL_EXPECTATION_COMMANDS.get(name) == path.name
 
 
+def _raw_level_from_param(value: Any) -> int:
+    """Coerce a level command param to the raw 0-255 scale.
+
+    MOR-334 regression fix: ``set_rf_gain``/``set_af_level``/``set_squelch``
+    accept a level either pre-scaled (raw 0-255) or normalized (0.0-1.0, as the
+    web sliders emit). The migration replaced the prior scale-aware coercion
+    with a bare ``int()``, so a normalized slider value (e.g. ``0.98``)
+    collapsed to ``int(0.98) == 0``. The expected/overlay value (used for
+    readback reconciliation) then sat at the opposite end of the scale from the
+    value the radio was actually set to, which surfaced as the control snapping
+    back to ``0`` (left edge) ~1s after a set. Mirror the web control-handler
+    coercion (``_normalized_or_raw_level``) so the StateStore expectation tracks
+    reality. Raw ints (and the boundary ``1.0``) round-trip unchanged.
+    """
+    numeric = float(value)
+    if 0.0 <= numeric <= 1.0:
+        return max(0, min(255, round(numeric * 255)))
+    return max(0, min(255, int(numeric)))
+
+
 def _normalize_raw_level_value(value: Any) -> Any:
     if isinstance(value, bool):
         return value
@@ -838,11 +858,11 @@ def command_intent_from_request(
     elif command_name == "ptt_off":
         normalized["ptt"] = False
     elif command_name == "set_rf_gain":
-        normalized["rf_gain"] = int(normalized["level"])
+        normalized["rf_gain"] = _raw_level_from_param(normalized["level"])
     elif command_name == "set_af_level":
-        normalized["af_level"] = int(normalized["level"])
+        normalized["af_level"] = _raw_level_from_param(normalized["level"])
     elif command_name in ("set_sql", "set_squelch"):
-        normalized["squelch"] = int(normalized["level"])
+        normalized["squelch"] = _raw_level_from_param(normalized["level"])
     elif command_name in ("set_att", "set_attenuator", "set_attenuator_level"):
         raw_value = (
             normalized["db"]

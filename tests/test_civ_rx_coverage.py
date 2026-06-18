@@ -1030,6 +1030,36 @@ def test_update_state_cache_omits_filter_num_when_byte_absent(
         snapshot.field(f"receiver.{target_receiver}.active.freq_mode.filter_num")
 
 
+@pytest.mark.parametrize(  # type: ignore[untyped-decorator]
+    ("frame", "target_receiver", "expected"),
+    [
+        # MAIN, USB, DATA1, filter 2
+        (_make_frame(cmd=0x26, data=bytes([0x00, Mode.USB.value, 0x01, 0x02])), "0", 1),
+        # SUB, CW, DATA3, filter 1
+        (_make_frame(cmd=0x26, data=bytes([0x01, Mode.CW.value, 0x03, 0x01])), "1", 3),
+        # MAIN, USB, DATA OFF (3-byte frame, no filter byte)
+        (_make_frame(cmd=0x26, data=bytes([0x00, Mode.USB.value, 0x00])), "0", 0),
+    ],
+)
+def test_update_state_cache_projects_data_mode_from_cmd26(
+    radio: IcomRadio,
+    frame: CivFrame,
+    target_receiver: str,
+    expected: int,
+) -> None:
+    """MOR-334 regression: the 0x26 answer carries the DATA-mode flag in data[2].
+
+    The StateStore observation path dropped data[2], so D1/D2/D3 never reached
+    the web UI even though the legacy ``_handle_26`` mirror read it.
+    """
+    radio._civ_runtime._update_state_cache_from_frame(frame)
+
+    field = radio._state_store.snapshot().field(
+        f"receiver.{target_receiver}.active.freq_mode.data_mode"
+    )
+    assert field.value == expected
+
+
 # ---------------------------------------------------------------------------
 # MOR-437: slow-state bool/status families observation-backed
 # ---------------------------------------------------------------------------
@@ -1668,28 +1698,45 @@ def test_meter_coalescing_applies_latest_due_sample_and_records_diagnostics(
     events: list[tuple[str, dict[str, object]]] = []
     radio._on_state_change = lambda name, data: events.append((name, data))
 
+    # MOR-334 regression (s_meter stuck at 0): seed-then-coalesce. The FIRST
+    # sample for a path is applied immediately (the store was empty, so holding
+    # it in the coalescer would leave the public projection at the sMeter=0
+    # default until a later sample/flush). Subsequent samples coalesce.
     with patch(
         "rigplane.runtime._civ_rx.time.monotonic",
-        side_effect=[100.0, 100.0, 100.1, 100.1],
+        return_value=100.0,
     ):
         radio._civ_runtime._apply_state_store_observations(
             _make_frame(cmd=0x15, sub=0x02, data=_bcd2(111))
         )
+
+    # First sample applied immediately (calibrated raw 111 -> -8).
+    assert radio._state_store.snapshot().field("receiver.0.meters.s_meter").value == -8
+
+    with patch(
+        "rigplane.runtime._civ_rx.time.monotonic",
+        return_value=100.1,
+    ):
         radio._civ_runtime._apply_state_store_observations(
             _make_frame(cmd=0x15, sub=0x02, data=_bcd2(222))
         )
 
-    with pytest.raises(KeyError):
-        radio._state_store.snapshot().field("receiver.0.meters.s_meter")
+    # Second sample coalesced (store still holds the seeded value until flush).
+    assert radio._state_store.snapshot().field("receiver.0.meters.s_meter").value == -8
 
     radio._civ_runtime.flush_due_meter_observations(now=100.3)
 
+    # After the window elapses the coalesced latest sample lands (raw 222 -> 31).
     assert radio._state_store.snapshot().field("receiver.0.meters.s_meter").value == 31
     assert events == [
         (
             "state_store_changed",
+            {"coalesced": False, "paths": ["receiver.0.meters.s_meter"]},
+        ),
+        (
+            "state_store_changed",
             {"coalesced": True, "paths": ["receiver.0.meters.s_meter"]},
-        )
+        ),
     ]
     meter_events = [
         event
@@ -1700,9 +1747,217 @@ def test_meter_coalescing_applies_latest_due_sample_and_records_diagnostics(
         "pendingSampleCount": 0,
         "pendingPaths": [],
         "droppedSampleCount": 0,
-        "coalescedSampleCount": 1,
+        "coalescedSampleCount": 0,
         "nextFlushMonotonic": None,
     }
+
+
+def test_first_coalesced_meter_sample_seeds_store_immediately(
+    radio: IcomRadio,
+) -> None:
+    """MOR-334 regression (s_meter stuck at 0): the first meter sample for an
+    unseen path is applied immediately rather than held in the coalescer.
+
+    The coalescer only flushes a sample once it has aged past its window, and
+    the post-record flush runs with ``now`` equal to the sample's own
+    timestamp, so the very first sample for a path would otherwise never reach
+    the store until a *later* sample arrived. Until then the public projection
+    falls back to the RadioState ``sMeter=0`` default — the reported stuck-at-0.
+    """
+    path = FieldPath.receiver("main", "meters", "s_meter")
+    policy = AcquisitionPolicy(
+        cadence_seconds=1.0,
+        freshness_ttl_seconds=4.0,
+        meter_coalescing=MeterCoalescingPolicy(window_seconds=0.2),
+    )
+    radio._acquisition_scheduler = AcquisitionScheduler(
+        profile=_acquisition_profile(path, policy=policy)
+    )
+    radio._meter_observation_coalescer = MeterObservationCoalescer()
+
+    # A single sample, no later sample and no explicit flush: the value must
+    # already be in the store (calibrated raw 150 -> 6).
+    radio._civ_runtime._apply_state_store_observations(
+        _make_frame(cmd=0x15, sub=0x02, data=_bcd2(150))
+    )
+
+    assert radio._state_store.snapshot().field("receiver.0.meters.s_meter").value == 6
+    # The seed went straight to the store, not the coalescer.
+    assert radio._meter_observation_coalescer._pending == []  # noqa: SLF001
+
+
+def test_stale_meter_sample_applies_immediately_and_reaches_projection(
+    radio: IcomRadio,
+) -> None:
+    """MOR-334 regression (s_meter stuck low / "S0 with signal present").
+
+    A live meter arriving ~1/s with a short freshness TTL decays to ``stale``
+    between arrivals. The seed-only fix held every post-seed sample in the
+    coalescer behind that stale reading, so the public projection (the thing the
+    WS broadcasts) lagged 1-2 samples and sat at the floor. After the fix, a
+    sample whose stored value has already decayed past freshness is applied
+    immediately and the *projected* payload — not just the store — carries it.
+    """
+    from rigplane.web.runtime_helpers import build_public_state_payload_from_snapshot
+
+    path = FieldPath.receiver("main", "meters", "s_meter")
+    # IC-7610 streaming-meter shape: fast cadence with a short freshness TTL
+    # (0.8s). Frames below arrive 1s apart, so the value decays to stale between
+    # them.
+    policy = AcquisitionPolicy(
+        cadence_seconds=0.2,
+        freshness_ttl_seconds=0.8,
+        meter_coalescing=MeterCoalescingPolicy(window_seconds=0.2),
+    )
+    radio._acquisition_scheduler = AcquisitionScheduler(
+        profile=_acquisition_profile(path, policy=policy)
+    )
+    radio._meter_observation_coalescer = MeterObservationCoalescer()
+
+    stored_path = "receiver.0.meters.s_meter"
+
+    # First sample seeds (calibrated raw 0 -> -54 = S0 floor).
+    with patch("rigplane.runtime._civ_rx.time.monotonic", return_value=100.0):
+        radio._civ_runtime._apply_state_store_observations(
+            _make_frame(cmd=0x15, sub=0x02, data=_bcd2(0))
+        )
+    assert radio._state_store.snapshot().field(stored_path).value == -54
+
+    # Second sample arrives ~1s later — the seeded value has decayed past the
+    # 0.8s TTL, so the live reading (calibrated raw 122 -> -4) must land in the
+    # store immediately rather than being held behind the stale floor.
+    with patch("rigplane.runtime._civ_rx.time.monotonic", return_value=101.0):
+        radio._civ_runtime._apply_state_store_observations(
+            _make_frame(cmd=0x15, sub=0x02, data=_bcd2(122))
+        )
+    stored = radio._state_store.snapshot().field(stored_path).value
+    assert stored != -54, "live meter must not stay stuck at the S0 floor"
+    assert stored == -4
+    # The coalescer is not holding the live sample.
+    assert radio._meter_observation_coalescer._pending == []  # noqa: SLF001
+
+    # The value survives all the way to the projected WS payload.
+    payload = build_public_state_payload_from_snapshot(
+        radio._state_store.snapshot(),
+        radio=None,
+        receiver_count=2,
+    )
+    assert payload["main"]["sMeter"] == -4
+
+
+def test_fresh_burst_meter_samples_still_coalesce(radio: IcomRadio) -> None:
+    """The stale-apply fix must not defeat burst coalescing: when the stored
+    value is still FRESH, rapid samples within the window coalesce as before.
+    """
+    path = FieldPath.receiver("main", "meters", "s_meter")
+    policy = AcquisitionPolicy(
+        cadence_seconds=1.0,
+        freshness_ttl_seconds=4.0,
+        meter_coalescing=MeterCoalescingPolicy(window_seconds=0.2),
+    )
+    radio._acquisition_scheduler = AcquisitionScheduler(
+        profile=_acquisition_profile(path, policy=policy)
+    )
+    radio._meter_observation_coalescer = MeterObservationCoalescer()
+    stored_path = "receiver.0.meters.s_meter"
+
+    # Seed (raw 111 -> -8).
+    with patch("rigplane.runtime._civ_rx.time.monotonic", return_value=200.0):
+        radio._civ_runtime._apply_state_store_observations(
+            _make_frame(cmd=0x15, sub=0x02, data=_bcd2(111))
+        )
+    assert radio._state_store.snapshot().field(stored_path).value == -8
+
+    # A second sample 0.05s later, still FRESH (TTL 4.0s) and within the 0.2s
+    # window — coalesced, so the store still holds the seeded value.
+    with patch("rigplane.runtime._civ_rx.time.monotonic", return_value=200.05):
+        radio._civ_runtime._apply_state_store_observations(
+            _make_frame(cmd=0x15, sub=0x02, data=_bcd2(222))
+        )
+    assert radio._state_store.snapshot().field(stored_path).value == -8
+    assert radio._meter_observation_coalescer._pending != []  # noqa: SLF001
+
+    # After the window elapses the coalesced latest sample lands (raw 222 -> 31).
+    radio._civ_runtime.flush_due_meter_observations(now=200.3)
+    assert radio._state_store.snapshot().field(stored_path).value == 31
+
+
+def test_meter_value_survives_freshness_window_between_live_arrivals(
+    radio: IcomRadio,
+) -> None:
+    """MOR-334 (s_meter stuck-low, 3rd attempt): the stale *window*, not apply.
+
+    The prior regression tests projected the payload immediately after applying a
+    sample — while the field is still FRESH — which is exactly the window the live
+    failure hides in. On real hardware the meter arrives ~1/s; if the freshness
+    TTL is SHORTER than that interval the field decays to ``stale`` between every
+    arrival, and a stale/last-known meter floors to S0 on the LCD layout
+    (``rx.sMeter ?? -54``). This test advances the clock PAST the inter-arrival
+    interval, runs the freshness-decay tick (the production
+    ``StateFreshnessService`` path), and asserts the projected WS payload the
+    frontend consumes still carries the real last-known value — not the floor.
+
+    Fail-without: with the meter TTL at the old 0.6s the field is ``stale`` 0.9s
+    after the sample and the public S-meter sits behind a stale reading. Pass-
+    with: the TTL exceeds the live cadence, so a streaming meter stays FRESH and
+    the real value reaches the UI.
+    """
+    from rigplane.web.runtime_helpers import build_public_state_payload_from_snapshot
+
+    path = FieldPath.receiver("main", "meters", "s_meter")
+    # Production cadence: fast nominal cadence, short coalescing window, and the
+    # freshness TTL the shipped IC-7610 CI-V path assigns to s_meter
+    # (``_OBSERVATION_MAX_AGE_SECONDS``). The observation carries that TTL into
+    # the store, so the test asserts against the real shipped value rather than a
+    # synthetic one.
+    from rigplane.runtime._civ_rx import _OBSERVATION_MAX_AGE_SECONDS
+
+    s_meter_ttl = _OBSERVATION_MAX_AGE_SECONDS[("receiver", "meters", "s_meter")]
+    policy = AcquisitionPolicy(
+        cadence_seconds=0.2,
+        freshness_ttl_seconds=4.0,
+        meter_coalescing=MeterCoalescingPolicy(window_seconds=0.2),
+    )
+    radio._acquisition_scheduler = AcquisitionScheduler(
+        profile=_acquisition_profile(path, policy=policy)
+    )
+    radio._meter_observation_coalescer = MeterObservationCoalescer()
+    stored_path = "receiver.0.meters.s_meter"
+
+    # A real mid-scale sample (raw 122 -> calibrated -4 dB-rel-S9 ≈ S8) arrives.
+    with patch("rigplane.runtime._civ_rx.time.monotonic", return_value=300.0):
+        radio._civ_runtime._apply_state_store_observations(
+            _make_frame(cmd=0x15, sub=0x02, data=_bcd2(122))
+        )
+    assert radio._state_store.snapshot().field(stored_path).value == -4
+
+    # The next live frame is ~1s away. Drive the freshness-decay tick (the
+    # production StateFreshnessService loop) to the moment just before that next
+    # arrival — i.e. one full inter-arrival interval after the sample. This is the
+    # exact window the old 0.6s TTL fell into (0.9s age > 0.6s TTL -> STALE); the
+    # prior sim never advanced the clock here, so it missed the failure.
+    inter_arrival = 1.0
+    decay_at = 300.0 + inter_arrival - 0.1  # 0.9s after the sample
+    radio._state_store.mark_stale_due(now=decay_at)
+
+    field = radio._state_store.snapshot().field(stored_path)
+    # The shipped TTL must exceed the ~1s live inter-arrival interval so the field
+    # stays FRESH between arrivals (the actual fix).
+    assert s_meter_ttl > 1.0, (
+        "s_meter freshness TTL must exceed the ~1/s live inter-arrival interval "
+        "or the field decays to stale (S0 floor) between every frame"
+    )
+    assert field.freshness is FreshnessState.FRESH
+
+    # The real last-known value reaches the projected WS payload — never the
+    # floor — across the inter-arrival window.
+    payload = build_public_state_payload_from_snapshot(
+        radio._state_store.snapshot(),
+        radio=None,
+        receiver_count=2,
+    )
+    assert payload["main"]["sMeter"] == -4
+    assert payload["main"]["sMeter"] != -54  # the calibrated S0 floor
 
 
 def test_same_value_coalesced_meter_flush_completes_scheduler_request(

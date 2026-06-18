@@ -1064,6 +1064,192 @@ async def test_set_freq_failure_does_not_publish_command_overlay() -> None:
 
 
 @pytest.mark.asyncio
+async def test_set_mode_publishes_command_overlay_before_readback() -> None:
+    # MOR-334 regression (mode reverts ~1s after the user sets it): a set_mode
+    # through the shared (WS) command executor must write the commanded mode
+    # into the command_state_store and projected public state immediately,
+    # mirroring the MOR-485 set_freq fix. Without the optimistic observation the
+    # published mode snapped back to the stale store value until the deferred
+    # readback (delayed by external_cat_pause=pause_polling) landed.
+    radio = SimpleNamespace(connected=True, capabilities=set())
+    srv = WebServer(radio, WebConfig())
+    srv.command_queue.put = lambda *a, **k: None  # type: ignore[method-assign]
+
+    intent = command_intent_from_request(
+        "set_mode",
+        {"mode": "CW", "receiver": 0},
+        source="websocket",
+        command_id="ws-mode-main",
+    )
+    await srv.command_service.execute(intent)
+
+    mode_path = FieldPath.active("0", "freq_mode", "mode")
+    assert srv.command_state_store.snapshot().field(mode_path).value == "CW"
+    assert srv.build_public_state()["main"]["mode"] == "CW"
+
+
+@pytest.mark.asyncio
+async def test_set_mode_overlay_yields_to_newer_external_readback() -> None:
+    # MOR-334 regression: front-panel tracking preserved. A later readback with
+    # a DIFFERENT mode must win (last-writer-wins); the optimistic value must
+    # not pin the mode.
+    radio = SimpleNamespace(connected=True, capabilities=set())
+    srv = WebServer(radio, WebConfig())
+    srv.command_queue.put = lambda *a, **k: None  # type: ignore[method-assign]
+
+    intent = command_intent_from_request(
+        "set_mode",
+        {"mode": "CW", "receiver": 0},
+        source="websocket",
+        command_id="ws-mode-external",
+    )
+    await srv.command_service.execute(intent)
+
+    mode_path = FieldPath.active("0", "freq_mode", "mode")
+    srv.command_service.apply_observation(
+        Observation(
+            path=mode_path,
+            value="USB",
+            source=SourceMetadata(source="poll_response", provider="icom_civ"),
+            timestamp_monotonic=time.monotonic(),
+            correlation_id=None,
+        )
+    )
+
+    assert srv.command_state_store.snapshot().field(mode_path).value == "USB"
+
+
+@pytest.mark.asyncio
+async def test_set_mode_failure_does_not_publish_command_overlay() -> None:
+    # MOR-334 regression: the optimistic overlay is emitted ONLY on enqueue
+    # success — a raised enqueue must leave the command_state_store untouched.
+    radio = SimpleNamespace(connected=True, capabilities=set())
+    srv = WebServer(radio, WebConfig())
+
+    def _boom(*_a: object, **_k: object) -> None:
+        raise RuntimeError("radio rejected command")
+
+    srv.command_queue.put = _boom  # type: ignore[method-assign]
+
+    intent = command_intent_from_request(
+        "set_mode",
+        {"mode": "CW", "receiver": 0},
+        source="websocket",
+        command_id="ws-mode-fail",
+    )
+    with pytest.raises(RuntimeError, match="radio rejected command"):
+        await srv.command_service.execute(intent)
+
+    snapshot = srv.command_state_store.snapshot()
+    with pytest.raises(KeyError):
+        snapshot.field(FieldPath.active("0", "freq_mode", "mode"))
+
+
+@pytest.mark.asyncio
+async def test_set_data_mode_publishes_command_overlay_before_readback() -> None:
+    # MOR-334 regression: data_mode (D1/D2/D3) must be published optimistically
+    # just like mode, so the DATA indicator reflects the user's set immediately
+    # instead of reverting until the deferred readback lands.
+    radio = SimpleNamespace(connected=True, capabilities={"data_mode"})
+    srv = WebServer(radio, WebConfig())
+    srv.command_queue.put = lambda *a, **k: None  # type: ignore[method-assign]
+
+    intent = command_intent_from_request(
+        "set_data_mode",
+        {"mode": 1, "receiver": 0},
+        source="websocket",
+        command_id="ws-data-mode-main",
+    )
+    await srv.command_service.execute(intent)
+
+    data_mode_path = FieldPath.active("0", "freq_mode", "data_mode")
+    assert srv.command_state_store.snapshot().field(data_mode_path).value == 1
+    assert srv.build_public_state()["main"]["dataMode"] == 1
+
+
+@pytest.mark.asyncio
+async def test_set_mod_input_publishes_command_overlay_before_readback() -> None:
+    # MOR-616 regression: the MOD-input source selector (set_data*_mod_input)
+    # had the same snap-back defect as freq/mode — the executor returned an ack
+    # with no observation, so the published source reverted to "—"/stale until
+    # the deferred readback landed. The overlay must write the commanded source
+    # to the SAME ``global.slow_state.<field>`` path the poller readback uses.
+    radio = SimpleNamespace(connected=True, capabilities={"data_mode"})
+    srv = WebServer(radio, WebConfig())
+    srv.command_queue.put = lambda *a, **k: None  # type: ignore[method-assign]
+
+    intent = command_intent_from_request(
+        "set_data2_mod_input",
+        {"source": 5},
+        source="websocket",
+        command_id="ws-mod-input-data2",
+    )
+    await srv.command_service.execute(intent)
+
+    mod_path = FieldPath.global_("slow_state", "data2_mod_input")
+    assert srv.command_state_store.snapshot().field(mod_path).value == 5
+    assert srv.build_public_state()["data2ModInput"] == 5
+
+
+@pytest.mark.asyncio
+async def test_set_mod_input_overlay_yields_to_newer_external_readback() -> None:
+    # MOR-616 regression: front-panel tracking preserved. A later poll readback
+    # with a DIFFERENT source must win (last-writer-wins); the optimistic value
+    # must not pin the source.
+    radio = SimpleNamespace(connected=True, capabilities={"data_mode"})
+    srv = WebServer(radio, WebConfig())
+    srv.command_queue.put = lambda *a, **k: None  # type: ignore[method-assign]
+
+    intent = command_intent_from_request(
+        "set_data_off_mod_input",
+        {"source": 0},
+        source="websocket",
+        command_id="ws-mod-input-external",
+    )
+    await srv.command_service.execute(intent)
+
+    mod_path = FieldPath.global_("slow_state", "data_off_mod_input")
+    srv.command_service.apply_observation(
+        Observation(
+            path=mod_path,
+            value=3,
+            source=SourceMetadata(source="poll_response", provider="web_poller"),
+            timestamp_monotonic=time.monotonic(),
+            correlation_id=None,
+        )
+    )
+
+    assert srv.command_state_store.snapshot().field(mod_path).value == 3
+    assert srv.build_public_state()["dataOffModInput"] == 3
+
+
+@pytest.mark.asyncio
+async def test_set_mod_input_failure_does_not_publish_command_overlay() -> None:
+    # MOR-616 regression: the optimistic overlay is emitted ONLY on enqueue
+    # success — a raised enqueue must leave the command_state_store untouched.
+    radio = SimpleNamespace(connected=True, capabilities={"data_mode"})
+    srv = WebServer(radio, WebConfig())
+
+    def _boom(*_a: object, **_k: object) -> None:
+        raise RuntimeError("radio rejected command")
+
+    srv.command_queue.put = _boom  # type: ignore[method-assign]
+
+    intent = command_intent_from_request(
+        "set_data1_mod_input",
+        {"source": 2},
+        source="websocket",
+        command_id="ws-mod-input-fail",
+    )
+    with pytest.raises(RuntimeError, match="radio rejected command"):
+        await srv.command_service.execute(intent)
+
+    snapshot = srv.command_state_store.snapshot()
+    with pytest.raises(KeyError):
+        snapshot.field(FieldPath.global_("slow_state", "data1_mod_input"))
+
+
+@pytest.mark.asyncio
 async def test_websocket_reused_command_ids_are_scoped_per_connection() -> None:
     radio = SimpleNamespace(connected=True, capabilities=set())
     srv = WebServer(radio, WebConfig())
