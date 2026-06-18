@@ -101,6 +101,41 @@ export default defineConfig({
             // MobileRadioLayout / BandPlanOverlay component tests.
             'src/**/*.component.test.ts',
             'src/**/*.component.svelte.test.ts',
+            // Module-scope ``vi.mock(...)`` files that are NOT named
+            // ``*.component*`` and so were not caught by the glob above. Under
+            // ``isolate: false`` a hoisted ``vi.mock`` becomes a no-op when a
+            // sibling test imports the real module first (it pins the real
+            // module in the shared cache), and a *partial* mock leaks its
+            // missing-export surface into sibling tests that import the real
+            // store (e.g. "No setWsConnected export is defined on the mock").
+            // The publish validate job (2-core, low parallelism) hit a rotating
+            // cast of these — mode-filter-memory / TxPanel / FilterPanel /
+            // DspPanel / SendReportDialog / vfo-header / ws-client* / http-client
+            // — a different file per run. Route every fast-pool file that does
+            // module-scope ``vi.mock`` through the isolated pool so the mock is
+            // authoritative and cannot leak. See #771.
+            'src/components-v2/controls/__tests__/BandSelector.test.ts',
+            'src/components-v2/dialogs/__tests__/SendReportDialog.test.ts',
+            'src/components-v2/layout/__tests__/RadioLayout.test.ts',
+            'src/components-v2/layout/__tests__/top-row-visual-regression.test.ts',
+            'src/components-v2/layout/__tests__/vfo-header.test.ts',
+            'src/components-v2/panels/__tests__/DockMeterPanel.test.ts',
+            'src/components-v2/panels/__tests__/DspPanel.test.ts',
+            'src/components-v2/panels/__tests__/FilterPanel.test.ts',
+            'src/components-v2/panels/__tests__/MeterPanel.test.ts',
+            'src/components-v2/panels/__tests__/MetersDockPanel.test.ts',
+            'src/components-v2/panels/__tests__/ModePanel.test.ts',
+            'src/components-v2/panels/__tests__/RitXitPanel.test.ts',
+            'src/components-v2/panels/__tests__/RxAudioPanel.test.ts',
+            'src/components-v2/panels/__tests__/TxPanel.test.ts',
+            'src/components-v2/panels/lcd/__tests__/AmberTelemetryStrip.test.ts',
+            'src/components-v2/panels/lcd/__tests__/lcd-availability.test.ts',
+            'src/components-v2/panels/lcd/__tests__/lcd-components.test.ts',
+            'src/components-v2/panels/vfo/__tests__/DualVfoDisplay.test.ts',
+            'src/components-v2/vfo/__tests__/VfoPanel.test.ts',
+            'src/lib/media/__tests__/media-session.test.ts',
+            'src/lib/radio/mode-filter-memory.test.ts',
+            'src/lib/transport/__tests__/ws-client.test.ts',
           ],
           pool: 'threads',
           isolate: false,
@@ -132,6 +167,31 @@ export default defineConfig({
             'src/lib/i18n/__tests__/pseudo.test.ts',
             'src/**/*.component.test.ts',
             'src/**/*.component.svelte.test.ts',
+            // Mirror of the fast-pool exclude additions above: every fast-pool
+            // file doing module-scope ``vi.mock`` runs isolated so its mock is
+            // authoritative and cannot leak under ``isolate: false``. See #771.
+            'src/components-v2/controls/__tests__/BandSelector.test.ts',
+            'src/components-v2/dialogs/__tests__/SendReportDialog.test.ts',
+            'src/components-v2/layout/__tests__/RadioLayout.test.ts',
+            'src/components-v2/layout/__tests__/top-row-visual-regression.test.ts',
+            'src/components-v2/layout/__tests__/vfo-header.test.ts',
+            'src/components-v2/panels/__tests__/DockMeterPanel.test.ts',
+            'src/components-v2/panels/__tests__/DspPanel.test.ts',
+            'src/components-v2/panels/__tests__/FilterPanel.test.ts',
+            'src/components-v2/panels/__tests__/MeterPanel.test.ts',
+            'src/components-v2/panels/__tests__/MetersDockPanel.test.ts',
+            'src/components-v2/panels/__tests__/ModePanel.test.ts',
+            'src/components-v2/panels/__tests__/RitXitPanel.test.ts',
+            'src/components-v2/panels/__tests__/RxAudioPanel.test.ts',
+            'src/components-v2/panels/__tests__/TxPanel.test.ts',
+            'src/components-v2/panels/lcd/__tests__/AmberTelemetryStrip.test.ts',
+            'src/components-v2/panels/lcd/__tests__/lcd-availability.test.ts',
+            'src/components-v2/panels/lcd/__tests__/lcd-components.test.ts',
+            'src/components-v2/panels/vfo/__tests__/DualVfoDisplay.test.ts',
+            'src/components-v2/vfo/__tests__/VfoPanel.test.ts',
+            'src/lib/media/__tests__/media-session.test.ts',
+            'src/lib/radio/mode-filter-memory.test.ts',
+            'src/lib/transport/__tests__/ws-client.test.ts',
           ],
           pool: 'threads',
           isolate: true,

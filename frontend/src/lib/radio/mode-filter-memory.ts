@@ -37,13 +37,14 @@ const modeFilter = new Map<string, number>();
 // `$lib/stores/radio.svelte` without `subscribeRadioState`, and the lookup
 // must remain a no-throw best-effort side effect.
 let seedingStarted = false;
+let unsubscribeSeeding: (() => void) | null = null;
 export function startModeFilterSeeding(): void {
   if (seedingStarted) {
     return;
   }
   seedingStarted = true;
   try {
-    subscribeRadioState((state) => seedFromState(state));
+    unsubscribeSeeding = subscribeRadioState((state) => seedFromState(state));
   } catch {
     // Store subscription unavailable (e.g. unit-test mock) — the map still
     // works via explicit recordModeFilter()/seedFromState() calls.
@@ -92,5 +93,19 @@ export function seedFromState(state: ServerState | null): void {
 /** Test hook — clear the session map and re-arm lazy seeding. */
 export function _resetModeFilterMemory(): void {
   modeFilter.clear();
+  // Tear down any live real-store subscription. Under the non-isolated test
+  // pool (vite.config ``isolate: false``) the module singleton is shared across
+  // test files: a sibling test that exercises a live mode handler attaches the
+  // real ``subscribeRadioState`` seeder, which then keeps recording entries
+  // into the shared map after this reset — re-populating it mid-test and making
+  // map assertions flaky. Releasing the subscription here makes the reset total.
+  if (unsubscribeSeeding) {
+    try {
+      unsubscribeSeeding();
+    } catch {
+      // best-effort teardown
+    }
+    unsubscribeSeeding = null;
+  }
   seedingStarted = false;
 }
