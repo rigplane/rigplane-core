@@ -185,6 +185,24 @@ _FAST_INTERVAL: float = 0.025  # meters — wfview queue interval for LAN (25ms)
 _FAST_INTERVAL_SERIAL: float = 0.100  # serial: 10 polls/sec for responsive meters
 _SLOW_INTERVAL: float = 0.25  # levels/settings — rarely change
 
+# MOR-874: how long a healthy-link in-flight acquisition request may stay
+# suppressed after its FIRST send-relative deadline expiry before being
+# treated as a REAL timeout. The healthy-link gate (see
+# ``_civ_link_healthy``) intentionally suppresses the false-timeout ->
+# adaptive-decay chain when the radio answered but the deadline raced under
+# load. But the gate reads the GLOBAL last-CI-V timestamp (refreshed by ANY
+# frame: meters/scope/transceive), so a link under external-CAT load reads
+# healthy ~permanently. Without a bound, a request whose specific answer is
+# genuinely lost (UDP drop / radio silently ignores that command) would stay
+# in flight forever — never re-sent, never failed. This bound caps the
+# suppression: a slightly-late answer (the common case) still credits within
+# the window with NO extra CI-V traffic, but once the window elapses with the
+# request still uncredited we fall back to a real timeout — drop it so the
+# scheduler re-queues/re-sends and the normal failure accounting/decay applies.
+# Sized to a couple of answer windows so a healthy radio's reply always lands
+# first; it does not add poll pressure for late-but-arriving answers.
+_ACQUISITION_HEALTHY_GRACE_SECONDS: float = 6.0
+
 # MOR-615: per-DATA-group MOD-input source fields (IC-7610 0x1A 05 00
 # 0x91-0x94). Field name == ``get_<name>`` / ``set_<name>`` radio method
 # suffix == legacy RadioState attribute == StateStore slow_state leaf.
@@ -394,6 +412,13 @@ class RadioPoller:
         )
         self._acquisition_executor = acquisition_executor
         self._acquisition_in_flight: dict[str, tuple[frozenset[FieldPath], float]] = {}
+        # MOR-874: monotonic time of the FIRST healthy-link deadline expiry per
+        # in-flight request id. Seeds the bounded grace window
+        # (``_ACQUISITION_HEALTHY_GRACE_SECONDS``) after which a still-uncredited
+        # request stops being suppressed and is treated as a real timeout.
+        # Entries are cleared when a request leaves flight (credited or dropped)
+        # so the map never leaks.
+        self._acquisition_healthy_grace_started: dict[str, float] = {}
         self._queue = queue
         self._on_state_event = on_state_event
         self._poll_index: int = 0
@@ -2247,11 +2272,42 @@ class RadioPoller:
         sent_at: float,
         now: float,
     ) -> bool:
-        deadlines = [request.deadline_monotonic]
-        if request.timeout is not None:
-            deadlines.append(sent_at + request.timeout)
-        deadline: float = min(deadlines)
-        return now >= deadline
+        # MOR-874: the deadline must be SEND-relative once the request has
+        # actually been dispatched. The enqueue-relative ``deadline_monotonic``
+        # only bounds requests still waiting to be sent (``sent_at == 0``);
+        # using it (or ``min`` with it) for a sent request fires a false
+        # timeout when the request sat queued under load and the radio's fast
+        # answer lands just after enqueue_time + max_age. A sent request is
+        # only expired ``timeout`` (or ``max_age`` when no explicit timeout is
+        # set) seconds after its SEND time — never relative to enqueue time.
+        if sent_at > 0.0:
+            window: float = (
+                request.timeout if request.timeout is not None else request.max_age
+            )
+            return bool(now >= sent_at + window)
+        return bool(now >= request.deadline_monotonic)
+
+    def _civ_link_healthy(self, *, now: float) -> bool:
+        """Return True when the CI-V transport is demonstrably alive (MOR-874).
+
+        Used to gate false acquisition timeouts: a request deadline that fires
+        while the link is healthy (recent CI-V data, no recovery in progress)
+        is a queueing artifact, not a backend failure, and must not decay the
+        adaptive cadence.
+        """
+
+        radio = self._radio
+        if bool(getattr(radio, "_civ_recovering", False)):
+            return False
+        last_civ = getattr(radio, "_last_civ_data_received", None)
+        if not isinstance(last_civ, (int, float)) or isinstance(last_civ, bool):
+            return False
+        ready_timeout = getattr(radio, "_civ_ready_idle_timeout", 2.0)
+        if not isinstance(ready_timeout, (int, float)) or isinstance(
+            ready_timeout, bool
+        ):
+            ready_timeout = 2.0
+        return (now - float(last_civ)) <= float(ready_timeout)
 
     async def _send_scheduler_requests(self) -> None:
         scheduler = self._acquisition_scheduler
@@ -2264,6 +2320,9 @@ class RadioPoller:
         for request_id in tuple(self._acquisition_in_flight):
             if request_id not in pending_ids:
                 del self._acquisition_in_flight[request_id]
+                # MOR-874: request left flight (credited / dropped) — drop its
+                # grace bookkeeping so the map never leaks.
+                self._acquisition_healthy_grace_started.pop(request_id, None)
 
         for request in pending:
             sent_paths: frozenset[FieldPath] = frozenset()
@@ -2276,21 +2335,60 @@ class RadioPoller:
                     sent_at=sent_at,
                     now=now,
                 ):
+                    # MOR-874: when the deadline fires but the CI-V link is
+                    # healthy, this is (usually) a false timeout — the radio
+                    # answered and the deadline raced under load. Suppress the
+                    # false-timeout -> adaptive-decay chain and keep the request
+                    # in flight so the returning observation can credit it.
+                    #
+                    # But the health gate reads the GLOBAL last-CI-V timestamp,
+                    # so under external-CAT load it reads healthy ~permanently;
+                    # a request whose specific answer is genuinely lost would
+                    # then be pinned forever. Bound the suppression with a grace
+                    # window: once it elapses with the request still uncredited,
+                    # fall back to a REAL timeout (drop it so the scheduler
+                    # re-queues/re-sends and normal failure accounting/decay
+                    # applies).
+                    link_healthy = self._civ_link_healthy(now=now)
+                    grace_expired = False
+                    if link_healthy:
+                        grace_started = self._acquisition_healthy_grace_started.get(
+                            request.id
+                        )
+                        if grace_started is None:
+                            self._acquisition_healthy_grace_started[request.id] = now
+                            grace_started = now
+                        if now - grace_started >= _ACQUISITION_HEALTHY_GRACE_SECONDS:
+                            grace_expired = True
+                    # Treat a grace-expired healthy expiry exactly like an
+                    # unhealthy one: count it, drop it, let cadence advance.
+                    timeout_is_real = (not link_healthy) or grace_expired
                     self._record_state_diagnostic(
                         "acquisition_request_failed",
                         "web.radio_poller",
                         request_id=request.id,
                         paths=[str(path) for path in request.paths],
                         reason="acquisition_request_timeout",
+                        link_healthy=link_healthy,
+                        grace_expired=grace_expired,
                     )
                     scheduler.record_acquisition_failure(
                         request,
                         reason="acquisition_request_timeout",
                         failed_paths=sent_paths or frozenset(request.paths),
                         now=now,
+                        link_healthy=not timeout_is_real,
                     )
-                    self._acquisition_in_flight.pop(request.id, None)
-                    continue
+                    if timeout_is_real:
+                        self._acquisition_in_flight.pop(request.id, None)
+                        self._acquisition_healthy_grace_started.pop(request.id, None)
+                        continue
+                    # Healthy link, still within grace: leave in flight, skip
+                    # re-send this cycle (no extra CI-V traffic — important not
+                    # to compete with external CAT).
+                    sent_paths = sent_paths.intersection(request.paths)
+                    if all(path in sent_paths for path in request.paths):
+                        continue
                 else:
                     sent_paths = sent_paths.intersection(request.paths)
 

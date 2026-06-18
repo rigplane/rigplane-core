@@ -1275,6 +1275,68 @@ def test_unchanged_acquisition_result_decays_cadence_exponentially_and_caps() ->
     assert diagnostics["cadenceByPath"][str(freq)]["nextDueMonotonic"] == 220.0
 
 
+def test_healthy_link_timeout_does_not_count_or_decay_cadence() -> None:
+    # MOR-874: an acquisition_request_timeout reported while the transport is
+    # healthy is a false timeout — the radio answered, the deadline raced. It
+    # must not be counted as a failure, must not drop the pending request, and
+    # must not advance/decay the freq_mode cadence toward the 30 s ceiling.
+    clock = FreshnessClock(start=300.0)
+    freq = FieldPath.active("main", "freq_mode", "freq_hz")
+    policy = AcquisitionPolicy(
+        cadence_seconds=2.0,
+        freshness_ttl_seconds=10.0,
+        adaptive_decay=AdaptiveDecayPolicy(
+            enabled=True,
+            idle_multiplier=2.0,
+            max_cadence_seconds=30.0,
+        ),
+    )
+    scheduler = AcquisitionScheduler(
+        profile=_profile([freq], default_policy=policy),
+        clock=clock,
+    )
+
+    request = scheduler.due_requests()[0]
+    scheduler.record_acquisition_failure(
+        request,
+        reason="acquisition_request_timeout",
+        now=clock.now(),
+        link_healthy=True,
+    )
+
+    diagnostics = scheduler.diagnostics()
+    # No failure counted, request still pending, cadence pinned at base 2.0 s.
+    assert diagnostics["failedRequestCount"] == 0
+    assert "acquisition_request_timeout" not in diagnostics["failureCountByReason"]
+    assert scheduler.pending_requests()[0].id == request.id
+    assert diagnostics["cadenceByPath"][str(freq)]["currentCadenceSeconds"] == 2.0
+
+
+def test_unhealthy_link_timeout_is_counted_and_drops_pending_request() -> None:
+    # MOR-874 (negative case): a real timeout (link NOT healthy) is still a
+    # terminal failure that is counted and clears the pending request.
+    clock = FreshnessClock(start=400.0)
+    freq = FieldPath.active("main", "freq_mode", "freq_hz")
+    policy = AcquisitionPolicy(cadence_seconds=2.0, freshness_ttl_seconds=10.0)
+    scheduler = AcquisitionScheduler(
+        profile=_profile([freq], default_policy=policy),
+        clock=clock,
+    )
+
+    request = scheduler.due_requests()[0]
+    scheduler.record_acquisition_failure(
+        request,
+        reason="acquisition_request_timeout",
+        now=clock.now(),
+        link_healthy=False,
+    )
+
+    diagnostics = scheduler.diagnostics()
+    assert diagnostics["failedRequestCount"] == 1
+    assert diagnostics["failureCountByReason"]["acquisition_request_timeout"] == 1
+    assert scheduler.pending_requests() == ()
+
+
 def test_semantic_change_resets_adaptive_cadence_to_base_policy() -> None:
     clock = FreshnessClock(start=220.0)
     freq = FieldPath.active("main", "freq_mode", "freq_hz")
