@@ -20,6 +20,11 @@ vi.mock('../../stores/connection.svelte', () => ({
   setReconnecting: vi.fn(),
   setRadioStatus: vi.fn(),
   isLiveRadioAvailable: vi.fn(() => true),
+  // Under the fast pool's ``isolate: false`` this hoisted mock is shared
+  // module-wide; scope-controller.svelte (loaded by a sibling fast-pool
+  // test) imports the real ``markScopeFrame``, so it must be stubbed here
+  // or that sibling throws "No markScopeFrame export". See issue #771.
+  markScopeFrame: vi.fn(),
 }));
 
 vi.mock('../../stores/radio.svelte', () => ({
