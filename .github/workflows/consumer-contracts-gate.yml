@@ -1,0 +1,65 @@
+name: Consumer contracts gate
+
+# MOR-883: consumer-driven contract (CDC) gate. Consumers (pro, station) author
+# static JSON expectation files declaring the producer surface they rely on;
+# those files are vendored under `contracts/consumer-expectations/<consumer>/`.
+# `scripts/run_consumer_contracts.py` builds the REAL producer artifact from the
+# PUBLIC `rigplane.*` surface in-process (no network, no private imports) and
+# fails when an expectation is violated — so a core change that would break a
+# fielded consumer turns core's own PR red. Mirrors the state-types-gate
+# staleness-gate pattern.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "src/rigplane/web/server.py"
+      - "src/rigplane/web/discovery.py"
+      - "src/rigplane/web/api_contract.py"
+      - "contracts/consumer-expectations/**"
+      - "scripts/run_consumer_contracts.py"
+      - "tests/contracts/test_consumer_contracts.py"
+      - "pyproject.toml"
+      - ".github/workflows/consumer-contracts-gate.yml"
+  pull_request:
+    branches: [main]
+    paths:
+      - "src/rigplane/web/server.py"
+      - "src/rigplane/web/discovery.py"
+      - "src/rigplane/web/api_contract.py"
+      - "contracts/consumer-expectations/**"
+      - "scripts/run_consumer_contracts.py"
+      - "tests/contracts/test_consumer_contracts.py"
+      - "pyproject.toml"
+      - ".github/workflows/consumer-contracts-gate.yml"
+
+concurrency:
+  group: consumer-contracts-gate-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  consumer-contracts-gate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    env:
+      UV_PYTHON: "3.11"
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v8.1.0
+        with:
+          enable-cache: true
+          cache-dependency-glob: |
+            pyproject.toml
+            uv.lock
+
+      - name: Set up Python 3.11
+        run: uv python install 3.11
+
+      - name: Install Python deps (jsonschema for the CDC runner)
+        run: uv sync --extra codegen
+
+      - name: Run consumer-driven contracts against HEAD
+        run: uv run python scripts/run_consumer_contracts.py

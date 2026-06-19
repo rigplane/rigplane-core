@@ -1,0 +1,30 @@
+{
+  "contract": "pro/discovery_datagram",
+  "source": "rigplane-pro",
+  "source_file": "src/rigplane_pro/companion/core/discovery.py",
+  "description": "Pro (and station) parse the UDP discovery unicast response built by rigplane.web.discovery.DiscoveryResponder. They rely on the legacy single-radio block: the schema identifier, service, version, base url, name, and the per-radio model/connected fields. The additive radios[] fleet array is parsed when present but is not required of a single-radio responder.",
+  "producer_artifact": "discovery",
+  "speaks_version": {
+    "field": "schema",
+    "value": "rigplane.station.discovery.v1"
+  },
+  "schema": {
+    "type": "object",
+    "required": ["schema", "service", "version", "url", "name", "radio"],
+    "properties": {
+      "schema": { "const": "rigplane.station.discovery.v1" },
+      "service": { "enum": ["rigplane", "icom-lan"] },
+      "version": { "type": "string" },
+      "url": { "type": "string" },
+      "name": { "type": "string" },
+      "radio": {
+        "type": "object",
+        "required": ["model", "connected"],
+        "properties": {
+          "model": { "type": "string" },
+          "connected": { "type": "boolean" }
+        }
+      }
+    }
+  }
+}
