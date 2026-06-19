@@ -1,0 +1,220 @@
+name: Dispatch downstream version-bump PRs
+
+# Triggered when a core GitHub Release is published (not a pre-release).
+# Opens bump PRs in rigplane-pro and rigplane-station via a GitHub App token
+# so the workflow operates across repository boundaries without using a PAT.
+#
+# INERT UNTIL CONFIGURED: if DOWNSTREAM_APP_ID or DOWNSTREAM_APP_PRIVATE_KEY
+# are absent the job logs a clear message and exits 0 — the core release is
+# not blocked. See the "Maintainer setup" section below for required steps.
+#
+# Maintainer setup (do this once):
+# ─────────────────────────────────
+# 1. Create a GitHub App in the rigplane org (Settings → Developer settings →
+#    GitHub Apps → New GitHub App):
+#      Name:        rigplane-downstream-bump (or similar)
+#      Homepage:    https://github.com/rigplane
+#      Webhook:     disable (uncheck "Active")
+#      Permissions (repository, Contents):  Read & write
+#      Permissions (repository, Pull requests): Read & write
+#      Where can it be installed? → Only on this account
+#
+# 2. After creation, note the numeric App ID shown on the App's settings page.
+#
+# 3. Generate a private key (App settings → "Private keys" → Generate a private
+#    key). Download the .pem file.
+#
+# 4. Install the App on the downstream repos:
+#      App settings → Install App → rigplane org →
+#      select repositories: rigplane-pro, rigplane-station
+#
+# 5. Add secrets to rigplane-core (Settings → Secrets and variables → Actions):
+#      DOWNSTREAM_APP_ID          — the numeric App ID (e.g. 123456)
+#      DOWNSTREAM_APP_PRIVATE_KEY — the full PEM content of the private key
+
+on:
+  release:
+    types: [published]
+
+permissions:
+  contents: read
+
+jobs:
+  bump-downstream:
+    name: Open downstream bump PRs
+    runs-on: ubuntu-latest
+    # Skip pre-releases (alpha, beta, rc). Only stable releases trigger bumps.
+    if: ${{ github.event.release.prerelease == false }}
+
+    steps:
+      - name: Check that App secrets are configured
+        id: secrets-check
+        env:
+          APP_ID: ${{ secrets.DOWNSTREAM_APP_ID }}
+          APP_KEY: ${{ secrets.DOWNSTREAM_APP_PRIVATE_KEY }}
+        run: |
+          if [ -z "$APP_ID" ] || [ -z "$APP_KEY" ]; then
+            echo "configured=false" >> "$GITHUB_OUTPUT"
+            echo "::warning::DOWNSTREAM_APP_ID or DOWNSTREAM_APP_PRIVATE_KEY secret is not set."
+            echo "Downstream bump PRs are SKIPPED. See workflow comments for setup instructions."
+          else
+            echo "configured=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Mint GitHub App token
+        id: app-token
+        if: steps.secrets-check.outputs.configured == 'true'
+        uses: actions/create-github-app-token@v1
+        with:
+          app-id: ${{ secrets.DOWNSTREAM_APP_ID }}
+          private-key: ${{ secrets.DOWNSTREAM_APP_PRIVATE_KEY }}
+          # Grant the token access to both downstream repos.
+          repositories: rigplane-pro,rigplane-station
+          owner: rigplane
+
+      - name: Checkout rigplane-core (for bump script)
+        if: steps.secrets-check.outputs.configured == 'true'
+        uses: actions/checkout@v6
+        with:
+          path: rigplane-core
+
+      - name: Extract version from release tag
+        if: steps.secrets-check.outputs.configured == 'true'
+        id: version
+        run: |
+          TAG="${{ github.event.release.tag_name }}"
+          VERSION="${TAG#v}"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "Core version: $VERSION (tag $TAG)"
+
+      # ── rigplane-pro ──────────────────────────────────────────────────────
+
+      - name: Checkout rigplane-pro
+        if: steps.secrets-check.outputs.configured == 'true'
+        uses: actions/checkout@v6
+        with:
+          repository: rigplane/rigplane-pro
+          token: ${{ steps.app-token.outputs.token }}
+          path: rigplane-pro
+
+      - name: Bump rigplane-pro pins
+        if: steps.secrets-check.outputs.configured == 'true'
+        run: |
+          python rigplane-core/scripts/bump_downstream_pin.py \
+            --repo pro \
+            --version "${{ steps.version.outputs.version }}" \
+            --root rigplane-pro
+
+      - name: Open PR in rigplane-pro
+        if: steps.secrets-check.outputs.configured == 'true'
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          VERSION: ${{ steps.version.outputs.version }}
+          TAG: ${{ steps.version.outputs.tag }}
+          RELEASE_URL: ${{ github.event.release.html_url }}
+        run: |
+          cd rigplane-pro
+          BRANCH="codex/auto-bump-core-${VERSION}"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git config user.name "github-actions[bot]"
+          git checkout -b "$BRANCH"
+          git add CORE_VERSION pyproject.toml
+          git diff --cached --stat
+          git commit -m "chore: bump core pin to v${VERSION} (auto)"
+          git push origin "$BRANCH"
+
+          PR_BODY="$(cat <<EOF
+          ## Auto-bump: core pin → \`v${VERSION}\`
+
+          This PR was opened automatically by the \`dispatch-downstream\` workflow
+          in [rigplane-core](https://github.com/rigplane/rigplane-core) when
+          release \`${TAG}\` was published.
+
+          ### Changes
+          | File | Edit |
+          |---|---|
+          | \`CORE_VERSION\` | \`v${VERSION}\` |
+          | \`pyproject.toml\` | \`rigplane[bridge]==${VERSION}\` |
+
+          Both edits are coupled and satisfy \`tests/test_core_version_contract.py\`.
+
+          ### Release notes
+          ${RELEASE_URL}
+
+          ### Checklist
+          - [ ] CI green
+          - [ ] Spot-check that \`CORE_VERSION\` and \`rigplane[bridge]==\` match
+          EOF
+          )"
+
+          gh pr create \
+            --repo rigplane/rigplane-pro \
+            --title "chore: bump core pin to v${VERSION} (auto)" \
+            --body "$PR_BODY" \
+            --head "$BRANCH" \
+            --base main
+
+      # ── rigplane-station ──────────────────────────────────────────────────
+
+      - name: Checkout rigplane-station
+        if: steps.secrets-check.outputs.configured == 'true'
+        uses: actions/checkout@v6
+        with:
+          repository: rigplane/rigplane-station
+          token: ${{ steps.app-token.outputs.token }}
+          path: rigplane-station
+
+      - name: Bump rigplane-station pin
+        if: steps.secrets-check.outputs.configured == 'true'
+        run: |
+          python rigplane-core/scripts/bump_downstream_pin.py \
+            --repo station \
+            --version "${{ steps.version.outputs.version }}" \
+            --root rigplane-station
+
+      - name: Open PR in rigplane-station
+        if: steps.secrets-check.outputs.configured == 'true'
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          VERSION: ${{ steps.version.outputs.version }}
+          TAG: ${{ steps.version.outputs.tag }}
+          RELEASE_URL: ${{ github.event.release.html_url }}
+        run: |
+          cd rigplane-station
+          BRANCH="codex/auto-bump-core-${VERSION}"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git config user.name "github-actions[bot]"
+          git checkout -b "$BRANCH"
+          git add pyproject.toml
+          git diff --cached --stat
+          git commit -m "chore: bump core pin to v${VERSION} (auto)"
+          git push origin "$BRANCH"
+
+          PR_BODY="$(cat <<EOF
+          ## Auto-bump: core pin → \`v${VERSION}\`
+
+          This PR was opened automatically by the \`dispatch-downstream\` workflow
+          in [rigplane-core](https://github.com/rigplane/rigplane-core) when
+          release \`${TAG}\` was published.
+
+          ### Changes
+          | File | Edit |
+          |---|---|
+          | \`pyproject.toml\` | \`rigplane==${VERSION}\` |
+
+          ### Release notes
+          ${RELEASE_URL}
+
+          ### Checklist
+          - [ ] CI green
+          - [ ] Confirm station image build picks up the new wheel
+          EOF
+          )"
+
+          gh pr create \
+            --repo rigplane/rigplane-station \
+            --title "chore: bump core pin to v${VERSION} (auto)" \
+            --body "$PR_BODY" \
+            --head "$BRANCH" \
+            --base main
