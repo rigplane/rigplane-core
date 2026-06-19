@@ -82,6 +82,8 @@ scripts/*
 !scripts/gen_state_types.py
 # And the consumer-driven contract (CDC) runner is tracked (MOR-883).
 !scripts/run_consumer_contracts.py
+# And the downstream-bump script is tracked (MOR-887).
+!scripts/bump_downstream_pin.py
 # But CI scripts under .github/ are tracked.
 !.github/scripts/
 # And frontend tooling scripts (e.g. i18n lint) are tracked.
