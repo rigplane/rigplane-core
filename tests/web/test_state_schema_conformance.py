@@ -178,9 +178,15 @@ def test_snapshot_path_normalized_level_fields_conform() -> None:
 
     # The snapshot producer normalizes the raw ints to float in [0, 1].
     main = payload["main"]
-    assert isinstance(main["afLevel"], float), f"expected float, got {type(main['afLevel'])}"
-    assert isinstance(main["rfGain"], float), f"expected float, got {type(main['rfGain'])}"
-    assert isinstance(main["squelch"], float), f"expected float, got {type(main['squelch'])}"
+    assert isinstance(main["afLevel"], float), (
+        f"expected float, got {type(main['afLevel'])}"
+    )
+    assert isinstance(main["rfGain"], float), (
+        f"expected float, got {type(main['rfGain'])}"
+    )
+    assert isinstance(main["squelch"], float), (
+        f"expected float, got {type(main['squelch'])}"
+    )
     assert isinstance(payload["powerLevel"], float), (
         f"expected float, got {type(payload['powerLevel'])}"
     )
