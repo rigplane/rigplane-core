@@ -756,17 +756,27 @@ class AudioRuntimeMixin(_MixinBase):  # type: ignore[misc]
     async def _ensure_audio_transport(self) -> None:
         """Connect the audio transport if not already connected.
 
-        If a previous audio transport is still attached but its underlying UDP
-        datagram transport is gone/closed (or the stream was already torn down
-        while the transport lingered), tear it down first so the stale socket
-        FD is released before a fresh ``connect`` reserves a new one. Without
-        this guard a half-dead transport would leak its FD and the rebuild
-        would raise ``RuntimeError: File descriptor ... is used by transport``.
+        If a previous audio transport is still attached and either the stream
+        was already torn down while the transport lingered, or the transport is
+        a real :class:`IcomTransport` whose underlying UDP datagram transport
+        is gone/closed (``_udp_transport is None``), tear it down first so the
+        stale socket FD is released before a fresh ``connect`` reserves a new
+        one.  Without this guard a half-dead transport would leak its FD and
+        the rebuild would raise
+        ``RuntimeError: File descriptor ... is used by transport``.
+
+        Transport objects that do not expose ``_udp_transport`` at all (e.g.
+        test mocks/stubs) are intentionally *not* treated as stale — they fall
+        through to the ``if self._audio_stream is not None: return``
+        short-circuit below.
         """
         audio_transport = getattr(self, "_audio_transport", None)
         if audio_transport is not None and (
             self._audio_stream is None
-            or getattr(audio_transport, "_udp_transport", None) is None
+            or (
+                hasattr(audio_transport, "_udp_transport")
+                and audio_transport._udp_transport is None
+            )
         ):
             await self._teardown_audio_transport()
 
