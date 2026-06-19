@@ -104,9 +104,13 @@ class ReceiverStatePublic(_Strict):
     twinPeakFilter: bool = False
     filterShape: int = 0
     agcTimeConstant: int = 0
-    afLevel: int = 0
-    rfGain: int = 0
-    squelch: int = 0
+    # These three are normalized to float in [0, 1] by the snapshot path
+    # (_normalize_public_level_snapshot_value in runtime_helpers.py).  Pydantic
+    # lax mode coerces the int(0) from the dataclass path, so float is the
+    # correct canonical type for both producers.
+    afLevel: float = 0.0
+    rfGain: float = 0.0
+    squelch: float = 0.0
     sMeter: int = 0
     apfTypeLevel: int = 0
     apfOn: bool = False
@@ -240,10 +244,15 @@ class ServerStatePublic(_Strict):
     updatedAt: str
 
     # Global slow-state / TX flags.
+    # ``active`` is set to "MAIN"/"SUB" in exactly three places:
+    #   _civ_rx.py (0xD2 frame), _dual_rx_runtime.py, and RadioState default.
+    # No other values are produced; the Literal is safe.
     active: Literal["MAIN", "SUB"]
     powerOn: bool = True
     ptt: bool = False
-    powerLevel: int = 0
+    # Normalized to float in [0, 1] by the snapshot path via
+    # _normalize_public_level_snapshot_value (runtime_helpers.py).
+    powerLevel: float = 0.0
     split: bool = False
     dualWatch: bool = False
     scanning: bool = False
