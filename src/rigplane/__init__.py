@@ -95,6 +95,11 @@ from .types import AudioCodec, BreakInMode, Mode  # noqa: F401, E402
 #
 # Format: name -> (module, attribute)
 _LAZY_MAP: dict[str, tuple[str, str]] = {
+    # --- Hamlib discovery payload builder (MOR-911) ---
+    "build_hamlib_discovery_payload": (
+        "rigplane.backends.discovery",
+        "build_hamlib_discovery_payload",
+    ),
     # --- Backward-compat radio facades ---
     "IcomRadio": ("rigplane.runtime.radio", "IcomRadio"),
     "AudioRecoveryState": ("rigplane.runtime.radio", "AudioRecoveryState"),

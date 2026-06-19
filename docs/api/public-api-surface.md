@@ -35,6 +35,12 @@ This page defines the **officially supported** public API of `rigplane`. Use the
 
 **Note:** The core `Radio` protocol no longer includes meter, level, power, or state-notify methods; those live on the capability protocols above. Use `isinstance(radio, MetersCapable)` (etc.) before calling them.
 
+### Hamlib-assisted discovery
+
+| Symbol | Description |
+|--------|-------------|
+| `build_hamlib_discovery_payload` | Build the stable Hamlib-assisted discovery JSON payload (`rigplane.discovery.hamlib.v1` schema). Promoted from internal `rigplane.cli` to public API in MOR-911. Canonical import: `from rigplane.backends.discovery import build_hamlib_discovery_payload` or `from rigplane import build_hamlib_discovery_payload`. |
+
 ### Exceptions
 
 | Symbol | Description |
@@ -184,6 +190,9 @@ minor version bump**. No semver guarantee — these may be reshaped or moved
 without a major version.
 
 - `IcomRadio`, `IcomCommander`, `Priority`
+- Hamlib discovery: `build_hamlib_discovery_payload` (canonical:
+  `rigplane.backends.discovery`; also via `from rigplane import
+  build_hamlib_discovery_payload`; promoted from internal CLI in MOR-911)
 - Audio primitives: `audio.backend.AudioBackend`,
   `audio.backend.PortAudioBackend`, `audio.backend.FakeAudioBackend`
 - DSP utilities: `audio.dsp.NoiseGate`, `audio.dsp.RmsNormalizer`,
