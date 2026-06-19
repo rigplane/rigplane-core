@@ -63,6 +63,12 @@ ALLOWLIST=(
     'docs/plans/2026-05-01-'
     'docs/plans/2026-05-02-'
     'docs/plans/2026-05-03-'
+    # Consumer contract expectation for Pro discovery — the service enum
+    # includes "icom-lan" because the discovery responder still emits that
+    # value for legacy Icom LAN adapters (wire backwards-compat, Wave 4
+    # migration). Consumers must accept it; renaming the JSON field would
+    # break the contract itself.
+    'contracts/consumer-expectations/pro/discovery_datagram.json'
     # Tests of preserved / migration code.
     'tests/test_icom_lan_shim.py'
     'tests/test_platformdirs_migration.py'
