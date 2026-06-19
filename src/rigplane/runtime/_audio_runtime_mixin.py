@@ -718,8 +718,68 @@ class AudioRuntimeMixin(_MixinBase):  # type: ignore[misc]
         """Effective radio-native audio values accepted for this connection."""
         return self._audio_stream_contract
 
+    async def _teardown_audio_transport(self) -> None:
+        """Tear down the audio stream and transport, releasing the UDP FD.
+
+        Stops any active RX/TX stream, disconnects the audio transport (which
+        closes the underlying asyncio datagram transport and frees its socket
+        FD), and clears both ``_audio_stream`` and ``_audio_transport`` so a
+        follow-up :meth:`_ensure_audio_transport` rebuilds from a clean slate.
+
+        This is the teardown half of the EPIPE-storm recovery (``radio_recon
+        nect.audio_error_watchdog_loop``), extracted so reconnect paths that
+        rebuild only the CI-V transport can also re-arm audio without leaking
+        the stale audio-UDP FD (``RuntimeError: File descriptor ... is used by
+        transport`` on the next re-arm). Idempotent and exception-safe — every
+        step is best-effort so a partially-dead transport still ends up fully
+        cleared.
+        """
+        audio_stream = self._audio_stream
+        if audio_stream is not None:
+            try:
+                await audio_stream.stop_rx()
+                await audio_stream.stop_tx()
+            except Exception:
+                logger.debug("audio teardown: stream stop failed", exc_info=True)
+            self._audio_stream = None
+
+        audio_transport = getattr(self, "_audio_transport", None)
+        if audio_transport is not None:
+            try:
+                await audio_transport.disconnect()
+            except Exception:
+                logger.debug(
+                    "audio teardown: transport disconnect failed", exc_info=True
+                )
+            self._audio_transport = None  # type: ignore[assignment]
+
     async def _ensure_audio_transport(self) -> None:
-        """Connect the audio transport if not already connected."""
+        """Connect the audio transport if not already connected.
+
+        If a previous audio transport is still attached and either the stream
+        was already torn down while the transport lingered, or the transport is
+        a real :class:`IcomTransport` whose underlying UDP datagram transport
+        is gone/closed (``_udp_transport is None``), tear it down first so the
+        stale socket FD is released before a fresh ``connect`` reserves a new
+        one.  Without this guard a half-dead transport would leak its FD and
+        the rebuild would raise
+        ``RuntimeError: File descriptor ... is used by transport``.
+
+        Transport objects that do not expose ``_udp_transport`` at all (e.g.
+        test mocks/stubs) are intentionally *not* treated as stale — they fall
+        through to the ``if self._audio_stream is not None: return``
+        short-circuit below.
+        """
+        audio_transport = getattr(self, "_audio_transport", None)
+        if audio_transport is not None and (
+            self._audio_stream is None
+            or (
+                hasattr(audio_transport, "_udp_transport")
+                and audio_transport._udp_transport is None
+            )
+        ):
+            await self._teardown_audio_transport()
+
         if self._audio_stream is not None:
             return
 
@@ -736,14 +796,16 @@ class AudioRuntimeMixin(_MixinBase):  # type: ignore[misc]
                 local_port=getattr(self, "_audio_local_port", 0),
                 sock=audio_sock,
             )
-        except OSError as exc:
+        except BaseException as exc:
             if audio_sock is not None:
                 audio_sock.close()
                 self._audio_sock_pending = None
             self._audio_transport = None  # type: ignore[assignment]
-            raise ConnectionError(
-                f"Failed to connect audio port {self._audio_port}: {exc}"
-            ) from exc
+            if isinstance(exc, OSError):
+                raise ConnectionError(
+                    f"Failed to connect audio port {self._audio_port}: {exc}"
+                ) from exc
+            raise
         else:
             if audio_sock is not None:
                 self._audio_sock_pending = None

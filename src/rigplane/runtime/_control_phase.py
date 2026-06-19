@@ -591,6 +591,24 @@ class ControlPhaseRuntime:
         h._civ_stream_ready = False
         h._civ_recovering = True
 
+        # Tear down the audio transport BEFORE the CI-V rebuild and re-arm it
+        # AFTER, mirroring the audio-before-civ order in ``disconnect()``.  Soft
+        # reconnect is the repair path for a dropped LAN audio sub-stream too:
+        # without an explicit teardown the stale audio-UDP socket FD leaks and
+        # the next ``_ensure_audio_transport`` re-arm raises
+        # ``RuntimeError: File descriptor ... is used by transport`` — RX never
+        # recovers.  Snapshot live demand first so the re-arm can restore it.
+        audio_runtime = getattr(h, "_audio_runtime", None)
+        audio_snapshot = (
+            audio_runtime.capture_snapshot() if audio_runtime is not None else None
+        )
+        teardown_audio = getattr(h, "_teardown_audio_transport", None)
+        if teardown_audio is not None:
+            try:
+                await teardown_audio()
+            except Exception:
+                logger.debug("soft_reconnect: audio teardown failed", exc_info=True)
+
         from rigplane.transport import IcomTransport
 
         requested_local_port = getattr(h, "_civ_local_port", 0)
@@ -676,6 +694,22 @@ class ControlPhaseRuntime:
                 logger.debug(
                     "soft_reconnect: _on_reconnect callback failed", exc_info=True
                 )
+
+        # Re-arm the audio transport on a fresh FD and restore any live demand.
+        # Bounded/safe: failures are logged, never raised, so a CI-V soft
+        # reconnect still succeeds even if audio cannot be re-established.
+        ensure_audio = getattr(h, "_ensure_audio_transport", None)
+        if ensure_audio is not None:
+            try:
+                await ensure_audio()
+                if (
+                    audio_runtime is not None
+                    and audio_snapshot is not None
+                    and getattr(h, "_auto_recover_audio", False)
+                ):
+                    await audio_runtime.recover(audio_snapshot)
+            except Exception:
+                logger.debug("soft_reconnect: audio re-arm failed", exc_info=True)
 
     async def _send_token_ack(self) -> None:
         h = self._host
