@@ -11,6 +11,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.10.5] — 2026-06-19
+
+### Fixed
+
+- **RX audio did not recover after the radio's LAN session dropped.** `soft_reconnect`
+  rebuilt only the CI-V control transport; the audio transport was never torn down,
+  leaking the audio-UDP socket file descriptor so RX could not re-arm (`File descriptor
+  … is used by transport`). The audio transport is now torn down and re-armed on
+  `soft_reconnect`, and `_ensure_audio_transport` is idempotent against a stale FD,
+  so RX audio auto-recovers without an app restart. (#1215)
+
 ## [2.10.4] — 2026-06-19
 
 ### Fixed
