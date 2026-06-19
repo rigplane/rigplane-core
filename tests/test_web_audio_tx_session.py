@@ -23,7 +23,7 @@ from unittest.mock import AsyncMock
 
 from _order_sensitive_radios import LanLikeRadio
 
-from rigplane.audio.session import AudioSession
+from rigplane.audio.session import AudioSession, AudioSessionState
 from rigplane.web.handlers import AudioHandler
 from rigplane.web.protocol import (
     AUDIO_CODEC_PCM16,
@@ -183,6 +183,49 @@ async def test_audio_stop_without_lease_never_direct_stops_session_radio() -> No
 
     await bridge_lease.release()
     await bridge_rx.release()
+
+
+async def test_digital_tx_no_rx_subscriber_pushes_without_error() -> None:
+    """Regression: digital TX (FT8/WSJT-X) with NO session RX subscriber.
+
+    Live forensics (IC-7610 over direct LAN): the radio keys via CAT PTT but
+    the LAN audio stream was never transitioned to TX, so every pushed frame
+    was rejected with ``AudioNotStartedError`` ("Cannot push TX in state
+    receiving"). Root cause: a digital client holds ONLY a TX lease — it never
+    subscribes the session to RX — and the AudioSession deferred the TX arm
+    forever (no RX demand ever arrived), so ``push_tx`` hit a RECEIVING stream.
+
+    Pre-fix: ``audio_start direction=tx`` acquired a lease but armed nothing
+    (session IDLE, ``start_tx`` never called), and the first ``_handle_tx_audio``
+    frame raised ``AudioNotStartedError``.
+
+    Post-fix: the first push lazily arms the TX leg (session → TX_ONLY) on the
+    full-duplex transport, so the frame reaches the radio.
+    """
+    radio = _SessionLanRadio()
+    session = radio.audio_session
+    handler = _make_handler(radio)
+
+    # NO subscribe_rx — the digital client only pushes TX audio.
+    await _start_tx(handler)
+    assert session.rx_demand == 0
+    assert session.tx_demand == 1
+    # Acquire defers (bridge/poller order preserved): TX not armed yet.
+    assert session.state is AudioSessionState.IDLE
+    assert radio.state != "transmitting"
+
+    # The browser/companion TX frame must reach the radio, not raise
+    # AudioNotStartedError. The push lazily arms TX (→ TX_ONLY).
+    await handler._handle_tx_audio(_pcm_tx_frame(b"ft8-tx-modulation"))
+    assert radio.pushed == [b"ft8-tx-modulation"]
+    assert session.state is AudioSessionState.TX_ONLY
+    assert radio.state == "transmitting"
+
+    # Releasing the lone TX lease disarms TX and returns to IDLE.
+    await _stop_tx(handler)
+    assert session.tx_demand == 0
+    assert session.state is AudioSessionState.IDLE
+    assert radio.state == "idle"
 
 
 async def test_handler_exit_cleanup_releases_lease() -> None:

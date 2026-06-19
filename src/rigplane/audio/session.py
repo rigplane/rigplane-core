@@ -18,6 +18,7 @@ at the source — MOR-556/MOR-559).
 State machine (ADR §3.3)::
 
     IDLE ⇄ RX_ONLY ⇄ RX_TX ⇄ RECOVERING        FAILED defined, not yet entered
+    IDLE ⇄ TX_ONLY ⇄ RX_TX                      full-duplex tx-only (lazy arm)
 
 RECOVERING (MOR-581, ADR §3.4, tenet T3 "no silent audio death"): a ~1 s
 watchdog task — decoupled from the keep-alives — reads the bus RX heartbeat
@@ -39,9 +40,13 @@ Arming order is transport-owned via the MOR-575 descriptor
   ``start_tx``; the session's sequencing here is that seam's caller.
 
 Teardown always stops TX BEFORE dropping RX (the MOR-574 lesson): RX is
-never stopped from a TRANSMITTING transport. TX never runs without RX
-(there is no TX_ONLY state); leases held across an RX gap are re-armed
-when RX demand returns.
+never stopped from a TRANSMITTING transport. On genuinely full-duplex
+transports (LAN, ``"rx_first"``) TX MAY run without RX: a digital client
+(WSJT-X/FT8 over the companion) holding only a TX lease lazily arms the TX
+leg on its first ``TxLease.push`` and enters the ``TX_ONLY`` state, so its
+modulation actually reaches the radio. Exclusive/atomic USB transports keep
+deferring tx-only demand (their TX leg requires the co-armed duplex stream).
+Leases held across an RX gap are re-armed when RX demand returns.
 
 As-built, the session is consumed via the radio-owned singleton
 ``radio.audio_session`` (MOR-579) by the AudioBridge (MOR-577), the web
@@ -99,6 +104,17 @@ class AudioSessionState(Enum):
     IDLE = "idle"
     RX_ONLY = "rx_only"
     RX_TX = "rx_tx"
+    #: TX armed with NO RX demand on the session — only valid on genuinely
+    #: full-duplex transports (LAN UDP; ``audio_setup_order == "rx_first"``).
+    #: A digital client (WSJT-X/FT8 over the companion) can hold a TX lease
+    #: without ever subscribing the session to RX; the radio still keys via
+    #: CAT and the LAN audio stream must be transitioned to TX so pushed
+    #: frames are accepted instead of rejected with ``AudioNotStartedError``
+    #: ("Cannot push TX in state receiving"). Excluded from the RX liveness
+    #: watchdog (no RX frames are expected). Exclusive/atomic USB transports
+    #: never enter this state — TX there still requires the co-armed duplex
+    #: leg, so their tx-only demand stays deferred exactly as before.
+    TX_ONLY = "tx_only"
     #: Watchdog-detected silent RX death (MOR-581). Surface-only as built:
     #: recovery currently rides the transport reconnect (MOR-586
     #: :meth:`AudioSession.reestablish`); a session-owned retry loop is a
@@ -110,8 +126,11 @@ class AudioSessionState(Enum):
 
 
 #: States in which RX frames are supposed to be flowing (watchdog runs).
+#: TX_ONLY is excluded: no RX subscription exists, so RX silence is expected
+#: and must NOT false-positive the liveness watchdog into RECOVERING.
 _WATCHED_STATES: frozenset[AudioSessionState] = frozenset(AudioSessionState) - {
     AudioSessionState.IDLE,
+    AudioSessionState.TX_ONLY,
     AudioSessionState.FAILED,
 }
 
@@ -175,6 +194,11 @@ class TxLease:
         """Push TX audio (encoded per the radio's ``audio_tx_codec``)."""
         if self._released:
             raise RuntimeError(f"TX lease {self.owner!r} already released")
+        # Lazily arm the TX leg for a tx-only (no RX demand) full-duplex
+        # session. This is the digital-TX (FT8/WSJT-X over the companion)
+        # path: a TX lease was acquired but the session deferred at IDLE, so
+        # the LAN stream is still RECEIVING and ``push_tx`` would be rejected.
+        await self._session._ensure_tx_for_push()
         await self._session._radio.push_tx(audio_data)
 
     async def release(self) -> None:
@@ -303,8 +327,11 @@ class AudioSession:
     async def acquire_tx(self, owner: str = "") -> TxLease:
         """Add TX demand; arms TX in the transport-declared order.
 
-        With no RX demand the lease is recorded but nothing is armed (no
-        TX_ONLY state); arming happens when RX demand arrives. A TX start
+        With no RX demand the lease is recorded but nothing is armed at the
+        acquire edge (preserving the bridge/poller "TX-lease-first, then RX"
+        order — MOR-556). On a full-duplex transport the TX leg is then armed
+        LAZILY by the first :meth:`TxLease.push` (entering TX_ONLY); with RX
+        demand already present the lease arms RX_TX immediately. A TX start
         failure unwinds the lease and re-raises.
         """
         async with self._lock:
@@ -318,15 +345,52 @@ class AudioSession:
                 raise
             return lease
 
+    async def _ensure_tx_for_push(self) -> None:
+        """Lazily arm the TX leg for a tx-only full-duplex session (no RX).
+
+        Called from :meth:`TxLease.push`. No-op unless the session currently
+        has TX demand, NO RX demand, is at IDLE, and the transport is genuinely
+        full-duplex ("rx_first"). This is the digital-TX (FT8/WSJT-X over the
+        companion) path: the lease was acquired but deferred at IDLE, so the
+        LAN stream is still RECEIVING and ``push_tx`` would be rejected with
+        ``AudioNotStartedError``. Arming here transitions the stream to TX and
+        enters TX_ONLY so lease release and RX-demand convergence tear down /
+        re-sequence correctly. Exclusive/atomic USB transports are excluded —
+        their TX leg requires the co-armed duplex stream.
+        """
+        async with self._lock:
+            if (
+                self._state is AudioSessionState.IDLE
+                and self._tx_leases
+                and not self._rx_subs
+                and self._setup_order() == "rx_first"
+            ):
+                try:
+                    await self._radio.start_tx()
+                except AudioAlreadyStartedError:
+                    logger.debug(
+                        "audio-session: TX already live on lazy push arm",
+                        exc_info=True,
+                    )
+                self._state = AudioSessionState.TX_ONLY
+                await self._sync_watchdog()
+
     async def _release_rx(self, sub: RxSubscription) -> None:
         async with self._lock:
             if sub not in self._rx_subs:
                 return
             self._rx_subs.remove(sub)
+            # Hand the just-removed subscription to reconcile so its bus
+            # ``aclose`` (which stops radio RX when it is the last subscriber)
+            # is ordered relative to TX disarm/arm — never closing RX from a
+            # TRANSMITTING transport (MOR-574), including the RX_TX → TX_ONLY
+            # edge where TX is briefly re-armed.
             try:
                 # Orders TX-down-before-RX when demand hits zero (MOR-574).
-                await self._apply()
+                await self._apply(closing_rx=sub)
             finally:
+                # Idempotent: reconcile already closed it at the correct
+                # point for TX-held transitions; this covers every other path.
                 await sub._inner.aclose()
 
     async def _release_tx(self, lease: TxLease) -> None:
@@ -341,7 +405,21 @@ class AudioSession:
     # ── Desired-state reconciliation (single lock holder) ────────────────
 
     def _desired(self) -> AudioSessionState:
+        # Acquiring a TX lease with no RX demand does NOT eagerly arm TX here:
+        # that would break the bridge/poller "TX-lease-first, then RX" pattern
+        # (MOR-556 — RX must arm before TX on the shared LAN stream). The
+        # tx-only arm is LAZY instead: the first ``TxLease.push`` with no RX
+        # demand on a full-duplex ("rx_first") transport arms the TX leg via
+        # ``_ensure_tx_for_push`` and enters TX_ONLY. Digital TX (FT8/WSJT-X
+        # over the companion) holds only a TX lease and never subscribes the
+        # session to RX, so without this its frames were rejected with
+        # ``AudioNotStartedError`` ("Cannot push TX in state receiving").
+        #
+        # Once TX_ONLY has been entered (by a push), a still-held lease keeps
+        # it until the lease drops or RX demand converges to RX_TX.
         if not self._rx_subs:
+            if self._state is AudioSessionState.TX_ONLY and self._tx_leases:
+                return AudioSessionState.TX_ONLY
             return AudioSessionState.IDLE
         if self._tx_leases:
             return AudioSessionState.RX_TX
@@ -357,15 +435,15 @@ class AudioSession:
             return "rx_first"
         return cast(_SetupOrder, order)
 
-    async def _apply(self) -> None:
+    async def _apply(self, *, closing_rx: RxSubscription | None = None) -> None:
         try:
-            await self._reconcile()
+            await self._reconcile(closing_rx=closing_rx)
         finally:
             if self._state is not AudioSessionState.RECOVERING:
                 self._recovering_from = None
             await self._sync_watchdog()
 
-    async def _reconcile(self) -> None:
+    async def _reconcile(self, *, closing_rx: RxSubscription | None = None) -> None:
         desired = self._desired()
         # RECOVERING (watchdog-owned, MOR-581) shadows the live transport
         # state: demand transitions act on the shadowed state (TX still
@@ -376,7 +454,10 @@ class AudioSession:
             else self._state
         )
         if desired is effective:
-            if desired is not AudioSessionState.IDLE:
+            if desired not in (
+                AudioSessionState.IDLE,
+                AudioSessionState.TX_ONLY,
+            ):
                 await self._arm_rx()  # new subscribers join the live RX leg
             return
         if desired is AudioSessionState.RX_TX:
@@ -389,15 +470,48 @@ class AudioSession:
             else:
                 await self._arm_rx()
             self._state = AudioSessionState.RX_ONLY
-        else:  # IDLE
+        elif desired is AudioSessionState.TX_ONLY:
+            # Full-duplex transport, TX demand with no RX demand. Arm the TX
+            # leg alone (digital TX / FT8 over the companion).
             if effective is AudioSessionState.RX_TX:
+                # RX demand just dropped while TX is held. On the LAN stream RX
+                # and TX share one stream, so stopping RX from TRANSMITTING
+                # tears the whole stream down (the MOR-574 lesson): drop TX
+                # first, shed the empty RX subs, then re-arm TX alone.
+                await self._disarm_tx()
+                await self._drop_rx(closing_rx)
+                await self._radio.start_tx()
+            else:
+                await self._drop_rx(closing_rx)
+                try:
+                    await self._radio.start_tx()
+                except AudioAlreadyStartedError:
+                    logger.debug(
+                        "audio-session: TX already live entering TX_ONLY",
+                        exc_info=True,
+                    )
+            self._state = AudioSessionState.TX_ONLY
+        else:  # IDLE
+            if effective in (AudioSessionState.RX_TX, AudioSessionState.TX_ONLY):
                 await self._disarm_tx()  # MOR-574: TX down BEFORE RX drops
-            await self._drop_rx()
+            await self._drop_rx(closing_rx)
             self._state = AudioSessionState.IDLE
 
     async def _enter_rx_tx(
         self, order: _SetupOrder, current: AudioSessionState
     ) -> None:
+        if current is AudioSessionState.TX_ONLY:
+            # Full-duplex only (TX_ONLY is unreachable elsewhere): the TX leg
+            # is already up and RX demand just arrived. The LAN ``start_rx``
+            # requires the stream's IDLE baseline, so RX cannot join while the
+            # stream is TRANSMITTING — drop TX, arm RX, then re-arm TX (the
+            # same clean rx_first ordering used from IDLE). RX is brief-gap
+            # free for the operator since no RX subscriber existed yet anyway.
+            await self._disarm_tx()
+            await self._arm_rx()
+            await self._radio.start_tx()
+            self._state = AudioSessionState.RX_TX
+            return
         if current is AudioSessionState.IDLE:
             # Reached only via subscribe_rx (TX demand was deferred at
             # IDLE), so a TX arm failure here has no demanding caller to
@@ -468,10 +582,17 @@ class AudioSession:
         except Exception:
             logger.debug("audio-session: stop TX error", exc_info=True)
 
-    async def _drop_rx(self) -> None:
+    async def _drop_rx(self, closing_rx: RxSubscription | None = None) -> None:
+        # Close any still-registered subs AND the subscription handed in by
+        # ``_release_rx`` (already removed from ``_rx_subs``), so the bus
+        # ``stop_rx`` is ordered after TX disarm on TX-held transitions
+        # rather than firing later from ``_release_rx``'s finally while the
+        # transport is TRANSMITTING (MOR-574).
         for sub in list(self._rx_subs):
             await sub._inner.aclose()
         self._rx_subs.clear()
+        if closing_rx is not None:
+            await closing_rx._inner.aclose()
 
     # ── Reconnect re-establishment (MOR-586, ADR §3.4 rule 4) ────────────
 

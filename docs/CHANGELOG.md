@@ -11,6 +11,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.10.4] — 2026-06-19
+
+### Fixed
+
+- **Digital/FT8 transmit produced no modulation over LAN.** A TX-only audio
+  client (e.g. WSJT-X over the companion) holds a TX lease without subscribing
+  to RX; `AudioSession` gated TX arming on RX demand, so the LAN audio stream
+  was never armed and every TX frame was rejected (`AudioNotStartedError`),
+  leaving the radio keyed with an unmodulated carrier. `AudioSession` now lazily
+  arms TX on first push for full-duplex transports (new `TX_ONLY` state),
+  preserving RX-before-TX and teardown ordering. Regression introduced by the
+  2.9.0 AudioSession demand-driven migration.
+
 ## [2.10.3] — 2026-06-18
 
 ### Fixed
