@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import asyncio
+from unittest import mock
 from unittest.mock import AsyncMock
 
 import pytest
@@ -649,14 +650,31 @@ async def test_get_mode_projects_numeric_active_main_alias(
 
 
 @pytest.mark.asyncio
-async def test_get_mode_served_from_cache(
+async def test_get_mode_is_read_only_and_does_not_self_cache(
     handler: RigctldHandler, mock_radio: AsyncMock
 ) -> None:
+    """get_mode is a READ: it must not write its readback into the StateStore.
+
+    Previously the first get_mode wrote ``mode``/``filter_width``/``data_mode``
+    back into the canonical store so a second poll was served from the
+    projection. That write-back clobbered the CI-V-owned ``filter_width`` (Hz)
+    and ``data_mode`` (int) keys (MOR-895), so it was removed: each get_mode now
+    reads the radio and leaves the canonical store untouched.
+    """
     mock_radio.get_mode_info.return_value = (Mode.USB, 1)
     cmd = get_cmd("get_mode")
-    await handler.execute(cmd)
-    await handler.execute(cmd)
-    mock_radio.get_mode_info.assert_awaited_once()
+    resp1 = await handler.execute(cmd)
+    resp2 = await handler.execute(cmd)
+
+    assert resp1.values == resp2.values == ["USB", "3000"]
+    # No write-back: the read polls the radio each time and the canonical
+    # freq_mode keys are never populated by the GET path.
+    assert mock_radio.get_mode_info.await_count == 2
+    snapshot = handler._state_store.snapshot()  # noqa: SLF001
+    with pytest.raises(KeyError):
+        snapshot.field("receiver.main.active.freq_mode.filter_width")
+    with pytest.raises(KeyError):
+        snapshot.field("receiver.main.active.freq_mode.data_mode")
 
 
 @pytest.mark.asyncio
@@ -872,18 +890,31 @@ async def test_set_mode_invalid_mode(
 
 
 @pytest.mark.asyncio
-async def test_set_mode_refreshes_cache_immediately(
+async def test_set_mode_does_not_confirm_mode_into_canonical_store(
     handler: RigctldHandler, mock_radio: AsyncMock
 ) -> None:
-    mock_radio.get_mode_info.return_value = (Mode.USB, 1)
-    await handler.execute(get_cmd("get_mode"))  # populate from radio
+    """set_mode drives the radio; the canonical mode comes from CI-V readback.
 
-    await handler.execute(set_cmd("set_mode", "LSB"))  # updates cache directly
+    Previously a non-packet set_mode promoted its mode/filter into the
+    canonical StateStore so the next get_mode was served without a radio read.
+    That confirm-path wrote a filter NUMBER into the Hz-typed ``filter_width``
+    key (MOR-895), so it was removed. A following get_mode now reflects what the
+    radio actually reports rather than an optimistic rigctld write.
+    """
+    mock_radio.get_mode_info.return_value = (Mode.USB, 1)
+    await handler.execute(get_cmd("get_mode"))
+
+    await handler.execute(set_cmd("set_mode", "LSB"))
+    mock_radio.set_mode.assert_awaited()
 
     resp = await handler.execute(get_cmd("get_mode"))
-    assert resp.values[0] == "LSB"
-    # No extra radio read needed after set_mode.
-    assert mock_radio.get_mode_info.await_count == 1
+    # The mock radio still reports USB (no CI-V feedback wired): get_mode reads
+    # the radio rather than an optimistic in-handler confirm.
+    assert resp.values[0] == "USB"
+    # No mode observation was promoted into the canonical store by set_mode.
+    snapshot = handler._state_store.snapshot()  # noqa: SLF001
+    with pytest.raises(KeyError):
+        snapshot.field("receiver.main.active.freq_mode.filter_width")
 
 
 @pytest.mark.asyncio
@@ -5266,3 +5297,147 @@ class TestExplicitVfobNoStateReturnsEnimpl:
 
         assert resp.error == HamlibError.ENIMPL
         dual_rx_radio.get_mode.assert_not_awaited()
+
+
+# ---------------------------------------------------------------------------
+# Regression: read-only get_mode must not clobber the canonical StateStore
+# (MOR-895 / rigplane-pro#1200). A WSJT-X ``get_mode`` poll used to write the
+# RadioState filter NUMBER into the Hz-typed ``filter_width`` key and a bool
+# into the int-typed ``data_mode`` key, overwriting the correct CI-V
+# 0x26 / 0x1A observations and blanking DATA mode + collapsing the IF width.
+# ---------------------------------------------------------------------------
+
+
+def _seed_civ_canonical_state(store: StateStore) -> None:
+    """Seed the canonical CI-V state the web UI reads.
+
+    Mirrors what ``runtime/_civ_rx`` produces for a USB / D2 / FIL1 / 3200 Hz
+    radio: 0x26 answer ``00 01 02 01`` -> mode=USB, data_mode=2, filter_num=1;
+    0x1A/03 answer -> filter_width=3200 Hz.
+    """
+    _apply_store_value(store, "receiver.main.active.freq_mode.mode", "USB", max_age=1.0)
+    _apply_store_value(
+        store, "receiver.main.active.freq_mode.data_mode", 2, max_age=1.0
+    )
+    _apply_store_value(
+        store, "receiver.main.active.freq_mode.filter_num", 1, max_age=1.0
+    )
+    _apply_store_value(
+        store, "receiver.main.active.freq_mode.filter_width", 3200, max_age=1.0
+    )
+
+
+def _assert_canonical_state_intact(store: StateStore) -> None:
+    snapshot = store.snapshot()
+    mode = snapshot.field("receiver.main.active.freq_mode.mode")
+    data_mode = snapshot.field("receiver.main.active.freq_mode.data_mode")
+    filter_width = snapshot.field("receiver.main.active.freq_mode.filter_width")
+    filter_num = snapshot.field("receiver.main.active.freq_mode.filter_num")
+
+    assert mode.value == "USB"
+    # data_mode must stay the int sub-mode, never a bool.
+    assert data_mode.value == 2
+    assert not isinstance(data_mode.value, bool)
+    # filter_width must stay Hz (3200), never a filter number (1/2/3).
+    assert filter_width.value == 3200
+    assert filter_num.value == 1
+
+
+@pytest.mark.asyncio
+async def test_get_mode_does_not_clobber_canonical_state_store() -> None:
+    """A read-only get_mode must not overwrite CI-V state with display types.
+
+    The store is seeded with the correct CI-V values, then those fields are
+    aged STALE so the projection misses and ``_cmd_get_mode`` falls into the
+    RadioState compatibility branch — the path that used to clobber the store.
+    """
+    radio = make_mock_radio()
+    radio.capabilities = set(FULL_ICOM_CAPS)
+    store = StateStore()
+    radio.state_store = store
+    _seed_civ_canonical_state(store)
+    # Age the freq_mode fields so the get_mode projection misses and the
+    # RadioState fallback branch (the historical clobber site) is exercised.
+    store.mark_stale_due(now=1000.0)
+
+    # RadioState mirror reflects the same physical radio: USB / D2 / FIL1.
+    state = RadioState()
+    state.main.freq = 14_074_000
+    state.main.mode = "USB"
+    state.main.filter = 1  # filter NUMBER
+    state.main.data_mode = 2  # int sub-mode
+    radio.radio_state = state
+
+    handler = RigctldHandler(radio, RigctldConfig())
+
+    resp = await handler.execute(get_cmd("get_mode"))
+
+    # Response value WSJT-X reads stays correct (D2 -> PKTUSB).
+    assert resp.ok
+    assert resp.values[0] == "PKTUSB"
+
+    # Canonical store is untouched by the read.
+    _assert_canonical_state_intact(store)
+
+
+@pytest.mark.asyncio
+async def test_set_mode_does_not_clobber_filter_width_with_filter_number() -> None:
+    """set_mode PKTUSB must not promote a filter NUMBER into ``filter_width``."""
+    radio = _ContractModeRadio(mode="USB", filter_width=1, data_mode=True)
+    store = StateStore()
+    _seed_civ_canonical_state(store)
+
+    handler = RigctldHandler(radio, RigctldConfig(), state_store=store)
+
+    resp = await handler.execute(set_cmd("set_mode", "PKTUSB", "0"))
+    assert resp.ok
+
+    # The canonical Hz filter_width / int data_mode are not overwritten with
+    # the rigctld filter number / bool.
+    _assert_canonical_state_intact(store)
+
+
+@pytest.mark.asyncio
+async def test_get_mode_emits_no_bool_data_mode_or_number_filter_width() -> None:
+    """Negative: no Observation from get_mode carries a bad type/unit.
+
+    Captures every Observation applied to the canonical store during a
+    get_mode poll and asserts none puts a ``bool`` into the ``data_mode`` path
+    nor a filter NUMBER into the ``filter_width`` path.
+    """
+    radio = make_mock_radio()
+    radio.capabilities = set(FULL_ICOM_CAPS)
+    store = StateStore()
+    radio.state_store = store
+    _seed_civ_canonical_state(store)
+    store.mark_stale_due(now=1000.0)
+
+    state = RadioState()
+    state.main.freq = 14_074_000
+    state.main.mode = "USB"
+    state.main.filter = 1
+    state.main.data_mode = 2
+    radio.radio_state = state
+
+    handler = RigctldHandler(radio, RigctldConfig())
+
+    captured: list[Observation] = []
+    original_apply = StateStore.apply
+
+    def _spy_apply(self: StateStore, observation: Observation):  # type: ignore[no-untyped-def]
+        captured.append(observation)
+        return original_apply(self, observation)
+
+    with mock.patch.object(StateStore, "apply", _spy_apply):
+        await handler.execute(get_cmd("get_mode"))
+
+    for obs in captured:
+        name = obs.path.name
+        if name == "data_mode":
+            assert not isinstance(obs.value, bool), (
+                f"get_mode wrote a bool into data_mode: {obs.value!r}"
+            )
+        if name == "filter_width":
+            assert obs.value not in (1, 2, 3), (
+                f"get_mode wrote a filter NUMBER into filter_width: {obs.value!r}"
+            )

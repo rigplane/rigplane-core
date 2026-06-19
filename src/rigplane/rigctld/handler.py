@@ -891,28 +891,6 @@ class RigctldHandler:
             )
         )
 
-    def _confirm_pending_value(
-        self,
-        path: FieldPath | str,
-        value: Any,
-        *,
-        command_id: str,
-    ) -> None:
-        self._command_service.apply_observation(
-            Observation(
-                path=FieldPath.parse(path) if isinstance(path, str) else path,
-                value=value,
-                source=SourceMetadata(
-                    source="command_response",
-                    provider="rigctld",
-                    command_source="rigctld",
-                    session_id=self._session_id(),
-                ),
-                timestamp_monotonic=time.monotonic(),
-                correlation_id=command_id,
-            )
-        )
-
     def _effective_pending_freq(self, main_state: ReceiverState | None) -> int | None:
         pending_freq = self._pending.freq
         if pending_freq is None:
@@ -1129,7 +1107,13 @@ class RigctldHandler:
             passband = _filter_to_passband(
                 None if projected_filter.value is None else int(projected_filter.value)
             )
-            data_mode: int = bool(projected_data_mode.value)
+            # Preserve the int sub-mode (0-3); never narrow to bool. Only its
+            # truthiness drives the packet-mode label below.
+            data_mode: int = (
+                int(projected_data_mode.value)
+                if projected_data_mode.value is not None
+                else 0
+            )
             if data_mode:
                 if mode_str == "USB":
                     mode_str = "PKTUSB"
@@ -1147,24 +1131,11 @@ class RigctldHandler:
                 mode_str = sub.mode.upper()
                 passband = _filter_to_passband(sub.filter)
                 data_mode = sub.data_mode
-                self._record_state_sample(
-                    mode_path,
-                    mode_str,
-                    source="state_poller",
-                    max_age=self._config.cache_ttl,
-                )
-                self._record_state_sample(
-                    filter_path,
-                    sub.filter,
-                    source="state_poller",
-                    max_age=self._config.cache_ttl,
-                )
-                self._record_state_sample(
-                    data_mode_path,
-                    bool(data_mode),
-                    source="state_poller",
-                    max_age=self._config.cache_ttl,
-                )
+                # get_mode is a READ: it must NOT mutate the canonical
+                # StateStore. Writing display semantics back here clobbered
+                # the CI-V-owned ``filter_width`` (Hz) with a filter NUMBER
+                # and ``data_mode`` (int 0-3) with a bool, corrupting
+                # /api/v1/state on every WSJT-X poll. (MOR-895, pro#1200.)
                 if data_mode:
                     if mode_str == "USB":
                         mode_str = "PKTUSB"
@@ -1181,56 +1152,28 @@ class RigctldHandler:
             if cmd.vfo_arg == "VFOB":
                 return _err(HamlibError.ENIMPL)
 
+        # get_mode is a READ path: project the radio's mode/filter/data_mode
+        # for the rigctld response WITHOUT writing anything back into the
+        # canonical StateStore. The earlier write-backs here stored a filter
+        # NUMBER into the Hz-typed ``filter_width`` key and a bool into the
+        # int-typed ``data_mode`` key, and (last-writer-wins) overwrote the
+        # correct CI-V 0x26/0x1A observations that drive the web UI — so a
+        # read-only WSJT-X ``get_mode`` poll blanked DATA mode and collapsed
+        # the IF width to ~1. (MOR-895, pro#1200.)
         main_state = self._main_receiver_state()
         if main_state is not None:
             mode_str = main_state.mode.upper()
             passband = _filter_to_passband(main_state.filter)
             data_mode = main_state.data_mode
-            self._record_state_sample(
-                mode_path,
-                mode_str,
-                source="state_poller",
-                max_age=self._config.cache_ttl,
-            )
-            self._record_state_sample(
-                filter_path,
-                main_state.filter,
-                source="state_poller",
-                max_age=self._config.cache_ttl,
-            )
-            self._record_state_sample(
-                data_mode_path,
-                bool(data_mode),
-                source="state_poller",
-                max_age=self._config.cache_ttl,
-            )
         else:
             get_mode = get_mode_reader(self._radio, _mode_to_hamlib_str)
             if get_mode is None:
                 return _err(HamlibError.ENIMPL)
             mode_str, filt = await get_mode()
-            self._record_state_sample(
-                mode_path,
-                mode_str,
-                source="hamlib_response",
-                max_age=self._config.cache_ttl,
-            )
-            self._record_state_sample(
-                filter_path,
-                filt,
-                source="hamlib_response",
-                max_age=self._config.cache_ttl,
-            )
             passband = _filter_to_passband(filt)
             # Fetch data mode alongside mode to keep them in sync.
             try:
                 data_mode = await self._radio.get_data_mode()
-                self._record_state_sample(
-                    data_mode_path,
-                    bool(data_mode),
-                    source="hamlib_response",
-                    max_age=self._config.cache_ttl,
-                )
             except Exception:
                 logger.debug(
                     "get_data_mode failed, preserving last projected value",
@@ -1349,16 +1292,14 @@ class RigctldHandler:
                         read_mode, _ = await get_mode()
                         read_data = await self._radio.get_data_mode()
                         if read_mode == base_mode_str and read_data:
-                            self._confirm_pending_value(
-                                self._filter_path(0),
-                                filter_width,
-                                command_id=intent.id,
-                            )
-                            self._confirm_pending_value(
-                                self._data_mode_path(0),
-                                True,
-                                command_id=intent.id,
-                            )
+                            # Read-back confirmed on the radio. Do NOT promote
+                            # the rigctld filter NUMBER / data-mode bool into the
+                            # canonical StateStore: ``filter_width`` there is Hz
+                            # and ``data_mode`` is the int sub-mode (0-3). The
+                            # session-scoped pending overlays already give this
+                            # CAT client a deterministic read-back; the real
+                            # CI-V 0x26/0x1A observations remain the canonical
+                            # source the web UI reads. (MOR-895, pro#1200.)
                             synced = True
                             break
                     except Exception:
