@@ -1,0 +1,71 @@
+name: State types gate
+
+# MOR-881: the server-sent portion of `frontend/src/lib/types/state.ts` is
+# GENERATED from the pydantic contract in `src/rigplane/web/state_schema.py`
+# via `scripts/gen_state_types.py` (pydantic -> JSON Schema -> json2ts). This
+# gate regenerates the block and fails on drift, so the TypeScript contract can
+# never silently diverge from the Python state-payload producer. Mirrors the
+# corpus-drift / rebrand-gate staleness pattern.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "src/rigplane/web/state_schema.py"
+      - "scripts/gen_state_types.py"
+      - "frontend/src/lib/types/state.ts"
+      - "frontend/package.json"
+      - "frontend/package-lock.json"
+      - "pyproject.toml"
+      - ".github/workflows/state-types-gate.yml"
+  pull_request:
+    branches: [main]
+    paths:
+      - "src/rigplane/web/state_schema.py"
+      - "scripts/gen_state_types.py"
+      - "frontend/src/lib/types/state.ts"
+      - "frontend/package.json"
+      - "frontend/package-lock.json"
+      - "pyproject.toml"
+      - ".github/workflows/state-types-gate.yml"
+
+concurrency:
+  group: state-types-gate-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  state-types-gate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    env:
+      UV_PYTHON: "3.11"
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v8.1.0
+        with:
+          enable-cache: true
+          cache-dependency-glob: |
+            pyproject.toml
+            uv.lock
+
+      - name: Set up Python 3.11
+        run: uv python install 3.11
+
+      - name: Install Python deps (pydantic for codegen)
+        run: uv sync --extra codegen
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install json-schema-to-typescript
+        run: npm --prefix frontend ci
+
+      - name: Regenerate state.ts and fail on drift
+        run: uv run python scripts/gen_state_types.py --check

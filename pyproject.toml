@@ -55,7 +55,13 @@ scope = [
 dsp = ["scipy>=1.11"]
 webrtc = ["aiortc>=1.9"]
 tls = ["cryptography>=41.0"]
-dev = ["pytest", "pytest-asyncio", "pytest-cov", "pytest-timeout", "pytest-xdist", "ruff", "mypy"]
+# Dev/build-only: pydantic drives the public-state JSON-Schema → TypeScript
+# codegen (MOR-881). It must NEVER enter the runtime `dependencies` above —
+# core stays zero-runtime-dep. Only the conformance test and the
+# `scripts/gen_state_types.py` generator import it; `state_schema.py` is never
+# imported on the live request path.
+codegen = ["pydantic>=2.13,<3"]
+dev = ["pytest", "pytest-asyncio", "pytest-cov", "pytest-timeout", "pytest-xdist", "ruff", "mypy", "pydantic>=2.13,<3"]
 
 [dependency-groups]
 dev = [
@@ -63,6 +69,9 @@ dev = [
     "mkdocs-material>=9.7.3",
     "mkdocstrings[python]>=1.0.3",
     "mypy>=1.18.1",
+    # Dev/build-only — drives MOR-881 state-payload codegen + conformance test.
+    # NOT a runtime dependency (core stays zero-runtime-dep).
+    "pydantic>=2.13,<3",
     "pytest>=8.0",
     "pytest-asyncio>=1.3.0",
     "pytest-cov>=7.0.0",
@@ -115,6 +124,10 @@ select = ["E4", "E7", "E9", "F", "TID251"]
 
 [tool.ruff.lint.per-file-ignores]
 "tests/*" = ["TID251"]
+# Build/codegen scripts may import tier-3 internals (e.g. the state-payload
+# schema for TypeScript codegen, MOR-881). They are dev/build-only, never
+# shipped in the wheel.
+"scripts/**" = ["TID251"]
 # CLI is the orchestrator that composes tier-3 web and rigctld servers (issue-blessed).
 "src/rigplane/cli/**" = ["TID251"]
 # Package entry point dispatches to cli.main.
@@ -144,6 +157,16 @@ module = ["rigplane.web.*"]
 strict = true
 follow_imports = "skip"
 warn_unused_ignores = false
+
+# Codegen-only contract schema (MOR-881). Under the global ``follow_imports =
+# skip`` policy pydantic's ``BaseModel`` resolves to ``Any``, so strict mypy
+# reports "cannot subclass BaseModel (has type Any)". The module is dev/build-
+# only (never on the runtime import path) and is covered by the conformance
+# test + the codegen drift gate, so suppress that single ``misc`` diagnostic
+# rather than wiring the pydantic mypy plugin into the strict web boundary.
+[[tool.mypy.overrides]]
+module = ["rigplane.web.state_schema"]
+disable_error_code = ["misc"]
 
 [[tool.mypy.overrides]]
 module = ["cryptography", "cryptography.*"]

@@ -38,6 +38,7 @@
     "eslint": "^10.2.0",
     "eslint-plugin-svelte": "^3.17.0",
     "jsdom": "^28.1.0",
+    "json-schema-to-typescript": "^15.0.4",
     "svelte": "^5.45.2",
     "svelte-check": "^4.3.4",
     "svelte-eslint-parser": "^1.6.0",

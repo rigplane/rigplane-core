@@ -78,6 +78,8 @@ mockups/
 scripts/*
 # But the release-validation runner is tracked (MOR-648).
 !scripts/validate-release.sh
+# And the public-state TypeScript codegen generator is tracked (MOR-881).
+!scripts/gen_state_types.py
 # But CI scripts under .github/ are tracked.
 !.github/scripts/
 # And frontend tooling scripts (e.g. i18n lint) are tracked.
