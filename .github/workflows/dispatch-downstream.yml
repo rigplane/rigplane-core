@@ -44,7 +44,10 @@ jobs:
     name: Open downstream bump PRs
     runs-on: ubuntu-latest
     # Skip pre-releases (alpha, beta, rc). Only stable releases trigger bumps.
-    if: ${{ github.event.release.prerelease == false }}
+    # Also skip if the release body contains the opt-out marker [no-downstream-bump].
+    if: |
+      github.event.release.prerelease == false &&
+      !contains(github.event.release.body, '[no-downstream-bump]')
 
     steps:
       - name: Check that App secrets are configured
