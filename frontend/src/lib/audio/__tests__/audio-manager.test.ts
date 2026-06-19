@@ -76,6 +76,19 @@ class FakeWebSocket {
     this.readyState = FakeWebSocket.OPEN;
     this.onopen?.();
   }
+
+  /** Simulate the server dropping this socket (soft_reconnect / audio
+   *  re-arm): fires onclose so the manager's reconnect path runs. */
+  serverClose(code = 1006, reason = 'rearm') {
+    this.readyState = 3;
+    this.onclose?.({ code, reason });
+  }
+}
+
+function rxStartMessages(ws: FakeWebSocket): Array<Record<string, unknown>> {
+  return ws.sent
+    .map((s) => JSON.parse(s as string) as Record<string, unknown>)
+    .filter((m) => m.type === 'audio_start' && m.direction === 'rx');
 }
 
 describe('AudioManager websocket subscriptions', () => {
@@ -97,11 +110,13 @@ describe('AudioManager websocket subscriptions', () => {
 
     audioManager.startRx();
 
-    expect(ws.sent).toContain(JSON.stringify({
-      type: 'audio_start',
-      direction: 'rx',
-      preferred_rx_codec: 'pcm16',
-    }));
+    expect(rxStartMessages(ws)).toContainEqual(
+      expect.objectContaining({
+        type: 'audio_start',
+        direction: 'rx',
+        preferred_rx_codec: 'pcm16',
+      }),
+    );
   });
 
   it('sends rx audio_stop before closing an open websocket', async () => {
@@ -125,11 +140,13 @@ describe('AudioManager websocket subscriptions', () => {
     const ws = FakeWebSocket.instances[0];
     ws.open();
 
-    expect(ws.sent).toContain(JSON.stringify({
-      type: 'audio_start',
-      direction: 'rx',
-      preferred_rx_codec: 'opus',
-    }));
+    expect(rxStartMessages(ws)).toContainEqual(
+      expect.objectContaining({
+        type: 'audio_start',
+        direction: 'rx',
+        preferred_rx_codec: 'opus',
+      }),
+    );
   });
 
   it('requests pcm16 inside the Tauri shell even when AudioDecoder is available', async () => {
@@ -141,11 +158,13 @@ describe('AudioManager websocket subscriptions', () => {
     const ws = FakeWebSocket.instances[0];
     ws.open();
 
-    expect(ws.sent).toContain(JSON.stringify({
-      type: 'audio_start',
-      direction: 'rx',
-      preferred_rx_codec: 'pcm16',
-    }));
+    expect(rxStartMessages(ws)).toContainEqual(
+      expect.objectContaining({
+        type: 'audio_start',
+        direction: 'rx',
+        preferred_rx_codec: 'pcm16',
+      }),
+    );
   });
 });
 
@@ -217,5 +236,53 @@ describe('AudioManager audio_stats uplink (MOR-585)', () => {
     vi.advanceTimersByTime(10000);
     expect(statsMessages(ws)).toEqual([]);
     expect(vi.getTimerCount()).toBe(0);
+  });
+});
+
+describe('AudioManager reconnect coalescing (MOR-924)', () => {
+  beforeEach(() => {
+    vi.resetModules();
+    vi.unstubAllGlobals();
+    vi.useFakeTimers();
+    FakeWebSocket.instances = [];
+    vi.stubGlobal('WebSocket', FakeWebSocket);
+    vi.stubGlobal('location', { protocol: 'http:', host: 'localhost:5173' });
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('re-sends audio_start with the SAME stable client_id after a server-side reconnect', async () => {
+    const { audioManager } = await import('../audio-manager');
+
+    // Initial RX subscribe.
+    audioManager.startRx();
+    const first = FakeWebSocket.instances[0];
+    first.open();
+    const firstStart = rxStartMessages(first);
+    expect(firstStart).toHaveLength(1);
+    const clientId = firstStart[0].client_id;
+    // Identity must be a non-empty stable token sent on the wire.
+    expect(typeof clientId).toBe('string');
+    expect(clientId).not.toBe('');
+
+    // Server drops the socket (soft_reconnect / audio re-arm). The manager
+    // schedules a backoff reconnect.
+    first.serverClose();
+    expect(FakeWebSocket.instances).toHaveLength(1);
+    vi.advanceTimersByTime(600); // > BACKOFF_MIN
+    expect(FakeWebSocket.instances).toHaveLength(2);
+
+    // The reconnected socket opens and must re-subscribe with the SAME
+    // identity so the broadcaster can drop the prior zombie subscription
+    // (instead of fanning RX out to two subscribers — the silent-audio bug).
+    const second = FakeWebSocket.instances[1];
+    second.open();
+    const secondStart = rxStartMessages(second);
+    expect(secondStart).toHaveLength(1);
+    expect(secondStart[0].client_id).toBe(clientId);
+
+    audioManager.stopRx();
   });
 });

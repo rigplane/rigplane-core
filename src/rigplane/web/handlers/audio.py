@@ -118,6 +118,20 @@ def _parse_preferred_rx_codec(msg: dict[str, Any]) -> int | None:
     return None
 
 
+def _parse_client_identity(msg: dict[str, Any]) -> str | None:
+    """Stable per-browser token from an ``audio_start`` (MOR-924).
+
+    Used for reconnect coalescing: a browser sends the same ``client_id``
+    on every (re)subscribe so the broadcaster can drop its prior, now-stale
+    subscription. Absent/blank/non-string is treated as "no identity" — old
+    clients that never send one keep the pre-MOR-924 behavior unchanged.
+    """
+    value = msg.get("client_id")
+    if isinstance(value, str) and value:
+        return value
+    return None
+
+
 class _AudioPacketLike(Protocol):
     data: bytes
 
@@ -157,6 +171,14 @@ class AudioBroadcaster:
         self._clients: dict[int, asyncio.Queue[bytes]] = {}
         self._client_ws: dict[int, Connection] = {}
         self._client_rx_codec: dict[int, int] = {}
+        # Stable per-browser identity supplied by the client on audio_start
+        # (MOR-924 reconnect coalescing). When a browser's audio WS drops on
+        # a soft_reconnect / audio re-arm and the client reconnects, the new
+        # subscribe carries the same identity; the prior (now-zombie)
+        # subscription is dropped synchronously so subscribers converge to
+        # exactly one per browser instead of waiting up to the 60 s pong
+        # timeout for ``reap_dead_clients`` to notice the half-open socket.
+        self._client_identity: dict[int, str] = {}
         # RX source handle: a session-routed RxSubscription when the radio
         # owns an AudioSession (MOR-608 — registers RX demand so the
         # MOR-581 watchdog covers browser-only listeners), or a legacy
@@ -234,14 +256,35 @@ class AudioBroadcaster:
         ws: Connection | None = None,
         *,
         preferred_rx_codec: int | None = None,
+        identity: str | None = None,
     ) -> asyncio.Queue[bytes]:
-        """Register a new WebSocket client and start relaying if first."""
+        """Register a new WebSocket client and start relaying if first.
+
+        ``identity`` is a stable per-browser token (MOR-924). When set, any
+        EXISTING client carrying the same identity — a stale subscription
+        left behind by the same browser's previous WS before its half-open
+        socket is reaped — is dropped and its WS closed before the new
+        client is registered, so subscribers converge to exactly one per
+        browser on reconnect instead of leaking a zombie fan-out target.
+        """
         queue: asyncio.Queue[bytes] = asyncio.Queue(maxsize=self.HIGH_WATERMARK)
         client_id = id(queue)
+        stale_ws: list[Connection] = []
         async with self._lock:
+            if identity is not None:
+                for old_id in [
+                    cid
+                    for cid, ident in self._client_identity.items()
+                    if ident == identity
+                ]:
+                    old_ws = self._drop_client(old_id)
+                    if old_ws is not None:
+                        stale_ws.append(old_ws)
             self._clients[client_id] = queue
             if ws is not None:
                 self._client_ws[client_id] = ws
+            if identity is not None:
+                self._client_identity[client_id] = identity
             if preferred_rx_codec is not None:
                 self._client_rx_codec[client_id] = preferred_rx_codec
             if self._adaptive_egress and preferred_rx_codec == AUDIO_CODEC_OPUS:
@@ -263,23 +306,59 @@ class AudioBroadcaster:
                     await self._release_subscription()
                 if self._radio:
                     await self._start_relay()
+        # Close any superseded sockets OUTSIDE the lock — the close awaits a
+        # drain and must never block subscribe under the broadcaster lock.
+        for old_ws in stale_ws:
+            try:
+                await old_ws.close(1001, "superseded by reconnect")
+            except Exception:
+                logger.debug(
+                    "audio-broadcaster: superseded ws close failed", exc_info=True
+                )
+        if stale_ws:
+            logger.info(
+                "audio-broadcaster: dropped %d superseded client(s) on reconnect "
+                "(identity=%s)",
+                len(stale_ws),
+                identity,
+            )
         self._notify_client_count_change()
         logger.info("audio-broadcaster: client added (total=%d)", len(self._clients))
         return queue
+
+    def _drop_client(self, client_id: int) -> Connection | None:
+        """Remove ALL per-client state for ``client_id``. Returns its ws (if any).
+
+        Single source of truth for per-client teardown — used by the
+        reconnect-coalescing path in :meth:`subscribe`, :meth:`unsubscribe`,
+        :meth:`reap_dead_clients`, and the relay loop's mid-stream dead-client
+        sweep, so a new per-client dict can never be forgotten in one of them.
+
+        Callers that mutate the client maps concurrently
+        (subscribe/unsubscribe/reap_dead_clients) hold ``self._lock``; the
+        relay loop calls this WITHOUT the lock, which is safe because every
+        map mutation here is an idempotent ``.pop(id, None)`` (this mirrors
+        the prior inline sweep, which was also lock-free). Closing the
+        returned ws is the caller's job and must happen outside the lock.
+        """
+        ws = self._client_ws.pop(client_id, None)
+        self._clients.pop(client_id, None)
+        self._client_identity.pop(client_id, None)
+        self._client_rx_codec.pop(client_id, None)
+        self._client_opus_transcoders.pop(client_id, None)
+        self._client_opus_pcm_buffers.pop(client_id, None)
+        self._client_link_quality.pop(client_id, None)
+        self._client_queue_drops.pop(client_id, None)
+        self._client_adaptive.pop(client_id, None)
+        return ws
 
     async def unsubscribe(self, queue: asyncio.Queue[bytes]) -> None:
         """Unregister a client and stop relay if last (unless PCM tap is active)."""
         client_id = id(queue)
         removed = False
         async with self._lock:
-            removed = self._clients.pop(client_id, None) is not None
-            self._client_ws.pop(client_id, None)
-            self._client_rx_codec.pop(client_id, None)
-            self._client_opus_transcoders.pop(client_id, None)
-            self._client_opus_pcm_buffers.pop(client_id, None)
-            self._client_link_quality.pop(client_id, None)
-            self._client_queue_drops.pop(client_id, None)
-            self._client_adaptive.pop(client_id, None)
+            removed = client_id in self._clients
+            self._drop_client(client_id)
             if (
                 not self._clients
                 and self._subscription is not None
@@ -387,14 +466,7 @@ class AudioBroadcaster:
                 cid for cid, ws in list(self._client_ws.items()) if not ws.is_alive()
             ]
             for cid in dead_ids:
-                self._clients.pop(cid, None)
-                self._client_ws.pop(cid, None)
-                self._client_rx_codec.pop(cid, None)
-                self._client_opus_transcoders.pop(cid, None)
-                self._client_opus_pcm_buffers.pop(cid, None)
-                self._client_link_quality.pop(cid, None)
-                self._client_queue_drops.pop(cid, None)
-                self._client_adaptive.pop(cid, None)
+                self._drop_client(cid)
             # Stop relay if no clients remain (and no PCM tap active)
             if (
                 not self._clients
@@ -999,14 +1071,7 @@ class AudioBroadcaster:
                                 pass
                 self._seq = (self._seq + 1) & 0xFFFF
                 for client_id in dead_ids:
-                    self._clients.pop(client_id, None)
-                    self._client_ws.pop(client_id, None)
-                    self._client_rx_codec.pop(client_id, None)
-                    self._client_opus_transcoders.pop(client_id, None)
-                    self._client_opus_pcm_buffers.pop(client_id, None)
-                    self._client_link_quality.pop(client_id, None)
-                    self._client_queue_drops.pop(client_id, None)
-                    self._client_adaptive.pop(client_id, None)
+                    self._drop_client(client_id)
                     logger.info("audio-broadcaster: removed dead client during relay")
                 if dead_ids:
                     self._notify_client_count_change()
@@ -1183,7 +1248,10 @@ class AudioHandler:
 
         if msg_type == "audio_start":
             if direction == "rx":
-                await self._start_rx(preferred_rx_codec=_parse_preferred_rx_codec(msg))
+                await self._start_rx(
+                    preferred_rx_codec=_parse_preferred_rx_codec(msg),
+                    identity=_parse_client_identity(msg),
+                )
             elif direction == "tx":
                 if self._radio and CAP_AUDIO in self._radio.capabilities:
                     self._ensure_tx_transcoder()
@@ -1526,7 +1594,12 @@ class AudioHandler:
         else:
             await getattr(self._radio, legacy_method)(data)
 
-    async def _start_rx(self, *, preferred_rx_codec: int | None = None) -> None:
+    async def _start_rx(
+        self,
+        *,
+        preferred_rx_codec: int | None = None,
+        identity: str | None = None,
+    ) -> None:
         """Subscribe to audio broadcaster for RX frames."""
         if not self._broadcaster:
             return
@@ -1534,6 +1607,7 @@ class AudioHandler:
         self._frame_queue = await self._broadcaster.subscribe(
             ws=self._ws,
             preferred_rx_codec=preferred_rx_codec,
+            identity=identity,
         )
         # Per-connection negotiation ack (MOR-584): tell the client which
         # wire codec/format it will receive.  Advisory and fire-and-forget

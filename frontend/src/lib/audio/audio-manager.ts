@@ -29,6 +29,19 @@ const BACKOFF_MAX = 10000;
 // message per 1.5 s while RX is active.
 const AUDIO_STATS_INTERVAL_MS = 1500;
 
+/** Stable per-page-context token so the server can coalesce this audio
+ *  manager's reconnects (MOR-924). A soft_reconnect / audio re-arm drops the
+ *  audio WS; the browser reopens it and re-sends ``audio_start`` carrying the
+ *  same ``client_id``, letting the broadcaster drop the prior (now-zombie)
+ *  subscription synchronously instead of fanning RX out to two subscribers
+ *  until the half-open socket finally times out. Distinct AudioManager
+ *  instances (a genuine second tab) get distinct ids and are NOT coalesced. */
+function makeClientId(): string {
+  const c = (globalThis as { crypto?: { randomUUID?: () => string } }).crypto;
+  if (c?.randomUUID) return c.randomUUID();
+  return `audio-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+}
+
 function preferredRxCodec(): 'opus' | 'pcm16' {
   const globals = globalThis as typeof globalThis & {
     __TAURI__?: unknown;
@@ -50,6 +63,8 @@ class AudioManager {
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   private statsTimer: ReturnType<typeof setInterval> | null = null;
   private _listeners: Set<() => void> = new Set();
+  // Stable identity for reconnect coalescing (MOR-924); see makeClientId.
+  private readonly clientId = makeClientId();
 
   // Reactive state (read externally)
   get rxEnabled(): boolean { return this._rxEnabled; }
@@ -111,6 +126,7 @@ class AudioManager {
         type: 'audio_start',
         direction: 'rx',
         preferred_rx_codec: preferredRxCodec(),
+        client_id: this.clientId,
       }));
     }
     this.notify();
@@ -240,6 +256,7 @@ class AudioManager {
           type: 'audio_start',
           direction: 'rx',
           preferred_rx_codec: preferredRxCodec(),
+          client_id: this.clientId,
         }));
       }
       if (this._txEnabled) {

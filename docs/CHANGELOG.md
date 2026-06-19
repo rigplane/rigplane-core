@@ -11,6 +11,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.10.6] — 2026-06-19
+
+### Fixed
+
+- **Web RX audio went silent after a reconnect until app restart.** On reconnect the
+  browser reopened the audio WebSocket, but the prior half-open socket was not reaped
+  (it still reported alive until the pong timeout), so the audio broadcaster kept a
+  zombie subscriber and the live tab stopped rendering audio. A stable per-client audio
+  identity now coalesces a reconnecting client's prior subscription (dropping the
+  superseded socket), so web audio recovers automatically without an app restart. (#1216)
+
 ## [2.10.5] — 2026-06-19
 
 ### Fixed
