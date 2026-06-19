@@ -80,6 +80,8 @@ scripts/*
 !scripts/validate-release.sh
 # And the public-state TypeScript codegen generator is tracked (MOR-881).
 !scripts/gen_state_types.py
+# And the consumer-driven contract (CDC) runner is tracked (MOR-883).
+!scripts/run_consumer_contracts.py
 # But CI scripts under .github/ are tracked.
 !.github/scripts/
 # And frontend tooling scripts (e.g. i18n lint) are tracked.

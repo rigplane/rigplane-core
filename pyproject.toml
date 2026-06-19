@@ -60,8 +60,13 @@ tls = ["cryptography>=41.0"]
 # core stays zero-runtime-dep. Only the conformance test and the
 # `scripts/gen_state_types.py` generator import it; `state_schema.py` is never
 # imported on the live request path.
-codegen = ["pydantic>=2.13,<3"]
-dev = ["pytest", "pytest-asyncio", "pytest-cov", "pytest-timeout", "pytest-xdist", "ruff", "mypy", "pydantic>=2.13,<3"]
+# `jsonschema` drives the consumer-driven contract (CDC) runner (MOR-883):
+# `scripts/run_consumer_contracts.py` validates the real producer artifacts
+# against consumer-authored expectations. Like `pydantic`, it is DEV/CI-only and
+# must NEVER enter the runtime `dependencies` above — core stays zero-runtime-dep.
+# Only the runner and its conformance test import it.
+codegen = ["pydantic>=2.13,<3", "jsonschema>=4.0"]
+dev = ["pytest", "pytest-asyncio", "pytest-cov", "pytest-timeout", "pytest-xdist", "ruff", "mypy", "pydantic>=2.13,<3", "jsonschema>=4.0"]
 
 [dependency-groups]
 dev = [
@@ -72,6 +77,9 @@ dev = [
     # Dev/build-only — drives MOR-881 state-payload codegen + conformance test.
     # NOT a runtime dependency (core stays zero-runtime-dep).
     "pydantic>=2.13,<3",
+    # Dev/build-only — drives the MOR-883 consumer-driven contract runner.
+    # NOT a runtime dependency (core stays zero-runtime-dep).
+    "jsonschema>=4.0",
     "pytest>=8.0",
     "pytest-asyncio>=1.3.0",
     "pytest-cov>=7.0.0",

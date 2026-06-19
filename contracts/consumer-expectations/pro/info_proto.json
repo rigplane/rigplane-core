@@ -1,0 +1,27 @@
+{
+  "contract": "pro/info_proto",
+  "source": "rigplane-pro",
+  "source_file": "src/rigplane_pro/companion/core/probe.py",
+  "description": "Pro companion probes GET /api/v1/info on connect and refuses to attach unless `proto` equals REQUIRED_PROTO (1). It also reads `version`, `connection.rigConnected`, `backend`, `capabilities.dataModeCount`, and `audioRoute`, but those are read defensively with defaults — `proto` is the only hard, connection-gating dependency.",
+  "producer_artifact": "info",
+  "speaks_version": {
+    "field": "proto",
+    "value": 1
+  },
+  "schema": {
+    "type": "object",
+    "required": ["server", "version", "proto", "connection"],
+    "properties": {
+      "server": { "type": "string" },
+      "version": { "type": "string" },
+      "proto": { "const": 1 },
+      "connection": {
+        "type": "object",
+        "required": ["rigConnected"],
+        "properties": {
+          "rigConnected": { "type": "boolean" }
+        }
+      }
+    }
+  }
+}
