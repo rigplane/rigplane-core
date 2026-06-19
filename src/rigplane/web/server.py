@@ -72,6 +72,7 @@ from ..env_config import (
 )
 from ..startup_checks import assert_radio_startup_ready
 from ._delta_encoder import DeltaEncoder  # noqa: TID251
+from .api_contract import WEB_API_CONTRACT_VERSION  # noqa: TID251
 from .discovery import DiscoveryResponder  # noqa: TID251
 from .dx_cluster import DXClusterClient, SpotBuffer  # noqa: TID251
 from .handlers import (  # noqa: TID251
@@ -2302,7 +2303,7 @@ class WebServer:
                 # Backward-compatible legacy fields
                 "server": "rigplane",
                 "version": __version__,
-                "proto": 1,
+                "proto": WEB_API_CONTRACT_VERSION,
                 "radio": model,
                 # New structured fields
                 "model": model,
