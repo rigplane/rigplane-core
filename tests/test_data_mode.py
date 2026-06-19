@@ -317,19 +317,25 @@ class TestHandlerGetModeWithDataMode:
 
 class TestHandlerGetModeCacheDataMode:
     @pytest.mark.asyncio
-    async def test_cached_mode_uses_cached_data_mode(
+    async def test_get_mode_reads_radio_each_call_without_self_caching(
         self, handler: RigctldHandler, mock_radio: AsyncMock
     ) -> None:
-        """When mode is fresh in cache, data_mode is also served from cache."""
+        """get_mode is read-only: it re-reads the radio rather than self-caching.
+
+        The legacy behavior wrote the mode/filter/data_mode readback into the
+        canonical StateStore so a second poll was served from the projection.
+        That write-back clobbered the CI-V-owned ``filter_width`` (Hz) and
+        ``data_mode`` (int) keys (MOR-895) and was removed, so each get_mode now
+        queries the radio and consistently reports the same value.
+        """
         mock_radio.get_mode_info.return_value = (Mode.USB, 1)
         mock_radio.get_data_mode.return_value = False
-        # Populate cache
         resp1 = await handler.execute(get_cmd("get_mode"))
         assert resp1.values[0] == "USB"
-        # Now the cache is fresh; second call should not hit radio
         resp2 = await handler.execute(get_cmd("get_mode"))
         assert resp2.values[0] == "USB"
-        mock_radio.get_mode_info.assert_awaited_once()
+        # No self-cache: the radio is polled on every read.
+        assert mock_radio.get_mode_info.await_count == 2
 
     @pytest.mark.asyncio
     async def test_set_mode_packet_updates_data_mode_cache(

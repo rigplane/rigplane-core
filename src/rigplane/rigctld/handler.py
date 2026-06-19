@@ -641,10 +641,14 @@ class RigctldHandler:
     def _mode_path(self, receiver: int) -> FieldPath:
         return FieldPath.active(self._receiver_id(receiver), "freq_mode", "mode")
 
-    def _filter_path(self, receiver: int) -> FieldPath:
-        return FieldPath.active(
-            self._receiver_id(receiver), "freq_mode", "filter_width"
-        )
+    def _filter_num_path(self, receiver: int) -> FieldPath:
+        # The CI-V filter NUMBER (1/2/3), distinct from the decoded
+        # ``filter_width`` (Hz). ``_filter_to_passband`` maps the NUMBER, so the
+        # rigctld passband and the set_mode readback overlay must use this key,
+        # not the Hz one. The former ``_filter_path``/``filter_width``
+        # projection was removed: it fed Hz into a NUMBER->Hz map and collapsed
+        # every width to 0. (MOR-895, pro#1200.)
+        return FieldPath.active(self._receiver_id(receiver), "freq_mode", "filter_num")
 
     def _data_mode_path(self, receiver: int) -> FieldPath:
         return FieldPath.active(self._receiver_id(receiver), "freq_mode", "data_mode")
@@ -891,28 +895,6 @@ class RigctldHandler:
             )
         )
 
-    def _confirm_pending_value(
-        self,
-        path: FieldPath | str,
-        value: Any,
-        *,
-        command_id: str,
-    ) -> None:
-        self._command_service.apply_observation(
-            Observation(
-                path=FieldPath.parse(path) if isinstance(path, str) else path,
-                value=value,
-                source=SourceMetadata(
-                    source="command_response",
-                    provider="rigctld",
-                    command_source="rigctld",
-                    session_id=self._session_id(),
-                ),
-                timestamp_monotonic=time.monotonic(),
-                correlation_id=command_id,
-            )
-        )
-
     def _effective_pending_freq(self, main_state: ReceiverState | None) -> int | None:
         pending_freq = self._pending.freq
         if pending_freq is None:
@@ -1111,25 +1093,36 @@ class RigctldHandler:
 
         receiver = self._receiver_index_for(target)
         mode_path = self._mode_path(receiver)
-        filter_path = self._filter_path(receiver)
+        # The rigctld passband maps a filter NUMBER (1/2/3), so the projection
+        # reads ``filter_num``. ``filter_width`` (decoded Hz) is deliberately
+        # NOT projected here: it is the wrong type for ``_filter_to_passband``
+        # and feeding it collapsed every width to 0. (MOR-895, pro#1200.)
+        filter_num_path = self._filter_num_path(receiver)
         data_mode_path = self._data_mode_path(receiver)
         projection = self._project_with_freshness(
-            (mode_path, filter_path, data_mode_path),
+            (mode_path, filter_num_path, data_mode_path),
             reason="rigctld.get_mode",
         )
         projected_mode = projection.value(mode_path)
-        projected_filter = projection.value(filter_path)
+        projected_filter_num = projection.value(filter_num_path)
         projected_data_mode = projection.value(data_mode_path)
         if (
             projected_mode is not None
-            and projected_filter is not None
+            and projected_filter_num is not None
             and projected_data_mode is not None
         ):
             mode_str = str(projected_mode.value).upper()
+            filter_num_value = projected_filter_num.value
             passband = _filter_to_passband(
-                None if projected_filter.value is None else int(projected_filter.value)
+                None if filter_num_value is None else int(filter_num_value)
             )
-            data_mode: int = bool(projected_data_mode.value)
+            # Preserve the int sub-mode (0-3); never narrow to bool. Only its
+            # truthiness drives the packet-mode label below.
+            data_mode: int = (
+                int(projected_data_mode.value)
+                if projected_data_mode.value is not None
+                else 0
+            )
             if data_mode:
                 if mode_str == "USB":
                     mode_str = "PKTUSB"
@@ -1147,24 +1140,11 @@ class RigctldHandler:
                 mode_str = sub.mode.upper()
                 passband = _filter_to_passband(sub.filter)
                 data_mode = sub.data_mode
-                self._record_state_sample(
-                    mode_path,
-                    mode_str,
-                    source="state_poller",
-                    max_age=self._config.cache_ttl,
-                )
-                self._record_state_sample(
-                    filter_path,
-                    sub.filter,
-                    source="state_poller",
-                    max_age=self._config.cache_ttl,
-                )
-                self._record_state_sample(
-                    data_mode_path,
-                    bool(data_mode),
-                    source="state_poller",
-                    max_age=self._config.cache_ttl,
-                )
+                # get_mode is a READ: it must NOT mutate the canonical
+                # StateStore. Writing display semantics back here clobbered
+                # the CI-V-owned ``filter_width`` (Hz) with a filter NUMBER
+                # and ``data_mode`` (int 0-3) with a bool, corrupting
+                # /api/v1/state on every WSJT-X poll. (MOR-895, pro#1200.)
                 if data_mode:
                     if mode_str == "USB":
                         mode_str = "PKTUSB"
@@ -1181,56 +1161,28 @@ class RigctldHandler:
             if cmd.vfo_arg == "VFOB":
                 return _err(HamlibError.ENIMPL)
 
+        # get_mode is a READ path: project the radio's mode/filter/data_mode
+        # for the rigctld response WITHOUT writing anything back into the
+        # canonical StateStore. The earlier write-backs here stored a filter
+        # NUMBER into the Hz-typed ``filter_width`` key and a bool into the
+        # int-typed ``data_mode`` key, and (last-writer-wins) overwrote the
+        # correct CI-V 0x26/0x1A observations that drive the web UI — so a
+        # read-only WSJT-X ``get_mode`` poll blanked DATA mode and collapsed
+        # the IF width to ~1. (MOR-895, pro#1200.)
         main_state = self._main_receiver_state()
         if main_state is not None:
             mode_str = main_state.mode.upper()
             passband = _filter_to_passband(main_state.filter)
             data_mode = main_state.data_mode
-            self._record_state_sample(
-                mode_path,
-                mode_str,
-                source="state_poller",
-                max_age=self._config.cache_ttl,
-            )
-            self._record_state_sample(
-                filter_path,
-                main_state.filter,
-                source="state_poller",
-                max_age=self._config.cache_ttl,
-            )
-            self._record_state_sample(
-                data_mode_path,
-                bool(data_mode),
-                source="state_poller",
-                max_age=self._config.cache_ttl,
-            )
         else:
             get_mode = get_mode_reader(self._radio, _mode_to_hamlib_str)
             if get_mode is None:
                 return _err(HamlibError.ENIMPL)
             mode_str, filt = await get_mode()
-            self._record_state_sample(
-                mode_path,
-                mode_str,
-                source="hamlib_response",
-                max_age=self._config.cache_ttl,
-            )
-            self._record_state_sample(
-                filter_path,
-                filt,
-                source="hamlib_response",
-                max_age=self._config.cache_ttl,
-            )
             passband = _filter_to_passband(filt)
             # Fetch data mode alongside mode to keep them in sync.
             try:
                 data_mode = await self._radio.get_data_mode()
-                self._record_state_sample(
-                    data_mode_path,
-                    bool(data_mode),
-                    source="hamlib_response",
-                    max_age=self._config.cache_ttl,
-                )
             except Exception:
                 logger.debug(
                     "get_data_mode failed, preserving last projected value",
@@ -1293,8 +1245,11 @@ class RigctldHandler:
                 session_id=self._session_id(),
             )
             await self._command_service.execute(intent)
+            # ``filter_width`` (the local var) is a filter NUMBER, so the
+            # readback overlay belongs on ``filter_num`` — that is the key the
+            # get_mode projection now reads for the passband. (MOR-895.)
             self._record_pending_overlay(
-                self._filter_path(1),
+                self._filter_num_path(1),
                 filter_width,
                 command_id=intent.id,
             )
@@ -1322,8 +1277,11 @@ class RigctldHandler:
         self._cache.update_mode(base_mode_str, filter_width)
         if requested_mode in packet_modes:
             self._cache.update_data_mode(True)
+        # ``filter_width`` (the local var) is a filter NUMBER, so the readback
+        # overlay belongs on ``filter_num`` — that is the key the get_mode
+        # projection now reads for the passband. (MOR-895.)
         self._record_pending_overlay(
-            self._filter_path(0),
+            self._filter_num_path(0),
             filter_width,
             command_id=intent.id,
         )
@@ -1349,16 +1307,14 @@ class RigctldHandler:
                         read_mode, _ = await get_mode()
                         read_data = await self._radio.get_data_mode()
                         if read_mode == base_mode_str and read_data:
-                            self._confirm_pending_value(
-                                self._filter_path(0),
-                                filter_width,
-                                command_id=intent.id,
-                            )
-                            self._confirm_pending_value(
-                                self._data_mode_path(0),
-                                True,
-                                command_id=intent.id,
-                            )
+                            # Read-back confirmed on the radio. Do NOT promote
+                            # the rigctld filter NUMBER / data-mode bool into the
+                            # canonical StateStore: ``filter_width`` there is Hz
+                            # and ``data_mode`` is the int sub-mode (0-3). The
+                            # session-scoped pending overlays already give this
+                            # CAT client a deterministic read-back; the real
+                            # CI-V 0x26/0x1A observations remain the canonical
+                            # source the web UI reads. (MOR-895, pro#1200.)
                             synced = True
                             break
                     except Exception:
@@ -1555,9 +1511,21 @@ class RigctldHandler:
     async def _cmd_get_vfo(self, cmd: RigctldCommand) -> RigctldResponse:
         active_vfo = self._project_active_vfo_name()
         if active_vfo is None:
-            if self._profile_vfo_info() is None:
-                return RigctldResponse(values=[self._active_vfo_name()])
-            return _err(HamlibError.EIO)
+            # The active-VFO projection is not fresh yet (or absent). On a CAT
+            # client's FIRST connect this fires before the first state poll has
+            # landed. Returning ``RPRT -6`` (EIO) here makes WSJT-X surface
+            # "Rig Control Error" / OOB / freq 0.000.000 until a retry. When the
+            # profile advertises VFO capability we instead answer with the
+            # default/main active VFO (``_active_vfo_name`` falls back to
+            # ``VFOA``) so the client gets a valid answer and proceeds; a
+            # subsequent poll corrects it. (MOR-895, pro#1200; OOB rel. #1199.)
+            #
+            # NOTE: this only relaxes ``get_vfo``. ``chk_vfo`` is independent
+            # (it keys off ``_profile_vfo_info`` directly) and is unchanged. For
+            # a non-VFO rig (no profile VFO info) ``_active_vfo_name`` already
+            # returns the legacy ``VFOA`` default and never fabricates a VFO for
+            # a capability the rig lacks, so both cases share one answer.
+            return RigctldResponse(values=[self._active_vfo_name()])
         return RigctldResponse(values=[active_vfo])
 
     async def _cmd_set_vfo(self, cmd: RigctldCommand) -> RigctldResponse:
