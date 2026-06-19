@@ -11,6 +11,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.10.3] — 2026-06-18
+
+### Fixed
+
+- **rigctld `get_mode` no longer clobbers canonical StateStore.** The WSJT-X
+  CAT `get_mode` poll was a read that wrote back `bool(data_mode)` and the
+  filter number into the `filter_width` slot of the canonical StateStore,
+  corrupting `/api/v1/state` mid-session (DATA mode blanked on the web UI,
+  filter forced to "1", scope/passband narrowed) whenever WSJT-X connected.
+  `get_mode`/`set_mode` are now read-only on the data_mode/filter projection;
+  `data_mode` stays an int (PR #1884).
+- **rigctld `get_vfo` first-connect and mid-session EIO resolved.** `get_vfo`
+  returned `RPRT -6` (EIO / "IO error") when the VFO projection was stale or
+  not yet fresh, dropping active WSJT-X FT8 sessions mid-run; it now returns
+  the active VFO name (VFOA). The `get_mode` passband now reads the
+  filter-number projection instead of `filter_width` (Hz), and `set_mode`
+  overlays the filter-number path (PR #1884).
+
+### Added
+
+- Canonical state-payload schema with TypeScript codegen as a reference
+  contract pattern (MOR-881, dev tooling; PR #1883).
+
 ## [2.10.2] — 2026-06-18
 
 ### Fixed
