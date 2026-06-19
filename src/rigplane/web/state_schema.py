@@ -307,11 +307,14 @@ class ServerStatePublic(_Strict):
     radioHealth: RadioHealthPublic
     wsClients: WsClientsPublic
 
-    # Snapshot path only.
-    fieldStatus: dict[str, FieldStatusPublic] | None = None
+    # Snapshot path only — absent on the dataclass path, never null when
+    # present (generated TS: ``fieldStatus?: Record<string, FieldStatusPublic>``).
+    fieldStatus: dict[str, FieldStatusPublic] = Field(default_factory=dict)
 
-    # Added by the server seq counter, not the helper.
-    publicStateSeq: int | None = None
+    # Added by the server seq counter, not the helper. Always an int when
+    # present (the producer omits the key otherwise), so the generated TS is
+    # ``publicStateSeq?: number`` — never nullable.
+    publicStateSeq: int = 0
 
 
 class StateUpdateEnvelope(_Strict):
