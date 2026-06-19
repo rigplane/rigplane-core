@@ -17,7 +17,9 @@ from __future__ import annotations
 # Re-export from the canonical public location.  All helpers that were private
 # to this module have been moved to rigplane.backends.discovery; they are not
 # part of the public API and are not re-exported here.
-from rigplane.backends.discovery import build_hamlib_discovery_payload as build_hamlib_discovery_payload  # noqa: PLC0414
+from rigplane.backends.discovery import (
+    build_hamlib_discovery_payload as build_hamlib_discovery_payload,
+)  # noqa: PLC0414
 
 
 def print_hamlib_human(payload: dict[str, object]) -> None:
