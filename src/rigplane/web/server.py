@@ -456,6 +456,20 @@ class _SharedControlCommandExecutor:
     def _optimistic_observations(
         self, intent: CommandIntent
     ) -> tuple[Observation, ...]:
+        # During an external-CAT session (e.g. WSJT-X via the Hamlib/rigctld
+        # bridge) the external master owns the wire: RigPlane's poller pauses
+        # (radio_poller._run gate) and rigctld get_freq serves the cached store
+        # projection without eliciting a fresh radio readback. An optimistic
+        # command-response overlay published here can therefore never be
+        # reconciled by a readback — it pins a fabricated freq/mode the radio is
+        # not on and the operating-UI display sticks at the command echo for the
+        # whole session. Suppress the overlay so the projection keeps tracking
+        # the radio's real last-known/live value (bridge CI-V readbacks still
+        # land via _civ_rx, and post-session reconcile_state refreshes it).
+        # Normal (non-external-CAT) responsiveness is unchanged: the poller
+        # readback continues to displace the overlay via last-writer-wins.
+        if getattr(self.server._radio, "external_cat_session_active", False) is True:
+            return ()
         receiver = str(int(intent.params.get("receiver", 0)))
         session_id = (
             str(intent.params["session_id"])
