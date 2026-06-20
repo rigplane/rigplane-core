@@ -582,13 +582,22 @@ class CivRuntime:
         self._host._civ_data_watchdog_task = None
 
         rc_task = self._reconnect_task
-        if rc_task is not None and not rc_task.done():
+        # Never cancel the detached recovery task if *it* is the caller.  The
+        # recovery helpers (``_watchdog_soft_reconnect`` /
+        # ``_watchdog_full_reconnect``) call ``_force_cleanup_civ`` →
+        # ``stop_data_watchdog`` from inside themselves; cancelling the current
+        # task here would self-cancel before ``soft_reconnect`` ever runs,
+        # freezing recovery after a single attempt (#1217).
+        current = asyncio.current_task()
+        if rc_task is not None and rc_task is not current and not rc_task.done():
             rc_task.cancel()
             try:
                 await rc_task
             except asyncio.CancelledError:
                 pass
-        self._reconnect_task = None
+            self._reconnect_task = None
+        elif rc_task is not current:
+            self._reconnect_task = None
 
     def advance_generation(self, reason: str) -> None:
         """Advance CI-V request generation and fail stale waiters."""
@@ -919,6 +928,10 @@ class CivRuntime:
 
         Runs outside the watchdog loop so the cooldown sleep survives the
         watchdog task exiting. Falls back to full reconnect on failure.
+
+        Always re-arms the data watchdog in ``finally`` so recovery keeps
+        retrying indefinitely (with bounded backoff) until the radio answers,
+        instead of freezing after a single attempt (#1217).
         """
         try:
             await self._host._force_cleanup_civ()
@@ -949,9 +962,15 @@ class CivRuntime:
                 "civ-data-watchdog: unexpected error in soft_reconnect",
                 exc_info=True,
             )
+        finally:
+            self._rearm_data_watchdog_after_recovery()
 
     async def _watchdog_full_reconnect(self, cooldown: float) -> None:
-        """Detached full reconnect after max soft_reconnect attempts exceeded."""
+        """Detached full reconnect after max soft_reconnect attempts exceeded.
+
+        Re-arms the data watchdog in ``finally`` so a still-unreachable radio
+        is re-probed instead of leaving recovery permanently frozen (#1217).
+        """
         try:
             await self._host._force_cleanup_civ()
             await self._host.disconnect()
@@ -965,6 +984,35 @@ class CivRuntime:
         except Exception:
             logger.error(
                 "civ-data-watchdog: unexpected error in full reconnect",
+                exc_info=True,
+            )
+        finally:
+            self._rearm_data_watchdog_after_recovery()
+
+    def _rearm_data_watchdog_after_recovery(self) -> None:
+        """Re-arm the CI-V data watchdog after a detached recovery attempt.
+
+        Recovery helpers run as ``self._reconnect_task``; once a helper
+        finishes, clear that handle and start a fresh watchdog so the next
+        stall is detected and escalated again.  ``start_data_watchdog`` is a
+        no-op when a healthy watchdog was already re-armed by a successful
+        ``soft_reconnect``/``connect``, so this is safe to call unconditionally.
+
+        Skipped only when the control session is gone (explicit disconnect) —
+        there is nothing left to watch and re-arming would fight teardown.
+        """
+        current = asyncio.current_task()
+        if self._reconnect_task is current:
+            self._reconnect_task = None
+        ctrl = getattr(self._host, "_ctrl_transport", None)
+        ctrl_alive = bool(ctrl and getattr(ctrl, "_udp_transport", None) is not None)
+        if not ctrl_alive:
+            return
+        try:
+            self.start_data_watchdog()
+        except Exception:
+            logger.debug(
+                "civ-data-watchdog: re-arm after recovery failed",
                 exc_info=True,
             )
 
@@ -2653,13 +2701,25 @@ class CivRuntime:
             if civ_t is not None and getattr(self._host, "_connected", False):
                 return
 
-            if civ_t is None and not fast_attempted:
+            # Kick a fast soft_reconnect not only when the transport is gone,
+            # but also when a transport object lingers in a stalled state
+            # (``already_open_stalled``): the radio dropped, the stream is dead,
+            # yet the FD still exists.  Previously this branch only fired for a
+            # ``None`` transport, so a stalled transport spun here to timeout
+            # without ever progressing recovery — the #1217 freeze.  With the
+            # rebuild-on-stall fix in ``soft_reconnect``, kicking it now makes
+            # the poller actively drive recovery.
+            stalled = civ_t is not None and not getattr(self._host, "_connected", False)
+            if (civ_t is None or stalled) and not fast_attempted:
                 fast_attempted = True
                 lock = getattr(self._host, "_civ_recovery_lock", None)
                 if isinstance(lock, asyncio.Lock):
                     async with lock:
                         civ_t2 = getattr(self._host, "_civ_transport", None)
-                        if civ_t2 is None and ctrl_alive:
+                        still_stalled = civ_t2 is not None and not getattr(
+                            self._host, "_connected", False
+                        )
+                        if (civ_t2 is None or still_stalled) and ctrl_alive:
                             try:
                                 await self._host.soft_reconnect()
                             except (ConnectionError, TimeoutError, OSError) as exc:

@@ -571,15 +571,26 @@ class ControlPhaseRuntime:
                         "civ_idle_seconds": now - float(last_data),
                     },
                 )
-            else:
-                logger.warning(
-                    "civ.soft_reconnect.already_open_stalled",
-                    extra={
-                        "transport_open": transport_open,
-                        "data_flowing": data_flowing,
-                    },
-                )
-            return
+                return
+            # Transport object exists but the stream is stalled (no data is
+            # flowing).  Returning here is the freeze bug (#1217): recovery
+            # would never progress past one attempt because the watchdog has
+            # already exited and nothing re-arms it.  Tear the stalled
+            # transport down so this call falls through to the genuine rebuild
+            # path below, which re-establishes CI-V and re-arms the watchdog.
+            logger.warning(
+                "civ.soft_reconnect.already_open_stalled",
+                extra={
+                    "transport_open": transport_open,
+                    "data_flowing": data_flowing,
+                    "action": "tearing_down_stalled_transport_for_rebuild",
+                },
+            )
+            await h._force_cleanup_civ()
+            if h._civ_transport is not None:
+                # Defensive: _force_cleanup_civ normally nulls the transport.
+                # If a subclass/mock left it set, do not loop forever — bail.
+                return
         if not h._ctrl_transport or not getattr(
             h._ctrl_transport, "_udp_transport", None
         ):
