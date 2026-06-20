@@ -11,6 +11,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.10.8] — 2026-06-20
+
+### Fixed
+
+- **Operating-UI frequency/mode display stuck during an external CAT session.** During a WSJT-X / external-CAT session the display could remain pinned to the last value tuned via the Pro UI while the radio was actually on a different frequency, because the optimistic command overlay was never displaced (the readback poller is paused for the session). The optimistic overlay is now suppressed during an external-CAT session, so the display tracks the radio's real frequency/mode from CI-V readback. Normal Pro-dial responsiveness is unchanged when no external-CAT session is active. (#1219)
+
 ## [2.10.7] — 2026-06-20
 
 ### Fixed
