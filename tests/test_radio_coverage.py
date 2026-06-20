@@ -278,11 +278,16 @@ async def test_soft_reconnect_noops_when_open_transport_is_receiving_data(
     assert not any("already open" in r.message for r in caplog.records)
 
 
-async def test_soft_reconnect_already_open_stalled_keeps_recovering(
+async def test_soft_reconnect_already_open_stalled_rebuilds_not_frozen(
     radio: IcomRadio,
     mock_transport: MockTransport,
     caplog: pytest.LogCaptureFixture,
 ) -> None:
+    """#1217: a stalled CI-V transport (transport open, no data flowing) must
+    NOT freeze soft_reconnect.  The old behavior returned early after logging
+    ``already_open_stalled``, so recovery never progressed.  The fix tears the
+    stalled transport down and falls through to a genuine rebuild.
+    """
     import logging
     import time
 
@@ -294,15 +299,28 @@ async def test_soft_reconnect_already_open_stalled_keeps_recovering(
     radio._civ_recovering = True
     radio._last_civ_data_received = time.monotonic() - 60.0
 
-    with caplog.at_level(logging.WARNING, logger="rigplane.runtime._control_phase"):
+    cleanup_called: list[bool] = []
+
+    async def fake_force_cleanup() -> None:
+        cleanup_called.append(True)
+        radio._civ_transport = None
+        radio._ctrl_transport._udp_transport = None  # force full-connect branch
+
+    rebuilt = AsyncMock()
+
+    with (
+        caplog.at_level(logging.WARNING, logger="rigplane.runtime._control_phase"),
+        patch.object(radio, "_force_cleanup_civ", side_effect=fake_force_cleanup),
+        patch.object(radio._control_phase, "connect", new=rebuilt),
+    ):
         await radio.soft_reconnect()
 
-    assert radio._conn_state == RadioConnectionState.RECONNECTING
-    assert radio._civ_stream_ready is False
-    assert radio._civ_recovering is True
+    # Logged the stall, but then tore the stalled transport down and rebuilt.
     assert any(
         r.message == "civ.soft_reconnect.already_open_stalled" for r in caplog.records
     )
+    assert cleanup_called == [True]
+    rebuilt.assert_awaited_once()
 
 
 async def test_soft_reconnect_does_full_connect_when_ctrl_dead(

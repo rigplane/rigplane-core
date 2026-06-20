@@ -619,11 +619,23 @@ def classify_radio_health(
         }
 
     if radio_link in {"reconnecting", "disconnected"}:
+        # Distinguish "host reachable but the radio's CI-V/remote-control
+        # server is not listening" (e.g. right after a power-cycle, before the
+        # network server comes up: ICMP port-unreachable / EPIPE on a connected
+        # UDP socket, no "Are You There" answer) from a full network loss.
+        # The former is actionable — the user can enable Network/Remote control
+        # on the radio — so surface a distinct cause.
+        remote_unreachable = _bool_attr(radio, "remote_control_unreachable")
+        likely_cause = (
+            "radio_remote_control_unreachable"
+            if remote_unreachable
+            else "radio_network_lost"
+        )
         return {
             "serverReachable": True,
             "radioLink": radio_link,
             "readiness": "recovering" if radio_link == "reconnecting" else "stalled",
-            "likelyCause": "radio_network_lost",
+            "likelyCause": likely_cause,
             "sinceMs": 0,
             "lastError": last_error_value,
         }

@@ -11,6 +11,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.10.7] — 2026-06-20
+
+### Fixed
+
+- **Radio control link now auto-recovers after the radio drops.** After a radio power-cycle or network blip, the CI-V control reconnect stalled after a single attempt (`already_open_stalled`) and the watchdog never re-armed, so the "Radio link recovering" state hung until a manual retry or app restart. Reconnect now rebuilds and keeps retrying with bounded backoff, recovering automatically once the radio answers again. (#1217)
+
+### Added
+
+- **Distinguish "radio reachable but remote-control server not responding" from "radio offline".** When the radio's IP is up but its CI-V/remote-control server isn't answering (e.g. Network/Remote control left off after a power-cycle), the app now reports a distinct cause so it can show an actionable hint instead of a generic recovering message. (#1217)
+
 ## [2.10.6] — 2026-06-19
 
 ### Fixed

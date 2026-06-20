@@ -67,6 +67,7 @@ class _FakeRadio:
         self._civ_ready_idle_timeout = None
         self._has_connected_once = False
         self.civ_stats = None
+        self.remote_control_unreachable = False
 
 
 def _source(*, provider: str = "test") -> SourceMetadata:
@@ -209,6 +210,37 @@ def test_radio_health_classifies_network_loss_separately_from_server_loss() -> N
     assert health["serverReachable"] is True
     assert health["radioLink"] == "reconnecting"
     assert health["readiness"] == "recovering"
+    assert health["likelyCause"] == "radio_network_lost"
+
+
+def test_radio_health_classifies_remote_control_unreachable_when_host_reachable() -> (
+    None
+):
+    """Host reachable but the radio's CI-V/remote-control server not listening
+    (EPIPE / ICMP port-unreachable, no Are-You-There answer) → distinct
+    actionable cause, not a generic network loss (#1217 diagnosis B).
+    """
+    radio = _FakeRadio(connected=False, radio_ready_flag=False)
+    radio.conn_state = "reconnecting"
+    radio.remote_control_unreachable = True
+
+    health = classify_radio_health(radio, server_reachable=True, now_monotonic=100.0)
+
+    assert health["serverReachable"] is True
+    assert health["radioLink"] == "reconnecting"
+    assert health["readiness"] == "recovering"
+    assert health["likelyCause"] == "radio_remote_control_unreachable"
+
+
+def test_radio_health_keeps_network_lost_when_host_unreachable() -> None:
+    """Without the remote-control-unreachable signal a reconnecting radio is a
+    plain network loss (host truly unreachable)."""
+    radio = _FakeRadio(connected=False, radio_ready_flag=False)
+    radio.conn_state = "reconnecting"
+    radio.remote_control_unreachable = False
+
+    health = classify_radio_health(radio, server_reachable=True, now_monotonic=100.0)
+
     assert health["likelyCause"] == "radio_network_lost"
 
 

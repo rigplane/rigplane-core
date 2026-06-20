@@ -943,6 +943,36 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
         return getattr(ctrl, "_udp_transport", None) is not None
 
     @property
+    def remote_control_unreachable(self) -> bool:
+        """Whether the radio's host is reachable but its CI-V/remote-control
+        network server is not accepting the session.
+
+        After a radio power-cycle the IP comes back up (pings/ARP resolve) but
+        the CI-V network server on the control/CI-V UDP port may not be
+        listening yet.  On a *connected* UDP socket the kernel surfaces the
+        peer's ICMP port-unreachable as ``error_received`` (e.g.
+        ``[Errno 32] Broken pipe`` / ``[Errno 111] Connection refused``), which
+        increments ``_udp_error_count``.  A truly unreachable host produces no
+        ICMP at all — sends simply time out and the error counter stays at 0.
+
+        This property is therefore True when the control transport socket is
+        open (so the host route exists) and has accumulated port-unreachable
+        errors while the session is not established — i.e. the remote-control
+        server is refusing/ignoring us rather than the network being gone.
+        """
+        if self._conn_state == RadioConnectionState.CONNECTED:
+            return False
+        ctrl = self._ctrl_transport
+        if ctrl is None:
+            return False
+        # Socket open == route to host exists (or recently existed); a closed
+        # socket means we never got that far.
+        if getattr(ctrl, "_udp_transport", None) is None:
+            return False
+        error_count = getattr(ctrl, "_udp_error_count", 0)
+        return isinstance(error_count, int) and error_count >= _UDP_ERROR_THRESHOLD
+
+    @property
     def radio_ready(self) -> bool:
         """Whether CI-V stream is healthy enough for client operations."""
         if not self.connected:
