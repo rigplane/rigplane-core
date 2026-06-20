@@ -1037,6 +1037,78 @@ async def test_set_freq_command_overlay_yields_to_newer_external_readback() -> N
 
 
 @pytest.mark.asyncio
+async def test_set_freq_optimistic_overlay_suppressed_during_external_cat() -> None:
+    # Regression: during an external-CAT session (WSJT-X/rigctld owns the wire),
+    # RigPlane's own poller pauses and rigctld get_freq serves the cached store
+    # projection — so an optimistic set_freq overlay can never be reconciled by a
+    # readback and pins a fabricated freq the radio is not on. The freq display
+    # then sticks at the command echo for the whole session. The overlay must NOT
+    # be planted while an external-CAT session is active: the projection must
+    # keep tracking the radio's real last-known/live frequency instead.
+    radio = SimpleNamespace(
+        connected=True,
+        capabilities=set(),
+        external_cat_session_active=True,
+    )
+    srv = WebServer(radio, WebConfig())
+    srv.command_queue.put = lambda *a, **k: None  # type: ignore[method-assign]
+
+    freq_path = FieldPath.active("0", "freq_mode", "freq_hz")
+    # Seed the store with the radio's REAL frequency (last poll readback before
+    # the external-CAT pause took hold).
+    srv.command_service.apply_observation(
+        Observation(
+            path=freq_path,
+            value=14_074_000,
+            source=SourceMetadata(source="poll_response", provider="icom_civ"),
+            timestamp_monotonic=time.monotonic(),
+            correlation_id=None,
+        )
+    )
+
+    # A web set_freq fires during the external-CAT session, commanding a freq the
+    # radio is NOT on (the live-log 14.260 echo).
+    intent = command_intent_from_request(
+        "set_freq",
+        {"freq": 14_260_000, "receiver": 0},
+        source="websocket",
+        command_id="ws-freq-extcat",
+    )
+    await srv.command_service.execute(intent)
+
+    # The real frequency must survive: no un-reconcilable optimistic overlay.
+    assert srv.command_state_store.snapshot().field(freq_path).value == 14_074_000
+    assert srv.build_public_state()["main"]["freqHz"] == 14_074_000
+
+
+@pytest.mark.asyncio
+async def test_set_freq_optimistic_overlay_kept_without_external_cat() -> None:
+    # Guard: with NO external-CAT session, the optimistic overlay must still be
+    # planted immediately so a web dial-spin feels instant (the normal poller
+    # readback displaces it later via last-writer-wins). The external-CAT
+    # suppression must not regress normal responsiveness.
+    radio = SimpleNamespace(
+        connected=True,
+        capabilities=set(),
+        external_cat_session_active=False,
+    )
+    srv = WebServer(radio, WebConfig())
+    srv.command_queue.put = lambda *a, **k: None  # type: ignore[method-assign]
+
+    intent = command_intent_from_request(
+        "set_freq",
+        {"freq": 14_260_000, "receiver": 0},
+        source="websocket",
+        command_id="ws-freq-normal",
+    )
+    await srv.command_service.execute(intent)
+
+    freq_path = FieldPath.active("0", "freq_mode", "freq_hz")
+    assert srv.command_state_store.snapshot().field(freq_path).value == 14_260_000
+    assert srv.build_public_state()["main"]["freqHz"] == 14_260_000
+
+
+@pytest.mark.asyncio
 async def test_set_freq_failure_does_not_publish_command_overlay() -> None:
     # MOR-485: the optimistic overlay is emitted ONLY on enqueue success — a
     # raised enqueue must leave the command_state_store untouched.
