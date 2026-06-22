@@ -156,6 +156,51 @@ async def mock_radio() -> AsyncGenerator[MockIcomRadio]:
     await server.stop()
 
 
+# Accelerated keepalive hold for the fast suite (D7). Real radios hold the
+# session for ~40-60 s after a non-graceful drop; the fast tests use ~0.5 s so a
+# silently-dropped session frees quickly without a wall-clock wait. The one
+# near-real timing test passes ~45-60 s explicitly.
+FAST_KEEPALIVE_HOLD_S = 0.5
+
+
+@pytest.fixture
+async def single_owner_radio() -> AsyncGenerator[MockIcomRadio]:
+    """A mock IC-7610 that enforces single-owner session semantics.
+
+    Models the real radio's network CI-V lifecycle: it holds ONE owning session
+    (keyed by ``(remote_addr, control my_id)``), rejects a foreign conninfo while
+    held with ``civ_port=0`` + ``error=0xFFFFFFFF`` (previous-session-active),
+    frees immediately on token-remove / OpenClose(close), and otherwise
+    auto-releases after the accelerated ``keepalive_hold_s`` window.
+    """
+    server = MockIcomRadio(
+        single_owner=True,
+        keepalive_hold_s=FAST_KEEPALIVE_HOLD_S,
+    )
+    await server.start()
+    yield server
+    await server.stop()
+
+
+@pytest.fixture
+async def unsolicited_radio() -> AsyncGenerator[MockIcomRadio]:
+    """A mock IC-7610 that streams unsolicited CI-V frames on its own cadence.
+
+    Exercises the CI-V pump and the data-flow watchdog: the radio evolves its
+    frequency state and emits transceive-style frames every
+    ``unsolicited_interval_s``. Use ``stall_for(...)`` to starve the stream.
+    """
+    server = MockIcomRadio(
+        single_owner=True,
+        keepalive_hold_s=FAST_KEEPALIVE_HOLD_S,
+        unsolicited_civ=True,
+        unsolicited_interval_s=0.05,
+    )
+    await server.start()
+    yield server
+    await server.stop()
+
+
 @pytest.fixture
 async def connected_radio(mock_radio: MockIcomRadio) -> AsyncGenerator[IcomRadio]:
     """An IcomRadio that has already completed the connect() handshake."""
