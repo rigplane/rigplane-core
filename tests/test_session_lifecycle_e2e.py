@@ -597,9 +597,10 @@ async def test_t11_recovery_exhaustion_closes_and_releases(
     nothing is left held.
 
     This drives ``CoreRadioSessionLifecycle.soft_reconnect`` (the stateful
-    RECOVERING loop) directly; ``CoreRadio.soft_reconnect`` deliberately uses a
-    single-attempt mechanism call (the data watchdog owns the outer retry loop)
-    — see FINDINGS in the task report."""
+    RECOVERING loop) directly.  After A4 this is the SINGLE owner of recovery:
+    ``CoreRadio.soft_reconnect`` now routes here too, and the CI-V data watchdog
+    only DETECTS the stall and triggers this loop (it no longer owns the
+    retry/backoff/exhaustion ladder)."""
     sim = single_owner_radio
     sim.keepalive_hold_s = 10.0
     radio = _make_radio(sim)

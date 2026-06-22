@@ -883,6 +883,17 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
             # the lifecycle with the default 10/30 s cooldowns.
             not_ready_cooldown_s=0.0,
             reject_cooldown_s=0.0,
+            # Recovery backoff is ZERO for the in-process CoreRadio (A4): the
+            # CI-V data watchdog already spends its patient OpenClose phase
+            # (~``_OPENCLOSE_DEADLINE`` = 60 s) BEFORE handing off to this
+            # RECOVERING loop, and ``soft_reconnect`` rebuilds the data path
+            # within one attempt.  A second 45/60 s lifecycle backoff per attempt
+            # would double-count that wait and stall the fast-recovery poller /
+            # direct ``soft_reconnect()`` callers.  The lifecycle still owns the
+            # attempt COUNT + exhaustion → CLOSING + release (single owner); only
+            # the inter-attempt sleep is collapsed.  The longer-lived Pro service
+            # constructs the lifecycle with the default ``_RECONNECT_BACKOFF``.
+            recovery_backoff_s=(0.0, 0.0, 0.0),
         )
         self._audio_runtime: AudioRecoveryRuntime = AudioRecoveryRuntime(self)
 
@@ -1309,18 +1320,24 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
         self._civ_recovering = ctrl_alive
 
     async def soft_reconnect(self) -> None:
-        """Reconnect CI-V transport using existing control session.
+        """Reconnect CI-V transport using the existing control session.
 
-        Drives ONE recovery attempt via the lifecycle mechanism
-        (``soft_reconnect_once`` = control + token reused; raises on failure).
-        The CI-V data watchdog (``_civ_rx.py``) owns the outer multi-attempt
-        RECOVERING retry/backoff/exhaustion loop and calls this once per
-        attempt, so a single attempt that raises on failure (without releasing
-        the control session) preserves the watchdog's recovery contract.
-        Folding that orchestration into the lifecycle's stateful RECOVERING
-        state is a separate (Phase B) routing step.
+        Routes through the unified lifecycle RECOVERING loop
+        (:meth:`CoreRadioSessionLifecycle.soft_reconnect` →
+        :meth:`CoreRadioSessionLifecycle._run_recover`), which is now the SINGLE
+        owner of recovery policy: the per-attempt primitive
+        (``soft_reconnect_once`` = control + token reused; raises on failure),
+        the N-attempt count (``_MAX_RECONNECTS``), the backoff
+        (``_RECONNECT_BACKOFF``), and exhaustion → CLOSING + full release.
+
+        The CI-V data watchdog (``_civ_rx.py``) remains the stall DETECTOR: it
+        watches CI-V data flow, sends patient OpenClose nudges, and on patience
+        exhaustion TRIGGERS this method in a detached task — but it no longer
+        owns the retry/backoff/exhaustion ladder (that moved here). The
+        watchdog still unconditionally re-arms in ``finally`` so a later stall
+        is caught again (#1217).
         """
-        await self._session_mechanism.soft_reconnect_once()
+        await self._session_lifecycle.soft_reconnect()
 
     async def _send_open_close(self, *, open_stream: bool) -> None:
         """Delegate to control-phase runtime (for soft_disconnect, _force_cleanup_civ, etc.)."""

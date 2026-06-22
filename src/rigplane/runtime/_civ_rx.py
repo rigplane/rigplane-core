@@ -583,11 +583,11 @@ class CivRuntime:
 
         rc_task = self._reconnect_task
         # Never cancel the detached recovery task if *it* is the caller.  The
-        # recovery helpers (``_watchdog_soft_reconnect`` /
-        # ``_watchdog_full_reconnect``) call ``_force_cleanup_civ`` →
-        # ``stop_data_watchdog`` from inside themselves; cancelling the current
-        # task here would self-cancel before ``soft_reconnect`` ever runs,
-        # freezing recovery after a single attempt (#1217).
+        # recovery helper (``_watchdog_recover``) calls ``_force_cleanup_civ`` →
+        # ``stop_data_watchdog`` from inside itself; cancelling the current task
+        # here would self-cancel before the lifecycle ``soft_reconnect`` ever
+        # runs, freezing recovery after a single attempt (#1217 invariant 2:
+        # self-cancel guard).
         current = asyncio.current_task()
         if rc_task is not None and rc_task is not current and not rc_task.done():
             rc_task.cancel()
@@ -820,20 +820,29 @@ class CivRuntime:
     # ------------------------------------------------------------------
 
     async def _civ_data_watchdog_loop(self) -> None:
-        """Monitor CI-V data flow; recover with open_close then soft_reconnect.
+        """DETECT CI-V data stalls; nudge with OpenClose, then HAND OFF recovery.
 
-        OpenClose is retried patiently (wfview icomudpcivdata.cpp:31 pattern —
-        never escalates). rigplane keeps a safety-net deadline at
-        _OPENCLOSE_DEADLINE before handing recovery off to a detached
-        reconnect task. The task is detached so its cooldown sleep survives
-        the watchdog loop exiting.
+        This is the stall DETECTOR only. It watches CI-V data flow, sends
+        patient OpenClose nudges (wfview icomudpcivdata.cpp:31 pattern — never
+        escalates), and at the safety-net deadline ``_OPENCLOSE_DEADLINE`` hands
+        recovery off to a detached task (:meth:`_watchdog_recover`).
+
+        The retry/backoff/exhaustion LADDER no longer lives here: it moved to
+        the unified lifecycle RECOVERING loop
+        (``CoreRadioSessionLifecycle._run_recover``), which owns the attempt
+        count (``_MAX_RECONNECTS``), the backoff (``_RECONNECT_BACKOFF``), and
+        exhaustion → CLOSING + full release. The detached handoff drives
+        ``host.soft_reconnect()`` (now routed to that lifecycle loop) ONCE per
+        detected stall episode and then unconditionally re-arms this watchdog in
+        ``finally`` so a later stall is detected again (#1217).
+
+        The task is detached so the recovery (including the lifecycle's backoff
+        sleeps) survives this watchdog loop exiting (the self-cancel guard in
+        :meth:`stop_data_watchdog` keeps it from cancelling itself).
         """
         _OPENCLOSE_DEADLINE = 60.0
-        _MAX_RECONNECTS = 3
-        _RECONNECT_BACKOFF = (45.0, 60.0, 60.0)
         recovering = False
         recovery_start: float = 0.0
-        reconnect_count = 0
         try:
             while True:
                 await asyncio.sleep(
@@ -881,37 +890,20 @@ class CivRuntime:
                                 exc_info=True,
                             )
                     else:
-                        reconnect_count += 1
-                        reconnect_pause = _RECONNECT_BACKOFF[
-                            min(reconnect_count - 1, len(_RECONNECT_BACKOFF) - 1)
-                        ]
-                        # Recovery runs in a detached task so its cooldown
-                        # sleep is honored even when this watchdog task
-                        # exits. The prior inline `await stop_data_watchdog()`
-                        # cancelled this task and caused the cooldown to be
-                        # skipped entirely (self-cancel bug).
-                        if reconnect_count > _MAX_RECONNECTS:
-                            logger.warning(
-                                "civ-data-watchdog: %d soft reconnects failed, "
-                                "attempting full reconnect",
-                                reconnect_count - 1,
-                            )
-                            self._reconnect_task = asyncio.create_task(
-                                self._watchdog_full_reconnect(reconnect_pause),
-                                name="civ-watchdog-full-reconnect",
-                            )
-                            return
+                        # Patient OpenClose exhausted: hand recovery off to the
+                        # unified lifecycle RECOVERING loop in a DETACHED task.
+                        # The lifecycle owns the retry/backoff/exhaustion policy;
+                        # this detector only triggers it once and re-arms in
+                        # ``finally`` (#1217 invariants preserved in
+                        # ``_watchdog_recover``).
                         logger.warning(
                             "civ-data-watchdog: OpenClose failed for %.1fs, "
-                            "triggering soft_reconnect (%d/%d), cooldown=%.0fs",
+                            "handing off to lifecycle recovery",
                             elapsed_recovery,
-                            reconnect_count,
-                            _MAX_RECONNECTS,
-                            reconnect_pause,
                         )
                         self._reconnect_task = asyncio.create_task(
-                            self._watchdog_soft_reconnect(reconnect_pause),
-                            name="civ-watchdog-soft-reconnect",
+                            self._watchdog_recover(),
+                            name="civ-watchdog-recover",
                         )
                         return
                 else:
@@ -923,67 +915,39 @@ class CivRuntime:
         except asyncio.CancelledError:
             pass
 
-    async def _watchdog_soft_reconnect(self, cooldown: float) -> None:
-        """Detached recovery: force_cleanup → sleep(cooldown) → soft_reconnect.
+    async def _watchdog_recover(self) -> None:
+        """Detached recovery handoff: force_cleanup → lifecycle soft_reconnect.
 
-        Runs outside the watchdog loop so the cooldown sleep survives the
-        watchdog task exiting. Falls back to full reconnect on failure.
+        Runs outside the watchdog loop so the lifecycle's RECOVERING backoff
+        sleeps survive the watchdog task exiting (#1217 invariant 1: detached
+        execution — recovery is not cancelled by the very stall that triggered
+        it).
 
-        Always re-arms the data watchdog in ``finally`` so recovery keeps
-        retrying indefinitely (with bounded backoff) until the radio answers,
-        instead of freezing after a single attempt (#1217).
+        ``host.soft_reconnect()`` is the unified lifecycle RECOVERING loop and
+        is the SINGLE owner of the retry/backoff/exhaustion policy now: it
+        performs ``_MAX_RECONNECTS`` attempts with ``_RECONNECT_BACKOFF`` and,
+        on exhaustion, routes through CLOSING + full release (after which the
+        control session is gone and re-arming below correctly no-ops).
+
+        Always re-arms the data watchdog in ``finally`` (#1217 invariant 3:
+        unconditional re-arm) so a fresh stall is detected and handed off again
+        instead of freezing after one episode. ``_rearm_data_watchdog_after_
+        recovery`` skips only when the control session is gone — i.e. after a
+        successful lifecycle exhaustion → CLOSING, where there is nothing left
+        to watch.
         """
         try:
             await self._host._force_cleanup_civ()
-            await asyncio.sleep(cooldown)
             await self._host.soft_reconnect()
         except (ConnectionError, TimeoutError, OSError):
             logger.error(
-                "civ-data-watchdog: soft_reconnect failed, "
-                "falling back to full reconnect",
-                exc_info=True,
-            )
-            try:
-                await self._host.disconnect()
-                await asyncio.sleep(cooldown)
-                await self._host.connect()
-            except (ConnectionError, TimeoutError, OSError):
-                logger.error(
-                    "civ-data-watchdog: full reconnect also failed",
-                    exc_info=True,
-                )
-            except Exception:
-                logger.error(
-                    "civ-data-watchdog: unexpected error in full reconnect fallback",
-                    exc_info=True,
-                )
-        except Exception:
-            logger.error(
-                "civ-data-watchdog: unexpected error in soft_reconnect",
-                exc_info=True,
-            )
-        finally:
-            self._rearm_data_watchdog_after_recovery()
-
-    async def _watchdog_full_reconnect(self, cooldown: float) -> None:
-        """Detached full reconnect after max soft_reconnect attempts exceeded.
-
-        Re-arms the data watchdog in ``finally`` so a still-unreachable radio
-        is re-probed instead of leaving recovery permanently frozen (#1217).
-        """
-        try:
-            await self._host._force_cleanup_civ()
-            await self._host.disconnect()
-            await asyncio.sleep(cooldown)
-            await self._host.connect()
-        except (ConnectionError, TimeoutError, OSError):
-            logger.error(
-                "civ-data-watchdog: full reconnect failed",
+                "civ-data-watchdog: lifecycle recovery failed (exhausted or "
+                "transient); watchdog will re-arm if the session survives",
                 exc_info=True,
             )
         except Exception:
             logger.error(
-                "civ-data-watchdog: unexpected error in full reconnect",
+                "civ-data-watchdog: unexpected error in lifecycle recovery",
                 exc_info=True,
             )
         finally:
@@ -992,7 +956,7 @@ class CivRuntime:
     def _rearm_data_watchdog_after_recovery(self) -> None:
         """Re-arm the CI-V data watchdog after a detached recovery attempt.
 
-        Recovery helpers run as ``self._reconnect_task``; once a helper
+        The recovery handoff runs as ``self._reconnect_task``; once it
         finishes, clear that handle and start a fresh watchdog so the next
         stall is detected and escalated again.  ``start_data_watchdog`` is a
         no-op when a healthy watchdog was already re-armed by a successful

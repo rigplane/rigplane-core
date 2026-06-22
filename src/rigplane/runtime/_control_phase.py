@@ -528,8 +528,16 @@ class ControlPhaseRuntime:
                 await h._stop_civ_rx_pump()
             await h._civ_transport.disconnect()
             h._civ_transport = None
+        # Shield the token-remove on the graceful CONNECTED path too (A3-verifier
+        # forward-note).  Now that recovery/shutdown can run this disconnect()
+        # under asyncio cancellation (the lifecycle's teardown / SIGTERM
+        # graceful-close cancels in-flight tasks), a pending cancel could
+        # otherwise truncate the load-bearing token-remove mid-flight and leave
+        # the radio's single-owner lock held.  ``asyncio.shield`` runs it to
+        # completion even under a pending cancel, mirroring the already-shielded
+        # token-remove in :meth:`release`.
         try:
-            await self._send_token(0x01)
+            await asyncio.shield(self._send_token(0x01))
         except Exception:
             logger.debug("disconnect: token remove failed", exc_info=True)
         await h._ctrl_transport.disconnect()
