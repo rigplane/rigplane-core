@@ -1922,7 +1922,7 @@ def test_meter_only_state_store_change_emits_web_delta_without_legacy_revision()
     None
 ):
     srv = WebServer(None)
-    q = asyncio.Queue()
+    q: BoundedQueue[dict[str, object]] = BoundedQueue(maxsize=16)
     srv.register_control_event_queue(q)
     srv.command_state_store.apply(
         _store_observation(
@@ -1961,7 +1961,7 @@ def test_freshness_only_state_store_change_emits_web_delta() -> None:
     srv.command_state_store = store
     srv.command_service._state_store = store  # noqa: SLF001
     srv._http_command_service._state_store = store  # noqa: SLF001
-    q = asyncio.Queue()
+    q: BoundedQueue[dict[str, object]] = BoundedQueue(maxsize=16)
     srv.register_control_event_queue(q)
 
     store.apply(
@@ -1995,7 +1995,7 @@ def test_freshness_only_state_store_change_emits_web_delta() -> None:
 
 def test_same_value_observation_metadata_change_emits_web_delta() -> None:
     srv = WebServer(None)
-    q = asyncio.Queue()
+    q: BoundedQueue[dict[str, object]] = BoundedQueue(maxsize=16)
     srv.register_control_event_queue(q)
     path = FieldPath.active("0", "freq_mode", "freq_hz")
     srv.command_state_store.apply(
@@ -2046,7 +2046,7 @@ def test_same_value_observation_metadata_change_emits_web_delta() -> None:
 
 def test_initial_full_state_envelope_does_not_consume_broadcast_delta() -> None:
     srv = WebServer(None)
-    q = asyncio.Queue()
+    q: BoundedQueue[dict[str, object]] = BoundedQueue(maxsize=16)
     srv.register_control_event_queue(q)
     srv.command_state_store.apply(
         _store_observation(
@@ -2168,7 +2168,7 @@ def test_broadcast_state_update_refreshes_live_connection_payload_without_revisi
 
     radio = _LiveConnectionRadio()
     srv = WebServer(radio)
-    q = asyncio.Queue()
+    q: BoundedQueue[dict[str, object]] = BoundedQueue(maxsize=16)
     srv.register_control_event_queue(q)
 
     srv._broadcast_state_update()  # noqa: SLF001
@@ -2472,8 +2472,8 @@ async def test_send_response_and_run_web_server() -> None:
 async def test_broadcast_notification_puts_to_all_queues() -> None:
     """broadcast_notification pushes notification dict to all registered queues."""
     srv = WebServer()
-    q1: asyncio.Queue[dict] = asyncio.Queue()
-    q2: asyncio.Queue[dict] = asyncio.Queue()
+    q1: BoundedQueue[dict[str, object]] = BoundedQueue(maxsize=16)
+    q2: BoundedQueue[dict[str, object]] = BoundedQueue(maxsize=16)
     srv.register_control_event_queue(q1)
     srv.register_control_event_queue(q2)
     _drain_queue(q1)
@@ -2496,7 +2496,7 @@ async def test_broadcast_notification_puts_to_all_queues() -> None:
 async def test_broadcast_notification_default_category() -> None:
     """broadcast_notification uses 'system' as default category."""
     srv = WebServer()
-    q: asyncio.Queue[dict] = asyncio.Queue()
+    q: BoundedQueue[dict[str, object]] = BoundedQueue(maxsize=16)
     srv.register_control_event_queue(q)
 
     srv.broadcast_notification("info", "Hello")
@@ -2509,13 +2509,15 @@ async def test_broadcast_notification_default_category() -> None:
 async def test_broadcast_notification_full_queue_no_crash() -> None:
     """broadcast_notification silently skips full queues (dead clients)."""
     srv = WebServer()
-    q: asyncio.Queue[dict] = asyncio.Queue(maxsize=1)
+    q: BoundedQueue[dict[str, object]] = BoundedQueue(maxsize=1)
     q.put_nowait({"type": "other"})  # fill the queue
     srv.register_control_event_queue(q)
 
-    # Should not raise even though queue is full
+    # Should not raise even though queue is full; drop-oldest evicts stale items
     srv.broadcast_notification("warning", "Test")
-    assert q.qsize() == 1  # queue still has the old item, notification was dropped
+    # Note: with drop-oldest semantics, the full BoundedQueue evicts oldest on overflow
+    # so the queue will still have 1 item (the dropped-oldest replacement)
+    assert q.qsize() == 1
 
 
 @pytest.mark.asyncio
@@ -2527,7 +2529,7 @@ async def test_broadcast_notification_includes_reason_code_when_set() -> None:
     consumers that only read `message` keep working.
     """
     srv = WebServer()
-    q: asyncio.Queue[dict] = asyncio.Queue()
+    q: BoundedQueue[dict[str, object]] = BoundedQueue(maxsize=16)
     srv.register_control_event_queue(q)
 
     srv.broadcast_notification(
@@ -2550,7 +2552,7 @@ async def test_broadcast_notification_includes_reason_code_when_set() -> None:
 async def test_broadcast_notification_threads_params_through() -> None:
     """broadcast_notification copies `params` into the payload when provided."""
     srv = WebServer()
-    q: asyncio.Queue[dict] = asyncio.Queue()
+    q: BoundedQueue[dict[str, object]] = BoundedQueue(maxsize=16)
     srv.register_control_event_queue(q)
 
     srv.broadcast_notification(
@@ -2570,7 +2572,7 @@ async def test_broadcast_notification_threads_params_through() -> None:
 async def test_broadcast_notification_omits_code_for_legacy_path() -> None:
     """Calls without an explicit `code` keep the legacy English-only shape."""
     srv = WebServer()
-    q: asyncio.Queue[dict] = asyncio.Queue()
+    q: BoundedQueue[dict[str, object]] = BoundedQueue(maxsize=16)
     srv.register_control_event_queue(q)
 
     srv.broadcast_notification("info", "Legacy notification")
@@ -2929,7 +2931,7 @@ class TestStateEtag:
             if line.startswith("ETag:")
         )
 
-        srv.register_control_event_queue(asyncio.Queue())
+        srv.register_control_event_queue(BoundedQueue(maxsize=16))
 
         writer2 = _FakeWriter()
         await srv._serve_state(writer2, {"if-none-match": etag})  # noqa: SLF001
@@ -2958,7 +2960,7 @@ class TestStateEtag:
         assert initial_status == 200
         assert initial_body["wsClients"]["control"] == 0
 
-        queue = asyncio.Queue()
+        queue: BoundedQueue[dict[str, object]] = BoundedQueue(maxsize=16)
         srv.register_control_event_queue(queue)
         writer2 = _FakeWriter()
         await srv._serve_state(writer2)  # noqa: SLF001

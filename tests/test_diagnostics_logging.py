@@ -18,13 +18,20 @@ from rigplane.diagnostics._logging import (
 
 @pytest.fixture(autouse=True)
 def _enable_diagnostic_logging(monkeypatch: pytest.MonkeyPatch) -> Any:
-    """Re-enable diagnostic logging locally for each test, then clean up."""
+    """Re-enable diagnostic logging locally for each test, then clean up.
+
+    Also snapshots and restores the ``rigplane`` logger level so that tests
+    calling ``configure_diagnostic_logging()`` (which promotes NOTSET → INFO
+    since #1879) do not pollute the logger state for subsequent tests.
+    """
     monkeypatch.delenv("RIGPLANE_DISABLE_DIAGNOSTIC_LOGGING", raising=False)
-    yield
     icom_logger = logging.getLogger("rigplane")
+    saved_level = icom_logger.level
+    yield
     icom_logger.handlers = [
         h for h in icom_logger.handlers if not isinstance(h, SafeRotatingFileHandler)
     ]
+    icom_logger.setLevel(saved_level)
 
 
 def test_handler_attached_to_icom_lan_logger_not_root(
@@ -132,7 +139,7 @@ def test_log_file_writes_to_platformdirs_cache(
     monkeypatch.setattr(platformdirs, "user_cache_path", lambda app: tmp_path)
     configure_diagnostic_logging()
     logger = logging.getLogger("rigplane.test")
-    logger.debug("hello")
+    logger.info("hello")  # use INFO: default level is now INFO (not DEBUG, see #1879)
     log_file = tmp_path / "logs" / "rigplane.log"
     assert log_file.exists()
     assert "hello" in log_file.read_text(encoding="utf-8")
@@ -147,7 +154,9 @@ def test_log_file_honors_rigplane_log_dir(
 
     configure_diagnostic_logging()
     logger = logging.getLogger("rigplane.test")
-    logger.debug("hello from env")
+    logger.info(
+        "hello from env"
+    )  # use INFO: default level is now INFO (not DEBUG, see #1879)
 
     log_file = log_dir / "rigplane.log"
     assert log_file.exists()
@@ -175,12 +184,17 @@ def test_preset_logger_level_preserved(
         icom_logger.setLevel(logging.NOTSET)
 
 
-def test_unset_logger_level_set_to_debug(
+def test_unset_logger_level_set_to_info(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    """When the logger level is NOTSET, init promotes it to DEBUG."""
+    """When the logger level is NOTSET, init promotes it to INFO (not DEBUG).
+
+    Changed in #1879: defaulting to DEBUG caused ~40-57 disk writes/sec on
+    the event loop at idle. INFO is the new production default; DEBUG remains
+    opt-in via an explicit setLevel call before configure_diagnostic_logging.
+    """
     monkeypatch.setattr(platformdirs, "user_cache_path", lambda app: tmp_path)
     icom_logger = logging.getLogger("rigplane")
     icom_logger.setLevel(logging.NOTSET)
     configure_diagnostic_logging()
-    assert icom_logger.level == logging.DEBUG
+    assert icom_logger.level == logging.INFO

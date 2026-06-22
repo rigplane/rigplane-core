@@ -1316,6 +1316,10 @@ class WebServer:
         # from the same canonical snapshot used for Web delivery.
         self._update_fft_scope_freq(snapshot)
         self._update_fft_scope_mode(snapshot)
+        # Skip the public-state build/delta/fan-out when no control client is
+        # subscribed (a connecting client gets initial state on connect via force=True).
+        if not force and not self._control_event_queues:
+            return
         body = self._build_public_state_from_snapshot(snapshot)
         state_key = self._public_state_delivery_key(
             snapshot,
@@ -1347,10 +1351,9 @@ class WebServer:
 
         target_queues = self._control_event_queues if queues is None else queues
         for q in list(target_queues):
-            try:
-                q.put_nowait(event)
-            except asyncio.QueueFull:
-                logger.warning("control state queue full; dropping state_update")
+            # A state_update supersedes older queued state; coalesce-to-latest on a
+            # stalled/slow consumer instead of dropping the freshest + log-flooding.
+            q.put_drop_oldest(event)
 
     async def _delayed_state_broadcast(self, delay: float) -> None:
         try:
