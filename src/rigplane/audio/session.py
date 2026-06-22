@@ -330,12 +330,13 @@ class AudioSession:
         """Add TX demand; arms TX in the transport-declared order.
 
         A held lease IS TX demand. On a full-duplex ("rx_first") transport
-        with no RX demand the TX leg is armed EAGERLY here (entering TX_ONLY —
-        decision #2, no wait for a first push); with RX demand present the
-        lease converges to RX_TX in the transport-declared order. Exclusive/
-        atomic USB transports keep deferring tx-only demand (their TX leg
-        requires the co-armed duplex stream) — ``_desired()`` maps that demand
-        shape to IDLE. A TX start failure unwinds the lease and re-raises.
+        with no RX demand the TX leg arm is DEFERRED at the bare-acquire edge
+        (intent-gated; see ``_desired()``); it arms on the push / reestablish
+        edges when TX intent is active. With RX demand present the lease
+        converges to RX_TX in the transport-declared order. Exclusive/atomic
+        USB transports keep deferring tx-only demand (their TX leg requires the
+        co-armed duplex stream) — ``_desired()`` maps that demand shape to IDLE.
+        A TX start failure unwinds the lease and re-raises.
         """
         async with self._lock:
             lease = TxLease(self, owner)
