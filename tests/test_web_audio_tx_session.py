@@ -110,6 +110,8 @@ async def test_web_lease_coexists_with_bridge_lease_on_same_session() -> None:
     bridge_lease = await session.acquire_tx("audio-bridge")
     bridge_rx = await session.subscribe_rx("audio-bridge")
     assert radio.state == "transmitting"
+    # MOR-934: the bare bridge lease defers, RX arrival converges straight to
+    # RX_TX with a SINGLE start_tx (no flap) — the MOR-556 order preserved.
     assert radio.calls.count("start_tx") == 1
 
     handler = _make_handler(radio)
@@ -199,8 +201,10 @@ async def test_digital_tx_no_rx_subscriber_pushes_without_error() -> None:
     (session IDLE, ``start_tx`` never called), and the first ``_handle_tx_audio``
     frame raised ``AudioNotStartedError``.
 
-    Post-fix: the first push lazily arms the TX leg (session → TX_ONLY) on the
-    full-duplex transport, so the frame reaches the radio.
+    Post-fix (MOR-934): a bare lease defers (the MOR-556 lease-then-RX order
+    must not flap TX), but a ``push`` with a held lease and no RX CONVERGES
+    the lone TX leg into TX_ONLY (push converges, never rejects), so the frame
+    reaches the radio instead of raising ``AudioNotStartedError``.
     """
     radio = _SessionLanRadio()
     session = radio.audio_session
@@ -214,8 +218,8 @@ async def test_digital_tx_no_rx_subscriber_pushes_without_error() -> None:
     assert session.state is AudioSessionState.IDLE
     assert radio.state != "transmitting"
 
-    # The browser/companion TX frame must reach the radio, not raise
-    # AudioNotStartedError. The push lazily arms TX (→ TX_ONLY).
+    # The browser/companion TX frame reaches the radio: the push converges
+    # the lone TX leg (→ TX_ONLY), never raising AudioNotStartedError.
     await handler._handle_tx_audio(_pcm_tx_frame(b"ft8-tx-modulation"))
     assert radio.pushed == [b"ft8-tx-modulation"]
     assert session.state is AudioSessionState.TX_ONLY

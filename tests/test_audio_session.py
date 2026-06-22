@@ -232,7 +232,15 @@ async def test_demand_permutations_converge(make_radio: type) -> None:
 
 
 async def test_acquire_tx_at_idle_defers_arming() -> None:
-    """A TX lease at IDLE registers demand but arms nothing (no TX_ONLY)."""
+    """A bare TX lease at IDLE registers demand but arms nothing (no flap).
+
+    MOR-934: ``_desired()`` is intent-gated by the OBSERVED TX leg — a bare
+    ``acquire_tx`` (no RX, TX leg not yet live) defers, so the bridge's
+    lease-then-RX order converges straight to RX_TX with a SINGLE start_tx
+    and never flaps the TX leg (MOR-556). The lone TX leg is armed only when
+    TX intent goes active (a push, or a reestablish of a session that was
+    transmitting) — see TX_ONLY push / recovery tests.
+    """
     radio = LanLikeRadio()
     session = AudioSession(radio)
     lease = await session.acquire_tx("ptt")
@@ -241,8 +249,28 @@ async def test_acquire_tx_at_idle_defers_arming() -> None:
     assert radio.calls == []  # nothing armed — the MOR-556 trap avoided
     await session.subscribe_rx("a")
     assert session.state is AudioSessionState.RX_TX
-    assert radio.calls == ["start_rx", "start_tx"]  # rx_first order
+    assert radio.calls == ["start_rx", "start_tx"]  # rx_first order, one arm
     await lease.release()
+
+
+async def test_lease_push_arms_tx_only_on_full_duplex() -> None:
+    """A held lease that pushes with no RX arms TX_ONLY (intent goes active).
+
+    The digital-TX (FT8/WSJT-X over the companion) path: a bare lease defers,
+    but the first ``push`` converges the lone TX leg into TX_ONLY so the frame
+    reaches the radio instead of being rejected (push converges, never
+    rejects). Exclusive/atomic transports keep deferring (no TX_ONLY mode)."""
+    radio = LanLikeRadio()
+    session = AudioSession(radio)
+    lease = await session.acquire_tx("wsjtx")
+    assert session.state is AudioSessionState.IDLE
+    assert radio.calls == []
+    await lease.push(b"\x00\x01")  # push converges → TX_ONLY
+    assert session.state is AudioSessionState.TX_ONLY
+    assert radio.state == "transmitting"
+    assert session.bus.subscriber_count == 0  # no phantom RX
+    await lease.release()
+    assert session.state is AudioSessionState.IDLE
 
 
 # ── audio_setup_order drives arming (descriptor-read, not hardcoded) ─────────
@@ -358,16 +386,23 @@ async def test_teardown_stops_tx_before_rx(release_order: str) -> None:
     assert session.bus.subscriber_count == 0
 
 
-async def test_rx_demand_returning_rearms_held_tx_lease() -> None:
-    """A lease held across an RX gap re-arms when RX demand returns."""
+async def test_rx_demand_dropping_with_live_tx_keeps_tx_only() -> None:
+    """RX_TX → drop RX while TX is live converges to TX_ONLY (mode change).
+
+    MOR-934: TX intent is active (the TX leg is up), so dropping the RX sub
+    sheds RX but keeps the lone TX leg — the SSB → FT8 excursion. No phantom
+    RX is resurrected. RX returning converges back to RX_TX.
+    """
     radio = LanLikeRadio()
     session = AudioSession(radio)
     sub = await session.subscribe_rx("a")
     await session.acquire_tx("ptt")
-    await sub.release()  # rx → 0 while the lease is held
-    assert session.state is AudioSessionState.IDLE
+    assert session.state is AudioSessionState.RX_TX
+    await sub.release()  # rx → 0 while the lease is held and TX is live
+    assert session.state is AudioSessionState.TX_ONLY
     assert session.tx_demand == 1
-    assert radio.state == "idle"
+    assert session.bus.subscriber_count == 0  # no phantom RX
+    assert radio.state == "transmitting"
     await session.subscribe_rx("b")  # demand convergence
     assert session.state is AudioSessionState.RX_TX
     assert radio.state == "transmitting"

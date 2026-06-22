@@ -252,6 +252,107 @@ async def test_no_leaked_watchdog_task_across_reconnect_cycle() -> None:
     assert task.done()  # cancelled AND awaited — nothing leaked
 
 
+# ── reestablish × prior-demand matrix (the reconciler invariant) ─────────────
+
+
+def _assert_converged(session: AudioSession, radio: LanLikeRadio) -> None:
+    """state == _desired() AND observed transport legs match (PLAN I2)."""
+    state = session.state
+    desired = session._desired()  # noqa: SLF001
+    assert state is desired, f"state {state} != desired {desired}"
+    rx_live = session.bus.rx_active
+    tx_live = radio.state == "transmitting"
+    if state in (AudioSessionState.RX_ONLY, AudioSessionState.RX_TX):
+        assert rx_live is True
+    else:
+        assert rx_live is False
+    if state in (AudioSessionState.TX_ONLY, AudioSessionState.RX_TX):
+        assert tx_live is True
+    else:
+        assert tx_live is False
+
+
+async def test_reestablish_rearms_tx_only_digital_session() -> None:
+    """The ad7737ce seed scenario, re-anchored on the reconciler INVARIANT.
+
+    A digital client (FT8/WSJT-X) holds ONLY a TX lease (no RX subscription),
+    so the session is TX_ONLY. A soft_reconnect / recovery tears the LAN
+    stream down and calls ``reestablish``: the TX leg must be re-armed so the
+    next pushed frame reaches the radio — pre-reconciler ``reestablish``
+    stranded it at RX_ONLY and every later push raised ``Cannot push TX in
+    state receiving``. Asserted via the invariant (converged + push succeeds),
+    not the old branch, proving the band-aid's scenario is covered
+    structurally (the `(TX_ONLY × recovery)` composition).
+    """
+    radio = LanLikeRadio()
+    session = AudioSession(radio)
+    lease = await session.acquire_tx("wsjtx")
+    await lease.push(b"\x00\x01")  # push converges → TX_ONLY
+    assert session.state is AudioSessionState.TX_ONLY
+
+    _wipe(radio)  # reconnect: fresh LAN stream comes back RECEIVING/idle
+
+    await session.reestablish()
+
+    _assert_converged(session, radio)
+    assert session.state is AudioSessionState.TX_ONLY
+    assert session.bus.subscriber_count == 0  # no phantom RX resurrected
+    # The push that previously raised AudioNotStartedError now succeeds.
+    await lease.push(b"\x00\x01")
+    assert radio.state == "transmitting"
+    await lease.release()
+    assert session.state is AudioSessionState.IDLE
+
+
+async def test_reestablish_rx_tx_recovery_converges() -> None:
+    """`(RX_TX × recovery)`: both legs re-arm in the rx_first order."""
+    radio = LanLikeRadio()
+    session = AudioSession(radio)
+    sub = await session.subscribe_rx("web")
+    lease = await session.acquire_tx("ptt")
+    assert session.state is AudioSessionState.RX_TX
+    _wipe(radio)
+
+    await session.reestablish()
+
+    _assert_converged(session, radio)
+    assert session.state is AudioSessionState.RX_TX
+    assert radio.calls == ["start_rx", "start_tx"]  # rx_first order preserved
+    await lease.push(b"\x00\x01")  # I1: held lease pushes after recovery
+    await lease.release()
+    await sub.release()
+
+
+async def test_reestablish_rx_only_recovery_converges() -> None:
+    """`(RX_ONLY × recovery)`: RX re-attaches, no TX resurrected."""
+    radio = LanLikeRadio()
+    session = AudioSession(radio)
+    sub = await session.subscribe_rx("web")
+    assert session.state is AudioSessionState.RX_ONLY
+    _wipe(radio)
+
+    await session.reestablish()
+
+    _assert_converged(session, radio)
+    assert session.state is AudioSessionState.RX_ONLY
+    await sub.release()
+
+
+async def test_reestablish_idle_recovery_resurrects_nothing() -> None:
+    """`(IDLE × recovery)`: demand dropped during the outage stays dropped."""
+    radio = LanLikeRadio()
+    session = AudioSession(radio)
+    sub = await session.subscribe_rx("web")
+    await sub.release()
+    _wipe(radio)
+
+    await session.reestablish()
+
+    _assert_converged(session, radio)
+    assert session.state is AudioSessionState.IDLE
+    assert radio.calls == []
+
+
 # ── Recovery runtime routing (the desync falsification) ──────────────────────
 
 
