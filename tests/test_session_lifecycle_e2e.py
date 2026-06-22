@@ -67,8 +67,11 @@ from rigplane.runtime.session_lifecycle import (
 )
 
 from _perf_helpers import fast_connect
-from conftest import FAST_KEEPALIVE_HOLD_S
 from mock_server import _PT_DATA, MockIcomRadio
+
+# Mirror of the constant defined in tests/conftest.py — imported locally to
+# avoid a conftest shadowing issue when pytest collects tests/integration/ too.
+FAST_KEEPALIVE_HOLD_S: float = 0.5
 
 pytestmark = pytest.mark.asyncio
 
