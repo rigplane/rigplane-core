@@ -11,6 +11,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.11.0] — 2026-06-22
+
+### Added
+
+- **Unified radio session lifecycle.** New `RadioSessionLifecycle` (public SDK) owns connect / disconnect / scan / recovery as one state machine with a guaranteed graceful session close (token-remove + OpenClose) on every exit path, plus a rich observable event/status surface (state transitions, cooldown countdown, error reasons, recovery events). New blessed public symbols: `RadioSessionLifecycle`, `LifecycleState`, `LifecycleErrorReason`, `RadioPresence`, `LifecycleEvent`, `LifecycleStatus`.
+
+### Fixed
+
+- **IC-7610 LAN connect livelock.** A failed network-CI-V connect now always releases the held session (token-remove) before any cooldown wait, and retry is cooldown-aware and resident in-process — eliminating the previous cross-process restart storm that reopened UDP 50001 inside the radio's keepalive window and got rejected with error 0xFFFFFFFF ("previous session active"). Graceful connect/disconnect now leaves the radio immediately free (no cooldown).
+
+### Changed
+
+- **Recovery unified + soft_reconnect semantics.** CI-V data-watchdog now only DETECTS stalls; the lifecycle owns retry/backoff/exhaustion (preserving the #1217 anti-freeze: detached recovery, self-cancel guard, unconditional re-arm). `CoreRadio.soft_reconnect()` is now multi-attempt and releases the session on exhaustion (previously a single non-releasing attempt) — direct callers already handle the connection-error raise.
+
 ## [2.10.8] — 2026-06-20
 
 ### Fixed
