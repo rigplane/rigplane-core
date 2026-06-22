@@ -82,7 +82,9 @@ def configure_diagnostic_logging() -> None:
         # The handler's own level is DEBUG, so any record the logger doesn't
         # filter still hits the file — see spec §4.1.
         if icom_logger.level == logging.NOTSET:
-            icom_logger.setLevel(logging.DEBUG)
+            icom_logger.setLevel(
+                logging.INFO
+            )  # was DEBUG: avoids ~40-57 disk writes/s on the loop (see issue #1879)
     except Exception as exc:  # noqa: BLE001 — best-effort init, swallow all
         sys.stderr.write(f"rigplane: diagnostic logging disabled: {exc}\n")
 
