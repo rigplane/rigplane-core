@@ -84,6 +84,14 @@ from .radio_protocol import (  # noqa: F401, E402
     VoiceControlCapable,
 )
 from .radio_state import RadioState, VfoSlotState, YaesuStateExtension  # noqa: F401, E402
+from .runtime.session_lifecycle import (  # noqa: F401, E402
+    LifecycleErrorReason,
+    LifecycleEvent,
+    LifecycleState,
+    LifecycleStatus,
+    RadioPresence,
+    RadioSessionLifecycle,
+)
 from .types import AudioCodec, BreakInMode, Mode  # noqa: F401, E402
 
 # === Tier 2 — lazy via PEP 562 ===
@@ -333,6 +341,13 @@ __all__ = [
     "RadioProfile",
     "VfoSlotState",
     "YaesuStateExtension",
+    # --- Tier 1: Session lifecycle (v2.11, D6) ---
+    "RadioSessionLifecycle",
+    "LifecycleState",
+    "LifecycleStatus",
+    "LifecycleEvent",
+    "LifecycleErrorReason",
+    "RadioPresence",
     # --- Tier 2 (lazy): backward-compat facade ---
     "IcomRadio",
     # --- Tier 2 (lazy): commander internals ---
