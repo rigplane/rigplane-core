@@ -46,10 +46,19 @@ Or from the submodule directly (tier-1 in-package path)::
 
 from __future__ import annotations
 
+import asyncio
+import logging
+import time
 from collections.abc import Callable
+from contextlib import suppress
 from dataclasses import dataclass
 from enum import Enum
 from typing import Protocol, runtime_checkable
+
+from rigplane.core.exceptions import (
+    AuthenticationError,
+    ConnectionError as RigplaneConnectionError,
+)
 
 __all__ = [
     "LifecycleErrorReason",
@@ -59,6 +68,8 @@ __all__ = [
     "RadioPresence",
     "RadioSessionLifecycle",
 ]
+
+_logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
 # 1. State and error taxonomy
@@ -553,3 +564,535 @@ class RadioSessionLifecycle(Protocol):
             ``None`` / ``False`` — does not suppress exceptions.
         """
         ...
+
+
+# ===========================================================================
+# 4. Concrete implementation (task A2 — NOT part of the frozen Tier-1 contract)
+# ===========================================================================
+#
+# Everything ABOVE this line is the frozen public-SDK contract (A2-api,
+# commit 76fa48ed); do not alter it.  Everything BELOW is the concrete
+# state-machine implementation introduced in task A2.  It is an internal
+# runtime detail — Pro consumes only the :class:`RadioSessionLifecycle`
+# Protocol and the rich types above, never these classes directly.
+#
+# Architecture: the lifecycle is the *policy* layer.  It drives a thin
+# *mechanism* (the packet I/O — :class:`~rigplane.runtime._control_phase.
+# ControlPhaseRuntime` in production, a fake in unit tests) via the
+# :class:`SessionMechanism` protocol below.  This is what makes the retry /
+# cooldown / recovery policy unit-testable without real sockets, and what lets
+# ``_control_phase`` be demoted to pure packet mechanism (the old retry wrapper
+# is re-expressed here as CONNECTING↔COOLDOWN state transitions).
+
+# Policy constants — this is now the ONLY home for the retry/cooldown timing
+# (they used to live on ``ControlPhaseRuntime``; A3 removes them there).
+_STATUS_RETRY_PAUSE = 10.0  # civ_port==0 (not ready) cooldown, seconds
+_STATUS_REJECT_COOLDOWN = 30.0  # 0xFFFFFFFF (busy reject) cooldown, seconds
+_MAX_RECONNECTS = 3  # soft-reconnect attempts before CLOSING
+_RECONNECT_BACKOFF: tuple[float, ...] = (45.0, 60.0, 60.0)
+# A bounded resident-retry cap so connect() cannot truly spin forever in a
+# pathological foreign-hold scenario while still being "resident" for the
+# normal transient window.  Generous because cooldown should almost never fire
+# after our own clean disconnect (D3).
+_MAX_CONNECT_ATTEMPTS = 1000
+
+
+class AttemptOutcome(Enum):
+    """Classification of a single :meth:`SessionMechanism.connect_attempt`.
+
+    This mirrors the radio's status response after a conninfo exchange:
+
+    * ``CONNECTED`` — auth succeeded and ``civ_port > 0``; the data path is up.
+    * ``SESSION_NOT_READY`` — auth succeeded but ``civ_port == 0`` (radio not
+      ready yet).  Transient → cooldown-aware resident retry (D3).
+    * ``SESSION_BUSY_REJECT`` — status ``error == 0xFFFFFFFF`` (previous session
+      still active).  Transient → cooldown-aware resident retry (D3).
+    * ``AUTH_CREDENTIALS`` — auth rejected with ``error == 0xFEFFFFFF``.  Hard,
+      non-transient failure → no retry (D3).
+    """
+
+    CONNECTED = "connected"
+    SESSION_NOT_READY = "session_not_ready"
+    SESSION_BUSY_REJECT = "session_busy_reject"
+    AUTH_CREDENTIALS = "auth_credentials"
+
+
+@dataclass(frozen=True)
+class AttemptResult:
+    """Result of one :meth:`SessionMechanism.connect_attempt`.
+
+    ``raises`` is a test/seam affordance: a mechanism may raise instead of
+    returning, but a fake mechanism can carry an exception to inject one *after*
+    the session has been claimed (proving Hole 1 release-on-exception).
+    """
+
+    outcome: AttemptOutcome
+    raises: BaseException | None = None
+
+
+@runtime_checkable
+class SessionMechanism(Protocol):
+    """The packet-I/O mechanism the lifecycle policy drives.
+
+    In production this is satisfied by an adapter over
+    :class:`~rigplane.runtime._control_phase.ControlPhaseRuntime` (wired by task
+    A3).  In unit tests it is a fake with queued outcomes.
+
+    Implementations MUST:
+
+    * register a release obligation the instant the session is *claimed* (auth
+      success), so that :meth:`release` discharges it even if
+      :meth:`connect_attempt` later raises;
+    * make :meth:`release` idempotent (safe to call when nothing is claimed).
+    """
+
+    async def connect_attempt(self) -> AttemptResult:
+        """Perform ONE connect attempt (auth + CI-V port).  No retry, no sleep."""
+        ...
+
+    async def release(self) -> None:
+        """Release the session: token-remove (0x01) + OpenClose-close + sockets.
+
+        Idempotent; a no-op when no session is claimed.
+        """
+        ...
+
+    async def soft_reconnect_once(self) -> None:
+        """Re-open the data path reusing the existing control + token.
+
+        Raises on failure; the policy layer counts attempts and decides when to
+        give up (→ CLOSING).
+        """
+        ...
+
+    async def scan(
+        self, targets: list[str] | None, *, timeout: float
+    ) -> list[RadioPresence]:
+        """Presence-probe only (AYT/IAH); never opens or holds a session."""
+        ...
+
+
+class CoreRadioSessionLifecycle:
+    """Concrete :class:`RadioSessionLifecycle` — the resident policy layer.
+
+    Owns the state machine, the observable surface (state/status/events), the
+    resident CONNECTING↔COOLDOWN runner, recovery attempt accounting, the
+    release obligation, and the SIGTERM graceful-close hook.  Drives a
+    :class:`SessionMechanism` for all packet I/O.
+
+    Not thread-safe; call from the event loop that owns it.
+    """
+
+    def __init__(
+        self,
+        mechanism: SessionMechanism,
+        *,
+        not_ready_cooldown_s: float = _STATUS_RETRY_PAUSE,
+        reject_cooldown_s: float = _STATUS_REJECT_COOLDOWN,
+        max_recovery_attempts: int = _MAX_RECONNECTS,
+        recovery_backoff_s: tuple[float, ...] = _RECONNECT_BACKOFF,
+        max_connect_attempts: int = _MAX_CONNECT_ATTEMPTS,
+    ) -> None:
+        self._mech = mechanism
+        self._not_ready_cooldown_s = not_ready_cooldown_s
+        self._reject_cooldown_s = reject_cooldown_s
+        self._max_recovery_attempts = max_recovery_attempts
+        self._recovery_backoff_s = recovery_backoff_s
+        self._max_connect_attempts = max_connect_attempts
+
+        self._state: LifecycleState = LifecycleState.DISCONNECTED
+        self._last_error: LifecycleErrorReason = LifecycleErrorReason.NONE
+        self._listeners: list[EventListener] = []
+
+        # Resident connect runner + coalescing.
+        self._connect_task: asyncio.Task[None] | None = None
+        self._recover_task: asyncio.Task[None] | None = None
+        # True once a session has been claimed (auth succeeded) and not yet
+        # released — drives idempotent disconnect.
+        self._claimed = False
+
+        # Progress/countdown bookkeeping for the status snapshot (D1).
+        self._cooldown_deadline: float | None = None
+        self._cooldown_total_s: float | None = None
+        self._connecting_started: float | None = None
+        self._recovery_attempt: int | None = None
+
+    # ------------------------------------------------------------------
+    # Observable surface
+    # ------------------------------------------------------------------
+
+    @property
+    def state(self) -> LifecycleState:
+        return self._state
+
+    @property
+    def status(self) -> LifecycleStatus:
+        now = time.monotonic()
+        cooldown_remaining: float | None = None
+        if (
+            self._state is LifecycleState.COOLDOWN
+            and self._cooldown_deadline is not None
+        ):
+            cooldown_remaining = max(0.0, self._cooldown_deadline - now)
+        connecting_elapsed: float | None = None
+        if (
+            self._state is LifecycleState.CONNECTING
+            and self._connecting_started is not None
+        ):
+            connecting_elapsed = max(0.0, now - self._connecting_started)
+        recovery_attempt = (
+            self._recovery_attempt if self._state is LifecycleState.RECOVERING else None
+        )
+        recovery_max = (
+            self._max_recovery_attempts
+            if self._state is LifecycleState.RECOVERING
+            else None
+        )
+        return LifecycleStatus(
+            state=self._state,
+            last_error=self._last_error,
+            cooldown_remaining_s=cooldown_remaining,
+            cooldown_total_s=(
+                self._cooldown_total_s
+                if self._state is LifecycleState.COOLDOWN
+                else None
+            ),
+            recovery_attempt=recovery_attempt,
+            recovery_max=recovery_max,
+            connecting_elapsed_s=connecting_elapsed,
+        )
+
+    # ------------------------------------------------------------------
+    # Event subscription
+    # ------------------------------------------------------------------
+
+    def add_event_listener(self, listener: EventListener) -> None:
+        if listener not in self._listeners:
+            self._listeners.append(listener)
+
+    def remove_event_listener(self, listener: EventListener) -> None:
+        with suppress(ValueError):
+            self._listeners.remove(listener)
+
+    def _emit(
+        self,
+        to_state: LifecycleState,
+        *,
+        reason: LifecycleErrorReason = LifecycleErrorReason.NONE,
+        cooldown_remaining_s: float | None = None,
+        recovery_attempt: int | None = None,
+        recovery_max: int | None = None,
+    ) -> None:
+        from_state = self._state
+        self._state = to_state
+        if reason is not LifecycleErrorReason.NONE:
+            self._last_error = reason
+        event = LifecycleEvent(
+            from_state=from_state,
+            to_state=to_state,
+            reason=reason,
+            cooldown_remaining_s=cooldown_remaining_s,
+            recovery_attempt=recovery_attempt,
+            recovery_max=recovery_max,
+        )
+        for listener in list(self._listeners):
+            try:
+                listener(event)
+            except Exception:  # noqa: BLE001 — listeners must never abort us
+                _logger.debug(
+                    "lifecycle.listener.error", exc_info=True, extra={"event": event}
+                )
+
+    # ------------------------------------------------------------------
+    # connect() — resident, cooldown-aware
+    # ------------------------------------------------------------------
+
+    async def connect(self) -> None:
+        # T9: coalesce a concurrent/duplicate connect onto the in-flight one.
+        if self._connect_task is not None and not self._connect_task.done():
+            await self._connect_task
+            return
+        if self._state is LifecycleState.CONNECTED:
+            return
+        self._connect_task = asyncio.ensure_future(self._run_connect())
+        try:
+            await self._connect_task
+        finally:
+            if self._connect_task is not None and self._connect_task.done():
+                self._connect_task = None
+
+    async def _run_connect(self) -> None:
+        """Resident CONNECTING↔COOLDOWN loop; release before every cooldown wait."""
+        try:
+            await self._connect_loop()
+        except asyncio.CancelledError:
+            # Cancellation (disconnect/SIGTERM during CONNECTING/COOLDOWN): the
+            # release already ran in ``_attempt_with_release``/teardown; just
+            # propagate so the awaiter sees the cancel.
+            raise
+        except (AuthenticationError, RigplaneConnectionError):
+            # Hard-fail / exhaustion paths already drove the machine to
+            # DISCONNECTED; just re-raise.
+            raise
+        except BaseException:
+            # Any other post-claim exception: release ran inside
+            # ``_attempt_with_release``; drive the observable machine home.
+            self._connecting_started = None
+            if self._state not in (
+                LifecycleState.CLOSING,
+                LifecycleState.DISCONNECTED,
+            ):
+                self._emit(
+                    LifecycleState.CLOSING, reason=LifecycleErrorReason.CANCELLED
+                )
+                self._emit(LifecycleState.DISCONNECTED)
+            raise
+
+    async def _connect_loop(self) -> None:
+        attempt = 0
+        while True:
+            attempt += 1
+            self._connecting_started = time.monotonic()
+            self._emit(LifecycleState.CONNECTING)
+            outcome = await self._attempt_with_release()
+
+            if outcome is AttemptOutcome.CONNECTED:
+                self._connecting_started = None
+                self._emit(LifecycleState.CONNECTED)
+                return
+
+            if outcome is AttemptOutcome.AUTH_CREDENTIALS:
+                # D3 hard-fail: NO resident retry.  Release (idempotent) +
+                # CLOSING + raise.
+                self._connecting_started = None
+                await self._mech.release()
+                self._claimed = False
+                self._emit(
+                    LifecycleState.CLOSING,
+                    reason=LifecycleErrorReason.AUTH_CREDENTIALS,
+                )
+                self._emit(LifecycleState.DISCONNECTED)
+                raise AuthenticationError(
+                    "Authentication failed (error=0xFEFFFFFF); credentials rejected"
+                )
+
+            # Transient: SESSION_NOT_READY (civ_port==0) or SESSION_BUSY_REJECT
+            # (0xFFFFFFFF).  The session was already released inside
+            # ``_attempt_with_release`` (release BEFORE the wait — Hole 4 / Cause
+            # A inversion).  Now enter COOLDOWN and wait in-process.
+            if attempt >= self._max_connect_attempts:
+                self._connecting_started = None
+                self._emit(LifecycleState.DISCONNECTED)
+                raise RigplaneConnectionError(
+                    "Radio session never became ready after "
+                    f"{attempt} resident attempts; a foreign client may hold it."
+                )
+
+            if outcome is AttemptOutcome.SESSION_BUSY_REJECT:
+                reason = LifecycleErrorReason.SESSION_BUSY_REJECT
+                cooldown = self._reject_cooldown_s
+            else:
+                reason = LifecycleErrorReason.SESSION_NOT_READY
+                cooldown = self._not_ready_cooldown_s
+
+            self._connecting_started = None
+            self._cooldown_total_s = cooldown
+            self._cooldown_deadline = time.monotonic() + cooldown
+            self._emit(
+                LifecycleState.COOLDOWN,
+                reason=reason,
+                cooldown_remaining_s=cooldown,
+            )
+            try:
+                await asyncio.sleep(cooldown)
+            finally:
+                self._cooldown_deadline = None
+                self._cooldown_total_s = None
+            # loop → CONNECTING again, inside the same resident process.
+
+    async def _attempt_with_release(self) -> AttemptOutcome:
+        """One connect attempt; on any non-CONNECTED outcome RELEASE first.
+
+        Guarantees the release obligation is discharged before we leave this
+        coroutine on a transient outcome OR on an exception (Holes 1/5/8) —
+        BEFORE any cooldown wait happens (Hole 4 / Cause A).
+        """
+        try:
+            result = await self._mech.connect_attempt()
+        except BaseException:
+            # Post-auth/pre-CONNECTED exception (or cancellation): release the
+            # (possibly partial) claim, then re-raise.  ``release`` is idempotent
+            # so this is safe even if nothing was claimed.
+            await self._mech.release()
+            self._claimed = False
+            raise
+
+        if result.outcome is AttemptOutcome.CONNECTED:
+            self._claimed = True
+            return AttemptOutcome.CONNECTED
+
+        if result.outcome is AttemptOutcome.AUTH_CREDENTIALS:
+            # Pre-claim hard failure — release defensively (no-op) and report.
+            await self._mech.release()
+            self._claimed = False
+            return AttemptOutcome.AUTH_CREDENTIALS
+
+        # Transient: civ_port==0 or 0xFFFFFFFF.  Auth DID succeed, so a session
+        # is claimed — RELEASE it now, before the caller enters the cooldown
+        # wait.  This is the structural inversion of the old held-cooldown bug.
+        await self._mech.release()
+        self._claimed = False
+        return result.outcome
+
+    # ------------------------------------------------------------------
+    # disconnect() — always releases (idempotent)
+    # ------------------------------------------------------------------
+
+    async def disconnect(self) -> None:
+        await self._teardown(reason=LifecycleErrorReason.CANCELLED, shutdown=False)
+
+    async def request_shutdown(self) -> None:
+        """SIGTERM-style graceful close: release the session BEFORE process exit.
+
+        This is the awaitable hook the CLI signal handler MUST call instead of
+        ``os._exit`` (design §2.6 / Hole 3).  It cancels any resident runner or
+        cooldown wait, runs the full release, and ends in DISCONNECTED.
+
+        CLI wiring (A3/Phase B follow-up, outside this task's files): install an
+        asyncio SIGTERM handler that schedules ``await lifecycle.request_shutdown()``
+        on the running loop, with a bounded ~2-3 s deadline (D2), then stops the
+        loop and exits 0.  Do NOT call ``os._exit`` before this awaitable
+        completes.
+        """
+        await self._teardown(reason=LifecycleErrorReason.CANCELLED, shutdown=True)
+
+    async def _teardown(self, *, reason: LifecycleErrorReason, shutdown: bool) -> None:
+        # Cancel any in-flight resident runner / recovery task first so their
+        # own ``finally`` release does not race ours.
+        for task_attr in ("_connect_task", "_recover_task"):
+            task = getattr(self, task_attr)
+            if task is not None and not task.done():
+                task.cancel()
+                with suppress(asyncio.CancelledError, Exception):
+                    await task
+            setattr(self, task_attr, None)
+
+        if self._state is LifecycleState.DISCONNECTED and not self._claimed:
+            # Idempotent no-op: nothing claimed, nothing to release.
+            return
+
+        self._emit(LifecycleState.CLOSING, reason=reason)
+        try:
+            await self._mech.release()
+        except Exception:  # noqa: BLE001 — release must not raise out of teardown
+            _logger.debug("lifecycle.release.error", exc_info=True)
+        finally:
+            self._claimed = False
+            self._cooldown_deadline = None
+            self._cooldown_total_s = None
+            self._connecting_started = None
+            self._recovery_attempt = None
+            self._emit(LifecycleState.DISCONNECTED)
+
+    # ------------------------------------------------------------------
+    # soft_reconnect() — CONNECTED → RECOVERING → CONNECTED (#1217)
+    # ------------------------------------------------------------------
+
+    async def soft_reconnect(self) -> None:
+        # Coalesce concurrent recovery onto the in-flight one.
+        if self._recover_task is not None and not self._recover_task.done():
+            await self._recover_task
+            return
+        self._recover_task = asyncio.ensure_future(self._run_recover())
+        try:
+            await self._recover_task
+        finally:
+            if self._recover_task is not None and self._recover_task.done():
+                self._recover_task = None
+
+    async def _run_recover(self) -> None:
+        last_exc: BaseException | None = None
+        for attempt in range(1, self._max_recovery_attempts + 1):
+            self._recovery_attempt = attempt
+            self._emit(
+                LifecycleState.RECOVERING,
+                reason=LifecycleErrorReason.DATA_WATCHDOG_STALL,
+                recovery_attempt=attempt,
+                recovery_max=self._max_recovery_attempts,
+            )
+            if attempt > 1:
+                backoff = self._recovery_backoff_s[
+                    min(attempt - 2, len(self._recovery_backoff_s) - 1)
+                ]
+                await asyncio.sleep(backoff)
+            try:
+                await self._mech.soft_reconnect_once()
+            except Exception as exc:  # noqa: BLE001 — count + retry/exhaust
+                last_exc = exc
+                _logger.warning(
+                    "lifecycle.soft_reconnect.attempt_failed",
+                    extra={"attempt": attempt, "max": self._max_recovery_attempts},
+                )
+                continue
+            else:
+                self._recovery_attempt = None
+                self._emit(LifecycleState.CONNECTED)
+                return
+
+        # Exhausted: route through CLOSING with full release (T11).
+        self._recovery_attempt = None
+        self._emit(
+            LifecycleState.CLOSING,
+            reason=LifecycleErrorReason.RECOVERY_EXHAUSTED,
+        )
+        with suppress(Exception):
+            await self._mech.release()
+        self._claimed = False
+        self._emit(LifecycleState.DISCONNECTED)
+        raise RigplaneConnectionError(
+            f"Soft reconnect exhausted after {self._max_recovery_attempts} attempts"
+        ) from last_exc
+
+    # ------------------------------------------------------------------
+    # scan() — presence-probe only; no session
+    # ------------------------------------------------------------------
+
+    async def scan(
+        self,
+        targets: list[str] | None = None,
+        *,
+        timeout: float = 3.0,
+    ) -> list[RadioPresence]:
+        # Scan is fire-and-forget w.r.t. the session: if we are connected we do
+        # NOT change the observable session state, we just probe.  If idle, we
+        # surface a SCANNING → DISCONNECTED blip for the UI.
+        was_connected = self._state is LifecycleState.CONNECTED
+        if not was_connected:
+            self._emit(LifecycleState.SCANNING)
+        try:
+            return await self._mech.scan(targets, timeout=timeout)
+        finally:
+            if not was_connected:
+                self._emit(LifecycleState.DISCONNECTED)
+
+    # ------------------------------------------------------------------
+    # Async context manager
+    # ------------------------------------------------------------------
+
+    async def __aenter__(self) -> "CoreRadioSessionLifecycle":
+        try:
+            await self.connect()
+        except BaseException:
+            # Hole 2: __aenter__ failure must still release any partial claim.
+            await self.disconnect()
+            raise
+        return self
+
+    async def __aexit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc_val: BaseException | None,
+        exc_tb: object,
+    ) -> bool | None:
+        await self.disconnect()
+        return None

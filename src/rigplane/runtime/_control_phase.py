@@ -8,6 +8,7 @@ import logging
 import socket as _socket
 import struct
 import time
+from contextlib import suppress as _suppress
 from dataclasses import replace
 from typing import TYPE_CHECKING
 
@@ -26,6 +27,7 @@ from rigplane.audio.route import AudioConfigSource
 
 if TYPE_CHECKING:
     from ._runtime_protocols import ControlPhaseHost
+    from .session_lifecycle import AttemptResult
 
 logger = logging.getLogger(__name__)
 
@@ -111,7 +113,27 @@ class ControlPhaseRuntime:
                 setattr(h, attr, None)
 
     async def connect(self) -> None:
-        """Open connection to the radio and authenticate."""
+        """Open connection to the radio and authenticate.
+
+        .. deprecated:: lifecycle (task A2/A3)
+            This in-mechanism retry wrapper is the OLD home of the
+            cooldown/retry policy.  The unified
+            :class:`~rigplane.runtime.session_lifecycle.CoreRadioSessionLifecycle`
+            now owns CONNECTING↔COOLDOWN as state transitions (it RELEASES the
+            session before each cooldown wait — closing the held-cooldown root
+            cause).  ``ControlPhaseRuntime`` is being demoted to a pure packet
+            *mechanism*: see :meth:`connect_attempt` / :meth:`release`.
+
+            **A3 reroute contract:** when ``CoreRadio.connect`` is routed
+            through the lifecycle, DELETE this wrapper (and the
+            ``_DATA_PORT_COOLDOWN_RETRIES`` loop), move the two tests that
+            exercise it (``test_data_port_discovery_timeout_retries_and_closes_pending_sockets``
+            and ``test_connect_raises_on_status_rejection_after_retries`` in
+            ``tests/test_radio_connect.py``) onto the lifecycle, and have the
+            mechanism adapter call :meth:`connect_attempt` once per lifecycle
+            attempt.  Until then this wrapper stays so existing callers/tests
+            remain green (no call-site behavior change in Phase A).
+        """
         h = self._host
         max_attempts = self._DATA_PORT_COOLDOWN_RETRIES + 1
         for attempt in range(1, max_attempts + 1):
@@ -543,6 +565,100 @@ class ControlPhaseRuntime:
         h._civ_stream_ready = False
         h._civ_recovering = False
         logger.info("Disconnected from %s:%d", h._host, h._port)
+
+    # ------------------------------------------------------------------
+    # Packet-mechanism seam for the unified session lifecycle (task A2)
+    # ------------------------------------------------------------------
+    #
+    # These methods are the demoted, pure-mechanism surface the
+    # ``CoreRadioSessionLifecycle`` policy layer drives.  They contain NO
+    # retry/sleep/cooldown — that policy lives in the lifecycle.  A3 wires an
+    # adapter (``ControlPhaseSessionMechanism`` below) so the lifecycle owns
+    # CONNECTING↔COOLDOWN and ``ControlPhaseRuntime`` owns packet I/O only.
+
+    async def connect_attempt(self) -> "AttemptResult":
+        """Perform ONE connect attempt (auth + CI-V port); classify the outcome.
+
+        Pure mechanism: no retry, no cooldown sleep.  The release obligation is
+        considered registered the instant auth succeeds — the lifecycle's RAII
+        discharges it via :meth:`release` on every exit path.
+
+        Returns an :class:`~rigplane.runtime.session_lifecycle.AttemptResult`:
+
+        * ``CONNECTED`` — ``_connect_once`` reached CONNECTED;
+        * ``SESSION_NOT_READY`` — civ_port==0 (data-port discovery cooldown or
+          status civ_port==0);
+        * ``SESSION_BUSY_REJECT`` — status error 0xFFFFFFFF;
+        * ``AUTH_CREDENTIALS`` — auth rejected (raises
+          :class:`AuthenticationError`, which the lifecycle maps to hard-fail).
+
+        .. note::
+            This wraps the existing :meth:`_connect_once` for now (it preserves
+            the audio fallback and socket plumbing).  A3 may inline the
+            single-attempt body and drop the busy-retry loop inside
+            ``_connect_once`` once the lifecycle owns retry.
+        """
+        from rigplane.runtime.session_lifecycle import AttemptOutcome, AttemptResult
+
+        h = self._host
+        try:
+            await self._connect_once()
+        except _DataPortDiscoveryCooldown:
+            return AttemptResult(AttemptOutcome.SESSION_NOT_READY)
+        except AuthenticationError:
+            # Distinguish credential rejection (0xFEFFFFFF) — the only
+            # non-transient auth failure (D3 hard-fail).
+            return AttemptResult(AttemptOutcome.AUTH_CREDENTIALS)
+        except ConnectionError:
+            # ``_connect_once`` raises ConnectionError on a busy/not-ready
+            # rejection after its internal checks; classify by last status.
+            if getattr(h, "_last_status_error", 0) == 0xFFFFFFFF:
+                return AttemptResult(AttemptOutcome.SESSION_BUSY_REJECT)
+            return AttemptResult(AttemptOutcome.SESSION_NOT_READY)
+        return AttemptResult(AttemptOutcome.CONNECTED)
+
+    async def release(self) -> None:
+        """Release the session UNCONDITIONALLY (token-remove + close + sockets).
+
+        This is the guaranteed-release primitive (design §2.5).  Unlike
+        :meth:`disconnect`, it does NOT early-return on
+        ``conn_state != CONNECTED`` — a partially-claimed session (post-auth,
+        pre-CONNECTED) is still released, closing graceful-close Holes 1/5/8.
+        Idempotent: safe to call when nothing is claimed.
+        """
+        h = self._host
+        # Best-effort teardown of any data/audio transports first (mirrors
+        # disconnect ordering), then the always-sent token-remove.
+        self._stop_watchdog()
+        self._stop_reconnect()
+        self._stop_token_renewal()
+        self._close_pending_sockets()
+        audio_t = getattr(h, "_audio_transport", None)
+        if audio_t is not None:
+            with _suppress(Exception):
+                await self._send_audio_open_close(open_stream=False)
+            with _suppress(Exception):
+                await audio_t.disconnect()
+            h._audio_transport = None
+        civ_t = getattr(h, "_civ_transport", None)
+        if civ_t is not None:
+            with _suppress(Exception):
+                await self._send_open_close(open_stream=False)
+            with _suppress(Exception):
+                await civ_t.disconnect()
+            h._civ_transport = None
+        # The token-remove is the load-bearing release: send it whenever a
+        # control transport exists, regardless of conn_state.
+        ctrl_t = getattr(h, "_ctrl_transport", None)
+        if ctrl_t is not None and h._token:
+            with _suppress(Exception):
+                await self._send_token(0x01)
+        if ctrl_t is not None:
+            with _suppress(Exception):
+                await ctrl_t.disconnect()
+        h._conn_state = RadioConnectionState.DISCONNECTED
+        h._civ_stream_ready = False
+        h._civ_recovering = False
 
     async def soft_reconnect(self) -> None:
         """Reconnect CI-V transport using existing control session."""
