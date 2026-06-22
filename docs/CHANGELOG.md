@@ -11,6 +11,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.11.1] — 2026-06-22
+
+### Fixed
+
+- **AudioSession declarative reconciler — TX-only strand after reconnect (#1226, #1212).** `AudioSession` is now a declarative reconciler: a pure `_desired()` computes the target state and a single idempotent `_converge()` drives toward it. Push events converge instead of rejecting, and the reconnect/reestablish path now handles `TX_ONLY`, fixing audio left stranded TX-only after a reconnect. TX arming is intent-gated, preserving the MOR-556 ordering invariant; public API unchanged.
+- **Control WS broadcast flood (#1876).** The control WS fanout now uses `put_drop_oldest` instead of `put_nowait`+warning, ending the broadcast flood under backpressure.
+- **Diagnostics logger default (#1879).** The rigplane logger now defaults to INFO instead of DEBUG.
+- **Idle state-build gate (#1877).** `_broadcast_state_update` is demand-gated on subscriber count, skipping idle state-builds when no client is subscribed.
+
 ## [2.11.0] — 2026-06-22
 
 ### Added
