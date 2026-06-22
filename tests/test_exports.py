@@ -79,6 +79,13 @@ def test_public_api_surface() -> None:
         "RadioProfile",
         "VfoSlotState",
         "YaesuStateExtension",
+        # --- Tier 1: Session lifecycle (v2.11, D6) ---
+        "RadioSessionLifecycle",
+        "LifecycleState",
+        "LifecycleStatus",
+        "LifecycleEvent",
+        "LifecycleErrorReason",
+        "RadioPresence",
         # --- Tier 2 (lazy): backward-compat facade ---
         "IcomRadio",
         # --- Tier 2 (lazy): commander internals ---
