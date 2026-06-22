@@ -630,7 +630,10 @@ async def test_soft_reconnect_rebuilds_on_already_open_stalled(
         rebuilt.append(True)
 
     radio._force_cleanup_civ = fake_force_cleanup
-    radio._control_phase.connect = fake_connect  # type: ignore[method-assign]
+    # A3 deleted the legacy ``ControlPhaseRuntime.connect()`` retry wrapper; the
+    # "control transport gone" rebuild branch now does a single full-connect
+    # attempt via ``_connect_once`` (the lifecycle owns retry).
+    radio._control_phase._connect_once = fake_connect  # type: ignore[method-assign]
 
     await radio.soft_reconnect()
 

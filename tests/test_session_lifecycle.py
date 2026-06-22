@@ -601,3 +601,125 @@ async def test_status_snapshot_in_cooldown_has_countdown() -> None:
     await lc.disconnect()
     with pytest.raises(asyncio.CancelledError):
         await connect_task
+
+
+# ---------------------------------------------------------------------------
+# A3 — tests moved from tests/test_radio_connect.py, re-expressed against the
+# lifecycle (the legacy ControlPhaseRuntime.connect() retry wrapper they used to
+# exercise was deleted in A3; the cooldown-retry + release policy now lives
+# here).
+# ---------------------------------------------------------------------------
+
+
+async def test_data_port_not_ready_retries_in_process_then_connects() -> None:
+    """Moved from ``test_data_port_discovery_timeout_retries_*``.
+
+    A CI-V data-port discovery timeout surfaces as SESSION_NOT_READY; the
+    resident runner RELEASES the partial attempt, waits out the cooldown, then
+    retries CONNECTING in-process and connects on the second attempt — exactly
+    what the deleted ``connect()`` wrapper's ``_DATA_PORT_COOLDOWN_RETRIES``
+    loop did, but now release-before-cooldown.
+    """
+    lc, mech, events = make_lifecycle(max_connect_attempts=4)
+    mech.queue_not_ready()  # attempt 1: data-port discovery timeout
+    mech.queue_ok()  # attempt 2: succeeds
+
+    await lc.connect()
+    assert lc.state is LifecycleState.CONNECTED
+    assert mech.connect_calls == 2
+    # release ran before the second attempt (release-before-cooldown).
+    first_release = mech.ops.index("release")
+    second_connect = [i for i, op in enumerate(mech.ops) if op == "connect_attempt"][1]
+    assert first_release < second_connect, mech.ops
+    not_ready = [
+        e for e in events if e.reason is LifecycleErrorReason.SESSION_NOT_READY
+    ]
+    assert not_ready
+    await lc.disconnect()
+
+
+async def test_persistent_busy_reject_raises_after_resident_attempts() -> None:
+    """Moved from ``test_connect_raises_on_status_rejection_after_retries``.
+
+    A radio that persistently busy-rejects (0xFFFFFFFF) is retried in-process up
+    to ``max_connect_attempts`` (each attempt RELEASED first), then surfaces a
+    ConnectionError rather than spinning forever — and never holds a session.
+    """
+    lc, mech, _events = make_lifecycle(max_connect_attempts=3)
+    for _ in range(3):
+        mech.queue_busy_reject()
+
+    with pytest.raises(ConnectionError, match="never became ready"):
+        await lc.connect()
+
+    assert mech.connect_calls == 3  # bounded resident retry
+    # Every attempt released its partial claim (release-before-cooldown).
+    assert mech.release_calls >= 3
+    assert not mech.claimed
+    assert lc.state is LifecycleState.DISCONNECTED
+
+
+# ---------------------------------------------------------------------------
+# A2-verifier-recommended regressions (A3)
+# ---------------------------------------------------------------------------
+
+
+async def test_cancel_after_claim_still_releases() -> None:
+    """A cancel arriving AFTER the session is claimed still token-removes.
+
+    Models the SIGTERM/disconnect-mid-CONNECTING race: ``connect_attempt`` is
+    cancelled after auth succeeded (session claimed).  ``_attempt_with_release``
+    MUST release the (now-claimed) session before the CancelledError propagates,
+    so the token-remove always goes out (Note 2 — release must not be truncated
+    by the cancel).
+    """
+
+    class CancelAfterClaimMech(FakeMechanism):
+        async def connect_attempt(self) -> AttemptResult:
+            # Claim the session (auth success side-effect), THEN get cancelled
+            # before returning an outcome.
+            self.connect_calls += 1
+            self.ops.append("connect_attempt")
+            self.claimed = True
+            raise asyncio.CancelledError()
+
+    mech = CancelAfterClaimMech()
+    lc = CoreRadioSessionLifecycle(mechanism=mech)
+
+    with pytest.raises(asyncio.CancelledError):
+        await lc.connect()
+
+    # The claimed session was released (token-remove sent) despite the cancel.
+    assert mech.release_calls >= 1
+    assert not mech.claimed
+    # The op log proves release ran after the claim.
+    assert "release" in mech.ops
+    assert mech.ops.index("connect_attempt") < mech.ops.index("release")
+
+
+async def test_release_raising_does_not_crash_disconnect() -> None:
+    """A mechanism ``release()`` that raises must not crash ``disconnect()``.
+
+    The lifecycle swallows release errors in teardown and still ends in
+    DISCONNECTED, so a flaky/raising release never propagates out of
+    disconnect() (defensive graceful-close).
+    """
+
+    class ReleaseBoomMech(FakeMechanism):
+        async def release(self) -> None:
+            self.release_calls += 1
+            self.ops.append("release")
+            self.claimed = False
+            raise RuntimeError("release blew up")
+
+    mech = ReleaseBoomMech()
+    mech.queue_ok()
+    lc = CoreRadioSessionLifecycle(mechanism=mech)
+
+    await lc.connect()
+    assert lc.state is LifecycleState.CONNECTED
+
+    # disconnect() must NOT raise even though release() does.
+    await lc.disconnect()
+    assert lc.state is LifecycleState.DISCONNECTED
+    assert mech.release_calls >= 1

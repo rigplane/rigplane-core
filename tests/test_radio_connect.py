@@ -624,19 +624,31 @@ class TestConnectSessionRejection:
                 new=AsyncMock(),
             ),
             patch("rigplane._control_phase.asyncio.sleep", new=AsyncMock()),
+            patch.object(radio, "_fetch_initial_state", new=AsyncMock()),
         ):
-            await radio._control_phase.connect()
+            # Routed through the unified lifecycle (A3): a data-port discovery
+            # timeout surfaces as SESSION_NOT_READY → the resident runner
+            # RELEASES the partial attempt, then retries CONNECTING in-process.
+            # The second attempt succeeds.
+            await radio.connect()
 
+        # Two control connects (one per CONNECTING attempt).
         assert mt.connect_count == 2
-        assert mt.disconnect_count == 1
+        # The timed-out attempt's CI-V transport was torn down by the data-port
+        # cooldown cleanup.
         assert timeout_civ_transport.disconnect_count == 1
+        # Sockets consumed by asyncio (civ) are not double-closed; the unused
+        # audio socket from the timed-out attempt IS closed exactly once.
         assert first_civ_sock.close_count == 0
         assert first_audio_sock.close_count == 1
+        # The successful attempt's sockets are not closed (still in use).
         assert second_civ_sock.close_count == 0
         assert second_audio_sock.close_count == 0
         assert radio._civ_transport is success_civ_transport
         assert radio._civ_sock_pending is None
         assert radio._audio_sock_pending is second_audio_sock
+
+        await radio.disconnect()
 
     @pytest.mark.asyncio
     async def test_stereo_codec_fallback_succeeds(self) -> None:

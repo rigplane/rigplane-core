@@ -311,7 +311,10 @@ async def test_soft_reconnect_already_open_stalled_rebuilds_not_frozen(
     with (
         caplog.at_level(logging.WARNING, logger="rigplane.runtime._control_phase"),
         patch.object(radio, "_force_cleanup_civ", side_effect=fake_force_cleanup),
-        patch.object(radio._control_phase, "connect", new=rebuilt),
+        # A3 deleted the legacy ControlPhaseRuntime.connect() retry wrapper; the
+        # ctrl-dead rebuild branch now does a single full-connect via
+        # ``_connect_once`` (the lifecycle owns retry).
+        patch.object(radio._control_phase, "_connect_once", new=rebuilt),
     ):
         await radio.soft_reconnect()
 
@@ -326,13 +329,18 @@ async def test_soft_reconnect_already_open_stalled_rebuilds_not_frozen(
 async def test_soft_reconnect_does_full_connect_when_ctrl_dead(
     radio: IcomRadio,
 ) -> None:
-    """soft_reconnect() falls back to full connect() when ctrl transport is dead."""
+    """soft_reconnect() falls back to a full connect when ctrl transport is dead.
+
+    A3 deleted the legacy ControlPhaseRuntime.connect() retry wrapper; the
+    ctrl-dead rebuild branch now does a single full-connect via ``_connect_once``
+    (the lifecycle owns retry).
+    """
     radio._civ_transport = None
     radio._ctrl_transport._udp_transport = None  # type: ignore[attr-defined]
 
     connect_mock = AsyncMock()
 
-    with patch.object(radio._control_phase, "connect", side_effect=connect_mock):
+    with patch.object(radio._control_phase, "_connect_once", side_effect=connect_mock):
         await radio.soft_reconnect()
 
     connect_mock.assert_awaited_once()
