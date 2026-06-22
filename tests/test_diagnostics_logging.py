@@ -18,13 +18,20 @@ from rigplane.diagnostics._logging import (
 
 @pytest.fixture(autouse=True)
 def _enable_diagnostic_logging(monkeypatch: pytest.MonkeyPatch) -> Any:
-    """Re-enable diagnostic logging locally for each test, then clean up."""
+    """Re-enable diagnostic logging locally for each test, then clean up.
+
+    Also snapshots and restores the ``rigplane`` logger level so that tests
+    calling ``configure_diagnostic_logging()`` (which promotes NOTSET → INFO
+    since #1879) do not pollute the logger state for subsequent tests.
+    """
     monkeypatch.delenv("RIGPLANE_DISABLE_DIAGNOSTIC_LOGGING", raising=False)
-    yield
     icom_logger = logging.getLogger("rigplane")
+    saved_level = icom_logger.level
+    yield
     icom_logger.handlers = [
         h for h in icom_logger.handlers if not isinstance(h, SafeRotatingFileHandler)
     ]
+    icom_logger.setLevel(saved_level)
 
 
 def test_handler_attached_to_icom_lan_logger_not_root(
