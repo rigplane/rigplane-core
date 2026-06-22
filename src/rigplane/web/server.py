@@ -1347,10 +1347,9 @@ class WebServer:
 
         target_queues = self._control_event_queues if queues is None else queues
         for q in list(target_queues):
-            try:
-                q.put_nowait(event)
-            except asyncio.QueueFull:
-                logger.warning("control state queue full; dropping state_update")
+            # A state_update supersedes older queued state; coalesce-to-latest on a
+            # stalled/slow consumer instead of dropping the freshest + log-flooding.
+            q.put_drop_oldest(event)
 
     async def _delayed_state_broadcast(self, delay: float) -> None:
         try:

@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import json
 from typing import Any
 
@@ -26,6 +25,7 @@ from rigplane.core.state_pipeline_contracts import (
 from rigplane.radio_state import RadioState
 from rigplane.web.radio_poller import RadioPoller
 from rigplane.web.runtime_helpers import build_public_state_payload_from_snapshot
+from rigplane._bounded_queue import BoundedQueue
 from rigplane.web.server import WebConfig, WebServer
 
 _LEGACY_POLLER_REVISION = 987_654
@@ -742,7 +742,7 @@ async def test_web_delivery_payloads_use_snapshot_not_legacy_state_or_revision()
     assert envelope["type"] == "full"
     _assert_delivered_from_snapshot(envelope["data"], snapshot)
 
-    queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
+    queue: BoundedQueue[dict[str, Any]] = BoundedQueue(maxsize=16)
     server.register_control_event_queue(queue)
     server._last_state_broadcast = 0.0  # noqa: SLF001
     server._broadcast_state_update()  # noqa: SLF001
@@ -765,7 +765,7 @@ async def test_web_delivery_payloads_use_snapshot_not_legacy_state_or_revision()
 
 def test_web_state_change_callback_broadcasts_snapshot_without_revision_path() -> None:
     server, snapshot = _server_with_conflicting_legacy_state()
-    queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
+    queue: BoundedQueue[dict[str, Any]] = BoundedQueue(maxsize=16)
     server.register_control_event_queue(queue)
 
     server._on_radio_state_change(  # noqa: SLF001
