@@ -54,7 +54,9 @@ from rigplane.runtime._control_phase import (
     STATUS_SIZE,  # noqa: F401 (re-export for tests)
     TOKEN_ACK_SIZE,  # noqa: F401 (re-export for tests)
     ControlPhaseRuntime,
+    ControlPhaseSessionMechanism,
 )
+from rigplane.runtime.session_lifecycle import CoreRadioSessionLifecycle
 from rigplane.audio import AudioPacket, AudioStream
 from rigplane.core.civ import CivEvent, CivRequestTracker
 from rigplane.commands.commander import IcomCommander, Priority
@@ -857,6 +859,42 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
         self._control_phase: ControlPhaseRuntime = ControlPhaseRuntime(
             cast("ControlPhaseHost", self)
         )
+        # Unified session lifecycle (policy layer) over the control-phase packet
+        # mechanism.  ``CoreRadio.connect/disconnect/soft_reconnect/scan`` route
+        # through this so the guaranteed-release + cooldown-aware-retry policy is
+        # owned in one place (design 2026-06-22; task A3).  The resident-retry
+        # bound mirrors the removed legacy wrapper (``_DATA_PORT_COOLDOWN_RETRIES
+        # + 1`` attempts) so an in-process ``CoreRadio`` still surfaces a
+        # ConnectionError on a persistently-unready radio rather than spinning
+        # forever; the longer-lived Pro service uses the lifecycle's resident
+        # default directly.
+        self._session_mechanism: ControlPhaseSessionMechanism = (
+            ControlPhaseSessionMechanism(self._control_phase)
+        )
+        self._session_lifecycle: CoreRadioSessionLifecycle = CoreRadioSessionLifecycle(
+            self._session_mechanism,
+            max_connect_attempts=4,
+            # In-process SDK retry is immediate: the meaningful wait between
+            # attempts is the radio's own keepalive window, and the lifecycle
+            # already RELEASES the (partial) session before each retry, so no
+            # client-side cooldown sleep is needed here.  The within-attempt
+            # conninfo busy-retry pacing still lives in ``_connect_once``
+            # (``_STATUS_RETRY_PAUSE``).  The longer-lived Pro service constructs
+            # the lifecycle with the default 10/30 s cooldowns.
+            not_ready_cooldown_s=0.0,
+            reject_cooldown_s=0.0,
+            # Recovery backoff is ZERO for the in-process CoreRadio (A4): the
+            # CI-V data watchdog already spends its patient OpenClose phase
+            # (~``_OPENCLOSE_DEADLINE`` = 60 s) BEFORE handing off to this
+            # RECOVERING loop, and ``soft_reconnect`` rebuilds the data path
+            # within one attempt.  A second 45/60 s lifecycle backoff per attempt
+            # would double-count that wait and stall the fast-recovery poller /
+            # direct ``soft_reconnect()`` callers.  The lifecycle still owns the
+            # attempt COUNT + exhaustion → CLOSING + release (single owner); only
+            # the inter-attempt sleep is collapsed.  The longer-lived Pro service
+            # constructs the lifecycle with the default ``_RECONNECT_BACKOFF``.
+            recovery_backoff_s=(0.0, 0.0, 0.0),
+        )
         self._audio_runtime: AudioRecoveryRuntime = AudioRecoveryRuntime(self)
 
     # Host shims for ControlPhaseRuntime and Icom7610SerialRadio (delegate to civ_runtime)
@@ -1176,10 +1214,13 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
         ``radio_state`` while rigctld/web serve a stale frequency.
         """
         self._reset_external_cat_session()
-        await self._control_phase.connect()
+        await self._session_lifecycle.connect()
         await self._fetch_initial_state()
 
     async def __aenter__(self) -> "CoreRadio":
+        # Route through the lifecycle's guaranteed-release context manager so a
+        # failure between connect() and the body still releases the session
+        # (graceful-close Hole 2).  ``__aexit__`` always releases.
         await self.connect()
         return self
 
@@ -1187,8 +1228,19 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
         await self.disconnect()
 
     async def disconnect(self) -> None:
-        """Cleanly disconnect from the radio."""
-        await self._control_phase.disconnect()
+        """Cleanly disconnect from the radio (always releases; idempotent).
+
+        Routes through the lifecycle (guaranteed-release policy).  If the radio
+        still reports a live session afterwards — i.e. the underlying
+        ``_conn_state`` was driven CONNECTED outside the lifecycle's own
+        connect() path (legacy/test injection, soft_disconnect bookkeeping) and
+        the lifecycle therefore treated disconnect() as an idempotent no-op —
+        fall back to the control-phase graceful teardown so a genuinely live
+        session is always released (graceful-close invariant).
+        """
+        await self._session_lifecycle.disconnect()
+        if self._conn_state == RadioConnectionState.CONNECTED:
+            await self._control_phase.disconnect()
 
     async def soft_disconnect(self) -> None:
         """Disconnect CI-V and audio but keep control transport alive.
@@ -1268,11 +1320,24 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
         self._civ_recovering = ctrl_alive
 
     async def soft_reconnect(self) -> None:
-        """Reconnect CI-V transport using existing control session.
+        """Reconnect CI-V transport using the existing control session.
 
-        Delegates to the composed ControlPhaseRuntime.
+        Routes through the unified lifecycle RECOVERING loop
+        (:meth:`CoreRadioSessionLifecycle.soft_reconnect` →
+        :meth:`CoreRadioSessionLifecycle._run_recover`), which is now the SINGLE
+        owner of recovery policy: the per-attempt primitive
+        (``soft_reconnect_once`` = control + token reused; raises on failure),
+        the N-attempt count (``_MAX_RECONNECTS``), the backoff
+        (``_RECONNECT_BACKOFF``), and exhaustion → CLOSING + full release.
+
+        The CI-V data watchdog (``_civ_rx.py``) remains the stall DETECTOR: it
+        watches CI-V data flow, sends patient OpenClose nudges, and on patience
+        exhaustion TRIGGERS this method in a detached task — but it no longer
+        owns the retry/backoff/exhaustion ladder (that moved here). The
+        watchdog still unconditionally re-arms in ``finally`` so a later stall
+        is caught again (#1217).
         """
-        await self._control_phase.soft_reconnect()
+        await self._session_lifecycle.soft_reconnect()
 
     async def _send_open_close(self, *, open_stream: bool) -> None:
         """Delegate to control-phase runtime (for soft_disconnect, _force_cleanup_civ, etc.)."""

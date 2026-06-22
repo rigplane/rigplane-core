@@ -211,10 +211,12 @@ class TestExternalCatSessionResetOnConnect:
         radio.begin_external_cat_session()
         assert radio.external_cat_session_active is True
 
-        # Drive connect() without hardware: stub the control-phase handshake and
-        # the initial-state fetch so only the reset behaviour under test runs.
+        # Drive connect() without hardware: stub the single-attempt handshake
+        # (``_connect_once``; A3 routes connect() through the lifecycle which
+        # drives the control-phase mechanism) and the initial-state fetch so
+        # only the reset behaviour under test runs.
         with (
-            patch.object(radio._control_phase, "connect", new_callable=AsyncMock),
+            patch.object(radio._control_phase, "_connect_once", new_callable=AsyncMock),
             patch.object(radio, "_fetch_initial_state", new_callable=AsyncMock),
         ):
             await radio.connect()
@@ -229,7 +231,7 @@ class TestExternalCatSessionResetOnConnect:
         """The reset is a no-op on a clean connect (no false-positive churn)."""
         assert radio.external_cat_session_active is False
         with (
-            patch.object(radio._control_phase, "connect", new_callable=AsyncMock),
+            patch.object(radio._control_phase, "_connect_once", new_callable=AsyncMock),
             patch.object(radio, "_fetch_initial_state", new_callable=AsyncMock),
         ):
             await radio.connect()

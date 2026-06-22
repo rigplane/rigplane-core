@@ -3769,8 +3769,15 @@ def main() -> None:
         parser.print_help()
         sys.exit(0)
     else:
-        # Convert SIGTERM to KeyboardInterrupt so asyncio.run() cleanup
-        # properly unwinds the async context manager (radio.disconnect()).
+        # Convert SIGTERM to KeyboardInterrupt so the event loop unwinds the
+        # ``async with radio:`` context manager, whose ``__aexit__`` runs the
+        # unified session lifecycle's graceful close (``radio.disconnect()`` →
+        # ``CoreRadioSessionLifecycle.disconnect`` → mechanism release).  The
+        # release sends the load-bearing token-remove under ``asyncio.shield``
+        # (Note 2), so the radio's session is freed BEFORE the ``os._exit``
+        # below — even though a cancel is already in flight from the SIGTERM.
+        # This is the SIGTERM graceful-close path (design 2.6 / Hole 3): the
+        # process does not hard-exit before the token-remove has gone out.
         def _sigterm_handler(signum: int, frame: Any) -> None:
             raise KeyboardInterrupt()
 

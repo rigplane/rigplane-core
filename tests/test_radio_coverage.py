@@ -311,7 +311,10 @@ async def test_soft_reconnect_already_open_stalled_rebuilds_not_frozen(
     with (
         caplog.at_level(logging.WARNING, logger="rigplane.runtime._control_phase"),
         patch.object(radio, "_force_cleanup_civ", side_effect=fake_force_cleanup),
-        patch.object(radio._control_phase, "connect", new=rebuilt),
+        # A3 deleted the legacy ControlPhaseRuntime.connect() retry wrapper; the
+        # ctrl-dead rebuild branch now does a single full-connect via
+        # ``_connect_once`` (the lifecycle owns retry).
+        patch.object(radio._control_phase, "_connect_once", new=rebuilt),
     ):
         await radio.soft_reconnect()
 
@@ -326,13 +329,18 @@ async def test_soft_reconnect_already_open_stalled_rebuilds_not_frozen(
 async def test_soft_reconnect_does_full_connect_when_ctrl_dead(
     radio: IcomRadio,
 ) -> None:
-    """soft_reconnect() falls back to full connect() when ctrl transport is dead."""
+    """soft_reconnect() falls back to a full connect when ctrl transport is dead.
+
+    A3 deleted the legacy ControlPhaseRuntime.connect() retry wrapper; the
+    ctrl-dead rebuild branch now does a single full-connect via ``_connect_once``
+    (the lifecycle owns retry).
+    """
     radio._civ_transport = None
     radio._ctrl_transport._udp_transport = None  # type: ignore[attr-defined]
 
     connect_mock = AsyncMock()
 
-    with patch.object(radio._control_phase, "connect", side_effect=connect_mock):
+    with patch.object(radio._control_phase, "_connect_once", side_effect=connect_mock):
         await radio.soft_reconnect()
 
     connect_mock.assert_awaited_once()
@@ -1474,7 +1482,17 @@ async def test_soft_reconnect_calls_on_reconnect_callback(
 
 
 async def test_soft_reconnect_handles_connect_failure(radio: IcomRadio) -> None:
-    """soft_reconnect() raises ConnectionError when transport.connect() fails (lines 444-447)."""
+    """soft_reconnect() surfaces a ConnectionError when transport.connect() fails.
+
+    After A4, ``radio.soft_reconnect`` routes through the unified lifecycle
+    RECOVERING loop, which is the SINGLE owner of recovery: it retries the
+    per-attempt rebuild (``soft_reconnect_once`` → ``_control_phase.
+    soft_reconnect``, which raises ``Failed to reconnect CI-V`` on transport
+    failure) up to ``_max_recovery_attempts`` times, then routes exhaustion
+    through CLOSING + release and raises ``Soft reconnect exhausted ...`` whose
+    ``__cause__`` is the underlying CI-V rebuild error.  (The CoreRadio
+    lifecycle uses zero recovery backoff so this stays fast.)
+    """
     from rigplane.transport import IcomTransport
 
     radio._civ_transport = None
@@ -1491,10 +1509,19 @@ async def test_soft_reconnect_handles_connect_failure(radio: IcomRadio) -> None:
     fake_transport = AsyncMock(spec=IcomTransport)
     fake_transport.connect = failing_connect
 
+    lifecycle = radio._session_lifecycle
+    attempts = lifecycle._max_recovery_attempts
+
     with patch("rigplane.transport.IcomTransport", return_value=fake_transport):
-        with pytest.raises(ConnectionError, match="Failed to reconnect CI-V"):
+        with pytest.raises(
+            ConnectionError, match="Soft reconnect exhausted"
+        ) as exc_info:
             await radio.soft_reconnect()
 
+    # Exhaustion wraps the underlying per-attempt CI-V rebuild failure.
+    assert "Failed to reconnect CI-V" in str(exc_info.value.__cause__)
+    # The lifecycle (single owner) ran every recovery attempt.
+    assert attempts >= 1
     assert radio._civ_transport is None
 
 

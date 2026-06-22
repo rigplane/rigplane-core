@@ -8,8 +8,10 @@ import logging
 import socket as _socket
 import struct
 import time
+from collections.abc import Awaitable, Callable
+from contextlib import suppress as _suppress
 from dataclasses import replace
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, SupportsInt, cast
 
 from rigplane.core.auth import (
     build_conninfo_packet,
@@ -26,8 +28,15 @@ from rigplane.audio.route import AudioConfigSource
 
 if TYPE_CHECKING:
     from ._runtime_protocols import ControlPhaseHost
+    from .session_lifecycle import AttemptResult, RadioPresence
 
 logger = logging.getLogger(__name__)
+
+#: Discovery callable injected into :class:`ControlPhaseSessionMechanism` so the
+#: lifecycle's ``scan()`` can probe for radios without ``rigplane.runtime``
+#: importing ``rigplane.backends`` (layered-architecture boundary).  Matches
+#: ``rigplane.backends.discovery.discover_lan_radios``.
+_DiscoverFn = Callable[..., Awaitable[list[dict[str, object]]]]
 
 # Packet size constants (per wfview packettypes.h).
 OPENCLOSE_SIZE = 0x16
@@ -55,6 +64,7 @@ def _is_address_in_use(exc: OSError) -> bool:
 
 __all__ = [
     "ControlPhaseRuntime",
+    "ControlPhaseSessionMechanism",
     "OPENCLOSE_SIZE",
     "TOKEN_ACK_SIZE",
     "CONNINFO_SIZE",
@@ -72,9 +82,16 @@ class ControlPhaseRuntime:
     TOKEN_PACKET_SIZE = 0x40
     WATCHDOG_CHECK_INTERVAL = 0.5
     _WATCHDOG_HEALTH_LOG_INTERVAL = 30.0
+    # Conninfo re-send pause for the WITHIN-attempt busy-retry inside
+    # ``_connect_once`` (a packet-mechanism detail: how long to wait before
+    # re-sending conninfo when the radio reports civ_port==0 mid-handshake).
+    # NOTE: this is NOT the lifecycle's COOLDOWN-between-attempts policy — that
+    # now lives solely in ``session_lifecycle.CoreRadioSessionLifecycle``.  The
+    # legacy ``ControlPhaseRuntime.connect()`` retry wrapper and its
+    # ``_DATA_PORT_COOLDOWN_RETRIES`` loop were removed in A3; the lifecycle
+    # owns CONNECTING↔COOLDOWN (it RELEASES before each cooldown wait).
     _STATUS_RETRY_PAUSE = 10.0
     _STATUS_REJECT_COOLDOWN = 30.0
-    _DATA_PORT_COOLDOWN_RETRIES = 3
 
     def __init__(self, host: ControlPhaseHost) -> None:
         self._host = host
@@ -110,36 +127,6 @@ class ControlPhaseRuntime:
                     pass
                 setattr(h, attr, None)
 
-    async def connect(self) -> None:
-        """Open connection to the radio and authenticate."""
-        h = self._host
-        max_attempts = self._DATA_PORT_COOLDOWN_RETRIES + 1
-        for attempt in range(1, max_attempts + 1):
-            try:
-                await self._connect_once()
-                return
-            except _DataPortDiscoveryCooldown as exc:
-                if attempt >= max_attempts:
-                    raise ConnectionError(
-                        "CI-V data-port discovery timed out after successful "
-                        "control auth/status; the radio may still be releasing "
-                        "a previous LAN session. Wait 30-60s and retry."
-                    ) from exc
-                retry_pause = self._status_retry_pause()
-                logger.warning(
-                    "CI-V data-port discovery timed out after successful control "
-                    "auth/status; treating as session cooldown "
-                    "(host=%s, control=%d, civ=%d, attempt=%d/%d). "
-                    "Retrying after %.0fs.",
-                    h._host,
-                    h._port,
-                    h._civ_port,
-                    attempt,
-                    max_attempts,
-                    retry_pause,
-                )
-                await asyncio.sleep(retry_pause)
-
     async def _connect_once(self) -> None:
         """Open connection to the radio and authenticate."""
         h = self._host
@@ -148,6 +135,7 @@ class ControlPhaseRuntime:
         h._civ_recovering = False
         h._last_status_error = 0
         h._last_status_disconnected = False
+        h._last_auth_error = 0
         # Re-enable queue during setup — we need status packets from radio
         h._ctrl_transport._discard_data_packets = False
         local_bind_host = self._resolve_local_bind_host()
@@ -202,6 +190,12 @@ class ControlPhaseRuntime:
             logger.warning(
                 "Control auth failed: %s:%d error=0x%08X", h._host, h._port, auth.error
             )
+            # Record the raw auth error so the lifecycle mechanism seam can tell a
+            # hard credential rejection (0xFEFFFFFF) apart from a transient
+            # "previous session still active" reject (0xFFFFFFFF) at the auth
+            # stage — only the former is a non-retryable AUTH_CREDENTIALS hard
+            # fail (D3 / lifecycle Note 1).
+            h._last_auth_error = auth.error
             raise AuthenticationError(
                 f"Authentication failed (error=0x{auth.error:08X})"
             )
@@ -534,8 +528,16 @@ class ControlPhaseRuntime:
                 await h._stop_civ_rx_pump()
             await h._civ_transport.disconnect()
             h._civ_transport = None
+        # Shield the token-remove on the graceful CONNECTED path too (A3-verifier
+        # forward-note).  Now that recovery/shutdown can run this disconnect()
+        # under asyncio cancellation (the lifecycle's teardown / SIGTERM
+        # graceful-close cancels in-flight tasks), a pending cancel could
+        # otherwise truncate the load-bearing token-remove mid-flight and leave
+        # the radio's single-owner lock held.  ``asyncio.shield`` runs it to
+        # completion even under a pending cancel, mirroring the already-shielded
+        # token-remove in :meth:`release`.
         try:
-            await self._send_token(0x01)
+            await asyncio.shield(self._send_token(0x01))
         except Exception:
             logger.debug("disconnect: token remove failed", exc_info=True)
         await h._ctrl_transport.disconnect()
@@ -543,6 +545,124 @@ class ControlPhaseRuntime:
         h._civ_stream_ready = False
         h._civ_recovering = False
         logger.info("Disconnected from %s:%d", h._host, h._port)
+
+    # ------------------------------------------------------------------
+    # Packet-mechanism seam for the unified session lifecycle (task A2)
+    # ------------------------------------------------------------------
+    #
+    # These methods are the demoted, pure-mechanism surface the
+    # ``CoreRadioSessionLifecycle`` policy layer drives.  They contain NO
+    # retry/sleep/cooldown — that policy lives in the lifecycle.  A3 wires an
+    # adapter (``ControlPhaseSessionMechanism`` below) so the lifecycle owns
+    # CONNECTING↔COOLDOWN and ``ControlPhaseRuntime`` owns packet I/O only.
+
+    async def connect_attempt(self) -> "AttemptResult":
+        """Perform ONE connect attempt (auth + CI-V port); classify the outcome.
+
+        Pure mechanism: no retry, no cooldown sleep.  The release obligation is
+        considered registered the instant auth succeeds — the lifecycle's RAII
+        discharges it via :meth:`release` on every exit path.
+
+        Returns an :class:`~rigplane.runtime.session_lifecycle.AttemptResult`:
+
+        * ``CONNECTED`` — ``_connect_once`` reached CONNECTED;
+        * ``SESSION_NOT_READY`` — civ_port==0 / data-port discovery cooldown;
+        * ``SESSION_BUSY_REJECT`` — status (or auth) error 0xFFFFFFFF —
+          "previous session still active";
+        * ``AUTH_CREDENTIALS`` — auth rejected with the *non-transient*
+          credential error 0xFEFFFFFF.
+
+        Classification rules (lifecycle Note 1; behaviour-preserving wiring):
+
+        * The ONLY transient signal ``_connect_once`` emits is
+          :class:`_DataPortDiscoveryCooldown` (CI-V data-port discovery timed out
+          after a successful auth/status) → ``SESSION_NOT_READY``.  This mirrors
+          the removed legacy ``connect()`` wrapper, which retried exactly this
+          case (its ``_DATA_PORT_COOLDOWN_RETRIES`` loop) and let every other
+          failure propagate.
+        * **Note 1 (auth over-hard-fail fix):** ``_connect_once`` raises
+          :class:`AuthenticationError` for ANY ``auth.success == False`` — which
+          covers BOTH 0xFEFFFFFF (wrong credentials, hard) AND 0xFFFFFFFF
+          (previous session active, transient).  Only 0xFEFFFFFF maps to the
+          non-retryable ``AUTH_CREDENTIALS``; any other auth failure (notably the
+          0xFFFFFFFF busy reject surfaced at the auth stage) maps to the
+          transient ``SESSION_BUSY_REJECT`` so a transient auth glitch is retried
+          rather than permanently failed.
+        * Every other ``ConnectionError`` (the radio definitively rejected the
+          session/codec after ``_connect_once`` exhausted its own within-attempt
+          fallbacks; CI-V/control open failure; startup-readiness abort) is a
+          genuine HARD error and is **propagated unchanged** — it is NOT
+          downgraded to a silent transient retry.
+        """
+        from rigplane.runtime.session_lifecycle import AttemptOutcome, AttemptResult
+
+        h = self._host
+        try:
+            await self._connect_once()
+        except _DataPortDiscoveryCooldown:
+            return AttemptResult(AttemptOutcome.SESSION_NOT_READY)
+        except AuthenticationError:
+            # Note 1: ONLY 0xFEFFFFFF is a hard credential failure.  Any other
+            # auth failure (e.g. 0xFFFFFFFF "previous session active" surfaced at
+            # the auth stage) is transient → cooldown-aware resident retry.
+            if getattr(h, "_last_auth_error", 0) == 0xFEFFFFFF:
+                return AttemptResult(AttemptOutcome.AUTH_CREDENTIALS)
+            return AttemptResult(AttemptOutcome.SESSION_BUSY_REJECT)
+        return AttemptResult(AttemptOutcome.CONNECTED)
+
+    async def release(self) -> None:
+        """Release the session UNCONDITIONALLY (token-remove + close + sockets).
+
+        This is the guaranteed-release primitive (design §2.5).  Unlike
+        :meth:`disconnect`, it does NOT early-return on
+        ``conn_state != CONNECTED`` — a partially-claimed session (post-auth,
+        pre-CONNECTED) is still released, closing graceful-close Holes 1/5/8.
+        Idempotent: safe to call when nothing is claimed.
+        """
+        h = self._host
+        # Best-effort teardown of any data/audio transports first (mirrors
+        # disconnect ordering), then the always-sent token-remove.
+        self._stop_watchdog()
+        self._stop_reconnect()
+        self._stop_token_renewal()
+        self._close_pending_sockets()
+        audio_t = getattr(h, "_audio_transport", None)
+        if audio_t is not None:
+            with _suppress(Exception):
+                await self._send_audio_open_close(open_stream=False)
+            with _suppress(Exception):
+                await audio_t.disconnect()
+            h._audio_transport = None
+        civ_t = getattr(h, "_civ_transport", None)
+        if civ_t is not None:
+            with _suppress(Exception):
+                await self._send_open_close(open_stream=False)
+            with _suppress(Exception):
+                await civ_t.disconnect()
+            h._civ_transport = None
+        # The token-remove is the load-bearing release: send it whenever a
+        # control transport exists, regardless of conn_state.
+        #
+        # Note 2 (release truncated by cancel): when release runs on the SIGTERM
+        # graceful-close path (``CoreRadioSessionLifecycle.request_shutdown`` →
+        # teardown) a fresh cancellation may already be pending on this task.
+        # The earlier ``await``s here (audio/CI-V disconnect) do NOT swallow
+        # ``CancelledError`` — only ``Exception`` — so an un-shielded await
+        # before the token-remove could be cancelled mid-flight and skip it.
+        # ``asyncio.shield`` runs the token-remove to completion even under a
+        # pending cancel, guaranteeing the radio is freed within the close
+        # deadline.  We re-suppress here because ``shield`` re-raises the
+        # outer ``CancelledError`` once the shielded coroutine finishes.
+        ctrl_t = getattr(h, "_ctrl_transport", None)
+        if ctrl_t is not None and h._token:
+            with _suppress(Exception):
+                await asyncio.shield(self._send_token(0x01))
+        if ctrl_t is not None:
+            with _suppress(Exception):
+                await asyncio.shield(ctrl_t.disconnect())
+        h._conn_state = RadioConnectionState.DISCONNECTED
+        h._civ_stream_ready = False
+        h._civ_recovering = False
 
     async def soft_reconnect(self) -> None:
         """Reconnect CI-V transport using existing control session."""
@@ -595,7 +715,11 @@ class ControlPhaseRuntime:
             h._ctrl_transport, "_udp_transport", None
         ):
             logger.info("soft_reconnect: control transport gone, doing full connect")
-            await self.connect()
+            # The legacy ``connect()`` retry wrapper was removed in A3; the
+            # lifecycle owns retry.  A full re-establish here is a single
+            # mechanism attempt (``_connect_once``); the lifecycle's RECOVERING
+            # accounting / exhaustion handles repeated failures.
+            await self._connect_once()
             return
 
         h._conn_state = RadioConnectionState.CONNECTING
@@ -962,3 +1086,81 @@ class ControlPhaseRuntime:
         if h._reconnect_task is not None and not h._reconnect_task.done():
             h._reconnect_task.cancel()
             h._reconnect_task = None
+
+
+class ControlPhaseSessionMechanism:
+    """Production :class:`~rigplane.runtime.session_lifecycle.SessionMechanism`.
+
+    Adapts a :class:`ControlPhaseRuntime` (the packet I/O mechanism) to the
+    :class:`SessionMechanism` protocol the :class:`CoreRadioSessionLifecycle`
+    policy layer drives (task A3).  One :meth:`connect_attempt` per lifecycle
+    attempt; :meth:`release` for guaranteed teardown; :meth:`soft_reconnect_once`
+    for recovery; a discovery-based :meth:`scan`.
+
+    The lifecycle owns CONNECTING↔COOLDOWN retry; this adapter performs no
+    sleeps or retries of its own beyond the packet-mechanism internals of
+    ``_connect_once``.
+    """
+
+    def __init__(
+        self,
+        control_phase: ControlPhaseRuntime,
+        *,
+        discover_fn: "_DiscoverFn | None" = None,
+    ) -> None:
+        self._cp = control_phase
+        # Presence-probe discovery is INJECTED from an upper layer (CLI/web).
+        # ``rigplane.runtime`` may not import ``rigplane.backends`` (layered
+        # architecture, enforced by import-linter), so the lifecycle's
+        # ``scan()`` borrows a discovery callable supplied by the caller rather
+        # than importing ``backends.discovery`` here.
+        self._discover_fn = discover_fn
+
+    async def connect_attempt(self) -> "AttemptResult":
+        return await self._cp.connect_attempt()
+
+    async def release(self) -> None:
+        """Guaranteed release (token-remove + close).
+
+        When a full CONNECTED session exists, route through the graceful
+        :meth:`ControlPhaseRuntime.disconnect` (audio/CI-V teardown, generation
+        advance, token-remove) so observable teardown behaviour is unchanged.
+        Otherwise fall through to the unconditional :meth:`ControlPhaseRuntime.
+        release`, which still token-removes a partially-claimed session (Holes
+        1/5/8).  Both are idempotent.
+        """
+        h = self._cp._host
+        if getattr(h, "_conn_state", None) is RadioConnectionState.CONNECTED:
+            # Full graceful teardown (audio/CI-V stop, generation advance,
+            # token-remove, ctrl disconnect).  This already sends token-remove,
+            # so do NOT also run the partial-claim ``release`` afterwards.
+            await self._cp.disconnect()
+            return
+        await self._cp.release()
+
+    async def soft_reconnect_once(self) -> None:
+        await self._cp.soft_reconnect()
+
+    async def scan(
+        self, targets: list[str] | None, *, timeout: float
+    ) -> list["RadioPresence"]:
+        from rigplane.runtime.session_lifecycle import RadioPresence
+
+        if self._discover_fn is None:
+            raise NotImplementedError(
+                "lifecycle scan() requires a discovery callable; construct "
+                "ControlPhaseSessionMechanism with discover_fn= from an upper "
+                "layer (e.g. rigplane.backends.discovery.discover_lan_radios)."
+            )
+        found = await self._discover_fn(timeout=timeout)
+        presences = [
+            RadioPresence(
+                host=str(r["host"]),
+                remote_id=int(cast("SupportsInt", r["remote_id"])),
+            )
+            for r in found
+        ]
+        if targets is not None:
+            wanted = set(targets)
+            presences = [p for p in presences if p.host in wanted]
+        return presences

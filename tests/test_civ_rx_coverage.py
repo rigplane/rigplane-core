@@ -321,18 +321,26 @@ async def test_watchdog_loop_phase1_open_close_exception_ignored(
         )  # should complete without raising
 
 
-async def test_watchdog_loop_phase2_uses_long_reconnect_cooldown(
+async def test_watchdog_loop_phase2_hands_off_to_lifecycle_recovery(
     radio: IcomRadio,
 ) -> None:
-    """Phase 2 uses a long cooldown before reconnect to avoid reconnect churn.
+    """After the OpenClose deadline the watchdog HANDS OFF recovery to the
+    unified lifecycle loop rather than owning the retry/backoff/exhaustion
+    ladder itself (A4 single-owner).
 
-    After the OpenClose deadline, the watchdog spawns a detached reconnect
-    task that sleeps for the cooldown BEFORE calling soft_reconnect.
+    The detached handoff (``_watchdog_recover``) calls ``soft_reconnect`` ONCE;
+    the attempt count and the per-attempt backoff now live entirely in
+    ``CoreRadioSessionLifecycle._run_recover`` (driven via ``soft_reconnect``),
+    so the watchdog no longer sleeps a 45 s backoff of its own.
     """
     radio._last_civ_data_received = 0.0
     radio._civ_recovering = False
     radio._force_cleanup_civ = AsyncMock()
     radio.soft_reconnect = AsyncMock()
+    # Control session alive so the post-recovery re-arm is a no-op spy path.
+    ctrl = MagicMock()
+    ctrl._udp_transport = object()
+    radio._ctrl_transport = ctrl
 
     delays: list[float] = []
 
@@ -350,36 +358,46 @@ async def test_watchdog_loop_phase2_uses_long_reconnect_cooldown(
     with (
         patch("asyncio.sleep", side_effect=fake_sleep),
         patch("time.monotonic", side_effect=_mono),
+        patch("rigplane.runtime._civ_rx.time.monotonic", side_effect=_mono),
         patch.object(radio, "_send_open_close", new=AsyncMock()),
+        patch.object(radio._civ_runtime, "start_data_watchdog", MagicMock()),
     ):
         await radio._civ_runtime._civ_data_watchdog_loop()
-        # Await the spawned reconnect task explicitly so its cooldown sleep
-        # runs inside the patched scope.
+        # Await the spawned recovery handoff explicitly so it runs inside the
+        # patched scope.
         spawned = [
             t for t in asyncio.all_tasks() if t.get_name().startswith("civ-watchdog-")
         ]
         for task in spawned:
             await task
 
-    # 45s cooldown was observed in the spawned task (first backoff entry).
-    assert any(d >= 45.0 for d in delays)
+    # The watchdog itself no longer owns a 45 s reconnect backoff sleep — the
+    # backoff moved into the lifecycle RECOVERING loop.  It hands off exactly
+    # once to ``soft_reconnect``.
+    assert all(d < 45.0 for d in delays)
     radio.soft_reconnect.assert_awaited_once()
 
 
-async def test_watchdog_soft_reconnect_task_sleeps_before_reconnect(
+async def test_watchdog_recover_cleans_up_then_drives_lifecycle(
     radio: IcomRadio,
 ) -> None:
-    """Detached soft_reconnect task sleeps for the cooldown BEFORE calling
-    soft_reconnect — regression guard for the self-cancel bug where the
-    watchdog cancelled itself and the cooldown sleep never ran.
+    """The detached recovery handoff tears down the stalled CI-V transport, then
+    drives the unified lifecycle ``soft_reconnect`` ONCE (A4).
+
+    The per-attempt backoff/cooldown that used to live in the watchdog handoff
+    moved into ``CoreRadioSessionLifecycle._run_recover``; the handoff itself no
+    longer sleeps a backoff before ``soft_reconnect`` — it just cleans up and
+    delegates.  ``force_cleanup`` runs before ``soft_reconnect`` (the
+    rebuild path), preserving the #1217 detached-execution ordering.
     """
     order: list[str] = []
+    # Control session alive so the finally re-arm is a no-op spy path.
+    ctrl = MagicMock()
+    ctrl._udp_transport = object()
+    radio._ctrl_transport = ctrl
 
     async def record_force_cleanup() -> None:
         order.append("force_cleanup")
-
-    async def record_sleep(delay: float) -> None:
-        order.append(f"sleep({delay})")
 
     async def record_soft_reconnect() -> None:
         order.append("soft_reconnect")
@@ -387,39 +405,54 @@ async def test_watchdog_soft_reconnect_task_sleeps_before_reconnect(
     radio._force_cleanup_civ = record_force_cleanup
     radio.soft_reconnect = record_soft_reconnect
 
-    with patch("asyncio.sleep", side_effect=record_sleep):
-        await radio._civ_runtime._watchdog_soft_reconnect(cooldown=45.0)
+    with patch.object(radio._civ_runtime, "start_data_watchdog", MagicMock()):
+        await radio._civ_runtime._watchdog_recover()
 
-    assert order == ["force_cleanup", "sleep(45.0)", "soft_reconnect"]
+    assert order == ["force_cleanup", "soft_reconnect"]
 
 
 async def test_stop_data_watchdog_cancels_pending_reconnect_task(
     radio: IcomRadio,
 ) -> None:
-    """stop_data_watchdog() must cancel any pending detached reconnect task
-    spawned by watchdog escalation, so disconnect during cooldown does not
-    trigger a late soft_reconnect (Codex P1 on PR #851).
+    """stop_data_watchdog() must cancel any in-flight detached recovery handoff,
+    so an explicit disconnect during recovery does not let a late
+    soft_reconnect resume (Codex P1 on PR #851).
+
+    Recovery backoff now lives in the lifecycle, so the handoff is "pending"
+    while the (here-blocked) ``soft_reconnect`` is in flight rather than while a
+    watchdog cooldown sleep runs.
     """
     radio._force_cleanup_civ = AsyncMock()
-    radio.soft_reconnect = AsyncMock()
 
-    # Spawn the reconnect helper the same way the watchdog does, and
-    # register it on the runtime so stop_data_watchdog can find it.
+    started = asyncio.Event()
+    reached_completion: list[bool] = []
+
+    async def blocking_soft_reconnect() -> None:
+        started.set()
+        # Block until cancelled (stands in for the lifecycle RECOVERING loop's
+        # backoff sleep / in-flight attempt).
+        await asyncio.sleep(60.0)
+        reached_completion.append(True)
+
+    radio.soft_reconnect = blocking_soft_reconnect
+
+    # Spawn the recovery handoff the same way the watchdog does, and register it
+    # on the runtime so stop_data_watchdog can find it.
     task = asyncio.create_task(
-        radio._civ_runtime._watchdog_soft_reconnect(cooldown=5.0),
-        name="civ-watchdog-soft-reconnect",
+        radio._civ_runtime._watchdog_recover(),
+        name="civ-watchdog-recover",
     )
     radio._civ_runtime._reconnect_task = task
 
-    # Let the task enter its cooldown sleep.
-    await asyncio.sleep(0.01)
-    assert not task.done(), "task should still be sleeping in cooldown"
+    # Let the task reach the (blocked) soft_reconnect.
+    await started.wait()
+    assert not task.done(), "recovery handoff should still be in flight"
 
-    # Explicit disconnect during cooldown.
+    # Explicit disconnect during recovery.
     await radio._civ_runtime.stop_data_watchdog()
 
     assert task.done()
-    radio.soft_reconnect.assert_not_awaited()
+    assert reached_completion == [], "soft_reconnect must not complete after cancel"
     assert radio._civ_runtime._reconnect_task is None
 
 
@@ -471,12 +504,13 @@ async def test_watchdog_patient_openclose_before_escalation(
 # ---------------------------------------------------------------------------
 
 
-async def test_watchdog_soft_reconnect_rearms_watchdog_when_recovery_fails(
+async def test_watchdog_recover_rearms_watchdog_when_recovery_fails(
     radio: IcomRadio,
 ) -> None:
-    """After a failed detached soft_reconnect the data watchdog is re-armed so
-    recovery keeps retrying with bounded backoff instead of freezing after one
-    attempt (#1217).
+    """When the lifecycle recovery handoff fails BUT the control session
+    survives (transient failure, not exhaustion-with-release), the data watchdog
+    is unconditionally re-armed so a later stall is detected again instead of
+    freezing after one episode (#1217 invariant 3: unconditional re-arm).
     """
     # Control session still alive so re-arm is appropriate.
     ctrl = MagicMock()
@@ -489,29 +523,15 @@ async def test_watchdog_soft_reconnect_rearms_watchdog_when_recovery_fails(
     async def failing_soft_reconnect() -> None:
         raise ConnectionError("radio still gone")
 
-    async def failing_disconnect() -> None:
-        return None
-
-    async def failing_connect() -> None:
-        raise ConnectionError("radio still gone")
-
     radio._force_cleanup_civ = failing_force_cleanup
     radio.soft_reconnect = failing_soft_reconnect
-    radio.disconnect = failing_disconnect
-    radio.connect = failing_connect
     radio._civ_data_watchdog_task = None
-
-    async def instant_sleep(delay: float) -> None:
-        return None
 
     # Spy on start_data_watchdog instead of running the real loop, so the test
     # asserts the re-arm without leaking a live watchdog task into the loop.
     rearm_spy = MagicMock()
-    with (
-        patch("asyncio.sleep", side_effect=instant_sleep),
-        patch.object(radio._civ_runtime, "start_data_watchdog", rearm_spy),
-    ):
-        await radio._civ_runtime._watchdog_soft_reconnect(cooldown=45.0)
+    with patch.object(radio._civ_runtime, "start_data_watchdog", rearm_spy):
+        await radio._civ_runtime._watchdog_recover()
 
     # A fresh watchdog must have been re-armed so recovery keeps probing.
     rearm_spy.assert_called_once()
@@ -534,19 +554,11 @@ async def test_watchdog_does_not_rearm_when_control_session_gone(
 
     radio._force_cleanup_civ = noop
     radio.soft_reconnect = failing_soft_reconnect
-    radio.disconnect = noop
-    radio.connect = failing_soft_reconnect
     radio._civ_data_watchdog_task = None
 
-    async def instant_sleep(delay: float) -> None:
-        return None
-
     rearm_spy = MagicMock()
-    with (
-        patch("asyncio.sleep", side_effect=instant_sleep),
-        patch.object(radio._civ_runtime, "start_data_watchdog", rearm_spy),
-    ):
-        await radio._civ_runtime._watchdog_soft_reconnect(cooldown=45.0)
+    with patch.object(radio._civ_runtime, "start_data_watchdog", rearm_spy):
+        await radio._civ_runtime._watchdog_recover()
 
     rearm_spy.assert_not_called()
     assert radio._civ_data_watchdog_task is None
@@ -577,17 +589,11 @@ async def test_stop_data_watchdog_does_not_self_cancel_running_recovery(
     radio.soft_reconnect = record_soft_reconnect
     radio._civ_data_watchdog_task = None
 
-    async def instant_sleep(delay: float) -> None:
-        return None
-
     # Spy the re-arm so the helper's finally does not leak a live watchdog task.
-    with (
-        patch("asyncio.sleep", side_effect=instant_sleep),
-        patch.object(radio._civ_runtime, "start_data_watchdog", MagicMock()),
-    ):
+    with patch.object(radio._civ_runtime, "start_data_watchdog", MagicMock()):
         task = asyncio.create_task(
-            radio._civ_runtime._watchdog_soft_reconnect(cooldown=1.0),
-            name="civ-watchdog-soft-reconnect",
+            radio._civ_runtime._watchdog_recover(),
+            name="civ-watchdog-recover",
         )
         radio._civ_runtime._reconnect_task = task
         await task
@@ -630,7 +636,10 @@ async def test_soft_reconnect_rebuilds_on_already_open_stalled(
         rebuilt.append(True)
 
     radio._force_cleanup_civ = fake_force_cleanup
-    radio._control_phase.connect = fake_connect  # type: ignore[method-assign]
+    # A3 deleted the legacy ``ControlPhaseRuntime.connect()`` retry wrapper; the
+    # "control transport gone" rebuild branch now does a single full-connect
+    # attempt via ``_connect_once`` (the lifecycle owns retry).
+    radio._control_phase._connect_once = fake_connect  # type: ignore[method-assign]
 
     await radio.soft_reconnect()
 
@@ -673,12 +682,13 @@ async def test_wait_for_recovery_kicks_soft_reconnect_on_stalled_transport(
     )
 
 
-async def test_watchdog_full_reconnect_rearms_for_indefinite_retry(
+async def test_watchdog_recover_rearms_after_successful_recovery(
     radio: IcomRadio,
 ) -> None:
-    """After the soft-reconnect ladder is exhausted, the detached full
-    reconnect re-arms the watchdog so a still-dead radio is re-probed
-    indefinitely (bounded backoff), not left permanently frozen (#1217).
+    """After a SUCCESSFUL lifecycle recovery handoff the watchdog is re-armed so
+    a later stall is detected and handed off again — the detector keeps watching
+    forever even though the lifecycle owns the bounded per-episode retry ladder
+    (A4 single-owner; #1217 invariant 3).
     """
     ctrl = MagicMock()
     ctrl._udp_transport = object()
@@ -687,25 +697,77 @@ async def test_watchdog_full_reconnect_rearms_for_indefinite_retry(
     async def noop() -> None:
         return None
 
-    async def failing_connect() -> None:
-        raise ConnectionError("still dead")
-
-    radio._force_cleanup_civ = noop
-    radio.disconnect = noop
-    radio.connect = failing_connect
-    radio._civ_data_watchdog_task = None
-
-    async def instant_sleep(delay: float) -> None:
+    async def ok_soft_reconnect() -> None:
+        # Lifecycle RECOVERING loop succeeded on an attempt.
         return None
 
+    radio._force_cleanup_civ = noop
+    radio.soft_reconnect = ok_soft_reconnect
+    radio._civ_data_watchdog_task = None
+
     rearm_spy = MagicMock()
-    with (
-        patch("asyncio.sleep", side_effect=instant_sleep),
-        patch.object(radio._civ_runtime, "start_data_watchdog", rearm_spy),
-    ):
-        await radio._civ_runtime._watchdog_full_reconnect(cooldown=60.0)
+    with patch.object(radio._civ_runtime, "start_data_watchdog", rearm_spy):
+        await radio._civ_runtime._watchdog_recover()
 
     rearm_spy.assert_called_once()
+
+
+async def test_watchdog_detects_but_lifecycle_owns_attempt_count(
+    radio: IcomRadio,
+) -> None:
+    """SINGLE-OWNER assertion (A4): the watchdog handoff DETECTS+triggers, but
+    the lifecycle owns the attempt count / backoff / exhaustion.
+
+    The detached handoff (``_watchdog_recover``) calls ``radio.soft_reconnect``
+    exactly ONCE.  ``radio.soft_reconnect`` routes into the unified lifecycle
+    RECOVERING loop, which is the SINGLE place that performs the
+    ``_MAX_RECONNECTS`` attempts of the per-attempt primitive
+    (``soft_reconnect_once``) with backoff and then routes exhaustion through
+    CLOSING + full release.  The watchdog itself counts nothing.
+    """
+    from rigplane.runtime.session_lifecycle import LifecycleState
+
+    ctrl = MagicMock()
+    ctrl._udp_transport = object()
+    radio._ctrl_transport = ctrl
+
+    lifecycle = radio._session_lifecycle
+    lifecycle._recovery_backoff_s = (0.0, 0.0, 0.0)  # no wall-clock backoff
+
+    attempts: list[int] = []
+
+    async def counting_failure() -> None:
+        attempts.append(1)
+        raise ConnectionError("injected per-attempt failure")
+
+    # The per-attempt primitive owned by the lifecycle.
+    lifecycle._mech.soft_reconnect_once = counting_failure  # type: ignore[method-assign]
+
+    async def noop() -> None:
+        return None
+
+    radio._force_cleanup_civ = noop
+
+    # Count how many times the watchdog handoff invokes the (lifecycle) recovery.
+    handoff_calls: list[int] = []
+    real_soft_reconnect = radio.soft_reconnect
+
+    async def counting_soft_reconnect() -> None:
+        handoff_calls.append(1)
+        await real_soft_reconnect()
+
+    radio.soft_reconnect = counting_soft_reconnect  # type: ignore[method-assign]
+
+    with patch.object(radio._civ_runtime, "start_data_watchdog", MagicMock()):
+        await radio._civ_runtime._watchdog_recover()
+
+    # The watchdog triggered recovery exactly once (it does NOT loop attempts).
+    assert handoff_calls == [1]
+    # The lifecycle owns the attempt count: it ran _MAX_RECONNECTS attempts of
+    # the per-attempt primitive before exhausting.
+    assert len(attempts) == lifecycle._max_recovery_attempts
+    # Exhaustion routed through CLOSING + full release -> DISCONNECTED.
+    assert lifecycle.state is LifecycleState.DISCONNECTED
 
 
 # ---------------------------------------------------------------------------

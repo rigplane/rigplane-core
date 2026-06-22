@@ -41,6 +41,42 @@ This page defines the **officially supported** public API of `rigplane`. Use the
 |--------|-------------|
 | `build_hamlib_discovery_payload` | Build the stable Hamlib-assisted discovery JSON payload (`rigplane.discovery.hamlib.v1` schema). Promoted from internal `rigplane.cli` to public API in MOR-911. Canonical import: `from rigplane.backends.discovery import build_hamlib_discovery_payload` or `from rigplane import build_hamlib_discovery_payload`. |
 
+### Session lifecycle (v2.11+)
+
+Unified radio session lifecycle controller and associated types.  These symbols
+are **contract-grade Tier 1** — designed as the stable cross-boundary API
+between `rigplane-core` and `rigplane-pro` (decision D6,
+`docs/architecture/2026-06-22-radio-session-lifecycle.md`).  See [Version and
+compatibility implications](#session-lifecycle-version-and-compatibility) below.
+
+| Symbol | Description |
+|--------|-------------|
+| `RadioSessionLifecycle` | `Protocol` / interface for the resident radio session lifecycle controller.  Owns the full connect / disconnect / scan / recover policy.  Exposes `scan()`, `connect()`, `disconnect()`, `soft_reconnect()`, `state`, `status`, `add_event_listener()`, `remove_event_listener()`, and the async context-manager protocol. |
+| `LifecycleState` | 7-member `str` enum: `DISCONNECTED`, `SCANNING`, `CONNECTING`, `COOLDOWN`, `CONNECTED`, `RECOVERING`, `CLOSING`.  String values are stable and may be serialised (e.g. to JSON). |
+| `LifecycleEvent` | Frozen dataclass carrying one state-transition event (fields: `from_state`, `to_state`, `reason`, `cooldown_remaining_s`, `recovery_attempt`, `recovery_max`).  Emitted to listeners on every transition. |
+| `LifecycleStatus` | Frozen dataclass point-in-time snapshot for UI rendering (fields: `state`, `last_error`, `cooldown_remaining_s`, `cooldown_total_s`, `recovery_attempt`, `recovery_max`, `connecting_elapsed_s`). |
+| `LifecycleErrorReason` | `str` enum of structured cause codes: `NONE`, `AUTH_CREDENTIALS`, `SESSION_BUSY_REJECT`, `SESSION_NOT_READY`, `DATA_WATCHDOG_STALL`, `CONTROL_LOSS`, `RECOVERY_EXHAUSTED`, `CANCELLED`. |
+| `RadioPresence` | Frozen dataclass returned by `scan()` (fields: `host: str`, `remote_id: int`). |
+
+Canonical import:
+
+```python
+from rigplane import (
+    RadioSessionLifecycle,
+    LifecycleState,
+    LifecycleStatus,
+    LifecycleEvent,
+    LifecycleErrorReason,
+    RadioPresence,
+)
+```
+
+Or from the submodule:
+
+```python
+from rigplane.runtime.session_lifecycle import RadioSessionLifecycle, LifecycleState
+```
+
 ### Exceptions
 
 | Symbol | Description |
@@ -133,6 +169,15 @@ available directly via `from rigplane import …`.
 **Public state types**
 
 - `RadioState`, `RadioProfile`, `VfoSlotState`, `YaesuStateExtension`
+
+**Session lifecycle (from `rigplane.runtime.session_lifecycle`, new in v2.11)**
+
+- `RadioSessionLifecycle` — resident lifecycle controller `Protocol`
+- `LifecycleState` — 7-state enum
+- `LifecycleEvent` — per-transition event dataclass (D1 observable surface)
+- `LifecycleStatus` — point-in-time snapshot dataclass (D1 observable surface)
+- `LifecycleErrorReason` — structured cause-code enum
+- `RadioPresence` — scan result dataclass
 
 **Frontend extension host API (Pro-facing)**
 
@@ -247,8 +292,61 @@ from rigplane.rigctld.server import RigctldServer  # tier-3 — forbidden in pro
 
 ---
 
+## Session lifecycle: version and compatibility {#session-lifecycle-version-and-compatibility}
+
+The session lifecycle symbols were introduced in **v2.11** as Tier 1 (semver-
+stable, contract-grade) per decision D6 in
+`docs/architecture/2026-06-22-radio-session-lifecycle.md`.
+
+### Why these are a hard contract
+
+`RadioSessionLifecycle` and its companion types cross the `rigplane-core` /
+`rigplane-pro` **version boundary**.  `rigplane-pro` imports ONLY blessed
+`rigplane.*` symbols (enforced by `.importlinter` `public-sdk-only` contract).
+Changing any signature or removing any symbol therefore requires a **coordinated
+core ↔ Pro cadence** per `rigplane-pro/docs/contracts/COMPATIBILITY.md`
+(MOR-885).
+
+### Additive-only rule
+
+Changes to these symbols MUST follow the additive-only policy:
+
+- **Adding a new `LifecycleState` or `LifecycleErrorReason` member** is
+  additive.  Consumers MUST handle unknown enum values (e.g. with an
+  `else`/`default` branch) to survive future additions.
+- **Adding a field to `LifecycleEvent` or `LifecycleStatus`** MUST use
+  `field(default=…)` so existing call sites constructing these types do not
+  break (prefer factory methods on the concrete implementation for construction;
+  consumers should read fields by name).
+- **Renaming or removing any symbol, field, or enum member** requires a
+  **major version bump** and a two-minor deprecation cycle.
+- **Changing a method signature** (parameters, return type) is a breaking
+  change and requires a major version bump.
+
+### Lockstep pin (Phase D / E)
+
+When a new core release adds or changes these symbols:
+
+1. Bump `rigplane[bridge]==X` in `rigplane-pro/pyproject.toml` **and**
+   `CORE_VERSION` **together** — they must match or `gate-pytest` fails
+   (known coupling, `rigplane-pro/memory/release-core-pin-pyproject-coupling.md`).
+2. Rebuild the Tauri sidecar fully (not `--skip-sidecar`) so the lifecycle
+   ships in the packaged app.
+
+### Import path
+
+Pro MUST import lifecycle symbols via the top-level package::
+
+    from rigplane import RadioSessionLifecycle, LifecycleState, ...
+
+Direct imports from `rigplane.runtime.session_lifecycle` are also supported (the
+module is Tier 1), but the `rigplane.*` path is what the `public-sdk-only`
+import-linter contract validates.
+
+---
+
 ## Summary
 
-- **Use for new code**: `create_radio`, `Radio`, backend configs, capability protocols, exceptions, `RadioState`, profiles, and `sync.IcomRadio` for blocking use.
+- **Use for new code**: `create_radio`, `Radio`, backend configs, capability protocols, exceptions, `RadioState`, profiles, `sync.IcomRadio` for blocking use, and `RadioSessionLifecycle` / `LifecycleState` for lifecycle observation.
 - **Use when needed**: Individual commands, transport, auth, and audio/scope types for custom pipelines or debugging.
 - **Internal**: Modules and symbols whose names start with `_` (e.g. `_connection_state`, `_shared_state_runtime`) are not part of the public API and may change without notice.
