@@ -1558,7 +1558,7 @@ def _resolve_model(
     Returns:
         (radio_addr, model_name, default_baud) — each may be None.
     """
-    from rigplane.rig_loader import discover_rigs
+    from rigplane.rig_loader import RigLoadError, discover_available_rigs
 
     model_name: str | None = getattr(args, "model", None)
     radio_addr: int | None = getattr(args, "radio_addr", None)
@@ -1566,7 +1566,7 @@ def _resolve_model(
     if model_name is None:
         return radio_addr, None, None
 
-    rigs = discover_rigs(_rigs_dir())
+    rigs = discover_available_rigs()
 
     # Case-insensitive match by model name or by rig id
     matched = None
@@ -1580,6 +1580,8 @@ def _resolve_model(
 
     if matched is None:
         available = ", ".join(sorted(rigs.keys()))
+        if not available:
+            raise RigLoadError("No rig profiles loaded")
         raise ValueError(f"Unknown model {model_name!r}. Available: {available}")
 
     # --radio-addr overrides profile civ_addr

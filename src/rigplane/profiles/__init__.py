@@ -279,7 +279,8 @@ _by_normalized: dict[str, RadioProfile] = {}
 _by_id: dict[str, RadioProfile] = {}
 _by_civ_addr: dict[int, RadioProfile] = {}
 
-# Search paths for rig TOML files (first existing directory wins).
+# Legacy search paths kept for private callers that inspected this constant.
+# New code must use rig_loader.rig_resource_roots().
 _RIG_DIRS: list[Path] = [
     Path(__file__).resolve().parent.parent.parent.parent
     / "rigs",  # dev: repo root/rigs/
@@ -295,35 +296,24 @@ def _ensure_loaded() -> dict[str, RadioProfile]:
         return _profiles
 
     # Import here to avoid circular imports
-    from .rig_loader import discover_rigs
+    from .rig_loader import discover_available_rigs, rig_resource_roots
 
     _profiles = {}
     _by_normalized = {}
     _by_id = {}
     _by_civ_addr = {}
 
-    for rig_dir in _RIG_DIRS:
-        if rig_dir.is_dir():
-            rigs = discover_rigs(rig_dir)
-            for model, rig_config in rigs.items():
-                profile = rig_config.to_profile()
-                _profiles[model] = profile
-                _by_normalized[_normalize(model)] = profile
-                _by_id[_normalize(profile.id)] = profile
-                _by_civ_addr.setdefault(profile.civ_addr, profile)
-            if rigs:
-                logger.debug(
-                    "Loaded %d rig profiles from %s: %s",
-                    len(rigs),
-                    rig_dir,
-                    ", ".join(sorted(rigs.keys())),
-                )
-                break  # use first directory that has rigs
+    for model, rig_config in discover_available_rigs().items():
+        profile = rig_config.to_profile()
+        _profiles[model] = profile
+        _by_normalized[_normalize(model)] = profile
+        _by_id[_normalize(profile.id)] = profile
+        _by_civ_addr.setdefault(profile.civ_addr, profile)
 
     if not _profiles:
         logger.warning(
             "No rig TOML profiles found in search paths: %s",
-            [str(p) for p in _RIG_DIRS],
+            [str(root) for root in rig_resource_roots()],
         )
 
     return _profiles

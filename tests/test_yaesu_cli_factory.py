@@ -94,6 +94,14 @@ class TestFactoryYaesuCat:
         radio = create_radio(cfg)
         assert isinstance(radio, YaesuCatRadio)
 
+    def test_serial_ft_model_is_passed_to_yaesu_radio(self):
+        cfg = SerialBackendConfig(device="/dev/ttyUSB0", model="FTX-1")
+        with patch("rigplane.backends.factory.YaesuCatRadio") as constructor:
+            create_radio(cfg)
+
+        constructor.assert_called_once()
+        assert constructor.call_args.kwargs["profile"] == "FTX-1"
+
 
 # ---------------------------------------------------------------------------
 # CLI _build_backend_config
