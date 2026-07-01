@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import logging
+import os
 import tomllib
 import warnings
 from dataclasses import dataclass
+from importlib import resources
 from pathlib import Path
 from typing import Any
 
@@ -23,7 +25,15 @@ from rigplane.core.state_acquisition_policy import (
 from rigplane.core.state_pipeline_contracts import FieldPath
 from rigplane.commands.command_map import CommandMap
 
-__all__ = ["RigConfig", "RigLoadError", "load_rig", "discover_rigs"]
+__all__ = [
+    "RigConfig",
+    "RigLoadError",
+    "load_rig",
+    "discover_rigs",
+    "discover_available_rigs",
+    "load_rig_resource",
+    "rig_resource_roots",
+]
 from rigplane.commands.command_spec import CatCommandSpec, CivCommandSpec, CommandSpec
 from rigplane.profiles import (
     BandInfo,
@@ -55,6 +65,7 @@ VALID_AUDIO_SAMPLE_RATES_HZ = {8000, 12000, 16000, 24000, 48000}
 VALID_BROWSER_RX_TRANSPORTS = {"auto", "pcm", "opus"}
 VALID_RX_AUDIO_CHANNELS = {"mix", "left", "right"}
 DEFAULT_KEYBOARD_PROFILE_NAME = "_keyboard-default.toml"
+RIGS_DIR_ENV = "RIGPLANE_RIGS_DIR"
 
 _REQUIRED_SECTIONS = ("radio", "capabilities", "modes", "filters", "vfo")
 _REQUIRED_RADIO_FIELDS = ("id", "model", "receiver_count", "has_lan", "has_wifi")
@@ -1450,3 +1461,94 @@ def discover_rigs(directory: Path) -> dict[str, RigConfig]:
         rigs[rig.model] = rig
 
     return rigs
+
+
+def rig_resource_roots() -> tuple[Any, ...]:
+    """Return rig-profile roots in supported lookup order.
+
+    Package resources are the canonical installed layout.  The repo-root
+    fallback keeps editable checkouts working without copying ``rigs/`` into
+    ``src/rigplane``.  ``RIGPLANE_RIGS_DIR`` is a test/dev override, not the
+    normal packaged-app path.
+    """
+    roots: list[Any] = []
+    override = os.environ.get(RIGS_DIR_ENV, "").strip()
+    if override:
+        roots.append(Path(override))
+    try:
+        roots.append(resources.files("rigplane").joinpath("rigs"))
+    except (AttributeError, ModuleNotFoundError):
+        pass
+    roots.append(Path(__file__).resolve().parents[3] / "rigs")
+
+    deduped: list[Any] = []
+    seen: set[str] = set()
+    for root in roots:
+        marker = str(root)
+        if marker in seen:
+            continue
+        seen.add(marker)
+        deduped.append(root)
+    return tuple(deduped)
+
+
+def _iter_resource_tomls(root: Any) -> list[Any]:
+    if not root.is_dir():
+        return []
+    return sorted(
+        (
+            child
+            for child in root.iterdir()
+            if child.name.endswith(".toml")
+            and not child.name.startswith("_")
+            and not child.name.endswith(".draft.toml")
+        ),
+        key=lambda child: child.name,
+    )
+
+
+def _load_rig_resource_file(resource: Any) -> RigConfig:
+    if isinstance(resource, Path):
+        return load_rig(resource)
+    with resources.as_file(resource) as path:
+        return load_rig(path)
+
+
+def discover_available_rigs() -> dict[str, RigConfig]:
+    """Discover rig TOML profiles from the supported resource roots."""
+    for root in rig_resource_roots():
+        rigs: dict[str, RigConfig] = {}
+        for resource in _iter_resource_tomls(root):
+            rig = _load_rig_resource_file(resource)
+            rigs[rig.model] = rig
+        if rigs:
+            logger.debug(
+                "Loaded %d rig profiles from %s: %s",
+                len(rigs),
+                root,
+                ", ".join(sorted(rigs.keys())),
+            )
+            return rigs
+    logger.warning(
+        "No rig TOML profiles found in resource roots: %s",
+        [str(root) for root in rig_resource_roots()],
+    )
+    return {}
+
+
+def _normalize_resource_key(value: str) -> str:
+    return "".join(ch for ch in value.upper() if ch.isalnum())
+
+
+def load_rig_resource(name_or_id: str) -> RigConfig:
+    """Load a bundled rig profile by model name or profile id."""
+    key = _normalize_resource_key(name_or_id)
+    rigs = discover_available_rigs()
+    for rig in rigs.values():
+        if (
+            _normalize_resource_key(rig.model) == key
+            or _normalize_resource_key(rig.id) == key
+        ):
+            return rig
+    available = ", ".join(sorted(rigs.keys()))
+    raise RigLoadError(f"Unknown rig profile {name_or_id!r}. Available: {available}")

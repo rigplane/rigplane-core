@@ -12,7 +12,14 @@ import pytest
 
 from rigplane.command_map import CommandMap
 from rigplane.profiles import BandInfo, FreqRangeInfo, RadioProfile, get_radio_profile
-from rigplane.rig_loader import RigConfig, RigLoadError, discover_rigs, load_rig
+from rigplane.rig_loader import (
+    RigConfig,
+    RigLoadError,
+    discover_available_rigs,
+    discover_rigs,
+    load_rig,
+    load_rig_resource,
+)
 
 RIGS_DIR = Path(__file__).resolve().parent.parent / "rigs"
 TEMPLATE_PATH = RIGS_DIR / "ic7610.toml"
@@ -615,6 +622,27 @@ class TestDiscoverRigs:
         assert rigs == {}
         assert rigs == {}
         assert rigs == {}
+
+
+class TestRigResourceResolver:
+    """Supported rig resource lookup used by packaged consumers."""
+
+    def test_discovers_profiles_from_env_override(self, monkeypatch, tmp_path):
+        (tmp_path / "ftx1.toml").write_bytes((RIGS_DIR / "ftx1.toml").read_bytes())
+        monkeypatch.setenv("RIGPLANE_RIGS_DIR", str(tmp_path))
+
+        rigs = discover_available_rigs()
+
+        assert sorted(rigs) == ["FTX-1"]
+
+    def test_loads_profile_by_model_or_id_from_supported_roots(
+        self, monkeypatch, tmp_path
+    ):
+        (tmp_path / "ftx1.toml").write_bytes((RIGS_DIR / "ftx1.toml").read_bytes())
+        monkeypatch.setenv("RIGPLANE_RIGS_DIR", str(tmp_path))
+
+        assert load_rig_resource("FTX-1").model == "FTX-1"
+        assert load_rig_resource("ftx1").model == "FTX-1"
 
 
 class TestCodecPreference:

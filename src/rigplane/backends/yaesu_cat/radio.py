@@ -8,7 +8,6 @@ using :class:`YaesuCatTransport` for serial I/O and
 from __future__ import annotations
 
 import logging
-from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable, Literal, Sequence
 
 from ...audio import AudioPacket
@@ -36,9 +35,6 @@ if TYPE_CHECKING:
 __all__ = ["YaesuCatRadio"]
 
 logger = logging.getLogger(__name__)
-
-# Path to rigs/ directory: src/rigplane/backends/yaesu_cat/radio.py → 4 levels up
-_RIGS_DIR = Path(__file__).parents[4] / "rigs"
 
 # CTCSS tone chart (MOR-458). The FTX-1 CAT ``CN`` "CTCSS TONE FREQUENCY"
 # command reports the tone as a 0-49 INDEX into the standard 50-tone EIA CTCSS
@@ -118,11 +114,10 @@ def _ctcss_index_to_centihz(index: int) -> int:
 
 def _load_config(profile: Any) -> "RigConfig":
     """Load RigConfig from a profile name or return an existing RigConfig."""
-    from ...rig_loader import RigConfig, load_rig
+    from ...rig_loader import RigConfig, load_rig_resource
 
     if isinstance(profile, str):
-        path = _RIGS_DIR / f"{profile}.toml"
-        return load_rig(path)
+        return load_rig_resource(profile)
     if isinstance(profile, RigConfig):
         return profile
     raise TypeError(f"profile must be str or RigConfig, got {type(profile).__name__}")
