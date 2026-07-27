@@ -1356,7 +1356,8 @@ async def test_audio_handler_reader_control_tx_and_sender_paths(
     )
     # Mock radio needs to pass isinstance(AudioCapable) check
     radio = MagicMock(spec=AudioCapable)
-    radio.capabilities = {"audio"}
+    radio.capabilities = {"audio", "tx"}
+    radio.backend_id = "rigplane"
     radio.push_audio_tx_opus = AsyncMock()
     radio.start_audio_tx_opus = AsyncMock()
     radio.stop_audio_tx_opus = AsyncMock()
@@ -1437,7 +1438,8 @@ async def test_audio_handler_control_and_tx_guard_paths() -> None:
     from rigplane.radio_protocol import AudioCapable
 
     class _FakeAudioRadio(AudioCapable):
-        capabilities = {"audio"}
+        capabilities = {"audio", "tx"}
+        backend_id = "rigplane"
         push_audio_tx_opus = AsyncMock(side_effect=RuntimeError("boom"))
         start_audio_rx_opus = AsyncMock()
         stop_audio_rx_opus = AsyncMock()
@@ -1484,7 +1486,8 @@ async def test_audio_handler_tx_already_transmitting_is_tolerated() -> None:
     from rigplane.radio_protocol import AudioCapable
 
     radio = MagicMock(spec=AudioCapable)
-    radio.capabilities = {"audio"}
+    radio.capabilities = {"audio", "tx"}
+    radio.backend_id = "rigplane"
     radio.start_audio_tx_opus = AsyncMock(
         side_effect=RuntimeError("Already transmitting")
     )
@@ -1502,7 +1505,8 @@ async def test_audio_handler_tx_other_runtime_error_propagates() -> None:
     from rigplane.radio_protocol import AudioCapable
 
     radio = MagicMock(spec=AudioCapable)
-    radio.capabilities = {"audio"}
+    radio.capabilities = {"audio", "tx"}
+    radio.backend_id = "rigplane"
     radio.start_audio_tx_opus = AsyncMock(side_effect=RuntimeError("Something else"))
 
     ws = SimpleNamespace(recv=AsyncMock(), send_binary=AsyncMock())
@@ -1532,7 +1536,9 @@ def _make_web_tx_contract(
 
 def _make_web_tx_radio(contract: AudioStreamContract) -> SimpleNamespace:
     return SimpleNamespace(
-        capabilities={"audio"},
+        capabilities={"audio", "tx"},
+        backend_id="yaesu_cat",
+        has_usb_audio=True,
         audio_codec=contract.rx_codec,
         audio_sample_rate=contract.tx_sample_rate_hz,
         audio_stream_contract=contract,
@@ -1679,7 +1685,8 @@ async def test_audio_handler_decodes_opus_browser_tx_for_pcm_contract() -> None:
     )
 
     class _FakeAudioRadio(AudioCapable):
-        capabilities = {"audio"}
+        capabilities = {"audio", "tx"}
+        backend_id = "rigplane"
         audio_codec = AudioCodec.PCM_2CH_16BIT
         audio_sample_rate = 16000
         audio_stream_contract = contract
@@ -1733,7 +1740,8 @@ async def test_audio_handler_pushes_pcm_browser_tx_directly() -> None:
     )
 
     class _FakeAudioRadio(AudioCapable):
-        capabilities = {"audio"}
+        capabilities = {"audio", "tx"}
+        backend_id = "rigplane"
         audio_codec = AudioCodec.PCM_2CH_16BIT
         audio_sample_rate = 48000
         audio_stream_contract = contract
