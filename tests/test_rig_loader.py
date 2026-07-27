@@ -168,6 +168,70 @@ provider = 123
         with pytest.raises(RigLoadError, match="vfo.*scheme"):
             load_rig(p)
 
+    @pytest.mark.parametrize(
+        ("scheme", "receiver_count"),
+        [
+            ("single", 1),
+            ("ab", 1),
+            ("ab_shared", 2),
+            ("main_sub", 2),
+        ],
+    )
+    def test_valid_receiver_count_vfo_scheme_pairs(
+        self,
+        tmp_path,
+        scheme,
+        receiver_count,
+    ):
+        toml = _MINIMAL_TOML.replace(
+            "receiver_count = 1",
+            f"receiver_count = {receiver_count}",
+        ).replace('scheme = "ab"', f'scheme = "{scheme}"')
+        rig = load_rig(_write_toml(tmp_path, toml))
+
+        assert rig.receiver_count == receiver_count
+        assert rig.vfo_scheme == scheme
+
+    @pytest.mark.parametrize(
+        ("scheme", "receiver_count", "expected_count"),
+        [
+            ("single", 2, 1),
+            ("ab", 2, 1),
+            ("ab_shared", 1, 2),
+            ("main_sub", 1, 2),
+            *[
+                (scheme, receiver_count, expected_count)
+                for scheme, expected_count in [
+                    ("single", 1),
+                    ("ab", 1),
+                    ("ab_shared", 2),
+                    ("main_sub", 2),
+                ]
+                for receiver_count in (0, -1, 3)
+            ],
+        ],
+    )
+    def test_invalid_receiver_count_vfo_scheme_pairs(
+        self,
+        tmp_path,
+        scheme,
+        receiver_count,
+        expected_count,
+    ):
+        toml = _MINIMAL_TOML.replace(
+            "receiver_count = 1",
+            f"receiver_count = {receiver_count}",
+        ).replace('scheme = "ab"', f'scheme = "{scheme}"')
+
+        with pytest.raises(
+            RigLoadError,
+            match=(
+                rf"\[radio\]\.receiver_count = {receiver_count} is incompatible "
+                rf"with \[vfo\]\.scheme = '{scheme}'; expected {expected_count}"
+            ),
+        ):
+            load_rig(_write_toml(tmp_path, toml))
+
     def test_file_not_found(self, tmp_path):
         with pytest.raises(RigLoadError, match="not found"):
             load_rig(tmp_path / "nonexistent.toml")
