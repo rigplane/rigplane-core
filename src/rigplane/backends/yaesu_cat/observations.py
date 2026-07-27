@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING, Protocol, TypeVar
 from rigplane.core.observation_adapter import ProviderObservationAdapter
 from rigplane.core.state_acquisition_policy import RadioAcquisitionProfile
 from rigplane.core.state_pipeline_contracts import FieldPath, Observation
+from rigplane.core.tx_target import KnownTxTarget, TxTarget, UnknownTxTarget
 from rigplane.runtime.meter_cal import interpolate_meter
 
 from .parser import CatFormatError, CatParseError
@@ -32,6 +33,7 @@ _MAIN_MODE = FieldPath.active("main", "freq_mode", "mode")
 _SUB_FREQ = FieldPath.active("sub", "freq_mode", "freq_hz")
 _SUB_MODE = FieldPath.active("sub", "freq_mode", "mode")
 _PTT = FieldPath.global_("tx_state", "ptt")
+_TX_TARGET = FieldPath.global_("tx_state", "tx_target")
 _MAIN_AF = FieldPath.receiver("main", "operator_controls", "af_level")
 _MAIN_RF = FieldPath.receiver("main", "operator_controls", "rf_gain")
 _MAIN_SQL = FieldPath.receiver("main", "operator_controls", "squelch")
@@ -182,6 +184,8 @@ class YaesuObservationRadio(Protocol):
 
     async def read_ptt(self) -> bool: ...
 
+    async def get_tx_func(self) -> int: ...
+
     async def read_af_level(self, receiver: int = 0) -> int: ...
 
     async def read_rf_gain(self, receiver: int = 0) -> int: ...
@@ -313,6 +317,14 @@ class YaesuObservationAdapter:
                 observations.append(
                     adapter.observation(_SUB_MODE, result[0], native_id="read_mode")
                 )
+        if self._can_poll(_TX_TARGET):
+            observations.append(
+                adapter.observation(
+                    _TX_TARGET,
+                    await self._read_tx_target(),
+                    native_id="get_tx_func",
+                )
+            )
         if self._can_poll(_PTT):
             ok, value = await self._safe_read("ptt", self.radio.read_ptt())
             if ok:
@@ -336,6 +348,61 @@ class YaesuObservationAdapter:
                     )
                 )
         return tuple(observations)
+
+    async def _read_tx_func(self) -> int | UnknownTxTarget:
+        method = getattr(self.radio, "get_tx_func", None)
+        if not callable(method):
+            return UnknownTxTarget(reason="unsupported")
+        try:
+            tx_func = await method()
+        except (AttributeError, NotImplementedError, CatCommandRejected):
+            return UnknownTxTarget(reason="unsupported")
+        except (CatParseError, CatFormatError, ValueError, KeyError):
+            return UnknownTxTarget(reason="contradiction")
+        if tx_func is None:
+            return UnknownTxTarget(reason="not-observed")
+        if type(tx_func) is not int or tx_func not in (0, 1):
+            return UnknownTxTarget(reason="contradiction")
+        return tx_func
+
+    async def _read_tx_target(self) -> TxTarget:
+        """Bracket the selected frequency with stable native FT authority."""
+        if not self._has_runtime_capability("tx"):
+            return UnknownTxTarget(reason="unsupported")
+        stats = getattr(getattr(self.radio, "_transport", None), "stats", None)
+        reconnects = getattr(stats, "reconnects", 0)
+        generation = (
+            self.profile.provider,
+            reconnects if type(reconnects) is int else 0,
+        )
+        before = await self._read_tx_func()
+        if isinstance(before, UnknownTxTarget):
+            return before
+        ok, raw_frequency = await self._safe_read(
+            "tx_target.freq", self.radio.read_freq(before)
+        )
+        after = await self._read_tx_func()
+        current_reconnects = getattr(stats, "reconnects", 0)
+        current_generation = (
+            self.profile.provider,
+            current_reconnects if type(current_reconnects) is int else 0,
+        )
+        if generation != current_generation:
+            return UnknownTxTarget(reason="not-observed")
+        if isinstance(after, UnknownTxTarget):
+            return after
+        if after != before:
+            return UnknownTxTarget(reason="contradiction")
+        frequency = (
+            raw_frequency
+            if ok and type(raw_frequency) is int and raw_frequency > 0
+            else None
+        )
+        return KnownTxTarget(
+            receiver="MAIN" if before == 0 else "SUB",
+            slot=None,
+            frequency_hz=frequency,
+        )
 
     async def poll_rx_meters(
         self,
