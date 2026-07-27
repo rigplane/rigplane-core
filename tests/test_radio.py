@@ -23,7 +23,7 @@ from rigplane.commands import (
     build_cmd29_frame,
 )
 from rigplane.commander import Priority
-from rigplane.exceptions import ConnectionError, TimeoutError
+from rigplane.exceptions import CommandError, ConnectionError, TimeoutError
 from rigplane.core import tx_safety as tx
 from rigplane.radio import IcomRadio
 from rigplane.types import (
@@ -867,6 +867,92 @@ class TestPtt:
             assert observations[0].provider_generation == 8
         finally:
             await radio._civ_runtime.stop_pump()
+
+    @pytest.mark.asyncio
+    async def test_fresh_ptt_read_rejects_identical_unbind_rebind(
+        self, radio: IcomRadio, mock_transport: MockTransport
+    ) -> None:
+        observations: list[tx.ProviderPttObservation] = []
+        observer = observations.append
+        radio._bind_authoritative_ptt_observer(provider_generation=8, observer=observer)
+        await _route_ptt(radio, b"\x01")
+        pending = asyncio.create_task(
+            radio._request_authoritative_ptt_read(
+                provider_generation=8, observer=observer
+            )
+        )
+        while not mock_transport.sent_packets:
+            await asyncio.sleep(0)
+        radio._unbind_authoritative_ptt_observer()
+        radio._bind_authoritative_ptt_observer(provider_generation=8, observer=observer)
+        mock_transport.queue_response(_ptt_response(False))
+
+        with pytest.raises(CommandError, match="authoritative"):
+            await pending
+        await _route_ptt(radio, b"\x00")
+        assert [item.ptt_observation_seq for item in observations] == [1, 2]
+
+    @pytest.mark.asyncio
+    async def test_fresh_ptt_read_rechecks_binding_before_dispatch(
+        self, radio: IcomRadio, mock_transport: MockTransport
+    ) -> None:
+        observations: list[tx.ProviderPttObservation] = []
+        observer = observations.append
+        radio._bind_authoritative_ptt_observer(provider_generation=9, observer=observer)
+        entered = asyncio.Event()
+        release = asyncio.Event()
+        send = radio._civ_runtime._send_civ_frame_now
+
+        async def gated_send(frame: bytes, **kwargs: object) -> None:
+            entered.set()
+            await release.wait()
+            await send(frame, **kwargs)
+
+        with patch.object(radio._civ_runtime, "_send_civ_frame_now", gated_send):
+            pending = asyncio.create_task(
+                radio._request_authoritative_ptt_read(
+                    provider_generation=9, observer=observer
+                )
+            )
+            await entered.wait()
+            radio._unbind_authoritative_ptt_observer()
+            release.set()
+            with pytest.raises((CommandError, ConnectionError)):
+                await pending
+        assert mock_transport.sent_packets == []
+        assert observations == []
+
+    @pytest.mark.asyncio
+    async def test_fresh_ptt_read_fails_closed_on_callback_and_reconnect(
+        self, radio: IcomRadio, mock_transport: MockTransport
+    ) -> None:
+        def broken(_observation: tx.ProviderPttObservation) -> None:
+            raise RuntimeError("observer")
+
+        radio._bind_authoritative_ptt_observer(provider_generation=10, observer=broken)
+        mock_transport.queue_response(_ptt_response(True))
+        with pytest.raises(CommandError, match="authoritative"):
+            await radio._request_authoritative_ptt_read(
+                provider_generation=10, observer=broken
+            )
+
+        observations: list[tx.ProviderPttObservation] = []
+        observer = observations.append
+        radio._bind_authoritative_ptt_observer(
+            provider_generation=10, observer=observer
+        )
+        pending = asyncio.create_task(
+            radio._request_authoritative_ptt_read(
+                provider_generation=10, observer=observer
+            )
+        )
+        while len(mock_transport.sent_packets) < 2:
+            await asyncio.sleep(0)
+        radio._civ_runtime.advance_generation("test-reconnect")
+        mock_transport.queue_response(_ptt_response(False))
+        with pytest.raises(ConnectionError):
+            await pending
+        assert observations == []
 
 
 class TestTimeout:
