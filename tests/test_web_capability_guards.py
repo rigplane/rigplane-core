@@ -6,6 +6,7 @@ TDD: these tests were written FIRST, then the backend was modified to pass them.
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 
 import pytest
 
@@ -135,6 +136,90 @@ class TestInfoEndpoint:
 
 class TestCapabilitiesEndpoint:
     """Verify /api/v1/capabilities includes rig-specific metadata."""
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("model", "receivers", "vfo_scheme"),
+        [
+            ("IC-7610", 2, "main_sub"),
+            ("IC-7300", 1, "ab"),
+            ("FTX-1", 2, "ab_shared"),
+        ],
+    )
+    async def test_capabilities_pins_known_wire_subset_and_types(
+        self, model: str, receivers: int, vfo_scheme: str
+    ):
+        """Known fields stay typed while additive fields remain compatible."""
+        radio = _make_radio(model)
+        srv = WebServer(radio)
+        writer = _FakeWriter()
+
+        await srv._serve_capabilities(writer)  # noqa: SLF001
+
+        data = _parse_json_body(writer)
+        # Deliberately assert a subset: clients must tolerate future additive
+        # capability fields, but these established fields and their types are
+        # the frontend wire contract.
+        assert data["model"] == model
+        assert data["receivers"] == receivers
+        assert data["vfoScheme"] == vfo_scheme
+        assert isinstance(data["capabilities"], list)
+        assert all(isinstance(capability, str) for capability in data["capabilities"])
+        assert isinstance(data["scope"], bool)
+        assert isinstance(data["audio"], bool)
+        assert isinstance(data["tx"], bool)
+        assert isinstance(data["freqRanges"], list)
+        assert isinstance(data["modes"], list)
+        assert isinstance(data["filters"], list)
+        assert isinstance(data["audioConfig"], dict)
+        assert isinstance(data["audioConfig"]["sampleRate"], int)
+        assert isinstance(data["webrtc"], dict)
+        assert isinstance(data["webrtc"]["available"], bool)
+        assert isinstance(data["webrtc"]["enabled"], bool)
+        assert isinstance(data["txBands"], list)
+        assert all(
+            isinstance(band["name"], str)
+            and isinstance(band["start"], int)
+            and isinstance(band["end"], int)
+            for band in data["txBands"]
+        )
+
+    @pytest.mark.asyncio
+    async def test_capabilities_reports_hardware_and_audio_scope_independently(self):
+        """Audio FFT availability is not inferred from hardware scope support."""
+        hardware_radio = _make_radio("IC-7610")
+        hardware_srv = WebServer(hardware_radio)
+        hardware_writer = _FakeWriter()
+        await hardware_srv._serve_capabilities(hardware_writer)  # noqa: SLF001
+        hardware_data = _parse_json_body(hardware_writer)
+
+        audio_radio = _make_radio("FTX-1")
+        audio_srv = WebServer(audio_radio)
+        audio_writer = _FakeWriter()
+        await audio_srv._serve_capabilities(audio_writer)  # noqa: SLF001
+        audio_data = _parse_json_body(audio_writer)
+
+        assert hardware_data["scope"] is True
+        assert hardware_data["audio"] is True
+        assert hardware_data["scopeSource"] == "hardware"
+        assert hardware_data["audioFftAvailable"] is True
+        assert audio_data["scope"] is False
+        assert audio_data["audio"] is True
+        assert audio_data["scopeSource"] == "audio_fft"
+        assert audio_data["audioFftAvailable"] is True
+
+    @pytest.mark.asyncio
+    async def test_capabilities_allows_nullable_tx_bands(self):
+        """Profiles without configured bands serialize the established null value."""
+        radio = _make_radio("IC-7610")
+        radio.profile = replace(radio.profile, freq_ranges=())
+        srv = WebServer(radio)
+        writer = _FakeWriter()
+
+        await srv._serve_capabilities(writer)  # noqa: SLF001
+
+        data = _parse_json_body(writer)
+        assert data["txBands"] is None
 
     @pytest.mark.asyncio
     async def test_capabilities_includes_receivers(self):
