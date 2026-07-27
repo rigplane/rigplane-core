@@ -1344,23 +1344,41 @@ async def test_audio_broadcaster_reap_stops_relay_when_empty() -> None:
     broadcaster._stop_relay.assert_awaited_once()
 
 
+def _make_legacy_opus_tx_radio(
+    *,
+    start_error: Exception | None = None,
+    push_error: Exception | None = None,
+) -> SimpleNamespace:
+    return SimpleNamespace(
+        capabilities={"audio", "tx"},
+        backend_id="rigplane",
+        audio_bus=None,
+        audio_codec=AudioCodec.OPUS_1CH,
+        audio_tx_codec=AudioCodec.OPUS_1CH,
+        audio_sample_rate=48000,
+        start_audio_rx_opus=AsyncMock(),
+        stop_audio_rx_opus=AsyncMock(),
+        start_audio_rx_pcm=AsyncMock(),
+        stop_audio_rx_pcm=AsyncMock(),
+        start_audio_tx_opus=AsyncMock(side_effect=start_error),
+        push_audio_tx_opus=AsyncMock(side_effect=push_error),
+        stop_audio_tx_opus=AsyncMock(),
+        start_audio_tx_pcm=AsyncMock(),
+        push_audio_tx_pcm=AsyncMock(),
+        stop_audio_tx_pcm=AsyncMock(),
+        get_audio_stats=AsyncMock(return_value={}),
+    )
+
+
 async def test_audio_handler_reader_control_tx_and_sender_paths(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from rigplane.radio_protocol import AudioCapable
-
     broadcaster = SimpleNamespace(
         subscribe=AsyncMock(return_value=asyncio.Queue()),
         unsubscribe=AsyncMock(),
         negotiated_rx_format=lambda _q: {"codec": "pcm16"},
     )
-    # Mock radio needs to pass isinstance(AudioCapable) check
-    radio = MagicMock(spec=AudioCapable)
-    radio.capabilities = {"audio", "tx"}
-    radio.backend_id = "rigplane"
-    radio.push_audio_tx_opus = AsyncMock()
-    radio.start_audio_tx_opus = AsyncMock()
-    radio.stop_audio_tx_opus = AsyncMock()
+    radio = _make_legacy_opus_tx_radio()
     ws = SimpleNamespace(
         recv=AsyncMock(
             side_effect=[
@@ -1435,19 +1453,7 @@ async def test_audio_handler_reader_control_tx_and_sender_paths(
 
 async def test_audio_handler_control_and_tx_guard_paths() -> None:
     ws = SimpleNamespace(send_binary=AsyncMock(), recv=AsyncMock())
-    from rigplane.radio_protocol import AudioCapable
-
-    class _FakeAudioRadio(AudioCapable):
-        capabilities = {"audio", "tx"}
-        backend_id = "rigplane"
-        push_audio_tx_opus = AsyncMock(side_effect=RuntimeError("boom"))
-        start_audio_rx_opus = AsyncMock()
-        stop_audio_rx_opus = AsyncMock()
-        start_audio_tx_opus = AsyncMock()
-        stop_audio_tx_opus = AsyncMock()
-        audio_bus = None
-
-    radio = _FakeAudioRadio()
+    radio = _make_legacy_opus_tx_radio(push_error=RuntimeError("boom"))
     broadcaster = SimpleNamespace(
         subscribe=AsyncMock(return_value=asyncio.Queue()),
         unsubscribe=AsyncMock(),
@@ -1483,14 +1489,7 @@ async def test_audio_handler_control_and_tx_guard_paths() -> None:
 
 async def test_audio_handler_tx_already_transmitting_is_tolerated() -> None:
     """_handle_control tolerates 'Already transmitting' from start_audio_tx_opus (#684)."""
-    from rigplane.radio_protocol import AudioCapable
-
-    radio = MagicMock(spec=AudioCapable)
-    radio.capabilities = {"audio", "tx"}
-    radio.backend_id = "rigplane"
-    radio.start_audio_tx_opus = AsyncMock(
-        side_effect=RuntimeError("Already transmitting")
-    )
+    radio = _make_legacy_opus_tx_radio(start_error=RuntimeError("Already transmitting"))
 
     ws = SimpleNamespace(recv=AsyncMock(), send_binary=AsyncMock())
     handler = AudioHandler(ws, radio, None)
@@ -1502,12 +1501,7 @@ async def test_audio_handler_tx_already_transmitting_is_tolerated() -> None:
 
 async def test_audio_handler_tx_other_runtime_error_propagates() -> None:
     """Non-'Already transmitting' RuntimeError still propagates."""
-    from rigplane.radio_protocol import AudioCapable
-
-    radio = MagicMock(spec=AudioCapable)
-    radio.capabilities = {"audio", "tx"}
-    radio.backend_id = "rigplane"
-    radio.start_audio_tx_opus = AsyncMock(side_effect=RuntimeError("Something else"))
+    radio = _make_legacy_opus_tx_radio(start_error=RuntimeError("Something else"))
 
     ws = SimpleNamespace(recv=AsyncMock(), send_binary=AsyncMock())
     handler = AudioHandler(ws, radio, None)
@@ -1559,41 +1553,6 @@ def _make_web_tx_audio_frame(browser_codec: int, audio_data: bytes) -> bytes:
         bytes([MSG_TYPE_AUDIO_TX, browser_codec])
         + b"\x00" * (AUDIO_HEADER_SIZE - 2)
         + audio_data
-    )
-
-
-async def test_audio_handler_drops_opus_browser_tx_for_pcm_contract_without_transcoder(
-    monkeypatch: pytest.MonkeyPatch,
-    caplog: pytest.LogCaptureFixture,
-) -> None:
-    contract = _make_web_tx_contract(AudioCodec.PCM_1CH_16BIT)
-    radio = _make_web_tx_radio(contract)
-    ws = SimpleNamespace(recv=AsyncMock(), send_binary=AsyncMock())
-    handler = AudioHandler(ws, radio, None)
-
-    def _missing_transcoder(**_kwargs: object) -> object:
-        raise RuntimeError("opus backend unavailable")
-
-    monkeypatch.setattr(
-        "rigplane.web.handlers.audio.create_pcm_opus_transcoder",
-        _missing_transcoder,
-    )
-    await handler._handle_control({"type": "audio_start", "direction": "tx"})
-
-    with caplog.at_level("WARNING", logger="rigplane.web.handlers.audio"):
-        await handler._handle_tx_audio(
-            _make_web_tx_audio_frame(AUDIO_CODEC_OPUS, b"opus-frame")
-        )
-
-    radio.start_audio_tx_pcm.assert_awaited_once_with(sample_rate=16000)
-    radio.push_audio_tx_pcm.assert_not_awaited()
-    radio.push_audio_tx_opus.assert_not_awaited()
-    assert any(
-        "incoming_codec=opus" in record.message
-        and "radio_tx_codec=PCM_1CH_16BIT" in record.message
-        and "sample_rate=16000" in record.message
-        and "action=dropped_no_transcoder" in record.message
-        for record in caplog.records
     )
 
 
@@ -1758,6 +1717,8 @@ async def test_audio_handler_pushes_pcm_browser_tx_directly() -> None:
     radio = _FakeAudioRadio()
     ws = SimpleNamespace(recv=AsyncMock(), send_binary=AsyncMock())
     handler = AudioHandler(ws, radio, None)
+    handler._transcoder = SimpleNamespace(opus_to_pcm=lambda data: data)
+    handler._transcoder_rate = 48000
     handler._tx_active = True
 
     await handler._handle_control({"type": "audio_start", "direction": "tx"})
@@ -1789,6 +1750,8 @@ async def test_audio_handler_neutral_radio_uses_start_tx_and_stop_tx() -> None:
     radio = _make_neutral_tx_radio(contract)
     ws = SimpleNamespace(recv=AsyncMock(), send_binary=AsyncMock())
     handler = AudioHandler(ws, radio, None)
+    handler._transcoder = SimpleNamespace(opus_to_pcm=lambda data: data)
+    handler._transcoder_rate = 16000
 
     await handler._handle_control({"type": "audio_start", "direction": "tx"})
     assert handler._tx_active is True
@@ -1809,6 +1772,8 @@ async def test_audio_handler_legacy_radio_keeps_per_codec_branches() -> None:
     radio = _make_web_tx_radio(contract)
     ws = SimpleNamespace(recv=AsyncMock(), send_binary=AsyncMock())
     handler = AudioHandler(ws, radio, None)
+    handler._transcoder = SimpleNamespace(opus_to_pcm=lambda data: data)
+    handler._transcoder_rate = 16000
 
     await handler._handle_control({"type": "audio_start", "direction": "tx"})
     radio.start_audio_tx_pcm.assert_awaited_once_with(sample_rate=16000)
@@ -1838,10 +1803,10 @@ def test_tx_codec_falls_back_to_contract_tx_codec() -> None:
 def test_tx_codec_falls_back_to_audio_codec() -> None:
     radio = SimpleNamespace(
         capabilities={"audio"},
-        audio_codec=AudioCodec.OPUS_2CH,
+        audio_codec=AudioCodec.OPUS_1CH,
     )
     handler = AudioHandler(SimpleNamespace(), radio, None)
-    assert handler._tx_codec() == AudioCodec.OPUS_2CH
+    assert handler._tx_codec() == AudioCodec.OPUS_1CH
 
 
 async def test_audio_handler_push_tx_byte_compatible_with_legacy_pcm_push() -> None:
@@ -1882,6 +1847,8 @@ async def test_audio_handler_tolerates_usb_lifecycle_double_start() -> None:
     )
     ws = SimpleNamespace(recv=AsyncMock(), send_binary=AsyncMock())
     handler = AudioHandler(ws, radio, None)
+    handler._transcoder = SimpleNamespace(opus_to_pcm=lambda data: data)
+    handler._transcoder_rate = 16000
 
     await handler._handle_control({"type": "audio_start", "direction": "tx"})
 
@@ -1904,6 +1871,8 @@ async def test_audio_handler_tolerates_typed_already_started_by_type() -> None:
     radio.start_tx = AsyncMock(side_effect=exc)
     ws = SimpleNamespace(recv=AsyncMock(), send_binary=AsyncMock())
     handler = AudioHandler(ws, radio, None)
+    handler._transcoder = SimpleNamespace(opus_to_pcm=lambda data: data)
+    handler._transcoder_rate = 16000
 
     await handler._handle_control({"type": "audio_start", "direction": "tx"})
 

@@ -58,7 +58,10 @@ class _SessionLanRadio(LanLikeRadio):
 
 def _make_handler(radio: _SessionLanRadio) -> AudioHandler:
     ws = SimpleNamespace(recv=AsyncMock(), send_binary=AsyncMock())
-    return AudioHandler(ws, radio, None)
+    handler = AudioHandler(ws, radio, None)
+    handler._transcoder = SimpleNamespace(opus_to_pcm=lambda data: data)
+    handler._transcoder_rate = radio.audio_sample_rate
+    return handler
 
 
 def _pcm_tx_frame(payload: bytes) -> bytes:
