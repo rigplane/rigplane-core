@@ -133,7 +133,6 @@ const deferred = <T>() => {
   return { promise, resolve };
 };
 const settle = async () => { await Promise.resolve(); await Promise.resolve(); };
-
 describe('PresentationResourceHost', () => {
   it('is inert until first demand, shares the handle, and stops on last release', async () => {
     const handle = {};
@@ -152,15 +151,29 @@ describe('PresentationResourceHost', () => {
     await settle();
     expect(driver.stop).toHaveBeenCalledWith(handle);
   });
-
+  it('publishes rejected stops and reclaims completed bindings', async () => {
+    const host = new PresentationResourceHost<object>('session');
+    let id = 0;
+    const driver = { start: vi.fn(async () => ({ id: ++id })), stop: vi.fn(async (handle: { id: number }) => { if (handle.id === 1) throw new Error('stop failed'); }) };
+    const health: string[] = [];
+    host.subscribe((_resource, state) => { health.push(state.health); });
+    host.configure('audio-fft', { available: true, selected: true, driver });
+    for (let cycle = 0; cycle < 3; cycle++) {
+      const lease = host.acquire('audio-fft', String(cycle));
+      await settle();
+      host.release(lease);
+      await settle();
+      expect.soft(health.at(-1)).toBe(host.snapshot('audio-fft').health);
+    }
+    expect.soft(driver.stop.mock.calls.map(([handle]) => handle.id)).toEqual([1, 2, 3]);
+    expect.soft((host as unknown as { bindings: object[] }).bindings).toHaveLength(0);
+  });
   it('disposes only a late abandoned handle and survives A→B→A completions', async () => {
     const startA = deferred<object>(), startB = deferred<object>(), startFinal = deferred<object>();
     const stopB = deferred<void>();
     const driver = {
-      start: vi.fn()
-        .mockImplementationOnce(() => startA.promise)
-        .mockImplementationOnce(() => startB.promise)
-        .mockImplementationOnce(() => startFinal.promise),
+      start: vi.fn().mockImplementationOnce(() => startA.promise)
+        .mockImplementationOnce(() => startB.promise).mockImplementationOnce(() => startFinal.promise),
       stop: vi.fn((handle: { id?: string }) => handle.id === 'B' ? stopB.promise : Promise.resolve()),
       dispose: vi.fn(async () => {}),
     };
@@ -172,34 +185,25 @@ describe('PresentationResourceHost', () => {
     host.release(leaseA);
     const leaseB = host.acquire('hardware-scope', 'B');
     const a = { id: 'stale-A' }, b = { id: 'B' }, currentA = { id: 'current-A' };
-    startB.resolve(b);
-    await settle();
-    startA.resolve(a);
-    await settle();
+    startB.resolve(b); await settle();
+    startA.resolve(a); await settle();
     expect(driver.dispose).toHaveBeenCalledWith(a);
     host.release(leaseB);
     host.acquire('hardware-scope', 'A-again');
-    startFinal.resolve(currentA);
-    await settle();
-    stopB.resolve();
-    await settle();
+    startFinal.resolve(currentA); await settle();
+    stopB.resolve(); await settle();
     expect(host.snapshot('hardware-scope').activeHandle).toBe(currentA);
     expect(driver.stop).toHaveBeenCalledWith(b);
     const publications = listener.mock.calls.length;
-    await host.teardown();
-    await host.teardown();
+    await host.teardown(); await host.teardown();
     expect(() => host.acquire('hardware-scope', 'late')).toThrow('torn down');
     expect(listener).toHaveBeenCalledTimes(publications);
     expect(driver.stop).toHaveBeenCalledWith(currentA);
     expect(driver.stop).toHaveBeenCalledTimes(2);
   });
-
   it('keeps unavailable and failed selections honest and requires retry', async () => {
     const handle = {};
-    const driver = {
-      start: vi.fn().mockRejectedValueOnce(new Error('offline')).mockResolvedValue(handle),
-      stop: vi.fn(async () => {}),
-    };
+    const driver = { start: vi.fn().mockRejectedValueOnce(new Error('offline')).mockResolvedValue(handle), stop: vi.fn(async () => {}) };
     const host = new PresentationResourceHost<object>('session');
     host.configure('rx-audio', { available: false, selected: true, driver });
     host.acquire('rx-audio', 'panel');
@@ -213,7 +217,6 @@ describe('PresentationResourceHost', () => {
     expect(driver.start).toHaveBeenCalledTimes(2);
   });
 });
-
 // ── Tests ──
 
 describe('FrontendRuntime.bootstrap()', () => {

@@ -33,12 +33,9 @@ import { systemController } from './system-controller';
 import { scopeController } from './scope-controller.svelte';
 import type { ScopeController } from './scope-controller.svelte';
 import { PresentationResourceHost } from './resource-host';
-
 import type { ServerState, ReceiverState } from '$lib/types/state';
 import type { Capabilities } from '$lib/types/capabilities';
-
 export const presentationResources = new PresentationResourceHost<unknown>('app');
-
 // ── Types ──
 
 export interface ConnectionSnapshot {

@@ -7,7 +7,6 @@ export interface PresentationResourceDriver<H> {
 type ResourceConfig<H> = { available: boolean; selected: boolean; driver?: PresentationResourceDriver<H> };
 type Binding<H> = { resource: AppResource; handle: H; driver: PresentationResourceDriver<H>; adopted: boolean };
 type Listener<H> = (resource: AppResource, state: ReturnType<ResourceDemand<H>['snapshot']>) => void;
-/** Executes one pure ResourceDemand model for an App session. */
 export class PresentationResourceHost<H> {
   private readonly demand: ResourceDemand<H>;
   private readonly drivers = new Map<AppResource, PresentationResourceDriver<H>>();
@@ -59,7 +58,9 @@ export class PresentationResourceHost<H> {
   private pump(operations = this.demand.takeOperations()): void {
     for (const operation of operations) {
       let task!: Promise<void>;
-      task = this.execute(operation).catch(() => {}).finally(() => { this.inFlight.delete(task); });
+      task = this.execute(operation).finally(() => {
+        try { this.refresh(operation.resource); } finally { this.inFlight.delete(task); }
+      }).catch(() => {});
       this.inFlight.add(task);
     }
   }
@@ -90,8 +91,8 @@ export class PresentationResourceHost<H> {
         }
       } finally {
         if (operation.kind === 'stop') this.demand.completeStop(operation);
+        if (binding) this.bindings.splice(this.bindings.indexOf(binding), 1);
       }
     }
-    this.refresh(operation.resource);
   }
 }
