@@ -335,12 +335,7 @@ class ServerStatePublic(_Strict):
     data3ModInput: int | None = None
     txBandEdges: list[dict[str, int]] = Field(default_factory=list)
     scopeControls: ScopeControlsPublic
-    # Additive staging field: both producers publish it in MOR-1106, after
-    # which MOR-1107 makes it required. The non-null default keeps current
-    # producer payloads conformant while explicit ``null`` still fails.
-    txTarget: TxTargetPublic = Field(
-        default_factory=lambda: UnknownTxTargetPublic(reason="not-observed")
-    )
+    txTarget: TxTargetPublic
 
     # Receivers. ``sub`` is dropped from the payload when ``receiver_count < 2``.
     main: ReceiverStatePublic

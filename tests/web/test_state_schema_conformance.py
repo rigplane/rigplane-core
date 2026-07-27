@@ -68,6 +68,22 @@ def test_dataclass_path_conforms(receiver_count: int) -> None:
     ServerStatePublic.model_validate(payload)
 
 
+def test_public_tx_target_is_required_after_producer_parity() -> None:
+    payload = build_public_state_payload(
+        RadioState(),
+        radio=None,
+        revision=7,
+        receiver_count=2,
+    )
+    assert payload.pop("txTarget") == {
+        "status": "unknown",
+        "reason": "not-observed",
+    }
+
+    with pytest.raises(ValueError):
+        ServerStatePublic.model_validate(payload)
+
+
 @pytest.mark.parametrize(
     "tx_target",
     [
