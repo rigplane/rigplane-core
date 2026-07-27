@@ -35,7 +35,9 @@ from rigplane.web.protocol import (
 class _SessionLanRadio(LanLikeRadio):
     """LAN-like stub + radio-owned session singleton (MOR-579 shape)."""
 
-    capabilities = {"audio"}
+    capabilities = {"audio", "tx"}
+    backend_id = "rigplane"
+    has_usb_audio = True
     audio_sample_rate = 48000
 
     def __init__(self) -> None:
