@@ -2963,6 +2963,22 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
         """Detach the managed-provider PTT readback observer."""
         self._civ_runtime.unbind_ptt_observer()
 
+    async def _request_authoritative_ptt_read(
+        self,
+        *,
+        provider_generation: int,
+        observer: "Callable[[ProviderPttObservation], None]",
+    ) -> None:
+        self._check_connected()
+        civ = build_civ_frame(self._radio_addr, CONTROLLER_ADDR, 0x1C, sub=0x00)
+        published = await self._civ_runtime.request_authoritative_ptt_read(
+            civ,
+            provider_generation=provider_generation,
+            observer=observer,
+        )
+        if not published:
+            raise CommandError("PTT response was not authoritative for this request")
+
     # ------------------------------------------------------------------
     # Transceiver status family (#136)
     # ------------------------------------------------------------------

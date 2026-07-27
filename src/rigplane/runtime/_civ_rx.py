@@ -537,6 +537,7 @@ class CivRuntime:
         self._ptt_observer_provider_generation: int | None = None
         self._ptt_observer_civ_generation: int | None = None
         self._ptt_observation_seq = 0
+        self._ptt_read_lock = asyncio.Lock()
         self._active_rx_source_generation: int | None = None
 
     # ------------------------------------------------------------------
@@ -568,6 +569,34 @@ class CivRuntime:
     def unbind_ptt_observer(self) -> None:
         """Detach the callback while preserving this provider's sequence."""
         self._ptt_observer = None
+
+    async def request_authoritative_ptt_read(
+        self,
+        civ_frame: bytes,
+        *,
+        provider_generation: int,
+        observer: Callable[[ProviderPttObservation], None],
+    ) -> bool:
+        async with self._ptt_read_lock:
+            source_generation = self._host._civ_epoch
+            if (
+                provider_generation != self._ptt_observer_provider_generation
+                or observer != self._ptt_observer
+                or source_generation != self._ptt_observer_civ_generation
+            ):
+                return False
+            frame = await self.send_civ_raw(civ_frame)
+            if (
+                frame is None
+                or frame.to_addr != CONTROLLER_ADDR
+                or source_generation != self._active_rx_source_generation
+                or provider_generation != self._ptt_observer_provider_generation
+                or observer != self._ptt_observer
+            ):
+                return False
+            return self._emit_authoritative_ptt(
+                frame, source_generation=source_generation
+            )
 
     async def stop_pump(self) -> None:
         """Stop CI-V receive pump and fail pending request futures."""
@@ -629,6 +658,7 @@ class CivRuntime:
 
     def advance_generation(self, reason: str) -> None:
         """Advance CI-V request generation and fail stale waiters."""
+        self.unbind_ptt_observer()
         self._host._civ_epoch = self._host._civ_request_tracker.advance_generation(
             ConnectionError(f"CI-V generation advanced: {reason}")
         )
@@ -1154,27 +1184,31 @@ class CivRuntime:
                 self._publish_scope_frame(scope_frame)
             return
 
+        bound_ptt_read = (
+            self._ptt_read_lock.locked() and frame.command == 0x1C and frame.sub == 0x00
+        )
         if frame.command == 0xFB:
             event = CivEvent(type=CivEventType.ACK, frame=frame)
         elif frame.command == 0xFA:
             event = CivEvent(type=CivEventType.NAK, frame=frame)
         else:
             event = CivEvent(type=CivEventType.RESPONSE, frame=frame)
-            self._emit_authoritative_ptt(
-                frame,
-                source_generation=(
-                    generation
-                    if self._active_rx_source_generation is None
-                    else self._active_rx_source_generation
-                ),
+            resolved_ptt = bound_ptt_read and self._host._civ_request_tracker.resolve(
+                event, generation=generation
             )
+            if not resolved_ptt:
+                source_generation = self._active_rx_source_generation
+                if source_generation is None:
+                    source_generation = generation
+                self._emit_authoritative_ptt(frame, source_generation=source_generation)
             self._update_state_cache_from_frame(frame)
         self._publish_civ_event(event)
-        self._host._civ_request_tracker.resolve(event, generation=generation)
+        if event.type is not CivEventType.RESPONSE or not bound_ptt_read:
+            self._host._civ_request_tracker.resolve(event, generation=generation)
 
     def _emit_authoritative_ptt(
         self, frame: CivFrame, *, source_generation: int
-    ) -> None:
+    ) -> bool:
         """Publish only exact, generation-bound CI-V PTT state responses."""
         observer = self._ptt_observer
         provider_generation = self._ptt_observer_provider_generation
@@ -1187,7 +1221,7 @@ class CivRuntime:
             or len(frame.data) != 1
             or frame.data[0] not in (0x00, 0x01)
         ):
-            return
+            return False
         self._ptt_observation_seq += 1
         observation = ProviderPttObservation(
             value=RadioTx.ON if frame.data[0] else RadioTx.OFF,
@@ -1199,6 +1233,8 @@ class CivRuntime:
             observer(observation)
         except Exception:  # noqa: BLE001 - observer failure must not break CI-V RX
             logger.exception("Authoritative PTT observer raised")
+            return False
+        return True
 
     def deliver_raw_civ(self, frame_bytes: bytes) -> None:
         """Forward a raw inbound CI-V frame to registered raw-pipe listeners.
