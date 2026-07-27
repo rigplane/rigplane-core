@@ -1,5 +1,6 @@
 import asyncio
 from collections.abc import Iterator
+from dataclasses import FrozenInstanceError
 
 import pytest
 
@@ -9,11 +10,14 @@ from rigplane.core.tx_safety import (
     ProviderPttObservation,
     RadioTx,
     TxOwner,
+    TxOutcome,
     TxPhase,
+    TxReleaseReason,
     TxSafetySupervisor,
     TxSource,
+    TxTransition,
 )
-from rigplane.runtime.managed_radio_runtime import ManagedRadioRuntime
+from rigplane.runtime.managed_radio_runtime import ManagedRadioRuntime, TxService
 
 
 def ids() -> Iterator[str]:
@@ -23,25 +27,33 @@ def ids() -> Iterator[str]:
         yield f"id-{index}"
 
 
-def runtime(target: str = "radio-a", *, timeout: float = 0.01) -> ManagedRadioRuntime:
+async def no_effects(
+    _supervisor: TxSafetySupervisor, _transition: TxTransition
+) -> None:
+    pass
+
+
+def runtime(
+    target: str = "radio-a",
+    *,
+    timeout: float = 0.01,
+    service: TxService = no_effects,
+) -> ManagedRadioRuntime:
     generated = ids()
     return ManagedRadioRuntime(
         target,
+        service=service,
         clock=lambda: 10.0,
         id_factory=lambda: next(generated),
         shutdown_timeout_seconds=timeout,
     )
 
 
-async def no_effects(_supervisor: TxSafetySupervisor, transition: object) -> None:
-    assert not getattr(transition, "effects")
-
-
 async def acquire(rt: ManagedRadioRuntime) -> tuple[TxOwner, ProviderAttempt]:
-    await rt.replace_provider(ready=True, service=no_effects)
-    rt.tx_safety.observe_ptt(ProviderPttObservation(RadioTx.OFF, 1, 1, 10.0))
+    await rt.replace_provider(ready=True)
+    rt._tx_safety.observe_ptt(ProviderPttObservation(RadioTx.OFF, 1, 1, 10.0))
     owner = TxOwner(TxSource.WEBSOCKET, "web-1")
-    attempt = rt.tx_safety.request_on(owner).effects[0]
+    attempt = (await rt.request_on(owner)).effects[0]
     assert isinstance(attempt, ProviderAttempt)
     return owner, attempt
 
@@ -53,54 +65,120 @@ def test_shutdown_timeout_must_be_bounded(timeout: float) -> None:
 
 
 @pytest.mark.asyncio
+async def test_runtime_does_not_expose_mutable_supervisor() -> None:
+    rt = runtime()
+    await rt.replace_provider(ready=True)
+    snapshot = rt.tx_snapshot
+
+    assert not hasattr(rt, "tx_safety")
+    assert not hasattr(snapshot, "request_on")
+    assert not hasattr(snapshot, "replace_provider")
+    with pytest.raises(FrozenInstanceError):
+        setattr(snapshot, "provider_generation", 999)
+    assert rt.tx_snapshot.provider_generation == 1
+
+
+@pytest.mark.asyncio
 async def test_target_owns_one_supervisor_across_consumers_and_generations() -> None:
     first, second = runtime("a"), runtime("b")
-    supervisor = first.tx_safety
+    supervisor = first._tx_safety
     await acquire(first)
-    lease = first.tx_safety.snapshot.lease_id
+    lease = first.tx_snapshot.lease_id
 
-    changed = await first.replace_provider(ready=False, service=no_effects)
+    changed = await first.replace_provider(ready=False)
 
-    assert first.tx_safety is supervisor is not second.tx_safety
+    assert first._tx_safety is supervisor is not second._tx_safety
     assert changed.snapshot.lease_id == lease
     assert changed.snapshot.phase is TxPhase.RELEASE_REQUIRED
 
 
 @pytest.mark.asyncio
 async def test_ready_provider_services_pending_off_before_return() -> None:
-    rt = runtime()
-    owner, attempt = await acquire(rt)
-    lease = rt.tx_safety.snapshot.lease_id or ""
-    rt.tx_safety.request_off(owner, lease)
     order: list[str] = []
 
     async def service(_supervisor: TxSafetySupervisor, transition: object) -> None:
         effect = getattr(transition, "effects")[0]
-        assert effect.kind is ProviderAttemptKind.WRITE_OFF
-        order.append("off")
+        order.append(getattr(effect, "kind", "cancel"))
 
-    await rt.replace_provider(ready=False, service=no_effects)
-    await rt.set_provider_ready(ready=True, service=service)
+    rt = runtime(service=service)
+    owner, attempt = await acquire(rt)
+    lease = rt.tx_snapshot.lease_id or ""
+    await rt.request_off(owner, lease)
+
+    await rt.replace_provider(ready=False)
+    await rt.set_provider_ready(ready=True)
     order.append("ordinary")
 
-    assert order == ["off", "ordinary"]
-    assert rt.tx_safety.snapshot.active_attempt != attempt
+    assert order[-2:] == [ProviderAttemptKind.WRITE_OFF, "ordinary"]
+    assert rt.tx_snapshot.active_attempt != attempt
+
+
+@pytest.mark.asyncio
+async def test_managed_requests_service_once_and_return_owner_lease_identity() -> None:
+    serviced: list[TxTransition] = []
+
+    async def service(supervisor: TxSafetySupervisor, transition: TxTransition) -> None:
+        assert supervisor is rt._tx_safety
+        serviced.append(transition)
+
+    rt = runtime(service=service)
+    await rt.replace_provider(ready=True)
+    rt._tx_safety.observe_ptt(ProviderPttObservation(RadioTx.OFF, 1, 1, 10.0))
+    owner = TxOwner(TxSource.SDK, "sdk-1")
+
+    keyed = await rt.request_on(owner)
+    released = await rt.release_owner(owner, reason=TxReleaseReason.SOURCE_DETACHED)
+
+    assert serviced == [keyed, released]
+    assert keyed.snapshot.owner == owner
+    assert keyed.snapshot.lease_id
+    assert released.snapshot.lease_id == keyed.snapshot.lease_id
+    assert released.snapshot.release_reason is TxReleaseReason.SOURCE_DETACHED
+
+
+@pytest.mark.asyncio
+async def test_request_off_service_error_propagates_and_retains_durable_off() -> None:
+    fail = False
+
+    async def service(
+        _supervisor: TxSafetySupervisor, _transition: TxTransition
+    ) -> None:
+        if fail:
+            raise RuntimeError("provider service failed")
+
+    rt = runtime(service=service)
+    owner, _ = await acquire(rt)
+    lease = rt.tx_snapshot.lease_id or ""
+    fail = True
+
+    with pytest.raises(RuntimeError, match="provider service failed"):
+        await rt.request_off(owner, lease)
+
+    assert rt.tx_snapshot.phase is TxPhase.RELEASE_REQUIRED
+    repeated = await rt.request_off(owner, lease)
+    assert repeated.outcome is TxOutcome.IDEMPOTENT
+    assert rt.tx_snapshot.lease_id == lease
 
 
 @pytest.mark.asyncio
 async def test_shutdown_bounds_dekey_before_provider_release() -> None:
-    rt = runtime()
-    await acquire(rt)
     order: list[str] = []
+    armed = False
 
-    async def dekey(_supervisor: TxSafetySupervisor, _transition: object) -> None:
+    async def service(_supervisor: TxSafetySupervisor, transition: object) -> None:
+        if not armed or not getattr(transition, "effects"):
+            return
         order.append("dekey")
         await asyncio.Event().wait()
+
+    rt = runtime(service=service)
+    await acquire(rt)
+    armed = True
 
     async def release() -> None:
         order.append("release")
 
-    result = await rt.shutdown(dekey=dekey, release_provider=release)
+    result = await rt.shutdown(release_provider=release)
 
     assert order == ["dekey", "release"]
     assert result.snapshot.phase is TxPhase.RELEASE_REQUIRED
@@ -108,17 +186,22 @@ async def test_shutdown_bounds_dekey_before_provider_release() -> None:
 
 @pytest.mark.asyncio
 async def test_shutdown_error_still_releases_provider() -> None:
-    rt = runtime()
-    await acquire(rt)
     released = False
 
-    async def fail(_supervisor: TxSafetySupervisor, _transition: object) -> None:
-        raise RuntimeError("dekey failed")
+    armed = False
+
+    async def service(_supervisor: TxSafetySupervisor, transition: object) -> None:
+        if armed and getattr(transition, "effects"):
+            raise RuntimeError("dekey failed")
+
+    rt = runtime(service=service)
+    await acquire(rt)
+    armed = True
 
     async def release() -> None:
         nonlocal released
         released = True
 
     with pytest.raises(RuntimeError, match="dekey failed"):
-        await rt.shutdown(dekey=fail, release_provider=release)
+        await rt.shutdown(release_provider=release)
     assert released
