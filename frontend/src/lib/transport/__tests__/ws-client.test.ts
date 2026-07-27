@@ -172,7 +172,7 @@ function makeState(
     connection?: Partial<ServerState['connection']>;
   } = {},
 ): ServerStateWithObservation {
-  const { main, sub, connection, ...topLevel } = overrides;
+  const { main, sub, connection, txTarget, ...topLevel } = overrides;
   const revision = topLevel.stateRevision ?? topLevel.revision ?? 1;
   return {
     revision,
@@ -196,6 +196,7 @@ function makeState(
       ...connection,
     },
     ...topLevel,
+    txTarget: txTarget ?? { status: 'unknown', reason: 'not-observed' },
   };
 }
 
