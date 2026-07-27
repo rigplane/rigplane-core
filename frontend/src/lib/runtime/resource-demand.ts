@@ -56,7 +56,9 @@ export class ResourceDemand<H> {
       if (operation.kind !== 'dispose') return true;
       const state = this.state(operation.resource);
       if (state.pending?.kind !== 'start')
-        return !Object.is(state.activeHandle, operation.handle);
+        return !Object.is(state.activeHandle, operation.handle) && !queued.some((candidate) =>
+          candidate.kind === 'stop' && candidate.resource === operation.resource
+            && Object.is(candidate.handle, operation.handle));
       this.operations.push(operation);
       return false;
     });
@@ -103,7 +105,7 @@ export class ResourceDemand<H> {
     if (!wanted) {
       if (state.pending?.kind === 'start') state.pending = undefined;
       if (state.activeHandle !== undefined) {
-        const stop = this.operation('stop', resource, state, state.activeHandle);
+        const stop = this.operation('stop', resource, state.activeHandle);
         state.activeHandle = undefined;
         state.pending = stop;
         this.operations.push(stop);
@@ -112,14 +114,12 @@ export class ResourceDemand<H> {
     }
     if (state.health === 'failed' || state.activeHandle !== undefined || state.pending?.kind === 'start')
       return;
-    const start = this.operation('start', resource, state);
+    const start = this.operation('start', resource);
     state.pending = start;
     state.health = 'starting';
     this.operations.push(start);
   }
-  private operation(
-    kind: 'start' | 'stop', resource: AppResource, state: State<H>, handle?: H,
-  ): ResourceOperation<H> {
+  private operation(kind: 'start' | 'stop', resource: AppResource, handle?: H): ResourceOperation<H> {
     const base = { kind, resource, sessionEpoch: this.sessionEpoch };
     const operation = (kind === 'start' ? base : { ...base, handle: handle as H }) as ResourceOperation<H>;
     if (kind === 'start') this.issuedStarts.add(operation);

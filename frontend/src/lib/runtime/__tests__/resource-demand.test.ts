@@ -1,17 +1,15 @@
 import { describe, expect, it } from 'vitest';
-import { ResourceDemand, type AppResource } from '../resource-demand';
-const ready = (model: ResourceDemand<string>, resource: AppResource) => {
-  model.configure(resource, { available: true, selected: true });
-};
+import { ResourceDemand } from '../resource-demand';
 const one = (model: ResourceDemand<string>) => {
   const operations = model.takeOperations();
   expect(operations).toHaveLength(1);
   return operations[0];
 };
+const cleanupOrderings = ['stop-before-stale', 'stale-before-stop'] as const;
 describe('ResourceDemand foundation', () => {
   it('uses exact leases and emits only first start and last stop', () => {
     const model = new ResourceDemand<string>('session-1');
-    ready(model, 'hardware-scope');
+    model.configure('hardware-scope', { available: true, selected: true });
     const first = model.acquire('hardware-scope', 'first');
     const start = one(model);
     const second = model.acquire('hardware-scope', 'second');
@@ -31,34 +29,36 @@ describe('ResourceDemand foundation', () => {
     model.configure('audio-fft', widerConfig);
     model.acquire('audio-fft', 'panel');
     expect(model.takeOperations()).toEqual([]);
-    expect(model.snapshot('audio-fft')).toMatchObject({
+    expect(model.snapshot('audio-fft')).toEqual({
       available: false, selected: true, demand: 1, health: 'inactive',
     });
-    expect(model.snapshot('audio-fft').activeHandle).toBeUndefined();
-    ready(model, 'audio-fft');
+    model.configure('audio-fft', { available: true, selected: true });
     expect(one(model).kind).toBe('start');
   });
-  it('ignores fake and duplicate starts and protects a stable aliased handle', () => {
+  it.each(cleanupOrderings)('dedupes stable-handle cleanup for %s ordering', (ordering) => {
     const model = new ResourceDemand<string>('session-1');
-    ready(model, 'hardware-scope');
+    model.configure('hardware-scope', { available: true, selected: true });
     const first = model.acquire('hardware-scope', 'A');
     const startA = one(model);
     expect(model.completeStart({ ...startA }, { handle: 'fake' })).toBe(false);
     model.release(first);
     const second = model.acquire('hardware-scope', 'B');
     const startB = one(model);
-    expect(model.completeStart(startA, { handle: 'stable' })).toBe(false);
-    expect(model.takeOperations()).toEqual([]);
-    expect(model.completeStart(startB, { handle: 'stable' })).toBe(true);
-    expect(model.completeStart(startB, { handle: 'stable' })).toBe(false);
-    expect(model.takeOperations()).toEqual([]);
-    expect(model.snapshot('hardware-scope')).toMatchObject({ activeHandle: 'stable', health: 'streaming' });
-    model.release(second);
+    if (ordering === 'stop-before-stale') {
+      expect(model.completeStart(startB, { handle: 'stable' })).toBe(true);
+      expect(model.completeStart(startB, { handle: 'stable' })).toBe(false);
+      model.release(second);
+      expect(model.completeStart(startA, { handle: 'stable' })).toBe(false);
+    } else {
+      expect(model.completeStart(startA, { handle: 'stable' })).toBe(false);
+      expect(model.completeStart(startB, { handle: 'stable' })).toBe(true);
+      model.release(second);
+    }
     expect(one(model)).toMatchObject({ kind: 'stop', handle: 'stable' });
   });
   it('rejects a stale stop when replacement demand overlaps it', () => {
     const model = new ResourceDemand<string>('session-1');
-    ready(model, 'rx-audio');
+    model.configure('rx-audio', { available: true, selected: true });
     const first = model.acquire('rx-audio', 'A');
     model.completeStart(one(model), { handle: 'A' });
     model.release(first);
