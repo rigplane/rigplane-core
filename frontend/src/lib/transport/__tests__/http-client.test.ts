@@ -113,7 +113,12 @@ describe('fetchCapabilities', () => {
       capabilities: ['scope', 'dual_rx'],
       receivers: 2,
       vfoScheme: 'main_sub',
-      freqRanges: [],
+      freqRanges: [{
+        start: 100000,
+        end: 60000000,
+        label: 'HF',
+        bands: [{ name: '20m', start: 14000000, end: 14350000, default: 14074000, bsrCode: 5 }],
+      }],
       modes: ['USB', 'LSB'],
       filters: ['FIL1'],
       audioConfig: { sampleRate: 48000, channels: 1, codecs: ['opus'] },
@@ -162,6 +167,21 @@ describe('fetchCapabilities', () => {
     expect(result.txBands).toBe(txBands);
   });
 
+  it('accepts finite numeric range values without imposing ordering rules', async () => {
+    const freqRanges = [{
+      start: 2.5,
+      end: -1,
+      label: 'Synthetic',
+      bands: [{ name: 'Synthetic', start: 3.5, end: -2, default: 0.5, bsrCode: -1 }],
+    }];
+    const caps = makeCapabilities({ freqRanges });
+    mockCapabilities(caps);
+    const { fetchCapabilities } = await import('../http-client');
+    const result = await fetchCapabilities();
+    expect(result).toBe(caps);
+    expect(result.freqRanges).toBe(freqRanges);
+  });
+
   it.each([
     ['$.receivers', { receivers: undefined }],
     ['$.receivers', { receivers: true }],
@@ -170,6 +190,21 @@ describe('fetchCapabilities', () => {
     ['$.vfoScheme', { vfoScheme: undefined }],
     ['$.vfoScheme', { vfoScheme: 'unknown' }],
     ['$.vfoScheme', { vfoScheme: 'single', receivers: 2 }],
+    ['$.freqRanges[0]', { freqRanges: [null] }],
+    ['$.freqRanges[0].start', { freqRanges: [{}] }],
+    ['$.freqRanges[0].start', { freqRanges: [{ start: true, end: 2, label: 'HF' }] }],
+    ['$.freqRanges[0].start', { freqRanges: [{ start: Number.NaN, end: 2, label: 'HF' }] }],
+    ['$.freqRanges[0].end', { freqRanges: [{ start: 1, end: false, label: 'HF' }] }],
+    ['$.freqRanges[0].end', { freqRanges: [{ start: 1, end: Number.POSITIVE_INFINITY, label: 'HF' }] }],
+    ['$.freqRanges[0].label', { freqRanges: [{ start: 1, end: 2, label: false }] }],
+    ['$.freqRanges[0].bands', { freqRanges: [{ start: 1, end: 2, label: 'HF', bands: {} }] }],
+    ['$.freqRanges[0].bands[0]', { freqRanges: [{ start: 1, end: 2, label: 'HF', bands: [null] }] }],
+    ['$.freqRanges[0].bands[0].name', { freqRanges: [{ start: 1, end: 2, label: 'HF', bands: [{}] }] }],
+    ['$.freqRanges[0].bands[0].start', { freqRanges: [{ start: 1, end: 2, label: 'HF', bands: [{ name: '20m', start: true, end: 4, default: 3 }] }] }],
+    ['$.freqRanges[0].bands[0].end', { freqRanges: [{ start: 1, end: 2, label: 'HF', bands: [{ name: '20m', start: 2, end: false, default: 3 }] }] }],
+    ['$.freqRanges[0].bands[0].default', { freqRanges: [{ start: 1, end: 2, label: 'HF', bands: [{ name: '20m', start: 2, end: 4, default: true }] }] }],
+    ['$.freqRanges[0].bands[0].default', { freqRanges: [{ start: 1, end: 2, label: 'HF', bands: [{ name: '20m', start: 2, end: 4, default: Number.NEGATIVE_INFINITY }] }] }],
+    ['$.freqRanges[0].bands[0].bsrCode', { freqRanges: [{ start: 1, end: 2, label: 'HF', bands: [{ name: '20m', start: 2, end: 4, default: 3, bsrCode: false }] }] }],
     ['$.audioConfig.channels', { audioConfig: { sampleRate: 48000, channels: true, codecs: ['opus'] } }],
     ['$.audioConfig.codecs[0]', { audioConfig: { sampleRate: 48000, channels: 1, codecs: [1] } }],
     ['$.webrtc.available', { webrtc: { available: 1, enabled: false } }],

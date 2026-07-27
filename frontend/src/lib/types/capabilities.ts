@@ -166,6 +166,12 @@ function requireInteger(value: unknown, path: string, positive = false): void {
   }
 }
 
+function requireFiniteNumber(value: unknown, path: string): void {
+  if (typeof value !== 'number' || !Number.isFinite(value)) {
+    invalid(path, 'a finite number');
+  }
+}
+
 export function validateCapabilities(value: unknown): Capabilities {
   const raw = requireRecord(value, '$');
 
@@ -186,6 +192,27 @@ export function validateCapabilities(value: unknown): Capabilities {
   }
 
   if (!Array.isArray(raw.freqRanges)) invalid('$.freqRanges', 'an array');
+  raw.freqRanges.forEach((value, rangeIndex) => {
+    const rangePath = `$.freqRanges[${rangeIndex}]`;
+    const range = requireRecord(value, rangePath);
+    requireFiniteNumber(range.start, `${rangePath}.start`);
+    requireFiniteNumber(range.end, `${rangePath}.end`);
+    requireString(range.label, `${rangePath}.label`);
+    if ('bands' in range) {
+      if (!Array.isArray(range.bands)) invalid(`${rangePath}.bands`, 'an array');
+      range.bands.forEach((value, bandIndex) => {
+        const bandPath = `${rangePath}.bands[${bandIndex}]`;
+        const band = requireRecord(value, bandPath);
+        requireString(band.name, `${bandPath}.name`);
+        requireFiniteNumber(band.start, `${bandPath}.start`);
+        requireFiniteNumber(band.end, `${bandPath}.end`);
+        requireFiniteNumber(band.default, `${bandPath}.default`);
+        if ('bsrCode' in band) {
+          requireFiniteNumber(band.bsrCode, `${bandPath}.bsrCode`);
+        }
+      });
+    }
+  });
   requireStringArray(raw.modes, '$.modes');
   requireStringArray(raw.filters, '$.filters');
 
