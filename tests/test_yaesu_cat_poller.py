@@ -399,11 +399,13 @@ def _tx_target_radio() -> MagicMock:
     radio = make_radio()
     profile = _profile_state_acquisition()
     target_path = FieldPath.global_("tx_state", "tx_target")
-    radio.profile.state_acquisition = replace(
-        profile,
-        capabilities=profile.capabilities
-        + (FieldCapability(path=target_path, polling=True),),
-    )
+    if not profile.capability_for(target_path).can_poll:
+        profile = replace(
+            profile,
+            capabilities=profile.capabilities
+            + (FieldCapability(path=target_path, polling=True),),
+        )
+    radio.profile.state_acquisition = profile
     radio._transport = SimpleNamespace(
         stats=SimpleNamespace(reconnects=0),
         reconnect=AsyncMock(),
