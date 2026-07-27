@@ -2,7 +2,6 @@
  * MediaSession API integration for mobile radio control.
  *
  * - Volume keys (previoustrack/nexttrack) -> frequency tuning
- * - Headphone play/pause button -> PTT toggle
  *
  * A silent audio loop keeps the MediaSession active on mobile browsers.
  */
@@ -16,6 +15,7 @@ const TAG = '[media-session]';
 let audioCtx: AudioContext | null = null;
 let oscillator: OscillatorNode | null = null;
 let gainNode: GainNode | null = null;
+let isInitialized = false;
 
 /** Tune the active receiver by `steps` increments and send to radio. */
 function tuneStep(steps: number): void {
@@ -57,7 +57,7 @@ function stopSilentAudio(): void {
 }
 
 /**
- * Initialize MediaSession handlers for volume-key tuning and headphone PTT.
+ * Initialize MediaSession handlers for volume-key tuning.
  * Call once on app startup. Safe to call in environments without MediaSession.
  */
 export function initMediaSession(): void {
@@ -65,7 +65,11 @@ export function initMediaSession(): void {
     console.debug(TAG, 'MediaSession API not available');
     return;
   }
+  if (isInitialized) {
+    return;
+  }
 
+  isInitialized = true;
   startSilentAudio();
 
   navigator.mediaSession.metadata = new MediaMetadata({
@@ -84,29 +88,19 @@ export function initMediaSession(): void {
     tuneStep(1);
   });
 
-  // Headphone play/pause -> PTT
-  navigator.mediaSession.setActionHandler('play', () => {
-    console.debug(TAG, 'play -> PTT on');
-    sendCommand('ptt', { state: true });
-  });
-
-  navigator.mediaSession.setActionHandler('pause', () => {
-    console.debug(TAG, 'pause -> PTT off');
-    sendCommand('ptt', { state: false });
-  });
-
-  console.info(TAG, 'handlers registered (tuning + PTT)');
+  console.info(TAG, 'handlers registered (tuning only)');
 }
 
 /**
  * Remove MediaSession handlers and stop the silent audio loop.
  */
 export function destroyMediaSession(): void {
-  if (!('mediaSession' in navigator)) return;
+  if (!('mediaSession' in navigator) || !isInitialized) return;
 
   stopSilentAudio();
+  isInitialized = false;
 
-  for (const action of ['previoustrack', 'nexttrack', 'play', 'pause'] as MediaSessionAction[]) {
+  for (const action of ['previoustrack', 'nexttrack'] as MediaSessionAction[]) {
     try {
       navigator.mediaSession.setActionHandler(action, null);
     } catch {

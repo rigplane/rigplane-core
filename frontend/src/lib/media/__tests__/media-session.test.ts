@@ -43,21 +43,43 @@ describe('media-session', () => {
   let wsMod: typeof import('../../transport/ws-client');
 
   const handlers = new Map<string, MediaSessionActionHandler | null>();
+  const existingPlayHandler = vi.fn<MediaSessionActionHandler>();
+  const existingPauseHandler = vi.fn<MediaSessionActionHandler>();
   let mockAudio: ReturnType<typeof createMockAudioContext>;
+  let audioContexts: ReturnType<typeof createMockAudioContext>[];
+
+  function expectNoPttCommands(): void {
+    const pttCommands = new Set(['ptt', 'ptt_on', 'ptt_off']);
+    const commands = vi.mocked(wsMod.sendCommand).mock.calls.map(([command]) => command);
+    expect(commands.filter((command) => pttCommands.has(command))).toEqual([]);
+  }
 
   beforeEach(async () => {
     vi.resetModules();
+    vi.clearAllMocks();
     handlers.clear();
+    handlers.set('play', existingPlayHandler);
+    handlers.set('pause', existingPauseHandler);
 
     mockAudio = createMockAudioContext();
+    audioContexts = [];
     // AudioContext and MediaMetadata are used with `new`, so mock as classes
     vi.stubGlobal(
       'AudioContext',
       class {
-        createOscillator = mockAudio.ctx.createOscillator;
-        createGain = mockAudio.ctx.createGain;
-        destination = mockAudio.ctx.destination;
-        close = mockAudio.ctx.close;
+        createOscillator;
+        createGain;
+        destination;
+        close;
+
+        constructor() {
+          const audio = audioContexts.length === 0 ? mockAudio : createMockAudioContext();
+          audioContexts.push(audio);
+          this.createOscillator = audio.ctx.createOscillator;
+          this.createGain = audio.ctx.createGain;
+          this.destination = audio.ctx.destination;
+          this.close = audio.ctx.close;
+        }
       },
     );
     vi.stubGlobal(
@@ -95,13 +117,13 @@ describe('media-session', () => {
     mod.destroyMediaSession();
   });
 
-  it('registers all four action handlers on init', () => {
+  it('registers only tuning action handlers on init', () => {
     mod.initMediaSession();
 
     expect(handlers.has('previoustrack')).toBe(true);
     expect(handlers.has('nexttrack')).toBe(true);
-    expect(handlers.has('play')).toBe(true);
-    expect(handlers.has('pause')).toBe(true);
+    expect(handlers.get('play')).toBe(existingPlayHandler);
+    expect(handlers.get('pause')).toBe(existingPauseHandler);
   });
 
   it('sets MediaSession metadata', () => {
@@ -161,33 +183,77 @@ describe('media-session', () => {
     expect(radioMod.patchActiveReceiver).not.toHaveBeenCalled();
   });
 
-  it('play handler sends PTT on', () => {
+  it('never emits legacy or preferred PTT commands', () => {
     mod.initMediaSession();
-    const handler = handlers.get('play')!;
-    handler({ action: 'play' } as MediaSessionActionDetails);
 
-    expect(wsMod.sendCommand).toHaveBeenCalledWith('ptt', { state: true });
+    handlers.get('previoustrack')?.({
+      action: 'previoustrack',
+    } as MediaSessionActionDetails);
+    handlers.get('nexttrack')?.({ action: 'nexttrack' } as MediaSessionActionDetails);
+    mod.destroyMediaSession();
+
+    expectNoPttCommands();
   });
 
-  it('pause handler sends PTT off', () => {
+  it('is idempotent across repeated init calls', () => {
     mod.initMediaSession();
-    const handler = handlers.get('pause')!;
-    handler({ action: 'pause' } as MediaSessionActionDetails);
+    mod.initMediaSession();
 
-    expect(wsMod.sendCommand).toHaveBeenCalledWith('ptt', { state: false });
+    expect(mockAudio.ctx.createOscillator).toHaveBeenCalledTimes(1);
+    expect(mockAudio.ctx.createGain).toHaveBeenCalledTimes(1);
+    expect(navigator.mediaSession.setActionHandler).toHaveBeenCalledTimes(2);
   });
 
   it('destroyMediaSession clears handlers and stops audio', () => {
     mod.initMediaSession();
     mod.destroyMediaSession();
 
-    // All handlers should be cleared (set to null)
+    // Only the handlers owned by this module are cleared (set to null).
     const setHandler = navigator.mediaSession.setActionHandler as ReturnType<typeof vi.fn>;
     const calls = setHandler.mock.calls as Array<[string, MediaSessionActionHandler | null]>;
-    const nullCalls = calls.filter((call) => call[1] === null);
-    expect(nullCalls.length).toBe(4);
+    const clearedActions = calls.filter((call) => call[1] === null).map(([action]) => action);
+    expect(clearedActions).toEqual(['previoustrack', 'nexttrack']);
+    expect(calls.map(([action]) => action)).not.toContain('play');
+    expect(calls.map(([action]) => action)).not.toContain('pause');
+    expect(handlers.get('play')).toBe(existingPlayHandler);
+    expect(handlers.get('pause')).toBe(existingPauseHandler);
     expect(mockAudio.oscillator.stop).toHaveBeenCalled();
     expect(mockAudio.ctx.close).toHaveBeenCalled();
+    expectNoPttCommands();
+  });
+
+  it('is idempotent across repeated destroy calls', () => {
+    mod.initMediaSession();
+    mod.destroyMediaSession();
+    mod.destroyMediaSession();
+
+    const setHandler = navigator.mediaSession.setActionHandler as ReturnType<typeof vi.fn>;
+    const calls = setHandler.mock.calls as Array<[string, MediaSessionActionHandler | null]>;
+    expect(mockAudio.oscillator.stop).toHaveBeenCalledTimes(1);
+    expect(mockAudio.ctx.close).toHaveBeenCalledTimes(1);
+    expect(calls.map(([action, handler]) => ({ action, clears: handler === null }))).toEqual([
+      { action: 'previoustrack', clears: false },
+      { action: 'nexttrack', clears: false },
+      { action: 'previoustrack', clears: true },
+      { action: 'nexttrack', clears: true },
+    ]);
+  });
+
+  it('starts a fresh owned session after init, destroy, init', () => {
+    mod.initMediaSession();
+    const firstPreviousTrackHandler = handlers.get('previoustrack');
+    mod.destroyMediaSession();
+    mod.initMediaSession();
+
+    expect(audioContexts).toHaveLength(2);
+    expect(audioContexts[0]).not.toBe(audioContexts[1]);
+    expect(audioContexts[0].oscillator.stop).toHaveBeenCalledTimes(1);
+    expect(audioContexts[1].oscillator.start).toHaveBeenCalledTimes(1);
+    expect(handlers.get('previoustrack')).not.toBe(firstPreviousTrackHandler);
+    expect(handlers.get('nexttrack')).toEqual(expect.any(Function));
+    expect(handlers.get('play')).toBe(existingPlayHandler);
+    expect(handlers.get('pause')).toBe(existingPauseHandler);
+    expectNoPttCommands();
   });
 
   describe('without MediaSession API', () => {
