@@ -1879,6 +1879,7 @@ class TestAudioHandlerTxTranscoderRate:
     @staticmethod
     def _make_handler(sample_rate: int | None) -> Any:
         from rigplane.radio_protocol import AudioCapable
+        from rigplane.types import AudioCodec
         from rigplane.web.handlers import AudioBroadcaster, AudioHandler
         from rigplane.web.websocket import WebSocketConnection
 
@@ -1886,12 +1887,15 @@ class TestAudioHandlerTxTranscoderRate:
         mock_radio = MagicMock(spec=AudioCapable)
         mock_radio.capabilities = {"audio", "tx"}
         mock_radio.backend_id = "yaesu_cat"
+        mock_radio.audio_codec = AudioCodec.PCM_1CH_16BIT
         if sample_rate is None:
             # Simulate a radio that does not expose audio_sample_rate
             del mock_radio.audio_sample_rate
         else:
             mock_radio.audio_sample_rate = sample_rate
-        mock_radio.start_audio_tx_opus = AsyncMock()
+        mock_radio.start_audio_tx_pcm = AsyncMock()
+        mock_radio.push_audio_tx_pcm = AsyncMock()
+        mock_radio.stop_audio_tx_pcm = AsyncMock()
 
         broadcaster = AudioBroadcaster(mock_radio)
         handler = AudioHandler(mock_ws, mock_radio, broadcaster)
