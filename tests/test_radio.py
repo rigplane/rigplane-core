@@ -1,7 +1,7 @@
 """Tests for IcomRadio high-level API."""
 
 import asyncio
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import pytest
 
@@ -874,13 +874,10 @@ class TestPtt:
     ) -> None:
         observations: list[tx.ProviderPttObservation] = []
         observer = observations.append
+        read = radio._request_authoritative_ptt_read
         radio._bind_authoritative_ptt_observer(provider_generation=8, observer=observer)
         await _route_ptt(radio, b"\x01")
-        pending = asyncio.create_task(
-            radio._request_authoritative_ptt_read(
-                provider_generation=8, observer=observer
-            )
-        )
+        pending = asyncio.create_task(read(provider_generation=8, observer=observer))
         while not mock_transport.sent_packets:
             await asyncio.sleep(0)
         radio._unbind_authoritative_ptt_observer()
@@ -891,20 +888,24 @@ class TestPtt:
         await _route_ptt(radio, b"\x00")
         assert [item.ptt_observation_seq for item in observations] == [1, 2]
 
-        bound, collision = MagicMock(), MagicMock()
-        bound.__eq__.return_value = True
+        class EqualObserver(list[tx.ProviderPttObservation]):
+            __call__ = list.append
+
+            def __eq__(self, _other: object) -> bool:
+                return True
+
+        bound, collision = EqualObserver(), EqualObserver()
         radio._bind_authoritative_ptt_observer(provider_generation=8, observer=bound)
         mock_transport.queue_response(_ptt_response(False))
         with pytest.raises(CommandError, match="authoritative"):
-            await radio._request_authoritative_ptt_read(
-                provider_generation=8, observer=collision
-            )
+            await read(provider_generation=8, observer=collision)
+        assert not bound
 
     @pytest.mark.asyncio
     async def test_fresh_ptt_read_rechecks_binding_before_dispatch(
         self, radio: IcomRadio, mock_transport: MockTransport
     ) -> None:
-        observer = MagicMock()
+        observer = [].append
         radio._bind_authoritative_ptt_observer(provider_generation=9, observer=observer)
         entered = asyncio.Event()
         release = asyncio.Event()
