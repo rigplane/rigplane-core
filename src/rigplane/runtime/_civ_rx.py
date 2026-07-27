@@ -641,7 +641,7 @@ class CivRuntime:
         return (
             self._active_ptt_read in (None, read)
             and self._ptt_observer_binding_epoch == read.binding_epoch
-            and self._ptt_observer == read.observer
+            and self._ptt_observer is read.observer
             and self._ptt_observer_provider_generation == read.provider_generation
             and self._ptt_observer_civ_generation == read.source_generation
             and self._host._civ_epoch == read.source_generation
@@ -1352,7 +1352,7 @@ class CivRuntime:
         )
         try:
             observer(observation)
-        except Exception:  # noqa: BLE001 - observer failure must not break CI-V RX
+        except (Exception, asyncio.CancelledError):  # noqa: BLE001
             logger.exception("Authoritative PTT observer raised")
             return False
         return True

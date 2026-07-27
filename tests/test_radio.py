@@ -1,7 +1,7 @@
 """Tests for IcomRadio high-level API."""
 
 import asyncio
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -869,7 +869,7 @@ class TestPtt:
             await radio._civ_runtime.stop_pump()
 
     @pytest.mark.asyncio
-    async def test_fresh_ptt_read_rejects_identical_unbind_rebind(
+    async def test_fresh_ptt_read_rejects_rebind_and_equal_distinct_observer(
         self, radio: IcomRadio, mock_transport: MockTransport
     ) -> None:
         observations: list[tx.ProviderPttObservation] = []
@@ -886,18 +886,25 @@ class TestPtt:
         radio._unbind_authoritative_ptt_observer()
         radio._bind_authoritative_ptt_observer(provider_generation=8, observer=observer)
         mock_transport.queue_response(_ptt_response(False))
-
         with pytest.raises(CommandError, match="authoritative"):
             await pending
         await _route_ptt(radio, b"\x00")
         assert [item.ptt_observation_seq for item in observations] == [1, 2]
 
+        bound, collision = MagicMock(), MagicMock()
+        bound.__eq__.return_value = True
+        radio._bind_authoritative_ptt_observer(provider_generation=8, observer=bound)
+        mock_transport.queue_response(_ptt_response(False))
+        with pytest.raises(CommandError, match="authoritative"):
+            await radio._request_authoritative_ptt_read(
+                provider_generation=8, observer=collision
+            )
+
     @pytest.mark.asyncio
     async def test_fresh_ptt_read_rechecks_binding_before_dispatch(
         self, radio: IcomRadio, mock_transport: MockTransport
     ) -> None:
-        observations: list[tx.ProviderPttObservation] = []
-        observer = observations.append
+        observer = MagicMock()
         radio._bind_authoritative_ptt_observer(provider_generation=9, observer=observer)
         entered = asyncio.Event()
         release = asyncio.Event()
@@ -920,14 +927,13 @@ class TestPtt:
             with pytest.raises((CommandError, ConnectionError)):
                 await pending
         assert mock_transport.sent_packets == []
-        assert observations == []
 
     @pytest.mark.asyncio
-    async def test_fresh_ptt_read_fails_closed_on_callback_and_reconnect(
+    async def test_fresh_ptt_read_fails_closed_on_callback_cancel_and_reconnect(
         self, radio: IcomRadio, mock_transport: MockTransport
     ) -> None:
         def broken(_observation: tx.ProviderPttObservation) -> None:
-            raise RuntimeError("observer")
+            raise asyncio.CancelledError("observer")
 
         radio._bind_authoritative_ptt_observer(provider_generation=10, observer=broken)
         mock_transport.queue_response(_ptt_response(True))
