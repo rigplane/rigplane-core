@@ -1,0 +1,536 @@
+"""Pure, single-target policy for managed radio PTT.
+
+The supervisor emits bounded provider operations but performs no I/O. Runtime
+integration enforces each operation's timeout and reports its settlement plus
+field-specific PTT observations back to this model.
+"""
+
+from __future__ import annotations
+
+import time
+import uuid
+from collections.abc import Callable, Sequence
+from dataclasses import dataclass, replace
+from enum import StrEnum
+from typing import TypeAlias
+
+Clock = Callable[[], float]
+IdFactory = Callable[[], str]
+
+
+class TxSource(StrEnum):
+    WEBSOCKET = "websocket"
+    RIGCTLD = "rigctld"
+    SDK = "sdk"
+    HAMLIB_BRIDGE = "hamlib_bridge"
+    INTERNAL = "internal"
+
+
+class RadioTx(StrEnum):
+    OFF = "off"
+    ON = "on"
+    UNKNOWN = "unknown"
+
+
+class TxPhase(StrEnum):
+    IDLE = "idle"
+    KEY_PENDING = "key_pending"
+    KEYED = "keyed"
+    RELEASE_REQUIRED = "release_required"
+    RELEASE_CONFIRMING = "release_confirming"
+    FAULTED = "faulted"
+    EXTERNAL_UNOWNED = "external_unowned"
+
+
+class TxOutcome(StrEnum):
+    ACCEPTED = "accepted"
+    IDEMPOTENT = "idempotent"
+    BUSY = "tx_busy"
+    NOT_READY = "provider_not_ready"
+    RADIO_NOT_OFF = "radio_not_off"
+    RELEASE_PENDING = "release_pending"
+    STALE = "stale"
+    APPLIED = "applied"
+    NOOP = "noop"
+
+
+class TxReleaseReason(StrEnum):
+    OPERATOR_RELEASE = "operator_release"
+    SOURCE_DETACHED = "source_detached"
+    PRESENTATION_REPLACED = "presentation_replaced"
+    CLIENT_DISCONNECTED = "client_disconnected"
+    AUDIO_FAILED = "audio_failed"
+    CONTROL_TRANSPORT_LOST = "control_transport_lost"
+    RADIO_TRANSPORT_LOST = "radio_transport_lost"
+    CAPABILITY_LOST = "capability_lost"
+    PERMIT_LOST = "permit_lost"
+    FRONTEND_SAFETY_TIMEOUT = "frontend_safety_timeout"
+    BACKEND_MAX_KEY_DOWN = "backend_max_key_down"
+    EXTERNAL_CAT_PREEMPTED = "external_cat_preempted"
+    APP_SHUTDOWN = "app_shutdown"
+    SERVER_SHUTDOWN = "server_shutdown"
+    RECOVERY_EXHAUSTED = "recovery_exhausted"
+    ADMIN_EMERGENCY_STOP = "admin_emergency_stop"
+
+
+class ProviderAttemptKind(StrEnum):
+    WRITE_ON = "write_on"
+    WRITE_OFF = "write_off"
+    READ_PTT = "read_ptt"
+
+
+@dataclass(frozen=True, slots=True)
+class TxOwner:
+    source: TxSource
+    session_id: str
+
+    def __post_init__(self) -> None:
+        if not self.session_id:
+            raise ValueError("session_id must not be empty")
+
+
+@dataclass(frozen=True, slots=True)
+class ProviderPttObservation:
+    value: RadioTx
+    provider_generation: int
+    ptt_observation_seq: int
+    observed_at_monotonic: float
+
+    def __post_init__(self) -> None:
+        if self.value is RadioTx.UNKNOWN:
+            raise ValueError("PTT observations must decode to ON or OFF")
+        if self.provider_generation < 0:
+            raise ValueError("provider_generation must be non-negative")
+        if self.ptt_observation_seq <= 0:
+            raise ValueError("ptt_observation_seq must be positive")
+
+
+@dataclass(frozen=True, slots=True)
+class ProviderAttempt:
+    id: str
+    kind: ProviderAttemptKind
+    provider_generation: int
+    lease_id: str
+    started_at_monotonic: float
+    timeout_seconds: float
+
+
+@dataclass(frozen=True, slots=True)
+class CancelProviderAttempt:
+    attempt_id: str
+    provider_generation: int
+
+
+TxEffect: TypeAlias = ProviderAttempt | CancelProviderAttempt
+
+
+@dataclass(frozen=True, slots=True)
+class TxSafetySnapshot:
+    phase: TxPhase
+    radio_tx: RadioTx
+    provider_generation: int | None
+    provider_ready: bool
+    lease_id: str | None
+    owner: TxOwner | None
+    release_reason: TxReleaseReason | None
+    terminal_release_reason: TxReleaseReason | None
+    release_attempt_count: int
+    release_last_error: str | None
+    active_attempt: ProviderAttempt | None
+    watchdog_deadline_monotonic: float | None
+    watchdog_enabled: bool
+    external_conflict: bool
+
+
+@dataclass(frozen=True, slots=True)
+class TxTransition:
+    outcome: TxOutcome
+    snapshot: TxSafetySnapshot
+    effects: tuple[TxEffect, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
+class _Lease:
+    id: str
+    owner: TxOwner
+
+
+@dataclass(frozen=True, slots=True)
+class _Boundary:
+    generation: int
+    sequence: int
+    not_before: float
+
+    def accepts(self, observation: ProviderPttObservation | None) -> bool:
+        return observation is not None and (
+            observation.provider_generation == self.generation
+            and observation.ptt_observation_seq > self.sequence
+            and observation.observed_at_monotonic >= self.not_before
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class _Release:
+    requested_reason: TxReleaseReason
+    terminal_reason: TxReleaseReason
+    boundary: _Boundary
+    attempts: int = 0
+    retry_due: float | None = None
+    error: str | None = None
+
+
+class TxSafetySupervisor:
+    """Owner, watchdog, causal confirmation, and durable OFF reducer."""
+
+    def __init__(
+        self,
+        *,
+        clock: Clock | None = None,
+        id_factory: IdFactory | None = None,
+        watchdog_seconds: float | None = 180.0,
+        write_timeout_seconds: float = 2.0,
+        read_timeout_seconds: float = 2.0,
+        retry_schedule_seconds: Sequence[float] = (0.25, 1.0, 2.0, 5.0),
+    ) -> None:
+        if watchdog_seconds is not None and watchdog_seconds <= 0:
+            raise ValueError("watchdog_seconds must be positive or None")
+        if write_timeout_seconds <= 0 or read_timeout_seconds <= 0:
+            raise ValueError("provider timeouts must be positive")
+        retries = tuple(float(delay) for delay in retry_schedule_seconds)
+        if (
+            not retries
+            or any(delay < 0 for delay in retries)
+            or any(b < a for a, b in zip(retries, retries[1:]))
+        ):
+            raise ValueError("retry schedule must be non-empty and non-decreasing")
+
+        self._clock = clock or time.monotonic
+        self._id_factory = id_factory or (lambda: uuid.uuid4().hex)
+        self._watchdog_seconds = watchdog_seconds
+        self._write_timeout = float(write_timeout_seconds)
+        self._read_timeout = float(read_timeout_seconds)
+        self._retries = retries
+        self._generation: int | None = None
+        self._ready = False
+        self._observation: ProviderPttObservation | None = None
+        self._lease: _Lease | None = None
+        self._acquisition: _Boundary | None = None
+        self._release: _Release | None = None
+        self._active: ProviderAttempt | None = None
+        self._watchdog_deadline: float | None = None
+
+    @property
+    def snapshot(self) -> TxSafetySnapshot:
+        radio = self._observation.value if self._observation else RadioTx.UNKNOWN
+        managed_on = bool(
+            self._lease
+            and not self._release
+            and radio is RadioTx.ON
+            and self._acquisition
+        )
+        confirmed = bool(
+            managed_on
+            and self._acquisition
+            and self._acquisition.accepts(self._observation)
+        )
+        if self._release:
+            if self._release.error:
+                phase = TxPhase.FAULTED
+            elif self._active and self._active.kind is ProviderAttemptKind.READ_PTT:
+                phase = TxPhase.RELEASE_CONFIRMING
+            else:
+                phase = TxPhase.RELEASE_REQUIRED
+        elif not self._lease:
+            phase = TxPhase.EXTERNAL_UNOWNED if radio is RadioTx.ON else TxPhase.IDLE
+        else:
+            phase = TxPhase.KEYED if confirmed else TxPhase.KEY_PENDING
+        return TxSafetySnapshot(
+            phase=phase,
+            radio_tx=radio,
+            provider_generation=self._generation,
+            provider_ready=self._ready,
+            lease_id=self._lease.id if self._lease else None,
+            owner=self._lease.owner if self._lease else None,
+            release_reason=self._release.requested_reason if self._release else None,
+            terminal_release_reason=(
+                self._release.terminal_reason if self._release else None
+            ),
+            release_attempt_count=self._release.attempts if self._release else 0,
+            release_last_error=self._release.error if self._release else None,
+            active_attempt=self._active,
+            watchdog_deadline_monotonic=self._watchdog_deadline,
+            watchdog_enabled=self._watchdog_seconds is not None,
+            external_conflict=managed_on and not confirmed,
+        )
+
+    def replace_provider(self, generation: int, *, ready: bool) -> TxTransition:
+        if generation < 0:
+            raise ValueError("provider_generation must be non-negative")
+        if self._generation is not None and generation <= self._generation:
+            return self._result(TxOutcome.STALE)
+        now = self._clock()
+        had_lease = self._lease is not None
+        self._generation, self._ready = generation, ready
+        self._observation = None
+        self._active = None
+        self._acquisition = None
+        if had_lease:
+            if not self._release:
+                self._begin_release(TxReleaseReason.CONTROL_TRANSPORT_LOST, now)
+            assert self._release is not None
+            self._release = replace(
+                self._release, boundary=self._boundary(now), retry_due=now
+            )
+        return self._result(TxOutcome.APPLIED, self._service_release(force=ready))
+
+    def set_provider_ready(self, generation: int, *, ready: bool) -> TxTransition:
+        if generation != self._generation:
+            return self._result(TxOutcome.STALE)
+        if ready == self._ready:
+            return self._result(
+                TxOutcome.IDEMPOTENT, self._service_release(force=ready)
+            )
+        self._ready = ready
+        if not ready:
+            self._observation = None
+            self._active = None
+            if self._lease and not self._release:
+                self._begin_release(
+                    TxReleaseReason.CONTROL_TRANSPORT_LOST, self._clock()
+                )
+            return self._result(TxOutcome.APPLIED)
+        return self._result(TxOutcome.APPLIED, self._service_release(force=True))
+
+    def observe_ptt(self, observation: ProviderPttObservation) -> TxTransition:
+        """Record globally newer truth, then apply acquisition/release causality."""
+        previous = self._observation
+        if observation.provider_generation != self._generation or (
+            previous is not None
+            and (
+                observation.ptt_observation_seq <= previous.ptt_observation_seq
+                or observation.observed_at_monotonic < previous.observed_at_monotonic
+            )
+        ):
+            return self._result(TxOutcome.STALE)
+        self._observation = observation
+        if (
+            self._release
+            and observation.value is RadioTx.OFF
+            and self._release.boundary.accepts(observation)
+        ):
+            self._clear_managed()
+        return self._result(TxOutcome.APPLIED)
+
+    def request_on(self, owner: TxOwner) -> TxTransition:
+        """Acquire once and emit the only WRITE_ON this lease can produce."""
+        if self._release:
+            return self._result(TxOutcome.RELEASE_PENDING)
+        if self._lease:
+            return self._result(
+                TxOutcome.IDEMPOTENT if self._lease.owner == owner else TxOutcome.BUSY
+            )
+        if not self._ready or self._generation is None:
+            return self._result(TxOutcome.NOT_READY)
+        if not self._observation or self._observation.value is not RadioTx.OFF:
+            return self._result(TxOutcome.RADIO_NOT_OFF)
+        now = self._clock()
+        self._lease = _Lease(self._id_factory(), owner)
+        self._acquisition = self._boundary(now)
+        self._watchdog_deadline = (
+            now + self._watchdog_seconds if self._watchdog_seconds else None
+        )
+        return self._result(
+            TxOutcome.ACCEPTED,
+            (self._start(ProviderAttemptKind.WRITE_ON, self._write_timeout),),
+        )
+
+    def request_off(
+        self,
+        owner: TxOwner,
+        lease_id: str,
+        *,
+        reason: TxReleaseReason = TxReleaseReason.OPERATOR_RELEASE,
+    ) -> TxTransition:
+        if not self._lease or (self._lease.owner, self._lease.id) != (owner, lease_id):
+            return self._result(TxOutcome.STALE)
+        return self._release_current(reason)
+
+    def release_owner(self, owner: TxOwner, *, reason: TxReleaseReason) -> TxTransition:
+        if not self._lease or self._lease.owner != owner:
+            return self._result(TxOutcome.STALE)
+        return self._release_current(reason)
+
+    def emergency_release(self, *, reason: TxReleaseReason) -> TxTransition:
+        return (
+            self._release_current(reason)
+            if self._lease
+            else self._result(TxOutcome.NOOP)
+        )
+
+    def settle_attempt(
+        self,
+        attempt_id: str,
+        provider_generation: int,
+        *,
+        succeeded: bool,
+        error: str | None = None,
+    ) -> TxTransition:
+        attempt = self._active
+        if (
+            not attempt
+            or (attempt.id, attempt.provider_generation)
+            != (attempt_id, provider_generation)
+            or provider_generation != self._generation
+        ):
+            return self._result(TxOutcome.STALE)
+        self._active = None
+
+        if attempt.kind is ProviderAttemptKind.WRITE_ON:
+            if not self._release and not succeeded:
+                self._begin_release(
+                    TxReleaseReason.CONTROL_TRANSPORT_LOST,
+                    self._clock(),
+                    error or "write_on_failed",
+                )
+            if self._release:
+                return self._result(
+                    TxOutcome.APPLIED, self._service_release(force=True)
+                )
+            return self._result(
+                TxOutcome.APPLIED,
+                (self._start(ProviderAttemptKind.READ_PTT, self._read_timeout),),
+            )
+
+        if not self._release:
+            if attempt.kind is ProviderAttemptKind.READ_PTT and not succeeded:
+                self._begin_release(
+                    TxReleaseReason.CONTROL_TRANSPORT_LOST,
+                    self._clock(),
+                    error or "read_ptt_failed",
+                )
+                return self._result(
+                    TxOutcome.APPLIED, self._service_release(force=True)
+                )
+            return self._result(TxOutcome.APPLIED)
+
+        if self._release.attempts == 0:
+            return self._result(TxOutcome.APPLIED, self._service_release(force=True))
+        if attempt.kind is ProviderAttemptKind.WRITE_OFF:
+            if not succeeded:
+                self._schedule_retry(error or "write_off_failed")
+                return self._result(TxOutcome.APPLIED)
+            return self._result(
+                TxOutcome.APPLIED,
+                (self._start(ProviderAttemptKind.READ_PTT, self._read_timeout),),
+            )
+        self._schedule_retry(
+            error or ("read_ptt_unconfirmed" if succeeded else "read_ptt_failed")
+        )
+        return self._result(TxOutcome.APPLIED)
+
+    def tick(self) -> TxTransition:
+        now = self._clock()
+        effects: tuple[TxEffect, ...] = ()
+        if (
+            self._lease
+            and not self._release
+            and self._watchdog_deadline is not None
+            and now >= self._watchdog_deadline
+        ):
+            active = self._active
+            self._begin_release(TxReleaseReason.BACKEND_MAX_KEY_DOWN, now)
+            if active:
+                effects = (
+                    CancelProviderAttempt(active.id, active.provider_generation),
+                )
+        if not effects:
+            effects = self._service_release(force=False)
+        outcome = TxOutcome.APPLIED if effects or self._release else TxOutcome.NOOP
+        return self._result(outcome, effects)
+
+    def _release_current(self, reason: TxReleaseReason) -> TxTransition:
+        if self._release:
+            self._release = replace(self._release, terminal_reason=reason)
+            return self._result(TxOutcome.IDEMPOTENT)
+        self._begin_release(reason, self._clock())
+        if self._active:
+            return self._result(
+                TxOutcome.ACCEPTED,
+                (
+                    CancelProviderAttempt(
+                        self._active.id, self._active.provider_generation
+                    ),
+                ),
+            )
+        return self._result(TxOutcome.ACCEPTED, self._service_release(force=True))
+
+    def _begin_release(
+        self, reason: TxReleaseReason, now: float, error: str | None = None
+    ) -> None:
+        if not self._lease:
+            return
+        self._release = _Release(
+            requested_reason=reason,
+            terminal_reason=reason,
+            boundary=self._boundary(now),
+            retry_due=now,
+            error=error,
+        )
+        self._watchdog_deadline = None
+
+    def _service_release(self, *, force: bool) -> tuple[TxEffect, ...]:
+        release = self._release
+        if (
+            not release
+            or not self._ready
+            or self._generation is None
+            or self._active
+            or (
+                not force
+                and (release.retry_due is None or self._clock() < release.retry_due)
+            )
+        ):
+            return ()
+        attempt = self._start(ProviderAttemptKind.WRITE_OFF, self._write_timeout)
+        self._release = replace(
+            release, attempts=release.attempts + 1, retry_due=None, error=None
+        )
+        return (attempt,)
+
+    def _schedule_retry(self, error: str) -> None:
+        if not self._release:
+            return
+        index = max(self._release.attempts - 1, 0)
+        delay = self._retries[min(index, len(self._retries) - 1)]
+        self._release = replace(
+            self._release, retry_due=self._clock() + delay, error=error
+        )
+
+    def _start(self, kind: ProviderAttemptKind, timeout: float) -> ProviderAttempt:
+        if self._active or self._generation is None or not self._lease:
+            raise RuntimeError("provider attempt requires one generation and lease")
+        attempt = ProviderAttempt(
+            self._id_factory(),
+            kind,
+            self._generation,
+            self._lease.id,
+            self._clock(),
+            timeout,
+        )
+        self._active = attempt
+        return attempt
+
+    def _boundary(self, now: float) -> _Boundary:
+        if self._generation is None:
+            raise RuntimeError("causal boundary requires provider generation")
+        sequence = self._observation.ptt_observation_seq if self._observation else 0
+        return _Boundary(self._generation, sequence, now)
+
+    def _clear_managed(self) -> None:
+        self._lease = self._acquisition = self._release = self._active = None
+        self._watchdog_deadline = None
+
+    def _result(
+        self, outcome: TxOutcome, effects: Sequence[TxEffect] = ()
+    ) -> TxTransition:
+        return TxTransition(outcome, self.snapshot, tuple(effects))
