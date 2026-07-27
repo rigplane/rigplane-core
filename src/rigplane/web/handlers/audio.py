@@ -49,7 +49,6 @@ from ...capabilities import (
 __all__ = [
     "AudioBroadcaster",
     "AudioHandler",
-    "BrowserTxAudioFacts",
     "RxPcmTapSource",
     "browser_tx_audio_facts",
 ]
