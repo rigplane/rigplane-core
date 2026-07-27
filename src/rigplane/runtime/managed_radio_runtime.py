@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Awaitable, Callable
+from dataclasses import dataclass
 
 from rigplane.core.tx_safety import (
     Clock,
     IdFactory,
+    ProviderPttObservation,
     TxOutcome,
     TxOwner,
     TxReleaseReason,
@@ -16,6 +18,14 @@ from rigplane.core.tx_safety import (
 
 TxService = Callable[[TxSafetySupervisor, TxTransition], Awaitable[None]]
 ProviderRelease = Callable[[], Awaitable[None]]
+PttObserver = Callable[[ProviderPttObservation], None]
+
+
+@dataclass(frozen=True, slots=True)
+class ProviderTxLifecycle:
+    bind: Callable[[int, PttObserver], None]
+    unbind: Callable[[], None]
+    read_ptt: Callable[[], Awaitable[None]]
 
 
 class ManagedRadioRuntime:
@@ -24,6 +34,7 @@ class ManagedRadioRuntime:
         target_id: str,
         *,
         service: TxService,
+        provider_lifecycle: ProviderTxLifecycle | None = None,
         clock: Clock | None = None,
         id_factory: IdFactory | None = None,
         shutdown_timeout_seconds: float = 3.0,
@@ -33,6 +44,7 @@ class ManagedRadioRuntime:
         self.target_id = target_id
         self._tx_safety = TxSafetySupervisor(clock=clock, id_factory=id_factory)
         self._service = service
+        self._provider_lifecycle = provider_lifecycle
         self._provider_generation = 0
         self._shutdown_timeout = shutdown_timeout_seconds
 
@@ -45,9 +57,39 @@ class ManagedRadioRuntime:
             await self._service(self._tx_safety, transition)
 
     async def replace_provider(self, *, ready: bool) -> TxTransition:
-        self._provider_generation += 1
+        generation = self._provider_generation + 1
+        if self._provider_lifecycle:
+            self._provider_lifecycle.bind(generation, self._observe_ptt)
+        self._provider_generation = generation
         transition = self._tx_safety.replace_provider(
             self._provider_generation, ready=ready
+        )
+        await self._service_effects(transition)
+        return transition
+
+    def _observe_ptt(self, observation: ProviderPttObservation) -> None:
+        self._tx_safety.observe_ptt(observation)
+
+    async def request_fresh_ptt(self, provider_generation: int) -> TxTransition:
+        lifecycle = self._provider_lifecycle
+        if lifecycle is None or provider_generation != self._provider_generation:
+            return TxTransition(TxOutcome.STALE, self.tx_snapshot)
+        await lifecycle.read_ptt()
+        outcome = (
+            TxOutcome.APPLIED
+            if provider_generation == self._provider_generation
+            else TxOutcome.STALE
+        )
+        return TxTransition(outcome, self.tx_snapshot)
+
+    async def invalidate_provider(self, provider_generation: int) -> TxTransition:
+        if provider_generation != self._provider_generation:
+            return TxTransition(TxOutcome.STALE, self.tx_snapshot)
+        if self._provider_lifecycle:
+            self._provider_lifecycle.unbind()
+        self._provider_generation += 1
+        transition = self._tx_safety.replace_provider(
+            self._provider_generation, ready=False
         )
         await self._service_effects(transition)
         return transition
@@ -95,5 +137,9 @@ class ManagedRadioRuntime:
         except TimeoutError:
             pass
         finally:
-            await release_provider()
+            try:
+                if self._provider_lifecycle:
+                    self._provider_lifecycle.unbind()
+            finally:
+                await release_provider()
         return transition
