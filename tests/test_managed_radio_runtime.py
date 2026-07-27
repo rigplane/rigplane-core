@@ -1,5 +1,5 @@
 import asyncio
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from dataclasses import FrozenInstanceError
 
 import pytest
@@ -17,7 +17,44 @@ from rigplane.core.tx_safety import (
     TxSource,
     TxTransition,
 )
-from rigplane.runtime.managed_radio_runtime import ManagedRadioRuntime, TxService
+from rigplane.runtime.managed_radio_runtime import (
+    ManagedRadioRuntime,
+    ProviderTxLifecycle,
+    TxService,
+)
+from rigplane.runtime.radio import CoreRadio
+
+
+class ProviderLifecycle:
+    def __init__(self) -> None:
+        self.bindings: list[tuple[int, Callable[[ProviderPttObservation], None]]] = []
+        self.current: tuple[int, Callable[[ProviderPttObservation], None]] | None = None
+        self.bind_error = self.unbind_error = False
+
+    def _bind_authoritative_ptt_observer(
+        self,
+        *,
+        provider_generation: int,
+        observer: Callable[[ProviderPttObservation], None],
+    ) -> None:
+        self.current = (provider_generation, observer)
+        self.bindings.append(self.current)
+        if self.bind_error:
+            raise RuntimeError("bind failed")
+
+    def _unbind_authoritative_ptt_observer(self) -> None:
+        if self.unbind_error:
+            raise RuntimeError("unbind failed")
+        self.current = None
+
+    async def _request_authoritative_ptt_read(
+        self,
+        *,
+        provider_generation: int,
+        observer: Callable[[ProviderPttObservation], None],
+    ) -> None:
+        assert self.current == (provider_generation, observer)
+        observer(ProviderPttObservation(RadioTx.OFF, provider_generation, 1, 10.0))
 
 
 def ids() -> Iterator[str]:
@@ -38,11 +75,13 @@ def runtime(
     *,
     timeout: float = 0.01,
     service: TxService = no_effects,
+    lifecycle: ProviderTxLifecycle | None = None,
 ) -> ManagedRadioRuntime:
     generated = ids()
     return ManagedRadioRuntime(
         target,
         service=service,
+        provider_lifecycle=lifecycle or ProviderLifecycle(),
         clock=lambda: 10.0,
         id_factory=lambda: next(generated),
         shutdown_timeout_seconds=timeout,
@@ -205,3 +244,68 @@ async def test_shutdown_error_still_releases_provider() -> None:
     with pytest.raises(RuntimeError, match="dekey failed"):
         await rt.shutdown(release_provider=release)
     assert released
+
+
+@pytest.mark.asyncio
+async def test_real_core_radio_keyword_port_binds_effectless_generation() -> None:
+    radio = CoreRadio("127.0.0.1")
+    rt = runtime(lifecycle=radio)
+
+    changed = await rt.replace_provider(ready=False)
+
+    assert changed.snapshot.provider_generation == 1
+    assert radio._civ_runtime._ptt_observer_provider_generation == 1
+    await rt.invalidate_provider(1)
+
+
+@pytest.mark.asyncio
+async def test_unbound_bind_failure_and_stale_callback_fail_closed() -> None:
+    provider = ProviderLifecycle()
+    rt = runtime(lifecycle=provider)
+    owner = TxOwner(TxSource.SDK, "sdk")
+    assert (await rt.request_on(owner)).outcome is TxOutcome.NOT_READY
+
+    provider.bind_error = True
+    with pytest.raises(RuntimeError, match="bind failed"):
+        await rt.replace_provider(ready=True)
+    generation, observer = provider.bindings[-1]
+    assert rt.tx_snapshot.provider_generation == generation == 1
+    assert rt.tx_snapshot.provider_ready is False
+    assert callable(observer)
+    observer(ProviderPttObservation(RadioTx.ON, generation, 1, 10.0))
+    assert rt.tx_snapshot.radio_tx is RadioTx.UNKNOWN
+    assert (await rt.request_on(owner)).outcome is TxOutcome.NOT_READY
+    assert (await rt.set_provider_ready(ready=True)).outcome is TxOutcome.NOT_READY
+
+
+@pytest.mark.asyncio
+async def test_unbind_failure_still_invalidates_host_and_old_callback() -> None:
+    provider = ProviderLifecycle()
+    rt = runtime(lifecycle=provider)
+    await rt.replace_provider(ready=True)
+    generation, observer = provider.bindings[-1]
+    provider.unbind_error = True
+
+    with pytest.raises(RuntimeError, match="unbind failed"):
+        await rt.invalidate_provider(generation)
+
+    assert rt.tx_snapshot.provider_generation == 2
+    assert rt.tx_snapshot.provider_ready is False
+    assert callable(observer)
+    observer(ProviderPttObservation(RadioTx.ON, generation, 1, 10.0))
+    assert rt.tx_snapshot.radio_tx is RadioTx.UNKNOWN
+    assert (await rt.set_provider_ready(ready=True)).outcome is TxOutcome.NOT_READY
+
+
+@pytest.mark.asyncio
+async def test_replacement_rejects_old_generation_callback() -> None:
+    provider = ProviderLifecycle()
+    rt = runtime(lifecycle=provider)
+    await rt.replace_provider(ready=True)
+    generation, observer = provider.bindings[-1]
+
+    await rt.replace_provider(ready=True)
+    observer(ProviderPttObservation(RadioTx.ON, generation, 1, 10.0))
+
+    assert rt.tx_snapshot.provider_generation == 2
+    assert rt.tx_snapshot.radio_tx is RadioTx.UNKNOWN
