@@ -23,11 +23,13 @@ asserting the scope's center freq / bandwidth.
 
 from __future__ import annotations
 
+from rigplane.audio_bus import AudioBus
 from rigplane.capabilities import CAP_AUDIO
 from rigplane.core.state_pipeline_contracts import FieldPath, SourceMetadata
 from rigplane.core.state_store import FieldSnapshot, FreshnessState, StateSnapshot
 from rigplane.profiles import resolve_radio_profile
 from rigplane.radio_state import RadioState
+from rigplane.types import AudioCodec
 from rigplane.web.server import WebConfig, WebServer
 
 _SOURCE = SourceMetadata(
@@ -39,15 +41,19 @@ _SOURCE = SourceMetadata(
 
 
 class _AudioOnlyRadio:
-    """Minimal fake radio: audio capability (so the FFT scope is wired), no
-    hardware scope. Carries a real profile so mode-bandwidth resolution works.
+    """Concrete wrapped-USB PCM supplier with no hardware scope.
+
+    Carries a real profile so mode-bandwidth resolution works.
     """
 
+    has_usb_audio = True
+
     def __init__(self, *, model: str) -> None:
-        self.capabilities = frozenset({CAP_AUDIO})
+        self.capabilities = {CAP_AUDIO}
         self.radio_state = RadioState()
-        self.audio_codec = None
+        self.audio_codec = AudioCodec.PCM_1CH_16BIT
         self.audio_sample_rate = 48_000
+        self.audio_bus = AudioBus(self)
         self.model = model
         self.profile = resolve_radio_profile(model=model)
 
@@ -85,7 +91,11 @@ def _mode_field(receiver_id: str, mode: str) -> FieldSnapshot:
 
 
 def _make_server(*, model: str) -> WebServer:
-    server = WebServer(radio=_AudioOnlyRadio(model=model), config=WebConfig())
+    radio = _AudioOnlyRadio(model=model)
+    assert callable(radio.audio_bus.subscribe)
+    assert radio.audio_codec == AudioCodec.PCM_1CH_16BIT
+    assert radio.audio_sample_rate > 0
+    server = WebServer(radio=radio, config=WebConfig())
     assert server._audio_fft_scope is not None, "audio FFT scope must be wired"
     return server
 
