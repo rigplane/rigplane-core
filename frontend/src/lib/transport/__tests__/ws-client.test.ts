@@ -461,6 +461,46 @@ describe('control channel singleton', () => {
     expect(patchActiveReceiver).not.toHaveBeenCalled();
   });
 
+  it('allows open-socket PTT release aliases while radio health is degraded', async () => {
+    vi.mocked(isLiveRadioAvailable).mockReturnValue(false);
+    radioStoreMock.current = makeState({ ptt: true });
+    const { connect, sendCommand } = await import('../ws-client');
+    connect('ws://test/api/v1/ws');
+    instances[0].simulateOpen();
+
+    expect(sendCommand('ptt_on')).toBe(false);
+    expect(sendCommand('ptt', { state: true })).toBe(false);
+    expect(sendCommand('ptt_off')).toBe(true);
+    expect(radioStoreMock.current?.ptt).toBe(true);
+    expect(sendCommand('ptt', { state: false })).toBe(true);
+    expect(radioStoreMock.current?.ptt).toBe(true);
+
+    expect(instances[0].sent.map((frame) => JSON.parse(frame))).toMatchObject([
+      { name: 'ptt_off' },
+      { name: 'ptt', params: { state: false } },
+    ]);
+  });
+
+  it('coalesces offline PTT release aliases while radio health is degraded', async () => {
+    vi.mocked(isLiveRadioAvailable).mockReturnValue(false);
+    radioStoreMock.current = makeState({ ptt: true });
+    const { connect, sendCommand } = await import('../ws-client');
+
+    expect(sendCommand('ptt_on', {}, 'on-1')).toBe(false);
+    expect(sendCommand('ptt', { state: true }, 'on-2')).toBe(false);
+    expect(sendCommand('ptt_off', {}, 'off-1')).toBe(false);
+    expect(radioStoreMock.current?.ptt).toBe(true);
+    expect(sendCommand('ptt', { state: false }, 'off-2')).toBe(false);
+    expect(radioStoreMock.current?.ptt).toBe(true);
+
+    connect('ws://test/api/v1/ws');
+    instances[0].simulateOpen();
+    expect(radioStoreMock.current?.ptt).toBe(true);
+    expect(instances[0].sent.map((frame) => JSON.parse(frame))).toEqual([
+      { type: 'cmd', name: 'ptt', id: 'off-2', params: { state: false } },
+    ]);
+  });
+
   it('getChannel returns the same instance for the same name', async () => {
     const { getChannel } = await import('../ws-client');
     const a = getChannel('scope');
@@ -835,6 +875,78 @@ describe('WsChannel send queue', () => {
 
     expect(instances[0].sent).toHaveLength(20);
     expect(JSON.parse(instances[0].sent[0]).id).toBe('cmd-5');
+  });
+
+  it('never replays offline PTT-on aliases and coalesces release aliases', async () => {
+    const { WsChannel } = await import('../ws-client');
+    const ch = new WsChannel();
+
+    expect(ch.send({ type: 'cmd', name: 'ptt_on', id: 'on-1', params: {} })).toBe(false);
+    expect(ch.send({ type: 'cmd', name: 'ptt', id: 'on-2', params: { state: true } })).toBe(false);
+    expect(ch.send({ type: 'cmd', name: 'ptt_off', id: 'off-1', params: {} })).toBe(false);
+    expect(ch.send({ type: 'cmd', name: 'ptt', id: 'off-2', params: { state: false } })).toBe(false);
+
+    ch.connect('ws://test');
+    instances[0].simulateOpen();
+
+    expect(instances[0].sent.map((frame) => JSON.parse(frame))).toEqual([
+      { type: 'cmd', name: 'ptt', id: 'off-2', params: { state: false } },
+    ]);
+  });
+
+  it('sends healthy PTT-on and release aliases immediately on an open socket', async () => {
+    const { WsChannel } = await import('../ws-client');
+    const ch = new WsChannel();
+    ch.connect('ws://test');
+    instances[0].simulateOpen();
+
+    expect(ch.send({ type: 'cmd', name: 'ptt_on', id: 'on-1', params: {} })).toBe(true);
+    expect(ch.send({ type: 'cmd', name: 'ptt', id: 'on-2', params: { state: true } })).toBe(true);
+    expect(ch.send({ type: 'cmd', name: 'ptt_off', id: 'off-1', params: {} })).toBe(true);
+    expect(ch.send({ type: 'cmd', name: 'ptt', id: 'off-2', params: { state: false } })).toBe(true);
+
+    expect(instances[0].sent.map((frame) => JSON.parse(frame).id)).toEqual([
+      'on-1',
+      'on-2',
+      'off-1',
+      'off-2',
+    ]);
+  });
+
+  it('pins an offline release beyond ordinary queue capacity', async () => {
+    const { WsChannel } = await import('../ws-client');
+    const ch = new WsChannel();
+
+    ch.send({ type: 'cmd', name: 'ptt_off', id: 'release', params: {} });
+    for (let i = 0; i < 45; i++) {
+      ch.send({ type: 'cmd', name: 'set_af_level', id: `ordinary-${i}`, params: { level: i } });
+    }
+
+    ch.connect('ws://test');
+    instances[0].simulateOpen();
+
+    const drained = instances[0].sent.map((frame) => JSON.parse(frame));
+    expect(drained).toHaveLength(21);
+    expect(drained[0]).toMatchObject({ name: 'ptt_off', id: 'release' });
+    expect(drained.slice(1).map((cmd) => cmd.id)).toEqual(
+      Array.from({ length: 20 }, (_, i) => `ordinary-${i + 25}`),
+    );
+  });
+
+  it('allows one new queued release in a later offline episode', async () => {
+    const { WsChannel } = await import('../ws-client');
+    const ch = new WsChannel();
+
+    ch.send({ type: 'cmd', name: 'ptt_off', id: 'release-1', params: {} });
+    ch.connect('ws://test');
+    instances[0].simulateOpen();
+    expect(instances[0].sent.map((frame) => JSON.parse(frame).id)).toEqual(['release-1']);
+
+    ch.disconnect();
+    ch.send({ type: 'cmd', name: 'ptt_off', id: 'release-2', params: {} });
+    ch.connect('ws://test');
+    instances[1].simulateOpen();
+    expect(instances[1].sent.map((frame) => JSON.parse(frame).id)).toEqual(['release-2']);
   });
 
   it('handles error response with status field', async () => {
