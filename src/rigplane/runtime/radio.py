@@ -24,6 +24,7 @@ if TYPE_CHECKING:
 
     from rigplane._runtime_protocols import ControlPhaseHost
     from rigplane.core.acquisition_scheduler import RadioStateModelService
+    from rigplane.core.tx_safety import ProviderPttObservation
 
 from . import radio_initial_state as _initial_state
 from . import radio_reconnect as _reconnect
@@ -2932,7 +2933,7 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
         """Toggle PTT (Push-To-Talk).
 
         Fire-and-forget: the command is sent at IMMEDIATE priority without
-        blocking for an ACK.  The state cache is updated optimistically.
+        blocking for an ACK. PTT state changes only on decoded radio readback.
 
         Args:
             on: True for TX, False for RX.
@@ -2944,8 +2945,23 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
             else ptt_off(to_addr=self._radio_addr)
         )
         await self._send_civ_raw(civ, priority=Priority.IMMEDIATE, wait_response=False)
-        self._state_cache.update_ptt(on)
         logger.debug("set_ptt(%s) sent (fire-and-forget)", on)
+
+    def _bind_authoritative_ptt_observer(
+        self,
+        *,
+        provider_generation: int,
+        observer: "Callable[[ProviderPttObservation], None]",
+    ) -> None:
+        """Bind decoded PTT readback to a managed-provider generation."""
+        self._civ_runtime.bind_ptt_observer(
+            provider_generation=provider_generation,
+            observer=observer,
+        )
+
+    def _unbind_authoritative_ptt_observer(self) -> None:
+        """Detach the managed-provider PTT readback observer."""
+        self._civ_runtime.unbind_ptt_observer()
 
     # ------------------------------------------------------------------
     # Transceiver status family (#136)

@@ -206,11 +206,11 @@ async def test_backend_contract_power(backend_fixture: _BackendFixture) -> None:
 
 
 @pytest.mark.asyncio
-async def test_backend_contract_ptt_updates_state_cache(
+async def test_backend_contract_ptt_cache_behavior(
     backend_fixture: _BackendFixture,
 ) -> None:
     await backend_fixture.radio.set_ptt(True)
-    backend_fixture.assert_ptt(True)
+    backend_fixture.assert_ptt(backend_fixture.name == "serial")
     await backend_fixture.radio.set_ptt(False)
     backend_fixture.assert_ptt(False)
 

@@ -24,6 +24,7 @@ from rigplane.commands import (
 )
 from rigplane.commander import Priority
 from rigplane.exceptions import ConnectionError, TimeoutError
+from rigplane.core import tx_safety as tx
 from rigplane.radio import IcomRadio
 from rigplane.types import (
     AgcMode,
@@ -90,6 +91,19 @@ def _ptt_response(on: bool) -> bytes:
         data=bytes([0x01 if on else 0x00]),
     )
     return _wrap_civ_in_udp(civ)
+
+
+async def _route_ptt(
+    radio: IcomRadio,
+    data: bytes,
+    *,
+    to_addr: int = CONTROLLER_ADDR,
+    from_addr: int = IC_7610_ADDR,
+) -> None:
+    await radio._civ_runtime._route_civ_frame(
+        CivFrame(to_addr, from_addr, 0x1C, sub=0x00, data=data),
+        generation=radio._civ_epoch,
+    )
 
 
 def _bcd_bytes(value: int, digits: int = 4) -> bytes:
@@ -742,16 +756,117 @@ class TestPtt:
         assert mock_raw.call_args.kwargs["priority"] == Priority.IMMEDIATE
 
     @pytest.mark.asyncio
-    async def test_set_ptt_updates_state_cache(
+    async def test_set_ptt_does_not_update_state_cache_optimistically(
         self, radio: IcomRadio, mock_transport: MockTransport
     ) -> None:
-        """set_ptt updates the state cache optimistically."""
+        """A local write is not authoritative PTT state."""
         await radio.set_ptt(True)
-        assert radio.state_cache.ptt is True
-        assert radio.state_cache.ptt_ts > 0.0
+        assert radio.state_cache.ptt is False
+        assert radio.state_cache.ptt_ts == 0.0
 
         await radio.set_ptt(False)
         assert radio.state_cache.ptt is False
+        assert radio.state_cache.ptt_ts == 0.0
+
+    @pytest.mark.asyncio
+    async def test_ptt_authority_requires_exact_radio_response(
+        self, radio: IcomRadio
+    ) -> None:
+        observations: list[tx.ProviderPttObservation] = []
+        radio._bind_authoritative_ptt_observer(
+            provider_generation=7, observer=observations.append
+        )
+
+        for data in (b"", b"\x02", b"\x01\x00"):
+            await _route_ptt(radio, data)
+        for to_addr, from_addr in (
+            (CONTROLLER_ADDR, 0x99),
+            (0x99, IC_7610_ADDR),
+        ):
+            await _route_ptt(radio, b"\x01", to_addr=to_addr, from_addr=from_addr)
+        await radio._civ_runtime._route_civ_frame(
+            CivFrame(
+                to_addr=CONTROLLER_ADDR,
+                from_addr=IC_7610_ADDR,
+                command=0xFB,
+            ),
+            generation=radio._civ_epoch,
+        )
+        assert observations == []
+
+        for value in (b"\x01", b"\x01", b"\x00"):
+            await _route_ptt(radio, value)
+        assert [item.value for item in observations] == [
+            tx.RadioTx.ON,
+            tx.RadioTx.ON,
+            tx.RadioTx.OFF,
+        ]
+        assert [item.ptt_observation_seq for item in observations] == [1, 2, 3]
+        assert {item.provider_generation for item in observations} == {7}
+
+        replaced: list[tx.ProviderPttObservation] = []
+        radio._bind_authoritative_ptt_observer(
+            provider_generation=7, observer=replaced.append
+        )
+        await _route_ptt(radio, b"\x00")
+        assert replaced[0].ptt_observation_seq == 4
+
+        rebound: list[tx.ProviderPttObservation] = []
+        radio._bind_authoritative_ptt_observer(
+            provider_generation=9, observer=rebound.append
+        )
+        await _route_ptt(radio, b"\x00")
+        assert rebound[0].provider_generation == 9
+        assert rebound[0].ptt_observation_seq == 1
+
+    @pytest.mark.asyncio
+    async def test_same_generation_rebind_off_crosses_supervisor_boundary(
+        self, radio: IcomRadio
+    ) -> None:
+        supervisor = tx.TxSafetySupervisor()
+        supervisor.replace_provider(7, ready=True)
+        radio._bind_authoritative_ptt_observer(
+            provider_generation=7, observer=supervisor.observe_ptt
+        )
+        await _route_ptt(radio, b"\x00")
+        owner = tx.TxOwner(tx.TxSource.INTERNAL, "same-generation-rebind")
+        acquired = supervisor.request_on(owner)
+        await _route_ptt(radio, b"\x01")
+        assert acquired.snapshot.lease_id is not None
+        supervisor.request_off(owner, acquired.snapshot.lease_id)
+        assert supervisor.snapshot.phase is tx.TxPhase.RELEASE_REQUIRED
+
+        radio._unbind_authoritative_ptt_observer()
+        radio._bind_authoritative_ptt_observer(
+            provider_generation=7, observer=supervisor.observe_ptt
+        )
+        await _route_ptt(radio, b"\x00")
+        assert supervisor.snapshot.phase is tx.TxPhase.IDLE
+
+    @pytest.mark.asyncio
+    async def test_ptt_authority_rejects_old_rx_pump_generation(
+        self, radio: IcomRadio, mock_transport: MockTransport
+    ) -> None:
+        observations: list[tx.ProviderPttObservation] = []
+        radio._civ_runtime.start_pump()
+        radio._civ_runtime.advance_generation("unit-test-reconnect")
+        radio._bind_authoritative_ptt_observer(
+            provider_generation=8, observer=observations.append
+        )
+        mock_transport.queue_response(_ptt_response(False))
+        await asyncio.sleep(0.01)
+        assert observations == []
+
+        await radio._civ_runtime.stop_pump()
+        radio._civ_runtime.start_pump()
+        mock_transport.queue_response(_ptt_response(False))
+        await asyncio.sleep(0.01)
+        try:
+            assert len(observations) == 1
+            assert observations[0].value is tx.RadioTx.OFF
+            assert observations[0].provider_generation == 8
+        finally:
+            await radio._civ_runtime.stop_pump()
 
 
 class TestTimeout:
