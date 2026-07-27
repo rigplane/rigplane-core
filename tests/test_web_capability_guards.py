@@ -313,6 +313,13 @@ def _neutral_tx_radio(**changes: object) -> SimpleNamespace:
     return SimpleNamespace(**(values | changes))
 
 
+class _FlippingCodecRadio(SimpleNamespace):
+    @property
+    def audio_tx_codec(self):
+        self.codec_reads += 1
+        return AudioCodec.PCM_1CH_16BIT if self.codec_reads == 1 else None
+
+
 def test_browser_tx_audio_requires_caps_and_complete_neutral_transport():
     cases = (
         ({}, True),
@@ -438,6 +445,35 @@ async def test_browser_tx_audio_failed_start_or_transcoder_is_inactive(
         assert handler._transcoder is None
         assert radio.start_tx.await_count == 0
         assert radio.stop_tx.await_count == int(prior_active)
+
+
+@pytest.mark.asyncio
+async def test_browser_tx_audio_uses_one_validated_codec_snapshot(monkeypatch):
+    values = _neutral_tx_radio().__dict__.copy()
+    values.pop("audio_tx_codec")
+    radio = _FlippingCodecRadio(**values, codec_reads=0)
+    radio.capabilities.add("mod_input_routing")
+    handler = AudioHandler(SimpleNamespace(send_text=AsyncMock()), radio)
+    transcoder = Mock()
+    route = SimpleNamespace(
+        tx_audio_source=TxAudioSource.LAN,
+        data_mode_policy=DataModePolicy.DATA2_LAN,
+    )
+    resolve, policy = Mock(return_value=route), Mock(return_value=(2, 5))
+    monkeypatch.setattr(audio_module, "resolve_audio_route", resolve)
+    monkeypatch.setattr(audio_module, "rigctld_wsjtx_policy", policy)
+    monkeypatch.setattr(
+        audio_module, "create_pcm_opus_transcoder", Mock(return_value=transcoder)
+    )
+    await handler._handle_control({"type": "audio_start", "direction": "tx"})
+    assert (radio.codec_reads, handler._tx_active, handler._transcoder) == (
+        1,
+        True,
+        transcoder,
+    )
+    radio.start_tx.assert_awaited_once_with()
+    resolve.assert_called_once_with(radio)
+    policy.assert_called_once_with(route)
 
 
 class TestStateEndpoint:
