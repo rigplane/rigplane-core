@@ -10,17 +10,44 @@ const supersede = (model: ResourceDemand<string>, resource: AppResource, consume
   model.release(lease);
   return start;
 };
-const cleanupCases = [[false, ['rx-audio', 'rx-audio'], ['H', 'H'], ['rx-audio:H']],
+const ready = (model: ResourceDemand<string>, resource: AppResource) => {
+  model.configure(resource, { available: true, selected: true });
+};
+const activate = (model: ResourceDemand<string>, resource: AppResource, handle: string) => {
+  ready(model, resource);
+  const lease = model.acquire(resource, handle);
+  expect(model.completeStart(one(model), { handle })).toBe(true);
+  return lease;
+};
+const overlap = (model: ResourceDemand<string>, resource: AppResource) => {
+  ready(model, resource);
+  const stale = supersede(model, resource, 'old');
+  const activeLease = model.acquire(resource, 'new');
+  return { stale, current: one(model), activeLease };
+};
+const cleanupCases = [
+  [false, ['rx-audio', 'rx-audio'], ['H', 'H'], ['rx-audio:H']],
   [true, ['rx-audio', 'rx-audio'], ['H', 'H'], ['rx-audio:H']],
   [false, ['rx-audio', 'rx-audio'], ['A', 'B'], ['rx-audio:A', 'rx-audio:B']],
-  [false, ['rx-audio', 'hardware-scope'], ['H', 'H'], ['rx-audio:H', 'hardware-scope:H']]] as const;
+  [false, ['rx-audio', 'hardware-scope'], ['H', 'H'], ['rx-audio:H', 'hardware-scope:H']],
+] as const;
 describe('ResourceDemand foundation', () => {
   it('uses exact leases and remembers adopted handles across cleanup drains', () => {
     const model = new ResourceDemand<string>('session-1');
-    const wider = { available: false, selected: true, demand: 99, activeHandle: 'ghost' };
+    const wider = {
+      available: false,
+      selected: true,
+      demand: 99,
+      activeHandle: 'ghost',
+      generation: 99,
+      health: 'streaming',
+      pending: { kind: 'start' },
+    };
     model.configure('audio-fft', wider);
     model.acquire('audio-fft', 'panel');
-    expect(model.snapshot('audio-fft')).toEqual({ available: false, selected: true, demand: 1, health: 'inactive' });
+    expect(model.snapshot('audio-fft')).toEqual({
+      available: false, selected: true, demand: 1, generation: 0, health: 'inactive',
+    });
     model.configure('rx-audio', { available: true, selected: true });
     const staleA = supersede(model, 'rx-audio', 'A');
     const late = ['B', 'C'].map((consumer) => supersede(model, 'rx-audio', consumer));
@@ -60,12 +87,81 @@ describe('ResourceDemand foundation', () => {
   });
   it('defers singleton cleanup until pending adoption', () => {
     const model = new ResourceDemand<string>('session-1');
-    model.configure('rx-audio', { available: true, selected: true });
+    ready(model, 'rx-audio');
     const staleStart = supersede(model, 'rx-audio', 'stale');
-    const liveLease = model.acquire('rx-audio', 'live'), liveStart = one(model);
+    const liveLease = model.acquire('rx-audio', 'live');
+    const liveStart = one(model);
     expect(model.completeStart(staleStart, { handle: 'stable' })).toBe(false);
     expect([model.takeOperations(), model.takeOperations()]).toEqual([[], []]);
     expect(model.completeStart(liveStart, { handle: 'stable' })).toBe(true);
-    model.release(liveLease); expect(model.takeOperations().map((op) => op.kind)).toEqual(['stop']);
+    model.release(liveLease);
+    expect(model.takeOperations().map((op) => op.kind)).toEqual(['stop']);
+  });
+  it('requires explicit retry and disposes a completed abandoned start once', () => {
+    const model = new ResourceDemand<string>('session-1');
+    ready(model, 'audio-fft');
+    const lease = model.acquire('audio-fft', 'panel');
+    expect(model.completeStart(one(model), { error: 'offline' })).toBe(true);
+    model.configure('audio-fft', { available: true, selected: false });
+    ready(model, 'audio-fft');
+    expect(model.takeOperations()).toEqual([]);
+    model.retry('audio-fft');
+    const retry = one(model);
+    model.release(lease);
+    expect(model.completeStart(retry, { handle: 'late' })).toBe(false);
+    expect(one(model)).toMatchObject({ kind: 'dispose', handle: 'late' });
+    expect(model.completeStart(retry, { handle: 'late' })).toBe(false);
+    expect(model.takeOperations()).toEqual([]);
+  });
+  it('tears down active work once and invalidates the old session', () => {
+    const model = new ResourceDemand<string>('session-1');
+    const active = activate(model, 'hardware-scope', 'scope');
+    ready(model, 'audio-fft');
+    const pending = model.acquire('audio-fft', 'pending');
+    const pendingStart = one(model);
+    expect(model.teardown()).toMatchObject([{ kind: 'stop', handle: 'scope' }]);
+    expect(model.teardown()).toEqual([]);
+    expect(model.takeOperations()).toEqual([]);
+    expect(model.release(active)).toBe(false);
+    expect(model.release(pending)).toBe(false);
+    expect(() => model.acquire('rx-audio', 'late')).toThrow('torn down');
+    expect(model.completeStart(pendingStart, { handle: 'late' })).toBe(false);
+    expect(one(model)).toMatchObject({ kind: 'dispose', handle: 'late' });
+  });
+  it.each([false, true])(
+    'harvests an undrained stop once (replacement demand: %s)',
+    (replacement) => {
+      const model = new ResourceDemand<string>('session-1');
+      const oldLease = activate(model, 'rx-audio', 'old');
+      model.release(oldLease);
+      const replacementLease = replacement ? model.acquire('rx-audio', 'new') : undefined;
+      expect(model.teardown()).toMatchObject([{ kind: 'stop', handle: 'old' }]);
+      if (replacementLease) expect(model.release(replacementLease)).toBe(false);
+      expect(model.takeOperations()).toEqual([]);
+      expect(model.teardown()).toEqual([]);
+    },
+  );
+  it.each([false, true])(
+    'prefers one stop when dispose aliases active or queued stop work (%s)',
+    (releaseBeforeTeardown) => {
+      const model = new ResourceDemand<string>('session-1');
+      const { stale, current, activeLease } = overlap(model, 'hardware-scope');
+      model.completeStart(stale, { handle: 'stable' });
+      model.completeStart(current, { handle: 'stable' });
+      if (releaseBeforeTeardown) model.release(activeLease);
+      expect(model.teardown()).toMatchObject([{ kind: 'stop', handle: 'stable' }]);
+      expect(model.takeOperations()).toEqual([]);
+    },
+  );
+  it('preserves distinct stale disposal and active stop intents', () => {
+    const model = new ResourceDemand<string>('session-1');
+    const { stale, current } = overlap(model, 'hardware-scope');
+    model.completeStart(stale, { handle: 'old' });
+    model.completeStart(current, { handle: 'new' });
+    expect(model.teardown()).toMatchObject([
+      { kind: 'dispose', handle: 'old' },
+      { kind: 'stop', handle: 'new' },
+    ]);
+    expect(model.takeOperations()).toEqual([]);
   });
 });
