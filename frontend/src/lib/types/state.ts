@@ -77,6 +77,7 @@ export interface ServerStatePublic {
     [k: string]: number;
   }[];
   scopeControls?: ScopeControlsPublic;
+  txTarget?: KnownTxTargetPublic | UnknownTxTargetPublic;
   main: ReceiverStatePublic;
   sub?: ReceiverStatePublic | null;
   connection: ConnectionPublic;
@@ -114,6 +115,22 @@ export interface FixedEdgePublic {
   edge: number;
   startHz: number;
   endHz: number;
+}
+/**
+ * Fresh backend-neutral transmit-target identity.
+ */
+export interface KnownTxTargetPublic {
+  status: "known";
+  receiver: "MAIN" | "SUB";
+  slot: ("A" | "B") | null;
+  frequencyHz: number | null;
+}
+/**
+ * Fail-closed transmit target when current identity is unavailable.
+ */
+export interface UnknownTxTargetPublic {
+  status: "unknown";
+  reason: "not-observed" | "stale" | "unsupported" | "contradiction";
 }
 /**
  * Per-receiver (``main`` / ``sub``) public state.

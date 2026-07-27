@@ -68,6 +68,123 @@ def test_dataclass_path_conforms(receiver_count: int) -> None:
     ServerStatePublic.model_validate(payload)
 
 
+@pytest.mark.parametrize(
+    "tx_target",
+    [
+        {
+            "status": "known",
+            "receiver": "MAIN",
+            "slot": None,
+            "frequencyHz": None,
+        },
+        {
+            "status": "known",
+            "receiver": "SUB",
+            "slot": "B",
+            "frequencyHz": 14_074_000,
+        },
+        {"status": "unknown", "reason": "not-observed"},
+        {"status": "unknown", "reason": "stale"},
+        {"status": "unknown", "reason": "unsupported"},
+        {"status": "unknown", "reason": "contradiction"},
+    ],
+)
+def test_public_tx_target_schema_accepts_exact_canonical_shapes(
+    tx_target: dict[str, object],
+) -> None:
+    payload = build_public_state_payload(
+        RadioState(),
+        radio=None,
+        revision=7,
+        receiver_count=2,
+    )
+    payload["txTarget"] = tx_target
+
+    validated = ServerStatePublic.model_validate(payload)
+
+    assert validated.txTarget is not None
+    assert validated.txTarget.model_dump() == tx_target
+
+
+@pytest.mark.parametrize(
+    "tx_target",
+    [
+        None,
+        {"status": "other"},
+        {
+            "status": "known",
+            "receiver": "main",
+            "slot": None,
+            "frequencyHz": None,
+        },
+        {
+            "status": "known",
+            "receiver": "MAIN",
+            "slot": "a",
+            "frequencyHz": None,
+        },
+        {
+            "status": "known",
+            "receiver": "MAIN",
+            "slot": None,
+            "frequencyHz": True,
+        },
+        {
+            "status": "known",
+            "receiver": "MAIN",
+            "slot": None,
+            "frequencyHz": 0,
+        },
+        {
+            "status": "known",
+            "receiver": "MAIN",
+            "slot": None,
+            "frequencyHz": -1,
+        },
+        {
+            "status": "known",
+            "receiver": "MAIN",
+            "slot": None,
+            "frequencyHz": 14_074_000.0,
+        },
+        {
+            "status": "known",
+            "receiver": "MAIN",
+            "slot": None,
+            "frequencyHz": float("nan"),
+        },
+        {
+            "status": "known",
+            "receiver": "MAIN",
+            "slot": None,
+            "frequencyHz": float("inf"),
+        },
+        {
+            "status": "known",
+            "receiver": "MAIN",
+            "slot": None,
+            "frequencyHz": None,
+            "backend": "icom",
+        },
+        {"status": "unknown", "reason": "missing"},
+        {"status": "unknown", "reason": "stale", "receiver": "MAIN"},
+    ],
+)
+def test_public_tx_target_schema_rejects_noncanonical_shapes(
+    tx_target: object,
+) -> None:
+    payload = build_public_state_payload(
+        RadioState(),
+        radio=None,
+        revision=7,
+        receiver_count=2,
+    )
+    payload["txTarget"] = tx_target
+
+    with pytest.raises(ValueError):
+        ServerStatePublic.model_validate(payload)
+
+
 @pytest.mark.parametrize("receiver_count", [1, 2])
 def test_snapshot_path_conforms(receiver_count: int) -> None:
     """``build_public_state_payload_from_snapshot`` validates.
