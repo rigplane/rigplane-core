@@ -888,8 +888,12 @@ class TestPtt:
         await _route_ptt(radio, b"\x00")
         assert [item.ptt_observation_seq for item in observations] == [1, 2]
 
-        class EqualObserver(list[tx.ProviderPttObservation]):
-            __call__ = list.append
+        class EqualObserver:
+            def __init__(self) -> None:
+                self.calls: list[tx.ProviderPttObservation] = []
+
+            def __call__(self, observation: tx.ProviderPttObservation) -> None:
+                self.calls.append(observation)
 
             def __eq__(self, _other: object) -> bool:
                 return True
@@ -899,7 +903,8 @@ class TestPtt:
         mock_transport.queue_response(_ptt_response(False))
         with pytest.raises(CommandError, match="authoritative"):
             await read(provider_generation=8, observer=collision)
-        assert not bound
+        assert not bound.calls
+        radio._unbind_authoritative_ptt_observer()
 
     @pytest.mark.asyncio
     async def test_fresh_ptt_read_rechecks_binding_before_dispatch(
@@ -910,6 +915,7 @@ class TestPtt:
         entered = asyncio.Event()
         release = asyncio.Event()
         send = radio._civ_runtime._send_civ_frame_now
+        read = radio._request_authoritative_ptt_read
 
         async def gated_send(frame: bytes, **kwargs: object) -> None:
             entered.set()
@@ -918,9 +924,7 @@ class TestPtt:
 
         with patch.object(radio._civ_runtime, "_send_civ_frame_now", gated_send):
             pending = asyncio.create_task(
-                radio._request_authoritative_ptt_read(
-                    provider_generation=9, observer=observer
-                )
+                read(provider_generation=9, observer=observer)
             )
             await entered.wait()
             radio._unbind_authoritative_ptt_observer()
@@ -945,14 +949,11 @@ class TestPtt:
 
         observations: list[tx.ProviderPttObservation] = []
         observer = observations.append
+        read = radio._request_authoritative_ptt_read
         radio._bind_authoritative_ptt_observer(
             provider_generation=10, observer=observer
         )
-        pending = asyncio.create_task(
-            radio._request_authoritative_ptt_read(
-                provider_generation=10, observer=observer
-            )
-        )
+        pending = asyncio.create_task(read(provider_generation=10, observer=observer))
         while len(mock_transport.sent_packets) < 2:
             await asyncio.sleep(0)
         radio._civ_runtime.advance_generation("test-reconnect")
