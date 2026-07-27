@@ -229,11 +229,31 @@ def test_release_cancels_inflight_then_services_off(
     assert isinstance(cancel, CancelProviderAttempt)
     assert cancel.attempt_id == on.id
     assert cancel.requested_at_monotonic == on.started_at_monotonic
-    assert cancel.settlement_timeout_seconds == 2.0
-    assert cancel.settlement_deadline_monotonic == 12.0
+    assert cancel.settlement_timeout_seconds == 0.5
+    assert cancel.settlement_deadline_monotonic == 10.5
     settled = supervisor.settle_attempt(on.id, 1, succeeded=False)
     assert isinstance(settled.effects[0], ProviderAttempt)
     assert settled.effects[0].kind is ProviderAttemptKind.WRITE_OFF
+
+
+def test_cancel_coalesces_across_release_and_readiness_loss(
+    supervisor: TxSafetySupervisor, clock: Clock, owner: TxOwner
+) -> None:
+    lease, _ = acquire(supervisor, clock, owner)
+    cancel = supervisor.request_off(owner, lease).effects[0]
+    assert isinstance(cancel, CancelProviderAttempt)
+    original_deadline = cancel.settlement_deadline_monotonic
+    clock.advance(0.25)
+
+    assert supervisor.set_provider_ready(1, ready=False).effects == ()
+    assert (
+        supervisor.emergency_release(
+            reason=TxReleaseReason.ADMIN_EMERGENCY_STOP
+        ).effects
+        == ()
+    )
+    assert supervisor._cancel_pending is cancel
+    assert cancel.settlement_deadline_monotonic == original_deadline
 
 
 def test_release_of_inflight_read_services_off_without_backoff(
@@ -570,6 +590,9 @@ def test_acquisition_uses_one_clock_instant(owner: TxOwner) -> None:
         lambda: ProviderPttObservation(RadioTx.UNKNOWN, 1, 1, 0),
         lambda: ProviderPttObservation(RadioTx.OFF, -1, 1, 0),
         lambda: ProviderPttObservation(RadioTx.OFF, 1, 0, 0),
+        lambda: ProviderPttObservation(RadioTx.OFF, 1, 1, float("nan")),
+        lambda: ProviderPttObservation(RadioTx.OFF, 1, 1, float("inf")),
+        lambda: ProviderPttObservation(RadioTx.OFF, 1, 1, float("-inf")),
         lambda: TxSafetySupervisor(watchdog_seconds=0),
         lambda: TxSafetySupervisor(watchdog_seconds=float("inf")),
         lambda: TxSafetySupervisor(watchdog_seconds=float("nan")),
@@ -586,3 +609,8 @@ def test_acquisition_uses_one_clock_instant(owner: TxOwner) -> None:
 def test_invalid_inputs_are_rejected(factory) -> None:
     with pytest.raises(ValueError):
         factory()
+
+
+def test_observation_accepts_finite_negative_monotonic_time() -> None:
+    observation = ProviderPttObservation(RadioTx.OFF, 1, 1, -1.5)
+    assert observation.observed_at_monotonic == -1.5

@@ -104,6 +104,8 @@ class ProviderPttObservation:
             raise ValueError("provider_generation must be non-negative")
         if self.ptt_observation_seq <= 0:
             raise ValueError("ptt_observation_seq must be positive")
+        if not isfinite(self.observed_at_monotonic):
+            raise ValueError("observed_at_monotonic must be finite")
 
 
 @dataclass(frozen=True, slots=True)
@@ -213,7 +215,7 @@ class TxSafetySupervisor:
         watchdog_seconds: float | None = 180.0,
         write_timeout_seconds: float = 2.0,
         read_timeout_seconds: float = 2.0,
-        cancel_timeout_seconds: float = 2.0,
+        cancel_timeout_seconds: float = 0.5,
         retry_schedule_seconds: Sequence[float] = (0.25, 1.0, 2.0, 5.0),
     ) -> None:
         if watchdog_seconds is not None and (
@@ -245,6 +247,7 @@ class TxSafetySupervisor:
         self._acquisition: _Boundary | None = None
         self._release: _Release | None = None
         self._active: ProviderAttempt | None = None
+        self._cancel_pending: CancelProviderAttempt | None = None
         self._watchdog_deadline: float | None = None
 
     @property
@@ -301,6 +304,7 @@ class TxSafetySupervisor:
         self._generation, self._ready = generation, ready
         self._observation = None
         self._active = None
+        self._cancel_pending = None
         self._acquisition = None
         if had_lease:
             if not self._release:
@@ -322,7 +326,7 @@ class TxSafetySupervisor:
             self._observation = None
             if self._lease and not self._release:
                 self._begin_release(TxReleaseReason.CONTROL_TRANSPORT_LOST, now)
-            effects = (self._cancel(self._active, now),) if self._active else ()
+            effects = self._cancel(self._active, now) if self._active else ()
             return self._result(TxOutcome.APPLIED, effects)
         return self._result(
             TxOutcome.APPLIED, self._service_release(force=True, now=now)
@@ -415,6 +419,7 @@ class TxSafetySupervisor:
         ):
             return self._result(TxOutcome.STALE)
         self._active = None
+        self._cancel_pending = None
         now = self._clock()
         if not self._lease:
             return self._result(TxOutcome.APPLIED)
@@ -476,7 +481,7 @@ class TxSafetySupervisor:
             active = self._active
             self._begin_release(TxReleaseReason.BACKEND_MAX_KEY_DOWN, now)
             if active:
-                effects = (self._cancel(active, now),)
+                effects = self._cancel(active, now)
         if not effects:
             effects = self._service_release(force=False, now=now)
         outcome = TxOutcome.APPLIED if effects or self._release else TxOutcome.NOOP
@@ -491,7 +496,7 @@ class TxSafetySupervisor:
         if self._active:
             return self._result(
                 TxOutcome.ACCEPTED,
-                (self._cancel(self._active, now),),
+                self._cancel(self._active, now),
             )
         return self._result(TxOutcome.ACCEPTED, self._service_release(force=True))
 
@@ -555,16 +560,27 @@ class TxSafetySupervisor:
             timeout,
         )
         self._active = attempt
+        self._cancel_pending = None
         return attempt
 
-    def _cancel(self, attempt: ProviderAttempt, now: float) -> CancelProviderAttempt:
-        return CancelProviderAttempt(
+    def _cancel(
+        self, attempt: ProviderAttempt, now: float
+    ) -> tuple[CancelProviderAttempt, ...]:
+        pending = self._cancel_pending
+        if pending and (
+            pending.attempt_id,
+            pending.provider_generation,
+        ) == (attempt.id, attempt.provider_generation):
+            return ()
+        pending = CancelProviderAttempt(
             attempt.id,
             attempt.provider_generation,
             now,
             self._cancel_timeout,
             now + self._cancel_timeout,
         )
+        self._cancel_pending = pending
+        return (pending,)
 
     def _boundary(self, now: float) -> _Boundary:
         if self._generation is None:
