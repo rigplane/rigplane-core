@@ -1,10 +1,18 @@
 import { describe, expect, it } from 'vitest';
 import { ResourceDemand } from '../resource-demand';
-type Resource = 'hardware-scope' | 'audio-fft' | 'rx-audio'; const ready = (m: ResourceDemand<string>, r: Resource) => m.configure(r, { selected: true, available: true });
+
+type Resource = 'hardware-scope' | 'audio-fft' | 'rx-audio';
+
+const ready = (m: ResourceDemand<string>, r: Resource) => {
+  m.configure(r, { selected: true, available: true });
+};
+
 const one = (m: ResourceDemand<string>) => {
-  const ops = m.takeOperations(); expect(ops).toHaveLength(1);
+  const ops = m.takeOperations();
+  expect(ops).toHaveLength(1);
   return ops[0];
 };
+
 describe('ResourceDemand', () => {
   it('uses exact unique leases and emits only first start and last stop', () => {
     const m = new ResourceDemand<string>('s1');
@@ -20,7 +28,41 @@ describe('ResourceDemand', () => {
     expect(m.release({ ...b } as typeof b)).toBe(false);
     expect(m.release(b)).toBe(true);
     expect(one(m)).toMatchObject({ kind: 'stop', handle: 'scope' });
-    expect(m.release(b)).toBe(false); expect(new ResourceDemand<string>('s2').release(b)).toBe(false);
+    expect(m.release(b)).toBe(false);
+    expect(new ResourceDemand<string>('s2').release(b)).toBe(false);
+  });
+  it('treats a replayed successful start completion as inert', () => {
+    const m = new ResourceDemand<string>('s1');
+    ready(m, 'hardware-scope');
+    m.acquire('hardware-scope', 'scope');
+    const start = one(m);
+
+    expect(m.completeStart(start, { handle: 'LIVE' })).toBe(true);
+    expect(m.completeStart(start, { handle: 'LIVE' })).toBe(false);
+    expect(m.takeOperations()).toEqual([]);
+    expect(m.snapshot('hardware-scope')).toMatchObject({
+      activeHandle: 'LIVE',
+      health: 'streaming',
+    });
+  });
+  it('does not dispose a stable handle returned by stale and current A→B→A starts', () => {
+    const m = new ResourceDemand<string>('s1');
+    ready(m, 'hardware-scope');
+    const a = m.acquire('hardware-scope', 'A');
+    const startA = one(m);
+    m.release(a);
+    expect(m.takeOperations()).toEqual([]);
+
+    const b = m.acquire('hardware-scope', 'B');
+    const startB = one(m);
+    expect(m.completeStart(startA, { handle: 'STABLE' })).toBe(false);
+    expect(m.takeOperations()).toEqual([]);
+    expect(m.completeStart(startB, { handle: 'STABLE' })).toBe(true);
+    expect(m.takeOperations()).toEqual([]);
+    expect(m.snapshot('hardware-scope').activeHandle).toBe('STABLE');
+
+    expect(m.release(b)).toBe(true);
+    expect(one(m)).toMatchObject({ kind: 'stop', handle: 'STABLE' });
   });
   it('keeps unavailable and failed selection honest until explicit retry', () => {
     const m = new ResourceDemand<string>('s1');
@@ -36,6 +78,32 @@ describe('ResourceDemand', () => {
     ready(m, 'hardware-scope');
     expect(m.takeOperations()).toEqual([]);
     m.retry('hardware-scope');
+    expect(one(m).kind).toBe('start');
+  });
+  it('copies only public configuration fields from wider caller objects', () => {
+    const m = new ResourceDemand<string>('s1');
+    const widerConfig = {
+      selected: true,
+      available: true,
+      demand: 99,
+      health: 'streaming',
+      activeHandle: 'ghost',
+      generation: 99,
+      pending: { kind: 'start' },
+    };
+
+    m.configure('audio-fft', widerConfig);
+    const snapshot = m.snapshot('audio-fft');
+    expect(snapshot).toMatchObject({
+      selected: true,
+      available: true,
+      demand: 0,
+      health: 'inactive',
+      generation: 0,
+    });
+    expect(snapshot.activeHandle).toBeUndefined();
+    expect(snapshot.pending).toBeUndefined();
+    m.acquire('audio-fft', 'real consumer');
     expect(one(m).kind).toBe('start');
   });
   it('disposes a pending start whose demand vanished', () => {
@@ -63,7 +131,9 @@ describe('ResourceDemand', () => {
   it('tears down each active handle once and invalidates all old work', () => {
     const m = new ResourceDemand<string>('s1');
     for (const r of ['hardware-scope', 'rx-audio'] as const) {
-      ready(m, r); m.acquire(r, r); m.completeStart(one(m), { handle: r });
+      ready(m, r);
+      m.acquire(r, r);
+      m.completeStart(one(m), { handle: r });
     }
     ready(m, 'audio-fft');
     const pendingLease = m.acquire('audio-fft', 'pending');
