@@ -14,8 +14,9 @@ asking for them must fail loudly rather than silently swallow frames.
 
 from __future__ import annotations
 
+import json
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, Mock
 
 import numpy as np
 import pytest
@@ -23,7 +24,9 @@ import pytest
 from rigplane.audio import AudioPacket
 from rigplane.audio.bus import STAGE_RX_PCM, STAGE_RX_POST_DSP, AudioBus
 from rigplane.capabilities import CAP_AUDIO
-from rigplane.web.handlers.audio import AudioBroadcaster
+from rigplane.radio_protocol import AudioCapable
+from rigplane.types import AudioCodec
+from rigplane.web.handlers.audio import AudioBroadcaster, RxPcmTapSource
 
 
 @pytest.fixture
@@ -94,6 +97,145 @@ class TestRxPostDspStage:
         broadcaster = AudioBroadcaster(radio=None)
         with pytest.raises(KeyError):
             broadcaster.taps("rx.egress")
+
+
+class _Route:
+    def __init__(self) -> None:
+        sub = self.subscription = AsyncMock()
+        sub.started = False
+        sub.start.side_effect = lambda: setattr(sub, "started", True)
+        sub.stop = Mock()
+        sub.__aiter__.return_value = []
+        self.subscribe_calls = 0
+
+    def subscribe(self, name: str = ""):  # noqa: ARG002
+        self.subscribe_calls += 1
+        return self.subscription
+
+    async def subscribe_rx(self, name: str):  # noqa: ARG002
+        return self.subscription
+
+
+class _PcmRadio(AudioCapable):
+    audio_bus: object = None
+
+    def __init__(
+        self,
+        *,
+        codec: object = AudioCodec.PCM_1CH_16BIT,
+        sample_rate: object = 48_000,
+        bus: object = ...,
+        session: object = ...,
+        raising: str | None = None,
+    ) -> None:
+        self.capabilities = {CAP_AUDIO}
+        self._codec = codec
+        self._sample_rate = sample_rate
+        self.audio_bus = _Route() if bus is ... else bus
+        self._raising = raising
+        if session is not ...:
+            self.audio_session = session
+
+    @property
+    def audio_codec(self):
+        return self._codec
+
+    @property
+    def audio_sample_rate(self):
+        return self._sample_rate
+
+    def __getattribute__(self, name: str):
+        if name == object.__getattribute__(self, "_raising"):
+            raise RuntimeError(f"{name.removeprefix('audio_')} route unavailable")
+        return object.__getattribute__(self, name)
+
+
+def test_pcm_tap_source_preserves_descriptor_matrix() -> None:
+    for codec in (
+        AudioCodec.PCM_1CH_16BIT,
+        AudioCodec.PCM_2CH_16BIT,
+        AudioCodec.ULAW_1CH,
+        AudioCodec.ULAW_2CH,
+    ):
+        assert AudioBroadcaster(_PcmRadio(codec=codec)).rx_pcm_tap_source == (
+            RxPcmTapSource(codec=codec, sample_rate=48_000)
+        )
+    rejected = (
+        _PcmRadio(codec=AudioCodec.PCM_1CH_8BIT),
+        _PcmRadio(codec=AudioCodec.PCM_2CH_8BIT),
+        _PcmRadio(codec=AudioCodec.OPUS_1CH),
+        _PcmRadio(codec="pcm16"),
+        _PcmRadio(sample_rate=0),
+        SimpleNamespace(
+            capabilities={CAP_AUDIO},
+            audio_codec=AudioCodec.PCM_1CH_16BIT,
+            audio_sample_rate=48_000,
+            audio_bus=_Route(),
+        ),
+        _PcmRadio(sample_rate=True),
+        _PcmRadio(sample_rate=48_000.0),
+        _PcmRadio(bus=SimpleNamespace(subscribe=None)),
+        _PcmRadio(session=SimpleNamespace(subscribe_rx=None)),
+        _PcmRadio(raising="audio_session"),
+        _PcmRadio(raising="audio_bus"),
+    )
+    assert all(AudioBroadcaster(radio).rx_pcm_tap_source is None for radio in rejected)
+
+
+@pytest.mark.asyncio
+async def test_relay_route_prefers_session_then_falls_back_to_bus() -> None:
+    session = _Route()
+    bus = _Route()
+    for radio, route, bus_started in (
+        (_PcmRadio(session=session), session, False),
+        (_PcmRadio(bus=bus), bus, True),
+    ):
+        broadcaster = AudioBroadcaster(radio)
+        await broadcaster._start_relay()
+        assert broadcaster._subscription is route.subscription
+        assert radio.audio_bus.subscription.started is bus_started
+        await broadcaster._relay_task
+
+
+@pytest.mark.asyncio
+async def test_malformed_selected_relay_routes_notify_without_fallback() -> None:
+    for radio, expected in (
+        (
+            _PcmRadio(session=SimpleNamespace(subscribe_rx=None)),
+            "audio_session.subscribe_rx must be callable",
+        ),
+        (_PcmRadio(raising="audio_session"), "session route unavailable"),
+        (
+            _PcmRadio(bus=SimpleNamespace(subscribe=None)),
+            "audio_bus.subscribe must be callable",
+        ),
+        (_PcmRadio(raising="audio_bus"), "bus route unavailable"),
+        (_PcmRadio(bus=None), "audio_bus is required for runtime audio"),
+        (
+            SimpleNamespace(capabilities={CAP_AUDIO}, has_usb_audio=True),
+            "audio_bus is required for runtime audio",
+        ),
+    ):
+        ws = SimpleNamespace(send_text=AsyncMock(), is_alive=lambda: True)
+        broadcaster = AudioBroadcaster(radio)
+        assert broadcaster.rx_pcm_tap_source is None
+        await broadcaster.subscribe(ws=ws)
+        assert broadcaster._subscription is broadcaster._relay_task is None
+        if "session" in expected:
+            assert radio.__dict__["audio_bus"].subscribe_calls == 0
+        assert json.loads(ws.send_text.await_args.args[0]) == {
+            "type": "error",
+            "message": f"audio_start: RX audio failed to start: {expected}",
+        }
+
+
+@pytest.mark.asyncio
+async def test_native_opus_route_is_relayable_without_pcm_tap() -> None:
+    broadcaster = AudioBroadcaster(_PcmRadio(codec=AudioCodec.OPUS_1CH))
+    assert broadcaster.rx_pcm_tap_source is None
+    await broadcaster._start_relay()
+    assert broadcaster._subscription is not None
+    await broadcaster._relay_task
 
 
 # ── FFT scope behavior preservation ──────────────────────────────────────────
