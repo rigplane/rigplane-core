@@ -213,6 +213,7 @@ def _make_radio() -> MagicMock:
     # in the medium (freq/mode) lane; if_shift/narrow in the slow lane.
     radio.read_freq = AsyncMock(side_effect=lambda receiver=0: 14_074_000)
     radio.read_mode = AsyncMock(side_effect=lambda receiver=0: ("USB", None))
+    radio.get_tx_func = AsyncMock(return_value=0)
     radio.read_ptt = AsyncMock(return_value=False)
     radio.read_filter_width = AsyncMock(return_value=500)
     radio.read_if_shift = AsyncMock(return_value=200)
