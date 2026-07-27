@@ -190,9 +190,7 @@ def _tx_path(radio: object, codec: AudioCodec) -> tuple[str, tuple[Any, ...]] | 
     if any(getattr(radio, name, None) is not None for name in neutral_names):
         return ("neutral", neutral) if neutral is not None else None
     suffix = "pcm" if codec == AudioCodec.PCM_1CH_16BIT else "opus"
-    names = tuple(
-        f"{operation}_audio_tx_{suffix}" for operation in ("start", "push", "stop")
-    )
+    names = tuple(f"{op}_audio_tx_{suffix}" for op in ("start", "push", "stop"))
     lifecycle = _lifecycle(radio, names)
     return (suffix, lifecycle) if lifecycle is not None else None
 
@@ -1401,40 +1399,44 @@ class AudioHandler:
                     identity=_parse_client_identity(msg),
                 )
             elif direction == "tx":
+                was_active = self._tx_active or self._tx_lease is not None
+                previous_facts = self._tx_facts
                 facts = browser_tx_audio_facts(self._radio)
                 if not facts.available:
-                    self._tx_active = False
-                    self._tx_facts = None
+                    await self._abort_tx_start(previous_facts, was_active)
                     await self._send_error("audio_start: TX audio unavailable")
                     return
                 self._tx_facts = facts
-                was_active = self._tx_active or self._tx_lease is not None
                 self._tx_active = False
                 try:
                     if facts.codec == AudioCodec.PCM_1CH_16BIT:
                         self._ensure_tx_transcoder()
                 except Exception:
-                    if was_active:
-                        await self._stop_tx(
-                            reason="failed TX audio restart", force=True
-                        )
-                    raise
+                    await self._abort_tx_start(previous_facts, was_active)
+                    await self._send_error("audio_start: TX transcoder unavailable")
+                    return
                 assert facts.lifecycle is not None
                 start = facts.lifecycle[0]
-                if facts.path == "session":
-                    if self._tx_lease is None or self._tx_lease.released:
-                        self._tx_lease = await start("web")
-                else:
-                    try:
+                try:
+                    if facts.path == "session":
+                        if self._tx_lease is None or self._tx_lease.released:
+                            self._tx_lease = await start("web")
+                    else:
                         if facts.path == "pcm":
                             await start(sample_rate=self._tx_sample_rate())
                         else:
                             await start()
-                    except RuntimeError as exc:
-                        if _is_benign_tx_restart(exc):
-                            logger.info("audio: TX already started by poller, reusing")
-                        else:
-                            raise
+                except RuntimeError as exc:
+                    if _is_benign_tx_restart(exc):
+                        logger.info("audio: TX already started by poller, reusing")
+                    else:
+                        await self._abort_tx_start(previous_facts, was_active)
+                        raise
+                except (asyncio.CancelledError, Exception):
+                    await asyncio.shield(
+                        self._abort_tx_start(previous_facts, was_active)
+                    )
+                    raise
                 self._tx_active = True
                 logger.info("audio: TX active")
         elif msg_type == "audio_stop":
@@ -1458,6 +1460,13 @@ class AudioHandler:
         self._link_quality = stats
         if self._rx_active and self._broadcaster is not None:
             self._broadcaster.record_client_stats(self._frame_queue, stats)
+
+    async def _abort_tx_start(
+        self, previous_facts: BrowserTxAudioFacts | None, was_active: bool
+    ) -> None:
+        self._tx_facts = previous_facts if was_active else None
+        if was_active:
+            await self._stop_tx(reason="failed TX audio restart", force=True)
 
     async def _stop_tx(
         self,

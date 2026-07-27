@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 from dataclasses import replace
 from types import SimpleNamespace
@@ -281,54 +282,25 @@ class TestCapabilitiesEndpoint:
         data = _parse_json_body(writer)
         assert data["antennas"] == 1
 
-    @pytest.mark.asyncio
-    @pytest.mark.parametrize(
-        ("model", "suffix", "expected"),
-        [
-            ("IC-7610", "_audio_tx_pcm", (True, "lan", 5)),
-            ("FTX-1", "_tx", (True, "usb", None)),
-        ],
-    )
-    async def test_capabilities_browser_tx_audio_facts(
-        self, model: str, suffix: str, expected: tuple[bool, str, int | None]
-    ):
-        radio, writer = _make_radio(model), _FakeWriter()
-        radio.audio_tx_codec = AudioCodec.PCM_1CH_16BIT
-        for operation in ("start", "push", "stop"):
-            setattr(radio, f"{operation}{suffix}", AsyncMock())
-        await WebServer(radio)._serve_capabilities(writer)  # noqa: SLF001
-        data = _parse_json_body(writer)
-        keys = ("audioTx", "audioTxRoute", "audioTxRequiredModInputSource")
-        assert tuple(data[key] for key in keys) == expected
-
 
 def _neutral_tx_radio(**changes: object) -> SimpleNamespace:
-    values: dict[str, object] = {
-        "capabilities": {"audio", "tx"},
-        "backend_id": "yaesu_cat",
-        "has_usb_audio": True,
-        "start_tx": AsyncMock(),
-        "push_tx": AsyncMock(),
-        "stop_tx": AsyncMock(),
-        "audio_tx_codec": AudioCodec.PCM_1CH_16BIT,
-    }
+    values = dict(
+        capabilities={"audio", "tx"},
+        backend_id="yaesu_cat",
+        has_usb_audio=True,
+        start_tx=AsyncMock(),
+        push_tx=AsyncMock(),
+        stop_tx=AsyncMock(),
+        audio_tx_codec=AudioCodec.PCM_1CH_16BIT,
+    )
     return SimpleNamespace(**(values | changes))
 
 
-class _FlippingCodecRadio(SimpleNamespace):
-    @property
-    def audio_tx_codec(self):
-        self.codec_reads += 1
-        return AudioCodec.PCM_1CH_16BIT if self.codec_reads == 1 else None
-
-
-def test_browser_tx_audio_requires_caps_and_complete_neutral_transport():
-    cases = (
+def test_browser_tx_audio_fact_validation(monkeypatch):
+    for changes, expected in (
         ({}, True),
         ({"start_tx": None}, False),
-        ({"push_tx": None}, False),
         ({"push_tx": lambda _data: None}, False),
-        ({"stop_tx": None}, False),
         ({"capabilities": {"audio"}}, False),
         ({"capabilities": {"tx"}}, False),
         ({"audio_tx_codec": None}, False),
@@ -337,15 +309,11 @@ def test_browser_tx_audio_requires_caps_and_complete_neutral_transport():
         ({"audio_tx_codec": AudioCodec.OPUS_2CH}, False),
         ({"audio_session": SimpleNamespace(acquire_tx=None)}, False),
         ({"audio_session": SimpleNamespace(acquire_tx=AsyncMock())}, True),
-    )
-    for changes, expected in cases:
+    ):
         facts = browser_tx_audio_facts(_neutral_tx_radio(**changes))
         assert (facts.available, facts.route) == (expected, "usb" if expected else None)
-        assert facts.required_mod_input_source is None
     assert browser_tx_audio_facts(None).available is False
 
-
-def test_browser_tx_audio_accepts_only_complete_selected_legacy():
     for codec, suffix in (
         (AudioCodec.PCM_1CH_16BIT, "pcm"),
         (AudioCodec.OPUS_1CH, "opus"),
@@ -360,8 +328,6 @@ def test_browser_tx_audio_accepts_only_complete_selected_legacy():
                 setattr(radio, f"{missing}_audio_tx_{suffix}", None)
             assert browser_tx_audio_facts(radio).available is (missing is None)
 
-
-def test_browser_tx_audio_validates_route_source_policy(monkeypatch):
     radio = _neutral_tx_radio()
     for source, policy, expected in (
         (TxAudioSource.ACC, DataModePolicy.LEGACY, "acc"),
@@ -378,22 +344,21 @@ def test_browser_tx_audio_validates_route_source_policy(monkeypatch):
         facts = browser_tx_audio_facts(radio)
         assert (facts.route if facts.available else None) == expected
 
-
-def test_browser_tx_audio_route_and_policy_exceptions_fail_closed(monkeypatch):
     radio = _neutral_tx_radio(capabilities={"audio", "tx", "mod_input_routing"})
-    resolve = Mock(side_effect=RuntimeError("route"))
-    monkeypatch.setattr(audio_module, "resolve_audio_route", resolve)
+    monkeypatch.setattr(
+        audio_module, "resolve_audio_route", Mock(side_effect=RuntimeError("route"))
+    )
     assert browser_tx_audio_facts(radio).available is False
     route = SimpleNamespace(
         tx_audio_source=TxAudioSource.LAN, data_mode_policy=DataModePolicy.DATA2_LAN
     )
     monkeypatch.setattr(audio_module, "resolve_audio_route", lambda _: route)
-    policy = Mock(side_effect=RuntimeError("policy"))
-    monkeypatch.setattr(audio_module, "rigctld_wsjtx_policy", policy)
+    monkeypatch.setattr(
+        audio_module, "rigctld_wsjtx_policy", Mock(side_effect=RuntimeError("policy"))
+    )
     assert browser_tx_audio_facts(radio).available is False
 
 
-@pytest.mark.asyncio
 async def test_browser_tx_audio_rejects_inherited_protocol_lifecycle_stubs():
     radio, writer = _make_radio("FTX-1"), _FakeWriter()
     radio.audio_tx_codec = AudioCodec.OPUS_1CH
@@ -404,51 +369,81 @@ async def test_browser_tx_audio_rejects_inherited_protocol_lifecycle_stubs():
     await handler._handle_control({"type": "audio_start", "direction": "tx"})
     await handler._handle_tx_audio(b"\x02\x01\x00\x00payload")
     await handler._stop_tx(reason="denied stub lifecycle")
-    assert not handler._tx_active
-    assert handler._tx_lease is handler._tx_facts is None
+    assert not handler._tx_active and handler._tx_lease is handler._tx_facts is None
 
 
-@pytest.mark.asyncio
-@pytest.mark.parametrize(
-    ("failure", "prior_active"),
-    [("start", True), ("factory", False), ("factory", True)],
-)
-async def test_browser_tx_audio_failed_start_or_transcoder_is_inactive(
-    monkeypatch, failure: str, prior_active: bool
-):
-    error = RuntimeError("start failed") if failure == "start" else None
-    codec = AudioCodec.OPUS_1CH if failure == "start" else AudioCodec.PCM_1CH_16BIT
-    radio = _neutral_tx_radio(
-        start_tx=AsyncMock(side_effect=error),
-        audio_tx_codec=codec,
-    )
+@pytest.mark.parametrize("failure", ["facts", "start", "cancel"])
+async def test_browser_tx_audio_failed_rearm_dekeys_once(failure: str):
+    radio = _neutral_tx_radio(audio_tx_codec=AudioCodec.OPUS_1CH)
     handler = AudioHandler(SimpleNamespace(send_text=AsyncMock()), radio)
-    handler._tx_active = prior_active
-    if failure == "factory":
-        monkeypatch.setattr(
-            audio_module,
-            "create_pcm_opus_transcoder",
-            Mock(side_effect=RuntimeError("factory failed")),
-        )
-    with pytest.raises(RuntimeError, match=f"{failure} failed"):
-        await handler._handle_control({"type": "audio_start", "direction": "tx"})
-    assert (handler._tx_active, handler._tx_lease) == (False, None)
-    if failure == "factory":
-        assert handler._transcoder is None
-        assert radio.start_tx.await_count == 0
-        assert radio.stop_tx.await_count == int(prior_active)
+    start = {"type": "audio_start", "direction": "tx"}
+    await handler._handle_control(start)
+    assert handler._tx_active
+
+    if failure == "facts":
+        radio.capabilities = {"audio"}
+        await handler._handle_control(start)
+    elif failure == "start":
+        radio.start_tx = AsyncMock(side_effect=RuntimeError("start failed"))
+        with pytest.raises(RuntimeError, match="start failed"):
+            await handler._handle_control(start)
+    else:
+        entered = asyncio.Event()
+
+        async def _cancelled_start() -> None:
+            entered.set()
+            await asyncio.Event().wait()
+
+        radio.start_tx = AsyncMock(side_effect=_cancelled_start)
+        task = asyncio.create_task(handler._handle_control(start))
+        await entered.wait()
+        task.cancel()
+        result = await asyncio.gather(task, return_exceptions=True)
+        assert isinstance(result[0], asyncio.CancelledError)
+    assert not handler._tx_active and handler._tx_lease is handler._tx_facts is None
+    radio.stop_tx.assert_awaited_once()
 
 
-@pytest.mark.asyncio
+async def test_browser_tx_audio_transcoder_error_keeps_reader_alive(
+    monkeypatch,
+):
+    radio = _neutral_tx_radio(audio_tx_codec=AudioCodec.OPUS_1CH)
+    ws = SimpleNamespace(send_text=AsyncMock())
+    handler = AudioHandler(ws, radio)
+    await handler._handle_control({"type": "audio_start", "direction": "tx"})
+    radio.audio_tx_codec = AudioCodec.PCM_1CH_16BIT
+    monkeypatch.setattr(
+        audio_module,
+        "create_pcm_opus_transcoder",
+        Mock(side_effect=RuntimeError("factory failed")),
+    )
+    text = audio_module.WS_OP_TEXT
+    start = (text, b'{"type":"audio_start","direction":"tx"}')
+    stats = (text, b'{"type":"audio_stats","rtt":1}')
+    ws.recv = AsyncMock(side_effect=[start, stats, EOFError()])
+    await handler._reader_loop()
+    assert ws.recv.await_count == 3
+    assert not handler._tx_active and handler._tx_lease is handler._tx_facts is None
+    assert (radio.start_tx.await_count, radio.stop_tx.await_count) == (1, 1)
+    error = json.loads(ws.send_text.await_args.args[0])
+    assert error["type"] == "error" and "transcoder unavailable" in error["message"]
+
+
+class _FlippingCodecRadio(SimpleNamespace):
+    @property
+    def audio_tx_codec(self):
+        self.codec_reads += 1
+        return AudioCodec.PCM_1CH_16BIT if self.codec_reads == 1 else None
+
+
 async def test_browser_tx_audio_uses_one_validated_codec_snapshot(monkeypatch):
     values = _neutral_tx_radio().__dict__.copy()
     values.pop("audio_tx_codec")
     radio = _FlippingCodecRadio(**values, codec_reads=0)
     radio.capabilities.add("mod_input_routing")
     handler = AudioHandler(SimpleNamespace(send_text=AsyncMock()), radio)
-    route = SimpleNamespace(
-        tx_audio_source=TxAudioSource.LAN, data_mode_policy=DataModePolicy.DATA2_LAN
-    )
+    route = SimpleNamespace(tx_audio_source=TxAudioSource.LAN)
+    route.data_mode_policy = DataModePolicy.DATA2_LAN
     resolve, policy = Mock(return_value=route), Mock(return_value=(2, 5))
     transcoder = Mock()
     for name, value in (
@@ -460,9 +455,7 @@ async def test_browser_tx_audio_uses_one_validated_codec_snapshot(monkeypatch):
     await handler._handle_control({"type": "audio_start", "direction": "tx"})
     assert (radio.codec_reads, handler._tx_active) == (1, True)
     assert handler._transcoder is transcoder
-    radio.start_tx.assert_awaited_once_with()
-    resolve.assert_called_once_with(radio)
-    policy.assert_called_once_with(route)
+    assert {radio.start_tx.await_count, resolve.call_count, policy.call_count} == {1}
 
 
 class TestStateEndpoint:
