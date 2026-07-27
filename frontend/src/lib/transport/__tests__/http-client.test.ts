@@ -104,25 +104,120 @@ describe('fetchState', () => {
 describe('fetchCapabilities', () => {
   afterEach(() => vi.restoreAllMocks());
 
-  it('returns parsed Capabilities', async () => {
-    const caps = {
+  function makeCapabilities(overrides: Record<string, unknown> = {}) {
+    return {
       model: 'IC-7610',
       scope: true,
       audio: true,
       tx: true,
       capabilities: ['scope', 'dual_rx'],
-      freqRanges: [],
+      receivers: 2,
+      vfoScheme: 'main_sub',
+      freqRanges: [{
+        start: 100000,
+        end: 60000000,
+        label: 'HF',
+        bands: [{ name: '20m', start: 14000000, end: 14350000, default: 14074000, bsrCode: 5 }],
+      }],
       modes: ['USB', 'LSB'],
       filters: ['FIL1'],
+      audioConfig: { sampleRate: 48000, channels: 1, codecs: ['opus'] },
+      webrtc: { available: true, enabled: false },
+      txBands: [{ name: '20m', start: 14000000, end: 14350000 }],
+      ...overrides,
     };
+  }
+
+  function mockCapabilities(payload: unknown) {
     globalThis.fetch = vi.fn().mockResolvedValue({
       ok: true,
-      json: () => Promise.resolve(caps),
+      json: () => Promise.resolve(payload),
     });
+  }
 
+  it('returns the same validated raw object with additive extensions intact', async () => {
+    const caps = makeCapabilities({ extension: { future: true } });
+    mockCapabilities(caps);
     const { fetchCapabilities } = await import('../http-client');
     const result = await fetchCapabilities();
-    expect(result.model).toBe('IC-7610');
+    expect(result).toBe(caps);
+    expect(result.extension).toEqual({ future: true });
+  });
+
+  it.each([
+    ['single', 1],
+    ['ab', 1],
+    ['ab_shared', 2],
+    ['main_sub', 2],
+  ])('accepts the %s topology', async (vfoScheme, receivers) => {
+    mockCapabilities(makeCapabilities({ vfoScheme, receivers }));
+    const { fetchCapabilities } = await import('../http-client');
+    await expect(fetchCapabilities()).resolves.toMatchObject({ vfoScheme, receivers });
+  });
+
+  it.each([
+    ['null', null],
+    ['an explicit empty list', []],
+  ])('accepts txBands as %s without normalizing it', async (_label, txBands) => {
+    const caps = makeCapabilities({ txBands });
+    mockCapabilities(caps);
+    const { fetchCapabilities } = await import('../http-client');
+    const result = await fetchCapabilities();
+    expect(result).toBe(caps);
+    expect(result.txBands).toBe(txBands);
+  });
+
+  it('accepts finite numeric range values without imposing ordering rules', async () => {
+    const freqRanges = [{
+      start: 2.5,
+      end: -1,
+      label: 'Synthetic',
+      bands: [{ name: 'Synthetic', start: 3.5, end: -2, default: 0.5, bsrCode: -1 }],
+    }];
+    const caps = makeCapabilities({ freqRanges });
+    mockCapabilities(caps);
+    const { fetchCapabilities } = await import('../http-client');
+    const result = await fetchCapabilities();
+    expect(result).toBe(caps);
+    expect(result.freqRanges).toBe(freqRanges);
+  });
+
+  it.each([
+    ['$.receivers', { receivers: undefined }],
+    ['$.receivers', { receivers: true }],
+    ['$.receivers', { receivers: 0 }],
+    ['$.receivers', { receivers: 1.5 }],
+    ['$.vfoScheme', { vfoScheme: undefined }],
+    ['$.vfoScheme', { vfoScheme: 'unknown' }],
+    ['$.vfoScheme', { vfoScheme: 'single', receivers: 2 }],
+    ['$.freqRanges[0]', { freqRanges: [null] }],
+    ['$.freqRanges[0].start', { freqRanges: [{}] }],
+    ['$.freqRanges[0].start', { freqRanges: [{ start: true, end: 2, label: 'HF' }] }],
+    ['$.freqRanges[0].start', { freqRanges: [{ start: Number.NaN, end: 2, label: 'HF' }] }],
+    ['$.freqRanges[0].end', { freqRanges: [{ start: 1, end: false, label: 'HF' }] }],
+    ['$.freqRanges[0].end', { freqRanges: [{ start: 1, end: Number.POSITIVE_INFINITY, label: 'HF' }] }],
+    ['$.freqRanges[0].label', { freqRanges: [{ start: 1, end: 2, label: false }] }],
+    ['$.freqRanges[0].bands', { freqRanges: [{ start: 1, end: 2, label: 'HF', bands: {} }] }],
+    ['$.freqRanges[0].bands[0]', { freqRanges: [{ start: 1, end: 2, label: 'HF', bands: [null] }] }],
+    ['$.freqRanges[0].bands[0].name', { freqRanges: [{ start: 1, end: 2, label: 'HF', bands: [{}] }] }],
+    ['$.freqRanges[0].bands[0].start', { freqRanges: [{ start: 1, end: 2, label: 'HF', bands: [{ name: '20m', start: true, end: 4, default: 3 }] }] }],
+    ['$.freqRanges[0].bands[0].end', { freqRanges: [{ start: 1, end: 2, label: 'HF', bands: [{ name: '20m', start: 2, end: false, default: 3 }] }] }],
+    ['$.freqRanges[0].bands[0].default', { freqRanges: [{ start: 1, end: 2, label: 'HF', bands: [{ name: '20m', start: 2, end: 4, default: true }] }] }],
+    ['$.freqRanges[0].bands[0].default', { freqRanges: [{ start: 1, end: 2, label: 'HF', bands: [{ name: '20m', start: 2, end: 4, default: Number.NEGATIVE_INFINITY }] }] }],
+    ['$.freqRanges[0].bands[0].bsrCode', { freqRanges: [{ start: 1, end: 2, label: 'HF', bands: [{ name: '20m', start: 2, end: 4, default: 3, bsrCode: false }] }] }],
+    ['$.audioConfig.channels', { audioConfig: { sampleRate: 48000, channels: true, codecs: ['opus'] } }],
+    ['$.audioConfig.codecs[0]', { audioConfig: { sampleRate: 48000, channels: 1, codecs: [1] } }],
+    ['$.webrtc.available', { webrtc: { available: 1, enabled: false } }],
+    ['$.webrtc.enabled', { webrtc: { available: true } }],
+    ['$.txBands', { txBands: undefined }],
+    ['$.txBands[0].name', { txBands: [{ name: 20, start: 1, end: 2 }] }],
+    ['$.txBands[0].start', { txBands: [{ name: '20m', start: true, end: 2 }] }],
+    ['$.txBands[0].end', { txBands: [{ name: '20m', start: 1, end: false }] }],
+    ['$.txBands[0].end', { txBands: [{ name: '20m', start: 1, end: 2.5 }] }],
+  ])('rejects malformed required field %s', async (path, overrides) => {
+    mockCapabilities(makeCapabilities(overrides));
+    const { fetchCapabilities } = await import('../http-client');
+    await expect(fetchCapabilities()).rejects.toThrow(path);
   });
 });
 

@@ -76,15 +76,28 @@ export interface ControlRange {
   style?: string;
 }
 
+export type VfoScheme = 'single' | 'ab' | 'ab_shared' | 'main_sub';
+
+export interface WebRtcCapabilities {
+  available: boolean;
+  enabled: boolean;
+}
+
+export interface TxBand {
+  name: string;
+  start: number;
+  end: number;
+}
+
 export interface Capabilities {
+  [extension: string]: unknown;
   model: string;
   scope: boolean;
   audio: boolean;
   tx: boolean;
   capabilities: string[];
-  receivers?: number;      // 1 = single, 2 = dual receiver
-  vfoScheme?: string;      // "ab" or "main_sub"
-  hasLan?: boolean;        // Radio has LAN connectivity
+  receivers: number;
+  vfoScheme: VfoScheme;
   freqRanges: FreqRange[];
   modes: string[];
   filters: string[];
@@ -104,9 +117,10 @@ export interface Capabilities {
   scopeSource?: string | null;  // "hardware", "audio_fft", or null
   audioFftAvailable?: boolean;  // true when audio FFT scope is available (even with hardware scope)
   scopeConfig?: ScopeConfig;
-  audioConfig?: AudioConfig;
+  audioConfig: AudioConfig;
+  webrtc: WebRtcCapabilities;
   controls?: Record<string, ControlRange>;
-  txBands?: { name: string; start: number; end: number }[];
+  txBands: TxBand[] | null;
   meterCalibrations?: Record<string, MeterCalPoint[]>;
   meterRedlines?: Record<string, number>;
 }
@@ -115,4 +129,111 @@ export interface MeterCalPoint {
   raw: number;
   actual: number;
   label: string;
+}
+
+function invalid(path: string, expected: string): never {
+  throw new TypeError(`Invalid capabilities payload at ${path}: expected ${expected}`);
+}
+
+function requireRecord(value: unknown, path: string): Record<string, unknown> {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+    invalid(path, 'an object');
+  }
+  return value as Record<string, unknown>;
+}
+
+function requireString(value: unknown, path: string): void {
+  if (typeof value !== 'string') invalid(path, 'a string');
+}
+
+function requireBoolean(value: unknown, path: string): void {
+  if (typeof value !== 'boolean') invalid(path, 'a boolean');
+}
+
+function requireStringArray(value: unknown, path: string): void {
+  if (!Array.isArray(value)) invalid(path, 'an array');
+  value.forEach((item, index) => requireString(item, `${path}[${index}]`));
+}
+
+function requireInteger(value: unknown, path: string, positive = false): void {
+  if (
+    typeof value !== 'number'
+    || !Number.isInteger(value)
+    || !Number.isFinite(value)
+    || (positive && value <= 0)
+  ) {
+    invalid(path, positive ? 'a positive integer' : 'an integer');
+  }
+}
+
+function requireFiniteNumber(value: unknown, path: string): void {
+  if (typeof value !== 'number' || !Number.isFinite(value)) {
+    invalid(path, 'a finite number');
+  }
+}
+
+export function validateCapabilities(value: unknown): Capabilities {
+  const raw = requireRecord(value, '$');
+
+  requireString(raw.model, '$.model');
+  requireBoolean(raw.scope, '$.scope');
+  requireBoolean(raw.audio, '$.audio');
+  requireBoolean(raw.tx, '$.tx');
+  requireStringArray(raw.capabilities, '$.capabilities');
+  requireInteger(raw.receivers, '$.receivers', true);
+
+  const schemes: readonly VfoScheme[] = ['single', 'ab', 'ab_shared', 'main_sub'];
+  if (!schemes.includes(raw.vfoScheme as VfoScheme)) {
+    invalid('$.vfoScheme', schemes.join(' | '));
+  }
+  const expectedReceivers = raw.vfoScheme === 'single' || raw.vfoScheme === 'ab' ? 1 : 2;
+  if (raw.receivers !== expectedReceivers) {
+    invalid('$.vfoScheme', `${String(raw.vfoScheme)} with receivers=${expectedReceivers}`);
+  }
+
+  if (!Array.isArray(raw.freqRanges)) invalid('$.freqRanges', 'an array');
+  raw.freqRanges.forEach((value, rangeIndex) => {
+    const rangePath = `$.freqRanges[${rangeIndex}]`;
+    const range = requireRecord(value, rangePath);
+    requireFiniteNumber(range.start, `${rangePath}.start`);
+    requireFiniteNumber(range.end, `${rangePath}.end`);
+    requireString(range.label, `${rangePath}.label`);
+    if ('bands' in range) {
+      if (!Array.isArray(range.bands)) invalid(`${rangePath}.bands`, 'an array');
+      range.bands.forEach((value, bandIndex) => {
+        const bandPath = `${rangePath}.bands[${bandIndex}]`;
+        const band = requireRecord(value, bandPath);
+        requireString(band.name, `${bandPath}.name`);
+        requireFiniteNumber(band.start, `${bandPath}.start`);
+        requireFiniteNumber(band.end, `${bandPath}.end`);
+        requireFiniteNumber(band.default, `${bandPath}.default`);
+        if ('bsrCode' in band) {
+          requireFiniteNumber(band.bsrCode, `${bandPath}.bsrCode`);
+        }
+      });
+    }
+  });
+  requireStringArray(raw.modes, '$.modes');
+  requireStringArray(raw.filters, '$.filters');
+
+  const audioConfig = requireRecord(raw.audioConfig, '$.audioConfig');
+  requireInteger(audioConfig.sampleRate, '$.audioConfig.sampleRate', true);
+  requireInteger(audioConfig.channels, '$.audioConfig.channels', true);
+  requireStringArray(audioConfig.codecs, '$.audioConfig.codecs');
+
+  const webrtc = requireRecord(raw.webrtc, '$.webrtc');
+  requireBoolean(webrtc.available, '$.webrtc.available');
+  requireBoolean(webrtc.enabled, '$.webrtc.enabled');
+
+  if (raw.txBands !== null) {
+    if (!Array.isArray(raw.txBands)) invalid('$.txBands', 'an array or null');
+    raw.txBands.forEach((value, index) => {
+      const band = requireRecord(value, `$.txBands[${index}]`);
+      requireString(band.name, `$.txBands[${index}].name`);
+      requireInteger(band.start, `$.txBands[${index}].start`);
+      requireInteger(band.end, `$.txBands[${index}].end`);
+    });
+  }
+
+  return raw as unknown as Capabilities;
 }
