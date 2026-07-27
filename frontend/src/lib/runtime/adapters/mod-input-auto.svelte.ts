@@ -9,25 +9,17 @@
  *     it, then set LAN through the same per-group SET command + optimistic
  *     patch as the ModePanel control (T1/MOR-615 backend, T2/MOR-616
  *     helpers). The optimistic LAN patch preempts the MOR-617 warning.
- *   - TX stop (`tx-adapter.stopTx`): restore the remembered source — only if
- *     auto changed it, and only if the group is still on LAN (a manual
- *     mid-TX change wins).
+ *   - after a field-specific authoritative PTT-off confirmation, restore the
+ *     remembered source only if the group is still on LAN (a manual mid-TX
+ *     change wins).
  *
- * Robustness: the clean stop above is the primary restore path. The pending
- * restore is also persisted to localStorage so that a crash / page reload /
- * disconnect mid-TX can be repaired best-effort on the next connect
- * (`applyPendingModInputRestoreOnConnect`, called from runtime bootstrap).
- * If that never fires, the radio stays on LAN — benign for network
- * operation, see the PR notes for the fully-robust backend follow-up.
+ * The pending transaction is intentionally memory-only. A disconnect,
+ * reload, or cached state cannot authorize MOD restoration.
  *
  * This module never touches the audio byte path.
  */
 
-import {
-  getRadioState,
-  patchRadioState,
-  subscribeRadioState,
-} from '$lib/stores/radio.svelte';
+import { getRadioState, patchRadioState } from '$lib/stores/radio.svelte';
 import { getCapabilities } from '$lib/stores/capabilities.svelte';
 import { getFieldAvailability } from '$lib/state/field-status';
 import {
@@ -37,13 +29,13 @@ import {
   type ModInputCommand,
   type ModInputStateKey,
 } from '$lib/radio/mod-input';
-import { isConnected, sendCommand } from '$lib/transport/ws-client';
+import { sendCommand } from '$lib/transport/ws-client';
 import type { ServerState } from '$lib/types/state';
 
 /** localStorage key of the opt-in preference ('true' / 'false'). */
 export const AUTO_LAN_PREF_KEY = 'rigplane:auto-lan-mod-input';
 
-/** localStorage key of the persisted pending restore (crash robustness). */
+/** Legacy localStorage key retained only for safe migration cleanup. */
 export const PENDING_RESTORE_KEY = 'rigplane:mod-input-tx-restore:v1';
 
 interface PendingRestore {
@@ -98,19 +90,10 @@ export function deriveAutoLanModInputProps(): AutoLanModInputProps {
   return { available, enabled };
 }
 
-/* ── Pending restore (memory + persisted) ────────────────────────── */
+/* ── Pending restore (memory only) ───────────────────────────────── */
 
 /** Set while a web TX keyed by auto-set is in flight; owns the restore. */
 let pending: PendingRestore | null = null;
-
-function persistPending(p: PendingRestore): void {
-  if (typeof localStorage === 'undefined') return;
-  try {
-    localStorage.setItem(PENDING_RESTORE_KEY, JSON.stringify(p));
-  } catch {
-    /* ignore */
-  }
-}
 
 function clearPersistedPending(): void {
   if (typeof localStorage === 'undefined') return;
@@ -119,25 +102,6 @@ function clearPersistedPending(): void {
   } catch {
     /* ignore */
   }
-}
-
-function readPersistedPending(): PendingRestore | null {
-  if (typeof localStorage === 'undefined') return null;
-  try {
-    const raw = localStorage.getItem(PENDING_RESTORE_KEY);
-    if (raw === null) return null;
-    const parsed = JSON.parse(raw) as Partial<PendingRestore>;
-    if (
-      typeof parsed?.command === 'string' &&
-      typeof parsed?.key === 'string' &&
-      typeof parsed?.source === 'number'
-    ) {
-      return parsed as PendingRestore;
-    }
-  } catch {
-    /* fall through */
-  }
-  return null;
 }
 
 /* ── Auto-set / restore engine ───────────────────────────────────── */
@@ -166,31 +130,21 @@ export function autoSetLanModInputForTx(): void {
   if (source === null || source === LAN_MOD_INPUT_SOURCE) return;
 
   pending = { command: modInputCommand(dataMode), key, source };
-  persistPending(pending);
   // Same optimistic-patch + per-group SET path as the ModePanel control
   // (MOR-616); the backend confirms via write-through readback (MOR-615).
   patchRadioState({ [key]: LAN_MOD_INPUT_SOURCE } as Partial<ServerState>);
   sendCommand(pending.command, { source: LAN_MOD_INPUT_SOURCE });
-  // MOR-624: arm a backend session-teardown restore so an abnormal disconnect
-  // mid-TX (this browser never reconnects) still restores the previous source.
-  sendCommand('arm_mod_input_restore', {
-    command: pending.command,
-    source: pending.source,
-  });
 }
 
 /**
- * TX-stop hook (clean restore path). One-shot: consumes the pending restore
- * whether or not a command is sent. Skips the SET when the group is known
- * to be off LAN already (the user changed it mid-TX — their choice wins).
+ * Confirmed-off hook. One-shot: consumes the pending restore whether or not a
+ * command is sent. Skips the SET when the group is known to be off LAN already.
  */
 export function restoreModInputAfterTx(): void {
   const p = pending;
   pending = null;
   clearPersistedPending();
   if (!p) return;
-  // MOR-624: a clean stop owns the restore — clear the backend teardown net.
-  sendCommand('disarm_mod_input_restore', {});
   const current = getRadioState()?.[p.key] ?? null;
   if (current !== null && current !== LAN_MOD_INPUT_SOURCE) return;
   patchRadioState({ [p.key]: p.source } as Partial<ServerState>);
@@ -198,50 +152,9 @@ export function restoreModInputAfterTx(): void {
 }
 
 /**
- * Best-effort repair after a crash / reload / disconnect mid-TX: if a
- * persisted pending restore is found, wait (via the radio-state
- * subscription) for live state on a connected control channel, then restore
- * the remembered source — but only when the group is still on LAN. Called
- * once from `FrontendRuntime.bootstrap()`.
+ * Remove pre-authority-gate restore records from older frontend versions.
+ * This migration never inspects cached radio state and never mutates the radio.
  */
-export function applyPendingModInputRestoreOnConnect(): void {
-  if (readPersistedPending() === null) return;
-
-  let finished = false;
-  let unsubscribe: (() => void) | null = null;
-  const finish = (): void => {
-    finished = true;
-    unsubscribe?.();
-  };
-
-  unsubscribe = subscribeRadioState((state) => {
-    if (finished) return;
-    const p = readPersistedPending();
-    if (!p) {
-      finish();
-      return;
-    }
-    // An in-flight TX in this session owns the restore (clean-stop path).
-    if (pending) return;
-    if (!state || !isConnected()) return;
-    const current = state[p.key] ?? null;
-    if (current === null) {
-      // Group not read yet — keep waiting, unless this radio never will.
-      if (getFieldAvailability(state, p.key) === 'missing') {
-        clearPersistedPending();
-        finish();
-      }
-      return;
-    }
-    if (current === LAN_MOD_INPUT_SOURCE) {
-      patchRadioState({ [p.key]: p.source } as Partial<ServerState>);
-      sendCommand(p.command, { source: p.source });
-    }
-    // Off LAN already → someone changed it; nothing to restore.
-    clearPersistedPending();
-    finish();
-  });
-  // subscribeRadioState invokes the handler synchronously — it may have
-  // finished before `unsubscribe` was assigned.
-  if (finished) unsubscribe();
+export function clearLegacyPendingModInputRestore(): void {
+  clearPersistedPending();
 }

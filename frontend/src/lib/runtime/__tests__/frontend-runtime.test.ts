@@ -42,8 +42,6 @@ vi.mock('$lib/stores/radio.svelte', () => ({
   patchActiveReceiver: vi.fn(),
   patchRadioState: vi.fn(),
   resetRadioState: vi.fn(),
-  // MOR-618: imported by adapters/mod-input-auto.svelte (bootstrap step 6).
-  subscribeRadioState: vi.fn(() => () => {}),
 }));
 
 vi.mock('$lib/stores/connection.svelte', () => ({
@@ -90,6 +88,10 @@ vi.mock('$lib/media/media-session', () => ({
   destroyMediaSession: vi.fn(),
 }));
 
+vi.mock('../adapters/mod-input-auto.svelte', () => ({
+  clearLegacyPendingModInputRestore: vi.fn(),
+}));
+
 // system-controller uses imports from above mocks — provide a lightweight stub
 vi.mock('./system-controller', async () => {
   const { systemController: _sc } = await vi.importActual<typeof import('../system-controller')>(
@@ -105,6 +107,7 @@ import { connect, sendRaw } from '$lib/transport/ws-client';
 import { setCapabilities } from '$lib/stores/capabilities.svelte';
 import { setRadioState } from '$lib/stores/radio.svelte';
 import { systemController } from '../system-controller';
+import { clearLegacyPendingModInputRestore } from '../adapters/mod-input-auto.svelte';
 
 // FrontendRuntime is a singleton — re-import fresh each time via a factory helper
 // so we can reset _bootstrapCleanup and _bootstrapInFlight between tests.
@@ -139,6 +142,7 @@ describe('FrontendRuntime.bootstrap()', () => {
 
     // 1. fetchCapabilities called
     expect(fetchCapabilities).toHaveBeenCalledTimes(1);
+    expect(clearLegacyPendingModInputRestore).toHaveBeenCalledTimes(1);
 
     // 2. capabilities pushed into store
     expect(setCapabilities).toHaveBeenCalledWith(fakeCaps);
