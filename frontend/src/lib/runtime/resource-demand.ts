@@ -24,8 +24,8 @@ export class ResourceDemand<H> {
   private readonly leases = new Set<ResourceLease>();
   private readonly issuedStarts = new WeakSet<object>();
   private readonly cleanupLedger: [AppResource, H][] = [];
+  private readonly adoptedLedger: [AppResource, H][] = [];
   private operations: ResourceOperation<H>[] = [];
-
   constructor(readonly sessionEpoch: string) {}
   configure(resource: AppResource, config: { available: boolean; selected: boolean }): void {
     const state = this.state(resource);
@@ -53,7 +53,7 @@ export class ResourceDemand<H> {
       if (operation.kind !== 'dispose') return true;
       const state = this.state(operation.resource);
       if (state.pending?.kind !== 'start')
-        return !Object.is(state.activeHandle, operation.handle);
+        return !this.adoptedLedger.some(([r, h]) => r === operation.resource && Object.is(h, operation.handle));
       this.operations.push(operation);
       return false;
     });
@@ -71,6 +71,7 @@ export class ResourceDemand<H> {
     if ('error' in result) state.health = 'failed';
     else {
       this.claimCleanup(op.resource, result.handle);
+      this.adoptedLedger.push([op.resource, result.handle]);
       state.activeHandle = result.handle;
       state.health = 'streaming';
     }
@@ -87,7 +88,6 @@ export class ResourceDemand<H> {
   snapshot(resource: AppResource): Readonly<State<H>> {
     return { ...this.state(resource) };
   }
-
   private state(resource: AppResource): State<H> {
     let state = this.states.get(resource);
     if (!state) {
