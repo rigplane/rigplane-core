@@ -1,71 +1,71 @@
 import { describe, expect, it } from 'vitest';
-import { ResourceDemand } from '../resource-demand';
+import { ResourceDemand, type AppResource } from '../resource-demand';
 const one = (model: ResourceDemand<string>) => {
   const operations = model.takeOperations();
   expect(operations).toHaveLength(1);
   return operations[0];
 };
-const cleanupOrderings = ['stop-before-stale', 'stale-before-stop'] as const;
+const supersede = (model: ResourceDemand<string>, resource: AppResource, consumer: string) => {
+  const lease = model.acquire(resource, consumer);
+  const start = one(model);
+  model.release(lease);
+  return start;
+};
+const cleanupCases = [
+  [false, ['rx-audio', 'rx-audio'], ['H', 'H'], ['rx-audio:H']],
+  [true, ['rx-audio', 'rx-audio'], ['H', 'H'], ['rx-audio:H']],
+  [false, ['rx-audio', 'rx-audio'], ['A', 'B'], ['rx-audio:A', 'rx-audio:B']],
+  [false, ['rx-audio', 'hardware-scope'], ['H', 'H'], ['rx-audio:H', 'hardware-scope:H']],
+] as const;
 describe('ResourceDemand foundation', () => {
-  it('uses exact leases and emits only first start and last stop', () => {
+  it('uses exact leases and remembers adopted handles across cleanup drains', () => {
     const model = new ResourceDemand<string>('session-1');
-    model.configure('hardware-scope', { available: true, selected: true });
-    const first = model.acquire('hardware-scope', 'first');
-    const start = one(model);
-    const second = model.acquire('hardware-scope', 'second');
-    expect(second).not.toBe(first);
-    expect(model.takeOperations()).toEqual([]);
-    expect(model.completeStart(start, { handle: 'scope' })).toBe(true);
-    expect(model.release(first)).toBe(true);
-    expect(model.takeOperations()).toEqual([]);
-    expect(model.release({ ...second } as typeof second)).toBe(false);
-    expect(new ResourceDemand<string>('session-2').release(second)).toBe(false);
-    expect(model.release(second)).toBe(true);
-    expect(one(model)).toMatchObject({ kind: 'stop', handle: 'scope' });
-  });
-  it('keeps unavailable resources idle and copies only public configuration', () => {
-    const model = new ResourceDemand<string>('session-1');
-    const widerConfig = { available: false, selected: true, demand: 99, activeHandle: 'ghost' };
-    model.configure('audio-fft', widerConfig);
+    const wider = { available: false, selected: true, demand: 99, activeHandle: 'ghost' };
+    model.configure('audio-fft', wider);
     model.acquire('audio-fft', 'panel');
-    expect(model.takeOperations()).toEqual([]);
     expect(model.snapshot('audio-fft')).toEqual({
       available: false, selected: true, demand: 1, health: 'inactive',
     });
-    model.configure('audio-fft', { available: true, selected: true });
-    expect(one(model).kind).toBe('start');
-  });
-  it.each(cleanupOrderings)('dedupes stable-handle cleanup for %s ordering', (ordering) => {
-    const model = new ResourceDemand<string>('session-1');
-    model.configure('hardware-scope', { available: true, selected: true });
-    const first = model.acquire('hardware-scope', 'A');
-    const startA = one(model);
-    expect(model.completeStart({ ...startA }, { handle: 'fake' })).toBe(false);
-    model.release(first);
-    const second = model.acquire('hardware-scope', 'B');
-    const startB = one(model);
-    if (ordering === 'stop-before-stale') {
-      expect(model.completeStart(startB, { handle: 'stable' })).toBe(true);
-      expect(model.completeStart(startB, { handle: 'stable' })).toBe(false);
-      model.release(second);
-      expect(model.completeStart(startA, { handle: 'stable' })).toBe(false);
-    } else {
-      expect(model.completeStart(startA, { handle: 'stable' })).toBe(false);
-      expect(model.completeStart(startB, { handle: 'stable' })).toBe(true);
-      model.release(second);
-    }
-    expect(one(model)).toMatchObject({ kind: 'stop', handle: 'stable' });
-  });
-  it('rejects a stale stop when replacement demand overlaps it', () => {
-    const model = new ResourceDemand<string>('session-1');
     model.configure('rx-audio', { available: true, selected: true });
-    const first = model.acquire('rx-audio', 'A');
-    model.completeStart(one(model), { handle: 'A' });
-    model.release(first);
-    const oldStop = one(model);
-    model.acquire('rx-audio', 'B');
-    model.completeStart(one(model), { handle: 'B' });
-    expect(model.completeStop(oldStop)).toBe(false);
-    expect(model.snapshot('rx-audio')).toMatchObject({ activeHandle: 'B', health: 'streaming' });
+    const staleA = supersede(model, 'rx-audio', 'A');
+    const late = ['B', 'C'].map((consumer) => supersede(model, 'rx-audio', consumer));
+    const first = model.acquire('rx-audio', 'first');
+    const start = one(model);
+    const shared = model.acquire('rx-audio', 'shared');
+    expect(model.takeOperations()).toEqual([]);
+    expect(model.release({ ...shared } as typeof shared)).toBe(false);
+    expect(new ResourceDemand<string>('session-1').release(shared)).toBe(false);
+    expect(model.completeStart({ ...start }, { handle: 'fake' })).toBe(false);
+    expect(model.completeStart(staleA, { handle: 'stable' })).toBe(false);
+    expect(model.takeOperations()).toEqual([]);
+    expect(model.completeStart(start, { handle: 'stable' })).toBe(true);
+    expect(model.completeStart(start, { handle: 'stable' })).toBe(false);
+    expect(model.takeOperations()).toEqual([]);
+    expect(model.release(first)).toBe(true);
+    expect(model.takeOperations()).toEqual([]);
+    expect(model.release(shared)).toBe(true);
+    const stop = one(model);
+    expect(model.completeStop(stop)).toBe(true);
+    for (const operation of late)
+      expect(model.completeStart(operation, { handle: 'stable' })).toBe(false);
+    expect(model.takeOperations()).toEqual([]);
+    const replacement = model.acquire('rx-audio', 'replacement');
+    model.completeStart(one(model), { handle: 'next' });
+    model.release(replacement);
+    const staleStop = one(model);
+    model.acquire('rx-audio', 'overlap');
+    model.completeStart(one(model), { handle: 'latest' });
+    expect(model.completeStop(staleStop)).toBe(false);
+  });
+  it.each(cleanupCases)('dedupes orphan cleanup %#', (drain, resources, handles, expected) => {
+    const model = new ResourceDemand<string>('session-1');
+    resources.forEach((resource) => model.configure(resource, { available: true, selected: true }));
+    const starts = resources.map((resource, index) => supersede(model, resource, String(index)));
+    const emitted = starts.flatMap((start, index) => {
+      model.completeStart(start, { handle: handles[index] });
+      return drain ? model.takeOperations() : [];
+    });
+    emitted.push(...model.takeOperations());
+    expect(emitted.map((op) => 'handle' in op && `${op.resource}:${op.handle}`)).toEqual(expected);
   });
 });
