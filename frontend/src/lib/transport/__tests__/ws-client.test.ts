@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import type { WsCommand, WsMessage } from '../../types/protocol';
 import type { ReceiverState, ServerState } from '../../types/state';
+import type { CommandDeliveryEvent } from '../ws-client';
 
 type ServerStateWithObservation = ServerState & {
   observationSeq?: number;
@@ -286,6 +287,81 @@ describe('WsChannel', () => {
     expect(received[0].type).toBe('ack');
   });
 
+  it('emits correlated PTT delivery events without fabricating RF state', async () => {
+    const { WsChannel } = await import('../ws-client');
+    const ch = new WsChannel();
+    const events: CommandDeliveryEvent[] = [];
+    ch.onCommandDelivery((event) => events.push(event));
+    ch.connect('ws://test');
+    instances[0].simulateOpen();
+
+    expect(ch.send({ type: 'cmd', name: 'ptt_on', id: 'on', params: {} })).toBe(true);
+    instances[0].simulateMessage(JSON.stringify({ type: 'ack', id: 'on' }));
+    instances[0].simulateMessage(JSON.stringify({ type: 'ack', id: 'on' }));
+    instances[0].simulateMessage(JSON.stringify({ type: 'response', id: 'on', ok: true }));
+    expect(ch.send({ type: 'cmd', name: 'ptt_off', id: 'off', params: {} })).toBe(true);
+    instances[0].simulateMessage(JSON.stringify({ type: 'response', id: 'off', ok: false }));
+    instances[0].simulateMessage(JSON.stringify({ type: 'error', id: 'off', message: 'rejected' }));
+
+    expect(events).toMatchObject([
+      { commandId: 'on', kind: 'transport-sent', originalEpoch: 1, eventEpoch: 1 },
+      { commandId: 'on', kind: 'ack', originalEpoch: 1, eventEpoch: 1 },
+      { commandId: 'on', kind: 'response-ok', originalEpoch: 1, eventEpoch: 1 },
+      { commandId: 'off', kind: 'transport-sent', originalEpoch: 1, eventEpoch: 1 },
+      { commandId: 'off', kind: 'response-error', originalEpoch: 1, eventEpoch: 1 },
+      { commandId: 'off', kind: 'error', originalEpoch: 1, eventEpoch: 1, error: 'rejected' },
+    ]);
+  });
+
+  it('preserves queued OFF identity and distinguishes stale reconnect events', async () => {
+    const { WsChannel } = await import('../ws-client');
+    const ch = new WsChannel();
+    const events: CommandDeliveryEvent[] = [];
+    ch.onCommandDelivery((event) => events.push(event));
+
+    ch.send({ type: 'cmd', name: 'ptt_off', id: 'off-1', params: {} });
+    ch.send({ type: 'cmd', name: 'ptt', id: 'off-2', params: { state: false } });
+    expect(events).toEqual([]);
+    ch.connect('ws://test');
+    instances[0].simulateOpen();
+    expect(events[0]).toMatchObject({
+      commandId: 'off-2', kind: 'transport-sent', originalEpoch: 0, eventEpoch: 1,
+    });
+
+    instances[0].simulateClose();
+    ch.send({ type: 'cmd', name: 'ptt_off', id: 'off-3', params: {} });
+    vi.advanceTimersByTime(1300);
+    instances[1].simulateOpen();
+    instances[0].simulateMessage(JSON.stringify({ type: 'ack', id: 'off-2' }));
+    instances[0].simulateMessage(JSON.stringify({ type: 'ack', id: 'off-2' }));
+    instances[0].simulateMessage(JSON.stringify({ type: 'response', id: 'off-2', ok: true }));
+    instances[0].simulateMessage(JSON.stringify({ type: 'response', id: 'off-2', ok: true }));
+    instances[0].simulateMessage(JSON.stringify({ type: 'error', id: 'off-2', message: 'stale' }));
+    instances[0].simulateMessage(JSON.stringify({ type: 'error', id: 'off-2', message: 'stale' }));
+
+    expect(events.slice(1)).toMatchObject([
+      { commandId: 'off-3', kind: 'transport-sent', originalEpoch: 1, eventEpoch: 2 },
+      { commandId: 'off-2', kind: 'ack', originalEpoch: 0, eventEpoch: 1 },
+      { commandId: 'off-2', kind: 'response-ok', originalEpoch: 0, eventEpoch: 1 },
+      { commandId: 'off-2', kind: 'error', originalEpoch: 0, eventEpoch: 1 },
+    ]);
+  });
+
+  it('reports a synchronous PTT send failure without a sent event', async () => {
+    const { WsChannel } = await import('../ws-client');
+    const ch = new WsChannel();
+    const events: CommandDeliveryEvent[] = [];
+    ch.onCommandDelivery((event) => events.push(event));
+    ch.connect('ws://test');
+    instances[0].simulateOpen();
+    instances[0].send = () => { throw new Error('socket failed'); };
+
+    expect(ch.send({ type: 'cmd', name: 'ptt_on', id: 'on', params: {} })).toBe(false);
+    expect(events).toEqual([{
+      commandId: 'on', kind: 'error', originalEpoch: 1, eventEpoch: 1, error: 'socket failed',
+    }]);
+  });
+
   it('routes binary messages to onBinary handlers', async () => {
     const { WsChannel } = await import('../ws-client');
     const ch = new WsChannel();
@@ -567,14 +643,19 @@ describe('control channel singleton', () => {
     expect(radioStoreMock.current?.ptt).toBe(true);
   });
 
-  it('merges a valid delta from the accepted server accumulator, not optimistic store state', async () => {
+  it('does not optimistically mutate PTT before authoritative state arrives', async () => {
     const { connect, sendCommand } = await import('../ws-client');
     connect('ws://test/api/v1/ws');
     instances[0].simulateOpen();
 
     sendStateUpdate(instances[0], fullEnvelope(makeState({ revision: 5, ptt: false, split: false })));
+    vi.mocked(patchRadioState).mockClear();
+    sendCommand('ptt_on');
     sendCommand('ptt', { state: true });
-    expect(radioStoreMock.current?.ptt).toBe(true);
+    sendCommand('ptt_off');
+    sendCommand('ptt', { state: false });
+    expect(patchRadioState).not.toHaveBeenCalled();
+    expect(radioStoreMock.current?.ptt).toBe(false);
     vi.mocked(setRadioState).mockClear();
 
     sendStateUpdate(instances[0], deltaEnvelope(makeState({ revision: 6 }), { split: true }));

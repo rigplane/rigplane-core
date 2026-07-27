@@ -4,15 +4,29 @@ import { isLiveRadioAvailable, setWsConnected, setHttpConnected, markStateUpdate
 import { getRadioState, patchActiveReceiver, patchRadioState, resetRadioState, setRadioState } from '../stores/radio.svelte';
 
 export type ConnectionState = 'disconnected' | 'connecting' | 'connected' | 'reconnecting';
+export type CommandDeliveryKind = 'transport-sent' | 'ack' | 'response-ok' | 'response-error' | 'error';
+export interface CommandDeliveryEvent {
+  commandId: string;
+  kind: CommandDeliveryKind;
+  originalEpoch: number;
+  eventEpoch: number;
+  error?: string;
+}
 type MessageHandler = (msg: WsIncoming) => void;
 type BinaryHandler = (data: ArrayBuffer) => void;
 type StateHandler = (state: ConnectionState) => void;
+type CommandDeliveryHandler = (event: CommandDeliveryEvent) => void;
+type PendingPttRelease = { command: WsCommand; originalEpoch: number };
+type TrackedPttCommand = PendingPttRelease & {
+  seen: Set<CommandDeliveryKind>;
+};
 
 const BACKOFF_BASE_MS = 1_000;
 const BACKOFF_MAX_MS = 30_000;
 const HEARTBEAT_TIMEOUT_MS = 30_000;  // server may be idle on control WS
 const KEEPALIVE_INTERVAL_MS = 15_000; // send ping to prevent idle timeout
 const MAX_QUEUE_SIZE = 20;
+const MAX_TRACKED_PTT_COMMANDS = 100;
 
 // Command types where only the latest value matters (last write wins)
 const IDEMPOTENT_TYPES = new Set(['set_freq', 'set_mode', 'set_filter']);
@@ -38,7 +52,10 @@ export class WsChannel {
   private attempt = 0;
   private intentionalClose = false;
   private sendQueue: WsCommand[] = [];
-  private pendingPttRelease: WsCommand | null = null;
+  private pendingPttRelease: PendingPttRelease | null = null;
+  private transportEpoch = 0;
+  private trackedPttCommands = new Map<string, TrackedPttCommand>();
+  private commandDeliveryHandlers = new Set<CommandDeliveryHandler>();
   private messageHandlers = new Set<MessageHandler>();
   private binaryHandlers = new Set<BinaryHandler>();
   private stateHandlers = new Set<StateHandler>();
@@ -71,10 +88,12 @@ export class WsChannel {
   private _open() {
     this.setState(this.attempt === 0 ? 'connecting' : 'reconnecting');
     const ws = new WebSocket(this.url);
+    let socketEpoch = 0;
     ws.binaryType = 'arraybuffer';
     this.ws = ws;
 
     ws.onopen = () => {
+      socketEpoch = ++this.transportEpoch;
       this.attempt = 0;
       this.setState('connected');
       this._resetHeartbeat();
@@ -82,7 +101,7 @@ export class WsChannel {
       // drain send queue
       const release = this.pendingPttRelease;
       this.pendingPttRelease = null;
-      if (release) ws.send(JSON.stringify(release));
+      if (release) this._sendPtt(ws, release, socketEpoch);
       const queued = this.sendQueue.splice(0).filter(
         (cmd) => pttIntent(cmd.name, cmd.params) !== 'on',
       );
@@ -92,12 +111,13 @@ export class WsChannel {
     };
 
     ws.onmessage = (event: MessageEvent) => {
-      this._resetHeartbeat();
+      if (this.ws === ws) this._resetHeartbeat();
       if (event.data instanceof ArrayBuffer) {
         this.binaryHandlers.forEach((h) => h(event.data as ArrayBuffer));
       } else {
         try {
           const raw = JSON.parse(event.data as string) as Record<string, unknown>;
+          this._emitCommandResult(raw, socketEpoch);
           // Handle status-based error responses ({"status":"error", ...})
           if (raw['status'] === 'error') {
             const errorMsg = (raw['message'] as string) || (raw['error'] as string) || 'Command failed';
@@ -168,8 +188,20 @@ export class WsChannel {
 
   send(cmd: WsCommand): boolean {
     if (this.ws?.readyState === WebSocket.OPEN) {
-      this.ws.send(JSON.stringify(cmd));
-      return true;
+      const intent = pttIntent(cmd.name, cmd.params);
+      if (intent) {
+        return this._sendPtt(
+          this.ws,
+          { command: cmd, originalEpoch: this.transportEpoch },
+          this.transportEpoch,
+        );
+      }
+      try {
+        this.ws.send(JSON.stringify(cmd));
+        return true;
+      } catch {
+        return false;
+      }
     }
     const intent = pttIntent(cmd.name, cmd.params);
     if (intent === 'on') {
@@ -179,7 +211,7 @@ export class WsChannel {
       this.sendQueue = this.sendQueue.filter(
         (queued) => pttIntent(queued.name, queued.params) !== 'on',
       );
-      this.pendingPttRelease = cmd;
+      this.pendingPttRelease = { command: cmd, originalEpoch: this.transportEpoch };
       return false;
     }
     // Deduplicate idempotent commands — keep only the latest value
@@ -211,6 +243,67 @@ export class WsChannel {
   onStateChange(handler: StateHandler): () => void {
     this.stateHandlers.add(handler);
     return () => this.stateHandlers.delete(handler);
+  }
+
+  onCommandDelivery(handler: CommandDeliveryHandler): () => void {
+    this.commandDeliveryHandlers.add(handler);
+    return () => this.commandDeliveryHandlers.delete(handler);
+  }
+
+  private _sendPtt(ws: WebSocket, pending: PendingPttRelease, eventEpoch: number): boolean {
+    try {
+      ws.send(JSON.stringify(pending.command));
+    } catch (error) {
+      this._emitDelivery({
+        commandId: pending.command.id,
+        kind: 'error',
+        originalEpoch: pending.originalEpoch,
+        eventEpoch,
+        error: error instanceof Error ? error.message : 'WebSocket send failed',
+      });
+      return false;
+    }
+    const tracked: TrackedPttCommand = { ...pending, seen: new Set() };
+    if (this.trackedPttCommands.size >= MAX_TRACKED_PTT_COMMANDS) {
+      this.trackedPttCommands.delete(this.trackedPttCommands.keys().next().value!);
+    }
+    this.trackedPttCommands.set(pending.command.id, tracked);
+    this._emitTracked(tracked, 'transport-sent', eventEpoch);
+    return true;
+  }
+
+  private _emitCommandResult(raw: Record<string, unknown>, eventEpoch: number): void {
+    const id = raw.id;
+    if (typeof id !== 'string') return;
+    const tracked = this.trackedPttCommands.get(id);
+    if (!tracked) return;
+    if (raw.type === 'ack') this._emitTracked(tracked, 'ack', eventEpoch);
+    else if (raw.type === 'response') {
+      this._emitTracked(tracked, raw.ok === false ? 'response-error' : 'response-ok', eventEpoch);
+    } else if (raw.type === 'error' || raw.status === 'error') {
+      this._emitTracked(tracked, 'error', eventEpoch, String(raw.message ?? raw.error ?? 'Command failed'));
+    }
+  }
+
+  private _emitTracked(
+    tracked: TrackedPttCommand,
+    kind: CommandDeliveryKind,
+    eventEpoch: number,
+    error?: string,
+  ): void {
+    if (tracked.seen.has(kind)) return;
+    tracked.seen.add(kind);
+    this._emitDelivery({
+      commandId: tracked.command.id,
+      kind,
+      originalEpoch: tracked.originalEpoch,
+      eventEpoch,
+      ...(error ? { error } : {}),
+    });
+  }
+
+  private _emitDelivery(event: CommandDeliveryEvent): void {
+    this.commandDeliveryHandlers.forEach((handler) => handler(event));
   }
 
   private _resetHeartbeat() {
@@ -453,6 +546,10 @@ export function disconnect() {
   _ctrl.disconnect();
 }
 
+export function onCommandDelivery(handler: CommandDeliveryHandler): () => void {
+  return _ctrl.onCommandDelivery(handler);
+}
+
 export function sendCommand(name: string, params: Record<string, unknown> = {}, id?: string): boolean {
   if (!isLiveRadioAvailable() && pttIntent(name, params) !== 'off') {
     console.warn('[cmd] blocked while radio health is degraded', name);
@@ -538,11 +635,6 @@ function _applyOptimistic(name: string, params: Record<string, unknown>): void {
     case 'set_ip_plus':
     case 'set_ipplus':  // backward-compat alias
       if (typeof params.on === 'boolean') patchActiveReceiver({ ipplus: params.on });
-      break;
-    case 'ptt':
-      // A release is best-effort until confirmed by backend state. Optimistically
-      // clearing PTT could falsely present a de-key while transport is degraded.
-      if (params.state === true) patchRadioState({ ptt: true });
       break;
     case 'set_dual_watch':
       if (typeof params.on === 'boolean') patchRadioState({ dualWatch: params.on });
