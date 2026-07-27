@@ -177,7 +177,7 @@ logger = logging.getLogger(__name__)
 _MAX_CW_TEXT_CHARS = 512
 
 # MOR-624: maps the per-DATA-group MOD-input SET command name (as sent by the
-# frontend auto-restore) to its poller action, for session-teardown restore.
+# frontend auto-restore) to its allowed teardown arm name (MOR-993).
 _MOD_INPUT_RESTORE_ACTIONS: dict[str, Any] = {
     "set_data_off_mod_input": SetDataOffModInput,
     "set_data1_mod_input": SetData1ModInput,
@@ -474,7 +474,7 @@ class ControlHandler:
         )
         self._subscribed_streams: set[str] = set()
         # MOR-624: (command_name, previous_source) armed by the frontend auto-LAN
-        # feature at TX start; restored on abnormal session teardown. None = nothing armed.
+        # feature at TX start; MOR-993 permits teardown PTT OFF only.
         self._mod_input_restore: tuple[str, int] | None = None
         self._event_queue: BoundedQueue[dict[str, Any]] = BoundedQueue(
             maxsize=100,
@@ -980,53 +980,53 @@ class ControlHandler:
     def _apply_mod_input_restore_cmd(
         self, name: str, params: dict[str, Any]
     ) -> dict[str, Any]:
-        """Arm/disarm the session MOD-input restore (MOR-624).
+        """Arm/disarm the transitional session teardown intent (MOR-624/MOR-993).
 
-        Session-local bookkeeping only — never touches the radio. ``arm`` records
-        the per-group SET command + the previous source to re-apply if this session
-        tears down before a clean disarm; ``disarm`` (clean TX stop owns the
-        restore) clears it.
+        Writable-session ``arm`` keeps the legacy payload for wire compatibility,
+        but teardown may use it only to request emergency PTT OFF. It never
+        authorizes a MOD SET. ``disarm`` clears the intent idempotently.
         """
         if name == "disarm_mod_input_restore":
             self._mod_input_restore = None
             return {}
+        self._mod_input_restore = None
+        if self._read_only:
+            return {"armed": False}
         command = str(params.get("command", ""))
         if command not in _MOD_INPUT_RESTORE_ACTIONS:
-            self._mod_input_restore = None
             return {"armed": False}
-        self._mod_input_restore = (command, int(params.get("source", 0)))
+        source = params.get("source")
+        if (
+            isinstance(source, bool)
+            or not isinstance(source, int)
+            or not 0 <= source <= 5
+        ):
+            return {"armed": False}
+        self._mod_input_restore = (command, source)
         return {"armed": True}
 
     def _restore_mod_input_on_teardown(self) -> None:
-        """Restore the armed MOD-input source on abnormal session teardown (MOR-624).
+        """Consume the legacy arm and request best-effort PTT OFF only (MOR-993).
 
-        A clean TX stop disarms (see ``_apply_mod_input_restore_cmd``), so a still-armed
-        restore here means the client vanished mid-TX. Enqueue PttOff first — restoring a
-        non-LAN source while the rig is still keyed would re-trigger the open-mic footgun
-        MOR-614 fixed — then the previous-source SET. Best-effort: the shared poller may be
-        shutting down too.
+        Queue order, ACK, timeout, and cached state do not prove RF de-key. Until
+        MOR-986 supplies fresh authoritative PTT confirmation, teardown must
+        never enqueue the remembered MOD SET.
         """
-        restore = self._mod_input_restore
+        armed = self._mod_input_restore
         self._mod_input_restore = None
-        if restore is None or self._server is None or self._radio is None:
+        if armed is None or self._server is None:
             return
         queue = getattr(self._server, "command_queue", None)
         if queue is None:
             return
-        command, source = restore
-        action = _MOD_INPUT_RESTORE_ACTIONS.get(command)
-        if action is None:
-            return
         try:
             queue.put(PttOff())
-            queue.put(action(source))
         except Exception:
-            logger.debug("control: MOD-input teardown restore failed", exc_info=True)
+            logger.debug("control: teardown PTT OFF enqueue failed", exc_info=True)
         else:
             logger.info(
-                "control: restored MOD-input %s=%d on session teardown (session=%s)",
-                command,
-                source,
+                "control: requested PTT OFF on armed session teardown; "
+                "MOD restore suppressed pending authoritative OFF (session=%s)",
                 self._session_id,
             )
 

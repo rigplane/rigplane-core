@@ -1,55 +1,53 @@
-"""Tests for backend session-teardown MOD-input restore (MOR-624).
+"""Tests for backend session-teardown MOD handling (MOR-624/MOR-993).
 
 The frontend auto-LAN feature (MOR-618) arms a restore on the backend
 session at TX start and disarms it on a clean TX stop. If the session
-tears down while still armed (abnormal mid-TX disconnect), the handler
-enqueues PttOff followed by the previous-source SET on the shared
-command queue.
+tears down while still armed, the handler enqueues PttOff only; no command
+outcome or queue ordering authorizes a previous-source MOD SET.
 """
 
 from __future__ import annotations
 
-from queue import Queue
 from types import SimpleNamespace
-from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from rigplane.profiles import resolve_radio_profile
 from rigplane.web.handlers.control import ControlHandler
-from rigplane.web.radio_poller import (
-    PttOff,
-    SetDataOffModInput,
-    SetData1ModInput,
-    SetData2ModInput,
+from rigplane.web.radio_poller import CommandQueue, PttOff, RadioPoller
+
+_MOD_COMMANDS = (
+    "set_data_off_mod_input",
+    "set_data1_mod_input",
+    "set_data2_mod_input",
+    "set_data3_mod_input",
 )
 
 
-def _make_handler() -> tuple[ControlHandler, Queue[Any]]:
-    """Build a ControlHandler with a fake server and return (handler, command_queue)."""
-    ws = MagicMock()
-
-    command_queue: Queue[Any] = Queue()
-
-    server = SimpleNamespace(
-        command_queue=command_queue,
-    )
-
+def _make_handler(*, read_only: bool = False) -> tuple[ControlHandler, CommandQueue]:
+    """Build a ControlHandler with a real command queue."""
+    command_queue = CommandQueue()
+    server = SimpleNamespace(command_queue=command_queue)
     handler = ControlHandler(
-        ws=ws,
+        ws=MagicMock(),
         radio=MagicMock(),
         server_version="test",
         radio_model="IC-7610",
         server=server,
+        read_only=read_only,
     )
     return handler, command_queue
 
 
-def _drain(q: Queue[Any]) -> list[Any]:
-    items: list[Any] = []
-    while not q.empty():
-        items.append(q.get_nowait())
-    return items
+def _provider_poller(error: Exception | None) -> tuple[RadioPoller, MagicMock]:
+    radio = MagicMock()
+    radio.profile = resolve_radio_profile(model="IC-7610")
+    radio.capabilities = set(radio.profile.capabilities) - {"audio"}
+    radio.set_ptt = AsyncMock(side_effect=error)
+    for name in _MOD_COMMANDS:
+        setattr(radio, name, AsyncMock())
+    return RadioPoller(radio, CommandQueue()), radio
 
 
 class TestArmDisarm:
@@ -77,7 +75,7 @@ class TestArmDisarm:
         assert handler._mod_input_restore is None
         assert result == {"armed": False}
 
-    def test_disarm_clears_armed_state(self) -> None:
+    def test_disarm_clears_armed_state_idempotently(self) -> None:
         handler, _ = _make_handler()
         handler._apply_mod_input_restore_cmd(
             "arm_mod_input_restore",
@@ -85,50 +83,89 @@ class TestArmDisarm:
         )
 
         result = handler._apply_mod_input_restore_cmd("disarm_mod_input_restore", {})
+        repeated = handler._apply_mod_input_restore_cmd("disarm_mod_input_restore", {})
 
         assert handler._mod_input_restore is None
-        assert result == {}
+        assert result == repeated == {}
+
+    @pytest.mark.parametrize("source", [True, "2", -1, 6, None])
+    def test_invalid_source_is_rejected_and_clears_existing_arm(
+        self, source: object
+    ) -> None:
+        handler, q = _make_handler()
+        invalid = {"command": "set_data1_mod_input", "source": source}
+        valid = {"command": "set_data1_mod_input", "source": 2}
+
+        assert handler._apply_mod_input_restore_cmd(
+            "arm_mod_input_restore", invalid
+        ) == {"armed": False}
+        assert handler._mod_input_restore is None
+        assert handler._apply_mod_input_restore_cmd("arm_mod_input_restore", valid) == {
+            "armed": True
+        }
+        assert handler._apply_mod_input_restore_cmd(
+            "arm_mod_input_restore", invalid
+        ) == {"armed": False}
+        handler._restore_mod_input_on_teardown()
+        assert handler._mod_input_restore is None
+        assert not q.has_commands
 
 
 class TestTeardownRestore:
-    """_restore_mod_input_on_teardown enqueues PttOff then the restore SET."""
+    """An armed teardown consumes its state and enqueues PTT OFF only."""
 
-    def test_teardown_when_armed_enqueues_ptt_off_then_restore(self) -> None:
+    @pytest.mark.parametrize("command", _MOD_COMMANDS)
+    def test_teardown_when_armed_enqueues_one_ptt_off(self, command: str) -> None:
         handler, q = _make_handler()
         handler._apply_mod_input_restore_cmd(
             "arm_mod_input_restore",
-            {"command": "set_data_off_mod_input", "source": 0},
+            {"command": command, "source": 0},
         )
 
         handler._restore_mod_input_on_teardown()
+        handler._restore_mod_input_on_teardown()
 
-        items = _drain(q)
-        assert len(items) == 2
-        assert isinstance(items[0], PttOff)
-        assert isinstance(items[1], SetDataOffModInput)
-        assert items[1].source == 0
+        assert q.drain() == [PttOff()]
         assert handler._mod_input_restore is None
 
-    def test_teardown_carries_armed_source(self) -> None:
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "error",
+        [
+            None,
+            TimeoutError("OFF timed out"),
+            ConnectionError("radio unreachable"),
+            RuntimeError("provider failure"),
+        ],
+        ids=["success", "timeout", "unreachable", "provider-failure"],
+    )
+    async def test_off_outcome_never_invokes_mod_provider(
+        self, error: Exception | None
+    ) -> None:
         handler, q = _make_handler()
         handler._apply_mod_input_restore_cmd(
             "arm_mod_input_restore",
-            {"command": "set_data1_mod_input", "source": 3},
+            {"command": "set_data3_mod_input", "source": 3},
         )
-
         handler._restore_mod_input_on_teardown()
+        commands = q.drain()
+        assert commands == [PttOff()]
 
-        items = _drain(q)
-        assert isinstance(items[0], PttOff)
-        assert isinstance(items[1], SetData1ModInput)
-        assert items[1].source == 3
+        poller, radio = _provider_poller(error)
+        try:
+            await poller._execute(commands[0])
+        except Exception as exc:
+            assert exc is error
+        radio.set_ptt.assert_awaited_once_with(False)
+        for name in _MOD_COMMANDS:
+            getattr(radio, name).assert_not_awaited()
 
     def test_teardown_when_not_armed_enqueues_nothing(self) -> None:
         handler, q = _make_handler()
 
         handler._restore_mod_input_on_teardown()
 
-        assert q.empty(), "nothing armed — teardown must not touch the queue"
+        assert not q.has_commands
 
     def test_teardown_after_disarm_enqueues_nothing(self) -> None:
         handler, q = _make_handler()
@@ -140,7 +177,7 @@ class TestTeardownRestore:
 
         handler._restore_mod_input_on_teardown()
 
-        assert q.empty(), "clean disarm owns the restore — teardown must be a no-op"
+        assert not q.has_commands
 
 
 class TestCommandRouting:
@@ -162,11 +199,11 @@ class TestCommandRouting:
         assert handler._mod_input_restore == ("set_data2_mod_input", 3)
         handler._ws.send_text.assert_awaited_once()
         sent = handler._ws.send_text.await_args.args[0]
-        assert '"ok": true' in sent or '"ok":true' in sent
+        assert '"ok":true' in sent and '"armed":true' in sent
 
     @pytest.mark.asyncio
-    async def test_teardown_after_routed_arm_restores(self) -> None:
-        handler, q = _make_handler()
+    async def test_read_only_routed_arm_has_no_teardown_effect(self) -> None:
+        handler, q = _make_handler(read_only=True)
         handler._ws.send_text = AsyncMock()
 
         await handler._handle_command(
@@ -178,8 +215,7 @@ class TestCommandRouting:
         )
         handler._restore_mod_input_on_teardown()
 
-        items = _drain(q)
-        assert len(items) == 2
-        assert isinstance(items[0], PttOff)
-        assert isinstance(items[1], SetData2ModInput)
-        assert items[1].source == 3
+        assert handler._mod_input_restore is None
+        assert not q.has_commands
+        sent = handler._ws.send_text.await_args.args[0]
+        assert '"ok":true' in sent and '"armed":false' in sent
