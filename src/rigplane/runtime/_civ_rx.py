@@ -18,6 +18,7 @@ from rigplane.core.acquisition_scheduler import (
 from rigplane.core.civ import (
     CivEvent,
     CivEventType,
+    CivRequestKey,
     iter_civ_frames,
     request_key_from_frame,
 )
@@ -156,6 +157,18 @@ class RawCivTransactionResult:
     status: RawCivTransactionStatus
     frame: CivFrame | None = None
     frame_bytes: bytes | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class _CivDataTransaction:
+    """Exact tracker futures owned by one data-returning CI-V request."""
+
+    response: asyncio.Future[CivFrame]
+    nak: asyncio.Future[CivFrame]
+
+    @property
+    def futures(self) -> tuple[asyncio.Future[CivFrame], ...]:
+        return (self.response, self.nak)
 
 
 _CMD14_RECEIVER_LEVEL_FIELDS = {
@@ -692,6 +705,7 @@ class CivRuntime:
             raise asyncio.TimeoutError("CI-V response timed out")
 
         pending_waiters: list[asyncio.Future[CivFrame]] = []
+        data_transaction: _CivDataTransaction | None = None
         try:
             if expect == "ack":
                 pending_or_token = self._host._civ_request_tracker.register_ack(
@@ -702,17 +716,8 @@ class CivRuntime:
                     raise RuntimeError("ACK waiter registration returned sink token")
                 pending_waiters.append(pending_or_token)
             else:
-                pending_waiters.append(
-                    self._host._civ_request_tracker.register_response(request_key)
-                )
-                nak_pending_or_token = self._host._civ_request_tracker.register_ack(
-                    wait=True,
-                    consume_backlog=False,
-                    nak_only=True,
-                )
-                if isinstance(nak_pending_or_token, int):
-                    raise RuntimeError("ACK waiter registration returned sink token")
-                pending_waiters.append(nak_pending_or_token)
+                data_transaction = self._register_civ_data_transaction(request_key)
+                pending_waiters.extend(data_transaction.futures)
 
             self.start_pump()
             await self._send_civ_frame_now(civ_frame)
@@ -735,8 +740,11 @@ class CivRuntime:
             )
             raise asyncio.TimeoutError("CI-V response timed out") from None
         finally:
-            for pending in pending_waiters:
-                self._host._civ_request_tracker.unregister(pending)
+            if data_transaction is not None:
+                self._close_civ_data_transaction(data_transaction)
+            else:
+                for pending in pending_waiters:
+                    self._host._civ_request_tracker.unregister(pending)
 
         if frame.command == 0xFA:
             status: RawCivTransactionStatus = "nak"
@@ -750,6 +758,30 @@ class CivRuntime:
             frame_bytes=self._take_raw_received_frame_bytes(frame)
             or self._civ_frame_to_bytes(frame),
         )
+
+    def _register_civ_data_transaction(
+        self, request_key: CivRequestKey
+    ) -> _CivDataTransaction:
+        """Register exact response and NAK identities for one data request."""
+        tracker = self._host._civ_request_tracker
+        response = tracker.register_response(request_key)
+        nak_or_token = tracker.register_ack(
+            wait=True,
+            consume_backlog=False,
+            nak_only=True,
+        )
+        if isinstance(nak_or_token, int):
+            tracker.unregister(response)
+            response.cancel()
+            raise RuntimeError("ACK waiter registration returned sink token")
+        return _CivDataTransaction(response=response, nak=nak_or_token)
+
+    def _close_civ_data_transaction(self, transaction: _CivDataTransaction) -> None:
+        """Atomically detach and settle both futures owned by a transaction."""
+        for future in transaction.futures:
+            self._host._civ_request_tracker.unregister(future)
+            if not future.done():
+                future.cancel()
 
     async def send_civ_raw(
         self,
