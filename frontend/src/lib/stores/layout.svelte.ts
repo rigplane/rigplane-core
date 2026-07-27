@@ -1,29 +1,57 @@
 /**
  * Layout preference store.
  * 'auto'        = standard layout when any scope available (HW or audio FFT), LCD otherwise
- * 'lcd'         = force LCD layout — cockpit variant (legacy alias for 'lcd-cockpit')
+ * 'lcd'         = legacy alias for 'lcd-cockpit'
  * 'lcd-cockpit' = force LCD cockpit (TS-990S-style dual-cockpit)
  * 'lcd-scope'   = force LCD scope (IC-7300-style scope-dominant)
  * 'standard'    = force standard layout
  *
- * Legacy 'lcd' persisted values are mapped to 'lcd-cockpit' by resolveSkinId().
+ * Raw persisted aliases are normalized here before presentation policy reads
+ * the preference.
  */
 
 const STORAGE_KEY = 'rigplane-layout';
+const LEGACY_SKIN_STORAGE_KEY = 'rigplane-skin';
 
 export type LayoutMode = 'auto' | 'lcd' | 'lcd-cockpit' | 'lcd-scope' | 'standard' | 'sdr-test';
+export type CanonicalLayoutMode = Exclude<LayoutMode, 'lcd'>;
 
-let mode = $state<LayoutMode>(loadMode());
+const CANONICAL_LAYOUT_MODES = new Set<CanonicalLayoutMode>([
+  'auto',
+  'lcd-cockpit',
+  'lcd-scope',
+  'standard',
+  'sdr-test',
+]);
 
-function loadMode(): LayoutMode {
-  if (typeof window === 'undefined') return 'auto';
-  const saved = localStorage.getItem(STORAGE_KEY);
-  if (saved === 'lcd' || saved === 'lcd-cockpit' || saved === 'lcd-scope' || saved === 'standard' || saved === 'sdr-test') {
-    return saved;
+const LEGACY_LAYOUT_ALIASES: Record<string, CanonicalLayoutMode> = {
+  lcd: 'lcd-cockpit',
+  'amber-lcd': 'lcd-cockpit',
+  spectrum: 'standard',
+  'desktop-v2': 'standard',
+};
+
+export function normalizeLayoutMode(value: 'lcd' | 'amber-lcd'): 'lcd-cockpit';
+export function normalizeLayoutMode(value: 'spectrum' | 'desktop-v2'): 'standard';
+export function normalizeLayoutMode(value: unknown): CanonicalLayoutMode;
+export function normalizeLayoutMode(value: unknown): CanonicalLayoutMode {
+  if (typeof value !== 'string') return 'auto';
+  if (Object.hasOwn(LEGACY_LAYOUT_ALIASES, value)) {
+    return LEGACY_LAYOUT_ALIASES[value];
   }
-  // Migrate old 'spectrum' value to 'standard'
-  if (saved === 'spectrum') return 'standard';
+  if (CANONICAL_LAYOUT_MODES.has(value as CanonicalLayoutMode)) {
+    return value as CanonicalLayoutMode;
+  }
   return 'auto';
+}
+
+let mode = $state<CanonicalLayoutMode>(loadMode());
+
+function loadMode(): CanonicalLayoutMode {
+  if (typeof window === 'undefined') return 'auto';
+  const saved = localStorage.getItem(STORAGE_KEY)
+    ?? localStorage.getItem(LEGACY_SKIN_STORAGE_KEY);
+  return normalizeLayoutMode(saved);
 }
 
 export function getLayoutMode(): LayoutMode {
@@ -31,21 +59,21 @@ export function getLayoutMode(): LayoutMode {
 }
 
 export function setLayoutMode(m: LayoutMode): void {
-  mode = m;
+  mode = normalizeLayoutMode(m);
   if (typeof window !== 'undefined') {
-    localStorage.setItem(STORAGE_KEY, m);
+    localStorage.setItem(STORAGE_KEY, mode);
   }
 }
 
 export function cycleLayoutMode(hasAnyScope: boolean): void {
   if (hasAnyScope) {
-    // auto → lcd → standard → auto
-    const order: LayoutMode[] = ['auto', 'lcd', 'standard'];
+    // auto → LCD cockpit → standard → auto
+    const order: CanonicalLayoutMode[] = ['auto', 'lcd-cockpit', 'standard'];
     const idx = order.indexOf(mode);
     setLayoutMode(order[(idx + 1) % order.length]);
   } else {
     // No scope at all: always LCD, no toggle needed
-    setLayoutMode('lcd');
+    setLayoutMode('lcd-cockpit');
   }
 }
 
