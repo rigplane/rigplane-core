@@ -417,7 +417,7 @@ class AudioBroadcaster:
             return ("session", session)
         bus = getattr(radio, "audio_bus", None)
         if bus is None:
-            return None
+            raise TypeError("audio_bus is required for runtime audio")
         if not callable(getattr(bus, "subscribe", None)):
             raise TypeError("audio_bus.subscribe must be callable")
         return ("bus", bus)

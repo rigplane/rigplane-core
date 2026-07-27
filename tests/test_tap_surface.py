@@ -151,13 +151,12 @@ class _PcmRadio(AudioCapable):
 
 
 def test_pcm_tap_source_preserves_descriptor_matrix() -> None:
-    accepted = (
+    for codec in (
         AudioCodec.PCM_1CH_16BIT,
         AudioCodec.PCM_2CH_16BIT,
         AudioCodec.ULAW_1CH,
         AudioCodec.ULAW_2CH,
-    )
-    for codec in accepted:
+    ):
         assert AudioBroadcaster(_PcmRadio(codec=codec)).rx_pcm_tap_source == (
             RxPcmTapSource(codec=codec, sample_rate=48_000)
         )
@@ -175,12 +174,10 @@ def test_pcm_tap_source_preserves_descriptor_matrix() -> None:
         ),
         _PcmRadio(sample_rate=True),
         _PcmRadio(sample_rate=48_000.0),
-        _PcmRadio(bus=None),
         _PcmRadio(bus=SimpleNamespace(subscribe=None)),
         _PcmRadio(session=SimpleNamespace(subscribe_rx=None)),
         _PcmRadio(raising="audio_session"),
         _PcmRadio(raising="audio_bus"),
-        SimpleNamespace(capabilities={CAP_AUDIO}, has_usb_audio=True),
     )
     assert all(AudioBroadcaster(radio).rx_pcm_tap_source is None for radio in rejected)
 
@@ -202,7 +199,7 @@ async def test_relay_route_prefers_session_then_falls_back_to_bus() -> None:
 
 @pytest.mark.asyncio
 async def test_malformed_selected_relay_routes_notify_without_fallback() -> None:
-    cases = [
+    for radio, expected in (
         (
             _PcmRadio(session=SimpleNamespace(subscribe_rx=None)),
             "audio_session.subscribe_rx must be callable",
@@ -213,10 +210,15 @@ async def test_malformed_selected_relay_routes_notify_without_fallback() -> None
             "audio_bus.subscribe must be callable",
         ),
         (_PcmRadio(raising="audio_bus"), "bus route unavailable"),
-    ]
-    for radio, expected in cases:
+        (_PcmRadio(bus=None), "audio_bus is required for runtime audio"),
+        (
+            SimpleNamespace(capabilities={CAP_AUDIO}, has_usb_audio=True),
+            "audio_bus is required for runtime audio",
+        ),
+    ):
         ws = SimpleNamespace(send_text=AsyncMock(), is_alive=lambda: True)
         broadcaster = AudioBroadcaster(radio)
+        assert broadcaster.rx_pcm_tap_source is None
         await broadcaster.subscribe(ws=ws)
         assert broadcaster._subscription is broadcaster._relay_task is None
         if "session" in expected:
