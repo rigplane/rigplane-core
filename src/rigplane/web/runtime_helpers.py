@@ -4,6 +4,7 @@ import copy
 import datetime
 import time
 from collections.abc import Mapping
+from dataclasses import replace
 from typing import TYPE_CHECKING, Any, cast
 
 from ..core.state_pipeline_contracts import FieldFamily, FieldScope, FieldPath, VfoSlot
@@ -810,6 +811,22 @@ def _project_tx_target(field: FieldSnapshot) -> dict[str, object]:
     return cast(dict[str, object], target.to_dict())
 
 
+def _canonical_snapshot_fields(snapshot: StateSnapshot) -> tuple[FieldSnapshot, ...]:
+    path = FieldPath.global_("tx_state", "tx_target")
+    targets = tuple(field for field in snapshot.fields if field.path == path)
+    if len(targets) < 2:
+        return cast(tuple[FieldSnapshot, ...], snapshot.fields)
+    newest_at = max(field.last_observed_monotonic for field in targets)
+    newest = tuple(f for f in targets if f.last_observed_monotonic == newest_at)
+    rank = (FreshnessState.FRESH, FreshnessState.UNKNOWN, FreshnessState.STALE)
+    winner = max(newest, key=lambda f: (rank.index(f.freshness), repr(f.to_dict())))
+    if winner.freshness is FreshnessState.FRESH and any(
+        field.value != winner.value for field in newest
+    ):
+        winner = replace(winner, value={"status": "unknown", "reason": "contradiction"})
+    return tuple(field for field in snapshot.fields if field.path != path) + (winner,)
+
+
 def _apply_snapshot_field(
     state: dict[str, Any],
     field: FieldSnapshot,
@@ -1052,6 +1069,7 @@ def build_public_state_payload_from_snapshot(
 ) -> dict[str, Any]:
     """Build the public web payload from one StateStore snapshot."""
 
+    snapshot = replace(snapshot, fields=_canonical_snapshot_fields(snapshot))
     state = _project_snapshot_state_dict(snapshot, radio=radio)
     state["field_status"] = _build_snapshot_field_status(
         snapshot,
