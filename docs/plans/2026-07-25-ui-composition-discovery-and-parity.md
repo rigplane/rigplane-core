@@ -348,8 +348,9 @@ Current Linear dependency order:
    fixture truth, route admission, service construction, and serialization
    consistent.
 4. **MOR-983 and MOR-984 — lifetime and derived-selector boundaries:** MOR-983
-   follows the presentation seam plus accepted TX/capability ownership;
-   MOR-984 follows the validated raw wire and accepted MOR-988 semantics.
+   follows the presentation seam plus accepted TX/capability ownership and
+   requires MOR-971 as a decision input; MOR-984 follows the validated raw wire
+   and accepted MOR-988 semantics.
 5. **MOR-975 — VFO plus RX/TX reference vertical:** consume the completed
    MOR-973/MOR-974 contracts and accepted MOR-986 backend policy, implement and
    prove R1-R8, then use MOR-987 for the independent cross-surface,

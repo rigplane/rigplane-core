@@ -117,13 +117,16 @@ capability gates, TX safety, or command semantics.
 
 ## Capability integration
 
-`frontend/src/lib/types/capabilities.ts::Capabilities` mirrors the backend and
-is authoritative. The adapter layer may expose a non-persisted presentation
-context with derived facts such as receiver count, VFO scheme, hardware/audio
-scope availability, TX support, antenna count, and available meters. This is an
-adapter result, not a new protocol. Existing selectors such as `hasAnyScope()`,
-`hasDualReceiver()`, `hasCapability()`, and `getControlRange()` must be reused
-or consolidated, not reimplemented per skin.
+The raw, validated v1 object returned by `GET /api/v1/capabilities` is
+authoritative. The current
+`frontend/src/lib/types/capabilities.ts::Capabilities` interface is incomplete
+and is not a second source of truth; after MOR-985, the frontend validator and
+type must mirror the raw contract. The adapter layer may expose a non-persisted
+presentation context with derived facts such as receiver count, VFO scheme,
+hardware/audio scope availability, TX support, antenna count, and available
+meters. This is an adapter result, not a new protocol. Existing selectors such
+as `hasAnyScope()`, `hasDualReceiver()`, `hasCapability()`, and
+`getControlRange()` must be reused or consolidated, not reimplemented per skin.
 
 Capabilities answer **what is supported**. Layout answers **how supported
 functions are arranged**. Design language answers **how they communicate
@@ -219,9 +222,9 @@ migrate incrementally; there is no flag-day move.
    route/PCM predicate (MOR-997), then service construction and serialization
    (MOR-998). MOR-994 remains the Linear program owner.
 4. Finish the App presentation-selection seam without activating lazy mounting,
-   then accept and implement the presentation-lifetime boundary (MOR-983).
-   Runtime transport, scope, audio, feedback, and TX ownership must be outside
-   replaceable presentations first.
+   then implement the presentation-lifetime boundary (MOR-983), with MOR-971 as
+   a required decision input. Runtime transport, scope, audio, feedback, and TX
+   ownership must be outside replaceable presentations first.
 5. Implement pure capability-derived presentation selectors (MOR-984) from the
    accepted MOR-988 semantics and validated MOR-985 raw wire. Do not change the
    backend source of truth or introduce persisted derived capabilities.
