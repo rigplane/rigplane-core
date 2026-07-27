@@ -9,6 +9,7 @@ from rigplane.core.tx_safety import (
     TxOutcome,
     TxOwner,
     TxReleaseReason,
+    TxSafetySnapshot,
     TxSafetySupervisor,
     TxTransition,
 )
@@ -36,8 +37,8 @@ class ManagedRadioRuntime:
         self._shutdown_timeout = shutdown_timeout_seconds
 
     @property
-    def tx_safety(self) -> TxSafetySupervisor:
-        return self._tx_safety
+    def tx_snapshot(self) -> TxSafetySnapshot:
+        return self._tx_safety.snapshot
 
     async def _service_effects(self, transition: TxTransition) -> None:
         if transition.effects:
@@ -45,14 +46,14 @@ class ManagedRadioRuntime:
 
     async def replace_provider(self, *, ready: bool) -> TxTransition:
         self._provider_generation += 1
-        transition = self.tx_safety.replace_provider(
+        transition = self._tx_safety.replace_provider(
             self._provider_generation, ready=ready
         )
         await self._service_effects(transition)
         return transition
 
     async def set_provider_ready(self, *, ready: bool) -> TxTransition:
-        transition = self.tx_safety.set_provider_ready(
+        transition = self._tx_safety.set_provider_ready(
             self._provider_generation, ready=ready
         )
         await self._service_effects(transition)
@@ -82,7 +83,7 @@ class ManagedRadioRuntime:
         return transition
 
     async def shutdown(self, *, release_provider: ProviderRelease) -> TxTransition:
-        transition = self.tx_safety.emergency_release(
+        transition = self._tx_safety.emergency_release(
             reason=TxReleaseReason.SERVER_SHUTDOWN
         )
         try:
