@@ -408,26 +408,29 @@ class AudioBroadcaster:
     def _resolve_rx_route(self) -> tuple[str, Any] | None:
         """Resolve the exact session-first RX source used by the relay."""
         radio = self._radio
-        try:
-            if radio is None or CAP_AUDIO not in runtime_capabilities(radio):
-                return None
-            session = getattr(radio, "audio_session", None)
-            if session is not None:
-                subscribe_rx = getattr(session, "subscribe_rx", None)
-                return ("session", session) if callable(subscribe_rx) else None
-            bus = getattr(radio, "audio_bus", None)
-            subscribe = getattr(bus, "subscribe", None)
-            return ("bus", bus) if callable(subscribe) else None
-        except Exception:
+        if radio is None or CAP_AUDIO not in runtime_capabilities(radio):
             return None
+        session = getattr(radio, "audio_session", None)
+        if session is not None:
+            if not callable(getattr(session, "subscribe_rx", None)):
+                raise TypeError("audio_session.subscribe_rx must be callable")
+            return ("session", session)
+        bus = getattr(radio, "audio_bus", None)
+        if bus is None:
+            return None
+        if not callable(getattr(bus, "subscribe", None)):
+            raise TypeError("audio_bus.subscribe must be callable")
+        return ("bus", bus)
 
     @property
     def rx_pcm_tap_source(self) -> RxPcmTapSource | None:
         """Return a descriptor only when the selected route yields PCM16."""
         radio = self._radio
-        if radio is None or self._resolve_rx_route() is None:
+        if radio is None:
             return None
         try:
+            if self._resolve_rx_route() is None:
+                return None
             codec = radio.audio_codec  # type: ignore[attr-defined]
             sample_rate = radio.audio_sample_rate  # type: ignore[attr-defined]
         except Exception:
@@ -951,14 +954,15 @@ class AudioBroadcaster:
             )
 
     async def _start_relay(self) -> None:
-        route = self._resolve_rx_route()
-        if self._radio is None or route is None:
+        if self._radio is None:
             return
 
-        await self._apply_phones_mix_off()
-        self._refresh_codec_state(first=True)
-
         try:
+            route = self._resolve_rx_route()
+            if route is None:
+                return
+            await self._apply_phones_mix_off()
+            self._refresh_codec_state(first=True)
             route_kind, source = route
             if route_kind == "session":
                 # Session-routed RX demand (MOR-608, ADR §3.2 option a):
