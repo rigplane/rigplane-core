@@ -6,10 +6,16 @@ TDD: these tests were written FIRST, then the backend was modified to pass them.
 from __future__ import annotations
 
 import json
-from dataclasses import replace
+from dataclasses import astuple, replace
+from types import SimpleNamespace
 
 import pytest
 
+from rigplane.backends.yaesu_cat.radio import YaesuCatRadio
+from rigplane.radio_protocol import AudioCapable
+from rigplane.runtime.radio import IcomRadio
+from rigplane.types import AudioCodec
+from rigplane.web.handlers.audio import browser_tx_audio_facts
 from rigplane.web.server import WebServer
 
 
@@ -290,6 +296,86 @@ class TestCapabilitiesEndpoint:
         await srv._serve_capabilities(writer)  # noqa: SLF001
         data = _parse_json_body(writer)
         assert data["antennas"] == 1
+
+
+def _yaesu(cls=YaesuCatRadio):
+    return cls("/dev/null", audio_driver=SimpleNamespace())
+
+
+def test_browser_tx_audio_facts_fail_closed():
+    no_tx = type(
+        "NoTx",
+        (YaesuCatRadio,),
+        {"capabilities": property(lambda _: {"audio"})},
+    )
+    bad_codec = type(
+        "BadCodec",
+        (YaesuCatRadio,),
+        {
+            "audio_tx_codec": property(lambda _: None),
+            "audio_codec": property(lambda _: None),
+        },
+    )
+    variants = (
+        _yaesu(no_tx),
+        _yaesu(bad_codec),
+        _yaesu(type("Partial", (YaesuCatRadio,), {"push_tx": None})),
+        _yaesu(type("SyncPush", (YaesuCatRadio,), {"push_tx": lambda *_: None})),
+        _yaesu(
+            type("WrongArity", (YaesuCatRadio,), {"push_tx": YaesuCatRadio.stop_tx})
+        ),
+    )
+    assert all(not browser_tx_audio_facts(radio).available for radio in variants)
+
+
+def test_browser_tx_audio_facts_reject_stubs_and_instance_callables():
+    class StubRadio(AudioCapable):
+        capabilities = {"audio", "tx"}
+        backend_id = "yaesu_cat"
+        has_usb_audio = True
+        audio_tx_codec = AudioCodec.OPUS_1CH
+
+    assert browser_tx_audio_facts(StubRadio()).available is False
+    donor, victim = _yaesu(), _yaesu()
+    victim.start_tx = donor.start_tx
+    assert browser_tx_audio_facts(victim).available is False
+
+    victim = _yaesu()
+    victim.push_tx = YaesuCatRadio.stop_tx
+    assert browser_tx_audio_facts(victim).available is False
+
+
+class _CountingRadio(YaesuCatRadio):
+    reads: dict[str, int]
+
+    def __getattribute__(self, name: str):
+        if name in {"start_tx", "push_tx", "stop_tx"}:
+            reads = object.__getattribute__(self, "reads")
+            reads[name] += 1
+        return super().__getattribute__(name)
+
+
+def test_browser_tx_audio_facts_reads_each_lifecycle_method_once():
+    radio = _yaesu(_CountingRadio)
+    radio.reads = dict.fromkeys(("start_tx", "push_tx", "stop_tx"), 0)
+    facts = browser_tx_audio_facts(radio)
+    assert facts.available is True
+    assert radio.reads == {"start_tx": 1, "push_tx": 1, "stop_tx": 1}
+
+
+def test_browser_tx_audio_facts_pin_real_provider_snapshots():
+    icom = browser_tx_audio_facts(IcomRadio("192.168.55.40", model="IC-7610"))
+    yaesu = browser_tx_audio_facts(
+        YaesuCatRadio("/dev/null", audio_driver=SimpleNamespace())
+    )
+    assert astuple(icom)[:-1] == (True, "lan", 5, AudioCodec.PCM_1CH_16BIT, "session")
+    assert astuple(yaesu)[:-1] == (
+        True,
+        "usb",
+        None,
+        AudioCodec.PCM_1CH_16BIT,
+        "session",
+    )
 
 
 # ── /api/v1/state tests ───────────────────────────────────────

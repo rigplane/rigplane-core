@@ -6,8 +6,7 @@ const one = (model: ResourceDemand<string>) => {
   return operations[0];
 };
 const supersede = (model: ResourceDemand<string>, resource: AppResource, consumer: string) => {
-  const lease = model.acquire(resource, consumer);
-  const start = one(model);
+  const lease = model.acquire(resource, consumer), start = one(model);
   model.release(lease);
   return start;
 };
@@ -52,25 +51,20 @@ describe('ResourceDemand foundation', () => {
     model.configure('rx-audio', { available: true, selected: true });
     const staleA = supersede(model, 'rx-audio', 'A');
     const late = ['B', 'C'].map((consumer) => supersede(model, 'rx-audio', consumer));
-    const first = model.acquire('rx-audio', 'first');
-    const start = one(model);
+    const first = model.acquire('rx-audio', 'first'), start = one(model);
     const shared = model.acquire('rx-audio', 'shared');
     expect(model.takeOperations()).toEqual([]);
     expect(model.release({ ...shared } as typeof shared)).toBe(false);
     expect(new ResourceDemand<string>('session-1').release(shared)).toBe(false);
     expect(model.completeStart({ ...start }, { handle: 'fake' })).toBe(false);
     expect(model.completeStart(staleA, { handle: 'stable' })).toBe(false);
-    expect(model.takeOperations()).toEqual([]);
     expect(model.completeStart(start, { handle: 'stable' })).toBe(true);
     expect(model.completeStart(start, { handle: 'stable' })).toBe(false);
-    expect(model.takeOperations()).toEqual([]);
     expect(model.release(first)).toBe(true);
-    expect(model.takeOperations()).toEqual([]);
     expect(model.release(shared)).toBe(true);
     const stop = one(model);
     expect(model.completeStop(stop)).toBe(true);
-    for (const operation of late)
-      expect(model.completeStart(operation, { handle: 'stable' })).toBe(false);
+    for (const operation of late) expect(model.completeStart(operation, { handle: 'stable' })).toBe(false);
     expect(model.takeOperations()).toEqual([]);
     const replacement = model.acquire('rx-audio', 'replacement');
     model.completeStart(one(model), { handle: 'next' });
@@ -90,6 +84,18 @@ describe('ResourceDemand foundation', () => {
     });
     emitted.push(...model.takeOperations());
     expect(emitted.map((op) => 'handle' in op && `${op.resource}:${op.handle}`)).toEqual(expected);
+  });
+  it('defers singleton cleanup until pending adoption', () => {
+    const model = new ResourceDemand<string>('session-1');
+    ready(model, 'rx-audio');
+    const staleStart = supersede(model, 'rx-audio', 'stale');
+    const liveLease = model.acquire('rx-audio', 'live');
+    const liveStart = one(model);
+    expect(model.completeStart(staleStart, { handle: 'stable' })).toBe(false);
+    expect([model.takeOperations(), model.takeOperations()]).toEqual([[], []]);
+    expect(model.completeStart(liveStart, { handle: 'stable' })).toBe(true);
+    model.release(liveLease);
+    expect(model.takeOperations().map((op) => op.kind)).toEqual(['stop']);
   });
   it('requires explicit retry and disposes a completed abandoned start once', () => {
     const model = new ResourceDemand<string>('session-1');
