@@ -253,7 +253,9 @@ class TestVfoSchemes:
     """Extended VFO schemes."""
 
     def test_ab_shared_scheme(self, tmp_path):
-        toml = _BASE_TOML.replace('scheme = "ab"', 'scheme = "ab_shared"')
+        toml = _BASE_TOML.replace("receiver_count = 1", "receiver_count = 2").replace(
+            'scheme = "ab"', 'scheme = "ab_shared"'
+        )
         p = _write_toml(tmp_path, toml)
         rig = load_rig(p)
         assert rig.vfo_scheme == "ab_shared"

@@ -1013,6 +1013,17 @@ def load_rig(path: Path) -> RigConfig:
             f"{filename}: [vfo].scheme must be one of {VALID_VFO_SCHEMES}, "
             f"got {scheme!r}"
         )
+    expected_receiver_count = 1 if scheme in {"single", "ab"} else 2
+    receiver_count = radio["receiver_count"]
+    if (
+        not isinstance(receiver_count, int)
+        or isinstance(receiver_count, bool)
+        or receiver_count != expected_receiver_count
+    ):
+        raise RigLoadError(
+            f"{filename}: [radio].receiver_count = {receiver_count!r} is incompatible "
+            f"with [vfo].scheme = {scheme!r}; expected {expected_receiver_count}"
+        )
 
     # Validate [modes]
     modes = data["modes"].get("list", [])
@@ -1369,7 +1380,7 @@ def load_rig(path: Path) -> RigConfig:
         id=radio["id"],
         model=radio["model"],
         civ_addr=civ_addr,
-        receiver_count=radio["receiver_count"],
+        receiver_count=receiver_count,
         transceiver_count=int(radio.get("transceiver_count", 1)),
         hamlib_model_id=int(radio.get("hamlib_model_id", 2028)),
         has_lan=radio["has_lan"],
