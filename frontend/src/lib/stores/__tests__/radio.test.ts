@@ -10,6 +10,10 @@ type ServerStateWithObservation = ServerState & {
 function makeState(overrides: Partial<ServerStateWithObservation> = {}): ServerStateWithObservation {
   const revision = overrides.stateRevision ?? overrides.revision ?? 1;
   const freshnessRevision = overrides.freshnessRevision ?? 1;
+  const {
+    txTarget = { status: 'unknown', reason: 'not-observed' },
+    ...stateOverrides
+  } = overrides;
   return {
     revision,
     stateRevision: revision,
@@ -132,7 +136,8 @@ function makeState(overrides: Partial<ServerStateWithObservation> = {}): ServerS
       rbw: 0,
       fixedEdge: { rangeIndex: 0, edge: 0, startHz: 0, endHz: 0 },
     },
-    ...overrides,
+    txTarget,
+    ...stateOverrides,
   };
 }
 

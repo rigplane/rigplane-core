@@ -21,6 +21,7 @@ function makeState(revision: number): ServerStateWithObservation {
     split: false,
     dualWatch: false,
     tunerStatus: 0,
+    txTarget: { status: 'unknown', reason: 'not-observed' },
     main: {
       freqHz: 14074000,
       mode: 'USB',
