@@ -10,4 +10,4 @@
   import RadioLayout from '../../components-v2/layout/RadioLayout.svelte';
 </script>
 
-<RadioLayout />
+<RadioLayout skinId="desktop-v2" />
