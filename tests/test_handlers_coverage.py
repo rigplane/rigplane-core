@@ -8,8 +8,10 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from _caps import FULL_ICOM_CAPS
+from rigplane.audio.bus import AudioBus
 from rigplane.profiles import resolve_radio_profile
 from rigplane.audio.route import AudioConfigSource, AudioStreamContract
+from rigplane.core.radio_protocol import AudioCapable
 from rigplane.scope import ScopeFrame
 from rigplane.types import AudioCodec
 from rigplane.web.handlers import (
@@ -81,7 +83,54 @@ from rigplane.web.radio_poller import (
     VfoEqualize,
     VfoSwap,
 )
+from rigplane.web.runtime_helpers import runtime_capabilities
 from rigplane.web.websocket import WS_OP_BINARY, WS_OP_TEXT
+
+
+class _RelayRadio:
+    """Concrete legacy-audio supplier with the broadcaster's bus route."""
+
+    def __init__(
+        self,
+        *,
+        codec: AudioCodec = AudioCodec.PCM_1CH_16BIT,
+        sample_rate: int = 48_000,
+        start_error: Exception | None = None,
+    ) -> None:
+        self.capabilities = {"audio"}
+        self.audio_codec = codec
+        self.audio_sample_rate = sample_rate
+        self._start_rx = AsyncMock(side_effect=start_error)
+        self._stop_rx = AsyncMock()
+        self._start_tx = AsyncMock()
+        self._push_tx = AsyncMock()
+        self._stop_tx = AsyncMock()
+        self.audio_bus = AudioBus(self)
+
+    async def start_audio_rx_opus(self, callback, **kwargs) -> None:
+        await self._start_rx(callback, **kwargs)
+
+    async def stop_audio_rx_opus(self) -> None:
+        await self._stop_rx()
+
+    start_audio_rx_pcm = start_audio_rx_opus
+    stop_audio_rx_pcm = stop_audio_rx_opus
+
+    async def start_audio_tx_opus(self, **kwargs) -> None:
+        await self._start_tx(**kwargs)
+
+    async def push_audio_tx_opus(self, data: bytes) -> None:
+        await self._push_tx(data)
+
+    async def stop_audio_tx_opus(self) -> None:
+        await self._stop_tx()
+
+    start_audio_tx_pcm = start_audio_tx_opus
+    push_audio_tx_pcm = push_audio_tx_opus
+    stop_audio_tx_pcm = stop_audio_tx_opus
+
+    async def get_audio_stats(self) -> dict[str, int]:
+        return {"sample_rate": self.audio_sample_rate}
 
 
 def _capable_radio() -> SimpleNamespace:
@@ -1159,64 +1208,28 @@ async def test_scope_enqueue_and_push_paths() -> None:
 
 
 async def test_audio_broadcaster_subscribe_unsubscribe_lifecycle() -> None:
-    from rigplane.audio_bus import AudioBus
-
-    radio = SimpleNamespace(
-        capabilities={"audio"},
-        audio_codec=AudioCodec.PCM_1CH_16BIT,
-        audio_sample_rate=48_000,
-        start_audio_rx_opus=AsyncMock(),
-        stop_audio_rx_opus=AsyncMock(),
-        push_audio_tx_opus=AsyncMock(),
-        start_audio_rx_pcm=AsyncMock(),
-        stop_audio_rx_pcm=AsyncMock(),
-        start_audio_tx_pcm=AsyncMock(),
-        push_audio_tx_pcm=AsyncMock(),
-        stop_audio_tx_pcm=AsyncMock(),
-        get_audio_stats=AsyncMock(return_value={}),
-        start_audio_tx_opus=AsyncMock(),
-        stop_audio_tx_opus=AsyncMock(),
-        audio_bus=None,
-    )
-    bus = AudioBus(radio)
-    radio.audio_bus = bus
-
+    radio = _RelayRadio()
     broadcaster = AudioBroadcaster(radio)
     q1 = await broadcaster.subscribe()
     q2 = await broadcaster.subscribe()
     # AudioBus starts RX on first subscriber
-    radio.start_audio_rx_opus.assert_awaited_once()
+    radio._start_rx.assert_awaited_once()
     await broadcaster.unsubscribe(q1)
-    radio.stop_audio_rx_opus.assert_not_awaited()
+    radio._stop_rx.assert_not_awaited()
     await broadcaster.unsubscribe(q2)
     # Give the scheduled stop task a chance to run
     await asyncio.sleep(0.05)
-    radio.stop_audio_rx_opus.assert_awaited_once()
+    radio._stop_rx.assert_awaited_once()
 
 
 async def test_audio_broadcaster_codec_and_frame_metadata() -> None:
-    from rigplane.audio_bus import AudioBus
-
-    radio = SimpleNamespace(
-        capabilities={"audio"},
-        audio_codec=AudioCodec.OPUS_2CH,
-        audio_sample_rate=96_000,
-        start_audio_rx_opus=AsyncMock(),
-        stop_audio_rx_opus=AsyncMock(),
-        push_audio_tx_opus=AsyncMock(),
-        start_audio_rx_pcm=AsyncMock(),
-        stop_audio_rx_pcm=AsyncMock(),
-        start_audio_tx_pcm=AsyncMock(),
-        push_audio_tx_pcm=AsyncMock(),
-        stop_audio_tx_pcm=AsyncMock(),
-        get_audio_stats=AsyncMock(return_value={}),
-        start_audio_tx_opus=AsyncMock(),
-        stop_audio_tx_opus=AsyncMock(),
-        audio_bus=None,
-    )
-    bus = AudioBus(radio)
-    radio.audio_bus = bus
-
+    radio = _RelayRadio(codec=AudioCodec.OPUS_2CH, sample_rate=96_000)
+    bus = radio.audio_bus
+    assert isinstance(radio, AudioCapable)
+    assert "start_audio_rx_opus" in type(radio).__dict__
+    assert "stop_audio_rx_opus" in type(radio).__dict__
+    assert "audio" in runtime_capabilities(radio)
+    assert callable(bus.subscribe)
     broadcaster = AudioBroadcaster(radio)
     queue = await broadcaster.subscribe()
 
@@ -1229,23 +1242,17 @@ async def test_audio_broadcaster_codec_and_frame_metadata() -> None:
     assert frame[1] == AUDIO_CODEC_OPUS
     assert struct.unpack_from("<H", frame, 4)[0] == 960
     assert frame[6] == 2
+    assert frame[AUDIO_HEADER_SIZE:] == b"\xaa\xbb\xcc"
 
     await broadcaster.unsubscribe(queue)
 
 
 async def test_audio_broadcaster_start_relay_failure() -> None:
-    from rigplane.audio_bus import AudioBus
-
-    failing_radio = SimpleNamespace(
-        capabilities={"audio"},
-        audio_codec=AudioCodec.OPUS_1CH,
-        audio_sample_rate=48_000,
-        start_audio_rx_opus=AsyncMock(side_effect=RuntimeError("start fail")),
-        stop_audio_rx_opus=AsyncMock(),
-        push_audio_tx_opus=AsyncMock(),
+    failing_radio = _RelayRadio(
+        codec=AudioCodec.OPUS_1CH,
+        start_error=RuntimeError("start fail"),
     )
-    bus = AudioBus(failing_radio)
-    failing_radio.audio_bus = bus
+    bus = failing_radio.audio_bus
 
     bad = AudioBroadcaster(failing_radio)
     await bad._start_relay()
@@ -1258,17 +1265,10 @@ async def test_audio_broadcaster_start_relay_failure() -> None:
 async def test_audio_broadcaster_start_relay_failure_notifies_ws_client() -> None:
     """MOR-582: a failed RX start sends an ``error`` envelope to the WS
     client instead of presenting "subscribed" with dead air forever."""
-    from rigplane.audio_bus import AudioBus
-
-    failing_radio = SimpleNamespace(
-        capabilities={"audio"},
-        audio_codec=AudioCodec.PCM_1CH_16BIT,
-        audio_sample_rate=48_000,
-        start_audio_rx_opus=AsyncMock(side_effect=RuntimeError("start fail")),
-        stop_audio_rx_opus=AsyncMock(),
+    failing_radio = _RelayRadio(
+        start_error=RuntimeError("start fail"),
     )
-    bus = AudioBus(failing_radio)
-    failing_radio.audio_bus = bus
+    bus = failing_radio.audio_bus
 
     ws = SimpleNamespace(send_text=AsyncMock(), is_alive=lambda: True)
     broadcaster = AudioBroadcaster(failing_radio)
@@ -1285,17 +1285,8 @@ async def test_audio_broadcaster_start_relay_failure_notifies_ws_client() -> Non
 
 async def test_audio_broadcaster_subscribe_success_sends_no_error_envelope() -> None:
     """MOR-582 success path unchanged: no spurious error on normal subscribe."""
-    from rigplane.audio_bus import AudioBus
-
-    radio = SimpleNamespace(
-        capabilities={"audio"},
-        audio_codec=AudioCodec.PCM_1CH_16BIT,
-        audio_sample_rate=48_000,
-        start_audio_rx_opus=AsyncMock(),
-        stop_audio_rx_opus=AsyncMock(),
-    )
-    bus = AudioBus(radio)
-    radio.audio_bus = bus
+    radio = _RelayRadio()
+    bus = radio.audio_bus
 
     ws = SimpleNamespace(send_text=AsyncMock(), is_alive=lambda: True)
     broadcaster = AudioBroadcaster(radio)
