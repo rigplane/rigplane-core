@@ -29,6 +29,7 @@ from ..protocol import (  # noqa: TID251
     encode_audio_frame,
     encode_json,
 )
+from ..runtime_helpers import runtime_capabilities  # noqa: TID251
 from ..transport import Connection  # noqa: TID251
 from ..websocket import WS_OP_BINARY, WS_OP_TEXT  # noqa: TID251
 
@@ -39,11 +40,19 @@ if TYPE_CHECKING:
 
 from ...capabilities import CAP_AUDIO, CAP_LAN_DUAL_RX_AUDIO_ROUTING
 
-__all__ = ["AudioBroadcaster", "AudioHandler"]
+__all__ = ["AudioBroadcaster", "AudioHandler", "RxPcmTapSource"]
 
 logger = logging.getLogger(__name__)
 
 _TX_CLEANUP_STOP_TIMEOUT_SECONDS = 2.0
+_PCM_TAP_CODECS = frozenset(
+    {
+        AudioCodec.PCM_1CH_16BIT,
+        AudioCodec.PCM_2CH_16BIT,
+        AudioCodec.ULAW_1CH,
+        AudioCodec.ULAW_2CH,
+    }
+)
 
 # Adaptive egress codec controller windows (MOR-588, ADR §3.6).
 # Degradation must be SUSTAINED for DEGRADE_WINDOW_S before PCM16→Opus
@@ -90,6 +99,14 @@ class _AdaptiveEgressState:
     # underrun delta, ws_queue_drops delta).
     degrade_samples: list[tuple[float, int, int]] = field(default_factory=list)
     degrade_threshold_met: bool = False
+
+
+@dataclass(frozen=True, slots=True)
+class RxPcmTapSource:
+    """Validated source format for the broadcaster's decoded-PCM tap."""
+
+    codec: AudioCodec
+    sample_rate: int
 
 
 def _is_benign_tx_restart(exc: RuntimeError) -> bool:
@@ -387,6 +404,43 @@ class AudioBroadcaster:
         :meth:`rigplane.audio.bus.AudioBus.taps`.
         """
         return self._stage_taps[stage]
+
+    def _resolve_rx_route(self) -> tuple[str, Any] | None:
+        """Resolve the exact session-first RX source used by the relay."""
+        radio = self._radio
+        try:
+            if radio is None or CAP_AUDIO not in runtime_capabilities(radio):
+                return None
+            session = getattr(radio, "audio_session", None)
+            if session is not None:
+                subscribe_rx = getattr(session, "subscribe_rx", None)
+                return ("session", session) if callable(subscribe_rx) else None
+            bus = getattr(radio, "audio_bus", None)
+            subscribe = getattr(bus, "subscribe", None)
+            return ("bus", bus) if callable(subscribe) else None
+        except Exception:
+            return None
+
+    @property
+    def rx_pcm_tap_source(self) -> RxPcmTapSource | None:
+        """Return a descriptor only when the selected route yields PCM16."""
+        radio = self._radio
+        if radio is None or self._resolve_rx_route() is None:
+            return None
+        try:
+            codec = radio.audio_codec  # type: ignore[attr-defined]
+            sample_rate = radio.audio_sample_rate  # type: ignore[attr-defined]
+        except Exception:
+            return None
+        if (
+            not isinstance(codec, AudioCodec)
+            or codec not in _PCM_TAP_CODECS
+            or not isinstance(sample_rate, int)
+            or isinstance(sample_rate, bool)
+            or sample_rate <= 0
+        ):
+            return None
+        return RxPcmTapSource(codec=codec, sample_rate=sample_rate)
 
     def set_pcm_tap(self, callback: "Callable[[bytes], None] | None") -> None:
         """Register a tap that receives decoded PCM16 audio data.
@@ -897,27 +951,27 @@ class AudioBroadcaster:
             )
 
     async def _start_relay(self) -> None:
-        if not self._radio or CAP_AUDIO not in self._radio.capabilities:
+        route = self._resolve_rx_route()
+        if self._radio is None or route is None:
             return
 
         await self._apply_phones_mix_off()
         self._refresh_codec_state(first=True)
 
         try:
-            session = getattr(self._radio, "audio_session", None)
-            if session is not None:
+            route_kind, source = route
+            if route_kind == "session":
                 # Session-routed RX demand (MOR-608, ADR §3.2 option a):
                 # subscribing through the radio-owned AudioSession registers
                 # this relay's demand (session leaves IDLE → RX_ONLY), so
                 # the MOR-581 health watchdog covers browser-only listeners
                 # and reconnects go through ``AudioSession.reestablish()``.
                 # Mirrors the MOR-580 TX-lease pattern in AudioHandler.
-                self._subscription = await session.subscribe_rx("web-audio")
+                self._subscription = await source.subscribe_rx("web-audio")
             else:
                 # Legacy bus path for radios without a session (bare test
                 # doubles, not-yet-migrated backends).
-                bus = self._radio.audio_bus  # type: ignore[attr-defined]
-                subscription = cast(_AudioBus, bus).subscribe(name="web-audio")
+                subscription = cast(_AudioBus, source).subscribe(name="web-audio")
                 await subscription.start()
                 self._subscription = subscription
             self._relay_task = asyncio.create_task(self._relay_loop())
