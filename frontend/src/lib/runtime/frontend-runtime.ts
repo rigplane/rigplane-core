@@ -28,7 +28,7 @@ import { getAudioState, setVolume, setMuted, toggleMute } from '$lib/stores/audi
 import { sendCommand, connect, sendRaw } from '$lib/transport/ws-client';
 import { fetchCapabilities, startPolling, setPollingMultiplier } from '$lib/transport/http-client';
 import { audioManager } from '$lib/audio/audio-manager';
-import { applyPendingModInputRestoreOnConnect } from './adapters/mod-input-auto.svelte';
+import { clearLegacyPendingModInputRestore } from './adapters/mod-input-auto.svelte';
 import { systemController } from './system-controller';
 import { scopeController } from './scope-controller.svelte';
 import type { ScopeController } from './scope-controller.svelte';
@@ -162,6 +162,10 @@ class FrontendRuntime {
    * can be set before this async function starts.
    */
   private async _doBootstrap(): Promise<() => void> {
+    // Remove legacy pre-authority-gate restore records without consulting
+    // cached state or issuing any radio command.
+    clearLegacyPendingModInputRestore();
+
     // 1. Fetch capabilities and push into the store.
     const caps = await fetchCapabilities();
     setCapabilities(caps);
@@ -180,11 +184,6 @@ class FrontendRuntime {
 
     // 5. Subscribe to the events stream (re-sent automatically on reconnect by WsChannel).
     sendRaw({ type: 'subscribe', streams: ['events'] });
-
-    // 6. MOR-618: best-effort — if a previous session ended mid-TX after the
-    // opt-in auto MOD-input switch, restore the remembered source once live
-    // state arrives (no-op when nothing is pending).
-    applyPendingModInputRestoreOnConnect();
 
     // Only latch as started after the entire chain succeeds.
     this._bootstrapCleanup = stopPolling;

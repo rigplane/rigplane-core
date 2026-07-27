@@ -100,6 +100,7 @@ function missingStatus() {
 }
 
 beforeEach(() => {
+  getTxAudioControl().stopLocalAudio();
   vi.mocked(sendCommand).mockClear();
   vi.mocked(runtime.startTx).mockClear();
   vi.mocked(runtime.stopTx).mockClear();
