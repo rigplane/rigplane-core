@@ -32,9 +32,12 @@ import { clearLegacyPendingModInputRestore } from './adapters/mod-input-auto.sve
 import { systemController } from './system-controller';
 import { scopeController } from './scope-controller.svelte';
 import type { ScopeController } from './scope-controller.svelte';
+import { PresentationResourceHost } from './resource-host';
 
 import type { ServerState, ReceiverState } from '$lib/types/state';
 import type { Capabilities } from '$lib/types/capabilities';
+
+export const presentationResources = new PresentationResourceHost<unknown>('app');
 
 // ── Types ──
 
@@ -186,8 +189,13 @@ class FrontendRuntime {
     sendRaw({ type: 'subscribe', streams: ['events'] });
 
     // Only latch as started after the entire chain succeeds.
-    this._bootstrapCleanup = stopPolling;
-    return stopPolling;
+    let cleanupInFlight: Promise<void> | undefined;
+    const cleanup = () => cleanupInFlight ??= (async () => {
+      await presentationResources.teardown();
+      stopPolling();
+    })();
+    this._bootstrapCleanup = cleanup;
+    return cleanup;
   }
 
   // ── Command dispatch ──

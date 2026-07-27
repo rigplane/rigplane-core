@@ -108,6 +108,8 @@ import { setCapabilities } from '$lib/stores/capabilities.svelte';
 import { setRadioState } from '$lib/stores/radio.svelte';
 import { systemController } from '../system-controller';
 import { clearLegacyPendingModInputRestore } from '../adapters/mod-input-auto.svelte';
+import { PresentationResourceHost } from '../resource-host';
+import { presentationResources } from '../frontend-runtime';
 
 // FrontendRuntime is a singleton — re-import fresh each time via a factory helper
 // so we can reset _bootstrapCleanup and _bootstrapInFlight between tests.
@@ -125,6 +127,92 @@ async function freshRuntime() {
 
 const fakeCaps = { modes: ['USB', 'LSB'], scope: false } as any;
 const fakeStopPolling = vi.fn();
+const deferred = <T>() => {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((done) => { resolve = done; });
+  return { promise, resolve };
+};
+const settle = async () => { await Promise.resolve(); await Promise.resolve(); };
+
+describe('PresentationResourceHost', () => {
+  it('is inert until first demand, shares the handle, and stops on last release', async () => {
+    const handle = {};
+    const driver = { start: vi.fn(async () => handle), stop: vi.fn(async () => {}) };
+    const host = new PresentationResourceHost<object>('session');
+    host.configure('audio-fft', { available: true, selected: true, driver });
+    expect(driver.start).not.toHaveBeenCalled();
+    const first = host.acquire('audio-fft', 'first');
+    const shared = host.acquire('audio-fft', 'shared');
+    await settle();
+    expect(driver.start).toHaveBeenCalledTimes(1);
+    expect(host.snapshot('audio-fft').activeHandle).toBe(handle);
+    host.release(first);
+    expect(driver.stop).not.toHaveBeenCalled();
+    host.release(shared);
+    await settle();
+    expect(driver.stop).toHaveBeenCalledWith(handle);
+  });
+
+  it('disposes only a late abandoned handle and survives A→B→A completions', async () => {
+    const startA = deferred<object>(), startB = deferred<object>(), startFinal = deferred<object>();
+    const stopB = deferred<void>();
+    const driver = {
+      start: vi.fn()
+        .mockImplementationOnce(() => startA.promise)
+        .mockImplementationOnce(() => startB.promise)
+        .mockImplementationOnce(() => startFinal.promise),
+      stop: vi.fn((handle: { id?: string }) => handle.id === 'B' ? stopB.promise : Promise.resolve()),
+      dispose: vi.fn(async () => {}),
+    };
+    const host = new PresentationResourceHost<object>('session');
+    const listener = vi.fn();
+    host.subscribe(listener);
+    host.configure('hardware-scope', { available: true, selected: true, driver });
+    const leaseA = host.acquire('hardware-scope', 'A');
+    host.release(leaseA);
+    const leaseB = host.acquire('hardware-scope', 'B');
+    const a = { id: 'stale-A' }, b = { id: 'B' }, currentA = { id: 'current-A' };
+    startB.resolve(b);
+    await settle();
+    startA.resolve(a);
+    await settle();
+    expect(driver.dispose).toHaveBeenCalledWith(a);
+    host.release(leaseB);
+    host.acquire('hardware-scope', 'A-again');
+    startFinal.resolve(currentA);
+    await settle();
+    stopB.resolve();
+    await settle();
+    expect(host.snapshot('hardware-scope').activeHandle).toBe(currentA);
+    expect(driver.stop).toHaveBeenCalledWith(b);
+    const publications = listener.mock.calls.length;
+    await host.teardown();
+    await host.teardown();
+    expect(() => host.acquire('hardware-scope', 'late')).toThrow('torn down');
+    expect(listener).toHaveBeenCalledTimes(publications);
+    expect(driver.stop).toHaveBeenCalledWith(currentA);
+    expect(driver.stop).toHaveBeenCalledTimes(2);
+  });
+
+  it('keeps unavailable and failed selections honest and requires retry', async () => {
+    const handle = {};
+    const driver = {
+      start: vi.fn().mockRejectedValueOnce(new Error('offline')).mockResolvedValue(handle),
+      stop: vi.fn(async () => {}),
+    };
+    const host = new PresentationResourceHost<object>('session');
+    host.configure('rx-audio', { available: false, selected: true, driver });
+    host.acquire('rx-audio', 'panel');
+    expect(driver.start).not.toHaveBeenCalled();
+    host.configure('rx-audio', { available: true, selected: true, driver });
+    await settle();
+    expect(host.snapshot('rx-audio')).toMatchObject({ selected: true, health: 'failed' });
+    expect(driver.start).toHaveBeenCalledTimes(1);
+    host.retry('rx-audio');
+    await settle();
+    expect(driver.start).toHaveBeenCalledTimes(2);
+  });
+});
 
 // ── Tests ──
 
@@ -178,12 +266,18 @@ describe('FrontendRuntime.bootstrap()', () => {
   });
 
   it('cleanup function stops polling', async () => {
+    const order: string[] = [];
+    const teardown = vi.spyOn(presentationResources, 'teardown')
+      .mockImplementation(async () => { order.push('resources'); });
+    fakeStopPolling.mockImplementation(() => { order.push('control'); });
     const rt = await freshRuntime();
     const cleanup = await rt.bootstrap();
-
-    cleanup();
-
+    await cleanup();
+    await cleanup();
     expect(fakeStopPolling).toHaveBeenCalledTimes(1);
+    expect(teardown).toHaveBeenCalledTimes(1);
+    expect(order).toEqual(['resources', 'control']);
+    teardown.mockRestore();
   });
 
   it('propagates fetchCapabilities error and allows retry', async () => {
@@ -241,6 +335,6 @@ describe('FrontendRuntime.bootstrap()', () => {
 
     // Both callers get the same cleanup function
     expect(cleanup1).toBe(cleanup2);
-    expect(cleanup1).toBe(fakeStopPolling);
+    expect(cleanup1).not.toBe(fakeStopPolling);
   });
 });
