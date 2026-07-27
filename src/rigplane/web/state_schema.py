@@ -28,7 +28,7 @@ live request path.
 
 from __future__ import annotations
 
-from typing import Literal
+from typing import Annotated, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -38,6 +38,9 @@ __all__ = [
     "FixedEdgePublic",
     "ScopeControlsPublic",
     "FieldStatusPublic",
+    "KnownTxTargetPublic",
+    "UnknownTxTargetPublic",
+    "TxTargetPublic",
     "ConnectionPublic",
     "RadioHealthPublic",
     "RadioDetailPublic",
@@ -184,6 +187,33 @@ class FieldStatusPublic(_Strict):
     quality: list[str] = Field(default_factory=list)
 
 
+class KnownTxTargetPublic(_Strict):
+    """Fresh backend-neutral transmit-target identity."""
+
+    status: Literal["known"]
+    receiver: Literal["MAIN", "SUB"]
+    slot: Literal["A", "B"] | None
+    frequencyHz: Annotated[int, Field(strict=True, gt=0)] | None
+
+
+class UnknownTxTargetPublic(_Strict):
+    """Fail-closed transmit target when current identity is unavailable."""
+
+    status: Literal["unknown"] = "unknown"
+    reason: Literal[
+        "not-observed",
+        "stale",
+        "unsupported",
+        "contradiction",
+    ]
+
+
+TxTargetPublic = Annotated[
+    KnownTxTargetPublic | UnknownTxTargetPublic,
+    Field(discriminator="status"),
+]
+
+
 class ConnectionPublic(_Strict):
     """Synthetic connection object injected from the backend connection scalars."""
 
@@ -305,6 +335,12 @@ class ServerStatePublic(_Strict):
     data3ModInput: int | None = None
     txBandEdges: list[dict[str, int]] = Field(default_factory=list)
     scopeControls: ScopeControlsPublic
+    # Additive staging field: both producers publish it in MOR-1106, after
+    # which MOR-1107 makes it required. The non-null default keeps current
+    # producer payloads conformant while explicit ``null`` still fails.
+    txTarget: TxTargetPublic = Field(
+        default_factory=lambda: UnknownTxTargetPublic(reason="not-observed")
+    )
 
     # Receivers. ``sub`` is dropped from the payload when ``receiver_count < 2``.
     main: ReceiverStatePublic
