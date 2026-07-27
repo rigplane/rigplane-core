@@ -30,6 +30,18 @@ class Clock:
         self.now += seconds
 
 
+class AdvancingClock(Clock):
+    def __init__(self) -> None:
+        super().__init__()
+        self.calls = 0
+
+    def __call__(self) -> float:
+        value = self.now
+        self.now += 1
+        self.calls += 1
+        return value
+
+
 def ids() -> Iterator[str]:
     index = 0
     while True:
@@ -216,6 +228,9 @@ def test_release_cancels_inflight_then_services_off(
     cancel = released.effects[0]
     assert isinstance(cancel, CancelProviderAttempt)
     assert cancel.attempt_id == on.id
+    assert cancel.requested_at_monotonic == on.started_at_monotonic
+    assert cancel.settlement_timeout_seconds == 2.0
+    assert cancel.settlement_deadline_monotonic == 12.0
     settled = supervisor.settle_attempt(on.id, 1, succeeded=False)
     assert isinstance(settled.effects[0], ProviderAttempt)
     assert settled.effects[0].kind is ProviderAttemptKind.WRITE_OFF
@@ -367,11 +382,61 @@ def test_new_generation_services_off_first(
 def test_not_ready_pauses_off_and_ready_resumes(
     supervisor: TxSafetySupervisor, clock: Clock, owner: TxOwner
 ) -> None:
-    acquire(supervisor, clock, owner)
+    _, active = acquire(supervisor, clock, owner)
     paused = supervisor.set_provider_ready(1, ready=False)
-    assert paused.effects == ()
+    assert isinstance(paused.effects[0], CancelProviderAttempt)
+    assert paused.snapshot.active_attempt == active
+    assert supervisor.set_provider_ready(1, ready=False).effects == ()
+    settled = supervisor.settle_attempt(active.id, 1, succeeded=False)
+    assert settled.effects == ()
     resumed = supervisor.set_provider_ready(1, ready=True)
     assert resumed.effects[0].kind is ProviderAttemptKind.WRITE_OFF
+
+
+def test_ready_recovery_cannot_overlap_unsettled_lane(
+    supervisor: TxSafetySupervisor, clock: Clock, owner: TxOwner
+) -> None:
+    _, active = acquire(supervisor, clock, owner)
+    supervisor.set_provider_ready(1, ready=False)
+    recovered = supervisor.set_provider_ready(1, ready=True)
+    assert recovered.effects == ()
+    assert recovered.snapshot.active_attempt == active
+    settled = supervisor.settle_attempt(active.id, 1, succeeded=False)
+    assert settled.effects[0].kind is ProviderAttemptKind.WRITE_OFF
+
+
+def test_authoritative_off_clears_managed_state_but_not_attempt_lane(
+    supervisor: TxSafetySupervisor, clock: Clock, owner: TxOwner
+) -> None:
+    lease, active = acquire(supervisor, clock, owner)
+    supervisor.request_off(owner, lease)
+    clock.advance(0.01)
+    cleared = observe(supervisor, clock, RadioTx.OFF, sequence=2)
+    assert cleared.snapshot.lease_id is None
+    assert cleared.snapshot.active_attempt == active
+    assert supervisor.request_on(owner).outcome is TxOutcome.BUSY
+    assert (
+        supervisor.settle_attempt(active.id, 1, succeeded=False).outcome
+        is TxOutcome.APPLIED
+    )
+    assert (
+        supervisor.settle_attempt(active.id, 1, succeeded=False).outcome
+        is TxOutcome.STALE
+    )
+    assert supervisor.request_on(owner).outcome is TxOutcome.ACCEPTED
+
+
+def test_unchanged_ready_does_not_bypass_retry_due(
+    supervisor: TxSafetySupervisor, clock: Clock, owner: TxOwner
+) -> None:
+    lease, on = acquire(supervisor, clock, owner)
+    supervisor.request_off(owner, lease)
+    off = supervisor.settle_attempt(on.id, 1, succeeded=False).effects[0]
+    supervisor.settle_attempt(off.id, 1, succeeded=False)
+    unchanged = supervisor.set_provider_ready(1, ready=True)
+    assert unchanged.outcome is TxOutcome.IDEMPOTENT
+    assert unchanged.effects == ()
+    assert supervisor.tick().effects == ()
 
 
 def test_release_read_failure_schedules_retry(
@@ -458,6 +523,47 @@ def test_emergency_release(
 
 
 @pytest.mark.parametrize(
+    "reason",
+    [
+        TxReleaseReason.OPERATOR_RELEASE,
+        TxReleaseReason.SOURCE_DETACHED,
+        TxReleaseReason.PRESENTATION_REPLACED,
+        TxReleaseReason.CLIENT_DISCONNECTED,
+        TxReleaseReason.FRONTEND_SAFETY_TIMEOUT,
+    ],
+)
+def test_unqualified_release_rejects_untrusted_reason(
+    supervisor: TxSafetySupervisor,
+    clock: Clock,
+    owner: TxOwner,
+    reason: TxReleaseReason,
+) -> None:
+    acquire(supervisor, clock, owner)
+    with pytest.raises(ValueError):
+        supervisor.emergency_release(reason=reason)
+
+
+def test_acquisition_uses_one_clock_instant(owner: TxOwner) -> None:
+    clock = AdvancingClock()
+    generated = ids()
+    supervisor = TxSafetySupervisor(clock=clock, id_factory=lambda: next(generated))
+    supervisor.replace_provider(1, ready=True)
+    supervisor.observe_ptt(ProviderPttObservation(RadioTx.OFF, 1, 1, 10.5))
+    before = clock.calls
+    result = supervisor.request_on(owner)
+    attempt = result.effects[0]
+    assert clock.calls == before + 1
+    assert (
+        result.snapshot.watchdog_deadline_monotonic
+        == attempt.started_at_monotonic + 180
+    )
+    supervisor.observe_ptt(
+        ProviderPttObservation(RadioTx.ON, 1, 2, attempt.started_at_monotonic)
+    )
+    assert supervisor.snapshot.phase is TxPhase.KEYED
+
+
+@pytest.mark.parametrize(
     "factory",
     [
         lambda: TxOwner(TxSource.WEBSOCKET, ""),
@@ -465,9 +571,16 @@ def test_emergency_release(
         lambda: ProviderPttObservation(RadioTx.OFF, -1, 1, 0),
         lambda: ProviderPttObservation(RadioTx.OFF, 1, 0, 0),
         lambda: TxSafetySupervisor(watchdog_seconds=0),
+        lambda: TxSafetySupervisor(watchdog_seconds=float("inf")),
+        lambda: TxSafetySupervisor(watchdog_seconds=float("nan")),
         lambda: TxSafetySupervisor(write_timeout_seconds=0),
+        lambda: TxSafetySupervisor(write_timeout_seconds=float("inf")),
+        lambda: TxSafetySupervisor(read_timeout_seconds=float("nan")),
+        lambda: TxSafetySupervisor(cancel_timeout_seconds=float("inf")),
         lambda: TxSafetySupervisor(retry_schedule_seconds=()),
         lambda: TxSafetySupervisor(retry_schedule_seconds=(1, 0)),
+        lambda: TxSafetySupervisor(retry_schedule_seconds=(float("nan"),)),
+        lambda: TxSafetySupervisor(retry_schedule_seconds=(float("inf"),)),
     ],
 )
 def test_invalid_inputs_are_rejected(factory) -> None:
