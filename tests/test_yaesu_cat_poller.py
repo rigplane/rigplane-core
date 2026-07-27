@@ -11,6 +11,7 @@ import pytest
 
 from rigplane.core.state_acquisition_policy import RadioAcquisitionProfile
 from rigplane.core.state_pipeline_contracts import FieldPath, Observation
+from rigplane.core.tx_target import KnownTxTarget
 from rigplane.backends.yaesu_cat.poller import YaesuCatPoller
 from rigplane.profiles import get_radio_profile
 from rigplane.radio_state import RadioState
@@ -142,6 +143,19 @@ def _normalized_power(raw_watts: int, *, max_watts: int = 100) -> float:
     return raw_watts / max_watts
 
 
+def _declared_tx_target(frequency_hz: int) -> list[tuple[str, object]]:
+    profile = _profile_state_acquisition()
+    path = FieldPath.global_("tx_state", "tx_target")
+    if not profile.capability_for(path).can_poll:
+        return []
+    return [
+        (
+            str(path),
+            KnownTxTarget(receiver="MAIN", slot=None, frequency_hz=frequency_hz),
+        )
+    ]
+
+
 class _SideEffectingYaesuRadio:
     capabilities = {
         "dual_rx",
@@ -210,6 +224,10 @@ class _SideEffectingYaesuRadio:
         value = await self.read_ptt()
         self.radio_state.ptt = value
         return value
+
+    async def get_tx_func(self) -> int:
+        """Pure native FT0 fixture; unlike legacy getters it mutates no state."""
+        return 0
 
     async def read_s_meter(self, receiver: int = 0) -> int:
         return 150 if receiver == 0 else 75
@@ -599,6 +617,7 @@ async def test_medium_poll_emits_observations_without_legacy_state_callback() ->
         ("receiver.main.active.freq_mode.mode", "USB"),
         ("receiver.sub.active.freq_mode.freq_hz", 7_074_000),
         ("receiver.sub.active.freq_mode.mode", "LSB"),
+        *_declared_tx_target(14_074_000),
         ("global.tx_state.ptt", True),
         ("receiver.main.active.freq_mode.filter_width", 2400),
     ]
@@ -663,6 +682,7 @@ async def test_observation_poller_uses_read_only_paths_when_getters_mutate_state
         ("receiver.main.active.freq_mode.mode", "USB"),
         ("receiver.sub.active.freq_mode.freq_hz", 7_074_000),
         ("receiver.sub.active.freq_mode.mode", "LSB"),
+        *_declared_tx_target(14_074_000),
         ("global.tx_state.ptt", False),
         ("receiver.main.meters.s_meter", 6),
         ("receiver.sub.meters.s_meter", -37),
