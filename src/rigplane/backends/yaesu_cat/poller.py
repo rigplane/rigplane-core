@@ -105,7 +105,7 @@ class YaesuCatPoller:
         self._last_ptt = bool(getattr(radio.radio_state, "ptt", False))
         self._tx_target_generation = self._current_tx_target_generation()
         self._tx_target_invalidated_generation: tuple[str | None, int] | None = None
-        self._tx_target_ever_known = False
+        self._tx_target_known_generation: tuple[str | None, int] | None = None
 
     # ------------------------------------------------------------------
     # Lifecycle
@@ -189,6 +189,9 @@ class YaesuCatPoller:
         callback = self._observation_callback
         profile = self._tx_target_profile()
         generation = self._current_tx_target_generation()
+        known = self._tx_target_known_generation == self._tx_target_generation
+        if generation != self._tx_target_generation:
+            self._tx_target_known_generation = None
         self._tx_target_generation = generation
         if (
             callback is None
@@ -201,18 +204,18 @@ class YaesuCatPoller:
             source="yaesu_poll_response",
             transport="serial",
         )
-        callback(
-            (
-                adapter.observation(
-                    _TX_TARGET_PATH,
-                    UnknownTxTarget(
-                        reason="stale" if self._tx_target_ever_known else "not-observed"
-                    ),
-                    native_id="connection_generation",
-                ),
-            )
+        observations = (
+            adapter.observation(
+                _TX_TARGET_PATH,
+                UnknownTxTarget(reason="stale" if known else "not-observed"),
+                native_id="connection_generation",
+            ),
         )
         self._tx_target_invalidated_generation = generation
+        try:
+            callback(observations)
+        except (Exception, asyncio.CancelledError):
+            logger.warning("YaesuCatPoller: TX target callback failed", exc_info=True)
 
     def _sync_tx_target_generation(self) -> tuple[str | None, int]:
         generation = self._current_tx_target_generation()
@@ -244,7 +247,7 @@ class YaesuCatPoller:
             elif observation.path == _TX_TARGET_PATH:
                 self._tx_target_invalidated_generation = None
                 if isinstance(observation.value, KnownTxTarget):
-                    self._tx_target_ever_known = True
+                    self._tx_target_known_generation = generation
         self._observation_callback(observations)
         return True
 
@@ -302,9 +305,11 @@ class YaesuCatPoller:
         except Exception:
             logger.error("YaesuCatPoller: reconnect failed", exc_info=True)
         finally:
-            self._tx_target_generation = self._current_tx_target_generation()
-            if self._tx_target_profile() is not None:
-                self._tx_target_invalidated_generation = self._tx_target_generation
+            generation = self._current_tx_target_generation()
+            if generation != self._tx_target_generation:
+                self._tx_target_known_generation = None
+                self._tx_target_invalidated_generation = None
+            self._tx_target_generation = generation
             self._reconnecting = False
 
     async def _run_poll_cycle(

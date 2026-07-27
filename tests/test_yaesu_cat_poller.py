@@ -662,73 +662,79 @@ async def test_medium_poll_emits_observations_without_legacy_state_callback() ->
     assert {item.source.source for item in observations} == {"yaesu_poll_response"}
 
 
-@pytest.mark.asyncio
-async def test_medium_transport_error_invalidates_tx_target_before_reraise(
+@pytest.mark.parametrize("operation", ["poll", "reconnect"])
+@pytest.mark.parametrize("callback_error", [RuntimeError, asyncio.CancelledError])
+async def test_invalidation_callback_failure_preserves_transport_flow(
     monkeypatch: pytest.MonkeyPatch,
+    operation: str,
+    callback_error: type[BaseException],
 ) -> None:
     radio = _tx_target_radio()
+    callback = MagicMock(side_effect=callback_error("consumer failed"))
+    poller = YaesuCatPoller(radio, observation_callback=callback)
+    if operation == "poll":
+        monkeypatch.setattr(
+            YaesuObservationAdapter,
+            "poll_medium",
+            AsyncMock(side_effect=[CatTimeoutError("cat reset")] * 2),
+        )
+        for _ in range(2):
+            with pytest.raises(CatTimeoutError, match="cat reset"):
+                await poller._poll_medium()  # noqa: SLF001
+        assert callback.call_count == 1
+    else:
+        radio._transport._maybe_reconnect_needed = lambda: True
+        await poller._try_reconnect()  # noqa: SLF001
+        radio._transport.reconnect.assert_awaited_once()
+    callback.assert_called_once()
+
+
+@pytest.mark.parametrize("boundary", ["reconnect", "provider"])
+async def test_tx_target_known_state_is_generation_scoped(
+    monkeypatch: pytest.MonkeyPatch, boundary: str
+) -> None:
+    radio = _tx_target_radio()
+    known = KnownTxTarget(receiver="MAIN", slot=None, frequency_hz=14_074_000)
     emitted: list[Observation] = []
-
-    async def fail_poll(_adapter: YaesuObservationAdapter) -> tuple[Observation, ...]:
-        raise CatTimeoutError("link reset")
-
-    monkeypatch.setattr(YaesuObservationAdapter, "poll_medium", fail_poll)
+    monkeypatch.setattr(
+        YaesuObservationAdapter,
+        "poll_medium",
+        AsyncMock(side_effect=[(_target_observation(radio, known),), (), ()]),
+    )
     poller = YaesuCatPoller(radio, observation_callback=emitted.extend)
 
-    with pytest.raises(CatTimeoutError, match="link reset"):
+    await poller._poll_medium()  # noqa: SLF001
+    for generation in (1, 2):
+        if boundary == "reconnect":
+            radio._transport.stats.reconnects = generation
+        else:
+            radio.profile.state_acquisition = replace(
+                radio.profile.state_acquisition, provider=f"yaesu_cat_{generation}"
+            )
         await poller._poll_medium()  # noqa: SLF001
 
-    assert [item.value for item in emitted] == [UnknownTxTarget(reason="not-observed")]
-
-
-@pytest.mark.asyncio
-async def test_late_tx_target_from_old_connection_generation_is_discarded(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    radio = _tx_target_radio()
-    emitted: list[Observation] = []
-    known = KnownTxTarget(receiver="MAIN", slot=None, frequency_hz=14_074_000)
-    calls = 0
-
-    async def poll_target(
-        _adapter: YaesuObservationAdapter,
-    ) -> tuple[Observation, ...]:
-        nonlocal calls
-        calls += 1
-        if calls == 1:
-            radio._transport.stats.reconnects += 1
-        return (_target_observation(radio, known),)
-
-    monkeypatch.setattr(YaesuObservationAdapter, "poll_medium", poll_target)
-    poller = YaesuCatPoller(radio, observation_callback=emitted.extend)
-
-    await poller._poll_medium()  # noqa: SLF001
-    assert [item.value for item in emitted] == [UnknownTxTarget(reason="not-observed")]
-
-    await poller._poll_medium()  # noqa: SLF001
-    assert emitted[-1].value == known
-
-
-@pytest.mark.asyncio
-async def test_unsupported_tx_target_does_not_trigger_reconnect(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    radio = _tx_target_radio()
+    assert [item.value for item in emitted] == [
+        known,
+        UnknownTxTarget(reason="stale"),
+        UnknownTxTarget(reason="not-observed"),
+    ]
     unsupported = UnknownTxTarget(reason="unsupported")
-    emitted: list[Observation] = []
-
-    async def poll_target(
-        _adapter: YaesuObservationAdapter,
-    ) -> tuple[Observation, ...]:
-        return (_target_observation(radio, unsupported),)
-
-    monkeypatch.setattr(YaesuObservationAdapter, "poll_medium", poll_target)
-    poller = YaesuCatPoller(radio, observation_callback=emitted.extend)
-
+    monkeypatch.setattr(
+        YaesuObservationAdapter,
+        "poll_medium",
+        AsyncMock(return_value=(_target_observation(radio, unsupported),)),
+    )
     await poller._poll_medium()  # noqa: SLF001
-
     assert emitted[-1].value == unsupported
     radio._transport.reconnect.assert_not_awaited()
+
+    async def late(_adapter: YaesuObservationAdapter) -> tuple[Observation, ...]:
+        radio._transport.stats.reconnects += 1
+        return (_target_observation(radio, known),)
+
+    monkeypatch.setattr(YaesuObservationAdapter, "poll_medium", late)
+    await poller._poll_medium()  # noqa: SLF001
+    assert emitted[-1].value == UnknownTxTarget(reason="not-observed")
 
 
 @pytest.mark.asyncio
