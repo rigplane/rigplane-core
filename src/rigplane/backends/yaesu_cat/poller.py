@@ -206,9 +206,7 @@ class YaesuCatPoller:
                 adapter.observation(
                     _TX_TARGET_PATH,
                     UnknownTxTarget(
-                        reason="stale"
-                        if self._tx_target_ever_known
-                        else "not-observed"
+                        reason="stale" if self._tx_target_ever_known else "not-observed"
                     ),
                     native_id="connection_generation",
                 ),

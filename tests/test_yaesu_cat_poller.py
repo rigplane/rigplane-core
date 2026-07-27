@@ -678,9 +678,7 @@ async def test_medium_transport_error_invalidates_tx_target_before_reraise(
     with pytest.raises(CatTimeoutError, match="link reset"):
         await poller._poll_medium()  # noqa: SLF001
 
-    assert [item.value for item in emitted] == [
-        UnknownTxTarget(reason="not-observed")
-    ]
+    assert [item.value for item in emitted] == [UnknownTxTarget(reason="not-observed")]
 
 
 @pytest.mark.asyncio
@@ -705,9 +703,7 @@ async def test_late_tx_target_from_old_connection_generation_is_discarded(
     poller = YaesuCatPoller(radio, observation_callback=emitted.extend)
 
     await poller._poll_medium()  # noqa: SLF001
-    assert [item.value for item in emitted] == [
-        UnknownTxTarget(reason="not-observed")
-    ]
+    assert [item.value for item in emitted] == [UnknownTxTarget(reason="not-observed")]
 
     await poller._poll_medium()  # noqa: SLF001
     assert emitted[-1].value == known
