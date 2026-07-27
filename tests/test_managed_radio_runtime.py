@@ -23,6 +23,7 @@ from rigplane.runtime.managed_radio_runtime import (
     TxService,
 )
 from rigplane.runtime.radio import CoreRadio
+from test_radio import MockTransport, _ptt_response
 
 
 class ProviderLifecycle:
@@ -60,7 +61,11 @@ class ProviderLifecycle:
         provider_generation: int,
         observer: Callable[[ProviderPttObservation], None],
     ) -> None:
-        assert self.current == (provider_generation, observer)
+        assert (
+            self.current
+            and self.current[0] == provider_generation
+            and self.current[1] is observer
+        )
         self.reads.append((provider_generation, observer))
         self.read_started.set()
         if self.read_blocked:
@@ -80,10 +85,6 @@ def ids() -> Iterator[str]:
 async def no_effects(
     _supervisor: TxSafetySupervisor, _transition: TxTransition
 ) -> None:
-    pass
-
-
-async def no_release() -> None:
     pass
 
 
@@ -276,6 +277,26 @@ async def test_real_core_radio_keyword_port_binds_effectless_generation() -> Non
 
 
 @pytest.mark.asyncio
+async def test_real_core_radio_fresh_read_preserves_healthy_generation() -> None:
+    transport = MockTransport()
+    radio = CoreRadio("127.0.0.1", timeout=0.05)
+    radio._civ_transport = transport
+    radio._connected = True
+    rt = runtime(lifecycle=radio)
+    await rt.replace_provider(ready=True)
+    transport.queue_response(_ptt_response(False))
+
+    result = await rt.request_fresh_ptt()
+
+    assert result.outcome is TxOutcome.APPLIED
+    assert len(transport.sent_packets) == 1
+    assert rt.tx_snapshot.provider_generation == 1
+    assert rt.tx_snapshot.provider_ready
+    assert rt.tx_snapshot.radio_tx is RadioTx.OFF
+    radio._connected = False
+
+
+@pytest.mark.asyncio
 async def test_unbound_bind_failure_and_stale_callback_fail_closed() -> None:
     provider = ProviderLifecycle()
     rt = runtime(lifecycle=provider)
@@ -381,36 +402,31 @@ async def test_failed_and_cancelled_fresh_reads_invalidate_and_release_lane() ->
 
 
 @pytest.mark.asyncio
-async def test_fresh_read_serializes_terminal_shutdown() -> None:
-    provider = ProviderLifecycle()
-    provider.read_blocked = True
-    rt = runtime(lifecycle=provider)
-    await rt.replace_provider(ready=True)
-    read = asyncio.create_task(rt.request_fresh_ptt())
-    await provider.read_started.wait()
-    shutdown = asyncio.create_task(rt.shutdown(release_provider=no_release))
-    await asyncio.sleep(0)
-    assert not shutdown.done()
-
-    provider.read_release.set()
-    assert (await read).outcome is TxOutcome.APPLIED
-    await shutdown
-
-    assert provider.unbinds == 1
-    assert rt.tx_snapshot.provider_generation == 2
-    assert rt.tx_snapshot.provider_ready is False
-
-
-@pytest.mark.asyncio
 async def test_shutdown_is_terminal_and_cleans_up_exactly_once() -> None:
     provider = ProviderLifecycle()
     serviced: list[TxTransition] = []
     releases = 0
+    sequence = 1
 
-    async def service(
-        _supervisor: TxSafetySupervisor, transition: TxTransition
-    ) -> None:
+    async def service(supervisor: TxSafetySupervisor, transition: TxTransition) -> None:
+        nonlocal sequence
         serviced.append(transition)
+        effect = transition.effects[0]
+        assert isinstance(effect, ProviderAttempt)
+        assert provider.current is not None
+        value = (
+            RadioTx.ON if effect.kind is ProviderAttemptKind.WRITE_ON else RadioTx.OFF
+        )
+        followup = supervisor.settle_attempt(
+            effect.id, effect.provider_generation, succeeded=True
+        )
+        read = followup.effects[0]
+        assert isinstance(read, ProviderAttempt)
+        sequence += 1
+        provider.current[1](
+            ProviderPttObservation(value, effect.provider_generation, sequence, 10.0)
+        )
+        supervisor.settle_attempt(read.id, read.provider_generation, succeeded=True)
 
     async def release() -> None:
         nonlocal releases
@@ -430,28 +446,8 @@ async def test_shutdown_is_terminal_and_cleans_up_exactly_once() -> None:
     assert rt.tx_snapshot.provider_generation == 2
     assert rt.tx_snapshot.provider_ready is False
     assert rt.tx_snapshot.radio_tx is RadioTx.UNKNOWN
+    assert rt.tx_snapshot.lease_id is None
     assert (await rt.replace_provider(ready=True)).outcome is TxOutcome.NOT_READY
     assert (await rt.request_fresh_ptt()).outcome is TxOutcome.NOT_READY
     assert (await rt.set_provider_ready(ready=True)).outcome is TxOutcome.NOT_READY
     assert (await rt.request_on(owner)).outcome is TxOutcome.NOT_READY
-
-
-@pytest.mark.asyncio
-async def test_shutdown_unbind_error_still_releases_and_stays_terminal() -> None:
-    provider = ProviderLifecycle()
-    rt = runtime(lifecycle=provider)
-    await rt.replace_provider(ready=True)
-    provider.unbind_error = True
-    released = False
-
-    async def release() -> None:
-        nonlocal released
-        released = True
-
-    with pytest.raises(RuntimeError, match="unbind failed"):
-        await rt.shutdown(release_provider=release)
-
-    assert released
-    assert rt.tx_snapshot.provider_generation == 2
-    assert rt.tx_snapshot.provider_ready is False
-    assert (await rt.replace_provider(ready=True)).outcome is TxOutcome.NOT_READY

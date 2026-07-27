@@ -54,6 +54,7 @@ class ManagedRadioRuntime:
         self._provider_generation = 0
         self._bound_generation: int | None = None
         self._provider_state: _ProviderLifecycleState = "unbound"
+        self._provider_observer = self._observe_ptt
         self._lifecycle_lock = asyncio.Lock()
         self._observation_version = 0
         self._terminal = False
@@ -114,10 +115,11 @@ class ManagedRadioRuntime:
             lifecycle = self._provider_lifecycle
             if lifecycle is None:
                 return transition
+            self._provider_observer = self._observe_ptt
             try:
                 lifecycle._bind_authoritative_ptt_observer(
                     provider_generation=self._provider_generation,
-                    observer=self._observe_ptt,
+                    observer=self._provider_observer,
                 )
             except BaseException:
                 try:
@@ -159,7 +161,7 @@ class ManagedRadioRuntime:
             try:
                 await lifecycle._request_authoritative_ptt_read(
                     provider_generation=self._provider_generation,
-                    observer=self._observe_ptt,
+                    observer=self._provider_observer,
                 )
                 if self._observation_version == version:
                     raise RuntimeError("provider returned no authoritative PTT")
@@ -212,7 +214,6 @@ class ManagedRadioRuntime:
         async with self._lifecycle_lock:
             if self._shutdown_transition is not None:
                 return self._shutdown_transition
-            self._terminal = True
             transition = self._tx_safety.emergency_release(
                 reason=TxReleaseReason.SERVER_SHUTDOWN
             )
@@ -228,6 +229,7 @@ class ManagedRadioRuntime:
                 pass
             except BaseException as exc:
                 error = exc
+            self._terminal = True
             _, unbind_error = self._advance_provider()
             try:
                 await release_provider()
