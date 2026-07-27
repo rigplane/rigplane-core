@@ -900,11 +900,10 @@ class TestPtt:
 
         bound, collision = EqualObserver(), EqualObserver()
         radio._bind_authoritative_ptt_observer(provider_generation=8, observer=bound)
-        mock_transport.queue_response(_ptt_response(False))
         with pytest.raises(CommandError, match="authoritative"):
             await read(provider_generation=8, observer=collision)
         assert not bound.calls
-        radio._unbind_authoritative_ptt_observer()
+        await radio._civ_runtime.stop_pump()
 
     @pytest.mark.asyncio
     async def test_fresh_ptt_read_rechecks_binding_before_dispatch(
