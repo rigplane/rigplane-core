@@ -18,6 +18,7 @@ from rigplane.core.acquisition_scheduler import (
 from rigplane.core.civ import (
     CivEvent,
     CivEventType,
+    CivRequestKey,
     iter_civ_frames,
     request_key_from_frame,
 )
@@ -156,6 +157,19 @@ class RawCivTransactionResult:
     status: RawCivTransactionStatus
     frame: CivFrame | None = None
     frame_bytes: bytes | None = None
+
+
+@dataclass(slots=True)
+class _CivDataTransaction:
+    """Exact tracker state owned by one data-returning CI-V request."""
+
+    response: asyncio.Future[CivFrame]
+    nak: asyncio.Future[CivFrame]
+    frame: CivFrame | None = None
+
+    @property
+    def futures(self) -> tuple[asyncio.Future[CivFrame], ...]:
+        return (self.response, self.nak)
 
 
 _CMD14_RECEIVER_LEVEL_FIELDS = {
@@ -538,6 +552,7 @@ class CivRuntime:
         self._ptt_observer_civ_generation: int | None = None
         self._ptt_observation_seq = 0
         self._active_rx_source_generation: int | None = None
+        self._civ_data_transaction: _CivDataTransaction | None = None
 
     # ------------------------------------------------------------------
     # Public API (design doc)
@@ -692,6 +707,7 @@ class CivRuntime:
             raise asyncio.TimeoutError("CI-V response timed out")
 
         pending_waiters: list[asyncio.Future[CivFrame]] = []
+        data_transaction: _CivDataTransaction | None = None
         try:
             if expect == "ack":
                 pending_or_token = self._host._civ_request_tracker.register_ack(
@@ -702,17 +718,8 @@ class CivRuntime:
                     raise RuntimeError("ACK waiter registration returned sink token")
                 pending_waiters.append(pending_or_token)
             else:
-                pending_waiters.append(
-                    self._host._civ_request_tracker.register_response(request_key)
-                )
-                nak_pending_or_token = self._host._civ_request_tracker.register_ack(
-                    wait=True,
-                    consume_backlog=False,
-                    nak_only=True,
-                )
-                if isinstance(nak_pending_or_token, int):
-                    raise RuntimeError("ACK waiter registration returned sink token")
-                pending_waiters.append(nak_pending_or_token)
+                data_transaction = self._register_civ_data_transaction(request_key)
+                pending_waiters.extend(data_transaction.futures)
 
             self.start_pump()
             await self._send_civ_frame_now(civ_frame)
@@ -726,7 +733,13 @@ class CivRuntime:
             )
             if not done:
                 raise asyncio.TimeoutError("CI-V response timed out")
-            frame = next(iter(done)).result()
+            if data_transaction is not None:
+                frame = data_transaction.frame
+                if frame is None:
+                    data_transaction.response.result()
+                    frame = data_transaction.nak.result()
+            else:
+                frame = pending_waiters[0].result()
         except asyncio.TimeoutError:
             self._host._civ_request_tracker.note_timeout()
             logger.debug(
@@ -735,8 +748,11 @@ class CivRuntime:
             )
             raise asyncio.TimeoutError("CI-V response timed out") from None
         finally:
-            for pending in pending_waiters:
-                self._host._civ_request_tracker.unregister(pending)
+            if data_transaction is not None:
+                self._close_civ_data_transaction(data_transaction)
+            else:
+                for pending in pending_waiters:
+                    self._host._civ_request_tracker.unregister(pending)
 
         if frame.command == 0xFA:
             status: RawCivTransactionStatus = "nak"
@@ -750,6 +766,54 @@ class CivRuntime:
             frame_bytes=self._take_raw_received_frame_bytes(frame)
             or self._civ_frame_to_bytes(frame),
         )
+
+    def _register_civ_data_transaction(
+        self, request_key: CivRequestKey
+    ) -> _CivDataTransaction:
+        """Register exact response and NAK identities for one data request."""
+        if self._civ_data_transaction is not None:
+            raise RuntimeError("CI-V data transaction already active")
+        tracker = self._host._civ_request_tracker
+        response = tracker.register_response(request_key)
+        nak_or_token = tracker.register_ack(
+            wait=True,
+            consume_backlog=False,
+            nak_only=True,
+        )
+        if isinstance(nak_or_token, int):
+            tracker.unregister(response)
+            response.cancel()
+            raise RuntimeError("ACK waiter registration returned sink token")
+        transaction = _CivDataTransaction(response=response, nak=nak_or_token)
+        self._civ_data_transaction = transaction
+        return transaction
+
+    def _close_civ_data_transaction(self, transaction: _CivDataTransaction) -> None:
+        """Idempotently detach and settle every future without yielding."""
+        if self._civ_data_transaction is transaction:
+            self._civ_data_transaction = None
+        for future in transaction.futures:
+            self._host._civ_request_tracker.unregister(future)
+            if not future.done():
+                future.cancel()
+
+    def _claim_civ_data_transaction(self, event: CivEvent) -> None:
+        """Synchronously claim the first routed response or NAK."""
+        transaction = self._civ_data_transaction
+        if transaction is None or event.type == CivEventType.ACK:
+            return
+        winner = (
+            transaction.nak if event.type == CivEventType.NAK else transaction.response
+        )
+        if winner.cancelled() or not winner.done():
+            return
+        try:
+            frame = winner.result()
+        except Exception:
+            return
+        if frame is event.frame:
+            transaction.frame = frame
+            self._close_civ_data_transaction(transaction)
 
     async def send_civ_raw(
         self,
@@ -1170,7 +1234,8 @@ class CivRuntime:
             )
             self._update_state_cache_from_frame(frame)
         self._publish_civ_event(event)
-        self._host._civ_request_tracker.resolve(event, generation=generation)
+        if self._host._civ_request_tracker.resolve(event, generation=generation):
+            self._claim_civ_data_transaction(event)
 
     def _emit_authoritative_ptt(
         self, frame: CivFrame, *, source_generation: int

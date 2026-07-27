@@ -12,11 +12,13 @@ from rigplane.commands import CONTROLLER_ADDR, build_civ_frame, parse_civ_frame
 from rigplane.core.civ import (
     CivEvent,
     CivEventType,
+    CivRequestKey,
     CivRequestTracker,
     request_key_from_frame,
 )
 from rigplane.core.exceptions import ConnectionError as RigplaneConnectionError
 from rigplane.radio import IcomRadio
+from rigplane.runtime._civ_rx import _CivDataTransaction
 from rigplane.types import bcd_encode
 
 
@@ -45,6 +47,29 @@ def _ack() -> bytes:
 
 def _nak() -> bytes:
     return build_civ_frame(CONTROLLER_ADDR, IC_7610_ADDR, 0xFA)
+
+
+def _ptt(value: int = 0) -> bytes:
+    return build_civ_frame(
+        CONTROLLER_ADDR, IC_7610_ADDR, 0x1C, sub=0x00, data=bytes([value])
+    )
+
+
+def _capture_data_transaction(
+    radio: IcomRadio,
+    monkeypatch: pytest.MonkeyPatch,
+) -> list[_CivDataTransaction]:
+    captured: list[_CivDataTransaction] = []
+    runtime = radio._civ_runtime
+    register = runtime._register_civ_data_transaction
+
+    def capture(key: CivRequestKey) -> _CivDataTransaction:
+        transaction = register(key)
+        captured.append(transaction)
+        return transaction
+
+    monkeypatch.setattr(runtime, "_register_civ_data_transaction", capture)
+    return captured
 
 
 async def test_raw_civ_transaction_ack_success_releases_owner(
@@ -290,6 +315,115 @@ async def test_raw_civ_transaction_session_releases_on_cancellation(
     assert radio.external_cat_session_active is False
     assert radio._civ_request_tracker.pending_count == 0
     assert radio._civ_request_tracker.timeout_count == 0
+
+
+@pytest.mark.parametrize(
+    ("first", "late", "expected"),
+    [(_ptt(), _nak(), "response"), (_nak(), _ptt(), "nak")],
+)
+@pytest.mark.parametrize("close_between", [False, True])
+async def test_data_transaction_first_terminal_frame_wins(
+    radio: IcomRadio,
+    monkeypatch: pytest.MonkeyPatch,
+    first: bytes,
+    late: bytes,
+    expected: str,
+    close_between: bool,
+) -> None:
+    runtime = radio._civ_runtime
+    captured = _capture_data_transaction(radio, monkeypatch)
+    task = asyncio.create_task(
+        radio.send_civ_transaction(0x1C, sub=0x00, expect="data", timeout=1.0)
+    )
+    while not captured:
+        await asyncio.sleep(0)
+    await runtime._route_civ_frame(parse_civ_frame(first), generation=radio._civ_epoch)
+    if close_between:
+        runtime._close_civ_data_transaction(captured[0])
+    await runtime._route_civ_frame(parse_civ_frame(late), generation=radio._civ_epoch)
+    result = await task
+    response, nak = captured[0].response, captured[0].nak
+    winner, loser = (response, nak) if expected == "response" else (nak, response)
+    assert result.status == expected
+    assert result.frame_bytes == first
+    assert winner.done() and not winner.cancelled()
+    assert loser.cancelled()
+
+
+async def test_data_transaction_identity_does_not_steal_older_same_command(
+    radio: IcomRadio,
+) -> None:
+    observations = []
+    radio._civ_runtime.bind_ptt_observer(
+        provider_generation=1, observer=observations.append
+    )
+    key = request_key_from_frame(
+        parse_civ_frame(build_civ_frame(IC_7610_ADDR, CONTROLLER_ADDR, 0x1C, sub=0x00))
+    )
+    older = radio._civ_request_tracker.register_response(key)
+    transaction = radio._civ_runtime._register_civ_data_transaction(key)
+    with pytest.raises(RuntimeError, match="already active"):
+        radio._civ_runtime._register_civ_data_transaction(key)
+
+    await radio._civ_runtime._route_civ_frame(
+        parse_civ_frame(_ptt()), generation=radio._civ_epoch
+    )
+    assert older.done()
+    assert not transaction.response.done()
+    assert len(observations) == 1
+
+    await radio._civ_runtime._route_civ_frame(
+        parse_civ_frame(_ptt(1)), generation=radio._civ_epoch
+    )
+    assert transaction.response.done()
+    assert len(observations) == 2
+    radio._civ_runtime._close_civ_data_transaction(transaction)
+
+
+async def test_data_transaction_timeout_settles_token_before_late_response(
+    radio: IcomRadio,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    observations = []
+    radio._civ_runtime.bind_ptt_observer(
+        provider_generation=1, observer=observations.append
+    )
+    captured = _capture_data_transaction(radio, monkeypatch)
+    with pytest.raises(TimeoutError):
+        await radio.send_civ_transaction(0x1C, sub=0x00, expect="data", timeout=0.01)
+
+    assert captured[0].response.cancelled()
+    assert captured[0].nak.cancelled()
+    await radio._civ_runtime._route_civ_frame(
+        parse_civ_frame(_ptt()), generation=radio._civ_epoch
+    )
+    assert len(observations) == 1
+
+
+async def test_data_transaction_cancel_settles_token_before_late_response(
+    radio: IcomRadio,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    observations = []
+    radio._civ_runtime.bind_ptt_observer(
+        provider_generation=1, observer=observations.append
+    )
+    captured = _capture_data_transaction(radio, monkeypatch)
+    task = asyncio.create_task(
+        radio.send_civ_transaction(0x1C, sub=0x00, expect="data", timeout=1.0)
+    )
+    while not captured:
+        await asyncio.sleep(0)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    assert captured[0].response.cancelled()
+    assert captured[0].nak.cancelled()
+    await radio._civ_runtime._route_civ_frame(
+        parse_civ_frame(_ptt()), generation=radio._civ_epoch
+    )
+    assert len(observations) == 1
 
 
 def _wrap(civ_frame: bytes) -> bytes:
