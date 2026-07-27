@@ -1884,7 +1884,8 @@ class TestAudioHandlerTxTranscoderRate:
 
         mock_ws = MagicMock(spec=WebSocketConnection)
         mock_radio = MagicMock(spec=AudioCapable)
-        mock_radio.capabilities = {"audio"}
+        mock_radio.capabilities = {"audio", "tx"}
+        mock_radio.backend_id = "yaesu_cat"
         if sample_rate is None:
             # Simulate a radio that does not expose audio_sample_rate
             del mock_radio.audio_sample_rate
