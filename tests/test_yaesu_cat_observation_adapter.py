@@ -5,11 +5,12 @@ from __future__ import annotations
 
 from dataclasses import replace
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, call
 
 import pytest
 
 from rigplane.core.state_acquisition_policy import RadioAcquisitionProfile
+from rigplane.core.tx_target import KnownTxTarget, TxReceiver, UnknownTxTarget
 from rigplane.core.types import BreakInMode
 from rigplane.profiles import get_radio_profile
 from rigplane.radio_state import RadioState
@@ -17,6 +18,7 @@ from rigplane.radio_state import RadioState
 from rigplane.backends.yaesu_cat.observations import YaesuObservationAdapter
 from rigplane.backends.yaesu_cat.parser import CatParseError
 from rigplane.backends.yaesu_cat.radio import RadioConnectionError, YaesuCatRadio
+from rigplane.backends.yaesu_cat.transport import CatCommandRejected
 
 
 def _clock() -> float:
@@ -147,6 +149,7 @@ def _make_radio() -> MagicMock:
     radio.read_split = AsyncMock(return_value=True)
     radio.get_vfo_select = AsyncMock(return_value=1)
     radio.read_vfo_select = AsyncMock(return_value=1)
+    radio.get_tx_func = AsyncMock(return_value=0)
     # Clarifier RIT/XIT observation reads (MOR-454). ``read_clarifier`` returns
     # the (rx, tx) clarifier flags; ``read_clarifier_freq`` returns the signed
     # Hz offset on the device scale.
@@ -287,6 +290,10 @@ class _SideEffectingYaesuRadio:
         value = await self.read_ptt()
         self.radio_state.ptt = value
         return value
+
+    async def get_tx_func(self) -> int:
+        # Unlike legacy getters, FT readback has no RadioState side effect.
+        return 0
 
     async def read_s_meter(self, receiver: int = 0) -> int:
         return 150 if receiver == 0 else 75
@@ -573,6 +580,10 @@ async def test_medium_poll_emits_frequency_mode_and_ptt_observations() -> None:
         ("receiver.main.active.freq_mode.mode", "USB"),
         ("receiver.sub.active.freq_mode.freq_hz", 7_074_000),
         ("receiver.sub.active.freq_mode.mode", "LSB"),
+        (
+            "global.tx_state.tx_target",
+            KnownTxTarget(receiver="MAIN", slot=None, frequency_hz=14_074_000),
+        ),
         ("global.tx_state.ptt", False),
         ("receiver.main.active.freq_mode.filter_width", 500),
     ]
@@ -587,9 +598,125 @@ async def test_medium_poll_emits_frequency_mode_and_ptt_observations() -> None:
     # it shares the freq/mode lane (MOR-445).
     by_path = {str(item.path): item for item in observations}
     assert by_path["global.tx_state.ptt"].max_age == 8.0
+    assert by_path["global.tx_state.tx_target"].max_age == 8.0
     assert by_path["receiver.main.active.freq_mode.freq_hz"].max_age == 8.0
     assert by_path["receiver.main.active.freq_mode.filter_width"].max_age == 120.0
     assert all(item.source.capability_id == str(item.path) for item in observations)
+
+
+@pytest.mark.parametrize(
+    ("ft", "frequency_response", "frequency_command", "receiver", "frequency"),
+    [
+        ("0", "FA014074000", "FA;", "MAIN", 14_074_000),
+        ("1", "FB007074000", "FB;", "SUB", 7_074_000),
+    ],
+)
+@pytest.mark.asyncio
+async def test_real_ftx1_parser_brackets_selected_frequency(
+    ft: str,
+    frequency_response: str,
+    frequency_command: str,
+    receiver: TxReceiver,
+    frequency: int,
+) -> None:
+    radio = YaesuCatRadio("/dev/null", audio_driver=MagicMock())
+    radio._transport._connected = True
+    radio._transport.query = AsyncMock(  # type: ignore[method-assign]
+        side_effect=[f"FT{ft}", frequency_response, f"FT{ft}"]
+    )
+    target = await YaesuObservationAdapter.from_radio(radio)._read_tx_target()
+
+    assert target == KnownTxTarget(receiver=receiver, slot=None, frequency_hz=frequency)
+    assert radio._transport.query.await_args_list == [
+        call("FT;"),
+        call(frequency_command),
+        call("FT;"),
+    ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("tx_func", [True, False, 0.0, 1.0, -1, 2, 2**63])
+async def test_invalid_ft_type_or_range_is_contradiction(tx_func: object) -> None:
+    radio = _make_radio()
+    radio.get_tx_func.return_value = tx_func
+
+    target = await YaesuObservationAdapter(
+        radio, profile=_profile_state_acquisition(), clock=_clock
+    )._read_tx_target()
+
+    assert target == UnknownTxTarget(reason="contradiction")
+    radio.read_freq.assert_not_awaited()
+    assert radio.read_split.await_count == radio.read_vfo_select.await_count == 0
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("result", "expected"),
+    [
+        (None, UnknownTxTarget(reason="not-observed")),
+        (
+            CatParseError("FT{vfo};", "FTX;", "invalid vfo"),
+            UnknownTxTarget(reason="contradiction"),
+        ),
+        (CatCommandRejected("?;"), UnknownTxTarget(reason="unsupported")),
+        (NotImplementedError(), UnknownTxTarget(reason="unsupported")),
+        ("missing", UnknownTxTarget(reason="unsupported")),
+    ],
+)
+async def test_missing_or_unsupported_ft_is_unknown(
+    result: object, expected: UnknownTxTarget
+) -> None:
+    radio = _make_radio()
+    if result == "missing":
+        radio.get_tx_func = None
+    elif isinstance(result, Exception):
+        radio.get_tx_func.side_effect = result
+    else:
+        radio.get_tx_func.return_value = result
+
+    target = await YaesuObservationAdapter(
+        radio, profile=_profile_state_acquisition(), clock=_clock
+    )._read_tx_target()
+
+    assert target == expected
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("boundary", ["ft", "generation", "missing-frequency"])
+async def test_tx_target_mid_cycle_change_or_missing_frequency(boundary: str) -> None:
+    radio = _make_radio()
+    radio._transport = SimpleNamespace(stats=SimpleNamespace(reconnects=0))
+    radio.get_tx_func.side_effect = [0, 1 if boundary == "ft" else 0]
+    if boundary == "generation":
+        radio.read_freq.side_effect = lambda _receiver: (
+            setattr(radio._transport.stats, "reconnects", 1) or 14_074_000
+        )
+    elif boundary == "missing-frequency":
+        radio.read_freq.side_effect = ValueError("bad selected frequency")
+
+    target = await YaesuObservationAdapter(
+        radio, profile=_profile_state_acquisition(), clock=_clock
+    )._read_tx_target()
+
+    expected = (
+        UnknownTxTarget(reason="contradiction")
+        if boundary == "ft"
+        else UnknownTxTarget(reason="not-observed")
+        if boundary == "generation"
+        else KnownTxTarget(receiver="MAIN", slot=None, frequency_hz=None)
+    )
+    assert target == expected
+
+
+@pytest.mark.asyncio
+async def test_tx_target_connection_failure_propagates() -> None:
+    radio = _make_radio()
+    radio.get_tx_func.side_effect = RadioConnectionError("link reset")
+    adapter = YaesuObservationAdapter(
+        radio, profile=_profile_state_acquisition(), clock=_clock
+    )
+    with pytest.raises(RadioConnectionError, match="link reset"):
+        await adapter._read_tx_target()
 
 
 @pytest.mark.asyncio
@@ -1074,6 +1201,10 @@ async def test_adapter_uses_read_only_yaesu_paths_when_getters_mutate_state() ->
         ("receiver.main.active.freq_mode.mode", "USB"),
         ("receiver.sub.active.freq_mode.freq_hz", 7_074_000),
         ("receiver.sub.active.freq_mode.mode", "LSB"),
+        (
+            "global.tx_state.tx_target",
+            KnownTxTarget(receiver="MAIN", slot=None, frequency_hz=14_074_000),
+        ),
         ("global.tx_state.ptt", True),
         ("receiver.main.meters.s_meter", 150),
         ("receiver.sub.meters.s_meter", 75),

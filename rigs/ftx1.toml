@@ -77,6 +77,7 @@ polling_only = [
     "receiver.sub.active.freq_mode.freq_hz",
     "receiver.sub.active.freq_mode.mode",
     "global.tx_state.ptt",
+    "global.tx_state.tx_target",
     "receiver.main.operator_controls.af_level",
     "receiver.main.operator_controls.rf_gain",
     "receiver.main.operator_controls.squelch",
