@@ -143,7 +143,7 @@ def _tx_codec_for_radio(radio: object) -> AudioCodec | None:
         tx_codec = getattr(contract, "tx_codec", None)
     if tx_codec is None:
         tx_codec = getattr(radio, "audio_codec", None)
-    return cast(AudioCodec | None, tx_codec)
+    return tx_codec
 
 
 def browser_tx_audio_facts(radio: "Radio | None") -> BrowserTxAudioFacts:
@@ -1398,6 +1398,7 @@ class AudioHandler:
                     self._tx_active = False
                     await self._send_error("audio_start: TX audio unavailable")
                     return
+                self._tx_active = False
                 self._ensure_tx_transcoder()
                 session = getattr(self._radio, "audio_session", None)
                 if session is not None:
