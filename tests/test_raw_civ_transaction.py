@@ -317,32 +317,37 @@ async def test_raw_civ_transaction_session_releases_on_cancellation(
     assert radio._civ_request_tracker.timeout_count == 0
 
 
-async def test_data_transaction_nak_token_cannot_be_resurrected(
+@pytest.mark.parametrize(
+    ("first", "late", "expected"),
+    [(_ptt(), _nak(), "response"), (_nak(), _ptt(), "nak")],
+)
+@pytest.mark.parametrize("close_between", [False, True])
+async def test_data_transaction_first_terminal_frame_wins(
     radio: IcomRadio,
+    monkeypatch: pytest.MonkeyPatch,
+    first: bytes,
+    late: bytes,
+    expected: str,
+    close_between: bool,
 ) -> None:
-    observations = []
-    radio._civ_runtime.bind_ptt_observer(
-        provider_generation=1, observer=observations.append
+    runtime = radio._civ_runtime
+    captured = _capture_data_transaction(radio, monkeypatch)
+    task = asyncio.create_task(
+        radio.send_civ_transaction(0x1C, sub=0x00, expect="data", timeout=1.0)
     )
-    request = parse_civ_frame(
-        build_civ_frame(IC_7610_ADDR, CONTROLLER_ADDR, 0x1C, sub=0x00)
-    )
-    transaction = radio._civ_runtime._register_civ_data_transaction(
-        request_key_from_frame(request)
-    )
-
-    await radio._civ_runtime._route_civ_frame(
-        parse_civ_frame(_nak()), generation=radio._civ_epoch
-    )
-    assert transaction.nak.done()
-    radio._civ_runtime._close_civ_data_transaction(transaction)
-    assert transaction.response.cancelled()
-
-    await radio._civ_runtime._route_civ_frame(
-        parse_civ_frame(_ptt()), generation=radio._civ_epoch
-    )
-    assert transaction.response.cancelled()
-    assert len(observations) == 1
+    while not captured:
+        await asyncio.sleep(0)
+    await runtime._route_civ_frame(parse_civ_frame(first), generation=radio._civ_epoch)
+    if close_between:
+        runtime._close_civ_data_transaction(captured[0])
+    await runtime._route_civ_frame(parse_civ_frame(late), generation=radio._civ_epoch)
+    result = await task
+    response, nak = captured[0].response, captured[0].nak
+    winner, loser = (response, nak) if expected == "response" else (nak, response)
+    assert result.status == expected
+    assert result.frame_bytes == first
+    assert winner.done() and not winner.cancelled()
+    assert loser.cancelled()
 
 
 async def test_data_transaction_identity_does_not_steal_older_same_command(
@@ -357,6 +362,8 @@ async def test_data_transaction_identity_does_not_steal_older_same_command(
     )
     older = radio._civ_request_tracker.register_response(key)
     transaction = radio._civ_runtime._register_civ_data_transaction(key)
+    with pytest.raises(RuntimeError, match="already active"):
+        radio._civ_runtime._register_civ_data_transaction(key)
 
     await radio._civ_runtime._route_civ_frame(
         parse_civ_frame(_ptt()), generation=radio._civ_epoch

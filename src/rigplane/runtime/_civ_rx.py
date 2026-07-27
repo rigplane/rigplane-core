@@ -159,12 +159,13 @@ class RawCivTransactionResult:
     frame_bytes: bytes | None = None
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(slots=True)
 class _CivDataTransaction:
-    """Exact tracker futures owned by one data-returning CI-V request."""
+    """Exact tracker state owned by one data-returning CI-V request."""
 
     response: asyncio.Future[CivFrame]
     nak: asyncio.Future[CivFrame]
+    frame: CivFrame | None = None
 
     @property
     def futures(self) -> tuple[asyncio.Future[CivFrame], ...]:
@@ -551,6 +552,7 @@ class CivRuntime:
         self._ptt_observer_civ_generation: int | None = None
         self._ptt_observation_seq = 0
         self._active_rx_source_generation: int | None = None
+        self._civ_data_transaction: _CivDataTransaction | None = None
 
     # ------------------------------------------------------------------
     # Public API (design doc)
@@ -731,7 +733,13 @@ class CivRuntime:
             )
             if not done:
                 raise asyncio.TimeoutError("CI-V response timed out")
-            frame = next(iter(done)).result()
+            if data_transaction is not None:
+                frame = data_transaction.frame
+                if frame is None:
+                    data_transaction.response.result()
+                    frame = data_transaction.nak.result()
+            else:
+                frame = pending_waiters[0].result()
         except asyncio.TimeoutError:
             self._host._civ_request_tracker.note_timeout()
             logger.debug(
@@ -763,6 +771,8 @@ class CivRuntime:
         self, request_key: CivRequestKey
     ) -> _CivDataTransaction:
         """Register exact response and NAK identities for one data request."""
+        if self._civ_data_transaction is not None:
+            raise RuntimeError("CI-V data transaction already active")
         tracker = self._host._civ_request_tracker
         response = tracker.register_response(request_key)
         nak_or_token = tracker.register_ack(
@@ -774,14 +784,36 @@ class CivRuntime:
             tracker.unregister(response)
             response.cancel()
             raise RuntimeError("ACK waiter registration returned sink token")
-        return _CivDataTransaction(response=response, nak=nak_or_token)
+        transaction = _CivDataTransaction(response=response, nak=nak_or_token)
+        self._civ_data_transaction = transaction
+        return transaction
 
     def _close_civ_data_transaction(self, transaction: _CivDataTransaction) -> None:
-        """Atomically detach and settle both futures owned by a transaction."""
+        """Idempotently detach and settle every future without yielding."""
+        if self._civ_data_transaction is transaction:
+            self._civ_data_transaction = None
         for future in transaction.futures:
             self._host._civ_request_tracker.unregister(future)
             if not future.done():
                 future.cancel()
+
+    def _claim_civ_data_transaction(self, event: CivEvent) -> None:
+        """Synchronously claim the first routed response or NAK."""
+        transaction = self._civ_data_transaction
+        if transaction is None or event.type == CivEventType.ACK:
+            return
+        winner = (
+            transaction.nak if event.type == CivEventType.NAK else transaction.response
+        )
+        if winner.cancelled() or not winner.done():
+            return
+        try:
+            frame = winner.result()
+        except Exception:
+            return
+        if frame is event.frame:
+            transaction.frame = frame
+            self._close_civ_data_transaction(transaction)
 
     async def send_civ_raw(
         self,
@@ -1202,7 +1234,8 @@ class CivRuntime:
             )
             self._update_state_cache_from_frame(frame)
         self._publish_civ_event(event)
-        self._host._civ_request_tracker.resolve(event, generation=generation)
+        if self._host._civ_request_tracker.resolve(event, generation=generation):
+            self._claim_civ_data_transaction(event)
 
     def _emit_authoritative_ptt(
         self, frame: CivFrame, *, source_generation: int
