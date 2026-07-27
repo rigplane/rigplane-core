@@ -17,6 +17,14 @@ const MAX_QUEUE_SIZE = 20;
 // Command types where only the latest value matters (last write wins)
 const IDEMPOTENT_TYPES = new Set(['set_freq', 'set_mode', 'set_filter']);
 
+function pttIntent(name: string, params: Record<string, unknown>): 'on' | 'off' | null {
+  if (name === 'ptt_on') return 'on';
+  if (name === 'ptt_off') return 'off';
+  if (name === 'ptt' && params.state === true) return 'on';
+  if (name === 'ptt' && params.state === false) return 'off';
+  return null;
+}
+
 function calcBackoff(attempt: number): number {
   const base = Math.min(BACKOFF_BASE_MS * 2 ** attempt, BACKOFF_MAX_MS);
   return base * (0.8 + Math.random() * 0.4);
@@ -30,6 +38,7 @@ export class WsChannel {
   private attempt = 0;
   private intentionalClose = false;
   private sendQueue: WsCommand[] = [];
+  private pendingPttRelease: WsCommand | null = null;
   private messageHandlers = new Set<MessageHandler>();
   private binaryHandlers = new Set<BinaryHandler>();
   private stateHandlers = new Set<StateHandler>();
@@ -71,7 +80,12 @@ export class WsChannel {
       this._resetHeartbeat();
       this._startKeepalive();
       // drain send queue
-      const queued = this.sendQueue.splice(0);
+      const release = this.pendingPttRelease;
+      this.pendingPttRelease = null;
+      if (release) ws.send(JSON.stringify(release));
+      const queued = this.sendQueue.splice(0).filter(
+        (cmd) => pttIntent(cmd.name, cmd.params) !== 'on',
+      );
       for (const cmd of queued) ws.send(JSON.stringify(cmd));
       // Re-send subscribe on every (re)connect so server pushes state immediately
       if (this._subscribeMsg) ws.send(JSON.stringify(this._subscribeMsg));
@@ -156,6 +170,17 @@ export class WsChannel {
     if (this.ws?.readyState === WebSocket.OPEN) {
       this.ws.send(JSON.stringify(cmd));
       return true;
+    }
+    const intent = pttIntent(cmd.name, cmd.params);
+    if (intent === 'on') {
+      return false;
+    }
+    if (intent === 'off') {
+      this.sendQueue = this.sendQueue.filter(
+        (queued) => pttIntent(queued.name, queued.params) !== 'on',
+      );
+      this.pendingPttRelease = cmd;
+      return false;
     }
     // Deduplicate idempotent commands — keep only the latest value
     if (IDEMPOTENT_TYPES.has(cmd.name)) {
@@ -429,7 +454,7 @@ export function disconnect() {
 }
 
 export function sendCommand(name: string, params: Record<string, unknown> = {}, id?: string): boolean {
-  if (!isLiveRadioAvailable()) {
+  if (!isLiveRadioAvailable() && pttIntent(name, params) !== 'off') {
     console.warn('[cmd] blocked while radio health is degraded', name);
     return false;
   }
@@ -515,7 +540,9 @@ function _applyOptimistic(name: string, params: Record<string, unknown>): void {
       if (typeof params.on === 'boolean') patchActiveReceiver({ ipplus: params.on });
       break;
     case 'ptt':
-      if (typeof params.state === 'boolean') patchRadioState({ ptt: params.state });
+      // A release is best-effort until confirmed by backend state. Optimistically
+      // clearing PTT could falsely present a de-key while transport is degraded.
+      if (params.state === true) patchRadioState({ ptt: true });
       break;
     case 'set_dual_watch':
       if (typeof params.on === 'boolean') patchRadioState({ dualWatch: params.on });
