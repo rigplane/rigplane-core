@@ -868,7 +868,6 @@ class TestPtt:
         finally:
             await radio._civ_runtime.stop_pump()
 
-    @pytest.mark.asyncio
     async def test_fresh_ptt_read_rejects_rebind_and_equal_distinct_observer(
         self, radio: IcomRadio, mock_transport: MockTransport
     ) -> None:
