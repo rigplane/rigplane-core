@@ -1,26 +1,22 @@
-"""Web UI capability guards — verify API responses adapt to rig profile.
-
-TDD: these tests were written FIRST, then the backend was modified to pass them.
-"""
+"""Web UI capability guards for rig-profile-adaptive API responses."""
 
 from __future__ import annotations
 
 import json
 from dataclasses import replace
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, Mock
 
 import pytest
 
-from rigplane.audio.route import TxAudioSource
+from rigplane.audio.route import DataModePolicy, TxAudioSource
 from rigplane.types import AudioCodec
+from rigplane.web.handlers import audio as audio_module
 from rigplane.web.handlers.audio import AudioHandler, browser_tx_audio_facts
 from rigplane.web.server import WebServer
 
 
 class _FakeWriter:
-    """Minimal asyncio.StreamWriter stand-in that captures bytes."""
-
     def __init__(self) -> None:
         self.buffer = bytearray()
 
@@ -43,11 +39,7 @@ def _parse_json_body(writer: _FakeWriter) -> dict:
     return json.loads(text[body_start:])
 
 
-# ── Helpers: fake radios with profiles ──────────────────────────
-
-
 def _make_radio(model: str = "IC-7610", caps: set[str] | None = None):
-    """Build a fake radio with a real RadioProfile resolved by model name."""
     from rigplane.profiles import resolve_radio_profile
     from rigplane.radio_protocol import AudioCapable, DualReceiverCapable, ScopeCapable
 
@@ -67,12 +59,7 @@ def _make_radio(model: str = "IC-7610", caps: set[str] | None = None):
     return radio
 
 
-# ── /api/v1/info tests ─────────────────────────────────────────
-
-
 class TestInfoEndpoint:
-    """Verify /api/v1/info includes rig-specific metadata."""
-
     @pytest.mark.asyncio
     async def test_info_includes_receivers_for_dual(self):
         radio = _make_radio("IC-7610")
@@ -137,12 +124,7 @@ class TestInfoEndpoint:
         assert "dual_rx" not in data["capabilities"]["tags"]
 
 
-# ── /api/v1/capabilities tests ─────────────────────────────────
-
-
 class TestCapabilitiesEndpoint:
-    """Verify /api/v1/capabilities includes rig-specific metadata."""
-
     @pytest.mark.asyncio
     @pytest.mark.parametrize(
         ("model", "receivers", "vfo_scheme"),
@@ -304,6 +286,10 @@ class TestCapabilitiesEndpoint:
         cases = (("IC-7610", (True, "lan", 5)), ("FTX-1", (True, "usb", None)))
         for model, expected in cases:
             radio, writer = _make_radio(model), _FakeWriter()
+            radio.audio_tx_codec = AudioCodec.PCM_1CH_16BIT
+            suffix = "_audio_tx_pcm" if model == "IC-7610" else "_tx"
+            for operation in ("start", "push", "stop"):
+                setattr(radio, f"{operation}{suffix}", AsyncMock())
             await WebServer(radio)._serve_capabilities(writer)  # noqa: SLF001
             data, facts = _parse_json_body(writer), browser_tx_audio_facts(radio)
             keys = ("audioTx", "audioTxRoute", "audioTxRequiredModInputSource")
@@ -322,6 +308,7 @@ def _neutral_tx_radio(**changes: object) -> SimpleNamespace:
         "start_tx": AsyncMock(),
         "push_tx": AsyncMock(),
         "stop_tx": AsyncMock(),
+        "audio_tx_codec": AudioCodec.PCM_1CH_16BIT,
     }
     return SimpleNamespace(**(values | changes))
 
@@ -335,13 +322,29 @@ def test_browser_tx_audio_requires_caps_and_complete_neutral_transport():
         ({"start_tx": None, "push_tx": None, "stop_tx": None}, False),
         ({"capabilities": {"audio"}}, False),
         ({"capabilities": {"tx"}}, False),
+        ({"audio_tx_codec": None}, False),
+        ({"audio_tx_codec": "invalid"}, False),
+        ({"audio_tx_codec": AudioCodec.PCM_1CH_8BIT}, False),
+        ({"audio_tx_codec": AudioCodec.OPUS_2CH}, False),
+        ({"audio_session": SimpleNamespace(acquire_tx=None)}, False),
     )
     for changes, expected in cases:
         facts = browser_tx_audio_facts(_neutral_tx_radio(**changes))
         assert (facts.available, facts.route) == (
             (True, "usb") if expected else (False, None)
         )
+        assert facts.required_mod_input_source is None
     assert browser_tx_audio_facts(None).available is False
+    session_radio = _neutral_tx_radio(
+        capabilities={"audio", "tx", "mod_input_routing"},
+        audio_session=SimpleNamespace(acquire_tx=AsyncMock()),
+    )
+    facts = browser_tx_audio_facts(session_radio)
+    assert (facts.available, facts.route, facts.required_mod_input_source) == (
+        True,
+        "usb",
+        None,
+    )
 
 
 def test_browser_tx_audio_accepts_only_complete_selected_legacy():
@@ -351,7 +354,7 @@ def test_browser_tx_audio_accepts_only_complete_selected_legacy():
     ):
         for missing in (None, "start", "push", "stop"):
             radio = _neutral_tx_radio(
-                start_tx=None, push_tx=None, stop_tx=None, audio_codec=codec
+                start_tx=None, push_tx=None, stop_tx=None, audio_tx_codec=codec
             )
             for operation in ("start", "push", "stop"):
                 setattr(radio, f"{operation}_audio_tx_{suffix}", AsyncMock())
@@ -360,32 +363,37 @@ def test_browser_tx_audio_accepts_only_complete_selected_legacy():
             assert browser_tx_audio_facts(radio).available is (missing is None)
 
 
-def test_browser_tx_audio_session_and_unknown_mod_source():
-    radio = _neutral_tx_radio(
-        capabilities={"audio", "tx", "mod_input_routing"},
-        audio_session=SimpleNamespace(acquire_tx=AsyncMock()),
-    )
-    facts = browser_tx_audio_facts(radio)
-    assert (facts.available, facts.required_mod_input_source) == (True, None)
-    radio.audio_session.acquire_tx = None
-    assert browser_tx_audio_facts(radio).available is False
-
-
-def test_browser_tx_audio_route_exception_and_acc(monkeypatch):
+def test_browser_tx_audio_validates_route_source_policy(monkeypatch):
     radio = _neutral_tx_radio()
-    for source, expected in (
-        (TxAudioSource.ACC, "acc"),
-        (TxAudioSource.UNAVAILABLE, None),
+    for source, policy, expected in (
+        (TxAudioSource.ACC, DataModePolicy.LEGACY, "acc"),
+        (TxAudioSource.UNAVAILABLE, DataModePolicy.LEGACY, None),
+        (TxAudioSource.USB, DataModePolicy.DATA2_LAN, None),
+        (TxAudioSource.LAN, DataModePolicy.DATA1_USB, None),
+        ("usb", DataModePolicy.DATA1_USB, None),
+        (TxAudioSource.USB, "data1_usb", None),
     ):
+        route = SimpleNamespace(tx_audio_source=source, data_mode_policy=policy)
         monkeypatch.setattr(
-            "rigplane.web.handlers.audio.resolve_audio_route",
-            lambda _radio, source=source: SimpleNamespace(tx_audio_source=source),
+            audio_module, "resolve_audio_route", lambda _radio, route=route: route
         )
         facts = browser_tx_audio_facts(radio)
         assert (facts.route if facts.available else None) == expected
+
+
+def test_browser_tx_audio_route_and_policy_exceptions_fail_closed(monkeypatch):
+    radio = _neutral_tx_radio(capabilities={"audio", "tx", "mod_input_routing"})
     monkeypatch.setattr(
-        "rigplane.web.handlers.audio.resolve_audio_route",
-        lambda _radio: (_ for _ in ()).throw(RuntimeError("route failed")),
+        audio_module, "resolve_audio_route", Mock(side_effect=RuntimeError("route"))
+    )
+    assert browser_tx_audio_facts(radio).available is False
+    route = SimpleNamespace(
+        tx_audio_source=TxAudioSource.LAN,
+        data_mode_policy=DataModePolicy.DATA2_LAN,
+    )
+    monkeypatch.setattr(audio_module, "resolve_audio_route", lambda _: route)
+    monkeypatch.setattr(
+        audio_module, "rigctld_wsjtx_policy", Mock(side_effect=RuntimeError("policy"))
     )
     assert browser_tx_audio_facts(radio).available is False
 
@@ -400,23 +408,39 @@ async def test_browser_tx_audio_denial_has_no_lifecycle_side_effects():
 
 
 @pytest.mark.asyncio
-async def test_browser_tx_audio_failed_start_keeps_handler_inactive():
+@pytest.mark.parametrize(
+    ("failure", "prior_active"),
+    [("start", True), ("factory", False), ("factory", True)],
+)
+async def test_browser_tx_audio_failed_start_or_transcoder_is_inactive(
+    monkeypatch, failure: str, prior_active: bool
+):
     radio = _neutral_tx_radio(
-        start_tx=AsyncMock(side_effect=RuntimeError("start failed")),
+        start_tx=AsyncMock(
+            side_effect=RuntimeError("start failed") if failure == "start" else None
+        ),
+        audio_tx_codec=(
+            AudioCodec.OPUS_1CH if failure == "start" else AudioCodec.PCM_1CH_16BIT
+        ),
     )
     handler = AudioHandler(SimpleNamespace(send_text=AsyncMock()), radio)
-    handler._tx_active = True
-    with pytest.raises(RuntimeError, match="start failed"):
+    handler._tx_active = prior_active
+    if failure == "factory":
+        monkeypatch.setattr(
+            audio_module,
+            "create_pcm_opus_transcoder",
+            Mock(side_effect=RuntimeError("factory failed")),
+        )
+    with pytest.raises(RuntimeError, match=f"{failure} failed"):
         await handler._handle_control({"type": "audio_start", "direction": "tx"})
-    assert handler._tx_active is False
-
-
-# ── /api/v1/state tests ───────────────────────────────────────
+    assert (handler._tx_active, handler._tx_lease) == (False, None)
+    if failure == "factory":
+        assert handler._transcoder is None
+        assert radio.start_tx.await_count == 0
+        assert radio.stop_tx.await_count == int(prior_active)
 
 
 class TestStateEndpoint:
-    """Verify /api/v1/state adapts to receiver count."""
-
     @pytest.mark.asyncio
     async def test_state_dual_receiver_includes_sub(self):
         radio = _make_radio("IC-7610")

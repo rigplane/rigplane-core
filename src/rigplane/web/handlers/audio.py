@@ -12,7 +12,12 @@ from typing import TYPE_CHECKING, Any, Callable, Protocol, cast
 from rigplane.audio._codecs import decode_ulaw_to_pcm16
 from rigplane.audio._transcoder import PcmOpusTranscoder, create_pcm_opus_transcoder
 from ...audio.bus import STAGE_RX_POST_DSP
-from ...audio.route import TxAudioSource, resolve_audio_route, rigctld_wsjtx_policy
+from ...audio.route import (
+    DataModePolicy,
+    TxAudioSource,
+    resolve_audio_route,
+    rigctld_wsjtx_policy,
+)
 from ...audio.session import RxSubscription
 from ...audio.usb_driver import AudioAlreadyStartedError
 from ...dsp.tap_registry import TapHandle, TapRegistry
@@ -139,11 +144,35 @@ class BrowserTxAudioFacts:
 def _tx_codec_for_radio(radio: object) -> AudioCodec | None:
     tx_codec = getattr(radio, "audio_tx_codec", None)
     if tx_codec is None:
-        contract = getattr(radio, "audio_stream_contract", None)
-        tx_codec = getattr(contract, "tx_codec", None)
+        tx_codec = getattr(
+            getattr(radio, "audio_stream_contract", None), "tx_codec", None
+        )
     if tx_codec is None:
         tx_codec = getattr(radio, "audio_codec", None)
+    if not isinstance(tx_codec, AudioCodec) or tx_codec not in (
+        AudioCodec.PCM_1CH_16BIT,
+        AudioCodec.OPUS_1CH,
+    ):
+        return None
     return tx_codec
+
+
+def _has_browser_tx_path(radio: object, codec: AudioCodec) -> bool:
+    neutral = tuple(
+        getattr(radio, name, None) for name in ("start_tx", "push_tx", "stop_tx")
+    )
+    session = getattr(radio, "audio_session", None)
+    if session is not None:
+        return callable(getattr(session, "acquire_tx", None)) and all(
+            callable(method) for method in neutral
+        )
+    if any(method is not None for method in neutral):
+        return all(callable(method) for method in neutral)
+    suffix = "pcm" if codec == AudioCodec.PCM_1CH_16BIT else "opus"
+    return all(
+        callable(getattr(radio, f"{operation}_audio_tx_{suffix}", None))
+        for operation in ("start", "push", "stop")
+    )
 
 
 def browser_tx_audio_facts(radio: "Radio | None") -> BrowserTxAudioFacts:
@@ -153,55 +182,42 @@ def browser_tx_audio_facts(radio: "Radio | None") -> BrowserTxAudioFacts:
     if radio is None or not {CAP_AUDIO, CAP_TX}.issubset(caps):
         return unavailable
 
-    neutral_names = ("start_tx", "push_tx", "stop_tx")
     try:
-        neutral = tuple(getattr(radio, name, None) for name in neutral_names)
-        session = getattr(radio, "audio_session", None)
-        if session is not None:
-            usable = callable(getattr(session, "acquire_tx", None)) and all(
-                callable(method) for method in neutral
-            )
-        elif any(method is not None for method in neutral):
-            usable = all(callable(method) for method in neutral)
-        else:
-            suffix = (
-                "pcm"
-                if _tx_codec_for_radio(radio) == AudioCodec.PCM_1CH_16BIT
-                else "opus"
-            )
-            usable = all(
-                callable(getattr(radio, f"{operation}_audio_tx_{suffix}", None))
-                for operation in ("start", "push", "stop")
-            )
+        codec = _tx_codec_for_radio(radio)
+        if codec is None:
+            return unavailable
         route = resolve_audio_route(radio)
+        source, policy = route.tx_audio_source, route.data_mode_policy
+        valid_route = (
+            isinstance(source, TxAudioSource)
+            and isinstance(policy, DataModePolicy)
+            and (source, policy)
+            in {
+                (TxAudioSource.LAN, DataModePolicy.DATA2_LAN),
+                (TxAudioSource.LAN, DataModePolicy.LEGACY),
+                (TxAudioSource.USB, DataModePolicy.DATA1_USB),
+                (TxAudioSource.ACC, DataModePolicy.LEGACY),
+            }
+        )
+        if not _has_browser_tx_path(radio, codec) or not valid_route:
+            return unavailable
+        candidate = (
+            rigctld_wsjtx_policy(route)[1] if CAP_MOD_INPUT_ROUTING in caps else None
+        )
+        if candidate is not None and (
+            source is not TxAudioSource.LAN
+            or not isinstance(candidate, int)
+            or isinstance(candidate, bool)
+            or not 0 <= candidate <= 9_007_199_254_740_991
+        ):
+            return unavailable
+        return BrowserTxAudioFacts(True, source.value, candidate)
     except Exception:
         return unavailable
-    if not usable or route.tx_audio_source is TxAudioSource.UNAVAILABLE:
-        return unavailable
-
-    required_source = None
-    if CAP_MOD_INPUT_ROUTING in caps:
-        candidate = rigctld_wsjtx_policy(route)[1]
-        if (
-            isinstance(candidate, int)
-            and not isinstance(candidate, bool)
-            and 0 <= candidate <= 9_007_199_254_740_991
-        ):
-            required_source = candidate
-    return BrowserTxAudioFacts(True, route.tx_audio_source.value, required_source)
 
 
 def _is_benign_tx_restart(exc: RuntimeError) -> bool:
-    """True when TX start failed only because the stream is already open.
-
-    The Icom LAN stream and the USB driver raise
-    :class:`~rigplane.audio.usb_driver.AudioAlreadyStartedError` (a
-    ``RuntimeError`` subclass, MOR-563), meaning the poller (or a prior
-    client) already opened TX and the handler can simply reuse it —
-    re-raising would close the audio WebSocket (MOR-541 review note,
-    MOR-544). The substring fallback covers not-yet-migrated raisers that
-    still signal the same condition with a bare ``RuntimeError``.
-    """
+    """Return whether TX is already open and safe to reuse."""
     if isinstance(exc, AudioAlreadyStartedError):
         return True
     text = str(exc).lower()
@@ -1398,27 +1414,26 @@ class AudioHandler:
                     self._tx_active = False
                     await self._send_error("audio_start: TX audio unavailable")
                     return
+                was_active = self._tx_active or self._tx_lease is not None
                 self._tx_active = False
-                self._ensure_tx_transcoder()
+                try:
+                    if self._tx_codec() == AudioCodec.PCM_1CH_16BIT:
+                        self._ensure_tx_transcoder()
+                except Exception:
+                    if was_active:
+                        await self._stop_tx(
+                            reason="failed TX audio restart", force=True
+                        )
+                    raise
                 session = getattr(self._radio, "audio_session", None)
                 if session is not None:
-                    # Shared AudioSession lease (MOR-580, ADR §3.3): the
-                    # session's single-lock refcount serializes arming
-                    # with other lease holders (bridge, poller PTT), so
-                    # the double-start benign-tolerance below is
-                    # unnecessary on this path.
+                    # Shared session serializes arming with other lease holders.
                     if self._tx_lease is None or self._tx_lease.released:
                         self._tx_lease = await session.acquire_tx("web")
                 else:
-                    # Legacy direct-arm fallback for radios without a
-                    # session (bare test doubles, not-yet-migrated
-                    # backends).
                     try:
                         start_tx = getattr(self._radio, "start_tx", None)
                         if start_tx is not None:
-                            # Neutral AudioTransport surface (MOR-544):
-                            # backend resolves the TX format from its
-                            # negotiated contract.
                             await start_tx()
                         else:
                             await self._legacy_tx_lifecycle("start")
@@ -1440,15 +1455,7 @@ class AudioHandler:
             self._handle_audio_stats(msg)
 
     def _handle_audio_stats(self, msg: dict[str, Any]) -> None:
-        """Record the client's periodic link-quality report (MOR-585).
-
-        Stats collection only (ADR §3.6 step 18): the browser player
-        reports playback ``underruns``, ``buffer_depth_ms`` and
-        ``dropped_frames`` every ~1.5 s; only numeric fields are kept
-        (latest-wins), and unknown numeric fields pass through so future
-        carriers (WebRTC RTCP, step 19) can reuse the envelope.  Clients
-        that never send ``audio_stats`` are entirely unaffected.
-        """
+        """Record the client's latest numeric link-quality report."""
         stats: dict[str, int | float] = {}
         for key, value in msg.items():
             if key == "type" or isinstance(value, bool):
@@ -1653,46 +1660,19 @@ class AudioHandler:
         await self._send_json({"type": "error", "message": message})
 
     def _ensure_tx_transcoder(self) -> None:
-        """Create (or recreate) the TX Opus→PCM transcoder at the radio's rate.
-
-        TX-side fix for issue #691: previously the transcoder was constructed
-        in ``__init__`` before the radio's negotiated ``audio_sample_rate`` was
-        known, so the browser's 24 kHz Opus stream was decoded to 48 kHz PCM
-        and the radio silently dropped TX audio. Called on ``audio_start
-        direction=tx``, when the rate is guaranteed available.
-        """
+        """Prepare the required Opus→PCM transcoder before TX starts."""
         rate = self._tx_sample_rate()
         if self._transcoder is not None and self._transcoder_rate == rate:
             return
-        try:
-            self._transcoder = create_pcm_opus_transcoder(sample_rate=rate)
-            self._transcoder_rate = rate
-            logger.info("audio: TX transcoder ready at %d Hz", rate)
-        except Exception:
-            logger.debug("audio: TX transcoder unavailable (opus codec missing?)")
-            self._transcoder = None
-            self._transcoder_rate = 0
+        self._transcoder, self._transcoder_rate = None, 0
+        self._transcoder = create_pcm_opus_transcoder(sample_rate=rate)
+        self._transcoder_rate = rate
+        logger.info("audio: TX transcoder ready at %d Hz", rate)
 
     def _tx_codec(self) -> AudioCodec | None:
-        # Under the ``rigplane.web.*`` strict override with
-        # ``follow_imports = "skip"``, ``AudioCodec`` resolves to ``Any`` in
-        # this module's view, so the function effectively returns
-        # ``Any | None`` and the ``getattr`` results below are also ``Any``.
-        # That triggers ``no-any-return``; suppress it locally rather than
-        # carrying a runtime-redundant ``cast``.  ``warn_unused_ignores`` is
-        # off for ``rigplane.web.*``, so the ignore stays safe in any future
-        # non-strict context.
-        #
-        # Preference order (MOR-544): first-class ``audio_tx_codec``
-        # (AudioTransport) → contract ``tx_codec`` → RX ``audio_codec``.
         return _tx_codec_for_radio(self._radio)  # type: ignore[no-any-return]
 
     def _tx_sample_rate(self) -> int:
-        """Resolve the TX sample rate: contract → radio property → 48000.
-
-        Single source for both the legacy ``start_audio_tx_pcm`` call and
-        the TX transcoder (the two used to carry half-duplicated fallback
-        chains; unified in MOR-544)."""
         contract = getattr(self._radio, "audio_stream_contract", None)
         sr = getattr(contract, "tx_sample_rate_hz", None)
         if not isinstance(sr, int) or isinstance(sr, bool) or sr <= 0:
@@ -1702,24 +1682,17 @@ class AudioHandler:
         return 48000
 
     async def _legacy_tx_lifecycle(self, op: str) -> None:
-        """Per-codec TX ``"start"``/``"stop"`` fallback for radios without
-        the neutral ``AudioTransport`` surface (MOR-544)."""
-        if self._tx_codec() == AudioCodec.PCM_1CH_16BIT:
-            if op == "start":
-                await self._radio.start_audio_tx_pcm(  # type: ignore[union-attr]
-                    sample_rate=self._tx_sample_rate()
-                )
-            else:
-                await self._radio.stop_audio_tx_pcm()  # type: ignore[union-attr]
-        elif op == "start":
-            await self._radio.start_audio_tx_opus()  # type: ignore[union-attr]
+        codec = self._tx_codec()
+        if codec not in (AudioCodec.PCM_1CH_16BIT, AudioCodec.OPUS_1CH):
+            raise RuntimeError("browser TX audio codec is unresolved")
+        suffix = "pcm" if codec == AudioCodec.PCM_1CH_16BIT else "opus"
+        method = getattr(self._radio, f"{op}_audio_tx_{suffix}")
+        if op == "start" and suffix == "pcm":
+            await method(sample_rate=self._tx_sample_rate())
         else:
-            await self._radio.stop_audio_tx_opus()  # type: ignore[union-attr]
+            await method()
 
     async def _push_tx(self, data: bytes, *, legacy_method: str) -> None:
-        """Push TX bytes via the held session lease (MOR-580); without one,
-        via neutral ``push_tx``, falling back to the named legacy per-codec
-        push method (MOR-544)."""
         lease = self._tx_lease
         if lease is not None and not lease.released:
             await lease.push(data)
@@ -1745,10 +1718,7 @@ class AudioHandler:
             preferred_rx_codec=preferred_rx_codec,
             identity=identity,
         )
-        # Per-connection negotiation ack (MOR-584): tell the client which
-        # wire codec/format it will receive.  Advisory and fire-and-forget
-        # — legacy clients ignore text frames on the audio WS and keep
-        # decoding from the per-frame binary header.
+        # Advisory per-connection format ack; legacy clients ignore it.
         await self._send_json(
             {
                 "type": "audio_format",
@@ -1813,7 +1783,6 @@ class AudioHandler:
                         )
                         return
                     try:
-                        # Decode Opus → PCM16
                         pcm_data = self._transcoder.opus_to_pcm(audio_data)
                         await self._push_tx(pcm_data, legacy_method="push_audio_tx_pcm")
                         tx_data_desc = f"{len(pcm_data)} bytes pcm"
@@ -1838,7 +1807,6 @@ class AudioHandler:
                     )
                     return
 
-                # Log every 50th frame to avoid spam
                 if not hasattr(self, "_tx_frame_count"):
                     self._tx_frame_count = 0
                 self._tx_frame_count += 1
