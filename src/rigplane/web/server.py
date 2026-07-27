@@ -60,7 +60,7 @@ from ..core.state_pipeline_contracts import (
 )
 from ..core.state_store import StateSnapshot, StateStore
 from ..radio_state import RadioState
-from ..capabilities import CAP_AUDIO, CAP_SCOPE
+from ..capabilities import CAP_AUDIO
 from ..exceptions import TimeoutError as RigplaneTimeoutError
 from ..audio.bus import STAGE_RX_POST_DSP
 from ..audio.session import AudioSession, AudioSessionEvent
@@ -836,6 +836,7 @@ class WebServer:
             on_client_count_change=self._broadcast_ws_client_state_update,
             adaptive_egress=self._config.audio_adaptive_egress,
         )
+        self._hardware_scope_available = _supports_scope(radio)
         # Gated WebRTC transport session manager (A2.3 / MOR-307). Lazily
         # constructed on first use so the import stays out of the no-extra path.
         self._webrtc_sessions: WebRtcSessionManager | None = None
@@ -845,20 +846,25 @@ class WebServer:
         # PCM tap is lazy — enabled only when audio-scope clients connect.
         self._audio_fft_scope: AudioFftScope | None = None
         _has_audio = (CAP_AUDIO in radio.capabilities) if radio is not None else False
-        _has_scope = (CAP_SCOPE in radio.capabilities) if radio is not None else False
-        if radio is not None and _has_audio:
-            self._audio_fft_scope = AudioFftScope(fft_size=2048, fps=20, avg_count=2)
+        pcm_tap_source = self._audio_broadcaster.rx_pcm_tap_source
+        if pcm_tap_source is not None:
+            self._audio_fft_scope = AudioFftScope(
+                fft_size=2048,
+                fps=20,
+                avg_count=2,
+                sample_rate=pcm_tap_source.sample_rate,
+            )
             # AudioFftScope.on_frame() is a single-slot setter: register one
             # dispatch method that fans out to BOTH broadcasters. Registering
             # twice would clobber the first callback (MOR-241).
             self._audio_fft_scope.on_frame(self._dispatch_audio_fft_frame)
-            if not _has_scope:
+            if not self._hardware_scope_available:
                 # No hardware scope — audio FFT also feeds /api/v1/scope.
                 self._audio_broadcaster.set_pcm_tap(self._audio_fft_scope.feed_audio)
             logger.info(
                 "Audio FFT scope available (has_audio=%s, has_hw_scope=%s)",
-                _has_audio,
-                _has_scope,
+                True,
+                self._hardware_scope_available,
             )
         # Audio analyzer: lightweight SNR estimator, tapped from PCM stream.
         self._audio_analyzer: AudioAnalyzer | None = None
@@ -1033,7 +1039,7 @@ class WebServer:
 
     def _set_scope_data_callback(self, callback: Any) -> None:
         """Set the scope data callback on the radio if it supports it."""
-        if self._radio is not None and CAP_SCOPE in self._radio.capabilities:
+        if self._radio is not None and self._hardware_scope_available:
             self._radio.on_scope_data(callback)  # type: ignore[attr-defined]
 
     # ------------------------------------------------------------------
@@ -1053,7 +1059,7 @@ class WebServer:
             if not was_registered:
                 self._broadcast_ws_client_state_update()
             if self._radio is not None:
-                if not _supports_scope(self._radio):
+                if not self._hardware_scope_available:
                     logger.info(
                         "scope: active radio does not expose runtime scope support"
                     )
@@ -1083,7 +1089,7 @@ class WebServer:
         if (
             not self._scope_handlers
             and self._radio is not None
-            and _supports_scope(self._radio)
+            and self._hardware_scope_available
         ):
             self._set_scope_data_callback(None)
             if self._scope_enabled:
@@ -1091,7 +1097,7 @@ class WebServer:
 
     async def _disable_scope_async(self) -> None:
         """Disable scope on the radio when no more handlers are connected."""
-        if self._radio is None or not _supports_scope(self._radio):
+        if self._radio is None or not self._hardware_scope_available:
             return
         await asyncio.sleep(self._scope_disable_grace)
         if self._scope_handlers:
@@ -1122,10 +1128,7 @@ class WebServer:
         the real scope, so the audio FFT never touches it (MOR-241).
         """
         self._broadcast_audio_scope(frame)
-        _has_scope = (
-            CAP_SCOPE in self._radio.capabilities if self._radio is not None else False
-        )
-        if not _has_scope:
+        if not self._hardware_scope_available:
             self._broadcast_scope(frame)
 
     def _broadcast_scope(self, frame: Any) -> None:
@@ -1166,12 +1169,7 @@ class WebServer:
         self._audio_scope_handlers.discard(handler)
         if not self._audio_scope_handlers and self._audio_fft_scope is not None:
             # Only disable tap for hardware-scope radios (non-hw radios keep tap always on)
-            _has_scope = (
-                CAP_SCOPE in self._radio.capabilities
-                if self._radio is not None
-                else False
-            )
-            if _has_scope:
+            if self._hardware_scope_available:
                 self._audio_broadcaster.set_pcm_tap(None)
                 logger.info("audio-scope: PCM tap disabled (no clients)")
         logger.info(
@@ -1799,7 +1797,7 @@ class WebServer:
             if (
                 self._scope_handlers
                 and self._radio is not None
-                and _supports_scope(self._radio)
+                and self._hardware_scope_available
             ):
                 self._set_scope_data_callback(self._broadcast_scope)
                 self._command_queue.put(EnableScope())
@@ -1833,7 +1831,7 @@ class WebServer:
             while True:
                 if not self._scope_handlers or self._radio is None:
                     return
-                if not _supports_scope(self._radio):
+                if not self._hardware_scope_available:
                     return
                 if self._radio_ready():
                     self._set_scope_data_callback(self._broadcast_scope)
@@ -1887,7 +1885,7 @@ class WebServer:
                 await asyncio.sleep(self._scope_health_interval)
                 if not self._scope_handlers or self._radio is None:
                     continue
-                if not _supports_scope(self._radio):
+                if not self._hardware_scope_available:
                     continue
                 # Don't re-enable scope while radio is disconnected
                 if not self._radio_ready():
@@ -2781,7 +2779,7 @@ class WebServer:
                 "keyboard": _serialize_keyboard_config(profile),
                 "scopeSource": (
                     "hardware"
-                    if "scope" in caps
+                    if self._hardware_scope_available
                     else ("audio_fft" if self._audio_fft_scope is not None else None)
                 ),
                 "audioFftAvailable": self._audio_fft_scope is not None,
