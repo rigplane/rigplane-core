@@ -35,7 +35,9 @@ from rigplane.audio.backend import (
 from rigplane.audio.usb_driver import UsbAudioDriver
 from rigplane.backends.ic705.serial import Ic705SerialRadio
 from rigplane.capabilities import CAP_AUDIO, CAP_SCOPE
+from rigplane.radio import IcomRadio
 from rigplane.scope import ScopeFrame
+from rigplane.types import AudioCodec
 from rigplane.web.server import WebConfig, WebServer
 
 
@@ -119,21 +121,19 @@ class _FakeSerialCivLink:
         return None
 
 
-class _HardwareScopeRadio:
-    """Minimal fake radio that advertises BOTH audio and hardware scope.
+def _make_hardware_and_pcm_radio() -> IcomRadio:
+    """Build an unconnected radio with BOTH hardware scope and concrete PCM.
 
     Used to prove the IC-7610-class non-regression: a hardware-scope radio
     must still receive audio-scope frames but must NOT have the audio FFT
     drive ``/api/v1/scope`` (its main spectrum comes from the real scope).
     """
-
-    def __init__(self) -> None:
-        from rigplane.radio_state import RadioState
-
-        self.capabilities = frozenset({CAP_AUDIO, CAP_SCOPE})
-        self.radio_state = RadioState()
-        self.audio_codec = None
-        self.audio_sample_rate = 48_000
+    return IcomRadio(
+        "127.0.0.1",
+        model="IC-7610",
+        audio_codec=AudioCodec.PCM_1CH_16BIT,
+        audio_sample_rate=48_000,
+    )
 
 
 class _FakeScopeHandler:
@@ -153,7 +153,7 @@ def _make_pcm_noise(num_samples: int, amplitude: int = 5000) -> bytes:
     """Generate PCM16 mono white noise frames (radio RX shape)."""
     rng = np.random.default_rng(241)
     samples = (rng.uniform(-1, 1, num_samples) * amplitude).astype(np.int16)
-    return samples.tobytes()
+    return bytes(samples.tobytes())
 
 
 def _feed_pcm_through_tap(server: WebServer, total_samples: int) -> None:
@@ -179,7 +179,7 @@ def _feed_pcm_through_tap(server: WebServer, total_samples: int) -> None:
 # ── X6200 (no hardware scope) ────────────────────────────────────────────────
 
 
-@pytest.mark.asyncio
+@pytest.mark.asyncio  # type: ignore[untyped-decorator]
 async def test_x6200_audio_scope_receives_fft_frames() -> None:
     """Non-hardware-scope X6200 must relay FFT frames to /api/v1/audio-scope.
 
@@ -201,6 +201,9 @@ async def test_x6200_audio_scope_receives_fft_frames() -> None:
         # Sanity: X6200 has audio FFT but no hardware scope.
         assert CAP_AUDIO in radio.capabilities
         assert CAP_SCOPE not in radio.capabilities
+        assert callable(radio.audio_session.subscribe_rx)
+        assert radio.audio_codec == AudioCodec.PCM_1CH_16BIT
+        assert radio.audio_sample_rate > 0
 
         server = WebServer(radio=radio, config=WebConfig())
         assert server._audio_fft_scope is not None, "audio FFT scope not wired"
@@ -241,7 +244,12 @@ def test_hardware_scope_radio_audio_fft_only_on_audio_scope() -> None:
     audio-scope path but must NEVER be pushed to /api/v1/scope (whose
     frames come from the real hardware scope).
     """
-    radio = _HardwareScopeRadio()
+    radio = _make_hardware_and_pcm_radio()
+    assert {CAP_AUDIO, CAP_SCOPE} <= radio.capabilities
+    assert callable(radio.audio_session.subscribe_rx)
+    assert radio.audio_codec == AudioCodec.PCM_1CH_16BIT
+    assert radio.audio_sample_rate > 0
+
     server = WebServer(radio=radio, config=WebConfig())
     assert server._audio_fft_scope is not None
 
