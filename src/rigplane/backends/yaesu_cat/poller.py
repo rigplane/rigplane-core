@@ -26,8 +26,14 @@ import logging
 from collections.abc import Awaitable
 from typing import TYPE_CHECKING, Any, Callable, Sequence
 
+from rigplane.core.observation_adapter import ProviderObservationAdapter
+from rigplane.core.state_acquisition_policy import RadioAcquisitionProfile
+from rigplane.core.state_pipeline_contracts import FieldPath
+from rigplane.core.tx_target import KnownTxTarget, UnknownTxTarget
+
 from ...exceptions import ConnectionError as RadioConnectionError
 from ...radio_state import YaesuStateExtension
+from .transport import CatTransportError
 
 if TYPE_CHECKING:
     from ..._poller_types import CommandQueue
@@ -43,6 +49,7 @@ _FAST_INTERVAL: float = 0.075  # 13.3 Hz
 _MEDIUM_INTERVAL: float = 0.200  # 5 Hz
 _SLOW_INTERVAL: float = 1.000  # 1 Hz
 _EMA_ALPHA: float = 0.3
+_TX_TARGET_PATH = FieldPath.global_("tx_state", "tx_target")
 
 
 class YaesuCatPoller:
@@ -96,6 +103,9 @@ class YaesuCatPoller:
         self._ema_s_main: float | None = None
         self._ema_s_sub: float | None = None
         self._last_ptt = bool(getattr(radio.radio_state, "ptt", False))
+        self._tx_target_generation = self._current_tx_target_generation()
+        self._tx_target_invalidated_generation: tuple[str | None, int] | None = None
+        self._tx_target_known_generation: tuple[str | None, int] | None = None
 
     # ------------------------------------------------------------------
     # Lifecycle
@@ -159,17 +169,85 @@ class YaesuCatPoller:
         if self._callback is not None and self._observation_callback is None:
             self._callback(self._radio.radio_state)
 
+    def _tx_target_profile(self) -> RadioAcquisitionProfile | None:
+        profile = getattr(
+            getattr(self._radio, "profile", None), "state_acquisition", None
+        )
+        if not isinstance(profile, RadioAcquisitionProfile):
+            return None
+        return profile if profile.capability_for(_TX_TARGET_PATH).can_poll else None
+
+    def _current_tx_target_generation(self) -> tuple[str | None, int]:
+        profile = self._tx_target_profile()
+        stats = getattr(getattr(self._radio, "_transport", None), "stats", None)
+        reconnects = getattr(stats, "reconnects", 0)
+        if not isinstance(reconnects, int) or isinstance(reconnects, bool):
+            reconnects = 0
+        return (None if profile is None else profile.provider, reconnects)
+
+    def _invalidate_tx_target(self) -> None:
+        callback = self._observation_callback
+        profile = self._tx_target_profile()
+        generation = self._current_tx_target_generation()
+        known = self._tx_target_known_generation == self._tx_target_generation
+        if generation != self._tx_target_generation:
+            self._tx_target_known_generation = None
+        self._tx_target_generation = generation
+        if (
+            callback is None
+            or profile is None
+            or self._tx_target_invalidated_generation == generation
+        ):
+            return
+        adapter = ProviderObservationAdapter(
+            profile=profile,
+            source="yaesu_poll_response",
+            transport="serial",
+        )
+        observations = (
+            adapter.observation(
+                _TX_TARGET_PATH,
+                UnknownTxTarget(reason="stale" if known else "not-observed"),
+                native_id="connection_generation",
+            ),
+        )
+        self._tx_target_invalidated_generation = generation
+        try:
+            callback(observations)
+        except (Exception, asyncio.CancelledError):
+            logger.warning("YaesuCatPoller: TX target callback failed", exc_info=True)
+
+    def _sync_tx_target_generation(self) -> tuple[str | None, int]:
+        generation = self._current_tx_target_generation()
+        if generation != self._tx_target_generation:
+            self._invalidate_tx_target()
+        return generation
+
     async def _emit_medium_observations(self) -> bool:
         if self._observation_callback is None:
             return False
         from .observations import YAESU_PTT_PATH, YaesuObservationAdapter
 
-        observations = await YaesuObservationAdapter.from_radio(
-            self._radio
-        ).poll_medium()
+        generation = self._sync_tx_target_generation()
+        try:
+            observations = await YaesuObservationAdapter.from_radio(
+                self._radio
+            ).poll_medium()
+        except (RadioConnectionError, ConnectionError, OSError, CatTransportError):
+            self._invalidate_tx_target()
+            raise
+        if self._current_tx_target_generation() != generation:
+            observations = tuple(
+                item for item in observations if item.path != _TX_TARGET_PATH
+            )
+            self._invalidate_tx_target()
         for observation in observations:
             if observation.path == YAESU_PTT_PATH:
                 self._last_ptt = bool(observation.value)
+            elif observation.path == _TX_TARGET_PATH:
+                self._tx_target_invalidated_generation = None
+                if isinstance(observation.value, KnownTxTarget):
+                    self._tx_target_known_generation = generation
         self._observation_callback(observations)
         return True
 
@@ -221,11 +299,17 @@ class YaesuCatPoller:
         self._reconnecting = True
         try:
             logger.warning("YaesuCatPoller: triggering auto-reconnect")
+            self._invalidate_tx_target()
             await transport.reconnect()
             logger.info("YaesuCatPoller: reconnected successfully")
         except Exception:
             logger.error("YaesuCatPoller: reconnect failed", exc_info=True)
         finally:
+            generation = self._current_tx_target_generation()
+            if generation != self._tx_target_generation:
+                self._tx_target_known_generation = None
+                self._tx_target_invalidated_generation = None
+            self._tx_target_generation = generation
             self._reconnecting = False
 
     async def _run_poll_cycle(
@@ -244,6 +328,7 @@ class YaesuCatPoller:
                 continue
             try:
                 async with self._lock:
+                    self._sync_tx_target_generation()
                     await coro_fn()
                 _conn_backoff = 0.0  # reset on success
             except asyncio.CancelledError:
