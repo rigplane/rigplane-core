@@ -3,11 +3,17 @@
 from __future__ import annotations
 
 import json
+from dataclasses import FrozenInstanceError
 from typing import Any
 
 import pytest
 
 from rigplane.core.state_store import StateSnapshot, StateStore
+from rigplane.core.tx_target import (
+    KnownTxTarget,
+    UnknownTxTarget,
+    tx_target_from_dict,
+)
 from rigplane.core.state_pipeline_contracts import (
     CapabilityMetadata,
     DEFAULT_FIELD_REGISTRY,
@@ -245,6 +251,86 @@ def test_default_registry_contains_representative_state_families() -> None:
         DEFAULT_FIELD_REGISTRY.require(examples["volume"]).family
         is FieldFamily.OPERATOR_CONTROLS
     )
+
+
+def test_tx_target_values_are_immutable_and_serialize_exactly() -> None:
+    known = KnownTxTarget(receiver="SUB", slot="B", frequency_hz=14_074_000)
+    unknown = UnknownTxTarget(reason="contradiction")
+
+    assert known.to_dict() == {
+        "status": "known",
+        "receiver": "SUB",
+        "slot": "B",
+        "frequencyHz": 14_074_000,
+    }
+    assert unknown.to_dict() == {"status": "unknown", "reason": "contradiction"}
+    assert tx_target_from_dict(known.to_dict()) == known
+    assert tx_target_from_dict(unknown.to_dict()) == unknown
+    with pytest.raises(FrozenInstanceError):
+        known.receiver = "MAIN"  # type: ignore[misc]
+
+
+@pytest.mark.parametrize(  # type: ignore[untyped-decorator]
+    "kwargs",
+    [
+        {"receiver": "main", "slot": None, "frequency_hz": None},
+        {"receiver": "MAIN", "slot": "C", "frequency_hz": None},
+        {"receiver": "MAIN", "slot": None, "frequency_hz": True},
+        {"receiver": "MAIN", "slot": None, "frequency_hz": 0},
+        {"receiver": "MAIN", "slot": None, "frequency_hz": -1},
+        {"receiver": "MAIN", "slot": None, "frequency_hz": 14_074_000.0},
+        {"receiver": "MAIN", "slot": None, "frequency_hz": float("inf")},
+    ],
+)
+def test_known_tx_target_rejects_invalid_values(kwargs: dict[str, object]) -> None:
+    with pytest.raises(ValueError):
+        KnownTxTarget(**kwargs)  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize(  # type: ignore[untyped-decorator]
+    "payload",
+    [
+        {"status": "unknown", "reason": "missing"},
+        {"status": "unknown", "reason": "stale", "receiver": "MAIN"},
+        {
+            "status": "known",
+            "receiver": "MAIN",
+            "slot": None,
+            "frequencyHz": None,
+            "backend": "icom",
+        },
+        {"status": "known", "receiver": "MAIN", "slot": None},
+        {"status": "other"},
+    ],
+)
+def test_tx_target_decoder_rejects_invalid_or_extra_fields(
+    payload: dict[str, object],
+) -> None:
+    with pytest.raises(ValueError):
+        tx_target_from_dict(payload)
+
+
+def test_tx_target_registry_and_observation_contract() -> None:
+    path = FieldPath.global_("tx_state", "tx_target")
+    spec = DEFAULT_FIELD_REGISTRY.require(path)
+    target = KnownTxTarget(receiver="MAIN", slot=None, frequency_hz=None)
+    store = StateStore()
+
+    assert spec.family is FieldFamily.TX_STATE
+    assert spec.value_type == "object"
+    assert spec.readable is True
+    assert spec.writable is False
+
+    observation = _store_observation(path, target, at=1.0)
+    store.apply(observation)
+    assert store.snapshot().field(path).value == target
+    assert Observation.from_dict(observation.to_dict()) == observation
+
+    decoded = _store_observation(path, target.to_dict(), at=2.0)
+    assert decoded.value == target
+
+    with pytest.raises(ValueError, match="canonical fields"):
+        _store_observation(path, {**target.to_dict(), "backend": "icom"}, at=3.0)
 
 
 def test_global_dial_lock_registered_as_tx_state_bool() -> None:

@@ -11,6 +11,8 @@ from dataclasses import dataclass
 from enum import StrEnum
 from typing import Any, Literal, cast, get_args
 
+from rigplane.core.tx_target import tx_target_from_dict, validate_tx_target
+
 __all__ = [
     "CapabilityMetadata",
     "ChangeSet",
@@ -71,6 +73,7 @@ _COMMAND_SOURCES: frozenset[str] = frozenset(get_args(CommandSource))
 _COMMAND_PRIORITIES: frozenset[str] = frozenset(get_args(CommandPriority))
 _PENDING_POLICIES: frozenset[str] = frozenset(get_args(PendingPolicy))
 _COMMAND_STATES: frozenset[str] = frozenset(get_args(CommandLifecycleState))
+_TX_TARGET_PATH = "global.tx_state.tx_target"
 
 
 class FieldScope(StrEnum):
@@ -642,11 +645,23 @@ class Observation:
             raise ValueError("max_age must be non-negative")
         for item in self.quality:
             _validate_token(item, label="quality")
+        if str(self.path) == _TX_TARGET_PATH:
+            target = (
+                tx_target_from_dict(self.value)
+                if isinstance(self.value, Mapping)
+                else validate_tx_target(self.value)
+            )
+            object.__setattr__(self, "value", target)
 
     def to_dict(self) -> dict[str, Any]:
+        value = (
+            validate_tx_target(self.value).to_dict()
+            if str(self.path) == _TX_TARGET_PATH
+            else self.value
+        )
         return {
             "path": str(self.path),
-            "value": self.value,
+            "value": value,
             "source": self.source.to_dict(),
             "timestampMonotonic": self.timestamp_monotonic,
             "quality": list(self.quality),
@@ -1110,6 +1125,7 @@ def _global_specs() -> tuple[FieldSpec, ...]:
         )
 
     return (
+        spec(FieldPath.global_("tx_state", "tx_target"), "object"),
         spec(FieldPath.global_("tx_state", "ptt"), "bool", writable=True),
         spec(FieldPath.global_("tx_state", "power_on"), "bool", writable=True),
         spec(FieldPath.global_("tx_state", "rit_on"), "bool", writable=True),
