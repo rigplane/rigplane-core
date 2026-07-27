@@ -54,6 +54,10 @@ class ManagedRadioRuntime:
         self._provider_generation = 0
         self._bound_generation: int | None = None
         self._provider_state: _ProviderLifecycleState = "unbound"
+        self._lifecycle_lock = asyncio.Lock()
+        self._observation_version = 0
+        self._terminal = False
+        self._shutdown_transition: TxTransition | None = None
         self._shutdown_timeout = shutdown_timeout_seconds
 
     @property
@@ -69,12 +73,15 @@ class ManagedRadioRuntime:
 
     def _observe_ptt(self, observation: ProviderPttObservation) -> None:
         if (
-            self._provider_state == "bound"
+            not self._terminal
+            and self._provider_state == "bound"
             and observation.provider_generation
             == self._bound_generation
             == self._provider_generation
         ):
-            self._tx_safety.observe_ptt(observation)
+            transition = self._tx_safety.observe_ptt(observation)
+            if transition.outcome is TxOutcome.APPLIED:
+                self._observation_version += 1
 
     def _unbind(self) -> BaseException | None:
         lifecycle = self._provider_lifecycle
@@ -88,46 +95,78 @@ class ManagedRadioRuntime:
             return exc
         return None
 
-    async def replace_provider(self, *, ready: bool) -> TxTransition:
-        unbind_error = self._unbind()
-        self._provider_generation += 1
-        generation = self._provider_generation
-        transition = self._tx_safety.replace_provider(generation, ready=False)
-        self._provider_state = "unbound"
-        if unbind_error is not None:
-            raise unbind_error
-        lifecycle = self._provider_lifecycle
-        if lifecycle is None:
-            return transition
-        try:
-            lifecycle._bind_authoritative_ptt_observer(
-                provider_generation=generation, observer=self._observe_ptt
-            )
-        except BaseException:
-            try:
-                lifecycle._unbind_authoritative_ptt_observer()
-            except BaseException:
-                pass
-            raise
-        self._bound_generation = generation
-        self._provider_state = "bound"
-        if ready:
-            transition = self._tx_safety.set_provider_ready(generation, ready=True)
-        await self._service_effects(transition)
-        return transition
-
-    async def invalidate_provider(self, provider_generation: int) -> TxTransition:
-        if provider_generation != self._provider_generation:
-            return TxTransition(TxOutcome.STALE, self.tx_snapshot)
+    def _advance_provider(self) -> tuple[TxTransition, BaseException | None]:
         unbind_error = self._unbind()
         self._provider_generation += 1
         transition = self._tx_safety.replace_provider(
             self._provider_generation, ready=False
         )
         self._provider_state = "unbound"
-        if unbind_error is not None:
-            raise unbind_error
-        return transition
+        return transition, unbind_error
+
+    async def replace_provider(self, *, ready: bool) -> TxTransition:
+        async with self._lifecycle_lock:
+            if self._terminal:
+                return self._not_ready()
+            transition, unbind_error = self._advance_provider()
+            if unbind_error is not None:
+                raise unbind_error
+            lifecycle = self._provider_lifecycle
+            if lifecycle is None:
+                return transition
+            try:
+                lifecycle._bind_authoritative_ptt_observer(
+                    provider_generation=self._provider_generation,
+                    observer=self._observe_ptt,
+                )
+            except BaseException:
+                try:
+                    lifecycle._unbind_authoritative_ptt_observer()
+                except BaseException:
+                    pass
+                raise
+            self._bound_generation = self._provider_generation
+            self._provider_state = "bound"
+            if ready:
+                transition = self._tx_safety.set_provider_ready(
+                    self._provider_generation, ready=True
+                )
+            await self._service_effects(transition)
+            return transition
+
+    async def invalidate_provider(self, provider_generation: int) -> TxTransition:
+        async with self._lifecycle_lock:
+            if self._terminal:
+                return self._not_ready()
+            if provider_generation != self._provider_generation:
+                return TxTransition(TxOutcome.STALE, self.tx_snapshot)
+            transition, unbind_error = self._advance_provider()
+            if unbind_error is not None:
+                raise unbind_error
+            return transition
+
+    async def request_fresh_ptt(self) -> TxTransition:
+        async with self._lifecycle_lock:
+            lifecycle = self._provider_lifecycle
+            if (
+                self._terminal
+                or lifecycle is None
+                or self._provider_state != "bound"
+                or self._bound_generation != self._provider_generation
+            ):
+                return self._not_ready()
+            version = self._observation_version
+            try:
+                await lifecycle._request_authoritative_ptt_read(
+                    provider_generation=self._provider_generation,
+                    observer=self._observe_ptt,
+                )
+                if self._observation_version == version:
+                    raise RuntimeError("provider returned no authoritative PTT")
+            except BaseException:
+                self._advance_provider()
+                raise
+            return TxTransition(TxOutcome.APPLIED, self.tx_snapshot)
 
     async def set_provider_ready(self, *, ready: bool) -> TxTransition:
         if ready and (
@@ -170,17 +209,31 @@ class ManagedRadioRuntime:
         return transition
 
     async def shutdown(self, *, release_provider: ProviderRelease) -> TxTransition:
-        transition = self._tx_safety.emergency_release(
-            reason=TxReleaseReason.SERVER_SHUTDOWN
-        )
-        try:
-            if transition.outcome is not TxOutcome.NOOP:
-                await asyncio.wait_for(
-                    self._service_effects(transition),
-                    timeout=self._shutdown_timeout,
-                )
-        except TimeoutError:
-            pass
-        finally:
-            await release_provider()
-        return transition
+        async with self._lifecycle_lock:
+            if self._shutdown_transition is not None:
+                return self._shutdown_transition
+            self._terminal = True
+            transition = self._tx_safety.emergency_release(
+                reason=TxReleaseReason.SERVER_SHUTDOWN
+            )
+            self._shutdown_transition = transition
+            error: BaseException | None = None
+            try:
+                if transition.outcome is not TxOutcome.NOOP:
+                    await asyncio.wait_for(
+                        self._service_effects(transition),
+                        timeout=self._shutdown_timeout,
+                    )
+            except TimeoutError:
+                pass
+            except BaseException as exc:
+                error = exc
+            _, unbind_error = self._advance_provider()
+            try:
+                await release_provider()
+            except BaseException as exc:
+                error = error or exc
+            error = error or unbind_error
+            if error is not None:
+                raise error
+            return transition
