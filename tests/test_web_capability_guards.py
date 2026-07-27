@@ -7,9 +7,12 @@ from __future__ import annotations
 
 import json
 from dataclasses import replace
+from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
 
+from rigplane.web.handlers.audio import AudioHandler, browser_tx_audio_facts
 from rigplane.web.server import WebServer
 
 
@@ -53,6 +56,7 @@ def _make_radio(model: str = "IC-7610", caps: set[str] | None = None):
 
     radio = _FakeRadio()
     radio.model = model
+    radio.backend_id = "rigplane" if model == "IC-7610" else "yaesu_cat"
     radio.connected = True
     radio.control_connected = False
     radio.radio_ready = True
@@ -169,6 +173,11 @@ class TestCapabilitiesEndpoint:
         assert isinstance(data["scope"], bool)
         assert isinstance(data["audio"], bool)
         assert isinstance(data["tx"], bool)
+        assert isinstance(data["audioTx"], bool)
+        assert data["audioTxRoute"] in {"lan", "usb", "acc", None}
+        assert data["audioTxRequiredModInputSource"] is None or isinstance(
+            data["audioTxRequiredModInputSource"], int
+        )
         assert isinstance(data["freqRanges"], list)
         assert isinstance(data["modes"], list)
         assert isinstance(data["filters"], list)
@@ -290,6 +299,57 @@ class TestCapabilitiesEndpoint:
         await srv._serve_capabilities(writer)  # noqa: SLF001
         data = _parse_json_body(writer)
         assert data["antennas"] == 1
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("model", "expected"),
+        [
+            ("IC-7610", (True, "lan", 5)),
+            ("FTX-1", (True, "usb", None)),
+        ],
+    )
+    async def test_capabilities_browser_tx_audio_facts(self, model, expected):
+        writer = _FakeWriter()
+        await WebServer(_make_radio(model))._serve_capabilities(writer)  # noqa: SLF001
+        data = _parse_json_body(writer)
+        assert (
+            data["audioTx"],
+            data["audioTxRoute"],
+            data["audioTxRequiredModInputSource"],
+        ) == expected
+
+
+@pytest.mark.parametrize("missing", [None, "start_tx", "push_tx", "stop_tx"])
+def test_browser_tx_audio_requires_complete_neutral_transport(missing):
+    radio = SimpleNamespace(
+        capabilities={"audio", "tx"},
+        backend_id="yaesu_cat",
+        has_usb_audio=True,
+        start_tx=AsyncMock(),
+        push_tx=AsyncMock(),
+        stop_tx=AsyncMock(),
+    )
+    if missing:
+        setattr(radio, missing, None)
+    facts = browser_tx_audio_facts(radio)
+    assert (facts.available, facts.route) == (
+        (True, "usb") if missing is None else (False, None)
+    )
+
+
+@pytest.mark.asyncio
+async def test_browser_tx_audio_denial_has_no_lifecycle_side_effects():
+    radio = SimpleNamespace(
+        capabilities={"audio", "tx"},
+        backend_id="yaesu_cat",
+        has_usb_audio=True,
+        start_tx=AsyncMock(),
+    )
+    handler = AudioHandler(SimpleNamespace(send_text=AsyncMock()), radio)
+    await handler._handle_control({"type": "audio_start", "direction": "tx"})
+    assert handler._tx_active is False
+    assert handler._tx_lease is None
+    radio.start_tx.assert_not_awaited()
 
 
 # ── /api/v1/state tests ───────────────────────────────────────

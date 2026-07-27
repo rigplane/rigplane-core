@@ -82,6 +82,7 @@ from .handlers import (  # noqa: TID251
     DiagnosticsHandler,
     ScopeHandler,
 )
+from .handlers.audio import browser_tx_audio_facts  # noqa: TID251
 from .transport.webrtc import webrtc_available  # noqa: TID251
 from .radio_poller import (  # noqa: TID251
     CommandQueue,
@@ -2724,6 +2725,7 @@ class WebServer:
         self, writer: asyncio.StreamWriter, headers: dict[str, str] | None = None
     ) -> None:
         caps = _runtime_capabilities(self._radio)
+        audio_tx_facts = browser_tx_audio_facts(self._radio)
         _raw_model = (
             getattr(self._radio, "model", None) if self._radio is not None else None
         )
@@ -2757,6 +2759,7 @@ class WebServer:
                 "scope": "scope" in caps,
                 "audio": "audio" in caps,
                 "tx": "tx" in caps,
+                **audio_tx_facts.as_payload(),
                 "capabilities": sorted(caps),
                 "receivers": profile.receiver_count,
                 "vfoScheme": profile.vfo_scheme,
