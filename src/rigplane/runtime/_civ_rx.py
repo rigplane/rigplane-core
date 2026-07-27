@@ -165,11 +165,21 @@ class _CivDataTransaction:
 
     response: asyncio.Future[CivFrame]
     nak: asyncio.Future[CivFrame]
+    owner: object | None = None
     frame: CivFrame | None = None
 
     @property
     def futures(self) -> tuple[asyncio.Future[CivFrame], ...]:
         return (self.response, self.nak)
+
+
+@dataclass(frozen=True, slots=True)
+class _AuthoritativePttRead:
+    observer: Callable[[ProviderPttObservation], None]
+    provider_generation: int
+    binding_epoch: int
+    source_generation: int
+    transport: object
 
 
 _CMD14_RECEIVER_LEVEL_FIELDS = {
@@ -550,7 +560,10 @@ class CivRuntime:
         self._ptt_observer: Callable[[ProviderPttObservation], None] | None = None
         self._ptt_observer_provider_generation: int | None = None
         self._ptt_observer_civ_generation: int | None = None
+        self._ptt_observer_binding_epoch = 0
         self._ptt_observation_seq = 0
+        self._ptt_read_lock = asyncio.Lock()
+        self._active_ptt_read: _AuthoritativePttRead | None = None
         self._active_rx_source_generation: int | None = None
         self._civ_data_transaction: _CivDataTransaction | None = None
 
@@ -576,13 +589,64 @@ class CivRuntime:
             raise ValueError("provider_generation must be non-negative")
         if provider_generation != self._ptt_observer_provider_generation:
             self._ptt_observation_seq = 0
+        self._ptt_observer_binding_epoch += 1
         self._ptt_observer = observer
         self._ptt_observer_provider_generation = provider_generation
         self._ptt_observer_civ_generation = self._host._civ_epoch
 
     def unbind_ptt_observer(self) -> None:
         """Detach the callback while preserving this provider's sequence."""
+        self._ptt_observer_binding_epoch += 1
         self._ptt_observer = None
+
+    async def request_authoritative_ptt_read(
+        self,
+        civ_frame: bytes,
+        *,
+        provider_generation: int,
+        observer: Callable[[ProviderPttObservation], None],
+    ) -> bool:
+        """Publish one exact PTT response only while its binding stays current."""
+        async with self._ptt_read_lock:
+            transport = self._host._civ_transport
+            read = _AuthoritativePttRead(
+                observer=observer,
+                provider_generation=provider_generation,
+                binding_epoch=self._ptt_observer_binding_epoch,
+                source_generation=self._host._civ_epoch,
+                transport=transport,
+            )
+            if transport is None or not self._ptt_read_is_current(read):
+                return False
+            self._active_ptt_read = read
+            try:
+                result = await self.execute_civ_transaction(
+                    civ_frame, expect="data", owner=read
+                )
+                return (
+                    result.status == "response"
+                    and result.frame is not None
+                    and self._ptt_read_is_current(read)
+                    and self._emit_authoritative_ptt(
+                        result.frame,
+                        source_generation=read.source_generation,
+                        expected=read,
+                    )
+                )
+            finally:
+                if self._active_ptt_read is read:
+                    self._active_ptt_read = None
+
+    def _ptt_read_is_current(self, read: _AuthoritativePttRead) -> bool:
+        return (
+            self._active_ptt_read in (None, read)
+            and self._ptt_observer_binding_epoch == read.binding_epoch
+            and self._ptt_observer is read.observer
+            and self._ptt_observer_provider_generation == read.provider_generation
+            and self._ptt_observer_civ_generation == read.source_generation
+            and self._host._civ_epoch == read.source_generation
+            and self._host._civ_transport is read.transport
+        )
 
     async def stop_pump(self) -> None:
         """Stop CI-V receive pump and fail pending request futures."""
@@ -667,6 +731,7 @@ class CivRuntime:
         *,
         expect: RawCivExpectation,
         timeout: float | None = None,
+        owner: object | None = None,
     ) -> RawCivTransactionResult:
         """Execute one explicitly-scoped raw CI-V transaction.
 
@@ -692,7 +757,7 @@ class CivRuntime:
 
         if expect == "none":
             self.start_pump()
-            await self._send_civ_frame_now(civ_frame)
+            await self._send_civ_frame_now(civ_frame, owner=owner)
             return RawCivTransactionResult(status="sent")
 
         await self._drain_ack_sinks_before_blocking()
@@ -719,10 +784,11 @@ class CivRuntime:
                 pending_waiters.append(pending_or_token)
             else:
                 data_transaction = self._register_civ_data_transaction(request_key)
+                data_transaction.owner = owner
                 pending_waiters.extend(data_transaction.futures)
 
             self.start_pump()
-            await self._send_civ_frame_now(civ_frame)
+            await self._send_civ_frame_now(civ_frame, owner=owner)
             remaining = deadline_monotonic - time.monotonic()
             if remaining <= 0:
                 raise asyncio.TimeoutError("CI-V response timed out")
@@ -796,24 +862,30 @@ class CivRuntime:
             self._host._civ_request_tracker.unregister(future)
             if not future.done():
                 future.cancel()
+            elif not future.cancelled():
+                future.exception()
 
-    def _claim_civ_data_transaction(self, event: CivEvent) -> None:
+    def _claim_civ_data_transaction(
+        self, event: CivEvent
+    ) -> _CivDataTransaction | None:
         """Synchronously claim the first routed response or NAK."""
         transaction = self._civ_data_transaction
         if transaction is None or event.type == CivEventType.ACK:
-            return
+            return None
         winner = (
             transaction.nak if event.type == CivEventType.NAK else transaction.response
         )
         if winner.cancelled() or not winner.done():
-            return
+            return None
         try:
             frame = winner.result()
         except Exception:
-            return
+            return None
         if frame is event.frame:
             transaction.frame = frame
             self._close_civ_data_transaction(transaction)
+            return transaction
+        return None
 
     async def send_civ_raw(
         self,
@@ -837,7 +909,9 @@ class CivRuntime:
             wait_dispatch=wait_dispatch,
         )
 
-    async def _send_civ_frame_now(self, civ_frame: bytes) -> None:
+    async def _send_civ_frame_now(
+        self, civ_frame: bytes, *, owner: object | None = None
+    ) -> None:
         """Send one CI-V frame directly through the runtime transport."""
         assert self._host._civ_transport is not None
         now = time.monotonic()
@@ -845,8 +919,14 @@ class CivRuntime:
         if delta < self._host._civ_min_interval:
             await asyncio.sleep(self._host._civ_min_interval - delta)
 
+        if isinstance(owner, _AuthoritativePttRead) and not self._ptt_read_is_current(
+            owner
+        ):
+            raise ConnectionError("PTT observer binding changed before dispatch")
         pkt = self._wrap_civ(civ_frame)
-        await self._host._civ_transport.send_tracked(pkt)
+        transport = self._host._civ_transport
+        assert transport is not None
+        await transport.send_tracked(pkt)
         self._host._last_civ_send_monotonic = time.monotonic()
 
     @staticmethod
@@ -1224,6 +1304,14 @@ class CivRuntime:
             event = CivEvent(type=CivEventType.NAK, frame=frame)
         else:
             event = CivEvent(type=CivEventType.RESPONSE, frame=frame)
+            self._update_state_cache_from_frame(frame)
+        self._publish_civ_event(event)
+        claimed: _CivDataTransaction | None = None
+        if self._host._civ_request_tracker.resolve(event, generation=generation):
+            claimed = self._claim_civ_data_transaction(event)
+        if event.type is CivEventType.RESPONSE and not isinstance(
+            claimed.owner if claimed is not None else None, _AuthoritativePttRead
+        ):
             self._emit_authoritative_ptt(
                 frame,
                 source_generation=(
@@ -1232,27 +1320,29 @@ class CivRuntime:
                     else self._active_rx_source_generation
                 ),
             )
-            self._update_state_cache_from_frame(frame)
-        self._publish_civ_event(event)
-        if self._host._civ_request_tracker.resolve(event, generation=generation):
-            self._claim_civ_data_transaction(event)
 
     def _emit_authoritative_ptt(
-        self, frame: CivFrame, *, source_generation: int
-    ) -> None:
+        self,
+        frame: CivFrame,
+        *,
+        source_generation: int,
+        expected: _AuthoritativePttRead | None = None,
+    ) -> bool:
         """Publish only exact, generation-bound CI-V PTT state responses."""
         observer = self._ptt_observer
         provider_generation = self._ptt_observer_provider_generation
         if (
-            observer is None
+            (expected is not None and not self._ptt_read_is_current(expected))
+            or observer is None
             or provider_generation is None
             or source_generation != self._ptt_observer_civ_generation
+            or source_generation != self._host._civ_epoch
             or frame.command != 0x1C
             or frame.sub != 0x00
             or len(frame.data) != 1
             or frame.data[0] not in (0x00, 0x01)
         ):
-            return
+            return False
         self._ptt_observation_seq += 1
         observation = ProviderPttObservation(
             value=RadioTx.ON if frame.data[0] else RadioTx.OFF,
@@ -1262,8 +1352,10 @@ class CivRuntime:
         )
         try:
             observer(observation)
-        except Exception:  # noqa: BLE001 - observer failure must not break CI-V RX
+        except (Exception, asyncio.CancelledError):  # noqa: BLE001
             logger.exception("Authoritative PTT observer raised")
+            return False
+        return True
 
     def deliver_raw_civ(self, frame_bytes: bytes) -> None:
         """Forward a raw inbound CI-V frame to registered raw-pipe listeners.
