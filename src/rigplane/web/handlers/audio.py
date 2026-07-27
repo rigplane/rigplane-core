@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
 import logging
 import time
 from collections.abc import AsyncIterator, Awaitable
@@ -11,6 +12,7 @@ from typing import TYPE_CHECKING, Any, Callable, Protocol, cast
 
 from rigplane.audio._codecs import decode_ulaw_to_pcm16
 from rigplane.audio._transcoder import PcmOpusTranscoder, create_pcm_opus_transcoder
+from ...audio import route as audio_route
 from ...audio.bus import STAGE_RX_POST_DSP
 from ...audio.session import RxSubscription
 from ...audio.usb_driver import AudioAlreadyStartedError
@@ -39,6 +41,7 @@ if TYPE_CHECKING:
     from ...radio_protocol import Radio
 
 from ...capabilities import CAP_AUDIO, CAP_LAN_DUAL_RX_AUDIO_ROUTING
+from ...capabilities import CAP_MOD_INPUT_ROUTING, CAP_TX
 
 __all__ = ["AudioBroadcaster", "AudioHandler", "RxPcmTapSource"]
 
@@ -107,6 +110,114 @@ class RxPcmTapSource:
 
     codec: AudioCodec
     sample_rate: int
+
+
+@dataclass(frozen=True, slots=True)
+class BrowserTxAudioFacts:
+    available: bool
+    route: str | None
+    required_mod_input_source: int | None
+    codec: AudioCodec | None = None
+    path: str | None = None
+    lifecycle: tuple[Any, ...] | None = None
+
+
+def _tx_codec_for_radio(radio: object) -> AudioCodec | None:
+    codec = getattr(radio, "audio_tx_codec", None)
+    if codec is None:
+        codec = getattr(getattr(radio, "audio_stream_contract", None), "tx_codec", None)
+    if codec is None:
+        codec = getattr(radio, "audio_codec", None)
+    supported = (AudioCodec.PCM_1CH_16BIT, AudioCodec.OPUS_1CH)
+    return codec if isinstance(codec, AudioCodec) and codec in supported else None
+
+
+def _concrete_async_method(owner: object, name: str, method: object) -> Any | None:
+    if not callable(method) or not asyncio.iscoroutinefunction(method):
+        return None
+    if name in getattr(owner, "__dict__", {}):
+        return None
+    base = next((cls for cls in type(owner).__mro__ if name in cls.__dict__), None)
+    if (
+        base is None
+        or getattr(base, "_is_protocol", False)
+        or getattr(base.__dict__[name], "__isabstractmethod__", False)
+    ):
+        return None
+    if getattr(method, "__self__", None) is not owner:
+        return None
+    args = (b"",) if "push" in name else ("web",) if name == "acquire_tx" else ()
+    kwargs = {"sample_rate": 48_000} if name == "start_audio_tx_pcm" else {}
+    try:
+        inspect.signature(method).bind(*args, **kwargs)
+    except (TypeError, ValueError):
+        return None
+    return method
+
+
+def _lifecycle(
+    owner: object, names: tuple[str, ...]
+) -> tuple[tuple[Any, ...] | None, bool]:
+    raw = tuple(getattr(owner, name, None) for name in names)
+    methods = tuple(
+        _concrete_async_method(owner, name, method)
+        for name, method in zip(names, raw, strict=True)
+    )
+    return (methods if all(methods) else None), any(item is not None for item in raw)
+
+
+def _tx_path(radio: object, codec: AudioCodec) -> tuple[str, tuple[Any, ...]] | None:
+    neutral, has_neutral = _lifecycle(radio, ("start_tx", "push_tx", "stop_tx"))
+    session = getattr(radio, "audio_session", None)
+    if session is not None:
+        acquire_raw = getattr(session, "acquire_tx", None)
+        acquire = _concrete_async_method(session, "acquire_tx", acquire_raw)
+        return ("session", (acquire, *neutral[1:])) if acquire and neutral else None
+    if has_neutral:
+        return ("neutral", neutral) if neutral is not None else None
+    suffix = "pcm" if codec == AudioCodec.PCM_1CH_16BIT else "opus"
+    lifecycle, _ = _lifecycle(
+        radio, tuple(f"{op}_audio_tx_{suffix}" for op in ("start", "push", "stop"))
+    )
+    return (suffix, lifecycle) if lifecycle is not None else None
+
+
+def browser_tx_audio_facts(radio: "Radio | None") -> BrowserTxAudioFacts:
+    """Resolve the exact fail-closed structural snapshot for HTTP and audio WS."""
+    unavailable = BrowserTxAudioFacts(False, None, None)
+    caps = runtime_capabilities(radio)
+    if radio is None or not {CAP_AUDIO, CAP_TX}.issubset(caps):
+        return unavailable
+    try:
+        codec = _tx_codec_for_radio(radio)
+        if codec is None or (path := _tx_path(radio, codec)) is None:
+            return unavailable
+        route = audio_route.resolve_audio_route(radio)
+        source, policy = route.tx_audio_source, route.data_mode_policy
+        if (source, policy) not in {
+            (audio_route.TxAudioSource.LAN, audio_route.DataModePolicy.DATA2_LAN),
+            (audio_route.TxAudioSource.LAN, audio_route.DataModePolicy.LEGACY),
+            (audio_route.TxAudioSource.USB, audio_route.DataModePolicy.DATA1_USB),
+            (audio_route.TxAudioSource.ACC, audio_route.DataModePolicy.LEGACY),
+        }:
+            return unavailable
+        required = (
+            audio_route.rigctld_wsjtx_policy(route)[1]
+            if CAP_MOD_INPUT_ROUTING in caps
+            else None
+        )
+        if required is not None and (
+            source is not audio_route.TxAudioSource.LAN
+            or not isinstance(required, int)
+            or isinstance(required, bool)
+            or not 0 <= required <= 9_007_199_254_740_991
+        ):
+            return unavailable
+        return BrowserTxAudioFacts(
+            True, source.value, required, codec, path[0], path[1]
+        )
+    except Exception:
+        return unavailable
 
 
 def _is_benign_tx_restart(exc: RuntimeError) -> bool:
