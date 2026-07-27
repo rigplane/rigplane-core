@@ -27,16 +27,18 @@ from unittest.mock import AsyncMock
 from _order_sensitive_radios import LanLikeRadio
 
 from rigplane.audio import AudioPacket
-from rigplane.audio.bus import STAGE_RX_POST_DSP
+from rigplane.audio.bus import STAGE_RX_POST_DSP, AudioBus
 from rigplane.audio.session import (
     AudioSession,
     AudioSessionEvent,
     AudioSessionState,
 )
+from rigplane.core.radio_protocol import AudioCapable
 from rigplane.core.types import AudioCodec
 from rigplane.runtime._audio_recovery import AudioRecoveryRuntime
 from rigplane.web.handlers import AudioBroadcaster
 from rigplane.web.protocol import AUDIO_HEADER_SIZE, MSG_TYPE_AUDIO_RX
+from rigplane.web.runtime_helpers import runtime_capabilities
 
 _PACKET = AudioPacket(ident=0x0080, send_seq=1, data=b"\x01\x00" * 160)
 
@@ -55,7 +57,42 @@ async def _wait_for(predicate: Callable[[], bool], deadline_s: float = 2.0) -> b
     return predicate()
 
 
-class _SessionLanRadio(LanLikeRadio):
+class _RuntimeAudioSupplier:
+    @property
+    def audio_bus(self) -> AudioBus:
+        return self._audio_bus
+
+    @audio_bus.setter
+    def audio_bus(self, bus: AudioBus) -> None:
+        self._audio_bus = bus
+
+    async def start_audio_rx_opus(self, callback, **kwargs) -> None:
+        await self.start_rx(callback, jitter_depth=kwargs.get("jitter_depth"))
+
+    async def stop_audio_rx_opus(self) -> None:
+        await self.stop_rx()
+
+    start_audio_rx_pcm = start_audio_rx_opus
+    stop_audio_rx_pcm = stop_audio_rx_opus
+
+    async def start_audio_tx_opus(self, **kwargs) -> None:
+        await self.start_tx()
+
+    async def push_audio_tx_opus(self, data: bytes) -> None:
+        await self.push_tx(data)
+
+    async def stop_audio_tx_opus(self) -> None:
+        await self.stop_tx()
+
+    start_audio_tx_pcm = start_audio_tx_opus
+    push_audio_tx_pcm = push_audio_tx_opus
+    stop_audio_tx_pcm = stop_audio_tx_opus
+
+    async def get_audio_stats(self) -> dict[str, str]:
+        return {"state": self.state}
+
+
+class _SessionLanRadio(LanLikeRadio, _RuntimeAudioSupplier):
     """LAN-like stub + radio-owned session singleton (MOR-579 shape)."""
 
     capabilities = {"audio"}
@@ -77,7 +114,7 @@ class _SessionLanRadio(LanLikeRadio):
         return self._audio_session
 
 
-class _NoSessionRadio(LanLikeRadio):
+class _NoSessionRadio(LanLikeRadio, _RuntimeAudioSupplier):
     """LAN-like stub WITHOUT ``audio_session`` (not-yet-migrated backend)."""
 
     capabilities = {"audio"}
@@ -99,6 +136,11 @@ async def test_web_subscribe_creates_session_rx_demand() -> None:
     queue = await broadcaster.subscribe(ws=_make_ws())
     try:
         session = radio.audio_session
+        assert isinstance(radio, AudioCapable)
+        assert "start_audio_rx_opus" in _RuntimeAudioSupplier.__dict__
+        assert "stop_audio_rx_opus" in _RuntimeAudioSupplier.__dict__
+        assert "audio" in runtime_capabilities(radio)
+        assert callable(session.subscribe_rx)
         assert session.rx_demand == 1, (
             "web RX must register demand on the radio-owned AudioSession "
             "(bus-direct subscribe bypasses the session — MOR-608)"
@@ -203,6 +245,8 @@ async def test_radio_without_session_keeps_legacy_bus_path() -> None:
     broadcaster = AudioBroadcaster(radio)
     queue = await broadcaster.subscribe(ws=_make_ws())
     try:
+        assert "audio" in runtime_capabilities(radio)
+        assert callable(radio.audio_bus.subscribe)
         assert radio.audio_bus.subscriber_count == 1
         assert radio.state == "receiving"
         assert radio.rx_callback is not None
