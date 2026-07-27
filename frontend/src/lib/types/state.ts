@@ -77,7 +77,7 @@ export interface ServerStatePublic {
     [k: string]: number;
   }[];
   scopeControls?: ScopeControlsPublic;
-  txTarget?: KnownTxTargetPublic | UnknownTxTargetPublic;
+  txTarget: KnownTxTargetPublic | UnknownTxTargetPublic;
   main: ReceiverStatePublic;
   sub?: ReceiverStatePublic | null;
   connection: ConnectionPublic;

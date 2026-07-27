@@ -93,6 +93,7 @@ _REQUIRED_BY_MODEL: dict[str, set[str]] = {
         "split",
         "dualWatch",
         "tunerStatus",
+        "txTarget",
         "main",
         "connection",
     },
