@@ -127,8 +127,6 @@ class RxPcmTapSource:
 
 @dataclass(frozen=True, slots=True)
 class BrowserTxAudioFacts:
-    """Backend-authoritative browser TX-audio capability tuple (MOR-1050)."""
-
     available: bool
     route: str | None
     required_mod_input_source: int | None
@@ -152,40 +150,51 @@ def _tx_codec_for_radio(radio: object) -> AudioCodec | None:
         )
     if tx_codec is None:
         tx_codec = getattr(radio, "audio_codec", None)
-    if not isinstance(tx_codec, AudioCodec) or tx_codec not in (
-        AudioCodec.PCM_1CH_16BIT,
-        AudioCodec.OPUS_1CH,
-    ):
-        return None
-    return tx_codec
-
-
-def _browser_tx_path(
-    radio: object, codec: AudioCodec
-) -> tuple[str, tuple[Any, ...]] | None:
-    neutral = tuple(
-        getattr(radio, name, None) for name in ("start_tx", "push_tx", "stop_tx")
+    supported = (AudioCodec.PCM_1CH_16BIT, AudioCodec.OPUS_1CH)
+    return (
+        tx_codec if isinstance(tx_codec, AudioCodec) and tx_codec in supported else None
     )
+
+
+def _concrete_lifecycle_method(owner: object, name: str) -> Any | None:
+    method = getattr(owner, name, None)
+    if not callable(method) or not asyncio.iscoroutinefunction(method):
+        return None
+    if name in getattr(owner, "__dict__", {}):
+        return method
+    base = next((item for item in type(owner).__mro__ if name in item.__dict__), None)
+    if base is None or getattr(base, "_is_protocol", False):
+        return None
+    definition = base.__dict__[name]
+    if getattr(definition, "__isabstractmethod__", False):
+        return None
+    if getattr(method, "__self__", None) is owner or method is definition:
+        return method
+    return None
+
+
+def _lifecycle(owner: object, names: tuple[str, ...]) -> tuple[Any, ...] | None:
+    methods = tuple(_concrete_lifecycle_method(owner, name) for name in names)
+    return methods if all(method is not None for method in methods) else None
+
+
+def _tx_path(radio: object, codec: AudioCodec) -> tuple[str, tuple[Any, ...]] | None:
+    neutral_names = ("start_tx", "push_tx", "stop_tx")
+    neutral = _lifecycle(radio, neutral_names)
     session = getattr(radio, "audio_session", None)
     if session is not None:
-        acquire = getattr(session, "acquire_tx", None)
-        if callable(acquire) and all(callable(method) for method in neutral):
+        acquire = _concrete_lifecycle_method(session, "acquire_tx")
+        if acquire is not None and neutral is not None:
             return "session", (acquire, neutral[1], neutral[2])
         return None
-    if any(method is not None for method in neutral):
-        return (
-            ("neutral", neutral)
-            if all(callable(method) for method in neutral)
-            else None
-        )
+    if any(getattr(radio, name, None) is not None for name in neutral_names):
+        return ("neutral", neutral) if neutral is not None else None
     suffix = "pcm" if codec == AudioCodec.PCM_1CH_16BIT else "opus"
-    lifecycle = tuple(
-        getattr(radio, f"{operation}_audio_tx_{suffix}", None)
-        for operation in ("start", "push", "stop")
+    names = tuple(
+        f"{operation}_audio_tx_{suffix}" for operation in ("start", "push", "stop")
     )
-    return (
-        (suffix, lifecycle) if all(callable(method) for method in lifecycle) else None
-    )
+    lifecycle = _lifecycle(radio, names)
+    return (suffix, lifecycle) if lifecycle is not None else None
 
 
 def browser_tx_audio_facts(radio: "Radio | None") -> BrowserTxAudioFacts:
@@ -199,7 +208,7 @@ def browser_tx_audio_facts(radio: "Radio | None") -> BrowserTxAudioFacts:
         codec = _tx_codec_for_radio(radio)
         if codec is None:
             return unavailable
-        path = _browser_tx_path(radio, codec)
+        path = _tx_path(radio, codec)
         route = resolve_audio_route(radio)
         source, policy = route.tx_audio_source, route.data_mode_policy
         valid_route = (
