@@ -9,7 +9,10 @@
 
 import type { Component } from 'svelte';
 import type { Capabilities } from '$lib/types/capabilities';
-import type { LayoutMode } from '$lib/stores/layout.svelte';
+import {
+  normalizeLayoutMode,
+  type LayoutMode,
+} from '$lib/stores/layout.svelte';
 
 export type SkinId = 'desktop-v2' | 'lcd-cockpit' | 'lcd-scope' | 'mobile' | 'sdr-test';
 
@@ -39,10 +42,11 @@ export interface SkinResolutionContext {
  */
 export function resolveSkinId(ctx: SkinResolutionContext): SkinId {
   if (ctx.isMobile) return 'mobile';
-  if (ctx.layoutPreference === 'sdr-test') return 'sdr-test';
-  if (ctx.layoutPreference === 'lcd' || ctx.layoutPreference === 'lcd-cockpit') return 'lcd-cockpit';
-  if (ctx.layoutPreference === 'lcd-scope') return 'lcd-scope';
-  if (ctx.layoutPreference === 'standard') return 'desktop-v2';
+  const layoutPreference = normalizeLayoutMode(ctx.layoutPreference);
+  if (layoutPreference === 'sdr-test') return 'sdr-test';
+  if (layoutPreference === 'lcd-cockpit') return 'lcd-cockpit';
+  if (layoutPreference === 'lcd-scope') return 'lcd-scope';
+  if (layoutPreference === 'standard') return 'desktop-v2';
   // auto: scope available → desktop, otherwise LCD
   return ctx.hasAnyScope ? 'desktop-v2' : 'lcd-cockpit';
 }
@@ -72,7 +76,7 @@ const SKIN_LOADERS: Record<SkinId, () => Promise<{ default: Component }>> = {
  * preferences.
  */
 export function resolvePersistedSkinId(id: PersistedSkinId): SkinId {
-  if (id === 'amber-lcd') return 'lcd-cockpit';
+  if (id === 'amber-lcd') return normalizeLayoutMode(id);
   return id;
 }
 
