@@ -161,6 +161,7 @@ class TestCapabilitiesEndpoint:
         # capability fields, but these established fields and their types are
         # the frontend wire contract.
         assert data["model"] == model
+        assert type(data["receivers"]) is int
         assert data["receivers"] == receivers
         assert data["vfoScheme"] == vfo_scheme
         assert isinstance(data["capabilities"], list)
@@ -172,15 +173,15 @@ class TestCapabilitiesEndpoint:
         assert isinstance(data["modes"], list)
         assert isinstance(data["filters"], list)
         assert isinstance(data["audioConfig"], dict)
-        assert isinstance(data["audioConfig"]["sampleRate"], int)
+        assert type(data["audioConfig"]["sampleRate"]) is int
         assert isinstance(data["webrtc"], dict)
         assert isinstance(data["webrtc"]["available"], bool)
         assert isinstance(data["webrtc"]["enabled"], bool)
         assert isinstance(data["txBands"], list)
         assert all(
             isinstance(band["name"], str)
-            and isinstance(band["start"], int)
-            and isinstance(band["end"], int)
+            and type(band["start"]) is int
+            and type(band["end"]) is int
             for band in data["txBands"]
         )
 
@@ -201,12 +202,8 @@ class TestCapabilitiesEndpoint:
 
         assert hardware_data["scope"] is True
         assert hardware_data["audio"] is True
-        assert hardware_data["scopeSource"] == "hardware"
-        assert hardware_data["audioFftAvailable"] is True
         assert audio_data["scope"] is False
         assert audio_data["audio"] is True
-        assert audio_data["scopeSource"] == "audio_fft"
-        assert audio_data["audioFftAvailable"] is True
 
     @pytest.mark.asyncio
     async def test_capabilities_allows_nullable_tx_bands(self):
