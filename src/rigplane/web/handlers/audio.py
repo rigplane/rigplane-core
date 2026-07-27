@@ -190,8 +190,10 @@ def browser_tx_audio_facts(radio: "Radio | None") -> BrowserTxAudioFacts:
         return unavailable
     try:
         codec = _tx_codec_for_radio(radio)
-        if codec is None or (path := _tx_path(radio, codec)) is None:
+        if codec is None:
             return unavailable
+        if (path := _tx_path(radio, codec)) is None:
+            return BrowserTxAudioFacts(False, None, None, codec)
         route = audio_route.resolve_audio_route(radio)
         source, policy = route.tx_audio_source, route.data_mode_policy
         if (source, policy) not in {
@@ -1311,6 +1313,7 @@ class AudioHandler:
         # ADR §3.3). None when the radio lacks a session (legacy direct
         # path) or when TX is not active.
         self._tx_lease: TxLease | None = None
+        self._tx_facts: BrowserTxAudioFacts | None = None
         self._tx_stop_lock = asyncio.Lock()
         self._seq: int = 0
         # Latest client-reported link-quality snapshot from the periodic
@@ -1422,37 +1425,44 @@ class AudioHandler:
                     identity=_parse_client_identity(msg),
                 )
             elif direction == "tx":
-                if self._radio and CAP_AUDIO in self._radio.capabilities:
-                    self._ensure_tx_transcoder()
-                    session = getattr(self._radio, "audio_session", None)
-                    if session is not None:
-                        # Shared AudioSession lease (MOR-580, ADR §3.3): the
-                        # session's single-lock refcount serializes arming
-                        # with other lease holders (bridge, poller PTT), so
-                        # the double-start benign-tolerance below is
-                        # unnecessary on this path.
+                was_active = self._tx_active or self._tx_lease is not None
+                previous_facts = self._tx_facts
+                try:
+                    facts = browser_tx_audio_facts(self._radio)
+                    transcoder_ready = facts.codec != AudioCodec.PCM_1CH_16BIT or (
+                        self._ensure_tx_transcoder()
+                    )
+                except BaseException:
+                    await self._abort_tx_start(previous_facts, was_active)
+                    raise
+                if not facts.available:
+                    await self._abort_tx_start(previous_facts, was_active)
+                    await self._send_error("audio_start: TX audio unavailable")
+                    return
+                if not transcoder_ready:
+                    await self._abort_tx_start(previous_facts, was_active)
+                    await self._send_error("audio_start: TX transcoder unavailable")
+                    return
+                assert facts.lifecycle is not None
+                start = facts.lifecycle[0]
+                try:
+                    if facts.path == "session":
                         if self._tx_lease is None or self._tx_lease.released:
-                            self._tx_lease = await session.acquire_tx("web")
+                            self._tx_lease = await start("web")
+                    elif facts.path == "pcm":
+                        await start(sample_rate=self._tx_sample_rate())
                     else:
-                        # Legacy direct-arm fallback for radios without a
-                        # session (bare test doubles, not-yet-migrated
-                        # backends).
-                        try:
-                            start_tx = getattr(self._radio, "start_tx", None)
-                            if start_tx is not None:
-                                # Neutral AudioTransport surface (MOR-544):
-                                # the backend resolves the TX format from
-                                # its negotiated contract.
-                                await start_tx()
-                            else:
-                                await self._legacy_tx_lifecycle("start")
-                        except RuntimeError as exc:
-                            if _is_benign_tx_restart(exc):
-                                logger.info(
-                                    "audio: TX already started by poller, reusing"
-                                )
-                            else:
-                                raise
+                        await start()
+                except RuntimeError as exc:
+                    if _is_benign_tx_restart(exc):
+                        logger.info("audio: TX already started by poller, reusing")
+                    else:
+                        await self._abort_tx_start(previous_facts, was_active)
+                        raise
+                except BaseException:
+                    await self._abort_tx_start(previous_facts, was_active)
+                    raise
+                self._tx_facts = facts
                 self._tx_active = True
                 logger.info("audio: TX active")
         elif msg_type == "audio_stop":
@@ -1485,6 +1495,13 @@ class AudioHandler:
         if self._rx_active and self._broadcaster is not None:
             self._broadcaster.record_client_stats(self._frame_queue, stats)
 
+    async def _abort_tx_start(
+        self, previous_facts: BrowserTxAudioFacts | None, was_active: bool
+    ) -> None:
+        self._tx_facts = previous_facts if was_active else None
+        if was_active:
+            await self._stop_tx(reason="failed TX audio restart", force=True)
+
     async def _stop_tx(
         self,
         *,
@@ -1495,15 +1512,12 @@ class AudioHandler:
     ) -> None:
         """Release this handler's active TX ownership, optionally bounded."""
         async with self._tx_stop_lock:
-            if not self._tx_active and not force and self._tx_lease is None:
-                return
+            if not self._tx_active and self._tx_lease is None:
+                if not force or self._tx_facts is None:
+                    return
+            was_active = self._tx_active
             self._tx_active = False
-
-            if not self._radio or CAP_AUDIO not in getattr(
-                self._radio, "capabilities", ()
-            ):
-                logger.info("audio: TX cleanup skipped (%s, no audio radio)", reason)
-                return
+            facts, self._tx_facts = self._tx_facts, None
 
             try:
                 lease = self._tx_lease
@@ -1513,7 +1527,7 @@ class AudioHandler:
                     # refcount reaches zero (release is idempotent).
                     self._tx_lease = None
                     stop_tx: Awaitable[None] = lease.release()
-                elif getattr(self._radio, "audio_session", None) is not None:
+                elif facts is not None and facts.path == "session":
                     # Session radio with no held lease: this handler owns no
                     # TX demand — never direct-stop the radio out from under
                     # other lease holders (bridge, poller PTT). MOR-580.
@@ -1521,7 +1535,19 @@ class AudioHandler:
                         "audio: TX stop skipped (%s, no session lease held)", reason
                     )
                     return
+                elif facts is not None and facts.lifecycle is not None:
+                    stop_tx = facts.lifecycle[2]()
                 else:
+                    if (
+                        not was_active
+                        or not self._radio
+                        or CAP_AUDIO not in getattr(self._radio, "capabilities", ())
+                    ):
+                        logger.info(
+                            "audio: TX cleanup skipped (%s, no active snapshot)",
+                            reason,
+                        )
+                        return
                     stop_tx_method = getattr(self._radio, "stop_tx", None)
                     if stop_tx_method is not None:
                         # Neutral AudioTransport surface (MOR-544).
@@ -1678,7 +1704,7 @@ class AudioHandler:
         """Send an error message envelope to the WS client."""
         await self._send_json({"type": "error", "message": message})
 
-    def _ensure_tx_transcoder(self) -> None:
+    def _ensure_tx_transcoder(self) -> bool:
         """Create (or recreate) the TX Opus→PCM transcoder at the radio's rate.
 
         TX-side fix for issue #691: previously the transcoder was constructed
@@ -1689,7 +1715,7 @@ class AudioHandler:
         """
         rate = self._tx_sample_rate()
         if self._transcoder is not None and self._transcoder_rate == rate:
-            return
+            return True
         try:
             self._transcoder = create_pcm_opus_transcoder(sample_rate=rate)
             self._transcoder_rate = rate
@@ -1698,6 +1724,8 @@ class AudioHandler:
             logger.debug("audio: TX transcoder unavailable (opus codec missing?)")
             self._transcoder = None
             self._transcoder_rate = 0
+            return False
+        return True
 
     def _tx_codec(self) -> AudioCodec | None:
         # Under the ``rigplane.web.*`` strict override with
@@ -1757,6 +1785,12 @@ class AudioHandler:
         if lease is not None and not lease.released:
             await lease.push(data)
             return
+        facts = self._tx_facts
+        if facts is not None and facts.lifecycle is not None:
+            if facts.path == "session":
+                raise RuntimeError("browser TX audio session lease is unavailable")
+            await facts.lifecycle[1](data)
+            return
         push_tx = getattr(self._radio, "push_tx", None)
         if push_tx is not None:
             await push_tx(data)
@@ -1805,10 +1839,11 @@ class AudioHandler:
                 "audio: TX frame ignored (tx_active=False), size=%d", len(payload)
             )
             return
-        if not self._radio:
+        facts = self._tx_facts
+        if facts is None and not self._radio:
             logger.warning("audio: TX frame ignored (no radio), size=%d", len(payload))
             return
-        if CAP_AUDIO not in self._radio.capabilities:
+        if facts is None and CAP_AUDIO not in self._radio.capabilities:  # type: ignore[union-attr]
             logger.warning(
                 "audio: TX frame ignored (radio missing audio capability), size=%d",
                 len(payload),
@@ -1828,8 +1863,11 @@ class AudioHandler:
         audio_data = payload[AUDIO_HEADER_SIZE:]
         if audio_data:
             try:
-                tx_codec = self._tx_codec()
-                if browser_codec == AUDIO_CODEC_PCM16:
+                tx_codec = facts.codec if facts is not None else self._tx_codec()
+                if (
+                    browser_codec == AUDIO_CODEC_PCM16
+                    and tx_codec == AudioCodec.PCM_1CH_16BIT
+                ):
                     await self._push_tx(audio_data, legacy_method="push_audio_tx_pcm")
                     tx_data_desc = f"{len(audio_data)} bytes pcm"
                 elif (
