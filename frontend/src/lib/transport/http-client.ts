@@ -1,5 +1,5 @@
 import type { ServerState } from '../types/state';
-import type { Capabilities } from '../types/capabilities';
+import { validateCapabilities, type Capabilities } from '../types/capabilities';
 import type { InfoResponse } from '../types/protocol';
 import { markStateUpdated, setHttpConnected, setRadioHealth, setRadioStatus, setReconnecting } from '../stores/connection.svelte';
 
@@ -114,7 +114,7 @@ export async function fetchCapabilities(): Promise<Capabilities> {
   const res = await fetch(`${BASE}/capabilities`, { headers: getAuthHeaders() });
   if (res.status === 401) { handleUnauthorized(); throw new Error('Unauthorized'); }
   if (!res.ok) throw new Error(`fetchCapabilities: ${res.status}`);
-  return res.json() as Promise<Capabilities>;
+  return validateCapabilities(await res.json());
 }
 
 /** Fetch server info (version, uptime). Used by StatusBar component (Sprint 2). */

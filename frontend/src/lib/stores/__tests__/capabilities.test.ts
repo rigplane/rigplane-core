@@ -8,9 +8,14 @@ function makeCaps(overrides: Partial<Capabilities> = {}): Capabilities {
     audio: true,
     tx: true,
     capabilities: ['scope', 'dual_rx', 'tx', 'tuner', 'cw'],
+    receivers: 2,
+    vfoScheme: 'main_sub',
     freqRanges: [{ start: 1800000, end: 30000000, label: 'HF' }],
     modes: ['USB', 'LSB', 'CW', 'AM', 'FM'],
     filters: ['FIL1', 'FIL2', 'FIL3'],
+    audioConfig: { sampleRate: 48000, channels: 1, codecs: ['opus'] },
+    webrtc: { available: true, enabled: false },
+    txBands: null,
     ...overrides,
   };
 }

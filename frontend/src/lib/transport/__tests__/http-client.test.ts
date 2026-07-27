@@ -104,25 +104,85 @@ describe('fetchState', () => {
 describe('fetchCapabilities', () => {
   afterEach(() => vi.restoreAllMocks());
 
-  it('returns parsed Capabilities', async () => {
-    const caps = {
+  function makeCapabilities(overrides: Record<string, unknown> = {}) {
+    return {
       model: 'IC-7610',
       scope: true,
       audio: true,
       tx: true,
       capabilities: ['scope', 'dual_rx'],
+      receivers: 2,
+      vfoScheme: 'main_sub',
       freqRanges: [],
       modes: ['USB', 'LSB'],
       filters: ['FIL1'],
+      audioConfig: { sampleRate: 48000, channels: 1, codecs: ['opus'] },
+      webrtc: { available: true, enabled: false },
+      txBands: [{ name: '20m', start: 14000000, end: 14350000 }],
+      ...overrides,
     };
+  }
+
+  function mockCapabilities(payload: unknown) {
     globalThis.fetch = vi.fn().mockResolvedValue({
       ok: true,
-      json: () => Promise.resolve(caps),
+      json: () => Promise.resolve(payload),
     });
+  }
 
+  it('returns the same validated raw object with additive extensions intact', async () => {
+    const caps = makeCapabilities({ extension: { future: true } });
+    mockCapabilities(caps);
     const { fetchCapabilities } = await import('../http-client');
     const result = await fetchCapabilities();
-    expect(result.model).toBe('IC-7610');
+    expect(result).toBe(caps);
+    expect(result.extension).toEqual({ future: true });
+  });
+
+  it.each([
+    ['single', 1],
+    ['ab', 1],
+    ['ab_shared', 2],
+    ['main_sub', 2],
+  ])('accepts the %s topology', async (vfoScheme, receivers) => {
+    mockCapabilities(makeCapabilities({ vfoScheme, receivers }));
+    const { fetchCapabilities } = await import('../http-client');
+    await expect(fetchCapabilities()).resolves.toMatchObject({ vfoScheme, receivers });
+  });
+
+  it.each([
+    ['null', null],
+    ['an explicit empty list', []],
+  ])('accepts txBands as %s without normalizing it', async (_label, txBands) => {
+    const caps = makeCapabilities({ txBands });
+    mockCapabilities(caps);
+    const { fetchCapabilities } = await import('../http-client');
+    const result = await fetchCapabilities();
+    expect(result).toBe(caps);
+    expect(result.txBands).toBe(txBands);
+  });
+
+  it.each([
+    ['$.receivers', { receivers: undefined }],
+    ['$.receivers', { receivers: true }],
+    ['$.receivers', { receivers: 0 }],
+    ['$.receivers', { receivers: 1.5 }],
+    ['$.vfoScheme', { vfoScheme: undefined }],
+    ['$.vfoScheme', { vfoScheme: 'unknown' }],
+    ['$.vfoScheme', { vfoScheme: 'single', receivers: 2 }],
+    ['$.audioConfig.channels', { audioConfig: { sampleRate: 48000, channels: true, codecs: ['opus'] } }],
+    ['$.audioConfig.codecs[0]', { audioConfig: { sampleRate: 48000, channels: 1, codecs: [1] } }],
+    ['$.webrtc.available', { webrtc: { available: 1, enabled: false } }],
+    ['$.webrtc.enabled', { webrtc: { available: true } }],
+    ['$.txBands', { txBands: undefined }],
+    ['$.txBands[0].name', { txBands: [{ name: 20, start: 1, end: 2 }] }],
+    ['$.txBands[0].start', { txBands: [{ name: '20m', start: true, end: 2 }] }],
+    ['$.txBands[0].end', { txBands: [{ name: '20m', start: 1, end: false }] }],
+    ['$.txBands[0].end', { txBands: [{ name: '20m', start: 1, end: 2.5 }] }],
+  ])('rejects malformed required field %s', async (path, overrides) => {
+    mockCapabilities(makeCapabilities(overrides));
+    const { fetchCapabilities } = await import('../http-client');
+    await expect(fetchCapabilities()).rejects.toThrow(path);
   });
 });
 
