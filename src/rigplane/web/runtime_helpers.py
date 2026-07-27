@@ -3,10 +3,13 @@ from __future__ import annotations
 import copy
 import datetime
 import time
+from collections.abc import Mapping
+from dataclasses import replace
 from typing import TYPE_CHECKING, Any, cast
 
 from ..core.state_pipeline_contracts import FieldFamily, FieldScope, FieldPath, VfoSlot
 from ..core.state_store import FieldSnapshot, FreshnessState, StateSnapshot
+from ..core.tx_target import TxTarget, tx_target_from_dict, validate_tx_target
 from ..radio_protocol import (
     AudioCapable,
     DualReceiverCapable,
@@ -123,6 +126,7 @@ _GLOBAL_TX_FIELDS = {
     "main_sub_tracking",
     "dial_lock",
     "tx_freq_monitor",
+    "tx_target",
 }
 _GLOBAL_OPERATOR_CONTROL_FIELDS = {
     "power_level",
@@ -791,6 +795,38 @@ def _power_level_max_value(field: FieldSnapshot, radio: "Radio | None") -> float
     return 255.0
 
 
+def _project_tx_target(field: FieldSnapshot) -> dict[str, object]:
+    if field.freshness is FreshnessState.STALE:
+        return {"status": "unknown", "reason": "stale"}
+    if field.freshness is not FreshnessState.FRESH:
+        return {"status": "unknown", "reason": "not-observed"}
+    try:
+        target: TxTarget = (
+            tx_target_from_dict(field.value)
+            if isinstance(field.value, Mapping)
+            else validate_tx_target(field.value)
+        )
+    except (TypeError, ValueError):
+        return {"status": "unknown", "reason": "contradiction"}
+    return cast(dict[str, object], target.to_dict())
+
+
+def _canonical_snapshot_fields(snapshot: StateSnapshot) -> tuple[FieldSnapshot, ...]:
+    path = FieldPath.global_("tx_state", "tx_target")
+    targets = tuple(field for field in snapshot.fields if field.path == path)
+    if len(targets) < 2:
+        return cast(tuple[FieldSnapshot, ...], snapshot.fields)
+    newest_at = max(field.last_observed_monotonic for field in targets)
+    newest = tuple(f for f in targets if f.last_observed_monotonic == newest_at)
+    rank = (FreshnessState.FRESH, FreshnessState.UNKNOWN, FreshnessState.STALE)
+    winner = max(newest, key=lambda f: (rank.index(f.freshness), repr(f.to_dict())))
+    if winner.freshness is FreshnessState.FRESH and any(
+        field.value != winner.value for field in newest
+    ):
+        winner = replace(winner, value={"status": "unknown", "reason": "contradiction"})
+    return tuple(field for field in snapshot.fields if field.path != path) + (winner,)
+
+
 def _apply_snapshot_field(
     state: dict[str, Any],
     field: FieldSnapshot,
@@ -866,6 +902,9 @@ def _apply_snapshot_field(
             return
 
     if path.scope is FieldScope.GLOBAL:
+        if path.family is FieldFamily.TX_STATE and path.name == "tx_target":
+            state[path.name] = _project_tx_target(field)
+            return
         if path.family is FieldFamily.TX_STATE and path.name in _GLOBAL_TX_FIELDS:
             state[path.name] = value
             return
@@ -932,6 +971,10 @@ def _build_public_state_payload_from_dict(
     health_revision: int = 0,
 ) -> dict[str, Any]:
     state = copy.deepcopy(state)
+    state.setdefault(
+        "tx_target",
+        {"status": "unknown", "reason": "not-observed"},
+    )
     raw_connected = getattr(radio, "connected", False) if radio else False
     state["connected"] = raw_connected if isinstance(raw_connected, bool) else False
     state["radio_ready"] = radio_ready(radio)
@@ -1026,6 +1069,7 @@ def build_public_state_payload_from_snapshot(
 ) -> dict[str, Any]:
     """Build the public web payload from one StateStore snapshot."""
 
+    snapshot = replace(snapshot, fields=_canonical_snapshot_fields(snapshot))
     state = _project_snapshot_state_dict(snapshot, radio=radio)
     state["field_status"] = _build_snapshot_field_status(
         snapshot,

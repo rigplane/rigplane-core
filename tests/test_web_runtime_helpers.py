@@ -8,6 +8,7 @@ import pytest
 from unittest.mock import MagicMock
 
 from rigplane.web.runtime_helpers import (
+    build_public_state_payload,
     build_public_state_payload_from_snapshot,
     classify_radio_health,
     radio_ready,
@@ -19,7 +20,15 @@ from rigplane.core.state_pipeline_contracts import (
     Observation,
     SourceMetadata,
 )
-from rigplane.core.state_store import FreshnessClock, StateSnapshot, StateStore
+from rigplane.core.state_store import (
+    FieldSnapshot,
+    FreshnessClock,
+    FreshnessState,
+    StateSnapshot,
+    StateStore,
+)
+from rigplane.core.tx_target import KnownTxTarget, TxTarget, UnknownTxTarget
+from rigplane.radio_state import RadioState
 
 
 class _FakeWriter:
@@ -96,6 +105,13 @@ def _observation(
         max_age=max_age,
         quality=quality,
     )
+
+
+def _tx_target_field(
+    value: Any, *, at: float, freshness: FreshnessState = FreshnessState.FRESH
+) -> FieldSnapshot:
+    path = FieldPath.global_("tx_state", "tx_target")
+    return FieldSnapshot(path, value, freshness, at, 1.0, _source())
 
 
 def test_runtime_capabilities_none_radio_returns_empty() -> None:
@@ -370,6 +386,145 @@ def test_public_state_projection_uses_snapshot_revisions_and_meter_values() -> N
     assert payload["freshnessRevision"] == 2
     assert payload["main"]["freqHz"] == 14_074_000
     assert payload["main"]["sMeter"] == 42
+
+
+def test_tx_target_missing_is_explicit_in_both_public_producers() -> None:
+    expected = {"status": "unknown", "reason": "not-observed"}
+    dataclass_payload = build_public_state_payload(
+        RadioState(), radio=None, revision=0, receiver_count=1
+    )
+    snapshot_payload = build_public_state_payload_from_snapshot(
+        StateSnapshot.empty(), radio=None, receiver_count=1
+    )
+    status = snapshot_payload["fieldStatus"]["txTarget"]
+    assert dataclass_payload["txTarget"] == expected
+    assert snapshot_payload["txTarget"] == expected
+    assert status == {
+        "storePath": "global.tx_state.tx_target",
+        "observed": False,
+        "freshness": "unknown",
+        "availability": "missing",
+    }
+
+
+@pytest.mark.parametrize(
+    "target",
+    [
+        KnownTxTarget(receiver="SUB", slot="B", frequency_hz=14_074_000),
+        UnknownTxTarget(reason="unsupported"),
+        UnknownTxTarget(reason="contradiction"),
+    ],
+)
+def test_tx_target_fresh_projection_is_lossless_and_available(
+    target: TxTarget,
+) -> None:
+    clock = FreshnessClock(start=10.0)
+    store = StateStore(freshness_clock=clock)
+    store.apply(
+        _observation(
+            FieldPath.global_("tx_state", "tx_target"),
+            target,
+            at=clock.now(),
+            max_age=1.0,
+        )
+    )
+    payload = build_public_state_payload_from_snapshot(
+        store.snapshot(), radio=None, receiver_count=2
+    )
+    assert payload["txTarget"] == target.to_dict()
+    status = payload["fieldStatus"]["txTarget"]
+    assert status["storePath"] == "global.tx_state.tx_target"
+    assert status["observed"] is True
+    assert status["freshness"] == "fresh"
+    assert status["availability"] == "available"
+
+
+def test_tx_target_stale_projection_never_leaks_known_identity() -> None:
+    clock = FreshnessClock(start=10.0)
+    store = StateStore(freshness_clock=clock)
+    store.apply(
+        _observation(
+            FieldPath.global_("tx_state", "tx_target"),
+            KnownTxTarget(receiver="SUB", slot="A", frequency_hz=7_074_000),
+            at=clock.now(),
+            max_age=0.5,
+        )
+    )
+    fresh = build_public_state_payload_from_snapshot(
+        store.snapshot(), radio=None, receiver_count=2
+    )
+    assert fresh["txTarget"]["receiver"] == "SUB"
+    clock.advance(0.6)
+    store.mark_stale_due()
+    stale = build_public_state_payload_from_snapshot(
+        store.snapshot(), radio=None, receiver_count=2
+    )
+    status = stale["fieldStatus"]["txTarget"]
+    assert stale["txTarget"] == {"status": "unknown", "reason": "stale"}
+    assert not {"receiver", "slot", "frequencyHz"} & stale["txTarget"].keys()
+    assert (status["freshness"], status["availability"]) == ("stale", "stale")
+
+
+def test_tx_target_malformed_impossible_snapshot_fails_closed() -> None:
+    snapshot = StateSnapshot(
+        1,
+        1,
+        1,
+        10.0,
+        (
+            _tx_target_field(
+                {
+                    "status": "known",
+                    "receiver": "MAIN",
+                    "slot": "A",
+                    "frequencyHz": 7_074_000,
+                    "backend": "icom",
+                },
+                at=10.0,
+            ),
+        ),
+    )
+    payload = build_public_state_payload_from_snapshot(
+        snapshot, radio=None, receiver_count=1
+    )
+    status = payload["fieldStatus"]["txTarget"]
+    assert payload["txTarget"] == {"status": "unknown", "reason": "contradiction"}
+    assert (status["freshness"], status["availability"]) == ("fresh", "available")
+
+
+@pytest.mark.parametrize(
+    "case",
+    [
+        (20.0, FreshnessState.STALE, {"malformed": True}, "stale"),
+        (
+            10.0,
+            FreshnessState.FRESH,
+            KnownTxTarget("SUB", None, None),
+            "contradiction",
+        ),
+        (10.0, FreshnessState.STALE, KnownTxTarget("SUB", None, None), "stale"),
+    ],
+)
+@pytest.mark.parametrize("reverse", [False, True])
+def test_tx_target_duplicate_path_selection_is_order_safe_and_consistent(
+    case: tuple[float, FreshnessState, Any, str],
+    reverse: bool,
+) -> None:
+    at, freshness, value, reason = case
+    older = _tx_target_field(
+        KnownTxTarget(receiver="MAIN", slot="B", frequency_hz=14_074_000), at=10.0
+    )
+    contender = _tx_target_field(value, at=at, freshness=freshness)
+    fields = (contender, older) if reverse else (older, contender)
+    payload = build_public_state_payload_from_snapshot(
+        StateSnapshot(1, 1, 2, max(10.0, at), fields),
+        radio=None,
+        receiver_count=2,
+    )
+    assert payload["txTarget"] == {"status": "unknown", "reason": reason}
+    s = payload["fieldStatus"]["txTarget"]
+    availability = "available" if freshness is FreshnessState.FRESH else "stale"
+    assert (s["freshness"], s["availability"]) == (freshness.value, availability)
 
 
 def test_public_field_status_exposes_quality_flags() -> None:
