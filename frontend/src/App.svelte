@@ -5,6 +5,9 @@
   import LocalExtensionsHost from './lib/local-extensions/LocalExtensionsHost.svelte';
   import { initMediaSession, destroyMediaSession } from './lib/media/media-session';
   import { runtime } from './lib/runtime/frontend-runtime';
+  import { hasAnyScope } from './lib/stores/capabilities.svelte';
+  import { getLayoutMode } from './lib/stores/layout.svelte';
+  import { resolveSkinId, type SkinId } from './skins/registry';
   import { t } from '$lib/i18n';
   import './app.css';
 
@@ -18,6 +21,19 @@
   const demoMode = typeof window !== 'undefined'
     ? new URLSearchParams(window.location.search).get('demo')
     : null;
+  let windowWidth = $state(typeof window !== 'undefined' ? window.innerWidth : 1200);
+  let windowHeight = $state(typeof window !== 'undefined' ? window.innerHeight : 800);
+  // Mobile = narrow portrait OR short landscape (touch device rotated)
+  let isMobile = $derived(
+    Math.min(windowWidth, windowHeight) < 640 ||
+    ('ontouchstart' in globalThis && Math.min(windowWidth, windowHeight) < 500)
+  );
+  let skinId = $derived<SkinId>(resolveSkinId({
+    capabilities: runtime.caps,
+    layoutPreference: getLayoutMode(),
+    isMobile,
+    hasAnyScope: hasAnyScope(),
+  }));
 
   onMount(() => {
     if (demoMode === 'control-buttons') {
@@ -37,6 +53,11 @@
     let cleanupBootstrap: (() => void) | null = null;
     let cleanupBattery: (() => void) | null = null;
     let retryTimer: ReturnType<typeof setTimeout> | null = null;
+    const handleResize = () => {
+      windowWidth = window.innerWidth;
+      windowHeight = window.innerHeight;
+    };
+    window.addEventListener('resize', handleResize);
 
     initBatteryMonitor((multiplier) => {
       runtime.setPollingMultiplier(multiplier);
@@ -68,6 +89,7 @@
       cleanupBattery?.();
       cleanupBootstrap?.();
       if (retryTimer) clearTimeout(retryTimer);
+      window.removeEventListener('resize', handleResize);
     };
   });
 </script>
@@ -90,7 +112,7 @@
     </div>
   </div>
 {:else}
-  <RadioLayoutV2 />
+  <RadioLayoutV2 {skinId} />
 {/if}
 
 {#if demoMode !== 'control-buttons' && !backendError}

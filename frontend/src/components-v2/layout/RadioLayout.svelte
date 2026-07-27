@@ -14,9 +14,8 @@
   
   import { runtime } from '$lib/runtime';
   import { applyModeDefault } from '$lib/stores/tuning.svelte';
-  import { getKeyboardConfig, hasCapability, hasAnyScope, hasSpectrum } from '$lib/stores/capabilities.svelte';
-  import { getLayoutMode } from '$lib/stores/layout.svelte';
-  import { resolveSkinId, type SkinId } from '../../skins/registry';
+  import { getKeyboardConfig, hasCapability, hasSpectrum } from '$lib/stores/capabilities.svelte';
+  import type { SkinId } from '../../skins/registry';
   import SpectrumPanel from '../../components/spectrum/SpectrumPanel.svelte';
   import LeftSidebar from './LeftSidebar.svelte';
   import RightSidebar from './RightSidebar.svelte';
@@ -56,6 +55,8 @@
   import { HardwareButton } from '$lib/Button';
   import Toast from '../../components/shared/Toast.svelte';
 
+  let { skinId = 'desktop-v2' }: { skinId?: SkinId } = $props();
+
   // Reactive state + capabilities — via runtime
   let radioState = $derived(runtime.state);
   let caps = $derived(runtime.caps);
@@ -89,26 +90,10 @@
   let mainVfo = $derived(toVfoProps(radioState, 'main'));
   let subVfo = $derived(toVfoProps(radioState, 'sub'));
   let vfoOps = $derived(toVfoOpsProps(radioState, caps));
-  let windowWidth = $state(typeof window !== 'undefined' ? window.innerWidth : 1200);
-  let windowHeight = $state(typeof window !== 'undefined' ? window.innerHeight : 800);
-  // Mobile = narrow portrait OR short landscape (touch device rotated)
-  let isMobile = $derived(
-    Math.min(windowWidth, windowHeight) < 640 ||
-    ('ontouchstart' in globalThis && Math.min(windowWidth, windowHeight) < 500)
-  );
   let isLandscape = $state(false);
   let landscapeSpectrumDismissed = $state(false);
   let landscapeAutoLocked = $state(false);
-  let spectrumLandscape = $derived(isMobile && isLandscape && !landscapeSpectrumDismissed && !landscapeAutoLocked);
   let connectionStatus = $derived(runtime.connectionStatus);
-
-  // Skin resolution — determines which layout to render
-  let skinId = $derived<SkinId>(resolveSkinId({
-    capabilities: caps,
-    layoutPreference: getLayoutMode(),
-    isMobile,
-    hasAnyScope: hasAnyScope(),
-  }));
 
   let activeReceiverLabel = $derived(radioState?.active === 'SUB' ? 'SUB' : 'MAIN');
   let activeModeLabel = $derived(radioState?.active === 'SUB' ? (radioState?.sub?.mode ?? '') : (radioState?.main?.mode ?? ''));
@@ -162,12 +147,6 @@
     // Theme already applied at module load
     manualVfoScaleOverrides = parseVfoLayoutScaleOverrides(window.location.search);
 
-    const handleResize = () => {
-      windowWidth = window.innerWidth;
-      windowHeight = window.innerHeight;
-    };
-    window.addEventListener('resize', handleResize);
-
     const mql = window.matchMedia?.('(orientation: landscape)');
     const handleOrientationChange = (e: MediaQueryListEvent) => {
       isLandscape = e.matches;
@@ -180,7 +159,6 @@
 
     if (!receiverDeckElement) {
       return () => {
-        window.removeEventListener('resize', handleResize);
         mql?.removeEventListener('change', handleOrientationChange);
       };
     }
@@ -189,7 +167,6 @@
 
     if (typeof ResizeObserver === 'undefined') {
       return () => {
-        window.removeEventListener('resize', handleResize);
         mql?.removeEventListener('change', handleOrientationChange);
       };
     }
@@ -205,7 +182,6 @@
 
     observer.observe(receiverDeckElement);
     return () => {
-      window.removeEventListener('resize', handleResize);
       mql?.removeEventListener('change', handleOrientationChange);
       observer.disconnect();
     };

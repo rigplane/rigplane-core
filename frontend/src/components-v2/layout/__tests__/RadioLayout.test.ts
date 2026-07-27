@@ -6,6 +6,11 @@ vi.mock('../../../components/spectrum/SpectrumPanel.svelte', async () => {
   return { default: stub.default };
 });
 
+vi.mock('../../../lib/local-extensions/LocalExtensionsHost.svelte', async () => {
+  const stub = await import('./SpectrumPanelStub.svelte');
+  return { default: stub.default };
+});
+
 vi.mock('$lib/stores/layout.svelte', () => ({
   useLcdLayout: vi.fn(() => false),
   getLayoutMode: vi.fn(() => 'standard'),
@@ -15,6 +20,29 @@ vi.mock('$lib/stores/layout.svelte', () => ({
 
 vi.mock('../../../skins/registry', () => ({
   resolveSkinId: vi.fn(() => 'desktop-v2'),
+}));
+
+vi.mock('../../../lib/utils/battery', () => ({
+  initBatteryMonitor: vi.fn(async () => vi.fn()),
+}));
+
+vi.mock('../../../lib/media/media-session', () => ({
+  initMediaSession: vi.fn(),
+  destroyMediaSession: vi.fn(),
+}));
+
+vi.mock('../../../lib/runtime/frontend-runtime', () => ({
+  runtime: {
+    state: null,
+    caps: { scope: true },
+    connectionStatus: 'disconnected',
+    radioPowerOn: null,
+    connection: { status: 'disconnected', radioPowerOn: null },
+    audio: { rxEnabled: false, txEnabled: false, volume: 50, muted: false },
+    bootstrap: vi.fn(async () => vi.fn()),
+    setPollingMultiplier: vi.fn(),
+    send: vi.fn(),
+  },
 }));
 
 vi.mock('$lib/runtime', () => ({
@@ -51,8 +79,10 @@ vi.mock('$lib/stores/tuning.svelte', () => ({
 }));
 
 import RadioLayout from '../RadioLayout.svelte';
+import App from '../../../App.svelte';
 import { extractVfoState, extractMeterState, hasLiveAudioFromState } from '../layout-utils';
 import { radio } from '$lib/stores/radio.svelte';
+import { resolveSkinId, type SkinId } from '../../../skins/registry';
 
 // ---------------------------------------------------------------------------
 // extractVfoState
@@ -283,10 +313,10 @@ import { hasDualReceiver } from '$lib/stores/capabilities.svelte';
 
 let components: ReturnType<typeof mount>[] = [];
 
-function mountLayout() {
+function mountLayout(skinId: SkinId = 'desktop-v2') {
   const t = document.createElement('div');
   document.body.appendChild(t);
-  const component = mount(RadioLayout, { target: t });
+  const component = mount(RadioLayout, { target: t, props: { skinId } });
   flushSync();
   components.push(component);
   return t;
@@ -296,6 +326,7 @@ beforeEach(() => {
   components = [];
   radio.current = null;
   vi.mocked(hasDualReceiver).mockReturnValue(false);
+  vi.mocked(resolveSkinId).mockReturnValue('desktop-v2');
   // JSDOM defaults to 0x0 — force desktop dimensions so isMobile stays false
   Object.defineProperty(window, 'innerWidth', { writable: true, configurable: true, value: 1440 });
   Object.defineProperty(window, 'innerHeight', { writable: true, configurable: true, value: 900 });
@@ -307,6 +338,11 @@ afterEach(() => {
 });
 
 describe('RadioLayout structure', () => {
+  it('renders the SDR branch from its skinId prop', () => {
+    const t = mountLayout('sdr-test');
+    expect(t.querySelector('.radio-layout.sdr-test')).not.toBeNull();
+  });
+
   it('renders the root .radio-layout element', () => {
     const t = mountLayout();
     expect(t.querySelector('.radio-layout')).not.toBeNull();
@@ -352,6 +388,26 @@ describe('RadioLayout structure', () => {
   it('renders .vfo-header inside .receiver-deck', () => {
     const t = mountLayout();
     expect(t.querySelector('.receiver-deck .vfo-header')).not.toBeNull();
+  });
+});
+
+describe('App presentation selection', () => {
+  it('owns the resolver inputs and passes the resolved skinId to RadioLayout', () => {
+    vi.mocked(resolveSkinId).mockReturnValue('sdr-test');
+
+    const t = document.createElement('div');
+    document.body.appendChild(t);
+    const component = mount(App, { target: t });
+    flushSync();
+    components.push(component);
+
+    expect(resolveSkinId).toHaveBeenLastCalledWith({
+      capabilities: { scope: true },
+      layoutPreference: 'standard',
+      isMobile: false,
+      hasAnyScope: false,
+    });
+    expect(t.querySelector('.radio-layout.sdr-test')).not.toBeNull();
   });
 });
 
