@@ -1,17 +1,28 @@
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
-import { flushSync, mount, unmount } from 'svelte';
+import type { Capabilities } from '$lib/types/capabilities';
 
-const channel = vi.hoisted(() => {
-  const handlers = new Set<(data: ArrayBuffer) => void>();
-  const stateHandlers = new Set<(state: ConnectionState) => void>();
-  let state: ConnectionState = 'disconnected';
-  const setState = (next: ConnectionState) => {
+type MockConnectionState = 'connecting' | 'connected' | 'disconnected';
+type DefaultScopeStatusProbe = {
+  source: 'hardware' | 'audio_fft' | null;
+  available: boolean;
+  resourceSelected: boolean;
+  demand: number;
+  lifecycle: string;
+  transport: MockConnectionState;
+  frameSeen: boolean;
+};
+
+const mocks = vi.hoisted(() => {
+  const binaryHandlers = new Set<(data: ArrayBuffer) => void>();
+  const stateHandlers = new Set<(state: MockConnectionState) => void>();
+  let state: MockConnectionState = 'disconnected';
+  const setState = (next: MockConnectionState) => {
     state = next;
     for (const handler of stateHandlers) handler(next);
   };
-  return {
+  const channel = {
     get state() { return state; },
     connect: vi.fn(() => {
       setState('connecting');
@@ -19,57 +30,65 @@ const channel = vi.hoisted(() => {
     }),
     disconnect: vi.fn(() => { setState('disconnected'); }),
     onBinary: vi.fn((handler: (data: ArrayBuffer) => void) => {
-      handlers.add(handler);
-      return () => { handlers.delete(handler); };
+      binaryHandlers.add(handler);
+      return () => { binaryHandlers.delete(handler); };
     }),
-    onStateChange: vi.fn((handler: (state: ConnectionState) => void) => {
+    onStateChange: vi.fn((handler: (value: MockConnectionState) => void) => {
       stateHandlers.add(handler);
       return () => { stateHandlers.delete(handler); };
     }),
-    handlerCount: () => handlers.size,
+    binaryHandlerCount: () => binaryHandlers.size,
     stateHandlerCount: () => stateHandlers.size,
+  };
+  return {
+    channel,
+    fetchCapabilities: vi.fn(),
+    startPolling: vi.fn(),
+    stopPolling: vi.fn(),
+    getChannel: vi.fn(() => channel),
+    connect: vi.fn(),
+    sendRaw: vi.fn(),
+    sendCommand: vi.fn(() => true),
+    onMessage: vi.fn(() => () => {}),
   };
 });
 
+vi.mock('$lib/transport/http-client', () => ({
+  fetchCapabilities: mocks.fetchCapabilities,
+  startPolling: mocks.startPolling,
+  setPollingMultiplier: vi.fn(),
+  clearEtag: vi.fn(),
+}));
+
 vi.mock('$lib/transport/ws-client', () => ({
-  getChannel: () => channel,
-  sendCommand: vi.fn(() => true),
-  connect: vi.fn(),
-  sendRaw: vi.fn(),
+  getChannel: mocks.getChannel,
+  connect: mocks.connect,
+  sendRaw: mocks.sendRaw,
+  sendCommand: mocks.sendCommand,
+  onMessage: mocks.onMessage,
   disconnectAll: vi.fn(),
   reconnectAll: vi.fn(),
 }));
 
-import AmberScope from '../AmberScope.svelte';
-import AmberCockpit from '../AmberCockpit.svelte';
-import { presentationResources, runtime } from '$lib/runtime/frontend-runtime';
-import { PresentationResourceHost } from '$lib/runtime/resource-host';
-import { ScopeController } from '$lib/runtime/scope-controller.svelte';
-import { setCapabilities } from '$lib/stores/capabilities.svelte';
-import { resetRadioState, setRadioState } from '$lib/stores/radio.svelte';
-import type { ConnectionState } from '$lib/transport/ws-client';
+const canonicalCapabilities: Capabilities = {
+  model: 'test',
+  scope: true,
+  audio: true,
+  audioFftAvailable: true,
+  scopeSource: 'hardware',
+  tx: false,
+  capabilities: ['audio', 'scope'],
+  receivers: 1,
+  vfoScheme: 'single',
+  freqRanges: [],
+  modes: ['USB'],
+  filters: ['FIL1'],
+  audioConfig: { sampleRate: 48_000, channels: 1, codecs: ['pcm16'] },
+  webrtc: { available: false, enabled: false },
+  txBands: null,
+};
 
-const variants = [
-  ['AmberCockpit', AmberCockpit],
-  ['AmberScope', AmberScope],
-] as const;
-let revision = 0;
-vi.stubGlobal('ResizeObserver', class {
-  observe() {}
-  disconnect() {}
-});
-
-function capabilities(audioFftAvailable: boolean) {
-  return {
-    model: 'test', capabilities: [], receivers: 1, vfoScheme: 'single',
-    scope: false, audio: true, audioFftAvailable,
-    scopeSource: audioFftAvailable ? 'audio_fft' : null,
-    tx: false, modes: ['USB'], filters: ['FIL1'],
-  } as never;
-}
-
-function radioState() {
-  revision += 1;
+function radioState(revision: number) {
   const receiver = {
     freqHz: 14_074_000 + revision, mode: 'USB', filter: 1, filterWidth: 2400,
     dataMode: 0, sMeter: 0, att: 0, preamp: 0, nb: false, nr: false,
@@ -81,149 +100,139 @@ function radioState() {
   } as never;
 }
 
-function makeChannel() {
-  const handlers = new Set<(data: ArrayBuffer) => void>();
-  const stateHandlers = new Set<(state: ConnectionState) => void>();
-  let state: ConnectionState = 'disconnected';
-  const setState = (next: ConnectionState) => {
-    state = next;
-    for (const handler of stateHandlers) handler(next);
-  };
-  return {
-    get state() { return state; },
-    connect: vi.fn(() => {
-      setState('connecting');
-      setState('connected');
-    }),
-    disconnect: vi.fn(() => { setState('disconnected'); }),
-    onBinary: vi.fn((handler: (data: ArrayBuffer) => void) => {
-      handlers.add(handler);
-      return () => { handlers.delete(handler); };
-    }),
-    onStateChange: vi.fn((handler: (state: ConnectionState) => void) => {
-      stateHandlers.add(handler);
-      return () => { stateHandlers.delete(handler); };
-    }),
-    handlerCount: () => handlers.size,
-    stateHandlerCount: () => stateHandlers.size,
-  };
+function hasDefaultScopeStatus(
+  value: object,
+): value is { readonly defaultScopeStatus: DefaultScopeStatusProbe } {
+  return 'defaultScopeStatus' in value;
 }
 
 describe('LCD audio-FFT demand ownership', () => {
-  it('keeps each mounted LCD lease stable across unrelated state updates', async () => {
+  it('boots canonical authority and shares only the two mounted panel leases', async () => {
+    vi.resetModules();
+    vi.clearAllMocks();
+    mocks.fetchCapabilities.mockResolvedValue(canonicalCapabilities);
+    mocks.startPolling.mockReturnValue(mocks.stopPolling);
+    vi.stubGlobal('ResizeObserver', class {
+      observe() {}
+      disconnect() {}
+    });
+
+    const { flushSync, mount, unmount } = await import('svelte');
+    const { default: AmberCockpit } = await import('../AmberCockpit.svelte');
+    const { default: AmberScope } = await import('../AmberScope.svelte');
+    const { presentationResources, runtime } = await import('$lib/runtime/frontend-runtime');
+    const { setRadioState } = await import('$lib/stores/radio.svelte');
+    const configure = vi.spyOn(presentationResources, 'configure');
     const acquire = vi.spyOn(presentationResources, 'acquire');
     const release = vi.spyOn(presentationResources, 'release');
-    const register = vi.spyOn(runtime.scope, 'registerPresentationDriver');
-    const subscribe = vi.spyOn(runtime.scope, 'subscribe');
+    const targets = [document.createElement('div'), document.createElement('div')];
+    let cockpit: ReturnType<typeof mount> | undefined;
+    let scope: ReturnType<typeof mount> | undefined;
+    let cleanup: (() => void) | undefined;
 
-    for (const [name, Component] of variants) {
-      setCapabilities(capabilities(true));
-      setRadioState(radioState());
-      const target = document.createElement('div');
-      document.body.appendChild(target);
-      const component = mount(Component, { target });
+    try {
+      expect(presentationResources.snapshot('audio-fft')).toMatchObject({
+        available: false, selected: false, demand: 0, health: 'inactive',
+      });
+      expect(mocks.getChannel).not.toHaveBeenCalled();
+
+      cleanup = await runtime.bootstrap();
+      runtime.scope.registerPresentationDriver(
+        presentationResources,
+        { available: true, selected: true },
+      );
+      const audioConfigurations = configure.mock.calls.filter(
+        ([resource]) => resource === 'audio-fft',
+      );
+      expect(audioConfigurations).toHaveLength(1);
+      expect(audioConfigurations[0]?.[1]).toMatchObject({
+        available: true, selected: true,
+      });
+      expect(presentationResources.snapshot('hardware-scope')).toMatchObject({
+        available: true, selected: true, demand: 0, health: 'inactive',
+      });
+      expect(presentationResources.snapshot('audio-fft')).toMatchObject({
+        available: true, selected: true, demand: 0, health: 'inactive',
+      });
+      if (hasDefaultScopeStatus(runtime)) {
+        expect(runtime.defaultScopeStatus).toEqual({
+          source: 'hardware',
+          available: true,
+          resourceSelected: true,
+          demand: 0,
+          lifecycle: 'inactive',
+          transport: 'disconnected',
+          frameSeen: false,
+        });
+      }
+      expect(mocks.getChannel).not.toHaveBeenCalled();
+
+      setRadioState(radioState(1));
+      for (const target of targets) document.body.appendChild(target);
+      cockpit = mount(AmberCockpit, { target: targets[0] });
       flushSync();
+      expect(presentationResources.snapshot('audio-fft').demand).toBe(1);
+      scope = mount(AmberScope, { target: targets[1] });
+      flushSync();
+      await vi.waitFor(() => expect(mocks.channel.connect).toHaveBeenCalledTimes(1));
+      expect(presentationResources.snapshot('audio-fft').demand).toBe(2);
+      expect(mocks.getChannel).toHaveBeenCalledExactlyOnceWith('audio-scope');
+      expect(mocks.channel.connect).toHaveBeenCalledExactlyOnceWith('/api/v1/audio-scope');
+      expect(mocks.channel.onBinary).toHaveBeenCalledTimes(1);
+      expect(mocks.channel.onStateChange).toHaveBeenCalledTimes(1);
+      expect(mocks.channel.binaryHandlerCount()).toBe(1);
+      expect(mocks.channel.stateHandlerCount()).toBe(1);
+      expect(acquire.mock.calls.map(([resource, consumer]) => [resource, consumer])).toEqual([
+        ['audio-fft', 'AmberCockpit'],
+        ['audio-fft', 'AmberScope'],
+      ]);
+      expect(presentationResources.snapshot('hardware-scope').demand).toBe(0);
+      if (hasDefaultScopeStatus(runtime)) expect(runtime.defaultScopeStatus.demand).toBe(0);
 
-      await vi.waitFor(() => expect(channel.connect).toHaveBeenCalledTimes(1));
-      expect(acquire).toHaveBeenCalledExactlyOnceWith('audio-fft', name);
-      expect(register).toHaveBeenCalledTimes(1);
-      expect(subscribe).toHaveBeenCalledTimes(1);
-
-      for (let update = 0; update < 5; update += 1) {
-        setRadioState(radioState());
+      for (let revision = 2; revision < 7; revision += 1) {
+        setRadioState(radioState(revision));
         flushSync();
       }
       await Promise.resolve();
-      expect(acquire).toHaveBeenCalledTimes(1);
-      expect(release).not.toHaveBeenCalled();
-      expect(channel.connect).toHaveBeenCalledTimes(1);
-      expect(channel.disconnect).not.toHaveBeenCalled();
-
-      setCapabilities(capabilities(false));
-      flushSync();
-      await vi.waitFor(() => expect(channel.disconnect).toHaveBeenCalledTimes(1));
-      expect(release).toHaveBeenCalledTimes(1);
-
-      setCapabilities(capabilities(true));
-      flushSync();
-      await vi.waitFor(() => expect(channel.connect).toHaveBeenCalledTimes(2));
       expect(acquire).toHaveBeenCalledTimes(2);
+      expect(release).not.toHaveBeenCalled();
+      expect(configure.mock.calls.filter(([resource]) => resource === 'audio-fft')).toHaveLength(1);
+      expect(mocks.getChannel).toHaveBeenCalledTimes(1);
+      expect(mocks.channel.connect).toHaveBeenCalledTimes(1);
+      expect(mocks.sendCommand).not.toHaveBeenCalled();
 
-      unmount(component);
-      await vi.waitFor(() => expect(channel.disconnect).toHaveBeenCalledTimes(2));
+      await unmount(cockpit);
+      cockpit = undefined;
+      expect(presentationResources.snapshot('audio-fft').demand).toBe(1);
+      expect(mocks.channel.disconnect).not.toHaveBeenCalled();
+      expect(mocks.channel.binaryHandlerCount()).toBe(1);
+      expect(mocks.channel.stateHandlerCount()).toBe(1);
+
+      await unmount(scope);
+      scope = undefined;
+      await vi.waitFor(() => expect(mocks.channel.disconnect).toHaveBeenCalledTimes(1));
+      expect(presentationResources.snapshot('audio-fft').demand).toBe(0);
+      expect(mocks.channel.binaryHandlerCount()).toBe(0);
+      expect(mocks.channel.stateHandlerCount()).toBe(0);
       expect(release).toHaveBeenCalledTimes(2);
-      expect(channel.handlerCount()).toBe(0);
-      expect(channel.stateHandlerCount()).toBe(0);
 
-      target.remove();
-      resetRadioState();
-      acquire.mockClear();
-      release.mockClear();
-      register.mockClear();
-      subscribe.mockClear();
-      vi.clearAllMocks();
+      await cleanup();
+      await cleanup();
+      expect(mocks.stopPolling).toHaveBeenCalledTimes(1);
+    } finally {
+      if (cockpit) await unmount(cockpit);
+      if (scope) await unmount(scope);
+      if (cleanup) await cleanup();
+      for (const target of targets) target.remove();
+      vi.doUnmock('$lib/transport/http-client');
+      vi.doUnmock('$lib/transport/ws-client');
+      vi.resetModules();
     }
   });
 
-  it('shares one channel through panel removal, final release, and duplicate cleanup', async () => {
-    const localChannel = makeChannel();
-    const binaryHandler = vi.fn();
-    const unsubscribeBinary = localChannel.onBinary(binaryHandler);
-    const stateHandler = vi.fn();
-    const unsubscribeState = localChannel.onStateChange(stateHandler);
-    const unsubscribeDuplicateState = localChannel.onStateChange(stateHandler);
-    const controller = new ScopeController(() => localChannel as never);
-    const host = new PresentationResourceHost<unknown>('test');
-    controller.registerPresentationDriver(host);
-    const panel = host.acquire('audio-fft', 'AudioSpectrumPanel');
-    const scope = host.acquire('audio-fft', 'AmberScope');
-    const cockpit = host.acquire('audio-fft', 'AmberCockpit');
-    const unsubscribeScope = controller.subscribe(vi.fn());
-    const unsubscribeCockpit = controller.subscribe(vi.fn());
-
-    expect(new Set([panel, scope, cockpit]).size).toBe(3);
-    await vi.waitFor(() => expect(localChannel.connect).toHaveBeenCalledTimes(1));
-    expect(localChannel.state).toBe('connected');
-    expect(stateHandler).toHaveBeenNthCalledWith(1, 'connecting');
-    expect(stateHandler).toHaveBeenNthCalledWith(2, 'connected');
-    expect(host.release(panel)).toBe(true);
-    expect(localChannel.disconnect).not.toHaveBeenCalled();
-    unsubscribeScope();
-    expect(host.release(scope)).toBe(true);
-    expect(localChannel.disconnect).not.toHaveBeenCalled();
-    unsubscribeCockpit();
-    expect(host.release(cockpit)).toBe(true);
-    await vi.waitFor(() => expect(localChannel.disconnect).toHaveBeenCalledTimes(1));
-    expect(localChannel.state).toBe('disconnected');
-    expect(stateHandler).toHaveBeenCalledTimes(3);
-    expect(stateHandler).toHaveBeenLastCalledWith('disconnected');
-    expect(localChannel.handlerCount()).toBe(1);
-    expect(host.release(cockpit)).toBe(false);
-    expect(localChannel.disconnect).toHaveBeenCalledTimes(1);
-    unsubscribeState();
-    unsubscribeState();
-    unsubscribeDuplicateState();
-    expect(localChannel.stateHandlerCount()).toBe(0);
-    unsubscribeBinary();
-    expect(localChannel.handlerCount()).toBe(0);
-  });
-
-  it('opens nothing when unavailable and contains no hardware fallback', async () => {
-    const localChannel = makeChannel();
-    const controller = new ScopeController(() => localChannel as never);
-    const host = new PresentationResourceHost<unknown>('test');
-    host.configure('audio-fft', {
-      available: false, selected: true, driver: controller.audioFftDriver,
-    });
-    const lease = host.acquire('audio-fft', 'AmberScope');
-    await Promise.resolve();
-    expect(localChannel.connect).not.toHaveBeenCalled();
-    expect(host.release(lease)).toBe(true);
-    expect(localChannel.disconnect).not.toHaveBeenCalled();
-    for (const [name] of variants) {
-      const source = readFileSync(
-        resolve(`src/components-v2/panels/lcd/${name}.svelte`), 'utf8',
-      );
+  it('contains no direct transport or hardware-scope fallback', () => {
+    for (const name of ['AmberCockpit', 'AmberScope']) {
+      const source = readFileSync(resolve(`src/components-v2/panels/lcd/${name}.svelte`), 'utf8');
       expect(source).not.toMatch(/\$lib\/transport|hardware-scope/);
     }
   });
