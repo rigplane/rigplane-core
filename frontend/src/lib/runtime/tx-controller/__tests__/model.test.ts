@@ -156,6 +156,7 @@ describe('TX reducer', () => {
   it('preserves empty command IDs through ON and OFF correlation paths', () => {
     const pending = start(); const guard = pending.state.guard!; const dispatched = transition(pending.state, { type: 'audio-ready', guard, commandId: '' });
     expect(dispatched.effects.filter((item) => item.type === 'dispatch-on' || item.type === 'arm-on-timeout').map((item) => item.commandId)).toEqual(['', '']);
+    const legacyEmpty = transition(dispatched.state, { type: 'on-sent', guard, commandId: '', barrier: marker(2) }); expect(legacyEmpty.state.phase).toBe('key-confirm-pending'); expect(legacyEmpty.effects[0]?.commandId).toBe('');
     const onSentEvent = { type: 'command-result' as const, command: 'on' as const, outcome: 'sent' as const, barrier: marker(2), ...correlation(dispatched.state, ''), offCommandId: '' }; const sent = transition(dispatched.state, onSentEvent);
     expect(sent.state.phase).toBe('key-confirm-pending'); expect(sent.effects[0]?.commandId).toBe('');
     const onError = transition(dispatched.state, { ...onSentEvent, outcome: 'response-error', barrier: null }); expect(onError.state.pendingOff?.commandId).toBe(''); expect(onError.effects.filter((item) => item.type === 'dispatch-off' || item.type === 'arm-off-timeout').map((item) => item.commandId)).toEqual(['', '']);
@@ -167,8 +168,10 @@ describe('TX reducer', () => {
     expect(transition(released.state, { ...offSentEvent, outcome: 'response-error', barrier: null }).state.fault).toBe('release-not-confirmed'); expect(transition(delivered.state, { ...timerEvent(delivered.state, 'off-confirmation', ''), offCommandId: '' }).state.fault).toBe('release-not-confirmed');
   });
   it('rejects malformed runtime command IDs before state mutation', () => {
+    const preDispatch = start(); for (const commandId of ['', 'wrong']) expect(transition(preDispatch.state, { type: 'on-sent', guard: preDispatch.state.guard!, commandId, barrier: marker(2) })).toEqual({ state: preDispatch.state, effects: [] });
     for (const invalid of [null, 42] as const) {
       const pending = start(); const badAudio = { type: 'audio-ready', guard: pending.state.guard!, commandId: invalid } as unknown as TxEvent; expect(transition(pending.state, badAudio)).toEqual({ state: pending.state, effects: [] }); expect(pending.state.mayOwnKey).toBe(false);
+      const badOnSent = { type: 'on-sent', guard: pending.state.guard!, commandId: invalid, barrier: marker(2) } as unknown as TxEvent; expect(transition(pending.state, badOnSent)).toEqual({ state: pending.state, effects: [] });
       const keyed = active(); const badRelease = { type: 'release', guard: keyed.guard!, commandId: invalid } as unknown as TxEvent; expect(transition(keyed, badRelease)).toEqual({ state: keyed, effects: [] }); expect(keyed.pendingOff).toBeNull();
       const dispatched = transition(pending.state, { type: 'audio-ready', guard: pending.state.guard!, commandId: 'on' }); const base = correlation(dispatched.state, 'on');
       const malformed = [
@@ -180,6 +183,7 @@ describe('TX reducer', () => {
       ] as unknown as TxEvent[];
       for (const event of malformed) expect(transition(dispatched.state, event)).toEqual({ state: dispatched.state, effects: [] });
     }
+    const normal = start(); const normalGuard = normal.state.guard!; const normalDispatched = transition(normal.state, { type: 'audio-ready', guard: normalGuard, commandId: 'on' }); expect(transition(normalDispatched.state, { type: 'on-sent', guard: normalGuard, commandId: 'on', barrier: marker(2) }).state.phase).toBe('key-confirm-pending');
   });
   it('rejects stale identity on every timer family', () => {
     const audio = start(); const guard = audio.state.guard!; const dispatched = transition(audio.state, { type: 'audio-ready', guard, commandId: 'on' }); const keyed = active(); const released = transition(keyed, { type: 'release', guard: keyed.guard!, commandId: 'off' });

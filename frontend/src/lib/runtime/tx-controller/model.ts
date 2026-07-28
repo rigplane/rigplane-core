@@ -87,7 +87,7 @@ function release(state: TxState, commandId: string): TxTransition {
 }
 
 export function transition(state: TxState, event: TxEvent): TxTransition {
-  if (('offCommandId' in event && typeof event.offCommandId !== 'string') || ((event.type === 'audio-ready' || event.type === 'release') && typeof event.commandId !== 'string')) return { state, effects: [] };
+  if (('offCommandId' in event && typeof event.offCommandId !== 'string') || ((event.type === 'audio-ready' || event.type === 'release' || event.type === 'on-sent') && typeof event.commandId !== 'string')) return { state, effects: [] };
   if (event.type === 'start') {
     if (state.phase !== 'idle') return { state, effects: [] };
     const ok = ready(event.eligibility) && event.ptt.value === false && authoritative(event.ptt) && newer(state.pttMarker, event.ptt) && event.ptt.marker.authorityEpoch === state.authorityEpoch;
@@ -125,7 +125,7 @@ export function transition(state: TxState, event: TxEvent): TxTransition {
     if (state.mayOwnKey) return release({ ...state, fault: event.fault }, event.offCommandId);
     return failLocal(state, event.fault);
   }
-  if (event.type === 'on-sent' && sameGuard(state, event.guard) && state.phase === 'audio-start-pending' && state.onCommandId === event.commandId && event.barrier.authorityEpoch === state.authorityEpoch) {
+  if (event.type === 'on-sent' && state.onCommandId !== null && state.mayOwnKey && sameGuard(state, event.guard) && state.phase === 'audio-start-pending' && state.onCommandId === event.commandId && event.barrier.authorityEpoch === state.authorityEpoch) {
     return bindOn(state, event.commandId, event.barrier);
   }
   if (event.type === 'off-sent') {
