@@ -25,10 +25,11 @@ import {
   getRadioPowerOn,
 } from '$lib/stores/connection.svelte';
 import { getAudioState, setVolume, setMuted, toggleMute } from '$lib/stores/audio.svelte';
-import { sendCommand, connect, sendRaw } from '$lib/transport/ws-client';
+import { sendCommand, connect, onMessage, sendRaw } from '$lib/transport/ws-client';
 import { fetchCapabilities, startPolling, setPollingMultiplier } from '$lib/transport/http-client';
 import { audioManager } from '$lib/audio/audio-manager';
 import { clearLegacyPendingModInputRestore } from './adapters/mod-input-auto.svelte';
+import { derivePresentationCapabilities } from './adapters/presentation-capabilities';
 import { systemController } from './system-controller';
 import { scopeController } from './scope-controller.svelte';
 import type { ScopeController } from './scope-controller.svelte';
@@ -36,8 +37,11 @@ import { PresentationResourceHost } from './resource-host';
 import type { ResourceLease } from './resource-demand';
 import type { ServerState, ReceiverState } from '$lib/types/state';
 import type { Capabilities } from '$lib/types/capabilities';
+import type { WsIncoming } from '$lib/types/protocol';
 export const presentationResources = new PresentationResourceHost<unknown>('app');
 // ── Types ──
+
+export type DxMessage = Extract<WsIncoming, { type: 'dx_spot' | 'dx_spots' }>;
 
 export interface ConnectionSnapshot {
   status: 'connected' | 'partial' | 'disconnected';
@@ -57,9 +61,17 @@ class FrontendRuntime {
   private _bootstrapCleanup: (() => void) | null = null;
   private _bootstrapInFlight: Promise<() => void> | null = null;
   private _rxAudioLease: ResourceLease | null = null;
-  private _rxAudioEnded = false;
+  private _ended = false;
+  private _dxSubscribers = new Map<number, (message: DxMessage) => void>();
+  private _dxControlUnsubscribe: (() => void) | null = null;
+  private _nextDxSubscriber = 0;
 
   constructor() {
+    presentationResources.configure('hardware-scope', {
+      available: false,
+      selected: false,
+      driver: scopeController.hardwareScopeDriver,
+    });
     presentationResources.configure('rx-audio', {
       available: false,
       selected: true,
@@ -188,6 +200,11 @@ class FrontendRuntime {
     // 1. Fetch capabilities and push into the store.
     const caps = await fetchCapabilities();
     setCapabilities(caps);
+    const presentationCaps = derivePresentationCapabilities(caps);
+    presentationResources.configure('hardware-scope', {
+      available: presentationCaps.scope.hardwareScopeAvailable,
+      selected: presentationCaps.scope.defaultSource === 'hardware',
+    });
     presentationResources.configure('rx-audio', {
       available: caps.audio === true && caps.capabilities.includes('audio'),
       selected: true,
@@ -211,9 +228,14 @@ class FrontendRuntime {
     // Only latch as started after the entire chain succeeds.
     let cleanupInFlight: Promise<void> | undefined;
     const cleanup = () => cleanupInFlight ??= (async () => {
-      this._rxAudioEnded = true;
-      await presentationResources.teardown();
-      stopPolling();
+      this._ended = true;
+      this._rxAudioLease = null;
+      this._dxSubscribers.clear();
+      const unsubscribeDx = this._dxControlUnsubscribe;
+      this._dxControlUnsubscribe = null;
+      try { unsubscribeDx?.(); } finally {
+        try { await presentationResources.teardown(); } finally { stopPolling(); }
+      }
     })();
     this._bootstrapCleanup = cleanup;
     return cleanup;
@@ -240,9 +262,46 @@ class FrontendRuntime {
 
   // ── Audio control ──
 
+  acquireHardwareScope(consumer: string): ResourceLease {
+    if (this._ended) throw new Error('frontend runtime is torn down');
+    return presentationResources.acquire('hardware-scope', consumer);
+  }
+
+  releaseHardwareScope(lease: ResourceLease): boolean {
+    return lease.resource === 'hardware-scope' && presentationResources.release(lease);
+  }
+
+  subscribeDx(handler: (message: DxMessage) => void): () => void {
+    if (this._ended) throw new Error('frontend runtime is torn down');
+    const id = this._nextDxSubscriber++;
+    this._dxSubscribers.set(id, handler);
+    if (this._dxControlUnsubscribe === null) {
+      try {
+        this._dxControlUnsubscribe = onMessage((message) => {
+          if (message.type !== 'dx_spot' && message.type !== 'dx_spots') return;
+          for (const subscriber of [...this._dxSubscribers.values()]) subscriber(message);
+        });
+      } catch (error) {
+        this._dxSubscribers.delete(id);
+        throw error;
+      }
+    }
+    let active = true;
+    return () => {
+      if (!active) return;
+      active = false;
+      this._dxSubscribers.delete(id);
+      if (this._dxSubscribers.size === 0) {
+        const unsubscribe = this._dxControlUnsubscribe;
+        this._dxControlUnsubscribe = null;
+        unsubscribe?.();
+      }
+    };
+  }
+
   setRxLive(live: boolean): void {
     if (live) {
-      if (!this._rxAudioEnded && this._rxAudioLease === null) {
+      if (!this._ended && this._rxAudioLease === null) {
         this._rxAudioLease = presentationResources.acquire('rx-audio', 'presentation');
       }
       return;
