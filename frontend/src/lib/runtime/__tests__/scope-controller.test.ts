@@ -220,4 +220,19 @@ describe('ScopeController', () => {
     expect(source).toContain('registerPresentationDriver');
     expect(source).not.toMatch(/\$lib\/transport|hardware-scope/);
   });
+
+  it('keeps default construction inert and resolves transport on first start', async () => {
+    const source = readFileSync(resolve('src/lib/runtime/scope-controller.svelte.ts'), 'utf8');
+    expect(source).not.toContain('channelFactory: ChannelFactory = getChannel');
+    const defaultChannel = makeMockChannel();
+    const lookup = vi.fn(() => defaultChannel as any);
+    const defaultController = new ScopeController(lookup);
+    expect(lookup).not.toHaveBeenCalled();
+
+    const handle = await defaultController.audioFftDriver.start();
+    expect(lookup).toHaveBeenCalledTimes(1);
+    expect(lookup).toHaveBeenCalledWith('audio-scope');
+    expect(defaultChannel.connect).toHaveBeenCalledWith('/api/v1/audio-scope');
+    await defaultController.audioFftDriver.stop(handle);
+  });
 });

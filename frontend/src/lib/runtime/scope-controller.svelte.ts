@@ -47,7 +47,7 @@ export class ScopeController {
     dispose: (handle) => this._disconnect(handle as AudioFftHandle),
   };
 
-  constructor(channelFactory: ChannelFactory = getChannel) {
+  constructor(channelFactory: ChannelFactory = (name) => getChannel(name)) {
     this._getChannel = channelFactory;
   }
 
