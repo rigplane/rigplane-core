@@ -97,45 +97,63 @@ Object.defineProperty(globalThis, 'localStorage', {
 // Module mocks
 // ---------------------------------------------------------------------------
 
-let capturedOnBinary: ((buf: ArrayBuffer) => void) | null = null;
-let capturedOnState: ((state: string) => void) | null = null;
-let mockScopeConnected = true;
-let mockScopeState = 'disconnected';
+type TestLease = Readonly<{ resource: 'hardware-scope'; sessionEpoch: string; id: number }>;
+type TestScopeFrame = Readonly<{
+  receiver: number;
+  mode: number;
+  startFreq: number;
+  endFreq: number;
+  pixels: Uint8Array;
+}>;
 
-const mockScopeChannel = {
-  get state() { return mockScopeState; },
-  connect: vi.fn(() => { mockScopeState = 'connecting'; }),
-  disconnect: vi.fn(() => { mockScopeState = 'disconnected'; }),
-  onStateChange: vi.fn((cb: (state: string) => void) => {
-    capturedOnState = cb;
-    return noop;
-  }),
-  onBinary: vi.fn((cb: (buf: ArrayBuffer) => void) => {
-    capturedOnBinary = cb;
-    return noop;
-  }),
-};
+const runtimeHarness = vi.hoisted(() => {
+  const state = {
+    capturedHardwareFrame: null as ((frame: TestScopeFrame) => void) | null,
+    capturedDxMessage: null as ((message: unknown) => void) | null,
+    mockScopeConnected: true,
+    mockTuneBy: 0,
+    nextLeaseId: 0,
+    hardwareUnsubscribe: vi.fn(),
+    dxUnsubscribe: vi.fn(),
+  };
+  const runtime = {
+    scope: {
+      get hardwareScopeConnected() { return state.mockScopeConnected; },
+      subscribeHardware: vi.fn((handler: (frame: TestScopeFrame) => void) => {
+        state.capturedHardwareFrame = handler;
+        return state.hardwareUnsubscribe;
+      }),
+    },
+    acquireHardwareScope: vi.fn(() => Object.freeze({
+      resource: 'hardware-scope' as const,
+      sessionEpoch: 'test',
+      id: ++state.nextLeaseId,
+    })),
+    releaseHardwareScope: vi.fn((_lease: TestLease) => true),
+    subscribeDx: vi.fn((handler: (message: unknown) => void) => {
+      state.capturedDxMessage = handler;
+      return state.dxUnsubscribe;
+    }),
+    send: vi.fn(),
+  };
+  return { state, runtime };
+});
 
-vi.mock('$lib/transport/ws-client', () => ({
-  getChannel: vi.fn(() => mockScopeChannel),
-  onMessage: vi.fn(() => noop),
-  sendCommand: vi.fn(),
-}));
+const mockRuntime = runtimeHarness.runtime;
 
-vi.mock('$lib/stores/connection.svelte', () => ({
-  setScopeConnected: vi.fn(),
-  markScopeFrame: vi.fn(),
-  isScopeConnected: vi.fn(() => mockScopeConnected),
+vi.mock('$lib/runtime/frontend-runtime', () => ({
+  runtime: runtimeHarness.runtime,
 }));
 
 vi.mock('$lib/stores/radio.svelte', () => ({
   radio: { current: null },
   patchActiveReceiver: vi.fn(),
+  patchReceiver: vi.fn(),
 }));
 
 vi.mock('$lib/stores/tuning.svelte', () => ({
   snapToStep: vi.fn((hz: number) => hz),
-  tuneBy: vi.fn(() => 0),
+  tuneBy: vi.fn(() => runtimeHarness.state.mockTuneBy),
   getTuningStep: vi.fn(() => 100),
   adjustTuningStep: vi.fn(),
   isAutoStep: vi.fn(() => true),
@@ -171,8 +189,12 @@ vi.mock('../../../../components-v2/wiring/state-adapter', () => ({
 // ---------------------------------------------------------------------------
 
 import SpectrumPanel from '../SpectrumPanel.svelte';
-import { getChannel, sendCommand } from '$lib/transport/ws-client';
-import { markScopeFrame, setScopeConnected } from '$lib/stores/connection.svelte';
+import spectrumPanelSource from '../SpectrumPanel.svelte?raw';
+import {
+  deriveScopeIndicatorState,
+  indicatorTone,
+} from '../../../components-v2/layout/StatusBar.svelte';
+import statusBarSource from '../../../components-v2/layout/StatusBar.svelte?raw';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -191,9 +213,13 @@ function mountPanel() {
 
 beforeEach(() => {
   components = [];
-  capturedOnState = null;
-  mockScopeConnected = true;
-  mockScopeState = 'disconnected';
+  runtimeHarness.state.capturedHardwareFrame = null;
+  runtimeHarness.state.capturedDxMessage = null;
+  runtimeHarness.state.mockScopeConnected = true;
+  runtimeHarness.state.mockTuneBy = 0;
+  runtimeHarness.state.nextLeaseId = 0;
+  runtimeHarness.state.hardwareUnsubscribe = vi.fn();
+  runtimeHarness.state.dxUnsubscribe = vi.fn();
   vi.clearAllMocks();
 });
 
@@ -241,85 +267,72 @@ describe('SpectrumPanel component', () => {
     expect(labels).toEqual(['0', '-20', '-40', '-60']);
   });
 
-  it('connects scope WebSocket channel on mount', () => {
+  it('acquires one runtime hardware-scope lease and lifetime-neutral subscriptions on mount', () => {
     mountPanel();
-    expect(getChannel).toHaveBeenCalledWith('scope');
-    expect(mockScopeChannel.connect).toHaveBeenCalledWith('/api/v1/scope');
-    expect(mockScopeChannel.onBinary).toHaveBeenCalled();
-    expect(mockScopeChannel.onStateChange).toHaveBeenCalled();
+    expect(mockRuntime.acquireHardwareScope).toHaveBeenCalledTimes(1);
+    expect(mockRuntime.acquireHardwareScope).toHaveBeenCalledWith('SpectrumPanel');
+    expect(mockRuntime.scope.subscribeHardware).toHaveBeenCalledTimes(1);
+    expect(mockRuntime.subscribeDx).toHaveBeenCalledTimes(1);
   });
 
-  it('releases and reacquires viewer demand through the existing scope channel', () => {
+  it('releases the exact lease on OFF and acquires a fresh lease on ON', () => {
     const target = mountPanel();
     const toggle = target.querySelector<HTMLButtonElement>('.scope-demand-toggle')!;
+    const firstLease = mockRuntime.acquireHardwareScope.mock.results[0].value;
 
     expect(toggle).not.toBeNull();
     expect(toggle.getAttribute('aria-pressed')).toBe('true');
+    expect(toggle.textContent).toContain('VIEW ON');
 
     toggle.click();
     flushSync();
     expect(toggle.getAttribute('aria-pressed')).toBe('false');
-    expect(mockScopeChannel.disconnect).toHaveBeenCalledTimes(1);
-    expect(setScopeConnected).toHaveBeenLastCalledWith(false);
+    expect(toggle.textContent).toContain('VIEW OFF');
+    expect(mockRuntime.releaseHardwareScope).toHaveBeenCalledTimes(1);
+    expect(mockRuntime.releaseHardwareScope).toHaveBeenLastCalledWith(firstLease);
 
     toggle.click();
     flushSync();
     expect(toggle.getAttribute('aria-pressed')).toBe('true');
-    expect(getChannel).toHaveBeenCalledTimes(1);
-    expect(mockScopeChannel.connect).toHaveBeenCalledTimes(2);
-    expect(mockScopeChannel.connect).toHaveBeenLastCalledWith('/api/v1/scope');
-  });
-
-  it('rejects frames and immediately closes an externally resurrected channel while OFF', () => {
-    const target = mountPanel();
-    target.querySelector<HTMLButtonElement>('.scope-demand-toggle')!.click();
-    flushSync();
-
-    capturedOnBinary?.(new ArrayBuffer(16));
-    expect(markScopeFrame).not.toHaveBeenCalled();
-
-    mockScopeState = 'connected';
-    capturedOnState?.('connected');
-    expect(mockScopeChannel.connect).toHaveBeenCalledTimes(1);
-    expect(mockScopeChannel.disconnect).toHaveBeenCalledTimes(2);
-    expect(setScopeConnected).toHaveBeenLastCalledWith(false);
+    expect(mockRuntime.acquireHardwareScope).toHaveBeenCalledTimes(2);
+    const currentLease = mockRuntime.acquireHardwareScope.mock.results[1].value;
+    expect(currentLease).not.toBe(firstLease);
 
     const component = components.pop()!;
     unmount(component);
-    expect(mockScopeChannel.disconnect).toHaveBeenCalledTimes(2);
+    expect(mockRuntime.releaseHardwareScope).toHaveBeenCalledTimes(2);
+    expect(mockRuntime.releaseHardwareScope).toHaveBeenLastCalledWith(currentLease);
+    expect(runtimeHarness.state.hardwareUnsubscribe).toHaveBeenCalledTimes(1);
+    expect(runtimeHarness.state.dxUnsubscribe).toHaveBeenCalledTimes(1);
   });
 
-  it('closes a resurrected live channel during teardown even without a state notification', () => {
-    const target = mountPanel();
-    target.querySelector<HTMLButtonElement>('.scope-demand-toggle')!.click();
-    flushSync();
-    expect(mockScopeChannel.disconnect).toHaveBeenCalledTimes(1);
-
-    mockScopeState = 'connected';
-    const component = components.pop()!;
-    unmount(component);
-    expect(mockScopeChannel.disconnect).toHaveBeenCalledTimes(2);
-  });
-
-  it('keeps demand intent ON across channel disconnect and reconnect health changes', () => {
+  it('keeps OFF intent inert across runtime health, teardown, and remount', () => {
     const target = mountPanel();
     const toggle = target.querySelector<HTMLButtonElement>('.scope-demand-toggle')!;
+    const releasedLease = mockRuntime.acquireHardwareScope.mock.results[0].value;
 
-    mockScopeState = 'disconnected';
-    capturedOnState?.('disconnected');
-    mockScopeState = 'connected';
-    capturedOnState?.('connected');
+    toggle.click();
+    runtimeHarness.state.mockScopeConnected = false;
+    runtimeHarness.state.mockScopeConnected = true;
     flushSync();
 
-    expect(toggle.getAttribute('aria-pressed')).toBe('true');
-    expect(mockScopeChannel.connect).toHaveBeenCalledTimes(1);
-    expect(mockScopeChannel.disconnect).not.toHaveBeenCalled();
-    expect(setScopeConnected).toHaveBeenNthCalledWith(1, false);
-    expect(setScopeConnected).toHaveBeenNthCalledWith(2, true);
+    expect(toggle.getAttribute('aria-pressed')).toBe('false');
+    expect(mockRuntime.acquireHardwareScope).toHaveBeenCalledTimes(1);
+    expect(mockRuntime.releaseHardwareScope).toHaveBeenCalledTimes(1);
+
+    unmount(components.pop()!);
+    expect(mockRuntime.releaseHardwareScope).toHaveBeenCalledTimes(1);
+    expect(mockRuntime.releaseHardwareScope).toHaveBeenLastCalledWith(releasedLease);
+
+    mountPanel();
+    const remountLease = mockRuntime.acquireHardwareScope.mock.results[1].value;
+    expect(remountLease).not.toBe(releasedLease);
+    unmount(components.pop()!);
+    expect(mockRuntime.releaseHardwareScope).toHaveBeenNthCalledWith(2, remountLease);
   });
 
   it('renders demand ON without claiming an inactive channel is live', () => {
-    mockScopeConnected = false;
+    runtimeHarness.state.mockScopeConnected = false;
     const target = mountPanel();
 
     expect(
@@ -327,6 +340,20 @@ describe('SpectrumPanel component', () => {
     ).toBe('true');
     expect(target.querySelector('.scope-disconnected-overlay')).not.toBeNull();
     expect(target.querySelector('.scope-demand-off-overlay')).toBeNull();
+  });
+
+  it('ignores shared runtime frames while VIEW is OFF', () => {
+    const target = mountPanel();
+    target.querySelector<HTMLButtonElement>('.scope-demand-toggle')!.click();
+    runtimeHarness.state.capturedHardwareFrame?.({
+      receiver: 0,
+      mode: 1,
+      startFreq: 14_000_000,
+      endFreq: 14_350_000,
+      pixels: new Uint8Array(475).fill(64),
+    });
+    flushSync();
+    expect(target.querySelector('.freq-axis')).toBeNull();
   });
 
   it('does not render freq-axis when no span data', () => {
@@ -348,8 +375,8 @@ describe('SpectrumPanel component', () => {
     target.remove();
   });
 
-  it('wheel event on panel triggers tuning command', async () => {
-    const { sendCommand } = await import('$lib/transport/ws-client');
+  it('wheel event routes tuning command through runtime.send', () => {
+    runtimeHarness.state.mockTuneBy = 14_074_000;
     const target = mountPanel();
     const panel = target.querySelector('.spectrum-panel')!;
     const wheelEvent = new WheelEvent('wheel', {
@@ -358,34 +385,111 @@ describe('SpectrumPanel component', () => {
       cancelable: true,
     });
     panel.dispatchEvent(wheelEvent);
-    // Wheel handler should send a tuning command via sendCommand
-    // (may not fire if no freq data — just verify no crash)
-    expect(panel).toBeTruthy();
+    expect(mockRuntime.send).toHaveBeenCalledWith('set_freq', {
+      freq: 14_074_000,
+      receiver: 0,
+    });
   });
 
-  it('renders freq-axis after receiving binary scope frame', () => {
+  it('renders runtime hardware frames and DX spots', () => {
     const target = mountPanel();
-    // Build a minimal scope frame header (16 bytes) + 475 pixels
-    // Header: seq(1) + id(1) + startFreq(4, LE) + endFreq(4, LE) + flags(6)
-    const headerSize = 16;
-    const pixelCount = 475;
-    const buf = new ArrayBuffer(headerSize + pixelCount);
-    const view = new DataView(buf);
-    view.setUint8(0, 1);  // seq = 1 (single-packet frame)
-    view.setUint8(1, 0);  // id
-    view.setUint32(2, 14_000_000, true);  // startFreq LE
-    view.setUint32(6, 14_350_000, true);  // endFreq LE
-    // Fill pixels with mid-level data
-    const pixels = new Uint8Array(buf, headerSize);
-    pixels.fill(64);
+    runtimeHarness.state.capturedHardwareFrame?.({
+      receiver: 0,
+      mode: 1,
+      startFreq: 14_000_000,
+      endFreq: 14_350_000,
+      pixels: new Uint8Array(475).fill(64),
+    });
+    flushSync();
+    expect(target.querySelector('.freq-axis')).not.toBeNull();
 
-    // Deliver frame via captured binary handler
-    if (capturedOnBinary) {
-      capturedOnBinary(buf);
-      flushSync();
+    runtimeHarness.state.capturedDxMessage?.({
+      type: 'dx_spot',
+      spot: {
+        spotter: 'N0CALL',
+        freq: 14_175_000,
+        call: 'K1ABC',
+        comment: 'test',
+        time_utc: '1200',
+        timestamp: 1,
+      },
+    });
+    flushSync();
+    expect(target.querySelector('.dx-badge')?.textContent).toContain('K1ABC');
+  });
+
+  it('keeps all scope transport and health authority behind the runtime facade', () => {
+    for (const legacyAuthority of [
+      'getChannel',
+      'onMessage',
+      'sendCommand',
+      'setScopeConnected',
+      'markScopeFrame',
+    ]) {
+      expect(spectrumPanelSource).not.toContain(legacyAuthority);
     }
-    // After a frame with valid span, the component should update
-    // (exact DOM depends on rAF scheduling — verify no crash at minimum)
-    expect(target.querySelector('.spectrum-panel')).not.toBeNull();
+    expect(spectrumPanelSource).toContain('runtime.acquireHardwareScope');
+    expect(spectrumPanelSource).toContain('runtime.scope.subscribeHardware');
+    expect(spectrumPanelSource).toContain('runtime.subscribeDx');
+    expect(spectrumPanelSource).toContain('runtime.send');
+  });
+});
+
+type ScopeStatusProbe = Parameters<typeof deriveScopeIndicatorState>[0];
+
+function scopeStatus(
+  overrides: Partial<ScopeStatusProbe> = {},
+): ScopeStatusProbe {
+  return {
+    source: 'hardware',
+    available: true,
+    resourceSelected: true,
+    demand: 1,
+    lifecycle: 'streaming',
+    transport: 'connected',
+    frameSeen: true,
+    ...overrides,
+  };
+}
+
+describe('StatusBar default scope status consumption', () => {
+  it('uses only the canonical runtime default and removes the legacy reader', () => {
+    expect(statusBarSource).toContain('runtime.defaultScopeStatus');
+    expect(statusBarSource).not.toContain('isScopeConnected');
+    expect(statusBarSource).not.toContain('hardwareScopeConnected');
+    expect(statusBarSource).not.toContain('audioScopeFrame');
+  });
+
+  it.each([
+    ['power-off override', scopeStatus(), true, 'disconnected'],
+    ['power-off precedes inactive facts', scopeStatus({ source: null, demand: 0 }), true, 'disconnected'],
+    ['no default source', scopeStatus({ source: null }), false, 'inactive'],
+    ['unavailable default', scopeStatus({ available: false }), false, 'inactive'],
+    ['unselected resource', scopeStatus({ resourceSelected: false }), false, 'inactive'],
+    ['zero demand', scopeStatus({ demand: 0 }), false, 'inactive'],
+    ['starting host', scopeStatus({ lifecycle: 'starting', transport: 'disconnected', frameSeen: false }), false, 'starting'],
+    ['connecting transport', scopeStatus({ transport: 'connecting', frameSeen: false }), false, 'connecting'],
+    ['reconnecting transport', scopeStatus({ transport: 'reconnecting', frameSeen: false }), false, 'reconnecting'],
+    ['waiting for current frame', scopeStatus({ frameSeen: false }), false, 'waiting'],
+    ['failed host under demand', scopeStatus({ lifecycle: 'failed' }), false, 'failed'],
+    ['disconnected transport under demand', scopeStatus({ transport: 'disconnected', frameSeen: false }), false, 'disconnected'],
+    ['healthy hardware default', scopeStatus(), false, 'connected'],
+    ['healthy audio default uses identical facts', scopeStatus({ source: 'audio_fft' }), false, 'connected'],
+    ['non-streaming lifecycle is not green', scopeStatus({ lifecycle: 'inactive' }), false, 'inactive'],
+  ] as const)('%s maps to %s', (_label, status, poweredOff, expected) => {
+    expect(deriveScopeIndicatorState(status, poweredOff)).toBe(expected);
+  });
+
+  it.each([
+    ['inactive', 'neutral'],
+    ['starting', 'yellow'],
+    ['connecting', 'yellow'],
+    ['waiting', 'yellow'],
+    ['reconnecting', 'yellow'],
+    ['failed', 'red'],
+    ['disconnected', 'red'],
+    ['connected', 'green'],
+  ] as const)('%s uses the %s tone', (state, expected) => {
+    expect(indicatorTone(state)).toBe(expected);
   });
 });

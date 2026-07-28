@@ -1,3 +1,57 @@
+<script module lang="ts">
+  import type { DefaultScopeStatus } from '$lib/runtime/frontend-runtime';
+
+  export type ScopeIndicatorState =
+    | 'inactive'
+    | 'starting'
+    | 'connecting'
+    | 'waiting'
+    | 'reconnecting'
+    | 'failed'
+    | 'disconnected'
+    | 'connected';
+  export type IndicatorTone = 'green' | 'yellow' | 'red' | 'neutral';
+
+  export function deriveScopeIndicatorState(
+    status: DefaultScopeStatus,
+    isPoweredOff: boolean,
+  ): ScopeIndicatorState {
+    if (isPoweredOff) return 'disconnected';
+    if (
+      status.source === null
+      || !status.available
+      || !status.resourceSelected
+      || status.demand === 0
+    ) return 'inactive';
+    if (status.lifecycle === 'failed') return 'failed';
+    if (status.lifecycle === 'starting') return 'starting';
+    if (status.transport === 'connecting') return 'connecting';
+    if (status.transport === 'reconnecting') return 'reconnecting';
+    if (status.transport === 'disconnected') return 'disconnected';
+    if (!status.frameSeen) return 'waiting';
+    return status.lifecycle === 'streaming' ? 'connected' : 'inactive';
+  }
+
+  export function indicatorTone(state: string): IndicatorTone {
+    switch (state) {
+      case 'connected':
+        return 'green';
+      case 'connecting':
+      case 'starting':
+      case 'waiting':
+      case 'reconnecting':
+      case 'partial':
+      case 'degraded':
+        return 'yellow';
+      case 'disconnected':
+      case 'failed':
+        return 'red';
+      default:
+        return 'neutral';
+    }
+  }
+</script>
+
 <script lang="ts">
   import { Radio, Cable, Activity, Volume2, ArrowDownUp, Power, Unplug, Palette, Monitor, Tv, Settings, Bug } from 'lucide-svelte';
   import ThemePicker from '../controls/ThemePicker.svelte';
@@ -7,7 +61,6 @@
   import {
     getRadioStatus,
     getConnectionStatus,
-    isScopeConnected,
     isAudioConnected,
     getHttpConnected,
     getRadioPowerOn,
@@ -62,7 +115,9 @@
   // When radio is powered off, override statuses that depend on the radio
   let radioState = $derived(isPoweredOff ? 'disconnected' : getRadioStatus());
   let controlState = $derived(getConnectionStatus()); // server link — always real
-  let scopeState = $derived(isPoweredOff ? 'disconnected' : (isScopeConnected() ? 'connected' : 'disconnected'));
+  let scopeState = $derived(
+    deriveScopeIndicatorState(runtime.defaultScopeStatus, isPoweredOff),
+  );
   let audioState = $derived(isPoweredOff ? 'disconnected' : (isAudioConnected() ? 'connected' : 'disconnected'));
   let httpState = $derived(getHttpConnected() ? 'connected' : 'disconnected'); // server link — always real
   let rigConnected = $derived(getRigConnected());
@@ -110,15 +165,12 @@
   );
 
   function stateColor(state: string): string {
-    switch (state) {
-      case 'connected':
+    switch (indicatorTone(state)) {
+      case 'green':
         return 'var(--v2-accent-green, #4ade80)';
-      case 'connecting':
-      case 'reconnecting':
-      case 'partial':
-      case 'degraded':
+      case 'yellow':
         return 'var(--v2-accent-yellow, #facc15)';
-      case 'disconnected':
+      case 'red':
         return 'var(--v2-accent-red, #ef4444)';
       default:
         return 'var(--v2-text-dim, #666)';

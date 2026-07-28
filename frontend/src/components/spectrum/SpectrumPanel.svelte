@@ -12,8 +12,7 @@
     type WaterfallOptions,
     type ColorSchemeName,
   } from '../../lib/renderers/waterfall-renderer';
-  import { getChannel, onMessage, sendCommand } from '../../lib/transport/ws-client';
-  import { setScopeConnected, markScopeFrame, isScopeConnected } from '../../lib/stores/connection.svelte';
+  import { runtime } from '../../lib/runtime/frontend-runtime';
   import { type DxSpot } from '../../lib/types/protocol';
   import { patchActiveReceiver, patchReceiver, radio } from '../../lib/stores/radio.svelte';
   import { getFilterWidthHz } from '../../lib/utils/filter-width';
@@ -31,12 +30,10 @@
     getPassbandGeometry,
   } from './passband-geometry';
   import {
-    parseScopeFrame,
     formatFreqOffset,
     deriveFreqTicks,
     getDragInterval,
     isFixedScope as isFixedScopeFn,
-    type ScopeFrame,
   } from './spectrum-logic';
 
   // --- Props ---
@@ -48,10 +45,9 @@
   let { hideSourceControls = false } = $props();
 
   // --- Component state ---
-  let scopeConnected = $derived(isScopeConnected());
+  let scopeConnected = $derived(runtime.scope.hardwareScopeConnected);
   let scopeDemandOn = $state(true);
-  let scopeChannel: ReturnType<typeof getChannel> | null = null;
-  let ownsScopeDemand = false;
+  let scopeLease: ReturnType<typeof runtime.acquireHardwareScope> | null = null;
   let scopePixels = $state<Uint8Array | null>(null);
   let enableAvg = $state(true);
   let enablePeakHold = $state(true);
@@ -158,7 +154,7 @@
     }
 
     patchActiveReceiver({ filterWidth: width }, true);
-    sendCommand('set_filter_width', { width });
+    runtime.send('set_filter_width', { width });
   }
 
   function handlePassbandResizeStart(event: PointerEvent): void {
@@ -205,17 +201,14 @@
   }
 
   function acquireScopeDemand(): void {
-    if (!scopeChannel || ownsScopeDemand) return;
-    ownsScopeDemand = true;
-    scopeChannel.connect('/api/v1/scope');
+    if (scopeLease) return;
+    scopeLease = runtime.acquireHardwareScope('SpectrumPanel');
   }
 
-  function releaseScopeDemand(closeIfLive = false): void {
-    if (!scopeChannel) return;
-    if (!ownsScopeDemand && !(closeIfLive && scopeChannel.state !== 'disconnected')) return;
-    ownsScopeDemand = false;
-    scopeChannel.disconnect();
-    setScopeConnected(false);
+  function releaseScopeDemand(): void {
+    const lease = scopeLease;
+    scopeLease = null;
+    if (lease) runtime.releaseHardwareScope(lease);
   }
 
   function setScopeDemand(enabled: boolean): void {
@@ -231,7 +224,7 @@
     if (freq <= 0) return;
     const receiver = radio.current?.active === 'SUB' ? 1 : 0;
     patchReceiver(receiver, { freqHz: freq }, true);
-    sendCommand('set_freq', { freq, receiver });
+    runtime.send('set_freq', { freq, receiver });
   }
 
   // --- Scroll-to-tune (mouse wheel on spectrum/waterfall) ---
@@ -321,7 +314,7 @@
     lastDragSendFreq = newFreq;
     const receiver = radio.current?.active === 'SUB' ? 1 : 0;
     patchReceiver(receiver, { freqHz: newFreq }, true);
-    sendCommand('set_freq', { freq: newFreq, receiver });
+    runtime.send('set_freq', { freq: newFreq, receiver });
   }
 
   function handleDragEnd(event: PointerEvent): void {
@@ -332,7 +325,7 @@
       if (dragFreq > 0 && dragFreq !== lastDragSendFreq) {
         const receiver = radio.current?.active === 'SUB' ? 1 : 0;
         patchReceiver(receiver, { freqHz: dragFreq }, true);
-        sendCommand('set_freq', { freq: dragFreq, receiver });
+        runtime.send('set_freq', { freq: dragFreq, receiver });
       }
     }
     // Tap-to-tune is handled exclusively by WaterfallCanvas gesture onTap
@@ -344,23 +337,10 @@
     dragSpeed = 0;
   }
 
-  // --- Lifecycle: connect scope WS + subscribe to DX spots ---
+  // --- Lifecycle: demand scope runtime + subscribe to frames and DX spots ---
   onMount(() => {
-    // Scope data arrives on its own WebSocket channel
-    scopeChannel = getChannel('scope');
-    const unsubState = scopeChannel.onStateChange((s) => {
-      if (!scopeDemandOn) {
-        setScopeConnected(false);
-        if (s === 'connected') scopeChannel?.disconnect();
-        return;
-      }
-      setScopeConnected(s === 'connected');
-    });
-    const unsubBinary = scopeChannel.onBinary((buf) => {
+    const unsubHardware = runtime.scope.subscribeHardware((frame) => {
       if (!scopeDemandOn) return;
-      markScopeFrame();
-      const frame = parseScopeFrame(buf);
-      if (!frame) return;
       if (frame.mode !== frameScopeMode) frameScopeMode = frame.mode;
       if (frame.startFreq !== startFreq || frame.endFreq !== endFreq) {
         startFreq = frame.startFreq;
@@ -374,8 +354,7 @@
     });
     acquireScopeDemand();
 
-    // DX spots come through the main control WebSocket as JSON messages
-    const unsubMsg = onMessage((msg) => {
+    const unsubDx = runtime.subscribeDx((msg) => {
       if (msg.type === 'dx_spot') {
         const spot = (msg as unknown as { spot: DxSpot }).spot;
         if (spot) dxSpots = [...dxSpots.slice(-49), spot];
@@ -386,11 +365,9 @@
     });
 
     return () => {
-      unsubState();
-      unsubBinary();
-      unsubMsg();
-      releaseScopeDemand(true);
-      scopeChannel = null;
+      unsubHardware();
+      unsubDx();
+      releaseScopeDemand();
     };
   });
 </script>
