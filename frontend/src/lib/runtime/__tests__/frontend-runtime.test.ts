@@ -432,7 +432,14 @@ describe('FrontendRuntime canonical default scope status', () => {
     vi.clearAllMocks();
     (startPolling as ReturnType<typeof vi.fn>).mockReturnValue(fakeStopPolling);
   });
-
+  it('keeps capability-denied hardware inert', async () => {
+    (fetchCapabilities as ReturnType<typeof vi.fn>).mockResolvedValue(fakeCaps);
+    const rt = await freshRuntime();
+    await rt.bootstrap();
+    expect(presentationResources.snapshot('hardware-scope')).toMatchObject({
+      available: false, selected: false, demand: 0, health: 'inactive',
+    });
+  });
   it('keeps both sources eligible while summarizing only the hardware default', async () => {
     const hardware = makeScopeChannel(), audio = makeScopeChannel();
     (getChannel as ReturnType<typeof vi.fn>).mockImplementation(
@@ -456,7 +463,6 @@ describe('FrontendRuntime canonical default scope status', () => {
     presentationResources.configure('hardware-scope', { available: false, selected: true });
     expect(rt.defaultScopeStatus).toMatchObject({ source: 'hardware', available: false, resourceSelected: true });
     presentationResources.configure('hardware-scope', { available: true, selected: true });
-
     const hardwareLease = rt.acquireHardwareScope('viewer');
     const hardwareShared = rt.acquireHardwareScope('shared');
     const audioLease = presentationResources.acquire('audio-fft', 'supplemental');
@@ -469,20 +475,17 @@ describe('FrontendRuntime canonical default scope status', () => {
       selected: true, demand: 1, health: 'streaming',
     });
     expect(rt.defaultScopeStatus.lifecycle).toBe('streaming');
-
     for (const state of ['connecting', 'connected', 'reconnecting', 'disconnected'] as const) {
       hardware.setState(state);
       expect(rt.defaultScopeStatus.transport).toBe(state);
       expect(rt.defaultScopeStatus.frameSeen).toBe(false);
     }
     hardware.setState('connected');
-    expect(rt.defaultScopeStatus.frameSeen).toBe(false);
     hardware.frame();
     expect(rt.defaultScopeStatus.frameSeen).toBe(true);
     hardware.setState('reconnecting');
     hardware.setState('connected');
     expect(rt.defaultScopeStatus.frameSeen).toBe(false);
-
     rt.releaseHardwareScope(hardwareLease);
     expect(rt.defaultScopeStatus.demand).toBe(1);
     expect(hardware.disconnect).not.toHaveBeenCalled();
@@ -491,7 +494,6 @@ describe('FrontendRuntime canonical default scope status', () => {
     await settle();
     expect(hardware.disconnect).toHaveBeenCalledTimes(1);
   });
-
   it('publishes the audio default and inert facts without fallback', async () => {
     (getChannel as ReturnType<typeof vi.fn>).mockReturnValue(makeScopeChannel());
     (fetchCapabilities as ReturnType<typeof vi.fn>).mockResolvedValue({
@@ -512,7 +514,6 @@ describe('FrontendRuntime canonical default scope status', () => {
     await settle();
     expect(rt.defaultScopeStatus.lifecycle).toBe('failed');
     presentationResources.release(failedLease);
-
     (fetchCapabilities as ReturnType<typeof vi.fn>).mockResolvedValue({
       ...fakeCaps, scope: true, capabilities: ['audio', 'scope'], scopeSource: 'invalid',
       audioFftAvailable: false,
@@ -526,9 +527,11 @@ describe('FrontendRuntime canonical default scope status', () => {
     expect(presentationResources.snapshot('hardware-scope')).toMatchObject({
       available: true, selected: true, demand: 0,
     });
+    expect(presentationResources.snapshot('audio-fft')).toMatchObject({
+      available: false, selected: false, demand: 0,
+    });
     expect(getChannel).toHaveBeenCalledExactlyOnceWith('audio-scope');
   });
-
   it('shares, coalesces, and exactly tears down the reactive bridge', async () => {
     const hardware = makeScopeChannel();
     (getChannel as ReturnType<typeof vi.fn>).mockReturnValue(hardware);
@@ -542,7 +545,6 @@ describe('FrontendRuntime canonical default scope status', () => {
     const observe = () => effect_root(() => {
       render_effect(() => { rt.defaultScopeStatus; reads += 1; });
     });
-
     expect(rt.defaultScopeStatus.demand).toBe(0);
     expect([hostListeners.size, healthListeners.size]).toEqual([0, 0]);
     const stopFirst = observe(), stopShared = observe();
@@ -561,7 +563,6 @@ describe('FrontendRuntime canonical default scope status', () => {
     expect(rt.defaultScopeStatus).toMatchObject({
       demand: 1, lifecycle: 'streaming', transport: 'connected', frameSeen: false,
     });
-
     stopFirst(); await settle();
     expect([hostListeners.size, healthListeners.size]).toEqual([1, 1]);
     stopShared(); await settle();
@@ -573,7 +574,6 @@ describe('FrontendRuntime canonical default scope status', () => {
     expect([hostListeners.size, healthListeners.size]).toEqual([0, 0]);
   });
 });
-
 describe('FrontendRuntime RX LIVE intent', () => {
   beforeEach(() => {
     vi.clearAllMocks();
