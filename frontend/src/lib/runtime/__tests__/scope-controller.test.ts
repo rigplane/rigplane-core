@@ -6,7 +6,10 @@
  */
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 import { ScopeController } from '../scope-controller.svelte';
+import { PresentationResourceHost } from '../resource-host';
 import type { ScopeFrame } from '../scope-controller.svelte';
 
 // ── Helpers ──
@@ -23,6 +26,9 @@ function makeMockChannel() {
     /** Fire a binary message to all registered handlers. */
     _fire(buf: ArrayBuffer) {
       for (const h of binaryHandlers) h(buf);
+    },
+    _handlerCount() {
+      return binaryHandlers.size;
     },
   };
 }
@@ -50,40 +56,41 @@ describe('ScopeController', () => {
     ctrl = new ScopeController(() => channel as any);
   });
 
-  it('subscribe() opens the WS channel on first subscriber', () => {
+  it('keeps frame subscriptions lifetime-neutral', () => {
     expect(channel.connect).not.toHaveBeenCalled();
 
-    ctrl.subscribe(vi.fn());
+    const unsubscribe = ctrl.subscribe(vi.fn());
+    unsubscribe();
+    unsubscribe();
 
-    expect(channel.connect).toHaveBeenCalledTimes(1);
-    expect(channel.connect).toHaveBeenCalledWith('/api/v1/audio-scope');
-  });
-
-  it('second subscribe() reuses the existing channel without reconnecting', () => {
-    ctrl.subscribe(vi.fn());
-    ctrl.subscribe(vi.fn());
-
-    expect(channel.connect).toHaveBeenCalledTimes(1);
-    expect(channel.onBinary).toHaveBeenCalledTimes(1);
-  });
-
-  it('last unsubscribe() closes the channel', () => {
-    const unsub1 = ctrl.subscribe(vi.fn());
-    const unsub2 = ctrl.subscribe(vi.fn());
-
-    unsub1();
+    expect(channel.connect).not.toHaveBeenCalled();
     expect(channel.disconnect).not.toHaveBeenCalled();
-
-    unsub2();
-    expect(channel.disconnect).toHaveBeenCalledTimes(1);
   });
 
-  it('both subscribers receive parsed frames', () => {
+  it('registers one exact-handle driver for first/shared/last demand', async () => {
+    const host = new PresentationResourceHost<unknown>('session');
+    ctrl.registerPresentationDriver(host);
+    const first = host.acquire('audio-fft', 'first');
+    const shared = host.acquire('audio-fft', 'shared');
+    await vi.waitFor(() => expect(channel.connect).toHaveBeenCalledTimes(1));
+    expect(channel.connect).toHaveBeenCalledWith('/api/v1/audio-scope');
+    expect(host.snapshot('audio-fft').activeHandle).not.toBe(channel);
+
+    expect(host.release(first)).toBe(true);
+    expect(channel.disconnect).not.toHaveBeenCalled();
+    expect(host.release(shared)).toBe(true);
+    await vi.waitFor(() => expect(channel.disconnect).toHaveBeenCalledTimes(1));
+    expect(channel._handlerCount()).toBe(0);
+    expect(host.release(shared)).toBe(false);
+  });
+
+  it('both subscribers receive parsed frames', async () => {
     const h1 = vi.fn<(frame: ScopeFrame) => void>();
     const h2 = vi.fn<(frame: ScopeFrame) => void>();
 
     ctrl.subscribe(h1);
     ctrl.subscribe(h2);
+    await ctrl.audioFftDriver.start();
 
     channel._fire(makeScopeFrameBuffer());
 
@@ -95,12 +102,13 @@ describe('ScopeController', () => {
     expect(frame.endFreq).toBe(14_200_000);
   });
 
-  it('unsubscribed handler no longer receives frames', () => {
+  it('unsubscribed handler no longer receives frames', async () => {
     const h1 = vi.fn();
     const h2 = vi.fn();
 
     const unsub1 = ctrl.subscribe(h1);
     ctrl.subscribe(h2);
+    await ctrl.audioFftDriver.start();
 
     unsub1();
     channel._fire(makeScopeFrameBuffer());
@@ -109,9 +117,24 @@ describe('ScopeController', () => {
     expect(h2).toHaveBeenCalledTimes(1);
   });
 
-  it('ignores malformed frames (wrong magic byte)', () => {
+  it('keeps repeated subscriptions of the same handler independent', async () => {
+    const handler = vi.fn();
+    const first = ctrl.subscribe(handler);
+    const second = ctrl.subscribe(handler);
+    const handle = await ctrl.audioFftDriver.start();
+    first();
+    channel._fire(makeScopeFrameBuffer());
+    expect(handler).toHaveBeenCalledTimes(1);
+    second();
+    channel._fire(makeScopeFrameBuffer());
+    expect(handler).toHaveBeenCalledTimes(1);
+    await ctrl.audioFftDriver.stop(handle);
+  });
+
+  it('ignores malformed frames (wrong magic byte)', async () => {
     const handler = vi.fn();
     ctrl.subscribe(handler);
+    await ctrl.audioFftDriver.start();
 
     // Bad magic — parseScopeFrame returns null
     const bad = new ArrayBuffer(20);
@@ -120,35 +143,81 @@ describe('ScopeController', () => {
     expect(handler).not.toHaveBeenCalled();
   });
 
-  it('reopens the channel after all subscribers leave and a new one joins', () => {
-    const unsub = ctrl.subscribe(vi.fn());
-    unsub();
+  it('disposes an orphaned repeated start on the memoized channel', async () => {
+    const host = new PresentationResourceHost<unknown>('session');
+    ctrl.registerPresentationDriver(host);
+    const warm = host.acquire('audio-fft', 'warm');
+    await vi.waitFor(() => expect(host.snapshot('audio-fft').health).toBe('streaming'));
+    const firstHandle = host.snapshot('audio-fft').activeHandle;
+    host.release(warm);
+    await vi.waitFor(() => expect(channel.disconnect).toHaveBeenCalledTimes(1));
 
-    expect(channel.disconnect).toHaveBeenCalledTimes(1);
+    const orphan = host.acquire('audio-fft', 'orphan');
+    host.release(orphan);
+    await Promise.resolve();
+    await Promise.resolve();
 
-    ctrl.subscribe(vi.fn());
     expect(channel.connect).toHaveBeenCalledTimes(2);
+    expect(channel.disconnect).toHaveBeenCalledTimes(2);
+    expect(channel._handlerCount()).toBe(0);
+    expect(host.snapshot('audio-fft').activeHandle).toBeUndefined();
+    const next = await ctrl.audioFftDriver.start();
+    expect(next).not.toBe(firstHandle);
+    await ctrl.audioFftDriver.stop(next);
   });
 
-  it('counts subscriptions: same handler reference subscribed twice requires two unsubscribes', () => {
-    const handler = vi.fn<(frame: ScopeFrame) => void>();
+  it('remounts with one callback after an orphaned start', async () => {
+    const host = new PresentationResourceHost<unknown>('session');
+    const subscriber = vi.fn();
+    ctrl.subscribe(subscriber);
+    ctrl.registerPresentationDriver(host);
+    const warm = host.acquire('audio-fft', 'warm');
+    await vi.waitFor(() => expect(host.snapshot('audio-fft').health).toBe('streaming'));
+    host.release(warm);
+    await vi.waitFor(() => expect(channel.disconnect).toHaveBeenCalledTimes(1));
+    const orphan = host.acquire('audio-fft', 'orphan');
+    host.release(orphan);
+    await Promise.resolve();
+    await Promise.resolve();
+    const remount = host.acquire('audio-fft', 'remount');
+    await vi.waitFor(() => expect(host.snapshot('audio-fft').health).toBe('streaming'));
 
-    const unsub1 = ctrl.subscribe(handler);
-    const unsub2 = ctrl.subscribe(handler);
-
-    expect(channel.connect).toHaveBeenCalledTimes(1);
-    expect(channel.disconnect).not.toHaveBeenCalled();
-
-    // Fire a frame — both subscriptions should receive it
+    expect(channel._handlerCount()).toBe(1);
     channel._fire(makeScopeFrameBuffer());
-    expect(handler).toHaveBeenCalledTimes(2);
+    expect(subscriber).toHaveBeenCalledTimes(1);
+    host.release(remount);
+    await vi.waitFor(() => expect(channel.disconnect).toHaveBeenCalledTimes(3));
+    expect(channel._handlerCount()).toBe(0);
+  });
 
-    // First unsubscribe — channel stays open
-    unsub1();
-    expect(channel.disconnect).not.toHaveBeenCalled();
+  it('teardown racing a repeated start prevents later publication', async () => {
+    const host = new PresentationResourceHost<unknown>('session');
+    const subscriber = vi.fn();
+    ctrl.subscribe(subscriber);
+    ctrl.registerPresentationDriver(host);
+    const warm = host.acquire('audio-fft', 'warm');
+    await vi.waitFor(() => expect(host.snapshot('audio-fft').health).toBe('streaming'));
+    host.release(warm);
+    await vi.waitFor(() => expect(channel.disconnect).toHaveBeenCalledTimes(1));
+    host.acquire('audio-fft', 'racing');
+    await host.teardown();
 
-    // Second unsubscribe — now channel closes
-    unsub2();
-    expect(channel.disconnect).toHaveBeenCalledTimes(1);
+    channel._fire(makeScopeFrameBuffer());
+    expect(channel.connect).toHaveBeenCalledTimes(2);
+    expect(channel.disconnect).toHaveBeenCalledTimes(2);
+    expect(channel._handlerCount()).toBe(0);
+    expect(subscriber).not.toHaveBeenCalled();
+    expect(ctrl.audioScopeFrame).toBeNull();
+  });
+
+  it('keeps the panel on one demand lease without transport or hardware fallback', () => {
+    const source = readFileSync(
+      resolve('src/components-v2/panels/audio-scope/AudioSpectrumPanel.svelte'),
+      'utf8',
+    );
+    expect(source).toContain("acquire('audio-fft'");
+    expect(source).toContain('release(lease)');
+    expect(source).toContain('registerPresentationDriver');
+    expect(source).not.toMatch(/\$lib\/transport|hardware-scope/);
   });
 });
