@@ -2262,24 +2262,33 @@ class TestScopeLifecycle:
         radio = MagicMock()
         radio.capabilities = {"scope"}
         _add_scope_capable_attrs(radio)
+        radio.connected = True
+        radio.radio_ready = True
 
         server = WebServer(radio)
         server._scope_disable_grace = 0
-        server._scope_enabled = True
 
         h = MagicMock()
-        server._scope_handlers.add(h)
+        await server.ensure_scope_enabled(h)
 
         server.unregister_scope_handler(h)
         await asyncio.sleep(0.05)  # let async task complete
 
         # DisableScope goes through command queue, not direct radio call
-        from rigplane.web.radio_poller import DisableScope
+        from rigplane.web.radio_poller import DisableScope, EnableScope, RadioPoller
 
         cmds = server._command_queue.drain()
-        assert any(isinstance(c, DisableScope) for c in cmds), (
-            "DisableScope should be in queue"
-        )
+        enable = next(c for c in cmds if isinstance(c, EnableScope))
+        disable = next(c for c in cmds if isinstance(c, DisableScope))
+        assert disable.generation > enable.generation
+
+        # A delayed old enable cannot roll back the queue watermark or revive
+        # hardware after the authoritative last-viewer disable.
+        server._command_queue.put(enable)
+        poller = RadioPoller(radio, server._command_queue, radio_state=RadioState())
+        for command in server._command_queue.drain():
+            await poller._execute(command)  # noqa: SLF001
+        radio.enable_scope.assert_not_awaited()
         assert not server._scope_enabled
 
     async def test_scope_flag_reset_on_disable(self) -> None:
@@ -2601,6 +2610,10 @@ class TestScopeReconnect:
 
         h1 = MagicMock()
         await server.ensure_scope_enabled(h1)
+        from rigplane.web.radio_poller import EnableScope
+
+        (initial_enable,) = server._command_queue.drain()
+        assert isinstance(initial_enable, EnableScope)
 
         # Unregister h1 — schedules disable task but doesn't await it yet
         server.unregister_scope_handler(h1)
@@ -2614,6 +2627,8 @@ class TestScopeReconnect:
 
         # disable_scope must NOT have been called — h2 is still connected
         radio.disable_scope.assert_not_awaited()
+        assert not server._command_queue.has_commands
+        assert server._scope_demand_generation > initial_enable.generation
         assert server._scope_enabled
 
     async def test_broadcast_scope_reaches_new_handler_after_reconnect(
@@ -2641,6 +2656,154 @@ class TestScopeReconnect:
 
         h2.enqueue_frame.assert_called_once_with(frame)
         h1.enqueue_frame.assert_not_called()
+
+
+class TestScopeDemandGeneration:
+    async def test_last_disconnect_cancels_pending_readiness_enable(self) -> None:
+        radio = MagicMock()
+        radio.capabilities = {"scope"}
+        _add_scope_capable_attrs(radio)
+        radio.radio_ready = False
+        server = WebServer(radio)
+
+        handler = MagicMock()
+        await server.ensure_scope_enabled(handler)
+        pending = server._scope_reenable_task
+        assert pending is not None
+
+        server.unregister_scope_handler(handler)
+        assert pending.cancelling()
+        await asyncio.sleep(0)
+
+        assert pending.done()
+        assert server._scope_reenable_task is None
+        assert not server._command_queue.has_commands
+
+    async def test_scope_health_without_viewer_queues_nothing(self) -> None:
+        radio = MagicMock()
+        radio.capabilities = {"scope"}
+        _add_scope_capable_attrs(radio)
+        radio.radio_ready = True
+        server = WebServer(radio)
+        server._scope_health_interval = 0
+        server._scope_last_nonzero = -1
+
+        monitor = asyncio.create_task(server._scope_health_monitor())
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+        monitor.cancel()
+        await monitor
+
+        assert not server._command_queue.has_commands
+
+    async def test_scope_health_recovery_uses_current_generation(self) -> None:
+        radio = MagicMock()
+        radio.capabilities = {"scope"}
+        _add_scope_capable_attrs(radio)
+        radio.radio_ready = True
+        server = WebServer(radio)
+        handler = MagicMock()
+        await server.ensure_scope_enabled(handler)
+
+        from rigplane.web.radio_poller import EnableScope
+
+        (initial_enable,) = server._command_queue.drain()
+        assert isinstance(initial_enable, EnableScope)
+        server._scope_health_interval = 0
+        server._scope_health_max_retries = 1
+        server._scope_last_nonzero = -1
+
+        monitor = asyncio.create_task(server._scope_health_monitor())
+        for _ in range(10):
+            await asyncio.sleep(0)
+            if server._command_queue.has_commands:
+                break
+        monitor.cancel()
+        await monitor
+
+        (recovery,) = server._command_queue.drain()
+        assert isinstance(recovery, EnableScope)
+        assert recovery.generation == initial_enable.generation > 0
+
+    async def test_reconnect_enable_uses_current_generation(self) -> None:
+        radio = MagicMock()
+        radio.capabilities = {"scope"}
+        _add_scope_capable_attrs(radio)
+        radio.radio_ready = True
+        radio._fetch_initial_state = AsyncMock()
+        server = WebServer(radio)
+        handler = MagicMock()
+        await server.ensure_scope_enabled(handler)
+
+        from rigplane.web.radio_poller import EnableScope
+
+        (initial_enable,) = server._command_queue.drain()
+        server._on_radio_reconnect()
+        await asyncio.gather(*list(server._bg_tasks))
+
+        (reconnect_enable,) = server._command_queue.drain()
+        assert isinstance(reconnect_enable, EnableScope)
+        assert reconnect_enable.generation == initial_enable.generation
+
+    async def test_reconnect_inside_grace_invalidates_old_reenable(self) -> None:
+        radio = MagicMock()
+        radio.capabilities = {"scope"}
+        _add_scope_capable_attrs(radio)
+        radio.radio_ready = True
+        fetch_started = asyncio.Event()
+        release_fetch = asyncio.Event()
+
+        async def delayed_fetch() -> None:
+            fetch_started.set()
+            await release_fetch.wait()
+
+        radio._fetch_initial_state = delayed_fetch
+        server = WebServer(radio)
+        server._scope_disable_grace = 0.01
+        first = MagicMock()
+        await server.ensure_scope_enabled(first)
+        (initial_enable,) = server._command_queue.drain()
+
+        server._on_radio_reconnect()
+        await fetch_started.wait()
+        server.unregister_scope_handler(first)
+        await server.ensure_scope_enabled(MagicMock())
+        release_fetch.set()
+        await asyncio.sleep(0.02)
+
+        assert not server._command_queue.has_commands
+        assert server._scope_enabled
+        assert server._scope_demand_generation > initial_enable.generation
+
+    async def test_superseded_disable_never_emits_lower_generation(self) -> None:
+        radio = MagicMock()
+        radio.capabilities = {"scope"}
+        _add_scope_capable_attrs(radio)
+        radio.radio_ready = True
+        server = WebServer(radio)
+        server._scope_disable_grace = 0.01
+        first, second = MagicMock(), MagicMock()
+        await server.ensure_scope_enabled(first)
+        server._command_queue.drain()
+
+        from rigplane.web.radio_poller import DisableScope
+
+        with patch.object(
+            server._command_queue, "put", wraps=server._command_queue.put
+        ) as put_spy:
+            server.unregister_scope_handler(first)
+            await server.ensure_scope_enabled(second)
+            server.unregister_scope_handler(second)
+            await asyncio.sleep(0.02)
+
+        disables = [
+            call.args[0]
+            for call in put_spy.call_args_list
+            if isinstance(call.args[0], DisableScope)
+        ]
+        assert [command.generation for command in disables] == [
+            server._scope_demand_generation
+        ]
 
 
 # ---------------------------------------------------------------------------
