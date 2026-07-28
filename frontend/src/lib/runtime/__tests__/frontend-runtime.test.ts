@@ -6,6 +6,7 @@
  * into the shared module cache used by the `fast` project.
  */
 
+import { readFileSync } from 'node:fs';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 // ── Mock transport and store modules before importing the runtime ──
@@ -74,6 +75,7 @@ vi.mock('$lib/stores/audio.svelte', () => ({
 
 vi.mock('$lib/audio/audio-manager', () => ({
   audioManager: {
+    rxEnabled: false,
     startRx: vi.fn(),
     stopRx: vi.fn(),
     startTx: vi.fn(),
@@ -106,10 +108,12 @@ import { fetchCapabilities, startPolling } from '$lib/transport/http-client';
 import { connect, sendRaw } from '$lib/transport/ws-client';
 import { setCapabilities } from '$lib/stores/capabilities.svelte';
 import { setRadioState } from '$lib/stores/radio.svelte';
+import { audioManager } from '$lib/audio/audio-manager';
 import { systemController } from '../system-controller';
 import { clearLegacyPendingModInputRestore } from '../adapters/mod-input-auto.svelte';
 import { PresentationResourceHost } from '../resource-host';
 import { presentationResources } from '../frontend-runtime';
+import { makeRxAudioHandlers } from '../commands/panel-commands';
 
 // FrontendRuntime is a singleton — re-import fresh each time via a factory helper
 // so we can reset _bootstrapCleanup and _bootstrapInFlight between tests.
@@ -117,15 +121,27 @@ async function freshRuntime() {
   // Dynamic import after vi.mock registrations ensures mocks are active.
   const mod = await import('../frontend-runtime');
   // Reset private state between tests by casting to access both sentinels
-  const rt = mod.runtime as unknown as { _bootstrapCleanup: null; _bootstrapInFlight: null };
+  const rt = mod.runtime as unknown as {
+    _bootstrapCleanup: null;
+    _bootstrapInFlight: null;
+    _rxAudioLease: null;
+    _rxAudioEnded: boolean;
+  };
   rt._bootstrapCleanup = null;
   rt._bootstrapInFlight = null;
+  rt._rxAudioLease = null;
+  rt._rxAudioEnded = false;
   return mod.runtime;
 }
 
 // ── Fixtures ──
 
-const fakeCaps = { modes: ['USB', 'LSB'], scope: false } as any;
+const fakeCaps = {
+  modes: ['USB', 'LSB'],
+  scope: false,
+  audio: true,
+  capabilities: ['audio'],
+} as any;
 const fakeStopPolling = vi.fn();
 const deferred = <T>() => {
   let resolve!: (value: T) => void;
@@ -339,5 +355,107 @@ describe('FrontendRuntime.bootstrap()', () => {
     // Both callers get the same cleanup function
     expect(cleanup1).toBe(cleanup2);
     expect(cleanup1).not.toBe(fakeStopPolling);
+  });
+});
+
+describe('FrontendRuntime RX LIVE intent', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    (fetchCapabilities as ReturnType<typeof vi.fn>).mockResolvedValue(fakeCaps);
+    (startPolling as ReturnType<typeof vi.fn>).mockReturnValue(fakeStopPolling);
+    presentationResources.retry('rx-audio');
+  });
+
+  it('keeps panel commands behind the runtime authority', () => {
+    const source = readFileSync('src/lib/runtime/commands/panel-commands.ts', 'utf8');
+    expect(source).not.toMatch(/audioManager\.(startRx|stopRx)\(/);
+  });
+
+  it('shares one LIVE lease and ignores duplicate and late exits', async () => {
+    const rt = await freshRuntime();
+    await rt.bootstrap();
+    const panelA = makeRxAudioHandlers();
+    const panelB = makeRxAudioHandlers();
+
+    panelA.onMonitorModeChange('live');
+    panelA.onMonitorModeChange('live');
+    panelB.onMonitorModeChange('live');
+    await settle();
+
+    expect(audioManager.startRx).toHaveBeenCalledTimes(1);
+    expect(presentationResources.snapshot('rx-audio')).toMatchObject({
+      demand: 1,
+      health: 'streaming',
+      activeHandle: audioManager,
+    });
+
+    panelB.onMonitorModeChange('radio');
+    panelB.onMonitorModeChange('radio');
+    panelA.onMonitorModeChange('radio');
+    await settle();
+    await new Promise((resolve) => setTimeout(resolve, 10));
+
+    expect(audioManager.stopRx).toHaveBeenCalledTimes(1);
+    expect(presentationResources.snapshot('rx-audio').demand).toBe(0);
+
+    panelA.onMonitorModeChange('mute');
+    await settle();
+    expect(presentationResources.snapshot('rx-audio').demand).toBe(0);
+    expect(audioManager.startRx).toHaveBeenCalledTimes(1);
+    expect(audioManager.stopRx).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not start while unavailable or implicitly retry a rejected start', async () => {
+    const unavailable = await freshRuntime();
+    (fetchCapabilities as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+      ...fakeCaps,
+      audio: false,
+      capabilities: [],
+    });
+    await unavailable.bootstrap();
+    unavailable.setRxLive(true);
+    await settle();
+    expect(audioManager.startRx).not.toHaveBeenCalled();
+    unavailable.setRxLive(false);
+
+    const failed = await freshRuntime();
+    await failed.bootstrap();
+    (audioManager.startRx as ReturnType<typeof vi.fn>).mockImplementationOnce(() => {
+      throw new Error('offline');
+    });
+    failed.setRxLive(true);
+    await settle();
+    failed.setRxLive(true);
+    await settle();
+
+    expect(audioManager.startRx).toHaveBeenCalledTimes(1);
+    expect(presentationResources.snapshot('rx-audio')).toMatchObject({
+      demand: 1,
+      health: 'failed',
+      activeHandle: undefined,
+    });
+    failed.setRxLive(false);
+  });
+
+  it('tears down once, in order, and never restarts after final cleanup', async () => {
+    const rt = await freshRuntime();
+    await rt.bootstrap();
+    rt.setRxLive(true);
+    await settle();
+
+    const cleanup = await rt.bootstrap();
+    await cleanup();
+    await cleanup();
+    rt.setRxLive(true);
+    await settle();
+    await new Promise((resolve) => setTimeout(resolve, 10));
+
+    expect(audioManager.startRx).toHaveBeenCalledTimes(1);
+    expect(audioManager.stopRx).toHaveBeenCalledTimes(1);
+    expect(presentationResources.snapshot('rx-audio')).toMatchObject({
+      demand: 0,
+      health: 'inactive',
+      activeHandle: undefined,
+    });
   });
 });
