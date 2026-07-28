@@ -5,7 +5,7 @@
  * safe to run in the fast (non-isolated) vitest pool.
  */
 
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { ScopeController } from '../scope-controller.svelte';
@@ -69,6 +69,10 @@ describe('ScopeController', () => {
   beforeEach(() => {
     channel = makeMockChannel();
     ctrl = new ScopeController(() => channel as any);
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
   });
 
   it('keeps frame subscriptions lifetime-neutral', () => {
@@ -165,6 +169,95 @@ describe('ScopeController', () => {
     channel._setState('connected');
     expect(listener).toHaveBeenCalledTimes(3);
     await ctrl.audioFftDriver.stop(handle);
+  });
+
+  it('isolates a throwing health listener from the same synchronous transition', async () => {
+    const failure = new Error('observer failed');
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const healthy = vi.fn();
+    ctrl.subscribeHealth(() => { throw failure; });
+    ctrl.subscribeHealth(healthy);
+
+    const started = ctrl.audioFftDriver.start();
+
+    expect(healthy).toHaveBeenCalledWith('audio_fft', {
+      demanded: true, transport: 'disconnected', frameSeen: false,
+    });
+    expect(warn).toHaveBeenCalledWith('Scope health subscriber failed', failure);
+    await ctrl.audioFftDriver.stop(await started);
+  });
+
+  it('uses a stable listener snapshot when subscriptions mutate during notification', async () => {
+    const calls: string[] = [];
+    let unsubscribeSelf = () => {};
+    unsubscribeSelf = ctrl.subscribeHealth(() => {
+      calls.push('self');
+      unsubscribeSelf();
+      unsubscribeSelf();
+      ctrl.subscribeHealth(() => { calls.push('late'); });
+    });
+    ctrl.subscribeHealth(() => { calls.push('existing'); });
+
+    const handle = await ctrl.audioFftDriver.start();
+    expect(calls).toEqual(['self', 'existing']);
+
+    channel._setState('connecting');
+    expect(calls).toEqual(['self', 'existing', 'existing', 'late']);
+    await ctrl.audioFftDriver.stop(handle);
+  });
+
+  it('preserves audio lifecycle cleanup when a health listener throws', async () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    ctrl.subscribeHealth(() => { throw new Error('observer failed'); });
+
+    const handle = await ctrl.audioFftDriver.start();
+    expect([channel._handlerCount(), channel._stateHandlerCount()]).toEqual([1, 1]);
+    expect(() => channel._setState('connected')).not.toThrow();
+    expect(() => channel._fire(makeScopeFrameBuffer())).not.toThrow();
+    expect(ctrl.snapshotHealth('audio_fft')).toEqual({
+      demanded: true, transport: 'connected', frameSeen: true,
+    });
+    await ctrl.audioFftDriver.stop(handle);
+    expect([channel._handlerCount(), channel._stateHandlerCount()]).toEqual([0, 0]);
+    expect(channel.disconnect).toHaveBeenCalledTimes(1);
+    expect((ctrl as any)._activeHandle).toBeNull();
+
+    const connectFailure = new Error('audio connect failed');
+    channel.connect.mockImplementationOnce(() => { throw connectFailure; });
+    expect(() => ctrl.audioFftDriver.start()).toThrow(connectFailure);
+    expect([channel._handlerCount(), channel._stateHandlerCount()]).toEqual([0, 0]);
+    expect(channel.disconnect).toHaveBeenCalledTimes(2);
+    expect((ctrl as any)._activeHandle).toBeNull();
+    expect(ctrl.snapshotHealth('audio_fft')).toEqual({
+      demanded: false, transport: 'disconnected', frameSeen: false,
+    });
+  });
+
+  it('preserves hardware lifecycle cleanup when a health listener throws', async () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    ctrl.subscribeHealth(() => { throw new Error('observer failed'); });
+
+    const handle = await ctrl.hardwareScopeDriver.start();
+    expect([channel._handlerCount(), channel._stateHandlerCount()]).toEqual([1, 1]);
+    expect(() => channel._setState('connected')).not.toThrow();
+    expect(() => channel._fire(makeScopeFrameBuffer())).not.toThrow();
+    expect(ctrl.snapshotHealth('hardware')).toEqual({
+      demanded: true, transport: 'connected', frameSeen: true,
+    });
+    await ctrl.hardwareScopeDriver.stop(handle);
+    expect([channel._handlerCount(), channel._stateHandlerCount()]).toEqual([0, 0]);
+    expect(channel.disconnect).toHaveBeenCalledTimes(1);
+    expect((ctrl as any)._activeHardwareHandle).toBeNull();
+
+    const connectFailure = new Error('hardware connect failed');
+    channel.connect.mockImplementationOnce(() => { throw connectFailure; });
+    expect(() => ctrl.hardwareScopeDriver.start()).toThrow(connectFailure);
+    expect([channel._handlerCount(), channel._stateHandlerCount()]).toEqual([0, 0]);
+    expect(channel.disconnect).toHaveBeenCalledTimes(2);
+    expect((ctrl as any)._activeHardwareHandle).toBeNull();
+    expect(ctrl.snapshotHealth('hardware')).toEqual({
+      demanded: false, transport: 'disconnected', frameSeen: false,
+    });
   });
 
   it('both subscribers receive parsed frames', async () => {
@@ -281,6 +374,8 @@ describe('ScopeController', () => {
   it('teardown racing a repeated start prevents later publication', async () => {
     const host = new PresentationResourceHost<unknown>('session');
     const subscriber = vi.fn();
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    ctrl.subscribeHealth(() => { throw new Error('observer failed'); });
     ctrl.subscribe(subscriber);
     ctrl.registerPresentationDriver(host);
     const warm = host.acquire('audio-fft', 'warm');
