@@ -20,7 +20,7 @@ function complete(state: TxState, seq: number): TxState {
 }
 describe('TX reducer', () => {
   it.each([['CAT PTT', { ...eligible, catPtt: false }, ptt(false, 2)], ['browser audio', { ...eligible, browserTxAudio: false }, ptt(false, 2)],
-    ['live control', { ...eligible, controlLive: false }, ptt(false, 2)], ['known permit', { ...eligible, permit: 'unknown' }, ptt(false, 2)],
+    ['live control', { ...eligible, controlLive: false }, ptt(false, 2)], ['known permit', { ...eligible, permit: 'unknown' }, ptt(false, 2)], ['denied permit', { ...eligible, permit: 'denied' }, ptt(false, 2)],
     ['known target', { ...eligible, target: null }, ptt(false, 2)], ['fresh OFF', eligible, ptt(false, 1)]] as const)('fails closed without %s', (_name, eligibility, observation) => {
     const result = start(initialTxState(1, marker(1)), { eligibility, ptt: observation }); expect(result).toMatchObject({ state: { phase: 'failed', fault: 'not-eligible', txRisk: 'none', leaseId: null }, effects: [] });
   });
@@ -33,8 +33,8 @@ describe('TX reducer', () => {
     const released = transition(result.state, { type: 'release', guard, commandId: 'off' }); expect(transition(released.state, { type: 'intent', sourceId: 'desktop', guard: released.state.guard!, intent: 'latched' })).toEqual({ state: released.state, effects: [] });
     expect(active()).toMatchObject({ phase: 'active', intent: 'latched', radioTx: 'on', onConfirmed: marker(3) });
   });
-  it('rejects stale start evidence without regressing authoritative truth', () => { const external = transition(initialTxState(1, marker(1)), { type: 'authority', epoch: 1, ptt: ptt(true, 10), eligibility: eligible, offCommandId: 'off' }); const stale = start(external.state, { ptt: ptt(false, 2) }); expect(stale.state).toMatchObject({ phase: 'failed', fault: 'not-eligible', pttMarker: marker(10), radioTx: 'on' }); });
-  it('supports consecutive successful leases without retained markers', () => { const once = complete(initialTxState(1, marker(1)), 2); const twice = complete(once, 6); expect(twice).toMatchObject({ phase: 'idle', generation: 4, leaseTarget: null, startPttBaseline: null, modBarrier: null, onCommandId: null, onDispatch: null, onConfirmed: null, fault: null }); });
+  it('rejects stale start evidence without regressing authoritative truth', () => { const external = transition(initialTxState(1, marker(1)), { type: 'authority', epoch: 1, ptt: ptt(true, 10), eligibility: eligible, offCommandId: 'off' }); const stale = start(external.state, { ptt: ptt(false, 2) }); expect(stale).toMatchObject({ state: { phase: 'failed', fault: 'not-eligible', txRisk: 'none', pttMarker: marker(10), radioTx: 'on', guard: null, cleanupGuard: null, intent: null, sourceId: null, leaseId: null }, effects: [] }); });
+  it('supports consecutive successful leases without retained markers', () => { const once = complete(initialTxState(1, marker(1)), 2); const twice = complete(once, 6); expect(twice).toMatchObject({ phase: 'idle', generation: 4, guard: null, cleanupGuard: null, intent: null, sourceId: null, leaseId: null, leaseTarget: null, startPttBaseline: null, modBarrier: null, onCommandId: null, onDispatch: null, onConfirmed: null, pendingOff: null, mayOwnKey: false, modRestorePending: false, timerRevision: { audio: 0, on: 0, off: 0 }, txRisk: 'none', fault: null }); });
   it('cancels pre-key without OFF and coalesces qualified release', () => {
     const pending = start(); const cancelled = transition(pending.state, { type: 'release', sourceId: 'desktop', guard: pending.state.guard!, commandId: 'off-pre' });
     expect(types(cancelled)).toEqual(['cancel-timers', 'stop-local-audio']);
@@ -75,8 +75,12 @@ describe('TX reducer', () => {
     expect(types(transition(opened.state, { type: 'authority', epoch: 2, ptt: ptt(false, 2, 2), eligibility: eligible, offCommandId: 'off' }))).toContain('restore-mod');
   });
   it.each([['receiver', { ...eligible, target: { ...target, receiver: 'SUB' as const } }], ['slot', { ...eligible, target: { ...target, slot: 'B' as const } }], ['frequency', { ...eligible, target: { ...target, frequencyHz: target.frequencyHz + 1 } }], ['unknown', { ...eligible, target: null }], ['permit', { ...eligible, permit: 'unknown' }]] as const)('routes %s loss by key ownership', (_name, eligibility) => {
-    const pending = start(); expect(types(transition(pending.state, { type: 'authority', epoch: 1, ptt: ptt(false, 2), eligibility, offCommandId: 'off' }))).not.toContain('dispatch-off');
-    expect(types(transition(active(), { type: 'authority', epoch: 1, ptt: ptt(true, 3), eligibility, offCommandId: 'off' }))).toContain('dispatch-off');
+    const pending = start(); const cancelled = transition(pending.state, { type: 'authority', epoch: 1, ptt: ptt(false, 2), eligibility, offCommandId: 'off' });
+    expect(types(cancelled)).toEqual(['cancel-timers', 'stop-local-audio']); expect(cancelled.state).toMatchObject({ phase: 'releasing', mayOwnKey: false, pendingOff: null, modRestorePending: true });
+    const keyed = active(); const releaseEvent = { type: 'authority' as const, epoch: 1, ptt: ptt(true, 3), eligibility, offCommandId: 'off' }; const released = transition(keyed, releaseEvent);
+    expect(types(released)).toEqual(['cancel-timers', 'dispatch-off', 'arm-off-timeout', 'stop-local-audio']); expect(types(released).filter((type) => type === 'dispatch-off')).toHaveLength(1);
+    expect(released.state).toMatchObject({ phase: 'releasing', generation: keyed.generation + 1, mayOwnKey: true, modRestorePending: true, pendingOff: { commandId: 'off', leaseId: keyed.leaseId, generation: keyed.generation + 1, originalEpoch: 1 } });
+    expect(transition(released.state, releaseEvent)).toEqual({ state: released.state, effects: [] });
   });
   it('treats qualifying backend de-key and later re-key as external', () => { const dekeyed = transition(active(), { type: 'authority', epoch: 1, ptt: ptt(false, 4), eligibility: eligible, offCommandId: 'off' }); expect(dekeyed.state).toMatchObject({ phase: 'failed', fault: 'backend-dekeyed', txRisk: 'none', leaseId: null, radioTx: 'off', modRestorePending: false }); expect(types(dekeyed)).toEqual(['cancel-timers', 'stop-local-audio', 'restore-mod']); const rekeyed = transition(dekeyed.state, { type: 'authority', epoch: 1, ptt: ptt(true, 5), eligibility: eligible, offCommandId: 'off' }); expect(rekeyed).toMatchObject({ state: { radioTx: 'on', leaseId: null }, effects: [] }); });
   it('resets only discharged faults and preserves authority truth', () => {
@@ -122,10 +126,15 @@ describe('TX reducer', () => {
       { type: 'command-result' as const, command: 'off' as const, outcome: 'transport-error' as const, barrier: null, ...base },
       timerEvent(delivered.state, 'off-confirmation', 'off'),
     ]) {
-      const failed = transition(delivered.state, trigger); expect(failed.state).toMatchObject({ phase: 'failed', fault: 'release-not-confirmed', pendingOff: delivered.state.pendingOff, mayOwnKey: true, modRestorePending: true });
-      expect(types(failed)).not.toContain('dispatch-off'); expect(transition(failed.state, trigger)).toEqual({ state: failed.state, effects: [] });
+      const failed = transition(delivered.state, trigger); expect(failed.state).toMatchObject({ phase: 'failed', fault: 'release-not-confirmed', txRisk: 'confirmed-on', radioTx: 'on', pendingOff: delivered.state.pendingOff, mayOwnKey: true, modRestorePending: true });
+      expect(types(failed)).toEqual(['cancel-timers']); expect(transition(failed.state, trigger)).toEqual({ state: failed.state, effects: [] });
     }
     const failedBeforeSent = transition(released.state, { ...sentEvent, outcome: 'response-error', barrier: null }); const lateSent = transition(failedBeforeSent.state, sentEvent); expect(lateSent.state.pendingOff?.deliveryPttBarrier).toEqual(marker(4));
+    const pending = start(); const dispatched = transition(pending.state, { type: 'audio-ready', guard: pending.state.guard!, commandId: 'on-uncertain' }); const uncertain = transition(dispatched.state, { type: 'release', guard: dispatched.state.guard!, commandId: 'off-uncertain' }); const uncertainBase = { ...correlation(uncertain.state, 'off-uncertain'), offCommandId: 'off-uncertain' };
+    const uncertainDelivered = transition(uncertain.state, { type: 'command-result', command: 'off', outcome: 'sent', barrier: marker(2), ...uncertainBase });
+    for (const trigger of [{ type: 'command-result' as const, command: 'off' as const, outcome: 'response-error' as const, barrier: null, ...uncertainBase }, { ...timerEvent(uncertainDelivered.state, 'off-confirmation', 'off-uncertain'), offCommandId: 'off-uncertain' }]) {
+      const failed = transition(uncertainDelivered.state, trigger); expect(failed.state).toMatchObject({ phase: 'failed', fault: 'release-not-confirmed', txRisk: 'uncertain', radioTx: 'off', pendingOff: uncertainDelivered.state.pendingOff, mayOwnKey: true, modRestorePending: true }); expect(types(failed)).toEqual(['cancel-timers']);
+    }
   });
   it('discharges failed release only from qualifying authoritative OFF', () => {
     const keyed = active(); const released = transition(keyed, { type: 'release', guard: keyed.guard!, commandId: 'off' }); const base = correlation(released.state, 'off');
@@ -184,6 +193,67 @@ describe('TX reducer', () => {
       for (const event of malformed) expect(transition(dispatched.state, event)).toEqual({ state: dispatched.state, effects: [] });
     }
     const normal = start(); const normalGuard = normal.state.guard!; const normalDispatched = transition(normal.state, { type: 'audio-ready', guard: normalGuard, commandId: 'on' }); expect(transition(normalDispatched.state, { type: 'on-sent', guard: normalGuard, commandId: 'on', barrier: marker(2) }).state.phase).toBe('key-confirm-pending');
+  });
+  it('makes stale audio, release, authority, target and permit inputs exact no-ops', () => {
+    const pending = start(); const guard = pending.state.guard!;
+    const stale: TxEvent[] = [
+      { type: 'audio-ready', guard: { ...guard, leaseId: 'old' }, commandId: 'on' },
+      { type: 'audio-ready', guard: { ...guard, generation: guard.generation - 1 }, commandId: 'on' },
+      { type: 'release', sourceId: 'other', guard, commandId: 'off' },
+      { type: 'release', guard: { ...guard, authorityEpoch: 0 }, commandId: 'off' },
+      { ...timerEvent(pending.state, 'audio-start', null), armRevision: pending.state.timerRevision.audio - 1 },
+      { type: 'authority', epoch: 1, ptt: ptt(false, 2), eligibility: eligible, offCommandId: 'off' },
+      { type: 'authority', epoch: 2, ptt: ptt(false, 3, 2), eligibility: { ...eligible, target: { ...target, receiver: 'SUB' } }, offCommandId: 'off' },
+      { type: 'authority', epoch: 0, ptt: ptt(false, 3, 0), eligibility: { ...eligible, permit: 'unknown' }, offCommandId: 'off' },
+    ];
+    for (const event of stale) expect(transition(pending.state, event)).toEqual({ state: pending.state, effects: [] });
+  });
+  it('prevents source takeover and system release of external-only TX', () => {
+    const pending = start(); const guard = pending.state.guard!; const cancelled = transition(pending.state, { type: 'release', guard, commandId: 'off' });
+    for (const event of [{ type: 'start', sourceId: 'mobile', leaseId: 'mobile', intent: 'latched', eligibility: eligible, ptt: ptt(false, 3) }, { type: 'intent', sourceId: 'desktop', guard, intent: 'latched' }] as TxEvent[]) expect(transition(cancelled.state, event)).toEqual({ state: cancelled.state, effects: [] });
+    const external = transition(initialTxState(1, marker(1)), { type: 'authority', epoch: 1, ptt: ptt(true, 2), eligibility: eligible, offCommandId: 'off' });
+    const systemRelease = transition(external.state, { type: 'release', guard: { leaseId: 'none', generation: 1, authorityEpoch: 1 }, commandId: 'off' });
+    expect(systemRelease).toEqual({ state: external.state, effects: [] }); expect(external.state).toMatchObject({ radioTx: 'on', mayOwnKey: false, leaseId: null });
+  });
+  it('discharges pre-audio rejection and cancellation MOD obligations exactly once', () => {
+    for (const route of ['rejection', 'cancellation'] as const) {
+      const pending = start(); const guard = pending.state.guard!;
+      const stopped = route === 'rejection' ? transition(pending.state, { type: 'fail', guard, fault: 'ptt-on-rejected', offCommandId: 'off' }) : transition(pending.state, { type: 'release', guard, commandId: 'off' });
+      expect(stopped.state).toMatchObject({ mayOwnKey: false, modRestorePending: true, pendingOff: null, cleanupGuard: guard });
+      const off = { type: 'authority' as const, epoch: 1, ptt: ptt(false, 3), eligibility: eligible, offCommandId: 'off' }; const discharged = transition(stopped.state, off);
+      expect(types(discharged)).toEqual(['cancel-timers', 'restore-mod']); expect(discharged.state.modRestorePending).toBe(false); expect(transition(discharged.state, off)).toEqual({ state: discharged.state, effects: [] });
+    }
+  });
+  it('coalesces duplicate local and system teardown around one pending OFF', () => {
+    const keyed = active(); const oldTimer = timerEvent(keyed, 'on-confirmation', 'on'); const released = transition(keyed, { type: 'release', sourceId: 'desktop', guard: keyed.guard!, commandId: 'off-first' }); const original = released.state.pendingOff!;
+    for (const event of [{ type: 'release', guard: released.state.guard!, commandId: 'off-system' }, { type: 'release', sourceId: 'desktop', guard: released.state.guard!, commandId: 'off-pointer' }, oldTimer] as TxEvent[]) expect(transition(released.state, event)).toEqual({ state: released.state, effects: [] });
+    const opened = transition(released.state, { type: 'epoch', epoch: 2, baseline: marker(1, 2), offCommandId: 'off-reconnect' }); expect(opened.effects).toEqual([]); expect(opened.state.pendingOff).toEqual(original);
+    const lost = transition(opened.state, { type: 'authority', epoch: 2, ptt: ptt(true, 2, 2), eligibility: { ...eligible, controlLive: false }, offCommandId: 'off-capability' });
+    expect(lost.effects).toEqual([]); expect(lost.state.pendingOff).toEqual(original); expect(lost.state.generation).toBe(released.state.generation);
+  });
+  it('qualifies immediate OFF evidence strictly after its bound barrier', () => {
+    const keyed = active(); const released = transition(keyed, { type: 'release', guard: keyed.guard!, commandId: 'off' }); const off = released.state.pendingOff!;
+    const delivered = transition(released.state, { type: 'off-sent', ...off, eventEpoch: 1, barrier: marker(3) }); expect(delivered.state.pendingOff?.deliveryPttBarrier).toEqual(marker(3));
+    const inert = [ptt(false, 3), ptt(false, 2), { ...ptt(false, 4), source: 'other' as const }, { ...ptt(false, 4), observed: false }, { ...ptt(false, 4), fresh: false }];
+    for (const observation of inert) expect(transition(delivered.state, { type: 'authority', epoch: 1, ptt: observation, eligibility: eligible, offCommandId: 'off' })).toEqual({ state: delivered.state, effects: [] });
+    const confirmed = transition(delivered.state, { type: 'authority', epoch: 1, ptt: { ...ptt(false, 4), source: 'backend-observation' }, eligibility: eligible, offCommandId: 'off' });
+    expect(confirmed.state.phase).toBe('idle'); expect(types(confirmed)).toEqual(['cancel-timers', 'restore-mod']); expect(transition(confirmed.state, { type: 'authority', epoch: 1, ptt: ptt(false, 4), eligibility: eligible, offCommandId: 'off' })).toEqual({ state: confirmed.state, effects: [] });
+  });
+  it('binds queued OFF once and rejects pre-drain and old-epoch completion', () => {
+    const keyed = active(); const released = transition(keyed, { type: 'release', guard: keyed.guard!, commandId: 'off' }); const old = correlation(released.state, 'off');
+    const opened = transition(released.state, { type: 'epoch', epoch: 2, baseline: marker(1, 2), offCommandId: 'other' }); const preDrain = transition(opened.state, { type: 'authority', epoch: 2, ptt: ptt(false, 2, 2), eligibility: eligible, offCommandId: 'other' });
+    expect(preDrain.effects).toEqual([]); expect(preDrain.state.pendingOff).toEqual(released.state.pendingOff);
+    for (const outcome of ['ack', 'response-error'] as const) expect(transition(preDrain.state, { type: 'command-result', command: 'off', outcome, barrier: null, ...old })).toEqual({ state: preDrain.state, effects: [] });
+    const off = preDrain.state.pendingOff!; const delivery = { type: 'off-sent' as const, ...off, eventEpoch: 2, barrier: marker(2, 2) }; const delivered = transition(preDrain.state, delivery);
+    expect(delivered.state.pendingOff).toMatchObject({ deliveryEpoch: 2, deliveryPttBarrier: marker(2, 2), deliveryRebound: true }); expect(transition(delivered.state, delivery)).toEqual({ state: delivered.state, effects: [] });
+    expect(transition(delivered.state, { type: 'authority', epoch: 2, ptt: ptt(false, 2, 2), eligibility: eligible, offCommandId: 'other' })).toEqual({ state: delivered.state, effects: [] });
+    const confirmed = transition(delivered.state, { type: 'authority', epoch: 2, ptt: ptt(false, 3, 2), eligibility: eligible, offCommandId: 'other' }); expect(confirmed.state.phase).toBe('idle'); expect(types(confirmed)).toEqual(['cancel-timers', 'restore-mod']);
+  });
+  it('never reconstructs ON intent across reconnect, restore, remount or fault reset', () => {
+    const dekeyed = transition(active(), { type: 'authority', epoch: 1, ptt: ptt(false, 4), eligibility: eligible, offCommandId: 'off' }); const reset = transition(dekeyed.state, { type: 'reset-fault' });
+    const opened = transition(reset.state, { type: 'epoch', epoch: 2, baseline: marker(1, 2), offCommandId: 'off' }); const restored = transition(opened.state, { type: 'authority', epoch: 2, ptt: ptt(false, 2, 2), eligibility: eligible, offCommandId: 'off' }); const rekeyed = transition(restored.state, { type: 'authority', epoch: 2, ptt: ptt(true, 3, 2), eligibility: eligible, offCommandId: 'off' });
+    for (const result of [reset, opened, restored, rekeyed]) { expect(types(result)).not.toContain('dispatch-on'); expect(types(result)).not.toContain('start-audio'); expect(result.state).toMatchObject({ intent: null, leaseId: null, onCommandId: null, mayOwnKey: false }); }
+    const remounted = initialTxState(2, marker(3, 2)); expect(remounted).toMatchObject({ phase: 'idle', intent: null, leaseId: null, onCommandId: null, mayOwnKey: false });
   });
   it('rejects stale identity on every timer family', () => {
     const audio = start(); const guard = audio.state.guard!; const dispatched = transition(audio.state, { type: 'audio-ready', guard, commandId: 'on' }); const keyed = active(); const released = transition(keyed, { type: 'release', guard: keyed.guard!, commandId: 'off' });
