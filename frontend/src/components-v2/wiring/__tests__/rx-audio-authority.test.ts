@@ -69,7 +69,7 @@ describe('RX-audio presentation command authority (MOR-1124)', () => {
     expect(setMuted).toHaveBeenNthCalledWith(2, false);
   });
 
-  it('keeps LIVE start, exit stop, and browser-volume semantics on the shared authority', () => {
+  it('keeps LIVE start, settled exit stop, and browser-volume semantics on the shared authority', async () => {
     const desktop = makeWiringRxAudioHandlers();
     const essentials = makeRuntimeRxAudioHandlers();
 
@@ -79,7 +79,10 @@ describe('RX-audio presentation command authority (MOR-1124)', () => {
     desktop.onMonitorModeChange('radio');
 
     expect(audioManager.startRx).toHaveBeenCalledTimes(1);
-    expect(audioManager.stopRx).toHaveBeenCalledTimes(1);
+    await vi.waitFor(
+      () => expect(audioManager.stopRx).toHaveBeenCalledTimes(1),
+      { timeout: 100, interval: 1 },
+    );
     expect(audioManager.setRxVolume).toHaveBeenCalledWith(0.37);
     expect(setVolume).toHaveBeenCalledWith(37);
   });
