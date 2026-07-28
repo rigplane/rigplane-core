@@ -8,6 +8,9 @@
 
 import { readFileSync } from 'node:fs';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { flushSync } from 'svelte';
+// @ts-expect-error -- Svelte does not publish types for its test-only effect harness.
+import { effect_root, render_effect } from 'svelte/internal/client';
 
 // ── Mock transport and store modules before importing the runtime ──
 
@@ -64,6 +67,7 @@ vi.mock('$lib/stores/connection.svelte', () => ({
   setRadioReady: vi.fn(),
   setControlConnected: vi.fn(),
   markStateUpdated: vi.fn(),
+  markScopeFrame: vi.fn(),
 }));
 
 vi.mock('$lib/stores/audio.svelte', () => ({
@@ -113,6 +117,7 @@ import { systemController } from '../system-controller';
 import { clearLegacyPendingModInputRestore } from '../adapters/mod-input-auto.svelte';
 import { PresentationResourceHost } from '../resource-host';
 import { presentationResources } from '../frontend-runtime';
+import { scopeController } from '../scope-controller.svelte';
 import { makeRxAudioHandlers } from '../commands/panel-commands';
 
 // FrontendRuntime is a singleton — re-import fresh each time via a factory helper
@@ -158,6 +163,24 @@ const deferred = <T>() => {
   return { promise, resolve };
 };
 const settle = async () => { await Promise.resolve(); await Promise.resolve(); };
+function makeScopeChannel() {
+  const binary = new Set<(data: ArrayBuffer) => void>();
+  const states = new Set<(state: any) => void>();
+  let state = 'disconnected';
+  return {
+    get state() { return state; },
+    connect: vi.fn(), disconnect: vi.fn(),
+    onBinary: vi.fn((handler) => { binary.add(handler); return () => binary.delete(handler); }),
+    onStateChange: vi.fn((handler) => { states.add(handler); return () => states.delete(handler); }),
+    setState(next: any) { state = next; for (const handler of states) handler(next); },
+    frame() {
+      const data = new ArrayBuffer(20), view = new DataView(data);
+      view.setUint8(0, 1); view.setUint32(3, 14_100_000, true);
+      view.setUint32(7, 14_200_000, true); view.setUint16(14, 4, true);
+      for (const handler of binary) handler(data);
+    },
+  };
+}
 describe('PresentationResourceHost', () => {
   it('is inert until first demand, shares the handle, and stops on last release', async () => {
     const handle = {};
@@ -374,59 +397,6 @@ describe('FrontendRuntime hardware scope and DX facades', () => {
     (startPolling as ReturnType<typeof vi.fn>).mockReturnValue(fakeStopPolling);
   });
 
-  it('derives unavailable/default selection and keeps bootstrap inert', async () => {
-    const rt = await freshRuntime();
-    await rt.bootstrap();
-
-    expect(presentationResources.snapshot('hardware-scope')).toMatchObject({
-      available: false,
-      selected: false,
-      demand: 0,
-      health: 'inactive',
-    });
-    expect(getChannel).not.toHaveBeenCalled();
-  });
-
-  it('starts only for exact shared demand and stops on the last valid release', async () => {
-    const channel = {
-      state: 'disconnected',
-      connect: vi.fn(),
-      disconnect: vi.fn(),
-      onBinary: vi.fn(() => vi.fn()),
-      onStateChange: vi.fn(() => vi.fn()),
-    };
-    (getChannel as ReturnType<typeof vi.fn>).mockReturnValue(channel);
-    (fetchCapabilities as ReturnType<typeof vi.fn>).mockResolvedValue({
-      ...fakeCaps,
-      scope: true,
-      capabilities: ['audio', 'scope'],
-      scopeSource: 'hardware',
-    });
-    const rt = await freshRuntime();
-    await rt.bootstrap();
-
-    expect(presentationResources.snapshot('hardware-scope')).toMatchObject({
-      available: true,
-      selected: true,
-      demand: 0,
-    });
-    expect(getChannel).not.toHaveBeenCalled();
-
-    const first = rt.acquireHardwareScope('first');
-    const shared = rt.acquireHardwareScope('shared');
-    await settle();
-    expect(getChannel).toHaveBeenCalledExactlyOnceWith('scope');
-    expect(channel.connect).toHaveBeenCalledExactlyOnceWith('/api/v1/scope');
-    expect(presentationResources.snapshot('hardware-scope').demand).toBe(2);
-
-    expect(rt.releaseHardwareScope(first)).toBe(true);
-    expect(rt.releaseHardwareScope(first)).toBe(false);
-    expect(channel.disconnect).not.toHaveBeenCalled();
-    expect(rt.releaseHardwareScope(shared)).toBe(true);
-    await settle();
-    expect(channel.disconnect).toHaveBeenCalledTimes(1);
-  });
-
   it('shares one filtered control subscription and unsubscribes exactly', async () => {
     let controlHandler: ((message: unknown) => void) | undefined;
     const controlUnsubscribe = vi.fn();
@@ -457,6 +427,153 @@ describe('FrontendRuntime hardware scope and DX facades', () => {
   });
 });
 
+describe('FrontendRuntime canonical default scope status', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    (startPolling as ReturnType<typeof vi.fn>).mockReturnValue(fakeStopPolling);
+  });
+  it('keeps capability-denied hardware inert', async () => {
+    (fetchCapabilities as ReturnType<typeof vi.fn>).mockResolvedValue(fakeCaps);
+    const rt = await freshRuntime();
+    await rt.bootstrap();
+    expect(presentationResources.snapshot('hardware-scope')).toMatchObject({
+      available: false, selected: false, demand: 0, health: 'inactive',
+    });
+  });
+  it('keeps both sources eligible while summarizing only the hardware default', async () => {
+    const hardware = makeScopeChannel(), audio = makeScopeChannel();
+    (getChannel as ReturnType<typeof vi.fn>).mockImplementation(
+      (name) => name === 'scope' ? hardware : audio,
+    );
+    (fetchCapabilities as ReturnType<typeof vi.fn>).mockResolvedValue({
+      ...fakeCaps, capabilities: ['audio', 'scope'], scopeSource: 'hardware',
+    });
+    const rt = await freshRuntime();
+    await rt.bootstrap();
+    expect(presentationResources.snapshot('hardware-scope')).toMatchObject({
+      available: true, selected: true, demand: 0,
+    });
+    expect(presentationResources.snapshot('audio-fft')).toMatchObject({
+      available: true, selected: true, demand: 0,
+    });
+    expect(rt.defaultScopeStatus).toEqual({
+      source: 'hardware', available: true, resourceSelected: true, demand: 0,
+      lifecycle: 'inactive', transport: 'disconnected', frameSeen: false,
+    });
+    presentationResources.configure('hardware-scope', { available: false, selected: true });
+    expect(rt.defaultScopeStatus).toMatchObject({ source: 'hardware', available: false, resourceSelected: true });
+    presentationResources.configure('hardware-scope', { available: true, selected: true });
+    const hardwareLease = rt.acquireHardwareScope('viewer');
+    const hardwareShared = rt.acquireHardwareScope('shared');
+    const audioLease = presentationResources.acquire('audio-fft', 'supplemental');
+    expect(rt.defaultScopeStatus).toMatchObject({
+      source: 'hardware', demand: 2, lifecycle: 'starting',
+      transport: 'disconnected', frameSeen: false,
+    });
+    await settle();
+    expect(presentationResources.snapshot('audio-fft')).toMatchObject({
+      selected: true, demand: 1, health: 'streaming',
+    });
+    expect(rt.defaultScopeStatus.lifecycle).toBe('streaming');
+    for (const state of ['connecting', 'connected', 'reconnecting', 'disconnected'] as const) {
+      hardware.setState(state);
+      expect(rt.defaultScopeStatus.transport).toBe(state);
+      expect(rt.defaultScopeStatus.frameSeen).toBe(false);
+    }
+    hardware.setState('connected');
+    hardware.frame();
+    expect(rt.defaultScopeStatus.frameSeen).toBe(true);
+    hardware.setState('reconnecting');
+    hardware.setState('connected');
+    expect(rt.defaultScopeStatus.frameSeen).toBe(false);
+    rt.releaseHardwareScope(hardwareLease);
+    expect(rt.defaultScopeStatus.demand).toBe(1);
+    expect(hardware.disconnect).not.toHaveBeenCalled();
+    rt.releaseHardwareScope(hardwareShared);
+    presentationResources.release(audioLease);
+    await settle();
+    expect(hardware.disconnect).toHaveBeenCalledTimes(1);
+  });
+  it('publishes the audio default and inert facts without fallback', async () => {
+    (getChannel as ReturnType<typeof vi.fn>).mockReturnValue(makeScopeChannel());
+    (fetchCapabilities as ReturnType<typeof vi.fn>).mockResolvedValue({
+      ...fakeCaps, scope: true, capabilities: ['audio', 'scope'], scopeSource: 'audio_fft',
+    });
+    const rt = await freshRuntime();
+    await rt.bootstrap();
+    expect(rt.defaultScopeStatus).toEqual({
+      source: 'audio_fft', available: true, resourceSelected: true, demand: 0,
+      lifecycle: 'inactive', transport: 'disconnected', frameSeen: false,
+    });
+    expect(presentationResources.snapshot('hardware-scope')).toMatchObject({ available: true, selected: true, demand: 0 });
+    expect(getChannel).not.toHaveBeenCalled();
+    (getChannel as ReturnType<typeof vi.fn>).mockImplementationOnce(() => {
+      throw new Error('offline');
+    });
+    const failedLease = presentationResources.acquire('audio-fft', 'failed');
+    await settle();
+    expect(rt.defaultScopeStatus.lifecycle).toBe('failed');
+    presentationResources.release(failedLease);
+    (fetchCapabilities as ReturnType<typeof vi.fn>).mockResolvedValue({
+      ...fakeCaps, scope: true, capabilities: ['audio', 'scope'], scopeSource: 'invalid',
+      audioFftAvailable: false,
+    });
+    const invalid = await freshRuntime();
+    await invalid.bootstrap();
+    expect(invalid.defaultScopeStatus).toEqual({
+      source: null, available: false, resourceSelected: false, demand: 0,
+      lifecycle: 'inactive', transport: 'disconnected', frameSeen: false,
+    });
+    expect(presentationResources.snapshot('hardware-scope')).toMatchObject({
+      available: true, selected: true, demand: 0,
+    });
+    expect(presentationResources.snapshot('audio-fft')).toMatchObject({
+      available: false, selected: false, demand: 0,
+    });
+    expect(getChannel).toHaveBeenCalledExactlyOnceWith('audio-scope');
+  });
+  it('shares, coalesces, and exactly tears down the reactive bridge', async () => {
+    const hardware = makeScopeChannel();
+    (getChannel as ReturnType<typeof vi.fn>).mockReturnValue(hardware);
+    (fetchCapabilities as ReturnType<typeof vi.fn>).mockResolvedValue({
+      ...fakeCaps, capabilities: ['audio', 'scope'], scopeSource: 'hardware',
+    });
+    const rt = await freshRuntime();
+    const hostListeners = (presentationResources as any).listeners as Set<unknown>;
+    const healthListeners = (scopeController as any)._healthSubscribers as Map<unknown, unknown>;
+    let reads = 0;
+    const observe = () => effect_root(() => {
+      render_effect(() => { rt.defaultScopeStatus; reads += 1; });
+    });
+    expect(rt.defaultScopeStatus.demand).toBe(0);
+    expect([hostListeners.size, healthListeners.size]).toEqual([0, 0]);
+    const stopFirst = observe(), stopShared = observe();
+    expect([hostListeners.size, healthListeners.size]).toEqual([1, 1]);
+    (fetchCapabilities as ReturnType<typeof vi.fn>).mockRejectedValueOnce(new Error('offline'));
+    await expect(rt.bootstrap()).rejects.toThrow('offline');
+    expect([hostListeners.size, healthListeners.size]).toEqual([1, 1]);
+    await rt.bootstrap();
+    const lease = rt.acquireHardwareScope('viewer');
+    await settle();
+    const before = reads;
+    hardware.setState('connecting');
+    hardware.setState('connected');
+    flushSync();
+    expect(reads).toBe(before + 2);
+    expect(rt.defaultScopeStatus).toMatchObject({
+      demand: 1, lifecycle: 'streaming', transport: 'connected', frameSeen: false,
+    });
+    stopFirst(); await settle();
+    expect([hostListeners.size, healthListeners.size]).toEqual([1, 1]);
+    stopShared(); await settle();
+    expect([hostListeners.size, healthListeners.size]).toEqual([0, 0]);
+    const stopRemount = observe();
+    expect([hostListeners.size, healthListeners.size]).toEqual([1, 1]);
+    rt.releaseHardwareScope(lease);
+    stopRemount(); await settle();
+    expect([hostListeners.size, healthListeners.size]).toEqual([0, 0]);
+  });
+});
 describe('FrontendRuntime RX LIVE intent', () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -555,6 +672,12 @@ describe('FrontendRuntime RX LIVE intent', () => {
     (onMessage as ReturnType<typeof vi.fn>).mockReturnValue(unsubscribeDx);
     const rt = await freshRuntime();
     await rt.bootstrap();
+    const hostListeners = (presentationResources as any).listeners as Set<unknown>;
+    const healthListeners = (scopeController as any)._healthSubscribers as Map<unknown, unknown>;
+    const stopStatus = effect_root(() => {
+      render_effect(() => { rt.defaultScopeStatus; });
+    });
+    expect([hostListeners.size, healthListeners.size]).toEqual([1, 1]);
     rt.setRxLive(true);
     const hardwareLease = rt.acquireHardwareScope('SpectrumPanel');
     rt.subscribeDx(vi.fn());
@@ -571,6 +694,7 @@ describe('FrontendRuntime RX LIVE intent', () => {
     expect(audioManager.stopRx).toHaveBeenCalledTimes(1);
     expect(channel.disconnect).toHaveBeenCalledTimes(1);
     expect(unsubscribeDx).toHaveBeenCalledTimes(1);
+    expect([hostListeners.size, healthListeners.size]).toEqual([0, 0]);
     expect(rt.releaseHardwareScope(hardwareLease)).toBe(false);
     expect(() => rt.acquireHardwareScope('late')).toThrow('torn down');
     expect(() => rt.subscribeDx(vi.fn())).toThrow('torn down');
@@ -579,5 +703,11 @@ describe('FrontendRuntime RX LIVE intent', () => {
       health: 'inactive',
       activeHandle: undefined,
     });
+    stopStatus(); await settle();
+    const stopAfterFinal = effect_root(() => {
+      render_effect(() => { rt.defaultScopeStatus; });
+    });
+    expect([hostListeners.size, healthListeners.size]).toEqual([0, 0]);
+    stopAfterFinal(); await settle();
   });
 });
