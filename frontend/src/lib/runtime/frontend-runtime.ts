@@ -107,7 +107,10 @@ class FrontendRuntime {
       selected: false,
       driver: scopeController.hardwareScopeDriver,
     });
-    scopeController.registerPresentationDriver(presentationResources);
+    scopeController.registerPresentationDriver(presentationResources, {
+      available: false,
+      selected: false,
+    });
     presentationResources.configure('rx-audio', {
       available: false,
       selected: true,
