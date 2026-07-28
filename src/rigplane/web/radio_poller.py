@@ -455,6 +455,7 @@ class RadioPoller:
         self._initial_fetch_done = asyncio.Event()
         self._initial_fetch_done.set()
         self._scope_enable_deferred = False
+        self._scope_demand_generation = queue.latest_scope_demand_generation
         # Issue #715: track user-initiated freq/mode writes so the unselected-
         # slot poll subroutine can debounce around them, and per-receiver
         # timestamps so each receiver's unselected slot is refreshed no more
@@ -1152,6 +1153,21 @@ class RadioPoller:
         _active = getattr(rs, "active", None) if rs is not None else None
         return _active if isinstance(_active, str) else "MAIN"
 
+    def _scope_demand_is_stale(self, generation: int) -> bool:
+        latest = max(
+            self._scope_demand_generation,
+            self._queue.latest_scope_demand_generation,
+        )
+        if generation < latest:
+            logger.debug(
+                "radio-poller: dropping stale scope demand generation %d (current=%d)",
+                generation,
+                latest,
+            )
+            return True
+        self._scope_demand_generation = generation
+        return False
+
     async def _execute(
         self,
         cmd: Command,
@@ -1792,23 +1808,31 @@ class RadioPoller:
                 self._last_user_write_ts = time.monotonic()
                 if CAP_DUAL_RX in self._caps:
                     await radio.equalize_main_sub()
-            case EnableScope(policy=policy):
+            case EnableScope(policy=policy, generation=generation):
                 if CAP_SCOPE in self._caps:
                     # Defer scope enable during initial fetch to avoid
                     # CI-V packet queue overflow (scope data + fetch).
                     if not self._initial_fetch_done.is_set():
+                        if self._scope_demand_is_stale(generation):
+                            return
                         if not self._scope_enable_deferred:
                             logger.info(
                                 "radio-poller: deferring scope enable until initial fetch completes"
                             )
                             self._scope_enable_deferred = True
-                        self._queue.put(EnableScope(policy=policy))
+                        self._queue.put(
+                            EnableScope(policy=policy, generation=generation)
+                        )
                     else:
+                        if self._scope_demand_is_stale(generation):
+                            return
                         await radio.enable_scope(policy=policy)
                         logger.info("radio-poller: scope enabled")
                         await self._fetch_scope_controls()
-            case DisableScope():
+            case DisableScope(generation=generation):
                 if CAP_SCOPE in self._caps:
+                    if self._scope_demand_is_stale(generation):
+                        return
                     await radio.disable_scope()
                     logger.info("radio-poller: scope disabled")
             case SwitchScopeReceiver(receiver=receiver):

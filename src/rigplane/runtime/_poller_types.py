@@ -465,11 +465,12 @@ class VfoEqualize:
 @dataclass(frozen=True, slots=True)
 class EnableScope:
     policy: str = "fast"
+    generation: int = 0
 
 
 @dataclass(frozen=True, slots=True)
 class DisableScope:
-    pass
+    generation: int = 0
 
 
 @dataclass(frozen=True, slots=True)
@@ -999,6 +1000,14 @@ class CommandQueue:
     def __init__(self) -> None:
         self._segments: list[_CommandQueueSegment] = []
         self._notify: asyncio.Event = asyncio.Event()
+        self._scope_demand_generation = 0
+
+    def _record_scope_demand(self, cmd: Command) -> None:
+        if isinstance(cmd, (EnableScope, DisableScope)):
+            self._scope_demand_generation = max(
+                self._scope_demand_generation,
+                cmd.generation,
+            )
 
     def _coalesced_tail(self) -> _CommandQueueSegment:
         if self._segments and self._segments[-1].kind == "coalesced":
@@ -1016,6 +1025,7 @@ class CommandQueue:
         session_id: str | None = None,
         command_service: Any | None = None,
     ) -> None:
+        self._record_scope_demand(cmd)
         entry = CommandQueueEntry(
             cmd,
             command_id=command_id,
@@ -1040,6 +1050,7 @@ class CommandQueue:
         session_id: str | None = None,
         command_service: Any | None = None,
     ) -> None:
+        self._record_scope_demand(cmd)
         self._segments.append(
             _CommandQueueSegment.ordered_entry(
                 CommandQueueEntry(
@@ -1069,6 +1080,10 @@ class CommandQueue:
     @property
     def has_commands(self) -> bool:
         return any(segment.has_commands for segment in self._segments)
+
+    @property
+    def latest_scope_demand_generation(self) -> int:
+        return self._scope_demand_generation
 
     async def wait(self, timeout: float | None = None) -> None:
         try:
