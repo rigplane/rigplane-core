@@ -192,6 +192,7 @@ import SpectrumPanel from '../SpectrumPanel.svelte';
 import spectrumPanelSource from '../SpectrumPanel.svelte?raw';
 import {
   deriveScopeIndicatorState,
+  indicatorTone,
 } from '../../../components-v2/layout/StatusBar.svelte';
 import statusBarSource from '../../../components-v2/layout/StatusBar.svelte?raw';
 
@@ -341,6 +342,20 @@ describe('SpectrumPanel component', () => {
     expect(target.querySelector('.scope-demand-off-overlay')).toBeNull();
   });
 
+  it('ignores shared runtime frames while VIEW is OFF', () => {
+    const target = mountPanel();
+    target.querySelector<HTMLButtonElement>('.scope-demand-toggle')!.click();
+    runtimeHarness.state.capturedHardwareFrame?.({
+      receiver: 0,
+      mode: 1,
+      startFreq: 14_000_000,
+      endFreq: 14_350_000,
+      pixels: new Uint8Array(475).fill(64),
+    });
+    flushSync();
+    expect(target.querySelector('.freq-axis')).toBeNull();
+  });
+
   it('does not render freq-axis when no span data', () => {
     const target = mountPanel();
     // Without scope frames, spanHz = 0, so freq-axis is not rendered
@@ -447,6 +462,7 @@ describe('StatusBar default scope status consumption', () => {
 
   it.each([
     ['power-off override', scopeStatus(), true, 'disconnected'],
+    ['power-off precedes inactive facts', scopeStatus({ source: null, demand: 0 }), true, 'disconnected'],
     ['no default source', scopeStatus({ source: null }), false, 'inactive'],
     ['unavailable default', scopeStatus({ available: false }), false, 'inactive'],
     ['unselected resource', scopeStatus({ resourceSelected: false }), false, 'inactive'],
@@ -459,8 +475,21 @@ describe('StatusBar default scope status consumption', () => {
     ['disconnected transport under demand', scopeStatus({ transport: 'disconnected', frameSeen: false }), false, 'disconnected'],
     ['healthy hardware default', scopeStatus(), false, 'connected'],
     ['healthy audio default uses identical facts', scopeStatus({ source: 'audio_fft' }), false, 'connected'],
-    ['streaming host alone is not green', scopeStatus({ transport: 'connecting', frameSeen: false }), false, 'connecting'],
+    ['non-streaming lifecycle is not green', scopeStatus({ lifecycle: 'inactive' }), false, 'inactive'],
   ] as const)('%s maps to %s', (_label, status, poweredOff, expected) => {
     expect(deriveScopeIndicatorState(status, poweredOff)).toBe(expected);
+  });
+
+  it.each([
+    ['inactive', 'neutral'],
+    ['starting', 'yellow'],
+    ['connecting', 'yellow'],
+    ['waiting', 'yellow'],
+    ['reconnecting', 'yellow'],
+    ['failed', 'red'],
+    ['disconnected', 'red'],
+    ['connected', 'green'],
+  ] as const)('%s uses the %s tone', (state, expected) => {
+    expect(indicatorTone(state)).toBe(expected);
   });
 });

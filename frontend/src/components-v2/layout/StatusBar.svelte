@@ -10,6 +10,7 @@
     | 'failed'
     | 'disconnected'
     | 'connected';
+  export type IndicatorTone = 'green' | 'yellow' | 'red' | 'neutral';
 
   export function deriveScopeIndicatorState(
     status: DefaultScopeStatus,
@@ -29,6 +30,25 @@
     if (status.transport === 'disconnected') return 'disconnected';
     if (!status.frameSeen) return 'waiting';
     return status.lifecycle === 'streaming' ? 'connected' : 'inactive';
+  }
+
+  export function indicatorTone(state: string): IndicatorTone {
+    switch (state) {
+      case 'connected':
+        return 'green';
+      case 'connecting':
+      case 'starting':
+      case 'waiting':
+      case 'reconnecting':
+      case 'partial':
+      case 'degraded':
+        return 'yellow';
+      case 'disconnected':
+      case 'failed':
+        return 'red';
+      default:
+        return 'neutral';
+    }
   }
 </script>
 
@@ -145,18 +165,12 @@
   );
 
   function stateColor(state: string): string {
-    switch (state) {
-      case 'connected':
+    switch (indicatorTone(state)) {
+      case 'green':
         return 'var(--v2-accent-green, #4ade80)';
-      case 'connecting':
-      case 'starting':
-      case 'waiting':
-      case 'reconnecting':
-      case 'partial':
-      case 'degraded':
+      case 'yellow':
         return 'var(--v2-accent-yellow, #facc15)';
-      case 'disconnected':
-      case 'failed':
+      case 'red':
         return 'var(--v2-accent-red, #ef4444)';
       default:
         return 'var(--v2-text-dim, #666)';
