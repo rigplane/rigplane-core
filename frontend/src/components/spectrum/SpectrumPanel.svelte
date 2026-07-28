@@ -49,6 +49,9 @@
 
   // --- Component state ---
   let scopeConnected = $derived(isScopeConnected());
+  let scopeDemandOn = $state(true);
+  let scopeChannel: ReturnType<typeof getChannel> | null = null;
+  let ownsScopeDemand = false;
   let scopePixels = $state<Uint8Array | null>(null);
   let enableAvg = $state(true);
   let enablePeakHold = $state(true);
@@ -201,6 +204,26 @@
     resizingPointerId = null;
   }
 
+  function acquireScopeDemand(): void {
+    if (!scopeChannel || ownsScopeDemand) return;
+    ownsScopeDemand = true;
+    scopeChannel.connect('/api/v1/scope');
+  }
+
+  function releaseScopeDemand(): void {
+    if (!scopeChannel || !ownsScopeDemand) return;
+    ownsScopeDemand = false;
+    scopeChannel.disconnect();
+    setScopeConnected(false);
+  }
+
+  function setScopeDemand(enabled: boolean): void {
+    if (scopeDemandOn === enabled) return;
+    scopeDemandOn = enabled;
+    if (enabled) acquireScopeDemand();
+    else releaseScopeDemand();
+  }
+
   // --- Click-to-tune ---
   function handleTune(hz: number): void {
     const freq = snapToStep(Math.round(hz));
@@ -323,12 +346,11 @@
   // --- Lifecycle: connect scope WS + subscribe to DX spots ---
   onMount(() => {
     // Scope data arrives on its own WebSocket channel
-    const scopeCh = getChannel('scope');
-    scopeCh.connect('/api/v1/scope');
-    const unsubState = scopeCh.onStateChange((s) => {
-      setScopeConnected(s === 'connected');
+    scopeChannel = getChannel('scope');
+    const unsubState = scopeChannel.onStateChange((s) => {
+      setScopeConnected(scopeDemandOn && s === 'connected');
     });
-    const unsubBinary = scopeCh.onBinary((buf) => {
+    const unsubBinary = scopeChannel.onBinary((buf) => {
       markScopeFrame();
       const frame = parseScopeFrame(buf);
       if (!frame) return;
@@ -343,6 +365,7 @@
       spectrumPush?.(frame.pixels);
       waterfallPush?.(frame.pixels);
     });
+    acquireScopeDemand();
 
     // DX spots come through the main control WebSocket as JSON messages
     const unsubMsg = onMessage((msg) => {
@@ -359,7 +382,8 @@
       unsubState();
       unsubBinary();
       unsubMsg();
-      scopeCh.disconnect();
+      releaseScopeDemand();
+      scopeChannel = null;
     };
   });
 </script>
@@ -371,7 +395,7 @@
 />
 
 <div class="spectrum-panel" class:fullscreen onwheel={handleWheel}>
-  <SpectrumToolbar bind:enableAvg bind:enablePeakHold bind:brtLevel bind:colorScheme bind:fullscreen bind:showBandPlan bind:hiddenLayers bind:showEiBi {hideSourceControls} />
+  <SpectrumToolbar bind:enableAvg bind:enablePeakHold bind:brtLevel bind:colorScheme bind:fullscreen bind:showBandPlan bind:hiddenLayers bind:showEiBi {scopeDemandOn} onScopeDemandChange={setScopeDemand} {hideSourceControls} />
   <div class="spectrum-with-scales">
     <div class="db-scale">
       {#each DB_TICKS as tick}
@@ -379,7 +403,9 @@
       {/each}
     </div>
     <div class="spectrum-area" class:panning={dragging} bind:this={spectrumArea} onpointerdown={handleDragStart} role="presentation">
-      {#if !scopeConnected}
+      {#if !scopeDemandOn}
+        <div class="scope-disconnected-overlay scope-demand-off-overlay">Scope viewer OFF</div>
+      {:else if !scopeConnected}
         <div class="scope-disconnected-overlay">{t('core.overlay.scopeDisconnected')}</div>
       {/if}
       <BandPlanOverlay {startFreq} {endFreq} visible={showBandPlan} {hiddenLayers} />
