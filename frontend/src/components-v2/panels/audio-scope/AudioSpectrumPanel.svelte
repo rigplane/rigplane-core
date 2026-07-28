@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { runtime } from '$lib/runtime';
+  import { presentationResources, runtime } from '$lib/runtime/frontend-runtime';
   import { deriveAudioSpectrumProps } from '$lib/runtime/adapters/panel-adapters';
   import AudioSpectrumCanvas from './AudioSpectrumCanvas.svelte';
 
@@ -13,15 +13,24 @@
   let fftBandwidth = $state(48000);
   let fftPush: ((data: Uint8Array) => void) | null = null;
 
-  // Scope subscription — delegates lifecycle to ScopeController (ADR INV-2, INV-5)
+  // Scope frames and resource demand have separate lifetimes (ADR INV-2, INV-5).
   $effect(() => {
-    return runtime.scope.subscribe((frame) => {
+    runtime.scope.registerPresentationDriver(presentationResources);
+    const lease = presentationResources.acquire('audio-fft', 'AudioSpectrumPanel');
+    const unsubscribe = runtime.scope.subscribe((frame) => {
       fftPixels = frame.pixels;
       if (frame.endFreq > frame.startFreq) {
         fftBandwidth = frame.endFreq - frame.startFreq;
       }
       fftPush?.(frame.pixels);
     });
+    let released = false;
+    return () => {
+      if (released) return;
+      released = true;
+      unsubscribe();
+      presentationResources.release(lease);
+    };
   });
 </script>
 
