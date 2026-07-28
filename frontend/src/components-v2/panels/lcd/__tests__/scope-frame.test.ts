@@ -1,33 +1,11 @@
 /**
  * Tests for scope frame parsing and bandwidth derivation in AmberLcdDisplay.
  *
- * parseScopeFrame is defined inline in the component, so this file tests the
- * same parsing logic as a standalone pure function to verify correctness of the
- * binary protocol and bandwidth computation that drives AmberAfScope.
+ * The runtime adapter owns scope-frame parsing. These tests verify that canonical
+ * decoder and the bandwidth computation that drives AmberAfScope.
  */
 import { describe, it, expect } from 'vitest';
-
-// ── Re-implement parseScopeFrame as a pure function for testing ───────────────
-
-interface ScopeFrame {
-  receiver: number;
-  mode: number;
-  startFreq: number;
-  endFreq: number;
-  pixels: Uint8Array;
-}
-
-function parseScopeFrame(buf: ArrayBuffer): ScopeFrame | null {
-  const view = new DataView(buf);
-  if (view.byteLength < 16 || view.getUint8(0) !== 0x01) return null;
-  const receiver = view.getUint8(1);
-  const mode = view.getUint8(2);
-  const startFreq = view.getUint32(3, true);
-  const endFreq = view.getUint32(7, true);
-  const pixelCount = view.getUint16(14, true);
-  if (16 + pixelCount > view.byteLength) return null;
-  return { receiver, mode, startFreq, endFreq, pixels: new Uint8Array(buf, 16, pixelCount) };
-}
+import { parseScopeFrame, type ScopeFrame } from '$lib/runtime/adapters/scope-adapter';
 
 /** Encode a scope frame in the binary wire format. */
 function encodeFrame(
@@ -69,12 +47,14 @@ describe('parseScopeFrame', () => {
     expect(parseScopeFrame(buf.slice(0, 20))).toBeNull();
   });
 
-  it('parses receiver, startFreq, endFreq, and pixels from a valid frame', () => {
+  it('parses immutable receiver, mode, frequency, and pixel facts from a valid frame', () => {
     const pixels = new Uint8Array([10, 20, 30, 40, 50]);
     const buf = encodeFrame(0, 14_050_000, 14_098_000, pixels);
     const frame = parseScopeFrame(buf);
     expect(frame).not.toBeNull();
+    expect(Object.isFrozen(frame)).toBe(true);
     expect(frame!.receiver).toBe(0);
+    expect(frame!.mode).toBe(0);
     expect(frame!.startFreq).toBe(14_050_000);
     expect(frame!.endFreq).toBe(14_098_000);
     expect(Array.from(frame!.pixels)).toEqual([10, 20, 30, 40, 50]);
