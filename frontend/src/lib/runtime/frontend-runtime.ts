@@ -32,12 +32,14 @@ import { clearLegacyPendingModInputRestore } from './adapters/mod-input-auto.sve
 import { derivePresentationCapabilities } from './adapters/presentation-capabilities';
 import { systemController } from './system-controller';
 import { scopeController } from './scope-controller.svelte';
-import type { ScopeController } from './scope-controller.svelte';
+import type { ScopeController, ScopeSource } from './scope-controller.svelte';
 import { PresentationResourceHost } from './resource-host';
-import type { ResourceLease } from './resource-demand';
+import type { ResourceHealth, ResourceLease } from './resource-demand';
+import { createSubscriber } from 'svelte/reactivity';
 import type { ServerState, ReceiverState } from '$lib/types/state';
 import type { Capabilities } from '$lib/types/capabilities';
 import type { WsIncoming } from '$lib/types/protocol';
+import type { ConnectionState } from '$lib/transport/ws-client';
 export const presentationResources = new PresentationResourceHost<unknown>('app');
 // ── Types ──
 
@@ -54,6 +56,15 @@ export interface ConnectionSnapshot {
   radioPowerOn: boolean | null;
 }
 
+export interface DefaultScopeStatus {
+  source: ScopeSource | null;
+  available: boolean;
+  resourceSelected: boolean;
+  demand: number;
+  lifecycle: ResourceHealth;
+  transport: ConnectionState;
+  frameSeen: boolean;
+}
 
 // ── Runtime class ──
 
@@ -65,12 +76,40 @@ class FrontendRuntime {
   private _dxSubscribers = new Map<number, (message: DxMessage) => void>();
   private _dxControlUnsubscribe: (() => void) | null = null;
   private _nextDxSubscriber = 0;
+  private _defaultScopeSource: ScopeSource | null = null;
+  private _defaultScopeSnapshot: DefaultScopeStatus = {
+    source: null, available: false, resourceSelected: false, demand: 0,
+    lifecycle: 'inactive', transport: 'disconnected', frameSeen: false,
+  };
+  private _defaultScopeStop: (() => void) | null = null;
+  private _defaultScopeSubscribe = createSubscriber((update) => {
+    if (this._ended) return;
+    const notify = () => {
+      this._defaultScopeSnapshot = this._readDefaultScopeStatus();
+      update();
+    };
+    const unsubscribeHost = presentationResources.subscribe(() => notify());
+    const unsubscribeHealth = scopeController.subscribeHealth(() => notify());
+    let active = true;
+    const stop = () => {
+      if (!active) return;
+      active = false;
+      try { unsubscribeHost(); } finally { unsubscribeHealth(); }
+      if (this._defaultScopeStop === stop) this._defaultScopeStop = null;
+    };
+    this._defaultScopeStop = stop;
+    return stop;
+  });
 
   constructor() {
     presentationResources.configure('hardware-scope', {
       available: false,
       selected: false,
       driver: scopeController.hardwareScopeDriver,
+    });
+    scopeController.registerPresentationDriver(presentationResources, {
+      available: false,
+      selected: false,
     });
     presentationResources.configure('rx-audio', {
       available: false,
@@ -154,6 +193,28 @@ class FrontendRuntime {
     return scopeController;
   }
 
+  get defaultScopeStatus(): DefaultScopeStatus {
+    this._defaultScopeSubscribe();
+    this._defaultScopeSnapshot = this._readDefaultScopeStatus();
+    return this._defaultScopeSnapshot;
+  }
+
+  private _readDefaultScopeStatus(): DefaultScopeStatus {
+    const source = this._defaultScopeSource;
+    if (source === null) return {
+      source, available: false, resourceSelected: false, demand: 0,
+      lifecycle: 'inactive', transport: 'disconnected', frameSeen: false,
+    };
+    const resource = source === 'hardware' ? 'hardware-scope' : 'audio-fft';
+    const host = presentationResources.snapshot(resource);
+    const health = scopeController.snapshotHealth(source);
+    return {
+      source, available: host.available, resourceSelected: host.selected,
+      demand: host.demand, lifecycle: host.health,
+      transport: health.transport, frameSeen: health.frameSeen,
+    };
+  }
+
   // ── Bootstrap ──
 
   /**
@@ -201,9 +262,14 @@ class FrontendRuntime {
     const caps = await fetchCapabilities();
     setCapabilities(caps);
     const presentationCaps = derivePresentationCapabilities(caps);
+    this._defaultScopeSource = presentationCaps.scope.defaultSource;
     presentationResources.configure('hardware-scope', {
       available: presentationCaps.scope.hardwareScopeAvailable,
-      selected: presentationCaps.scope.defaultSource === 'hardware',
+      selected: presentationCaps.scope.hardwareScopeAvailable,
+    });
+    presentationResources.configure('audio-fft', {
+      available: presentationCaps.scope.audioFftAvailable,
+      selected: presentationCaps.scope.audioFftAvailable,
     });
     presentationResources.configure('rx-audio', {
       available: caps.audio === true && caps.capabilities.includes('audio'),
@@ -234,7 +300,11 @@ class FrontendRuntime {
       const unsubscribeDx = this._dxControlUnsubscribe;
       this._dxControlUnsubscribe = null;
       try { unsubscribeDx?.(); } finally {
-        try { await presentationResources.teardown(); } finally { stopPolling(); }
+        const stopScopeStatus = this._defaultScopeStop;
+        this._defaultScopeStop = null;
+        try { stopScopeStatus?.(); } finally {
+          try { await presentationResources.teardown(); } finally { stopPolling(); }
+        }
       }
     })();
     this._bootstrapCleanup = cleanup;

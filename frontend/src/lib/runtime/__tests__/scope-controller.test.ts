@@ -5,7 +5,7 @@
  * safe to run in the fast (non-isolated) vitest pool.
  */
 
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { ScopeController } from '../scope-controller.svelte';
@@ -71,6 +71,10 @@ describe('ScopeController', () => {
     ctrl = new ScopeController(() => channel as any);
   });
 
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
   it('keeps frame subscriptions lifetime-neutral', () => {
     expect(channel.connect).not.toHaveBeenCalled();
 
@@ -99,6 +103,163 @@ describe('ScopeController', () => {
     expect(host.release(shared)).toBe(false);
   });
 
+  it('registers audio FFT once per host without overwriting central config', () => {
+    const host = new PresentationResourceHost<unknown>('session');
+    const configure = vi.spyOn(host, 'configure');
+
+    ctrl.registerPresentationDriver(host, { available: false, selected: false });
+    ctrl.registerPresentationDriver(host);
+
+    expect(configure).toHaveBeenCalledTimes(1);
+    expect(host.snapshot('audio-fft')).toMatchObject({ available: false, selected: false });
+    host.acquire('audio-fft', 'panel');
+    expect(channel.connect).not.toHaveBeenCalled();
+  });
+
+  it('publishes immutable audio health for the observed connected interval', async () => {
+    const listener = vi.fn();
+    const unsubscribe = ctrl.subscribeHealth(listener);
+    expect(ctrl.snapshotHealth('audio_fft')).toEqual({
+      demanded: false, transport: 'disconnected', frameSeen: false,
+    });
+    expect(Object.isFrozen(ctrl.snapshotHealth('audio_fft'))).toBe(true);
+
+    const handle = await ctrl.audioFftDriver.start();
+    expect(ctrl.snapshotHealth('audio_fft')).toEqual({
+      demanded: true, transport: 'disconnected', frameSeen: false,
+    });
+    for (const state of ['connecting', 'reconnecting', 'disconnected'] as const) {
+      channel._setState(state);
+      channel._fire(makeScopeFrameBuffer());
+      expect(ctrl.snapshotHealth('audio_fft')).toEqual({
+        demanded: true, transport: state, frameSeen: false,
+      });
+    }
+    channel._setState('connected');
+    channel._fire(makeScopeFrameBuffer());
+    expect(ctrl.snapshotHealth('audio_fft')).toEqual({
+      demanded: true, transport: 'connected', frameSeen: true,
+    });
+    channel._setState('reconnecting');
+    expect(ctrl.snapshotHealth('audio_fft').frameSeen).toBe(false);
+
+    unsubscribe();
+    unsubscribe();
+    const calls = listener.mock.calls.length;
+    await ctrl.audioFftDriver.stop(handle);
+    expect(ctrl.snapshotHealth('audio_fft')).toEqual({
+      demanded: false, transport: 'disconnected', frameSeen: false,
+    });
+    expect(listener).toHaveBeenCalledTimes(calls);
+    expect(channel._handlerCount()).toBe(0);
+    expect(channel._stateHandlerCount()).toBe(0);
+  });
+
+  it('keeps repeated health subscriptions exact and independently removable', async () => {
+    const listener = vi.fn();
+    const first = ctrl.subscribeHealth(listener);
+    const second = ctrl.subscribeHealth(listener);
+    const handle = await ctrl.audioFftDriver.start();
+    expect(listener).toHaveBeenCalledTimes(2);
+    first();
+    first();
+    channel._setState('connecting');
+    expect(listener).toHaveBeenCalledTimes(3);
+    second();
+    channel._setState('connected');
+    expect(listener).toHaveBeenCalledTimes(3);
+    await ctrl.audioFftDriver.stop(handle);
+  });
+
+  it('isolates a throwing health listener from the same synchronous transition', async () => {
+    const failure = new Error('observer failed');
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const healthy = vi.fn();
+    ctrl.subscribeHealth(() => { throw failure; });
+    ctrl.subscribeHealth(healthy);
+
+    const started = ctrl.audioFftDriver.start();
+
+    expect(healthy).toHaveBeenCalledWith('audio_fft', {
+      demanded: true, transport: 'disconnected', frameSeen: false,
+    });
+    expect(warn).toHaveBeenCalledWith('Scope health subscriber failed', failure);
+    await ctrl.audioFftDriver.stop(await started);
+  });
+
+  it('uses a stable listener snapshot when subscriptions mutate during notification', async () => {
+    const calls: string[] = [];
+    let unsubscribeSelf = () => {};
+    unsubscribeSelf = ctrl.subscribeHealth(() => {
+      calls.push('self');
+      unsubscribeSelf();
+      unsubscribeSelf();
+      ctrl.subscribeHealth(() => { calls.push('late'); });
+    });
+    ctrl.subscribeHealth(() => { calls.push('existing'); });
+
+    const handle = await ctrl.audioFftDriver.start();
+    expect(calls).toEqual(['self', 'existing']);
+
+    channel._setState('connecting');
+    expect(calls).toEqual(['self', 'existing', 'existing', 'late']);
+    await ctrl.audioFftDriver.stop(handle);
+  });
+
+  it('preserves audio lifecycle cleanup when a health listener throws', async () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    ctrl.subscribeHealth(() => { throw new Error('observer failed'); });
+
+    const handle = await ctrl.audioFftDriver.start();
+    expect([channel._handlerCount(), channel._stateHandlerCount()]).toEqual([1, 1]);
+    expect(() => channel._setState('connected')).not.toThrow();
+    expect(() => channel._fire(makeScopeFrameBuffer())).not.toThrow();
+    expect(ctrl.snapshotHealth('audio_fft')).toEqual({
+      demanded: true, transport: 'connected', frameSeen: true,
+    });
+    await ctrl.audioFftDriver.stop(handle);
+    expect([channel._handlerCount(), channel._stateHandlerCount()]).toEqual([0, 0]);
+    expect(channel.disconnect).toHaveBeenCalledTimes(1);
+    expect((ctrl as any)._activeHandle).toBeNull();
+
+    const connectFailure = new Error('audio connect failed');
+    channel.connect.mockImplementationOnce(() => { throw connectFailure; });
+    expect(() => ctrl.audioFftDriver.start()).toThrow(connectFailure);
+    expect([channel._handlerCount(), channel._stateHandlerCount()]).toEqual([0, 0]);
+    expect(channel.disconnect).toHaveBeenCalledTimes(2);
+    expect((ctrl as any)._activeHandle).toBeNull();
+    expect(ctrl.snapshotHealth('audio_fft')).toEqual({
+      demanded: false, transport: 'disconnected', frameSeen: false,
+    });
+  });
+
+  it('preserves hardware lifecycle cleanup when a health listener throws', async () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    ctrl.subscribeHealth(() => { throw new Error('observer failed'); });
+
+    const handle = await ctrl.hardwareScopeDriver.start();
+    expect([channel._handlerCount(), channel._stateHandlerCount()]).toEqual([1, 1]);
+    expect(() => channel._setState('connected')).not.toThrow();
+    expect(() => channel._fire(makeScopeFrameBuffer())).not.toThrow();
+    expect(ctrl.snapshotHealth('hardware')).toEqual({
+      demanded: true, transport: 'connected', frameSeen: true,
+    });
+    await ctrl.hardwareScopeDriver.stop(handle);
+    expect([channel._handlerCount(), channel._stateHandlerCount()]).toEqual([0, 0]);
+    expect(channel.disconnect).toHaveBeenCalledTimes(1);
+    expect((ctrl as any)._activeHardwareHandle).toBeNull();
+
+    const connectFailure = new Error('hardware connect failed');
+    channel.connect.mockImplementationOnce(() => { throw connectFailure; });
+    expect(() => ctrl.hardwareScopeDriver.start()).toThrow(connectFailure);
+    expect([channel._handlerCount(), channel._stateHandlerCount()]).toEqual([0, 0]);
+    expect(channel.disconnect).toHaveBeenCalledTimes(2);
+    expect((ctrl as any)._activeHardwareHandle).toBeNull();
+    expect(ctrl.snapshotHealth('hardware')).toEqual({
+      demanded: false, transport: 'disconnected', frameSeen: false,
+    });
+  });
+
   it('both subscribers receive parsed frames', async () => {
     const h1 = vi.fn<(frame: ScopeFrame) => void>();
     const h2 = vi.fn<(frame: ScopeFrame) => void>();
@@ -106,6 +267,7 @@ describe('ScopeController', () => {
     ctrl.subscribe(h1);
     ctrl.subscribe(h2);
     await ctrl.audioFftDriver.start();
+    channel._setState('connected');
 
     channel._fire(makeScopeFrameBuffer());
 
@@ -124,6 +286,7 @@ describe('ScopeController', () => {
     const unsub1 = ctrl.subscribe(h1);
     ctrl.subscribe(h2);
     await ctrl.audioFftDriver.start();
+    channel._setState('connected');
 
     unsub1();
     channel._fire(makeScopeFrameBuffer());
@@ -137,6 +300,7 @@ describe('ScopeController', () => {
     const first = ctrl.subscribe(handler);
     const second = ctrl.subscribe(handler);
     const handle = await ctrl.audioFftDriver.start();
+    channel._setState('connected');
     first();
     channel._fire(makeScopeFrameBuffer());
     expect(handler).toHaveBeenCalledTimes(1);
@@ -150,6 +314,7 @@ describe('ScopeController', () => {
     const handler = vi.fn();
     ctrl.subscribe(handler);
     await ctrl.audioFftDriver.start();
+    channel._setState('connected');
 
     // Bad magic — parseScopeFrame returns null
     const bad = new ArrayBuffer(20);
@@ -198,6 +363,7 @@ describe('ScopeController', () => {
     await vi.waitFor(() => expect(host.snapshot('audio-fft').health).toBe('streaming'));
 
     expect(channel._handlerCount()).toBe(1);
+    channel._setState('connected');
     channel._fire(makeScopeFrameBuffer());
     expect(subscriber).toHaveBeenCalledTimes(1);
     host.release(remount);
@@ -208,6 +374,8 @@ describe('ScopeController', () => {
   it('teardown racing a repeated start prevents later publication', async () => {
     const host = new PresentationResourceHost<unknown>('session');
     const subscriber = vi.fn();
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    ctrl.subscribeHealth(() => { throw new Error('observer failed'); });
     ctrl.subscribe(subscriber);
     ctrl.registerPresentationDriver(host);
     const warm = host.acquire('audio-fft', 'warm');
@@ -269,6 +437,10 @@ describe('ScopeController', () => {
       controller.hardwareScopeConnected,
       controller.hardwareScopeFrameLive,
     ]).toEqual([true, false, false]);
+    channels.scope._fire(makeScopeFrameBuffer());
+    expect(controller.snapshotHealth('hardware')).toEqual({
+      demanded: true, transport: 'disconnected', frameSeen: false,
+    });
 
     channels.scope._setState('connected');
     expect(controller.hardwareScopeConnected).toBe(true);
@@ -354,5 +526,45 @@ describe('ScopeController', () => {
     expect(controller.hardwareScopeConnected).toBe(true);
     expect(controller.hardwareScopeFrameLive).toBe(false);
     await controller.hardwareScopeDriver.stop(current);
+  });
+
+  it('qualifies audio callbacks and cleanup across A to B to A handles', async () => {
+    const audio = makeMockChannel();
+    const controller = new ScopeController(() => audio as any);
+    const subscriber = vi.fn();
+    controller.subscribe(subscriber);
+    const firstA = await controller.audioFftDriver.start();
+    const b = await controller.audioFftDriver.start();
+    const currentA = await controller.audioFftDriver.start();
+    const [staleAFrame, staleBFrame, currentFrame] = audio._binaryHistory;
+    const [staleAState, staleBState, currentState] = audio._stateHistory;
+
+    await controller.audioFftDriver.stop(firstA);
+    await controller.audioFftDriver.dispose?.(b);
+    staleAState('connected');
+    staleBState('connected');
+    staleAFrame(makeScopeFrameBuffer());
+    staleBFrame(makeScopeFrameBuffer());
+    expect(controller.snapshotHealth('audio_fft')).toEqual({
+      demanded: true, transport: 'disconnected', frameSeen: false,
+    });
+    expect(subscriber).not.toHaveBeenCalled();
+
+    currentFrame(makeScopeFrameBuffer());
+    expect(subscriber).not.toHaveBeenCalled();
+    currentState('connected');
+    currentFrame(makeScopeFrameBuffer());
+    expect(controller.snapshotHealth('audio_fft').frameSeen).toBe(true);
+    currentState('reconnecting');
+    staleAState('connected');
+    staleAFrame(makeScopeFrameBuffer());
+    expect(controller.snapshotHealth('audio_fft')).toEqual({
+      demanded: true, transport: 'reconnecting', frameSeen: false,
+    });
+    await controller.audioFftDriver.stop(currentA);
+    expect(controller.snapshotHealth('audio_fft')).toEqual({
+      demanded: false, transport: 'disconnected', frameSeen: false,
+    });
+    expect(audio.disconnect).toHaveBeenCalledTimes(1);
   });
 });
