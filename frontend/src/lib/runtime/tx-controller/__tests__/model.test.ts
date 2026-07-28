@@ -21,7 +21,7 @@ function complete(state: TxState, seq: number): TxState {
 describe('TX reducer', () => {
   it.each([['CAT PTT', { ...eligible, catPtt: false }, ptt(false, 2)], ['browser audio', { ...eligible, browserTxAudio: false }, ptt(false, 2)],
     ['live control', { ...eligible, controlLive: false }, ptt(false, 2)], ['known permit', { ...eligible, permit: 'unknown' }, ptt(false, 2)], ['denied permit', { ...eligible, permit: 'denied' }, ptt(false, 2)],
-    ['known target', { ...eligible, target: null }, ptt(false, 2)], ['fresh OFF', eligible, ptt(false, 1)]] as const)('fails closed without %s', (_name, eligibility, observation) => {
+    ['known target', { ...eligible, target: null }, ptt(false, 2)], ['fresh OFF', eligible, ptt(false, 1)], ['radio already keyed', eligible, ptt(true, 2)]] as const)('fails closed without %s', (_name, eligibility, observation) => {
     const result = start(initialTxState(1, marker(1)), { eligibility, ptt: observation }); expect(result).toMatchObject({ state: { phase: 'failed', fault: 'not-eligible', txRisk: 'none', leaseId: null }, effects: [] });
   });
   it('models the happy path without optimistic RF truth', () => {
@@ -103,7 +103,7 @@ describe('TX reducer', () => {
     const premature = { type: 'command-result', command: 'on', outcome: 'sent', barrier: marker(2), ...correlation(pending.state, null) } as unknown as TxEvent;
     expect(transition(pending.state, premature)).toEqual({ state: pending.state, effects: [] });
     const base = correlation(dispatched.state, 'on'); const sentEvent = { type: 'command-result' as const, command: 'on' as const, outcome: 'sent' as const, barrier: marker(2), ...base };
-    for (const outcome of ['ack', 'response-ok'] as const) expect(transition(dispatched.state, { ...sentEvent, outcome, barrier: null })).toEqual({ state: dispatched.state, effects: [] });
+    for (const outcome of ['ack', 'response-ok'] as const) expect(transition(dispatched.state, { ...sentEvent, outcome, barrier: marker(2) })).toEqual({ state: dispatched.state, effects: [] });
     for (const patch of [{ command: 'off' as const }, { commandId: 'wrong' }, { leaseId: 'wrong' }, { generation: base.generation + 1 }, { originalEpoch: 2 }, { eventEpoch: 2 }, { barrier: marker(2, 2) }]) expect(transition(dispatched.state, { ...sentEvent, ...patch })).toEqual({ state: dispatched.state, effects: [] });
     const sent = transition(dispatched.state, sentEvent); expect(sent.state).toMatchObject({ phase: 'key-confirm-pending', radioTx: 'off', onConfirmed: null }); expect(types(sent)).toEqual(['arm-on-timeout']); expect(sent.effects[0]?.armRevision).toBe(sent.state.timerRevision.on);
     expect(transition(sent.state, sentEvent)).toEqual({ state: sent.state, effects: [] });
@@ -118,8 +118,8 @@ describe('TX reducer', () => {
     const keyed = active(); const released = transition(keyed, { type: 'release', guard: keyed.guard!, commandId: 'off' }); const base = correlation(released.state, 'off');
     const dispatchTimer = timerEvent(released.state, 'off-confirmation', 'off');
     const sentEvent = { type: 'command-result' as const, command: 'off' as const, outcome: 'sent' as const, barrier: marker(4), ...base };
-    for (const outcome of ['ack', 'response-ok'] as const) expect(transition(released.state, { ...sentEvent, outcome, barrier: null })).toEqual({ state: released.state, effects: [] });
-    for (const patch of [{ command: 'on' as const }, { commandId: 'wrong' }, { leaseId: 'wrong' }, { generation: base.generation + 1 }, { originalEpoch: 2 }, { eventEpoch: 2 }, { barrier: marker(4, 2) }]) expect(transition(released.state, { ...sentEvent, ...patch })).toEqual({ state: released.state, effects: [] });
+    for (const outcome of ['ack', 'response-ok'] as const) expect(transition(released.state, { ...sentEvent, outcome, barrier: marker(4) })).toEqual({ state: released.state, effects: [] });
+    for (const patch of [{ command: 'on' as const }, { commandId: 'wrong' }, { offCommandId: 'mismatch' }, { leaseId: 'wrong' }, { generation: base.generation + 1 }, { originalEpoch: 2 }, { eventEpoch: 2 }, { barrier: marker(4, 2) }]) expect(transition(released.state, { ...sentEvent, ...patch })).toEqual({ state: released.state, effects: [] });
     const delivered = transition(released.state, sentEvent); expect(delivered.state.pendingOff).toMatchObject({ deliveryEpoch: 1, deliveryPttBarrier: marker(4) }); expect(delivered.effects[0]?.armRevision).toBe(delivered.state.timerRevision.off); expect(transition(delivered.state, dispatchTimer)).toEqual({ state: delivered.state, effects: [] });
     for (const trigger of [
       { type: 'command-result' as const, command: 'off' as const, outcome: 'response-error' as const, barrier: null, ...base },
@@ -127,13 +127,13 @@ describe('TX reducer', () => {
       timerEvent(delivered.state, 'off-confirmation', 'off'),
     ]) {
       const failed = transition(delivered.state, trigger); expect(failed.state).toMatchObject({ phase: 'failed', fault: 'release-not-confirmed', txRisk: 'confirmed-on', radioTx: 'on', pendingOff: delivered.state.pendingOff, mayOwnKey: true, modRestorePending: true });
-      expect(types(failed)).toEqual(['cancel-timers']); expect(transition(failed.state, trigger)).toEqual({ state: failed.state, effects: [] });
+      expect(types(failed)).toEqual(['cancel-timers']); expect(transition(failed.state, trigger)).toEqual({ state: failed.state, effects: [] }); expect(transition(failed.state, { type: 'release', guard: failed.state.guard!, commandId: 'off-again' })).toEqual({ state: failed.state, effects: [] });
     }
     const failedBeforeSent = transition(released.state, { ...sentEvent, outcome: 'response-error', barrier: null }); const lateSent = transition(failedBeforeSent.state, sentEvent); expect(lateSent.state.pendingOff?.deliveryPttBarrier).toEqual(marker(4));
     const pending = start(); const dispatched = transition(pending.state, { type: 'audio-ready', guard: pending.state.guard!, commandId: 'on-uncertain' }); const uncertain = transition(dispatched.state, { type: 'release', guard: dispatched.state.guard!, commandId: 'off-uncertain' }); const uncertainBase = { ...correlation(uncertain.state, 'off-uncertain'), offCommandId: 'off-uncertain' };
     const uncertainDelivered = transition(uncertain.state, { type: 'command-result', command: 'off', outcome: 'sent', barrier: marker(2), ...uncertainBase });
     for (const trigger of [{ type: 'command-result' as const, command: 'off' as const, outcome: 'response-error' as const, barrier: null, ...uncertainBase }, { ...timerEvent(uncertainDelivered.state, 'off-confirmation', 'off-uncertain'), offCommandId: 'off-uncertain' }]) {
-      const failed = transition(uncertainDelivered.state, trigger); expect(failed.state).toMatchObject({ phase: 'failed', fault: 'release-not-confirmed', txRisk: 'uncertain', radioTx: 'off', pendingOff: uncertainDelivered.state.pendingOff, mayOwnKey: true, modRestorePending: true }); expect(types(failed)).toEqual(['cancel-timers']);
+      const failed = transition(uncertainDelivered.state, trigger); expect(failed.state).toMatchObject({ phase: 'failed', fault: 'release-not-confirmed', txRisk: 'uncertain', radioTx: 'off', pendingOff: uncertainDelivered.state.pendingOff, mayOwnKey: true, modRestorePending: true }); expect(types(failed)).toEqual(['cancel-timers']); expect(transition(failed.state, { type: 'release', guard: failed.state.guard!, commandId: 'off-again' })).toEqual({ state: failed.state, effects: [] });
     }
   });
   it('discharges failed release only from qualifying authoritative OFF', () => {
