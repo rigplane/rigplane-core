@@ -5,14 +5,29 @@ import { flushSync, mount, unmount } from 'svelte';
 
 const channel = vi.hoisted(() => {
   const handlers = new Set<(data: ArrayBuffer) => void>();
+  const stateHandlers = new Set<(state: ConnectionState) => void>();
+  let state: ConnectionState = 'disconnected';
+  const setState = (next: ConnectionState) => {
+    state = next;
+    for (const handler of stateHandlers) handler(next);
+  };
   return {
-    connect: vi.fn(),
-    disconnect: vi.fn(),
+    get state() { return state; },
+    connect: vi.fn(() => {
+      setState('connecting');
+      setState('connected');
+    }),
+    disconnect: vi.fn(() => { setState('disconnected'); }),
     onBinary: vi.fn((handler: (data: ArrayBuffer) => void) => {
       handlers.add(handler);
       return () => { handlers.delete(handler); };
     }),
+    onStateChange: vi.fn((handler: (state: ConnectionState) => void) => {
+      stateHandlers.add(handler);
+      return () => { stateHandlers.delete(handler); };
+    }),
     handlerCount: () => handlers.size,
+    stateHandlerCount: () => stateHandlers.size,
   };
 });
 
@@ -32,6 +47,7 @@ import { PresentationResourceHost } from '$lib/runtime/resource-host';
 import { ScopeController } from '$lib/runtime/scope-controller.svelte';
 import { setCapabilities } from '$lib/stores/capabilities.svelte';
 import { resetRadioState, setRadioState } from '$lib/stores/radio.svelte';
+import type { ConnectionState } from '$lib/transport/ws-client';
 
 const variants = [
   ['AmberCockpit', AmberCockpit],
@@ -67,14 +83,29 @@ function radioState() {
 
 function makeChannel() {
   const handlers = new Set<(data: ArrayBuffer) => void>();
+  const stateHandlers = new Set<(state: ConnectionState) => void>();
+  let state: ConnectionState = 'disconnected';
+  const setState = (next: ConnectionState) => {
+    state = next;
+    for (const handler of stateHandlers) handler(next);
+  };
   return {
-    connect: vi.fn(),
-    disconnect: vi.fn(),
+    get state() { return state; },
+    connect: vi.fn(() => {
+      setState('connecting');
+      setState('connected');
+    }),
+    disconnect: vi.fn(() => { setState('disconnected'); }),
     onBinary: vi.fn((handler: (data: ArrayBuffer) => void) => {
       handlers.add(handler);
       return () => { handlers.delete(handler); };
     }),
+    onStateChange: vi.fn((handler: (state: ConnectionState) => void) => {
+      stateHandlers.add(handler);
+      return () => { stateHandlers.delete(handler); };
+    }),
     handlerCount: () => handlers.size,
+    stateHandlerCount: () => stateHandlers.size,
   };
 }
 
@@ -122,6 +153,7 @@ describe('LCD audio-FFT demand ownership', () => {
       await vi.waitFor(() => expect(channel.disconnect).toHaveBeenCalledTimes(2));
       expect(release).toHaveBeenCalledTimes(2);
       expect(channel.handlerCount()).toBe(0);
+      expect(channel.stateHandlerCount()).toBe(0);
 
       target.remove();
       resetRadioState();
@@ -135,6 +167,11 @@ describe('LCD audio-FFT demand ownership', () => {
 
   it('shares one channel through panel removal, final release, and duplicate cleanup', async () => {
     const localChannel = makeChannel();
+    const binaryHandler = vi.fn();
+    const unsubscribeBinary = localChannel.onBinary(binaryHandler);
+    const stateHandler = vi.fn();
+    const unsubscribeState = localChannel.onStateChange(stateHandler);
+    const unsubscribeDuplicateState = localChannel.onStateChange(stateHandler);
     const controller = new ScopeController(() => localChannel as never);
     const host = new PresentationResourceHost<unknown>('test');
     controller.registerPresentationDriver(host);
@@ -146,6 +183,9 @@ describe('LCD audio-FFT demand ownership', () => {
 
     expect(new Set([panel, scope, cockpit]).size).toBe(3);
     await vi.waitFor(() => expect(localChannel.connect).toHaveBeenCalledTimes(1));
+    expect(localChannel.state).toBe('connected');
+    expect(stateHandler).toHaveBeenNthCalledWith(1, 'connecting');
+    expect(stateHandler).toHaveBeenNthCalledWith(2, 'connected');
     expect(host.release(panel)).toBe(true);
     expect(localChannel.disconnect).not.toHaveBeenCalled();
     unsubscribeScope();
@@ -154,9 +194,18 @@ describe('LCD audio-FFT demand ownership', () => {
     unsubscribeCockpit();
     expect(host.release(cockpit)).toBe(true);
     await vi.waitFor(() => expect(localChannel.disconnect).toHaveBeenCalledTimes(1));
-    expect(localChannel.handlerCount()).toBe(0);
+    expect(localChannel.state).toBe('disconnected');
+    expect(stateHandler).toHaveBeenCalledTimes(3);
+    expect(stateHandler).toHaveBeenLastCalledWith('disconnected');
+    expect(localChannel.handlerCount()).toBe(1);
     expect(host.release(cockpit)).toBe(false);
     expect(localChannel.disconnect).toHaveBeenCalledTimes(1);
+    unsubscribeState();
+    unsubscribeState();
+    unsubscribeDuplicateState();
+    expect(localChannel.stateHandlerCount()).toBe(0);
+    unsubscribeBinary();
+    expect(localChannel.handlerCount()).toBe(0);
   });
 
   it('opens nothing when unavailable and contains no hardware fallback', async () => {
