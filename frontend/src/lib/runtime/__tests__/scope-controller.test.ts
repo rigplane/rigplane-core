@@ -16,20 +16,35 @@ import type { ScopeFrame } from '../scope-controller.svelte';
 
 function makeMockChannel() {
   const binaryHandlers = new Set<(buf: ArrayBuffer) => void>();
+  const stateHandlers = new Set<(state: string) => void>();
+  const binaryHistory: Array<(buf: ArrayBuffer) => void> = [];
+  const stateHistory: Array<(state: string) => void> = [];
+  let state = 'disconnected';
   return {
+    get state() { return state; },
     connect: vi.fn(),
     disconnect: vi.fn(),
     onBinary: vi.fn((handler: (buf: ArrayBuffer) => void) => {
       binaryHandlers.add(handler);
+      binaryHistory.push(handler);
       return () => { binaryHandlers.delete(handler); };
+    }),
+    onStateChange: vi.fn((handler: (next: string) => void) => {
+      stateHandlers.add(handler);
+      stateHistory.push(handler);
+      return () => { stateHandlers.delete(handler); };
     }),
     /** Fire a binary message to all registered handlers. */
     _fire(buf: ArrayBuffer) {
       for (const h of binaryHandlers) h(buf);
     },
-    _handlerCount() {
-      return binaryHandlers.size;
+    _setState(next: string) {
+      state = next;
+      for (const h of stateHandlers) h(next);
     },
+    _binaryHistory: binaryHistory, _stateHistory: stateHistory,
+    _handlerCount() { return binaryHandlers.size; },
+    _stateHandlerCount() { return stateHandlers.size; },
   };
 }
 
@@ -234,5 +249,110 @@ describe('ScopeController', () => {
     expect(lookup).toHaveBeenCalledWith('audio-scope');
     expect(defaultChannel.connect).toHaveBeenCalledWith('/api/v1/audio-scope');
     await defaultController.audioFftDriver.stop(handle);
+  });
+
+  it('owns hardware first/shared/last demand without claiming frame liveness', async () => {
+    const channels = { scope: makeMockChannel(), 'audio-scope': makeMockChannel() };
+    const lookup = vi.fn((name: string) => channels[name as keyof typeof channels] as any);
+    const controller = new ScopeController(lookup);
+    const host = new PresentationResourceHost<unknown>('hardware');
+    host.configure('hardware-scope', { available: true, selected: true, driver: controller.hardwareScopeDriver });
+    expect(lookup).not.toHaveBeenCalled();
+
+    const first = host.acquire('hardware-scope', 'first');
+    const shared = host.acquire('hardware-scope', 'shared');
+    await vi.waitFor(() => expect(channels.scope.connect).toHaveBeenCalledTimes(1));
+    expect(lookup).toHaveBeenCalledWith('scope');
+    expect(channels.scope.connect).toHaveBeenCalledWith('/api/v1/scope');
+    expect([
+      controller.hardwareScopeDemanded,
+      controller.hardwareScopeConnected,
+      controller.hardwareScopeFrameLive,
+    ]).toEqual([true, false, false]);
+
+    channels.scope._setState('connected');
+    expect(controller.hardwareScopeConnected).toBe(true);
+    expect(controller.hardwareScopeFrameLive).toBe(false);
+    channels.scope._fire(makeScopeFrameBuffer());
+    expect(controller.scopeFrame?.startFreq).toBe(14_100_000);
+    expect(controller.hardwareScopeFrameLive).toBe(true);
+
+    expect(host.release(first)).toBe(true);
+    expect(channels.scope.disconnect).not.toHaveBeenCalled();
+    expect(host.release(shared)).toBe(true);
+    await vi.waitFor(() => expect(channels.scope.disconnect).toHaveBeenCalledTimes(1));
+    expect(host.release(shared)).toBe(false);
+    expect([
+      controller.hardwareScopeDemanded,
+      controller.hardwareScopeConnected,
+      controller.hardwareScopeFrameLive,
+      controller.scopeFrame,
+    ]).toEqual([false, false, false, null]);
+    expect(channels.scope._handlerCount()).toBe(0);
+    expect(channels.scope._stateHandlerCount()).toBe(0);
+    expect(channels['audio-scope'].connect).not.toHaveBeenCalled();
+
+    const pending = host.acquire('hardware-scope', 'pending');
+    expect(host.release(pending)).toBe(true);
+    await vi.waitFor(() => expect(channels.scope.disconnect).toHaveBeenCalledTimes(2));
+    expect(channels.scope._handlerCount()).toBe(0);
+    expect(controller.hardwareScopeDemanded).toBe(false);
+  });
+
+  it('qualifies hardware callbacks and cleanup across A to B to A handles', async () => {
+    const hardware = makeMockChannel();
+    const controller = new ScopeController(() => hardware as any);
+    const subscriber = vi.fn();
+    controller.subscribeHardware(subscriber);
+    const firstA = await controller.hardwareScopeDriver.start();
+    const b = await controller.hardwareScopeDriver.start();
+    const currentA = await controller.hardwareScopeDriver.start();
+    const [staleAFrame, staleBFrame, currentFrame] = hardware._binaryHistory;
+    const [staleAState, staleBState, currentState] = hardware._stateHistory;
+
+    await controller.hardwareScopeDriver.stop(firstA);
+    await controller.hardwareScopeDriver.dispose?.(b);
+    staleAState('connected');
+    staleBState('connected');
+    staleAFrame(makeScopeFrameBuffer());
+    staleBFrame(makeScopeFrameBuffer());
+    expect(controller.hardwareScopeConnected).toBe(false);
+    expect(controller.scopeFrame).toBeNull();
+    expect(subscriber).not.toHaveBeenCalled();
+    expect(hardware.disconnect).not.toHaveBeenCalled();
+
+    currentState('connected');
+    currentFrame(makeScopeFrameBuffer());
+    expect(controller.hardwareScopeConnected).toBe(true);
+    expect(controller.hardwareScopeFrameLive).toBe(true);
+    expect(subscriber).toHaveBeenCalledTimes(1);
+    await controller.hardwareScopeDriver.stop(currentA);
+    expect(hardware.disconnect).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not let stale reconnect callbacks revive current hardware state', async () => {
+    const hardware = makeMockChannel();
+    const controller = new ScopeController(() => hardware as any);
+    const stale = await controller.hardwareScopeDriver.start();
+    const staleState = hardware._stateHistory[0];
+    await controller.hardwareScopeDriver.stop(stale);
+    const current = await controller.hardwareScopeDriver.start();
+    const currentState = hardware._stateHistory[1];
+
+    staleState('connected');
+    expect(controller.hardwareScopeConnected).toBe(false);
+    currentState('connected');
+    hardware._fire(makeScopeFrameBuffer());
+    expect(controller.hardwareScopeFrameLive).toBe(true);
+    currentState('reconnecting');
+    expect([
+      controller.hardwareScopeConnected,
+      controller.hardwareScopeFrameLive,
+      controller.scopeFrame,
+    ]).toEqual([false, false, null]);
+    currentState('connected');
+    expect(controller.hardwareScopeConnected).toBe(true);
+    expect(controller.hardwareScopeFrameLive).toBe(false);
+    await controller.hardwareScopeDriver.stop(current);
   });
 });
