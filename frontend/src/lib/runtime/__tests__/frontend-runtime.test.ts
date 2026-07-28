@@ -443,7 +443,6 @@ describe('FrontendRuntime canonical default scope status', () => {
     });
     const rt = await freshRuntime();
     await rt.bootstrap();
-
     expect(presentationResources.snapshot('hardware-scope')).toMatchObject({
       available: true, selected: true, demand: 0,
     });
@@ -455,7 +454,7 @@ describe('FrontendRuntime canonical default scope status', () => {
       lifecycle: 'inactive', transport: 'disconnected', frameSeen: false,
     });
     presentationResources.configure('hardware-scope', { available: false, selected: true });
-    expect(rt.defaultScopeStatus).toMatchObject({ source: 'hardware', available: false });
+    expect(rt.defaultScopeStatus).toMatchObject({ source: 'hardware', available: false, resourceSelected: true });
     presentationResources.configure('hardware-scope', { available: true, selected: true });
 
     const hardwareLease = rt.acquireHardwareScope('viewer');
@@ -496,7 +495,7 @@ describe('FrontendRuntime canonical default scope status', () => {
   it('publishes the audio default and inert facts without fallback', async () => {
     (getChannel as ReturnType<typeof vi.fn>).mockReturnValue(makeScopeChannel());
     (fetchCapabilities as ReturnType<typeof vi.fn>).mockResolvedValue({
-      ...fakeCaps, scope: false, capabilities: ['audio'], scopeSource: 'audio_fft',
+      ...fakeCaps, scope: true, capabilities: ['audio', 'scope'], scopeSource: 'audio_fft',
     });
     const rt = await freshRuntime();
     await rt.bootstrap();
@@ -504,6 +503,7 @@ describe('FrontendRuntime canonical default scope status', () => {
       source: 'audio_fft', available: true, resourceSelected: true, demand: 0,
       lifecycle: 'inactive', transport: 'disconnected', frameSeen: false,
     });
+    expect(presentationResources.snapshot('hardware-scope')).toMatchObject({ available: true, selected: true, demand: 0 });
     expect(getChannel).not.toHaveBeenCalled();
     (getChannel as ReturnType<typeof vi.fn>).mockImplementationOnce(() => {
       throw new Error('offline');
