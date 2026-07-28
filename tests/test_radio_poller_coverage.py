@@ -1581,6 +1581,57 @@ async def test_enable_scope_executes_after_initial_fetch_done() -> None:
 
 
 @pytest.mark.asyncio
+async def test_stale_deferred_enable_cannot_requeue_after_newer_disable() -> None:
+    radio = _make_radio()
+    queue = CommandQueue()
+    poller = RadioPoller(radio, StateCache(), queue, radio_state=RadioState())
+    poller._initial_fetch_done.clear()  # noqa: SLF001
+
+    queue.put(EnableScope(policy="fast", generation=1))
+    (old_enable,) = queue.drain()
+    await poller._execute(old_enable)  # noqa: SLF001
+    assert queue.has_commands is True
+
+    queue.put(DisableScope(generation=2))
+    for command in queue.drain():
+        await poller._execute(command)  # noqa: SLF001
+
+    radio.enable_scope.assert_not_awaited()
+    radio.disable_scope.assert_awaited_once()
+    assert queue.has_commands is False
+
+
+@pytest.mark.asyncio
+async def test_stale_disable_is_inert_after_newer_enable_demand() -> None:
+    radio = _make_radio()
+    queue = CommandQueue()
+    poller = RadioPoller(radio, StateCache(), queue, radio_state=RadioState())
+
+    queue.put(DisableScope(generation=3))
+    (old_disable,) = queue.drain()
+    queue.put(EnableScope(policy="fast", generation=4))
+
+    await poller._execute(old_disable)  # noqa: SLF001
+    for command in queue.drain():
+        await poller._execute(command)  # noqa: SLF001
+
+    radio.disable_scope.assert_not_awaited()
+    radio.enable_scope.assert_awaited_once_with(policy="fast")
+
+
+@pytest.mark.asyncio
+async def test_current_scope_generation_preserves_recovery_enable() -> None:
+    radio = _make_radio()
+    queue = CommandQueue()
+    poller = RadioPoller(radio, StateCache(), queue, radio_state=RadioState())
+
+    await poller._execute(EnableScope(generation=5))  # noqa: SLF001
+    await poller._execute(EnableScope(generation=5))  # noqa: SLF001
+
+    assert radio.enable_scope.await_count == 2
+
+
+@pytest.mark.asyncio
 async def test_set_freq_not_blocked_by_deferred_enable_scope() -> None:
     """SetFreq must execute during initial fetch even when EnableScope is deferred.
 
