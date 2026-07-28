@@ -1,8 +1,8 @@
 /**
  * ScopeController — singleton owner of the audio-scope WebSocket channel.
  *
- * Opens `/api/v1/audio-scope` lazily when the first subscriber attaches and
- * closes it when the last subscriber detaches. Parses binary frames with
+ * Opens `/api/v1/audio-scope` lazily on first presentation demand and closes
+ * it on last release. Parses binary frames with
  * `parseScopeFrame()` from `scope-adapter.ts` and stores the latest frame as
  * a reactive `$state` property that Svelte components can read via `$derived`.
  *
@@ -23,6 +23,8 @@ export type { ScopeFrame };
 
 type FrameHandler = (frame: ScopeFrame) => void;
 type ChannelFactory = (name: string) => WsChannel;
+type AudioFftHandle = Readonly<{ token: symbol }>;
+type ChannelBinding = { channel: WsChannel; unsubscribe: () => void };
 
 export class ScopeController {
   /** Latest parsed audio-scope frame (Svelte 5 reactive). */
@@ -36,13 +38,13 @@ export class ScopeController {
 
   private _subscribers = new Map<number, FrameHandler>();
   private _nextId = 0;
-  private _bindings = new Map<WsChannel, () => void>();
-  private _activeChannel: WsChannel | null = null;
+  private _bindings = new Map<AudioFftHandle, ChannelBinding>();
+  private _activeHandle: AudioFftHandle | null = null;
   private _getChannel: ChannelFactory;
   readonly audioFftDriver: PresentationResourceDriver<unknown> = {
     start: () => this._connect(),
-    stop: (handle) => this._disconnect(handle as WsChannel),
-    dispose: (handle) => this._disconnect(handle as WsChannel),
+    stop: (handle) => this._disconnect(handle as AudioFftHandle),
+    dispose: (handle) => this._disconnect(handle as AudioFftHandle),
   };
 
   constructor(channelFactory: ChannelFactory = getChannel) {
@@ -69,12 +71,13 @@ export class ScopeController {
     });
   }
 
-  private _connect(): WsChannel {
+  private _connect(): AudioFftHandle {
     const ch = this._getChannel('audio-scope');
+    const handle = Object.freeze({ token: Symbol('audio-fft') });
     try {
       ch.connect('/api/v1/audio-scope');
       const unsubscribe = ch.onBinary((buf: ArrayBuffer) => {
-        if (this._activeChannel !== ch) return;
+        if (this._activeHandle !== handle) return;
         markScopeFrame();
         const frame = parseScopeFrame(buf);
         if (frame) {
@@ -84,27 +87,32 @@ export class ScopeController {
           }
         }
       });
-      this._bindings.set(ch, unsubscribe);
-      this._activeChannel = ch;
-      return ch;
+      this._bindings.set(handle, { channel: ch, unsubscribe });
+      this._activeHandle = handle;
+      return handle;
     } catch (error) {
-      ch.disconnect();
+      if (![...this._bindings.values()].some((binding) => binding.channel === ch)) {
+        ch.disconnect();
+      }
       throw error;
     }
   }
 
-  private _disconnect(ch: WsChannel): void {
-    const unsubscribe = this._bindings.get(ch);
-    if (!unsubscribe) return;
-    this._bindings.delete(ch);
+  private _disconnect(handle: AudioFftHandle): void {
+    const binding = this._bindings.get(handle);
+    if (!binding) return;
+    this._bindings.delete(handle);
+    const shared = [...this._bindings.values()].some(
+      (candidate) => candidate.channel === binding.channel,
+    );
     try {
-      unsubscribe();
+      binding.unsubscribe();
     } finally {
       try {
-        ch.disconnect();
+        if (!shared) binding.channel.disconnect();
       } finally {
-        if (this._activeChannel === ch) {
-          this._activeChannel = null;
+        if (this._activeHandle === handle) {
+          this._activeHandle = null;
           this.audioScopeFrame = null;
         }
       }
