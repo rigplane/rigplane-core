@@ -273,7 +273,13 @@ export class ScopeController {
     ) return;
     this._health[source] = next;
     const snapshot = this.snapshotHealth(source);
-    for (const listener of this._healthSubscribers.values()) listener(source, snapshot);
+    for (const listener of [...this._healthSubscribers.values()]) {
+      try {
+        listener(source, snapshot);
+      } catch (error) {
+        console.warn('Scope health subscriber failed', error);
+      }
+    }
   }
 
   private _readHealth(source: ScopeSource): ScopeHealth {
