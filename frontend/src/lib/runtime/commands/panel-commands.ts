@@ -20,8 +20,7 @@ import {
   patchRadioState,
 } from '$lib/stores/radio.svelte';
 import { getCapabilities, getControlRange } from '$lib/stores/capabilities.svelte';
-import { audioManager } from '$lib/audio/audio-manager';
-import { setMuted, setVolume } from '$lib/stores/audio.svelte';
+import { runtime } from '../frontend-runtime';
 import { consumePendingFocus } from '$lib/radio/pending-focus';
 import { getModeFilter } from '$lib/radio/mode-filter-memory';
 import { modInputCommand, modInputStateKey } from '$lib/radio/mod-input';
@@ -620,26 +619,26 @@ export function makeRxAudioHandlers() {
   return {
     onMonitorModeChange: (mode: string) => {
       if (mode === 'live') {
-        setMuted(false);
+        runtime.setMuted(false);
         if (savedAfLevel !== null) {
           cmd('set_af_level', { level: savedAfLevel, receiver: activeReceiverParam() });
           savedAfLevel = null;
         }
-        audioManager.startRx();
+        runtime.setRxLive(true);
         return;
       }
 
-      audioManager.stopRx();
+      runtime.setRxLive(false);
 
       if (mode === 'mute') {
-        setMuted(true);
+        runtime.setMuted(true);
         const rx = getRadioState();
         const key = rx?.active === 'SUB' ? 'sub' : 'main';
         const currentAf = rx?.[key]?.afLevel ?? 0.5;
         if (savedAfLevel === null) savedAfLevel = currentAf;
         cmd('set_af_level', { level: 0, receiver: activeReceiverParam() });
       } else {
-        setMuted(false);
+        runtime.setMuted(false);
         if (savedAfLevel !== null) {
           cmd('set_af_level', { level: savedAfLevel, receiver: activeReceiverParam() });
           patchActiveReceiver({ afLevel: savedAfLevel }, true);
@@ -648,9 +647,9 @@ export function makeRxAudioHandlers() {
       }
     },
     onAfLevelChange: (level: number) => {
-      if (audioManager.rxEnabled) {
-        audioManager.setRxVolume(level);
-        setVolume(Math.round(level * 100));
+      if (runtime.rxEnabled) {
+        runtime.setRxVolume(level);
+        runtime.setVolume(Math.round(level * 100));
       } else {
         const receiver = activeReceiverParam();
         patchActiveReceiver({ afLevel: level }, true);

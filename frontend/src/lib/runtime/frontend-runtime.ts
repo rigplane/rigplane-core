@@ -33,6 +33,7 @@ import { systemController } from './system-controller';
 import { scopeController } from './scope-controller.svelte';
 import type { ScopeController } from './scope-controller.svelte';
 import { PresentationResourceHost } from './resource-host';
+import type { ResourceLease } from './resource-demand';
 import type { ServerState, ReceiverState } from '$lib/types/state';
 import type { Capabilities } from '$lib/types/capabilities';
 export const presentationResources = new PresentationResourceHost<unknown>('app');
@@ -55,6 +56,24 @@ export interface ConnectionSnapshot {
 class FrontendRuntime {
   private _bootstrapCleanup: (() => void) | null = null;
   private _bootstrapInFlight: Promise<() => void> | null = null;
+  private _rxAudioLease: ResourceLease | null = null;
+  private _rxAudioEnded = false;
+
+  constructor() {
+    presentationResources.configure('rx-audio', {
+      available: false,
+      selected: true,
+      driver: {
+        start: () => {
+          audioManager.startRx();
+          return audioManager;
+        },
+        stop: () => {
+          audioManager.stopRx();
+        },
+      },
+    });
+  }
 
   // ── Reactive state reads ──
   // These return live $state references — Svelte 5 tracks them automatically.
@@ -169,6 +188,10 @@ class FrontendRuntime {
     // 1. Fetch capabilities and push into the store.
     const caps = await fetchCapabilities();
     setCapabilities(caps);
+    presentationResources.configure('rx-audio', {
+      available: caps.audio === true && caps.capabilities.includes('audio'),
+      selected: true,
+    });
 
     // 2. Register polling lifecycle with SystemController so connect/disconnect works.
     systemController.registerPolling(() =>
@@ -188,6 +211,7 @@ class FrontendRuntime {
     // Only latch as started after the entire chain succeeds.
     let cleanupInFlight: Promise<void> | undefined;
     const cleanup = () => cleanupInFlight ??= (async () => {
+      this._rxAudioEnded = true;
       await presentationResources.teardown();
       stopPolling();
     })();
@@ -216,12 +240,21 @@ class FrontendRuntime {
 
   // ── Audio control ──
 
-  startRx(): void {
-    audioManager.startRx();
+  setRxLive(live: boolean): void {
+    if (live) {
+      if (!this._rxAudioEnded && this._rxAudioLease === null) {
+        this._rxAudioLease = presentationResources.acquire('rx-audio', 'presentation');
+      }
+      return;
+    }
+
+    const lease = this._rxAudioLease;
+    this._rxAudioLease = null;
+    if (lease) presentationResources.release(lease);
   }
 
-  stopRx(): void {
-    audioManager.stopRx();
+  get rxEnabled(): boolean {
+    return audioManager.rxEnabled;
   }
 
   setRxVolume(v: number): void {
