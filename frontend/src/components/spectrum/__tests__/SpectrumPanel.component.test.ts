@@ -109,6 +109,7 @@ type TestScopeFrame = Readonly<{
 const runtimeHarness = vi.hoisted(() => {
   const state = {
     capturedHardwareFrame: null as ((frame: TestScopeFrame) => void) | null,
+    capturedDxMessage: null as ((message: unknown) => void) | null,
     mockScopeConnected: true,
     mockTuneBy: 0,
     nextLeaseId: 0,
@@ -129,7 +130,10 @@ const runtimeHarness = vi.hoisted(() => {
       id: ++state.nextLeaseId,
     })),
     releaseHardwareScope: vi.fn((_lease: TestLease) => true),
-    subscribeDx: vi.fn((_handler: (message: unknown) => void) => state.dxUnsubscribe),
+    subscribeDx: vi.fn((handler: (message: unknown) => void) => {
+      state.capturedDxMessage = handler;
+      return state.dxUnsubscribe;
+    }),
     send: vi.fn(),
   };
   return { state, runtime };
@@ -185,6 +189,11 @@ vi.mock('../../../../components-v2/wiring/state-adapter', () => ({
 // ---------------------------------------------------------------------------
 
 import SpectrumPanel from '../SpectrumPanel.svelte';
+import spectrumPanelSource from '../SpectrumPanel.svelte?raw';
+import {
+  deriveScopeIndicatorState,
+} from '../../../components-v2/layout/StatusBar.svelte';
+import statusBarSource from '../../../components-v2/layout/StatusBar.svelte?raw';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -204,6 +213,7 @@ function mountPanel() {
 beforeEach(() => {
   components = [];
   runtimeHarness.state.capturedHardwareFrame = null;
+  runtimeHarness.state.capturedDxMessage = null;
   runtimeHarness.state.mockScopeConnected = true;
   runtimeHarness.state.mockTuneBy = 0;
   runtimeHarness.state.nextLeaseId = 0;
@@ -271,10 +281,12 @@ describe('SpectrumPanel component', () => {
 
     expect(toggle).not.toBeNull();
     expect(toggle.getAttribute('aria-pressed')).toBe('true');
+    expect(toggle.textContent).toContain('VIEW ON');
 
     toggle.click();
     flushSync();
     expect(toggle.getAttribute('aria-pressed')).toBe('false');
+    expect(toggle.textContent).toContain('VIEW OFF');
     expect(mockRuntime.releaseHardwareScope).toHaveBeenCalledTimes(1);
     expect(mockRuntime.releaseHardwareScope).toHaveBeenLastCalledWith(firstLease);
 
@@ -364,7 +376,7 @@ describe('SpectrumPanel component', () => {
     });
   });
 
-  it('renders freq-axis after receiving a runtime hardware scope frame', () => {
+  it('renders runtime hardware frames and DX spots', () => {
     const target = mountPanel();
     runtimeHarness.state.capturedHardwareFrame?.({
       receiver: 0,
@@ -375,5 +387,80 @@ describe('SpectrumPanel component', () => {
     });
     flushSync();
     expect(target.querySelector('.freq-axis')).not.toBeNull();
+
+    runtimeHarness.state.capturedDxMessage?.({
+      type: 'dx_spot',
+      spot: {
+        spotter: 'N0CALL',
+        freq: 14_175_000,
+        call: 'K1ABC',
+        comment: 'test',
+        time_utc: '1200',
+        timestamp: 1,
+      },
+    });
+    flushSync();
+    expect(target.querySelector('.dx-badge')?.textContent).toContain('K1ABC');
+  });
+
+  it('keeps all scope transport and health authority behind the runtime facade', () => {
+    for (const legacyAuthority of [
+      'getChannel',
+      'onMessage',
+      'sendCommand',
+      'setScopeConnected',
+      'markScopeFrame',
+    ]) {
+      expect(spectrumPanelSource).not.toContain(legacyAuthority);
+    }
+    expect(spectrumPanelSource).toContain('runtime.acquireHardwareScope');
+    expect(spectrumPanelSource).toContain('runtime.scope.subscribeHardware');
+    expect(spectrumPanelSource).toContain('runtime.subscribeDx');
+    expect(spectrumPanelSource).toContain('runtime.send');
+  });
+});
+
+type ScopeStatusProbe = Parameters<typeof deriveScopeIndicatorState>[0];
+
+function scopeStatus(
+  overrides: Partial<ScopeStatusProbe> = {},
+): ScopeStatusProbe {
+  return {
+    source: 'hardware',
+    available: true,
+    resourceSelected: true,
+    demand: 1,
+    lifecycle: 'streaming',
+    transport: 'connected',
+    frameSeen: true,
+    ...overrides,
+  };
+}
+
+describe('StatusBar default scope status consumption', () => {
+  it('uses only the canonical runtime default and removes the legacy reader', () => {
+    expect(statusBarSource).toContain('runtime.defaultScopeStatus');
+    expect(statusBarSource).not.toContain('isScopeConnected');
+    expect(statusBarSource).not.toContain('hardwareScopeConnected');
+    expect(statusBarSource).not.toContain('audioScopeFrame');
+  });
+
+  it.each([
+    ['power-off override', scopeStatus(), true, 'disconnected'],
+    ['no default source', scopeStatus({ source: null }), false, 'inactive'],
+    ['unavailable default', scopeStatus({ available: false }), false, 'inactive'],
+    ['unselected resource', scopeStatus({ resourceSelected: false }), false, 'inactive'],
+    ['zero demand', scopeStatus({ demand: 0 }), false, 'inactive'],
+    ['starting host', scopeStatus({ lifecycle: 'starting', transport: 'disconnected', frameSeen: false }), false, 'starting'],
+    ['connecting transport', scopeStatus({ transport: 'connecting', frameSeen: false }), false, 'connecting'],
+    ['reconnecting transport', scopeStatus({ transport: 'reconnecting', frameSeen: false }), false, 'reconnecting'],
+    ['waiting for current frame', scopeStatus({ frameSeen: false }), false, 'waiting'],
+    ['failed host under demand', scopeStatus({ lifecycle: 'failed' }), false, 'failed'],
+    ['disconnected transport under demand', scopeStatus({ transport: 'disconnected', frameSeen: false }), false, 'disconnected'],
+    ['healthy hardware default', scopeStatus(), false, 'connected'],
+    ['healthy audio default uses identical facts', scopeStatus({ source: 'audio_fft' }), false, 'connected'],
+    ['streaming host alone is not green', scopeStatus({ transport: 'connecting', frameSeen: false }), false, 'connecting'],
+  ] as const)('%s maps to %s', (_label, status, poweredOff, expected) => {
+    expect(deriveScopeIndicatorState(status, poweredOff)).toBe(expected);
   });
 });
