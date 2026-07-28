@@ -2659,12 +2659,16 @@ class TestScopeReconnect:
 
 
 class TestScopeDemandGeneration:
-    async def test_last_disconnect_cancels_pending_readiness_enable(self) -> None:
+    @staticmethod
+    def _make_server(*, ready: bool = True) -> tuple[WebServer, MagicMock]:
         radio = MagicMock()
         radio.capabilities = {"scope"}
         _add_scope_capable_attrs(radio)
-        radio.radio_ready = False
-        server = WebServer(radio)
+        radio.radio_ready = ready
+        return WebServer(radio), radio
+
+    async def test_last_disconnect_cancels_pending_readiness_enable(self) -> None:
+        server, _ = self._make_server(ready=False)
 
         handler = MagicMock()
         await server.ensure_scope_enabled(handler)
@@ -2680,11 +2684,7 @@ class TestScopeDemandGeneration:
         assert not server._command_queue.has_commands
 
     async def test_scope_health_without_viewer_queues_nothing(self) -> None:
-        radio = MagicMock()
-        radio.capabilities = {"scope"}
-        _add_scope_capable_attrs(radio)
-        radio.radio_ready = True
-        server = WebServer(radio)
+        server, _ = self._make_server()
         server._scope_health_interval = 0
         server._scope_last_nonzero = -1
 
@@ -2697,11 +2697,7 @@ class TestScopeDemandGeneration:
         assert not server._command_queue.has_commands
 
     async def test_scope_health_recovery_uses_current_generation(self) -> None:
-        radio = MagicMock()
-        radio.capabilities = {"scope"}
-        _add_scope_capable_attrs(radio)
-        radio.radio_ready = True
-        server = WebServer(radio)
+        server, _ = self._make_server()
         handler = MagicMock()
         await server.ensure_scope_enabled(handler)
 
@@ -2726,12 +2722,8 @@ class TestScopeDemandGeneration:
         assert recovery.generation == initial_enable.generation > 0
 
     async def test_reconnect_enable_uses_current_generation(self) -> None:
-        radio = MagicMock()
-        radio.capabilities = {"scope"}
-        _add_scope_capable_attrs(radio)
-        radio.radio_ready = True
+        server, radio = self._make_server()
         radio._fetch_initial_state = AsyncMock()
-        server = WebServer(radio)
         handler = MagicMock()
         await server.ensure_scope_enabled(handler)
 
@@ -2745,11 +2737,11 @@ class TestScopeDemandGeneration:
         assert isinstance(reconnect_enable, EnableScope)
         assert reconnect_enable.generation == initial_enable.generation
 
-    async def test_reconnect_inside_grace_invalidates_old_reenable(self) -> None:
-        radio = MagicMock()
-        radio.capabilities = {"scope"}
-        _add_scope_capable_attrs(radio)
-        radio.radio_ready = True
+    @pytest.mark.parametrize("viewer_returns", [False, True])
+    async def test_reconnect_refetch_uses_current_viewer_demand(
+        self, viewer_returns: bool
+    ) -> None:
+        server, radio = self._make_server()
         fetch_started = asyncio.Event()
         release_fetch = asyncio.Event()
 
@@ -2758,7 +2750,6 @@ class TestScopeDemandGeneration:
             await release_fetch.wait()
 
         radio._fetch_initial_state = delayed_fetch
-        server = WebServer(radio)
         server._scope_disable_grace = 0.01
         first = MagicMock()
         await server.ensure_scope_enabled(first)
@@ -2767,20 +2758,28 @@ class TestScopeDemandGeneration:
         server._on_radio_reconnect()
         await fetch_started.wait()
         server.unregister_scope_handler(first)
-        await server.ensure_scope_enabled(MagicMock())
+        if viewer_returns:
+            await server.ensure_scope_enabled(MagicMock())
         release_fetch.set()
         await asyncio.sleep(0.02)
 
-        assert not server._command_queue.has_commands
-        assert server._scope_enabled
-        assert server._scope_demand_generation > initial_enable.generation
+        from rigplane.web.radio_poller import EnableScope
+
+        enables = [
+            command
+            for command in server._command_queue.drain()
+            if isinstance(command, EnableScope)
+        ]
+        if viewer_returns:
+            assert len(enables) == 1
+            assert enables[0].generation == server._scope_demand_generation
+            assert enables[0].generation > initial_enable.generation
+        else:
+            assert not server._scope_handlers
+            assert not enables
 
     async def test_superseded_disable_never_emits_lower_generation(self) -> None:
-        radio = MagicMock()
-        radio.capabilities = {"scope"}
-        _add_scope_capable_attrs(radio)
-        radio.radio_ready = True
-        server = WebServer(radio)
+        server, _ = self._make_server()
         server._scope_disable_grace = 0.01
         first, second = MagicMock(), MagicMock()
         await server.ensure_scope_enabled(first)

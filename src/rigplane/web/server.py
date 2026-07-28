@@ -1783,7 +1783,6 @@ class WebServer:
 
     def _on_radio_reconnect(self) -> None:
         """Called after soft_reconnect — refetch state and re-enable scope."""
-        generation = self._scope_demand_generation
         # Clear poller readiness so scope waits for refetch to complete
         if self._radio_poller is not None:
             self._radio_poller._initial_fetch_done.clear()
@@ -1812,13 +1811,14 @@ class WebServer:
             # own, which is strictly better than a silent 30-second wait
             # every reconnect cycle.
             if (
-                generation == self._scope_demand_generation
-                and self._scope_handlers
+                self._scope_handlers
                 and self._radio is not None
                 and self._hardware_scope_available
             ):
                 self._set_scope_data_callback(self._broadcast_scope)
-                self._command_queue.put(EnableScope(generation=generation))
+                self._command_queue.put(
+                    EnableScope(generation=self._scope_demand_generation)
+                )
                 self._scope_enabled = True
                 logger.info(
                     "scope: re-enable queued after reconnect (%d handlers)",
