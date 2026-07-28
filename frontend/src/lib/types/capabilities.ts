@@ -95,6 +95,9 @@ export interface Capabilities {
   scope: boolean;
   audio: boolean;
   tx: boolean;
+  audioTx?: boolean;
+  audioTxRoute?: 'lan' | 'usb' | 'acc' | null;
+  audioTxRequiredModInputSource?: number | null;
   capabilities: string[];
   receivers: number;
   vfoScheme: VfoScheme;
@@ -181,6 +184,62 @@ export function validateCapabilities(value: unknown): Capabilities {
   requireBoolean(raw.tx, '$.tx');
   requireStringArray(raw.capabilities, '$.capabilities');
   requireInteger(raw.receivers, '$.receivers', true);
+
+  const txAudioFields = [
+    'audioTx',
+    'audioTxRoute',
+    'audioTxRequiredModInputSource',
+  ] as const;
+  const presentTxAudioFields = txAudioFields.filter((field) =>
+    Object.prototype.hasOwnProperty.call(raw, field),
+  );
+  if (presentTxAudioFields.length !== 0 && presentTxAudioFields.length !== txAudioFields.length) {
+    invalid('$', 'a complete or absent TX-audio capability group');
+  }
+  if (presentTxAudioFields.length === txAudioFields.length) {
+    requireBoolean(raw.audioTx, '$.audioTx');
+    const routes = ['lan', 'usb', 'acc'] as const;
+    if (raw.audioTxRoute !== null && !routes.includes(raw.audioTxRoute as typeof routes[number])) {
+      invalid('$.audioTxRoute', 'lan | usb | acc | null');
+    }
+    if (
+      raw.audioTxRequiredModInputSource !== null
+      && (
+        typeof raw.audioTxRequiredModInputSource !== 'number'
+        || !Number.isSafeInteger(raw.audioTxRequiredModInputSource)
+        || raw.audioTxRequiredModInputSource < 0
+      )
+    ) {
+      invalid('$.audioTxRequiredModInputSource', 'a safe non-negative integer or null');
+    }
+
+    const tags = raw.capabilities as string[];
+    if (
+      raw.audioTx === false
+      && (raw.audioTxRoute !== null || raw.audioTxRequiredModInputSource !== null)
+    ) {
+      invalid('$.audioTx', 'non-contradictory TX-audio capability facts');
+    }
+    if (
+      raw.audioTx === true
+      && (
+        raw.audioTxRoute === null
+        || raw.audio !== true
+        || raw.tx !== true
+        || !tags.includes('audio')
+        || !tags.includes('tx')
+        || (
+          raw.audioTxRequiredModInputSource !== null
+          && (
+            raw.audioTxRoute !== 'lan'
+            || !tags.includes('mod_input_routing')
+          )
+        )
+      )
+    ) {
+      invalid('$.audioTx', 'non-contradictory TX-audio capability facts');
+    }
+  }
 
   const schemes: readonly VfoScheme[] = ['single', 'ab', 'ab_shared', 'main_sub'];
   if (!schemes.includes(raw.vfoScheme as VfoScheme)) {

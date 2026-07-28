@@ -146,6 +146,91 @@ describe('fetchCapabilities', () => {
   });
 
   it.each([
+    [false, null, null, ['scope', 'audio', 'tx']],
+    [true, 'usb', null, ['scope', 'audio', 'tx']],
+    [true, 'lan', 5, ['scope', 'audio', 'tx', 'mod_input_routing']],
+    [true, 'lan', Number.MAX_SAFE_INTEGER, ['audio', 'tx', 'mod_input_routing']],
+    [true, 'lan', null, ['audio', 'tx', 'mod_input_routing']],
+  ])('accepts and preserves a complete TX-audio tuple', async (
+    audioTx,
+    audioTxRoute,
+    audioTxRequiredModInputSource,
+    capabilities,
+  ) => {
+    const caps = makeCapabilities({
+      audioTx,
+      audioTxRoute,
+      audioTxRequiredModInputSource,
+      capabilities,
+      futureTxFact: { additive: true },
+    });
+    mockCapabilities(caps);
+    const { fetchCapabilities } = await import('../http-client');
+    const result = await fetchCapabilities();
+    expect(result).toBe(caps);
+    expect(result.futureTxFact).toEqual({ additive: true });
+  });
+
+  it('keeps an old capability document absent and never synthesizes audioTx', async () => {
+    const caps = makeCapabilities({
+      capabilities: ['audio', 'tx', 'voice_tx', 'mod_input_routing'],
+    });
+    mockCapabilities(caps);
+    const { fetchCapabilities } = await import('../http-client');
+    const result = await fetchCapabilities();
+    expect(result).toBe(caps);
+    expect(Object.hasOwn(result, 'audioTx')).toBe(false);
+  });
+
+  it.each([
+    [{ audioTx: true, audioTxRoute: 'lan' }],
+    [{ audioTx: true, audioTxRequiredModInputSource: null }],
+    [{ audioTxRoute: 'lan', audioTxRequiredModInputSource: null }],
+  ])('rejects a partial TX-audio tuple', async (overrides) => {
+    mockCapabilities(makeCapabilities(overrides));
+    const { fetchCapabilities } = await import('../http-client');
+    await expect(fetchCapabilities()).rejects.toThrow('TX-audio capability group');
+  });
+
+  it.each([
+    ['$.audioTx', { audioTx: 'yes', audioTxRoute: 'lan', audioTxRequiredModInputSource: null }],
+    ['$.audioTxRoute', { audioTx: true, audioTxRoute: 'network', audioTxRequiredModInputSource: null }],
+    ['$.audioTxRoute', { audioTx: true, audioTxRoute: 1, audioTxRequiredModInputSource: null }],
+    ['$.audioTxRequiredModInputSource', { audioTx: true, audioTxRoute: 'lan', audioTxRequiredModInputSource: '5' }],
+    ['$.audioTxRequiredModInputSource', { audioTx: true, audioTxRoute: 'lan', audioTxRequiredModInputSource: -1 }],
+    ['$.audioTxRequiredModInputSource', { audioTx: true, audioTxRoute: 'lan', audioTxRequiredModInputSource: 1.5 }],
+    ['$.audioTxRequiredModInputSource', { audioTx: true, audioTxRoute: 'lan', audioTxRequiredModInputSource: Number.POSITIVE_INFINITY }],
+    ['$.audioTxRequiredModInputSource', { audioTx: true, audioTxRoute: 'lan', audioTxRequiredModInputSource: Number.MAX_SAFE_INTEGER + 1 }],
+  ])('rejects malformed TX-audio field %s', async (path, overrides) => {
+    mockCapabilities(makeCapabilities({
+      capabilities: ['audio', 'tx', 'mod_input_routing'],
+      ...overrides,
+    }));
+    const { fetchCapabilities } = await import('../http-client');
+    await expect(fetchCapabilities()).rejects.toThrow(path);
+  });
+
+  it.each([
+    ['false with a route', { audioTx: false, audioTxRoute: 'lan', audioTxRequiredModInputSource: null }],
+    ['false with a source', { audioTx: false, audioTxRoute: null, audioTxRequiredModInputSource: 5 }],
+    ['true with a null route', { audioTx: true, audioTxRoute: null, audioTxRequiredModInputSource: null }],
+    ['a source on the USB route', { audioTx: true, audioTxRoute: 'usb', audioTxRequiredModInputSource: 5 }],
+    ['a source on the ACC route', { audioTx: true, audioTxRoute: 'acc', audioTxRequiredModInputSource: 5 }],
+    ['a source without MOD routing', { audioTx: true, audioTxRoute: 'lan', audioTxRequiredModInputSource: 5, capabilities: ['audio', 'tx'] }],
+    ['a false audio scalar', { audioTx: true, audioTxRoute: 'lan', audioTxRequiredModInputSource: null, audio: false }],
+    ['a missing audio tag', { audioTx: true, audioTxRoute: 'lan', audioTxRequiredModInputSource: null, capabilities: ['tx'] }],
+    ['a false TX scalar', { audioTx: true, audioTxRoute: 'lan', audioTxRequiredModInputSource: null, tx: false }],
+    ['a missing TX tag', { audioTx: true, audioTxRoute: 'lan', audioTxRequiredModInputSource: null, capabilities: ['audio'] }],
+  ])('rejects contradictory TX-audio facts: %s', async (_label, overrides) => {
+    mockCapabilities(makeCapabilities({
+      capabilities: ['audio', 'tx', 'mod_input_routing'],
+      ...overrides,
+    }));
+    const { fetchCapabilities } = await import('../http-client');
+    await expect(fetchCapabilities()).rejects.toThrow('contradictory TX-audio capability facts');
+  });
+
+  it.each([
     ['single', 1],
     ['ab', 1],
     ['ab_shared', 2],
