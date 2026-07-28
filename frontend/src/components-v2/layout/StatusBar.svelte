@@ -7,7 +7,6 @@
   import {
     getRadioStatus,
     getConnectionStatus,
-    isScopeConnected,
     isAudioConnected,
     getHttpConnected,
     getRadioPowerOn,
@@ -62,7 +61,9 @@
   // When radio is powered off, override statuses that depend on the radio
   let radioState = $derived(isPoweredOff ? 'disconnected' : getRadioStatus());
   let controlState = $derived(getConnectionStatus()); // server link — always real
-  let scopeState = $derived(isPoweredOff ? 'disconnected' : (isScopeConnected() ? 'connected' : 'disconnected'));
+  let scopeState = $derived(
+    isPoweredOff || !runtime.scope.hardwareScopeConnected ? 'disconnected' : 'connected'
+  );
   let audioState = $derived(isPoweredOff ? 'disconnected' : (isAudioConnected() ? 'connected' : 'disconnected'));
   let httpState = $derived(getHttpConnected() ? 'connected' : 'disconnected'); // server link — always real
   let rigConnected = $derived(getRigConnected());
