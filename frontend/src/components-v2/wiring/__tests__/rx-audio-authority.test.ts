@@ -28,6 +28,23 @@ vi.mock('$lib/stores/audio.svelte', () => ({
   setVolume: vi.fn(),
 }));
 
+vi.mock('$lib/runtime/frontend-runtime', async () => {
+  const { audioManager } = await import('$lib/audio/audio-manager');
+  const { setMuted, setVolume } = await import('$lib/stores/audio.svelte');
+  return {
+    runtime: {
+      setRxLive: vi.fn((live: boolean) => {
+        if (live) audioManager.startRx();
+        else audioManager.stopRx();
+      }),
+      get rxEnabled() { return audioManager.rxEnabled; },
+      setRxVolume: vi.fn((level: number) => { audioManager.setRxVolume(level); }),
+      setVolume: vi.fn((level: number) => { setVolume(level); }),
+      setMuted: vi.fn((muted: boolean) => { setMuted(muted); }),
+    },
+  };
+});
+
 import { audioManager } from '$lib/audio/audio-manager';
 import { setMuted, setVolume } from '$lib/stores/audio.svelte';
 import { patchActiveReceiver } from '$lib/stores/radio.svelte';
@@ -83,6 +100,9 @@ describe('RX-audio presentation command authority (MOR-1124)', () => {
       () => expect(audioManager.stopRx).toHaveBeenCalledTimes(1),
       { timeout: 100, interval: 1 },
     );
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(audioManager.stopRx).toHaveBeenCalledTimes(1);
     expect(audioManager.setRxVolume).toHaveBeenCalledWith(0.37);
     expect(setVolume).toHaveBeenCalledWith(37);
   });
