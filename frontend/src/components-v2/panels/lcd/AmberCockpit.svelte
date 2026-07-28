@@ -216,7 +216,7 @@
 
   // Scope subscription — delegates lifecycle to ScopeController (ADR INV-2, INV-5)
   $effect(() => {
-    if (!cockpitProps.hasAudioFft) return;
+    if (!showFft) return;
 
     runtime.scope.registerPresentationDriver(presentationResources);
     const lease = presentationResources.acquire('audio-fft', 'AmberCockpit');
