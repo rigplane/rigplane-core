@@ -817,6 +817,7 @@ class WebServer:
         self._scope_handlers: set["ScopeHandler"] = set()
         self._audio_scope_handlers: set["ScopeHandler"] = set()
         self._scope_enabled = False
+        self._scope_demand_generation = 0
         self._scope_enable_lock: asyncio.Lock = asyncio.Lock()
         self._scope_disable_grace: float = 2.0
         raw_radio_state = (
@@ -1055,8 +1056,12 @@ class WebServer:
         is needed — frames are generated from the audio stream.
         """
         async with self._scope_enable_lock:
+            was_empty = not self._scope_handlers
             was_registered = handler in self._scope_handlers
             self._scope_handlers.add(handler)
+            if was_empty and not was_registered:
+                self._scope_demand_generation += 1
+            generation = self._scope_demand_generation
             if not was_registered:
                 self._broadcast_ws_client_state_update()
             if self._radio is not None:
@@ -1074,11 +1079,13 @@ class WebServer:
                     )
                     return
                 if self._radio_ready():
-                    self._command_queue.put(EnableScope())
+                    self._command_queue.put(EnableScope(generation=generation))
                     self._scope_enabled = True
                     logger.info("scope: enable queued")
                 else:
-                    self._schedule_scope_enable_when_ready(reason="handler_connect")
+                    self._schedule_scope_enable_when_ready(
+                        reason="handler_connect", generation=generation
+                    )
                     logger.info("scope: defer enable until radio_ready")
 
     def unregister_scope_handler(self, handler: "ScopeHandler") -> None:
@@ -1087,6 +1094,9 @@ class WebServer:
         self._scope_handlers.discard(handler)
         if was_registered:
             self._broadcast_ws_client_state_update()
+        if was_registered and not self._scope_handlers:
+            self._scope_demand_generation += 1
+            self._cancel_scope_reenable_task()
         if (
             not self._scope_handlers
             and self._radio is not None
@@ -1094,9 +1104,11 @@ class WebServer:
         ):
             self._set_scope_data_callback(None)
             if self._scope_enabled:
-                self._spawn(self._disable_scope_async())
+                self._spawn(
+                    self._disable_scope_async(generation=self._scope_demand_generation)
+                )
 
-    async def _disable_scope_async(self) -> None:
+    async def _disable_scope_async(self, *, generation: int) -> None:
         """Disable scope on the radio when no more handlers are connected."""
         if self._radio is None or not self._hardware_scope_available:
             return
@@ -1106,7 +1118,10 @@ class WebServer:
             if self._radio is not None:
                 self._set_scope_data_callback(self._broadcast_scope)
             return
-        self._command_queue.put(DisableScope())
+        if generation != self._scope_demand_generation:
+            logger.debug("scope: disable task superseded by newer viewer demand")
+            return
+        self._command_queue.put(DisableScope(generation=generation))
         if not self._scope_handlers:
             self._scope_enabled = False
             logger.info("scope: disable queued (no active handlers)")
@@ -1801,7 +1816,9 @@ class WebServer:
                 and self._hardware_scope_available
             ):
                 self._set_scope_data_callback(self._broadcast_scope)
-                self._command_queue.put(EnableScope())
+                self._command_queue.put(
+                    EnableScope(generation=self._scope_demand_generation)
+                )
                 self._scope_enabled = True
                 logger.info(
                     "scope: re-enable queued after reconnect (%d handlers)",
@@ -1810,7 +1827,16 @@ class WebServer:
 
         self._spawn(_refetch_and_reenable())
 
-    def _schedule_scope_enable_when_ready(self, *, reason: str) -> None:
+    def _cancel_scope_reenable_task(self) -> None:
+        """Cancel readiness work invalidated by a last-viewer transition."""
+        task = self._scope_reenable_task
+        self._scope_reenable_task = None
+        if task is not None and not task.done():
+            task.cancel()
+
+    def _schedule_scope_enable_when_ready(
+        self, *, reason: str, generation: int
+    ) -> None:
         """Schedule delayed scope enable once radio becomes ready."""
         if (
             self._scope_reenable_task is not None
@@ -1819,24 +1845,29 @@ class WebServer:
             return
         loop = asyncio.get_running_loop()
         self._scope_reenable_task = loop.create_task(
-            self._wait_and_enable_scope(reason=reason),
+            self._wait_and_enable_scope(reason=reason, generation=generation),
             name="scope-reenable-when-ready",
         )
 
-    async def _wait_and_enable_scope(self, *, reason: str) -> None:
+    async def _wait_and_enable_scope(self, *, reason: str, generation: int) -> None:
         """Wait until radio_ready before queuing EnableScope."""
         import time
 
+        current_task = asyncio.current_task()
         deadline = time.monotonic() + self._scope_reenable_timeout
         try:
             while True:
-                if not self._scope_handlers or self._radio is None:
+                if (
+                    generation != self._scope_demand_generation
+                    or not self._scope_handlers
+                    or self._radio is None
+                ):
                     return
                 if not self._hardware_scope_available:
                     return
                 if self._radio_ready():
                     self._set_scope_data_callback(self._broadcast_scope)
-                    self._command_queue.put(EnableScope())
+                    self._command_queue.put(EnableScope(generation=generation))
                     self._scope_enabled = True
                     logger.info(
                         "scope: enable queued after %s (%d handlers)",
@@ -1855,7 +1886,8 @@ class WebServer:
         except asyncio.CancelledError:
             pass
         finally:
-            self._scope_reenable_task = None
+            if self._scope_reenable_task is current_task:
+                self._scope_reenable_task = None
 
     def _scope_health_check(self, frame: Any) -> None:
         """Track whether scope frames contain real data (non-zero pixels)."""
@@ -1909,7 +1941,9 @@ class WebServer:
                             )
                             retries += 1  # log once
                         continue
-                    self._command_queue.put(EnableScope())
+                    self._command_queue.put(
+                        EnableScope(generation=self._scope_demand_generation)
+                    )
                     self._scope_last_nonzero = now  # reset to avoid spam
                     retries += 1
                     logger.warning(
