@@ -230,7 +230,10 @@ export function validateCapabilities(value: unknown): Capabilities {
         || !tags.includes('tx')
         || (
           raw.audioTxRequiredModInputSource !== null
-          && !tags.includes('mod_input_routing')
+          && (
+            raw.audioTxRoute !== 'lan'
+            || !tags.includes('mod_input_routing')
+          )
         )
       )
     ) {

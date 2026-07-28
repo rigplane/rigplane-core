@@ -149,7 +149,7 @@ describe('fetchCapabilities', () => {
     [false, null, null, ['scope', 'audio', 'tx']],
     [true, 'usb', null, ['scope', 'audio', 'tx']],
     [true, 'lan', 5, ['scope', 'audio', 'tx', 'mod_input_routing']],
-    [true, 'acc', Number.MAX_SAFE_INTEGER, ['audio', 'tx', 'mod_input_routing']],
+    [true, 'lan', Number.MAX_SAFE_INTEGER, ['audio', 'tx', 'mod_input_routing']],
     [true, 'lan', null, ['audio', 'tx', 'mod_input_routing']],
   ])('accepts and preserves a complete TX-audio tuple', async (
     audioTx,
@@ -214,6 +214,8 @@ describe('fetchCapabilities', () => {
     ['false with a route', { audioTx: false, audioTxRoute: 'lan', audioTxRequiredModInputSource: null }],
     ['false with a source', { audioTx: false, audioTxRoute: null, audioTxRequiredModInputSource: 5 }],
     ['true with a null route', { audioTx: true, audioTxRoute: null, audioTxRequiredModInputSource: null }],
+    ['a source on the USB route', { audioTx: true, audioTxRoute: 'usb', audioTxRequiredModInputSource: 5 }],
+    ['a source on the ACC route', { audioTx: true, audioTxRoute: 'acc', audioTxRequiredModInputSource: 5 }],
     ['a source without MOD routing', { audioTx: true, audioTxRoute: 'lan', audioTxRequiredModInputSource: 5, capabilities: ['audio', 'tx'] }],
     ['a false audio scalar', { audioTx: true, audioTxRoute: 'lan', audioTxRequiredModInputSource: null, audio: false }],
     ['a missing audio tag', { audioTx: true, audioTxRoute: 'lan', audioTxRequiredModInputSource: null, capabilities: ['tx'] }],
