@@ -105,7 +105,7 @@ vi.mock('./system-controller', async () => {
 // ── Import modules under test after mocks are hoisted ──
 
 import { fetchCapabilities, startPolling } from '$lib/transport/http-client';
-import { connect, sendRaw } from '$lib/transport/ws-client';
+import { connect, getChannel, onMessage, sendRaw } from '$lib/transport/ws-client';
 import { setCapabilities } from '$lib/stores/capabilities.svelte';
 import { setRadioState } from '$lib/stores/radio.svelte';
 import { audioManager } from '$lib/audio/audio-manager';
@@ -125,12 +125,17 @@ async function freshRuntime() {
     _bootstrapCleanup: null;
     _bootstrapInFlight: null;
     _rxAudioLease: null;
-    _rxAudioEnded: boolean;
+    _ended: boolean;
+    _dxSubscribers: Map<number, unknown>;
+    _dxControlUnsubscribe: (() => void) | null;
   };
+  rt._dxControlUnsubscribe?.();
+  rt._dxSubscribers?.clear();
   rt._bootstrapCleanup = null;
   rt._bootstrapInFlight = null;
   rt._rxAudioLease = null;
-  rt._rxAudioEnded = false;
+  rt._ended = false;
+  rt._dxControlUnsubscribe = null;
   return mod.runtime;
 }
 
@@ -138,9 +143,13 @@ async function freshRuntime() {
 
 const fakeCaps = {
   modes: ['USB', 'LSB'],
-  scope: false,
+  scope: true,
   audio: true,
   capabilities: ['audio'],
+  receivers: 1,
+  vfoScheme: 'ab',
+  scopeSource: 'audio_fft',
+  audioFftAvailable: true,
 } as any;
 const fakeStopPolling = vi.fn();
 const deferred = <T>() => {
@@ -358,6 +367,96 @@ describe('FrontendRuntime.bootstrap()', () => {
   });
 });
 
+describe('FrontendRuntime hardware scope and DX facades', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    (fetchCapabilities as ReturnType<typeof vi.fn>).mockResolvedValue(fakeCaps);
+    (startPolling as ReturnType<typeof vi.fn>).mockReturnValue(fakeStopPolling);
+  });
+
+  it('derives unavailable/default selection and keeps bootstrap inert', async () => {
+    const rt = await freshRuntime();
+    await rt.bootstrap();
+
+    expect(presentationResources.snapshot('hardware-scope')).toMatchObject({
+      available: false,
+      selected: false,
+      demand: 0,
+      health: 'inactive',
+    });
+    expect(getChannel).not.toHaveBeenCalled();
+  });
+
+  it('starts only for exact shared demand and stops on the last valid release', async () => {
+    const channel = {
+      state: 'disconnected',
+      connect: vi.fn(),
+      disconnect: vi.fn(),
+      onBinary: vi.fn(() => vi.fn()),
+      onStateChange: vi.fn(() => vi.fn()),
+    };
+    (getChannel as ReturnType<typeof vi.fn>).mockReturnValue(channel);
+    (fetchCapabilities as ReturnType<typeof vi.fn>).mockResolvedValue({
+      ...fakeCaps,
+      scope: true,
+      capabilities: ['audio', 'scope'],
+      scopeSource: 'hardware',
+    });
+    const rt = await freshRuntime();
+    await rt.bootstrap();
+
+    expect(presentationResources.snapshot('hardware-scope')).toMatchObject({
+      available: true,
+      selected: true,
+      demand: 0,
+    });
+    expect(getChannel).not.toHaveBeenCalled();
+
+    const first = rt.acquireHardwareScope('first');
+    const shared = rt.acquireHardwareScope('shared');
+    await settle();
+    expect(getChannel).toHaveBeenCalledExactlyOnceWith('scope');
+    expect(channel.connect).toHaveBeenCalledExactlyOnceWith('/api/v1/scope');
+    expect(presentationResources.snapshot('hardware-scope').demand).toBe(2);
+
+    expect(rt.releaseHardwareScope(first)).toBe(true);
+    expect(rt.releaseHardwareScope(first)).toBe(false);
+    expect(channel.disconnect).not.toHaveBeenCalled();
+    expect(rt.releaseHardwareScope(shared)).toBe(true);
+    await settle();
+    expect(channel.disconnect).toHaveBeenCalledTimes(1);
+  });
+
+  it('shares one filtered control subscription and unsubscribes exactly', async () => {
+    let controlHandler: ((message: unknown) => void) | undefined;
+    const controlUnsubscribe = vi.fn();
+    (onMessage as ReturnType<typeof vi.fn>).mockImplementation((handler) => {
+      controlHandler = handler;
+      return controlUnsubscribe;
+    });
+    const rt = await freshRuntime();
+    const first = vi.fn();
+    const second = vi.fn();
+    const unsubscribeFirst = rt.subscribeDx(first);
+    const unsubscribeSecond = rt.subscribeDx(second);
+
+    expect(onMessage).toHaveBeenCalledTimes(1);
+    controlHandler?.({ type: 'state', data: {} });
+    controlHandler?.({ type: 'dx_spot', spot: { call: 'K1ABC' } });
+    expect(first).toHaveBeenCalledTimes(1);
+    expect(second).toHaveBeenCalledTimes(1);
+
+    unsubscribeFirst();
+    unsubscribeFirst();
+    controlHandler?.({ type: 'dx_spots', spots: [] });
+    expect(first).toHaveBeenCalledTimes(1);
+    expect(second).toHaveBeenCalledTimes(2);
+    expect(controlUnsubscribe).not.toHaveBeenCalled();
+    unsubscribeSecond();
+    expect(controlUnsubscribe).toHaveBeenCalledTimes(1);
+  });
+});
+
 describe('FrontendRuntime RX LIVE intent', () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -438,9 +537,27 @@ describe('FrontendRuntime RX LIVE intent', () => {
   });
 
   it('tears down once, in order, and never restarts after final cleanup', async () => {
+    const channel = {
+      state: 'disconnected',
+      connect: vi.fn(),
+      disconnect: vi.fn(),
+      onBinary: vi.fn(() => vi.fn()),
+      onStateChange: vi.fn(() => vi.fn()),
+    };
+    (getChannel as ReturnType<typeof vi.fn>).mockReturnValue(channel);
+    (fetchCapabilities as ReturnType<typeof vi.fn>).mockResolvedValue({
+      ...fakeCaps,
+      scope: true,
+      capabilities: ['audio', 'scope'],
+      scopeSource: 'hardware',
+    });
+    const unsubscribeDx = vi.fn();
+    (onMessage as ReturnType<typeof vi.fn>).mockReturnValue(unsubscribeDx);
     const rt = await freshRuntime();
     await rt.bootstrap();
     rt.setRxLive(true);
+    const hardwareLease = rt.acquireHardwareScope('SpectrumPanel');
+    rt.subscribeDx(vi.fn());
     await settle();
 
     const cleanup = await rt.bootstrap();
@@ -452,6 +569,11 @@ describe('FrontendRuntime RX LIVE intent', () => {
 
     expect(audioManager.startRx).toHaveBeenCalledTimes(1);
     expect(audioManager.stopRx).toHaveBeenCalledTimes(1);
+    expect(channel.disconnect).toHaveBeenCalledTimes(1);
+    expect(unsubscribeDx).toHaveBeenCalledTimes(1);
+    expect(rt.releaseHardwareScope(hardwareLease)).toBe(false);
+    expect(() => rt.acquireHardwareScope('late')).toThrow('torn down');
+    expect(() => rt.subscribeDx(vi.fn())).toThrow('torn down');
     expect(presentationResources.snapshot('rx-audio')).toMatchObject({
       demand: 0,
       health: 'inactive',
