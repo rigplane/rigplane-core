@@ -40,6 +40,7 @@ describe('TX reducer', () => {
     const pending = start(); const cancelled = transition(pending.state, { type: 'release', sourceId: 'desktop', guard: pending.state.guard!, commandId: 'off-pre' });
     expect(types(cancelled)).toEqual(['cancel-timers', 'stop-local-audio']);
     expect(transition(cancelled.state, { type: 'release', guard: cancelled.state.guard!, commandId: 'off-duplicate' })).toEqual({ state: cancelled.state, effects: [] }); expect(cancelled.state.generation).toBe(2);
+    expect(transition(cancelled.state, { type: 'audio-ready', guard: cancelled.state.guard!, commandId: 'late-on' })).toEqual({ state: cancelled.state, effects: [] });
     const keyed = active(); const released = transition(keyed, { type: 'release', sourceId: 'desktop', guard: keyed.guard!, commandId: 'off' });
     expect(types(released)).toEqual(['cancel-timers', 'dispatch-off', 'arm-off-timeout', 'stop-local-audio']); expect(released.state.phase).toBe('releasing');
     expect(released.state).toMatchObject({ phase: 'releasing', generation: 2, pendingOff: { commandId: 'off', leaseId: 'lease', generation: 2,
@@ -64,6 +65,7 @@ describe('TX reducer', () => {
     const begun = start(); const guard = begun.state.guard!; const dispatched = transition(begun.state, { type: 'audio-ready', guard, commandId: 'on' }); const confirmed = transition(dispatched.state, { type: 'authority', epoch: 1, ptt: ptt(true, 3), eligibility: eligible, offCommandId: 'off' });
     expect(confirmed.state).toMatchObject({ phase: 'audio-start-pending', txRisk: 'confirmed-on', onConfirmed: marker(3) });
     const rebound = transition(confirmed.state, { type: 'on-sent', guard, commandId: 'on', barrier: marker(3) }); expect(rebound.state.phase).toBe('active'); expect(types(rebound)).toEqual(['arm-on-timeout']); expect(transition(rebound.state, { type: 'on-sent', guard, commandId: 'on', barrier: marker(3) })).toEqual({ state: rebound.state, effects: [] });
+    expect(transition(rebound.state, timerEvent(rebound.state, 'on-confirmation', 'on'))).toEqual({ state: rebound.state, effects: [] });
     const dekeyed = transition(rebound.state, { type: 'authority', epoch: 1, ptt: ptt(false, 4), eligibility: eligible, offCommandId: 'off' }); expect(dekeyed.state.fault).toBe('backend-dekeyed'); const released = transition(dispatched.state, { type: 'release', guard, commandId: 'off' }); const raced = transition(released.state, { type: 'authority', epoch: 1, ptt: ptt(true, 3), eligibility: eligible, offCommandId: 'off' });
     expect(raced.state).toMatchObject({ phase: 'releasing', radioTx: 'on', txRisk: 'confirmed-on', onConfirmed: marker(3) });
   });
@@ -111,6 +113,7 @@ describe('TX reducer', () => {
     const pending = start(); const guard = pending.state.guard!; const dispatched = transition(pending.state, { type: 'audio-ready', guard, commandId: 'on' });
     expect(transition(dispatched.state, { type: 'on-sent', guard, commandId: 'stale-on', barrier: marker(9) })).toEqual({ state: dispatched.state, effects: [] });
     expect(transition(dispatched.state, { type: 'on-sent', guard, commandId: 'on', barrier: marker(9, 2) })).toEqual({ state: dispatched.state, effects: [] });
+    expect(transition(dispatched.state, { type: 'on-sent', guard: { ...guard, leaseId: 'foreign' }, commandId: 'on', barrier: marker(2) })).toEqual({ state: dispatched.state, effects: [] });
     const premature = { type: 'command-result', command: 'on', outcome: 'sent', barrier: marker(2), ...correlation(pending.state, null) } as unknown as TxEvent;
     expect(transition(pending.state, premature)).toEqual({ state: pending.state, effects: [] });
     const base = correlation(dispatched.state, 'on'); const sentEvent = { type: 'command-result' as const, command: 'on' as const, outcome: 'sent' as const, barrier: marker(2), ...base };
@@ -223,6 +226,7 @@ describe('TX reducer', () => {
       { type: 'authority', epoch: 2, ptt: ptt(false, 3, 2), eligibility: { ...eligible, target: { ...target, receiver: 'SUB' } }, offCommandId: 'off' },
       { type: 'authority', epoch: 0, ptt: ptt(false, 3, 0), eligibility: { ...eligible, permit: 'unknown' }, offCommandId: 'off' },
       { type: 'authority', epoch: 0, ptt: ptt(false, 3), eligibility: eligible, offCommandId: 'off' },
+      { type: 'authority', epoch: 1, ptt: ptt(true, 9, 3), eligibility: eligible, offCommandId: 'off' },
     ];
     for (const event of stale) expect(transition(pending.state, event)).toEqual({ state: pending.state, effects: [] });
   });
@@ -254,6 +258,9 @@ describe('TX reducer', () => {
     const delivered = transition(released.state, { type: 'off-sent', ...off, eventEpoch: 1, barrier: marker(3) }); expect(delivered.state.pendingOff?.deliveryPttBarrier).toEqual(marker(3));
     const inert = [ptt(false, 3), ptt(false, 2), { ...ptt(false, 4), source: 'other' as const }, { ...ptt(false, 4), observed: false }, { ...ptt(false, 4), fresh: false }];
     for (const observation of inert) expect(transition(delivered.state, { type: 'authority', epoch: 1, ptt: observation, eligibility: eligible, offCommandId: 'off' })).toEqual({ state: delivered.state, effects: [] });
+    const stillKeyed = transition(delivered.state, { type: 'authority', epoch: 1, ptt: ptt(true, 5), eligibility: eligible, offCommandId: 'off' });
+    expect(types(stillKeyed)).toEqual([]);
+    expect(stillKeyed.state).toMatchObject({ phase: 'releasing', txRisk: 'confirmed-on', radioTx: 'on', modRestorePending: true, mayOwnKey: true, pendingOff: delivered.state.pendingOff });
     const confirmed = transition(delivered.state, { type: 'authority', epoch: 1, ptt: { ...ptt(false, 4), source: 'backend-observation' }, eligibility: eligible, offCommandId: 'off' });
     expect(confirmed.state.phase).toBe('idle'); expect(types(confirmed)).toEqual(['cancel-timers', 'restore-mod']); expect(transition(confirmed.state, { type: 'authority', epoch: 1, ptt: ptt(false, 4), eligibility: eligible, offCommandId: 'off' })).toEqual({ state: confirmed.state, effects: [] });
   });
