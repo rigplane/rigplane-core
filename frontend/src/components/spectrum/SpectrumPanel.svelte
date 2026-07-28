@@ -210,8 +210,9 @@
     scopeChannel.connect('/api/v1/scope');
   }
 
-  function releaseScopeDemand(): void {
-    if (!scopeChannel || !ownsScopeDemand) return;
+  function releaseScopeDemand(closeIfLive = false): void {
+    if (!scopeChannel) return;
+    if (!ownsScopeDemand && !(closeIfLive && scopeChannel.state !== 'disconnected')) return;
     ownsScopeDemand = false;
     scopeChannel.disconnect();
     setScopeConnected(false);
@@ -348,9 +349,15 @@
     // Scope data arrives on its own WebSocket channel
     scopeChannel = getChannel('scope');
     const unsubState = scopeChannel.onStateChange((s) => {
-      setScopeConnected(scopeDemandOn && s === 'connected');
+      if (!scopeDemandOn) {
+        setScopeConnected(false);
+        if (s === 'connected') scopeChannel?.disconnect();
+        return;
+      }
+      setScopeConnected(s === 'connected');
     });
     const unsubBinary = scopeChannel.onBinary((buf) => {
+      if (!scopeDemandOn) return;
       markScopeFrame();
       const frame = parseScopeFrame(buf);
       if (!frame) return;
@@ -382,7 +389,7 @@
       unsubState();
       unsubBinary();
       unsubMsg();
-      releaseScopeDemand();
+      releaseScopeDemand(true);
       scopeChannel = null;
     };
   });

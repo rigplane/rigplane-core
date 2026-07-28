@@ -100,10 +100,12 @@ Object.defineProperty(globalThis, 'localStorage', {
 let capturedOnBinary: ((buf: ArrayBuffer) => void) | null = null;
 let capturedOnState: ((state: string) => void) | null = null;
 let mockScopeConnected = true;
+let mockScopeState = 'disconnected';
 
 const mockScopeChannel = {
-  connect: vi.fn(),
-  disconnect: vi.fn(),
+  get state() { return mockScopeState; },
+  connect: vi.fn(() => { mockScopeState = 'connecting'; }),
+  disconnect: vi.fn(() => { mockScopeState = 'disconnected'; }),
   onStateChange: vi.fn((cb: (state: string) => void) => {
     capturedOnState = cb;
     return noop;
@@ -170,7 +172,7 @@ vi.mock('../../../../components-v2/wiring/state-adapter', () => ({
 
 import SpectrumPanel from '../SpectrumPanel.svelte';
 import { getChannel, sendCommand } from '$lib/transport/ws-client';
-import { setScopeConnected } from '$lib/stores/connection.svelte';
+import { markScopeFrame, setScopeConnected } from '$lib/stores/connection.svelte';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -191,6 +193,7 @@ beforeEach(() => {
   components = [];
   capturedOnState = null;
   mockScopeConnected = true;
+  mockScopeState = 'disconnected';
   vi.clearAllMocks();
 });
 
@@ -267,26 +270,44 @@ describe('SpectrumPanel component', () => {
     expect(mockScopeChannel.connect).toHaveBeenLastCalledWith('/api/v1/scope');
   });
 
-  it('does not disconnect viewer demand twice after OFF during teardown', () => {
+  it('rejects frames and immediately closes an externally resurrected channel while OFF', () => {
     const target = mountPanel();
     target.querySelector<HTMLButtonElement>('.scope-demand-toggle')!.click();
     flushSync();
 
-    capturedOnState?.('reconnecting');
+    capturedOnBinary?.(new ArrayBuffer(16));
+    expect(markScopeFrame).not.toHaveBeenCalled();
+
+    mockScopeState = 'connected';
     capturedOnState?.('connected');
     expect(mockScopeChannel.connect).toHaveBeenCalledTimes(1);
+    expect(mockScopeChannel.disconnect).toHaveBeenCalledTimes(2);
     expect(setScopeConnected).toHaveBeenLastCalledWith(false);
 
     const component = components.pop()!;
     unmount(component);
+    expect(mockScopeChannel.disconnect).toHaveBeenCalledTimes(2);
+  });
+
+  it('closes a resurrected live channel during teardown even without a state notification', () => {
+    const target = mountPanel();
+    target.querySelector<HTMLButtonElement>('.scope-demand-toggle')!.click();
+    flushSync();
     expect(mockScopeChannel.disconnect).toHaveBeenCalledTimes(1);
+
+    mockScopeState = 'connected';
+    const component = components.pop()!;
+    unmount(component);
+    expect(mockScopeChannel.disconnect).toHaveBeenCalledTimes(2);
   });
 
   it('keeps demand intent ON across channel disconnect and reconnect health changes', () => {
     const target = mountPanel();
     const toggle = target.querySelector<HTMLButtonElement>('.scope-demand-toggle')!;
 
+    mockScopeState = 'disconnected';
     capturedOnState?.('disconnected');
+    mockScopeState = 'connected';
     capturedOnState?.('connected');
     flushSync();
 
