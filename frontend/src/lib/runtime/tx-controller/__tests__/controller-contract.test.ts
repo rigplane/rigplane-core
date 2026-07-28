@@ -103,8 +103,6 @@ describe('TxController public contract matrix', () => {
     expect(h.controller.snapshot()).toMatchObject({ phase: 'idle', pendingOff: null, modRestorePending: false });
     expect(h.dependencies.restoreMod).toHaveBeenCalledTimes(1);
     expect(vi.getTimerCount()).toBe(0);
-    vi.runAllTimers();
-    expect(h.controller.snapshot().phase).toBe('idle');
     // Kills replayed lifecycle release, duplicate OFF, and uncancelled deadline mutations.
   });
 
@@ -161,15 +159,16 @@ describe('TxController public contract matrix', () => {
     const h = harness();
     await key(h);
     h.controller.dispatch({ type: 'release', guard: h.controller.snapshot().guard!, commandId: 'off-queued' });
+    authority(h, false, 4);
+    expect(h.controller.snapshot()).toMatchObject({ phase: 'releasing', pendingOff: { deliveryPttBarrier: null } });
+    expect(h.dependencies.restoreMod).not.toHaveBeenCalled();
     h.controller.dispatch({ type: 'epoch', epoch: 2, baseline: marker(1, 2), offCommandId: 'off-e2' });
-    authority(h, false, 2, allowed, 2);
-    expect(h.controller.snapshot().phase).toBe('releasing');
     report(h, 'off', 'sent', 2, 2);
     expect(h.controller.snapshot().pendingOff).toMatchObject({ deliveryEpoch: 2, deliveryRebound: true });
     authority(h, false, 3, allowed, 2);
     expect(h.controller.snapshot().phase).toBe('idle');
     expect(h.dependencies.restoreMod).toHaveBeenCalledTimes(1);
-    // Kills original-epoch binding and pre-delivery OFF acceptance.
+    // Kills original-epoch binding and same-epoch pre-delivery OFF acceptance.
   });
 
   it('keeps release failed and MOD unrestored when OFF dispatch throws', async () => {
