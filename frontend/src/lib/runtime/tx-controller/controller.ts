@@ -4,7 +4,6 @@ type Timer = 'audio-start' | 'on-confirmation' | 'off-confirmation';
 type CommandReport = { outcome: 'sent' | 'ack' | 'response-ok' | 'response-error' | 'transport-error'; eventEpoch: number; barrier: PttMarker | null };
 type CommandCorrelation = { leaseId: string; generation: number; originalEpoch: number };
 type TimerRecord = { handle: unknown; guard: TxGuard; cancelGuard: TxGuard };
-
 export interface TxControllerDependencies {
   startAudio(): Promise<string | null>;
   sendPtt(command: Command, commandId: string, correlation: CommandCorrelation, report: (result: CommandReport) => void): void;
