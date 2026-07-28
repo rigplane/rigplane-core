@@ -98,11 +98,18 @@ Object.defineProperty(globalThis, 'localStorage', {
 // ---------------------------------------------------------------------------
 
 let capturedOnBinary: ((buf: ArrayBuffer) => void) | null = null;
+let capturedOnState: ((state: string) => void) | null = null;
+let mockScopeConnected = true;
+let mockScopeState = 'disconnected';
 
 const mockScopeChannel = {
-  connect: vi.fn(),
-  disconnect: vi.fn(),
-  onStateChange: vi.fn(() => noop),
+  get state() { return mockScopeState; },
+  connect: vi.fn(() => { mockScopeState = 'connecting'; }),
+  disconnect: vi.fn(() => { mockScopeState = 'disconnected'; }),
+  onStateChange: vi.fn((cb: (state: string) => void) => {
+    capturedOnState = cb;
+    return noop;
+  }),
   onBinary: vi.fn((cb: (buf: ArrayBuffer) => void) => {
     capturedOnBinary = cb;
     return noop;
@@ -118,7 +125,7 @@ vi.mock('$lib/transport/ws-client', () => ({
 vi.mock('$lib/stores/connection.svelte', () => ({
   setScopeConnected: vi.fn(),
   markScopeFrame: vi.fn(),
-  isScopeConnected: vi.fn(() => true),
+  isScopeConnected: vi.fn(() => mockScopeConnected),
 }));
 
 vi.mock('$lib/stores/radio.svelte', () => ({
@@ -137,7 +144,7 @@ vi.mock('$lib/stores/tuning.svelte', () => ({
 
 vi.mock('$lib/stores/capabilities.svelte', () => ({
   getCapabilities: vi.fn(() => ({})),
-  hasCapability: vi.fn(() => false),
+  hasCapability: vi.fn((name: string) => name === 'scope'),
   hasDualReceiver: vi.fn(() => false),
 }));
 
@@ -165,6 +172,7 @@ vi.mock('../../../../components-v2/wiring/state-adapter', () => ({
 
 import SpectrumPanel from '../SpectrumPanel.svelte';
 import { getChannel, sendCommand } from '$lib/transport/ws-client';
+import { markScopeFrame, setScopeConnected } from '$lib/stores/connection.svelte';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -183,6 +191,9 @@ function mountPanel() {
 
 beforeEach(() => {
   components = [];
+  capturedOnState = null;
+  mockScopeConnected = true;
+  mockScopeState = 'disconnected';
   vi.clearAllMocks();
 });
 
@@ -236,6 +247,86 @@ describe('SpectrumPanel component', () => {
     expect(mockScopeChannel.connect).toHaveBeenCalledWith('/api/v1/scope');
     expect(mockScopeChannel.onBinary).toHaveBeenCalled();
     expect(mockScopeChannel.onStateChange).toHaveBeenCalled();
+  });
+
+  it('releases and reacquires viewer demand through the existing scope channel', () => {
+    const target = mountPanel();
+    const toggle = target.querySelector<HTMLButtonElement>('.scope-demand-toggle')!;
+
+    expect(toggle).not.toBeNull();
+    expect(toggle.getAttribute('aria-pressed')).toBe('true');
+
+    toggle.click();
+    flushSync();
+    expect(toggle.getAttribute('aria-pressed')).toBe('false');
+    expect(mockScopeChannel.disconnect).toHaveBeenCalledTimes(1);
+    expect(setScopeConnected).toHaveBeenLastCalledWith(false);
+
+    toggle.click();
+    flushSync();
+    expect(toggle.getAttribute('aria-pressed')).toBe('true');
+    expect(getChannel).toHaveBeenCalledTimes(1);
+    expect(mockScopeChannel.connect).toHaveBeenCalledTimes(2);
+    expect(mockScopeChannel.connect).toHaveBeenLastCalledWith('/api/v1/scope');
+  });
+
+  it('rejects frames and immediately closes an externally resurrected channel while OFF', () => {
+    const target = mountPanel();
+    target.querySelector<HTMLButtonElement>('.scope-demand-toggle')!.click();
+    flushSync();
+
+    capturedOnBinary?.(new ArrayBuffer(16));
+    expect(markScopeFrame).not.toHaveBeenCalled();
+
+    mockScopeState = 'connected';
+    capturedOnState?.('connected');
+    expect(mockScopeChannel.connect).toHaveBeenCalledTimes(1);
+    expect(mockScopeChannel.disconnect).toHaveBeenCalledTimes(2);
+    expect(setScopeConnected).toHaveBeenLastCalledWith(false);
+
+    const component = components.pop()!;
+    unmount(component);
+    expect(mockScopeChannel.disconnect).toHaveBeenCalledTimes(2);
+  });
+
+  it('closes a resurrected live channel during teardown even without a state notification', () => {
+    const target = mountPanel();
+    target.querySelector<HTMLButtonElement>('.scope-demand-toggle')!.click();
+    flushSync();
+    expect(mockScopeChannel.disconnect).toHaveBeenCalledTimes(1);
+
+    mockScopeState = 'connected';
+    const component = components.pop()!;
+    unmount(component);
+    expect(mockScopeChannel.disconnect).toHaveBeenCalledTimes(2);
+  });
+
+  it('keeps demand intent ON across channel disconnect and reconnect health changes', () => {
+    const target = mountPanel();
+    const toggle = target.querySelector<HTMLButtonElement>('.scope-demand-toggle')!;
+
+    mockScopeState = 'disconnected';
+    capturedOnState?.('disconnected');
+    mockScopeState = 'connected';
+    capturedOnState?.('connected');
+    flushSync();
+
+    expect(toggle.getAttribute('aria-pressed')).toBe('true');
+    expect(mockScopeChannel.connect).toHaveBeenCalledTimes(1);
+    expect(mockScopeChannel.disconnect).not.toHaveBeenCalled();
+    expect(setScopeConnected).toHaveBeenNthCalledWith(1, false);
+    expect(setScopeConnected).toHaveBeenNthCalledWith(2, true);
+  });
+
+  it('renders demand ON without claiming an inactive channel is live', () => {
+    mockScopeConnected = false;
+    const target = mountPanel();
+
+    expect(
+      target.querySelector<HTMLButtonElement>('.scope-demand-toggle')?.getAttribute('aria-pressed'),
+    ).toBe('true');
+    expect(target.querySelector('.scope-disconnected-overlay')).not.toBeNull();
+    expect(target.querySelector('.scope-demand-off-overlay')).toBeNull();
   });
 
   it('does not render freq-axis when no span data', () => {

@@ -28,6 +28,8 @@
     showBandPlan = $bindable(true),
     hiddenLayers = $bindable([] as string[]),
     showEiBi = $bindable(false),
+    scopeDemandOn = true,
+    onScopeDemandChange = (_enabled: boolean) => {},
     /**
      * Hide the DUAL + MAIN/SUB scope-source controls. Set by layouts that
      * surface these controls elsewhere (e.g. v2 desktop VfoHeader bridge,
@@ -172,6 +174,14 @@
     <div class="toolbar-separator"></div>
     <!-- Group B: Scope mode (cyan wash) -->
     <div class="toolbar-group-b">
+      <button
+        class="toolbar-btn scope-demand-toggle"
+        class:active={scopeDemandOn}
+        aria-pressed={scopeDemandOn}
+        onclick={() => onScopeDemandChange(!scopeDemandOn)}
+        title="Request scope viewer data"
+      >VIEW {scopeDemandOn ? 'ON' : 'OFF'}</button>
+      <div class="toolbar-sub-separator"></div>
       <div class="toolbar-group">
         {#each MODE_BUTTONS as [m, label]}
           <button
