@@ -14,7 +14,7 @@
   import AmberTelemetryStrip from './AmberTelemetryStrip.svelte';
   import AmberMemoryStrip from './AmberMemoryStrip.svelte';
   import type { IndToken } from './AmberIndStrip.svelte';
-  import { runtime } from '$lib/runtime';
+  import { presentationResources, runtime } from '$lib/runtime/frontend-runtime';
   import { isFieldAvailable } from '$lib/state/field-status';
   import { formatOffsetKHz } from '../rit-utils';
 
@@ -218,11 +218,20 @@
   $effect(() => {
     if (!cockpitProps.hasAudioFft) return;
 
-    return runtime.scope.subscribe((frame) => {
+    runtime.scope.registerPresentationDriver(presentationResources);
+    const lease = presentationResources.acquire('audio-fft', 'AmberCockpit');
+    const unsubscribe = runtime.scope.subscribe((frame) => {
       fftPixels = frame.pixels;
       fftBandwidth = frame.endFreq > frame.startFreq ? frame.endFreq - frame.startFreq : undefined;
       fftPush?.(frame.pixels);
     });
+    let released = false;
+    return () => {
+      if (released) return;
+      released = true;
+      unsubscribe();
+      presentationResources.release(lease);
+    };
   });
 
   // Record active-receiver frequency changes into the local QSY history

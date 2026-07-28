@@ -9,7 +9,7 @@
   import AmberIndStrip from './AmberIndStrip.svelte';
   import AmberSmeter from './AmberSmeter.svelte';
   import type { IndToken } from './AmberIndStrip.svelte';
-  import { runtime } from '$lib/runtime';
+  import { presentationResources, runtime } from '$lib/runtime/frontend-runtime';
   import { isFieldAvailable } from '$lib/state/field-status';
 
   // Band lookup by frequency (LCD-specific, mirrors AmberCockpit)
@@ -175,11 +175,20 @@
   $effect(() => {
     if (!scopeProps.hasAudioFft) return;
 
-    return runtime.scope.subscribe((frame) => {
+    runtime.scope.registerPresentationDriver(presentationResources);
+    const lease = presentationResources.acquire('audio-fft', 'AmberScope');
+    const unsubscribe = runtime.scope.subscribe((frame) => {
       fftPixels = frame.pixels;
       fftBandwidth = frame.endFreq > frame.startFreq ? frame.endFreq - frame.startFreq : undefined;
       fftPush?.(frame.pixels);
     });
+    let released = false;
+    return () => {
+      if (released) return;
+      released = true;
+      unsubscribe();
+      presentationResources.release(lease);
+    };
   });
 </script>
 
