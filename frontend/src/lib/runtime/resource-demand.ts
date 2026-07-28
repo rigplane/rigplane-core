@@ -24,8 +24,6 @@ export class ResourceDemand<H> {
   private readonly states = new Map<AppResource, State<H>>();
   private readonly leases = new Set<ResourceLease>();
   private readonly issuedStarts = new WeakSet<object>();
-  private readonly cleanupLedger: [AppResource, H][] = [];
-  private readonly adoptedLedger: [AppResource, H][] = [];
   private operations: ResourceOperation<H>[] = [];
   private ended = false;
 
@@ -64,10 +62,15 @@ export class ResourceDemand<H> {
     return this.operations.splice(0).filter((operation) => {
       if (operation.kind !== 'dispose') return true;
       const state = this.state(operation.resource);
-      if (state.pending?.kind !== 'start')
-        return !this.adoptedLedger.some(([r, h]) => r === operation.resource && Object.is(h, operation.handle));
-      this.operations.push(operation);
-      return false;
+      const aliasesActive = state.activeHandle !== undefined
+        && Object.is(state.activeHandle, operation.handle);
+      const aliasesStopping = state.pending?.kind === 'stop'
+        && Object.is(state.pending.handle, operation.handle);
+      if (state.pending?.kind === 'start' || aliasesActive || aliasesStopping) {
+        this.operations.push(operation);
+        return false;
+      }
+      return true;
     });
   }
   completeStart(op: ResourceOperation<H>, result: { handle: H } | { error: string }): boolean {
@@ -75,15 +78,13 @@ export class ResourceDemand<H> {
       return false;
     const state = this.state(op.resource);
     if (state.pending !== op || op.generation !== state.generation || this.ended) {
-      if ('handle' in result && this.claimCleanup(op.resource, result.handle))
+      if ('handle' in result)
         this.operations.push({ ...op, kind: 'dispose', handle: result.handle });
       return false;
     }
     state.pending = undefined;
     if ('error' in result) state.health = 'failed';
     else {
-      this.claimCleanup(op.resource, result.handle);
-      this.adoptedLedger.push([op.resource, result.handle]);
       state.activeHandle = result.handle;
       state.health = 'streaming';
     }
@@ -116,13 +117,19 @@ export class ResourceDemand<H> {
     ) => {
       const active = this.states.get(candidate.resource)?.activeHandle;
       if (active !== undefined && Object.is(active, candidate.handle)) return;
-      const duplicate = cleanups.findIndex(
-        (cleanup) =>
-          cleanup.resource === candidate.resource && Object.is(cleanup.handle, candidate.handle),
+      const aliases = cleanups.flatMap((cleanup, index) =>
+        cleanup.resource === candidate.resource && Object.is(cleanup.handle, candidate.handle)
+          ? [index] : [],
       );
-      if (duplicate < 0) cleanups.push(candidate);
-      else if (candidate.kind === 'stop' && cleanups[duplicate].kind === 'dispose')
-        cleanups[duplicate] = candidate;
+      if (candidate.kind === 'stop') {
+        if (!aliases.length) cleanups.push(candidate);
+        else {
+          cleanups[aliases[0]] = candidate;
+          for (const index of aliases.slice(1).reverse()) cleanups.splice(index, 1);
+        }
+      } else if (!aliases.some((index) =>
+        cleanups[index].kind === 'stop' || cleanups[index].generation === candidate.generation
+      )) cleanups.push(candidate);
     };
     for (const operation of this.operations) {
       if (operation.kind !== 'start') addCleanup(operation);
@@ -149,11 +156,6 @@ export class ResourceDemand<H> {
       this.states.set(resource, state);
     }
     return state;
-  }
-  private claimCleanup(resource: AppResource, handle: H): boolean {
-    const claimed = this.cleanupLedger.some(([r, h]) => r === resource && Object.is(h, handle));
-    if (!claimed) this.cleanupLedger.push([resource, handle]);
-    return !claimed;
   }
   private reconcile(resource: AppResource, state: State<H>): void {
     const wanted = !this.ended && state.demand > 0 && state.selected && state.available;

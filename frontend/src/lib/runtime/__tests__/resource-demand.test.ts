@@ -1,5 +1,6 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { ResourceDemand, type AppResource } from '../resource-demand';
+import { PresentationResourceHost } from '../resource-host';
 const one = (model: ResourceDemand<string>) => {
   const operations = model.takeOperations();
   expect(operations).toHaveLength(1);
@@ -26,13 +27,13 @@ const overlap = (model: ResourceDemand<string>, resource: AppResource) => {
   return { stale, current: one(model), activeLease };
 };
 const cleanupCases = [
-  [false, ['rx-audio', 'rx-audio'], ['H', 'H'], ['rx-audio:H']],
-  [true, ['rx-audio', 'rx-audio'], ['H', 'H'], ['rx-audio:H']],
+  [false, ['rx-audio', 'rx-audio'], ['H', 'H'], ['rx-audio:H', 'rx-audio:H']],
+  [true, ['rx-audio', 'rx-audio'], ['H', 'H'], ['rx-audio:H', 'rx-audio:H']],
   [false, ['rx-audio', 'rx-audio'], ['A', 'B'], ['rx-audio:A', 'rx-audio:B']],
   [false, ['rx-audio', 'hardware-scope'], ['H', 'H'], ['rx-audio:H', 'hardware-scope:H']],
 ] as const;
 describe('ResourceDemand foundation', () => {
-  it('uses exact leases and remembers adopted handles across cleanup drains', () => {
+  it('uses exact leases and tracks cleanup per issued start', () => {
     const model = new ResourceDemand<string>('session-1');
     const wider = {
       available: false,
@@ -65,7 +66,13 @@ describe('ResourceDemand foundation', () => {
     const stop = one(model);
     expect(model.completeStop(stop)).toBe(true);
     for (const operation of late) expect(model.completeStart(operation, { handle: 'stable' })).toBe(false);
-    expect(model.takeOperations()).toEqual([]);
+    expect(model.takeOperations()).toMatchObject(
+      [staleA, ...late].map((operation) => ({
+        kind: 'dispose',
+        generation: operation.generation,
+        handle: 'stable',
+      })),
+    );
     const replacement = model.acquire('rx-audio', 'replacement');
     model.completeStart(one(model), { handle: 'next' });
     model.release(replacement);
@@ -74,7 +81,7 @@ describe('ResourceDemand foundation', () => {
     model.completeStart(one(model), { handle: 'latest' });
     expect(model.completeStop(staleStop)).toBe(false);
   });
-  it.each(cleanupCases)('dedupes orphan cleanup %#', (drain, resources, handles, expected) => {
+  it.each(cleanupCases)('emits orphan cleanup per start issuance %#', (drain, resources, handles, expected) => {
     const model = new ResourceDemand<string>('session-1');
     resources.forEach((resource) => model.configure(resource, { available: true, selected: true }));
     const starts = resources.map((resource, index) => supersede(model, resource, String(index)));
@@ -84,6 +91,42 @@ describe('ResourceDemand foundation', () => {
     });
     emitted.push(...model.takeOperations());
     expect(emitted.map((op) => 'handle' in op && `${op.resource}:${op.handle}`)).toEqual(expected);
+  });
+  it('disposes a reused singleton once per abandoned start issuance', () => {
+    const model = new ResourceDemand<string>('session-1');
+    ready(model, 'rx-audio');
+    const first = supersede(model, 'rx-audio', 'first');
+    const second = supersede(model, 'rx-audio', 'second');
+    expect(model.completeStart(first, { handle: 'singleton' })).toBe(false);
+    expect(model.completeStart(second, { handle: 'singleton' })).toBe(false);
+    expect(model.takeOperations()).toMatchObject([
+      { kind: 'dispose', generation: first.generation, handle: 'singleton' },
+      { kind: 'dispose', generation: second.generation, handle: 'singleton' },
+    ]);
+    expect(model.completeStart(second, { handle: 'singleton' })).toBe(false);
+    expect(model.takeOperations()).toEqual([]);
+  });
+  it('balances repeated same-microtask cycles from a singleton driver', async () => {
+    const handle = {};
+    const dispose = vi.fn();
+    const stop = vi.fn();
+    const host = new PresentationResourceHost<object>('session-1');
+    host.configure('rx-audio', {
+      available: true,
+      selected: true,
+      driver: { start: () => handle, stop, dispose },
+    });
+    const first = host.acquire('rx-audio', 'first');
+    expect(host.release(first)).toBe(true);
+    const second = host.acquire('rx-audio', 'second');
+    expect(host.release(second)).toBe(true);
+    await host.teardown();
+    expect(dispose.mock.calls).toEqual([[handle], [handle]]);
+    expect(stop).not.toHaveBeenCalled();
+    expect(host.snapshot('rx-audio')).toMatchObject({
+      demand: 0,
+      health: 'inactive',
+    });
   });
   it('defers singleton cleanup until pending adoption', () => {
     const model = new ResourceDemand<string>('session-1');
@@ -95,7 +138,15 @@ describe('ResourceDemand foundation', () => {
     expect([model.takeOperations(), model.takeOperations()]).toEqual([[], []]);
     expect(model.completeStart(liveStart, { handle: 'stable' })).toBe(true);
     model.release(liveLease);
-    expect(model.takeOperations().map((op) => op.kind)).toEqual(['stop']);
+    const stop = one(model);
+    expect(stop.kind).toBe('stop');
+    expect(model.takeOperations()).toEqual([]);
+    expect(model.completeStop(stop)).toBe(true);
+    expect(one(model)).toMatchObject({
+      kind: 'dispose',
+      generation: staleStart.generation,
+      handle: 'stable',
+    });
   });
   it('requires explicit retry and disposes a completed abandoned start once', () => {
     const model = new ResourceDemand<string>('session-1');
@@ -145,8 +196,14 @@ describe('ResourceDemand foundation', () => {
     'prefers one stop when dispose aliases active or queued stop work (%s)',
     (releaseBeforeTeardown) => {
       const model = new ResourceDemand<string>('session-1');
-      const { stale, current, activeLease } = overlap(model, 'hardware-scope');
-      model.completeStart(stale, { handle: 'stable' });
+      ready(model, 'hardware-scope');
+      const stale = [
+        supersede(model, 'hardware-scope', 'stale-a'),
+        supersede(model, 'hardware-scope', 'stale-b'),
+      ];
+      const activeLease = model.acquire('hardware-scope', 'current');
+      const current = one(model);
+      for (const operation of stale) model.completeStart(operation, { handle: 'stable' });
       model.completeStart(current, { handle: 'stable' });
       if (releaseBeforeTeardown) model.release(activeLease);
       expect(model.teardown()).toMatchObject([{ kind: 'stop', handle: 'stable' }]);
