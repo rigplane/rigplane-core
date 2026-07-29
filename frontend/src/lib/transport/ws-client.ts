@@ -4,6 +4,10 @@ import { isLiveRadioAvailable, setWsConnected, setHttpConnected, markStateUpdate
 import { getRadioState, patchActiveReceiver, patchRadioState, resetRadioState, setRadioState } from '../stores/radio.svelte';
 
 export type ConnectionState = 'disconnected' | 'connecting' | 'connected' | 'reconnecting';
+export interface ControlSessionTransition {
+  state: ConnectionState;
+  epoch: number;
+}
 export type CommandDeliveryKind = 'transport-sent' | 'ack' | 'response-ok' | 'response-error' | 'error';
 export interface CommandDeliveryEvent {
   commandId: string;
@@ -15,6 +19,7 @@ export interface CommandDeliveryEvent {
 type MessageHandler = (msg: WsIncoming) => void;
 type BinaryHandler = (data: ArrayBuffer) => void;
 type StateHandler = (state: ConnectionState) => void;
+export type ControlSessionTransitionHandler = (transition: ControlSessionTransition) => void;
 type CommandDeliveryHandler = (event: CommandDeliveryEvent) => void;
 type PendingPttRelease = { command: WsCommand; originalEpoch: number };
 type TrackedPttCommand = PendingPttRelease & {
@@ -59,6 +64,7 @@ export class WsChannel {
   private messageHandlers = new Set<MessageHandler>();
   private binaryHandlers = new Set<BinaryHandler>();
   private stateHandlers = new Set<StateHandler>();
+  private sessionTransitionHandlers = new Set<ControlSessionTransitionHandler>();
   private _state: ConnectionState = 'disconnected';
   private url = '';
   private _subscribeMsg: Record<string, unknown> | null = null;
@@ -73,8 +79,13 @@ export class WsChannel {
   }
 
   private setState(s: ConnectionState) {
+    const changed = this._state !== s;
     this._state = s;
     this.stateHandlers.forEach((h) => h(s));
+    if (changed) {
+      const transition = { state: s, epoch: this.transportEpoch };
+      this.sessionTransitionHandlers.forEach((h) => h(transition));
+    }
   }
 
   connect(url: string) {
@@ -243,6 +254,11 @@ export class WsChannel {
   onStateChange(handler: StateHandler): () => void {
     this.stateHandlers.add(handler);
     return () => this.stateHandlers.delete(handler);
+  }
+
+  onSessionTransition(handler: ControlSessionTransitionHandler): () => void {
+    this.sessionTransitionHandlers.add(handler);
+    return () => this.sessionTransitionHandlers.delete(handler);
   }
 
   onCommandDelivery(handler: CommandDeliveryHandler): () => void {
@@ -548,6 +564,10 @@ export function disconnect() {
 
 export function onCommandDelivery(handler: CommandDeliveryHandler): () => void {
   return _ctrl.onCommandDelivery(handler);
+}
+
+export function onControlSessionTransition(handler: ControlSessionTransitionHandler): () => void {
+  return _ctrl.onSessionTransition(handler);
 }
 
 export function sendCommand(name: string, params: Record<string, unknown> = {}, id?: string): boolean {
