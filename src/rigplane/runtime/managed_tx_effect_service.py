@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 import asyncio
 from dataclasses import dataclass, field
 
@@ -22,6 +20,7 @@ class _Service:
     def __init__(self, host: _ManagedTxEffectHost) -> None:
         self._host, self._lock, self._lane = host, asyncio.Lock(), asyncio.Lock()
         self._claims: dict[tuple[int, str], _Claim] = {}
+        self._barrier: tuple[int, str | None] = (-1, None)
 
     async def __call__(
         self, supervisor: tx.TxSafetySupervisor, transition: tx.TxTransition
@@ -29,27 +28,22 @@ class _Service:
         queue = list(transition.effects)
         for effect in queue:
             if isinstance(effect, tx.CancelProviderAttempt):
-                followup = await self._cancel(supervisor, effect)
+                queue.extend(await self._cancel(supervisor, effect))
             else:
-                followup = await self._attempt(supervisor, effect)
-            queue.extend(followup)
+                queue.extend(await self._attempt(supervisor, effect))
 
     async def _attempt(
         self, supervisor: tx.TxSafetySupervisor, effect: tx.ProviderAttempt
     ) -> tuple[tx.TxEffect, ...]:
         key = (effect.provider_generation, effect.id)
         async with self._lock:
-            if key in self._claims or any(
-                claim.effect.provider_generation > effect.provider_generation
-                for claim in self._claims.values()
-            ):
+            active = supervisor.snapshot.active_attempt
+            if key in self._claims or key == self._barrier or active != effect:
                 return ()
-            blockers = tuple(
-                claim.done
-                for claim in self._claims.values()
-                if claim.effect.provider_generation != effect.provider_generation
-                and not claim.done.is_set()
-            )
+            if effect.provider_generation < self._barrier[0]:
+                return ()
+            self._barrier = (effect.provider_generation, None)
+            blockers = tuple(claim.done for claim in self._claims.values())
             claim = self._claims[key] = _Claim(effect)
             claim.task = asyncio.create_task(self._run(claim, blockers))
         deadline = effect.started_at_monotonic + effect.timeout_seconds
@@ -58,61 +52,67 @@ class _Service:
     async def _run(self, claim: _Claim, blockers: tuple[asyncio.Event, ...]) -> None:
         await asyncio.gather(*(blocker.wait() for blocker in blockers))
         async with self._lock:
+            if claim.done.is_set():
+                return
             claim.lane = lane = self._lane
         async with lane:
-            if claim.retirement is not None:
+            if claim.done.is_set() or claim.retirement is not None:
                 return
             effect = claim.effect
             if effect.kind is tx.ProviderAttemptKind.READ_PTT:
                 await self._host.read(effect.provider_generation)
             else:
-                await self._host.write(
-                    effect.provider_generation,
-                    effect.kind is tx.ProviderAttemptKind.WRITE_ON,
-                )
+                on = effect.kind is tx.ProviderAttemptKind.WRITE_ON
+                await self._host.write(effect.provider_generation, on)
 
     async def _wait(
         self, supervisor: tx.TxSafetySupervisor, claim: _Claim, deadline: float
     ) -> tuple[tx.TxEffect, ...]:
-        assert claim.task is not None
+        if (task := claim.task) is None:
+            return ()
         done, _ = await asyncio.wait(
-            (claim.task,), timeout=max(0.0, deadline - self._host._clock())
+            (task,), timeout=max(0.0, deadline - self._host._clock())
         )
         if not done:
             return await self._poison(claim)
         async with self._lock:
             if claim.retirement is not None or claim.done.is_set():
                 return ()
-            try:
-                claim.task.result()
-            except BaseException as exc:
-                error: str | None = str(exc) or type(exc).__name__
-            else:
-                error = None
+            exc = asyncio.CancelledError() if task.cancelled() else task.exception()
+            error = None if exc is None else str(exc) or type(exc).__name__
             transition = supervisor.settle_attempt(
                 claim.effect.id,
                 claim.effect.provider_generation,
                 succeeded=error is None,
                 error=error,
             )
-            claim.done.set()
+            self._finish(claim)
             return tuple(transition.effects)
 
     async def _cancel(
         self, supervisor: tx.TxSafetySupervisor, effect: tx.CancelProviderAttempt
     ) -> tuple[tx.TxEffect, ...]:
+        key = (effect.provider_generation, effect.attempt_id)
         async with self._lock:
-            claim = self._claims.get((effect.provider_generation, effect.attempt_id))
-            if claim is None or claim.done.is_set():
+            claim = self._claims.get(key)
+            if claim is None:
+                active = supervisor.snapshot.active_attempt
+                if active is not None:
+                    active_key = (active.provider_generation, active.id)
+                    if active_key == key and key[0] >= self._barrier[0]:
+                        self._barrier = key
+                        end = supervisor.settle_attempt
+                        done: tx.TxTransition = end(active.id, key[0], succeeded=False)
+                        return tuple(done.effects)
                 return ()
             if claim.cancel_deadline is None:
                 claim.cancel_deadline = effect.settlement_deadline_monotonic
                 assert claim.task is not None
                 claim.task.cancel()
-            deadline = claim.cancel_deadline
-        return await self._wait(supervisor, claim, deadline)
+        return await self._wait(supervisor, claim, claim.cancel_deadline)
 
     async def _poison(self, claim: _Claim) -> tuple[tx.TxEffect, ...]:
+        clock = self._host._clock
         async with self._lock:
             if claim.done.is_set():
                 return ()
@@ -123,15 +123,11 @@ class _Service:
                 if claim.lane is self._lane:
                     self._lane = asyncio.Lock()
                 claim.retirement = asyncio.create_task(self._retire(claim))
-                claim.retirement_deadline = (
-                    self._host._clock() + claim.effect.timeout_seconds
-                )
+                claim.retirement_deadline = clock() + claim.effect.timeout_seconds
                 claim.retirement.add_done_callback(self._harvest)
             retirement = claim.retirement
-        done, _ = await asyncio.wait(
-            (retirement,),
-            timeout=max(0.0, claim.retirement_deadline - self._host._clock()),
-        )
+        timeout = max(0.0, claim.retirement_deadline - clock())
+        done, _ = await asyncio.wait((retirement,), timeout=timeout)
         if done:
             await retirement
         return ()
@@ -141,10 +137,14 @@ class _Service:
             await self._host.retire(claim.effect.provider_generation)
         finally:
             async with self._lock:
-                claim.done.set()
+                self._finish(claim)
 
-    @staticmethod
-    def _harvest(task: asyncio.Task[object]) -> None:
+    def _finish(self, claim: _Claim) -> None:
+        self._claims.pop((claim.effect.provider_generation, claim.effect.id), None)
+        claim.done.set()
+        claim.task = claim.retirement = claim.lane = None
+
+    def _harvest(self, task: asyncio.Task[object]) -> None:
         if not task.cancelled():
             task.exception()
 
