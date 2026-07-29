@@ -65,6 +65,8 @@ export class WsChannel {
   private binaryHandlers = new Set<BinaryHandler>();
   private stateHandlers = new Set<StateHandler>();
   private sessionTransitionHandlers = new Set<ControlSessionTransitionHandler>();
+  private sessionTransitionQueue: ControlSessionTransition[] = [];
+  private dispatchingSessionTransition = false;
   private _state: ConnectionState = 'disconnected';
   private url = '';
   private _subscribeMsg: Record<string, unknown> | null = null;
@@ -83,8 +85,21 @@ export class WsChannel {
     this._state = s;
     this.stateHandlers.forEach((h) => h(s));
     if (changed) {
-      const transition = { state: s, epoch: this.transportEpoch };
-      this.sessionTransitionHandlers.forEach((h) => h(transition));
+      this._emitSessionTransition({ state: s, epoch: this.transportEpoch });
+    }
+  }
+
+  private _emitSessionTransition(transition: ControlSessionTransition): void {
+    this.sessionTransitionQueue.push(transition);
+    if (this.dispatchingSessionTransition) return;
+    this.dispatchingSessionTransition = true;
+    try {
+      while (this.sessionTransitionQueue.length > 0) {
+        const next = this.sessionTransitionQueue.shift()!;
+        for (const handler of [...this.sessionTransitionHandlers]) handler(next);
+      }
+    } finally {
+      this.dispatchingSessionTransition = false;
     }
   }
 
@@ -107,6 +122,12 @@ export class WsChannel {
       socketEpoch = ++this.transportEpoch;
       this.attempt = 0;
       this.setState('connected');
+      if (
+        this.ws !== ws
+        || ws.readyState !== WebSocket.OPEN
+        || this._state !== 'connected'
+        || socketEpoch !== this.transportEpoch
+      ) return;
       this._resetHeartbeat();
       this._startKeepalive();
       // drain send queue
