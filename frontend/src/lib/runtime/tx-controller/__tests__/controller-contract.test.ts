@@ -8,8 +8,9 @@ type Eligibility = StartEvent['eligibility'];
 type Observation = StartEvent['ptt'];
 type Marker = Observation['marker'];
 type Command = Parameters<TxControllerDependencies['sendPtt']>[0];
+type Correlation = Parameters<TxControllerDependencies['sendPtt']>[2];
 type Report = Parameters<TxControllerDependencies['sendPtt']>[3];
-type Send = { command: Command; report: Report };
+type Send = { command: Command; correlation: Correlation; report: Report };
 
 const marker = (seq: number, epoch = 1): Marker => ({
   authorityEpoch: epoch,
@@ -37,8 +38,8 @@ function harness(options: { audio?: Promise<string | null>; throwOn?: Command } 
   let id = 0;
   const dependencies: TxControllerDependencies = {
     startAudio: vi.fn(() => options.audio ?? Promise.resolve(null)),
-    sendPtt: vi.fn((command, _id, _correlation, report) => {
-      sends.push({ command, report });
+    sendPtt: vi.fn((command, _id, correlation, report) => {
+      sends.push({ command, correlation, report });
       if (command === options.throwOn) throw new Error(`${command} transport closed`);
     }),
     stopLocalAudio: vi.fn(),
@@ -117,6 +118,91 @@ describe('TxController public contract matrix', () => {
     expect(h.controller.snapshot()).toMatchObject({ phase: 'releasing', pendingOff: { commandId: 'off-e1' } });
     expect(commands(h, 'off')).toHaveLength(1);
     // Kills eligibility-drift mutations that leave the App lease keyed.
+  });
+
+  it('isolates the lease target from caller and snapshot mutation before ON', async () => {
+    let resolveAudio!: (error: string | null) => void;
+    const callerTarget: NonNullable<Eligibility['target']> = { ...target };
+    const h = harness({ audio: new Promise((resolve) => { resolveAudio = resolve; }) });
+    await begin(h, { ...allowed, target: callerTarget });
+    callerTarget.receiver = 'SUB';
+    h.controller.snapshot().leaseTarget = null;
+    resolveAudio(null);
+    await flush();
+    expect(commands(h, 'on')[0]!.correlation.target).toEqual(target);
+    // Kills target sampling from caller-owned or publicly exposed state when delayed audio emits ON.
+  });
+
+  it('isolates ON identity from listener mutation between audio-ready and dispatch', async () => {
+    const h = harness();
+    const unsubscribe = h.controller.subscribe((state) => {
+      if (state.phase === 'audio-start-pending' && state.onCommandId !== null) {
+        state.leaseTarget!.slot = 'B';
+        state.leaseTarget!.frequencyHz += 1;
+      }
+    });
+    await begin(h);
+    unsubscribe();
+    expect(commands(h, 'on')[0]!.correlation.target).toEqual(target);
+    // Kills lease identity resampling after synchronous observers run but before effects dispatch.
+  });
+
+  it('keeps OFF isolated from caller, snapshot, and prior correlation mutation', async () => {
+    const callerTarget: NonNullable<Eligibility['target']> = { ...target };
+    const eligibility = { ...allowed, target: callerTarget };
+    const h = harness();
+    await begin(h, eligibility);
+    const on = commands(h, 'on')[0]!;
+    report(h, 'on', 'sent', 2);
+    authority(h, true, 3, eligibility);
+    callerTarget.slot = 'B';
+    h.controller.snapshot().leaseTarget = null;
+    on.correlation.target.frequencyHz += 1;
+    h.controller.dispatch({ type: 'release', guard: h.controller.snapshot().guard!, commandId: 'off-release' });
+    expect(commands(h, 'off')[0]!.correlation.target).toEqual(target);
+    // Kills target resampling or shared references between ON and OFF.
+  });
+
+  it('keeps the lease target and original epoch stable through target drift and OFF delivery rebinding', async () => {
+    const h = harness();
+    await key(h);
+    const drifted = { ...allowed, target: { receiver: 'SUB', slot: 'B', frequencyHz: target.frequencyHz + 1 } as const };
+    authority(h, true, 4, drifted);
+    const on = commands(h, 'on')[0]!;
+    const off = commands(h, 'off')[0]!;
+    expect(on.correlation.target).toEqual(target);
+    expect(on.correlation.target).not.toBe(target);
+    expect(off.correlation.target).toEqual(on.correlation.target);
+    expect(off.correlation.target).not.toBe(on.correlation.target);
+    expect(off.correlation.originalEpoch).toBe(on.correlation.originalEpoch);
+    h.controller.dispatch({ type: 'epoch', epoch: 2, baseline: marker(1, 2), offCommandId: 'off-e2' });
+    report(h, 'off', 'sent', 2, 2);
+    expect(h.controller.snapshot().pendingOff).toMatchObject({ originalEpoch: 1, deliveryEpoch: 2, deliveryRebound: true });
+    expect(off.correlation).toMatchObject({ originalEpoch: 1, target });
+    // Kills mutable target/epoch sampling during drift-triggered release and reconnect delivery.
+  });
+
+  it('does not let a rejected start overwrite identity and reuses after terminal cleanup', async () => {
+    const h = harness();
+    await key(h);
+    const nextTarget = { receiver: 'SUB', slot: 'B', frequencyHz: target.frequencyHz + 1 } as const;
+    h.controller.dispatch({
+      type: 'start', sourceId: 'desktop', leaseId: 'rejected', intent: 'momentary',
+      eligibility: { ...allowed, target: nextTarget }, ptt: ptt(false, 4),
+    });
+    h.controller.dispatch({ type: 'release', guard: h.controller.snapshot().guard!, commandId: 'off-first' });
+    expect(commands(h, 'off')[0]!.correlation.target).toEqual(target);
+    report(h, 'off', 'sent', 4);
+    authority(h, false, 5);
+    expect(h.controller.snapshot().phase).toBe('idle');
+    h.controller.dispatch({
+      type: 'start', sourceId: 'desktop', leaseId: 'next', intent: 'momentary',
+      eligibility: { ...allowed, target: nextTarget }, ptt: ptt(false, 6),
+    });
+    await flush();
+    expect(commands(h, 'on')).toHaveLength(2);
+    expect(commands(h, 'on')[1]!.correlation.target).toEqual(nextTarget);
+    // Kills rejected-start overwrite and stale private identity reuse after terminal cleanup.
   });
 
   it('accepts only fresh authority, fails on backend de-key, and never replays ON after external re-key', async () => {
