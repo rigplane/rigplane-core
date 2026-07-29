@@ -174,12 +174,18 @@ class _CivDataTransaction:
 
 
 @dataclass(frozen=True, slots=True)
-class _AuthoritativePttRead:
-    observer: Callable[[ProviderPttObservation], None]
+class _ManagedTxPortToken:
     provider_generation: int
     binding_epoch: int
-    source_generation: int
-    transport: object
+    civ_source_generation: int
+    transport: Any
+
+
+@dataclass(frozen=True, slots=True)
+class _AuthoritativePttRead:
+    observer: Callable[[ProviderPttObservation], None]
+    token: _ManagedTxPortToken
+    managed: bool
 
 
 _CMD14_RECEIVER_LEVEL_FIELDS = {
@@ -566,6 +572,10 @@ class CivRuntime:
         self._active_ptt_read: _AuthoritativePttRead | None = None
         self._active_rx_source_generation: int | None = None
         self._civ_data_transaction: _CivDataTransaction | None = None
+        self._managed_tx_ports: dict[int, _ManagedTxPortToken] = {}
+        self._poisoned_managed_tx_generations: set[int] = set()
+        self._managed_tx_sends: dict[int, set[asyncio.Task[None]]] = {}
+        self._managed_tx_retirements: dict[int, asyncio.Task[None]] = {}
 
     # ------------------------------------------------------------------
     # Public API (design doc)
@@ -587,6 +597,9 @@ class CivRuntime:
         """Bind authoritative PTT readback to this CI-V transport generation."""
         if provider_generation < 0:
             raise ValueError("provider_generation must be non-negative")
+        self._poison_bound_managed_tx_port()
+        if provider_generation in self._poisoned_managed_tx_generations:
+            raise ConnectionError("managed TX provider generation is terminal")
         if provider_generation != self._ptt_observer_provider_generation:
             self._ptt_observation_seq = 0
         self._ptt_observer_binding_epoch += 1
@@ -594,8 +607,32 @@ class CivRuntime:
         self._ptt_observer_provider_generation = provider_generation
         self._ptt_observer_civ_generation = self._host._civ_epoch
 
+    def capture_managed_port(
+        self,
+        provider_generation: int,
+        observer: Callable[[ProviderPttObservation], None],
+    ) -> bool:
+        if provider_generation in self._managed_tx_ports:
+            raise ConnectionError("managed TX provider generation already captured")
+        self.bind_ptt_observer(
+            provider_generation=provider_generation, observer=observer
+        )
+        transport = self._host._civ_transport
+        if transport is None:
+            self.unbind_ptt_observer()
+            return False
+        token = _ManagedTxPortToken(
+            provider_generation,
+            self._ptt_observer_binding_epoch,
+            self._host._civ_epoch,
+            transport,
+        )
+        self._managed_tx_ports[provider_generation] = token
+        return True
+
     def unbind_ptt_observer(self) -> None:
         """Detach the callback while preserving this provider's sequence."""
+        self._poison_bound_managed_tx_port()
         self._ptt_observer_binding_epoch += 1
         self._ptt_observer = None
 
@@ -608,15 +645,19 @@ class CivRuntime:
     ) -> bool:
         """Publish one exact PTT response only while its binding stays current."""
         async with self._ptt_read_lock:
-            transport = self._host._civ_transport
-            read = _AuthoritativePttRead(
-                observer=observer,
-                provider_generation=provider_generation,
-                binding_epoch=self._ptt_observer_binding_epoch,
-                source_generation=self._host._civ_epoch,
-                transport=transport,
-            )
-            if transport is None or not self._ptt_read_is_current(read):
+            token = self._managed_tx_ports.get(provider_generation)
+            managed = token is not None
+            if token is None:
+                token = _ManagedTxPortToken(
+                    provider_generation,
+                    self._ptt_observer_binding_epoch,
+                    self._host._civ_epoch,
+                    self._host._civ_transport,
+                )
+            elif not self._managed_tx_port_is_current(token):
+                return False
+            read = _AuthoritativePttRead(observer, token, managed)
+            if token.transport is None or not self._ptt_read_is_current(read):
                 return False
             self._active_ptt_read = read
             try:
@@ -629,7 +670,7 @@ class CivRuntime:
                     and self._ptt_read_is_current(read)
                     and self._emit_authoritative_ptt(
                         result.frame,
-                        source_generation=read.source_generation,
+                        source_generation=read.token.civ_source_generation,
                         expected=read,
                     )
                 )
@@ -638,15 +679,68 @@ class CivRuntime:
                     self._active_ptt_read = None
 
     def _ptt_read_is_current(self, read: _AuthoritativePttRead) -> bool:
+        token = read.token
         return (
             self._active_ptt_read in (None, read)
-            and self._ptt_observer_binding_epoch == read.binding_epoch
+            and (not read.managed or self._managed_tx_port_is_current(token))
+            and self._ptt_observer_binding_epoch == token.binding_epoch
             and self._ptt_observer is read.observer
-            and self._ptt_observer_provider_generation == read.provider_generation
-            and self._ptt_observer_civ_generation == read.source_generation
-            and self._host._civ_epoch == read.source_generation
-            and self._host._civ_transport is read.transport
+            and self._ptt_observer_provider_generation == token.provider_generation
+            and self._ptt_observer_civ_generation == token.civ_source_generation
+            and self._host._civ_epoch == token.civ_source_generation
+            and self._host._civ_transport is token.transport
         )
+
+    def _managed_tx_port_is_current(self, token: _ManagedTxPortToken) -> bool:
+        return (
+            self._managed_tx_ports.get(token.provider_generation) is token
+            and token.provider_generation not in self._poisoned_managed_tx_generations
+            and self._ptt_observer_provider_generation == token.provider_generation
+            and self._ptt_observer_binding_epoch == token.binding_epoch
+            and self._ptt_observer_civ_generation == token.civ_source_generation
+            and self._host._civ_epoch == token.civ_source_generation
+            and self._host._civ_transport is token.transport
+        )
+
+    def _poison_managed_tx_port(self, token: _ManagedTxPortToken) -> None:
+        self._poisoned_managed_tx_generations.add(token.provider_generation)
+        for task in self._managed_tx_sends.get(token.provider_generation, ()):
+            task.cancel()
+
+    def _poison_bound_managed_tx_port(self) -> None:
+        generation = self._ptt_observer_provider_generation
+        if generation is not None and (token := self._managed_tx_ports.get(generation)):
+            self._poison_managed_tx_port(token)
+
+    async def write_managed_ptt(
+        self, civ_frame: bytes, provider_generation: int
+    ) -> None:
+        token = self._managed_tx_ports.get(provider_generation)
+        if token is None or not self._managed_tx_port_is_current(token):
+            raise ConnectionError("managed TX physical port is stale")
+        await self.execute_civ_transaction(civ_frame, expect="none", owner=token)
+
+    async def retire_managed_tx_port(self, provider_generation: int) -> None:
+        token = self._managed_tx_ports.get(provider_generation)
+        if token is None:
+            raise ConnectionError("managed TX physical port was not captured")
+        self._poison_managed_tx_port(token)
+        if (
+            self._ptt_observer_provider_generation == provider_generation
+            and self._ptt_observer_binding_epoch == token.binding_epoch
+        ):
+            self.unbind_ptt_observer()
+        if self._host._civ_epoch == token.civ_source_generation:
+            self.advance_generation("managed TX physical port retired")
+        if self._host._civ_transport is token.transport:
+            self._host._civ_transport = None
+        barrier = self._managed_tx_retirements.get(provider_generation)
+        if barrier is None or (
+            barrier.done() and (barrier.cancelled() or barrier.exception() is not None)
+        ):
+            barrier = asyncio.create_task(token.transport.disconnect())
+            self._managed_tx_retirements[provider_generation] = barrier
+        await asyncio.shield(barrier)
 
     async def stop_pump(self) -> None:
         """Stop CI-V receive pump and fail pending request futures."""
@@ -708,9 +802,13 @@ class CivRuntime:
 
     def advance_generation(self, reason: str) -> None:
         """Advance CI-V request generation and fail stale waiters."""
+        source_generation = self._host._civ_epoch
         self._host._civ_epoch = self._host._civ_request_tracker.advance_generation(
             ConnectionError(f"CI-V generation advanced: {reason}")
         )
+        for token in self._managed_tx_ports.values():
+            if token.civ_source_generation == source_generation:
+                self._poison_managed_tx_port(token)
 
     async def execute_civ_raw(
         self,
@@ -919,14 +1017,32 @@ class CivRuntime:
         if delta < self._host._civ_min_interval:
             await asyncio.sleep(self._host._civ_min_interval - delta)
 
+        token = owner if isinstance(owner, _ManagedTxPortToken) else None
+        if isinstance(owner, _AuthoritativePttRead) and owner.managed:
+            token = owner.token
+        if token is not None and not self._managed_tx_port_is_current(token):
+            raise ConnectionError("managed TX physical port changed before dispatch")
         if isinstance(owner, _AuthoritativePttRead) and not self._ptt_read_is_current(
             owner
         ):
             raise ConnectionError("PTT observer binding changed before dispatch")
         pkt = self._wrap_civ(civ_frame)
-        transport = self._host._civ_transport
+        transport = token.transport if token is not None else self._host._civ_transport
         assert transport is not None
-        await transport.send_tracked(pkt)
+        task = asyncio.create_task(transport.send_tracked(pkt))
+        tasks = None
+        if token is not None:
+            tasks = self._managed_tx_sends.setdefault(token.provider_generation, set())
+            tasks.add(task)
+        try:
+            await task
+        except asyncio.CancelledError:
+            if token is not None and not self._managed_tx_port_is_current(token):
+                raise ConnectionError("managed TX send invalidated") from None
+            raise
+        finally:
+            if tasks is not None:
+                tasks.discard(task)
         self._host._last_civ_send_monotonic = time.monotonic()
 
     @staticmethod

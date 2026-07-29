@@ -1,11 +1,12 @@
 """Tests for IcomRadio high-level API."""
 
 import asyncio
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
 from rigplane import IC_7610_ADDR
+from rigplane.backends.icom7610.drivers import serial_session as serial
 from rigplane.commands import (
     _CMD_ACK,
     _CMD_FREQ_GET,
@@ -727,6 +728,76 @@ class TestSquelch:
 
 class TestPtt:
     """Test PTT toggle."""
+
+    @pytest.mark.timeout(2)
+    @pytest.mark.parametrize("poison_only", [False, True], ids=["rebind", "poison"])
+    async def test_managed_ptt_port_token_safety(
+        self, radio: IcomRadio, poison_only: bool
+    ) -> None:
+        sent: list[bytes] = []
+        responses: asyncio.Queue[bytes] = asyncio.Queue()
+        send_release, disconnect_release = asyncio.Event(), asyncio.Event()
+
+        async def send(frame: bytes) -> None:
+            await send_release.wait()
+            sent.append(frame)
+
+        async def receive(**_kwargs: float) -> bytes:
+            return await responses.get()
+
+        link = AsyncMock()
+        link.send.side_effect = send
+        link.receive.side_effect = receive
+        link.disconnect.side_effect = OSError("pre-disconnect failure")
+        radio._civ_transport = serial.SerialCivTransport(link)
+        observations: list[tx.ProviderPttObservation] = []
+        observer = observations.append
+        assert radio._capture_managed_tx_port(11, observer)
+        read = radio._request_authoritative_ptt_read
+        send_release.set()
+        pending_read = asyncio.create_task(read(11, observer))
+        while not sent:
+            await asyncio.sleep(0)
+        send_release.clear()
+        pending_write = asyncio.create_task(radio._write_managed_ptt(11, True))
+        while link.send.await_count < 2:
+            await asyncio.sleep(0)
+        runtime = radio._civ_runtime
+        token = runtime._managed_tx_ports[11]
+        if poison_only:
+            assert runtime._managed_tx_port_is_current(token)
+            runtime._poison_managed_tx_port(token)
+            assert runtime._managed_tx_ports[11] is token
+        else:
+            runtime.bind_ptt_observer(provider_generation=12, observer=lambda _: None)
+        send_release.set()
+        with pytest.raises(ConnectionError):
+            await asyncio.wait_for(pending_write, 0.5)
+        assert len(sent) == 1
+        responses.put_nowait(serial._unwrap_civ_frame(_ptt_response(True)))
+        with pytest.raises(CommandError, match="authoritative"):
+            await asyncio.wait_for(pending_read, 0.5)
+        assert not observations
+        replacement = MockTransport()
+        radio._civ_transport = replacement
+        with pytest.raises(OSError, match="pre-disconnect"):
+            await asyncio.wait_for(radio._retire_managed_tx_port(11), 0.5)
+        link.disconnect.side_effect = disconnect_release.wait
+        retry = asyncio.create_task(radio._retire_managed_tx_port(11))
+        while link.disconnect.await_count < 2:
+            await asyncio.sleep(0)
+        duplicate = asyncio.create_task(radio._retire_managed_tx_port(11))
+        await asyncio.sleep(0)
+        retry.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await retry
+        assert not duplicate.done() and link.disconnect.await_count == 2
+        disconnect_release.set()
+        await asyncio.wait_for(duplicate, 0.5)
+        assert not replacement.disconnected and radio._civ_transport is replacement
+        with pytest.raises(ConnectionError):
+            radio._capture_managed_tx_port(11, observer)
+        await radio._civ_runtime.stop_pump()
 
     @pytest.mark.asyncio
     async def test_set_ptt_on(
