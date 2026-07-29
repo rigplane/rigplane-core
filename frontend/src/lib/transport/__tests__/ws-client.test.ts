@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import type { WsCommand, WsMessage } from '../../types/protocol';
 import type { ReceiverState, ServerState } from '../../types/state';
-import type { CommandDeliveryEvent } from '../ws-client';
+import type { CommandDeliveryEvent, ControlSessionTransition } from '../ws-client';
 
 type ServerStateWithObservation = ServerState & {
   observationSeq?: number;
@@ -440,6 +440,66 @@ describe('WsChannel', () => {
     expect(ch.state).toBe('disconnected');
   });
 
+  it('snapshots control session subscribers for each transition', async () => {
+    const { WsChannel } = await import('../ws-client');
+    const ch = new WsChannel();
+    const order: string[] = [];
+    let added = false;
+    ch.onSessionTransition((transition) => {
+      order.push(`first:${transition.state}`);
+      if (!added) {
+        added = true;
+        ch.onSessionTransition((next) => order.push(`late:${next.state}`));
+      }
+    });
+    ch.onSessionTransition((transition) => order.push(`second:${transition.state}`));
+
+    ch.connect('ws://test');
+    expect(order).toEqual(['first:connecting', 'second:connecting']);
+
+    instances[0].simulateOpen();
+    expect(order).toEqual([
+      'first:connecting',
+      'second:connecting',
+      'first:connected',
+      'second:connected',
+      'late:connected',
+    ]);
+  });
+
+  it('serializes reentrant transitions and aborts open work after callback disconnect', async () => {
+    const { WsChannel } = await import('../ws-client');
+    const ch = new WsChannel();
+    const order: string[] = [];
+    const deliveries: CommandDeliveryEvent[] = [];
+    ch.onSessionTransition((transition) => {
+      order.push(`first:${transition.state}`);
+      if (transition.state === 'connected') ch.disconnect();
+    });
+    ch.onSessionTransition((transition) => order.push(`second:${transition.state}`));
+    ch.onCommandDelivery((event) => deliveries.push(event));
+
+    expect(ch.send({ type: 'cmd', name: 'ptt_off', id: 'off', params: {} })).toBe(false);
+    ch.connect('ws://test');
+    instances[0].simulateOpen();
+    expect(vi.getTimerCount()).toBe(0);
+    vi.advanceTimersByTime(30_001);
+
+    expect(order).toEqual([
+      'first:connecting',
+      'second:connecting',
+      'first:connected',
+      'second:connected',
+      'first:disconnected',
+      'second:disconnected',
+    ]);
+    expect(ch.state).toBe('disconnected');
+    expect(instances).toHaveLength(1);
+    expect(instances[0].sent).toEqual([]);
+    expect(deliveries).toEqual([]);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
   it('keeps the connection alive by sending periodic ping frames', async () => {
     const { WsChannel } = await import('../ws-client');
     const ch = new WsChannel();
@@ -510,6 +570,72 @@ describe('control channel singleton', () => {
     globalThis.WebSocket = originalWebSocket;
     vi.useRealTimers();
     vi.resetModules();
+  });
+
+  it('publishes each control session epoch before draining a pinned OFF', async () => {
+    const {
+      connect,
+      disconnect,
+      onCommandDelivery,
+      onControlSessionTransition,
+      sendCommand,
+    } = await import('../ws-client');
+    const transitions: ControlSessionTransition[] = [];
+    const order: string[] = [];
+    onControlSessionTransition((transition) => {
+      transitions.push(transition);
+      order.push(`session:${transition.state}:${transition.epoch}`);
+    });
+    onCommandDelivery((event) => {
+      order.push(`delivery:${event.commandId}:${event.eventEpoch}`);
+    });
+
+    expect(sendCommand('ptt_off', {}, 'off-1')).toBe(false);
+    connect('ws://test/api/v1/ws');
+    instances[0].simulateOpen();
+    instances[0].simulateClose();
+    expect(sendCommand('ptt_off', {}, 'off-2')).toBe(false);
+    vi.advanceTimersByTime(1300);
+    instances[1].simulateOpen();
+    disconnect();
+
+    expect(transitions).toEqual([
+      { state: 'connecting', epoch: 0 },
+      { state: 'connected', epoch: 1 },
+      { state: 'disconnected', epoch: 1 },
+      { state: 'reconnecting', epoch: 1 },
+      { state: 'connected', epoch: 2 },
+      { state: 'disconnected', epoch: 2 },
+    ]);
+    expect(order).toEqual([
+      'session:connecting:0',
+      'session:connected:1',
+      'delivery:off-1:1',
+      'session:disconnected:1',
+      'session:reconnecting:1',
+      'session:connected:2',
+      'delivery:off-2:2',
+      'session:disconnected:2',
+    ]);
+  });
+
+  it('unsubscribes the control session transition handler idempotently', async () => {
+    const { connect, disconnect, onControlSessionTransition } = await import('../ws-client');
+    const transitions: ControlSessionTransition[] = [];
+    const unsubscribe = onControlSessionTransition((transition) => transitions.push(transition));
+
+    connect('ws://test/api/v1/ws');
+    instances[0].simulateOpen();
+    unsubscribe();
+    unsubscribe();
+    disconnect();
+    connect('ws://test/api/v1/ws');
+    instances[1].simulateOpen();
+
+    expect(transitions).toEqual([
+      { state: 'connecting', epoch: 0 },
+      { state: 'connected', epoch: 1 },
+    ]);
   });
 
   it('applies optimistic data mode updates before sending', async () => {
