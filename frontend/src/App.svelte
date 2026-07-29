@@ -5,6 +5,8 @@
   import LocalExtensionsHost from './lib/local-extensions/LocalExtensionsHost.svelte';
   import { initMediaSession, destroyMediaSession } from './lib/media/media-session';
   import { runtime } from './lib/runtime/frontend-runtime';
+  import { systemController } from '$lib/runtime/system-controller';
+  import { provideAppTxControllerHost } from '$lib/runtime/tx-controller/app-host';
   import { hasAnyScope } from './lib/stores/capabilities.svelte';
   import { getLayoutMode } from './lib/stores/layout.svelte';
   import { resolveSkinId, type SkinId } from './skins/registry';
@@ -35,9 +37,39 @@
     hasAnyScope: hasAnyScope(),
   }));
 
+  const txHost = provideAppTxControllerHost({
+    registerPreDisconnectBarrier: (barrier) =>
+      systemController.registerPreDisconnectBarrier(barrier),
+    lifecycleReleaseSource: (release) => {
+      if (typeof window === 'undefined' || typeof document === 'undefined') {
+        return () => {};
+      }
+      const onPageHide = () => release();
+      const onVisibilityLoss = () => {
+        if (document.visibilityState === 'hidden') release();
+      };
+      window.addEventListener('pagehide', onPageHide);
+      document.addEventListener('visibilitychange', onVisibilityLoss);
+      return () => {
+        window.removeEventListener('pagehide', onPageHide);
+        document.removeEventListener('visibilitychange', onVisibilityLoss);
+      };
+    },
+  });
+  let txAuthorityReady = $state(false);
+  $effect(() => {
+    const state = runtime.state, caps = runtime.caps;
+    void JSON.stringify([
+      state?.stateRevision, state?.freshnessRevision, state?.observationSeq, state?.ptt,
+      state?.active, state?.main?.dataMode, state?.sub?.dataMode, state?.txTarget, state?.fieldStatus,
+      caps?.tx, caps?.audioTx, caps?.audioTxRequiredModInputSource, caps?.capabilities, caps?.vfoScheme, caps?.txBands,
+    ]);
+    if (txAuthorityReady) txHost.refreshAuthority();
+  });
+
   onMount(() => {
     if (demoMode === 'control-buttons') {
-      return;
+      return () => txHost.dispose();
     }
 
     // Stale-bookmark notice: ?ui=v1 is no longer supported (v0.20+). Emit once per session.
@@ -53,6 +85,7 @@
     let cleanupBootstrap: (() => void) | null = null;
     let cleanupBattery: (() => void) | null = null;
     let retryTimer: ReturnType<typeof setTimeout> | null = null;
+    let mounted = true;
     const handleResize = () => {
       windowWidth = window.innerWidth;
       windowHeight = window.innerHeight;
@@ -66,6 +99,8 @@
     (async () => {
       try {
         cleanupBootstrap = await runtime.bootstrap();
+        if (!mounted) return cleanupBootstrap();
+        txAuthorityReady = true;
         backendError = null;
       } catch (err) {
         console.error('init error:', err);
@@ -85,6 +120,9 @@
     })();
 
     return () => {
+      mounted = false;
+      txAuthorityReady = false;
+      txHost.dispose();
       destroyMediaSession();
       cleanupBattery?.();
       cleanupBootstrap?.();
