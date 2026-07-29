@@ -34,7 +34,9 @@ class ProviderLifecycle:
         self.unbinds = 0
         self.reads: list[tuple[int, Callable[[ProviderPttObservation], None]]] = []
         self.read_started, self.read_release = asyncio.Event(), asyncio.Event()
-        self.read_blocked, self.emit_read_observation = False, True
+        self.read_observed, self.read_observe_release = asyncio.Event(), asyncio.Event()
+        self.read_observe_release.set()
+        self.read_blocked = False
         self.read_error: BaseException | None = None
         self.captures, self.capture_result = 0, True
         self.writes: list[tuple[int, bool]] = []
@@ -77,8 +79,9 @@ class ProviderLifecycle:
             await self.read_release.wait()
         if self.read_error is not None:
             raise self.read_error
-        if self.emit_read_observation:
-            observer(ProviderPttObservation(RadioTx.OFF, provider_generation, 2, 10.0))
+        observer(ProviderPttObservation(RadioTx.OFF, provider_generation, 2, 10.0))
+        self.read_observed.set()
+        await self.read_observe_release.wait()
 
     def _capture_managed_tx_port(
         self,
@@ -399,52 +402,147 @@ async def test_factory_clock_capture_and_stale_host_are_generation_safe() -> Non
     )
 
 
-@pytest.mark.parametrize(
-    "retire_error", [RuntimeError("retire failed"), asyncio.CancelledError("cancelled")]
-)
 @pytest.mark.asyncio
-async def test_failed_retirement_retry_observes_latched_outcome(
-    retire_error: BaseException,
-) -> None:
+async def test_blocked_service_does_not_hold_lifecycle_lock() -> None:
+    provider, started, release = ProviderLifecycle(), asyncio.Event(), asyncio.Event()
+    armed = False
+
+    async def service(_: TxSafetySupervisor, transition: TxTransition) -> None:
+        nonlocal armed
+        if armed and transition.effects:
+            armed = False
+            started.set()
+            await release.wait()
+
+    rt = runtime(service=service, lifecycle=provider)
+    owner, _ = await acquire(rt)
+    armed = True
+    blocked = asyncio.create_task(rt.request_off(owner, rt.tx_snapshot.lease_id or ""))
+    await asyncio.wait_for(started.wait(), 0.2)
+
+    changed = await asyncio.wait_for(rt.replace_provider(ready=True), 0.2)
+
+    assert changed.snapshot.provider_generation == 2 and not blocked.done()
+    assert changed.effects[0].kind is ProviderAttemptKind.WRITE_OFF
+    release.set()
+    await blocked
+
+
+@pytest.mark.asyncio
+async def test_retirement_barrier_is_shared_and_shutdown_wins() -> None:
     provider = ProviderLifecycle()
+    failure = RuntimeError("retirement failed")
+    provider.retire_error = failure
+    provider.retire_release.clear()
     rt = runtime(lifecycle=provider)
     await rt.replace_provider(ready=True)
-    provider.retire_error = retire_error
-    tasks, errors = [], []
-    for _attempt in range(2):
-        with pytest.raises(type(retire_error), match=str(retire_error)) as raised:
-            await rt._effect_host.retire(1)
-        tasks.append(rt._retirement_task)
-        errors.append(raised.value)
 
-    assert tasks[0] is tasks[1] and tasks[0] is not None and tasks[0].done()
-    assert errors[0] is errors[1] is retire_error
+    replacement = asyncio.create_task(rt.replace_provider(ready=True))
+    await asyncio.wait_for(provider.retire_started.wait(), 0.2)
+    assert replacement.cancel()
+    waiter = asyncio.create_task(rt.replace_provider(ready=True))
+    shutdown = asyncio.create_task(
+        rt.shutdown(release_provider=lambda: asyncio.sleep(0))
+    )
+    await asyncio.sleep(0)
+
+    assert not replacement.done() and not waiter.done() and not shutdown.done()
+    assert provider.captures == 1
+    provider.retire_release.set()
+
+    assert (await replacement).outcome is TxOutcome.NOT_READY
+    assert (await waiter).outcome is TxOutcome.NOT_READY
+    with pytest.raises(RuntimeError) as raised:
+        await shutdown
+    assert raised.value is failure
+    assert provider.retirements == [1] and provider.captures == 1
+
+
+@pytest.mark.parametrize(
+    "error", [RuntimeError("retire failed"), asyncio.CancelledError("retire cancelled")]
+)
+@pytest.mark.asyncio
+async def test_terminal_retirement_failure_is_latched(error: BaseException) -> None:
+    provider = ProviderLifecycle()
+    provider.retire_error = error
+    provider.retire_release.clear()
+    rt = runtime(lifecycle=provider)
+    await rt.replace_provider(ready=True)
+
+    if isinstance(error, asyncio.CancelledError):
+        provider.read_error = RuntimeError("read failed")
+        pending = asyncio.create_task(rt.request_fresh_ptt())
+    else:
+        provider.read_blocked = True
+        pending = asyncio.create_task(rt.request_fresh_ptt())
+        await asyncio.wait_for(provider.read_started.wait(), 0.2)
+        pending.cancel()
+    await asyncio.wait_for(provider.retire_started.wait(), 0.2)
+    assert not pending.done()
+    provider.retire_release.set()
+
+    with pytest.raises(type(error)) as first:
+        await pending
+    with pytest.raises(type(error)) as second:
+        await rt.replace_provider(ready=True)
+
+    assert first.value is second.value is error
     assert provider.retirements == [1] and rt._provider_state == "invalidating"
     assert not rt._lifecycle_lock.locked()
-    assert rt.tx_snapshot.provider_generation == 2 and not rt.tx_snapshot.provider_ready
-    for stale in (0, 2):
+    assert rt.tx_snapshot.provider_generation == 3 and not rt.tx_snapshot.provider_ready
+    for stale in (0, 2, 3):
         with pytest.raises(ConnectionError, match="stale"):
             await rt._effect_host.retire(stale)
     assert provider.retirements == [1]
 
 
+@pytest.mark.parametrize("shutdown", [False, True])
 @pytest.mark.asyncio
-async def test_fresh_read_serializes_replacement_and_rejects_a_b_a_callback() -> None:
+async def test_fresh_read_replacement_and_shutdown_races(shutdown: bool) -> None:
     provider = ProviderLifecycle()
     provider.read_blocked = True
+    if shutdown:
+        provider.read_observe_release.clear()
     rt = runtime(lifecycle=provider)
     await rt.replace_provider(ready=True)
     generation, old_observer = provider.bindings[-1]
+    old_observer(ProviderPttObservation(RadioTx.OFF, generation, 1, 10.0))
 
     read = asyncio.create_task(rt.request_fresh_ptt())
-    await provider.read_started.wait()
-    replaced = asyncio.create_task(rt.replace_provider(ready=True))
+    await asyncio.wait_for(provider.read_started.wait(), 0.2)
+    raced = (
+        asyncio.create_task(rt.shutdown(release_provider=lambda: asyncio.sleep(0)))
+        if shutdown
+        else asyncio.create_task(rt.replace_provider(ready=True))
+    )
     await asyncio.sleep(0)
-    assert not replaced.done()
+    assert not raced.done()
 
+    before = (
+        rt.tx_snapshot,
+        rt._observation_version,
+        provider.captures,
+        len(provider.bindings),
+    )
     provider.read_release.set()
-    assert (await read).outcome is TxOutcome.APPLIED
-    assert (await replaced).snapshot.provider_generation == 2
+    if shutdown:
+        await asyncio.wait_for(provider.read_observed.wait(), 0.2)
+        assert (
+            rt.tx_snapshot,
+            rt._observation_version,
+            provider.captures,
+            len(provider.bindings),
+        ) == before
+        provider.read_observe_release.set()
+
+    assert (await read).outcome is (TxOutcome.APPLIED, TxOutcome.NOT_READY)[shutdown]
+    assert (await raced).snapshot.provider_generation == (1 if shutdown else 2)
+    if shutdown:
+        assert rt.tx_snapshot.provider_generation == 2
+        assert rt.tx_snapshot.radio_tx is RadioTx.UNKNOWN
+        assert provider.captures == 1 and provider.current is None
+        return
+
     await rt.replace_provider(ready=True)
     old_observer(ProviderPttObservation(RadioTx.ON, generation, 2, 10.0))
 
@@ -456,12 +554,17 @@ async def test_fresh_read_serializes_replacement_and_rejects_a_b_a_callback() ->
 @pytest.mark.asyncio
 async def test_failed_and_cancelled_fresh_reads_invalidate_and_release_lane() -> None:
     provider = ProviderLifecycle()
+    provider.retire_release.clear()
     rt = runtime(lifecycle=provider)
     await rt.replace_provider(ready=True)
     provider.read_error = RuntimeError("source epoch changed")
 
+    failed = asyncio.create_task(rt.request_fresh_ptt())
+    await asyncio.wait_for(provider.retire_started.wait(), 0.2)
+    assert not failed.done()
+    provider.retire_release.set()
     with pytest.raises(RuntimeError, match="source epoch changed"):
-        await rt.request_fresh_ptt()
+        await failed
     assert rt.tx_snapshot.provider_generation == 2
     assert rt.tx_snapshot.provider_ready is False
     assert (await rt.request_fresh_ptt()).outcome is TxOutcome.NOT_READY
@@ -469,10 +572,16 @@ async def test_failed_and_cancelled_fresh_reads_invalidate_and_release_lane() ->
     provider.read_error = None
     provider.read_blocked = True
     provider.read_started.clear()
+    provider.read_release.clear()
+    provider.retire_started.clear()
+    provider.retire_release.clear()
     await rt.replace_provider(ready=True)
     pending = asyncio.create_task(rt.request_fresh_ptt())
-    await provider.read_started.wait()
+    await asyncio.wait_for(provider.read_started.wait(), 0.2)
     pending.cancel()
+    await asyncio.wait_for(provider.retire_started.wait(), 0.2)
+    assert not pending.done()
+    provider.retire_release.set()
     with pytest.raises(asyncio.CancelledError):
         await pending
     assert rt.tx_snapshot.provider_generation == 4
