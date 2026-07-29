@@ -1,8 +1,8 @@
-import { initialTxState, transition, type PttMarker, type PttObservation, type TxEffect, type TxEvent, type TxGuard, type TxState } from './model';
+import { initialTxState, transition, type PttMarker, type PttObservation, type TxEffect, type TxEvent, type TxGuard, type TxState, type TxTarget } from './model';
 type Command = 'on' | 'off';
 type Timer = 'audio-start' | 'on-confirmation' | 'off-confirmation';
 type CommandReport = { outcome: 'sent' | 'ack' | 'response-ok' | 'response-error' | 'transport-error'; eventEpoch: number; barrier: PttMarker | null };
-type CommandCorrelation = { leaseId: string; generation: number; originalEpoch: number };
+type CommandCorrelation = { leaseId: string; generation: number; originalEpoch: number; target: Exclude<TxTarget, null> };
 type TimerRecord = { handle: unknown; guard: TxGuard; cancelGuard: TxGuard };
 export interface TxControllerDependencies {
   startAudio(): Promise<string | null>;
@@ -18,6 +18,7 @@ const sameGuard = (a: TxGuard, b: TxGuard) =>
   a.leaseId === b.leaseId && a.generation === b.generation && a.authorityEpoch === b.authorityEpoch;
 export class TxController {
   #state: TxState;
+  #leaseTarget: Exclude<TxTarget, null> | null = null;
   #timers = new Set<TimerRecord>();
   #listeners = new Set<(state: TxState) => void>();
   #events: TxEvent[] = [];
@@ -31,16 +32,25 @@ export class TxController {
     return () => this.#listeners.delete(listener);
   }
   dispatch(event: TxEvent): void {
-    this.#events.push(event);
+    const queued: TxEvent = event.type === 'start' && event.eligibility.target !== null
+      ? { ...event, eligibility: { ...event.eligibility, target: { ...event.eligibility.target } } }
+      : event;
+    this.#events.push(queued);
     if (this.#processing) return;
     this.#processing = true;
     try {
       while (this.#events.length) {
         const current = this.#events.shift()!;
         const result = transition(this.#state, current);
+        if (current.type === 'start' && current.eligibility.target !== null
+          && result.effects.some((effect) => effect.type === 'start-audio')) {
+          this.#leaseTarget = { ...current.eligibility.target };
+        }
+        const retainLeaseTarget = result.state.guard !== null || result.state.pendingOff !== null || result.state.mayOwnKey;
         this.#state = result.state;
         for (const listener of this.#listeners) try { listener(this.#state); } catch { /* observers cannot block safety effects */ }
         this.#run(result.effects, current);
+        if (!retainLeaseTarget) this.#leaseTarget = null;
       }
     } finally { this.#processing = false; }
   }
@@ -68,7 +78,9 @@ export class TxController {
   }
   #send(effect: TxEffect, command: Command, offCommandId: string): void {
     const guard = effect.guard!;
-    const correlation = { leaseId: guard.leaseId, generation: guard.generation, originalEpoch: guard.authorityEpoch };
+    const leaseTarget = this.#leaseTarget;
+    if (leaseTarget === null) throw new Error('TX command effect missing lease target');
+    const correlation = { leaseId: guard.leaseId, generation: guard.generation, originalEpoch: guard.authorityEpoch, target: { ...leaseTarget } };
     this.dependencies.sendPtt(command, effect.commandId!, correlation,
       (report) => this.#commandResult(effect, command, offCommandId, report));
   }
