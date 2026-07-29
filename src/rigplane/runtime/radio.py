@@ -2959,13 +2959,26 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
             observer=observer,
         )
 
+    def _capture_managed_tx_port(
+        self,
+        provider_generation: int,
+        observer: "Callable[[ProviderPttObservation], None]",
+    ) -> bool:
+        return self._civ_runtime.capture_managed_port(provider_generation, observer)
+
+    async def _write_managed_ptt(self, provider_generation: int, on: bool) -> None:
+        civ = (ptt_on if on else ptt_off)(to_addr=self._radio_addr)
+        await self._civ_runtime.write_managed_ptt(civ, provider_generation)
+
+    async def _retire_managed_tx_port(self, provider_generation: int) -> None:
+        await self._civ_runtime.retire_managed_tx_port(provider_generation)
+
     def _unbind_authoritative_ptt_observer(self) -> None:
         """Detach the managed-provider PTT readback observer."""
         self._civ_runtime.unbind_ptt_observer()
 
     async def _request_authoritative_ptt_read(
         self,
-        *,
         provider_generation: int,
         observer: "Callable[[ProviderPttObservation], None]",
     ) -> None:
