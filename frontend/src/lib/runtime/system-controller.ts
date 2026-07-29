@@ -25,10 +25,26 @@ export interface EibiResult {
   stations: EibiStation[];
 }
 
-class SystemController {
+export class SystemController {
   private _stopPolling: (() => void) | null = null;
   private _startPolling: (() => (() => void)) | null = null;
   private _clientConnected = true;
+  private _releaseBarrier: { run: () => Promise<void> } | null = null;
+  private _disconnectInFlight: Promise<void> | null = null;
+
+  constructor(
+    private readonly _effects = {
+      destroyAudio: () => audioManager.destroy(),
+      disconnectWebSockets: () => wsDisconnectAll(),
+      setHttpDisconnected: () => setHttpConnected(false),
+      destroyMediaSession: () => destroyMediaSession(),
+      setRadioDisconnected: () => setRadioStatus('disconnected'),
+      resetRadioState: () => resetRadioState(),
+      initMediaSession: () => initMediaSession(),
+      clearEtag: () => clearEtag(),
+      reconnectWebSockets: () => wsReconnectAll(),
+    },
+  ) {}
 
   get clientConnected(): boolean {
     return this._clientConnected;
@@ -42,6 +58,18 @@ class SystemController {
   /** Register an active polling stop handle (called from App.svelte after startPolling). */
   setStopPolling(stopFn: (() => void) | null): void {
     this._stopPolling = stopFn;
+  }
+
+  /** Register the sole opaque barrier awaited before disconnect teardown. */
+  registerPreDisconnectBarrier(barrier: () => Promise<void>): () => void {
+    if (this._releaseBarrier) {
+      throw new Error('A pre-disconnect barrier is already registered');
+    }
+    const registration = { run: barrier };
+    this._releaseBarrier = registration;
+    return () => {
+      if (this._releaseBarrier === registration) this._releaseBarrier = null;
+    };
   }
 
   async powerOn(): Promise<void> {
@@ -63,45 +91,65 @@ class SystemController {
   }
 
   /** Disconnect all frontend channels: WS, audio, polling, MediaSession. */
-  disconnect(): void {
-    if (!this._clientConnected) return;
+  disconnect(): Promise<void> {
+    if (this._disconnectInFlight) return this._disconnectInFlight;
+    if (!this._clientConnected) return Promise.resolve();
     this._clientConnected = false;
+    const barrier = this._releaseBarrier?.run;
+    if (!barrier) {
+      this._teardown();
+      return Promise.resolve();
+    }
 
+    const inFlight = Promise.resolve()
+      .then(barrier)
+      .finally(() => {
+        try {
+          this._teardown();
+        } finally {
+          this._disconnectInFlight = null;
+        }
+      });
+    this._disconnectInFlight = inFlight;
+    return inFlight;
+  }
+
+  private _teardown(): void {
     // 1. Stop audio (RX/TX playback + audio WS)
-    audioManager.destroy();
+    this._effects.destroyAudio();
 
     // 2. Close all WebSocket channels (control + scope + any named)
-    wsDisconnectAll();
+    this._effects.disconnectWebSockets();
 
     // 3. Stop HTTP polling
     this._stopPolling?.();
     this._stopPolling = null;
-    setHttpConnected(false);
+    this._effects.setHttpDisconnected();
 
     // 4. Stop MediaSession silent audio loop
-    destroyMediaSession();
+    this._effects.destroyMediaSession();
 
     // 5. Clear stale state
-    setRadioStatus('disconnected');
-    resetRadioState();
+    this._effects.setRadioDisconnected();
+    this._effects.resetRadioState();
   }
 
   /** Reconnect all frontend channels. */
   connect(): void {
-    if (this._clientConnected) return;
+    if (this._disconnectInFlight || this._clientConnected) return;
     this._clientConnected = true;
 
     // 1. Restart MediaSession
-    initMediaSession();
+    this._effects.initMediaSession();
 
     // 2. Restart HTTP polling
-    clearEtag();
+    this._effects.clearEtag();
     if (this._startPolling) {
       this._stopPolling = this._startPolling();
     }
 
     // 3. Reconnect all WebSocket channels (control + scope + any named)
-    wsReconnectAll();
+    this._effects.reconnectWebSockets();
   }
 
   async identifyFrequency(freqHz: number): Promise<EibiResult | null> {
