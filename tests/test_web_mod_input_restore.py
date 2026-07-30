@@ -1,21 +1,29 @@
-"""Tests for backend session-teardown MOD handling (MOR-624/MOR-993).
+"""Tests for control-session teardown (MOR-624/MOR-993/MOR-1013).
 
-The frontend auto-LAN feature (MOR-618) arms a restore on the backend
-session at TX start and disarms it on a clean TX stop. If the session
-tears down while still armed, the handler enqueues PttOff only; no command
-outcome or queue ordering authorizes a previous-source MOD SET.
+Two concerns share the teardown path and are deliberately kept apart:
+
+* **PTT release** — a writable session that disconnects always requests PTT
+  OFF. Unkeying is the safe direction, so no session state may gate it
+  (MOR-1013). Read-only sessions are excluded: ``ptt_off`` is a
+  ``_TX_COMMANDS`` member they may never issue, so they cannot have keyed.
+* **MOD-input bookkeeping** — the frontend auto-LAN feature (MOR-618) arms a
+  restore at TX start and disarms it on a clean TX stop. Teardown consumes the
+  arm and discards it; no command outcome or queue ordering authorizes a
+  previous-source MOD SET (MOR-993).
 """
 
 from __future__ import annotations
 
+import asyncio
 from types import SimpleNamespace
+from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
 from rigplane.profiles import resolve_radio_profile
 from rigplane.web.handlers.control import ControlHandler
-from rigplane.web.radio_poller import CommandQueue, PttOff, RadioPoller
+from rigplane.web.radio_poller import CommandQueue, PttOff, PttOn, RadioPoller
 
 _MOD_COMMANDS = (
     "set_data_off_mod_input",
@@ -38,6 +46,34 @@ def _make_handler(*, read_only: bool = False) -> tuple[ControlHandler, CommandQu
         read_only=read_only,
     )
     return handler, command_queue
+
+
+def _teardown(handler: ControlHandler) -> None:
+    """Run the teardown steps in the same order as ``run()``'s finally block."""
+    handler._release_ptt_on_teardown()
+    handler._clear_mod_input_restore_on_teardown()
+
+
+def _make_run_handler(*, unregister: Any = None) -> tuple[ControlHandler, CommandQueue]:
+    """Build a handler whose ``run()`` reaches teardown on the first ``recv``."""
+    command_queue = CommandQueue()
+
+    async def recv() -> tuple[int, bytes]:
+        await asyncio.sleep(0.01)  # let the event-sender task run before EOF
+        raise EOFError
+
+    return ControlHandler(
+        ws=SimpleNamespace(send_text=AsyncMock(), recv=recv),
+        radio=SimpleNamespace(connected=True, radio_ready=True),
+        server_version="test",
+        radio_model="IC-7610",
+        server=SimpleNamespace(
+            command_queue=command_queue,
+            register_control_event_queue=MagicMock(),
+            unregister_control_event_queue=unregister or MagicMock(),
+            build_state_update_envelope=MagicMock(return_value={}),
+        ),
+    ), command_queue
 
 
 def _provider_poller(error: Exception | None) -> tuple[RadioPoller, MagicMock]:
@@ -106,27 +142,42 @@ class TestArmDisarm:
         assert handler._apply_mod_input_restore_cmd(
             "arm_mod_input_restore", invalid
         ) == {"armed": False}
-        handler._restore_mod_input_on_teardown()
+        handler._clear_mod_input_restore_on_teardown()
         assert handler._mod_input_restore is None
+        # Bookkeeping alone never reaches the command queue.
         assert not q.has_commands
 
 
-class TestTeardownRestore:
-    """An armed teardown consumes its state and enqueues PTT OFF only."""
+class TestTeardownModRestoreInvariant:
+    """MOR-993: teardown may never replay the remembered MOD SET."""
 
     @pytest.mark.parametrize("command", _MOD_COMMANDS)
-    def test_teardown_when_armed_enqueues_one_ptt_off(self, command: str) -> None:
+    def test_teardown_when_armed_enqueues_ptt_off_and_no_mod_set(
+        self, command: str
+    ) -> None:
         handler, q = _make_handler()
         handler._apply_mod_input_restore_cmd(
             "arm_mod_input_restore",
             {"command": command, "source": 0},
         )
 
-        handler._restore_mod_input_on_teardown()
-        handler._restore_mod_input_on_teardown()
+        _teardown(handler)
 
+        # Exact list equality: a MOD SET of any kind would show up here.
         assert q.drain() == [PttOff()]
         assert handler._mod_input_restore is None
+
+    def test_clearing_bookkeeping_never_enqueues_anything(self) -> None:
+        handler, q = _make_handler()
+        handler._apply_mod_input_restore_cmd(
+            "arm_mod_input_restore",
+            {"command": "set_data2_mod_input", "source": 4},
+        )
+
+        handler._clear_mod_input_restore_on_teardown()
+
+        assert handler._mod_input_restore is None
+        assert q.drain() == []
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize(
@@ -147,7 +198,7 @@ class TestTeardownRestore:
             "arm_mod_input_restore",
             {"command": "set_data3_mod_input", "source": 3},
         )
-        handler._restore_mod_input_on_teardown()
+        _teardown(handler)
         commands = q.drain()
         assert commands == [PttOff()]
 
@@ -160,14 +211,24 @@ class TestTeardownRestore:
         for name in _MOD_COMMANDS:
             getattr(radio, name).assert_not_awaited()
 
-    def test_teardown_when_not_armed_enqueues_nothing(self) -> None:
+
+class TestTeardownPttRelease:
+    """MOR-1013: the teardown unkey is not gated on any session state."""
+
+    def test_teardown_when_not_armed_enqueues_ptt_off(self) -> None:
+        """Behaviour change: this used to assert that nothing was enqueued.
+
+        A session that keyed but never armed a MOD restore previously
+        disconnected with no PTT OFF at all, leaving the rig transmitting.
+        """
         handler, q = _make_handler()
 
-        handler._restore_mod_input_on_teardown()
+        _teardown(handler)
 
-        assert not q.has_commands
+        assert q.drain() == [PttOff()]
 
-    def test_teardown_after_disarm_enqueues_nothing(self) -> None:
+    def test_teardown_after_disarm_enqueues_ptt_off(self) -> None:
+        """A clean TX stop disarms; the teardown unkey must survive it."""
         handler, q = _make_handler()
         handler._apply_mod_input_restore_cmd(
             "arm_mod_input_restore",
@@ -175,9 +236,122 @@ class TestTeardownRestore:
         )
         handler._apply_mod_input_restore_cmd("disarm_mod_input_restore", {})
 
-        handler._restore_mod_input_on_teardown()
+        _teardown(handler)
 
-        assert not q.has_commands
+        assert q.drain() == [PttOff()]
+
+    def test_keyed_session_without_arm_is_released_on_teardown(self) -> None:
+        """The reported defect: key via ptt_on, never arm, then disconnect."""
+        handler, q = _make_handler()
+
+        handler._enqueue_rc_power("ptt_on", {}, q, handler._radio)
+        assert handler._mod_input_restore is None
+        _teardown(handler)
+
+        assert q.drain() == [PttOn(), PttOff()]
+
+    def test_release_is_not_suppressed_by_prior_release(self) -> None:
+        """No consume-once flag: re-entering teardown re-requests the unkey.
+
+        Idempotency state would be another gate able to swallow the release;
+        a duplicate OFF is harmless, a missing one is not.
+        """
+        handler, q = _make_handler()
+
+        _teardown(handler)
+        _teardown(handler)
+
+        assert q.drain() == [PttOff(), PttOff()]
+
+    def test_read_only_teardown_enqueues_nothing(self) -> None:
+        """A read-only session may never issue ptt_off, so it cannot have keyed.
+
+        Releasing here would de-key whoever is actually transmitting.
+        """
+        handler, q = _make_handler(read_only=True)
+
+        _teardown(handler)
+
+        assert q.drain() == []
+
+    def test_teardown_without_server_does_not_raise(self) -> None:
+        handler = ControlHandler(
+            ws=MagicMock(),
+            radio=MagicMock(),
+            server_version="test",
+            radio_model="IC-7610",
+            server=None,
+        )
+
+        _teardown(handler)
+
+        assert handler._mod_input_restore is None
+
+    def test_teardown_without_command_queue_does_not_raise(self) -> None:
+        handler = ControlHandler(
+            ws=MagicMock(),
+            radio=MagicMock(),
+            server_version="test",
+            radio_model="IC-7610",
+            server=SimpleNamespace(),
+        )
+
+        _teardown(handler)
+
+        assert handler._mod_input_restore is None
+
+    def test_teardown_survives_queue_put_failure(self) -> None:
+        """Teardown stays bounded: an enqueue failure must not escape."""
+        queue = MagicMock()
+        queue.put.side_effect = RuntimeError("queue is gone")
+        handler = ControlHandler(
+            ws=MagicMock(),
+            radio=MagicMock(),
+            server_version="test",
+            radio_model="IC-7610",
+            server=SimpleNamespace(command_queue=queue),
+        )
+        handler._apply_mod_input_restore_cmd(
+            "arm_mod_input_restore",
+            {"command": "set_data1_mod_input", "source": 1},
+        )
+
+        _teardown(handler)
+
+        queue.put.assert_called_once_with(PttOff())
+        assert handler._mod_input_restore is None
+
+
+class TestRunTeardownWiring:
+    """run()'s finally must reach the release before any step that can raise."""
+
+    @pytest.mark.asyncio
+    async def test_run_releases_ptt_on_disconnect_without_arm(self) -> None:
+        handler, q = _make_run_handler()
+        await handler.run()
+        assert q.drain() == [PttOff()]
+
+    @pytest.mark.asyncio
+    async def test_release_survives_dead_egress_socket(self) -> None:
+        """A dead egress socket kills the sender; ``await event_task`` re-raises."""
+        handler, q = _make_run_handler()
+        handler._ws.send_text = AsyncMock(
+            side_effect=[None, None, ConnectionResetError("egress socket closed")]
+        )
+        handler._enqueue_rc_power("ptt_on", {}, q, handler._radio)
+        handler._event_queue.put_nowait({"type": "state_update"})
+        with pytest.raises(ConnectionResetError):
+            await handler.run()
+        assert q.drain() == [PttOn(), PttOff()]
+
+    @pytest.mark.asyncio
+    async def test_release_survives_unregister_failure(self) -> None:
+        """``unregister_control_event_queue`` broadcasts; it is not raise-free."""
+        handler, q = _make_run_handler(unregister=MagicMock(side_effect=RuntimeError))
+        handler._enqueue_rc_power("ptt_on", {}, q, handler._radio)
+        with pytest.raises(RuntimeError):
+            await handler.run()
+        assert q.drain() == [PttOn(), PttOff()]
 
 
 class TestCommandRouting:
@@ -198,7 +372,7 @@ class TestCommandRouting:
 
         assert handler._mod_input_restore == ("set_data2_mod_input", 3)
         handler._ws.send_text.assert_awaited_once()
-        sent = handler._ws.send_text.await_args.args[0]
+        sent: Any = handler._ws.send_text.await_args.args[0]
         assert '"ok":true' in sent and '"armed":true' in sent
 
     @pytest.mark.asyncio
@@ -213,9 +387,9 @@ class TestCommandRouting:
                 "id": "x",
             }
         )
-        handler._restore_mod_input_on_teardown()
+        _teardown(handler)
 
         assert handler._mod_input_restore is None
         assert not q.has_commands
-        sent = handler._ws.send_text.await_args.args[0]
+        sent: Any = handler._ws.send_text.await_args.args[0]
         assert '"ok":true' in sent and '"armed":false' in sent

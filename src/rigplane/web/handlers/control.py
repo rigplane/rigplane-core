@@ -474,7 +474,8 @@ class ControlHandler:
         )
         self._subscribed_streams: set[str] = set()
         # MOR-624: (command_name, previous_source) armed by the frontend auto-LAN
-        # feature at TX start; MOR-993 permits teardown PTT OFF only.
+        # feature at TX start. MOR-993 forbids replaying it on teardown; MOR-1013
+        # moved the teardown PTT OFF off this state entirely.
         self._mod_input_restore: tuple[str, int] | None = None
         self._event_queue: BoundedQueue[dict[str, Any]] = BoundedQueue(
             maxsize=100,
@@ -531,6 +532,12 @@ class ControlHandler:
         except EOFError:
             pass
         finally:
+            # Ahead of every step that can raise out of this block: on a dead
+            # socket ``await event_task`` re-raises the sender's error and
+            # unregister broadcasts, so either would skip the unkey on exactly
+            # the abrupt drops that need it most. The release needs neither.
+            self._release_ptt_on_teardown()
+            self._clear_mod_input_restore_on_teardown()
             event_task.cancel()
             try:
                 await event_task
@@ -538,7 +545,6 @@ class ControlHandler:
                 pass
             if self._server is not None:
                 self._server.unregister_control_event_queue(self._event_queue)
-            self._restore_mod_input_on_teardown()
 
     async def _event_sender_loop(self) -> None:
         """Drain event queue and forward events to WebSocket."""
@@ -983,8 +989,9 @@ class ControlHandler:
         """Arm/disarm the transitional session teardown intent (MOR-624/MOR-993).
 
         Writable-session ``arm`` keeps the legacy payload for wire compatibility,
-        but teardown may use it only to request emergency PTT OFF. It never
-        authorizes a MOD SET. ``disarm`` clears the intent idempotently.
+        but the arm authorizes nothing: it never authorizes a MOD SET (MOR-993),
+        and since MOR-1013 the teardown PTT OFF no longer depends on it either.
+        ``disarm`` clears the intent idempotently.
         """
         if name == "disarm_mod_input_restore":
             self._mod_input_restore = None
@@ -1005,16 +1012,24 @@ class ControlHandler:
         self._mod_input_restore = (command, source)
         return {"armed": True}
 
-    def _restore_mod_input_on_teardown(self) -> None:
-        """Consume the legacy arm and request best-effort PTT OFF only (MOR-993).
+    def _release_ptt_on_teardown(self) -> None:
+        """Request best-effort PTT OFF whenever a writable session tears down.
 
-        Queue order, ACK, timeout, and cached state do not prove RF de-key. Until
-        MOR-986 supplies fresh authoritative PTT confirmation, teardown must
-        never enqueue the remembered MOD SET.
+        Unconditional by design (MOR-1013). This release used to be reachable
+        only through the MOD-input arm, so a session that keyed the radio but
+        never armed a restore disconnected with no unkey enqueued at all and
+        stranded the rig in TX. Unkeying is the safe direction, so no session
+        state may gate it — see the same rule for ``_ensure_tx_session_ready``.
+
+        Read-only sessions are excluded: ``ptt_off`` is a ``_TX_COMMANDS``
+        member they may never issue, so they cannot have keyed, and an
+        unsolicited OFF from a passive monitor would de-key another operator.
+
+        The ``_server``/``queue`` checks are structural (no transport to enqueue
+        onto), not policy. Enqueue failures are swallowed so teardown stays
+        bounded.
         """
-        armed = self._mod_input_restore
-        self._mod_input_restore = None
-        if armed is None or self._server is None:
+        if self._read_only or self._server is None:
             return
         queue = getattr(self._server, "command_queue", None)
         if queue is None:
@@ -1025,10 +1040,19 @@ class ControlHandler:
             logger.debug("control: teardown PTT OFF enqueue failed", exc_info=True)
         else:
             logger.info(
-                "control: requested PTT OFF on armed session teardown; "
-                "MOD restore suppressed pending authoritative OFF (session=%s)",
+                "control: requested PTT OFF on control session teardown (session=%s)",
                 self._session_id,
             )
+
+    def _clear_mod_input_restore_on_teardown(self) -> None:
+        """Consume the legacy MOD-input arm without acting on it (MOR-993).
+
+        Queue order, ACK, timeout, and cached state do not prove RF de-key. Until
+        MOR-986 supplies fresh authoritative PTT confirmation, teardown must
+        never enqueue the remembered MOD SET. Bookkeeping only — this method
+        never touches the command queue.
+        """
+        self._mod_input_restore = None
 
     async def _enqueue_command(
         self,
