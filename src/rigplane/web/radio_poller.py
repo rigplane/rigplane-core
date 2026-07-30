@@ -86,8 +86,10 @@ from ..core.state_pipeline_contracts import (
     Observation,
     SourceMetadata,
 )
+from ..core.radio_protocol import ManagedTxApi
 from ..core.state_diagnostics import StateDiagnosticsRecorder
 from ..core.state_store import StateStore
+from ..core.tx_safety import TxOutcome, TxOwner, TxSource
 from .._state_queries import build_state_queries
 from ..profiles import RadioProfile, resolve_radio_profile
 from ..types import AudioCodec
@@ -184,6 +186,8 @@ _DEFAULT_POLL_FIELD_TTL: float = 0.2
 _FAST_INTERVAL: float = 0.025  # meters — wfview queue interval for LAN (25ms)
 _FAST_INTERVAL_SERIAL: float = 0.100  # serial: 10 polls/sec for responsive meters
 _SLOW_INTERVAL: float = 0.25  # levels/settings — rarely change
+
+_KEY_ACCEPTED = frozenset({TxOutcome.ACCEPTED, TxOutcome.IDEMPOTENT})  # lease is ours
 
 # MOR-874: how long a healthy-link in-flight acquisition request may stay
 # suppressed after its FIRST send-relative deadline expiry before being
@@ -1168,6 +1172,54 @@ class RadioPoller:
         self._scope_demand_generation = generation
         return False
 
+    def _managed_tx(
+        self, source: CommandSource, session_id: str | None
+    ) -> ManagedTxApi | None:
+        """Bind this control session's managed TX facade; ``None`` if unmanaged.
+
+        Only a websocket session has a STABLE owner identity: its long-lived
+        ``ControlHandler._session_id``, not the throwaway the shared executor
+        mints per request, which owner-matched ``release_owner`` would miss —
+        stranding the rig keyed. Every other ingress (HTTP params may even
+        carry a ``session_id``) has no teardown hook: its lease is unreleasable.
+        """
+        if source != "websocket" or not session_id:
+            return None
+        return ManagedTxApi.bind(self._radio, TxOwner(TxSource.WEBSOCKET, session_id))
+
+    async def _stop_tx_audio_leg(self) -> None:
+        """Stop the TX audio stream and re-arm RX; never raises."""
+        radio = self._radio
+        if CAP_AUDIO not in self._caps:
+            return
+        try:
+            stop_tx = getattr(radio, "stop_tx", None)
+            if stop_tx is not None:
+                # Neutral AudioTransport surface (MOR-543).
+                await stop_tx()
+            else:
+                # Legacy per-codec fallback.
+                tx_codec, _tx_sr = _audio_tx_codec_and_rate(radio)
+                if tx_codec == AudioCodec.PCM_1CH_16BIT:
+                    await radio.stop_audio_tx_pcm()
+                else:
+                    await radio.stop_audio_tx_opus()
+            logger.info("poller: TX audio stream stopped")
+
+            # Re-arm RX through the AudioBus so the real subscriber callback is
+            # reinstated rather than a throwaway no-op clobbering the
+            # single-slot RX callback (MOR-506). The LAN stream itself IS
+            # full-duplex; the re-arm currently fires for every
+            # audio_duplex_mode (including "full") until skipping it is
+            # verified on real IC-7610 hardware — that flip is a hardware-gated
+            # follow-up to MOR-543, one line inside _should_restart_rx.
+            duplex_mode = getattr(radio, "audio_duplex_mode", "half")
+            if _should_restart_rx(duplex_mode):
+                await radio.audio_bus.restart_rx()
+                logger.info("poller: RX audio stream restarted")
+        except Exception as e:
+            logger.debug("poller: audio stream transition failed: %s", e)
+
     async def _execute(
         self,
         cmd: Command,
@@ -1322,6 +1374,7 @@ class RadioPoller:
                     )
             case PttOn():
                 logger.info("poller: PTT ON")
+                managed = self._managed_tx(command_source, session_id)
                 # Start TX audio stream before PTT (LAN audio requires this)
                 if CAP_AUDIO in self._caps:
                     try:
@@ -1349,9 +1402,22 @@ class RadioPoller:
                             )
                     except Exception as e:
                         logger.warning("poller: start TX audio failed: %s", e)
-                await radio.set_ptt(True)
+                if managed is None:
+                    await radio.set_ptt(True)
+                else:
+                    transition = await managed.set_ptt(True)
+                    if transition.outcome not in _KEY_ACCEPTED:
+                        # The TX audio leg above is armed but the rig is not
+                        # ours: disarm it, or modulation keeps flowing towards
+                        # a rig nobody keyed. Reported, never swallowed — the
+                        # operator must not believe they are on the air.
+                        await self._stop_tx_audio_leg()
+                        raise CommandError(
+                            f"managed TX rejected PTT ON: {transition.outcome}"
+                        )
             case PttOff():
                 logger.info("poller: PTT OFF")
+                managed = self._managed_tx(command_source, session_id)
                 # The unkey is a fire-and-forget CI-V write and can raise
                 # (connection/timeout/transport). The audio teardown below must
                 # run anyway: a failed de-key with the TX audio leg still
@@ -1362,41 +1428,15 @@ class RadioPoller:
                 # while the teardown's own ``except Exception`` guarantees a
                 # failing teardown can never replace it.
                 try:
-                    await radio.set_ptt(False)
+                    if managed is None:
+                        await radio.set_ptt(False)
+                    else:
+                        # A refused release answers STALE: nothing was keyed, or
+                        # another owner holds the lease. Neither is actionable,
+                        # and raising would break defensive unkeys in ``finally``.
+                        await managed.set_ptt(False)
                 finally:
-                    # Stop TX audio stream after PTT, then restart RX
-                    if CAP_AUDIO in self._caps:
-                        try:
-                            stop_tx = getattr(radio, "stop_tx", None)
-                            if stop_tx is not None:
-                                # Neutral AudioTransport surface (MOR-543).
-                                await stop_tx()
-                            else:
-                                # Legacy per-codec fallback.
-                                tx_codec, _tx_sr = _audio_tx_codec_and_rate(radio)
-                                if tx_codec == AudioCodec.PCM_1CH_16BIT:
-                                    await radio.stop_audio_tx_pcm()
-                                else:
-                                    await radio.stop_audio_tx_opus()
-                            logger.info("poller: TX audio stream stopped")
-
-                            # Re-arm RX through the AudioBus so the real
-                            # subscriber callback is reinstated rather than a
-                            # throwaway no-op clobbering the single-slot RX
-                            # callback (MOR-506). The LAN stream itself IS
-                            # full-duplex; the re-arm currently fires for every
-                            # audio_duplex_mode (including "full") until
-                            # skipping it is verified on real IC-7610 hardware
-                            # — that flip is a hardware-gated follow-up to
-                            # MOR-543, one line inside _should_restart_rx.
-                            duplex_mode = getattr(radio, "audio_duplex_mode", "half")
-                            if _should_restart_rx(duplex_mode):
-                                await radio.audio_bus.restart_rx()
-                                logger.info("poller: RX audio stream restarted")
-                        except Exception as e:
-                            logger.debug(
-                                "poller: audio stream transition failed: %s", e
-                            )
+                    await self._stop_tx_audio_leg()
             case SetPower(level=level, unit=unit):
                 if unit != "raw_255":
                     raise ValueError(
