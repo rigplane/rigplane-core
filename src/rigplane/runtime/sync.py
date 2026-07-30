@@ -14,6 +14,7 @@ Example::
 
 import asyncio
 import time
+import uuid
 from dataclasses import dataclass
 from typing import Any, Callable, Coroutine, TypeVar
 
@@ -24,8 +25,11 @@ from rigplane.core.command_service import (
     command_intent_from_request,
     command_response_observation,
 )
+from rigplane.core.exceptions import CommandError
+from rigplane.core.radio_protocol import ManagedTxApi
 from rigplane.core.state_pipeline_contracts import CommandIntent, Observation
 from rigplane.core.state_store import StateStore
+from rigplane.core.tx_safety import TxOutcome, TxOwner, TxSource
 from .ic705 import (
     prepare_ic705_data_profile as _prepare_ic705_data_profile,
     restore_ic705_data_profile as _restore_ic705_data_profile,
@@ -37,6 +41,8 @@ from rigplane.core.types import AudioCodec, Mode, ScopeCompletionPolicy
 T = TypeVar("T")
 
 __all__ = ["IcomRadio"]
+
+_KEY_ACCEPTED = frozenset({TxOutcome.ACCEPTED, TxOutcome.IDEMPOTENT})
 
 
 @dataclass(slots=True)
@@ -60,7 +66,7 @@ class _SyncCommandExecutor:
         elif intent.name == "set_rf_power":
             await radio.set_rf_power(int(params["value"]))
         elif intent.name == "set_ptt":
-            await radio.set_ptt(bool(params["ptt"]))
+            await self.wrapper._execute_ptt(bool(params["ptt"]))
         elif intent.name == "set_split":
             await radio.set_split(bool(params["split"]))
         elif intent.name == "set_attenuator_level":
@@ -148,6 +154,10 @@ class IcomRadio:
             executor=_SyncCommandExecutor(self),
             state_store=self._state_store,
         )
+        # One TX identity per SDK session (MOR-1009): the managed supervisor
+        # matches a release against the owner that took the lease, so this is
+        # bound once here rather than minted per request.
+        self._tx_owner = TxOwner(TxSource.SDK, uuid.uuid4().hex)
 
     def _run(self, coro: Coroutine[Any, Any, T]) -> T:
         """Run a coroutine on the internal event loop."""
@@ -356,6 +366,30 @@ class IcomRadio:
                 )
             )
         )
+
+    async def _execute_ptt(self, on: bool) -> None:
+        """Route one PTT request through the managed supervisor when present.
+
+        Radios without a managed runtime keep the legacy direct provider
+        write. The supervisor reports refusal through the returned outcome
+        rather than by raising, so both directions inspect it explicitly.
+        """
+        managed = ManagedTxApi.bind(self._radio, self._tx_owner)
+        if managed is None:
+            await self._radio.set_ptt(on)
+            return
+        transition = await managed.set_ptt(on)
+        if not on:
+            # A refused release answers STALE, which means either nothing was
+            # keyed or another owner holds the lease. Neither is actionable
+            # here — a non-owner cannot force a release by design — and raising
+            # would break the defensive unkey callers put in ``finally``.
+            return
+        if transition.outcome not in _KEY_ACCEPTED:
+            # ``set_ptt`` returns nothing, so swallowing a refusal would leave
+            # the caller believing it is on the air while the rig is not
+            # transmitting on its behalf.
+            raise CommandError(f"managed TX rejected set_ptt: {transition.outcome}")
 
     # ------------------------------------------------------------------
     # VFO / Split

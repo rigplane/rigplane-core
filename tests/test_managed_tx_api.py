@@ -2,6 +2,11 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterator
+
+import pytest
+
+from rigplane.core.exceptions import CommandError
 from rigplane.core.radio_protocol import (
     ManagedTxApi,
     ManagedTxCapable,
@@ -17,38 +22,52 @@ from rigplane.core.tx_safety import (
 )
 from rigplane.runtime.managed_radio_runtime import ManagedRadioRuntime
 from rigplane.runtime.radio import IcomRadio
+from rigplane.runtime.sync import IcomRadio as SyncIcomRadio
 
 _IDLE = TxSafetySupervisor().snapshot
 _OWNER = TxOwner(TxSource.SDK, "session")
+# Every answer ``request_on`` can give when the caller did *not* get the rig.
+_KEY_REJECTIONS = (
+    TxOutcome.BUSY,
+    TxOutcome.NOT_READY,
+    TxOutcome.RADIO_NOT_OFF,
+    TxOutcome.RELEASE_PENDING,
+    TxOutcome.STALE,
+)
 
 
 class FakeSupervisor:
     """Managed entry point; drives the provider's private write hook."""
 
-    def __init__(self, radio: "FakeRadio") -> None:
-        self._radio = radio
+    def __init__(self, radio: "FakeRadio", on: TxOutcome, off: TxOutcome) -> None:
+        self._radio, self._on, self._off = radio, on, off
         self.calls: list[tuple[bool, TxOwner, TxReleaseReason | None]] = []
 
     async def request_on(self, owner: TxOwner) -> TxTransition:
         self.calls.append((True, owner, None))
         await self._radio._write_managed_ptt(0, True)
-        return TxTransition(TxOutcome.ACCEPTED, _IDLE)
+        return TxTransition(self._on, _IDLE)
 
     async def release_owner(
         self, owner: TxOwner, *, reason: TxReleaseReason
     ) -> TxTransition:
         self.calls.append((False, owner, reason))
         await self._radio._write_managed_ptt(0, False)
-        return TxTransition(TxOutcome.ACCEPTED, _IDLE)
+        return TxTransition(self._off, _IDLE)
 
 
 class FakeRadio:
     """Provider whose bare ``set_ptt`` managed ingress must never reach."""
 
-    def __init__(self, managed: bool) -> None:
+    def __init__(
+        self,
+        managed: bool,
+        on: TxOutcome = TxOutcome.ACCEPTED,
+        off: TxOutcome = TxOutcome.ACCEPTED,
+    ) -> None:
         self.bare_writes: list[bool] = []
         self.managed_writes: list[bool] = []
-        self.supervisor = FakeSupervisor(self)
+        self.supervisor = FakeSupervisor(self, on, off)
         self.managed_tx = self.supervisor if managed else None
 
     async def set_ptt(self, on: bool) -> None:
@@ -103,3 +122,113 @@ def test_managed_runtime_satisfies_the_supervisor_protocol() -> None:
     runtime = ManagedRadioRuntime("target", service_factory=lambda _host: _service)
 
     assert isinstance(runtime, ManagedTxSupervisor)
+
+
+# --- SDK sync ingress (MOR-1171) -------------------------------------------
+
+
+@pytest.fixture
+def wrapper() -> Iterator[SyncIcomRadio]:
+    """One SDK session; the sync facade owns a private event loop."""
+    radio = SyncIcomRadio("127.0.0.1")
+    try:
+        yield radio
+    finally:
+        radio._loop.close()
+
+
+def _attach(wrapper: SyncIcomRadio, provider: FakeRadio) -> FakeRadio:
+    wrapper._radio = provider  # type: ignore[assignment]
+    return provider
+
+
+def test_shipped_ingress_keeps_the_legacy_direct_write(
+    wrapper: SyncIcomRadio,
+) -> None:
+    # Nothing assembles a managed runtime yet (MOR-1016), so the backend the
+    # SDK actually ships must still reach its own ``set_ptt``, unchanged.
+    writes: list[bool] = []
+
+    async def _record(on: bool) -> None:
+        writes.append(on)
+
+    assert not isinstance(wrapper._radio, ManagedTxCapable)
+    assert ManagedTxApi.bind(wrapper._radio, wrapper._tx_owner) is None
+    wrapper._radio.set_ptt = _record  # type: ignore[method-assign]
+
+    wrapper.set_ptt(True)
+    wrapper.set_ptt(False)
+
+    assert writes == [True, False]
+
+
+@pytest.mark.parametrize("outcome", [TxOutcome.ACCEPTED, TxOutcome.IDEMPOTENT])
+def test_managed_ingress_enters_the_supervisor_exactly_once(
+    wrapper: SyncIcomRadio, outcome: TxOutcome
+) -> None:
+    # IDEMPOTENT means this owner already holds the lease, so the request did
+    # land — it is an accepting outcome, not a rejection.
+    provider = _attach(wrapper, FakeRadio(True, on=outcome, off=outcome))
+
+    wrapper.set_ptt(True)
+    wrapper.set_ptt(False)
+
+    owner = wrapper._tx_owner
+    assert provider.supervisor.calls == [
+        (True, owner, None),
+        (False, owner, TxReleaseReason.OPERATOR_RELEASE),
+    ]
+    # No bypass and no re-entry: the effect path owns the provider write.
+    assert provider.bare_writes == []
+    assert provider.managed_writes == [True, False]
+
+
+def test_owner_identity_is_stable_per_session(wrapper: SyncIcomRadio) -> None:
+    provider = _attach(wrapper, FakeRadio(True))
+    other = SyncIcomRadio("127.0.0.1")
+
+    wrapper.set_ptt(True)
+    wrapper.set_ptt(False)
+    wrapper.set_ptt(True)
+
+    try:
+        # A per-request owner would make ``release_owner`` miss its own lease
+        # and strand the rig keyed until the watchdog fires.
+        assert [owner for _, owner, _ in provider.supervisor.calls] == [
+            wrapper._tx_owner
+        ] * 3
+        assert wrapper._tx_owner.source is other._tx_owner.source is TxSource.SDK
+        assert other._tx_owner != wrapper._tx_owner
+    finally:
+        other._loop.close()
+
+
+@pytest.mark.parametrize("outcome", _KEY_REJECTIONS)
+def test_a_key_the_supervisor_refused_raises(
+    wrapper: SyncIcomRadio, outcome: TxOutcome
+) -> None:
+    # ``set_ptt`` returns nothing, so a swallowed rejection would leave the
+    # caller believing it is on the air while the rig is not transmitting.
+    provider = _attach(wrapper, FakeRadio(True, on=outcome))
+
+    with pytest.raises(CommandError, match=str(outcome)):
+        wrapper.set_ptt(True)
+
+    assert provider.supervisor.calls == [(True, wrapper._tx_owner, None)]
+    assert provider.bare_writes == []
+
+
+def test_a_release_the_supervisor_refused_is_tolerated(
+    wrapper: SyncIcomRadio,
+) -> None:
+    # STALE covers both "nothing was keyed" and "another owner holds it". A
+    # non-owner cannot force a release by design, so an unkey is best effort
+    # and must not throw out of a caller's ``finally`` block.
+    provider = _attach(wrapper, FakeRadio(True, off=TxOutcome.STALE))
+
+    wrapper.set_ptt(False)
+
+    assert provider.supervisor.calls == [
+        (False, wrapper._tx_owner, TxReleaseReason.OPERATOR_RELEASE)
+    ]
+    assert provider.bare_writes == []
