@@ -24,7 +24,17 @@ from rigplane.cli import (
     _run,
     main,
 )
+from rigplane.core.radio_protocol import ManagedTxApi, ManagedTxCapable
+from rigplane.core.tx_safety import (
+    TxOutcome,
+    TxOwner,
+    TxReleaseReason,
+    TxSafetySupervisor,
+    TxSource,
+    TxTransition,
+)
 from rigplane.exceptions import TimeoutError as IcomTimeout
+from rigplane.runtime.radio import IcomRadio as RuntimeIcomRadio
 
 
 # ---------------------------------------------------------------------------
@@ -126,6 +136,11 @@ def mock_radio():
     radio.start_audio_tx_pcm = AsyncMock()
     radio.stop_audio_tx_pcm = AsyncMock()
     radio.push_audio_tx_pcm = AsyncMock()
+    # Unmanaged on purpose: no backend assembles a managed TX runtime yet
+    # (MOR-1016). Left unset, an AsyncMock auto-satisfies ``ManagedTxCapable``
+    # on 3.11 and not on 3.12+ (gh-102433), which would make every PTT test in
+    # this file interpreter dependent — and the PR gate runs 3.11.
+    radio.managed_tx = None
     _add_capability_protocols(radio)
     return radio
 
@@ -491,6 +506,154 @@ class TestCmdPtt:
         assert rc == 0
         mock_radio.set_ptt.assert_called_once_with(False)
         assert "OFF" in capsys.readouterr().out
+
+
+# ---------------------------------------------------------------------------
+# _cmd_ptt — managed TX ingress (MOR-1170)
+# ---------------------------------------------------------------------------
+
+_IDLE_TX_SNAPSHOT = TxSafetySupervisor().snapshot
+_ACCEPTED = TxOutcome.ACCEPTED
+# Every answer ``request_on`` can give when the caller did *not* get the rig.
+_TX_KEY_REJECTIONS = (
+    TxOutcome.BUSY,
+    TxOutcome.NOT_READY,
+    TxOutcome.RADIO_NOT_OFF,
+    TxOutcome.RELEASE_PENDING,
+    TxOutcome.STALE,
+)
+
+
+class _FakeTxSupervisor:
+    """Hand written: a MagicMock satisfies ManagedTxCapable on 3.11, not 3.12+."""
+
+    def __init__(self, on: TxOutcome, off: TxOutcome) -> None:
+        self._on, self._off = on, off
+        self.calls: list[tuple[bool, TxOwner, TxReleaseReason | None]] = []
+
+    async def request_on(self, owner: TxOwner) -> TxTransition:
+        self.calls.append((True, owner, None))
+        return TxTransition(self._on, _IDLE_TX_SNAPSHOT)
+
+    async def release_owner(
+        self, owner: TxOwner, *, reason: TxReleaseReason
+    ) -> TxTransition:
+        self.calls.append((False, owner, reason))
+        return TxTransition(self._off, _IDLE_TX_SNAPSHOT)
+
+
+class _FakeManagedRadio:
+    """Radio whose bare ``set_ptt`` the managed ingress must never reach."""
+
+    def __init__(self, on: TxOutcome = _ACCEPTED, off: TxOutcome = _ACCEPTED) -> None:
+        self.bare_writes: list[bool] = []
+        self.supervisor = _FakeTxSupervisor(on, off)
+        self.managed_tx = self.supervisor
+
+    async def set_ptt(self, on: bool) -> None:
+        self.bare_writes.append(on)
+
+
+def _kinds(sup: _FakeTxSupervisor) -> list[tuple[bool, TxReleaseReason | None]]:
+    return [(keyed, reason) for keyed, _owner, reason in sup.calls]
+
+
+class TestCmdPttManagedIngress:
+    @pytest.mark.asyncio
+    async def test_shipped_radio_keeps_the_legacy_direct_write(self, capsys) -> None:
+        # No backend assembles a managed runtime yet (MOR-1016): the radio the
+        # CLI ships must reach its own ``set_ptt``, with today's codes and lines.
+        shipped = RuntimeIcomRadio("127.0.0.1")
+        writes: list[bool] = []
+
+        async def _record(on: bool) -> None:
+            writes.append(on)
+
+        assert not isinstance(shipped, ManagedTxCapable)
+        assert ManagedTxApi.bind(shipped, TxOwner(TxSource.SDK, "probe")) is None
+        shipped.set_ptt = _record
+
+        assert await _cmd_ptt(shipped, Namespace(state="on")) == 0
+        assert await _cmd_ptt(shipped, Namespace(state="off")) == 0
+
+        assert writes == [True, False]
+        captured = capsys.readouterr()
+        assert captured.out.splitlines() == ["PTT ON", "PTT OFF"]
+        assert captured.err == ""
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("outcome", [TxOutcome.ACCEPTED, TxOutcome.IDEMPOTENT])
+    async def test_managed_ingress_enters_the_supervisor_exactly_once(
+        self, outcome: TxOutcome, capsys
+    ) -> None:
+        # IDEMPOTENT means this owner already holds the lease, so the request
+        # did land — it is an accepting outcome, not a rejection.
+        radio = _FakeManagedRadio(on=outcome, off=outcome)
+
+        assert await _cmd_ptt(radio, Namespace(state="on")) == 0
+        assert await _cmd_ptt(radio, Namespace(state="off")) == 0
+
+        assert _kinds(radio.supervisor) == [
+            (True, None),
+            (False, TxReleaseReason.OPERATOR_RELEASE),
+        ]
+        assert radio.bare_writes == []  # no bypass: the effect path writes
+        captured = capsys.readouterr()
+        assert captured.out.splitlines() == ["PTT ON", "PTT OFF"]
+        assert captured.err == ""
+
+    @pytest.mark.asyncio
+    async def test_tx_owner_is_one_stable_identity_per_process(self) -> None:
+        first, second = _FakeManagedRadio(), _FakeManagedRadio()
+
+        await _cmd_ptt(first, Namespace(state="on"))
+        await _cmd_ptt(first, Namespace(state="off"))
+        await _cmd_ptt(second, Namespace(state="on"))
+
+        calls = first.supervisor.calls + second.supervisor.calls
+        owners = [owner for _keyed, owner, _reason in calls]
+        assert len(owners) == 3
+        # ``release_owner`` matches on the owner alone, so a per-request (or
+        # per-radio) owner would miss its own lease and could strand the rig
+        # keyed until the watchdog fires.
+        assert all(owner is owners[0] for owner in owners)
+        assert owners[0].source is TxSource.SDK
+        assert owners[0].session_id
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("outcome", _TX_KEY_REJECTIONS)
+    async def test_a_key_the_supervisor_refused_exits_non_zero(
+        self, outcome: TxOutcome, capsys
+    ) -> None:
+        # The supervisor reports refusal by return value, not by raising: a
+        # caller that ignores it prints a cheerful "PTT ON" and exits 0 while
+        # the rig is not transmitting on its behalf.
+        radio = _FakeManagedRadio(on=outcome)
+
+        rc = await _cmd_ptt(radio, Namespace(state="on"))
+
+        assert rc == 1
+        captured = capsys.readouterr()
+        assert captured.out == ""
+        assert "Error" in captured.err and f"({outcome})" in captured.err
+        assert _kinds(radio.supervisor) == [(True, None)]
+        assert radio.bare_writes == []
+
+    @pytest.mark.asyncio
+    async def test_a_release_the_supervisor_refused_succeeds(self, capsys) -> None:
+        # STALE covers both "nothing was keyed" and "another owner holds it".
+        # A non-owner cannot force a release by design, so the unkey is best
+        # effort: it reports, but it must not fail the command.
+        radio = _FakeManagedRadio(off=TxOutcome.STALE)
+
+        rc = await _cmd_ptt(radio, Namespace(state="off"))
+
+        assert rc == 0
+        captured = capsys.readouterr()
+        assert captured.out.splitlines() == ["PTT OFF"]
+        assert "Warning" in captured.err and f"({TxOutcome.STALE})" in captured.err
+        assert _kinds(radio.supervisor) == [(False, TxReleaseReason.OPERATOR_RELEASE)]
+        assert radio.bare_writes == []
 
 
 # ---------------------------------------------------------------------------
