@@ -41,6 +41,7 @@ Standard capability tags:
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import (
     TYPE_CHECKING,
     Any,
@@ -55,6 +56,7 @@ from typing import (
 )
 
 from .radio_state import RadioState, VfoSlotState
+from .tx_safety import TxOwner, TxReleaseReason, TxTransition
 from .types import AudioCodec, BreakInMode, Mode
 
 if TYPE_CHECKING:
@@ -92,6 +94,9 @@ __all__ = [
     "SystemControlCapable",
     "RepeaterControlCapable",
     "LevelsCapable",
+    "ManagedTxApi",
+    "ManagedTxCapable",
+    "ManagedTxSupervisor",
     "MetersCapable",
     "PowerControlCapable",
     "RigctldFallbackCache",
@@ -498,6 +503,76 @@ class SplitCapable(Protocol):
     async def set_split(self, on: bool) -> None:
         """Enable (``True``) or disable (``False``) split mode."""
         ...
+
+
+# --- Managed TX (supervised PTT) -------------------------------------------
+
+
+@runtime_checkable
+class ManagedTxSupervisor(Protocol):
+    """Supervised PTT surface of a radio's managed TX runtime.
+
+    Structural surface of
+    :class:`~rigplane.runtime.managed_radio_runtime.ManagedRadioRuntime`.
+    Managed ingress keys and unkeys through these methods only; the bare
+    :meth:`Radio.set_ptt` write stays private to the supervisor's own effect
+    path, so an ingress request never re-enters the supervisor.
+    """
+
+    async def request_on(self, owner: TxOwner) -> TxTransition:
+        """Request TX for ``owner`` — one supervisor entry per call."""
+        ...
+
+    async def release_owner(
+        self, owner: TxOwner, *, reason: TxReleaseReason
+    ) -> TxTransition:
+        """Release ``owner``'s TX lease — one supervisor entry per call."""
+        ...
+
+
+@runtime_checkable
+class ManagedTxCapable(Protocol):
+    """Radio that publishes a managed TX supervisor for every ingress.
+
+    Backends assembled with a managed runtime expose it here so Web, rigctld,
+    and the SDK route through :class:`ManagedTxApi` instead of writing PTT
+    themselves.  Backends without one expose no ``managed_tx`` attribute (or
+    return ``None``) and keep the legacy :meth:`Radio.set_ptt` path unchanged.
+    """
+
+    @property
+    def managed_tx(self) -> ManagedTxSupervisor | None:
+        """The radio's managed TX supervisor, or ``None`` when unmanaged."""
+        ...
+
+
+@dataclass(frozen=True, slots=True)
+class ManagedTxApi:
+    """One managed PTT facade bound to one stable ingress identity.
+
+    ``owner`` is bound once per ingress session: the supervisor matches a
+    release against the owner that took the lease, so a per-request owner
+    would fail that match and strand the radio keyed.
+    """
+
+    supervisor: ManagedTxSupervisor
+    owner: TxOwner
+
+    @staticmethod
+    def bind(radio: object, owner: TxOwner) -> ManagedTxApi | None:
+        """Bind ``owner`` to ``radio``'s supervisor; ``None`` when unmanaged."""
+        if not isinstance(radio, ManagedTxCapable):
+            return None
+        supervisor = radio.managed_tx
+        return None if supervisor is None else ManagedTxApi(supervisor, owner)
+
+    async def set_ptt(
+        self, on: bool, *, reason: TxReleaseReason = TxReleaseReason.OPERATOR_RELEASE
+    ) -> TxTransition:
+        """Route one key/unkey request into the supervisor exactly once."""
+        if on:
+            return await self.supervisor.request_on(self.owner)
+        return await self.supervisor.release_owner(self.owner, reason=reason)
 
 
 @runtime_checkable
