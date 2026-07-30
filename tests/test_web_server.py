@@ -362,6 +362,16 @@ def mock_radio() -> MagicMock:
     }
     _add_scope_capable_attrs(radio)
     _del_poller_factory_attrs(radio)
+    # No managed TX runtime: this fixture drives the poller's legacy
+    # ``set_ptt`` for every PTT a control session issues — the explicit
+    # ``test_command_ptt`` key and, far more often, the teardown unkey. Stated
+    # explicitly because a bare Mock satisfies the runtime-checkable
+    # ``ManagedTxCapable`` on 3.11 (hasattr) but not on 3.12+ (getattr_static,
+    # gh-102433), and the per-PR gate pins 3.11 while dev runs newer. ``None``
+    # still passes isinstance on both — ``managed_tx`` is a non-callable
+    # protocol member — but ``ManagedTxApi.bind`` then returns ``None`` on
+    # both, and bind, not a bare isinstance, is the gate managed ingress uses.
+    radio.managed_tx = None
     radio.get_freq = AsyncMock(return_value=14_074_000)
     radio.get_mode = AsyncMock(return_value=MagicMock(name="USB"))
     radio.get_mode.return_value.name = "USB"
@@ -2836,6 +2846,11 @@ class TestRadioPoller:
         radio.model = profile.model
         radio.capabilities = set(profile.capabilities)
         radio._radio_state = SimpleNamespace(active="MAIN")
+        # No managed TX runtime — same reason as the ``mock_radio`` fixture
+        # above. No test in this class keys through a poller yet, but
+        # ``set_ptt`` is wired below: an unmanaged provider states this whether
+        # or not a test happens to key today.
+        radio.managed_tx = None
         mode_mock = MagicMock()
         mode_mock.name = "USB"
         radio.get_freq = AsyncMock(return_value=14074000)
@@ -3025,6 +3040,11 @@ class TestSwitchScopeReceiver:
         radio.model = profile.model
         radio.capabilities = set(profile.capabilities)
         radio._radio_state = SimpleNamespace(active="MAIN")
+        # No managed TX runtime — same reason as the ``mock_radio`` fixture
+        # above. No test in this class keys through a poller yet, but
+        # ``set_ptt`` is wired below: an unmanaged provider states this whether
+        # or not a test happens to key today.
+        radio.managed_tx = None
         radio.send_civ = AsyncMock()
         radio.state_cache = StateCache()
         radio.enable_scope = AsyncMock()
