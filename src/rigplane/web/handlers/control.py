@@ -532,6 +532,12 @@ class ControlHandler:
         except EOFError:
             pass
         finally:
+            # Ahead of every step that can raise out of this block: on a dead
+            # socket ``await event_task`` re-raises the sender's error and
+            # unregister broadcasts, so either would skip the unkey on exactly
+            # the abrupt drops that need it most. The release needs neither.
+            self._release_ptt_on_teardown()
+            self._clear_mod_input_restore_on_teardown()
             event_task.cancel()
             try:
                 await event_task
@@ -539,10 +545,6 @@ class ControlHandler:
                 pass
             if self._server is not None:
                 self._server.unregister_control_event_queue(self._event_queue)
-            # Release first: unkeying is the safe direction and must never be
-            # reachable only via MOD-input bookkeeping (MOR-1013).
-            self._release_ptt_on_teardown()
-            self._clear_mod_input_restore_on_teardown()
 
     async def _event_sender_loop(self) -> None:
         """Drain event queue and forward events to WebSocket."""
@@ -1037,7 +1039,10 @@ class ControlHandler:
         except Exception:
             logger.debug("control: teardown PTT OFF enqueue failed", exc_info=True)
         else:
-            logger.info("control: requested PTT OFF on control session teardown")
+            logger.info(
+                "control: requested PTT OFF on control session teardown (session=%s)",
+                self._session_id,
+            )
 
     def _clear_mod_input_restore_on_teardown(self) -> None:
         """Consume the legacy MOD-input arm without acting on it (MOR-993).

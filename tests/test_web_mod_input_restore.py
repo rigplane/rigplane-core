@@ -14,6 +14,7 @@ Two concerns share the teardown path and are deliberately kept apart:
 
 from __future__ import annotations
 
+import asyncio
 from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
@@ -51,6 +52,28 @@ def _teardown(handler: ControlHandler) -> None:
     """Run the teardown steps in the same order as ``run()``'s finally block."""
     handler._release_ptt_on_teardown()
     handler._clear_mod_input_restore_on_teardown()
+
+
+def _make_run_handler(*, unregister: Any = None) -> tuple[ControlHandler, CommandQueue]:
+    """Build a handler whose ``run()`` reaches teardown on the first ``recv``."""
+    command_queue = CommandQueue()
+
+    async def recv() -> tuple[int, bytes]:
+        await asyncio.sleep(0.01)  # let the event-sender task run before EOF
+        raise EOFError
+
+    return ControlHandler(
+        ws=SimpleNamespace(send_text=AsyncMock(), recv=recv),
+        radio=SimpleNamespace(connected=True, radio_ready=True),
+        server_version="test",
+        radio_model="IC-7610",
+        server=SimpleNamespace(
+            command_queue=command_queue,
+            register_control_event_queue=MagicMock(),
+            unregister_control_event_queue=unregister or MagicMock(),
+            build_state_update_envelope=MagicMock(return_value={}),
+        ),
+    ), command_queue
 
 
 def _provider_poller(error: Exception | None) -> tuple[RadioPoller, MagicMock]:
@@ -300,32 +323,35 @@ class TestTeardownPttRelease:
 
 
 class TestRunTeardownWiring:
-    """run()'s finally block must reach the release, not just the bookkeeping."""
+    """run()'s finally must reach the release before any step that can raise."""
 
     @pytest.mark.asyncio
     async def test_run_releases_ptt_on_disconnect_without_arm(self) -> None:
-        command_queue = CommandQueue()
-        server = SimpleNamespace(
-            command_queue=command_queue,
-            register_control_event_queue=MagicMock(),
-            unregister_control_event_queue=MagicMock(),
-            build_state_update_envelope=MagicMock(return_value={}),
-        )
-        ws = SimpleNamespace(
-            send_text=AsyncMock(),
-            recv=AsyncMock(side_effect=EOFError()),
-        )
-        handler = ControlHandler(
-            ws=ws,
-            radio=SimpleNamespace(connected=True, radio_ready=True),
-            server_version="test",
-            radio_model="IC-7610",
-            server=server,
-        )
-
+        handler, q = _make_run_handler()
         await handler.run()
+        assert q.drain() == [PttOff()]
 
-        assert command_queue.drain() == [PttOff()]
+    @pytest.mark.asyncio
+    async def test_release_survives_dead_egress_socket(self) -> None:
+        """A dead egress socket kills the sender; ``await event_task`` re-raises."""
+        handler, q = _make_run_handler()
+        handler._ws.send_text = AsyncMock(
+            side_effect=[None, None, ConnectionResetError("egress socket closed")]
+        )
+        handler._enqueue_rc_power("ptt_on", {}, q, handler._radio)
+        handler._event_queue.put_nowait({"type": "state_update"})
+        with pytest.raises(ConnectionResetError):
+            await handler.run()
+        assert q.drain() == [PttOn(), PttOff()]
+
+    @pytest.mark.asyncio
+    async def test_release_survives_unregister_failure(self) -> None:
+        """``unregister_control_event_queue`` broadcasts; it is not raise-free."""
+        handler, q = _make_run_handler(unregister=MagicMock(side_effect=RuntimeError))
+        handler._enqueue_rc_power("ptt_on", {}, q, handler._radio)
+        with pytest.raises(RuntimeError):
+            await handler.run()
+        assert q.drain() == [PttOn(), PttOff()]
 
 
 class TestCommandRouting:
