@@ -23,6 +23,7 @@ from ..protocol import (  # noqa: TID251
     encode_json,
 )
 from ..radio_poller import (  # noqa: TID251
+    CommandQueue,
     PttOff,
     PttOn,
     ScanSetDfSpan,
@@ -525,6 +526,10 @@ class ControlHandler:
                 logger.debug("control: failed to send initial state", exc_info=True)
         event_task: asyncio.Task[None] = asyncio.create_task(self._event_sender_loop())
         try:
+            # Inside the try, so the finally below owns every exit from here on;
+            # ahead of the recv loop, so no command of ours can be enqueued
+            # before the poller can see who enqueued it.
+            self._publish_session_liveness(live=True)
             while True:
                 opcode, payload = await self._ws.recv()
                 if opcode == WS_OP_TEXT:
@@ -537,6 +542,7 @@ class ControlHandler:
             # unregister broadcasts, so either would skip the unkey on exactly
             # the abrupt drops that need it most. The release needs neither.
             self._release_ptt_on_teardown()
+            self._publish_session_liveness(live=False)
             self._clear_mod_input_restore_on_teardown()
             event_task.cancel()
             try:
@@ -1043,6 +1049,25 @@ class ControlHandler:
                 "control: requested PTT OFF on control session teardown (session=%s)",
                 self._session_id,
             )
+
+    def _publish_session_liveness(self, *, live: bool) -> None:
+        """Publish this session's liveness on the queue the poller drains.
+
+        The poller keys on behalf of a session it cannot see (MOR-1013 D1-a), so
+        the command queue — the one object both ends already hold — carries the
+        record. Teardown calls this from the top of ``run()``'s finally, beside
+        the PTT release and ahead of ``await event_task``: a dead egress socket
+        re-raises there, and a session left marked live is a session that can
+        still key. Structural check only (a server with no real queue has no
+        poller to gate), and raise-free, so it can never displace the unkey.
+        """
+        queue = getattr(self._server, "command_queue", None)
+        if not isinstance(queue, CommandQueue):
+            return
+        if live:
+            queue.register_session(self._session_id)
+        else:
+            queue.unregister_session(self._session_id)
 
     def _clear_mod_input_restore_on_teardown(self) -> None:
         """Consume the legacy MOD-input arm without acting on it (MOR-993).

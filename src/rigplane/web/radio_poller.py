@@ -1187,6 +1187,27 @@ class RadioPoller:
             return None
         return ManagedTxApi.bind(self._radio, TxOwner(TxSource.WEBSOCKET, session_id))
 
+    def _refuse_key_from_gone_session(
+        self, source: CommandSource, session_id: str | None
+    ) -> None:
+        """Reject a key enqueued by a control session that is already gone.
+
+        The entry outlives its author: a session can enqueue PTT ON and drop
+        before this drain, and the supervisor grants a lease to any owner, alive
+        or dead. Gated on the same pair as ``_managed_tx`` — only a websocket
+        session publishes liveness, and ``session_id is None`` (HTTP PTT, and
+        the teardown unkey) carries none to check, so it passes through. ON
+        only: an unkey refused for being late would strand the rig keyed.
+
+        This narrows the window; it does not close it. A session can still die
+        between this check and the write it guards.
+        """
+        if source != "websocket" or not session_id:
+            return
+        if self._queue.session_is_live(session_id):
+            return
+        raise CommandError(f"control session {session_id} is gone: PTT ON refused")
+
     async def _stop_tx_audio_leg(self) -> None:
         """Stop the TX audio stream and re-arm RX; never raises."""
         radio = self._radio
@@ -1373,6 +1394,9 @@ class RadioPoller:
                         "filter_shape_changed", {"shape": shape, "receiver": rx}
                     )
             case PttOn():
+                # Before the log line, the TX audio leg, and the lease: a
+                # refused key must leave no trace on the air or in the rig.
+                self._refuse_key_from_gone_session(command_source, session_id)
                 logger.info("poller: PTT ON")
                 managed = self._managed_tx(command_source, session_id)
                 # Start TX audio stream before PTT (LAN audio requires this)
