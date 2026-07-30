@@ -1441,17 +1441,20 @@ class RadioPoller:
                         )
             case PttOff():
                 logger.info("poller: PTT OFF")
-                managed = self._managed_tx(command_source, session_id)
                 # The unkey is a fire-and-forget CI-V write and can raise
-                # (connection/timeout/transport). The audio teardown below must
-                # run anyway: a failed de-key with the TX audio leg still
+                # (connection/timeout/transport). So can the bind below it:
+                # resolving the supervisor runs backend code — a ``managed_tx``
+                # accessor is free to fail — so it binds INSIDE this guard, not
+                # above it (MOR-1187). The audio teardown must run through
+                # either failure: a failed de-key with the TX audio leg still
                 # pumping modulation into the rig is the worst outcome
-                # available (MOR-1013). ``finally`` keeps the original unkey
+                # available (MOR-1013). ``finally`` keeps the original
                 # exception intact — it propagates unwrapped so the caller's
                 # ``_mark_queued_command_failed`` classification is unchanged —
                 # while the teardown's own ``except Exception`` guarantees a
                 # failing teardown can never replace it.
                 try:
+                    managed = self._managed_tx(command_source, session_id)
                     if managed is None:
                         await radio.set_ptt(False)
                     else:
