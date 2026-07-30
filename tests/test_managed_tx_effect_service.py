@@ -1,4 +1,5 @@
 import asyncio
+import time
 from dataclasses import replace
 from itertools import count
 from unittest.mock import patch
@@ -245,3 +246,126 @@ async def test_failed_off_and_stale_readback_remain_durable_and_retryable() -> N
     assert supervisor.snapshot.phase is tx.TxPhase.IDLE
     retry = [("off", 11), ("read", 11)]
     assert calls == [("on", 11), ("read", 11), ("off", 11)] + retry * 2
+
+
+@pytest.mark.asyncio
+async def test_uncancelled_write_off_poisons_at_metadata_attempt_deadline() -> None:
+    now = [10.0]
+    supervisor, acquire = _acquire(13, now, attempt_timeout=0.5)
+    hang, retirements, cancellations = asyncio.Event(), [], 0
+    calls: list[tuple[str, int]] = []
+
+    async def write(generation: int, on: bool) -> None:
+        nonlocal cancellations
+        calls.append(("on" if on else "off", generation))
+        if not on:
+            try:
+                await hang.wait()
+            except asyncio.CancelledError:
+                cancellations += 1
+                raise
+
+    async def read(generation: int) -> None:
+        calls.append(("read", generation))
+        supervisor.observe_ptt(
+            tx.ProviderPttObservation(tx.RadioTx.ON, generation, 2, now[0])
+        )
+
+    async def retire(generation: int) -> None:
+        retirements.append(generation)
+
+    service = make_service(Host(lambda: now[0], write, read, retire))
+    await service(supervisor, acquire)
+    assert supervisor.snapshot.phase is tx.TxPhase.KEYED
+    release = _release(supervisor)
+    attempt = release.effects[0]
+    assert isinstance(attempt, tx.ProviderAttempt) and release.effects == (attempt,)
+    residual = 0.04
+    now[0] = attempt.started_at_monotonic + attempt.timeout_seconds - residual
+    with patch.object(
+        supervisor, "settle_attempt", wraps=supervisor.settle_attempt
+    ) as settle:
+        budget = attempt.timeout_seconds / 2
+        started = time.monotonic()
+        try:
+            await asyncio.wait_for(service(supervisor, release), budget)
+        finally:
+            hang.set()
+        elapsed = time.monotonic() - started
+    assert residual <= elapsed < budget
+    assert settle.call_count == 0 and cancellations == 1 and retirements == [13]
+    assert calls == [("on", 13), ("read", 13), ("off", 13)]
+    assert not getattr(service, "_claims")
+
+
+@pytest.mark.asyncio
+async def test_barrier_generation_floor_rejects_stale_attempt_and_cancel() -> None:
+    now = [10.0]
+    current, keyed = _acquire(10, now)
+    old, pending = _acquire(9, now)
+    calls: list[tuple[str, int]] = []
+
+    async def write(generation: int, on: bool) -> None:
+        calls.append(("on" if on else "off", generation))
+
+    async def read(generation: int) -> None:
+        calls.append(("read", generation))
+        current.observe_ptt(
+            tx.ProviderPttObservation(tx.RadioTx.ON, generation, 2, now[0])
+        )
+
+    async def retire(_: int) -> None:
+        raise AssertionError("stale-generation effects must never reach the provider")
+
+    service = make_service(Host(lambda: now[0], write, read, retire))
+    await service(current, keyed)
+    assert current.snapshot.phase is tx.TxPhase.KEYED
+    assert getattr(service, "_barrier") == (10, None)
+    stale = pending.effects[0]
+    assert old.snapshot.active_attempt == stale
+    with patch.object(old, "settle_attempt", wraps=old.settle_attempt) as settle:
+        await service(old, pending)
+        assert calls == [("on", 10), ("read", 10)] and settle.call_count == 0
+        cancel = _release(old)
+        assert isinstance(cancel.effects[0], tx.CancelProviderAttempt)
+        await service(old, cancel)
+    assert settle.call_count == 0 and old.snapshot.active_attempt == stale
+    assert getattr(service, "_barrier") == (10, None)
+    assert calls == [("on", 10), ("read", 10)] and not getattr(service, "_claims")
+
+
+@pytest.mark.asyncio
+async def test_claim_barrier_rejects_replay_the_identity_guard_would_admit() -> None:
+    now = [10.0]
+    supervisor, acquire = _acquire(5, now)
+    calls: list[tuple[str, int]] = []
+
+    async def write(generation: int, on: bool) -> None:
+        calls.append(("on" if on else "off", generation))
+
+    async def read(generation: int) -> None:
+        calls.append(("read", generation))
+        supervisor.observe_ptt(
+            tx.ProviderPttObservation(tx.RadioTx.ON, generation, 2, now[0])
+        )
+
+    async def retire(_: int) -> None:
+        raise AssertionError("a barred attempt must never reach the provider")
+
+    service = make_service(Host(lambda: now[0], write, read, retire))
+    await service(supervisor, acquire)
+    barred = _release(supervisor).effects[0]
+    assert isinstance(barred, tx.ProviderAttempt)
+    await service(supervisor, supervisor.set_provider_ready(5, ready=False))
+    assert getattr(service, "_barrier") == (5, barred.id)
+    twin, twin_acquire = _acquire(5, now)
+    readback = twin.settle_attempt(twin_acquire.effects[0].id, 5, succeeded=True)
+    twin.observe_ptt(tx.ProviderPttObservation(tx.RadioTx.ON, 5, 2, now[0]))
+    twin.settle_attempt(readback.effects[0].id, 5, succeeded=True)
+    replay = _release(twin)
+    assert replay.effects == (barred,) and twin.snapshot.active_attempt == barred
+    with patch.object(twin, "settle_attempt", wraps=twin.settle_attempt) as settle:
+        await service(twin, replay)
+    assert settle.call_count == 0 and twin.snapshot.active_attempt == barred
+    assert getattr(service, "_barrier") == (5, barred.id)
+    assert calls == [("on", 5), ("read", 5)] and not getattr(service, "_claims")
