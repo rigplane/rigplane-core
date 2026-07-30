@@ -129,11 +129,10 @@ def _make_radio(active: str = "MAIN") -> MagicMock:
     radio.capabilities = set(profile.capabilities)
     radio._radio_state = SimpleNamespace(active=active)
     # No managed TX runtime: this double stands in for an unmanaged provider,
-    # so the legacy ``set_ptt`` path stays in charge. ``None`` is the one value
-    # that reads unmanaged on every interpreter; a bare Mock does not, because
-    # runtime-checkable protocols use hasattr on 3.11 and getattr_static on
-    # 3.12+ (gh-102433). Full note: the ``mock_radio`` fixture in
-    # tests/test_web_server.py.
+    # so the legacy ``set_ptt`` path stays in charge. ``None`` reads unmanaged
+    # on every interpreter; a bare Mock does not, because runtime-checkable
+    # protocols use hasattr on 3.11 and getattr_static on 3.12+ (gh-102433).
+    # Full note: the ``mock_radio`` fixture in tests/test_web_server.py.
     radio.managed_tx = None
     radio.send_civ = AsyncMock()
     radio.set_freq = AsyncMock()
