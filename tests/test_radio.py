@@ -730,9 +730,9 @@ class TestPtt:
     """Test PTT toggle."""
 
     @pytest.mark.timeout(2)
-    @pytest.mark.parametrize("poison_only", [False, True], ids=["rebind", "poison"])
+    @pytest.mark.parametrize("invalidation", ["rebind", "poison", "reconnect"])
     async def test_managed_ptt_port_token_safety(
-        self, radio: IcomRadio, poison_only: bool
+        self, radio: IcomRadio, invalidation: str
     ) -> None:
         sent: list[bytes] = []
         responses: asyncio.Queue[bytes] = asyncio.Queue()
@@ -753,6 +753,76 @@ class TestPtt:
         observations: list[tx.ProviderPttObservation] = []
         observer = observations.append
         assert radio._capture_managed_tx_port(11, observer)
+        runtime = radio._civ_runtime
+        token = runtime._managed_tx_ports[11]
+        if invalidation == "reconnect":
+            replacement = MockTransport()
+            checks = 0
+            paced, release = asyncio.Event(), asyncio.Event()
+            pending: asyncio.Task[None] | None = None
+            current = runtime._managed_tx_port_is_current
+
+            def reconnect_after_validation(candidate: object) -> bool:
+                nonlocal checks
+                checks += 1
+                valid = current(candidate)  # type: ignore[arg-type]
+                if checks == 2:
+                    radio._civ_transport = replacement
+                return valid
+
+            async def blocked_pacing(_delay: float) -> None:
+                paced.set()
+                await release.wait()
+
+            send_release.set()
+            link.disconnect.side_effect = None
+            try:
+                with patch.object(
+                    runtime,
+                    "_managed_tx_port_is_current",
+                    reconnect_after_validation,
+                ):
+                    await asyncio.wait_for(radio._write_managed_ptt(11, True), 0.5)
+                if radio._civ_transport is not replacement:
+                    radio._civ_transport = replacement
+                await asyncio.wait_for(radio._retire_managed_tx_port(11), 0.5)
+                assert link.send.await_count == 1
+                assert replacement.sent_packets == []
+                assert not replacement.disconnected
+                assert radio._civ_transport is replacement
+                await runtime.stop_pump()
+
+                assert radio._capture_managed_tx_port(12, observer)
+                paced_token = runtime._managed_tx_ports[12]
+                radio._last_civ_send_monotonic = asyncio.get_running_loop().time()
+                radio._civ_min_interval = 1.0
+                frame = build_civ_frame(
+                    IC_7610_ADDR,
+                    CONTROLLER_ADDR,
+                    _CMD_PTT,
+                    sub=_SUB_PTT,
+                    data=b"\x01",
+                )
+                with patch("rigplane.runtime._civ_rx.asyncio.sleep", blocked_pacing):
+                    pending = asyncio.create_task(
+                        runtime._send_civ_frame_now(frame, owner=paced_token)
+                    )
+                    await asyncio.wait_for(paced.wait(), 0.2)
+                    runtime._poison_managed_tx_port(paced_token)
+                    release.set()
+                    with pytest.raises(ConnectionError, match="before dispatch"):
+                        await asyncio.wait_for(pending, 0.5)
+                assert replacement.sent_packets == []
+            finally:
+                release.set()
+                if pending is not None and not pending.done():
+                    pending.cancel()
+                    await asyncio.gather(pending, return_exceptions=True)
+                if 12 in runtime._managed_tx_ports:
+                    await asyncio.wait_for(radio._retire_managed_tx_port(12), 0.5)
+                await runtime.stop_pump()
+            return
+
         read = radio._request_authoritative_ptt_read
         send_release.set()
         pending_read = asyncio.create_task(read(11, observer))
@@ -762,9 +832,7 @@ class TestPtt:
         pending_write = asyncio.create_task(radio._write_managed_ptt(11, True))
         while link.send.await_count < 2:
             await asyncio.sleep(0)
-        runtime = radio._civ_runtime
-        token = runtime._managed_tx_ports[11]
-        if poison_only:
+        if invalidation == "poison":
             assert runtime._managed_tx_port_is_current(token)
             runtime._poison_managed_tx_port(token)
             assert runtime._managed_tx_ports[11] is token

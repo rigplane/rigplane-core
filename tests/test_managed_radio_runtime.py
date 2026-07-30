@@ -228,8 +228,9 @@ async def test_request_off_service_error_propagates_and_retains_durable_off() ->
     assert repeated.outcome is TxOutcome.IDEMPOTENT and rt.tx_snapshot.lease_id == lease
 
 
-@pytest.mark.asyncio
-async def test_shutdown_fences_readiness_and_terminal_reason() -> None:
+@pytest.mark.timeout(2)
+@pytest.mark.parametrize("replace", [False, True], ids=["ready", "replacement"])
+async def test_shutdown_fences_readiness_and_terminal_reason(replace: bool) -> None:
     provider, started, finish = ProviderLifecycle(), asyncio.Event(), asyncio.Event()
     armed = False
 
@@ -246,30 +247,48 @@ async def test_shutdown_fences_readiness_and_terminal_reason() -> None:
     await rt.request_off(owner, lease)
     await rt.replace_provider(ready=False)
     armed = True
-    readiness = asyncio.create_task(rt.set_provider_ready(ready=True))
-    await asyncio.wait_for(started.wait(), 0.2)
-    shutdown = asyncio.create_task(
-        rt.shutdown(release_provider=lambda: asyncio.sleep(0))
+    readiness = asyncio.create_task(
+        rt.replace_provider(ready=True)
+        if replace
+        else rt.set_provider_ready(ready=True)
     )
-    await asyncio.sleep(0)
-    with pytest.raises(ConnectionError, match="stale"):
-        await rt._effect_host.write(2, True)
-    late = await asyncio.gather(
-        rt.request_off(owner, lease),
-        rt.release_owner(owner, reason=TxReleaseReason.SOURCE_DETACHED),
-        rt.set_provider_ready(ready=False),
-        rt.set_provider_ready(ready=True),
-    )
-    assert not readiness.done() and provider.writes
-    assert all(not on for _generation, on in provider.writes)
-    assert [item.outcome for item in late[2:]] == [TxOutcome.NOT_READY] * 2
-    assert all(
-        item.snapshot.terminal_release_reason is TxReleaseReason.SERVER_SHUTDOWN
-        for item in late
-    )
-    finish.set()
-    assert (await readiness).outcome is TxOutcome.NOT_READY
-    assert (await shutdown).snapshot.phase is TxPhase.RELEASE_REQUIRED
+    shutdown: asyncio.Task[TxTransition] | None = None
+    try:
+        await asyncio.wait_for(started.wait(), 0.2)
+        shutdown = asyncio.create_task(
+            rt.shutdown(release_provider=lambda: asyncio.sleep(0))
+        )
+        await asyncio.sleep(0)
+        with pytest.raises(ConnectionError, match="stale"):
+            await rt._effect_host.write(rt.tx_snapshot.provider_generation, True)
+        late = await asyncio.gather(
+            rt.request_off(owner, lease),
+            rt.release_owner(owner, reason=TxReleaseReason.SOURCE_DETACHED),
+            rt.set_provider_ready(ready=False),
+            rt.set_provider_ready(ready=True),
+        )
+        assert not readiness.done() and provider.writes
+        assert all(not on for _generation, on in provider.writes)
+        assert [item.outcome for item in late[2:]] == [TxOutcome.NOT_READY] * 2
+        assert all(
+            item.snapshot.terminal_release_reason is TxReleaseReason.SERVER_SHUTDOWN
+            for item in late
+        )
+        finish.set()
+        assert (await asyncio.wait_for(readiness, 0.5)).outcome is TxOutcome.NOT_READY
+        assert shutdown is not None
+        assert (
+            await asyncio.wait_for(shutdown, 0.5)
+        ).snapshot.phase is TxPhase.RELEASE_REQUIRED
+    finally:
+        finish.set()
+        for task in (readiness, shutdown):
+            if task is not None and not task.done():
+                task.cancel()
+        await asyncio.gather(
+            *(task for task in (readiness, shutdown) if task is not None),
+            return_exceptions=True,
+        )
 
 
 @pytest.mark.parametrize(
