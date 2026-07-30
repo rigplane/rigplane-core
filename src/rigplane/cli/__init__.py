@@ -36,6 +36,7 @@ import sys
 from collections.abc import Sequence
 from pathlib import Path
 import time
+import uuid
 import wave
 from typing import Any
 
@@ -98,11 +99,20 @@ from rigplane.cli._convert import (  # noqa: E402
     add_subparser as _add_convert_subparser,
     run as _run_convert,
 )
-from rigplane.core.radio_protocol import Radio  # noqa: E402
+from rigplane.core.radio_protocol import ManagedTxApi, Radio  # noqa: E402
+from rigplane.core.tx_safety import TxOutcome, TxOwner, TxSource  # noqa: E402
 from rigplane.core.types import Mode, get_audio_capabilities  # noqa: E402
 
 _AUDIO_FRAME_MS = 20
 _PCM_SAMPLE_WIDTH_BYTES = 2
+
+# One TX identity for the whole CLI process (MOR-1170): the supervisor matches
+# a release against the owner that took the lease, so a per-request owner would
+# miss its own lease and could strand the rig keyed. One `rigplane` invocation
+# is one TX session, hence minted here and not in the handler. `TxSource` has
+# no CLI member; the CLI is an in-process consumer of the public SDK surface.
+_CLI_TX_OWNER = TxOwner(TxSource.SDK, f"cli-{uuid.uuid4().hex}")
+_TX_KEY_ACCEPTED = frozenset({TxOutcome.ACCEPTED, TxOutcome.IDEMPOTENT})
 
 
 def _get_env(name: str, default: str = "") -> str:
@@ -2718,8 +2728,35 @@ async def _cmd_meter(radio: Radio, args: argparse.Namespace) -> int:
 
 
 async def _cmd_ptt(radio: Radio, args: argparse.Namespace) -> int:
+    """Key or unkey the radio, through the managed supervisor when there is one.
+
+    Radios without a managed runtime keep the legacy direct provider write; the
+    supervisor reports refusal by return value, so both directions inspect it.
+    """
     on = args.state == "on"
-    await radio.set_ptt(on)
+    managed = ManagedTxApi.bind(radio, _CLI_TX_OWNER)
+    if managed is None:
+        await radio.set_ptt(on)
+    else:
+        transition = await managed.set_ptt(on)
+        if transition.outcome not in _TX_KEY_ACCEPTED:
+            if on:
+                # Printing "PTT ON" here would tell the operator the rig is
+                # transmitting when the supervisor refused the key.
+                print(
+                    f"Error: managed TX refused PTT on ({transition.outcome}).",
+                    file=sys.stderr,
+                )
+                return 1
+            # A refused release answers STALE, which means either nothing was
+            # keyed or another owner holds the lease. Neither is actionable
+            # here — a non-owner cannot force a release by design — so report
+            # it and still succeed, rather than failing a defensive unkey.
+            print(
+                f"Warning: managed TX released no lease for this session "
+                f"({transition.outcome}); another session may still hold TX.",
+                file=sys.stderr,
+            )
     print(f"PTT {'ON' if on else 'OFF'}")
     return 0
 
