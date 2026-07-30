@@ -154,6 +154,33 @@ async def _yield_until(predicate, timeout: float = 1.0) -> None:  # type: ignore
         await asyncio.sleep(0)
 
 
+async def _read_http_response(
+    reader: asyncio.StreamReader,
+) -> tuple[int, dict[str, str], bytes]:
+    """Read one complete HTTP response from ``reader``.
+
+    A single ``reader.read(n)`` returns whatever one TCP segment happened to
+    carry, so bodies larger than a segment (``/api/v1/state`` is ~32 KiB) were
+    silently truncated mid-JSON. Read the headers up to the blank line, then
+    take either ``Content-Length`` body bytes or everything until EOF (callers
+    send ``Connection: close``, and the server always sets ``Content-Length``).
+    """
+    header_bytes = (await reader.readuntil(b"\r\n\r\n"))[:-4]
+    lines = header_bytes.decode("ascii", errors="replace").split("\r\n")
+    status = int(lines[0].split(" ", 2)[1])
+    headers: dict[str, str] = {}
+    for line in lines[1:]:
+        if ":" in line:
+            key, _, value = line.partition(":")
+            headers[key.strip().lower()] = value.strip()
+    raw_length = headers.get("content-length")
+    if raw_length is None:
+        body = await reader.read()  # until EOF
+    else:
+        body = await reader.readexactly(int(raw_length))
+    return status, headers, body
+
+
 async def _http_get(
     host: str, port: int, path: str
 ) -> tuple[int, dict[str, str], bytes]:
@@ -162,19 +189,10 @@ async def _http_get(
         req = f"GET {path} HTTP/1.1\r\nHost: {host}:{port}\r\nConnection: close\r\n\r\n"
         writer.write(req.encode("ascii"))
         await writer.drain()
-        raw = await asyncio.wait_for(reader.read(65536), timeout=2.0)
+        return await asyncio.wait_for(_read_http_response(reader), timeout=2.0)
     finally:
         writer.close()
         await writer.wait_closed()
-    header_end = raw.find(b"\r\n\r\n")
-    header_bytes = raw[:header_end].decode("ascii", errors="replace").split("\r\n")
-    status = int(header_bytes[0].split(" ", 2)[1])
-    headers: dict[str, str] = {}
-    for line in header_bytes[1:]:
-        if ":" in line:
-            key, _, value = line.partition(":")
-            headers[key.strip().lower()] = value.strip()
-    return status, headers, raw[header_end + 4 :]
 
 
 async def _ws_connect(

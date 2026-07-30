@@ -184,18 +184,47 @@ async def _close_writer(writer: asyncio.StreamWriter) -> None:
         pass
 
 
+async def _read_http_response(
+    reader: asyncio.StreamReader,
+) -> tuple[int, dict[str, str], bytes]:
+    """Read one complete HTTP response from ``reader``.
+
+    A single ``reader.read(n)`` returns whatever one TCP segment happened to
+    carry, so bodies larger than a segment (``/api/v1/runtime`` grows past one)
+    were silently truncated mid-JSON. Read the headers up to the blank line,
+    then take either ``Content-Length`` body bytes or everything until EOF
+    (callers send ``Connection: close``, and the server always sets
+    ``Content-Length``).
+    """
+    header_bytes = (await reader.readuntil(b"\r\n\r\n"))[:-4]
+    lines = header_bytes.decode("ascii", errors="replace").split("\r\n")
+    status = int(lines[0].split(" ", 2)[1])
+    headers: dict[str, str] = {}
+    for line in lines[1:]:
+        if ":" in line:
+            key, _, value = line.partition(":")
+            headers[key.strip().lower()] = value.strip()
+    raw_length = headers.get("content-length")
+    if raw_length is None:
+        body = await reader.read()  # until EOF
+    else:
+        body = await reader.readexactly(int(raw_length))
+    return status, headers, body
+
+
 async def _http_get_json(host: str, port: int, path: str) -> dict[str, Any]:
     reader, writer = await asyncio.open_connection(host, port)
     try:
         req = f"GET {path} HTTP/1.1\r\nHost: {host}:{port}\r\nConnection: close\r\n\r\n"
         writer.write(req.encode("ascii"))
         await writer.drain()
-        raw = await asyncio.wait_for(reader.read(65536), timeout=2.0)
+        status, _headers, body = await asyncio.wait_for(
+            _read_http_response(reader), timeout=2.0
+        )
     finally:
         await _close_writer(writer)
-    status = int(raw.split(b" ", 2)[1])
     assert status == 200, f"GET {path} -> {status}"
-    return json.loads(raw[raw.find(b"\r\n\r\n") + 4 :])
+    return json.loads(body)
 
 
 def _noise_pcm(num_samples: int, seed: int = 583, amplitude: int = 5000) -> bytes:
