@@ -20,6 +20,41 @@ from rigplane.web.dx_cluster import DXClusterClient, DXSpot, SpotBuffer, parse_s
 
 
 # ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+
+async def _read_http_response(
+    reader: asyncio.StreamReader,
+) -> tuple[int, dict[str, str], bytes]:
+    """Read one complete HTTP response from ``reader``.
+
+    A single ``reader.read(n)`` returns whatever one TCP segment happened to
+    carry, so bodies larger than a segment were silently truncated mid-JSON.
+    Read the headers up to the blank line, then take either ``Content-Length``
+    body bytes or everything until EOF (callers send ``Connection: close``, and
+    the server always sets ``Content-Length``).
+    """
+    header_bytes = (await reader.readuntil(b"\r\n\r\n"))[:-4]
+
+    lines = header_bytes.decode("ascii", errors="replace").split("\r\n")
+    status_code = int(lines[0].split(" ", 2)[1])
+    headers: dict[str, str] = {}
+    for line in lines[1:]:
+        if ":" in line:
+            k, _, v = line.partition(":")
+            headers[k.strip().lower()] = v.strip()
+
+    raw_length = headers.get("content-length")
+    if raw_length is None:
+        body = await reader.read()  # until EOF
+    else:
+        body = await reader.readexactly(int(raw_length))
+
+    return status_code, headers, body
+
+
+# ---------------------------------------------------------------------------
 # Task 1: parse_spot
 # ---------------------------------------------------------------------------
 
@@ -447,20 +482,18 @@ class TestWebServerDXBroadcast:
         request = f"GET /api/v1/dx/spots HTTP/1.1\r\nHost: {host}:{port}\r\nConnection: close\r\n\r\n"
         writer.write(request.encode())
         await writer.drain()
-        raw = await asyncio.wait_for(reader.read(65536), timeout=5.0)
+        status, _headers, body = await asyncio.wait_for(
+            _read_http_response(reader), timeout=5.0
+        )
         writer.close()
         try:
             await writer.wait_closed()
         except Exception:
             pass
 
-        header_end = raw.find(b"\r\n\r\n")
-        status_line = raw[:header_end].decode("ascii").split("\r\n")[0]
-        body = raw[header_end + 4 :]
-
         await srv.stop()
 
-        assert "200" in status_line
+        assert status == 200
         data = json.loads(body)
         assert "spots" in data
         assert len(data["spots"]) == 1
