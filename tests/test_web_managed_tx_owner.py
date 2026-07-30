@@ -17,6 +17,11 @@ drain time. ON only: an unkey refused for being late strands the rig keyed.
 MOR-1187 closes what both leave open on the unkey: binding is not a lookup but
 backend code that can fail, so it belongs inside slice 1's teardown guard rather
 than above it. It also pins the two managed behaviours that had no test at all.
+
+MOR-1185 closes the last hole in the pair: the teardown unkey went onto the RAW
+queue, so it reached the drain owner-less and de-keyed the rig without ever
+giving the lease back. Routed through the metadata wrapper it releases what it
+took — and, deliberately, drops the unconditional write it used to make.
 """
 
 from __future__ import annotations
@@ -32,6 +37,7 @@ from rigplane.core.capabilities import CAP_AUDIO
 from rigplane.core.exceptions import CommandError
 from rigplane.core.radio_protocol import ManagedTxApi
 from rigplane.core.tx_safety import (
+    ProviderAttemptKind,
     ProviderPttObservation,
     RadioTx,
     TxOutcome,
@@ -122,9 +128,11 @@ def _poller(supervisor: _Supervisor | None) -> tuple[RadioPoller, _Radio]:
     return RadioPoller(radio, CommandQueue()), radio  # type: ignore[arg-type]
 
 
-def _run_handler() -> tuple[ControlHandler, CommandQueue]:
+def _run_handler(
+    queue: CommandQueue | None = None,
+) -> tuple[ControlHandler, CommandQueue]:
     """A handler whose ``run()`` reaches teardown on the first ``recv``."""
-    queue = CommandQueue()
+    queue = CommandQueue() if queue is None else queue
 
     async def recv() -> tuple[int, bytes]:
         await asyncio.sleep(0.01)  # let the event-sender task run before EOF
@@ -142,6 +150,55 @@ def _run_handler() -> tuple[ControlHandler, CommandQueue]:
             build_state_update_envelope=MagicMock(return_value={}),
         ),
     ), queue
+
+
+def _wired(
+    supervisor: _Supervisor | None,
+) -> tuple[ControlHandler, RadioPoller, _Radio]:
+    """One control session and one poller over the queue the server shares."""
+    handler, queue = _run_handler()
+    radio = _Radio(supervisor)
+    return handler, RadioPoller(radio, queue), radio  # type: ignore[arg-type]
+
+
+def _owner(handler: ControlHandler) -> TxOwner:
+    return TxOwner(TxSource.WEBSOCKET, handler._session_id)
+
+
+async def _drain(poller: RadioPoller) -> None:
+    """Execute queued entries exactly as ``_run``'s drain does — including its
+    default of ``source="websocket"`` for an entry that carries no source."""
+    for entry in poller._queue.drain_entries():
+        await poller._execute(
+            entry.command,
+            command_id=entry.command_id,
+            source=entry.source or "websocket",
+            session_id=entry.session_id,
+            command_service=entry.command_service,
+        )
+
+
+def _settle_release(supervisor: _Supervisor) -> list[ProviderAttemptKind]:
+    """Drive the started de-key to completion and report the provider work.
+
+    The policy is pure: ``release_owner`` only STARTS the release. Undriven, the
+    lease sits in RELEASE_PENDING and the next session is refused for a reason
+    that is not BUSY but is still a refusal, which would prove nothing. Every
+    attempt this settles belongs to the de-key, so observing the rig OFF after
+    each one is what the runtime's effect service sees on a rig that obeyed.
+    """
+    kinds: list[ProviderAttemptKind] = []
+    seq = 1
+    while (attempt := supervisor.inner.snapshot.active_attempt) is not None:
+        kinds.append(attempt.kind)
+        supervisor.inner.settle_attempt(
+            attempt.id, attempt.provider_generation, succeeded=True
+        )
+        seq += 1
+        supervisor.inner.observe_ptt(
+            ProviderPttObservation(RadioTx.OFF, 0, seq, time.monotonic())
+        )
+    return kinds
 
 
 async def test_unmanaged_radio_keeps_the_legacy_write_and_ordering() -> None:
@@ -235,10 +292,11 @@ async def test_a_raising_managed_tx_accessor_still_tears_the_tx_leg_down() -> No
 async def test_a_websocket_unkey_without_a_session_id_stays_unmanaged() -> None:
     """The ``session_id`` half of the gate carries its own weight.
 
-    A sourceless entry defaults to ``source="websocket"`` at drain, so on the
-    teardown unkey (MOR-1185) only the emptiness check stands between the drain
-    and ``TxOwner``'s empty-id ``ValueError``. The test above buys the teardown
-    back from such a raise, but nothing can buy back the de-key it replaces.
+    A sourceless entry defaults to ``source="websocket"`` at drain, so for any
+    entry that carries no id — every non-websocket ingress, and the teardown
+    unkey before MOR-1185 routed it through the metadata wrapper — only the
+    emptiness check stands between the drain and ``TxOwner``'s empty-id
+    ``ValueError``, which would replace a de-key with a raise.
     """
     supervisor = _Supervisor()
     poller, radio = _poller(supervisor)
@@ -305,10 +363,10 @@ async def test_a_queue_no_session_registered_on_assumes_nobody_is_gone() -> None
 
 
 async def test_a_command_with_no_session_id_keys_and_unkeys() -> None:
-    """HTTP PTT and the teardown unkey (MOR-1185) carry no session at all, so
-    they have no liveness to check even once the queue is tracking sessions.
-    Both source arms matter: the teardown unkey goes onto the RAW queue, and
-    the drain defaults a sourceless entry to ``source="websocket"``."""
+    """HTTP PTT carries no session at all, so it has no liveness to check even
+    once the queue is tracking sessions. Both source arms matter, because the
+    drain defaults a sourceless entry to ``source="websocket"`` — the arm the
+    teardown unkey took until MOR-1185 gave it the metadata wrapper."""
     poller, radio = _poller(None)
     poller._queue.register_session("ws-1")
     poller._queue.unregister_session("ws-1")
@@ -361,3 +419,105 @@ async def test_teardown_marks_the_session_gone_through_a_dead_egress_socket() ->
         await handler.run()
 
     assert not queue.session_is_live(handler._session_id)
+
+
+async def test_a_disconnect_releases_the_lease_it_took_not_just_the_rig() -> None:
+    """MOR-1185, acceptance 1 and 2: the next session keys without waiting.
+
+    The teardown OFF used to go onto the RAW server queue, so it reached the
+    drain sourceless and session-less, took the legacy write, and left the lease
+    with a session that no longer exists. MOR-1191's watchdog clears that after
+    ``watchdog_seconds`` — a backstop, not a fix: three minutes of denied TX
+    after every disconnect. A real supervisor drives this, so an owner that did
+    not match would answer STALE here rather than quietly passing.
+
+    Consequence C rides along: the finally unregisters the session immediately
+    after enqueuing the unkey, so the entry is always drained on behalf of an
+    author already gone. ``_refuse_key_from_gone_session`` covers ``PttOn`` only
+    and must keep to it — an OFF refused for being late strands a transmitter.
+    """
+    supervisor = _Supervisor()
+    handler, poller, radio = _wired(supervisor)
+    handler._publish_session_liveness(live=True)
+
+    await handler._enqueue_command("ptt_on", {})
+    await _drain(poller)
+    await handler.run()  # EOF on the first recv: the session disconnects
+    assert not poller._queue.session_is_live(handler._session_id)
+    await _drain(poller)
+
+    assert supervisor.entries == [(True, _owner(handler)), (False, _owner(handler))]
+    assert supervisor.outcomes == [TxOutcome.ACCEPTED, TxOutcome.ACCEPTED]
+    # The de-key is the supervisor's own WRITE_OFF, not a raw defensive write.
+    assert _settle_release(supervisor) == [
+        ProviderAttemptKind.WRITE_ON,  # the key attempt, cancelled by the release
+        ProviderAttemptKind.WRITE_OFF,
+    ]
+    assert "set_ptt(False)" not in radio.calls
+
+    second, _ = _run_handler(poller._queue)
+    second._publish_session_liveness(live=True)
+    await second._enqueue_command("ptt_on", {})
+    await _drain(poller)
+
+    # ACCEPTED, not BUSY and not RELEASE_PENDING: the lease is genuinely gone.
+    assert supervisor.entries[-1] == (True, _owner(second))
+    assert supervisor.outcomes[-1] is TxOutcome.ACCEPTED
+
+
+async def test_the_lease_is_released_through_a_dead_egress_socket() -> None:
+    """Acceptance 3: slice 2's guarantee, now with a lease behind it.
+
+    ``await event_task`` re-raises the sender's error and skips everything
+    behind it, which is why the release is the FIRST statement of the finally.
+    """
+    supervisor = _Supervisor()
+    handler, poller, radio = _wired(supervisor)
+    handler._publish_session_liveness(live=True)
+    await handler._enqueue_command("ptt_on", {})
+    await _drain(poller)
+    handler._ws.send_text = AsyncMock(
+        side_effect=[None, None, ConnectionResetError("egress socket closed")]
+    )
+    handler._event_queue.put_nowait({"type": "state_update"})
+
+    with pytest.raises(ConnectionResetError):
+        await handler.run()
+    await _drain(poller)
+
+    assert supervisor.entries[-1] == (False, _owner(handler))
+    assert supervisor.outcomes[-1] is TxOutcome.ACCEPTED
+
+
+async def test_a_session_that_never_keyed_writes_nothing_to_a_managed_rig() -> None:
+    """Consequence A, stated: this REMOVES a defensive write that fires today.
+
+    ``release_owner`` on a session holding no lease answers STALE and emits no
+    WRITE_OFF, so nothing reaches the rig. Correct when it is idle, and required
+    when it is not: under management the lease is the authority on who is on the
+    air, and one session's disconnect must not de-key another's transmission.
+    The rig keyed by something outside the supervisor's knowledge
+    (``TxPhase.EXTERNAL_UNOWNED``, still without consumers) stays MOR-1175's to
+    close — a per-session blind write is not the instrument for it.
+    """
+    supervisor = _Supervisor()
+    handler, poller, radio = _wired(supervisor)
+
+    await handler.run()
+    await _drain(poller)
+
+    assert supervisor.entries == [(False, _owner(handler))]
+    assert supervisor.outcomes == [TxOutcome.STALE]
+    assert _settle_release(supervisor) == []  # no provider write of any kind
+    assert radio.calls == _TEARDOWN
+
+
+async def test_an_unmanaged_teardown_still_writes_the_unconditional_unkey() -> None:
+    """Acceptance 4: no shipped backend assembles a managed runtime until
+    MOR-1016, so the unconditional legacy OFF is what production still gets."""
+    handler, poller, radio = _wired(None)
+
+    await handler.run()
+    await _drain(poller)
+
+    assert radio.calls == ["set_ptt(False)", *_TEARDOWN]

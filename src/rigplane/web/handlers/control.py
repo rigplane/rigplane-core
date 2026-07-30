@@ -1034,6 +1034,21 @@ class ControlHandler:
         The ``_server``/``queue`` checks are structural (no transport to enqueue
         onto), not policy. Enqueue failures are swallowed so teardown stays
         bounded.
+
+        Enqueued through the same metadata wrapper as every other unkey, so the
+        entry reaches the drain carrying this session's STABLE id (MOR-1185). On
+        a managed runtime that id IS the owner ``release_owner`` matches, so the
+        disconnect gives the lease back instead of only de-keying the rig and
+        leaving the next session to wait out MOR-1191's watchdog. It also
+        replaces today's unconditional write: a session holding no lease answers
+        STALE and nothing reaches the rig — which is the point, because one
+        session's disconnect must not de-key another's transmission. The
+        unmanaged path binds no owner and writes exactly as it does now.
+
+        The command id is synthetic: no client acked this OFF, and the poller
+        uses the id only to report a failure back to a command that does not
+        exist here. Liveness cannot refuse it — the gate covers ``PttOn`` alone,
+        and this is always drained after its own author has been unregistered.
         """
         if self._read_only or self._server is None:
             return
@@ -1041,7 +1056,13 @@ class ControlHandler:
         if queue is None:
             return
         try:
-            queue.put(PttOff())
+            _CommandMetadataQueue(
+                queue,
+                command_id=f"teardown-ptt-off-{self._session_id}",
+                source="websocket",
+                session_id=self._session_id,
+                command_service=self._command_service,
+            ).put(PttOff())
         except Exception:
             logger.debug("control: teardown PTT OFF enqueue failed", exc_info=True)
         else:

@@ -324,7 +324,15 @@ class TestTeardownPttRelease:
 
         _teardown(handler)
 
-        queue.put.assert_called_once_with(PttOff())
+        # MOR-1185: enqueued through the metadata wrapper, so the entry carries
+        # this session's stable id — the owner a managed release has to match.
+        assert queue.put.call_count == 1
+        args, kwargs = queue.put.call_args
+        assert args == (PttOff(),)
+        assert (kwargs["source"], kwargs["session_id"]) == (
+            "websocket",
+            handler._session_id,
+        )
         assert handler._mod_input_restore is None
 
 

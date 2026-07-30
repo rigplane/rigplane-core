@@ -1195,9 +1195,15 @@ class RadioPoller:
         The entry outlives its author: a session can enqueue PTT ON and drop
         before this drain, and the supervisor grants a lease to any owner, alive
         or dead. Gated on the same pair as ``_managed_tx`` — only a websocket
-        session publishes liveness, and ``session_id is None`` (HTTP PTT, and
-        the teardown unkey) carries none to check, so it passes through. ON
-        only: an unkey refused for being late would strand the rig keyed.
+        session publishes liveness, and ``session_id is None`` (HTTP PTT)
+        carries none to check, so it passes through. ON only: an unkey refused
+        for being late would strand the rig keyed.
+
+        That last sentence is the whole reason the teardown unkey is safe, and
+        it is the only reason: since MOR-1185 it arrives carrying its session's
+        id, and by drain time that session is already unregistered. Hoisting
+        this call anywhere the ``PttOff`` arm can reach would strand a keyed
+        rig on every disconnect.
 
         This narrows the window; it does not close it. A session can still die
         between this check and the write it guards.
