@@ -1781,6 +1781,32 @@ class WebServer:
                     code="radioDisconnected",
                 )
 
+    async def _service_managed_tx_release(self) -> None:
+        """Service a pending managed durable OFF; must precede recovered work.
+
+        ``soft_reconnect`` advances the CI-V generation, which poisons the bound
+        managed TX port, so a release armed before the drop is re-armed against
+        a fresh causal boundary only once the provider is rebound.  Awaiting the
+        rebind here is what puts the OFF in front of ordinary recovered work:
+        ``ManagedRadioRuntime.replace_provider`` services the re-armed release
+        before it returns, so the write has reached the radio by the time the
+        refetch, the poller readiness signal and the scope re-enable start.
+
+        Unmanaged radios publish no supervisor and keep today's behaviour
+        exactly — no backend assembles a managed runtime until MOR-1016.
+        """
+        supervisor = getattr(self._radio, "managed_tx", None)
+        rebind = getattr(supervisor, "replace_provider", None)
+        if rebind is None:
+            return
+        try:
+            await rebind(ready=True)
+        except Exception:
+            # A release that cannot be serviced stays pending in the supervisor
+            # and is re-armed by the next reconnect; blocking recovery on it
+            # would only keep the link that has to carry the OFF down.
+            logger.warning("reconnect: managed TX release failed", exc_info=True)
+
     def _on_radio_reconnect(self) -> None:
         """Called after soft_reconnect — refetch state and re-enable scope."""
         # Clear poller readiness so scope waits for refetch to complete
@@ -1788,7 +1814,8 @@ class WebServer:
             self._radio_poller._initial_fetch_done.clear()
 
         async def _refetch_and_reenable() -> None:
-            """Refetch state, signal readiness, then re-enable scope."""
+            """Release TX first, then refetch state, signal readiness and scope."""
+            await self._service_managed_tx_release()
             try:
                 if self._radio is not None and hasattr(
                     self._radio, "_fetch_initial_state"
