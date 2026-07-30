@@ -1061,6 +1061,12 @@
     "observed": false,
     "storePath": "global.tx_state.tx_freq_monitor"
   },
+  "txTarget": {
+    "availability": "missing",
+    "freshness": "unknown",
+    "observed": false,
+    "storePath": "global.tx_state.tx_target"
+  },
   "vdMeter": {
     "availability": "missing",
     "freshness": "unknown",

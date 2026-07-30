@@ -84,6 +84,8 @@ scripts/*
 !scripts/run_consumer_contracts.py
 # And the downstream-bump script is tracked (MOR-887).
 !scripts/bump_downstream_pin.py
+# And the frontend field-status fixture generator is tracked (MOR-429).
+!scripts/gen_field_status_fixture.py
 # But CI scripts under .github/ are tracked.
 !.github/scripts/
 # And frontend tooling scripts (e.g. i18n lint) are tracked.
