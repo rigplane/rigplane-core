@@ -75,6 +75,36 @@ def _ws_accept(key: str) -> str:
     return base64.b64encode(hashlib.sha1(raw).digest()).decode("ascii")
 
 
+async def _read_http_response(
+    reader: asyncio.StreamReader,
+) -> tuple[int, dict[str, str], bytes]:
+    """Read one complete HTTP response from ``reader``.
+
+    A single ``reader.read(n)`` returns whatever one TCP segment happened to
+    carry, so bodies larger than a segment (``/api/v1/state`` is ~32 KiB) were
+    silently truncated mid-JSON. Read the headers up to the blank line, then
+    take either ``Content-Length`` body bytes or everything until EOF (callers
+    send ``Connection: close``, and the server always sets ``Content-Length``).
+    """
+    header_bytes = (await reader.readuntil(b"\r\n\r\n"))[:-4]
+
+    lines = header_bytes.decode("ascii", errors="replace").split("\r\n")
+    status_code = int(lines[0].split(" ", 2)[1])
+    headers: dict[str, str] = {}
+    for line in lines[1:]:
+        if ":" in line:
+            k, _, v = line.partition(":")
+            headers[k.strip().lower()] = v.strip()
+
+    raw_length = headers.get("content-length")
+    if raw_length is None:
+        body = await reader.read()  # until EOF
+    else:
+        body = await reader.readexactly(int(raw_length))
+
+    return status_code, headers, body
+
+
 async def _http_get(
     host: str, port: int, path: str
 ) -> tuple[int, dict[str, str], bytes]:
@@ -87,29 +117,13 @@ async def _http_get(
         writer.write(request.encode())
         await writer.drain()
 
-        raw = await asyncio.wait_for(reader.read(65536), timeout=5.0)
+        return await asyncio.wait_for(_read_http_response(reader), timeout=5.0)
     finally:
         writer.close()
         try:
             await writer.wait_closed()
         except Exception:
             pass
-
-    # Parse response
-    header_end = raw.find(b"\r\n\r\n")
-    header_bytes = raw[:header_end]
-    body = raw[header_end + 4 :]
-
-    lines = header_bytes.decode("ascii", errors="replace").split("\r\n")
-    status_line = lines[0]
-    status_code = int(status_line.split(" ", 2)[1])
-    headers: dict[str, str] = {}
-    for line in lines[1:]:
-        if ":" in line:
-            k, _, v = line.partition(":")
-            headers[k.strip().lower()] = v.strip()
-
-    return status_code, headers, body
 
 
 async def _ws_connect(
