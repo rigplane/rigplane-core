@@ -1440,9 +1440,22 @@ class AudioHandler:
                     await self._send_error("audio_start: TX audio unavailable")
                     return
                 if not transcoder_ready:
-                    await self._abort_tx_start(previous_facts, was_active)
-                    await self._send_error("audio_start: TX transcoder unavailable")
-                    return
+                    # MOR-1173: a missing Opus→PCM transcoder must not deny the
+                    # whole session.  ``audio_start`` cannot know which codec the
+                    # browser will actually send, and browser PCM16 → radio PCM16
+                    # is forwarded in ``_handle_tx_audio`` with no transcoder at
+                    # all — ``tx-mic.ts`` deliberately falls back to PCM16 where
+                    # WebCodecs is unreliable.  The real hazard, a browser Opus
+                    # frame with no decoder, is already dropped fail-closed per
+                    # frame (``action=dropped_no_transcoder``, #1569), so arm the
+                    # session and let that guard do its job.  Warn loudly so an
+                    # operator can still diagnose a missing native opus codec.
+                    logger.warning(
+                        "audio: TX Opus decoder unavailable at %d Hz "
+                        "(native opus codec missing?) — browser PCM16 TX still "
+                        "works, browser Opus TX frames will be dropped",
+                        self._tx_sample_rate(),
+                    )
                 assert facts.lifecycle is not None
                 start = facts.lifecycle[0]
                 try:

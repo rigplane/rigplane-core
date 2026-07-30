@@ -1728,6 +1728,38 @@ def _make_neutral_tx_radio(contract: AudioStreamContract) -> _NeutralWebTxRadio:
     return _NeutralWebTxRadio(contract)
 
 
+class _WebTxLease:
+    """Minimal stand-in for the AudioSession TX lease (MOR-580)."""
+
+    def __init__(self) -> None:
+        self.released = False
+        self.pushed: list[bytes] = []
+
+    async def push(self, data: bytes) -> None:
+        self.pushed.append(data)
+
+    async def release(self) -> None:
+        self.released = True
+
+
+class _WebTxSession:
+    def __init__(self, lease: _WebTxLease) -> None:
+        self._lease = lease
+        self.acquired: list[str] = []
+
+    async def acquire_tx(self, client: str) -> _WebTxLease:
+        self.acquired.append(client)
+        return self._lease
+
+
+class _SessionTxRadio(_NeutralWebTxRadio):
+    """Neutral fake radio that also owns an AudioSession → ``path="session"``."""
+
+    def __init__(self, contract: AudioStreamContract, lease: _WebTxLease) -> None:
+        super().__init__(contract)
+        self.audio_session = _WebTxSession(lease)
+
+
 async def test_browser_tx_audio_endpoint_matches_real_provider_facts(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1780,14 +1812,26 @@ async def test_browser_tx_audio_uses_one_snapshot_after_radio_swap(
     replacement._stop_tx.assert_not_awaited()
 
 
-async def test_transcoder_failure_denies_before_arm_and_keeps_reader_rx(
+async def test_transcoder_failure_arms_tx_and_drops_only_opus_frames(
     monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
 ) -> None:
-    radio = _make_neutral_tx_radio(_make_web_tx_contract(AudioCodec.PCM_1CH_16BIT))
+    """MOR-1173: a missing Opus decoder must not deny the whole session.
+
+    ``audio_start`` cannot know which codec the browser will send, and the
+    radio here speaks PCM16 — so browser PCM16 needs no transcoder and must
+    reach the radio through a real lease.  Only a browser *Opus* frame stays
+    fail-closed (#1569), dropped per frame rather than by denying the arm.
+    """
+    lease = _WebTxLease()
+    contract = _make_web_tx_contract(AudioCodec.PCM_1CH_16BIT)
+    radio = _SessionTxRadio(contract, lease)
     start = (WS_OP_TEXT, b'{"type":"audio_start","direction":"tx"}')
+    opus = (WS_OP_BINARY, _make_web_tx_audio_frame(AUDIO_CODEC_OPUS, b"opus-frame"))
+    pcm = (WS_OP_BINARY, _make_web_tx_audio_frame(AUDIO_CODEC_PCM16, b"pcm-frame"))
     stats = (WS_OP_TEXT, b'{"type":"audio_stats","rtt":1}')
     ws = SimpleNamespace(
-        recv=AsyncMock(side_effect=[start, stats, EOFError()]),
+        recv=AsyncMock(side_effect=[start, opus, pcm, stats, EOFError()]),
         send_text=AsyncMock(),
     )
     handler = AudioHandler(ws, radio, SimpleNamespace(record_client_stats=MagicMock()))
@@ -1798,13 +1842,22 @@ async def test_transcoder_failure_denies_before_arm_and_keeps_reader_rx(
         MagicMock(side_effect=RuntimeError("factory failed")),
     )
 
-    await handler._reader_loop()
+    with caplog.at_level("WARNING", logger="rigplane.web.handlers.audio"):
+        await handler._reader_loop()
 
-    assert ws.recv.await_count == 3
+    assert ws.recv.await_count == 5
     assert handler._rx_active is True
-    assert handler._tx_active is False
-    radio._start_tx.assert_not_awaited()
-    assert decode_json(ws.send_text.await_args.args[0])["type"] == "error"
+    # Armed despite the missing decoder, and the TX lease really was taken.
+    assert handler._tx_active is True
+    assert handler._transcoder is None
+    assert radio.audio_session.acquired == ["web"]
+    assert handler._tx_lease is lease
+    # PCM16 reached the radio; the Opus frame stayed fail-closed.
+    assert lease.pushed == [b"pcm-frame"]
+    ws.send_text.assert_not_awaited()
+    messages = [record.message for record in caplog.records]
+    assert any("action=dropped_no_transcoder" in message for message in messages)
+    assert any("TX Opus decoder unavailable" in message for message in messages)
 
 
 @pytest.mark.parametrize("failure", ["denial", "runtime", "base", "cancel"])
