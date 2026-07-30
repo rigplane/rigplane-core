@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, replace
@@ -17,6 +18,8 @@ from rigplane.core.tx_safety import (
     TxSafetySupervisor,
     TxTransition,
 )
+
+logger = logging.getLogger(__name__)
 
 TxService = Callable[[TxSafetySupervisor, TxTransition], Awaitable[None]]
 ProviderRelease = Callable[[], Awaitable[None]]
@@ -62,9 +65,13 @@ class ManagedRadioRuntime:
         clock: Clock | None = None,
         id_factory: IdFactory | None = None,
         shutdown_timeout_seconds: float = 3.0,
+        tick_interval_seconds: float = 0.25,
     ) -> None:
-        if not 0 < shutdown_timeout_seconds < float("inf"):
-            raise ValueError("shutdown_timeout_seconds must be finite-positive")
+        if not all(
+            0 < seconds < float("inf")
+            for seconds in (shutdown_timeout_seconds, tick_interval_seconds)
+        ):
+            raise ValueError("shutdown timeout and tick interval must be positive")
         self.target_id, self._clock = target_id, clock or time.monotonic
         self._tx_safety = TxSafetySupervisor(clock=self._clock, id_factory=id_factory)
         self._provider_lifecycle, self._provider_generation = provider_lifecycle, 0
@@ -78,6 +85,8 @@ class ManagedRadioRuntime:
         self._observation_version = 0
         self._shutdown_task: _ShutdownTask | None = None
         self._shutdown_pending, self._shutdown_timeout = False, shutdown_timeout_seconds
+        self._tick_interval = tick_interval_seconds
+        self._tick_task: asyncio.Task[None] | None = None
         self._effect_host = _ManagedTxEffectHost(
             self._clock, self._host_write, self._host_read, self._host_retire
         )
@@ -90,6 +99,31 @@ class ManagedRadioRuntime:
     async def _service_effects(self, transition: TxTransition) -> None:
         if transition.effects:
             await self._service(self._tx_safety, transition)
+
+    async def _tick_loop(self) -> None:
+        """The production driver of ``tick``: max key-down plus the timed retry.
+
+        Only ``_lifecycle_lock`` is taken, and only around the reducer call: it
+        is the lock that guards supervisor mutation, while ``_lifecycle_change``
+        guards provider identity, which a tick never changes. Waiting on the
+        latter would park the watchdog behind a retirement — exactly when a
+        keyed rig most needs it. The loop retires itself once the lease is gone
+        so an idle target costs nothing and leaves no task behind.
+        """
+        try:
+            while True:
+                async with self._lifecycle_lock:
+                    if self._shutdown_pending or self.tx_snapshot.lease_id is None:
+                        self._tick_task = None
+                        return
+                    transition = self._tx_safety.tick()
+                try:
+                    await self._service_effects(transition)
+                except Exception:
+                    logger.warning("managed TX tick service failed", exc_info=True)
+                await asyncio.sleep(self._tick_interval)
+        except asyncio.CancelledError:
+            pass
 
     def _not_ready(self) -> TxTransition:
         return TxTransition(TxOutcome.NOT_READY, self.tx_snapshot)
@@ -290,6 +324,8 @@ class ManagedRadioRuntime:
             ):
                 return self._not_ready()
             transition = self._tx_safety.request_on(owner)
+            if self._tick_task is None and transition.snapshot.lease_id is not None:
+                self._tick_task = asyncio.create_task(self._tick_loop())
         await self._service_effects(transition)
         return transition
 
@@ -338,6 +374,10 @@ class ManagedRadioRuntime:
         self, transition: TxTransition, release_provider: ProviderRelease
     ) -> tuple[TxTransition, BaseException | None]:
         error: BaseException | None = None
+        if (ticker := self._tick_task) is not None:
+            self._tick_task = None
+            ticker.cancel()
+            await asyncio.gather(ticker, return_exceptions=True)
         try:
             if transition.outcome is not TxOutcome.NOOP:
                 await asyncio.wait_for(

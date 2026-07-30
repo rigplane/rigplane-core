@@ -146,6 +146,8 @@ class TxSafetySnapshot:
     release_last_error: str | None
     active_attempt: ProviderAttempt | None
     watchdog_deadline_monotonic: float | None
+    # Configured *and* driven: a watchdog nothing ticks cannot fire, and this
+    # field must never advertise one (MOR-1191).
     watchdog_enabled: bool
     external_conflict: bool
 
@@ -249,6 +251,7 @@ class TxSafetySupervisor:
         self._active: ProviderAttempt | None = None
         self._cancel_pending: CancelProviderAttempt | None = None
         self._watchdog_deadline: float | None = None
+        self._driven = False
 
     @property
     def snapshot(self) -> TxSafetySnapshot:
@@ -290,7 +293,7 @@ class TxSafetySupervisor:
             release_last_error=self._release.error if self._release else None,
             active_attempt=self._active,
             watchdog_deadline_monotonic=self._watchdog_deadline,
-            watchdog_enabled=self._watchdog_seconds is not None,
+            watchdog_enabled=self._watchdog_seconds is not None and self._driven,
             external_conflict=managed_on and not confirmed,
         )
 
@@ -470,6 +473,7 @@ class TxSafetySupervisor:
         return self._result(TxOutcome.APPLIED)
 
     def tick(self) -> TxTransition:
+        self._driven = True
         now = self._clock()
         effects: tuple[TxEffect, ...] = ()
         if (
