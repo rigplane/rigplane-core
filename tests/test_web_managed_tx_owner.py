@@ -13,6 +13,10 @@ queue carries the liveness record because it is the one object both ends
 already hold — the handler registers on connect and unregisters on every
 teardown path, and the poller refuses a key on behalf of a session gone by
 drain time. ON only: an unkey refused for being late strands the rig keyed.
+
+MOR-1187 closes what both leave open on the unkey: binding is not a lookup but
+backend code that can fail, so it belongs inside slice 1's teardown guard rather
+than above it. It also pins the two managed behaviours that had no test at all.
 """
 
 from __future__ import annotations
@@ -96,6 +100,23 @@ class _Radio:
         self.calls.append("restart_rx")
 
 
+class _BrokenSupervisorRadio(_Radio):
+    """Backend whose supervisor accessor itself raises.
+
+    ``ManagedTxApi.bind`` reads ``managed_tx`` twice over: once through the
+    ``runtime_checkable`` ``isinstance`` (3.11 calls the getter; 3.12+ reads it
+    statically) and once directly. Either read is enough to make binding fail.
+    """
+
+    @property
+    def managed_tx(self) -> _Supervisor | None:
+        raise RuntimeError("managed_tx accessor exploded")
+
+    @managed_tx.setter
+    def managed_tx(self, value: _Supervisor | None) -> None:
+        """Absorb ``_Radio.__init__``'s assignment; the getter is the point."""
+
+
 def _poller(supervisor: _Supervisor | None) -> tuple[RadioPoller, _Radio]:
     radio = _Radio(supervisor)
     return RadioPoller(radio, CommandQueue()), radio  # type: ignore[arg-type]
@@ -165,6 +186,24 @@ async def test_a_second_session_gets_its_own_owner_and_is_refused() -> None:
     assert radio.calls == ["start_tx", "start_tx", *_TEARDOWN]
 
 
+async def test_a_same_owner_re_key_is_accepted_and_keeps_its_leg_armed() -> None:
+    """IDEMPOTENT answers 'already yours', which is acceptance, not refusal.
+
+    Read as a refusal it would trip the disarm above — tearing down a LIVE audio
+    leg mid-transmission while the lease, and the rig, stay keyed: the operator
+    is still on the air with nothing feeding it.
+    """
+    supervisor = _Supervisor()
+    poller, radio = _poller(supervisor)
+
+    await poller._execute(PttOn(), command_id="c1", session_id="ws-1")
+    await poller._execute(PttOn(), command_id="c2", session_id="ws-1")
+
+    assert supervisor.entries == [(True, _WS1), (True, _WS1)]
+    assert supervisor.outcomes == [TxOutcome.ACCEPTED, TxOutcome.IDEMPOTENT]
+    assert radio.calls == ["start_tx", "start_tx"]  # no _TEARDOWN
+
+
 async def test_a_refused_release_is_tolerated_and_still_tears_down() -> None:
     """STALE means nothing of ours is keyed; raising would break ``finally``."""
     supervisor = _Supervisor()
@@ -174,6 +213,40 @@ async def test_a_refused_release_is_tolerated_and_still_tears_down() -> None:
 
     assert supervisor.outcomes == [TxOutcome.STALE]
     assert radio.calls == _TEARDOWN
+
+
+async def test_a_raising_managed_tx_accessor_still_tears_the_tx_leg_down() -> None:
+    """MOR-1187: the bind belongs INSIDE the guard it depends on.
+
+    Binding is not a read-only lookup — it runs backend code that can fail. Bound
+    above the ``try``, a raising accessor skips the ``finally`` outright, and the
+    unkey path loses the one thing it must never lose: modulation kept flowing
+    into a rig the operator believes is unkeyed. The error must still surface.
+    """
+    radio = _BrokenSupervisorRadio(None)
+    poller = RadioPoller(radio, CommandQueue())  # type: ignore[arg-type]
+
+    with pytest.raises(RuntimeError, match="accessor exploded"):
+        await poller._execute(PttOff(), command_id="c1", session_id="ws-1")
+
+    assert radio.calls == _TEARDOWN
+
+
+async def test_a_websocket_unkey_without_a_session_id_stays_unmanaged() -> None:
+    """The ``session_id`` half of the gate carries its own weight.
+
+    A sourceless entry defaults to ``source="websocket"`` at drain, so on the
+    teardown unkey (MOR-1185) only the emptiness check stands between the drain
+    and ``TxOwner``'s empty-id ``ValueError``. The test above buys the teardown
+    back from such a raise, but nothing can buy back the de-key it replaces.
+    """
+    supervisor = _Supervisor()
+    poller, radio = _poller(supervisor)
+
+    await poller._execute(PttOff(), command_id="c1", session_id=None)
+
+    assert supervisor.entries == []
+    assert radio.calls == ["set_ptt(False)", *_TEARDOWN]
 
 
 async def test_http_ingress_never_binds_an_owner() -> None:
