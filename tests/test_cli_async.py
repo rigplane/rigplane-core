@@ -635,7 +635,7 @@ class TestCmdPttManagedIngress:
         assert rc == 1
         captured = capsys.readouterr()
         assert captured.out == ""
-        assert "Error" in captured.err and str(outcome) in captured.err
+        assert "Error" in captured.err and f"({outcome})" in captured.err
         assert _kinds(radio.supervisor) == [(True, None)]
         assert radio.bare_writes == []
 
@@ -651,7 +651,7 @@ class TestCmdPttManagedIngress:
         assert rc == 0
         captured = capsys.readouterr()
         assert captured.out.splitlines() == ["PTT OFF"]
-        assert str(TxOutcome.STALE) in captured.err
+        assert f"({TxOutcome.STALE})" in captured.err
         assert _kinds(radio.supervisor) == [(False, TxReleaseReason.OPERATOR_RELEASE)]
         assert radio.bare_writes == []
 
