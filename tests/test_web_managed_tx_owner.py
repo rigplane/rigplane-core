@@ -109,9 +109,9 @@ class _Radio:
 class _BrokenSupervisorRadio(_Radio):
     """Backend whose supervisor accessor itself raises.
 
-    ``ManagedTxApi.bind`` reads ``managed_tx`` twice over: once through the
-    ``runtime_checkable`` ``isinstance`` (3.11 calls the getter; 3.12+ reads it
-    statically) and once directly. Either read is enough to make binding fail.
+    ``ManagedTxApi.bind`` reads ``managed_tx`` exactly once, explicitly, and
+    settles absence without running it (MOR-1193), so the accessor's failure is
+    the bind's failure on every interpreter.
     """
 
     @property
