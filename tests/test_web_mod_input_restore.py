@@ -80,6 +80,12 @@ def _provider_poller(error: Exception | None) -> tuple[RadioPoller, MagicMock]:
     radio = MagicMock()
     radio.profile = resolve_radio_profile(model="IC-7610")
     radio.capabilities = set(radio.profile.capabilities) - {"audio"}
+    # No managed TX runtime: the teardown unkey under test is the legacy
+    # ``set_ptt`` write. ``None`` reads unmanaged on every interpreter; a bare
+    # Mock does not, because runtime-checkable protocols use hasattr on 3.11
+    # and getattr_static on 3.12+ (gh-102433).
+    # Full note: the ``mock_radio`` fixture in tests/test_web_server.py.
+    radio.managed_tx = None
     radio.set_ptt = AsyncMock(side_effect=error)
     for name in _MOD_COMMANDS:
         setattr(radio, name, AsyncMock())
