@@ -1352,38 +1352,51 @@ class RadioPoller:
                 await radio.set_ptt(True)
             case PttOff():
                 logger.info("poller: PTT OFF")
-                await radio.set_ptt(False)
-                # Stop TX audio stream after PTT, then restart RX
-                if CAP_AUDIO in self._caps:
-                    try:
-                        stop_tx = getattr(radio, "stop_tx", None)
-                        if stop_tx is not None:
-                            # Neutral AudioTransport surface (MOR-543).
-                            await stop_tx()
-                        else:
-                            # Legacy per-codec fallback.
-                            tx_codec, _tx_sr = _audio_tx_codec_and_rate(radio)
-                            if tx_codec == AudioCodec.PCM_1CH_16BIT:
-                                await radio.stop_audio_tx_pcm()
+                # The unkey is a fire-and-forget CI-V write and can raise
+                # (connection/timeout/transport). The audio teardown below must
+                # run anyway: a failed de-key with the TX audio leg still
+                # pumping modulation into the rig is the worst outcome
+                # available (MOR-1013). ``finally`` keeps the original unkey
+                # exception intact — it propagates unwrapped so the caller's
+                # ``_mark_queued_command_failed`` classification is unchanged —
+                # while the teardown's own ``except Exception`` guarantees a
+                # failing teardown can never replace it.
+                try:
+                    await radio.set_ptt(False)
+                finally:
+                    # Stop TX audio stream after PTT, then restart RX
+                    if CAP_AUDIO in self._caps:
+                        try:
+                            stop_tx = getattr(radio, "stop_tx", None)
+                            if stop_tx is not None:
+                                # Neutral AudioTransport surface (MOR-543).
+                                await stop_tx()
                             else:
-                                await radio.stop_audio_tx_opus()
-                        logger.info("poller: TX audio stream stopped")
+                                # Legacy per-codec fallback.
+                                tx_codec, _tx_sr = _audio_tx_codec_and_rate(radio)
+                                if tx_codec == AudioCodec.PCM_1CH_16BIT:
+                                    await radio.stop_audio_tx_pcm()
+                                else:
+                                    await radio.stop_audio_tx_opus()
+                            logger.info("poller: TX audio stream stopped")
 
-                        # Re-arm RX through the AudioBus so the real
-                        # subscriber callback is reinstated rather than a
-                        # throwaway no-op clobbering the single-slot RX
-                        # callback (MOR-506). The LAN stream itself IS
-                        # full-duplex; the re-arm currently fires for every
-                        # audio_duplex_mode (including "full") until skipping
-                        # it is verified on real IC-7610 hardware — that flip
-                        # is a hardware-gated follow-up to MOR-543, one line
-                        # inside _should_restart_rx.
-                        duplex_mode = getattr(radio, "audio_duplex_mode", "half")
-                        if _should_restart_rx(duplex_mode):
-                            await radio.audio_bus.restart_rx()
-                            logger.info("poller: RX audio stream restarted")
-                    except Exception as e:
-                        logger.debug("poller: audio stream transition failed: %s", e)
+                            # Re-arm RX through the AudioBus so the real
+                            # subscriber callback is reinstated rather than a
+                            # throwaway no-op clobbering the single-slot RX
+                            # callback (MOR-506). The LAN stream itself IS
+                            # full-duplex; the re-arm currently fires for every
+                            # audio_duplex_mode (including "full") until
+                            # skipping it is verified on real IC-7610 hardware
+                            # — that flip is a hardware-gated follow-up to
+                            # MOR-543, one line inside _should_restart_rx.
+                            duplex_mode = getattr(radio, "audio_duplex_mode", "half")
+                            if _should_restart_rx(duplex_mode):
+                                await radio.audio_bus.restart_rx()
+                                logger.info("poller: RX audio stream restarted")
+                        except Exception as e:
+                            logger.debug(
+                                "poller: audio stream transition failed: %s", e
+                            )
             case SetPower(level=level, unit=unit):
                 if unit != "raw_255":
                     raise ValueError(
