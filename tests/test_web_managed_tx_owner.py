@@ -1,4 +1,4 @@
-"""MOR-1013 slice 4: managed owner identity on the Web TX path.
+"""MOR-1013 slices 4 and 5: owner identity and liveness on the Web TX path.
 
 The poller keys on behalf of the control session (D1-a), so the owner must be
 the STABLE session id on the queue entry — not the throwaway
@@ -6,12 +6,21 @@ the STABLE session id on the queue entry — not the throwaway
 ``release_owner`` matches on the owner alone, so a mismatch strands the rig
 keyed. A real ``TxSafetySupervisor`` drives these tests because a scripted
 fake would answer ACCEPTED to any owner and could never show that.
+
+Slice 5 adds the other half of that identity: the queue entry outlives its
+author, and the supervisor grants a lease to any owner, alive or dead. The
+queue carries the liveness record because it is the one object both ends
+already hold — the handler registers on connect and unregisters on every
+teardown path, and the poller refuses a key on behalf of a session gone by
+drain time. ON only: an unkey refused for being late strands the rig keyed.
 """
 
 from __future__ import annotations
 
+import asyncio
 import time
 from types import SimpleNamespace
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -29,6 +38,7 @@ from rigplane.core.tx_safety import (
     TxTransition,
 )
 from rigplane.profiles import resolve_radio_profile
+from rigplane.web.handlers.control import ControlHandler
 from rigplane.web.radio_poller import CommandQueue, PttOff, PttOn, RadioPoller
 
 _KEY, _TEARDOWN = ["start_tx", "set_ptt(True)"], ["stop_tx", "restart_rx"]
@@ -89,6 +99,28 @@ class _Radio:
 def _poller(supervisor: _Supervisor | None) -> tuple[RadioPoller, _Radio]:
     radio = _Radio(supervisor)
     return RadioPoller(radio, CommandQueue()), radio  # type: ignore[arg-type]
+
+
+def _run_handler() -> tuple[ControlHandler, CommandQueue]:
+    """A handler whose ``run()`` reaches teardown on the first ``recv``."""
+    queue = CommandQueue()
+
+    async def recv() -> tuple[int, bytes]:
+        await asyncio.sleep(0.01)  # let the event-sender task run before EOF
+        raise EOFError
+
+    return ControlHandler(
+        ws=SimpleNamespace(send_text=AsyncMock(), recv=recv),
+        radio=SimpleNamespace(connected=True, radio_ready=True),
+        server_version="test",
+        radio_model="IC-7610",
+        server=SimpleNamespace(
+            command_queue=queue,
+            register_control_event_queue=MagicMock(),
+            unregister_control_event_queue=MagicMock(),
+            build_state_update_envelope=MagicMock(return_value={}),
+        ),
+    ), queue
 
 
 async def test_unmanaged_radio_keeps_the_legacy_write_and_ordering() -> None:
@@ -156,3 +188,103 @@ async def test_http_ingress_never_binds_an_owner() -> None:
 
     assert supervisor.entries == []
     assert radio.calls == [*_KEY, *_KEY, "set_ptt(False)", *_TEARDOWN]
+
+
+async def test_a_key_from_a_gone_session_costs_nothing() -> None:
+    """Slice 5: the queue entry outlives its author; the key must not."""
+    supervisor = _Supervisor()
+    poller, radio = _poller(supervisor)
+    poller._queue.register_session("ws-1")
+    poller._queue.unregister_session("ws-1")
+
+    with pytest.raises(CommandError, match="ws-1"):
+        await poller._execute(PttOn(), command_id="c1", session_id="ws-1")
+
+    # Refused ahead of the TX audio leg and ahead of the lease. Raising is the
+    # poller's failure channel (``_mark_queued_command_failed`` plus
+    # ``future.set_exception``), so a refusal can never be read as success.
+    assert supervisor.entries == []
+    assert radio.calls == []
+
+
+async def test_a_live_session_keys_exactly_as_it_does_today() -> None:
+    """The gate is invisible to the session that is actually connected."""
+    supervisor = _Supervisor()
+    poller, radio = _poller(supervisor)
+    poller._queue.register_session("ws-1")
+
+    await poller._execute(PttOn(), command_id="c1", session_id="ws-1")
+    await poller._execute(PttOff(), command_id="c2", session_id="ws-1")
+
+    assert supervisor.entries == [(True, _WS1), (False, _WS1)]
+    assert supervisor.outcomes == [TxOutcome.ACCEPTED, TxOutcome.ACCEPTED]
+    assert radio.calls == ["start_tx", *_TEARDOWN]
+
+
+async def test_a_queue_no_session_registered_on_assumes_nobody_is_gone() -> None:
+    """No registration means no knowledge — not 'every session is dead'."""
+    poller, radio = _poller(None)
+
+    await poller._execute(PttOn(), command_id="c1", session_id="ws-1")
+
+    assert poller._queue.session_is_live("ws-1")
+    assert radio.calls == _KEY
+
+
+async def test_a_command_with_no_session_id_keys_and_unkeys() -> None:
+    """HTTP PTT and the teardown unkey (MOR-1185) carry no session at all, so
+    they have no liveness to check even once the queue is tracking sessions.
+    Both source arms matter: the teardown unkey goes onto the RAW queue, and
+    the drain defaults a sourceless entry to ``source="websocket"``."""
+    poller, radio = _poller(None)
+    poller._queue.register_session("ws-1")
+    poller._queue.unregister_session("ws-1")
+
+    await poller._execute(PttOn(), source="http", session_id=None)
+    await poller._execute(PttOn(), session_id=None)
+    await poller._execute(PttOff(), session_id=None)
+
+    assert radio.calls == [*_KEY, *_KEY, "set_ptt(False)", *_TEARDOWN]
+
+
+async def test_a_gone_session_may_still_unkey() -> None:
+    """Gating OFF would strand the rig keyed — the opposite of the point."""
+    poller, radio = _poller(None)
+    poller._queue.register_session("ws-1")
+    poller._queue.unregister_session("ws-1")
+
+    await poller._execute(PttOff(), command_id="c1", session_id="ws-1")
+
+    assert radio.calls == ["set_ptt(False)", *_TEARDOWN]
+
+
+async def test_a_session_is_registered_for_the_whole_of_its_run() -> None:
+    """Published before the recv loop can accept a single command of its own."""
+    handler, queue = _run_handler()
+    seen: list[bool] = []
+
+    async def recv() -> tuple[int, bytes]:
+        seen.append(queue.session_is_live(handler._session_id))
+        raise EOFError
+
+    handler._ws.recv = recv
+    await handler.run()
+
+    assert seen == [True]
+    assert not queue.session_is_live(handler._session_id)
+
+
+async def test_teardown_marks_the_session_gone_through_a_dead_egress_socket() -> None:
+    """``await event_task`` re-raises here and skips everything behind it — the
+    trap slice 2 moved the PTT release out of. A session left marked live is a
+    session that can still key."""
+    handler, queue = _run_handler()
+    handler._ws.send_text = AsyncMock(
+        side_effect=[None, None, ConnectionResetError("egress socket closed")]
+    )
+    handler._event_queue.put_nowait({"type": "state_update"})
+
+    with pytest.raises(ConnectionResetError):
+        await handler.run()
+
+    assert not queue.session_is_live(handler._session_id)

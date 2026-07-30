@@ -1001,6 +1001,30 @@ class CommandQueue:
         self._segments: list[_CommandQueueSegment] = []
         self._notify: asyncio.Event = asyncio.Event()
         self._scope_demand_generation = 0
+        # MOR-1013: ids of the control sessions currently connected. An entry
+        # outlives its author, and the poller keys on behalf of a session it
+        # cannot otherwise see (decision D1-a), so the queue that carries the
+        # entry from ingress to drain carries the liveness record too.
+        # ``None`` until the first registration: a queue no session ever
+        # registered on knows nothing and must not answer "gone" for ids it was
+        # never told about. Once any session registers the set is authoritative
+        # even when empty — that is the every-session-gone case, not ignorance.
+        self._live_sessions: set[str] | None = None
+
+    def register_session(self, session_id: str) -> None:
+        """Mark a control session live for as long as it stays connected."""
+        if self._live_sessions is None:
+            self._live_sessions = set()
+        self._live_sessions.add(session_id)
+
+    def unregister_session(self, session_id: str) -> None:
+        """Mark a control session gone; must run on every teardown path."""
+        if self._live_sessions is not None:
+            self._live_sessions.discard(session_id)
+
+    def session_is_live(self, session_id: str) -> bool:
+        """Whether ``session_id`` still has a connected control session."""
+        return self._live_sessions is None or session_id in self._live_sessions
 
     def _record_scope_demand(self, cmd: Command) -> None:
         if isinstance(cmd, (EnableScope, DisableScope)):
