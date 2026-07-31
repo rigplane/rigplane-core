@@ -1,6 +1,7 @@
 """Tests for CLI async command handlers using mocked IcomRadio."""
 
 import asyncio
+import contextlib
 import json
 import os
 import signal
@@ -28,8 +29,10 @@ from rigplane.cli import (
     _cmd_ptt,
     _cmd_scope,
     _cmd_status,
+    _armed_for_ptt_hold,
     _PTT_HOLD_SIGNALS,
     _ptt_hold,
+    _PttArm,
     _run,
     main,
 )
@@ -696,9 +699,12 @@ def held(monkeypatch):
     """Drive the hold by hand — no test may block, or wait out a duration."""
     seen: list[float | None] = []
 
-    async def _hold(stop: asyncio.Event, seconds: float | None) -> bool:
+    async def _hold(arm: _PttArm, seconds: float | None) -> bool:
         seen.append(seconds)
-        return seconds is None  # only a signal can end an unbounded hold
+        if seconds is not None:
+            return False  # the clock ran out
+        arm.signum = int(signal.SIGINT)  # only a signal ends an unbounded hold
+        return True
 
     monkeypatch.setattr(cli_module, "_ptt_hold", _hold)
     return seen
@@ -823,11 +829,87 @@ class TestCmdPttHold:
 
     @pytest.mark.asyncio
     async def test_the_hold_distinguishes_its_clock_from_its_event(self) -> None:
-        stop = asyncio.Event()
-        assert await _ptt_hold(stop, 0.01) is False  # ran out, nobody asked
-        stop.set()
-        assert await _ptt_hold(stop, None) is True  # unbounded, ended by event
-        assert await _ptt_hold(stop, 3600.0) is True  # event beats the clock
+        arm = _PttArm()
+        assert await _ptt_hold(arm, 0.01) is False  # ran out, nobody asked
+        arm.stop.set()
+        assert await _ptt_hold(arm, None) is True  # unbounded, ended by event
+        assert await _ptt_hold(arm, 3600.0) is True  # event beats the clock
+
+
+# ---------------------------------------------------------------------------
+# _cmd_ptt — arm before the key, bound the unkey, report the signal (MOR-1199)
+# ---------------------------------------------------------------------------
+
+
+class TestCmdPttArming:
+    @pytest.mark.asyncio
+    async def test_a_signal_before_the_key_never_transmits(
+        self, held, monkeypatch, capsys
+    ) -> None:
+        # Arming first only buys anything if the key is then skipped: a
+        # process that has already been told to stop must not go on to key a
+        # rig it will not be around to unkey.
+        @contextlib.contextmanager
+        def _already_signalled():
+            with _armed_for_ptt_hold() as arm:
+                arm.signum = int(signal.SIGTERM)
+                yield arm
+
+        monkeypatch.setattr(cli_module, "_armed_for_ptt_hold", _already_signalled)
+        radio = _FakeShippedRadio()
+
+        rc = await _cmd_ptt(radio, Namespace(state="on", hold_seconds=None))
+
+        assert rc == 143  # 128 + SIGTERM
+        assert radio.writes == []  # never keyed, so there is nothing to unkey
+        assert held == []  # and no hold was entered
+        assert capsys.readouterr().out == ""  # nor was anything announced
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "signum, code",
+        [(signal.SIGINT, 130), (signal.SIGHUP, 129), (signal.SIGTERM, 143)],
+    )
+    async def test_the_exit_code_reflects_the_signal_that_ended_the_hold(
+        self, signum, code, monkeypatch
+    ) -> None:
+        # A wrapper that retries on Ctrl-C but obeys a SIGTERM cannot tell the
+        # two apart if every ending reports 130.
+        async def _hold(arm: _PttArm, seconds: float | None) -> bool:
+            arm.signum = int(signum)
+            return True
+
+        monkeypatch.setattr(cli_module, "_ptt_hold", _hold)
+        radio = _FakeShippedRadio()
+
+        assert await _cmd_ptt(radio, Namespace(state="on", hold_seconds=None)) == code
+        assert radio.writes == [True, False]
+
+    @pytest.mark.asyncio
+    async def test_a_hanging_unkey_is_bounded_and_reported(
+        self, held, monkeypatch, capsys
+    ) -> None:
+        # The hold still owns the signals across the release, so an unbounded
+        # wait on a transport that never answers leaves the operator SIGKILL
+        # — which unkeys nothing — as the only way out.
+        monkeypatch.setattr(cli_module, "_PTT_RELEASE_TIMEOUT", 0.05)
+        radio = _FakeShippedRadio()
+        keyed = radio.set_ptt
+
+        async def _hang(on: bool) -> None:
+            if not on:
+                await asyncio.Event().wait()  # a transport that never answers
+            await keyed(on)
+
+        radio.set_ptt = _hang  # type: ignore[method-assign]
+
+        rc = await _cmd_ptt(radio, Namespace(state="on", hold_seconds=None))
+
+        assert rc == 1
+        captured = capsys.readouterr()
+        assert "PTT OFF" not in captured.out  # it did not claim to have unkeyed
+        assert "timed out" in captured.err
+        assert "may still be transmitting" in captured.err
 
 
 _PTT_SIGNAL_CHILD = '''\
@@ -837,6 +919,7 @@ import sys
 import rigplane.cli as cli
 
 JOURNAL = sys.argv[1]
+WIDEN = float(sys.argv[2]) if len(sys.argv) > 2 else None
 
 
 def note(line):
@@ -863,32 +946,56 @@ class FakeRadio:
 
 
 cli.create_radio = lambda config: FakeRadio()
+
+if WIDEN is not None:  # widen the arm-to-key window so a signal lands inside it
+    import contextlib
+    import time
+
+    armed = cli._armed_for_ptt_hold
+
+    @contextlib.contextmanager
+    def slow_arm():
+        with armed() as arm:
+            note("armed")
+            time.sleep(WIDEN)
+            yield arm
+
+    cli._armed_for_ptt_hold = slow_arm
+
 sys.argv = ["rigplane", "--host", "127.0.0.1", "ptt", "on"]
 cli.main()
 '''
 
 
-@pytest.mark.parametrize("signum", [signal.SIGINT, signal.SIGTERM, signal.SIGHUP])
-def test_a_real_signal_unkeys_the_rig(signum, tmp_path) -> None:
-    # ``main()`` ends in ``os._exit`` and force-exits about a second after a
-    # signal, so a handler that merely exists is no evidence that it is
-    # installed or that the unkey survives. Send the real signal to a real
-    # ``main()`` and read back what the radio saw.
+def _signal_a_real_ptt_hold(
+    tmp_path, signum: signal.Signals, widen: float | None = None
+) -> tuple[int, list[str], list[str]]:
+    """Run a real ``rigplane ptt on``, signal it, and report what it did."""
     child = tmp_path / "child.py"
     child.write_text(_PTT_SIGNAL_CHILD)
     journal, err_path = tmp_path / "journal.txt", tmp_path / "err.txt"
+    journal.write_text("")
+    argv = [sys.executable, str(child), str(journal)]
+    argv += [] if widen is None else [str(widen)]
     with err_path.open("w") as err_fh:
         proc = subprocess.Popen(
-            [sys.executable, str(child), str(journal)],
+            argv,
             stdout=subprocess.PIPE,
             stderr=err_fh,
             text=True,
             env={**os.environ, "PYTHONUNBUFFERED": "1", "ICOM_DEBUG": "0"},
         )
-        # The hint is printed once the hold owns both signals, so it is the
-        # handshake that makes this test free of a race with process start-up.
+
+        # Handshake, so the signal cannot race process start-up: the hint is
+        # printed once the hold owns the signals and the rig is keyed, and
+        # the journal's "armed" line once they are owned but before the key.
+        def _reached() -> bool:
+            if widen is not None:
+                return "armed" in journal.read_text()
+            return "Ctrl-C" in err_path.read_text()
+
         deadline = time.monotonic() + 60
-        while "Ctrl-C" not in err_path.read_text():
+        while not _reached():
             assert proc.poll() is None and time.monotonic() < deadline, (
                 f"child never reached the hold: {err_path.read_text()}"
             )
@@ -898,10 +1005,40 @@ def test_a_real_signal_unkeys_the_rig(signum, tmp_path) -> None:
         # ``os._exit``, which flushes no stdio, so a piped stdout is lost
         # without it. Pre-existing and not specific to ``ptt``.
         out, _ = proc.communicate(timeout=60)
+    return proc.returncode, out.splitlines(), journal.read_text().split()
 
-    assert journal.read_text().split() == ["key", "unkey"]
-    assert out.splitlines() == ["PTT ON", "PTT OFF"]
-    assert proc.returncode == 130
+
+@pytest.mark.parametrize("signum", [signal.SIGINT, signal.SIGTERM, signal.SIGHUP])
+def test_a_real_signal_unkeys_the_rig(signum, tmp_path) -> None:
+    # ``main()`` ends in ``os._exit`` and force-exits about a second after a
+    # signal, so a handler that merely exists is no evidence that it is
+    # installed or that the unkey survives. Send the real signal to a real
+    # ``main()`` and read back what the radio saw.
+    rc, out, journal = _signal_a_real_ptt_hold(tmp_path, signum)
+
+    assert journal == ["key", "unkey"]
+    assert out == ["PTT ON", "PTT OFF"]
+    assert rc == 128 + signum  # 130 / 143 / 129, the code a shell reports
+
+
+@pytest.mark.parametrize("signum", [signal.SIGINT, signal.SIGTERM, signal.SIGHUP])
+def test_a_signal_before_the_key_leaves_the_rig_unkeyed(signum, tmp_path) -> None:
+    # The window between owning the signals and issuing the key is real, and
+    # in it the process is interruptible while the rig is not yet keyed. It is
+    # widened here because unwidened it is too short to hit on purpose — and a
+    # rig keyed by a process on its way out is what the ordering prevents.
+    #
+    # All three signals, because SIGINT alone cannot tell arming-first from
+    # arming-after-the-key: unhandled, it raises KeyboardInterrupt, which
+    # unwinds ahead of the key into ``main()``'s own 130 — the same journal,
+    # the same output, the same code. Unhandled SIGHUP kills the process and
+    # unhandled SIGTERM lands in ``main()``'s handler, so only these two prove
+    # the hold's handlers were already installed when the signal arrived.
+    rc, out, journal = _signal_a_real_ptt_hold(tmp_path, signum, widen=1.0)
+
+    assert journal == ["armed"]  # it never keyed, so there was nothing to unkey
+    assert out == []  # and it never announced a transmission
+    assert rc == 128 + signum
 
 
 # ---------------------------------------------------------------------------

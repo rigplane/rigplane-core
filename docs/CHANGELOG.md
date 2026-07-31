@@ -11,6 +11,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Breaking changes
+
+- **CLI: `rigplane ptt on` no longer returns while the rig is keyed.** The
+  command now holds the key for as long as the process runs and unkeys on the
+  way out, so the process that keyed the rig is the one that releases it. A
+  script that ran `rigplane ptt on`, did some work, and then ran
+  `rigplane ptt off` must move to `rigplane ptt on --for SEC` (or keep the
+  `ptt on` process alive for the length of the transmission) — the old shape
+  now blocks at the first command. SIGINT / SIGTERM / SIGHUP unkey and exit
+  128 + the signal (130 / 143 / 129); a duration that simply runs out exits 0;
+  a failed or stuck unkey exits 1 with a warning that the radio may still be
+  transmitting. `ptt off` is unchanged and immediate — it remains the recovery
+  path for a rig left transmitting by some other process (MOR-1184, MOR-1199).
+
 ## [2.11.1] — 2026-06-22
 
 ### Fixed
