@@ -1,12 +1,19 @@
 """Tests for CLI async command handlers using mocked IcomRadio."""
 
+import asyncio
 import json
+import os
+import signal
+import subprocess
+import sys
+import time
 import wave
 from argparse import Namespace
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, call, patch
 
 import pytest
 
+import rigplane.cli as cli_module
 from _caps import FULL_ICOM_CAPS
 from rigplane.cli import (
     _cmd_audio_caps,
@@ -21,6 +28,8 @@ from rigplane.cli import (
     _cmd_ptt,
     _cmd_scope,
     _cmd_status,
+    _PTT_HOLD_SIGNALS,
+    _ptt_hold,
     _run,
     main,
 )
@@ -491,11 +500,11 @@ class TestCmdMeter:
 
 class TestCmdPtt:
     @pytest.mark.asyncio
-    async def test_ptt_on(self, mock_radio, capsys) -> None:
+    async def test_ptt_on(self, mock_radio, held, capsys) -> None:
         args = Namespace(state="on")
         rc = await _cmd_ptt(mock_radio, args)
-        assert rc == 0
-        mock_radio.set_ptt.assert_called_once_with(True)
+        assert rc == 130
+        assert mock_radio.set_ptt.await_args_list == [call(True), call(False)]
         assert "ON" in capsys.readouterr().out
 
     @pytest.mark.asyncio
@@ -560,7 +569,9 @@ def _kinds(sup: _FakeTxSupervisor) -> list[tuple[bool, TxReleaseReason | None]]:
 
 class TestCmdPttManagedIngress:
     @pytest.mark.asyncio
-    async def test_shipped_radio_keeps_the_legacy_direct_write(self, capsys) -> None:
+    async def test_shipped_radio_keeps_the_legacy_direct_write(
+        self, held, capsys
+    ) -> None:
         # No backend assembles a managed runtime yet (MOR-1016): the radio the
         # CLI ships must reach its own ``set_ptt``, with today's codes and lines.
         shipped = RuntimeIcomRadio("127.0.0.1")
@@ -573,37 +584,41 @@ class TestCmdPttManagedIngress:
         assert ManagedTxApi.bind(shipped, TxOwner(TxSource.SDK, "probe")) is None
         shipped.set_ptt = _record
 
-        assert await _cmd_ptt(shipped, Namespace(state="on")) == 0
-        assert await _cmd_ptt(shipped, Namespace(state="off")) == 0
+        assert await _cmd_ptt(shipped, Namespace(state="on")) == 130
+        assert writes == [True, False]  # the hold keys and unkeys through it
+        assert capsys.readouterr().out.splitlines() == ["PTT ON", "PTT OFF"]
 
-        assert writes == [True, False]
+        assert await _cmd_ptt(shipped, Namespace(state="off")) == 0
+        assert writes == [True, False, False]
         captured = capsys.readouterr()
-        assert captured.out.splitlines() == ["PTT ON", "PTT OFF"]
-        assert captured.err == ""
+        assert captured.out.splitlines() == ["PTT OFF"]
+        assert captured.err == ""  # ``ptt off`` still stays silent and immediate
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize("outcome", [TxOutcome.ACCEPTED, TxOutcome.IDEMPOTENT])
     async def test_managed_ingress_enters_the_supervisor_exactly_once(
-        self, outcome: TxOutcome, capsys
+        self, outcome: TxOutcome, held, capsys
     ) -> None:
         # IDEMPOTENT means this owner already holds the lease, so the request
         # did land — it is an accepting outcome, not a rejection.
         radio = _FakeManagedRadio(on=outcome, off=outcome)
 
-        assert await _cmd_ptt(radio, Namespace(state="on")) == 0
-        assert await _cmd_ptt(radio, Namespace(state="off")) == 0
-
+        assert await _cmd_ptt(radio, Namespace(state="on")) == 130
         assert _kinds(radio.supervisor) == [
             (True, None),
-            (False, TxReleaseReason.OPERATOR_RELEASE),
+            (False, TxReleaseReason.OPERATOR_RELEASE),  # the hold's own unkey
         ]
+        assert capsys.readouterr().out.splitlines() == ["PTT ON", "PTT OFF"]
+
+        assert await _cmd_ptt(radio, Namespace(state="off")) == 0
+        assert _kinds(radio.supervisor)[-1] == (False, TxReleaseReason.OPERATOR_RELEASE)
         assert radio.bare_writes == []  # no bypass: the effect path writes
         captured = capsys.readouterr()
-        assert captured.out.splitlines() == ["PTT ON", "PTT OFF"]
+        assert captured.out.splitlines() == ["PTT OFF"]
         assert captured.err == ""
 
     @pytest.mark.asyncio
-    async def test_tx_owner_is_one_stable_identity_per_process(self) -> None:
+    async def test_tx_owner_is_one_stable_identity_per_process(self, held) -> None:
         first, second = _FakeManagedRadio(), _FakeManagedRadio()
 
         await _cmd_ptt(first, Namespace(state="on"))
@@ -612,7 +627,7 @@ class TestCmdPttManagedIngress:
 
         calls = first.supervisor.calls + second.supervisor.calls
         owners = [owner for _keyed, owner, _reason in calls]
-        assert len(owners) == 3
+        assert len(owners) == 5  # each hold keys and releases under one owner
         # ``release_owner`` matches on the owner alone, so a per-request (or
         # per-radio) owner would miss its own lease and could strand the rig
         # keyed until the watchdog fires.
@@ -623,7 +638,7 @@ class TestCmdPttManagedIngress:
     @pytest.mark.asyncio
     @pytest.mark.parametrize("outcome", _TX_KEY_REJECTIONS)
     async def test_a_key_the_supervisor_refused_exits_non_zero(
-        self, outcome: TxOutcome, capsys
+        self, outcome: TxOutcome, held, capsys
     ) -> None:
         # The supervisor reports refusal by return value, not by raising: a
         # caller that ignores it prints a cheerful "PTT ON" and exits 0 while
@@ -654,6 +669,223 @@ class TestCmdPttManagedIngress:
         assert "Warning" in captured.err and f"({TxOutcome.STALE})" in captured.err
         assert _kinds(radio.supervisor) == [(False, TxReleaseReason.OPERATOR_RELEASE)]
         assert radio.bare_writes == []
+
+
+# ---------------------------------------------------------------------------
+# _cmd_ptt — ``ptt on`` holds the key for as long as it runs (MOR-1184)
+# ---------------------------------------------------------------------------
+
+
+class _FakeShippedRadio:
+    """Hand written: unmanaged, like every backend the CLI ships until MOR-1016."""
+
+    managed_tx = None
+
+    def __init__(self, unkey_error: Exception | None = None) -> None:
+        self.writes: list[bool] = []
+        self._unkey_error = unkey_error
+
+    async def set_ptt(self, on: bool) -> None:
+        if not on and self._unkey_error is not None:
+            raise self._unkey_error
+        self.writes.append(on)
+
+
+@pytest.fixture
+def held(monkeypatch):
+    """End the hold at once — no test may block on a real signal."""
+    entered: list[asyncio.Event] = []
+
+    async def _hold(stop: asyncio.Event) -> None:
+        entered.append(stop)
+
+    monkeypatch.setattr(cli_module, "_ptt_hold", _hold)
+    return entered
+
+
+class TestCmdPttHold:
+    @pytest.mark.asyncio
+    async def test_ptt_on_holds_and_unkeys_when_interrupted(self, held, capsys) -> None:
+        before = [signal.getsignal(sig) for sig in _PTT_HOLD_SIGNALS]
+        radio = _FakeShippedRadio()
+
+        rc = await _cmd_ptt(radio, Namespace(state="on"))
+
+        assert rc == 130  # 128 + SIGINT, as any interrupted command reports
+        assert len(held) == 1
+        assert radio.writes == [True, False]  # the keying process is the unkeying one
+        captured = capsys.readouterr()
+        assert captured.out.splitlines() == ["PTT ON", "PTT OFF"]
+        assert "Ctrl-C" in captured.err  # the hold says how to end itself
+        assert [signal.getsignal(sig) for sig in _PTT_HOLD_SIGNALS] == before
+
+    @pytest.mark.asyncio
+    async def test_the_hold_owns_sigint_sigterm_and_sighup(self) -> None:
+        # Closing the terminal is the likeliest accidental end to a held
+        # transmission, and SIGHUP's default action would leave the rig keyed.
+        assert set(_PTT_HOLD_SIGNALS) == {
+            signal.SIGINT,
+            signal.SIGTERM,
+            signal.SIGHUP,
+        }
+
+    @pytest.mark.asyncio
+    async def test_a_refused_key_never_enters_the_hold(self, held, capsys) -> None:
+        # Holding on a key the supervisor refused would block on a rig that is
+        # not transmitting, then "release" a lease this session never took.
+        radio = _FakeManagedRadio(on=TxOutcome.BUSY)
+
+        rc = await _cmd_ptt(radio, Namespace(state="on"))
+
+        assert rc == 1
+        assert held == []
+        assert _kinds(radio.supervisor) == [(True, None)]  # no release either
+        assert capsys.readouterr().out == ""
+
+    @pytest.mark.asyncio
+    async def test_a_failed_unkey_is_reported_and_exits_non_zero(
+        self, held, capsys
+    ) -> None:
+        # A silent failed unkey is the worst outcome available here: the rig is
+        # transmitting and the operator has been told the command finished.
+        radio = _FakeShippedRadio(unkey_error=OSError("transport gone"))
+
+        rc = await _cmd_ptt(radio, Namespace(state="on"))
+
+        assert rc == 1
+        captured = capsys.readouterr()
+        assert "PTT OFF" not in captured.out
+        assert "Error" in captured.err and "transport gone" in captured.err
+
+    @pytest.mark.asyncio
+    async def test_a_refused_release_of_this_session_lease_exits_non_zero(
+        self, held, capsys
+    ) -> None:
+        # Unlike a bare ``ptt off``, this session is known to have taken the
+        # lease, so a refused release means the rig may still be keyed on it.
+        radio = _FakeManagedRadio(off=TxOutcome.STALE)
+
+        rc = await _cmd_ptt(radio, Namespace(state="on"))
+
+        assert rc == 1
+        captured = capsys.readouterr()
+        assert "Error" in captured.err and f"({TxOutcome.STALE})" in captured.err
+        assert "PTT OFF" not in captured.out
+
+    @pytest.mark.asyncio
+    async def test_the_hold_still_owns_the_signals_while_unkeying(self, held) -> None:
+        # Restoring the handlers before the release would let a second Ctrl-C
+        # raise KeyboardInterrupt mid-unkey and walk away from a keyed rig.
+        radio = _FakeShippedRadio()
+        before = signal.getsignal(signal.SIGINT)
+        during: list[object] = []
+        keyed = radio.set_ptt
+
+        async def _watch(on: bool) -> None:
+            if not on:
+                during.append(signal.getsignal(signal.SIGINT))
+            await keyed(on)
+
+        radio.set_ptt = _watch  # type: ignore[method-assign]
+
+        assert await _cmd_ptt(radio, Namespace(state="on")) == 130
+        assert during and during[0] is not before  # the hold's, not the default
+        assert signal.getsignal(signal.SIGINT) is before  # and restored after
+
+    @pytest.mark.asyncio
+    async def test_the_unkey_runs_when_the_hold_itself_raises(
+        self, monkeypatch
+    ) -> None:
+        async def _boom(stop: asyncio.Event) -> None:
+            raise RuntimeError("hold blew up")
+
+        monkeypatch.setattr(cli_module, "_ptt_hold", _boom)
+        radio = _FakeShippedRadio()
+
+        with pytest.raises(RuntimeError):
+            await _cmd_ptt(radio, Namespace(state="on"))
+
+        assert radio.writes == [True, False]
+
+    @pytest.mark.asyncio
+    async def test_the_hold_ends_when_its_event_is_set(self) -> None:
+        stop = asyncio.Event()
+        stop.set()
+        await _ptt_hold(stop)  # the real waiter, and it returns
+
+
+_PTT_SIGNAL_CHILD = '''\
+import os
+import sys
+
+import rigplane.cli as cli
+
+JOURNAL = sys.argv[1]
+
+
+def note(line):
+    with open(JOURNAL, "a") as fh:
+        fh.write(line + "\\n")
+        fh.flush()
+        os.fsync(fh.fileno())
+
+
+class FakeRadio:
+    """Hand written: unmanaged, like every backend the CLI ships today."""
+
+    capabilities = set()
+    managed_tx = None
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *exc):
+        return False
+
+    async def set_ptt(self, on):
+        note("key" if on else "unkey")
+
+
+cli.create_radio = lambda config: FakeRadio()
+sys.argv = ["rigplane", "--host", "127.0.0.1", "ptt", "on"]
+cli.main()
+'''
+
+
+@pytest.mark.parametrize("signum", [signal.SIGINT, signal.SIGTERM, signal.SIGHUP])
+def test_a_real_signal_unkeys_the_rig(signum, tmp_path) -> None:
+    # ``main()`` ends in ``os._exit`` and force-exits about a second after a
+    # signal, so a handler that merely exists is no evidence that it is
+    # installed or that the unkey survives. Send the real signal to a real
+    # ``main()`` and read back what the radio saw.
+    child = tmp_path / "child.py"
+    child.write_text(_PTT_SIGNAL_CHILD)
+    journal, err_path = tmp_path / "journal.txt", tmp_path / "err.txt"
+    with err_path.open("w") as err_fh:
+        proc = subprocess.Popen(
+            [sys.executable, str(child), str(journal)],
+            stdout=subprocess.PIPE,
+            stderr=err_fh,
+            text=True,
+            env={**os.environ, "PYTHONUNBUFFERED": "1", "ICOM_DEBUG": "0"},
+        )
+        # The hint is printed once the hold owns both signals, so it is the
+        # handshake that makes this test free of a race with process start-up.
+        deadline = time.monotonic() + 60
+        while "Ctrl-C" not in err_path.read_text():
+            assert proc.poll() is None and time.monotonic() < deadline, (
+                f"child never reached the hold: {err_path.read_text()}"
+            )
+            time.sleep(0.02)
+        proc.send_signal(signum)
+        # PYTHONUNBUFFERED above is load bearing: ``main()`` ends in
+        # ``os._exit``, which flushes no stdio, so a piped stdout is lost
+        # without it. Pre-existing and not specific to ``ptt``.
+        out, _ = proc.communicate(timeout=60)
+
+    assert journal.read_text().split() == ["key", "unkey"]
+    assert out.splitlines() == ["PTT ON", "PTT OFF"]
+    assert proc.returncode == 130
 
 
 # ---------------------------------------------------------------------------

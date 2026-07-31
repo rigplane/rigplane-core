@@ -2727,11 +2727,82 @@ async def _cmd_meter(radio: Radio, args: argparse.Namespace) -> int:
     return 0
 
 
+# SIGHUP is the one an operator reaches by accident: closing the terminal on a
+# held transmission is likelier than any ``kill``, and its default action would
+# end the process with the rig still keyed. It is POSIX only, hence the guard.
+_PTT_HOLD_SIGNALS: tuple[signal.Signals, ...] = tuple(
+    sig
+    for sig in (signal.SIGINT, signal.SIGTERM, getattr(signal, "SIGHUP", None))
+    if sig is not None
+)
+
+
+async def _ptt_hold(stop: asyncio.Event) -> None:
+    """Wait until a signal ends the hold."""
+    await stop.wait()
+
+
+async def _ptt_release(radio: Radio, managed: ManagedTxApi | None) -> str | None:
+    """Unkey; return an operator-facing reason when the rig may still be keyed."""
+    try:
+        if managed is None:
+            await radio.set_ptt(False)
+            return None
+        transition = await managed.set_ptt(False)
+    except Exception as exc:  # noqa: BLE001 — a failed unkey is reported, not raised
+        return f"unkey failed ({exc!r})"
+    if transition.outcome in _TX_KEY_ACCEPTED:
+        return None
+    # A bare ``ptt off`` may legitimately find nothing to release and warns.
+    # This session is known to have taken the lease, so a refusal here means
+    # the lease is gone from under it and the rig may still be transmitting.
+    return f"managed TX refused this session's release ({transition.outcome})"
+
+
+async def _hold_ptt(radio: Radio, managed: ManagedTxApi | None) -> int:
+    """Hold the key for as long as this command runs, then unkey (MOR-1184).
+
+    The signals are handled here rather than left to ``main()``: its
+    ``KeyboardInterrupt`` path force-exits through ``os._exit`` about a second
+    later, which truncates any unkey still in flight, and it has already fixed
+    the exit code by then, so a failed unkey could be neither awaited nor
+    reported. Owning them keeps the unkey on the ordinary return path. They
+    stay installed across the unkey too — a second Ctrl-C must not walk away
+    from a transmitting rig.
+    """
+    loop = asyncio.get_running_loop()
+    stop = asyncio.Event()
+
+    def _wake(signum: int, frame: Any) -> None:
+        loop.call_soon_threadsafe(stop.set)
+
+    restore = [(sig, signal.getsignal(sig)) for sig in _PTT_HOLD_SIGNALS]
+    for sig in _PTT_HOLD_SIGNALS:
+        signal.signal(sig, _wake)
+    print("Transmitting — press Ctrl-C to unkey.", file=sys.stderr)
+    try:
+        await _ptt_hold(stop)
+    finally:
+        # Every exit path, including an exception out of the hold.
+        failure = await _ptt_release(radio, managed)
+        for sig, handler in restore:
+            signal.signal(sig, handler)
+    if failure is not None:
+        print(
+            f"Error: {failure}; the radio may still be transmitting.", file=sys.stderr
+        )
+        return 1
+    print("PTT OFF")
+    return 130  # 128 + SIGINT: only a signal ends the hold
+
+
 async def _cmd_ptt(radio: Radio, args: argparse.Namespace) -> int:
     """Key or unkey the radio, through the managed supervisor when there is one.
 
     Radios without a managed runtime keep the legacy direct provider write; the
     supervisor reports refusal by return value, so both directions inspect it.
+    ``ptt on`` then holds the key until it is interrupted, so the process that
+    took the lease is the process that releases it.
     """
     on = args.state == "on"
     managed = ManagedTxApi.bind(radio, _CLI_TX_OWNER)
@@ -2758,7 +2829,9 @@ async def _cmd_ptt(radio: Radio, args: argparse.Namespace) -> int:
                 file=sys.stderr,
             )
     print(f"PTT {'ON' if on else 'OFF'}")
-    return 0
+    if not on:
+        return 0
+    return await _hold_ptt(radio, managed)
 
 
 async def _cmd_cw(radio: Radio, args: argparse.Namespace) -> int:
