@@ -16,6 +16,10 @@ so could never show the unmanaged path staying unmanaged.
 MOR-1192 hardens the same hook against the three ways it fails once MOR-1016
 publishes a supervisor: a supervisor of the wrong shape read as "unmanaged", a
 rebind that never returns, and two reconnects racing each other.
+
+MOR-1196 settles the read itself: resolving the supervisor is a fallible
+operation, not an attribute lookup, so it may neither be read as absence when
+it fails nor escape the guard that re-opens the scope gate.
 """
 
 from __future__ import annotations
@@ -24,6 +28,8 @@ import asyncio
 import logging
 import time
 from collections.abc import Callable
+
+import pytest
 
 from rigplane.core.radio_protocol import ManagedTxSupervisor
 from rigplane.core.tx_safety import (
@@ -121,6 +127,39 @@ class _Radio:
 
     async def _fetch_initial_state(self) -> None:
         self.log.append("refetch")
+
+
+class _RaisingSupervisorRadio(_Radio):
+    """Backend whose supervisor accessor raises instead of answering.
+
+    Neither hypothetical nor new: ``tests/test_web_managed_tx_owner.py`` models
+    the same backend for the poller's unkey (MOR-1187). A property is free to
+    read the transport, and a transport read is free to fail.
+    """
+
+    def __init__(self, log: list[str], error: BaseException) -> None:
+        super().__init__(log)
+        self._error = error
+
+    @property
+    def managed_tx(self) -> object:
+        raise self._error
+
+
+class _SupervisorLessRadio(_Radio):
+    """Backend that publishes the member and answers ``None`` from it.
+
+    ``ManagedTxCapable`` documents this shape in as many words — "expose no
+    ``managed_tx`` attribute (or return ``None``)" — and it is the one shape
+    plain ``_Radio`` cannot model, because it stores the supervisor only when
+    there is one, so ``None`` there means no member at all. The static probe
+    finds this property, so past it the explicit read is the only thing left
+    that can settle the radio as unmanaged.
+    """
+
+    @property
+    def managed_tx(self) -> None:
+        return None
 
 
 async def _managed(
@@ -268,6 +307,69 @@ async def test_a_supervisor_without_replace_provider_is_reported_not_ignored(
     # one, and the operator is left keyed with nothing in the log to say so.
     assert log == ["refetch"]
     assert [r for r in caplog.records if "managed TX" in r.getMessage()]
+
+
+async def test_a_raising_accessor_still_opens_the_scope_gate() -> None:
+    """MOR-1196: the resolution belongs inside the guard that re-opens the gate.
+
+    ``ConnectionError``, not ``AttributeError``: ``getattr(..., None)`` already
+    absorbs the latter, so only a different exception shows whether the read is
+    guarded at all. Resolved above the ``finally``, it escapes with the gate
+    still clear, and ``EnableScope`` is deferred and re-queued for good — the
+    operator's scope goes dark and stays dark. The error must still surface.
+    """
+    log: list[str] = []
+    server = WebServer(_RaisingSupervisorRadio(log, ConnectionError("boom")))  # type: ignore[arg-type]
+    server._radio_poller = poller = _Poller()  # type: ignore[assignment]
+
+    server._on_radio_reconnect()  # noqa: SLF001
+    with pytest.raises(ConnectionError, match="boom"):
+        await asyncio.gather(*list(server._bg_tasks))  # noqa: SLF001
+
+    # Nothing downstream of the failure ran, and the gate opened regardless.
+    assert log == []
+    assert poller._initial_fetch_done.is_set()
+
+
+async def test_an_attributeerror_inside_the_accessor_is_not_absence() -> None:
+    """The other half of the rule: a failed read is not a ``None``.
+
+    ``getattr(radio, "managed_tx", None)`` cannot tell "this backend publishes
+    no supervisor" from a typo on a nested attribute inside the property — the
+    identical bypass MOR-1193 closed in ``ManagedTxApi.bind``. Silently
+    unmanaged is the worse outcome of the two: the armed OFF is never even
+    attempted, and unlike the shapeless-supervisor branch nothing says so.
+    """
+    log: list[str] = []
+    server = WebServer(_RaisingSupervisorRadio(log, AttributeError("typo")))  # type: ignore[arg-type]
+    server._radio_poller = poller = _Poller()  # type: ignore[assignment]
+
+    server._on_radio_reconnect()  # noqa: SLF001
+    with pytest.raises(AttributeError, match="typo"):
+        await asyncio.gather(*list(server._bg_tasks))  # noqa: SLF001
+
+    assert log == []
+    assert poller._initial_fetch_done.is_set()
+
+
+async def test_a_backend_that_answers_none_is_unmanaged_and_stays_quiet(
+    caplog,
+) -> None:
+    """A ``None`` from the accessor is a supervisor-less rig, not a broken one.
+
+    Past the static probe the read is the only thing that can still settle
+    this, so dropping the ``None`` check hands ``NoneType`` to the shapeless-
+    supervisor branch, which warns that an armed durable OFF cannot be re-armed
+    — on a rig that never had a supervisor to arm one with. A warning that
+    fires on a healthy backend is how the one that matters stops being read.
+    """
+    log: list[str] = []
+
+    with caplog.at_level(logging.WARNING):
+        await _recover(WebServer(_SupervisorLessRadio(log)))  # type: ignore[arg-type]
+
+    assert log == ["refetch"]
+    assert not [r for r in caplog.records if "managed TX" in r.getMessage()]
 
 
 async def test_a_rebind_that_never_returns_does_not_wedge_recovery(
