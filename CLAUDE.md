@@ -196,7 +196,7 @@ EXPLORE → PLAN → EXECUTE → regression-check → REVIEW → TEST → PR
 ### Entry conditions (must ALL be true to start)
 
 - Issue has clear expected outcome
-- Scope fits guardrails (≤3 files, ≤200 LOC) — if not, `/decompose-issue` first
+- Scope fits guardrails (≤3 files, ≤400 LOC) — if not, `/decompose-issue` first
 - No hardware dependency (unless mockable)
 - Not an epic or parent issue — only atomic/decomposed tasks
 - Otherwise → SKIP or DECOMPOSE
@@ -235,7 +235,7 @@ Use subagents for large exploration/review — keep main session lean.
 | Limit | Value |
 |-------|-------|
 | Files per change | 3 |
-| LOC delta | 200 |
+| LOC delta | 400 |
 | New abstractions/layers | forbidden unless issue requires |
 | Speculative improvements | forbidden |
 | Min confidence | 0.6 |
