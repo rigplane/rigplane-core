@@ -536,10 +536,12 @@ class ManagedTxSupervisor(Protocol):
 class ManagedTxCapable(Protocol):
     """Radio that publishes a managed TX supervisor for every ingress.
 
-    Backends assembled with a managed runtime expose it here so Web, rigctld,
-    and the SDK route through :class:`ManagedTxApi` instead of writing PTT
-    themselves.  Backends without one expose no ``managed_tx`` attribute (or
-    return ``None``) and keep the legacy :meth:`Radio.set_ptt` path unchanged.
+    Backends assembled with a managed runtime expose it here so Web, the SDK
+    and the CLI route through :class:`ManagedTxApi` instead of writing PTT
+    themselves.  rigctld does not yet — its executor writes PTT directly, so a
+    rigctld key takes no lease and no watchdog covers it (MOR-1014).  Backends
+    without a runtime expose no ``managed_tx`` attribute (or return ``None``)
+    and keep the legacy :meth:`Radio.set_ptt` path unchanged.
 
     Publish it as a real class or instance member, never through
     ``__getattr__``: :meth:`ManagedTxApi.bind` settles absence without running
@@ -547,6 +549,16 @@ class ManagedTxCapable(Protocol):
     with ``isinstance`` instead — 3.11 answers that with ``hasattr``, which
     reads a conjured attribute as present and a raising one as absent, which
     is the bypass MOR-1193 exists to close.
+
+    For consumers the rule is that resolving a supervisor is a fallible
+    operation and not an attribute lookup: the accessor is backend code and may
+    raise anything.  So no call site may read a failed resolution as absence —
+    ``getattr(radio, "managed_tx", None)`` does exactly that, its default
+    absorbing an ``AttributeError`` raised *inside* the property — nor let one
+    escape a guard that owns cleanup.  Three call sites got this wrong
+    independently (MOR-1187, MOR-1193, MOR-1196).  Bind through
+    :meth:`ManagedTxApi.bind` wherever an owner identity is in hand; where one
+    is not, repeat its two-step read rather than collapsing it to a ``getattr``.
     """
 
     @property

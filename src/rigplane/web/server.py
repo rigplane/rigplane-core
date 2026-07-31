@@ -35,6 +35,7 @@ import time
 import urllib.parse
 from collections.abc import Callable, Collection, Coroutine
 from dataclasses import dataclass, field
+from inspect import getattr_static
 from typing import TYPE_CHECKING, Any, Literal, Protocol, TextIO
 
 from .. import __version__
@@ -1818,7 +1819,17 @@ class WebServer:
         Unmanaged radios publish no supervisor and keep today's behaviour
         exactly — no backend assembles a managed runtime until MOR-1016.
         """
-        supervisor = getattr(self._radio, "managed_tx", None)
+        # Resolving the supervisor is backend code, not an attribute lookup.
+        # ``getattr_static`` settles absence without running the accessor, so
+        # the one explicit read below is the only thing here that can fail, and
+        # it fails outward.  ``getattr(..., None)`` could not tell "publishes no
+        # supervisor" from an ``AttributeError`` raised *inside* the property —
+        # a typo on a nested attribute will do — and answered "unmanaged",
+        # leaving a keyed rig's armed OFF unattempted (MOR-1193, MOR-1196).
+        radio: Any = self._radio
+        if getattr_static(radio, "managed_tx", None) is None:
+            return  # no such member, or a backend that publishes none
+        supervisor = radio.managed_tx
         if supervisor is None:
             return
         rebind = getattr(supervisor, "replace_provider", None)
@@ -1884,14 +1895,23 @@ class WebServer:
 
         async def _refetch_and_reenable() -> None:
             """Release TX first, then refetch state, signal readiness and scope."""
-            await self._service_managed_tx_release()
             try:
-                if self._radio is not None and hasattr(
-                    self._radio, "_fetch_initial_state"
-                ):
-                    await self._radio._fetch_initial_state()
-            except Exception:
-                logger.warning("reconnect: refetch failed", exc_info=True)
+                # Inside the guard, not above it (MOR-1187's shape, MOR-1196):
+                # servicing the release resolves the supervisor, which is
+                # backend code and free to raise anything.  Above the
+                # ``finally`` it escapes with the gate still clear, and since
+                # this closure is the only thing in ``src/`` that ever re-sets
+                # the gate, the poller defers and re-queues ``EnableScope`` for
+                # good.  The failure still propagates — the point is that
+                # cleanup runs first, not that anything is swallowed.
+                await self._service_managed_tx_release()
+                try:
+                    if self._radio is not None and hasattr(
+                        self._radio, "_fetch_initial_state"
+                    ):
+                        await self._radio._fetch_initial_state()
+                except Exception:
+                    logger.warning("reconnect: refetch failed", exc_info=True)
             finally:
                 if self._radio_poller is not None:
                     self._radio_poller._initial_fetch_done.set()
