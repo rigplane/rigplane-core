@@ -103,18 +103,28 @@ class ManagedRadioRuntime:
     async def _tick_loop(self) -> None:
         """The production driver of ``tick``: max key-down plus the timed retry.
 
-        Only ``_lifecycle_lock`` is taken, and only around the reducer call: it
-        is the lock that guards supervisor mutation, while ``_lifecycle_change``
-        guards provider identity, which a tick never changes. Waiting on the
-        latter would park the watchdog behind a retirement — exactly when a
-        keyed rig most needs it. The loop retires itself once the lease is gone
-        so an idle target costs nothing and leaves no task behind.
+        Only ``_lifecycle_lock`` is taken, and on the normal path only around
+        the reducer call: it is the lock that guards supervisor mutation, while
+        ``_lifecycle_change`` guards provider identity, which a tick never
+        changes. Waiting on the latter would park the watchdog behind a
+        retirement — exactly when a keyed rig most needs it. The loop retires
+        itself once the lease is gone so an idle target costs nothing and
+        leaves no task behind.
+
+        The ``finally`` below is the exception: when a cancel or a shutdown
+        ends the loop it retires outside the lock, because the canceller may
+        already hold it. Safe only because the two writes it makes have no
+        ``await`` between them and the loop is single-threaded.
+
+        The interval bounds retry latency rather than setting it: an OFF that
+        failed comes due one ``retry_schedule_seconds[0]`` after the failure and
+        is picked up by the next tick, so it lands within one interval of that.
         """
         try:
             while True:
                 async with self._lifecycle_lock:
                     if self._shutdown_pending or self.tx_snapshot.lease_id is None:
-                        self._tick_task = None
+                        self._retire_ticker()
                         return
                     transition = self._tx_safety.tick()
                 try:
@@ -124,6 +134,19 @@ class ManagedRadioRuntime:
                 await asyncio.sleep(self._tick_interval)
         except asyncio.CancelledError:
             pass
+        finally:
+            self._retire_ticker()
+
+    def _retire_ticker(self) -> None:
+        """The loop owns its own slot, so no canceller can strand the watchdog.
+
+        Withdrawing the drive with it is what keeps ``watchdog_enabled`` honest:
+        clearing the slot alone still leaves the flag latched on by the last
+        tick, advertising a watchdog that is no longer running.
+        """
+        if self._tick_task is asyncio.current_task():
+            self._tick_task = None
+            self._tx_safety.retire_driver()
 
     def _not_ready(self) -> TxTransition:
         return TxTransition(TxOutcome.NOT_READY, self.tx_snapshot)
@@ -375,8 +398,7 @@ class ManagedRadioRuntime:
     ) -> tuple[TxTransition, BaseException | None]:
         error: BaseException | None = None
         if (ticker := self._tick_task) is not None:
-            self._tick_task = None
-            ticker.cancel()
+            ticker.cancel()  # the loop clears the slot on its way out
             await asyncio.gather(ticker, return_exceptions=True)
         try:
             if transition.outcome is not TxOutcome.NOOP:

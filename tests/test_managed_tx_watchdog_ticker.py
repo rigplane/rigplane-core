@@ -48,16 +48,19 @@ class _Clock:
 class _Managed:
     """A managed runtime plus everything the tests need to watch it."""
 
-    def __init__(self) -> None:
+    def __init__(self, *, tick: float = _TICK, shutdown: float = 3.0) -> None:
         self.clock, self.log = _Clock(), []
         self.serviced: list[TxTransition] = []
+        self.park: asyncio.Event | None = None
+        self.entered = asyncio.Event()
         self.provider = _Provider(self.log)
         self.runtime = ManagedRadioRuntime(
             "watchdog",
             service_factory=self._factory,
             provider_lifecycle=self.provider,
             clock=self.clock,
-            tick_interval_seconds=_TICK,
+            shutdown_timeout_seconds=shutdown,
+            tick_interval_seconds=tick,
         )
 
     def _factory(self, host: object) -> TxService:
@@ -65,14 +68,25 @@ class _Managed:
 
         async def service(sup: TxSafetySupervisor, moved: TxTransition) -> None:
             self.serviced.append(moved)
-            await inner(sup, moved)
+            if (park := self.park) is None:
+                await inner(sup, moved)
+                return
+            self.entered.set()
+            try:
+                await park.wait()  # a provider call that outlives its caller...
+            except asyncio.CancelledError:
+                pass  # ...and swallows the cancel meant to stop it
+            finally:
+                self.entered.clear()
 
         return service
 
 
-async def _armed(*, key: bool = True) -> _Managed:
+async def _armed(
+    *, key: bool = True, tick: float = _TICK, shutdown: float = 3.0
+) -> _Managed:
     """Bring the provider up, seed the OFF ``request_on`` demands, then key."""
-    managed = _Managed()
+    managed = _Managed(tick=tick, shutdown=shutdown)
     await managed.runtime.replace_provider(ready=True)
     await managed.runtime.request_fresh_ptt()
     if key:
@@ -88,6 +102,34 @@ async def _settles(predicate: Callable[[], bool], timeout: float = 2.0) -> None:
     while not predicate():
         assert time.monotonic() < deadline, "the ticker never got there"
         await asyncio.sleep(_TICK)
+
+
+async def _parked(*, shutdown: float = 3.0) -> _Managed:
+    """Hold the ticker inside the provider call its own watchdog just made."""
+    managed = await _armed(shutdown=shutdown)
+    managed.park = asyncio.Event()
+    managed.clock.now += 181.0  # the watchdog is due, so this tick has effects
+    await asyncio.wait_for(managed.entered.wait(), timeout=2.0)
+    return managed
+
+
+async def _cancelled(managed: _Managed) -> asyncio.Task[None] | None:
+    """Cancel the ticker the way a caller that forgets to clear the slot would."""
+    ticker = managed.runtime._tick_task
+    assert ticker is not None
+    ticker.cancel()
+    await asyncio.gather(ticker, return_exceptions=True)
+    return ticker
+
+
+async def _quiesce(managed: _Managed) -> None:
+    """Reap the ticker whatever the test found: a parked one eats its cancel,
+    and loop teardown cancels only once, so a failure would hang, not report."""
+    if managed.park is not None:
+        managed.park.set()
+        await _settles(lambda: not managed.entered.is_set())
+    if managed.runtime._tick_task is not None:
+        await _cancelled(managed)
 
 
 async def test_a_lease_held_past_max_key_down_is_dekeyed_on_the_wire() -> None:
@@ -150,3 +192,95 @@ async def test_nothing_ticks_until_a_lease_exists_and_the_signal_says_so() -> No
     await managed.runtime.request_on(_OWNER)
     await _settles(lambda: managed.runtime.tx_snapshot.watchdog_enabled)
     assert managed.runtime._tick_task is not None
+
+
+async def test_a_cancelled_ticker_frees_its_slot_and_claims_no_watchdog() -> None:
+    """MOR-1194 item 1: the loop owns its slot, so no canceller can strand it.
+
+    Only ``_complete_shutdown`` cancels today, and it clears the slot first --
+    which makes a permanently dead watchdog depend on every future canceller
+    remembering to do the same. Cancel it the careless way instead.
+    """
+    managed = await _armed()
+    await _settles(lambda: managed.runtime.tx_snapshot.watchdog_enabled)
+    await _cancelled(managed)
+
+    assert managed.runtime._tick_task is None
+    snapshot = managed.runtime.tx_snapshot
+    # Item 2 of the acceptance: still keyed, and honest that nothing watches it.
+    assert snapshot.lease_id is not None and not snapshot.watchdog_enabled
+
+
+async def test_the_next_request_rearms_a_watchdog_that_still_fires() -> None:
+    """MOR-1194 item 1: re-arming must restore the watchdog, not just a task."""
+    managed = await _armed()
+    await _settles(lambda: managed.runtime.tx_snapshot.watchdog_enabled)
+    ticker = await _cancelled(managed)
+
+    await managed.runtime.request_on(_OWNER)  # idempotent on the lease it holds
+    assert managed.runtime._tick_task not in (None, ticker)
+
+    managed.clock.now += 181.0
+    await _settles(lambda: managed.runtime.tx_snapshot.phase is TxPhase.IDLE)
+    assert managed.log == ["ptt(off)", "read_ptt"]
+    await _settles(lambda: managed.runtime._tick_task is None)
+
+
+async def test_shutdown_returns_even_when_the_service_swallows_its_cancel() -> None:
+    """MOR-1194 item 2: the ``_shutdown_pending`` fence is the only stop left.
+
+    A service that survives cancellation puts the ticker straight back into the
+    loop, and the lease outlives the emergency release, so without the fence it
+    ticks forever and the gather in ``_complete_shutdown`` never returns.
+    """
+    managed = await _parked(shutdown=0.05)
+    try:
+        await asyncio.wait_for(
+            managed.runtime.shutdown(release_provider=lambda: asyncio.sleep(0)),
+            timeout=5.0,
+        )
+        assert managed.runtime._tick_task is None
+        assert not managed.runtime.tx_snapshot.watchdog_enabled
+    finally:
+        await _quiesce(managed)
+
+
+async def test_the_ticker_waits_its_interval_between_ticks() -> None:
+    """MOR-1194 item 3: four wakeups a second, not an unbounded hot loop.
+
+    Only real time can show this. The fake clock does not move on its own, so a
+    loop that never sleeps reaches all the same states -- thousands of times a
+    second on a keyed rig, and no other assertion here would notice.
+    """
+    managed = await _armed(tick=5.0)
+    supervisor, ticks = managed.runtime._tx_safety, 0
+    real = supervisor.tick
+
+    def counted() -> TxTransition:
+        nonlocal ticks
+        ticks += 1
+        return real()
+
+    supervisor.tick = counted
+    await asyncio.sleep(0.05)
+
+    assert managed.runtime._tick_task is not None  # alive, and still not spinning
+    assert ticks <= 1, f"the interval is not awaited: {ticks} ticks in 50 ms"
+
+
+async def test_effects_are_serviced_with_the_lifecycle_lock_released() -> None:
+    """MOR-1194 item 4: a provider that stops answering must not stall the rest.
+
+    Retirement needs ``_lifecycle_lock``. Hold it across the service call and
+    the one provider already refusing to answer also blocks every attempt to
+    replace it -- ``_provider_state`` stuck at ``bound`` instead of ``unbound``.
+    """
+    managed = await _parked()
+    try:
+        await asyncio.wait_for(
+            managed.runtime.invalidate_provider(managed.runtime._provider_generation),
+            timeout=1.0,
+        )
+        assert managed.runtime._provider_state == "unbound"
+    finally:
+        await _quiesce(managed)

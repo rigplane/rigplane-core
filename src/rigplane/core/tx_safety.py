@@ -491,6 +491,10 @@ class TxSafetySupervisor:
         outcome = TxOutcome.APPLIED if effects or self._release else TxOutcome.NOOP
         return self._result(outcome, effects)
 
+    def retire_driver(self) -> None:
+        """The driver of ``tick`` is gone; stop claiming a watchdog with it."""
+        self._driven = False
+
     def _release_current(self, reason: TxReleaseReason) -> TxTransition:
         if self._release:
             self._release = replace(self._release, terminal_reason=reason)
