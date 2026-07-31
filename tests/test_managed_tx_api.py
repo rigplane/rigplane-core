@@ -124,6 +124,82 @@ def test_managed_runtime_satisfies_the_supervisor_protocol() -> None:
     assert isinstance(runtime, ManagedTxSupervisor)
 
 
+# --- Supervisor resolution (MOR-1193) --------------------------------------
+
+
+class RaisingRadio:
+    """Provider whose supervisor accessor fails instead of answering."""
+
+    def __init__(self, error: type[Exception]) -> None:
+        self._error = error
+
+    @property
+    def managed_tx(self) -> ManagedTxSupervisor | None:
+        raise self._error("supervisor accessor exploded")
+
+
+class SupervisorLessRadio:
+    """Managed-capable provider that publishes no supervisor of its own."""
+
+    @property
+    def managed_tx(self) -> ManagedTxSupervisor | None:
+        return None
+
+
+class CountingRadio(FakeRadio):
+    """Managed provider that counts every read of its supervisor accessor."""
+
+    def __init__(self) -> None:
+        self.reads = 0
+        super().__init__(True)
+
+    @property
+    def managed_tx(self) -> FakeSupervisor:
+        self.reads += 1
+        return self.supervisor
+
+    @managed_tx.setter
+    def managed_tx(self, value: FakeSupervisor | None) -> None:
+        """Absorb ``FakeRadio.__init__``'s assignment; the getter is the point."""
+
+
+@pytest.mark.parametrize("error", [AttributeError, RuntimeError, ValueError, KeyError])
+def test_a_failing_supervisor_accessor_is_never_read_as_unmanaged(
+    error: type[Exception],
+) -> None:
+    # A supervisor that cannot be resolved is not the same as no supervisor:
+    # answering ``None`` here sends a managed rig down the legacy write with no
+    # lease, no owner and no watchdog.  ``AttributeError`` is the trap — a typo
+    # on a nested attribute inside the property body raises it just as a
+    # missing member does — and 3.11 alone swallowed it, through the ``hasattr``
+    # that ``isinstance`` probes a non-callable protocol member with.  The other
+    # three always propagated: ``hasattr`` catches nothing else.
+    with pytest.raises(error, match="exploded"):
+        ManagedTxApi.bind(RaisingRadio(error), _OWNER)
+
+
+def test_a_supervisor_less_backend_reads_unmanaged_through_its_property() -> None:
+    # ``ManagedTxCapable`` declares ``managed_tx`` a property, so a backend
+    # with no supervisor answers ``None`` from code rather than storing it —
+    # and that answer must still mean unmanaged (MOR-1013).  Binding a ``None``
+    # supervisor instead would defer the failure to the first key, with the
+    # operator's finger on it.
+    assert ManagedTxApi.bind(SupervisorLessRadio(), _OWNER) is None
+
+
+def test_binding_reads_the_supervisor_accessor_exactly_once() -> None:
+    # The only accessor call is bind's own explicit read.  A second one means
+    # the protocol machinery is probing the object as well — and that probe is
+    # the ``hasattr`` which turns the raise above into "unmanaged".
+    radio = CountingRadio()
+
+    managed = ManagedTxApi.bind(radio, _OWNER)
+
+    assert managed is not None
+    assert managed.supervisor is radio.supervisor
+    assert radio.reads == 1
+
+
 # --- SDK sync ingress (MOR-1171) -------------------------------------------
 
 

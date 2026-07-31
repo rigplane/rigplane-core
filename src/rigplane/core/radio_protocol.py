@@ -42,6 +42,7 @@ Standard capability tags:
 from __future__ import annotations
 
 from dataclasses import dataclass
+from inspect import getattr_static
 from typing import (
     TYPE_CHECKING,
     Any,
@@ -52,6 +53,7 @@ from typing import (
     Literal,
     Protocol,
     Sequence,
+    cast,
     runtime_checkable,
 )
 
@@ -538,6 +540,13 @@ class ManagedTxCapable(Protocol):
     and the SDK route through :class:`ManagedTxApi` instead of writing PTT
     themselves.  Backends without one expose no ``managed_tx`` attribute (or
     return ``None``) and keep the legacy :meth:`Radio.set_ptt` path unchanged.
+
+    Publish it as a real class or instance member, never through
+    ``__getattr__``: :meth:`ManagedTxApi.bind` settles absence without running
+    the accessor, so a conjured attribute reads as absent there.  Do not probe
+    with ``isinstance`` instead — 3.11 answers that with ``hasattr``, which
+    reads a conjured attribute as present and a raising one as absent, which
+    is the bypass MOR-1193 exists to close.
     """
 
     @property
@@ -560,10 +569,22 @@ class ManagedTxApi:
 
     @staticmethod
     def bind(radio: object, owner: TxOwner) -> ManagedTxApi | None:
-        """Bind ``owner`` to ``radio``'s supervisor; ``None`` when unmanaged."""
-        if not isinstance(radio, ManagedTxCapable):
-            return None
-        supervisor = radio.managed_tx
+        """Bind ``owner`` to ``radio``'s supervisor; ``None`` when unmanaged.
+
+        Unmanaged is a positive finding, never a fallback from a failed read.
+        ``getattr_static`` settles absence without running the accessor, so the
+        single explicit read below is the only backend code this touches and
+        its failures propagate.  ``isinstance(radio, ManagedTxCapable)`` cannot
+        draw that line: 3.11 probes the non-callable member with ``hasattr``,
+        which turns an ``AttributeError`` raised *inside* the property — a typo
+        on a nested attribute will do — into "no supervisor", handing a managed
+        rig to the legacy write with no lease, no owner and no watchdog.  3.12+
+        reads the member statically and raised instead, leaving the silent
+        bypass on the one interpreter the per-PR gate pins (MOR-1193).
+        """
+        if getattr_static(radio, "managed_tx", None) is None:
+            return None  # no such member, or a backend that publishes none
+        supervisor = cast(ManagedTxCapable, radio).managed_tx
         return None if supervisor is None else ManagedTxApi(supervisor, owner)
 
     async def set_ptt(
