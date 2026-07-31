@@ -13,6 +13,7 @@ from rigplane.cli import (
     _HOST_NOT_SET,
     _build_backend_config,
     _build_parser,
+    _finalize_ptt_args,
     _parse_frequency,
     _resolve_password,
     check_ports_available,
@@ -202,6 +203,41 @@ class TestBuildParser:
         p = _build_parser()
         args = p.parse_args(["ptt", "off"])
         assert args.state == "off"
+
+    def test_ptt_for_implies_on(self):
+        # ``rigplane ptt --for 5`` is the shape the operator reaches for; the
+        # positional stays available so ``ptt on --for 5`` means the same.
+        p = _build_parser()
+        for argv in (["ptt", "--for", "5"], ["ptt", "on", "--for", "5"]):
+            args = p.parse_args(argv)
+            _finalize_ptt_args(p, args)
+            assert (args.state, args.hold_seconds) == ("on", 5.0)
+
+    def test_ptt_on_without_for_holds_indefinitely(self):
+        p = _build_parser()
+        args = p.parse_args(["ptt", "on"])
+        _finalize_ptt_args(p, args)
+        assert (args.state, args.hold_seconds) == ("on", None)
+
+    @pytest.mark.parametrize(
+        "argv",
+        [
+            ["ptt"],  # bare ``ptt`` must not key the rig by accident
+            ["ptt", "--for", "0"],  # a 0 s key is a hot-switch transient
+            ["ptt", "--for", "-1"],
+            ["ptt", "--for", "inf"],  # a bounded flag that never ends
+            ["ptt", "--for", "nan"],
+            ["ptt", "--for", "soon"],
+            # ``ptt off`` is the recovery path for a rig another build left
+            # keyed; a duration on it is meaningless, so reject it explicitly.
+            ["ptt", "off", "--for", "5"],
+        ],
+    )
+    def test_ptt_rejects_unusable_argv(self, argv):
+        p = _build_parser()
+        with pytest.raises(SystemExit) as exc:
+            _finalize_ptt_args(p, p.parse_args(argv))
+        assert exc.value.code == 2
 
     def test_cw(self):
         p = _build_parser()

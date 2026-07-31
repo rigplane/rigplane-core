@@ -501,7 +501,7 @@ class TestCmdMeter:
 class TestCmdPtt:
     @pytest.mark.asyncio
     async def test_ptt_on(self, mock_radio, held, capsys) -> None:
-        args = Namespace(state="on")
+        args = Namespace(state="on", hold_seconds=None)
         rc = await _cmd_ptt(mock_radio, args)
         assert rc == 130
         assert mock_radio.set_ptt.await_args_list == [call(True), call(False)]
@@ -584,7 +584,7 @@ class TestCmdPttManagedIngress:
         assert ManagedTxApi.bind(shipped, TxOwner(TxSource.SDK, "probe")) is None
         shipped.set_ptt = _record
 
-        assert await _cmd_ptt(shipped, Namespace(state="on")) == 130
+        assert await _cmd_ptt(shipped, Namespace(state="on", hold_seconds=None)) == 130
         assert writes == [True, False]  # the hold keys and unkeys through it
         assert capsys.readouterr().out.splitlines() == ["PTT ON", "PTT OFF"]
 
@@ -603,7 +603,7 @@ class TestCmdPttManagedIngress:
         # did land — it is an accepting outcome, not a rejection.
         radio = _FakeManagedRadio(on=outcome, off=outcome)
 
-        assert await _cmd_ptt(radio, Namespace(state="on")) == 130
+        assert await _cmd_ptt(radio, Namespace(state="on", hold_seconds=None)) == 130
         assert _kinds(radio.supervisor) == [
             (True, None),
             (False, TxReleaseReason.OPERATOR_RELEASE),  # the hold's own unkey
@@ -621,9 +621,9 @@ class TestCmdPttManagedIngress:
     async def test_tx_owner_is_one_stable_identity_per_process(self, held) -> None:
         first, second = _FakeManagedRadio(), _FakeManagedRadio()
 
-        await _cmd_ptt(first, Namespace(state="on"))
+        await _cmd_ptt(first, Namespace(state="on", hold_seconds=None))
         await _cmd_ptt(first, Namespace(state="off"))
-        await _cmd_ptt(second, Namespace(state="on"))
+        await _cmd_ptt(second, Namespace(state="on", hold_seconds=None))
 
         calls = first.supervisor.calls + second.supervisor.calls
         owners = [owner for _keyed, owner, _reason in calls]
@@ -645,7 +645,7 @@ class TestCmdPttManagedIngress:
         # the rig is not transmitting on its behalf.
         radio = _FakeManagedRadio(on=outcome)
 
-        rc = await _cmd_ptt(radio, Namespace(state="on"))
+        rc = await _cmd_ptt(radio, Namespace(state="on", hold_seconds=None))
 
         assert rc == 1
         captured = capsys.readouterr()
@@ -693,14 +693,15 @@ class _FakeShippedRadio:
 
 @pytest.fixture
 def held(monkeypatch):
-    """End the hold at once — no test may block on a real signal."""
-    entered: list[asyncio.Event] = []
+    """Drive the hold by hand — no test may block, or wait out a duration."""
+    seen: list[float | None] = []
 
-    async def _hold(stop: asyncio.Event) -> None:
-        entered.append(stop)
+    async def _hold(stop: asyncio.Event, seconds: float | None) -> bool:
+        seen.append(seconds)
+        return seconds is None  # only a signal can end an unbounded hold
 
     monkeypatch.setattr(cli_module, "_ptt_hold", _hold)
-    return entered
+    return seen
 
 
 class TestCmdPttHold:
@@ -709,10 +710,10 @@ class TestCmdPttHold:
         before = [signal.getsignal(sig) for sig in _PTT_HOLD_SIGNALS]
         radio = _FakeShippedRadio()
 
-        rc = await _cmd_ptt(radio, Namespace(state="on"))
+        rc = await _cmd_ptt(radio, Namespace(state="on", hold_seconds=None))
 
         assert rc == 130  # 128 + SIGINT, as any interrupted command reports
-        assert len(held) == 1
+        assert held == [None]  # unbounded: no --for was given
         assert radio.writes == [True, False]  # the keying process is the unkeying one
         captured = capsys.readouterr()
         assert captured.out.splitlines() == ["PTT ON", "PTT OFF"]
@@ -730,12 +731,25 @@ class TestCmdPttHold:
         }
 
     @pytest.mark.asyncio
+    async def test_for_bounds_the_hold_and_exits_zero(self, held, capsys) -> None:
+        rc = await _cmd_ptt(
+            radio := _FakeShippedRadio(), Namespace(state="on", hold_seconds=5.0)
+        )
+
+        assert rc == 0  # the duration ran out; nothing went wrong
+        assert held == [5.0]  # and it is the duration that was asked for
+        assert radio.writes == [True, False]
+        captured = capsys.readouterr()
+        assert captured.out.splitlines() == ["PTT ON", "PTT OFF"]
+        assert "5 s" in captured.err  # the deadline is on screen while it holds
+
+    @pytest.mark.asyncio
     async def test_a_refused_key_never_enters_the_hold(self, held, capsys) -> None:
         # Holding on a key the supervisor refused would block on a rig that is
         # not transmitting, then "release" a lease this session never took.
         radio = _FakeManagedRadio(on=TxOutcome.BUSY)
 
-        rc = await _cmd_ptt(radio, Namespace(state="on"))
+        rc = await _cmd_ptt(radio, Namespace(state="on", hold_seconds=None))
 
         assert rc == 1
         assert held == []
@@ -750,7 +764,7 @@ class TestCmdPttHold:
         # transmitting and the operator has been told the command finished.
         radio = _FakeShippedRadio(unkey_error=OSError("transport gone"))
 
-        rc = await _cmd_ptt(radio, Namespace(state="on"))
+        rc = await _cmd_ptt(radio, Namespace(state="on", hold_seconds=None))
 
         assert rc == 1
         captured = capsys.readouterr()
@@ -765,7 +779,7 @@ class TestCmdPttHold:
         # lease, so a refused release means the rig may still be keyed on it.
         radio = _FakeManagedRadio(off=TxOutcome.STALE)
 
-        rc = await _cmd_ptt(radio, Namespace(state="on"))
+        rc = await _cmd_ptt(radio, Namespace(state="on", hold_seconds=None))
 
         assert rc == 1
         captured = capsys.readouterr()
@@ -788,7 +802,7 @@ class TestCmdPttHold:
 
         radio.set_ptt = _watch  # type: ignore[method-assign]
 
-        assert await _cmd_ptt(radio, Namespace(state="on")) == 130
+        assert await _cmd_ptt(radio, Namespace(state="on", hold_seconds=None)) == 130
         assert during and during[0] is not before  # the hold's, not the default
         assert signal.getsignal(signal.SIGINT) is before  # and restored after
 
@@ -796,22 +810,24 @@ class TestCmdPttHold:
     async def test_the_unkey_runs_when_the_hold_itself_raises(
         self, monkeypatch
     ) -> None:
-        async def _boom(stop: asyncio.Event) -> None:
+        async def _boom(stop: asyncio.Event, seconds: float | None) -> bool:
             raise RuntimeError("hold blew up")
 
         monkeypatch.setattr(cli_module, "_ptt_hold", _boom)
         radio = _FakeShippedRadio()
 
         with pytest.raises(RuntimeError):
-            await _cmd_ptt(radio, Namespace(state="on"))
+            await _cmd_ptt(radio, Namespace(state="on", hold_seconds=None))
 
         assert radio.writes == [True, False]
 
     @pytest.mark.asyncio
-    async def test_the_hold_ends_when_its_event_is_set(self) -> None:
+    async def test_the_hold_distinguishes_its_clock_from_its_event(self) -> None:
         stop = asyncio.Event()
+        assert await _ptt_hold(stop, 0.01) is False  # ran out, nobody asked
         stop.set()
-        await _ptt_hold(stop)  # the real waiter, and it returns
+        assert await _ptt_hold(stop, None) is True  # unbounded, ended by event
+        assert await _ptt_hold(stop, 3600.0) is True  # event beats the clock
 
 
 _PTT_SIGNAL_CHILD = '''\

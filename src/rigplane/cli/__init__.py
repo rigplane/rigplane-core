@@ -12,7 +12,7 @@ Usage:
     rigplane audio loopback [--seconds 10]
     rigplane att [VALUE] [--host HOST] [--user USER] [--pass PASS]
     rigplane preamp [VALUE] [--host HOST] [--user USER] [--pass PASS]
-    rigplane ptt {on,off} [--host HOST] [--user USER] [--pass PASS]
+    rigplane ptt [on|off] [--for SEC] [--host HOST] [--user USER] [--pass PASS]
     rigplane antenna [--ant1 on|off] [--ant2 on|off] [--rx-ant1 on|off] [--rx-ant2 on|off]
     rigplane date [YYYY-MM-DD]
     rigplane time [HH:MM]
@@ -30,6 +30,7 @@ import ipaddress
 import json
 import logging
 from logging.handlers import RotatingFileHandler
+from math import isfinite
 import os
 import signal
 import sys
@@ -508,6 +509,50 @@ def _apply_managed_runtime_defaults(args: argparse.Namespace) -> None:
         args.web_rigctld = True
 
 
+def _ptt_hold_seconds(raw: str) -> float:
+    """Parse ``--for``: a finite, positive number of seconds and nothing else.
+
+    Zero and negatives would key the rig for a hot-switch transient or not at
+    all; ``inf`` and ``nan`` would turn a bounded flag into an unbounded hold.
+    There is deliberately no upper bound: the 180 s key-down watchdog belongs
+    to ``TxSafetySupervisor``, is configurable there, and does not exist at
+    all on the unmanaged path every shipped radio still takes — a second limit
+    invented here would imply a guarantee the CLI cannot make. What bounds
+    this hold is the process, and interrupting it always unkeys.
+    """
+    try:
+        seconds = float(raw)
+    except ValueError:
+        raise argparse.ArgumentTypeError(
+            f"{raw!r} is not a number of seconds"
+        ) from None
+    if not isfinite(seconds) or seconds <= 0:
+        raise argparse.ArgumentTypeError(
+            f"{raw!r} must be a positive, finite number of seconds"
+        )
+    return seconds
+
+
+def _finalize_ptt_args(
+    parser: argparse.ArgumentParser, args: argparse.Namespace
+) -> None:
+    """Settle the ``ptt`` argv shapes a declarative parser cannot express.
+
+    ``ptt --for 5`` implies ``on``; a bare ``ptt`` stays an error so that a
+    truncated command line can never key the rig; and ``ptt off --for 5`` is
+    refused rather than quietly ignored, because ``ptt off`` is the recovery
+    path for a rig some other build left transmitting and must stay immediate.
+    """
+    if getattr(args, "command", None) != "ptt":
+        return
+    if args.state == "off" and args.hold_seconds is not None:
+        parser.error("--for applies to 'ptt on'; 'ptt off' unkeys immediately")
+    if args.state is None:
+        if args.hold_seconds is None:
+            parser.error("ptt needs 'on' or 'off', or --for SEC (which implies 'on')")
+        args.state = "on"
+
+
 def _build_parser() -> argparse.ArgumentParser:
     p = _RigplaneArgumentParser(
         prog="rigplane",
@@ -918,8 +963,17 @@ def _build_parser() -> argparse.ArgumentParser:
     ptt_p = sub.add_parser("ptt", help="PTT control")
     ptt_p.add_argument(
         "state",
+        nargs="?",
         choices=["on", "off"],
-        help="PTT state",
+        help="PTT state ('on' is implied by --for)",
+    )
+    ptt_p.add_argument(
+        "--for",
+        dest="hold_seconds",
+        type=_ptt_hold_seconds,
+        default=None,
+        metavar="SEC",
+        help="Transmit for SEC seconds, then unkey (default: until interrupted)",
     )
 
     # cw
@@ -2737,9 +2791,16 @@ _PTT_HOLD_SIGNALS: tuple[signal.Signals, ...] = tuple(
 )
 
 
-async def _ptt_hold(stop: asyncio.Event) -> None:
-    """Wait until a signal ends the hold."""
-    await stop.wait()
+async def _ptt_hold(stop: asyncio.Event, seconds: float | None) -> bool:
+    """Wait out the hold; ``True`` when ``stop`` ended it rather than the clock."""
+    if seconds is None:
+        await stop.wait()
+        return True
+    try:
+        await asyncio.wait_for(stop.wait(), timeout=seconds)
+    except TimeoutError:
+        return False
+    return True
 
 
 async def _ptt_release(radio: Radio, managed: ManagedTxApi | None) -> str | None:
@@ -2759,7 +2820,9 @@ async def _ptt_release(radio: Radio, managed: ManagedTxApi | None) -> str | None
     return f"managed TX refused this session's release ({transition.outcome})"
 
 
-async def _hold_ptt(radio: Radio, managed: ManagedTxApi | None) -> int:
+async def _hold_ptt(
+    radio: Radio, managed: ManagedTxApi | None, seconds: float | None
+) -> int:
     """Hold the key for as long as this command runs, then unkey (MOR-1184).
 
     The signals are handled here rather than left to ``main()``: its
@@ -2779,9 +2842,14 @@ async def _hold_ptt(radio: Radio, managed: ManagedTxApi | None) -> int:
     restore = [(sig, signal.getsignal(sig)) for sig in _PTT_HOLD_SIGNALS]
     for sig in _PTT_HOLD_SIGNALS:
         signal.signal(sig, _wake)
-    print("Transmitting — press Ctrl-C to unkey.", file=sys.stderr)
+    print(
+        "Transmitting — press Ctrl-C to unkey."
+        if seconds is None
+        else f"Transmitting for {seconds:g} s — press Ctrl-C to unkey early.",
+        file=sys.stderr,
+    )
     try:
-        await _ptt_hold(stop)
+        interrupted = await _ptt_hold(stop, seconds)
     finally:
         # Every exit path, including an exception out of the hold.
         failure = await _ptt_release(radio, managed)
@@ -2793,7 +2861,7 @@ async def _hold_ptt(radio: Radio, managed: ManagedTxApi | None) -> int:
         )
         return 1
     print("PTT OFF")
-    return 130  # 128 + SIGINT: only a signal ends the hold
+    return 130 if interrupted else 0  # 128 + SIGINT, or a duration that ran out
 
 
 async def _cmd_ptt(radio: Radio, args: argparse.Namespace) -> int:
@@ -2801,8 +2869,8 @@ async def _cmd_ptt(radio: Radio, args: argparse.Namespace) -> int:
 
     Radios without a managed runtime keep the legacy direct provider write; the
     supervisor reports refusal by return value, so both directions inspect it.
-    ``ptt on`` then holds the key until it is interrupted, so the process that
-    took the lease is the process that releases it.
+    ``ptt on`` then holds the key until it is interrupted or ``--for`` runs out,
+    so the process that took the lease is the process that releases it.
     """
     on = args.state == "on"
     managed = ManagedTxApi.bind(radio, _CLI_TX_OWNER)
@@ -2831,7 +2899,7 @@ async def _cmd_ptt(radio: Radio, args: argparse.Namespace) -> int:
     print(f"PTT {'ON' if on else 'OFF'}")
     if not on:
         return 0
-    return await _hold_ptt(radio, managed)
+    return await _hold_ptt(radio, managed, args.hold_seconds)
 
 
 async def _cmd_cw(radio: Radio, args: argparse.Namespace) -> int:
@@ -3775,6 +3843,7 @@ def main() -> None:
 
     parser = _build_parser()
     args = parser.parse_args()
+    _finalize_ptt_args(parser, args)
 
     # Enable debug logging with ICOM_DEBUG=1 or any truthy value
     # ICOM_LOG_FILE=/path/to/file.log — log to file (default: platform cache logs)
