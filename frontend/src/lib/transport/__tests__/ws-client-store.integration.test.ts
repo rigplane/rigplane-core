@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import type { ReceiverState, ServerState } from '../../types/state';
+import { MockWebSocket, instances } from './support/fake-ws-backend';
 
 // ─── End-to-end fidelity test: REAL ws-client → REAL radio.svelte store ──────
 //
@@ -28,50 +29,6 @@ type ServerStateWithObservation = ServerState & {
   publicStateSeq?: number;
   fieldStatus?: Record<string, unknown>;
 };
-
-// ─── Minimal WebSocket mock (shapes copied from ws-client.test.ts) ───────────
-
-class MockWebSocket {
-  static CONNECTING = 0;
-  static OPEN = 1;
-  static CLOSING = 2;
-  static CLOSED = 3;
-
-  readyState = MockWebSocket.CONNECTING;
-  binaryType = 'blob';
-  url: string;
-  sent: string[] = [];
-
-  onopen: (() => void) | null = null;
-  onmessage: ((e: MessageEvent) => void) | null = null;
-  onclose: (() => void) | null = null;
-  onerror: (() => void) | null = null;
-
-  constructor(url: string) {
-    this.url = url;
-    instances.push(this);
-  }
-
-  send(data: string) {
-    this.sent.push(data);
-  }
-
-  close() {
-    this.readyState = MockWebSocket.CLOSED;
-    this.onclose?.();
-  }
-
-  simulateOpen() {
-    this.readyState = MockWebSocket.OPEN;
-    this.onopen?.();
-  }
-
-  simulateMessage(data: string | ArrayBuffer) {
-    this.onmessage?.({ data } as MessageEvent);
-  }
-}
-
-const instances: MockWebSocket[] = [];
 
 // ─── Envelope/state fixtures (shapes copied from ws-client.test.ts) ──────────
 

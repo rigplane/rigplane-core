@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import type { WsCommand, WsMessage } from '../../types/protocol';
 import type { ReceiverState, ServerState } from '../../types/state';
 import type { CommandDeliveryEvent, ControlSessionTransition } from '../ws-client';
+import { MockWebSocket, instances } from './support/fake-ws-backend';
 
 type ServerStateWithObservation = ServerState & {
   observationSeq?: number;
@@ -94,58 +95,6 @@ beforeEach(() => {
 
 // ─── Minimal WebSocket mock ──────────────────────────────────────────────────
 type WsEventName = 'open' | 'message' | 'close' | 'error';
-
-class MockWebSocket {
-  static CONNECTING = 0;
-  static OPEN = 1;
-  static CLOSING = 2;
-  static CLOSED = 3;
-
-  readyState = MockWebSocket.CONNECTING;
-  binaryType = 'blob';
-  url: string;
-  sent: string[] = [];
-
-  onopen: (() => void) | null = null;
-  onmessage: ((e: MessageEvent) => void) | null = null;
-  onclose: (() => void) | null = null;
-  onerror: (() => void) | null = null;
-
-  constructor(url: string) {
-    this.url = url;
-    instances.push(this);
-  }
-
-  send(data: string) {
-    this.sent.push(data);
-  }
-
-  close() {
-    this.readyState = MockWebSocket.CLOSED;
-    this.onclose?.();
-  }
-
-  // Test helpers
-  simulateOpen() {
-    this.readyState = MockWebSocket.OPEN;
-    this.onopen?.();
-  }
-
-  simulateMessage(data: string | ArrayBuffer) {
-    this.onmessage?.({ data } as MessageEvent);
-  }
-
-  simulateClose() {
-    this.readyState = MockWebSocket.CLOSED;
-    this.onclose?.();
-  }
-
-  simulateError() {
-    this.onerror?.();
-  }
-}
-
-const instances: MockWebSocket[] = [];
 
 function makeReceiver(overrides: Partial<ReceiverState> = {}): ReceiverState {
   return {
