@@ -174,6 +174,16 @@ _RADIO_MODEL_UNSPECIFIED = "unspecified"
 _MAX_POST_BODY = 256 * 1024  # 256 KiB — hard ceiling for all POST body reads
 _MAX_COMMAND_BATCH_STEPS = 128
 _COMMAND_BATCH_STEP_TIMEOUT = 10.0
+# Ceiling on the managed TX rebind that fronts recovery, derived from what the
+# rebind actually costs: one provider retirement (a transport disconnect) plus
+# one serviced effect chain — the durable OFF write and the authoritative PTT
+# read confirming it, that read itself capped by ``_civ_get_timeout``, at most
+# 2.0s.  ``ManagedRadioRuntime`` budgets 3.0s for the effect chain alone at
+# shutdown, so 5.0s is that budget plus room for the retirement it excludes.
+# Past it the link is not slow, it is gone: the OFF is abandoned exactly as a
+# refused one is, stays pending in the supervisor for the next reconnect to
+# re-arm, and recovery goes on and reopens the scope gate it would have shut.
+_MANAGED_TX_REBIND_TIMEOUT = 5.0
 _CIV_TRANSACTION_BATCH_STEP_TYPE = "raw_civ_transaction"
 _CIV_TRANSACTION_BATCH_STEP_KEYS = frozenset(
     {"type", "id", "command", "sub", "data", "expect", "timeout_ms"}
@@ -767,6 +777,17 @@ class ConnectionManager:
         return dead
 
 
+def _log_late_managed_tx_rebind(task: "asyncio.Task[Any]") -> None:
+    """Report a rebind that failed after recovery stopped waiting on it.
+
+    Attached only once the wait has timed out, so it never double-reports a
+    failure the awaiting side already logged; without it the outcome is never
+    retrieved and asyncio reports it as an unhandled task exception instead.
+    """
+    if not task.cancelled() and (error := task.exception()) is not None:
+        logger.warning("reconnect: managed TX rebind failed late", exc_info=error)
+
+
 class WebServer:
     """Asyncio HTTP + WebSocket server for the rigplane Web UI.
 
@@ -911,6 +932,8 @@ class WebServer:
         self._scope_reenable_timeout: float = 30.0
         # prevent GC of fire-and-forget tasks
         self._bg_tasks: set[asyncio.Task[Any]] = set()
+        # Serialises the managed TX rebind; see _service_managed_tx_release.
+        self._managed_tx_rebind_lock: asyncio.Lock = asyncio.Lock()
         self._scope_health_max_retries: int = 3  # give up after N failed re-enables
         # Band plan registry
         from .band_plan import BandPlanRegistry  # noqa: TID251
@@ -1796,16 +1819,62 @@ class WebServer:
         exactly — no backend assembles a managed runtime until MOR-1016.
         """
         supervisor = getattr(self._radio, "managed_tx", None)
+        if supervisor is None:
+            return
         rebind = getattr(supervisor, "replace_provider", None)
         if rebind is None:
+            # ``ManagedTxSupervisor`` declares ``request_on``/``release_owner``
+            # only, so a facade satisfying exactly that protocol lands here.
+            # Returning through the unmanaged branch would leave a keyed rig
+            # keyed with nothing logged; "unmanaged" is a positive
+            # determination, never a fallback from a failure to look.
+            logger.warning(
+                "reconnect: managed TX supervisor %s exposes no replace_provider; "
+                "an armed durable OFF cannot be re-armed and the rig may stay keyed",
+                type(supervisor).__name__,
+            )
             return
-        try:
-            await rebind(ready=True)
-        except Exception:
-            # A release that cannot be serviced stays pending in the supervisor
-            # and is re-armed by the next reconnect; blocking recovery on it
-            # would only keep the link that has to carry the OFF down.
-            logger.warning("reconnect: managed TX release failed", exc_info=True)
+        # The rebind runs as its own task and is awaited through a shield
+        # because it is not cancellable: ``ManagedRadioRuntime._await_retirement``
+        # re-awaits a shielded retirement in a loop that absorbs cancellation,
+        # so a plain ``wait_for`` would itself hang where the bound is needed.
+        # Timing out therefore abandons the wait, not the rebind, which is what
+        # lets the refetch and the readiness signal below it proceed.
+        # Serialised, because two overlapping reconnects otherwise let the
+        # second advance the provider generation while the first is still
+        # servicing its transition: the first pass's OFF is superseded and its
+        # refetch reaches a rig that is still keyed.  The lock is taken here,
+        # below the unmanaged guard and around the rebind alone, rather than
+        # around the recovery pass — a pass also refetches, unbounded, and a
+        # lock held across that would queue every later pass behind a stall
+        # the ``finally`` below has not reached yet, leaving the scope gate
+        # shut for good.  Here the only await it covers is bounded, and no
+        # unmanaged radio ever reaches it.
+        async with self._managed_tx_rebind_lock:
+            rebind_task: asyncio.Task[Any] | None = None
+            try:
+                # Starting the rebind is inside the guard because it is backend
+                # code: resolving the coroutine and handing it to ``create_task``
+                # can each fail, and this helper runs above the ``finally`` that
+                # signals readiness, so an escape here shuts the scope gate.
+                rebind_task = self._spawn(rebind(ready=True))
+                await asyncio.wait_for(
+                    asyncio.shield(rebind_task), _MANAGED_TX_REBIND_TIMEOUT
+                )
+            except TimeoutError:
+                if rebind_task is not None:  # a sync ``OSError`` from ``rebind``
+                    rebind_task.add_done_callback(_log_late_managed_tx_rebind)
+                logger.warning(
+                    "reconnect: managed TX rebind still running after %.1fs; "
+                    "continuing recovery with the release still pending",
+                    _MANAGED_TX_REBIND_TIMEOUT,
+                )
+            except Exception:
+                # A release that cannot be serviced stays pending in the
+                # supervisor and is re-armed by the next reconnect; blocking
+                # recovery on it would only keep the link that has to carry
+                # the OFF down.
+                logger.warning("reconnect: managed TX release failed", exc_info=True)
 
     def _on_radio_reconnect(self) -> None:
         """Called after soft_reconnect — refetch state and re-enable scope."""
