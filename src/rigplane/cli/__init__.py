@@ -12,7 +12,7 @@ Usage:
     rigplane audio loopback [--seconds 10]
     rigplane att [VALUE] [--host HOST] [--user USER] [--pass PASS]
     rigplane preamp [VALUE] [--host HOST] [--user USER] [--pass PASS]
-    rigplane ptt {on,off} [--host HOST] [--user USER] [--pass PASS]
+    rigplane ptt [on|off] [--for SEC] [--host HOST] [--user USER] [--pass PASS]
     rigplane antenna [--ant1 on|off] [--ant2 on|off] [--rx-ant1 on|off] [--rx-ant2 on|off]
     rigplane date [YYYY-MM-DD]
     rigplane time [HH:MM]
@@ -24,16 +24,18 @@ __all__ = ["main", "check_ports_available"]
 
 import argparse
 import asyncio
-from dataclasses import replace
+from contextlib import contextmanager
+from dataclasses import dataclass, field, replace
 import errno
 import ipaddress
 import json
 import logging
 from logging.handlers import RotatingFileHandler
+from math import isfinite
 import os
 import signal
 import sys
-from collections.abc import Sequence
+from collections.abc import Iterator, Sequence
 from pathlib import Path
 import time
 import uuid
@@ -508,6 +510,50 @@ def _apply_managed_runtime_defaults(args: argparse.Namespace) -> None:
         args.web_rigctld = True
 
 
+def _ptt_hold_seconds(raw: str) -> float:
+    """Parse ``--for``: a finite, positive number of seconds and nothing else.
+
+    Zero and negatives would key the rig for a hot-switch transient or not at
+    all; ``inf`` and ``nan`` would turn a bounded flag into an unbounded hold.
+    There is deliberately no upper bound: the 180 s key-down watchdog belongs
+    to ``TxSafetySupervisor``, is configurable there, and does not exist at
+    all on the unmanaged path every shipped radio still takes — a second limit
+    invented here would imply a guarantee the CLI cannot make. What bounds
+    this hold is the process, and interrupting it always unkeys.
+    """
+    try:
+        seconds = float(raw)
+    except ValueError:
+        raise argparse.ArgumentTypeError(
+            f"{raw!r} is not a number of seconds"
+        ) from None
+    if not isfinite(seconds) or seconds <= 0:
+        raise argparse.ArgumentTypeError(
+            f"{raw!r} must be a positive, finite number of seconds"
+        )
+    return seconds
+
+
+def _finalize_ptt_args(
+    parser: argparse.ArgumentParser, args: argparse.Namespace
+) -> None:
+    """Settle the ``ptt`` argv shapes a declarative parser cannot express.
+
+    ``ptt --for 5`` implies ``on``; a bare ``ptt`` stays an error so that a
+    truncated command line can never key the rig; and ``ptt off --for 5`` is
+    refused rather than quietly ignored, because ``ptt off`` is the recovery
+    path for a rig some other build left transmitting and must stay immediate.
+    """
+    if getattr(args, "command", None) != "ptt":
+        return
+    if args.state == "off" and args.hold_seconds is not None:
+        parser.error("--for applies to 'ptt on'; 'ptt off' unkeys immediately")
+    if args.state is None:
+        if args.hold_seconds is None:
+            parser.error("ptt needs 'on' or 'off', or --for SEC (which implies 'on')")
+        args.state = "on"
+
+
 def _build_parser() -> argparse.ArgumentParser:
     p = _RigplaneArgumentParser(
         prog="rigplane",
@@ -918,8 +964,17 @@ def _build_parser() -> argparse.ArgumentParser:
     ptt_p = sub.add_parser("ptt", help="PTT control")
     ptt_p.add_argument(
         "state",
+        nargs="?",
         choices=["on", "off"],
-        help="PTT state",
+        help="PTT state ('on' is implied by --for)",
+    )
+    ptt_p.add_argument(
+        "--for",
+        dest="hold_seconds",
+        type=_ptt_hold_seconds,
+        default=None,
+        metavar="SEC",
+        help="Transmit for SEC seconds, then unkey (default: until interrupted)",
     )
 
     # cw
@@ -2737,9 +2792,64 @@ _PTT_HOLD_SIGNALS: tuple[signal.Signals, ...] = tuple(
 )
 
 
-async def _ptt_hold(stop: asyncio.Event) -> None:
-    """Wait until a signal ends the hold."""
-    await stop.wait()
+# The hold keeps these signals across the unkey — a second Ctrl-C must not walk
+# away from a transmitting rig — so a release that never returns would leave
+# SIGKILL as the only way out, and SIGKILL unkeys nothing. Five seconds is far
+# longer than a CI-V or managed-TX write takes and still an answer.
+_PTT_RELEASE_TIMEOUT = 5.0
+
+
+@dataclass
+class _PttArm:
+    """What a held transmission is armed with, before it keys (MOR-1199)."""
+
+    stop: asyncio.Event = field(default_factory=asyncio.Event)
+    signum: int | None = None
+
+    @property
+    def exit_code(self) -> int:
+        """128 + the signal that ended the hold — what a shell reports itself."""
+        return 0 if self.signum is None else 128 + self.signum
+
+
+@contextmanager
+def _armed_for_ptt_hold() -> Iterator[_PttArm]:
+    """Own the hold's signals from before the key until after the release.
+
+    Arming ahead of the key is what makes the gap between them survivable: a
+    signal landing in it finds either a rig that never transmitted (the key is
+    skipped) or a hold already in place to unkey it. Restoring only after the
+    release keeps the same guarantee over the unkey.
+    """
+    loop = asyncio.get_running_loop()
+    arm = _PttArm()
+
+    def _wake(signum: int, frame: Any) -> None:
+        # Recorded synchronously: ``stop`` is only set on the loop's next pass,
+        # which is already too late for the check ahead of the key.
+        arm.signum = signum
+        loop.call_soon_threadsafe(arm.stop.set)
+
+    restore = [(sig, signal.getsignal(sig)) for sig in _PTT_HOLD_SIGNALS]
+    for sig in _PTT_HOLD_SIGNALS:
+        signal.signal(sig, _wake)
+    try:
+        yield arm
+    finally:
+        for sig, handler in restore:
+            signal.signal(sig, handler)
+
+
+async def _ptt_hold(arm: _PttArm, seconds: float | None) -> bool:
+    """Wait out the hold; ``True`` when a signal ended it rather than the clock."""
+    if seconds is None:
+        await arm.stop.wait()
+        return True
+    try:
+        await asyncio.wait_for(arm.stop.wait(), timeout=seconds)
+    except TimeoutError:
+        return False
+    return True
 
 
 async def _ptt_release(radio: Radio, managed: ManagedTxApi | None) -> str | None:
@@ -2759,41 +2869,66 @@ async def _ptt_release(radio: Radio, managed: ManagedTxApi | None) -> str | None
     return f"managed TX refused this session's release ({transition.outcome})"
 
 
-async def _hold_ptt(radio: Radio, managed: ManagedTxApi | None) -> int:
-    """Hold the key for as long as this command runs, then unkey (MOR-1184).
+async def _hold_ptt(
+    radio: Radio, managed: ManagedTxApi | None, seconds: float | None, arm: _PttArm
+) -> int:
+    """Key, hold for as long as this command runs, then unkey (MOR-1184).
 
-    The signals are handled here rather than left to ``main()``: its
-    ``KeyboardInterrupt`` path force-exits through ``os._exit`` about a second
-    later, which truncates any unkey still in flight, and it has already fixed
-    the exit code by then, so a failed unkey could be neither awaited nor
-    reported. Owning them keeps the unkey on the ordinary return path. They
-    stay installed across the unkey too — a second Ctrl-C must not walk away
-    from a transmitting rig.
+    Runs inside ``_armed_for_ptt_hold``, which owns the signals rather than
+    leaving them to ``main()``: its ``KeyboardInterrupt`` path force-exits
+    through ``os._exit`` about a second later, which truncates any unkey still
+    in flight, and it has already fixed the exit code by then, so a failed
+    unkey could be neither awaited nor reported. Arming outside this call is
+    what lets the key be skipped when the signal beat it here.
     """
-    loop = asyncio.get_running_loop()
-    stop = asyncio.Event()
-
-    def _wake(signum: int, frame: Any) -> None:
-        loop.call_soon_threadsafe(stop.set)
-
-    restore = [(sig, signal.getsignal(sig)) for sig in _PTT_HOLD_SIGNALS]
-    for sig in _PTT_HOLD_SIGNALS:
-        signal.signal(sig, _wake)
-    print("Transmitting — press Ctrl-C to unkey.", file=sys.stderr)
+    if arm.signum is not None:
+        # Signalled between the arming and the key. A rig that never
+        # transmitted needs no unkey, and keying on the way out of the process
+        # is the one outcome the ordering exists to prevent.
+        return arm.exit_code
+    if managed is None:
+        await radio.set_ptt(True)
+    else:
+        transition = await managed.set_ptt(True)
+        if transition.outcome not in _TX_KEY_ACCEPTED:
+            # Announcing a transmission here would tell the operator the rig
+            # is keyed when the supervisor refused the key.
+            print(
+                f"Error: managed TX refused PTT on ({transition.outcome}).",
+                file=sys.stderr,
+            )
+            return 1
+    # Ordering invariant: both lines announce a rig that is keyed AND a process
+    # that already owns its signals, so neither may move above the arming or
+    # the key. The signal tests use the hint as their handshake — printed
+    # early, it invites a signal the process cannot yet answer with an unkey.
+    print("PTT ON")
+    print(
+        "Transmitting — press Ctrl-C to unkey."
+        if seconds is None
+        else f"Transmitting for {seconds:g} s — press Ctrl-C to unkey early.",
+        file=sys.stderr,
+    )
     try:
-        await _ptt_hold(stop)
+        interrupted = await _ptt_hold(arm, seconds)
     finally:
-        # Every exit path, including an exception out of the hold.
-        failure = await _ptt_release(radio, managed)
-        for sig, handler in restore:
-            signal.signal(sig, handler)
+        # Every exit path, including an exception out of the hold, and bounded
+        # (see ``_PTT_RELEASE_TIMEOUT``) so a stuck release is an answer.
+        try:
+            failure = await asyncio.wait_for(
+                _ptt_release(radio, managed), timeout=_PTT_RELEASE_TIMEOUT
+            )
+        except TimeoutError:
+            failure = f"unkey timed out after {_PTT_RELEASE_TIMEOUT:g} s"
     if failure is not None:
         print(
             f"Error: {failure}; the radio may still be transmitting.", file=sys.stderr
         )
         return 1
     print("PTT OFF")
-    return 130  # 128 + SIGINT: only a signal ends the hold
+    # 130 / 143 / 129 for the signal that ended it, 0 for a duration that ran
+    # out — a caller cannot tell a Ctrl-C from a SIGTERM if both report 130.
+    return arm.exit_code if interrupted else 0
 
 
 async def _cmd_ptt(radio: Radio, args: argparse.Namespace) -> int:
@@ -2801,24 +2936,20 @@ async def _cmd_ptt(radio: Radio, args: argparse.Namespace) -> int:
 
     Radios without a managed runtime keep the legacy direct provider write; the
     supervisor reports refusal by return value, so both directions inspect it.
-    ``ptt on`` then holds the key until it is interrupted, so the process that
-    took the lease is the process that releases it.
+    ``ptt on`` arms its signals, keys, then holds until it is interrupted or
+    ``--for`` runs out, so the process that took the lease is the process that
+    releases it. ``ptt off`` owns no signals and stays immediate: it is the
+    recovery path for a rig some other process left transmitting.
     """
-    on = args.state == "on"
     managed = ManagedTxApi.bind(radio, _CLI_TX_OWNER)
+    if args.state == "on":
+        with _armed_for_ptt_hold() as arm:
+            return await _hold_ptt(radio, managed, args.hold_seconds, arm)
     if managed is None:
-        await radio.set_ptt(on)
+        await radio.set_ptt(False)
     else:
-        transition = await managed.set_ptt(on)
+        transition = await managed.set_ptt(False)
         if transition.outcome not in _TX_KEY_ACCEPTED:
-            if on:
-                # Printing "PTT ON" here would tell the operator the rig is
-                # transmitting when the supervisor refused the key.
-                print(
-                    f"Error: managed TX refused PTT on ({transition.outcome}).",
-                    file=sys.stderr,
-                )
-                return 1
             # A refused release answers STALE, which means either nothing was
             # keyed or another owner holds the lease. Neither is actionable
             # here — a non-owner cannot force a release by design — so report
@@ -2828,10 +2959,8 @@ async def _cmd_ptt(radio: Radio, args: argparse.Namespace) -> int:
                 f"({transition.outcome}); another session may still hold TX.",
                 file=sys.stderr,
             )
-    print(f"PTT {'ON' if on else 'OFF'}")
-    if not on:
-        return 0
-    return await _hold_ptt(radio, managed)
+    print("PTT OFF")
+    return 0
 
 
 async def _cmd_cw(radio: Radio, args: argparse.Namespace) -> int:
@@ -3775,6 +3904,7 @@ def main() -> None:
 
     parser = _build_parser()
     args = parser.parse_args()
+    _finalize_ptt_args(parser, args)
 
     # Enable debug logging with ICOM_DEBUG=1 or any truthy value
     # ICOM_LOG_FILE=/path/to/file.log — log to file (default: platform cache logs)
