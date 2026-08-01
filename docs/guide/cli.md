@@ -480,12 +480,29 @@ rigplane levels
 
 ### `ptt`
 
-Toggle Push-To-Talk.
+Key or unkey the transmitter.
 
 ```bash
 rigplane ptt on
+```
+
+`ptt on` keys the rig and **blocks**, holding the key for as long as the command runs. Press Ctrl-C to unkey and exit; SIGTERM and SIGHUP do the same. The exit code says which one ended the hold — `130` (Ctrl-C / SIGINT), `143` (SIGTERM), `129` (SIGHUP) — while a signal arriving before the key completes skips the key entirely, so the rig never transmits.
+
+For a timed or scripted transmission, use `--for` instead of waiting on a signal:
+
+```bash
+rigplane ptt --for 10
+```
+
+This keys the rig, holds for 10 seconds, then unkeys on its own and exits `0` — `on` is implied by `--for`, so it doesn't need to be written out.
+
+Either way, the unkey on the way out is bounded to 5 seconds. If it fails or hangs past that, the command exits `1` and warns that the radio may still be transmitting.
+
+```bash
 rigplane ptt off
 ```
+
+`ptt off` is unchanged: it unkeys immediately and returns right away. Use it to recover a rig left keyed by a crash, a killed process, or an older rigplane build — it never blocks, so it always gets the chance to run.
 
 !!! danger "Caution"
     Activating PTT will key your transmitter. Ensure your antenna is connected and you are authorized to transmit on the current frequency.

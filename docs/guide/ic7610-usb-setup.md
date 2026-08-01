@@ -177,8 +177,13 @@ rigplane --backend serial freq 7.074m
 # Set mode
 rigplane --backend serial mode USB
 
-# PTT on/off
-rigplane --backend serial ptt on
+# PTT test: key for 3 seconds, then unkey automatically (exits 0)
+rigplane --backend serial ptt --for 3
+
+# rigplane ptt on (no --for) keys and blocks until you press Ctrl-C —
+# use that form instead when you want to hold the key down by hand
+# ptt off unkeys immediately: the recovery command if a crash or an
+# older rigplane build left the rig transmitting
 rigplane --backend serial ptt off
 
 # CW keying
