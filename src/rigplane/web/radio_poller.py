@@ -1431,7 +1431,22 @@ class RadioPoller:
                                 tx_sr,
                             )
                     except Exception as e:
-                        logger.warning("poller: start TX audio failed: %s", e)
+                        # MOR-1178: a failed arm refuses the key. Swallowed, it
+                        # fell through to the write below and keyed a rig whose
+                        # modulation path is dead — an unmodulated carrier the
+                        # operator believes is a transmission — and did so
+                        # before any lease existed to record it. So disarm the
+                        # half-armed leg and refuse, exactly as the two
+                        # refusals below: a refused key leaves no trace on the
+                        # air, and costs one reported, recoverable transmission
+                        # where a silent carrier costs airtime nobody can see.
+                        logger.warning(
+                            "poller: refusing PTT ON: start TX audio failed: %s", e
+                        )
+                        await self._stop_tx_audio_leg()
+                        raise CommandError(
+                            f"TX audio failed to arm, refusing PTT ON: {e}"
+                        ) from e
                 if managed is None:
                     # Binding nothing is two findings, and only one may reach
                     # the raw write: an unmanaged rig (every shipped backend,

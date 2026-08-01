@@ -392,6 +392,12 @@ def mock_radio() -> MagicMock:
     radio.set_filter = AsyncMock()
     radio.set_rf_power = AsyncMock()
     radio.set_ptt = AsyncMock()
+    # This fixture declares ``audio``, so the poller arms the TX leg before
+    # every key. Bare ``MagicMock`` attributes are not awaitable, which the arm
+    # read as a failed TX-audio arm — harmless while that failure was swallowed,
+    # and a refused key once it stopped being (MOR-1178).
+    radio.start_tx = AsyncMock()
+    radio.stop_tx = AsyncMock()
     radio.set_rf_gain = AsyncMock()
     radio.set_af_level = AsyncMock()
     radio.set_attenuator_level = AsyncMock()
