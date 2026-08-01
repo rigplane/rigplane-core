@@ -563,6 +563,205 @@ def test_unqualified_release_rejects_untrusted_reason(
         supervisor.emergency_release(reason=reason)
 
 
+@pytest.mark.parametrize(
+    "reason",
+    [
+        TxReleaseReason.OPERATOR_RELEASE,
+        TxReleaseReason.SOURCE_DETACHED,
+        TxReleaseReason.PRESENTATION_REPLACED,
+        TxReleaseReason.CLIENT_DISCONNECTED,
+        TxReleaseReason.FRONTEND_SAFETY_TIMEOUT,
+    ],
+)
+def test_forced_unkey_rejects_untrusted_reason(
+    supervisor: TxSafetySupervisor,
+    clock: Clock,
+    owner: TxOwner,
+    reason: TxReleaseReason,
+) -> None:
+    supervisor.replace_provider(1, ready=True)
+    observe(supervisor, clock, RadioTx.ON)
+    with pytest.raises(ValueError):
+        supervisor.force_unkey(owner, reason=reason)
+    assert supervisor.snapshot.lease_id is None
+
+
+def test_unqualified_release_still_rejects_the_forced_unkey_reason(
+    supervisor: TxSafetySupervisor, clock: Clock, owner: TxOwner
+) -> None:
+    acquire(supervisor, clock, owner)
+    with pytest.raises(ValueError):
+        supervisor.emergency_release(reason=TxReleaseReason.OPERATOR_FORCED_UNKEY)
+
+
+def test_forced_unkey_during_a_release_keeps_its_terminal_reason(
+    supervisor: TxSafetySupervisor,
+    clock: Clock,
+    owner: TxOwner,
+    other: TxOwner,
+) -> None:
+    lease, _ = acquire(supervisor, clock, owner)
+    supervisor.request_off(owner, lease, reason=TxReleaseReason.CLIENT_DISCONNECTED)
+    before = supervisor.snapshot
+    result = supervisor.force_unkey(other, reason=TxReleaseReason.OPERATOR_FORCED_UNKEY)
+    assert result.outcome is TxOutcome.IDEMPOTENT
+    assert result.effects == ()
+    assert result.snapshot == before
+    assert (
+        result.snapshot.terminal_release_reason is TxReleaseReason.CLIENT_DISCONNECTED
+    )
+
+
+@pytest.mark.parametrize("holder", ["same-owner", "foreign-owner"])
+def test_forced_unkey_never_preempts_a_live_lease(
+    supervisor: TxSafetySupervisor,
+    clock: Clock,
+    owner: TxOwner,
+    other: TxOwner,
+    holder: str,
+) -> None:
+    lease, on = acquire(supervisor, clock, owner)
+    read = settle_on(supervisor, on)
+    supervisor.settle_attempt(read.id, 1, succeeded=True)
+    clock.advance(0.01)
+    observe(supervisor, clock, RadioTx.ON, sequence=2)
+    before = supervisor.snapshot
+    assert before.phase is TxPhase.KEYED
+    assert before.active_attempt is None
+    result = supervisor.force_unkey(
+        owner if holder == "same-owner" else other,
+        reason=TxReleaseReason.OPERATOR_FORCED_UNKEY,
+    )
+    assert result.outcome is TxOutcome.BUSY
+    assert result.effects == ()
+    assert result.snapshot == before
+    assert result.snapshot.lease_id == lease
+
+
+def test_forced_unkey_is_busy_while_the_attempt_lane_settles(
+    supervisor: TxSafetySupervisor, clock: Clock, owner: TxOwner
+) -> None:
+    lease, active = acquire(supervisor, clock, owner)
+    supervisor.request_off(owner, lease)
+    clock.advance(0.01)
+    cleared = observe(supervisor, clock, RadioTx.OFF, sequence=2)
+    assert cleared.snapshot.lease_id is None
+    assert cleared.snapshot.active_attempt == active
+    result = supervisor.force_unkey(owner, reason=TxReleaseReason.OPERATOR_FORCED_UNKEY)
+    assert result.outcome is TxOutcome.BUSY
+    assert result.effects == ()
+    assert result.snapshot.lease_id is None
+
+
+@pytest.mark.parametrize(
+    "generation", [None, 1], ids=["no-generation", "provider-not-ready"]
+)
+def test_forced_unkey_mints_no_lease_without_a_ready_provider(
+    supervisor: TxSafetySupervisor, owner: TxOwner, generation: int | None
+) -> None:
+    if generation is not None:
+        supervisor.replace_provider(generation, ready=False)
+    result = supervisor.force_unkey(owner, reason=TxReleaseReason.OPERATOR_FORCED_UNKEY)
+    assert result.outcome is TxOutcome.NOT_READY
+    assert result.effects == ()
+    assert result.snapshot.lease_id is None
+    assert supervisor.snapshot.lease_id is None
+
+
+@pytest.mark.parametrize(
+    "reason",
+    [TxReleaseReason.OPERATOR_FORCED_UNKEY, TxReleaseReason.ADMIN_EMERGENCY_STOP],
+    ids=["operator-forced", "trusted-system"],
+)
+def test_forced_unkey_adopts_an_external_unowned_key(
+    supervisor: TxSafetySupervisor,
+    clock: Clock,
+    owner: TxOwner,
+    reason: TxReleaseReason,
+) -> None:
+    supervisor.replace_provider(1, ready=True)
+    observe(supervisor, clock, RadioTx.ON)
+    assert supervisor.snapshot.phase is TxPhase.EXTERNAL_UNOWNED
+    result = supervisor.force_unkey(owner, reason=reason)
+    assert result.outcome is TxOutcome.ACCEPTED
+    assert len(result.effects) == 1
+    off = result.effects[0]
+    assert isinstance(off, ProviderAttempt)
+    assert off.kind is ProviderAttemptKind.WRITE_OFF
+    assert result.snapshot.lease_id == off.lease_id
+    assert result.snapshot.owner == owner
+    assert result.snapshot.release_reason is reason
+    assert result.snapshot.terminal_release_reason is reason
+    assert result.snapshot.phase is TxPhase.RELEASE_REQUIRED
+    assert result.snapshot.watchdog_deadline_monotonic is None
+    assert not result.snapshot.external_conflict
+    assert supervisor._acquisition is None
+
+
+def test_forced_unkey_adopts_an_idle_radio_that_reads_off(
+    supervisor: TxSafetySupervisor, clock: Clock, owner: TxOwner
+) -> None:
+    ready_off(supervisor, clock)
+    assert supervisor.snapshot.phase is TxPhase.IDLE
+    assert supervisor.snapshot.radio_tx is RadioTx.OFF
+    result = supervisor.force_unkey(owner, reason=TxReleaseReason.OPERATOR_FORCED_UNKEY)
+    assert result.outcome is TxOutcome.ACCEPTED
+    assert [effect.kind for effect in result.effects] == [ProviderAttemptKind.WRITE_OFF]
+    assert result.snapshot.watchdog_deadline_monotonic is None
+    assert supervisor._acquisition is None
+
+
+def test_a_supervisor_that_has_never_observed_anything_still_forces_an_off(
+    supervisor: TxSafetySupervisor, owner: TxOwner
+) -> None:
+    supervisor.replace_provider(1, ready=True)
+    assert supervisor.snapshot.radio_tx is RadioTx.UNKNOWN
+    assert supervisor.snapshot.phase is TxPhase.IDLE
+    result = supervisor.force_unkey(owner, reason=TxReleaseReason.OPERATOR_FORCED_UNKEY)
+    assert result.outcome is TxOutcome.ACCEPTED
+    assert len(result.effects) == 1
+    off = result.effects[0]
+    assert isinstance(off, ProviderAttempt)
+    assert off.kind is ProviderAttemptKind.WRITE_OFF
+    assert result.snapshot.watchdog_deadline_monotonic is None
+    assert not result.snapshot.external_conflict
+
+
+def test_forced_unkey_uses_one_clock_instant(owner: TxOwner) -> None:
+    clock = AdvancingClock()
+    generated = ids()
+    supervisor = TxSafetySupervisor(clock=clock, id_factory=lambda: next(generated))
+    supervisor.replace_provider(1, ready=True)
+    before, instant = clock.calls, clock.now
+    result = supervisor.force_unkey(owner, reason=TxReleaseReason.OPERATOR_FORCED_UNKEY)
+    assert clock.calls == before + 1
+    off = result.effects[0]
+    assert isinstance(off, ProviderAttempt)
+    assert off.started_at_monotonic == instant
+    assert result.snapshot.watchdog_deadline_monotonic is None
+
+
+def test_the_adopted_lease_self_clears_on_the_confirming_off(
+    supervisor: TxSafetySupervisor, clock: Clock, owner: TxOwner
+) -> None:
+    supervisor.replace_provider(1, ready=True)
+    observe(supervisor, clock, RadioTx.ON)
+    off = supervisor.force_unkey(
+        owner, reason=TxReleaseReason.OPERATOR_FORCED_UNKEY
+    ).effects[0]
+    read = supervisor.settle_attempt(off.id, 1, succeeded=True).effects[0]
+    assert read.kind is ProviderAttemptKind.READ_PTT
+    clock.advance(0.01)
+    cleared = observe(supervisor, clock, RadioTx.OFF, sequence=2)
+    assert cleared.snapshot.phase is TxPhase.IDLE
+    assert cleared.snapshot.lease_id is None
+    assert cleared.snapshot.owner is None
+    assert cleared.snapshot.release_reason is None
+    assert cleared.snapshot.terminal_release_reason is None
+    assert cleared.snapshot.release_attempt_count == 0
+    assert cleared.snapshot.watchdog_deadline_monotonic is None
+
+
 def test_acquisition_uses_one_clock_instant(owner: TxOwner) -> None:
     clock = AdvancingClock()
     generated = ids()
