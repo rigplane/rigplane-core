@@ -101,6 +101,8 @@ __all__ = [
     "ManagedTxSupervisor",
     "MetersCapable",
     "PowerControlCapable",
+    "PrivilegedTxApi",
+    "PrivilegedTxSupervisor",
     "RigctldFallbackCache",
     "RigctldRoutable",
     "RigctldRoutingStrategy",
@@ -559,6 +561,13 @@ class ManagedTxCapable(Protocol):
     independently (MOR-1187, MOR-1193, MOR-1196).  Bind through
     :meth:`ManagedTxApi.bind` wherever an owner identity is in hand; where one
     is not, repeat its two-step read rather than collapsing it to a ``getattr``.
+
+    The published supervisor MAY additionally satisfy
+    :class:`PrivilegedTxSupervisor` — a managed runtime does, publishing
+    ``force_unkey`` alongside ``request_on``/``release_owner`` — but
+    :class:`ManagedTxSupervisor` remains the guaranteed minimum every managed
+    backend publishes.  Ordinary ingress binds :class:`ManagedTxApi` and never
+    sees the extra surface; only :meth:`PrivilegedTxApi.bind` looks for it.
     """
 
     @property
@@ -606,6 +615,95 @@ class ManagedTxApi:
         if on:
             return await self.supervisor.request_on(self.owner)
         return await self.supervisor.release_owner(self.owner, reason=reason)
+
+
+@runtime_checkable
+class PrivilegedTxSupervisor(Protocol):
+    """Force-unkey surface of a radio's managed TX runtime.
+
+    Deliberately NOT a member of :class:`ManagedTxSupervisor`. Every ingress —
+    Web, the SDK, the CLI — binds through :class:`ManagedTxApi`, whose
+    ``supervisor`` is typed as :class:`ManagedTxSupervisor`; adding
+    ``force_unkey`` there would hand force semantics to all of them,
+    including two that must never get it. rigctld's executor issues a plain
+    housekeeping ``set_ptt(False)`` between overs with no :class:`TxOwner`
+    behind it — an implicit force there would let ordinary release traffic
+    escalate into adopting someone else's lease. The SDK is automation-shaped
+    with no operator attached to a session either; an author who actually
+    wants force names :class:`PrivilegedTxApi` explicitly rather than
+    inheriting it silently from the ordinary managed path. Splitting the two
+    protocols is what keeps :class:`ManagedTxSupervisor` the guaranteed
+    minimum every managed backend publishes, while force stays reachable only
+    to the one facade that asks for it by name.
+    """
+
+    async def force_unkey(
+        self, owner: TxOwner, *, reason: TxReleaseReason
+    ) -> TxTransition:
+        """Adopt an unowned/idle key and drive a durable release for it."""
+        ...
+
+
+@dataclass(frozen=True, slots=True)
+class PrivilegedTxApi:
+    """One force-unkey facade bound to one stable ingress identity.
+
+    Distinct from :class:`ManagedTxApi`: it does not publish or read a second
+    attribute on the radio, it re-reads the same ``managed_tx`` member and
+    additionally probes the supervisor object it finds for ``force_unkey``. A
+    supervisor satisfying only :class:`ManagedTxSupervisor`
+    (``request_on``/``release_owner``, nothing else) binds ``ManagedTxApi``
+    but not this one — ``bind`` answers ``None``, a positive finding that the
+    backend publishes no privileged surface, not a failure to resolve one.
+    """
+
+    supervisor: PrivilegedTxSupervisor
+    owner: TxOwner
+
+    @staticmethod
+    def bind(radio: object, owner: TxOwner) -> PrivilegedTxApi | None:
+        """Bind ``owner`` to ``radio``'s privileged surface; ``None`` when absent.
+
+        Two reads, two different failure disciplines, mirroring
+        :meth:`ManagedTxApi.bind`.
+
+        The first is the same ``managed_tx`` *property* that facade reads:
+        ``getattr_static`` settles absence — no such member, or a backend
+        that publishes ``None`` — without running the accessor, so the one
+        explicit property read below is the only backend code this touches
+        and its failures propagate. A raising ``managed_tx`` is a broken
+        accessor, not "no privileged surface"; swallowing it here would
+        repeat the bug :class:`ManagedTxCapable` documents (MOR-1187,
+        MOR-1193, MOR-1196) one layer up.
+
+        The second is a plain ``getattr`` shape-probe for ``force_unkey`` — a
+        coroutine *method*, not a property, so the probe runs no accessor
+        body at all (precedent: the ``replace_provider`` probe in
+        ``web/server.py``'s ``_service_managed_tx_release``). A supervisor
+        with no ``force_unkey`` answers ``None`` here — a positive finding,
+        never a fallback from a failed read.
+        """
+        if getattr_static(radio, "managed_tx", None) is None:
+            return None  # no such member, or a backend that publishes none
+        supervisor = cast(ManagedTxCapable, radio).managed_tx
+        if supervisor is None:
+            return None  # backend publishes the member but no supervisor
+        if getattr(supervisor, "force_unkey", None) is None:
+            return None  # exactly ManagedTxSupervisor; no privileged surface
+        return PrivilegedTxApi(cast(PrivilegedTxSupervisor, supervisor), owner)
+
+    async def force_unkey(self) -> TxTransition:
+        """Force-unkey ``owner``'s target, hardcoded to the operator reason.
+
+        Takes no parameters: :attr:`TxReleaseReason.OPERATOR_FORCED_UNKEY` is
+        the only reason this may ever carry. A caller-supplied ``reason``
+        would let any holder of this facade launder a system-attributed
+        release through the one path meant for an operator reaching for the
+        kill switch.
+        """
+        return await self.supervisor.force_unkey(
+            self.owner, reason=TxReleaseReason.OPERATOR_FORCED_UNKEY
+        )
 
 
 @runtime_checkable
