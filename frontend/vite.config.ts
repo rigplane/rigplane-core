@@ -136,6 +136,11 @@ export default defineConfig({
             'src/lib/media/__tests__/media-session.test.ts',
             'src/lib/radio/mode-filter-memory.test.ts',
             'src/lib/transport/__tests__/ws-client.test.ts',
+            // module-scope vi.mock of the same $lib/stores/*, tx-adapter, and
+            // ws-client specifiers as several files above — same isolate:false
+            // leak risk, routed to the isolated pool below. See #771.
+            'src/lib/runtime/tx-controller/__tests__/browser-dependencies.test.ts',
+            'src/lib/runtime/tx-controller/__tests__/browser-dependencies-fault-injection.test.ts',
           ],
           pool: 'threads',
           isolate: false,
@@ -192,6 +197,8 @@ export default defineConfig({
             'src/lib/media/__tests__/media-session.test.ts',
             'src/lib/radio/mode-filter-memory.test.ts',
             'src/lib/transport/__tests__/ws-client.test.ts',
+            'src/lib/runtime/tx-controller/__tests__/browser-dependencies.test.ts',
+            'src/lib/runtime/tx-controller/__tests__/browser-dependencies-fault-injection.test.ts',
           ],
           pool: 'threads',
           isolate: true,
