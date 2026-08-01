@@ -961,12 +961,19 @@ def _build_parser() -> argparse.ArgumentParser:
     )
 
     # ptt
-    ptt_p = sub.add_parser("ptt", help="PTT control")
+    ptt_p = sub.add_parser(
+        "ptt",
+        help="PTT control ('on' holds until interrupted; 'off' is immediate)",
+    )
     ptt_p.add_argument(
         "state",
         nargs="?",
         choices=["on", "off"],
-        help="PTT state ('on' is implied by --for)",
+        help=(
+            "'on' keys the rig and holds until Ctrl-C/SIGTERM/SIGHUP or --for "
+            "expires; 'off' unkeys immediately and recovers a rig left keyed "
+            "('on' is implied by --for)"
+        ),
     )
     ptt_p.add_argument(
         "--for",
