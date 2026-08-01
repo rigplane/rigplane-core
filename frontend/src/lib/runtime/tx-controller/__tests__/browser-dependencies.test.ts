@@ -22,6 +22,7 @@ vi.mock('$lib/transport/ws-client', () => ({
   },
 }));
 import { createBrowserTxControllerDependencies } from '../browser-dependencies';
+import { TxController } from '../controller';
 const field = (at: number) => ({ observed: true, freshness: 'fresh', availability: 'available', lastObservedMonotonic: at, source: { source: 'poll_response' } });
 const target = { receiver: 'SUB' as const, slot: 'B' as const, frequencyHz: 150 };
 const correlation = { leaseId: 'lease', generation: 1, originalEpoch: 4, target };
@@ -100,5 +101,36 @@ describe('browser TxController dependencies', () => {
       expect(off.at(-1)).toEqual({ outcome, eventEpoch: 6, barrier: null });
     }
     factory.dispose(); expect(h.deliveries.size).toBe(0);
+  });
+  it('supersedes a real off-confirmation timeout: the stale delivery is a no-op, the rearmed one resolves for real', async () => {
+    const factory = createBrowserTxControllerDependencies();
+    const baseline = factory.projectAuthority({ state: 'connected', epoch: 4 });
+    const controller = new TxController(baseline.epoch, baseline.ptt.marker, factory.dependencies);
+    h.send.mockImplementation((name, _params, id) => { if (name === 'ptt_on') emit({ commandId: id!, kind: 'transport-sent', originalEpoch: 4, eventEpoch: 4 }); return true; });
+    h.radio = { ...h.radio, fieldStatus: { ...h.radio.fieldStatus, ptt: field(2) } };
+    const started = factory.projectAuthority({ state: 'connected', epoch: 4 });
+    controller.dispatch({ type: 'start', sourceId: 'test', leaseId: 'lease-stale', intent: 'momentary', eligibility: started.eligibility, ptt: started.ptt });
+    await Promise.resolve(); await Promise.resolve();
+    expect(controller.snapshot().phase).toBe('key-confirm-pending');
+    // Release arms a REAL off-confirmation setTimeout (deadline t+5000).
+    controller.dispatch({ type: 'release', guard: controller.snapshot().guard!, commandId: 'off-release' });
+    const staleRevision = controller.snapshot().timerRevision.off;
+    expect(controller.snapshot().phase).toBe('releasing');
+    vi.advanceTimersByTime(100);
+    // The OFF delivery arrives and rearms a SECOND real off-confirmation timer
+    // (deadline (t+100)+5000) via bindOff — the FIRST real setTimeout is never
+    // explicitly cancelled and keeps ticking toward its own, now-stale, deadline.
+    emit({ commandId: 'off-release', kind: 'transport-sent', originalEpoch: 4, eventEpoch: 4 });
+    expect(controller.snapshot().timerRevision.off).toBe(staleRevision + 1);
+    expect(controller.snapshot().pendingOff?.deliveryEpoch).toBe(4);
+    // Advance past the STALE timer's real deadline (t=5000) but short of the
+    // rearmed one's (t=5100): its timer-fired dispatch must be a no-op.
+    vi.advanceTimersByTime(4_950);
+    expect(controller.snapshot()).toMatchObject({ phase: 'releasing', fault: null });
+    expect(controller.snapshot().pendingOff?.deliveryEpoch).toBe(4);
+    // Now the rearmed timer's own real deadline (t=5100) is crossed and its
+    // matching-revision dispatch is the one that legitimately resolves release.
+    vi.advanceTimersByTime(100);
+    expect(controller.snapshot()).toMatchObject({ phase: 'failed', fault: 'release-not-confirmed' });
   });
 });
