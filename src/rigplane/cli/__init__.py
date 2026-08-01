@@ -101,7 +101,11 @@ from rigplane.cli._convert import (  # noqa: E402
     add_subparser as _add_convert_subparser,
     run as _run_convert,
 )
-from rigplane.core.radio_protocol import ManagedTxApi, Radio  # noqa: E402
+from rigplane.core.radio_protocol import (  # noqa: E402
+    ManagedTxApi,
+    PrivilegedTxApi,
+    Radio,
+)
 from rigplane.core.tx_safety import TxOutcome, TxOwner, TxSource  # noqa: E402
 from rigplane.core.types import Mode, get_audio_capabilities  # noqa: E402
 
@@ -2870,10 +2874,97 @@ async def _ptt_release(radio: Radio, managed: ManagedTxApi | None) -> str | None
         return f"unkey failed ({exc!r})"
     if transition.outcome in _TX_KEY_ACCEPTED:
         return None
-    # A bare ``ptt off`` may legitimately find nothing to release and warns.
-    # This session is known to have taken the lease, so a refusal here means
-    # the lease is gone from under it and the rig may still be transmitting.
+    # A bare ``ptt off`` may legitimately find nothing to release, and escalates
+    # to a forced unkey (``_ptt_force_unkey``). This path must never escalate.
+    # This session is known to have taken the lease, so a refusal here means the
+    # lease was taken from under the hold — and forcing would let one process's
+    # teardown adopt, and unkey, whatever took it. Preempting a live foreign
+    # transmission is MOR-1179 territory, never a side effect of ``ptt on``
+    # exiting. So the rig may still be transmitting, and this reports it.
     return f"managed TX refused this session's release ({transition.outcome})"
+
+
+async def _ptt_force_unkey(radio: Radio, ordinary_outcome: TxOutcome) -> int:
+    """Escalate a ``ptt off`` the ordinary managed release refused (MOR-1182).
+
+    Reached only from the bare ``ptt off``, and only once the ordinary release
+    has found no lease of this session's to release — which is exactly what a
+    rig keyed by a process that has since died looks like from a freshly
+    started one. Before the managed runtime, ``ptt off`` simply wrote OFF;
+    without this escalation the recovery path the command exists for stops at a
+    warning while the rig keeps transmitting.
+
+    The escalation stays narrow: a live foreign lease is refused rather than
+    preempted (preemption is MOR-1179's), and the exit code now answers the one
+    question worth asking — did an unkey reach the wire?
+    """
+    privileged = PrivilegedTxApi.bind(radio, _CLI_TX_OWNER)
+    if privileged is None:
+        print(
+            f"Error: managed TX released no lease for this session "
+            f"({ordinary_outcome}) and publishes no privileged unkey; "
+            "the rig may still be transmitting.",
+            file=sys.stderr,
+        )
+        return 1
+    try:
+        # Bounded like every other unkey here (see ``_PTT_RELEASE_TIMEOUT``): a
+        # force that never returns tells the operator no more than a rig that
+        # never stops.
+        transition = await asyncio.wait_for(
+            privileged.force_unkey(), timeout=_PTT_RELEASE_TIMEOUT
+        )
+    except TimeoutError:
+        print(
+            f"Error: forced unkey timed out after {_PTT_RELEASE_TIMEOUT:g} s; "
+            "the radio may still be transmitting.",
+            file=sys.stderr,
+        )
+        return 1
+    except Exception as exc:  # noqa: BLE001 — a failed unkey is reported, not raised
+        print(
+            f"Error: forced unkey failed ({exc!r}); "
+            "the radio may still be transmitting.",
+            file=sys.stderr,
+        )
+        return 1
+    outcome = transition.outcome
+    if outcome is TxOutcome.ACCEPTED:
+        print(
+            "Note: no TX lease for this session; forced an unkey of a rig "
+            "keyed elsewhere.",
+            file=sys.stderr,
+        )
+        return 0
+    if outcome is TxOutcome.IDEMPOTENT:
+        print(
+            "Note: an unkey is already in progress; nothing further sent.",
+            file=sys.stderr,
+        )
+        return 0
+    if outcome is TxOutcome.BUSY:
+        print(
+            f"Error: another TX session holds this radio ({outcome}); refusing "
+            "to preempt a live transmission. Stop that session and retry, or "
+            "wait for the max-key-down watchdog.",
+            file=sys.stderr,
+        )
+        return 1
+    if outcome is TxOutcome.NOT_READY:
+        print(
+            f"Error: the radio link is not ready ({outcome}); no unkey was "
+            "attempted and the rig may still be transmitting.",
+            file=sys.stderr,
+        )
+        return 1
+    # No other outcome is reachable from ``force_unkey`` today; a new one must
+    # fail closed rather than report an unkey nobody saw.
+    print(
+        f"Error: forced unkey was refused ({outcome}); "
+        "the radio may still be transmitting.",
+        file=sys.stderr,
+    )
+    return 1
 
 
 async def _hold_ptt(
@@ -2946,7 +3037,8 @@ async def _cmd_ptt(radio: Radio, args: argparse.Namespace) -> int:
     ``ptt on`` arms its signals, keys, then holds until it is interrupted or
     ``--for`` runs out, so the process that took the lease is the process that
     releases it. ``ptt off`` owns no signals and stays immediate: it is the
-    recovery path for a rig some other process left transmitting.
+    recovery path for a rig some other process left transmitting, and the only
+    caller allowed to escalate to a forced unkey when no lease matches.
     """
     managed = ManagedTxApi.bind(radio, _CLI_TX_OWNER)
     if args.state == "on":
@@ -2957,15 +3049,12 @@ async def _cmd_ptt(radio: Radio, args: argparse.Namespace) -> int:
     else:
         transition = await managed.set_ptt(False)
         if transition.outcome not in _TX_KEY_ACCEPTED:
-            # A refused release answers STALE, which means either nothing was
-            # keyed or another owner holds the lease. Neither is actionable
-            # here — a non-owner cannot force a release by design — so report
-            # it and still succeed, rather than failing a defensive unkey.
-            print(
-                f"Warning: managed TX released no lease for this session "
-                f"({transition.outcome}); another session may still hold TX.",
-                file=sys.stderr,
-            )
+            # A refused release answers STALE: nothing of this session's was
+            # there to release. On the recovery path that is the normal case,
+            # not a dead end — a rig left keyed by a dead process has a lease
+            # nobody can match — so escalate rather than warn and exit 0.
+            if rc := await _ptt_force_unkey(radio, transition.outcome):
+                return rc
     print("PTT OFF")
     return 0
 

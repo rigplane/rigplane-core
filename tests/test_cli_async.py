@@ -38,15 +38,20 @@ from rigplane.cli import (
 )
 from rigplane.core.radio_protocol import ManagedTxApi
 from rigplane.core.tx_safety import (
+    RadioTx,
     TxOutcome,
     TxOwner,
+    TxPhase,
     TxReleaseReason,
     TxSafetySupervisor,
     TxSource,
     TxTransition,
 )
 from rigplane.exceptions import TimeoutError as IcomTimeout
+from rigplane.runtime.managed_radio_runtime import ManagedRadioRuntime
+from rigplane.runtime.managed_tx_effect_service import managed_tx_effect_service
 from rigplane.runtime.radio import IcomRadio as RuntimeIcomRadio
+from test_web_recovery_durable_off import _Provider
 
 
 # ---------------------------------------------------------------------------
@@ -661,18 +666,23 @@ class TestCmdPttManagedIngress:
         assert radio.bare_writes == []
 
     @pytest.mark.asyncio
-    async def test_a_release_the_supervisor_refused_succeeds(self, capsys) -> None:
+    async def test_a_refused_release_with_no_privileged_surface_exits_non_zero(
+        self, capsys
+    ) -> None:
         # STALE covers both "nothing was keyed" and "another owner holds it".
-        # A non-owner cannot force a release by design, so the unkey is best
-        # effort: it reports, but it must not fail the command.
+        # This supervisor is exactly ``ManagedTxSupervisor`` — no
+        # ``force_unkey`` — so there is nothing left to escalate to and no
+        # unkey reached the wire. Reporting success here would tell the
+        # operator the rig is quiet on no evidence at all.
         radio = _FakeManagedRadio(off=TxOutcome.STALE)
 
         rc = await _cmd_ptt(radio, Namespace(state="off"))
 
-        assert rc == 0
+        assert rc == 1
         captured = capsys.readouterr()
-        assert captured.out.splitlines() == ["PTT OFF"]
-        assert "Warning" in captured.err and f"({TxOutcome.STALE})" in captured.err
+        assert "PTT OFF" not in captured.out
+        assert "Error" in captured.err and f"({TxOutcome.STALE})" in captured.err
+        assert "publishes no privileged unkey" in captured.err
         assert _kinds(radio.supervisor) == [(False, TxReleaseReason.OPERATOR_RELEASE)]
         assert radio.bare_writes == []
 
@@ -1042,6 +1052,338 @@ def test_a_signal_before_the_key_leaves_the_rig_unkeyed(signum, tmp_path) -> Non
     assert journal == ["armed"]  # it never keyed, so there was nothing to unkey
     assert out == []  # and it never announced a transmission
     assert rc == 128 + signum
+
+
+# ---------------------------------------------------------------------------
+# _cmd_ptt — ``ptt off`` escalates to a forced unkey (MOR-1175, MOR-1182)
+# ---------------------------------------------------------------------------
+
+
+class _FakePrivilegedTxSupervisor(_FakeTxSupervisor):
+    """What a managed runtime really publishes: the pair plus ``force_unkey``.
+
+    ``force`` is the outcome the force answers, an exception it raises, or
+    ``None`` for a force that never returns — the case the caller must bound.
+    """
+
+    def __init__(
+        self,
+        on: TxOutcome,
+        off: TxOutcome,
+        force: TxOutcome | Exception | None,
+    ) -> None:
+        super().__init__(on, off)
+        self._force = force
+        self.forced: list[tuple[TxOwner, TxReleaseReason]] = []
+
+    async def force_unkey(
+        self, owner: TxOwner, *, reason: TxReleaseReason
+    ) -> TxTransition:
+        self.forced.append((owner, reason))
+        if isinstance(self._force, Exception):
+            raise self._force
+        if self._force is None:
+            await asyncio.Event().wait()  # never returns; the caller bounds it
+            raise AssertionError("unreachable: the wait above never completes")
+        return TxTransition(self._force, _IDLE_TX_SNAPSHOT)
+
+
+class _FakePrivilegedRadio(_FakeManagedRadio):
+    """Managed radio whose supervisor also carries the privileged surface."""
+
+    def __init__(
+        self,
+        on: TxOutcome = _ACCEPTED,
+        off: TxOutcome = _ACCEPTED,
+        force: TxOutcome | Exception | None = _ACCEPTED,
+    ) -> None:
+        super().__init__(on, off)
+        self.supervisor = _FakePrivilegedTxSupervisor(on, off, force)
+        self.managed_tx = self.supervisor
+
+
+class TestCmdPttOffForcedUnkey:
+    """The exit-code table for ``ptt off``: 0 only when an unkey is on the wire.
+
+    ``ptt off`` used to exit 0 whatever happened. It is the command an operator
+    reaches for when a rig will not stop transmitting, so its exit code now
+    carries exactly one meaning — an unkey reached the wire, or is already in
+    flight — and every other answer is 1 with what the rig may still be doing.
+    """
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("outcome", [TxOutcome.ACCEPTED, TxOutcome.IDEMPOTENT])
+    async def test_an_accepted_ordinary_release_never_escalates(
+        self, outcome: TxOutcome, capsys
+    ) -> None:
+        # The ordinary path is the one that runs on every normal unkey. Routing
+        # it through the force would adopt leases nobody asked about and put a
+        # "forced an unkey" note on screen for a release that just worked.
+        radio = _FakePrivilegedRadio(off=outcome)
+
+        rc = await _cmd_ptt(radio, Namespace(state="off"))
+
+        assert rc == 0
+        assert radio.supervisor.forced == []
+        captured = capsys.readouterr()
+        assert captured.out.splitlines() == ["PTT OFF"]
+        assert captured.err == ""
+
+    @pytest.mark.asyncio
+    async def test_an_unmanaged_radio_keeps_the_legacy_direct_write(
+        self, capsys
+    ) -> None:
+        # Nothing to escalate to and nothing to escalate from: an unmanaged
+        # backend still writes OFF once and exits 0, silently, as it always has.
+        radio = _FakeShippedRadio()
+
+        rc = await _cmd_ptt(radio, Namespace(state="off"))
+
+        assert rc == 0
+        assert radio.writes == [False]
+        captured = capsys.readouterr()
+        assert captured.out.splitlines() == ["PTT OFF"]
+        assert captured.err == ""
+
+    @pytest.mark.asyncio
+    async def test_a_refused_release_forces_an_unkey_and_reports_it(
+        self, capsys
+    ) -> None:
+        # The MOR-1182 case in miniature: no lease of ours matched, so the
+        # rig is keyed by someone who is not here to release it.
+        radio = _FakePrivilegedRadio(off=TxOutcome.STALE, force=TxOutcome.ACCEPTED)
+
+        rc = await _cmd_ptt(radio, Namespace(state="off"))
+
+        assert rc == 0
+        captured = capsys.readouterr()
+        assert captured.out.splitlines() == ["PTT OFF"]
+        assert "Note" in captured.err and "keyed elsewhere" in captured.err
+        (owner, reason), *rest = radio.supervisor.forced
+        assert rest == []  # exactly one force, never a retry loop of its own
+        assert reason is TxReleaseReason.OPERATOR_FORCED_UNKEY
+        # The same process identity the ordinary release carried: a force under
+        # a fresh owner would mint a lease this session could not then release.
+        assert owner is radio.supervisor.calls[0][1]
+        assert radio.bare_writes == []
+
+    @pytest.mark.asyncio
+    async def test_a_force_that_finds_an_unkey_in_flight_succeeds(self, capsys) -> None:
+        # A durable OFF is already owed and being retried. Nothing more is sent,
+        # and failing here would send the operator chasing a rig already being
+        # dekeyed.
+        radio = _FakePrivilegedRadio(off=TxOutcome.STALE, force=TxOutcome.IDEMPOTENT)
+
+        rc = await _cmd_ptt(radio, Namespace(state="off"))
+
+        assert rc == 0
+        captured = capsys.readouterr()
+        assert captured.out.splitlines() == ["PTT OFF"]
+        assert "Note" in captured.err and "already in progress" in captured.err
+
+    @pytest.mark.asyncio
+    async def test_a_live_foreign_lease_is_refused_not_preempted(self, capsys) -> None:
+        # Somebody is transmitting on purpose. Cutting that off from another
+        # terminal is preemption (MOR-1179), not recovery, so it is refused —
+        # and the operator is told how the transmission does end.
+        radio = _FakePrivilegedRadio(off=TxOutcome.STALE, force=TxOutcome.BUSY)
+
+        rc = await _cmd_ptt(radio, Namespace(state="off"))
+
+        assert rc == 1
+        captured = capsys.readouterr()
+        assert "PTT OFF" not in captured.out
+        assert "Error" in captured.err and "refusing to preempt" in captured.err
+        assert "watchdog" in captured.err
+
+    @pytest.mark.asyncio
+    async def test_a_link_that_is_not_ready_reports_a_rig_that_may_be_keyed(
+        self, capsys
+    ) -> None:
+        # No unkey was attempted at all, so the one thing that must not happen
+        # is a "PTT OFF" and an exit 0 over a rig nothing has written to.
+        radio = _FakePrivilegedRadio(off=TxOutcome.STALE, force=TxOutcome.NOT_READY)
+
+        rc = await _cmd_ptt(radio, Namespace(state="off"))
+
+        assert rc == 1
+        captured = capsys.readouterr()
+        assert "PTT OFF" not in captured.out
+        assert "Error" in captured.err and "not ready" in captured.err
+        assert f"({TxOutcome.NOT_READY})" in captured.err
+        assert "may still be transmitting" in captured.err
+
+    @pytest.mark.asyncio
+    async def test_a_force_that_raises_is_reported_and_exits_non_zero(
+        self, capsys
+    ) -> None:
+        radio = _FakePrivilegedRadio(
+            off=TxOutcome.STALE, force=OSError("transport gone")
+        )
+
+        rc = await _cmd_ptt(radio, Namespace(state="off"))
+
+        assert rc == 1
+        captured = capsys.readouterr()
+        assert "PTT OFF" not in captured.out
+        assert "Error" in captured.err and "transport gone" in captured.err
+
+    @pytest.mark.asyncio
+    async def test_a_force_that_never_returns_is_bounded(
+        self, monkeypatch, capsys
+    ) -> None:
+        # The rig this runs against is, by construction, one that has already
+        # misbehaved. An unbounded wait would hang the recovery command itself.
+        monkeypatch.setattr(cli_module, "_PTT_RELEASE_TIMEOUT", 0.05)
+        radio = _FakePrivilegedRadio(off=TxOutcome.STALE, force=None)
+
+        rc = await _cmd_ptt(radio, Namespace(state="off"))
+
+        assert rc == 1
+        captured = capsys.readouterr()
+        assert "PTT OFF" not in captured.out
+        assert "Error" in captured.err and "timed out after" in captured.err
+
+    @pytest.mark.asyncio
+    async def test_the_holds_own_unkey_never_escalates(self, held, capsys) -> None:
+        # ``ptt on``'s teardown is the one release that must not escalate: a
+        # refusal there means the lease was taken from under this session, and
+        # forcing would let one process's exit adopt and unkey whatever took
+        # it — preemption smuggled in through a hold ending (MOR-1179).
+        radio = _FakePrivilegedRadio(off=TxOutcome.STALE, force=TxOutcome.ACCEPTED)
+
+        rc = await _cmd_ptt(radio, Namespace(state="on", hold_seconds=None))
+
+        assert rc == 1
+        assert radio.supervisor.forced == []
+        captured = capsys.readouterr()
+        assert "PTT OFF" not in captured.out
+        assert "Error" in captured.err and f"({TxOutcome.STALE})" in captured.err
+
+
+# ---------------------------------------------------------------------------
+# _cmd_ptt — ``ptt off`` against a real managed runtime and a real wire
+# ---------------------------------------------------------------------------
+
+
+class _RuntimeRadio:
+    """Managed backend shape: a real ``ManagedRadioRuntime`` as ``managed_tx``."""
+
+    def __init__(self, runtime: ManagedRadioRuntime) -> None:
+        self.managed_tx = runtime
+        self.bare_writes: list[bool] = []
+
+    async def set_ptt(self, on: bool) -> None:
+        self.bare_writes.append(on)
+
+
+async def _ready_runtime(provider: _Provider, target: str) -> ManagedRadioRuntime:
+    """A real runtime, bound and ready over ``provider``'s wire."""
+    runtime = ManagedRadioRuntime(
+        target,
+        service_factory=managed_tx_effect_service,
+        provider_lifecycle=provider,
+        tick_interval_seconds=0.01,
+    )
+    await runtime.replace_provider(ready=True)
+    return runtime
+
+
+async def _process_gone(runtime: ManagedRadioRuntime) -> None:
+    """The keying process dies: its ticker stops, its lease is never released."""
+    ticker = runtime._tick_task
+    assert ticker is not None  # keying armed it
+    ticker.cancel()
+    with contextlib.suppress(asyncio.CancelledError):
+        await ticker
+
+
+async def _ticker_retired(runtime: ManagedRadioRuntime) -> None:
+    """Let the ticker the force armed notice the lease is gone and leave."""
+    deadline = time.monotonic() + 2.0
+    while runtime._tick_task is not None:
+        assert time.monotonic() < deadline, "the ticker never retired"
+        await asyncio.sleep(0.01)
+
+
+@pytest.mark.asyncio
+async def test_an_externally_keyed_rig_refuses_the_key_and_forces_the_unkey(
+    held, capsys
+) -> None:
+    """The unkey direction loses the observation gate; the key direction keeps it.
+
+    One rig, one runtime, two commands apart: ``ptt on`` must still refuse to
+    key a transmitter someone else is using (RADIO_NOT_OFF, no write at all),
+    while ``ptt off`` must still get an OFF onto the wire. Letting the force's
+    reach spread into ``request_on`` would turn this into a rig the CLI keys
+    over the top of.
+    """
+    log: list[str] = []
+    provider = _Provider(log)
+    provider._keyed = True  # someone else is transmitting, and this rig says so
+    runtime = await _ready_runtime(provider, "externally-keyed")
+    await runtime.request_fresh_ptt()
+    assert runtime.tx_snapshot.phase is TxPhase.EXTERNAL_UNOWNED
+    radio = _RuntimeRadio(runtime)
+    log.clear()
+
+    assert await _cmd_ptt(radio, Namespace(state="on", hold_seconds=None)) == 1
+    assert log == []  # refused before any write; nothing keyed over
+    assert held == []  # and no hold entered on a rig this session never took
+    assert f"({TxOutcome.RADIO_NOT_OFF})" in capsys.readouterr().err
+
+    assert await _cmd_ptt(radio, Namespace(state="off")) == 0
+
+    assert log == ["ptt(off)", "read_ptt"]  # the OFF and its confirming read
+    assert provider._keyed is False
+    captured = capsys.readouterr()
+    assert captured.out.splitlines() == ["PTT OFF"]
+    assert "Note" in captured.err and "keyed elsewhere" in captured.err
+    assert radio.bare_writes == []
+    await _ticker_retired(runtime)
+
+
+@pytest.mark.asyncio
+async def test_a_second_process_unkeys_a_rig_the_first_left_transmitting(
+    capsys,
+) -> None:
+    """MOR-1182 end to end: two runtimes, two supervisors, one shared wire.
+
+    Process A's lease lives in a supervisor that dies with it, so process B's
+    ``ptt off`` finds nothing of its own to release — and, never having read
+    the rig, reports ``IDLE``/``UNKNOWN``, indistinguishable from an idle
+    radio. The OFF still has to reach the wire, or the crash recovery this
+    command exists for is gone. Two separately constructed runtimes are what
+    make that real: a single shared runtime would still hold the lease and
+    could release it the ordinary way.
+    """
+    log: list[str] = []
+    provider = _Provider(log)
+    runtime_a = await _ready_runtime(provider, "process-a")
+    await runtime_a.request_fresh_ptt()
+    keying = ManagedTxApi.bind(_RuntimeRadio(runtime_a), TxOwner(TxSource.SDK, "cli-a"))
+    assert keying is not None
+    assert (await keying.set_ptt(True)).outcome is TxOutcome.ACCEPTED
+    assert provider._keyed is True
+    await _process_gone(runtime_a)
+
+    runtime_b = await _ready_runtime(provider, "process-b")  # never observed
+    before = runtime_b.tx_snapshot
+    assert (before.phase, before.radio_tx) == (TxPhase.IDLE, RadioTx.UNKNOWN)
+    radio_b = _RuntimeRadio(runtime_b)
+    log.clear()
+
+    rc = await _cmd_ptt(radio_b, Namespace(state="off"))
+
+    assert rc == 0
+    assert provider._keyed is False  # the OFF reached the wire process A keyed
+    assert log == ["ptt(off)", "read_ptt"]
+    captured = capsys.readouterr()
+    assert captured.out.splitlines() == ["PTT OFF"]
+    assert "Note" in captured.err and "keyed elsewhere" in captured.err
+    assert runtime_b.tx_snapshot.lease_id is None  # the adopted lease self-cleared
+    assert radio_b.bare_writes == []
+    await _ticker_retired(runtime_b)
 
 
 # ---------------------------------------------------------------------------
