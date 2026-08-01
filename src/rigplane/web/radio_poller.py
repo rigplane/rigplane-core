@@ -190,6 +190,14 @@ _SLOW_INTERVAL: float = 0.25  # levels/settings — rarely change
 
 _KEY_ACCEPTED = frozenset({TxOutcome.ACCEPTED, TxOutcome.IDEMPOTENT})  # lease is ours
 
+# MOR-1181: how long the shutdown TX-safety drain may hold teardown open.
+# ``CoreRadio._shutdown_managed_tx``'s doctrine — a wedged rig must not hold
+# shutdown open, since closing the socket is itself the de-key of last resort —
+# at a shorter bound than its 5 s: this runs inside ``stop_web_server``, ahead of
+# the disconnect that then spends that 5 s on the managed release. 2.0 s matches
+# every other bound there and dwarfs a fire-and-forget CI-V unkey.
+_SHUTDOWN_TX_DRAIN_TIMEOUT_S: float = 2.0
+
 # MOR-874: how long a healthy-link in-flight acquisition request may stay
 # suppressed after its FIRST send-relative deadline expiry before being
 # treated as a REAL timeout. The healthy-link gate (see
@@ -558,10 +566,94 @@ class RadioPoller:
         logger.info("radio-poller: started")
 
     def stop(self) -> None:
+        """Cancel the loop and drop the task; deliberately synchronous.
+
+        Draining the queue is not this method's job, and cannot be: on a full
+        server shutdown the writable session's teardown ``PttOff`` is not
+        enqueued until the client tasks are cancelled, well after this call. The
+        caller keeps the poller and awaits :meth:`drain_tx_safety_commands` once
+        those tasks have been gathered (MOR-1181, ``stop_web_server``).
+        """
         if self._task is not None:
             self._task.cancel()
             self._task = None
             logger.info("radio-poller: stopped")
+
+    async def drain_tx_safety_commands(
+        self, *, timeout: float = _SHUTDOWN_TX_DRAIN_TIMEOUT_S
+    ) -> None:
+        """Execute pending unkeys on the way out; discard everything else.
+
+        MOR-1181. The loop exits with entries still queued, and exactly one class
+        of them is still worth running: a ``PttOff``, because the alternative is
+        a transmitter left keyed by a process that is gone. Stale freq/mode/level
+        writes must not fire on the way out, and a pending ``PttOn`` must NEVER
+        run here — keying a rig this process is abandoning is the worst outcome
+        this path can produce. Non-unkeys are discarded, counted and logged.
+
+        Shielded because this runs on an already-cancelled task, which loop
+        teardown would otherwise re-cancel mid-write; the bound therefore
+        abandons the wait, not the write, and names at ERROR what it could not
+        confirm.
+        """
+        entries = self._queue.drain_entries()
+        undelivered = [e for e in entries if isinstance(e.command, PttOff)]
+        discarded = [
+            type(e.command).__name__
+            for e in entries
+            if not isinstance(e.command, PttOff)
+        ]
+        if discarded:
+            logger.info(
+                "radio-poller: shutdown discarded %d pending command(s) — the "
+                "TX-safety drain executes PttOff only: %s",
+                len(discarded),
+                ", ".join(discarded),
+            )
+        if not undelivered:
+            return
+        try:
+            await asyncio.wait_for(
+                asyncio.shield(self._execute_pending_unkeys(undelivered)),
+                timeout=timeout,
+            )
+        except (TimeoutError, asyncio.TimeoutError):
+            logger.error(
+                "radio-poller: shutdown TX drain did not settle within %.1fs; "
+                "%d unkey(s) unconfirmed, the rig may still be keyed: %s",
+                timeout,
+                len(undelivered),
+                ", ".join(e.command_id or "PttOff" for e in undelivered),
+            )
+
+    async def _execute_pending_unkeys(self, pending: list[CommandQueueEntry]) -> None:
+        """Run each queued unkey, dropping it from *pending* once it has run.
+
+        *pending* is the caller's own list, so what is left in it when the bound
+        expires is exactly what the ERROR line has to name.
+        """
+        while pending:
+            entry = pending[0]
+            try:
+                await self._execute(
+                    entry.command,
+                    command_id=entry.command_id,
+                    source=entry.source or "websocket",
+                    session_id=entry.session_id,
+                    command_service=entry.command_service,
+                )
+            except Exception as exc:
+                logger.error(
+                    "radio-poller: shutdown unkey failed: %s", exc, exc_info=True
+                )
+                self._mark_queued_command_failed(entry, exc)
+                if entry.future is not None and not entry.future.done():
+                    entry.future.set_exception(exc)
+            else:
+                if entry.future is not None and not entry.future.done():
+                    entry.future.set_result(None)
+            finally:
+                pending.pop(0)
 
     @property
     def running(self) -> bool:
@@ -1105,7 +1197,11 @@ class RadioPoller:
                 # 4. Wait for next cycle
                 await self._queue.wait(timeout=self._fast_interval)
         except asyncio.CancelledError:
-            pass
+            # MOR-1181: an unkey abandoned in the queue here is a keyed
+            # transmitter. Covers every cancellation of this task; the shutdown
+            # ORDERING — the teardown unkey is not enqueued until long after
+            # this runs — is the caller's half, in ``stop_web_server``.
+            await self.drain_tx_safety_commands()
         except Exception:
             logger.exception(
                 "radio-poller: FATAL — task crashed, commands will stop working"

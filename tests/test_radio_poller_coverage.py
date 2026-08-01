@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import asyncio
+import logging
+import time
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -71,6 +73,13 @@ from rigplane.web.radio_poller import (
     VfoEqualize,
     VfoSwap,
 )
+from rigplane.core.tx_safety import TxOutcome, TxOwner, TxSource
+from rigplane.web.handlers.control import ControlHandler
+from rigplane.web.web_startup import stop_web_server
+
+# MOR-1181 asserts on ordered ``radio.calls`` against a REAL supervisor, so it
+# reuses MOR-1013's harness rather than re-mocking either of them.
+from test_web_managed_tx_owner import _KEY, _TEARDOWN, _poller, _Radio, _Supervisor
 
 
 class _NoopCommandExecutor:
@@ -3052,3 +3061,187 @@ async def test_set_data1_mod_input_dispatch_reads_back_confirmed_value() -> None
     snapshot = store.snapshot()
     assert snapshot.field(FieldPath.global_("slow_state", "data1_mod_input")).value == 5
     assert state.data1_mod_input == 5
+
+
+# --- MOR-1181: the shutdown TX-safety drain --------------------------------
+
+
+def _tx_poller(
+    supervisor: _Supervisor | None,
+) -> tuple[RadioPoller, _Radio, CommandQueue]:
+    poller, radio = _poller(supervisor)
+    return poller, radio, poller._queue  # noqa: SLF001
+
+
+def _cancel_run_with_queued(queue: CommandQueue, *pending: object) -> None:
+    """Cancel the real ``_run`` at its wait, leaving *pending* queued behind it —
+    the file's own cancellation idiom, enqueuing where production does."""
+
+    async def _wait(*args: object, **kwargs: object) -> None:
+        for cmd in pending:
+            queue.put(cmd, source="websocket", session_id="ws-1")  # type: ignore[arg-type]
+        raise asyncio.CancelledError
+
+    queue.wait = _wait  # type: ignore[method-assign]
+
+
+@pytest.mark.parametrize("managed", [True, False])
+@pytest.mark.asyncio
+async def test_shutdown_drain_delivers_an_unkey_queued_at_cancellation(
+    managed: bool,
+) -> None:
+    """MOR-1181: a cancelled poller must not abandon a queued PttOff — the
+    handler was ``pass``, so the entry died with the task and left a keyed
+    transmitter behind a gone process. Both paths matter: the managed one gives
+    the lease back, and the legacy one (kill switch off, or a backend publishing
+    no supervisor) is the residual with no other de-key at all."""
+    supervisor = _Supervisor() if managed else None
+    poller, radio, queue = _tx_poller(supervisor)
+    await poller._execute(PttOn(), session_id="ws-1")  # noqa: SLF001
+    _cancel_run_with_queued(queue, PttOff())
+
+    await poller._run()  # noqa: SLF001
+
+    assert queue.has_commands is False
+    if supervisor is not None:
+        assert supervisor.entries[-1] == (False, TxOwner(TxSource.WEBSOCKET, "ws-1"))
+        assert supervisor.outcomes[-1] is TxOutcome.ACCEPTED
+        assert radio.calls == ["start_tx", *_TEARDOWN]
+    else:
+        assert radio.calls == [*_KEY, "set_ptt(False)", *_TEARDOWN]
+
+
+@pytest.mark.asyncio
+async def test_shutdown_drain_never_executes_a_pending_key() -> None:
+    """The safety-critical negative: keying a rig this process is abandoning is
+    the worst outcome this path can produce, so a pending PttOn is discarded."""
+    supervisor = _Supervisor()
+    poller, radio, queue = _tx_poller(supervisor)
+    _cancel_run_with_queued(queue, PttOn())
+
+    await poller._run()  # noqa: SLF001
+
+    assert radio.calls == []  # no start_tx, no key, no lease attempt
+    assert supervisor.entries == []
+    assert queue.has_commands is False
+
+
+@pytest.mark.asyncio
+async def test_shutdown_drain_discards_and_reports_non_tx_commands(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Stale freq/mode/level writes must not fire on the way out — but they are
+    counted and named, because a silently dropped command is its own defect."""
+    poller, radio, queue = _tx_poller(None)
+    _cancel_run_with_queued(queue, SetFreq(14_074_000), PttOff())
+
+    with caplog.at_level(logging.INFO, logger="rigplane.web.radio_poller"):
+        await poller._run()  # noqa: SLF001
+
+    assert radio.calls == ["set_ptt(False)", *_TEARDOWN]
+    assert "discarded 1 pending command(s)" in caplog.text
+    assert "SetFreq" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_shutdown_drain_abandons_the_wait_not_the_write_on_timeout(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A wedged rig must not hold shutdown open; the bound reports what it could
+    not confirm, and the shield leaves the OFF still trying behind it."""
+    poller, radio, queue = _tx_poller(None)
+    gate = asyncio.Event()
+
+    async def _wedged_set_ptt(on: bool) -> None:
+        radio.calls.append(f"set_ptt({on})")
+        await gate.wait()
+
+    radio.set_ptt = _wedged_set_ptt  # type: ignore[method-assign]
+    queue.put(PttOff(), command_id="teardown-ptt-off-ws-1", source="websocket")
+
+    started = time.monotonic()
+    with caplog.at_level(logging.ERROR, logger="rigplane.web.radio_poller"):
+        await poller.drain_tx_safety_commands(timeout=0.05)
+    elapsed = time.monotonic() - started
+
+    assert elapsed < 1.0
+    assert "may still be keyed" in caplog.text
+    assert "teardown-ptt-off-ws-1" in caplog.text
+    assert radio.calls == ["set_ptt(False)"]
+    gate.set()
+    await asyncio.sleep(0.01)  # the shielded write completes behind the bound
+    assert radio.calls == ["set_ptt(False)", *_TEARDOWN]
+
+
+def _writable_control_session(queue: CommandQueue) -> ControlHandler:
+    """A writable control session whose ``run()`` ends only when cancelled —
+    which is exactly when ``stop_web_server`` cancels its client tasks."""
+
+    async def recv() -> tuple[int, bytes]:
+        await asyncio.Event().wait()
+        raise EOFError  # pragma: no cover - unreachable, keeps the return type
+
+    return ControlHandler(
+        ws=SimpleNamespace(send_text=AsyncMock(), recv=recv),
+        radio=SimpleNamespace(connected=True, radio_ready=True),
+        server_version="test",
+        radio_model="IC-7610",
+        server=SimpleNamespace(
+            command_queue=queue,
+            register_control_event_queue=MagicMock(),
+            unregister_control_event_queue=MagicMock(),
+            build_state_update_envelope=MagicMock(return_value={}),
+        ),
+    )
+
+
+def _shutdown_server(
+    poller: RadioPoller, client_tasks: list[asyncio.Task[None]]
+) -> SimpleNamespace:
+    """The subset of ``WebServer`` that ``stop_web_server`` actually touches."""
+    return SimpleNamespace(
+        _radio_poller=poller,
+        _state_poller=None,
+        _state_store_freshness_task=None,
+        _audio_broadcaster=SimpleNamespace(_stop_relay=AsyncMock()),
+        _webrtc_sessions=None,
+        _diagnostics=SimpleNamespace(stop=AsyncMock()),
+        _audio_bridge=None,
+        _discovery=None,
+        _dx_client=None,
+        _dx_client_task=None,
+        _zombie_reaper_task=None,
+        _scope_health_task=None,
+        _scope_reenable_task=None,
+        _bg_tasks=[],
+        _client_tasks=client_tasks,
+        _server=None,
+        _server_was_running=True,
+    )
+
+
+@pytest.mark.asyncio
+async def test_server_shutdown_delivers_the_unkey_its_client_enqueues_late() -> None:
+    """MOR-1181's production case, and why the drain alone is not enough:
+    ``stop_web_server`` cancels the poller at step 1, but the teardown PttOff
+    does not exist until ``ControlHandler.run()``'s finally runs at step 6. The
+    poller's own CancelledError handler therefore finds an empty queue every
+    time, deterministically — only the awaited final drain delivers the unkey."""
+    supervisor = _Supervisor()
+    radio = _Radio(supervisor)
+    queue = CommandQueue()
+    poller = RadioPoller(radio, queue)  # type: ignore[arg-type]
+    handler = _writable_control_session(queue)
+    client: asyncio.Task[None] = asyncio.create_task(handler.run())
+    await asyncio.sleep(0.01)  # run() reaches the recv loop and publishes itself
+    await poller._execute(PttOn(), session_id=handler._session_id)  # noqa: SLF001
+    poller.start()
+    await asyncio.sleep(0.01)  # the loop is genuinely running when it is stopped
+
+    await stop_web_server(_shutdown_server(poller, [client]))  # type: ignore[arg-type]
+
+    owner = TxOwner(TxSource.WEBSOCKET, handler._session_id)
+    assert supervisor.entries == [(True, owner), (False, owner)]
+    assert supervisor.outcomes[-1] is TxOutcome.ACCEPTED
+    assert radio.calls == ["start_tx", *_TEARDOWN]
+    assert queue.has_commands is False
