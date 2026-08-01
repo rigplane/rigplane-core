@@ -1812,12 +1812,21 @@ class WebServer:
         managed TX port, so a release armed before the drop is re-armed against
         a fresh causal boundary only once the provider is rebound.  Awaiting the
         rebind here is what puts the OFF in front of ordinary recovered work:
-        ``ManagedRadioRuntime.replace_provider`` services the re-armed release
-        before it returns, so the write has reached the radio by the time the
-        refetch, the poller readiness signal and the scope re-enable start.
+        the re-arm services the re-armed release before it returns, so the write
+        has reached the radio by the time the refetch, the poller readiness
+        signal and the scope re-enable start.
+
+        The rebind goes through the radio's own ``rearm_managed_tx`` rather than
+        ``replace_provider`` on the supervisor (MOR-1016).  Both would rebind,
+        but only the radio's knows whether the provider is *already* bound to
+        the port the reconnect just repaired — and a second ``replace_provider``
+        over a live binding retires that port, advancing the CI-V generation and
+        disconnecting the transport.  ``soft_reconnect`` re-arms on its own way
+        past, so this pass is very often the second caller.
 
         Unmanaged radios publish no supervisor and keep today's behaviour
-        exactly — no backend assembles a managed runtime until MOR-1016.
+        exactly — Yaesu, the rigctld client and the serial backends assemble no
+        managed runtime.
         """
         # Resolving the supervisor is backend code, not an attribute lookup.
         # ``getattr_static`` settles absence without running the accessor, so
@@ -1832,16 +1841,20 @@ class WebServer:
         supervisor = radio.managed_tx
         if supervisor is None:
             return
-        rebind = getattr(supervisor, "replace_provider", None)
+        rebind = getattr(radio, "rearm_managed_tx", None)
         if rebind is None:
-            # ``ManagedTxSupervisor`` declares ``request_on``/``release_owner``
-            # only, so a facade satisfying exactly that protocol lands here.
+            # A backend that publishes a supervisor but re-arms it somewhere
+            # this hook cannot reach — ``ManagedTxSupervisor`` declares
+            # ``request_on``/``release_owner`` only, so a facade satisfying
+            # exactly that protocol over a radio without the re-arm lands here.
             # Returning through the unmanaged branch would leave a keyed rig
             # keyed with nothing logged; "unmanaged" is a positive
             # determination, never a fallback from a failure to look.
             logger.warning(
-                "reconnect: managed TX supervisor %s exposes no replace_provider; "
-                "an armed durable OFF cannot be re-armed and the rig may stay keyed",
+                "reconnect: managed TX radio %s over supervisor %s exposes no "
+                "rearm_managed_tx; an armed durable OFF cannot be re-armed and "
+                "the rig may stay keyed",
+                type(radio).__name__,
                 type(supervisor).__name__,
             )
             return
@@ -1868,7 +1881,7 @@ class WebServer:
                 # code: resolving the coroutine and handing it to ``create_task``
                 # can each fail, and this helper runs above the ``finally`` that
                 # signals readiness, so an escape here shuts the scope gate.
-                rebind_task = self._spawn(rebind(ready=True))
+                rebind_task = self._spawn(rebind())
                 await asyncio.wait_for(
                     asyncio.shield(rebind_task), _MANAGED_TX_REBIND_TIMEOUT
                 )
