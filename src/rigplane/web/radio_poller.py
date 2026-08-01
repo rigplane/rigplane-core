@@ -89,9 +89,10 @@ from ..core.state_pipeline_contracts import (
 from ..core.radio_protocol import ManagedTxApi
 from ..core.state_diagnostics import StateDiagnosticsRecorder
 from ..core.state_store import StateStore
-from ..core.tx_safety import TxOutcome, TxOwner, TxSource
+from ..core.tx_safety import TxOutcome
 from .._state_queries import build_state_queries
 from ..profiles import RadioProfile, resolve_radio_profile
+from ..runtime.managed_tx_ingress import bind_managed_tx, refuse_key_without_owner
 from ..types import AudioCodec
 
 if TYPE_CHECKING:
@@ -1177,15 +1178,14 @@ class RadioPoller:
     ) -> ManagedTxApi | None:
         """Bind this control session's managed TX facade; ``None`` if unmanaged.
 
-        Only a websocket session has a STABLE owner identity: its long-lived
-        ``ControlHandler._session_id``, not the throwaway the shared executor
-        mints per request, which owner-matched ``release_owner`` would miss —
-        stranding the rig keyed. Every other ingress (HTTP params may even
-        carry a ``session_id``) has no teardown hook: its lease is unreleasable.
+        The rule it applies — only a websocket session carries an owner identity
+        stable enough to release the lease it takes — now lives in
+        ``runtime.managed_tx_ingress`` with the rest of the gate, because
+        rigctld (MOR-1014) and the CLI/SDK (MOR-1190) must apply the same one
+        and the two-step supervisor read behind it belongs in exactly one place
+        (MOR-1198).
         """
-        if source != "websocket" or not session_id:
-            return None
-        return ManagedTxApi.bind(self._radio, TxOwner(TxSource.WEBSOCKET, session_id))
+        return bind_managed_tx(self._radio, source, session_id)
 
     def _refuse_key_from_gone_session(
         self, source: CommandSource, session_id: str | None
@@ -1433,6 +1433,32 @@ class RadioPoller:
                     except Exception as e:
                         logger.warning("poller: start TX audio failed: %s", e)
                 if managed is None:
+                    # Binding nothing is two findings, and only one may reach
+                    # the raw write: an unmanaged rig (every shipped backend,
+                    # unchanged), or an ingress with no owner a lease could be
+                    # released against — which on a managed rig would key with
+                    # no lease, no owner and no watchdog, the unsupervised
+                    # bypass management exists to close. Resolving a supervisor
+                    # is backend code that can fail (MOR-1187) and runs with the
+                    # TX audio leg above already armed, so refusal and failed
+                    # resolution alike disarm it on the way out, mirroring the
+                    # managed refusal below: a refused key leaves no trace on
+                    # the air.
+                    try:
+                        if refuse_key_without_owner(radio, command_source, session_id):
+                            logger.warning(
+                                "poller: refusing PTT ON from %s ingress: this "
+                                "radio is managed and the request carries no "
+                                "releasable owner",
+                                command_source,
+                            )
+                            raise CommandError(
+                                f"managed TX refused PTT ON from {command_source}: "
+                                "no owner identity to hold the lease"
+                            )
+                    except BaseException:
+                        await self._stop_tx_audio_leg()
+                        raise
                     await radio.set_ptt(True)
                 else:
                     transition = await managed.set_ptt(True)
@@ -1462,6 +1488,12 @@ class RadioPoller:
                 try:
                     managed = self._managed_tx(command_source, session_id)
                     if managed is None:
+                        # No owner gate here, and there must never be one: the
+                        # key arm above refuses an ownerless ingress, but an
+                        # unkey refused for the same reason strands a keyed
+                        # transmitter with nobody able to take it off the air
+                        # (the ``_refuse_key_from_gone_session`` asymmetry).
+                        # Ownerless de-keys keep the unconditional legacy write.
                         await radio.set_ptt(False)
                     else:
                         # A refused release answers STALE: nothing was keyed, or

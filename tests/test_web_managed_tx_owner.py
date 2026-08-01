@@ -22,12 +22,22 @@ MOR-1185 closes the last hole in the pair: the teardown unkey went onto the RAW
 queue, so it reached the drain owner-less and de-keyed the rig without ever
 giving the lease back. Routed through the metadata wrapper it releases what it
 took — and, deliberately, drops the unconditional write it used to make.
+
+MOR-1016 PR 5 turns the owner gate into an ingress gate. Until assembly there
+was no managed backend, so "binds no owner" could keep falling through to the
+raw ``set_ptt`` write; once a rig publishes a supervisor that fallthrough is an
+unsupervised key on a managed rig. The gate lives in
+``rigplane.runtime.managed_tx_ingress`` — below the poller, so rigctld
+(MOR-1014) and the CLI/SDK (MOR-1190) reuse it instead of growing a third copy
+of the same two-step read (MOR-1198) — and it is deliberately one-sided: keys
+are refusable, unkeys never are.
 """
 
 from __future__ import annotations
 
 import asyncio
 import time
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
@@ -35,7 +45,7 @@ import pytest
 
 from rigplane.core.capabilities import CAP_AUDIO
 from rigplane.core.exceptions import CommandError
-from rigplane.core.radio_protocol import ManagedTxApi
+from rigplane.core.radio_protocol import ManagedTxApi, PrivilegedTxApi
 from rigplane.core.tx_safety import (
     ProviderAttemptKind,
     ProviderPttObservation,
@@ -48,6 +58,13 @@ from rigplane.core.tx_safety import (
     TxTransition,
 )
 from rigplane.profiles import resolve_radio_profile
+from rigplane.runtime import managed_tx_ingress
+from rigplane.runtime.managed_tx_ingress import (
+    bind_managed_tx,
+    refuse_key_without_owner,
+    resolve_supervisor,
+)
+from rigplane.web import radio_poller as radio_poller_module
 from rigplane.web.handlers.control import ControlHandler
 from rigplane.web.radio_poller import CommandQueue, PttOff, PttOn, RadioPoller
 
@@ -307,18 +324,83 @@ async def test_a_websocket_unkey_without_a_session_id_stays_unmanaged() -> None:
     assert radio.calls == ["set_ptt(False)", *_TEARDOWN]
 
 
-async def test_http_ingress_never_binds_an_owner() -> None:
+async def test_http_ingress_never_binds_an_owner_and_is_refused_the_key() -> None:
     """HTTP has no session and no teardown hook, so a lease taken there could
-    never be released — and its params are caller-supplied, not a session."""
+    never be released — and its params are caller-supplied, not a session.
+
+    MOR-1016 PR 5 draws the consequence the bind alone could not: on a MANAGED
+    rig, "binds no owner" used to mean "falls through to the raw
+    ``set_ptt(True)``" — an unsupervised key with no lease, no owner and no
+    watchdog behind it, which is the bypass management exists to close. So an
+    ingress that cannot hold a lease is refused the key outright, and the
+    supervisor never hears about it.
+    """
     supervisor = _Supervisor()
     poller, radio = _poller(supervisor)
 
-    await poller._execute(PttOn(), source="http", session_id=None)
-    await poller._execute(PttOn(), source="http", session_id="forged")
+    with pytest.raises(CommandError, match="no owner"):
+        await poller._execute(PttOn(), source="http", session_id=None)
+    # A caller-supplied ``session_id`` is not a session: same refusal.
+    with pytest.raises(CommandError, match="http"):
+        await poller._execute(PttOn(), source="http", session_id="forged")
+
+    # No lease attempt, and above all no provider write: the refusal leaves no
+    # trace on the air, and each armed TX audio leg is disarmed behind it.
+    assert supervisor.entries == []
+    assert "set_ptt(True)" not in radio.calls
+    assert radio.calls == ["start_tx", *_TEARDOWN, "start_tx", *_TEARDOWN]
+
+
+async def test_an_http_unkey_on_a_managed_rig_still_writes_the_legacy_off() -> None:
+    """The asymmetry, stated: a refused unkey strands a keyed transmitter.
+
+    The key gate above and this are deliberately not symmetric — the same
+    doctrine ``_refuse_key_from_gone_session`` is built on. Refusing a key costs
+    an operator one denied transmission; refusing an unkey leaves the rig on the
+    air with nobody able to take it off. So the ``PttOff`` arm keeps the
+    unconditional legacy write for every ingress that binds no owner, managed
+    rig or not.
+    """
+    supervisor = _Supervisor()
+    poller, radio = _poller(supervisor)
+
     await poller._execute(PttOff(), source="http", session_id=None)
 
     assert supervisor.entries == []
-    assert radio.calls == [*_KEY, *_KEY, "set_ptt(False)", *_TEARDOWN]
+    assert radio.calls == ["set_ptt(False)", *_TEARDOWN]
+
+
+async def test_an_unmanaged_rig_keeps_the_legacy_http_path_on_both_arms() -> None:
+    """Every shipped backend is still unmanaged, so HTTP PTT is untouched.
+
+    The gate asks the radio, not the request: with no supervisor published there
+    is nothing to be refused on behalf of, and refusing here would break HTTP
+    PTT for every rig in the field.
+    """
+    poller, radio = _poller(None)
+
+    await poller._execute(PttOn(), source="http", session_id=None)
+    await poller._execute(PttOff(), source="http", session_id=None)
+
+    assert radio.calls == [*_KEY, "set_ptt(False)", *_TEARDOWN]
+
+
+async def test_a_raising_accessor_on_the_key_path_disarms_the_tx_leg_too() -> None:
+    """The gate resolves a supervisor, so it runs backend code that can fail.
+
+    MOR-1187's lesson applied to the other arm: the resolution happens with the
+    TX audio leg already armed, so it belongs inside the guard that disarms it.
+    A failed resolution is not "unmanaged" — it propagates — but it must not
+    leave modulation flowing towards a rig this ingress never keyed.
+    """
+    radio = _BrokenSupervisorRadio(None)
+    poller = RadioPoller(radio, CommandQueue())  # type: ignore[arg-type]
+
+    with pytest.raises(RuntimeError, match="accessor exploded"):
+        await poller._execute(PttOn(), source="http", session_id=None)
+
+    assert "set_ptt(True)" not in radio.calls
+    assert radio.calls == ["start_tx", *_TEARDOWN]
 
 
 async def test_a_key_from_a_gone_session_costs_nothing() -> None:
@@ -521,3 +603,99 @@ async def test_an_unmanaged_teardown_still_writes_the_unconditional_unkey() -> N
     await _drain(poller)
 
     assert radio.calls == ["set_ptt(False)", *_TEARDOWN]
+
+
+# --- the ingress gate itself (rigplane.runtime.managed_tx_ingress) ----------
+
+
+def test_resolve_supervisor_propagates_a_raising_accessor() -> None:
+    """A broken accessor is a broken backend, never a positive 'unmanaged'.
+
+    This is the whole reason the two-step read exists rather than
+    ``getattr(radio, "managed_tx", None)``, whose default absorbs an
+    ``AttributeError`` raised *inside* the property and hands a managed rig to
+    the unsupervised write (MOR-1187, MOR-1193, MOR-1196).
+    """
+    with pytest.raises(RuntimeError, match="accessor exploded"):
+        resolve_supervisor(_BrokenSupervisorRadio(None))
+
+
+def test_resolve_supervisor_reads_absence_and_a_published_none_as_unmanaged() -> None:
+    """Both unmanaged shapes: no such member, and a member holding ``None``."""
+    assert resolve_supervisor(object()) is None
+    assert resolve_supervisor(_Radio(None)) is None
+
+
+def test_resolve_supervisor_answers_a_supervisor_with_no_privileged_surface() -> None:
+    """``ManagedTxSupervisor`` is the guaranteed minimum, and it is enough.
+
+    ``_Supervisor`` publishes ``request_on``/``release_owner`` and nothing else,
+    so ``PrivilegedTxApi`` correctly declines it. The gate must not: requiring
+    ``force_unkey`` here would read a conformant managed backend as unmanaged
+    and reopen the very fallthrough this gate closes.
+    """
+    supervisor = _Supervisor()
+    radio = _Radio(supervisor)
+
+    assert resolve_supervisor(radio) is supervisor
+    assert PrivilegedTxApi.bind(radio, _WS1) is None
+
+
+def test_bind_managed_tx_binds_only_a_stable_owner() -> None:
+    """The poller's old ``_managed_tx`` body, now shared and unchanged."""
+    supervisor = _Supervisor()
+    radio = _Radio(supervisor)
+
+    managed = bind_managed_tx(radio, "websocket", "ws-1")
+    assert managed is not None
+    assert managed.owner == _WS1
+    assert managed.supervisor is supervisor
+
+    # No stable owner anywhere else: HTTP (with or without a forged id), and a
+    # websocket entry that carries no id at all.
+    assert bind_managed_tx(radio, "http", None) is None
+    assert bind_managed_tx(radio, "http", "forged") is None
+    assert bind_managed_tx(radio, "websocket", None) is None
+    assert bind_managed_tx(radio, "websocket", "") is None
+    # Unmanaged radios bind nothing even from a stable owner.
+    assert bind_managed_tx(_Radio(None), "websocket", "ws-1") is None
+
+
+def test_refuse_key_without_owner_is_exactly_managed_minus_ownable() -> None:
+    """Refuse only where both halves hold: managed rig, unownable ingress.
+
+    An owned ingress is not refused — it keys through the supervisor — and an
+    unmanaged rig is not refused either, or HTTP PTT would break for every radio
+    in the field. The supervisor is resolved only once the ingress has already
+    failed the owner test, so the common websocket path runs no backend code.
+    """
+    managed_radio, unmanaged_radio = _Radio(_Supervisor()), _Radio(None)
+
+    assert refuse_key_without_owner(managed_radio, "http", None) is True
+    assert refuse_key_without_owner(managed_radio, "http", "forged") is True
+    assert refuse_key_without_owner(managed_radio, "websocket", None) is True
+    assert refuse_key_without_owner(managed_radio, "websocket", "ws-1") is False
+    assert refuse_key_without_owner(unmanaged_radio, "http", None) is False
+    assert refuse_key_without_owner(unmanaged_radio, "websocket", None) is False
+    # An owned ingress never resolves a supervisor, so a broken accessor on the
+    # radio cannot turn a keyable session into an error.
+    owned = refuse_key_without_owner(_BrokenSupervisorRadio(None), "websocket", "ws-1")
+    assert owned is False
+
+
+def test_the_poller_carries_no_second_copy_of_the_supervisor_read() -> None:
+    """MOR-1198: one two-step read, in the layer every ingress can reach.
+
+    A structural assertion because the duplication is what the bug is made of:
+    three call sites resolved the supervisor independently and two of them got
+    the failure discipline wrong. The poller now asks the gate; it builds no
+    ``TxOwner`` and reads no ``managed_tx`` member of its own.
+    """
+    gate_src = Path(managed_tx_ingress.__file__).read_text()
+    poller_src = Path(radio_poller_module.__file__).read_text()
+
+    assert "getattr_static" in gate_src  # the canonical read lives here
+    assert "getattr_static" not in poller_src
+    assert "ManagedTxApi.bind(" not in poller_src
+    assert "TxOwner(" not in poller_src
+    assert "managed_tx_ingress" in poller_src
