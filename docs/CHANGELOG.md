@@ -49,6 +49,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   panel unmounts, and on mobile also when the device rotates while latched
   (fail-closed).
 
+### Removed
+
+- **`rigplane.backends.icom7610.drivers.serial_stub` no longer ships in the
+  package (#2129, #2131).** `SerialMockRadio` and the serial framing test
+  doubles were test-only code living inside the wheel; they moved to
+  `tests/serial_stub.py` (non-shipping) so TX-safety audits of the shipping
+  package (`grep -rn "\.set_ptt(" src/`, MOR-999/MOR-1015/MOR-1016) contain no
+  test-double false positives. Nothing in the shipping package imported the
+  module and it was never a documented public API; external code that imported
+  the old path should vendor the double from the repo's test tree instead.
+
 ## [2.11.1] — 2026-06-22
 
 ### Fixed
