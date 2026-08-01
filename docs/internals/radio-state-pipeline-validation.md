@@ -95,9 +95,12 @@ PORT=8765
 RIGPLANE_TEST_PORT=$PORT uv run python - <<'PY' &
 import asyncio
 import os
+import sys
 from pathlib import Path
 
-from rigplane.backends.icom7610.drivers.serial_stub import SerialMockRadio
+sys.path.insert(0, "tests")  # SerialMockRadio is a non-shipping test double
+from serial_stub import SerialMockRadio
+
 from rigplane.web.server import WebConfig, WebServer
 
 
