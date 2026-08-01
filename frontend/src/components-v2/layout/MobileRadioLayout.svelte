@@ -1,3 +1,14 @@
+<script module lang="ts">
+  /**
+   * Per-surface PTT lease identity. The portrait FAB and the landscape strip
+   * are separate recognizer instances and a rotation swaps one for the other,
+   * so each needs its own sourceId: the App TX controller keys lease ownership
+   * by sourceId, and a shared id would let a torn-down surface release — or
+   * latch — a lease the freshly created one, or another source entirely, owns.
+   */
+  let mobilePttSeq = 0;
+</script>
+
 <script lang="ts">
   import { runtime } from '$lib/runtime';
   import { t } from '$lib/i18n';
@@ -47,12 +58,12 @@
     makeRfFrontEndHandlers, makeModeHandlers, makeFilterHandlers,
     makeAgcHandlers, makeRitXitHandlers, makeBandHandlers, makePresetHandlers,
     makeRxAudioHandlers, makeDspHandlers, makeTxHandlers, makeCwPanelHandlers,
-    makeSystemHandlers, makeAntennaHandlers, makeScanHandlers,
+    makeAntennaHandlers, makeScanHandlers,
   } from '../wiring/command-bus';
   import { getKeyboardConfig } from '$lib/stores/capabilities.svelte';
-  import { getTxAudioControl } from '$lib/runtime/adapters/tx-adapter';
-  const txAudio = getTxAudioControl();
-  import { onMount, onDestroy, untrack } from 'svelte';
+  import { getAppTxController } from '$lib/runtime/tx-controller/app-host';
+  import { createPttGesture, type PttGesture } from '../wiring/tx-ptt-gesture';
+  import { onMount, onDestroy } from 'svelte';
   import Toast from '../../components/shared/Toast.svelte';
 
   // ── State — via runtime ──
@@ -97,7 +108,6 @@
   const cwHandlers = makeCwPanelHandlers();
   const antennaHandlers = makeAntennaHandlers();
   const scanHandlers = makeScanHandlers();
-  const systemHandlers = makeSystemHandlers();
 
   // ── VFO layout ──
   let receiverDeckElement = $state<HTMLElement | null>(null);
@@ -304,133 +314,96 @@
     };
   });
 
-  // ── PTT ──
-  // Modes: 'idle' | 'held' (touch held down) | 'latched' (double-tap locked)
-  let pttMode = $state<'idle' | 'held' | 'latched'>('idle');
-  let pttActive = $derived(pttMode !== 'idle');
+  // ── PTT — App TX controller (MOR-1012) ──
+  // This layout owns no TX state. Audio start, key confirmation, safety
+  // deadlines and fail-closed release all live in the App TX controller; the
+  // mobile surfaces only render that state and feed it gesture intent, exactly
+  // as TxPanel does (MOR-1011). What used to live here — a local held/latched
+  // machine, a 3-minute safety timer and raw ptt_on/ptt_off commands — could
+  // dekey a lease owned by another source, so it is gone rather than adapted.
+  const txCtl = getAppTxController();
+  let txState = $state.raw(txCtl.snapshot());
+  const stopWatchingTx = txCtl.subscribe((next) => { txState = next; });
+  // Registered BEFORE the recognizer effect below on purpose: Svelte tears
+  // effects down in creation order, so the subscription is dropped first and
+  // the teardown release runs to completion inside the controller instead of
+  // bouncing back into a component that is already being destroyed.
+  onDestroy(stopWatchingTx);
 
-  // ── TX color (depends on mainVfo, tx, pttActive — declared above) ──
+  let owned = $derived(txState.guard !== null);
+  let latched = $derived(txState.intent === 'latched');
+  // "The rig is keyed" for display purposes: our own lease, or an observed
+  // radio-side TX that may well belong to a different source.
+  let txKeyed = $derived(owned || txState.radioTx === 'on');
+  // PttFab's visual contract is unchanged — it still takes idle/held/latched.
+  let pttMode: 'idle' | 'held' | 'latched' = $derived(
+    latched ? 'latched' : owned ? 'held' : 'idle'
+  );
+
+  // ── TX color (depends on mainVfo, tx, txKeyed — declared above) ──
   let txPermit = $derived(getTxPermit(mainVfo.freq, caps?.txBands));
   let txIndicatorColor = $derived(
-    (tx.txActive || pttActive) ? 'var(--v2-accent-red, #ef4444)' :
+    (tx.txActive || txKeyed) ? 'var(--v2-accent-red, #ef4444)' :
     txPermit === 'allowed' ? 'var(--v2-accent-green, #4ade80)' :
     'var(--v2-text-dim, #555)'
   );
-  let lastPttDown = 0;
-  let pttPressActive = false;
-  let txStartToken = 0;
-  const DOUBLE_TAP_MS = 350;
-  const PTT_SAFETY_TIMEOUT_MS = 3 * 60 * 1000; // 3 minutes
-  let pttSafetyTimer: ReturnType<typeof setTimeout> | null = null;
 
-  function clearPttSafety() {
-    if (pttSafetyTimer) {
-      clearTimeout(pttSafetyTimer);
-      pttSafetyTimer = null;
-    }
-  }
+  // One recognizer per input surface. The portrait FAB and the landscape strip
+  // are never mounted together and a rotation swaps one for the other; a shared
+  // recognizer would carry an armed release window across that swap, where the
+  // first press on the new surface would be misread as the second half of a
+  // double-tap. Re-keying the effect on the surface destroys the old recognizer
+  // instead — `destroy()` releases a live lease exactly once, which is why
+  // rotating away while keyed or latched now drops TX rather than stranding it.
+  let pttSurface: 'none' | 'portrait' | 'landscape' = $derived(
+    !txCapable ? 'none' : isLandscape ? 'landscape' : 'portrait'
+  );
+  let ptt: PttGesture | null = null;
 
-  function startPttSafety() {
-    clearPttSafety();
-    pttSafetyTimer = setTimeout(() => {
-      // Safety: force PTT off after timeout
-      pttMode = 'idle';
-      disengageTx();
-    }, PTT_SAFETY_TIMEOUT_MS);
-  }
-
-  async function engageTx(token: number): Promise<boolean> {
-    const err = await txAudio.startTx();
-    if (token !== txStartToken || pttMode !== 'held' || !pttPressActive) {
-      if (!err) txAudio.stopTx();
-      return false;
-    }
-    if (err) {
-      console.warn('TX audio did not start:', err);
-      return false;
-    }
-    systemHandlers.onPttOn();
-    return true;
-  }
-
-  function disengageTx() {
-    systemHandlers.onPttOff();
-    txAudio.stopTx();
-  }
-
-  async function pttDown() {
-    const now = Date.now();
-    if (pttMode === 'latched') {
-      // Tap while latched → unlock, go idle
-      pttPressActive = false;
-      txStartToken += 1;
-      pttMode = 'idle';
-      disengageTx();
-      clearPttSafety();
-      return;
-    }
-    if (now - lastPttDown < DOUBLE_TAP_MS && pttMode === 'held') {
-      // Double-tap → latch
-      pttPressActive = false;
-      pttMode = 'latched';
-      startPttSafety();
-      lastPttDown = 0;
-      return;
-    }
-    // Normal press → held
-    lastPttDown = now;
-    pttPressActive = true;
-    pttMode = 'held';
-    const token = ++txStartToken;
-    if (await engageTx(token)) {
-      startPttSafety();
-    } else {
-      pttMode = 'idle';
-      lastPttDown = 0;
-    }
-  }
-
-  function pttUp() {
-    pttPressActive = false;
-    txStartToken += 1;
-    if (pttMode === 'held') {
-      // Release after single tap → off
-      // But give a moment for double-tap detection
-      setTimeout(() => {
-        if (pttMode === 'held') {
-          pttMode = 'idle';
-          disengageTx();
-          clearPttSafety();
-        }
-      }, DOUBLE_TAP_MS);
-    }
-    // If latched, don't turn off on release
-  }
-
-  // Orientation-change safety net (codex P1 on PR #931 / #934 regression).
-  // PttFab is conditionally mounted on `!isLandscape`; rotation removes
-  // the component so its `pointerup` never fires. Without this guard,
-  // an in-progress press would leave `pttMode === 'held'` and TX keyed
-  // until the 3-minute safety timer.
-  //
-  // Must fire ONLY on the transition `portrait → landscape`, not on
-  // every `pttMode` change — otherwise landscape hold-to-talk engages
-  // and is instantly released by this same effect (codex P1 on PR #934).
-  //
-  // Plain `let` for prevIsLandscape so it doesn't become a reactive
-  // dep; `untrack` on `pttMode` so only orientation changes re-run the
-  // effect body.
-  let prevIsLandscape = false;
   $effect(() => {
-    const nowLandscape = isLandscape;
-    const enteredLandscape = !prevIsLandscape && nowLandscape;
-    prevIsLandscape = nowLandscape;
-    if (enteredLandscape && untrack(() => pttMode) === 'held') {
-      pttMode = 'idle';
-      disengageTx();
-      clearPttSafety();
-    }
+    const surface = pttSurface;
+    if (surface === 'none') return;
+    const sourceId = `mobile-ptt-${surface}-${++mobilePttSeq}`;
+    let leaseSeq = 0;
+    const gesture = createPttGesture(
+      // Read the controller DIRECTLY rather than the subscribed `txState`:
+      // teardown runs after the subscription has already been dropped, and a
+      // stale snapshot there would release a guard that has since moved on.
+      {
+        guard: () => txCtl.snapshot().guard,
+        latched: () => txCtl.snapshot().intent === 'latched',
+      },
+      {
+        start: () => {
+          // A stale fault would swallow the start (the model only leaves
+          // 'failed' on an explicit reset), so clear it as part of the press —
+          // otherwise one denied press bricks mobile TX for the session.
+          if (txCtl.snapshot().phase === 'failed') txCtl.resetFault();
+          txCtl.start(sourceId, `${sourceId}-${++leaseSeq}`, 'momentary');
+        },
+        latch: (guard) => txCtl.setIntent(sourceId, guard, 'latched'),
+        release: (guard) => txCtl.release(sourceId, guard),
+      },
+      {
+        schedule: (callback, ms) => setTimeout(callback, ms),
+        cancel: (handle) => clearTimeout(handle as ReturnType<typeof setTimeout>),
+      },
+    );
+    ptt = gesture;
+    return () => { ptt = null; gesture.destroy(); };
   });
+
+  // PttFab's 50 ms hold timer is not cleared when it unmounts, so a press that
+  // began in portrait can still fire onDown() after a rotation has already
+  // swapped in the landscape recognizer. Both FAB entry points therefore check
+  // that portrait is still the live surface before touching the recognizer.
+  function fabDown() {
+    if (pttSurface === 'portrait') ptt?.down();
+  }
+
+  function fabUp() {
+    if (pttSurface === 'portrait') ptt?.up();
+  }
 
   // ── Landscape PTT guards (#843 parity with FAB) ──
   // Adds pointermove-8px cancel + haptic + TX-permit dim-state so the
@@ -444,8 +417,8 @@
 
   function lsPttPointerDown(event: PointerEvent) {
     if (pttMode === 'latched') {
-      // Tap-to-unlatch — delegate to shared state machine.
-      pttDown();
+      // Tap-to-unlatch — the recognizer releases the live lease on a down().
+      ptt?.down();
       return;
     }
     if (txPermit === 'denied' && pttMode === 'idle') {
@@ -464,7 +437,7 @@
     if (typeof navigator !== 'undefined' && typeof navigator.vibrate === 'function') {
       try { navigator.vibrate(10); } catch { /* noop */ }
     }
-    pttDown();
+    ptt?.down();
   }
 
   function lsPttPointerMove(event: PointerEvent) {
@@ -473,14 +446,14 @@
     const dy = event.clientY - lsPttStartY;
     if (dx * dx + dy * dy > LS_PTT_MOVE_CANCEL_PX * LS_PTT_MOVE_CANCEL_PX) {
       lsPttEngaged = false;
-      pttUp();
+      ptt?.up();
     }
   }
 
   function lsPttPointerUp() {
     if (!lsPttEngaged) return;
     lsPttEngaged = false;
-    pttUp();
+    ptt?.up();
   }
 
   let lsLastDeniedPressAt = 0;
@@ -556,8 +529,8 @@
       {#if txCapable}
         <button
           class="m-ls-ptt"
-          class:m-ptt-held={pttMode === 'held'}
-          class:m-ptt-latched={pttMode === 'latched'}
+          class:m-ptt-held={owned && !latched}
+          class:m-ptt-latched={latched}
           class:m-ls-ptt-dim={txPermit === 'denied' && pttMode === 'idle'}
           onpointerdown={lsPttPointerDown}
           onpointermove={lsPttPointerMove}
@@ -736,7 +709,7 @@
             <!-- Power readout (tap → power modal) -->
             <button type="button" class="m-tx-info" disabled={!tx.rfPowerAvailable} onclick={() => (powerModalOpen = true)}>
               <span class="m-tx-power-value">{tx.rfPowerAvailable ? formatPower(tx.rfPower) : '—'}</span>
-              {#if tx.txActive || pttActive}
+              {#if tx.txActive || txKeyed}
                 <span class="m-tx-swr-value">SWR {meter.swr > 0 ? (meter.swr / 10).toFixed(1) : '—'}</span>
               {/if}
             </button>
@@ -764,7 +737,7 @@
             <!-- Inline PTT button removed (#840) — PttFab at bottom-right
                  is the persistent, guarded TX affordance. -->
           </div>
-          {#if tx.txActive || pttActive}
+          {#if tx.txActive || txKeyed}
             <div class="m-tx-meter">
               <DockMeterPanel
                 sValue={mainVfo.sValue}
@@ -938,13 +911,14 @@
   <!-- Guarded sticky PTT FAB (#840) — persistent 1-tap TX in portrait only.
        Landscape has its own guarded `.m-ls-ptt` button (#843); mounting
        FAB there would give two simultaneous TX controls (codex P1 on
-       PR #928). Layered guards live in the FAB component. State machine
-       stays in the parent (pttMode + 3-min safety timer + double-tap). -->
+       PR #928). Layered guards (50 ms hold, 8 px move-cancel, haptics,
+       TX-permit two-step) live in the FAB component; the TX state machine
+       lives in the App TX controller (MOR-1012). -->
   <PttFab
     mode={pttMode}
     txPermit={txPermit}
-    onDown={pttDown}
-    onUp={pttUp}
+    onDown={fabDown}
+    onUp={fabUp}
   />
 {/if}
 
