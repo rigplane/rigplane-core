@@ -20,6 +20,14 @@ cannot be supervised must degrade to refusing TX, never back to ``None``,
 because ``None`` hands the next key to the unsupervised legacy write with no
 lease, no owner and no watchdog (MOR-1193).
 
+PR7 closes the series with the evidence and the escape hatch. The evidence is
+identity: one radio hands Web, CLI and SDK the *same* supervisor object, two
+radios stay isolated down to their leases, and exactly one module in the
+package ever constructs a runtime -- the structural claim no ``is`` assertion
+can make on its own. The escape hatch is ``RIGPLANE_MANAGED_TX=0``, which stops
+assembly before it starts and returns TX to the legacy unsupervised write, loud
+enough that nobody runs that way by accident.
+
 No ``MagicMock`` stands in for a protocol-shaped object here (a mock answers
 every ``getattr``, so it could never show the unmanaged path staying
 unmanaged, and it satisfies a ``runtime_checkable`` protocol on 3.11 but not
@@ -35,10 +43,12 @@ import asyncio
 import inspect
 import logging
 from collections.abc import Iterator
+from pathlib import Path
 
 import pytest
 
 from rigplane.backends.icom7610 import Icom7610SerialRadio
+from rigplane.core.env_config import get_managed_tx_enabled
 from rigplane.core.radio_protocol import ManagedTxApi
 from rigplane.core.tx_safety import (
     RadioTx,
@@ -48,6 +58,7 @@ from rigplane.core.tx_safety import (
 )
 from rigplane.exceptions import CommandError
 from rigplane.runtime import radio as radio_module
+from rigplane.runtime.managed_tx_ingress import bind_managed_tx
 from rigplane.runtime.radio import CoreRadio, IcomRadio
 from rigplane.web.server import WebServer
 from test_web_recovery_durable_off import _Observer, _Provider
@@ -244,8 +255,14 @@ class _AssembledRadio(CoreRadio):
     assembly.
     """
 
-    def __init__(self, provider: _Provider, *, answers_probe: bool = True) -> None:
-        super().__init__("127.0.0.1")
+    def __init__(
+        self,
+        provider: _Provider,
+        *,
+        answers_probe: bool = True,
+        host: str = "127.0.0.1",
+    ) -> None:
+        super().__init__(host)
         self.provider = provider
         self.answers_probe = answers_probe
         self.probes: list[bytes] = []
@@ -318,9 +335,14 @@ def _release_assembled_radios() -> Iterator[None]:
 
 
 async def _connected(
-    provider: _Provider | None = None, *, answers_probe: bool = True
+    provider: _Provider | None = None,
+    *,
+    answers_probe: bool = True,
+    host: str = "127.0.0.1",
 ) -> _AssembledRadio:
-    radio = _AssembledRadio(provider or _Provider([]), answers_probe=answers_probe)
+    radio = _AssembledRadio(
+        provider or _Provider([]), answers_probe=answers_probe, host=host
+    )
     _LIVE.append(radio)
     await radio.connect()
     return radio
@@ -824,3 +846,295 @@ async def test_an_unmanaged_radio_disconnects_through_the_real_lifecycle() -> No
 
     assert radio.managed_tx is None
     assert not radio.connected
+
+
+# ===========================================================================
+# PR7 -- the identity evidence (E1/E2) and the RIGPLANE_MANAGED_TX kill switch
+# ===========================================================================
+
+# The owners three ingresses actually mint. Copied in shape, not imported:
+# ``cli._CLI_TX_OWNER`` and ``SyncRadio._tx_owner`` are built once per process
+# and per session respectively, and binding those very objects here would prove
+# only that two module globals are equal to themselves.
+_WEB_SESSION_ID = "ws-control-7"
+_CLI_OWNER = TxOwner(TxSource.SDK, "cli-0e1d2c3b4a5968778695a4b3c2d1e0f9")
+_SDK_OWNER = TxOwner(TxSource.SDK, "9f8e7d6c5b4a39281706f5e4d3c2b1a0")
+
+
+# --- E1: one radio, one supervisor, whichever door you come in through -----
+
+
+async def test_web_cli_and_sdk_binds_all_reach_the_same_supervisor() -> None:
+    # The claim MOR-1016 exists to make. Three ingresses bind three facades
+    # over one rig by three different routes -- the Web/poller helper, the
+    # CLI's process-wide owner, the SDK's per-session owner -- and every one of
+    # them must land on the *same object*, because the supervisor is where the
+    # lease, the observation and the watchdog live. Two supervisors over one
+    # PTT line is two independent leases over one transmitter, which is the
+    # failure this whole subsystem exists to prevent, and equality would not
+    # catch it: two runtimes over one rig would compare equal on target_id.
+    radio = await _connected()
+
+    web = bind_managed_tx(radio, "websocket", _WEB_SESSION_ID)
+    cli = ManagedTxApi.bind(radio, _CLI_OWNER)
+    sdk = ManagedTxApi.bind(radio, _SDK_OWNER)  # sync.py:_execute_ptt's bind
+
+    assert web is not None and cli is not None and sdk is not None
+    assert web.supervisor is cli.supervisor
+    assert cli.supervisor is sdk.supervisor
+    # ...and it is the radio's own runtime, not a per-facade wrapper over it.
+    assert web.supervisor is radio.managed_tx
+    assert web.supervisor is radio._managed_tx_runtime
+    # Shared supervisor, distinct identities: the owner is what a release is
+    # matched against, so collapsing those would let one ingress unkey another.
+    assert len({web.owner, cli.owner, sdk.owner}) == 3
+
+
+async def test_the_shared_supervisor_survives_a_reconnect() -> None:
+    # Identity is only worth anything if it holds across the event that
+    # rebuilds the CI-V port. An ingress binds once, at session start, and
+    # never re-reads ``managed_tx``; if a reconnect swapped the runtime, that
+    # facade would go on keying an object nothing else consults.
+    radio = await _connected()
+    before = bind_managed_tx(radio, "websocket", _WEB_SESSION_ID)
+    assert before is not None
+
+    await radio.connect()
+
+    after = ManagedTxApi.bind(radio, _SDK_OWNER)
+    assert after is not None
+    assert after.supervisor is before.supervisor
+
+
+# --- E1: two radios, two runtimes, two independent leases ------------------
+
+
+async def test_two_radios_are_isolated_runtimes_with_isolated_leases() -> None:
+    # One process, two rigs. Isolation has to hold at three levels, and the
+    # first two are cheap to get right by accident: distinct objects, distinct
+    # target ids, and -- the one that matters on the air -- a lease taken on
+    # one rig must not deny a key on the other. A shared supervisor would
+    # answer BUSY here and the second operator would simply never transmit.
+    first = await _connected(host="127.0.0.1")
+    second = await _connected(host="192.0.2.7")
+
+    assert first._managed_tx_runtime is not None
+    assert second._managed_tx_runtime is not None
+    assert first._managed_tx_runtime is not second._managed_tx_runtime
+    assert first._managed_tx_runtime.target_id == "rigplane:127.0.0.1:50002"
+    assert second._managed_tx_runtime.target_id == "rigplane:192.0.2.7:50002"
+
+    holder = ManagedTxApi.bind(first, _CLI_OWNER)
+    rival_on_first = ManagedTxApi.bind(first, _SDK_OWNER)
+    rival_on_second = ManagedTxApi.bind(second, _SDK_OWNER)
+    assert holder is not None
+    assert rival_on_first is not None and rival_on_second is not None
+
+    assert (await holder.set_ptt(True)).outcome is TxOutcome.ACCEPTED
+
+    # Same second owner, two rigs, two answers -- real supervisor semantics,
+    # not a stubbed verdict: BUSY on the rig whose lease is held, ACCEPTED on
+    # the one that is free.
+    assert (await rival_on_first.set_ptt(True)).outcome is TxOutcome.BUSY
+    assert (await rival_on_second.set_ptt(True)).outcome is TxOutcome.ACCEPTED
+
+    assert "ptt(on)" in first.provider.log
+    assert "ptt(on)" in second.provider.log
+
+    await holder.set_ptt(False)
+    await rival_on_second.set_ptt(False)
+
+
+# --- E2: exactly one construction site, and it is not in an ingress --------
+
+
+def _package_root() -> Path:
+    """The ``rigplane`` package these tests actually imported.
+
+    Keyed off the imported module rather than ``cwd`` so the scan reads the
+    tree under test -- the venv-crosstalk trap, where an editable install
+    resolves to a *different* worktree's source and a grep run from the
+    checkout would be auditing the wrong files entirely.
+    """
+    return Path(radio_module.__file__).parent.parent
+
+
+def _construction_sites() -> list[str]:
+    """Every source line in the package that constructs a managed runtime.
+
+    Read rather than grepped so the assertion travels with the test, and
+    line-wise so a module that built two would be counted twice. The class
+    statement in ``managed_radio_runtime.py`` is not a match: it declares no
+    bases, so only a call carries the ``(``.
+    """
+    root = _package_root()
+    return sorted(
+        str(path.relative_to(root))
+        for path in root.rglob("*.py")
+        for line in path.read_text().splitlines()
+        if "ManagedRadioRuntime(" in line
+    )
+
+
+def test_exactly_one_module_in_src_constructs_a_managed_runtime() -> None:
+    # The structural half of the identity claim. Identity by ``is`` proves the
+    # binds agree *today*; this proves nothing can quietly disagree tomorrow.
+    # A second construction site anywhere in the package would hand some caller
+    # a second supervisor over the same PTT line, and no ``is`` assertion
+    # written against the first one would ever notice.
+    assert _construction_sites() == ["runtime/radio.py"]
+
+
+def test_no_ingress_module_builds_its_own_managed_runtime() -> None:
+    # Stated separately from the count because it is the specific mistake the
+    # seam choice was made to prevent: assembly belongs to ``CoreRadio``, below
+    # every UI server, so ``web``, ``rigctld`` and ``cli`` can only ever *bind*
+    # what the radio publishes. A runtime built in an ingress would supervise
+    # only that ingress's keys and would be invisible to the other two -- and
+    # to a headless SDK caller, which never constructs an ingress at all.
+    root = _package_root()
+    offenders = [
+        site
+        for site in _construction_sites()
+        if site.startswith(("web/", "rigctld/", "cli/"))
+    ]
+
+    assert offenders == []
+    # And the guard is not vacuous: those packages exist and were scanned.
+    for package in ("web", "rigctld", "cli"):
+        assert (root / package).is_dir()
+        assert any(path.suffix == ".py" for path in (root / package).rglob("*.py"))
+
+
+# --- the kill switch: RIGPLANE_MANAGED_TX=0 --------------------------------
+
+
+@pytest.mark.parametrize(
+    ("raw", "enabled"),
+    [
+        ("0", False),
+        ("false", False),
+        ("off", False),
+        ("no", False),
+        ("OFF", False),  # spelling is case- and whitespace-insensitive
+        (" 0 ", False),
+        ("1", True),
+        ("true", True),
+        ("", True),  # set-but-empty reads as unset, not as off
+        ("maybe", True),  # unparseable resolves *towards* supervision
+    ],
+)
+def test_kill_switch_spellings(
+    monkeypatch: pytest.MonkeyPatch, raw: str, enabled: bool
+) -> None:
+    monkeypatch.setenv("RIGPLANE_MANAGED_TX", raw)
+
+    assert get_managed_tx_enabled() is enabled
+
+
+def test_kill_switch_defaults_to_managed_when_unset(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("RIGPLANE_MANAGED_TX", raising=False)
+
+    assert get_managed_tx_enabled() is True
+
+
+async def test_the_kill_switch_leaves_the_radio_unmanaged_and_says_so(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    # The escape hatch, whole. With the switch set, ``connect()`` builds
+    # nothing: ``managed_tx`` stays ``None``, which is exactly the reading
+    # every ingress already treats as "unmanaged", so all of them fall back to
+    # the legacy ``set_ptt`` write that shipped before MOR-1016 -- an operator
+    # whose rig cannot be supervised gets a working transmitter back.
+    monkeypatch.setenv("RIGPLANE_MANAGED_TX", "0")
+    caplog.set_level(logging.WARNING, logger="rigplane.runtime.radio")
+
+    radio = await _connected()
+
+    assert radio.connected  # the rest of the session is untouched
+    assert radio.managed_tx is None
+    assert radio._managed_tx_runtime is None
+    assert radio.tx_snapshot is None
+    assert radio.provider.log == []  # no probe, no capture, no seed
+    # Loud, and loud about *what it costs*: this is a field escape hatch, not
+    # a preference, and the operator who set it is running unsupervised.
+    warning = next(
+        record
+        for record in caplog.records
+        if record.levelno == logging.WARNING
+        and "RIGPLANE_MANAGED_TX" in record.getMessage()
+    )
+    assert "legacy" in warning.getMessage()
+
+    # Both bind routes decline, which is what puts every ingress back on the
+    # legacy path rather than leaving one of them with a half-built facade.
+    assert ManagedTxApi.bind(radio, _SDK_OWNER) is None
+    assert bind_managed_tx(radio, "websocket", _WEB_SESSION_ID) is None
+
+    writes: list[bool] = []
+
+    async def _record(on: bool) -> None:
+        writes.append(on)
+
+    radio.set_ptt = _record  # type: ignore[method-assign]
+    await radio.set_ptt(True)
+    await radio.set_ptt(False)
+
+    assert writes == [True, False]
+
+
+async def test_the_kill_switch_warns_on_every_connect_not_just_the_first(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    # A once-at-startup notice scrolls off and the rig runs unsupervised for
+    # the rest of the week. Every connect re-states it, which also means the
+    # arming marker is never latched: the radio stays eligible to arm the
+    # moment the switch comes off.
+    monkeypatch.setenv("RIGPLANE_MANAGED_TX", "off")
+    caplog.set_level(logging.WARNING, logger="rigplane.runtime.radio")
+
+    radio = await _connected()
+    await radio.connect()
+
+    disabled = [r for r in caplog.records if "RIGPLANE_MANAGED_TX" in r.getMessage()]
+    assert len(disabled) == 2
+    assert radio._managed_tx_armed_epoch is None
+
+
+async def test_the_switch_is_read_when_arming_not_when_importing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Import-time caching would make the knob a launch-only setting and would
+    # quietly pin whichever value the first test in a session happened to set.
+    # The same radio, reconnected with the switch removed, arms normally.
+    monkeypatch.setenv("RIGPLANE_MANAGED_TX", "0")
+    radio = await _connected()
+    assert radio.managed_tx is None
+
+    monkeypatch.delenv("RIGPLANE_MANAGED_TX")
+    await radio.connect()
+
+    assert radio.managed_tx is not None
+    snapshot = radio.tx_snapshot
+    assert snapshot is not None
+    assert (snapshot.provider_ready, snapshot.radio_tx) == (True, RadioTx.OFF)
+
+
+async def test_a_recovery_rearm_cannot_arm_a_switched_off_radio(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # The hole a gate on ``_arm_managed_tx`` alone would leave: the control
+    # phase re-arms the radio itself on every CI-V recovery, and that path
+    # reaches the same construction site. If it were not gated too, the first
+    # reconnect after a disabled connect would arm the radio behind the
+    # operator's back -- an escape hatch that closes on its own is worse than
+    # none, because nobody watches for it.
+    monkeypatch.setenv("RIGPLANE_MANAGED_TX", "0")
+    radio = await _connected()
+
+    await radio.rearm_managed_tx()
+
+    assert radio.managed_tx is None
+    assert radio._managed_tx_runtime is None
