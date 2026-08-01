@@ -57,6 +57,7 @@ class TxOutcome(StrEnum):
 
 class TxReleaseReason(StrEnum):
     OPERATOR_RELEASE = "operator_release"
+    OPERATOR_FORCED_UNKEY = "operator_forced_unkey"
     SOURCE_DETACHED = "source_detached"
     PRESENTATION_REPLACED = "presentation_replaced"
     CLIENT_DISCONNECTED = "client_disconnected"
@@ -204,6 +205,12 @@ _SYSTEM_RELEASE_REASONS = frozenset(
         TxReleaseReason.ADMIN_EMERGENCY_STOP,
     }
 )
+
+# Forcing an unkey is an operator act, so it carries one operator-attributed
+# reason the system lane must never be able to claim: ``emergency_release``
+# keeps rejecting ``OPERATOR_FORCED_UNKEY``, and ``force_unkey`` keeps
+# rejecting ``OPERATOR_RELEASE``.
+_FORCE_UNKEY_REASONS = _SYSTEM_RELEASE_REASONS | {TxReleaseReason.OPERATOR_FORCED_UNKEY}
 
 
 class TxSafetySupervisor:
@@ -403,6 +410,41 @@ class TxSafetySupervisor:
             self._release_current(reason)
             if self._lease
             else self._result(TxOutcome.NOOP)
+        )
+
+    def force_unkey(self, owner: TxOwner, *, reason: TxReleaseReason) -> TxTransition:
+        """Adopt an unowned key so the durable OFF has a lease to run under.
+
+        The minted lease is a release obligation, never a key-down: it exists
+        only so the OFF inherits the retry ladder, generation-change survival
+        and readiness-loss parking every managed release already gets, and it
+        self-clears on the confirming observation.
+
+        This must never gate on ``TxPhase.EXTERNAL_UNOWNED`` nor require a
+        fresh PTT read first. A supervisor in a freshly started process has no
+        observation at all, so it reports ``IDLE``/``UNKNOWN`` while the rig is
+        keyed -- exactly the case this exists for (MOR-1182) -- and the read
+        that would settle the question may be broken by the same fault. Live
+        leases are refused rather than preempted; preemption is MOR-1179's
+        territory, reached by exposing ``emergency_release``.
+        """
+        if reason not in _FORCE_UNKEY_REASONS:
+            raise ValueError("forced unkey requires a trusted or operator reason")
+        if self._release is not None:
+            # A durable OFF is already owed; routing this through
+            # ``_release_current`` would rewrite a foreign terminal reason.
+            return self._result(TxOutcome.IDEMPOTENT)
+        if self._lease is not None:
+            return self._result(TxOutcome.BUSY)
+        if self._active is not None:
+            return self._result(TxOutcome.BUSY)
+        if not self._ready or self._generation is None:
+            return self._result(TxOutcome.NOT_READY)
+        now = self._clock()
+        self._lease = _Lease(self._id_factory(), owner)
+        self._begin_release(reason, now)
+        return self._result(
+            TxOutcome.ACCEPTED, self._service_release(force=True, now=now)
         )
 
     def settle_attempt(
