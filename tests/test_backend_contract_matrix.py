@@ -9,7 +9,7 @@ from typing import Protocol
 import pytest
 
 from rigplane import IC_7610_ADDR
-from rigplane.backends.icom7610.drivers.serial_stub import SerialMockRadio
+from serial_stub import SerialMockRadio
 from rigplane.commands import (
     CONTROLLER_ADDR,
     _CMD_LEVEL,

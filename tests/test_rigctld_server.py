@@ -19,7 +19,7 @@ from unittest.mock import ANY, AsyncMock, MagicMock, patch
 
 import pytest
 
-from rigplane.backends.icom7610.drivers.serial_stub import SerialMockRadio
+from serial_stub import SerialMockRadio
 from rigplane.core.acquisition_scheduler import (
     AcquisitionExecutionResult,
     AcquisitionPriority,

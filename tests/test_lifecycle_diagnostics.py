@@ -12,7 +12,7 @@ import logging
 import pytest
 
 from rigplane.runtime._connection_state import RadioConnectionState
-from rigplane.backends.icom7610.drivers.serial_stub import SerialMockRadio
+from serial_stub import SerialMockRadio
 from rigplane.radio import IcomRadio
 from rigplane.rigctld.contract import RigctldConfig
 from rigplane.rigctld.server import RigctldServer
