@@ -58,8 +58,14 @@ from rigplane.core.tx_safety import (
 )
 from rigplane.exceptions import CommandError
 from rigplane.runtime import radio as radio_module
+from rigplane.runtime._control_phase import ControlPhaseSessionMechanism
 from rigplane.runtime.managed_tx_ingress import bind_managed_tx
 from rigplane.runtime.radio import CoreRadio, IcomRadio
+from rigplane.runtime.session_lifecycle import (
+    AttemptOutcome,
+    AttemptResult,
+    CoreRadioSessionLifecycle,
+)
 from rigplane.web.server import WebServer
 from test_web_recovery_durable_off import _Observer, _Provider
 
@@ -846,6 +852,178 @@ async def test_an_unmanaged_radio_disconnects_through_the_real_lifecycle() -> No
 
     assert radio.managed_tx is None
     assert not radio.connected
+
+
+# ===========================================================================
+# PR8 -- every path that gives the session up runs the managed teardown
+# ===========================================================================
+#
+# PR4 hung the teardown off ``CoreRadio.disconnect()``, which is one of the
+# ways a session ends and not the one that matters most: the SIGTERM hook
+# (``CoreRadioSessionLifecycle.request_shutdown``) and recovery exhaustion both
+# reach the release without passing through it, so a killed process closed the
+# transport with the supervisor still armed over the captured CI-V port and a
+# possibly-held lease -- no OFF, not even attempted. The teardown therefore
+# moved down to ``ControlPhaseSessionMechanism.release()``, the single funnel
+# all three go through, and ``disconnect()``'s own call stayed where it is
+# (the lifecycle can treat its teardown as an idempotent no-op and never reach
+# the mechanism at all). Which makes running it twice the ordinary case, not
+# the exceptional one -- pinned below.
+
+
+class _ControlPhase:
+    """The packet mechanism reduced to what the session adapter drives.
+
+    ``_Session`` above stands in for the whole policy layer, which is right for
+    everything PR4 claims but cannot state PR8's: ``request_shutdown`` is a
+    method on the *real* lifecycle, and the teardown now lives in the *real*
+    ``ControlPhaseSessionMechanism``. So both of those are genuine here and the
+    stub moves one layer down, to the UDP packet I/O -- the same line
+    ``_AssembledRadio`` already draws.
+
+    ``disconnect`` logs into the provider's log for the same reason
+    ``_Session.disconnect`` does: the claim is an *ordering* one -- the durable
+    OFF against the close of the session that carries it -- and one list is the
+    only way to state it.
+    """
+
+    def __init__(self, radio: _AssembledRadio) -> None:
+        self._host = radio
+        self.closes = 0
+
+    async def connect_attempt(self) -> AttemptResult:
+        radio = self._host
+        radio._civ_port = 50002
+        radio._civ_transport = _CivPort()  # type: ignore[assignment]
+        radio._advance_civ_generation("test-connect")
+        radio._connected = True
+        return AttemptResult(outcome=AttemptOutcome.CONNECTED)
+
+    async def disconnect(self) -> None:
+        radio = self._host
+        if not radio._connected:
+            return
+        self.closes += 1
+        radio.provider.log.append("session_close")
+        radio._civ_transport = None
+        radio._connected = False
+
+    async def release(self) -> None:
+        # The partial-claim branch of the adapter; nothing here is claimed
+        # differently, so it closes the same way.
+        await self.disconnect()
+
+    async def soft_reconnect(self) -> None:
+        raise AssertionError("no test below drives recovery through this stub")
+
+
+class _LifecycleRadio(_RegistryRadio):
+    """A registry-real radio driven by the production lifecycle + adapter."""
+
+    def __init__(self, provider: _Provider) -> None:
+        super().__init__(provider)
+        self.control_phase = _ControlPhase(self)
+        self._session_lifecycle = CoreRadioSessionLifecycle(  # type: ignore[assignment]
+            ControlPhaseSessionMechanism(self.control_phase)  # type: ignore[arg-type]
+        )
+
+
+async def _connected_over_the_real_lifecycle() -> _LifecycleRadio:
+    radio = _LifecycleRadio(_Provider([]))
+    _LIVE.append(radio)
+    await radio.connect()
+    return radio
+
+
+async def _keyed(radio: _LifecycleRadio) -> None:
+    api = ManagedTxApi.bind(radio, _OWNER)
+    assert api is not None
+    assert (await api.set_ptt(True)).outcome is TxOutcome.ACCEPTED
+    assert radio.provider._keyed is True
+
+
+async def test_request_shutdown_releases_the_tx_it_finds_armed() -> None:
+    # The gap PR8 closes, stated on the same log PR4 used for disconnect(): a
+    # SIGTERM'd process owes the rig the OFF its held lease implies, and owes
+    # it *before* the transport that carries it goes away.
+    radio = await _connected_over_the_real_lifecycle()
+    await _keyed(radio)
+    log = radio.provider.log
+
+    await radio._session_lifecycle.request_shutdown()
+
+    assert "ptt(off)" in log
+    assert log.index("ptt(off)") < log.index("session_close")
+    # Not merely written: the confirming read settled it, so the rig is
+    # observably unkeyed rather than optimistically assumed to be.
+    assert radio.provider._keyed is False
+    assert radio.control_phase.closes == 1
+
+
+async def test_request_shutdown_leaves_no_managed_tx_behind() -> None:
+    # The other half of the teardown: the members and the CI-V layer's
+    # generation-keyed registry. A shutdown path that carried the OFF out but
+    # left the port registered would advertise a supervisor over a closed
+    # socket and collide with the next session's generation 1.
+    radio = await _connected_over_the_real_lifecycle()
+    await _keyed(radio)
+    civ = radio._civ_runtime
+    assert list(civ._managed_tx_ports) == [1]
+
+    await radio._session_lifecycle.request_shutdown()
+
+    assert radio.managed_tx is None
+    assert radio._managed_tx_bound_port is None
+    assert radio._managed_tx_armed_epoch is None
+    assert civ._managed_tx_ports == {}
+    assert civ._poisoned_managed_tx_generations == set()
+    assert civ._managed_tx_sends == {}
+    assert civ._managed_tx_retirements == {}
+
+
+async def test_a_shut_down_radio_arms_a_fresh_supervisor_on_the_next_connect() -> None:
+    # Armed is not the claim; keyable is. A process that came back after a
+    # SIGTERM-shaped close has to get supervision back with it, which is only
+    # true if the shutdown released the registry as well as the runtime.
+    radio = await _connected_over_the_real_lifecycle()
+    await _keyed(radio)
+    first = radio.managed_tx
+    assert first is not None
+
+    await radio._session_lifecycle.request_shutdown()
+    await radio.connect()
+
+    second = radio.managed_tx
+    assert second is not None and second is not first
+    snapshot = radio.tx_snapshot
+    assert snapshot is not None
+    assert (snapshot.provider_ready, snapshot.radio_tx) == (True, RadioTx.OFF)
+    api = ManagedTxApi.bind(radio, _OWNER)
+    assert api is not None
+    assert (await api.set_ptt(True)).outcome is TxOutcome.ACCEPTED
+
+    await api.set_ptt(False)
+
+
+async def test_disconnect_runs_the_managed_teardown_twice_and_it_shows_once() -> None:
+    # ``CoreRadio.disconnect()`` keeps its own call *and* reaches the adapter's,
+    # so the double-run is the ordinary path and idempotence is load-bearing
+    # rather than defensive. Two failure shapes are pinned at once: a second
+    # run that re-emits would put a second ``ptt(off)`` on the log, and one
+    # that raises would escape ``release()`` before the session close it is
+    # supposed to precede -- leaving no ``session_close`` at all, because the
+    # lifecycle's teardown suppresses what comes out of ``release()``.
+    radio = await _connected_over_the_real_lifecycle()
+    await _keyed(radio)
+    log = radio.provider.log
+
+    await radio.disconnect()
+
+    assert log.count("ptt(off)") == 1
+    assert log.index("ptt(off)") < log.index("session_close")
+    assert radio.control_phase.closes == 1
+    assert radio.managed_tx is None
+    assert radio._civ_runtime._managed_tx_ports == {}
 
 
 # ===========================================================================
