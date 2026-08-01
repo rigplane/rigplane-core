@@ -145,6 +145,9 @@ export default defineConfig({
             // radio.svelte/capabilities.svelte/tx-adapter — same isolate:false
             // leak risk as the two files above. See #771 / MOR-1089 U4.
             'src/lib/runtime/tx-controller/__tests__/integration-lifecycle-matrix.test.ts',
+            // Same real-ws-client-singleton + module-scope vi.mock shape as
+            // the file above — reconnect/de-key variant. See #771 / MOR-1089 U5.
+            'src/lib/runtime/tx-controller/__tests__/integration-reconnect-dekey-matrix.test.ts',
           ],
           pool: 'threads',
           isolate: false,
@@ -204,6 +207,7 @@ export default defineConfig({
             'src/lib/runtime/tx-controller/__tests__/browser-dependencies.test.ts',
             'src/lib/runtime/tx-controller/__tests__/browser-dependencies-fault-injection.test.ts',
             'src/lib/runtime/tx-controller/__tests__/integration-lifecycle-matrix.test.ts',
+            'src/lib/runtime/tx-controller/__tests__/integration-reconnect-dekey-matrix.test.ts',
           ],
           pool: 'threads',
           isolate: true,
