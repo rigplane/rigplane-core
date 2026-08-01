@@ -265,10 +265,18 @@ class IcomCommander:
                         resp = await execute_task
                     except asyncio.CancelledError:
                         # Distinguish caller-driven cancel from worker
-                        # teardown (c.stop()): on caller-cancel, item.future
-                        # is already in cancelled state; on worker stop, the
-                        # outer except below handles it.
-                        if item.future.cancelled():
+                        # teardown (c.stop()).  item.future.cancelled() alone
+                        # is not a safe discriminator: when a caller timeout
+                        # has already cancelled both the future and the
+                        # in-flight execute, stop()'s worker.cancel() is
+                        # delivered through this same await — swallowing it
+                        # would park _loop on queue.get() forever and hang
+                        # stop().  Task.cancelling() (3.11+) exposes the
+                        # worker's own pending cancel request.
+                        worker = asyncio.current_task()
+                        if item.future.cancelled() and not (
+                            worker is not None and worker.cancelling()
+                        ):
                             # Packet was sent on the wire — honor pacing
                             # for the next item.
                             self._last_send = asyncio.get_running_loop().time()
