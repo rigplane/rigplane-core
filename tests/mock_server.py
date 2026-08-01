@@ -76,6 +76,7 @@ _CMD_METER = 0x15
 _CMD_ATT = 0x11
 _CMD_PREAMP = 0x16
 _CMD_CMD29 = 0x29
+_CMD_PTT = 0x1C
 _CMD_ACK = 0xFB
 _CMD_NAK = 0xFA
 _SUB_RF_POWER = 0x0A
@@ -84,6 +85,7 @@ _SUB_SWR_METER = 0x12
 _SUB_ALC_METER = 0x13
 _SUB_PREAMP_STATUS = 0x02
 _SUB_DIGISEL_STATUS = 0x4E
+_SUB_PTT = 0x00
 
 
 # ---------------------------------------------------------------------------
@@ -845,6 +847,25 @@ class MockIcomRadio:
                     _CMD_METER,
                     sub=_SUB_ALC_METER,
                     data=_level_bcd_encode(self._alc),
+                )
+            return self._civ_nak(to, frm)
+
+        # --- PTT / Transceiver status (0x1C) ---
+        if cmd == _CMD_PTT:
+            if not payload:
+                return self._civ_nak(to, frm)
+            sub = payload[0]
+            rest = payload[1:]
+            if sub == _SUB_PTT and not rest:  # 0x00 GET only
+                # The managed-TX arming probe (MOR-1016) reads PTT once,
+                # unmanaged, before any port is captured — and
+                # ``request_fresh_ptt`` reads it again right after capture to
+                # seed the authoritative observation. Always answer PTT OFF so
+                # a rig that can in fact be supervised is recognised as such
+                # (MOR-1217); a SET or an unrecognised sub-command NAKs, same
+                # as an unimplemented command.
+                return self._civ_frame(
+                    to, frm, _CMD_PTT, sub=_SUB_PTT, data=bytes([0x00])
                 )
             return self._civ_nak(to, frm)
 

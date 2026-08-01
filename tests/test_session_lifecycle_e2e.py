@@ -352,6 +352,7 @@ async def test_t4_force_civ_unavailable_resident_retry_recovers(
     retries IN-PROCESS within one CoreRadio until the sim recovers — single
     owner throughout, ``busy_rejects == 0``, no process restart, no livelock."""
     sim = single_owner_radio
+    sim.keepalive_hold_s = 10.0  # outlive the resident not-ready retry window
     sim.force_civ_unavailable_for(0.4)
 
     radio = _make_radio(sim)
@@ -371,6 +372,29 @@ async def test_t4_force_civ_unavailable_resident_retry_recovers(
     assert sim.session_held is False
     # Single owner the entire time (the same identity that finally claimed).
     assert owner_id is not None
+
+
+async def test_managed_tx_arms_via_mock_civ_ptt_probe(
+    single_owner_radio: MockIcomRadio,
+) -> None:
+    """MOR-1217 coverage-gap closure: the MOR-1016 arming probe (0x1C 0x00,
+    ``_managed_tx_provider_answers_ptt``) and the seeding read that follows it
+    (``request_fresh_ptt``) both round-trip against the mock server, so
+    managed TX actually ARMS on a normal e2e connect instead of silently
+    degrading to provider-not-ready. Fails if ``tests/mock_server.py`` stops
+    answering CI-V ``0x1C 0x00``."""
+    sim = single_owner_radio
+    radio = _make_radio(sim)
+
+    await _connect(radio)
+
+    assert radio.connected
+    assert radio.managed_tx is not None
+    snapshot = radio.tx_snapshot
+    assert snapshot is not None
+    assert snapshot.provider_ready is True
+
+    await radio.disconnect()
 
 
 # ---------------------------------------------------------------------------
