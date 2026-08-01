@@ -15,7 +15,7 @@
   import { txStatusColor } from './tx-utils';
   import { deriveTxProps, getTxHandlers } from '$lib/runtime/adapters/panel-adapters';
   import { getAppTxController } from '$lib/runtime/tx-controller/app-host';
-  import { createPttGesture } from './tx-ptt-gesture';
+  import { createPttGesture } from '../wiring/tx-ptt-gesture';
   import {
     deriveAutoLanModInputProps,
     setAutoLanModInputEnabled,
