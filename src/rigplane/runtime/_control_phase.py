@@ -1152,8 +1152,17 @@ class ControlPhaseSessionMechanism:
         Otherwise fall through to the unconditional :meth:`ControlPhaseRuntime.
         release`, which still token-removes a partially-claimed session (Holes
         1/5/8).  Both are idempotent.
+
+        Supervised TX is stopped first (MOR-1016).  This is the single funnel
+        every lifecycle path that gives the session up goes through, and it is
+        the only one of them ``CoreRadio.disconnect()`` does not sit above:
+        ``request_shutdown()`` (the SIGTERM hook) and recovery exhaustion reach
+        it directly, and before this they closed the transport with the
+        supervisor still armed over the captured CI-V port — a SIGTERM'd
+        process left a possibly-keyed rig with no release even attempted.
         """
         h = self._cp._host
+        await self._shutdown_supervised_tx(h)
         if getattr(h, "_conn_state", None) is RadioConnectionState.CONNECTED:
             # Full graceful teardown (audio/CI-V stop, generation advance,
             # token-remove, ctrl disconnect).  This already sends token-remove,
@@ -1161,6 +1170,57 @@ class ControlPhaseSessionMechanism:
             await self._cp.disconnect()
             return
         await self._cp.release()
+
+    @staticmethod
+    async def _shutdown_supervised_tx(host: object) -> None:
+        """Run the host's managed-TX teardown ahead of the session release.
+
+        Ordering, boundedness and fail-softness all belong to
+        ``CoreRadio._shutdown_managed_tx`` — the durable OFF must go out while
+        the CI-V path can still carry it, and a supervisor wedged on a rig that
+        stopped answering must not hold the socket close (the de-key of last
+        resort) open behind it.  Nothing is re-implemented here; this is only
+        the second call site, and deliberately without a second ``except``:
+        that method already catches its own timeout and every ``Exception``
+        around the shutdown and clears its members in ``finally``, so wrapping
+        it again could only hide a break in that contract — and would hide it
+        from the very ordering assertion below, since an exception raised here
+        skips the session close this method is supposed to precede.
+
+        **Idempotent by construction, and relied upon as such.**
+        ``CoreRadio.disconnect()`` runs the same teardown one level above,
+        because the lifecycle may treat its own ``disconnect()`` as a no-op
+        (nothing claimed) and never reach this method at all.  When both do
+        run, the second finds ``_managed_tx_runtime is None`` — the first
+        call's ``finally`` cleared it — and returns without touching anything.
+
+        ``getattr`` rather than a direct call: ``ControlPhaseHost`` is a
+        Protocol, and a host that never assembles managed TX (a backend, a test
+        double) simply has nothing to tear down.  Same idiom as
+        ``_stop_audio_watchdog`` in :meth:`ControlPhaseRuntime.disconnect`.
+
+        Side benefit worth naming, because it looks accidental otherwise: this
+        await also unwedges a 3.11-only teardown hang.  ``_arm_managed_tx``'s
+        PTT probe is the last thing ``connect()`` does, and when it times out
+        its ``asyncio.wait_for`` cancels the in-flight CI-V execute task.  On
+        3.12+ ``wait_for`` is built on ``asyncio.timeouts``, which unwinds the
+        probing task through ``__aexit__`` and costs enough loop ticks for the
+        commander worker to drain that cancelled execute before ``connect()``
+        returns.  3.11's future-juggling ``wait_for`` returns in fewer ticks,
+        so the worker is still parked on ``await execute_task`` when teardown
+        arrives — and ``IcomCommander._loop`` classifies the cancel it then
+        receives by ``item.future.cancelled()``, which the probe's timeout
+        already set.  The worker's own ``stop()`` cancel is read as the
+        caller's, swallowed by the ``continue``, and ``stop()`` waits on a
+        worker that has gone back to ``queue.get()`` forever.  Any yield before
+        the release closes that window; this one is here for the production
+        reason above, and the commander's cancel classification is the real
+        (pre-existing, managed-TX-independent) bug behind the hang.
+        """
+        shutdown = getattr(host, "_shutdown_managed_tx", None)
+        if shutdown is None:
+            return
+        await shutdown()
 
     async def soft_reconnect_once(self) -> None:
         await self._cp.soft_reconnect()
