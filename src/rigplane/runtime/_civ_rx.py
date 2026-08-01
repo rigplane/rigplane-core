@@ -712,6 +712,54 @@ class CivRuntime:
         if generation is not None and (token := self._managed_tx_ports.get(generation)):
             self._poison_managed_tx_port(token)
 
+    def reset_managed_tx_generations(self) -> None:
+        """Forget the managed-TX bookkeeping of a finished connect session.
+
+        Four structures here are keyed by *provider generation*: the captured
+        ports, the numbers retirement marked terminal, the in-flight sends, and
+        the transport-close barriers. That key is a counter owned by a
+        ``ManagedRadioRuntime``, and it starts at 1. While one runtime owned a
+        radio for the life of the process the key was effectively unique and
+        keeping entries forever was the safe choice — every mark blocked a
+        stale caller from presenting a retired generation again.
+
+        MOR-1016 ends that: ``CoreRadio.disconnect`` shuts the managed runtime
+        down and drops it, and the next ``connect()`` builds a new one whose
+        first generation is 1 again. Session 1's marks then answer for session
+        2's numbers — ``capture_managed_port`` raises "already captured",
+        ``bind_ptt_observer`` raises "terminal", the arming path swallows both
+        as an arming failure, and the radio refuses TX for the rest of its
+        life. So the bookkeeping has to end with the session that generated it.
+
+        Clearing is safe because presence was never what made a retired port
+        unusable — identity is. Every currency check compares
+        ``_managed_tx_ports.get(generation) is token`` against the *token*, so a
+        port from the finished session fails it whether the slot is empty or
+        refilled by a successor. What clearing has to rule out is a stale
+        caller *capturing* a freed number, and only a runtime can: capture has
+        exactly one caller (``ManagedRadioRuntime.replace_provider``), under
+        that runtime's lifecycle locks, presenting ``_provider_generation`` —
+        a monotonic counter advanced immediately before every capture, so a
+        live runtime never offers a generation twice. The runtime whose
+        session this was cannot capture at all: its ``_shutdown_pending`` fence
+        turns ``replace_provider`` into a NOT_READY no-op, permanently.
+
+        Called by :meth:`~rigplane.runtime.radio.CoreRadio._shutdown_managed_tx`
+        as it drops the runtime — the one moment the counter restarts — and
+        never during a session, where retirement's own marks are load-bearing
+        (a port whose close failed stays registered so the retirement can be
+        retried). A retirement still in flight when this runs cannot undo it:
+        everything it writes here happens before its one ``await``, the
+        transport close, and that close is all it has left to do.
+        """
+        for tasks in self._managed_tx_sends.values():
+            for task in tasks:
+                task.cancel()
+        self._managed_tx_ports.clear()
+        self._poisoned_managed_tx_generations.clear()
+        self._managed_tx_sends.clear()
+        self._managed_tx_retirements.clear()
+
     async def write_managed_ptt(
         self, civ_frame: bytes, provider_generation: int
     ) -> None:
