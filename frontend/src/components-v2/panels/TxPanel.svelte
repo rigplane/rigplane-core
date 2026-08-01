@@ -1,9 +1,21 @@
+<script module lang="ts">
+  /**
+   * Per-instance TX lease identity. Both sidebars list a draggable "tx" panel,
+   * so two TxPanel instances can be mounted at once; the App TX controller keys
+   * lease ownership by sourceId, and a shared id would let one instance release
+   * the other's lease.
+   */
+  let panelSeq = 0;
+</script>
+
 <script lang="ts">
+  import { onDestroy } from 'svelte';
   import { HardwareButton } from '$lib/Button';
   import { ValueControl, normalizedPercentDisplay, rawToPercentDisplay } from '../controls/value-control';
   import { txStatusColor } from './tx-utils';
-  import { getTxAudioControl } from '$lib/runtime/adapters/tx-adapter';
   import { deriveTxProps, getTxHandlers } from '$lib/runtime/adapters/panel-adapters';
+  import { getAppTxController } from '$lib/runtime/tx-controller/app-host';
+  import { createPttGesture } from './tx-ptt-gesture';
   import {
     deriveAutoLanModInputProps,
     setAutoLanModInputEnabled,
@@ -11,13 +23,11 @@
   import { t } from '$lib/i18n';
   import ModInputTxWarning from './ModInputTxWarning.svelte';
 
-  const txAudio = getTxAudioControl();
   const handlers = getTxHandlers();
   let p = $derived(deriveTxProps());
   // MOR-618: opt-in auto LAN MOD-input toggle (shown in the settings modal).
   let autoLan = $derived(deriveAutoLanModInputProps());
 
-  let txActive = $derived(p.txActive);
   let rfPower = $derived(p.rfPower);
   let micGain = $derived(p.micGain);
   let atuActive = $derived(p.atuActive);
@@ -38,8 +48,6 @@
   const onMonToggle = handlers.onMonToggle;
   const onMonLevelChange = handlers.onMonLevelChange;
   const onDriveGainChange = handlers.onDriveGainChange;
-  const onPttOn = handlers.onPttOn;
-  const onPttOff = handlers.onPttOff;
 
   let tuneButtonColor = $derived(txStatusColor(atuActive, atuTuning));
   let showTx = $derived(p.hasTx);
@@ -54,68 +62,54 @@
   let driveGainAvailable = $derived(p.driveGainAvailable ?? true);
 
   // ── PTT (hold-to-talk + double-tap latch) ──
-  const PTT_DOUBLE_TAP_MS = 300;
-  const PTT_SAFETY_MS = 3 * 60 * 1000;
-  let pttMode = $state<'idle' | 'held' | 'latched'>('idle');
-  let lastPttDown = 0;
-  let pttStarting = $state(false);
-  let txError = $state('');
-  let pttPressActive = false;
-  let txStartToken = 0;
-  let pttSafetyTimer: ReturnType<typeof setTimeout> | null = null;
+  // MOR-1011: this panel owns no TX state. It is one lease source among several
+  // (mobile layout, keyboard, future hardware key), so audio start, key
+  // confirmation, safety deadlines and fail-closed release all live in the App
+  // TX controller; the panel only renders that state and feeds it gesture intent.
+  const tx = getAppTxController();
+  const sourceId = `tx-panel-${++panelSeq}`;
+  let leaseSeq = 0;
+  let txState = $state.raw(tx.snapshot());
+  const stopWatchingTx = tx.subscribe((next) => { txState = next; });
 
-  function startPttSafety() {
-    clearPttSafety();
-    pttSafetyTimer = setTimeout(() => { pttMode = 'idle'; onPttOff?.(); txAudio.stopTx(); }, PTT_SAFETY_MS);
-  }
-  function clearPttSafety() {
-    if (pttSafetyTimer) { clearTimeout(pttSafetyTimer); pttSafetyTimer = null; }
-  }
+  const ptt = createPttGesture(
+    { guard: () => txState.guard, latched: () => txState.intent === 'latched' },
+    {
+      start: () => {
+        // A stale fault would swallow the start (the model only leaves 'failed'
+        // on an explicit reset), so clear it as part of the same press.
+        if (txState.phase === 'failed') tx.resetFault();
+        tx.start(sourceId, `${sourceId}-${++leaseSeq}`, 'momentary');
+      },
+      latch: (guard) => tx.setIntent(sourceId, guard, 'latched'),
+      release: (guard) => tx.release(sourceId, guard),
+    },
+    {
+      schedule: (callback, ms) => setTimeout(callback, ms),
+      cancel: (handle) => clearTimeout(handle as ReturnType<typeof setTimeout>),
+    },
+  );
 
-  async function engageTx(token: number): Promise<boolean> {
-    pttStarting = true;
-    txError = '';
-    const err = await txAudio.startTx();
-    pttStarting = false;
-    if (token !== txStartToken || pttMode !== 'held' || !pttPressActive) {
-      if (!err) txAudio.stopTx();
-      return false;
-    }
-    if (err) {
-      txError = err;
-      pttMode = 'idle';
-      lastPttDown = 0;
-      return false;
-    }
-    onPttOn?.();
-    return true;
-  }
+  // Unsubscribe BEFORE the teardown release: the release is fail-closed and must
+  // run to completion inside the controller, not bounce back into a component
+  // that is already being destroyed.
+  onDestroy(() => { stopWatchingTx(); ptt.destroy(); });
 
-  async function pttDown() {
-    if (pttStarting) return;
-    const now = Date.now();
-    if (pttMode === 'latched') { pttPressActive = false; txStartToken += 1; pttMode = 'idle'; onPttOff?.(); txAudio.stopTx(); clearPttSafety(); return; }
-    if (now - lastPttDown < PTT_DOUBLE_TAP_MS && pttMode === 'held') {
-      pttPressActive = false; pttMode = 'latched'; startPttSafety(); lastPttDown = 0; return;
-    }
-    lastPttDown = now;
-    pttPressActive = true;
-    pttMode = 'held';
-    const token = ++txStartToken;
-    if (await engageTx(token)) {
-      startPttSafety();
-    }
-  }
-
-  function pttUp() {
-    pttPressActive = false;
-    txStartToken += 1;
-    if (pttMode === 'held') {
-      setTimeout(() => {
-        if (pttMode === 'held') { pttMode = 'idle'; onPttOff?.(); txAudio.stopTx(); clearPttSafety(); }
-      }, PTT_DOUBLE_TAP_MS);
-    }
-  }
+  let owned = $derived(txState.guard !== null);
+  let starting = $derived(txState.phase === 'audio-start-pending');
+  let keyed = $derived(txState.phase === 'key-confirm-pending' || txState.phase === 'active');
+  let latched = $derived(txState.intent === 'latched');
+  let busy = $derived(txState.phase === 'releasing');
+  let fault = $derived(txState.fault);
+  // Controller authority wins; the props snapshot is only a fallback for the
+  // idle case, where the controller never observes PTT at all.
+  let rf = $derived(
+    txState.radioTx !== 'unknown'
+      ? txState.radioTx
+      : (p.txActiveAvailable ?? true)
+        ? (p.txActive ? 'on' : 'off')
+        : 'unknown',
+  );
 
   // Settings modal
   let settingsOpen = $state(false);
@@ -155,23 +149,23 @@
 {#if showTx}
   <div class="tx-panel" bind:this={modalAnchor}>
     <!-- TX indicator strip -->
-    <div class="tx-strip" class:tx-active={txActive}>
-      {txActive ? '● TX' : '○ RX'}
+    <div class="tx-strip" class:tx-active={rf === 'on'} data-testid="tx-strip" data-rf={rf}>
+      {rf === 'on' ? '● TX' : rf === 'off' ? '○ RX' : '○ ---'}
     </div>
 
     <button
       class="ptt-button"
-      class:ptt-held={pttMode === 'held'}
-      class:ptt-latched={pttMode === 'latched'}
-      aria-disabled={pttStarting}
-      onpointerdown={(e) => { e.preventDefault(); pttDown(); }}
-      onpointerup={(e) => { e.preventDefault(); pttUp(); }}
-      onpointerleave={() => { if (pttMode === 'held') pttUp(); }}
+      class:ptt-held={owned && !latched}
+      class:ptt-latched={latched}
+      aria-disabled={starting || busy}
+      onpointerdown={(e) => { e.preventDefault(); ptt.down(); }}
+      onpointerup={(e) => { e.preventDefault(); ptt.up(); }}
+      onpointerleave={() => ptt.cancel()}
     >
-      {pttStarting ? 'MIC...' : pttMode === 'latched' ? 'TX 🔒' : pttMode === 'held' ? 'TX' : 'PTT'}
+      {starting ? 'MIC…' : latched ? 'TX 🔒' : keyed ? 'TX' : busy ? 'UNKEYING…' : 'PTT'}
     </button>
-    {#if txError}
-      <div class="tx-error">{txError}</div>
+    {#if fault}
+      <div class="tx-error" data-testid="tx-fault" data-fault={fault}>TX FAULT: {fault}</div>
     {/if}
 
     <!-- MOR-617: warn when TX was keyed with a non-LAN MOD input -->
