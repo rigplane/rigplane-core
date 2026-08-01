@@ -25,6 +25,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   transmitting. `ptt off` is unchanged and immediate — it remains the recovery
   path for a rig left transmitting by some other process (MOR-1184, MOR-1199).
 
+### Changed
+
+- **Browser TX surfaces unified (PRs #2125, #2128, #2130, #2134).** Both desktop
+  TxPanel and mobile FAB + landscape strip now key through the single App-owned
+  TX controller with lease-correct gestures; duplicate presentation-local PTT
+  state machines and 3-minute safety timers removed. Operator-visible: re-keying
+  immediately after release waits for fresh authoritative PTT readback (button
+  shows unkeying state in between); latched transmission is released when its
+  panel unmounts, and on mobile also when the device rotates while latched
+  (fail-closed).
+
 ## [2.11.1] — 2026-06-22
 
 ### Fixed
