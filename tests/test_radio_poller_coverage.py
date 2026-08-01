@@ -140,6 +140,12 @@ def _make_radio(active: str = "MAIN") -> MagicMock:
     radio.set_filter = AsyncMock()
     radio.set_filter_shape = AsyncMock()
     radio.set_ptt = AsyncMock()
+    # The neutral AudioTransport surface the ``PttOn``/``PttOff`` arms drive
+    # (MOR-543). Left as bare ``MagicMock`` attributes these are not awaitable,
+    # which the arm read as a failed TX-audio arm — harmless while that failure
+    # was swallowed, and a refused key once it stopped being (MOR-1178).
+    radio.start_tx = AsyncMock()
+    radio.stop_tx = AsyncMock()
     radio.set_rf_power = AsyncMock()
     radio.set_rf_gain = AsyncMock()
     radio.set_af_level = AsyncMock()
