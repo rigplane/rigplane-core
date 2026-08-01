@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 
 import pytest
 
@@ -438,3 +439,82 @@ async def test_cancelled_queued_request_is_not_executed() -> None:
         assert seen == [b"block"]
     finally:
         await c.stop()
+
+
+async def _assert_stop_completes(c: IcomCommander) -> None:
+    """Await c.stop() via asyncio.wait, failing loudly if it wedges.
+
+    Deliberately NOT asyncio.wait_for(c.stop(), ...): on the buggy path
+    wait_for's timeout cancels the stop task, and that cancel cascades into
+    a second worker.cancel() delivered at queue.get() — un-wedging the
+    worker and letting wait_for return normally, masking the hang.
+    asyncio.wait leaves the pending task untouched, so the wedge is visible.
+    """
+    stop_task = asyncio.ensure_future(c.stop())
+    done, _pending = await asyncio.wait({stop_task}, timeout=2.0)
+    if stop_task not in done:
+        stop_task.cancel()  # cascade un-wedges the worker for cleanup
+        with contextlib.suppress(asyncio.CancelledError):
+            await stop_task
+        pytest.fail("stop() hung: worker swallowed its own teardown cancel")
+
+
+@pytest.mark.asyncio
+async def test_stop_unblocks_when_caller_cancel_races_teardown() -> None:
+    """Worker teardown must win when it races a caller-driven cancel.
+
+    A caller timeout/disconnect cancels item.future and, via the worker's
+    done-callback, the in-flight execute task.  If stop() cancels the worker
+    while it is still parked on that already-cancelled execute, the worker's
+    own CancelledError arrives through the same await — treating it as the
+    caller-cancel case (continue) swallows the teardown request, _loop goes
+    back to queue.get(), and stop() hangs forever on await self._worker.
+    """
+    started = asyncio.Event()
+    hang = asyncio.Event()
+
+    async def execute(cmd: bytes, wait_response: bool = True) -> CivFrame | None:
+        started.set()
+        await hang.wait()
+        return None
+
+    c = IcomCommander(execute, min_interval=0.0)
+    c.start()
+
+    send_task = asyncio.create_task(c.send(b"never-answered"))
+    await asyncio.wait_for(started.wait(), timeout=1.0)
+
+    # Caller goes away: cancels item.future, which propagates into the
+    # in-flight execute task via the worker's done-callback.
+    send_task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await send_task
+
+    # No yields between here and stop(): the worker must still be parked
+    # on the already-cancelled execute when its own cancel arrives.
+    await _assert_stop_completes(c)
+
+
+@pytest.mark.asyncio
+async def test_stop_returns_after_send_timeout_without_yield() -> None:
+    """Field repro (Python 3.11): timed-out send immediately followed by
+    stop() must not wedge the worker.
+
+    3.11's wait_for unwinds the timed-out caller in fewer loop ticks than
+    3.12+, leaving the worker still parked on the cancelled execute when
+    stop()'s worker.cancel() lands.
+    """
+    hang = asyncio.Event()
+
+    async def execute(cmd: bytes, wait_response: bool = True) -> CivFrame | None:
+        await hang.wait()
+        return None
+
+    c = IcomCommander(execute, min_interval=0.0)
+    c.start()
+
+    with pytest.raises(asyncio.TimeoutError):
+        await c.send(b"no-reply", timeout=0.05)
+
+    # No yields between the timeout and stop().
+    await _assert_stop_completes(c)
