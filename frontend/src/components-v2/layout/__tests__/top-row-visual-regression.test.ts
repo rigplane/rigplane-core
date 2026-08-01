@@ -8,6 +8,23 @@ vi.mock('$lib/stores/layout.svelte', () => ({
   setLayoutMode: vi.fn(),
 }));
 
+// MOR-1011: TxPanel resolves the App TX controller from Svelte context, which
+// only App.svelte provides. RadioLayout is mounted here without that provider,
+// so stub the host lookup — the layout still renders the real panel tree.
+vi.mock('$lib/runtime/tx-controller/app-host', () => {
+  const idle = { phase: 'idle', intent: null, guard: null, radioTx: 'unknown', fault: null };
+  return {
+    getAppTxController: () => ({
+      snapshot: () => idle,
+      subscribe: () => () => {},
+      start: vi.fn(),
+      setIntent: vi.fn(),
+      release: vi.fn(),
+      resetFault: vi.fn(),
+    }),
+  };
+});
+
 vi.mock('../../../skins/registry', () => ({
   resolveSkinId: vi.fn(() => 'desktop-v2'),
 }));
