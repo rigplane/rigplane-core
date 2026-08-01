@@ -5,7 +5,7 @@ import pytest
 from rigplane.backends.config import SerialBackendConfig
 from rigplane.backends.factory import create_radio
 from rigplane.backends.ic705.serial import Ic705SerialRadio
-from rigplane.backends.icom7610.drivers.serial_stub import SerialMockRadio
+from serial_stub import SerialMockRadio
 from rigplane.backends.icom7610.serial import Icom7610SerialRadio
 from rigplane.exceptions import CommandError
 

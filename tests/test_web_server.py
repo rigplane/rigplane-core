@@ -23,7 +23,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from rigplane.backends.icom7610.drivers.serial_stub import SerialMockRadio
+from serial_stub import SerialMockRadio
 from rigplane.radio_state import RadioState
 from rigplane.rigctld.state_cache import StateCache
 from rigplane.scope import ScopeFrame

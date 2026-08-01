@@ -13,7 +13,7 @@ import pytest
 from rigplane.audio.backend import AudioDeviceId, AudioDeviceInfo, FakeAudioBackend
 from rigplane.audio_bridge import AudioBridge
 from rigplane.backends.icom7610 import Icom7610SerialRadio
-from rigplane.backends.icom7610.drivers.serial_stub import SerialMockRadio
+from serial_stub import SerialMockRadio
 from rigplane.rigctld.contract import RigctldConfig
 from rigplane.rigctld.server import RigctldServer
 from rigplane.web.handlers import AudioBroadcaster

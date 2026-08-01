@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from rigplane.backends.icom7610.drivers.serial_stub import (
+from serial_stub import (
     DeterministicSerialCivLink,
     SerialFrameCodec,
     SerialFrameOverflowError,
