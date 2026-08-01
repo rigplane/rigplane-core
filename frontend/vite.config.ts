@@ -148,6 +148,13 @@ export default defineConfig({
             // Same real-ws-client-singleton + module-scope vi.mock shape as
             // the file above — reconnect/de-key variant. See #771 / MOR-1089 U5.
             'src/lib/runtime/tx-controller/__tests__/integration-reconnect-dekey-matrix.test.ts',
+            // Same real-ws-client-singleton + module-scope vi.mock shape as the
+            // two files above, PLUS a real mounted App.svelte (module-scope
+            // `vi.resetModules()` reloads `svelte` itself alongside the SUT so
+            // the mounted component and `mount()`/`unmount()` share one
+            // internal effect-scheduling instance) — pagehide/visibility
+            // variant. See #771 / MOR-1089 U6.
+            'src/lib/runtime/tx-controller/__tests__/integration-page-lifecycle.test.ts',
           ],
           pool: 'threads',
           isolate: false,
@@ -208,6 +215,7 @@ export default defineConfig({
             'src/lib/runtime/tx-controller/__tests__/browser-dependencies-fault-injection.test.ts',
             'src/lib/runtime/tx-controller/__tests__/integration-lifecycle-matrix.test.ts',
             'src/lib/runtime/tx-controller/__tests__/integration-reconnect-dekey-matrix.test.ts',
+            'src/lib/runtime/tx-controller/__tests__/integration-page-lifecycle.test.ts',
           ],
           pool: 'threads',
           isolate: true,
