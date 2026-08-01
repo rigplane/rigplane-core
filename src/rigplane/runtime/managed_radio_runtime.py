@@ -376,6 +376,28 @@ class ManagedRadioRuntime:
         await self._service_effects(transition)
         return transition
 
+    async def force_unkey(
+        self, owner: TxOwner, *, reason: TxReleaseReason
+    ) -> TxTransition:
+        """Adopt an unowned key so the durable OFF reaches the wire.
+
+        Arming the ticker is the other half of the reducer here, not a nicety
+        borrowed from ``request_on``: the adopted lease exists only to carry a
+        release, and ``tick`` is the sole path to that release's retry. Without
+        the arm a forced OFF the rig refuses once is never attempted again
+        (MOR-1191) — the worst possible outcome for the one call whose entire
+        purpose is a rig that will not stop transmitting. The loop retires
+        itself on the confirming observation, as it does for every other lease.
+        """
+        async with self._lifecycle_lock:
+            if self._shutdown_pending:
+                return TxTransition(TxOutcome.IDEMPOTENT, self.tx_snapshot)
+            transition = self._tx_safety.force_unkey(owner, reason=reason)
+            if self._tick_task is None and transition.snapshot.lease_id is not None:
+                self._tick_task = asyncio.create_task(self._tick_loop())
+        await self._service_effects(transition)
+        return transition
+
     async def shutdown(self, *, release_provider: ProviderRelease) -> TxTransition:
         async with self._lifecycle_lock:
             task = self._shutdown_task
