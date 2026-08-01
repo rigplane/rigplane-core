@@ -2,8 +2,8 @@
 
 One question, asked identically by every ingress: does this request carry an
 identity the supervisor can hold a lease against? Web asks it here, rigctld
-(MOR-1014) and the CLI/SDK (MOR-1190) will ask the same helpers rather than
-grow a third copy of the two-step supervisor read — the duplication MOR-1198
+(MOR-1014) asks the same helpers, and the CLI/SDK (MOR-1190) will — rather than
+grow a third copy of the two-step supervisor read, the duplication MOR-1198
 exists to remove, and the one three call sites already got wrong in three
 different ways (MOR-1187, MOR-1193, MOR-1196).
 
@@ -60,18 +60,33 @@ def resolve_supervisor(radio: object) -> ManagedTxSupervisor | None:
     return cast(ManagedTxCapable, radio).managed_tx
 
 
+_STABLE_OWNER_SOURCES: dict[CommandSource, TxSource] = {
+    "websocket": TxSource.WEBSOCKET,
+    "rigctld": TxSource.RIGCTLD,
+}
+
+
 def _stable_owner(source: CommandSource, session_id: str | None) -> TxOwner | None:
     """The ingress identity a lease can be held against, or ``None``.
 
-    Only a websocket control session has one: its long-lived
+    Two ingresses qualify, and for one reason: the id names a *connection* that
+    something is obliged to tear down, so a lease taken under it is releasable.
+
+    A websocket control session carries its long-lived
     ``ControlHandler._session_id``, not the throwaway the shared executor mints
     per request, which owner-matched ``release_owner`` would miss — stranding
-    the rig keyed. Every other ingress (HTTP params may even carry a
-    ``session_id``) has no teardown hook, so its lease would be unreleasable.
+    the rig keyed. A rigctld connection carries the ``rigctld-client-N`` id its
+    TCP server mints once per accepted socket and releases on that socket's
+    teardown, however the socket ends (MOR-1014).
+
+    Every other ingress has no teardown hook — HTTP params may even carry a
+    ``session_id``, and nothing would ever hand its lease back — so its lease
+    would be unreleasable and it gets no owner here.
     """
-    if source != "websocket" or not session_id:
+    tx_source = _STABLE_OWNER_SOURCES.get(source)
+    if tx_source is None or not session_id:
         return None
-    return TxOwner(TxSource.WEBSOCKET, session_id)
+    return TxOwner(tx_source, session_id)
 
 
 def bind_managed_tx(

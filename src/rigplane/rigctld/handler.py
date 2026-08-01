@@ -37,9 +37,11 @@ from ..core.state_pipeline_contracts import (
     SourceMetadata,
 )
 from ..core.state_store import FreshnessState, StateStore, StateSnapshot
+from ..core.tx_safety import TxOutcome, TxReleaseReason
 from ..exceptions import ConnectionError, TimeoutError as RigplaneTimeoutError
 from ..radio_protocol import StateModelCapable, StateModelService, StateStoreCapable
 from ..radio_state import RadioState, ReceiverState
+from ..runtime.managed_tx_ingress import bind_managed_tx, refuse_key_without_owner
 from ..types import Mode
 from .contract import (  # noqa: TID251
     CIV_TO_HAMLIB_MODE,
@@ -218,6 +220,12 @@ def _passband_to_filter(passband_hz: int) -> int | None:
     return 3
 
 
+# The supervisor took the request: a lease is ours (key), or a durable OFF is
+# owed and will be retried until the rig confirms it (unkey). Anything else and
+# nothing reached the wire.
+_TX_ACCEPTED = frozenset({TxOutcome.ACCEPTED, TxOutcome.IDEMPOTENT})
+
+
 def _ok() -> RigctldResponse:
     return RigctldResponse(error=HamlibError.OK)
 
@@ -349,7 +357,16 @@ class _RigctldCommandExecutor:
             if bool(params.get("packet_mode", False)):
                 await self.handler._apply_packet_data_mode(receiver=receiver)
         elif intent.name == "set_ptt":
-            await self.handler._radio.set_ptt(bool(params["ptt"]))
+            # The owner identity rides on the intent, not on the handler's
+            # context var: the ingress recorded it there, ``CommandService``
+            # already matches overlays on it, and it survives an executor that
+            # is ever awaited from a task other than the one that parsed the
+            # command.
+            raised_by = params.get("session_id")
+            await self.handler._route_ptt(
+                bool(params["ptt"]),
+                session_id=None if raised_by is None else str(raised_by),
+            )
         elif intent.name == "set_rit":
             hz = int(params["hz"])
             await self.handler._radio.set_rit_frequency(hz)
@@ -1002,6 +1019,35 @@ class RigctldHandler:
         finally:
             _RIGCTLD_SESSION_ID.reset(token)
 
+    async def release_session_tx(self, session_id: str) -> None:
+        """Hand back any managed TX lease ``session_id`` still holds.
+
+        The TCP server calls this when a client connection ends, however it
+        ends. Without it a WSJT-X that drops mid-over leaves its lease standing
+        until the max key-down watchdog expires: the rig does come off the air,
+        but far later than it needs to, and until then no other client can key.
+
+        Unmanaged radios are left completely alone — no legacy ``set_ptt(False)``
+        is invented here. rigctld has never written to the rig on disconnect,
+        and starting now would de-key an over some *other* ingress is running.
+
+        Fail-soft by construction: this runs on the teardown path of a socket
+        that is already gone, so there is nobody left to report an error to,
+        and raising would only skip the rest of that teardown. A rig genuinely
+        still keyed after this is the watchdog's problem, not this method's.
+        """
+        try:
+            managed = bind_managed_tx(self._radio, "rigctld", session_id)
+            if managed is None:
+                return
+            await managed.set_ptt(False, reason=TxReleaseReason.CLIENT_DISCONNECTED)
+        except Exception:
+            logger.warning(
+                "rigctld: managed TX release for session %s failed",
+                session_id,
+                exc_info=True,
+            )
+
     # ------------------------------------------------------------------
     # Frequency commands
     # ------------------------------------------------------------------
@@ -1362,6 +1408,69 @@ class RigctldHandler:
             )
             return RigctldResponse(values=[str(int(state.ptt))])
         return RigctldResponse(values=["0"])
+
+    async def _route_ptt(self, on: bool, *, session_id: str | None) -> None:
+        """Key or unkey the rig, through the supervisor when the rig has one.
+
+        A rigctld connection id is a lease-bearing owner identity (MOR-1014):
+        the TCP server mints it once per accepted socket and
+        :meth:`release_session_tx` gives the lease back when that socket goes,
+        so a lease taken here is always releasable.
+
+        Three outcomes, deliberately asymmetric between key and unkey.
+
+        **No facade to bind.** Either the rig is unmanaged — every shipped
+        backend today, and the legacy write below is byte-identical to what
+        rigctld has always sent — or the request carries no owner. On a managed
+        rig an ownerless KEY is refused, because falling through would key with
+        no lease, no owner and no watchdog: the unsupervised bypass management
+        exists to close. An ownerless UNKEY still writes, because an unkey
+        refused for lacking an owner strands a keyed transmitter, and nothing
+        on this path may ever do that.
+
+        **Facade bound, key declined.** ``BUSY`` / ``NOT_READY`` /
+        ``RADIO_NOT_OFF`` — the rig is not ours and nothing reached the wire, so
+        the answer has to be an RPRT error. ``RPRT 0`` for a key that never
+        happened tells WSJT-X it is transmitting when it is not.
+
+        **Facade bound, unkey declined.** ``STALE``: nothing is keyed, or the
+        lease belongs to somebody else. This answers ``RPRT 0`` and writes
+        nothing, and both halves are the decision, not an oversight. Nothing is
+        written because rigctld holds no privileged surface (MOR-1175): a raw
+        ``set_ptt(False)`` here would be precisely the unsupervised bypass the
+        facade exists to close, taking another owner's transmission down behind
+        the supervisor's back and leaving that owner's lease — and its
+        watchdog — believing the rig is still keyed. ``RPRT 0`` because the
+        command *was* processed and the supervisor declined it by policy, while
+        WSJT-X reads a nonzero RPRT mid-sequence as a hard rig-control failure.
+        The corner this leaves — a rig keyed by an owner rigctld cannot reach —
+        is bounded by that owner's own teardown and by the max key-down
+        watchdog, which is exactly where MOR-1175 put it.
+        """
+        managed = bind_managed_tx(self._radio, "rigctld", session_id)
+        if managed is None:
+            if on and refuse_key_without_owner(self._radio, "rigctld", session_id):
+                logger.warning(
+                    "rigctld: refusing PTT ON — this radio is managed and the "
+                    "request carries no releasable owner (session_id=%r)",
+                    session_id,
+                )
+                raise _RigctldCommandFailure(HamlibError.EACCESS)
+            await self._radio.set_ptt(on)
+            return
+        transition = await managed.set_ptt(on)
+        if transition.outcome in _TX_ACCEPTED:
+            return
+        if on:
+            logger.warning(
+                "rigctld: managed TX rejected PTT ON: %s", transition.outcome
+            )
+            raise _RigctldCommandFailure(HamlibError.ERJCTED)
+        logger.warning(
+            "rigctld: managed TX declined the unkey (%s) — the lease is not "
+            "this session's and rigctld does not force; reporting RPRT 0",
+            transition.outcome,
+        )
 
     async def _cmd_set_ptt(self, cmd: RigctldCommand) -> RigctldResponse:
         if not cmd.args:
