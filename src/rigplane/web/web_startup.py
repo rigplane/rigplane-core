@@ -211,9 +211,14 @@ async def stop_web_server(server: WebServer) -> None:
     Mirrors the original :meth:`WebServer.stop` body verbatim — the method
     now delegates here so the public API is preserved.
     """
-    # 1. Stop poller first (no more CI-V queries)
-    if server._radio_poller is not None:
-        server._radio_poller.stop()
+    # 1. Stop poller first (no more CI-V queries). The reference outlives the
+    #    call deliberately (MOR-1181): a session's teardown PttOff is enqueued
+    #    only when its client task is cancelled at step 6, so the poller is
+    #    already dead when the unkey arrives and its own CancelledError handler
+    #    finds an empty queue. Step 9 drains it, after those tasks tear down.
+    radio_poller = server._radio_poller
+    if radio_poller is not None:
+        radio_poller.stop()
         server._radio_poller = None
     if server._state_poller is not None:
         try:
@@ -306,6 +311,12 @@ async def stop_web_server(server: WebServer) -> None:
         except TimeoutError:
             logger.warning("tasks did not finish in 3s, continuing shutdown")
     server._bg_tasks.clear()
+
+    # 9. Now — and only now — the teardown unkeys those client tasks enqueued on
+    #    their way out are in the queue. Bounded, TX-safety only: this executes
+    #    pending PttOff entries and discards the rest (MOR-1181).
+    if radio_poller is not None:
+        await radio_poller.drain_tx_safety_commands()
 
     # Radio disconnect is handled by the caller's context manager
     # (async with radio: in _run). Do NOT disconnect here.

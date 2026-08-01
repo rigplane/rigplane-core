@@ -288,7 +288,9 @@ async def test_start_and_stop_with_radio_sets_callbacks() -> None:
     radio.radio_ready = True
     radio.control_connected = True
     fake_server = _FakeAsyncServer()
-    fake_poller = MagicMock()
+    # MOR-1181: stop_web_server now awaits a final TX-safety drain on the
+    # poller it stopped, so the stand-in has to answer that call too.
+    fake_poller = MagicMock(drain_tx_safety_commands=AsyncMock())
 
     srv = WebServer(radio, WebConfig(host="127.0.0.1", port=0))
     with (
@@ -329,7 +331,7 @@ async def test_start_attaches_shared_state_model_service_for_acquisition_profile
     radio.radio_ready = True
     radio.control_connected = True
     fake_server = _FakeAsyncServer()
-    fake_poller = MagicMock()
+    fake_poller = MagicMock(drain_tx_safety_commands=AsyncMock())  # MOR-1181
 
     srv = WebServer(radio, WebConfig(host="127.0.0.1", port=0))
     with (
@@ -604,7 +606,7 @@ async def test_stop_handles_disconnect_failure_and_cancels_client_tasks() -> Non
     radio.disconnect = AsyncMock(side_effect=RuntimeError("disconnect failed"))
     srv = WebServer(radio)
     srv._server = _FakeAsyncServer()
-    srv._radio_poller = MagicMock()
+    srv._radio_poller = MagicMock(drain_tx_safety_commands=AsyncMock())
 
     blocker = asyncio.Event()
 
