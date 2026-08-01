@@ -147,10 +147,5 @@ export function getTxAudioControl() {
     startTx,
     stopLocalAudio,
     restoreModAfterConfirmedOff,
-    /**
-     * Transitional alias for the presentation-local PTT machines. Deliberately
-     * stops audio only; MOD restoration requires authoritative OFF evidence.
-     */
-    stopTx: stopLocalAudio,
   };
 }

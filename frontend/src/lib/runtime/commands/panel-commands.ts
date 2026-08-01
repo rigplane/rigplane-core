@@ -454,8 +454,6 @@ export function makeTxHandlers() {
       patchRadioState({ driveGain: level });
       cmd('set_drive_gain', { level });
     },
-    onPttOn: () => cmd('ptt_on'),
-    onPttOff: () => cmd('ptt_off'),
   };
 }
 

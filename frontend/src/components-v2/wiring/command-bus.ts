@@ -600,8 +600,6 @@ export function makeTxHandlers() {
       patchRadioState({ driveGain: level });
       cmd('set_drive_gain', { level });
     },
-    onPttOn: () => cmd('ptt_on'),
-    onPttOff: () => cmd('ptt_off'),
   };
 }
 
@@ -757,8 +755,6 @@ export function makeMeterHandlers() {
 
 export function makeSystemHandlers() {
   return {
-    onPttOn: () => cmd('ptt_on'),
-    onPttOff: () => cmd('ptt_off'),
     onDialLock: (on: boolean) => cmd('set_dial_lock', { on }),
     onPowerOff: () => cmd('set_powerstat', { on: false }),
     onSpeak: () => cmd('speak', { mode: 0 }),
