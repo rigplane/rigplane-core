@@ -195,6 +195,33 @@ class RigctldServer:
                     )
         return cast(Coroutine[Any, Any, Any], execute(cmd))
 
+    async def _release_session_tx(self, session_id: str) -> None:
+        """Give a departing client's managed TX lease back at teardown.
+
+        The connection id is the owner identity the handler keys under
+        (MOR-1014), and this is the teardown hook that makes it releasable: a
+        client that drops mid-over would otherwise leave its lease standing
+        until the max key-down watchdog expires, blocking every other client
+        meanwhile.
+
+        Probed rather than called outright, and never allowed to raise, for the
+        same reason ``_handler_execute_call`` probes ``session_id``:
+        ``_rig_handler`` is an injected ``Any``, and a handler that predates
+        this hook must keep working. Failure here cannot be reported to a
+        socket that is already gone, and must not skip the rest of teardown.
+        """
+        release = getattr(self._rig_handler, "release_session_tx", None)
+        if release is None:
+            return
+        try:
+            result = release(session_id)
+            if inspect.isawaitable(result):
+                await result
+        except Exception:
+            logger.warning(
+                "session %s: managed TX release failed", session_id, exc_info=True
+            )
+
     def __del__(self) -> None:
         """Emit WARN if instance is collected while TCP server/poller is still active."""
         try:
@@ -839,6 +866,10 @@ class RigctldServer:
             client_id=client_id,
             peername=f"{peer[0]}:{peer[1]}",
         )
+        # Minted once per accepted socket and released in this coroutine's
+        # ``finally``: that pairing is what makes it a lease-bearing managed TX
+        # owner identity rather than a throwaway request id (MOR-1014).
+        session_id = f"rigctld-client-{client_id}"
         logger.info("client #%d connected from %s", client_id, session.peername)
 
         try:
@@ -909,10 +940,7 @@ class RigctldServer:
                 t_start = time.monotonic()
                 try:
                     resp = await asyncio.wait_for(
-                        self._handler_execute_call(
-                            cmd,
-                            session_id=f"rigctld-client-{client_id}",
-                        ),
+                        self._handler_execute_call(cmd, session_id=session_id),
                         timeout=self._config.command_timeout,
                     )
                 except asyncio.TimeoutError:
@@ -989,6 +1017,7 @@ class RigctldServer:
             )
         finally:
             self._rate_windows.pop(client_id, None)
+            await self._release_session_tx(session_id)
             try:
                 writer.close()
                 await writer.wait_closed()
