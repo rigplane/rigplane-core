@@ -502,7 +502,16 @@ Either way, the unkey on the way out is bounded to 5 seconds. If it fails or han
 rigplane ptt off
 ```
 
-`ptt off` is unchanged: it unkeys immediately and returns right away. Use it to recover a rig left keyed by a crash, a killed process, or an older rigplane build — it never blocks, so it always gets the chance to run.
+`ptt off` unkeys immediately and returns promptly — it never holds the key the way `ptt on` does, and a forced unkey is bounded at 5 seconds, so it always gets the chance to run. Use it to recover a rig left keyed by a crash, a killed process, or an older rigplane build: when no TX lease of this invocation's own matches — the normal case for a rig some *other* process keyed — it escalates to an operator-forced unkey instead of giving up, and says so on stderr.
+
+Its exit code answers one question: did an unkey reach the radio?
+
+| Code | Meaning |
+|---|---|
+| `0` | An unkey reached the wire, or one was already in flight. |
+| `1` | rigplane did not get an unkey out — **the rig may still be transmitting.** |
+
+The refusal worth calling out is a busy radio. If another TX session holds a *live* lease on this rig, `ptt off` exits `1` and refuses rather than cutting that transmission off: recovering a stranded key is not the same thing as preempting somebody who is talking. Stop that session and retry, or wait for its max-key-down watchdog.
 
 !!! danger "Caution"
     Activating PTT will key your transmitter. Ensure your antenna is connected and you are authorized to transmit on the current frequency.

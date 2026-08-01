@@ -22,10 +22,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   now blocks at the first command. SIGINT / SIGTERM / SIGHUP unkey and exit
   128 + the signal (130 / 143 / 129); a duration that simply runs out exits 0;
   a failed or stuck unkey exits 1 with a warning that the radio may still be
-  transmitting. `ptt off` is unchanged and immediate — it remains the recovery
-  path for a rig left transmitting by some other process (MOR-1184, MOR-1199).
+  transmitting. `ptt off` remains the recovery path for a rig left transmitting
+  by some other process; under a managed runtime it now escalates to an
+  operator-forced unkey (see Changed below) and its exit code is meaningful
+  (MOR-1184, MOR-1199).
 
 ### Changed
+
+- **CLI: `rigplane ptt off` forces an unkey when no lease of its own matches
+  (MOR-1175, MOR-1182).** Under the managed TX runtime a rig keyed by a process
+  that has since died holds a lease no other invocation can match, so the
+  ordinary release was refused and the command warned and exited 0 — the crash
+  recovery `ptt off` exists for was gone. It now escalates to an
+  operator-forced unkey (attributed as such, never as a system release), and
+  its exit code becomes meaningful: `0` only when an unkey reached the wire or
+  was already in flight, `1` — with what the rig may still be doing — when it
+  did not. A *live* lease held by another TX session is refused rather than
+  preempted. `ptt on` is unaffected: its own teardown never escalates.
 
 - **Browser TX surfaces unified (PRs #2125, #2128, #2130, #2134).** Both desktop
   TxPanel and mobile FAB + landscape strip now key through the single App-owned
