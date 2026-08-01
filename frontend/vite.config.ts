@@ -141,6 +141,10 @@ export default defineConfig({
             // leak risk, routed to the isolated pool below. See #771.
             'src/lib/runtime/tx-controller/__tests__/browser-dependencies.test.ts',
             'src/lib/runtime/tx-controller/__tests__/browser-dependencies-fault-injection.test.ts',
+            // Real ws-client singleton (`_ctrl`) + module-scope vi.mock of
+            // radio.svelte/capabilities.svelte/tx-adapter — same isolate:false
+            // leak risk as the two files above. See #771 / MOR-1089 U4.
+            'src/lib/runtime/tx-controller/__tests__/integration-lifecycle-matrix.test.ts',
           ],
           pool: 'threads',
           isolate: false,
@@ -199,6 +203,7 @@ export default defineConfig({
             'src/lib/transport/__tests__/ws-client.test.ts',
             'src/lib/runtime/tx-controller/__tests__/browser-dependencies.test.ts',
             'src/lib/runtime/tx-controller/__tests__/browser-dependencies-fault-injection.test.ts',
+            'src/lib/runtime/tx-controller/__tests__/integration-lifecycle-matrix.test.ts',
           ],
           pool: 'threads',
           isolate: true,
