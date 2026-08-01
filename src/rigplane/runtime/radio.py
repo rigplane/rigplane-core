@@ -361,6 +361,29 @@ _UDP_ERROR_THRESHOLD: int = 3
 # Being wrong here costs supervised TX for one epoch, never the session.
 _MANAGED_TX_PROBE_TIMEOUT_S: float = 0.5
 
+# Deadline for the managed-TX teardown waits (MOR-1016): the shutdown that
+# carries a held lease's OFF out through a still-open CI-V path, and the
+# provider-park that shuts the gate ahead of a soft_disconnect.  Deliberately
+# longer than ``ManagedRadioRuntime``'s own 3 s effect-service bound, which is
+# what the durable OFF and its retries actually run under: an outer wait that
+# expired first would cut the release short rather than bound a wedged one, and
+# the remaining headroom covers ticker cancellation and port retirement.
+_MANAGED_TX_TEARDOWN_TIMEOUT_S: float = 5.0
+
+
+async def _managed_tx_provider_released_by_disconnect() -> None:
+    """``ManagedRadioRuntime.shutdown``'s release hook, deliberately empty.
+
+    The hook exists for an owner whose provider outlives the runtime — a server
+    handing a shared rig back. ``disconnect()`` is the other case: the shutdown
+    has already retired the managed CI-V port by the time this runs, and the
+    session under it is released on the very next line, so there is nothing
+    left here to hand back. Clearing the radio's own managed-TX members is
+    deliberately *not* done here: the shutdown task is shielded, so on the
+    bounded path this may run long after ``disconnect()`` returned.
+    """
+    return None
+
 
 class RawCivSubscription:
     """Handle for a raw CI-V listener registered via ``add_raw_civ_listener``.
@@ -1079,10 +1102,11 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
         :class:`~rigplane.core.radio_protocol.ManagedTxCapable`: a real class
         member, never conjured through ``__getattr__``, so
         :meth:`~rigplane.core.radio_protocol.ManagedTxApi.bind`'s
-        ``getattr_static`` read finds it. ``None`` only before the first
-        ``connect()`` — every ingress keeps using the legacy :meth:`set_ptt`
-        path until then. Once :meth:`_arm_managed_tx` has run this answers the
-        radio's own runtime for good, whether or not that arming succeeded:
+        ``getattr_static`` read finds it. ``None`` outside a connect session —
+        before the first ``connect()`` and again after :meth:`disconnect` —
+        where every ingress keeps using the legacy :meth:`set_ptt` path.
+        Within one, from :meth:`_arm_managed_tx` to teardown, this answers that
+        session's runtime for good, whether or not the arming succeeded:
         a rig whose provider never came ready refuses keys with ``NOT_READY``
         rather than reverting to an unsupervised write (MOR-1193).
         """
@@ -1203,8 +1227,16 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
         runtime and refuses TX rather than falling back to the unsupervised
         legacy write (MOR-1193). Failures never propagate, so a caller on a
         recovery path can await it without guarding.
+
+        A radio with no CI-V transport is not re-armable at all, and that is
+        what makes a disconnected one inert: :meth:`disconnect` clears the
+        runtime, so a re-arm that ran anyway would *build a second one* and
+        republish ``managed_tx`` on a radio with nothing to bind it to — a
+        supervisor whose port was captured from a closed session, which is a
+        worse answer than the honest ``None``. Only ``connect()`` brings a
+        runtime back.
         """
-        if self._managed_tx_binding_is_live():
+        if self._civ_transport is None or self._managed_tx_binding_is_live():
             return
         async with self._managed_tx_arm_lock:
             # Re-checked under the lock: the holder this caller queued behind
@@ -1243,9 +1275,16 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
 
         Four steps, all of which must land before a key is allowed:
 
-        1. construct the runtime — once per radio, never per connect, so every
-           ingress that already bound a facade keeps pointing at the same
-           supervisor across a reconnect;
+        1. construct the runtime — once per *connect session*, never per arm,
+           so every ingress that already bound a facade keeps pointing at the
+           same supervisor across a reconnect, a re-arm or a soft_disconnect.
+           The session, not the radio, is the bound: :meth:`disconnect` shuts
+           the runtime down and clears it (PR4), and the next ``connect()``
+           builds a new one. A fresh runtime's provider generations start again
+           at 1, which is why teardown also clears the CI-V layer's
+           generation-keyed registry — marks left by the previous session would
+           otherwise read as this one's and fail every arm from here on
+           (:meth:`~rigplane.runtime._civ_rx.CivRuntime.reset_managed_tx_generations`);
         2. prove the rig answers PTT reads at all
            (:meth:`_managed_tx_provider_answers_ptt`) — the guard that keeps a
            failed arm from costing the CI-V session;
@@ -1340,6 +1379,93 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
         except Exception:
             logger.debug(
                 "managed TX degrade-to-not-ready failed for %s",
+                runtime.target_id,
+                exc_info=True,
+            )
+
+    async def _shutdown_managed_tx(self) -> None:
+        """Stop supervised TX while the CI-V path can still carry the OFF.
+
+        Ordered ahead of the session teardown in :meth:`disconnect` for the one
+        reason that matters: ``shutdown`` emergency-releases a held lease, and
+        a WRITE_OFF issued after the transport is gone is a rig left keyed with
+        nobody watching it. Bounded for the mirror-image reason — a supervisor
+        wedged on a rig that stopped answering must not hold ``disconnect()``
+        open, since closing the socket is itself the de-key of last resort.
+        The runtime shields its own shutdown task, so the bound abandons the
+        wait rather than the release: the OFF keeps trying behind us.
+
+        Clearing the three managed-TX members afterwards is the other half of
+        the MOR-1193 invariant, not a weakening of it. "Managed-eligible means
+        ``managed_tx`` is never ``None``" holds *from connect to disconnect*;
+        past disconnect there is no session to supervise, and the next
+        ``connect()`` arms a fresh runtime. Keeping this one published would
+        advertise a supervisor over a closed port — and leave the re-arm path
+        able to rebuild a binding for a rig that is gone.
+
+        Dropping the runtime is also what restarts its provider-generation
+        counter, which the CI-V layer uses as a registry key — so the session's
+        entries there have to go with it, or session 2's generation 1 collides
+        with session 1's and every arm from here on fails
+        (:meth:`~rigplane.runtime._civ_rx.CivRuntime.reset_managed_tx_generations`).
+        Ordered inside the ``finally`` with the members it belongs to, so a
+        shutdown that timed out or raised still leaves a connectable radio.
+        """
+        runtime = self._managed_tx_runtime
+        if runtime is None:
+            return
+        try:
+            await asyncio.wait_for(
+                runtime.shutdown(
+                    release_provider=_managed_tx_provider_released_by_disconnect
+                ),
+                timeout=_MANAGED_TX_TEARDOWN_TIMEOUT_S,
+            )
+        except asyncio.TimeoutError:
+            logger.error(
+                "managed TX shutdown for %s did not settle within %.1fs; "
+                "disconnecting anyway — the rig may still be keyed",
+                runtime.target_id,
+                _MANAGED_TX_TEARDOWN_TIMEOUT_S,
+            )
+        except Exception:
+            logger.error(
+                "managed TX shutdown for %s failed; disconnecting anyway",
+                runtime.target_id,
+                exc_info=True,
+            )
+        finally:
+            self._managed_tx_runtime = None
+            self._managed_tx_bound_port = None
+            self._managed_tx_armed_epoch = None
+            self._civ_runtime.reset_managed_tx_generations()
+
+    async def _park_managed_tx(self) -> None:
+        """Refuse keys for the length of a CI-V gap, without unpublishing.
+
+        ``soft_disconnect`` takes the data path down and expects it back, so
+        the runtime outlives it — but in between, a lease granted on the
+        strength of a provider still marked ready would have its WRITE_ON land
+        on a socket that is already closing, which is a key the supervisor
+        believes in and the rig never saw. Marking the provider not-ready first
+        makes ``request_on`` answer ``NOT_READY`` for the length of the gap,
+        and turns a lease held across it into the release that
+        :meth:`rearm_managed_tx` services against the repaired port.
+
+        Bounded and fail-soft: a gate that will not shut is not a reason to
+        refuse to tear down the path it guards.
+        """
+        runtime = self._managed_tx_runtime
+        if runtime is None:
+            return
+        try:
+            await asyncio.wait_for(
+                runtime.set_provider_ready(ready=False),
+                timeout=_MANAGED_TX_TEARDOWN_TIMEOUT_S,
+            )
+        except Exception:
+            logger.warning(
+                "managed TX did not park for %s ahead of soft_disconnect",
                 runtime.target_id,
                 exc_info=True,
             )
@@ -1565,7 +1691,13 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
         the lifecycle therefore treated disconnect() as an idempotent no-op —
         fall back to the control-phase graceful teardown so a genuinely live
         session is always released (graceful-close invariant).
+
+        Managed TX is shut down first (MOR-1016), bounded, because the OFF a
+        held lease owes the rig has to go out over a transport that is still
+        open — see :meth:`_shutdown_managed_tx`, which is also where the radio
+        stops being managed until the next ``connect()``.
         """
+        await self._shutdown_managed_tx()
         await self._session_lifecycle.disconnect()
         if self._conn_state == RadioConnectionState.CONNECTED:
             await self._control_phase.disconnect()
@@ -1575,9 +1707,15 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
 
         This allows fast reconnect without re-authentication — the radio
         keeps the session open on the control port.
+
+        Managed TX is parked, not shut down (MOR-1016): the runtime survives
+        the gap and is re-armed against the repaired port, so the only thing
+        that changes here is that it stops accepting keys — see
+        :meth:`_park_managed_tx`.
         """
         if self._conn_state != RadioConnectionState.CONNECTED:
             return
+        await self._park_managed_tx()
         self._conn_state = RadioConnectionState.DISCONNECTING
         self._civ_runtime.advance_generation("soft_disconnect")
 
