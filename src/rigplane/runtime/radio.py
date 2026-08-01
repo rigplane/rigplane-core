@@ -25,8 +25,7 @@ if TYPE_CHECKING:
     from rigplane._runtime_protocols import ControlPhaseHost
     from rigplane.core.acquisition_scheduler import RadioStateModelService
     from rigplane.core.radio_protocol import ManagedTxSupervisor
-    from rigplane.core.tx_safety import ProviderPttObservation
-    from rigplane.runtime.managed_radio_runtime import ManagedRadioRuntime
+    from rigplane.core.tx_safety import ProviderPttObservation, TxSafetySnapshot
 
     def _managed_tx_runtime_satisfies_supervisor(
         runtime: ManagedRadioRuntime,
@@ -35,8 +34,8 @@ if TYPE_CHECKING:
         from :class:`~rigplane.core.radio_protocol.ManagedTxSupervisor`.
 
         Guarded by ``TYPE_CHECKING`` — never defined and never called at
-        runtime, so it costs nothing until PR2 arms
-        ``self._managed_tx_runtime`` (MOR-1016). Its only job is to turn a
+        runtime, so it costs nothing now that :meth:`CoreRadio._arm_managed_tx`
+        builds ``self._managed_tx_runtime`` (MOR-1016). Its only job is to turn a
         ``request_on``/``release_owner`` signature drift on either side into
         a ``uv run mypy src/`` error here, since the assembly-time
         ``getattr_static`` two-step (:meth:`ManagedTxApi.bind`) only checks
@@ -65,6 +64,8 @@ from rigplane.runtime._civ_rx import (
 )
 from rigplane.runtime._dual_rx_runtime import DualRxRuntimeMixin
 from rigplane.runtime._scope_runtime import ScopeRuntimeMixin
+from rigplane.runtime.managed_radio_runtime import ManagedRadioRuntime
+from rigplane.runtime.managed_tx_effect_service import managed_tx_effect_service
 
 # Import split modules
 from rigplane.runtime._connection_state import RadioConnectionState
@@ -300,6 +301,7 @@ from rigplane.commands import set_tsql_freq as _set_tsql_freq_cmd
 from rigplane.commands import set_vfo as _select_vfo_cmd
 from rigplane.core.exceptions import CommandError, TimeoutError
 from rigplane.core.state_store import StateStore
+from rigplane.core.tx_safety import TxOutcome
 from rigplane.runtime.meter_cal import interpolate_swr
 from rigplane.profiles import RadioProfile, resolve_radio_profile
 from rigplane.core.radio_state import RadioState
@@ -349,6 +351,14 @@ _DEFAULT_CACHE_TTL: dict[str, float] = {"freq": 10.0, "mode": 10.0, "rf_power": 
 # cumulative and only the 30s watchdog resets it via ``soft_reconnect``.
 # Require >=3 accumulated errors before reporting ``connected = False``.
 _UDP_ERROR_THRESHOLD: int = 3
+
+# Deadline for the managed-TX arming probe (MOR-1016).  Deliberately shorter
+# than ``_civ_get_timeout``: by the time it runs the rig has already answered
+# a full initial-state fetch, so a PTT read that does not come back promptly
+# means the command is unsupported rather than merely slow — and the whole
+# point of the probe is to settle that *without* holding up ``connect()``.
+# Being wrong here costs supervised TX for one epoch, never the session.
+_MANAGED_TX_PROBE_TIMEOUT_S: float = 0.5
 
 
 class RawCivSubscription:
@@ -916,10 +926,16 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
             recovery_backoff_s=(0.0, 0.0, 0.0),
         )
         self._audio_runtime: AudioRecoveryRuntime = AudioRecoveryRuntime(self)
-        # Managed TX supervisor (MOR-1016 PR1): inert until PR2 constructs and
-        # arms it in connect(). ``managed_tx`` below always answers ``None``
-        # until then, so every ingress keeps using the legacy set_ptt path.
+        # Managed TX supervisor (MOR-1016).  Built once, by the first
+        # ``connect()`` that reaches ``_arm_managed_tx`` — never here: arming
+        # needs a live ``_civ_transport`` to capture, which does not exist
+        # until the control phase has run.  From that point on the member is
+        # non-None for the life of the radio: a failed arm degrades it to
+        # NOT_READY, never back to ``None`` (see ``_arm_managed_tx``).
         self._managed_tx_runtime: ManagedRadioRuntime | None = None
+        # CI-V epoch the last arming attempt was made against; ``None`` until
+        # the first attempt.  Bounds arming to one attempt per epoch.
+        self._managed_tx_armed_epoch: int | None = None
 
     # Host shims for ControlPhaseRuntime and Icom7610SerialRadio (delegate to civ_runtime)
     def _advance_civ_generation(self, reason: str) -> None:
@@ -1054,12 +1070,158 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
         :class:`~rigplane.core.radio_protocol.ManagedTxCapable`: a real class
         member, never conjured through ``__getattr__``, so
         :meth:`~rigplane.core.radio_protocol.ManagedTxApi.bind`'s
-        ``getattr_static`` read finds it. Inert until MOR-1016 PR2 constructs
-        and arms ``self._managed_tx_runtime`` at connect time — until then
-        every radio here answers ``None`` and every ingress keeps using the
-        legacy :meth:`set_ptt` path unchanged.
+        ``getattr_static`` read finds it. ``None`` only before the first
+        ``connect()`` — every ingress keeps using the legacy :meth:`set_ptt`
+        path until then. Once :meth:`_arm_managed_tx` has run this answers the
+        radio's own runtime for good, whether or not that arming succeeded:
+        a rig whose provider never came ready refuses keys with ``NOT_READY``
+        rather than reverting to an unsupervised write (MOR-1193).
         """
         return self._managed_tx_runtime
+
+    @property
+    def tx_snapshot(self) -> "TxSafetySnapshot | None":
+        """Current managed TX state, or ``None`` when no runtime exists yet.
+
+        Read-only passthrough to the supervisor's snapshot so presentation
+        (MOR-1015) can render *why* a key was refused — unarmed provider,
+        someone else's lease, a rig that is not observably OFF — without
+        reaching into ``_managed_tx_runtime`` or re-deriving TX state from
+        the legacy poller's PTT mirror.
+        """
+        runtime = self._managed_tx_runtime
+        return None if runtime is None else runtime.tx_snapshot
+
+    @property
+    def _managed_tx_target_id(self) -> str:
+        """Stable identity of the physical rig this radio's TX runtime owns.
+
+        One managed runtime supervises one rig, so the id has to separate two
+        radios that a single process holds at once and stay the same across
+        that rig's reconnects. For a LAN radio that is the backend family plus
+        the CI-V endpoint (``_host`` is the rig's address and ``_civ_port`` the
+        data port the control phase negotiated); serial radios carry the OS
+        device path instead, since ``_IcomSerialRadioBase`` passes the device
+        as ``host`` with no ports at all and ``f"…:{host}:0"`` would read as a
+        LAN rig on port zero. That branch is inert today — the serial backend
+        overrides ``connect()`` without calling ``super()``, so nothing arms
+        it (MOR-1190) — and exists so the id is right the day it does.
+        """
+        device = getattr(self, "_serial_device", None)
+        if isinstance(device, str) and device:
+            return f"serial:{device}"
+        return f"{self.backend_id}:{self._host}:{self._civ_port}"
+
+    async def _managed_tx_provider_answers_ptt(self) -> bool:
+        """Ask the rig for PTT once, unmanaged, before any port is captured.
+
+        The guard on the retirement trap. ``request_fresh_ptt`` treats "the
+        provider could not prove PTT state" as grounds to retire the managed
+        port, and ``CivRuntime.retire_managed_tx_port`` implements retirement
+        by advancing the CI-V epoch and **disconnecting the transport itself**
+        — correct for a port that was armed and is now suspect, catastrophic
+        for one that failed its very first read: it would close the CI-V
+        socket ``connect()`` opened moments earlier and hand the caller back a
+        radio that reports ``connected is False``.
+
+        So the rig proves it answers ``0x1C 0x00`` on the ordinary command
+        path first, where a timeout costs one ``CommandError`` and nothing
+        else. Only then is the runtime given a port it can retire. A rig that
+        does not implement the command — or is not answering at all — never
+        reaches step 2, and keeps its session.
+
+        This narrows the trap rather than closing it: a rig that answers the
+        probe and then drops the seed reply still loses the socket. Closing it
+        for good means teaching either ``request_fresh_ptt`` or
+        ``retire_managed_tx_port`` that an unarmed port is not a suspect one,
+        which is a change to modules this PR does not touch.
+        """
+        civ = build_civ_frame(self._radio_addr, CONTROLLER_ADDR, 0x1C, sub=0x00)
+        try:
+            await self._send_civ_expect(
+                civ, label="managed_tx_ptt_probe", timeout=_MANAGED_TX_PROBE_TIMEOUT_S
+            )
+        except Exception:
+            return False
+        return True
+
+    async def _arm_managed_tx(self) -> None:
+        """Build, bind and seed the managed TX runtime for this CI-V epoch.
+
+        Four steps, all of which must land before a key is allowed:
+
+        1. construct the runtime — once per radio, never per connect, so every
+           ingress that already bound a facade keeps pointing at the same
+           supervisor across a reconnect;
+        2. prove the rig answers PTT reads at all
+           (:meth:`_managed_tx_provider_answers_ptt`) — the guard that keeps a
+           failed arm from costing the CI-V session;
+        3. ``replace_provider(ready=True)`` — captures the *current* CI-V
+           transport as the managed port, which is why this runs at the end of
+           ``connect()`` and never in ``__init__``;
+        4. ``request_fresh_ptt()`` — one CI-V ``0x1C 0x00`` whose answer seeds
+           the authoritative OFF observation. Not optional and not cosmetic:
+           nothing polls PTT periodically, and ``request_on`` refuses with
+           ``RADIO_NOT_OFF`` until an observation exists, so a runtime armed
+           without this step can never key at all.
+
+        Failure at any step never propagates: a rig that cannot supervise TX
+        must still be usable for RX, tuning and audio. It degrades to
+        provider-not-ready and *stays published* — dropping the runtime would
+        hand the next key to the legacy unsupervised ``set_ptt`` with no lease,
+        no owner and no watchdog, which is the exact bypass MOR-1193 closed.
+
+        Bounded to one attempt per CI-V epoch: the marker is written before
+        the first await, so a re-entrant call is a no-op. A step-4 failure
+        retires the managed port, which advances the epoch by itself — so the
+        radio is immediately eligible for a fresh attempt on the next
+        ``connect()``/rearm rather than being latched off for good.
+        """
+        epoch = self._civ_epoch
+        if self._managed_tx_armed_epoch == epoch:
+            return
+        self._managed_tx_armed_epoch = epoch
+        runtime = self._managed_tx_runtime
+        if runtime is None:
+            runtime = ManagedRadioRuntime(
+                self._managed_tx_target_id,
+                service_factory=managed_tx_effect_service,
+                provider_lifecycle=self,
+            )
+            self._managed_tx_runtime = runtime
+        step = "ptt_probe"
+        try:
+            if await self._managed_tx_provider_answers_ptt():
+                step = "replace_provider"
+                if (await runtime.replace_provider(ready=True)).snapshot.provider_ready:
+                    step = "request_fresh_ptt"
+                    if (await runtime.request_fresh_ptt()).outcome is TxOutcome.APPLIED:
+                        return
+            logger.error(
+                "managed TX arming for %s did not complete at %s; TX stays "
+                "refused until a later connect re-arms it",
+                runtime.target_id,
+                step,
+            )
+        except Exception:
+            logger.error(
+                "managed TX arming for %s raised at %s; TX stays refused until "
+                "a later connect re-arms it",
+                runtime.target_id,
+                step,
+                exc_info=True,
+            )
+        # Degrade, never disappear.  A step-4 failure has already retired the
+        # port and marked the (new) provider not-ready, so this is a no-op
+        # there; the probe and capture paths need it stated explicitly.
+        try:
+            await runtime.set_provider_ready(ready=False)
+        except Exception:
+            logger.debug(
+                "managed TX degrade-to-not-ready failed for %s",
+                runtime.target_id,
+                exc_info=True,
+            )
 
     # ------------------------------------------------------------------
     # Backwards-compatible property shims for _connected / _intentional_disconnect
@@ -1251,10 +1413,16 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
         ``end_external_cat_session()`` (managed-runtime crash/restart, a dropped
         Hamlib bridge) would keep cooperating pollers paused forever, freezing
         ``radio_state`` while rigctld/web serve a stale frequency.
+
+        Managed TX is armed last (MOR-1016): it captures the CI-V transport
+        this connect just built, and it must not delay the state fetch every
+        consumer waits on. It never raises — see :meth:`_arm_managed_tx` — so
+        ``connect()`` returns with ``managed_tx`` published either way.
         """
         self._reset_external_cat_session()
         await self._session_lifecycle.connect()
         await self._fetch_initial_state()
+        await self._arm_managed_tx()
 
     async def __aenter__(self) -> "CoreRadio":
         # Route through the lifecycle's guaranteed-release context manager so a
