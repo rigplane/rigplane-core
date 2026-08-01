@@ -20,6 +20,15 @@ rebind that never returns, and two reconnects racing each other.
 MOR-1196 settles the read itself: resolving the supervisor is a fallible
 operation, not an attribute lookup, so it may neither be read as absence when
 it fails nor escape the guard that re-opens the scope gate.
+
+MOR-1016 PR3 gives the hook a second re-arm caller: ``soft_reconnect`` now
+re-arms the radio itself, before any consumer's recovery, so this pass is very
+often the *second* one. Both are routed onto ``CoreRadio.rearm_managed_tx``,
+whose no-op-when-already-bound guard is what keeps the second from retiring the
+port the first captured — a rebind that would take the repaired CI-V transport
+down with it. Those cases run over a real ``CoreRadio`` and the real
+``soft_reconnect``, because the ordering and the guard are both claims about
+production wiring that a double could only assert about itself.
 """
 
 from __future__ import annotations
@@ -31,6 +40,7 @@ from collections.abc import Callable
 
 import pytest
 
+from rigplane import transport as transport_module
 from rigplane.core.radio_protocol import ManagedTxSupervisor
 from rigplane.core.tx_safety import (
     ProviderPttObservation,
@@ -43,8 +53,14 @@ from rigplane.core.tx_safety import (
 )
 from rigplane.runtime.managed_radio_runtime import ManagedRadioRuntime
 from rigplane.runtime.managed_tx_effect_service import managed_tx_effect_service
+from rigplane.runtime.radio import CoreRadio
 from rigplane.web import server as web_server
 from rigplane.web.server import WebServer
+from test_audio_reconnect_rearm import (
+    _FakeCivTransport,
+    _SoftReconnectHost,
+    _TestControlPhaseRuntime,
+)
 
 _OWNER = TxOwner(TxSource.WEBSOCKET, "ws-1")
 _Observer = Callable[[ProviderPttObservation], None]
@@ -129,6 +145,21 @@ class _Radio:
         self.log.append("refetch")
 
 
+class _ManagedTxRadio(_Radio):
+    """A backend that re-arms its own managed port, as ``CoreRadio`` now does.
+
+    Recovery stopped reaching for ``replace_provider`` on the supervisor in
+    MOR-1016: only the radio can tell whether the provider is already bound to
+    the port the reconnect repaired, so only the radio may decide to rebind.
+    The forwarder is deliberately thin — the real method's degradation is
+    pinned on the real ``CoreRadio`` further down, and a double that swallowed
+    failures here would hide the rebind failures these cases were written for.
+    """
+
+    async def rearm_managed_tx(self) -> None:
+        await self.managed_tx.replace_provider(ready=True)
+
+
 class _RaisingSupervisorRadio(_Radio):
     """Backend whose supervisor accessor raises instead of answering.
 
@@ -178,7 +209,7 @@ async def _managed(
         await runtime.set_provider_ready(ready=False)  # the control link drops
         assert runtime.tx_snapshot.phase is TxPhase.RELEASE_REQUIRED
     log.clear()
-    return WebServer(_Radio(log, runtime)), runtime, provider, log  # type: ignore[arg-type]
+    return WebServer(_ManagedTxRadio(log, runtime)), runtime, provider, log  # type: ignore[arg-type]
 
 
 async def _recover(server: WebServer) -> None:
@@ -451,3 +482,204 @@ async def test_overlapping_reconnects_do_not_interleave() -> None:
     assert log.count("refetch") == 2
     assert log.index("read_ptt") < log.index("retire[2]")
     assert runtime.tx_snapshot.phase is TxPhase.IDLE
+
+
+# ===========================================================================
+# MOR-1016 PR3 -- one re-arm per repaired path, and it goes first
+# ===========================================================================
+
+
+class _CivPort:
+    """A CI-V data transport stand-in; its identity is all the guard reads."""
+
+
+class _ManagedRadio(CoreRadio):
+    """A real ``CoreRadio`` whose managed port keeps the CI-V bookkeeping.
+
+    ``_AssembledRadio`` in ``test_managed_tx_assembly`` retires
+    unconditionally, which is right for the arming failures it pins. What the
+    re-arm guard turns on is the *conditional* half of
+    ``CivRuntime.retire_managed_tx_port``: the epoch advances, and the
+    transport is dropped, only when the port being retired is the current one.
+    Retiring a port from an older epoch, or one whose transport has since been
+    replaced, leaves both alone — and telling that apart from a live binding is
+    the entire job of the guard under test.
+    """
+
+    def __init__(self, provider: _Provider) -> None:
+        super().__init__("127.0.0.1")
+        self.provider = provider
+        self._civ_transport = _CivPort()  # type: ignore[assignment]
+        self._ports: dict[int, tuple[int, object]] = {}
+
+    async def _send_civ_expect(self, civ_frame: bytes, **kwargs: object) -> object:
+        return object()  # the arming probe: this rig answers 0x1C 0x00
+
+    def _unbind_authoritative_ptt_observer(self) -> None:
+        self.provider._unbind_authoritative_ptt_observer()
+
+    def _capture_managed_tx_port(self, generation: int, observer: _Observer) -> bool:
+        if self._civ_transport is None:
+            # What ``CivRuntime.capture_managed_port`` answers with nothing to
+            # capture — the state a destructive second rebind leaves behind.
+            self._unbind_authoritative_ptt_observer()
+            return False
+        if not self.provider._capture_managed_tx_port(generation, observer):
+            return False
+        self._ports[generation] = (self._civ_epoch, self._civ_transport)
+        return True
+
+    async def _write_managed_ptt(self, generation: int, on: bool) -> None:
+        await self.provider._write_managed_ptt(generation, on)
+
+    async def _request_authoritative_ptt_read(
+        self, provider_generation: int, observer: _Observer
+    ) -> None:
+        await self.provider._request_authoritative_ptt_read(
+            provider_generation=provider_generation, observer=observer
+        )
+
+    async def _retire_managed_tx_port(self, generation: int) -> None:
+        await self.provider._retire_managed_tx_port(generation)
+        epoch, transport = self._ports.pop(generation, (None, None))
+        if epoch == self._civ_epoch:
+            self._advance_civ_generation("managed TX physical port retired")
+        if transport is self._civ_transport:
+            self._civ_transport = None
+
+
+async def _armed() -> tuple[_ManagedRadio, ManagedRadioRuntime, list[bool]]:
+    """A radio armed through the public path, counting every rebind after it."""
+    radio = _ManagedRadio(_Provider([]))
+    await radio.rearm_managed_tx()
+    runtime = radio._managed_tx_runtime
+    assert runtime is not None
+    assert radio.tx_snapshot is not None and radio.tx_snapshot.provider_ready
+    rebinds: list[bool] = []
+    replace_provider = runtime.replace_provider
+
+    async def _counted(*, ready: bool) -> TxTransition:
+        rebinds.append(ready)
+        return await replace_provider(ready=ready)
+
+    runtime.replace_provider = _counted  # type: ignore[method-assign]
+    return radio, runtime, rebinds
+
+
+async def test_a_second_rearm_over_a_live_binding_touches_nothing() -> None:
+    """The no-op is the feature: two recovery callers, one of them does work."""
+    radio, _runtime, rebinds = await _armed()
+    port = radio._civ_transport
+
+    await radio.rearm_managed_tx()
+
+    assert rebinds == []  # zero ``replace_provider`` calls reach the runtime
+    assert radio._civ_transport is port
+    assert radio.provider.log == ["read_ptt"]  # and no second seed either
+
+
+async def test_web_and_the_control_phase_rebind_a_reconnect_once_between_them() -> None:
+    """R2: ``soft_reconnect`` re-arms and the Web hook re-arms; one may land."""
+    radio, _runtime, rebinds = await _armed()
+    server = WebServer(radio)  # type: ignore[arg-type]
+    # What ``soft_reconnect`` leaves behind: a fresh CI-V socket on a fresh
+    # generation, with the pre-drop binding stale against both.
+    radio._civ_transport = port = _CivPort()  # type: ignore[assignment]
+    radio._advance_civ_generation("soft_reconnect")
+
+    await radio.rearm_managed_tx()  # the control phase, ahead of the callbacks
+    await server._service_managed_tx_release()  # the Web hook, right behind it
+
+    # A second rebind would retire the port the first captured — current epoch,
+    # current transport — which advances the generation and disconnects the
+    # socket the reconnect just repaired, undoing the recovery it rode in on.
+    assert rebinds == [True]
+    assert radio._civ_transport is port
+    snapshot = radio.tx_snapshot
+    assert snapshot is not None and snapshot.provider_ready
+
+
+async def test_an_arm_that_moved_the_epoch_does_not_invite_another_rebind() -> None:
+    """The guard reads the binding, not ``_managed_tx_armed_epoch``.
+
+    ``_managed_tx_armed_epoch`` survives the plain two-caller race above — it
+    happens to agree there — and is wrong on both sides of this one, which is
+    why that race cannot be the only case here. The marker is written before
+    arming's first await and answers "have I tried on this epoch", not "is the
+    provider bound". A port whose transport was rebuilt under it is dead on an
+    unchanged epoch, so keying off the marker refuses the re-arm that would
+    revive it; and arming a replacement retires a port of the *current* epoch,
+    which advances the epoch before the capture that follows — leaving a wholly
+    successful arm with its marker one epoch behind a live binding, where the
+    marker now reads "never armed here" and waves the destructive rebind
+    through.
+    """
+    radio, _runtime, rebinds = await _armed()
+    # The window ``soft_reconnect`` passes through between binding the new CI-V
+    # socket and advancing the generation: transport replaced, epoch not yet.
+    radio._civ_transport = port = _CivPort()  # type: ignore[assignment]
+    epoch_before = radio._civ_epoch
+
+    await radio.rearm_managed_tx()
+
+    # Re-armed, because the binding was dead — the marker would have said no.
+    assert rebinds == [True]
+    assert radio._civ_epoch != epoch_before  # the retirement moved it mid-call
+    assert radio._managed_tx_armed_epoch == epoch_before  # the marker did not
+    assert radio._civ_transport is port
+
+    await radio.rearm_managed_tx()
+
+    # And not re-armed, because the binding is live — the marker would have
+    # said yes, retiring a current port and disconnecting a working transport.
+    assert rebinds == [True]
+    assert radio._civ_transport is port
+    snapshot = radio.tx_snapshot
+    assert snapshot is not None and snapshot.provider_ready
+
+
+async def test_soft_reconnect_re_arms_before_it_calls_any_consumer(monkeypatch) -> None:
+    """The durable OFF goes in front of every consumer's recovery, not one.
+
+    The Web hook put it in front of the Web's own recovered work; nothing put
+    it in front of a headless consumer's, and nothing serviced it at all on a
+    rig with no ``_on_reconnect`` at all. The real ``soft_reconnect`` runs here
+    because the ordering claim is about that method's body and nothing else.
+    """
+    monkeypatch.setattr(transport_module, "IcomTransport", _FakeCivTransport)
+    order: list[str] = []
+    host = _SoftReconnectHost()
+    host._on_reconnect = lambda: order.append("on_reconnect")
+
+    async def _rearm() -> None:
+        order.append("rearm")
+
+    host.rearm_managed_tx = _rearm  # type: ignore[attr-defined]
+
+    await _TestControlPhaseRuntime(host).soft_reconnect()  # type: ignore[arg-type]
+
+    assert order == ["rearm", "on_reconnect"]
+
+
+async def test_a_re_arm_that_raises_does_not_fail_the_reconnect(
+    monkeypatch, caplog
+) -> None:
+    """Fail-soft: arming already fails closed, so nothing here may fail hard."""
+    monkeypatch.setattr(transport_module, "IcomTransport", _FakeCivTransport)
+    order: list[str] = []
+    host = _SoftReconnectHost()
+    host._on_reconnect = lambda: order.append("on_reconnect")
+
+    async def _raises() -> None:
+        raise ConnectionError("the rig went away again")
+
+    host.rearm_managed_tx = _raises  # type: ignore[attr-defined]
+
+    with caplog.at_level(logging.WARNING):
+        await _TestControlPhaseRuntime(host).soft_reconnect()  # type: ignore[arg-type]
+
+    # The CI-V path is repaired and every consumer still gets its callback; a
+    # rig that cannot supervise TX is still a rig that must receive.
+    assert order == ["on_reconnect"]
+    assert host._civ_transport is not None
+    assert _warned(caplog, "re-arm failed")

@@ -936,6 +936,14 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
         # CI-V epoch the last arming attempt was made against; ``None`` until
         # the first attempt.  Bounds arming to one attempt per epoch.
         self._managed_tx_armed_epoch: int | None = None
+        # Identity of the port the runtime is bound to, recorded the moment
+        # ``replace_provider`` captured it: (provider generation, CI-V epoch,
+        # transport).  Never cleared — every way a binding dies moves one of
+        # the three (see ``_managed_tx_binding_is_live``).
+        self._managed_tx_bound_port: tuple[int | None, int, object] | None = None
+        # Serialises the arming steps, so two callers cannot both find the
+        # binding dead and both replace the provider.
+        self._managed_tx_arm_lock = asyncio.Lock()
 
     # Host shims for ControlPhaseRuntime and Icom7610SerialRadio (delegate to civ_runtime)
     def _advance_civ_generation(self, reason: str) -> None:
@@ -1145,7 +1153,78 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
             return False
         return True
 
+    def _managed_tx_binding_is_live(self) -> bool:
+        """Whether the runtime's provider is bound to *this* CI-V port, now.
+
+        The one question a re-arm may key off, and the reason
+        ``_managed_tx_armed_epoch`` cannot answer it: that marker is written
+        before arming's first await, and arming's own retirement step can
+        advance the CI-V epoch before the capture that follows it. A perfectly
+        successful arm can therefore leave the marker one epoch behind a live
+        binding — at which point an epoch-keyed guard waves the *next* caller
+        through into exactly the second ``replace_provider`` this exists to
+        prevent, one call later than the naive case. That second call retires a
+        current port, and retirement advances the generation and disconnects
+        the transport, so the redundant re-arm is what breaks the connection
+        the reconnect just repaired.
+
+        The three facts recorded at capture are compared against the live ones
+        instead, which is also why nothing has to clear them: a retirement
+        advances the supervisor's provider generation, a CI-V recovery advances
+        the epoch, and a rebuilt data path replaces the transport object. Any
+        one of the three moving means the recorded port is no longer the bound
+        one, and the answer flips to "re-arm" on its own.
+        """
+        runtime, bound = self._managed_tx_runtime, self._managed_tx_bound_port
+        if runtime is None or bound is None or self._civ_transport is None:
+            return False
+        generation, epoch, transport = bound
+        return (
+            transport is self._civ_transport
+            and epoch == self._civ_epoch
+            and generation == runtime.tx_snapshot.provider_generation
+        )
+
+    async def rearm_managed_tx(self) -> None:
+        """Re-arm managed TX after a repaired CI-V path. The sole re-arm path.
+
+        Every consumer that used to reach for ``replace_provider`` of its own
+        accord routes here instead — the control phase ahead of its reconnect
+        callbacks, the Web recovery hook behind them — and exactly one of them
+        does the work: a caller that finds the provider already bound to the
+        live port returns having touched nothing. That no-op is the point.
+        Rebinding is not idempotent, and the cost of the redundant call is not
+        a wasted round trip but the transport itself
+        (:meth:`_managed_tx_binding_is_live`).
+
+        Past the guard this is arming unchanged — probe, capture, seed, and the
+        same degradation: a rig that cannot be supervised keeps its published
+        runtime and refuses TX rather than falling back to the unsupervised
+        legacy write (MOR-1193). Failures never propagate, so a caller on a
+        recovery path can await it without guarding.
+        """
+        if self._managed_tx_binding_is_live():
+            return
+        async with self._managed_tx_arm_lock:
+            # Re-checked under the lock: the holder this caller queued behind
+            # may have been the one that armed the very port it came to replace.
+            if not self._managed_tx_binding_is_live():
+                await self._run_managed_tx_arm()
+
     async def _arm_managed_tx(self) -> None:
+        """Arm managed TX from ``connect()``, once per CI-V epoch.
+
+        The epoch bound belongs to this entry point, not to the arming steps:
+        a fresh connect is the one caller with nothing to compare a binding
+        against, so "have I already tried on this epoch" is the only cheap
+        question it can ask. Re-arm callers ask a sharper one — see
+        :meth:`rearm_managed_tx`.
+        """
+        async with self._managed_tx_arm_lock:
+            if self._managed_tx_armed_epoch != self._civ_epoch:
+                await self._run_managed_tx_arm()
+
+    async def _run_managed_tx_arm(self) -> None:
         """Build, bind and seed the managed TX runtime for this CI-V epoch.
 
         Four steps, all of which must land before a key is allowed:
@@ -1171,16 +1250,13 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
         hand the next key to the legacy unsupervised ``set_ptt`` with no lease,
         no owner and no watchdog, which is the exact bypass MOR-1193 closed.
 
-        Bounded to one attempt per CI-V epoch: the marker is written before
-        the first await, so a re-entrant call is a no-op. A step-4 failure
-        retires the managed port, which advances the epoch by itself — so the
-        radio is immediately eligible for a fresh attempt on the next
-        ``connect()``/rearm rather than being latched off for good.
+        Serialised by ``_managed_tx_arm_lock``, so the steps below never
+        interleave with a second attempt. A step-4 failure retires the managed
+        port, which advances the epoch by itself — so the radio is immediately
+        eligible for a fresh attempt on the next ``connect()``/rearm rather
+        than being latched off for good.
         """
-        epoch = self._civ_epoch
-        if self._managed_tx_armed_epoch == epoch:
-            return
-        self._managed_tx_armed_epoch = epoch
+        self._managed_tx_armed_epoch = self._civ_epoch
         runtime = self._managed_tx_runtime
         if runtime is None:
             runtime = ManagedRadioRuntime(
@@ -1193,7 +1269,17 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
         try:
             if await self._managed_tx_provider_answers_ptt():
                 step = "replace_provider"
-                if (await runtime.replace_provider(ready=True)).snapshot.provider_ready:
+                bound = (await runtime.replace_provider(ready=True)).snapshot
+                if bound.provider_ready:
+                    # Identity of the port just captured, for the re-arm guard.
+                    # Recorded here rather than inside
+                    # ``_capture_managed_tx_port`` so a backend that overrides
+                    # that lifecycle hook cannot silently lose it.
+                    self._managed_tx_bound_port = (
+                        bound.provider_generation,
+                        self._civ_epoch,
+                        self._civ_transport,
+                    )
                     step = "request_fresh_ptt"
                     if (await runtime.request_fresh_ptt()).outcome is TxOutcome.APPLIED:
                         return

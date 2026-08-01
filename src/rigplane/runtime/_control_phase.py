@@ -821,6 +821,30 @@ class ControlPhaseRuntime:
             h._start_civ_worker()
             h._start_civ_data_watchdog()
         logger.info("Soft reconnect to %s (civ=%d)", h._host, h._civ_port)
+
+        # Managed TX is re-armed here, ahead of every reconnect consumer, so
+        # the durable OFF a drop armed reaches the wire before any recovered
+        # work does — and so it happens at all on a headless rig, which has no
+        # ``_on_reconnect`` consumer to piggyback on. The rebind captures the
+        # CI-V port this method just rebuilt, which is why it cannot run any
+        # earlier. ``rearm_managed_tx`` is the only re-arm path there is: a
+        # consumer that replaced the provider itself would retire the port this
+        # call captured, taking the repaired transport down with it.
+        #
+        # Fail-soft, and by a different rule than the callback below: arming
+        # already fails closed inside the radio (TX stays refused, the
+        # supervisor stays published), so an exception escaping it is a
+        # surprise worth a warning rather than a debug line — but never worth
+        # failing a CI-V reconnect that otherwise succeeded.
+        rearm_managed_tx = getattr(h, "rearm_managed_tx", None)
+        if rearm_managed_tx is not None:
+            try:
+                await rearm_managed_tx()
+            except Exception:
+                logger.warning(
+                    "soft_reconnect: managed TX re-arm failed", exc_info=True
+                )
+
         on_reconnect = getattr(h, "_on_reconnect", None)
         if on_reconnect is not None:
             try:
