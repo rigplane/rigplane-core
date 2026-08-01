@@ -36,7 +36,7 @@ from rigplane.cli import (
     _run,
     main,
 )
-from rigplane.core.radio_protocol import ManagedTxApi, ManagedTxCapable
+from rigplane.core.radio_protocol import ManagedTxApi
 from rigplane.core.tx_safety import (
     TxOutcome,
     TxOwner,
@@ -575,15 +575,18 @@ class TestCmdPttManagedIngress:
     async def test_shipped_radio_keeps_the_legacy_direct_write(
         self, held, capsys
     ) -> None:
-        # No backend assembles a managed runtime yet (MOR-1016): the radio the
-        # CLI ships must reach its own ``set_ptt``, with today's codes and lines.
+        # No backend assembles a managed runtime yet (MOR-1016 PR2): the radio
+        # the CLI ships must reach its own ``set_ptt``, with today's codes and
+        # lines. (MOR-1016 PR1 gives CoreRadio a real, inert ``managed_tx``
+        # member, so ``isinstance(..., ManagedTxCapable)`` now reads True
+        # structurally -- the probe the protocol's own docstring says not to
+        # trust. ``bind()`` returning ``None`` is the invariant that matters.)
         shipped = RuntimeIcomRadio("127.0.0.1")
         writes: list[bool] = []
 
         async def _record(on: bool) -> None:
             writes.append(on)
 
-        assert not isinstance(shipped, ManagedTxCapable)
         assert ManagedTxApi.bind(shipped, TxOwner(TxSource.SDK, "probe")) is None
         shipped.set_ptt = _record
 

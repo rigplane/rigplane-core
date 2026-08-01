@@ -24,7 +24,26 @@ if TYPE_CHECKING:
 
     from rigplane._runtime_protocols import ControlPhaseHost
     from rigplane.core.acquisition_scheduler import RadioStateModelService
+    from rigplane.core.radio_protocol import ManagedTxSupervisor
     from rigplane.core.tx_safety import ProviderPttObservation
+    from rigplane.runtime.managed_radio_runtime import ManagedRadioRuntime
+
+    def _managed_tx_runtime_satisfies_supervisor(
+        runtime: ManagedRadioRuntime,
+    ) -> ManagedTxSupervisor:
+        """Mypy-only: fails to type-check if ``ManagedRadioRuntime`` drifts
+        from :class:`~rigplane.core.radio_protocol.ManagedTxSupervisor`.
+
+        Guarded by ``TYPE_CHECKING`` — never defined and never called at
+        runtime, so it costs nothing until PR2 arms
+        ``self._managed_tx_runtime`` (MOR-1016). Its only job is to turn a
+        ``request_on``/``release_owner`` signature drift on either side into
+        a ``uv run mypy src/`` error here, since the assembly-time
+        ``getattr_static`` two-step (:meth:`ManagedTxApi.bind`) only checks
+        member presence, never shape.
+        """
+        return runtime
+
 
 from . import radio_initial_state as _initial_state
 from . import radio_reconnect as _reconnect
@@ -897,6 +916,10 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
             recovery_backoff_s=(0.0, 0.0, 0.0),
         )
         self._audio_runtime: AudioRecoveryRuntime = AudioRecoveryRuntime(self)
+        # Managed TX supervisor (MOR-1016 PR1): inert until PR2 constructs and
+        # arms it in connect(). ``managed_tx`` below always answers ``None``
+        # until then, so every ingress keeps using the legacy set_ptt path.
+        self._managed_tx_runtime: ManagedRadioRuntime | None = None
 
     # Host shims for ControlPhaseRuntime and Icom7610SerialRadio (delegate to civ_runtime)
     def _advance_civ_generation(self, reason: str) -> None:
@@ -1022,6 +1045,21 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
         if not isinstance(last, (int, float)):
             return False
         return (time.monotonic() - float(last)) <= self._civ_ready_idle_timeout
+
+    @property
+    def managed_tx(self) -> ManagedTxSupervisor | None:
+        """The radio's managed TX supervisor, or ``None`` when unmanaged.
+
+        Structural implementation of
+        :class:`~rigplane.core.radio_protocol.ManagedTxCapable`: a real class
+        member, never conjured through ``__getattr__``, so
+        :meth:`~rigplane.core.radio_protocol.ManagedTxApi.bind`'s
+        ``getattr_static`` read finds it. Inert until MOR-1016 PR2 constructs
+        and arms ``self._managed_tx_runtime`` at connect time — until then
+        every radio here answers ``None`` and every ingress keeps using the
+        legacy :meth:`set_ptt` path unchanged.
+        """
+        return self._managed_tx_runtime
 
     # ------------------------------------------------------------------
     # Backwards-compatible property shims for _connected / _intentional_disconnect

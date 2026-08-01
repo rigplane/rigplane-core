@@ -9,7 +9,6 @@ import pytest
 from rigplane.core.exceptions import CommandError
 from rigplane.core.radio_protocol import (
     ManagedTxApi,
-    ManagedTxCapable,
     ManagedTxSupervisor,
 )
 from rigplane.core.tx_safety import (
@@ -78,11 +77,14 @@ class FakeRadio:
 
 
 def test_shipped_radio_is_dormant() -> None:
-    # No backend attaches a managed runtime yet (MOR-1016), so the facade must
-    # refuse to bind and leave the legacy provider path untouched.
+    # MOR-1016 PR1 gives CoreRadio a real (inert) ``managed_tx`` member, so
+    # ``isinstance(..., ManagedTxCapable)`` now reads True structurally --
+    # exactly the probe the protocol's own docstring says not to trust.  What
+    # must still hold is the invariant that matters: nothing constructs or
+    # arms a runtime until PR2, so the facade refuses to bind and the legacy
+    # provider path stays untouched.
     shipped = IcomRadio("127.0.0.1")
 
-    assert not isinstance(shipped, ManagedTxCapable)
     assert ManagedTxApi.bind(shipped, _OWNER) is None
     assert ManagedTxApi.bind(object(), _OWNER) is None
     assert ManagedTxApi.bind(FakeRadio(False), _OWNER) is None
@@ -221,14 +223,16 @@ def _attach(wrapper: SyncIcomRadio, provider: FakeRadio) -> FakeRadio:
 def test_shipped_ingress_keeps_the_legacy_direct_write(
     wrapper: SyncIcomRadio,
 ) -> None:
-    # Nothing assembles a managed runtime yet (MOR-1016), so the backend the
-    # SDK actually ships must still reach its own ``set_ptt``, unchanged.
+    # Nothing assembles a managed runtime yet (MOR-1016 PR2), so the backend
+    # the SDK actually ships must still reach its own ``set_ptt``, unchanged.
+    # (``isinstance(..., ManagedTxCapable)`` reads True once PR1 lands the
+    # inert member -- see ``test_shipped_radio_is_dormant`` -- so ``bind()``
+    # returning ``None`` is the invariant checked here, not isinstance.)
     writes: list[bool] = []
 
     async def _record(on: bool) -> None:
         writes.append(on)
 
-    assert not isinstance(wrapper._radio, ManagedTxCapable)
     assert ManagedTxApi.bind(wrapper._radio, wrapper._tx_owner) is None
     wrapper._radio.set_ptt = _record  # type: ignore[method-assign]
 
