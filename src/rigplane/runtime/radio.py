@@ -299,6 +299,7 @@ from rigplane.commands import set_repeater_tsql as _set_repeater_tsql_cmd
 from rigplane.commands import set_tone_freq as _set_tone_freq_cmd
 from rigplane.commands import set_tsql_freq as _set_tsql_freq_cmd
 from rigplane.commands import set_vfo as _select_vfo_cmd
+from rigplane.core.env_config import get_managed_tx_enabled
 from rigplane.core.exceptions import CommandError, TimeoutError
 from rigplane.core.state_store import StateStore
 from rigplane.core.tx_safety import TxOutcome
@@ -1219,6 +1220,19 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
         against, so "have I already tried on this epoch" is the only cheap
         question it can ask. Re-arm callers ask a sharper one — see
         :meth:`rearm_managed_tx`.
+
+        ``RIGPLANE_MANAGED_TX=0`` stops this short of building anything, so
+        ``managed_tx`` stays ``None`` and every ingress keeps the legacy
+        unsupervised ``set_ptt`` path. The check itself lives one level down,
+        in :meth:`_run_managed_tx_arm`, because that is the sole construction
+        site and ``rearm_managed_tx`` reaches it too — a gate here alone would
+        let the first CI-V recovery arm the radio the operator switched off.
+
+        **Naming trap (R9):** the CLI's ``--managed`` flag and the
+        ``args.managed_runtime`` namespace it sets select the *local station
+        runtime* (web host binding, bundled rigctld) and have nothing whatever
+        to do with managed TX. ``RIGPLANE_MANAGED_TX`` is the only managed-TX
+        switch; neither reads the other.
         """
         async with self._managed_tx_arm_lock:
             if self._managed_tx_armed_epoch != self._civ_epoch:
@@ -1255,7 +1269,28 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
         port, which advances the epoch by itself — so the radio is immediately
         eligible for a fresh attempt on the next ``connect()``/rearm rather
         than being latched off for good.
+
+        Ahead of all four sits the kill switch. ``RIGPLANE_MANAGED_TX=0``
+        returns before the construction, so there is no runtime to publish and
+        ``managed_tx`` answers ``None`` — which every ingress already reads as
+        "unmanaged" and routes around, back to the legacy ``set_ptt`` write.
+        That is a different thing from a failed arm, which keeps the runtime
+        and refuses keys, and it is deliberately the louder of the two: a
+        failed arm is the rig's doing and the operator gets refusals to show
+        for it, while this one silently removes the lease, the owner and the
+        watchdog from every key on the radio. So it warns on every connect for
+        as long as it is set, and the marker below stays unwritten so a later
+        connect made with the switch back on arms normally.
         """
+        if not get_managed_tx_enabled():
+            logger.warning(
+                "managed TX disabled by RIGPLANE_MANAGED_TX for %s: TX falls "
+                "back to the legacy unsupervised set_ptt path — no lease, no "
+                "owner, no keep-alive watchdog. Unset the variable to restore "
+                "supervision. (Unrelated to the CLI's --managed flag.)",
+                self._managed_tx_target_id,
+            )
+            return
         self._managed_tx_armed_epoch = self._civ_epoch
         runtime = self._managed_tx_runtime
         if runtime is None:
