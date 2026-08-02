@@ -27,6 +27,7 @@ import asyncio
 import dataclasses
 import datetime
 import logging
+import uuid
 from collections.abc import Awaitable, Callable, Sequence
 from typing import Any, TypeVar, cast
 
@@ -42,12 +43,14 @@ from rigplane.core.radio_protocol import (
     AudioCapable,
     DspControlCapable,
     LevelsCapable,
+    ManagedTxApi,
     Radio,
     RitXitCapable,
     ScopeCapable,
     SystemControlCapable,
     UsbAudioCapable,
 )
+from rigplane.core.tx_safety import TxOutcome, TxOwner, TxSource, TxTransition
 from rigplane.core.types import AgcMode
 from rigplane.validation.interactive import InteractivePrompter
 from rigplane.validation.registry import CheckKind, CheckSpec, ValueRule, get_spec
@@ -154,6 +157,20 @@ _TUNER_SETTLE_SECONDS = 1.0
 # The check_ids whose actuation transmits; gated by ``--tx-actuate`` + confirm.
 # VOX is deliberately excluded (stays MANUAL — out of MOR-666 scope).
 _TX_ACTUATE_CHECK_IDS = frozenset({"tx.ptt", "tuner.tune"})
+
+# MOR-1222 — one TX identity for the whole validation process, minted here for
+# the same reason the CLI mints ``_CLI_TX_OWNER`` once (MOR-1170): the
+# supervisor matches a release against the owner that TOOK the lease, so a
+# per-actuation owner could miss its own lease and strand the rig keyed.
+# ``rigplane validate`` is a one-shot process, so one process is one TX session.
+# ``TxSource`` has no validation member and this deliberately adds none — the
+# harness is an in-process consumer of the public SDK surface, exactly as the
+# CLI is, so it borrows ``SDK`` and distinguishes itself by the owner id.
+_VALIDATION_TX_OWNER = TxOwner(TxSource.SDK, f"validation:{uuid.uuid4().hex}")
+
+# Supervisor outcomes that mean the request reached the transmitter: ACCEPTED
+# for a state change, IDEMPOTENT for a request that found the rig already there.
+_TX_ACCEPTED_OUTCOMES = frozenset({TxOutcome.ACCEPTED, TxOutcome.IDEMPOTENT})
 
 # MOR-668 — RX-audio probes that run for real against a live captured RX-PCM
 # window (supplied via ``audio_probe_frames``). ``audio.tx.byte_perfect`` is
@@ -526,7 +543,59 @@ def _manual_required_result(
 # TX actuation handlers (MOR-666) — reached ONLY after the full gate stack and
 # an explicit interactive confirm() YES. Each guarantees the radio is left in a
 # safe (un-keyed, power-restored) state via a finally that never raises.
+#
+# MOR-1222: every PTT *assertion* below goes through the radio's managed TX
+# supervisor when it publishes one. A raw ``set_ptt`` here took no lease, so
+# nothing applied ``BACKEND_MAX_KEY_DOWN`` to the key and a SIGKILL between the
+# key and the unkey left the rig transmitting with nothing in the product able
+# to stop it; and the raw OFF could de-key another owner's *managed*
+# transmission behind the supervisor's back (the MOR-1179 class of defect). The
+# legacy write survives only where ``ManagedTxApi.bind`` returns ``None`` — a
+# positive finding that the backend is unmanaged, never a fallback from a
+# failed read.
+#
+# ``_actuate_tuner_tune`` asserts no PTT and is a documented carve-out; its
+# docstring carries the reasoning and the named residual risk.
 # ---------------------------------------------------------------------------
+
+
+def _tx_refusal(transition: TxTransition, action: str) -> str | None:
+    """An operator-facing reason when the supervisor refused, else ``None``."""
+    if transition.outcome in _TX_ACCEPTED_OUTCOMES:
+        return None
+    return f"managed TX refused the {action} ({transition.outcome})"
+
+
+async def _release_validation_lease(
+    managed: ManagedTxApi,
+    evidence: dict[str, object],
+    *,
+    per_check_timeout: float,
+) -> bool:
+    """Hand this harness's TX lease back. ALWAYS attempted, never gated.
+
+    Called even after a REFUSED key: an unkey withheld on the theory that
+    nothing was keyed is how a transmitter gets stranded, and asking the
+    supervisor to release a lease this owner never took is free (it answers
+    ``STALE`` and touches no wire).
+
+    A refusal is recorded, never escalated. ``force_unkey`` exists for a rig an
+    *external* process left keyed (MOR-1182); reaching for it here would let
+    the validation harness adopt — and de-key — a live transmission belonging
+    to somebody else. This tool only ever releases keys it took itself.
+    """
+    try:
+        transition = await asyncio.wait_for(
+            managed.set_ptt(False), timeout=per_check_timeout
+        )
+    except _RESTORE_ERRORS as exc:
+        evidence["unkey_error"] = str(exc)
+        return False
+    refusal = _tx_refusal(transition, "release")
+    if refusal is not None:
+        evidence["unkey_error"] = refusal
+        return False
+    return True
 
 
 async def _actuate_tx_ptt(
@@ -543,6 +612,11 @@ async def _actuate_tx_ptt(
     never raises (contained by ``_RESTORE_ERRORS``, which includes ``OSError``),
     so a mid-check exception/timeout/LAN drop can never leave the radio keyed or
     at the wrong power.
+
+    MOR-1222: on a managed rig both the key and the unkey go through the
+    supervisor under :data:`_VALIDATION_TX_OWNER`. A refused key is a FAIL, not
+    a licence to write PTT directly — the supervisor refuses precisely when
+    somebody else is on the air, which is the one moment a raw key is worst.
     """
     _set_ptt_attr = getattr(radio, "set_ptt", None)
     if not callable(_set_ptt_attr):
@@ -552,6 +626,11 @@ async def _actuate_tx_ptt(
             evidence={"reason": "radio has no set_ptt op"},
         )
     set_ptt = cast(Callable[[bool], Awaitable[None]], _set_ptt_attr)
+    # Bound before the power dance so a backend whose ``managed_tx`` accessor
+    # raises fails the check with the rig still un-keyed. The run loop's
+    # backstop turns that into an errored check; it must never read as
+    # "unmanaged" and hand a supervised rig to the legacy write (MOR-1193).
+    managed = ManagedTxApi.bind(radio, _VALIDATION_TX_OWNER)
 
     _get_power_attr = getattr(radio, "get_rf_power", None)
     _set_power_attr = getattr(radio, "set_rf_power", None)
@@ -559,11 +638,16 @@ async def _actuate_tx_ptt(
     get_power = cast(Callable[[], Awaitable[int]], _get_power_attr)
     set_power = cast(Callable[[int], Awaitable[None]], _set_power_attr)
 
-    evidence: dict[str, object] = {"tx_actuated": True, "keyed": False}
+    evidence: dict[str, object] = {
+        "tx_actuated": True,
+        "keyed": False,
+        "managed_tx": managed is not None,
+    }
     original_power: int | None = None
     power_set_to_min = False
     keyed = False
     verify_error: str | None = None
+    key_refusal: str | None = None
 
     if has_power:
         original_power, fail = await _guard(
@@ -599,26 +683,42 @@ async def _actuate_tx_ptt(
         )
 
     try:
-        # Key the transmitter.
-        await asyncio.wait_for(set_ptt(True), timeout=per_check_timeout)
-        keyed = True
-        # Brief, bounded key window.
-        await asyncio.sleep(_TX_PTT_KEY_SECONDS)
-        # Verify the keyed state from published radio state (best-effort).
-        evidence["ptt_state"] = bool(radio.radio_state.ptt)
-        keyed = bool(radio.radio_state.ptt)
-        evidence["keyed"] = keyed
+        # Key the transmitter — through the supervisor when there is one, so
+        # the emission carries a lease, an owner and a max-key-down watchdog.
+        if managed is None:
+            await asyncio.wait_for(set_ptt(True), timeout=per_check_timeout)
+        else:
+            transition = await asyncio.wait_for(
+                managed.set_ptt(True), timeout=per_check_timeout
+            )
+            key_refusal = _tx_refusal(transition, "key")
+            if key_refusal is not None:
+                evidence["key_refused"] = key_refusal
+        if key_refusal is None:
+            keyed = True
+            # Brief, bounded key window.
+            await asyncio.sleep(_TX_PTT_KEY_SECONDS)
+            # Verify the keyed state from published radio state (best-effort).
+            evidence["ptt_state"] = bool(radio.radio_state.ptt)
+            keyed = bool(radio.radio_state.ptt)
+            evidence["keyed"] = keyed
     except _RESTORE_ERRORS as exc:
         verify_error = str(exc)
         evidence["actuate_error"] = verify_error
     finally:
         # ALWAYS unkey, no matter what — the radio must never be left keyed.
+        # Never gated on whether the key was believed to succeed.
         unkeyed = False
-        try:
-            await asyncio.wait_for(set_ptt(False), timeout=per_check_timeout)
-            unkeyed = True
-        except _RESTORE_ERRORS as exc:
-            evidence["unkey_error"] = str(exc)
+        if managed is not None:
+            unkeyed = await _release_validation_lease(
+                managed, evidence, per_check_timeout=per_check_timeout
+            )
+        else:
+            try:
+                await asyncio.wait_for(set_ptt(False), timeout=per_check_timeout)
+                unkeyed = True
+            except _RESTORE_ERRORS as exc:
+                evidence["unkey_error"] = str(exc)
         evidence["unkeyed"] = unkeyed
         # ALWAYS restore the original power if we lowered it.
         power_restored = not power_set_to_min
@@ -636,6 +736,16 @@ async def _actuate_tx_ptt(
                 evidence["power_restore_error"] = str(exc)
         evidence["power_restored"] = power_restored
 
+    if key_refusal is not None:
+        # The supervisor said no. Reported as a failed check — the one thing
+        # that must NOT happen is a retry through the raw provider write.
+        return _base_result(
+            entry,
+            CheckStatus.FAIL,
+            failure_domain=FailureDomain.COMMAND_EXECUTION,
+            evidence=evidence,
+            error=f"refusing to transmit: {key_refusal}",
+        )
     if verify_error is not None:
         return _base_result(
             entry,
@@ -668,6 +778,22 @@ async def _actuate_tuner_tune(
     settle window, read the tuner status back (best-effort), and record it. A
     NAK/timeout-free trigger is the PASS signal — the radio's own readback can
     report transient/idle states once the cycle completes.
+
+    **Documented carve-out from MOR-1222's managed-TX routing.** Unlike
+    ``tx.ptt``, this path asserts no PTT: the radio's own firmware keys, sweeps
+    and unkeys autonomously once the tune command lands, so the emission is an
+    EXTERNAL-class RF event the supervisor observes rather than one an ingress
+    causes. Wrapping it in a supervisor lease would make it strictly more
+    dangerous, not less — taking the lease writes PTT ON at the *operator's*
+    power into a load that is by definition unmatched, a key legacy never
+    asserted and one that sits outside the minimum-power-first mitigation
+    MOR-1165 Auditor A credited for this module. So this actuator keeps the
+    legacy behaviour verbatim (``set_tuner_status`` only, no lease, no PTT
+    write) under Auditor A's sanctioned alternative for this site: an explicit
+    carve-out with its residual risk named. Residual risk: the tune cycle runs
+    with no lease and therefore no ``BACKEND_MAX_KEY_DOWN``; it is bounded
+    instead by the rig's own firmware timeout, by ``tuner_allowed`` plus the
+    full ``--tx-actuate`` gate stack, and by the interactive ``confirm()``.
     """
     _set_tuner_attr = getattr(radio, "set_tuner_status", None)
     if not callable(_set_tuner_attr):
