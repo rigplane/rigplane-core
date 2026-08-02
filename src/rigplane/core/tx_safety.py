@@ -18,6 +18,12 @@ from typing import TypeAlias
 Clock = Callable[[], float]
 IdFactory = Callable[[], str]
 
+#: Longest a managed key-down may last before the watchdog releases it with
+#: :attr:`TxReleaseReason.BACKEND_MAX_KEY_DOWN`. Named, not inlined as a default,
+#: because ``web.radio_poller``'s unmanaged backstop (MOR-1220) is the SAME
+#: bound: one key-down limit per operator, not one per backend class.
+BACKEND_MAX_KEY_DOWN_SECONDS: float = 180.0
+
 
 class TxSource(StrEnum):
     WEBSOCKET = "websocket"
@@ -221,7 +227,7 @@ class TxSafetySupervisor:
         *,
         clock: Clock | None = None,
         id_factory: IdFactory | None = None,
-        watchdog_seconds: float | None = 180.0,
+        watchdog_seconds: float | None = BACKEND_MAX_KEY_DOWN_SECONDS,
         write_timeout_seconds: float = 2.0,
         read_timeout_seconds: float = 2.0,
         cancel_timeout_seconds: float = 0.5,
