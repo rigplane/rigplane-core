@@ -108,4 +108,19 @@ describe('App TxController host', () => {
       leaseTarget: { receiver: 'MAIN', slot: 'A', frequencyHz: 100 } });
     facade.release('desktop', later.guard!); expect(h.effects).toEqual(['audio', 'on', 'off', 'stop']);
   });
+  it('releases a held guard on dispose, not only through an explicit release() call', async () => {
+    // MOR-1226 (MOR-1165 audit remediation R2, A6-1): dispose()'s `void
+    // release()` was unpinned -- deleting it left all 13 TX test files
+    // green, including the two tests above, because neither calls
+    // dispose() while a guard is still held. This one does.
+    const host = provideAppTxControllerHost(bindings()); const facade = getAppTxController();
+    h.session!(projection({ state: 'connected', epoch: 1 }, 1), { state: 'connected', epoch: 1 });
+    host.refreshAuthority();
+    facade.start('desktop', 'lease', 'momentary');
+    await Promise.resolve(); await Promise.resolve();
+    expect(h.effects).toEqual(['audio', 'on']);
+    host.dispose();
+    expect(h.events).toContain('release');
+    expect(h.effects).toEqual(['audio', 'on', 'off', 'stop']);
+  });
 });
