@@ -89,7 +89,7 @@ from ..core.state_pipeline_contracts import (
 from ..core.radio_protocol import ManagedTxApi
 from ..core.state_diagnostics import StateDiagnosticsRecorder
 from ..core.state_store import StateStore
-from ..core.tx_safety import TxOutcome
+from ..core.tx_safety import BACKEND_MAX_KEY_DOWN_SECONDS, TxOutcome
 from .._state_queries import build_state_queries
 from ..profiles import RadioProfile, resolve_radio_profile
 from ..runtime.managed_tx_ingress import bind_managed_tx, refuse_key_without_owner
@@ -197,6 +197,15 @@ _KEY_ACCEPTED = frozenset({TxOutcome.ACCEPTED, TxOutcome.IDEMPOTENT})  # lease i
 # the disconnect that then spends that 5 s on the managed release. 2.0 s matches
 # every other bound there and dwarfs a fire-and-forget CI-V unkey.
 _SHUTDOWN_TX_DRAIN_TIMEOUT_S: float = 2.0
+
+# MOR-1220: max key-down for a radio that arms NO supervisor — every shipped
+# serial/USB Icom backend (``_IcomSerialRadioBase.connect`` never calls
+# ``_arm_managed_tx``). Since MOR-1011/1012 deleted the frontend's 3-minute
+# ``PTT_SAFETY_MS`` timers those rigs had NO key-down bound anywhere in the
+# product. Restored here, where the key is issued, at the managed watchdog's own
+# duration — imported, not re-spelled. The managed path keeps its own bound; a
+# key this poller never issued is not its to time out.
+_MAX_KEY_DOWN_SECONDS: float = BACKEND_MAX_KEY_DOWN_SECONDS
 
 # MOR-874: how long a healthy-link in-flight acquisition request may stay
 # suppressed after its FIRST send-relative deadline expiry before being
@@ -478,6 +487,10 @@ class RadioPoller:
         # MOR-615: (main, sub) data_mode pair seen at the last MOD-input fetch;
         # a change triggers a refetch of the per-DATA-group MOD-input sources.
         self._mod_input_data_modes: tuple[int, int] | None = None
+        # MOR-1220: the unmanaged max-key-down backstop. Per-instance, so a new
+        # connect starts unarmed; overridable for tests.
+        self._max_key_down_seconds: float = _MAX_KEY_DOWN_SECONDS
+        self._max_key_down_timer: asyncio.TimerHandle | None = None
 
     def _apply_bsr_readback_observations(
         self,
@@ -557,6 +570,44 @@ class RadioPoller:
             **params,
         )
 
+    def _arm_max_key_down(self, source: CommandSource, session_id: str | None) -> None:
+        """Bound a key this poller just issued on an unmanaged radio (MOR-1220).
+
+        Restart-on-key: a re-key replaces the pending bound. The key's ingress
+        identity rides along, so the forced unkey binds what the operator's own
+        unkey would have.
+        """
+        self._cancel_max_key_down()
+        seconds = self._max_key_down_seconds
+        self._max_key_down_timer = asyncio.get_running_loop().call_later(
+            seconds, self._on_max_key_down, seconds, source, session_id
+        )
+
+    def _cancel_max_key_down(self) -> None:
+        """Disarm the backstop; safe to call when nothing is armed."""
+        if self._max_key_down_timer is not None:
+            self._max_key_down_timer.cancel()
+            self._max_key_down_timer = None
+
+    def _on_max_key_down(
+        self, seconds: float, source: CommandSource, session_id: str | None
+    ) -> None:
+        """Force the unkey the operator did not send.
+
+        ENQUEUED, never written here: the loop then gives it the audio teardown
+        and the managed/legacy split every other unkey gets, and a shutdown
+        racing this expiry finds a ``PttOff`` in the queue — exactly what
+        MOR-1181's drain exists to deliver.
+        """
+        self._max_key_down_timer = None
+        logger.error(
+            "radio-poller: max key-down (%gs) exceeded on unmanaged radio; "
+            "forcing unkey",
+            seconds,
+        )
+        self._queue.put(PttOff(), source=source, session_id=session_id)
+        self._emit("tx_max_key_down", {"seconds": seconds, "session_id": session_id})
+
     def start(self) -> None:
         if self._task is not None and not self._task.done():
             return
@@ -574,6 +625,12 @@ class RadioPoller:
         caller keeps the poller and awaits :meth:`drain_tx_safety_commands` once
         those tasks have been gathered (MOR-1181, ``stop_web_server``).
         """
+        # MOR-1220: an unfired backstop must not outlive its poller. What it
+        # enqueued BEFORE this survives — a ``PttOff`` the final drain still
+        # delivers — but minting one after promises what nothing is left to keep.
+        # On this path the teardown ``PttOff`` is the whole cover for an
+        # unmanaged rig: ``CoreRadio.disconnect`` de-keys the managed path only.
+        self._cancel_max_key_down()
         if self._task is not None:
             self._task.cancel()
             self._task = None
@@ -1201,6 +1258,10 @@ class RadioPoller:
             # transmitter. Covers every cancellation of this task; the shutdown
             # ORDERING — the teardown unkey is not enqueued until long after
             # this runs — is the caller's half, in ``stop_web_server``.
+            # MOR-1220: same disarm as ``stop()`` — this covers cancellations
+            # that never went through it. Ahead of the drain, which still
+            # delivers an expiry already in the queue.
+            self._cancel_max_key_down()
             await self.drain_tx_safety_commands()
         except Exception:
             logger.exception(
@@ -1571,6 +1632,11 @@ class RadioPoller:
                         await self._stop_tx_audio_leg()
                         raise
                     await radio.set_ptt(True)
+                    # MOR-1220: only now, and only here. After the write, so a
+                    # key that never reached the rig arms no bound; on this arm
+                    # only, so the managed path keeps the supervisor's watchdog
+                    # as its single bound and an EXTERNAL key stays untouched.
+                    self._arm_max_key_down(command_source, session_id)
                 else:
                     transition = await managed.set_ptt(True)
                     if transition.outcome not in _KEY_ACCEPTED:
@@ -1611,6 +1677,11 @@ class RadioPoller:
                         # another owner holds the lease. Neither is actionable,
                         # and raising would break defensive unkeys in ``finally``.
                         await managed.set_ptt(False)
+                    # MOR-1220: every unkey this poller issues disarms the
+                    # backstop — operator, teardown and drain all reach here.
+                    # Below the write, never in the ``finally``: an unkey that
+                    # RAISED left the rig keyed, and must not drop the bound.
+                    self._cancel_max_key_down()
                 finally:
                     await self._stop_tx_audio_leg()
             case SetPower(level=level, unit=unit):
