@@ -240,7 +240,8 @@ async def test_a_declined_unkey_reports_ok_and_writes_nothing(
 
 
 async def test_an_unmanaged_radio_keeps_the_legacy_write_both_ways() -> None:
-    """Every shipped backend today: byte-identical to what rigctld always sent."""
+    """Legacy unmanaged backends (serial/USB Icom, Yaesu CAT, rigctld-client):
+    byte-identical to what rigctld always sent."""
     radio = _Radio()
     handler = RigctldHandler(radio, RigctldConfig())  # type: ignore[arg-type]
 

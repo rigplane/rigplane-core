@@ -49,6 +49,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   panel unmounts, and on mobile also when the device rotates while latched
   (fail-closed).
 
+- **Max-key-down coverage after the presentation-timer removal (MOR-1220).**
+  The 3-minute presentation-local timers removed above were UI-side and
+  backend-agnostic, so deleting them (MOR-1011/MOR-1012) traded that
+  frontend bound for the managed TX runtime's own supervisor watchdog on the
+  managed path — coverage that only exists where a runtime is armed. A 180s
+  backstop (`BACKEND_MAX_KEY_DOWN_SECONDS`) is now armed around the legacy
+  PTT write on the web UI's Icom poller, so a serial/USB Icom rig keyed from
+  the Web UI is bounded again. Current boundary: managed TX is armed on the
+  LAN `IcomRadio` path only (the supervisor watchdog covers it everywhere,
+  not just Web); serial/USB Icom is legacy, covered only by this 180s
+  web-poller backstop, with full managed arm pending MOR-1219; Yaesu CAT,
+  the rigctld-client backend, and the CLI hold path (`ptt on --for`) are
+  legacy and unbounded on unmanaged rigs, pending MOR-1190 (acceptance
+  amended to include the key-down bound; MOR-1190 gates the MOR-1033 FTX-1
+  hardware cert in the same release).
+
 ### Removed
 
 - **`rigplane.backends.icom7610.drivers.serial_stub` no longer ships in the

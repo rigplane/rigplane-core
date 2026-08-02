@@ -1138,7 +1138,7 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
         as ``host`` with no ports at all and ``f"…:{host}:0"`` would read as a
         LAN rig on port zero. That branch is inert today — the serial backend
         overrides ``connect()`` without calling ``super()``, so nothing arms
-        it (MOR-1190) — and exists so the id is right the day it does.
+        it (MOR-1219) — and exists so the id is right the day it does.
         """
         device = getattr(self, "_serial_device", None)
         if isinstance(device, str) and device:

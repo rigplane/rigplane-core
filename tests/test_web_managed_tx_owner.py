@@ -28,9 +28,12 @@ was no managed backend, so "binds no owner" could keep falling through to the
 raw ``set_ptt`` write; once a rig publishes a supervisor that fallthrough is an
 unsupervised key on a managed rig. The gate lives in
 ``rigplane.runtime.managed_tx_ingress`` — below the poller, so rigctld
-(MOR-1014) and the CLI/SDK (MOR-1190) reuse it instead of growing a third copy
-of the same two-step read (MOR-1198) — and it is deliberately one-sided: keys
-are refusable, unkeys never are.
+(MOR-1014) and the CLI/SDK (already routed, landed under MOR-1170/MOR-1171)
+reuse it instead of growing a third copy of the same two-step read (MOR-1198)
+— and it is deliberately one-sided: keys are refusable, unkeys never are. The
+serial-backend arm gap this owner/ingress gate does not itself touch is a
+separate ticket: MOR-1219 (serial Icom managed arm), with MOR-1190 covering
+its Yaesu CAT / rigctld-client siblings.
 """
 
 from __future__ import annotations
@@ -371,11 +374,12 @@ async def test_an_http_unkey_on_a_managed_rig_still_writes_the_legacy_off() -> N
 
 
 async def test_an_unmanaged_rig_keeps_the_legacy_http_path_on_both_arms() -> None:
-    """Every shipped backend is still unmanaged, so HTTP PTT is untouched.
+    """Legacy unmanaged backends publish no supervisor, so HTTP PTT is untouched.
 
     The gate asks the radio, not the request: with no supervisor published there
     is nothing to be refused on behalf of, and refusing here would break HTTP
-    PTT for every rig in the field.
+    PTT for every serial/USB Icom, Yaesu CAT, or rigctld-client rig in the
+    field — the LAN Icom path is managed and does not take this branch.
     """
     poller, radio = _poller(None)
 

@@ -1338,9 +1338,9 @@ class RadioPoller:
         The rule it applies — only a websocket session carries an owner identity
         stable enough to release the lease it takes — now lives in
         ``runtime.managed_tx_ingress`` with the rest of the gate, because
-        rigctld (MOR-1014) and the CLI/SDK (MOR-1190) must apply the same one
-        and the two-step supervisor read behind it belongs in exactly one place
-        (MOR-1198).
+        rigctld (MOR-1014) and the CLI/SDK (routed under MOR-1170/MOR-1171)
+        apply the same one and the two-step supervisor read behind it belongs
+        in exactly one place (MOR-1198).
         """
         return bind_managed_tx(self._radio, source, session_id)
 
@@ -1606,8 +1606,10 @@ class RadioPoller:
                         ) from e
                 if managed is None:
                     # Binding nothing is two findings, and only one may reach
-                    # the raw write: an unmanaged rig (every shipped backend,
-                    # unchanged), or an ingress with no owner a lease could be
+                    # the raw write: an unmanaged rig (every shipped
+                    # serial/USB Icom backend this poller serves; bounded
+                    # below by MOR-1220's 180s backstop, full managed arm
+                    # pending MOR-1219), or an ingress with no owner a lease could be
                     # released against — which on a managed rig would key with
                     # no lease, no owner and no watchdog, the unsupervised
                     # bypass management exists to close. Resolving a supervisor
