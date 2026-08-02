@@ -2,10 +2,11 @@
 
 One question, asked identically by every ingress: does this request carry an
 identity the supervisor can hold a lease against? Web asks it here, rigctld
-(MOR-1014) asks the same helpers, and the CLI/SDK (MOR-1190) will — rather than
-grow a third copy of the two-step supervisor read, the duplication MOR-1198
-exists to remove, and the one three call sites already got wrong in three
-different ways (MOR-1187, MOR-1193, MOR-1196).
+(MOR-1014) asks the same helpers, and the CLI/SDK already do too, having
+landed under MOR-1170/MOR-1171 — rather than grow a third copy of the
+two-step supervisor read, the duplication MOR-1198 exists to remove, and the
+one three call sites already got wrong in three different ways (MOR-1187,
+MOR-1193, MOR-1196).
 
 It lives in ``runtime`` because ``runtime`` sits below ``backends`` and below
 both UI servers, so every one of those callers can reach it while it reaches
@@ -115,8 +116,9 @@ def refuse_key_without_owner(
     ``True`` only where both halves hold: the radio publishes a supervisor, and
     the request carries no identity that supervisor could release later. Either
     half alone is not a refusal — an owned ingress keys through the supervisor,
-    and an unmanaged rig keeps the legacy write every shipped backend still
-    uses.
+    and an unmanaged rig (serial/USB Icom, Yaesu CAT, or rigctld-client —
+    legacy, pending MOR-1219/MOR-1190) keeps the legacy write those backends
+    still use.
 
     The owner test comes first so a managed websocket key never pays for the
     supervisor read, and a broken accessor cannot turn a perfectly keyable

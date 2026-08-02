@@ -780,20 +780,14 @@ async def _actuate_tuner_tune(
     report transient/idle states once the cycle completes.
 
     **Documented carve-out from MOR-1222's managed-TX routing.** Unlike
-    ``tx.ptt``, this path asserts no PTT: the radio's own firmware keys, sweeps
-    and unkeys autonomously once the tune command lands, so the emission is an
-    EXTERNAL-class RF event the supervisor observes rather than one an ingress
-    causes. Wrapping it in a supervisor lease would make it strictly more
-    dangerous, not less — taking the lease writes PTT ON at the *operator's*
-    power into a load that is by definition unmatched, a key legacy never
-    asserted and one that sits outside the minimum-power-first mitigation
-    MOR-1165 Auditor A credited for this module. So this actuator keeps the
-    legacy behaviour verbatim (``set_tuner_status`` only, no lease, no PTT
-    write) under Auditor A's sanctioned alternative for this site: an explicit
-    carve-out with its residual risk named. Residual risk: the tune cycle runs
-    with no lease and therefore no ``BACKEND_MAX_KEY_DOWN``; it is bounded
-    instead by the rig's own firmware timeout, by ``tuner_allowed`` plus the
-    full ``--tx-actuate`` gate stack, and by the interactive ``confirm()``.
+    ``tx.ptt``, this path asserts no PTT: the tune cycle is a
+    radio-internal EXTERNAL-class RF event, and a supervisor lease here
+    would assert an operator-power key into an unmatched load legacy never
+    had (the recorded MOR-1222 decision). So this actuator keeps legacy
+    behaviour verbatim (``set_tuner_status`` only, no lease, no PTT write).
+    Residual risk: no lease means no ``BACKEND_MAX_KEY_DOWN``; the
+    firmware-managed hazard (autonomous key/sweep/unkey timing) is
+    UNVERIFIED on hardware, not asserted as safe.
     """
     _set_tuner_attr = getattr(radio, "set_tuner_status", None)
     if not callable(_set_tuner_attr):

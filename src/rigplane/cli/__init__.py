@@ -520,10 +520,11 @@ def _ptt_hold_seconds(raw: str) -> float:
     Zero and negatives would key the rig for a hot-switch transient or not at
     all; ``inf`` and ``nan`` would turn a bounded flag into an unbounded hold.
     There is deliberately no upper bound: the 180 s key-down watchdog belongs
-    to ``TxSafetySupervisor``, is configurable there, and does not exist at
-    all on the unmanaged path every shipped radio still takes — a second limit
-    invented here would imply a guarantee the CLI cannot make. What bounds
-    this hold is the process, and interrupting it always unkeys.
+    to ``TxSafetySupervisor`` and is configurable there, but does not exist at
+    all on the unmanaged path a legacy serial/USB Icom, Yaesu CAT, or
+    rigctld-client radio still takes (pending MOR-1219/MOR-1190) — a second
+    limit invented here would imply a guarantee the CLI cannot make. What
+    bounds this hold is the process, and interrupting it always unkeys.
     """
     try:
         seconds = float(raw)

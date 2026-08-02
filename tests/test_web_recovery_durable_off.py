@@ -276,7 +276,9 @@ async def test_recovery_with_nothing_pending_only_does_recovered_work() -> None:
 
 
 async def test_an_unmanaged_radio_recovers_exactly_as_it_does_today(caplog) -> None:
-    """Every shipped backend until MOR-1016 publishes no supervisor at all."""
+    """Legacy unmanaged backends (serial/USB Icom, Yaesu CAT, rigctld-client)
+    publish no supervisor at all, matching every backend's behavior before
+    MOR-1016."""
     log: list[str] = []
     radio = _Radio(log)
     assert not hasattr(radio, "managed_tx")

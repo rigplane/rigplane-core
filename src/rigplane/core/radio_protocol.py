@@ -538,12 +538,13 @@ class ManagedTxSupervisor(Protocol):
 class ManagedTxCapable(Protocol):
     """Radio that publishes a managed TX supervisor for every ingress.
 
-    Backends assembled with a managed runtime expose it here so Web, the SDK
-    and the CLI route through :class:`ManagedTxApi` instead of writing PTT
-    themselves.  rigctld does not yet — its executor writes PTT directly, so a
-    rigctld key takes no lease and no watchdog covers it (MOR-1014).  Backends
-    without a runtime expose no ``managed_tx`` attribute (or return ``None``)
-    and keep the legacy :meth:`Radio.set_ptt` path unchanged.
+    Backends assembled with a managed runtime expose it here so Web, the SDK,
+    the CLI and rigctld all route through :class:`ManagedTxApi` instead of
+    writing PTT themselves when the rig is managed (rigctld's routing landed
+    under MOR-1014, #2148).  Backends without a runtime expose no
+    ``managed_tx`` attribute (or return ``None``) and keep the legacy
+    :meth:`Radio.set_ptt` path unchanged — the path a rigctld key on an
+    unmanaged rig still takes, with no lease and no watchdog.
 
     Publish it as a real class or instance member, never through
     ``__getattr__``: :meth:`ManagedTxApi.bind` settles absence without running
@@ -622,13 +623,13 @@ class PrivilegedTxSupervisor(Protocol):
     """Force-unkey surface of a radio's managed TX runtime.
 
     Deliberately NOT a member of :class:`ManagedTxSupervisor`. Every ingress —
-    Web, the SDK, the CLI — binds through :class:`ManagedTxApi`, whose
+    Web, the SDK, the CLI, rigctld — binds through :class:`ManagedTxApi`, whose
     ``supervisor`` is typed as :class:`ManagedTxSupervisor`; adding
     ``force_unkey`` there would hand force semantics to all of them,
-    including two that must never get it. rigctld's executor issues a plain
-    housekeeping ``set_ptt(False)`` between overs with no :class:`TxOwner`
-    behind it — an implicit force there would let ordinary release traffic
-    escalate into adopting someone else's lease. The SDK is automation-shaped
+    including two that must never get it. rigctld's own session-scoped
+    :class:`TxOwner` (MOR-1014, landed #2148) only releases the lease that
+    owner itself took; an implicit force there would let ordinary release
+    traffic escalate into adopting someone else's lease. The SDK is automation-shaped
     with no operator attached to a session either; an author who actually
     wants force names :class:`PrivilegedTxApi` explicitly rather than
     inheriting it silently from the ordinary managed path. Splitting the two

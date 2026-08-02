@@ -1033,8 +1033,14 @@ class RigctldHandler:
 
         Fail-soft by construction: this runs on the teardown path of a socket
         that is already gone, so there is nobody left to report an error to,
-        and raising would only skip the rest of that teardown. A rig genuinely
-        still keyed after this is the watchdog's problem, not this method's.
+        and raising would only skip the rest of that teardown. On an
+        unmanaged radio nothing here or elsewhere de-keys it: MOR-1220's
+        backstop bounds only keys the web poller itself issued, not a
+        rigctld-issued key, so a client that keys a serial/USB Icom and
+        drops leaves it transmitting with no bound anywhere in the product.
+        The ticketed path to coverage is MOR-1219 (serial Icom managed arm)
+        and MOR-1190 (Yaesu CAT, rigctld-client — amended to include the
+        key-down bound).
         """
         try:
             managed = bind_managed_tx(self._radio, "rigctld", session_id)
@@ -1419,9 +1425,12 @@ class RigctldHandler:
 
         Three outcomes, deliberately asymmetric between key and unkey.
 
-        **No facade to bind.** Either the rig is unmanaged — every shipped
-        backend today, and the legacy write below is byte-identical to what
-        rigctld has always sent — or the request carries no owner. On a managed
+        **No facade to bind.** Either the rig is unmanaged — serial/USB Icom
+        (legacy, MOR-1220's 180s web-poller backstop does not cover a
+        rigctld-issued key, full arm pending MOR-1219), Yaesu CAT, or
+        rigctld-client (legacy, no key-down bound, pending MOR-1190) — and
+        the legacy write below is byte-identical to what rigctld has always
+        sent — or the request carries no owner. On a managed
         rig an ownerless KEY is refused, because falling through would key with
         no lease, no owner and no watchdog: the unsupervised bypass management
         exists to close. An ownerless UNKEY still writes, because an unkey
