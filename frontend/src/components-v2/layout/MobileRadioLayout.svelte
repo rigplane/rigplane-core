@@ -64,7 +64,6 @@
   import { getAppTxController } from '$lib/runtime/tx-controller/app-host';
   import { createPttGesture, type PttGesture } from '../wiring/tx-ptt-gesture';
   import { onMount, onDestroy } from 'svelte';
-  import Toast from '../../components/shared/Toast.svelte';
 
   // ── State — via runtime ──
   let radioState = $derived(runtime.state);
@@ -894,8 +893,8 @@
 </div>
 {/if}
 
-<!-- Toast notifications — rendered in fixed position overlay -->
-<Toast />
+<!-- Global feedback / power-health / TX indication are hosted by
+     AppGlobalHost at the App composition root (MOR-1059). -->
 
 <!-- MOR-617: floating MOD-input TX warning — keying happens via the FAB or
      the landscape strip, so the banner must be visible outside the TX

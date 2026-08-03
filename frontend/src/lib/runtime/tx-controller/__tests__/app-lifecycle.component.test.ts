@@ -49,6 +49,12 @@ vi.mock('../../../../lib/runtime/frontend-runtime', async () => {
 vi.mock('$lib/runtime/system-controller', () => ({ systemController: { registerPreDisconnectBarrier: h.registerBarrier } }));
 vi.mock('$lib/i18n', () => ({ t: (key: string) => key }));
 vi.mock('../app-host', () => ({ provideAppTxControllerHost: h.provide }));
+// The App-global status host (MOR-1059) is stubbed here: these tests own the
+// TX controller lifecycle, and the host has its own focused suite.
+vi.mock('../../../../AppGlobalHost.svelte', async () => {
+  const stub = await import('../../../../components-v2/layout/__tests__/SpectrumPanelStub.svelte');
+  return { default: stub.default };
+});
 import App from '../../../../App.svelte';
 const settle = async () => { await Promise.resolve(); await Promise.resolve(); };
 function mountApp() {
