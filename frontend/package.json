@@ -20,7 +20,7 @@
     "preview": "vite preview",
     "check": "svelte-check --tsconfig ./tsconfig.app.json && tsc -p tsconfig.node.json",
     "lint": "eslint src/",
-    "lint:boundaries": "eslint src/components-v2/panels/ src/components-v2/layout/",
+    "lint:boundaries": "eslint src/components-v2/panels/ src/components-v2/layout/ src/presentation/",
     "i18n:check": "node scripts/i18n-check.mjs",
     "test": "vitest run",
     "test:watch": "vitest",
