@@ -46,7 +46,11 @@ export type BooleanFact =
 /**
  * Structural = the radio model supports this. Operational = usable right
  * now, given live capability AND field-observed state. MOR-977 two-level
- * gating: a control that fails either half is absent, not merely disabled.
+ * gating: a control that fails the STRUCTURAL half is absent (nothing to
+ * render); a control that fails only the OPERATIONAL half stays present but
+ * disabled, degrading to an explicit unknown/disabled state rather than a
+ * guessed default — MOR-988 §11.3: "Old v1 servers lacking additive fields
+ * degrade to `unknown`/disabled in v3, not guessed behavior."
  */
 export interface Availability {
   structural: boolean;

@@ -169,6 +169,17 @@
   "core.modePanel.modInputLabel": "MOD IN",
   "core.modePanel.modInputAria": "Modulation input source",
 
+  "core.vfo.groupLabel": "VFOs",
+  "core.vfo.activeReceiver.known": "Active receiver: {receiver}",
+  "core.vfo.activeReceiver.unknown": "Active receiver: unknown",
+  "core.vfo.selectAction": "Select {label}",
+  "core.vfo.txTarget.label": "TX target",
+  "core.vfo.split.label": "Split",
+  "core.vfo.dualWatch.label": "Dual watch",
+  "core.vfo.state.on": "on",
+  "core.vfo.state.off": "off",
+  "core.vfo.state.unknown": "unknown",
+
   "core.txGuard.modInputNotLan": "MOD input is {source}, not LAN — your voice from the web will not be transmitted (TX).",
   "core.txGuard.setLan": "Set LAN",
   "core.txGuard.dismiss": "Dismiss MOD input warning",
