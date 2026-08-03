@@ -118,6 +118,15 @@ export function makeVfoHandlers() {
     },
     onMainVfoClick: () => _activateReceiver('MAIN'),
     onSubVfoClick: () => _activateReceiver('SUB'),
+    /** Semantic VFO selection (MOR-1065): activate the receiver, then the A/B
+     *  slot when the topology has one. `set_vfo` carries either identity
+     *  (`command_service._active_receiver_value` / `_active_slot_value`).
+     *  `slot === null` means the position has no addressable slot — never a
+     *  guessed 'A'. */
+    onVfoSelect: (receiver: 'MAIN' | 'SUB', slot: 'A' | 'B' | null) => {
+      if (getRadioState()?.active !== receiver) _activateReceiver(receiver);
+      if (slot !== null) cmd('set_vfo', { vfo: slot });
+    },
     onMainModeClick: () => focusModePanel('MAIN'),
     onSubModeClick: () => focusModePanel('SUB'),
     onMainFreqChange: (freq: number) => {
