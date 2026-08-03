@@ -168,6 +168,17 @@
   "core.modePanel.modInputLabel": "MOD IN",
   "core.modePanel.modInputAria": "Источник входной модуляции",
 
+  "core.vfo.groupLabel": "VFO",
+  "core.vfo.activeReceiver.known": "Активный приёмник: {receiver}",
+  "core.vfo.activeReceiver.unknown": "Активный приёмник: неизвестно",
+  "core.vfo.selectAction": "Выбрать {label}",
+  "core.vfo.txTarget.label": "Цель TX",
+  "core.vfo.split.label": "Сплит",
+  "core.vfo.dualWatch.label": "Двойной приём",
+  "core.vfo.state.on": "включено",
+  "core.vfo.state.off": "выключено",
+  "core.vfo.state.unknown": "неизвестно",
+
   "core.txGuard.modInputNotLan": "Вход MOD установлен в {source}, а не LAN — голос из веб-интерфейса не уйдёт в эфир (TX).",
   "core.txGuard.setLan": "Включить LAN",
   "core.txGuard.dismiss": "Скрыть предупреждение о входе MOD",

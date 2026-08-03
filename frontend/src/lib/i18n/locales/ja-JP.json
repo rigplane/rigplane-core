@@ -168,6 +168,17 @@
   "core.modePanel.modInputLabel": "MOD IN",
   "core.modePanel.modInputAria": "変調入力ソース",
 
+  "core.vfo.groupLabel": "VFO",
+  "core.vfo.activeReceiver.known": "アクティブな受信機: {receiver}",
+  "core.vfo.activeReceiver.unknown": "アクティブな受信機: 不明",
+  "core.vfo.selectAction": "{label} を選択",
+  "core.vfo.txTarget.label": "TX 対象",
+  "core.vfo.split.label": "スプリット",
+  "core.vfo.dualWatch.label": "デュアルウォッチ",
+  "core.vfo.state.on": "オン",
+  "core.vfo.state.off": "オフ",
+  "core.vfo.state.unknown": "不明",
+
   "core.txGuard.modInputNotLan": "MOD 入力が {source} のため LAN 経由の音声は送信 (TX) されません。",
   "core.txGuard.setLan": "LAN に設定",
   "core.txGuard.dismiss": "MOD 入力の警告を閉じる",
