@@ -13,9 +13,13 @@
 
   interface Props {
     mode?: RightSidebarMode;
+    /** MOR-1065: a layout whose TX presentation is owned by the semantic RX/TX
+     *  surface suppresses the legacy TX panel, so no layout ships two PTT
+     *  affordances at once. Scoped to the TX panel — CW is unaffected. */
+    hideTxPanel?: boolean;
   }
 
-  let { mode = 'all' }: Props = $props();
+  let { mode = 'all', hideTxPanel = false }: Props = $props();
 
   let showRx = $derived(mode === 'all' || mode === 'rx');
   let showTx = $derived(mode === 'all' || mode === 'tx');
@@ -47,7 +51,7 @@
     </CollapsiblePanel>
   {/if}
 
-  {#if showTx && drag.order.includes('tx')}
+  {#if showTx && !hideTxPanel && drag.order.includes('tx')}
     <CollapsiblePanel title="TX" panelId="tx" draggable onDragStart={drag.handleDragStart} style={drag.dragStyle('tx')}>
       <TxPanel />
     </CollapsiblePanel>

@@ -17,6 +17,11 @@
   import CollapsiblePanel from '../controls/CollapsiblePanel.svelte';
   import { createDragReorder } from '$lib/drag-reorder.svelte';
 
+  /** MOR-1065: mirrors RightSidebar. The TX panel is not in this sidebar's
+   *  defaults, but a cross-sidebar drag can move it here, so the semantic
+   *  layout's TX suppression has to hold on both sides. */
+  let { hideTxPanel = false }: { hideTxPanel?: boolean } = $props();
+
   // Reactive state + capabilities — via runtime
   let caps = $derived(runtime.caps);
 
@@ -105,7 +110,7 @@
     </CollapsiblePanel>
   {/if}
 
-  {#if drag.order.includes('tx')}
+  {#if !hideTxPanel && drag.order.includes('tx')}
     <CollapsiblePanel title="TX" panelId="tx" draggable onDragStart={drag.handleDragStart} style={drag.dragStyle('tx')}>
       <TxPanel />
     </CollapsiblePanel>

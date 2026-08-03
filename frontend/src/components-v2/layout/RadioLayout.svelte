@@ -57,10 +57,9 @@
   let { skinId = 'desktop-v2' }: { skinId?: SkinId } = $props();
 
   // MOR-1065: the sdr-test desktop layout is the migrated reference vertical —
-  // its VFO presentation is owned by the semantic surface, so the legacy
-  // twin-VFO block must not also render. desktop-v2 keeps the legacy panels
-  // for the compatibility window (MOR-1099). Slice c additionally passes this
-  // flag to the sidebars as `hideTxPanel`, once they declare that prop.
+  // its VFO and TX presentation is owned by the semantic surfaces, so the
+  // legacy twin-VFO block and the sidebars' TX panel must not also render.
+  // desktop-v2 keeps the legacy panels for the compatibility window (MOR-1099).
   let semanticSurfaces = $derived(skinId === 'sdr-test');
 
   // Reactive state + capabilities — via runtime
@@ -238,7 +237,7 @@
 
   <section class="content-row">
     <div class="content-left">
-      <LeftSidebar />
+      <LeftSidebar hideTxPanel={semanticSurfaces} />
     </div>
 
     <main class="content-center center-column">
@@ -255,7 +254,7 @@
     </main>
 
     <div class="content-right">
-      <RightSidebar />
+      <RightSidebar hideTxPanel={semanticSurfaces} />
     </div>
   </section>
 
