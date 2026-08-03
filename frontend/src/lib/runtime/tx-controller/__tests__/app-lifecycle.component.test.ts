@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { flushSync, mount, unmount } from 'svelte';
 const h = vi.hoisted(() => ({
   order: [] as string[],
@@ -157,5 +157,84 @@ describe('App TX lifecycle', () => {
     await settle();
     expect(h.host!.refreshAuthority).not.toHaveBeenCalled();
     expect(h.bootstrapCleanup).toHaveBeenCalledOnce();
+  });
+});
+
+// MOR-1168 — a deferred runtime.bootstrap() rejection must not drive
+// backendError/retry effects or arm a reload timer once App has unmounted.
+// jsdom's `location.reload` is non-configurable, so these assert on the
+// global setTimeout/clearTimeout calls (the retry-timer arm/clear) instead
+// of ever letting the real reload callback run.
+describe('App bootstrap rejection lifecycle (MOR-1168)', () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  function pendingReject() {
+    let rejectBootstrap!: (err: unknown) => void;
+    h.bootstrap.mockImplementationOnce(
+      () => new Promise((_resolve, reject) => { rejectBootstrap = reject; }),
+    );
+    return () => rejectBootstrap;
+  }
+
+  it('makes a rejection that arrives after unmount inert: no retry timer armed', async () => {
+    const getReject = pendingReject();
+    const setTimeoutSpy = vi.spyOn(globalThis, 'setTimeout');
+    const component = mountApp();
+    await settle();
+    unmount(component);
+    expect(h.host!.dispose).toHaveBeenCalledOnce();
+    setTimeoutSpy.mockClear();
+
+    getReject()(new Error('late failure after unmount'));
+    await settle();
+    flushSync();
+
+    // Removing the `!mounted` guard in the catch handler would arm a
+    // retry setTimeout (and eventually call location.reload()) here.
+    expect(setTimeoutSpy).not.toHaveBeenCalled();
+  });
+
+  it('preserves bounded retry/error behavior for a rejection while still mounted', async () => {
+    const getReject = pendingReject();
+    const setTimeoutSpy = vi.spyOn(globalThis, 'setTimeout');
+    const component = mountApp();
+    await settle();
+    setTimeoutSpy.mockClear();
+
+    getReject()(new Error('mounted failure'));
+    await settle();
+    flushSync();
+
+    expect(document.body.textContent).toContain('core.app.backendError');
+    expect(document.querySelector('.retry-indicator')).not.toBeNull();
+    // A mounted rejection still arms the bounded reload-retry timer.
+    expect(setTimeoutSpy).toHaveBeenCalledTimes(1);
+    expect(setTimeoutSpy).toHaveBeenCalledWith(expect.any(Function), 3000);
+    unmount(component);
+  });
+
+  it('clears an already-armed retry timer exactly once when unmount races the pending reload', async () => {
+    const getReject = pendingReject();
+    const setTimeoutSpy = vi.spyOn(globalThis, 'setTimeout');
+    const clearTimeoutSpy = vi.spyOn(globalThis, 'clearTimeout');
+    const component = mountApp();
+    await settle();
+    setTimeoutSpy.mockClear();
+
+    getReject()(new Error('mounted failure, then unmount before retry fires'));
+    await settle();
+    flushSync();
+    expect(setTimeoutSpy).toHaveBeenCalledTimes(1);
+    const armedTimer = setTimeoutSpy.mock.results[0]!.value;
+    clearTimeoutSpy.mockClear();
+
+    unmount(component);
+
+    // Pre-existing cleanup (untouched by this fix) must still clear an
+    // already-armed retry timer exactly once when unmount races it.
+    expect(clearTimeoutSpy).toHaveBeenCalledOnce();
+    expect(clearTimeoutSpy).toHaveBeenCalledWith(armedTimer);
   });
 });
