@@ -147,7 +147,13 @@ export function transition(state: TxState, event: TxEvent): TxTransition {
       return { state: next, effects: [effect('cancel-timers', state, undefined, undefined, cleanupGuard), effect('stop-local-audio', state, undefined, undefined, cleanupGuard), effect('restore-mod', state, undefined, state.onConfirmed, cleanupGuard)] };
     }
     if ((state.phase === 'releasing' || state.phase === 'failed') && !event.ptt.value && state.modRestorePending) {
-      const barrier = state.pendingOff ? state.pendingOff.deliveryPttBarrier : state.modBarrier;
+      const bound = state.pendingOff ? state.pendingOff.deliveryPttBarrier : state.modBarrier;
+      // A barrier stamped at a superseded authority epoch can never be crossed by an
+      // observation on the live epoch, so an obligation a reconnect caught mid-flight
+      // would be stranded forever (MOR-1205). Fall back to the current epoch's own
+      // baseline: the authoritative reading past it is the source of truth. Stale
+      // commands and timers stay dead, and discharging issues no further command.
+      const barrier = bound && bound.authorityEpoch < state.authorityEpoch ? state.epochBaseline : bound;
       if (barrier && newer(barrier, event.ptt)) {
         const cleanupGuard = state.cleanupGuard ?? state.guard;
         const discharged = state.phase === 'releasing' ? { ...clearLease(next), phase: 'idle' as const, txRisk: 'none' as const, modRestorePending: false, fault: null } : state.fault === 'release-not-confirmed' ? { ...clearLease(next), phase: 'failed' as const, txRisk: 'none' as const, modRestorePending: false, fault: state.fault } : { ...next, cleanupGuard: null, modRestorePending: false };

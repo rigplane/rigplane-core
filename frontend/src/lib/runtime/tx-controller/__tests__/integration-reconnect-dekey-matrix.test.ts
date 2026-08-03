@@ -30,18 +30,18 @@ import { MockWebSocket, instances } from '$lib/transport/__tests__/support/fake-
 //      lease is never reconstructed from an external PTT observation alone.
 //   4. WS loss while a *self-issued* release is already in flight but
 //      unconfirmed — proving the pending release obligation is neither
-//      duplicated nor silently discarded by the reconnect's epoch bump.
+//      duplicated nor silently discarded by the reconnect's epoch bump, and
+//      that it can still converge afterwards.
 //
-// Case 4 was hand-verified against the real code before being written down:
-// once the OFF has already reached the (since-dropped) socket, the model has
-// no path back to a clean "idle" after a session-epoch bump (the bound
-// delivery barrier and the armed timeout are both epoch-stamped at the old
-// epoch, so neither the authoritative-confirm branch nor the off-confirmation
-// timeout can fire against the new one). That's an existing property of
-// model.ts, not something this test suite invents or repairs — the assertion
-// here is deliberately scoped to what the reconnect boundary must never do
-// (invent a duplicate OFF, or drop the still-owed one), not to a full
-// idle convergence this specific interleaving doesn't reach.
+// Case 4's boundary half was hand-verified against the real code before being
+// written down: once the OFF has already reached the (since-dropped) socket,
+// the reconnect must neither invent a duplicate OFF nor drop the still-owed
+// one. Its convergence half is MOR-1205: the bound delivery barrier and the
+// armed off-confirmation timeout are both epoch-stamped at the old epoch, so
+// neither could fire against the new one and the controller used to sit in
+// "releasing" forever. The stale timeout still cannot fire (asserted below);
+// discharge now comes from a fresh authoritative ptt:false observed on the
+// new epoch — evidence, not a timer, and never another command.
 
 const h = vi.hoisted(() => ({
   radio: null as any,
@@ -345,5 +345,25 @@ describe('tx-controller integration reconnect/de-key matrix — real WsChannel +
       }),
     });
     expect(h.restore).not.toHaveBeenCalled(); // never falsely restores MOD without a real confirmation
+
+    // ── The surviving obligation must also be able to DISCHARGE (MOR-1205) ──
+    // The off-confirmation timeout armed before the drop is stamped at the old
+    // epoch, so it can never fire against the new one: advancing well past its
+    // 5s deadline must change nothing — no `release-not-confirmed`, no OFF.
+    vi.advanceTimersByTime(6_000);
+    expect(controller.snapshot()).toMatchObject({ phase: 'releasing', fault: null });
+    expect(countFrames('ptt_off', socket0, socket1)).toBe(1);
+
+    // A fresh authoritative ptt:false on the NEW epoch is the source of truth,
+    // and the controller converges on it: the obligation is discharged without
+    // ever putting another OFF on the wire.
+    confirmAuthority(controller, factory, getSession(), false, 4);
+    expect(controller.snapshot()).toMatchObject({
+      phase: 'idle', fault: null, guard: null, leaseId: null, mayOwnKey: false,
+      pendingOff: null, txRisk: 'none', modRestorePending: false, radioTx: 'off',
+    });
+    expect(countFrames('ptt_off', socket0, socket1)).toBe(1); // still exactly one OFF, ever
+    expect(countFrames('ptt_on', socket0, socket1)).toBe(1);
+    expect(h.restore).toHaveBeenCalledTimes(1); // MOD restored once, on real evidence
   });
 });
