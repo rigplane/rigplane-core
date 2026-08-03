@@ -1,16 +1,16 @@
 <script lang="ts">
-  import { onMount } from 'svelte';
+  import { onMount, tick, type Component } from 'svelte';
   import { initBatteryMonitor } from './lib/utils/battery';
-  import RadioLayoutV2 from './components-v2/layout/RadioLayout.svelte';
   import AppGlobalHost from './AppGlobalHost.svelte';
   import LocalExtensionsHost from './lib/local-extensions/LocalExtensionsHost.svelte';
   import { initMediaSession, destroyMediaSession } from './lib/media/media-session';
-  import { runtime } from './lib/runtime/frontend-runtime';
+  import { presentationResources, runtime } from './lib/runtime/frontend-runtime';
+  import type { ResourceLease } from '$lib/runtime/resource-demand';
   import { systemController } from '$lib/runtime/system-controller';
   import { provideAppTxControllerHost } from '$lib/runtime/tx-controller/app-host';
   import { hasAnyScope } from './lib/stores/capabilities.svelte';
   import { getLayoutMode } from './lib/stores/layout.svelte';
-  import { resolveSkinId, type SkinId } from './skins/registry';
+  import { loadSkin, presentationResourcePlan, resolveSkinId, type SkinId } from './skins/registry';
   import { t } from '$lib/i18n';
   import './app.css';
 
@@ -37,6 +37,87 @@
     isMobile,
     hasAnyScope: hasAnyScope(),
   }));
+
+  // ── Lazy presentation loading (MOR-1060) ──
+  //
+  // App is the sole owner of presentation selection, loading and commit. Each
+  // request takes a fresh loader generation — including A → B → A — so exactly
+  // one resolution can commit: any completion whose generation is no longer
+  // current is discarded without mounting, without writing state and without
+  // touching the resources of the presentation that is actually on screen.
+  //
+  // The committed presentation stays mounted for the whole time the next
+  // loader is in flight, so a switch never blanks the operator's screen and
+  // never replays bootstrap, transport, audio or TX ownership — all of which
+  // live above this seam (MOR-973, MOR-1008, MOR-1059).
+  let presentation = $state<{ id: SkinId; component: Component } | null>(null);
+  let presentationFailed = $state(false);
+  let Presentation = $derived(presentation?.component ?? null);
+  let loaderGeneration = 0;
+  /** Cleared by App teardown; a resolution that lands afterwards is inert. */
+  let presentationActive = true;
+
+  $effect(() => {
+    const requested = skinId;
+    if (demoMode === 'control-buttons') return;
+    void requestPresentation(requested);
+  });
+
+  async function requestPresentation(id: SkinId): Promise<void> {
+    const generation = ++loaderGeneration;
+    let loaded: Component;
+    try {
+      loaded = await loadSkin(id);
+    } catch (err) {
+      // A stale or post-teardown failure is inert: only the newest request
+      // owns the error surface (same guard doctrine as the bootstrap catch).
+      if (!presentationActive || generation !== loaderGeneration) return;
+      console.error(`[rigplane] presentation "${id}" failed to load:`, err);
+      // Last-known-good survives a failed switch; only an initial load has
+      // nothing to keep, and then the surface is inert — no retry, no
+      // runtime teardown.
+      presentationFailed = presentation === null;
+      return;
+    }
+    if (!presentationActive || generation !== loaderGeneration) return;
+
+    // Hold the incoming presentation's demand BEFORE the swap so destroying
+    // the outgoing subtree can never drop a live resource to zero and bounce
+    // it (MOR-973). Released only after the commit has flushed, by which time
+    // the new subtree owns its own leases.
+    const bridge = acquireSwapBridge(id);
+    try {
+      presentationFailed = false;
+      presentation = { id, component: loaded };
+      await tick();
+    } finally {
+      releaseSwapBridge(bridge);
+    }
+  }
+
+  /**
+   * Bridge leases for the incoming presentation's planned resources, limited
+   * to those already demanded: a presentation choice must not manufacture a
+   * live service (v3 ADR invariant 12).
+   */
+  function acquireSwapBridge(id: SkinId): ResourceLease[] {
+    const leases: ResourceLease[] = [];
+    for (const resource of presentationResourcePlan(id)) {
+      try {
+        if (presentationResources.snapshot(resource).demand <= 0) continue;
+        // Every acquisition returns its own distinct lease object, so a
+        // release can only ever cancel the binding it created.
+        leases.push(presentationResources.acquire(resource, `App:${id}`));
+      } catch {
+        // The App resource session is torn down — there is nothing to bridge.
+      }
+    }
+    return leases;
+  }
+
+  function releaseSwapBridge(leases: ResourceLease[]): void {
+    while (leases.length > 0) presentationResources.release(leases.pop()!);
+  }
 
   const txHost = provideAppTxControllerHost({
     registerPreDisconnectBarrier: (barrier) =>
@@ -70,7 +151,10 @@
 
   onMount(() => {
     if (demoMode === 'control-buttons') {
-      return () => txHost.dispose();
+      return () => {
+        presentationActive = false;
+        txHost.dispose();
+      };
     }
 
     // Stale-bookmark notice: ?ui=v1 is no longer supported (v0.20+). Emit once per session.
@@ -123,6 +207,7 @@
 
     return () => {
       mounted = false;
+      presentationActive = false;
       txAuthorityReady = false;
       txHost.dispose();
       destroyMediaSession();
@@ -151,8 +236,18 @@
       {/if}
     </div>
   </div>
-{:else}
-  <RadioLayoutV2 {skinId} />
+{:else if Presentation}
+  <Presentation />
+{:else if presentationFailed}
+  <!-- Initial presentation load failed: an inert App-owned surface. No retry
+       and no runtime teardown — control transport, audio and TX authority all
+       live above this boundary and stay up. -->
+  <div class="error-overlay" role="alert" aria-live="assertive">
+    <div class="error-box">
+      <div class="error-icon">⚠</div>
+      <p class="error-msg" data-testid="presentation-load-error">{t('core.app.presentationError')}</p>
+    </div>
+  </div>
 {/if}
 
 {#if demoMode !== 'control-buttons' && !backendError}

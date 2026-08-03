@@ -9,6 +9,7 @@
 
 import type { Component } from 'svelte';
 import type { Capabilities } from '$lib/types/capabilities';
+import type { AppResource } from '$lib/runtime/resource-demand';
 import {
   normalizeLayoutMode,
   type LayoutMode,
@@ -82,4 +83,37 @@ export function resolvePersistedSkinId(id: PersistedSkinId): SkinId {
 
 export async function loadSkin(id: SkinId): Promise<Component> {
   return (await SKIN_LOADERS[id]()).default;
+}
+
+/**
+ * Which App-session resources a presentation's subtree can demand (MOR-1060).
+ *
+ * This is a private composition-root detail, NOT a public workspace or
+ * design-language API: it exists so `App.svelte` can hold demand across a
+ * presentation swap and stop the outgoing subtree's release from bouncing a
+ * stream the incoming subtree is about to ask for again.
+ *
+ * Read off the actual component trees:
+ * - `hardware-scope` — `SpectrumPanel`, mounted by the desktop/sdr-test and
+ *   mobile layouts; the LCD layouts have none.
+ * - `audio-fft` — `AudioSpectrumPanel` (right sidebar, desktop/sdr-test/LCD)
+ *   and `AmberCockpit` / `AmberScope` (LCD); the mobile layout has none.
+ *
+ * `rx-audio` is deliberately absent: its lease is held by the runtime
+ * (`setRxLive`), not by a presentation subtree, so it already survives a swap.
+ *
+ * Membership here only permits bridging — `App.svelte` bridges a resource
+ * solely while it is already demanded, so a presentation choice can never
+ * manufacture a live service (v3 ADR invariant 12).
+ */
+const SKIN_RESOURCE_PLAN: Record<SkinId, readonly AppResource[]> = {
+  'desktop-v2': ['hardware-scope', 'audio-fft'],
+  'lcd-cockpit': ['audio-fft'],
+  'lcd-scope': ['audio-fft'],
+  'mobile': ['hardware-scope'],
+  'sdr-test': ['hardware-scope', 'audio-fft'],
+};
+
+export function presentationResourcePlan(id: SkinId): readonly AppResource[] {
+  return SKIN_RESOURCE_PLAN[id] ?? [];
 }

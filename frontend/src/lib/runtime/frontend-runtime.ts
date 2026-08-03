@@ -254,6 +254,11 @@ class FrontendRuntime {
    * can be set before this async function starts.
    */
   private async _doBootstrap(): Promise<() => void> {
+    // A new App instance re-arms the runtime: `_ended` is latched by the
+    // previous instance's cleanup and would otherwise fail every facade
+    // (`acquireHardwareScope`, `subscribeDx`, `setRxLive`) closed forever.
+    this._ended = false;
+
     // Remove legacy pre-authority-gate restore records without consulting
     // cached state or issuing any radio command.
     clearLegacyPendingModInputRestore();
@@ -295,6 +300,12 @@ class FrontendRuntime {
     let cleanupInFlight: Promise<void> | undefined;
     const cleanup = () => cleanupInFlight ??= (async () => {
       this._ended = true;
+      // Drop the cached registration so a later `bootstrap()` (a remounted
+      // App) re-runs the chain instead of being handed a cleanup that has
+      // already run. Safe to do unconditionally: `cleanupInFlight` latches
+      // this body to exactly one execution, which happens before any newer
+      // registration can exist.
+      this._bootstrapCleanup = null;
       this._rxAudioLease = null;
       this._dxSubscribers.clear();
       const unsubscribeDx = this._dxControlUnsubscribe;

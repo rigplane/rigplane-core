@@ -23,7 +23,7 @@ vi.mock('../lcd-scope/LcdScopeSkin.svelte', () => lazyImports.scope());
 vi.mock('../mobile/MobileSkin.svelte', () => lazyImports.mobile());
 vi.mock('../sdr-test/SdrTestSkin.svelte', () => lazyImports.sdr());
 
-import { loadSkin, resolvePersistedSkinId, resolveSkinId } from '../registry';
+import { loadSkin, presentationResourcePlan, resolvePersistedSkinId, resolveSkinId } from '../registry';
 
 const resolve = (overrides: Partial<Parameters<typeof resolveSkinId>[0]> = {}) =>
   resolveSkinId({
@@ -80,5 +80,32 @@ describe('skin registry', () => {
   ] as const)('lazily loads the %s entrypoint', async (skinId: SkinId, entrypoint, lazyImport) => {
     await expect(loadSkin(skinId)).resolves.toBe(entrypoint);
     expect(lazyImport).toHaveBeenCalledTimes(1);
+  });
+});
+
+// MOR-1060 — the private per-presentation resource plan. It exists so the
+// composition root can bridge demand across a swap; it is read off the actual
+// component trees, not invented per skin.
+describe('presentation resource plan', () => {
+  const everySkin = ['desktop-v2', 'lcd-cockpit', 'lcd-scope', 'mobile', 'sdr-test'] as const;
+
+  it.each([
+    ['desktop-v2', ['audio-fft', 'hardware-scope']],
+    ['sdr-test', ['audio-fft', 'hardware-scope']],
+    ['lcd-cockpit', ['audio-fft']],
+    ['lcd-scope', ['audio-fft']],
+    // The mobile layout mounts SpectrumPanel but no audio-FFT surface.
+    ['mobile', ['hardware-scope']],
+  ] as const)('names the resources the %s tree can demand', (skinId: SkinId, resources) => {
+    expect([...presentationResourcePlan(skinId)].sort()).toEqual([...resources]);
+  });
+
+  // MUTATION KILLED: adding `rx-audio` to any plan. Its lease belongs to the
+  // runtime (`setRxLive`), not to a presentation subtree — bridging it would
+  // hand a second owner to a resource that already survives a swap.
+  it('never claims rx-audio for a presentation', () => {
+    for (const skinId of everySkin) {
+      expect(presentationResourcePlan(skinId)).not.toContain('rx-audio');
+    }
   });
 });

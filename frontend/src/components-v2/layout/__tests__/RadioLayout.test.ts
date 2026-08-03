@@ -18,7 +18,11 @@ vi.mock('$lib/stores/layout.svelte', () => ({
   setLayoutMode: vi.fn(),
 }));
 
-vi.mock('../../../skins/registry', () => ({
+// Only the resolver is faked; `loadSkin` stays real so the App-mount test
+// below still exercises the actual lazy entrypoint → RadioLayout path
+// (MOR-1060).
+vi.mock('../../../skins/registry', async (importOriginal) => ({
+  ...await importOriginal<typeof import('../../../skins/registry')>(),
   resolveSkinId: vi.fn(() => 'desktop-v2'),
 }));
 
@@ -412,7 +416,7 @@ describe('RadioLayout structure', () => {
 });
 
 describe('App presentation selection', () => {
-  it('owns the resolver inputs and passes the resolved skinId to RadioLayout', () => {
+  it('owns the resolver inputs and passes the resolved skinId to RadioLayout', async () => {
     vi.mocked(resolveSkinId).mockReturnValue('sdr-test');
 
     const t = document.createElement('div');
@@ -420,6 +424,12 @@ describe('App presentation selection', () => {
     const component = mount(App, { target: t });
     flushSync();
     components.push(component);
+    // MOR-1060: the presentation is loaded lazily (a real dynamic import of
+    // the sdr-test entrypoint), so wait for the commit before asserting.
+    await vi.waitFor(() => {
+      flushSync();
+      expect(t.querySelector('.radio-layout.sdr-test')).not.toBeNull();
+    });
 
     expect(resolveSkinId).toHaveBeenLastCalledWith({
       capabilities: { scope: true },

@@ -331,6 +331,42 @@ describe('FrontendRuntime.bootstrap()', () => {
     teardown.mockRestore();
   });
 
+  // MOR-1060 — the App remount seam. A second App instance must get a live
+  // runtime, not the cached cleanup of an instance that already tore down.
+  it('re-bootstraps after cleanup so a remounted App gets a live runtime', async () => {
+    const teardown = vi.spyOn(presentationResources, 'teardown')
+      .mockImplementation(async () => {});
+    const rt = await freshRuntime();
+    const internals = rt as unknown as { _ended: boolean };
+
+    const cleanup = await rt.bootstrap();
+    await cleanup();
+    expect(internals._ended).toBe(true);
+
+    const second = await rt.bootstrap();
+
+    expect(fetchCapabilities).toHaveBeenCalledTimes(2);
+    expect(connect).toHaveBeenCalledTimes(2);
+    expect(sendRaw).toHaveBeenCalledTimes(2);
+    expect(second).not.toBe(cleanup);
+    // The facades are re-armed, not latched closed by the previous teardown.
+    expect(internals._ended).toBe(false);
+    const lease = rt.acquireHardwareScope('remount-probe');
+    presentationResources.release(lease);
+
+    // MUTATION KILLED: clearing the cache from a cleanup body that can run
+    // more than once. Re-invoking the first instance's cleanup must stay a
+    // no-op and must not drop the SECOND instance's registration — otherwise
+    // a third bootstrap silently re-runs the transport chain on a live
+    // runtime.
+    await cleanup();
+    expect(fetchCapabilities).toHaveBeenCalledTimes(2);
+    expect(await rt.bootstrap()).toBe(second);
+
+    await second();
+    teardown.mockRestore();
+  });
+
   it('propagates fetchCapabilities error and allows retry', async () => {
     const rt = await freshRuntime();
     const error = new Error('network failure');
