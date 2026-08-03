@@ -438,6 +438,31 @@ Practical rule:
     of your audio. See
     [Network Voice TX Is Noise, a Squeal, or Silent (IC-7610 MOD Input)](troubleshooting.md#network-voice-tx-is-noise-a-squeal-or-silent-ic-7610-mod-input).
 
+### Managed TX and PTT ownership
+
+For the Icom CI-V backends served by `RadioPoller`, browser PTT commands
+route through the same managed-TX ingress (`bind_managed_tx()` in
+`src/rigplane/web/radio_poller.py`) as other control-channel PTT sources.
+Current boundary: managed TX — a per-session
+lease, owner identity, and a 180-second max-key-down watchdog
+(`BACKEND_MAX_KEY_DOWN_SECONDS` in `src/rigplane/core/tx_safety.py`) — is
+armed on the LAN `IcomRadio` path only. Serial/USB Icom backends are legacy
+and unmanaged, covered only by a 180-second poller-side backstop (pending
+full managed arming, MOR-1219); Yaesu CAT and rigctld-client backends are
+legacy with no key-down bound (pending MOR-1190). See
+[`docs/CHANGELOG.md`](../CHANGELOG.md) for the dated record of this
+boundary.
+
+On that same Icom CI-V path, if a second WebSocket session tries to key a
+rig whose lease is already held live elsewhere, `ptt` is refused rather
+than stealing the key; a PTT ON enqueued by a WebSocket session that has
+already disconnected is also refused (fail-closed). PTT OFF is never
+refused this way. Yaesu CAT
+(`backends/yaesu_cat/poller.py`) and rigctld-client
+(`backends/rigctld_client/radio.py`) drain the same command queue with a
+bare `radio.set_ptt(True)` — no ingress bind, no lease, and no
+stale-session refusal.
+
 ## Frontend Runtime Workflow (Current Implementation)
 
 The browser app startup path is implemented in `frontend/src/App.svelte` and
@@ -445,7 +470,7 @@ The browser app startup path is implemented in `frontend/src/App.svelte` and
 
 ### Boot sequence
 
-1. Initialize the skin selector from URL/localStorage (see "Layout and skin resolution" below).
+1. Initialize the skin selector from localStorage (see "Layout and skin resolution" below).
 2. Register MediaSession handlers (when API is available).
 3. Start HTTP polling loop for `/api/v1/state` (interval set to `1000ms` in app bootstrap).
 4. Start battery monitor (progressive enhancement) and adjust polling multiplier.
@@ -519,8 +544,9 @@ When `navigator.mediaSession` is supported:
 
 - `previoustrack` -> tune down one step (`set_freq`)
 - `nexttrack` -> tune up one step (`set_freq`)
-- `play` -> `ptt` ON
-- `pause` -> `ptt` OFF
+
+MediaSession does **not** control PTT. `play`/`pause` have no handler
+registered; only the volume-key tuning actions above are wired up.
 
 Implementation path: `frontend/src/lib/media/media-session.ts`.
 
@@ -530,14 +556,29 @@ Implementation path: `frontend/src/lib/media/media-session.ts`.
 
 ## Keyboard Shortcuts (Desktop)
 
+Bindings are capability-driven: the backend serializes a per-radio
+`keyboard` config into `GET /api/v1/capabilities`, built from a shared
+default (`rigs/_keyboard-default.toml`) plus optional per-rig overrides.
+Press `?` in the desktop skin to open the in-app shortcut list for the
+connected radio's actual bindings.
+
+Representative bindings from the shared default profile:
+
 | Key | Action |
 |-----|--------|
-| `F1`-`F11` | Jump to preset amateur bands (160m .. 6m) |
-| `M` | Cycle mode through supported modes |
-| `ArrowUp` / `ArrowRight` | Tune up by current step |
-| `ArrowDown` / `ArrowLeft` | Tune down by current step |
-| `Space` | Toggle PTT |
-| `Escape` | Close frequency-entry modal |
+| `ArrowUp` / `ArrowDown` | Increase / decrease the tuning step |
+| `ArrowLeft` / `ArrowRight` | Tune down / up by the current step |
+| `PageUp` / `PageDown` | Jump the active receiver +/- 1 kHz |
+| `1`-`9` | Select band (160m .. 6m) |
+| `F1`-`F10` | Select mode (LSB, USB, CW, CW-R, AM, FM, RTTY, RTTY-R, PSK, PSK-R) |
+| `m` / `Shift+M` / `Shift+S` | Toggle active receiver / activate MAIN / activate SUB |
+| `Tab` | Swap VFO |
+| `Escape` | Clear RIT/XIT offset |
+
+There is currently no keyboard shortcut bound to PTT. Implementation:
+`frontend/src/components-v2/layout/keyboard-map.ts` (event matching) and
+`frontend/src/components-v2/wiring/command-bus.ts` (`makeKeyboardHandlers`,
+action dispatch).
 
 ## Mobile Interaction Model
 
@@ -550,22 +591,40 @@ Mobile-first interaction logic is implemented in:
 
 ### Layout and skin resolution
 
-Skin/layout is resolved in `frontend/src/components-v2/layout/RadioLayout.svelte`
-using `resolveSkinId(...)` and `getLayoutMode()`:
+Skin/layout is resolved once per render in `frontend/src/App.svelte` via
+`resolveSkinId(...)`, then passed as a `skinId` prop into
+`components-v2/layout/RadioLayout.svelte`. `frontend/src/skins/*` are thin
+delegation wrappers that mount the layout components with a fixed
+`skinId`/`variant` (see `skins/registry.ts`):
 
 1. `isMobile` is true when:
    - `min(window.innerWidth, window.innerHeight) < 640`, or
    - touch device and `min(window.innerWidth, window.innerHeight) < 500`.
-2. If `isMobile` is true -> mobile skin.
+2. If `isMobile` is true -> `mobile` skin.
 3. Otherwise, layout preference from localStorage key `rigplane-layout` is used:
-   - `lcd` -> amber LCD skin
-   - `standard` -> desktop v2 skin
-   - `auto` -> desktop v2 when any scope is available, amber LCD when no scope is available.
+   - `lcd-cockpit` -> LCD Cockpit skin (TS-990S-style dual-cockpit)
+   - `lcd-scope` -> LCD Scope skin (IC-7300-style scope-dominant)
+   - `standard` -> desktop-v2 skin
+   - `sdr-test` -> SDR Screen test skin
+   - `auto` -> desktop-v2 when any scope is available, LCD Cockpit when no scope is available.
 
-Status bar layout button behavior (`cycleLayoutMode(...)`):
+`normalizeLayoutMode()` (`lib/stores/layout.svelte.ts`) normalizes legacy
+persisted values so old localStorage entries keep resolving:
+`amber-lcd`/`lcd` -> `lcd-cockpit`, `spectrum`/`desktop-v2` -> `standard`.
 
-- if scope is available: `auto -> lcd -> standard -> auto`
-- if scope is not available: selecting layout forces `lcd`
+The status bar layout control (`StatusBar.svelte`) is a `<select>` dropdown
+listing all five values above, not a cycle button. `cycleLayoutMode()`
+(`lib/stores/layout.svelte.ts`) still exists but is not wired to any
+control in the current UI.
+
+!!! note "Current v2 skins vs. the planned v3 architecture"
+    This is the current (v2 migration-era) skin system — skins are chosen
+    synchronously and rendered from one shared component tree, not
+    lazy-loaded. The target v3 frontend architecture
+    ([`docs/plans/2026-04-12-target-frontend-architecture.md`](../plans/2026-04-12-target-frontend-architecture.md))
+    describes a different, not-yet-implemented design — `import()`-loaded
+    skin components and a workspace/slot layout model. Treat that document
+    as a plan, not as shipped behavior.
 
 ### Bottom sheet gestures
 
@@ -586,12 +645,22 @@ Panel headers support vertical swipe:
 
 ### Mobile PTT workflow
 
-Mobile PTT button behavior:
+Mobile PTT button behavior (`components-v2/wiring/tx-ptt-gesture.ts`, wired
+into `MobileRadioLayout.svelte` through the shared App TX controller):
 
-- press-and-hold -> TX while held
-- double-tap within 350ms -> latch TX lock
-- tap while latched -> unlock and return to idle
-- safety timeout forcibly disengages TX after 3 minutes
+- press then release -> keys TX; release arms a 300ms window instead of
+  de-keying immediately
+- a second press inside that 300ms window latches TX (lock) instead of
+  starting a new key
+- a press while latched unlatches and releases TX immediately
+- rotating the device while keyed or latched releases TX rather than
+  stranding it (the gesture recognizer is torn down and rebuilt for the
+  new orientation)
+
+There is no mobile-local safety timer — the previous 3-minute
+presentation-side timer was removed in MOR-1011/MOR-1012. See
+[Managed TX and PTT ownership](#managed-tx-and-ptt-ownership) above for the
+backend-side max-key-down backstop that replaced it.
 
 ## Operations Runbook
 
@@ -714,10 +783,12 @@ const sub = state.sub ?? null;
   UI updates can be overwritten by server state.
 - **Scope recovery behavior:** scope enable/re-enable is deferred until `radio_ready=true`;
   all-zero scope frames trigger automatic re-enable attempts.
-- **UI version assumptions:** mobile v2 interactions (sheet/panel swipe, touch-first PTT flow)
-  require `?ui=v2` or previously stored v2 selection; default is v1.
-- **Layout mode expectations:** v2 layout preference (`rigplane-layout`) is capability-aware;
-  `auto` resolves to desktop only when any scope exists, otherwise LCD is selected.
+- **No v1 UI:** `?ui=v1` is no longer supported (since v0.20+) — the app only ships
+  the current (v2) skins-based UI. Mobile interactions (sheet/panel swipe, touch-first
+  PTT flow) are always active on a mobile-sized viewport; no query param or stored
+  selection is required.
+- **Layout mode expectations:** layout preference (`rigplane-layout`) is capability-aware;
+  `auto` resolves to desktop-v2 only when any scope exists, otherwise LCD Cockpit is selected.
 - **System action error surfacing:** connect/disconnect/power actions in v2 call
   `runtime.system.*` and surface backend HTTP errors directly in the UI.
 - **Battery API availability:** polling slowdown on low battery is best-effort; browsers without
