@@ -1,18 +1,14 @@
 /**
- * MOR-1065 slice b — one current desktop layout migrated to the semantic VFO
- * surface.
+ * MOR-1065 — one current desktop layout migrated to the semantic surfaces.
  *
- * The migrated layout is `sdr-test`: its VFO presentation is now owned by the
- * MOR-1063 surface. Two things must hold at once:
- *   1. the semantic VFO surface renders IN PLACE of the legacy twin-VFO block
- *      — a layout carrying both would ship two VFO truths;
- *   2. everything else in that layout (status bar, sidebars — INCLUDING the
- *      legacy TX panel, which slice c replaces — spectrum, meters dock) is
- *      untouched, and `desktop-v2` still renders the legacy VFO header for the
- *      compatibility window (MOR-1099).
- *
- * The RX/TX surface, the TX-panel suppression and the CW-survival pin arrive
- * with slice c, together with the code they pin.
+ * The migrated layout is `sdr-test`: its VFO and TX presentation is now owned
+ * by the MOR-1063 / MOR-1064 surfaces. Two things must hold at once:
+ *   1. the semantic surfaces render IN PLACE of the legacy twin-VFO block and
+ *      the sidebar TX panel — a layout carrying both would ship two PTT
+ *      affordances and two VFO truths;
+ *   2. everything else in that layout (status bar, sidebars, spectrum, meters
+ *      dock) is untouched, and `desktop-v2` still renders the legacy panels
+ *      for the compatibility window (MOR-1099).
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { flushSync, mount, unmount } from 'svelte';
@@ -187,32 +183,25 @@ afterEach(() => {
   document.body.innerHTML = '';
 });
 
-
-describe('the migrated desktop layout owns its VFO through the semantic surface', () => {
-  it('renders the semantic VFO surface inside the receiver deck', () => {
+describe('the migrated desktop layout owns VFO/TX through the semantic surfaces', () => {
+  it('renders both surfaces inside the receiver deck', () => {
     const t = render('sdr-test');
     const deck = t.querySelector('.receiver-deck')!;
     expect(deck.querySelector('[data-testid="semantic-radio-surfaces"]')).not.toBeNull();
     expect(deck.querySelector('[data-testid="vfo-surface"]')).not.toBeNull();
+    expect(deck.querySelector('[data-testid="rx-tx-surface"]')).not.toBeNull();
   });
 
-  // MUTATION KILLED: adding the surface alongside the block it replaces. Two
-  // VFO readouts in one layout is exactly the "duplicate presentation
-  // ownership" MOR-1099 exists to retire.
-  it('renders none of the legacy VFO presentation it replaces', () => {
+  // MUTATION KILLED: adding the surfaces alongside the panels they replace.
+  // Two PTT affordances and two VFO readouts in one layout is exactly the
+  // "duplicate presentation ownership" MOR-1099 exists to retire.
+  it('renders none of the legacy VFO/TX presentation it replaces', () => {
     const t = render('sdr-test');
     expect(t.querySelector('.vfo-header')).toBeNull();
     expect(t.querySelector('.sdr-host')).toBeNull();
-  });
-
-  // The coherent slice-b intermediate: the legacy TX panel is STILL the only
-  // PTT affordance in this layout, so no TX capability is lost between b and c.
-  // Slice c replaces it with the semantic RX/TX surface in the same commit that
-  // introduces `hideTxPanel`.
-  it('leaves the legacy TX panel in place until the RX/TX surface lands', () => {
-    const t = render('sdr-test');
-    expect(t.querySelector('[data-panel-id="tx"]')).not.toBeNull();
-    expect(t.querySelector('[data-testid="rx-tx-surface"]')).toBeNull();
+    expect(t.querySelector('.tx-panel')).toBeNull();
+    expect(t.querySelector('[data-testid="tx-strip"]')).toBeNull();
+    expect(t.querySelector('[data-panel-id="tx"]')).toBeNull();
   });
 
   it('leaves the rest of the layout intact', () => {
@@ -223,8 +212,20 @@ describe('the migrated desktop layout owns its VFO through the semantic surface'
     expect(t.querySelector('.center-column .spectrum-slot')).not.toBeNull();
     expect(t.querySelector('.spectrum-panel-stub')).not.toBeNull();
     expect(t.querySelector('.bottom-dock')).not.toBeNull();
+    // Non-TX sidebar panels are untouched by the TX suppression.
     expect(t.querySelector('[data-panel-id="rx-audio"]')).not.toBeNull();
     expect(t.querySelector('[data-panel-id="memory"]')).not.toBeNull();
+  });
+
+  // MUTATION KILLED: widening `hideTxPanel` to the sidebar's whole `showTx`
+  // branch, which also guards CW. The suppression is TX-panel-scoped by
+  // construction, but nothing pinned it — `hasCapability` is mocked false
+  // everywhere else in this file, so the CW block never renders to be checked.
+  it('keeps the CW panel, which shares the sidebar\'s TX branch', () => {
+    vi.mocked(hasCapability).mockImplementation((tag: string) => tag === 'cw');
+    const t = render('sdr-test');
+    expect(t.querySelector('[data-panel-id="cw"]')).not.toBeNull();
+    expect(t.querySelector('[data-panel-id="tx"]')).toBeNull();
   });
 
   it.each(['1/single', '1/ab', '2/ab_shared', '2/main_sub'] as const)(
@@ -233,15 +234,16 @@ describe('the migrated desktop layout owns its VFO through the semantic surface'
       const t = render('sdr-test');
       const tiles = t.querySelectorAll('[data-vfo-tile]');
       expect(tiles.length).toBe(topologyFixtures[id].vfos.length);
-      expect(t.querySelector('[data-testid="vfo-surface"]')).not.toBeNull();
+      expect(t.querySelector('[data-testid="rx-tx-surface"]')).not.toBeNull();
     },
   );
 
-  it('renders the chrome but no surface when capabilities have not loaded', () => {
+  it('renders the chrome but no surfaces when capabilities have not loaded', () => {
     h.caps = null;
     const t = render('sdr-test');
     expect(t.querySelector('.receiver-deck')).not.toBeNull();
     expect(t.querySelector('[data-testid="vfo-surface"]')).toBeNull();
+    expect(t.querySelector('[data-testid="rx-tx-surface"]')).toBeNull();
   });
 });
 
