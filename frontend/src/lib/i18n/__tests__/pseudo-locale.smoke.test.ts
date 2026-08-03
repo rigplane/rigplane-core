@@ -63,6 +63,11 @@ beforeEach(() => {
 
 afterEach(() => {
   localStorage.clear();
+  // The i18n store is a module singleton and the fast pool runs with
+  // ``isolate: false`` (issue #771), so a pseudo-locale left set here leaks
+  // into every later fast-pool file — any test asserting on real English text
+  // then sees ``⟦…⟧`` instead. Hand the locale back on the way out.
+  _resetLocale();
 });
 
 describe('pseudo-locale smoke (representative UI keys)', () => {
