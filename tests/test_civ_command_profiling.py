@@ -250,7 +250,20 @@ class TestLatencyDistribution:
     """Analyze latency distribution of critical operations."""
 
     def test_frame_creation_latency_distribution(self):
-        """Measure frame creation latency percentiles."""
+        """Measure frame creation latency percentiles.
+
+        Gates the MOR-416 frame-building performance SLO on p50/p95, which
+        both carry a >20x margin over baseline (~0.17µs / ~0.38µs vs the
+        10µs / 30µs budgets below) and stay stable even on a contended
+        CI runner.
+
+        p99 with only 100 samples is not a statistical percentile -- index
+        99 of a 100-sample sort is literally the single worst sample, so a
+        lone scheduler preemption on a shared runner can move it 10-30x
+        with zero change in actual latency (observed locally; see MOR-1176
+        for a CI run where it hit 155µs against p50=0.17µs/p95=0.38µs).
+        Report it for visibility; do not gate on it.
+        """
         latencies_ms = []
 
         for _ in range(100):
@@ -265,7 +278,7 @@ class TestLatencyDistribution:
 
         p50 = latencies_ms[50]
         p95 = latencies_ms[95]
-        p99 = latencies_ms[99]
+        p99 = latencies_ms[99]  # worst-of-100 sample; reported only, see above
 
         print(
             f"  Frame creation latency: p50={p50:.2f}µs, p95={p95:.2f}µs, p99={p99:.2f}µs"
@@ -274,4 +287,3 @@ class TestLatencyDistribution:
         # Latency should be consistently low
         assert p50 < 10, f"Median latency too high: {p50:.2f}µs"
         assert p95 < 30, f"95th percentile too high: {p95:.2f}µs"
-        assert p99 < 100, f"99th percentile too high: {p99:.2f}µs"
