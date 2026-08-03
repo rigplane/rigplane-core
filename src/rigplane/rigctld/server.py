@@ -204,19 +204,46 @@ class RigctldServer:
         until the max key-down watchdog expires, blocking every other client
         meanwhile.
 
-        Probed rather than called outright, and never allowed to raise, for the
-        same reason ``_handler_execute_call`` probes ``session_id``:
-        ``_rig_handler`` is an injected ``Any``, and a handler that predates
-        this hook must keep working. Failure here cannot be reported to a
-        socket that is already gone, and must not skip the rest of teardown.
+        Probed rather than called outright, and never allowed to raise an
+        ordinary exception, for the same reason ``_handler_execute_call``
+        probes ``session_id``: ``_rig_handler`` is an injected ``Any``, and a
+        handler that predates this hook must keep working. Failure here cannot
+        be reported to a socket that is already gone, and must not skip the
+        rest of teardown.
+
+        Cancellation is the one thing it does not absorb twice: the handback
+        survives the cancellation ``stop()`` sends, and a second one ends it.
+        Nothing recovers from that by itself — the lease stays held with its
+        release obligation unsettled (``RELEASE_REQUIRED``) and no watchdog
+        re-arms behind it, so it is a condition for the uncertain-shutdown
+        diagnostics to surface (MOR-1015), not one that times itself out. The
+        caller's teardown is written to close the socket either way.
         """
         release = getattr(self._rig_handler, "release_session_tx", None)
         if release is None:
             return
         try:
             result = release(session_id)
-            if inspect.isawaitable(result):
-                await result
+            if not inspect.isawaitable(result):
+                return
+            handback = asyncio.ensure_future(result)
+            try:
+                await asyncio.shield(handback)
+            except asyncio.CancelledError:
+                # Shutdown reached this session mid-handback. Every other step
+                # of a teardown can be abandoned; this one cannot, and nothing
+                # downstream would clean up after it. An abandoned handback
+                # leaves the lease held with its release obligation unsettled
+                # (``RELEASE_REQUIRED``, an unfinished WRITE_OFF) and no
+                # watchdog behind it: ``_begin_release`` clears
+                # ``watchdog_deadline``, and ``tick`` arms the max key-down
+                # branch only while no release is pending. That state does not
+                # time itself out — it is for the uncertain-shutdown
+                # diagnostics to surface (MOR-1015). The release is in flight
+                # anyway and ``stop()`` gathers this task, so the wait is
+                # bounded by the handback itself. Swallowed rather than
+                # re-raised so the socket close below still runs (MOR-1014).
+                await handback
         except Exception:
             logger.warning(
                 "session %s: managed TX release failed", session_id, exc_info=True
@@ -696,10 +723,17 @@ class RigctldServer:
             await self._poller.stop()
             self._poller = None
 
-        if self._server is not None:
-            self._server.close()
-            await self._server.wait_closed()
-            self._server = None
+        # Listener down, then the live sessions, then the wait. The order is
+        # the release guarantee, not tidiness (MOR-1014): since 3.12
+        # ``wait_closed()`` returns only once every accepted connection has
+        # gone (gh-79033), so awaiting it before cancelling would park here for
+        # the whole ``client_timeout`` — 300s by default — behind one idle
+        # WSJT-X socket, and the managed TX lease that session holds is handed
+        # back by the cancellation queued below. Shutdown must not leave a
+        # transmitter keyed while it waits on a client that has nothing to say.
+        listener, self._server = self._server, None
+        if listener is not None:
+            listener.close()
         self._server_was_running = False
 
         tasks = list(self._client_tasks)
@@ -707,6 +741,11 @@ class RigctldServer:
             task.cancel()
         if tasks:
             await asyncio.gather(*tasks, return_exceptions=True)
+
+        if listener is not None:
+            # Prompt now: every handler has run its teardown and dropped its
+            # transport, so nothing is left for this to wait on.
+            await listener.wait_closed()
 
         logger.info("rigctld stopped")
 
@@ -1017,13 +1056,19 @@ class RigctldServer:
             )
         finally:
             self._rate_windows.pop(client_id, None)
-            await self._release_session_tx(session_id)
             try:
-                writer.close()
-                await writer.wait_closed()
-            except OSError:
-                pass
-            logger.info("client #%d disconnected", client_id)
+                await self._release_session_tx(session_id)
+            finally:
+                # Unconditional, and nested so no failure above can skip it:
+                # since 3.12 the listener's ``wait_closed()`` returns only once
+                # every accepted connection has gone, so a socket abandoned
+                # here would leave ``stop()`` waiting on it forever (MOR-1014).
+                try:
+                    writer.close()
+                    await writer.wait_closed()
+                except (OSError, asyncio.CancelledError):
+                    pass
+                logger.info("client #%d disconnected", client_id)
 
     # ------------------------------------------------------------------
     # Line reader
