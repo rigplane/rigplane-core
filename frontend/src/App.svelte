@@ -2,6 +2,7 @@
   import { onMount } from 'svelte';
   import { initBatteryMonitor } from './lib/utils/battery';
   import RadioLayoutV2 from './components-v2/layout/RadioLayout.svelte';
+  import AppGlobalHost from './AppGlobalHost.svelte';
   import LocalExtensionsHost from './lib/local-extensions/LocalExtensionsHost.svelte';
   import { initMediaSession, destroyMediaSession } from './lib/media/media-session';
   import { runtime } from './lib/runtime/frontend-runtime';
@@ -155,6 +156,10 @@
 {/if}
 
 {#if demoMode !== 'control-buttons' && !backendError}
+  <!-- Global feedback / power-health / authoritative TX indication live here,
+       as siblings of the presentation, so switching layout or skin never
+       recreates or duplicates them (MOR-1059). -->
+  <AppGlobalHost />
   <LocalExtensionsHost />
 {/if}
 

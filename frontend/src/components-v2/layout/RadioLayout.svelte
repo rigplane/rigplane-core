@@ -53,7 +53,6 @@
   import RitXitPanel from '../panels/RitXitPanel.svelte';
   import CwPanel from '../panels/CwPanel.svelte';
   import { HardwareButton } from '$lib/Button';
-  import Toast from '../../components/shared/Toast.svelte';
 
   let { skinId = 'desktop-v2' }: { skinId?: SkinId } = $props();
 
@@ -292,21 +291,8 @@
 </div>
 {/if}
 
-<!-- Toast notifications — rendered in fixed position overlay -->
-<Toast />
-
-{#if runtime.radioPowerOn === false}
-  <div class="power-off-overlay" role="dialog" aria-modal="true" aria-label={t('core.overlay.poweredOff.label')}>
-    <div class="power-off-content">
-      <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-        <path d="M18.36 6.64a9 9 0 1 1-12.73 0" />
-        <line x1="12" y1="2" x2="12" y2="12" />
-      </svg>
-      <span class="power-off-label">{t('core.overlay.poweredOff.label')}</span>
-      <span class="power-off-hint">{t('core.overlay.poweredOff.hint')}</span>
-    </div>
-  </div>
-{/if}
+<!-- Global feedback / power-health / TX indication are hosted by
+     AppGlobalHost at the App composition root (MOR-1059). -->
 
 <!-- ═══ SETTINGS MODAL (outside power-off block so it works when radio is on) ═══ -->
 {#if settingsOpen}
@@ -537,52 +523,6 @@
   }
 
   /* Mobile layout is now in MobileRadioLayout.svelte */
-
-  /* Power-off overlay */
-  .power-off-overlay {
-    position: fixed;
-    inset: 28px 0 0 0; /* below status bar */
-    z-index: 1000;
-    background: rgba(0, 0, 0, 0.85);
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    backdrop-filter: blur(4px);
-  }
-
-  .power-off-content {
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    gap: 16px;
-    color: var(--v2-accent-red, #ef4444);
-    animation: pulse-dim 2s ease-in-out infinite;
-  }
-
-  .power-off-label {
-    font-size: 24px;
-    font-weight: 700;
-    letter-spacing: 0.1em;
-    text-transform: uppercase;
-    color: var(--v2-text-primary, #fff);
-  }
-
-  .power-off-hint {
-    font-size: 13px;
-    color: var(--v2-text-dim, #888);
-    letter-spacing: 0.02em;
-  }
-
-  @keyframes pulse-dim {
-    0%, 100% { opacity: 0.6; }
-    50% { opacity: 1; }
-  }
-
-  @media (prefers-reduced-motion: reduce) {
-    .power-off-content {
-      animation: none;
-    }
-  }
 
   /* ── Settings Modal ── */
   .settings-backdrop {

@@ -28,8 +28,6 @@
   import KeyboardHandler from './KeyboardHandler.svelte';
   import StatusBar from './StatusBar.svelte';
   import { makeKeyboardHandlers } from '../wiring/command-bus';
-  import Toast from '../../components/shared/Toast.svelte';
-  import { t } from '$lib/i18n';
 
   // Twin-skin variant selector (#887). Default preserves today's behavior.
   // `scope` currently falls through to cockpit until C-PR1 (#895) delivers
@@ -44,14 +42,6 @@
   let activeMode = $derived(radioState?.active === 'SUB' ? radioState?.sub?.mode : radioState?.main?.mode);
 
   const keyboardHandlers = makeKeyboardHandlers();
-
-  async function handlePowerOn() {
-    try {
-      await runtime.system.powerOn();
-    } catch (err) {
-      alert(t('core.overlay.poweredOff.failedPowerOn', { detail: String(err) }));
-    }
-  }
 
   $effect(() => {
     if (activeMode) {
@@ -98,27 +88,8 @@
 
 </div>
 
-<!-- Toast notifications — rendered in fixed position overlay -->
-<Toast />
-
-{#if runtime.radioPowerOn === false}
-  <div class="power-off-overlay" aria-label={t('core.overlay.poweredOff.label')}>
-    <div class="power-off-content">
-      <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-        <path d="M18.36 6.64a9 9 0 1 1-12.73 0" />
-        <line x1="12" y1="2" x2="12" y2="12" />
-      </svg>
-      <span class="power-off-label">{t('core.overlay.poweredOff.label')}</span>
-      <button class="power-on-btn" onclick={handlePowerOn}>
-        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-          <path d="M18.36 6.64a9 9 0 1 1-12.73 0" />
-          <line x1="12" y1="2" x2="12" y2="12" />
-        </svg>
-        {t('core.overlay.poweredOff.powerOnButton')}
-      </button>
-    </div>
-  </div>
-{/if}
+<!-- Global feedback / power-health / TX indication are hosted by
+     AppGlobalHost at the App composition root (MOR-1059). -->
 
 <style>
   .lcd-layout {
@@ -216,51 +187,4 @@
     border-radius: 4px;
   }
 
-  .power-off-overlay {
-    position: fixed;
-    inset: 0;
-    z-index: 9999;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    background: rgba(0, 0, 0, 0.85);
-    backdrop-filter: blur(8px);
-  }
-
-  .power-off-content {
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    gap: 12px;
-    color: var(--v2-text-dim);
-  }
-
-  .power-off-label {
-    font-family: 'Roboto Mono', monospace;
-    font-size: 16px;
-    font-weight: 700;
-    letter-spacing: 0.1em;
-  }
-
-  .power-on-btn {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    margin-top: 8px;
-    padding: 10px 24px;
-    font-family: 'Roboto Mono', monospace;
-    font-size: 14px;
-    font-weight: 700;
-    letter-spacing: 0.08em;
-    color: #fff;
-    background: rgba(40, 160, 40, 0.25);
-    border: 1.5px solid rgba(40, 160, 40, 0.6);
-    border-radius: 6px;
-    cursor: pointer;
-    transition: background 0.15s, border-color 0.15s;
-  }
-  .power-on-btn:hover {
-    background: rgba(40, 160, 40, 0.4);
-    border-color: rgba(40, 160, 40, 0.8);
-  }
 </style>
