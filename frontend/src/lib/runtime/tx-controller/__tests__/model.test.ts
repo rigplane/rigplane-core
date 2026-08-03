@@ -277,6 +277,35 @@ describe('TX reducer', () => {
     expect(transition(delivered.state, { type: 'authority', epoch: 2, ptt: ptt(false, 2, 2), eligibility: eligible, offCommandId: 'other' })).toEqual({ state: delivered.state, effects: [] });
     const confirmed = transition(delivered.state, { type: 'authority', epoch: 2, ptt: ptt(false, 3, 2), eligibility: eligible, offCommandId: 'other' }); expect(confirmed.state.phase).toBe('idle'); expect(types(confirmed)).toEqual(['cancel-timers', 'restore-mod']);
   });
+  // MOR-1205: an OFF bound BEFORE a reconnect carries an old-epoch delivery barrier,
+  // and its armed timeout is stamped at the old epoch too. Neither can fire against
+  // the new epoch, so only a fresh authoritative observation on the live epoch can
+  // discharge the surviving obligation — and it must do so without a second OFF.
+  it('discharges a reconnect-stranded OFF only from live-epoch authoritative evidence', () => {
+    const keyed = active(); const released = transition(keyed, { type: 'release', guard: keyed.guard!, commandId: 'off' });
+    const off = released.state.pendingOff!; const delivered = transition(released.state, { type: 'off-sent', ...off, eventEpoch: 1, barrier: marker(4) });
+    expect(delivered.state.pendingOff?.deliveryPttBarrier).toEqual(marker(4)); // bound on the OLD epoch
+    const opened = transition(delivered.state, { type: 'epoch', epoch: 2, baseline: marker(1, 2), offCommandId: 'other' });
+    expect(types(opened)).toEqual([]); expect(opened.state).toMatchObject({ phase: 'releasing', authorityEpoch: 2, epochBaseline: marker(1, 2), pendingOff: delivered.state.pendingOff, mayOwnKey: true, modRestorePending: true });
+    expect(transition(opened.state, timerEvent(delivered.state, 'off-confirmation', 'off'))).toEqual({ state: opened.state, effects: [] }); // old-epoch timeout stays dead
+    const inert: PttObservation[] = [{ ...ptt(false, 2, 2), fresh: false }, { ...ptt(false, 2, 2), observed: false }, { ...ptt(false, 2, 2), source: 'other' }, ptt(false, 5, 1)];
+    for (const observation of inert) expect(transition(opened.state, { type: 'authority', epoch: 2, ptt: observation, eligibility: eligible, offCommandId: 'other' })).toEqual({ state: opened.state, effects: [] });
+    expect(transition(opened.state, { type: 'authority', epoch: 1, ptt: ptt(false, 5, 1), eligibility: eligible, offCommandId: 'other' })).toEqual({ state: opened.state, effects: [] }); // stale epoch, stale evidence
+    const discharged = transition(opened.state, { type: 'authority', epoch: 2, ptt: ptt(false, 2, 2), eligibility: eligible, offCommandId: 'other' });
+    expect(types(discharged)).toEqual(['cancel-timers', 'restore-mod']); // never a second OFF
+    expect(discharged.effects.find((item) => item.type === 'restore-mod')?.barrier).toEqual(marker(1, 2)); // rebased, so the MOD restore is not silently rejected downstream
+    expect(discharged.state).toMatchObject({ phase: 'idle', fault: null, intent: null, leaseId: null, guard: null, cleanupGuard: null, pendingOff: null, mayOwnKey: false, modRestorePending: false, txRisk: 'none', radioTx: 'off', timerRevision: { audio: 0, on: 0, off: 0 } });
+    expect(transition(discharged.state, { type: 'authority', epoch: 2, ptt: ptt(false, 2, 2), eligibility: eligible, offCommandId: 'other' })).toEqual({ state: discharged.state, effects: [] }); // discharged exactly once
+    const later = transition(discharged.state, { type: 'authority', epoch: 2, ptt: ptt(false, 3, 2), eligibility: eligible, offCommandId: 'other' }); // later truth is observed, never re-discharged
+    expect(types(later)).toEqual([]); expect(later.state).toMatchObject({ phase: 'idle', pendingOff: null, mayOwnKey: false, pttMarker: marker(3, 2) });
+    const next = start(discharged.state, { leaseId: 'lease-next', ptt: ptt(false, 3, 2) }); // no residue blocking the next cycle
+    expect(types(next)).toEqual(['start-audio', 'arm-audio-timeout']); expect(next.state).toMatchObject({ phase: 'audio-start-pending', leaseId: 'lease-next', authorityEpoch: 2, pendingOff: null, mayOwnKey: false, fault: null });
+    const errored = transition(opened.state, { type: 'command-result', command: 'off', outcome: 'response-error', barrier: null, ...correlation(delivered.state, 'off'), eventEpoch: 2 });
+    expect(errored.state).toMatchObject({ phase: 'failed', fault: 'release-not-confirmed', pendingOff: opened.state.pendingOff }); // same strand, failed terminal
+    const dischargedFailed = transition(errored.state, { type: 'authority', epoch: 2, ptt: ptt(false, 2, 2), eligibility: eligible, offCommandId: 'other' });
+    expect(types(dischargedFailed)).toEqual(['cancel-timers', 'restore-mod']);
+    expect(dischargedFailed.state).toMatchObject({ phase: 'failed', fault: 'release-not-confirmed', pendingOff: null, mayOwnKey: false, modRestorePending: false, txRisk: 'none' });
+  });
   it('never reconstructs ON intent across reconnect, restore, remount or fault reset', () => {
     const dekeyed = transition(active(), { type: 'authority', epoch: 1, ptt: ptt(false, 4), eligibility: eligible, offCommandId: 'off' }); const reset = transition(dekeyed.state, { type: 'reset-fault' });
     const opened = transition(reset.state, { type: 'epoch', epoch: 2, baseline: marker(1, 2), offCommandId: 'off' }); const restored = transition(opened.state, { type: 'authority', epoch: 2, ptt: ptt(false, 2, 2), eligibility: eligible, offCommandId: 'off' }); const rekeyed = transition(restored.state, { type: 'authority', epoch: 2, ptt: ptt(true, 3, 2), eligibility: eligible, offCommandId: 'off' });
