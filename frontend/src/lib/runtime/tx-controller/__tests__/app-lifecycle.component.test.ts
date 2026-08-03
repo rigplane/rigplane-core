@@ -32,7 +32,13 @@ vi.mock('../../../../lib/local-extensions/LocalExtensionsHost.svelte', async () 
 });
 vi.mock('$lib/stores/capabilities.svelte', () => ({ hasAnyScope: () => false }));
 vi.mock('$lib/stores/layout.svelte', () => ({ getLayoutMode: () => 'standard' }));
-vi.mock('../../../../skins/registry', () => ({ resolveSkinId: h.resolveSkin }));
+// MOR-1060: App loads the presentation lazily; serve the same stub through
+// the loader so the mounted tree is unchanged for these TX lifecycle tests.
+vi.mock('../../../../skins/registry', () => ({
+  resolveSkinId: h.resolveSkin,
+  loadSkin: async () => (await import('../../../../components-v2/layout/__tests__/SpectrumPanelStub.svelte')).default,
+  presentationResourcePlan: () => [],
+}));
 vi.mock('../../../../lib/utils/battery', () => ({ initBatteryMonitor: h.initBattery }));
 vi.mock('../../../../lib/media/media-session', () => ({ initMediaSession: h.initMedia, destroyMediaSession: h.destroyMedia }));
 vi.mock('../../../../lib/runtime/frontend-runtime', async () => {
@@ -40,11 +46,19 @@ vi.mock('../../../../lib/runtime/frontend-runtime', async () => {
   let update = () => {};
   const subscribe = createSubscriber((notify) => { update = notify; return () => {}; });
   h.notifyRuntime = () => update();
-  return { runtime: {
-    get state() { subscribe(); return h.radio; },
-    get caps() { subscribe(); return h.caps; },
-    bootstrap: h.bootstrap, setPollingMultiplier: vi.fn(),
-  } };
+  return {
+    runtime: {
+      get state() { subscribe(); return h.radio; },
+      get caps() { subscribe(); return h.caps; },
+      bootstrap: h.bootstrap, setPollingMultiplier: vi.fn(),
+    },
+    // MOR-1060 swap-bridge surface; inert here (nothing is demanded).
+    presentationResources: {
+      snapshot: () => ({ demand: 0 }),
+      acquire: () => ({}),
+      release: () => true,
+    },
+  };
 });
 vi.mock('$lib/runtime/system-controller', () => ({ systemController: { registerPreDisconnectBarrier: h.registerBarrier } }));
 vi.mock('$lib/i18n', () => ({ t: (key: string) => key }));

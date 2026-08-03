@@ -35,6 +35,7 @@ const h = vi.hoisted(() => ({
   bootstrap: vi.fn(),
   initBattery: vi.fn(),
   resolveSkin: vi.fn(),
+  loadSkin: vi.fn(),
 }));
 
 vi.mock('$lib/runtime', async () => {
@@ -56,7 +57,17 @@ vi.mock('$lib/runtime', async () => {
 });
 vi.mock('../lib/runtime/frontend-runtime', async () => {
   const mod = await import('$lib/runtime');
-  return { runtime: mod.runtime };
+  return {
+    runtime: mod.runtime,
+    // MOR-1060: App bridges presentation resource demand across a swap. The
+    // demand model has its own suite; here it only has to exist and stay
+    // inert (nothing is demanded, so nothing is bridged).
+    presentationResources: {
+      snapshot: () => ({ demand: 0 }),
+      acquire: () => ({}),
+      release: () => true,
+    },
+  };
 });
 vi.mock('../lib/transport/ws-client', () => ({ onMessage: h.onMessage }));
 vi.mock('$lib/i18n', () => ({
@@ -78,7 +89,11 @@ vi.mock('$lib/runtime/system-controller', () => ({
 }));
 vi.mock('$lib/stores/capabilities.svelte', () => ({ hasAnyScope: () => false }));
 vi.mock('$lib/stores/layout.svelte', () => ({ getLayoutMode: () => 'standard' }));
-vi.mock('../skins/registry', () => ({ resolveSkinId: h.resolveSkin }));
+vi.mock('../skins/registry', () => ({
+  resolveSkinId: h.resolveSkin,
+  loadSkin: h.loadSkin,
+  presentationResourcePlan: () => [],
+}));
 vi.mock('../lib/utils/battery', () => ({ initBatteryMonitor: h.initBattery }));
 vi.mock('../lib/media/media-session', () => ({ initMediaSession: vi.fn(), destroyMediaSession: vi.fn() }));
 vi.mock('../components-v2/layout/RadioLayout.svelte', async () => {
@@ -92,8 +107,25 @@ vi.mock('../lib/local-extensions/LocalExtensionsHost.svelte', async () => {
 
 import App from '../App.svelte';
 import AppGlobalHost from '../AppGlobalHost.svelte';
+import LayoutStub from './LayoutStub.svelte';
 
 const settle = async () => { await Promise.resolve(); await Promise.resolve(); };
+
+/**
+ * MOR-1060: the presentation reaches App through the lazy loader, so each
+ * skin id gets its own component identity wrapping the shared stub — a swap
+ * is still a genuine destroy/recreate of the presentation subtree.
+ */
+type ClientComponent = (anchor: unknown, props: Record<string, unknown>) => void;
+const presentationStubs = new Map<string, ClientComponent>();
+function presentationStub(skinId: string): ClientComponent {
+  let stub = presentationStubs.get(skinId);
+  if (!stub) {
+    stub = (anchor, props) => (LayoutStub as unknown as ClientComponent)(anchor, { ...props, skinId });
+    presentationStubs.set(skinId, stub);
+  }
+  return stub;
+}
 
 /** Push a new authoritative TX snapshot through the controller subscription. */
 function emitTx(next: Partial<TxSnapshot>): void {
@@ -128,6 +160,7 @@ beforeEach(() => {
   h.bootstrap.mockResolvedValue(vi.fn());
   h.initBattery.mockResolvedValue(vi.fn());
   h.resolveSkin.mockImplementation(({ isMobile }: { isMobile: boolean }) => (isMobile ? 'mobile' : 'desktop-v2'));
+  h.loadSkin.mockImplementation(async (skinId: string) => presentationStub(skinId));
   h.provide.mockReturnValue({ refreshAuthority: vi.fn(), release: vi.fn(), dispose: vi.fn() });
 });
 
@@ -251,18 +284,23 @@ describe('App composition — one host above the presentation boundary', () => {
     const layoutBefore = document.querySelector('.layout-stub');
     expect(layoutBefore?.getAttribute('data-skin')).toBe('desktop-v2');
 
-    const resize = (width: number) => {
+    // MOR-1060 made the swap asynchronous (the next presentation is loaded
+    // lazily), so each hop settles the loader before asserting. The
+    // assertions themselves are unchanged.
+    const resize = async (width: number) => {
       Object.defineProperty(window, 'innerWidth', { configurable: true, value: width });
       window.dispatchEvent(new Event('resize'));
+      flushSync();
+      await settle();
       flushSync();
     };
 
     // A -> B -> A. Each hop genuinely destroys and recreates the layout.
-    resize(390);
+    await resize(390);
     const layoutMobile = document.querySelector('.layout-stub');
     expect(layoutMobile?.getAttribute('data-skin')).toBe('mobile');
     expect(layoutMobile).not.toBe(layoutBefore);
-    resize(1200);
+    await resize(1200);
     const layoutBack = document.querySelector('.layout-stub');
     expect(layoutBack?.getAttribute('data-skin')).toBe('desktop-v2');
     expect(layoutBack).not.toBe(layoutMobile);

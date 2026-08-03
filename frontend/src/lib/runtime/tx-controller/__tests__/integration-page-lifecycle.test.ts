@@ -114,7 +114,14 @@ vi.mock('../../../../lib/local-extensions/LocalExtensionsHost.svelte', async () 
   return { default: stub.default };
 });
 vi.mock('$lib/stores/layout.svelte', () => ({ getLayoutMode: () => 'standard' }));
-vi.mock('../../../../skins/registry', () => ({ resolveSkinId: () => 'desktop-v2' }));
+// MOR-1060: App now loads the presentation lazily through the registry, so
+// the probe is served by `loadSkin` rather than by the RadioLayout module
+// substitution above. Same tree, same captured controller.
+vi.mock('../../../../skins/registry', () => ({
+  resolveSkinId: () => 'desktop-v2',
+  loadSkin: async () => (await import('./support/TxControllerProbe.svelte')).default,
+  presentationResourcePlan: () => [],
+}));
 vi.mock('../../../../lib/utils/battery', () => ({ initBatteryMonitor: h.initBattery }));
 vi.mock('../../../../lib/media/media-session', () => ({
   initMediaSession: h.initMedia,
@@ -140,6 +147,11 @@ vi.mock('../../../../lib/runtime/frontend-runtime', async () => {
       },
       bootstrap: h.bootstrap,
       setPollingMultiplier: vi.fn(),
+    },
+    presentationResources: {
+      snapshot: () => ({ demand: 0 }),
+      acquire: () => ({}),
+      release: () => true,
     },
   };
 });
@@ -223,6 +235,12 @@ async function mountConnectedApp(): Promise<{
   mountedComponent = component;
   flushSync();
   await settle(); // let onMount's runtime.bootstrap() resolve → txAuthorityReady = true
+  // …and the lazy presentation loader commit + flush, which is what mounts
+  // the probe that captures the controller (MOR-1060).
+  await vi.waitFor(() => {
+    flushSync();
+    if (!capturedController()) throw new Error('presentation not committed yet');
+  });
 
   connection.setRadioReady(true);
   wsClient.connect('ws://test/api/v1/ws');

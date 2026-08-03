@@ -13,6 +13,7 @@
   "core.app.backendError": "Ошибка сервера: {detail}",
   "core.app.serverUnreachable": "Сервер недоступен после нескольких попыток. Проверьте соединение и перезагрузите страницу вручную.",
   "core.app.retryIndicator": "Попытка {attempt}/{max}, следующая через {seconds} с…",
+  "core.app.presentationError": "Не удалось загрузить эту раскладку. Связь с трансивером не затронута — перезагрузите страницу, чтобы повторить попытку.",
 
   "core.statusbar.connection.connected": "Подключено",
   "core.statusbar.connection.notConnected": "Не подключено",
