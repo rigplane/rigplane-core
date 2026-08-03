@@ -396,6 +396,60 @@ export default [
     },
   },
 
+  // ── Narrow exception: adapters may reference the view-model CONTRACT ──
+  // MOR-1065 review ruling 2. The v3 ADR's dependency diagram is
+  // `runtime -> adapters/view models -> semantic radio UI`, i.e. the view
+  // model belongs to the ADAPTER side of the seam, but MOR-1062 physically
+  // placed `RadioViewModel` under `src/semantic/`. The base
+  // `no-restricted-imports` rule has no `allowTypeImports`, so the block
+  // above blocks type-only references too and an adapter cannot annotate the
+  // contract it produces. This zone swaps in the typescript-eslint variant so
+  // a TYPE-only import is permitted and a VALUE import stays an error — the
+  // producer-side compile-time link, without a runtime dependency on
+  // presentation. Pinned by `__tests__/architecture-boundaries.test.ts`.
+  //
+  // `ignores` is REQUIRED: without it this `files` glob also captures
+  // `adapters/**/__tests__/**`, and the "tests may import anything" block
+  // below only disables the BASE rule — the typescript-eslint rule would stay
+  // live and reject the adapter tests' legitimate value imports of
+  // `validateRadioViewModel` and the topology fixtures.
+  {
+    files: ['src/lib/runtime/adapters/**/*.ts'],
+    ignores: ['src/lib/runtime/adapters/**/__tests__/**'],
+    plugins: { '@typescript-eslint': tsPlugin },
+    rules: {
+      'no-restricted-imports': 'off',
+      '@typescript-eslint/no-restricted-imports': [
+        'error',
+        {
+          patterns: [
+            {
+              group: ['**/components-v2/**', '**/components-v2'],
+              message:
+                'lib/runtime must not import from components-v2. ' +
+                'Use lib/runtime/props/ or lib/runtime/commands/ instead. ' +
+                'See ADR 2026-04-12.',
+            },
+            {
+              group: ['**/presentation/**', '**/presentation'],
+              message:
+                'lib/runtime must not import from presentation/. ' +
+                'See v3 ADR invariant 1 (MOR-1061 F2).',
+            },
+            {
+              group: ['**/semantic/**', '**/semantic'],
+              allowTypeImports: true,
+              message:
+                'Adapters may import the view-model CONTRACT type-only (v3 ADR: adapters ' +
+                'emit view models). No value imports from semantic/ — a runtime dependency ' +
+                'on presentation is still invariant-1 forbidden.',
+            },
+          ],
+        },
+      ],
+    },
+  },
+
   // ── Tests may import anything (mocking is legitimate) ──
   {
     files: ['src/**/__tests__/**', 'src/**/*.test.ts'],

@@ -19,10 +19,21 @@ import path from 'node:path';
 
 const FRONTEND_ROOT = path.resolve(fileURLToPath(import.meta.url), '../../..');
 
+/**
+ * Counts import-boundary violations under EITHER rule id. The adapters zone
+ * (MOR-1065 ruling 2) swaps the base rule for `@typescript-eslint/
+ * no-restricted-imports` so it can express `allowTypeImports`; a filter on the
+ * base id alone would silently score every adapter-zone ban as "0 hits" and
+ * turn the pre-existing adapter assertions below into vacuous passes.
+ */
+const RESTRICTED_IMPORT_RULES = new Set([
+  'no-restricted-imports', '@typescript-eslint/no-restricted-imports',
+]);
+
 async function restrictedImportHits(code: string, filePath: string): Promise<number> {
   const eslint = new ESLint({ cwd: FRONTEND_ROOT });
   const [result] = await eslint.lintText(code, { filePath });
-  return result.messages.filter((m) => m.ruleId === 'no-restricted-imports').length;
+  return result.messages.filter((m) => RESTRICTED_IMPORT_RULES.has(m.ruleId ?? '')).length;
 }
 
 describe('v3 package boundaries (MOR-1061)', () => {
@@ -355,6 +366,73 @@ describe('v3 package boundaries (MOR-1061)', () => {
     const hits = await restrictedImportHits(
       `import LcdSkin from '../../skins/amber-lcd/LcdSkin.svelte';`,
       'src/presentation/workspaces/preferences.ts',
+    );
+    expect(hits).toBeGreaterThan(0);
+  });
+
+  // ── MOR-1065 ruling 2: the adapters' type-only contract exception ───────
+  // The v3 ADR puts the view model on the adapter side of the seam, but
+  // MOR-1062 placed `RadioViewModel` under src/semantic/. Adapters may name
+  // that contract; they may not depend on presentation at runtime. The whole
+  // value of the exception is the asymmetry, so pin both halves.
+
+  it('allows adapters a TYPE-ONLY import of the view-model contract', async () => {
+    const hits = await restrictedImportHits(
+      `import type { RadioViewModel } from '../../../semantic/radio-view-model';\n`
+        + `export type X = RadioViewModel;`,
+      'src/lib/runtime/adapters/radio-view-model-adapter.ts',
+    );
+    expect(hits).toBe(0);
+  });
+
+  it('still rejects adapters VALUE-importing from semantic/', async () => {
+    const hits = await restrictedImportHits(
+      `import { validateRadioViewModel } from '../../../semantic/radio-view-model';`,
+      'src/lib/runtime/adapters/radio-view-model-adapter.ts',
+    );
+    expect(hits).toBeGreaterThan(0);
+  });
+
+  it('still rejects adapters importing a semantic component', async () => {
+    const hits = await restrictedImportHits(
+      `import VfoSurface from '../../../semantic/VfoSurface.svelte';`,
+      'src/lib/runtime/adapters/radio-view-model-adapter.ts',
+    );
+    expect(hits).toBeGreaterThan(0);
+  });
+
+  it('confines the exception to adapters — other lib/runtime files still cannot name semantic', async () => {
+    const hits = await restrictedImportHits(
+      `import type { RadioViewModel } from '../../semantic/radio-view-model';\n`
+        + `export type X = RadioViewModel;`,
+      'src/lib/runtime/frontend-runtime.ts',
+    );
+    expect(hits).toBeGreaterThan(0);
+  });
+
+  it('leaves the adapters zone\'s own __tests__ free to import anything', async () => {
+    // The `ignores:` line on the adapters block is what makes this pass: the
+    // "tests may import anything" block only disables the BASE rule, so
+    // without it the typescript-eslint rule would still reject this.
+    const hits = await restrictedImportHits(
+      `import { validateRadioViewModel } from '../../../../semantic/radio-view-model';`,
+      'src/lib/runtime/adapters/__tests__/radio-view-model-adapter.test.ts',
+    );
+    expect(hits).toBe(0);
+  });
+
+  it('keeps the components-v2 ban live inside the adapters zone', async () => {
+    const hits = await restrictedImportHits(
+      `import VfoPanel from '../../../components-v2/panels/VfoPanel.svelte';`,
+      'src/lib/runtime/adapters/radio-view-model-adapter.ts',
+    );
+    expect(hits).toBeGreaterThan(0);
+  });
+
+  it('keeps the presentation ban live inside the adapters zone', async () => {
+    const hits = await restrictedImportHits(
+      `import { SpectrumFirst } from '../../../presentation/layouts/SpectrumFirst';`,
+      'src/lib/runtime/adapters/radio-view-model-adapter.ts',
     );
     expect(hits).toBeGreaterThan(0);
   });
