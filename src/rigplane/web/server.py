@@ -99,6 +99,7 @@ from .runtime_helpers import (  # noqa: TID251
     radio_ready,
     runtime_capabilities,
 )
+from .tx_safety_view import build_tx_safety_payload  # noqa: TID251
 from .websocket import (  # noqa: TID251
     WS_KEEPALIVE_INTERVAL,
     WebSocketConnection,
@@ -2798,6 +2799,11 @@ class WebServer:
                 "audioSession": self._runtime_audio_session_payload(),
                 "connection": self._runtime_connection_payload(),
                 "stateAcquisition": self._state_acquisition_diagnostics_payload(),
+                # Additive TX safety evidence (MOR-1015): owner, phase, lease,
+                # watchdog, durable OFF obligation and uncertain shutdown, read
+                # from the supervisor rather than re-derived from the poller's
+                # PTT mirror — which knows nothing about leases or obligations.
+                "txSafety": build_tx_safety_payload(radio),
                 "lastError": self._runtime_last_error,
             },
             separators=(",", ":"),
