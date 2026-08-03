@@ -20,7 +20,7 @@
   import LeftSidebar from './LeftSidebar.svelte';
   import RightSidebar from './RightSidebar.svelte';
   import VfoHeader from './VfoHeader.svelte';
-  import SdrVfoScreen from '../../skins/sdr-test/SdrVfoScreen.svelte';
+  import SemanticRadioSurfaces from '../wiring/SemanticRadioSurfaces.svelte';
   import KeyboardHandler from './KeyboardHandler.svelte';
   import StatusBar from './StatusBar.svelte';
   import MetersDockPanel from '../panels/MetersDockPanel.svelte';
@@ -55,6 +55,13 @@
   import { HardwareButton } from '$lib/Button';
 
   let { skinId = 'desktop-v2' }: { skinId?: SkinId } = $props();
+
+  // MOR-1065: the sdr-test desktop layout is the migrated reference vertical —
+  // its VFO presentation is owned by the semantic surface, so the legacy
+  // twin-VFO block must not also render. desktop-v2 keeps the legacy panels
+  // for the compatibility window (MOR-1099). Slice c additionally passes this
+  // flag to the sidebars as `hideTxPanel`, once they declare that prop.
+  let semanticSurfaces = $derived(skinId === 'sdr-test');
 
   // Reactive state + capabilities — via runtime
   let radioState = $derived(runtime.state);
@@ -199,31 +206,8 @@
   <KeyboardHandler config={keyboardConfig} onAction={keyboardHandlers.dispatch} />
 
   <section class="receiver-deck" bind:this={receiverDeckElement} style={receiverDeckStyle}>
-    {#if skinId === 'sdr-test'}
-      <SdrVfoScreen
-        {mainVfo}
-        {subVfo}
-        splitActive={vfoOps.splitActive}
-        dualWatchActive={vfoOps.dualWatch}
-        txVfo={vfoOps.txVfo}
-        extras={{
-          tunerStatus: (radioState as { tunerStatus?: number } | null)?.tunerStatus,
-          xitActive: (radioState as { ritTx?: boolean } | null)?.ritTx,
-          xitOffset: (radioState as { ritFreq?: number } | null)?.ritFreq,
-          txAntenna: (radioState as { txAntenna?: number } | null)?.txAntenna,
-          main: (radioState as { main?: Record<string, unknown> } | null)?.main ?? null,
-          sub: (radioState as { sub?: Record<string, unknown> } | null)?.sub ?? null,
-        }}
-        onSwap={vfoHandlers.onSwap}
-        onEqual={vfoHandlers.onEqual}
-        onSplitToggle={vfoHandlers.onSplitToggle}
-        onDualWatchToggle={vfoHandlers.onDualWatchToggle}
-        onMainVfoClick={vfoHandlers.onMainVfoClick}
-        onSubVfoClick={vfoHandlers.onSubVfoClick}
-        onMainModeClick={vfoHandlers.onMainModeClick}
-        onSubModeClick={vfoHandlers.onSubModeClick}
-        onSpeak={systemHandlers.onSpeak}
-      />
+    {#if semanticSurfaces}
+      <SemanticRadioSurfaces />
     {:else}
       <VfoHeader
         {mainVfo}

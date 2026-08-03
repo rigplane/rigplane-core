@@ -216,6 +216,48 @@ describe('makeVfoHandlers', () => {
       expect(audioManager.setAudioConfig).toHaveBeenCalledWith({ focus: 'sub' });
     });
   });
+
+  // MOR-1065 — the semantic VFO surface's selection intent.
+  describe('onVfoSelect', () => {
+    beforeEach(() => {
+      vi.mocked(audioManager.setAudioConfig).mockClear();
+      vi.mocked(patchRadioState).mockClear();
+    });
+
+    it('activates the receiver and the addressed A/B slot', () => {
+      vi.mocked(getRadioState).mockReturnValue({ active: 'MAIN' } as any);
+
+      makeVfoHandlers().onVfoSelect('SUB', 'B');
+
+      expect(patchRadioState).toHaveBeenCalledWith({ active: 'SUB' });
+      expect(audioManager.setAudioConfig).toHaveBeenCalledWith({ focus: 'sub' });
+      expect(sendCommand).toHaveBeenCalledWith('set_vfo', { vfo: 'SUB' });
+      expect(sendCommand).toHaveBeenCalledWith('set_vfo', { vfo: 'B' });
+    });
+
+    // MUTATION KILLED: defaulting an unslotted position to `vfo: 'A'` — the
+    // topology has no A/B to address and the radio would be re-slotted behind
+    // the operator's back.
+    it('sends no slot command for an unslotted position', () => {
+      vi.mocked(getRadioState).mockReturnValue({ active: 'MAIN' } as any);
+
+      makeVfoHandlers().onVfoSelect('SUB', null);
+
+      expect(sendCommand).toHaveBeenCalledWith('set_vfo', { vfo: 'SUB' });
+      expect(sendCommand).not.toHaveBeenCalledWith('set_vfo', { vfo: 'A' });
+      expect(sendCommand).toHaveBeenCalledTimes(1);
+    });
+
+    it('switches slot without re-selecting the receiver already in use', () => {
+      vi.mocked(getRadioState).mockReturnValue({ active: 'MAIN' } as any);
+
+      makeVfoHandlers().onVfoSelect('MAIN', 'B');
+
+      expect(patchRadioState).not.toHaveBeenCalled();
+      expect(sendCommand).toHaveBeenCalledTimes(1);
+      expect(sendCommand).toHaveBeenCalledWith('set_vfo', { vfo: 'B' });
+    });
+  });
 });
 
 describe('makeModeHandlers', () => {
