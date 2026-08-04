@@ -178,11 +178,31 @@
         onToggleDualWatch={toggleDualWatch}
       />
     {/if}
-    <!-- `display: contents` — a naming wrapper only, so the single-strip
-         layout is unchanged and the shared TX surface stays one flex item. -->
-    <div class="rx-tx-zone" data-zone-id={strips === 'dual' ? 'rx-tx' : null}>
+    <!--
+      MOR-1069 (finding N1, routed from the MOR-1068 verification). The
+      wrapper used to render on EVERY path as an inert `display: contents`
+      naming shell, which left the single/default path no longer
+      element-identical to its pre-cockpit shape. It is now rendered ONLY in
+      the dual composition, where it is a real, bound zone element the
+      cockpit's responsive rules can place — an inert wrapper cannot be a
+      grid/flex item, so "leave it inert" was not an option once the zone had
+      to move between arrangements. The single/default path (sdr-test / LCD /
+      mobile) renders the surface bare again, and that element shape is
+      re-pinned in `__tests__/semantic-rx-tx-wiring.component.test.ts`.
+
+      The snippet is deliberate: it keeps exactly ONE `<RxTxSurface>` tag in
+      this file, so single TX authority stays a property of the SOURCE rather
+      than of which branch happens to be taken. Pinned as such by
+      `presentation/layouts/__tests__/cockpit-responsive-composition.test.ts`.
+    -->
+    {#snippet rxTxSurface()}
       <RxTxSurface {view} tx={txState} onRequestKey={requestKey} onRequestUnkey={requestUnkey} />
-    </div>
+    {/snippet}
+    {#if strips === 'dual'}
+      <div class="rx-tx-zone" data-zone-id="rx-tx">{@render rxTxSurface()}</div>
+    {:else}
+      {@render rxTxSurface()}
+    {/if}
   {/if}
 
   <!--
@@ -231,9 +251,11 @@
     grid-template-columns: repeat(auto-fit, minmax(0, 1fr));
     gap: 8px;
   }
-  .rx-tx-zone {
-    display: contents;
-  }
+  /* MOR-1069: no `display: contents` any more — the zone only exists in the
+     dual composition now, and it must be a real box there so the cockpit can
+     place it. It carries no presentation of its own; the surface inside owns
+     that. */
+
   .channel-strip[data-strip-active='true'] {
     border-left: 2px solid var(--v2-accent-cyan, #00d4ff);
     padding-left: 6px;

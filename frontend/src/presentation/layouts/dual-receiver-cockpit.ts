@@ -27,8 +27,36 @@
  * `stageSizing: fluid` encodes the MOR-1160 chrome-fluid half of the sizing
  * axis: this shell composes only VFO/RX-TX status text today (no fixed-native
  * instrument glass yet), so it always fits, at any viewport.
+ *
+ * MOR-1069 — the PORTRAIT-MOBILE RULING, stated rather than defaulted.
+ *
+ * A `fixed-native` layout is excluded from a portrait phone arithmetically:
+ * the achievable uniform scale drops under `minScale` and resolution takes the
+ * one validated hop to a fluid fallback. A `fluid` layout has no such
+ * exclusion — it fits every viewport by construction — so this cockpit DOES
+ * reach portrait mobile, and it reaches it deliberately. It is not a silent
+ * default: restoring an exclusion would need either a viewport consumer of the
+ * frozen sizing field (banned while the ScaledStage primitive does not exist —
+ * `__tests__/stage-sizing-boundary.test.ts`) or a second mobile behavior state
+ * machine (banned by MOR-1069's owned area). So the ruling is STACK, NOT
+ * EXCLUDE: on a portrait phone the cockpit composes as a single column with
+ * touch-sized controls, and `fallbackLayoutId` stays a TOPOLOGY fallback
+ * (`sdr-test`, MOR-1068's frozen table), never a viewport one.
  */
 import { registerLayout, type LayoutManifest } from './contract';
+
+/**
+ * The two reflow thresholds the shell actually implements, recorded honestly
+ * — the same discipline MOR-1094 applied to the mobile manifest's single
+ * breakpoint. Widths, in px: `<768` compact, `768-1023` tablet, `>=1024`
+ * desktop, matching the app's existing tablet band in
+ * `components-v2/layout/responsive.css`. Declaration only, as the field's
+ * contract requires: the media queries in
+ * `skins/dual-receiver-cockpit/DualReceiverCockpit.svelte` are what reflows,
+ * and `__tests__/cockpit-responsive-composition.test.ts` requires the two
+ * descriptions to name the same numbers in both directions.
+ */
+const COCKPIT_REFLOW_BREAKPOINTS = [768, 1024] as const;
 
 export const dualReceiverCockpitLayout: LayoutManifest = {
   schemaVersion: 1,
@@ -52,7 +80,7 @@ export const dualReceiverCockpitLayout: LayoutManifest = {
   ],
   compatibleTopologies: ['2/ab_shared', '2/main_sub'],
   requiredSemanticSurfaces: ['vfo', 'rxTx'],
-  stageSizing: { mode: 'fluid', responsiveBreakpoints: [] },
+  stageSizing: { mode: 'fluid', responsiveBreakpoints: COCKPIT_REFLOW_BREAKPOINTS },
   fallbackLayoutId: 'sdr-test',
 };
 

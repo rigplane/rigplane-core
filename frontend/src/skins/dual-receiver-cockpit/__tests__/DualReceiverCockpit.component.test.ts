@@ -11,6 +11,7 @@
  * scope/controls/global zones staying inert, and no shell-level fabrication
  * of an active strip. Each test's doc line names the mutation it kills.
  */
+import { readFileSync } from 'node:fs';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { flushSync, mount, unmount } from 'svelte';
 import type { Capabilities } from '$lib/types/capabilities';
@@ -553,6 +554,155 @@ describe('operational audio-scope availability (scope=false + audioFft=true)', (
     expect(markup()).toBe(withoutAudioFft);
     expect(qa('[data-testid="rx-tx-key"]')).toHaveLength(1);
     expect(q('[data-testid="cockpit-zone-scope"]')!.textContent).toBe('');
+  });
+});
+
+// ── MOR-1069: the mounted half of the responsive-composition policy. The
+// breakpoint/orientation rules themselves are CSS and jsdom does not evaluate
+// media queries, so they are pinned textually in
+// `presentation/layouts/__tests__/cockpit-responsive-composition.test.ts`.
+// What IS observable here — and what the ticket's acceptance evidence is
+// actually about — is that the composition is CSS-only: the same DOM, the
+// same elements and the same TX ownership at every viewport and orientation.
+
+describe('MOR-1069 — a viewport or orientation change recomposes nothing at runtime', () => {
+  /** Drive the signals a JS-based responsive implementation would listen to. */
+  function rotateToPortraitPhone(): void {
+    for (const [axis, value] of [['innerWidth', 390], ['innerHeight', 844]] as const) {
+      Object.defineProperty(window, axis, { value, configurable: true, writable: true });
+    }
+    window.dispatchEvent(new Event('resize'));
+    window.dispatchEvent(new Event('orientationchange'));
+    flushSync();
+  }
+
+  // The ticket's headline evidence: "portrait/landscape replacement preserves
+  // TX/resource ownership" and "hidden secondary zones do not destroy active
+  // runtime resources". Both hold trivially IF the arrangement change never
+  // touches the DOM — so that is what is pinned, by ELEMENT IDENTITY rather
+  // than by markup equality. Kills: re-implementing the reflow as JS state
+  // (a matchMedia subscription, a resize listener, an `{#if isPortrait}`),
+  // which remounts this subtree on rotation, destroys the RxTxSurface that
+  // owns the operator's only unkey control, and re-runs the wiring's
+  // `onDestroy` lease release under a fresh sourceId.
+  it('keeps every zone element, the TX surface and the key control identical across a rotation', () => {
+    h.state = mainSubState('MAIN');
+    h.caps = mainSubCaps();
+    render();
+
+    const zonesBefore = qa('[data-zone-id]');
+    const keyBefore = q('[data-testid="rx-tx-key"]')!;
+    const surfaceBefore = q('[data-testid="rx-tx-surface"]')!;
+    const markupBefore = target.innerHTML;
+    expect(zonesBefore).toHaveLength(4);
+
+    rotateToPortraitPhone();
+
+    const zonesAfter = qa('[data-zone-id]');
+    expect(zonesAfter).toHaveLength(zonesBefore.length);
+    zonesAfter.forEach((el, i) => expect(el).toBe(zonesBefore[i]));
+    expect(q('[data-testid="rx-tx-key"]')).toBe(keyBefore);
+    expect(q('[data-testid="rx-tx-surface"]')).toBe(surfaceBefore);
+    expect(target.innerHTML).toBe(markupBefore);
+  });
+
+  // The TX half, driven from a LIVE lease rather than from idle — idle has no
+  // guard, so a remount's fail-closed `onDestroy` release is a no-op and the
+  // interesting failure hides. Keyed, the same remount drops the operator's
+  // transmission on rotation, or re-keys under a fresh `sourceId` that the
+  // controller will refuse to release from. This is the ticket's "portrait/
+  // landscape replacement preserves TX/resource ownership", stated where it
+  // can actually fail: rotating while keyed is not a lease event.
+  it('rotating while KEYED neither releases nor re-acquires the lease', () => {
+    h.state = mainSubState('MAIN');
+    h.caps = mainSubCaps();
+    render();
+
+    q<HTMLButtonElement>('[data-testid="rx-tx-key"]')!.click();
+    flushSync();
+    expect(h.start).toHaveBeenCalledTimes(1);
+    push({ phase: 'transmitting', intent: 'latched', guard: { leaseId: 'L1' }, mayOwnKey: true });
+    h.start.mockReset();
+    h.release.mockReset();
+
+    rotateToPortraitPhone();
+
+    expect(h.start).not.toHaveBeenCalled();
+    expect(h.release).not.toHaveBeenCalled();
+    // ...and the only way out of transmit is still there, exactly once.
+    expect(qa('[data-testid="rx-tx-surface"]')).toHaveLength(1);
+    expect(qa('[data-testid="rx-tx-unkey"]')).toHaveLength(1);
+  });
+});
+
+describe('MOR-1069 — focus order is DOM order, and the RX/TX zone comes last', () => {
+  // "Keyboard and touch order remain logical." The CSS side (no `order`, no
+  // reversed flow) is pinned textually; this is the DOM side that the CSS
+  // must keep agreeing with. Kills: emitting the radio-wide row or the RX/TX
+  // zone before the strips, or interleaving the strips' controls — either
+  // would make the tab sequence disagree with the reading order in BOTH
+  // arrangements at once.
+  it('every control appears in declared zone order, ending in rx-tx', () => {
+    h.state = mainSubState('MAIN');
+    h.caps = mainSubCaps();
+    render();
+
+    const declared = dualReceiverCockpitLayout.zones.map((z) => z.id);
+    const sequence = qa<HTMLElement>('button, input, select, a[href], [tabindex]')
+      .map((el) => el.closest('[data-zone-id]') as HTMLElement | null)
+      .map((zone) => declared.indexOf(zone?.dataset.zoneId ?? ''));
+
+    expect(sequence.length).toBeGreaterThan(0);
+    // No control sits outside a declared zone...
+    expect(sequence).not.toContain(-1);
+    // ...and the sequence never goes backwards through the declared order.
+    expect(sequence).toEqual([...sequence].sort((a, b) => a - b));
+    // The operator's key/unkey control is the last thing in the tab sequence,
+    // not stranded between two channel strips.
+    expect(sequence.at(-1)).toBe(declared.indexOf('rx-tx'));
+  });
+});
+
+describe('MOR-1069 (N1) — rx-tx is a real bound zone element in the cockpit', () => {
+  // The MOR-1068 verification accepted an inert `display: contents` wrapper on
+  // every path. It cannot stay inert here: a `display: contents` box takes no
+  // part in its parent's layout, so the zone could not be placed by the
+  // responsive rules at all. It is now a real element, rendered only in this
+  // composition. Kills: reverting the wrapper to a phantom, or losing the
+  // zone binding while collapsing it.
+  it('wraps the shared TX surface in a placeable element carrying the zone id', () => {
+    h.state = mainSubState('MAIN');
+    h.caps = mainSubCaps();
+    render();
+
+    const zone = q('[data-zone-id="rx-tx"]')!;
+    expect(zone).not.toBeNull();
+    expect(zone.tagName).toBe('DIV');
+    expect(zone.classList.contains('rx-tx-zone')).toBe(true);
+    // The zone IS the surface's box, not a sibling marker next to it.
+    expect(q('[data-testid="rx-tx-surface"]')!.parentElement).toBe(zone);
+    expect(zone.querySelectorAll('[data-testid="rx-tx-key"]')).toHaveLength(1);
+  });
+});
+
+describe('MOR-1069 — the shell\'s responsive selectors still match the composed tree', () => {
+  // The cockpit owns its responsive rules but the boxes they place are
+  // composed by the SHARED wiring, so the rules reach in with `:global(...)`.
+  // That coupling is one rename away from silently doing nothing — a CSS
+  // selector that matches no element is not an error anywhere. Kills: a class
+  // rename (or a restructure) in SemanticRadioSurfaces that leaves the
+  // cockpit's stacking rules pointing at nothing.
+  it('every :global class named by the cockpit CSS exists in the mounted DOM', () => {
+    h.state = mainSubState('MAIN');
+    h.caps = mainSubCaps();
+    render();
+
+    const source = readFileSync('src/skins/dual-receiver-cockpit/DualReceiverCockpit.svelte', 'utf8');
+    const classes = [...source.matchAll(/:global\(\.([a-z0-9-]+)\)/g)].map((m) => m[1]);
+    expect(classes.length).toBeGreaterThan(0);
+    for (const className of new Set(classes)) {
+      expect(qa(`.${className}`).length).toBeGreaterThan(0);
+    }
   });
 });
 

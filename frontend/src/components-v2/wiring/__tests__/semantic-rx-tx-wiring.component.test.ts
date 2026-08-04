@@ -189,6 +189,28 @@ describe('the surfaces render from the live adapter output', () => {
     expect(target.querySelectorAll('[data-testid="vfo-surface"]')).toHaveLength(1);
   });
 
+  // MOR-1069, finding N1 (routed from the MOR-1068 verification). MOR-1068
+  // wrapped the RX/TX surface in an inert `display: contents` zone shell on
+  // EVERY path, so the single/default composition — the one sdr-test, the LCD
+  // layouts and MOBILE all mount — stopped being element-identical to its
+  // pre-cockpit shape. Layout was preserved, nothing queried the old position,
+  // and it was accepted as a trade-off; MOR-1069 collapses it back out, and
+  // this is the element-shape expectation re-pinned so it cannot drift back.
+  // MUTATION KILLED: reintroducing an always-on wrapper (or extending the
+  // cockpit's zone binding to the default path, which would put a zone id on
+  // a layout whose manifest never declared one).
+  it('mounts the RX/TX surface bare — no zone wrapper on the default path', () => {
+    render();
+    const root = q('[data-testid="semantic-radio-surfaces"]')!;
+    const surface = q('[data-testid="rx-tx-surface"]')!;
+    expect(surface.parentElement).toBe(root);
+    expect(root.querySelector('.rx-tx-zone')).toBeNull();
+    expect(target.querySelectorAll('[data-zone-id]')).toHaveLength(0);
+    // Still exactly one TX action surface — the branch must not duplicate it.
+    expect(target.querySelectorAll('[data-testid="rx-tx-surface"]')).toHaveLength(1);
+    expect(target.querySelectorAll('[data-testid="rx-tx-key"]')).toHaveLength(1);
+  });
+
   it('renders no surfaces at all rather than guessing when capabilities are absent', () => {
     h.caps = null;
     render();
