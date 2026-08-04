@@ -103,6 +103,10 @@ vi.mock('../../wiring/command-bus', () => {
       onMainFreqChange: n, onSubFreqChange: n, onVfoSwap: n, onVfoEqual: n, onReceiverSelect: n,
       onMainVfoClick: onMainVfoClickSpy, onSubVfoClick: onSubVfoClickSpy,
     }),
+    // MOR-1265 — the semantic wiring now also composes the txAux intents.
+    makeVoxHandlers: () => ({
+      onVoxToggle: n, onVoxGainChange: n, onAntiVoxGainChange: n, onVoxDelayChange: n,
+    }),
     makeMeterHandlers: () => ({ onMeterSourceChange: n }), makeKeyboardHandlers: () => ({ dispatch: n }),
     makeModeHandlers: () => ({ onModeChange: n, onDataModeChange: n }),
     makeFilterHandlers: () => ({ onFilterChange: n, onFilterWidthChange: n }),
