@@ -15,7 +15,8 @@
  */
 import type {
   Availability, MeterField, MeterRfState, MetersViewModel,
-  RadioViewModel, TxAuxField, TxAuxViewModel,
+  ModInputReadiness, RadioViewModel, RxAudioField, RxAudioViewModel,
+  TxAuxField, TxAuxViewModel,
 } from '../radio-view-model';
 
 const singleReceiver: RadioViewModel = {
@@ -212,4 +213,29 @@ export function withMeters(
     drainCurrent: field(80, tx),
   };
   return { ...fixture, meters };
+}
+
+/**
+ * Applies a fully-observed `rxAudio` group (MOR-1262 slice 3A) to any topology
+ * fixture. `readiness` is a PARAMETER for the same reason `withMeters`'s
+ * `rfState` is: MOD-input readiness is the safety-critical axis, and a fixture
+ * that hard-coded `ready` would make the "web voice TX = noise" mismatch
+ * unobservable in every consumer that composes this helper.
+ */
+export function withRxAudio(
+  fixture: RadioViewModel,
+  readiness: ModInputReadiness = { status: 'ready', source: 5 },
+): RadioViewModel {
+  const avail: Availability = { structural: true, operational: true };
+  const known = <T>(value: T): RxAudioField<T> => ({ reading: { status: 'known', value }, availability: avail });
+  const rxAudio: RxAudioViewModel = {
+    monitorMode: 'live',
+    liveAudio: avail,
+    afLevel: known(0.42),
+    routingFocus: known('both'),
+    routingSplit: known(false),
+    modInputSource: known(readiness.status === 'ready' || readiness.status === 'mismatch' ? readiness.source : 5),
+    modInputReadiness: readiness,
+  };
+  return { ...fixture, rxAudio };
 }
