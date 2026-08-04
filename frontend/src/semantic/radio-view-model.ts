@@ -89,6 +89,44 @@ export interface DisabledReason {
   code: DisabledReasonCode;
 }
 
+/**
+ * A single TX-adjacent fact (MOR-1244): a value that is either known (with
+ * its type-checked reading) or unknown, paired with the MOR-977 two-level
+ * `Availability` — structural (does this radio model have the control at
+ * all) and operational (is it currently readable). The two are independent:
+ * `structural: false` means nothing to render; `structural: true,
+ * operational: false` means present-but-disabled, degrading to `unknown`
+ * rather than a guessed value, same doctrine as every other fact here.
+ */
+export type TxAuxReading<T> = { status: 'known'; value: T } | { status: 'unknown' };
+export interface TxAuxField<T> {
+  reading: TxAuxReading<T>;
+  availability: Availability;
+}
+export type AtuStatus = 'off' | 'on' | 'tuning';
+
+/**
+ * TX-adjacent facts (MOR-1244, MOR-1262 decomposition slice 1A): ATU/TUNE,
+ * VOX (+gain/anti-vox/delay), COMP (+level), MON (+level), RF power, mic
+ * gain, drive gain. Facts only — no action/dispatch. ATU TUNE is a
+ * transmit-causing action; this contract carries only its honestly-gated
+ * *state*, never a control to trigger it (MOR-1262 §2 slice 1 safety note i).
+ */
+export interface TxAuxViewModel {
+  atu: TxAuxField<AtuStatus>;
+  vox: TxAuxField<boolean>;
+  voxGain: TxAuxField<number>;
+  antiVoxGain: TxAuxField<number>;
+  voxDelay: TxAuxField<number>;
+  compressor: TxAuxField<boolean>;
+  compressorLevel: TxAuxField<number>;
+  monitor: TxAuxField<boolean>;
+  monitorLevel: TxAuxField<number>;
+  rfPower: TxAuxField<number>;
+  micGain: TxAuxField<number>;
+  driveGain: TxAuxField<number>;
+}
+
 export interface RadioViewModel {
   topologyId: string;
   vfoScheme: VfoScheme;
@@ -102,6 +140,10 @@ export interface RadioViewModel {
   txPermit: FrequencyPermit;
   scope: ScopeAvailabilityViewModel;
   disabledReasons: readonly DisabledReason[];
+  /** Absent (MOR-1264 optional group) ⇒ structurally unavailable: this radio
+   *  model has no TX-adjacent controls at all. Never emitted as a placeholder
+   *  of all-unknowns — see `radio-view-model-adapter.ts`'s evidence gate. */
+  readonly txAux?: TxAuxViewModel;
 }
 
 const RECEIVER_IDS: readonly ReceiverId[] = ['MAIN', 'SUB'];
@@ -128,6 +170,10 @@ function nullableNumber(value: unknown, path: string): number | null {
 function nullableString(value: unknown, path: string): string | null {
   if (value !== null && typeof value !== 'string') invalid(path, 'a string or null');
   return value as string | null;
+}
+function num(value: unknown, path: string): number {
+  if (typeof value !== 'number' || !Number.isFinite(value)) invalid(path, 'a finite number');
+  return value;
 }
 
 /**
@@ -270,6 +316,52 @@ function validateDisabledReason(value: unknown, path: string): DisabledReason {
   return { field: str(v.field, `${path}.field`), code: oneOf(v.code, DISABLED_REASON_CODES, `${path}.code`) };
 }
 
+const ATU_STATUSES: readonly AtuStatus[] = ['off', 'on', 'tuning'];
+
+function validateTxAuxField<T>(
+  value: unknown, path: string, validateValue: (v: unknown, p: string) => T,
+): TxAuxField<T> {
+  const v = record(value, path);
+  exactKeys(v, ['reading', 'availability'], path);
+  const r = record(v.reading, `${path}.reading`);
+  let reading: TxAuxReading<T>;
+  if (r.status === 'known') {
+    exactKeys(r, ['status', 'value'], `${path}.reading`);
+    reading = { status: 'known', value: validateValue(r.value, `${path}.reading.value`) };
+  } else if (r.status === 'unknown') {
+    exactKeys(r, ['status'], `${path}.reading`);
+    reading = { status: 'unknown' };
+  } else {
+    invalid(`${path}.reading.status`, "'known' | 'unknown'");
+  }
+  return { reading, availability: validateAvailability(v.availability, `${path}.availability`) };
+}
+
+/** N4: this `exactKeys` list is exactly the 12 fields the adapter reads —
+ *  no speculative keys. See `radio-view-model-adapter.ts::deriveTxAux`. */
+function validateTxAux(value: unknown, path: string): TxAuxViewModel {
+  const v = record(value, path);
+  exactKeys(v, [
+    'atu', 'vox', 'voxGain', 'antiVoxGain', 'voxDelay',
+    'compressor', 'compressorLevel', 'monitor', 'monitorLevel',
+    'rfPower', 'micGain', 'driveGain',
+  ], path);
+  return {
+    atu: validateTxAuxField(v.atu, `${path}.atu`, (val, p) => oneOf(val, ATU_STATUSES, p)),
+    vox: validateTxAuxField(v.vox, `${path}.vox`, bool),
+    voxGain: validateTxAuxField(v.voxGain, `${path}.voxGain`, num),
+    antiVoxGain: validateTxAuxField(v.antiVoxGain, `${path}.antiVoxGain`, num),
+    voxDelay: validateTxAuxField(v.voxDelay, `${path}.voxDelay`, num),
+    compressor: validateTxAuxField(v.compressor, `${path}.compressor`, bool),
+    compressorLevel: validateTxAuxField(v.compressorLevel, `${path}.compressorLevel`, num),
+    monitor: validateTxAuxField(v.monitor, `${path}.monitor`, bool),
+    monitorLevel: validateTxAuxField(v.monitorLevel, `${path}.monitorLevel`, num),
+    rfPower: validateTxAuxField(v.rfPower, `${path}.rfPower`, num),
+    micGain: validateTxAuxField(v.micGain, `${path}.micGain`, num),
+    driveGain: validateTxAuxField(v.driveGain, `${path}.driveGain`, num),
+  };
+}
+
 /** Runtime validator (repo idiom: throws TypeError with a `$.path`, see `validateCapabilities`).
  *  Also enforces two cross-field invariants (review cycle 1, V1): `txPermit`
  *  cannot be 'allowed' while `txTarget` is unknown (no fail-open), and
@@ -278,7 +370,7 @@ export function validateRadioViewModel(value: unknown): RadioViewModel {
   const v = record(value, '$');
   exactKeys(v, [
     'topologyId', 'vfoScheme', 'activeReceiver', 'vfos', 'split', 'dualWatch',
-    'txTarget', 'txPermit', 'scope', 'disabledReasons',
+    'txTarget', 'txPermit', 'scope', 'disabledReasons', 'txAux',
   ], '$');
   if (!Array.isArray(v.vfos)) invalid('$.vfos', 'an array');
   if (!Array.isArray(v.disabledReasons)) invalid('$.disabledReasons', 'an array');
@@ -300,6 +392,14 @@ export function validateRadioViewModel(value: unknown): RadioViewModel {
     }
   });
 
+  // Conditional spread, not `txAux: optionalGroup(...)` directly: an absent
+  // group must OMIT the key, not merely set it to `undefined` — a plain
+  // property assignment still shows up in `Object.keys()`, which would make
+  // "structurally unavailable" indistinguishable from "present" to any
+  // consumer that inventories keys (see the adapter test's exact-key-list
+  // assertion this was verified against).
+  const txAux = optionalGroup(v.txAux, '$.txAux', validateTxAux);
+
   return {
     topologyId: str(v.topologyId, '$.topologyId'),
     vfoScheme: oneOf(v.vfoScheme, VFO_SCHEMES, '$.vfoScheme'),
@@ -314,5 +414,6 @@ export function validateRadioViewModel(value: unknown): RadioViewModel {
       audioFftScope: validateAvailability(scope.audioFftScope, '$.scope.audioFftScope'),
     },
     disabledReasons: v.disabledReasons.map((r, i) => validateDisabledReason(r, `$.disabledReasons[${i}]`)),
+    ...(txAux !== undefined ? { txAux } : {}),
   };
 }
