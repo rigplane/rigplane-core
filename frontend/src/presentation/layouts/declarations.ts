@@ -21,7 +21,7 @@ export const sdrTestLayout: LayoutManifest = {
   zones: [{ id: 'main', surfaces: ['vfo', 'rxTx'] }],
   compatibleTopologies: ['1/single', '1/ab', '2/ab_shared', '2/main_sub'],
   requiredSemanticSurfaces: ['vfo', 'rxTx'],
-  sizing: { mode: 'fluid', responsiveBreakpoints: [] },
+  stageSizing: { mode: 'fluid', responsiveBreakpoints: [] },
   fallbackLayoutId: null,
 };
 

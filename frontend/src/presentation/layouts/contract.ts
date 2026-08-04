@@ -3,7 +3,7 @@
  * (MOR-1066) — the other side of the design-language handshake in
  * `../languages/contract.ts` (`./compatibility.ts` composes the two).
  * Declares identity, zones mounting semantic surfaces, compatible radio
- * topologies, the MOR-1160 sizing axis, and a safe fallback — never
+ * topologies, the MOR-1160 stage-sizing axis, and a safe fallback — never
  * executable radio behavior, capability objects, or component module paths
  * (v3 ADR "Composition contract"; MOR-988/983 doctrine). Lint-enforced
  * presentation/ zone (MOR-1061) bans runtime/capability/transport/command
@@ -36,7 +36,8 @@ export interface LayoutZone {
  * `min(w/nativeW, h/nativeH)`, letterboxed, falling back below `minScale`.
  * Structurally exclusive at the type level (`FixedNativeSizing` has no
  * `responsiveBreakpoints` slot); the runtime validator enforces the same
- * exclusion against untyped input.
+ * exclusion against untyped input. See `LayoutManifest.stageSizing` below for
+ * what this policy is scoped to.
  */
 export interface FluidSizing {
   readonly mode: 'fluid';
@@ -58,13 +59,23 @@ export interface LayoutManifest {
   readonly zones: readonly LayoutZone[];
   readonly compatibleTopologies: readonly TopologyClass[];
   readonly requiredSemanticSurfaces: readonly SemanticSurfaceName[];
-  readonly sizing: SizingPolicy;
+  /**
+   * The INSTRUMENT STAGE's sizing policy (MOR-1160/1247) — not the whole
+   * layout. Chrome (nav, control columns, sidebars — anything that is not
+   * the instrument glass) is fluid by doctrine and renders as a sibling of
+   * the future `ScaledStage` primitive, which owns the stage's mechanical
+   * enforcement of this policy (MOR-1160 constraint 1); until that primitive
+   * exists this field stays declaration-only (guard test: `__tests__/
+   * stage-sizing-boundary.test.ts`). A `fixed-native` value here does NOT
+   * mean the whole layout is fixed-native — only its instrument stage is.
+   */
+  readonly stageSizing: SizingPolicy;
   readonly fallbackLayoutId: string | null;
 }
 
 const TOP_LEVEL_KEYS: readonly PropertyKey[] = [
   'schemaVersion', 'id', 'displayName', 'loader', 'zones',
-  'compatibleTopologies', 'requiredSemanticSurfaces', 'sizing', 'fallbackLayoutId',
+  'compatibleTopologies', 'requiredSemanticSurfaces', 'stageSizing', 'fallbackLayoutId',
 ];
 
 export class LayoutValidationError extends Error {}
@@ -117,22 +128,22 @@ function validateSizing(id: string, sizing: SizingPolicy): string | null {
     if (!hasExactPlainKeys(sizing, ['mode', 'responsiveBreakpoints'])
       || !Array.isArray(sizing.responsiveBreakpoints)
       || !sizing.responsiveBreakpoints.every((b) => typeof b === 'number')) {
-      return `Layout "${id}" fluid sizing must declare only mode/responsiveBreakpoints (number array).`;
+      return `Layout "${id}" fluid stageSizing must declare only mode/responsiveBreakpoints (number array).`;
     }
     return null;
   }
   if (sizing.mode === 'fixed-native') {
     if (!hasExactPlainKeys(sizing, ['mode', 'nativeW', 'nativeH', 'minScale'])) {
-      return `Layout "${id}" fixed-native sizing must declare only mode/nativeW/nativeH/minScale — ` +
+      return `Layout "${id}" fixed-native stageSizing must declare only mode/nativeW/nativeH/minScale — ` +
         'no responsiveBreakpoints (MOR-1160: the two are mutually exclusive).';
     }
     const { nativeW, nativeH, minScale } = sizing;
     if (![nativeW, nativeH, minScale].every((n) => typeof n === 'number' && Number.isFinite(n) && n > 0)) {
-      return `Layout "${id}" fixed-native sizing requires positive finite nativeW/nativeH/minScale.`;
+      return `Layout "${id}" fixed-native stageSizing requires positive finite nativeW/nativeH/minScale.`;
     }
     return null;
   }
-  return `Layout "${id}" sizing.mode must be 'fluid' | 'fixed-native'.`;
+  return `Layout "${id}" stageSizing.mode must be 'fluid' | 'fixed-native'.`;
 }
 
 function validateZones(id: string, zones: readonly LayoutZone[]): string | null {
@@ -181,7 +192,7 @@ export function validateLayoutManifest(manifest: LayoutManifest): void {
       `Layout "${id}" must declare at least one required semantic surface.`) ||
     (manifest.requiredSemanticSurfaces.some((s) => !manifest.zones.some((z) => z.surfaces.includes(s))) &&
       `Layout "${id}" requires a semantic surface that no zone mounts.`) ||
-    validateSizing(id, manifest.sizing) ||
+    validateSizing(id, manifest.stageSizing) ||
     (manifest.fallbackLayoutId !== null && !isValidProductId(manifest.fallbackLayoutId) &&
       `Layout "${id}" fallbackLayoutId "${manifest.fallbackLayoutId}" fails naming policy.`);
   if (problem) throw new LayoutValidationError(problem);
@@ -250,8 +261,8 @@ export interface Viewport { readonly width: number; readonly height: number }
  *  mobile viewport fails this arithmetically (small height vs. a wide
  *  native design), with no separate mobile-detection branch. */
 export function fitsViewport(manifest: LayoutManifest, viewport: Viewport): boolean {
-  if (manifest.sizing.mode === 'fluid') return true;
-  const { nativeW, nativeH, minScale } = manifest.sizing;
+  if (manifest.stageSizing.mode === 'fluid') return true;
+  const { nativeW, nativeH, minScale } = manifest.stageSizing;
   return Math.min(viewport.width / nativeW, viewport.height / nativeH) >= minScale;
 }
 

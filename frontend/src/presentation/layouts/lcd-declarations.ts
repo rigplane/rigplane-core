@@ -7,7 +7,7 @@
  * without three tickets editing the same declaration block.
  *
  * A manifest is a DECLARATION, never behaviour. `loader` names the existing
- * skin entrypoint with no change to it; `sizing` records the assignment
+ * skin entrypoint with no change to it; `stageSizing` records the assignment
  * MOR-1160 froze without implementing it — the shared ScaledStage primitive
  * owns measurement and the transform (MOR-1160 constraint 1), never a layout.
  */
@@ -30,6 +30,10 @@ const LCD_NATIVE_STAGE = {
  * hand control column, where `SemanticRadioSurfaces` now owns the VFO facts
  * and the RX/TX action. The amber glass itself declares no zone: it stays
  * legacy presentation for this slice and is redesigned by MOR-1162.
+ *
+ * `control-column` is CHROME, not the instrument stage: MOR-1162 is what
+ * declares the glass. It sits outside `stageSizing` below (MOR-1160/1247) —
+ * chrome stays fluid by doctrine regardless of this manifest's stage mode.
  */
 const LCD_ZONES = [{ id: 'control-column', surfaces: ['vfo', 'rxTx'] }] as const;
 
@@ -49,7 +53,7 @@ export const lcdCockpitLayout: LayoutManifest = {
   zones: LCD_ZONES,
   compatibleTopologies: LCD_TOPOLOGIES,
   requiredSemanticSurfaces: ['vfo', 'rxTx'],
-  sizing: LCD_NATIVE_STAGE,
+  stageSizing: LCD_NATIVE_STAGE,
   // The family's universal variant — nothing left to fall back to.
   fallbackLayoutId: null,
 };
@@ -69,7 +73,7 @@ export const lcdScopeLayout: LayoutManifest = {
   zones: LCD_ZONES,
   compatibleTopologies: LCD_TOPOLOGIES,
   requiredSemanticSurfaces: ['vfo', 'rxTx'],
-  sizing: LCD_NATIVE_STAGE,
+  stageSizing: LCD_NATIVE_STAGE,
   fallbackLayoutId: 'lcd-cockpit',
 };
 

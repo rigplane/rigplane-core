@@ -85,7 +85,7 @@ describe('MOR-1160 sizing axis — sdr-test stays fluid', () => {
   // family owns — sdr-test is a reflowing desktop layout, not a native-scaled
   // instrument glass.
   it('declares fluid sizing with no breakpoints', () => {
-    expect(sdrTestLayout.sizing).toEqual({ mode: 'fluid', responsiveBreakpoints: [] });
+    expect(sdrTestLayout.stageSizing).toEqual({ mode: 'fluid', responsiveBreakpoints: [] });
   });
 
   it('resolves on both a desktop and an iPhone-class portrait viewport — fluid never gates', () => {

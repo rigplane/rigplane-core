@@ -86,7 +86,7 @@ describe('MOR-1160 sizing axis — mobile is the fluid side', () => {
   // an instrument stage scaled as one letterboxed block, and a native stage
   // here would make the phone shell fail its own minScale gate.
   it('declares fluid sizing with the one breakpoint the layout implements', () => {
-    expect(mobileLayout.sizing).toEqual({ mode: 'fluid', responsiveBreakpoints: [500] });
+    expect(mobileLayout.stageSizing).toEqual({ mode: 'fluid', responsiveBreakpoints: [500] });
   });
 
   // Kills: flipping mobile to a mode with a viewport gate. `fluid` always
@@ -144,7 +144,7 @@ describe('portrait-mobile exclusion of fixed-native layouts, and the hop off it'
       zones: [{ id: 'main', surfaces: ['vfo', 'rxTx'] }],
       compatibleTopologies: ['1/single'],
       requiredSemanticSurfaces: ['vfo', 'rxTx'],
-      sizing: { mode: 'fixed-native', nativeW: 1280, nativeH: 540, minScale: 0.5 },
+      stageSizing: { mode: 'fixed-native', nativeW: 1280, nativeH: 540, minScale: 0.5 },
       fallbackLayoutId: 'mobile',
     };
     registerLayout(probe);

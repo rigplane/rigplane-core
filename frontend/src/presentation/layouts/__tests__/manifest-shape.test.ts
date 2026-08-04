@@ -88,12 +88,12 @@ describe('compatible topology classes', () => {
 
 describe('sizing (MOR-1160)', () => {
   it('accepts fluid sizing with breakpoints', () => {
-    const manifest = validLayoutManifest({ sizing: { mode: 'fluid', responsiveBreakpoints: [600, 900] } });
+    const manifest = validLayoutManifest({ stageSizing: { mode: 'fluid', responsiveBreakpoints: [600, 900] } });
     expect(() => validateLayoutManifest(manifest)).not.toThrow();
   });
 
   it('accepts fixed-native sizing with a positive minScale', () => {
-    const manifest = validLayoutManifest({ sizing: { mode: 'fixed-native', nativeW: 1280, nativeH: 540, minScale: 0.5 } });
+    const manifest = validLayoutManifest({ stageSizing: { mode: 'fixed-native', nativeW: 1280, nativeH: 540, minScale: 0.5 } });
     expect(() => validateLayoutManifest(manifest)).not.toThrow();
   });
 
@@ -103,11 +103,11 @@ describe('sizing (MOR-1160)', () => {
     const poisoned = {
       mode: 'fixed-native', nativeW: 1280, nativeH: 540, minScale: 0.5, responsiveBreakpoints: [600],
     } as unknown as SizingPolicy;
-    expect(() => validateLayoutManifest(validLayoutManifest({ sizing: poisoned }))).toThrow(/mutually exclusive/);
+    expect(() => validateLayoutManifest(validLayoutManifest({ stageSizing: poisoned }))).toThrow(/mutually exclusive/);
   });
 
   it('rejects a non-positive minScale', () => {
-    const manifest = validLayoutManifest({ sizing: { mode: 'fixed-native', nativeW: 1280, nativeH: 540, minScale: 0 } });
+    const manifest = validLayoutManifest({ stageSizing: { mode: 'fixed-native', nativeW: 1280, nativeH: 540, minScale: 0 } });
     expect(() => validateLayoutManifest(manifest)).toThrow(/positive finite/);
   });
 });
@@ -181,7 +181,7 @@ describe('exact-key discipline pins (MOR-1072 N1 lesson, review cycle 1 F2)', ()
       zones = [{ id: 'main', surfaces: ['vfo', 'rxTx'] as const }];
       compatibleTopologies = ['1/single'] as const;
       requiredSemanticSurfaces = ['vfo', 'rxTx'] as const;
-      sizing = { mode: 'fluid' as const, responsiveBreakpoints: [] as number[] };
+      stageSizing = { mode: 'fluid' as const, responsiveBreakpoints: [] as number[] };
       fallbackLayoutId = null;
       // Prototype getter: an own-keys/Object.keys walk of the instance never
       // sees this — only the explicit prototype check catches it.

@@ -178,6 +178,25 @@ Resolution order:
 6. provide semantic view models and product services;
 7. render safety/status overlays outside the selected layout.
 
+### Stage sizing (MOR-1160)
+
+[MOR-1160](https://linear.app/morozsm/issue/MOR-1160/decision-freeze-the-surface-sizing-model-fluid-vs-fixed-native-uniform)
+(frozen 2026-07-29) fixes the surface sizing model: a layout's instrument
+stage is either `fluid` (reflows on declared breakpoints) or `fixed-native`
+(scaled as one uniform, letterboxed block by `min(w/nativeW, h/nativeH)`,
+falling back below `minScale`). Chrome — nav, control columns, sidebars,
+anything that is not the instrument glass — is fluid by doctrine and is
+never swept into the stage's fixed scale (constraint 2). It renders as a
+sibling of the future `ScaledStage` primitive, which will own mechanical
+enforcement of this split (constraint 1).
+
+A layout manifest's sizing field is scoped to this instrument-stage axis, not
+the whole layout —
+[MOR-1247](https://linear.app/morozsm/issue/MOR-1247/scope-layout-manifest-sizing-to-the-instrument-stage-rename-sizing)
+renamed it `stageSizing` to say so and froze it declaration-only (an
+architecture test flags any direct textual read outside
+`presentation/layouts/`) until `ScaledStage` exists to enforce it.
+
 ## Dependency and product invariants
 
 1. Runtime imports no adapters or presentation.

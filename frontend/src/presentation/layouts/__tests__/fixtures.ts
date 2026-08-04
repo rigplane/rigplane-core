@@ -11,7 +11,7 @@ export function validLayoutManifest(overrides: Partial<LayoutManifest> = {}): La
     zones: [{ id: 'main', surfaces: ['vfo', 'rxTx'] }],
     compatibleTopologies: ['1/single'],
     requiredSemanticSurfaces: ['vfo', 'rxTx'],
-    sizing: { mode: 'fluid', responsiveBreakpoints: [] },
+    stageSizing: { mode: 'fluid', responsiveBreakpoints: [] },
     fallbackLayoutId: null,
     ...overrides,
   };
