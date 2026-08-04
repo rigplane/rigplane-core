@@ -31,5 +31,17 @@
   --radius-lg: 12px;
   --tap-target: 44px;
   --bottom-bar-height: 56px;
-  --focus-ring: 0 0 0 2px var(--accent);
+  /* MOR-1232: outline-shaped, NOT box-shadow-shaped. A box-shadow focus ring is
+   * discarded by any component that sets its own box-shadow at higher
+   * specificity (e.g. TxPanel's `.ptt-button.ptt-held` transmit glow), which
+   * would leave the most safety-critical control with no focus indicator at
+   * all. `outline` paints on an independent layer: it cannot be masked by a
+   * component shadow, is not clipped by an ancestor `overflow: hidden`, and it
+   * survives forced-colours mode.
+   * OWNER CALL (MOR-1072): the design-language half,
+   * `presentation/languages/declarations.ts`, still declares `focusRing` as
+   * '0 0 0 2px var(--accent)' — box-shadow-shaped, and on the legacy accent
+   * that fails WCAG 1.4.11 3:1 on all five light components-v2 skins. Both need
+   * reconciling with this token when the `--dl-*` custom properties land. */
+  --focus-ring: 2px solid var(--accent);
 }

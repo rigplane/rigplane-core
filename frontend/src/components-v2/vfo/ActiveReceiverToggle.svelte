@@ -151,7 +151,7 @@
 
   .segment:focus-visible {
     outline: none;
-    box-shadow: 0 0 0 2px var(--v2-accent-cyan, #00d4ff);
+    box-shadow: var(--v2-focus-ring-shadow);
   }
 
   .segment.is-active {

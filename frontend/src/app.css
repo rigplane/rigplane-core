@@ -8,7 +8,14 @@
 }
 
 :focus-visible {
-  outline: 2px solid var(--accent);
+  /* MOR-1232: `outline`, never `box-shadow`. This is the app-wide default that
+   * every component without a focus rule of its own relies on, and a global
+   * box-shadow (0,1,0) loses to any Svelte-scoped component box-shadow
+   * (0,2,0+) — see the note on --focus-ring in styles/tokens.css.
+   * --v2-focus-ring carries the per-skin, contrast-checked ring colour once the
+   * components-v2 theme layer is loaded; skins are code-split, so the legacy
+   * --focus-ring fallback stays live until a v2 layout mounts. */
+  outline: var(--v2-focus-ring, var(--focus-ring));
   outline-offset: 2px;
 }
 

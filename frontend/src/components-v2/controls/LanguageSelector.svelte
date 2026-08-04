@@ -140,6 +140,11 @@
     outline: none;
   }
 
+  .lang-select:focus-visible {
+    outline: var(--v2-focus-ring);
+    outline-offset: 2px;
+  }
+
   .lang-select option {
     background: var(--v2-bg-input, #1a1a2e);
     color: var(--v2-text-primary, #fff);
