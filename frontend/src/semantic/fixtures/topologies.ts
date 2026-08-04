@@ -13,7 +13,7 @@
  * matrix ("4 topology pairs + audio-only scope"), not a property of any one
  * topology, so it can be applied to any of the four fixtures below.
  */
-import type { RadioViewModel } from '../radio-view-model';
+import type { Availability, RadioViewModel, TxAuxField, TxAuxViewModel } from '../radio-view-model';
 
 const singleReceiver: RadioViewModel = {
   topologyId: '1/single',
@@ -152,4 +152,33 @@ export function withAudioOnlyScope(fixture: RadioViewModel): RadioViewModel {
       audioFftScope: { structural: true, operational: true },
     },
   };
+}
+
+/**
+ * Applies a fully-capable `txAux` group (MOR-1244) to any topology fixture —
+ * every control structurally present and operationally observed. Composable
+ * the same way `withAudioOnlyScope` is: TX-adjacent capability is an axis
+ * orthogonal to VFO topology, not a property of any one scheme, and "only
+ * where the radio genuinely has the capability" (governing scope) is left to
+ * the caller — this fixture models a radio that has all of them, it does not
+ * force txAux onto the four base topologies.
+ */
+export function withTxAux(fixture: RadioViewModel): RadioViewModel {
+  const avail: Availability = { structural: true, operational: true };
+  const known = <T>(value: T): TxAuxField<T> => ({ reading: { status: 'known', value }, availability: avail });
+  const txAux: TxAuxViewModel = {
+    atu: known('off'),
+    vox: known(false),
+    voxGain: known(50),
+    antiVoxGain: known(30),
+    voxDelay: known(20),
+    compressor: known(false),
+    compressorLevel: known(10),
+    monitor: known(false),
+    monitorLevel: known(128),
+    rfPower: known(0.8),
+    micGain: known(128),
+    driveGain: known(128),
+  };
+  return { ...fixture, txAux };
 }

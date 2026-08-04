@@ -25,7 +25,8 @@
  */
 import type { Capabilities } from '$lib/types/capabilities';
 import type { ServerState } from '$lib/types/state';
-import type { RadioViewModel } from '../../../semantic/radio-view-model';
+import type { RadioViewModel, TxAuxField, TxAuxViewModel, AtuStatus } from '../../../semantic/radio-view-model';
+import { isFieldAvailable } from '$lib/state/field-status';
 import {
   derivePresentationCapabilities, type ReceiverId, type VfoSlotId,
 } from './presentation-capabilities';
@@ -76,6 +77,91 @@ function readings(
 
 const sameSlot = (a: Slot, b: Slot): boolean =>
   a.kind === 'slotted' && b.kind === 'slotted' ? a.id === b.id : a.kind === b.kind;
+
+function hasCap(caps: Capabilities | null, name: string): boolean {
+  return caps?.capabilities?.includes(name) ?? false;
+}
+
+/**
+ * MOR-1244: the SAME field-status gate `toTxProps`/`toVoxProps` use for these
+ * exact controls (`$lib/runtime/props/panel-props.ts`,
+ * `components-v2/wiring/state-adapter.ts`) — deliberately the looser
+ * "not proven missing/stale" gate (`isFieldAvailable`, defaults to available
+ * absent an explicit field-status entry), not this file's own stricter
+ * `seen()` three-part gate used for VFO/TX-target identity. `txAux` controls
+ * are legacy top-level fields with the same v2 availability story as the
+ * panel they came from; giving them a stricter gate here would silently
+ * disable controls v2 has always shown.
+ */
+function topFieldAvailable(state: ServerState | null, field: string): boolean {
+  return isFieldAvailable(state, field);
+}
+
+/** `fieldFresh` is the raw `topFieldAvailable` read; a structurally-absent
+ *  control must never report a "known" reading even if the (irrelevant)
+ *  field happens to look fresh — so the reading gates on BOTH, same as
+ *  `availability.operational`. */
+function txAuxField<T>(structural: boolean, fieldFresh: boolean, value: T | undefined): TxAuxField<T> {
+  const operational = structural && fieldFresh;
+  return {
+    reading: operational && value !== undefined ? { status: 'known', value } : { status: 'unknown' },
+    availability: { structural, operational },
+  };
+}
+const numOrUndef = (v: unknown): number | undefined => (typeof v === 'number' && Number.isFinite(v) ? v : undefined);
+const boolOrUndef = (v: unknown): boolean | undefined => (typeof v === 'boolean' ? v : undefined);
+const atuStatus = (v: unknown): AtuStatus | undefined =>
+  v === 0 ? 'off' : v === 1 ? 'on' : v === 2 ? 'tuning' : undefined;
+
+/**
+ * N3: emits the group ONLY on positive evidence — "capability/observed
+ * fields", verbatim. `caps.tx` alone is NOT sufficient: a radio can declare
+ * generic TX capability (e.g. for the RX/TX authority, MOR-1064) without
+ * this adapter having ANY reason to believe a single one of the twelve
+ * txAux controls exists — no sub-capability tag AND no field ever observed.
+ * Emitting a group there would be exactly the all-unknowns placeholder N3
+ * forbids. So the gate is a real OR: at least one txAux-specific capability
+ * tag (`vox`/`compressor`/`monitor`/`tuner`/`drive_gain` — confirmed against
+ * both `toTxProps` and `AmberCockpit.svelte`'s
+ * `hasCap('vox' | 'compressor' | 'tuner')` usage) OR at least one of the
+ * twelve raw state fields actually present (any live radio that has ever
+ * reported ptt/power/mic-gain telemetry clears this — RF power and mic gain
+ * carry no separate capability tag in v2 either, they are core TX facts).
+ * Once evidence exists, `hasCap(caps, 'tx')` remains required too — it is
+ * `toTxProps`'s own `hasTx` gate for the panel as a whole.
+ */
+function deriveTxAux(state: ServerState | null, caps: Capabilities | null): TxAuxViewModel | undefined {
+  if (!hasCap(caps, 'tx')) return undefined;
+  const hasTuner = hasCap(caps, 'tuner');
+  const hasVox = hasCap(caps, 'vox');
+  const hasCompressor = hasCap(caps, 'compressor');
+  const hasMonitor = hasCap(caps, 'monitor');
+  const hasDriveGain = hasCap(caps, 'drive_gain');
+  const rawValues = [
+    state?.tunerStatus, state?.voxOn, state?.voxGain, state?.antiVoxGain, state?.voxDelay,
+    state?.compressorOn, state?.compressorLevel, state?.monitorOn, state?.monitorGain,
+    state?.powerLevel, state?.micGain, state?.driveGain,
+  ];
+  const hasEvidence = hasTuner || hasVox || hasCompressor || hasMonitor || hasDriveGain
+    || rawValues.some((v) => v !== undefined);
+  if (!hasEvidence) return undefined;
+  return {
+    atu: txAuxField(hasTuner, topFieldAvailable(state, 'tunerStatus'), atuStatus(state?.tunerStatus)),
+    vox: txAuxField(hasVox, topFieldAvailable(state, 'voxOn'), boolOrUndef(state?.voxOn)),
+    voxGain: txAuxField(hasVox, topFieldAvailable(state, 'voxGain'), numOrUndef(state?.voxGain)),
+    antiVoxGain: txAuxField(hasVox, topFieldAvailable(state, 'antiVoxGain'), numOrUndef(state?.antiVoxGain)),
+    voxDelay: txAuxField(hasVox, topFieldAvailable(state, 'voxDelay'), numOrUndef(state?.voxDelay)),
+    compressor: txAuxField(hasCompressor, topFieldAvailable(state, 'compressorOn'), boolOrUndef(state?.compressorOn)),
+    compressorLevel: txAuxField(
+      hasCompressor, topFieldAvailable(state, 'compressorLevel'), numOrUndef(state?.compressorLevel),
+    ),
+    monitor: txAuxField(hasMonitor, topFieldAvailable(state, 'monitorOn'), boolOrUndef(state?.monitorOn)),
+    monitorLevel: txAuxField(hasMonitor, topFieldAvailable(state, 'monitorGain'), numOrUndef(state?.monitorGain)),
+    rfPower: txAuxField(true, topFieldAvailable(state, 'powerLevel'), numOrUndef(state?.powerLevel)),
+    micGain: txAuxField(true, topFieldAvailable(state, 'micGain'), numOrUndef(state?.micGain)),
+    driveGain: txAuxField(hasDriveGain, topFieldAvailable(state, 'driveGain'), numOrUndef(state?.driveGain)),
+  };
+}
 
 /**
  * `null` when there is nothing safe to render at all: capabilities have not
@@ -204,6 +290,13 @@ export function toRadioViewModel(
     }
   }
 
+  // Conditional spread, not a plain `txAux: deriveTxAux(...)` property: an
+  // object literal assigning a key to `undefined` still shows up in
+  // `Object.keys()`, which would make "no TX capability" indistinguishable
+  // from "has the group" to any consumer that inventories keys — same
+  // reasoning as the validator's own omission below `validateRadioViewModel`.
+  const txAux = deriveTxAux(state, caps);
+
   return {
     topologyId: `${topology.structuralCount}/${topology.scheme}`,
     vfoScheme: topology.scheme,
@@ -215,5 +308,6 @@ export function toRadioViewModel(
     txPermit,
     scope: { hardwareScope, audioFftScope },
     disabledReasons,
+    ...(txAux !== undefined ? { txAux } : {}),
   };
 }
