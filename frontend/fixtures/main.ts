@@ -12,6 +12,8 @@
  * Query parameters:
  *   ?fixture=<id>    one of `catalog.ts`'s FIXTURES ids (required)
  *   &theme=v2|none   load the components-v2 theme layer (default `v2`)
+ *   &language=<id>   opt into a design language (MOR-1073; default: none)
+ *   &mode=light      the language's light variant (explicit; dark is primary)
  *
  * `theme=none` is not a styling preference — it is the honest reading of what
  * the cockpit gets today: `components-v2/theme/index` is imported by
@@ -35,6 +37,22 @@ if (!fixture) throw new Error(`MOR-1070 harness: unknown fixture id "${id}"`);
 
 if ((params.get('theme') ?? 'v2') === 'v2') {
   await import('../src/components-v2/theme/index');
+}
+
+// MOR-1073: design languages are scoped to `[data-design-language]` and have
+// no activation path in the app yet (routing one in is cutover work,
+// MOR-1048/MOR-1263). This param is the only opt-in, so the harness can
+// capture the language over the same fixtures the unstyled baselines use.
+const language = params.get('language');
+if (language === 'studioline') {
+  await import('../src/presentation/languages/studioline/studioline.css');
+  document.documentElement.dataset.designLanguage = language;
+  // Light is an explicit opt-in, never an OS-preference flip: the app's own
+  // light/dark is a manual `[data-theme]` choice, so language and surface have
+  // to be switched by the same deliberate act.
+  if (params.get('mode') === 'light') document.documentElement.dataset.languageMode = 'light';
+} else if (language) {
+  throw new Error(`MOR-1073 harness: unknown design language "${language}"`);
 }
 
 harness.state = fixture.state();
