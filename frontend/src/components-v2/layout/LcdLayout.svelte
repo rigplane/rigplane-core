@@ -27,6 +27,7 @@
   import RightSidebar from './RightSidebar.svelte';
   import KeyboardHandler from './KeyboardHandler.svelte';
   import StatusBar from './StatusBar.svelte';
+  import SemanticRadioSurfaces from '../wiring/SemanticRadioSurfaces.svelte';
   import { makeKeyboardHandlers } from '../wiring/command-bus';
 
   // Twin-skin variant selector (#887). Default preserves today's behavior.
@@ -56,7 +57,7 @@
 
   <section class="content-row">
     <div class="content-left">
-      <LeftSidebar />
+      <LeftSidebar hideTxPanel />
     </div>
 
     <main class="content-center">
@@ -79,9 +80,18 @@
       </div>
     </main>
 
+    <!-- MOR-1092: the LCD's VFO facts and TX action are owned by the semantic
+         surfaces (MOR-1063/1064), wired exactly once by SemanticRadioSurfaces
+         — no new TX path. The legacy TX panel is suppressed on BOTH sidebars
+         (a cross-sidebar drag can move it), and VfoControlPanel drops the two
+         facts the surface now presents. The amber glass keeps its legacy
+         presentation for this slice; MOR-1162 redesigns it. -->
     <div class="content-right">
-      <VfoControlPanel />
-      <RightSidebar />
+      <div class="semantic-slot">
+        <SemanticRadioSurfaces />
+      </div>
+      <VfoControlPanel hideVfoFacts />
+      <RightSidebar hideTxPanel />
     </div>
   </section>
 
@@ -167,6 +177,15 @@
     background:
       linear-gradient(180deg, var(--v2-panel-bg-gradient-top) 0%, var(--v2-panel-bg-gradient-bottom) 100%);
     box-shadow: var(--v2-shadow-sm);
+  }
+
+  /* `.content-right` is a definite-height flex column, so the surfaces' own
+     `height: 100%` would claim the whole column. Nesting them under an
+     auto-height wrapper resolves that percentage to `auto` and leaves the
+     soft-button panel and sidebar in place. */
+  .semantic-slot {
+    flex: 0 0 auto;
+    min-height: 0;
   }
 
   .lcd-slot {

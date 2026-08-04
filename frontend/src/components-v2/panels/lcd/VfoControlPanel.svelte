@@ -21,6 +21,15 @@
   } from '../../wiring/command-bus';
   import { runtime } from '$lib/runtime';
 
+  /**
+   * MOR-1092: in the migrated LCD entrypoints the semantic VFO surface owns
+   * the split and dual-watch facts (as tri-state switches that can render
+   * "unknown"), so this panel suppresses its own copies — one fact, one
+   * affordance, the same scoping as `hideTxPanel` (MOR-1065). The remaining
+   * buttons have no semantic equivalent yet and are retained unchanged.
+   */
+  let { hideVfoFacts = false }: { hideVfoFacts?: boolean } = $props();
+
   const vfoHandlers = makeVfoHandlers();
   const ritXitHandlers = makeRitXitHandlers();
   const cwHandlers = makeCwPanelHandlers();
@@ -33,10 +42,10 @@
 <div class="vfo-ctrl-panel">
   <button class="lcd-btn" onclick={vfoHandlers.onSwap}>A↔B</button>
   <button class="lcd-btn" onclick={vfoHandlers.onEqual}>A=B</button>
-  {#if p.hasDualRx}
+  {#if p.hasDualRx && !hideVfoFacts}
     <button class="lcd-btn" class:active={vfoOps.dualWatch} onclick={() => vfoHandlers.onDualWatchToggle(!vfoOps.dualWatch)}>DW</button>
   {/if}
-  {#if p.hasSplit}
+  {#if p.hasSplit && !hideVfoFacts}
     <button class="lcd-btn" class:active={vfoOps.splitActive} onclick={vfoHandlers.onSplitToggle}>SPLIT</button>
   {/if}
   {#if p.hasRit}
