@@ -24,7 +24,8 @@ import {
 // the fast pool's `isolate: false` it would leak that registration into
 // sibling files (the MOR-1092 lesson, restated on MOR-1067).
 import {
-  dualReceiverCockpitLayout, lcdCockpitLayout, lcdScopeLayout, mobileLayout, sdrTestLayout,
+  desktopV2Layout, dualReceiverCockpitLayout, lcdCockpitLayout, lcdScopeLayout, mobileLayout,
+  sdrTestLayout,
 } from '../declarations';
 import { forReceiver, receiversOf } from '../../../components-v2/wiring/dual-receiver-strips';
 import { topologyFixtures, withAudioOnlyScope } from '../../../semantic/fixtures/topologies';
@@ -111,8 +112,12 @@ describe('audio-only scope survives the cockpit slicing (scope=false + audioFft=
 // not imported: `skins/registry.ts` pulls in the layout preference store,
 // which touches `localStorage` at module scope.
 describe('F8 — every registered layout manifest names a loadable skin', () => {
+  // MOR-1266 adds desktop-v2 to the generalized set — the rule this ticket's
+  // acceptance criteria requires to stay green for every newly registered
+  // manifest, not just the ones that existed when F8 was written.
   const REAL_LAYOUTS: readonly LayoutManifest[] = [
     sdrTestLayout, dualReceiverCockpitLayout, lcdCockpitLayout, lcdScopeLayout, mobileLayout,
+    desktopV2Layout,
   ];
   const source = readFileSync('src/skins/registry.ts', 'utf8');
   const loadersStart = source.indexOf('const SKIN_LOADERS');
