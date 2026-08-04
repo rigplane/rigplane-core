@@ -348,7 +348,7 @@
   }
 
   .vc-track-container:focus-visible {
-    outline: var(--vc-focus-ring-width, 2px) solid var(--vc-rf-accent);
+    outline: var(--vc-focus-ring-width, 2px) solid var(--vc-focus-ring);
     outline-offset: 3px;
     border-radius: 2px;
   }

@@ -20,8 +20,12 @@
   --vc-glow-opacity: 0.14;
   --vc-glow-strong: 0.25;
 
-  /* Focus */
-  --vc-focus-ring: var(--v2-accent-cyan);
+  /* Focus. MOR-1254: proxies the same contrast-pinned per-skin knob MOR-1232
+   * introduced (--v2-focus-ring-color, components-v2/theme/tokens.css),
+   * instead of the raw --v2-accent-cyan, which fails WCAG 1.4.11 3:1 on
+   * nord-light/solarized-light. Matrix-checked in
+   * src/__tests__/focus-ring-token-wiring.test.ts (section 5's extended loop). */
+  --vc-focus-ring: var(--v2-focus-ring-color);
   --vc-focus-ring-width: 2px;
 
   /* Spacing */
