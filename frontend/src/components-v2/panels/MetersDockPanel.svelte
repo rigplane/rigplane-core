@@ -65,6 +65,9 @@
     label: string;
     display: string;
     fillPct: number;
+    // MOR-1252: position of the held peak marker, independent of `fillPct`
+    // under reduced motion (see `displayRaw` below). Undefined = no marker.
+    peakFillPct?: number;
     fill: string;
     track: string;
     relevant: boolean;
@@ -121,30 +124,46 @@
     return peakHoldDisplay(peaks[key], liveRaw, now, PEAK_DECAY_MS);
   }
 
+  // MOR-1252: the NUMBER (and, coupled to it, the bar FILL) always render
+  // the raw live sample under reduced motion — never the held/decaying
+  // value — so freezing the peak marker never freezes the readout. Under
+  // full motion this is unchanged: both still derive from the held+decaying
+  // raw value (MOR-498/1249 ballistics stand).
+  function displayRaw(key: PeakKey, liveRaw: number): number {
+    return prefersReducedMotion() ? liveRaw : heldRaw(key, liveRaw);
+  }
+
+  // MOR-1252: fill-% position for the peak MARKER. Under full motion this
+  // matches `fillPct` exactly (the marker rides the held/decaying bar tip,
+  // unchanged from MOR-498/1249). Under reduced motion it instead reflects
+  // the STATIC latch (`peaks[key].latchedPeak`), independent of the live
+  // `raw` driving the number/fill — undefined (no marker) while unlatched.
+  function peakFillPctFor(
+    key: PeakKey,
+    raw: number,
+    levelFn: (raw: number) => number,
+  ): number | undefined {
+    const peakState = peaks[key];
+    if (peakState === undefined) return undefined;
+    return levelFn(prefersReducedMotion() ? peakState.latchedPeak : raw) * 100;
+  }
+
   // A 100ms interval drives both the decay and the latch from fresh
   // prop samples. Driving everything off a timer (not a reactive $effect)
   // avoids the read-then-write cycle on `peaks` that Svelte 5 flags.
   //
-  // MOR-1249: mirrors the MOR-1233 fix already shipped for LinearSMeter's
+  // MOR-1249/MOR-1252: mirrors the MOR-1233 fix shipped for LinearSMeter's
   // own rAF peak-hold loop — under `prefers-reduced-motion` there is no
-  // hold-then-decay animation, so the interval is not scheduled at all (no
-  // ticks) and any already-latched peak is cleared. With `peaks[key]`
-  // undefined, `heldRaw()` (peakHoldDisplay with state=undefined) falls
-  // through to the live raw sample every render, so the NUMBER and the bar
-  // FILL track raw input with zero glide — matching "snap, never freeze".
-  //
-  // Clearing the latch also stops the peak MARKER from rendering while
-  // reduced, because its render gate is `peaks[tile.key] !== undefined`
-  // (latch existence) — unlike LinearSMeter's `showPeak = peakSegs -
-  // smoother.value > 0.3` (a value comparison). That means the marker's
-  // disappearance here is a deliberate choice, mirroring the removal
-  // MOR-1233 already shipped for LinearSMeter, not an unavoidable
-  // consequence of the snap fix itself — a gate keyed on `tile.fillPct`
-  // instead of latch existence could keep the marker visible at the live
-  // position with the identical zero-glide motion profile. Provisional
-  // pending the MOR-1252 owner decision (which now explicitly names
-  // MetersDockPanel alongside LinearSMeter) on whether peak indicators
-  // should render at all, or hold statically, under reduced motion.
+  // hold-then-decay animation, so this interval is not scheduled at all (no
+  // ticks). Unlike the interim MOR-1249 fix, the latch itself is NOT
+  // cleared here: per the MOR-1252 owner decision the peak MARKER is a
+  // static hold (latch at the highest observed value, instant reset on
+  // expiry) while the NUMBER/FILL stay live via `displayRaw` above. The
+  // reduced-motion branch below is kept only for the ticking
+  // interval's own start/stop lifecycle; the latch's static-hold semantics
+  // are owned by the prop-reactive effect further down (no timer needed —
+  // see meter-utils.ts's `updatePeakHold`, which already holds statically
+  // and re-seats instantly on expiry rather than gliding).
   //
   // Reacts to the OS preference flipping mid-session in both directions
   // (fix cycle 1 precedent: deciding once at mount is not enough).
@@ -163,18 +182,7 @@
       }
     }
 
-    function snapPeaks() {
-      untrack(() => {
-        if (peaks.po !== undefined) peaks.po = undefined;
-        if (peaks.swr !== undefined) peaks.swr = undefined;
-        if (peaks.alc !== undefined) peaks.alc = undefined;
-        if (peaks.id !== undefined) peaks.id = undefined;
-      });
-    }
-
-    if (prefersReducedMotion()) {
-      snapPeaks();
-    } else {
+    if (!prefersReducedMotion()) {
       untrack(() => stepAllPeaks());
       startTicking();
     }
@@ -182,7 +190,6 @@
     const unsubscribe = onReducedMotionChange((reduced) => {
       if (reduced) {
         stopTicking();
-        snapPeaks();
       } else if (!intervalId) {
         untrack(() => stepAllPeaks());
         startTicking();
@@ -193,6 +200,29 @@
       stopTicking();
       unsubscribe();
     };
+  });
+
+  // MOR-1252: keeps the static-hold latch fresh under reduced motion. This
+  // is ordinary prop-reactive Svelte tracking — it re-runs only when a raw
+  // meter value actually changes (a genuine data update) — not a scheduled
+  // loop, so it does not reintroduce the animation prefers-reduced-motion
+  // disables. `updatePeakHold` (see meter-utils.ts) already implements
+  // exactly the desired semantics: hold the latch unchanged while within
+  // the decay window, or re-seat it to the current sample (a single jump,
+  // no glide) once the window has elapsed.
+  $effect(() => {
+    const po = powerMeter;
+    const swr = swrMeter;
+    const alc = alcMeter;
+    const id = idMeter;
+    if (!prefersReducedMotion()) return;
+    const t = Date.now();
+    untrack(() => {
+      steppeak('po', po, t);
+      steppeak('swr', swr, t);
+      steppeak('alc', alc, t);
+      steppeak('id', id, t);
+    });
   });
 
   function resetPeak(key: PeakKey) {
@@ -214,24 +244,26 @@
     // 100 ms tick as the held peak decays.
     void now;
     if (powerMeter !== undefined) {
-      const raw = heldRaw('po', powerMeter);
+      const raw = displayRaw('po', powerMeter);
       out.push({
         key: 'po',
         label: 'Po',
         display: formatPowerWatts(raw),
         fillPct: normalizePower(raw) * 100,
+        peakFillPct: peakFillPctFor('po', raw, normalizePower),
         fill: 'var(--v2-meter-power-fill)',
         track: 'var(--v2-meter-power-track)',
         relevant: txActive,
       });
     }
     if (swrMeter !== undefined) {
-      const raw = heldRaw('swr', swrMeter);
+      const raw = displayRaw('swr', swrMeter);
       out.push({
         key: 'swr',
         label: 'SWR',
         display: formatSwr(raw),
         fillPct: swrLevel(raw) * 100,
+        peakFillPct: peakFillPctFor('swr', raw, swrLevel),
         fill: 'var(--v2-meter-swr-fill)',
         track: 'var(--v2-meter-swr-track)',
         relevant: txActive,
@@ -239,12 +271,13 @@
       });
     }
     if (alcMeter !== undefined) {
-      const raw = heldRaw('alc', alcMeter);
+      const raw = displayRaw('alc', alcMeter);
       out.push({
         key: 'alc',
         label: 'ALC',
         display: formatAlc(raw),
         fillPct: alcLevel(raw) * 100,
+        peakFillPct: peakFillPctFor('alc', raw, alcLevel),
         fill: 'var(--v2-meter-alc-fill)',
         track: 'var(--v2-meter-alc-track)',
         relevant: txActive,
@@ -252,12 +285,13 @@
       });
     }
     if (idMeter !== undefined) {
-      const raw = heldRaw('id', idMeter);
+      const raw = displayRaw('id', idMeter);
       out.push({
         key: 'id',
         label: 'Id',
         display: formatAmps(raw),
         fillPct: idLevel(raw) * 100,
+        peakFillPct: peakFillPctFor('id', raw, idLevel),
         fill: 'var(--v2-meter-id-fill)',
         track: 'var(--v2-meter-id-track)',
         relevant: txActive,
@@ -303,10 +337,11 @@
 
   // Issue #938 — per-tile rAF-driven bar smoothing. Smoothers are keyed by
   // tile.key and reused across renders so the bar carries fractional state
-  // between updates. Peak-hold (`peakPct`) and digit text (`tile.display`)
-  // continue to read raw props; only the bar-fill width is smoothed. Each
-  // smoother is seeded with the tile's current fillPct on first creation so
-  // the initial synchronous render matches the raw target (no flash from 0).
+  // between updates. Peak-hold (`peakFillPct`) and digit text
+  // (`tile.display`) continue to read raw props; only the bar-fill width is
+  // smoothed. Each smoother is seeded with the tile's current fillPct on
+  // first creation so the initial synchronous render matches the raw target
+  // (no flash from 0).
   type Smoother = ReturnType<typeof createSmoother>;
   const smoothers = new Map<Tile['key'], Smoother>();
 
@@ -353,12 +388,6 @@
 
   <div class="dock-grid">
     {#each tiles as tile (tile.key)}
-      {@const peakPct =
-        tile.key === 'po' || tile.key === 'swr' || tile.key === 'alc' || tile.key === 'id'
-          ? peaks[tile.key] !== undefined
-            ? tile.fillPct
-            : undefined
-          : undefined}
       {@const displayPct = smoothers.get(tile.key)?.value ?? tile.fillPct}
       <div
         class="dock-tile"
@@ -388,11 +417,11 @@
             style:width={`${Math.max(0, Math.min(100, displayPct))}%`}
             style:background={tile.fill}
           ></div>
-          {#if peakPct !== undefined && tile.relevant}
+          {#if tile.peakFillPct !== undefined && tile.relevant}
             <div
               class="tile-bar-peak"
               data-testid="peak-marker"
-              style:left={`${Math.max(0, Math.min(100, peakPct))}%`}
+              style:left={`${Math.max(0, Math.min(100, tile.peakFillPct))}%`}
             ></div>
           {/if}
         </div>

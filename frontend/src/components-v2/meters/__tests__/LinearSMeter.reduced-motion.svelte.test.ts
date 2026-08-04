@@ -127,19 +127,141 @@ describe('LinearSMeter — prefers-reduced-motion (MOR-1233)', () => {
     }
   });
 
-  it('does not leave a stale peak indicator after a value drop when reduced motion is preferred', () => {
+  // MOR-1252 owner decision (2026-08-04, option b): under reduced motion the
+  // peak indicator is a STATIC HOLD, not a removal — it latches at the
+  // highest observed value and stays visible (motion removed, information
+  // kept) instead of vanishing. This replaces the MOR-1233-era removal pin
+  // above (peakSegs forced to smoother.value on every update, so the gap
+  // that gates `showPeak` was always 0).
+  it('KILL: holds the peak marker statically after a value drop, instead of vanishing (MOR-1252 static hold)', () => {
     const { restore } = mockReducedMotion(true);
     try {
       const { target, state } = mountReactive({ value: 20 });
       flushSync();
-      // Even at a high value, no held peak line should linger: the peak
-      // tracks the (instantly-snapped) bar value directly under reduced
-      // motion, so peakSegs === smoother.value at all times.
+      // At mount the peak is freshly captured at the current value — no gap
+      // yet, so no marker (unchanged from before).
       expect(peakLineCount(target)).toBe(0);
+
+      // A drop must LATCH the prior peak, not erase it: the marker appears
+      // and holds at the old high-water mark rather than tracking the bar
+      // down to 0. A mutant reverting to the old
+      // `peakSegs = smoother.value` behavior collapses the gap to 0 and
+      // this assertion fails.
+      state.value = 0;
+      flushSync();
+      expect(peakLineCount(target)).toBe(1);
+    } finally {
+      restore();
+    }
+  });
+
+  it('KILL: does not move the held peak marker when fed a further-lower value (true static hold, not a slow follow)', () => {
+    const { restore } = mockReducedMotion(true);
+    try {
+      const { target, state } = mountReactive({ value: 20 });
+      flushSync();
 
       state.value = 0;
       flushSync();
-      expect(peakLineCount(target)).toBe(0);
+      const firstLine = target.querySelector('line[stroke-width="2"]');
+      const xAfterFirstDrop = firstLine?.getAttribute('x1');
+      expect(xAfterFirstDrop).toBeTruthy();
+
+      // A further, even-lower value within the same hold window must NOT
+      // move the latch — a mutant that keeps recomputing the peak as some
+      // function of the live value (rather than truly holding it) would
+      // shift the marker here.
+      state.value = -30;
+      flushSync();
+      const secondLine = target.querySelector('line[stroke-width="2"]');
+      expect(secondLine?.getAttribute('x1')).toBe(xAfterFirstDrop);
+    } finally {
+      restore();
+    }
+  });
+
+  it('KILL: resets the held peak instantly (no glide, no scheduled frames) once the hold window elapses', () => {
+    const { restore } = mockReducedMotion(true);
+    vi.useFakeTimers();
+    vi.setSystemTime(0);
+    try {
+      const { target, state } = mountReactive({ value: 20 });
+      flushSync();
+
+      state.value = 0;
+      flushSync();
+      expect(peakLineCount(target)).toBe(1);
+      rafSpy.mockClear();
+
+      // Advance well past the 1s hold window with NO new sample arriving.
+      // The static-hold design is event-driven (computed on the next real
+      // update), not a ticking reset — nothing should fire on its own, and
+      // no rAF/interval should ever be scheduled under reduced motion.
+      vi.advanceTimersByTime(1500);
+      expect(peakLineCount(target)).toBe(1); // still held — no timer reset it
+      expect(rafSpy).not.toHaveBeenCalled();
+
+      // The next genuine sample after expiry resets in a single synchronous
+      // jump: the marker collapses back onto the live bar immediately
+      // (peakSegs re-seats to the new current value), with no intermediate
+      // decaying frame ever rendered.
+      state.value = -20; // distinct from the previous value, still well below the old peak
+      flushSync();
+      expect(peakLineCount(target)).toBe(0); // reset landed instantly
+      expect(rafSpy).not.toHaveBeenCalled(); // reset was computed, not animated
+    } finally {
+      vi.useRealTimers();
+      restore();
+    }
+  });
+
+  // J2 (verifier finding, MOR-1252 review): the reduce branch reads AND
+  // writes peakSegs/peakTime, so without untrack() it depends on its own
+  // writes and self-invalidates — it only converged incidentally (the
+  // re-seat is idempotent and `||` short-circuits). The verifier's Z5
+  // mutant (a step-glide reset instead of an instant jump) demonstrated
+  // ~140 synchronous effect passes inside a single flush before landing on
+  // the same end state, which is why a *bound* on this effect's pass count
+  // is the cheap regression pin — not just its converged output.
+  //
+  // `performance.now()` is called only from this effect while reduced
+  // motion holds (the smoother's own rAF-driven call site never runs under
+  // reduce, and the non-reduce branch is dead code on this path), so its
+  // call count is a precise, direct proxy for how many times the effect
+  // body actually executed for one external update.
+  //
+  // A drop (current < peakSegs, within the hold window) never writes, so it
+  // cannot discriminate a missing untrack() — measured empirically at
+  // exactly 1 call with or without the wrap, since nothing invalidates a
+  // dependency that was never written. A RISE (current >= peakSegs, the
+  // write-back path) is what discriminates: measured empirically at
+  // exactly 1 call with untrack() correctly scoping the read/write, vs 2
+  // without it (the effect re-runs once more after writing peakSegs to a
+  // genuinely new value, before the idempotent second pass settles) —
+  // proving this effect's dependency set no longer includes its own
+  // writes.
+  it('KILL J2: the reduce-branch peak effect does not self-invalidate on a new-peak write (bounded performance.now() calls)', () => {
+    const { restore } = mockReducedMotion(true);
+    const nowSpy = vi.spyOn(performance, 'now');
+    try {
+      const { state } = mountReactive({ value: 20 });
+      flushSync();
+      nowSpy.mockClear();
+
+      // Drop: no write occurs (current < peakSegs, hold window not
+      // expired) — sanity check that this path stays a single read, not a
+      // kill signal on its own.
+      state.value = 0;
+      flushSync();
+      expect(nowSpy.mock.calls.length).toBe(1);
+
+      // Rise: current >= peakSegs, so this DOES write peakSegs/peakTime —
+      // the actual kill signal. Exactly 1 call proves the effect ran
+      // exactly once; a missing untrack() measures 2 (see comment above).
+      nowSpy.mockClear();
+      state.value = 40;
+      flushSync();
+      expect(nowSpy.mock.calls.length).toBe(1);
     } finally {
       restore();
     }
