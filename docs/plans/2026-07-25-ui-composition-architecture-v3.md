@@ -98,7 +98,7 @@ Layouts are compiled Svelte compositions, not serialized component trees.
 
 Visual grammar: typography, geometry, control families, meter and frequency
 renderers, state indication, motion, density, and surface treatment. Use
-product-owned identifiers such as `rigplane-modern`, `japanese-sdr`,
+product-owned identifiers such as `studioline`, `fieldline`,
 `contest-console`, or `classic-instrument`. Public manufacturer naming requires
 separate brand/legal review.
 
@@ -161,10 +161,12 @@ persistent browser TX controller, and global overlays. Its selection contains
 stable layout, design-language and theme IDs plus `comfortable`, `compact`, or
 `dense` density.
 
-A layout manifest declares identity, zones, responsive policy, and capability
-requirements; its implementation is a lazy-loaded Svelte component. A design
-language manifest declares compatible renderer families and token bundles.
-Manifests support discovery and validation, never executable radio behavior.
+A layout manifest declares identity, zones, responsive policy, and compatible
+topology classes — a pure, transient derived presentation fact (MOR-988), not
+a capability claim; its implementation is a lazy-loaded Svelte component. A
+design language manifest declares compatible renderer families and token
+bundles. Manifests support discovery and validation, never executable radio
+behavior.
 
 Resolution order:
 
