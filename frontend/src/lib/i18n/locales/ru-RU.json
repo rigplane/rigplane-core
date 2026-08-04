@@ -170,6 +170,8 @@
   "core.modePanel.modInputAria": "Источник входной модуляции",
 
   "core.vfo.groupLabel": "VFO",
+  "core.vfo.receiverGroupLabel": "Приёмник {receiver}",
+  "core.vfo.radioWideGroupLabel": "Общие органы управления",
   "core.vfo.activeReceiver.known": "Активный приёмник: {receiver}",
   "core.vfo.activeReceiver.unknown": "Активный приёмник: неизвестно",
   "core.vfo.selectAction": "Выбрать {label}",

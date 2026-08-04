@@ -15,7 +15,8 @@ import {
   type LayoutMode,
 } from '$lib/stores/layout.svelte';
 
-export type SkinId = 'desktop-v2' | 'lcd-cockpit' | 'lcd-scope' | 'mobile' | 'sdr-test';
+export type SkinId =
+  | 'desktop-v2' | 'dual-receiver-cockpit' | 'lcd-cockpit' | 'lcd-scope' | 'mobile' | 'sdr-test';
 
 /**
  * Persisted skin IDs include the legacy `amber-lcd` alias, which routes to
@@ -65,6 +66,12 @@ export function resolveSkinId(ctx: SkinResolutionContext): SkinId {
  */
 const SKIN_LOADERS: Record<SkinId, () => Promise<{ default: Component }>> = {
   'desktop-v2': () => import('./desktop-v2/DesktopSkin.svelte'),
+  // MOR-1068 (F8): the cockpit's layout manifest registers under this exact
+  // id, so it needs the matching loadable SkinId — it was the only registered
+  // manifest the App had no way to load. `resolveSkinId` does not yet return
+  // it (that needs a `LayoutMode` preference and a picker affordance, tracked
+  // separately); the entry here is what makes the id addressable at all.
+  'dual-receiver-cockpit': () => import('./dual-receiver-cockpit/DualReceiverCockpit.svelte'),
   'lcd-cockpit': () => import('./lcd-cockpit/LcdCockpitSkin.svelte'),
   'lcd-scope': () => import('./lcd-scope/LcdScopeSkin.svelte'),
   'mobile': () => import('./mobile/MobileSkin.svelte'),
@@ -108,6 +115,11 @@ export async function loadSkin(id: SkinId): Promise<Component> {
  */
 const SKIN_RESOURCE_PLAN: Record<SkinId, readonly AppResource[]> = {
   'desktop-v2': ['hardware-scope', 'audio-fft'],
+  // Empty by construction: the cockpit mounts the VFO/RX-TX surfaces only —
+  // no SpectrumPanel, no AudioSpectrumPanel. Membership only permits
+  // bridging, so naming a resource this tree cannot consume would be a
+  // presentation manufacturing a live service (v3 ADR invariant 12).
+  'dual-receiver-cockpit': [],
   'lcd-cockpit': ['audio-fft'],
   'lcd-scope': ['audio-fft'],
   'mobile': ['hardware-scope'],

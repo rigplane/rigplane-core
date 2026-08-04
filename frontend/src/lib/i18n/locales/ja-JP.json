@@ -170,6 +170,8 @@
   "core.modePanel.modInputAria": "変調入力ソース",
 
   "core.vfo.groupLabel": "VFO",
+  "core.vfo.receiverGroupLabel": "受信機 {receiver}",
+  "core.vfo.radioWideGroupLabel": "無線機全体の操作",
   "core.vfo.activeReceiver.known": "アクティブな受信機: {receiver}",
   "core.vfo.activeReceiver.unknown": "アクティブな受信機: 不明",
   "core.vfo.selectAction": "{label} を選択",

@@ -21,10 +21,15 @@ describe('the dual-receiver-cockpit real registration', () => {
     expect(getLayout('dual-receiver-cockpit')).toBe(dualReceiverCockpitLayout);
   });
 
-  it('declares primary/secondary VFO zones and one shared RX/TX zone', () => {
+  // MOR-1068 added `global`: the radio-wide half of the `vfo` surface (split
+  // / dual-watch / active receiver) moved out of the first strip into its own
+  // zone. Declaration order is rendered order — the end-to-end binding is
+  // pinned in the shell's component test (MOR-1067 verification F6).
+  it('declares primary/secondary VFO zones, the global row, and one shared RX/TX zone', () => {
     expect(dualReceiverCockpitLayout.zones).toEqual([
       { id: 'primary-vfo', surfaces: ['vfo'] },
       { id: 'secondary-vfo', surfaces: ['vfo'] },
+      { id: 'global', surfaces: ['vfo'] },
       { id: 'rx-tx', surfaces: ['rxTx'] },
     ]);
     expect(dualReceiverCockpitLayout.requiredSemanticSurfaces).toEqual(['vfo', 'rxTx']);

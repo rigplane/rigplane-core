@@ -170,6 +170,8 @@
   "core.modePanel.modInputAria": "Modulation input source",
 
   "core.vfo.groupLabel": "VFOs",
+  "core.vfo.receiverGroupLabel": "Receiver {receiver}",
+  "core.vfo.radioWideGroupLabel": "Radio-wide controls",
   "core.vfo.activeReceiver.known": "Active receiver: {receiver}",
   "core.vfo.activeReceiver.unknown": "Active receiver: unknown",
   "core.vfo.selectAction": "Select {label}",
