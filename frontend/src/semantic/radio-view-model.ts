@@ -127,6 +127,51 @@ export interface TxAuxViewModel {
   driveGain: TxAuxField<number>;
 }
 
+/**
+ * A single meter fact (MOR-1262 decomposition slice 2A): a numeric reading
+ * that is either known or unknown, the MOR-977 two-level `Availability`, and
+ * whether the meter reads meaningfully in the CURRENT RF state.
+ *
+ * `relevant` is the one field of this contract that must NOT be derived from
+ * radio state: TX-gated meters (Po/SWR/ALC/COMP/Id) are relevant exactly when
+ * the App-owned TX authority — the same source as the AppGlobalHost lamp
+ * (MOR-1008/MOR-1059) — says the transmitter may be live. Deriving it from
+ * `radioState.ptt` is the open disagreement MOR-1235 reports, and safety
+ * invariant R9 forbids reintroducing it here: this contract EXPOSES the
+ * authority's conclusion, it never computes one.
+ */
+export type MeterReading = { status: 'known'; value: number } | { status: 'unknown' };
+export interface MeterField {
+  reading: MeterReading;
+  availability: Availability;
+  relevant: boolean;
+}
+
+/**
+ * The authoritative RF state the meters are read against. Member-for-member
+ * the RX/TX surface's own `RfState` (`rx-tx-surface.ts`, MOR-1064) — declared
+ * again here rather than imported because that module already imports this
+ * one, and a contract must not depend on a surface. Agreement is pinned in
+ * `__tests__/meters.test.ts` against the real union and the real reducer.
+ */
+export type MeterRfState = 'receiving' | 'transmitting' | 'uncertain' | 'unknown';
+
+/**
+ * Meter facts (MOR-1262 decomposition slice 2A): S / Po / SWR / ALC / COMP /
+ * Vd / Id — the seven meters the shipped v2 dock renders. Facts only: no
+ * ballistics, no peak-hold, no formatting (those are presentation, slice 2B).
+ */
+export interface MetersViewModel {
+  rfState: MeterRfState;
+  signal: MeterField;
+  power: MeterField;
+  swr: MeterField;
+  alc: MeterField;
+  compression: MeterField;
+  drainVoltage: MeterField;
+  drainCurrent: MeterField;
+}
+
 export interface RadioViewModel {
   topologyId: string;
   vfoScheme: VfoScheme;
@@ -144,6 +189,10 @@ export interface RadioViewModel {
    *  model has no TX-adjacent controls at all. Never emitted as a placeholder
    *  of all-unknowns — see `radio-view-model-adapter.ts`'s evidence gate. */
   readonly txAux?: TxAuxViewModel;
+  /** Absent (MOR-1264 optional group) ⇒ this radio reports no meters at all,
+   *  or the App TX authority was not supplied so no honest TX-relevance could
+   *  be stated — see `radio-view-model-adapter.ts`'s `deriveMeters`. */
+  readonly meters?: MetersViewModel;
 }
 
 const RECEIVER_IDS: readonly ReceiverId[] = ['MAIN', 'SUB'];
@@ -316,6 +365,49 @@ function validateDisabledReason(value: unknown, path: string): DisabledReason {
   return { field: str(v.field, `${path}.field`), code: oneOf(v.code, DISABLED_REASON_CODES, `${path}.code`) };
 }
 
+const METER_RF_STATES: readonly MeterRfState[] = ['receiving', 'transmitting', 'uncertain', 'unknown'];
+
+function validateMeterField(value: unknown, path: string): MeterField {
+  const v = record(value, path);
+  exactKeys(v, ['reading', 'availability', 'relevant'], path);
+  const r = record(v.reading, `${path}.reading`);
+  let reading: MeterReading;
+  if (r.status === 'known') {
+    exactKeys(r, ['status', 'value'], `${path}.reading`);
+    reading = { status: 'known', value: num(r.value, `${path}.reading.value`) };
+  } else if (r.status === 'unknown') {
+    exactKeys(r, ['status'], `${path}.reading`);
+    reading = { status: 'unknown' };
+  } else {
+    invalid(`${path}.reading.status`, "'known' | 'unknown'");
+  }
+  return {
+    reading,
+    availability: validateAvailability(v.availability, `${path}.availability`),
+    relevant: bool(v.relevant, `${path}.relevant`),
+  };
+}
+
+/** This `exactKeys` list is exactly the seven meters the adapter reads plus
+ *  the authoritative `rfState` — no speculative keys (MOR-1244 finding N4).
+ *  See `radio-view-model-adapter.ts::deriveMeters`. */
+function validateMeters(value: unknown, path: string): MetersViewModel {
+  const v = record(value, path);
+  exactKeys(v, [
+    'rfState', 'signal', 'power', 'swr', 'alc', 'compression', 'drainVoltage', 'drainCurrent',
+  ], path);
+  return {
+    rfState: oneOf(v.rfState, METER_RF_STATES, `${path}.rfState`),
+    signal: validateMeterField(v.signal, `${path}.signal`),
+    power: validateMeterField(v.power, `${path}.power`),
+    swr: validateMeterField(v.swr, `${path}.swr`),
+    alc: validateMeterField(v.alc, `${path}.alc`),
+    compression: validateMeterField(v.compression, `${path}.compression`),
+    drainVoltage: validateMeterField(v.drainVoltage, `${path}.drainVoltage`),
+    drainCurrent: validateMeterField(v.drainCurrent, `${path}.drainCurrent`),
+  };
+}
+
 const ATU_STATUSES: readonly AtuStatus[] = ['off', 'on', 'tuning'];
 
 function validateTxAuxField<T>(
@@ -370,7 +462,7 @@ export function validateRadioViewModel(value: unknown): RadioViewModel {
   const v = record(value, '$');
   exactKeys(v, [
     'topologyId', 'vfoScheme', 'activeReceiver', 'vfos', 'split', 'dualWatch',
-    'txTarget', 'txPermit', 'scope', 'disabledReasons', 'txAux',
+    'txTarget', 'txPermit', 'scope', 'disabledReasons', 'txAux', 'meters',
   ], '$');
   if (!Array.isArray(v.vfos)) invalid('$.vfos', 'an array');
   if (!Array.isArray(v.disabledReasons)) invalid('$.disabledReasons', 'an array');
@@ -399,6 +491,7 @@ export function validateRadioViewModel(value: unknown): RadioViewModel {
   // consumer that inventories keys (see the adapter test's exact-key-list
   // assertion this was verified against).
   const txAux = optionalGroup(v.txAux, '$.txAux', validateTxAux);
+  const meters = optionalGroup(v.meters, '$.meters', validateMeters);
 
   return {
     topologyId: str(v.topologyId, '$.topologyId'),
@@ -415,5 +508,6 @@ export function validateRadioViewModel(value: unknown): RadioViewModel {
     },
     disabledReasons: v.disabledReasons.map((r, i) => validateDisabledReason(r, `$.disabledReasons[${i}]`)),
     ...(txAux !== undefined ? { txAux } : {}),
+    ...(meters !== undefined ? { meters } : {}),
   };
 }
