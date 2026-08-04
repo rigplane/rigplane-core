@@ -9,7 +9,7 @@
  * classes: a single-receiver radio has nothing to put in a second strip, so
  * this layout must not mount for one — `fallbackLayoutId` sends it to the
  * already-registered, all-topology `sdr-test` layout instead (MOR-976
- * "degrades safely" acceptance). `sizing: fluid` encodes the MOR-1160
+ * "degrades safely" acceptance). `stageSizing: fluid` encodes the MOR-1160
  * chrome-fluid half of the sizing axis: this shell composes only VFO/RX-TX
  * status text today (no fixed-native instrument glass yet), so it always
  * fits, at any viewport.
@@ -28,7 +28,7 @@ export const dualReceiverCockpitLayout: LayoutManifest = {
   ],
   compatibleTopologies: ['2/ab_shared', '2/main_sub'],
   requiredSemanticSurfaces: ['vfo', 'rxTx'],
-  sizing: { mode: 'fluid', responsiveBreakpoints: [] },
+  stageSizing: { mode: 'fluid', responsiveBreakpoints: [] },
   fallbackLayoutId: 'sdr-test',
 };
 

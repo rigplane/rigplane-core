@@ -87,7 +87,7 @@ describe('MOR-1160 sizing axis — the LCD is the fixed-native archetype', () =>
   // Kills: leaving the LCD on `fluid`, or drifting off the native stage size
   // MOR-1160 froze for the incoming LCD directions (1280x540).
   it.each(LCD_LAYOUTS)('"%s" declares the frozen fixed-native stage', (_id, manifest) => {
-    expect(manifest.sizing).toEqual({
+    expect(manifest.stageSizing).toEqual({
       mode: 'fixed-native', nativeW: 1280, nativeH: 540, minScale: 0.5,
     });
   });

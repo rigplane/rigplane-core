@@ -130,11 +130,11 @@ describe('fallback re-validation (review cycle 1, F1)', () => {
   // portrait-mobile exclusion for the fallback layout itself.
   it('a fixed-native fallback that itself fails minScale resolves to undefined, not the fallback', () => {
     registerLayout(validLayoutManifest({
-      id: 'f1-vp-fallback', sizing: { mode: 'fixed-native', nativeW: 1280, nativeH: 540, minScale: 0.5 },
+      id: 'f1-vp-fallback', stageSizing: { mode: 'fixed-native', nativeW: 1280, nativeH: 540, minScale: 0.5 },
     }));
     registerLayout(validLayoutManifest({
       id: 'f1-vp-primary',
-      sizing: { mode: 'fixed-native', nativeW: 1280, nativeH: 540, minScale: 0.5 },
+      stageSizing: { mode: 'fixed-native', nativeW: 1280, nativeH: 540, minScale: 0.5 },
       fallbackLayoutId: 'f1-vp-fallback',
     }));
     // Same tiny viewport fails minScale for both primary and fallback.
@@ -146,7 +146,7 @@ describe('fallback re-validation (review cycle 1, F1)', () => {
 describe('viewport resolution (MOR-1160 sizing)', () => {
   it('a fixed-native layout resolves when the achievable scale meets minScale', () => {
     registerLayout(validLayoutManifest({
-      id: 'fixed-fit-test', sizing: { mode: 'fixed-native', nativeW: 1280, nativeH: 540, minScale: 0.5 },
+      id: 'fixed-fit-test', stageSizing: { mode: 'fixed-native', nativeW: 1280, nativeH: 540, minScale: 0.5 },
     }));
     expect(resolveLayoutForViewport('fixed-fit-test', { width: 1280, height: 540 })?.id).toBe('fixed-fit-test');
   });
@@ -155,11 +155,11 @@ describe('viewport resolution (MOR-1160 sizing)', () => {
   // minScale for a fixed-native layout (the MOR-1066 comment's explicit ask).
   it('falls back below minScale — portrait mobile is excluded arithmetically, no special-cased branch', () => {
     registerLayout(validLayoutManifest({
-      id: 'fixed-portrait-fallback', sizing: { mode: 'fluid', responsiveBreakpoints: [] },
+      id: 'fixed-portrait-fallback', stageSizing: { mode: 'fluid', responsiveBreakpoints: [] },
     }));
     registerLayout(validLayoutManifest({
       id: 'fixed-portrait-primary',
-      sizing: { mode: 'fixed-native', nativeW: 1280, nativeH: 540, minScale: 0.5 },
+      stageSizing: { mode: 'fixed-native', nativeW: 1280, nativeH: 540, minScale: 0.5 },
       fallbackLayoutId: 'fixed-portrait-fallback',
     }));
     // iPhone-class portrait viewport: min(390/1280, 844/540) ≈ 0.30 < 0.5.
@@ -169,7 +169,7 @@ describe('viewport resolution (MOR-1160 sizing)', () => {
 
   it('a fluid layout always fits — breakpoints are reflow hints, not a hard gate', () => {
     registerLayout(validLayoutManifest({
-      id: 'fluid-always-fits', sizing: { mode: 'fluid', responsiveBreakpoints: [600] },
+      id: 'fluid-always-fits', stageSizing: { mode: 'fluid', responsiveBreakpoints: [600] },
     }));
     expect(resolveLayoutForViewport('fluid-always-fits', { width: 100, height: 100 })?.id).toBe('fluid-always-fits');
   });

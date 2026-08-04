@@ -6,9 +6,10 @@
  * family, alongside `./lcd-declarations.ts` (MOR-1092).
  *
  * A manifest is a DECLARATION, never behaviour. `loader` names the existing
- * skin entrypoint with no change to it, and `sizing` records the assignment
- * MOR-1160 froze without implementing it — the shared ScaledStage primitive
- * owns measurement and the transform (MOR-1160 constraint 1), never a layout.
+ * skin entrypoint with no change to it, and `stageSizing` records the
+ * assignment MOR-1160 froze without implementing it — the shared ScaledStage
+ * primitive owns measurement and the transform (MOR-1160 constraint 1), never
+ * a layout.
  * In particular this manifest does NOT take over the shell's own orientation
  * handling: `isLandscape` still drives which PTT surface is mounted, and that
  * is live safety behaviour, not a sizing declaration.
@@ -54,7 +55,7 @@ export const mobileLayout: LayoutManifest = {
   // single- and dual-receiver topologies are both structurally supported.
   compatibleTopologies: ['1/single', '1/ab', '2/ab_shared', '2/main_sub'],
   requiredSemanticSurfaces: ['vfo', 'rxTx'],
-  sizing: MOBILE_FLUID_SIZING,
+  stageSizing: MOBILE_FLUID_SIZING,
   // Terminal by construction: a fluid layout never fails a viewport, so a hop
   // off mobile would be unreachable and would only mask a real failure.
   fallbackLayoutId: null,
