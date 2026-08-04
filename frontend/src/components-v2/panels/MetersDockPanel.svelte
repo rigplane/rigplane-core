@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onMount, untrack } from 'svelte';
-  import { createSmoother } from '$lib/utils/smoothing.svelte';
+  import { createSmoother, onReducedMotionChange, prefersReducedMotion } from '$lib/utils/smoothing.svelte';
   import {
     alcLevel,
     compLevel,
@@ -124,10 +124,75 @@
   // A 100ms interval drives both the decay and the latch from fresh
   // prop samples. Driving everything off a timer (not a reactive $effect)
   // avoids the read-then-write cycle on `peaks` that Svelte 5 flags.
+  //
+  // MOR-1249: mirrors the MOR-1233 fix already shipped for LinearSMeter's
+  // own rAF peak-hold loop — under `prefers-reduced-motion` there is no
+  // hold-then-decay animation, so the interval is not scheduled at all (no
+  // ticks) and any already-latched peak is cleared. With `peaks[key]`
+  // undefined, `heldRaw()` (peakHoldDisplay with state=undefined) falls
+  // through to the live raw sample every render, so the NUMBER and the bar
+  // FILL track raw input with zero glide — matching "snap, never freeze".
+  //
+  // Clearing the latch also stops the peak MARKER from rendering while
+  // reduced, because its render gate is `peaks[tile.key] !== undefined`
+  // (latch existence) — unlike LinearSMeter's `showPeak = peakSegs -
+  // smoother.value > 0.3` (a value comparison). That means the marker's
+  // disappearance here is a deliberate choice, mirroring the removal
+  // MOR-1233 already shipped for LinearSMeter, not an unavoidable
+  // consequence of the snap fix itself — a gate keyed on `tile.fillPct`
+  // instead of latch existence could keep the marker visible at the live
+  // position with the identical zero-glide motion profile. Provisional
+  // pending the MOR-1252 owner decision (which now explicitly names
+  // MetersDockPanel alongside LinearSMeter) on whether peak indicators
+  // should render at all, or hold statically, under reduced motion.
+  //
+  // Reacts to the OS preference flipping mid-session in both directions
+  // (fix cycle 1 precedent: deciding once at mount is not enough).
   $effect(() => {
-    untrack(() => stepAllPeaks());
-    const id = setInterval(() => untrack(() => stepAllPeaks()), 100);
-    return () => clearInterval(id);
+    let intervalId: ReturnType<typeof setInterval> | null = null;
+
+    function startTicking() {
+      if (intervalId) return;
+      intervalId = setInterval(() => untrack(() => stepAllPeaks()), 100);
+    }
+
+    function stopTicking() {
+      if (intervalId) {
+        clearInterval(intervalId);
+        intervalId = null;
+      }
+    }
+
+    function snapPeaks() {
+      untrack(() => {
+        if (peaks.po !== undefined) peaks.po = undefined;
+        if (peaks.swr !== undefined) peaks.swr = undefined;
+        if (peaks.alc !== undefined) peaks.alc = undefined;
+        if (peaks.id !== undefined) peaks.id = undefined;
+      });
+    }
+
+    if (prefersReducedMotion()) {
+      snapPeaks();
+    } else {
+      untrack(() => stepAllPeaks());
+      startTicking();
+    }
+
+    const unsubscribe = onReducedMotionChange((reduced) => {
+      if (reduced) {
+        stopTicking();
+        snapPeaks();
+      } else if (!intervalId) {
+        untrack(() => stepAllPeaks());
+        startTicking();
+      }
+    });
+
+    return () => {
+      stopTicking();
+      unsubscribe();
+    };
   });
 
   function resetPeak(key: PeakKey) {
