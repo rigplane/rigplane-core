@@ -1,7 +1,7 @@
 # CLAUDE.md — Control Plane
 
 **rigplane** v2.0.0 — Python 3.11+ asyncio library + Web UI for Icom transceivers over LAN/USB.
-IC-7610 at `192.168.55.40`, CI-V `0x98`. Context: `docs/PROJECT.md`.
+Live bench: **IC-7300, FTX-1, X6200**. *(IC-7610 retired 2026-08-04.)* Context: `docs/PROJECT.md`.
 
 ---
 
