@@ -172,6 +172,67 @@ export interface MetersViewModel {
   drainCurrent: MeterField;
 }
 
+/**
+ * A single RX-audio fact (MOR-1262 decomposition slice 3A, MOR-1274). Shape-
+ * identical to `TxAuxField` — `{reading, availability}`, no third member —
+ * so it is declared as an alias rather than a near-duplicate: one field shape
+ * for every non-meter fact family, and slice 1A's declaration is left
+ * untouched. The validator is shared for the same reason.
+ */
+export type RxAudioReading<T> = TxAuxReading<T>;
+export type RxAudioField<T> = TxAuxField<T>;
+
+/** What the operator is listening to, verbatim the shipped `RxAudioProps`
+ *  vocabulary (`lib/runtime/props/panel-props.ts::toRxAudioProps`): `local` =
+ *  the rig's own speaker, `live` = the browser RX stream, `mute` = silenced. */
+export type MonitorMode = 'local' | 'live' | 'mute';
+
+/** Dual-receiver audio routing focus, verbatim `AudioRoutingControl.svelte`. */
+export type AudioFocus = 'main' | 'sub' | 'both';
+
+/**
+ * MOD-input readiness — the recorded "web voice TX = noise/squeal" guard.
+ * Member-for-member `lib/runtime/adapters/tx-capabilities.ts`'s own
+ * `ModInputReadiness`, declared again here for the same reason `MeterRfState`
+ * is (a contract must not depend on an adapter); the adapter EXPOSES
+ * `deriveTxCapabilities(...).modInputReadiness` rather than re-deriving it,
+ * and both the union and the derivation are pinned in `__tests__/rx-audio.test.ts`.
+ * `mismatch` is the failure the whole family exists to make visible: the rig
+ * is modulating from MIC/ACC/USB while the web UI streams audio over LAN.
+ */
+export type ModInputReadiness =
+  | { status: 'not-applicable' }
+  | { status: 'ready'; source: number }
+  | { status: 'mismatch'; source: number }
+  | { status: 'unknown' };
+
+/**
+ * RX audio-chain facts (MOR-1262 decomposition slice 3A). Facts only — no
+ * transport, no AudioContext, no lifetime: audio lifetime is App-owned
+ * (MOR-1058, MOR-972 P0) and this group is a pure read-model over a snapshot
+ * the App hands in. Constructing or serializing it must never start a stream.
+ *
+ * `monitorMode` and `liveAudio` come from that App-owned snapshot (the same
+ * relationship `meters.rfState` has to the TX authority); `afLevel` /
+ * `routingFocus` / `routingSplit` / `modInputSource` are two-level-gated facts
+ * that degrade to `unknown` rather than to the shipped panel's fabricated
+ * defaults (0.5 AF, 'both' focus).
+ */
+export interface RxAudioViewModel {
+  monitorMode: MonitorMode;
+  /** Structural = the radio streams audio at all; operational = the audio WS
+   *  is up. Without it a surface cannot honestly offer the `live` mode. */
+  liveAudio: Availability;
+  /** 0..1. In `live` mode the browser volume; otherwise the radio's AF level —
+   *  and `unknown` when that field was never observed, never 0.5. */
+  afLevel: RxAudioField<number>;
+  routingFocus: RxAudioField<AudioFocus>;
+  routingSplit: RxAudioField<boolean>;
+  /** The active DATA group's MOD-input source enum (`$lib/radio/mod-input`). */
+  modInputSource: RxAudioField<number>;
+  modInputReadiness: ModInputReadiness;
+}
+
 export interface RadioViewModel {
   topologyId: string;
   vfoScheme: VfoScheme;
@@ -193,6 +254,10 @@ export interface RadioViewModel {
    *  or the App TX authority was not supplied so no honest TX-relevance could
    *  be stated — see `radio-view-model-adapter.ts`'s `deriveMeters`. */
   readonly meters?: MetersViewModel;
+  /** Absent (MOR-1264 optional group) ⇒ the App-owned RX-audio snapshot was
+   *  not supplied, or this radio has no RX-audio chain to describe — see
+   *  `radio-view-model-adapter.ts`'s `deriveRxAudio`. */
+  readonly rxAudio?: RxAudioViewModel;
 }
 
 const RECEIVER_IDS: readonly ReceiverId[] = ['MAIN', 'SUB'];
@@ -454,6 +519,56 @@ function validateTxAux(value: unknown, path: string): TxAuxViewModel {
   };
 }
 
+const MONITOR_MODES: readonly MonitorMode[] = ['local', 'live', 'mute'];
+const AUDIO_FOCUSES: readonly AudioFocus[] = ['main', 'sub', 'both'];
+
+/** The `source` carried by `ready`/`mismatch` is the offending/confirmed
+ *  MOD-input enum value; a bare status must NOT carry one (that would make
+ *  "not applicable" indistinguishable from a read). */
+function validateModInputReadiness(value: unknown, path: string): ModInputReadiness {
+  const v = record(value, path);
+  if (v.status === 'ready') {
+    exactKeys(v, ['status', 'source'], path);
+    return { status: 'ready', source: num(v.source, `${path}.source`) };
+  }
+  if (v.status === 'mismatch') {
+    exactKeys(v, ['status', 'source'], path);
+    return { status: 'mismatch', source: num(v.source, `${path}.source`) };
+  }
+  if (v.status === 'not-applicable') {
+    exactKeys(v, ['status'], path);
+    return { status: 'not-applicable' };
+  }
+  if (v.status === 'unknown') {
+    exactKeys(v, ['status'], path);
+    return { status: 'unknown' };
+  }
+  invalid(`${path}.status`, "'not-applicable' | 'ready' | 'mismatch' | 'unknown'");
+}
+
+/** N4 again: exactly the seven facts the adapter reads, no speculative keys.
+ *  The per-field validator is `validateTxAuxField` — `RxAudioField` IS
+ *  `TxAuxField`, so sharing it is the alias's whole point, not a shortcut.
+ *  See `radio-view-model-adapter.ts::deriveRxAudio`. */
+function validateRxAudio(value: unknown, path: string): RxAudioViewModel {
+  const v = record(value, path);
+  exactKeys(v, [
+    'monitorMode', 'liveAudio', 'afLevel', 'routingFocus', 'routingSplit',
+    'modInputSource', 'modInputReadiness',
+  ], path);
+  return {
+    monitorMode: oneOf(v.monitorMode, MONITOR_MODES, `${path}.monitorMode`),
+    liveAudio: validateAvailability(v.liveAudio, `${path}.liveAudio`),
+    afLevel: validateTxAuxField(v.afLevel, `${path}.afLevel`, num),
+    routingFocus: validateTxAuxField(
+      v.routingFocus, `${path}.routingFocus`, (val, p) => oneOf(val, AUDIO_FOCUSES, p),
+    ),
+    routingSplit: validateTxAuxField(v.routingSplit, `${path}.routingSplit`, bool),
+    modInputSource: validateTxAuxField(v.modInputSource, `${path}.modInputSource`, num),
+    modInputReadiness: validateModInputReadiness(v.modInputReadiness, `${path}.modInputReadiness`),
+  };
+}
+
 /** Runtime validator (repo idiom: throws TypeError with a `$.path`, see `validateCapabilities`).
  *  Also enforces two cross-field invariants (review cycle 1, V1): `txPermit`
  *  cannot be 'allowed' while `txTarget` is unknown (no fail-open), and
@@ -462,7 +577,7 @@ export function validateRadioViewModel(value: unknown): RadioViewModel {
   const v = record(value, '$');
   exactKeys(v, [
     'topologyId', 'vfoScheme', 'activeReceiver', 'vfos', 'split', 'dualWatch',
-    'txTarget', 'txPermit', 'scope', 'disabledReasons', 'txAux', 'meters',
+    'txTarget', 'txPermit', 'scope', 'disabledReasons', 'txAux', 'meters', 'rxAudio',
   ], '$');
   if (!Array.isArray(v.vfos)) invalid('$.vfos', 'an array');
   if (!Array.isArray(v.disabledReasons)) invalid('$.disabledReasons', 'an array');
@@ -492,6 +607,7 @@ export function validateRadioViewModel(value: unknown): RadioViewModel {
   // assertion this was verified against).
   const txAux = optionalGroup(v.txAux, '$.txAux', validateTxAux);
   const meters = optionalGroup(v.meters, '$.meters', validateMeters);
+  const rxAudio = optionalGroup(v.rxAudio, '$.rxAudio', validateRxAudio);
 
   return {
     topologyId: str(v.topologyId, '$.topologyId'),
@@ -509,5 +625,6 @@ export function validateRadioViewModel(value: unknown): RadioViewModel {
     disabledReasons: v.disabledReasons.map((r, i) => validateDisabledReason(r, `$.disabledReasons[${i}]`)),
     ...(txAux !== undefined ? { txAux } : {}),
     ...(meters !== undefined ? { meters } : {}),
+    ...(rxAudio !== undefined ? { rxAudio } : {}),
   };
 }

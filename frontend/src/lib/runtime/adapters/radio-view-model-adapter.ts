@@ -28,13 +28,17 @@ import type { ServerState } from '$lib/types/state';
 import type {
   RadioViewModel, TxAuxField, TxAuxViewModel, AtuStatus,
   MeterField, MeterRfState, MetersViewModel,
+  AudioFocus, MonitorMode, RxAudioViewModel,
 } from '../../../semantic/radio-view-model';
 import type { TxAuthoritySnapshot } from '../../../semantic/rx-tx-surface';
 import { isFieldAvailable } from '$lib/state/field-status';
+import { modInputStateKey } from '$lib/radio/mod-input';
 import {
   derivePresentationCapabilities, type ReceiverId, type VfoSlotId,
 } from './presentation-capabilities';
-import { deriveTxCapabilities } from './tx-capabilities';
+import {
+  deriveTxCapabilities, type ModInputSource, type TxCapabilityFacts,
+} from './tx-capabilities';
 
 type Slot = { kind: 'slotted'; id: VfoSlotId } | { kind: 'unslotted' } | { kind: 'unknown' };
 type Fact = { status: 'known'; value: boolean } | { status: 'unknown' };
@@ -257,6 +261,96 @@ function deriveMeters(
 }
 
 /**
+ * The App-owned RX-audio snapshot the `rxAudio` facts are read against
+ * (MOR-1262 slice 3A). It is an INPUT, deliberately: audio lifetime belongs to
+ * the App (MOR-1058) and building a view model must never open, start or probe
+ * the audio path (MOR-972 P0). Nothing in this file imports `audio-manager`,
+ * `ws-client` or `AudioContext`; the caller reads its own already-live state
+ * (`runtime.audio`, `runtime.connectionAudio`, the routing prefs
+ * `AudioRoutingControl` restores) and hands the values in. Pinned by
+ * `__tests__/rx-audio-purity.test.ts`.
+ */
+export interface RxAudioSnapshot {
+  /** `AudioUiState` (`lib/runtime/props/panel-props.ts`), verbatim. */
+  muted: boolean;
+  rxEnabled: boolean;
+  /** 0..100 browser RX volume. */
+  volume: number;
+  /** Audio-WS link health (`runtime.connectionAudio`). */
+  connected: boolean;
+  /** Browser-side routing prefs; absent/null ⇒ never restored, so the routing
+   *  facts read `unknown` rather than the control's own 'both'/false defaults. */
+  routing?: { focus: AudioFocus; splitStereo: boolean } | null;
+}
+
+/**
+ * Projects the active DATA group's MOD-input source exactly as the App TX
+ * authority does (`tx-controller/app-authority.ts::projectInputs`): the same
+ * three-part `seen()` gate and the same `Number.isSafeInteger` value check.
+ * Agreement with the real projector is pinned in
+ * `__tests__/rx-audio-adapter.test.ts` rather than assumed.
+ */
+function projectModInputSource(state: ServerState | null): ModInputSource {
+  const rx = state?.active === 'SUB' ? state.sub : state?.main;
+  const key = modInputStateKey(rx?.dataMode ?? 0);
+  const source = state?.[key];
+  return seen(state, key) && typeof source === 'number' && Number.isSafeInteger(source)
+    ? { status: 'known', source }
+    : { status: 'unknown' };
+}
+
+/**
+ * RX audio-chain facts. Same positive-evidence discipline as `deriveTxAux`
+ * (N3) and `deriveMeters`: NO App snapshot ⇒ NO group (there is no honest
+ * monitor mode to state, and guessing one from a store this layer does not own
+ * is the MOR-972 failure), and a radio with no AF control, no live audio, no
+ * dual-RX routing and no MOD-input routing gets no all-unknowns placeholder.
+ *
+ * SAFETY: `modInputReadiness` is `deriveTxCapabilities`'s own conclusion,
+ * passed straight through. It is NOT re-derived here — the "web voice TX =
+ * noise" guard has exactly one derivation in this codebase and this contract
+ * exposes it, the same way the meters group exposes the TX authority's.
+ */
+function deriveRxAudio(
+  state: ServerState | null, caps: Capabilities | null, facts: TxCapabilityFacts,
+  modInputSource: ModInputSource, audio: RxAudioSnapshot | null | undefined,
+): RxAudioViewModel | undefined {
+  if (!audio) return undefined;
+  const hasLiveAudio = hasCap(caps, 'audio');
+  // `toRxAudioProps`'s own gate: the radio's AF control, or the browser stream.
+  const hasAfLevel = hasCap(caps, 'af_level') || hasLiveAudio;
+  const hasDualRx = hasCap(caps, 'dual_rx');
+  const hasModInput = facts.modInputRoutingAvailable;
+  if (!hasAfLevel && !hasLiveAudio && !hasDualRx && !hasModInput) return undefined;
+  // Byte-identical to `toRxAudioProps`'s monitor-mode derivation; parity across
+  // the whole matrix is pinned in `__tests__/rx-audio-adapter.test.ts`.
+  const monitorMode: MonitorMode = audio.muted
+    ? 'mute'
+    : audio.rxEnabled && hasLiveAudio ? 'live' : 'local';
+  const onSub = state?.active === 'SUB';
+  const rx = onSub ? state?.sub : state?.main;
+  const afObserved = state !== null && topFieldAvailable(state, onSub ? 'sub.afLevel' : 'main.afLevel');
+  // In `live` mode AF is the browser volume the App already owns, so it is
+  // known by construction; otherwise it is the radio's own gated field — and
+  // `unknown` when unobserved, where the shipped panel substitutes 0.5.
+  const live = monitorMode === 'live';
+  const afLevel = live ? numOrUndef(audio.volume / 100) : (afObserved ? numOrUndef(rx?.afLevel) : undefined);
+  const routing = audio.routing ?? null;
+  const source = modInputSource.status === 'known' ? modInputSource.source : undefined;
+  return {
+    monitorMode,
+    liveAudio: { structural: hasLiveAudio, operational: hasLiveAudio && audio.connected },
+    // `txAuxField` is the shared `{reading, availability}` builder — `RxAudioField`
+    // IS `TxAuxField` (see the contract's alias), so there is one builder, not a fork.
+    afLevel: txAuxField(hasAfLevel, live || afObserved, afLevel),
+    routingFocus: txAuxField(hasDualRx, routing !== null, routing?.focus),
+    routingSplit: txAuxField(hasDualRx, routing !== null, routing?.splitStereo),
+    modInputSource: txAuxField(hasModInput, source !== undefined, source),
+    modInputReadiness: facts.modInputReadiness,
+  };
+}
+
+/**
  * `null` when there is nothing safe to render at all: capabilities have not
  * loaded, or they describe a topology that contradicts itself
  * (`derivePresentationCapabilities` diagnoses that, and a contradictory
@@ -265,6 +359,7 @@ function deriveMeters(
 export function toRadioViewModel(
   state: ServerState | null, caps: Capabilities | null,
   tx?: MetersTxAuthority | null,
+  rxAudioSnapshot?: RxAudioSnapshot | null,
 ): RadioViewModel | null {
   if (!caps) return null;
   const presentation = derivePresentationCapabilities(caps);
@@ -286,9 +381,11 @@ export function toRadioViewModel(
       reason: state?.fieldStatus?.txTarget?.availability === 'stale'
         ? 'stale' as const : 'not-observed' as const,
     };
-  const facts = deriveTxCapabilities(caps, {
-    txTarget: observedTarget, modInputSource: { status: 'unknown' },
-  });
+  // MOR-1274: the REAL projected MOD-input source, not a stub — it is the sole
+  // input to `modInputReadiness`, the "web voice TX = noise" guard the rxAudio
+  // group exposes. No other fact this call returns depends on it.
+  const modInputSource = projectModInputSource(state);
+  const facts = deriveTxCapabilities(caps, { txTarget: observedTarget, modInputSource });
   const target = facts.txTarget;
   const txTarget = target.status === 'known'
     ? {
@@ -391,6 +488,7 @@ export function toRadioViewModel(
   // reasoning as the validator's own omission below `validateRadioViewModel`.
   const txAux = deriveTxAux(state, caps);
   const meters = deriveMeters(state, caps, tx);
+  const rxAudio = deriveRxAudio(state, caps, facts, modInputSource, rxAudioSnapshot);
 
   return {
     topologyId: `${topology.structuralCount}/${topology.scheme}`,
@@ -405,5 +503,6 @@ export function toRadioViewModel(
     disabledReasons,
     ...(txAux !== undefined ? { txAux } : {}),
     ...(meters !== undefined ? { meters } : {}),
+    ...(rxAudio !== undefined ? { rxAudio } : {}),
   };
 }
