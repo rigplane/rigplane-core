@@ -120,6 +120,18 @@ function peakMarkerCount(t: HTMLElement): number {
   return t.querySelectorAll('[data-testid="peak-marker"]').length;
 }
 
+function peakMarkerLeft(t: HTMLElement, meterKey = 'po'): string | null {
+  const el = t.querySelector(
+    `[data-meter="${meterKey}"] [data-testid="peak-marker"]`,
+  ) as HTMLElement | null;
+  return el?.style.left ?? null;
+}
+
+function tileBarFillWidth(t: HTMLElement, meterKey = 'po'): string | null {
+  const el = t.querySelector(`[data-meter="${meterKey}"] .tile-bar-fill`) as HTMLElement | null;
+  return el?.style.width ?? null;
+}
+
 describe('MetersDockPanel — prefers-reduced-motion (MOR-1249)', () => {
   it('schedules no decay interval when reduced motion is preferred at mount', () => {
     const { restore } = mockReducedMotion(true);
@@ -161,18 +173,77 @@ describe('MetersDockPanel — prefers-reduced-motion (MOR-1249)', () => {
     }
   });
 
-  // Removal semantics — provisional pending MOR-1252: the marker is gated
-  // on latch existence (`peaks[tile.key] !== undefined`), not on a value
-  // comparison, so its disappearance here is a deliberate implementation
-  // choice (mirroring LinearSMeter's shipped removal), not an unavoidable
-  // consequence of the snap fix. This test pins the CURRENT behavior; it
-  // is expected to change if MOR-1252 rules for a static/visible hold
-  // instead of removal.
-  it('renders no peak marker under reduced motion (removal semantics — provisional pending MOR-1252)', () => {
+  // MOR-1252 owner decision (2026-08-04, option b): the peak marker is a
+  // STATIC HOLD under reduced motion, not a removal — it latches at the
+  // highest observed value and stays visible while the NUMBER (pinned live
+  // above) keeps tracking the raw sample. This replaces the MOR-1249-era
+  // removal pin (`snapPeaks()` used to clear `peaks[key]` outright, which
+  // gated the marker's render condition to always-false under reduce).
+  it('KILL: renders and holds the peak marker under reduced motion, decoupled from the live NUMBER (MOR-1252 static hold)', () => {
     const { restore } = mockReducedMotion(true);
     try {
-      const { t } = mountReactive({ powerMeter: 212, txActive: true });
-      expect(peakMarkerCount(t)).toBe(0);
+      const { t, state } = mountReactive({ powerMeter: 212, txActive: true });
+      expect(peakMarkerCount(t)).toBe(1);
+
+      // A drop must NOT move or remove the held marker — only the NUMBER
+      // (already pinned live above) reflects the new sample. A mutant that
+      // reverts to clearing `peaks[key]` under reduce (the old removal
+      // fix) makes the marker vanish here.
+      state.powerMeter = 5;
+      flushSync();
+      expect(peakMarkerCount(t)).toBe(1);
+      expect(poNumber(t)).toBeLessThan(10); // number stays live, not frozen
+    } finally {
+      restore();
+    }
+  });
+
+  it('KILL: does not move the held peak marker when fed a further-lower value (true static hold)', () => {
+    const { restore } = mockReducedMotion(true);
+    try {
+      const { t, state } = mountReactive({ powerMeter: 212, txActive: true });
+      const leftAfterMount = peakMarkerLeft(t);
+      expect(leftAfterMount).toBeTruthy();
+
+      state.powerMeter = 5;
+      flushSync();
+      expect(peakMarkerLeft(t)).toBe(leftAfterMount); // unchanged — latch held
+
+      state.powerMeter = 1;
+      flushSync();
+      expect(peakMarkerLeft(t)).toBe(leftAfterMount); // still unchanged
+    } finally {
+      restore();
+    }
+  });
+
+  it('KILL: resets the held peak instantly (no glide) once the hold window elapses, with no interval ever scheduled', () => {
+    const { restore } = mockReducedMotion(true);
+    try {
+      const { t, state } = mountReactive({ powerMeter: 212, txActive: true });
+      const highLeft = peakMarkerLeft(t);
+      expect(highLeft).toBeTruthy();
+
+      state.powerMeter = 5;
+      flushSync();
+      expect(peakMarkerLeft(t)).toBe(highLeft); // held
+
+      // Advance well past PEAK_DECAY_MS (1500ms) with no new sample — the
+      // static-hold design is event-driven (computed on the next real
+      // update), not a ticking reset: nothing should fire on its own.
+      vi.advanceTimersByTime(2000);
+      expect(netActiveIntervals()).toBe(0);
+      expect(peakMarkerLeft(t)).toBe(highLeft); // still held — no timer reset it
+
+      // The next genuine sample after expiry resets in a single synchronous
+      // jump, landing exactly at the fresh sample's own live position (not
+      // decayed/interpolated toward it) — proving the reset is a re-seat,
+      // not a partial glide.
+      state.powerMeter = 3;
+      flushSync();
+      const resetLeft = peakMarkerLeft(t);
+      expect(resetLeft).not.toBe(highLeft);
+      expect(parseFloat(resetLeft ?? '')).toBeCloseTo(parseFloat(tileBarFillWidth(t) ?? ''), 5);
     } finally {
       restore();
     }

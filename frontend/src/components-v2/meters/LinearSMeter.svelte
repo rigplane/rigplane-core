@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { onMount } from 'svelte';
+  import { onMount, untrack } from 'svelte';
   import { createSmoother, prefersReducedMotion, onReducedMotionChange } from '$lib/utils/smoothing.svelte';
   import {
     calibratedToSegments,
@@ -158,10 +158,35 @@
 
   $effect(() => {
     const current = smoother.value;
-    // MOR-1233: under reduced motion there is no hold-then-decay animation —
-    // the indicator tracks the bar directly, so it never lags behind.
-    if (prefersReducedMotion() || current >= peakSegs) {
-      // New peak — capture it
+
+    if (prefersReducedMotion()) {
+      // MOR-1252: static hold under reduced motion — the peak marker
+      // latches at the highest observed value and stays put (no glide)
+      // until either a higher value arrives or the hold window elapses, at
+      // which point it resets INSTANTLY to the current value (a single
+      // jump computed here, not a decay). This effect only re-runs when
+      // `smoother.value` actually changes — MOR-1233 already makes that a
+      // direct snap-to-target under reduce, so no rAF loop or interval is
+      // scheduled to drive this hold/reset.
+      //
+      // J2: the condition/write below both reads and writes peakSegs and
+      // peakTime, so it must run inside untrack() — otherwise the effect
+      // depends on its own writes and self-invalidates (it still converges
+      // today because the re-seat is idempotent and `||` short-circuits,
+      // but that's incidental, not guaranteed; matches the untrack()
+      // pattern MetersDockPanel's own latch-freshness effect already uses).
+      untrack(() => {
+        if (current >= peakSegs || performance.now() - peakTime > PEAK_HOLD_MS) {
+          peakSegs = current;
+          peakTime = performance.now();
+        }
+      });
+      return;
+    }
+
+    if (current >= peakSegs) {
+      // New peak — capture it (the decay-toward-current glide for an
+      // expired hold is handled by the rAF loop below).
       peakSegs = current;
       peakTime = performance.now();
     }
