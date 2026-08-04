@@ -436,4 +436,53 @@ describe('v3 package boundaries (MOR-1061)', () => {
     );
     expect(hits).toBeGreaterThan(0);
   });
+
+  // ── MOR-1093: the sdr-test entrypoint's own import boundary ────────────
+  // `src/skins/**/*.svelte` (and components-v2/layout/**) carry the looser
+  // FORBIDDEN_RUNTIME_IMPORTS ban (transport + audioManager only — unlike
+  // the presentation/ zone above, capabilities and commands are legal here)
+  // since MOR-1061, but nothing in this file had ever run that rule through
+  // the real config for the sdr-test path. SdrTestSkin.svelte is a pure
+  // RadioLayout delegate with no other import; these pin the rule that keeps
+  // it that way, and confirm the capabilities import SdrVfoScreen.svelte
+  // gained under MOR-1093 (replacing a hardcoded manufacturer-specific
+  // fallback table) stays inside the boundary this zone actually enforces.
+
+  // .svelte fixtures need a <script> block (see the workspace .svelte test
+  // above) — svelte-eslint-parser only treats code inside it as a Program
+  // with ImportDeclaration nodes; a bare top-level import is parsed as
+  // template text, not JS, and would silently score every case below as
+  // "0 hits" regardless of which import it names.
+
+  it('rejects the sdr-test entrypoint importing transport', async () => {
+    const hits = await restrictedImportHits(
+      `<script lang="ts">\n  import { sendCommand } from '$lib/transport/ws-client';\n</script>`,
+      'src/skins/sdr-test/SdrTestSkin.svelte',
+    );
+    expect(hits).toBeGreaterThan(0);
+  });
+
+  it('rejects the sdr-test entrypoint importing audioManager (relative)', async () => {
+    const hits = await restrictedImportHits(
+      `<script lang="ts">\n  import { audioManager } from '../../lib/audio/audio-manager';\n</script>`,
+      'src/skins/sdr-test/SdrTestSkin.svelte',
+    );
+    expect(hits).toBeGreaterThan(0);
+  });
+
+  it('allows the sdr-test entrypoint to import RadioLayout (its actual import)', async () => {
+    const hits = await restrictedImportHits(
+      `<script lang="ts">\n  import RadioLayout from '../../components-v2/layout/RadioLayout.svelte';\n</script>`,
+      'src/skins/sdr-test/SdrTestSkin.svelte',
+    );
+    expect(hits).toBe(0);
+  });
+
+  it('allows the sdr-test diagnostic renderer to import capabilities (unlike the presentation/ zone)', async () => {
+    const hits = await restrictedImportHits(
+      `<script lang="ts">\n  import { getAgcLabels, getAttValues } from '$lib/stores/capabilities.svelte';\n</script>`,
+      'src/skins/sdr-test/SdrVfoScreen.svelte',
+    );
+    expect(hits).toBe(0);
+  });
 });

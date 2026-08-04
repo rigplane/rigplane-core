@@ -1,10 +1,17 @@
 <!--
   SdrVfoScreen — IC-7610-style dual VFO + central bridge, LCD/"SDR screen" look.
 
-  Drop-in visual replacement for VfoHeader in the sdr-test skin. Consumes the
-  same VfoStateProps as VfoHeader so it plugs directly into the existing
-  runtime wiring (state-adapter + command-bus). Visual design ported from
-  Claude Design handoff "VFO SDR Screen" (2026-04-20).
+  Not currently mounted: MOR-1065 replaced this top slot with
+  SemanticRadioSurfaces (see SdrTestSkin.svelte), so RadioLayout no longer
+  swaps VfoHeader for this component. Kept as the pre-migration prototype
+  reference pending the MOR-1099 legacy-wrapper retirement; MOR-1093 removed
+  the one piece of live policy it carried (below) since a dead file should
+  not also be the sdr-test folder's only source of manufacturer-specific
+  capability fallback values.
+
+  Consumes the same VfoStateProps as VfoHeader so it plugs directly into the
+  existing runtime wiring (state-adapter + command-bus). Visual design ported
+  from Claude Design handoff "VFO SDR Screen" (2026-04-20).
 
   Wired live: freq, mode, filter, active receiver, TX/RX, split, dual-watch,
   sValue, band label, SPLIT/A⇄B/A=B/M/S/SPEAK callbacks.
@@ -15,6 +22,7 @@
   import { formatFrequency } from '../../components-v2/display/frequency-format';
   import type { VfoStateProps } from '../../components-v2/layout/layout-utils';
   import { calibratedToRaw, calibratedToSUnit, getScaleMaxRaw, getS9Raw } from '../../components-v2/meters/smeter-scale';
+  import { getAgcLabels, getAttValues } from '$lib/stores/capabilities.svelte';
   import { HardwareButton } from '$lib/Button';
 
   /**
@@ -80,11 +88,12 @@
     if (hz >= 1000) return `${(hz / 1000).toFixed(hz % 1000 === 0 ? 0 : 1)}k`;
     return String(hz);
   }
-  // IC-7610 ATT levels (dB): 0 / 12 / 18 / 24
-  const ATT_DB = [0, 12, 18, 24];
+  // Attenuator dB steps are radio-model-specific — sourced from capabilities
+  // (MOR-1093; was a hardcoded IC-7610 guess that had drifted from the real
+  // values, see capabilities.ts's own `attValues` doc comment).
   function attLabel(rx: Record<string, unknown> | null | undefined): string {
     const a = num(rx, 'att');
-    const db = ATT_DB[a] ?? a;
+    const db = getAttValues()[a] ?? a;
     return db > 0 ? `ATT ${db}dB` : 'ATT';
   }
   function preampLabel(rx: Record<string, unknown> | null | undefined): string {
@@ -105,11 +114,13 @@
     const sign = khz > 0 ? '+' : khz < 0 ? '' : '+';
     return `${sign}${khz.toFixed(2)} kHz`;
   }
-  // IC-7610 AGC: 1=FAST, 2=MID, 3=SLOW (per capabilities.agcLabels default)
-  const AGC_LABELS: Record<number, string> = { 1: 'FAST', 2: 'MID', 3: 'SLOW' };
+  // AGC mode labels are radio-model-specific — sourced from capabilities
+  // (MOR-1093), the same generic fallback (`{1:'FAST',2:'MID',3:'SLOW'}`)
+  // `state-adapter.ts`'s `toAgcProps` already uses for the desktop AgcPanel.
   function agcLabel(rx: Record<string, unknown> | null | undefined): string {
     const m = num(rx, 'agc');
-    return AGC_LABELS[m] ? `AGC ${AGC_LABELS[m]}` : 'AGC';
+    const label = getAgcLabels()[String(m)];
+    return label ? `AGC ${label}` : 'AGC';
   }
   // rfGain is the backend-normalized 0.0..1.0 float (CI-V raw 0-255 is divided
   // by 255 at the source — see runtime/_civ_rx.py). Convert to 0..100 for
