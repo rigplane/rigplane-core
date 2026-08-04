@@ -1,0 +1,19 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+    <title>MOR-1070 — dual-receiver cockpit fixtures</title>
+    <style>
+      /* The cockpit's grid is `height: 100%`; give it a viewport-sized box and
+         nothing else. No chrome, no caption, no padding — a baseline picture
+         must contain the layout under test and nothing the harness invented. */
+      html, body { margin: 0; height: 100%; }
+      #app { height: 100dvh; }
+    </style>
+  </head>
+  <body>
+    <div id="app"></div>
+    <script type="module" src="./main.ts"></script>
+  </body>
+</html>
