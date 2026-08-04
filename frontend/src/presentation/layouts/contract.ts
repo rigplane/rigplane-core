@@ -12,8 +12,10 @@
 import type { Component } from 'svelte';
 import { isValidLanguageId as isValidProductId } from '../languages/contract';
 
-/** Semantic surfaces a layout may mount (MOR-1062/1065 reference vertical). */
-export const SEMANTIC_SURFACE_NAMES = ['vfo', 'rxTx'] as const;
+/** Semantic surfaces a layout may mount (MOR-1062/1065 reference vertical;
+ *  `txAux` added by MOR-1265). Adding a name makes it DECLARABLE — it does
+ *  not mount anything, and no manifest declares a `txAux` zone yet. */
+export const SEMANTIC_SURFACE_NAMES = ['vfo', 'rxTx', 'txAux'] as const;
 export type SemanticSurfaceName = (typeof SEMANTIC_SURFACE_NAMES)[number];
 
 /**

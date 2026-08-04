@@ -28,9 +28,13 @@
   import { getAppTxController } from '$lib/runtime/tx-controller/app-host';
   import type { RadioViewModel } from '../../semantic/radio-view-model';
   import RxTxSurface from '../../semantic/RxTxSurface.svelte';
+  import TxAuxSurface, {
+    type TxAuxLevelField, type TxAuxToggleField,
+  } from '../../semantic/TxAuxSurface.svelte';
+  import { keyBlockedReasons } from '../../semantic/rx-tx-surface';
   import VfoSurface, { type VfoSelection } from '../../semantic/VfoSurface.svelte';
   import ModInputTxWarning from '../panels/ModInputTxWarning.svelte';
-  import { makeVfoHandlers } from './command-bus';
+  import { makeTxHandlers, makeVfoHandlers, makeVoxHandlers } from './command-bus';
   import {
     forReceiver, receiversOf, isActiveStrip, isOperationalStrip,
   } from './dual-receiver-strips';
@@ -57,6 +61,25 @@
   let { strips = 'single' }: Props = $props();
 
   const vfo = makeVfoHandlers();
+  /**
+   * MOR-1265. The two v2 handler factories already carry every txAux intent
+   * (`makeVoxHandlers` owns gain/anti-VOX/delay, `makeTxHandlers` the rest);
+   * composing them keeps ONE command vocabulary rather than a v3 fork of it.
+   * The two maps below exist so the pure surface can stay field-addressed —
+   * agreement with the shipped command-bus names is pinned in
+   * `__tests__/tx-aux-command-bus.test.ts` against the REAL module.
+   */
+  const txAuxIntents = { ...makeVoxHandlers(), ...makeTxHandlers() };
+  const TX_AUX_TOGGLE_INTENT: Record<TxAuxToggleField, () => void> = {
+    atu: txAuxIntents.onAtuToggle, vox: txAuxIntents.onVoxToggle,
+    compressor: txAuxIntents.onCompToggle, monitor: txAuxIntents.onMonToggle,
+  };
+  const TX_AUX_LEVEL_INTENT: Record<TxAuxLevelField, (value: number) => void> = {
+    rfPower: txAuxIntents.onRfPowerChange, micGain: txAuxIntents.onMicGainChange,
+    driveGain: txAuxIntents.onDriveGainChange, voxGain: txAuxIntents.onVoxGainChange,
+    antiVoxGain: txAuxIntents.onAntiVoxGainChange, voxDelay: txAuxIntents.onVoxDelayChange,
+    compressorLevel: txAuxIntents.onCompLevelChange, monitorLevel: txAuxIntents.onMonLevelChange,
+  };
   const tx = getAppTxController();
   const sourceId = `semantic-rx-tx-${++surfaceSeq}`;
   let leaseSeq = 0;
@@ -103,6 +126,23 @@
    *  the layout chrome the operator has no UI exit from a fault. */
   function clearFault(): void {
     tx.resetFault();
+  }
+
+  /**
+   * ATU TUNE emits a CARRIER — a transmit-causing action (MOR-1262 §2 slice 1
+   * safety note i). Routing decision, recorded on MOR-1265: the *gate* is the
+   * App-owned TX authority — the shared `keyBlockedReasons` predicate on the
+   * LIVE snapshot, exactly what blocks the key intent — while the *carrier*
+   * stays radio-owned (the ATU's own tune cycle, started by the backend
+   * command). No TX lease is taken, so this never becomes a second key path
+   * (safety note iii); it can only be more restrictive than keying, never
+   * less. The snapshot is read HERE rather than from `txState` because the
+   * transmitter can start between the last render and the click — the same
+   * live-read discipline `requestUnkey` uses for the guard.
+   */
+  function requestAtuTune(): void {
+    if (!view || keyBlockedReasons(view, tx.snapshot()).length > 0) return;
+    txAuxIntents.onAtuTune();
   }
 
   function selectVfo(target: VfoSelection): void {
@@ -211,6 +251,24 @@
       <div class="rx-tx-zone" data-zone-id="rx-tx">{@render rxTxSurface()}</div>
     {:else}
       {@render rxTxSurface()}
+    {/if}
+    <!--
+      MOR-1265. STRUCTURAL gate: the surface mounts only when the view model
+      actually carries the group, so a radio the MOR-1244 evidence gate
+      declined renders the pre-1265 element shape exactly (pinned in
+      `__tests__/semantic-tx-aux-wiring.component.test.ts`). Bare in BOTH
+      compositions and with no `data-zone-id`: `'txAux'` is merely declarable
+      by a manifest after this slice; no manifest declares a txAux zone yet,
+      and binding one here would put a zone id in the DOM that no layout
+      asked for (the MOR-1069 lesson).
+    -->
+    {#if view.txAux}
+      <TxAuxSurface
+        {view} tx={txState}
+        onToggle={(field) => TX_AUX_TOGGLE_INTENT[field]()}
+        onLevelChange={(field, value) => TX_AUX_LEVEL_INTENT[field](value)}
+        onAtuTune={requestAtuTune}
+      />
     {/if}
   {/if}
 

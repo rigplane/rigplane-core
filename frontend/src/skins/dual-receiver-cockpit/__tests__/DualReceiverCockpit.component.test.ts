@@ -30,6 +30,9 @@ const h = vi.hoisted(() => ({
   splitToggle: vi.fn(),
   dualWatchToggle: vi.fn(),
   modInputGuard: { visible: false, sourceLabel: null } as { visible: boolean; sourceLabel: string | null },
+  /** MOR-1265: stand-in for every txAux intent. This fixture declares no
+   *  txAux capability, so the MOR-1244 evidence gate omits the group. */
+  txAuxNoop: vi.fn(),
 }));
 
 vi.mock('$lib/runtime', () => ({
@@ -60,6 +63,17 @@ vi.mock('../../../components-v2/wiring/command-bus', () => ({
     onVfoSelect: h.selectVfo,
     onSplitToggle: h.splitToggle,
     onDualWatchToggle: h.dualWatchToggle,
+  }),
+  // MOR-1265 — the wiring now also composes the txAux intent vocabulary.
+  makeVoxHandlers: () => ({
+    onVoxToggle: h.txAuxNoop, onVoxGainChange: h.txAuxNoop,
+    onAntiVoxGainChange: h.txAuxNoop, onVoxDelayChange: h.txAuxNoop,
+  }),
+  makeTxHandlers: () => ({
+    onRfPowerChange: h.txAuxNoop, onMicGainChange: h.txAuxNoop, onAtuToggle: h.txAuxNoop,
+    onAtuTune: h.txAuxNoop, onVoxToggle: h.txAuxNoop, onCompToggle: h.txAuxNoop,
+    onCompLevelChange: h.txAuxNoop, onMonToggle: h.txAuxNoop,
+    onMonLevelChange: h.txAuxNoop, onDriveGainChange: h.txAuxNoop,
   }),
 }));
 
