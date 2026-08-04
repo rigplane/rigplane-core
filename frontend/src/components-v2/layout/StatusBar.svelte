@@ -70,7 +70,7 @@
   } from '$lib/stores/connection.svelte';
   import { getFrequency } from '$lib/stores/radio.svelte';
   import { hasAnyScope, hasAudio, hasSpectrum } from '$lib/stores/capabilities.svelte';
-  import { getLayoutMode, setLayoutMode, type LayoutMode } from '$lib/stores/layout.svelte';
+  import { getLayoutMode, setLayoutMode, type CanonicalLayoutMode, type LayoutMode } from '$lib/stores/layout.svelte';
 
   interface Props {
     onSettings?: () => void;
@@ -88,7 +88,12 @@
   // Skin-switcher dropdown options. `lcd` is a legacy persisted value that
   // normalizes to `lcd-cockpit` above (kept for backward compat). Twin-skin
   // variants (`lcd-cockpit`, `lcd-scope`) are selectable per #887 / #889.
-  const skinOptions: Array<{ value: LayoutMode; label: string }> = [
+  // Typed `CanonicalLayoutMode`, not the wider `LayoutMode` (MOR-1257 F1):
+  // `CanonicalLayoutMode` excludes the QA-only 'dual-receiver-cockpit' value,
+  // so adding it to this array is a compile error, not just an omission —
+  // restoring the barrier that existed before that value was added to
+  // `LayoutMode`. See lib/stores/qa-cockpit-override.ts.
+  const skinOptions: Array<{ value: CanonicalLayoutMode; label: string }> = [
     { value: 'auto', label: 'AUTO' },
     { value: 'standard', label: 'Standard' },
     { value: 'lcd-cockpit', label: 'LCD Cockpit' },

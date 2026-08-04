@@ -70,4 +70,26 @@ describe('layout preference normalization', () => {
     cycleLayoutMode(false);
     expect(getLayoutMode()).toBe('lcd-cockpit');
   });
+
+  // MOR-1257: the QA-only dual-receiver-cockpit value must never become a
+  // normal, persisted layout preference — the only legitimate way to reach
+  // it is `readQaCockpitLayoutOverride()` (lib/stores/qa-cockpit-override.ts)
+  // reading the exact query param. Kill-test: dropping the
+  // `CanonicalLayoutMode` exclusion (or adding the value to
+  // `CANONICAL_LAYOUT_MODES`) would make this normalize to itself instead of
+  // falling through to 'auto', and it would then survive setLayoutMode /
+  // localStorage like any other forced preference.
+  it('does not let the QA-only dual-receiver-cockpit value normalize to itself', async () => {
+    const { normalizeLayoutMode } = await loadStore();
+    expect(normalizeLayoutMode('dual-receiver-cockpit')).toBe('auto');
+  });
+
+  it('does not let setLayoutMode persist the QA-only dual-receiver-cockpit value', async () => {
+    const { getLayoutMode, setLayoutMode } = await loadStore();
+
+    setLayoutMode('dual-receiver-cockpit');
+
+    expect(getLayoutMode()).toBe('auto');
+    expect(localStorage.getItem(LAYOUT_KEY)).toBe('auto');
+  });
 });

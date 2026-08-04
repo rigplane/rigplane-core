@@ -10,6 +10,7 @@
   import { provideAppTxControllerHost } from '$lib/runtime/tx-controller/app-host';
   import { hasAnyScope } from './lib/stores/capabilities.svelte';
   import { getLayoutMode } from './lib/stores/layout.svelte';
+  import { readQaCockpitLayoutOverride } from './lib/stores/qa-cockpit-override';
   import { loadSkin, presentationResourcePlan, resolveSkinId, type SkinId } from './skins/registry';
   import { t } from '$lib/i18n';
   import './app.css';
@@ -24,6 +25,10 @@
   const demoMode = typeof window !== 'undefined'
     ? new URLSearchParams(window.location.search).get('demo')
     : null;
+  // MOR-1257: interim QA-only reachability for the dual-receiver cockpit —
+  // resolved once at load, exactly like `demoMode` above. See
+  // `lib/stores/qa-cockpit-override.ts`.
+  const qaCockpitLayoutOverride = readQaCockpitLayoutOverride();
   let windowWidth = $state(typeof window !== 'undefined' ? window.innerWidth : 1200);
   let windowHeight = $state(typeof window !== 'undefined' ? window.innerHeight : 800);
   // Mobile = narrow portrait OR short landscape (touch device rotated)
@@ -33,7 +38,7 @@
   );
   let skinId = $derived<SkinId>(resolveSkinId({
     capabilities: runtime.caps,
-    layoutPreference: getLayoutMode(),
+    layoutPreference: qaCockpitLayoutOverride ?? getLayoutMode(),
     isMobile,
     hasAnyScope: hasAnyScope(),
   }));
