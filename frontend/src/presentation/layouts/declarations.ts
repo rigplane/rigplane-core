@@ -7,6 +7,11 @@
  * migrate the remaining skins the same way, purely additively.
  */
 import { registerLayout, type LayoutManifest } from './contract';
+// MOR-1067 registration — see that file. Re-exported rather than imported for
+// its side effect alone: this barrel is the ONLY thing that wires the cockpit
+// into the app, and a named re-export gives every test a real binding to
+// assert against, so dropping this line cannot pass unnoticed.
+export { dualReceiverCockpitLayout } from './dual-receiver-cockpit';
 
 export const sdrTestLayout: LayoutManifest = {
   schemaVersion: 1,

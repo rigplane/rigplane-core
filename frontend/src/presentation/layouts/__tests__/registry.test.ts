@@ -22,6 +22,22 @@ describe('the sdr-test real registration proof', () => {
   });
 });
 
+describe('the dual-receiver-cockpit registration barrel proof (MOR-1067)', () => {
+  // Kills: declarations.ts dropping the dual-receiver-cockpit line — the only
+  // thing that wires that manifest into the app-wide registration barrel.
+  // This file deliberately imports ONLY '../declarations' (never
+  // '../dual-receiver-cockpit'), so the layout can be found here if and only
+  // if the barrel itself pulls the manifest module in. Without this, deleting
+  // the line leaves the whole suite green while the app silently loses the
+  // layout — the surviving mutant review cycle 1 found (F3).
+  it('registers dual-receiver-cockpit through the barrel, not through a test-file import', () => {
+    const cockpit = getLayout('dual-receiver-cockpit');
+    expect(cockpit).toBeDefined();
+    expect(cockpit?.id).toBe('dual-receiver-cockpit');
+    expect(typeof cockpit?.loader).toBe('function');
+  });
+});
+
 describe('count-agnostic registration', () => {
   // Kills: a registry that hardcodes a family count instead of accepting
   // any manifest that passes validation.
