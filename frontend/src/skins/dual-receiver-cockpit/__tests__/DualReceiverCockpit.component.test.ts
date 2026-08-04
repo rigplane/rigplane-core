@@ -769,6 +769,45 @@ describe('MOR-1069 — focus order is DOM order, and the RX/TX zone comes last',
     // not stranded between two channel strips.
     expect(sequence.at(-1)).toBe(declared.indexOf('rx-tx'));
   });
+
+  // MOR-1258. `tx-fault-reset` and the two ModInputTxWarning buttons only
+  // exist in the DOM while their own conditional trigger is active (a
+  // latched TX fault; a visible MOD-input guard). The base-case test above
+  // never enters either state, so before MOR-1258 these three controls could
+  // sit anywhere at all — including outside every declared zone — without
+  // this assertion ever seeing them (the MOR-1069 verification finding this
+  // ticket exists to close). Driving each conditional state in turn is what
+  // makes the assertion actually SEE them.
+  it.each([
+    ['a TX fault is latched', { phase: 'failed', fault: 'audio-failed' } as Partial<Snapshot>, false],
+    ['the MOD-input guard is visible', {} as Partial<Snapshot>, true],
+    ['both conditional alerts are active at once', { phase: 'failed', fault: 'audio-failed' } as Partial<Snapshot>, true],
+  ] as const)('still ends in rx-tx with no control outside a declared zone — %s', (
+    _label, snapshotOver, modInputVisible,
+  ) => {
+    h.state = mainSubState('MAIN');
+    h.caps = mainSubCaps();
+    h.modInputGuard = modInputVisible
+      ? { visible: true, sourceLabel: 'MIC' }
+      : { visible: false, sourceLabel: null };
+    render();
+    push(snapshotOver);
+
+    // Sanity: the conditional control(s) this case drives are actually present
+    // — otherwise the assertions below would pass vacuously.
+    if ('phase' in snapshotOver) expect(q('[data-testid="tx-fault-reset"]')).not.toBeNull();
+    if (modInputVisible) expect(q('[data-testid="mod-input-tx-warning"]')).not.toBeNull();
+
+    const declared = dualReceiverCockpitLayout.zones.map((z) => z.id);
+    const sequence = qa<HTMLElement>('button, input, select, a[href], [tabindex]')
+      .map((el) => el.closest('[data-zone-id]') as HTMLElement | null)
+      .map((zone) => declared.indexOf(zone?.dataset.zoneId ?? ''));
+
+    expect(sequence.length).toBeGreaterThan(0);
+    expect(sequence).not.toContain(-1);
+    expect(sequence).toEqual([...sequence].sort((a, b) => a - b));
+    expect(sequence.at(-1)).toBe(declared.indexOf('rx-tx'));
+  });
 });
 
 describe('MOR-1069 (N1) — rx-tx is a real bound zone element in the cockpit', () => {
@@ -790,6 +829,77 @@ describe('MOR-1069 (N1) — rx-tx is a real bound zone element in the cockpit', 
     // The zone IS the surface's box, not a sibling marker next to it.
     expect(q('[data-testid="rx-tx-surface"]')!.parentElement).toBe(zone);
     expect(zone.querySelectorAll('[data-testid="rx-tx-key"]')).toHaveLength(1);
+  });
+});
+
+// MOR-1258 (owner decision, 2026-08-04, gate item (b)): `tx-fault-reset` and
+// the two ModInputTxWarning buttons are formal rx-tx zone members. Each
+// assertion is a direct containment check against the zone ELEMENT itself
+// (`.contains` / `.closest`), independent of the focus-order sequence above —
+// a mutant that re-homes any one of the three as a sibling of `.rx-tx-zone`
+// fails here even if it still happened to land last in tab order.
+describe('MOR-1258 — the three TX-adjacent alerts are formal rx-tx zone members', () => {
+  it('contains tx-fault-reset inside the rx-tx zone while a fault is latched, and nowhere before it', () => {
+    h.state = mainSubState('MAIN');
+    h.caps = mainSubCaps();
+    render();
+    expect(q('[data-testid="tx-fault-reset"]')).toBeNull();
+
+    push({ phase: 'failed', fault: 'audio-failed' });
+
+    const zone = q('[data-zone-id="rx-tx"]')!;
+    const reset = q('[data-testid="tx-fault-reset"]')!;
+    expect(zone.contains(reset)).toBe(true);
+    expect(reset.closest('[data-zone-id]')).toBe(zone);
+  });
+
+  it('contains both ModInputTxWarning buttons inside the rx-tx zone while the guard is visible', () => {
+    h.state = mainSubState('MAIN');
+    h.caps = mainSubCaps();
+    h.modInputGuard = { visible: true, sourceLabel: 'MIC' };
+    render();
+
+    const zone = q('[data-zone-id="rx-tx"]')!;
+    const setLan = q('[data-testid="mod-input-set-lan"]')!;
+    const dismiss = q('[data-testid="mod-input-dismiss"]')!;
+    expect(zone.contains(setLan)).toBe(true);
+    expect(zone.contains(dismiss)).toBe(true);
+    expect(setLan.closest('[data-zone-id]')).toBe(zone);
+    expect(dismiss.closest('[data-zone-id]')).toBe(zone);
+  });
+
+  it('contains all three alerts inside the SAME zone box that owns RxTxSurface, active simultaneously', () => {
+    h.state = mainSubState('MAIN');
+    h.caps = mainSubCaps();
+    h.modInputGuard = { visible: true, sourceLabel: 'MIC' };
+    render();
+    push({ phase: 'failed', fault: 'audio-failed' });
+
+    const zone = q('[data-zone-id="rx-tx"]')!;
+    expect(q('[data-testid="rx-tx-surface"]')!.parentElement).toBe(zone);
+    for (const testid of ['tx-fault-reset', 'mod-input-set-lan', 'mod-input-dismiss']) {
+      const el = q(`[data-testid="${testid}"]`);
+      expect(el).not.toBeNull();
+      expect(zone.contains(el)).toBe(true);
+    }
+  });
+
+  // The alert's own behavior is untouched by the containment move: the
+  // fault-reset handler still fires from its new DOM parent exactly as it
+  // did from the old one. (The ModInputTxWarning buttons' own handler
+  // wiring is unchanged — pinned in
+  // `components-v2/wiring/__tests__/semantic-rx-tx-wiring.component.test.ts`
+  // and `components-v2/panels/__tests__/ModInputTxWarning.test.ts` — moving
+  // its DOM parent does not touch the component's own click handlers.)
+  it('still reaches the fault-reset handler from inside the zone', () => {
+    h.state = mainSubState('MAIN');
+    h.caps = mainSubCaps();
+    render();
+    push({ phase: 'failed', fault: 'audio-failed' });
+
+    q<HTMLButtonElement>('[data-testid="tx-fault-reset"]')!.click();
+    flushSync();
+    expect(h.resetFault).toHaveBeenCalledTimes(1);
   });
 });
 

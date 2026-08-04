@@ -227,42 +227,78 @@
         onToggleDualWatch={toggleDualWatch}
       />
     {/if}
-    <!--
-      MOR-1069 (finding N1, routed from the MOR-1068 verification). The
-      wrapper used to render on EVERY path as an inert `display: contents`
-      naming shell, which left the single/default path no longer
-      element-identical to its pre-cockpit shape. It is now rendered ONLY in
-      the dual composition, where it is a real, bound zone element the
-      cockpit's responsive rules can place — an inert wrapper cannot be a
-      grid/flex item, so "leave it inert" was not an option once the zone had
-      to move between arrangements. The single/default path (sdr-test / LCD /
-      mobile) renders the surface bare again, and that element shape is
-      re-pinned in `__tests__/semantic-rx-tx-wiring.component.test.ts`.
+  {/if}
+  <!--
+    MOR-1069 (finding N1, routed from the MOR-1068 verification). The
+    wrapper used to render on EVERY path as an inert `display: contents`
+    naming shell, which left the single/default path no longer
+    element-identical to its pre-cockpit shape. It is now rendered ONLY in
+    the dual composition, where it is a real, bound zone element the
+    cockpit's responsive rules can place — an inert wrapper cannot be a
+    grid/flex item, so "leave it inert" was not an option once the zone had
+    to move between arrangements. The single/default path (sdr-test / LCD /
+    mobile) renders the surface bare again, and that element shape is
+    re-pinned in `__tests__/semantic-rx-tx-wiring.component.test.ts`.
 
-      The snippet is deliberate: it keeps exactly ONE `<RxTxSurface>` tag in
-      this file, so single TX authority stays a property of the SOURCE rather
-      than of which branch happens to be taken. Pinned as such by
-      `presentation/layouts/__tests__/cockpit-responsive-composition.test.ts`.
-    -->
-    {#snippet rxTxSurface()}
+    The snippet is deliberate: it keeps exactly ONE `<RxTxSurface>` tag in
+    this file, so single TX authority stays a property of the SOURCE rather
+    than of which branch happens to be taken. Pinned as such by
+    `presentation/layouts/__tests__/cockpit-responsive-composition.test.ts`.
+    MOR-1258 moves the invocation below out from under the outer
+    `{#if view}` (the rx-tx zone and the TX-adjacent alerts it now carries
+    must exist even while `view` is still null — see the alerts comment
+    below), so the view-model gate now lives on the snippet itself.
+  -->
+  {#snippet rxTxSurface()}
+    {#if view}
       <RxTxSurface {view} tx={txState} onRequestKey={requestKey} onRequestUnkey={requestUnkey} />
-    {/snippet}
-    {#if strips === 'dual'}
-      <div class="rx-tx-zone" data-zone-id="rx-tx">{@render rxTxSurface()}</div>
-    {:else}
-      {@render rxTxSurface()}
     {/if}
-    <!--
-      MOR-1265. STRUCTURAL gate: the surface mounts only when the view model
-      actually carries the group, so a radio the MOR-1244 evidence gate
-      declined renders the pre-1265 element shape exactly (pinned in
-      `__tests__/semantic-tx-aux-wiring.component.test.ts`). Bare in BOTH
-      compositions and with no `data-zone-id`: `'txAux'` is merely declarable
-      by a manifest after this slice; no manifest declares a txAux zone yet,
-      and binding one here would put a zone id in the DOM that no layout
-      asked for (the MOR-1069 lesson).
-    -->
-    {#if view.txAux}
+  {/snippet}
+
+  <!--
+    MOR-1258 (owner decision, 2026-08-04, gate item (b)). The three
+    conditional TX-adjacent alerts — `tx-fault-reset` and the two
+    ModInputTxWarning buttons ("Set LAN" / dismiss) — are formal members of
+    the rx-tx zone: they render beside RxTxSurface (inside its bound zone
+    element in the dual composition) rather than in a new `alerts` zone or
+    as a pinned outside-by-design exception. Grouping them in one snippet
+    keeps ONE place that decides where they render, mirroring `rxTxSurface`
+    above.
+
+    MOR-617 network-voice-TX preflight. It ships inside TxPanel, which this
+    layout suppresses (`hideTxPanel`) — but this layout can now key network
+    voice TX, and the controller's `start-audio` effect IS that path. Without
+    the banner the operator keys with a mis-routed MOD input, no warning and
+    no one-click "Set LAN" fix: the exact shape of the "web voice TX = noise"
+    bug. Self-gating on `deriveModInputTxGuardProps().visible`, so the
+    trigger conditions are byte-identical to the panel's, and — same as
+    before MOR-1258 — NOT gated on the view model: it must warn even before
+    capabilities load.
+  -->
+  {#snippet txAdjacentAlerts()}
+    <ModInputTxWarning />
+    {#if txState.phase === 'failed'}
+      <button
+        type="button" class="tx-fault-reset" data-testid="tx-fault-reset" onclick={clearFault}
+      >Clear TX fault</button>
+    {/if}
+  {/snippet}
+
+  <!--
+    MOR-1265. STRUCTURAL gate: the surface mounts only when the view model
+    actually carries the group, so a radio the MOR-1244 evidence gate
+    declined renders the pre-1265 element shape exactly (pinned in
+    `__tests__/semantic-tx-aux-wiring.component.test.ts`). Bare in BOTH
+    compositions and with no `data-zone-id`: `'txAux'` is merely declarable
+    by a manifest after this slice; no manifest declares a txAux zone yet,
+    and binding one here would put a zone id in the DOM that no layout
+    asked for (the MOR-1069 lesson). `view?.txAux` (rather than the caller
+    nesting this under `{#if view}`) keeps the same "never renders while
+    view is null" behavior now that the surrounding structure changed
+    around it (MOR-1258).
+  -->
+  {#snippet txAuxSurface()}
+    {#if view?.txAux}
       <TxAuxSurface
         {view} tx={txState}
         onToggle={(field) => TX_AUX_TOGGLE_INTENT[field]()}
@@ -270,23 +306,31 @@
         onAtuTune={requestAtuTune}
       />
     {/if}
-  {/if}
+  {/snippet}
 
-  <!--
-    MOR-617 network-voice-TX preflight. It ships inside TxPanel, which this
-    layout suppresses (`hideTxPanel`) — but this layout can now key network
-    voice TX, and the controller's `start-audio` effect IS that path. Without
-    the banner the operator keys with a mis-routed MOD input, no warning and no
-    one-click "Set LAN" fix: the exact shape of the "web voice TX = noise" bug.
-    Self-gating on `deriveModInputTxGuardProps().visible`, so the trigger
-    conditions are byte-identical to the panel's.
-  -->
-  <ModInputTxWarning />
-
-  {#if txState.phase === 'failed'}
-    <button
-      type="button" class="tx-fault-reset" data-testid="tx-fault-reset" onclick={clearFault}
-    >Clear TX fault</button>
+  {#if strips === 'dual'}
+    <!--
+      MOR-1258: the zone now carries RxTxSurface AND the two TX-adjacent
+      alerts that used to sit at the bottom of this component, unzoned.
+      TxAuxSurface stays OUTSIDE — it declares no zone (see above) — so it
+      renders after the zone rather than between RxTxSurface and the alerts,
+      which is the one DOM-order change this ticket makes: the alerts move
+      up to sit beside RxTxSurface instead of after TxAuxSurface.
+    -->
+    <div class="rx-tx-zone" data-zone-id="rx-tx">
+      {@render rxTxSurface()}
+      {@render txAdjacentAlerts()}
+    </div>
+    {@render txAuxSurface()}
+  {:else}
+    <!--
+      Single/default path (sdr-test / LCD / mobile): no bound zone exists
+      here (MOR-1069), so containment is not possible — the alerts keep
+      their pre-MOR-1258 position and order, unchanged.
+    -->
+    {@render rxTxSurface()}
+    {@render txAuxSurface()}
+    {@render txAdjacentAlerts()}
   {/if}
 </div>
 
@@ -320,8 +364,14 @@
   }
   /* MOR-1069: no `display: contents` any more — the zone only exists in the
      dual composition now, and it must be a real box there so the cockpit can
-     place it. It carries no presentation of its own; the surface inside owns
-     that. */
+     place it. MOR-1258: the zone now stacks RxTxSurface with the two
+     TX-adjacent alerts it gained, so it owns this minimal layout — the
+     alerts and RxTxSurface still each own their own internal presentation. */
+  .rx-tx-zone {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
 
   .channel-strip[data-strip-active='true'] {
     border-left: 2px solid var(--v2-accent-cyan, #00d4ff);
