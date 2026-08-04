@@ -22,6 +22,7 @@
 
 <script lang="ts">
   import { onDestroy } from 'svelte';
+  import { t } from '$lib/i18n';
   import { runtime } from '$lib/runtime';
   import { toRadioViewModel } from '$lib/runtime/adapters/radio-view-model-adapter';
   import { getAppTxController } from '$lib/runtime/tx-controller/app-host';
@@ -38,6 +39,15 @@
    * receiver channel strips (MOR-1067): still ONE shared RxTxSurface and
    * ONE TX lease below — ONLY the VFO half splits, so there is still exactly
    * one authoritative key/unkey action surface regardless of `strips`.
+   *
+   * MOR-1068: in `'dual'` the composed blocks carry `data-zone-id` values
+   * drawn from the `dual-receiver-cockpit` layout manifest's declared zones
+   * (`presentation/layouts/dual-receiver-cockpit.ts`). The manifest is the
+   * authority and is NOT imported here — importing it would close a cycle
+   * (manifest -> loader -> skin -> wiring) and let a wiring change register a
+   * layout. The two descriptions are held together by a test that reads the
+   * ids out of the real registry and requires exactly these in the rendered
+   * tree (MOR-1067 verification F6).
    */
   interface Props {
     strips?: 'single' | 'dual';
@@ -106,9 +116,16 @@
     {#if strips === 'dual'}
       <div class="channel-strips" data-testid="channel-strips">
         {#each receiversOf(view) as receiverId, index (receiverId)}
+          <!--
+            `data-zone-id`: `ReceiverId` is `'MAIN' | 'SUB'`, so the index is
+            total over the manifest's two per-receiver zones. A degraded
+            single-receiver view model renders `primary-vfo` and NO
+            `secondary-vfo` — an absent zone, never an empty promise.
+          -->
           <div
             class="channel-strip"
             data-testid={`channel-strip-${receiverId}`}
+            data-zone-id={index === 0 ? 'primary-vfo' : 'secondary-vfo'}
             data-strip-receiver={receiverId}
             data-strip-active={isActiveStrip(view, receiverId)}
           >
@@ -118,22 +135,40 @@
               without the pool the MOR-977 gate reads a 1-VFO slice as
               "structurally nothing to choose" and an `ab_shared` cockpit
               silently loses its only receiver-selection control.
-              `showRadioWideFacts`: split / dual-watch / active-receiver are
-              radio-wide, so exactly ONE strip renders them — the FIRST, a
-              position that depends on no observed fact, so the switches never
-              move when the active receiver changes. (Their eventual home is
-              the cockpit's global zone, once a semantic surface backs it.)
+              `showRadioWideFacts={false}`: split / dual-watch / active-receiver
+              are radio-wide and now live in the global zone below (MOR-1068);
+              a strip owns nothing but its own receiver.
+              `groupLabel`: without it all three mounted surfaces share one
+              generic accessible name and assistive tech cannot tell the
+              strips apart.
             -->
             <VfoSurface
               viewModel={forReceiver(view, receiverId)}
               selectionPoolSize={view.vfos.length}
-              showRadioWideFacts={index === 0}
+              showRadioWideFacts={false}
+              groupLabel={t('core.vfo.receiverGroupLabel', { receiver: receiverId })}
               onSelectVfo={selectVfo}
-              onToggleSplit={vfo.onSplitToggle}
-              onToggleDualWatch={toggleDualWatch}
             />
           </div>
         {/each}
+      </div>
+      <!--
+        The radio-wide row, rendered ONCE and outside every strip. It used to
+        ride in the first strip's column, which put "Active receiver: SUB"
+        inside the column without the active border (MOR-1067 verification
+        #4). Binding it to the ACTIVE strip instead is proven worse — a
+        verifier mutant made split/dual-watch vanish whenever `activeReceiver`
+        was unobserved. It is not `aria-disabled`: it holds live switches that
+        already gate themselves on their own observed facts (F7).
+      -->
+      <div class="cockpit-global-row" data-testid="cockpit-zone-global" data-zone-id="global">
+        <VfoSurface
+          viewModel={view}
+          showVfoList={false}
+          groupLabel={t('core.vfo.radioWideGroupLabel')}
+          onToggleSplit={vfo.onSplitToggle}
+          onToggleDualWatch={toggleDualWatch}
+        />
       </div>
     {:else}
       <VfoSurface
@@ -143,7 +178,11 @@
         onToggleDualWatch={toggleDualWatch}
       />
     {/if}
-    <RxTxSurface {view} tx={txState} onRequestKey={requestKey} onRequestUnkey={requestUnkey} />
+    <!-- `display: contents` — a naming wrapper only, so the single-strip
+         layout is unchanged and the shared TX surface stays one flex item. -->
+    <div class="rx-tx-zone" data-zone-id={strips === 'dual' ? 'rx-tx' : null}>
+      <RxTxSurface {view} tx={txState} onRequestKey={requestKey} onRequestUnkey={requestUnkey} />
+    </div>
   {/if}
 
   <!--
@@ -191,6 +230,9 @@
     display: grid;
     grid-template-columns: repeat(auto-fit, minmax(0, 1fr));
     gap: 8px;
+  }
+  .rx-tx-zone {
+    display: contents;
   }
   .channel-strip[data-strip-active='true'] {
     border-left: 2px solid var(--v2-accent-cyan, #00d4ff);

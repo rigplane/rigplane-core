@@ -63,6 +63,11 @@ vi.mock('../../../components-v2/wiring/command-bus', () => ({
 }));
 
 import DualReceiverCockpit from '../DualReceiverCockpit.svelte';
+// MOR-1068 F6: the manifest's declared zone ids, read through the app-wide
+// registration barrel (never '../../../presentation/layouts/
+// dual-receiver-cockpit' directly), so the DOM assertions below are checked
+// against what the app actually registers rather than a local copy.
+import { dualReceiverCockpitLayout } from '../../../presentation/layouts/declarations';
 
 type Snapshot = {
   phase: string; intent: string | null; guard: { leaseId: string } | null;
@@ -120,6 +125,34 @@ function mainSubStateUnknownActive(): ServerState {
 }
 const abSharedCaps = (): Capabilities => ({
   ...mainSubCaps(), vfoScheme: 'ab_shared',
+} as unknown as Capabilities);
+
+/**
+ * MOR-1068 degrade case: 1/single — ONE receiver, one unslotted VFO. The
+ * manifest refuses this topology, so resolution sends it to sdr-test
+ * (`presentation/layouts/__tests__/cockpit-topology-adaptation.test.ts`); the
+ * shell must nonetheless degrade honestly if it is mounted over a
+ * single-receiver view model — one strip, no fabricated SUB, and no
+ * `secondary-vfo` zone standing empty.
+ */
+function singleReceiverState(): ServerState {
+  const paths = ['active', 'split', 'dualWatch', 'txTarget',
+    'main.freqHz', 'main.mode', 'main.filter'];
+  return {
+    active: 'MAIN', split: false, dualWatch: false, ptt: false,
+    txTarget: { status: 'known', receiver: 'MAIN', slot: null, frequencyHz: 14195000 },
+    main: { freqHz: 14195000, mode: 'USB', filter: 1 },
+    fieldStatus: Object.fromEntries(paths.map((p) => [p, fresh])),
+  } as unknown as ServerState;
+}
+/** 1/single caps: no `dual_rx` tag, or the topology derivation contradicts itself. */
+const singleReceiverCaps = (): Capabilities => ({
+  ...mainSubCaps(), receivers: 1, vfoScheme: 'single', capabilities: ['audio', 'tx'],
+} as unknown as Capabilities);
+
+/** The ticket's operational audio-scope condition: scope=false + audioFft=true. */
+const audioOnlyScopeCaps = (): Capabilities => ({
+  ...mainSubCaps(), audioFftAvailable: true,
 } as unknown as Capabilities);
 
 let target: HTMLDivElement;
@@ -291,18 +324,235 @@ describe('exactly one authoritative TX action surface across both strips', () =>
   });
 });
 
-describe('scope/controls/global zones — placed, never falsely active', () => {
-  it('all three are present and structurally disabled', () => {
+describe('scope/controls zones — placed, never falsely active', () => {
+  // MOR-1068: `global` left this list — it now carries the real radio-wide
+  // row (see below), and MOR-1067's F7 note is explicit that `aria-disabled`
+  // may only stand while a zone is honest-by-emptiness. A zone holding live
+  // switches must gate at the widget, which the switches already do.
+  it('both are present, structurally disabled, and hold nothing interactive', () => {
     h.state = mainSubState('MAIN');
     h.caps = mainSubCaps();
     render();
 
-    for (const zone of ['scope', 'controls', 'global']) {
+    for (const zone of ['scope', 'controls']) {
       const el = q(`[data-testid="cockpit-zone-${zone}"]`)!;
       expect(el).not.toBeNull();
       expect(el.getAttribute('aria-disabled')).toBe('true');
       expect(el.dataset.zoneActive).toBe('false');
+      // "Unsupported surfaces never appear enabled": empty, so there is no
+      // widget for the marker to lie about.
+      expect(el.querySelectorAll('button, [role="switch"], input')).toHaveLength(0);
     }
+  });
+
+  // Kills: keeping `aria-disabled` on the global zone after real content
+  // landed in it — MOR-1067 F7. An `aria-disabled` container wrapping enabled
+  // switches is precisely the MOR-557 bug class inverted: a live control
+  // presenting as dead.
+  it('the global zone is NOT marked disabled once it carries the live row', () => {
+    h.state = mainSubState('MAIN');
+    h.caps = mainSubCaps();
+    render();
+
+    const global = q('[data-zone-id="global"]')!;
+    expect(global).not.toBeNull();
+    expect(global.getAttribute('aria-disabled')).toBeNull();
+    expect(global.dataset.zoneActive).not.toBe('false');
+  });
+});
+
+// MOR-1067 verification F6: the manifest declared `primary-vfo` /
+// `secondary-vfo` / `rx-tx` while the shell's DOM shared not one id with it,
+// and nothing asserted the correspondence. These tests read the zone ids out
+// of the REGISTERED manifest and require the rendered tree to expose exactly
+// those, in declaration order — the two descriptions can no longer drift.
+describe('F6 — manifest zone ids are bound to the rendered structure', () => {
+  const declaredZoneIds = (): readonly string[] => dualReceiverCockpitLayout.zones.map((z) => z.id);
+
+  it.each([
+    ['2/main_sub', () => mainSubState('MAIN'), mainSubCaps],
+    ['2/ab_shared', abSharedState, abSharedCaps],
+  ] as const)('%s: renders every declared zone, once, in declaration order', (
+    _topology, makeState, makeCaps,
+  ) => {
+    h.state = makeState();
+    h.caps = makeCaps();
+    render();
+
+    expect(qa('[data-zone-id]').map((el) => el.dataset.zoneId)).toEqual([...declaredZoneIds()]);
+  });
+
+  // Kills: a zone id invented in the DOM that no manifest zone declares (the
+  // drift direction that made the shell's five ad-hoc ids invisible to the
+  // registry). The inert placeholders are deliberately NOT manifest zones:
+  // `LayoutZone` requires at least one semantic surface and MOR-1062/1065
+  // ship none for scope/controls.
+  it('no rendered zone id is undeclared, and the placeholders claim none', () => {
+    h.state = mainSubState('MAIN');
+    h.caps = mainSubCaps();
+    render();
+
+    for (const el of qa('[data-zone-id]')) {
+      expect(declaredZoneIds()).toContain(el.dataset.zoneId);
+    }
+    for (const zone of ['scope', 'controls']) {
+      expect(q(`[data-testid="cockpit-zone-${zone}"]`)!.hasAttribute('data-zone-id')).toBe(false);
+    }
+  });
+
+  // Kills: binding zone ids to a fixed strip count. `primary-vfo` is the
+  // FIRST rendered strip whatever the topology; `secondary-vfo` exists only
+  // when a second receiver was actually observed.
+  it.each([
+    ['2/main_sub', () => mainSubState('MAIN'), mainSubCaps, 'MAIN', 'SUB'],
+    ['2/ab_shared', abSharedState, abSharedCaps, 'MAIN', 'SUB'],
+  ] as const)('%s: primary-vfo is the first strip, secondary-vfo the second', (
+    _topology, makeState, makeCaps, primary, secondary,
+  ) => {
+    h.state = makeState();
+    h.caps = makeCaps();
+    render();
+
+    expect(q('[data-zone-id="primary-vfo"]')!.dataset.stripReceiver).toBe(primary);
+    expect(q('[data-zone-id="secondary-vfo"]')!.dataset.stripReceiver).toBe(secondary);
+    // #5(b): strip ORDER, pinned. Kills a reversed/receiver-sorted render.
+    expect(qa('[data-testid^="channel-strip-"]').map((el) => el.dataset.stripReceiver))
+      .toEqual([primary, secondary]);
+  });
+});
+
+describe('degrading to a single-receiver view model', () => {
+  // "One compiled layout safely degrades across all pairs; no impossible
+  // receiver/VFO labels." Kills: a shell that renders a second, empty strip
+  // (or a fabricated SUB label) when only one receiver was observed.
+  it('renders one strip, no SUB anywhere, and no secondary-vfo zone', () => {
+    h.state = singleReceiverState();
+    h.caps = singleReceiverCaps();
+    render();
+
+    expect(qa('[data-testid^="channel-strip-"]')).toHaveLength(1);
+    expect(q('[data-zone-id="primary-vfo"]')!.dataset.stripReceiver).toBe('MAIN');
+    expect(q('[data-zone-id="secondary-vfo"]')).toBeNull();
+    expect(q('[data-testid="channel-strip-SUB"]')).toBeNull();
+    expect(target.textContent).not.toContain('SUB');
+  });
+
+  // Kills: degrading by dropping the radio-wide row or the TX authority with
+  // the second strip. Single TX authority is non-negotiable in EVERY topology.
+  it('keeps exactly one radio-wide row and exactly one TX action surface', () => {
+    h.state = singleReceiverState();
+    h.caps = singleReceiverCaps();
+    render();
+
+    expect(qa('[data-zone-id="global"]')).toHaveLength(1);
+    expect(qa('[data-vfo-split]')).toHaveLength(1);
+    expect(qa('[data-vfo-dual-watch]')).toHaveLength(1);
+    expect(qa('[data-testid="rx-tx-surface"]')).toHaveLength(1);
+    expect(qa('[data-testid="rx-tx-key"]')).toHaveLength(1);
+  });
+
+  // The declared zone set is a superset here, and that is the honest reading:
+  // a zone is rendered when its content exists, never as an empty promise.
+  it('renders a strict, declared subset of the manifest zones', () => {
+    h.state = singleReceiverState();
+    h.caps = singleReceiverCaps();
+    render();
+
+    const rendered = qa('[data-zone-id]').map((el) => el.dataset.zoneId);
+    expect(rendered).toEqual(['primary-vfo', 'global', 'rx-tx']);
+    for (const id of rendered) {
+      expect(dualReceiverCockpitLayout.zones.map((z) => z.id)).toContain(id);
+    }
+  });
+});
+
+describe('the radio-wide row lives in the cockpit\'s global zone', () => {
+  // MOR-1067 verification #4: the row used to sit inside the FIRST strip, so
+  // with SUB active "Active receiver: SUB" rendered in the column WITHOUT the
+  // active border. It is radio-wide, so it belongs to no receiver's column.
+  // #5(a): its PRESENCE is pinned here — deleting split/dual-watch fails.
+  it.each([
+    ['2/main_sub', () => mainSubState('SUB'), mainSubCaps],
+    ['2/ab_shared', abSharedState, abSharedCaps],
+  ] as const)('%s: split, dual-watch and active-receiver render once, outside every strip', (
+    _topology, makeState, makeCaps,
+  ) => {
+    h.state = makeState();
+    h.caps = makeCaps();
+    render();
+
+    const global = q('[data-zone-id="global"]')!;
+    for (const sel of ['[data-vfo-split]', '[data-vfo-dual-watch]', '[data-testid="vfo-active-receiver"]']) {
+      expect(qa(sel)).toHaveLength(1);
+      expect(global.contains(q(sel)!)).toBe(true);
+      // Kills: reintroducing the row inside a strip (the MOR-1067 placement).
+      expect(qa('[data-testid^="channel-strip-"]').some((s) => s.contains(q(sel)!))).toBe(false);
+    }
+    // The global row is facts only — the VFO tiles stay in the strips.
+    expect(global.querySelectorAll('[data-vfo-tile]')).toHaveLength(0);
+  });
+
+  // Kills: moving the row at the cost of its wiring — the switches must still
+  // reach the radio-wide handlers from their new home.
+  it('the relocated switches still reach the radio-wide handlers', () => {
+    h.state = mainSubState('SUB');
+    h.caps = mainSubCaps();
+    render();
+
+    q<HTMLButtonElement>('[data-vfo-split]')!.click();
+    q<HTMLButtonElement>('[data-vfo-dual-watch]')!.click();
+    flushSync();
+    expect(h.splitToggle).toHaveBeenCalledTimes(1);
+    expect(h.dualWatchToggle).toHaveBeenCalledTimes(1);
+  });
+
+  // #5(b): strip accessible NAMING. Three groups mount at once (two strips +
+  // the radio-wide row); with one shared generic name assistive tech cannot
+  // tell MAIN from SUB, and the ticket's "no impossible receiver/VFO labels"
+  // has no a11y half at all.
+  it('names each mounted surface distinctly for assistive tech', () => {
+    h.state = mainSubState('MAIN');
+    h.caps = mainSubCaps();
+    render();
+
+    const names = qa('[data-testid="vfo-surface"]').map((el) => el.getAttribute('aria-label'));
+    expect(names).toHaveLength(3);
+    expect(new Set(names).size).toBe(3);
+    expect(names.every((n) => (n?.length ?? 0) > 0)).toBe(true);
+    expect(names.every((n) => !n?.includes('core.vfo.'))).toBe(true);
+    const named = (receiver: string) =>
+      q(`[data-testid="channel-strip-${receiver}"] [data-testid="vfo-surface"]`)!
+        .getAttribute('aria-label');
+    expect(named('MAIN')).toContain('MAIN');
+    expect(named('SUB')).toContain('SUB');
+  });
+});
+
+describe('operational audio-scope availability (scope=false + audioFft=true)', () => {
+  // The ticket's fifth, orthogonal condition. The cockpit mounts no scope
+  // surface, so the honest behaviour is to make NO claim either way: the
+  // rendered tree must be identical with and without a live audio-FFT scope,
+  // and the inert scope placeholder must not turn into an "unavailable"
+  // verdict about a capability that IS available. Kills: gating any strip,
+  // switch or TX control on scope state.
+  /** The RX/TX surface's aria-describedby carries a per-instance counter. */
+  const markup = (): string => target.innerHTML.replace(/rx-tx-\d+/g, 'rx-tx-N');
+
+  it('changes nothing in the cockpit, and denies nothing about the radio', () => {
+    h.state = mainSubState('MAIN');
+    h.caps = mainSubCaps();
+    render();
+    const withoutAudioFft = markup();
+
+    if (component) unmount(component);
+    document.body.innerHTML = '';
+    h.state = mainSubState('MAIN');
+    h.caps = audioOnlyScopeCaps();
+    render();
+
+    expect(markup()).toBe(withoutAudioFft);
+    expect(qa('[data-testid="rx-tx-key"]')).toHaveLength(1);
+    expect(q('[data-testid="cockpit-zone-scope"]')!.textContent).toBe('');
   });
 });
 

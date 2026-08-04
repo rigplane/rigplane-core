@@ -390,3 +390,84 @@ describe('accessibility basics', () => {
     expect(order).toEqual(['select:MAIN:B', 'select:SUB:A', 'select:SUB:B', 'split', 'dualWatch']);
   });
 });
+
+// ── MOR-1068: the three composition props a per-receiver cockpit needs ───────
+// `selectionPoolSize` and `showRadioWideFacts` shipped with MOR-1067;
+// `showVfoList` and `groupLabel` land with the radio-wide row's move out of
+// the strips. Every default path below must stay byte-identical for the
+// unsliced callers (sdr-test / LCD / mobile).
+
+describe('selectionPoolSize (MOR-1067) — the ?? vs || distinction', () => {
+  // MOR-1067 verification, gap (c): `??` -> `||` in the fallback survived
+  // mutation because every existing caller passes a positive pool. An
+  // EXPLICIT pool of 0 is the only value that separates them: `??` keeps 0
+  // (nothing to choose -> control ABSENT), `||` treats 0 as "unset" and
+  // silently falls back to the slice's own length, resurrecting the control.
+  it('an explicit pool size of 0 means "nothing to choose", not "unset"', () => {
+    const target = mountSurface({
+      viewModel: topologyFixtures['2/main_sub'],
+      selectionPoolSize: 0,
+    });
+    expect(target.querySelectorAll('[data-vfo-select]')).toHaveLength(0);
+    // Same model with no pool override still offers the controls, so the
+    // assertion above cannot pass for the trivial reason.
+    const unsliced = mountSurface({ viewModel: topologyFixtures['2/main_sub'] });
+    expect(unsliced.querySelectorAll('[data-vfo-select]').length).toBeGreaterThan(0);
+  });
+
+  it('a pool larger than the slice keeps the control present (MOR-1067 F1)', () => {
+    const sliced: RadioViewModel = {
+      ...topologyFixtures['2/ab_shared'],
+      vfos: topologyFixtures['2/ab_shared'].vfos.filter((v) => v.receiver === 'MAIN'),
+    };
+    expect(mountSurface({ viewModel: sliced }).querySelectorAll('[data-vfo-select]')).toHaveLength(0);
+    expect(
+      mountSurface({ viewModel: sliced, selectionPoolSize: 2 }).querySelectorAll('[data-vfo-select]'),
+    ).toHaveLength(1);
+  });
+});
+
+describe('showVfoList (MOR-1068) — the radio-wide half, placeable on its own', () => {
+  // Kills: ignoring the prop (the cockpit's global row would duplicate every
+  // VFO tile already rendered in the strips), or letting it also suppress the
+  // radio-wide facts (the row would render nothing at all).
+  it('false renders the radio-wide facts with no VFO list', () => {
+    const target = mountSurface({ viewModel: topologyFixtures['2/main_sub'], showVfoList: false });
+    expect(target.querySelectorAll('[data-vfo-tile]')).toHaveLength(0);
+    expect(target.querySelector('[data-testid="vfo-list"]')).toBeNull();
+    expect(target.querySelectorAll('[data-vfo-split]')).toHaveLength(1);
+    expect(target.querySelectorAll('[data-vfo-dual-watch]')).toHaveLength(1);
+    expect(target.querySelectorAll('[data-testid="vfo-active-receiver"]')).toHaveLength(1);
+  });
+
+  // Kills: defaulting the new prop to false — every unsliced caller would
+  // lose its VFO tiles.
+  it('defaults to true: the unsliced surface is unchanged', () => {
+    const target = mountSurface({ viewModel: topologyFixtures['2/main_sub'] });
+    expect(target.querySelectorAll('[data-vfo-tile]')).toHaveLength(4);
+    expect(target.querySelector('[data-testid="vfo-list"]')).not.toBeNull();
+  });
+});
+
+describe('groupLabel (MOR-1068) — distinct accessible names per mounted surface', () => {
+  // Kills: ignoring the prop. A cockpit mounts three of these surfaces at
+  // once (MAIN strip, SUB strip, radio-wide row); with one shared generic
+  // name assistive tech sees three identical groups and cannot tell which
+  // receiver it is in.
+  it('overrides the group accessible name when supplied', () => {
+    const target = mountSurface({
+      viewModel: topologyFixtures['2/main_sub'], groupLabel: 'Receiver SUB',
+    });
+    expect(target.querySelector('[data-testid="vfo-surface"]')?.getAttribute('aria-label'))
+      .toBe('Receiver SUB');
+  });
+
+  it('falls back to the generic catalog label when absent', () => {
+    const target = mountSurface({ viewModel: topologyFixtures['2/main_sub'] });
+    const label = target.querySelector('[data-testid="vfo-surface"]')?.getAttribute('aria-label');
+    expect(label).toBeTruthy();
+    expect(label).not.toBe('Receiver SUB');
+    // i18n coverage: never an unresolved catalog key.
+    expect(label).not.toContain('core.vfo.');
+  });
+});

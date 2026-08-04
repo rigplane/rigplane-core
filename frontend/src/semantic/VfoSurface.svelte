@@ -58,6 +58,22 @@
      * unsliced surface renders them exactly as before.
      */
     showRadioWideFacts?: boolean;
+    /**
+     * MOR-1068: the mirror of `showRadioWideFacts`. `false` renders the
+     * radio-wide half ALONE, so a layout can place that row outside the
+     * per-receiver strips (the dual-receiver cockpit's global zone) without
+     * repeating the VFO tiles the strips already show. Defaults to `true`:
+     * every unsliced caller renders exactly as before.
+     */
+    showVfoList?: boolean;
+    /**
+     * MOR-1068: accessible name for this surface's group. A cockpit mounts
+     * three of these at once (one per receiver strip + the radio-wide row);
+     * with one shared generic name assistive tech sees three identical
+     * groups and cannot tell which receiver it is in. Defaults to the
+     * generic catalog label, so single-surface callers are unchanged.
+     */
+    groupLabel?: string;
   }
 
   let {
@@ -67,6 +83,8 @@
     onToggleDualWatch,
     selectionPoolSize,
     showRadioWideFacts = true,
+    showVfoList = true,
+    groupLabel,
   }: Props = $props();
 
   function slotKey(slot: VfoSlot): string {
@@ -114,7 +132,7 @@
   }
 </script>
 
-<div class="vfo-surface" role="group" aria-label={t('core.vfo.groupLabel')} data-testid="vfo-surface">
+<div class="vfo-surface" role="group" aria-label={groupLabel ?? t('core.vfo.groupLabel')} data-testid="vfo-surface">
   {#if showRadioWideFacts}
     <p
       class="active-receiver"
@@ -129,6 +147,7 @@
     </p>
   {/if}
 
+  {#if showVfoList}
   <div class="vfo-list" data-testid="vfo-list">
     {#each viewModel.vfos as vfo, i (vfo.receiver + ':' + i)}
       {@const selectable = isSelectable(vfo)}
@@ -165,6 +184,7 @@
       </div>
     {/each}
   </div>
+  {/if}
 
   {#if showRadioWideFacts}
     <div class="fact-toggles">
