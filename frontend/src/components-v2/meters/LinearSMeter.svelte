@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onMount } from 'svelte';
-  import { createSmoother } from '$lib/utils/smoothing.svelte';
+  import { createSmoother, prefersReducedMotion, onReducedMotionChange } from '$lib/utils/smoothing.svelte';
   import {
     calibratedToSegments,
     calibratedToSUnit,
@@ -158,7 +158,9 @@
 
   $effect(() => {
     const current = smoother.value;
-    if (current >= peakSegs) {
+    // MOR-1233: under reduced motion there is no hold-then-decay animation —
+    // the indicator tracks the bar directly, so it never lags behind.
+    if (prefersReducedMotion() || current >= peakSegs) {
       // New peak — capture it
       peakSegs = current;
       peakTime = performance.now();
@@ -182,8 +184,28 @@
 
       peakFrameId = requestAnimationFrame(tickPeak);
     };
-    peakFrameId = requestAnimationFrame(tickPeak);
-    return () => { if (peakFrameId) cancelAnimationFrame(peakFrameId); };
+
+    // MOR-1233: the hold/decay ballistics above are exactly the animation
+    // prefers-reduced-motion asks us to skip — don't schedule the loop while
+    // the preference is active. Fix cycle 1: react to it changing mid-
+    // session too (start/stop alone only decide once, at mount).
+    if (!prefersReducedMotion()) peakFrameId = requestAnimationFrame(tickPeak);
+
+    const unsubscribe = onReducedMotionChange((reduced) => {
+      if (reduced) {
+        if (peakFrameId) {
+          cancelAnimationFrame(peakFrameId);
+          peakFrameId = 0;
+        }
+      } else if (!peakFrameId) {
+        peakFrameId = requestAnimationFrame(tickPeak);
+      }
+    });
+
+    return () => {
+      if (peakFrameId) cancelAnimationFrame(peakFrameId);
+      unsubscribe();
+    };
   });
 
   // Peak X position for the vertical indicator line
