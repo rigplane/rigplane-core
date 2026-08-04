@@ -17,6 +17,7 @@
  */
 import type { VfoScheme } from '$lib/types/capabilities';
 import type { FrequencyPermit } from '$lib/utils/tx-permit';
+import { invalid, record, exactKeys, str } from './validator-primitives';
 
 export type ReceiverId = 'MAIN' | 'SUB';
 export type VfoSlotId = 'A' | 'B';
@@ -110,27 +111,12 @@ const DISABLED_REASON_CODES: readonly DisabledReasonCode[] = [
   'capability-unavailable', 'field-not-observed', 'tx-target-unknown', 'out-of-band',
 ];
 
-function invalid(path: string, expected: string): never {
-  throw new TypeError(`Invalid radio view model at ${path}: expected ${expected}`);
-}
-function record(value: unknown, path: string): Record<string, unknown> {
-  if (typeof value !== 'object' || value === null || Array.isArray(value)) invalid(path, 'an object');
-  return value as Record<string, unknown>;
-}
-function exactKeys(value: Record<string, unknown>, keys: readonly string[], path: string): void {
-  const extra = Object.keys(value).filter((k) => !keys.includes(k));
-  if (extra.length > 0) invalid(path, `only [${keys.join(', ')}] (found extra: ${extra.join(', ')})`);
-}
 function oneOf<T>(value: unknown, allowed: readonly T[], path: string): T {
   if (!allowed.includes(value as T)) invalid(path, allowed.join(' | '));
   return value as T;
 }
 function bool(value: unknown, path: string): boolean {
   if (typeof value !== 'boolean') invalid(path, 'a boolean');
-  return value;
-}
-function str(value: unknown, path: string): string {
-  if (typeof value !== 'string') invalid(path, 'a string');
   return value;
 }
 function nullableNumber(value: unknown, path: string): number | null {
@@ -142,6 +128,32 @@ function nullableNumber(value: unknown, path: string): number | null {
 function nullableString(value: unknown, path: string): string | null {
   if (value !== null && typeof value !== 'string') invalid(path, 'a string or null');
   return value as string | null;
+}
+
+/**
+ * Declares a fact group as optional (MOR-1264, decision (b) of the MOR-1262
+ * decomposition's slice 0): present ⇒ validated strictly by `validate` (the
+ * group runs its own `exactKeys`/shape checks, unchanged); absent (`value`
+ * is `undefined`) ⇒ the field stays `undefined` on the returned model and
+ * the family is structurally unavailable — the MOR-988 §11.3 degrade-to-
+ * unknown doctrine applied at the group level, not a new relaxation.
+ *
+ * A group is optional *only* because its key is listed in the containing
+ * `exactKeys(...)` allow-list alongside the required keys — `exactKeys`
+ * itself is untouched, so a key absent from that list is still rejected as
+ * an extra. This is what keeps "optional" bounded rather than "anything
+ * goes". A future slice declares and reads its group with one line each,
+ * e.g. (MOR-1244, `txAux`) — `validateTxAux` built from the same
+ * `record`/`exactKeys`/`str` imported from `./validator-primitives`:
+ *   exactKeys(v, [...requiredKeys, 'txAux'], '$');
+ *   txAux: optionalGroup(v.txAux, '$.txAux', validateTxAux),
+ */
+export function optionalGroup<T>(
+  value: unknown,
+  path: string,
+  validate: (value: unknown, path: string) => T,
+): T | undefined {
+  return value === undefined ? undefined : validate(value, path);
 }
 
 function validateVfoSlot(value: unknown, path: string): VfoSlot {
