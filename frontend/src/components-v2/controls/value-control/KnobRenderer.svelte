@@ -376,7 +376,7 @@
   }
 
   .vc-knob-container:focus-visible {
-    outline: var(--vc-focus-ring-width, 2px) solid var(--vc-accent);
+    outline: var(--vc-focus-ring-width, 2px) solid var(--vc-focus-ring);
     outline-offset: 4px;
     border-radius: 50%;
   }

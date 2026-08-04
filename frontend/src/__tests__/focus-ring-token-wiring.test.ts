@@ -51,15 +51,18 @@
  *     ProfessionalKnob's comes from a per-instance `accentColor` prop
  *     (literal default #00e5ff), so aligning it is a behaviour question for
  *     the owner, not a token swap.
- *   - value-control renderers (Knob/HBar/Discrete/Bipolar/DualParam): their
- *     focus outlines use `--vc-accent` — which is the general accent, shared
- *     with tick marks and fills — while `--vc-focus-ring`
- *     (value-control.css:24) is itself declared and referenced NOWHERE, i.e.
- *     a second instance of this ticket's dead-token defect. Fixing it means
- *     retargeting five renderers, one of which (DualParamRenderer) backs the
- *     dual-receiver cockpit that is out of scope here. Follow-up ticket.
  *   - legacy `src/components/spectrum/*` suppressions: pre-v3 code, listed
  *     under LEGACY_DEBT below rather than silently masked by the guard.
+ *
+ * MOR-1254 follow-up (fixed here, see section 5's extended loop and section 7
+ * below): the five value-control renderers (Knob/HBar/Discrete/Bipolar/
+ * DualParam) used to colour their focus outline with `--vc-accent` /
+ * `--vc-rf-accent` — the general per-instance accent, shared with tick marks
+ * and fills, unchecked for contrast (1.48-1.74 on nord-light) — while
+ * `--vc-focus-ring` (value-control.css) was declared and referenced NOWHERE,
+ * a second instance of this ticket's dead-token defect. `--vc-focus-ring` now
+ * resolves to `--v2-focus-ring-color` (the same contrast-pinned per-skin
+ * knob), and all five renderers, including DualParamRenderer, consume it.
  */
 import { readFileSync, readdirSync, statSync } from 'node:fs';
 import { extname, join } from 'node:path';
@@ -392,6 +395,46 @@ describe('MOR-1232: the focus ring clears WCAG 1.4.11 (3:1) on every skin', () =
       );
     });
   }
+
+  /* MOR-1254: the five value-control renderers colour their focus outline
+   * with `--vc-focus-ring` (value-control.css), which now resolves through
+   * this same `--v2-focus-ring-color` knob. Extending this loop — rather than
+   * writing a parallel matrix — means a future change to either the knob or
+   * value-control.css's wiring is caught by the same per-skin recompute. */
+  const vcBase: Record<string, string> = {
+    ...base,
+    ...parseTokens(
+      readFileSync(
+        join(FRONTEND_SRC, 'components-v2/controls/value-control/value-control.css'),
+        'utf-8',
+      ),
+    ),
+  };
+
+  for (const { id, tokens } of skins) {
+    it(`${id}: value-control renderer focus ring (--vc-focus-ring) is >= ${MIN_RATIO}:1 against every surface`, () => {
+      const ring = resolve('--vc-focus-ring', tokens, vcBase);
+      expect(ring, `${id} has no resolvable --vc-focus-ring`).toBeTruthy();
+      expect(ring!, `${id} --vc-focus-ring is not a hex literal`).toMatch(/^#[0-9a-fA-F]{3,6}$/);
+
+      const checked: string[] = [];
+      for (const surface of SURFACES) {
+        const bg = resolve(surface, tokens, base);
+        if (!bg || !/^#[0-9a-fA-F]{3,6}$/.test(bg)) continue;
+        checked.push(surface);
+        const ratio = contrast(ring!, bg);
+        expect(
+          ratio,
+          `${id}: --vc-focus-ring ${ring} on ${surface} ${bg} = ${ratio.toFixed(2)}:1 ` +
+            `(WCAG 1.4.11 non-text minimum is ${MIN_RATIO}:1). This drives the focus ` +
+            'outline of all five value-control renderers (Knob/HBar/Discrete/Bipolar/DualParam).',
+        ).toBeGreaterThanOrEqual(MIN_RATIO);
+      }
+      expect(checked.length, `${id}: no surfaces resolved — the check was vacuous`).toBeGreaterThan(
+        2,
+      );
+    });
+  }
 });
 
 /* ── 6. regression guard, selector-scoped (F3) ───────────────────────────── */
@@ -460,4 +503,45 @@ describe('MOR-1232: regression guard — no new unpaired outline:none suppressio
       expect(suppressionOffenders(rel, raw)).toEqual(expect.arrayContaining(selectors));
     }
   });
+});
+
+/* ── 7. MOR-1254: value-control renderers wired off the live token ───────── */
+
+describe('MOR-1254: --vc-focus-ring is live and drives value-control renderer focus colour', () => {
+  const VC_CSS = 'components-v2/controls/value-control/value-control.css';
+
+  it('value-control.css no longer declares the dead --v2-accent-cyan value', () => {
+    const css = read(VC_CSS);
+    // The original defect: declared, but resolving to the raw (contrast-failing)
+    // accent, with zero consumers.
+    expect(css).not.toMatch(/--vc-focus-ring:\s*var\(--v2-accent-cyan\)/);
+    // It now proxies the same contrast-pinned per-skin knob MOR-1232 introduced,
+    // recomputed for these renderers in section 5 above.
+    expect(css).toMatch(/--vc-focus-ring:\s*var\(--v2-focus-ring-color\)\s*;/);
+  });
+
+  const RENDERERS = [
+    'components-v2/controls/value-control/HBarRenderer.svelte',
+    'components-v2/controls/value-control/DiscreteRenderer.svelte',
+    'components-v2/controls/value-control/BipolarRenderer.svelte',
+    'components-v2/controls/value-control/KnobRenderer.svelte',
+    'components-v2/controls/value-control/DualParamRenderer.svelte',
+  ];
+
+  for (const file of RENDERERS) {
+    it(`${file}: the :focus-visible outline consumes var(--vc-focus-ring), not the raw per-instance accent`, () => {
+      const css = stripComments(styleText(file, read(file)));
+      const rule = css.match(/:focus-visible\s*\{[^}]*\}/);
+      expect(rule, `${file}: expected a :focus-visible rule`).not.toBeNull();
+      expect(rule![0]).toMatch(
+        /outline:\s*var\(--vc-focus-ring-width,\s*2px\)\s*solid\s*var\(--vc-focus-ring\)/,
+      );
+      // Regression guard: `--vc-accent` / `--vc-rf-accent` are the general,
+      // per-instance colour props (unchecked for contrast) that caused the
+      // 1.48-1.74 nord-light ratios this ticket fixes — they must not come
+      // back as the OUTLINE colour. (They remain legitimate for fills/ticks;
+      // this only pins the focus-visible rule.)
+      expect(rule![0]).not.toMatch(/outline:[^;]*solid\s*var\(--vc-(accent|rf-accent)\)/);
+    });
+  }
 });
