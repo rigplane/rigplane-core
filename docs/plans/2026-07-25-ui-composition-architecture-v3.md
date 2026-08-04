@@ -197,6 +197,17 @@ renamed it `stageSizing` to say so and froze it declaration-only (an
 architecture test flags any direct textual read outside
 `presentation/layouts/`) until `ScaledStage` exists to enforce it.
 
+MOR-1261 (owner decision, 2026-08-04): until a layout's instrument stage
+exists, `stageSizing`'s fluid `responsiveBreakpoints` may ALSO carry CHROME
+reflow thresholds declaratively — legitimizing the mobile manifest's `[500]`
+(MOR-1094) and the cockpit's `[768, 1024]` (MOR-1069) — the cockpit's pair
+pinned by a CSS↔manifest agreement test, mobile's declared value pinned at
+the manifest only. This is an interim carriage: the field's primary
+semantics stay the instrument stage's policy above, the MOR-1247
+declaration-only guard still forbids a runtime read, and a per-zone sizing
+superset may supersede it later. A dedicated `chromeBreakpoints` field was
+considered and rejected for now.
+
 ## Dependency and product invariants
 
 1. Runtime imports no adapters or presentation.
