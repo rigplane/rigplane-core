@@ -192,6 +192,17 @@ export function toRadioViewModel(
     if (!availability.structural) disabledReasons.push({ field, code: 'capability-unavailable' });
     else if (!availability.operational) disabledReasons.push({ field, code: 'field-not-observed' });
   }
+  // MOR-1256: `operationalReceivers` (presentation-capabilities.ts) had zero
+  // consumers — a `dual-rx-unavailable` radio (structurally dual, no
+  // `dual_rx` tag) kept SUB in `vfos` (correct: MOR-977 renders it PRESENT)
+  // but nothing ever disabled it. One reason per structurally-present,
+  // operationally-absent receiver, same shape as the scope facts above;
+  // `dual-receiver-strips.ts`'s `isOperationalStrip` reads it back.
+  for (const receiverId of topology.structuralReceivers) {
+    if (!topology.operationalReceivers.includes(receiverId)) {
+      disabledReasons.push({ field: `receiver.${receiverId}`, code: 'capability-unavailable' });
+    }
+  }
 
   return {
     topologyId: `${topology.structuralCount}/${topology.scheme}`,

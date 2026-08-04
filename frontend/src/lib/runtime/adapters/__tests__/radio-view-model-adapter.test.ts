@@ -251,6 +251,44 @@ describe('scope availability separates structural from operational', () => {
   });
 });
 
+// MOR-1256: `operationalReceivers` (presentation-capabilities.ts) had zero
+// consumers — a `dual-rx-unavailable` radio (structurally dual, no `dual_rx`
+// tag) kept SUB fully enabled. `vfos` correctly stays derived from
+// `structuralReceivers` (MOR-977: the strip must still be PRESENT); the gap
+// was that nothing fed `operationalReceivers` anywhere, so no CONSUMER ever
+// disabled it. This closes the gap the same way `scope.hardwareScope` /
+// `scope.audioFftScope` already report degraded-but-structural facts: one
+// `disabledReasons` entry per structurally-present, operationally-absent
+// receiver, read back by `dual-receiver-strips.ts`'s `isOperationalStrip`.
+describe('operational receiver availability separates structural from operational (MOR-1256)', () => {
+  const dualRxUnavailableCaps = caps({ capabilities: SINGLE });
+
+  // MUTATION KILLED: dropping the `topology.operationalReceivers` loop
+  // entirely — SUB stays structurally present (correct) but nothing ever
+  // marks it disabled, reproducing the exact bug this ticket exists to fix.
+  it('marks the structurally-present, operationally-unavailable SUB receiver disabled', () => {
+    const view = model(observedState(), dualRxUnavailableCaps);
+    expect(view.topologyId).toBe('2/main_sub');
+    expect(view.vfos.some((v) => v.receiver === 'SUB')).toBe(true);
+    expect(view.disabledReasons).toContainEqual({
+      field: 'receiver.SUB', code: 'capability-unavailable',
+    });
+  });
+
+  // MUTATION KILLED: pushing the reason for every structural receiver
+  // instead of only the ones missing from `operationalReceivers` — MAIN
+  // would falsely disable too.
+  it('never marks MAIN unavailable — only the receiver that failed the capability check', () => {
+    const view = model(observedState(), dualRxUnavailableCaps);
+    expect(view.disabledReasons.some((r) => r.field === 'receiver.MAIN')).toBe(false);
+  });
+
+  it('emits no receiver disabledReason when the radio is fully dual-capable', () => {
+    const view = model(observedState(), TOPOLOGY_CAPS['2/main_sub']);
+    expect(view.disabledReasons.some((r) => r.field.startsWith('receiver.'))).toBe(false);
+  });
+});
+
 describe('the emitted model carries only contract data', () => {
   it('survives a JSON round-trip unchanged — no functions, classes or live objects', () => {
     for (const id of Object.keys(TOPOLOGY_CAPS)) {

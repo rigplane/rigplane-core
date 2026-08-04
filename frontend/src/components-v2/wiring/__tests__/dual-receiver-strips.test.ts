@@ -4,13 +4,28 @@
  * exists to kill.
  */
 import { describe, it, expect } from 'vitest';
-import { forReceiver, isActiveStrip, receiversOf } from '../dual-receiver-strips';
+import {
+  forReceiver, isActiveStrip, isOperationalStrip, receiversOf,
+} from '../dual-receiver-strips';
 import { topologyFixtures } from '../../../semantic/fixtures/topologies';
 import type { RadioViewModel } from '../../../semantic/radio-view-model';
 
 const dualAbShared = topologyFixtures['2/ab_shared'];
 const dualMainSub = topologyFixtures['2/main_sub'];
 const singleReceiver = topologyFixtures['1/single'];
+
+// MOR-1256: none of the four canonical topology fixtures models
+// `dual-rx-unavailable` (structurally dual, operationally degraded) — it is
+// a diagnostic condition, not a fifth topology. Built here the same way
+// `withAudioOnlyScope` composes its orthogonal condition onto a fixture:
+// every other fact stays byte-identical to `dualMainSub`.
+const dualRxUnavailable: RadioViewModel = {
+  ...dualMainSub,
+  disabledReasons: [
+    ...dualMainSub.disabledReasons,
+    { field: 'receiver.SUB', code: 'capability-unavailable' },
+  ],
+};
 
 describe('receiversOf', () => {
   it('finds both receivers in an unslotted dual (ab_shared) fixture', () => {
@@ -67,5 +82,33 @@ describe('isActiveStrip', () => {
     const unknownActive: RadioViewModel = { ...dualMainSub, activeReceiver: { status: 'unknown' } };
     expect(isActiveStrip(unknownActive, 'MAIN')).toBe(false);
     expect(isActiveStrip(unknownActive, 'SUB')).toBe(false);
+  });
+});
+
+describe('isOperationalStrip (MOR-1256)', () => {
+  it('is true for both receivers of a fully dual-capable fixture (no receiver disabledReason)', () => {
+    expect(isOperationalStrip(dualMainSub, 'MAIN')).toBe(true);
+    expect(isOperationalStrip(dualMainSub, 'SUB')).toBe(true);
+  });
+
+  // The kill-test this ticket requires: severing the operational feed (no
+  // `receiver.SUB` disabledReason reaching the view model) makes this false
+  // assertion pass instead — i.e. the present+disabled assertion fails.
+  it('is false only for the receiver named in a receiver.<ID> disabledReason', () => {
+    expect(isOperationalStrip(dualRxUnavailable, 'SUB')).toBe(false);
+    expect(isOperationalStrip(dualRxUnavailable, 'MAIN')).toBe(true);
+  });
+
+  // MUTATION KILLED: matching on ANY `receiver.` prefix (or on the presence
+  // of ANY disabledReason) instead of the exact `receiver.<ID>` field — would
+  // wrongly disable MAIN whenever SUB is unavailable, gating the shared
+  // TX-adjacent strip on someone else's diagnostic.
+  it('does not fire on an unrelated disabledReason field', () => {
+    const other: RadioViewModel = {
+      ...dualMainSub,
+      disabledReasons: [{ field: 'scope.hardwareScope', code: 'field-not-observed' }],
+    };
+    expect(isOperationalStrip(other, 'SUB')).toBe(true);
+    expect(isOperationalStrip(other, 'MAIN')).toBe(true);
   });
 });

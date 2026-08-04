@@ -74,6 +74,19 @@
      * generic catalog label, so single-surface callers are unchanged.
      */
     groupLabel?: string;
+    /**
+     * MOR-1256: forces every select control in this surface's VFO list
+     * disabled, regardless of slot/active state — the strip-level
+     * counterpart to the per-VFO `slot.kind === 'unknown'` gate below (same
+     * `disabled` attribute on the same button; not a parallel mechanism). A
+     * dual-receiver-cockpit strip whose receiver is structurally present but
+     * OPERATIONALLY unavailable (`dual-rx-unavailable`) sets this so its
+     * controls go inert without pretending the receiver does not exist
+     * (MOR-977: absent only when structural, disabled when only operational
+     * fails). Defaults to `false`: every existing caller — single/unsliced,
+     * and an operationally-fine dual strip — is unchanged.
+     */
+    disabled?: boolean;
   }
 
   let {
@@ -85,6 +98,7 @@
     showRadioWideFacts = true,
     showVfoList = true,
     groupLabel,
+    disabled = false,
   }: Props = $props();
 
   function slotKey(slot: VfoSlot): string {
@@ -107,7 +121,7 @@
   }
 
   function selectVfo(vfo: VfoViewModel): void {
-    if (!isSelectable(vfo) || vfo.slot.kind === 'unknown') return;
+    if (!isSelectable(vfo) || vfo.slot.kind === 'unknown' || disabled) return;
     onSelectVfo?.({ receiver: vfo.receiver, slot: vfo.slot });
   }
 
@@ -151,7 +165,7 @@
   <div class="vfo-list" data-testid="vfo-list">
     {#each viewModel.vfos as vfo, i (vfo.receiver + ':' + i)}
       {@const selectable = isSelectable(vfo)}
-      {@const disabled = selectable && vfo.slot.kind === 'unknown'}
+      {@const selectDisabled = selectable && (vfo.slot.kind === 'unknown' || disabled)}
       <div
         class="vfo-tile"
         class:is-active={vfo.isActive}
@@ -172,7 +186,7 @@
             type="button"
             class="vfo-select"
             data-vfo-select
-            disabled={disabled}
+            disabled={selectDisabled}
             aria-label={t('core.vfo.selectAction', { label: vfo.label })}
             onclick={() => selectVfo(vfo)}
           >
