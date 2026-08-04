@@ -1,0 +1,304 @@
+/*
+  `studioline` design language — the CSS half of the MOR-1073 token slice.
+  Its arithmetic half is `./tokens.ts`; every colour below is one of the
+  palette entries proven there to clear 3:1 against BOTH studioline surfaces.
+
+  SCOPING. Everything is rooted at the language attribute, so
+  loading this file changes nothing until a host opts in. There is no
+  activation mechanism in the app yet — routing a language into the shell is
+  cutover work (MOR-1048/MOR-1263), not this slice — so the only opt-in today
+  is the MOR-1070 fixture harness (`?language=studioline`).
+
+  WHAT IT MAY STYLE. Colour, type, spacing and geometry on the semantic
+  surfaces. Never which facts appear, never whether a control is available:
+  no rule here uses `display: none`, `visibility`, or `content` to add or
+  remove a fact, and none keys off a capability.
+
+  SPECIFICITY. The root selector repeats the attribute
+  (`[data-design-language='studioline'][data-design-language]`) purely to
+  score (0,3,0). Svelte compiles a component's own rules to
+  `.vfo-surface.s-<hash>` — also (0,2,0) — and injects them after this file,
+  so a single-attribute root would TIE and lose on order: the language would
+  silently fail to restyle the very surfaces it exists to restyle. This is a
+  deliberate one-step raise, not an escalation ladder; nothing here uses
+  `!important`.
+
+  R9. The TX-adjacent rules key off `[data-session]` / `[data-rf]`, which
+  RxTxSurface derives from the App-owned TX authority snapshot — never from
+  `radioState.ptt`. CSS displays that authority's conclusion; it cannot form
+  one.
+*/
+
+[data-design-language='studioline'][data-design-language] {
+  --dl-studioline-focus: #00819f;
+  --dl-studioline-rx-idle: #67757c;
+  --dl-studioline-rx-active: #008f86;
+  --dl-studioline-rx-tuning: #00819f;
+  --dl-studioline-tx-idle: #7a6a66;
+  --dl-studioline-tx-active: #d63a30;
+  --dl-studioline-tx-tuning: #a97400;
+
+  --dl-studioline-surface: #0e1113;
+  --dl-studioline-text: #eef1f2;
+  --dl-studioline-muted: #748086;
+  /* 6px rhythm with a 4:1 macro/micro gap ratio (MOR-977 §2.3 geometry). */
+  --dl-studioline-gap-micro: 6px;
+  --dl-studioline-gap-macro: 24px;
+  --dl-studioline-numerals: 200;
+  --dl-studioline-font: -apple-system, BlinkMacSystemFont, 'Helvetica Neue', 'Inter', system-ui, sans-serif;
+
+  /* `app.css` paints `body { background-color: var(--bg) }`, so a background
+     declared only here would be covered by the body box. Re-pointing `--bg`
+     is what actually makes the language own its surface — and it is the whole
+     surface story for a chrome-less grammar, where the page IS the panel. */
+  --bg: var(--dl-studioline-surface);
+
+  background: var(--dl-studioline-surface);
+  color: var(--dl-studioline-text);
+  font-family: var(--dl-studioline-font);
+  font-variant-numeric: tabular-nums;
+}
+
+/* The family is RESTATED on every surface rather than inherited: the shared
+   wiring block (`.semantic-surfaces`) pins `'Roboto Mono'` above these, so an
+   `inherit` here would quietly resolve to a mono face — the one thing the
+   studioline numeral must not be (MOR-977 §2.3). */
+[data-design-language='studioline'][data-design-language] .semantic-surfaces,
+[data-design-language='studioline'][data-design-language] .channel-strip {
+  font-family: var(--dl-studioline-font);
+}
+
+/* True dual-mode: with no chrome there is nothing to re-tune — the surface
+   goes warm off-white and the numerals step 200 → 300, because thin
+   dark-on-light glyphs read thinner than thin light-on-dark ones
+   (MOR-977 §5). The state palette is unchanged: it is proven on both.
+   
+   EXPLICIT OPT-IN, not `prefers-color-scheme`. This app's light/dark is a
+   MANUAL choice — `[data-theme="github-light"]` and friends — and nothing in
+   it responds to the OS signal. A language that flipped its own text to
+   near-black on an OS preference would put dark text on the app's still-dark
+   surface: unreadable, and caught exactly that way in the MOR-1073 capture
+   run. Dark stays primary (MOR-977 §5); a host that goes light flips this
+   attribute and the app theme together. */
+[data-design-language='studioline'][data-design-language][data-language-mode='light'] {
+  --dl-studioline-surface: #faf7f2;
+  --dl-studioline-text: #14181a;
+  --dl-studioline-numerals: 300;
+}
+
+/* Weight, not only colour — 200-weight glyphs read thinner than their
+   contrast ratio implies (MOR-977 §3.2 studioline weak point). */
+[data-design-language='studioline'][data-design-language][data-theme='high-contrast'],
+[data-design-language='studioline'][data-design-language] [data-theme='high-contrast'] {
+  --dl-studioline-text: #ffffff;
+  --dl-studioline-muted: #d5dbde;
+  --dl-studioline-numerals: 600;
+}
+
+/* ── One focus contract, never re-suppressed (MOR-977 §1.2.5) ───────────── */
+[data-design-language='studioline'][data-design-language] :focus-visible {
+  /* Outline shorthand, matching the token literal exactly (MOR-1232 D5). */
+  outline: 2px solid var(--dl-studioline-focus);
+  /* No box edge to hug in a borderless grammar — the ring stands off instead. */
+  outline-offset: 3px;
+}
+
+/* ── The channel strip: no boxes, one optical left margin ───────────────── */
+[data-design-language='studioline'][data-design-language] .vfo-surface,
+[data-design-language='studioline'][data-design-language] .rx-tx-surface {
+  gap: var(--dl-studioline-gap-micro);
+  font-family: var(--dl-studioline-font);
+  color: var(--dl-studioline-text);
+}
+[data-design-language='studioline'][data-design-language] .vfo-tile {
+  border: 0;
+  border-radius: 0;
+  background: none;
+  padding: 0;
+  gap: var(--dl-studioline-gap-macro);
+}
+/* Identity is carried by the rail, not by an enclosure. */
+[data-design-language='studioline'][data-design-language] .vfo-tile.is-active {
+  box-shadow: inset 2px 0 0 0 var(--dl-studioline-rx-active);
+  padding-inline-start: var(--dl-studioline-gap-micro);
+}
+[data-design-language='studioline'][data-design-language] .vfo-freq {
+  font-family: var(--dl-studioline-font);
+  font-size: 34px;
+  font-weight: var(--dl-studioline-numerals);
+  letter-spacing: -0.02em;
+  font-variant-numeric: tabular-nums;
+}
+[data-design-language='studioline'][data-design-language] .active-receiver,
+[data-design-language='studioline'][data-design-language] .vfo-role,
+[data-design-language='studioline'][data-design-language] .vfo-mode,
+[data-design-language='studioline'][data-design-language] .rx-tx-session,
+[data-design-language='studioline'][data-design-language] .rx-tx-origin {
+  font-size: 10px;
+  font-weight: 500;
+  letter-spacing: 0.22em;
+  text-transform: uppercase;
+  color: var(--dl-studioline-muted);
+}
+/* The TX-target marker is the last box in a grammar that has none. It stays a
+   distinct, always-visible mark — it just carries by weight and tracking
+   instead of by an enclosure. */
+[data-design-language='studioline'][data-design-language] .vfo-badge {
+  border: 0;
+  border-radius: 0;
+  padding: 0;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.22em;
+  text-transform: uppercase;
+  color: var(--dl-studioline-tx-active);
+}
+[data-design-language='studioline'][data-design-language] .vfo-select,
+[data-design-language='studioline'][data-design-language] .fact-toggle {
+  border: 0;
+  border-bottom: 1px solid var(--dl-studioline-muted);
+  border-radius: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  font-size: 11px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  padding: 4px 0;
+}
+/* Disabled must stay legible: it is a fact about the radio, not a dimming. */
+[data-design-language='studioline'][data-design-language] .vfo-select:disabled,
+[data-design-language='studioline'][data-design-language] .fact-toggle:disabled {
+  color: var(--dl-studioline-muted);
+  border-bottom-style: dashed;
+}
+
+/* ── The TX carrier: a full-bleed top rail (MOR-977 §2.3) ───────────────── */
+[data-design-language='studioline'][data-design-language] .rx-tx-surface {
+  position: relative;
+  padding-top: var(--dl-studioline-gap-micro);
+  /* Thickness AND colour, so the state survives forced-colors. */
+  border-top: 1px solid var(--dl-studioline-rx-idle);
+}
+[data-design-language='studioline'][data-design-language] .rx-tx-surface:has([data-session='pending']) {
+  border-top: 3px solid var(--dl-studioline-tx-tuning);
+}
+[data-design-language='studioline'][data-design-language] .rx-tx-surface:has([data-session='keyed']) {
+  border-top: 3px solid var(--dl-studioline-tx-active);
+}
+[data-design-language='studioline'][data-design-language] .rx-tx-surface:has([data-session='releasing']) {
+  border-top: 2px solid var(--dl-studioline-tx-active);
+}
+/* Unknown RF is a THIRD thing, never RX (MOR-977 §1.2.1). */
+[data-design-language='studioline'][data-design-language] .rx-tx-surface:has([data-rf='unknown']),
+[data-design-language='studioline'][data-design-language] .rx-tx-surface:has([data-rf='uncertain']) {
+  border-top: 3px solid var(--dl-studioline-tx-tuning);
+}
+/* A fault outranks RF doubt and must stay LAST: a failed session almost
+   always reports `rf=uncertain` too, and at equal specificity the later rule
+   wins — so ordering, not specificity, is what keeps a fault rail red
+   (MOR-977 §2.3) instead of amber. */
+[data-design-language='studioline'][data-design-language] .rx-tx-surface:has([data-session='failed']) {
+  border-top: 3px solid var(--dl-studioline-tx-active);
+}
+[data-design-language='studioline'][data-design-language] .rx-tx-label {
+  font-size: 20px;
+  font-weight: 300;
+  letter-spacing: 0.04em;
+}
+[data-design-language='studioline'][data-design-language] .rx-tx-fault {
+  font-size: 10px;
+  font-weight: 500;
+  letter-spacing: 0.22em;
+  text-transform: uppercase;
+  color: var(--dl-studioline-tx-active);
+}
+[data-design-language='studioline'][data-design-language] .rx-tx-blocked {
+  font-size: 11px;
+  color: var(--dl-studioline-muted);
+}
+
+/* ── The TX key: an intentional treatment, not a UA default (N2) ──────────
+   Border style and fill carry the state without colour, so the five
+   treatments stay distinct under forced-colors and colour-vision deficiency:
+     idle     solid edge, no fill
+     pending  solid edge, hatched fill
+     keyed    solid edge, solid fill (label knocked out)
+     fault    dashed edge, no fill
+     blocked  dotted edge, no fill
+   The state itself always comes from `[data-session]`, i.e. from the App TX
+   authority — never from a raw PTT reading (R9). */
+[data-design-language='studioline'][data-design-language] .rx-tx-actions {
+  gap: var(--dl-studioline-gap-micro);
+  margin-top: var(--dl-studioline-gap-micro);
+}
+[data-design-language='studioline'][data-design-language] .rx-tx-key,
+[data-design-language='studioline'][data-design-language] .rx-tx-unkey {
+  /* The pill is the one radius this grammar allows anywhere. */
+  border-radius: 999px;
+  border: 1px solid currentcolor;
+  background: none;
+  color: var(--dl-studioline-tx-idle);
+  font: inherit;
+  font-size: 11px;
+  font-weight: 500;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  padding: 10px 22px;
+  min-height: 44px;
+  cursor: pointer;
+}
+/* IDLE — outlined and quiet: keying is deliberate, not the default gesture. */
+[data-design-language='studioline'][data-design-language] .rx-tx-surface:has([data-session='idle']) .rx-tx-key {
+  color: var(--dl-studioline-rx-tuning);
+}
+/* PENDING — the request is out but no RF is; hatched, so it can never be
+   mistaken for the keyed fill. */
+[data-design-language='studioline'][data-design-language] .rx-tx-surface:has([data-session='pending']) .rx-tx-key {
+  color: var(--dl-studioline-tx-tuning);
+  border-style: solid;
+  background: repeating-linear-gradient(
+    -45deg, transparent 0 5px, color-mix(in srgb, var(--dl-studioline-tx-tuning) 30%, transparent) 5px 10px
+  );
+}
+/* KEYED — solid fill with a knocked-out label: the loudest thing on screen.
+   The key is also `disabled` here (you cannot key what is already keyed), and
+   the inert treatment below must NOT bleed through: a dotted edge on a solid
+   TX fill reads as a styling accident rather than as "transmitting". These
+   selectors outrank it, so the border style is restated rather than left to
+   cascade order. */
+[data-design-language='studioline'][data-design-language] .rx-tx-surface:has([data-session='keyed']) .rx-tx-key,
+[data-design-language='studioline'][data-design-language] .rx-tx-surface:has([data-session='releasing']) .rx-tx-key {
+  background: var(--dl-studioline-tx-active);
+  border-color: var(--dl-studioline-tx-active);
+  border-style: solid;
+  color: var(--dl-studioline-surface);
+}
+/* FAULT — dashed, so the state reads without colour. */
+[data-design-language='studioline'][data-design-language] .rx-tx-surface:has([data-session='failed']) .rx-tx-key {
+  color: var(--dl-studioline-tx-active);
+  border-style: dashed;
+}
+/* Fail-closed permit renders as DENIAL, not absence — inert but present, and
+   still legible (MOR-977 §1.2.3). A hidden PTT reads as "no TX capability",
+   which is a different fact. */
+[data-design-language='studioline'][data-design-language] .rx-tx-key:disabled {
+  color: var(--dl-studioline-muted);
+  border-style: dotted;
+  background: none;
+  cursor: not-allowed;
+}
+/* Unkey is never gated, and is weighted to be findable in a hurry. */
+[data-design-language='studioline'][data-design-language] .rx-tx-unkey {
+  color: var(--dl-studioline-text);
+  font-weight: 600;
+}
+
+/* NO reduced-motion block here, deliberately. This file declares no
+   transition, animation or keyframes at all — studioline's one animation is
+   the tuning underline slide, which lives in the renderer descriptor
+   (`frequency-renderer.ts`), not in CSS. A blanket `transition: none
+   !important` would therefore switch off nothing of this language's own while
+   reaching every descendant component, and `styles/animations.css` already
+   clamps the app-wide reduce case. Adding one back is a signal that a
+   transition crept in; remove the transition instead (MOR-977 §3.2). */
