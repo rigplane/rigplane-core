@@ -13,6 +13,13 @@
   'unknown'`) — never fabricate an A/B id. Split/dual-watch toggles are
   always structurally present but DISABLED while unobserved, rendered as
   an explicit tri-state — never defaulted to "off".
+
+  Two optional props exist only for callers that mount ONE SURFACE PER
+  RECEIVER over a sliced view model (MOR-1067's dual-receiver cockpit);
+  both default to the unsliced behaviour byte-for-byte. `selectionPoolSize`
+  keeps the "structurally nothing to choose" gate reading the whole radio
+  rather than the slice, and `showRadioWideFacts` lets such a caller render
+  the radio-wide split/dual-watch/active-receiver facts exactly once.
 -->
 <script module lang="ts">
   import type { ReceiverId, VfoSlot } from './radio-view-model';
@@ -32,9 +39,35 @@
     onSelectVfo?: (target: VfoSelection) => void;
     onToggleSplit?: () => void;
     onToggleDualWatch?: () => void;
+    /**
+     * MOR-1067: how many VFOs the operator can choose BETWEEN across the WHOLE
+     * radio. Defaults to `viewModel.vfos.length` — for an unsliced view model
+     * those are the same number, so the default path is unchanged. A
+     * dual-receiver channel strip passes the whole model's count: its slice
+     * holds one VFO, but the radio still has something to choose, and the
+     * MOR-977 structural gate must not read a per-receiver SLICE as "there is
+     * structurally nothing to choose" and render the control ABSENT.
+     */
+    selectionPoolSize?: number;
+    /**
+     * MOR-1067: split / dual-watch / active-receiver are radio-WIDE facts, not
+     * per-receiver ones. A cockpit that mounts one surface per receiver must
+     * render them exactly once — two `role="switch"` controls for one radio
+     * fact is duplicated radio behaviour in the presentation and a duplicated
+     * `aria-checked` pair for assistive tech. Defaults to `true`: the single
+     * unsliced surface renders them exactly as before.
+     */
+    showRadioWideFacts?: boolean;
   }
 
-  let { viewModel, onSelectVfo, onToggleSplit, onToggleDualWatch }: Props = $props();
+  let {
+    viewModel,
+    onSelectVfo,
+    onToggleSplit,
+    onToggleDualWatch,
+    selectionPoolSize,
+    showRadioWideFacts = true,
+  }: Props = $props();
 
   function slotKey(slot: VfoSlot): string {
     return slot.kind === 'slotted' ? slot.id : slot.kind;
@@ -52,7 +85,7 @@
   }
 
   function isSelectable(vfo: VfoViewModel): boolean {
-    return viewModel.vfos.length > 1 && !vfo.isActive;
+    return (selectionPoolSize ?? viewModel.vfos.length) > 1 && !vfo.isActive;
   }
 
   function selectVfo(vfo: VfoViewModel): void {
@@ -82,17 +115,19 @@
 </script>
 
 <div class="vfo-surface" role="group" aria-label={t('core.vfo.groupLabel')} data-testid="vfo-surface">
-  <p
-    class="active-receiver"
-    data-testid="vfo-active-receiver"
-    data-active-receiver={viewModel.activeReceiver.status === 'known'
-      ? viewModel.activeReceiver.receiver
-      : 'unknown'}
-  >
-    {viewModel.activeReceiver.status === 'known'
-      ? t('core.vfo.activeReceiver.known', { receiver: viewModel.activeReceiver.receiver })
-      : t('core.vfo.activeReceiver.unknown')}
-  </p>
+  {#if showRadioWideFacts}
+    <p
+      class="active-receiver"
+      data-testid="vfo-active-receiver"
+      data-active-receiver={viewModel.activeReceiver.status === 'known'
+        ? viewModel.activeReceiver.receiver
+        : 'unknown'}
+    >
+      {viewModel.activeReceiver.status === 'known'
+        ? t('core.vfo.activeReceiver.known', { receiver: viewModel.activeReceiver.receiver })
+        : t('core.vfo.activeReceiver.unknown')}
+    </p>
+  {/if}
 
   <div class="vfo-list" data-testid="vfo-list">
     {#each viewModel.vfos as vfo, i (vfo.receiver + ':' + i)}
@@ -131,32 +166,34 @@
     {/each}
   </div>
 
-  <div class="fact-toggles">
-    <button
-      type="button"
-      class="fact-toggle"
-      data-vfo-split
-      role="switch"
-      aria-checked={triState(viewModel.split)}
-      aria-label={t('core.vfo.split.label')}
-      disabled={viewModel.split.status === 'unknown'}
-      onclick={toggleSplit}
-    >
-      {t('core.vfo.split.label')}: {stateWord(viewModel.split)}
-    </button>
-    <button
-      type="button"
-      class="fact-toggle"
-      data-vfo-dual-watch
-      role="switch"
-      aria-checked={triState(viewModel.dualWatch)}
-      aria-label={t('core.vfo.dualWatch.label')}
-      disabled={viewModel.dualWatch.status === 'unknown'}
-      onclick={toggleDualWatch}
-    >
-      {t('core.vfo.dualWatch.label')}: {stateWord(viewModel.dualWatch)}
-    </button>
-  </div>
+  {#if showRadioWideFacts}
+    <div class="fact-toggles">
+      <button
+        type="button"
+        class="fact-toggle"
+        data-vfo-split
+        role="switch"
+        aria-checked={triState(viewModel.split)}
+        aria-label={t('core.vfo.split.label')}
+        disabled={viewModel.split.status === 'unknown'}
+        onclick={toggleSplit}
+      >
+        {t('core.vfo.split.label')}: {stateWord(viewModel.split)}
+      </button>
+      <button
+        type="button"
+        class="fact-toggle"
+        data-vfo-dual-watch
+        role="switch"
+        aria-checked={triState(viewModel.dualWatch)}
+        aria-label={t('core.vfo.dualWatch.label')}
+        disabled={viewModel.dualWatch.status === 'unknown'}
+        onclick={toggleDualWatch}
+      >
+        {t('core.vfo.dualWatch.label')}: {stateWord(viewModel.dualWatch)}
+      </button>
+    </div>
+  {/if}
 </div>
 
 <style>

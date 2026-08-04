@@ -177,6 +177,18 @@ describe('the surfaces render from the live adapter output', () => {
     expect(q('[data-testid="rx-tx-target"]')?.dataset.target).toBe('known');
   });
 
+  // MUTATION KILLED: flipping the `strips` default from 'single' to 'dual'
+  // (MOR-1067 review cycle 1, F4). The default is what every existing consumer
+  // gets — RadioLayout.svelte mounts this with no `strips` prop — so a flipped
+  // default silently re-composes sdr-test/desktop into per-receiver channel
+  // strips. Nothing else in the suite distinguishes the two modes: this file's
+  // fixtures render the same inner surface either way.
+  it('defaults to the single unsliced surface — no channel-strip wrapper at all', () => {
+    render();
+    expect(q('[data-testid="channel-strips"]')).toBeNull();
+    expect(target.querySelectorAll('[data-testid="vfo-surface"]')).toHaveLength(1);
+  });
+
   it('renders no surfaces at all rather than guessing when capabilities are absent', () => {
     h.caps = null;
     render();

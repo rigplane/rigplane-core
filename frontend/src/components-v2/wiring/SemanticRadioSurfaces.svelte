@@ -30,6 +30,19 @@
   import VfoSurface, { type VfoSelection } from '../../semantic/VfoSurface.svelte';
   import ModInputTxWarning from '../panels/ModInputTxWarning.svelte';
   import { makeVfoHandlers } from './command-bus';
+  import { forReceiver, receiversOf, isActiveStrip } from './dual-receiver-strips';
+
+  /**
+   * `'single'` (default) is the exact pre-MOR-1067 markup — sdr-test's
+   * behavior is untouched. `'dual'` is the dual-receiver-cockpit's per-
+   * receiver channel strips (MOR-1067): still ONE shared RxTxSurface and
+   * ONE TX lease below — ONLY the VFO half splits, so there is still exactly
+   * one authoritative key/unkey action surface regardless of `strips`.
+   */
+  interface Props {
+    strips?: 'single' | 'dual';
+  }
+  let { strips = 'single' }: Props = $props();
 
   const vfo = makeVfoHandlers();
   const tx = getAppTxController();
@@ -90,12 +103,46 @@
 
 <div class="semantic-surfaces" data-testid="semantic-radio-surfaces">
   {#if view}
-    <VfoSurface
-      viewModel={view}
-      onSelectVfo={selectVfo}
-      onToggleSplit={vfo.onSplitToggle}
-      onToggleDualWatch={toggleDualWatch}
-    />
+    {#if strips === 'dual'}
+      <div class="channel-strips" data-testid="channel-strips">
+        {#each receiversOf(view) as receiverId, index (receiverId)}
+          <div
+            class="channel-strip"
+            data-testid={`channel-strip-${receiverId}`}
+            data-strip-receiver={receiverId}
+            data-strip-active={isActiveStrip(view, receiverId)}
+          >
+            <!--
+              `selectionPoolSize`: the slice below holds this receiver's VFOs
+              only, but the operator can still choose across the WHOLE radio —
+              without the pool the MOR-977 gate reads a 1-VFO slice as
+              "structurally nothing to choose" and an `ab_shared` cockpit
+              silently loses its only receiver-selection control.
+              `showRadioWideFacts`: split / dual-watch / active-receiver are
+              radio-wide, so exactly ONE strip renders them — the FIRST, a
+              position that depends on no observed fact, so the switches never
+              move when the active receiver changes. (Their eventual home is
+              the cockpit's global zone, once a semantic surface backs it.)
+            -->
+            <VfoSurface
+              viewModel={forReceiver(view, receiverId)}
+              selectionPoolSize={view.vfos.length}
+              showRadioWideFacts={index === 0}
+              onSelectVfo={selectVfo}
+              onToggleSplit={vfo.onSplitToggle}
+              onToggleDualWatch={toggleDualWatch}
+            />
+          </div>
+        {/each}
+      </div>
+    {:else}
+      <VfoSurface
+        viewModel={view}
+        onSelectVfo={selectVfo}
+        onToggleSplit={vfo.onSplitToggle}
+        onToggleDualWatch={toggleDualWatch}
+      />
+    {/if}
     <RxTxSurface {view} tx={txState} onRequestKey={requestKey} onRequestUnkey={requestUnkey} />
   {/if}
 
@@ -137,5 +184,16 @@
     color: var(--v2-accent-red, #ef4444);
     font: inherit;
     cursor: pointer;
+  }
+  /* MOR-1067: two borderless channel strips sharing one optical left margin —
+     the RxTxSurface below stays a single shared block, outside this grid. */
+  .channel-strips {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(0, 1fr));
+    gap: 8px;
+  }
+  .channel-strip[data-strip-active='true'] {
+    border-left: 2px solid var(--v2-accent-cyan, #00d4ff);
+    padding-left: 6px;
   }
 </style>
