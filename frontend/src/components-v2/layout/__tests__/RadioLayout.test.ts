@@ -49,9 +49,14 @@ vi.mock('../../../lib/runtime/frontend-runtime', () => ({
   },
 }));
 
+// MOR-1235: `state` is a live getter over a mutable holder (default `null`,
+// reset per test) so a test can put a REAL `ptt` on the runtime state and
+// prove the meters dock ignores it in favour of the App TX authority.
+const rt = vi.hoisted(() => ({ state: null as unknown }));
+
 vi.mock('$lib/runtime', () => ({
   runtime: {
-    state: null,
+    get state() { return rt.state; },
     caps: null,
     connectionStatus: 'disconnected',
     radioPowerOn: null,
@@ -284,13 +289,22 @@ describe('extractVfoState partial data', () => {
 // only App.svelte provides. RadioLayout is mounted here without that provider,
 // so stub the host lookup — the layout still renders the real panel tree.
 // (Partial mock: the App-mount test below still needs the real provider.)
+// MOR-1235: the snapshot is a MUTABLE holder now — the meters dock reads its
+// TX chrome from this controller, so a test has to be able to key it.
+const txAuthority = vi.hoisted(() => {
+  const idle = {
+    phase: 'idle', intent: null, guard: null, radioTx: 'unknown',
+    txRisk: 'none', mayOwnKey: false, fault: null,
+  };
+  return { idle, current: idle as Record<string, unknown> };
+});
+
 vi.mock('$lib/runtime/tx-controller/app-host', async (importOriginal) => {
   const actual = await importOriginal<typeof import('$lib/runtime/tx-controller/app-host')>();
-  const idle = { phase: 'idle', intent: null, guard: null, radioTx: 'unknown', fault: null };
   return {
     ...actual,
     getAppTxController: () => ({
-      snapshot: () => idle,
+      snapshot: () => txAuthority.current,
       subscribe: () => () => {},
       start: vi.fn(),
       setIntent: vi.fn(),
@@ -349,6 +363,8 @@ function mountLayout(skinId: SkinId = 'desktop-v2') {
 beforeEach(() => {
   components = [];
   radio.current = null;
+  rt.state = null;
+  txAuthority.current = txAuthority.idle;
   vi.mocked(hasDualReceiver).mockReturnValue(false);
   vi.mocked(resolveSkinId).mockReturnValue('desktop-v2');
   // JSDOM defaults to 0x0 — force desktop dimensions so isMobile stays false
@@ -359,6 +375,13 @@ beforeEach(() => {
 afterEach(() => {
   components.forEach((c) => unmount(c));
   document.body.innerHTML = '';
+  // Hygiene WITHIN this file. It runs in the `isolated` pool
+  // (`vite.config.ts`), so these holders cannot leak into another file — but
+  // they are module-level and shared by every `it` here, so a non-null `state`
+  // or a keyed authority left behind by one test would be read by the next one
+  // that does not set its own. Reset on the way OUT as well as the way in.
+  rt.state = null;
+  txAuthority.current = txAuthority.idle;
 });
 
 describe('RadioLayout structure', () => {
@@ -447,6 +470,39 @@ describe('Bottom dock MetersDockPanel', () => {
     const dock = t.querySelector('.bottom-dock');
     expect(dock).not.toBeNull();
     expect(dock?.querySelector('[data-testid="meters-dock-panel"]')).not.toBeNull();
+  });
+});
+
+/**
+ * MOR-1235 — the discriminating pair. The dock's TX chrome must follow the
+ * App TX controller (the same source as the authoritative AppGlobalHost lamp),
+ * NOT `radioState.ptt`. Each case sets the two to OPPOSITE values, so routing
+ * the prop back to `ptt` flips both assertions.
+ */
+describe('meters dock TX chrome follows the App TX authority (MOR-1235)', () => {
+  const txTag = (t: HTMLElement) => t.querySelector('.bottom-dock .dock-tx-state');
+
+  it('shows TX when the authority is keyed while radioState.ptt reads false', () => {
+    rt.state = { active: 'MAIN', ptt: false, main: { sMeter: 120 } };
+    txAuthority.current = { ...txAuthority.idle, radioTx: 'on', txRisk: 'confirmed-on' };
+    const t = mountLayout();
+    expect(txTag(t)?.getAttribute('data-active')).toBe('true');
+    expect(txTag(t)?.textContent).toBe('TX');
+  });
+
+  it('shows RX when the authority is idle while radioState.ptt reads true', () => {
+    rt.state = { active: 'MAIN', ptt: true, main: { sMeter: 120 } };
+    txAuthority.current = { ...txAuthority.idle, radioTx: 'off', txRisk: 'none' };
+    const t = mountLayout();
+    expect(txTag(t)?.getAttribute('data-active')).toBe('false');
+    expect(txTag(t)?.textContent).toBe('RX');
+  });
+
+  it('fails closed: an uncertain authority shows TX even with ptt false', () => {
+    rt.state = { active: 'MAIN', ptt: false, main: { sMeter: 120 } };
+    txAuthority.current = { ...txAuthority.idle, radioTx: 'off', txRisk: 'uncertain' };
+    const t = mountLayout();
+    expect(txTag(t)?.getAttribute('data-active')).toBe('true');
   });
 });
 

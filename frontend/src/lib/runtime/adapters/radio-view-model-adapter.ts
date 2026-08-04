@@ -25,7 +25,11 @@
  */
 import type { Capabilities } from '$lib/types/capabilities';
 import type { ServerState } from '$lib/types/state';
-import type { RadioViewModel, TxAuxField, TxAuxViewModel, AtuStatus } from '../../../semantic/radio-view-model';
+import type {
+  RadioViewModel, TxAuxField, TxAuxViewModel, AtuStatus,
+  MeterField, MeterRfState, MetersViewModel,
+} from '../../../semantic/radio-view-model';
+import type { TxAuthoritySnapshot } from '../../../semantic/rx-tx-surface';
 import { isFieldAvailable } from '$lib/state/field-status';
 import {
   derivePresentationCapabilities, type ReceiverId, type VfoSlotId,
@@ -164,6 +168,95 @@ function deriveTxAux(state: ServerState | null, caps: Capabilities | null): TxAu
 }
 
 /**
+ * The subset of the App TX authority the meter facts read (MOR-1262 slice 2A).
+ * `Pick<>` of the RX/TX surface's own snapshot type — one authority vocabulary
+ * for the whole v3 contract layer, already parity-pinned against the real
+ * reducer in `semantic/__tests__/rx-tx-authority-parity.test.ts`, so the
+ * controller's deep-readonly `snapshot()` is assignable with no adaptation.
+ */
+export type MetersTxAuthority = Pick<TxAuthoritySnapshot, 'radioTx' | 'txRisk'>;
+
+/**
+ * SAFETY INVARIANT R9. TX truth comes from the App TX authority and from
+ * nowhere else — never from `state.ptt`, which is a command/readback echo
+ * that can read RX while the key is still down (the AppGlobalHost lamp's own
+ * reasoning, MOR-1059) and whose use for meter chrome is the open MOR-1235
+ * disagreement this slice closes.
+ *
+ * The body is a byte-identical copy of `rx-tx-surface.ts::rfState` — eslint
+ * invariant 1 permits this file only TYPE imports from `semantic/`, so the
+ * shared predicate cannot be called from here. Agreement with the real
+ * function, across every state the real reducer can reach, is pinned in
+ * `semantic/__tests__/meters.test.ts`; drift there is a red test, not a
+ * silent fork.
+ */
+function meterRfState(tx: MetersTxAuthority): MeterRfState {
+  if (tx.radioTx === 'on' || tx.txRisk === 'confirmed-on') return 'transmitting';
+  if (tx.txRisk === 'uncertain') return 'uncertain';
+  return tx.radioTx === 'off' && tx.txRisk === 'none' ? 'receiving' : 'unknown';
+}
+
+function meterField(structural: boolean, fieldFresh: boolean, raw: unknown, relevant: boolean): MeterField {
+  const operational = structural && fieldFresh;
+  const value = numOrUndef(raw);
+  return {
+    reading: operational && value !== undefined ? { status: 'known', value } : { status: 'unknown' },
+    availability: { structural, operational },
+    relevant,
+  };
+}
+
+/**
+ * Emits the group only on positive evidence, same discipline as `deriveTxAux`
+ * (N3) with two additions:
+ *
+ *  - NO authority snapshot ⇒ NO group. Without the App TX authority there is
+ *    no honest TX relevance to state, and inventing one from `state.ptt` is
+ *    exactly what R9 forbids; a caller that has not wired the controller gets
+ *    a structurally-absent family, not a guess.
+ *  - `raw !== undefined` IS the shipped capability gate for meters. There is
+ *    no per-meter capability tag anywhere in v2 — `MetersDockPanel.svelte`'s
+ *    own doc comment says "capability gating by `!== undefined`" — so that
+ *    gate is copied rather than replaced. TX meters additionally require the
+ *    radio to be able to transmit at all (`caps.tx`, `toMeterProps`'s `hasTx`).
+ *
+ * Relevance fails CLOSED: TX meters read as relevant in every state that is
+ * not a positively observed RX, so an 'uncertain'/'unknown' window keeps the
+ * SWR and ALC fault meters live rather than greying them out mid-transmission.
+ */
+function deriveMeters(
+  state: ServerState | null, caps: Capabilities | null, tx: MetersTxAuthority | null | undefined,
+): MetersViewModel | undefined {
+  if (!tx || !state) return undefined;
+  const rfState = meterRfState(tx);
+  const onTx = rfState !== 'receiving';
+  const hasTx = caps?.tx ?? false;
+  // Mirrors the shipped dock's own active-receiver read (`RadioLayout.svelte`):
+  // the S-meter follows the receiver the operator is listening to.
+  const onSub = state.active === 'SUB';
+  const rx = onSub ? state.sub : state.main;
+  const sPath = onSub ? 'sub.sMeter' : 'main.sMeter';
+  const { powerMeter, swrMeter, alcMeter, compMeter, vdMeter, idMeter } = state;
+  const raws = [rx?.sMeter, powerMeter, swrMeter, alcMeter, compMeter, vdMeter, idMeter];
+  if (!raws.some((v) => v !== undefined)) return undefined;
+  const txMeter = (raw: unknown, path: string): MeterField =>
+    meterField(hasTx && raw !== undefined, topFieldAvailable(state, path), raw, onTx);
+  return {
+    rfState,
+    signal: meterField(rx?.sMeter !== undefined, topFieldAvailable(state, sPath), rx?.sMeter, !onTx),
+    power: txMeter(powerMeter, 'powerMeter'),
+    swr: txMeter(swrMeter, 'swrMeter'),
+    alc: txMeter(alcMeter, 'alcMeter'),
+    compression: txMeter(compMeter, 'compMeter'),
+    // Vd is the station's supply rail, not a TX reading: it is worth showing
+    // in every RF state (the dock keeps it on instantaneous display for the
+    // same reason), so it is structurally gated but never relevance-gated.
+    drainVoltage: meterField(vdMeter !== undefined, topFieldAvailable(state, 'vdMeter'), vdMeter, true),
+    drainCurrent: txMeter(idMeter, 'idMeter'),
+  };
+}
+
+/**
  * `null` when there is nothing safe to render at all: capabilities have not
  * loaded, or they describe a topology that contradicts itself
  * (`derivePresentationCapabilities` diagnoses that, and a contradictory
@@ -171,6 +264,7 @@ function deriveTxAux(state: ServerState | null, caps: Capabilities | null): TxAu
  */
 export function toRadioViewModel(
   state: ServerState | null, caps: Capabilities | null,
+  tx?: MetersTxAuthority | null,
 ): RadioViewModel | null {
   if (!caps) return null;
   const presentation = derivePresentationCapabilities(caps);
@@ -296,6 +390,7 @@ export function toRadioViewModel(
   // from "has the group" to any consumer that inventories keys — same
   // reasoning as the validator's own omission below `validateRadioViewModel`.
   const txAux = deriveTxAux(state, caps);
+  const meters = deriveMeters(state, caps, tx);
 
   return {
     topologyId: `${topology.structuralCount}/${topology.scheme}`,
@@ -309,5 +404,6 @@ export function toRadioViewModel(
     scope: { hardwareScope, audioFftScope },
     disabledReasons,
     ...(txAux !== undefined ? { txAux } : {}),
+    ...(meters !== undefined ? { meters } : {}),
   };
 }

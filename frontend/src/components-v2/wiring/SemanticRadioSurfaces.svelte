@@ -107,7 +107,10 @@
 
   // Belt-and-braces contract pin. The adapter now annotates its own return
   // type (MOR-1065 ruling 2), so this is the second of two compile-time links.
-  let view: RadioViewModel | null = $derived(toRadioViewModel(runtime.state, runtime.caps));
+  // MOR-1262 slice 2A: the live authority snapshot is the THIRD argument — the
+  // meter facts read their TX relevance from it and never from `state.ptt`
+  // (invariant R9). Without it the adapter emits no `meters` group at all.
+  let view: RadioViewModel | null = $derived(toRadioViewModel(runtime.state, runtime.caps, txState));
 
   // Bound once per instance, never per render — see `surfaceSeq` above.
   function requestKey(): void {

@@ -67,6 +67,20 @@ export default defineConfig({
           environment: 'jsdom',
           include: ['src/**/*.test.ts'],
           exclude: [
+            // MOR-1262 slice 2A: joins the sensitive set. It asserts on
+            // `sendCommand`/`audioManager` call counts through the shared
+            // RX-audio authority, so under ``isolate: false`` it is sensitive
+            // to WHICH siblings share its worker — adding unrelated test files
+            // elsewhere in the suite reshuffles the fast pool and flips it red
+            // with no production change. Isolation makes it order-independent.
+            'src/components-v2/wiring/__tests__/rx-audio-authority.test.ts',
+            // MOR-1262 slice 2A, same class: it spies on the GLOBAL
+            // `requestAnimationFrame` and asserts exact call counts, while
+            // sibling component tests (MetersDockPanel's `tick`/`tickPeak`
+            // smoothers among them) leave live rAF loops running that the spy
+            // then counts. Under ``isolate: false`` that makes it a function of
+            // worker assignment rather than of its own subject.
+            'src/lib/utils/__tests__/smoothing.svelte.test.ts',
             'src/components-v2/wiring/__tests__/keyboard-wiring.test.ts',
             'src/components-v2/wiring/__tests__/vfo-wiring.test.ts',
             'src/components-v2/wiring/__tests__/dsp-nr-level.test.ts',
@@ -166,6 +180,8 @@ export default defineConfig({
           name: 'isolated',
           environment: 'jsdom',
           include: [
+            'src/components-v2/wiring/__tests__/rx-audio-authority.test.ts',
+            'src/lib/utils/__tests__/smoothing.svelte.test.ts',
             'src/components-v2/wiring/__tests__/keyboard-wiring.test.ts',
             'src/components-v2/wiring/__tests__/vfo-wiring.test.ts',
             'src/components-v2/wiring/__tests__/dsp-nr-level.test.ts',

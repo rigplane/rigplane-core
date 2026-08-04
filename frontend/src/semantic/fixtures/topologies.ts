@@ -13,7 +13,10 @@
  * matrix ("4 topology pairs + audio-only scope"), not a property of any one
  * topology, so it can be applied to any of the four fixtures below.
  */
-import type { Availability, RadioViewModel, TxAuxField, TxAuxViewModel } from '../radio-view-model';
+import type {
+  Availability, MeterField, MeterRfState, MetersViewModel,
+  RadioViewModel, TxAuxField, TxAuxViewModel,
+} from '../radio-view-model';
 
 const singleReceiver: RadioViewModel = {
   topologyId: '1/single',
@@ -181,4 +184,32 @@ export function withTxAux(fixture: RadioViewModel): RadioViewModel {
     driveGain: known(128),
   };
   return { ...fixture, txAux };
+}
+
+/**
+ * Applies a fully-observed `meters` group (MOR-1262 slice 2A) to any topology
+ * fixture, read against the RF state the caller names — meters are an axis
+ * orthogonal to VFO topology, same as `withTxAux` above. `rfState` is a
+ * PARAMETER rather than a constant precisely because TX relevance is the
+ * property under test: a fixture that hard-coded 'receiving' would make the
+ * MOR-1235 disagreement unobservable.
+ */
+export function withMeters(
+  fixture: RadioViewModel, rfState: MeterRfState = 'receiving',
+): RadioViewModel {
+  const avail: Availability = { structural: true, operational: true };
+  const tx = rfState !== 'receiving';
+  const field = (value: number, relevant: boolean): MeterField =>
+    ({ reading: { status: 'known', value }, availability: avail, relevant });
+  const meters: MetersViewModel = {
+    rfState,
+    signal: field(120, !tx),
+    power: field(0.6, tx),
+    swr: field(20, tx),
+    alc: field(40, tx),
+    compression: field(10, tx),
+    drainVoltage: field(200, true),
+    drainCurrent: field(80, tx),
+  };
+  return { ...fixture, meters };
 }

@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { onMount } from 'svelte';
+  import { onDestroy, onMount } from 'svelte';
   import '../theme/index';
   import { setTheme, getTheme, setVfoTheme, getVfoTheme } from '../theme/theme-switcher';
   
@@ -21,6 +21,7 @@
   import RightSidebar from './RightSidebar.svelte';
   import VfoHeader from './VfoHeader.svelte';
   import SemanticRadioSurfaces from '../wiring/SemanticRadioSurfaces.svelte';
+  import { getAppTxController } from '$lib/runtime/tx-controller/app-host';
   import KeyboardHandler from './KeyboardHandler.svelte';
   import StatusBar from './StatusBar.svelte';
   import MetersDockPanel from '../panels/MetersDockPanel.svelte';
@@ -65,6 +66,21 @@
   // Reactive state + capabilities — via runtime
   let radioState = $derived(runtime.state);
   let caps = $derived(runtime.caps);
+
+  // MOR-1235. The meters dock's TX chrome takes its truth from the App-owned
+  // TX controller — the SAME source as the authoritative global lamp
+  // (MOR-1008/MOR-1059) — and never from `radioState.ptt`, a command/readback
+  // echo that can read RX while the key is still down. The two disagree
+  // exactly in the uncertain/confirming windows the lamp fails closed on, and
+  // a meters panel that says RX there greys out the SWR/ALC fault tiles
+  // mid-transmission. Predicate below is AppGlobalHost's own, verbatim.
+  const txCtl = getAppTxController();
+  let txState = $state.raw(txCtl.snapshot());
+  const stopWatchingTx = txCtl.subscribe((next) => { txState = next; });
+  onDestroy(() => stopWatchingTx());
+  let meterTxActive = $derived(
+    txState.radioTx === 'on' || txState.txRisk === 'confirmed-on' || txState.txRisk === 'uncertain',
+  );
 
   // Scope digest for VfoHeader bridge (issue #832).  Gate on `scope` capability;
   // VfoHeader treats null as "hide the block".
@@ -268,7 +284,7 @@
       vdMeter={radioState?.vdMeter}
       compMeter={radioState?.compMeter}
       compressorOn={radioState?.compressorOn}
-      txActive={radioState?.ptt ?? false}
+      txActive={meterTxActive}
     />
   </section>
 </div>
