@@ -115,7 +115,7 @@ Each UDP packet has a fixed-format header (see `packettypes.h` in wfview):
 - [x] Dual-port architecture (control port 50001 + CI-V port 50002)
 - [x] Keep-alive loop (ping + retransmit)
 - [x] Graceful disconnect
-- [x] Test: connect to IC-7610 at 192.168.55.40
+- [x] Test: connect over LAN (historical IC-7610 at 192.168.55.40; hardware retired 2026-08-04)
 
 **Result:** `radio.connect()` / `radio.disconnect()` work. ✅
 
@@ -430,10 +430,8 @@ IC-7610 parity matrix (issue #139, 2026-03-06): 134 implemented, 0 partial, 0 mi
 
 ## Test Equipment
 
-- **Icom IC-7610** at `192.168.55.40`
-- LAN ports: 50001 (control), 50002 (CI-V), 50003 (audio)
-- USB path: CI-V serial device + exported RX/TX audio devices
-- Local development host on the same LAN (IP redacted)
+- **Live bench:** Icom IC-7300, FTX-1, X6200 (LAN/USB ports per model docs)
+- **Retired:** Icom IC-7610 *(was at 192.168.55.40; hardware destroyed 2026-08-04; CAT audit frozen in `docs/validation/cat-audits/ic7610.md`)*
 
 ## License Notes
 

@@ -2,6 +2,10 @@
 
 These tests transmit RF/audio when explicitly enabled. They are skipped by
 default and require a controlled station setup such as a dummy load.
+
+**Note:** No IC-7610 hardware is available for testing as of 2026-08-04 (hardware retired).
+Tests remain in place for historical reference and are gated by the RIGPLANE_HW_IC7610_AUDIO
+environment variable if future testing becomes possible.
 """
 
 from __future__ import annotations
