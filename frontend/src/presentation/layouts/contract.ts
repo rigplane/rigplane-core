@@ -70,6 +70,16 @@ export interface LayoutManifest {
    * exists this field stays declaration-only (guard test: `__tests__/
    * stage-sizing-boundary.test.ts`). A `fixed-native` value here does NOT
    * mean the whole layout is fixed-native — only its instrument stage is.
+   *
+   * MOR-1261 (owner decision, 2026-08-04): until a layout has an instrument
+   * stage, this field's fluid `responsiveBreakpoints` may ALSO carry CHROME
+   * reflow thresholds declaratively — legitimizing mobile's `[500]`
+   * (MOR-1094) and the cockpit's `[768, 1024]` (MOR-1069) — the cockpit's
+   * pair pinned by a CSS↔manifest agreement test, mobile's declared value
+   * pinned at the manifest only. Interim carriage only: the field's primary
+   * semantics stay the instrument stage's policy above, runtime still must
+   * not read it (MOR-1247 declaration-only guard unchanged), and a per-zone
+   * superset may supersede this later.
    */
   readonly stageSizing: SizingPolicy;
   readonly fallbackLayoutId: string | null;
