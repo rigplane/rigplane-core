@@ -1,11 +1,15 @@
 /**
  * MOR-1072 registry: the two frozen family IDs (`studioline`/`fieldline`,
- * MOR-977 §4.6) are registered as declarations with no visual
- * implementation yet, and the registry does not hardcode a family count —
- * a third, hypothetical family registers and validates the same way.
+ * MOR-977 §4.6) are registered as declarations, and the registry does not
+ * hardcode a family count — a third, hypothetical family registers and
+ * validates the same way. MOR-1073 gave studioline its renderers; fieldline
+ * is still renderer-less, which keeps the "zero renderers declared" fallback
+ * path under test with a real declaration rather than only a fixture.
  */
 import { describe, it, expect } from 'vitest';
-import { listDesignLanguageIds, getDesignLanguage, registerDesignLanguage } from '../contract';
+import {
+  listDesignLanguageIds, getDesignLanguage, registerDesignLanguage, RENDERER_SLOT_NAMES,
+} from '../contract';
 import { studioline, fieldline } from '../declarations';
 import { validManifest } from './fixtures';
 
@@ -16,8 +20,8 @@ describe('the two frozen v3 declarations', () => {
     expect(getDesignLanguage('fieldline')).toBe(fieldline);
   });
 
-  it('neither declares a renderer yet — no visual implementation, that is MOR-1073/MOR-1074', () => {
-    expect(studioline.renderers).toEqual({});
+  it('studioline declares every renderer slot (MOR-1073); fieldline none yet (MOR-1074)', () => {
+    expect(Object.keys(studioline.renderers).sort()).toEqual([...RENDERER_SLOT_NAMES].sort());
     expect(fieldline.renderers).toEqual({});
   });
 
