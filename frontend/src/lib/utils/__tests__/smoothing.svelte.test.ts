@@ -176,3 +176,150 @@ describe('createSmoother — runtime prefers-reduced-motion flips (MOR-1233 fix 
     }
   });
 });
+
+// MOR-1251 (findings from the MOR-1233 verification, 2026-08-04): three
+// one-liner hardenings pinned individually below.
+
+describe('createSmoother — matchMedia without addEventListener (MOR-1251 F11)', () => {
+  it('KILL F11: does not throw when matchMedia returns a shallow {matches} mock (no addEventListener) — mirrors InstallPrompt.test.ts:176', () => {
+    const original = window.matchMedia;
+    // Exactly the shallow mock InstallPrompt.test.ts installs: no
+    // addEventListener/removeEventListener/addListener at all.
+    window.matchMedia = vi.fn().mockReturnValue({ matches: false }) as unknown as typeof window.matchMedia;
+    try {
+      const smoother = createSmoother(0.12, 0.32, 0);
+      expect(() => {
+        smoother.update(10);
+        smoother.start();
+        smoother.stop();
+      }).not.toThrow();
+    } finally {
+      window.matchMedia = original;
+    }
+  });
+
+  it('KILL F11 (fallback path): subscribes and unsubscribes via addListener/removeListener when addEventListener is absent (pre-Safari14 MediaQueryList)', () => {
+    const original = window.matchMedia;
+    let matches = false;
+    const legacyListeners = new Set<(mql: MediaQueryListEvent) => void>();
+    const mql = {
+      get matches() { return matches; },
+      addListener: (fn: (mql: MediaQueryListEvent) => void) => { legacyListeners.add(fn); },
+      removeListener: (fn: (mql: MediaQueryListEvent) => void) => { legacyListeners.delete(fn); },
+    } as unknown as MediaQueryList;
+    window.matchMedia = vi.fn().mockReturnValue(mql) as unknown as typeof window.matchMedia;
+    try {
+      const smoother = createSmoother(0.12, 0.32, 0);
+      smoother.update(10);
+      smoother.start();
+      expect(legacyListeners.size).toBe(1); // subscribed via the legacy fallback
+
+      matches = true;
+      legacyListeners.forEach((fn) => fn({} as MediaQueryListEvent));
+      expect(smoother.value).toBe(10); // handler fired through the fallback
+
+      smoother.stop();
+      expect(legacyListeners.size).toBe(0); // unsubscribed via the legacy fallback
+    } finally {
+      window.matchMedia = original;
+    }
+  });
+});
+
+describe('createSmoother — double start() without stop() (MOR-1251 F9)', () => {
+  it('KILL F9: unsubscribes the first change listener before a second start() — no orphaned listener', () => {
+    const { listenerCount, restore } = mockReducedMotion(false);
+    vi.spyOn(window, 'requestAnimationFrame').mockImplementation(() => 1);
+    vi.spyOn(window, 'cancelAnimationFrame').mockImplementation(() => {});
+    try {
+      const smoother = createSmoother(0.12, 0.32, 0);
+      smoother.update(10);
+
+      smoother.start();
+      expect(listenerCount()).toBe(1);
+
+      smoother.start(); // second start() without an intervening stop()
+      expect(listenerCount()).toBe(1); // must not orphan the first listener
+
+      smoother.stop();
+      expect(listenerCount()).toBe(0);
+    } finally {
+      restore();
+    }
+  });
+});
+
+// Verifier follow-up (2026-08-04, H1): F9 closed the orphaned-*listener* half
+// of a double start() without stop(), but start() still called loop()
+// unconditionally, overwriting frameId without cancelling the previous
+// pending frame — an orphaned rAF *chain* that outlives stop(). Verifier
+// probe W6: rafScheduled=2, cafTotal=1 -> orphanedLoops=1 on the pre-H1 code.
+// Fix: start() cancels any pending frame before scheduling a new one, making
+// it idempotent. This test reproduces the W6 shape directly: distinct
+// non-zero rAF ids so cancellation is observable per call.
+describe('createSmoother — double start() cancels the pending rAF chain (MOR-1251 H1)', () => {
+  it('KILL H1: a second start() cancels the first pending frame — every scheduled frame is eventually cancelled (rafScheduled - cafTotal === 0)', () => {
+    const { restore } = mockReducedMotion(false);
+    let nextId = 1;
+    const rafSpy = vi.spyOn(window, 'requestAnimationFrame').mockImplementation(() => nextId++);
+    const cafSpy = vi.spyOn(window, 'cancelAnimationFrame').mockImplementation(() => {});
+    try {
+      const smoother = createSmoother(0.12, 0.32, 0);
+      smoother.update(10);
+
+      smoother.start();
+      expect(rafSpy).toHaveBeenCalledTimes(1);
+      expect(cafSpy).toHaveBeenCalledTimes(0);
+
+      smoother.start(); // second start() without an intervening stop()
+      expect(rafSpy).toHaveBeenCalledTimes(2);
+      expect(cafSpy).toHaveBeenCalledTimes(1); // the first pending frame was cancelled first
+
+      smoother.stop();
+      expect(cafSpy).toHaveBeenCalledTimes(2); // the second (surviving) frame is cancelled too
+
+      // W6 shape: no orphaned loop survives stop().
+      expect(rafSpy.mock.calls.length - cafSpy.mock.calls.length).toBe(0);
+    } finally {
+      restore();
+    }
+  });
+});
+
+describe('createSmoother — target initial value (MOR-1251 F4)', () => {
+  it('KILL F4: start() before the first update(), under reduced motion, shows initialValue — not 0', () => {
+    const { restore } = mockReducedMotion(true);
+    try {
+      const smoother = createSmoother(0.12, 0.32, 25);
+      expect(smoother.value).toBe(25);
+
+      smoother.start(); // no update() has been called yet
+
+      expect(smoother.value).toBe(25); // must stay at initialValue, not snap to 0
+      smoother.stop();
+    } finally {
+      restore();
+    }
+  });
+
+  // Verifier follow-up (H3): F4 has two independent trigger paths — start()
+  // under reduce (covered above) and the ON-flip change handler's
+  // `current = target` (verifier probe W8). Both were fixed by the same
+  // `target = initialValue` one-liner, but only the first was pinned.
+  it('KILL H3 (F4, second trigger): OS flips reduced motion ON before the first update() — shows initialValue, not 0', () => {
+    const { setMatches, restore } = mockReducedMotion(false);
+    vi.spyOn(window, 'requestAnimationFrame').mockImplementation(() => 1);
+    vi.spyOn(window, 'cancelAnimationFrame').mockImplementation(() => {});
+    try {
+      const smoother = createSmoother(0.12, 0.32, 25);
+      smoother.start(); // not reduced at start(); no update() has been called yet
+
+      setMatches(true); // OS flips ON mid-session, still before any update()
+
+      expect(smoother.value).toBe(25); // must snap to initialValue, not 0
+      smoother.stop();
+    } finally {
+      restore();
+    }
+  });
+});

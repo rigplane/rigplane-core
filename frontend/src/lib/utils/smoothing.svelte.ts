@@ -25,8 +25,15 @@ export function onReducedMotionChange(callback: (reduced: boolean) => void): () 
   }
   const mql = window.matchMedia('(prefers-reduced-motion: reduce)');
   const handler = () => callback(mql.matches);
-  mql.addEventListener('change', handler);
-  return () => mql.removeEventListener('change', handler);
+  if (typeof mql.addEventListener === 'function') {
+    mql.addEventListener('change', handler);
+    return () => mql.removeEventListener('change', handler);
+  }
+  if (typeof mql.addListener === 'function') {
+    mql.addListener(handler);
+    return () => mql.removeListener?.(handler);
+  }
+  return () => {};
 }
 
 /**
@@ -41,7 +48,7 @@ export function onReducedMotionChange(callback: (reduced: boolean) => void): () 
  */
 export function createSmoother(attack = 0.12, release = 0.32, initialValue = 0) {
   let current = $state(initialValue);
-  let target = 0;
+  let target = initialValue;
   let frameId = 0;
   let lastTime = 0;
   let unsubscribe: (() => void) | null = null;
@@ -70,12 +77,18 @@ export function createSmoother(attack = 0.12, release = 0.32, initialValue = 0) 
   }
 
   function start() {
+    if (frameId) {
+      cancelAnimationFrame(frameId);
+      frameId = 0;
+    }
+
     if (prefersReducedMotion()) {
       current = target;
     } else {
       loop();
     }
 
+    unsubscribe?.();
     unsubscribe = onReducedMotionChange((reduced) => {
       if (reduced) {
         if (frameId) {
