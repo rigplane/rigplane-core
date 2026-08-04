@@ -31,7 +31,9 @@
   import VfoSurface, { type VfoSelection } from '../../semantic/VfoSurface.svelte';
   import ModInputTxWarning from '../panels/ModInputTxWarning.svelte';
   import { makeVfoHandlers } from './command-bus';
-  import { forReceiver, receiversOf, isActiveStrip } from './dual-receiver-strips';
+  import {
+    forReceiver, receiversOf, isActiveStrip, isOperationalStrip,
+  } from './dual-receiver-strips';
 
   /**
    * `'single'` (default) is the exact pre-MOR-1067 markup — sdr-test's
@@ -128,6 +130,7 @@
             data-zone-id={index === 0 ? 'primary-vfo' : 'secondary-vfo'}
             data-strip-receiver={receiverId}
             data-strip-active={isActiveStrip(view, receiverId)}
+            data-strip-operational={isOperationalStrip(view, receiverId)}
           >
             <!--
               `selectionPoolSize`: the slice below holds this receiver's VFOs
@@ -141,6 +144,11 @@
               `groupLabel`: without it all three mounted surfaces share one
               generic accessible name and assistive tech cannot tell the
               strips apart.
+              `disabled` (MOR-1256): a structurally-dual, operationally-
+              degraded receiver (`dual-rx-unavailable`) keeps its strip
+              PRESENT but forces its select controls inert — the shared
+              RxTxSurface below is untouched, so single TX authority stays
+              radio-wide regardless of which strip this gates.
             -->
             <VfoSurface
               viewModel={forReceiver(view, receiverId)}
@@ -148,6 +156,7 @@
               showRadioWideFacts={false}
               groupLabel={t('core.vfo.receiverGroupLabel', { receiver: receiverId })}
               onSelectVfo={selectVfo}
+              disabled={!isOperationalStrip(view, receiverId)}
             />
           </div>
         {/each}

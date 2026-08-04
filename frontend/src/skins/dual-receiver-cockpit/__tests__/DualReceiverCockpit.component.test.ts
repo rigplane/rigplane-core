@@ -156,6 +156,19 @@ const audioOnlyScopeCaps = (): Capabilities => ({
   ...mainSubCaps(), audioFftAvailable: true,
 } as unknown as Capabilities);
 
+/**
+ * MOR-1256: `2/main_sub` structurally (receivers=2, main_sub scheme) but
+ * missing the `dual_rx` tag — `derivePresentationCapabilities` diagnoses
+ * `dual-rx-unavailable` and reports `operationalReceivers: ['MAIN']` while
+ * `structuralReceivers` stays `['MAIN', 'SUB']`. The SUB strip must still
+ * mount (MOR-977: structural ✓ renders present), just disabled (operational
+ * ✗). Reuses `mainSubState` — the diagnostic is purely a capability fact,
+ * independent of what state.sub happens to report.
+ */
+const dualRxUnavailableCaps = (): Capabilities => ({
+  ...mainSubCaps(), capabilities: ['audio', 'tx'],
+} as unknown as Capabilities);
+
 let target: HTMLDivElement;
 let component: ReturnType<typeof mount> | null = null;
 
@@ -258,6 +271,87 @@ describe('per-receiver VFO strips, driven by the dual-receiver topologies', () =
 
     expect(q('[data-testid="channel-strip-MAIN"]')!.dataset.stripActive).toBe('false');
     expect(q('[data-testid="channel-strip-SUB"]')!.dataset.stripActive).toBe('false');
+  });
+});
+
+// MOR-1256 — MOR-1068 verification finding N2: `operationalReceivers` had
+// zero consumers, so a `dual-rx-unavailable` radio (structurally dual,
+// operationally degraded) rendered a fully ENABLED SUB strip. The fix must
+// leave the SUB strip PRESENT (structural doctrine untouched) but its
+// controls genuinely inert, and must not leak into MAIN or the shared TX
+// surface — the MOR-557 lens applied in both directions.
+describe('dual-rx-unavailable: SUB strip present but operationally disabled (MOR-1256)', () => {
+  it('renders the SUB strip present, its select controls really disabled, MAIN fully live', () => {
+    h.state = mainSubState('MAIN');
+    h.caps = dualRxUnavailableCaps();
+    render();
+
+    const subStrip = q('[data-testid="channel-strip-SUB"]')!;
+    expect(subStrip).not.toBeNull();
+    expect(subStrip.dataset.stripOperational).toBe('false');
+    const subSelects = subStrip.querySelectorAll<HTMLButtonElement>('[data-vfo-select]');
+    expect(subSelects.length).toBeGreaterThan(0);
+    subSelects.forEach((b) => expect(b.disabled).toBe(true));
+
+    // Kill-test (2): the disabled-SUB fixture must not affect MAIN liveness.
+    const mainStrip = q('[data-testid="channel-strip-MAIN"]')!;
+    expect(mainStrip.dataset.stripOperational).toBe('true');
+    const mainSelects = mainStrip.querySelectorAll<HTMLButtonElement>('[data-vfo-select]');
+    expect(mainSelects.length).toBeGreaterThan(0);
+    mainSelects.forEach((b) => expect(b.disabled).toBe(false));
+  });
+
+  // Kill-test (2), the TX half: single TX authority is untouched by this
+  // ticket — the shared RxTxSurface must not become per-strip-gated.
+  it('does not touch the shared TX surface — the key control stays live and reaches the authority', () => {
+    h.state = mainSubState('MAIN');
+    h.caps = dualRxUnavailableCaps();
+    render();
+
+    expect(qa('[data-testid="rx-tx-surface"]')).toHaveLength(1);
+    const key = q<HTMLButtonElement>('[data-testid="rx-tx-key"]')!;
+    expect(key.disabled).toBe(false);
+    key.click();
+    flushSync();
+    expect(h.start).toHaveBeenCalledTimes(1);
+  });
+
+  // Pin round (verifier N1): the radio-wide row's immunity to the SUB
+  // per-receiver gate was correct but unpinned. Split/dual-watch are
+  // radio-wide facts (`showRadioWideFacts` only on the global-zone
+  // `VfoSurface`, `disabled` only on the per-receiver strips' `VfoSurface`
+  // instances) — mirrors the TX-authority protection above, which the
+  // original build already pinned; this closes the same gap for the
+  // global row.
+  it('leaves the radio-wide split and dual-watch switches enabled and reaching their handlers, with SUB operationally degraded', () => {
+    h.state = mainSubState('MAIN');
+    h.caps = dualRxUnavailableCaps();
+    render();
+
+    const split = q<HTMLButtonElement>('[data-vfo-split]')!;
+    const dualWatch = q<HTMLButtonElement>('[data-vfo-dual-watch]')!;
+    expect(split.disabled).toBe(false);
+    expect(dualWatch.disabled).toBe(false);
+
+    split.click();
+    dualWatch.click();
+    flushSync();
+    expect(h.splitToggle).toHaveBeenCalledTimes(1);
+    expect(h.dualWatchToggle).toHaveBeenCalledTimes(1);
+  });
+
+  // Regression pin: a fully dual-capable radio (dual_rx present) must render
+  // both strips operational — this ticket's fix must not fire unconditionally.
+  it('a fully dual-capable radio keeps SUB operational', () => {
+    h.state = mainSubState('MAIN');
+    h.caps = mainSubCaps();
+    render();
+
+    const subStrip = q('[data-testid="channel-strip-SUB"]')!;
+    expect(subStrip.dataset.stripOperational).toBe('true');
+    const subSelects = subStrip.querySelectorAll<HTMLButtonElement>('[data-vfo-select]');
+    expect(subSelects.length).toBeGreaterThan(0);
+    subSelects.forEach((b) => expect(b.disabled).toBe(false));
   });
 });
 

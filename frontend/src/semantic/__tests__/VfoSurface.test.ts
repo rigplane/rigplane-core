@@ -449,6 +449,50 @@ describe('showVfoList (MOR-1068) — the radio-wide half, placeable on its own',
   });
 });
 
+describe('disabled (MOR-1256) — the strip-level operational gate', () => {
+  // Mirrors the existing per-VFO `slot.kind === 'unknown'` disabled-select
+  // mechanism rather than inventing a parallel one: same `disabled`
+  // attribute on the same button, now also forced by this prop. A
+  // dual-receiver-cockpit strip whose receiver is structurally present but
+  // operationally unavailable (`dual-rx-unavailable`) sets this.
+  it('forces every otherwise-selectable control disabled when true', () => {
+    const target = mountSurface({ viewModel: topologyFixtures['2/main_sub'], disabled: true });
+    const buttons = target.querySelectorAll<HTMLButtonElement>('[data-vfo-select]');
+    expect(buttons.length).toBeGreaterThan(0);
+    buttons.forEach((b) => expect(b.disabled).toBe(true));
+  });
+
+  it('MUTATION KILL: clicking a strip-disabled select control never emits the intent, ' +
+    'even if the native disabled gate is bypassed', () => {
+    const onSelectVfo = vi.fn();
+    const target = mountSurface({
+      viewModel: topologyFixtures['2/main_sub'], disabled: true, onSelectVfo,
+    });
+    const button = target.querySelectorAll<HTMLButtonElement>('[data-vfo-select]')[0];
+    button.disabled = false;
+    button.click();
+    expect(onSelectVfo).not.toHaveBeenCalled();
+  });
+
+  // Kills: defaulting the new prop to `true` — every existing caller
+  // (single/unsliced, and an operationally-fine dual strip) would lose its
+  // selection controls.
+  it('defaults to false: the unsliced surface is unchanged', () => {
+    const target = mountSurface({ viewModel: topologyFixtures['2/main_sub'] });
+    const buttons = target.querySelectorAll<HTMLButtonElement>('[data-vfo-select]');
+    expect(buttons.length).toBeGreaterThan(0);
+    buttons.forEach((b) => expect(b.disabled).toBe(false));
+  });
+
+  // The MOR-977 structural half is untouched by this prop: a control that is
+  // structurally ABSENT (nothing to choose) must stay absent, not reappear
+  // as a disabled button.
+  it('does not resurrect a structurally-absent control', () => {
+    const target = mountSurface({ viewModel: topologyFixtures['1/single'], disabled: true });
+    expect(target.querySelector('[data-vfo-select]')).toBeNull();
+  });
+});
+
 describe('groupLabel (MOR-1068) — distinct accessible names per mounted surface', () => {
   // Kills: ignoring the prop. A cockpit mounts three of these surfaces at
   // once (MAIN strip, SUB strip, radio-wide row); with one shared generic
