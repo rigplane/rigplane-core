@@ -141,10 +141,10 @@ const liveCaps = (): Capabilities => ({
 let target: HTMLDivElement;
 let component: ReturnType<typeof mount> | null = null;
 
-function render(): void {
+function render(props: { strips?: 'single' | 'dual' } = {}): void {
   target = document.createElement('div');
   document.body.appendChild(target);
-  component = mount(SemanticRadioSurfaces, { target });
+  component = mount(SemanticRadioSurfaces, { target, props });
   flushSync();
 }
 
@@ -512,5 +512,54 @@ describe('the migrated layout keeps the MOR-617 network-voice-TX preflight', () 
     render();
     expect(q('[data-testid="rx-tx-surface"]')).toBeNull();
     expect(q('[data-testid="mod-input-tx-warning"]')).not.toBeNull();
+  });
+});
+
+describe('MOR-1258 — the three TX-adjacent alerts join the rx-tx zone in the dual composition', () => {
+  // The owner ruling (2026-08-04, gate item (b)): `tx-fault-reset` and the
+  // two ModInputTxWarning buttons render inside the rx-tx zone's bound
+  // element when `strips="dual"` — the only composition with a bound zone at
+  // all (MOR-1069). Direct containment checks at the wiring level, one layer
+  // below the full cockpit shell mount in
+  // `skins/dual-receiver-cockpit/__tests__/DualReceiverCockpit.component.test.ts`.
+  it('contains tx-fault-reset inside the rx-tx zone while a fault is latched', () => {
+    render({ strips: 'dual' });
+    push({ phase: 'failed', fault: 'audio-failed' });
+
+    const zone = q('.rx-tx-zone')!;
+    expect(zone).not.toBeNull();
+    expect(zone.contains(q('[data-testid="tx-fault-reset"]'))).toBe(true);
+  });
+
+  it('contains both ModInputTxWarning buttons inside the rx-tx zone', () => {
+    h.modInputGuard = { visible: true, sourceLabel: 'MIC' };
+    render({ strips: 'dual' });
+
+    const zone = q('.rx-tx-zone')!;
+    expect(zone.contains(q('[data-testid="mod-input-set-lan"]'))).toBe(true);
+    expect(zone.contains(q('[data-testid="mod-input-dismiss"]'))).toBe(true);
+  });
+
+  // The single/default path has no bound zone at all (MOR-1069) — the
+  // ticket's explicit, honest carve-out (no containment is possible there).
+  // The alerts keep their pre-MOR-1258 bare placement, unchanged.
+  it('leaves the alerts bare on the single/default path — there is no zone to contain them in', () => {
+    render();
+    push({ phase: 'failed', fault: 'audio-failed' });
+    expect(target.querySelectorAll('[data-zone-id]')).toHaveLength(0);
+    expect(q('.rx-tx-zone')).toBeNull();
+    expect(q('[data-testid="tx-fault-reset"]')).not.toBeNull();
+  });
+
+  // MOR-617's invariant survives the containment move even in the dual
+  // composition: the warning still is not gated on the view model.
+  it('still shows the MOD-input warning before capabilities load, in the dual composition too', () => {
+    h.caps = null;
+    h.modInputGuard = { visible: true, sourceLabel: 'MIC' };
+    render({ strips: 'dual' });
+    expect(q('[data-testid="rx-tx-surface"]')).toBeNull();
+    const zone = q('.rx-tx-zone')!;
+    expect(zone).not.toBeNull();
+    expect(zone.contains(q('[data-testid="mod-input-tx-warning"]'))).toBe(true);
   });
 });
