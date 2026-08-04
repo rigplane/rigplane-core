@@ -37,6 +37,9 @@ export interface SkinResolutionContext {
  *
  * Rules:
  * - Mobile viewport → mobile skin
+ * - QA-only: layoutPreference === 'dual-receiver-cockpit' → dual-receiver-cockpit
+ *   (MOR-1257 — only reachable via the exact `?layout=dual-receiver-cockpit`
+ *   query param; see `lib/stores/qa-cockpit-override.ts`)
  * - User forced 'lcd' or 'lcd-cockpit' → lcd-cockpit
  * - User forced 'lcd-scope' → lcd-scope
  * - User forced 'standard' → desktop-v2
@@ -44,6 +47,13 @@ export interface SkinResolutionContext {
  */
 export function resolveSkinId(ctx: SkinResolutionContext): SkinId {
   if (ctx.isMobile) return 'mobile';
+  // MOR-1257: interim QA reachability. `ctx.layoutPreference` can only be
+  // this value when the caller resolved it from the exact
+  // `?layout=dual-receiver-cockpit` query param — it is deliberately NOT a
+  // `CanonicalLayoutMode` (lib/stores/layout.svelte.ts), so
+  // `normalizeLayoutMode` below would fall it straight through to 'auto'.
+  // Checked here, before normalization, for that reason.
+  if (ctx.layoutPreference === 'dual-receiver-cockpit') return 'dual-receiver-cockpit';
   const layoutPreference = normalizeLayoutMode(ctx.layoutPreference);
   if (layoutPreference === 'sdr-test') return 'sdr-test';
   if (layoutPreference === 'lcd-cockpit') return 'lcd-cockpit';

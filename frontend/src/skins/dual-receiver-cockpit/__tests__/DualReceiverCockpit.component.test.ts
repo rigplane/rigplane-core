@@ -800,6 +800,27 @@ describe('MOR-1069 — the shell\'s responsive selectors still match the compose
   });
 });
 
+// MOR-1257 (N4) — MOR-1070 evidence run finding: a standalone mount of this
+// shell never pulled in the code-split components-v2 theme layer
+// (fonts/tokens/themes), so app.css's
+// `outline: var(--v2-focus-ring, var(--focus-ring))` silently fell back to
+// the legacy ring instead of the MOR-1232 --v2-focus-ring pair (pinned in
+// src/__tests__/focus-ring-token-wiring.test.ts). RadioLayout.svelte and
+// LcdLayout.svelte already import the theme layer as a side effect; this
+// shell had no equivalent import.
+describe('MOR-1257 (N4) — the components-v2 theme layer loads with this skin', () => {
+  // Source-based, mirroring this file's own F5 check above (":global class
+  // exists in the mounted DOM") rather than a DOM computed-style assertion —
+  // vitest/jsdom does not reliably apply real CSS cascade from side-effect
+  // `.css` imports, which is why MOR-1232's own wiring pins
+  // (focus-ring-token-wiring.test.ts) read source text too.
+  // Kills: dropping the import, or narrowing it to skip tokens.css.
+  it('imports the v2 theme layer as a side effect, the same way RadioLayout/LcdLayout do', () => {
+    const source = readFileSync('src/skins/dual-receiver-cockpit/DualReceiverCockpit.svelte', 'utf8');
+    expect(source).toMatch(/import\s+['"]\.\.\/\.\.\/components-v2\/theme\/index['"]\s*;/);
+  });
+});
+
 function push(next: Partial<Snapshot>): void {
   h.snapshot = { ...(h.snapshot as Snapshot), ...next };
   for (const listener of h.listeners) listener(h.snapshot);

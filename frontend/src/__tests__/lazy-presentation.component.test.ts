@@ -218,6 +218,21 @@ describe('lazy presentation loading', () => {
     expect(source).not.toMatch(/import\s+\w+\s+from\s+['"][^'"]*components-v2\/layout\/[^'"]*\.svelte['"]/);
     expect(source).not.toMatch(/import\s+\w+\s+from\s+['"][^'"]*skins\/[^'"]*\.svelte['"]/);
   });
+
+  // MOR-1257 — this suite mocks `resolveSkinId` entirely (`h.resolveSkinId`
+  // above only reads `isMobile`), so it cannot observe what `layoutPreference`
+  // App.svelte actually passes through. Source-pinned instead, the same
+  // technique as the static-import check above. Kills: reverting to
+  // `layoutPreference: getLayoutMode()` (dropping the QA override), or
+  // flipping the `??` precedence so the stored preference would win over an
+  // explicit query param.
+  it('wires the QA-only cockpit override ahead of the stored layout preference (MOR-1257)', () => {
+    const source = readFileSync('src/App.svelte', 'utf8');
+    expect(source).toMatch(
+      /import\s*\{\s*readQaCockpitLayoutOverride\s*\}\s*from\s*['"]\.\/lib\/stores\/qa-cockpit-override['"]\s*;/,
+    );
+    expect(source).toMatch(/layoutPreference:\s*qaCockpitLayoutOverride\s*\?\?\s*getLayoutMode\(\)/);
+  });
 });
 
 describe('stale-resolution cancellation', () => {

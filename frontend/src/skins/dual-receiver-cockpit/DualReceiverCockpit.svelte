@@ -67,6 +67,15 @@
   chrome stays fluid).
 -->
 <script lang="ts">
+  // MOR-1257 (N4): the components-v2 theme layer (fonts, base tokens, and
+  // the MOR-1232 focus-ring pair --v2-focus-ring-color/--v2-focus-ring) is
+  // code-split per skin — RadioLayout.svelte and LcdLayout.svelte both pull
+  // it in via this exact side-effect import. This shell composed neither of
+  // those, so a standalone mount never loaded the theme layer and
+  // app.css's `outline: var(--v2-focus-ring, var(--focus-ring))` silently
+  // fell back to the legacy ring (MOR-1070 evidence run finding N4). A pure
+  // CSS side effect, not a runtime/store/command import.
+  import '../../components-v2/theme/index';
   import SemanticRadioSurfaces from '../../components-v2/wiring/SemanticRadioSurfaces.svelte';
 </script>
 

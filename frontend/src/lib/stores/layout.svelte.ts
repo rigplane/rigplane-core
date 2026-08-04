@@ -5,6 +5,13 @@
  * 'lcd-cockpit' = force LCD cockpit (TS-990S-style dual-cockpit)
  * 'lcd-scope'   = force LCD scope (IC-7300-style scope-dominant)
  * 'standard'    = force standard layout
+ * 'dual-receiver-cockpit' = QA-ONLY (MOR-1257): reachable solely via the
+ *                 exact `?layout=dual-receiver-cockpit` query param (see
+ *                 `lib/stores/qa-cockpit-override.ts`) — deliberately NOT a
+ *                 CanonicalLayoutMode, so normalizeLayoutMode below falls it
+ *                 through to 'auto'. It can therefore never be persisted via
+ *                 setLayoutMode/localStorage and never appears in the
+ *                 StatusBar skin selector.
  *
  * Raw persisted aliases are normalized here before presentation policy reads
  * the preference.
@@ -13,8 +20,10 @@
 const STORAGE_KEY = 'rigplane-layout';
 const LEGACY_SKIN_STORAGE_KEY = 'rigplane-skin';
 
-export type LayoutMode = 'auto' | 'lcd' | 'lcd-cockpit' | 'lcd-scope' | 'standard' | 'sdr-test';
-export type CanonicalLayoutMode = Exclude<LayoutMode, 'lcd'>;
+export type LayoutMode =
+  | 'auto' | 'lcd' | 'lcd-cockpit' | 'lcd-scope' | 'standard' | 'sdr-test'
+  | 'dual-receiver-cockpit';
+export type CanonicalLayoutMode = Exclude<LayoutMode, 'lcd' | 'dual-receiver-cockpit'>;
 
 const CANONICAL_LAYOUT_MODES = new Set<CanonicalLayoutMode>([
   'auto',
