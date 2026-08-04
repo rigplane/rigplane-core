@@ -18,6 +18,11 @@
 
   /* ── Colors: Accents ─────────────────────────────────────── */
   --v2-accent-cyan: #2aa198;
+  /* MOR-1232: solarized cyan is 2.17:1 against --v2-bg-input on this light
+   * skin, under the WCAG 1.4.11 3:1 non-text minimum a focus indicator needs.
+   * The ring reuses this skin's own darker teal (--v2-accent-cyan-teal value)
+   * — worst case 4.06:1 (--v2-bg-input #ddd6c1). */
+  --v2-focus-ring-color: #1a7068;
   --v2-accent-orange: #cb4b16;
   --v2-accent-red: #dc322f;
   --v2-accent-green: #859900;

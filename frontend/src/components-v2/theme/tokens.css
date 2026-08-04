@@ -16,6 +16,20 @@
 
   /* ── Colors: Accents ─────────────────────────────────────────────────────── */
   --v2-accent-cyan: #00D4FF;
+  /* MOR-1232 focus ring. DEVIATION RECORD (MOR-1231 ruling, "decide in-slice and
+   * record"): this is a theme-layer pair, not `--dl-*`, because the MOR-1072
+   * design-language custom properties do not exist as CSS — `--dl-focus-ring`
+   * would resolve to nothing and re-create the dead-token defect this ticket
+   * fixes. Interim home for the DL `focusRing` token group; migrate the pair to
+   * `--dl-*` when those properties actually land.
+   * --v2-focus-ring-color is the single per-skin knob: a skin whose accent
+   * misses the WCAG 1.4.11 3:1 non-text minimum against its own surfaces
+   * overrides only this one property (see nord-light, solarized-light). Both
+   * shapes are contrast-pinned per skin by
+   * src/__tests__/focus-ring-token-wiring.test.ts. */
+  --v2-focus-ring-color: var(--v2-accent-cyan);
+  --v2-focus-ring: 2px solid var(--v2-focus-ring-color);
+  --v2-focus-ring-shadow: 0 0 0 2px var(--v2-focus-ring-color);
   --v2-accent-orange: #FF6A00;
   --v2-accent-red: #FF2020;
   --v2-accent-green: #00CC66;

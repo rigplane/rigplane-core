@@ -103,7 +103,7 @@
   }
 
   .segmented-button:focus-visible {
-    box-shadow: 0 0 0 2px var(--accent, var(--v2-accent-cyan));
+    box-shadow: var(--v2-focus-ring-shadow);
     border-radius: 4px;
   }
 

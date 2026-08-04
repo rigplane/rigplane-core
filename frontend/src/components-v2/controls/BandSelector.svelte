@@ -125,7 +125,10 @@
   }
 
   .band-tab:focus-visible {
-    outline: 1px solid var(--v2-accent-cyan);
+    /* MOR-1232: colour only — the inset 1px shape is deliberately kept (a tight
+     * tab strip). --v2-focus-ring-color is the contrast-checked ring colour;
+     * the raw accent is under WCAG 1.4.11 3:1 on nord-light/solarized-light. */
+    outline: 1px solid var(--v2-focus-ring-color);
     outline-offset: -1px;
   }
 

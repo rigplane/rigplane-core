@@ -50,6 +50,11 @@
   outline: none;
 }
 
+.v2-control-button:focus-visible {
+  outline: var(--v2-focus-ring);
+  outline-offset: 2px;
+}
+
 /* Truly disabled state — must be visually distinct from idle.
  * Issue #804: idle was being confused with disabled because both looked
  * muted. Disabled now gets reduced opacity + not-allowed cursor and

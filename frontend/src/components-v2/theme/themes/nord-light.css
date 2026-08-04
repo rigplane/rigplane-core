@@ -18,6 +18,11 @@
 
   /* ── Colors: Accents ─────────────────────────────────────── */
   --v2-accent-cyan: #88c0d0;
+  /* MOR-1232: the frost accent is 1.48:1 against --v2-bg-input on this light
+   * skin, far under the WCAG 1.4.11 3:1 non-text minimum a focus indicator
+   * needs. nord10 (#5e81ac) still only reaches 2.98:1, so the ring uses a
+   * darkened nord10 — worst case 3.87:1 (--v2-bg-input #d8dee9). */
+  --v2-focus-ring-color: #4c6f96;
   --v2-accent-orange: #d08770;
   --v2-accent-red: #bf616a;
   --v2-accent-green: #a3be8c;
