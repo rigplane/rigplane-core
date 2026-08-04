@@ -283,3 +283,35 @@
   --v2-vfo-font-weight: 700;
   --v2-vfo-font-style: normal;
 }
+
+/* ── MOR-1233: prefers-contrast / forced-colors — minimal automatic strategy ──
+ * A manually-selectable "High Contrast" theme already exists (see
+ * themes/high-contrast.css) but nothing responds to the OS-level signal
+ * automatically. This is intentionally minimal, not a full palette swap:
+ * bump border/text separation under `prefers-contrast: more`, and re-anchor
+ * border tokens to system colors under `forced-colors: active` (e.g.
+ * Windows High Contrast Mode) so panel/track outlines stay visible.
+ * `:not([data-theme])` so an explicit manual theme choice always wins over
+ * the automatic OS signal. SVG fill/stroke (meters, scope) is not
+ * auto-adjusted by forced-colors and is out of scope here — see the build
+ * report for MOR-1233 for a follow-up note. Does not touch --focus-ring
+ * (styles/tokens.css, MOR-1232).
+ */
+@media (prefers-contrast: more) {
+  :root:not([data-theme]) {
+    --v2-border: #7a95b5;
+    --v2-border-subtle: #5f7a9a;
+    --v2-border-panel: #7a95b5;
+    --v2-text-dim: #a8bcd0;
+    --v2-text-muted: #9db2c8;
+  }
+}
+
+@media (forced-colors: active) {
+  :root:not([data-theme]) {
+    --v2-border: CanvasText;
+    --v2-border-subtle: CanvasText;
+    --v2-border-panel: CanvasText;
+    --v2-bg-panel: Canvas;
+  }
+}
