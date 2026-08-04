@@ -23,3 +23,4 @@ export const sdrTestLayout: LayoutManifest = {
 registerLayout(sdrTestLayout);
 
 export { lcdCockpitLayout, lcdScopeLayout } from './lcd-declarations';
+export { mobileLayout } from './mobile-declarations';

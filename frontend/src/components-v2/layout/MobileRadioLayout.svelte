@@ -33,6 +33,7 @@
   import CwPanel from '../panels/CwPanel.svelte';
   import DockMeterPanel from '../panels/DockMeterPanel.svelte';
   import KeyboardHandler from './KeyboardHandler.svelte';
+  import SemanticRadioSurfaces from '../wiring/SemanticRadioSurfaces.svelte';
   import MobileChipBar from './mobile-chip-bar.svelte';
   import EssentialsPanel from '../panels/EssentialsPanel.svelte';
   import PttFab from '../controls/PttFab.svelte';
@@ -639,6 +640,17 @@
         <AmberLcdDisplay />
       </section>
     {/if}
+
+    <!-- MOR-1094: the portrait deck's VFO facts and RX/TX status/action are
+         owned by the semantic surfaces (MOR-1063/1064), wired exactly once by
+         the shared SemanticRadioSurfaces — no new TX path, and no change to
+         the press-and-hold PTT below, which keeps its own gesture recognizer
+         and its own per-surface sourceId on the App TX controller. Mounted
+         outside the chip panels on purpose: a chip tap destroys and recreates
+         its panel, and this subtree is a TX lease source. -->
+    <section class="m-semantic-deck">
+      <SemanticRadioSurfaces />
+    </section>
 
     <!-- Chip-scroll IA nav (#839) -->
     <MobileChipBar
@@ -1321,6 +1333,16 @@
 
   .m-content::-webkit-scrollbar {
     display: none;
+  }
+
+  /* ── Semantic deck (MOR-1094) ── */
+  /* The surfaces declare `height: 100%`, which inside the scrolling
+     `.m-content` would resolve to the full viewport. An auto-height wrapper
+     resolves that percentage to `auto` and keeps the deck the size of its
+     content, above the chip bar. Same slot idiom as the LCD control column. */
+  .m-semantic-deck {
+    padding: 6px 8px;
+    border-bottom: 1px solid var(--v2-border-darker, #222);
   }
 
   /* ── Spectrum ── */
