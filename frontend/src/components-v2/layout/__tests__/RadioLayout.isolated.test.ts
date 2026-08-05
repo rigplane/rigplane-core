@@ -351,6 +351,14 @@ import { hasDualReceiver } from '$lib/stores/capabilities.svelte';
 
 let components: ReturnType<typeof mount>[] = [];
 
+/**
+ * MOR-1313 — an id no layout manifest is registered under, so nothing is
+ * declared and every legacy twin renders. It is the only way to reach the
+ * legacy VFO/TX branch now that both families sharing this shell resolve fully
+ * semantic, and it exercises the fail-safe direction of the suppression rule.
+ */
+const UNDECLARED = 'no-such-layout' as SkinId;
+
 function mountLayout(skinId: SkinId = 'desktop-v2') {
   const t = document.createElement('div');
   document.body.appendChild(t);
@@ -432,8 +440,18 @@ describe('RadioLayout structure', () => {
     expect(t.querySelector('.bottom-dock')).not.toBeNull();
   });
 
-  it('renders .vfo-header inside .receiver-deck', () => {
+  // MOR-1313: `desktop-v2` resolves through its layout manifest now, so the
+  // receiver deck hosts the semantic surfaces. The LEGACY deck is what an
+  // undeclared layout gets — see `UNDECLARED` below and the full suppression
+  // matrix in `semantic-desktop-migration.component.test.ts`.
+  it('renders the semantic surfaces inside .receiver-deck for desktop-v2', () => {
     const t = mountLayout();
+    expect(t.querySelector('.receiver-deck [data-testid="semantic-radio-surfaces"]')).not.toBeNull();
+    expect(t.querySelector('.vfo-header')).toBeNull();
+  });
+
+  it('renders .vfo-header inside .receiver-deck for an undeclared layout', () => {
+    const t = mountLayout(UNDECLARED);
     expect(t.querySelector('.receiver-deck .vfo-header')).not.toBeNull();
   });
 });
@@ -506,10 +524,11 @@ describe('meters dock TX chrome follows the App TX authority (MOR-1235)', () => 
   });
 });
 
+// MOR-1313: the legacy VFO header lives on the undeclared branch now.
 describe('VfoHeader dual receiver', () => {
   it('renders only one .panel in vfo-header when hasDualReceiver is false', () => {
     vi.mocked(hasDualReceiver).mockReturnValue(false);
-    const t = mountLayout();
+    const t = mountLayout(UNDECLARED);
     const vfoHeader = t.querySelector('.receiver-deck .vfo-header');
     const panels = vfoHeader?.querySelectorAll('.panel');
     expect(panels?.length).toBe(1);
@@ -517,7 +536,7 @@ describe('VfoHeader dual receiver', () => {
 
   it('renders two .panel elements in vfo-header when hasDualReceiver is true', () => {
     vi.mocked(hasDualReceiver).mockReturnValue(true);
-    const t = mountLayout();
+    const t = mountLayout(UNDECLARED);
     const vfoHeader = t.querySelector('.receiver-deck .vfo-header');
     const panels = vfoHeader?.querySelectorAll('.panel');
     expect(panels?.length).toBe(2);
