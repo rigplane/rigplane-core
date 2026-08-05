@@ -41,10 +41,10 @@ const REQUIRED_KEYS = [
 ] as const;
 
 /** MOR-1244: txAux. MOR-1262 slice 2A: meters. Slice 3A: rxAudio. Slice 4A:
- *  modeFilter. Slice 4A′: filterPassband. Slice 5A: dsp. Add your key here
- *  when your family's slice lands. */
+ *  modeFilter. Slice 4A′: filterPassband. Slice 5A: dsp. Slice 6A: rfFrontEnd.
+ *  Add your key here when your family's slice lands. */
 const EXPECTED_OPTIONAL_GROUP_KEYS = [
-  'txAux', 'meters', 'rxAudio', 'modeFilter', 'filterPassband', 'dsp',
+  'txAux', 'meters', 'rxAudio', 'modeFilter', 'filterPassband', 'dsp', 'rfFrontEnd',
 ] as const;
 
 function extractTopLevelAllowList(): string[] {
