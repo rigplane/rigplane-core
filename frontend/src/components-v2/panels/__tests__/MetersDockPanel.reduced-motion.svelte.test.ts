@@ -14,7 +14,7 @@ import MetersDockPanel from '../MetersDockPanel.svelte';
 // flips in both directions.
 //
 // The MatchMediaMock + mockReducedMotion() helper is duplicated from
-// smoothing.svelte.test.ts / LinearSMeter.reduced-motion.svelte.test.ts,
+// smoothing.isolated.test.ts / LinearSMeter.reduced-motion.svelte.test.ts,
 // matching the established per-file convention in this codebase (no shared
 // test util) — this is test-only code, not production LOC.
 

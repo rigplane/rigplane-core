@@ -676,7 +676,7 @@ export type BreakInMode = 'off' | 'semi' | 'full';
  * a transmit-causing action) has no representation here at all, the same way
  * `txAux` carries ATU *state* but never an ATU TUNE control (MOR-1244).
  * Constructing, validating or serializing this group must not be able to key
- * the radio; that is pinned by `__tests__/cw-keyer-purity.test.ts`, not merely
+ * the radio; that is pinned by `__tests__/cw-keyer-purity.isolated.test.ts`, not merely
  * asserted here.
  *
  * NO SECOND PERMIT. This group states no TX permission of its own. "May

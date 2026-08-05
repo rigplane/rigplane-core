@@ -391,7 +391,7 @@ function deriveFilterPassband(
   // already declare a non-default scale would read a confidently-wrong
   // `{known}` value from an unrelated (e.g. still-unpopulated) store. See the
   // doc comment above and the parity pin in
-  // `__tests__/filter-passband-adapter.test.ts`. Computed only from the
+  // `__tests__/filter-passband-adapter.isolated.test.ts`. Computed only from the
   // field's OWN raw value — never from a `?? 128` stand-in — so an unobserved
   // pbtInner/pbtOuter never silently seeds a derived ifShift.
   const pbtScale = pbtRangeFromCaps(caps);
@@ -463,7 +463,7 @@ function deriveDsp(
   // `CONTROL_DEFAULTS`, the same ones `nrRawToDisplay`/`nbDepthRawToDisplay`
   // fall back to today — so the store is NEVER consulted here, in either
   // branch: the fact is a pure function of `(state, caps)` unconditionally.
-  // See the determinism pin in `__tests__/dsp-adapter.test.ts`. Computed only
+  // See the determinism pin in `__tests__/dsp-adapter.isolated.test.ts`. Computed only
   // from the field's OWN raw value — never from a `?? 0` stand-in — so an
   // unobserved nrLevel/nbDepth never silently reports a fabricated reading.
   const nrLevelRange = controlRangeFromCapsOrDefault('nr_level', caps);
@@ -973,7 +973,7 @@ function deriveScopeControls(
  * `ws-client` or `AudioContext`; the caller reads its own already-live state
  * (`runtime.audio`, `runtime.connectionAudio`, the routing prefs
  * `AudioRoutingControl` restores) and hands the values in. Pinned by
- * `__tests__/rx-audio-purity.test.ts`.
+ * `__tests__/rx-audio-purity.isolated.test.ts`.
  */
 export interface RxAudioSnapshot {
   /** `AudioUiState` (`lib/runtime/props/panel-props.ts`), verbatim. */

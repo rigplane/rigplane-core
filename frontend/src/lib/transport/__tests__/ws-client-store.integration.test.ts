@@ -4,7 +4,7 @@ import { MockWebSocket, instances } from './support/fake-ws-backend';
 
 // ─── End-to-end fidelity test: REAL ws-client → REAL radio.svelte store ──────
 //
-// Unlike the unit suite in ``ws-client.test.ts`` (which mocks
+// Unlike the unit suite in ``ws-client.isolated.test.ts`` (which mocks
 // ``../../stores/radio.svelte`` and re-implements the acceptance gate by
 // hand), this file drives the genuine module graph end-to-end: the real
 // control-channel ``_ctrl.onMessage`` handler feeds the real
@@ -22,7 +22,7 @@ import { MockWebSocket, instances } from './support/fake-ws-backend';
 // revision trackers (``lastRevision`` etc.). We therefore reset the module
 // graph per test (``vi.resetModules()`` in ``afterEach``) and dynamically
 // import both modules inside each test for a clean slate — the proven
-// pattern from the singleton block of ``ws-client.test.ts``.
+// pattern from the singleton block of ``ws-client.isolated.test.ts``.
 
 type ServerStateWithObservation = ServerState & {
   observationSeq?: number;
@@ -30,7 +30,7 @@ type ServerStateWithObservation = ServerState & {
   fieldStatus?: Record<string, unknown>;
 };
 
-// ─── Envelope/state fixtures (shapes copied from ws-client.test.ts) ──────────
+// ─── Envelope/state fixtures (shapes copied from ws-client.isolated.test.ts) ──────────
 
 function makeReceiver(overrides: Partial<ReceiverState> = {}): ReceiverState {
   return {

@@ -161,7 +161,7 @@ import { getTxPermit } from '$lib/utils/tx-permit';
 // Real-controller harness
 //
 // Copied verbatim (bar this note) from
-// src/components-v2/panels/__tests__/TxPanel.test.ts, which in turn follows
+// src/components-v2/panels/__tests__/TxPanel.isolated.test.ts, which in turn follows
 // tx-controller/__tests__/controller-contract. Duplicated rather than shared
 // because the two suites live in different pools and a shared helper module
 // would pin the controller in the ``isolate: false`` cache for siblings that

@@ -14,7 +14,7 @@
  * "no de-key" is a wire fact (`ptt_off` frame count), not a mock call count.
  *
  * The harness is deliberately the one already proven by
- * `tx-controller/__tests__/integration-page-lifecycle.test.ts` (MOR-1089 U6);
+ * `tx-controller/__tests__/integration-page-lifecycle.isolated.test.ts` (MOR-1089 U6);
  * the only additions are a controllable lazy loader (so the presentation can
  * actually be switched, including mid-flight) and `TxControllerProbe` served
  * per skin id, so the controller the INCOMING subtree pulls out of context

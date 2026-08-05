@@ -7,7 +7,7 @@
  * group-shape rationale (and for the three shipped `CwProps` fields
  * deliberately absent from it), and `radio-view-model-adapter.ts`'s
  * `deriveCwKeyer`/`deriveCwKeyerReasons` for the live derivation (covered by
- * the companion `cw-keyer-adapter.test.ts` and `cw-keyer-purity.test.ts`).
+ * the companion `cw-keyer-adapter.test.ts` and `cw-keyer-purity.isolated.test.ts`).
  *
  * Mirrors the companion families' (`rit-xit.test.ts`, `scan.test.ts`)
  * kill-tests, plus one this family alone carries: the fail-closed cross-field

@@ -5,7 +5,7 @@
  * (`txAuxIntents.onAtuTune`, …). Its own component test mocks `../command-bus`,
  * so a renamed or deleted handler there would be invisible to it: the mock
  * would keep answering. This file closes that gap by loading the real module
- * (`dsp-nr-level.test.ts`'s established mocking recipe) and asserting, for
+ * (`dsp-nr-level.isolated.test.ts`'s established mocking recipe) and asserting, for
  * every name the wiring source actually references, that it exists and emits
  * the exact command the radio expects.
  *
