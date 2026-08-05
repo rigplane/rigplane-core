@@ -49,7 +49,7 @@ const fallbackHex = (token: string): string => {
 describe('focus ring is outline syntax, everywhere it is declared (MOR-1232 D5)', () => {
   it.each([
     ['studioline', studioline.tokens.focusRing],
-    ['fieldline (shared placeholder)', fieldline.tokens.focusRing],
+    ['fieldline', fieldline.tokens.focusRing],
     ['the shared test fixture', validManifest().tokens.focusRing],
   ])('%s declares a ring assignable to `outline`', (_name, ring) => {
     expect(ring).toMatch(OUTLINE_SHORTHAND);
@@ -129,7 +129,7 @@ describe('studioline token set implements the MOR-977 §2.3 grammar', () => {
     );
   });
 
-  it('leaves fieldline on the shared placeholder — this slice owns one language', () => {
+  it('does not lend its token set to fieldline — the two families are independent', () => {
     expect(fieldline.tokens).not.toBe(STUDIOLINE_TOKENS);
     expect(fieldline.tokens.typography.weight).not.toBe(STUDIOLINE_TOKENS.typography.weight);
   });

@@ -222,13 +222,11 @@ describe('F3 — the band takes over, and a fault band beats the doubt band', ()
 });
 
 describe('the CSS half honours the same constraints as the token half', () => {
-  it('is activated ONLY by the design-language attribute (owner decision Q2)', () => {
-    // Every rule in the sheet is rooted at the attribute — no class, prop or
-    // context can switch this language on.
-    for (const rule of RULES) {
-      expect(rule.selector).toMatch(/^\[data-design-language='fieldline']\[data-design-language]/);
-    }
-  });
+  // The activation-attribute pin that used to sit here is now general, over
+  // every discovered language sheet: `../../__tests__/activation-attribute.test.ts`
+  // (MOR-1275). It asserts strictly more than this copy did — the doubled
+  // attribute at the root of every selector, plus the competing-mechanism and
+  // bare-class checks — for fieldline and for any family added next.
 
   it('never flips polarity on prefers-color-scheme — daylight is an explicit opt-in', () => {
     expect(css).not.toMatch(/prefers-color-scheme/);

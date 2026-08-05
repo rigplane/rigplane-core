@@ -126,6 +126,31 @@ describe('the TX key gets an intentional treatment, not a UA default (N2)', () =
     expect(blocked.key.tone).toBe(STUDIOLINE_PALETTE.inert);
   });
 
+  it('a key disabled BECAUSE it is already keyed keeps the KEYED treatment (F3/N3)', () => {
+    // The contradiction this kills: `keyBlocked` is true in every TX-adjacent
+    // session — you cannot key what is already keyed — so an unconditional
+    // `blocked ? 'blocked' : …` reported an inert dotted key under a flooded
+    // TX rail. The stylesheet says the opposite and always did: every
+    // `[data-session]` key rule outranks `.rx-tx-key:disabled` on specificity
+    // (pinned in `stylesheet.test.ts`), so the descriptor was contradicting
+    // the CSS half of its own language. Harmless while unconsumed; live the
+    // moment MOR-1275 wires the renderers in.
+    const withKey = (over: Record<string, string | number | boolean | null>) =>
+      renderStateFeedback({
+        kind: 'state-feedback',
+        fields: { rf: 'receiving', session: 'idle', fault: null, keyBlocked: true, ...over },
+      }, STUDIOLINE_TOKENS).key;
+
+    expect(withKey({ rf: 'transmitting', session: 'keyed' })).toMatchObject({
+      treatment: 'keyed', filled: true, fill: STUDIOLINE_TOKENS.tx.active,
+    });
+    expect(withKey({ rf: 'transmitting', session: 'releasing' }).treatment).toBe('keyed');
+    expect(withKey({ rf: 'uncertain', session: 'pending' }).treatment).toBe('pending');
+    expect(withKey({ rf: 'uncertain', session: 'failed', fault: 'audio-failed' }).treatment).toBe('fault');
+    // The one session where "you may not key" IS the whole story keeps it.
+    expect(withKey({}).treatment).toBe('blocked');
+  });
+
   it('every treatment is present — no state hides the control', () => {
     for (const tx of [RX, PENDING, TX, RELEASING, FAULT, UNKNOWN_RF]) {
       expect(fromAuthority(tx).key.present).toBe(true);
