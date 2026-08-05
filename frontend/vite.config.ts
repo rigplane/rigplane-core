@@ -112,6 +112,10 @@ export default defineConfig({
             // import of the workspace contract — both mutate state the fast
             // pool shares across files. See MOR-1272.
             'src/presentation/workspace/__tests__/purity.test.ts',
+            // MOR-1078, same class again: ``vi.stubGlobal`` on localStorage/
+            // fetch/WebSocket plus ``vi.resetModules()`` around a fresh
+            // dynamic import of the legacy workspace readers. See MOR-1272.
+            'src/presentation/workspace/__tests__/legacy-readers-purity.test.ts',
             'src/components-v2/wiring/__tests__/keyboard-wiring.test.ts',
             'src/components-v2/wiring/__tests__/vfo-wiring.test.ts',
             'src/components-v2/wiring/__tests__/dsp-nr-level.test.ts',
@@ -218,6 +222,7 @@ export default defineConfig({
             'src/lib/runtime/adapters/__tests__/filter-passband-adapter.test.ts',
             'src/lib/runtime/adapters/__tests__/dsp-adapter.test.ts',
             'src/presentation/workspace/__tests__/purity.test.ts',
+            'src/presentation/workspace/__tests__/legacy-readers-purity.test.ts',
             'src/components-v2/wiring/__tests__/keyboard-wiring.test.ts',
             'src/components-v2/wiring/__tests__/vfo-wiring.test.ts',
             'src/components-v2/wiring/__tests__/dsp-nr-level.test.ts',
