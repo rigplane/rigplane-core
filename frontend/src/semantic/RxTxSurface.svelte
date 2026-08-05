@@ -12,6 +12,7 @@
   may restyle any of this; it may not change which facts appear.
 -->
 <script lang="ts">
+  import { renderSlot } from './design-language-renderers';
   import type { RadioViewModel } from './radio-view-model';
   import {
     BLOCKED_LABEL, RF_LABEL, RF_MARK, SESSION_LABEL, keyBlockedReasons, nextSurfaceId,
@@ -39,9 +40,26 @@
     : undefined);
   let frequencyHz = $derived(view.txTarget.status === 'known' ? view.txTarget.frequencyHz : null);
   let reason = $derived(view.txTarget.status === 'unknown' ? view.txTarget.reason : undefined);
+
+  /**
+   * MOR-1275: the active design language's `stateFeedback` renderer.
+   *
+   * R9 — every field handed over is a CONCLUSION this surface already renders:
+   * `rf`/`session` are `rfState()`/`txSessionState()` over the App-owned
+   * authority snapshot, `fault` is the snapshot's own code, and `keyBlocked` is
+   * the very predicate that gates the key button below. No raw `ptt`, no store,
+   * no new state path — and the descriptor comes back as annotations only, so
+   * it cannot re-gate a control or rename one.
+   */
+  let stateFeedback = $derived(renderSlot('stateFeedback', {
+    rf, session, fault: tx.fault, keyBlocked: blocked.length > 0,
+  }));
 </script>
 
-<section class="rx-tx-surface" data-testid="rx-tx-surface" aria-label="Transmitter status and control">
+<section
+  class="rx-tx-surface" data-testid="rx-tx-surface" aria-label="Transmitter status and control"
+  {...stateFeedback?.attributes ?? {}}
+>
   <p
     class="rx-tx-state" role="status" data-testid="rx-tx-state"
     data-rf={rf} data-session={session} data-origin={txOrigin(tx)} data-intent={tx.intent ?? undefined}

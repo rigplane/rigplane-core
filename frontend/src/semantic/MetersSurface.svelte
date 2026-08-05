@@ -39,8 +39,9 @@
   import type { MeterField, MetersViewModel } from './radio-view-model';
   import {
     alcLevel, compLevel, formatAlc, formatAmps, formatCompDb, formatPowerWatts,
-    formatSwr, formatVolts, idLevel, normalizePower, swrLevel, vdLevel,
+    formatSwr, formatVolts, idLevel, normalizePower, sLevel, swrLevel, vdLevel,
   } from '../components-v2/panels/meter-utils';
+  import { renderSlot } from './design-language-renderers';
 
   type BarKey = Exclude<keyof MetersViewModel, 'rfState' | 'signal'>;
   type Scale = readonly [BarKey, string, (raw: number) => number, (raw: number) => string];
@@ -65,6 +66,19 @@
   const observed = (f: MeterField): boolean =>
     f.availability.operational && f.reading.status === 'known';
   const rawOf = (f: MeterField): number => (f.reading.status === 'known' ? f.reading.value : 0);
+
+  /**
+   * MOR-1275: the active design language's `meters` renderer, for the S meter —
+   * the one gauge whose grammar those renderers describe (a two-tone track that
+   * hands over at S9). The reading is handed over on the 0..1 UI scale
+   * `meter-utils` already calibrates, with the S9 crossover expressed on the
+   * same scale, so the descriptor's fractions mean what they say; an unobserved
+   * meter passes `null` and stays unknown rather than reading as zero (rule 3).
+   * Annotations only — availability, relevance and the gauge itself remain this
+   * surface's decisions.
+   */
+  const signalDisplay = (f: MeterField): ReturnType<typeof renderSlot> =>
+    renderSlot('meters', { value: observed(f) ? sLevel(rawOf(f)) : null, max: 1, s9: sLevel(0) });
 </script>
 
 <script lang="ts">
@@ -107,6 +121,7 @@
         class="meter-tile" data-meter-tile data-meter="signal" data-testid="meter-signal"
         data-relevant={meters.signal.relevant} data-observed={observed(meters.signal)}
         role="group" aria-label="S meter"
+        {...signalDisplay(meters.signal)?.attributes ?? {}}
       >
         {#if observed(meters.signal)}
           <LinearSMeter value={rawOf(meters.signal)} label="S" compact />
