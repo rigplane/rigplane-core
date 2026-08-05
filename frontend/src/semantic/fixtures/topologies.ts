@@ -309,10 +309,14 @@ export function withDsp(fixture: RadioViewModel): RadioViewModel {
 }
 
 /**
- * Applies a fully-observed `rfFrontEnd` group (MOR-1262 slice 6A, MOR-1292)
- * to any topology fixture — a SEPARATE group from `dsp` above (see
- * `RfFrontEndViewModel`'s doc comment for why), same composable-axis story
- * as `withTxAux`/`withMeters`/`withRxAudio`/`withFilterPassband`/`withDsp`.
+ * Applies a fully-observed `rfFrontEnd` group (MOR-1262 slice 6A, MOR-1292;
+ * extended with `digiSel`/`ipPlus` by slice 6A′, MOR-1293) to any topology
+ * fixture — a SEPARATE group from `dsp` above (see `RfFrontEndViewModel`'s
+ * doc comment for why), same composable-axis story as
+ * `withTxAux`/`withMeters`/`withRxAudio`/`withFilterPassband`/`withDsp`.
+ * DIGI-SEL defaults to `known(false)` — mutex OFF, PRE not disabled by it —
+ * so this fixture stays a "nothing disabled" baseline; the mutex-ON/-unknown
+ * cases are exercised by the adapter's own dedicated tests, not this fixture.
  */
 export function withRfFrontEnd(fixture: RadioViewModel): RadioViewModel {
   const avail: Availability = { structural: true, operational: true };
@@ -325,6 +329,8 @@ export function withRfFrontEnd(fixture: RadioViewModel): RadioViewModel {
     attValues: [0, 6, 12, 18],
     rfGain: known(1),
     squelch: known(0),
+    digiSel: known(false),
+    ipPlus: known(false),
   };
   return { ...fixture, rfFrontEnd };
 }
