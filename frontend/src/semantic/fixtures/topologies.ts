@@ -14,7 +14,8 @@
  * topology, so it can be applied to any of the four fixtures below.
  */
 import type {
-  Availability, DspField, DspViewModel, FilterPassbandField, FilterPassbandViewModel,
+  Availability, BandField, BandViewModel,
+  DspField, DspViewModel, FilterPassbandField, FilterPassbandViewModel,
   MeterField, MeterRfState, MetersViewModel,
   ModeFilterField, ModeFilterViewModel,
   ModInputReadiness, RadioViewModel, RfFrontEndField, RfFrontEndViewModel, RxAudioField, RxAudioViewModel,
@@ -333,4 +334,47 @@ export function withRfFrontEnd(fixture: RadioViewModel): RadioViewModel {
     ipPlus: known(false),
   };
   return { ...fixture, rfFrontEnd };
+}
+
+/**
+ * Applies a fully-observed `band` group (MOR-1262 slice 7A, MOR-1294) to any
+ * topology fixture — same composable-axis story as `withRfFrontEnd`/`withDsp`
+ * above. `currentBandTx` is a PARAMETER for the same reason `withMeters`'s
+ * `rfState` and `withRxAudio`'s `readiness` are: TX permission is the
+ * safety-critical axis of this family, and a fixture that hard-coded
+ * `'allowed'` would make the fail-closed path unobservable in every consumer
+ * that composes this helper. Passing `'denied'` also switches the current
+ * band to `unknown`, because the contract's own cross-field invariant forbids
+ * an `'allowed'`-on-unknown pairing and this fixture must stay valid in both
+ * directions; the finer per-permit combinations are exercised by the
+ * adapter's own tests, not this fixture.
+ */
+export function withBand(
+  fixture: RadioViewModel, currentBandTx: 'allowed' | 'denied' = 'allowed',
+): RadioViewModel {
+  const avail: Availability = { structural: true, operational: true };
+  const known = <T>(value: T): BandField<T> => ({ reading: { status: 'known', value }, availability: avail });
+  const band: BandViewModel = {
+    currentBand: currentBandTx === 'allowed'
+      ? known('20m')
+      : { reading: { status: 'unknown' }, availability: avail },
+    bandChoices: [
+      {
+        name: '40m', startHz: 7000000, endHz: 7300000, defaultHz: 7100000, bsrCode: 2,
+        defaultHzTxPermit: { status: 'allowed', band: '40m' },
+      },
+      {
+        name: '20m', startHz: 14000000, endHz: 14350000, defaultHz: 14195000, bsrCode: 5,
+        defaultHzTxPermit: { status: 'allowed', band: '20m' },
+      },
+      {
+        name: 'MW', startHz: 520000, endHz: 1710000, defaultHz: 1000000, bsrCode: null,
+        defaultHzTxPermit: { status: 'denied', reason: 'outside-configured-ranges' },
+      },
+    ],
+    currentBandTx,
+    tuneMinHz: 30000,
+    tuneMaxHz: 60000000,
+  };
+  return { ...fixture, band };
 }

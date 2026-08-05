@@ -16,7 +16,7 @@
  * boolean or a default is the failure mode this contract exists to prevent.
  */
 import type { VfoScheme } from '$lib/types/capabilities';
-import type { FrequencyPermit } from '$lib/utils/tx-permit';
+import type { FrequencyPermit, TxPermit } from '$lib/utils/tx-permit';
 import { invalid, record, exactKeys, str } from './validator-primitives';
 
 export type ReceiverId = 'MAIN' | 'SUB';
@@ -435,6 +435,115 @@ export interface RfFrontEndViewModel {
   ipPlus: RfFrontEndField<boolean>;
 }
 
+/**
+ * A single band fact (MOR-1262 decomposition slice 7A, MOR-1294).
+ * Shape-identical to `TxAuxField`, declared as an alias for the same reason
+ * `RfFrontEndField`/`DspField`/`ModeFilterField`/`RxAudioField` are: one
+ * field shape per fact family.
+ */
+export type BandField<T> = TxAuxField<T>;
+
+/**
+ * One selectable band of the radio's own band plan — `$lib/radio/band-plan`'s
+ * `FlatBand` (the shipped `flattenBands` output over `Capabilities.
+ * freqRanges`) plus the band's TX permit.
+ *
+ * SAFETY (MOR-1294): `defaultHzTxPermit` is the EXISTING `FrequencyPermit`
+ * tri-state, produced by the ONE derivation in this codebase
+ * (`getFrequencyPermit`, `$lib/utils/tx-permit` — the same function
+ * `deriveTxCapabilities` calls for the model's top-level `txPermit`). It is
+ * NOT read off the band plan itself: `freqRanges` describes what the radio
+ * can TUNE, `caps.txBands` describes where it may TRANSMIT, and treating a
+ * band's presence in the plan as permission to key is precisely the fail-open
+ * defect this slice forbids. A default outside `txBands` stays `denied`;
+ * `txBands: null` stays `unknown`.
+ *
+ * It is a POINT SAMPLE at `defaultHz`, and the field name says so (MOR-1294
+ * verify F1). It answers only "if I pick this band and land on its default
+ * frequency, may I key THERE" — the picker label. It is NOT a statement about
+ * the whole band: `txBands` segments are routinely NARROWER than a band-plan
+ * band (WARC segments, regional sub-bands, 60m channels), so a band whose
+ * default sits inside a permitted segment reads `allowed` here while the
+ * operator's LIVE frequency elsewhere in the same band is denied.
+ * `BandViewModel.currentBandTx` is the live-frequency answer and is NEVER
+ * derived from this field; a 7B surface must not present this as "you may
+ * transmit anywhere in this band".
+ */
+export interface BandChoice {
+  name: string;
+  startHz: number;
+  endHz: number;
+  defaultHz: number;
+  /** Icom band-stacking-register index; `null` when the plan declares none. */
+  bsrCode: number | null;
+  defaultHzTxPermit: FrequencyPermit;
+}
+
+/**
+ * Band facts (MOR-1262 decomposition slice 7A, MOR-1294): the current band,
+ * the capability-derived band choice set with its per-band TX permits, and
+ * the tuning envelope a frequency-entry surface validates against. Facts only
+ * — no command emission; selecting a band or committing a typed frequency
+ * stays with the surface (slice 7B).
+ *
+ * `bandChoices` is a plain list, not `BandField`-wrapped, for the same reason
+ * `modeFilter`'s `modeChoices` and `dsp`'s `agcModes` aren't: a choice set is
+ * a structural fact about the radio MODEL, not a live reading that can go
+ * stale. Per the X6200 lesson it is read from the `caps` ARGUMENT only, via
+ * the shipped `flattenBands` — never a frontend band table (the shipped
+ * `BandSelector.svelte`'s hard-coded `BROADCAST_SW_BANDS`/`BROADCAST_LW_MW_BANDS`
+ * presets are UI convenience, not radio facts, and are deliberately absent).
+ *
+ * `currentBand` is the shipped `findActiveBand` lookup over that same `caps`
+ * argument, keyed on the ACTIVE receiver's observed frequency — `unknown`
+ * when the frequency was never observed or when no band of the plan contains
+ * it, where the shipped `toBandSelectorProps` substitutes a fabricated
+ * 14.074 MHz.
+ *
+ * `currentBandTx` is the FAIL-CLOSED, LIVE-FREQUENCY answer to "may the
+ * operator key right now" — see its own comment below. It is a different
+ * question from `bandChoices[].defaultHzTxPermit`, which is a point sample at
+ * a band's default frequency, and the two must never be conflated.
+ *
+ * `tuneMinHz`/`tuneMaxHz` are the frequency-entry constraint: the envelope of
+ * the declared `freqRanges` (range bounds, not band bounds — the gaps between
+ * bands are still tunable). `null` when the radio declares no range at all;
+ * never `components-v2/display/frequency-tuning.ts::adjustFreqByDigit`'s
+ * fabricated `0 … 999 MHz` defaults, which is the only bound v2 has (that
+ * function has no production caller that supplies one).
+ */
+export interface BandViewModel {
+  currentBand: BandField<string>;
+  bandChoices: readonly BandChoice[];
+  /**
+   * SAFETY (MOR-1294, corrected by the verify F1 ruling). "May the operator
+   * key RIGHT NOW, at the frequency the radio is actually on."
+   *
+   * Evaluated at the LIVE frequency — `getFrequencyPermit(observedFreqHz,
+   * caps.txBands)`, the same single shipped derivation, just at the correct
+   * argument — and NEVER inherited from `bandChoices[].defaultHzTxPermit`.
+   * Inheriting the point sample is a demonstrated fail-OPEN whenever a
+   * `txBands` segment is narrower than the band-plan band it sits in (live
+   * 14.300 MHz reading `allowed` off a 14.000–14.150 allocation), which is
+   * common, silent, and exactly what "out-of-band must stay denied, never
+   * fail-open" forbids.
+   *
+   * Collapsed fail-closed exactly the way the shipped `getTxPermit` collapses
+   * the tri-state (`$lib/utils/tx-permit`: "unknown fails closed").
+   * `'allowed'` requires ALL of: a POSITIVELY known current band, a choice
+   * entry for it, and a POSITIVELY `allowed` live-frequency permit. An
+   * unobserved/stale/malformed frequency, an out-of-plan frequency, a band
+   * absent from the choice set, an out-of-segment frequency and unconfigured
+   * TX ranges all read `'denied'`. An unknown input must never enable a
+   * TX-adjacent affordance — see `radio-view-model-adapter.ts`'s `deriveBand`,
+   * and the cross-field invariant `validateRadioViewModel` enforces on this
+   * pair.
+   */
+  currentBandTx: TxPermit;
+  tuneMinHz: number | null;
+  tuneMaxHz: number | null;
+}
+
 export interface RadioViewModel {
   topologyId: string;
   vfoScheme: VfoScheme;
@@ -477,6 +586,10 @@ export interface RadioViewModel {
    *  (MOR-1293 added the latter two) — see
    *  `radio-view-model-adapter.ts`'s `deriveRfFrontEnd`. */
   readonly rfFrontEnd?: RfFrontEndViewModel;
+  /** Absent (MOR-1264 optional group) ⇒ this radio declares no frequency
+   *  range at all, so there is no band plan and no tuning envelope to state
+   *  — see `radio-view-model-adapter.ts`'s `deriveBand`. */
+  readonly band?: BandViewModel;
 }
 
 const RECEIVER_IDS: readonly ReceiverId[] = ['MAIN', 'SUB'];
@@ -881,6 +994,49 @@ function validateRfFrontEnd(value: unknown, path: string): RfFrontEndViewModel {
   };
 }
 
+const TX_PERMITS: readonly TxPermit[] = ['allowed', 'denied'];
+
+/** One band-plan entry plus its own default-frequency TX point sample — the
+ *  permit is validated by the SAME `validateTxPermit` the top-level
+ *  `txPermit` uses, because it IS the same tri-state (MOR-1294); a divergent
+ *  per-band permit shape would be the second derivation this slice exists to
+ *  prevent. */
+function validateBandChoice(value: unknown, path: string): BandChoice {
+  const v = record(value, path);
+  exactKeys(v, ['name', 'startHz', 'endHz', 'defaultHz', 'bsrCode', 'defaultHzTxPermit'], path);
+  return {
+    name: str(v.name, `${path}.name`),
+    startHz: num(v.startHz, `${path}.startHz`),
+    endHz: num(v.endHz, `${path}.endHz`),
+    defaultHz: num(v.defaultHz, `${path}.defaultHz`),
+    bsrCode: nullableNumber(v.bsrCode, `${path}.bsrCode`),
+    defaultHzTxPermit: validateTxPermit(v.defaultHzTxPermit, `${path}.defaultHzTxPermit`),
+  };
+}
+
+/** N4 again: exactly the five facts the adapter reads, no speculative keys.
+ *  See `radio-view-model-adapter.ts::deriveBand`. */
+function validateBand(value: unknown, path: string): BandViewModel {
+  const v = record(value, path);
+  exactKeys(v, ['currentBand', 'bandChoices', 'currentBandTx', 'tuneMinHz', 'tuneMaxHz'], path);
+  if (!Array.isArray(v.bandChoices)) invalid(`${path}.bandChoices`, 'an array');
+  const currentBand = validateTxAuxField(v.currentBand, `${path}.currentBand`, str);
+  const currentBandTx = oneOf(v.currentBandTx, TX_PERMITS, `${path}.currentBandTx`);
+  // The fail-closed cross-field invariant (MOR-1294), the same shape as the
+  // model-level "txPermit 'allowed' only when txTarget is known" pin below:
+  // a band the radio could not identify must never carry TX permission.
+  if (currentBandTx === 'allowed' && currentBand.reading.status === 'unknown') {
+    invalid(`${path}.currentBandTx`, "'denied' whenever currentBand is unknown (fail-open otherwise)");
+  }
+  return {
+    currentBand,
+    bandChoices: v.bandChoices.map((b, i) => validateBandChoice(b, `${path}.bandChoices[${i}]`)),
+    currentBandTx,
+    tuneMinHz: nullableNumber(v.tuneMinHz, `${path}.tuneMinHz`),
+    tuneMaxHz: nullableNumber(v.tuneMaxHz, `${path}.tuneMaxHz`),
+  };
+}
+
 /** Runtime validator (repo idiom: throws TypeError with a `$.path`, see `validateCapabilities`).
  *  Also enforces two cross-field invariants (review cycle 1, V1): `txPermit`
  *  cannot be 'allowed' while `txTarget` is unknown (no fail-open), and
@@ -890,7 +1046,7 @@ export function validateRadioViewModel(value: unknown): RadioViewModel {
   exactKeys(v, [
     'topologyId', 'vfoScheme', 'activeReceiver', 'vfos', 'split', 'dualWatch',
     'txTarget', 'txPermit', 'scope', 'disabledReasons', 'txAux', 'meters', 'rxAudio', 'modeFilter',
-    'filterPassband', 'dsp', 'rfFrontEnd',
+    'filterPassband', 'dsp', 'rfFrontEnd', 'band',
   ], '$');
   if (!Array.isArray(v.vfos)) invalid('$.vfos', 'an array');
   if (!Array.isArray(v.disabledReasons)) invalid('$.disabledReasons', 'an array');
@@ -925,6 +1081,7 @@ export function validateRadioViewModel(value: unknown): RadioViewModel {
   const filterPassband = optionalGroup(v.filterPassband, '$.filterPassband', validateFilterPassband);
   const dsp = optionalGroup(v.dsp, '$.dsp', validateDsp);
   const rfFrontEnd = optionalGroup(v.rfFrontEnd, '$.rfFrontEnd', validateRfFrontEnd);
+  const band = optionalGroup(v.band, '$.band', validateBand);
 
   return {
     topologyId: str(v.topologyId, '$.topologyId'),
@@ -947,5 +1104,6 @@ export function validateRadioViewModel(value: unknown): RadioViewModel {
     ...(filterPassband !== undefined ? { filterPassband } : {}),
     ...(dsp !== undefined ? { dsp } : {}),
     ...(rfFrontEnd !== undefined ? { rfFrontEnd } : {}),
+    ...(band !== undefined ? { band } : {}),
   };
 }
