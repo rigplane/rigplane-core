@@ -17,7 +17,7 @@ import type {
   Availability, DspField, DspViewModel, FilterPassbandField, FilterPassbandViewModel,
   MeterField, MeterRfState, MetersViewModel,
   ModeFilterField, ModeFilterViewModel,
-  ModInputReadiness, RadioViewModel, RxAudioField, RxAudioViewModel,
+  ModInputReadiness, RadioViewModel, RfFrontEndField, RfFrontEndViewModel, RxAudioField, RxAudioViewModel,
   TxAuxField, TxAuxViewModel,
 } from '../radio-view-model';
 
@@ -306,4 +306,25 @@ export function withDsp(fixture: RadioViewModel): RadioViewModel {
     agcTimeConstant: known(0),
   };
   return { ...fixture, dsp };
+}
+
+/**
+ * Applies a fully-observed `rfFrontEnd` group (MOR-1262 slice 6A, MOR-1292)
+ * to any topology fixture — a SEPARATE group from `dsp` above (see
+ * `RfFrontEndViewModel`'s doc comment for why), same composable-axis story
+ * as `withTxAux`/`withMeters`/`withRxAudio`/`withFilterPassband`/`withDsp`.
+ */
+export function withRfFrontEnd(fixture: RadioViewModel): RadioViewModel {
+  const avail: Availability = { structural: true, operational: true };
+  const known = <T>(value: T): RfFrontEndField<T> =>
+    ({ reading: { status: 'known', value }, availability: avail });
+  const rfFrontEnd: RfFrontEndViewModel = {
+    preamp: known(1),
+    preValues: [0, 1, 2],
+    attenuator: known(6),
+    attValues: [0, 6, 12, 18],
+    rfGain: known(1),
+    squelch: known(0),
+  };
+  return { ...fixture, rfFrontEnd };
 }

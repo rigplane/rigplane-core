@@ -358,6 +358,53 @@ export interface DspViewModel {
   agcTimeConstant: DspField<number>;
 }
 
+/**
+ * A single RF-front-end fact (MOR-1262 decomposition slice 6A, MOR-1292).
+ * Shape-identical to `TxAuxField`, declared as an alias for the same reason
+ * `DspField`/`FilterPassbandField`/`ModeFilterField`/`RxAudioField` are: one
+ * field shape per fact family.
+ */
+export type RfFrontEndField<T> = TxAuxField<T>;
+
+/**
+ * RF front-end facts (MOR-1262 decomposition slice 6A, MOR-1292): preamp,
+ * attenuator, RF gain, squelch. Facts only — no command emission, same
+ * doctrine as `dsp`/`modeFilter`/`filterPassband`. Family enumeration is
+ * explicit and CLOSED: NR/NB/notch/AGC are family 5 (`dsp`, MOR-1290) — this
+ * group never duplicates them; DIGI-SEL/IP+ are the shipped `RfFrontEndProps`
+ * panel's OWN remaining controls but are not part of this slice's four named
+ * facts and are deliberately left uncovered here (ticket scope, not an
+ * oversight — see the build report).
+ *
+ * `preamp`/`attenuator`/`rfGain`/`squelch` are plain pass-through readings:
+ * unlike `dsp`'s `nrLevel`/`nbDepth`, the shipped `toRfFrontEndProps`
+ * (`lib/runtime/props/panel-props.ts`) reads `rx.preamp`/`rx.att`/
+ * `rx.rfGain`/`rx.squelch` verbatim, with no raw<->display scale conversion
+ * — the server already reports these as display-ready values (dB steps,
+ * preamp-level ordinal, 0-1 gain fractions). There is no separate "real
+ * function" to consume for the VALUE; the parity surface here is the
+ * CAPABILITY gate and the choice sets below, both copied verbatim from
+ * `toRfFrontEndProps`.
+ *
+ * `preValues`/`attValues` are the capability-derived preamp-level and
+ * attenuator-dB choice sets (`Capabilities.preValues`/`.attValues`,
+ * verbatim) — plain lists, not field-wrapped, same reasoning as `dsp`'s
+ * `agcModes`: a choice set is a structural fact about the radio MODEL, not a
+ * live reading that can itself go stale. Per the X6200 lesson, these are
+ * read from the `caps` ARGUMENT only — never a radio-specific fallback table
+ * (the shipped panel's own `[0, 6, 12, 18]`/`[0, 1, 2]` UI-convenience
+ * defaults are presentation, not a fact — see `radio-view-model-adapter.ts`'s
+ * `deriveRfFrontEnd`).
+ */
+export interface RfFrontEndViewModel {
+  preamp: RfFrontEndField<number>;
+  preValues: readonly number[];
+  attenuator: RfFrontEndField<number>;
+  attValues: readonly number[];
+  rfGain: RfFrontEndField<number>;
+  squelch: RfFrontEndField<number>;
+}
+
 export interface RadioViewModel {
   topologyId: string;
   vfoScheme: VfoScheme;
@@ -395,6 +442,10 @@ export interface RadioViewModel {
    *  notch and no AGC capability — see `radio-view-model-adapter.ts`'s
    *  `deriveDsp`. */
   readonly dsp?: DspViewModel;
+  /** Absent (MOR-1264 optional group) ⇒ this radio declares no preamp, no
+   *  attenuator, no RF-gain and no squelch capability — see
+   *  `radio-view-model-adapter.ts`'s `deriveRfFrontEnd`. */
+  readonly rfFrontEnd?: RfFrontEndViewModel;
 }
 
 const RECEIVER_IDS: readonly ReceiverId[] = ['MAIN', 'SUB'];
@@ -778,6 +829,21 @@ function validateDsp(value: unknown, path: string): DspViewModel {
   };
 }
 
+/** N4 again: exactly the six facts the adapter reads, no speculative keys.
+ *  See `radio-view-model-adapter.ts::deriveRfFrontEnd`. */
+function validateRfFrontEnd(value: unknown, path: string): RfFrontEndViewModel {
+  const v = record(value, path);
+  exactKeys(v, ['preamp', 'preValues', 'attenuator', 'attValues', 'rfGain', 'squelch'], path);
+  return {
+    preamp: validateTxAuxField(v.preamp, `${path}.preamp`, num),
+    preValues: numArray(v.preValues, `${path}.preValues`),
+    attenuator: validateTxAuxField(v.attenuator, `${path}.attenuator`, num),
+    attValues: numArray(v.attValues, `${path}.attValues`),
+    rfGain: validateTxAuxField(v.rfGain, `${path}.rfGain`, num),
+    squelch: validateTxAuxField(v.squelch, `${path}.squelch`, num),
+  };
+}
+
 /** Runtime validator (repo idiom: throws TypeError with a `$.path`, see `validateCapabilities`).
  *  Also enforces two cross-field invariants (review cycle 1, V1): `txPermit`
  *  cannot be 'allowed' while `txTarget` is unknown (no fail-open), and
@@ -787,7 +853,7 @@ export function validateRadioViewModel(value: unknown): RadioViewModel {
   exactKeys(v, [
     'topologyId', 'vfoScheme', 'activeReceiver', 'vfos', 'split', 'dualWatch',
     'txTarget', 'txPermit', 'scope', 'disabledReasons', 'txAux', 'meters', 'rxAudio', 'modeFilter',
-    'filterPassband', 'dsp',
+    'filterPassband', 'dsp', 'rfFrontEnd',
   ], '$');
   if (!Array.isArray(v.vfos)) invalid('$.vfos', 'an array');
   if (!Array.isArray(v.disabledReasons)) invalid('$.disabledReasons', 'an array');
@@ -821,6 +887,7 @@ export function validateRadioViewModel(value: unknown): RadioViewModel {
   const modeFilter = optionalGroup(v.modeFilter, '$.modeFilter', validateModeFilter);
   const filterPassband = optionalGroup(v.filterPassband, '$.filterPassband', validateFilterPassband);
   const dsp = optionalGroup(v.dsp, '$.dsp', validateDsp);
+  const rfFrontEnd = optionalGroup(v.rfFrontEnd, '$.rfFrontEnd', validateRfFrontEnd);
 
   return {
     topologyId: str(v.topologyId, '$.topologyId'),
@@ -842,5 +909,6 @@ export function validateRadioViewModel(value: unknown): RadioViewModel {
     ...(modeFilter !== undefined ? { modeFilter } : {}),
     ...(filterPassband !== undefined ? { filterPassband } : {}),
     ...(dsp !== undefined ? { dsp } : {}),
+    ...(rfFrontEnd !== undefined ? { rfFrontEnd } : {}),
   };
 }
