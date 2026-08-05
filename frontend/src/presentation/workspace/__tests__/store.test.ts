@@ -14,9 +14,9 @@ import {
 } from '../repository';
 import { DEFAULT_WORKSPACE } from '../contract';
 import {
-  dismissWorkspaceNotice, getWorkspace, getWorkspaceNotice, initWorkspaceStore,
-  setDensity, setDesignLanguage, setLayout, setPinnedCommands, setTheme,
-  setZoneOrder, setZoneVisibleSurfaces,
+  dismissWorkspaceNotice, getWorkspace, getWorkspaceNotice, initWorkspaceStore, resetWorkspace,
+  setDensity, setDesignLanguage, setLayout, setPinnedCommands, setTheme, setZoneOrder,
+  setZoneVisibleSurfaces,
 } from '../store.svelte';
 
 class FakeStorage {
@@ -301,5 +301,44 @@ describe('semantic actions go through the validator (MOR-1079)', () => {
     expect(storage.deletes).toEqual([]);
     expect(storage.getItem('rigplane:theme')).toBe('dracula');
     expect(storage.getItem('rigplane-layout')).toBe('amber-lcd');
+  });
+});
+
+describe('resetWorkspace (MOR-1080)', () => {
+  beforeEach(() => {
+    initWorkspaceStore(storage);
+  });
+
+  it('restores every typed field to the frozen defaults and returns the prior snapshot', () => {
+    setTheme('nord', true);
+    setLayout('lcd-scope');
+    setZoneOrder('main', ['vfo']);
+
+    const previous = resetWorkspace();
+
+    expect(getWorkspace()).toEqual(DEFAULT_WORKSPACE);
+    expect(previous).toMatchObject({ theme: 'nord', layout: 'lcd-scope', zoneOrder: { main: ['vfo'] } });
+    expect(stored(storage).theme).toBe('default');
+  });
+
+  it('clears a stale latch so the override actually unblocks writes, not just this one call', () => {
+    const raw = JSON.stringify({ ...DEFAULT_WORKSPACE, version: 3, theme: 'v3-only-theme' });
+    storage.map.set(WORKSPACE_STORAGE_KEY, raw);
+    initWorkspaceStore(storage);
+    expect(getWorkspaceNotice()?.kind).toBe('forward-read-only');
+
+    resetWorkspace();
+
+    expect(getWorkspaceNotice()).toBeNull();
+    expect(stored(storage).version).toBe(1);
+    expect(stored(storage).theme).toBe('default');
+
+    setTheme('nord');
+    expect(stored(storage).theme).toBe('nord');
+  });
+
+  it('latches the reset theme as explicit, so it round-trips instead of being omitted', () => {
+    resetWorkspace();
+    expect(stored(storage)).toHaveProperty('theme', 'default');
   });
 });

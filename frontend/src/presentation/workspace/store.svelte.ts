@@ -139,8 +139,17 @@ export function isThemeExplicit(): boolean {
   return themeChosen;
 }
 
-function update(patch: Readonly<Record<string, unknown>>): void {
-  const next = applyWorkspacePatch(current, patch);
+/**
+ * `unlatch` = an explicit whole-object replacement (reset/import), which
+ * carries no unrepresentable remainder for `blocked` to protect — so it
+ * clears the latch instead of being silently swallowed by it, and clears
+ * a stale notice rather than leaving it to contradict the fresh result.
+ */
+function commit(next: WorkspaceReadResult, unlatch = false): void {
+  if (unlatch) {
+    blocked = null;
+    notice = null;
+  }
   current = next;
   const published = noticeFor(next);
   if (published !== null) notice = published;
@@ -152,6 +161,26 @@ function update(patch: Readonly<Record<string, unknown>>): void {
   if (!persistWorkspace(backing, next, themeChosen)) {
     notice = published ?? { kind: 'persist-failed', rejections: next.rejections };
   }
+}
+
+function update(patch: Readonly<Record<string, unknown>>): void {
+  commit(applyWorkspacePatch(current, patch));
+}
+
+/**
+ * MOR-1080 — the safe override binding carry-forward 1 asks for: a latched
+ * forward-read-only notice can only be escaped by discarding down to the
+ * frozen defaults, never by a partial merge that could still be lossy.
+ * Latches `themeChosen` (the reset IS the operator's choice, not a re-apply
+ * — mirrors `setTheme(id, true)`). Returns the pre-reset snapshot so the
+ * caller can offer an in-session undo through the existing typed setters —
+ * no new persistence path.
+ */
+export function resetWorkspace(): WorkspaceV1 {
+  const previous = current.workspace;
+  themeChosen = true;
+  commit(readWorkspace(DEFAULT_WORKSPACE), true);
+  return previous;
 }
 
 export function setLayout(layout: WorkspaceLayoutId): void {
