@@ -734,58 +734,85 @@ export interface CwKeyerViewModel {
 export type ScopeControlsField<T> = TxAuxField<T>;
 
 /**
- * Scope-control facts (MOR-1262 decomposition slice 11A, MOR-1298): the four
- * operator-navigated facts off the shipped spectrum toolbar's own
- * `scopeControls` block (`components/spectrum/SpectrumToolbar.svelte`) — SPAN
- * preset index, sweep SPEED, DUAL-scope on/off, and which RECEIVER (MAIN=0/
- * SUB=1) feeds the scope. The design doc that named this toolbar
+ * Scope-control facts (MOR-1262 decomposition slice 11A/MOR-1298, extended
+ * by slice 11A′/MOR-1299): the eight operator-navigated facts off the
+ * shipped spectrum toolbar's own `scopeControls` block
+ * (`components/spectrum/SpectrumToolbar.svelte`) — SPAN preset index, sweep
+ * SPEED, DUAL-scope on/off, which RECEIVER (MAIN=0/SUB=1) feeds the scope
+ * (11A), plus scope MODE (CTR/FIX/S-C/S-F), EDGE, HOLD and REF level (11A′).
+ * The design doc that named this toolbar
  * (`docs/plans/2026-04-18-spectrum-controls.md`) calls the MAIN/SUB selector
  * the "scope-source selector" and proposes labelling it "SCOPE SRC" — the
  * decomposition ticket's "receiver/source" pair names this ONE wire field
  * (`ScopeControlsPublic.receiver`), not two.
  *
- * FACTS ONLY, and a DELIBERATELY NARROW slice of the eight
- * `scopeControls.*` leaves the backend gives field-status entries for
- * (`runtime_helpers.py`'s `_SCOPE_CONTROL_PUBLIC_FIELDS`): scope MODE
- * (CTR/FIX/S-C/S-F), EDGE, HOLD and REF level are cosmetic/display-tuning
- * facts that belong to the display slice (12), matching
- * `SpectrumToolbar.svelte`'s own `scopeModeAvailable`/`scopeEdgeAvailable`/
- * `scopeHoldAvailable`/`scopeRefAvailable` booleans staying separate from the
- * four this group reads. Live scope FRAMES/WATERFALL DATA are a wholly
- * different, App-owned resource demand (12A) and are never carried here —
- * this group states facts about the scope's CONTROLS, never its pixels.
+ * FACTS ONLY, and now the COMPLETE set of the eight `scopeControls.*` leaves
+ * the backend gives field-status entries for (`runtime_helpers.py`'s
+ * `_SCOPE_CONTROL_PUBLIC_FIELDS`) — MODE/EDGE/HOLD/REF were a recorded
+ * enumeration gap in 11A (they matched `SpectrumToolbar.svelte`'s own
+ * `scopeModeAvailable`/`scopeEdgeAvailable`/`scopeHoldAvailable`/
+ * `scopeRefAvailable` booleans but were left out of the first slice; MOR-1299
+ * closes the gap, same group, same `scope` gate, same namespace — not a
+ * separate "display" family). Live scope FRAMES/WATERFALL DATA remain a
+ * wholly different, App-owned resource demand (12A) and are never carried
+ * here — this group states facts about the scope's CONTROLS, never its
+ * pixels.
  *
  * PARITY: values mirror the same `scopeControls.<leaf>` register the toolbar
  * reads (`radio.current?.scopeControls`), and availability reuses the exact
  * same `isFieldAvailable(state, 'scopeControls.<leaf>')` predicate the
- * toolbar calls for its own `scope{Span,Speed,Dual,Receiver}Available`
- * booleans — not a reimplementation. Where this contract DIVERGES from v2:
- * the toolbar's `scopeControls?.span ?? 3` / `?? 1` / `?? false` / `?? 0`
- * fallbacks fabricate a value on an unobserved field; here an absent raw
- * reads `unknown`, never those defaults.
+ * toolbar calls for its own `scope{Mode,Edge,Span,Speed,Hold,Ref,Dual,
+ * Receiver}Available` booleans — not a reimplementation. Where this contract
+ * DIVERGES from v2: the toolbar's `scopeControls?.span ?? 3` / `?? 1` /
+ * `?? false` / `?? 0` fallbacks (and the analogous `?.mode` / `?.edge`
+ * / `?.hold ?? false` / `?.refDb ?? 0` reads) fabricate a value on an
+ * unobserved field; here an absent raw reads `unknown`, never those
+ * defaults. When `mode` is absent, the entire row is hidden rather than
+ * fabricating CTR. EDGE's applicability is UI-only, gated on the current MODE
+ * value (`isEdgeApplicable` in `spectrum-toolbar-logic.ts` shows EDGE only
+ * in FIX/S-F modes) — that is a rendering decision, not a fact-availability
+ * distinction, so `edge`'s structural gate here mirrors `span`/`speed`/
+ * `mode`/`hold`/`refDb`, not a mode-conditional gate.
  *
  * STRUCTURAL gate, doubly per the X6200 lesson (scope command support
  * varies per radio — IC-7300/IC-9700 lack the `27 12`/`27 13` receiver-select
  * commands even though `scope` is declared, and dual-scope operation is
- * IC-7610-only in practice per MOR-664): `span`/`speed` are structurally
- * available under `hasCap('scope')` alone (every scope-bearing single-RX
- * radio supports them), while `dual`/`receiver` ADDITIONALLY require
- * `hasCap('dual_rx')` — the only generic capability tag this contract may
- * use, per "no radio-specific tables in the frontend". This is a real
- * strengthening beyond the shipped toolbar, which gates DUAL/MAIN-SUB on
- * field-availability alone; where `dual_rx` still over-declares for a
- * specific radio (e.g. IC-9700, whose VHF/UHF `dual_rx` is unrelated to
- * scope receiver-select), the OPERATIONAL half degrades honestly because the
- * backend never observes that leaf for that radio — same structural/
- * operational split `hardwareScope`/`audioFftScope` already use.
+ * IC-7610-only in practice per MOR-664): `span`/`speed`/`mode`/`edge`/
+ * `hold`/`refDb` are structurally available under `hasCap('scope')` alone
+ * (every scope-bearing single-RX radio supports them — the backend spec
+ * (`state_pipeline_contracts.py`) declares all six as read-only ingress
+ * leaves with no additional capability distinction), while `dual`/`receiver`
+ * ADDITIONALLY require `hasCap('dual_rx')` — the only generic capability tag
+ * this contract may use, per "no radio-specific tables in the frontend".
+ * This is a real strengthening beyond the shipped toolbar, which gates
+ * DUAL/MAIN-SUB on field-availability alone; where `dual_rx` still
+ * over-declares for a specific radio (e.g. IC-9700, whose VHF/UHF `dual_rx`
+ * is unrelated to scope receiver-select), the OPERATIONAL half degrades
+ * honestly because the backend never observes that leaf for that radio —
+ * same structural/operational split `hardwareScope`/`audioFftScope` already
+ * use.
  */
 export interface ScopeControlsViewModel {
+  /** Scope mode ordinal: 0=CTR, 1=FIX, 2=S-C (scroll-center), 3=S-F
+   *  (scroll-fixed) — `MODE_BUTTONS` in `spectrum-toolbar-logic.ts` maps the
+   *  ordinal to a display label; that table is UI convenience, not a fact,
+   *  and is deliberately absent here. */
+  mode: ScopeControlsField<number>;
+  /** Fixed-edge preset index 1..4. Applicable only in FIX/S-F modes per the
+   *  toolbar's `isEdgeApplicable`, but that is a rendering decision — this
+   *  fact is structurally available whenever the group is, same as `mode`. */
+  edge: ScopeControlsField<number>;
   /** Span preset index 0..7 (`SPAN_LABELS` in `spectrum-toolbar-logic.ts`
    *  maps the ordinal to a display string; that table is UI convenience,
    *  not a fact, and is deliberately absent here). */
   span: ScopeControlsField<number>;
   /** Sweep-speed ordinal 0=FST/1=MID/2=SLO. */
   speed: ScopeControlsField<number>;
+  hold: ScopeControlsField<boolean>;
+  /** Reference level in dB, clamped [-30, 10] by the toolbar's `clampRef`
+   *  (that clamp is a UI editing convenience, not a fact constraint — the
+   *  raw value here is whatever the radio reports). */
+  refDb: ScopeControlsField<number>;
   dual: ScopeControlsField<boolean>;
   /** 0=MAIN, 1=SUB. */
   receiver: ScopeControlsField<number>;
@@ -1361,14 +1388,19 @@ function validateCwKeyer(value: unknown, path: string): CwKeyerViewModel {
   };
 }
 
-/** Exactly the four facts the adapter reads. See
+/** Exactly the eight facts the adapter reads (11A's four plus 11A′'s
+ *  mode/edge/hold/refDb). See
  *  `radio-view-model-adapter.ts::deriveScopeControls`. */
 function validateScopeControls(value: unknown, path: string): ScopeControlsViewModel {
   const v = record(value, path);
-  exactKeys(v, ['span', 'speed', 'dual', 'receiver'], path);
+  exactKeys(v, ['mode', 'edge', 'span', 'speed', 'hold', 'refDb', 'dual', 'receiver'], path);
   return {
+    mode: validateTxAuxField(v.mode, `${path}.mode`, num),
+    edge: validateTxAuxField(v.edge, `${path}.edge`, num),
     span: validateTxAuxField(v.span, `${path}.span`, num),
     speed: validateTxAuxField(v.speed, `${path}.speed`, num),
+    hold: validateTxAuxField(v.hold, `${path}.hold`, bool),
+    refDb: validateTxAuxField(v.refDb, `${path}.refDb`, num),
     dual: validateTxAuxField(v.dual, `${path}.dual`, bool),
     receiver: validateTxAuxField(v.receiver, `${path}.receiver`, num),
   };

@@ -1,6 +1,6 @@
 /**
- * MOR-1262 decomposition slice 11A (MOR-1298) — `scopeControls` fact-group
- * adapter derivation.
+ * MOR-1262 decomposition slice 11A (MOR-1298), extended by slice 11A′
+ * (MOR-1299) — `scopeControls` fact-group adapter derivation.
  *
  * Companion to `cw-keyer-adapter.test.ts`/`scan-adapter.test.ts`, which this
  * file does NOT modify. `scopeControls` is a SEPARATE optional group — see
@@ -9,11 +9,13 @@
  * PARITY — this group has no extractable pure `toXProps` function to call
  * (the real derivation is inline in `SpectrumToolbar.svelte`'s `$derived`
  * blocks), so the pins below call the SAME `isFieldAvailable` predicate the
- * toolbar calls for its own `scopeSpanAvailable`/`scopeSpeedAvailable`/
- * `scopeDualAvailable`/`scopeReceiverAvailable` booleans, rather than
- * reimplementing it. The toolbar's `scopeControls?.span ?? 3` (etc.)
- * fallbacks are pinned as fabrication this contract deliberately diverges
- * from — see the honesty-gate describe block.
+ * toolbar calls for its own `scopeModeAvailable`/`scopeEdgeAvailable`/
+ * `scopeSpanAvailable`/`scopeSpeedAvailable`/`scopeHoldAvailable`/
+ * `scopeRefAvailable`/`scopeDualAvailable`/`scopeReceiverAvailable`
+ * booleans, rather than reimplementing it. The toolbar's
+ * `scopeControls?.span ?? 3` (etc.) fallbacks are pinned as fabrication this
+ * contract deliberately diverges from — see the honesty-gate describe
+ * block.
  */
 import { describe, expect, it } from 'vitest';
 import type { Capabilities } from '$lib/types/capabilities';
@@ -74,15 +76,21 @@ describe('scopeControls evidence gate (MOR-1298, N3)', () => {
   it('emits scopeControls once the scope capability alone is declared', () => {
     const view = model(bareState(), scopeCaps());
     expect(view.scopeControls).toBeDefined();
-    expect(Object.keys(view.scopeControls!).sort()).toEqual(['dual', 'receiver', 'span', 'speed']);
+    expect(Object.keys(view.scopeControls!).sort()).toEqual(
+      ['dual', 'edge', 'hold', 'mode', 'receiver', 'refDb', 'span', 'speed'],
+    );
   });
 });
 
-describe('scopeControls per-field structural gates (MOR-1298, X6200 lesson)', () => {
-  it('span/speed stay structurally present on a scope-only, single-RX radio (IC-7300/IC-9700 shape)', () => {
+describe('scopeControls per-field structural gates (MOR-1298/MOR-1299, X6200 lesson)', () => {
+  it('mode/edge/span/speed/hold/refDb stay structurally present on a scope-only, single-RX radio (IC-7300/IC-9700 shape)', () => {
     const view = model(bareState(), scopeCaps(['scope']));
+    expect(view.scopeControls!.mode.availability.structural).toBe(true);
+    expect(view.scopeControls!.edge.availability.structural).toBe(true);
     expect(view.scopeControls!.span.availability.structural).toBe(true);
     expect(view.scopeControls!.speed.availability.structural).toBe(true);
+    expect(view.scopeControls!.hold.availability.structural).toBe(true);
+    expect(view.scopeControls!.refDb.availability.structural).toBe(true);
   });
 
   it('dual/receiver are structurally absent without dual_rx — no radio-specific table, just the cap tag', () => {
@@ -103,33 +111,39 @@ describe('scopeControls per-field structural gates (MOR-1298, X6200 lesson)', ()
   });
 });
 
-describe('scopeControls per-field derivation (MOR-1298)', () => {
+describe('scopeControls per-field derivation (MOR-1298/MOR-1299)', () => {
   const fullCaps = scopeCaps(['scope', 'dual_rx']);
 
   it('reports known readings for observed, fresh fields — parity with isFieldAvailable, the same predicate the real toolbar uses', () => {
     const state = bareState({
       scopeControls: {
-        receiver: 1, dual: true, mode: 0, span: 5, edge: 0, hold: false, refDb: 0, speed: 2,
+        receiver: 1, dual: true, mode: 1, span: 5, edge: 2, hold: true, refDb: -5, speed: 2,
         duringTx: false, centerType: 0, vbwNarrow: false, rbw: 0,
         fixedEdge: { rangeIndex: 0, edge: 0, startHz: 0, endHz: 0 },
       },
       fieldStatus: {
         ...bareState().fieldStatus,
+        'scopeControls.mode': fresh, 'scopeControls.edge': fresh,
         'scopeControls.span': fresh, 'scopeControls.speed': fresh,
+        'scopeControls.hold': fresh, 'scopeControls.refDb': fresh,
         'scopeControls.dual': fresh, 'scopeControls.receiver': fresh,
       },
     } as Partial<ServerState>);
     const sc = model(state, fullCaps).scopeControls!;
+    expect(sc.mode.reading).toEqual({ status: 'known', value: 1 });
+    expect(sc.edge.reading).toEqual({ status: 'known', value: 2 });
     expect(sc.span.reading).toEqual({ status: 'known', value: 5 });
     expect(sc.speed.reading).toEqual({ status: 'known', value: 2 });
+    expect(sc.hold.reading).toEqual({ status: 'known', value: true });
+    expect(sc.refDb.reading).toEqual({ status: 'known', value: -5 });
     expect(sc.dual.reading).toEqual({ status: 'known', value: true });
     expect(sc.receiver.reading).toEqual({ status: 'known', value: 1 });
-    for (const leaf of ['span', 'speed', 'dual', 'receiver'] as const) {
+    for (const leaf of ['mode', 'edge', 'span', 'speed', 'hold', 'refDb', 'dual', 'receiver'] as const) {
       expect(sc[leaf].availability.operational).toBe(isFieldAvailable(state, `scopeControls.${leaf}`));
     }
   });
 
-  const STALE_FIELDS = ['span', 'speed', 'dual', 'receiver'] as const;
+  const STALE_FIELDS = ['mode', 'edge', 'span', 'speed', 'hold', 'refDb', 'dual', 'receiver'] as const;
 
   it.each(STALE_FIELDS)(
     'degrades a stale scopeControls.%s to unknown while keeping structural availability true',
@@ -196,17 +210,31 @@ describe('scopeControls per-field derivation (MOR-1298)', () => {
  * (`SpectrumToolbar.svelte` lines around its `SPAN_LABELS[scopeControls?.
  * span ?? 3]`-style reads).
  */
-describe('scopeControls honesty gate — absent raw values never fabricate (MOR-1298)', () => {
+describe('scopeControls honesty gate — absent raw values never fabricate (MOR-1298/MOR-1299)', () => {
   const fullCaps = scopeCaps(['scope', 'dual_rx']);
 
-  const ABSENT_CASES = [
+  const NO_TOOLBAR_DEFAULT_CASES = [
+    ['mode', 0],
+    ['edge', 1],
+  ] as const;
+
+  const TOOLBAR_DEFAULT_CASES = [
     ['span', 3],
     ['speed', 1],
+    ['hold', false],
+    ['refDb', 0],
     ['dual', false],
     ['receiver', 0],
   ] as const;
 
-  it.each(ABSENT_CASES)(
+  it.each(NO_TOOLBAR_DEFAULT_CASES)(
+    '%s with nothing reported at all reads unknown, no toolbar default at all — the row is hidden',
+    (viewField) => {
+      expect(model(bareState(), fullCaps).scopeControls![viewField].reading).toEqual({ status: 'unknown' });
+    },
+  );
+
+  it.each(TOOLBAR_DEFAULT_CASES)(
     '%s with nothing reported at all reads unknown, not the toolbar\'s fabricated %s default',
     (viewField) => {
       expect(model(bareState(), fullCaps).scopeControls![viewField].reading).toEqual({ status: 'unknown' });
