@@ -15,6 +15,7 @@
  */
 import type {
   Availability, MeterField, MeterRfState, MetersViewModel,
+  ModeFilterField, ModeFilterViewModel,
   ModInputReadiness, RadioViewModel, RxAudioField, RxAudioViewModel,
   TxAuxField, TxAuxViewModel,
 } from '../radio-view-model';
@@ -238,4 +239,24 @@ export function withRxAudio(
     modInputReadiness: readiness,
   };
   return { ...fixture, rxAudio };
+}
+
+/**
+ * Applies a fully-observed `modeFilter` group (MOR-1262 slice 4A) to any
+ * topology fixture — capability-derived choice sets plus a known current
+ * selection, same composable-axis story as `withTxAux`/`withMeters` above.
+ */
+export function withModeFilter(fixture: RadioViewModel): RadioViewModel {
+  const avail: Availability = { structural: true, operational: true };
+  const known = <T>(value: T): ModeFilterField<T> => ({ reading: { status: 'known', value }, availability: avail });
+  const modeFilter: ModeFilterViewModel = {
+    currentMode: known('USB'),
+    modeChoices: ['USB', 'LSB', 'CW', 'RTTY', 'FM'],
+    currentFilter: known(1),
+    filterChoices: ['FIL1', 'FIL2', 'FIL3'],
+    filterWidth: known(2400),
+    filterWidthMin: known(50),
+    filterWidthMax: known(3600),
+  };
+  return { ...fixture, modeFilter };
 }

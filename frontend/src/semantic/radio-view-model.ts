@@ -233,6 +233,42 @@ export interface RxAudioViewModel {
   modInputReadiness: ModInputReadiness;
 }
 
+/**
+ * A single mode/filter fact (MOR-1262 decomposition slice 4A, MOR-1280).
+ * Shape-identical to `TxAuxField`, declared as an alias for the same reason
+ * `RxAudioField` is: one field shape per fact family, no near-duplicate.
+ */
+export type ModeFilterField<T> = TxAuxField<T>;
+
+/**
+ * Mode/filter facts (MOR-1262 decomposition slice 4A). Facts only — no
+ * command emission; choosing a mode or dragging the filter-width control
+ * stays with the surface (slice 4B).
+ *
+ * `modeChoices`/`filterChoices` are the capability-derived choice sets
+ * (`Capabilities.modes` / `.filters`, verbatim) — plain lists, not
+ * `ModeFilterField`-wrapped, because a choice set is a structural fact about
+ * the radio MODEL, not a live reading that can itself go stale. The current
+ * selection and the width bounds ARE readings, and degrade to `unknown`
+ * rather than to `toFilterProps`'s fabricated defaults ('USB', 2400 Hz,
+ * 50..9999 Hz) — see `radio-view-model-adapter.ts`'s `deriveModeFilter`.
+ *
+ * `filterWidthMin`/`filterWidthMax` are the ONE remaining consumer of
+ * `resolveFilterModeConfig`'s per-mode table lookup that this slice adds;
+ * the X6200 CAT-audit lesson (filter-width codecs are radio-specific) is why
+ * this group never re-derives that table itself — it reads the shipped
+ * resolver's own output, like `modInputReadiness` reads `deriveTxCapabilities`.
+ */
+export interface ModeFilterViewModel {
+  currentMode: ModeFilterField<string>;
+  modeChoices: readonly string[];
+  currentFilter: ModeFilterField<number>;
+  filterChoices: readonly string[];
+  filterWidth: ModeFilterField<number>;
+  filterWidthMin: ModeFilterField<number>;
+  filterWidthMax: ModeFilterField<number>;
+}
+
 export interface RadioViewModel {
   topologyId: string;
   vfoScheme: VfoScheme;
@@ -258,6 +294,10 @@ export interface RadioViewModel {
    *  not supplied, or this radio has no RX-audio chain to describe — see
    *  `radio-view-model-adapter.ts`'s `deriveRxAudio`. */
   readonly rxAudio?: RxAudioViewModel;
+  /** Absent (MOR-1264 optional group) ⇒ this radio declares no modes and no
+   *  filters and nothing mode/filter-shaped was ever observed — see
+   *  `radio-view-model-adapter.ts`'s `deriveModeFilter`. */
+  readonly modeFilter?: ModeFilterViewModel;
 }
 
 const RECEIVER_IDS: readonly ReceiverId[] = ['MAIN', 'SUB'];
@@ -569,6 +609,32 @@ function validateRxAudio(value: unknown, path: string): RxAudioViewModel {
   };
 }
 
+/** A capability-derived choice set: plain strings, no field-shape wrapper —
+ *  see `ModeFilterViewModel`'s doc comment for why. */
+function strArray(value: unknown, path: string): string[] {
+  if (!Array.isArray(value)) invalid(path, 'an array of strings');
+  return value.map((item, i) => str(item, `${path}[${i}]`));
+}
+
+/** N4 again: exactly the seven facts the adapter reads, no speculative keys.
+ *  See `radio-view-model-adapter.ts::deriveModeFilter`. */
+function validateModeFilter(value: unknown, path: string): ModeFilterViewModel {
+  const v = record(value, path);
+  exactKeys(v, [
+    'currentMode', 'modeChoices', 'currentFilter', 'filterChoices',
+    'filterWidth', 'filterWidthMin', 'filterWidthMax',
+  ], path);
+  return {
+    currentMode: validateTxAuxField(v.currentMode, `${path}.currentMode`, str),
+    modeChoices: strArray(v.modeChoices, `${path}.modeChoices`),
+    currentFilter: validateTxAuxField(v.currentFilter, `${path}.currentFilter`, num),
+    filterChoices: strArray(v.filterChoices, `${path}.filterChoices`),
+    filterWidth: validateTxAuxField(v.filterWidth, `${path}.filterWidth`, num),
+    filterWidthMin: validateTxAuxField(v.filterWidthMin, `${path}.filterWidthMin`, num),
+    filterWidthMax: validateTxAuxField(v.filterWidthMax, `${path}.filterWidthMax`, num),
+  };
+}
+
 /** Runtime validator (repo idiom: throws TypeError with a `$.path`, see `validateCapabilities`).
  *  Also enforces two cross-field invariants (review cycle 1, V1): `txPermit`
  *  cannot be 'allowed' while `txTarget` is unknown (no fail-open), and
@@ -577,7 +643,7 @@ export function validateRadioViewModel(value: unknown): RadioViewModel {
   const v = record(value, '$');
   exactKeys(v, [
     'topologyId', 'vfoScheme', 'activeReceiver', 'vfos', 'split', 'dualWatch',
-    'txTarget', 'txPermit', 'scope', 'disabledReasons', 'txAux', 'meters', 'rxAudio',
+    'txTarget', 'txPermit', 'scope', 'disabledReasons', 'txAux', 'meters', 'rxAudio', 'modeFilter',
   ], '$');
   if (!Array.isArray(v.vfos)) invalid('$.vfos', 'an array');
   if (!Array.isArray(v.disabledReasons)) invalid('$.disabledReasons', 'an array');
@@ -608,6 +674,7 @@ export function validateRadioViewModel(value: unknown): RadioViewModel {
   const txAux = optionalGroup(v.txAux, '$.txAux', validateTxAux);
   const meters = optionalGroup(v.meters, '$.meters', validateMeters);
   const rxAudio = optionalGroup(v.rxAudio, '$.rxAudio', validateRxAudio);
+  const modeFilter = optionalGroup(v.modeFilter, '$.modeFilter', validateModeFilter);
 
   return {
     topologyId: str(v.topologyId, '$.topologyId'),
@@ -626,5 +693,6 @@ export function validateRadioViewModel(value: unknown): RadioViewModel {
     ...(txAux !== undefined ? { txAux } : {}),
     ...(meters !== undefined ? { meters } : {}),
     ...(rxAudio !== undefined ? { rxAudio } : {}),
+    ...(modeFilter !== undefined ? { modeFilter } : {}),
   };
 }

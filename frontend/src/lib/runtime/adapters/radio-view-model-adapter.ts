@@ -28,11 +28,12 @@ import type { ServerState } from '$lib/types/state';
 import type {
   RadioViewModel, TxAuxField, TxAuxViewModel, AtuStatus,
   MeterField, MeterRfState, MetersViewModel,
-  AudioFocus, MonitorMode, RxAudioViewModel,
+  AudioFocus, MonitorMode, RxAudioViewModel, ModeFilterViewModel,
 } from '../../../semantic/radio-view-model';
 import type { TxAuthoritySnapshot } from '../../../semantic/rx-tx-surface';
 import { isFieldAvailable } from '$lib/state/field-status';
 import { modInputStateKey } from '$lib/radio/mod-input';
+import { resolveFilterModeConfig } from '$lib/runtime/props/panel-props';
 import {
   derivePresentationCapabilities, type ReceiverId, type VfoSlotId,
 } from './presentation-capabilities';
@@ -257,6 +258,67 @@ function deriveMeters(
     // same reason), so it is structurally gated but never relevance-gated.
     drainVoltage: meterField(vdMeter !== undefined, topFieldAvailable(state, 'vdMeter'), vdMeter, true),
     drainCurrent: txMeter(idMeter, 'idMeter'),
+  };
+}
+
+/**
+ * Mode/filter facts (MOR-1262 decomposition slice 4A, MOR-1280): current
+ * mode, capability-derived mode choice set, current filter selection,
+ * capability-derived filter choice set, filter width and its min/max bounds.
+ *
+ * Evidence gate (N3): unlike `deriveTxAux`'s optional per-control fields,
+ * `ReceiverStatePublic.mode`/`.filter` are REQUIRED fields — always present
+ * once any receiver exists — so "a raw field was observed" carries no
+ * evidence here (it would fire for every radio ever built). The only honest
+ * signal is the capability-declared choice set: no declared modes AND no
+ * declared filters is NO group, never an all-unknowns placeholder (pinned
+ * against `radio-view-model-adapter.test.ts`'s own `modes: [], filters: []`
+ * baseline fixtures, which must keep emitting no `modeFilter`).
+ *
+ * `resolveFilterModeConfig` moves BEHIND this adapter (the decomposition's
+ * explicit instruction for this slice): `filterWidthMin`/`filterWidthMax`
+ * read the shipped resolver's own per-mode table lookup — the same function
+ * `toFilterProps`/`toScopeControlsProps` call directly today — rather than
+ * re-deriving a width table here. v2's own call sites are untouched; this is
+ * an additional consumer, not a migration (that is slice 4B).
+ */
+function deriveModeFilter(
+  state: ServerState | null, caps: Capabilities | null,
+): ModeFilterViewModel | undefined {
+  if (!caps) return undefined;
+  const modeChoices = caps.modes ?? [];
+  const filterChoices = caps.filters ?? [];
+  if (modeChoices.length === 0 && filterChoices.length === 0) return undefined;
+  const onSub = state?.active === 'SUB';
+  const rx = onSub ? state?.sub : state?.main;
+  const base = onSub ? 'sub.' : 'main.';
+  const hasModes = modeChoices.length > 0;
+  const hasFilters = filterChoices.length > 0;
+  const modeObserved = topFieldAvailable(state, `${base}mode`);
+  const filterObserved = topFieldAvailable(state, `${base}filter`);
+  const widthObserved = topFieldAvailable(state, `${base}filterWidth`);
+  // The active mode-keyed filter config, resolved by the ONE shipped
+  // derivation (`resolveFilterModeConfig`) — see the doc comment above.
+  const filterConfig = resolveFilterModeConfig(caps, rx?.mode, rx?.dataMode);
+  const widthMin = filterConfig?.minHz ?? filterConfig?.table?.[0] ?? caps.filterWidthMin;
+  const widthMax = filterConfig?.maxHz
+    ?? (filterConfig?.table?.length ? filterConfig.table[filterConfig.table.length - 1] : undefined)
+    ?? caps.filterWidthMax;
+  return {
+    currentMode: txAuxField(hasModes, modeObserved, rx?.mode),
+    modeChoices,
+    currentFilter: txAuxField(hasFilters, filterObserved, numOrUndef(rx?.filter ?? undefined)),
+    filterChoices,
+    filterWidth: txAuxField(hasFilters, widthObserved, numOrUndef(rx?.filterWidth ?? undefined)),
+    // F2 fix (verify round 1): the bounds' VALUE comes from
+    // `resolveFilterModeConfig(caps, rx?.mode, rx?.dataMode)` — caps + MODE,
+    // never from `filterWidth` — so their operational gate must be
+    // `modeObserved`, not `widthObserved`. Gating on `widthObserved`
+    // published mode-derived bounds as confirmed while `currentMode` itself
+    // read unknown (fabrication), and withheld derivable bounds whenever a
+    // width readback simply hadn't arrived yet (false negative).
+    filterWidthMin: txAuxField(hasFilters, modeObserved, numOrUndef(widthMin)),
+    filterWidthMax: txAuxField(hasFilters, modeObserved, numOrUndef(widthMax)),
   };
 }
 
@@ -489,6 +551,7 @@ export function toRadioViewModel(
   const txAux = deriveTxAux(state, caps);
   const meters = deriveMeters(state, caps, tx);
   const rxAudio = deriveRxAudio(state, caps, facts, modInputSource, rxAudioSnapshot);
+  const modeFilter = deriveModeFilter(state, caps);
 
   return {
     topologyId: `${topology.structuralCount}/${topology.scheme}`,
@@ -504,5 +567,6 @@ export function toRadioViewModel(
     ...(txAux !== undefined ? { txAux } : {}),
     ...(meters !== undefined ? { meters } : {}),
     ...(rxAudio !== undefined ? { rxAudio } : {}),
+    ...(modeFilter !== undefined ? { modeFilter } : {}),
   };
 }
