@@ -85,6 +85,15 @@ vi.mock('../command-bus', () => ({
 }));
 
 import SemanticRadioSurfaces from '../SemanticRadioSurfaces.svelte';
+// MOR-1082: the REAL manifests, through the app-wide registration barrel, and
+// the REAL resolution seam — the plans below are what App would hand down.
+import {
+  dualReceiverCockpitLayout, sdrTestLayout,
+} from '../../../presentation/layouts/declarations';
+import { readWorkspace } from '../../../presentation/workspace/contract';
+import {
+  resolveSurfacePlan, SURFACE_PLAN_CONTEXT_KEY, type SurfacePlan,
+} from '../../../presentation/workspace/resolution';
 
 const IDLE: Snapshot = {
   phase: 'idle', intent: null, guard: null, radioTx: 'off', txRisk: 'none',
@@ -141,10 +150,21 @@ const liveCaps = (withTxAux: boolean): Capabilities => ({
 let target: HTMLDivElement;
 let component: ReturnType<typeof mount> | null = null;
 
-function render(props: { strips?: 'single' | 'dual' } = {}): void {
+/**
+ * MOR-1082: `plan` is what the composition root (App) resolves and hands down
+ * through context. Omitting it is the pre-1082 mount — no plan, everything the
+ * composition declares — which every suite above therefore still exercises.
+ */
+function render(
+  props: { strips?: 'single' | 'dual' } = {},
+  plan?: SurfacePlan,
+): void {
   target = document.createElement('div');
   document.body.appendChild(target);
-  component = mount(SemanticRadioSurfaces, { target, props });
+  const context = plan === undefined
+    ? undefined
+    : new Map<unknown, unknown>([[SURFACE_PLAN_CONTEXT_KEY, () => plan]]);
+  component = mount(SemanticRadioSurfaces, { target, props, context });
   flushSync();
 }
 
@@ -354,5 +374,99 @@ describe('every txAux intent reaches its own command-bus handler', () => {
     const others = [h.rfPower, h.micGain, h.driveGain, h.voxGain, h.antiVoxGain,
       h.voxDelay, h.compLevel, h.monLevel].filter((s) => s !== spy());
     for (const other of others) expect(other).not.toHaveBeenCalled();
+  });
+});
+
+// ── MOR-1082: the workspace's per-zone visibility/order, consulted HERE ─────
+//
+// The plans below are built by the real `resolveSurfacePlan` from a real,
+// validated workspace against the real registered manifests, so these probes
+// fail if either the manifest or the resolution rules drift — not just if this
+// component's wiring does.
+
+describe('MOR-1082 — the semantic vertical consults the resolved surface plan', () => {
+  /** What App resolves for `layout` given a stored workspace `fields`. */
+  function planFor(layout: typeof sdrTestLayout, fields: Record<string, unknown>): SurfacePlan {
+    return resolveSurfacePlan(layout, readWorkspace({ version: 1, ...fields }).workspace);
+  }
+
+  const stripIds = () => [...target.querySelectorAll<HTMLElement>('[data-testid^="channel-strip-"]')]
+    .map((el) => el.dataset.testid!);
+  /** `vfo-surface` / `rx-tx-surface`, in document order — the order probe. */
+  const surfaceOrder = () => [...target.querySelectorAll<HTMLElement>(
+    '[data-testid="vfo-surface"], [data-testid="rx-tx-surface"]',
+  )].map((el) => el.dataset.testid!);
+
+  it('hides a strip the operator switched off, and only that strip', () => {
+    // MUTATION KILLED: ignoring `visibleSurfaces` in the dual composition —
+    // the SUB strip would still mount. Also kills gating the wrong zone: the
+    // MAIN strip, the global row and the RX/TX surface must all survive.
+    render({ strips: 'dual' }, planFor(dualReceiverCockpitLayout, {
+      visibleSurfaces: { 'secondary-vfo': [] },
+    }));
+
+    expect(stripIds()).toEqual(['channel-strip-MAIN']);
+    expect(q('[data-testid="cockpit-zone-global"]')).not.toBeNull();
+    expect(q('[data-testid="rx-tx-surface"]')).not.toBeNull();
+    expect(q('[data-testid="rx-tx-key"]')).not.toBeNull();
+  });
+
+  it('renders every declared zone when the operator expressed nothing', () => {
+    render({ strips: 'dual' }, planFor(dualReceiverCockpitLayout, {}));
+
+    expect(stripIds()).toEqual(['channel-strip-MAIN', 'channel-strip-SUB']);
+    expect(q('[data-testid="cockpit-zone-global"]')).not.toBeNull();
+  });
+
+  it('refuses to hide the RX/TX surface — the only unkey affordance', () => {
+    // `rxTx` is `requiredSemanticSurfaces` and exactly one zone mounts it, so
+    // the plan restores it. MUTATION KILLED: dropping the required-coverage
+    // arm of `resolveSurfacePlan`, which would leave a keyed operator with no
+    // way to stop transmitting.
+    render({ strips: 'dual' }, planFor(dualReceiverCockpitLayout, {
+      visibleSurfaces: { 'rx-tx': [] },
+    }));
+
+    expect(q('[data-testid="rx-tx-surface"]')).not.toBeNull();
+    expect(q('[data-testid="rx-tx-unkey"]')).not.toBeNull();
+  });
+
+  it('cannot force-show a surface whose view-model group is absent', () => {
+    // The S0 self-gate outranks the workspace. This radio's MOR-1244 evidence
+    // gate declined `txAux`; a workspace that names it everywhere it could be
+    // named still mounts nothing. MUTATION KILLED: rendering a surface because
+    // the plan lists it, rather than because the view model carries it.
+    h.state = liveState(false);
+    h.caps = liveCaps(false);
+    render({ strips: 'dual' }, planFor(dualReceiverCockpitLayout, {
+      visibleSurfaces: { 'rx-tx': ['rxTx', 'txAux'], 'primary-vfo': ['vfo', 'txAux'] },
+      zoneOrder: { 'rx-tx': ['txAux', 'rxTx'] },
+    }));
+
+    expect(q('[data-testid="tx-aux-surface"]')).toBeNull();
+    expect(target.innerHTML).not.toContain('tx-aux');
+    // …and the surface that IS declared there is still exactly where it was.
+    expect(q('.rx-tx-zone [data-testid="rx-tx-surface"]')).not.toBeNull();
+  });
+
+  it('reorders the single composition from the zone that mounts both surfaces', () => {
+    // sdr-test's `main` zone declares ['vfo', 'rxTx']; the operator flipped it.
+    // MUTATION KILLED: ignoring `zoneOrder` in the single composition, or
+    // hard-coding the VFO-before-RX/TX sequence.
+    render({ strips: 'single' }, planFor(sdrTestLayout, {
+      zoneOrder: { main: ['rxTx', 'vfo'] },
+    }));
+
+    expect(surfaceOrder()).toEqual(['rx-tx-surface', 'vfo-surface']);
+  });
+
+  it('keeps the default sequence with a plan that expresses nothing, and with none at all', () => {
+    render({ strips: 'single' }, planFor(sdrTestLayout, {}));
+    expect(surfaceOrder()).toEqual(['vfo-surface', 'rx-tx-surface']);
+
+    if (component) unmount(component);
+    document.body.innerHTML = '';
+    render({ strips: 'single' });
+    expect(surfaceOrder()).toEqual(['vfo-surface', 'rx-tx-surface']);
   });
 });
