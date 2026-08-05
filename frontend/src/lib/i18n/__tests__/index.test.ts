@@ -33,7 +33,7 @@ describe('t()', () => {
     // Both ja-JP and ru-RU are now complete pilot translations, so the
     // en-US silent-fallback path is no longer exercised by simply
     // switching locale for a generic action key. The fallback behaviour
-    // itself is unit-tested at the runtime layer (see runtime.test.ts);
+    // itself is unit-tested at the runtime layer (see runtime.isolated.test.ts);
     // here we just confirm setLocale('ja-JP') resolves to the Japanese
     // string rather than the en-US source.
     setLocale('ja-JP');

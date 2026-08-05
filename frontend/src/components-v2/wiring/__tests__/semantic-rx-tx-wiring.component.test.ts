@@ -53,6 +53,11 @@ vi.mock('$lib/runtime', () => ({
   runtime: {
     get state() { return h.state; },
     get caps() { return h.caps; },
+    // MOR-1279 slice 3B: the wiring now also hands the adapter an
+    // App-owned RX-audio snapshot (the FOURTH argument). Muted with no
+    // browser stream keeps every fixture below on its pre-1279 path.
+    get audio() { return { muted: true, rxEnabled: false, volume: 0 }; },
+    get connectionAudio() { return false; },
   },
 }));
 vi.mock('$lib/runtime/tx-controller/app-host', () => ({
@@ -97,6 +102,10 @@ vi.mock('../command-bus', () => ({
     onCompLevelChange: h.txAuxNoop, onMonToggle: h.txAuxNoop,
     onMonLevelChange: h.txAuxNoop, onDriveGainChange: h.txAuxNoop,
   }),
+  // MOR-1279 slice 3B: the RX-audio intent vocabulary.
+  makeRxAudioHandlers: () => ({ onMonitorModeChange: h.txAuxNoop, onAfLevelChange: h.txAuxNoop }),
+  makeAudioRoutingHandlers: () => ({ onFocusChange: h.txAuxNoop, onSplitStereoChange: h.txAuxNoop }),
+  makeModeHandlers: () => ({ onModInputChange: h.txAuxNoop }),
 }));
 
 import SemanticRadioSurfaces from '../SemanticRadioSurfaces.svelte';

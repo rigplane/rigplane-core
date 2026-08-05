@@ -60,6 +60,8 @@ vi.mock('$lib/stores/radio.svelte', () => ({
 vi.mock('$lib/stores/connection.svelte', () => ({
   getConnectionStatus: vi.fn(() => ({ connected: false })),
   getRadioPowerOn: vi.fn(() => null),
+  // MOR-1279 slice 3B: the RX-audio snapshot reports audio-WS link health.
+  isAudioConnected: vi.fn(() => false),
 }));
 vi.mock('$lib/stores/audio.svelte', () => ({
   getAudioState: vi.fn(() => ({ volume: 50, muted: false, rxEnabled: false, txEnabled: false, micEnabled: false, bridgeRunning: false })),
@@ -108,7 +110,10 @@ vi.mock('../../wiring/command-bus', () => {
       onVoxToggle: n, onVoxGainChange: n, onAntiVoxGainChange: n, onVoxDelayChange: n,
     }),
     makeMeterHandlers: () => ({ onMeterSourceChange: n }), makeKeyboardHandlers: () => ({ dispatch: n }),
-    makeModeHandlers: () => ({ onModeChange: n, onDataModeChange: n }),
+    // MOR-1279 slice 3B: the semantic RX-audio surface's routing intents and
+    // its one-click MOD-input LAN remedy.
+    makeModeHandlers: () => ({ onModeChange: n, onDataModeChange: n, onModInputChange: n }),
+    makeAudioRoutingHandlers: () => ({ onFocusChange: n, onSplitStereoChange: n }),
     makeFilterHandlers: () => ({ onFilterChange: n, onFilterWidthChange: n }),
     makeBandHandlers: () => ({ onBandSelect: n }), makePresetHandlers: () => ({ onPresetSelect: n }),
     makeRxAudioHandlers: () => ({ onAfLevelChange: n, onMonitorModeChange: n }),
@@ -161,7 +166,7 @@ import { getTxPermit } from '$lib/utils/tx-permit';
 // Real-controller harness
 //
 // Copied verbatim (bar this note) from
-// src/components-v2/panels/__tests__/TxPanel.test.ts, which in turn follows
+// src/components-v2/panels/__tests__/TxPanel.isolated.test.ts, which in turn follows
 // tx-controller/__tests__/controller-contract. Duplicated rather than shared
 // because the two suites live in different pools and a shared helper module
 // would pin the controller in the ``isolate: false`` cache for siblings that

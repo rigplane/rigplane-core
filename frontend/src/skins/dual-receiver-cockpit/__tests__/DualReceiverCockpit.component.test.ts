@@ -39,6 +39,10 @@ vi.mock('$lib/runtime', () => ({
   runtime: {
     get state() { return h.state; },
     get caps() { return h.caps; },
+    // MOR-1279 slice 3B: the wiring now also hands the adapter an App-owned
+    // RX-audio snapshot (the FOURTH argument).
+    get audio() { return { muted: true, rxEnabled: false, volume: 0 }; },
+    get connectionAudio() { return false; },
   },
 }));
 vi.mock('$lib/runtime/tx-controller/app-host', () => ({
@@ -75,6 +79,10 @@ vi.mock('../../../components-v2/wiring/command-bus', () => ({
     onCompLevelChange: h.txAuxNoop, onMonToggle: h.txAuxNoop,
     onMonLevelChange: h.txAuxNoop, onDriveGainChange: h.txAuxNoop,
   }),
+  // MOR-1279 slice 3B: the RX-audio intent vocabulary.
+  makeRxAudioHandlers: () => ({ onMonitorModeChange: h.txAuxNoop, onAfLevelChange: h.txAuxNoop }),
+  makeAudioRoutingHandlers: () => ({ onFocusChange: h.txAuxNoop, onSplitStereoChange: h.txAuxNoop }),
+  makeModeHandlers: () => ({ onModInputChange: h.txAuxNoop }),
 }));
 
 import DualReceiverCockpit from '../DualReceiverCockpit.svelte';
@@ -889,7 +897,7 @@ describe('MOR-1258 — the three TX-adjacent alerts are formal rx-tx zone member
   // did from the old one. (The ModInputTxWarning buttons' own handler
   // wiring is unchanged — pinned in
   // `components-v2/wiring/__tests__/semantic-rx-tx-wiring.component.test.ts`
-  // and `components-v2/panels/__tests__/ModInputTxWarning.test.ts` — moving
+  // and `components-v2/panels/__tests__/ModInputTxWarning.isolated.test.ts` — moving
   // its DOM parent does not touch the component's own click handlers.)
   it('still reaches the fault-reset handler from inside the zone', () => {
     h.state = mainSubState('MAIN');

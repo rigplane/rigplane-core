@@ -6,7 +6,7 @@
  * Fast pool on purpose: this file stubs no global and mocks no module, so it
  * is order-independent under `isolate: false` (MOR-1272). The registry
  * imports below DO fire `registerLayout`/`registerDesignLanguage`, which is
- * exactly why they live here and not in `purity.test.ts`.
+ * exactly why they live here and not in `purity.isolated.test.ts`.
  */
 import { describe, it, expect } from 'vitest';
 import { readFileSync } from 'node:fs';

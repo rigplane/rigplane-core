@@ -196,7 +196,7 @@ const settle = async () => { await Promise.resolve(); await Promise.resolve(); }
  * very first authority projection computed once the control session goes
  * 'connected' is deliberately swallowed as a non-fresh baseline (this is
  * `app-authority.ts`'s own anti-replay guard, not a test artifact — see
- * `integration-lifecycle-matrix.test.ts`'s `dispatchStart` for the identical
+ * `integration-lifecycle-matrix.isolated.test.ts`'s `dispatchStart` for the identical
  * two-step shape), so every caller needs at least one of these before a PTT
  * observation is treated as authoritative. */
 async function observePtt(value: boolean, at: number): Promise<void> {

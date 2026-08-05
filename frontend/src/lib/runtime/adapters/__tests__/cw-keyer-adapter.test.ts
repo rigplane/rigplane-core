@@ -5,7 +5,7 @@
  * Companion to `rit-xit-adapter.test.ts`/`scan-adapter.test.ts`, which this
  * file does NOT modify. `cwKeyer` is a SEPARATE optional group — see
  * `radio-view-model.ts`'s `CwKeyerViewModel` doc comment. The no-key-path
- * proof lives in `cw-keyer-purity.test.ts`.
+ * proof lives in `cw-keyer-purity.isolated.test.ts`.
  *
  * PARITY — the pins below call the REAL `toCwProps`
  * (`lib/runtime/props/panel-props.ts`) and the REAL `isBreakInActive`

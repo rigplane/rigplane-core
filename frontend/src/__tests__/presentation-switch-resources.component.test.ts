@@ -246,7 +246,7 @@ const closes = (name: string) => channels[name].disconnect.mock.calls.length;
  * The App-session host and the runtime latch `ended` on teardown and expose
  * no reset (correct for production: a torn-down session must stay closed).
  * Each test needs a fresh session, so the private sentinels are cleared here
- * — the same cast-and-reset idiom `frontend-runtime.test.ts::freshRuntime()`
+ * — the same cast-and-reset idiom `frontend-runtime.isolated.test.ts::freshRuntime()`
  * uses. The registered DRIVERS are deliberately left in place: they are
  * installed by the runtime constructor, which only runs on module import.
  */
