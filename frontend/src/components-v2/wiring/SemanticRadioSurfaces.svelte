@@ -30,8 +30,10 @@
   import {
     compositionSurfaces, useSurfacePlan, zoneShowsSurface,
   } from '../../presentation/workspace/resolution';
+  import { LAN_MOD_INPUT_SOURCE } from '$lib/radio/mod-input';
   import MetersSurface from '../../semantic/MetersSurface.svelte';
   import type { RadioViewModel } from '../../semantic/radio-view-model';
+  import RxAudioSurface from '../../semantic/RxAudioSurface.svelte';
   import RxTxSurface from '../../semantic/RxTxSurface.svelte';
   import TxAuxSurface, {
     type TxAuxLevelField, type TxAuxToggleField,
@@ -39,7 +41,10 @@
   import { keyBlockedReasons } from '../../semantic/rx-tx-surface';
   import VfoSurface, { type VfoSelection } from '../../semantic/VfoSurface.svelte';
   import ModInputTxWarning from '../panels/ModInputTxWarning.svelte';
-  import { makeTxHandlers, makeVfoHandlers, makeVoxHandlers } from './command-bus';
+  import {
+    makeAudioRoutingHandlers, makeModeHandlers, makeRxAudioHandlers,
+    makeTxHandlers, makeVfoHandlers, makeVoxHandlers,
+  } from './command-bus';
   import {
     forReceiver, receiversOf, isActiveStrip, isOperationalStrip,
   } from './dual-receiver-strips';
@@ -117,6 +122,19 @@
     antiVoxGain: txAuxIntents.onAntiVoxGainChange, voxDelay: txAuxIntents.onVoxDelayChange,
     compressorLevel: txAuxIntents.onCompLevelChange, monitorLevel: txAuxIntents.onMonLevelChange,
   };
+  /**
+   * MOR-1279. The RX-audio intent vocabulary, composed from the SHIPPED
+   * command bus rather than forked: monitor mode + AF level from
+   * `makeRxAudioHandlers` (whose `onAfLevelChange` takes 0..1 — the contract's
+   * own unit, so nothing rescales on the way out either), routing from
+   * `makeAudioRoutingHandlers`, and the MOD-input remedy from
+   * `makeModeHandlers().onModInputChange` — the SAME command
+   * `ModInputTxWarning`'s "Set LAN" fires, so a mismatch has one fix, not two.
+   * `ModInputTxWarning` itself is untouched and stays in the rx-tx zone.
+   */
+  const rxAudioIntents = makeRxAudioHandlers();
+  const routingIntents = makeAudioRoutingHandlers();
+  const setModInputLan = () => makeModeHandlers().onModInputChange(LAN_MOD_INPUT_SOURCE);
   const tx = getAppTxController();
   const sourceId = `semantic-rx-tx-${++surfaceSeq}`;
   let leaseSeq = 0;
@@ -142,12 +160,39 @@
     if (guard) tx.release(sourceId, guard);
   });
 
+  /**
+   * MOR-1279. The App-owned RX-audio snapshot the `rxAudio` facts are read
+   * against (MOR-1274's FOURTH adapter argument). Every member is state this
+   * layer ALREADY holds — nothing here opens, starts or probes the audio path
+   * (MOR-972 P0); audio lifetime stays App-owned (MOR-1058).
+   *
+   * `routing: null` is deliberate and load-bearing. The browser routing prefs
+   * live in `localStorage` and are applied by `AudioRoutingControl`'s
+   * `onMount` via `audioManager.setAudioConfig` — a transport-touching call
+   * this layer must not make — while `audioManager.getAudioConfig()` would
+   * report the RxPlayer's CONSTRUCTION-TIME defaults ('both' / false) as
+   * though they had been observed: the exact fabrication slice 3A degraded
+   * away from. So the routing facts read `unknown` until whoever owns the
+   * restore hands it in, and the surface says so honestly rather than
+   * guessing. Ownership of that restore is an App concern, out of scope here.
+   */
+  let rxAudioSnapshot = $derived({
+    muted: runtime.audio.muted,
+    rxEnabled: runtime.audio.rxEnabled,
+    volume: runtime.audio.volume,
+    connected: runtime.connectionAudio,
+    routing: null,
+  });
+
   // Belt-and-braces contract pin. The adapter now annotates its own return
   // type (MOR-1065 ruling 2), so this is the second of two compile-time links.
   // MOR-1262 slice 2A: the live authority snapshot is the THIRD argument — the
   // meter facts read their TX relevance from it and never from `state.ptt`
   // (invariant R9). Without it the adapter emits no `meters` group at all.
-  let view: RadioViewModel | null = $derived(toRadioViewModel(runtime.state, runtime.caps, txState));
+  // MOR-1279 slice 3B: the RX-audio snapshot is the FOURTH.
+  let view: RadioViewModel | null = $derived(
+    toRadioViewModel(runtime.state, runtime.caps, txState, rxAudioSnapshot),
+  );
 
   // Bound once per instance, never per render — see `surfaceSeq` above.
   function requestKey(): void {
@@ -383,6 +428,40 @@
     {/if}
   {/snippet}
 
+  <!--
+    MOR-1279 (vocabulary slice 3B). Same structural gate and same reasoning as
+    `txAuxSurface`/`metersSurface` above: the surface mounts only when the view
+    model actually carries the MOR-1274 `rxAudio` group, so a radio with no
+    audio chain renders the pre-1279 element shape exactly.
+
+    UNLIKE those two it is rendered in the SINGLE composition ONLY. This is the
+    first semantic surface that carries interactive controls no manifest
+    declares a zone for, and the cockpit has a hard MOR-1069 rule: every
+    focusable control lives inside a declared zone, and the rx-tx zone is LAST
+    in the tab order. A control-bearing surface mounted bare would break both
+    clauses at once, and the two alternatives are worse — binding a zone id no
+    layout asked for is the MOR-1069 lesson itself, and folding the controls
+    into the rx-tx zone would put an AF slider between the operator and the
+    unkey button. `'rxAudio'` became DECLARABLE with this slice, so the cockpit
+    gains the surface the moment its manifest declares a zone for it — a layout
+    decision, separately reviewed, exactly as txAux and meters left it.
+
+    It takes NO authority snapshot: nothing here is TX truth. The intents are
+    the shipped command bus, wired above.
+  -->
+  {#snippet rxAudioSurface()}
+    {#if view?.rxAudio}
+      <RxAudioSurface
+        {view}
+        onMonitorMode={(mode) => rxAudioIntents.onMonitorModeChange(mode)}
+        onAfLevel={(level) => rxAudioIntents.onAfLevelChange(level)}
+        onRoutingFocus={(focus) => routingIntents.onFocusChange(focus)}
+        onRoutingSplit={(split) => routingIntents.onSplitStereoChange(split)}
+        onSetModInputLan={setModInputLan}
+      />
+    {/if}
+  {/snippet}
+
   {#if strips === 'dual'}
     <!--
       MOR-1258: the zone now carries RxTxSurface AND the two TX-adjacent
@@ -425,6 +504,7 @@
     {/each}
     {@render txAuxSurface()}
     {@render metersSurface()}
+    {@render rxAudioSurface()}
     {@render txAdjacentAlerts()}
   {/if}
 </div>
