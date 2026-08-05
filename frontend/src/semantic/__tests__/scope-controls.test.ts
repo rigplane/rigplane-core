@@ -1,13 +1,15 @@
 /**
- * MOR-1262 decomposition slice 11A (MOR-1298) — `scopeControls` optional
- * fact group (validator half).
+ * MOR-1262 decomposition slice 11A (MOR-1298), extended by slice 11A′
+ * (MOR-1299) — `scopeControls` optional fact group (validator half).
  *
- * Facts only: span preset index, sweep speed, dual-scope on/off, scope
- * receiver (MAIN/SUB). See `radio-view-model.ts`'s `ScopeControlsViewModel`
- * doc comment for the group-shape rationale (why MODE/EDGE/HOLD/REF and
- * frame data are deliberately absent), and `radio-view-model-adapter.ts`'s
- * `deriveScopeControls` for the live derivation (covered by the companion
- * `scope-controls-adapter.test.ts`).
+ * Facts: scope mode, fixed-edge preset, span preset index, sweep speed,
+ * hold on/off, reference level, dual-scope on/off, scope receiver
+ * (MAIN/SUB) — all eight `scopeControls.*` leaves the backend gives
+ * field-status entries for. See `radio-view-model.ts`'s
+ * `ScopeControlsViewModel` doc comment for the group-shape rationale (why
+ * live scope frame data is still deliberately absent), and
+ * `radio-view-model-adapter.ts`'s `deriveScopeControls` for the live
+ * derivation (covered by the companion `scope-controls-adapter.test.ts`).
  *
  * Mirrors the companion families' (`scan.test.ts`, `cw-keyer.test.ts`)
  * kill-tests: absent-group round-trip, exactKeys rejection of `null`/`{}`,
@@ -42,11 +44,47 @@ describe('scopeControls (MOR-1262 slice 11A)', () => {
     expect(() => validateRadioViewModel({ ...base, scopeControls: {} })).toThrow(TypeError);
   });
 
-  it('rejects an extra key on the group (closed shape, exactly the four facts)', () => {
+  it('rejects an extra key on the group (closed shape, exactly the eight facts)', () => {
     const withSc = withScopeControls(base);
     const extra: ScopeControlsField<number> = { reading: { status: 'known', value: 0 }, availability: AVAIL };
-    const malformed = { ...withSc, scopeControls: { ...withSc.scopeControls, mode: extra } };
+    const malformed = { ...withSc, scopeControls: { ...withSc.scopeControls, bogus: extra } };
     expect(() => validateRadioViewModel(malformed)).toThrow(TypeError);
+  });
+
+  it('rejects a non-numeric mode reading value with a precise error path', () => {
+    const withSc = withScopeControls(base);
+    const malformed = {
+      ...withSc,
+      scopeControls: { ...withSc.scopeControls, mode: { reading: { status: 'known', value: 'CTR' }, availability: AVAIL } },
+    };
+    expect(() => validateRadioViewModel(malformed)).toThrow(/\$\.scopeControls\.mode\.reading\.value/);
+  });
+
+  it('rejects a non-numeric edge reading value with a precise error path', () => {
+    const withSc = withScopeControls(base);
+    const malformed = {
+      ...withSc,
+      scopeControls: { ...withSc.scopeControls, edge: { reading: { status: 'known', value: false }, availability: AVAIL } },
+    };
+    expect(() => validateRadioViewModel(malformed)).toThrow(/\$\.scopeControls\.edge\.reading\.value/);
+  });
+
+  it('rejects a non-boolean hold reading value with a precise error path', () => {
+    const withSc = withScopeControls(base);
+    const malformed = {
+      ...withSc,
+      scopeControls: { ...withSc.scopeControls, hold: { reading: { status: 'known', value: 1 }, availability: AVAIL } },
+    };
+    expect(() => validateRadioViewModel(malformed)).toThrow(/\$\.scopeControls\.hold\.reading\.value/);
+  });
+
+  it('rejects a non-numeric refDb reading value with a precise error path', () => {
+    const withSc = withScopeControls(base);
+    const malformed = {
+      ...withSc,
+      scopeControls: { ...withSc.scopeControls, refDb: { reading: { status: 'known', value: '0' }, availability: AVAIL } },
+    };
+    expect(() => validateRadioViewModel(malformed)).toThrow(/\$\.scopeControls\.refDb\.reading\.value/);
   });
 
   it('rejects a non-numeric span reading value with a precise error path', () => {
