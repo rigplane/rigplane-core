@@ -31,12 +31,13 @@ import type {
   AudioFocus, MonitorMode, RxAudioViewModel, ModeFilterViewModel,
   FilterPassbandViewModel, DspViewModel, RfFrontEndViewModel,
   BandChoice, BandViewModel, RitXitViewModel, AntennaViewModel, ScanViewModel,
+  BreakInMode, CwKeyerViewModel,
 } from '../../../semantic/radio-view-model';
 import type { TxAuthoritySnapshot } from '../../../semantic/rx-tx-surface';
 import { isFieldAvailable } from '$lib/state/field-status';
 import { modInputStateKey } from '$lib/radio/mod-input';
 import { flattenBands, findActiveBand } from '$lib/radio/band-plan';
-import { getFrequencyPermit, type TxPermit } from '$lib/utils/tx-permit';
+import { getFrequencyPermit, type FrequencyPermit, type TxPermit } from '$lib/utils/tx-permit';
 import { resolveFilterModeConfig } from '$lib/runtime/props/panel-props';
 import {
   deriveIfShift, pbtRangeFromCaps, pbtRawToHz,
@@ -814,6 +815,112 @@ function deriveScan(state: ServerState | null): ScanViewModel | undefined {
   };
 }
 
+/** The v2 wire encoding (`BREAK_IN_LABELS`, `components-v2/panels/
+ *  cw-panel-logic.ts`), decoded ONCE here. Unlike v2's `formatBreakIn`, an
+ *  unrecognised int returns `undefined` (⇒ `unknown` reading) instead of
+ *  falling back to OFF — an unreadable break-in state must never present as
+ *  "the key is safe". Same shape as `atuStatus` above. */
+const breakInMode = (v: unknown): BreakInMode | undefined =>
+  v === 0 ? 'off' : v === 1 ? 'semi' : v === 2 ? 'full' : undefined;
+
+/**
+ * CW-keyer facts (MOR-1262 decomposition slice 9A, MOR-1296) — SAFETY-CRITICAL.
+ * See `CwKeyerViewModel`'s doc comment for the group shape, the closed family
+ * enumeration (sidetone LEVEL is `txAux.monitorLevel`, current MODE is
+ * `modeFilter.currentMode`, keyer TYPE has no state field at all) and the
+ * "no second permit" rule. This function emits READINGS ONLY; every disable —
+ * the APF/TPF mode mutex and the break-in TX gate alike — is produced by
+ * `deriveCwKeyerReasons` below, which consumes facts, never raw state.
+ *
+ * Evidence gate (N3): `hasCap(caps, 'cw')`, the shipped panel's own single
+ * gate (`LeftSidebar.svelte`/`RightSidebar.svelte` render the CW panel only
+ * under `hasCapability('cw')`, and `CwPanel.svelte` wraps its whole body in
+ * `{#if showCw}`), copied rather than replaced. One v2 gate, not four: a radio
+ * declaring `twin_peak` but not `cw` shows nothing in v2 and gets no group
+ * here either. The per-control `break_in`/`apf`/`twin_peak` tags are
+ * `toCwProps`'s own sub-gates and become per-field STRUCTURAL availability,
+ * exactly as `deriveRitXit` treats `rit`/`xit`.
+ *
+ * `reversePaddle` consumes `toCwProps`'s own `(state?.dashRatio ?? 0) < 0`
+ * predicate — but over an HONEST input: v2's `?? 0` makes an unreported dash
+ * ratio read as "not reversed", where an unobserved field here yields
+ * `unknown`. Same deviation-from-v2-fabrication story as `pitchHz`/
+ * `keyerSpeed`, which never fall back to v2's 600 Hz / 12 WPM.
+ */
+function deriveCwKeyer(state: ServerState | null, caps: Capabilities | null): CwKeyerViewModel | undefined {
+  if (!hasCap(caps, 'cw')) return undefined;
+  const hasBreakInCap = hasCap(caps, 'break_in');
+  const hasApfCap = hasCap(caps, 'apf');
+  const hasTwinPeakCap = hasCap(caps, 'twin_peak');
+  const onSub = state?.active === 'SUB';
+  const rx = onSub ? state?.sub : state?.main;
+  const base = onSub ? 'sub.' : 'main.';
+  const dashRatio = numOrUndef(state?.dashRatio);
+  return {
+    breakIn: txAuxField(hasBreakInCap, topFieldAvailable(state, 'breakIn'), breakInMode(state?.breakIn)),
+    breakInDelay: txAuxField(
+      hasBreakInCap, topFieldAvailable(state, 'breakInDelay'), numOrUndef(state?.breakInDelay),
+    ),
+    keyerSpeed: txAuxField(true, topFieldAvailable(state, 'keySpeed'), numOrUndef(state?.keySpeed)),
+    pitchHz: txAuxField(true, topFieldAvailable(state, 'cwPitch'), numOrUndef(state?.cwPitch)),
+    reversePaddle: txAuxField(
+      true, topFieldAvailable(state, 'dashRatio'), dashRatio === undefined ? undefined : dashRatio < 0,
+    ),
+    apf: txAuxField(hasApfCap, topFieldAvailable(state, `${base}apfTypeLevel`), numOrUndef(rx?.apfTypeLevel)),
+    twinPeak: txAuxField(
+      hasTwinPeakCap, topFieldAvailable(state, `${base}twinPeakFilter`), boolOrUndef(rx?.twinPeakFilter),
+    ),
+  };
+}
+
+/**
+ * Every CW-keyer disable, in one place, derived from FACTS only (MOR-1296).
+ *
+ * THE APF/TPF MUTEX (MOR-479 lineage, MOR-1293 precedent): `toCwProps`
+ * disables APF outside CW/CW-R and TPF outside RTTY/RTTY-R — its own comment
+ * calls this a mirror of the MOR-479 preamp mutex — so it is expressed the
+ * way the DIGI-SEL/PREAMP mutex is: `disabledReasons` entries with the generic
+ * `'mutually-exclusive-control'` code, never bespoke `apfDisabled`/
+ * `tpfDisabled` booleans. The mode comes from THIS model's own
+ * `modeFilter.currentMode` fact, never a second `rx?.mode` read, and an
+ * `unknown` (or structurally-absent) mode leaves BOTH controls disabled —
+ * fail-closed, matching what v2's `?? 'USB'` fallback happens to produce
+ * while resting on a fabricated value this contract refuses to invent.
+ *
+ * THE BREAK-IN TX GATE (safety constraint 2, "no second permit"): break-in
+ * keys the transmitter, so its affordance is gated on the model's ONE
+ * `txPermit` — the value already computed by `deriveTxCapabilities` and
+ * passed in here, NOT a second `getFrequencyPermit` call and NOT `state.ptt`
+ * (invariant R9). The reason CODES mirror the model-level `txPermit` entries
+ * `toRadioViewModel` already emits, so there is one vocabulary for one
+ * permit. Anything other than a positively `'allowed'` permit — denied,
+ * ranges-unconfigured, tx-target-unknown — disables break-in; that
+ * fail-closed pairing is additionally enforced by `validateRadioViewModel`.
+ */
+function deriveCwKeyerReasons(
+  cwKeyer: CwKeyerViewModel | undefined, modeFilter: ModeFilterViewModel | undefined,
+  txPermit: FrequencyPermit,
+): Reason[] {
+  if (!cwKeyer) return [];
+  const modeReading = modeFilter?.currentMode.reading;
+  const mode = modeReading?.status === 'known' ? modeReading.value : undefined;
+  const reasons: Reason[] = [];
+  if (cwKeyer.apf.availability.structural && mode !== 'CW' && mode !== 'CW-R') {
+    reasons.push({ field: 'cwKeyer.apf', code: 'mutually-exclusive-control' });
+  }
+  if (cwKeyer.twinPeak.availability.structural && mode !== 'RTTY' && mode !== 'RTTY-R') {
+    reasons.push({ field: 'cwKeyer.twinPeak', code: 'mutually-exclusive-control' });
+  }
+  if (cwKeyer.breakIn.availability.structural && txPermit.status !== 'allowed') {
+    reasons.push({
+      field: 'cwKeyer.breakIn',
+      code: txPermit.status === 'denied' ? 'out-of-band'
+        : txPermit.reason === 'ranges-unconfigured' ? 'capability-unavailable' : 'tx-target-unknown',
+    });
+  }
+  return reasons;
+}
+
 /**
  * The App-owned RX-audio snapshot the `rxAudio` facts are read against
  * (MOR-1262 slice 3A). It is an INPUT, deliberately: audio lifetime belongs to
@@ -1051,8 +1158,10 @@ export function toRadioViewModel(
   const ritXit = deriveRitXit(state, caps);
   const antenna = deriveAntenna(state, caps);
   const scan = deriveScan(state);
+  const cwKeyer = deriveCwKeyer(state, caps);
   const rfFrontEndMutex = deriveRfFrontEndMutex(rfFrontEnd);
   if (rfFrontEndMutex) disabledReasons.push(rfFrontEndMutex);
+  disabledReasons.push(...deriveCwKeyerReasons(cwKeyer, modeFilter, txPermit));
 
   return {
     topologyId: `${topology.structuralCount}/${topology.scheme}`,
@@ -1076,5 +1185,6 @@ export function toRadioViewModel(
     ...(ritXit !== undefined ? { ritXit } : {}),
     ...(antenna !== undefined ? { antenna } : {}),
     ...(scan !== undefined ? { scan } : {}),
+    ...(cwKeyer !== undefined ? { cwKeyer } : {}),
   };
 }
