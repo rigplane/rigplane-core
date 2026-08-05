@@ -14,7 +14,8 @@
  * topology, so it can be applied to any of the four fixtures below.
  */
 import type {
-  Availability, MeterField, MeterRfState, MetersViewModel,
+  Availability, FilterPassbandField, FilterPassbandViewModel,
+  MeterField, MeterRfState, MetersViewModel,
   ModeFilterField, ModeFilterViewModel,
   ModInputReadiness, RadioViewModel, RxAudioField, RxAudioViewModel,
   TxAuxField, TxAuxViewModel,
@@ -259,4 +260,24 @@ export function withModeFilter(fixture: RadioViewModel): RadioViewModel {
     filterWidthMax: known(3600),
   };
   return { ...fixture, modeFilter };
+}
+
+/**
+ * Applies a fully-observed `filterPassband` group (MOR-1262 slice 4A′) to any
+ * topology fixture — a SEPARATE group from `withModeFilter` above (see
+ * `FilterPassbandViewModel`'s doc comment for why), same composable-axis
+ * story as `withTxAux`/`withMeters`/`withRxAudio`.
+ */
+export function withFilterPassband(fixture: RadioViewModel): RadioViewModel {
+  const avail: Availability = { structural: true, operational: true };
+  const known = <T>(value: T): FilterPassbandField<T> =>
+    ({ reading: { status: 'known', value }, availability: avail });
+  const filterPassband: FilterPassbandViewModel = {
+    filterShape: known(1),
+    ifShift: known(0),
+    pbtInner: known(0),
+    pbtOuter: known(0),
+    dataMode: known(0),
+  };
+  return { ...fixture, filterPassband };
 }

@@ -269,6 +269,48 @@ export interface ModeFilterViewModel {
   filterWidthMax: ModeFilterField<number>;
 }
 
+/**
+ * A single filter-passband fact (MOR-1262 decomposition slice 4A′, MOR-1284).
+ * Shape-identical to `TxAuxField`, declared as an alias for the same reason
+ * `ModeFilterField`/`RxAudioField` are: one field shape per fact family.
+ */
+export type FilterPassbandField<T> = TxAuxField<T>;
+
+/**
+ * Filter-passband facts (MOR-1262 decomposition slice 4A′, MOR-1284): filter
+ * shape, IF-shift, passband tuning (PBT) inner/outer, and the DATA-mode
+ * selector these controls key off. Facts only — no command emission, same
+ * doctrine as `modeFilter` (MOR-1280).
+ *
+ * A SEPARATE group from `modeFilter` rather than five more keys on it: 4A
+ * covers discrete SELECTION facts (which mode/filter is chosen, and the
+ * capability-declared choice sets) gated by a single required-field-is-
+ * signal-free capability check. This family covers continuous passband-
+ * SHAPING facts (family 9 of the MOR-1262 decomposition — FilterPanel +
+ * `filter-controls`) with a different, per-field evidence story (see
+ * `deriveFilterPassband`). Folding both into one `exactKeys` list would mix
+ * two evidence-gate shapes under one allow-list and force every 4B
+ * passband-only consumer to import the selection keys too. One group per
+ * family, same precedent as `txAux`/`meters`/`rxAudio`/`modeFilter`.
+ *
+ * `ifShift`/`pbtInner`/`pbtOuter` are the ONE remaining consumer of
+ * `$lib/radio/filter-controls`'s `pbtRawToHz`/`deriveIfShift` — the exact
+ * functions `toFilterProps` calls — never a re-derived formula (X6200
+ * lesson: PBT/filter scaling is per-radio-model data). Unlike `toFilterProps`,
+ * the adapter passes `pbtRawToHz` an explicit `PbtRange` derived from THIS
+ * request's own `caps` argument (`pbtRangeFromCaps`, MOR-1284 F1) rather than
+ * letting it fall back to the capabilities STORE singleton — a fact-layer
+ * value must be a pure function of `(state, caps)`, never of module-global
+ * state that can differ from the `caps` already in hand.
+ */
+export interface FilterPassbandViewModel {
+  filterShape: FilterPassbandField<number>;
+  ifShift: FilterPassbandField<number>;
+  pbtInner: FilterPassbandField<number>;
+  pbtOuter: FilterPassbandField<number>;
+  dataMode: FilterPassbandField<number>;
+}
+
 export interface RadioViewModel {
   topologyId: string;
   vfoScheme: VfoScheme;
@@ -298,6 +340,10 @@ export interface RadioViewModel {
    *  filters and nothing mode/filter-shaped was ever observed — see
    *  `radio-view-model-adapter.ts`'s `deriveModeFilter`. */
   readonly modeFilter?: ModeFilterViewModel;
+  /** Absent (MOR-1264 optional group) ⇒ this radio declares no filters, no
+   *  PBT, no IF-shift and no DATA-mode capability — see
+   *  `radio-view-model-adapter.ts`'s `deriveFilterPassband`. */
+  readonly filterPassband?: FilterPassbandViewModel;
 }
 
 const RECEIVER_IDS: readonly ReceiverId[] = ['MAIN', 'SUB'];
@@ -635,6 +681,20 @@ function validateModeFilter(value: unknown, path: string): ModeFilterViewModel {
   };
 }
 
+/** N4 again: exactly the five facts the adapter reads, no speculative keys.
+ *  See `radio-view-model-adapter.ts::deriveFilterPassband`. */
+function validateFilterPassband(value: unknown, path: string): FilterPassbandViewModel {
+  const v = record(value, path);
+  exactKeys(v, ['filterShape', 'ifShift', 'pbtInner', 'pbtOuter', 'dataMode'], path);
+  return {
+    filterShape: validateTxAuxField(v.filterShape, `${path}.filterShape`, num),
+    ifShift: validateTxAuxField(v.ifShift, `${path}.ifShift`, num),
+    pbtInner: validateTxAuxField(v.pbtInner, `${path}.pbtInner`, num),
+    pbtOuter: validateTxAuxField(v.pbtOuter, `${path}.pbtOuter`, num),
+    dataMode: validateTxAuxField(v.dataMode, `${path}.dataMode`, num),
+  };
+}
+
 /** Runtime validator (repo idiom: throws TypeError with a `$.path`, see `validateCapabilities`).
  *  Also enforces two cross-field invariants (review cycle 1, V1): `txPermit`
  *  cannot be 'allowed' while `txTarget` is unknown (no fail-open), and
@@ -644,6 +704,7 @@ export function validateRadioViewModel(value: unknown): RadioViewModel {
   exactKeys(v, [
     'topologyId', 'vfoScheme', 'activeReceiver', 'vfos', 'split', 'dualWatch',
     'txTarget', 'txPermit', 'scope', 'disabledReasons', 'txAux', 'meters', 'rxAudio', 'modeFilter',
+    'filterPassband',
   ], '$');
   if (!Array.isArray(v.vfos)) invalid('$.vfos', 'an array');
   if (!Array.isArray(v.disabledReasons)) invalid('$.disabledReasons', 'an array');
@@ -675,6 +736,7 @@ export function validateRadioViewModel(value: unknown): RadioViewModel {
   const meters = optionalGroup(v.meters, '$.meters', validateMeters);
   const rxAudio = optionalGroup(v.rxAudio, '$.rxAudio', validateRxAudio);
   const modeFilter = optionalGroup(v.modeFilter, '$.modeFilter', validateModeFilter);
+  const filterPassband = optionalGroup(v.filterPassband, '$.filterPassband', validateFilterPassband);
 
   return {
     topologyId: str(v.topologyId, '$.topologyId'),
@@ -694,5 +756,6 @@ export function validateRadioViewModel(value: unknown): RadioViewModel {
     ...(meters !== undefined ? { meters } : {}),
     ...(rxAudio !== undefined ? { rxAudio } : {}),
     ...(modeFilter !== undefined ? { modeFilter } : {}),
+    ...(filterPassband !== undefined ? { filterPassband } : {}),
   };
 }
