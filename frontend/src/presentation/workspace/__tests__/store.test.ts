@@ -14,9 +14,9 @@ import {
 } from '../repository';
 import { DEFAULT_WORKSPACE } from '../contract';
 import {
-  dismissWorkspaceNotice, getWorkspace, getWorkspaceNotice, initWorkspaceStore, resetWorkspace,
-  setDensity, setDesignLanguage, setLayout, setPinnedCommands, setTheme, setZoneOrder,
-  setZoneVisibleSurfaces,
+  dismissWorkspaceNotice, exportWorkspace, getWorkspace, getWorkspaceNotice, importWorkspace,
+  initWorkspaceStore, resetWorkspace, setDensity, setDesignLanguage, setLayout, setPinnedCommands,
+  setTheme, setZoneOrder, setZoneVisibleSurfaces,
 } from '../store.svelte';
 
 class FakeStorage {
@@ -340,5 +340,78 @@ describe('resetWorkspace (MOR-1080)', () => {
   it('latches the reset theme as explicit, so it round-trips instead of being omitted', () => {
     resetWorkspace();
     expect(stored(storage)).toHaveProperty('theme', 'default');
+  });
+});
+
+describe('importWorkspace (MOR-1080)', () => {
+  beforeEach(() => {
+    initWorkspaceStore(storage);
+  });
+
+  it('commits a valid document and reports zero rejections', () => {
+    const result = importWorkspace(JSON.stringify({ ...DEFAULT_WORKSPACE, theme: 'nord', layout: 'lcd-cockpit' }));
+
+    expect(result.rejections).toEqual([]);
+    expect(getWorkspace().theme).toBe('nord');
+    expect(stored(storage).theme).toBe('nord');
+  });
+
+  it('rejects a document with an unknown-id field, commits nothing, and reports the field + reason', () => {
+    setTheme('nord');
+    const before = stored(storage).theme;
+
+    const result = importWorkspace(JSON.stringify({ ...DEFAULT_WORKSPACE, theme: 'not-a-real-theme' }));
+
+    expect(result.outcome).toBe('repaired');
+    expect(result.rejections).toContainEqual({ field: 'theme', reason: 'unknown-id' });
+    expect(getWorkspace().theme).toBe('nord');
+    expect(stored(storage).theme).toBe(before);
+  });
+
+  it('rejects malformed JSON text without touching the store', () => {
+    setTheme('gruvbox-dark');
+
+    const result = importWorkspace('not json{{{');
+
+    expect(result.outcome).toBe('reset');
+    expect(getWorkspace().theme).toBe('gruvbox-dark');
+  });
+
+  it('refuses a lossy forward-read import the same way boot does, and reports it', () => {
+    const result = importWorkspace(JSON.stringify({ ...DEFAULT_WORKSPACE, version: 3, theme: 'v3-only-theme' }));
+
+    expect(result.outcome).toBe('forward-read');
+    expect(result.rejections).toContainEqual({ field: 'theme', reason: 'unknown-id' });
+    expect(getWorkspace().theme).toBe('default');
+    expect(getWorkspaceNotice()).toBeNull();
+  });
+
+  it('commits a lossless forward-read import and clears a prior latch', () => {
+    const badRaw = JSON.stringify({ ...DEFAULT_WORKSPACE, version: 3, theme: 'v3-only-theme' });
+    storage.map.set(WORKSPACE_STORAGE_KEY, badRaw);
+    initWorkspaceStore(storage);
+    expect(getWorkspaceNotice()?.kind).toBe('forward-read-only');
+
+    const result = importWorkspace(JSON.stringify({
+      ...DEFAULT_WORKSPACE, version: 3, theme: 'nord', futureField: 42,
+    }));
+
+    expect(result.outcome).toBe('forward-read');
+    expect(result.rejections).toEqual([]);
+    expect(getWorkspace().theme).toBe('nord');
+    expect(getWorkspaceNotice()).toBeNull();
+    expect(stored(storage).version).toBe(3);
+    expect(stored(storage).futureField).toBe(42);
+  });
+});
+
+describe('exportWorkspace (MOR-1080)', () => {
+  it('serializes the current validated fields plus every preserved unknown field, verbatim', () => {
+    storage.map.set(WORKSPACE_STORAGE_KEY, JSON.stringify({
+      ...DEFAULT_WORKSPACE, version: 2, theme: 'nord', futureField: 42,
+    }));
+    initWorkspaceStore(storage);
+
+    expect(exportWorkspace()).toEqual({ ...DEFAULT_WORKSPACE, version: 2, theme: 'nord', futureField: 42 });
   });
 });

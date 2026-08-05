@@ -16,7 +16,7 @@
  * every mutation goes through `applyWorkspacePatch`, i.e. through
  * `readWorkspace`, so an invalid value can never reach state or storage.
  */
-import { DEFAULT_WORKSPACE, readWorkspace } from './contract';
+import { DEFAULT_WORKSPACE, readWorkspace, readWorkspaceJson, serializeWorkspace } from './contract';
 import {
   applyWorkspacePatch, loadWorkspace, markWorkspaceMigrated, persistWorkspace,
   type WorkspaceStorage,
@@ -181,6 +181,27 @@ export function resetWorkspace(): WorkspaceV1 {
   themeChosen = true;
   commit(readWorkspace(DEFAULT_WORKSPACE), true);
   return previous;
+}
+
+/**
+ * MOR-1080 — whole-document import, routed only through `readWorkspaceJson`
+ * (carry-forward 4: never a hand-rolled check). Any rejection — including a
+ * lossy forward-read — is refused outright with its typed reasons and
+ * nothing is committed, the same latch semantics as boot. A clean or
+ * lossless-forward-read result is an explicit replacement, so it unlatches
+ * and commits like `resetWorkspace`.
+ */
+export function importWorkspace(text: string): WorkspaceReadResult {
+  const result = readWorkspaceJson(text);
+  if (result.outcome === 'version-discarded' || result.rejections.length > 0) return result;
+  commit(result, true);
+  return result;
+}
+
+/** MOR-1080 — verbatim export (carry-forward 5): the validated fields plus
+ *  every preserved unknown field, nothing added. */
+export function exportWorkspace(): Record<string, unknown> {
+  return serializeWorkspace(current);
 }
 
 export function setLayout(layout: WorkspaceLayoutId): void {

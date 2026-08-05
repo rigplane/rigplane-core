@@ -49,6 +49,7 @@
   import BandSelector from '../controls/BandSelector.svelte';
   import LanguageSelector from '../controls/LanguageSelector.svelte';
   import WorkspaceSettingsPanel from '../controls/WorkspaceSettingsPanel.svelte';
+  import WorkspaceImportExport from '../controls/WorkspaceImportExport.svelte';
   import DspPanel from '../panels/DspPanel.svelte';
   import AgcPanel from '../panels/AgcPanel.svelte';
   import RfFrontEnd from '../panels/RfFrontEnd.svelte';
@@ -311,6 +312,7 @@
 
         <CollapsiblePanel title="WORKSPACE" panelId="desktop-workspace">
           <WorkspaceSettingsPanel />
+          <WorkspaceImportExport />
         </CollapsiblePanel>
 
         <CollapsiblePanel title="VFO / BAND" panelId="desktop-vfo-ops">
