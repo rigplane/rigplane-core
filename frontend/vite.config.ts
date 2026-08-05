@@ -96,6 +96,11 @@ export default defineConfig({
             // both shared-state shapes that are order-dependent under
             // ``isolate: false``. See MOR-1272.
             'src/lib/runtime/adapters/__tests__/rx-audio-purity.test.ts',
+            // MOR-1077, same class: ``vi.stubGlobal`` on localStorage/fetch/
+            // WebSocket plus ``vi.resetModules()`` around a fresh dynamic
+            // import of the workspace contract — both mutate state the fast
+            // pool shares across files. See MOR-1272.
+            'src/presentation/workspace/__tests__/purity.test.ts',
             'src/components-v2/wiring/__tests__/keyboard-wiring.test.ts',
             'src/components-v2/wiring/__tests__/vfo-wiring.test.ts',
             'src/components-v2/wiring/__tests__/dsp-nr-level.test.ts',
@@ -199,6 +204,7 @@ export default defineConfig({
             'src/components-v2/panels/lcd/__tests__/audio-fft-demand.test.ts',
             'src/lib/utils/__tests__/smoothing.svelte.test.ts',
             'src/lib/runtime/adapters/__tests__/rx-audio-purity.test.ts',
+            'src/presentation/workspace/__tests__/purity.test.ts',
             'src/components-v2/wiring/__tests__/keyboard-wiring.test.ts',
             'src/components-v2/wiring/__tests__/vfo-wiring.test.ts',
             'src/components-v2/wiring/__tests__/dsp-nr-level.test.ts',
