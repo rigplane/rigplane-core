@@ -1,0 +1,329 @@
+/*
+  `fieldline` design language — the CSS half of the MOR-1074 token slice.
+  Its arithmetic half is `./tokens.ts`; every colour below is one of the palette
+  entries proven there to clear 3:1 (in fact 3.9:1) against BOTH fieldline
+  surfaces, with label text held to 4.5:1 on its own ground.
+
+  ACTIVATION. `[data-design-language='fieldline']` is the ONLY activation
+  mechanism — no class, no prop, no context (owner decision Q2, 2026-08-04).
+  Loading this file therefore changes nothing until a host sets that attribute.
+  Routing a language into the shell is cutover work (MOR-1048/MOR-1263); the
+  only opt-in today is the MOR-1070 fixture harness (`?language=fieldline`).
+
+  WHAT IT MAY STYLE. Colour, type, spacing and geometry on the semantic
+  surfaces. Never which facts appear, never whether a control is available: no
+  rule here uses `display: none`, `visibility`, or `content` to add or remove a
+  fact, and none keys off a capability.
+
+  SPECIFICITY. The root selector repeats the attribute
+  (`[data-design-language='fieldline'][data-design-language]`) purely to score
+  (0,3,0), for the same reason studioline does: Svelte compiles a component's
+  own rules to `.vfo-surface.s-<hash>` — also (0,2,0) — and injects them after
+  this file, so a single-attribute root would TIE and lose on order. Deliberate
+  one-step raise, not an escalation ladder; nothing here uses `!important`.
+
+  WHAT IS DELIBERATELY ABSENT. Anything the semantic components already declare
+  is not restated: `.rx-tx-surface` and `.rx-tx-state` are already flex, and
+  `.rx-tx-state`/`.rx-tx-fault` already zero their margins. A language restyles;
+  it does not re-declare a layout it agrees with.
+
+  R9. The TX-adjacent rules key off `[data-session]` / `[data-rf]`, which
+  RxTxSurface derives from the App-owned TX authority snapshot — never from
+  `radioState.ptt`. CSS displays that authority's conclusion; it cannot form one.
+
+  NO MOTION AT ALL. This file declares no transition, animation or keyframes,
+  and that is a grammar property rather than an omission: every fieldline state
+  change is a discrete colour/size step, so the language is fully intact under
+  `prefers-reduced-motion` without needing a reduce block (MOR-977 §3.2).
+*/
+
+[data-design-language='fieldline'][data-design-language] {
+  --dl-fieldline-focus: #0a6ed1;
+  --dl-fieldline-rx-idle: #6e7a85;
+  --dl-fieldline-rx-active: #008a5c;
+  --dl-fieldline-rx-tuning: #0a6ed1;
+  --dl-fieldline-tx-idle: #8a6a2e;
+  --dl-fieldline-tx-active: #e03a2f;
+  --dl-fieldline-tx-tuning: #b25a00;
+  --dl-fieldline-inert: #6f7a85;
+
+  --dl-fieldline-surface: #0a0a0a;
+  --dl-fieldline-text: #f2f5f7;
+  --dl-fieldline-muted: #c2cbd2;
+  /* Knocked-out label text on a filled slab or band: black in BOTH modes. */
+  --dl-fieldline-knockout: #0a0a0a;
+  /* 8px rhythm throughout — no micro/macro split, because this grammar ranks
+     by block size and border weight rather than by negative space. */
+  --dl-fieldline-gap: 8px;
+  --dl-fieldline-border: 3px;
+  --dl-fieldline-rail: 8px;
+  --dl-fieldline-font: ui-monospace, 'SF Mono', Menlo, 'DejaVu Sans Mono', 'Roboto Mono', monospace;
+
+  /* `app.css` paints `body { background-color: var(--bg) }`, so a background
+     declared only here would be covered by the body box. Re-pointing `--bg` is
+     what actually makes the language own its surface. */
+  --bg: var(--dl-fieldline-surface);
+
+  background: var(--dl-fieldline-surface);
+  color: var(--dl-fieldline-text);
+  font-family: var(--dl-fieldline-font);
+  font-variant-numeric: tabular-nums;
+}
+
+/* Restated rather than inherited, for the mirror of studioline's reason: the
+   shared wiring block (`.semantic-surfaces`) pins its own family above these,
+   so an `inherit` here would resolve to whatever that block chose. */
+[data-design-language='fieldline'][data-design-language] .semantic-surfaces,
+[data-design-language='fieldline'][data-design-language] .channel-strip {
+  font-family: var(--dl-fieldline-font);
+}
+
+/* DAYLIGHT MODE — not "light mode". Black on white, borders held at full
+   strength, state fills at maximum saturation. This is the grammar's BEST
+   condition, the one no other family is usable in, not a compromise
+   (MOR-977 §5).
+
+   EXPLICIT OPT-IN, not `prefers-color-scheme`: this app's light/dark is a
+   MANUAL `[data-theme]` choice and nothing in it responds to the OS signal, so
+   a language that flipped its own text to black on an OS preference would put
+   black text on the app's still-dark surface. */
+[data-design-language='fieldline'][data-design-language][data-language-mode='light'] {
+  --dl-fieldline-surface: #ffffff;
+  --dl-fieldline-text: #000000;
+  --dl-fieldline-muted: #3a4249;
+}
+
+/* High contrast pushes both label tones to the rail; the numeral weight is
+   already 700 and has nowhere useful to go, so unlike studioline — which must
+   bump 200 → 600 — this bundle changes colour only. */
+[data-design-language='fieldline'][data-design-language][data-theme='high-contrast'],
+[data-design-language='fieldline'][data-design-language] [data-theme='high-contrast'] {
+  --dl-fieldline-text: #ffffff;
+  --dl-fieldline-muted: #ffffff;
+}
+
+/* ── One focus contract, never re-suppressed (MOR-977 §1.2.5) ───────────── */
+[data-design-language='fieldline'][data-design-language] :focus-visible {
+  /* Outline shorthand matching the token literal exactly (MOR-1232 D5). 3px
+     and hugging the edge: thick borders give the ring room, so it reads as an
+     inversion of the block rather than as a halo standing off it — the
+     opposite placement to studioline's 3px offset (MOR-977 §3.2). */
+  outline: 3px solid var(--dl-fieldline-focus);
+  outline-offset: 0;
+}
+
+/* ── Stacked blocks: hard edges, 8px rhythm, nothing soft ───────────────── */
+[data-design-language='fieldline'][data-design-language] .vfo-surface,
+[data-design-language='fieldline'][data-design-language] .vfo-list,
+[data-design-language='fieldline'][data-design-language] .rx-tx-surface {
+  gap: var(--dl-fieldline-gap);
+  font-family: var(--dl-fieldline-font);
+  color: var(--dl-fieldline-text);
+}
+[data-design-language='fieldline'][data-design-language] .vfo-tile {
+  border: var(--dl-fieldline-border) solid var(--dl-fieldline-rx-idle);
+  border-radius: 0;
+  background: none;
+  padding: var(--dl-fieldline-gap);
+  gap: var(--dl-fieldline-gap);
+}
+/* Identity is carried by a flooded left rail on the block itself — the same
+   carrier the TX surface uses, so one silhouette cue covers both. */
+[data-design-language='fieldline'][data-design-language] .vfo-tile.is-active {
+  border-inline-start: var(--dl-fieldline-rail) solid var(--dl-fieldline-rx-active);
+}
+[data-design-language='fieldline'][data-design-language] .vfo-freq {
+  font-size: 34px;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+}
+/* Labels are bordered CHIPS at 800, not micro-labels that recede: this grammar
+   has no light weights anywhere and ranks nothing by subtlety. */
+[data-design-language='fieldline'][data-design-language] .active-receiver,
+[data-design-language='fieldline'][data-design-language] .vfo-role,
+[data-design-language='fieldline'][data-design-language] .vfo-mode,
+[data-design-language='fieldline'][data-design-language] .vfo-badge,
+[data-design-language='fieldline'][data-design-language] .rx-tx-session,
+[data-design-language='fieldline'][data-design-language] .rx-tx-origin {
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--dl-fieldline-muted);
+  border: 2px solid currentcolor;
+  border-radius: 0;
+  padding: 2px 6px;
+}
+/* The TX-target marker keeps the chip and changes only its tone — the border
+   follows via `currentcolor`. */
+[data-design-language='fieldline'][data-design-language] .vfo-badge {
+  color: var(--dl-fieldline-tx-active);
+}
+
+/* ── Controls: one hard-edged 48px block, whatever the control ───────────
+   Above the 44px `--tap-target` floor because this grammar assumes gloves,
+   daylight and possibly one hand. `currentcolor` borders let each group set
+   only its tone below. */
+[data-design-language='fieldline'][data-design-language] .vfo-select,
+[data-design-language='fieldline'][data-design-language] .fact-toggle,
+[data-design-language='fieldline'][data-design-language] .rx-tx-key,
+[data-design-language='fieldline'][data-design-language] .rx-tx-unkey {
+  border: var(--dl-fieldline-border) solid currentcolor;
+  /* Zero radius everywhere — this grammar allows no pill anywhere at all. */
+  border-radius: 0;
+  background: none;
+  font: inherit;
+  font-size: 12px;
+  font-weight: 800;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  padding: 12px var(--dl-fieldline-gap);
+  min-height: 48px;
+  cursor: pointer;
+}
+[data-design-language='fieldline'][data-design-language] .vfo-select,
+[data-design-language='fieldline'][data-design-language] .fact-toggle {
+  color: var(--dl-fieldline-muted);
+}
+/* Disabled must stay legible: it is a fact about the radio, not a dimming. */
+[data-design-language='fieldline'][data-design-language] .vfo-select:disabled,
+[data-design-language='fieldline'][data-design-language] .fact-toggle:disabled {
+  color: var(--dl-fieldline-inert);
+  border-style: dotted;
+}
+
+/* ── The TX carrier: a flooding LEFT rail (MOR-977 §2.2) ─────────────────
+   Width AND colour, so the state survives forced-colors: 8px baseline, 16px
+   for doubt, 24px for RF that is actually out. The left edge is the one
+   element that never scrolls out of a stacked layout. */
+[data-design-language='fieldline'][data-design-language] .rx-tx-surface {
+  padding-inline-start: var(--dl-fieldline-gap);
+  border-inline-start: var(--dl-fieldline-rail) solid var(--dl-fieldline-rx-idle);
+}
+[data-design-language='fieldline'][data-design-language] .rx-tx-surface:has([data-session='pending']) {
+  border-inline-start: 16px solid var(--dl-fieldline-tx-tuning);
+}
+[data-design-language='fieldline'][data-design-language] .rx-tx-surface:has([data-session='keyed']) {
+  border-inline-start: 24px solid var(--dl-fieldline-tx-active);
+}
+[data-design-language='fieldline'][data-design-language] .rx-tx-surface:has([data-session='releasing']) {
+  border-inline-start: 16px solid var(--dl-fieldline-tx-active);
+}
+/* Unknown RF is a THIRD thing, never RX (MOR-977 §1.2.1). */
+[data-design-language='fieldline'][data-design-language] .rx-tx-surface:has([data-rf='unknown']),
+[data-design-language='fieldline'][data-design-language] .rx-tx-surface:has([data-rf='uncertain']) {
+  border-inline-start: 16px solid var(--dl-fieldline-tx-tuning);
+}
+/* A fault outranks RF doubt and must stay LAST: a failed session almost always
+   reports `rf=uncertain` too, and at equal specificity the later rule wins — so
+   ordering, not specificity, is what keeps a fault rail red instead of amber. */
+[data-design-language='fieldline'][data-design-language] .rx-tx-surface:has([data-session='failed']) {
+  border-inline-start: 24px solid var(--dl-fieldline-tx-active);
+}
+
+/* ── The band: a full-width strip above the reading, not a micro-label ──── */
+[data-design-language='fieldline'][data-design-language] .rx-tx-state {
+  padding: var(--dl-fieldline-gap);
+  /* A transparent edge at full width reserves the band's box in every state,
+     so appearing is a colour step and never a reflow. */
+  border: var(--dl-fieldline-border) solid transparent;
+  background: none;
+  color: var(--dl-fieldline-text);
+}
+[data-design-language='fieldline'][data-design-language] .rx-tx-surface:has([data-session='pending']) .rx-tx-state,
+[data-design-language='fieldline'][data-design-language] .rx-tx-surface:has([data-rf='unknown']) .rx-tx-state,
+[data-design-language='fieldline'][data-design-language] .rx-tx-surface:has([data-rf='uncertain']) .rx-tx-state {
+  border-color: var(--dl-fieldline-tx-tuning);
+}
+/* KEYED floods the band solid with the label knocked out in black — the
+   takeover the grammar is named for. */
+[data-design-language='fieldline'][data-design-language] .rx-tx-surface:has([data-session='keyed']) .rx-tx-state {
+  border-color: var(--dl-fieldline-tx-active);
+  background: var(--dl-fieldline-tx-active);
+  color: var(--dl-fieldline-knockout);
+}
+/* FAULT floods it the same way and stays LAST, same ordering argument as the
+   rail: a failed session reports RF doubt too, and the amber outline above
+   must not be what the operator sees. */
+[data-design-language='fieldline'][data-design-language] .rx-tx-surface:has([data-session='failed']) .rx-tx-state {
+  border-color: var(--dl-fieldline-tx-active);
+  background: var(--dl-fieldline-tx-active);
+  color: var(--dl-fieldline-knockout);
+}
+[data-design-language='fieldline'][data-design-language] .rx-tx-label {
+  font-size: 22px;
+  font-weight: 800;
+}
+[data-design-language='fieldline'][data-design-language] .rx-tx-fault {
+  font-size: 12px;
+  text-transform: uppercase;
+  color: var(--dl-fieldline-knockout);
+  background: var(--dl-fieldline-tx-active);
+  padding: var(--dl-fieldline-gap);
+}
+[data-design-language='fieldline'][data-design-language] .rx-tx-blocked {
+  color: var(--dl-fieldline-muted);
+}
+
+/* ── The action slab: full-width, hard-edged (MOR-977 §2.2) ───────────────
+   Border style and fill carry the state without colour, so the five treatments
+   stay distinct under forced-colors and colour-vision deficiency:
+     idle     solid edge, no fill
+     pending  solid edge, hatched fill
+     keyed    solid edge, solid fill (label knocked out in black)
+     fault    dashed edge, no fill
+     blocked  dotted edge, no fill
+   The state itself always comes from `[data-session]`, i.e. from the App TX
+   authority — never from a raw PTT reading (R9). */
+[data-design-language='fieldline'][data-design-language] .rx-tx-actions {
+  flex-direction: column;
+  gap: var(--dl-fieldline-gap);
+}
+[data-design-language='fieldline'][data-design-language] .rx-tx-key,
+[data-design-language='fieldline'][data-design-language] .rx-tx-unkey {
+  width: 100%;
+  color: var(--dl-fieldline-tx-idle);
+}
+/* IDLE — outlined and quiet: keying is deliberate, not the default gesture. */
+[data-design-language='fieldline'][data-design-language] .rx-tx-surface:has([data-session='idle']) .rx-tx-key {
+  color: var(--dl-fieldline-rx-tuning);
+}
+/* PENDING — the request is out but no RF is; hatched, so it can never be
+   mistaken for the keyed fill. Coarse 8px hatching, not studioline's 5px: this
+   has to read through sunlight and a glove. */
+[data-design-language='fieldline'][data-design-language] .rx-tx-surface:has([data-session='pending']) .rx-tx-key {
+  color: var(--dl-fieldline-tx-tuning);
+  border-style: solid;
+  background: repeating-linear-gradient(
+    -45deg, transparent 0 8px, color-mix(in srgb, var(--dl-fieldline-tx-tuning) 45%, transparent) 8px 16px
+  );
+}
+/* KEYED — solid fill with a knocked-out BLACK label: the loudest thing on
+   screen. The slab is also `disabled` here, and the inert treatment below must
+   NOT bleed through, so these selectors outrank it and the border style is
+   restated rather than left to cascade order. */
+[data-design-language='fieldline'][data-design-language] .rx-tx-surface:has([data-session='keyed']) .rx-tx-key,
+[data-design-language='fieldline'][data-design-language] .rx-tx-surface:has([data-session='releasing']) .rx-tx-key {
+  background: var(--dl-fieldline-tx-active);
+  border-color: var(--dl-fieldline-tx-active);
+  border-style: solid;
+  color: var(--dl-fieldline-knockout);
+}
+/* FAULT — dashed, so the state reads without colour. */
+[data-design-language='fieldline'][data-design-language] .rx-tx-surface:has([data-session='failed']) .rx-tx-key {
+  color: var(--dl-fieldline-tx-active);
+  border-style: dashed;
+}
+/* Fail-closed permit renders as DENIAL, not absence — inert but present, and
+   still legible (MOR-977 §1.2.3). A hidden PTT reads as "no TX capability",
+   which is a different fact. */
+[data-design-language='fieldline'][data-design-language] .rx-tx-key:disabled {
+  color: var(--dl-fieldline-inert);
+  border-style: dotted;
+  background: none;
+  cursor: not-allowed;
+}
+/* Unkey is never gated, and is the heaviest control on the surface. */
+[data-design-language='fieldline'][data-design-language] .rx-tx-unkey {
+  color: var(--dl-fieldline-text);
+}
