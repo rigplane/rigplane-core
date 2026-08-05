@@ -91,6 +91,10 @@ ALLOWLIST=(
     # to classify and read them correctly. Read-only — the module never writes
     # or renames these keys, it only routes them.
     'frontend/src/presentation/workspace/legacy-readers.ts'
+    # MOR-1080/MOR-1081: workspace adoption tests assert the legacy-key
+    # routing behavior (reconciliation, retain-outside, sentinel names) and
+    # must therefore spell the historical key names verbatim. Test-only.
+    'frontend/src/presentation/workspace/__tests__/selection-adoption.test.ts'
 )
 
 # Collect all files matching brand pattern.
