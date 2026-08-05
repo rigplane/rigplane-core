@@ -50,7 +50,8 @@ type Slot = { kind: 'slotted'; id: VfoSlotId } | { kind: 'unslotted' } | { kind:
 type Fact = { status: 'known'; value: boolean } | { status: 'unknown' };
 type Reason = {
   field: string;
-  code: 'capability-unavailable' | 'field-not-observed' | 'tx-target-unknown' | 'out-of-band';
+  code: 'capability-unavailable' | 'field-not-observed' | 'tx-target-unknown' | 'out-of-band'
+    | 'mutually-exclusive-control';
 };
 type Readable = {
   freqHz?: number; mode?: string; filter?: number | null; filterNum?: number | null;
@@ -502,37 +503,52 @@ function deriveDsp(
 }
 
 /**
- * RF front-end facts (MOR-1262 decomposition slice 6A, MOR-1292): preamp,
- * attenuator, RF gain, squelch. A separate group from `dsp` — family
- * enumeration is explicit and CLOSED (NR/NB/notch/AGC are family 5,
- * `deriveDsp` above; never duplicated here).
+ * RF front-end facts (MOR-1262 decomposition slice 6A, MOR-1292; extended by
+ * slice 6A′, MOR-1293 with `digiSel`/`ipPlus` — the family-11 enumeration
+ * gap the 6A re-verify flagged): preamp, attenuator, RF gain, squelch,
+ * DIGI-SEL, IP+. A separate group from `dsp` — family enumeration is
+ * explicit and CLOSED (NR/NB/notch/AGC are family 5, `deriveDsp` above;
+ * never duplicated here).
  *
  * Evidence gate (N3), purely caps-driven, same shape as `deriveDsp`'s own
  * gate (no raw-state fallback): `hasCap(caps, 'preamp'|'attenuator'|
- * 'rf_gain'|'squelch')`, copied verbatim from the shipped `toRfFrontEndProps`
- * (`lib/runtime/props/panel-props.ts`)'s own `showPre`/`showAtt`/
- * `showRfGain`/`showSquelch` gates. The group itself emits only when at
- * least one of the four is declared.
+ * 'rf_gain'|'squelch'|'digisel'|'ip_plus')`, copied verbatim from the shipped
+ * `toRfFrontEndProps` (`lib/runtime/props/panel-props.ts`)'s own
+ * `showPre`/`showAtt`/`showRfGain`/`showSquelch`/`showDigiSel`/`showIpPlus`
+ * gates. The group itself emits only when at least one of the six is
+ * declared.
  *
- * `preamp`/`attenuator`/`rfGain`/`squelch` are read straight off the active
- * receiver with NO scale conversion (see `RfFrontEndViewModel`'s doc comment
- * for why there is no "real function" to consume for these four, unlike
- * `dsp`'s `nrLevel`/`nbDepth`) — `numOrUndef(rx?.preamp)` etc., never a
- * `?? 0` stand-in, so an unobserved control never reports a fabricated
+ * `preamp`/`attenuator`/`rfGain`/`squelch`/`digiSel`/`ipPlus` are read
+ * straight off the active receiver with NO scale conversion (see
+ * `RfFrontEndViewModel`'s doc comment for why there is no "real function" to
+ * consume for these six, unlike `dsp`'s `nrLevel`/`nbDepth`) —
+ * `numOrUndef(rx?.preamp)`/`boolOrUndef(rx?.digisel)` etc., never a `?? 0`/
+ * `?? false` stand-in, so an unobserved control never reports a fabricated
  * reading.
  *
  * The field-freshness gate is this file's own `topFieldAvailable`
  * (`isFieldAvailable`, the same "operational" discipline `deriveTxAux`/
  * `deriveDsp` use), NOT the shipped panel's looser `activeFieldShown` (which
- * treats a stale field as still "shown" for UX continuity, `panel-props.ts`).
- * A fact-layer reading must degrade a stale field to `unknown` — the
- * looser gate is presentation policy, not a fact.
+ * treats a stale field as still "shown" for UX continuity, `panel-props.ts`)
+ * — for `preamp`/`attenuator`/`rfGain`/`squelch`, that is a deliberate
+ * deviation (a fact-layer reading must degrade a stale field to `unknown`;
+ * the looser gate is presentation policy, not a fact). `digiSel`/`ipPlus`
+ * carry NO such deviation: the shipped panel already gates them on the
+ * STRICT `activeFieldAvailable` (`panel-props.ts`'s own `digiSelAvailable`/
+ * `ipPlusAvailable`), which calls the exact same `isFieldAvailable` this
+ * file's `topFieldAvailable` does — so this file's gate is parity-exact for
+ * these two, not a deviation, per the MOR-1292 re-verify's finding.
  *
  * `preValues`/`attValues` are the capability-derived choice sets
  * (`Capabilities.preValues`/`.attValues`, verbatim) — see
  * `RfFrontEndViewModel`'s doc comment. Deliberately `?? []`, never the
  * shipped panel's `[0, 1, 2]`/`[0, 6, 12, 18]` IC-7610-shaped UI-convenience
  * fallback (X6200 lesson: no radio-specific tables in the fact layer).
+ *
+ * THE MUTEX is NOT derived here — it lives in `toRadioViewModel`, below,
+ * where it reads THIS function's own `digiSel` field back rather than
+ * re-reading `rx?.digisel` a second time (one raw read per fact, same
+ * discipline as every other field here).
  */
 function deriveRfFrontEnd(
   state: ServerState | null, caps: Capabilities | null,
@@ -542,7 +558,11 @@ function deriveRfFrontEnd(
   const hasAttCap = hasCap(caps, 'attenuator');
   const hasRfGainCap = hasCap(caps, 'rf_gain');
   const hasSquelchCap = hasCap(caps, 'squelch');
-  if (!hasPreCap && !hasAttCap && !hasRfGainCap && !hasSquelchCap) return undefined;
+  const hasDigiSelCap = hasCap(caps, 'digisel');
+  const hasIpPlusCap = hasCap(caps, 'ip_plus');
+  if (!hasPreCap && !hasAttCap && !hasRfGainCap && !hasSquelchCap && !hasDigiSelCap && !hasIpPlusCap) {
+    return undefined;
+  }
 
   const onSub = state?.active === 'SUB';
   const rx = onSub ? state?.sub : state?.main;
@@ -555,7 +575,37 @@ function deriveRfFrontEnd(
     attValues: caps.attValues ?? [],
     rfGain: txAuxField(hasRfGainCap, topFieldAvailable(state, `${base}rfGain`), numOrUndef(rx?.rfGain)),
     squelch: txAuxField(hasSquelchCap, topFieldAvailable(state, `${base}squelch`), numOrUndef(rx?.squelch)),
+    digiSel: txAuxField(hasDigiSelCap, topFieldAvailable(state, `${base}digisel`), boolOrUndef(rx?.digisel)),
+    ipPlus: txAuxField(hasIpPlusCap, topFieldAvailable(state, `${base}ipplus`), boolOrUndef(rx?.ipplus)),
   };
+}
+
+/**
+ * THE MUTEX (MOR-479, MOR-1293): the shipped `toRfFrontEndProps` disables the
+ * PRE control while DIGI-SEL is ON — `const preDisabled = rx?.digisel ??
+ * false` (`panel-props.ts`) — because the IC-7610 silently ignores a PREAMP
+ * set in that state. Expressed here as a `disabledReasons` entry rather than
+ * a bespoke field (the gap-ticket ruling, MOR-1292 re-verify §5), and
+ * consumes THIS group's own `digiSel` fact rather than re-deriving the raw
+ * `rx?.digisel ?? false` read a second time — the fact already carries the
+ * two-level availability the raw read has no way to express.
+ *
+ * FAIL-CLOSED (the discriminating deviation from v2's own naive read): the
+ * shipped `rx?.digisel ?? false` treats an UNOBSERVED digisel as "off", so a
+ * radio that has never reported DIGI-SEL would silently show PREAMP enabled.
+ * This function does the opposite for an `unknown` reading — mutex ACTIVE,
+ * same as `on` — because "we don't know DIGI-SEL is off" is not evidence
+ * that it's safe to optimistically enable PREAMP; it is exactly the class of
+ * fabricated-default this whole contract exists to forbid (MOR-988 §3.2).
+ * Gated on `preamp.availability.structural` — a radio with no preamp
+ * capability at all gets no `rfFrontEnd.preamp` disable entry, mutex or not.
+ */
+function deriveRfFrontEndMutex(rfFrontEnd: RfFrontEndViewModel | undefined): Reason | null {
+  if (!rfFrontEnd) return null;
+  const { preamp, digiSel } = rfFrontEnd;
+  if (!preamp.availability.structural || !digiSel.availability.structural) return null;
+  const mutexActive = digiSel.reading.status === 'unknown' || digiSel.reading.value === true;
+  return mutexActive ? { field: 'rfFrontEnd.preamp', code: 'mutually-exclusive-control' } : null;
 }
 
 /**
@@ -791,6 +841,8 @@ export function toRadioViewModel(
   const filterPassband = deriveFilterPassband(state, caps);
   const dsp = deriveDsp(state, caps);
   const rfFrontEnd = deriveRfFrontEnd(state, caps);
+  const rfFrontEndMutex = deriveRfFrontEndMutex(rfFrontEnd);
+  if (rfFrontEndMutex) disabledReasons.push(rfFrontEndMutex);
 
   return {
     topologyId: `${topology.structuralCount}/${topology.scheme}`,

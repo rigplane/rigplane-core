@@ -82,7 +82,13 @@ export type DisabledReasonCode =
   | 'capability-unavailable'
   | 'field-not-observed'
   | 'tx-target-unknown'
-  | 'out-of-band';
+  | 'out-of-band'
+  /** MOR-1293: a hardware mutex with another control's CURRENT state
+   *  disables this one (e.g. PREAMP while DIGI-SEL is on/unknown, MOR-479).
+   *  Distinct from `capability-unavailable` (the control doesn't exist) and
+   *  `field-not-observed` (this control's OWN reading is unobserved) —
+   *  here the control itself is fine, a PEER control's state disables it. */
+  | 'mutually-exclusive-control';
 
 export interface DisabledReason {
   field: string;
@@ -367,24 +373,31 @@ export interface DspViewModel {
 export type RfFrontEndField<T> = TxAuxField<T>;
 
 /**
- * RF front-end facts (MOR-1262 decomposition slice 6A, MOR-1292): preamp,
- * attenuator, RF gain, squelch. Facts only — no command emission, same
- * doctrine as `dsp`/`modeFilter`/`filterPassband`. Family enumeration is
- * explicit and CLOSED: NR/NB/notch/AGC are family 5 (`dsp`, MOR-1290) — this
- * group never duplicates them; DIGI-SEL/IP+ are the shipped `RfFrontEndProps`
- * panel's OWN remaining controls but are not part of this slice's four named
- * facts and are deliberately left uncovered here (ticket scope, not an
- * oversight — see the build report).
+ * RF front-end facts (MOR-1262 decomposition slice 6A, MOR-1292; extended by
+ * slice 6A′, MOR-1293): preamp, attenuator, RF gain, squelch, DIGI-SEL, IP+.
+ * Facts only — no command emission, same doctrine as
+ * `dsp`/`modeFilter`/`filterPassband`. Family enumeration is explicit and
+ * CLOSED: NR/NB/notch/AGC are family 5 (`dsp`, MOR-1290) — this group never
+ * duplicates them.
  *
- * `preamp`/`attenuator`/`rfGain`/`squelch` are plain pass-through readings:
- * unlike `dsp`'s `nrLevel`/`nbDepth`, the shipped `toRfFrontEndProps`
- * (`lib/runtime/props/panel-props.ts`) reads `rx.preamp`/`rx.att`/
- * `rx.rfGain`/`rx.squelch` verbatim, with no raw<->display scale conversion
- * — the server already reports these as display-ready values (dB steps,
- * preamp-level ordinal, 0-1 gain fractions). There is no separate "real
- * function" to consume for the VALUE; the parity surface here is the
- * CAPABILITY gate and the choice sets below, both copied verbatim from
- * `toRfFrontEndProps`.
+ * `digiSel`/`ipPlus` were deliberately left out of 6A (MOR-1292 review
+ * ruling — enumeration gap identical in kind to the filterShape/IF-shift/PBT
+ * one from MOR-1284) because they are the shipped `RfFrontEndProps` panel's
+ * OWN remaining controls, sourced from the same `toRfFrontEndProps`. This
+ * slice (MOR-1293) closes the gap: EXTENDING this group rather than adding a
+ * sibling, because they share the same panel, the same `rf-frontend-utils`
+ * neighborhood, and the same per-field shape as the original four — a
+ * sibling group would just be this one split for no reason.
+ *
+ * `preamp`/`attenuator`/`rfGain`/`squelch`/`digiSel`/`ipPlus` are plain
+ * pass-through readings: unlike `dsp`'s `nrLevel`/`nbDepth`, the shipped
+ * `toRfFrontEndProps` (`lib/runtime/props/panel-props.ts`) reads
+ * `rx.preamp`/`rx.att`/`rx.rfGain`/`rx.squelch`/`rx.digisel`/`rx.ipplus`
+ * verbatim, with no raw<->display scale conversion — the server already
+ * reports these as display-ready values (dB steps, preamp-level ordinal,
+ * 0-1 gain fractions, booleans). There is no separate "real function" to
+ * consume for the VALUE; the parity surface here is the CAPABILITY gate and
+ * the choice sets below, both copied verbatim from `toRfFrontEndProps`.
  *
  * `preValues`/`attValues` are the capability-derived preamp-level and
  * attenuator-dB choice sets (`Capabilities.preValues`/`.attValues`,
@@ -395,6 +408,21 @@ export type RfFrontEndField<T> = TxAuxField<T>;
  * (the shipped panel's own `[0, 6, 12, 18]`/`[0, 1, 2]` UI-convenience
  * defaults are presentation, not a fact — see `radio-view-model-adapter.ts`'s
  * `deriveRfFrontEnd`).
+ *
+ * THE MUTEX (MOR-479, MOR-1293): the shipped panel derives an IC-7610
+ * hardware mutex from `digiSel` — the radio silently ignores a PREAMP set
+ * while DIGI-SEL is ON, so `toRfFrontEndProps` disables the PRE control
+ * rather than let it light optimistically. This contract does NOT add a
+ * bespoke boolean for that (no `preDisabled` field here) — it expresses the
+ * mutex through the existing `RadioViewModel.disabledReasons` home, exactly
+ * like every other cross-field disable in this contract (`scope.*`,
+ * `receiver.*`), with `field: 'rfFrontEnd.preamp'` and the new
+ * `'mutually-exclusive-control'` code. See
+ * `radio-view-model-adapter.ts`'s `deriveRfFrontEnd` for the derivation,
+ * which reads the mutex condition off THIS group's own `digiSel` fact —
+ * never off raw state again — so a stale/unobserved DIGI-SEL reading FAILS
+ * CLOSED (the reason is present, disabling PRE) rather than silently
+ * re-enabling the control the way a naive `rawDigisel ?? false` would.
  */
 export interface RfFrontEndViewModel {
   preamp: RfFrontEndField<number>;
@@ -403,6 +431,8 @@ export interface RfFrontEndViewModel {
   attValues: readonly number[];
   rfGain: RfFrontEndField<number>;
   squelch: RfFrontEndField<number>;
+  digiSel: RfFrontEndField<boolean>;
+  ipPlus: RfFrontEndField<boolean>;
 }
 
 export interface RadioViewModel {
@@ -443,7 +473,8 @@ export interface RadioViewModel {
    *  `deriveDsp`. */
   readonly dsp?: DspViewModel;
   /** Absent (MOR-1264 optional group) ⇒ this radio declares no preamp, no
-   *  attenuator, no RF-gain and no squelch capability — see
+   *  attenuator, no RF-gain, no squelch, no DIGI-SEL and no IP+ capability
+   *  (MOR-1293 added the latter two) — see
    *  `radio-view-model-adapter.ts`'s `deriveRfFrontEnd`. */
   readonly rfFrontEnd?: RfFrontEndViewModel;
 }
@@ -453,6 +484,7 @@ const SLOT_IDS: readonly VfoSlotId[] = ['A', 'B'];
 const VFO_SCHEMES: readonly VfoScheme[] = ['single', 'ab', 'ab_shared', 'main_sub'];
 const DISABLED_REASON_CODES: readonly DisabledReasonCode[] = [
   'capability-unavailable', 'field-not-observed', 'tx-target-unknown', 'out-of-band',
+  'mutually-exclusive-control',
 ];
 
 function oneOf<T>(value: unknown, allowed: readonly T[], path: string): T {
@@ -829,11 +861,14 @@ function validateDsp(value: unknown, path: string): DspViewModel {
   };
 }
 
-/** N4 again: exactly the six facts the adapter reads, no speculative keys.
+/** N4 again: exactly the eight facts the adapter reads (MOR-1293 added
+ *  `digiSel`/`ipPlus` to 6A's original six), no speculative keys.
  *  See `radio-view-model-adapter.ts::deriveRfFrontEnd`. */
 function validateRfFrontEnd(value: unknown, path: string): RfFrontEndViewModel {
   const v = record(value, path);
-  exactKeys(v, ['preamp', 'preValues', 'attenuator', 'attValues', 'rfGain', 'squelch'], path);
+  exactKeys(v, [
+    'preamp', 'preValues', 'attenuator', 'attValues', 'rfGain', 'squelch', 'digiSel', 'ipPlus',
+  ], path);
   return {
     preamp: validateTxAuxField(v.preamp, `${path}.preamp`, num),
     preValues: numArray(v.preValues, `${path}.preValues`),
@@ -841,6 +876,8 @@ function validateRfFrontEnd(value: unknown, path: string): RfFrontEndViewModel {
     attValues: numArray(v.attValues, `${path}.attValues`),
     rfGain: validateTxAuxField(v.rfGain, `${path}.rfGain`, num),
     squelch: validateTxAuxField(v.squelch, `${path}.squelch`, num),
+    digiSel: validateTxAuxField(v.digiSel, `${path}.digiSel`, bool),
+    ipPlus: validateTxAuxField(v.ipPlus, `${path}.ipPlus`, bool),
   };
 }
 
