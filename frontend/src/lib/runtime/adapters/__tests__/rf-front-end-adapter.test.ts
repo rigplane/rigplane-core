@@ -1,23 +1,26 @@
 /**
  * MOR-1262 decomposition slice 6A (MOR-1292) — `rfFrontEnd` fact-group
- * adapter derivation.
+ * adapter derivation. Extended by slice 6A′ (MOR-1293) with `digiSel`/
+ * `ipPlus` and the PREAMP/DIGI-SEL hardware mutex (MOR-479).
  *
  * Companion to `dsp-adapter.test.ts` (MOR-1290), which this file does NOT
  * modify. `rfFrontEnd` is a SEPARATE optional group — see
  * `radio-view-model.ts`'s `RfFrontEndViewModel` doc comment.
  *
- * Unlike `dsp`'s `nrLevel`/`nbDepth`, none of this group's four facts
- * (preamp/attenuator/rfGain/squelch) consume a capabilities-STORE-backed
- * scale conversion — they are plain pass-through readings (see
- * `deriveRfFrontEnd`'s doc comment) — so this file never calls the real
- * `setCapabilities` and does not need the isolated pool (MOR-1272; contrast
- * `dsp-adapter.test.ts`'s own file-level doc comment on that point).
+ * Unlike `dsp`'s `nrLevel`/`nbDepth`, none of this group's six facts
+ * (preamp/attenuator/rfGain/squelch/digiSel/ipPlus) consume a
+ * capabilities-STORE-backed scale conversion — they are plain pass-through
+ * readings (see `deriveRfFrontEnd`'s doc comment) — so this file never calls
+ * the real `setCapabilities` and does not need the isolated pool (MOR-1272;
+ * contrast `dsp-adapter.test.ts`'s own file-level doc comment on that
+ * point).
  */
 import { describe, expect, it } from 'vitest';
 import type { Capabilities } from '$lib/types/capabilities';
 import type { FieldStatus, ServerState } from '$lib/types/state';
 import { validateRadioViewModel, type RadioViewModel } from '../../../../semantic/radio-view-model';
 import { toRadioViewModel } from '../radio-view-model-adapter';
+import { toRfFrontEndProps } from '../../props/panel-props';
 
 function caps(overrides: Partial<Capabilities> = {}): Capabilities {
   return {
@@ -244,4 +247,225 @@ describe('rfFrontEnd honesty gate — absent raw values never fabricate (MOR-129
       expect(view.rfFrontEnd![viewField].reading).toEqual({ status: 'unknown' });
     },
   );
+});
+
+/**
+ * MOR-1293 (slice 6A′) — `digiSel`/`ipPlus`, the two family-11 facts the
+ * MOR-1292 re-verify found enumerated nowhere in the decomposition despite
+ * belonging to the same panel/adapter as `preamp`/`attenuator`/`rfGain`/
+ * `squelch`. Same evidence-gate, structural-gate, freshness and honesty
+ * disciplines as the original four — mirrored here rather than folded into
+ * the existing tables above so the MOR-1292 test file stays untouched
+ * (A-queue: this slice extends, never edits, prior-family assertions).
+ */
+describe('rfFrontEnd evidence gate — digiSel/ipPlus (MOR-1293, N3)', () => {
+  it('emits rfFrontEnd once the digisel capability alone is declared', () => {
+    const view = model(bareState(), caps({ capabilities: ['digisel'] }));
+    expect(view.rfFrontEnd).toBeDefined();
+  });
+
+  it('emits rfFrontEnd once the ip_plus capability alone is declared', () => {
+    const view = model(bareState(), caps({ capabilities: ['ip_plus'] }));
+    expect(view.rfFrontEnd).toBeDefined();
+  });
+});
+
+describe('rfFrontEnd per-field structural gates — digiSel/ipPlus (MOR-1293)', () => {
+  it('digiSel is structurally absent without the digisel capability, even with preamp present', () => {
+    const view = model(bareState(), caps({ capabilities: ['preamp'] }));
+    expect(view.rfFrontEnd!.digiSel.availability.structural).toBe(false);
+    expect(view.rfFrontEnd!.preamp.availability.structural).toBe(true);
+  });
+
+  it('ipPlus is structurally absent without the ip_plus capability, even with digisel present', () => {
+    const view = model(bareState(), caps({ capabilities: ['digisel'] }));
+    expect(view.rfFrontEnd!.ipPlus.availability.structural).toBe(false);
+    expect(view.rfFrontEnd!.digiSel.availability.structural).toBe(true);
+  });
+});
+
+describe('rfFrontEnd per-field derivation — digiSel/ipPlus (MOR-1293)', () => {
+  const boolCaps = caps({ capabilities: ['digisel', 'ip_plus'] });
+
+  it('reports known boolean readings for observed, fresh, capability-backed fields', () => {
+    const view = model(bareState({
+      main: { ...bareState().main, digisel: true, ipplus: false },
+      fieldStatus: { ...bareState().fieldStatus, 'main.digisel': fresh, 'main.ipplus': fresh },
+    }), boolCaps);
+    expect(view.rfFrontEnd!.digiSel).toEqual(
+      { reading: { status: 'known', value: true }, availability: { structural: true, operational: true } },
+    );
+    expect(view.rfFrontEnd!.ipPlus.reading).toEqual({ status: 'known', value: false });
+  });
+
+  // Same STALE_FIELDS lesson as the base four (MOR-1292 re-verify F1): one
+  // row per field proves each has its OWN `topFieldAvailable` call, not a
+  // shared one that only one mutation-tested field happens to exercise.
+  const STALE_BOOL_FIELDS: ReadonlyArray<readonly [
+    rawField: 'digisel' | 'ipplus', viewField: 'digiSel' | 'ipPlus',
+  ]> = [
+    ['digisel', 'digiSel'],
+    ['ipplus', 'ipPlus'],
+  ];
+
+  it.each(STALE_BOOL_FIELDS)(
+    'degrades a stale %s field to unknown while keeping structural availability true',
+    (rawField, viewField) => {
+      const main = { ...bareState().main, [rawField]: true } as unknown as ServerState['main'];
+      const view = model(bareState({
+        main,
+        fieldStatus: { ...bareState().fieldStatus, [`main.${rawField}`]: stale },
+      }), boolCaps);
+      expect(view.rfFrontEnd![viewField]).toEqual({
+        reading: { status: 'unknown' }, availability: { structural: true, operational: false },
+      });
+    },
+  );
+
+  it('marks digiSel structurally absent when its capability tag is missing, never known', () => {
+    const view = model(bareState({
+      main: { ...bareState().main, digisel: true },
+      fieldStatus: { ...bareState().fieldStatus, 'main.digisel': fresh },
+    }), caps({ capabilities: ['squelch'] }));
+    expect(view.rfFrontEnd!.digiSel).toEqual({
+      reading: { status: 'unknown' }, availability: { structural: false, operational: false },
+    });
+  });
+
+  it('degrades a malformed raw value (wrong JS type) to unknown rather than throwing or coercing', () => {
+    const view = model(bareState({
+      main: { ...bareState().main, digisel: 'on' as unknown as boolean },
+      fieldStatus: { ...bareState().fieldStatus, 'main.digisel': fresh },
+    }), boolCaps);
+    expect(view.rfFrontEnd!.digiSel.reading).toEqual({ status: 'unknown' });
+  });
+});
+
+describe(
+  'rfFrontEnd honesty gate — digiSel/ipPlus absent raw values never fabricate (MOR-1293, mutant H3 lineage)',
+  () => {
+    const allCaps = caps({ capabilities: ['digisel', 'ip_plus'] });
+    const RECEIVER_SCOPED_BOOL_FIELDS = ['digisel', 'ipplus'] as const;
+    const VIEW_FIELD_NAME = { digisel: 'digiSel', ipplus: 'ipPlus' } as const;
+
+    it.each(RECEIVER_SCOPED_BOOL_FIELDS)(
+      '%s: absent from the receiver object (no fieldStatus entry) reads unknown, not {known, false}',
+      (field) => {
+        const main = { ...bareState().main } as Record<string, unknown>;
+        delete main[field];
+        const view = model(bareState({ main: main as unknown as ServerState['main'] }), allCaps);
+        const viewField = VIEW_FIELD_NAME[field];
+        expect(view.rfFrontEnd![viewField].reading).toEqual({ status: 'unknown' });
+      },
+    );
+  },
+);
+
+/**
+ * THE MUTEX (MOR-479, MOR-1293) — `deriveRfFrontEndMutex`. The shipped
+ * `toRfFrontEndProps` (`panel-props.ts`) computes `preDisabled = rx?.digisel
+ * ?? false` and disables the PRE control when it's true. This contract
+ * expresses the same disable as a `disabledReasons` entry
+ * (`{field: 'rfFrontEnd.preamp', code: 'mutually-exclusive-control'}`),
+ * derived from the group's OWN `digiSel` fact rather than a second raw read.
+ *
+ * The parity pins below call the REAL `toRfFrontEndProps` (never a
+ * reimplementation) so the known-value agreement is against the shipped
+ * function itself, not an assumption about it — "consume, never re-derive"
+ * per the MOR-1292 re-verify's gap-ticket wording. The `unknown` pin is the
+ * one place this contract is REQUIRED to diverge from that real function's
+ * own `?? false` (fail-closed, not the panel's fail-open) — asserted
+ * explicitly rather than merely implied by the on/off pins.
+ */
+describe('rfFrontEnd PREAMP/DIGI-SEL mutex (MOR-479, MOR-1293)', () => {
+  const mutexCaps = caps({ capabilities: ['preamp', 'digisel'] });
+
+  function preampMutexReason(view: RadioViewModel) {
+    return view.disabledReasons.find(
+      (r) => r.field === 'rfFrontEnd.preamp' && r.code === 'mutually-exclusive-control',
+    );
+  }
+
+  it('DIGI-SEL on: the real toRfFrontEndProps disables PRE, and this contract agrees', () => {
+    const state = bareState({
+      main: { ...bareState().main, digisel: true, preamp: 1 },
+      fieldStatus: { ...bareState().fieldStatus, 'main.digisel': fresh, 'main.preamp': fresh },
+    });
+    expect(toRfFrontEndProps(state, mutexCaps).preDisabled).toBe(true);
+
+    const view = model(state, mutexCaps);
+    expect(preampMutexReason(view)).toEqual({ field: 'rfFrontEnd.preamp', code: 'mutually-exclusive-control' });
+  });
+
+  it('DIGI-SEL off: the real toRfFrontEndProps leaves PRE enabled, and this contract agrees', () => {
+    const state = bareState({
+      main: { ...bareState().main, digisel: false, preamp: 1 },
+      fieldStatus: { ...bareState().fieldStatus, 'main.digisel': fresh, 'main.preamp': fresh },
+    });
+    expect(toRfFrontEndProps(state, mutexCaps).preDisabled).toBe(false);
+
+    const view = model(state, mutexCaps);
+    expect(preampMutexReason(view)).toBeUndefined();
+  });
+
+  it(
+    'DIGI-SEL unknown (never observed): FAILS CLOSED — disables PRE — deliberately diverging from ' +
+    'the real toRfFrontEndProps, which would fail OPEN',
+    () => {
+      const state = bareState({
+        main: { ...bareState().main, preamp: 1 },
+        // No 'main.digisel' fieldStatus entry AND no fieldStatus for the group
+        // parent either — an honestly never-observed control.
+        fieldStatus: { ...bareState().fieldStatus, 'main.preamp': fresh },
+      });
+      // The shipped panel's own naive `rx?.digisel ?? false` reads this as
+      // "off" — PRE stays enabled. This is the exact fabricated-default this
+      // contract exists to refuse to repeat.
+      expect(toRfFrontEndProps(state, mutexCaps).preDisabled).toBe(false);
+
+      const view = model(state, mutexCaps);
+      expect(preampMutexReason(view)).toEqual({ field: 'rfFrontEnd.preamp', code: 'mutually-exclusive-control' });
+      expect(view.rfFrontEnd!.digiSel.reading).toEqual({ status: 'unknown' });
+    },
+  );
+
+  it('DIGI-SEL stale: FAILS CLOSED the same way as never-observed', () => {
+    const state = bareState({
+      main: { ...bareState().main, digisel: false, preamp: 1 },
+      fieldStatus: { ...bareState().fieldStatus, 'main.digisel': stale, 'main.preamp': fresh },
+    });
+    const view = model(state, mutexCaps);
+    expect(view.rfFrontEnd!.digiSel.reading).toEqual({ status: 'unknown' });
+    expect(preampMutexReason(view)).toEqual({ field: 'rfFrontEnd.preamp', code: 'mutually-exclusive-control' });
+  });
+
+  it('no digisel capability at all: no mutex entry regardless of raw digisel value', () => {
+    const state = bareState({
+      main: { ...bareState().main, digisel: true, preamp: 1 },
+      fieldStatus: { ...bareState().fieldStatus, 'main.digisel': fresh, 'main.preamp': fresh },
+    });
+    const view = model(state, caps({ capabilities: ['preamp'] }));
+    expect(view.rfFrontEnd!.digiSel.availability.structural).toBe(false);
+    expect(preampMutexReason(view)).toBeUndefined();
+  });
+
+  it('no preamp capability at all: no mutex entry regardless of DIGI-SEL state', () => {
+    const state = bareState({
+      main: { ...bareState().main, digisel: true },
+      fieldStatus: { ...bareState().fieldStatus, 'main.digisel': fresh },
+    });
+    const view = model(state, caps({ capabilities: ['digisel'] }));
+    expect(view.rfFrontEnd!.preamp.availability.structural).toBe(false);
+    expect(preampMutexReason(view)).toBeUndefined();
+  });
+
+  it('follows the SUB receiver once it is the active one', () => {
+    const state = bareState({
+      active: 'SUB',
+      sub: { ...bareState().sub, digisel: true, preamp: 2 },
+      fieldStatus: { ...bareState().fieldStatus, 'sub.digisel': fresh, 'sub.preamp': fresh },
+    });
+    const view = model(state, mutexCaps);
+    expect(preampMutexReason(view)).toEqual({ field: 'rfFrontEnd.preamp', code: 'mutually-exclusive-control' });
+  });
 });
