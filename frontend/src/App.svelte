@@ -11,9 +11,23 @@
   import { hasAnyScope } from './lib/stores/capabilities.svelte';
   import { getLayoutMode } from './lib/stores/layout.svelte';
   import { readQaCockpitLayoutOverride } from './lib/stores/qa-cockpit-override';
+  import { getDesignLanguage } from './presentation/languages/contract';
+  // Side-effect import: populates the design-language registry the lookup
+  // above resolves against, exactly as `semantic/design-language-renderers.ts`
+  // does. Imported here too so the activation effect below cannot depend on a
+  // lazily-loaded skin having pulled the barrel in first.
+  import './presentation/languages/declarations';
+  import { designLanguageActivation } from './presentation/workspace/activation';
+  import { getWorkspace, initWorkspaceStore } from './presentation/workspace/store.svelte';
   import { loadSkin, presentationResourcePlan, resolveSkinId, type SkinId } from './skins/registry';
   import { t } from '$lib/i18n';
   import './app.css';
+
+  // MOR-1081: the workspace store owns layout, design-language and theme
+  // selection. Initialised here — the composition root, and the first thing
+  // in it — so it is loaded before the first selection read below
+  // (`getLayoutMode()`) and before any skin, theme or surface mounts.
+  initWorkspaceStore();
 
   let backendError = $state<string | null>(null);
   let retrying = $state(false);
@@ -42,6 +56,21 @@
     isMobile,
     hasAnyScope: hasAnyScope(),
   }));
+
+  // MOR-1081: the workspace's `designLanguage` is the ONLY source the
+  // `[data-design-language]` activation attribute (MOR-1278) is written from,
+  // and this is its only writer — the MOR-1275 renderer wiring and the
+  // language stylesheets both read that same attribute, so there is no second
+  // activation path. `designLanguageActivation` gates on the language's own
+  // manifest, which is what keeps the shipped v2 skins unchanged until the
+  // cutover (MOR-1048/MOR-1263) declares them compatible.
+  $effect(() => {
+    const activated = designLanguageActivation(
+      getDesignLanguage(getWorkspace().designLanguage), skinId,
+    );
+    if (activated === null) delete document.documentElement.dataset.designLanguage;
+    else document.documentElement.dataset.designLanguage = activated;
+  });
 
   // ── Lazy presentation loading (MOR-1060) ──
   //
