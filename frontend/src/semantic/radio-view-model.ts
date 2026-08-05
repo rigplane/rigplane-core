@@ -726,6 +726,71 @@ export interface CwKeyerViewModel {
   twinPeak: CwKeyerField<boolean>;
 }
 
+/**
+ * A single scope-control fact (MOR-1262 decomposition slice 11A, MOR-1298).
+ * Shape-identical to `TxAuxField`, declared as an alias for the same reason
+ * `CwKeyerField`/`ScanField`/`AntennaField` are.
+ */
+export type ScopeControlsField<T> = TxAuxField<T>;
+
+/**
+ * Scope-control facts (MOR-1262 decomposition slice 11A, MOR-1298): the four
+ * operator-navigated facts off the shipped spectrum toolbar's own
+ * `scopeControls` block (`components/spectrum/SpectrumToolbar.svelte`) — SPAN
+ * preset index, sweep SPEED, DUAL-scope on/off, and which RECEIVER (MAIN=0/
+ * SUB=1) feeds the scope. The design doc that named this toolbar
+ * (`docs/plans/2026-04-18-spectrum-controls.md`) calls the MAIN/SUB selector
+ * the "scope-source selector" and proposes labelling it "SCOPE SRC" — the
+ * decomposition ticket's "receiver/source" pair names this ONE wire field
+ * (`ScopeControlsPublic.receiver`), not two.
+ *
+ * FACTS ONLY, and a DELIBERATELY NARROW slice of the eight
+ * `scopeControls.*` leaves the backend gives field-status entries for
+ * (`runtime_helpers.py`'s `_SCOPE_CONTROL_PUBLIC_FIELDS`): scope MODE
+ * (CTR/FIX/S-C/S-F), EDGE, HOLD and REF level are cosmetic/display-tuning
+ * facts that belong to the display slice (12), matching
+ * `SpectrumToolbar.svelte`'s own `scopeModeAvailable`/`scopeEdgeAvailable`/
+ * `scopeHoldAvailable`/`scopeRefAvailable` booleans staying separate from the
+ * four this group reads. Live scope FRAMES/WATERFALL DATA are a wholly
+ * different, App-owned resource demand (12A) and are never carried here —
+ * this group states facts about the scope's CONTROLS, never its pixels.
+ *
+ * PARITY: values mirror the same `scopeControls.<leaf>` register the toolbar
+ * reads (`radio.current?.scopeControls`), and availability reuses the exact
+ * same `isFieldAvailable(state, 'scopeControls.<leaf>')` predicate the
+ * toolbar calls for its own `scope{Span,Speed,Dual,Receiver}Available`
+ * booleans — not a reimplementation. Where this contract DIVERGES from v2:
+ * the toolbar's `scopeControls?.span ?? 3` / `?? 1` / `?? false` / `?? 0`
+ * fallbacks fabricate a value on an unobserved field; here an absent raw
+ * reads `unknown`, never those defaults.
+ *
+ * STRUCTURAL gate, doubly per the X6200 lesson (scope command support
+ * varies per radio — IC-7300/IC-9700 lack the `27 12`/`27 13` receiver-select
+ * commands even though `scope` is declared, and dual-scope operation is
+ * IC-7610-only in practice per MOR-664): `span`/`speed` are structurally
+ * available under `hasCap('scope')` alone (every scope-bearing single-RX
+ * radio supports them), while `dual`/`receiver` ADDITIONALLY require
+ * `hasCap('dual_rx')` — the only generic capability tag this contract may
+ * use, per "no radio-specific tables in the frontend". This is a real
+ * strengthening beyond the shipped toolbar, which gates DUAL/MAIN-SUB on
+ * field-availability alone; where `dual_rx` still over-declares for a
+ * specific radio (e.g. IC-9700, whose VHF/UHF `dual_rx` is unrelated to
+ * scope receiver-select), the OPERATIONAL half degrades honestly because the
+ * backend never observes that leaf for that radio — same structural/
+ * operational split `hardwareScope`/`audioFftScope` already use.
+ */
+export interface ScopeControlsViewModel {
+  /** Span preset index 0..7 (`SPAN_LABELS` in `spectrum-toolbar-logic.ts`
+   *  maps the ordinal to a display string; that table is UI convenience,
+   *  not a fact, and is deliberately absent here). */
+  span: ScopeControlsField<number>;
+  /** Sweep-speed ordinal 0=FST/1=MID/2=SLO. */
+  speed: ScopeControlsField<number>;
+  dual: ScopeControlsField<boolean>;
+  /** 0=MAIN, 1=SUB. */
+  receiver: ScopeControlsField<number>;
+}
+
 export interface RadioViewModel {
   topologyId: string;
   vfoScheme: VfoScheme;
@@ -788,6 +853,10 @@ export interface RadioViewModel {
    *  capability, so v2 renders no CW panel at all — see
    *  `radio-view-model-adapter.ts`'s `deriveCwKeyer`. */
   readonly cwKeyer?: CwKeyerViewModel;
+  /** Absent (MOR-1264 optional group) ⇒ this radio declares no `scope`
+   *  capability, so v2 renders no spectrum toolbar at all — see
+   *  `radio-view-model-adapter.ts`'s `deriveScopeControls`. */
+  readonly scopeControls?: ScopeControlsViewModel;
 }
 
 const RECEIVER_IDS: readonly ReceiverId[] = ['MAIN', 'SUB'];
@@ -1292,6 +1361,19 @@ function validateCwKeyer(value: unknown, path: string): CwKeyerViewModel {
   };
 }
 
+/** Exactly the four facts the adapter reads. See
+ *  `radio-view-model-adapter.ts::deriveScopeControls`. */
+function validateScopeControls(value: unknown, path: string): ScopeControlsViewModel {
+  const v = record(value, path);
+  exactKeys(v, ['span', 'speed', 'dual', 'receiver'], path);
+  return {
+    span: validateTxAuxField(v.span, `${path}.span`, num),
+    speed: validateTxAuxField(v.speed, `${path}.speed`, num),
+    dual: validateTxAuxField(v.dual, `${path}.dual`, bool),
+    receiver: validateTxAuxField(v.receiver, `${path}.receiver`, num),
+  };
+}
+
 /** Runtime validator (repo idiom: throws TypeError with a `$.path`, see `validateCapabilities`).
  *  Also enforces two cross-field invariants (review cycle 1, V1): `txPermit`
  *  cannot be 'allowed' while `txTarget` is unknown (no fail-open), and
@@ -1302,6 +1384,7 @@ export function validateRadioViewModel(value: unknown): RadioViewModel {
     'topologyId', 'vfoScheme', 'activeReceiver', 'vfos', 'split', 'dualWatch',
     'txTarget', 'txPermit', 'scope', 'disabledReasons', 'txAux', 'meters', 'rxAudio', 'modeFilter',
     'filterPassband', 'dsp', 'rfFrontEnd', 'band', 'ritXit', 'antenna', 'scan', 'cwKeyer',
+    'scopeControls',
   ], '$');
   if (!Array.isArray(v.vfos)) invalid('$.vfos', 'an array');
   if (!Array.isArray(v.disabledReasons)) invalid('$.disabledReasons', 'an array');
@@ -1341,6 +1424,7 @@ export function validateRadioViewModel(value: unknown): RadioViewModel {
   const antenna = optionalGroup(v.antenna, '$.antenna', validateAntenna);
   const scan = optionalGroup(v.scan, '$.scan', validateScan);
   const cwKeyer = optionalGroup(v.cwKeyer, '$.cwKeyer', validateCwKeyer);
+  const scopeControls = optionalGroup(v.scopeControls, '$.scopeControls', validateScopeControls);
 
   const disabledReasons = v.disabledReasons.map((r, i) => validateDisabledReason(r, `$.disabledReasons[${i}]`));
   // SAFETY, MOR-1296 — the fail-closed half of "no second permit", enforced
@@ -1382,5 +1466,6 @@ export function validateRadioViewModel(value: unknown): RadioViewModel {
     ...(antenna !== undefined ? { antenna } : {}),
     ...(scan !== undefined ? { scan } : {}),
     ...(cwKeyer !== undefined ? { cwKeyer } : {}),
+    ...(scopeControls !== undefined ? { scopeControls } : {}),
   };
 }

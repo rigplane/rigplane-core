@@ -31,7 +31,7 @@ import type {
   AudioFocus, MonitorMode, RxAudioViewModel, ModeFilterViewModel,
   FilterPassbandViewModel, DspViewModel, RfFrontEndViewModel,
   BandChoice, BandViewModel, RitXitViewModel, AntennaViewModel, ScanViewModel,
-  BreakInMode, CwKeyerViewModel,
+  BreakInMode, CwKeyerViewModel, ScopeControlsViewModel,
 } from '../../../semantic/radio-view-model';
 import type { TxAuthoritySnapshot } from '../../../semantic/rx-tx-surface';
 import { isFieldAvailable } from '$lib/state/field-status';
@@ -922,6 +922,43 @@ function deriveCwKeyerReasons(
 }
 
 /**
+ * Scope-control facts (MOR-1262 decomposition slice 11A, MOR-1298). See
+ * `ScopeControlsViewModel`'s doc comment for the field set, the parity
+ * story against `SpectrumToolbar.svelte`'s own `scopeControls?.<leaf> ??
+ * <default>` reads, and the doubly-applied X6200 capability-gating lesson.
+ *
+ * Evidence gate (N3): `hasCap(caps, 'scope')`, the same single gate the
+ * shipped toolbar uses to render at all (`{#if hasCapability('scope')}`,
+ * three call sites in `SpectrumToolbar.svelte`) — one v2 gate, not a
+ * per-field OR-of-evidence like `deriveTxAux`, because there is no
+ * scope-adjacent state that reports independently of the `scope` capability
+ * the way TX telemetry does.
+ *
+ * `span`/`speed` are structurally available whenever the group is (every
+ * scope-bearing single-RX radio supports them); `dual`/`receiver`
+ * additionally require `hasCap(caps, 'dual_rx')` — the only generic tag
+ * available to gate "does dual-scope / receiver-select make sense here"
+ * without a radio-specific table.
+ */
+function deriveScopeControls(
+  state: ServerState | null, caps: Capabilities | null,
+): ScopeControlsViewModel | undefined {
+  if (!hasCap(caps, 'scope')) return undefined;
+  const hasReceiverSelect = hasCap(caps, 'dual_rx');
+  const sc = state?.scopeControls;
+  return {
+    span: txAuxField(true, topFieldAvailable(state, 'scopeControls.span'), numOrUndef(sc?.span)),
+    speed: txAuxField(true, topFieldAvailable(state, 'scopeControls.speed'), numOrUndef(sc?.speed)),
+    dual: txAuxField(
+      hasReceiverSelect, topFieldAvailable(state, 'scopeControls.dual'), boolOrUndef(sc?.dual),
+    ),
+    receiver: txAuxField(
+      hasReceiverSelect, topFieldAvailable(state, 'scopeControls.receiver'), numOrUndef(sc?.receiver),
+    ),
+  };
+}
+
+/**
  * The App-owned RX-audio snapshot the `rxAudio` facts are read against
  * (MOR-1262 slice 3A). It is an INPUT, deliberately: audio lifetime belongs to
  * the App (MOR-1058) and building a view model must never open, start or probe
@@ -1159,6 +1196,7 @@ export function toRadioViewModel(
   const antenna = deriveAntenna(state, caps);
   const scan = deriveScan(state);
   const cwKeyer = deriveCwKeyer(state, caps);
+  const scopeControls = deriveScopeControls(state, caps);
   const rfFrontEndMutex = deriveRfFrontEndMutex(rfFrontEnd);
   if (rfFrontEndMutex) disabledReasons.push(rfFrontEndMutex);
   disabledReasons.push(...deriveCwKeyerReasons(cwKeyer, modeFilter, txPermit));
@@ -1186,5 +1224,6 @@ export function toRadioViewModel(
     ...(antenna !== undefined ? { antenna } : {}),
     ...(scan !== undefined ? { scan } : {}),
     ...(cwKeyer !== undefined ? { cwKeyer } : {}),
+    ...(scopeControls !== undefined ? { scopeControls } : {}),
   };
 }

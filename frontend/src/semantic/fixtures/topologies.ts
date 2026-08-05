@@ -22,6 +22,7 @@ import type {
   ModInputReadiness, RadioViewModel, RfFrontEndField, RfFrontEndViewModel,
   RitXitField, RitXitViewModel, RxAudioField, RxAudioViewModel,
   ScanField, ScanViewModel,
+  ScopeControlsField, ScopeControlsViewModel,
   TxAuxField, TxAuxViewModel,
 } from '../radio-view-model';
 
@@ -459,4 +460,23 @@ export function withScan(fixture: RadioViewModel): RadioViewModel {
     scanResumeMode: known(0),
   };
   return { ...fixture, scan };
+}
+
+/**
+ * Applies a fully-observed `scopeControls` group (MOR-1262 slice 11A,
+ * MOR-1298) to any topology fixture — same composable-axis story as
+ * `withScan`/`withCwKeyer` above.
+ */
+export function withScopeControls(fixture: RadioViewModel): RadioViewModel {
+  const avail: Availability = { structural: true, operational: true };
+  const known = <T>(value: T): ScopeControlsField<T> => (
+    { reading: { status: 'known', value }, availability: avail }
+  );
+  const scopeControls: ScopeControlsViewModel = {
+    span: known(3),
+    speed: known(1),
+    dual: known(false),
+    receiver: known(0),
+  };
+  return { ...fixture, scopeControls };
 }
