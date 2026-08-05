@@ -96,6 +96,11 @@ export default defineConfig({
             // both shared-state shapes that are order-dependent under
             // ``isolate: false``. See MOR-1272.
             'src/lib/runtime/adapters/__tests__/rx-audio-purity.test.ts',
+            // MOR-1262 slice 9A: same shape as the 3A entry above — module-scope
+            // ``vi.mock`` of ws-client, whose hoisted mock must be authoritative
+            // for the "the CW fact group is not a key path" pins to mean
+            // anything (SAFETY: break-in keys the transmitter). See MOR-1272.
+            'src/lib/runtime/adapters/__tests__/cw-keyer-purity.test.ts',
             // MOR-1262 slice 4A′: calls the REAL ``setCapabilities``
             // (``$lib/stores/capabilities.svelte``, no ``vi.mock``) to install
             // a non-default PBT control range for the filter-passband parity
@@ -224,6 +229,7 @@ export default defineConfig({
             'src/components-v2/panels/lcd/__tests__/audio-fft-demand.test.ts',
             'src/lib/utils/__tests__/smoothing.svelte.test.ts',
             'src/lib/runtime/adapters/__tests__/rx-audio-purity.test.ts',
+            'src/lib/runtime/adapters/__tests__/cw-keyer-purity.test.ts',
             'src/lib/runtime/adapters/__tests__/filter-passband-adapter.test.ts',
             'src/lib/runtime/adapters/__tests__/dsp-adapter.test.ts',
             'src/presentation/workspace/__tests__/purity.test.ts',
