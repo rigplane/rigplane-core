@@ -1,5 +1,8 @@
 /**
- * Layout preference store.
+ * Layout preference — since MOR-1081 a thin façade over the single workspace
+ * store (`presentation/workspace/store.svelte.ts`), which owns the selection,
+ * its validation and its persistence.
+ *
  * 'auto'        = standard layout when any scope available (HW or audio FFT), LCD otherwise
  * 'lcd'         = legacy alias for 'lcd-cockpit'
  * 'lcd-cockpit' = force LCD cockpit (TS-990S-style dual-cockpit)
@@ -10,15 +13,26 @@
  *                 `lib/stores/qa-cockpit-override.ts`) — deliberately NOT a
  *                 CanonicalLayoutMode, so normalizeLayoutMode below falls it
  *                 through to 'auto'. It can therefore never be persisted via
- *                 setLayoutMode/localStorage and never appears in the
+ *                 setLayoutMode/the workspace and never appears in the
  *                 StatusBar skin selector.
  *
- * Raw persisted aliases are normalized here before presentation policy reads
- * the preference.
+ * SINGLE WRITER (MOR-1081). This module no longer reads or writes
+ * `rigplane-layout` / `rigplane-skin`. The legacy keys are neither written nor
+ * deleted: MOR-1079's repository froze them at their migration-time value so
+ * an older build can still READ them during the rollback window, while the
+ * workspace object is the only thing this build writes. Reconciliation is
+ * therefore "the workspace wins, once migrated" by construction — the legacy
+ * keys are simply off the selection path.
+ *
+ * `normalizeLayoutMode` stays here, pure and unchanged: MOR-1042's canonical
+ * alias behavior is the contract several callers (skins/registry.ts,
+ * StatusBar) depend on, and the workspace validator applies the same alias
+ * table on its own read path.
  */
-
-const STORAGE_KEY = 'rigplane-layout';
-const LEGACY_SKIN_STORAGE_KEY = 'rigplane-skin';
+import {
+  getWorkspace,
+  setLayout as setWorkspaceLayout,
+} from '../../presentation/workspace/store.svelte';
 
 export type LayoutMode =
   | 'auto' | 'lcd' | 'lcd-cockpit' | 'lcd-scope' | 'standard' | 'sdr-test'
@@ -54,31 +68,20 @@ export function normalizeLayoutMode(value: unknown): CanonicalLayoutMode {
   return 'auto';
 }
 
-let mode = $state<CanonicalLayoutMode>(loadMode());
-
-function loadMode(): CanonicalLayoutMode {
-  if (typeof window === 'undefined') return 'auto';
-  const saved = localStorage.getItem(STORAGE_KEY)
-    ?? localStorage.getItem(LEGACY_SKIN_STORAGE_KEY);
-  return normalizeLayoutMode(saved);
-}
-
+/** Reactive: the workspace store's `$state` is the backing cell. */
 export function getLayoutMode(): LayoutMode {
-  return mode;
+  return getWorkspace().layout;
 }
 
 export function setLayoutMode(m: LayoutMode): void {
-  mode = normalizeLayoutMode(m);
-  if (typeof window !== 'undefined') {
-    localStorage.setItem(STORAGE_KEY, mode);
-  }
+  setWorkspaceLayout(normalizeLayoutMode(m));
 }
 
 export function cycleLayoutMode(hasAnyScope: boolean): void {
   if (hasAnyScope) {
     // auto → LCD cockpit → standard → auto
     const order: CanonicalLayoutMode[] = ['auto', 'lcd-cockpit', 'standard'];
-    const idx = order.indexOf(mode);
+    const idx = order.indexOf(normalizeLayoutMode(getLayoutMode()));
     setLayoutMode(order[(idx + 1) % order.length]);
   } else {
     // No scope at all: always LCD, no toggle needed

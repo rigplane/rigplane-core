@@ -1,3 +1,26 @@
+/**
+ * Theme selection — since MOR-1081 the theme ID lives in the single workspace
+ * store (`presentation/workspace/store.svelte.ts`); this module keeps the
+ * catalogue and applies the choice to the DOM.
+ *
+ * SINGLE WRITER. `rigplane:theme` and `rigplane:theme-user-choice` are no
+ * longer read or written here. MOR-1079's migration folded them into
+ * `WorkspaceV1.theme` (user-choice first, applied-theme second) and MOR-1076's
+ * rollback window only requires that older builds can still READ them — so
+ * they stay frozen at their migration-time value, never rewritten and never
+ * deleted, and the workspace object is the sole write target.
+ *
+ * `rigplane:vfo-theme` is deliberately untouched: MOR-1078 routed it
+ * `retain-outside` (a per-VFO override with no field in the frozen v1 schema),
+ * so its current owner is still this module.
+ */
+import type { WorkspaceThemeId } from '../../presentation/workspace/contract';
+import {
+  getWorkspace,
+  isThemeExplicit,
+  setTheme as setWorkspaceTheme,
+} from '../../presentation/workspace/store.svelte';
+
 export interface ThemeInfo {
   id: string;
   name: string;
@@ -5,8 +28,6 @@ export interface ThemeInfo {
   preview: string[]; // 5 colors for swatch
 }
 
-const STORAGE_KEY = 'rigplane:theme';
-const USER_CHOICE_KEY = 'rigplane:theme-user-choice';
 const VFO_STORAGE_KEY = 'rigplane:vfo-theme';
 
 const THEMES: ThemeInfo[] = [
@@ -148,51 +169,61 @@ export function getAvailableThemes(): ThemeInfo[] {
 }
 
 export function getTheme(): string {
-  if (typeof window === 'undefined') {
-    return 'default';
-  }
-  try {
-    return localStorage.getItem(STORAGE_KEY) || 'default';
-  } catch {
-    return 'default';
-  }
+  return getWorkspace().theme;
 }
 
 /**
  * True if the user has explicitly chosen a theme via the picker UI.
  * False when no user preference exists yet — lets skins pick a sensible
- * default without stomping an explicit user choice. Note: the applied-theme
- * key (STORAGE_KEY) may be written by framework startup code and is not a
- * reliable indicator of user intent — hence the separate USER_CHOICE_KEY.
+ * default without stomping an explicit user choice.
+ *
+ * MOR-1081 keeps v2's semantics exactly (KEY PRESENCE, any value — including
+ * an explicit `default`) while retiring the second key: the store latches, at
+ * load, whether the stored object carried a `theme` field at all, and
+ * `setThemeUserChoice` below is what makes it carry one. The applied-theme
+ * value alone could not answer this, which is precisely why v2 kept two keys.
  */
 export function hasExplicitTheme(): boolean {
-  if (typeof window === 'undefined') {
-    return false;
-  }
-  try {
-    return localStorage.getItem(USER_CHOICE_KEY) !== null;
-  } catch {
-    return false;
-  }
+  return isThemeExplicit();
 }
 
+/**
+ * Apply `id` to the DOM and record it as the current theme.
+ *
+ * NOT an explicit choice: this is the path a skin mount takes when it
+ * re-applies the theme already in effect, so it must not turn "never chose"
+ * into "chose" — see `setThemeUserChoice` for the operator's own pick.
+ */
 export function setTheme(id: string): void {
-  if (typeof window === 'undefined') {
-    return;
-  }
+  applyTheme(id, false);
+}
 
+/**
+ * Called by the theme picker UI when a user explicitly selects a theme.
+ * Applies the theme and records that the choice came from the user so
+ * skin auto-defaults (e.g. amber-lcd → lcd-warm) do not override it on
+ * subsequent loads — including when the user picks `default` itself.
+ */
+export function setThemeUserChoice(id: string): void {
+  applyTheme(id, true);
+}
+
+function applyTheme(id: string, explicit: boolean): void {
   // Validate theme ID
   if (!THEMES.some((theme) => theme.id === id)) {
     console.warn(`Unknown theme ID: ${id}`);
     return;
   }
 
-  // Store preference (applied-theme key; may be written at startup even
-  // without explicit user intent — see setThemeUserChoice for explicit).
-  try {
-    localStorage.setItem(STORAGE_KEY, id);
-  } catch (err) {
-    console.warn('Failed to save theme preference:', err);
+  // An explicit pick always goes through — it is what latches explicitness and
+  // makes the field persist, even when the value is unchanged. A non-explicit
+  // re-apply of the theme already selected writes nothing.
+  if (explicit || getWorkspace().theme !== id) {
+    setWorkspaceTheme(id as WorkspaceThemeId, explicit);
+  }
+
+  if (typeof document === 'undefined') {
+    return;
   }
 
   // Apply to DOM
@@ -200,24 +231,6 @@ export function setTheme(id: string): void {
     delete document.documentElement.dataset.theme;
   } else {
     document.documentElement.dataset.theme = id;
-  }
-}
-
-/**
- * Called by the theme picker UI when a user explicitly selects a theme.
- * Applies the theme and records that the choice came from the user so
- * skin auto-defaults (e.g. amber-lcd → lcd-warm) do not override it on
- * subsequent loads.
- */
-export function setThemeUserChoice(id: string): void {
-  setTheme(id);
-  if (typeof window === 'undefined') {
-    return;
-  }
-  try {
-    localStorage.setItem(USER_CHOICE_KEY, id);
-  } catch (err) {
-    console.warn('Failed to save user theme choice:', err);
   }
 }
 

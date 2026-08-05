@@ -11,9 +11,32 @@
   import { hasAnyScope } from './lib/stores/capabilities.svelte';
   import { getLayoutMode } from './lib/stores/layout.svelte';
   import { readQaCockpitLayoutOverride } from './lib/stores/qa-cockpit-override';
+  import { getDesignLanguage } from './presentation/languages/contract';
+  // Side-effect import: populates the design-language registry the lookup
+  // above resolves against, exactly as `semantic/design-language-renderers.ts`
+  // does. Imported here too so the activation effect below cannot depend on a
+  // lazily-loaded skin having pulled the barrel in first.
+  import './presentation/languages/declarations';
+  import { getLayout } from './presentation/layouts/contract';
+  // MOR-1082, the layout half of the same idiom: a side-effect import that
+  // populates the LAYOUT registry, so `getLayout(skinId)` below can resolve
+  // the active layout's declared zones. Manifests stay declarations — the
+  // surface plan reads `zones` and `requiredSemanticSurfaces`, nothing else.
+  import './presentation/layouts/declarations';
+  import { designLanguageActivation } from './presentation/workspace/activation';
+  import {
+    densityActivation, provideSurfacePlan, resolveSurfacePlan,
+  } from './presentation/workspace/resolution';
+  import { getWorkspace, initWorkspaceStore } from './presentation/workspace/store.svelte';
   import { loadSkin, presentationResourcePlan, resolveSkinId, type SkinId } from './skins/registry';
   import { t } from '$lib/i18n';
   import './app.css';
+
+  // MOR-1081: the workspace store owns layout, design-language and theme
+  // selection. Initialised here — the composition root, and the first thing
+  // in it — so it is loaded before the first selection read below
+  // (`getLayoutMode()`) and before any skin, theme or surface mounts.
+  initWorkspaceStore();
 
   let backendError = $state<string | null>(null);
   let retrying = $state(false);
@@ -42,6 +65,42 @@
     isMobile,
     hasAnyScope: hasAnyScope(),
   }));
+
+  // MOR-1081: the workspace's `designLanguage` is the ONLY source the
+  // `[data-design-language]` activation attribute (MOR-1278) is written from,
+  // and this is its only writer — the MOR-1275 renderer wiring and the
+  // language stylesheets both read that same attribute, so there is no second
+  // activation path. `designLanguageActivation` gates on the language's own
+  // manifest, which is what keeps the shipped v2 skins unchanged until the
+  // cutover (MOR-1048/MOR-1263) declares them compatible.
+  //
+  // MOR-1082 rides the SAME effect and the same gate rather than adding a
+  // second one: `[data-density]` carries the resolved density (the workspace
+  // override clamped by the ACTIVE language's own DensityClamp) on the same
+  // semantic-vertical root, so the two attributes can never disagree about
+  // which language is in force. No stylesheet consumes it yet — density
+  // rules arrive with the cutover — and it is absent entirely wherever the
+  // language is not active, so no shipped v2 skin sees a new attribute.
+  $effect(() => {
+    const language = getDesignLanguage(getWorkspace().designLanguage);
+    const activated = designLanguageActivation(language, skinId);
+    if (activated === null) delete document.documentElement.dataset.designLanguage;
+    else document.documentElement.dataset.designLanguage = activated;
+    const density = densityActivation(language, skinId, getWorkspace().density);
+    if (density === null) delete document.documentElement.dataset.density;
+    else document.documentElement.dataset.density = density;
+  });
+
+  // MOR-1082 — the workspace's per-zone `visibleSurfaces`/`zoneOrder`, resolved
+  // against the ACTIVE layout manifest and handed down as a getter. App is the
+  // only place that can do this: the semantic wiring must not import a layout
+  // manifest (that closes the manifest → loader → skin → wiring cycle the
+  // MOR-1068 wiring documents), and this is where the layout id already lives.
+  // A getter, so a consumer's `$derived` re-runs when either input changes.
+  provideSurfacePlan(() => {
+    const manifest = getLayout(skinId);
+    return manifest === undefined ? null : resolveSurfacePlan(manifest, getWorkspace());
+  });
 
   // ── Lazy presentation loading (MOR-1060) ──
   //
