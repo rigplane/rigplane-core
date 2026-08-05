@@ -26,6 +26,10 @@
   import { runtime } from '$lib/runtime';
   import { toRadioViewModel } from '$lib/runtime/adapters/radio-view-model-adapter';
   import { getAppTxController } from '$lib/runtime/tx-controller/app-host';
+  import type { SemanticSurfaceName } from '../../presentation/layouts/contract';
+  import {
+    compositionSurfaces, useSurfacePlan, zoneShowsSurface,
+  } from '../../presentation/workspace/resolution';
   import MetersSurface from '../../semantic/MetersSurface.svelte';
   import type { RadioViewModel } from '../../semantic/radio-view-model';
   import RxTxSurface from '../../semantic/RxTxSurface.svelte';
@@ -60,6 +64,38 @@
     strips?: 'single' | 'dual';
   }
   let { strips = 'single' }: Props = $props();
+
+  /**
+   * MOR-1082 — the workspace's per-zone `visibleSurfaces`/`zoneOrder`, resolved
+   * by the composition root (App) against the ACTIVE layout manifest and read
+   * here through a context getter. The manifest itself is deliberately still
+   * NOT imported (see `strips` below): App owns the lookup, this file owns only
+   * the consultation.
+   *
+   * It can ONLY subtract. `zoneShows` answers "unchanged" whenever there is no
+   * plan (a standalone mount) or the active layout declares no such zone, the
+   * plan can never contain a surface the manifest did not declare, and the
+   * self-gates below (`view`, `view?.txAux`, `view?.meters`) are untouched — so
+   * "the workspace says visible" can never mount a surface whose view-model
+   * group is absent. `singleOrder` likewise falls back to the composed order,
+   * so the vertical can never resolve to a screen with no RX/TX surface.
+   */
+  const surfacePlan = useSurfacePlan();
+  const SINGLE_COMPOSITION: readonly SemanticSurfaceName[] = ['vfo', 'rxTx'];
+  let singleOrder = $derived(compositionSurfaces(surfacePlan(), SINGLE_COMPOSITION));
+  function zoneShows(zoneId: string, surface: SemanticSurfaceName): boolean {
+    return zoneShowsSurface(surfacePlan(), zoneId, surface);
+  }
+  /** The dual composition's per-receiver strips, after the workspace. Filtering
+   *  the `{#each}` SOURCE rather than wrapping its body keeps ONE place that
+   *  decides a strip's zone id — the id the DOM carries is the id consulted. */
+  function visibleStrips(model: RadioViewModel) {
+    return receiversOf(model)
+      .map((receiverId, index) => ({
+        receiverId, zoneId: index === 0 ? 'primary-vfo' : 'secondary-vfo',
+      }))
+      .filter(({ zoneId }) => zoneShows(zoneId, 'vfo'));
+  }
 
   const vfo = makeVfoHandlers();
   /**
@@ -161,7 +197,7 @@
   {#if view}
     {#if strips === 'dual'}
       <div class="channel-strips" data-testid="channel-strips">
-        {#each receiversOf(view) as receiverId, index (receiverId)}
+        {#each visibleStrips(view) as { receiverId, zoneId } (receiverId)}
           <!--
             `data-zone-id`: `ReceiverId` is `'MAIN' | 'SUB'`, so the index is
             total over the manifest's two per-receiver zones. A degraded
@@ -171,7 +207,7 @@
           <div
             class="channel-strip"
             data-testid={`channel-strip-${receiverId}`}
-            data-zone-id={index === 0 ? 'primary-vfo' : 'secondary-vfo'}
+            data-zone-id={zoneId}
             data-strip-receiver={receiverId}
             data-strip-active={isActiveStrip(view, receiverId)}
             data-strip-operational={isOperationalStrip(view, receiverId)}
@@ -214,16 +250,30 @@
         was unobserved. It is not `aria-disabled`: it holds live switches that
         already gate themselves on their own observed facts (F7).
       -->
-      <div class="cockpit-global-row" data-testid="cockpit-zone-global" data-zone-id="global">
-        <VfoSurface
-          viewModel={view}
-          showVfoList={false}
-          groupLabel={t('core.vfo.radioWideGroupLabel')}
-          onToggleSplit={vfo.onSplitToggle}
-          onToggleDualWatch={toggleDualWatch}
-        />
-      </div>
-    {:else}
+      {#if zoneShows('global', 'vfo')}
+        <div class="cockpit-global-row" data-testid="cockpit-zone-global" data-zone-id="global">
+          <VfoSurface
+            viewModel={view}
+            showVfoList={false}
+            groupLabel={t('core.vfo.radioWideGroupLabel')}
+            onToggleSplit={vfo.onSplitToggle}
+            onToggleDualWatch={toggleDualWatch}
+          />
+        </div>
+      {/if}
+    {/if}
+  {/if}
+
+  <!--
+    MOR-1082: the single composition's VFO half, moved into a snippet for the
+    same reason `rxTxSurface` is one — so the two surfaces the layout's single
+    zone mounts can be rendered in the ORDER that zone resolves to, from one
+    place, with exactly one `<VfoSurface>` tag per composition. Its render
+    site below is where the default path's VFO already was, so an unresolved
+    or default plan reproduces today's element sequence exactly.
+  -->
+  {#snippet vfoSurface()}
+    {#if view}
       <VfoSurface
         viewModel={view}
         onSelectVfo={selectVfo}
@@ -231,7 +281,7 @@
         onToggleDualWatch={toggleDualWatch}
       />
     {/if}
-  {/if}
+  {/snippet}
   <!--
     MOR-1069 (finding N1, routed from the MOR-1068 verification). The
     wrapper used to render on EVERY path as an inert `display: contents`
@@ -342,8 +392,16 @@
       which is the one DOM-order change this ticket makes: the alerts move
       up to sit beside RxTxSurface instead of after TxAuxSurface.
     -->
+    <!--
+      MOR-1082: only the SURFACE is workspace-gated. The TX-adjacent alerts
+      stay unconditional — they are not a semantic surface, and the MOD-input
+      preflight in particular must warn regardless of any presentation
+      preference. In every shipped layout `rxTx` is `requiredSemanticSurfaces`
+      and exactly one zone mounts it, so the plan refuses to hide it anyway;
+      the gate is here so the rule is enforced where it is read, not assumed.
+    -->
     <div class="rx-tx-zone" data-zone-id="rx-tx">
-      {@render rxTxSurface()}
+      {#if zoneShows('rx-tx', 'rxTx')}{@render rxTxSurface()}{/if}
       {@render txAdjacentAlerts()}
     </div>
     {@render txAuxSurface()}
@@ -353,8 +411,18 @@
       Single/default path (sdr-test / LCD / mobile): no bound zone exists
       here (MOR-1069), so containment is not possible — the alerts keep
       their pre-MOR-1258 position and order, unchanged.
+
+      MOR-1082: the layout's single zone mounts both `vfo` and `rxTx`
+      (sdr-test `main`, LCD `control-column`, mobile `portrait-deck`), so this
+      is where a per-zone reorder actually lands. `singleOrder` is the plan
+      flattened in zone-declaration order and falls back to the composed order
+      whenever no plan is resolved — an unresolved plan renders exactly the
+      sequence this path renders today.
     -->
-    {@render rxTxSurface()}
+    {#each singleOrder as surface (surface)}
+      {#if surface === 'vfo'}{@render vfoSurface()}
+      {:else if surface === 'rxTx'}{@render rxTxSurface()}{/if}
+    {/each}
     {@render txAuxSurface()}
     {@render metersSurface()}
     {@render txAdjacentAlerts()}
