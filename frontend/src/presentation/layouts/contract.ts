@@ -19,7 +19,7 @@ import { isValidLanguageId as isValidProductId } from '../languages/contract';
  *  slot of the same name (`languages/contract.ts`'s `RENDERER_SLOT_NAMES`):
  *  that one says how a language DRAWS a meter, this one says which layout
  *  zone may HOST the surface. */
-export const SEMANTIC_SURFACE_NAMES = ['vfo', 'rxTx', 'txAux', 'meters'] as const;
+export const SEMANTIC_SURFACE_NAMES = ['vfo', 'rxTx', 'txAux', 'meters', 'rxAudio'] as const;
 export type SemanticSurfaceName = (typeof SEMANTIC_SURFACE_NAMES)[number];
 
 /**

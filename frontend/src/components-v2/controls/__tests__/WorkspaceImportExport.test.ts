@@ -6,7 +6,7 @@
  *
  * Storage is injected, no module is `vi.mock`-ed; `URL.createObjectURL` is
  * spied (not stubbed) and restored per test, the same shape as
- * `SendReportDialog.test.ts`'s save-locally test — so this file stays in
+ * `SendReportDialog.isolated.test.ts`'s save-locally test — so this file stays in
  * the fast pool per MOR-1272.
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';

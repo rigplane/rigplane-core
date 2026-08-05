@@ -10,8 +10,8 @@
  * `seedFromState` seeding that records map[mode] = filter for the ACTIVE
  * receiver.  The handler-wiring side (onModeChange sending the remembered
  * filter / falling back to mode-only) is asserted in the co-located handler
- * test files: `vfo-wiring.test.ts` (command-bus / mobile) and
- * `pending-focus.test.ts` (panel-commands / desktop-v2).
+ * test files: `vfo-wiring.isolated.test.ts` (command-bus / mobile) and
+ * `pending-focus.isolated.test.ts` (panel-commands / desktop-v2).
  */
 
 import { describe, it, expect, beforeEach, vi } from 'vitest';

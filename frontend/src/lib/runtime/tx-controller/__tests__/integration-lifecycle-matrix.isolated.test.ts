@@ -16,7 +16,7 @@ import { MockWebSocket, instances } from '$lib/transport/__tests__/support/fake-
 // `createBrowserTxControllerDependencies()` factory, and a REAL
 // `TxController`. Only the seams `browser-dependencies.ts` reads facts from
 // are mocked (radio.svelte, capabilities.svelte, tx-adapter) — the same seam
-// U2 (browser-dependencies-fault-injection.test.ts) mocks.
+// U2 (browser-dependencies-fault-injection.isolated.test.ts) mocks.
 // `$lib/stores/connection.svelte` is left REAL: it is the real ws-client's
 // own dependency for `isLiveRadioAvailable()`/connection flags, plain
 // `$state` setters that are harmless under jsdom.

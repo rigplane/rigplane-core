@@ -96,7 +96,7 @@ describe('RendererViewModel structural gate', () => {
   // strictFunctionTypes checks function-typed properties contravariantly.
   // The repo has no dedicated type-testing idiom (no expectTypeOf/tsd); this
   // reuses the `@ts-expect-error` mechanism already used elsewhere in the
-  // suite (e.g. ws-client.test.ts), pinned by `npm run check` (svelte-check
+  // suite (e.g. ws-client.isolated.test.ts), pinned by `npm run check` (svelte-check
   // + tsc), which is already part of required verification. If this stops
   // being a type error, `npm run check` fails with "Unused '@ts-expect-error'
   // directive" — that failure IS the pin.

@@ -52,13 +52,27 @@ export default defineConfig({
     // Split the test suite into two projects to contain the cost
     // of test-file isolation.  Under ``isolate: false`` (PR #707 —
     // ~10× faster) modules are cached across test files; any file
-    // that does module-scope ``vi.mock(...)`` is vulnerable to load
-    // ordering — a sibling file that imports the real module first
-    // pins it in the cache and the hoisted mock becomes a no-op.
-    // Rather than fixing each affected file (treadmill, and any
-    // new test file that uses ``vi.mock`` becomes a future flake),
-    // route the known-sensitive files through a small isolated pool
-    // and keep the rest fast.  Issue #771.
+    // that does module-scope ``vi.mock(...)``, ``vi.stubGlobal(...)``,
+    // a global spy (e.g. on ``requestAnimationFrame``), or a real
+    // mounted Svelte component is vulnerable to load/execution
+    // ordering — a sibling file can pin the real module in the shared
+    // cache, leave global state dirty, or race a live effect loop, and
+    // the failure shows up as "flips red with no production change."
+    //
+    // POOL-MEMBERSHIP CONVENTION (MOR-1272): rather than hand-maintain
+    // two mirrored enumerated file lists here (a merge-collision magnet
+    // — every branch that adds a sensitive test conflicts with every
+    // other branch touching this file), pool membership is decided by
+    // filename: any test file named ``*.isolated.test.ts`` (anywhere
+    // under src/) runs in the ``isolated`` project and is excluded from
+    // ``fast``. To add a new order-dependent test, name it
+    // ``<subject>.isolated.test.ts`` — no config edit required.
+    // ``*.component.test.ts`` / ``*.component.svelte.test.ts`` predate
+    // this convention and use the same glob mechanism for the same
+    // reason (real mounted components, see #771); left as-is.
+    // Full historical inventory of why each current isolated file
+    // needed it lives in git blame / MOR-1262 / MOR-1272 ticket history,
+    // not here.
     projects: [
       {
         extends: true,
@@ -67,153 +81,9 @@ export default defineConfig({
           environment: 'jsdom',
           include: ['src/**/*.test.ts'],
           exclude: [
-            // MOR-1262 slice 2A: joins the sensitive set. It asserts on
-            // `sendCommand`/`audioManager` call counts through the shared
-            // RX-audio authority, so under ``isolate: false`` it is sensitive
-            // to WHICH siblings share its worker — adding unrelated test files
-            // elsewhere in the suite reshuffles the fast pool and flips it red
-            // with no production change. Isolation makes it order-independent.
-            'src/components-v2/wiring/__tests__/rx-audio-authority.test.ts',
-            // MOR-1074, same class again: it declares module-scope
-            // ``vi.mock('$lib/transport/...')`` and asserts exact lease counts
-            // through the canonical audio authority, so whether its hoisted
-            // mock wins depends on which sibling loaded the real transport
-            // module first. Reproduced on a PRISTINE baaaf480 checkout by
-            // adding five test files that merely import
-            // `semantic/rx-tx-surface` + `presentation/languages/*` and assert
-            // nothing else: red in 4 of 6 runs with zero production change.
-            // Isolation makes it a function of its own subject again.
-            'src/components-v2/panels/lcd/__tests__/audio-fft-demand.test.ts',
-            // MOR-1262 slice 2A, same class: it spies on the GLOBAL
-            // `requestAnimationFrame` and asserts exact call counts, while
-            // sibling component tests (MetersDockPanel's `tick`/`tickPeak`
-            // smoothers among them) leave live rAF loops running that the spy
-            // then counts. Under ``isolate: false`` that makes it a function of
-            // worker assignment rather than of its own subject.
-            'src/lib/utils/__tests__/smoothing.svelte.test.ts',
-            // MOR-1262 slice 3A: module-scope ``vi.mock`` of audio-manager and
-            // ws-client PLUS ``vi.stubGlobal`` on AudioContext / localStorage —
-            // both shared-state shapes that are order-dependent under
-            // ``isolate: false``. See MOR-1272.
-            'src/lib/runtime/adapters/__tests__/rx-audio-purity.test.ts',
-            // MOR-1262 slice 9A: same shape as the 3A entry above — module-scope
-            // ``vi.mock`` of ws-client, whose hoisted mock must be authoritative
-            // for the "the CW fact group is not a key path" pins to mean
-            // anything (SAFETY: break-in keys the transmitter). See MOR-1272.
-            'src/lib/runtime/adapters/__tests__/cw-keyer-purity.test.ts',
-            // MOR-1262 slice 4A′: calls the REAL ``setCapabilities``
-            // (``$lib/stores/capabilities.svelte``, no ``vi.mock``) to install
-            // a non-default PBT control range for the filter-passband parity
-            // pin — same order-dependent global-mutation shape as
-            // ``mod-input-tx-guard.test.ts`` / ``frontend-runtime.test.ts``
-            // below. See MOR-1272.
-            'src/lib/runtime/adapters/__tests__/filter-passband-adapter.test.ts',
-            // MOR-1262 slice 5A, same shape as the 4A′ entry above: calls the
-            // REAL ``setCapabilities`` to install non-default NR/NB control
-            // ranges for the dsp parity pin. See MOR-1272.
-            'src/lib/runtime/adapters/__tests__/dsp-adapter.test.ts',
-            // MOR-1077, same class: ``vi.stubGlobal`` on localStorage/fetch/
-            // WebSocket plus ``vi.resetModules()`` around a fresh dynamic
-            // import of the workspace contract — both mutate state the fast
-            // pool shares across files. See MOR-1272.
-            'src/presentation/workspace/__tests__/purity.test.ts',
-            // MOR-1078, same class again: ``vi.stubGlobal`` on localStorage/
-            // fetch/WebSocket plus ``vi.resetModules()`` around a fresh
-            // dynamic import of the legacy workspace readers. See MOR-1272.
-            'src/presentation/workspace/__tests__/legacy-readers-purity.test.ts',
-            // MOR-1079, same class a third time: ``vi.stubGlobal`` on
-            // localStorage/fetch/WebSocket plus ``vi.resetModules()`` around a
-            // fresh dynamic import of the workspace store, whose module-scope
-            // ``$state`` would otherwise be shared across files. See MOR-1272.
-            'src/presentation/workspace/__tests__/store-purity.test.ts',
-            'src/components-v2/wiring/__tests__/keyboard-wiring.test.ts',
-            'src/components-v2/wiring/__tests__/vfo-wiring.test.ts',
-            'src/components-v2/wiring/__tests__/dsp-nr-level.test.ts',
-            'src/components-v2/wiring/__tests__/dsp-nb-depth.test.ts',
-            'src/components-v2/wiring/__tests__/focus-mode-race.test.ts',
-            'src/components-v2/wiring/__tests__/mod-input-wiring.test.ts',
-            'src/components-v2/vfo/__tests__/VfoOps.test.ts',
-            'src/components-v2/panels/__tests__/AudioRoutingControl.test.ts',
-            'src/components-v2/panels/__tests__/ModInputTxWarning.test.ts',
-            'src/lib/stores/radio.svelte.test.ts',
-            'src/lib/runtime/__tests__/frontend-runtime.test.ts',
-            'src/lib/runtime/adapters/__tests__/mod-input-tx-guard.test.ts',
-            'src/lib/runtime/adapters/__tests__/mod-input-auto.test.ts',
-            'src/lib/audio/__tests__/audio-manager.test.ts',
-            'src/lib/radio/pending-focus.test.ts',
-            'src/lib/i18n/__tests__/runtime.test.ts',
-            'src/lib/i18n/__tests__/plural.test.ts',
-            'src/lib/i18n/__tests__/pseudo.test.ts',
-            // *.component(.svelte).test.ts mount real Svelte components and
-            // depend on store mocks that vary across the suite. Under
-            // ``isolate: false`` sibling tests' inconsistent ``vi.mock(...)``
-            // definitions (e.g. ``capabilities.svelte`` returning
-            // ``hasCapability: false`` in some files vs ``true`` here) leak
-            // via the shared module cache and the component renders with the
-            // wrong capability flags. Failure mode: "component renders
-            // fallback markup" rather than "test asserts wrong" — extremely
-            // hard to diagnose without isolation. Reproduces only on
-            // low-parallelism CI (Ubuntu 2-core), passes locally on macOS
-            // with 16-core worker spread. See #771 for the original symptom;
-            // this expands the sensitive set after the post-#1385 marathon
-            // exposed SpectrumToolbar / CwPanel / DspPanel / SpectrumPanel /
-            // MobileRadioLayout / BandPlanOverlay component tests.
+            'src/**/*.isolated.test.ts',
             'src/**/*.component.test.ts',
             'src/**/*.component.svelte.test.ts',
-            // Module-scope ``vi.mock(...)`` files that are NOT named
-            // ``*.component*`` and so were not caught by the glob above. Under
-            // ``isolate: false`` a hoisted ``vi.mock`` becomes a no-op when a
-            // sibling test imports the real module first (it pins the real
-            // module in the shared cache), and a *partial* mock leaks its
-            // missing-export surface into sibling tests that import the real
-            // store (e.g. "No setWsConnected export is defined on the mock").
-            // The publish validate job (2-core, low parallelism) hit a rotating
-            // cast of these — mode-filter-memory / TxPanel / FilterPanel /
-            // DspPanel / SendReportDialog / vfo-header / ws-client* / http-client
-            // — a different file per run. Route every fast-pool file that does
-            // module-scope ``vi.mock`` through the isolated pool so the mock is
-            // authoritative and cannot leak. See #771.
-            'src/components-v2/controls/__tests__/BandSelector.test.ts',
-            'src/components-v2/dialogs/__tests__/SendReportDialog.test.ts',
-            'src/components-v2/layout/__tests__/RadioLayout.test.ts',
-            'src/components-v2/layout/__tests__/top-row-visual-regression.test.ts',
-            'src/components-v2/layout/__tests__/vfo-header.test.ts',
-            'src/components-v2/panels/__tests__/DockMeterPanel.test.ts',
-            'src/components-v2/panels/__tests__/DspPanel.test.ts',
-            'src/components-v2/panels/__tests__/FilterPanel.test.ts',
-            'src/components-v2/panels/__tests__/MeterPanel.test.ts',
-            'src/components-v2/panels/__tests__/MetersDockPanel.test.ts',
-            'src/components-v2/panels/__tests__/ModePanel.test.ts',
-            'src/components-v2/panels/__tests__/RitXitPanel.test.ts',
-            'src/components-v2/panels/__tests__/RxAudioPanel.test.ts',
-            'src/components-v2/panels/__tests__/TxPanel.test.ts',
-            'src/components-v2/panels/lcd/__tests__/AmberTelemetryStrip.test.ts',
-            'src/components-v2/panels/lcd/__tests__/lcd-availability.test.ts',
-            'src/components-v2/panels/lcd/__tests__/lcd-components.test.ts',
-            'src/components-v2/panels/vfo/__tests__/DualVfoDisplay.test.ts',
-            'src/components-v2/vfo/__tests__/VfoPanel.test.ts',
-            'src/lib/media/__tests__/media-session.test.ts',
-            'src/lib/radio/mode-filter-memory.test.ts',
-            'src/lib/transport/__tests__/ws-client.test.ts',
-            // module-scope vi.mock of the same $lib/stores/*, tx-adapter, and
-            // ws-client specifiers as several files above — same isolate:false
-            // leak risk, routed to the isolated pool below. See #771.
-            'src/lib/runtime/tx-controller/__tests__/browser-dependencies.test.ts',
-            'src/lib/runtime/tx-controller/__tests__/browser-dependencies-fault-injection.test.ts',
-            // Real ws-client singleton (`_ctrl`) + module-scope vi.mock of
-            // radio.svelte/capabilities.svelte/tx-adapter — same isolate:false
-            // leak risk as the two files above. See #771 / MOR-1089 U4.
-            'src/lib/runtime/tx-controller/__tests__/integration-lifecycle-matrix.test.ts',
-            // Same real-ws-client-singleton + module-scope vi.mock shape as
-            // the file above — reconnect/de-key variant. See #771 / MOR-1089 U5.
-            'src/lib/runtime/tx-controller/__tests__/integration-reconnect-dekey-matrix.test.ts',
-            // Same real-ws-client-singleton + module-scope vi.mock shape as the
-            // two files above, PLUS a real mounted App.svelte (module-scope
-            // `vi.resetModules()` reloads `svelte` itself alongside the SUT so
-            // the mounted component and `mount()`/`unmount()` share one
-            // internal effect-scheduling instance) — pagehide/visibility
-            // variant. See #771 / MOR-1089 U6.
-            'src/lib/runtime/tx-controller/__tests__/integration-page-lifecycle.test.ts',
           ],
           pool: 'threads',
           isolate: false,
@@ -225,66 +95,9 @@ export default defineConfig({
           name: 'isolated',
           environment: 'jsdom',
           include: [
-            'src/components-v2/wiring/__tests__/rx-audio-authority.test.ts',
-            'src/components-v2/panels/lcd/__tests__/audio-fft-demand.test.ts',
-            'src/lib/utils/__tests__/smoothing.svelte.test.ts',
-            'src/lib/runtime/adapters/__tests__/rx-audio-purity.test.ts',
-            'src/lib/runtime/adapters/__tests__/cw-keyer-purity.test.ts',
-            'src/lib/runtime/adapters/__tests__/filter-passband-adapter.test.ts',
-            'src/lib/runtime/adapters/__tests__/dsp-adapter.test.ts',
-            'src/presentation/workspace/__tests__/purity.test.ts',
-            'src/presentation/workspace/__tests__/legacy-readers-purity.test.ts',
-            'src/presentation/workspace/__tests__/store-purity.test.ts',
-            'src/components-v2/wiring/__tests__/keyboard-wiring.test.ts',
-            'src/components-v2/wiring/__tests__/vfo-wiring.test.ts',
-            'src/components-v2/wiring/__tests__/dsp-nr-level.test.ts',
-            'src/components-v2/wiring/__tests__/dsp-nb-depth.test.ts',
-            'src/components-v2/wiring/__tests__/focus-mode-race.test.ts',
-            'src/components-v2/wiring/__tests__/mod-input-wiring.test.ts',
-            'src/components-v2/vfo/__tests__/VfoOps.test.ts',
-            'src/components-v2/panels/__tests__/AudioRoutingControl.test.ts',
-            'src/components-v2/panels/__tests__/ModInputTxWarning.test.ts',
-            'src/lib/stores/radio.svelte.test.ts',
-            'src/lib/runtime/__tests__/frontend-runtime.test.ts',
-            'src/lib/runtime/adapters/__tests__/mod-input-tx-guard.test.ts',
-            'src/lib/runtime/adapters/__tests__/mod-input-auto.test.ts',
-            'src/lib/audio/__tests__/audio-manager.test.ts',
-            'src/lib/radio/pending-focus.test.ts',
-            'src/lib/i18n/__tests__/runtime.test.ts',
-            'src/lib/i18n/__tests__/plural.test.ts',
-            'src/lib/i18n/__tests__/pseudo.test.ts',
+            'src/**/*.isolated.test.ts',
             'src/**/*.component.test.ts',
             'src/**/*.component.svelte.test.ts',
-            // Mirror of the fast-pool exclude additions above: every fast-pool
-            // file doing module-scope ``vi.mock`` runs isolated so its mock is
-            // authoritative and cannot leak under ``isolate: false``. See #771.
-            'src/components-v2/controls/__tests__/BandSelector.test.ts',
-            'src/components-v2/dialogs/__tests__/SendReportDialog.test.ts',
-            'src/components-v2/layout/__tests__/RadioLayout.test.ts',
-            'src/components-v2/layout/__tests__/top-row-visual-regression.test.ts',
-            'src/components-v2/layout/__tests__/vfo-header.test.ts',
-            'src/components-v2/panels/__tests__/DockMeterPanel.test.ts',
-            'src/components-v2/panels/__tests__/DspPanel.test.ts',
-            'src/components-v2/panels/__tests__/FilterPanel.test.ts',
-            'src/components-v2/panels/__tests__/MeterPanel.test.ts',
-            'src/components-v2/panels/__tests__/MetersDockPanel.test.ts',
-            'src/components-v2/panels/__tests__/ModePanel.test.ts',
-            'src/components-v2/panels/__tests__/RitXitPanel.test.ts',
-            'src/components-v2/panels/__tests__/RxAudioPanel.test.ts',
-            'src/components-v2/panels/__tests__/TxPanel.test.ts',
-            'src/components-v2/panels/lcd/__tests__/AmberTelemetryStrip.test.ts',
-            'src/components-v2/panels/lcd/__tests__/lcd-availability.test.ts',
-            'src/components-v2/panels/lcd/__tests__/lcd-components.test.ts',
-            'src/components-v2/panels/vfo/__tests__/DualVfoDisplay.test.ts',
-            'src/components-v2/vfo/__tests__/VfoPanel.test.ts',
-            'src/lib/media/__tests__/media-session.test.ts',
-            'src/lib/radio/mode-filter-memory.test.ts',
-            'src/lib/transport/__tests__/ws-client.test.ts',
-            'src/lib/runtime/tx-controller/__tests__/browser-dependencies.test.ts',
-            'src/lib/runtime/tx-controller/__tests__/browser-dependencies-fault-injection.test.ts',
-            'src/lib/runtime/tx-controller/__tests__/integration-lifecycle-matrix.test.ts',
-            'src/lib/runtime/tx-controller/__tests__/integration-reconnect-dekey-matrix.test.ts',
-            'src/lib/runtime/tx-controller/__tests__/integration-page-lifecycle.test.ts',
           ],
           pool: 'threads',
           isolate: true,

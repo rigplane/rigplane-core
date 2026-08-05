@@ -6,7 +6,7 @@ import { MockWebSocket, instances } from '$lib/transport/__tests__/support/fake-
 // ─── Integration reconnect/de-key matrix — WS-loss recovery ordering and
 // backend-driven de-key/re-key through the REAL stack (MOR-1089 U5) ─────────
 //
-// Sibling of `integration-lifecycle-matrix.test.ts` (U4): same wiring, same
+// Sibling of `integration-lifecycle-matrix.isolated.test.ts` (U4): same wiring, same
 // seam choices, same rationale for why `vi.resetModules()` runs per-`it()`
 // and why this file lives in the isolated pool. See that file's header for
 // the full explanation of the real-WsChannel + real-browser-dependencies +
