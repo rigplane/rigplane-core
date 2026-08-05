@@ -87,6 +87,11 @@
   "core.settings.workspace.noticeReset": "Saved settings could not be read and were reset to defaults.",
   "core.settings.workspace.noticeVersionDiscarded": "Saved settings were from an unsupported version and were reset to defaults.",
   "core.settings.workspace.noticePersistFailed": "The last change could not be saved.",
+  "core.settings.workspace.exportButton": "Export workspace",
+  "core.settings.workspace.importFileLabel": "Import from file",
+  "core.settings.workspace.importPasteLabel": "Or paste workspace JSON",
+  "core.settings.workspace.importButton": "Import",
+  "core.settings.workspace.importRejectedTitle": "Import rejected",
 
   "core.overlay.poweredOff.label": "Radio is powered off",
   "core.overlay.poweredOff.hint": "Use the ON button in the status bar to power up",
