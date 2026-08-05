@@ -181,7 +181,7 @@ import { hasTx } from '$lib/stores/capabilities.svelte';
 // Real-controller harness
 //
 // Copied from MobileRadioLayout.component.svelte.test.ts (itself copied from
-// TxPanel.test.ts). Duplicated rather than shared because the suites live in
+// TxPanel.isolated.test.ts). Duplicated rather than shared because the suites live in
 // different pools and a shared helper module would pin the controller in the
 // ``isolate: false`` cache for siblings that mock it — see vite.config.ts /
 // #771. Keep the copies in step.

@@ -2,7 +2,7 @@
  * MOR-1077 load-time purity. The workspace contract is a PURE module: reading
  * it must never touch storage, the DOM, transport or audio — persistence is
  * MOR-1079's boundary, and the 3A lesson (`lib/runtime/adapters/__tests__/
- * rx-audio-purity.test.ts`) is that a side effect fired at IMPORT is invisible
+ * rx-audio-purity.isolated.test.ts`) is that a side effect fired at IMPORT is invisible
  * to every behavioural assertion made afterwards.
  *
  * Two pins with different, non-interchangeable coverage:

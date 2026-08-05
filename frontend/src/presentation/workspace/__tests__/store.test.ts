@@ -5,7 +5,7 @@
  *
  * Storage is INJECTED (`initWorkspaceStore(fake)`), so no global is stubbed
  * and this file stays in the fast pool. The module-load purity spy pin lives
- * in the sibling `store-purity.test.ts`, which is registered in the isolated
+ * in the sibling `store-purity.isolated.test.ts`, which is registered in the isolated
  * pool (MOR-1272).
  */
 import { beforeEach, describe, expect, it } from 'vitest';

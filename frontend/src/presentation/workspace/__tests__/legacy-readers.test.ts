@@ -3,7 +3,7 @@
  * the fixture matrix (full/legacy-alias/partial/corrupt/empty/mixed-
  * manufacturer snapshots), determinism, and idempotence. Fast pool: no
  * globals stubbed, no modules mocked (MOR-1272) — the read-only/purity pins
- * live in `legacy-readers-purity.test.ts` instead.
+ * live in `legacy-readers-purity.isolated.test.ts` instead.
  */
 import { describe, it, expect } from 'vitest';
 import {
