@@ -37,7 +37,15 @@ const h = vi.hoisted(() => ({
 }));
 
 vi.mock('$lib/runtime', () => ({
-  runtime: { get state() { return h.state; }, get caps() { return h.caps; } },
+  runtime: {
+    get state() { return h.state; },
+    get caps() { return h.caps; },
+    // MOR-1279 slice 3B: the wiring now also hands the adapter an
+    // App-owned RX-audio snapshot (the FOURTH argument). Muted with no
+    // browser stream keeps every fixture below on its pre-1279 path.
+    get audio() { return { muted: true, rxEnabled: false, volume: 0 }; },
+    get connectionAudio() { return false; },
+  },
 }));
 vi.mock('$lib/runtime/tx-controller/app-host', () => ({
   getAppTxController: () => ({
@@ -70,6 +78,10 @@ vi.mock('../command-bus', () => ({
     onCompLevelChange: h.noop, onMonToggle: h.noop,
     onMonLevelChange: h.noop, onDriveGainChange: h.noop,
   }),
+  // MOR-1279 slice 3B: the RX-audio intent vocabulary.
+  makeRxAudioHandlers: () => ({ onMonitorModeChange: h.noop, onAfLevelChange: h.noop }),
+  makeAudioRoutingHandlers: () => ({ onFocusChange: h.noop, onSplitStereoChange: h.noop }),
+  makeModeHandlers: () => ({ onModInputChange: h.noop }),
 }));
 
 import SemanticRadioSurfaces from '../SemanticRadioSurfaces.svelte';
@@ -184,6 +196,17 @@ describe('the meters surface mounts only when the view model carries the group',
     'vfo-surface', 'vfo-active-receiver', 'vfo-list',
     'rx-tx-surface', 'rx-tx-state', 'rx-tx-rf-mark', 'rx-tx-rf-label',
     'rx-tx-target', 'rx-tx-key', 'rx-tx-unkey', 'rx-tx-blocked',
+    // MOR-1279 slice 3B: this fixture's radio DOES have an audio chain
+    // (`audio` + `dual_rx`), so the rxAudio surface legitimately mounts here.
+    // Its own absent-group gate is pinned in
+    // `semantic-rx-audio-wiring.component.test.ts`; what this literal still
+    // kills is an UNGATED txAux/meters mount.
+    'rx-audio-surface', 'rx-audio-monitor',
+    'rx-audio-monitor-local', 'rx-audio-monitor-live', 'rx-audio-monitor-mute',
+    'rx-audio-af', 'rx-audio-af-value',
+    'rx-audio-focus', 'rx-audio-focus-main', 'rx-audio-focus-sub', 'rx-audio-focus-both',
+    'rx-audio-focus-value',
+    'rx-audio-split', 'rx-audio-split-on', 'rx-audio-split-off', 'rx-audio-split-value',
   ];
   const testids = () => [...target.querySelectorAll<HTMLElement>('[data-testid]')]
     .map((el) => el.dataset.testid!)
