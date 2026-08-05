@@ -2,9 +2,11 @@
  * MOR-1072 registry: the two frozen family IDs (`studioline`/`fieldline`,
  * MOR-977 §4.6) are registered as declarations, and the registry does not
  * hardcode a family count — a third, hypothetical family registers and
- * validates the same way. MOR-1073 gave studioline its renderers; fieldline
- * is still renderer-less, which keeps the "zero renderers declared" fallback
- * path under test with a real declaration rather than only a fixture.
+ * validates the same way. MOR-1073 gave studioline its renderers and MOR-1074
+ * gave fieldline its own, so BOTH declared families now fill every slot — the
+ * "zero renderers declared" fallback path is exercised by the shared fixture
+ * (`validManifest`) and by `renderer-contract.test.ts`, which is where it
+ * belongs now that no real family is renderer-less.
  */
 import { describe, it, expect } from 'vitest';
 import {
@@ -20,9 +22,19 @@ describe('the two frozen v3 declarations', () => {
     expect(getDesignLanguage('fieldline')).toBe(fieldline);
   });
 
-  it('studioline declares every renderer slot (MOR-1073); fieldline none yet (MOR-1074)', () => {
+  it('both declared families fill every renderer slot (MOR-1073, MOR-1074)', () => {
     expect(Object.keys(studioline.renderers).sort()).toEqual([...RENDERER_SLOT_NAMES].sort());
-    expect(fieldline.renderers).toEqual({});
+    expect(Object.keys(fieldline.renderers).sort()).toEqual([...RENDERER_SLOT_NAMES].sort());
+  });
+
+  // The inventory row that makes "second language" mean something: the two
+  // families occupy the same slots with DIFFERENT implementations, so no slot
+  // is silently shared and no family is a re-export of the other.
+  it('no renderer instance is shared between the two families', () => {
+    for (const slot of RENDERER_SLOT_NAMES) {
+      expect(fieldline.renderers[slot]).toBeDefined();
+      expect(fieldline.renderers[slot]).not.toBe(studioline.renderers[slot]);
+    }
   });
 
   it('fieldline clamps out "dense" (MOR-977 §4.4)', () => {
