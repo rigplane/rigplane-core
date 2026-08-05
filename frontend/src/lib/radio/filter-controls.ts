@@ -8,6 +8,7 @@
 // PBT raw <-> display conversion
 // Reads range from capabilities if available, falls back to IC-7610 defaults
 import { getControlRange } from '$lib/stores/capabilities.svelte';
+import type { Capabilities } from '$lib/types/capabilities';
 
 export const FILTER_BIPOLAR_MIN = -1200;
 export const FILTER_BIPOLAR_MAX = 1200;
@@ -18,7 +19,9 @@ export const FILTER_WIDTH_STEP = 50;
 // Default PBT range (IC-7610 / standard CI-V)
 const PBT_DEFAULTS = { rawCenter: 128, displayMin: -1200, displayMax: 1200 } as const;
 
-function pbtRange() {
+export type PbtRange = { rawCenter: number; displayMin: number; displayMax: number };
+
+function pbtRange(): PbtRange {
   try {
     const ctrl = getControlRange('pbt_inner');
     if (
@@ -39,8 +42,38 @@ function pbtRange() {
   return PBT_DEFAULTS;
 }
 
-export function pbtRawToHz(raw: number): number {
-  const { rawCenter, displayMax } = pbtRange();
+/**
+ * Derives a `PbtRange` explicitly from a `Capabilities` object's own
+ * `controls.pbt_inner` entry (MOR-1284 F1) — the same shape `pbtRange()`
+ * reads from the capabilities STORE singleton, but sourced from an argument
+ * a caller already has in hand rather than a module-global. Returns
+ * `undefined` when the caps object carries no usable range, so `pbtRawToHz`/
+ * `pbtHzToRaw` fall through to their own store-lookup default.
+ */
+export function pbtRangeFromCaps(caps: Capabilities | null | undefined): PbtRange | undefined {
+  const ctrl = caps?.controls?.pbt_inner;
+  if (
+    ctrl &&
+    ctrl.raw_center !== undefined &&
+    ctrl.display_min !== undefined &&
+    ctrl.display_max !== undefined
+  ) {
+    return { rawCenter: ctrl.raw_center, displayMin: ctrl.display_min, displayMax: ctrl.display_max };
+  }
+  return undefined;
+}
+
+/**
+ * `range`, when supplied (MOR-1284 F1), is used INSTEAD of the capabilities
+ * STORE lookup — pass `pbtRangeFromCaps(caps)` from a caller that already
+ * holds a `caps` argument so the conversion is a pure function of that
+ * argument rather than a hidden dependency on module-global store state
+ * (the fabrication class MOR-1280's F2 fix closed for filterWidthMin/Max).
+ * Every EXISTING call site omits `range` and keeps today's store-lookup
+ * behavior unchanged — this parameter is strictly additive.
+ */
+export function pbtRawToHz(raw: number, range?: PbtRange): number {
+  const { rawCenter, displayMax } = range ?? pbtRange();
   return Math.round((raw - rawCenter) * (displayMax / rawCenter));
 }
 

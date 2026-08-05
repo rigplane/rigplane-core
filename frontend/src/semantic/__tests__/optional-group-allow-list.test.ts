@@ -41,8 +41,11 @@ const REQUIRED_KEYS = [
 ] as const;
 
 /** MOR-1244: txAux. MOR-1262 slice 2A: meters. Slice 3A: rxAudio. Slice 4A:
- *  modeFilter. Add your key here when your family's slice lands. */
-const EXPECTED_OPTIONAL_GROUP_KEYS = ['txAux', 'meters', 'rxAudio', 'modeFilter'] as const;
+ *  modeFilter. Slice 4A′: filterPassband. Add your key here when your
+ *  family's slice lands. */
+const EXPECTED_OPTIONAL_GROUP_KEYS = [
+  'txAux', 'meters', 'rxAudio', 'modeFilter', 'filterPassband',
+] as const;
 
 function extractTopLevelAllowList(): string[] {
   // `.toString()` on a Vite/esbuild-transformed function returns the SSR-

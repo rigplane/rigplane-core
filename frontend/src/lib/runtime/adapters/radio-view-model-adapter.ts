@@ -29,11 +29,13 @@ import type {
   RadioViewModel, TxAuxField, TxAuxViewModel, AtuStatus,
   MeterField, MeterRfState, MetersViewModel,
   AudioFocus, MonitorMode, RxAudioViewModel, ModeFilterViewModel,
+  FilterPassbandViewModel,
 } from '../../../semantic/radio-view-model';
 import type { TxAuthoritySnapshot } from '../../../semantic/rx-tx-surface';
 import { isFieldAvailable } from '$lib/state/field-status';
 import { modInputStateKey } from '$lib/radio/mod-input';
 import { resolveFilterModeConfig } from '$lib/runtime/props/panel-props';
+import { deriveIfShift, pbtRangeFromCaps, pbtRawToHz } from '$lib/radio/filter-controls';
 import {
   derivePresentationCapabilities, type ReceiverId, type VfoSlotId,
 } from './presentation-capabilities';
@@ -323,6 +325,93 @@ function deriveModeFilter(
 }
 
 /**
+ * Filter-passband facts (MOR-1262 decomposition slice 4A′, MOR-1284): filter
+ * shape, IF-shift, PBT inner/outer, DATA-mode. A separate group from
+ * `deriveModeFilter` — see `FilterPassbandViewModel`'s doc comment.
+ *
+ * Evidence gate, per field, following the same "capability-based where the
+ * raw field is required-and-signal-free; observed-based operational gate
+ * otherwise" split 4A used:
+ *  - `dataMode` is a REQUIRED field (`ReceiverStatePublic.dataMode: number`,
+ *    always present) — same story as 4A's `mode`/`filter`: structural is
+ *    `hasCap(caps, 'data_mode')` (`toModeProps`'s own `hasDataMode` gate),
+ *    never "was it observed".
+ *  - `filterShape` is OPTIONAL and undeclared by any capability tag of its
+ *    own; it is part of the same filter subsystem 4A's `filterWidth` is, so
+ *    its structural gate is the SAME `hasFilters` signal that field uses.
+ *  - `pbtInner`/`pbtOuter` are OPTIONAL, gated on `hasCap(caps, 'pbt')` —
+ *    `toFilterProps`'s own `hasPbt` capability, verbatim.
+ *  - `ifShift` mirrors `toFilterProps`'s own conditional BYTE-FOR-BYTE: a
+ *    radio with the `if_shift` capability reports its own raw field; one
+ *    without it, but WITH `pbt`, gets `deriveIfShift(pbtInner, pbtOuter)` —
+ *    the ONE shipped fallback, not a re-derivation. Structural is therefore
+ *    the OR of both paths (same "real OR, not a stand-in for AND" discipline
+ *    `deriveRxAudio`'s `hasAfLevel` uses); operational for the derived path
+ *    requires BOTH pbtInner AND pbtOuter to be honestly observed — deriving
+ *    from one observed and one silently-defaulted-to-128 input is exactly
+ *    the fabrication `deriveModeFilter`'s F2 fix forbids, so neither pbtInner
+ *    nor pbtOuter nor ifShift ever computes over the OTHER field's ` ?? 128`
+ *    fallback the way `toFilterProps` does.
+ */
+function deriveFilterPassband(
+  state: ServerState | null, caps: Capabilities | null,
+): FilterPassbandViewModel | undefined {
+  if (!caps) return undefined;
+  const hasFilters = (caps.filters ?? []).length > 0;
+  const hasPbtCap = hasCap(caps, 'pbt');
+  const hasIfShiftCap = hasCap(caps, 'if_shift');
+  const hasDataModeCap = hasCap(caps, 'data_mode');
+  if (!hasFilters && !hasPbtCap && !hasIfShiftCap && !hasDataModeCap) return undefined;
+
+  const onSub = state?.active === 'SUB';
+  const rx = onSub ? state?.sub : state?.main;
+  const base = onSub ? 'sub.' : 'main.';
+
+  const filterShapeObserved = topFieldAvailable(state, `${base}filterShape`);
+  const dataModeObserved = topFieldAvailable(state, `${base}dataMode`);
+  const pbtInnerObserved = topFieldAvailable(state, `${base}pbtInner`);
+  const pbtOuterObserved = topFieldAvailable(state, `${base}pbtOuter`);
+  const ifShiftRawObserved = topFieldAvailable(state, `${base}ifShift`);
+
+  // The ONE shipped PBT raw->Hz conversion (`pbtRawToHz`, `$lib/radio/filter-
+  // controls`) — called with the range explicitly derived from THIS
+  // function's own `caps` argument (`pbtRangeFromCaps`, MOR-1284 F1), not the
+  // capabilities STORE singleton `pbtRawToHz` otherwise falls back to. A
+  // store-sourced scale would make these facts a function of module-global
+  // state rather than of `(state, caps)` — identical arguments could yield
+  // different facts across store writes, and worse, a radio whose OWN caps
+  // already declare a non-default scale would read a confidently-wrong
+  // `{known}` value from an unrelated (e.g. still-unpopulated) store. See the
+  // doc comment above and the parity pin in
+  // `__tests__/filter-passband-adapter.test.ts`. Computed only from the
+  // field's OWN raw value — never from a `?? 128` stand-in — so an unobserved
+  // pbtInner/pbtOuter never silently seeds a derived ifShift.
+  const pbtScale = pbtRangeFromCaps(caps);
+  const pbtInnerRaw = numOrUndef(rx?.pbtInner);
+  const pbtOuterRaw = numOrUndef(rx?.pbtOuter);
+  const pbtInnerHz = pbtInnerRaw !== undefined ? pbtRawToHz(pbtInnerRaw, pbtScale) : undefined;
+  const pbtOuterHz = pbtOuterRaw !== undefined ? pbtRawToHz(pbtOuterRaw, pbtScale) : undefined;
+
+  const ifShiftStructural = hasIfShiftCap || hasPbtCap;
+  const ifShiftOperational = hasIfShiftCap
+    ? ifShiftRawObserved
+    : (pbtInnerObserved && pbtOuterObserved);
+  const ifShiftValue = hasIfShiftCap
+    ? numOrUndef(rx?.ifShift)
+    : (pbtInnerHz !== undefined && pbtOuterHz !== undefined
+      ? deriveIfShift(pbtInnerHz, pbtOuterHz)
+      : undefined);
+
+  return {
+    filterShape: txAuxField(hasFilters, filterShapeObserved, numOrUndef(rx?.filterShape)),
+    ifShift: txAuxField(ifShiftStructural, ifShiftOperational, ifShiftValue),
+    pbtInner: txAuxField(hasPbtCap, pbtInnerObserved, pbtInnerHz),
+    pbtOuter: txAuxField(hasPbtCap, pbtOuterObserved, pbtOuterHz),
+    dataMode: txAuxField(hasDataModeCap, dataModeObserved, numOrUndef(rx?.dataMode)),
+  };
+}
+
+/**
  * The App-owned RX-audio snapshot the `rxAudio` facts are read against
  * (MOR-1262 slice 3A). It is an INPUT, deliberately: audio lifetime belongs to
  * the App (MOR-1058) and building a view model must never open, start or probe
@@ -552,6 +641,7 @@ export function toRadioViewModel(
   const meters = deriveMeters(state, caps, tx);
   const rxAudio = deriveRxAudio(state, caps, facts, modInputSource, rxAudioSnapshot);
   const modeFilter = deriveModeFilter(state, caps);
+  const filterPassband = deriveFilterPassband(state, caps);
 
   return {
     topologyId: `${topology.structuralCount}/${topology.scheme}`,
@@ -568,5 +658,6 @@ export function toRadioViewModel(
     ...(meters !== undefined ? { meters } : {}),
     ...(rxAudio !== undefined ? { rxAudio } : {}),
     ...(modeFilter !== undefined ? { modeFilter } : {}),
+    ...(filterPassband !== undefined ? { filterPassband } : {}),
   };
 }
