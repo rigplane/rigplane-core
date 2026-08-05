@@ -463,9 +463,9 @@ export function withScan(fixture: RadioViewModel): RadioViewModel {
 }
 
 /**
- * Applies a fully-observed `scopeControls` group (MOR-1262 slice 11A,
- * MOR-1298) to any topology fixture — same composable-axis story as
- * `withScan`/`withCwKeyer` above.
+ * Applies a fully-observed `scopeControls` group (MOR-1262 slice 11A/
+ * MOR-1298, extended by slice 11A′/MOR-1299) to any topology fixture — same
+ * composable-axis story as `withScan`/`withCwKeyer` above.
  */
 export function withScopeControls(fixture: RadioViewModel): RadioViewModel {
   const avail: Availability = { structural: true, operational: true };
@@ -473,8 +473,12 @@ export function withScopeControls(fixture: RadioViewModel): RadioViewModel {
     { reading: { status: 'known', value }, availability: avail }
   );
   const scopeControls: ScopeControlsViewModel = {
+    mode: known(0),
+    edge: known(1),
     span: known(3),
     speed: known(1),
+    hold: known(false),
+    refDb: known(0),
     dual: known(false),
     receiver: known(0),
   };

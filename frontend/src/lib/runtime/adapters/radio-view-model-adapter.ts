@@ -922,7 +922,8 @@ function deriveCwKeyerReasons(
 }
 
 /**
- * Scope-control facts (MOR-1262 decomposition slice 11A, MOR-1298). See
+ * Scope-control facts (MOR-1262 decomposition slice 11A/MOR-1298, extended
+ * by slice 11A′/MOR-1299 with mode/edge/hold/refDb). See
  * `ScopeControlsViewModel`'s doc comment for the field set, the parity
  * story against `SpectrumToolbar.svelte`'s own `scopeControls?.<leaf> ??
  * <default>` reads, and the doubly-applied X6200 capability-gating lesson.
@@ -934,11 +935,13 @@ function deriveCwKeyerReasons(
  * scope-adjacent state that reports independently of the `scope` capability
  * the way TX telemetry does.
  *
- * `span`/`speed` are structurally available whenever the group is (every
- * scope-bearing single-RX radio supports them); `dual`/`receiver`
- * additionally require `hasCap(caps, 'dual_rx')` — the only generic tag
- * available to gate "does dual-scope / receiver-select make sense here"
- * without a radio-specific table.
+ * `mode`/`edge`/`span`/`speed`/`hold`/`refDb` are structurally available
+ * whenever the group is (every scope-bearing single-RX radio supports them
+ * — the backend spec declares all six as read-only ingress leaves with no
+ * additional capability distinction); `dual`/`receiver` additionally
+ * require `hasCap(caps, 'dual_rx')` — the only generic tag available to
+ * gate "does dual-scope / receiver-select make sense here" without a
+ * radio-specific table.
  */
 function deriveScopeControls(
   state: ServerState | null, caps: Capabilities | null,
@@ -947,8 +950,12 @@ function deriveScopeControls(
   const hasReceiverSelect = hasCap(caps, 'dual_rx');
   const sc = state?.scopeControls;
   return {
+    mode: txAuxField(true, topFieldAvailable(state, 'scopeControls.mode'), numOrUndef(sc?.mode)),
+    edge: txAuxField(true, topFieldAvailable(state, 'scopeControls.edge'), numOrUndef(sc?.edge)),
     span: txAuxField(true, topFieldAvailable(state, 'scopeControls.span'), numOrUndef(sc?.span)),
     speed: txAuxField(true, topFieldAvailable(state, 'scopeControls.speed'), numOrUndef(sc?.speed)),
+    hold: txAuxField(true, topFieldAvailable(state, 'scopeControls.hold'), boolOrUndef(sc?.hold)),
+    refDb: txAuxField(true, topFieldAvailable(state, 'scopeControls.refDb'), numOrUndef(sc?.refDb)),
     dual: txAuxField(
       hasReceiverSelect, topFieldAvailable(state, 'scopeControls.dual'), boolOrUndef(sc?.dual),
     ),
