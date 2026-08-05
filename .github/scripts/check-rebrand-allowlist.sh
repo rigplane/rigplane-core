@@ -95,6 +95,10 @@ ALLOWLIST=(
     # routing behavior (reconciliation, retain-outside, sentinel names) and
     # must therefore spell the historical key names verbatim. Test-only.
     'frontend/src/presentation/workspace/__tests__/selection-adoption.test.ts'
+    # MOR-1083: the workspace verification gate seeds historical pre-v2
+    # localStorage snapshots (`icom-lan:*` keys) verbatim to prove the
+    # migration reads/retains them byte-for-byte. Test-only, read-only.
+    'frontend/src/presentation/workspace/__tests__/workspace-compatibility-verification.test.ts'
 )
 
 # Collect all files matching brand pattern.
