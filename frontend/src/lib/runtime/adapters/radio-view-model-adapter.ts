@@ -30,10 +30,13 @@ import type {
   MeterField, MeterRfState, MetersViewModel,
   AudioFocus, MonitorMode, RxAudioViewModel, ModeFilterViewModel,
   FilterPassbandViewModel, DspViewModel, RfFrontEndViewModel,
+  BandChoice, BandViewModel,
 } from '../../../semantic/radio-view-model';
 import type { TxAuthoritySnapshot } from '../../../semantic/rx-tx-surface';
 import { isFieldAvailable } from '$lib/state/field-status';
 import { modInputStateKey } from '$lib/radio/mod-input';
+import { flattenBands, findActiveBand } from '$lib/radio/band-plan';
+import { getFrequencyPermit, type TxPermit } from '$lib/utils/tx-permit';
 import { resolveFilterModeConfig } from '$lib/runtime/props/panel-props';
 import {
   deriveIfShift, pbtRangeFromCaps, pbtRawToHz,
@@ -609,6 +612,123 @@ function deriveRfFrontEndMutex(rfFrontEnd: RfFrontEndViewModel | undefined): Rea
 }
 
 /**
+ * Band facts (MOR-1262 decomposition slice 7A, MOR-1294): current band, the
+ * capability-derived band choice set with its per-band TX permits, and the
+ * tuning envelope frequency entry validates against. A separate group from
+ * `rfFrontEnd` — family enumeration is explicit and CLOSED.
+ *
+ * Evidence gate (N3), purely caps-driven like `deriveRfFrontEnd`'s: no
+ * declared `freqRanges` ⇒ NO group. `freqRanges` is a REQUIRED capability
+ * field (always present, possibly empty), so "was it observed" carries no
+ * evidence here — the same reasoning `deriveModeFilter` applies to
+ * `modes`/`filters`. There is no `band`/`band_select` capability TAG to gate
+ * on: the shipped `BandSelector.svelte` gates purely on `freqRanges` being
+ * non-empty, and that gate is copied rather than replaced.
+ *
+ * `flattenBands`/`findActiveBand` are the ONE shipped band-plan derivation
+ * (`$lib/radio/band-plan`, moved there from `components-v2/controls/band-utils`
+ * by this slice precisely so it could be CONSUMED rather than forked) —
+ * called with `caps.freqRanges` from THIS request's own `caps` argument, not
+ * the capabilities STORE singleton the v2 callers read (`getCapabilities()?.
+ * freqRanges ?? []`). Same discipline as `filterPassband`'s `pbtRangeFromCaps`
+ * (MOR-1284 F1) and `dsp`'s `controlRangeFromCapsOrDefault` (MOR-1290 F1): a
+ * fact-layer value is a pure function of `(state, caps)`, never of
+ * module-global state that can differ from the `caps` already in hand.
+ *
+ * SAFETY (MOR-1294). Every permit here comes from `getFrequencyPermit(hz,
+ * caps.txBands)`, the SAME single derivation `deriveTxCapabilities` calls for
+ * the model's top-level `txPermit`. What differs between the two permit facts
+ * is only the FREQUENCY ARGUMENT, and that difference is the whole point:
+ *  - `bandChoices[].defaultHzTxPermit` samples the band's own `defaultHz` —
+ *    the picker label, "may I key where selecting this band lands me".
+ *  - `currentBandTx` samples the LIVE observed frequency — "may I key right
+ *    now". It is NEVER inherited from the point sample above (verify F1): a
+ *    `txBands` segment narrower than its band-plan band (WARC segments,
+ *    regional sub-bands, 60m channels) makes the inherited answer fail OPEN,
+ *    e.g. live 14.300 MHz reading `allowed` off a 14.000–14.150 allocation
+ *    whose 14.074 default happens to be inside. Same derivation, correct
+ *    argument — not a second derivation.
+ *
+ * Two things this deliberately does NOT do:
+ *  - it never treats a band's presence in the PLAN as permission to key. The
+ *    plan (`freqRanges`) is what the radio can TUNE; `caps.txBands` is where
+ *    it may TRANSMIT, and they routinely differ (a general-coverage receiver
+ *    tunes far outside its TX allocations). Reading permission off the plan
+ *    is the fail-open defect the slice's safety note names.
+ *  - it never states a permit on unknown input. `currentBandTx` is `'allowed'`
+ *    only when the current band is POSITIVELY known, has a choice entry, AND
+ *    the live-frequency permit is POSITIVELY `allowed`; everything else
+ *    collapses to `'denied'` exactly as the shipped `getTxPermit` does
+ *    ("unknown fails closed", `$lib/utils/tx-permit`). An unknown input must
+ *    not enable a TX-adjacent affordance. `validateRadioViewModel` enforces
+ *    the known-band half of that invariant structurally.
+ */
+function deriveBand(
+  state: ServerState | null, caps: Capabilities | null,
+): BandViewModel | undefined {
+  if (!caps) return undefined;
+  const freqRanges = caps.freqRanges ?? [];
+  if (freqRanges.length === 0) return undefined;
+
+  const bandChoices: BandChoice[] = flattenBands(freqRanges)
+    // A band whose boundaries or default frequency are not finite numbers is
+    // OMITTED rather than emitted with a fabricated value: there is no
+    // frequency to tune to and therefore no permit to state. Omission is the
+    // fail-closed outcome — `currentBandTx` finds no entry for such a band
+    // and reads 'denied' even when `findActiveBand` still names it.
+    .filter((band) => [band.start, band.end, band.defaultFreq].every((hz) => numOrUndef(hz) !== undefined))
+    .map((band) => ({
+      name: band.name,
+      startHz: band.start,
+      endHz: band.end,
+      defaultHz: band.defaultFreq,
+      // `?? null` is the contract's own "no BSR index declared", not a
+      // fabricated 0 — index 0 is a real band-stacking register on Icom rigs.
+      bsrCode: numOrUndef(band.bsrCode) ?? null,
+      // POINT SAMPLE at defaultHz — the picker label, never the live answer.
+      defaultHzTxPermit: getFrequencyPermit(band.defaultFreq, caps.txBands),
+    }));
+
+  const onSub = state?.active === 'SUB';
+  const rx = onSub ? state?.sub : state?.main;
+  const freqObserved = topFieldAvailable(state, onSub ? 'sub.freqHz' : 'main.freqHz');
+  const freqHz = numOrUndef(rx?.freqHz);
+  // Never over a `?? 14074000` stand-in, where the shipped `toBandSelectorProps`
+  // fabricates exactly that; an unobserved or plan-less frequency stays unknown.
+  const currentName = freqObserved && freqHz !== undefined
+    ? findActiveBand(freqHz, freqRanges) ?? undefined
+    : undefined;
+  const currentBand = txAuxField(bandChoices.length > 0, freqObserved, currentName);
+  const reading = currentBand.reading;
+  const currentChoice = reading.status === 'known'
+    ? bandChoices.find((band) => band.name === reading.value)
+    : undefined;
+  // THE LIVE-FREQUENCY PERMIT (verify F1). Evaluated at `freqHz`, the
+  // frequency the operator is actually on — never inherited from
+  // `currentChoice.defaultHzTxPermit`, which only samples the band's default.
+  // The `currentChoice`/`reading` conjunction is fail-closed reinforcement,
+  // not the permit itself: a frequency inside `txBands` but outside every
+  // plan band, or inside a band whose entry was dropped as malformed, still
+  // reads 'denied' (and would otherwise break the contract's own
+  // "allowed ⇒ currentBand known" invariant).
+  const liveFreqPermit = freqObserved && freqHz !== undefined
+    ? getFrequencyPermit(freqHz, caps.txBands)
+    : getFrequencyPermit(null, caps.txBands);
+  const currentBandTx: TxPermit = reading.status === 'known' && currentChoice !== undefined
+    && liveFreqPermit.status === 'allowed' ? 'allowed' : 'denied';
+
+  const starts = freqRanges.map((range) => range.start).filter((hz) => Number.isFinite(hz));
+  const ends = freqRanges.map((range) => range.end).filter((hz) => Number.isFinite(hz));
+  return {
+    currentBand,
+    bandChoices,
+    currentBandTx,
+    tuneMinHz: starts.length > 0 ? Math.min(...starts) : null,
+    tuneMaxHz: ends.length > 0 ? Math.max(...ends) : null,
+  };
+}
+
+/**
  * The App-owned RX-audio snapshot the `rxAudio` facts are read against
  * (MOR-1262 slice 3A). It is an INPUT, deliberately: audio lifetime belongs to
  * the App (MOR-1058) and building a view model must never open, start or probe
@@ -841,6 +961,7 @@ export function toRadioViewModel(
   const filterPassband = deriveFilterPassband(state, caps);
   const dsp = deriveDsp(state, caps);
   const rfFrontEnd = deriveRfFrontEnd(state, caps);
+  const band = deriveBand(state, caps);
   const rfFrontEndMutex = deriveRfFrontEndMutex(rfFrontEnd);
   if (rfFrontEndMutex) disabledReasons.push(rfFrontEndMutex);
 
@@ -862,5 +983,6 @@ export function toRadioViewModel(
     ...(filterPassband !== undefined ? { filterPassband } : {}),
     ...(dsp !== undefined ? { dsp } : {}),
     ...(rfFrontEnd !== undefined ? { rfFrontEnd } : {}),
+    ...(band !== undefined ? { band } : {}),
   };
 }

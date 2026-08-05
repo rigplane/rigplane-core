@@ -1,44 +1,9 @@
-import type { FreqRange } from '$lib/types/capabilities';
-
-export interface FlatBand {
-  name: string;
-  defaultFreq: number;
-  start: number;
-  end: number;
-  bsrCode?: number;
-}
-
 /**
- * Flatten all bands from all freq ranges into a single ordered array.
- * Ranges and bands within each range appear in the order defined in the config.
+ * Re-export shim (MOR-1294). The implementations moved to
+ * `$lib/radio/band-plan` so the `band` fact group's adapter can consume them
+ * — `lib/runtime/**` may not import from `components-v2/**` (eslint zone),
+ * and a second copy of the band-plan lookup is exactly the forked derivation
+ * the fact layer exists to prevent. Every existing importer of this module
+ * keeps working unchanged; see `band-plan.ts` for the doc comments.
  */
-export function flattenBands(freqRanges: FreqRange[]): FlatBand[] {
-  const result: FlatBand[] = [];
-  for (const range of freqRanges) {
-    for (const band of range.bands ?? []) {
-      result.push({
-        name: band.name,
-        defaultFreq: band.default,
-        start: band.start,
-        end: band.end,
-        bsrCode: band.bsrCode,
-      });
-    }
-  }
-  return result;
-}
-
-/**
- * Find the band name whose [start, end] range contains `freq`.
- * Returns null if no band matches.
- */
-export function findActiveBand(freq: number, freqRanges: FreqRange[]): string | null {
-  for (const range of freqRanges) {
-    for (const band of range.bands ?? []) {
-      if (freq >= band.start && freq <= band.end) {
-        return band.name;
-      }
-    }
-  }
-  return null;
-}
+export { flattenBands, findActiveBand, type FlatBand } from '$lib/radio/band-plan';
