@@ -14,11 +14,14 @@
  * topology, so it can be applied to any of the four fixtures below.
  */
 import type {
+  AntennaField, AntennaViewModel,
   Availability, BandField, BandViewModel,
   DspField, DspViewModel, FilterPassbandField, FilterPassbandViewModel,
   MeterField, MeterRfState, MetersViewModel,
   ModeFilterField, ModeFilterViewModel,
-  ModInputReadiness, RadioViewModel, RfFrontEndField, RfFrontEndViewModel, RxAudioField, RxAudioViewModel,
+  ModInputReadiness, RadioViewModel, RfFrontEndField, RfFrontEndViewModel,
+  RitXitField, RitXitViewModel, RxAudioField, RxAudioViewModel,
+  ScanField, ScanViewModel,
   TxAuxField, TxAuxViewModel,
 } from '../radio-view-model';
 
@@ -377,4 +380,53 @@ export function withBand(
     tuneMaxHz: 60000000,
   };
   return { ...fixture, band };
+}
+
+/**
+ * Applies a fully-observed `ritXit` group (MOR-1262 slice 8A, MOR-1295) to
+ * any topology fixture — same composable-axis story as `withBand`/
+ * `withRfFrontEnd` above.
+ */
+export function withRitXit(fixture: RadioViewModel): RadioViewModel {
+  const avail: Availability = { structural: true, operational: true };
+  const known = <T>(value: T): RitXitField<T> => ({ reading: { status: 'known', value }, availability: avail });
+  const ritXit: RitXitViewModel = {
+    ritActive: known(true),
+    ritOffset: known(250),
+    xitActive: known(false),
+    xitOffset: known(250),
+  };
+  return { ...fixture, ritXit };
+}
+
+/**
+ * Applies a fully-observed `antenna` group (MOR-1262 slice 8A, MOR-1295) to
+ * any topology fixture — same composable-axis story as `withBand`/
+ * `withRfFrontEnd` above.
+ */
+export function withAntenna(fixture: RadioViewModel): RadioViewModel {
+  const avail: Availability = { structural: true, operational: true };
+  const known = <T>(value: T): AntennaField<T> => ({ reading: { status: 'known', value }, availability: avail });
+  const antenna: AntennaViewModel = {
+    txAntenna: known(1),
+    rxAnt: known(false),
+    antennaCount: 2,
+  };
+  return { ...fixture, antenna };
+}
+
+/**
+ * Applies a fully-observed `scan` group (MOR-1262 slice 8A, MOR-1295) to any
+ * topology fixture — same composable-axis story as `withBand`/
+ * `withRfFrontEnd` above.
+ */
+export function withScan(fixture: RadioViewModel): RadioViewModel {
+  const avail: Availability = { structural: true, operational: true };
+  const known = <T>(value: T): ScanField<T> => ({ reading: { status: 'known', value }, availability: avail });
+  const scan: ScanViewModel = {
+    scanning: known(false),
+    scanType: known(0x01),
+    scanResumeMode: known(0),
+  };
+  return { ...fixture, scan };
 }

@@ -30,7 +30,7 @@ import type {
   MeterField, MeterRfState, MetersViewModel,
   AudioFocus, MonitorMode, RxAudioViewModel, ModeFilterViewModel,
   FilterPassbandViewModel, DspViewModel, RfFrontEndViewModel,
-  BandChoice, BandViewModel,
+  BandChoice, BandViewModel, RitXitViewModel, AntennaViewModel, ScanViewModel,
 } from '../../../semantic/radio-view-model';
 import type { TxAuthoritySnapshot } from '../../../semantic/rx-tx-surface';
 import { isFieldAvailable } from '$lib/state/field-status';
@@ -729,6 +729,92 @@ function deriveBand(
 }
 
 /**
+ * RIT/XIT facts (MOR-1262 decomposition slice 8A, MOR-1295): the RIT/XIT
+ * enables and their shared frequency offset. A separate group from `txAux`
+ * — RIT/XIT is not a TX-adjacent control (it offsets the RX/TX pair without
+ * transmitting), and family enumeration stays explicit and closed.
+ *
+ * Evidence gate (N3), purely caps-driven: `hasCap(caps, 'rit'|'xit')` — the
+ * shipped `RitXitPanel`'s own `shouldShowPanel(hasRit, hasXit)` gate,
+ * verbatim, no raw-field fallback (same shape as `deriveBand`'s
+ * `freqRanges`-only gate).
+ *
+ * `ritOffset`/`xitOffset` deliberately read the SAME raw field
+ * (`state.ritFreq`) and the SAME freshness signal — see `RitXitViewModel`'s
+ * doc comment for why duplicating, not deriving one from the other, is the
+ * parity-correct shape.
+ */
+function deriveRitXit(state: ServerState | null, caps: Capabilities | null): RitXitViewModel | undefined {
+  const hasRitCap = hasCap(caps, 'rit');
+  const hasXitCap = hasCap(caps, 'xit');
+  if (!hasRitCap && !hasXitCap) return undefined;
+  const offsetObserved = topFieldAvailable(state, 'ritFreq');
+  const offsetRaw = numOrUndef(state?.ritFreq);
+  return {
+    ritActive: txAuxField(hasRitCap, topFieldAvailable(state, 'ritOn'), boolOrUndef(state?.ritOn)),
+    ritOffset: txAuxField(hasRitCap, offsetObserved, offsetRaw),
+    xitActive: txAuxField(hasXitCap, topFieldAvailable(state, 'ritTx'), boolOrUndef(state?.ritTx)),
+    xitOffset: txAuxField(hasXitCap, offsetObserved, offsetRaw),
+  };
+}
+
+/**
+ * Antenna facts (MOR-1262 decomposition slice 8A, MOR-1295): selected TX
+ * antenna port, the port-dependent RX-antenna override, and the declared
+ * port count. See `AntennaViewModel`'s doc comment for why ATU/tuner state
+ * is deliberately absent (family 1, `txAux.atu`) and why `antennaCount` is
+ * this group's whole evidence gate.
+ *
+ * `rxAnt` selects `rxAntenna1`/`rxAntenna2` by the RAW `txAntenna` reading —
+ * `toAntennaProps`'s own `txAntenna === 2 ? rxAntenna2 : rxAntenna1` — and,
+ * per the "never derive from a half-observed pair" lesson (4A′/5A), is
+ * operational only when `txAntenna` ITSELF was honestly observed; an
+ * unobserved port never silently resolves to port 1's reading.
+ */
+function deriveAntenna(state: ServerState | null, caps: Capabilities | null): AntennaViewModel | undefined {
+  const antennaCount = caps?.antennas ?? 0;
+  if (antennaCount <= 1) return undefined;
+  const hasRxAntennaCap = hasCap(caps, 'rx_antenna');
+  const txAntennaObserved = topFieldAvailable(state, 'txAntenna');
+  const txAntennaRaw = numOrUndef(state?.txAntenna);
+  const rxAntennaRaw = txAntennaRaw === 2 ? state?.rxAntenna2 : state?.rxAntenna1;
+  const rxAntennaObserved = txAntennaObserved && txAntennaRaw !== undefined
+    && topFieldAvailable(state, txAntennaRaw === 2 ? 'rxAntenna2' : 'rxAntenna1');
+  return {
+    txAntenna: txAuxField(true, txAntennaObserved, txAntennaRaw),
+    rxAnt: txAuxField(hasRxAntennaCap, rxAntennaObserved, boolOrUndef(rxAntennaRaw)),
+    antennaCount,
+  };
+}
+
+/**
+ * Scan facts (MOR-1262 decomposition slice 8A, MOR-1295): scanning, scan
+ * type, and the masked resume mode. No capability tag exists for `scan`
+ * anywhere in v2 (the shipped `ScanPanel` renders unconditionally), so —
+ * like `deriveMeters` — evidence is per-field "was this ever reported",
+ * not a capability check; see `ScanViewModel`'s doc comment.
+ */
+function deriveScan(state: ServerState | null): ScanViewModel | undefined {
+  const raw = [state?.scanning, state?.scanType, state?.scanResumeMode];
+  if (!raw.some((v) => v !== undefined)) return undefined;
+  const resumeRaw = numOrUndef(state?.scanResumeMode);
+  return {
+    scanning: txAuxField(
+      state?.scanning !== undefined, topFieldAvailable(state, 'scanning'), boolOrUndef(state?.scanning),
+    ),
+    scanType: txAuxField(
+      state?.scanType !== undefined, topFieldAvailable(state, 'scanType'), numOrUndef(state?.scanType),
+    ),
+    // The shipped `& 0x0F` mask (`toScanProps`), applied verbatim — the raw
+    // field carries a direction bit this contract does not interpret.
+    scanResumeMode: txAuxField(
+      state?.scanResumeMode !== undefined, topFieldAvailable(state, 'scanResumeMode'),
+      resumeRaw !== undefined ? (resumeRaw & 0x0f) : undefined,
+    ),
+  };
+}
+
+/**
  * The App-owned RX-audio snapshot the `rxAudio` facts are read against
  * (MOR-1262 slice 3A). It is an INPUT, deliberately: audio lifetime belongs to
  * the App (MOR-1058) and building a view model must never open, start or probe
@@ -962,6 +1048,9 @@ export function toRadioViewModel(
   const dsp = deriveDsp(state, caps);
   const rfFrontEnd = deriveRfFrontEnd(state, caps);
   const band = deriveBand(state, caps);
+  const ritXit = deriveRitXit(state, caps);
+  const antenna = deriveAntenna(state, caps);
+  const scan = deriveScan(state);
   const rfFrontEndMutex = deriveRfFrontEndMutex(rfFrontEnd);
   if (rfFrontEndMutex) disabledReasons.push(rfFrontEndMutex);
 
@@ -984,5 +1073,8 @@ export function toRadioViewModel(
     ...(dsp !== undefined ? { dsp } : {}),
     ...(rfFrontEnd !== undefined ? { rfFrontEnd } : {}),
     ...(band !== undefined ? { band } : {}),
+    ...(ritXit !== undefined ? { ritXit } : {}),
+    ...(antenna !== undefined ? { antenna } : {}),
+    ...(scan !== undefined ? { scan } : {}),
   };
 }
