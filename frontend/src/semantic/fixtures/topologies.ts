@@ -14,7 +14,7 @@
  * topology, so it can be applied to any of the four fixtures below.
  */
 import type {
-  Availability, FilterPassbandField, FilterPassbandViewModel,
+  Availability, DspField, DspViewModel, FilterPassbandField, FilterPassbandViewModel,
   MeterField, MeterRfState, MetersViewModel,
   ModeFilterField, ModeFilterViewModel,
   ModInputReadiness, RadioViewModel, RxAudioField, RxAudioViewModel,
@@ -280,4 +280,30 @@ export function withFilterPassband(fixture: RadioViewModel): RadioViewModel {
     dataMode: known(0),
   };
   return { ...fixture, filterPassband };
+}
+
+/**
+ * Applies a fully-observed `dsp` group (MOR-1262 slice 5A) to any topology
+ * fixture — a SEPARATE group from `withFilterPassband` above (see
+ * `DspViewModel`'s doc comment for why), same composable-axis story as
+ * `withTxAux`/`withMeters`/`withRxAudio`/`withFilterPassband`.
+ */
+export function withDsp(fixture: RadioViewModel): RadioViewModel {
+  const avail: Availability = { structural: true, operational: true };
+  const known = <T>(value: T): DspField<T> => ({ reading: { status: 'known', value }, availability: avail });
+  const dsp: DspViewModel = {
+    nrActive: known(true),
+    nrLevel: known(8),
+    nbActive: known(false),
+    nbLevel: known(64),
+    nbDepth: known(5),
+    nbWidth: known(2),
+    notchMode: known('off'),
+    notchFreq: known(0),
+    manualNotchWidth: known(10),
+    agcMode: known(2),
+    agcModes: [1, 2, 3],
+    agcTimeConstant: known(0),
+  };
+  return { ...fixture, dsp };
 }

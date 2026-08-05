@@ -103,6 +103,10 @@ export default defineConfig({
             // ``mod-input-tx-guard.test.ts`` / ``frontend-runtime.test.ts``
             // below. See MOR-1272.
             'src/lib/runtime/adapters/__tests__/filter-passband-adapter.test.ts',
+            // MOR-1262 slice 5A, same shape as the 4A′ entry above: calls the
+            // REAL ``setCapabilities`` to install non-default NR/NB control
+            // ranges for the dsp parity pin. See MOR-1272.
+            'src/lib/runtime/adapters/__tests__/dsp-adapter.test.ts',
             // MOR-1077, same class: ``vi.stubGlobal`` on localStorage/fetch/
             // WebSocket plus ``vi.resetModules()`` around a fresh dynamic
             // import of the workspace contract — both mutate state the fast
@@ -221,6 +225,7 @@ export default defineConfig({
             'src/lib/utils/__tests__/smoothing.svelte.test.ts',
             'src/lib/runtime/adapters/__tests__/rx-audio-purity.test.ts',
             'src/lib/runtime/adapters/__tests__/filter-passband-adapter.test.ts',
+            'src/lib/runtime/adapters/__tests__/dsp-adapter.test.ts',
             'src/presentation/workspace/__tests__/purity.test.ts',
             'src/presentation/workspace/__tests__/legacy-readers-purity.test.ts',
             'src/presentation/workspace/__tests__/store-purity.test.ts',

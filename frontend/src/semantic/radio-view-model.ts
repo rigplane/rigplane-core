@@ -311,6 +311,53 @@ export interface FilterPassbandViewModel {
   dataMode: FilterPassbandField<number>;
 }
 
+/**
+ * A single DSP fact (MOR-1262 decomposition slice 5A, MOR-1290).
+ * Shape-identical to `TxAuxField`, declared as an alias for the same reason
+ * `FilterPassbandField`/`ModeFilterField`/`RxAudioField` are: one field
+ * shape per fact family.
+ */
+export type DspField<T> = TxAuxField<T>;
+
+/**
+ * DSP facts (MOR-1262 decomposition slice 5A, MOR-1290): noise reduction
+ * (NR), noise blanker (NB, + depth/width), notch (auto/manual), and AGC.
+ * Facts only — no command emission, same doctrine as `modeFilter`/
+ * `filterPassband`. Family enumeration is explicit and CLOSED: filter shape,
+ * IF-shift, and PBT are family 4 (`filterPassband`, MOR-1284) — this group
+ * never duplicates them.
+ *
+ * `nrLevel`/`nbDepth` are the ONE remaining consumers of `$lib/radio/filter-
+ * controls`'s `nrRawToDisplay`/`nbDepthRawToDisplay` — the exact functions
+ * `toDspProps` calls — never a re-derived scale (X6200 lesson: control
+ * scaling is per-radio-model data, `caps.controls.nr_level`/`.nb_depth`).
+ * Like `filterPassband`'s `pbtInner`/`pbtOuter` (MOR-1284 F1), the adapter
+ * passes both an explicit `ControlDisplayRange` derived from THIS request's
+ * own `caps` argument (`controlRangeFromCaps`) rather than letting them fall
+ * back to the capabilities STORE singleton — a fact-layer value must be a
+ * pure function of `(state, caps)`, never of module-global state.
+ *
+ * `agcModes` is the capability-derived AGC choice set (`Capabilities.
+ * agcModes`, verbatim) — a plain list, not `DspField`-wrapped, for the same
+ * reason `ModeFilterViewModel`'s `modeChoices`/`filterChoices` aren't: a
+ * choice set is a structural fact about the radio MODEL, not a live reading
+ * that can itself go stale.
+ */
+export interface DspViewModel {
+  nrActive: DspField<boolean>;
+  nrLevel: DspField<number>;
+  nbActive: DspField<boolean>;
+  nbLevel: DspField<number>;
+  nbDepth: DspField<number>;
+  nbWidth: DspField<number>;
+  notchMode: DspField<'off' | 'auto' | 'manual'>;
+  notchFreq: DspField<number>;
+  manualNotchWidth: DspField<number>;
+  agcMode: DspField<number>;
+  agcModes: readonly number[];
+  agcTimeConstant: DspField<number>;
+}
+
 export interface RadioViewModel {
   topologyId: string;
   vfoScheme: VfoScheme;
@@ -344,6 +391,10 @@ export interface RadioViewModel {
    *  PBT, no IF-shift and no DATA-mode capability — see
    *  `radio-view-model-adapter.ts`'s `deriveFilterPassband`. */
   readonly filterPassband?: FilterPassbandViewModel;
+  /** Absent (MOR-1264 optional group) ⇒ this radio declares no NR, no NB, no
+   *  notch and no AGC capability — see `radio-view-model-adapter.ts`'s
+   *  `deriveDsp`. */
+  readonly dsp?: DspViewModel;
 }
 
 const RECEIVER_IDS: readonly ReceiverId[] = ['MAIN', 'SUB'];
@@ -662,6 +713,12 @@ function strArray(value: unknown, path: string): string[] {
   return value.map((item, i) => str(item, `${path}[${i}]`));
 }
 
+/** Same idea as `strArray`, for `DspViewModel.agcModes` — see its doc comment. */
+function numArray(value: unknown, path: string): number[] {
+  if (!Array.isArray(value)) invalid(path, 'an array of numbers');
+  return value.map((item, i) => num(item, `${path}[${i}]`));
+}
+
 /** N4 again: exactly the seven facts the adapter reads, no speculative keys.
  *  See `radio-view-model-adapter.ts::deriveModeFilter`. */
 function validateModeFilter(value: unknown, path: string): ModeFilterViewModel {
@@ -695,6 +752,32 @@ function validateFilterPassband(value: unknown, path: string): FilterPassbandVie
   };
 }
 
+const NOTCH_MODES = ['off', 'auto', 'manual'] as const;
+
+/** N4 again: exactly the twelve facts the adapter reads, no speculative keys.
+ *  See `radio-view-model-adapter.ts::deriveDsp`. */
+function validateDsp(value: unknown, path: string): DspViewModel {
+  const v = record(value, path);
+  exactKeys(v, [
+    'nrActive', 'nrLevel', 'nbActive', 'nbLevel', 'nbDepth', 'nbWidth',
+    'notchMode', 'notchFreq', 'manualNotchWidth', 'agcMode', 'agcModes', 'agcTimeConstant',
+  ], path);
+  return {
+    nrActive: validateTxAuxField(v.nrActive, `${path}.nrActive`, bool),
+    nrLevel: validateTxAuxField(v.nrLevel, `${path}.nrLevel`, num),
+    nbActive: validateTxAuxField(v.nbActive, `${path}.nbActive`, bool),
+    nbLevel: validateTxAuxField(v.nbLevel, `${path}.nbLevel`, num),
+    nbDepth: validateTxAuxField(v.nbDepth, `${path}.nbDepth`, num),
+    nbWidth: validateTxAuxField(v.nbWidth, `${path}.nbWidth`, num),
+    notchMode: validateTxAuxField(v.notchMode, `${path}.notchMode`, (val, p) => oneOf(val, NOTCH_MODES, p)),
+    notchFreq: validateTxAuxField(v.notchFreq, `${path}.notchFreq`, num),
+    manualNotchWidth: validateTxAuxField(v.manualNotchWidth, `${path}.manualNotchWidth`, num),
+    agcMode: validateTxAuxField(v.agcMode, `${path}.agcMode`, num),
+    agcModes: numArray(v.agcModes, `${path}.agcModes`),
+    agcTimeConstant: validateTxAuxField(v.agcTimeConstant, `${path}.agcTimeConstant`, num),
+  };
+}
+
 /** Runtime validator (repo idiom: throws TypeError with a `$.path`, see `validateCapabilities`).
  *  Also enforces two cross-field invariants (review cycle 1, V1): `txPermit`
  *  cannot be 'allowed' while `txTarget` is unknown (no fail-open), and
@@ -704,7 +787,7 @@ export function validateRadioViewModel(value: unknown): RadioViewModel {
   exactKeys(v, [
     'topologyId', 'vfoScheme', 'activeReceiver', 'vfos', 'split', 'dualWatch',
     'txTarget', 'txPermit', 'scope', 'disabledReasons', 'txAux', 'meters', 'rxAudio', 'modeFilter',
-    'filterPassband',
+    'filterPassband', 'dsp',
   ], '$');
   if (!Array.isArray(v.vfos)) invalid('$.vfos', 'an array');
   if (!Array.isArray(v.disabledReasons)) invalid('$.disabledReasons', 'an array');
@@ -737,6 +820,7 @@ export function validateRadioViewModel(value: unknown): RadioViewModel {
   const rxAudio = optionalGroup(v.rxAudio, '$.rxAudio', validateRxAudio);
   const modeFilter = optionalGroup(v.modeFilter, '$.modeFilter', validateModeFilter);
   const filterPassband = optionalGroup(v.filterPassband, '$.filterPassband', validateFilterPassband);
+  const dsp = optionalGroup(v.dsp, '$.dsp', validateDsp);
 
   return {
     topologyId: str(v.topologyId, '$.topologyId'),
@@ -757,5 +841,6 @@ export function validateRadioViewModel(value: unknown): RadioViewModel {
     ...(rxAudio !== undefined ? { rxAudio } : {}),
     ...(modeFilter !== undefined ? { modeFilter } : {}),
     ...(filterPassband !== undefined ? { filterPassband } : {}),
+    ...(dsp !== undefined ? { dsp } : {}),
   };
 }
