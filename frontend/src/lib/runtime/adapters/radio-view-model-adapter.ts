@@ -29,7 +29,7 @@ import type {
   RadioViewModel, TxAuxField, TxAuxViewModel, AtuStatus,
   MeterField, MeterRfState, MetersViewModel,
   AudioFocus, MonitorMode, RxAudioViewModel, ModeFilterViewModel,
-  FilterPassbandViewModel, DspViewModel,
+  FilterPassbandViewModel, DspViewModel, RfFrontEndViewModel,
 } from '../../../semantic/radio-view-model';
 import type { TxAuthoritySnapshot } from '../../../semantic/rx-tx-surface';
 import { isFieldAvailable } from '$lib/state/field-status';
@@ -502,6 +502,63 @@ function deriveDsp(
 }
 
 /**
+ * RF front-end facts (MOR-1262 decomposition slice 6A, MOR-1292): preamp,
+ * attenuator, RF gain, squelch. A separate group from `dsp` — family
+ * enumeration is explicit and CLOSED (NR/NB/notch/AGC are family 5,
+ * `deriveDsp` above; never duplicated here).
+ *
+ * Evidence gate (N3), purely caps-driven, same shape as `deriveDsp`'s own
+ * gate (no raw-state fallback): `hasCap(caps, 'preamp'|'attenuator'|
+ * 'rf_gain'|'squelch')`, copied verbatim from the shipped `toRfFrontEndProps`
+ * (`lib/runtime/props/panel-props.ts`)'s own `showPre`/`showAtt`/
+ * `showRfGain`/`showSquelch` gates. The group itself emits only when at
+ * least one of the four is declared.
+ *
+ * `preamp`/`attenuator`/`rfGain`/`squelch` are read straight off the active
+ * receiver with NO scale conversion (see `RfFrontEndViewModel`'s doc comment
+ * for why there is no "real function" to consume for these four, unlike
+ * `dsp`'s `nrLevel`/`nbDepth`) — `numOrUndef(rx?.preamp)` etc., never a
+ * `?? 0` stand-in, so an unobserved control never reports a fabricated
+ * reading.
+ *
+ * The field-freshness gate is this file's own `topFieldAvailable`
+ * (`isFieldAvailable`, the same "operational" discipline `deriveTxAux`/
+ * `deriveDsp` use), NOT the shipped panel's looser `activeFieldShown` (which
+ * treats a stale field as still "shown" for UX continuity, `panel-props.ts`).
+ * A fact-layer reading must degrade a stale field to `unknown` — the
+ * looser gate is presentation policy, not a fact.
+ *
+ * `preValues`/`attValues` are the capability-derived choice sets
+ * (`Capabilities.preValues`/`.attValues`, verbatim) — see
+ * `RfFrontEndViewModel`'s doc comment. Deliberately `?? []`, never the
+ * shipped panel's `[0, 1, 2]`/`[0, 6, 12, 18]` IC-7610-shaped UI-convenience
+ * fallback (X6200 lesson: no radio-specific tables in the fact layer).
+ */
+function deriveRfFrontEnd(
+  state: ServerState | null, caps: Capabilities | null,
+): RfFrontEndViewModel | undefined {
+  if (!caps) return undefined;
+  const hasPreCap = hasCap(caps, 'preamp');
+  const hasAttCap = hasCap(caps, 'attenuator');
+  const hasRfGainCap = hasCap(caps, 'rf_gain');
+  const hasSquelchCap = hasCap(caps, 'squelch');
+  if (!hasPreCap && !hasAttCap && !hasRfGainCap && !hasSquelchCap) return undefined;
+
+  const onSub = state?.active === 'SUB';
+  const rx = onSub ? state?.sub : state?.main;
+  const base = onSub ? 'sub.' : 'main.';
+
+  return {
+    preamp: txAuxField(hasPreCap, topFieldAvailable(state, `${base}preamp`), numOrUndef(rx?.preamp)),
+    preValues: caps.preValues ?? [],
+    attenuator: txAuxField(hasAttCap, topFieldAvailable(state, `${base}att`), numOrUndef(rx?.att)),
+    attValues: caps.attValues ?? [],
+    rfGain: txAuxField(hasRfGainCap, topFieldAvailable(state, `${base}rfGain`), numOrUndef(rx?.rfGain)),
+    squelch: txAuxField(hasSquelchCap, topFieldAvailable(state, `${base}squelch`), numOrUndef(rx?.squelch)),
+  };
+}
+
+/**
  * The App-owned RX-audio snapshot the `rxAudio` facts are read against
  * (MOR-1262 slice 3A). It is an INPUT, deliberately: audio lifetime belongs to
  * the App (MOR-1058) and building a view model must never open, start or probe
@@ -733,6 +790,7 @@ export function toRadioViewModel(
   const modeFilter = deriveModeFilter(state, caps);
   const filterPassband = deriveFilterPassband(state, caps);
   const dsp = deriveDsp(state, caps);
+  const rfFrontEnd = deriveRfFrontEnd(state, caps);
 
   return {
     topologyId: `${topology.structuralCount}/${topology.scheme}`,
@@ -751,5 +809,6 @@ export function toRadioViewModel(
     ...(modeFilter !== undefined ? { modeFilter } : {}),
     ...(filterPassband !== undefined ? { filterPassband } : {}),
     ...(dsp !== undefined ? { dsp } : {}),
+    ...(rfFrontEnd !== undefined ? { rfFrontEnd } : {}),
   };
 }
