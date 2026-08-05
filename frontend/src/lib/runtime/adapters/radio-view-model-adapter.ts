@@ -29,13 +29,16 @@ import type {
   RadioViewModel, TxAuxField, TxAuxViewModel, AtuStatus,
   MeterField, MeterRfState, MetersViewModel,
   AudioFocus, MonitorMode, RxAudioViewModel, ModeFilterViewModel,
-  FilterPassbandViewModel,
+  FilterPassbandViewModel, DspViewModel,
 } from '../../../semantic/radio-view-model';
 import type { TxAuthoritySnapshot } from '../../../semantic/rx-tx-surface';
 import { isFieldAvailable } from '$lib/state/field-status';
 import { modInputStateKey } from '$lib/radio/mod-input';
 import { resolveFilterModeConfig } from '$lib/runtime/props/panel-props';
-import { deriveIfShift, pbtRangeFromCaps, pbtRawToHz } from '$lib/radio/filter-controls';
+import {
+  deriveIfShift, pbtRangeFromCaps, pbtRawToHz,
+  controlRangeFromCapsOrDefault, nrRawToDisplay, nbDepthRawToDisplay,
+} from '$lib/radio/filter-controls';
 import {
   derivePresentationCapabilities, type ReceiverId, type VfoSlotId,
 } from './presentation-capabilities';
@@ -412,6 +415,93 @@ function deriveFilterPassband(
 }
 
 /**
+ * DSP facts (MOR-1262 decomposition slice 5A, MOR-1290): NR, NB (+ depth/
+ * width), notch (auto/manual), AGC. A separate group from `filterPassband`
+ * — family enumeration is explicit and CLOSED (filter shape / IF-shift / PBT
+ * are family 4, `deriveFilterPassband` above; never duplicated here).
+ *
+ * Evidence gate (N3): each field's structural gate mirrors `toDspProps`'/
+ * `toAgcProps`' OWN gate verbatim — `hasCap(caps, 'nr'|'nb'|'notch'|'agc')`,
+ * or (for `nbDepth`/`nbWidth`) the presence of a `controls.nb_depth` range,
+ * exactly `toDspProps`' own `hasNbDepth`/`hasNbWidth` (`hasNbWidth` borrows
+ * `hasNbDepth`'s signal verbatim, same as that function does). The group
+ * itself emits only when at least one of these signals is positive.
+ */
+function deriveDsp(
+  state: ServerState | null, caps: Capabilities | null,
+): DspViewModel | undefined {
+  if (!caps) return undefined;
+  const hasNrCap = hasCap(caps, 'nr');
+  const hasNbCap = hasCap(caps, 'nb');
+  const hasNotchCap = hasCap(caps, 'notch');
+  const hasAgcCap = hasCap(caps, 'agc');
+  const hasNbDepth = (caps.controls?.nb_depth ?? null) !== null;
+  if (!hasNrCap && !hasNbCap && !hasNotchCap && !hasAgcCap && !hasNbDepth) return undefined;
+
+  const onSub = state?.active === 'SUB';
+  const rx = onSub ? state?.sub : state?.main;
+  const base = onSub ? 'sub.' : 'main.';
+
+  // The ONE shipped display-scale conversions (`nrRawToDisplay`/
+  // `nbDepthRawToDisplay`, `$lib/radio/filter-controls`) — called with the
+  // range explicitly derived from THIS function's own `caps` argument
+  // (`controlRangeFromCapsOrDefault`, mirroring `filterPassband`'s
+  // `pbtRangeFromCaps`, MOR-1284 F1), not the capabilities STORE singleton
+  // they otherwise fall back to. MOR-1290 F1 (verify round 1): the plain
+  // `controlRangeFromCaps` alone still returns `undefined` when `caps`
+  // declares no range for the key, and passing `undefined` as `range` makes
+  // `nrRawToDisplay`/`nbDepthRawToDisplay` fall through to THEIR OWN store
+  // lookup — reintroducing the exact module-global dependency this is meant
+  // to close, for the one case (`caps` omitting the key) that matters most
+  // (a server whose capabilities haven't fully landed yet). The `…OrDefault`
+  // wrapper always returns a CONCRETE range — this module's own
+  // `CONTROL_DEFAULTS`, the same ones `nrRawToDisplay`/`nbDepthRawToDisplay`
+  // fall back to today — so the store is NEVER consulted here, in either
+  // branch: the fact is a pure function of `(state, caps)` unconditionally.
+  // See the determinism pin in `__tests__/dsp-adapter.test.ts`. Computed only
+  // from the field's OWN raw value — never from a `?? 0` stand-in — so an
+  // unobserved nrLevel/nbDepth never silently reports a fabricated reading.
+  const nrLevelRange = controlRangeFromCapsOrDefault('nr_level', caps);
+  const nrLevelRaw = numOrUndef(rx?.nrLevel);
+  const nrLevelValue = nrLevelRaw !== undefined ? nrRawToDisplay(nrLevelRaw, nrLevelRange) : undefined;
+
+  const nbDepthRange = controlRangeFromCapsOrDefault('nb_depth', caps);
+  const nbDepthRaw = numOrUndef(state?.nbDepth);
+  const nbDepthValue = nbDepthRaw !== undefined ? nbDepthRawToDisplay(nbDepthRaw, nbDepthRange) : undefined;
+
+  // `notchMode` is derived from TWO raw booleans (`autoNotch`/`manualNotch`);
+  // same "never derive from a half-observed input" discipline `filterPassband`'s
+  // `ifShift` uses for `pbtInner`/`pbtOuter` (MOR-1284 F2 lesson) — both must
+  // be honestly observed before a definitive 'off'/'auto'/'manual' is reported.
+  const autoNotchObserved = topFieldAvailable(state, `${base}autoNotch`);
+  const manualNotchObserved = topFieldAvailable(state, `${base}manualNotch`);
+  const autoNotchRaw = boolOrUndef(rx?.autoNotch);
+  const manualNotchRaw = boolOrUndef(rx?.manualNotch);
+  const notchModeValue = autoNotchRaw !== undefined && manualNotchRaw !== undefined
+    ? (autoNotchRaw ? 'auto' as const : manualNotchRaw ? 'manual' as const : 'off' as const)
+    : undefined;
+
+  return {
+    nrActive: txAuxField(hasNrCap, topFieldAvailable(state, `${base}nr`), boolOrUndef(rx?.nr)),
+    nrLevel: txAuxField(hasNrCap, topFieldAvailable(state, `${base}nrLevel`), nrLevelValue),
+    nbActive: txAuxField(hasNbCap, topFieldAvailable(state, `${base}nb`), boolOrUndef(rx?.nb)),
+    nbLevel: txAuxField(hasNbCap, topFieldAvailable(state, `${base}nbLevel`), numOrUndef(rx?.nbLevel)),
+    nbDepth: txAuxField(hasNbDepth, topFieldAvailable(state, 'nbDepth'), nbDepthValue),
+    nbWidth: txAuxField(hasNbDepth, topFieldAvailable(state, 'nbWidth'), numOrUndef(state?.nbWidth)),
+    notchMode: txAuxField(hasNotchCap, autoNotchObserved && manualNotchObserved, notchModeValue),
+    notchFreq: txAuxField(hasNotchCap, topFieldAvailable(state, 'notchFilter'), numOrUndef(state?.notchFilter)),
+    manualNotchWidth: txAuxField(
+      hasNotchCap, topFieldAvailable(state, `${base}manualNotchWidth`), numOrUndef(rx?.manualNotchWidth),
+    ),
+    agcMode: txAuxField(hasAgcCap, topFieldAvailable(state, `${base}agc`), numOrUndef(rx?.agc)),
+    agcModes: caps.agcModes ?? [],
+    agcTimeConstant: txAuxField(
+      hasAgcCap, topFieldAvailable(state, `${base}agcTimeConstant`), numOrUndef(rx?.agcTimeConstant),
+    ),
+  };
+}
+
+/**
  * The App-owned RX-audio snapshot the `rxAudio` facts are read against
  * (MOR-1262 slice 3A). It is an INPUT, deliberately: audio lifetime belongs to
  * the App (MOR-1058) and building a view model must never open, start or probe
@@ -642,6 +732,7 @@ export function toRadioViewModel(
   const rxAudio = deriveRxAudio(state, caps, facts, modInputSource, rxAudioSnapshot);
   const modeFilter = deriveModeFilter(state, caps);
   const filterPassband = deriveFilterPassband(state, caps);
+  const dsp = deriveDsp(state, caps);
 
   return {
     topologyId: `${topology.structuralCount}/${topology.scheme}`,
@@ -659,5 +750,6 @@ export function toRadioViewModel(
     ...(rxAudio !== undefined ? { rxAudio } : {}),
     ...(modeFilter !== undefined ? { modeFilter } : {}),
     ...(filterPassband !== undefined ? { filterPassband } : {}),
+    ...(dsp !== undefined ? { dsp } : {}),
   };
 }

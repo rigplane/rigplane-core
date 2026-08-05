@@ -127,9 +127,75 @@ function controlRange(key: string, fallback: ControlRange): ControlRange {
   return fallback;
 }
 
-/** Convert a raw CI-V wire value to the slider display value for `key`. */
-export function controlRawToDisplay(key: string, raw: number, fallback: ControlRange): number {
-  const { rawMin, rawMax, displayMin, displayMax } = controlRange(key, fallback);
+/** Same shape as the internal (unexported) `ControlRange`, exported under its
+ *  own name (MOR-1290) so `controlRangeFromCaps`'s return type — and the
+ *  optional `range` parameter it feeds `controlRawToDisplay` — can be named
+ *  by callers outside this module, the same reason `PbtRange` (MOR-1284) is
+ *  exported rather than the conversion functions staying un-parameterisable. */
+export type ControlDisplayRange = ControlRange;
+
+/**
+ * Derives a `ControlDisplayRange` explicitly from a `Capabilities` object's
+ * own `controls[key]` entry (MOR-1290, following the `pbtRangeFromCaps`
+ * precedent, MOR-1284 F1) — the same shape `controlRange()` reads from the
+ * capabilities STORE singleton, but sourced from an argument a caller
+ * already has in hand rather than a module-global. Returns `undefined` when
+ * the caps object carries no usable range for `key`, so `controlRawToDisplay`
+ * falls through to its own store-lookup default.
+ */
+export function controlRangeFromCaps(
+  key: string, caps: Capabilities | null | undefined,
+): ControlDisplayRange | undefined {
+  const ctrl = caps?.controls?.[key];
+  if (
+    ctrl &&
+    ctrl.display_min !== undefined &&
+    ctrl.display_max !== undefined &&
+    ctrl.display_max > ctrl.display_min
+  ) {
+    return {
+      rawMin: ctrl.raw_min, rawMax: ctrl.raw_max,
+      displayMin: ctrl.display_min, displayMax: ctrl.display_max,
+    };
+  }
+  return undefined;
+}
+
+/**
+ * `controlRangeFromCaps(key, caps)`, falling back to this module's own
+ * `CONTROL_DEFAULTS[key]` when caps carries no range for `key` at all
+ * (MOR-1290 F1, verify round 1). `controlRangeFromCaps` alone still has one
+ * honest "I don't know" outcome — `undefined` — and a caller that passes
+ * that straight into `controlRawToDisplay`'s optional `range` falls through
+ * to that function's OWN store lookup, making the result a function of
+ * module-global state again for exactly the caps-omits-the-key case. This
+ * wrapper closes that residual: every caller gets a CONCRETE range either
+ * way, so passing its result as `range` never reaches the store — the
+ * conversion becomes a pure function of `(raw, caps)` with no residual
+ * dependency. Only defined for keys with a `CONTROL_DEFAULTS` entry
+ * (`nr_level`, `nb_depth` today); throws for any other key so a typo fails
+ * loudly rather than silently degrading to `undefined` mid-computation.
+ */
+export function controlRangeFromCapsOrDefault(
+  key: string, caps: Capabilities | null | undefined,
+): ControlDisplayRange {
+  const fallback = CONTROL_DEFAULTS[key];
+  if (!fallback) throw new Error(`controlRangeFromCapsOrDefault: no CONTROL_DEFAULTS entry for '${key}'`);
+  return controlRangeFromCaps(key, caps) ?? fallback;
+}
+
+/**
+ * `range`, when supplied (MOR-1290, mirroring `pbtRawToHz`'s own `range`
+ * parameter), is used INSTEAD of the capabilities STORE lookup — pass
+ * `controlRangeFromCaps(key, caps)` from a caller that already holds a
+ * `caps` argument so the conversion is a pure function of that argument
+ * rather than a hidden dependency on module-global store state. Every
+ * EXISTING call site omits `range` and keeps today's store-lookup behavior
+ * unchanged — this parameter is strictly additive. */
+export function controlRawToDisplay(
+  key: string, raw: number, fallback: ControlRange, range?: ControlDisplayRange,
+): number {
+  const { rawMin, rawMax, displayMin, displayMax } = range ?? controlRange(key, fallback);
   const span = rawMax - rawMin;
   if (span <= 0) return displayMin;
   const display = Math.round(((raw - rawMin) / span) * (displayMax - displayMin) + displayMin);
@@ -145,9 +211,10 @@ export function controlDisplayToRaw(key: string, display: number, fallback: Cont
   return Math.max(rawMin, Math.min(rawMax, raw));
 }
 
-/** Convert a raw 0-255 NR wire value to the 0-15 display value. */
-export function nrRawToDisplay(raw: number): number {
-  return controlRawToDisplay('nr_level', raw, CONTROL_DEFAULTS.nr_level);
+/** Convert a raw 0-255 NR wire value to the 0-15 display value. `range`
+ *  (MOR-1290) is strictly additive — see `controlRawToDisplay`. */
+export function nrRawToDisplay(raw: number, range?: ControlDisplayRange): number {
+  return controlRawToDisplay('nr_level', raw, CONTROL_DEFAULTS.nr_level, range);
 }
 
 /** Convert a 0-15 display value to the raw 0-255 NR wire value. */
@@ -155,9 +222,10 @@ export function nrDisplayToRaw(display: number): number {
   return controlDisplayToRaw('nr_level', display, CONTROL_DEFAULTS.nr_level);
 }
 
-/** Convert a raw 0-9 NB-depth wire value to the 1-10 display value. */
-export function nbDepthRawToDisplay(raw: number): number {
-  return controlRawToDisplay('nb_depth', raw, CONTROL_DEFAULTS.nb_depth);
+/** Convert a raw 0-9 NB-depth wire value to the 1-10 display value. `range`
+ *  (MOR-1290) is strictly additive — see `controlRawToDisplay`. */
+export function nbDepthRawToDisplay(raw: number, range?: ControlDisplayRange): number {
+  return controlRawToDisplay('nb_depth', raw, CONTROL_DEFAULTS.nb_depth, range);
 }
 
 /** Convert a 1-10 display value to the raw 0-9 NB-depth wire value. */
