@@ -19,9 +19,10 @@ import {
 } from '../declarations';
 
 describe('txAux is a declarable semantic surface', () => {
-  // Kills: reverting the SEMANTIC_SURFACE_NAMES addition.
+  // Kills: reverting the SEMANTIC_SURFACE_NAMES addition. MOR-1273 appended
+  // `meters`; `txAux` must stay present and in place.
   it('is in the declarable set alongside vfo and rxTx', () => {
-    expect([...SEMANTIC_SURFACE_NAMES]).toEqual(['vfo', 'rxTx', 'txAux']);
+    expect([...SEMANTIC_SURFACE_NAMES]).toEqual(['vfo', 'rxTx', 'txAux', 'meters']);
   });
 
   // Kills: adding the name to the type but not to the runtime allow-list the
