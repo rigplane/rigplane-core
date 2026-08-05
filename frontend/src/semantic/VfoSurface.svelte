@@ -32,6 +32,7 @@
 
 <script lang="ts">
   import { t } from '$lib/i18n';
+  import { renderSlot } from './design-language-renderers';
   import type { BooleanFact, RadioViewModel, VfoViewModel } from './radio-view-model';
 
   interface Props {
@@ -116,6 +117,18 @@
     return hz === null ? '—' : `${(hz / 1_000_000).toFixed(6)} MHz`;
   }
 
+  /**
+   * MOR-1275: the active design language's `frequencyDisplay` renderer, given
+   * the ONE fact it is entitled to — this tile's own frequency, already a prop.
+   * `null` whenever no language is active or none declares that renderer, in
+   * which case `formatFrequency` above renders exactly as it always did. This
+   * changes the READOUT only: which tiles exist, which controls are gated and
+   * every accessible name are decided above and are not passed in.
+   */
+  function frequencyDisplay(vfo: VfoViewModel): ReturnType<typeof renderSlot> {
+    return renderSlot('frequencyDisplay', { frequencyHz: vfo.frequencyHz });
+  }
+
   function isSelectable(vfo: VfoViewModel): boolean {
     return (selectionPoolSize ?? viewModel.vfos.length) > 1 && !vfo.isActive;
   }
@@ -166,6 +179,7 @@
     {#each viewModel.vfos as vfo, i (vfo.receiver + ':' + i)}
       {@const selectable = isSelectable(vfo)}
       {@const selectDisabled = selectable && (vfo.slot.kind === 'unknown' || disabled)}
+      {@const freq = frequencyDisplay(vfo)}
       <div
         class="vfo-tile"
         class:is-active={vfo.isActive}
@@ -176,7 +190,7 @@
         data-vfo-tx-target={vfo.isTxTarget}
       >
         <span class="vfo-role">{roleLabel(vfo)}</span>
-        <span class="vfo-freq">{formatFrequency(vfo.frequencyHz)}</span>
+        <span class="vfo-freq" {...freq?.attributes ?? {}}>{freq?.text ?? formatFrequency(vfo.frequencyHz)}</span>
         <span class="vfo-mode">{vfo.mode ?? '—'}{vfo.filter ? ` / ${vfo.filter}` : ''}</span>
         {#if vfo.isTxTarget}
           <span class="vfo-badge" data-vfo-tx-badge>{t('core.vfo.txTarget.label')}</span>

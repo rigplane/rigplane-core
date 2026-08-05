@@ -116,9 +116,17 @@ export function renderStateFeedback(
   // Treatment follows the RESOLVED state, not the raw session: a slab that
   // still looks idle under a doubt rail is the contradiction R9 exists to
   // prevent.
-  const treatment: KeyTreatment = blocked ? 'blocked'
-    : state === DOUBT_RAIL ? 'pending'
-      : (KEY_TREATMENT[session] ?? 'pending');
+  //
+  // F3/N3: the inert treatment applies ONLY where the session has nothing
+  // louder to say. `keyBlocked` is true in every TX-adjacent session — you
+  // cannot key what is already keyed — so an unconditional `blocked ?
+  // 'blocked' : …` reported a dotted inert slab while the rail was flooded.
+  // `stylesheet.test.ts` pins the opposite for the CSS half ("keyed outranks
+  // the inert treatment on SPECIFICITY"); the descriptor now agrees with it.
+  const held = KEY_TREATMENT[session];
+  const treatment: KeyTreatment = held !== undefined && held !== 'idle' ? held
+    : blocked ? 'blocked'
+      : state === DOUBT_RAIL ? 'pending' : 'idle';
 
   return {
     kind: 'fieldline-state-feedback',

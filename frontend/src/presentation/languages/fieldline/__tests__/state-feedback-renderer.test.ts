@@ -161,6 +161,29 @@ describe('the action slab gets an intentional treatment, not a UA default (N2)',
     expect(blocked.slab.tone).toBe(FIELDLINE_PALETTE.inert);
   });
 
+  it('a slab disabled BECAUSE it is already keyed keeps the KEYED treatment (F3/N3)', () => {
+    // Twin of studioline's pin, same contradiction: `keyBlocked` is true in
+    // every TX-adjacent session — you cannot key what is already keyed — so an
+    // unconditional `blocked ? 'blocked' : …` reported a dotted inert slab
+    // while the rail was flooded. `stylesheet.test.ts` pins the opposite for
+    // the CSS half ("keyed outranks the inert treatment on SPECIFICITY"), so
+    // the descriptor was disagreeing with its own sheet.
+    const withSlab = (over: Record<string, string | number | boolean | null>) =>
+      renderStateFeedback({
+        kind: 'state-feedback',
+        fields: { rf: 'receiving', session: 'idle', fault: null, keyBlocked: true, ...over },
+      }, FIELDLINE_TOKENS).slab;
+
+    expect(withSlab({ rf: 'transmitting', session: 'keyed' })).toMatchObject({
+      treatment: 'keyed', filled: true, edgeStyle: 'solid',
+    });
+    expect(withSlab({ rf: 'transmitting', session: 'releasing' }).treatment).toBe('keyed');
+    expect(withSlab({ rf: 'uncertain', session: 'pending' }).treatment).toBe('pending');
+    expect(withSlab({ rf: 'uncertain', session: 'failed', fault: 'audio-failed' }).treatment).toBe('fault');
+    // The one session where "you may not key" IS the whole story keeps it.
+    expect(withSlab({}).treatment).toBe('blocked');
+  });
+
   it('every treatment is present — no state hides the control', () => {
     for (const tx of ALL) expect(fromAuthority(tx).slab.present).toBe(true);
   });
