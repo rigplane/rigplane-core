@@ -86,6 +86,11 @@ ALLOWLIST=(
     # Release skill documents src/icom_lan/__init__.py shim as DO-NOT-TOUCH
     # (deprecation shim — must not be modified during version bumps).
     '.claude/skills/release/SKILL.md'
+    # MOR-1078: legacy workspace migration layer must name historical
+    # localStorage keys verbatim (e.g. `rigplane:storage-migrated-from-icom-lan`)
+    # to classify and read them correctly. Read-only — the module never writes
+    # or renames these keys, it only routes them.
+    'frontend/src/presentation/workspace/legacy-readers.ts'
 )
 
 # Collect all files matching brand pattern.
