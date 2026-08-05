@@ -645,6 +645,87 @@ export interface ScanViewModel {
   scanResumeMode: ScanField<number>;
 }
 
+/**
+ * A single CW-keyer fact (MOR-1262 decomposition slice 9A, MOR-1296).
+ * Shape-identical to `TxAuxField`, declared as an alias for the same reason
+ * `ScanField`/`AntennaField`/`RitXitField`/`BandField` are.
+ */
+export type CwKeyerField<T> = TxAuxField<T>;
+
+/**
+ * Break-in state as a THREE-VALUED fact, never a boolean and never an int.
+ * `off` = the key does not transmit; `semi` = keying transmits with a
+ * hang-time (the delay fact below applies); `full` = QSK, the key transmits
+ * immediately. The shipped v2 wire encoding is an int (`ServerStatePublic.
+ * breakIn`, 0/1/2 — `components-v2/panels/cw-panel-logic.ts`'s
+ * `BREAK_IN_LABELS`), decoded ONCE in `radio-view-model-adapter.ts`'s
+ * `breakInMode`; an int this contract does not recognise decodes to the
+ * field's `unknown` reading, where v2's `formatBreakIn` falls back to 'OFF'.
+ * That difference is deliberate and is the whole point of the type: an
+ * unreadable break-in state must never present as "the key is safe".
+ */
+export type BreakInMode = 'off' | 'semi' | 'full';
+
+/**
+ * CW-keyer facts (MOR-1262 decomposition slice 9A, MOR-1296) — SAFETY-CRITICAL.
+ *
+ * FACTS ONLY, and here that phrase carries more weight than in any previous
+ * family: break-in KEYS THE TRANSMITTER. This group carries the READ state of
+ * the keyer and nothing else — no toggle, no action, no command vocabulary,
+ * not even a label table. `CwPanel.svelte`'s AUTO TUNE button (`cw_auto_tune`,
+ * a transmit-causing action) has no representation here at all, the same way
+ * `txAux` carries ATU *state* but never an ATU TUNE control (MOR-1244).
+ * Constructing, validating or serializing this group must not be able to key
+ * the radio; that is pinned by `__tests__/cw-keyer-purity.test.ts`, not merely
+ * asserted here.
+ *
+ * NO SECOND PERMIT. This group states no TX permission of its own. "May
+ * arming break-in cause the transmitter to key" is answered by the model's
+ * ONE existing `RadioViewModel.txPermit` (produced by `deriveTxCapabilities`,
+ * the same derivation the App TX authority uses — safety invariant R9: TX
+ * truth never comes from `radioState.ptt`), surfaced for this family through
+ * the existing `disabledReasons` home with `field: 'cwKeyer.breakIn'` — the
+ * MOR-1293 ruling that a cross-field disable is a `disabledReasons` entry, not
+ * a bespoke boolean, applied to the safety-critical case. A second permit
+ * field here — or any re-derivation of `getFrequencyPermit` in the CW path —
+ * is the forbidden defect, and `validateRadioViewModel` enforces the
+ * fail-closed half structurally: a model that carries a structurally-available
+ * `breakIn` while `txPermit` is anything other than `'allowed'` is REJECTED
+ * unless it also records that disabled reason.
+ *
+ * THE APF/TPF MUTEX (MOR-479 lineage, MOR-1293 precedent). `toCwProps`
+ * (`lib/runtime/props/panel-props.ts`) disables APF outside CW/CW-R and TPF
+ * outside RTTY/RTTY-R, in its own words "mirrors the MOR-479 preamp mutex".
+ * Same treatment as the DIGI-SEL/PREAMP mutex: no bespoke `apfDisabled`/
+ * `tpfDisabled` booleans here, one `disabledReasons` entry each with the
+ * generic `'mutually-exclusive-control'` code, and FAIL-CLOSED on an unknown
+ * mode (see `radio-view-model-adapter.ts`'s `deriveCwKeyerReasons`).
+ *
+ * Family enumeration is explicit and CLOSED. Three facts the shipped
+ * `CwProps` exposes are deliberately ABSENT because they belong to families
+ * this slice must not duplicate or fabricate:
+ *  - `sidetoneLevel` IS `txAux.monitorLevel` (`state.monitorGain`, family 1);
+ *  - `currentMode` IS `modeFilter.currentMode` (family 4) — the mutex above
+ *    READS that fact rather than re-reading `rx.mode` a second time;
+ *  - `keyerType` has no state field at all in v2 (`toCwProps` hard-codes 0
+ *    while `set_keyer_type` is write-only), so there is no fact to state and
+ *    a placeholder would be exactly the fabrication this contract forbids.
+ * `pitchHz` covers `cwPitch` and `sidetonePitch` together: both shipped props
+ * read the one `state.cwPitch` register, so this is one fact, not two.
+ */
+export interface CwKeyerViewModel {
+  breakIn: CwKeyerField<BreakInMode>;
+  breakInDelay: CwKeyerField<number>;
+  /** Keyer speed in WPM (`state.keySpeed`); `unknown`, never v2's 12. */
+  keyerSpeed: CwKeyerField<number>;
+  /** CW pitch / sidetone pitch in Hz (`state.cwPitch`); `unknown`, never 600. */
+  pitchHz: CwKeyerField<number>;
+  reversePaddle: CwKeyerField<boolean>;
+  /** Audio peak filter type/level ordinal (`rx.apfTypeLevel`, 0 = off). */
+  apf: CwKeyerField<number>;
+  twinPeak: CwKeyerField<boolean>;
+}
+
 export interface RadioViewModel {
   topologyId: string;
   vfoScheme: VfoScheme;
@@ -703,6 +784,10 @@ export interface RadioViewModel {
    *  scanning/scanType/scanResumeMode — see `radio-view-model-adapter.ts`'s
    *  `deriveScan`. */
   readonly scan?: ScanViewModel;
+  /** Absent (MOR-1264 optional group) ⇒ this radio declares no `cw`
+   *  capability, so v2 renders no CW panel at all — see
+   *  `radio-view-model-adapter.ts`'s `deriveCwKeyer`. */
+  readonly cwKeyer?: CwKeyerViewModel;
 }
 
 const RECEIVER_IDS: readonly ReceiverId[] = ['MAIN', 'SUB'];
@@ -1187,6 +1272,26 @@ function validateScan(value: unknown, path: string): ScanViewModel {
   };
 }
 
+const BREAK_IN_MODES: readonly BreakInMode[] = ['off', 'semi', 'full'];
+
+/** Exactly the seven facts the adapter reads. See
+ *  `radio-view-model-adapter.ts::deriveCwKeyer`. */
+function validateCwKeyer(value: unknown, path: string): CwKeyerViewModel {
+  const v = record(value, path);
+  exactKeys(v, [
+    'breakIn', 'breakInDelay', 'keyerSpeed', 'pitchHz', 'reversePaddle', 'apf', 'twinPeak',
+  ], path);
+  return {
+    breakIn: validateTxAuxField(v.breakIn, `${path}.breakIn`, (val, p) => oneOf(val, BREAK_IN_MODES, p)),
+    breakInDelay: validateTxAuxField(v.breakInDelay, `${path}.breakInDelay`, num),
+    keyerSpeed: validateTxAuxField(v.keyerSpeed, `${path}.keyerSpeed`, num),
+    pitchHz: validateTxAuxField(v.pitchHz, `${path}.pitchHz`, num),
+    reversePaddle: validateTxAuxField(v.reversePaddle, `${path}.reversePaddle`, bool),
+    apf: validateTxAuxField(v.apf, `${path}.apf`, num),
+    twinPeak: validateTxAuxField(v.twinPeak, `${path}.twinPeak`, bool),
+  };
+}
+
 /** Runtime validator (repo idiom: throws TypeError with a `$.path`, see `validateCapabilities`).
  *  Also enforces two cross-field invariants (review cycle 1, V1): `txPermit`
  *  cannot be 'allowed' while `txTarget` is unknown (no fail-open), and
@@ -1196,7 +1301,7 @@ export function validateRadioViewModel(value: unknown): RadioViewModel {
   exactKeys(v, [
     'topologyId', 'vfoScheme', 'activeReceiver', 'vfos', 'split', 'dualWatch',
     'txTarget', 'txPermit', 'scope', 'disabledReasons', 'txAux', 'meters', 'rxAudio', 'modeFilter',
-    'filterPassband', 'dsp', 'rfFrontEnd', 'band', 'ritXit', 'antenna', 'scan',
+    'filterPassband', 'dsp', 'rfFrontEnd', 'band', 'ritXit', 'antenna', 'scan', 'cwKeyer',
   ], '$');
   if (!Array.isArray(v.vfos)) invalid('$.vfos', 'an array');
   if (!Array.isArray(v.disabledReasons)) invalid('$.disabledReasons', 'an array');
@@ -1235,6 +1340,21 @@ export function validateRadioViewModel(value: unknown): RadioViewModel {
   const ritXit = optionalGroup(v.ritXit, '$.ritXit', validateRitXit);
   const antenna = optionalGroup(v.antenna, '$.antenna', validateAntenna);
   const scan = optionalGroup(v.scan, '$.scan', validateScan);
+  const cwKeyer = optionalGroup(v.cwKeyer, '$.cwKeyer', validateCwKeyer);
+
+  const disabledReasons = v.disabledReasons.map((r, i) => validateDisabledReason(r, `$.disabledReasons[${i}]`));
+  // SAFETY, MOR-1296 — the fail-closed half of "no second permit", enforced
+  // structurally rather than left to the adapter. Break-in keys the
+  // transmitter, so a model that presents a structurally-available break-in
+  // fact while the model's ONE `txPermit` is anything other than 'allowed'
+  // must ALSO record that the affordance is disabled. Same shape as the
+  // `band` invariant above (MOR-1294): a producer cannot ship the permissive
+  // half of a TX-adjacent pair while silently dropping the restrictive half.
+  if (cwKeyer !== undefined && cwKeyer.breakIn.availability.structural
+    && txPermit.status !== 'allowed'
+    && !disabledReasons.some((r) => r.field === 'cwKeyer.breakIn')) {
+    invalid('$.disabledReasons', "a 'cwKeyer.breakIn' entry whenever txPermit is not 'allowed' (fail-open otherwise)");
+  }
 
   return {
     topologyId: str(v.topologyId, '$.topologyId'),
@@ -1249,7 +1369,7 @@ export function validateRadioViewModel(value: unknown): RadioViewModel {
       hardwareScope: validateAvailability(scope.hardwareScope, '$.scope.hardwareScope'),
       audioFftScope: validateAvailability(scope.audioFftScope, '$.scope.audioFftScope'),
     },
-    disabledReasons: v.disabledReasons.map((r, i) => validateDisabledReason(r, `$.disabledReasons[${i}]`)),
+    disabledReasons,
     ...(txAux !== undefined ? { txAux } : {}),
     ...(meters !== undefined ? { meters } : {}),
     ...(rxAudio !== undefined ? { rxAudio } : {}),
@@ -1261,5 +1381,6 @@ export function validateRadioViewModel(value: unknown): RadioViewModel {
     ...(ritXit !== undefined ? { ritXit } : {}),
     ...(antenna !== undefined ? { antenna } : {}),
     ...(scan !== undefined ? { scan } : {}),
+    ...(cwKeyer !== undefined ? { cwKeyer } : {}),
   };
 }
