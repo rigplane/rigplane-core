@@ -544,6 +544,107 @@ export interface BandViewModel {
   tuneMaxHz: number | null;
 }
 
+/**
+ * A single RIT/XIT fact (MOR-1262 decomposition slice 8A, MOR-1295).
+ * Shape-identical to `TxAuxField`, declared as an alias for the same reason
+ * `BandField`/`RfFrontEndField`/`DspField`/`ModeFilterField`/`RxAudioField`
+ * are: one field shape per fact family.
+ */
+export type RitXitField<T> = TxAuxField<T>;
+
+/**
+ * RIT/XIT facts (MOR-1262 decomposition slice 8A, MOR-1295): the RIT/XIT
+ * enables and their frequency offset. Facts only — no command emission;
+ * toggling RIT/XIT or dragging the offset stays with a future surface slice.
+ *
+ * `ritOffset`/`xitOffset` are DELIBERATELY two separate fields reading the
+ * SAME underlying register (`ServerStatePublic.ritFreq` — one CI-V RIT/XIT
+ * offset, shared), verbatim the shipped `toRitXitProps`
+ * (`lib/runtime/props/panel-props.ts`): `ritOffset: state?.ritFreq`,
+ * `xitOffset: state?.ritFreq`. This is not a duplicate-in-error; it is
+ * parity with the one existing derivation, which the shipped `RitXitPanel`
+ * itself resolves by displaying whichever is currently active
+ * (`xitActive && !ritActive ? xitOffset : ritOffset`). A future surface
+ * consuming this group makes that same choice from two honestly-identical
+ * readings, not from a field this contract already collapsed for it.
+ */
+export interface RitXitViewModel {
+  ritActive: RitXitField<boolean>;
+  ritOffset: RitXitField<number>;
+  xitActive: RitXitField<boolean>;
+  xitOffset: RitXitField<number>;
+}
+
+/**
+ * A single antenna fact (MOR-1262 decomposition slice 8A, MOR-1295).
+ * Shape-identical to `TxAuxField`, declared as an alias for the same reason
+ * `RitXitField`/`BandField`/`RfFrontEndField`/`DspField` are.
+ */
+export type AntennaField<T> = TxAuxField<T>;
+
+/**
+ * Antenna facts (MOR-1262 decomposition slice 8A, MOR-1295): the selected TX
+ * antenna port, whether the (port-dependent) RX-antenna override is active,
+ * and the capability-declared port count. ATU/tuner state is DELIBERATELY
+ * absent here — it is family 1's `txAux.atu` (MOR-1244) already, and family
+ * enumeration is explicit and CLOSED (same discipline `dsp`/`rfFrontEnd` use
+ * for their own neighbors) — this group never duplicates it.
+ *
+ * `antennaCount` is a plain number, not an `AntennaField`-wrapped reading,
+ * for the same reason `RfFrontEndViewModel.preValues` isn't: a port count is
+ * a structural fact about the radio MODEL (from `caps.antennas`), not a live
+ * reading that can itself go stale — see `radio-view-model-adapter.ts`'s
+ * `deriveAntenna` for why it is also this group's WHOLE evidence gate (the
+ * shipped `AntennaPanel`/`MobileRadioLayout` show nothing at all when
+ * `antennaCount <= 1`, and RX-ANT only nested inside that same condition —
+ * one v2 gate, not two).
+ *
+ * `rxAnt` reads the RX-antenna override for whichever port `txAntenna`
+ * currently names (`ServerStatePublic.rxAntenna1`/`.rxAntenna2`) — the
+ * shipped `toAntennaProps`'s own `txAntenna === 2 ? rxAntenna2 : rxAntenna1`
+ * selection. Per the 4A′/5A "never derive from a half-observed pair" lesson,
+ * it degrades to `unknown` whenever `txAntenna` itself is unobserved — an
+ * honest reading of a port this contract cannot honestly name is not
+ * possible, and silently falling back to port 1 is exactly the fabrication
+ * this contract exists to forbid.
+ */
+export interface AntennaViewModel {
+  txAntenna: AntennaField<number>;
+  rxAnt: AntennaField<boolean>;
+  antennaCount: number;
+}
+
+/**
+ * A single scan fact (MOR-1262 decomposition slice 8A, MOR-1295).
+ * Shape-identical to `TxAuxField`, declared as an alias for the same reason
+ * `AntennaField`/`RitXitField`/`BandField`/`RfFrontEndField` are.
+ */
+export type ScanField<T> = TxAuxField<T>;
+
+/**
+ * Scan facts (MOR-1262 decomposition slice 8A, MOR-1295): whether a scan is
+ * running, its type, and its resume mode. Facts only — the shipped scan-type
+ * / ΔF-span / resume-mode LABEL tables (`ScanPanel.svelte`'s `scanTypes`/
+ * `dfSpans`/`resumeModes` constants) are UI convenience, not radio facts, and
+ * are deliberately absent (X6200 lesson: no UI-only tables in the fact
+ * layer).
+ *
+ * There is no `scan` capability tag anywhere in v2 — the shipped `ScanPanel`
+ * renders unconditionally — so, like `MetersViewModel`, evidence is
+ * per-field "was this ever reported" (`radio-view-model-adapter.ts`'s
+ * `deriveScan`), not a capability check.
+ *
+ * `scanResumeMode` carries the shipped `& 0x0F` mask applied verbatim
+ * (`toScanProps`'s own `(state?.scanResumeMode ?? 0) & 0x0f`) — the raw field
+ * carries a direction bit this contract does not interpret, so the mask is
+ * consumed, not re-derived.
+ */
+export interface ScanViewModel {
+  scanning: ScanField<boolean>;
+  scanType: ScanField<number>;
+  scanResumeMode: ScanField<number>;
+}
+
 export interface RadioViewModel {
   topologyId: string;
   vfoScheme: VfoScheme;
@@ -590,6 +691,18 @@ export interface RadioViewModel {
    *  range at all, so there is no band plan and no tuning envelope to state
    *  — see `radio-view-model-adapter.ts`'s `deriveBand`. */
   readonly band?: BandViewModel;
+  /** Absent (MOR-1264 optional group) ⇒ this radio declares neither `rit`
+   *  nor `xit` capability — see `radio-view-model-adapter.ts`'s
+   *  `deriveRitXit`. */
+  readonly ritXit?: RitXitViewModel;
+  /** Absent (MOR-1264 optional group) ⇒ this radio declares one antenna
+   *  port or fewer, so there is no port to select — see
+   *  `radio-view-model-adapter.ts`'s `deriveAntenna`. */
+  readonly antenna?: AntennaViewModel;
+  /** Absent (MOR-1264 optional group) ⇒ this radio has never reported
+   *  scanning/scanType/scanResumeMode — see `radio-view-model-adapter.ts`'s
+   *  `deriveScan`. */
+  readonly scan?: ScanViewModel;
 }
 
 const RECEIVER_IDS: readonly ReceiverId[] = ['MAIN', 'SUB'];
@@ -1037,6 +1150,43 @@ function validateBand(value: unknown, path: string): BandViewModel {
   };
 }
 
+/** Exactly the four facts the adapter reads. See
+ *  `radio-view-model-adapter.ts::deriveRitXit`. */
+function validateRitXit(value: unknown, path: string): RitXitViewModel {
+  const v = record(value, path);
+  exactKeys(v, ['ritActive', 'ritOffset', 'xitActive', 'xitOffset'], path);
+  return {
+    ritActive: validateTxAuxField(v.ritActive, `${path}.ritActive`, bool),
+    ritOffset: validateTxAuxField(v.ritOffset, `${path}.ritOffset`, num),
+    xitActive: validateTxAuxField(v.xitActive, `${path}.xitActive`, bool),
+    xitOffset: validateTxAuxField(v.xitOffset, `${path}.xitOffset`, num),
+  };
+}
+
+/** Exactly the three facts the adapter reads. See
+ *  `radio-view-model-adapter.ts::deriveAntenna`. */
+function validateAntenna(value: unknown, path: string): AntennaViewModel {
+  const v = record(value, path);
+  exactKeys(v, ['txAntenna', 'rxAnt', 'antennaCount'], path);
+  return {
+    txAntenna: validateTxAuxField(v.txAntenna, `${path}.txAntenna`, num),
+    rxAnt: validateTxAuxField(v.rxAnt, `${path}.rxAnt`, bool),
+    antennaCount: num(v.antennaCount, `${path}.antennaCount`),
+  };
+}
+
+/** Exactly the three facts the adapter reads. See
+ *  `radio-view-model-adapter.ts::deriveScan`. */
+function validateScan(value: unknown, path: string): ScanViewModel {
+  const v = record(value, path);
+  exactKeys(v, ['scanning', 'scanType', 'scanResumeMode'], path);
+  return {
+    scanning: validateTxAuxField(v.scanning, `${path}.scanning`, bool),
+    scanType: validateTxAuxField(v.scanType, `${path}.scanType`, num),
+    scanResumeMode: validateTxAuxField(v.scanResumeMode, `${path}.scanResumeMode`, num),
+  };
+}
+
 /** Runtime validator (repo idiom: throws TypeError with a `$.path`, see `validateCapabilities`).
  *  Also enforces two cross-field invariants (review cycle 1, V1): `txPermit`
  *  cannot be 'allowed' while `txTarget` is unknown (no fail-open), and
@@ -1046,7 +1196,7 @@ export function validateRadioViewModel(value: unknown): RadioViewModel {
   exactKeys(v, [
     'topologyId', 'vfoScheme', 'activeReceiver', 'vfos', 'split', 'dualWatch',
     'txTarget', 'txPermit', 'scope', 'disabledReasons', 'txAux', 'meters', 'rxAudio', 'modeFilter',
-    'filterPassband', 'dsp', 'rfFrontEnd', 'band',
+    'filterPassband', 'dsp', 'rfFrontEnd', 'band', 'ritXit', 'antenna', 'scan',
   ], '$');
   if (!Array.isArray(v.vfos)) invalid('$.vfos', 'an array');
   if (!Array.isArray(v.disabledReasons)) invalid('$.disabledReasons', 'an array');
@@ -1082,6 +1232,9 @@ export function validateRadioViewModel(value: unknown): RadioViewModel {
   const dsp = optionalGroup(v.dsp, '$.dsp', validateDsp);
   const rfFrontEnd = optionalGroup(v.rfFrontEnd, '$.rfFrontEnd', validateRfFrontEnd);
   const band = optionalGroup(v.band, '$.band', validateBand);
+  const ritXit = optionalGroup(v.ritXit, '$.ritXit', validateRitXit);
+  const antenna = optionalGroup(v.antenna, '$.antenna', validateAntenna);
+  const scan = optionalGroup(v.scan, '$.scan', validateScan);
 
   return {
     topologyId: str(v.topologyId, '$.topologyId'),
@@ -1105,5 +1258,8 @@ export function validateRadioViewModel(value: unknown): RadioViewModel {
     ...(dsp !== undefined ? { dsp } : {}),
     ...(rfFrontEnd !== undefined ? { rfFrontEnd } : {}),
     ...(band !== undefined ? { band } : {}),
+    ...(ritXit !== undefined ? { ritXit } : {}),
+    ...(antenna !== undefined ? { antenna } : {}),
+    ...(scan !== undefined ? { scan } : {}),
   };
 }
