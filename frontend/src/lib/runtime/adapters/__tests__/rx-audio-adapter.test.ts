@@ -16,7 +16,7 @@
  *  3. Honest degradation: the group never fabricates the shipped panel's
  *     0.5 AF / 'both' focus defaults.
  * (Purity — no transport/audio-manager/AudioContext contact — is pinned
- * separately in `rx-audio-purity.test.ts`, which needs the isolated pool.)
+ * separately in `rx-audio-purity.isolated.test.ts`, which needs the isolated pool.)
  */
 import { describe, expect, it } from 'vitest';
 import type { Capabilities } from '$lib/types/capabilities';

@@ -14,7 +14,7 @@
  * `skinId === 'desktop-v2'` that is `false`, so TODAY it still mounts the
  * legacy `<VfoHeader>` in `.receiver-deck` and the sidebars' legacy
  * `<TxPanel>` (`hideTxPanel={semanticSurfaces}` is `false` here), pinned by
- * the pre-existing `RadioLayout.test.ts` ("renders .vfo-header inside
+ * the pre-existing `RadioLayout.isolated.test.ts` ("renders .vfo-header inside
  * .receiver-deck", default `skinId: 'desktop-v2'`). Registering this
  * manifest does not change that — `validateLayoutManifest` only requires
  * internal self-consistency (every `requiredSemanticSurfaces` entry covered

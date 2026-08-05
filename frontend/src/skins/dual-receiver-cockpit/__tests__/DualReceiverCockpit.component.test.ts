@@ -897,7 +897,7 @@ describe('MOR-1258 — the three TX-adjacent alerts are formal rx-tx zone member
   // did from the old one. (The ModInputTxWarning buttons' own handler
   // wiring is unchanged — pinned in
   // `components-v2/wiring/__tests__/semantic-rx-tx-wiring.component.test.ts`
-  // and `components-v2/panels/__tests__/ModInputTxWarning.test.ts` — moving
+  // and `components-v2/panels/__tests__/ModInputTxWarning.isolated.test.ts` — moving
   // its DOM parent does not touch the component's own click handlers.)
   it('still reaches the fault-reset handler from inside the zone', () => {
     h.state = mainSubState('MAIN');

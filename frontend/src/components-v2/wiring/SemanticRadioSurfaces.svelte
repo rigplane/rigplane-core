@@ -109,7 +109,7 @@
    * composing them keeps ONE command vocabulary rather than a v3 fork of it.
    * The two maps below exist so the pure surface can stay field-addressed —
    * agreement with the shipped command-bus names is pinned in
-   * `__tests__/tx-aux-command-bus.test.ts` against the REAL module.
+   * `__tests__/tx-aux-command-bus.isolated.test.ts` against the REAL module.
    */
   const txAuxIntents = { ...makeVoxHandlers(), ...makeTxHandlers() };
   const TX_AUX_TOGGLE_INTENT: Record<TxAuxToggleField, () => void> = {

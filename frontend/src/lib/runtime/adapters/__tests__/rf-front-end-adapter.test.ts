@@ -3,7 +3,7 @@
  * adapter derivation. Extended by slice 6A′ (MOR-1293) with `digiSel`/
  * `ipPlus` and the PREAMP/DIGI-SEL hardware mutex (MOR-479).
  *
- * Companion to `dsp-adapter.test.ts` (MOR-1290), which this file does NOT
+ * Companion to `dsp-adapter.isolated.test.ts` (MOR-1290), which this file does NOT
  * modify. `rfFrontEnd` is a SEPARATE optional group — see
  * `radio-view-model.ts`'s `RfFrontEndViewModel` doc comment.
  *
@@ -12,7 +12,7 @@
  * capabilities-STORE-backed scale conversion — they are plain pass-through
  * readings (see `deriveRfFrontEnd`'s doc comment) — so this file never calls
  * the real `setCapabilities` and does not need the isolated pool (MOR-1272;
- * contrast `dsp-adapter.test.ts`'s own file-level doc comment on that
+ * contrast `dsp-adapter.isolated.test.ts`'s own file-level doc comment on that
  * point).
  */
 import { describe, expect, it } from 'vitest';
@@ -35,7 +35,7 @@ function caps(overrides: Partial<Capabilities> = {}): Capabilities {
 const fresh: FieldStatus = { storePath: 'x', observed: true, freshness: 'fresh', availability: 'available' };
 const stale: FieldStatus = { storePath: 'x', observed: true, freshness: 'stale', availability: 'stale' };
 
-/** The exact shape `dsp-adapter.test.ts`'s own baseline uses. */
+/** The exact shape `dsp-adapter.isolated.test.ts`'s own baseline uses. */
 function bareState(overrides: Partial<ServerState> = {}): ServerState {
   return {
     active: 'MAIN', split: false, dualWatch: false, ptt: false,
@@ -225,7 +225,7 @@ describe('preValues/attValues choice sets (MOR-1292)', () => {
 
 /**
  * HONESTY GATE (MOR-1292, mirroring the DSP F2/mutant-H3 lesson,
- * `dsp-adapter.test.ts`). Each of the four numeric fields is read via
+ * `dsp-adapter.isolated.test.ts`). Each of the four numeric fields is read via
  * `numOrUndef(raw)` with no `?? 0` — pin that a mutant seeding one WOULD be
  * caught: the field absent from the receiver object entirely, no
  * `fieldStatus` entry either, so the ONLY thing standing between an honest

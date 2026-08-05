@@ -75,7 +75,7 @@ vi.mock('$lib/runtime/adapters/mod-input-tx-guard.svelte', () => ({
 }));
 // The names below are the REAL `makeTxHandlers`/`makeVoxHandlers` surface —
 // agreement with the shipped module is proven separately, against the real
-// module, in `tx-aux-command-bus.test.ts`.
+// module, in `tx-aux-command-bus.isolated.test.ts`.
 vi.mock('../command-bus', () => ({
   makeVfoHandlers: () => ({
     onVfoSelect: h.noop, onSplitToggle: h.noop, onDualWatchToggle: h.noop,

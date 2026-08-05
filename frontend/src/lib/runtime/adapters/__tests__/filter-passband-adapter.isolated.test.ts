@@ -14,8 +14,8 @@
  * their scale from that STORE rather than from this file's own `caps`
  * parameter. Under the fast pool's `isolate: false` this mutation would leak
  * into whichever sibling file's tests share the worker afterward — the same
- * shape `rx-audio-purity.test.ts`, `mod-input-tx-guard.test.ts`, and
- * `frontend-runtime.test.ts` are isolated for. See `vite.config.ts`.
+ * shape `rx-audio-purity.isolated.test.ts`, `mod-input-tx-guard.isolated.test.ts`, and
+ * `frontend-runtime.isolated.test.ts` are isolated for. See `vite.config.ts`.
  */
 import { afterEach, describe, expect, it } from 'vitest';
 import type { Capabilities, ControlRange } from '$lib/types/capabilities';

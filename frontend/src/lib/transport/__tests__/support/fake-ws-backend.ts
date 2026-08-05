@@ -1,6 +1,6 @@
 // ─── Shared fake WebSocket backend for ws-client tests ───────────────────────
 //
-// Used by both the unit suite (``ws-client.test.ts``, which mocks the store
+// Used by both the unit suite (``ws-client.isolated.test.ts``, which mocks the store
 // modules) and the integration suite (``ws-client-store.integration.test.ts``,
 // which drives the real store). Previously each file kept its own copy of
 // this class; this module is the single source of truth (superset of both
