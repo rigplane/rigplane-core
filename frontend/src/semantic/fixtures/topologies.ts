@@ -15,7 +15,7 @@
  */
 import type {
   AntennaField, AntennaViewModel,
-  Availability, BandField, BandViewModel,
+  Availability, BandField, BandViewModel, CwKeyerField, CwKeyerViewModel,
   DspField, DspViewModel, FilterPassbandField, FilterPassbandViewModel,
   MeterField, MeterRfState, MetersViewModel,
   ModeFilterField, ModeFilterViewModel,
@@ -420,6 +420,36 @@ export function withAntenna(fixture: RadioViewModel): RadioViewModel {
  * topology fixture — same composable-axis story as `withBand`/
  * `withRfFrontEnd` above.
  */
+/**
+ * Applies a fully-observed `cwKeyer` group (MOR-1262 slice 9A, MOR-1296) to
+ * any topology fixture — same composable-axis story as `withScan`/`withBand`
+ * above, with one SAFETY-CRITICAL difference it cannot opt out of: break-in
+ * keys the transmitter, and `validateRadioViewModel` rejects a model carrying
+ * a structurally-available `breakIn` under a non-`'allowed'` `txPermit`
+ * unless the matching `disabledReasons` entry is present. So this helper adds
+ * that entry for exactly the fixtures that need it (`1/ab`, whose txPermit is
+ * unknown), rather than quietly weakening the invariant to keep a fixture
+ * valid. `breakIn` is `'semi'`, not `'off'`: a fixture whose keyer is idle
+ * would make every fail-closed consumer path unobservable.
+ */
+export function withCwKeyer(fixture: RadioViewModel): RadioViewModel {
+  const avail: Availability = { structural: true, operational: true };
+  const known = <T>(value: T): CwKeyerField<T> => ({ reading: { status: 'known', value }, availability: avail });
+  const cwKeyer: CwKeyerViewModel = {
+    breakIn: known('semi'),
+    breakInDelay: known(64),
+    keyerSpeed: known(24),
+    pitchHz: known(600),
+    reversePaddle: known(false),
+    apf: known(0),
+    twinPeak: known(false),
+  };
+  const disabledReasons = fixture.txPermit.status === 'allowed'
+    ? fixture.disabledReasons
+    : [...fixture.disabledReasons, { field: 'cwKeyer.breakIn', code: 'tx-target-unknown' as const }];
+  return { ...fixture, cwKeyer, disabledReasons };
+}
+
 export function withScan(fixture: RadioViewModel): RadioViewModel {
   const avail: Availability = { structural: true, operational: true };
   const known = <T>(value: T): ScanField<T> => ({ reading: { status: 'known', value }, availability: avail });
