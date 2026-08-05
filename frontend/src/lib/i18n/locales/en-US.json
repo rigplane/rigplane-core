@@ -73,6 +73,11 @@
   "core.settings.language.srHint": "Selecting a language updates the UI immediately and is saved on this device.",
   "core.settings.language.devLocaleSuffix": "developer pseudo-locale",
 
+  "core.settings.workspace.title": "Workspace",
+  "core.settings.workspace.layoutLabel": "Layout",
+  "core.settings.workspace.designLanguageLabel": "Design language",
+  "core.settings.workspace.themeLabel": "Theme",
+
   "core.overlay.poweredOff.label": "Radio is powered off",
   "core.overlay.poweredOff.hint": "Use the ON button in the status bar to power up",
   "core.overlay.poweredOff.powerOnButton": "Power ON",
