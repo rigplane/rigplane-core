@@ -260,6 +260,34 @@ export function supportsTopology(manifest: LayoutManifest, topology: TopologyCla
   return manifest.compatibleTopologies.includes(topology);
 }
 
+/**
+ * MOR-1313 — every semantic surface `manifest`'s DECLARED ZONES mount, as one
+ * flat set. The zone schema is untouched (risk R3): this derives entirely from
+ * `zone.surfaces`, so a layout expresses "this area is semantic now" by
+ * declaring the zone, never by a per-zone config field.
+ *
+ * This is what a shared v2 shell reads to decide, PER AREA, whether the
+ * semantic vertical owns a surface or its legacy twin still renders — see
+ * `components-v2/layout/RadioLayout.svelte`. Deliberately the MANIFEST and not
+ * the resolved `SurfacePlan` (`../workspace/resolution`): the manifest is the
+ * ceiling, and a workspace subtraction (which may only ever hide) must not be
+ * able to bring a legacy twin back on screen.
+ *
+ * `undefined` — an id no manifest is registered under — yields the empty set,
+ * i.e. "nothing is declared, keep every legacy presentation". That is the
+ * fail-safe direction: an unresolvable layout renders the shipped v2 panels
+ * rather than a screen the semantic vertical was never asked to fill.
+ */
+export function declaredSurfaces(
+  manifest: LayoutManifest | undefined,
+): ReadonlySet<SemanticSurfaceName> {
+  const declared = new Set<SemanticSurfaceName>();
+  for (const zone of manifest?.zones ?? []) {
+    for (const surface of zone.surfaces) declared.add(surface);
+  }
+  return declared;
+}
+
 /** Resolves `id` against `topology`, falling back to `fallbackLayoutId` only
  *  when the fallback itself also supports `topology`. */
 export function resolveLayoutForTopology(id: string, topology: TopologyClass): LayoutManifest | undefined {

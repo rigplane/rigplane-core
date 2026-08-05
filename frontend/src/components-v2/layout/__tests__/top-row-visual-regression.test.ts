@@ -348,6 +348,14 @@ describe('VfoHeader visual regression', () => {
 });
 
 describe('RadioLayout top-row profile switching', () => {
+  // MOR-1313: the legacy top row (VfoHeader + its shared scale tokens) renders
+  // for a layout whose manifest declares no `vfo` zone. `desktop-v2` — this
+  // component's default skinId — resolves through its manifest now and hosts
+  // the semantic surfaces instead, so the subject of these two pins is the
+  // undeclared branch. The deck's style vars are chrome and are written either
+  // way; the `.vfo-main-panel` profile below only exists on the legacy branch.
+  const UNDECLARED = { skinId: 'no-such-layout' };
+
   beforeEach(() => {
     // JSDOM defaults to 0x0 — force desktop dimensions so isMobile stays false
     Object.defineProperty(window, 'innerWidth', { writable: true, configurable: true, value: 1440 });
@@ -357,7 +365,7 @@ describe('RadioLayout top-row profile switching', () => {
   it('promotes the top row to wide profile when the deck width crosses the threshold', () => {
     vi.stubGlobal('ResizeObserver', ResizeObserverStub);
 
-    const target = mountWithCleanup(RadioLayout);
+    const target = mountWithCleanup(RadioLayout, UNDECLARED);
     const receiverDeck = target.querySelector('.receiver-deck');
     const mainPanel = target.querySelector('.vfo-main-panel .panel');
 
@@ -376,7 +384,7 @@ describe('RadioLayout top-row profile switching', () => {
     const previousUrl = window.location.href;
     window.history.replaceState({}, '', '/?vfoScale=1.05&vfoFreqScale=0.9&vfoMeterScale=1.1');
 
-    const target = mountWithCleanup(RadioLayout);
+    const target = mountWithCleanup(RadioLayout, UNDECLARED);
     const receiverDeck = target.querySelector('.receiver-deck');
 
     expect(receiverDeck?.getAttribute('style')).toContain('--vfo-panel-meter-height: 69px');

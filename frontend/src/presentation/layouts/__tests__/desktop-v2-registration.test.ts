@@ -11,7 +11,7 @@
 import { existsSync, readFileSync } from 'node:fs';
 import { describe, it, expect } from 'vitest';
 import {
-  getLayout, resolveLayoutForTopology, resolveLayoutForViewport,
+  declaredSurfaces, getLayout, resolveLayoutForTopology, resolveLayoutForViewport,
   TOPOLOGY_CLASSES,
 } from '../contract';
 // Barrel-only, never '../desktop-declarations' directly — the M7 lesson
@@ -52,10 +52,9 @@ describe('the desktop-v2 entrypoint is registered in the real registry', () => {
   });
 });
 
-describe('declared zones are a forward declaration, not a DOM claim (MOR-1263 step 1 vs step 2)', () => {
+describe('declared zones now drive the DOM (MOR-1263 step 2, MOR-1313)', () => {
   // Kills: declaring a surface this manifest does not name, or dropping
-  // either one — the pair the future DOM binding (MOR-1263 step 2) must
-  // still satisfy.
+  // either one — the pair per-zone suppression consumes.
   it('declares receiver-deck:[vfo] and rx-tx:[rxTx]', () => {
     expect(desktopV2Layout.zones).toEqual([
       { id: 'receiver-deck', surfaces: ['vfo'] },
@@ -64,14 +63,23 @@ describe('declared zones are a forward declaration, not a DOM claim (MOR-1263 st
     expect([...desktopV2Layout.requiredSemanticSurfaces].sort()).toEqual(['rxTx', 'vfo']);
   });
 
-  // Kills: silently flipping RadioLayout.svelte's semanticSurfaces gate to
-  // also cover 'desktop-v2' as part of "registering the manifest" — the
-  // ticket's explicit boundary is that the legacy resolution path stays the
-  // live one until a later slice. This reads the actual gate expression, not
-  // a mounted assertion (no DOM tree needed here).
-  it('RadioLayout.svelte does not (yet) gate semanticSurfaces on desktop-v2', () => {
+  // Kills: RadioLayout.svelte regressing to a per-skin-id gate — the exact
+  // `skinId === 'sdr-test'` boolean MOR-1266 pinned as still-present and
+  // MOR-1313 removed. A reintroduced id fork would leave this manifest
+  // decorative again while every registry assertion above stayed green. Read
+  // as TEXT for the same reason as the loader pin below (no DOM tree needed).
+  it('RadioLayout.svelte derives suppression from the manifest, not from a skin id', () => {
     const source = readFileSync('src/components-v2/layout/RadioLayout.svelte', 'utf8');
-    expect(source).toContain("let semanticSurfaces = $derived(skinId === 'sdr-test');");
+    expect(source).toContain('let declared = $derived(declaredSurfaces(getLayout(skinId)));');
+    expect(source).not.toContain("$derived(skinId === 'sdr-test')");
+  });
+
+  // Kills: `declaredSurfaces` losing the zone walk (e.g. returning a fixed
+  // set, or reading only the first zone) — desktop-v2 is the manifest that
+  // splits the pair ACROSS two zones, so it is the one that proves the walk
+  // is per-zone rather than per-manifest-first-zone.
+  it('its two zones flatten to the surfaces the shell suppresses legacy twins for', () => {
+    expect([...declaredSurfaces(getLayout('desktop-v2'))].sort()).toEqual(['rxTx', 'vfo']);
   });
 });
 
