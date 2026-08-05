@@ -13,9 +13,13 @@ import type { Component } from 'svelte';
 import { isValidLanguageId as isValidProductId } from '../languages/contract';
 
 /** Semantic surfaces a layout may mount (MOR-1062/1065 reference vertical;
- *  `txAux` added by MOR-1265). Adding a name makes it DECLARABLE — it does
- *  not mount anything, and no manifest declares a `txAux` zone yet. */
-export const SEMANTIC_SURFACE_NAMES = ['vfo', 'rxTx', 'txAux'] as const;
+ *  `txAux` added by MOR-1265, `meters` by MOR-1273). Adding a name makes it
+ *  DECLARABLE — it does not mount anything, and no manifest declares a
+ *  `txAux` or `meters` zone yet. Distinct from the design-language renderer
+ *  slot of the same name (`languages/contract.ts`'s `RENDERER_SLOT_NAMES`):
+ *  that one says how a language DRAWS a meter, this one says which layout
+ *  zone may HOST the surface. */
+export const SEMANTIC_SURFACE_NAMES = ['vfo', 'rxTx', 'txAux', 'meters'] as const;
 export type SemanticSurfaceName = (typeof SEMANTIC_SURFACE_NAMES)[number];
 
 /**

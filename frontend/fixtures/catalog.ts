@@ -100,6 +100,37 @@ function abState(): ServerState {
   } as unknown as ServerState;
 }
 
+/**
+ * MOR-1273 — raw meter samples overlaid on a fixture state so the browser can
+ * see the semantic meters surface. FIXTURE CODE ONLY: no production module
+ * changes, and no capability is added, so
+ *
+ *   - the cockpit gains no new focusable control (the meters surface is a
+ *     readout — R9), and every existing behavior assertion, focus order and
+ *     zone-less-control count is therefore untouched;
+ *   - `compressorOn` is deliberately NOT set and `compressor` stays out of the
+ *     capability list, so the MOR-1244 `txAux` group is still absent. That is
+ *     the browser proof of the COMP gate: a fully-present compression METER
+ *     with the compressor fact unavailable renders NO COMP tile.
+ *
+ * Fixtures WITHOUT this overlay carry no `meters` group at all and so render
+ * no meters surface — the self-gating half, provable in the same capture run.
+ */
+const METER_PATHS = ['powerMeter', 'swrMeter', 'alcMeter', 'compMeter',
+  'vdMeter', 'idMeter', 'main.sMeter', 'sub.sMeter'];
+
+function withMeters(state: ServerState): ServerState {
+  const s = state as unknown as Record<string, unknown>;
+  const rx = (v: unknown, sMeter: number) =>
+    (v === undefined ? v : { ...(v as Record<string, unknown>), sMeter });
+  return {
+    ...s,
+    powerMeter: 120, swrMeter: 30, alcMeter: 40, compMeter: 20, vdMeter: 200, idMeter: 90,
+    main: rx(s.main, -12), sub: rx(s.sub, -30),
+    fieldStatus: { ...(s.fieldStatus as FieldStatusMap), ...statuses(METER_PATHS) },
+  } as unknown as ServerState;
+}
+
 const baseCaps = (): Capabilities => ({
   model: 'fixture', scope: false, audio: true, tx: true,
   capabilities: ['audio', 'tx', 'dual_rx'], receivers: 2, vfoScheme: 'main_sub',
@@ -183,7 +214,7 @@ export const FIXTURES: readonly Fixture[] = [
   {
     id: 'topology-1-single',
     what: '1/single — one receiver, one unslotted VFO; the cockpit degrades to one strip.',
-    state: singleState, caps: singleCaps, tx: tx({}),
+    state: () => withMeters(singleState()), caps: singleCaps, tx: tx({}),
     expect: {
       zones: SINGLE_ZONES, strips: 1, stripReceivers: ['MAIN'],
       stripOperational: [true], stripActive: [true],
@@ -222,7 +253,7 @@ export const FIXTURES: readonly Fixture[] = [
   {
     id: 'topology-2-main-sub',
     what: '2/main_sub — the reference dual state: 4 tiles across 2 strips, MAIN A active.',
-    state: () => mainSubState('MAIN'), caps: mainSubCaps, tx: tx({}),
+    state: () => withMeters(mainSubState('MAIN')), caps: mainSubCaps, tx: tx({}),
     expect: mainSubExpect(),
   },
   {
@@ -248,13 +279,13 @@ export const FIXTURES: readonly Fixture[] = [
   {
     id: 'tx-phase-rx',
     what: 'TX idle — RF receiving, session ready, key enabled, unkey ungated.',
-    state: () => mainSubState('MAIN'), caps: mainSubCaps, tx: tx({}),
+    state: () => withMeters(mainSubState('MAIN')), caps: mainSubCaps, tx: tx({}),
     expect: mainSubExpect(),
   },
   {
     id: 'tx-phase-pending',
     what: 'TX keying in progress — RF uncertain, session pending, key blocked, unkey still live.',
-    state: () => mainSubState('MAIN'), caps: mainSubCaps,
+    state: () => withMeters(mainSubState('MAIN')), caps: mainSubCaps,
     tx: tx({
       phase: 'key-confirm-pending', intent: 'latched', guard: { leaseId: 'L1' },
       radioTx: 'off', txRisk: 'uncertain', mayOwnKey: true,
@@ -264,7 +295,7 @@ export const FIXTURES: readonly Fixture[] = [
   {
     id: 'tx-phase-tx',
     what: 'transmitting — RF TX, session key down, key blocked, unkey the only way out.',
-    state: () => mainSubState('MAIN'), caps: mainSubCaps,
+    state: () => withMeters(mainSubState('MAIN')), caps: mainSubCaps,
     tx: tx({
       phase: 'active', intent: 'latched', guard: { leaseId: 'L1' },
       radioTx: 'on', txRisk: 'confirmed-on', mayOwnKey: true,
@@ -274,7 +305,7 @@ export const FIXTURES: readonly Fixture[] = [
   {
     id: 'tx-phase-fault',
     what: 'TX fault — session fault, fault line shown, the App-owned fault reset affordance renders.',
-    state: () => mainSubState('MAIN'), caps: mainSubCaps,
+    state: () => withMeters(mainSubState('MAIN')), caps: mainSubCaps,
     tx: tx({ phase: 'failed', radioTx: 'unknown', txRisk: 'uncertain', fault: 'audio-failed' }),
     expect: mainSubExpect({
       keyDisabled: true, rfLabel: 'TX?', sessionLabel: 'fault',
