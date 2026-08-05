@@ -74,6 +74,16 @@ export default defineConfig({
             // elsewhere in the suite reshuffles the fast pool and flips it red
             // with no production change. Isolation makes it order-independent.
             'src/components-v2/wiring/__tests__/rx-audio-authority.test.ts',
+            // MOR-1074, same class again: it declares module-scope
+            // ``vi.mock('$lib/transport/...')`` and asserts exact lease counts
+            // through the canonical audio authority, so whether its hoisted
+            // mock wins depends on which sibling loaded the real transport
+            // module first. Reproduced on a PRISTINE baaaf480 checkout by
+            // adding five test files that merely import
+            // `semantic/rx-tx-surface` + `presentation/languages/*` and assert
+            // nothing else: red in 4 of 6 runs with zero production change.
+            // Isolation makes it a function of its own subject again.
+            'src/components-v2/panels/lcd/__tests__/audio-fft-demand.test.ts',
             // MOR-1262 slice 2A, same class: it spies on the GLOBAL
             // `requestAnimationFrame` and asserts exact call counts, while
             // sibling component tests (MetersDockPanel's `tick`/`tickPeak`
@@ -181,6 +191,7 @@ export default defineConfig({
           environment: 'jsdom',
           include: [
             'src/components-v2/wiring/__tests__/rx-audio-authority.test.ts',
+            'src/components-v2/panels/lcd/__tests__/audio-fft-demand.test.ts',
             'src/lib/utils/__tests__/smoothing.svelte.test.ts',
             'src/components-v2/wiring/__tests__/keyboard-wiring.test.ts',
             'src/components-v2/wiring/__tests__/vfo-wiring.test.ts',

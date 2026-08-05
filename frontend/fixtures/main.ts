@@ -39,20 +39,25 @@ if ((params.get('theme') ?? 'v2') === 'v2') {
   await import('../src/components-v2/theme/index');
 }
 
-// MOR-1073: design languages are scoped to `[data-design-language]` and have
+// MOR-1073/MOR-1074: design languages are scoped to `[data-design-language]`,
+// which is their ONLY activation mechanism (owner decision Q2) — and they have
 // no activation path in the app yet (routing one in is cutover work,
-// MOR-1048/MOR-1263). This param is the only opt-in, so the harness can
-// capture the language over the same fixtures the unstyled baselines use.
+// MOR-1048/MOR-1263). This param is the only opt-in, so the harness can capture
+// each language over the same fixtures the unstyled baselines use.
+const LANGUAGE_STYLESHEETS: Record<string, () => Promise<unknown>> = {
+  studioline: () => import('../src/presentation/languages/studioline/studioline.css'),
+  fieldline: () => import('../src/presentation/languages/fieldline/fieldline.css'),
+};
 const language = params.get('language');
-if (language === 'studioline') {
-  await import('../src/presentation/languages/studioline/studioline.css');
+if (language) {
+  const load = LANGUAGE_STYLESHEETS[language];
+  if (!load) throw new Error(`MOR-1074 harness: unknown design language "${language}"`);
+  await load();
   document.documentElement.dataset.designLanguage = language;
   // Light is an explicit opt-in, never an OS-preference flip: the app's own
   // light/dark is a manual `[data-theme]` choice, so language and surface have
   // to be switched by the same deliberate act.
   if (params.get('mode') === 'light') document.documentElement.dataset.languageMode = 'light';
-} else if (language) {
-  throw new Error(`MOR-1073 harness: unknown design language "${language}"`);
 }
 
 harness.state = fixture.state();
