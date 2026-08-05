@@ -112,6 +112,11 @@ export default defineConfig({
             // fetch/WebSocket plus ``vi.resetModules()`` around a fresh
             // dynamic import of the legacy workspace readers. See MOR-1272.
             'src/presentation/workspace/__tests__/legacy-readers-purity.test.ts',
+            // MOR-1079, same class a third time: ``vi.stubGlobal`` on
+            // localStorage/fetch/WebSocket plus ``vi.resetModules()`` around a
+            // fresh dynamic import of the workspace store, whose module-scope
+            // ``$state`` would otherwise be shared across files. See MOR-1272.
+            'src/presentation/workspace/__tests__/store-purity.test.ts',
             'src/components-v2/wiring/__tests__/keyboard-wiring.test.ts',
             'src/components-v2/wiring/__tests__/vfo-wiring.test.ts',
             'src/components-v2/wiring/__tests__/dsp-nr-level.test.ts',
@@ -218,6 +223,7 @@ export default defineConfig({
             'src/lib/runtime/adapters/__tests__/filter-passband-adapter.test.ts',
             'src/presentation/workspace/__tests__/purity.test.ts',
             'src/presentation/workspace/__tests__/legacy-readers-purity.test.ts',
+            'src/presentation/workspace/__tests__/store-purity.test.ts',
             'src/components-v2/wiring/__tests__/keyboard-wiring.test.ts',
             'src/components-v2/wiring/__tests__/vfo-wiring.test.ts',
             'src/components-v2/wiring/__tests__/dsp-nr-level.test.ts',
