@@ -1,0 +1,154 @@
+/**
+ * MOR-1079 — the single workspace store.
+ *
+ * Svelte 5 runes over the pure `repository.ts` layer, in the module-level
+ * `$state` + exported accessors idiom the `lib/stores/*` modules already use.
+ * Module load is PURE (MOR-1077 idiom): storage is touched only by an explicit
+ * `initWorkspaceStore()` call, never at import.
+ *
+ * The notice is the "visible discard" signal the owner asked for: when a
+ * stored object is discarded on version mismatch, or repaired, or could not be
+ * written, that fact is published reactively instead of being swallowed. The
+ * future settings UI (MOR-1080) reads `getWorkspaceNotice()` from a `$derived`
+ * and calls `dismissWorkspaceNotice()`.
+ *
+ * Updates are semantic and typed. There is deliberately no raw-object setter:
+ * every mutation goes through `applyWorkspacePatch`, i.e. through
+ * `readWorkspace`, so an invalid value can never reach state or storage.
+ */
+import { DEFAULT_WORKSPACE, readWorkspace } from './contract';
+import {
+  applyWorkspacePatch, loadWorkspace, markWorkspaceMigrated, persistWorkspace,
+  type WorkspaceStorage,
+} from './repository';
+import type {
+  WorkspaceDesignLanguageId, WorkspaceLayoutId, WorkspaceReadResult, WorkspaceRejection,
+  WorkspaceThemeId, WorkspaceV1, WorkspaceZoneId,
+} from './contract';
+import type { SemanticSurfaceName } from '../layouts/contract';
+import type { DensityLevel } from '../languages/contract';
+
+export type WorkspaceNoticeKind =
+  /** A stored object outside the readable version window was NOT recovered. */
+  | 'version-discarded'
+  /** Stored bytes were unusable (not an object / bad JSON) and reset to defaults. */
+  | 'reset'
+  /** Recovered, but individual fields fell back — the operator lost those. */
+  | 'repaired'
+  /** A newer stored object this build cannot fully represent; writes are refused. */
+  | 'forward-read-only'
+  /** The last write failed (quota, private mode); the previous stored state stands. */
+  | 'persist-failed';
+
+export interface WorkspaceNotice {
+  readonly kind: WorkspaceNoticeKind;
+  readonly discardedVersion?: unknown;
+  readonly rejections: readonly WorkspaceRejection[];
+}
+
+const INITIAL: WorkspaceReadResult = readWorkspace(DEFAULT_WORKSPACE);
+
+let current = $state<WorkspaceReadResult>(INITIAL);
+let notice = $state<WorkspaceNotice | null>(null);
+let backing: WorkspaceStorage | null = null;
+/** Set at init when the load was NOT writable (see `WorkspaceLoad.writable`),
+ *  and never re-derived per update: once the unrepresentable value has been
+ *  repaired away a patched result validates cleanly, so re-deriving would
+ *  re-enable the write and destroy the newer data. */
+let blocked: WorkspaceNotice | null = null;
+
+function defaultStorage(): WorkspaceStorage | null {
+  try {
+    return typeof localStorage === 'undefined' ? null : localStorage;
+  } catch {
+    return null;
+  }
+}
+
+function noticeFor(result: WorkspaceReadResult): WorkspaceNotice | null {
+  if (result.outcome === 'version-discarded') {
+    return { kind: 'version-discarded', discardedVersion: result.discardedVersion, rejections: result.rejections };
+  }
+  if (result.outcome === 'reset') return { kind: 'reset', rejections: result.rejections };
+  if (result.outcome === 'forward-read' && result.rejections.length > 0) {
+    return { kind: 'forward-read-only', rejections: result.rejections };
+  }
+  if (result.rejections.length > 0) return { kind: 'repaired', rejections: result.rejections };
+  return null;
+}
+
+/**
+ * Explicit, idempotent boot step. Migration is decided by the repository's
+ * sentinel, so calling this twice re-reads the stored object and never
+ * re-applies legacy data.
+ */
+export function initWorkspaceStore(storage: WorkspaceStorage | null = defaultStorage()): void {
+  backing = storage;
+  blocked = null;
+  if (storage === null) {
+    current = INITIAL;
+    notice = null;
+    return;
+  }
+  const load = loadWorkspace(storage);
+  current = load.result;
+  notice = noticeFor(load.result);
+  blocked = load.writable ? null : notice;
+  if (load.source === 'migrated' && persistWorkspace(storage, load.result)) markWorkspaceMigrated(storage);
+}
+
+export function getWorkspace(): WorkspaceV1 {
+  return current.workspace;
+}
+
+/** The discard/repair/write-failure signal. Reactive: read it from `$derived`. */
+export function getWorkspaceNotice(): WorkspaceNotice | null {
+  return notice;
+}
+
+export function dismissWorkspaceNotice(): void {
+  notice = null;
+}
+
+function update(patch: Readonly<Record<string, unknown>>): void {
+  const next = applyWorkspacePatch(current, patch);
+  current = next;
+  const published = noticeFor(next);
+  if (published !== null) notice = published;
+  if (backing === null) return;
+  if (blocked !== null) {
+    notice = blocked;
+    return;
+  }
+  if (!persistWorkspace(backing, next)) {
+    notice = published ?? { kind: 'persist-failed', rejections: next.rejections };
+  }
+}
+
+export function setLayout(layout: WorkspaceLayoutId): void {
+  update({ layout });
+}
+
+export function setDesignLanguage(designLanguage: WorkspaceDesignLanguageId): void {
+  update({ designLanguage });
+}
+
+export function setTheme(theme: WorkspaceThemeId): void {
+  update({ theme });
+}
+
+export function setDensity(density: DensityLevel): void {
+  update({ density });
+}
+
+export function setZoneVisibleSurfaces(zone: WorkspaceZoneId, surfaces: readonly SemanticSurfaceName[]): void {
+  update({ visibleSurfaces: { ...current.workspace.visibleSurfaces, [zone]: surfaces } });
+}
+
+export function setZoneOrder(zone: WorkspaceZoneId, surfaces: readonly SemanticSurfaceName[]): void {
+  update({ zoneOrder: { ...current.workspace.zoneOrder, [zone]: surfaces } });
+}
+
+export function setPinnedCommands(pinnedCommands: readonly string[]): void {
+  update({ pinnedCommands });
+}
