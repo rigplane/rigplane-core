@@ -56,6 +56,18 @@ let backing: WorkspaceStorage | null = null;
  *  repaired away a patched result validates cleanly, so re-deriving would
  *  re-enable the write and destroy the newer data. */
 let blocked: WorkspaceNotice | null = null;
+/**
+ * MOR-1081 — the theme-explicitness latch, the same shape as `blocked` above:
+ * a verdict taken from the LOAD and then carried for the session.
+ *
+ * `WorkspaceV1.theme` is total — it always resolves to something — so the
+ * validated value cannot say whether the operator ever chose one. v2 answered
+ * that with a second key (`rigplane:theme-user-choice`); adoption answers it
+ * with the PRESENCE of the `theme` field in the stored object, which
+ * `repository.ts` reports on load and preserves on write. Read it through
+ * `isThemeExplicit()`. `$state` so a `$derived` consumer re-runs on a pick.
+ */
+let themeChosen = $state(false);
 
 function defaultStorage(): WorkspaceStorage | null {
   try {
@@ -85,6 +97,7 @@ function noticeFor(result: WorkspaceReadResult): WorkspaceNotice | null {
 export function initWorkspaceStore(storage: WorkspaceStorage | null = defaultStorage()): void {
   backing = storage;
   blocked = null;
+  themeChosen = false;
   if (storage === null) {
     current = INITIAL;
     notice = null;
@@ -94,7 +107,10 @@ export function initWorkspaceStore(storage: WorkspaceStorage | null = defaultSto
   current = load.result;
   notice = noticeFor(load.result);
   blocked = load.writable ? null : notice;
-  if (load.source === 'migrated' && persistWorkspace(storage, load.result)) markWorkspaceMigrated(storage);
+  themeChosen = load.themeChosen;
+  if (load.source === 'migrated' && persistWorkspace(storage, load.result, themeChosen)) {
+    markWorkspaceMigrated(storage);
+  }
 }
 
 export function getWorkspace(): WorkspaceV1 {
@@ -110,6 +126,19 @@ export function dismissWorkspaceNotice(): void {
   notice = null;
 }
 
+/**
+ * MOR-1081 — has the operator a theme of their OWN, as opposed to whatever the
+ * schema default resolved to? The signal a skin needs before it may apply its
+ * own default (amber-lcd → lcd-warm) without stomping a real choice, and the
+ * successor to v2's `rigplane:theme-user-choice` key presence.
+ *
+ * Explicitly picking `default` counts: `setTheme(id, true)` latches it and the
+ * field is then persisted, so Default Dark stays Default Dark across a reload.
+ */
+export function isThemeExplicit(): boolean {
+  return themeChosen;
+}
+
 function update(patch: Readonly<Record<string, unknown>>): void {
   const next = applyWorkspacePatch(current, patch);
   current = next;
@@ -120,7 +149,7 @@ function update(patch: Readonly<Record<string, unknown>>): void {
     notice = blocked;
     return;
   }
-  if (!persistWorkspace(backing, next)) {
+  if (!persistWorkspace(backing, next, themeChosen)) {
     notice = published ?? { kind: 'persist-failed', rejections: next.rejections };
   }
 }
@@ -133,7 +162,14 @@ export function setDesignLanguage(designLanguage: WorkspaceDesignLanguageId): vo
   update({ designLanguage });
 }
 
-export function setTheme(theme: WorkspaceThemeId): void {
+/**
+ * `explicit` = this came from the operator picking a theme, not from a host
+ * re-applying the one already selected. It latches `isThemeExplicit()` and is
+ * what makes the field persist — mirroring v2's `setTheme` /
+ * `setThemeUserChoice` split onto one field plus one latch.
+ */
+export function setTheme(theme: WorkspaceThemeId, explicit = false): void {
+  if (explicit) themeChosen = true;
   update({ theme });
 }
 

@@ -20,10 +20,11 @@
  *    resurrect a legacy layout the operator has since changed.
  */
 import {
-  WORKSPACE_SCHEMA_VERSION, readWorkspace, readWorkspaceJson, serializeWorkspace,
+  DEFAULT_WORKSPACE, WORKSPACE_SCHEMA_VERSION,
+  readWorkspace, readWorkspaceJson, serializeWorkspace,
   type WorkspaceReadResult,
 } from './contract';
-import { readLegacyWorkspaceFromStorage } from './legacy-readers';
+import { buildWorkspaceInput, readLegacyWorkspace, snapshotLegacyStorage } from './legacy-readers';
 
 /** Unversioned on purpose: the schema version lives INSIDE the object, so a
  *  newer build writes its own version to this same key and an older build can
@@ -47,6 +48,20 @@ export interface WorkspaceLoad {
    *  unrepresentable value has been repaired away, a patched result validates
    *  cleanly and would silently overwrite the newer data. */
   readonly writable: boolean;
+  /**
+   * MOR-1081 — explicitness-via-presence. `true` when the loaded INPUT actually
+   * carried a `theme` key, i.e. the operator has a theme of their own; `false`
+   * when it did not, i.e. they never chose and a skin's own default applies.
+   *
+   * It has to be read off the input: `readWorkspace` folds an absent `theme`
+   * to the schema default WITHOUT a rejection, so `'default'` in the validated
+   * result is ambiguous between "explicitly picked Default Dark" and "never
+   * chose" — exactly the conflation v2's separate `rigplane:theme-user-choice`
+   * key existed to prevent. `persistWorkspace` keeps the distinction alive by
+   * omitting the field again when it was never chosen, so the answer survives
+   * a reload with no schema change.
+   */
+  readonly themeChosen: boolean;
 }
 
 const EMPTY_WORKSPACE_JSON = JSON.stringify({ version: WORKSPACE_SCHEMA_VERSION });
@@ -59,15 +74,36 @@ function readKey(storage: WorkspaceStorage, key: string): string | null {
   }
 }
 
+/** Did the stored text carry a `theme` key at all? Never throws. */
+function storedThemeChosen(text: string): boolean {
+  try {
+    const raw: unknown = JSON.parse(text);
+    return typeof raw === 'object' && raw !== null && !Array.isArray(raw) && 'theme' in raw;
+  } catch {
+    return false;
+  }
+}
+
+function load(
+  result: WorkspaceReadResult, source: WorkspaceLoadSource, themeChosen: boolean,
+): WorkspaceLoad {
+  return { result, source, writable: canPersistWorkspace(result), themeChosen };
+}
+
 /** Total: every storage state yields a validated result, nothing throws. */
 export function loadWorkspace(storage: WorkspaceStorage): WorkspaceLoad {
   const stored = readKey(storage, WORKSPACE_STORAGE_KEY);
-  const load = stored !== null
-    ? { result: readWorkspaceJson(stored), source: 'stored' as const }
-    : readKey(storage, WORKSPACE_MIGRATION_SENTINEL_KEY) !== null
-      ? { result: readWorkspaceJson(EMPTY_WORKSPACE_JSON), source: 'absent' as const }
-      : { result: readLegacyWorkspaceFromStorage(storage), source: 'migrated' as const };
-  return { ...load, writable: canPersistWorkspace(load.result) };
+  if (stored !== null) {
+    return load(readWorkspaceJson(stored), 'stored', storedThemeChosen(stored));
+  }
+  if (readKey(storage, WORKSPACE_MIGRATION_SENTINEL_KEY) !== null) {
+    // A cleared key is "back to defaults", never "resurrect a legacy choice".
+    return load(readWorkspaceJson(EMPTY_WORKSPACE_JSON), 'absent', false);
+  }
+  // First run. `buildWorkspaceInput` sets `theme` only when a legacy theme key
+  // existed, so its presence IS the migrated operator's explicitness.
+  const snapshot = snapshotLegacyStorage(storage);
+  return load(readLegacyWorkspace(snapshot), 'migrated', 'theme' in buildWorkspaceInput(snapshot));
 }
 
 /**
@@ -90,11 +126,26 @@ export function canPersistWorkspace(result: WorkspaceReadResult): boolean {
  *  always says "writable", because the unrepresentable value has been repaired
  *  away by then; the real gate is the `blocked` latch in `store.svelte.ts`,
  *  which holds the verdict from the LOAD. */
-export function persistWorkspace(storage: WorkspaceStorage, result: WorkspaceReadResult): boolean {
+export function persistWorkspace(
+  storage: WorkspaceStorage,
+  result: WorkspaceReadResult,
+  themeChosen = true,
+): boolean {
   if (!canPersistWorkspace(result)) return false;
   let payload: string;
   try {
-    payload = JSON.stringify(serializeWorkspace(result));
+    const object = serializeWorkspace(result);
+    // Explicitness-via-presence (MOR-1081). The field is omitted in exactly one
+    // case: it was never chosen AND it carries nothing beyond the schema
+    // default, i.e. it holds no information at all. Writing it anyway would
+    // make the next load indistinguishable from an explicit Default Dark, and
+    // a skin's own default (amber-lcd → lcd-warm) would be silently
+    // unreachable forever. Any non-default value is still persisted, chosen or
+    // not, so nothing can be lost. Omitting is not a schema change:
+    // `readWorkspace` already folds an absent `theme` to the default without a
+    // rejection.
+    if (!themeChosen && object.theme === DEFAULT_WORKSPACE.theme) delete object.theme;
+    payload = JSON.stringify(object);
   } catch {
     return false;
   }
