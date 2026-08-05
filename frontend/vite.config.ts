@@ -91,6 +91,11 @@ export default defineConfig({
             // then counts. Under ``isolate: false`` that makes it a function of
             // worker assignment rather than of its own subject.
             'src/lib/utils/__tests__/smoothing.svelte.test.ts',
+            // MOR-1262 slice 3A: module-scope ``vi.mock`` of audio-manager and
+            // ws-client PLUS ``vi.stubGlobal`` on AudioContext / localStorage —
+            // both shared-state shapes that are order-dependent under
+            // ``isolate: false``. See MOR-1272.
+            'src/lib/runtime/adapters/__tests__/rx-audio-purity.test.ts',
             'src/components-v2/wiring/__tests__/keyboard-wiring.test.ts',
             'src/components-v2/wiring/__tests__/vfo-wiring.test.ts',
             'src/components-v2/wiring/__tests__/dsp-nr-level.test.ts',
@@ -193,6 +198,7 @@ export default defineConfig({
             'src/components-v2/wiring/__tests__/rx-audio-authority.test.ts',
             'src/components-v2/panels/lcd/__tests__/audio-fft-demand.test.ts',
             'src/lib/utils/__tests__/smoothing.svelte.test.ts',
+            'src/lib/runtime/adapters/__tests__/rx-audio-purity.test.ts',
             'src/components-v2/wiring/__tests__/keyboard-wiring.test.ts',
             'src/components-v2/wiring/__tests__/vfo-wiring.test.ts',
             'src/components-v2/wiring/__tests__/dsp-nr-level.test.ts',

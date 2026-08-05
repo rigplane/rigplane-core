@@ -26,6 +26,7 @@
   import { runtime } from '$lib/runtime';
   import { toRadioViewModel } from '$lib/runtime/adapters/radio-view-model-adapter';
   import { getAppTxController } from '$lib/runtime/tx-controller/app-host';
+  import MetersSurface from '../../semantic/MetersSurface.svelte';
   import type { RadioViewModel } from '../../semantic/radio-view-model';
   import RxTxSurface from '../../semantic/RxTxSurface.svelte';
   import TxAuxSurface, {
@@ -311,6 +312,27 @@
     {/if}
   {/snippet}
 
+  <!--
+    MOR-1273 (vocabulary slice 2B). Same structural gate, same reasoning as
+    `txAuxSurface` above: the surface mounts only when the view model actually
+    carries the MOR-1269 `meters` group, so a radio that reports no meters —
+    or one for which no App TX authority was supplied, and therefore no honest
+    TX relevance could be stated — renders the pre-1273 element shape exactly.
+    Bare and unzoned in BOTH compositions: `'meters'` becomes declarable by a
+    manifest with this slice, but no manifest declares a meters zone, and the
+    zone schema stays config-free (risk R3).
+
+    It takes NO authority snapshot and no intent callbacks. That is the R9
+    boundary made structural: the meters are a readout, their TX truth is
+    already decided inside `view.meters` by the App-owned authority the
+    adapter was handed, and this component has nothing else to give them.
+  -->
+  {#snippet metersSurface()}
+    {#if view?.meters}
+      <MetersSurface {view} />
+    {/if}
+  {/snippet}
+
   {#if strips === 'dual'}
     <!--
       MOR-1258: the zone now carries RxTxSurface AND the two TX-adjacent
@@ -325,6 +347,7 @@
       {@render txAdjacentAlerts()}
     </div>
     {@render txAuxSurface()}
+    {@render metersSurface()}
   {:else}
     <!--
       Single/default path (sdr-test / LCD / mobile): no bound zone exists
@@ -333,6 +356,7 @@
     -->
     {@render rxTxSurface()}
     {@render txAuxSurface()}
+    {@render metersSurface()}
     {@render txAdjacentAlerts()}
   {/if}
 </div>

@@ -107,6 +107,22 @@ export function isRendererViewModel(value: unknown): value is RendererViewModel 
 }
 
 export interface DesignLanguageManifest {
+  /**
+   * The language's stable id (naming policy: `isValidLanguageId`).
+   *
+   * MOR-1278 (owner decision, 2026-08-04): `[data-design-language]` is the
+   * canonical — and only — design-language activation mechanism. Its DOM
+   * value MUST equal this registered `id`, and it is placed on the
+   * semantic-vertical root: the document root that scopes the whole
+   * semantic radio UI vertical (`document.documentElement` — see the
+   * MOR-1070 fixture harness, `fixtures/main.ts`, and `studioline`'s own
+   * stylesheet, which keys every rule off this same attribute). No
+   * alternative activation path — a CSS class, a component prop, a Svelte
+   * context — may be introduced, by `studioline`, by `fieldline`
+   * (MOR-1074), or by the renderer wiring that consumes it (MOR-1275): the
+   * whole design-language CSS half assumes a single attribute selector it
+   * can scope every rule under.
+   */
   readonly id: string;
   readonly displayName: string;
   readonly tokens: DesignLanguageTokens;

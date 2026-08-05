@@ -102,6 +102,19 @@ product-owned identifiers such as `studioline`, `fieldline`,
 `contest-console`, or `classic-instrument`. Public manufacturer naming requires
 separate brand/legal review.
 
+MOR-1278 (owner decision, 2026-08-04): `[data-design-language]` is the
+canonical — and only — activation mechanism for a design language. Its value
+equals the language's registered id (`DesignLanguageManifest.id`,
+`presentation/languages/contract.ts`), and it is placed on the
+semantic-vertical root — the document root that scopes the whole semantic
+radio UI (the MOR-1070 fixture harness sets it on
+`document.documentElement`; `studioline`'s stylesheet keys every rule off it,
+see `presentation/languages/studioline/studioline.css`). No competing
+activation path — a CSS class, a component prop, a Svelte context — may be
+introduced, by `studioline`, by `fieldline` (MOR-1074), or by the renderer
+wiring that consumes it (MOR-1275). Routing this attribute into the app shell
+remains cutover work (MOR-1048/MOR-1263) and stays out of scope here.
+
 ### Theme
 
 CSS token values such as colors, fonts, spacing, shadows, and contrast. A theme
