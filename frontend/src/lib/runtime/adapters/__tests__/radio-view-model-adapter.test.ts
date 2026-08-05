@@ -321,7 +321,7 @@ describe('the emitted model carries only contract data', () => {
     expect(Object.keys(view)).not.toContain('capabilities');
     // The validator rejects extra keys, so this is belt-and-braces on shape.
     expect(Object.keys(view).sort()).toEqual([
-      'activeReceiver', 'disabledReasons', 'dualWatch', 'scope', 'split',
+      'activeReceiver', 'disabledReasons', 'dualWatch', 'scope', 'scopeControls', 'split',
       'topologyId', 'txPermit', 'txTarget', 'vfoScheme', 'vfos',
     ]);
   });
