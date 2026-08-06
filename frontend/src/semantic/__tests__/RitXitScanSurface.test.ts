@@ -119,6 +119,33 @@ describe('unread facts render honestly, never fabricated', () => {
     expect(r.el('ritxit-offset')!.dataset.observed).toBe('false');
     r.dispose();
   });
+
+  // F3 (fix round, verify-MOR-1308 M6/M7): activeReceiver stays KNOWN here —
+  // isolates the offset's OWN observation gate from the S3b wrong-VFO guard.
+  // Both halves of "refuse an edit to an unobserved offset" pinned
+  // independently: the `disabled` attribute (M7) and the in-handler guard,
+  // bypassed via a direct dispatch (M6).
+  it('disables the offset slider while the offset itself is unread (activeReceiver known)', () => {
+    const r = render(withRx({ ritOffset: unread<number>(), xitOffset: unread<number>() }));
+    expect(r.input()!.disabled).toBe(true);
+    r.dispose();
+  });
+
+  it('refuses an offset edit dispatched directly at the input while the offset is unread, bypassing disabled', () => {
+    const onRitOffsetChange = vi.fn();
+    const onXitOffsetChange = vi.fn();
+    const r = render(
+      withRx({ ritOffset: unread<number>(), xitOffset: unread<number>() }),
+      { onRitOffsetChange, onXitOffsetChange },
+    );
+    const input = r.input()!;
+    input.value = '300';
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+    flushSync();
+    expect(onRitOffsetChange).not.toHaveBeenCalled();
+    expect(onXitOffsetChange).not.toHaveBeenCalled();
+    r.dispose();
+  });
 });
 
 describe('S3b wrong-VFO guard: every RIT/XIT control fails closed while activeReceiver is unknown', () => {
@@ -403,6 +430,23 @@ describe('scan start/stop: guarded on a KNOWN scanning state, start also on a kn
     r.el('scan-toggle')!.click();
     flushSync();
     expect(onScanStart).toHaveBeenCalledExactlyOnceWith(0x22);
+    r.dispose();
+  });
+
+  // F3 (fix round, verify-MOR-1308 M10): `scanning` is KNOWN idle here (the
+  // button IS disabled in this state, since `!scanningOn && !usable(scanType)`
+  // — so the attribute alone would satisfy a naive assertion). The bypass
+  // dispatch is the only way to prove the handler itself never falls through
+  // to a fabricated `type: 0`, unlike the sibling test above which only
+  // covers the `scanning`-unobserved early-return path.
+  it('never fabricates type 0 via a bypassed click while idle and scanType is unobserved', () => {
+    const onScanStart = vi.fn();
+    const r = render(
+      withSc({ scanning: knownScan(false), scanType: unreadScan<number>(OFF_AVAIL) }), { onScanStart },
+    );
+    bypassClick(r.el('scan-toggle')!);
+    flushSync();
+    expect(onScanStart).not.toHaveBeenCalled();
     r.dispose();
   });
 
