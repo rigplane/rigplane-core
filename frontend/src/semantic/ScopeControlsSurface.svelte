@@ -39,6 +39,7 @@
     MODE_BUTTONS, SPAN_LABELS, SPEED_LABELS,
     isSpanApplicable, isEdgeApplicable, clampSpan, clampSpeed, clampRef,
   } from '../components/spectrum/spectrum-toolbar-logic';
+  import { pressedOf } from './pressed-of';
 
   /** On/off leaves, `[field, label]`. */
   export const TOGGLES = [
@@ -64,8 +65,6 @@
     f.reading.status === 'known' ? f.reading.value : fallback;
   export const textOf = (f: ScopeControlsField<unknown>): string =>
     f.reading.status === 'known' ? String(f.reading.value) : UNKNOWN_TEXT;
-  export const pressedOf = (f: ScopeControlsField<boolean>): boolean | undefined =>
-    f.reading.status === 'known' ? f.reading.value : undefined;
 </script>
 
 <script lang="ts">
