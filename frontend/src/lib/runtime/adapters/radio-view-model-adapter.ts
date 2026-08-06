@@ -84,6 +84,19 @@ function seen(state: ServerState | null, path: string): boolean {
     && status.availability === 'available';
 }
 
+/**
+ * THE active-receiver identity — `seen()` plus a positively recognised
+ * MAIN/SUB reading. Extracted (MOR-1356) so `toRadioViewModel`'s
+ * `activeReceiver` fact and `deriveBand`'s receiver-scoped TX permit share
+ * ONE criterion rather than two that can drift apart: the model must not be
+ * able to say "I don't know which receiver is active" and, in the same
+ * payload, hand out a TX permit scoped to the receiver it just guessed.
+ */
+function activeReceiverId(state: ServerState | null): ReceiverId | null {
+  const active = state?.active;
+  return seen(state, 'active') && (active === 'MAIN' || active === 'SUB') ? active : null;
+}
+
 function boolFact(state: ServerState | null, path: string, value: unknown): Fact {
   return seen(state, path) && typeof value === 'boolean'
     ? { status: 'known', value }
@@ -669,7 +682,11 @@ function deriveRfFrontEndMutex(rfFrontEnd: RfFrontEndViewModel | undefined): Rea
  *    tunes far outside its TX allocations). Reading permission off the plan
  *    is the fail-open defect the slice's safety note names.
  *  - it never states a permit on unknown input. `currentBandTx` is `'allowed'`
- *    only when the current band is POSITIVELY known, has a choice entry, AND
+ *    only when the ACTIVE RECEIVER is positively confirmed (MOR-1356 — the
+ *    permit is scoped to that receiver's frequency, so an unconfirmed
+ *    identity makes it a permit for a guess; `activeReceiverId` is the ONE
+ *    gate, shared with the model's `activeReceiver` fact), the current band
+ *    is POSITIVELY known, has a choice entry, AND
  *    the live-frequency permit is POSITIVELY `allowed`; everything else
  *    collapses to `'denied'` exactly as the shipped `getTxPermit` does
  *    ("unknown fails closed", `$lib/utils/tx-permit`). An unknown input must
@@ -704,6 +721,12 @@ function deriveBand(
 
   const onSub = state?.active === 'SUB';
   const rx = onSub ? state?.sub : state?.main;
+  // MOR-1356: which receiver the raw `state.active` names is an ORDINARY fact
+  // — every reading below keeps reading it ungated, per this file's own
+  // convention. The PERMIT is the exception: `activeReceiverId` is the SAME
+  // gate `activeReceiver` uses, so a receiver identity the model itself
+  // reports as unknown cannot carry TX permission (see `currentBandTx`).
+  const activeConfirmed = activeReceiverId(state) !== null;
   const freqObserved = topFieldAvailable(state, onSub ? 'sub.freqHz' : 'main.freqHz');
   const freqHz = numOrUndef(rx?.freqHz);
   // Never over a `?? 14074000` stand-in, where the shipped `toBandSelectorProps`
@@ -727,8 +750,8 @@ function deriveBand(
   const liveFreqPermit = freqObserved && freqHz !== undefined
     ? getFrequencyPermit(freqHz, caps.txBands)
     : getFrequencyPermit(null, caps.txBands);
-  const currentBandTx: TxPermit = reading.status === 'known' && currentChoice !== undefined
-    && liveFreqPermit.status === 'allowed' ? 'allowed' : 'denied';
+  const currentBandTx: TxPermit = activeConfirmed && reading.status === 'known'
+    && currentChoice !== undefined && liveFreqPermit.status === 'allowed' ? 'allowed' : 'denied';
 
   const starts = freqRanges.map((range) => range.start).filter((hz) => Number.isFinite(hz));
   const ends = freqRanges.map((range) => range.end).filter((hz) => Number.isFinite(hz));
@@ -1197,10 +1220,9 @@ export function toRadioViewModel(
   const topology = presentation.topology;
   if (!topology) return null;
 
+  const activeId = activeReceiverId(state);
   const activeReceiver: { status: 'known'; receiver: ReceiverId } | { status: 'unknown' } =
-    seen(state, 'active') && (state?.active === 'MAIN' || state?.active === 'SUB')
-      ? { status: 'known', receiver: state.active }
-      : { status: 'unknown' };
+    activeId !== null ? { status: 'known', receiver: activeId } : { status: 'unknown' };
 
   // TX identity and permit come from the SAME derivation the App TX authority
   // uses (`deriveTxCapabilities`), so the surfaces cannot disagree with the
