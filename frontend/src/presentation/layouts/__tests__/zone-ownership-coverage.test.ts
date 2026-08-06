@@ -35,19 +35,14 @@ const OWNED = declaredSurfaces(desktopV2Layout);
 /**
  * The complement, with the decision that put each name here. A surface leaves
  * this map only by gaining a `desktop-v2` zone in the same commit.
+ *
+ * `filter`, `rfFrontEnd` (S7), `band`, `antenna`, `ritXitScan` (S8) and
+ * `rxAudio`, `dsp`, `cwKeyer` (S9, this slice) have all graduated to real
+ * zones on `desktopV2Layout` — `OWNED` now covers them, so an entry here
+ * would fail both the partition pin and the overlap pin below. `scopeControls`
+ * is the one surface in the whole MOR-1262 vocabulary still excused.
  */
 const RECORDED_REASONS: Partial<Record<SemanticSurfaceName, string>> = {
-  filter:
-    'S7/MOR-1366 declares { id: "filter", surfaces: ["filter"] }; not yet landed on this base.',
-  rfFrontEnd:
-    'S7/MOR-1366 declares { id: "rf-front-end", … }; not yet landed on this base.',
-  band:
-    'S8/MOR-1367. The BAND twin is NOT a plain retirement: `BandSelector` also hosts the '
-    + 'LW/MW + SWL tabs and 17 broadcast presets, which are deliberately not facts and have no '
-    + 'other production host (S10 row 10, permanent). S8 retires the HAM half by a `hamBands` '
-    + 'prop, never by unmounting the section.',
-  antenna: 'S8/MOR-1367 declares { id: "antenna", surfaces: ["antenna"] }.',
-  ritXitScan: 'S8/MOR-1367 declares { id: "rit-xit-scan", … } for the RIT/XIT + SCAN pair.',
   scopeControls:
     'S6b-2. 11B/MOR-1311 built the surface; the scope toolbar it replaces is not on the '
     + 'MOR-1364 suppression channel yet, so declaring the zone today would double-present it.',
@@ -94,11 +89,15 @@ describe('MOR-1317 — every semantic surface has a desktop-v2 decision', () => 
   it.each([...OWNED].sort())('%s has a real mount in the single composition', (surface) => {
     const source = readFileSync('src/components-v2/wiring/SemanticRadioSurfaces.svelte', 'utf8');
     // `vfo`/`rxTx` ride the `singleOrder` {#each} rather than `zoned()`; every
-    // other owned surface must have its own `zoned('<name>', …)` call.
+    // other owned surface must have its own `zoned('<name>', …)` call. A
+    // whitespace-tolerant match, not a plain substring: `ritXitScan`'s call
+    // wraps its opening paren onto its own line (its guard condition is the
+    // longest of the family), so the literal `zoned('ritXitScan'` never
+    // appears on one line even though the real call is there.
     if (surface === 'vfo' || surface === 'rxTx') {
       expect(source).toContain(`surface === '${surface}'`);
     } else {
-      expect(source).toContain(`zoned('${surface}'`);
+      expect(source).toMatch(new RegExp(`zoned\\(\\s*'${surface}'`));
     }
   });
 });
