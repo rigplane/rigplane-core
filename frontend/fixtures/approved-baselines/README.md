@@ -31,9 +31,44 @@ The last two additions came from `verify-mor-1090.md`'s representative-set adequ
 
 **Calibration data.** At `threshold: 0.2` with zero tolerance, three same-tree reruns measured a noise ceiling of 3-123 differing pixels per capture (≤0.012% of a 1280×800 frame, less on the smaller phone viewport) — never zero, but always small. `maxDiffPixelRatio: 0.001` (0.1%) sits ~8x above that ceiling. Three consecutive full runs at the shipped threshold came back green (0 failing captures each, `manifest.json` regenerated identically bar `generatedAt`). A deliberate sabotage — a 60×60px (0.35%-of-frame) opaque overlay injected into one capture — came back red (3185 differing pixels) with an `-actual`/`-expected`/`-diff` artifact trio in `test-results/`, then was reverted.
 
+**Sensitivity floor (required reading before trusting a green run).** `maxDiffPixelRatio: 0.001` over a 1280×800 desktop capture (1,024,000 px) is a hard floor of **~1024 differing pixels, roughly 32×32 px**, before a change turns the comparator red — and roughly **304 px, ~17×17**, on the smaller 375×812 phone capture, a 3.4x tighter absolute floor nobody had stated before this. Measured directly (`verify-mor-1090.md` §3, a 9-case injected-regression probe against the real committed baselines):
+
+- A 32×32px overlay (1027 px) is caught; 24×24px (under budget) and a 16×16px indicator dot (under budget) are not.
+- **A whole-frame low-amplitude colour shift is NOT caught, and this is the more surprising miss.** A 3% brightness lift across the entire frame — a plausible design-token regression — produced fewer than 1024 differing pixels, because `threshold: 0.2` (pixelmatch's per-pixel YIQ distance) filters the delta away *before* the `maxDiffPixelRatio` ratio budget is ever consulted. **This comparator cannot police whole-frame contrast/brightness drift at all**, regardless of how the ratio knob is tuned.
+- Small localized changes below the pixel floor (status LEDs, badges, single-glyph text swaps) are likewise invisible to this layer.
+
+**None of this is evidence tooling has a gap** — it is a coarse net with a stated mesh size. `capture.mjs`'s own assertion layer (`tx-readout`, `fault-affordance`, and the rest) already pins exactly these classes of change on every capture, every invocation, independent of pixels. **Do not treat a green pixel job as evidence that nothing visual changed** — treat it as evidence that nothing changed ABOVE ~1024 px / ~32×32 (desktop) or ~304 px / ~17×17 (phone), with the assertion layer covering the finer mesh below that, including all contrast/brightness drift this layer structurally cannot see.
+
 ## Platform note
 
-These baselines were captured on macOS. `.github/workflows/visual.yml` runs on a Linux self-hosted runner and is `continue-on-error: true` for exactly this reason — font/antialiasing differences could redden a non-regression on first landing. Per MOR-1090's acceptance criteria, regenerate this set from a Linux CI run before the owner flips the job to blocking (see the workflow file's header comment).
+These baselines were captured on macOS. `.github/workflows/visual.yml` runs on a Linux self-hosted runner and is `continue-on-error: true` for exactly this reason — font/antialiasing differences could redden a non-regression on first landing. Per MOR-1090's acceptance criteria, regenerate this set from a Linux CI run before the owner flips the job to blocking.
+
+**Regenerating from Linux (the required pre-blocking re-pin — do NOT do this on macOS):** the workflow already produces the Linux renders as a side effect of a failing run — `steps.visual.outcome == 'failure'` uploads `frontend/test-results/`, and every failing capture's `*-actual.png` inside it IS the Linux render (Playwright's own output naming for the actual-vs-expected-vs-diff trio). To re-pin from Linux:
+
+```bash
+# 1. Trigger visual.yml on a PR (or push [full-ci]-style if a push trigger
+#    exists at that point) so it runs on the [self-hosted, linux, build]
+#    runner and — expectedly — fails against the macOS-captured baselines.
+# 2. Download the `visual-diff-report` artifact from that run.
+gh run download <run-id> -n visual-diff-report -D /tmp/visual-diff-report
+
+# 3. Copy each *-actual.png over its corresponding approved baseline —
+#    NOT the *-expected.png (that is just a copy of the old baseline) and
+#    NOT the *-diff.png (that is the highlighted difference image).
+for actual in /tmp/visual-diff-report/**/*-actual.png; do
+  name=$(basename "$actual" | sed 's/-actual\.png$/.png/')
+  /bin/cp -f "$actual" "frontend/fixtures/approved-baselines/$name"
+done
+
+# 4. Re-run the comparator on Linux (or trust the just-copied images) to
+#    confirm 0 diffs, open each changed PNG to eyeball it, then commit.
+git status frontend/fixtures/approved-baselines/
+git add frontend/fixtures/approved-baselines/
+```
+
+Do not regenerate this set on macOS for the pre-blocking re-pin — that reproduces the exact platform mismatch the Platform note warns about, just with a fresher timestamp.
+
+**Batching (do not regenerate per rework slice).** S6a/S7/S8/MOR-1355 and future S-slices each change what the cockpit renders on `desktop-v2`. If every slice regenerated this set, reviewers would rubber-stamp the image diff within two rounds and each pass burns ~700KB of unreclaimable binary into git history (PNGs do not delta-compress) for a job that isn't even gating yet. **Keep `continue-on-error: true` through the rework series, regenerate ONCE at series end on Linux, right before the flip** — between now and then this job's value is diagnostic (the uploaded diff artifacts show what each slice changed), not gating, and that is a coherent use of a non-blocking job.
 
 ## Updating baselines (intentional change)
 
@@ -45,4 +80,6 @@ git status fixtures/approved-baselines/
 git add frontend/fixtures/approved-baselines/
 ```
 
-`manifest.json` regenerates every run (`tests/e2e/visual/global-teardown.ts`), recording the commit, platform, and tool versions behind the committed set — commit it with the PNGs. A PR that intentionally changes cockpit/PTT visuals MUST include regenerated baselines + `manifest.json`, reviewed as an image diff, not waved through.
+This local flow produces macOS baselines — fine for everyday intentional-change PRs during the rework series (see Batching, above), but NOT the procedure for the pre-blocking Linux re-pin (see Platform note, above).
+
+`manifest.json` regenerates every run (`tests/e2e/visual/global-teardown.ts`), recording the commit, platform, and tool versions behind the committed set — commit it with the PNGs. Its `commit`/`commitShort` fields are read at run time, so when the regeneration is part of the commit being made, they necessarily record that commit's PARENT (the manifest can't know its own future commit hash) — this is documented, honest behaviour, not a bug. A PR that intentionally changes cockpit/PTT visuals MUST include regenerated baselines + `manifest.json`, reviewed as an image diff, not waved through — and when the change is a **regeneration** (as opposed to a from-scratch capture), the PR description must state which captures are expected to change and why, so the reviewer is confirming a named expectation rather than rubber-stamping N changed PNGs.
