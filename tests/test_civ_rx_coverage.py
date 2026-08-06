@@ -59,7 +59,7 @@ from rigplane.radio import IcomRadio
 from rigplane.radio_state import RadioState
 from rigplane.scope import ScopeFrame
 from rigplane.core.state_store import FreshnessState, StateSnapshot
-from rigplane.types import CivFrame, Mode, bcd_encode
+from rigplane.types import CivFrame, Mode, ScopeFixedEdge, bcd_encode
 from rigplane.web.radio_poller import CommandQueue, RadioPoller
 
 # ---------------------------------------------------------------------------
@@ -3322,6 +3322,49 @@ _SCOPE_CONTROL_OBSERVATION_CASES = (
             "scope_controls.global.display.receiver": 0,
         },
     ),
+    # MOR-1329: the five MOR-1302 leaves (during_tx/center_type/vbw_narrow/
+    # fixed_edge/rbw) had a registered field-status spec but no 0x27 decoder
+    # wired to emit an observation for them — this closes that gap.
+    (
+        _make_frame(cmd=0x27, sub=0x1B, data=b"\x01"),
+        {"scope_controls.global.display.during_tx": True},
+    ),
+    (
+        _make_frame(cmd=0x27, sub=0x1C, data=b"\x00\x02"),
+        {
+            "scope_controls.global.display.center_type": 2,
+            "scope_controls.global.display.receiver": 0,
+        },
+    ),
+    (
+        _make_frame(cmd=0x27, sub=0x1D, data=b"\x00\x01"),
+        {
+            "scope_controls.global.display.vbw_narrow": True,
+            "scope_controls.global.display.receiver": 0,
+        },
+    ),
+    (
+        _make_frame(
+            cmd=0x27,
+            sub=0x1E,
+            data=b"\x06\x04" + bcd_encode(14_000_000) + bcd_encode(14_350_000),
+        ),
+        {
+            "scope_controls.global.display.fixed_edge": ScopeFixedEdge(
+                range_index=6,
+                edge=4,
+                start_hz=14_000_000,
+                end_hz=14_350_000,
+            ),
+        },
+    ),
+    (
+        _make_frame(cmd=0x27, sub=0x1F, data=b"\x00\x02"),
+        {
+            "scope_controls.global.display.rbw": 2,
+            "scope_controls.global.display.receiver": 0,
+        },
+    ),
 )
 
 
@@ -3378,8 +3421,18 @@ def test_scope_control_observations_project_public(radio: IcomRadio) -> None:
     assert sc["hold"] is True
     assert sc["refDb"] == -10.5
     assert sc["speed"] == 2
+    # MOR-1329: five new leaves
+    assert sc["duringTx"] is True
+    assert sc["centerType"] == 2
+    assert sc["vbwNarrow"] is True
+    assert sc["fixedEdge"]["rangeIndex"] == 6
+    assert sc["fixedEdge"]["edge"] == 4
+    assert sc["fixedEdge"]["startHz"] == 14_000_000
+    assert sc["fixedEdge"]["endHz"] == 14_350_000
+    assert sc["rbw"] == 2
 
-    suffixes = ("receiver", "dual", "mode", "span", "edge", "hold", "refDb", "speed")
+    suffixes = ("receiver", "dual", "mode", "span", "edge", "hold", "refDb", "speed",
+                "duringTx", "centerType", "vbwNarrow", "fixedEdge", "rbw")
     for suffix in suffixes:
         status = payload["fieldStatus"][f"scopeControls.{suffix}"]
         assert status["observed"] is True, suffix
