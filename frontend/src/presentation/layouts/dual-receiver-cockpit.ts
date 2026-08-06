@@ -77,6 +77,10 @@ export const dualReceiverCockpitLayout: LayoutManifest = {
     { id: 'secondary-vfo', surfaces: ['vfo'] },
     { id: 'global', surfaces: ['vfo'] },
     { id: 'rx-tx', surfaces: ['rxTx'] },
+    // MOR-1336 (S4): the cockpit declares it too, so the MOR-1069 invariant has a
+    // live txAux zone to bite on in the DUAL composition — where the surface's
+    // three focusable controls previously sat outside every zone.
+    { id: 'tx-aux', surfaces: ['txAux'] },
   ],
   compatibleTopologies: ['2/ab_shared', '2/main_sub'],
   requiredSemanticSurfaces: ['vfo', 'rxTx'],

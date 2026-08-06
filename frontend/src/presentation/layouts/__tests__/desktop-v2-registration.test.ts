@@ -55,10 +55,12 @@ describe('the desktop-v2 entrypoint is registered in the real registry', () => {
 describe('declared zones now drive the DOM (MOR-1263 step 2, MOR-1313)', () => {
   // Kills: declaring a surface this manifest does not name, or dropping
   // either one — the pair per-zone suppression consumes.
-  it('declares receiver-deck:[vfo] and rx-tx:[rxTx]', () => {
+  it('declares receiver-deck:[vfo], rx-tx:[rxTx] and tx-aux:[txAux]', () => {
     expect(desktopV2Layout.zones).toEqual([
       { id: 'receiver-deck', surfaces: ['vfo'] },
       { id: 'rx-tx', surfaces: ['rxTx'] },
+      // MOR-1336 (S4): txAux became zone-owned. Declared, deliberately not required.
+      { id: 'tx-aux', surfaces: ['txAux'] },
     ]);
     expect([...desktopV2Layout.requiredSemanticSurfaces].sort()).toEqual(['rxTx', 'vfo']);
   });
@@ -79,7 +81,7 @@ describe('declared zones now drive the DOM (MOR-1263 step 2, MOR-1313)', () => {
   // splits the pair ACROSS two zones, so it is the one that proves the walk
   // is per-zone rather than per-manifest-first-zone.
   it('its two zones flatten to the surfaces the shell suppresses legacy twins for', () => {
-    expect([...declaredSurfaces(getLayout('desktop-v2'))].sort()).toEqual(['rxTx', 'vfo']);
+    expect([...declaredSurfaces(getLayout('desktop-v2'))].sort()).toEqual(['rxTx', 'txAux', 'vfo']);
   });
 });
 
