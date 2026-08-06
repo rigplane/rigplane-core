@@ -1,17 +1,14 @@
 /**
- * MOR-1308 — `ritXitScan` is DECLARABLE, and nothing declares it yet.
+ * MOR-1308 — `ritXitScan` is DECLARABLE. MOR-1367 (S8) declares it for real.
  *
- * Slice 8B adds the name to `SEMANTIC_SURFACE_NAMES` so a manifest CAN mount
- * the surface later; it deliberately does not touch any manifest, and it adds
- * no design-language renderer slot (that set was frozen by MOR-1072 — adding
- * one would be a language-contract change this slice must not make).
+ * Slice 8B added the name to `SEMANTIC_SURFACE_NAMES` so a manifest COULD mount
+ * the surface later; it deliberately touched no manifest and added no
+ * design-language renderer slot (that set was frozen by MOR-1072).
  *
- * Same three pins as `tx-aux-declarability.test.ts` / `meters-declarability
- * .test.ts` / `rx-audio-declarability.test.ts`:
- *   - drop the name and a future manifest's zone stops validating;
- *   - quietly add a `ritXitScan` zone to a shipped manifest and the DOM
- *     grows a zone id no layout review ever saw;
- *   - the renderer slot set stays exactly what MOR-1072 froze.
+ * MOR-1367 flips the second half, on `desktop-v2` ONLY — the cockpit manifest is
+ * deliberately untouched (S5 precedent), so 8B's single-composition-only mount
+ * and its dual-absence pin stay valid and unedited. This is canon option (ii),
+ * for `desktop-v2` alone.
  */
 import { describe, it, expect } from 'vitest';
 import { SEMANTIC_SURFACE_NAMES, validateLayoutManifest } from '../contract';
@@ -49,16 +46,43 @@ describe('ritXitScan is a declarable semantic surface', () => {
   });
 });
 
-describe('no shipped manifest declares a ritXitScan zone in this slice', () => {
-  // Kills: slipping a ritXitScan zone into an existing layout here.
-  // Declarability is the whole scope of the contract touch; placing the
-  // surface in a real layout is a later, separately reviewed slice.
-  it.each([
+describe('exactly the reviewed manifests declare a ritXitScan zone (MOR-1367)', () => {
+  /** The literal — extend by hand, with a layout review, never silently. */
+  const DECLARES_RITXIT_SCAN = ['desktop-v2'];
+
+  const ALL = [
     ['sdr-test', sdrTestLayout], ['dual-receiver-cockpit', dualReceiverCockpitLayout],
     ['lcd-cockpit', lcdCockpitLayout], ['lcd-scope', lcdScopeLayout],
     ['mobile', mobileLayout], ['desktop-v2', desktopV2Layout],
-  ])('%s declares no ritXitScan zone and does not require the surface', (_id, manifest) => {
-    for (const zone of manifest.zones) expect(zone.surfaces).not.toContain('ritXitScan');
+  ] as const;
+
+  // Kills BOTH directions: a family losing the zone S8 gave it, and a family
+  // gaining one without review. For the cockpit that is load-bearing rather
+  // than cosmetic — a declared zone there would move a control-bearing surface
+  // into the dual composition and change what MOR-1069's tab-order assertion
+  // has to say.
+  it('the declaring set is exactly the reviewed literal', () => {
+    const declaring = ALL
+      .filter(([, m]) => m.zones.some((z) => z.surfaces.includes('ritXitScan')))
+      .map(([id]) => id)
+      .sort();
+    expect(declaring).toEqual([...DECLARES_RITXIT_SCAN].sort());
+  });
+
+  // Kills: declaring the zone under a drifted id — the wiring binds whatever
+  // the plan's key is, so the id IS the contract with the layout's arrangement.
+  it.each(DECLARES_RITXIT_SCAN)('%s declares it under the stable `rit-xit-scan` id, alone in its zone', (id) => {
+    const manifest = ALL.find(([name]) => name === id)![1];
+    const zone = manifest.zones.find((z) => z.surfaces.includes('ritXitScan'))!;
+    expect(zone.id).toBe('rit-xit-scan');
+    expect(zone.surfaces).toEqual(['ritXitScan']);
+  });
+
+  // Kills: making ritXitScan REQUIRED. A radio declaring neither RIT/XIT nor
+  // scan must still resolve this layout; the surface self-gates on
+  // `view.ritXit`/`view.scan`, and a required surface no zone could fill would
+  // be a resolution failure rather than an honest absence.
+  it.each(ALL)('%s does not require the ritXitScan surface', (_id, manifest) => {
     expect(manifest.requiredSemanticSurfaces).not.toContain('ritXitScan');
   });
 });

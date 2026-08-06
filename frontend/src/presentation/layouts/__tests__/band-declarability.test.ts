@@ -1,16 +1,22 @@
 /**
- * MOR-1307 — `band` is DECLARABLE, and nothing declares it yet.
+ * MOR-1307 — `band` is DECLARABLE. MOR-1367 (S8) declares it for real.
  *
- * Slice 7B adds the name to `SEMANTIC_SURFACE_NAMES` so a manifest CAN mount
- * the surface later; it deliberately does not touch any manifest, and it adds
- * no design-language renderer slot (that set was frozen by MOR-1072).
+ * Slice 7B added the name to `SEMANTIC_SURFACE_NAMES` so a manifest COULD mount
+ * the surface later; it deliberately touched no manifest and added no
+ * design-language renderer slot (that set was frozen by MOR-1072).
  *
- * Same three pins as `tx-aux-`/`meters-`/`rx-audio-declarability.test.ts`, with
- * one extra weight here: `band` is a CONTROL-BEARING surface, so "no shipped
- * manifest declares a band zone" is also what makes the single-composition-only
- * mount legal under the MOR-1069 cockpit invariant (see the dual-absence pin in
- * `components-v2/wiring/__tests__/semantic-band-wiring.component.test.ts`). If
- * a manifest ever gains the zone, that pin must be revisited in the same PR.
+ * MOR-1367 flips the second half, on `desktop-v2` ONLY — the cockpit manifest is
+ * deliberately untouched (S5 precedent), so 7B's single-composition-only mount
+ * and its dual-absence pin in
+ * `components-v2/wiring/__tests__/semantic-band-wiring.component.test.ts` stay
+ * valid and unedited. The inventory below is a LITERAL of who declares it,
+ * mirroring `meters-declarability.test.ts`'s post-S5 shape.
+ *
+ * `band` is the one surface in this slice whose legacy twin does NOT retire
+ * wholesale: `BandSelector` keeps hosting the LW/MW + SWL broadcast tabs and
+ * loses only its HAM half, via `hamBands={!declared.has('band')}` (S10 §4a).
+ * That half of the contract is pinned in
+ * `components-v2/layout/__tests__/semantic-desktop-migration.component.test.ts`.
  */
 import { describe, it, expect } from 'vitest';
 import { SEMANTIC_SURFACE_NAMES, validateLayoutManifest } from '../contract';
@@ -51,17 +57,45 @@ describe('band is a declarable semantic surface', () => {
   });
 });
 
-describe('no shipped manifest declares a band zone in this slice', () => {
-  // Kills: slipping a band zone into an existing layout here. For the cockpit
-  // this is load-bearing, not cosmetic: a declared zone would move the surface
-  // into the dual composition and change what the MOR-1069 tab-order assertion
-  // has to say.
-  it.each([
+describe('exactly the reviewed manifests declare a band zone (MOR-1367)', () => {
+  /** The literal — extend by hand, with a layout review, never silently. */
+  const DECLARES_BAND = ['desktop-v2'];
+
+  const ALL = [
     ['sdr-test', sdrTestLayout], ['dual-receiver-cockpit', dualReceiverCockpitLayout],
     ['lcd-cockpit', lcdCockpitLayout], ['lcd-scope', lcdScopeLayout],
     ['mobile', mobileLayout], ['desktop-v2', desktopV2Layout],
-  ])('%s declares no band zone and does not require the surface', (_id, manifest) => {
-    for (const zone of manifest.zones) expect(zone.surfaces).not.toContain('band');
+  ] as const;
+
+  // Kills BOTH directions: a family losing the zone S8 gave it, and a family
+  // gaining one without review. For the cockpit that is load-bearing rather
+  // than cosmetic — a declared zone there would move a control-bearing surface
+  // into the dual composition and change what MOR-1069's tab-order assertion
+  // has to say.
+  it('the declaring set is exactly the reviewed literal', () => {
+    const declaring = ALL
+      .filter(([, m]) => m.zones.some((z) => z.surfaces.includes('band')))
+      .map(([id]) => id)
+      .sort();
+    expect(declaring).toEqual([...DECLARES_BAND].sort());
+  });
+
+  // Kills: declaring the zone under a drifted id — the suppression binds the
+  // DECLARED set, and `BandSelector`'s `hamBands` prop reads exactly
+  // `declared.has('band')`, so the surface name and the zone id are both
+  // contracts with the shell.
+  it.each(DECLARES_BAND)('%s declares it under the stable `band` id, alone in its zone', (id) => {
+    const manifest = ALL.find(([name]) => name === id)![1];
+    const zone = manifest.zones.find((z) => z.surfaces.includes('band'))!;
+    expect(zone.id).toBe('band');
+    expect(zone.surfaces).toEqual(['band']);
+  });
+
+  // Kills: making band REQUIRED. A radio whose caps carry no frequency ranges
+  // at all must still resolve this layout; the surface self-gates on
+  // `view.band`, and a required surface no zone could fill would be a
+  // resolution failure rather than an honest absence.
+  it.each(ALL)('%s does not require the band surface', (_id, manifest) => {
     expect(manifest.requiredSemanticSurfaces).not.toContain('band');
   });
 });

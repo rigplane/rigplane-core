@@ -56,7 +56,8 @@ describe('declared zones now drive the DOM (MOR-1263 step 2, MOR-1313)', () => {
   // Kills: declaring a surface this manifest does not name, or dropping
   // either one — the pair per-zone suppression consumes.
   it('declares receiver-deck:[vfo], rx-tx:[rxTx], tx-aux:[txAux], meters:[meters], '
-    + 'scope-display:[scopeDisplay], filter:[filter] and rf-front-end:[rfFrontEnd]', () => {
+    + 'scope-display:[scopeDisplay], filter:[filter], rf-front-end:[rfFrontEnd], '
+    + 'band:[band], antenna:[antenna] and rit-xit-scan:[ritXitScan]', () => {
     expect(desktopV2Layout.zones).toEqual([
       { id: 'receiver-deck', surfaces: ['vfo'] },
       { id: 'rx-tx', surfaces: ['rxTx'] },
@@ -71,6 +72,12 @@ describe('declared zones now drive the DOM (MOR-1263 step 2, MOR-1313)', () => {
       // double-presentation defect on desktop-v2. Neither required.
       { id: 'filter', surfaces: ['filter'] },
       { id: 'rf-front-end', surfaces: ['rfFrontEnd'] },
+      // MOR-1367 (S8): band, antenna and ritXit/scan. `band` retires only the
+      // HAM half of `BandSelector` (S10 §4a); the other two retire their
+      // sidebar/modal twins outright.
+      { id: 'band', surfaces: ['band'] },
+      { id: 'antenna', surfaces: ['antenna'] },
+      { id: 'rit-xit-scan', surfaces: ['ritXitScan'] },
     ]);
     expect([...desktopV2Layout.requiredSemanticSurfaces].sort()).toEqual(['rxTx', 'vfo']);
   });
@@ -92,7 +99,7 @@ describe('declared zones now drive the DOM (MOR-1263 step 2, MOR-1313)', () => {
   // is per-zone rather than per-manifest-first-zone.
   it('its zones flatten to the surfaces the shell suppresses legacy twins for', () => {
     expect([...declaredSurfaces(getLayout('desktop-v2'))].sort())
-      .toEqual(['filter', 'meters', 'rfFrontEnd', 'rxTx', 'scopeDisplay', 'txAux', 'vfo']);
+      .toEqual(['antenna', 'band', 'filter', 'meters', 'rfFrontEnd', 'ritXitScan', 'rxTx', 'scopeDisplay', 'txAux', 'vfo']);
   });
 });
 

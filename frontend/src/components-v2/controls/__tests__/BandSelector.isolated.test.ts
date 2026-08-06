@@ -57,11 +57,11 @@ import BandSelector from '../BandSelector.svelte';
 
 let components: ReturnType<typeof mount>[] = [];
 
-function mountPanel(overrides?: Partial<typeof mockProps>) {
+function mountPanel(overrides?: Partial<typeof mockProps>, props?: { hamBands?: boolean }) {
   if (overrides) Object.assign(mockProps, overrides);
   const target = document.createElement('div');
   document.body.appendChild(target);
-  const component = mount(BandSelector, { target });
+  const component = mount(BandSelector, { target, props: props ?? {} });
   flushSync();
   components.push(component);
   return target;
@@ -225,5 +225,78 @@ describe('BandSelector component', () => {
     flushSync();
 
     expect(mockBandHandlers.onBandSelect).toHaveBeenCalledWith('20m', 14_225_000, 5);
+  });
+});
+
+/**
+ * MOR-1367 (v3-rework S8) — the HAM/broadcast split, at the component level.
+ *
+ * `docs/plans/2026-08-06-settings-modal-boundary.md` §4a: this component is two
+ * independently-ruled halves. The HAM tab and grid duplicate `BandSurface` and
+ * retire under `band` zone ownership; the LW/MW + SWL broadcast presets are
+ * excluded from the vocabulary BY NAME (`semantic/radio-view-model.ts:494-496`)
+ * and this component is their only production consumer, so they are permanent
+ * on every manifest. Hence a prop, and hosts that never unmount the component.
+ *
+ * The composed-tree half of this contract (both hosts, the real desktop-v2
+ * manifest) lives in
+ * `components-v2/layout/__tests__/semantic-desktop-migration.component.test.ts`.
+ */
+describe('BandSelector HAM/broadcast split (hamBands prop)', () => {
+  const tabs = (t: HTMLElement) =>
+    [...t.querySelectorAll('.band-tab')].map((el) => el.textContent?.trim());
+  const grid = (t: HTMLElement) =>
+    [...t.querySelectorAll('.grid button')].map((el) => el.textContent?.trim());
+
+  // Kills: making the prop default to `false`, or removing the default. Every
+  // caller that predates the split (mobile, LCD, ControlButtonDemo) passes
+  // nothing and must keep the pre-split three-tab component.
+  it('defaults to the full three-tab component when the prop is omitted', () => {
+    const t = mountPanel();
+    expect(tabs(t)).toEqual(['HAM', 'LW/MW', 'SWL']);
+    expect(grid(t)).toEqual(['160m', '80m', '40m', '20m', '15m', '10m', '6m']);
+  });
+
+  // Kills: gating only the grid and leaving a dead HAM tab, or vice versa.
+  it('drops the HAM tab AND the HAM grid when hamBands is false', () => {
+    const t = mountPanel(undefined, { hamBands: false });
+    expect(tabs(t)).toEqual(['LW/MW', 'SWL']);
+    expect(grid(t)).not.toContain('20m');
+  });
+
+  // Kills: gating the tab/grid but leaving `bandMode`'s `'ham'` initial value
+  // (S10 §4a explicitly requires the DEFAULT to be gated too). Without this the
+  // suppressed component opens on an empty grid with no control able to leave
+  // that state.
+  it('defaults bandMode to LW/MW — never to an unreachable empty HAM grid', () => {
+    const t = mountPanel(undefined, { hamBands: false });
+    expect(grid(t)).toEqual(['LW', 'MW', '120m', '90m', '75m', '60m']);
+    expect(t.querySelector('.band-tab.active')?.textContent?.trim()).toBe('LW/MW');
+  });
+
+  // Kills: taking the broadcast half with the HAM half — the operator-affordance
+  // loss §4a exists to prevent. Sixteen presets, counted: `broadcast-presets.ts`
+  // ships 6 LW/MW + 10 SW. (The S10 doc says "17"; it counted the
+  // `BroadcastPreset` interface's own `name:` field. Measured, not copied.)
+  it('keeps every broadcast preset reachable with the HAM half suppressed', () => {
+    const t = mountPanel(undefined, { hamBands: false });
+    const lwmw = grid(t);
+    (t.querySelectorAll('.band-tab')[1] as HTMLElement).click();
+    flushSync();
+    const swl = grid(t);
+    expect(lwmw).toEqual(['LW', 'MW', '120m', '90m', '75m', '60m']);
+    expect(swl).toEqual(['49m', '41m', '31m', '25m', '22m', '19m', '16m', '15m', '13m', '11m']);
+    expect(lwmw.length + swl.length).toBe(16);
+  });
+
+  // Kills: suppressing the preset intent along with the tab. The presets fire
+  // `onPresetSelect(freq, mode)` — a frequency+mode intent, NOT a band
+  // selection — and that path must survive the split untouched.
+  it('still forwards a broadcast preset intent with the HAM half suppressed', () => {
+    const t = mountPanel(undefined, { hamBands: false });
+    ([...t.querySelectorAll('.grid button')]
+      .find((el) => el.textContent?.trim() === 'MW') as HTMLElement).click();
+    flushSync();
+    expect(mockPresetHandlers.onPresetSelect).toHaveBeenCalledWith(1_000_000, 'AM');
   });
 });

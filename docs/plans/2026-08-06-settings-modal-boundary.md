@@ -110,7 +110,7 @@ render on those skins with §3's predicates evaluated against **their** manifest
 | 7 | `desktop-vfo-ops` → `SPLIT`/`A↔B`/`A=B` row | `VfoSurface`'s own split-toggle/swap/equalize controls (`data-vfo-split`/`data-vfo-swap`/`data-vfo-equalize`, `VfoSurface.svelte`) | **(a)** | `receiver-deck` zone — **already landed** (MOR-1313, v3-rework S1/S2) | `semanticDeck` (existing `RadioLayout.svelte:90` derived value) — **see §4, non-inert exception** |
 | 8 | `desktop-language` (`LanguageSelector`) | — no sidebar twin, no semantic surface | **(b)** | n/a | n/a — never suppressed |
 | 9 | `desktop-workspace` (`WorkspaceSettingsPanel` + `WorkspaceImportExport`) | — no sidebar twin, no semantic surface | **(b)** | n/a | n/a — never suppressed |
-| 10 | `desktop-vfo-ops` → `BandSelector` **LW/MW tab + SWL tab** (17 curated presets, `broadcast-presets.ts`) | — no semantic surface; **deliberately** excluded (`semantic/radio-view-model.ts:494-496`, verbatim: *"UI convenience, not radio facts, … deliberately absent"*) | **(b)** | n/a | n/a — never suppressed, on any manifest; see §4a for the coordinator ruling |
+| 10 | `desktop-vfo-ops` → `BandSelector` **LW/MW tab + SWL tab** (16 curated presets, `broadcast-presets.ts`) | — no semantic surface; **deliberately** excluded (`semantic/radio-view-model.ts:494-496`, verbatim: *"UI convenience, not radio facts, … deliberately absent"*) | **(b)** | n/a | n/a — never suppressed, on any manifest; see §4a for the coordinator ruling |
 
 Every semantic-surface copy the modal hosts appears in exactly one row. No row is category (c): every
 duplicative control in this modal already has either a landed zone (#7) or a zone a named slice is
@@ -143,7 +143,7 @@ possible. Category (b) is exact, not a default.
 iterates `flattenBands(caps.freqRanges)`, the same source `deriveBand`
 (`lib/runtime/adapters/radio-view-model-adapter.ts:668-692`) uses to build `BandSurface`'s
 `band-choices`. The `LW/MW` and `SWL` branches iterate `BROADCAST_LW_MW_BANDS`/`BROADCAST_SW_BANDS`
-from `components-v2/controls/broadcast-presets.ts` — 17 curated presets, each firing
+from `components-v2/controls/broadcast-presets.ts` — 16 curated presets, each firing
 `presetH.onPresetSelect(preset.freq, preset.mode)` (a frequency+mode intent, not a band selection).
 
 The vocabulary comment for `bandChoices` states the exclusion directly
@@ -223,7 +223,7 @@ silently into the "nothing renders differently" inertness claim.** Concretely:
 §3 row 6 originally ruled `BandSelector` as a whole (a): duplicated by `BandSurface`, retiring with
 the `band` zone. That is wrong for two of the component's three tabs — see §3's Row 10 detail. The
 vocabulary (`semantic/radio-view-model.ts:494-496`) *deliberately* excludes the LW/MW and SWL
-broadcast-preset tabs (17 presets, `broadcast-presets.ts`) from `bandChoices`; ruling row 6 as (a) for
+broadcast-preset tabs (16 presets, `broadcast-presets.ts`) from `bandChoices`; ruling row 6 as (a) for
 the whole component would have suppressed those tabs the moment `declared.has('band')` went true on
 `desktop-v2`, and — since `BandSelector.svelte` is the **only** production consumer of
 `BROADCAST_LW_MW_BANDS`/`BROADCAST_SW_BANDS`/`onPresetSelect` — deleted an operator affordance no
@@ -232,7 +232,7 @@ semantic surface replaces, with no remaining host anywhere in `desktop-v2`.
 **Coordinator ruling (recorded here, not left open): option (A) — split the component.**
 `BandSelector` gains a `hamBands?: boolean` prop (default `true`). The suppression predicate for row 6
 becomes *pass `hamBands={!declared.has('band')}`* rather than *omit the component*: the `HAM` tab and
-grid disappear when the `band` zone is declared, the `LW/MW`/`SWL` tabs and their 17 presets survive
+grid disappear when the `band` zone is declared, the `LW/MW`/`SWL` tabs and their 16 presets survive
 unconditionally. This is the only one of the three options considered (§3 Row 10 detail; the
 alternatives were retain-whole, which reopens double-presentation, and accept-the-loss, which deletes
 the affordance) with **zero** operator loss.
