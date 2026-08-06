@@ -43,7 +43,15 @@ const h = vi.hoisted(() => ({
 }));
 
 vi.mock('$lib/runtime', () => ({
-  runtime: { get state() { return h.state; }, get caps() { return h.caps; } },
+  runtime: {
+    get state() { return h.state; },
+    get caps() { return h.caps; },
+    // MOR-1279 slice 3B: the wiring now also hands the adapter an App-owned
+    // RX-audio snapshot (the FOURTH argument). Muted with no browser stream
+    // keeps every fixture below off the rxAudio path — this file tests dsp.
+    get audio() { return { muted: true, rxEnabled: false, volume: 0 }; },
+    get connectionAudio() { return false; },
+  },
 }));
 vi.mock('$lib/runtime/tx-controller/app-host', () => ({
   getAppTxController: () => ({
@@ -79,6 +87,12 @@ vi.mock('../command-bus', () => ({
     onCompLevelChange: h.noop, onMonToggle: h.noop,
     onMonLevelChange: h.noop, onDriveGainChange: h.noop,
   }),
+  // MOR-1279 slice 3B: the RX-audio intent vocabulary. This fixture declares
+  // no rxAudio capability, so none of these is reachable — same stand-in role
+  // as `makeVfoHandlers`/`makeTxHandlers` above.
+  makeRxAudioHandlers: () => ({ onMonitorModeChange: h.noop, onAfLevelChange: h.noop }),
+  makeAudioRoutingHandlers: () => ({ onFocusChange: h.noop, onSplitStereoChange: h.noop }),
+  makeModeHandlers: () => ({ onModInputChange: h.noop }),
   makeDspHandlers: () => ({
     onNrModeChange: h.nrMode, onNrLevelChange: h.nrLevel, onNbToggle: h.nbToggle,
     onNbLevelChange: h.nbLevel, onNbDepthChange: h.nbDepth, onNbWidthChange: h.nbWidth,
@@ -179,10 +193,22 @@ afterEach(() => {
 });
 
 describe('the dsp surface mounts only when the view model carries the group', () => {
+  /**
+   * The default/single-composition element sequence with NO dsp group —
+   * i.e. "today" minus this slice. `liveCaps(false)` still declares the
+   * `audio` capability, so `vfo-ops`/`vfo-split-digest` (unrelated VFO
+   * ops row) and the full `rxAudio` surface (MOR-1279) are both present —
+   * this list pins the CURRENT baseline, not a dsp-slice invention.
+   */
   const DEFAULT_PATH_TESTIDS = [
-    'vfo-surface', 'vfo-active-receiver', 'vfo-list',
+    'vfo-surface', 'vfo-active-receiver', 'vfo-list', 'vfo-ops', 'vfo-split-digest',
     'rx-tx-surface', 'rx-tx-state', 'rx-tx-rf-mark', 'rx-tx-rf-label',
     'rx-tx-target', 'rx-tx-key', 'rx-tx-unkey', 'rx-tx-blocked',
+    'rx-audio-surface', 'rx-audio-monitor', 'rx-audio-monitor-local',
+    'rx-audio-monitor-live', 'rx-audio-monitor-mute', 'rx-audio-af', 'rx-audio-af-value',
+    'rx-audio-focus', 'rx-audio-focus-main', 'rx-audio-focus-sub', 'rx-audio-focus-both',
+    'rx-audio-focus-value', 'rx-audio-split', 'rx-audio-split-on', 'rx-audio-split-off',
+    'rx-audio-split-value',
   ];
   const testids = () => [...target.querySelectorAll<HTMLElement>('[data-testid]')]
     .map((el) => el.dataset.testid!)
@@ -203,17 +229,43 @@ describe('the dsp surface mounts only when the view model carries the group', ()
     expect(testids()).toEqual(DEFAULT_PATH_TESTIDS);
   });
 
-  it.each(['single', 'dual'] as const)('mounts the dsp surface when the group is present (%s)', (strips) => {
-    render({ strips });
+  it('mounts the dsp surface when the group is present (single)', () => {
+    render({ strips: 'single' });
     expect(target.querySelectorAll('[data-testid="dsp-surface"]')).toHaveLength(1);
   });
 
-  it('binds no zone id to the dsp surface in either composition', () => {
+  it('renders it bare in the single composition, outside every zone', () => {
+    render({ strips: 'single' });
+    const surface = q('[data-testid="dsp-surface"]')!;
+    expect(surface).not.toBeNull();
+    expect(surface.closest('[data-zone-id]')).toBeNull();
+  });
+
+  /**
+   * MOR-1304/MOR-1305 zone-mount ruling (inverted from the pre-fix-round
+   * shape, which blessed a bare dual mount). `DspSurface` renders up to 8
+   * range inputs and 7 buttons — it is control-bearing, and the cockpit's
+   * MOR-1069 rule forbids mounting any control-bearing surface bare in the
+   * dual composition: every focusable control must live inside a declared
+   * zone, with rx-tx last in the tab order. No manifest declares a `dsp`
+   * zone, so the dual composition renders NO dsp surface at all — same
+   * precedent as `rxAudioSurface`
+   * (`semantic-rx-audio-wiring.component.test.ts`). The view model here DOES
+   * carry the `dsp` group (see `beforeEach`) — a fixture that cannot see the
+   * surface would repeat the bug this fix closes rather than proving its
+   * absence.
+   */
+  it('renders NO dsp surface in the dual composition, zoned or unzoned', () => {
     render({ strips: 'dual' });
-    const zones = [...target.querySelectorAll<HTMLElement>('[data-zone-id]')]
-      .map((el) => el.dataset.zoneId);
-    expect(zones).toEqual(['primary-vfo', 'secondary-vfo', 'global', 'rx-tx']);
-    expect(q('[data-testid="dsp-surface"]')!.closest('[data-zone-id]')).toBeNull();
+    expect(q('[data-testid="dsp-surface"]')).toBeNull();
+    expect(target.innerHTML).not.toContain('dsp-surface');
+  });
+
+  it('leaves the cockpit with no focusable control outside a declared zone', () => {
+    render({ strips: 'dual' });
+    const outside = [...target.querySelectorAll<HTMLElement>('button, input, select, [tabindex]')]
+      .filter((node) => node.closest('[data-zone-id]') === null);
+    expect(outside).toEqual([]);
   });
 });
 

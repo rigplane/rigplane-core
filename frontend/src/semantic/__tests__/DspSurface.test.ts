@@ -26,6 +26,14 @@ type AnyField = keyof DspViewModel;
 const NUMERIC_FIELDS: readonly AnyField[] = [
   ...DSP_TOGGLES.map(([f]) => f), ...DSP_LEVELS.map(([f]) => f), 'nbLevel',
 ] as readonly AnyField[];
+/** The thumb position an unread level control MUST claim (MOR-1304/1305 F2)
+ *  — `numberOf`'s own fallback, verbatim, so a fallback-value mutation is
+ *  pinned rather than left free to claim any position. `nbLevel` falls back
+ *  to `0` (its own literal in `DspSurface.svelte`), not its declared min. */
+const LEVEL_FALLBACK: Partial<Record<AnyField, number>> = {
+  ...Object.fromEntries(DSP_LEVELS.map(([f, , min]) => [f, min])),
+  nbLevel: 0,
+};
 
 /** Re-shape ONE dsp field of an otherwise fully-available fixture. */
 function withField(
@@ -141,8 +149,29 @@ describe('operational availability decides whether a control is USABLE', () => {
       expect(isDisabled(s, field)).toBe(true);
       const text = s.control(field)!.textContent ?? '';
       expect(text).toContain('?');
+      // MOR-1304/1305 F2: the rendered slider THUMB of an unread level is not
+      // free to claim any position — it must sit at the field's declared
+      // fallback (`numberOf`'s own default), never a mutated stand-in value.
+      const input = s.input(field);
+      if (input) expect(input.value).toBe(String(LEVEL_FALLBACK[field]));
     });
   });
+
+  // MOR-1304/1305 N1/MD7: `pressedOf` must return `undefined` — never `false`
+  // — for an unobserved toggle reading, so Svelte OMITS `aria-pressed`
+  // entirely. `aria-pressed="false"` is not the absence of a claim, it is the
+  // claim "this control is OFF" about a reading the radio never reported —
+  // carry-forward 4's exact prohibition, applied to the attribute as well as
+  // the visible text.
+  it.each(DSP_TOGGLES.map(([f]) => f))(
+    'never fabricates aria-pressed=false for an unobserved toggle "%s"',
+    (field) => {
+      const view = withField(base(), field, { unknown: true });
+      withSurface(view, (s) => {
+        expect(s.control(field)!.getAttribute('aria-pressed')).toBeNull();
+      });
+    },
+  );
 
   // Carry-forward (2): `agcTimeConstant` structurally present but never
   // observed renders exactly like any other honest present-unobserved field —
@@ -218,6 +247,28 @@ describe('level intents reach the caller with the field and the raw value', () =
       expect(s.input('nbDepth')!.valueAsNumber).toBe(5);
     });
   });
+
+  /**
+   * MOR-1304/1305 F3: the `level()` handler guard must reject an unusable
+   * field on its OWN, independently of the `disabled` attribute. A plain
+   * `.click()`/native interaction never reaches a disabled control's handler
+   * at all, which would let this test pass even if the in-component guard
+   * were deleted — so the input event is dispatched directly, the same
+   * bypass a determined operator's assistive tech or a stray event listener
+   * could still trigger.
+   */
+  it('emits nothing when the level reading is unobserved, even bypassing disabled', () => {
+    const onLevelChange = vi.fn();
+    const view = withField(base(), 'nrLevel', { unknown: true });
+    withSurface(view, (s) => {
+      const input = s.input('nrLevel')!;
+      expect(input.disabled).toBe(true);
+      input.value = '9';
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+      flushSync();
+      expect(onLevelChange).not.toHaveBeenCalled();
+    }, { onLevelChange });
+  });
 });
 
 // ── 5. Range-parameterisation: nbLevel takes its ceiling from caps-echo props ─
@@ -280,11 +331,20 @@ describe('notchMode renders as a three-way choice', () => {
     }, { onNotchModeChange });
   });
 
-  it('emits nothing when clicked on an unobserved reading', () => {
+  /**
+   * MOR-1304/1305 F3: `.click()` on a disabled button never reaches its
+   * `onclick` handler at all — a no-op that would pass this assertion even
+   * with the `notch()` guard deleted. Dispatching the click event directly
+   * proves the GUARD rejects it, not merely that `disabled` suppressed the
+   * interaction.
+   */
+  it('emits nothing when clicked on an unobserved reading, even bypassing disabled', () => {
     const onNotchModeChange = vi.fn();
     const view = withField(base(), 'notchMode', { unknown: true });
     withSurface(view, (s) => {
-      s.notchButton('auto')!.click();
+      const btn = s.notchButton('auto')!;
+      expect(btn.disabled).toBe(true);
+      btn.dispatchEvent(new MouseEvent('click', { bubbles: true }));
       flushSync();
       expect(onNotchModeChange).not.toHaveBeenCalled();
     }, { onNotchModeChange });
@@ -318,6 +378,23 @@ describe('agcMode renders the capability-derived choice set with caps-echoed lab
       s.agcButton(1)!.click();
       flushSync();
       expect(onAgcModeChange).toHaveBeenCalledExactlyOnceWith(1);
+    }, { onAgcModeChange });
+  });
+
+  /**
+   * MOR-1304/1305 F3: same bypass discipline as notchMode's guard test — the
+   * event is dispatched directly so a deleted `agc()` guard is what this
+   * assertion catches, not merely `disabled` suppressing a plain `.click()`.
+   */
+  it('emits nothing when clicked on an unobserved reading, even bypassing disabled', () => {
+    const onAgcModeChange = vi.fn();
+    const view = withField(base(), 'agcMode', { unknown: true });
+    withSurface(view, (s) => {
+      const btn = s.agcButton(1)!;
+      expect(btn.disabled).toBe(true);
+      btn.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+      flushSync();
+      expect(onAgcModeChange).not.toHaveBeenCalled();
     }, { onAgcModeChange });
   });
 });
