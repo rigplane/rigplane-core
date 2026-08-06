@@ -150,3 +150,93 @@ jobs:
           label: mypy
           message: "0 errors"
           color: blue
+
+  capture-harness:
+    # MOR-1382 — wires the MOR-1070/1085/1087/1088 browser fixture-harness
+    # capture (`frontend/fixtures/capture.mjs`) into CI. It ran in NO
+    # workflow before this. Deliberately a single dedicated job, NOT a
+    # matrix leg — the capture matrix is Python-version-independent (it
+    # only exercises the built frontend in a real browser), so multiplying
+    # it by matrix.python-version (3.11/3.12/3.13) would triple runner
+    # minutes for zero additional coverage.
+    #
+    # OWNER GATE (binding — mirrors visual.yml's MOR-1090 gate, see its
+    # header comment): `continue-on-error: true` for one cycle so failures
+    # can be observed without blocking the full matrix. Flipping to
+    # blocking — removing `continue-on-error` below — is an OWNER decision
+    # at v3 gate promotion (MOR-1382 follow-up), not a builder's call.
+    #
+    # Same push guard as the `test` job above: on `push`, only runs when
+    # the commit message contains `[full-ci]`; on `schedule`/
+    # `workflow_dispatch`, always runs. This keeps the job off every
+    # ordinary push to `main`.
+    if: >-
+      github.event_name != 'push' ||
+      contains(github.event.head_commit.message, '[full-ci]')
+    runs-on: [self-hosted, linux, build]
+    # Budget: ~45s once the Playwright browser cache is warm (npm ci +
+    # cached chromium + the capture matrix itself). 10 minutes is a
+    # generous ceiling for a cold cache / first run on a new runner image,
+    # not the expected steady-state duration.
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: frontend/package-lock.json
+
+      # Read the LOCKFILE-RESOLVED exact version, not package.json's range.
+      # `devDependencies['@playwright/test']` is the string "^1.55.0", which
+      # resolves to 1.58.2 today: keying the cache on the range would let a
+      # lockfile-only Playwright bump hit the SAME key, restore the old
+      # browser, re-download the new one, and then skip the save (an exact
+      # key hit never re-saves) — permanently poisoning the cache it exists
+      # to populate.
+      - name: Resolve Playwright version
+        id: pw
+        run: |
+          cd frontend
+          echo "version=$(node -p "require('./package-lock.json').packages['node_modules/@playwright/test'].version")" >> "$GITHUB_OUTPUT"
+
+      # Playwright's own browser cache, keyed on the lockfile-resolved
+      # @playwright/test version (frontend/package-lock.json) — this is what
+      # "playwright install dominates" is about: a cache hit skips the
+      # ~100-200MB chromium download entirely and turns this job's dominant
+      # cost into the capture matrix run itself.
+      - name: Cache Playwright browsers
+        uses: actions/cache@v4
+        id: pw-cache
+        with:
+          path: ~/.cache/ms-playwright
+          key: ${{ runner.os }}-playwright-${{ steps.pw.outputs.version }}
+
+      - name: Install deps + Playwright chromium
+        run: |
+          cd frontend
+          npm ci
+          npx playwright install chromium >/dev/null 2>&1 || true
+
+      # continue-on-error: OWNER GATE, see the job header comment above.
+      - name: Run fixture-harness capture
+        id: capture
+        continue-on-error: true
+        run: node frontend/fixtures/capture.mjs
+
+      # Always uploaded (not just on failure) — this is the MOR-1091
+      # "links to CI artifacts" deliverable: the manifest + PNGs need to be
+      # linkable from a passing run too, not only a failing one.
+      - name: Upload capture output
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fixture-harness-capture
+          path: frontend/fixtures-baselines/
+          retention-days: 14
+
+      - name: Annotate result
+        if: always()
+        run: '[ "${{ steps.capture.outcome }}" = "failure" ] && echo "::warning::Fixture-harness capture FAILED — non-blocking until the MOR-1382 owner gate flips it. See the fixture-harness-capture artifact." || true'
