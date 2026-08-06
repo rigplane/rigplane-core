@@ -2336,11 +2336,13 @@ class CivRuntime:
 
         Mirrors the ``_handle_27`` sub-command dispatch for the leaves the web
         layer publishes as ``scopeControls.*`` (MOR-557): receiver/dual/mode/
-        span/edge/hold/ref_db/speed. Sub 0x00 (waterfall pixel data) never
-        reaches here — ``_route_civ_frame`` short-circuits it — and command
-        echoes are dropped earlier by the ``from_addr`` filter. Malformed
-        payloads raise ``ValueError`` in the parse helpers and are swallowed
-        by ``_apply_state_store_observations``.
+        span/edge/hold/ref_db/speed, plus the five ScopeSettingsPopover leaves
+        registered by MOR-1302 (during_tx/center_type/vbw_narrow/fixed_edge/
+        rbw, MOR-1329). Sub 0x00 (waterfall pixel data) never reaches here —
+        ``_route_civ_frame`` short-circuits it — and command echoes are
+        dropped earlier by the ``from_addr`` filter. Malformed payloads raise
+        ``ValueError`` in the parse helpers and are swallowed by
+        ``_apply_state_store_observations``.
         """
         receiver: int | None = None
         pairs: list[tuple[str, Any]] = []
@@ -2366,6 +2368,19 @@ class CivRuntime:
         elif frame.sub == 0x1A:
             receiver, speed = parse_scope_speed_response(frame)
             pairs.append(("speed", speed))
+        elif frame.sub == 0x1B:
+            pairs.append(("during_tx", parse_scope_during_tx_response(frame)))
+        elif frame.sub == 0x1C:
+            receiver, center_type = parse_scope_center_type_response(frame)
+            pairs.append(("center_type", center_type))
+        elif frame.sub == 0x1D:
+            receiver, vbw_narrow = parse_scope_vbw_response(frame)
+            pairs.append(("vbw_narrow", vbw_narrow))
+        elif frame.sub == 0x1E:
+            pairs.append(("fixed_edge", parse_scope_fixed_edge_response(frame)))
+        elif frame.sub == 0x1F:
+            receiver, rbw = parse_scope_rbw_response(frame)
+            pairs.append(("rbw", rbw))
         if receiver is not None:
             pairs.append(("receiver", receiver))
         return [
