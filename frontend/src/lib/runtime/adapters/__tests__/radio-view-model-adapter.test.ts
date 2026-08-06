@@ -175,6 +175,63 @@ describe('unobserved facts survive as the explicit unknown branch', () => {
     expect(view.vfos.filter((v) => v.isActive).map((v) => v.label)).toEqual(['MAIN A']);
   });
 
+  // ── MOR-1335 (G4): the per-receiver active slot ─────────────────────────
+  //
+  // `isActive` answers "is this the ACTIVE RECEIVER's active VFO" and is
+  // therefore globally unique — which is why the VFO surface, gating tuning on
+  // it, left SUB untunable on `2/main_sub`. `isActiveSlot` answers the
+  // per-receiver question, so each receiver names the VFO its own
+  // receiver-scoped `set_freq` would write.
+
+  // MUTATION KILLED: deriving `isActiveSlot` from the ACTIVE RECEIVER (i.e.
+  // aliasing `isActive`) — SUB would report no active slot at all and the
+  // parity gap this fact exists to close would silently persist.
+  it('names each receiver\'s own active slot, including the receiver that is NOT active', () => {
+    const view = model(observedState({
+      sub: { ...receiver(14300000), activeSlot: 'B' },
+    } as Partial<ServerState>), TOPOLOGY_CAPS['2/main_sub']);
+    expect(view.activeReceiver).toEqual({ status: 'known', receiver: 'MAIN' });
+    expect(view.vfos.filter((v) => v.isActiveSlot).map((v) => v.label))
+      .toEqual(['MAIN A', 'SUB B']);
+    // ...and the radio-wide fact is unchanged by it: still exactly one.
+    expect(view.vfos.filter((v) => v.isActive).map((v) => v.label)).toEqual(['MAIN A']);
+  });
+
+  // MUTATION KILLED: `slot.id === (rx.activeSlot ?? 'A')` — the backend
+  // DEFAULTS activeSlot to "A", so an ungated read would hand the surface a
+  // tunable MAIN A / SUB A on evidence the radio never provided.
+  it('marks NO active slot for a receiver whose activeSlot was never observed', () => {
+    const base = observedState();
+    const fieldStatus = { ...base.fieldStatus } as Record<string, unknown>;
+    delete fieldStatus['sub.activeSlot'];
+    const view = model(
+      { ...base, fieldStatus } as unknown as ServerState, TOPOLOGY_CAPS['2/main_sub'],
+    );
+    expect(view.vfos.filter((v) => v.receiver === 'SUB' && v.isActiveSlot)).toEqual([]);
+    // Non-vacuous: MAIN's observed reading still names its slot.
+    expect(view.vfos.filter((v) => v.isActiveSlot).map((v) => v.label)).toEqual(['MAIN A']);
+  });
+
+  // An unslotted position IS its receiver's active slot — there is no other
+  // VFO on that receiver for `set_freq` to write. Kills a derivation keyed to
+  // a slotted id, which would leave every `single`/`ab_shared` position
+  // untunable.
+  it.each(['1/single', '2/ab_shared'] as const)('%s: every unslotted position is its receiver\'s active slot', (id) => {
+    const view = model(observedState(), TOPOLOGY_CAPS[id]);
+    expect(view.vfos.every((v) => v.isActiveSlot)).toBe(true);
+  });
+
+  // The decomposition, stated once over the whole matrix: `isActive` is
+  // exactly "this receiver is the active one AND this is its active slot".
+  it.each(Object.keys(TOPOLOGY_CAPS))('%s: isActive === active receiver AND isActiveSlot', (id) => {
+    const view = model(observedState(), TOPOLOGY_CAPS[id]);
+    for (const vfo of view.vfos) {
+      const receiverActive = view.activeReceiver.status === 'known'
+        && view.activeReceiver.receiver === vfo.receiver;
+      expect(vfo.isActive, vfo.label).toBe(receiverActive && vfo.isActiveSlot);
+    }
+  });
+
   // MUTATION KILLED: reading `state.txTarget` without the freshness gate — a
   // stale target keys the wrong VFO.
   it('reports a stale TX target as unknown/stale and blocks the permit', () => {
