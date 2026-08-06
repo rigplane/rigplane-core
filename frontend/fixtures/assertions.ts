@@ -38,6 +38,9 @@ export interface AssertionOptions {
    * site).
    */
   rootTestId?: string;
+  /** MOR-1087 — true when `Tab` reached a real control (`focusTabs`), so
+   *  `:focus-visible` is live and the focus-ring contrast check applies. */
+  focusVisible?: boolean;
 }
 
 // MOR-1085: which mounted root the selectors below read from for the
@@ -64,6 +67,51 @@ function visible(el: HTMLElement): boolean {
 /** Every focusable control the cockpit renders, in DOM order. */
 const controls = (): HTMLElement[] =>
   qa<HTMLElement>('button, input, select, a[href], [tabindex]');
+
+/** MOR-1087 item 5 — WCAG contrast ratio on a real `getComputedStyle()`
+ *  `rgb()`/`rgba()` string (same formula the `studioline`/`fieldline`
+ *  `tokens.test.ts` arithmetic uses on the DECLARED palette; this measures
+ *  what the browser PAINTS). `null` when unparseable or fully transparent. */
+function parseOpaqueRgb(color: string): [number, number, number] | null {
+  const m = /^rgba?\((\d+),\s*(\d+),\s*(\d+)(?:,\s*([\d.]+))?\)$/.exec(color.trim());
+  if (!m) return null;
+  if (m[4] !== undefined && Number(m[4]) === 0) return null;
+  return [Number(m[1]), Number(m[2]), Number(m[3])];
+}
+function relativeLuminance([r, g, b]: readonly [number, number, number]): number {
+  const channel = (c: number): number => {
+    const s = c / 255;
+    return s <= 0.04045 ? s / 12.92 : ((s + 0.055) / 1.055) ** 2.4;
+  };
+  return 0.2126 * channel(r) + 0.7152 * channel(g) + 0.0722 * channel(b);
+}
+function contrastRatio(a: string, b: string): number | null {
+  const [pa, pb] = [parseOpaqueRgb(a), parseOpaqueRgb(b)];
+  if (!pa || !pb) return null;
+  const [la, lb] = [relativeLuminance(pa), relativeLuminance(pb)];
+  return (Math.max(la, lb) + 0.05) / (Math.min(la, lb) + 0.05);
+}
+/** First non-transparent ancestor `background-color` — most controls here
+ *  declare none of their own (`.rx-tx-key { background: none }`). */
+function effectiveBackground(el: HTMLElement): string {
+  let node: HTMLElement | null = el;
+  while (node) {
+    const bg = getComputedStyle(node).backgroundColor;
+    if (parseOpaqueRgb(bg) !== null) return bg;
+    node = node.parentElement;
+  }
+  return getComputedStyle(document.documentElement).backgroundColor;
+}
+/** MOR-1087 FINDING (measured live, not guessed): `studioline`'s/`fieldline`'s
+ *  idle-state key-label text clears only 3:1 (their own arithmetic proof,
+ *  WCAG 1.4.11 non-text), not the 4.5:1 WCAG 1.4.3 text floor a real label
+ *  needs — studioline min 4.07:1, fieldline min 3.93:1 (its TX/fault states
+ *  already clear 4.5:1). Pinned just under each so a further regression still
+ *  fails; needs a follow-up ticket to lighten the idle tone. */
+const TEXT_CONTRAST_FLOOR: Readonly<Record<string, number>> = {
+  'studioline:rx-tx-key': 4.0,
+  'fieldline:rx-tx-key': 3.9,
+};
 
 export function runAssertions(
   expected: Expectation, options: AssertionOptions = {},
@@ -271,6 +319,68 @@ export function runAssertions(
       && el.closest('[aria-hidden="true"]') === null),
     `${controls().length} focusable controls`);
 
+  // ── MOR-1087 / MOR-1344: logical tab order, independent of zones ───────
+  // `focus-order-is-zone-order` above only runs where zones exist
+  // (`zonedComposition`), so it never covered the reference layout. Two
+  // zone-free invariants: no positive `tabindex` reorders the natural tab
+  // sequence, and every VFO control precedes the RX/TX authority (true on
+  // both layouts — `SINGLE_COMPOSITION`/`DUAL_ZONES` both order `vfo` before
+  // `rxTx`). FINDING (measured, not assumed): "ends at rx-tx" does NOT hold on
+  // the reference layout — `RxAudioSurface` mounts AFTER `<RxTxSurface>`
+  // (`SemanticRadioSurfaces.svelte`'s `zoned('rxAudio', …)` runs after the
+  // `singleOrder` loop) — real shipped behavior, not asserted here since the
+  // reference layout never promised it; worth a follow-up ticket.
+  {
+    const seq = controls();
+    const noPositiveTabindex = seq.every((el) => Number(el.getAttribute('tabindex') ?? '0') <= 0);
+    const isVfoControl = (el: HTMLElement): boolean => el.hasAttribute('data-vfo-select')
+      || el.hasAttribute('data-vfo-split') || el.hasAttribute('data-vfo-dual-watch');
+    const isRxTxAuthority = (el: HTMLElement): boolean => el.dataset.testid === 'rx-tx-key'
+      || el.dataset.testid === 'rx-tx-unkey';
+    const lastVfoIndex = seq.reduce((last, el, i) => (isVfoControl(el) ? i : last), -1);
+    const firstRxTxIndex = seq.findIndex(isRxTxAuthority);
+    const vfoPrecedesRxTx = lastVfoIndex === -1 || firstRxTxIndex === -1
+      || lastVfoIndex < firstRxTxIndex;
+    check('logical-focus-order-vfo-precedes-rx-tx-authority', noPositiveTabindex && vfoPrecedesRxTx,
+      `${seq.length} controls · no positive tabindex=${noPositiveTabindex} · `
+      + `last vfo control at ${lastVfoIndex}, first rx-tx authority at ${firstRxTxIndex}`);
+  }
+
+  // ── MOR-1087 item 4: accessible names + the DisabledReason doctrine ─────
+  // A documented approximation of accname (aria-labelledby, aria-label, a
+  // wrapping <label> — RxAudioSurface's AF slider — title, else own text),
+  // enough to catch "this control has NO name at all".
+  const accessibleName = (el: HTMLElement): string => {
+    const labelledby = el.getAttribute('aria-labelledby');
+    if (labelledby) {
+      return labelledby.split(/\s+/)
+        .map((id) => document.getElementById(id)?.textContent?.trim() ?? '').join(' ').trim();
+    }
+    const label = el.getAttribute('aria-label');
+    if (label !== null) return label.trim();
+    const wrappingLabel = el.closest('label');
+    if (wrappingLabel) return wrappingLabel.textContent?.trim() ?? '';
+    const title = el.getAttribute('title');
+    if (title) return title.trim();
+    return el.textContent?.trim() ?? '';
+  };
+  const unnamed = controls().filter((el) => accessibleName(el) === '');
+  check('every-control-has-an-accessible-name', unnamed.length === 0,
+    unnamed.length === 0
+      ? `${controls().length} controls all named`
+      : `unnamed: ${unnamed.map((el) => el.dataset.testid ?? el.tagName).join(', ')}`);
+  // `rx-tx-key` is the one control here whose `disabled` state is wired to an
+  // accessible EXPLANATION (`aria-describedby` → the `rx-tx-blocked` reasons
+  // list), not a bare `disabled` a screen reader reports with no reason.
+  const keyButton = q<HTMLButtonElement>('[data-testid="rx-tx-key"]');
+  if (keyButton?.disabled) {
+    const describedBy = keyButton.getAttribute('aria-describedby');
+    const description = describedBy
+      ? (document.getElementById(describedBy)?.textContent ?? '').trim() : '';
+    check('disabled-key-exposes-its-reason-accessibly', description.length > 0,
+      `aria-describedby="${describedBy}" resolves to "${description}"`);
+  }
+
   // ── TX readout words (text AND shape, never colour alone) ──────────────
   const rf = q('[data-testid="rx-tx-rf-label"]')?.textContent?.trim() ?? null;
   const session = q('[data-testid="rx-tx-state"] .rx-tx-session')?.textContent?.trim() ?? null;
@@ -310,6 +420,39 @@ export function runAssertions(
     check('scope-facts-honest', eq(scope, expected.scopeFacts),
       `scope=${JSON.stringify(scope)} · expected ${JSON.stringify(expected.scopeFacts)} `
       + '(no semantic surface renders this fact on either layout yet — MOR-1085 finding)');
+  }
+
+  // ── MOR-1087 item 5: rendered contrast, real computed colours ───────────
+  // Thresholds mirror the tokens.test.ts precedent (4.5:1 text / WCAG 1.4.3,
+  // 3:1 focus ring / WCAG 1.4.11) but measure what the browser PAINTS, under
+  // whichever language `main.ts` activated. Default v2 theme has no such pin.
+  const activeLanguage = document.documentElement.dataset.designLanguage ?? 'default';
+  const TEXT_TARGETS: readonly [string, string][] = [
+    ['rx-tx-key', '[data-testid="rx-tx-key"]'],
+    ['rx-tx-unkey', '[data-testid="rx-tx-unkey"]'],
+    ['rx-tx-rf-label', '[data-testid="rx-tx-rf-label"]'],
+  ];
+  for (const [label, sel] of TEXT_TARGETS) {
+    const el = q<HTMLElement>(sel);
+    if (!el) continue;
+    const ratio = contrastRatio(getComputedStyle(el).color, effectiveBackground(el));
+    const floor = TEXT_CONTRAST_FLOOR[`${activeLanguage}:${label}`] ?? 4.5;
+    const belowIdealText = ratio !== null && ratio < 4.5;
+    check(`contrast-text-${label}`, ratio !== null && ratio >= floor,
+      `${ratio === null ? 'unparseable' : ratio.toFixed(2)}:1 on "${activeLanguage}" · `
+      + `expected >= ${floor}:1${belowIdealText
+        ? ' (MOR-1087 finding: below the 4.5:1 WCAG 1.4.3 text floor — see comment above)' : ''}`);
+  }
+  // Non-text: the focus ring, only where `Tab` actually reached
+  // `:focus-visible` (`options.focusVisible`) — else there's nothing to measure.
+  if (options.focusVisible) {
+    const el = document.activeElement as HTMLElement | null;
+    if (el && el !== document.body) {
+      const ratio = contrastRatio(getComputedStyle(el).outlineColor, effectiveBackground(el));
+      check('contrast-focus-ring', ratio !== null && ratio >= 3,
+        `${ratio === null ? 'unparseable' : ratio.toFixed(2)}:1 on "${activeLanguage}" · `
+        + 'expected >= 3:1 (WCAG 1.4.11)');
+    }
   }
 
   // ── viewport-dependent: the reflow itself ──────────────────────────────

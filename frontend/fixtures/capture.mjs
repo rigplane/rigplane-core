@@ -162,6 +162,35 @@ const MATRIX = [
   ].map((id) => ({
     name: `${id}--reference--desktop`, fixture: `${id}--reference`, viewport: 'desktop',
   })),
+  // O. MOR-1087 item 2 — focus restoration across an orientation change.
+  {
+    name: 'focus-restored-orientation-change--phone-portrait-to-landscape',
+    fixture: 'topology-2-main-sub', viewport: 'phone-portrait', focusTabs: 6,
+    resizeTo: 'phone-landscape',
+  },
+  // P. MOR-1087 item 3 — native Space/Enter activation of a real <button>,
+  // proven via the same command-bus recording every click already uses.
+  {
+    name: 'keyboard-activation-vfo-split--desktop', fixture: 'topology-2-main-sub',
+    viewport: 'desktop',
+    keyboardActivate: { selector: '[data-vfo-split]', key: 'Space', expectCall: 'vfo.split' },
+  },
+  {
+    name: 'keyboard-activation-rx-tx-key--desktop', fixture: 'tx-phase-rx',
+    viewport: 'desktop',
+    keyboardActivate: { selector: '[data-testid="rx-tx-key"]', key: 'Enter', expectCall: 'tx.start' },
+  },
+  // Q. MOR-1087 items 5/7 — per-language contrast + unmistakable RX/TX/fault
+  // indication, over both registered design languages (section A covers
+  // "default" already).
+  ...['studioline', 'fieldline'].flatMap((language) => [
+    { name: `dual-main-sub--desktop--${language}`, fixture: 'topology-2-main-sub',
+      viewport: 'desktop', language },
+    { name: `dual-main-sub--desktop--${language}--light`, fixture: 'topology-2-main-sub',
+      viewport: 'desktop', language, languageMode: 'light' },
+    { name: `tx-phase-tx--desktop--${language}`, fixture: 'tx-phase-tx',
+      viewport: 'desktop', language },
+  ]),
 ];
 
 /* ── build identity ────────────────────────────────────────────────────── */
@@ -276,10 +305,24 @@ try {
     page.on('console', (m) => { if (m.type() === 'error') consoleErrors.push(m.text()); });
     page.on('pageerror', (e) => consoleErrors.push(`pageerror: ${e.message}`));
     if (spec.media) await page.emulateMedia(spec.media);
+    // MOR-1087 item 6: count `requestAnimationFrame` CALLS — synchronous, so
+    // already meaningful by `harnessReady`. `createSmoother().start()`
+    // (`LinearSMeter`/`BarGauge`, via `onMount`) schedules one rAF tick
+    // UNLESS `prefers-reduced-motion` is active (`smoothing.svelte.ts`) — the
+    // JS/rAF half of MOR-1233/1249/1252 a CSS-only check can't see.
+    await page.addInitScript(() => {
+      window.__rafCount = 0;
+      const real = window.requestAnimationFrame.bind(window);
+      window.requestAnimationFrame = (cb) => { window.__rafCount += 1; return real(cb); };
+    });
 
     const theme = spec.theme ?? 'v2';
     const url = `http://127.0.0.1:${PORT}/fixtures/index.html`
-      + `?fixture=${spec.fixture}&theme=${theme}`;
+      + `?fixture=${spec.fixture}&theme=${theme}`
+      // items 5/7: `main.ts` already supports `&language=`/`&mode=light`
+      // (MOR-1074) — this file just adds the MATRIX entries that use it.
+      + (spec.language ? `&language=${spec.language}` : '')
+      + (spec.languageMode ? `&mode=${spec.languageMode}` : '');
     await page.goto(url, { waitUntil: 'load' });
     await page.waitForSelector('body[data-harness-ready="true"]', { timeout: 15_000 });
 
@@ -306,16 +349,77 @@ try {
       focusedControl = focusPath[focusPath.length - 1];
     }
 
+    // MOR-1087 item 2: focus restoration across an orientation change — the
+    // one live-reflow event this static, one-component-per-load harness can
+    // script. Focus via Tab, resize under it, prove focus doesn't drop to body.
+    let focusRestoration = null;
+    if (spec.resizeTo) {
+      const before = await page.evaluate(() => window.__harness.activeControl());
+      const target = VIEWPORTS[spec.resizeTo];
+      await page.setViewportSize({ width: target.width, height: target.height });
+      const after = await page.evaluate(() => window.__harness.activeControl());
+      focusRestoration = { before, after, resizedTo: spec.resizeTo };
+    }
+
+    // MOR-1087 item 3: the only bespoke shortcut system (KeyboardHandler) is
+    // RadioLayout-only, out of reach here — what the semantic surfaces DO
+    // declare is native Space/Enter button semantics. `.focus()` by selector
+    // keeps this independent of tab-order elsewhere in the tree.
+    let keyboardActivation = null;
+    if (spec.keyboardActivate) {
+      await page.evaluate((sel) => {
+        (document.querySelector(sel))?.focus();
+      }, spec.keyboardActivate.selector);
+      await page.keyboard.press(spec.keyboardActivate.key);
+      const calls = await page.evaluate(() => window.__harness.calls());
+      keyboardActivation = {
+        selector: spec.keyboardActivate.selector,
+        key: spec.keyboardActivate.key,
+        reachedCommandBus: calls.some((c) => c.fn === spec.keyboardActivate.expectCall),
+      };
+    }
+
     // ── BEHAVIOR ASSERTIONS FIRST ────────────────────────────────────────
+    const resizedVp = spec.resizeTo ? VIEWPORTS[spec.resizeTo] : vp;
     const options = {
-      arrangement: vp.arrangement,
+      arrangement: resizedVp.arrangement,
       touchTargets: Boolean(spec.touch),
       reducedMotion: spec.media?.reducedMotion === 'reduce',
+      focusVisible: Boolean(spec.focusTabs),
     };
     const assertions = await page.evaluate((o) => window.__harness.assert(o), options);
     const tokens = await page.evaluate(() => window.__harness.tokens());
     const paint = await page.evaluate(() => window.__harness.paint());
     const domFocusOrder = await page.evaluate(() => window.__harness.focusOrder());
+    const metersPresent = await page.evaluate(() =>
+      document.querySelector('[data-testid="meters-surface"]') !== null);
+    const rafCount = await page.evaluate(() => window.__rafCount);
+    if (metersPresent) {
+      const reduced = spec.media?.reducedMotion === 'reduce';
+      const rafScheduled = rafCount > 0;
+      assertions.push({
+        name: 'meter-ballistics-honor-reduced-motion',
+        ok: reduced ? rafCount === 0 : rafCount > 0,
+        detail: `rafScheduled=${rafScheduled} · reducedMotion=${reduced} · `
+          + `expected ${reduced ? 'false (no ballistics loop scheduled)' : 'true (the loop runs normally)'}`,
+      });
+    }
+    if (focusRestoration) {
+      assertions.push({
+        name: 'focus-restored-after-layout-change',
+        ok: focusRestoration.after !== 'NONE' && focusRestoration.after === focusRestoration.before,
+        detail: `before="${focusRestoration.before}" after resize to `
+          + `${focusRestoration.resizedTo}="${focusRestoration.after}"`,
+      });
+    }
+    if (keyboardActivation) {
+      assertions.push({
+        name: 'keyboard-activation-reaches-command-bus',
+        ok: keyboardActivation.reachedCommandBus,
+        detail: `${keyboardActivation.key} on ${keyboardActivation.selector} · `
+          + `reached command bus=${keyboardActivation.reachedCommandBus}`,
+      });
+    }
     const passed = assertions.every((a) => a.ok) && consoleErrors.length === 0;
     if (!passed) failures += 1;
 
@@ -330,7 +434,9 @@ try {
       valid: passed,
       fixture: spec.fixture,
       what: await page.evaluate(() => window.__harness.what),
-      viewport: { id: spec.viewport, ...vp },
+      viewport: spec.resizeTo
+        ? { id: spec.viewport, ...vp, resizedTo: { id: spec.resizeTo, ...resizedVp } }
+        : { id: spec.viewport, ...vp },
       media: {
         reducedMotion: spec.media?.reducedMotion ?? 'no-preference',
         contrast: spec.media?.contrast ?? 'no-preference',
@@ -338,6 +444,8 @@ try {
         colorScheme: 'dark',
         pointer: spec.touch ? 'coarse' : 'fine',
       },
+      language: spec.language ?? 'none',
+      languageMode: spec.languageMode ?? 'dark',
       themeLayer: theme === 'v2' ? 'components-v2/theme (tokens + themes)' : 'none (fallbacks)',
       url,
       assertions,
@@ -346,6 +454,8 @@ try {
       consoleErrors,
       focusPath,
       focusedControl,
+      focusRestoration,
+      keyboardActivation,
       domFocusOrder,
       tokens,
       paint,
@@ -404,6 +514,18 @@ const manifest = {
     + 'the MOR-1313 per-zone suppression arm — so the R9 rule decided at RadioLayout\'s '
     + 'semanticRxTx derivation is NOT exercised by reference captures (it is pinned separately in '
     + 'jsdom component tests).',
+    'MOR-1087: `--studioline`/`--fieldline` captures activate a language by setting '
+    + '`document.documentElement.dataset.designLanguage` directly (fixtures/main.ts\'s pre-existing '
+    + '`&language=` param, MOR-1074), NOT the real `workspace/activation.ts` gate (no reachable UI '
+    + 'path in the app yet — MOR-1048/1263 cutover work). The rendered subtree is production-identical.',
+    '`focus-restored-orientation-change--*` resizes the SAME page mid-capture rather than reloading — '
+    + 'the harness cannot switch mounted components without a reload, so this is restricted to a '
+    + 'viewport/orientation change, not a cockpit-to-reference layout switch.',
+    '`keyboard-activation-*` focuses its target via `element.focus()` by selector rather than counting '
+    + 'real `Tab` presses — it proves native Space/Enter semantics on an already-focused control, not '
+    + 'Tab reachability (covered separately by the focus-order assertions).',
+    '`meter-ballistics-honor-reduced-motion` counts `requestAnimationFrame` calls page-wide, not scoped '
+    + 'to the meters subtree — correct today (nothing else in the tree calls rAF).',
   ],
   viewports: VIEWPORTS,
   summary: {
