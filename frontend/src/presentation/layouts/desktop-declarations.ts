@@ -40,6 +40,12 @@ const DESKTOP_V2_ZONES = [
   // `required` — a radio whose MOR-1244 evidence gate declined the group must
   // still resolve this layout, and the surface self-gates on `view.txAux`.
   { id: 'tx-aux', surfaces: ['txAux'] },
+  // MOR-1341 (S5): meters becomes zone-OWNED here too, and RadioLayout.svelte
+  // retires the legacy `<MetersDockPanel>` the moment this zone is declared
+  // (mirroring `hideTxPanel`'s `tx-aux` precedent). Not `required` — a radio
+  // reporting no meter fields at all must still resolve this layout, and the
+  // surface self-gates on `view.meters`.
+  { id: 'meters', surfaces: ['meters'] },
 ] as const;
 
 export const desktopV2Layout: LayoutManifest = {

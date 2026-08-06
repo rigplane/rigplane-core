@@ -100,7 +100,7 @@ import SemanticRadioSurfaces from '../SemanticRadioSurfaces.svelte';
 // MOR-1082: the REAL manifests, through the app-wide registration barrel, and
 // the REAL resolution seam — the plans below are what App would hand down.
 import {
-  dualReceiverCockpitLayout, sdrTestLayout,
+  desktopV2Layout, dualReceiverCockpitLayout, sdrTestLayout,
 } from '../../../presentation/layouts/declarations';
 import { readWorkspace } from '../../../presentation/workspace/contract';
 import {
@@ -613,5 +613,44 @@ describe('MOR-1336 — a declared zone renders nothing for a radio without the g
     expect(q('[data-testid="tx-aux-surface"]')).toBeNull();
     expect(q('[data-zone-id="tx-aux"]')).toBeNull();
     expect(target.innerHTML).not.toContain('tx-aux');
+  });
+
+  // MOR-1341 (S5): the same pin, for `meters` against `desktop-v2`'s own real
+  // plan (the manifest that actually declares the zone in production, unlike
+  // the synthetic plan the generic-mechanism describe above uses). `liveState`
+  // reports no meter fields, so `deriveMeters` emits no group at all.
+  it('mounts no meters zone element for a radio without the group, even though desktop-v2 declares one', () => {
+    h.state = liveState(false);
+    h.caps = liveCaps(false);
+    const plan = resolveSurfacePlan(desktopV2Layout, readWorkspace({ version: 1 }).workspace);
+    render({ strips: 'single' }, plan);
+
+    expect(q('[data-testid="meters-surface"]')).toBeNull();
+    expect(q('[data-zone-id="meters"]')).toBeNull();
+    expect(target.innerHTML).not.toContain('data-zone-id="meters"');
+  });
+});
+
+// ── MOR-1341 (S5) — desktop-v2's OWN real `meters` zone actually binds ──────
+//
+// The generic-mechanism describe above proves the MECHANISM against a
+// synthetic id no manifest ships; this proves the SHIPPED zone — the one
+// `desktop-v2` actually declares (`presentation/layouts/desktop-declarations
+// .ts`) and the one `RadioLayout.svelte` reads to retire the legacy dock.
+describe('MOR-1341 — desktop-v2 mounts a real meters zone when the group is present', () => {
+  it('binds [data-zone-id="meters"] around the meters surface, alone in its zone', () => {
+    const base = liveState(false) as unknown as { main: Record<string, unknown> };
+    h.state = { ...base, main: { ...base.main, sMeter: 120 } };
+    h.caps = liveCaps(false);
+    const plan = resolveSurfacePlan(desktopV2Layout, readWorkspace({ version: 1 }).workspace);
+    render({ strips: 'single' }, plan);
+
+    const zone = q('[data-zone-id="meters"]');
+    expect(zone).not.toBeNull();
+    expect(zone!.classList.contains('surface-zone')).toBe(true);
+    expect(q('[data-testid="meters-surface"]')!.parentElement).toBe(zone);
+    // R9 sanity: a readout-only zone adds no key/unkey affordance.
+    expect(zone!.querySelector('[data-testid="rx-tx-key"]')).toBeNull();
+    expect(zone!.querySelector('[data-testid="rx-tx-unkey"]')).toBeNull();
   });
 });
