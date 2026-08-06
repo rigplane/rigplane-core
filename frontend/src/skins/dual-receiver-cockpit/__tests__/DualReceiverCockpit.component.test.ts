@@ -33,6 +33,9 @@ const h = vi.hoisted(() => ({
   /** MOR-1265: stand-in for every txAux intent. This fixture declares no
    *  txAux capability, so the MOR-1244 evidence gate omits the group. */
   txAuxNoop: vi.fn(),
+  /** MOR-1305: same stand-in role for every dsp intent — no dsp capability
+   *  or state here either, so the group is absent and these are unreachable. */
+  dspNoop: vi.fn(),
 }));
 
 vi.mock('$lib/runtime', () => ({
@@ -94,6 +97,14 @@ vi.mock('../../../components-v2/wiring/command-bus', () => ({
     onFilterChange: h.txAuxNoop, onFilterWidthChange: h.txAuxNoop, onFilterShapeChange: h.txAuxNoop,
     onIfShiftChange: h.txAuxNoop, onPbtInnerChange: h.txAuxNoop, onPbtOuterChange: h.txAuxNoop,
   }),
+  // MOR-1305 — the wiring now also composes the dsp intent vocabulary.
+  makeDspHandlers: () => ({
+    onNrModeChange: h.dspNoop, onNrLevelChange: h.dspNoop, onNbToggle: h.dspNoop,
+    onNbLevelChange: h.dspNoop, onNbDepthChange: h.dspNoop, onNbWidthChange: h.dspNoop,
+    onNotchModeChange: h.dspNoop, onNotchFreqChange: h.dspNoop,
+    onManualNotchWidthChange: h.dspNoop, onAgcTimeChange: h.dspNoop,
+  }),
+  makeAgcHandlers: () => ({ onAgcModeChange: h.dspNoop }),
 }));
 
 import DualReceiverCockpit from '../DualReceiverCockpit.svelte';
