@@ -53,11 +53,14 @@
   import VfoSurface, { type VfoSelection } from '../../semantic/VfoSurface.svelte';
   import ModInputTxWarning from '../panels/ModInputTxWarning.svelte';
   import CwKeyerSurface, { type CwLevelField } from '../../semantic/CwKeyerSurface.svelte';
+  import ScopeControlsSurface, {
+    type ScopeChoiceField, type ScopeToggleField,
+  } from '../../semantic/ScopeControlsSurface.svelte';
   import {
     makeAgcHandlers, makeAntennaHandlers, makeAudioRoutingHandlers, makeBandHandlers,
     makeCwPanelHandlers, makeDspHandlers, makeFilterHandlers, makeModeHandlers,
     makeRfFrontEndHandlers, makeRitXitHandlers, makeRxAudioHandlers, makeScanHandlers,
-    makeTxHandlers, makeVfoHandlers, makeVoxHandlers,
+    makeScopeControlsHandlers, makeTxHandlers, makeVfoHandlers, makeVoxHandlers,
   } from './command-bus';
   import {
     forReceiver, receiversOf, isActiveStrip, isOperationalStrip,
@@ -267,6 +270,22 @@
   const CW_LEVEL_INTENT: Record<CwLevelField, (value: number) => void> = {
     keyerSpeed: cwIntents.onKeySpeedChange, pitchHz: cwIntents.onCwPitchChange,
     breakInDelay: cwIntents.onBreakInDelayChange,
+  };
+  /**
+   * MOR-1311 (slice 11B, LAST of the vocabulary program). The shipped
+   * scope-toolbar/popover command vocabulary, composed unmodified — the two
+   * maps keep the pure surface field-addressed, same precedent as
+   * `TX_AUX_*_INTENT`/`DSP_*_INTENT` above.
+   */
+  const scopeIntents = makeScopeControlsHandlers();
+  const SCOPE_TOGGLE_INTENT: Record<ScopeToggleField, (next: boolean) => void> = {
+    hold: scopeIntents.onHoldChange, dual: scopeIntents.onDualChange,
+    duringTx: scopeIntents.onDuringTxChange, vbwNarrow: scopeIntents.onVbwChange,
+  };
+  const SCOPE_CHOICE_INTENT: Record<ScopeChoiceField, (value: number) => void> = {
+    mode: scopeIntents.onModeChange, edge: scopeIntents.onEdgeChange,
+    centerType: scopeIntents.onCenterTypeChange, rbw: scopeIntents.onRbwChange,
+    receiver: scopeIntents.onReceiverChange,
   };
   const tx = getAppTxController();
   const sourceId = `semantic-rx-tx-${++surfaceSeq}`;
@@ -913,19 +932,19 @@
   {/snippet}
 
   <!--
-    MOR-1312 (vocabulary slice 12B — the LAST vocabulary slice). Same
-    structural gate and same reasoning as `txAuxSurface`/`metersSurface`
-    above: the surface mounts only when the view model actually carries the
-    MOR-1301 `scopeDisplay` group, so a radio with neither a hardware scope
-    nor an audio-FFT source renders the pre-1312 element shape exactly.
-    Bare and unzoned in BOTH compositions, the `meters`/`txAux` shape, NOT
-    `rxAudio`'s single-only shape: `ScopeDisplaySurface` renders zero
-    focusable elements (pinned in `__tests__/ScopeDisplaySurface.test.ts` and
-    re-pinned below at the composed-tree level), so it carries none of the
-    MOR-1069 tab-order risk a control-bearing surface would. `'scopeDisplay'`
-    becomes DECLARABLE with this slice, so a manifest gains the surface the
-    moment it declares a zone for it — a layout decision, separately
-    reviewed, exactly as txAux/meters/rxAudio left it.
+    MOR-1312 (vocabulary slice 12B). Same structural gate and same reasoning
+    as `txAuxSurface`/`metersSurface` above: the surface mounts only when the
+    view model actually carries the MOR-1301 `scopeDisplay` group, so a radio
+    with neither a hardware scope nor an audio-FFT source renders the
+    pre-1312 element shape exactly. Bare and unzoned in BOTH compositions,
+    the `meters`/`txAux` shape, NOT `rxAudio`'s single-only shape:
+    `ScopeDisplaySurface` renders zero focusable elements (pinned in
+    `__tests__/ScopeDisplaySurface.test.ts` and re-pinned below at the
+    composed-tree level), so it carries none of the MOR-1069 tab-order risk a
+    control-bearing surface would. `'scopeDisplay'` becomes DECLARABLE with
+    this slice, so a manifest gains the surface the moment it declares a zone
+    for it — a layout decision, separately reviewed, exactly as
+    txAux/meters/rxAudio left it.
 
     It takes NO intent callbacks: a source/health/hardware readout has no
     action to offer (v3 ADR invariant 11).
@@ -933,6 +952,27 @@
   {#snippet scopeDisplaySurface()}
     {#if view?.scopeDisplay}
       <ScopeDisplaySurface {view} />
+    {/if}
+  {/snippet}
+
+  <!--
+    MOR-1311 (vocabulary slice 11B, the LAST B-slice of the vocabulary
+    program). Same mounting canon as `ritXitScanSurface`/`cwKeyerSurface`
+    above: control-bearing, no manifest declares a `scopeControls` zone, so
+    per the MOR-1304 ruling's option (i) it mounts in the SINGLE composition
+    only, bare, and must render NOTHING in the DUAL composition — pinned by
+    name in `__tests__/semantic-scope-controls-wiring.component.test.ts`.
+  -->
+  {#snippet scopeControlsSurface()}
+    {#if view?.scopeControls}
+      <ScopeControlsSurface
+        {view}
+        onToggleChange={(field, next) => SCOPE_TOGGLE_INTENT[field](next)}
+        onChoiceChange={(field, value) => SCOPE_CHOICE_INTENT[field](value)}
+        onSpanChange={scopeIntents.onSpanChange}
+        onSpeedChange={scopeIntents.onSpeedChange}
+        onRefChange={scopeIntents.onRefChange}
+      />
     {/if}
   {/snippet}
 
@@ -990,6 +1030,7 @@
     )}
     {@render zoned('cwKeyer', view?.cwKeyer !== undefined, cwKeyerSurface)}
     {@render zoned('scopeDisplay', view?.scopeDisplay !== undefined, scopeDisplaySurface)}
+    {@render zoned('scopeControls', view?.scopeControls !== undefined, scopeControlsSurface)}
     {@render txAdjacentAlerts()}
   {/if}
 </div>

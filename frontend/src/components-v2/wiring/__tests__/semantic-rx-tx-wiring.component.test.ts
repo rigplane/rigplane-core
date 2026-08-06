@@ -162,6 +162,13 @@ vi.mock('../command-bus', () => ({
     onScanStart: h.txAuxNoop, onScanStop: h.txAuxNoop, onDfSpanChange: h.txAuxNoop,
     onResumeChange: h.txAuxNoop,
   }),
+  // MOR-1311 slice 11B: the scope-toolbar/popover intent vocabulary.
+  makeScopeControlsHandlers: () => ({
+    onModeChange: h.txAuxNoop, onEdgeChange: h.txAuxNoop, onSpanChange: h.txAuxNoop,
+    onSpeedChange: h.txAuxNoop, onHoldChange: h.txAuxNoop, onRefChange: h.txAuxNoop,
+    onDualChange: h.txAuxNoop, onReceiverChange: h.txAuxNoop, onDuringTxChange: h.txAuxNoop,
+    onCenterTypeChange: h.txAuxNoop, onVbwChange: h.txAuxNoop, onRbwChange: h.txAuxNoop,
+  }),
 }));
 
 import SemanticRadioSurfaces from '../SemanticRadioSurfaces.svelte';

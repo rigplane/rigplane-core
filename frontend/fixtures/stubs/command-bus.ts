@@ -190,6 +190,15 @@ export function makeScanHandlers() {
   ] as const);
 }
 
+/** MOR-1311: the scope-toolbar/popover vocabulary. */
+export function makeScopeControlsHandlers() {
+  return recorders('scopeControls', [
+    'onModeChange', 'onEdgeChange', 'onSpanChange', 'onSpeedChange', 'onHoldChange', 'onRefChange',
+    'onDualChange', 'onReceiverChange', 'onDuringTxChange', 'onCenterTypeChange', 'onVbwChange',
+    'onRbwChange',
+  ] as const);
+}
+
 /** `dispatch` takes the same shape as the real module's — a single
  *  `KeyboardActionConfig` — but `recorders()` only names bare handlers, so
  *  it is built directly rather than forced through that helper. */

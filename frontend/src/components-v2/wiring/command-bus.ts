@@ -792,6 +792,29 @@ export function makeScanHandlers() {
   };
 }
 
+/**
+ * MOR-1311 (vocabulary slice 11B). The shipped scope-toolbar/popover command
+ * vocabulary, composed unmodified — every name and parameter below is
+ * `SpectrumToolbar.svelte`'s/`ScopeSettingsPopover.svelte`'s own `sendCommand`
+ * call, reproduced 1:1 rather than re-derived.
+ */
+export function makeScopeControlsHandlers() {
+  return {
+    onModeChange: (mode: number) => cmd('set_scope_mode', { mode }),
+    onEdgeChange: (edge: number) => cmd('set_scope_edge', { edge }),
+    onSpanChange: (span: number) => cmd('set_scope_span', { span }),
+    onSpeedChange: (speed: number) => cmd('set_scope_speed', { speed }),
+    onHoldChange: (on: boolean) => cmd('set_scope_hold', { on }),
+    onRefChange: (ref: number) => cmd('set_scope_ref', { ref }),
+    onDualChange: (dual: boolean) => cmd('set_scope_dual', { dual }),
+    onReceiverChange: (receiver: number) => cmd('switch_scope_receiver', { receiver }),
+    onDuringTxChange: (on: boolean) => cmd('set_scope_during_tx', { on }),
+    onCenterTypeChange: (center_type: number) => cmd('set_scope_center_type', { center_type }),
+    onVbwChange: (narrow: boolean) => cmd('set_scope_vbw', { narrow }),
+    onRbwChange: (rbw: number) => cmd('set_scope_rbw', { rbw }),
+  };
+}
+
 function cycleValue(values: number[], current: number): number {
   if (values.length === 0) {
     return current;
