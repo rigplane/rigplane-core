@@ -1,14 +1,15 @@
 /**
- * MOR-1304 — `filter` is DECLARABLE, and nothing declares it yet.
+ * MOR-1304 — `filter` is DECLARABLE. MOR-1366 (S7) declares it for real.
  *
- * Slice 4B adds the name to `SEMANTIC_SURFACE_NAMES` so a manifest CAN mount
- * the surface later; it deliberately does not touch any manifest, and it does
- * not add a renderer slot. The three pins mirror `meters-declarability.test.ts`
- * / `tx-aux-declarability.test.ts` / `rx-audio-declarability.test.ts`:
- *   - drop the name and a future manifest's zone stops validating;
- *   - quietly add a `filter` zone to a shipped manifest and the DOM grows a
- *     zone id no layout review ever saw;
- *   - the renderer slot stays exactly the set MOR-1072 froze.
+ * Slice 4B added the name to `SEMANTIC_SURFACE_NAMES` so a manifest CAN mount
+ * the surface later; it deliberately did not touch any manifest, and it added
+ * no renderer slot. MOR-1366 flips the second half, on `desktop-v2` ONLY,
+ * closing the double-presentation defect the rework tail found live on that
+ * skin (FilterSurface already mounted bare in the receiver deck via the
+ * MOR-1304 `zoned(...)` single-composition mount, while `ModePanel`/
+ * `FilterPanel` kept rendering a legacy twin). The inventory below is a
+ * LITERAL of who declares it, mirroring `meters-declarability.test.ts` /
+ * `tx-aux-declarability.test.ts`'s post-rework shape.
  */
 import { describe, it, expect } from 'vitest';
 import { SEMANTIC_SURFACE_NAMES, validateLayoutManifest } from '../contract';
@@ -46,16 +47,41 @@ describe('filter is a declarable semantic surface', () => {
   });
 });
 
-describe('no shipped manifest declares a filter zone in this slice', () => {
-  // Kills: slipping a filter zone into an existing layout here. Declarability
-  // is the whole scope of the contract touch; placing the surface in a real
-  // layout is a later, separately reviewed slice.
-  it.each([
+describe('exactly the reviewed manifests declare a filter zone (MOR-1366)', () => {
+  /** The literal — extend by hand, with a layout review, never silently. */
+  const DECLARES_FILTER = ['desktop-v2'];
+
+  const ALL = [
     ['sdr-test', sdrTestLayout], ['dual-receiver-cockpit', dualReceiverCockpitLayout],
     ['lcd-cockpit', lcdCockpitLayout], ['lcd-scope', lcdScopeLayout],
     ['mobile', mobileLayout], ['desktop-v2', desktopV2Layout],
-  ])('%s declares no filter zone and does not require the surface', (_id, manifest) => {
-    for (const zone of manifest.zones) expect(zone.surfaces).not.toContain('filter');
+  ] as const;
+
+  // Kills BOTH directions: a family losing the zone S7 gave it, and a family
+  // gaining one without review.
+  it('the declaring set is exactly the reviewed literal', () => {
+    const declaring = ALL
+      .filter(([, m]) => m.zones.some((z) => z.surfaces.includes('filter')))
+      .map(([id]) => id)
+      .sort();
+    expect(declaring).toEqual([...DECLARES_FILTER].sort());
+  });
+
+  // Kills: declaring the zone under a drifted id — the wiring binds whatever
+  // the plan's key is, so the id IS the contract with the layout's arrangement.
+  it.each(DECLARES_FILTER)('%s declares it under the stable `filter` id, alone in its zone', (id) => {
+    const manifest = ALL.find(([name]) => name === id)![1];
+    const zone = manifest.zones.find((z) => z.surfaces.includes('filter'))!;
+    expect(zone.id).toBe('filter');
+    expect(zone.surfaces).toEqual(['filter']);
+  });
+
+  // Kills: making filter REQUIRED. A radio whose evidence gate declines both
+  // groups (`caps.modes`/`caps.filters` empty) must still resolve this
+  // layout; the surface self-gates on `view.modeFilter`/`view.filterPassband`,
+  // and a required surface no zone could fill would be a resolution failure
+  // rather than an honest absence.
+  it.each(ALL)('%s does not require the filter surface', (_id, manifest) => {
     expect(manifest.requiredSemanticSurfaces).not.toContain('filter');
   });
 });

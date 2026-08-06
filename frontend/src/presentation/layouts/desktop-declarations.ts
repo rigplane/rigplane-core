@@ -55,6 +55,21 @@ const DESKTOP_V2_ZONES = [
   // The dual-receiver cockpit manifest is deliberately untouched;
   // `scopeDisplay` keeps mounting bare there (12B's own shape).
   { id: 'scope-display', surfaces: ['scopeDisplay'] },
+  // MOR-1366 (S7): filter and rfFrontEnd become zone-OWNED here, closing the
+  // double-presentation defect §0.1 of the rework tail found live on
+  // `desktop-v2` (FilterSurface/RfFrontEndSurface already mounted bare in the
+  // receiver deck via MOR-1304/MOR-1306's `zoned(...)` single-composition
+  // mounts, while `LeftSidebar`'s ModePanel/FilterPanel/RfFrontEnd and the
+  // settings modal's RF FRONT END section kept rendering a legacy third
+  // copy). The MOR-1364 (S6-pre) suppression channel already carries the
+  // `!declared.has('filter')` / `!declared.has('rfFrontEnd')` predicates on
+  // those hosts as no-ops; declaring the zones here is what activates them.
+  // Not `required` on either — a radio whose evidence gate declines both
+  // groups (`caps.modes`/`caps.filters` empty, or none of
+  // preamp/attenuator/rf_gain/squelch/digisel/ip_plus) must still resolve
+  // this layout, and each surface self-gates on its own view-model group.
+  { id: 'filter', surfaces: ['filter'] },
+  { id: 'rf-front-end', surfaces: ['rfFrontEnd'] },
 ] as const;
 
 export const desktopV2Layout: LayoutManifest = {
