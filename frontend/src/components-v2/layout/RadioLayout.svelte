@@ -444,7 +444,7 @@
           {/if}
           <!-- MOR-1367 (S8) wires the BAND half, S10 §4a/§7: only the HAM tab
                is duplicated by `BandSurface`, while the LW/MW + SWL tabs and
-               their 17 broadcast presets are deliberately not facts and have no
+               their 16 broadcast presets are deliberately not facts and have no
                other production host. So the split is a PROP, never a mount
                gate. This panel is the ONE section that must never be wrapped as
                a whole: row 10 (the LW/MW + SWL tabs) is permanent, so the panel

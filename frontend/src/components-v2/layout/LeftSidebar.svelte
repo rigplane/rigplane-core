@@ -97,7 +97,7 @@
   {/if}
 
   <!-- MOR-1367 (S8): the BAND twin joins the channel by PROP, not by mount.
-       `BandSelector` hosts three tabs (HAM / LW-MW / SWL) and 17 broadcast
+       `BandSelector` hosts three tabs (HAM / LW-MW / SWL) and 16 broadcast
        presets; only the HAM half is duplicated by `BandSurface`, and the
        broadcast presets are deliberately NOT facts
        (`semantic/radio-view-model.ts:494-496`) and have no other production
