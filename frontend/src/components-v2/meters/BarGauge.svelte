@@ -1,8 +1,13 @@
 <script lang="ts">
-  import { onMount } from 'svelte';
-  import { createSmoother } from '$lib/utils/smoothing.svelte';
+  import { onMount, untrack } from 'svelte';
+  import {
+    createSmoother,
+    prefersReducedMotion,
+    onReducedMotionChange,
+  } from '$lib/utils/smoothing.svelte';
   import { DEFAULT_ZONES, valueToSegments, getSegmentZone, dimColor } from './bar-gauge-utils';
   import type { Zone } from './bar-gauge-utils';
+  import { updatePeakHold, peakHoldDisplay, PEAK_DECAY_MS, type PeakHoldState } from '../panels/meter-utils';
 
   interface Props {
     value: number;         // 0–1 normalized
@@ -10,9 +15,12 @@
     displayValue: string;  // '35W' | '1.2' | '-8'
     zones?: readonly Zone[];
     compact?: boolean;
+    showPeak?: boolean;    // MOR-1282: optional peak-hold marker
   }
 
-  let { value, label, displayValue, zones = DEFAULT_ZONES, compact = false }: Props = $props();
+  let {
+    value, label, displayValue, zones = DEFAULT_ZONES, compact = false, showPeak = false,
+  }: Props = $props();
 
   // ── Segment geometry ────────────────────────────────────────────────────────
   const SEG_COUNT = 10;
@@ -47,6 +55,57 @@
     return () => smoother.stop();
   });
 
+  // ── Peak-hold marker (MOR-1282) ─────────────────────────────────────────────
+  // Reuses `updatePeakHold`/`peakHoldDisplay` — the single MOR-1252 semantics
+  // implementation MetersDockPanel already channels through — so this gauge
+  // never disagrees with the dock about hold/decay/reduced-motion behaviour.
+  // MetersSurface stays loop-free (R9): all ballistics live here.
+  let peakState = $state<PeakHoldState | undefined>(undefined);
+  let peakNow = $state(Date.now());
+
+  // Latches on every live sample. Reads `peakState` (to compare against the
+  // new sample) as well as writing it, so the read must be untracked —
+  // otherwise `resetPeak()`'s write below would re-trigger this same effect
+  // and immediately re-latch from the still-live `value` (mirrors the dock's
+  // own `untrack(() => stepAllPeaks())` pattern for the identical hazard).
+  $effect(() => {
+    if (!showPeak) return;
+    const v = value;
+    const t = Date.now();
+    untrack(() => {
+      peakState = updatePeakHold(peakState, v, t, PEAK_DECAY_MS);
+      peakNow = t;
+    });
+  });
+
+  // Drives the decay display forward. No ticking (and no rAF) while reduced
+  // motion is preferred — the marker is a static hold instead (MOR-1249/1252).
+  $effect(() => {
+    if (!showPeak) return;
+    let intervalId: ReturnType<typeof setInterval> | null = null;
+    const start = () => { intervalId ??= setInterval(() => { peakNow = Date.now(); }, 100); };
+    const stop = () => { if (intervalId) { clearInterval(intervalId); intervalId = null; } };
+
+    if (!prefersReducedMotion()) start();
+    const unsubscribe = onReducedMotionChange((reduced) => {
+      if (reduced) stop(); else start();
+    });
+
+    return () => { stop(); unsubscribe(); };
+  });
+
+  let peakPct = $derived.by(() => {
+    if (!showPeak || peakState === undefined) return undefined;
+    const level = prefersReducedMotion()
+      ? peakState.latchedPeak
+      : peakHoldDisplay(peakState, value, peakNow, PEAK_DECAY_MS);
+    return Math.max(0, Math.min(100, level * 100));
+  });
+
+  function resetPeak() {
+    if (showPeak) peakState = undefined;
+  }
+
   // ── Reactive display values ─────────────────────────────────────────────────
   let fullSegs = $derived(Math.floor(smoother.value));
   let fracSeg  = $derived(smoother.value - Math.floor(smoother.value));
@@ -57,6 +116,8 @@
   width="100%"
   height="auto"
   preserveAspectRatio="xMidYMid meet"
+  role="group"
+  ondblclick={resetPeak}
 >
   <!-- Container background -->
   <rect
@@ -117,6 +178,17 @@
       />
     {/if}
   {/each}
+
+  <!-- Peak-hold marker (MOR-1282) -->
+  {#if showPeak && peakPct !== undefined}
+    <rect
+      x={BAR_X + (peakPct / 100) * BAR_WIDTH - 1}
+      y={TRACK_Y}
+      width="2" height={TRACK_H}
+      fill="var(--v2-accent-yellow, #f2cf4a)"
+      data-testid="bar-gauge-peak-marker"
+    />
+  {/if}
 
   <!-- Display value -->
   <text
