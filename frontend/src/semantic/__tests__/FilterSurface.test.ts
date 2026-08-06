@@ -240,16 +240,57 @@ describe('choice fields emit the caller intent only when usable', () => {
     });
   });
 
-  // MUTATION KILLED: emitting a choice intent from an unobserved reading —
-  // clicking would arm a guess rather than a confirmed selection.
-  it('emits nothing when a choice is clicked on an unobserved reading', () => {
+  /**
+   * MOR-1304 fix round (verify-MOR-1304 F3) — `HTMLElement.click()` is a
+   * no-op on a `disabled` button in jsdom (and in every real browser): the
+   * click-activation steps never run, so the handler's OWN guard
+   * (`usable(...)` in `selectMode`/`selectFilter`/`selectShape`) is never
+   * actually exercised — `disabled` alone would satisfy an assertion that
+   * `onXChange` was never called, even with the guard deleted. Dispatching
+   * the `MouseEvent` directly bypasses that suppression and reaches the
+   * `onclick` handler regardless of `disabled`, so these tests can tell
+   * "the button is disabled" apart from "the guard inside the handler holds"
+   * — MF3/MF12/MF13 in the verify report, each SURVIVED under `.click()`.
+   */
+  function forceClick(button: HTMLButtonElement): void {
+    button.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+  }
+
+  // MUTATION KILLED (MF3): `selectMode`'s `usable(modeFilter.currentMode)`
+  // guard dropped — clicking would arm a guess rather than a confirmed
+  // selection.
+  it('emits nothing when the mode is clicked on an unobserved reading', () => {
     const onModeChange = vi.fn();
     const view = withModeFilterField(base(), 'currentMode', { unknown: true });
     withSurface(view, (s) => {
-      s.button('filter-mode', 'LSB')!.click();
+      forceClick(s.button('filter-mode', 'LSB')!);
       flushSync();
       expect(onModeChange).not.toHaveBeenCalled();
     }, { onModeChange });
+  });
+
+  // MUTATION KILLED (MF12): `selectFilter`'s `usable(modeFilter.currentFilter)`
+  // guard dropped.
+  it('emits nothing when a filter is clicked on an unobserved reading', () => {
+    const onFilterChange = vi.fn();
+    const view = withModeFilterField(base(), 'currentFilter', { unknown: true });
+    withSurface(view, (s) => {
+      forceClick(s.button('filter-select', 2)!);
+      flushSync();
+      expect(onFilterChange).not.toHaveBeenCalled();
+    }, { onFilterChange });
+  });
+
+  // MUTATION KILLED (MF13): `selectShape`'s `usable(filterPassband.filterShape)`
+  // guard dropped.
+  it('emits nothing when a shape is clicked on an unobserved reading', () => {
+    const onFilterShapeChange = vi.fn();
+    const view = withPassbandField(base(), 'filterShape', { unknown: true });
+    withSurface(view, (s) => {
+      forceClick(s.button('filter-shape', 1)!);
+      flushSync();
+      expect(onFilterShapeChange).not.toHaveBeenCalled();
+    }, { onFilterShapeChange });
   });
 });
 
@@ -264,6 +305,24 @@ describe('level fields emit the raw value, unrescaled', () => {
       input.dispatchEvent(new Event('input', { bubbles: true }));
       flushSync();
       expect(onFilterWidthChange).toHaveBeenCalledExactlyOnceWith(2800);
+    }, { onFilterWidthChange });
+  });
+
+  // MUTATION KILLED (MF9, verify-MOR-1304 F3): `changeWidth`'s
+  // `usable(modeFilter.filterWidth)` guard dropped. No prior test exercised
+  // this — the slider's `disabled` attribute was never in question here, so
+  // an `input` event dispatched directly (never suppressed for a disabled
+  // range input the way `.click()` is for a disabled button) reaches the
+  // handler and proves the guard itself, not merely the DOM attribute.
+  it('emits nothing when the width slider is moved on an unobserved reading', () => {
+    const onFilterWidthChange = vi.fn();
+    const view = withModeFilterField(base(), 'filterWidth', { unknown: true });
+    withSurface(view, (s) => {
+      const input = s.input('filter-width')!;
+      input.value = '2800';
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+      flushSync();
+      expect(onFilterWidthChange).not.toHaveBeenCalled();
     }, { onFilterWidthChange });
   });
 
@@ -291,6 +350,11 @@ describe('level fields emit the raw value, unrescaled', () => {
     const view = withPassbandField(base(), 'ifShift', { unknown: true });
     withSurface(view, (s) => {
       const input = s.input('filter-ifShift')!;
+      // MUTATION KILLED (MF1b): `numberOf(filterPassband[field], min)`'s
+      // fallback swapped for a non-min literal (e.g. 999) — an unread thumb
+      // is free to claim any position unless the fallback itself is pinned,
+      // BEFORE the dispatched input below overwrites it.
+      expect(input.value).toBe('-1200');
       input.value = '100';
       input.dispatchEvent(new Event('input', { bubbles: true }));
       flushSync();
@@ -324,6 +388,14 @@ describe('filterWidth and its bounds carry independent availability', () => {
       // Bounds are still their own known values — used for min/max regardless.
       expect(s.input('filter-width')!.min).toBe('50');
       expect(s.input('filter-width')!.max).toBe('3600');
+      // MUTATION KILLED (MF1): `numberOf(modeFilter.filterWidth, 0)`'s
+      // fallback swapped for a non-zero literal — an unread thumb is free to
+      // claim any position unless the fallback itself is pinned. The DOM
+      // clamps the fallback `0` to the slider's own `min` (`50`, this view's
+      // known `filterWidthMin`), which is itself the honest rendered
+      // position and still distinguishes the fallback from a fabricated
+      // literal like `777` (which sits inside [50, 3600] and would NOT clamp).
+      expect(s.input('filter-width')!.value).toBe('50');
     });
   });
 

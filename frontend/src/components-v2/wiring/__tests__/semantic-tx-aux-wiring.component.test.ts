@@ -640,6 +640,59 @@ describe('MOR-1336 — a declared zone renders nothing for a radio without the g
   });
 });
 
+/**
+ * MOR-1304 fix round (verify-MOR-1304 F1) — the zone-mount ruling applied to
+ * `filter`, the MOR-1279 rxAudio shape.
+ *
+ * `FilterSurface` renders up to 14 focusable controls (mode/filter/shape
+ * choice buttons, the width slider, three passband-level sliders) and no
+ * shipped manifest declares a `filter` zone (`filter-declarability.test.ts`).
+ * The cockpit's MOR-1069 invariant requires every focusable control to sit
+ * inside a zone the active layout's manifest actually declares, with `rx-tx`
+ * last in the tab order — a control-bearing surface mounted bare in the DUAL
+ * composition breaks both clauses the moment the fixture's caps carry real
+ * modes/filters (every real radio does). `caps.modes`/`caps.filters` are
+ * empty in this file's own `liveCaps`, which is why this describe supplies
+ * its OWN caps override — a fixture that cannot see the group is not
+ * evidence the surface behaves, it is the bug this pin exists to catch (the
+ * verify report's Probe P1/P2, reproduced here rather than trusted from afar).
+ */
+describe('MOR-1304 fix round — filter never mounts bare in the dual composition', () => {
+  const withFilterCaps = (caps: Capabilities): Capabilities => ({
+    ...caps, modes: ['USB', 'CW', 'FM'], filters: [1, 2, 3],
+  } as unknown as Capabilities);
+
+  it('renders NO filter surface in the dual composition, zoned or unzoned', () => {
+    h.state = liveState(false);
+    h.caps = withFilterCaps(liveCaps(false));
+    render({ strips: 'dual' });
+
+    expect(q('[data-testid="filter-surface"]')).toBeNull();
+    expect(target.innerHTML).not.toContain('filter-surface');
+  });
+
+  it('leaves the cockpit with no focusable control outside a declared zone', () => {
+    h.state = liveState(false);
+    h.caps = withFilterCaps(liveCaps(false));
+    render({ strips: 'dual' });
+
+    const outside = [...target.querySelectorAll<HTMLElement>('button, input, select, [tabindex]')]
+      .filter((node) => node.closest('[data-zone-id]') === null);
+    expect(outside).toEqual([]);
+  });
+
+  // Control: the SAME caps, in the single composition, DO mount the surface —
+  // proves the dual absence above is the zone-mount gate, not the fixture
+  // simply being unable to produce a `modeFilter` group at all.
+  it('mounts the filter surface in the single composition with the same caps', () => {
+    h.state = liveState(false);
+    h.caps = withFilterCaps(liveCaps(false));
+    render({ strips: 'single' });
+
+    expect(q('[data-testid="filter-surface"]')).not.toBeNull();
+  });
+});
+
 // ── MOR-1341 (S5) — desktop-v2's OWN real `meters` zone actually binds ──────
 //
 // The generic-mechanism describe above proves the MECHANISM against a
