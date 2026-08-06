@@ -91,6 +91,10 @@ import DualReceiverCockpit from '../DualReceiverCockpit.svelte';
 // dual-receiver-cockpit' directly), so the DOM assertions below are checked
 // against what the app actually registers rather than a local copy.
 import { dualReceiverCockpitLayout } from '../../../presentation/layouts/declarations';
+import { readWorkspace } from '../../../presentation/workspace/contract';
+import {
+  resolveSurfacePlan, SURFACE_PLAN_CONTEXT_KEY, type SurfacePlan,
+} from '../../../presentation/workspace/resolution';
 
 type Snapshot = {
   phase: string; intent: string | null; guard: { leaseId: string } | null;
@@ -118,9 +122,17 @@ function mainSubState(active: 'MAIN' | 'SUB' = 'MAIN'): ServerState {
     fieldStatus: Object.fromEntries(paths.map((p) => [p, fresh])),
   } as unknown as ServerState;
 }
+/**
+ * MOR-1336 (S4): the cockpit declares a `tx-aux` zone now, so this fixture must
+ * carry enough TX-aux evidence for the MOR-1244 gate to emit the group —
+ * otherwise the surface self-gates away, the zone has nothing to hold, and the
+ * F6 "every declared zone renders" invariant fails for the right reason but the
+ * wrong cause. `tuner` is the cheapest honest evidence (`deriveTxAux` accepts a
+ * capability tag OR a raw value); everything else stays as it was.
+ */
 const mainSubCaps = (): Capabilities => ({
   model: 'fixture', scope: false, audio: true, tx: true,
-  capabilities: ['audio', 'tx', 'dual_rx'], receivers: 2, vfoScheme: 'main_sub',
+  capabilities: ['audio', 'tx', 'dual_rx', 'tuner'], receivers: 2, vfoScheme: 'main_sub',
   freqRanges: [], modes: [], filters: [],
   audioConfig: { sampleRate: 48000, channels: 1, codecs: ['pcm16'] },
   webrtc: { available: false, enabled: false },
@@ -194,11 +206,30 @@ const dualRxUnavailableCaps = (): Capabilities => ({
 let target: HTMLDivElement;
 let component: ReturnType<typeof mount> | null = null;
 
-function render(): void {
+/**
+ * `plan` mirrors what App actually hands down through context (MOR-1082) —
+ * omitted, this is the pre-1082/standalone mount `useSurfacePlan()` documents
+ * ("Absent by design ... every consumer renders its declared composition
+ * unchanged"), which is what every pre-existing test below still exercises.
+ * The MOR-1336 (S4) generic zone-mount mechanism reads the SAME plan
+ * (`zoneOwning` in `SemanticRadioSurfaces`), so proving the cockpit's new
+ * `tx-aux` zone actually binds — rather than merely being declared — needs a
+ * resolved plan supplied, exactly as it is supplied in production.
+ */
+function render(plan?: SurfacePlan): void {
   target = document.createElement('div');
   document.body.appendChild(target);
-  component = mount(DualReceiverCockpit, { target });
+  const context = plan === undefined
+    ? undefined
+    : new Map<unknown, unknown>([[SURFACE_PLAN_CONTEXT_KEY, () => plan]]);
+  component = mount(DualReceiverCockpit, { target, context });
   flushSync();
+}
+
+/** The plan App resolves for the cockpit when the operator expressed no
+ *  visibleSurfaces/zoneOrder preference — i.e. every declared zone, verbatim. */
+function defaultPlan(): SurfacePlan {
+  return resolveSurfacePlan(dualReceiverCockpitLayout, readWorkspace({ version: 1 }).workspace);
 }
 
 const q = <T extends HTMLElement>(sel: string) => target.querySelector(sel) as T | null;
@@ -486,6 +517,14 @@ describe('scope/controls zones — placed, never falsely active', () => {
 describe('F6 — manifest zone ids are bound to the rendered structure', () => {
   const declaredZoneIds = (): readonly string[] => dualReceiverCockpitLayout.zones.map((z) => z.id);
 
+  // MOR-1336 (S4): `tx-aux` joined the declared set, and it is the FIRST zone
+  // here whose existence in the DOM is plan-gated rather than hardcoded
+  // (`vfo`/`rxTx` stay bespoke and render their box unconditionally) — so
+  // proving the correspondence now needs the SAME resolved plan App actually
+  // hands down, or the new zone's box would never appear regardless of what
+  // the manifest declares (`useSurfacePlan()`'s documented standalone-mount
+  // fallback). Both fixtures already carry `tuner` (MOR-1336 fixture note
+  // above), so `view.txAux` is present and the zone is not an empty promise.
   it.each([
     ['2/main_sub', () => mainSubState('MAIN'), mainSubCaps],
     ['2/ab_shared', abSharedState, abSharedCaps],
@@ -494,7 +533,7 @@ describe('F6 — manifest zone ids are bound to the rendered structure', () => {
   ) => {
     h.state = makeState();
     h.caps = makeCaps();
-    render();
+    render(defaultPlan());
 
     expect(qa('[data-zone-id]').map((el) => el.dataset.zoneId)).toEqual([...declaredZoneIds()]);
   });
@@ -652,8 +691,16 @@ describe('operational audio-scope availability (scope=false + audioFft=true)', (
   // and the inert scope placeholder must not turn into an "unavailable"
   // verdict about a capability that IS available. Kills: gating any strip,
   // switch or TX control on scope state.
-  /** The RX/TX surface's aria-describedby carries a per-instance counter. */
-  const markup = (): string => target.innerHTML.replace(/rx-tx-\d+/g, 'rx-tx-N');
+  /**
+   * The RX/TX surface's aria-describedby carries a per-instance counter.
+   * MOR-1336 (S4): `mainSubCaps` now carries `tuner`, so the txAux surface
+   * also mounts here and its own blocked-list id (`TxAuxSurface`'s module
+   * counter) is exactly as per-instance — this test unmounts and remounts
+   * within itself, so the second mount's id is never the first's.
+   */
+  const markup = (): string => target.innerHTML
+    .replace(/rx-tx-\d+/g, 'rx-tx-N')
+    .replace(/tx-aux-blocked-\d+/g, 'tx-aux-blocked-N');
 
   it('changes nothing in the cockpit, and denies nothing about the radio', () => {
     h.state = mainSubState('MAIN');
@@ -751,17 +798,25 @@ describe('MOR-1069 — a viewport or orientation change recomposes nothing at ru
   });
 });
 
-describe('MOR-1069 — focus order is DOM order, and the RX/TX zone comes last', () => {
+describe('MOR-1069 — focus order is DOM order, and the LAST declared zone comes last', () => {
   // "Keyboard and touch order remain logical." The CSS side (no `order`, no
   // reversed flow) is pinned textually; this is the DOM side that the CSS
   // must keep agreeing with. Kills: emitting the radio-wide row or the RX/TX
   // zone before the strips, or interleaving the strips' controls — either
   // would make the tab sequence disagree with the reading order in BOTH
   // arrangements at once.
-  it('every control appears in declared zone order, ending in rx-tx', () => {
+  //
+  // MOR-1336 (S4) flips the premise this test pinned: `tx-aux` is now the
+  // LAST declared zone (after `rx-tx`), and its controls are real, focusable
+  // members of it once a resolved plan is supplied (see `defaultPlan()` /
+  // the F6 comment above) — both fixtures carry `tuner`, so the surface
+  // mounts. The tab sequence must still never go backwards, and now ends in
+  // `tx-aux`, not `rx-tx`: the key/unkey control sits SECOND-TO-LAST, ahead
+  // of the txAux row, which is exactly where the manifest places the zone.
+  it('every control appears in declared zone order, ending in tx-aux', () => {
     h.state = mainSubState('MAIN');
     h.caps = mainSubCaps();
-    render();
+    render(defaultPlan());
 
     const declared = dualReceiverCockpitLayout.zones.map((z) => z.id);
     const sequence = qa<HTMLElement>('button, input, select, a[href], [tabindex]')
@@ -773,9 +828,10 @@ describe('MOR-1069 — focus order is DOM order, and the RX/TX zone comes last',
     expect(sequence).not.toContain(-1);
     // ...and the sequence never goes backwards through the declared order.
     expect(sequence).toEqual([...sequence].sort((a, b) => a - b));
-    // The operator's key/unkey control is the last thing in the tab sequence,
-    // not stranded between two channel strips.
-    expect(sequence.at(-1)).toBe(declared.indexOf('rx-tx'));
+    // MOR-1336: tx-aux is now the last declared zone, and its controls are
+    // the last thing in the tab sequence — the key/unkey control precedes it.
+    expect(sequence.at(-1)).toBe(declared.indexOf('tx-aux'));
+    expect(declared.indexOf('tx-aux')).toBeGreaterThan(declared.indexOf('rx-tx'));
   });
 
   // MOR-1258. `tx-fault-reset` and the two ModInputTxWarning buttons only
@@ -786,11 +842,15 @@ describe('MOR-1069 — focus order is DOM order, and the RX/TX zone comes last',
   // this assertion ever seeing them (the MOR-1069 verification finding this
   // ticket exists to close). Driving each conditional state in turn is what
   // makes the assertion actually SEE them.
+  //
+  // MOR-1336: these three alerts are rx-tx zone members (R6, pinned formally
+  // below), not tx-aux members, so the sequence still ends in tx-aux even
+  // while they are present — they land just BEFORE it, never after.
   it.each([
     ['a TX fault is latched', { phase: 'failed', fault: 'audio-failed' } as Partial<Snapshot>, false],
     ['the MOD-input guard is visible', {} as Partial<Snapshot>, true],
     ['both conditional alerts are active at once', { phase: 'failed', fault: 'audio-failed' } as Partial<Snapshot>, true],
-  ] as const)('still ends in rx-tx with no control outside a declared zone — %s', (
+  ] as const)('still ends in tx-aux with no control outside a declared zone — %s', (
     _label, snapshotOver, modInputVisible,
   ) => {
     h.state = mainSubState('MAIN');
@@ -798,7 +858,7 @@ describe('MOR-1069 — focus order is DOM order, and the RX/TX zone comes last',
     h.modInputGuard = modInputVisible
       ? { visible: true, sourceLabel: 'MIC' }
       : { visible: false, sourceLabel: null };
-    render();
+    render(defaultPlan());
     push(snapshotOver);
 
     // Sanity: the conditional control(s) this case drives are actually present
@@ -814,7 +874,7 @@ describe('MOR-1069 — focus order is DOM order, and the RX/TX zone comes last',
     expect(sequence.length).toBeGreaterThan(0);
     expect(sequence).not.toContain(-1);
     expect(sequence).toEqual([...sequence].sort((a, b) => a - b));
-    expect(sequence.at(-1)).toBe(declared.indexOf('rx-tx'));
+    expect(sequence.at(-1)).toBe(declared.indexOf('tx-aux'));
   });
 });
 
@@ -908,6 +968,30 @@ describe('MOR-1258 — the three TX-adjacent alerts are formal rx-tx zone member
     q<HTMLButtonElement>('[data-testid="tx-fault-reset"]')!.click();
     flushSync();
     expect(h.resetFault).toHaveBeenCalledTimes(1);
+  });
+
+  // MOR-1336 (S4) restated (R6): the four tests above never supply a resolved
+  // plan, so the new tx-aux zone never actually mounts alongside them — R6
+  // holds, but only because there was nowhere for the alerts to have moved
+  // TO. Restated with `defaultPlan()`, so the tx-aux zone is a real sibling
+  // element and containment inside rx-tx — never tx-aux — is proven against
+  // it, not merely against its absence.
+  it('keeps all three TX-adjacent alerts inside rx-tx, never tx-aux, once the tx-aux zone actually mounts', () => {
+    h.state = mainSubState('MAIN');
+    h.caps = mainSubCaps();
+    h.modInputGuard = { visible: true, sourceLabel: 'MIC' };
+    render(defaultPlan());
+    push({ phase: 'failed', fault: 'audio-failed' });
+
+    const rxTxZone = q('[data-zone-id="rx-tx"]')!;
+    const txAuxZone = q('[data-zone-id="tx-aux"]');
+    expect(txAuxZone).not.toBeNull(); // sanity: the zone this pin restates for actually exists
+    for (const testid of ['tx-fault-reset', 'mod-input-set-lan', 'mod-input-dismiss']) {
+      const el = q(`[data-testid="${testid}"]`);
+      expect(el).not.toBeNull();
+      expect(rxTxZone.contains(el)).toBe(true);
+      expect(txAuxZone!.contains(el)).toBe(false);
+    }
   });
 });
 

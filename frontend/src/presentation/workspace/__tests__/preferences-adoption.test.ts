@@ -130,6 +130,8 @@ describe('MOR-1082 — the surface plan starts from what the manifest declares',
   it('is the manifest, verbatim, for a workspace that expresses no preference', () => {
     expect([...plan(dualReceiverCockpitLayout)]).toEqual([
       ['primary-vfo', ['vfo']], ['secondary-vfo', ['vfo']], ['global', ['vfo']], ['rx-tx', ['rxTx']],
+      // MOR-1336 (S4): the cockpit now declares a tx-aux zone too.
+      ['tx-aux', ['txAux']],
     ]);
     expect([...plan(sdrTestLayout)]).toEqual([['main', ['vfo', 'rxTx']]]);
   });
@@ -241,6 +243,8 @@ describe('MOR-1082 — the surface plan starts from what the manifest declares',
     );
     expect([...resolveSurfacePlan(dualReceiverCockpitLayout, read.workspace)]).toEqual([
       ['primary-vfo', ['vfo']], ['secondary-vfo', ['vfo']], ['global', ['vfo']], ['rx-tx', ['rxTx']],
+      // MOR-1336 (S4): the cockpit now declares a tx-aux zone too.
+      ['tx-aux', ['txAux']],
     ]);
   });
 });
@@ -258,8 +262,9 @@ describe('MOR-1082 — the single-composition order comes from the same plan', (
 
   it('flattens the plan in zone-declaration order, deduped', () => {
     expect(compositionSurfaces(plan(sdrTestLayout), FALLBACK)).toEqual(['vfo', 'rxTx']);
-    // desktop-v2 spreads the same two surfaces over two zones.
-    expect(compositionSurfaces(plan(desktopV2Layout), FALLBACK)).toEqual(['vfo', 'rxTx']);
+    // desktop-v2 spreads the same two surfaces over two zones, plus its own
+    // MOR-1336 (S4) tx-aux zone — flattening never drops a third zone.
+    expect(compositionSurfaces(plan(desktopV2Layout), FALLBACK)).toEqual(['vfo', 'rxTx', 'txAux']);
     expect(compositionSurfaces(plan(sdrTestLayout, { zoneOrder: { main: ['rxTx', 'vfo'] } }), FALLBACK))
       .toEqual(['rxTx', 'vfo']);
   });

@@ -21,7 +21,7 @@
 </script>
 
 <script lang="ts">
-  import { onDestroy } from 'svelte';
+  import { onDestroy, type Snippet } from 'svelte';
   import { t } from '$lib/i18n';
   import { runtime } from '$lib/runtime';
   import { toRadioViewModel } from '$lib/runtime/adapters/radio-view-model-adapter';
@@ -90,6 +90,38 @@
   let singleOrder = $derived(compositionSurfaces(surfacePlan(), SINGLE_COMPOSITION));
   function zoneShows(zoneId: string, surface: SemanticSurfaceName): boolean {
     return zoneShowsSurface(surfacePlan(), zoneId, surface);
+  }
+  /**
+   * MOR-1336 (v3-rework S4) — the DECLARED zone that mounts `surface`, or
+   * `null` when no zone does.
+   *
+   * This is the whole zone-ownership mechanism, and it is GENERIC: any
+   * `SEMANTIC_SURFACE_NAMES` member a layout declares mounts through the one
+   * `zoned` path below, so the next declarable surface needs no new code and
+   * `txAux` is not a third hardcoded special case beside `vfo`/`rxTx`.
+   *
+   * It reads the SURFACE PLAN, never a manifest — this file stays manifest-blind
+   * (the MOR-1068 cycle). That works because `resolveSurfacePlan` keys its map
+   * by `manifest.zones`, so the plan's KEY SET is exactly the active layout's
+   * declared-zone set. App already computes it; this only consults it.
+   *
+   * `null` → the caller renders BARE, byte-identical to the pre-S4 DOM. That is
+   * MOR-1069 enforced by construction: a zone element exists only where a
+   * layout actually declared one, never as an empty promise.
+   *
+   * LIMITATION, recorded rather than hidden: the plan is POST-subtraction, so
+   * "no zone declares this" and "a zone declared it and the workspace hid it"
+   * are indistinguishable here, and both render bare. That matches today
+   * exactly (these surfaces consult no plan at all before this slice), so no
+   * force-show is introduced and nothing regresses — but the workspace still
+   * cannot hide a zoned optional surface. Fixing that needs `SurfacePlan` to
+   * carry declaration and visibility separately (own ticket).
+   */
+  function zoneOwning(surface: SemanticSurfaceName): string | null {
+    const plan = surfacePlan();
+    if (plan === null) return null;
+    for (const [zoneId, surfaces] of plan) if (surfaces.includes(surface)) return zoneId;
+    return null;
   }
   /** The dual composition's per-receiver strips, after the workspace. Filtering
    *  the `{#each}` SOURCE rather than wrapping its body keeps ONE place that
@@ -425,6 +457,34 @@
     view is null" behavior now that the surrounding structure changed
     around it (MOR-1258).
   -->
+  <!--
+    MOR-1336 — the ONE zone-aware mount path, applied uniformly to every
+    optional surface that used to render bare. Declared → a real zone element
+    the layout's arrangement can place; undeclared → bare, exactly as before.
+
+    Deliberately NOT applied to `vfo`/`rxTx`: those carry per-receiver slicing,
+    the `showVfoList`/`showRadioWideFacts` split and the R6 TX-adjacent alerts,
+    none of which a uniform wrapper can express. Genericity is applied where it
+    is honest; the two bespoke arrangements stay bespoke and are documented as
+    such rather than forced through this path.
+
+    `present` is the surface's OWN structural gate, hoisted to the wrap
+    decision. Without it a declared zone would render as an empty `<div>` for a
+    radio whose view model carries no such group — an "empty promise" zone,
+    exactly what MOR-1069 forbids. The snippet bodies keep their own `{#if}`
+    as well: one decides whether the zone exists, the other whether the surface
+    does, and they must agree.
+  -->
+  {#snippet zoned(surface: SemanticSurfaceName, present: boolean, body: Snippet)}
+    {#if present}
+      {@const zoneId = zoneOwning(surface)}
+      {#if zoneId === null}{@render body()}
+      {:else}
+        <div class="surface-zone" data-zone-id={zoneId}>{@render body()}</div>
+      {/if}
+    {/if}
+  {/snippet}
+
   {#snippet txAuxSurface()}
     {#if view?.txAux}
       <TxAuxSurface
@@ -512,8 +572,8 @@
       {#if zoneShows('rx-tx', 'rxTx')}{@render rxTxSurface()}{/if}
       {@render txAdjacentAlerts()}
     </div>
-    {@render txAuxSurface()}
-    {@render metersSurface()}
+    {@render zoned('txAux', view?.txAux !== undefined, txAuxSurface)}
+    {@render zoned('meters', view?.meters !== undefined, metersSurface)}
   {:else}
     <!--
       Single/default path (sdr-test / LCD / mobile): no bound zone exists
@@ -531,9 +591,9 @@
       {#if surface === 'vfo'}{@render vfoSurface()}
       {:else if surface === 'rxTx'}{@render rxTxSurface()}{/if}
     {/each}
-    {@render txAuxSurface()}
-    {@render metersSurface()}
-    {@render rxAudioSurface()}
+    {@render zoned('txAux', view?.txAux !== undefined, txAuxSurface)}
+    {@render zoned('meters', view?.meters !== undefined, metersSurface)}
+    {@render zoned('rxAudio', view?.rxAudio !== undefined, rxAudioSurface)}
     {@render txAdjacentAlerts()}
   {/if}
 </div>
@@ -572,6 +632,14 @@
      TX-adjacent alerts it gained, so it owns this minimal layout — the
      alerts and RxTxSurface still each own their own internal presentation. */
   .rx-tx-zone {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+  /* MOR-1336: a declared zone must be a real box the arrangement can place —
+     the MOR-1069 lesson that an inert `display: contents` wrapper cannot be a
+     grid/flex item. Layout only; the surface owns its own presentation. */
+  .surface-zone {
     display: flex;
     flex-direction: column;
     gap: 8px;

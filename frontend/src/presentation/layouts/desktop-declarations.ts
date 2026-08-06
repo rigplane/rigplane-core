@@ -36,6 +36,10 @@ import { registerLayout, type LayoutManifest } from './contract';
 const DESKTOP_V2_ZONES = [
   { id: 'receiver-deck', surfaces: ['vfo'] },
   { id: 'rx-tx', surfaces: ['rxTx'] },
+  // MOR-1336 (S4): txAux becomes zone-OWNED here. Declared but deliberately not
+  // `required` — a radio whose MOR-1244 evidence gate declined the group must
+  // still resolve this layout, and the surface self-gates on `view.txAux`.
+  { id: 'tx-aux', surfaces: ['txAux'] },
 ] as const;
 
 export const desktopV2Layout: LayoutManifest = {

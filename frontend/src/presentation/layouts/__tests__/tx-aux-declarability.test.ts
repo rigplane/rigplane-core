@@ -1,5 +1,5 @@
 /**
- * MOR-1265 — `txAux` is DECLARABLE, and nothing declares it yet.
+ * MOR-1265 — `txAux` is DECLARABLE. MOR-1336 (S4) declares it for real.
  *
  * Slice 1B adds the name to `SEMANTIC_SURFACE_NAMES` so a manifest CAN mount
  * the surface later; it deliberately does not touch any manifest. Both halves
@@ -7,8 +7,13 @@
  *   - drop the name and a future manifest's zone stops validating (the whole
  *     point of this slice's contract change);
  *   - quietly add a `txAux` zone to a shipped manifest and the DOM grows a
- *     zone id no layout review ever saw. That is out of scope here and is
- *     what the second test refuses.
+ *     zone id no layout review ever saw.
+ *
+ * MOR-1336 flipped the second half: `desktop-v2` and `dual-receiver-cockpit`
+ * now DO declare a `tx-aux` zone, and the surface mounts through it. The
+ * inventory below is a LITERAL of who declares it, so a third family gaining
+ * the zone without review still fails here — the guard's direction changed, its
+ * job did not.
  */
 import { describe, it, expect } from 'vitest';
 import { SEMANTIC_SURFACE_NAMES, validateLayoutManifest } from '../contract';
@@ -43,16 +48,40 @@ describe('txAux is a declarable semantic surface', () => {
   });
 });
 
-describe('no shipped manifest declares a txAux zone in this slice', () => {
-  // Kills: slipping a txAux zone into an existing layout here. Declarability
-  // is the whole scope of MOR-1265; placing the surface in a real layout is a
-  // later, separately reviewed slice.
-  it.each([
+describe('exactly the reviewed manifests declare a txAux zone (MOR-1336)', () => {
+  /** The literal — extend by hand, with a layout review, never silently. */
+  const DECLARES_TX_AUX = ['desktop-v2', 'dual-receiver-cockpit'];
+
+  const ALL = [
     ['sdr-test', sdrTestLayout], ['dual-receiver-cockpit', dualReceiverCockpitLayout],
     ['lcd-cockpit', lcdCockpitLayout], ['lcd-scope', lcdScopeLayout],
     ['mobile', mobileLayout], ['desktop-v2', desktopV2Layout],
-  ])('%s declares no txAux zone and does not require the surface', (_id, manifest) => {
-    for (const zone of manifest.zones) expect(zone.surfaces).not.toContain('txAux');
+  ] as const;
+
+  // Kills BOTH directions: a family losing the zone S4 gave it, and a family
+  // gaining one without review.
+  it('the declaring set is exactly the reviewed literal', () => {
+    const declaring = ALL
+      .filter(([, m]) => m.zones.some((z) => z.surfaces.includes('txAux')))
+      .map(([id]) => id)
+      .sort();
+    expect(declaring).toEqual([...DECLARES_TX_AUX].sort());
+  });
+
+  // Kills: declaring the zone under a drifted id — the wiring binds whatever
+  // the plan's key is, so the id IS the contract with the layout's arrangement.
+  it.each(DECLARES_TX_AUX)('%s declares it under the stable `tx-aux` id, alone in its zone', (id) => {
+    const manifest = ALL.find(([name]) => name === id)![1];
+    const zone = manifest.zones.find((z) => z.surfaces.includes('txAux'))!;
+    expect(zone.id).toBe('tx-aux');
+    expect(zone.surfaces).toEqual(['txAux']);
+  });
+
+  // Kills: making txAux REQUIRED. A radio whose MOR-1244 evidence gate declined
+  // the group must still resolve these layouts; the surface self-gates on
+  // `view.txAux`, and a required surface no zone could fill would be a
+  // resolution failure rather than an honest absence.
+  it.each(ALL)('%s does not require the txAux surface', (_id, manifest) => {
     expect(manifest.requiredSemanticSurfaces).not.toContain('txAux');
   });
 });
