@@ -79,6 +79,9 @@ export default defineConfig({
         test: {
           name: 'fast',
           environment: 'jsdom',
+          // Shadows the process-wide `--localstorage-file` store with a
+          // per-environment in-memory one — see vitest.setup.ts.
+          setupFiles: ['./vitest.setup.ts'],
           include: ['src/**/*.test.ts'],
           exclude: [
             'src/**/*.isolated.test.ts',
@@ -94,6 +97,10 @@ export default defineConfig({
         test: {
           name: 'isolated',
           environment: 'jsdom',
+          // Same storage shadowing as `fast`; under `isolate: true` this is
+          // what makes web storage genuinely per-file — the Node store is
+          // shared across worker threads and defeated the isolation.
+          setupFiles: ['./vitest.setup.ts'],
           include: [
             'src/**/*.isolated.test.ts',
             'src/**/*.component.test.ts',
