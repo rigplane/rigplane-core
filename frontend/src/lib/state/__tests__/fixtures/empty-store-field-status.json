@@ -605,17 +605,35 @@
     "observed": false,
     "storePath": "global.slow_state.scanning"
   },
+  "scopeControls.centerType": {
+    "availability": "missing",
+    "freshness": "unknown",
+    "observed": false,
+    "storePath": "scope_controls.global.display.center_type"
+  },
   "scopeControls.dual": {
     "availability": "missing",
     "freshness": "unknown",
     "observed": false,
     "storePath": "scope_controls.global.display.dual"
   },
+  "scopeControls.duringTx": {
+    "availability": "missing",
+    "freshness": "unknown",
+    "observed": false,
+    "storePath": "scope_controls.global.display.during_tx"
+  },
   "scopeControls.edge": {
     "availability": "missing",
     "freshness": "unknown",
     "observed": false,
     "storePath": "scope_controls.global.display.edge"
+  },
+  "scopeControls.fixedEdge": {
+    "availability": "missing",
+    "freshness": "unknown",
+    "observed": false,
+    "storePath": "scope_controls.global.display.fixed_edge"
   },
   "scopeControls.hold": {
     "availability": "missing",
@@ -628,6 +646,12 @@
     "freshness": "unknown",
     "observed": false,
     "storePath": "scope_controls.global.display.mode"
+  },
+  "scopeControls.rbw": {
+    "availability": "missing",
+    "freshness": "unknown",
+    "observed": false,
+    "storePath": "scope_controls.global.display.rbw"
   },
   "scopeControls.receiver": {
     "availability": "missing",
@@ -652,6 +676,12 @@
     "freshness": "unknown",
     "observed": false,
     "storePath": "scope_controls.global.display.speed"
+  },
+  "scopeControls.vbwNarrow": {
+    "availability": "missing",
+    "freshness": "unknown",
+    "observed": false,
+    "storePath": "scope_controls.global.display.vbw_narrow"
   },
   "split": {
     "availability": "missing",

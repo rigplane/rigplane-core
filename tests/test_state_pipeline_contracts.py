@@ -374,6 +374,32 @@ def test_global_scope_control_display_leaves_registered() -> None:
         assert spec.writable is False
 
 
+def test_scope_settings_popover_leaves_registered() -> None:
+    """MOR-1302: the five ScopeSettingsPopover leaves have canonical FieldSpecs.
+
+    ``duringTx``/``centerType``/``vbwNarrow``/``rbw``/``fixedEdge`` are on the
+    ``ScopeControlsPublic`` wire type and read by ``ScopeSettingsPopover.svelte``
+    but, until now, had no registered spec. Types verified against the 0x27
+    sub-command decoders in ``runtime/_civ_rx.py``: 0x1B during_tx (bool),
+    0x1C center_type (int), 0x1D vbw_narrow (bool), 0x1E fixed_edge
+    (``ScopeFixedEdge`` composite -> ``object``), 0x1F rbw (int).
+    """
+    expected = {
+        "during_tx": "bool",
+        "center_type": "int",
+        "vbw_narrow": "bool",
+        "rbw": "int",
+        "fixed_edge": "object",
+    }
+    for name, value_type in expected.items():
+        path = FieldPath.scope_control("display", name)
+        spec = DEFAULT_FIELD_REGISTRY.require(path)
+        assert spec.path == path
+        assert spec.family is FieldFamily.DISPLAY
+        assert spec.value_type == value_type
+        assert spec.writable is False
+
+
 def test_global_key_speed_registered_as_operator_control_int() -> None:
     """MOR-456: ``global.operator_controls.key_speed`` is a registered int.
 
