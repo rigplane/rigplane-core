@@ -76,81 +76,85 @@ vi.mock('$lib/runtime/adapters/mod-input-tx-guard.svelte', () => ({
   deriveModInputTxGuardProps: () => h.modInputGuard,
   getModInputTxGuardHandlers: () => ({ onSetLan: vi.fn(), onDismiss: vi.fn() }),
 }));
-vi.mock('../../../components-v2/wiring/command-bus', () => ({
-  makeVfoHandlers: () => ({
-    onVfoSelect: h.selectVfo,
-    onSplitToggle: h.splitToggle,
-    onDualWatchToggle: h.dualWatchToggle,
-  }),
-  // MOR-1265 — the wiring now also composes the txAux intent vocabulary.
-  makeVoxHandlers: () => ({
-    onVoxToggle: h.txAuxNoop, onVoxGainChange: h.txAuxNoop,
-    onAntiVoxGainChange: h.txAuxNoop, onVoxDelayChange: h.txAuxNoop,
-  }),
-  makeTxHandlers: () => ({
-    onRfPowerChange: h.txAuxNoop, onMicGainChange: h.txAuxNoop, onAtuToggle: h.txAuxNoop,
-    onAtuTune: h.txAuxNoop, onVoxToggle: h.txAuxNoop, onCompToggle: h.txAuxNoop,
-    onCompLevelChange: h.txAuxNoop, onMonToggle: h.txAuxNoop,
-    onMonLevelChange: h.txAuxNoop, onDriveGainChange: h.txAuxNoop,
-  }),
-  // MOR-1279 slice 3B: the RX-audio intent vocabulary.
-  makeRxAudioHandlers: () => ({ onMonitorModeChange: h.txAuxNoop, onAfLevelChange: h.txAuxNoop }),
-  // MOR-1310 slice 9B: the semantic CW-keyer surface's setting intents.
-  makeCwPanelHandlers: () => ({
-    onKeySpeedChange: h.txAuxNoop, onCwPitchChange: h.txAuxNoop, onBreakInDelayChange: h.txAuxNoop,
-    onBreakInModeChange: h.txAuxNoop, onApfChange: h.txAuxNoop, onTwinPeakToggle: h.txAuxNoop,
-    onReversePaddleToggle: h.txAuxNoop,
-  }),
-  makeAudioRoutingHandlers: () => ({ onFocusChange: h.txAuxNoop, onSplitStereoChange: h.txAuxNoop }),
-  // MOR-1304 — the wiring now also composes the modeFilter/filterPassband
-  // intent vocabulary; `makeModeHandlers` is composed at both call sites
-  // (rxAudio's MOD-input remedy and filterIntents), so the stub carries both.
-  // The default fixture (`mainSubCaps()`) declares no filter capability, so
-  // the MOR-1280/1284 evidence gate omits both groups by default.
-  makeModeHandlers: () => ({
-    onModInputChange: h.txAuxNoop, onModeChange: h.txAuxNoop, onDataModeChange: h.txAuxNoop,
-  }),
-  makeFilterHandlers: () => ({
-    onFilterChange: h.txAuxNoop, onFilterWidthChange: h.txAuxNoop, onFilterShapeChange: h.txAuxNoop,
-    onIfShiftChange: h.txAuxNoop, onPbtInnerChange: h.txAuxNoop, onPbtOuterChange: h.txAuxNoop,
-  }),
-  // MOR-1305 — the wiring now also composes the dsp intent vocabulary.
-  makeDspHandlers: () => ({
-    onNrModeChange: h.dspNoop, onNrLevelChange: h.dspNoop, onNbToggle: h.dspNoop,
-    onNbLevelChange: h.dspNoop, onNbDepthChange: h.dspNoop, onNbWidthChange: h.dspNoop,
-    onNotchModeChange: h.dspNoop, onNotchFreqChange: h.dspNoop,
-    onManualNotchWidthChange: h.dspNoop, onAgcTimeChange: h.dspNoop,
-  }),
-  makeAgcHandlers: () => ({ onAgcModeChange: h.dspNoop }),
-  // MOR-1306 slice 6B: the RF-front-end intent vocabulary.
-  makeRfFrontEndHandlers: () => ({
-    onAttChange: h.txAuxNoop, onPreChange: h.txAuxNoop, onRfGainChange: h.txAuxNoop,
-    onSquelchChange: h.txAuxNoop, onDigiSelToggle: h.txAuxNoop, onIpPlusToggle: h.txAuxNoop,
-  }),
-  // MOR-1307 slice 7B: the band-select intent the band surface composes.
-  makeBandHandlers: () => ({ onBandSelect: h.txAuxNoop }),
-  // MOR-1309 slice 8C: the antenna intent vocabulary.
-  makeAntennaHandlers: () => ({ onSelectAnt1: h.txAuxNoop, onSelectAnt2: h.txAuxNoop, onToggleRxAnt: h.txAuxNoop }),
-  // MOR-1308 slice 8B: the RIT/XIT and scan intent vocabularies. MOR-1351
-  // hardened `mainSubCaps()` to carry `rit`/`xit` tags, so this group IS
-  // reachable through the default fixture below — these stubs are exercised,
-  // not merely composition-time stand-ins.
-  makeRitXitHandlers: () => ({
-    onRitToggle: h.txAuxNoop, onXitToggle: h.txAuxNoop, onRitOffsetChange: h.txAuxNoop,
-    onXitOffsetChange: h.txAuxNoop, onClear: h.txAuxNoop,
-  }),
-  makeScanHandlers: () => ({
-    onScanStart: h.txAuxNoop, onScanStop: h.txAuxNoop, onDfSpanChange: h.txAuxNoop,
-    onResumeChange: h.txAuxNoop,
-  }),
-  // MOR-1311 slice 11B: the scope-toolbar/popover intent vocabulary.
-  makeScopeControlsHandlers: () => ({
-    onModeChange: h.txAuxNoop, onEdgeChange: h.txAuxNoop, onSpanChange: h.txAuxNoop,
-    onSpeedChange: h.txAuxNoop, onHoldChange: h.txAuxNoop, onRefChange: h.txAuxNoop,
-    onDualChange: h.txAuxNoop, onReceiverChange: h.txAuxNoop, onDuringTxChange: h.txAuxNoop,
-    onCenterTypeChange: h.txAuxNoop, onVbwChange: h.txAuxNoop, onRbwChange: h.txAuxNoop,
-  }),
-}));
+vi.mock('../../../components-v2/wiring/command-bus', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../../components-v2/wiring/command-bus')>();
+  return {
+    ...actual,
+    makeVfoHandlers: () => ({
+      onVfoSelect: h.selectVfo,
+      onSplitToggle: h.splitToggle,
+      onDualWatchToggle: h.dualWatchToggle,
+    }),
+    // MOR-1265 — the wiring now also composes the txAux intent vocabulary.
+    makeVoxHandlers: () => ({
+      onVoxToggle: h.txAuxNoop, onVoxGainChange: h.txAuxNoop,
+      onAntiVoxGainChange: h.txAuxNoop, onVoxDelayChange: h.txAuxNoop,
+    }),
+    makeTxHandlers: () => ({
+      onRfPowerChange: h.txAuxNoop, onMicGainChange: h.txAuxNoop, onAtuToggle: h.txAuxNoop,
+      onAtuTune: h.txAuxNoop, onVoxToggle: h.txAuxNoop, onCompToggle: h.txAuxNoop,
+      onCompLevelChange: h.txAuxNoop, onMonToggle: h.txAuxNoop,
+      onMonLevelChange: h.txAuxNoop, onDriveGainChange: h.txAuxNoop,
+    }),
+    // MOR-1279 slice 3B: the RX-audio intent vocabulary.
+    makeRxAudioHandlers: () => ({ onMonitorModeChange: h.txAuxNoop, onAfLevelChange: h.txAuxNoop }),
+    // MOR-1310 slice 9B: the semantic CW-keyer surface's setting intents.
+    makeCwPanelHandlers: () => ({
+      onKeySpeedChange: h.txAuxNoop, onCwPitchChange: h.txAuxNoop, onBreakInDelayChange: h.txAuxNoop,
+      onBreakInModeChange: h.txAuxNoop, onApfChange: h.txAuxNoop, onTwinPeakToggle: h.txAuxNoop,
+      onReversePaddleToggle: h.txAuxNoop,
+    }),
+    makeAudioRoutingHandlers: () => ({ onFocusChange: h.txAuxNoop, onSplitStereoChange: h.txAuxNoop }),
+    // MOR-1304 — the wiring now also composes the modeFilter/filterPassband
+    // intent vocabulary; `makeModeHandlers` is composed at both call sites
+    // (rxAudio's MOD-input remedy and filterIntents), so the stub carries both.
+    // The default fixture (`mainSubCaps()`) declares no filter capability, so
+    // the MOR-1280/1284 evidence gate omits both groups by default.
+    makeModeHandlers: () => ({
+      onModInputChange: h.txAuxNoop, onModeChange: h.txAuxNoop, onDataModeChange: h.txAuxNoop,
+    }),
+    makeFilterHandlers: () => ({
+      onFilterChange: h.txAuxNoop, onFilterWidthChange: h.txAuxNoop, onFilterShapeChange: h.txAuxNoop,
+      onIfShiftChange: h.txAuxNoop, onPbtInnerChange: h.txAuxNoop, onPbtOuterChange: h.txAuxNoop,
+    }),
+    // MOR-1305 — the wiring now also composes the dsp intent vocabulary.
+    makeDspHandlers: () => ({
+      onNrModeChange: h.dspNoop, onNrLevelChange: h.dspNoop, onNbToggle: h.dspNoop,
+      onNbLevelChange: h.dspNoop, onNbDepthChange: h.dspNoop, onNbWidthChange: h.dspNoop,
+      onNotchModeChange: h.dspNoop, onNotchFreqChange: h.dspNoop,
+      onManualNotchWidthChange: h.dspNoop, onAgcTimeChange: h.dspNoop,
+    }),
+    makeAgcHandlers: () => ({ onAgcModeChange: h.dspNoop }),
+    // MOR-1306 slice 6B: the RF-front-end intent vocabulary.
+    makeRfFrontEndHandlers: () => ({
+      onAttChange: h.txAuxNoop, onPreChange: h.txAuxNoop, onRfGainChange: h.txAuxNoop,
+      onSquelchChange: h.txAuxNoop, onDigiSelToggle: h.txAuxNoop, onIpPlusToggle: h.txAuxNoop,
+    }),
+    // MOR-1307 slice 7B: the band-select intent the band surface composes.
+    makeBandHandlers: () => ({ onBandSelect: h.txAuxNoop }),
+    // MOR-1309 slice 8C: the antenna intent vocabulary.
+    makeAntennaHandlers: () => ({ onSelectAnt1: h.txAuxNoop, onSelectAnt2: h.txAuxNoop, onToggleRxAnt: h.txAuxNoop }),
+    // MOR-1308 slice 8B: the RIT/XIT and scan intent vocabularies. MOR-1351
+    // hardened `mainSubCaps()` to carry `rit`/`xit` tags, so this group IS
+    // reachable through the default fixture below — these stubs are exercised,
+    // not merely composition-time stand-ins.
+    makeRitXitHandlers: () => ({
+      onRitToggle: h.txAuxNoop, onXitToggle: h.txAuxNoop, onRitOffsetChange: h.txAuxNoop,
+      onXitOffsetChange: h.txAuxNoop, onClear: h.txAuxNoop,
+    }),
+    makeScanHandlers: () => ({
+      onScanStart: h.txAuxNoop, onScanStop: h.txAuxNoop, onDfSpanChange: h.txAuxNoop,
+      onResumeChange: h.txAuxNoop,
+    }),
+    // MOR-1311 slice 11B: the scope-toolbar/popover intent vocabulary.
+    makeScopeControlsHandlers: () => ({
+      onModeChange: h.txAuxNoop, onEdgeChange: h.txAuxNoop, onSpanChange: h.txAuxNoop,
+      onSpeedChange: h.txAuxNoop, onHoldChange: h.txAuxNoop, onRefChange: h.txAuxNoop,
+      onDualChange: h.txAuxNoop, onReceiverChange: h.txAuxNoop, onDuringTxChange: h.txAuxNoop,
+      onCenterTypeChange: h.txAuxNoop, onVbwChange: h.txAuxNoop, onRbwChange: h.txAuxNoop,
+    }),
+  };
+});
 
 import DualReceiverCockpit from '../DualReceiverCockpit.svelte';
 // MOR-1068 F6: the manifest's declared zone ids, read through the app-wide

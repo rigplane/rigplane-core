@@ -83,86 +83,90 @@ vi.mock('$lib/runtime/adapters/mod-input-tx-guard.svelte', () => ({
 // The names below are the REAL `makeDspHandlers`/`makeAgcHandlers` surface —
 // agreement with the shipped module is proven separately, against the real
 // module, in `command-bus.test.ts`.
-vi.mock('../command-bus', () => ({
-  makeVfoHandlers: () => ({
-    onVfoSelect: h.noop, onSplitToggle: h.noop, onDualWatchToggle: h.noop,
-  }),
-  makeVoxHandlers: () => ({
-    onVoxToggle: h.noop, onVoxGainChange: h.noop,
-    onAntiVoxGainChange: h.noop, onVoxDelayChange: h.noop,
-  }),
-  makeTxHandlers: () => ({
-    onRfPowerChange: h.noop, onMicGainChange: h.noop, onAtuToggle: h.noop,
-    onAtuTune: h.noop, onVoxToggle: h.noop, onCompToggle: h.noop,
-    onCompLevelChange: h.noop, onMonToggle: h.noop,
-    onMonLevelChange: h.noop, onDriveGainChange: h.noop,
-  }),
-  // MOR-1279 slice 3B: the RX-audio intent vocabulary. This fixture declares
-  // no rxAudio capability, so none of these is reachable — same stand-in role
-  // as `makeVfoHandlers`/`makeTxHandlers` above.
-  makeRxAudioHandlers: () => ({ onMonitorModeChange: h.noop, onAfLevelChange: h.noop }),
-  makeAudioRoutingHandlers: () => ({ onFocusChange: h.noop, onSplitStereoChange: h.noop }),
-  // MOR-1304 — the wiring now also composes the modeFilter/filterPassband
-  // intent vocabulary; `makeModeHandlers` is composed at both call sites
-  // (rxAudio's MOD-input remedy and filterIntents), so the stub carries both.
-  // This fixture declares no filter capability, so none of these is
-  // reachable — same stand-in role as `makeVfoHandlers`/`makeTxHandlers` above.
-  makeModeHandlers: () => ({
-    onModInputChange: h.noop, onModeChange: h.noop, onDataModeChange: h.noop,
-  }),
-  makeFilterHandlers: () => ({
-    onFilterChange: h.noop, onFilterWidthChange: h.noop, onFilterShapeChange: h.noop,
-    onIfShiftChange: h.noop, onPbtInnerChange: h.noop, onPbtOuterChange: h.noop,
-  }),
-  makeDspHandlers: () => ({
-    onNrModeChange: h.nrMode, onNrLevelChange: h.nrLevel, onNbToggle: h.nbToggle,
-    onNbLevelChange: h.nbLevel, onNbDepthChange: h.nbDepth, onNbWidthChange: h.nbWidth,
-    onNotchModeChange: h.notchMode, onNotchFreqChange: h.notchFreq,
-    onManualNotchWidthChange: h.manualNotchWidth, onAgcTimeChange: h.agcTime,
-  }),
-  makeAgcHandlers: () => ({ onAgcModeChange: h.agcMode }),
-  // MOR-1306 — the wiring now also composes the RF-front-end intent
-  // vocabulary. This fixture declares no RF-front-end capability, so none of
-  // these is reachable — same stand-in role as `makeVfoHandlers`/
-  // `makeTxHandlers` above.
-  makeRfFrontEndHandlers: () => ({
-    onAttChange: h.noop, onPreChange: h.noop, onRfGainChange: h.noop,
-    onSquelchChange: h.noop, onDigiSelToggle: h.noop, onIpPlusToggle: h.noop,
-  }),
-  // MOR-1307 slice 7B: the band-select intent the band surface composes.
-  // This fixture declares no band capability, so it is never reachable —
-  // same stand-in role as `makeVfoHandlers`/`makeTxHandlers` above.
-  makeBandHandlers: () => ({ onBandSelect: h.noop }),
-  // MOR-1309 slice 8C: the wiring now also composes the antenna intent
-  // vocabulary unconditionally. This fixture declares no antenna capability,
-  // so none of these is reachable — same stand-in role as `makeBandHandlers`.
-  makeAntennaHandlers: () => ({ onSelectAnt1: h.noop, onSelectAnt2: h.noop, onToggleRxAnt: h.noop }),
-  // MOR-1308 — the wiring now also composes the RIT/XIT and scan intent
-  // vocabularies. This fixture declares no rit/xit capability or scan
-  // evidence, so none of these is reachable — same stand-in role as
-  // `makeVfoHandlers`/`makeTxHandlers` above.
-  makeRitXitHandlers: () => ({
-    onRitToggle: h.noop, onXitToggle: h.noop, onRitOffsetChange: h.noop,
-    onXitOffsetChange: h.noop, onClear: h.noop,
-  }),
-  makeScanHandlers: () => ({
-    onScanStart: h.noop, onScanStop: h.noop, onDfSpanChange: h.noop, onResumeChange: h.noop,
-  }),
-  // MOR-1310 slice 9B: the wiring now also composes the CW keyer intent
-  // vocabulary unconditionally. This fixture declares no cwKeyer capability,
-  // so none of these is reachable — same stand-in role as `makeRitXitHandlers`.
-  makeCwPanelHandlers: () => ({
-    onKeySpeedChange: h.noop, onCwPitchChange: h.noop, onBreakInDelayChange: h.noop,
-    onBreakInModeChange: h.noop, onApfChange: h.noop, onTwinPeakToggle: h.noop,
-    onReversePaddleToggle: h.noop,
-  }),
-  // MOR-1311 slice 11B: the scope-toolbar/popover intent vocabulary.
-  makeScopeControlsHandlers: () => ({
-    onModeChange: h.noop, onEdgeChange: h.noop, onSpanChange: h.noop, onSpeedChange: h.noop,
-    onHoldChange: h.noop, onRefChange: h.noop, onDualChange: h.noop, onReceiverChange: h.noop,
-    onDuringTxChange: h.noop, onCenterTypeChange: h.noop, onVbwChange: h.noop, onRbwChange: h.noop,
-  }),
-}));
+vi.mock('../command-bus', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../command-bus')>();
+  return {
+    ...actual,
+    makeVfoHandlers: () => ({
+      onVfoSelect: h.noop, onSplitToggle: h.noop, onDualWatchToggle: h.noop,
+    }),
+    makeVoxHandlers: () => ({
+      onVoxToggle: h.noop, onVoxGainChange: h.noop,
+      onAntiVoxGainChange: h.noop, onVoxDelayChange: h.noop,
+    }),
+    makeTxHandlers: () => ({
+      onRfPowerChange: h.noop, onMicGainChange: h.noop, onAtuToggle: h.noop,
+      onAtuTune: h.noop, onVoxToggle: h.noop, onCompToggle: h.noop,
+      onCompLevelChange: h.noop, onMonToggle: h.noop,
+      onMonLevelChange: h.noop, onDriveGainChange: h.noop,
+    }),
+    // MOR-1279 slice 3B: the RX-audio intent vocabulary. This fixture declares
+    // no rxAudio capability, so none of these is reachable — same stand-in role
+    // as `makeVfoHandlers`/`makeTxHandlers` above.
+    makeRxAudioHandlers: () => ({ onMonitorModeChange: h.noop, onAfLevelChange: h.noop }),
+    makeAudioRoutingHandlers: () => ({ onFocusChange: h.noop, onSplitStereoChange: h.noop }),
+    // MOR-1304 — the wiring now also composes the modeFilter/filterPassband
+    // intent vocabulary; `makeModeHandlers` is composed at both call sites
+    // (rxAudio's MOD-input remedy and filterIntents), so the stub carries both.
+    // This fixture declares no filter capability, so none of these is
+    // reachable — same stand-in role as `makeVfoHandlers`/`makeTxHandlers` above.
+    makeModeHandlers: () => ({
+      onModInputChange: h.noop, onModeChange: h.noop, onDataModeChange: h.noop,
+    }),
+    makeFilterHandlers: () => ({
+      onFilterChange: h.noop, onFilterWidthChange: h.noop, onFilterShapeChange: h.noop,
+      onIfShiftChange: h.noop, onPbtInnerChange: h.noop, onPbtOuterChange: h.noop,
+    }),
+    makeDspHandlers: () => ({
+      onNrModeChange: h.nrMode, onNrLevelChange: h.nrLevel, onNbToggle: h.nbToggle,
+      onNbLevelChange: h.nbLevel, onNbDepthChange: h.nbDepth, onNbWidthChange: h.nbWidth,
+      onNotchModeChange: h.notchMode, onNotchFreqChange: h.notchFreq,
+      onManualNotchWidthChange: h.manualNotchWidth, onAgcTimeChange: h.agcTime,
+    }),
+    makeAgcHandlers: () => ({ onAgcModeChange: h.agcMode }),
+    // MOR-1306 — the wiring now also composes the RF-front-end intent
+    // vocabulary. This fixture declares no RF-front-end capability, so none of
+    // these is reachable — same stand-in role as `makeVfoHandlers`/
+    // `makeTxHandlers` above.
+    makeRfFrontEndHandlers: () => ({
+      onAttChange: h.noop, onPreChange: h.noop, onRfGainChange: h.noop,
+      onSquelchChange: h.noop, onDigiSelToggle: h.noop, onIpPlusToggle: h.noop,
+    }),
+    // MOR-1307 slice 7B: the band-select intent the band surface composes.
+    // This fixture declares no band capability, so it is never reachable —
+    // same stand-in role as `makeVfoHandlers`/`makeTxHandlers` above.
+    makeBandHandlers: () => ({ onBandSelect: h.noop }),
+    // MOR-1309 slice 8C: the wiring now also composes the antenna intent
+    // vocabulary unconditionally. This fixture declares no antenna capability,
+    // so none of these is reachable — same stand-in role as `makeBandHandlers`.
+    makeAntennaHandlers: () => ({ onSelectAnt1: h.noop, onSelectAnt2: h.noop, onToggleRxAnt: h.noop }),
+    // MOR-1308 — the wiring now also composes the RIT/XIT and scan intent
+    // vocabularies. This fixture declares no rit/xit capability or scan
+    // evidence, so none of these is reachable — same stand-in role as
+    // `makeVfoHandlers`/`makeTxHandlers` above.
+    makeRitXitHandlers: () => ({
+      onRitToggle: h.noop, onXitToggle: h.noop, onRitOffsetChange: h.noop,
+      onXitOffsetChange: h.noop, onClear: h.noop,
+    }),
+    makeScanHandlers: () => ({
+      onScanStart: h.noop, onScanStop: h.noop, onDfSpanChange: h.noop, onResumeChange: h.noop,
+    }),
+    // MOR-1310 slice 9B: the wiring now also composes the CW keyer intent
+    // vocabulary unconditionally. This fixture declares no cwKeyer capability,
+    // so none of these is reachable — same stand-in role as `makeRitXitHandlers`.
+    makeCwPanelHandlers: () => ({
+      onKeySpeedChange: h.noop, onCwPitchChange: h.noop, onBreakInDelayChange: h.noop,
+      onBreakInModeChange: h.noop, onApfChange: h.noop, onTwinPeakToggle: h.noop,
+      onReversePaddleToggle: h.noop,
+    }),
+    // MOR-1311 slice 11B: the scope-toolbar/popover intent vocabulary.
+    makeScopeControlsHandlers: () => ({
+      onModeChange: h.noop, onEdgeChange: h.noop, onSpanChange: h.noop, onSpeedChange: h.noop,
+      onHoldChange: h.noop, onRefChange: h.noop, onDualChange: h.noop, onReceiverChange: h.noop,
+      onDuringTxChange: h.noop, onCenterTypeChange: h.noop, onVbwChange: h.noop, onRbwChange: h.noop,
+    }),
+  };
+});
 
 import SemanticRadioSurfaces from '../SemanticRadioSurfaces.svelte';
 import { desktopV2Layout } from '../../../presentation/layouts/declarations';

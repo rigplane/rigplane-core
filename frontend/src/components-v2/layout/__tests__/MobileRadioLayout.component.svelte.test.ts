@@ -98,9 +98,11 @@ const {
   onMainVfoClickSpy: vi.fn(),
   onSubVfoClickSpy: vi.fn(),
 }));
-vi.mock('../../wiring/command-bus', () => {
+vi.mock('../../wiring/command-bus', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../wiring/command-bus')>();
   const n = vi.fn();
   return {
+    ...actual,
     makeVfoHandlers: () => ({
       onMainFreqChange: n, onSubFreqChange: n, onVfoSwap: n, onVfoEqual: n, onReceiverSelect: n,
       onMainVfoClick: onMainVfoClickSpy, onSubVfoClick: onSubVfoClickSpy,
