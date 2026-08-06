@@ -9,6 +9,7 @@
  * manifest — the picture is evidence of the assertions, never a substitute.
  */
 import type { Expectation } from './catalog';
+import { harness } from './harness-state';
 
 export interface AssertionResult {
   name: string;
@@ -97,14 +98,28 @@ export function runAssertions(
     'disabled selects match :disabled (attribute, not styling)');
 
   // ── single TX authority (the layout's hardest invariant) ────────────────
+  // MOR-1258 moved the `.rx-tx-zone` div's render site out from under the
+  // `{#if view}` gate, so the zone can (and, pre-capabilities, does) exist
+  // with zero mounted surfaces — `caps-unloaded` is exactly that state. The
+  // upper bound ("never more than one TX authority") holds unconditionally;
+  // the lower bound ("exactly one, no fewer") only holds once a view model
+  // can exist at all. `harness.caps` — the same value `toRadioViewModel`
+  // gates on (`if (!caps) return null`) — is read directly here instead of
+  // going through `expected`, so this is the real page state driving the
+  // render, not a fixture-id special-case.
   const surfaces = qa('[data-testid="rx-tx-surface"]');
   const keys = qa<HTMLButtonElement>('[data-testid="rx-tx-key"]');
   const unkeys = qa<HTMLButtonElement>('[data-testid="rx-tx-unkey"]');
-  const txExpected = expected.zones.includes('rx-tx') ? 1 : 0;
+  const zoneDeclared = expected.zones.includes('rx-tx');
+  const capsLoaded = harness.caps !== null;
+  const txMax = zoneDeclared ? 1 : 0;
+  const txMin = zoneDeclared && capsLoaded ? 1 : 0;
   check('single-tx-authority-surface',
-    surfaces.length === txExpected && keys.length === txExpected
-      && unkeys.length === txExpected,
-    `${surfaces.length} surfaces / ${keys.length} key / ${unkeys.length} unkey`);
+    surfaces.length <= txMax && keys.length <= txMax && unkeys.length <= txMax
+      && surfaces.length >= txMin && keys.length >= txMin && unkeys.length >= txMin,
+    `${surfaces.length} surfaces / ${keys.length} key / ${unkeys.length} unkey · `
+    + `expected ${txMin === txMax ? txMin : `${txMin}-${txMax}`} `
+    + `(zone declared=${zoneDeclared}, caps loaded=${capsLoaded})`);
   check('unkey-is-never-gated', unkeys.every((b) => !b.disabled),
     'no unkey control carries `disabled`');
   if (keys.length === 1) {
@@ -151,8 +166,19 @@ export function runAssertions(
     'scope + controls: aria-disabled, empty, claiming no manifest zone');
 
   // ── nothing is hidden (MOR-1069 policy 2 — only decidable in a browser) ─
+  // A declared zone with no children (MOR-1258's `.rx-tx-zone`, rendered
+  // before capabilities load, is the only real case today) is not "hidden" —
+  // there is nothing inside it to hide. `visible()` measures laid-out box
+  // size, which is legitimately 0x0 for an empty flex container; that is a
+  // true and honest reading of "empty", not a bug this assertion should
+  // flag. A zone that DOES have content must still lay out visibly.
+  const isEmptyZone = (el: HTMLElement): boolean =>
+    el.hasAttribute('data-zone-id')
+    && el.childElementCount === 0
+    && (el.textContent ?? '').trim() === '';
   const hideable = [...qa<HTMLElement>('[data-zone-id]'), ...controls(),
-    ...qa<HTMLElement>('[data-testid^="channel-strip-"]')];
+    ...qa<HTMLElement>('[data-testid^="channel-strip-"]')]
+    .filter((el) => !isEmptyZone(el));
   const hidden = hideable.filter((el) => !visible(el));
   check('nothing-hidden', hidden.length === 0,
     hidden.length === 0
