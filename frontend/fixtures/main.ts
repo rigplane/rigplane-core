@@ -23,7 +23,7 @@
  */
 import { flushSync, mount } from 'svelte';
 import '../src/app.css';
-import { dualReceiverCockpitLayout } from '../src/presentation/layouts/declarations';
+import { desktopV2Layout, dualReceiverCockpitLayout } from '../src/presentation/layouts/declarations';
 import { readWorkspace } from '../src/presentation/workspace/contract';
 import { resolveSurfacePlan, SURFACE_PLAN_CONTEXT_KEY } from '../src/presentation/workspace/resolution';
 import DualReceiverCockpit from '../src/skins/dual-receiver-cockpit/DualReceiverCockpit.svelte';
@@ -100,10 +100,29 @@ harness.calls = [];
  * `dualReceiverCockpitLayout` manifest, i.e. exactly what `App` resolves for
  * this layout the moment no preference has been saved. This is
  * production's own default, not a fixture invention.
+ *
+ * MOR-1379 — the reference/single composition's own residual: every
+ * `--reference` fixture (`layout === 'reference'`, `ReferenceLayout.svelte`)
+ * stands in for `desktop-v2`/`sdr-test`'s real wiring (see that file's own
+ * header comment), but until now always mounted with `context: undefined` —
+ * no plan at all, regardless of `fixture.planned` (which `toReferenceFixture`
+ * in catalog.ts never sets). That made `desktopV2Layout` — the manifest S6a
+ * through S6b-2 have been declaring zones onto, one S-slice at a time — a
+ * manifest this harness never resolved, so every zoned optional surface
+ * (`txAux`, `meters`, `scopeDisplay`, `filter`, `rfFrontEnd`, `band`,
+ * `antenna`, `ritXitScan`, `rxAudio`, `dsp`, `cwKeyer`, `scopeControls`)
+ * rendered bare there, indistinguishable from undeclared. Unlike the cockpit
+ * side above, this is not an opt-in: EVERY reference-layout fixture now
+ * resolves `desktopV2Layout`'s default-workspace plan, because "this stands
+ * in for desktop-v2" is what `ReferenceLayout.svelte` already claims
+ * unconditionally, not a per-fixture experiment — the same default-workspace
+ * recipe as the cockpit's `dualReceiverCockpitLayout` resolution above.
  */
-const plan = fixture.planned
-  ? resolveSurfacePlan(dualReceiverCockpitLayout, readWorkspace({ version: 1 }).workspace)
-  : null;
+const plan = fixture.layout === 'reference'
+  ? resolveSurfacePlan(desktopV2Layout, readWorkspace({ version: 1 }).workspace)
+  : fixture.planned
+    ? resolveSurfacePlan(dualReceiverCockpitLayout, readWorkspace({ version: 1 }).workspace)
+    : null;
 const context = plan === null
   ? undefined
   : new Map<unknown, unknown>([[SURFACE_PLAN_CONTEXT_KEY, () => plan]]);
