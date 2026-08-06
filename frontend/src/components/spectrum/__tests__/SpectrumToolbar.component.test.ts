@@ -317,3 +317,90 @@ describe('SpectrumToolbar component', () => {
     expect(target.querySelector('.spectrum-toolbar')).toBeNull();
   });
 });
+
+// ── MOR-1369 (v3-rework S6b-1): scopeControls suppression channel ──────────
+//
+// The S10 boundary doc (docs/plans/2026-08-06-settings-modal-boundary.md)
+// rules the `scopeControls` vocabulary FACTS-only: the twelve
+// `scopeControls.*` leaves (mode/edge/span/speed/hold/refDb/dual/receiver +
+// the four ScopeSettingsPopover leaves — centerType/rbw/duringTx/vbwNarrow)
+// retire behind `hideScopeControls` once a manifest declares the zone
+// (S6b-2). The client-side VIEW OPTIONS (AVG/PEAK/BRT/color scheme/
+// fullscreen/BANDS/layers/EiBi) have no wire field and are NEVER gated on
+// this prop, in either direction — category (b), the same category as
+// LANGUAGE/WORKSPACE in the settings modal. `VIEW ON/OFF` (scope-streaming
+// demand) is client-side too and stays unconditional alongside them.
+describe('hideScopeControls channel (MOR-1369, S6b-1)', () => {
+  /** Tag + trimmed text + disabled-state signature of every focusable
+   *  element, in DOM order — the light-weight, single-component form of the
+   *  S6-pre/MOR-1364 element-stream capture method (full-app captures belong
+   *  to RadioLayout-level tests; this one only needs to prove ONE
+   *  component's stream is unchanged). */
+  function signature(root: HTMLElement): string {
+    return Array.from(root.querySelectorAll('button, select, input, [tabindex]'))
+      .map((el) => {
+        const disabled = (el as HTMLButtonElement).disabled ? '1' : '0';
+        return `${el.tagName}:${el.textContent?.trim() ?? ''}:${disabled}`;
+      })
+      .join('|');
+  }
+
+  it('renders an IDENTICAL control stream whether hideScopeControls is omitted or explicitly false (inertness proof)', () => {
+    const omitted = mountToolbar();
+    const omittedSig = signature(omitted);
+    unmount(components.pop()!);
+    document.body.innerHTML = '';
+
+    const explicit = mountToolbar({ hideScopeControls: false });
+    const explicitSig = signature(explicit);
+
+    expect(explicitSig).toBe(omittedSig);
+    expect(explicitSig.length).toBeGreaterThan(0);
+  });
+
+  it('hides exactly the fact-backed scopeControls half when hideScopeControls is true (S6b-2 flip-test-ready)', () => {
+    const target = mountToolbar({ hideScopeControls: true });
+    const buttons = Array.from(target.querySelectorAll<HTMLButtonElement>('.toolbar-btn'));
+    const labels = buttons.map((b) => b.textContent?.trim());
+
+    // mode buttons (scopeControls.mode)
+    expect(labels).not.toContain('CTR');
+    expect(labels).not.toContain('FIX');
+    expect(labels).not.toContain('S-C');
+    expect(labels).not.toContain('S-F');
+    // hold (scopeControls.hold)
+    expect(labels).not.toContain('HOLD');
+    // dual + receiver-switch (scopeControls.dual / scopeControls.receiver)
+    expect(labels).not.toContain('DUAL');
+    expect(labels).not.toContain('MAIN');
+    // span/speed/ref (scopeControls.span/.speed/.refDb) — the whole group
+    expect(target.querySelector('.toolbar-group-c')).toBeNull();
+    const spanLabel = Array.from(target.querySelectorAll('.toolbar-label'))
+      .find((el) => el.textContent?.trim() === 'SPAN');
+    expect(spanLabel).toBeUndefined();
+    // settings-gear popover (centerType/rbw/duringTx/vbwNarrow, MOR-1330)
+    expect(target.querySelector('.settings-group')).toBeNull();
+  });
+
+  it('NEVER gates the client-side view-options half, even when hideScopeControls is true (S10 category (b) — the never-gated pin)', () => {
+    const target = mountToolbar({ hideScopeControls: true });
+    const buttons = Array.from(target.querySelectorAll<HTMLButtonElement>('.toolbar-btn'));
+    const labels = buttons.map((b) => b.textContent?.trim());
+
+    expect(labels).toContain('AVG');
+    expect(labels).toContain('PEAK');
+    expect(labels).toContain('BANDS');
+    expect(labels.some((l) => l?.startsWith('VIEW'))).toBe(true); // scope-demand toggle
+    expect(target.querySelector('.icon-btn')).not.toBeNull(); // fullscreen
+    expect(target.querySelector('.toolbar-select')).not.toBeNull(); // color scheme
+    const brtLabel = Array.from(target.querySelectorAll('.toolbar-label'))
+      .find((el) => el.textContent?.trim() === 'BRT');
+    expect(brtLabel).toBeDefined();
+  });
+
+  it('renders the fact-backed half unchanged when hideScopeControls is false (control-stream parity)', () => {
+    const withFalse = mountToolbar({ hideScopeControls: false });
+    const withoutProp = mountToolbar();
+    expect(signature(withFalse)).toBe(signature(withoutProp));
+  });
+});

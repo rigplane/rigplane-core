@@ -37,6 +37,35 @@
      * leave this `false` so the scope source remains reachable (#832 follow-up).
      */
     hideSourceControls = false,
+    /**
+     * MOR-1369 (v3-rework S6b-1) — hides the FACT-BACKED half of this
+     * toolbar: the scope MODE/EDGE buttons, the SPAN/SPEED/HOLD/REF/DUAL/
+     * receiver controls, and the settings-gear popover (the four
+     * `ScopeSettingsPopover` leaves — centerType/rbw/duringTx/vbwNarrow).
+     * Every one of those reads a `scopeControls.*` field the backend gives a
+     * field-status entry for (the MOR-1311 `ScopeControlsSurface`
+     * vocabulary). Set by a layout whose manifest declares a `scopeControls`
+     * zone (S6b-2) — the semantic surface then owns that half.
+     *
+     * The client-side VIEW OPTIONS below — AVG/PEAK, BRT, color scheme,
+     * fullscreen, BANDS/layers, EiBi — have no wire field and no
+     * field-status entry (they configure the browser session, not the
+     * radio). Per the S10 boundary ruling
+     * (docs/plans/2026-08-06-settings-modal-boundary.md, category (b) — the
+     * same category as `LANGUAGE`/`WORKSPACE`), they stay legacy and are
+     * NEVER gated on this prop, in either direction. `VIEW ON/OFF`
+     * (`scopeDemandOn`) is client-side scope-streaming demand, not a
+     * `scopeControls.*` field either, and also stays unconditional.
+     *
+     * Landed INERT (MOR-1369, S6b-1): no manifest declares a `scopeControls`
+     * zone yet, so this defaults `false` and nothing renders differently.
+     * Safe only because an omitting caller keeps the prop `false` — the same
+     * shape as `hideSourceControls` above and the MOR-1364 `hideTxPanel`/
+     * `declared` channel (S5-N3: safe because the surface degrades to a bare
+     * render when unzoned, a guarantee that lives in
+     * `SemanticRadioSurfaces.svelte`, not here).
+     */
+    hideScopeControls = false,
   } = $props();
 
   let showSettings = $state(false);
@@ -181,36 +210,39 @@
         onclick={() => onScopeDemandChange(!scopeDemandOn)}
         title="Request scope viewer data"
       >VIEW {scopeDemandOn ? 'ON' : 'OFF'}</button>
-      <div class="toolbar-sub-separator"></div>
-      <div class="toolbar-group">
-        {#each MODE_BUTTONS as [m, label]}
-          <button
-            class="toolbar-btn small"
-            class:active={scopeModeAvailable && scopeControls?.mode === m}
-            disabled={!scopeModeAvailable}
-            onclick={() => sendCommand('set_scope_mode', { mode: m })}
-            title="Scope mode: {label}"
-          >{label}</button>
-        {/each}
-      </div>
-      {#if edgeApplicable}
+      {#if !hideScopeControls}
         <div class="toolbar-sub-separator"></div>
         <div class="toolbar-group">
-          <span class="toolbar-label">EDGE</span>
-          {#each [1, 2, 3, 4] as e}
+          {#each MODE_BUTTONS as [m, label]}
             <button
               class="toolbar-btn small"
-              class:active={scopeEdgeAvailable && scopeControls?.edge === e}
-              disabled={!scopeEdgeAvailable}
-              onclick={() => sendCommand('set_scope_edge', { edge: e })}
-            >{e}</button>
+              class:active={scopeModeAvailable && scopeControls?.mode === m}
+              disabled={!scopeModeAvailable}
+              onclick={() => sendCommand('set_scope_mode', { mode: m })}
+              title="Scope mode: {label}"
+            >{label}</button>
           {/each}
         </div>
+        {#if edgeApplicable}
+          <div class="toolbar-sub-separator"></div>
+          <div class="toolbar-group">
+            <span class="toolbar-label">EDGE</span>
+            {#each [1, 2, 3, 4] as e}
+              <button
+                class="toolbar-btn small"
+                class:active={scopeEdgeAvailable && scopeControls?.edge === e}
+                disabled={!scopeEdgeAvailable}
+                onclick={() => sendCommand('set_scope_edge', { edge: e })}
+              >{e}</button>
+            {/each}
+          </div>
+        {/if}
       {/if}
     </div>
-    <div class="toolbar-separator"></div>
-    <!-- Group C: Scope data (cyan wash) -->
-    <div class="toolbar-group-c">
+    {#if !hideScopeControls}
+      <div class="toolbar-separator"></div>
+      <!-- Group C: Scope data (cyan wash) -->
+      <div class="toolbar-group-c">
       {#if spanApplicable}
         <div class="toolbar-group step-group">
           <button class="toolbar-btn small step-arrow" disabled={!scopeSpanAvailable} onclick={() => cycleSpan(-1)} title="Decrease span">◀</button>
@@ -251,6 +283,7 @@
         </div>
       {/if}
     </div>
+    {/if}
   {/if}
   <div class="toolbar-separator"></div>
   <!-- Group D: Display (neutral wash) -->
@@ -287,7 +320,7 @@
             <button class="gear-btn" onclick={() => (brtLevel = clampBrt(brtLevel, 5))} aria-label="Increase brightness">+</button>
             <button class="gear-btn gear-btn-zero" onclick={() => (brtLevel = 0)} aria-label="Reset brightness">0</button>
           </div>
-          {#if hasCapability('scope')}
+          {#if hasCapability('scope') && !hideScopeControls}
             <div class="gear-row">
               <span class="gear-label">REF</span>
               <button class="gear-btn" disabled={!scopeRefAvailable} onclick={() => sendCommand('set_scope_ref', { ref: clampRef(scopeControls?.refDb ?? 0, -5) })} aria-label="Decrease reference">−</button>
@@ -357,7 +390,7 @@
     {/if}
     </div>
   </div>
-  {#if hasCapability('scope')}
+  {#if hasCapability('scope') && !hideScopeControls}
     <div class="toolbar-separator"></div>
     <!-- Group E: Settings (no wash) -->
     <div class="toolbar-group settings-group">

@@ -353,8 +353,14 @@
           <div class="spectrum-frame">
             <!-- Desktop: VfoHeader bridge owns DUAL + MAIN/SUB (#832); hide
                  the toolbar duplicate. Mobile/v1 layouts omit the prop so
-                 the toolbar retains them (#832 fallback). -->
-            <SpectrumPanel hideSourceControls={true} />
+                 the toolbar retains them (#832 fallback).
+                 `hideScopeControls` is the MOR-1369 (S6b-1) suppression
+                 channel: reuses the SAME `declared` set as `LeftSidebar`/
+                 `RightSidebar`/`StatusBar` above (S6-pre, MOR-1364) rather
+                 than a second derivation. Landed INERT — no manifest
+                 declares a `scopeControls` zone yet, so this is always
+                 `false` today; S6b-2 wires the zone that flips it. -->
+            <SpectrumPanel hideSourceControls={true} hideScopeControls={declared.has('scopeControls')} />
           </div>
         </div>
       {/if}

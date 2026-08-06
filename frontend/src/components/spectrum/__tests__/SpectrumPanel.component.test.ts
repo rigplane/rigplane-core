@@ -202,10 +202,10 @@ import statusBarSource from '../../../components-v2/layout/StatusBar.svelte?raw'
 
 let components: ReturnType<typeof mount>[] = [];
 
-function mountPanel() {
+function mountPanel(props: Record<string, unknown> = {}) {
   const target = document.createElement('div');
   document.body.appendChild(target);
-  const component = mount(SpectrumPanel, { target, props: {} });
+  const component = mount(SpectrumPanel, { target, props });
   flushSync();
   components.push(component);
   return target;
@@ -432,6 +432,30 @@ describe('SpectrumPanel component', () => {
     expect(spectrumPanelSource).toContain('runtime.scope.subscribeHardware');
     expect(spectrumPanelSource).toContain('runtime.subscribeDx');
     expect(spectrumPanelSource).toContain('runtime.send');
+  });
+});
+
+// MOR-1369 (v3-rework S6b-1) — `hideScopeControls` is a pure pass-through to
+// the real (unmocked) SpectrumToolbar; no logic of its own lives here. One
+// direct DOM check per direction is enough to prove the wire is connected —
+// SpectrumToolbar.component.test.ts owns the exhaustive fact-backed/
+// view-option split.
+describe('SpectrumPanel hideScopeControls pass-through (MOR-1369, S6b-1)', () => {
+  it('omitting the prop keeps the toolbar fact-backed half reachable (default false)', () => {
+    const target = mountPanel();
+    const holdBtn = Array.from(target.querySelectorAll<HTMLButtonElement>('.toolbar-btn'))
+      .find((b) => b.textContent?.trim() === 'HOLD');
+    expect(holdBtn).toBeDefined();
+  });
+
+  it('forwards hideScopeControls=true to SpectrumToolbar, hiding the fact-backed half', () => {
+    const target = mountPanel({ hideScopeControls: true });
+    const buttons = Array.from(target.querySelectorAll<HTMLButtonElement>('.toolbar-btn'));
+    const labels = buttons.map((b) => b.textContent?.trim());
+    expect(labels).not.toContain('HOLD');
+    // the view-options half is unaffected by the forwarded prop
+    expect(labels).toContain('AVG');
+    expect(labels).toContain('PEAK');
   });
 });
 
