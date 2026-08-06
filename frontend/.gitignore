@@ -27,3 +27,6 @@ dist-ssr
 # Baseline screenshots under tests/e2e/i18n/__screenshots__/ ARE tracked.
 tests/e2e/i18n/.output
 playwright-report
+
+# Fixture verification capture output (verification-only, never committed).
+fixtures-baselines/
