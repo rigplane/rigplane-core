@@ -89,9 +89,20 @@
   export const defaultPermitLabel = (choice: BandChoice): string =>
     `TX at ${mhz(choice.defaultHz)}: ${choice.defaultHzTxPermit.status}`;
 
-  /** Rule (3): consulted ONLY once `currentBandTx` already said `denied`. */
+  /** Rule (3): consulted ONLY once `currentBandTx` already said `denied` (or,
+   *  from the fix-round F1 caveat, once the authoritative `txPermit` itself is
+   *  not `allowed`) — and only over TX-SCOPED entries. `capability-unavailable`
+   *  is ALSO emitted for `scope.hardwareScope`, `scope.audioFftScope` and each
+   *  non-operational `receiver.<id>` (radio-view-model-adapter.ts:1171-1187),
+   *  none of which explain a TX denial. The adapter records a `field:
+   *  'txPermit'` entry for EVERY non-allowed permit
+   *  (radio-view-model-adapter.ts:1164-1170), so filtering on that field is
+   *  the whole fix — a code match alone would misattribute an unrelated
+   *  capability gap as a TX-configuration fault (fix-round F2). */
   export function txDeniedReason(view: RadioViewModel): string {
-    const hit = TX_REASON_CODES.find((c) => view.disabledReasons.some((r) => r.code === c));
+    const hit = TX_REASON_CODES.find(
+      (c) => view.disabledReasons.some((r) => r.code === c && r.field === 'txPermit'),
+    );
     if (hit !== undefined) return REASON_LABEL[hit];
     return view.txPermit.status === 'allowed' ? UNRESOLVED_REASON : UNKNOWN_TEXT;
   }
@@ -152,6 +163,15 @@
       <output data-testid="band-tx-value">{band.currentBandTx}</output>
       {#if band.currentBandTx === 'denied'}
         <span data-testid="band-tx-reason">{txDeniedReason(view)}</span>
+      {:else if view.txPermit.status !== 'allowed'}
+        <!-- Fix-round F1: `band.currentBandTx` answers "may I key at the
+             ACTIVE RECEIVER's frequency" — it can say `allowed` while the
+             authoritative TX-TARGET permit (`view.txPermit`, the one 9A's
+             break-in gate and `keyBlockedReasons` both key off) disagrees,
+             e.g. under split, or while the TX target is simply unobserved.
+             That disagreement must never live only in `data-tx-permit-status`
+             — a data attribute is invisible to an operator. -->
+        <span data-testid="band-tx-caveat">TX target {view.txPermit.status}: {txDeniedReason(view)}</span>
       {/if}
     </p>
 

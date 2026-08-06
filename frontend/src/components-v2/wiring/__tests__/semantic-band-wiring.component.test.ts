@@ -348,3 +348,30 @@ describe('the rendered TX permit is the LIVE-frequency answer (7B carry-forward 
     expect(el('tx-value')!.textContent!.trim()).toBe('allowed');
   });
 });
+
+/* ── the caveat, end to end through the real adapter's two-permit split
+   (fix-round F1) ────────────────────────────────────────────────────── */
+
+describe('a split TX target surfaces the caveat, end to end (fix-round F1)', () => {
+  /**
+   * THE F1 REGRESSION PIN, end to end. MAIN (the ACTIVE receiver) sits at
+   * 14.250 — inside the 20m TX segment, so `band.currentBandTx` (scoped to
+   * the active receiver) reads `allowed`. But the TX TARGET is SUB, split to
+   * 7.250 — inside the 40m band-plan band but OUTSIDE the 40m TX segment
+   * (7.000-7.200) — so the authoritative `view.txPermit` (`tx-capabilities.ts`,
+   * keyed off `txTarget.frequencyHz`) reads `denied`. A surface that shows
+   * only `band.currentBandTx` renders an unqualified "TX HERE: allowed"
+   * while the radio would refuse to key. The caveat must be visible.
+   */
+  it('shows TX HERE: allowed but a denied TX-target caveat under split', () => {
+    h.state = liveState({
+      split: true,
+      sub: { ...slot(7250000), vfoA: slot(7250000), activeSlot: 'A', filter: 1 },
+      txTarget: { status: 'known', receiver: 'SUB', slot: 'A', frequencyHz: 7250000 },
+    } as unknown as Partial<ServerState>);
+    render();
+    expect(el('tx-value')!.textContent!.trim()).toBe('allowed');
+    expect(el('tx-caveat')).not.toBeNull();
+    expect(el('tx-caveat')!.textContent).toContain('denied');
+  });
+});

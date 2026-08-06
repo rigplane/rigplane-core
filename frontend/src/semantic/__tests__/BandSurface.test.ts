@@ -195,6 +195,57 @@ describe('currentBandTx is the live-frequency answer (carry-forwards 1 + 2)', ()
   });
 });
 
+/* ── fix-round F1: the band answer can disagree with the authoritative
+   TX-target permit, and that disagreement must be VISIBLE, not just a
+   `data-` attribute ────────────────────────────────────────────────── */
+
+describe('the TX-target permit caveat (fix-round F1)', () => {
+  // THE F1 REGRESSION PIN. `band.currentBandTx` answers for the ACTIVE
+  // RECEIVER's frequency; `view.txPermit` is the authoritative TX-TARGET
+  // permit and can disagree (e.g. under split). Before the fix this
+  // disagreement was visible only in `data-tx-permit-status` — an operator
+  // reading the text saw an unqualified "TX HERE: allowed".
+  it('renders a visible caveat when the band answer is allowed but the TX-target permit is denied', () => {
+    const view = withB({ currentBand: knownBand('20m'), currentBandTx: 'allowed' });
+    const r = render({
+      ...view,
+      txPermit: DENIED,
+      disabledReasons: [{ field: 'txPermit', code: 'out-of-band' }] as readonly DisabledReason[],
+    });
+    expect(r.text('tx-value')).toBe('allowed');
+    expect(r.el('tx-caveat')).not.toBeNull();
+    expect(r.text('tx-caveat')).toContain(REASON_LABEL['out-of-band']);
+    r.dispose();
+  });
+
+  // Same disagreement, `unknown` case — the far more common shape: an
+  // unobserved TX target. Every other TX-adjacent surface in the program
+  // treats `unknown` as fail-closed (MOR-1296 O2); this surface must not be
+  // the one place that prints an unqualified "allowed".
+  it('renders a visible caveat when the band answer is allowed but the TX-target permit is unknown', () => {
+    const view = withB({ currentBand: knownBand('20m'), currentBandTx: 'allowed' });
+    const r = render({
+      ...view,
+      txPermit: { status: 'unknown', reason: 'tx-target-unknown' },
+      disabledReasons: [{ field: 'txPermit', code: 'tx-target-unknown' }] as readonly DisabledReason[],
+    });
+    expect(r.text('tx-value')).toBe('allowed');
+    expect(r.el('tx-caveat')).not.toBeNull();
+    expect(r.text('tx-caveat')).toContain(REASON_LABEL['tx-target-unknown']);
+    r.dispose();
+  });
+
+  // Negative guard: when both permits agree on `allowed`, no caveat appears
+  // — the caveat is the DISAGREEMENT signal, not a permanent fixture.
+  it('renders no caveat when both the band answer and the TX-target permit are allowed', () => {
+    const view = withB({ currentBand: knownBand('20m'), currentBandTx: 'allowed' });
+    const r = render({ ...view, txPermit: ALLOWED, disabledReasons: [] });
+    expect(r.text('tx-value')).toBe('allowed');
+    expect(r.el('tx-caveat')).toBeNull();
+    r.dispose();
+  });
+});
+
 /* ── (c) no band-scoped disabledReason exists, by design ────────── */
 
 describe('the denial signal is the field value itself (carry-forward 3)', () => {
@@ -211,7 +262,25 @@ describe('the denial signal is the field value itself (carry-forward 3)', () => 
 
   it('never looks for a band-scoped reason code', () => {
     expect(CODE).not.toContain("'band.");
-    expect(CODE).not.toContain('field ===');
+  });
+
+  // THE F2 REGRESSION PIN. `capability-unavailable` is NOT TX-exclusive — the
+  // adapter also emits it for `scope.hardwareScope`/`scope.audioFftScope` and
+  // each non-operational `receiver.<id>`. A denial explanation that matches
+  // on CODE ALONE (ignoring `field`) renders this scope-capability gap as a
+  // TX-configuration statement, which is false: `txPermit` here is allowed,
+  // so the real cause is that the band itself could not be resolved.
+  it('ignores a non-TX reason that happens to carry a TX code', () => {
+    const view = withB({ currentBand: knownBand('20m'), currentBandTx: 'denied' });
+    const r = render({
+      ...view,
+      txPermit: ALLOWED,
+      disabledReasons: [
+        { field: 'scope.audioFftScope', code: 'capability-unavailable' },
+      ] as readonly DisabledReason[],
+    });
+    expect(r.text('tx-reason')).toBe(UNRESOLVED_REASON);
+    r.dispose();
   });
 });
 
