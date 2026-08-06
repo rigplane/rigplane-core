@@ -195,6 +195,13 @@ _SCOPE_CONTROL_PUBLIC_FIELDS = {
     "refDb": "ref_db",
     "dual": "dual",
     "receiver": "receiver",
+    # MOR-1302: ScopeSettingsPopover leaves (registered FieldSpecs added in
+    # state_pipeline_contracts.py alongside the eight above).
+    "duringTx": "during_tx",
+    "centerType": "center_type",
+    "vbwNarrow": "vbw_narrow",
+    "rbw": "rbw",
+    "fixedEdge": "fixed_edge",
 }
 # Inverse map: backend scope-control leaf name → public ``scopeControls.``
 # suffix, used to project store snapshot fields back out (MOR-557).
@@ -811,6 +818,31 @@ def _project_tx_target(field: FieldSnapshot) -> dict[str, object]:
     return cast(dict[str, object], target.to_dict())
 
 
+def _project_scope_fixed_edge(value: Any) -> dict[str, int]:
+    """Serialise a ``ScopeFixedEdge``-shaped observation value to a dict.
+
+    MOR-1302: the observation value may be a ``ScopeFixedEdge`` dataclass
+    (the 0x1E parse helper's return type) or a plain mapping (tests); either
+    way ``_camel_case_state`` needs a snake_case dict to recurse into for the
+    nested public ``scopeControls.fixedEdge`` leaf.
+    """
+
+    def _int_field(name: str) -> int:
+        raw = (
+            value.get(name)
+            if isinstance(value, Mapping)
+            else getattr(value, name, None)
+        )
+        return raw if isinstance(raw, int) and not isinstance(raw, bool) else 0
+
+    return {
+        "range_index": _int_field("range_index"),
+        "edge": _int_field("edge"),
+        "start_hz": _int_field("start_hz"),
+        "end_hz": _int_field("end_hz"),
+    }
+
+
 def _canonical_snapshot_fields(snapshot: StateSnapshot) -> tuple[FieldSnapshot, ...]:
     path = FieldPath.global_("tx_state", "tx_target")
     targets = tuple(field for field in snapshot.fields if field.path == path)
@@ -939,7 +971,9 @@ def _apply_snapshot_field(
                 scope_controls["receiver"] = 0
             elif receiver_key == "sub":
                 scope_controls["receiver"] = 1
-        if path.name in _SCOPE_CONTROL_PUBLIC_SUFFIXES:
+        if path.name == "fixed_edge":
+            scope_controls["fixed_edge"] = _project_scope_fixed_edge(value)
+        elif path.name in _SCOPE_CONTROL_PUBLIC_SUFFIXES:
             scope_controls[path.name] = value
 
 

@@ -1250,6 +1250,16 @@ def _global_specs() -> tuple[FieldSpec, ...]:
         spec(FieldPath.scope_control("display", "hold"), "bool"),
         spec(FieldPath.scope_control("display", "ref_db"), "float", unit="db"),
         spec(FieldPath.scope_control("display", "speed"), "int"),
+        # MOR-1302: the five ScopeSettingsPopover leaves on ScopeControlsPublic
+        # that had no registered spec (verified against the 0x27 sub-command
+        # decoders in runtime/_civ_rx.py: 0x1B during_tx, 0x1C center_type,
+        # 0x1D vbw_narrow, 0x1E fixed_edge, 0x1F rbw). Read-only, same as the
+        # eight leaves above -- writes go through the scope command path.
+        spec(FieldPath.scope_control("display", "during_tx"), "bool"),
+        spec(FieldPath.scope_control("display", "center_type"), "int"),
+        spec(FieldPath.scope_control("display", "vbw_narrow"), "bool"),
+        spec(FieldPath.scope_control("display", "rbw"), "int"),
+        spec(FieldPath.scope_control("display", "fixed_edge"), "object"),
     )
 
 
