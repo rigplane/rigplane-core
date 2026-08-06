@@ -493,9 +493,12 @@ export function withScopeControls(fixture: RadioViewModel): RadioViewModel {
 }
 
 /**
- * Applies a fully-observed `scopeDisplay` group (MOR-1262 slice 12A/
- * MOR-1301, the FINAL A-slice) to any topology fixture — same
- * composable-axis story as `withScopeControls` above.
+ * Applies a fully-observed `scopeDisplay` group (MOR-1262 slice 12A/12B,
+ * MOR-1301/MOR-1312) to any topology fixture — same composable-axis story as
+ * `withScopeControls` above. `hardwareConnected` (12B) defaults to matching
+ * `source`/`health` (hardware, connected) — the case where the leaf is
+ * redundant with `health`; callers exercising the `audio_fft` residual
+ * (MOR-1352) override it explicitly.
  */
 export function withScopeDisplay(fixture: RadioViewModel): RadioViewModel {
   const avail: Availability = { structural: true, operational: true };
@@ -505,6 +508,7 @@ export function withScopeDisplay(fixture: RadioViewModel): RadioViewModel {
   const scopeDisplay: ScopeDisplayViewModel = {
     source: known('hardware'),
     health: known('connected'),
+    hardwareConnected: known(true),
   };
   return { ...fixture, scopeDisplay };
 }

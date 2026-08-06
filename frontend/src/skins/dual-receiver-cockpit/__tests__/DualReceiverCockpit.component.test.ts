@@ -46,6 +46,17 @@ vi.mock('$lib/runtime', () => ({
     // RX-audio snapshot (the FOURTH argument).
     get audio() { return { muted: true, rxEnabled: false, volume: 0 }; },
     get connectionAudio() { return false; },
+    // MOR-1312 slice 12B: the wiring now also hands the adapter a
+    // scope-display snapshot (the FIFTH argument). This fixture declares no
+    // scope capability, so this stays on its pre-1312 path regardless.
+    get defaultScopeStatus() {
+      return {
+        source: null, available: false, resourceSelected: false, demand: 0,
+        lifecycle: 'inactive', transport: 'disconnected', frameSeen: false,
+      };
+    },
+    get radioPowerOn() { return null; },
+    get scope() { return { hardwareScopeConnected: false }; },
   },
 }));
 vi.mock('$lib/runtime/tx-controller/app-host', () => ({
@@ -286,6 +297,14 @@ const audioOnlyScopeCaps = (): Capabilities => ({
   ...mainSubCaps(), scope: false,
   capabilities: mainSubCaps().capabilities.filter((t) => t !== 'scope'),
   audioFftAvailable: true,
+  // MOR-1312 slice 12B (rebase fix): `hasAnyScopeCap` (the scopeDisplay
+  // facts gate, radio-view-model-adapter.ts) reads `scopeSource`, not
+  // `audioFftAvailable` — this fixture predates 12B and only set the latter.
+  // Naming the audio-FFT source here keeps `hasAnyScopeCap` true across both
+  // caps variants in this describe block, matching this fixture's own intent
+  // (scope=false but audio-FFT IS an available scope source) and preserving
+  // the "changes nothing in the cockpit" invariant the test proves.
+  scopeSource: 'audio_fft',
 } as unknown as Capabilities);
 
 /**

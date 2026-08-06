@@ -50,6 +50,16 @@ vi.mock('$lib/runtime', async () => {
     get caps() { subscribe(); return { tx: true, capabilities: ['tx'] }; },
     get radioPowerOn() { subscribe(); return h.radioPowerOn; },
     get system() { return { powerOn: h.powerOn }; },
+    // MOR-1312 slice 12B (rebase fix): `SemanticRadioSurfaces`'s scope-display
+    // snapshot (the FIFTH adapter argument) reads these two directly; this
+    // fixture declares no scope capability.
+    get defaultScopeStatus() {
+      return {
+        source: null, available: false, resourceSelected: false, demand: 0,
+        lifecycle: 'inactive', transport: 'disconnected', frameSeen: false,
+      };
+    },
+    get scope() { return { hardwareScopeConnected: false }; },
     bootstrap: h.bootstrap,
     setPollingMultiplier: vi.fn(),
   };

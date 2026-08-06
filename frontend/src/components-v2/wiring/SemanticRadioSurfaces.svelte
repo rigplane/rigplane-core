@@ -45,6 +45,7 @@
   import RitXitScanSurface from '../../semantic/RitXitScanSurface.svelte';
   import RxAudioSurface from '../../semantic/RxAudioSurface.svelte';
   import RxTxSurface from '../../semantic/RxTxSurface.svelte';
+  import ScopeDisplaySurface from '../../semantic/ScopeDisplaySurface.svelte';
   import TxAuxSurface, {
     type TxAuxLevelField, type TxAuxToggleField,
   } from '../../semantic/TxAuxSurface.svelte';
@@ -316,14 +317,38 @@
     routing: null,
   });
 
+  /**
+   * MOR-1312 (slice 12B) — the App-owned scope-display snapshot the
+   * `scopeDisplay` facts are read against (MOR-1301's FIFTH adapter
+   * argument). Every member is state this layer already holds — nothing
+   * here opens, starts or probes the scope resource (MOR-972 P0); scope
+   * lifetime stays App-owned (MOR-1058), same discipline `rxAudioSnapshot`
+   * above uses for audio.
+   *
+   * `...runtime.defaultScopeStatus` spreads `source`/`available`/
+   * `resourceSelected`/`demand`/`lifecycle`/`transport`/`frameSeen` verbatim
+   * — the field-name mirroring `ScopeDisplaySnapshot`'s own doc comment
+   * documents. `isPoweredOff` is the status bar's own override input
+   * (`StatusBar.svelte`'s `isPoweredOff`), read from the SAME
+   * `runtime.radioPowerOn` getter rather than re-derived. `hardwareConnected`
+   * is the MOR-1312 addition (MOR-1352 finding) — `runtime.scope`'s own
+   * hardware-transport flag, independent of `source`.
+   */
+  let scopeDisplaySnapshot = $derived({
+    ...runtime.defaultScopeStatus,
+    isPoweredOff: runtime.radioPowerOn === false,
+    hardwareConnected: runtime.scope.hardwareScopeConnected,
+  });
+
   // Belt-and-braces contract pin. The adapter now annotates its own return
   // type (MOR-1065 ruling 2), so this is the second of two compile-time links.
   // MOR-1262 slice 2A: the live authority snapshot is the THIRD argument — the
   // meter facts read their TX relevance from it and never from `state.ptt`
   // (invariant R9). Without it the adapter emits no `meters` group at all.
   // MOR-1279 slice 3B: the RX-audio snapshot is the FOURTH.
+  // MOR-1312 slice 12B: the scope-display snapshot is the FIFTH.
   let view: RadioViewModel | null = $derived(
-    toRadioViewModel(runtime.state, runtime.caps, txState, rxAudioSnapshot),
+    toRadioViewModel(runtime.state, runtime.caps, txState, rxAudioSnapshot, scopeDisplaySnapshot),
   );
 
   // Bound once per instance, never per render — see `surfaceSeq` above.
@@ -887,6 +912,30 @@
     {/if}
   {/snippet}
 
+  <!--
+    MOR-1312 (vocabulary slice 12B — the LAST vocabulary slice). Same
+    structural gate and same reasoning as `txAuxSurface`/`metersSurface`
+    above: the surface mounts only when the view model actually carries the
+    MOR-1301 `scopeDisplay` group, so a radio with neither a hardware scope
+    nor an audio-FFT source renders the pre-1312 element shape exactly.
+    Bare and unzoned in BOTH compositions, the `meters`/`txAux` shape, NOT
+    `rxAudio`'s single-only shape: `ScopeDisplaySurface` renders zero
+    focusable elements (pinned in `__tests__/ScopeDisplaySurface.test.ts` and
+    re-pinned below at the composed-tree level), so it carries none of the
+    MOR-1069 tab-order risk a control-bearing surface would. `'scopeDisplay'`
+    becomes DECLARABLE with this slice, so a manifest gains the surface the
+    moment it declares a zone for it — a layout decision, separately
+    reviewed, exactly as txAux/meters/rxAudio left it.
+
+    It takes NO intent callbacks: a source/health/hardware readout has no
+    action to offer (v3 ADR invariant 11).
+  -->
+  {#snippet scopeDisplaySurface()}
+    {#if view?.scopeDisplay}
+      <ScopeDisplaySurface {view} />
+    {/if}
+  {/snippet}
+
   {#if strips === 'dual'}
     <!--
       MOR-1258: the zone now carries RxTxSurface AND the two TX-adjacent
@@ -910,6 +959,7 @@
     </div>
     {@render zoned('txAux', view?.txAux !== undefined, txAuxSurface)}
     {@render zoned('meters', view?.meters !== undefined, metersSurface)}
+    {@render zoned('scopeDisplay', view?.scopeDisplay !== undefined, scopeDisplaySurface)}
   {:else}
     <!--
       Single/default path (sdr-test / LCD / mobile): no bound zone exists
@@ -939,6 +989,7 @@
       'ritXitScan', view?.ritXit !== undefined || view?.scan !== undefined, ritXitScanSurface,
     )}
     {@render zoned('cwKeyer', view?.cwKeyer !== undefined, cwKeyerSurface)}
+    {@render zoned('scopeDisplay', view?.scopeDisplay !== undefined, scopeDisplaySurface)}
     {@render txAdjacentAlerts()}
   {/if}
 </div>

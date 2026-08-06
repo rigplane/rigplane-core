@@ -43,6 +43,14 @@ vi.mock('../../../lib/runtime/frontend-runtime', () => ({
     radioPowerOn: null,
     connection: { status: 'disconnected', radioPowerOn: null },
     audio: { rxEnabled: false, txEnabled: false, volume: 50, muted: false },
+    connectionAudio: false,
+    // MOR-1312 slice 12B: see the `$lib/runtime` mock below for why these
+    // are fixed, honest "never observed" defaults.
+    defaultScopeStatus: {
+      source: null, available: false, resourceSelected: false, demand: 0,
+      lifecycle: 'inactive', transport: 'disconnected', frameSeen: false,
+    },
+    scope: { hardwareScopeConnected: false },
     bootstrap: vi.fn(async () => vi.fn()),
     setPollingMultiplier: vi.fn(),
     send: vi.fn(),
@@ -62,6 +70,17 @@ vi.mock('$lib/runtime', () => ({
     radioPowerOn: null,
     connection: { status: 'disconnected', radioPowerOn: null },
     audio: { rxEnabled: false, txEnabled: false, volume: 50, muted: false },
+    connectionAudio: false,
+    // MOR-1312 slice 12B: `SemanticRadioSurfaces` now also reads
+    // `runtime.defaultScopeStatus` / `runtime.scope.hardwareScopeConnected`
+    // for the scope-display snapshot (the FIFTH adapter argument). `caps` is
+    // `null` here, so `toRadioViewModel` returns `null` regardless — these
+    // are fixed, honest "never observed" defaults, not exercised behavior.
+    defaultScopeStatus: {
+      source: null, available: false, resourceSelected: false, demand: 0,
+      lifecycle: 'inactive', transport: 'disconnected', frameSeen: false,
+    },
+    scope: { hardwareScopeConnected: false },
     send: vi.fn(),
   },
 }));

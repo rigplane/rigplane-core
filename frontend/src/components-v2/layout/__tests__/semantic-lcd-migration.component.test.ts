@@ -68,6 +68,9 @@ const h = vi.hoisted(() => {
     scope: {
       registerPresentationDriver: vi.fn(),
       subscribe: vi.fn(() => () => {}),
+      // MOR-1312 slice 12B: `SemanticRadioSurfaces`'s scope-display snapshot
+      // reads `runtime.scope.hardwareScopeConnected` directly.
+      hardwareScopeConnected: false,
     },
     /**
      * The runtime facade is REACTIVE, not a plain getter box: the MOR-557
@@ -93,6 +96,13 @@ const h = vi.hoisted(() => {
           radioPowerOn: null,
           connection: { status: 'disconnected', radioPowerOn: null },
           audio: { rxEnabled: false, txEnabled: false, volume: 50, muted: false },
+          connectionAudio: false,
+          // MOR-1312 slice 12B: the scope-display snapshot (the FIFTH
+          // adapter argument) — no fixture here declares a scope capability.
+          defaultScopeStatus: {
+            source: null, available: false, resourceSelected: false, demand: 0,
+            lifecycle: 'inactive', transport: 'disconnected', frameSeen: false,
+          },
           bootstrap: async () => () => {},
           setPollingMultiplier: () => {},
           send: () => {},

@@ -30,7 +30,16 @@ vi.mock('$lib/runtime/adapters/panel-adapters', () => ({
 
 vi.mock('$lib/runtime', () => ({
   runtime: {
-    scope: { subscribe: vi.fn(() => vi.fn()) },
+    // MOR-1312 slice 12B (rebase fix): `SemanticRadioSurfaces`'s scope-display
+    // snapshot reads `runtime.scope.hardwareScopeConnected` directly; this
+    // fixture's own `scope` store shape (`subscribe`) is unrelated but shares
+    // the same key. `AmberScope` here does not mount `SemanticRadioSurfaces`,
+    // so this is defensive rather than a live hazard.
+    scope: { subscribe: vi.fn(() => vi.fn()), hardwareScopeConnected: false },
+    defaultScopeStatus: {
+      source: null, available: false, resourceSelected: false, demand: 0,
+      lifecycle: 'inactive', transport: 'disconnected', frameSeen: false,
+    },
   },
 }));
 
