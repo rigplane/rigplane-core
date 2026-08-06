@@ -111,6 +111,16 @@
   // earns this line a second term — not a subset manifest landing.
   let semanticRxTx = $derived(semanticDeck);
 
+  // MOR-1341 (v3-rework S5) — same per-zone rule as `semanticRxTx` above,
+  // applied to the bottom dock: the legacy `<MetersDockPanel>` retires the
+  // moment a declared zone mounts the `meters` surface, and survives
+  // untouched for any layout that declares no such zone. Unlike `vfo`/`rxTx`
+  // this area carries no R9 stranded-transmitter hazard (a meter is a
+  // readout, never a key/unkey affordance), so there is no asymmetric
+  // "follow the deck, not the zone" rule to restate here — `declared` is the
+  // whole answer.
+  let semanticMeters = $derived(declared.has('meters'));
+
   // Reactive state + capabilities — via runtime
   let radioState = $derived(runtime.state);
   let caps = $derived(runtime.caps);
@@ -328,19 +338,21 @@
     </div>
   </section>
 
-  <section class="bottom-dock">
-    <MetersDockPanel
-      sValue={radioState?.active === 'SUB' ? radioState?.sub?.sMeter : radioState?.main?.sMeter}
-      powerMeter={radioState?.powerMeter}
-      swrMeter={radioState?.swrMeter}
-      alcMeter={radioState?.alcMeter}
-      idMeter={radioState?.idMeter}
-      vdMeter={radioState?.vdMeter}
-      compMeter={radioState?.compMeter}
-      compressorOn={radioState?.compressorOn}
-      txActive={meterTxActive}
-    />
-  </section>
+  {#if !semanticMeters}
+    <section class="bottom-dock">
+      <MetersDockPanel
+        sValue={radioState?.active === 'SUB' ? radioState?.sub?.sMeter : radioState?.main?.sMeter}
+        powerMeter={radioState?.powerMeter}
+        swrMeter={radioState?.swrMeter}
+        alcMeter={radioState?.alcMeter}
+        idMeter={radioState?.idMeter}
+        vdMeter={radioState?.vdMeter}
+        compMeter={radioState?.compMeter}
+        compressorOn={radioState?.compressorOn}
+        txActive={meterTxActive}
+      />
+    </section>
+  {/if}
 </div>
 {/if}
 

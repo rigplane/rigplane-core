@@ -336,6 +336,22 @@ describe('desktop-v2 resolves through the v3 path (MOR-1313)', () => {
     expect(t.querySelector('[data-testid="tx-strip"]')).toBeNull();
   });
 
+  // MOR-1341 (S5) — the bottom dock joins the matrix. `desktop-v2` now
+  // declares a `meters` zone too, so `<MetersDockPanel>` retires the moment
+  // the view model actually carries the group. Proven with a state that
+  // reports a real meter reading, not the bare `liveState()` fixture every
+  // other test in this describe uses — that fixture reports NO meter fields
+  // at all, so it would pass this assertion vacuously (both the dock and the
+  // semantic surface self-gate away) and prove nothing about suppression.
+  it('drops the legacy meters dock in favour of the semantic meters surface', () => {
+    const state = liveState() as { main: Record<string, unknown> };
+    h.state = { ...state, main: { ...state.main, sMeter: 120 } };
+    const t = render('desktop-v2');
+    expect(t.querySelector('.bottom-dock')).toBeNull();
+    expect(t.querySelector('[data-testid="meters-dock-panel"]')).toBeNull();
+    expect(t.querySelector('[data-testid="meters-surface"]')).not.toBeNull();
+  });
+
   // R9, asserted BEHAVIORALLY rather than by import absence: whatever the zone
   // shape, the screen carries exactly ONE key/unkey authority. Counting both
   // the semantic surface and the legacy panel in one query is what makes a
@@ -351,13 +367,15 @@ describe('desktop-v2 resolves through the v3 path (MOR-1313)', () => {
 
   // The rest of the shell is chrome, not a zone: nothing about suppression
   // may reach it. Same claim the sdr-test block above makes, restated for the
-  // family that actually ships to every Icom radio.
+  // family that actually ships to every Icom radio. `.bottom-dock` is
+  // deliberately NOT asserted here any more (MOR-1341): it is now itself a
+  // suppressed twin, not part of "the rest" — its own matrix entry is the
+  // dedicated test above.
   it('leaves the rest of the layout intact', () => {
     const t = render('desktop-v2');
     expect(t.querySelector('.content-left .left-sidebar')).not.toBeNull();
     expect(t.querySelector('.content-right .right-sidebar')).not.toBeNull();
     expect(t.querySelector('.center-column .spectrum-slot')).not.toBeNull();
-    expect(t.querySelector('.bottom-dock [data-testid="meters-dock-panel"]')).not.toBeNull();
     expect(t.querySelector('[data-panel-id="rx-audio"]')).not.toBeNull();
     expect(t.querySelector('[data-panel-id="memory"]')).not.toBeNull();
   });
