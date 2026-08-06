@@ -73,6 +73,16 @@
    *  TARGET may key, so what is missing is the band-scoped resolution itself
    *  (unobserved live frequency, or a frequency in no band of the plan). */
   export const UNRESOLVED_REASON = 'current band could not be resolved';
+  /** MOR-1389: the denial's words when `deriveBand`'s MOR-1356
+   *  `activeConfirmed` gate is what forced 'denied', with the current band
+   *  ITSELF resolved and rendered. `UNRESOLVED_REASON` is false in that
+   *  state — the band is not unresolved, the receiver serving it is
+   *  unconfirmed — so it needs its own, equally honest, sentence. Named for
+   *  exactly what `activeReceiver.status === 'unknown'` carries (rule (4)'s
+   *  own gate): identity is unconfirmed, not "stale" or "never observed" —
+   *  `seen()`'s three-part AND collapses those into one signal upstream, so
+   *  claiming more than this would be a fact this file does not have. */
+  export const ACTIVE_RECEIVER_UNCONFIRMED_REASON = 'active receiver identity was not confirmed';
 
   export const usable = (f: BandField<unknown>): boolean =>
     f.availability.structural && f.availability.operational && f.reading.status === 'known';
@@ -98,13 +108,28 @@
    *  'txPermit'` entry for EVERY non-allowed permit
    *  (radio-view-model-adapter.ts:1164-1170), so filtering on that field is
    *  the whole fix — a code match alone would misattribute an unrelated
-   *  capability gap as a TX-configuration fault (fix-round F2). */
+   *  capability gap as a TX-configuration fault (fix-round F2). This
+   *  `field === 'txPermit'` match is NEVER weakened or bypassed below.
+   *
+   *  MOR-1389: a `field: 'txPermit'` reason is not the only way `denied` can
+   *  arise. `deriveBand`'s MOR-1356 `activeConfirmed` gate can force it with
+   *  no such entry at all — the true reason is `field: 'activeReceiver'`,
+   *  which the match above correctly ignores (it is not a TX-scoped fault;
+   *  rule (3) reserves `TX_REASON_CODES` for those). Once the TX-scoped
+   *  search comes up empty, `view.activeReceiver.status` — the SAME top-level
+   *  fact rule (4)'s `receiverKnown` reads, not a re-derivation — decides
+   *  between the two remaining, mutually exclusive explanations: the
+   *  receiver is unconfirmed (band resolved, rendered above), or the band
+   *  itself could not be resolved (the pre-existing fallback, still true in
+   *  that state). */
   export function txDeniedReason(view: RadioViewModel): string {
     const hit = TX_REASON_CODES.find(
       (c) => view.disabledReasons.some((r) => r.code === c && r.field === 'txPermit'),
     );
     if (hit !== undefined) return REASON_LABEL[hit];
-    return view.txPermit.status === 'allowed' ? UNRESOLVED_REASON : UNKNOWN_TEXT;
+    if (view.txPermit.status !== 'allowed') return UNKNOWN_TEXT;
+    if (view.activeReceiver.status === 'unknown') return ACTIVE_RECEIVER_UNCONFIRMED_REASON;
+    return UNRESOLVED_REASON;
   }
 </script>
 

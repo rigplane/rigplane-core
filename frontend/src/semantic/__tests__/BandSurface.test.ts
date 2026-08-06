@@ -23,7 +23,8 @@ import { readFileSync } from 'node:fs';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { flushSync, mount, unmount } from 'svelte';
 import BandSurface, {
-  REASON_LABEL, UNKNOWN_TEXT, UNRESOLVED_REASON, defaultPermitLabel, mhz,
+  ACTIVE_RECEIVER_UNCONFIRMED_REASON, REASON_LABEL, UNKNOWN_TEXT, UNRESOLVED_REASON,
+  defaultPermitLabel, mhz,
 } from '../BandSurface.svelte';
 import { topologyFixtures, withBand } from '../fixtures/topologies';
 import type { FrequencyPermit } from '$lib/utils/tx-permit';
@@ -280,6 +281,81 @@ describe('the denial signal is the field value itself (carry-forward 3)', () => 
       ] as readonly DisabledReason[],
     });
     expect(r.text('tx-reason')).toBe(UNRESOLVED_REASON);
+    r.dispose();
+  });
+});
+
+/* ── three-way denial reason (MOR-1389, MOR-1356 verify §4.4) ──────
+   `deriveBand`'s MOR-1356 `activeConfirmed` gate can force `currentBandTx`
+   to 'denied' while the CURRENT BAND is resolved and rendered right above
+   the readout. Before this ticket, `txDeniedReason`'s F2 field==='txPermit'
+   match found no entry (the true reason is `field: 'activeReceiver'`) and
+   fell through to the "band could not be resolved" fallback — false, since
+   the band IS resolved. These three tests pin the resulting three-way
+   split; the middle one is the ticket's own repro. ────────────────── */
+
+describe('the three-way denial reason distinguishes an unconfirmed receiver (MOR-1389)', () => {
+  // Row 1 — genuinely out of band: band resolved, receiver confirmed, a
+  // recorded TX-scoped reason explains it. UNCHANGED by this ticket — F2's
+  // field==='txPermit' match still owns this text and must keep owning it.
+  it('keeps the recorded out-of-band explanation when the receiver IS confirmed', () => {
+    const view = withB({ currentBand: knownBand('20m'), currentBandTx: 'denied' });
+    const r = render({
+      ...view,
+      txPermit: DENIED,
+      disabledReasons: [{ field: 'txPermit', code: 'out-of-band' }] as readonly DisabledReason[],
+    });
+    expect(r.text('current-value')).toBe('20m');
+    expect(r.text('tx-reason')).toBe(REASON_LABEL['out-of-band']);
+    r.dispose();
+  });
+
+  // Row 2 — THE TICKET. `activeReceiver` is unknown, the band is resolved,
+  // and nothing in `disabledReasons` carries a `field: 'txPermit'` entry
+  // (`txPermit` itself reads allowed — MOR-1356's exact rendered repro).
+  // The old fallback said "current band could not be resolved" while
+  // `BAND` showed `20m` directly above it. The new text must be a TRUE
+  // sentence about the receiver, not the band.
+  it('names the unconfirmed receiver instead of the band-unresolved fallback', () => {
+    const view = withB({ currentBand: knownBand('20m'), currentBandTx: 'denied' });
+    const r = render({
+      ...view,
+      activeReceiver: { status: 'unknown' },
+      txPermit: ALLOWED,
+      disabledReasons: [
+        { field: 'activeReceiver', code: 'field-not-observed' },
+      ] as readonly DisabledReason[],
+    });
+    expect(r.text('current-value')).toBe('20m');
+    expect(r.text('tx-reason')).toBe(ACTIVE_RECEIVER_UNCONFIRMED_REASON);
+    expect(r.text('tx-reason')).not.toBe(UNRESOLVED_REASON);
+    r.dispose();
+  });
+
+  // Row 3 — the band genuinely could not be resolved: receiver confirmed,
+  // no out-of-band code. The fallback text is TRUE here and must survive
+  // untouched.
+  it('keeps the band-unresolved fallback when the band itself is unread', () => {
+    const view = withB({ currentBand: unreadBand(), currentBandTx: 'denied' });
+    const r = render({ ...view, txPermit: ALLOWED, disabledReasons: [] });
+    expect(r.text('current-value')).toBe(UNKNOWN_TEXT);
+    expect(r.text('tx-reason')).toBe(UNRESOLVED_REASON);
+    r.dispose();
+  });
+
+  // The distinguishing signal named in rule (4) — band-choice buttons dim
+  // while the active receiver is unconfirmed — must still hold in exactly
+  // the state row 2 renders the new sentence for.
+  it('still dims every band-choice button in the unconfirmed-receiver denial state', () => {
+    const r = render({
+      ...withB({ currentBand: knownBand('20m'), currentBandTx: 'denied' }),
+      activeReceiver: { status: 'unknown' },
+      txPermit: ALLOWED,
+      disabledReasons: [
+        { field: 'activeReceiver', code: 'field-not-observed' },
+      ] as readonly DisabledReason[],
+    });
+    for (const name of ['40m', '20m', 'MW']) expect(r.btn(`choice-${name}`)!.disabled).toBe(true);
     r.dispose();
   });
 });
