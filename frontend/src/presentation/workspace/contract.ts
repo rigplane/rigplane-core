@@ -49,7 +49,7 @@ export const WORKSPACE_THEME_IDS = [
 export type WorkspaceThemeId = (typeof WORKSPACE_THEME_IDS)[number];
 
 /** Every zone id declared by a registered layout manifest (decisions 5 and 6). */
-export const WORKSPACE_ZONE_IDS = ['main', 'receiver-deck', 'rx-tx', 'primary-vfo', 'secondary-vfo', 'global', 'portrait-deck', 'control-column', 'tx-aux', 'meters', 'scope-display', 'filter', 'rf-front-end', 'band', 'antenna', 'rit-xit-scan', 'rx-audio', 'dsp', 'cw-keyer'] as const;
+export const WORKSPACE_ZONE_IDS = ['main', 'receiver-deck', 'rx-tx', 'primary-vfo', 'secondary-vfo', 'global', 'portrait-deck', 'control-column', 'tx-aux', 'meters', 'scope-display', 'filter', 'rf-front-end', 'band', 'antenna', 'rit-xit-scan', 'rx-audio', 'dsp', 'cw-keyer', 'scope-controls'] as const;
 export type WorkspaceZoneId = (typeof WORKSPACE_ZONE_IDS)[number];
 
 /** Decision 7: command-bus intent names (`set_compressor`), never module paths. */

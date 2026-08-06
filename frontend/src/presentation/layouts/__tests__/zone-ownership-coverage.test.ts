@@ -5,7 +5,8 @@
  * MOR-1317 is the defect "a surface exists in the vocabulary but nothing
  * decides whether the flagship skin owns it", and the rework tail closes it
  * family by family (S6a scopeDisplay, S7 filter/rfFrontEnd, S8
- * band/antenna/ritXitScan, S9 rxAudio/dsp/cwKeyer). What made it a defect
+ * band/antenna/ritXitScan, S9 rxAudio/dsp/cwKeyer, S6b-2 scopeControls). What
+ * made it a defect
  * rather than a backlog item is that the gap was invisible: a surface could be
  * added to `SEMANTIC_SURFACE_NAMES`, wired, shipped — and double-presented
  * beside its legacy twin forever — without any test noticing that nobody had
@@ -19,8 +20,11 @@
  * whole point. The reason strings are not decoration: they are what the next
  * slice reads instead of guessing.
  *
- * Deliberately NOT a claim that every surface belongs on desktop-v2. Two of
- * the recorded reasons are permanent-by-design; the rest name their slice.
+ * MOR-1370 (S6b-2) declares the `scopeControls` zone — the last excused
+ * surface in the vocabulary — which empties `RECORDED_REASONS` below. THE
+ * LEDGER IS NOW EMPTY: every `SEMANTIC_SURFACE_NAMES` member is zone-owned on
+ * `desktop-v2`, and the partition pin holds with zero excused entries. That is
+ * the intended terminal state, not a gap — MOR-1317 closes program-wide here.
  */
 import { describe, it, expect } from 'vitest';
 import {
@@ -36,17 +40,14 @@ const OWNED = declaredSurfaces(desktopV2Layout);
  * The complement, with the decision that put each name here. A surface leaves
  * this map only by gaining a `desktop-v2` zone in the same commit.
  *
- * `filter`, `rfFrontEnd` (S7), `band`, `antenna`, `ritXitScan` (S8) and
- * `rxAudio`, `dsp`, `cwKeyer` (S9, this slice) have all graduated to real
- * zones on `desktopV2Layout` — `OWNED` now covers them, so an entry here
- * would fail both the partition pin and the overlap pin below. `scopeControls`
- * is the one surface in the whole MOR-1262 vocabulary still excused.
+ * `filter`, `rfFrontEnd` (S7), `band`, `antenna`, `ritXitScan` (S8),
+ * `rxAudio`, `dsp`, `cwKeyer` (S9) and `scopeControls` (S6b-2, this slice)
+ * have all graduated to real zones on `desktopV2Layout` — `OWNED` now covers
+ * every one of them, so an entry here would fail both the partition pin and
+ * the overlap pin below. ALL GRADUATED: the map is empty, which is the
+ * terminal state this ledger exists to reach, not a gap.
  */
-const RECORDED_REASONS: Partial<Record<SemanticSurfaceName, string>> = {
-  scopeControls:
-    'S6b-2. 11B/MOR-1311 built the surface; the scope toolbar it replaces is not on the '
-    + 'MOR-1364 suppression channel yet, so declaring the zone today would double-present it.',
-};
+const RECORDED_REASONS: Partial<Record<SemanticSurfaceName, string>> = {};
 
 describe('MOR-1317 — every semantic surface has a desktop-v2 decision', () => {
   /**

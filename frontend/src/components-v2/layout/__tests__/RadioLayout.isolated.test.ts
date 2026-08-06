@@ -111,8 +111,6 @@ import App from '../../../App.svelte';
 import { extractVfoState, extractMeterState, hasLiveAudioFromState } from '../layout-utils';
 import { radio } from '$lib/stores/radio.svelte';
 import { resolveSkinId, type SkinId } from '../../../skins/registry';
-import { registerLayout, type LayoutManifest } from '../../../presentation/layouts/contract';
-import { desktopV2Layout } from '../../../presentation/layouts/declarations';
 
 // ---------------------------------------------------------------------------
 // extractVfoState
@@ -380,23 +378,6 @@ let components: ReturnType<typeof mount>[] = [];
  */
 const UNDECLARED = 'no-such-layout' as SkinId;
 
-/**
- * MOR-1369 (v3-rework S6b-1) — the `scopeControls` zone S6b-2 will declare
- * does not exist on `desktop-v2` yet, but the `hideScopeControls` channel
- * this slice wires must already compute correctly the moment one does.
- * Spread from the real desktop-v2 manifest, same `probeManifest` recipe as
- * `semantic-desktop-migration.component.test.ts`'s VFO_ONLY/RX_TX_ONLY
- * probes (S2/MOR-1313) — differs from the shipped layout in exactly the one
- * zone under test.
- */
-const SCOPE_CONTROLS_PROBE = 'scope-controls-probe' as SkinId;
-registerLayout({
-  ...desktopV2Layout,
-  id: SCOPE_CONTROLS_PROBE,
-  displayName: SCOPE_CONTROLS_PROBE,
-  zones: [...desktopV2Layout.zones, { id: 'scope-controls', surfaces: ['scopeControls'] }],
-} satisfies LayoutManifest);
-
 function mountLayout(skinId: SkinId = 'desktop-v2') {
   const t = document.createElement('div');
   document.body.appendChild(t);
@@ -505,23 +486,23 @@ describe('RadioLayout structure', () => {
 // (`SpectrumPanelStub`'s `data-hide-scope-controls`); the SpectrumToolbar
 // half (which controls are fact-backed vs client-side view options, per the
 // S10 boundary doc) is proven directly in `SpectrumToolbar.component.test.ts`.
-describe('SpectrumPanel hideScopeControls channel (MOR-1369, S6b-1)', () => {
-  it('passes hideScopeControls=false when no manifest declares a scopeControls zone (INERT today)', () => {
+//
+// MOR-1370 (S6b-2) graduates the flip: `desktop-v2` now REALLY declares a
+// `scope-controls` zone, so the synthetic probe manifest this describe used
+// to register is retired in favour of the real manifest — the same
+// graduation `semantic-desktop-migration.component.test.ts`'s `ZONES`
+// literal recorded for S7/S8/S9.
+describe('SpectrumPanel hideScopeControls channel (MOR-1369 S6b-1, MOR-1370 S6b-2)', () => {
+  it('passes hideScopeControls=true on real desktop-v2, which declares the scope-controls zone', () => {
     const t = mountLayout('desktop-v2');
     const stub = t.querySelector('.spectrum-panel-stub');
-    expect(stub?.getAttribute('data-hide-scope-controls')).toBe('false');
+    expect(stub?.getAttribute('data-hide-scope-controls')).toBe('true');
   });
 
-  it('stays false on an undeclared layout too (fail-safe direction)', () => {
+  it('stays false on an undeclared layout (fail-safe direction)', () => {
     const t = mountLayout(UNDECLARED);
     const stub = t.querySelector('.spectrum-panel-stub');
     expect(stub?.getAttribute('data-hide-scope-controls')).toBe('false');
-  });
-
-  it('passes hideScopeControls=true the moment a manifest declares a scopeControls zone (S6b-2 flip-test-ready)', () => {
-    const t = mountLayout(SCOPE_CONTROLS_PROBE);
-    const stub = t.querySelector('.spectrum-panel-stub');
-    expect(stub?.getAttribute('data-hide-scope-controls')).toBe('true');
   });
 });
 

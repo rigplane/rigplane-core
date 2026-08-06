@@ -58,7 +58,7 @@ describe('declared zones now drive the DOM (MOR-1263 step 2, MOR-1313)', () => {
   it('declares receiver-deck:[vfo], rx-tx:[rxTx], tx-aux:[txAux], meters:[meters], '
     + 'scope-display:[scopeDisplay], filter:[filter], rf-front-end:[rfFrontEnd], '
     + 'band:[band], antenna:[antenna], rit-xit-scan:[ritXitScan], rx-audio:[rxAudio], '
-    + 'dsp:[dsp] and cw-keyer:[cwKeyer]', () => {
+    + 'dsp:[dsp], cw-keyer:[cwKeyer] and scope-controls:[scopeControls]', () => {
     expect(desktopV2Layout.zones).toEqual([
       { id: 'receiver-deck', surfaces: ['vfo'] },
       { id: 'rx-tx', surfaces: ['rxTx'] },
@@ -85,6 +85,9 @@ describe('declared zones now drive the DOM (MOR-1263 step 2, MOR-1313)', () => {
       { id: 'rx-audio', surfaces: ['rxAudio'] },
       { id: 'dsp', surfaces: ['dsp'] },
       { id: 'cw-keyer', surfaces: ['cwKeyer'] },
+      // MOR-1370 (S6b-2): scopeControls becomes zone-owned, the LAST surface
+      // in the MOR-1262 vocabulary to graduate. Not required.
+      { id: 'scope-controls', surfaces: ['scopeControls'] },
     ]);
     expect([...desktopV2Layout.requiredSemanticSurfaces].sort()).toEqual(['rxTx', 'vfo']);
   });
@@ -106,7 +109,7 @@ describe('declared zones now drive the DOM (MOR-1263 step 2, MOR-1313)', () => {
   // is per-zone rather than per-manifest-first-zone.
   it('its zones flatten to the surfaces the shell suppresses legacy twins for', () => {
     expect([...declaredSurfaces(getLayout('desktop-v2'))].sort())
-      .toEqual(['antenna', 'band', 'cwKeyer', 'dsp', 'filter', 'meters', 'rfFrontEnd', 'ritXitScan', 'rxAudio', 'rxTx', 'scopeDisplay', 'txAux', 'vfo']);
+      .toEqual(['antenna', 'band', 'cwKeyer', 'dsp', 'filter', 'meters', 'rfFrontEnd', 'ritXitScan', 'rxAudio', 'rxTx', 'scopeControls', 'scopeDisplay', 'txAux', 'vfo']);
   });
 });
 

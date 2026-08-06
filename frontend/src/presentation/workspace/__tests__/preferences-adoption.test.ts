@@ -265,8 +265,9 @@ describe('MOR-1082 — the single-composition order comes from the same plan', (
     // desktop-v2 spreads the same two surfaces over two zones, plus its own
     // MOR-1336 (S4) tx-aux zone, MOR-1341 (S5) meters zone, MOR-1365 (S6a)
     // scope-display zone, the MOR-1366 (S7) filter/rf-front-end zones, the
-    // three MOR-1367 (S8) zones and the MOR-1368 (S9) rx-audio/dsp/cw-keyer
-    // zones — flattening never drops a later zone.
+    // three MOR-1367 (S8) zones, the MOR-1368 (S9) rx-audio/dsp/cw-keyer
+    // zones and the MOR-1370 (S6b-2) scope-controls zone — flattening never
+    // drops a later zone.
     //
     // §1.5 / MOR-1339 discipline: this list GROWS, but `singleOrder`'s `{#each}`
     // in `SemanticRadioSurfaces.svelte` gains NO branch for any of these
@@ -275,7 +276,7 @@ describe('MOR-1082 — the single-composition order comes from the same plan', (
     // `components-v2/layout/__tests__/semantic-desktop-migration.component.test.ts`
     // is the counterpart that would catch a double mount.
     expect(compositionSurfaces(plan(desktopV2Layout), FALLBACK))
-      .toEqual(['vfo', 'rxTx', 'txAux', 'meters', 'scopeDisplay', 'filter', 'rfFrontEnd', 'band', 'antenna', 'ritXitScan', 'rxAudio', 'dsp', 'cwKeyer']);
+      .toEqual(['vfo', 'rxTx', 'txAux', 'meters', 'scopeDisplay', 'filter', 'rfFrontEnd', 'band', 'antenna', 'ritXitScan', 'rxAudio', 'dsp', 'cwKeyer', 'scopeControls']);
     expect(compositionSurfaces(plan(sdrTestLayout, { zoneOrder: { main: ['rxTx', 'vfo'] } }), FALLBACK))
       .toEqual(['rxTx', 'vfo']);
   });
