@@ -1,0 +1,61 @@
+name: Visual regression (pixel-diff)
+
+# MOR-1090 — approved pixel-diff baselines for the v3 semantic surfaces,
+# over the fixtures/ harness (MOR-1070/1085/1087/1088). Separate from
+# quick.yml by design: path-filtered like quick.yml's frontend block, but
+# isolated so a pixel-diff never blocks the Python lint/test gate quick.yml
+# exists for.
+#
+# OWNER GATE (binding — see MOR-1090 acceptance criteria): this job runs
+# `continue-on-error: true` on first landing so the Linux/macOS render
+# divergence can be measured over a real cycle before it blocks anything.
+# Flipping it to blocking — removing `continue-on-error` below — is an
+# OWNER decision at v3 gate promotion, not a builder's call.
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - "frontend/**"
+
+concurrency:
+  group: visual-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  visual:
+    runs-on: [self-hosted, linux, build]
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install deps + Playwright chromium
+        run: |
+          cd frontend
+          npm ci
+          npx playwright install chromium >/dev/null 2>&1 || true
+
+      # continue-on-error: OWNER GATE, see the header comment above.
+      - name: Pixel-diff vs approved baselines
+        id: visual
+        continue-on-error: true
+        run: cd frontend && npm run test:e2e:visual
+
+      - name: Upload diff report
+        if: steps.visual.outcome == 'failure'
+        uses: actions/upload-artifact@v4
+        with:
+          name: visual-diff-report
+          path: frontend/test-results/
+          retention-days: 14
+
+      - name: Annotate result
+        if: always()
+        run: '[ "${{ steps.visual.outcome }}" = "failure" ] && echo "::warning::Visual pixel-diff FAILED — non-blocking until the MOR-1090 owner gate flips it at v3 promotion. See the visual-diff-report artifact." || true'

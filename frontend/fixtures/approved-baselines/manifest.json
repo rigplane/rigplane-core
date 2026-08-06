@@ -1,0 +1,15 @@
+{
+  "ticket": "MOR-1090",
+  "generatedAt": "2026-08-06T10:58:08.422Z",
+  "commit": "efa48cc418784a1f6f8cf4433541ebe76afcef59",
+  "commitShort": "efa48cc4",
+  "branch": "codex/mor-1090-pixel-diff-ci",
+  "platform": "darwin-arm64",
+  "node": "v26.4.0",
+  "playwright": "1.58.2",
+  "comparator": {
+    "engine": "playwright-bundled-pixelmatch",
+    "threshold": 0.2,
+    "maxDiffPixelRatio": 0.001
+  }
+}
