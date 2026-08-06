@@ -25,10 +25,11 @@ import {
 
 describe('meters is a declarable semantic surface', () => {
   // Kills: reverting the SEMANTIC_SURFACE_NAMES addition. MOR-1305 appended
-  // `dsp`; `meters` must stay present and in place.
+  // `dsp`, MOR-1306 appended `rfFrontEnd`; `meters` must stay present and in
+  // place.
   it('is in the declarable set alongside vfo, rxTx and txAux', () => {
     expect([...SEMANTIC_SURFACE_NAMES]).toEqual([
-      'vfo', 'rxTx', 'txAux', 'meters', 'rxAudio', 'filter', 'dsp',
+      'vfo', 'rxTx', 'txAux', 'meters', 'rxAudio', 'filter', 'dsp', 'rfFrontEnd',
     ]);
   });
 

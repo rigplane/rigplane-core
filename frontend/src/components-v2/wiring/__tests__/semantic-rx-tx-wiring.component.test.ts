@@ -126,6 +126,11 @@ vi.mock('../command-bus', () => ({
     onManualNotchWidthChange: h.dspNoop, onAgcTimeChange: h.dspNoop,
   }),
   makeAgcHandlers: () => ({ onAgcModeChange: h.dspNoop }),
+  // MOR-1306 slice 6B: the RF-front-end intent vocabulary.
+  makeRfFrontEndHandlers: () => ({
+    onAttChange: h.txAuxNoop, onPreChange: h.txAuxNoop, onRfGainChange: h.txAuxNoop,
+    onSquelchChange: h.txAuxNoop, onDigiSelToggle: h.txAuxNoop, onIpPlusToggle: h.txAuxNoop,
+  }),
 }));
 
 import SemanticRadioSurfaces from '../SemanticRadioSurfaces.svelte';
