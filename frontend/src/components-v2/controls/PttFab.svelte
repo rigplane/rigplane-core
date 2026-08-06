@@ -51,6 +51,14 @@
   let engaged = false;               // true once onDown() was invoked
   let startX = 0;
   let startY = 0;
+  // MOR-1376: the callbacks the CURRENT press was armed against. The hold timer
+  // below is deliberately not cleared on unmount, so a rotation can destroy this
+  // FAB mid-delay; reading the `onDown`/`onUp` props at fire time would then
+  // resolve to whatever handler the parent has live BY THEN — a recognizer
+  // generation that never saw this press. Snapshot them while the press is
+  // still this instance's own, and complete the press against those.
+  let armedDown: (() => void) | null = null;
+  let armedUp: (() => void) | null = null;
 
   // TX-permit two-step arm state. First press arms; second press within
   // the window engages. A timer resets armedAt back to 0 when the window
@@ -75,8 +83,9 @@
   function cancelPress() {
     clearHoldTimer();
     if (engaged) {
-      // A press that already engaged — release cleanly.
-      onUp();
+      // A press that already engaged — release cleanly, against the handler
+      // that press was armed on (MOR-1376).
+      armedUp?.();
       engaged = false;
     }
   }
@@ -114,12 +123,14 @@
     startX = event.clientX;
     startY = event.clientY;
     engaged = false;
+    armedDown = onDown;
+    armedUp = onUp;
 
     holdTimer = setTimeout(() => {
       holdTimer = null;
       engaged = true;
       vibrate(10);
-      onDown();
+      armedDown?.();
     }, HOLD_DELAY_MS);
   }
 
@@ -139,7 +150,7 @@
       return;
     }
     if (engaged) {
-      onUp();
+      armedUp?.();
       engaged = false;
     }
   }

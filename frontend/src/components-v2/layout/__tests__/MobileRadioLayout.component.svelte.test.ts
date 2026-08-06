@@ -801,6 +801,44 @@ describe('mobile PTT via the App TX controller (MOR-1012)', () => {
     expect(tx.controller.snapshot().phase).toBe('idle');
   });
 
+  // C.14b (MOR-1376) — the SAFETY case a coarse 'portrait'/'landscape' liveness
+  // label cannot see. Rotating away and straight back inside the 50 ms hold
+  // delay leaves the FIRST surface's abandoned press pointing at a recognizer
+  // generation that never saw a finger: the label says 'portrait' again, so the
+  // guard passes and TX keys with no press behind it — and no pointer capture
+  // left to release it. The press must complete against the generation it was
+  // armed on, not whatever happens to be live when its timer fires.
+  it('does not key a fresh recognizer when a double flip strands a press mid-hold-delay', () => {
+    const t = mountMobile();
+    pointer(fabEl(t), 'pointerdown'); // generation 1 arms its 50 ms hold timer
+    vi.advanceTimersByTime(HOLD_MS - 30);
+    rotate(true);                     // generation 2
+    rotate(false);                    // generation 3 — a brand new recognizer
+    vi.advanceTimersByTime(HOLD_MS);  // generation 1's orphaned timer fires here
+    flushSync();
+
+    expect(tx.dependencies.startAudio).not.toHaveBeenCalled();
+    expect(tx.controller.snapshot().phase).toBe('idle');
+    expect(tx.controller.snapshot().guard).toBeNull();
+  });
+
+  // The other direction: the guard must block the ghost, not the operator. The
+  // surface that survives the double flip stays fully usable.
+  it('still keys on the surviving surface after a double flip stranded a press', () => {
+    const t = mountMobile();
+    pointer(fabEl(t), 'pointerdown');
+    vi.advanceTimersByTime(HOLD_MS - 30);
+    rotate(true);
+    rotate(false);
+    vi.advanceTimersByTime(HOLD_MS * 4); // well past the stranded timer
+    flushSync();
+    expect(tx.controller.snapshot().phase).toBe('idle');
+
+    fabPress(t); // a real press, on the live FAB
+    expect(tx.dependencies.startAudio).toHaveBeenCalledOnce();
+    expect(tx.controller.snapshot().phase).toBe('audio-start-pending');
+  });
+
   // -- D: other lease sources on the same controller -------------------------
 
   // D.15 — the guard alone always matches (it is the single live lease), so the
@@ -886,6 +924,9 @@ describe('mobile PTT via the App TX controller (MOR-1012)', () => {
     // Deliberately NOT asserting on 'ptt' as a bare substring — PttFab and the
     // landscape lsPtt* handlers legitimately keep it.
     expect(mobileLayoutSource).toContain('getAppTxController');
-    expect(mobileLayoutSource).toContain('createPttGesture');
+    // MOR-1378: the recognizer wiring moved to wiring/mobile-ptt-surface.ts —
+    // this layout now composes it instead of building the gesture inline.
+    expect(mobileLayoutSource).toContain('createMobilePttSurface');
+    expect(mobileLayoutSource).not.toContain('createPttGesture');
   });
 });
