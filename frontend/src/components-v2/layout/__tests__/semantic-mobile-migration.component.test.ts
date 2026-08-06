@@ -123,9 +123,11 @@ vi.mock('$lib/stores/capabilities.svelte', () => ({
   getAgcLabels: vi.fn(() => ({ 0: 'OFF', 1: 'FAST', 2: 'MID', 3: 'SLOW' })),
   getVfoScheme: vi.fn(() => 'ab'), getAntennaCount: vi.fn(() => 1),
 }));
-vi.mock('../../wiring/command-bus', () => {
+vi.mock('../../wiring/command-bus', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../wiring/command-bus')>();
   const n = vi.fn();
   return {
+    ...actual,
     makeVfoHandlers: () => ({
       onMainFreqChange: n, onSubFreqChange: n, onVfoSwap: n, onVfoEqual: n, onReceiverSelect: n,
       onMainVfoClick: n, onSubVfoClick: n, onSplitToggle: n, onSwap: n, onEqual: n,
