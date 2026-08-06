@@ -37,6 +37,9 @@
   import FilterSurface from '../../semantic/FilterSurface.svelte';
   import MetersSurface from '../../semantic/MetersSurface.svelte';
   import type { RadioViewModel } from '../../semantic/radio-view-model';
+  import RfFrontEndSurface, {
+    type RfFrontEndLevelField, type RfFrontEndToggleField,
+  } from '../../semantic/RfFrontEndSurface.svelte';
   import RxAudioSurface from '../../semantic/RxAudioSurface.svelte';
   import RxTxSurface from '../../semantic/RxTxSurface.svelte';
   import TxAuxSurface, {
@@ -47,7 +50,8 @@
   import ModInputTxWarning from '../panels/ModInputTxWarning.svelte';
   import {
     makeAgcHandlers, makeAudioRoutingHandlers, makeDspHandlers, makeFilterHandlers,
-    makeModeHandlers, makeRxAudioHandlers, makeTxHandlers, makeVfoHandlers, makeVoxHandlers,
+    makeModeHandlers, makeRfFrontEndHandlers, makeRxAudioHandlers, makeTxHandlers,
+    makeVfoHandlers, makeVoxHandlers,
   } from './command-bus';
   import {
     forReceiver, receiversOf, isActiveStrip, isOperationalStrip,
@@ -209,6 +213,20 @@
   let nbLevelRange = $derived(runtime.caps?.controls?.nb_level ?? null);
   let nbLevelMax = $derived(nbLevelRange?.raw_max ?? 10);
   let nbLevelPercent = $derived(nbLevelRange !== null);
+  /**
+   * MOR-1306. The RF-front-end intent vocabulary, composed from the SHIPPED
+   * command bus rather than forked — same discipline as `rxAudioIntents`
+   * above. `RF_FRONT_END_LEVEL_INTENT` maps the surface's field-addressed
+   * `onLevelChange` onto the two real level handlers, mirroring
+   * `TX_AUX_LEVEL_INTENT`.
+   */
+  const rfFrontEndIntents = makeRfFrontEndHandlers();
+  const RF_FRONT_END_LEVEL_INTENT: Record<RfFrontEndLevelField, (value: number) => void> = {
+    rfGain: rfFrontEndIntents.onRfGainChange, squelch: rfFrontEndIntents.onSquelchChange,
+  };
+  const RF_FRONT_END_TOGGLE_INTENT: Record<RfFrontEndToggleField, (next: boolean) => void> = {
+    digiSel: rfFrontEndIntents.onDigiSelToggle, ipPlus: rfFrontEndIntents.onIpPlusToggle,
+  };
   const tx = getAppTxController();
   const sourceId = `semantic-rx-tx-${++surfaceSeq}`;
   let leaseSeq = 0;
@@ -659,6 +677,34 @@
     {/if}
   {/snippet}
 
+  <!--
+    MOR-1306 (vocabulary slice 6B). Same structural gate and same reasoning as
+    `rxAudioSurface` above: the surface mounts only when the view model
+    actually carries the MOR-1292/MOR-1293 `rfFrontEnd` group, so a radio with
+    no preamp/attenuator/RF-gain/squelch/DIGI-SEL/IP+ capability renders the
+    pre-1306 element shape exactly.
+
+    SINGLE COMPOSITION ONLY — the MOR-1304 mounting canon (`RfFrontEndSurface.
+    svelte`'s file header): this surface carries focusable controls (preamp
+    and attenuator choice buttons, RF-gain/squelch sliders, DIGI-SEL/IP+
+    toggles) and no shipped manifest declares an `rfFrontEnd` zone yet, so a
+    bare dual mount would put controls outside every declared zone — exactly
+    the defect the MOR-1279 rxAudio precedent avoided. `'rfFrontEnd'` became
+    DECLARABLE with this slice; the cockpit gains the surface the moment a
+    rework slice declares a zone for it, same as `rxAudio` left it.
+  -->
+  {#snippet rfFrontEndSurface()}
+    {#if view?.rfFrontEnd}
+      <RfFrontEndSurface
+        {view}
+        onPreampChange={(level) => rfFrontEndIntents.onPreChange(level)}
+        onAttenuatorChange={(db) => rfFrontEndIntents.onAttChange(db)}
+        onLevelChange={(field, value) => RF_FRONT_END_LEVEL_INTENT[field](value)}
+        onToggle={(field, next) => RF_FRONT_END_TOGGLE_INTENT[field](next)}
+      />
+    {/if}
+  {/snippet}
+
   {#if strips === 'dual'}
     <!--
       MOR-1258: the zone now carries RxTxSurface AND the two TX-adjacent
@@ -704,6 +750,7 @@
     {@render zoned('rxAudio', view?.rxAudio !== undefined, rxAudioSurface)}
     {@render zoned('filter', view?.modeFilter !== undefined || view?.filterPassband !== undefined, filterSurface)}
     {@render zoned('dsp', view?.dsp !== undefined, dspSurface)}
+    {@render zoned('rfFrontEnd', view?.rfFrontEnd !== undefined, rfFrontEndSurface)}
     {@render txAdjacentAlerts()}
   {/if}
 </div>

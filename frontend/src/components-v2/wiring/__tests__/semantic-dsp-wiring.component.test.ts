@@ -111,6 +111,14 @@ vi.mock('../command-bus', () => ({
     onManualNotchWidthChange: h.manualNotchWidth, onAgcTimeChange: h.agcTime,
   }),
   makeAgcHandlers: () => ({ onAgcModeChange: h.agcMode }),
+  // MOR-1306 — the wiring now also composes the RF-front-end intent
+  // vocabulary. This fixture declares no RF-front-end capability, so none of
+  // these is reachable — same stand-in role as `makeVfoHandlers`/
+  // `makeTxHandlers` above.
+  makeRfFrontEndHandlers: () => ({
+    onAttChange: h.noop, onPreChange: h.noop, onRfGainChange: h.noop,
+    onSquelchChange: h.noop, onDigiSelToggle: h.noop, onIpPlusToggle: h.noop,
+  }),
 }));
 
 import SemanticRadioSurfaces from '../SemanticRadioSurfaces.svelte';
