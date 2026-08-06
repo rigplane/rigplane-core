@@ -55,6 +55,7 @@
   import {
     BLOCKED_LABEL, keyBlockedReasons, type KeyBlockedReason, type TxAuthoritySnapshot,
   } from './rx-tx-surface';
+  import { pressedOf } from './pressed-of';
 
   /** The TX ports the shipped command vocabulary can actually reach
    *  (`set_antenna_1` / `set_antenna_2`) — and exactly what the shipped
@@ -178,7 +179,7 @@
       <div class="antenna-row" data-testid="antenna-rx" data-observed={usable(ant.rxAnt)}>
         <button
           type="button" class="antenna-choice" data-testid="antenna-rx-toggle"
-          aria-pressed={valueOf(ant.rxAnt)} aria-describedby={blockedId}
+          aria-pressed={pressedOf(ant.rxAnt)} aria-describedby={blockedId}
           disabled={blocked.length > 0 || !usable(ant.rxAnt)}
           onclick={toggleRxAnt}
         >RX-ANT: {textOf(ant.rxAnt)}</button>
