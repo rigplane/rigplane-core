@@ -94,6 +94,12 @@ declare global {
       paint: () => Record<string, Record<string, string>>;
       calls: () => typeof harness.calls;
       focusOrder: () => string[];
+      /** MOR-1087 checklist item 2: the SAME per-control descriptor
+       *  `focusOrder()` uses, for whichever element is focused RIGHT NOW —
+       *  `'NONE'` for `document.body`/nothing focused. `capture.mjs` samples
+       *  this before and after a viewport resize to prove focus survives an
+       *  orientation/layout reflow rather than silently dropping to `body`. */
+      activeControl: () => string;
     };
   }
 }
@@ -114,6 +120,10 @@ window.__harness = {
     + `[data-testid="${ROOT_TEST_ID}"] a[href], `
     + `[data-testid="${ROOT_TEST_ID}"] [tabindex]`,
   )].map(describe),
+  activeControl: () => {
+    const el = document.activeElement;
+    return el === null || el === document.body ? 'NONE' : describe(el as HTMLElement);
+  },
 };
 
 function describe(el: HTMLElement): string {
