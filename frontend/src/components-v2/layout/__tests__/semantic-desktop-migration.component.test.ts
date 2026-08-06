@@ -19,6 +19,7 @@
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { flushSync, mount, unmount } from 'svelte';
+import { readFileSync } from 'fs';
 import type { Capabilities } from '$lib/types/capabilities';
 import type { SkinId } from '../../../skins/registry';
 
@@ -1058,6 +1059,24 @@ describe('a stored order naming every legacy panelId cannot resurrect a declared
     for (const id of RETIRED_ON_DESKTOP_V2) {
       expect(ids.has(id), id).toBe(true);
     }
+  });
+
+  // F1: source-text literal pins (S9 zone-ownership-coverage precedent) — the
+  // doc's §1.2 ruling has no regression test in pin 2 (which sets a stored
+  // order that defaults are never read from). Pruning these shared `defaults`
+  // arrays is unsafe, because `rigplane:panel-order` and `rigplane:right-panel-order`
+  // are ONE storage key shared by every skin that mounts these sidebars
+  // (RadioLayout: desktop-v2/sdr-test; LcdLayout: lcd-cockpit/lcd-scope).
+  // `loadPanelOrder` always prefers a stored order over `defaults`, so a
+  // pruned defaults only affects a brand-new user — a RETURNING user who
+  // switches skins would inherit the pruned order and silently lose panels on
+  // the OTHER skin. This pin catches that hazard by enforcing the shared
+  // literals stay identical across all skins.
+  it('the sidebars\' defaults arrays stay intact as shared storage across all skins', () => {
+    expect(readFileSync('src/components-v2/layout/LeftSidebar.svelte', 'utf8'))
+      .toContain("defaults: ['rf-front-end', 'mode', 'filter', 'agc', 'rit-xit', 'band', 'antenna', 'scan']");
+    expect(readFileSync('src/components-v2/layout/RightSidebar.svelte', 'utf8'))
+      .toContain("defaults: ['rx-audio', 'audio-scope', 'dsp', 'tx', 'cw', 'memory']");
   });
 });
 
