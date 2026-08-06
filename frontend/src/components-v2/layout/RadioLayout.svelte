@@ -121,6 +121,33 @@
   // whole answer.
   let semanticMeters = $derived(declared.has('meters'));
 
+  // MOR-1364 (v3-rework S6-pre) — the ONE legacy-twin suppression channel.
+  //
+  // `declared` above is already the whole answer for every remaining legacy
+  // twin, so nothing new is derived here: the set itself is handed to
+  // `LeftSidebar`, `RightSidebar` and `StatusBar` (which each gate their own
+  // panels on `!declared.has('<surface>')`), and the settings modal below —
+  // this shell's own third copy of six of those panels — gates in place.
+  // Landed INERT: no manifest declares any of `filter`/`rfFrontEnd`/`band`/
+  // `antenna`/`ritXitScan`/`rxAudio`/`dsp`/`cwKeyer` yet, so every predicate
+  // is `false` and the rendered tree is unchanged until S6a/S7/S8/S9 declare
+  // the zones. The ONE exception is the modal's SPLIT/A↔B/A=B row, which
+  // gates on the ALREADY-TRUE `semanticDeck` (S10 §4 — a real, deliberate
+  // change, not inert plumbing).
+  //
+  // Same two rules as `semanticRxTx`/`semanticMeters`, restated because this
+  // channel now carries them to three more files:
+  //   - the MANIFEST decides, never the resolved SurfacePlan (S5 ruling) —
+  //     a workspace subtraction must cost the operator the zone, never
+  //     resurrect the legacy twin through the back door;
+  //   - it is safe ONLY because MOR-1336's `zoned()` degrades to a BARE
+  //     render for an unzoned surface (S5-N3). That guarantee lives in
+  //     `SemanticRadioSurfaces.svelte`; a change making `zoned` withhold its
+  //     body instead would turn every suppression on this channel into a
+  //     readout-losing bug.
+  // AGC pairs with `dsp`, not a zone of its own: `DspSurface` owns the AGC
+  // leaf (5A/MOR-1290), so `<AgcPanel>` retires on `declared.has('dsp')`.
+
   // Reactive state + capabilities — via runtime
   let radioState = $derived(runtime.state);
   let caps = $derived(runtime.caps);
@@ -281,7 +308,7 @@
   now that a second family resolves into it (MOR-1313).
 -->
 <div class="radio-layout" class:sdr-test={skinId === 'sdr-test'} class:semantic-deck={semanticDeck}>
-  <StatusBar onSettings={() => (settingsOpen = true)} />
+  <StatusBar onSettings={() => (settingsOpen = true)} {declared} />
   <KeyboardHandler config={keyboardConfig} onAction={keyboardHandlers.dispatch} />
 
   <section class="receiver-deck" bind:this={receiverDeckElement} style={receiverDeckStyle}>
@@ -317,7 +344,7 @@
 
   <section class="content-row">
     <div class="content-left">
-      <LeftSidebar hideTxPanel={semanticRxTx} />
+      <LeftSidebar hideTxPanel={semanticRxTx} {declared} />
     </div>
 
     <main class="content-center center-column">
@@ -334,7 +361,7 @@
     </main>
 
     <div class="content-right">
-      <RightSidebar hideTxPanel={semanticRxTx} />
+      <RightSidebar hideTxPanel={semanticRxTx} {declared} />
     </div>
   </section>
 
@@ -380,56 +407,88 @@
         </CollapsiblePanel>
 
         <CollapsiblePanel title="VFO / BAND" panelId="desktop-vfo-ops">
-          <div class="settings-vfo-ops-row">
-            <HardwareButton
-              active={vfoOps.splitActive}
-              indicator="edge-left"
-              color={vfoOps.splitActive ? 'yellow' : 'gray'}
-              onclick={vfoHandlers.onSplitToggle}
-            >
-              SPLIT
-            </HardwareButton>
-            <HardwareButton
-              indicator="edge-left"
-              color="cyan"
-              onclick={vfoHandlers.onSwap}
-            >
-              A↔B
-            </HardwareButton>
-            <HardwareButton
-              indicator="edge-left"
-              color="cyan"
-              onclick={vfoHandlers.onEqual}
-            >
-              A=B
-            </HardwareButton>
-          </div>
+          <!-- S10 §4, the NAMED EXCEPTION to this slice's inertness: unlike
+               every other predicate on this channel, `semanticDeck` is
+               ALREADY true on desktop-v2 (MOR-1313 declared `receiver-deck`),
+               so this row disappears the day S6-pre merges. Deliberate: the
+               semantic `VfoSurface` has owned equivalent — and translated —
+               split/swap/equalize controls since MOR-1321, and only the
+               modal's third copy was never gated. Gated on `semanticDeck`,
+               NOT on `semanticRxTx`: this is VFO-ops routing, not a
+               key/unkey affordance, so it is not an R9 site (S10 §6). -->
+          {#if !semanticDeck}
+            <div class="settings-vfo-ops-row">
+              <HardwareButton
+                active={vfoOps.splitActive}
+                indicator="edge-left"
+                color={vfoOps.splitActive ? 'yellow' : 'gray'}
+                onclick={vfoHandlers.onSplitToggle}
+              >
+                SPLIT
+              </HardwareButton>
+              <HardwareButton
+                indicator="edge-left"
+                color="cyan"
+                onclick={vfoHandlers.onSwap}
+              >
+                A↔B
+              </HardwareButton>
+              <HardwareButton
+                indicator="edge-left"
+                color="cyan"
+                onclick={vfoHandlers.onEqual}
+              >
+                A=B
+              </HardwareButton>
+            </div>
+          {/if}
+          <!-- The BAND half of this section stays UNGATED this slice: only the
+               HAM tab is duplicated by `BandSurface`, while the LW/MW + SWL tabs
+               and their 17 broadcast presets are deliberately not facts and have
+               no other host. It joins the channel in S8, after `BandSelector` is
+               split. This panel is the ONE section that must never be wrapped as
+               a whole: row 10 (the LW/MW + SWL tabs) is permanent, so the panel
+               can never be empty, and S8 retires the HAM half by passing
+               `hamBands={!declared.has('band')}` — a prop change, not a mount
+               gate (S10 §4a/§7). -->
           <BandSelector />
         </CollapsiblePanel>
 
-        <CollapsiblePanel title="DSP" panelId="desktop-dsp">
-          <DspPanel />
-        </CollapsiblePanel>
+        {#if !declared.has('dsp')}
+          <CollapsiblePanel title="DSP" panelId="desktop-dsp">
+            <DspPanel />
+          </CollapsiblePanel>
+        {/if}
 
-        <CollapsiblePanel title="AGC" panelId="desktop-agc">
-          <AgcPanel />
-        </CollapsiblePanel>
+        <!-- Same predicate as DSP above, on purpose (S10 row 2): AGC is a
+             leaf of `DspSurface`, not a surface of its own. -->
+        {#if !declared.has('dsp')}
+          <CollapsiblePanel title="AGC" panelId="desktop-agc">
+            <AgcPanel />
+          </CollapsiblePanel>
+        {/if}
 
-        <CollapsiblePanel title="RF FRONT END" panelId="desktop-rf">
-          <RfFrontEnd />
-        </CollapsiblePanel>
+        {#if !declared.has('rfFrontEnd')}
+          <CollapsiblePanel title="RF FRONT END" panelId="desktop-rf">
+            <RfFrontEnd />
+          </CollapsiblePanel>
+        {/if}
 
-        <CollapsiblePanel title="RIT / XIT" panelId="desktop-rit">
-          <RitXitPanel />
-        </CollapsiblePanel>
+        {#if !declared.has('ritXitScan')}
+          <CollapsiblePanel title="RIT / XIT" panelId="desktop-rit">
+            <RitXitPanel />
+          </CollapsiblePanel>
+        {/if}
 
-        <CollapsiblePanel
-          title="CW"
-          panelId="desktop-cw"
-          autoCollapseWhen={activeMode !== 'CW' && activeMode !== 'CW-R'}
-        >
-          <CwPanel />
-        </CollapsiblePanel>
+        {#if !declared.has('cwKeyer')}
+          <CollapsiblePanel
+            title="CW"
+            panelId="desktop-cw"
+            autoCollapseWhen={activeMode !== 'CW' && activeMode !== 'CW-R'}
+          >
+            <CwPanel />
+          </CollapsiblePanel>
+        {/if}
       </div>
     </div>
   </div>

@@ -71,11 +71,22 @@
   import { getFrequency } from '$lib/stores/radio.svelte';
   import { hasAnyScope, hasAudio, hasSpectrum } from '$lib/stores/capabilities.svelte';
   import { getLayoutMode, setLayoutMode, type CanonicalLayoutMode, type LayoutMode } from '$lib/stores/layout.svelte';
+  import type { SemanticSurfaceName } from '../../presentation/layouts/contract';
 
   interface Props {
     onSettings?: () => void;
+    /** MOR-1364 (v3-rework S6-pre) — the manifest-driven legacy-twin
+     *  suppression channel, reaching the status bar for its one twin: the
+     *  scope indicator, whose semantic replacement is `ScopeDisplaySurface`
+     *  (MOR-1312). Same doctrine as the sidebars': the MANIFEST decides, never
+     *  the resolved SurfacePlan (S5 ruling), and it is safe only because
+     *  MOR-1336's `zoned()` degrades to a bare render for an unzoned surface
+     *  (S5-N3). Default empty set ⇒ no-op, so mobile/LCD and every caller that
+     *  omits the prop keep the indicator. Note the OTHER four indicators
+     *  (radio/control/audio/http) have no semantic twin and are never gated. */
+    declared?: ReadonlySet<SemanticSurfaceName>;
   }
-  let { onSettings }: Props = $props();
+  let { onSettings, declared = new Set<SemanticSurfaceName>() }: Props = $props();
 
   // Canonicalize legacy 'lcd' to 'lcd-cockpit' for UI binding — the persisted
   // value may still be 'lcd' (from pre-#889 installs), but the dropdown only
@@ -257,7 +268,7 @@
       <span class="indicator-dot"></span>
       <Cable size={12} color="currentColor" strokeWidth={2.5} />
     </span>
-    {#if hasAnyScope()}
+    {#if hasAnyScope() && !declared.has('scopeDisplay')}
       <span class="indicator" role="status" title={t('core.statusbar.indicator.scope', { state: scopeState })} style="--indicator-color: {stateColor(scopeState)}">
         <span class="indicator-dot"></span>
         <Activity size={12} color="currentColor" strokeWidth={2.5} />

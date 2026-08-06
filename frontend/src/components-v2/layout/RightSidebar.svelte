@@ -8,6 +8,7 @@
   import AudioSpectrumPanel from '../panels/audio-scope/AudioSpectrumPanel.svelte';
   import CollapsiblePanel from '../controls/CollapsiblePanel.svelte';
   import { createDragReorder } from '$lib/drag-reorder.svelte';
+  import type { SemanticSurfaceName } from '../../presentation/layouts/contract';
 
   type RightSidebarMode = 'all' | 'rx' | 'tx';
 
@@ -17,9 +18,17 @@
      *  surface suppresses the legacy TX panel, so no layout ships two PTT
      *  affordances at once. Scoped to the TX panel — CW is unaffected. */
     hideTxPanel?: boolean;
+    /** MOR-1364 (v3-rework S6-pre) — the same manifest-driven suppression
+     *  channel LeftSidebar carries, and it MUST be wired on both sides:
+     *  `rx-audio`, `dsp` and `cw` live in both sidebars and a cross-sidebar
+     *  drag moves them freely, so a one-sided suppression would leave the
+     *  retired twin reachable. See LeftSidebar for the full doctrine (manifest
+     *  not plan; safe only while `zoned()` degrades to bare; `hideTxPanel`
+     *  stays separate for R9). */
+    declared?: ReadonlySet<SemanticSurfaceName>;
   }
 
-  let { mode = 'all', hideTxPanel = false }: Props = $props();
+  let { mode = 'all', hideTxPanel = false, declared = new Set<SemanticSurfaceName>() }: Props = $props();
 
   let showRx = $derived(mode === 'all' || mode === 'rx');
   let showTx = $derived(mode === 'all' || mode === 'tx');
@@ -33,7 +42,7 @@
 </script>
 
 <aside class="right-sidebar" class:cross-drop-target={drag.isDropTarget}>
-  {#if showRx && drag.order.includes('rx-audio')}
+  {#if showRx && drag.order.includes('rx-audio') && !declared.has('rxAudio')}
     <CollapsiblePanel title="RX AUDIO" panelId="rx-audio" draggable onDragStart={drag.handleDragStart} style={drag.dragStyle('rx-audio')}>
       <RxAudioPanel />
     </CollapsiblePanel>
@@ -45,7 +54,7 @@
     </CollapsiblePanel>
   {/if}
 
-  {#if showRx && drag.order.includes('dsp')}
+  {#if showRx && drag.order.includes('dsp') && !declared.has('dsp')}
     <CollapsiblePanel title="DSP" panelId="dsp" draggable onDragStart={drag.handleDragStart} style={drag.dragStyle('dsp')}>
       <DspPanel />
     </CollapsiblePanel>
@@ -57,7 +66,7 @@
     </CollapsiblePanel>
   {/if}
 
-  {#if showTx && drag.order.includes('cw') && hasCapability('cw')}
+  {#if showTx && drag.order.includes('cw') && hasCapability('cw') && !declared.has('cwKeyer')}
     <CollapsiblePanel title="CW" panelId="cw" draggable onDragStart={drag.handleDragStart} style={drag.dragStyle('cw')}>
       <CwPanel />
     </CollapsiblePanel>

@@ -137,7 +137,7 @@ vi.mock('$lib/stores/capabilities.svelte', () => ({
 }));
 
 import RadioLayout from '../RadioLayout.svelte';
-import { hasCapability } from '$lib/stores/capabilities.svelte';
+import { hasAnyScope, hasCapability } from '$lib/stores/capabilities.svelte';
 import { topologyFixtures, type TopologyFixtureId } from '../../../semantic/fixtures/topologies';
 import { registerLayout, type LayoutManifest } from '../../../presentation/layouts/contract';
 // Barrel, for the same reason `skins/dual-receiver-cockpit/__tests__/
@@ -544,5 +544,215 @@ describe('the semantic receiver deck carries the VFO ops again (MOR-1321)', () =
   it('adds no key authority to the deck', () => {
     const t = render('desktop-v2');
     expect(t.querySelectorAll('[data-testid="rx-tx-surface"], .tx-panel').length).toBe(1);
+  });
+});
+
+/**
+ * MOR-1364 (v3-rework S6-pre) — the ONE manifest-driven legacy-twin
+ * suppression channel, landed INERT.
+ *
+ * S2/MOR-1313 built this rule for `vfo`/`rxTx` and S5/MOR-1341 for `meters`;
+ * this slice generalises it to every remaining legacy twin the zone slices
+ * S6a/S7/S8/S9 will retire — the sidebar panels, the settings modal's third
+ * copy of five of them, and the status bar's scope indicator — by handing the
+ * same `declaredSurfaces(manifest)` set `RadioLayout` already derives down to
+ * `LeftSidebar`, `RightSidebar` and `StatusBar`.
+ *
+ * Nothing renders differently today (no manifest declares any of these zones),
+ * which is the whole point: the risky plumbing lands once, independently
+ * pinned, and each zone slice after it is a two-file manifest edit. The ONE
+ * exception is the settings modal's SPLIT/A↔B/A=B row, which gates on the
+ * already-true `semanticDeck` — a real, deliberate change, pinned by its own
+ * named test below rather than folded into the inertness claim.
+ *
+ * The probes are `desktop-v2`'s REAL manifest plus exactly ONE zone — the
+ * literal shape S6a/S7/S8/S9 will land — so a row that fails here is a
+ * statement about the channel and not about a hand-built fixture.
+ */
+describe('the legacy-twin suppression channel (MOR-1364, S6-pre)', () => {
+  /** Every panel id either sidebar can host. Without these the pins would pass
+   *  vacuously for the boring reason that the drag order never offered the
+   *  panel — `rx-audio`/`dsp`/`cw` are exactly the cross-sidebar ones a drag
+   *  can move to the other side, so both sidebars are stocked with all of
+   *  them. */
+  const LEFT_ALL = ['rf-front-end', 'mode', 'filter', 'agc', 'rit-xit', 'band',
+    'antenna', 'scan', 'rx-audio', 'dsp', 'tx', 'cw', 'memory'];
+  const RIGHT_ALL = ['rx-audio', 'audio-scope', 'dsp', 'tx', 'cw', 'memory'];
+
+  /** surface → the zone id its rework slice will declare on `desktop-v2`. */
+  const ZONES = [
+    ['filter', 'filter'], ['rfFrontEnd', 'rf-front-end'], ['dsp', 'dsp'],
+    ['ritXitScan', 'rit-xit-scan'], ['antenna', 'antenna'], ['rxAudio', 'rx-audio'],
+    ['cwKeyer', 'cw-keyer'], ['scopeDisplay', 'scope-display'], ['band', 'band'],
+  ] as const;
+  type CoveredSurface = (typeof ZONES)[number][0];
+
+  const ZONE_PROBE = Object.fromEntries(ZONES.map(([surface, zoneId]) => {
+    const id = `${zoneId}-zone-probe` as SkinId;
+    registerLayout(probeManifest(
+      id,
+      [...desktopV2Layout.zones, { id: zoneId, surfaces: [surface] }],
+      desktopV2Layout.requiredSemanticSurfaces,
+    ));
+    return [surface, id];
+  })) as Record<CoveredSurface, SkinId>;
+
+  /**
+   * One row per legacy twin the channel covers: which surface's zone retires
+   * it, and where it lives. `dsp` owns FIVE rows because `DspSurface` covers
+   * the AGC leaf too (5A/MOR-1290) — a `dsp` zone that retired `DspPanel` and
+   * left `AgcPanel` standing would ship a half-double, in two hosts.
+   */
+  const TWINS = [
+    ['filter', 'left sidebar MODE', '.left-sidebar [data-panel-id="mode"]'],
+    ['filter', 'left sidebar FILTER', '.left-sidebar [data-panel-id="filter"]'],
+    ['rfFrontEnd', 'left sidebar RF FRONT END', '.left-sidebar [data-panel-id="rf-front-end"]'],
+    ['rfFrontEnd', 'settings modal RF FRONT END', '[data-panel-id="desktop-rf"]'],
+    ['dsp', 'left sidebar AGC', '.left-sidebar [data-panel-id="agc"]'],
+    ['dsp', 'left sidebar DSP', '.left-sidebar [data-panel-id="dsp"]'],
+    ['dsp', 'right sidebar DSP', '.right-sidebar [data-panel-id="dsp"]'],
+    ['dsp', 'settings modal DSP', '[data-panel-id="desktop-dsp"]'],
+    ['dsp', 'settings modal AGC', '[data-panel-id="desktop-agc"]'],
+    ['ritXitScan', 'left sidebar RIT / XIT', '.left-sidebar [data-panel-id="rit-xit"]'],
+    ['ritXitScan', 'left sidebar SCAN', '.left-sidebar [data-panel-id="scan"]'],
+    ['ritXitScan', 'settings modal RIT / XIT', '[data-panel-id="desktop-rit"]'],
+    ['antenna', 'left sidebar ANTENNA', '.left-sidebar [data-panel-id="antenna"]'],
+    ['rxAudio', 'left sidebar RX AUDIO', '.left-sidebar [data-panel-id="rx-audio"]'],
+    ['rxAudio', 'right sidebar RX AUDIO', '.right-sidebar [data-panel-id="rx-audio"]'],
+    ['cwKeyer', 'left sidebar CW', '.left-sidebar [data-panel-id="cw"]'],
+    ['cwKeyer', 'right sidebar CW', '.right-sidebar [data-panel-id="cw"]'],
+    ['cwKeyer', 'settings modal CW', '[data-panel-id="desktop-cw"]'],
+    ['scopeDisplay', 'status bar scope indicator', '.status-indicators [title^="Scope WebSocket"]'],
+  ] as const satisfies readonly (readonly [CoveredSurface, string, string])[];
+
+  /**
+   * The BAND twin is deliberately NOT on the channel (S10 verifier ruling):
+   * `BandSelector` hosts the LW/MW + SWL tabs and 17 broadcast presets that
+   * are deliberately not facts and have no other production host, so gating it
+   * on `declared.has('band')` would orphan them. It joins in S8, after the
+   * component split. Pinned so that deferral is a decision someone has to
+   * revisit rather than an omission nobody notices.
+   */
+  const BAND_TWINS = [
+    ['left sidebar BAND', '.left-sidebar [data-panel-id="band"]'],
+    ['settings modal BAND', '[data-panel-id="desktop-vfo-ops"] .band-tabs'],
+  ] as const;
+
+  /** Opens the settings modal too — the third host, and the only one that is
+   *  not on screen by default. */
+  function renderAll(skinId: SkinId): HTMLElement {
+    const target = render(skinId);
+    (target.querySelector('.settings-btn') as HTMLElement | null)?.click();
+    flushSync();
+    return target;
+  }
+
+  beforeEach(() => {
+    // A radio that actually emits every gated family: two antennas (the
+    // ANTENNA panel self-gates on the count), CW, and a scope.
+    h.caps = { ...(capsFor('2/main_sub') as object), antennas: 2 } as Capabilities;
+    vi.mocked(hasCapability).mockImplementation((tag: string) => tag === 'cw');
+    vi.mocked(hasAnyScope).mockReturnValue(true);
+    localStorage.setItem('rigplane:panel-order', JSON.stringify(LEFT_ALL));
+    localStorage.setItem('rigplane:right-panel-order', JSON.stringify(RIGHT_ALL));
+  });
+
+  afterEach(() => {
+    vi.mocked(hasAnyScope).mockReturnValue(false);
+    localStorage.clear();
+  });
+
+  // INERTNESS, half one: every covered twin is on screen TODAY. Without this
+  // the suppression pins below would be satisfied by a twin that never
+  // rendered in the first place.
+  it.each(TWINS)('[%s] %s renders on desktop-v2, no zone declaring it', (_surface, _host, selector) => {
+    expect(renderAll('desktop-v2').querySelector(selector)).not.toBeNull();
+  });
+
+  // INERTNESS, half two, stated as an inventory rather than per-row: the exact
+  // set of panels desktop-v2 renders is unchanged by this slice. Measured
+  // against `origin/main` with the identical fixture before the channel
+  // landed — see the build report's element-stream diff (2049/2049 nodes
+  // identical on the undeclared layout; on desktop-v2 exactly one 11-node
+  // hunk, the SPLIT row below).
+  it('renders exactly the panel inventory it rendered before the channel existed', () => {
+    const ids = [...renderAll('desktop-v2').querySelectorAll('[data-panel-id]')]
+      .map((el) => el.getAttribute('data-panel-id'))
+      .sort();
+    expect(ids).toEqual([
+      'agc', 'antenna', 'band', 'cw', 'cw',
+      'desktop-agc', 'desktop-cw', 'desktop-dsp', 'desktop-language', 'desktop-rf',
+      'desktop-rit', 'desktop-vfo-ops', 'desktop-workspace',
+      'dsp', 'dsp', 'filter', 'memory', 'memory', 'mode', 'rf-front-end',
+      'rit-xit', 'rx-audio', 'rx-audio', 'scan',
+    ]);
+  });
+
+  // THE CHANNEL ITSELF, both directions in one assertion per surface: a
+  // declared zone retires every twin of ITS OWN family, in every host, and
+  // touches no sibling family's twin. A `dsp`-only suppression that leaves
+  // `AgcPanel`, or a one-sided suppression that leaves the right sidebar's
+  // `rx-audio`/`dsp`/`cw` reachable by a cross-sidebar drag, dies here.
+  it.each(ZONES.filter(([s]) => s !== 'band').map(([s]) => s))(
+    'declaring the %s zone retires that family\'s twins in every host, and no sibling\'s',
+    (surface) => {
+      const t = renderAll(ZONE_PROBE[surface]);
+      for (const [twinSurface, host, selector] of TWINS) {
+        if (twinSurface === surface) {
+          expect(t.querySelector(selector), `${host} must be suppressed`).toBeNull();
+        } else {
+          expect(t.querySelector(selector), `${host} must survive`).not.toBeNull();
+        }
+      }
+    },
+  );
+
+  // The deferral, pinned: declaring `band` today must suppress NOTHING. When
+  // S8 splits `BandSelector` and wires the predicate, this test is the one it
+  // has to come back and change — deliberately, not by accident.
+  it('declaring the band zone suppresses nothing yet (BandSelector split deferred to S8)', () => {
+    const t = renderAll(ZONE_PROBE.band);
+    for (const [host, selector] of BAND_TWINS) {
+      expect(t.querySelector(selector), `${host} must survive`).not.toBeNull();
+    }
+    for (const [, host, selector] of TWINS) {
+      expect(t.querySelector(selector), `${host} must survive`).not.toBeNull();
+    }
+  });
+
+  // R9, restated over the new quadrants: none of the nine probes may change
+  // the number of elements that can key or unkey the transmitter. The channel
+  // deliberately does NOT carry `rxTx` — `hideTxPanel` still follows the
+  // semantic DECK (MOR-1313) and must stay a separate prop.
+  it.each(ZONES.map(([s]) => s))('leaves exactly one key authority with the %s zone declared', (surface) => {
+    expect(renderAll(ZONE_PROBE[surface]).querySelectorAll(KEY_AUTHORITIES).length).toBe(1);
+  });
+
+  /**
+   * THE NAMED EXCEPTION (S10 §4) — the one thing this slice changes on screen.
+   *
+   * `semanticDeck` is ALREADY true on desktop-v2 (MOR-1313 declared
+   * `receiver-deck`), and `VfoSurface` has carried translated split/swap/
+   * equalize controls since MOR-1321; only the settings modal's third copy of
+   * that row was never gated. Gating it removes three hardcoded, untranslated
+   * strings from the flagship skin the day this merges.
+   *
+   * The false branch cannot be `sdr-test` — it declares `vfo` too, as do all
+   * five registered manifests — so it is taken from the `rxTx`-only probe and
+   * the unregistered-layout fallback, the only two `semanticDeck === false`
+   * configurations this shell can reach.
+   *
+   * The row is VFO-ops routing, NOT a key/unkey affordance (S10 §6), so it
+   * gates on `semanticDeck` and never on `semanticRxTx`; the R9 counts above
+   * cover both probes.
+   */
+  it('NAMED EXCEPTION: retires the settings-modal SPLIT/A↔B/A=B row where the semantic deck owns it', () => {
+    expect(renderAll('desktop-v2').querySelector('.settings-vfo-ops-row')).toBeNull();
+    expect(renderAll(RX_TX_ONLY).querySelector('.settings-vfo-ops-row')).not.toBeNull();
+    expect(renderAll('no-such-layout' as SkinId).querySelector('.settings-vfo-ops-row')).not.toBeNull();
+    // ...and the semantic replacement really is on screen where the row went.
+    expect(renderAll('desktop-v2').querySelector('.receiver-deck [data-vfo-split]')).not.toBeNull();
+    // The BAND half of the same modal section is untouched by this exception.
+    expect(renderAll('desktop-v2').querySelector('[data-panel-id="desktop-vfo-ops"] .band-tabs')).not.toBeNull();
   });
 });
