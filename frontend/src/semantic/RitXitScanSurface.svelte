@@ -103,7 +103,11 @@
   }
   function cycleResume(): void {
     if (!sc || !usable(sc.scanResumeMode) || sc.scanResumeMode.reading.status !== 'known') return;
-    onResumeModeChange?.((sc.scanResumeMode.reading.value + 1) % 4);
+    // F1 (fix round, verify-MOR-1308): the fact is the `& 0x0F` masked value
+    // (8A), but the wire wants the full CI-V byte — the backend validates
+    // `scan_set_resume: mode must be 0xD0-0xD3` (control.py:2283-2289). Same
+    // split `ScanPanel.svelte` makes between `rm.value` and `rm.value & 0x0F`.
+    onResumeModeChange?.(0xD0 | ((sc.scanResumeMode.reading.value + 1) % 4));
   }
 </script>
 

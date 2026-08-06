@@ -355,21 +355,38 @@ describe('scan resume mode: a single honest cycle over the raw masked value', ()
     r.dispose();
   });
 
-  it('advances the masked resume value by one', () => {
+  it('advances the masked resume value by one, encoded as the full CI-V byte', () => {
     const onResumeModeChange = vi.fn();
     const r = render(withSc({ scanResumeMode: knownScan(1) }), { onResumeModeChange });
     r.el('scan-resume-cycle')!.click();
     flushSync();
-    expect(onResumeModeChange).toHaveBeenCalledExactlyOnceWith(2);
+    expect(onResumeModeChange).toHaveBeenCalledExactlyOnceWith(0xD2);
     r.dispose();
   });
 
-  it('wraps from the last value back to 0', () => {
+  it('wraps from the last masked value back to 0xD0', () => {
     const onResumeModeChange = vi.fn();
     const r = render(withSc({ scanResumeMode: knownScan(3) }), { onResumeModeChange });
     r.el('scan-resume-cycle')!.click();
     flushSync();
-    expect(onResumeModeChange).toHaveBeenCalledExactlyOnceWith(0);
+    expect(onResumeModeChange).toHaveBeenCalledExactlyOnceWith(0xD0);
+    r.dispose();
+  });
+
+  // F1 (fix round) — the backend validator is `if resume_mode not in
+  // range(0xD0, 0xD4): raise ValueError(...)` (control.py:2283-2289). Every
+  // one of the four masked cycle positions must dispatch a value inside that
+  // accepted range — the assertion whose absence let the masked-only bug ship.
+  it.each([
+    [0, 0xD1], [1, 0xD2], [2, 0xD3], [3, 0xD0],
+  ])('dispatches an accepted-range value (0xD0..0xD3) from masked %i', (masked, expected) => {
+    const onResumeModeChange = vi.fn();
+    const r = render(withSc({ scanResumeMode: knownScan(masked) }), { onResumeModeChange });
+    r.el('scan-resume-cycle')!.click();
+    flushSync();
+    expect(onResumeModeChange).toHaveBeenCalledExactlyOnceWith(expected);
+    expect(expected).toBeGreaterThanOrEqual(0xD0);
+    expect(expected).toBeLessThanOrEqual(0xD3);
     r.dispose();
   });
 });

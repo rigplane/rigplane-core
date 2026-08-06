@@ -240,7 +240,7 @@ describe('the surface intents reach the shipped command vocabulary', () => {
     render();
     el('scan-resume-cycle')!.click();
     flushSync();
-    expect(sendCommand).toHaveBeenCalledExactlyOnceWith('scan_set_resume', { mode: 2 });
+    expect(sendCommand).toHaveBeenCalledExactlyOnceWith('scan_set_resume', { mode: 0xD2 });
   });
 });
 
