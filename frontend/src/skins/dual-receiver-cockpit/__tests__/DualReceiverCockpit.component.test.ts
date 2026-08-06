@@ -154,13 +154,60 @@ function mainSubState(active: 'MAIN' | 'SUB' = 'MAIN'): ServerState {
  * carry enough TX-aux evidence for the MOR-1244 gate to emit the group —
  * otherwise the surface self-gates away, the zone has nothing to hold, and the
  * F6 "every declared zone renders" invariant fails for the right reason but the
- * wrong cause. `tuner` is the cheapest honest evidence (`deriveTxAux` accepts a
- * capability tag OR a raw value); everything else stays as it was.
+ * wrong cause. `tuner` was the cheapest honest evidence (`deriveTxAux` accepts
+ * a capability tag OR a raw value) when this fixture carried only one tag; as
+ * of MOR-1351 all five `deriveTxAux` evidence tags
+ * (`tuner`/`vox`/`compressor`/`monitor`/`drive_gain`) are present. This DOES
+ * land the controls inside the declared `tx-aux` zone rather than zone-less —
+ * unlike the browser fixture catalog (`fixtures/catalog.ts`), this harness's
+ * `render()` (below) DOES accept and resolve a real `SurfacePlan`
+ * (`render(defaultPlan())`, used by every MOR-1069 assertion in this file), so
+ * `zoneOwning()` is NOT unconditionally null here — the earlier claim that it
+ * was (pre-MOR-1351) was wrong for this file; that reasoning only holds for
+ * `fixtures/catalog.ts`'s browser harness, which has no plan context at all.
+ *
+ * MOR-1351: `modes`/`filters` and the rest of the capability tags were an
+ * inert placeholder (`[]` / four tags) — the view-model groups those tags
+ * gate (`deriveModeFilter`/`deriveFilterPassband`/`deriveAgc`/
+ * `deriveRfFrontEnd`/`deriveRitXit`/`deriveCwKeyer`, all in
+ * `radio-view-model-adapter.ts`) are none of them consumed by
+ * `SemanticRadioSurfaces.svelte` (verified against its own imports: it
+ * renders only `vfo`/`rxTx`/`txAux`/`meters`/`rxAudio`), so a vacuous caps
+ * object here proved nothing about those gates being honestly absent versus
+ * simply never exercised. Hardened to a REAL radio's shape — IC-7610
+ * (`rigs/ic7610.toml`), the only
+ * dual-receiver profile in the tree and already this fixture's implied
+ * topology (`receivers: 2`, `vfoScheme: 'main_sub'`) — modes/filters/tags
+ * verbatim from that profile, WITH `scope` now included: `caps.scope: true`
+ * AND the `'scope'` tag together (`presentation-capabilities.ts`'s `agreed()`
+ * requires the boolean and the tag to agree — the resolution is to flip BOTH
+ * to true, not to drop the tag while leaving the boolean disagreeing). The
+ * MOR-1085 `audio-only-scope` contrast fixture (`audioOnlyScopeCaps` below)
+ * now states its own `scope: false` condition explicitly instead of
+ * inheriting an unstated default.
  */
 const mainSubCaps = (): Capabilities => ({
-  model: 'fixture', scope: false, audio: true, tx: true,
-  capabilities: ['audio', 'tx', 'dual_rx', 'tuner'], receivers: 2, vfoScheme: 'main_sub',
-  freqRanges: [], modes: [], filters: [],
+  model: 'fixture', scope: true, audio: true, tx: true,
+  capabilities: [
+    'audio', 'tx', 'dual_rx', 'tuner', 'dual_watch', 'lan_dual_rx_audio_routing',
+    'af_level', 'rf_gain', 'squelch', 'attenuator', 'preamp', 'digisel', 'ip_plus',
+    'antenna', 'rx_antenna', 'nb', 'nr', 'notch', 'apf', 'twin_peak', 'pbt',
+    'filter_width', 'filter_shape', 'split', 'ssb_tx_bw', 'cw', 'break_in', 'rit', 'xit',
+    'meters', 'data_mode', 'mod_input_routing', 'agc', 'power_control', 'dial_lock',
+    'scan', 'bsr', 'main_sub_tracking', 'tuning_step', 'band_edge', 'xfc', 'system_settings',
+    'scope', 'vox', 'compressor', 'monitor', 'drive_gain',
+  ],
+  receivers: 2, vfoScheme: 'main_sub',
+  freqRanges: [{ start: 1800000, end: 54000000, label: 'HF+6m', bands: [
+    { name: '20m', start: 14000000, end: 14350000, default: 14195000 },
+    { name: '40m', start: 7000000, end: 7300000, default: 7100000 },
+  ] }],
+  modes: ['USB', 'LSB', 'CW', 'CW-R', 'AM', 'FM', 'RTTY', 'RTTY-R', 'PSK', 'PSK-R'],
+  filters: ['FIL1', 'FIL2', 'FIL3'],
+  antennas: 2,
+  attValues: [0, 3, 6, 9, 12, 15, 18, 21, 24, 27, 30, 33, 36, 39, 42, 45],
+  preValues: [0, 1, 2],
+  agcModes: [1, 2, 3], agcLabels: { '1': 'FAST', '2': 'MID', '3': 'SLOW' },
   audioConfig: { sampleRate: 48000, channels: 1, codecs: ['pcm16'] },
   webrtc: { available: false, enabled: false },
   txBands: [{ start: 14000000, end: 14350000, name: '20m' }],
@@ -209,12 +256,14 @@ function singleReceiverState(): ServerState {
 }
 /** 1/single caps: no `dual_rx` tag, or the topology derivation contradicts itself. */
 const singleReceiverCaps = (): Capabilities => ({
-  ...mainSubCaps(), receivers: 1, vfoScheme: 'single', capabilities: ['audio', 'tx'],
+  ...mainSubCaps(), receivers: 1, vfoScheme: 'single', scope: false, capabilities: ['audio', 'tx'],
 } as unknown as Capabilities);
 
 /** The ticket's operational audio-scope condition: scope=false + audioFft=true. */
 const audioOnlyScopeCaps = (): Capabilities => ({
-  ...mainSubCaps(), audioFftAvailable: true,
+  ...mainSubCaps(), scope: false,
+  capabilities: mainSubCaps().capabilities.filter((t) => t !== 'scope'),
+  audioFftAvailable: true,
 } as unknown as Capabilities);
 
 /**
@@ -227,7 +276,7 @@ const audioOnlyScopeCaps = (): Capabilities => ({
  * independent of what state.sub happens to report.
  */
 const dualRxUnavailableCaps = (): Capabilities => ({
-  ...mainSubCaps(), capabilities: ['audio', 'tx'],
+  ...mainSubCaps(), scope: false, capabilities: ['audio', 'tx'],
 } as unknown as Capabilities);
 
 let target: HTMLDivElement;
