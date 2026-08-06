@@ -42,6 +42,7 @@
   import RfFrontEndSurface, {
     type RfFrontEndLevelField, type RfFrontEndToggleField,
   } from '../../semantic/RfFrontEndSurface.svelte';
+  import RitXitScanSurface from '../../semantic/RitXitScanSurface.svelte';
   import RxAudioSurface from '../../semantic/RxAudioSurface.svelte';
   import RxTxSurface from '../../semantic/RxTxSurface.svelte';
   import TxAuxSurface, {
@@ -53,7 +54,8 @@
   import {
     makeAgcHandlers, makeAntennaHandlers, makeAudioRoutingHandlers, makeBandHandlers,
     makeDspHandlers, makeFilterHandlers, makeModeHandlers, makeRfFrontEndHandlers,
-    makeRxAudioHandlers, makeTxHandlers, makeVfoHandlers, makeVoxHandlers,
+    makeRitXitHandlers, makeRxAudioHandlers, makeScanHandlers, makeTxHandlers,
+    makeVfoHandlers, makeVoxHandlers,
   } from './command-bus';
   import {
     forReceiver, receiversOf, isActiveStrip, isOperationalStrip,
@@ -243,6 +245,15 @@
   const RF_FRONT_END_TOGGLE_INTENT: Record<RfFrontEndToggleField, (next: boolean) => void> = {
     digiSel: rfFrontEndIntents.onDigiSelToggle, ipPlus: rfFrontEndIntents.onIpPlusToggle,
   };
+  /**
+   * MOR-1308 (vocabulary slice 8B). The shipped RIT/XIT and scan command
+   * vocabularies, composed unmodified — the O1 "one register, two gates"
+   * behavior lives entirely in `makeRitXitHandlers()` already (both offset
+   * handlers write `ritFreq` via the same `set_rit_frequency` command); this
+   * wiring adds no re-derivation, only 1:1 plumbing.
+   */
+  const ritXitIntents = makeRitXitHandlers();
+  const scanIntents = makeScanHandlers();
   const tx = getAppTxController();
   const sourceId = `semantic-rx-tx-${++surfaceSeq}`;
   let leaseSeq = 0;
@@ -805,6 +816,33 @@
     {/if}
   {/snippet}
 
+  <!--
+    MOR-1308 (vocabulary slice 8B). Same reasoning as `rxAudioSurface` above:
+    the second semantic surface carrying interactive controls no manifest
+    declares a zone for, so — per the MOR-1304 mounting canon — it mounts in
+    the SINGLE composition only, and its dual-composition absence is pinned in
+    `__tests__/semantic-ritxit-scan-wiring.component.test.ts` with a view
+    model that actually carries the `ritXit`/`scan` groups (a fixture that
+    cannot see the surface would repeat the bug that canon exists to catch).
+    `'ritXitScan'` becomes DECLARABLE with this slice; no manifest declares a
+    zone for it yet.
+  -->
+  {#snippet ritXitScanSurface()}
+    {#if view?.ritXit || view?.scan}
+      <RitXitScanSurface
+        {view}
+        onRitToggle={ritXitIntents.onRitToggle}
+        onXitToggle={ritXitIntents.onXitToggle}
+        onRitOffsetChange={ritXitIntents.onRitOffsetChange}
+        onXitOffsetChange={ritXitIntents.onXitOffsetChange}
+        onClear={ritXitIntents.onClear}
+        onScanStart={(type) => scanIntents.onScanStart(type)}
+        onScanStop={scanIntents.onScanStop}
+        onResumeModeChange={(mode) => scanIntents.onResumeChange(mode)}
+      />
+    {/if}
+  {/snippet}
+
   {#if strips === 'dual'}
     <!--
       MOR-1258: the zone now carries RxTxSurface AND the two TX-adjacent
@@ -853,6 +891,9 @@
     {@render zoned('rfFrontEnd', view?.rfFrontEnd !== undefined, rfFrontEndSurface)}
     {@render zoned('band', view?.band !== undefined, bandSurface)}
     {@render zoned('antenna', view?.antenna !== undefined, antennaSurface)}
+    {@render zoned(
+      'ritXitScan', view?.ritXit !== undefined || view?.scan !== undefined, ritXitScanSurface,
+    )}
     {@render txAdjacentAlerts()}
   {/if}
 </div>

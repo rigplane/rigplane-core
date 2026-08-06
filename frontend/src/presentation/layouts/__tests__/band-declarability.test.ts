@@ -27,7 +27,10 @@ describe('band is a declarable semantic surface', () => {
   // appended `rfFrontEnd`; `band` must land last, after all of them.
   it('is in the declarable set alongside vfo, rxTx, txAux, meters, rxAudio, filter, dsp and rfFrontEnd', () => {
     expect([...SEMANTIC_SURFACE_NAMES])
-      .toEqual(['vfo', 'rxTx', 'txAux', 'meters', 'rxAudio', 'filter', 'dsp', 'rfFrontEnd', 'band', 'antenna']);
+      .toEqual([
+        'vfo', 'rxTx', 'txAux', 'meters', 'rxAudio', 'filter', 'dsp', 'rfFrontEnd', 'band',
+        'antenna', 'ritXitScan',
+      ]);
   });
 
   // Kills: adding the name to the type but not to the runtime allow-list the
