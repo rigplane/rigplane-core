@@ -24,6 +24,7 @@
 import { flushSync, mount } from 'svelte';
 import '../src/app.css';
 import DualReceiverCockpit from '../src/skins/dual-receiver-cockpit/DualReceiverCockpit.svelte';
+import ReferenceLayout from './ReferenceLayout.svelte';
 import {
   runAssertions, styleProbe, tokenSnapshot, type AssertionOptions,
 } from './assertions';
@@ -34,6 +35,17 @@ const params = new URLSearchParams(window.location.search);
 const id = params.get('fixture') ?? 'topology-2-main-sub';
 const fixture = fixtureById(id);
 if (!fixture) throw new Error(`MOR-1070 harness: unknown fixture id "${id}"`);
+
+/**
+ * MOR-1085 — which of the two layouts this fixture mounts. The fixture ITSELF
+ * carries this (not a separate `&layout=` query param) so one fixture id is
+ * one grid cell: `catalog.ts`'s `toReferenceFixture` derives every
+ * `--reference` id from its `dual-receiver-cockpit` sibling, and the two
+ * always mount the corresponding real component. See `ReferenceLayout.svelte`
+ * for why that component, rather than the full `RadioLayout`, stands in for
+ * "the reference current layout" here.
+ */
+const ROOT_TEST_ID = fixture.layout === 'reference' ? 'reference-layout' : 'dual-receiver-cockpit';
 
 if ((params.get('theme') ?? 'v2') === 'v2') {
   await import('../src/components-v2/theme/index');
@@ -67,7 +79,9 @@ harness.modGuard = fixture.modGuard ?? { visible: false, sourceLabel: null };
 harness.calls = [];
 
 document.title = `MOR-1070 · ${fixture.id}`;
-mount(DualReceiverCockpit, { target: document.getElementById('app')! });
+mount(fixture.layout === 'reference' ? ReferenceLayout : DualReceiverCockpit, {
+  target: document.getElementById('app')!,
+});
 flushSync();
 
 declare global {
@@ -87,17 +101,18 @@ declare global {
 window.__harness = {
   fixture: fixture.id,
   what: fixture.what,
-  assert: (options: AssertionOptions = {}) => runAssertions(fixture.expect, options),
+  assert: (options: AssertionOptions = {}) =>
+    runAssertions(fixture.expect, { ...options, rootTestId: ROOT_TEST_ID }),
   tokens: tokenSnapshot,
   paint: styleProbe,
   calls: () => harness.calls,
   /** A stable identifier per focusable control, in DOM order — the tab sequence. */
   focusOrder: () => [...document.querySelectorAll<HTMLElement>(
-    '[data-testid="dual-receiver-cockpit"] button, '
-    + '[data-testid="dual-receiver-cockpit"] input, '
-    + '[data-testid="dual-receiver-cockpit"] select, '
-    + '[data-testid="dual-receiver-cockpit"] a[href], '
-    + '[data-testid="dual-receiver-cockpit"] [tabindex]',
+    `[data-testid="${ROOT_TEST_ID}"] button, `
+    + `[data-testid="${ROOT_TEST_ID}"] input, `
+    + `[data-testid="${ROOT_TEST_ID}"] select, `
+    + `[data-testid="${ROOT_TEST_ID}"] a[href], `
+    + `[data-testid="${ROOT_TEST_ID}"] [tabindex]`,
   )].map(describe),
 };
 

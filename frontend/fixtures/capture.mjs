@@ -28,7 +28,12 @@ const arg = (name, fallback) => {
 };
 const OUT = path.resolve(arg('--out', path.join(FRONTEND, 'fixtures-baselines')));
 const ONLY = arg('--only', null);
-const PORT = 5199;
+// MOR-1085: multiple worktrees run this tool concurrently against the same
+// hardcoded port, which collides ("Port 5199 is already in use") whenever two
+// agent sessions capture at once. `--port` (default unchanged) lets a
+// parallel run pick its own port without touching the single-port default any
+// script or doc already assumes.
+const PORT = Number(arg('--port', '5199'));
 
 /* ── viewports ─────────────────────────────────────────────────────────── */
 const VIEWPORTS = {
@@ -88,7 +93,7 @@ const MATRIX = [
   },
   { name: 'caps-unloaded--desktop', fixture: 'caps-unloaded', viewport: 'desktop' },
   // H. acceptance gate (b): the three conditional zone-less controls
-  { name: 'zoneless-controls--desktop', fixture: 'zoneless-controls', viewport: 'desktop' },
+  { name: 'tx-adjacent-alerts--desktop', fixture: 'tx-adjacent-alerts', viewport: 'desktop' },
   // I. media emulation on the reference dual state
   {
     name: 'dual-main-sub--desktop--reduced-motion', fixture: 'topology-2-main-sub',
@@ -125,6 +130,38 @@ const MATRIX = [
     name: 'dual-main-sub--desktop--no-v2-theme', fixture: 'topology-2-main-sub',
     viewport: 'desktop', theme: 'none',
   },
+  // M. MOR-1085 — new topology×state cells (both dual topologies now have
+  // "unsupported controls" / "selection fallback" coverage, and 1/ab gets a
+  // per-slot selection-fallback state; see catalog.ts for the fixtures).
+  {
+    name: 'topology-2-ab-shared-unsupported-controls--desktop',
+    fixture: 'topology-2-ab-shared-unsupported-controls', viewport: 'desktop',
+  },
+  {
+    name: 'topology-2-ab-shared-selection-fallback--desktop',
+    fixture: 'topology-2-ab-shared-selection-fallback', viewport: 'desktop',
+  },
+  {
+    name: 'topology-1-ab-selection-fallback--desktop',
+    fixture: 'topology-1-ab-selection-fallback', viewport: 'desktop',
+  },
+  // N. MOR-1085 — the reference-layout twin of every cell above that has
+  // one (every `CORE_FIXTURES` entry except `tx-adjacent-alerts`, see
+  // `toReferenceFixture` in catalog.ts). One capture per state at `desktop`
+  // — the reflow/media/focus/touch dimensions (sections I-L) are properties
+  // of the CSS the cockpit shell alone owns (`DualReceiverCockpit.svelte`'s
+  // `@media` blocks), not of the shared wiring, so they are not re-swept
+  // per layout.
+  ...[
+    'topology-1-single', 'topology-1-ab', 'topology-1-ab-selection-fallback',
+    'topology-2-ab-shared', 'topology-2-ab-shared-unsupported-controls',
+    'topology-2-ab-shared-selection-fallback', 'topology-2-main-sub',
+    'audio-only-scope', 'sub-unobserved', 'dual-rx-unavailable',
+    'tx-phase-rx', 'tx-phase-pending', 'tx-phase-tx', 'tx-phase-fault',
+    'connection-loss-stale', 'connection-loss-state-null', 'caps-unloaded',
+  ].map((id) => ({
+    name: `${id}--reference--desktop`, fixture: `${id}--reference`, viewport: 'desktop',
+  })),
 ];
 
 /* ── build identity ────────────────────────────────────────────────────── */
@@ -362,6 +399,11 @@ const manifest = {
     + 'components-v2/theme/index is imported by RadioLayout/LcdLayout, never by the cockpit).',
     'The page chrome is a bare 100dvh box — no caption, padding or harness UI is composited '
     + 'into any baseline.',
+    'The `--reference--` capture family (MOR-1085) mounts `SemanticRadioSurfaces` directly '
+    + '(production-identical semantic subtree) but omits RadioLayout\'s chrome, legacy twins, and '
+    + 'the MOR-1313 per-zone suppression arm — so the R9 rule decided at RadioLayout\'s '
+    + 'semanticRxTx derivation is NOT exercised by reference captures (it is pinned separately in '
+    + 'jsdom component tests).',
   ],
   viewports: VIEWPORTS,
   summary: {
