@@ -29,7 +29,7 @@ describe('meters is a declarable semantic surface', () => {
   // place.
   it('is in the declarable set alongside vfo, rxTx and txAux', () => {
     expect([...SEMANTIC_SURFACE_NAMES]).toEqual([
-      'vfo', 'rxTx', 'txAux', 'meters', 'rxAudio', 'filter', 'dsp', 'rfFrontEnd',
+      'vfo', 'rxTx', 'txAux', 'meters', 'rxAudio', 'filter', 'dsp', 'rfFrontEnd', 'band',
     ]);
   });
 

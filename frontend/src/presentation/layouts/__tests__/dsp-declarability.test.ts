@@ -20,7 +20,7 @@ describe('dsp is a declarable semantic surface', () => {
   // slice must not create.
   it('is in the declarable set alongside vfo, rxTx, txAux, meters and rxAudio', () => {
     expect([...SEMANTIC_SURFACE_NAMES]).toEqual([
-      'vfo', 'rxTx', 'txAux', 'meters', 'rxAudio', 'filter', 'dsp', 'rfFrontEnd',
+      'vfo', 'rxTx', 'txAux', 'meters', 'rxAudio', 'filter', 'dsp', 'rfFrontEnd', 'band',
     ]);
   });
 

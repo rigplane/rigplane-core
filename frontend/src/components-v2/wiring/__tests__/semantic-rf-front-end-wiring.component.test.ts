@@ -118,6 +118,10 @@ vi.mock('../command-bus', () => ({
     onAttChange: h.att, onPreChange: h.pre, onRfGainChange: h.rfGain,
     onSquelchChange: h.squelch, onDigiSelToggle: h.digiSel, onIpPlusToggle: h.ipPlus,
   }),
+  // MOR-1307 slice 7B: the band-select intent the band surface composes.
+  // This fixture declares no band capability, so it is never reachable —
+  // same stand-in role as the noop handlers above.
+  makeBandHandlers: () => ({ onBandSelect: h.noop }),
 }));
 
 import SemanticRadioSurfaces from '../SemanticRadioSurfaces.svelte';

@@ -110,6 +110,8 @@ vi.mock('../../../components-v2/wiring/command-bus', () => ({
     onAttChange: h.txAuxNoop, onPreChange: h.txAuxNoop, onRfGainChange: h.txAuxNoop,
     onSquelchChange: h.txAuxNoop, onDigiSelToggle: h.txAuxNoop, onIpPlusToggle: h.txAuxNoop,
   }),
+  // MOR-1307 slice 7B: the band-select intent the band surface composes.
+  makeBandHandlers: () => ({ onBandSelect: h.txAuxNoop }),
 }));
 
 import DualReceiverCockpit from '../DualReceiverCockpit.svelte';
