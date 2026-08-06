@@ -769,6 +769,18 @@ describe('the legacy-twin suppression channel (MOR-1364, S6-pre)', () => {
     }
   });
 
+  // N1a (MOR-1368 S9): the panel ledger must be bidirectional. Unrecorded
+  // surviving panels are caught above; stale entries (a panel that no longer
+  // renders but keeps its reason) must fail too. `tx` and `audio-scope` are
+  // exempt: they are deliberately not in the default-fixture inventory.
+  it('no stale entry remains in the panel ledger after a zone retires its panels', () => {
+    const ids = new Set([...renderAll('desktop-v2').querySelectorAll('[data-panel-id]')]
+      .map((el) => el.getAttribute('data-panel-id')!));
+    const EXEMPT = new Set(['tx', 'audio-scope']);
+    const stale = Object.keys(SURVIVING_PANEL_REASONS).filter((id) => !ids.has(id) && !EXEMPT.has(id));
+    expect(stale).toEqual([]);
+  });
+
   // THE CHANNEL ITSELF, both directions in one assertion per surface: a
   // declared zone retires every twin of ITS OWN family, in every host, and
   // touches no sibling family's twin. A `dsp`-only suppression that leaves

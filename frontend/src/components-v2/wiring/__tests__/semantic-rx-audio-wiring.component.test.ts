@@ -102,6 +102,11 @@ import { audioManager } from '$lib/audio/audio-manager';
 import { sendCommand } from '$lib/transport/ws-client';
 import SemanticRadioSurfaces from '../SemanticRadioSurfaces.svelte';
 import { makeAudioRoutingHandlers, makeModeHandlers, makeRxAudioHandlers } from '../command-bus';
+import { desktopV2Layout } from '../../../presentation/layouts/declarations';
+import { readWorkspace } from '../../../presentation/workspace/contract';
+import {
+  resolveSurfacePlan, SURFACE_PLAN_CONTEXT_KEY, type SurfacePlan,
+} from '../../../presentation/workspace/resolution';
 
 /**
  * (a), half one. Read BEFORE any `mockClear()` — the only pin that can see a
@@ -158,10 +163,13 @@ const SILENT_TAGS = ['tx'] as const;
 let target: HTMLDivElement;
 let component: ReturnType<typeof mount> | null = null;
 
-function render(props: { strips?: 'single' | 'dual' } = {}): void {
+function render(props: { strips?: 'single' | 'dual' } = {}, plan?: SurfacePlan): void {
   target = document.createElement('div');
   document.body.appendChild(target);
-  component = mount(SemanticRadioSurfaces, { target, props });
+  const context = plan === undefined
+    ? undefined
+    : new Map<unknown, unknown>([[SURFACE_PLAN_CONTEXT_KEY, () => plan]]);
+  component = mount(SemanticRadioSurfaces, { target, props, context });
   flushSync();
 }
 
@@ -415,5 +423,17 @@ describe('the surface mounts only when the view model carries the group', () => 
     h.state = liveState({ ptt: true } as Partial<ServerState>);
     flushSync();
     expect(el('surface')!.outerHTML).toBe(before);
+  });
+});
+
+describe('desktop-v2 declares a real rx-audio zone; the cockpit does not (MOR-1368, S9, F1)', () => {
+  function planFor(layout: typeof desktopV2Layout, fields: Record<string, unknown>): SurfacePlan {
+    return resolveSurfacePlan(layout, readWorkspace({ version: 1, ...fields }).workspace);
+  }
+
+  it('binds the rx-audio zone id against desktop-v2\'s real plan', () => {
+    h.caps = liveCaps(AUDIO_TAGS);
+    render({ strips: 'single' }, planFor(desktopV2Layout, {}));
+    expect(q('[data-testid="rx-audio-surface"]')!.closest('[data-zone-id="rx-audio"]')).not.toBeNull();
   });
 });
