@@ -507,4 +507,17 @@ describe('MetersSurface and MetersDockPanel are on the same peak-hold channel', 
     expect(dockSource).toMatch(/peakHoldDisplay/);
     expect(dockSource).toMatch(/from '\.\/meter-utils'/);
   });
+
+  // MUTATION KILLED (F1): either consumer re-declaring a local `PEAK_DECAY_MS`
+  // literal instead of importing the shared one from `meter-utils` — the
+  // exact duplicated-window drift the verifier proved was previously pinned
+  // by NOTHING. Both must import the SAME binding; neither may shadow it.
+  it('both BarGauge and MetersDockPanel import the shared PEAK_DECAY_MS instead of declaring their own', () => {
+    const barGaugeSource = readFileSync('src/components-v2/meters/BarGauge.svelte', 'utf8');
+    const dockSource = readFileSync('src/components-v2/panels/MetersDockPanel.svelte', 'utf8');
+    expect(barGaugeSource).toMatch(/import\s*\{[^}]*PEAK_DECAY_MS[^}]*\}\s*from\s*'\.\.\/panels\/meter-utils'/);
+    expect(dockSource).toMatch(/import\s*\{[^}]*PEAK_DECAY_MS[^}]*\}\s*from\s*'\.\/meter-utils'/);
+    expect(barGaugeSource).not.toMatch(/const\s+PEAK_DECAY_MS\s*=/);
+    expect(dockSource).not.toMatch(/const\s+PEAK_DECAY_MS\s*=/);
+  });
 });

@@ -1,10 +1,3 @@
-<script module lang="ts">
-  /** MOR-1282: shared decay window so MetersDockPanel's own peak-hold (which
-   *  already channels through `updatePeakHold`/`peakHoldDisplay`, see
-   *  meter-utils.ts) and this gauge's peak marker never drift apart. */
-  export const PEAK_DECAY_MS = 1500;
-</script>
-
 <script lang="ts">
   import { onMount, untrack } from 'svelte';
   import {
@@ -14,7 +7,7 @@
   } from '$lib/utils/smoothing.svelte';
   import { DEFAULT_ZONES, valueToSegments, getSegmentZone, dimColor } from './bar-gauge-utils';
   import type { Zone } from './bar-gauge-utils';
-  import { updatePeakHold, peakHoldDisplay, type PeakHoldState } from '../panels/meter-utils';
+  import { updatePeakHold, peakHoldDisplay, PEAK_DECAY_MS, type PeakHoldState } from '../panels/meter-utils';
 
   interface Props {
     value: number;         // 0–1 normalized

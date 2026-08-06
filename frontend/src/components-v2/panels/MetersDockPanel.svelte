@@ -15,6 +15,7 @@
     isAlcFault,
     isSwrFault,
     normalizePower,
+    PEAK_DECAY_MS,
     peakHoldDisplay,
     sLevel,
     swrLevel,
@@ -85,8 +86,9 @@
   // value, so the digits and the fill stay consistent. On RX the raw values are
   // 0, so the held peak naturally decays to 0 within the window (no stale TX
   // peak bleed). Vd (steady supply rail), COMP (not requested) and S (the RX
-  // indicator) keep instantaneous display.
-  const PEAK_DECAY_MS = 1500;
+  // indicator) keep instantaneous display. `PEAK_DECAY_MS` is the shared
+  // decay window (MOR-1282) imported from `./meter-utils` above — BarGauge
+  // imports the same binding so the window can never drift between surfaces.
 
   // Peak-hold state for Po/SWR/ALC/Id, latched on the RAW meter value. Stores
   // the latched peak + timestamp only; the decayed value is recomputed per

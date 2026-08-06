@@ -349,6 +349,17 @@ export interface PeakHoldState {
   latchedAt: number;
 }
 
+/**
+ * Shared peak-hold decay window (MOR-1282), in milliseconds.
+ *
+ * Both `BarGauge` and `MetersDockPanel` import this single constant instead
+ * of each declaring their own literal — a raw sample must decay identically
+ * regardless of which surface is rendering it. Do not re-declare a local
+ * `PEAK_DECAY_MS` in either consumer; that would silently reintroduce the
+ * drift this constant exists to close.
+ */
+export const PEAK_DECAY_MS = 1500;
+
 export function updatePeakHold(
   state: PeakHoldState | undefined,
   current: number,
