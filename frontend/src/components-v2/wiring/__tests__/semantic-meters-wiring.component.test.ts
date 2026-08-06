@@ -81,7 +81,16 @@ vi.mock('../command-bus', () => ({
   // MOR-1279 slice 3B: the RX-audio intent vocabulary.
   makeRxAudioHandlers: () => ({ onMonitorModeChange: h.noop, onAfLevelChange: h.noop }),
   makeAudioRoutingHandlers: () => ({ onFocusChange: h.noop, onSplitStereoChange: h.noop }),
-  makeModeHandlers: () => ({ onModInputChange: h.noop }),
+  // MOR-1304 — the wiring now also composes the modeFilter/filterPassband
+  // intent vocabulary; `makeModeHandlers` is composed at both call sites
+  // (rxAudio's MOD-input remedy and filterIntents), so the stub carries both.
+  makeModeHandlers: () => ({
+    onModInputChange: h.noop, onModeChange: h.noop, onDataModeChange: h.noop,
+  }),
+  makeFilterHandlers: () => ({
+    onFilterChange: h.noop, onFilterWidthChange: h.noop, onFilterShapeChange: h.noop,
+    onIfShiftChange: h.noop, onPbtInnerChange: h.noop, onPbtOuterChange: h.noop,
+  }),
 }));
 
 import SemanticRadioSurfaces from '../SemanticRadioSurfaces.svelte';
