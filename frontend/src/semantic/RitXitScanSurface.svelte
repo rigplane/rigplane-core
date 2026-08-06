@@ -44,6 +44,7 @@
 -->
 <script module lang="ts">
   import type { RitXitField, ScanField } from './radio-view-model';
+  import { pressedOf } from './pressed-of';
 
   export const UNKNOWN_TEXT = '—';
   /** O2 — v2's own `RitXitPanel` bounds, verbatim. */
@@ -56,13 +57,6 @@
   export const textOf = (f: RitXitField<unknown> | ScanField<unknown>): string =>
     f.reading.status === 'known' ? String(f.reading.value) : UNKNOWN_TEXT;
   const isOn = (f: RitXitField<boolean>): boolean => f.reading.status === 'known' && f.reading.value === true;
-  /** F2 (fix round, verify-MOR-1308). `TxAuxSurface.svelte`'s `pressedOf`,
-   *  verbatim shape: `boolean | undefined` so `aria-pressed` is OMITTED —
-   *  never `"false"` — when the reading is unknown. Claiming "off" for a
-   *  field this surface has never observed is the same fabrication the
-   *  B-wave criterion forbids for the underlying dispatch below. */
-  const pressedOf = (f: RitXitField<boolean> | ScanField<boolean>): boolean | undefined =>
-    f.reading.status === 'known' ? f.reading.value : undefined;
 </script>
 
 <script lang="ts">

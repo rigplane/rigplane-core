@@ -52,6 +52,7 @@
 -->
 <script module lang="ts">
   import type { BreakInMode, CwKeyerField, DisabledReasonCode } from './radio-view-model';
+  import { pressedOf } from './pressed-of';
 
   /** Break-in as THREE ABSOLUTE choices, `[label, wire mode]`. Absolute, not a
    *  toggle: a toggle computed from an unread reading arms a guess, and here
@@ -205,8 +206,7 @@
     {#if cw.reversePaddle.availability.structural}
       <button
         type="button" class="cw-keyer-toggle" data-testid="cw-keyer-reverse-paddle"
-        aria-pressed={cw.reversePaddle.reading.status === 'known'
-          ? cw.reversePaddle.reading.value : undefined}
+        aria-pressed={pressedOf(cw.reversePaddle)}
         disabled={!usable(cw.reversePaddle)}
         onclick={toggleReversePaddle}
       >Reverse paddle: {textOf(cw.reversePaddle)}</button>
@@ -244,7 +244,7 @@
       <div class="cw-keyer-row" data-testid="cw-keyer-twin-peak" data-observed={usable(cw.twinPeak)}>
         <button
           type="button" class="cw-keyer-toggle" data-testid="cw-keyer-twin-peak-toggle"
-          aria-pressed={cw.twinPeak.reading.status === 'known' ? cw.twinPeak.reading.value : undefined}
+          aria-pressed={pressedOf(cw.twinPeak)}
           disabled={!usable(cw.twinPeak) || mutexed('twinPeak')}
           onclick={toggleTwinPeak}
         >TPF: {textOf(cw.twinPeak)}</button>

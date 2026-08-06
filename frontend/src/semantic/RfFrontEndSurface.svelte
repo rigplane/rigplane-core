@@ -41,6 +41,7 @@
 -->
 <script module lang="ts">
   import type { DisabledReasonCode, RfFrontEndField } from './radio-view-model';
+  import { pressedOf } from './pressed-of';
 
   /** The one rendering of "not read". Never 0, never the last value. */
   export const UNKNOWN_TEXT = '?';
@@ -180,7 +181,7 @@
         <button
           type="button" class="rf-front-end-toggle"
           data-testid={`rf-front-end-${field}`} data-observed={usable(rf[field])}
-          aria-pressed={rf[field].reading.status === 'known' ? rf[field].reading.value : undefined}
+          aria-pressed={pressedOf(rf[field])}
           disabled={!usable(rf[field])}
           onclick={() => toggle(field)}
         >{label}: {textOf(rf[field])}</button>

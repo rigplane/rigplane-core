@@ -101,11 +101,16 @@ const slide = (el: HTMLInputElement, value: number) => {
 describe('the CW-keyer surface is NOT a key path (decomposition R9)', () => {
   /** The whole static import closure of the file, allow-listed. Kills: adding
    *  ANY import that could reach the TX controller, the transport or the
-   *  permit utility — including through a relative specifier. */
-  it('imports nothing but the fact contract', () => {
+   *  permit utility — including through a relative specifier.
+   *  `./pressed-of` (MOR-1358) is allow-listed alongside the fact contract:
+   *  it is a pure, dependency-free `aria-pressed` derivation shared with
+   *  four sibling surfaces, itself importing only a TYPE from
+   *  `./radio-view-model` — it cannot reach the TX controller, the
+   *  transport or the permit utility any more than the fact contract can. */
+  it('imports nothing but the fact contract and the shared pressedOf helper', () => {
     const specifiers = [...CODE.matchAll(/from\s+'([^']+)'/g)].map((m) => m[1]);
     expect(specifiers.length).toBeGreaterThan(0);
-    expect([...new Set(specifiers)]).toEqual(['./radio-view-model']);
+    expect([...new Set(specifiers)]).toEqual(['./radio-view-model', './pressed-of']);
   });
 
   // Kills: `onMount(() => …)` and every relative of it, plus a dynamic import

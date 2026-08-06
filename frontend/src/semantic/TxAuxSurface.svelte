@@ -28,6 +28,7 @@
 -->
 <script module lang="ts">
   import type { TxAuxField } from './radio-view-model';
+  import { pressedOf } from './pressed-of';
 
   /** On/off controls, `[field, label]`. ATU's reading is a three-state enum,
    *  the rest are booleans; `pressedOf` normalises both to one aria state. */
@@ -61,8 +62,6 @@
     f.reading.status !== 'known' ? '?'
       : typeof f.reading.value === 'boolean' ? (f.reading.value ? 'on' : 'off')
         : String(f.reading.value);
-  const pressedOf = (f: TxAuxField<unknown>): boolean | undefined =>
-    f.reading.status === 'known' ? f.reading.value !== false && f.reading.value !== 'off' : undefined;
   const numberOf = (f: TxAuxField<number>, fallback: number): number =>
     f.reading.status === 'known' ? f.reading.value : fallback;
 

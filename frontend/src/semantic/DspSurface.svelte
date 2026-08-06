@@ -38,6 +38,7 @@
   import { buildAgcOptions } from '../components-v2/panels/agc-utils';
   import { NOTCH_WIDTH_LABELS, formatAgcTime } from '../components-v2/panels/dsp-panel-logic';
   import { rawToPercentDisplay } from '../components-v2/controls/value-control/value-control-core';
+  import { pressedOf } from './pressed-of';
 
   /** On/off controls, `[field, label]`. */
   export const DSP_TOGGLES = [['nrActive', 'NR'], ['nbActive', 'NB']] as const;
@@ -70,8 +71,6 @@
     const v = f.reading.value;
     return typeof v === 'boolean' ? (v ? 'on' : 'off') : format ? format(v as number) : String(v);
   };
-  const pressedOf = (f: DspField<unknown>): boolean | undefined =>
-    f.reading.status === 'known' ? f.reading.value !== false : undefined;
 </script>
 
 <script lang="ts">
