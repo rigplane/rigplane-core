@@ -6,7 +6,7 @@
  * (`src/skins/dual-receiver-cockpit/__tests__/DualReceiverCockpit.component.test.ts`),
  * so a browser capture and the jsdom behavior pins describe the same radio.
  * The extra entries (`connection-loss-*`, `caps-unloaded`, the four TX phases,
- * `zoneless-controls`) are the states the ticket's Evidence line names but the
+ * `tx-adjacent-alerts`) are the states the ticket's Evidence line names but the
  * component tests do not enumerate as separate fixtures.
  *
  * `expect` is the BEHAVIOR ASSERTION contract for the fixture — it runs in the
@@ -59,17 +59,36 @@ function mainSubSubUnobserved(): ServerState {
   return { ...rest, fieldStatus: statuses(paths) } as unknown as ServerState;
 }
 
-/** 2/ab_shared: MAIN and SUB are each a single unslotted VFO (2 vfo tiles). */
-function abSharedState(): ServerState {
+/**
+ * 2/ab_shared: MAIN and SUB are each a single unslotted VFO (2 vfo tiles).
+ * `active` defaults to `'SUB'` (the ORIGINAL `topology-2-ab-shared` baseline,
+ * unchanged) — MOR-1085's two new ab_shared states pass `'MAIN'` explicitly
+ * so the degraded/unobserved receiver (SUB) is never simultaneously the
+ * "active" one, matching `mainSubState`/`mainSubSubUnobserved`'s convention.
+ */
+function abSharedState(active: 'MAIN' | 'SUB' = 'SUB'): ServerState {
   const paths = [...RADIO_WIDE, 'main.freqHz', 'main.mode', 'main.filter',
     'sub.freqHz', 'sub.mode', 'sub.filter'];
   const receiver = (hz: number) => ({ freqHz: hz, mode: 'CW', filter: 1 });
   return {
-    active: 'SUB', split: false, dualWatch: true, ptt: false,
-    txTarget: { status: 'known', receiver: 'SUB', slot: null, frequencyHz: 14250000 },
+    active, split: false, dualWatch: true, ptt: false,
+    txTarget: { status: 'known', receiver: active, slot: null, frequencyHz: 14250000 },
     main: receiver(14250000), sub: receiver(14250000),
     fieldStatus: statuses(paths),
   } as unknown as ServerState;
+}
+
+/**
+ * MOR-1085 — 2/ab_shared with SUB never observed: the `ab_shared` analogue of
+ * `mainSubSubUnobserved` below (the "startup window" / selection-fallback
+ * state), applied to the OTHER dual topology so the same startup gap is
+ * proven across both, not just `main_sub`.
+ */
+function abSharedSubUnobserved(): ServerState {
+  const paths = [...RADIO_WIDE, 'main.freqHz', 'main.mode', 'main.filter'];
+  const base = abSharedState('MAIN') as unknown as Record<string, unknown>;
+  const { sub: _absent, ...rest } = base;
+  return { ...rest, fieldStatus: statuses(paths) } as unknown as ServerState;
 }
 
 /** 1/single: ONE receiver, one unslotted VFO. */
@@ -98,6 +117,46 @@ function abState(): ServerState {
     },
     fieldStatus: statuses(paths),
   } as unknown as ServerState;
+}
+
+/**
+ * MOR-1085 — 1/ab with slot B never observed: the per-SLOT analogue of
+ * `mainSubSubUnobserved`'s per-RECEIVER startup window, exercising selection
+ * fallback on a topology that has no second receiver to degrade at all —
+ * `dual-rx-unavailable`'s capability axis is structurally inapplicable to
+ * `1/ab` (there is no `dual_rx` concept for one receiver), so this is the
+ * meaningful "unobserved slot" state that topology actually admits.
+ *
+ * Deletes the `vfoB` key outright — VERIFIED against two candidate shapes
+ * (MOR-1281 discipline), not assumed:
+ *
+ *   - keeping `vfoB` and narrowing only `fieldStatus` renders BYTE-IDENTICAL
+ *     tile/select shape to the healthy `1/ab` baseline. The adapter's slot
+ *     collapse (`radio-view-model-adapter.ts`'s `vfos` builder) branches on
+ *     RAW STATE PRESENCE — `slots.every((id) => rx?.[SLOT_KEY[id]] != null)`
+ *     — not on `fieldStatus`/observedness, so a slot whose key is merely
+ *     unobserved-but-present still renders `kind: 'slotted'` and stays fully
+ *     selectable. That shape does not exercise "selection fallback" at all.
+ *   - deleting the key makes `every(...)` false for the WHOLE receiver,
+ *     collapsing BOTH slots into ONE `kind: 'unknown'` position (comment at
+ *     that call site: "A slotted scheme whose slot view was never observed:
+ *     ONE position of unknown slot identity"). With only one vfo in the
+ *     entire topology, `selectionPoolSize` is 1, so `isSelectable` (which
+ *     requires `hasVfoPair`) is false — the position renders as a
+ *     `data-vfo-label` span, not a button, at ALL. Verified actual: 1 tile,
+ *     0 selects (neither enabled nor disabled — there is no select control
+ *     to gate, the structurally-absent half of the MOR-1256 two-level
+ *     doctrine, not the present-and-disabled half).
+ *
+ * The second shape is the real "selection fallback" this fixture is for.
+ */
+function abStateSlotBUnobserved(): ServerState {
+  const paths = [...RADIO_WIDE, 'main.activeSlot',
+    'main.vfoA.freqHz', 'main.vfoA.mode', 'main.vfoA.filterNum'];
+  const base = abState() as unknown as Record<string, unknown>;
+  const mainBase = base.main as Record<string, unknown>;
+  const { vfoB: _absentSlot, ...restMain } = mainBase;
+  return { ...base, main: restMain, fieldStatus: statuses(paths) } as unknown as ServerState;
 }
 
 /**
@@ -156,6 +215,13 @@ const audioOnlyScopeCaps = (): Capabilities =>
 /** Structurally dual, no `dual_rx` tag → `dual-rx-unavailable` (MOR-1256). */
 const dualRxUnavailableCaps = (): Capabilities =>
   ({ ...baseCaps(), capabilities: ['audio', 'tx'] } as unknown as Capabilities);
+/**
+ * MOR-1085 — the `ab_shared` analogue of `dualRxUnavailableCaps`: structurally
+ * dual (`vfoScheme: 'ab_shared'`, `receivers: 2`), no `dual_rx` tag, so the
+ * SAME MOR-1256 two-level gate applies on the other dual topology.
+ */
+const abSharedDualRxUnavailableCaps = (): Capabilities =>
+  ({ ...abSharedCaps(), capabilities: ['audio', 'tx'] } as unknown as Capabilities);
 
 const tx = (over: Partial<TxSnapshot>): TxSnapshot => ({ ...IDLE_TX, ...over });
 
@@ -183,6 +249,41 @@ export interface Expectation {
   modInputWarningPresent: boolean;
   /** Controls whose `closest('[data-zone-id]')` is null (acceptance gate (b)). */
   zonelessControls: number;
+  /**
+   * MOR-1085. `true` (default) for the dual-receiver-cockpit composition,
+   * which binds every declared zone to a `data-zone-id` element. `false` for
+   * the reference/single composition, which MOR-1069 deliberately leaves
+   * zone-less ("a zone element exists only where an arrangement must place
+   * it, and the single composition places nothing" —
+   * `presentation/layouts/desktop-declarations.ts`). Every zone-shaped check
+   * in `assertions.ts` — the cockpit's inert scope/controls placeholders,
+   * the "every control lives in a zone" acceptance gate, the containment
+   * half of the radio-wide-row check — is cockpit-specific by construction
+   * and reads this flag rather than assuming one composition's shape.
+   */
+  zonedComposition?: boolean;
+  /**
+   * MOR-1085 checklist item 5. Whether `[data-testid="rx-audio-surface"]`
+   * (the only currently-wired "audio path" UI, MOR-1279) is present.
+   * Structural: renders in the reference/single composition whenever a view
+   * model exists, never in the dual-receiver-cockpit composition. Optional
+   * so existing fixtures are unaffected; set where the contrast matters.
+   */
+  rxAudioSurfacePresent?: boolean;
+  /**
+   * MOR-1085 checklist item 5. The `view.scope.{hardwareScope,audioFftScope}`
+   * facts (MOR-1298/1299 vocabulary), checked directly against the real
+   * adapter's output — no semantic surface consumes them yet on either
+   * layout (see the MOR-1085 report), so this is the only way to pin the
+   * "hardware-scope affordances absent, audioFft honestly reported" half of
+   * the audio-only-scope condition today. `null` means "no view model"
+   * (caps not loaded). Optional and set only where this contrast is the
+   * point of the fixture.
+   */
+  scopeFacts?: {
+    hardwareScope: { structural: boolean; operational: boolean };
+    audioFftScope: { structural: boolean; operational: boolean };
+  } | null;
 }
 
 export interface Fixture {
@@ -193,6 +294,15 @@ export interface Fixture {
   caps: () => Capabilities | null;
   tx: TxSnapshot;
   modGuard?: ModGuardProps;
+  /**
+   * MOR-1085. Which real component this fixture mounts: the
+   * dual-receiver-cockpit shell (default, unchanged from MOR-1070) or
+   * `ReferenceLayout.svelte` (`SemanticRadioSurfaces strips="single"` — the
+   * same wiring `desktop-v2`/`sdr-test` compose today). One fixture id is
+   * one grid cell; `toReferenceFixture()` below derives every `--reference`
+   * id from its cockpit sibling.
+   */
+  layout?: 'cockpit' | 'reference';
   expect: Expectation;
 }
 
@@ -210,7 +320,12 @@ const mainSubExpect = (over: Partial<Expectation> = {}): Expectation => ({
   ...over,
 });
 
-export const FIXTURES: readonly Fixture[] = [
+/**
+ * MOR-1085 — every dual-receiver-cockpit fixture. `FIXTURES` below adds the
+ * reference-layout twin of each (except `tx-adjacent-alerts`, a
+ * cockpit-zone-specific acceptance gate — see `toReferenceFixture`).
+ */
+const CORE_FIXTURES: readonly Fixture[] = [
   {
     id: 'topology-1-single',
     what: '1/single — one receiver, one unslotted VFO; the cockpit degrades to one strip.',
@@ -238,9 +353,36 @@ export const FIXTURES: readonly Fixture[] = [
     },
   },
   {
+    // MOR-1085 — "selection fallback" on `1/ab`: `dual-rx-unavailable`'s
+    // capability axis does not exist for a single receiver, but a slot CAN
+    // still be unobserved, which is the state this topology actually admits
+    // (see `abStateSlotBUnobserved` above).
+    // `tiles: 1, selectsEnabled: 0, selectsDisabled: 0` — VERIFIED, not
+    // assumed by analogy with `sub-unobserved`'s 3-tiles/1-disabled shape:
+    // losing one of two DECLARED slots collapses the receiver to ONE
+    // `kind: 'unknown'` position (see `abStateSlotBUnobserved` above), and
+    // with only that one vfo in the whole topology it is not selectable at
+    // all — no select button exists to be enabled OR disabled. This is the
+    // "structurally absent" half of the MOR-1085 two-level doctrine
+    // (checklist item 4), the OPPOSITE half from `sub-unobserved`'s
+    // "present and really disabled".
+    id: 'topology-1-ab-selection-fallback',
+    what: '1/ab, slot B never observed — the receiver collapses to ONE unknown-slot tile with no '
+      + 'select control at all (structurally absent, not present-and-disabled).',
+    state: abStateSlotBUnobserved, caps: abCaps, tx: tx({}),
+    expect: {
+      zones: SINGLE_ZONES, strips: 1, stripReceivers: ['MAIN'],
+      stripOperational: [true], stripActive: [true],
+      tiles: 1, selectsEnabled: 0, selectsDisabled: 0,
+      radioWideSwitchesDisabled: false, keyDisabled: false,
+      rfLabel: 'RX', sessionLabel: 'ready',
+      faultResetPresent: false, modInputWarningPresent: false, zonelessControls: 0,
+    },
+  },
+  {
     id: 'topology-2-ab-shared',
     what: '2/ab_shared — two receivers, one unslotted VFO each; SUB is the active receiver.',
-    state: abSharedState, caps: abSharedCaps, tx: tx({}),
+    state: () => abSharedState(), caps: abSharedCaps, tx: tx({}),
     expect: {
       zones: DUAL_ZONES, strips: 2, stripReceivers: ['MAIN', 'SUB'],
       stripOperational: [true, true], stripActive: [false, true],
@@ -251,16 +393,89 @@ export const FIXTURES: readonly Fixture[] = [
     },
   },
   {
+    // MOR-1085 — "unsupported controls" state on the SECOND dual topology
+    // (`dual-rx-unavailable` above already covers `main_sub`; MOR-1256's
+    // two-level gate is a capability-derivation property, not a
+    // `main_sub`-specific one, so it applies here unchanged). `active:
+    // 'MAIN'` so the receiver capabilities degrade (SUB) is not also the
+    // one `state.active` claims — same separation `dual-rx-unavailable`
+    // keeps for `main_sub`.
+    id: 'topology-2-ab-shared-unsupported-controls',
+    what: '2/ab_shared, structurally dual but no `dual_rx` tag (MOR-1256) — SUB present, its select '
+      + 'really disabled, same two-level gate as `dual-rx-unavailable` on the other dual topology.',
+    state: () => abSharedState('MAIN'), caps: abSharedDualRxUnavailableCaps, tx: tx({}),
+    expect: {
+      zones: DUAL_ZONES, strips: 2, stripReceivers: ['MAIN', 'SUB'],
+      stripOperational: [true, false], stripActive: [true, false],
+      tiles: 2, selectsEnabled: 0, selectsDisabled: 1,
+      radioWideSwitchesDisabled: false, keyDisabled: false,
+      rfLabel: 'RX', sessionLabel: 'ready',
+      faultResetPresent: false, modInputWarningPresent: false, zonelessControls: 0,
+    },
+  },
+  {
+    // MOR-1085 — "selection fallback" / startup-window state on `ab_shared`
+    // (`sub-unobserved` above already covers `main_sub`).
+    //
+    // `selectsEnabled: 1, selectsDisabled: 0` — VERIFIED against the actual
+    // capture, not assumed by analogy with `sub-unobserved`: an unslotted
+    // `ab_shared` vfo's `slot.kind` is never `'unknown'`
+    // (`VfoSurface.svelte`'s `selectDisabled = selectable && (vfo.slot.kind
+    // === 'unknown' || disabled)` only has a `'unknown'` kind for A/B SLOTS),
+    // and this state does not touch the `disabled` prop path either (that is
+    // driven by `isOperationalStrip`, i.e. the CAPABILITY gate, not by
+    // per-field observedness) — so an unobserved `ab_shared` receiver's
+    // select stays exactly as enabled as the healthy baseline. This is the
+    // real, honest answer for this topology, not a copy of `sub-unobserved`'s
+    // numbers.
+    id: 'topology-2-ab-shared-selection-fallback',
+    what: '2/ab_shared startup window: SUB never observed — strip present, select UNAFFECTED (see '
+      + 'comment: ab_shared select-gating is capability-driven, not observedness-driven).',
+    state: abSharedSubUnobserved, caps: abSharedCaps, tx: tx({}),
+    expect: {
+      zones: DUAL_ZONES, strips: 2, stripReceivers: ['MAIN', 'SUB'],
+      stripOperational: [true, true], stripActive: [true, false],
+      tiles: 2, selectsEnabled: 1, selectsDisabled: 0,
+      radioWideSwitchesDisabled: false, keyDisabled: false,
+      rfLabel: 'RX', sessionLabel: 'ready',
+      faultResetPresent: false, modInputWarningPresent: false, zonelessControls: 0,
+    },
+  },
+  {
     id: 'topology-2-main-sub',
     what: '2/main_sub — the reference dual state: 4 tiles across 2 strips, MAIN A active.',
     state: () => withMeters(mainSubState('MAIN')), caps: mainSubCaps, tx: tx({}),
-    expect: mainSubExpect(),
+    // MOR-1085 checklist item 5 contrast pair (with `audio-only-scope` below):
+    // baseCaps has NO scope tag and `audioFftAvailable: false`, so both scope
+    // sources read fully unavailable — computed straight from the real
+    // adapter, not asserted by fiat (see `scope-facts-honest` in
+    // assertions.ts). `rxAudioSurfacePresent: false` pins the cockpit's OWN
+    // half of the contrast: the dual composition never mounts
+    // `RxAudioSurface` regardless of any audio capability (structural, not
+    // capability-gated) — see the `--reference` twin below for the layout
+    // that DOES mount it.
+    expect: mainSubExpect({
+      scopeFacts: {
+        hardwareScope: { structural: false, operational: false },
+        audioFftScope: { structural: false, operational: false },
+      },
+      rxAudioSurfacePresent: false,
+    }),
   },
   {
     id: 'audio-only-scope',
     what: 'scope=false + audioFft=true on 2/main_sub — the cockpit must claim nothing either way.',
     state: () => mainSubState('MAIN'), caps: audioOnlyScopeCaps, tx: tx({}),
-    expect: mainSubExpect(),
+    // `audioOnlyScopeCaps` sets ONLY `audioFftAvailable: true` on top of
+    // baseCaps — `hardwareScope` is untouched (still fully unavailable) and
+    // `audioFftScope.operational` follows `state !== null`, true here.
+    expect: mainSubExpect({
+      scopeFacts: {
+        hardwareScope: { structural: false, operational: false },
+        audioFftScope: { structural: true, operational: true },
+      },
+      rxAudioSurfacePresent: false,
+    }),
   },
   {
     id: 'sub-unobserved',
@@ -343,8 +558,18 @@ export const FIXTURES: readonly Fixture[] = [
     },
   },
   {
-    id: 'zoneless-controls',
-    what: 'acceptance gate (b): the three conditional controls that render OUTSIDE every declared zone.',
+    // MOR-1085 checklist item 2: renamed from `zoneless-controls`. The old id
+    // and `what` both dated to before MOR-1258 moved these three controls'
+    // render site — `tx-fault-reset` and the two `ModInputTxWarning` buttons
+    // — to sit BESIDE `RxTxSurface` inside the bound `.rx-tx-zone` div. They
+    // are formal members of the `rx-tx` zone now (`zonelessControls: 0`
+    // below already asserted that; only the name and prose still claimed
+    // the pre-MOR-1258 shape). The fixture still earns its keep: it is the
+    // one state where all three conditional controls render simultaneously,
+    // which is what acceptance gate (b) actually needs proving.
+    id: 'tx-adjacent-alerts',
+    what: 'acceptance gate (b): the three conditional controls render INSIDE the rx-tx zone (MOR-1258), '
+      + 'never zone-less, even with all three present at once.',
     state: () => mainSubState('MAIN'), caps: mainSubCaps,
     tx: tx({ phase: 'failed', radioTx: 'unknown', txRisk: 'uncertain', fault: 'audio-failed' }),
     modGuard: { visible: true, sourceLabel: 'MIC' },
@@ -353,6 +578,92 @@ export const FIXTURES: readonly Fixture[] = [
       faultResetPresent: true, modInputWarningPresent: true, zonelessControls: 0,
     }),
   },
+];
+
+/**
+ * MOR-1085 — derives a fixture's reference-layout twin: same state, caps, tx
+ * and mod-guard (the RADIO doesn't change, only which real component mounts
+ * it), `layout: 'reference'`, and an `expect` rewritten for the structural
+ * shape `ReferenceLayout.svelte` actually renders:
+ *
+ *   - `zones: []`, `strips: 0`, `stripReceivers/Operational/Active: []` —
+ *     the single composition never creates a `data-zone-id` element or a
+ *     `channel-strip` div (see `zonedComposition` in `assertions.ts`); all
+ *     of a topology's vfos render inside ONE `<VfoSurface>` call instead of
+ *     per-receiver strips.
+ *   - `zonedComposition: false` — turns off every cockpit-only assertion
+ *     (inert scope/controls placeholders, the zone-order acceptance gate)
+ *     that presupposes a zone wrapper.
+ *   - `rxAudioSurfacePresent` — `RxAudioSurface` mounts in the single
+ *     composition whenever a view model exists (MOR-1279; every fixture's
+ *     `baseCaps`-derived caps carry `audio: true`, so this is universal, not
+ *     per-topology); `rfLabel !== null` is the same "view model exists" test
+ *     `single-tx-authority-surface` already uses (`toRadioViewModel` returns
+ *     null exactly when caps is null).
+ *   - `tiles`, `selectsEnabled/Disabled`, `keyDisabled`, `rfLabel`,
+ *     `sessionLabel`, `radioWideSwitchesDisabled`, `faultResetPresent`,
+ *     `modInputWarningPresent`, `scopeFacts` carry over UNCHANGED: they are
+ *     properties of the view model (`toRadioViewModel(state, caps, tx, …)`),
+ *     which is composition-independent — splitting the same vfos into per-
+ *     receiver strips does not change how many are selectable or what the TX
+ *     readout says. This is verified, not assumed: every reference fixture
+ *     below was run through `capture.mjs` and its assertions pass (see the
+ *     MOR-1085 report), so a wrong carry-over would have shown up as a real
+ *     `select-gating`/`tx-readout`/etc. failure, not a silent mismatch.
+ *   - `zonelessControls` stays whatever the source declared (irrelevant here
+ *     — the check that reads it is itself skipped when `zonedComposition`
+ *     is false).
+ */
+/**
+ * MOR-1085 FINDING (see the report): the reference/single composition's
+ * `vfoSurface()` snippet never passes a `disabled` prop to `<VfoSurface>` —
+ * only the dual composition's per-strip wiring does
+ * (`disabled={!isOperationalStrip(view, receiverId)}`). `selectDisabled`
+ * (`VfoSurface.svelte`) is `selectable && (vfo.slot.kind === 'unknown' ||
+ * disabled)`, so on the reference layout the MOR-1256 two-level gate never
+ * engages: a structurally-dual, operationally-degraded receiver's select
+ * stays fully enabled there today, verified against the actual capture
+ * (`3 enabled / 0 disabled`, not the cockpit's `1/2`). This is real,
+ * pre-existing production behavior this ticket observes, not a bug this
+ * catalog papers over — the two ids below are exactly the fixtures whose
+ * `dual_rx`-unavailable capability makes the cockpit disable a select; their
+ * reference twins keep the HEALTHY-baseline gating numbers instead of
+ * inheriting the cockpit's.
+ */
+const REFERENCE_SELECT_GATING_OVERRIDE: Readonly<Record<string, Pick<Expectation,
+  'selectsEnabled' | 'selectsDisabled'>>> = {
+  'dual-rx-unavailable': { selectsEnabled: 3, selectsDisabled: 0 },
+  'topology-2-ab-shared-unsupported-controls': { selectsEnabled: 1, selectsDisabled: 0 },
+};
+
+function toReferenceFixture(f: Fixture): Fixture {
+  return {
+    id: `${f.id}--reference`,
+    what: `${f.what} [reference layout: SemanticRadioSurfaces strips="single", the wiring `
+      + 'desktop-v2/sdr-test compose today — see ReferenceLayout.svelte].',
+    state: f.state, caps: f.caps, tx: f.tx, modGuard: f.modGuard,
+    layout: 'reference',
+    expect: {
+      ...f.expect,
+      zones: [], strips: 0, stripReceivers: [], stripOperational: [], stripActive: [],
+      zonedComposition: false,
+      rxAudioSurfacePresent: f.caps() !== null,
+      ...REFERENCE_SELECT_GATING_OVERRIDE[f.id],
+    },
+  };
+}
+
+/**
+ * The full MOR-1085 grid: every `CORE_FIXTURES` (dual-receiver-cockpit)
+ * entry, plus its reference-layout twin — except `tx-adjacent-alerts`, whose
+ * whole point is the cockpit's OWN zone-containment acceptance gate (b) and
+ * has no reference-layout equivalent (the reference/single composition has
+ * no zone concept for the three alerts to be "inside" or "outside" of; see
+ * `zonedComposition` in `assertions.ts`).
+ */
+export const FIXTURES: readonly Fixture[] = [
+  ...CORE_FIXTURES,
+  ...CORE_FIXTURES.filter((f) => f.id !== 'tx-adjacent-alerts').map(toReferenceFixture),
 ];
 
 export const fixtureById = (id: string): Fixture | undefined =>

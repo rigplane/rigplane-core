@@ -2,9 +2,10 @@
  * MOR-1070 stub for `$lib/runtime/adapters/mod-input-tx-guard.svelte`.
  *
  * The real adapter reads the radio/capability stores and the command bus; the
- * banner it drives is one of the three conditional, zone-less controls named
- * in the MOR-1070 acceptance package's gate item (b), so the harness needs to
- * be able to turn it on deliberately (`zoneless-controls` fixture).
+ * banner it drives is one of the three conditional controls named in the
+ * MOR-1070 acceptance package's gate item (b) — inside the rx-tx zone since
+ * MOR-1258 — so the harness needs to be able to turn it on deliberately
+ * (`tx-adjacent-alerts` fixture, MOR-1085's renamed `zoneless-controls`).
  */
 import { harness, record, type ModGuardProps } from '../harness-state';
 
