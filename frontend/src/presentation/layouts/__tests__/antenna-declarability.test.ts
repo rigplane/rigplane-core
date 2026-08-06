@@ -1,22 +1,16 @@
 /**
- * MOR-1309 — `antenna` is DECLARABLE, and nothing declares it yet.
+ * MOR-1309 — `antenna` is DECLARABLE. MOR-1367 (S8) declares it for real.
  *
- * Slice 8C adds the name to `SEMANTIC_SURFACE_NAMES` so a manifest CAN mount
- * the surface later; it deliberately does not touch any manifest, and it adds
- * no design-language renderer slot (that set was frozen by MOR-1072 — adding
- * one would be a language-contract change this slice must not make).
+ * Slice 8C added the name to `SEMANTIC_SURFACE_NAMES` so a manifest COULD mount
+ * the surface later; it deliberately touched no manifest and added no
+ * design-language renderer slot (that set was frozen by MOR-1072).
  *
- * The "nothing declares it yet" half is load-bearing HERE in a way it was not
- * for `meters`: the antenna surface is control-bearing, and it is mounted in
- * the SINGLE composition only (MOR-1304 mounting canon, option (i)). A zone
- * declared in a dual-mounting manifest without the matching composition work
- * would put focusable controls outside the cockpit's declared zones.
- *
- * Same three pins as `rx-audio-declarability.test.ts` / `tx-aux-declarability.test.ts`:
- *   - drop the name and a future manifest's zone stops validating;
- *   - quietly add an `antenna` zone to a shipped manifest and the DOM grows a
- *     zone id no layout review ever saw;
- *   - the renderer slot set stays exactly what MOR-1072 froze.
+ * MOR-1367 flips the second half, on `desktop-v2` ONLY. The "nothing declares
+ * it" half was load-bearing for 8C because the surface is CONTROL-BEARING and is
+ * mounted in the SINGLE composition only (MOR-1304 mounting canon, option (i));
+ * declaring a zone on `desktop-v2` does not put it into the dual composition, so
+ * the cockpit manifest stays untouched and 8C's dual-absence pin stays valid and
+ * unedited. This is canon option (ii), for `desktop-v2` alone.
  */
 import { describe, it, expect } from 'vitest';
 import { SEMANTIC_SURFACE_NAMES, validateLayoutManifest } from '../contract';
@@ -55,17 +49,43 @@ describe('antenna is a declarable semantic surface', () => {
   });
 });
 
-describe('no shipped manifest declares an antenna zone in this slice', () => {
-  // Kills: slipping an antenna zone into an existing layout here. Declarability
-  // is the whole scope of the contract touch; placing a control-bearing surface
-  // in a real layout is a later, separately reviewed slice that must also do
-  // the dual-composition mount work the canon requires.
-  it.each([
+describe('exactly the reviewed manifests declare an antenna zone (MOR-1367)', () => {
+  /** The literal — extend by hand, with a layout review, never silently. */
+  const DECLARES_ANTENNA = ['desktop-v2'];
+
+  const ALL = [
     ['sdr-test', sdrTestLayout], ['dual-receiver-cockpit', dualReceiverCockpitLayout],
     ['lcd-cockpit', lcdCockpitLayout], ['lcd-scope', lcdScopeLayout],
     ['mobile', mobileLayout], ['desktop-v2', desktopV2Layout],
-  ])('%s declares no antenna zone and does not require the surface', (_id, manifest) => {
-    for (const zone of manifest.zones) expect(zone.surfaces).not.toContain('antenna');
+  ] as const;
+
+  // Kills BOTH directions: a family losing the zone S8 gave it, and a family
+  // gaining one without review. For the cockpit that is load-bearing rather
+  // than cosmetic — a declared zone there would move a control-bearing surface
+  // into the dual composition and change what MOR-1069's tab-order assertion
+  // has to say.
+  it('the declaring set is exactly the reviewed literal', () => {
+    const declaring = ALL
+      .filter(([, m]) => m.zones.some((z) => z.surfaces.includes('antenna')))
+      .map(([id]) => id)
+      .sort();
+    expect(declaring).toEqual([...DECLARES_ANTENNA].sort());
+  });
+
+  // Kills: declaring the zone under a drifted id — the wiring binds whatever
+  // the plan's key is, so the id IS the contract with the layout's arrangement.
+  it.each(DECLARES_ANTENNA)('%s declares it under the stable `antenna` id, alone in its zone', (id) => {
+    const manifest = ALL.find(([name]) => name === id)![1];
+    const zone = manifest.zones.find((z) => z.surfaces.includes('antenna'))!;
+    expect(zone.id).toBe('antenna');
+    expect(zone.surfaces).toEqual(['antenna']);
+  });
+
+  // Kills: making antenna REQUIRED. A single-antenna radio reports no antenna
+  // group at all and must still resolve this layout; the surface self-gates on
+  // `view.antenna`, and a required surface no zone could fill would be a
+  // resolution failure rather than an honest absence.
+  it.each(ALL)('%s does not require the antenna surface', (_id, manifest) => {
     expect(manifest.requiredSemanticSurfaces).not.toContain('antenna');
   });
 });

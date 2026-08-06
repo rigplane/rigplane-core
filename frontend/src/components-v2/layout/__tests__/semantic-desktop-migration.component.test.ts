@@ -137,7 +137,7 @@ vi.mock('$lib/stores/capabilities.svelte', () => ({
 }));
 
 import RadioLayout from '../RadioLayout.svelte';
-import { hasAnyScope, hasCapability } from '$lib/stores/capabilities.svelte';
+import { getCapabilities, hasAnyScope, hasCapability } from '$lib/stores/capabilities.svelte';
 import { topologyFixtures, type TopologyFixtureId } from '../../../semantic/fixtures/topologies';
 import { registerLayout, type LayoutManifest } from '../../../presentation/layouts/contract';
 // Barrel, for the same reason `skins/dual-receiver-cockpit/__tests__/
@@ -145,6 +145,10 @@ import { registerLayout, type LayoutManifest } from '../../../presentation/layou
 // derive the probes below from. RadioLayout.svelte already pulls this module in
 // (its side-effect registry import), so this adds no registration of its own.
 import { desktopV2Layout } from '../../../presentation/layouts/declarations';
+// MOR-1367 (S8): the zone-ELEMENT assertions need the resolved plan in context
+// — see `renderWithPlan` in the S8 describe for why `render()` cannot show one.
+import { resolveSurfacePlan, SURFACE_PLAN_CONTEXT_KEY } from '../../../presentation/workspace/resolution';
+import { DEFAULT_WORKSPACE } from '../../../presentation/workspace/contract';
 
 /**
  * MOR-1313 fix round — PARTIALLY DECLARING manifests, the quadrants no shipped
@@ -579,26 +583,18 @@ describe('the legacy-twin suppression channel (MOR-1364, S6-pre)', () => {
     'antenna', 'scan', 'rx-audio', 'dsp', 'tx', 'cw', 'memory'];
   const RIGHT_ALL = ['rx-audio', 'audio-scope', 'dsp', 'tx', 'cw', 'memory'];
 
-  /**
-   * surface → the zone id its rework slice will declare on `desktop-v2`.
-   * `scopeDisplay` graduated to a REAL declaration in MOR-1365 (S6a) and left
-   * this synthetic-probe literal — a probe re-declaring `scope-display` here
-   * would collide with the real zone `desktopV2Layout.zones` already
-   * carries. Its suppression is now proved directly against the real
-   * manifest below (`the legacy-twin suppression channel retires the status
-   * bar scope indicator on the REAL desktop-v2 manifest (MOR-1365)`).
+  /** surface → the zone id its rework slice will declare on `desktop-v2`.
    *
-   * `filter` and `rfFrontEnd` graduated off this synthetic-probe list in
-   * MOR-1366 (S7): `desktopV2Layout` now declares both for real, so spreading
-   * `desktopV2Layout.zones` plus a second `{ id: 'filter', … }` /
-   * `{ id: 'rf-front-end', … }` entry here would duplicate a zone id the real
-   * manifest already owns. Their suppression is asserted directly against the
-   * REAL `desktop-v2` registration below instead of through `ZONE_PROBE`.
-   */
+   *  GRADUATIONS — surfaces whose zone `desktopV2Layout` now really declares
+   *  have LEFT this synthetic-probe literal, because a probe spreading
+   *  `...desktopV2Layout.zones` plus a second entry with the same id would
+   *  declare a duplicate zone id. Each graduate's coverage moved to a describe
+   *  asserting the REAL registration — a strictly stronger statement:
+   *    - `scopeDisplay` graduated in MOR-1365 (S6a);
+   *    - `filter`, `rfFrontEnd` graduated in MOR-1366 (S7);
+   *    - `band`, `antenna`, `ritXitScan` graduated in MOR-1367 (S8). */
   const ZONES = [
-    ['dsp', 'dsp'],
-    ['ritXitScan', 'rit-xit-scan'], ['antenna', 'antenna'], ['rxAudio', 'rx-audio'],
-    ['cwKeyer', 'cw-keyer'], ['band', 'band'],
+    ['dsp', 'dsp'], ['rxAudio', 'rx-audio'], ['cwKeyer', 'cw-keyer'],
   ] as const;
   type CoveredSurface = (typeof ZONES)[number][0];
 
@@ -630,10 +626,9 @@ describe('the legacy-twin suppression channel (MOR-1364, S6-pre)', () => {
     ['dsp', 'right sidebar DSP', '.right-sidebar [data-panel-id="dsp"]'],
     ['dsp', 'settings modal DSP', '[data-panel-id="desktop-dsp"]'],
     ['dsp', 'settings modal AGC', '[data-panel-id="desktop-agc"]'],
-    ['ritXitScan', 'left sidebar RIT / XIT', '.left-sidebar [data-panel-id="rit-xit"]'],
-    ['ritXitScan', 'left sidebar SCAN', '.left-sidebar [data-panel-id="scan"]'],
-    ['ritXitScan', 'settings modal RIT / XIT', '[data-panel-id="desktop-rit"]'],
-    ['antenna', 'left sidebar ANTENNA', '.left-sidebar [data-panel-id="antenna"]'],
+    // MOR-1367 (S8): the three `ritXitScan` rows and the `antenna` row moved to
+    // the zone-ownership describe below — those twins are GONE on desktop-v2
+    // now, so an "it renders today" row here would be false.
     ['rxAudio', 'left sidebar RX AUDIO', '.left-sidebar [data-panel-id="rx-audio"]'],
     ['rxAudio', 'right sidebar RX AUDIO', '.right-sidebar [data-panel-id="rx-audio"]'],
     ['cwKeyer', 'left sidebar CW', '.left-sidebar [data-panel-id="cw"]'],
@@ -642,12 +637,13 @@ describe('the legacy-twin suppression channel (MOR-1364, S6-pre)', () => {
   ] as const satisfies readonly (readonly [CoveredSurface, string, string])[];
 
   /**
-   * The BAND twin is deliberately NOT on the channel (S10 verifier ruling):
-   * `BandSelector` hosts the LW/MW + SWL tabs and 17 broadcast presets that
-   * are deliberately not facts and have no other production host, so gating it
-   * on `declared.has('band')` would orphan them. It joins in S8, after the
-   * component split. Pinned so that deferral is a decision someone has to
-   * revisit rather than an omission nobody notices.
+   * The BAND twin is never MOUNT-gated, on any manifest, ever (S10 rows 6/10,
+   * §4a): `BandSelector` hosts the LW/MW + SWL broadcast tabs that are
+   * deliberately not facts and have no other production host, so unmounting the
+   * component would orphan them. MOR-1367 (S8) retires the HAM half by PROP
+   * instead — the hosts below keep rendering the component either way, which is
+   * exactly what these two rows say. See the split pins in the zone-ownership
+   * describe for the HAM-vs-broadcast half of the statement.
    */
   const BAND_TWINS = [
     ['left sidebar BAND', '.left-sidebar [data-panel-id="band"]'],
@@ -686,24 +682,29 @@ describe('the legacy-twin suppression channel (MOR-1364, S6-pre)', () => {
   });
 
   // INERTNESS, half two, stated as an inventory rather than per-row: the exact
-  // set of panels desktop-v2 renders. This is the pin the N3 carry-forward
-  // warned about — it MUST go red the moment a zone-declaring slice lands,
-  // and the correct fix is deleting the retired ids, never widening the
-  // literal. MOR-1366 (S7) is the first slice to do that: `desktop-rf`
-  // (settings modal RF FRONT END), `filter`, `mode` and `rf-front-end` are
-  // gone from the panel inventory because the `filter`/`rf-front-end` zones
-  // are now REAL on `desktop-v2`, not synthetic probes — see the dedicated
-  // "drops the legacy ... twins" tests below for the non-vacuous proof.
-  it('renders exactly the panel inventory desktop-v2 renders post-S7', () => {
+  // set of panels desktop-v2 renders. S6-pre landed it as "unchanged by the
+  // channel"; every zone slice after it SHRINKS this literal by the ids its
+  // zones retire, and the shrink is the intended signal (S6-pre verify N3 — a
+  // builder who sees this go red must remove ids, never weaken the literal).
+  //
+  // MOR-1366 (S7) removed four: `desktop-rf` (settings modal RF FRONT END),
+  // `filter`, `mode` and `rf-front-end` — the `filter`/`rf-front-end` zones are
+  // now REAL on `desktop-v2`, not synthetic probes.
+  //
+  // MOR-1367 (S8) removes four more: `antenna`, `rit-xit`, `scan` (left
+  // sidebar) and `desktop-rit` (settings modal). `band` STAYS — the band zone
+  // retires only the component's HAM half, by prop, so the panel itself keeps
+  // rendering (S10 §4a).
+  it('renders exactly the panel inventory the declared zones leave standing', () => {
     const ids = [...renderAll('desktop-v2').querySelectorAll('[data-panel-id]')]
       .map((el) => el.getAttribute('data-panel-id'))
       .sort();
     expect(ids).toEqual([
-      'agc', 'antenna', 'band', 'cw', 'cw',
+      'agc', 'band', 'cw', 'cw',
       'desktop-agc', 'desktop-cw', 'desktop-dsp', 'desktop-language',
-      'desktop-rit', 'desktop-vfo-ops', 'desktop-workspace',
+      'desktop-vfo-ops', 'desktop-workspace',
       'dsp', 'dsp', 'memory', 'memory',
-      'rit-xit', 'rx-audio', 'rx-audio', 'scan',
+      'rx-audio', 'rx-audio',
     ]);
   });
 
@@ -712,7 +713,7 @@ describe('the legacy-twin suppression channel (MOR-1364, S6-pre)', () => {
   // touches no sibling family's twin. A `dsp`-only suppression that leaves
   // `AgcPanel`, or a one-sided suppression that leaves the right sidebar's
   // `rx-audio`/`dsp`/`cw` reachable by a cross-sidebar drag, dies here.
-  it.each(ZONES.filter(([s]) => s !== 'band').map(([s]) => s))(
+  it.each(ZONES.map(([s]) => s))(
     'declaring the %s zone retires that family\'s twins in every host, and no sibling\'s',
     (surface) => {
       const t = renderAll(ZONE_PROBE[surface]);
@@ -726,11 +727,15 @@ describe('the legacy-twin suppression channel (MOR-1364, S6-pre)', () => {
     },
   );
 
-  // The deferral, pinned: declaring `band` today must suppress NOTHING. When
-  // S8 splits `BandSelector` and wires the predicate, this test is the one it
-  // has to come back and change — deliberately, not by accident.
-  it('declaring the band zone suppresses nothing yet (BandSelector split deferred to S8)', () => {
-    const t = renderAll(ZONE_PROBE.band);
+  // MOR-1367 (S8) flipped this from the S6-pre deferral pin ("declaring `band`
+  // suppresses nothing yet") to its split-aware successor. The band zone IS
+  // declared on `desktop-v2` now, and the statement that survives is the one
+  // that matters permanently: declaring it never UNMOUNTS either band host.
+  // Which half of the component goes is asserted in the zone-ownership
+  // describe below; here we only pin that neither host disappears, so a future
+  // slice that "simplifies" the prop into an `{#if}` dies on this row.
+  it('the band zone never unmounts a band host — the split is a prop, not a mount gate', () => {
+    const t = renderAll('desktop-v2');
     for (const [host, selector] of BAND_TWINS) {
       expect(t.querySelector(selector), `${host} must survive`).not.toBeNull();
     }
@@ -883,5 +888,251 @@ describe('scopeDisplay zone ownership retires the status bar scope indicator (MO
     const surface = render('desktop-v2').querySelector('[data-testid="scope-display-surface"]');
     expect(surface).not.toBeNull();
     expect(surface!.querySelectorAll('button, input, select, a[href], [tabindex]')).toHaveLength(0);
+  });
+});
+
+/**
+ * MOR-1367 (v3-rework S8) — `band`, `antenna` and `ritXitScan` become
+ * ZONE-OWNED on `desktop-v2`, closing the live double-presentation these three
+ * families have shown on the flagship skin since their B-slices landed (7B/8C/
+ * 8B mounted the surfaces; no manifest declared the zones, so `zoneOwning()`
+ * returned `null` and each rendered BARE inside the receiver deck while the
+ * sidebar and modal twins kept rendering too).
+ *
+ * Everything here is asserted against the REAL `desktop-v2` registration, not a
+ * synthetic probe — the three surfaces graduated off the S6-pre probe apparatus
+ * above because a probe would now declare a duplicate zone id.
+ *
+ * NON-VACUITY is the whole design of this describe (the MOR-1304-verify P1/P5
+ * trap, and the S5/MOR-1341 `drops the legacy meters dock` pattern): the outer
+ * file's default `capsFor('2/main_sub')` reports `freqRanges: []`, `antennas`
+ * undefined and no `rit`/`xit` tag, so all three evidence gates would decline
+ * their groups and every "the surface is present" assertion would pass for the
+ * boring reason that nothing rendered at all. The fixture below makes each
+ * `derive*` gate actually FIRE:
+ *   - `deriveBand`   — non-empty `caps.freqRanges` (adapter:683);
+ *   - `deriveAntenna`— `caps.antennas > 1` (adapter:788);
+ *   - `deriveRitXit` — a `rit`/`xit` capability tag (adapter:761);
+ *   - `deriveScan`   — at least one of scanning/scanType/scanResumeMode in state.
+ *
+ * S-ADJ NOTE: this slice writes NO gate logic. 7B's TX-permission readout, 8C's
+ * under-power antenna gating and 8B's observation gates are untouched, and
+ * their own tests are unedited by this change. What the slice does is remove
+ * the legacy fallbacks, which makes those semantic gates the ONLY ones left —
+ * see the build report's carry-forward section (MOR-1307-N4, MOR-1309-N1,
+ * MOR-1308-N4).
+ */
+describe('band, antenna and ritXitScan are zone-owned on desktop-v2 (MOR-1367, S8)', () => {
+  const LEFT_ALL = ['rf-front-end', 'mode', 'filter', 'agc', 'rit-xit', 'band',
+    'antenna', 'scan', 'rx-audio', 'dsp', 'tx', 'cw', 'memory'];
+  const RIGHT_ALL = ['rx-audio', 'audio-scope', 'dsp', 'tx', 'cw', 'memory'];
+
+  /** Two HAM bands the legacy `BandSelector` grid renders by name — so the
+   *  "HAM half is gone" pin below is about content, not just a tab strip. */
+  const HAM_RANGES = [{
+    start: 1_800_000, end: 30_000_000, label: 'HF',
+    bands: [
+      { name: '40m', start: 7_000_000, end: 7_300_000, default: 7_100_000 },
+      { name: '20m', start: 14_000_000, end: 14_350_000, default: 14_225_000, bsrCode: 5 },
+    ],
+  }];
+  const LW_MW_PRESETS = ['LW', 'MW', '120m', '90m', '75m', '60m'];
+  const SW_PRESETS = ['49m', '41m', '31m', '25m', '22m', '19m', '16m', '15m', '13m', '11m'];
+
+  function renderAll(skinId: SkinId): HTMLElement {
+    const target = render(skinId);
+    (target.querySelector('.settings-btn') as HTMLElement | null)?.click();
+    flushSync();
+    return target;
+  }
+
+  /**
+   * The zone ELEMENT half of ownership needs the resolved plan, which reaches
+   * `SemanticRadioSurfaces` through Svelte context that only `App.svelte`
+   * provides — so `render()` above (a standalone `RadioLayout` mount) leaves
+   * `useSurfacePlan()` at its `NO_PLAN` default and every surface renders bare,
+   * declared or not. `resolution.ts:148` exports the context key for exactly
+   * this: a test may supply a plan through `mount`'s `context` option.
+   *
+   * This is the S5 asymmetry made visible in one file: the LEGACY suppression
+   * reads the MANIFEST (so it works in every mount above), while the ZONE
+   * WRAPPER reads the PLAN (so it needs this).
+   */
+  function renderWithPlan(skinId: SkinId): HTMLElement {
+    const target = document.createElement('div');
+    document.body.appendChild(target);
+    const plan = resolveSurfacePlan(desktopV2Layout, DEFAULT_WORKSPACE);
+    mounted.push(mount(RadioLayout, {
+      target,
+      props: { skinId },
+      context: new Map([[SURFACE_PLAN_CONTEXT_KEY, () => plan]]),
+    }));
+    flushSync();
+    return target;
+  }
+
+  const texts = (root: Element | null, selector: string) =>
+    [...(root?.querySelectorAll(selector) ?? [])].map((el) => el.textContent?.trim());
+
+  beforeEach(() => {
+    h.caps = {
+      ...(capsFor('2/main_sub') as object),
+      antennas: 2,
+      capabilities: ['scope', 'audio', 'tx', 'dual_rx', 'rit', 'xit'],
+      freqRanges: HAM_RANGES,
+    } as Capabilities;
+    h.state = {
+      ...(liveState() as object),
+      scanning: false, scanType: 0x34, scanResumeMode: 1,
+      txAntenna: 1, rxAntenna1: 0, ritOn: false, ritTx: false, ritFreq: 0,
+    };
+    // The legacy `BandSelector` reads its HAM grid from the capabilities STORE,
+    // not from `runtime.caps` — without this the grid is empty and the split
+    // pin would only ever be about the tab strip.
+    vi.mocked(getCapabilities).mockReturnValue(
+      { freqRanges: HAM_RANGES, modes: [], filters: [] } as never,
+    );
+    vi.mocked(hasCapability).mockImplementation((tag: string) => tag === 'cw');
+    vi.mocked(hasAnyScope).mockReturnValue(true);
+    localStorage.setItem('rigplane:panel-order', JSON.stringify(LEFT_ALL));
+    localStorage.setItem('rigplane:right-panel-order', JSON.stringify(RIGHT_ALL));
+  });
+
+  afterEach(() => {
+    vi.mocked(getCapabilities).mockReturnValue({ freqRanges: [], modes: [], filters: [] } as never);
+    vi.mocked(hasAnyScope).mockReturnValue(false);
+    localStorage.clear();
+  });
+
+  // Non-vacuity, stated first and on its own: every one of the three evidence
+  // gates fires under this fixture. If one stops firing, the suppression pins
+  // below would still pass while asserting nothing — this row is what makes
+  // them mean something.
+  it('the fixture actually emits all three groups (non-vacuity)', () => {
+    const t = renderAll('desktop-v2');
+    expect(t.querySelector('[data-testid="band-surface"]')).not.toBeNull();
+    expect(t.querySelector('[data-testid="antenna-surface"]')).not.toBeNull();
+    expect(t.querySelector('[data-testid="ritxit-scan-surface"]')).not.toBeNull();
+  });
+
+  // Each declared zone actually binds a zone element and OWNS its surface —
+  // the difference between "declared" and "still rendering bare inside the
+  // deck", which is the double-presentation defect this slice closes. Run
+  // against the real resolved plan (see `renderWithPlan`), because that is the
+  // read `zoneOwning()` makes.
+  it.each([['band', 'band-surface'], ['antenna', 'antenna-surface'],
+    ['rit-xit-scan', 'ritxit-scan-surface']])(
+    'mounts %s inside its own declared zone element', (zoneId, testid) => {
+      const t = renderWithPlan('desktop-v2');
+      const zone = t.querySelector(`[data-zone-id="${zoneId}"]`);
+      expect(zone, `${zoneId} zone element`).not.toBeNull();
+      expect(zone!.querySelector(`[data-testid="${testid}"]`)).not.toBeNull();
+      // …and it is the ONLY instance — no second, bare mount alongside it.
+      expect(t.querySelectorAll(`[data-testid="${testid}"]`).length).toBe(1);
+    },
+  );
+
+  // The ritXitScan zone retires THREE twins across two hosts. A slice that
+  // gated RIT/XIT and forgot SCAN — they are separate legacy panels sharing one
+  // surface, the same shape as the `dsp`→`agc` pairing — dies here.
+  it('drops the legacy RIT / XIT + SCAN twins (sidebar + modal) for the semantic surface', () => {
+    const t = renderAll('desktop-v2');
+    expect(t.querySelector('.left-sidebar [data-panel-id="rit-xit"]')).toBeNull();
+    expect(t.querySelector('.left-sidebar [data-panel-id="scan"]')).toBeNull();
+    expect(t.querySelector('[data-panel-id="desktop-rit"]')).toBeNull();
+    expect(t.querySelector('[data-testid="ritxit-scan-surface"]')).not.toBeNull();
+  });
+
+  // 8C's own gate (`antennaCount > 1`) and the sidebar panel's identical
+  // self-gate both pass under this fixture, so the twin genuinely WOULD render
+  // without the zone — see the mutation battery.
+  it('drops the legacy ANTENNA twin for the semantic surface', () => {
+    const t = renderAll('desktop-v2');
+    expect(t.querySelector('.left-sidebar [data-panel-id="antenna"]')).toBeNull();
+    expect(t.querySelector('[data-testid="antenna-surface"]')).not.toBeNull();
+  });
+
+  /**
+   * THE SPLIT (S10 §4a, rows 6 and 10) — the one asymmetric retirement in the
+   * wave. `BandSelector` keeps its mount in BOTH hosts; only its HAM tab and
+   * HAM grid go, because `BandSurface` duplicates those and nothing duplicates
+   * the broadcast presets (`semantic/radio-view-model.ts:494-496` excludes them
+   * from the vocabulary BY NAME) and `BandSelector` is their only production
+   * consumer.
+   */
+  it('retires the HAM half of BandSelector in BOTH hosts and keeps the broadcast half', () => {
+    const t = renderAll('desktop-v2');
+    for (const [host, root] of [
+      ['left sidebar', t.querySelector('.left-sidebar [data-panel-id="band"]')],
+      ['settings modal', t.querySelector('[data-panel-id="desktop-vfo-ops"]')],
+    ] as const) {
+      expect(root, `${host} still hosts BandSelector`).not.toBeNull();
+      // The HAM tab is gone; the two broadcast tabs are not.
+      expect(texts(root, '.band-tab'), `${host} tabs`).toEqual(['LW/MW', 'SWL']);
+      // …and so is the HAM grid's content — the default landed on LW/MW, which
+      // is the other half of §4a's instruction ("gate the `bandMode === 'ham'`
+      // DEFAULT too"): without it the component would open on an empty grid.
+      expect(texts(root, '.grid button'), `${host} grid`).toEqual(LW_MW_PRESETS);
+      expect(texts(root, '.grid button')).not.toContain('20m');
+    }
+    // The semantic replacement really is on screen where the HAM grid went.
+    expect(t.querySelector('[data-testid="band-choices"]')).not.toBeNull();
+  });
+
+  // PRESET SURVIVAL. Both broadcast tabs remain reachable and every preset is
+  // still there. Note the count: `broadcast-presets.ts` ships SIXTEEN presets
+  // (6 LW/MW + 10 SW), not the seventeen the S10 doc states — the doc counted
+  // the `BroadcastPreset` interface's own `name:` field. Pinned as the measured
+  // number, with the discrepancy recorded rather than propagated.
+  it('keeps all 16 broadcast presets reachable after the split', () => {
+    const t = renderAll('desktop-v2');
+    const panel = t.querySelector('.left-sidebar [data-panel-id="band"]')!;
+    expect(texts(panel, '.grid button')).toEqual(LW_MW_PRESETS);
+    (texts(panel, '.band-tab').indexOf('SWL') >= 0
+      ? (panel.querySelectorAll('.band-tab')[1] as HTMLElement)
+      : null)?.click();
+    flushSync();
+    expect(texts(panel, '.grid button')).toEqual(SW_PRESETS);
+    expect(LW_MW_PRESETS.length + SW_PRESETS.length).toBe(16);
+  });
+
+  // The un-split direction: a host that does NOT declare `band` renders the
+  // pre-split three-tab component, HAM grid and all. `hamBands` defaults to
+  // `true`, so mobile/LCD and every other caller are untouched by the split.
+  it('an undeclared layout still renders the full three-tab BandSelector', () => {
+    const panel = renderAll('no-such-layout' as SkinId)
+      .querySelector('.left-sidebar [data-panel-id="band"]')!;
+    expect(texts(panel, '.band-tab')).toEqual(['HAM', 'LW/MW', 'SWL']);
+    expect(texts(panel, '.grid button')).toEqual(['40m', '20m']);
+  });
+
+  // §1.5 / MOR-1339: `compositionSurfaces(plan(desktopV2Layout))` grew by three
+  // members, and NO `{#each singleOrder}` branch was added for any of them, so
+  // each surface must render exactly ONCE. This is the double-presentation
+  // CLOSED assertion — the shape most likely to reveal a suppression that
+  // covers only some of the three zones, or a second mount path.
+  it('presents band, antenna and ritXitScan exactly ONCE each on desktop-v2', () => {
+    const t = renderAll('desktop-v2');
+    for (const testid of ['band-surface', 'antenna-surface', 'ritxit-scan-surface']) {
+      expect(t.querySelectorAll(`[data-testid="${testid}"]`).length, testid).toBe(1);
+    }
+    for (const selector of [
+      '.left-sidebar [data-panel-id="rit-xit"]', '.left-sidebar [data-panel-id="scan"]',
+      '[data-panel-id="desktop-rit"]', '.left-sidebar [data-panel-id="antenna"]',
+    ]) {
+      expect(t.querySelectorAll(selector).length, selector).toBe(0);
+    }
+    // The band family's "exactly once" is tab-shaped, not panel-shaped: one
+    // semantic band grid, and zero HAM tabs anywhere on the flagship skin.
+    expect(t.querySelectorAll('[data-testid="band-choices"]').length).toBe(1);
+    expect([...t.querySelectorAll('.band-tab')].filter((b) => b.textContent?.trim() === 'HAM').length)
+      .toBe(0);
+  });
+
+  // R9, over the real manifest rather than a probe: three more declared zones
+  // must not change the number of elements that can key or unkey. `hideTxPanel`
+  // still follows the semantic DECK and stays a separate prop (§1.4).
+  it('leaves exactly one key authority with all three zones declared', () => {
+    expect(renderAll('desktop-v2').querySelectorAll(KEY_AUTHORITIES).length).toBe(1);
   });
 });

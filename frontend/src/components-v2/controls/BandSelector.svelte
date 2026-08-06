@@ -7,6 +7,28 @@
 
   import { deriveBandSelectorProps, getBandHandlers, getPresetHandlers } from '$lib/runtime/adapters/panel-adapters';
 
+  /**
+   * MOR-1367 (v3-rework S8) — the HAM/broadcast split, ruled by
+   * `docs/plans/2026-08-06-settings-modal-boundary.md` §4a (row 6 vs row 10).
+   *
+   * This component is TWO independently-ruled things under one roof. The HAM
+   * tab and its grid iterate `flattenBands(caps.freqRanges)` — the same source
+   * `deriveBand` uses for `BandSurface`'s `band-choices` — so they are a plain
+   * duplicate that retires under `band` zone ownership. The LW/MW and SWL tabs
+   * iterate the sixteen curated `broadcast-presets.ts` entries (6 LW/MW + 10
+   * SW; the S10 doc's "17" counted the interface's own `name:` field), which the
+   * vocabulary excludes BY NAME (`semantic/radio-view-model.ts:494-496`: "UI convenience,
+   * not radio facts, … deliberately absent") and which this component is the
+   * only production consumer of. Suppressing the whole component would delete
+   * that affordance with no remaining host.
+   *
+   * Hence a prop, not a mount gate: hosts pass `hamBands={!declared.has('band')}`
+   * and keep mounting the component unconditionally. `true` by default, so
+   * every caller that does not know about the split (LCD, mobile, tests)
+   * renders exactly the pre-split three-tab component.
+   */
+  let { hamBands = true }: { hamBands?: boolean } = $props();
+
   const bandH = getBandHandlers();
   const presetH = getPresetHandlers();
   let bp = $derived(deriveBandSelectorProps());
@@ -17,6 +39,13 @@
   const onFreqPreset = presetH.onFreqPreset;
 
   let bandMode = $state<'ham' | 'broadcast' | 'lwmw'>('ham');
+
+  // S10 §4a explicitly gates the DEFAULT too, not just the tab: with the HAM
+  // tab gone there would be no control able to leave a `'ham'` selection, so
+  // the component would open on an empty grid and stay there. Derived rather
+  // than baked into `$state`'s initialiser so the fallback also holds if a host
+  // flips the prop after mount.
+  let shownMode = $derived(!hamBands && bandMode === 'ham' ? 'lwmw' : bandMode);
 
   let bands = $derived(flattenBands(getCapabilities()?.freqRanges ?? []));
   let activeBand = $derived(findActiveBand(currentFreq, getCapabilities()?.freqRanges ?? []));
@@ -36,24 +65,26 @@
 </script>
 
 <div class="band-tabs">
+  {#if hamBands}
+    <button
+      class="band-tab"
+      class:active={shownMode === 'ham'}
+      onclick={(e: MouseEvent) => { bandMode = 'ham'; (e.currentTarget as HTMLElement)?.blur(); }}
+    >HAM</button>
+  {/if}
   <button
     class="band-tab"
-    class:active={bandMode === 'ham'}
-    onclick={(e: MouseEvent) => { bandMode = 'ham'; (e.currentTarget as HTMLElement)?.blur(); }}
-  >HAM</button>
-  <button
-    class="band-tab"
-    class:active={bandMode === 'lwmw'}
+    class:active={shownMode === 'lwmw'}
     onclick={(e: MouseEvent) => { bandMode = 'lwmw'; (e.currentTarget as HTMLElement)?.blur(); }}
   >LW/MW</button>
   <button
     class="band-tab"
-    class:active={bandMode === 'broadcast'}
+    class:active={shownMode === 'broadcast'}
     onclick={(e: MouseEvent) => { bandMode = 'broadcast'; (e.currentTarget as HTMLElement)?.blur(); }}
   >SWL</button>
 </div>
 
-{#if bandMode === 'ham'}
+{#if shownMode === 'ham'}
   <div class="grid">
     {#each bands as band (band.name)}
       {@const isActive = activeBand === band.name}
@@ -69,7 +100,7 @@
       </HardwareButton>
     {/each}
   </div>
-{:else if bandMode === 'lwmw'}
+{:else if shownMode === 'lwmw'}
   <div class="grid">
     {#each BROADCAST_LW_MW_BANDS as preset (preset.name)}
       {@const isActive = activeBroadcast === preset.name}

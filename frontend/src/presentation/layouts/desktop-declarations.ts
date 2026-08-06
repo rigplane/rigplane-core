@@ -70,6 +70,24 @@ const DESKTOP_V2_ZONES = [
   // this layout, and each surface self-gates on its own view-model group.
   { id: 'filter', surfaces: ['filter'] },
   { id: 'rf-front-end', surfaces: ['rfFrontEnd'] },
+  // MOR-1367 (S8): band, antenna and ritXit/scan become zone-OWNED here, which
+  // is what activates the S6-pre suppression channel for the RIT / XIT, SCAN
+  // and ANTENNA sidebar panels and the `desktop-rit` modal section — closing
+  // the live double-presentation these three families have shown on the
+  // flagship skin since their B-slices mounted the surfaces (§0.1).
+  //
+  // `band` is the one that is NOT a plain retirement: `BandSelector` hosts the
+  // LW/MW + SWL broadcast tabs (16 presets) that the vocabulary deliberately
+  // excludes from `bandChoices` (`semantic/radio-view-model.ts:494-496`), so
+  // declaring this zone retires the component's HAM half ONLY, through
+  // `hamBands={!declared.has('band')}` — a prop, never a mount gate (S10 §4a).
+  //
+  // None is `required`, for the same reason as `tx-aux`/`meters`: a radio whose
+  // evidence gate declined the group must still resolve this layout, and each
+  // surface self-gates on its own `view.*` leaf.
+  { id: 'band', surfaces: ['band'] },
+  { id: 'antenna', surfaces: ['antenna'] },
+  { id: 'rit-xit-scan', surfaces: ['ritXitScan'] },
 ] as const;
 
 export const desktopV2Layout: LayoutManifest = {
