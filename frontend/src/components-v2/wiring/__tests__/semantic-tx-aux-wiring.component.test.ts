@@ -744,6 +744,19 @@ describe('MOR-1304 fix round — filter never mounts bare in the dual compositio
 
     expect(q('[data-testid="filter-surface"]')).not.toBeNull();
   });
+
+  // MOR-1366 (S7), N1 fold (verify-MOR-1365 ruling item 3): desktop-v2 now
+  // declares a REAL `filter` zone — mirrors the S6a context-injection recipe
+  // (`semantic-scope-display-wiring.component.test.ts`) and this file's own
+  // `meters` binding pin below.
+  it('binds the filter zone id against desktop-v2\'s real plan', () => {
+    h.state = liveState(false);
+    h.caps = withFilterCaps(liveCaps(false));
+    const plan = resolveSurfacePlan(desktopV2Layout, readWorkspace({ version: 1 }).workspace);
+    render({ strips: 'single' }, plan);
+
+    expect(q('[data-testid="filter-surface"]')!.closest('[data-zone-id="filter"]')).not.toBeNull();
+  });
 });
 
 // ── MOR-1341 (S5) — desktop-v2's OWN real `meters` zone actually binds ──────

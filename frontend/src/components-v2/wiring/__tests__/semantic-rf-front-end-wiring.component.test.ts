@@ -169,6 +169,14 @@ vi.mock('../command-bus', () => ({
 }));
 
 import SemanticRadioSurfaces from '../SemanticRadioSurfaces.svelte';
+// MOR-1366 (S7), N1 fold (verify-MOR-1365 ruling item 3): the REAL manifest +
+// the REAL resolution seam, mirroring `semantic-scope-display-wiring
+// .component.test.ts`'s S6a context-injection recipe — the only way to prove
+// the `rf-front-end` zone binding, since `useSurfacePlan()` falls back to
+// `NO_PLAN` on a standalone mount.
+import { desktopV2Layout } from '../../../presentation/layouts/declarations';
+import { readWorkspace } from '../../../presentation/workspace/contract';
+import { resolveSurfacePlan, SURFACE_PLAN_CONTEXT_KEY, type SurfacePlan } from '../../../presentation/workspace/resolution';
 
 const IDLE: Snapshot = {
   phase: 'idle', intent: null, guard: null, radioTx: 'off', txRisk: 'none',
@@ -218,10 +226,13 @@ const liveCaps = (withRfFrontEnd: boolean): Capabilities => ({
 let target: HTMLDivElement;
 let component: ReturnType<typeof mount> | null = null;
 
-function render(props: { strips?: 'single' | 'dual' } = {}): void {
+function render(props: { strips?: 'single' | 'dual' } = {}, plan?: SurfacePlan): void {
   target = document.createElement('div');
   document.body.appendChild(target);
-  component = mount(SemanticRadioSurfaces, { target, props });
+  const context = plan === undefined
+    ? undefined
+    : new Map<unknown, unknown>([[SURFACE_PLAN_CONTEXT_KEY, () => plan]]);
+  component = mount(SemanticRadioSurfaces, { target, props, context });
   flushSync();
 }
 
@@ -353,5 +364,15 @@ describe('the surface mounts only when the view model carries the group', () => 
     (h.state as unknown as { ptt: boolean }).ptt = true;
     flushSync();
     expect(el('surface')!.outerHTML).toBe(before);
+  });
+});
+
+/* ── MOR-1366 (S7), N1 fold — desktop-v2's REAL rf-front-end zone binds ─── */
+
+describe('desktop-v2 declares a REAL rf-front-end zone (MOR-1366, S7)', () => {
+  it('binds the rf-front-end zone id against desktop-v2\'s real plan', () => {
+    const plan = resolveSurfacePlan(desktopV2Layout, readWorkspace({ version: 1 }).workspace);
+    render({ strips: 'single' }, plan);
+    expect(el('surface')!.closest('[data-zone-id="rf-front-end"]')).not.toBeNull();
   });
 });
