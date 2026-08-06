@@ -191,32 +191,38 @@ function withMeters(state: ServerState): ServerState {
 }
 
 /**
- * MOR-1351: was an inert placeholder (`modes: [], filters: []`, three
- * capability tags) — no semantic surface `SemanticRadioSurfaces.svelte`
- * actually mounts (`vfo`/`rxTx`/`txAux`/`meters`/`rxAudio`, verified against
- * its own imports) consumes `modes`/`filters`, or any of the DSP tags added
- * below, so the vacuous shape proved nothing about those gates being
- * honestly absent versus never exercised. Hardened to a REAL radio's shape —
- * IC-7610 (`rigs/ic7610.toml`), the only dual-receiver profile in the tree
- * and already this fixture's implied topology (`receivers: 2, vfoScheme:
- * 'main_sub'`) — modes/filters/tags verbatim from that profile, with three
- * exclusions:
+ * MOR-1351: hardened to a REAL radio's shape — IC-7610 (`rigs/ic7610.toml`),
+ * the only dual-receiver profile in the tree and already this fixture's
+ * implied topology (`receivers: 2, vfoScheme: 'main_sub'`) — modes/filters/
+ * tags verbatim from that profile, with one exclusion:
  *
- *  - `scope`: `caps.scope` stays `false` (the MOR-1085 `audio-only-scope`
- *    contrast fixture depends on it), and `presentation-capabilities.ts`'s
- *    `agreed()` raises `scope-capability-contradiction` the moment the tag
- *    and the boolean disagree.
  *  - `tuner`/`vox`/`compressor`/`monitor`/`drive_gain` (the `deriveTxAux`
- *    evidence tags): this harness (`fixtures/main.ts`) mounts
- *    `DualReceiverCockpit` with NO `SurfacePlan` context, so
- *    `SemanticRadioSurfaces.svelte`'s `zoneOwning()` is unconditionally
- *    `null` and `TxAuxSurface` would render its controls ZONE-LESS rather
- *    than inside `tx-aux` — flipping every fixture's pinned
- *    `zonelessControls: 0` for a reason unrelated to this ticket. Left
- *    exactly as before (absent), so `deriveTxAux` keeps emitting no group.
+ *    evidence tags): this harness (`fixtures/main.ts`) supplies NO resolved
+ *    `SurfacePlan`, so `SemanticRadioSurfaces.svelte`'s `zoneOwning()` is
+ *    unconditionally `null` and `TxAuxSurface` would render its controls
+ *    ZONE-LESS rather than inside `tx-aux` — flipping every fixture's pinned
+ *    `zonelessControls: 0` for a reason unrelated to this ticket. Confirmed
+ *    by measurement: adding `tuner` alone (`deriveTxAux`'s cheapest evidence
+ *    tag — `hasTuner` alone satisfies `hasEvidence`) flips 36/60 captures to
+ *    `zone-less-control-count: 4` (the ATU button, ATU-tune button, and two
+ *    disabled inputs, landing `NO-ZONE`). All five tags stay OUT here, unlike
+ *    the cockpit vitest fixture where `render(defaultPlan())` supplies a real
+ *    plan and `tuner` (pre-existing since MOR-1336/S4) lands inside `tx-aux`
+ *    correctly. Follow-up ticket N1 will wire the plan and lift this
+ *    exclusion together.
+ *
+ * `scope` is now `true` with a `'scope'` tag (matching the cockpit vitest
+ * fixture): `presentation-capabilities.ts`'s `agreed()` requires the boolean
+ * and the tag to agree, so leaving the tag off while flipping the boolean
+ * would itself raise `scope-capability-contradiction`. The MOR-1085
+ * `audio-only-scope` contrast fixture below now states its own `scope: false`
+ * condition explicitly instead of inheriting it (see `audioOnlyScopeCaps`).
+ * This flips `topology-2-main-sub`'s `expect.scopeFacts.hardwareScope` from
+ * `structural: false` to `structural: true` — `operational` stays `false`
+ * because no fixture state carries `scopeControls`.
  */
 const baseCaps = (): Capabilities => ({
-  model: 'fixture', scope: false, audio: true, tx: true,
+  model: 'fixture', scope: true, audio: true, tx: true,
   capabilities: [
     'audio', 'tx', 'dual_rx', 'dual_watch', 'lan_dual_rx_audio_routing',
     'af_level', 'rf_gain', 'squelch', 'attenuator', 'preamp', 'digisel', 'ip_plus',
@@ -224,10 +230,19 @@ const baseCaps = (): Capabilities => ({
     'filter_width', 'filter_shape', 'split', 'ssb_tx_bw', 'cw', 'break_in', 'rit', 'xit',
     'meters', 'data_mode', 'mod_input_routing', 'agc', 'power_control', 'dial_lock',
     'scan', 'bsr', 'main_sub_tracking', 'tuning_step', 'band_edge', 'xfc', 'system_settings',
+    'scope',
   ],
   receivers: 2, vfoScheme: 'main_sub',
-  freqRanges: [], modes: ['USB', 'LSB', 'CW', 'CW-R', 'AM', 'FM', 'RTTY', 'RTTY-R', 'PSK', 'PSK-R'],
+  freqRanges: [{ start: 1800000, end: 54000000, label: 'HF+6m', bands: [
+    { name: '20m', start: 14000000, end: 14350000, default: 14195000 },
+    { name: '40m', start: 7000000, end: 7300000, default: 7100000 },
+  ] }],
+  modes: ['USB', 'LSB', 'CW', 'CW-R', 'AM', 'FM', 'RTTY', 'RTTY-R', 'PSK', 'PSK-R'],
   filters: ['FIL1', 'FIL2', 'FIL3'],
+  antennas: 2,
+  attValues: [0, 3, 6, 9, 12, 15, 18, 21, 24, 27, 30, 33, 36, 39, 42, 45],
+  preValues: [0, 1, 2],
+  agcModes: [1, 2, 3], agcLabels: { '1': 'FAST', '2': 'MID', '3': 'SLOW' },
   audioConfig: { sampleRate: 48000, channels: 1, codecs: ['pcm16'] },
   webrtc: { available: false, enabled: false },
   txBands: [{ start: 14000000, end: 14350000, name: '20m' }],
@@ -238,24 +253,27 @@ const mainSubCaps = baseCaps;
 const abSharedCaps = (): Capabilities =>
   ({ ...baseCaps(), vfoScheme: 'ab_shared' } as unknown as Capabilities);
 const singleCaps = (): Capabilities => ({
-  ...baseCaps(), receivers: 1, vfoScheme: 'single', capabilities: ['audio', 'tx'],
+  ...baseCaps(), receivers: 1, vfoScheme: 'single', scope: false, capabilities: ['audio', 'tx'],
 } as unknown as Capabilities);
 const abCaps = (): Capabilities => ({
-  ...baseCaps(), receivers: 1, vfoScheme: 'ab', capabilities: ['audio', 'tx'],
+  ...baseCaps(), receivers: 1, vfoScheme: 'ab', scope: false, capabilities: ['audio', 'tx'],
 } as unknown as Capabilities);
 /** The ticket's orthogonal condition: scope=false + audioFft=true. */
-const audioOnlyScopeCaps = (): Capabilities =>
-  ({ ...baseCaps(), audioFftAvailable: true } as unknown as Capabilities);
+const audioOnlyScopeCaps = (): Capabilities => ({
+  ...baseCaps(), scope: false,
+  capabilities: baseCaps().capabilities.filter((t) => t !== 'scope'),
+  audioFftAvailable: true,
+} as unknown as Capabilities);
 /** Structurally dual, no `dual_rx` tag → `dual-rx-unavailable` (MOR-1256). */
 const dualRxUnavailableCaps = (): Capabilities =>
-  ({ ...baseCaps(), capabilities: ['audio', 'tx'] } as unknown as Capabilities);
+  ({ ...baseCaps(), scope: false, capabilities: ['audio', 'tx'] } as unknown as Capabilities);
 /**
  * MOR-1085 — the `ab_shared` analogue of `dualRxUnavailableCaps`: structurally
  * dual (`vfoScheme: 'ab_shared'`, `receivers: 2`), no `dual_rx` tag, so the
  * SAME MOR-1256 two-level gate applies on the other dual topology.
  */
 const abSharedDualRxUnavailableCaps = (): Capabilities =>
-  ({ ...abSharedCaps(), capabilities: ['audio', 'tx'] } as unknown as Capabilities);
+  ({ ...abSharedCaps(), scope: false, capabilities: ['audio', 'tx'] } as unknown as Capabilities);
 
 const tx = (over: Partial<TxSnapshot>): TxSnapshot => ({ ...IDLE_TX, ...over });
 
@@ -480,17 +498,21 @@ const CORE_FIXTURES: readonly Fixture[] = [
     what: '2/main_sub — the reference dual state: 4 tiles across 2 strips, MAIN A active.',
     state: () => withMeters(mainSubState('MAIN')), caps: mainSubCaps, tx: tx({}),
     // MOR-1085 checklist item 5 contrast pair (with `audio-only-scope` below):
-    // baseCaps has NO scope tag and `audioFftAvailable: false`, so both scope
-    // sources read fully unavailable — computed straight from the real
-    // adapter, not asserted by fiat (see `scope-facts-honest` in
-    // assertions.ts). `rxAudioSurfacePresent: false` pins the cockpit's OWN
-    // half of the contrast: the dual composition never mounts
+    // MOR-1351 gave baseCaps a `scope` tag AND `scope: true` (they must
+    // agree, `presentation-capabilities.ts`'s `agreed()`), so hardwareScope
+    // is now structurally available; `audioFftAvailable` stays `false`, so
+    // audioFftScope stays fully unavailable — computed straight from the
+    // real adapter, not asserted by fiat (see `scope-facts-honest` in
+    // assertions.ts). No fixture state carries `scopeControls`, so
+    // hardwareScope stays operationally unavailable even though it is now
+    // structurally available. `rxAudioSurfacePresent: false` pins the
+    // cockpit's OWN half of the contrast: the dual composition never mounts
     // `RxAudioSurface` regardless of any audio capability (structural, not
     // capability-gated) — see the `--reference` twin below for the layout
     // that DOES mount it.
     expect: mainSubExpect({
       scopeFacts: {
-        hardwareScope: { structural: false, operational: false },
+        hardwareScope: { structural: true, operational: false },
         audioFftScope: { structural: false, operational: false },
       },
       rxAudioSurfacePresent: false,
@@ -500,9 +522,11 @@ const CORE_FIXTURES: readonly Fixture[] = [
     id: 'audio-only-scope',
     what: 'scope=false + audioFft=true on 2/main_sub — the cockpit must claim nothing either way.',
     state: () => mainSubState('MAIN'), caps: audioOnlyScopeCaps, tx: tx({}),
-    // `audioOnlyScopeCaps` sets ONLY `audioFftAvailable: true` on top of
-    // baseCaps — `hardwareScope` is untouched (still fully unavailable) and
-    // `audioFftScope.operational` follows `state !== null`, true here.
+    // `audioOnlyScopeCaps` explicitly restates `scope: false` (and drops the
+    // `scope` tag) on top of baseCaps, then sets `audioFftAvailable: true` —
+    // `hardwareScope` stays fully unavailable (structural comes from the
+    // explicit override, not an inherited default) and `audioFftScope.
+    // operational` follows `state !== null`, true here.
     expect: mainSubExpect({
       scopeFacts: {
         hardwareScope: { structural: false, operational: false },
