@@ -29,7 +29,7 @@ describe('rfFrontEnd is a declarable semantic surface', () => {
     expect([...SEMANTIC_SURFACE_NAMES])
       .toEqual([
         'vfo', 'rxTx', 'txAux', 'meters', 'rxAudio', 'filter', 'dsp', 'rfFrontEnd', 'band',
-        'antenna', 'ritXitScan',
+        'antenna', 'ritXitScan', 'cwKeyer',
       ]);
   });
 

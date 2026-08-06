@@ -138,6 +138,14 @@ vi.mock('../command-bus', () => ({
   makeScanHandlers: () => ({
     onScanStart: h.noop, onScanStop: h.noop, onDfSpanChange: h.noop, onResumeChange: h.noop,
   }),
+  // MOR-1310 slice 9B: the wiring now also composes the CW keyer intent
+  // vocabulary unconditionally. This fixture declares no cwKeyer capability,
+  // so none of these is reachable — same stand-in role as `makeRitXitHandlers`.
+  makeCwPanelHandlers: () => ({
+    onKeySpeedChange: h.noop, onCwPitchChange: h.noop, onBreakInDelayChange: h.noop,
+    onBreakInModeChange: h.noop, onApfChange: h.noop, onTwinPeakToggle: h.noop,
+    onReversePaddleToggle: h.noop,
+  }),
 }));
 
 import SemanticRadioSurfaces from '../SemanticRadioSurfaces.svelte';

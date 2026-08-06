@@ -148,7 +148,12 @@ vi.mock('../../wiring/command-bus', () => {
     makeAgcHandlers: () => ({ onAgcModeChange: n }),
     makeRitXitHandlers: () => ({ onRitToggle: n, onRitClear: n, onXitToggle: n, onXitClear: n }),
     makeDspHandlers: () => ({ onNrToggle: n, onNbToggle: n, onNotchToggle: n, onNrModeChange: n, onNotchModeChange: n }),
-    makeCwPanelHandlers: () => ({ onSpeedChange: n }),
+    // MOR-1310 slice 9B added the semantic CW surface's setting intents here.
+    makeCwPanelHandlers: () => ({
+      onSpeedChange: n, onKeySpeedChange: n, onCwPitchChange: n,
+      onBreakInDelayChange: n, onBreakInModeChange: n, onApfChange: n,
+      onTwinPeakToggle: n, onReversePaddleToggle: n,
+    }),
     makeAntennaHandlers: () => ({ onAntennaSelect: n }),
     makeScanHandlers: () => ({ onScanStart: n, onScanStop: n, onDfSpanChange: n, onResumeChange: n }),
   };

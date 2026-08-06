@@ -51,11 +51,12 @@
   import { keyBlockedReasons } from '../../semantic/rx-tx-surface';
   import VfoSurface, { type VfoSelection } from '../../semantic/VfoSurface.svelte';
   import ModInputTxWarning from '../panels/ModInputTxWarning.svelte';
+  import CwKeyerSurface, { type CwLevelField } from '../../semantic/CwKeyerSurface.svelte';
   import {
     makeAgcHandlers, makeAntennaHandlers, makeAudioRoutingHandlers, makeBandHandlers,
-    makeDspHandlers, makeFilterHandlers, makeModeHandlers, makeRfFrontEndHandlers,
-    makeRitXitHandlers, makeRxAudioHandlers, makeScanHandlers, makeTxHandlers,
-    makeVfoHandlers, makeVoxHandlers,
+    makeCwPanelHandlers, makeDspHandlers, makeFilterHandlers, makeModeHandlers,
+    makeRfFrontEndHandlers, makeRitXitHandlers, makeRxAudioHandlers, makeScanHandlers,
+    makeTxHandlers, makeVfoHandlers, makeVoxHandlers,
   } from './command-bus';
   import {
     forReceiver, receiversOf, isActiveStrip, isOperationalStrip,
@@ -254,6 +255,18 @@
    */
   const ritXitIntents = makeRitXitHandlers();
   const scanIntents = makeScanHandlers();
+  /**
+   * MOR-1310 (slice 9B). The CW intent vocabulary, composed from the SHIPPED
+   * `makeCwPanelHandlers` rather than forked. `onAutoTune` is deliberately NOT
+   * wired: `cw_auto_tune` is a transmit-causing action and the surface offers no
+   * control for it (MOR-1244 ATU-TUNE precedent). Nothing here keys — exactly
+   * one `<RxTxSurface>` stays the key/unkey authority (decomposition R9).
+   */
+  const cwIntents = makeCwPanelHandlers();
+  const CW_LEVEL_INTENT: Record<CwLevelField, (value: number) => void> = {
+    keyerSpeed: cwIntents.onKeySpeedChange, pitchHz: cwIntents.onCwPitchChange,
+    breakInDelay: cwIntents.onBreakInDelayChange,
+  };
   const tx = getAppTxController();
   const sourceId = `semantic-rx-tx-${++surfaceSeq}`;
   let leaseSeq = 0;
@@ -843,6 +856,37 @@
     {/if}
   {/snippet}
 
+  <!--
+    MOR-1310 (vocabulary slice 9B) — SAFETY-CRITICAL. Same structural gate as
+    the surfaces above, and the SAME single-composition-only mounting as
+    `rxAudioSurface`: this surface is control-bearing, no manifest declares a
+    `cwKeyer` zone, and the MOR-1069 cockpit rule is that every focusable
+    control lives inside a declared zone with rx-tx last in the tab order.
+    Mounted bare in the dual composition it would break both clauses; folded
+    into the rx-tx zone it would put a keyer slider between the operator and
+    the unkey button. `'cwKeyer'` became DECLARABLE with this slice, so the
+    cockpit gains the surface the moment a manifest declares a zone — a layout
+    decision, separately reviewed, exactly as rxAudio left it. Its absence from
+    the dual composition is pinned by name in
+    `__tests__/semantic-cw-keyer-wiring.component.test.ts`.
+
+    It takes NO authority snapshot and no key intent: break-in is a SETTING,
+    gated inside the surface on the model's one `txPermit`, and the key/unkey
+    authority stays the single `<RxTxSurface>` above (decomposition R9).
+  -->
+  {#snippet cwKeyerSurface()}
+    {#if view?.cwKeyer}
+      <CwKeyerSurface
+        {view}
+        onBreakInMode={(mode) => cwIntents.onBreakInModeChange(mode)}
+        onLevelChange={(field, value) => CW_LEVEL_INTENT[field](value)}
+        onApfOn={(on) => cwIntents.onApfChange(on ? 1 : 0)}
+        onTwinPeakToggle={() => cwIntents.onTwinPeakToggle()}
+        onReversePaddleToggle={() => cwIntents.onReversePaddleToggle()}
+      />
+    {/if}
+  {/snippet}
+
   {#if strips === 'dual'}
     <!--
       MOR-1258: the zone now carries RxTxSurface AND the two TX-adjacent
@@ -894,6 +938,7 @@
     {@render zoned(
       'ritXitScan', view?.ritXit !== undefined || view?.scan !== undefined, ritXitScanSurface,
     )}
+    {@render zoned('cwKeyer', view?.cwKeyer !== undefined, cwKeyerSurface)}
     {@render txAdjacentAlerts()}
   {/if}
 </div>

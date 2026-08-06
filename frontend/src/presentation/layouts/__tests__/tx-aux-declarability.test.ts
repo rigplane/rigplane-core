@@ -30,7 +30,7 @@ describe('txAux is a declarable semantic surface', () => {
   it('is in the declarable set alongside vfo and rxTx', () => {
     expect([...SEMANTIC_SURFACE_NAMES]).toEqual([
       'vfo', 'rxTx', 'txAux', 'meters', 'rxAudio', 'filter', 'dsp', 'rfFrontEnd', 'band',
-      'antenna', 'ritXitScan',
+      'antenna', 'ritXitScan', 'cwKeyer',
     ]);
   });
 

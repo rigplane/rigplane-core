@@ -92,6 +92,12 @@ vi.mock('../command-bus', () => ({
   }),
   // MOR-1279 slice 3B: the RX-audio intent vocabulary.
   makeRxAudioHandlers: () => ({ onMonitorModeChange: h.noop, onAfLevelChange: h.noop }),
+  // MOR-1310 slice 9B: the semantic CW-keyer surface's setting intents.
+  makeCwPanelHandlers: () => ({
+    onKeySpeedChange: h.noop, onCwPitchChange: h.noop, onBreakInDelayChange: h.noop,
+    onBreakInModeChange: h.noop, onApfChange: h.noop, onTwinPeakToggle: h.noop,
+    onReversePaddleToggle: h.noop,
+  }),
   makeAudioRoutingHandlers: () => ({ onFocusChange: h.noop, onSplitStereoChange: h.noop }),
   // MOR-1304 — the wiring now also composes the modeFilter/filterPassband
   // intent vocabulary; `makeModeHandlers` is composed at both call sites
