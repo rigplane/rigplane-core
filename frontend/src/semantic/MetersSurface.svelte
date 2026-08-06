@@ -20,6 +20,13 @@
       They are text AND shape, so the state survives forced-colors (MOR-977).
   (3) An unobserved meter renders as an explicit `?`, never as a gauge at
       zero. "0 W into the antenna" and "not measured" are different claims.
+  (4) FAULT (MOR-1345): SWR/ALC over-threshold highlighting is a FACT this
+      surface computes from the SAME `isSwrFault`/`isAlcFault` predicates the
+      legacy dock's border reads (`meter-utils`, imported not copied), gated
+      on `relevant` (this field's own TX-authority conclusion, rule 1) AND
+      "observed" (rule 3) — an unobserved reading is never a fault. The
+      colour itself is drawn by `BarGauge` (below), which already owns
+      colour; this file only ever hands it a boolean.
 
   Two-level availability (MOR-977/1256): `structural: false` renders NOTHING —
   "this radio has no SWR meter" is a different claim from "the SWR meter is
@@ -39,7 +46,8 @@
   import type { MeterField, MetersViewModel } from './radio-view-model';
   import {
     alcLevel, compLevel, formatAlc, formatAmps, formatCompDb, formatPowerWatts,
-    formatSwr, formatVolts, idLevel, normalizePower, sLevel, swrLevel, vdLevel,
+    formatSwr, formatVolts, idLevel, isAlcFault, isSwrFault, normalizePower, sLevel,
+    swrLevel, vdLevel,
   } from '../components-v2/panels/meter-utils';
   import { renderSlot } from './design-language-renderers';
 
@@ -62,6 +70,18 @@
     ['drainVoltage', 'Vd', vdLevel, formatVolts, false],
     ['compression', 'COMP', compLevel, formatCompDb, false],
   ] as const satisfies readonly Scale[];
+
+  /**
+   * MOR-1345: fields with an over-threshold FAULT — the SAME `isSwrFault`/
+   * `isAlcFault` predicates `MetersDockPanel`'s border reads, imported (not
+   * copied) so the two surfaces can never disagree about what counts as a
+   * fault. Only SWR and ALC have a threshold; every other bar has none, and
+   * this surface invents none — an absent entry means "never faults".
+   */
+  const FAULT_CHECKS: Partial<Record<BarKey, (raw: number) => boolean>> = {
+    swr: isSwrFault,
+    alc: isAlcFault,
+  };
 
   /** Level 1 — does this radio HAVE the meter at all. */
   const present = (f: MeterField): boolean => f.availability.structural;
@@ -136,16 +156,17 @@
 
     {#each METER_BARS as [field, label, level, format, showPeak] (field)}
       {#if present(meters[field]) && (field !== 'compression' || compressorOn)}
+        {@const isObserved = observed(meters[field])}
+        {@const raw = rawOf(meters[field])}
+        {@const fault = isObserved && meters[field].relevant
+          && (FAULT_CHECKS[field]?.(raw) ?? false)}
         <div
           class="meter-tile" data-meter-tile data-meter={field} data-testid={`meter-${field}`}
-          data-relevant={meters[field].relevant} data-observed={observed(meters[field])}
+          data-relevant={meters[field].relevant} data-observed={isObserved} data-fault={fault}
           role="group" aria-label={`${label} meter`}
         >
-          {#if observed(meters[field])}
-            <BarGauge
-              value={level(rawOf(meters[field]))} {label}
-              displayValue={format(rawOf(meters[field]))} compact {showPeak}
-            />
+          {#if isObserved}
+            <BarGauge value={level(raw)} {label} displayValue={format(raw)} compact {showPeak} {fault} />
           {:else}
             <span class="meter-unknown">{label} ?</span>
           {/if}

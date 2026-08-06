@@ -16,10 +16,12 @@
     zones?: readonly Zone[];
     compact?: boolean;
     showPeak?: boolean;    // MOR-1282: optional peak-hold marker
+    fault?: boolean;       // MOR-1345: SWR/ALC over-threshold fault highlight
   }
 
   let {
     value, label, displayValue, zones = DEFAULT_ZONES, compact = false, showPeak = false,
+    fault = false,
   }: Props = $props();
 
   // ── Segment geometry ────────────────────────────────────────────────────────
@@ -117,15 +119,19 @@
   height="auto"
   preserveAspectRatio="xMidYMid meet"
   role="group"
+  data-fault={fault ? 'true' : 'false'}
   ondblclick={resetPeak}
 >
-  <!-- Container background -->
+  <!-- Container background. MOR-1345: an over-threshold SWR/ALC reading
+       (the same `isSwrFault`/`isAlcFault` predicates the legacy dock's
+       border comes from) swaps the outline for the shared red accent — the
+       one place this gauge already owns colour (zone segments, above). -->
   <rect
     x="0" y="0" width="300" height={TOTAL_HEIGHT}
     rx="6"
     fill="var(--v2-bg-darkest)"
-    stroke="var(--v2-bg-panel)"
-    stroke-width="1"
+    stroke={fault ? 'var(--v2-accent-red, #ff4040)' : 'var(--v2-bg-panel)'}
+    stroke-width={fault ? 2 : 1}
   />
 
   <!-- Label -->

@@ -32,6 +32,7 @@ import type {
   Availability, MeterField, MeterRfState, MetersViewModel, RadioViewModel,
 } from '../radio-view-model';
 import { RF_LABEL, RF_MARK } from '../rx-tx-surface';
+import { isAlcFault, isSwrFault } from '../../components-v2/panels/meter-utils';
 
 /** Source scans below run over the CODE, with comments stripped — the same
  *  instrument (and the same reason) as `TxAuxSurface.test.ts`: a behavioural
@@ -72,6 +73,20 @@ function withField(
         availability: over.availability ?? current.availability,
         relevant: over.relevant ?? current.relevant,
       } satisfies MeterField,
+    } as MetersViewModel,
+  };
+}
+
+/** Drives ONE meter field's raw KNOWN reading (MOR-1345 fault fixtures need
+ *  specific SWR/ALC amplitudes `withField` was never asked to carry). */
+function withRaw(view: RadioViewModel, field: MeterKey, value: number): RadioViewModel {
+  const meters = view.meters!;
+  const current: MeterField = meters[field];
+  return {
+    ...view,
+    meters: {
+      ...meters,
+      [field]: { ...current, reading: { status: 'known', value } } satisfies MeterField,
     } as MetersViewModel,
   };
 }
@@ -519,5 +534,147 @@ describe('MetersSurface and MetersDockPanel are on the same peak-hold channel', 
     expect(dockSource).toMatch(/import\s*\{[^}]*PEAK_DECAY_MS[^}]*\}\s*from\s*'\.\/meter-utils'/);
     expect(barGaugeSource).not.toMatch(/const\s+PEAK_DECAY_MS\s*=/);
     expect(dockSource).not.toMatch(/const\s+PEAK_DECAY_MS\s*=/);
+  });
+});
+
+// ── 11. Fault highlighting (MOR-1345) — dock's border, ported honestly ─────
+
+describe('SWR/ALC fault highlighting reuses the dock\'s own threshold', () => {
+  // MUTATION KILLED: a locally-invented threshold instead of the shared
+  // predicate. Raw 80 is the dock's own "exactly SWR 2.0" boundary fixture
+  // (MetersDockPanel.isolated.test.ts) — not a fault.
+  it('does not fault SWR at exactly the 2.0 boundary (raw=80)', () => {
+    const view = withRaw(base('transmitting'), 'swr', 80);
+    withSurface(view, (s) => {
+      expect(s.tile('swr')!.dataset.fault).toBe('false');
+    });
+  });
+
+  it('faults SWR just above the boundary (raw=90 -> ratio 2.25)', () => {
+    const view = withRaw(base('transmitting'), 'swr', 90);
+    withSurface(view, (s) => {
+      expect(s.tile('swr')!.dataset.fault).toBe('true');
+    });
+  });
+
+  it('does not fault ALC at exactly the 90% boundary (raw=108)', () => {
+    const view = withRaw(base('transmitting'), 'alc', 108);
+    withSurface(view, (s) => {
+      expect(s.tile('alc')!.dataset.fault).toBe('false');
+    });
+  });
+
+  it('faults ALC just above the boundary (raw=115 -> 95.8%)', () => {
+    const view = withRaw(base('transmitting'), 'alc', 115);
+    withSurface(view, (s) => {
+      expect(s.tile('alc')!.dataset.fault).toBe('true');
+    });
+  });
+
+  // MUTATION KILLED (wrong channel): swapping which predicate gates which
+  // field. At raw=90 the two predicates DISAGREE (isSwrFault(90)=true,
+  // isAlcFault(90)=false), so a swapped FAULT_CHECKS map flips both
+  // assertions below.
+  it('never cross-applies the SWR predicate to ALC or vice-versa (raw=90 on both)', () => {
+    const view = withRaw(withRaw(base('transmitting'), 'swr', 90), 'alc', 90);
+    withSurface(view, (s) => {
+      expect(s.tile('swr')!.dataset.fault).toBe('true');
+      expect(s.tile('alc')!.dataset.fault).toBe('false');
+    });
+  });
+
+  // MUTATION KILLED: firing fault on a field with no threshold at all
+  // (Po/Id/Vd/COMP never have one — the dock never highlights them either).
+  it.each(['power', 'drainCurrent', 'drainVoltage'] as const)(
+    'never marks "%s" as a fault regardless of amplitude',
+    (field) => {
+      const view = withRaw(base('transmitting'), field, 255);
+      withSurface(view, (s) => {
+        expect(s.tile(field)!.dataset.fault).toBe('false');
+      });
+    },
+  );
+
+  // MUTATION KILLED: dropping the `relevant` gate — an over-threshold SWR
+  // reading that lingers while the fact layer says the meter is NOT relevant
+  // (e.g. RX) must not highlight, exactly like the dock's own TX gate.
+  it('does not fault an over-threshold reading the fact layer marks irrelevant', () => {
+    const view = withField(withRaw(base('transmitting'), 'swr', 120), 'swr', { relevant: false });
+    withSurface(view, (s) => {
+      expect(s.tile('swr')!.dataset.relevant).toBe('false');
+      expect(s.tile('swr')!.dataset.fault).toBe('false');
+    });
+  });
+
+  // Unknown is not a fault (omission doctrine).
+  //
+  // HONEST SCOPE (verify-MOR-1345): dropping the `isObserved` conjunct alone
+  // does NOT go red here, and that is not a weakness in this test — it is an
+  // EQUIVALENT mutant under `rawOf`'s current contract. `rawOf` returns `0`
+  // for an unknown reading, `swrRatio(0)` is 1.0 and `alcLevel(0)` is 0, so
+  // neither predicate can fire on an unobserved field however the conjunction
+  // is written. What this test DOES kill is the dangerous combination: change
+  // `rawOf`'s fallback to a hazardous value AND drop the guard, and it goes
+  // red (verifier mutant M6b). The guard is therefore load-bearing the moment
+  // that fallback changes — which is why the next test pins the fallback
+  // itself, so the two edits can never pass independently.
+  it('does not fault an unobserved (unknown) reading even when relevant', () => {
+    const view = withField(base('transmitting'), 'swr', { unknown: true, relevant: true });
+    withSurface(view, (s) => {
+      expect(s.tile('swr')!.dataset.observed).toBe('false');
+      expect(s.tile('swr')!.dataset.fault).toBe('false');
+      expect(s.tile('swr')!.querySelector('svg')).toBeNull();
+    });
+  });
+
+  // MUTATION KILLED (verifier mutant M6a, verify-MOR-1345): changing `rawOf`'s
+  // unknown-fallback to a value either predicate would fault on. Today the
+  // whole meters suite stays GREEN through such a change, because the
+  // `isObserved` conjunct above absorbs it — so the fallback is the silent
+  // assumption the "unknown never faults" property actually rests on, and
+  // nothing else in the repo pins it. Source-scanned rather than behavioural
+  // because `rawOf` is module-private to the component: a behavioural test
+  // cannot observe a fallback the render path never reaches.
+  it('pins rawOf\'s unknown-fallback to a value neither fault predicate fires on', () => {
+    const fallback = /reading\.status === 'known' \? f\.reading\.value : (-?\d+(?:\.\d+)?)/.exec(SOURCE);
+    expect(fallback, 'rawOf no longer has a numeric literal fallback').not.toBeNull();
+    const raw = Number(fallback![1]);
+    expect(raw).toBe(0);
+    expect(isSwrFault(raw)).toBe(false);
+    expect(isAlcFault(raw)).toBe(false);
+  });
+
+  // Threads the boolean through to the REAL BarGauge (no stub) — mirrors the
+  // MOR-1282 peak-marker test's own "real component" discipline.
+  it('threads the fault flag into the real BarGauge SVG', () => {
+    const view = withRaw(base('transmitting'), 'swr', 120);
+    withSurface(view, (s) => {
+      const svg = s.tile('swr')!.querySelector('svg');
+      expect(svg?.getAttribute('data-fault')).toBe('true');
+    });
+    const clean = withRaw(base('transmitting'), 'swr', 20);
+    withSurface(clean, (s) => {
+      const svg = s.tile('swr')!.querySelector('svg');
+      expect(svg?.getAttribute('data-fault')).toBe('false');
+    });
+  });
+
+  // MUTATION KILLED: either surface reimplementing the threshold instead of
+  // importing the shared predicates — the same instrument as the PEAK_DECAY_MS
+  // parity test above (block 10), now for `isSwrFault`/`isAlcFault`.
+  it('both MetersSurface and MetersDockPanel import isSwrFault/isAlcFault from the shared meter-utils module', () => {
+    const dockSource = readFileSync('src/components-v2/panels/MetersDockPanel.svelte', 'utf8');
+    expect(SOURCE).toMatch(/import\s*\{[^}]*isSwrFault[^}]*\}\s*from\s*'\.\.\/components-v2\/panels\/meter-utils'/);
+    expect(SOURCE).toMatch(/import\s*\{[^}]*isAlcFault[^}]*\}\s*from\s*'\.\.\/components-v2\/panels\/meter-utils'/);
+    expect(dockSource).toMatch(/import\s*\{[^}]*isSwrFault[^}]*\}\s*from\s*'\.\/meter-utils'/);
+    expect(dockSource).toMatch(/import\s*\{[^}]*isAlcFault[^}]*\}\s*from\s*'\.\/meter-utils'/);
+    expect(SOURCE).not.toMatch(/function\s+isSwrFault|function\s+isAlcFault/);
+  });
+
+  // The base surface itself stays colour-free (MOR-977) — the highlight's
+  // actual colour is drawn by BarGauge, which already owns colour.
+  it('carries the fault as a boolean/attribute only — its own stylesheet stays colour-free', () => {
+    const styles = SOURCE.slice(SOURCE.indexOf('<style>'));
+    expect(styles).not.toMatch(/#[0-9a-f]{3,8}\b|\brgb\(|\bhsl\(/i);
   });
 });
