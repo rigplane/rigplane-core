@@ -1,17 +1,19 @@
 /**
- * MOR-1306 — `rfFrontEnd` is DECLARABLE, and nothing declares it yet.
+ * MOR-1306 — `rfFrontEnd` is DECLARABLE. MOR-1366 (S7) declares it for real.
  *
- * Slice 6B adds the name to `SEMANTIC_SURFACE_NAMES` so a manifest CAN mount
- * the surface later; it deliberately does not touch any manifest, and it adds
- * no design-language renderer slot (that set was frozen by MOR-1072 — adding
- * one would be a language-contract change this slice must not make).
- *
- * Same three pins as `tx-aux-declarability.test.ts` / `meters-declarability.test.ts`
- * / `rx-audio-declarability.test.ts`:
- *   - drop the name and a future manifest's zone stops validating;
- *   - quietly add an `rfFrontEnd` zone to a shipped manifest and the DOM
- *     grows a zone id no layout review ever saw;
- *   - the renderer slot set stays exactly what MOR-1072 froze.
+ * Slice 6B added the name to `SEMANTIC_SURFACE_NAMES` so a manifest CAN mount
+ * the surface later; it deliberately did not touch any manifest, and it added
+ * no design-language renderer slot (that set was frozen by MOR-1072). MOR-1366
+ * flips the second half, on `desktop-v2` ONLY: closing the double-presentation
+ * defect the rework tail found live on that skin (`RfFrontEndSurface` already
+ * mounted bare in the receiver deck via the MOR-1306 `zoned(...)`
+ * single-composition mount, while `RfFrontEnd` kept rendering a legacy twin in
+ * `LeftSidebar` and the settings modal). The cockpit is deliberately
+ * untouched (S5 precedent) — the MOR-1069 mount canon in `RfFrontEndSurface`
+ * still forbids a dual-composition mount with no cockpit zone declared. The
+ * inventory below is a LITERAL of who declares it, mirroring
+ * `meters-declarability.test.ts` / `tx-aux-declarability.test.ts`'s
+ * post-rework shape.
  */
 import { describe, it, expect } from 'vitest';
 import { SEMANTIC_SURFACE_NAMES, validateLayoutManifest } from '../contract';
@@ -51,18 +53,43 @@ describe('rfFrontEnd is a declarable semantic surface', () => {
   });
 });
 
-describe('no shipped manifest declares an rfFrontEnd zone in this slice', () => {
-  // Kills: slipping an rfFrontEnd zone into an existing layout here.
-  // Declarability is the whole scope of the contract touch; placing the
-  // surface in a real layout (including the dual-receiver-cockpit — see the
-  // MOR-1069 mount canon in `RfFrontEndSurface.svelte`) is a later, separately
-  // reviewed rework slice.
-  it.each([
+describe('exactly the reviewed manifests declare an rfFrontEnd zone (MOR-1366)', () => {
+  /** The literal — extend by hand, with a layout review, never silently. */
+  const DECLARES_RF_FRONT_END = ['desktop-v2'];
+
+  const ALL = [
     ['sdr-test', sdrTestLayout], ['dual-receiver-cockpit', dualReceiverCockpitLayout],
     ['lcd-cockpit', lcdCockpitLayout], ['lcd-scope', lcdScopeLayout],
     ['mobile', mobileLayout], ['desktop-v2', desktopV2Layout],
-  ])('%s declares no rfFrontEnd zone and does not require the surface', (_id, manifest) => {
-    for (const zone of manifest.zones) expect(zone.surfaces).not.toContain('rfFrontEnd');
+  ] as const;
+
+  // Kills BOTH directions: a family losing the zone S7 gave it, and a family
+  // gaining one without review — including the dual-receiver-cockpit, which
+  // the mounting canon (MOR-1304) forbids from mounting a control-bearing
+  // surface bare and this slice deliberately leaves undeclared.
+  it('the declaring set is exactly the reviewed literal', () => {
+    const declaring = ALL
+      .filter(([, m]) => m.zones.some((z) => z.surfaces.includes('rfFrontEnd')))
+      .map(([id]) => id)
+      .sort();
+    expect(declaring).toEqual([...DECLARES_RF_FRONT_END].sort());
+  });
+
+  // Kills: declaring the zone under a drifted id — the wiring binds whatever
+  // the plan's key is, so the id IS the contract with the layout's arrangement.
+  it.each(DECLARES_RF_FRONT_END)('%s declares it under the stable `rf-front-end` id, alone in its zone', (id) => {
+    const manifest = ALL.find(([name]) => name === id)![1];
+    const zone = manifest.zones.find((z) => z.surfaces.includes('rfFrontEnd'))!;
+    expect(zone.id).toBe('rf-front-end');
+    expect(zone.surfaces).toEqual(['rfFrontEnd']);
+  });
+
+  // Kills: making rfFrontEnd REQUIRED. A radio whose evidence gate declines
+  // every group (no preamp/attenuator/rf_gain/squelch/digisel/ip_plus
+  // capability) must still resolve this layout; the surface self-gates on
+  // `view.rfFrontEnd`, and a required surface no zone could fill would be a
+  // resolution failure rather than an honest absence.
+  it.each(ALL)('%s does not require the rfFrontEnd surface', (_id, manifest) => {
     expect(manifest.requiredSemanticSurfaces).not.toContain('rfFrontEnd');
   });
 });

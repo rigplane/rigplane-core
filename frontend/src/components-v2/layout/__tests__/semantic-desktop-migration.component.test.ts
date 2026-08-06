@@ -579,15 +579,24 @@ describe('the legacy-twin suppression channel (MOR-1364, S6-pre)', () => {
     'antenna', 'scan', 'rx-audio', 'dsp', 'tx', 'cw', 'memory'];
   const RIGHT_ALL = ['rx-audio', 'audio-scope', 'dsp', 'tx', 'cw', 'memory'];
 
-  /** surface → the zone id its rework slice will declare on `desktop-v2`.
-   *  `scopeDisplay` graduated to a REAL declaration in MOR-1365 (S6a) and left
-   *  this synthetic-probe literal — a probe re-declaring `scope-display` here
-   *  would collide with the real zone `desktopV2Layout.zones` already
-   *  carries. Its suppression is now proved directly against the real
-   *  manifest below (`the legacy-twin suppression channel retires the status
-   *  bar scope indicator on the REAL desktop-v2 manifest (MOR-1365)`). */
+  /**
+   * surface → the zone id its rework slice will declare on `desktop-v2`.
+   * `scopeDisplay` graduated to a REAL declaration in MOR-1365 (S6a) and left
+   * this synthetic-probe literal — a probe re-declaring `scope-display` here
+   * would collide with the real zone `desktopV2Layout.zones` already
+   * carries. Its suppression is now proved directly against the real
+   * manifest below (`the legacy-twin suppression channel retires the status
+   * bar scope indicator on the REAL desktop-v2 manifest (MOR-1365)`).
+   *
+   * `filter` and `rfFrontEnd` graduated off this synthetic-probe list in
+   * MOR-1366 (S7): `desktopV2Layout` now declares both for real, so spreading
+   * `desktopV2Layout.zones` plus a second `{ id: 'filter', … }` /
+   * `{ id: 'rf-front-end', … }` entry here would duplicate a zone id the real
+   * manifest already owns. Their suppression is asserted directly against the
+   * REAL `desktop-v2` registration below instead of through `ZONE_PROBE`.
+   */
   const ZONES = [
-    ['filter', 'filter'], ['rfFrontEnd', 'rf-front-end'], ['dsp', 'dsp'],
+    ['dsp', 'dsp'],
     ['ritXitScan', 'rit-xit-scan'], ['antenna', 'antenna'], ['rxAudio', 'rx-audio'],
     ['cwKeyer', 'cw-keyer'], ['band', 'band'],
   ] as const;
@@ -608,12 +617,14 @@ describe('the legacy-twin suppression channel (MOR-1364, S6-pre)', () => {
    * it, and where it lives. `dsp` owns FIVE rows because `DspSurface` covers
    * the AGC leaf too (5A/MOR-1290) — a `dsp` zone that retired `DspPanel` and
    * left `AgcPanel` standing would ship a half-double, in two hosts.
+   *
+   * `filter` (left sidebar MODE + FILTER) and `rfFrontEnd` (left sidebar RF
+   * FRONT END + settings modal RF FRONT END) are NOT rows here any more
+   * (MOR-1366, S7): the real `desktop-v2` manifest now declares both zones,
+   * so those twins no longer render at all — asserted directly below rather
+   * than through this "no zone declaring it yet" inventory.
    */
   const TWINS = [
-    ['filter', 'left sidebar MODE', '.left-sidebar [data-panel-id="mode"]'],
-    ['filter', 'left sidebar FILTER', '.left-sidebar [data-panel-id="filter"]'],
-    ['rfFrontEnd', 'left sidebar RF FRONT END', '.left-sidebar [data-panel-id="rf-front-end"]'],
-    ['rfFrontEnd', 'settings modal RF FRONT END', '[data-panel-id="desktop-rf"]'],
     ['dsp', 'left sidebar AGC', '.left-sidebar [data-panel-id="agc"]'],
     ['dsp', 'left sidebar DSP', '.left-sidebar [data-panel-id="dsp"]'],
     ['dsp', 'right sidebar DSP', '.right-sidebar [data-panel-id="dsp"]'],
@@ -675,20 +686,23 @@ describe('the legacy-twin suppression channel (MOR-1364, S6-pre)', () => {
   });
 
   // INERTNESS, half two, stated as an inventory rather than per-row: the exact
-  // set of panels desktop-v2 renders is unchanged by this slice. Measured
-  // against `origin/main` with the identical fixture before the channel
-  // landed — see the build report's element-stream diff (2049/2049 nodes
-  // identical on the undeclared layout; on desktop-v2 exactly one 11-node
-  // hunk, the SPLIT row below).
-  it('renders exactly the panel inventory it rendered before the channel existed', () => {
+  // set of panels desktop-v2 renders. This is the pin the N3 carry-forward
+  // warned about — it MUST go red the moment a zone-declaring slice lands,
+  // and the correct fix is deleting the retired ids, never widening the
+  // literal. MOR-1366 (S7) is the first slice to do that: `desktop-rf`
+  // (settings modal RF FRONT END), `filter`, `mode` and `rf-front-end` are
+  // gone from the panel inventory because the `filter`/`rf-front-end` zones
+  // are now REAL on `desktop-v2`, not synthetic probes — see the dedicated
+  // "drops the legacy ... twins" tests below for the non-vacuous proof.
+  it('renders exactly the panel inventory desktop-v2 renders post-S7', () => {
     const ids = [...renderAll('desktop-v2').querySelectorAll('[data-panel-id]')]
       .map((el) => el.getAttribute('data-panel-id'))
       .sort();
     expect(ids).toEqual([
       'agc', 'antenna', 'band', 'cw', 'cw',
-      'desktop-agc', 'desktop-cw', 'desktop-dsp', 'desktop-language', 'desktop-rf',
+      'desktop-agc', 'desktop-cw', 'desktop-dsp', 'desktop-language',
       'desktop-rit', 'desktop-vfo-ops', 'desktop-workspace',
-      'dsp', 'dsp', 'filter', 'memory', 'memory', 'mode', 'rf-front-end',
+      'dsp', 'dsp', 'memory', 'memory',
       'rit-xit', 'rx-audio', 'rx-audio', 'scan',
     ]);
   });
@@ -731,6 +745,55 @@ describe('the legacy-twin suppression channel (MOR-1364, S6-pre)', () => {
   // semantic DECK (MOR-1313) and must stay a separate prop.
   it.each(ZONES.map(([s]) => s))('leaves exactly one key authority with the %s zone declared', (surface) => {
     expect(renderAll(ZONE_PROBE[surface]).querySelectorAll(KEY_AUTHORITIES).length).toBe(1);
+  });
+
+  /**
+   * MOR-1366 (S7) — `filter` and `rfFrontEnd` join the matrix for real.
+   *
+   * Same shape as MOR-1341's meters test above: proven with caps that
+   * actually make the evidence gate fire, not the bare `capsFor()` default
+   * (`modes: [], filters: []`, no rf-front-end capability tag), which would
+   * pass these assertions vacuously (both the legacy twin and the semantic
+   * surface self-gate away) and prove nothing about suppression. This is
+   * also the closing evidence for §0.1 of the rework tail: BEFORE this slice,
+   * `desktop-v2` double-presented both families (bare deck render +
+   * legacy twin); the surface's `data-testid` count pins "exactly ONE".
+   */
+  it('drops the legacy MODE/FILTER twins in favour of the semantic filter surface', () => {
+    h.caps = { ...capsFor('2/main_sub'), modes: ['USB', 'CW', 'FM'], filters: [1, 2, 3] };
+    const t = renderAll('desktop-v2');
+    expect(t.querySelector('.left-sidebar [data-panel-id="mode"]')).toBeNull();
+    expect(t.querySelector('.left-sidebar [data-panel-id="filter"]')).toBeNull();
+    expect(t.querySelectorAll('[data-testid="filter-surface"]').length).toBe(1);
+  });
+
+  it('drops the legacy RF FRONT END twins (sidebar + modal) in favour of the semantic rfFrontEnd surface', () => {
+    h.caps = {
+      ...capsFor('2/main_sub'),
+      capabilities: [...capsFor('2/main_sub').capabilities, 'preamp'],
+    };
+    const t = renderAll('desktop-v2');
+    expect(t.querySelector('.left-sidebar [data-panel-id="rf-front-end"]')).toBeNull();
+    expect(t.querySelector('[data-panel-id="desktop-rf"]')).toBeNull();
+    expect(t.querySelectorAll('[data-testid="rf-front-end-surface"]').length).toBe(1);
+  });
+
+  // DOUBLE-PRESENTATION CLOSED, stated over BOTH families in caps that make
+  // BOTH evidence gates fire at once — the shape most likely to reveal a
+  // suppression that only covers one of the two zones this slice declares.
+  it('presents filter and rfFrontEnd controls exactly ONCE each on desktop-v2', () => {
+    h.caps = {
+      ...capsFor('2/main_sub'),
+      modes: ['USB', 'CW', 'FM'], filters: [1, 2, 3],
+      capabilities: [...capsFor('2/main_sub').capabilities, 'preamp'],
+    };
+    const t = renderAll('desktop-v2');
+    expect(t.querySelectorAll('[data-testid="filter-surface"]').length).toBe(1);
+    expect(t.querySelectorAll('[data-testid="rf-front-end-surface"]').length).toBe(1);
+    expect(t.querySelectorAll('.left-sidebar [data-panel-id="mode"]').length).toBe(0);
+    expect(t.querySelectorAll('.left-sidebar [data-panel-id="filter"]').length).toBe(0);
+    expect(t.querySelectorAll('.left-sidebar [data-panel-id="rf-front-end"]').length).toBe(0);
+    expect(t.querySelectorAll('[data-panel-id="desktop-rf"]').length).toBe(0);
   });
 
   /**
