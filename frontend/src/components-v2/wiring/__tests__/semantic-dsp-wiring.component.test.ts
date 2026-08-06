@@ -165,6 +165,11 @@ vi.mock('../command-bus', () => ({
 }));
 
 import SemanticRadioSurfaces from '../SemanticRadioSurfaces.svelte';
+import { desktopV2Layout } from '../../../presentation/layouts/declarations';
+import { readWorkspace } from '../../../presentation/workspace/contract';
+import {
+  resolveSurfacePlan, SURFACE_PLAN_CONTEXT_KEY, type SurfacePlan,
+} from '../../../presentation/workspace/resolution';
 
 const IDLE: Snapshot = {
   phase: 'idle', intent: null, guard: null, radioTx: 'off', txRisk: 'none',
@@ -229,10 +234,13 @@ const liveCaps = (withDsp: boolean): Capabilities => ({
 let target: HTMLDivElement;
 let component: ReturnType<typeof mount> | null = null;
 
-function render(props: { strips?: 'single' | 'dual' } = {}): void {
+function render(props: { strips?: 'single' | 'dual' } = {}, plan?: SurfacePlan): void {
   target = document.createElement('div');
   document.body.appendChild(target);
-  component = mount(SemanticRadioSurfaces, { target, props });
+  const context = plan === undefined
+    ? undefined
+    : new Map<unknown, unknown>([[SURFACE_PLAN_CONTEXT_KEY, () => plan]]);
+  component = mount(SemanticRadioSurfaces, { target, props, context });
   flushSync();
 }
 
@@ -383,5 +391,16 @@ describe('carry-forward (1): caps-echo display metadata is read at this seam', (
     render();
     const input = q<HTMLInputElement>('[data-testid="dsp-nbLevel"] input')!;
     expect(input.max).toBe('10');
+  });
+});
+
+describe('desktop-v2 declares a real dsp zone; the cockpit does not (MOR-1368, S9, F1)', () => {
+  function planFor(layout: typeof desktopV2Layout, fields: Record<string, unknown>): SurfacePlan {
+    return resolveSurfacePlan(layout, readWorkspace({ version: 1, ...fields }).workspace);
+  }
+
+  it('binds the dsp zone id against desktop-v2\'s real plan', () => {
+    render({ strips: 'single' }, planFor(desktopV2Layout, {}));
+    expect(q('[data-testid="dsp-surface"]')!.closest('[data-zone-id="dsp"]')).not.toBeNull();
   });
 });
