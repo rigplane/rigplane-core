@@ -818,6 +818,63 @@ export interface ScopeControlsViewModel {
   receiver: ScopeControlsField<number>;
 }
 
+/**
+ * A single scope-display fact (MOR-1262 decomposition slice 12A, MOR-1301 —
+ * the LAST A-slice of the vocabulary program). Shape-identical to
+ * `TxAuxField`, declared as an alias for the same reason
+ * `ScopeControlsField`/`CwKeyerField`/etc. are.
+ */
+export type ScopeDisplayField<T> = TxAuxField<T>;
+
+/** Which scope channel the frontend currently treats as "the" scope
+ *  (`ScopeSource` in `lib/runtime/scope-controller.svelte.ts`) — hardware
+ *  CI-V scope frames vs the browser-side audio FFT. */
+export type ScopeSourceKind = 'hardware' | 'audio_fft';
+
+/** The v2 status-bar scope indicator's own state machine
+ *  (`ScopeIndicatorState` in `components-v2/layout/StatusBar.svelte`),
+ *  reproduced verbatim as the closed set of values this fact may take —
+ *  never a UI-only label, an ordinal, or a raw transport/lifecycle string. */
+export type ScopeHealthState =
+  | 'inactive' | 'starting' | 'connecting' | 'waiting'
+  | 'reconnecting' | 'failed' | 'disconnected' | 'connected';
+
+/**
+ * Scope-display facts (MOR-1262 decomposition slice 12A/MOR-1301, the FINAL
+ * A-slice of the vocabulary program): WHICH scope source is currently live
+ * and HOW HEALTHY it is — never scope TUNING (MODE/EDGE/HOLD/REF are
+ * `scopeControls`, slice 11A/11A′, and are not duplicated here per that
+ * slice's binding boundary ruling) and never the scope's PIXELS (live
+ * hardware/audio-FFT frames stay a wholly App-owned resource demand, same
+ * doctrine `ScopeAvailabilityViewModel`'s doc comment already states for
+ * `scope.hardwareScope`/`scope.audioFftScope` — this group is downstream of
+ * those two structural/operational booleans, not a replacement for them).
+ * Band-plan, DX-spot and EiBi overlays are explicitly out of scope too.
+ *
+ * PARITY: `source` mirrors `runtime.defaultScopeStatus.source`
+ * (`lib/runtime/frontend-runtime.ts`) and `health` reproduces the exact
+ * state machine the shipped status-bar scope indicator already computes
+ * from that same status object (`deriveScopeIndicatorState`,
+ * `StatusBar.svelte`) — pinned against the real function in
+ * `__tests__/scope-display-adapter.test.ts` rather than assumed, the same
+ * "agree with the real projector" discipline `deriveRxAudio`'s
+ * `modInputSource` uses. `demand`/`frameSeen`/`lifecycle`/`transport` are
+ * consumed ONLY as inputs to that one classification, never exposed as
+ * their own leaves — they are exactly the "subscription state"/"frame
+ * data" this slice's ticket forbids restating as facts.
+ *
+ * INPUT, not a store read: like `rxAudio` (slice 3A), `defaultScopeStatus`
+ * lives on the `FrontendRuntime` singleton, not on `ServerState`/
+ * `Capabilities` — a fact derivation may not read it directly (MOR-988 §3.2
+ * determinism), so the caller supplies a plain snapshot
+ * (`ScopeDisplaySnapshot`, `radio-view-model-adapter.ts`) and NO snapshot
+ * means NO group, same as `rxAudio`.
+ */
+export interface ScopeDisplayViewModel {
+  source: ScopeDisplayField<ScopeSourceKind>;
+  health: ScopeDisplayField<ScopeHealthState>;
+}
+
 export interface RadioViewModel {
   topologyId: string;
   vfoScheme: VfoScheme;
@@ -884,6 +941,10 @@ export interface RadioViewModel {
    *  capability, so v2 renders no spectrum toolbar at all — see
    *  `radio-view-model-adapter.ts`'s `deriveScopeControls`. */
   readonly scopeControls?: ScopeControlsViewModel;
+  /** Absent (MOR-1264 optional group) ⇒ this radio declares no `scope`
+   *  capability and no audio-FFT scope source — see
+   *  `radio-view-model-adapter.ts`'s `deriveScopeDisplay`. */
+  readonly scopeDisplay?: ScopeDisplayViewModel;
 }
 
 const RECEIVER_IDS: readonly ReceiverId[] = ['MAIN', 'SUB'];
@@ -1406,6 +1467,21 @@ function validateScopeControls(value: unknown, path: string): ScopeControlsViewM
   };
 }
 
+const SCOPE_SOURCES: readonly ScopeSourceKind[] = ['hardware', 'audio_fft'];
+const SCOPE_HEALTH_STATES: readonly ScopeHealthState[] = [
+  'inactive', 'starting', 'connecting', 'waiting',
+  'reconnecting', 'failed', 'disconnected', 'connected',
+];
+
+function validateScopeDisplay(value: unknown, path: string): ScopeDisplayViewModel {
+  const v = record(value, path);
+  exactKeys(v, ['source', 'health'], path);
+  return {
+    source: validateTxAuxField(v.source, `${path}.source`, (val, p) => oneOf(val, SCOPE_SOURCES, p)),
+    health: validateTxAuxField(v.health, `${path}.health`, (val, p) => oneOf(val, SCOPE_HEALTH_STATES, p)),
+  };
+}
+
 /** Runtime validator (repo idiom: throws TypeError with a `$.path`, see `validateCapabilities`).
  *  Also enforces two cross-field invariants (review cycle 1, V1): `txPermit`
  *  cannot be 'allowed' while `txTarget` is unknown (no fail-open), and
@@ -1416,7 +1492,7 @@ export function validateRadioViewModel(value: unknown): RadioViewModel {
     'topologyId', 'vfoScheme', 'activeReceiver', 'vfos', 'split', 'dualWatch',
     'txTarget', 'txPermit', 'scope', 'disabledReasons', 'txAux', 'meters', 'rxAudio', 'modeFilter',
     'filterPassband', 'dsp', 'rfFrontEnd', 'band', 'ritXit', 'antenna', 'scan', 'cwKeyer',
-    'scopeControls',
+    'scopeControls', 'scopeDisplay',
   ], '$');
   if (!Array.isArray(v.vfos)) invalid('$.vfos', 'an array');
   if (!Array.isArray(v.disabledReasons)) invalid('$.disabledReasons', 'an array');
@@ -1457,6 +1533,7 @@ export function validateRadioViewModel(value: unknown): RadioViewModel {
   const scan = optionalGroup(v.scan, '$.scan', validateScan);
   const cwKeyer = optionalGroup(v.cwKeyer, '$.cwKeyer', validateCwKeyer);
   const scopeControls = optionalGroup(v.scopeControls, '$.scopeControls', validateScopeControls);
+  const scopeDisplay = optionalGroup(v.scopeDisplay, '$.scopeDisplay', validateScopeDisplay);
 
   const disabledReasons = v.disabledReasons.map((r, i) => validateDisabledReason(r, `$.disabledReasons[${i}]`));
   // SAFETY, MOR-1296 — the fail-closed half of "no second permit", enforced
@@ -1499,5 +1576,6 @@ export function validateRadioViewModel(value: unknown): RadioViewModel {
     ...(scan !== undefined ? { scan } : {}),
     ...(cwKeyer !== undefined ? { cwKeyer } : {}),
     ...(scopeControls !== undefined ? { scopeControls } : {}),
+    ...(scopeDisplay !== undefined ? { scopeDisplay } : {}),
   };
 }

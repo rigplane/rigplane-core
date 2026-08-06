@@ -23,6 +23,7 @@ import type {
   RitXitField, RitXitViewModel, RxAudioField, RxAudioViewModel,
   ScanField, ScanViewModel,
   ScopeControlsField, ScopeControlsViewModel,
+  ScopeDisplayField, ScopeDisplayViewModel,
   TxAuxField, TxAuxViewModel,
 } from '../radio-view-model';
 
@@ -483,4 +484,21 @@ export function withScopeControls(fixture: RadioViewModel): RadioViewModel {
     receiver: known(0),
   };
   return { ...fixture, scopeControls };
+}
+
+/**
+ * Applies a fully-observed `scopeDisplay` group (MOR-1262 slice 12A/
+ * MOR-1301, the FINAL A-slice) to any topology fixture — same
+ * composable-axis story as `withScopeControls` above.
+ */
+export function withScopeDisplay(fixture: RadioViewModel): RadioViewModel {
+  const avail: Availability = { structural: true, operational: true };
+  const known = <T>(value: T): ScopeDisplayField<T> => (
+    { reading: { status: 'known', value }, availability: avail }
+  );
+  const scopeDisplay: ScopeDisplayViewModel = {
+    source: known('hardware'),
+    health: known('connected'),
+  };
+  return { ...fixture, scopeDisplay };
 }
