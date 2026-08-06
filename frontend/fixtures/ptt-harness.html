@@ -1,0 +1,19 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+    <title>MOR-1088 — mobile PTT gesture/orientation fixtures</title>
+    <style>
+      html, body { margin: 0; height: 100%; background: #0a0a14; }
+      #app { height: 100dvh; position: relative; }
+    </style>
+  </head>
+  <body>
+    <div id="app" data-testid="ptt-harness">
+      <div id="portrait-slot"></div>
+      <div id="landscape-slot"></div>
+    </div>
+    <script type="module" src="./ptt-main.ts"></script>
+  </body>
+</html>
