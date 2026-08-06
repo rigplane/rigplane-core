@@ -104,6 +104,22 @@ describe('carry-forward (3): EDGE/SPAN visibility is a rendering decision on top
     expect(r.el('scope-span')).toBeNull();
     r.dispose();
   });
+
+  // F2 — mode S-F (3) shows EDGE and hides SPAN
+  it('shows EDGE and hides SPAN when mode is known S-F (3)', () => {
+    const r = render(withSc({ mode: known(3) }));
+    expect(r.el('scope-edge')).not.toBeNull();
+    expect(r.el('scope-span')).toBeNull();
+    r.dispose();
+  });
+
+  // F2 — mode S-C (2) shows SPAN and hides EDGE
+  it('shows SPAN and hides EDGE when mode is known S-C (2)', () => {
+    const r = render(withSc({ mode: known(2) }));
+    expect(r.el('scope-span')).not.toBeNull();
+    expect(r.el('scope-edge')).toBeNull();
+    r.dispose();
+  });
 });
 
 describe('unread leaves render honestly, never fabricated', () => {
@@ -259,6 +275,36 @@ describe('steppers compute the next value with the shipped clamp functions', () 
     r.el('scope-ref')!.querySelectorAll('button')[1]!.click();
     flushSync();
     expect(onRefChange).toHaveBeenCalledExactlyOnceWith(5);
+    r.dispose();
+  });
+
+  // F1 — SPAN at the ceiling stays 7, never 8 (domain 0-7)
+  it('SPAN at the ceiling clamped to 7, never exceeds domain', () => {
+    const onSpanChange = vi.fn();
+    const r = render(withSc({ mode: known(0), span: known(7) }), { onSpanChange });
+    r.el('scope-span')!.querySelectorAll('button')[1]!.click();
+    flushSync();
+    expect(onSpanChange).toHaveBeenCalledExactlyOnceWith(7);
+    r.dispose();
+  });
+
+  // F1 — REF at the ceiling stays 10 (domain -30..10)
+  it('REF at the ceiling clamped to 10, never exceeds domain', () => {
+    const onRefChange = vi.fn();
+    const r = render(withSc({ refDb: known(10) }), { onRefChange });
+    r.el('scope-ref')!.querySelectorAll('button')[1]!.click();
+    flushSync();
+    expect(onRefChange).toHaveBeenCalledExactlyOnceWith(10);
+    r.dispose();
+  });
+
+  // F1 — SPEED at the floor stays 0 (domain 0-2, note clampSpeed's inverted delta)
+  it('SPEED at the floor clamped to 0, never goes below domain', () => {
+    const onSpeedChange = vi.fn();
+    const r = render(withSc({ speed: known(0) }), { onSpeedChange });
+    r.el('scope-speed')!.querySelectorAll('button')[1]!.click();
+    flushSync();
+    expect(onSpeedChange).toHaveBeenCalledExactlyOnceWith(0);
     r.dispose();
   });
 });
