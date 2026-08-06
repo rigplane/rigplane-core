@@ -4,7 +4,7 @@ Tracked, reviewed screenshots for a representative slice of the MOR-1070/1085 fi
 
 ## Why a slice, not the full 60+13 matrix
 
-`capture.mjs`/`capture-ptt.mjs` already run the deterministic manifest/assertion layer on every invocation — that is the correctness floor and needs no pixels to be meaningful. Pixel-diffing is a second, purely visual floor on top, so it only needs the combinations a token/CSS regression could plausibly hit differently: topology shape, RX/TX/fault state, and design language. The 12 captures below span all three plus the MOR-1088 mobile PTT pair; the rest of the matrix is viewport/media/focus permutations of the same render paths.
+`capture.mjs`/`capture-ptt.mjs` already run the deterministic manifest/assertion layer on every invocation — that is the correctness floor and needs no pixels to be meaningful. Pixel-diffing is a second, purely visual floor on top, so it only needs the combinations a token/CSS regression could plausibly hit differently: topology shape, RX/TX/fault state, design language, and light/dark mode. The 14 captures below span all four plus the MOR-1088 mobile PTT pair; the rest of the matrix is viewport/media/focus permutations of the same render paths.
 
 | Capture | Spans |
 |---|---|
@@ -18,8 +18,12 @@ Tracked, reviewed screenshots for a representative slice of the MOR-1070/1085 fi
 | `dual-main-sub--desktop--fieldline` | design language |
 | `tx-phase-tx--desktop--studioline` | TX state × language |
 | `dual-main-sub--phone-portrait` | viewport |
+| `dual-main-sub--desktop--studioline--light` | light mode (a separate token resolution from dark — MOR-1073/1074; no other capture here exercises it) |
+| `tx-phase-fault--desktop--fieldline` | fault state × language (fault previously only appeared in the default language) |
 | `ptt-idle--mobile` | mobile PTT, idle |
 | `ptt-held--mobile` | mobile PTT, held (real pointerdown) |
+
+The last two additions came from `verify-mor-1090.md`'s representative-set adequacy ranking (§4): of the gaps it found against the MOR-1085 axis matrix, these were the two ranked highest by "what a token/CSS regression could plausibly hit differently" that a 2-capture budget could close. Media variants (reduced-motion / forced-colors / contrast-more) stay out on purpose — animations are already disabled for every screenshot, and forced-colors is an OS-level render mode the assertion layer already pins.
 
 ## Comparator, threshold, calibration
 

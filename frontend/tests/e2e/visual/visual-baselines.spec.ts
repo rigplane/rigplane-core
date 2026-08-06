@@ -20,10 +20,18 @@ interface Spec {
   name: string;
   fixture: string;
   language?: 'studioline' | 'fieldline';
+  mode?: 'light';
   viewport?: typeof DESKTOP;
 }
 
-/** Topology × {RX, TX, fault} × language, per MOR-1090's acceptance text. */
+/**
+ * Topology × {RX, TX, fault} × language, per MOR-1090's acceptance text,
+ * plus two additions from the independent verification's adequacy ranking
+ * (`verify-mor-1090.md` §4/§10.6): a light-mode capture (light is a separate
+ * token resolution from dark — see MOR-1073/1074 — and none of the original
+ * 12 exercised it) and a fault × non-default-language capture (fault only
+ * ever appeared in the default language before).
+ */
 const COCKPIT: Spec[] = [
   { name: 'dual-main-sub--desktop', fixture: 'topology-2-main-sub' },
   { name: 'topology-1-single--desktop', fixture: 'topology-1-single' },
@@ -35,13 +43,21 @@ const COCKPIT: Spec[] = [
   { name: 'dual-main-sub--desktop--fieldline', fixture: 'topology-2-main-sub', language: 'fieldline' },
   { name: 'tx-phase-tx--desktop--studioline', fixture: 'tx-phase-tx', language: 'studioline' },
   { name: 'dual-main-sub--phone-portrait', fixture: 'topology-2-main-sub', viewport: PHONE },
+  {
+    name: 'dual-main-sub--desktop--studioline--light',
+    fixture: 'topology-2-main-sub',
+    language: 'studioline',
+    mode: 'light',
+  },
+  { name: 'tx-phase-fault--desktop--fieldline', fixture: 'tx-phase-fault', language: 'fieldline' },
 ];
 
 for (const spec of COCKPIT) {
   test(spec.name, async ({ page }) => {
     await page.setViewportSize(spec.viewport ?? DESKTOP);
     const url = `/fixtures/index.html?fixture=${spec.fixture}&theme=v2`
-      + (spec.language ? `&language=${spec.language}` : '');
+      + (spec.language ? `&language=${spec.language}` : '')
+      + (spec.mode ? `&mode=${spec.mode}` : '');
     await page.goto(url, { waitUntil: 'load' });
     await page.waitForSelector('body[data-harness-ready="true"]');
     await expect(page).toHaveScreenshot(`${spec.name}.png`, { animations: 'disabled', caret: 'hide' });
