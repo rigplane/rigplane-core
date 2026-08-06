@@ -8,6 +8,7 @@
  * A capture whose assertions did not all pass is recorded as INVALID in the
  * manifest — the picture is evidence of the assertions, never a substitute.
  */
+import { toRadioViewModel } from '../src/lib/runtime/adapters/radio-view-model-adapter';
 import type { Expectation } from './catalog';
 import { harness } from './harness-state';
 
@@ -29,10 +30,23 @@ export interface AssertionOptions {
   touchTargets?: boolean;
   /** Require every animation/transition inside the cockpit to be switched off. */
   reducedMotion?: boolean;
+  /**
+   * MOR-1085 — which mounted root this capture's assertions read from.
+   * `main.ts` supplies this from the fixture's `layout` (default
+   * `'dual-receiver-cockpit'`, the pre-MOR-1085 hardcoded value, so every
+   * existing cockpit fixture is byte-identical without touching its call
+   * site).
+   */
+  rootTestId?: string;
 }
 
+// MOR-1085: which mounted root the selectors below read from for the
+// DURATION of one `runAssertions` call — set at the top of that function from
+// `options.rootTestId`. A module-level var rather than a threaded parameter
+// keeps every existing `qa()`/`q()` call site in this file unchanged.
+let currentRootTestId = 'dual-receiver-cockpit';
 const root = (): HTMLElement =>
-  document.querySelector<HTMLElement>('[data-testid="dual-receiver-cockpit"]')!;
+  document.querySelector<HTMLElement>(`[data-testid="${currentRootTestId}"]`)!;
 const qa = <T extends HTMLElement>(sel: string): T[] => [...root().querySelectorAll<T>(sel)];
 const q = <T extends HTMLElement>(sel: string): T | null => root().querySelector<T>(sel);
 const eq = (a: unknown, b: unknown): boolean => JSON.stringify(a) === JSON.stringify(b);
@@ -54,6 +68,17 @@ const controls = (): HTMLElement[] =>
 export function runAssertions(
   expected: Expectation, options: AssertionOptions = {},
 ): AssertionResult[] {
+  currentRootTestId = options.rootTestId ?? 'dual-receiver-cockpit';
+  // MOR-1085 — true for the dual-receiver-cockpit composition (the pre-1085
+  // default, so every existing fixture is unaffected), false for the
+  // reference/single composition (`ReferenceLayout.svelte` /
+  // `SemanticRadioSurfaces strips="single"`), which MOR-1069 deliberately
+  // leaves zone-less: "a zone element exists only where an arrangement must
+  // place it, and the single composition places nothing"
+  // (`presentation/layouts/desktop-declarations.ts`). Every gate below that
+  // depends on a `data-zone-id` wrapper existing at all reads this flag
+  // instead of assuming one composition's shape for both.
+  const zonedComposition = expected.zonedComposition ?? true;
   const out: AssertionResult[] = [];
   const check = (name: string, ok: boolean, detail: string): void => {
     out.push({ name, ok, detail });
@@ -110,7 +135,13 @@ export function runAssertions(
   const surfaces = qa('[data-testid="rx-tx-surface"]');
   const keys = qa<HTMLButtonElement>('[data-testid="rx-tx-key"]');
   const unkeys = qa<HTMLButtonElement>('[data-testid="rx-tx-unkey"]');
-  const zoneDeclared = expected.zones.includes('rx-tx');
+  // MOR-1085: the reference/single composition mounts `<RxTxSurface>`
+  // unconditionally (`SemanticRadioSurfaces`'s `singleOrder` always includes
+  // `'rxTx'`, gated only by `{#if view}`) with no zone wrapper to read the
+  // declaration off — so for it "declared" is simply "this is the
+  // permanent composition", same as the cockpit's zone declaration, just
+  // without the div.
+  const zoneDeclared = zonedComposition ? expected.zones.includes('rx-tx') : true;
   const capsLoaded = harness.caps !== null;
   const txMax = zoneDeclared ? 1 : 0;
   const txMin = zoneDeclared && capsLoaded ? 1 : 0;
@@ -131,20 +162,35 @@ export function runAssertions(
   const global = q('[data-zone-id="global"]');
   const wide = ['[data-vfo-split]', '[data-vfo-dual-watch]',
     '[data-testid="vfo-active-receiver"]'];
-  if (expected.zones.includes('global')) {
+  const hasGlobalZone = expected.zones.includes('global');
+  // MOR-1085: the reference/single composition renders the SAME radio-wide
+  // switches (one `<VfoSurface viewModel={view}>` call, `showRadioWideFacts`
+  // defaulting true) but never wraps them in a `global` zone div — there is
+  // no separate radio-wide row there at all, split/dual-watch/active-receiver
+  // sit inline with the vfo list. The STRUCTURAL half of this check (are
+  // there exactly the switches expected, gated correctly) still applies;
+  // only the CONTAINMENT half (do they live inside a `global` div) is
+  // cockpit-specific and stays behind `hasGlobalZone`. Both halves are
+  // skipped while caps have not loaded (`capsLoaded`, defined above) — with
+  // `view` null neither composition renders `<VfoSurface>` at all, so an
+  // absent switch there is correct, not a regression.
+  const hasRadioWideRow = capsLoaded && (hasGlobalZone || !zonedComposition);
+  if (hasRadioWideRow) {
     check('radio-wide-row-renders-once',
       wide.every((sel) => qa(sel).length === 1),
       wide.map((sel) => `${sel}=${qa(sel).length}`).join(' '));
-    check('radio-wide-row-lives-in-the-global-zone',
-      wide.every((sel) => {
-        const el = q(sel);
-        return el !== null && global !== null && global.contains(el)
-          && !strips.some((s) => s.contains(el));
-      }),
-      'split / dual-watch / active-receiver are inside `global` and inside no strip');
-    check('global-zone-is-not-aria-disabled',
-      global !== null && global.getAttribute('aria-disabled') === null,
-      'a zone holding live switches must not present as dead');
+    if (hasGlobalZone) {
+      check('radio-wide-row-lives-in-the-global-zone',
+        wide.every((sel) => {
+          const el = q(sel);
+          return el !== null && global !== null && global.contains(el)
+            && !strips.some((s) => s.contains(el));
+        }),
+        'split / dual-watch / active-receiver are inside `global` and inside no strip');
+      check('global-zone-is-not-aria-disabled',
+        global !== null && global.getAttribute('aria-disabled') === null,
+        'a zone holding live switches must not present as dead');
+    }
     const switches = qa<HTMLButtonElement>('[data-vfo-split], [data-vfo-dual-watch]');
     check('radio-wide-switch-gate',
       switches.length === 2
@@ -154,16 +200,26 @@ export function runAssertions(
   }
 
   // ── honest placeholders ────────────────────────────────────────────────
-  const inert = ['scope', 'controls']
-    .map((z) => q(`[data-testid="cockpit-zone-${z}"]`));
-  check('placeholder-zones-present-and-inert',
-    inert.every((el) => el !== null
-      && el.getAttribute('aria-disabled') === 'true'
-      && el.dataset.zoneActive === 'false'
-      && el.querySelectorAll('button, [role="switch"], input').length === 0
-      && (el.textContent ?? '') === ''
-      && !el.hasAttribute('data-zone-id')),
-    'scope + controls: aria-disabled, empty, claiming no manifest zone');
+  // MOR-1085: `cockpit-zone-scope`/`cockpit-zone-controls` are
+  // `dual-receiver-cockpit`'s OWN structural placeholders (MOR-1067) — a
+  // promise that shell makes about future scope/controls surfaces. The
+  // reference/single composition (`desktop-v2`/`sdr-test` today) makes no
+  // such promise: its scope area is the legacy `SpectrumPanel`, out of scope
+  // for this grammar, and it has no equivalent inert marker to check. Asking
+  // for one there would assert a promise the layout never made, so this
+  // block is cockpit-only, same signal as every other zoned-only check above.
+  if (zonedComposition) {
+    const inert = ['scope', 'controls']
+      .map((z) => q(`[data-testid="cockpit-zone-${z}"]`));
+    check('placeholder-zones-present-and-inert',
+      inert.every((el) => el !== null
+        && el.getAttribute('aria-disabled') === 'true'
+        && el.dataset.zoneActive === 'false'
+        && el.querySelectorAll('button, [role="switch"], input').length === 0
+        && (el.textContent ?? '') === ''
+        && !el.hasAttribute('data-zone-id')),
+      'scope + controls: aria-disabled, empty, claiming no manifest zone');
+  }
 
   // ── nothing is hidden (MOR-1069 policy 2 — only decidable in a browser) ─
   // A declared zone with no children (MOR-1258's `.rx-tx-zone`, rendered
@@ -186,21 +242,30 @@ export function runAssertions(
       : `hidden: ${hidden.map((el) => el.dataset.testid ?? el.tagName).join(', ')}`);
 
   // ── focus order is DOM order, ending in rx-tx (MOR-1069) ───────────────
-  const declared = [...expected.zones];
-  const seq = controls().map((el) => {
-    const zone = el.closest('[data-zone-id]') as HTMLElement | null;
-    return declared.indexOf(zone?.dataset.zoneId ?? '');
-  });
-  const zoned = seq.filter((i) => i >= 0);
-  check('focus-order-is-zone-order',
-    controls().length === 0
-      || (eq(zoned, [...zoned].sort((a, b) => a - b))
-        && (zoned.length === 0 || zoned[zoned.length - 1] === declared.indexOf('rx-tx'))),
-    `zone indices ${JSON.stringify(seq)} (-1 = outside every declared zone)`);
-  check('zone-less-control-count',
-    seq.filter((i) => i === -1).length === expected.zonelessControls,
-    `${seq.filter((i) => i === -1).length} outside every zone · `
-    + `expected ${expected.zonelessControls}`);
+  // MOR-1085: "every control lives inside a declared zone" is the
+  // dual-receiver-cockpit's own acceptance gate (MOR-1069/1070 gate item
+  // (b)) — it presupposes zones exist to live inside. The reference/single
+  // composition has no zone concept at all (see `zonedComposition` above),
+  // so EVERY control there is trivially "outside every declared zone"; that
+  // is not a regression to police, it is the honest absence of the concept
+  // this check verifies. Both checks stay cockpit-only for that reason.
+  if (zonedComposition) {
+    const declared = [...expected.zones];
+    const seq = controls().map((el) => {
+      const zone = el.closest('[data-zone-id]') as HTMLElement | null;
+      return declared.indexOf(zone?.dataset.zoneId ?? '');
+    });
+    const zoned = seq.filter((i) => i >= 0);
+    check('focus-order-is-zone-order',
+      controls().length === 0
+        || (eq(zoned, [...zoned].sort((a, b) => a - b))
+          && (zoned.length === 0 || zoned[zoned.length - 1] === declared.indexOf('rx-tx'))),
+      `zone indices ${JSON.stringify(seq)} (-1 = outside every declared zone)`);
+    check('zone-less-control-count',
+      seq.filter((i) => i === -1).length === expected.zonelessControls,
+      `${seq.filter((i) => i === -1).length} outside every zone · `
+      + `expected ${expected.zonelessControls}`);
+  }
   check('no-negative-tabindex-and-no-aria-hidden-control',
     controls().every((el) => Number(el.getAttribute('tabindex') ?? '0') >= 0
       && el.closest('[aria-hidden="true"]') === null),
@@ -218,6 +283,34 @@ export function runAssertions(
   check('mod-input-warning',
     (q('[data-testid="mod-input-tx-warning"]') !== null) === expected.modInputWarningPresent,
     `mod-input-tx-warning present=${q('[data-testid="mod-input-tx-warning"]') !== null}`);
+
+  // ── MOR-1085 checklist item 5: the audio-only-scope condition ───────────
+  // `RxAudioSurface` is the only currently-wired "audio path" UI
+  // (MOR-1279) — it renders in the reference/single composition whenever a
+  // view model exists, NEVER in the dual-receiver-cockpit composition
+  // (structural, independent of any capability). This is the closest real
+  // signal to "the audio path stays operational" available today; see the
+  // MOR-1085 report for the finding that no semantic surface yet consumes
+  // `view.scope.{hardwareScope,audioFftScope}` on either layout.
+  if (expected.rxAudioSurfacePresent !== undefined) {
+    const present = q('[data-testid="rx-audio-surface"]') !== null;
+    check('rx-audio-surface-presence', present === expected.rxAudioSurfacePresent,
+      `rx-audio-surface present=${present} · expected ${expected.rxAudioSurfacePresent}`);
+  }
+  // The `scope`/`scopeControls` FACTS (MOR-1298/1299) exist in the view
+  // model regardless of which composition mounts it — computed here by
+  // calling the real, unmodified adapter with the fixture's own state/caps
+  // (its `scope` derivation takes neither `tx` nor the rx-audio snapshot, so
+  // the 2-arg call is exact, not an approximation). Checked only where a
+  // fixture opts in (`expected.scopeFacts`), so this stays a targeted
+  // addition rather than a blanket assertion every fixture must satisfy.
+  if (expected.scopeFacts !== undefined) {
+    const view = toRadioViewModel(harness.state, harness.caps);
+    const scope = view?.scope ?? null;
+    check('scope-facts-honest', eq(scope, expected.scopeFacts),
+      `scope=${JSON.stringify(scope)} · expected ${JSON.stringify(expected.scopeFacts)} `
+      + '(no semantic surface renders this fact on either layout yet — MOR-1085 finding)');
+  }
 
   // ── viewport-dependent: the reflow itself ──────────────────────────────
   if (options.arrangement !== undefined && strips.length === 2) {
