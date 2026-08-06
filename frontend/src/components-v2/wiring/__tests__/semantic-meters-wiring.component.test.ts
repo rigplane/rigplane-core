@@ -45,6 +45,18 @@ vi.mock('$lib/runtime', () => ({
     // browser stream keeps every fixture below on its pre-1279 path.
     get audio() { return { muted: true, rxEnabled: false, volume: 0 }; },
     get connectionAudio() { return false; },
+    // MOR-1312 slice 12B: the wiring now also hands the adapter a
+    // scope-display snapshot (the FIFTH argument). Every fixture below
+    // declares no scope capability, so this stays on its pre-1312 path
+    // regardless of these values.
+    get defaultScopeStatus() {
+      return {
+        source: null, available: false, resourceSelected: false, demand: 0,
+        lifecycle: 'inactive', transport: 'disconnected', frameSeen: false,
+      };
+    },
+    get radioPowerOn() { return null; },
+    get scope() { return { hardwareScopeConnected: false }; },
   },
 }));
 vi.mock('$lib/runtime/tx-controller/app-host', () => ({

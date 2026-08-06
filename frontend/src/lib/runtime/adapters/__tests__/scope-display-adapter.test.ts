@@ -1,6 +1,8 @@
 /**
  * MOR-1262 decomposition slice 12A (MOR-1301, the FINAL A-slice of the
  * vocabulary program) — `scopeDisplay` fact-group adapter derivation.
+ * Extended by slice 12B (MOR-1312, the LAST vocabulary slice) for the
+ * `hardwareConnected` leaf — see the `hardwareConnected` describe block below.
  *
  * Companion to `scope-controls-adapter.test.ts` (11A/11A′) and
  * `rx-audio-adapter.test.ts` (3A), neither of which this file modifies.
@@ -16,6 +18,9 @@
  * `rx-audio-adapter.test.ts` uses for `projectModInputSource`. No `vi.mock`,
  * no global store mutation — `deriveScopeIndicatorState` is a pure function
  * of its two explicit arguments, so this file needs no isolated pool.
+ * `hardwareConnected` is deliberately EXCLUDED from this parity discipline —
+ * `deriveScopeIndicatorState` takes no such input, by design (see the
+ * CORRECTION note on `ScopeDisplayViewModel`).
  */
 import { describe, expect, it } from 'vitest';
 import type { Capabilities } from '$lib/types/capabilities';
@@ -52,6 +57,7 @@ function bareState(overrides: Partial<ServerState> = {}): ServerState {
 const SNAP: ScopeDisplaySnapshot = {
   source: 'hardware', available: true, resourceSelected: true, demand: 1,
   lifecycle: 'streaming', transport: 'connected', frameSeen: true, isPoweredOff: false,
+  hardwareConnected: true,
 };
 
 function model(
@@ -80,7 +86,9 @@ describe('scopeDisplay evidence gate (MOR-1301)', () => {
   it('emits scopeDisplay once the scope capability alone is declared', () => {
     const view = model(bareState(), caps(), SNAP);
     expect(view.scopeDisplay).toBeDefined();
-    expect(Object.keys(view.scopeDisplay!).sort()).toEqual(['health', 'source']);
+    // MOR-1312 (12B): `hardwareConnected` joins the group's three facts.
+    expect(Object.keys(view.scopeDisplay!).sort())
+      .toEqual(['hardwareConnected', 'health', 'source']);
   });
 
   it('emits scopeDisplay for an audio-FFT-only radio (no hardware scope at all)', () => {
@@ -111,6 +119,54 @@ describe('scopeDisplay per-field derivation (MOR-1301)', () => {
   it('emits a validator-clean model carrying the scopeDisplay group (round-trip proof)', () => {
     const view = model(bareState(), caps(), SNAP);
     expect(JSON.parse(JSON.stringify(view))).toEqual(view);
+  });
+});
+
+/**
+ * MOR-1312 (12B) — `hardwareConnected`. The MOR-1352 finding: `health` alone
+ * does not tell the operator whether the HARDWARE channel is connected when
+ * `source === 'audio_fft'` — this leaf reads the flag straight off the
+ * snapshot, never through `classifyScopeHealth`.
+ */
+describe('scopeDisplay hardwareConnected (MOR-1312, MOR-1352 finding)', () => {
+  it('reads true straight from the snapshot', () => {
+    const view = model(bareState(), caps(), { ...SNAP, hardwareConnected: true });
+    expect(view.scopeDisplay!.hardwareConnected.reading).toEqual({ status: 'known', value: true });
+    expect(view.scopeDisplay!.hardwareConnected.availability).toEqual({ structural: true, operational: true });
+  });
+
+  it('reads false straight from the snapshot', () => {
+    const view = model(bareState(), caps(), { ...SNAP, hardwareConnected: false });
+    expect(view.scopeDisplay!.hardwareConnected.reading).toEqual({ status: 'known', value: false });
+  });
+
+  // MUTATION KILLED: computing `hardwareConnected` from `health`/`transport`
+  // instead of reading the snapshot's own dedicated field — this is the exact
+  // residual `health` cannot cover when `source === 'audio_fft'` (MOR-1352):
+  // the two are made to DISAGREE here, and the leaf must still report the
+  // snapshot's own truth, not a derivation from the other two.
+  it('disagrees with health/transport when the snapshot says so — proving it is not re-derived from them', () => {
+    const view = model(bareState(), caps(), {
+      ...SNAP,
+      source: 'audio_fft',
+      // The selected (audio) channel is fully healthy...
+      lifecycle: 'streaming', transport: 'connected', frameSeen: true,
+      // ...while the hardware channel is explicitly down.
+      hardwareConnected: false,
+    });
+    expect(view.scopeDisplay!.health.reading).toEqual({ status: 'known', value: 'connected' });
+    expect(view.scopeDisplay!.hardwareConnected.reading).toEqual({ status: 'known', value: false });
+  });
+
+  // The audio_fft case is the one MOR-1352 named — hardware may be live even
+  // though the selected/rendered source is audio_fft, and `health` alone
+  // cannot say so.
+  it('stays independent of source selection: audio_fft selected, hardware still connected', () => {
+    const view = model(bareState(), caps(), {
+      ...SNAP, source: 'audio_fft', hardwareConnected: true,
+    });
+    expect(view.scopeDisplay!.source.reading).toEqual({ status: 'known', value: 'audio_fft' });
+    expect(view.scopeDisplay!.hardwareConnected.reading).toEqual({ status: 'known', value: true });
   });
 });
 

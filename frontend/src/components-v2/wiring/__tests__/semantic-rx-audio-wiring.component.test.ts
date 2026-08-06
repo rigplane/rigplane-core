@@ -67,6 +67,17 @@ vi.mock('$lib/runtime/frontend-runtime', () => ({
     get rxEnabled() { return h.rxEnabled; },
     setVolume: h.setVolume, setMuted: h.setMuted,
     setRxLive: h.setRxLive, setRxVolume: h.setRxVolume,
+    // MOR-1312 slice 12B: the wiring now also hands the adapter a
+    // scope-display snapshot (the FIFTH argument). This fixture declares no
+    // scope capability, so this stays on its pre-1312 path regardless.
+    get defaultScopeStatus() {
+      return {
+        source: null, available: false, resourceSelected: false, demand: 0,
+        lifecycle: 'inactive', transport: 'disconnected', frameSeen: false,
+      };
+    },
+    get radioPowerOn() { return null; },
+    get scope() { return { hardwareScopeConnected: false }; },
   },
 }));
 vi.mock('$lib/runtime', async () => ({

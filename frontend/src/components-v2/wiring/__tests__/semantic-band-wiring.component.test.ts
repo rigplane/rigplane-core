@@ -57,6 +57,16 @@ vi.mock('$lib/runtime/frontend-runtime', () => ({
     get connectionAudio() { return h.audioConnected; },
     get rxEnabled() { return h.rxEnabled; },
     setVolume: vi.fn(), setMuted: vi.fn(), setRxLive: vi.fn(), setRxVolume: vi.fn(),
+    // MOR-1312 slice 12B (rebase fix): the wiring now also hands the adapter
+    // a scope-display snapshot (the FIFTH argument). This file tests band, so
+    // this stays on its pre-1312 path regardless of these values.
+    get defaultScopeStatus() {
+      return {
+        source: null, available: false, resourceSelected: false, demand: 0,
+        lifecycle: 'inactive', transport: 'disconnected', frameSeen: false,
+      };
+    },
+    get scope() { return { hardwareScopeConnected: false }; },
   },
 }));
 vi.mock('$lib/runtime', async () => ({

@@ -907,10 +907,25 @@ export type ScopeHealthState =
  * determinism), so the caller supplies a plain snapshot
  * (`ScopeDisplaySnapshot`, `radio-view-model-adapter.ts`) and NO snapshot
  * means NO group, same as `rxAudio`.
+ *
+ * CORRECTION (MOR-1312, slice 12B, MOR-1352): the 12A enumeration called
+ * `runtime.scope.hardwareScopeConnected` (`ScopeController`,
+ * `components/spectrum/SpectrumPanel.svelte`) "fully subsumed by `source` +
+ * `health`". That is false when `source === 'audio_fft'`: `health` then
+ * classifies the SELECTED (audio) channel, and says nothing about whether
+ * the hardware channel is ALSO connected. `hardwareConnected` below closes
+ * that gap as its own leaf rather than folding the input into
+ * `classifyScopeHealth` — that function is pinned byte-identical to the
+ * shipped `deriveScopeIndicatorState`, which does not take this input, so
+ * folding it in would break the parity slice 12A established.
  */
 export interface ScopeDisplayViewModel {
   source: ScopeDisplayField<ScopeSourceKind>;
   health: ScopeDisplayField<ScopeHealthState>;
+  /** Mirrors `runtime.scope.hardwareScopeConnected` verbatim — independent
+   *  of `source`, tracking the hardware channel's own transport regardless
+   *  of which source is currently selected. See the CORRECTION note above. */
+  hardwareConnected: ScopeDisplayField<boolean>;
 }
 
 export interface RadioViewModel {
@@ -1523,10 +1538,11 @@ const SCOPE_HEALTH_STATES: readonly ScopeHealthState[] = [
 
 function validateScopeDisplay(value: unknown, path: string): ScopeDisplayViewModel {
   const v = record(value, path);
-  exactKeys(v, ['source', 'health'], path);
+  exactKeys(v, ['source', 'health', 'hardwareConnected'], path);
   return {
     source: validateTxAuxField(v.source, `${path}.source`, (val, p) => oneOf(val, SCOPE_SOURCES, p)),
     health: validateTxAuxField(v.health, `${path}.health`, (val, p) => oneOf(val, SCOPE_HEALTH_STATES, p)),
+    hardwareConnected: validateTxAuxField(v.hardwareConnected, `${path}.hardwareConnected`, bool),
   };
 }
 

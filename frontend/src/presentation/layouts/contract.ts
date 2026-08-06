@@ -16,17 +16,17 @@ import { isValidLanguageId as isValidProductId } from '../languages/contract';
  *  `txAux` added by MOR-1265, `meters` by MOR-1273, `rxAudio` by MOR-1279,
  *  `filter` by MOR-1304, `dsp` by MOR-1305, `rfFrontEnd` by MOR-1306, `band`
  *  by MOR-1307, `antenna` by MOR-1309, `ritXitScan` by MOR-1308, `cwKeyer` by
- *  MOR-1310). Adding a name makes it DECLARABLE — it does not mount anything
- *  by itself, and no manifest declares a `meters`, `rxAudio`, `filter`,
- *  `dsp`, `rfFrontEnd`, `band`, `antenna`, `ritXitScan` or `cwKeyer` zone yet
- *  (the cockpit declares only `txAux`, as `tx-aux` — MOR-1336). Distinct
- *  from the design-language renderer slot of the same name
- *  (`languages/contract.ts`'s `RENDERER_SLOT_NAMES`): that one says how a
- *  language DRAWS a meter, this one says which layout zone may HOST the
- *  surface. */
+ *  MOR-1310, `scopeDisplay` by MOR-1312 — the LAST vocabulary slice). Adding
+ *  a name makes it DECLARABLE — it does not mount anything by itself, and no
+ *  manifest declares a `meters`, `rxAudio`, `filter`, `dsp`, `rfFrontEnd`,
+ *  `band`, `antenna`, `ritXitScan`, `cwKeyer` or `scopeDisplay` zone yet (the
+ *  cockpit declares only `txAux`, as `tx-aux` — MOR-1336). Distinct from the
+ *  design-language renderer slot of the same name (`languages/contract.ts`'s
+ *  `RENDERER_SLOT_NAMES`): that one says how a language DRAWS a meter, this
+ *  one says which layout zone may HOST the surface. */
 export const SEMANTIC_SURFACE_NAMES = [
   'vfo', 'rxTx', 'txAux', 'meters', 'rxAudio', 'filter', 'dsp', 'rfFrontEnd', 'band', 'antenna', 'ritXitScan',
-  'cwKeyer',
+  'cwKeyer', 'scopeDisplay',
 ] as const;
 export type SemanticSurfaceName = (typeof SEMANTIC_SURFACE_NAMES)[number];
 

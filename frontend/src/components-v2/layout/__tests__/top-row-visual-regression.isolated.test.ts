@@ -37,6 +37,14 @@ vi.mock('$lib/runtime', () => ({
     radioPowerOn: null,
     connection: { status: 'disconnected', radioPowerOn: null },
     audio: { rxEnabled: false, txEnabled: false, volume: 50, muted: false },
+    // MOR-1312 slice 12B (rebase fix): `SemanticRadioSurfaces`'s scope-display
+    // snapshot (the FIFTH adapter argument) reads these two directly; this
+    // fixture declares no scope capability.
+    defaultScopeStatus: {
+      source: null, available: false, resourceSelected: false, demand: 0,
+      lifecycle: 'inactive', transport: 'disconnected', frameSeen: false,
+    },
+    scope: { hardwareScopeConnected: false },
     send: vi.fn(),
   },
 }));

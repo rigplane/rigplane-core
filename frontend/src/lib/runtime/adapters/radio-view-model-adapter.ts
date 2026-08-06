@@ -50,6 +50,17 @@ import {
 import {
   deriveTxCapabilities, type ModInputSource, type TxCapabilityFacts,
 } from './tx-capabilities';
+// MOR-1312 (12A verify N1): the REAL type, not a hand-copied literal union —
+// `ScopeDisplaySnapshot.lifecycle` below now widens automatically if
+// `ResourceHealth` ever gains a value upstream, instead of silently staying
+// narrower than the runtime status it mirrors. `ConnectionState` (the sibling
+// type N1 also names) stays a hand-copied literal deliberately: it lives in
+// `$lib/transport/ws-client`, and this file's own purity guard
+// (`__tests__/rx-audio-purity.isolated.test.ts` pin 3 / SAFETY CONSTRAINT 1)
+// asserts NO import from `$lib/transport/*` anywhere in this adapter, type-only
+// or not — that guard is more binding than N1's suggestion, so `.transport`
+// keeps its inline union and only `.lifecycle` gets the real type.
+import type { ResourceHealth } from '$lib/runtime/resource-demand';
 
 type Slot = { kind: 'slotted'; id: VfoSlotId } | { kind: 'unslotted' } | { kind: 'unknown' };
 type Fact = { status: 'known'; value: boolean } | { status: 'unknown' };
@@ -991,16 +1002,25 @@ function deriveScopeControls(
  * `frameSeen`) so a caller can spread `runtime.defaultScopeStatus` in
  * directly; `isPoweredOff` is the one addition, the status bar's own
  * override input to the same classification (see `classifyScopeHealth`).
+ *
+ * `hardwareConnected` (MOR-1312, slice 12B) is a SECOND addition: mirrors
+ * `runtime.scope.hardwareScopeConnected` verbatim, the hardware channel's own
+ * transport regardless of `source` — NOT an input to `classifyScopeHealth`
+ * (see `ScopeDisplayViewModel`'s CORRECTION note for why it stays a separate
+ * leaf instead).
  */
 export interface ScopeDisplaySnapshot {
   source: ScopeSourceKind | null;
   available: boolean;
   resourceSelected: boolean;
   demand: number;
-  lifecycle: 'inactive' | 'starting' | 'streaming' | 'failed';
+  lifecycle: ResourceHealth;
+  // `ConnectionState`'s own literal union, hand-copied rather than imported —
+  // see the import comment above (this file's transport-purity guard).
   transport: 'disconnected' | 'connecting' | 'connected' | 'reconnecting';
   frameSeen: boolean;
   isPoweredOff: boolean;
+  hardwareConnected: boolean;
 }
 
 /**
@@ -1064,6 +1084,9 @@ function deriveScopeDisplay(
   return {
     source: txAuxField(true, snapshot.source !== null, snapshot.source ?? undefined),
     health: txAuxField(true, true, classifyScopeHealth(snapshot)),
+    // MOR-1312 (12B): read straight from the snapshot, never through
+    // `classifyScopeHealth` — see `ScopeDisplayViewModel`'s CORRECTION note.
+    hardwareConnected: txAuxField(true, true, snapshot.hardwareConnected),
   };
 }
 

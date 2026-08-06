@@ -33,6 +33,17 @@ const h = vi.hoisted(() => {
       radioPowerOn: null,
       connection: { status: 'disconnected', radioPowerOn: null },
       audio: { rxEnabled: false, txEnabled: false, volume: 50, muted: false },
+      connectionAudio: false,
+      // MOR-1312 slice 12B: `SemanticRadioSurfaces` now also reads
+      // `runtime.defaultScopeStatus` / `runtime.scope.hardwareScopeConnected`
+      // for the scope-display snapshot (the FIFTH adapter argument). No
+      // fixture here declares a scope capability, so this stays on its
+      // pre-1312 path regardless of these fixed defaults.
+      defaultScopeStatus: {
+        source: null, available: false, resourceSelected: false, demand: 0,
+        lifecycle: 'inactive', transport: 'disconnected', frameSeen: false,
+      },
+      scope: { hardwareScopeConnected: false },
       bootstrap: async () => () => {},
       setPollingMultiplier: () => {},
       send: () => {},

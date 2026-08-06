@@ -1,9 +1,12 @@
 /**
  * MOR-1262 decomposition slice 12A (MOR-1301, the FINAL A-slice of the
  * vocabulary program) — `scopeDisplay` optional fact group (validator half).
+ * Extended by slice 12B (MOR-1312, the LAST vocabulary slice) with the
+ * `hardwareConnected` leaf (MOR-1352 finding).
  *
  * Facts: which scope SOURCE is currently live (hardware CI-V frames vs the
- * browser audio FFT) and how HEALTHY that source's connection is — never
+ * browser audio FFT), how HEALTHY that source's connection is, and whether
+ * the HARDWARE channel is connected independent of that selection — never
  * scope tuning (`scopeControls`, slice 11A/11A′, unchanged by this file) and
  * never scope pixels/overlays. See `radio-view-model.ts`'s
  * `ScopeDisplayViewModel` doc comment for the full rationale, and
@@ -43,7 +46,7 @@ describe('scopeDisplay (MOR-1262 slice 12A)', () => {
     expect(() => validateRadioViewModel({ ...base, scopeDisplay: {} })).toThrow(TypeError);
   });
 
-  it('rejects an extra key on the group (closed shape, exactly the two facts)', () => {
+  it('rejects an extra key on the group (closed shape, exactly the three facts)', () => {
     const withSd = withScopeDisplay(base);
     const extra: ScopeDisplayField<number> = { reading: { status: 'known', value: 0 }, availability: AVAIL };
     const malformed = { ...withSd, scopeDisplay: { ...withSd.scopeDisplay, bogus: extra } };
@@ -94,6 +97,35 @@ describe('scopeDisplay (MOR-1262 slice 12A)', () => {
         scopeDisplay: { ...withSd.scopeDisplay, health: { reading: { status: 'known', value: health }, availability: AVAIL } },
       };
       expect(validateRadioViewModel(model).scopeDisplay!.health.reading).toEqual({ status: 'known', value: health });
+    }
+  });
+
+  // MOR-1312 (12B) — `hardwareConnected` leaf.
+  it('rejects an invalid hardwareConnected reading value with a precise error path', () => {
+    const withSd = withScopeDisplay(base);
+    const malformed = {
+      ...withSd,
+      scopeDisplay: {
+        ...withSd.scopeDisplay,
+        hardwareConnected: { reading: { status: 'known', value: 'yes' }, availability: AVAIL },
+      },
+    };
+    expect(() => validateRadioViewModel(malformed))
+      .toThrow(/\$\.scopeDisplay\.hardwareConnected\.reading\.value/);
+  });
+
+  it('accepts both boolean values for hardwareConnected', () => {
+    for (const value of [true, false]) {
+      const withSd = withScopeDisplay(base);
+      const model = {
+        ...withSd,
+        scopeDisplay: {
+          ...withSd.scopeDisplay,
+          hardwareConnected: { reading: { status: 'known', value }, availability: AVAIL },
+        },
+      };
+      expect(validateRadioViewModel(model).scopeDisplay!.hardwareConnected.reading)
+        .toEqual({ status: 'known', value });
     }
   });
 });
