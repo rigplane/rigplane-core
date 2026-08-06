@@ -126,41 +126,34 @@ describe('scopeControls per-field structural gates (MOR-1298/MOR-1299/MOR-1330, 
 describe('scopeControls per-field derivation (MOR-1298/MOR-1299/MOR-1330)', () => {
   const fullCaps = scopeCaps(['scope', 'dual_rx']);
 
-  it('reports known readings for observed, fresh fields — parity with isFieldAvailable, the same predicate the real toolbar uses', () => {
+  const ALL_TWELVE = [
+    'mode', 'edge', 'span', 'speed', 'hold', 'refDb', 'dual', 'receiver',
+    'duringTx', 'centerType', 'vbwNarrow', 'rbw',
+  ] as const;
+
+  const CASE_A = {
+    mode: 1, edge: 2, span: 5, speed: 3, refDb: -5, receiver: 0,
+    centerType: 4, rbw: 6, hold: false, dual: false, duringTx: true, vbwNarrow: true,
+  };
+  const CASE_B = { ...CASE_A, dual: true, duringTx: false };
+
+  it.each([['A', CASE_A], ['B', CASE_B]])('case %s: every leaf reports its OWN raw value', (_label, sc) => {
     const state = bareState({
       scopeControls: {
-        receiver: 1, dual: true, mode: 1, span: 5, edge: 2, hold: true, refDb: -5, speed: 2,
-        duringTx: true, centerType: 2, vbwNarrow: true, rbw: 1,
+        ...sc,
         fixedEdge: { rangeIndex: 0, edge: 0, startHz: 0, endHz: 0 },
       },
       fieldStatus: {
         ...bareState().fieldStatus,
-        'scopeControls.mode': fresh, 'scopeControls.edge': fresh,
-        'scopeControls.span': fresh, 'scopeControls.speed': fresh,
-        'scopeControls.hold': fresh, 'scopeControls.refDb': fresh,
-        'scopeControls.dual': fresh, 'scopeControls.receiver': fresh,
-        'scopeControls.duringTx': fresh, 'scopeControls.centerType': fresh,
-        'scopeControls.vbwNarrow': fresh, 'scopeControls.rbw': fresh,
+        ...Object.fromEntries(ALL_TWELVE.map(leaf => [`scopeControls.${leaf}`, fresh])),
       },
     } as Partial<ServerState>);
-    const sc = model(state, fullCaps).scopeControls!;
-    expect(sc.mode.reading).toEqual({ status: 'known', value: 1 });
-    expect(sc.edge.reading).toEqual({ status: 'known', value: 2 });
-    expect(sc.span.reading).toEqual({ status: 'known', value: 5 });
-    expect(sc.speed.reading).toEqual({ status: 'known', value: 2 });
-    expect(sc.hold.reading).toEqual({ status: 'known', value: true });
-    expect(sc.refDb.reading).toEqual({ status: 'known', value: -5 });
-    expect(sc.dual.reading).toEqual({ status: 'known', value: true });
-    expect(sc.receiver.reading).toEqual({ status: 'known', value: 1 });
-    expect(sc.duringTx.reading).toEqual({ status: 'known', value: true });
-    expect(sc.centerType.reading).toEqual({ status: 'known', value: 2 });
-    expect(sc.vbwNarrow.reading).toEqual({ status: 'known', value: true });
-    expect(sc.rbw.reading).toEqual({ status: 'known', value: 1 });
-    for (const leaf of [
-      'mode', 'edge', 'span', 'speed', 'hold', 'refDb', 'dual', 'receiver',
-      'duringTx', 'centerType', 'vbwNarrow', 'rbw',
-    ] as const) {
-      expect(sc[leaf].availability.operational).toBe(isFieldAvailable(state, `scopeControls.${leaf}`));
+    const view = model(state, fullCaps);
+    for (const leaf of ALL_TWELVE) {
+      expect(view.scopeControls![leaf].reading).toEqual({ status: 'known', value: sc[leaf] });
+    }
+    for (const leaf of ALL_TWELVE) {
+      expect(view.scopeControls![leaf].availability.operational).toBe(isFieldAvailable(state, `scopeControls.${leaf}`));
     }
   });
 

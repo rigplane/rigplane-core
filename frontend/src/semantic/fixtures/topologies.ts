@@ -476,18 +476,18 @@ export function withScopeControls(fixture: RadioViewModel): RadioViewModel {
     { reading: { status: 'known', value }, availability: avail }
   );
   const scopeControls: ScopeControlsViewModel = {
-    mode: known(0),
-    edge: known(1),
+    mode: known(1),
+    edge: known(2),
     span: known(3),
-    speed: known(1),
+    speed: known(4),
     hold: known(false),
-    refDb: known(0),
+    refDb: known(-5),
     dual: known(false),
     receiver: known(0),
     duringTx: known(false),
-    centerType: known(0),
+    centerType: known(5),
     vbwNarrow: known(false),
-    rbw: known(0),
+    rbw: known(6),
   };
   return { ...fixture, scopeControls };
 }
