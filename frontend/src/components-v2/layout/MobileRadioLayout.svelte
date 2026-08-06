@@ -346,7 +346,7 @@
   let pttSurface: 'none' | 'portrait' | 'landscape' = $derived(
     !txCapable ? 'none' : isLandscape ? 'landscape' : 'portrait'
   );
-  let ptt: MobilePttBinding | null = null;
+  let ptt = $state<MobilePttBinding | null>(null);
 
   $effect(() => {
     const surface = pttSurface;
@@ -354,18 +354,17 @@
     const binding = createMobilePttSurface(surface, txCtl, {
       schedule: (callback, ms) => setTimeout(callback, ms),
       cancel: (handle) => clearTimeout(handle as ReturnType<typeof setTimeout>),
-    }, () => pttSurface);
+    });
     ptt = binding;
     return () => { ptt = null; binding.destroy(); };
   });
 
-  function fabDown() {
-    ptt?.fabDown();
-  }
-
-  function fabUp() {
-    ptt?.fabUp();
-  }
+  // MOR-1376: the FAB gets THIS generation's own handlers, never a stable
+  // forwarder that re-reads `ptt`. PttFab snapshots them when a press arms, so
+  // a press stranded by a rotation completes against the (now destroyed)
+  // binding it started on instead of spuriously keying whichever generation is
+  // live 50 ms later — see `mobile-ptt-surface.ts` for the full rationale.
+  const noPtt = () => {};
 
   // ── Landscape PTT guards (#843 parity with FAB) ──
   // Adds pointermove-8px cancel + haptic + TX-permit dim-state so the
@@ -890,8 +889,8 @@
   <PttFab
     mode={pttMode}
     txPermit={txPermit}
-    onDown={fabDown}
-    onUp={fabUp}
+    onDown={ptt?.fabDown ?? noPtt}
+    onUp={ptt?.fabUp ?? noPtt}
   />
 {/if}
 

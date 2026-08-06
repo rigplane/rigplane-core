@@ -118,14 +118,13 @@ function applySurface(): void {
   ptt = createMobilePttSurface(
     surface, host,
     { schedule: (cb, ms) => setTimeout(cb, ms), cancel: (h) => clearTimeout(h as ReturnType<typeof setTimeout>) },
-    () => surface,
   );
-  // Reads the LIVE binding slot at call time, faithfully modelling how Svelte
-  // compiles `onDown={fabDown}` in the shipped component: the layout's stable
-  // handler forwards to whatever `ptt` currently holds. This is the staleness
-  // the MOR-1088 double-flip scenario exercises.
-  const fabDown = (): void => ptt?.fabDown();
-  const fabUp = (): void => ptt?.fabUp();
+  // MOR-1376: hand the FAB THIS generation's own handlers, exactly as the
+  // shipped layout's `onDown={ptt?.fabDown}` now does — never a stable
+  // forwarder that re-reads the live binding slot. A press stranded by a
+  // rotation then completes against the generation it was armed on.
+  const fabDown = ptt.fabDown;
+  const fabUp = ptt.fabUp;
   if (fabInstance) { unmount(fabInstance); fabInstance = null; }
   portraitEl.replaceChildren();
   landscapeEl.replaceChildren();

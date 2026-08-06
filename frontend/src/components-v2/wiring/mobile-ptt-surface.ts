@@ -51,6 +51,15 @@ export interface MobilePttBinding {
    * Portrait FAB entry points. PttFab's 50 ms hold timer is not cleared when it
    * unmounts, so a press begun in portrait can still fire after a rotation has
    * already swapped the recognizer — these are guarded, `down`/`up` are not.
+   *
+   * MOR-1376: the guard is THIS binding's own identity, not a live orientation
+   * label. Hand these two out per generation (the FAB must capture them while
+   * the press is armed) and a stranded press can only ever complete against the
+   * generation it started on — which, once rotated away from, is destroyed and
+   * inert. A shared forwarder reading a mutable `binding` slot reintroduces the
+   * bug: a portrait → landscape → portrait double flip inside the 50 ms delay
+   * puts the label back to 'portrait' and spuriously keys a generation the
+   * operator never pressed (ResourceDemand handle-identity trap class).
    */
   fabDown(): void;
   fabUp(): void;
@@ -64,11 +73,10 @@ export function createMobilePttSurface(
   surface: MobilePttSurface,
   host: MobilePttHost,
   deps: MobilePttSurfaceDeps,
-  /** Reads the surface that is live NOW — the FAB liveness guard's input. */
-  liveSurface: () => MobilePttSurface | 'none',
 ): MobilePttBinding {
   const sourceId = `mobile-ptt-${surface}-${++surfaceSeq}`;
   let leaseSeq = 0;
+  let alive = true;
 
   const gesture: PttGesture = createPttGesture(
     // Read the host DIRECTLY rather than a subscribed snapshot: teardown runs
@@ -92,11 +100,17 @@ export function createMobilePttSurface(
     deps,
   );
 
+  // `alive` is this generation's identity, captured in the closures below.
+  // `createPttGesture` already no-ops once destroyed, so this is belt-and-
+  // braces — but it is the assertion that makes the guard readable, and it also
+  // covers the landscape binding (whose fabDown/fabUp are never wired to a FAB)
+  // without consulting anything mutable outside this call.
+  const live = (): boolean => alive && surface === 'portrait';
   return {
     down: () => gesture.down(),
     up: () => gesture.up(),
-    fabDown: () => { if (liveSurface() === 'portrait') gesture.down(); },
-    fabUp: () => { if (liveSurface() === 'portrait') gesture.up(); },
-    destroy: () => gesture.destroy(),
+    fabDown: () => { if (live()) gesture.down(); },
+    fabUp: () => { if (live()) gesture.up(); },
+    destroy: () => { alive = false; gesture.destroy(); },
   };
 }

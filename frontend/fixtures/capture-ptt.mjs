@@ -237,22 +237,24 @@ const SCENARIOS = [
     },
   },
   {
-    // MOR-1088 FINDING (verification-only — NOT fixed in this slice, file a
-    // follow-up ticket): a double orientation flip within the 50ms hold-delay
-    // window lets an ABANDONED older-surface press spuriously key a BRAND NEW
-    // recognizer generation that the operator never actually pressed.
-    // `fabDown`/`fabUp`'s liveness guard (`MobileRadioLayout.svelte` ~L396-406,
-    // mirrored here) checks only the coarse `surface` label ('portrait' vs
-    // 'landscape'), not which SPECIFIC recognizer generation armed the timer —
-    // the ResourceDemand handle-identity trap class (see standing memory: a
-    // stale async callback acts on whatever a shared mutable slot currently
-    // points to, without checking it is still ITS OWN handle). This assertion
-    // PINS the currently observed (unsafe) behavior as a regression floor —
-    // it must fail loudly if a future change makes it WORSE (more than one
-    // spurious call, or a guard belonging to neither generation) — it does
-    // NOT assert the ticket's ideal "a newer key owner survives" property,
-    // which this code does not currently meet.
-    name: 'orientation-double-flip-ghost-press-known-gap',
+    // MOR-1376 (was the MOR-1088 flagship FINDING, now FIXED and pinned SAFE).
+    // A double orientation flip within the 50ms hold-delay window used to let
+    // an ABANDONED older-surface press spuriously key a BRAND NEW recognizer
+    // generation the operator never pressed: `fabDown`/`fabUp`'s liveness guard
+    // checked only the coarse surface label ('portrait' vs 'landscape'), not
+    // which SPECIFIC recognizer generation armed the timer — the ResourceDemand
+    // handle-identity trap class (a stale async callback acting on whatever a
+    // shared mutable slot currently points to, without checking it is still ITS
+    // OWN handle). MOR-1376 moved the identity into the binding: each
+    // generation hands out its own fabDown/fabUp, PttFab snapshots them when a
+    // press arms, and a destroyed generation is inert.
+    //
+    // This assertion now pins the SAFE property in BOTH directions: the ghost
+    // must NOT key (a regression that reinstates the shared forwarder fails on
+    // `guard`/`calls`), and the surviving surface must still be usable (an
+    // over-broad guard that bricks the live FAB fails on the deliberate press
+    // at the end).
+    name: 'orientation-double-flip-newer-owner-survives',
     async run(page) {
       // Abandoned press on the FIRST portrait surface — never released, still
       // inside its 50ms hold-delay when we rotate away from it twice.
@@ -263,18 +265,23 @@ const SCENARIOS = [
       await page.evaluate(() => window.__ptt.setSurface('portrait')); // generation 3 — a NEW, unrelated recognizer
       const g3guardBeforeGhost = await page.evaluate(() => window.__ptt.guardId());
       // The FIRST press's 50ms timer (armed at t=0) fires around now (~t=50),
-      // long after generation 3 replaced generation 1 — the guard checked at
-      // fire time is only the current LIVE surface label, and we are back in
-      // portrait, so it passes even though generation 3 never pressed anything.
+      // long after generation 3 replaced generation 1. It resolves to
+      // generation 1's own (destroyed, inert) handler, so nothing keys.
       await wait(page, 60);
       const afterGhostWindow = await snap(page);
+      // Direction 2: generation 3 is untouched, not collaterally disarmed.
+      await pointer(page, '.ptt-fab', 'pointerdown');
+      await wait(page, 70);
+      const afterRealPress = await snap(page);
       return {
         ok: g3guardBeforeGhost === null // generation 3 starts clean, as expected
-          && afterGhostWindow.guardId !== null && afterGhostWindow.calls === 1, // KNOWN GAP: ghost keyed it anyway
+          && afterGhostWindow.guardId === null && afterGhostWindow.calls === 0 // SAFE: no ghost key
+          && afterRealPress.guardId !== null && afterRealPress.calls === 1,    // and a real press still keys
         detail: `generation-3 guard before ghost=${g3guardBeforeGhost !== null} (expected false) · `
           + `after the abandoned generation-1 press's delayed timer fires: `
-          + `guard=${afterGhostWindow.guardId !== null} calls=${afterGhostWindow.calls} `
-          + '(expected true/1 — KNOWN GAP, not the ideal "newer owner survives"; regression floor only, see comment above)',
+          + `guard=${afterGhostWindow.guardId !== null} calls=${afterGhostWindow.calls} (expected false/0) · `
+          + `after a deliberate press on the surviving surface: `
+          + `guard=${afterRealPress.guardId !== null} calls=${afterRealPress.calls} (expected true/1)`,
       };
     },
   },
