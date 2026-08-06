@@ -25,7 +25,7 @@ import { readFileSync } from 'node:fs';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { flushSync, mount, unmount } from 'svelte';
 import RxAudioSurface, {
-  FOCUS_CHOICES, MONITOR_MODES, READINESS_LABEL, SPLIT_CHOICES, UNKNOWN_TEXT,
+  FOCUS_CHOICES, LINK_LOST_TEXT, MONITOR_MODES, READINESS_LABEL, SPLIT_CHOICES, UNKNOWN_TEXT,
 } from '../RxAudioSurface.svelte';
 import { topologyFixtures, withRxAudio } from '../fixtures/topologies';
 import type {
@@ -181,6 +181,77 @@ describe('the liveAudio FACT decides whether `live` is offerable', () => {
     flushSync();
     expect(onMonitorMode).toHaveBeenCalledExactlyOnceWith(mode);
     r.dispose();
+  });
+});
+
+/* ── (f) the audio link-lost indication (MOR-1384) ─────────────── */
+
+describe('an ENGAGED live link that is down is stated in words', () => {
+  const focusable = () =>
+    target.querySelectorAll('button, input, select, textarea, a[href], [tabindex]').length;
+
+  // Kills: dropping the readout entirely — the S12 parity loss itself. The v2
+  // `RxAudioPanel` said this and its sole consumer was retired with the panel,
+  // so without this element the operator reads a dead audio path as a dead
+  // radio.
+  it('renders the link-lost readout while live is selected and the link is down', () => {
+    const r = render(withRx({ liveAudio: DEGRADED, monitorMode: 'live' }));
+    expect(r.el('link')).not.toBeNull();
+    expect(r.text('link')).toBe(LINK_LOST_TEXT);
+    r.dispose();
+  });
+
+  // Kills: an indication whose only channel is a colour or a data attribute —
+  // the same forced-colors rule the unknown renderings follow (MOR-977).
+  it('states the loss as TEXT inside the surface, not only as an attribute', () => {
+    const r = render(withRx({ liveAudio: DEGRADED, monitorMode: 'live' }));
+    expect(r.root()!.textContent).toContain(LINK_LOST_TEXT);
+    r.dispose();
+  });
+
+  // Kills: claiming a loss on a healthy link. `operational: true` IS the
+  // observation that the audio WS is up.
+  it('renders nothing at all while the engaged link is up', () => {
+    const r = render(withRx({ liveAudio: ON, monitorMode: 'live' }));
+    expect(r.el('link')).toBeNull();
+    expect(r.root()!.textContent).not.toContain(LINK_LOST_TEXT);
+    r.dispose();
+  });
+
+  // THE EPISTEMIC PIN. Kills: dropping the `monitorMode === 'live'` leg. With
+  // `local`/`mute` selected the audio WS is legitimately closed and was never
+  // opened — "down" there is not a loss, it is the absence of a request, and
+  // rendering it as a loss is a lie the operator would act on.
+  it.each(['local', 'mute'] as const)(
+    'makes no loss claim while %s is selected, even with the link down', (mode) => {
+      const r = render(withRx({ liveAudio: DEGRADED, monitorMode: mode }));
+      expect(r.el('link')).toBeNull();
+      expect(r.root()!.textContent).not.toContain(LINK_LOST_TEXT);
+      r.dispose();
+    },
+  );
+
+  // Kills: dropping the structural leg. A radio that streams no audio at all
+  // has no link to lose — the `live` choice is not even offered — so a model
+  // that nonetheless names `live` must not be narrated as a dropped link.
+  it('makes no loss claim on a radio whose live audio is structurally absent', () => {
+    const r = render(withRx({ liveAudio: OFF, monitorMode: 'live' }));
+    expect(r.el('monitor-live')).toBeNull();
+    expect(r.el('link')).toBeNull();
+    r.dispose();
+  });
+
+  // Kills: restoring the indication as a control. The rx-audio zone canon lets
+  // a pure readout ride along; a focusable element here would change the zone's
+  // tab order (MOR-1069/MOR-1304).
+  it('adds no focusable element to the surface', () => {
+    const up = render(withRx({ liveAudio: ON, monitorMode: 'live' }));
+    const before = focusable();
+    up.dispose();
+    const down = render(withRx({ liveAudio: DEGRADED, monitorMode: 'live' }));
+    expect(focusable()).toBe(before);
+    expect(down.el('link')!.querySelectorAll('*').length).toBe(0);
+    down.dispose();
   });
 });
 
