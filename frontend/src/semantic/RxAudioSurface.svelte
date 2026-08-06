@@ -64,6 +64,13 @@
   export const SPLIT_CHOICES = [[true, 'on'], [false, 'off']] as const;
   /** The ONE rendering of "not measured". Never 0, never 'both', never 'off'. */
   export const UNKNOWN_TEXT = '—';
+  /** MOR-1384 — the restored audio-link-lost words. English is hardcoded here
+   *  exactly like every other string on this surface (the MOR-1373 semantic
+   *  i18n policy is still open); the v2 key `core.overlay.audioLinkLost` is
+   *  NOT reused, and its "— reconnecting…" clause is deliberately dropped: a
+   *  retry in flight is client behaviour this contract does not carry, and
+   *  this surface may not consult the audio manager to find out. */
+  export const LINK_LOST_TEXT = 'live audio link lost';
   /** Readiness words. `mismatch` names the consequence, not just the state. */
   export const READINESS_LABEL: Record<ModInputReadiness['status'], string> = {
     'not-applicable': 'n/a', ready: 'LAN', unknown: UNKNOWN_TEXT,
@@ -101,6 +108,20 @@
   let rx = $derived(view.rxAudio);
   /** Rule (3): the FACT, not a capability re-derivation. */
   let liveOffered = $derived(rx?.liveAudio.structural === true);
+  /** MOR-1384 — the v2 `RxAudioPanel` link-lost readout, restored from the SAME
+   *  underlying fact (`liveAudio.operational` is `runtime.connectionAudio`, the
+   *  identical audio-WS health the retired panel read as `isAudioConnected`).
+   *
+   *  All three legs are load-bearing, and `monitorMode === 'live'` is the
+   *  EPISTEMIC one: the audio WS is opened BECAUSE the operator selects `live`
+   *  (see rule 3), so while `local`/`mute` is selected a down link was never
+   *  requested and is not a loss. Reporting "lost" there would be a claim about
+   *  an observation that was never made — and an operator who trusts it
+   *  mis-reads a working radio. Structurally absent live audio has no link to
+   *  lose at all. Nothing here is new: no timer, no history, no retry state. */
+  let linkLost = $derived(
+    liveOffered && rx?.monitorMode === 'live' && rx.liveAudio.operational === false,
+  );
   /** The slider position while AF is unread is a guess, so the control is
    *  inert then — the same "never act on an unknown reading" gate slice 1B
    *  applies, enforced on the widget AND in the handler. */
@@ -127,6 +148,14 @@
         {/if}
       {/each}
     </div>
+
+    <!-- Beside the monitor row, next to the `live` choice whose
+         `data-live-link` already carries this fact machine-readably: the
+         operator gets it in WORDS. Zero focusable elements, so the rx-audio
+         zone's tab order is unchanged (MOR-1069/MOR-1304 mounting canon). -->
+    {#if linkLost}
+      <p class="rx-audio-row" data-testid="rx-audio-link">{LINK_LOST_TEXT}</p>
+    {/if}
 
     {#if rx.afLevel.availability.structural}
       <label
