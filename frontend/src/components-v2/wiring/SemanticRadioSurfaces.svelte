@@ -31,6 +31,7 @@
     compositionSurfaces, useSurfacePlan, zoneShowsSurface,
   } from '../../presentation/workspace/resolution';
   import { LAN_MOD_INPUT_SOURCE } from '$lib/radio/mod-input';
+  import FilterSurface from '../../semantic/FilterSurface.svelte';
   import MetersSurface from '../../semantic/MetersSurface.svelte';
   import type { RadioViewModel } from '../../semantic/radio-view-model';
   import RxAudioSurface from '../../semantic/RxAudioSurface.svelte';
@@ -42,7 +43,7 @@
   import VfoSurface, { type VfoSelection } from '../../semantic/VfoSurface.svelte';
   import ModInputTxWarning from '../panels/ModInputTxWarning.svelte';
   import {
-    makeAudioRoutingHandlers, makeModeHandlers, makeRxAudioHandlers,
+    makeAudioRoutingHandlers, makeFilterHandlers, makeModeHandlers, makeRxAudioHandlers,
     makeTxHandlers, makeVfoHandlers, makeVoxHandlers,
   } from './command-bus';
   import {
@@ -167,6 +168,14 @@
   const rxAudioIntents = makeRxAudioHandlers();
   const routingIntents = makeAudioRoutingHandlers();
   const setModInputLan = () => makeModeHandlers().onModInputChange(LAN_MOD_INPUT_SOURCE);
+  /**
+   * MOR-1304. `makeModeHandlers` owns mode/dataMode intents, `makeFilterHandlers`
+   * the rest — the SAME v2 command vocabulary `FilterPanel` already dispatches
+   * through, composed once here rather than forked for the semantic surface.
+   * Unlike `txAuxIntents` above, `FilterSurface`'s props already match these
+   * names 1:1, so no per-field `Record` indirection is needed.
+   */
+  const filterIntents = { ...makeModeHandlers(), ...makeFilterHandlers() };
   const tx = getAppTxController();
   const sourceId = `semantic-rx-tx-${++surfaceSeq}`;
   let leaseSeq = 0;
@@ -551,6 +560,40 @@
     {/if}
   {/snippet}
 
+  <!--
+    MOR-1304 (vocabulary slice 4B). Same structural gate as `metersSurface`
+    above: the surface mounts only when the view model carries EITHER of the
+    two fact groups it renders (`view.modeFilter` from MOR-1280, `view.
+    filterPassband` from MOR-1284) — a radio the evidence gate declined on
+    both renders the pre-1304 element shape exactly.
+
+    UNLIKE `txAuxSurface`/`metersSurface` (and like `rxAudioSurface` above) it
+    is rendered in the SINGLE composition ONLY (fix round, verify-MOR-1304 F1).
+    `FilterSurface` renders up to 14 focusable controls (mode/filter/shape
+    buttons, width and passband-level sliders) and no manifest declares a
+    `filter` zone, so mounting it bare in the dual cockpit would put every one
+    of those controls outside every declared zone and after the `rx-tx` zone
+    that MOR-1069 requires to end the tab order — exactly the shape the
+    MOR-1279/MOR-1336 zone-mount ruling forbids for any control-bearing
+    surface. `'filter'` became DECLARABLE with this slice, so the cockpit
+    gains the surface the moment a rework slice's manifest declares a zone for
+    it — a layout decision, separately reviewed, exactly as rxAudio left it.
+  -->
+  {#snippet filterSurface()}
+    {#if view?.modeFilter || view?.filterPassband}
+      <FilterSurface
+        {view}
+        onModeChange={filterIntents.onModeChange}
+        onFilterChange={filterIntents.onFilterChange}
+        onFilterWidthChange={filterIntents.onFilterWidthChange}
+        onFilterShapeChange={filterIntents.onFilterShapeChange}
+        onIfShiftChange={filterIntents.onIfShiftChange}
+        onPbtInnerChange={filterIntents.onPbtInnerChange}
+        onPbtOuterChange={filterIntents.onPbtOuterChange}
+      />
+    {/if}
+  {/snippet}
+
   {#if strips === 'dual'}
     <!--
       MOR-1258: the zone now carries RxTxSurface AND the two TX-adjacent
@@ -594,6 +637,7 @@
     {@render zoned('txAux', view?.txAux !== undefined, txAuxSurface)}
     {@render zoned('meters', view?.meters !== undefined, metersSurface)}
     {@render zoned('rxAudio', view?.rxAudio !== undefined, rxAudioSurface)}
+    {@render zoned('filter', view?.modeFilter !== undefined || view?.filterPassband !== undefined, filterSurface)}
     {@render txAdjacentAlerts()}
   {/if}
 </div>

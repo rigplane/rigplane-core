@@ -13,13 +13,15 @@ import type { Component } from 'svelte';
 import { isValidLanguageId as isValidProductId } from '../languages/contract';
 
 /** Semantic surfaces a layout may mount (MOR-1062/1065 reference vertical;
- *  `txAux` added by MOR-1265, `meters` by MOR-1273). Adding a name makes it
- *  DECLARABLE — it does not mount anything, and no manifest declares a
- *  `txAux` or `meters` zone yet. Distinct from the design-language renderer
- *  slot of the same name (`languages/contract.ts`'s `RENDERER_SLOT_NAMES`):
- *  that one says how a language DRAWS a meter, this one says which layout
- *  zone may HOST the surface. */
-export const SEMANTIC_SURFACE_NAMES = ['vfo', 'rxTx', 'txAux', 'meters', 'rxAudio'] as const;
+ *  `txAux` added by MOR-1265, `meters` by MOR-1273, `rxAudio` by MOR-1279,
+ *  `filter` by MOR-1304). Adding a name makes it DECLARABLE — it does not
+ *  mount anything by itself, and no manifest declares a `meters`, `rxAudio`
+ *  or `filter` zone yet (the cockpit declares only `txAux`, as `tx-aux` —
+ *  MOR-1336). Distinct from the design-language renderer slot of the same
+ *  name (`languages/contract.ts`'s `RENDERER_SLOT_NAMES`): that one says how
+ *  a language DRAWS a meter, this one says which layout zone may HOST the
+ *  surface. */
+export const SEMANTIC_SURFACE_NAMES = ['vfo', 'rxTx', 'txAux', 'meters', 'rxAudio', 'filter'] as const;
 export type SemanticSurfaceName = (typeof SEMANTIC_SURFACE_NAMES)[number];
 
 /**
