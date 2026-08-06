@@ -381,13 +381,22 @@ describe('accessibility basics', () => {
     const target = mountSurface({ viewModel: topologyFixtures['2/main_sub'] });
     const focusable = Array.from(target.querySelectorAll<HTMLButtonElement>('button:not([disabled])'));
     // MAIN A is active (no select button); expect MAIN B, SUB A, SUB B selects,
-    // then the split and dualWatch toggles, in that DOM order.
+    // then the split and dualWatch toggles, then MOR-1321's four ops — facts
+    // before actions, in that DOM order. The classifier NAMES each op rather
+    // than letting an unrecognised button fall through to 'dualWatch', which is
+    // what made this test read four phantom dualWatch entries when the ops row
+    // first landed.
+    const OPS = ['equalize', 'swap', 'quick-split', 'quick-dual-watch'];
     const order = focusable.map(
       (el) => el.dataset.vfoSelect !== undefined
         ? `select:${el.closest('[data-vfo-tile]')?.getAttribute('data-vfo-receiver')}:${el.closest('[data-vfo-tile]')?.getAttribute('data-vfo-slot')}`
-        : el.hasAttribute('data-vfo-split') ? 'split' : 'dualWatch',
+        : el.hasAttribute('data-vfo-split') ? 'split'
+          : el.hasAttribute('data-vfo-dual-watch') ? 'dualWatch'
+            : OPS.find((op) => el.hasAttribute(`data-vfo-${op}`)) ?? 'UNCLASSIFIED',
     );
-    expect(order).toEqual(['select:MAIN:B', 'select:SUB:A', 'select:SUB:B', 'split', 'dualWatch']);
+    expect(order).toEqual([
+      'select:MAIN:B', 'select:SUB:A', 'select:SUB:B', 'split', 'dualWatch', ...OPS,
+    ]);
   });
 });
 
@@ -513,5 +522,255 @@ describe('groupLabel (MOR-1068) — distinct accessible names per mounted surfac
     expect(label).not.toBe('Receiver SUB');
     // i18n coverage: never an unresolved catalog key.
     expect(label).not.toContain('core.vfo.');
+  });
+});
+
+// ── MOR-1321 (S3a): the VFO ops row and the split RX/TX digest ──────────────
+//
+// Receiver-deck parity for the four VFO-scoped ACTIONS the legacy `VfoOps`
+// bridge carried (A=B, A↔B, Quick Split, Quick DW) and the `RX … TX …` digest
+// that sat under them, restated on facts. Every test's doc line names the
+// mutation it exists to kill.
+
+describe('VFO ops (MOR-1321) — structural gating', () => {
+  // Kills: rendering the ops row unconditionally. With one VFO there is nothing
+  // to equalize onto, swap with, or split against — MOR-977 says ABSENT, not
+  // present-and-inert.
+  it('is absent when there is structurally nothing to swap against', () => {
+    const target = mountSurface({ viewModel: topologyFixtures['1/single'] });
+    expect(target.querySelector('[data-testid="vfo-ops"]')).toBeNull();
+    expect(target.querySelector('[data-testid="vfo-split-digest"]')).toBeNull();
+  });
+
+  // The non-vacuous half: the same assertions must NOT hold for a multi-VFO
+  // radio, or "absent" above would be passing for the trivial reason.
+  it.each(['1/ab', '2/ab_shared', '2/main_sub'] as const)(
+    'renders all four ops on the %s topology', (id) => {
+      const target = mountSurface({ viewModel: topologyFixtures[id] });
+      expect(target.querySelector('[data-testid="vfo-ops"]')).not.toBeNull();
+      for (const op of ['equalize', 'swap', 'quick-split', 'quick-dual-watch']) {
+        expect(target.querySelector(`[data-vfo-${op}]`), op).not.toBeNull();
+      }
+    },
+  );
+
+  // Kills: reading `viewModel.vfos.length` directly instead of the pool. A
+  // per-receiver cockpit strip holds ONE vfo but the radio still has a pair —
+  // the same MOR-1067 distinction tile selection already makes.
+  it('follows selectionPoolSize, not the slice length', () => {
+    const sliced: RadioViewModel = {
+      ...topologyFixtures['2/ab_shared'],
+      vfos: topologyFixtures['2/ab_shared'].vfos.filter((v) => v.receiver === 'MAIN'),
+    };
+    expect(mountSurface({ viewModel: sliced }).querySelector('[data-testid="vfo-ops"]')).toBeNull();
+    expect(
+      mountSurface({ viewModel: sliced, selectionPoolSize: 2 }).querySelector('[data-testid="vfo-ops"]'),
+    ).not.toBeNull();
+  });
+
+  // Kills: emitting the ops from a per-receiver strip. They are radio-wide
+  // actions; one per receiver would fire equalize twice from one screen.
+  it('rides with the radio-wide facts, so a per-receiver strip renders none', () => {
+    const target = mountSurface({
+      viewModel: topologyFixtures['2/main_sub'], showRadioWideFacts: false,
+    });
+    expect(target.querySelector('[data-testid="vfo-ops"]')).toBeNull();
+    expect(target.querySelector('[data-testid="vfo-split-digest"]')).toBeNull();
+  });
+});
+
+describe('VFO ops (MOR-1321) — intents', () => {
+  it.each([
+    ['equalize', 'onEqualizeVfos'], ['swap', 'onSwapVfos'],
+    ['quick-split', 'onQuickSplit'], ['quick-dual-watch', 'onQuickDualWatch'],
+  ] as const)('%s emits exactly its own intent, once', (op, prop) => {
+    const spies = {
+      onEqualizeVfos: vi.fn(), onSwapVfos: vi.fn(),
+      onQuickSplit: vi.fn(), onQuickDualWatch: vi.fn(),
+    };
+    const target = mountSurface({ viewModel: topologyFixtures['2/main_sub'], ...spies });
+    target.querySelector<HTMLButtonElement>(`[data-vfo-${op}]`)!.click();
+    flushSync();
+    // Exactly one intent fired, and it was this button's — a cross-wired
+    // handler (swap firing equalize) passes a "was called" assertion alone.
+    for (const [name, spy] of Object.entries(spies)) {
+      expect(spy.mock.calls.length, name).toBe(name === prop ? 1 : 0);
+    }
+  });
+
+  // R9. The ops surface must not grow a key path: none of these four intents
+  // is a TX action, and the surface carries no key/unkey affordance at all.
+  it('R9: the ops row emits no TX intent and mounts no key affordance', () => {
+    const target = mountSurface({ viewModel: topologyFixtures['2/main_sub'] });
+    expect(target.querySelector('[data-testid="rx-tx-surface"]')).toBeNull();
+    const ops = target.querySelector<HTMLElement>('[data-testid="vfo-ops"]')!;
+    expect(ops.querySelectorAll('button')).toHaveLength(4);
+    // Actions, not facts: no switch semantics on any of them.
+    expect(ops.querySelectorAll('[role="switch"]')).toHaveLength(0);
+  });
+});
+
+describe('VFO ops (MOR-1321) — unknown honesty on the quick triggers', () => {
+  const base = topologyFixtures['2/main_sub'];
+
+  // Kills: dropping the `disabled` gate on quick-split. The composite trigger
+  // ends with SPLIT ON — firing it while split is unobserved asks for a state
+  // this surface cannot see reached. Same gate its fact toggle carries.
+  it('quick split is disabled, and inert, while split is unknown', () => {
+    const model = validateRadioViewModel({ ...base, split: { status: 'unknown' } });
+    const onQuickSplit = vi.fn();
+    const target = mountSurface({ viewModel: model, onQuickSplit });
+    const button = target.querySelector<HTMLButtonElement>('[data-vfo-quick-split]')!;
+    expect(button.disabled).toBe(true);
+    // MUTATION KILL: the handler's own guard, independent of the attribute —
+    // deleting either one alone must fail here.
+    button.click();
+    flushSync();
+    expect(onQuickSplit).not.toHaveBeenCalled();
+  });
+
+  it('quick dual watch is disabled, and inert, while dualWatch is unknown', () => {
+    const model = validateRadioViewModel({ ...base, dualWatch: { status: 'unknown' } });
+    const onQuickDualWatch = vi.fn();
+    const target = mountSurface({ viewModel: model, onQuickDualWatch });
+    const button = target.querySelector<HTMLButtonElement>('[data-vfo-quick-dual-watch]')!;
+    expect(button.disabled).toBe(true);
+    button.click();
+    flushSync();
+    expect(onQuickDualWatch).not.toHaveBeenCalled();
+  });
+
+  /**
+   * MOR-1321 fix round (verifier B2) — the DISCRIMINATING half of the two tests
+   * above, and the house pattern this file already applies twice to
+   * `toggleSplit` / `toggleDualWatch` ("even if the native disabled gate is
+   * bypassed").
+   *
+   * A native `disabled` button refuses to dispatch `click` in jsdom and in real
+   * browsers alike, so the click assertions above are satisfied by the ATTRIBUTE
+   * alone and prove nothing about the component's own guard: an independent
+   * verifier's mutant, which deleted the guard line and kept the attribute,
+   * survived all 5075 tests. Forcing the button enabled first separates the two
+   * mechanisms, so deleting EITHER one alone now fails.
+   */
+  it.each([
+    ['quick-split', 'split', 'onQuickSplit'],
+    ['quick-dual-watch', 'dualWatch', 'onQuickDualWatch'],
+  ] as const)(
+    'MUTATION KILL: %s never emits its intent while %s is unknown, ' +
+    'even if the native disabled gate is bypassed',
+    (op, fact, prop) => {
+      const spy = vi.fn();
+      const model = validateRadioViewModel({ ...base, [fact]: { status: 'unknown' } });
+      const target = mountSurface({ viewModel: model, [prop]: spy });
+      const button = target.querySelector<HTMLButtonElement>(`[data-vfo-${op}]`)!;
+      button.disabled = false;
+      button.click();
+      flushSync();
+      expect(spy).not.toHaveBeenCalled();
+    },
+  );
+
+  // The non-vacuous companion: with the fact KNOWN, the same click DOES emit —
+  // so the two assertions above cannot be passing merely because the button was
+  // never wired to anything.
+  it.each([
+    ['quick-split', 'onQuickSplit'],
+    ['quick-dual-watch', 'onQuickDualWatch'],
+  ] as const)('%s emits normally once its fact is known', (op, prop) => {
+    const spy = vi.fn();
+    const target = mountSurface({ viewModel: base, [prop]: spy });
+    target.querySelector<HTMLButtonElement>(`[data-vfo-${op}]`)!.click();
+    flushSync();
+    expect(spy).toHaveBeenCalledOnce();
+  });
+
+  // Kills: gating equalize/swap on an unrelated unknown. Neither reads split or
+  // dual-watch, so an unobserved fact must not make them inert — that would
+  // invent a dependency the radio does not have.
+  it('equalize and swap stay live while both toggle facts are unknown', () => {
+    const model = validateRadioViewModel({
+      ...base, split: { status: 'unknown' }, dualWatch: { status: 'unknown' },
+    });
+    const onEqualizeVfos = vi.fn();
+    const onSwapVfos = vi.fn();
+    const target = mountSurface({ viewModel: model, onEqualizeVfos, onSwapVfos });
+    for (const op of ['equalize', 'swap'] as const) {
+      const button = target.querySelector<HTMLButtonElement>(`[data-vfo-${op}]`)!;
+      expect(button.disabled, op).toBe(false);
+      button.click();
+    }
+    flushSync();
+    expect(onEqualizeVfos).toHaveBeenCalledTimes(1);
+    expect(onSwapVfos).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('split RX/TX digest (MOR-1321)', () => {
+  // Kills: reading TX off the active VFO (or RX off the TX target) — the two
+  // sides would then agree by construction and the digest could never show the
+  // split it exists to show.
+  it('reads RX from the active VFO and TX from the radio-wide txTarget', () => {
+    const model = topologyFixtures['2/main_sub'];
+    const active = model.vfos.find((v) => v.isActive)!;
+    const target = mountSurface({ viewModel: model });
+    const digest = target.querySelector<HTMLElement>('[data-testid="vfo-split-digest"]')!;
+    expect(digest.querySelector('[data-split-rx]')!.textContent)
+      .toContain(expectedFreq(active.frequencyHz));
+    expect(model.txTarget.status).toBe('known');
+    if (model.txTarget.status === 'known') {
+      expect(digest.querySelector('[data-split-tx]')!.textContent)
+        .toContain(expectedFreq(model.txTarget.frequencyHz));
+    }
+  });
+
+  // Unknown honesty, TX side: an unobserved txTarget must render the
+  // placeholder — never fall back to the active VFO's frequency, which would
+  // tell the operator he is transmitting on a frequency nobody observed.
+  it('renders the placeholder for TX while txTarget is unknown', () => {
+    const base = topologyFixtures['2/main_sub'];
+    const model = validateRadioViewModel({
+      ...base,
+      txTarget: { status: 'unknown', reason: 'not-observed' },
+      // The validator refuses `txPermit: 'allowed'` while the target is
+      // unknown (fail-open is not permitted), and refuses `isTxTarget` on a
+      // tile no known target names — so an honest unknown-TX model has to
+      // carry all three, which is exactly the state the radio reports.
+      txPermit: { status: 'unknown', reason: 'tx-target-unknown' },
+      vfos: base.vfos.map((v) => ({ ...v, isTxTarget: false })),
+      disabledReasons: [{ field: 'txTarget', code: 'field-not-observed' }],
+    });
+    const digest = mountSurface({ viewModel: model })
+      .querySelector<HTMLElement>('[data-testid="vfo-split-digest"]')!;
+    expect(digest.querySelector('[data-split-tx]')!.textContent).toContain('—');
+    // ...and RX is still stated, so the placeholder is TX-specific rather than
+    // the whole digest going blank.
+    expect(digest.querySelector('[data-split-rx]')!.textContent).not.toContain('—');
+  });
+
+  // Kills: collapsing the split fact to a boolean for the dimming hook, which
+  // is what the legacy bridge did (`class:inactive={!splitActive}`) and what
+  // this surface must not do.
+  it.each([
+    [{ status: 'known', value: true } as const, 'true'],
+    [{ status: 'known', value: false } as const, 'false'],
+    [{ status: 'unknown' } as const, 'mixed'],
+  ])('carries the split fact as a tri-state (%j)', (split, expected) => {
+    const model = validateRadioViewModel({ ...topologyFixtures['2/main_sub'], split });
+    const digest = mountSurface({ viewModel: model })
+      .querySelector<HTMLElement>('[data-testid="vfo-split-digest"]')!;
+    expect(digest.getAttribute('data-split-active')).toBe(expected);
+  });
+});
+
+describe('MOR-1321 i18n', () => {
+  // Kills: a missing catalog key silently rendering its own dotted name.
+  it('no unresolved catalog key leaks into the ops row or the digest', () => {
+    const target = mountSurface({ viewModel: topologyFixtures['2/main_sub'] });
+    for (const sel of ['vfo-ops', 'vfo-split-digest']) {
+      const text = target.querySelector<HTMLElement>(`[data-testid="${sel}"]`)!.textContent ?? '';
+      expect(text, sel).not.toMatch(/core\.vfo\./);
+      expect(text.trim().length, sel).toBeGreaterThan(0);
+    }
   });
 });

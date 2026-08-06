@@ -88,6 +88,23 @@
      * and an operationally-fine dual strip — is unchanged.
      */
     disabled?: boolean;
+    /**
+     * MOR-1321 (v3-rework slice S3a) — the VFO-scoped ACTIONS the legacy
+     * `VfoOps` bridge carried and the semantic deck lost at MOR-1313: equalize
+     * (copy one VFO onto the other), swap, and the two composite "quick"
+     * triggers the backend performs atomically as equalize-then-toggle-on
+     * (`quick_split` / `quick_dualwatch`, epic #774).
+     *
+     * INTENTS, like every other callback here: this surface names what the
+     * operator asked for and knows nothing about how it is sent. None is a TX
+     * path — the quick triggers move receive/transmit FREQUENCY assignment and
+     * never key the transmitter (R9: the sole key/unkey authority is the
+     * sibling RX/TX surface).
+     */
+    onEqualizeVfos?: () => void;
+    onSwapVfos?: () => void;
+    onQuickSplit?: () => void;
+    onQuickDualWatch?: () => void;
   }
 
   let {
@@ -100,7 +117,22 @@
     showVfoList = true,
     groupLabel,
     disabled = false,
+    onEqualizeVfos,
+    onSwapVfos,
+    onQuickSplit,
+    onQuickDualWatch,
   }: Props = $props();
+
+  /**
+   * MOR-1321 — the STRUCTURAL half of the MOR-977 gate for everything below,
+   * and the same pool `isSelectable` reads: with one VFO there is nothing to
+   * equalize onto, swap with, or split against, so the ops row and the RX/TX
+   * digest are ABSENT rather than present-and-inert. `selectionPoolSize` keeps
+   * a per-receiver slice reading the whole radio (MOR-1067), exactly as it does
+   * for tile selection.
+   */
+  let vfoPool = $derived(selectionPoolSize ?? viewModel.vfos.length);
+  let hasVfoPair = $derived(vfoPool > 1);
 
   function slotKey(slot: VfoSlot): string {
     return slot.kind === 'slotted' ? slot.id : slot.kind;
@@ -130,7 +162,7 @@
   }
 
   function isSelectable(vfo: VfoViewModel): boolean {
-    return (selectionPoolSize ?? viewModel.vfos.length) > 1 && !vfo.isActive;
+    return hasVfoPair && !vfo.isActive;
   }
 
   function selectVfo(vfo: VfoViewModel): void {
@@ -157,6 +189,42 @@
     if (viewModel.dualWatch.status !== 'known') return;
     onToggleDualWatch?.();
   }
+
+  /**
+   * MOR-1321 — the OPERATIONAL half of the gate, and it applies to the quick
+   * triggers only. `quick_split` / `quick_dualwatch` end with the corresponding
+   * fact turned ON, so firing one while that fact is unobserved would ask the
+   * radio to reach a state this surface cannot see it reach — the same reason
+   * `toggleSplit`/`toggleDualWatch` above refuse, and the same `disabled`
+   * attribute, not a parallel mechanism.
+   *
+   * Equalize and swap deliberately have NO such guard: neither reads a fact,
+   * both are meaningful whatever split/dual-watch report, and gating them on an
+   * unrelated unknown would invent a dependency the radio does not have.
+   */
+  function quickSplit(): void {
+    if (viewModel.split.status !== 'known') return;
+    onQuickSplit?.();
+  }
+
+  function quickDualWatch(): void {
+    if (viewModel.dualWatch.status !== 'known') return;
+    onQuickDualWatch?.();
+  }
+
+  /**
+   * MOR-1321 row 20 — the legacy bridge's `RX <freq> TX <freq>` digest, restated
+   * on facts. RX is the ACTIVE VFO (what the operator is listening to); TX comes
+   * from the radio-wide `txTarget`, which carries its OWN frequency and is the
+   * same derivation the App TX authority uses — so the digest can never disagree
+   * with the per-tile TX-target badge. Either side reads `null` — rendered `—`
+   * by `formatFrequency` — when its fact is unobserved; neither is ever defaulted
+   * to the other's value, which is precisely what a split digest must not do.
+   */
+  let rxFrequencyHz = $derived(viewModel.vfos.find((vfo) => vfo.isActive)?.frequencyHz ?? null);
+  let txFrequencyHz = $derived(
+    viewModel.txTarget.status === 'known' ? viewModel.txTarget.frequencyHz : null,
+  );
 </script>
 
 <div class="vfo-surface" role="group" aria-label={groupLabel ?? t('core.vfo.groupLabel')} data-testid="vfo-surface">
@@ -241,6 +309,46 @@
         {t('core.vfo.dualWatch.label')}: {stateWord(viewModel.dualWatch)}
       </button>
     </div>
+
+    <!--
+      MOR-1321. Actions, not facts — so no `role="switch"` and no `aria-checked`:
+      each button DOES a thing once, it does not report a state. The two quick
+      triggers carry the same `disabled` gate their fact toggles above carry.
+      Button text is the accessible name; no `aria-label` duplicates it.
+    -->
+    {#if hasVfoPair}
+      <div class="vfo-ops" data-testid="vfo-ops">
+        <button type="button" class="vfo-op" data-vfo-equalize onclick={() => onEqualizeVfos?.()}>
+          {t('core.vfo.ops.equalize')}
+        </button>
+        <button type="button" class="vfo-op" data-vfo-swap onclick={() => onSwapVfos?.()}>
+          {t('core.vfo.ops.swap')}
+        </button>
+        <button
+          type="button" class="vfo-op" data-vfo-quick-split
+          disabled={viewModel.split.status === 'unknown'}
+          onclick={quickSplit}
+        >
+          {t('core.vfo.ops.quickSplit')}
+        </button>
+        <button
+          type="button" class="vfo-op" data-vfo-quick-dual-watch
+          disabled={viewModel.dualWatch.status === 'unknown'}
+          onclick={quickDualWatch}
+        >
+          {t('core.vfo.ops.quickDualWatch')}
+        </button>
+      </div>
+
+      <!--
+        `data-split-active` carries the split fact's TRI-STATE, so "unknown" is
+        stated rather than collapsed into the legacy bridge's binary dimming.
+      -->
+      <p class="split-digest" data-testid="vfo-split-digest" data-split-active={triState(viewModel.split)}>
+        <span data-split-rx>{t('core.vfo.splitDigest.rx', { frequency: formatFrequency(rxFrequencyHz) })}</span>
+        <span data-split-tx>{t('core.vfo.splitDigest.tx', { frequency: formatFrequency(txFrequencyHz) })}</span>
+      </p>
+    {/if}
   {/if}
 </div>
 
@@ -253,7 +361,9 @@
   .vfo-tile.is-active { border-color: var(--v2-accent-cyan, #00d4ff); }
   .vfo-role { font-weight: 700; color: var(--v2-text-secondary, rgba(255, 255, 255, 0.8)); }
   .vfo-badge { padding: 1px 4px; border-radius: 3px; font-size: 10px; color: var(--v2-accent-red, #ff2020); border: 1px solid var(--v2-accent-red, #ff2020); }
-  .vfo-select, .fact-toggle { border: 1px solid var(--v2-border-panel, rgba(255, 255, 255, 0.12)); border-radius: 4px; background: transparent; color: inherit; cursor: pointer; padding: 3px 6px; }
-  .vfo-select:disabled, .fact-toggle:disabled { color: var(--v2-text-disabled, rgba(255, 255, 255, 0.3)); cursor: not-allowed; }
-  .fact-toggles { display: flex; gap: 6px; }
+  .vfo-select, .fact-toggle, .vfo-op { border: 1px solid var(--v2-border-panel, rgba(255, 255, 255, 0.12)); border-radius: 4px; background: transparent; color: inherit; cursor: pointer; padding: 3px 6px; }
+  .vfo-select:disabled, .fact-toggle:disabled, .vfo-op:disabled { color: var(--v2-text-disabled, rgba(255, 255, 255, 0.3)); cursor: not-allowed; }
+  .fact-toggles, .vfo-ops { display: flex; gap: 6px; flex-wrap: wrap; }
+  .split-digest { display: flex; gap: 8px; margin: 0; font-size: 11px; color: var(--v2-text-subdued, rgba(255, 255, 255, 0.55)); }
+  .split-digest[data-split-active='false'] { opacity: 0.64; }
 </style>
