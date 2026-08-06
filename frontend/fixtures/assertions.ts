@@ -289,7 +289,7 @@ export function runAssertions(
       ? `${hideable.length} zones/controls all laid out and visible`
       : `hidden: ${hidden.map((el) => el.dataset.testid ?? el.tagName).join(', ')}`);
 
-  // ── focus order is DOM order, ending in rx-tx (MOR-1069) ───────────────
+  // ── focus order is DOM order, ending in the LAST declared zone (MOR-1069) ─
   // MOR-1085: "every control lives inside a declared zone" is the
   // dual-receiver-cockpit's own acceptance gate (MOR-1069/1070 gate item
   // (b)) — it presupposes zones exist to live inside. The reference/single
@@ -297,6 +297,13 @@ export function runAssertions(
   // so EVERY control there is trivially "outside every declared zone"; that
   // is not a regression to police, it is the honest absence of the concept
   // this check verifies. Both checks stay cockpit-only for that reason.
+  // MOR-1355: the terminal zone is `declared[declared.length - 1]`, not a
+  // hardcoded `'rx-tx'` — the same generalisation
+  // `DualReceiverCockpit.component.test.ts`'s MOR-1069 suite already made
+  // ("the LAST declared zone comes last"), needed the moment a resolved
+  // `SurfacePlan` puts real content in the manifest's `tx-aux` zone, which
+  // sits declared (and rendered) AFTER `rx-tx`. A no-op for every fixture
+  // whose declared zones still end in `rx-tx` (every one before this ticket).
   if (zonedComposition) {
     const declared = [...expected.zones];
     const seq = controls().map((el) => {
@@ -307,7 +314,7 @@ export function runAssertions(
     check('focus-order-is-zone-order',
       controls().length === 0
         || (eq(zoned, [...zoned].sort((a, b) => a - b))
-          && (zoned.length === 0 || zoned[zoned.length - 1] === declared.indexOf('rx-tx'))),
+          && (zoned.length === 0 || zoned[zoned.length - 1] === declared.length - 1)),
       `zone indices ${JSON.stringify(seq)} (-1 = outside every declared zone)`);
     check('zone-less-control-count',
       seq.filter((i) => i === -1).length === expected.zonelessControls,

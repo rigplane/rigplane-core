@@ -23,6 +23,9 @@
  */
 import { flushSync, mount } from 'svelte';
 import '../src/app.css';
+import { dualReceiverCockpitLayout } from '../src/presentation/layouts/declarations';
+import { readWorkspace } from '../src/presentation/workspace/contract';
+import { resolveSurfacePlan, SURFACE_PLAN_CONTEXT_KEY } from '../src/presentation/workspace/resolution';
 import DualReceiverCockpit from '../src/skins/dual-receiver-cockpit/DualReceiverCockpit.svelte';
 import ReferenceLayout from './ReferenceLayout.svelte';
 import {
@@ -78,9 +81,37 @@ harness.tx = { ...IDLE_TX, ...fixture.tx };
 harness.modGuard = fixture.modGuard ?? { visible: false, sourceLabel: null };
 harness.calls = [];
 
+/**
+ * MOR-1355 — the ONE place this harness can supply a real resolved
+ * `SurfacePlan`, exactly the recipe
+ * `DualReceiverCockpit.component.test.ts`'s `render(plan?)` already proves:
+ * `mount`'s `context` option carries `SURFACE_PLAN_CONTEXT_KEY` down to
+ * `useSurfacePlan()`, so `SemanticRadioSurfaces.svelte`'s `zoneOwning()` stops
+ * being unconditionally null. `fixture.planned` is opt-in and per-fixture —
+ * every fixture that does not set it keeps mounting exactly as before
+ * (`context: undefined`, the pre-MOR-1355 plan-less shape catalog.ts's
+ * `baseCaps` comment still documents), which is deliberate: the ticket's
+ * instruction is to prove the plan-ful path exists, not to make it the only
+ * path — the plan-less captures still model the real gap MOR-1351 found
+ * (`fixtures/main.ts` supplying no plan at all).
+ *
+ * `readWorkspace({ version: 1 }).workspace` is the DEFAULT workspace — no
+ * operator `visibleSurfaces`/`zoneOrder` preference — over the REAL
+ * `dualReceiverCockpitLayout` manifest, i.e. exactly what `App` resolves for
+ * this layout the moment no preference has been saved. This is
+ * production's own default, not a fixture invention.
+ */
+const plan = fixture.planned
+  ? resolveSurfacePlan(dualReceiverCockpitLayout, readWorkspace({ version: 1 }).workspace)
+  : null;
+const context = plan === null
+  ? undefined
+  : new Map<unknown, unknown>([[SURFACE_PLAN_CONTEXT_KEY, () => plan]]);
+
 document.title = `MOR-1070 · ${fixture.id}`;
 mount(fixture.layout === 'reference' ? ReferenceLayout : DualReceiverCockpit, {
   target: document.getElementById('app')!,
+  context,
 });
 flushSync();
 

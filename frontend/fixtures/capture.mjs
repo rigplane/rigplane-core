@@ -191,6 +191,15 @@ const MATRIX = [
     { name: `tx-phase-tx--desktop--${language}`, fixture: 'tx-phase-tx',
       viewport: 'desktop', language },
   ]),
+  // R. MOR-1355 — the harness's one PLAN-FUL capture: `main.ts` resolves a
+  // real `SurfacePlan` for this fixture (`catalog.ts`'s `planned: true`), so
+  // `tx-aux` is genuinely bound rather than merely declared. Same radio as
+  // section A's `topology-2-main-sub`; the only variable is plan-ful vs
+  // plan-less.
+  {
+    name: 'topology-2-main-sub--planned--desktop', fixture: 'topology-2-main-sub--planned',
+    viewport: 'desktop',
+  },
 ];
 
 /* ── build identity ────────────────────────────────────────────────────── */
@@ -206,6 +215,10 @@ const PRODUCTION_SOURCES = [
   'frontend/src/lib/runtime/adapters/radio-view-model-adapter.ts',
   'frontend/src/lib/runtime/adapters/presentation-capabilities.ts',
   'frontend/src/presentation/layouts/dual-receiver-cockpit.ts',
+  // MOR-1355: the plan-ful capture genuinely exercises these two — the
+  // resolution seam and the default-workspace path `resolveSurfacePlan` reads.
+  'frontend/src/presentation/workspace/resolution.ts',
+  'frontend/src/presentation/workspace/contract.ts',
   'frontend/src/app.css',
   'frontend/src/styles/tokens.css',
   'frontend/src/styles/animations.css',
@@ -526,6 +539,13 @@ const manifest = {
     + 'Tab reachability (covered separately by the focus-order assertions).',
     '`meter-ballistics-honor-reduced-motion` counts `requestAnimationFrame` calls page-wide, not scoped '
     + 'to the meters subtree — correct today (nothing else in the tree calls rAF).',
+    'MOR-1355: exactly ONE capture (`topology-2-main-sub--planned--desktop`) supplies a real resolved '
+    + '`SurfacePlan` (`resolveSurfacePlan(dualReceiverCockpitLayout, …)`, via `catalog.ts`\'s `planned: '
+    + 'true`); every other capture stays plan-less on purpose — those still model the pre-navigation '
+    + 'reference path this harness mounts directly (see the `main.ts` header). Only '
+    + '`dualReceiverCockpitLayout` is ever resolved here; the `--reference` family (desktop-v2/sdr-test '
+    + 'wiring) has no plan-ful twin in this slice — its manifest declares a different zone set and is '
+    + 'separately scoped follow-up work.',
   ],
   viewports: VIEWPORTS,
   summary: {
