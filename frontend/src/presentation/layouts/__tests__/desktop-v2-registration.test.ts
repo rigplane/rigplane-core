@@ -57,7 +57,8 @@ describe('declared zones now drive the DOM (MOR-1263 step 2, MOR-1313)', () => {
   // either one — the pair per-zone suppression consumes.
   it('declares receiver-deck:[vfo], rx-tx:[rxTx], tx-aux:[txAux], meters:[meters], '
     + 'scope-display:[scopeDisplay], filter:[filter], rf-front-end:[rfFrontEnd], '
-    + 'band:[band], antenna:[antenna] and rit-xit-scan:[ritXitScan]', () => {
+    + 'band:[band], antenna:[antenna], rit-xit-scan:[ritXitScan], rx-audio:[rxAudio], '
+    + 'dsp:[dsp] and cw-keyer:[cwKeyer]', () => {
     expect(desktopV2Layout.zones).toEqual([
       { id: 'receiver-deck', surfaces: ['vfo'] },
       { id: 'rx-tx', surfaces: ['rxTx'] },
@@ -78,6 +79,12 @@ describe('declared zones now drive the DOM (MOR-1263 step 2, MOR-1313)', () => {
       { id: 'band', surfaces: ['band'] },
       { id: 'antenna', surfaces: ['antenna'] },
       { id: 'rit-xit-scan', surfaces: ['ritXitScan'] },
+      // MOR-1368 (S9): the cross-sidebar family. `dsp` also retires `AgcPanel`
+      // (DspSurface owns the AGC leaf, 5A/MOR-1290), and `cw-keyer` makes the
+      // SAFETY-CRITICAL MOR-1310 surface the sole break-in affordance here.
+      { id: 'rx-audio', surfaces: ['rxAudio'] },
+      { id: 'dsp', surfaces: ['dsp'] },
+      { id: 'cw-keyer', surfaces: ['cwKeyer'] },
     ]);
     expect([...desktopV2Layout.requiredSemanticSurfaces].sort()).toEqual(['rxTx', 'vfo']);
   });
@@ -99,7 +106,7 @@ describe('declared zones now drive the DOM (MOR-1263 step 2, MOR-1313)', () => {
   // is per-zone rather than per-manifest-first-zone.
   it('its zones flatten to the surfaces the shell suppresses legacy twins for', () => {
     expect([...declaredSurfaces(getLayout('desktop-v2'))].sort())
-      .toEqual(['antenna', 'band', 'filter', 'meters', 'rfFrontEnd', 'ritXitScan', 'rxTx', 'scopeDisplay', 'txAux', 'vfo']);
+      .toEqual(['antenna', 'band', 'cwKeyer', 'dsp', 'filter', 'meters', 'rfFrontEnd', 'ritXitScan', 'rxAudio', 'rxTx', 'scopeDisplay', 'txAux', 'vfo']);
   });
 });
 

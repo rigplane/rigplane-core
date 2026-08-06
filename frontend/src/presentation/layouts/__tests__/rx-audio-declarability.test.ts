@@ -48,16 +48,39 @@ describe('rxAudio is a declarable semantic surface', () => {
   });
 });
 
-describe('no shipped manifest declares an rxAudio zone in this slice', () => {
-  // Kills: slipping an rxAudio zone into an existing layout here. Declarability
-  // is the whole scope of the contract touch; placing the surface in a real
-  // layout is a later, separately reviewed slice.
-  it.each([
+describe('exactly the reviewed manifests declare an rxAudio zone (MOR-1368)', () => {
+  /** The literal — extend by hand, with a layout review, never silently. */
+  const DECLARES_RX_AUDIO = ['desktop-v2'];
+
+  const ALL = [
     ['sdr-test', sdrTestLayout], ['dual-receiver-cockpit', dualReceiverCockpitLayout],
     ['lcd-cockpit', lcdCockpitLayout], ['lcd-scope', lcdScopeLayout],
     ['mobile', mobileLayout], ['desktop-v2', desktopV2Layout],
-  ])('%s declares no rxAudio zone and does not require the surface', (_id, manifest) => {
-    for (const zone of manifest.zones) expect(zone.surfaces).not.toContain('rxAudio');
+  ] as const;
+
+  // Kills BOTH directions: desktop-v2 losing the zone S9 gave it (which would
+  // resurrect the RX AUDIO twin in both sidebars), and a family gaining one
+  // without review.
+  it('the declaring set is exactly the reviewed literal', () => {
+    const declaring = ALL
+      .filter(([, m]) => m.zones.some((z) => z.surfaces.includes('rxAudio')))
+      .map(([id]) => id)
+      .sort();
+    expect(declaring).toEqual([...DECLARES_RX_AUDIO].sort());
+  });
+
+  // Kills: declaring the zone under a drifted id — the wiring binds whatever
+  // the plan's key is, so the id IS the contract with the layout's arrangement.
+  it.each(DECLARES_RX_AUDIO)('%s declares it under the stable `rx-audio` id, alone in its zone', (id) => {
+    const manifest = ALL.find(([name]) => name === id)![1];
+    const zone = manifest.zones.find((z) => z.surfaces.includes('rxAudio'))!;
+    expect(zone.id).toBe('rx-audio');
+    expect(zone.surfaces).toEqual(['rxAudio']);
+  });
+
+  // Kills: making rxAudio REQUIRED. A radio with no audio chain at all must
+  // still resolve this layout; the surface self-gates on `view.rxAudio`.
+  it.each(ALL)('%s does not require the rxAudio surface', (_id, manifest) => {
     expect(manifest.requiredSemanticSurfaces).not.toContain('rxAudio');
   });
 });

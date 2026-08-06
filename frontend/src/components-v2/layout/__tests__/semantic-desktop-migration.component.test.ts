@@ -385,13 +385,15 @@ describe('desktop-v2 resolves through the v3 path (MOR-1313)', () => {
   // family that actually ships to every Icom radio. `.bottom-dock` is
   // deliberately NOT asserted here any more (MOR-1341): it is now itself a
   // suppressed twin, not part of "the rest" — its own matrix entry is the
-  // dedicated test above.
+  // dedicated test above. `rx-audio` left this list for the same reason
+  // (MOR-1368/S9): it is a suppressed twin now, pinned by its own row in the
+  // channel describe below. `memory` stays — it has no semantic twin at all,
+  // so it is the panel that proves suppression did not widen into "the rest".
   it('leaves the rest of the layout intact', () => {
     const t = render('desktop-v2');
     expect(t.querySelector('.content-left .left-sidebar')).not.toBeNull();
     expect(t.querySelector('.content-right .right-sidebar')).not.toBeNull();
     expect(t.querySelector('.center-column .spectrum-slot')).not.toBeNull();
-    expect(t.querySelector('[data-panel-id="rx-audio"]')).not.toBeNull();
     expect(t.querySelector('[data-panel-id="memory"]')).not.toBeNull();
   });
 
@@ -583,19 +585,22 @@ describe('the legacy-twin suppression channel (MOR-1364, S6-pre)', () => {
     'antenna', 'scan', 'rx-audio', 'dsp', 'tx', 'cw', 'memory'];
   const RIGHT_ALL = ['rx-audio', 'audio-scope', 'dsp', 'tx', 'cw', 'memory'];
 
-  /** surface → the zone id its rework slice will declare on `desktop-v2`.
+  /**
+   * surface → the zone id its rework slice will declare on `desktop-v2`.
    *
-   *  GRADUATIONS — surfaces whose zone `desktopV2Layout` now really declares
-   *  have LEFT this synthetic-probe literal, because a probe spreading
-   *  `...desktopV2Layout.zones` plus a second entry with the same id would
-   *  declare a duplicate zone id. Each graduate's coverage moved to a describe
-   *  asserting the REAL registration — a strictly stronger statement:
-   *    - `scopeDisplay` graduated in MOR-1365 (S6a);
-   *    - `filter`, `rfFrontEnd` graduated in MOR-1366 (S7);
-   *    - `band`, `antenna`, `ritXitScan` graduated in MOR-1367 (S8). */
-  const ZONES = [
-    ['dsp', 'dsp'], ['rxAudio', 'rx-audio'], ['cwKeyer', 'cw-keyer'],
-  ] as const;
+   * ALL GRADUATED. `scopeDisplay` graduated in MOR-1365 (S6a); `filter` and
+   * `rfFrontEnd` in MOR-1366 (S7); `band`, `antenna` and `ritXitScan` in
+   * MOR-1367 (S8); `rxAudio`, `dsp` and `cwKeyer` in MOR-1368 (S9).
+   * `desktopV2Layout` now declares every one of them for real, so spreading
+   * `desktopV2Layout.zones` plus a second entry with the same id would
+   * duplicate a zone id the real manifest already owns. Each graduate's
+   * coverage moved to a describe asserting the REAL registration — a
+   * strictly stronger statement. Left as an empty literal rather than
+   * deleted: the `it.each` below correctly reports zero cases now, which is
+   * the intended terminal state of this synthetic-probe list, not a gap
+   * (harness note, same structural blindness ruled on for S6a/S7/S8).
+   */
+  const ZONES = [] as const;
   type CoveredSurface = (typeof ZONES)[number][0];
 
   const ZONE_PROBE = Object.fromEntries(ZONES.map(([surface, zoneId]) => {
@@ -610,31 +615,36 @@ describe('the legacy-twin suppression channel (MOR-1364, S6-pre)', () => {
 
   /**
    * One row per legacy twin the channel covers: which surface's zone retires
-   * it, and where it lives. `dsp` owns FIVE rows because `DspSurface` covers
-   * the AGC leaf too (5A/MOR-1290) — a `dsp` zone that retired `DspPanel` and
-   * left `AgcPanel` standing would ship a half-double, in two hosts.
+   * it, and where it lives.
    *
-   * `filter` (left sidebar MODE + FILTER) and `rfFrontEnd` (left sidebar RF
-   * FRONT END + settings modal RF FRONT END) are NOT rows here any more
-   * (MOR-1366, S7): the real `desktop-v2` manifest now declares both zones,
-   * so those twins no longer render at all — asserted directly below rather
-   * than through this "no zone declaring it yet" inventory.
+   * ALL GRADUATED, same set as `ZONES` above: `filter`/`rfFrontEnd` (S7),
+   * `band`/`antenna`/`ritXitScan` (S8) and `rxAudio`/`dsp`/`cwKeyer` (S9) are
+   * NOT rows here any more — the real `desktop-v2` manifest now declares
+   * every one of their zones, so those twins no longer render at all —
+   * asserted directly against the REAL registration in each family's own
+   * dedicated test instead of through this "no zone declaring it yet"
+   * inventory. `dsp` alone would have owned FIVE rows (`DspSurface` also
+   * covers the AGC leaf, 5A/MOR-1290) had it still been here.
    */
-  const TWINS = [
+  const TWINS = [] as const satisfies readonly (readonly [CoveredSurface, string, string])[];
+
+  /**
+   * The ten twins S9 retired, kept as a named inventory so the *survival*
+   * direction is still asserted somewhere: none of them may come back on any
+   * probe, and a suppression that covers only one sidebar dies here.
+   */
+  const S9_RETIRED = [
+    ['rxAudio', 'left sidebar RX AUDIO', '.left-sidebar [data-panel-id="rx-audio"]'],
+    ['rxAudio', 'right sidebar RX AUDIO', '.right-sidebar [data-panel-id="rx-audio"]'],
     ['dsp', 'left sidebar AGC', '.left-sidebar [data-panel-id="agc"]'],
     ['dsp', 'left sidebar DSP', '.left-sidebar [data-panel-id="dsp"]'],
     ['dsp', 'right sidebar DSP', '.right-sidebar [data-panel-id="dsp"]'],
     ['dsp', 'settings modal DSP', '[data-panel-id="desktop-dsp"]'],
     ['dsp', 'settings modal AGC', '[data-panel-id="desktop-agc"]'],
-    // MOR-1367 (S8): the three `ritXitScan` rows and the `antenna` row moved to
-    // the zone-ownership describe below — those twins are GONE on desktop-v2
-    // now, so an "it renders today" row here would be false.
-    ['rxAudio', 'left sidebar RX AUDIO', '.left-sidebar [data-panel-id="rx-audio"]'],
-    ['rxAudio', 'right sidebar RX AUDIO', '.right-sidebar [data-panel-id="rx-audio"]'],
     ['cwKeyer', 'left sidebar CW', '.left-sidebar [data-panel-id="cw"]'],
     ['cwKeyer', 'right sidebar CW', '.right-sidebar [data-panel-id="cw"]'],
     ['cwKeyer', 'settings modal CW', '[data-panel-id="desktop-cw"]'],
-  ] as const satisfies readonly (readonly [CoveredSurface, string, string])[];
+  ] as const;
 
   /**
    * The BAND twin is never MOUNT-gated, on any manifest, ever (S10 rows 6/10,
@@ -691,21 +701,72 @@ describe('the legacy-twin suppression channel (MOR-1364, S6-pre)', () => {
   // `filter`, `mode` and `rf-front-end` — the `filter`/`rf-front-end` zones are
   // now REAL on `desktop-v2`, not synthetic probes.
   //
-  // MOR-1367 (S8) removes four more: `antenna`, `rit-xit`, `scan` (left
+  // MOR-1367 (S8) removed four more: `antenna`, `rit-xit`, `scan` (left
   // sidebar) and `desktop-rit` (settings modal). `band` STAYS — the band zone
   // retires only the component's HAM half, by prop, so the panel itself keeps
   // rendering (S10 §4a).
-  it('renders exactly the panel inventory the declared zones leave standing', () => {
+  //
+  // MOR-1368 (S9) removes the whole cross-sidebar family: both `rx-audio`s,
+  // both `dsp`s, both `cw`s, `agc`, and the modal's
+  // `desktop-dsp`/`desktop-agc`/`desktop-cw` — ten ids, the largest single
+  // retirement in the tail. Non-vacuous proof is in the dedicated "drops the
+  // legacy ..." tests below, which use caps that make each evidence gate fire.
+  it('renders exactly the panel inventory desktop-v2 renders post-S9', () => {
     const ids = [...renderAll('desktop-v2').querySelectorAll('[data-panel-id]')]
       .map((el) => el.getAttribute('data-panel-id'))
       .sort();
     expect(ids).toEqual([
-      'agc', 'band', 'cw', 'cw',
-      'desktop-agc', 'desktop-cw', 'desktop-dsp', 'desktop-language',
-      'desktop-vfo-ops', 'desktop-workspace',
-      'dsp', 'dsp', 'memory', 'memory',
-      'rx-audio', 'rx-audio',
+      'band',
+      'desktop-language', 'desktop-vfo-ops', 'desktop-workspace',
+      'memory', 'memory',
     ]);
+  });
+
+  /**
+   * MOR-1317 CLOSURE, panel side. `zone-ownership-coverage.test.ts` is the
+   * ledger for the SURFACE direction (every `SEMANTIC_SURFACE_NAMES` member is
+   * owned or excused in writing); this is the mirror for the PANEL direction —
+   * every legacy panel still on screen on `desktop-v2` is a recorded decision,
+   * not an oversight. Together they are what makes "MOR-1317 is closed for the
+   * sidebar family" a checkable statement rather than a claim.
+   *
+   * Derived from the live DOM, so a panel that survives without an entry fails
+   * here the moment it appears — the same shape of gap MOR-1317 names.
+   */
+  // Pruned by MOR-1368 (S9)'s rebase: `antenna`, `desktop-rf`, `desktop-rit`,
+  // `filter`, `mode`, `rf-front-end`, `rit-xit` and `scan` graduated with S7
+  // (filter/rfFrontEnd) and S8 (antenna/ritXitScan) — those eight panels no
+  // longer render on `desktop-v2` at all, so an entry for them would be
+  // exactly the stale-ledger drift the N1a check below now enforces.
+  const SURVIVING_PANEL_REASONS: Record<string, string> = {
+    band: 'S10 row 10 (PERMANENT for the broadcast half): BandSelector hosts the LW/MW + SWL '
+      + 'tabs and 16 presets that are deliberately not facts and have no other production host. '
+      + 'S8 retires only the HAM half, by a `hamBands` prop, never by unmounting the section.',
+    'desktop-language': 'S10 row 8 — PERMANENT. Locale is an app preference, not a radio fact.',
+    'desktop-vfo-ops': 'S10 row 7 (split row) is already gated on `semanticDeck`; the section '
+      + 'itself is PERMANENT because of the band tabs above (row 10).',
+    'desktop-workspace': 'S10 row 9 — PERMANENT. Workspace preferences are not a radio fact.',
+    memory: 'NO SEMANTIC SURFACE EXISTS. Memory channels are not in the MOR-1262 vocabulary at '
+      + 'all, so there is nothing to relocate into and nothing to double-present.',
+    // Not in the inventory above under the default fixture, but reachable and
+    // decided, so recorded here rather than discovered later:
+    tx: 'R9 — the ONE key/unkey authority. It follows the semantic DECK via `hideTxPanel` '
+      + '(MOR-1313) and must never be folded into the `declared` channel; `desktop-v2` already '
+      + 'suppresses it that way, which is why it is absent above.',
+    'audio-scope': 'NO SEMANTIC TWIN. The spectrum panel is its own subsystem, outside the '
+      + 'surface vocabulary; absent above only because the right sidebar renders it under a '
+      + 'different host in this fixture.',
+  };
+
+  it('every legacy panel still on screen is a recorded decision, not an oversight', () => {
+    const ids = new Set([...renderAll('desktop-v2').querySelectorAll('[data-panel-id]')]
+      .map((el) => el.getAttribute('data-panel-id')!));
+    const undecided = [...ids].filter((id) => !(id in SURVIVING_PANEL_REASONS)).sort();
+    expect(undecided).toEqual([]);
+    // ...and no reason may be a placeholder.
+    for (const [id, reason] of Object.entries(SURVIVING_PANEL_REASONS)) {
+      expect(reason.length, id).toBeGreaterThan(30);
+    }
   });
 
   // THE CHANNEL ITSELF, both directions in one assertion per surface: a
@@ -723,6 +784,12 @@ describe('the legacy-twin suppression channel (MOR-1364, S6-pre)', () => {
         } else {
           expect(t.querySelector(selector), `${host} must survive`).not.toBeNull();
         }
+      }
+      // Every probe spreads `desktopV2Layout.zones`, so the S9 family is
+      // retired on all of them too: a probe that resurrected one would mean
+      // the manifest lost a zone, not that the probe gained a panel.
+      for (const [, host, selector] of S9_RETIRED) {
+        expect(t.querySelector(selector), `${host} must stay retired`).toBeNull();
       }
     },
   );
@@ -744,10 +811,10 @@ describe('the legacy-twin suppression channel (MOR-1364, S6-pre)', () => {
     }
   });
 
-  // R9, restated over the new quadrants: none of the nine probes may change
-  // the number of elements that can key or unkey the transmitter. The channel
-  // deliberately does NOT carry `rxTx` — `hideTxPanel` still follows the
-  // semantic DECK (MOR-1313) and must stay a separate prop.
+  // R9, restated over the remaining quadrants: none of the six probes may
+  // change the number of elements that can key or unkey the transmitter. The
+  // channel deliberately does NOT carry `rxTx` — `hideTxPanel` still follows
+  // the semantic DECK (MOR-1313) and must stay a separate prop.
   it.each(ZONES.map(([s]) => s))('leaves exactly one key authority with the %s zone declared', (surface) => {
     expect(renderAll(ZONE_PROBE[surface]).querySelectorAll(KEY_AUTHORITIES).length).toBe(1);
   });
@@ -799,6 +866,92 @@ describe('the legacy-twin suppression channel (MOR-1364, S6-pre)', () => {
     expect(t.querySelectorAll('.left-sidebar [data-panel-id="filter"]').length).toBe(0);
     expect(t.querySelectorAll('.left-sidebar [data-panel-id="rf-front-end"]').length).toBe(0);
     expect(t.querySelectorAll('[data-panel-id="desktop-rf"]').length).toBe(0);
+  });
+
+  /**
+   * MOR-1368 (S9) — `rxAudio`, `dsp` and `cwKeyer` join the matrix for real.
+   *
+   * Same shape as MOR-1341's meters test and MOR-1366's filter/rfFrontEnd
+   * pair: proven with caps that actually make each evidence gate fire, not the
+   * bare `capsFor()` default (no `nr`/`nb`/`notch`/`agc` tag, no `cw` tag),
+   * which would pass these assertions vacuously — both the legacy twin and the
+   * semantic surface self-gate away — and prove nothing about suppression.
+   *
+   * BEFORE this slice `desktop-v2` DOUBLE-PRESENTED all three families: the
+   * semantic surface rendered bare in the deck AND the legacy panel rendered
+   * in the sidebar. The `data-testid` counts below pin "exactly ONE".
+   */
+  /** A radio that emits every S9 family at once: audio chain, DSP, keyer. */
+  const S9_CAPS = () => ({
+    ...(capsFor('2/main_sub') as object),
+    antennas: 2,
+    capabilities: [
+      ...(capsFor('2/main_sub').capabilities as string[]),
+      'nr', 'nb', 'notch', 'agc', 'af_level', 'cw', 'break_in', 'apf',
+    ],
+  }) as Capabilities;
+
+  it('drops the legacy RX AUDIO twins (both sidebars) for the semantic rxAudio surface', () => {
+    h.caps = S9_CAPS();
+    const t = renderAll('desktop-v2');
+    expect(t.querySelector('.left-sidebar [data-panel-id="rx-audio"]')).toBeNull();
+    expect(t.querySelector('.right-sidebar [data-panel-id="rx-audio"]')).toBeNull();
+    expect(t.querySelectorAll('[data-testid="rx-audio-surface"]').length).toBe(1);
+  });
+
+  // THE AGC PAIRING, pinned on its own (S9's named risk): `DspSurface` covers
+  // NR/NB/notch AND the AGC leaf (5A/MOR-1290), so a `dsp` zone that retired
+  // `DspPanel` and left `AgcPanel` — in the sidebar or in the modal — would
+  // ship a half-double beside a surface that already draws AGC.
+  it('drops the legacy DSP twins AND AgcPanel with them (sidebars + modal)', () => {
+    h.caps = S9_CAPS();
+    const t = renderAll('desktop-v2');
+    expect(t.querySelector('.left-sidebar [data-panel-id="dsp"]')).toBeNull();
+    expect(t.querySelector('.right-sidebar [data-panel-id="dsp"]')).toBeNull();
+    expect(t.querySelector('[data-panel-id="desktop-dsp"]')).toBeNull();
+    // The AGC half of the same family — the row that makes this a pairing.
+    expect(t.querySelector('.left-sidebar [data-panel-id="agc"]')).toBeNull();
+    expect(t.querySelector('[data-panel-id="desktop-agc"]')).toBeNull();
+    expect(t.querySelectorAll('[data-testid="dsp-surface"]').length).toBe(1);
+  });
+
+  // SAFETY-CRITICAL (MOR-1310). After this, `CwKeyerSurface` is the SOLE
+  // break-in affordance on the flagship skin: `CwPanel` is gone from both
+  // sidebars and from the settings modal. Two break-in controls disagreeing
+  // about one radio setting is the defect this closes; zero would be worse,
+  // so the count is pinned at exactly one, not merely ">= 0 legacy panels".
+  it('drops the legacy CW twins (both sidebars + modal) for the semantic cwKeyer surface', () => {
+    h.caps = S9_CAPS();
+    const t = renderAll('desktop-v2');
+    expect(t.querySelector('.left-sidebar [data-panel-id="cw"]')).toBeNull();
+    expect(t.querySelector('.right-sidebar [data-panel-id="cw"]')).toBeNull();
+    expect(t.querySelector('[data-panel-id="desktop-cw"]')).toBeNull();
+    expect(t.querySelectorAll('[data-testid="cw-keyer-surface"]').length).toBe(1);
+  });
+
+  // DOUBLE-PRESENTATION CLOSED, stated over all three families at once — the
+  // shape most likely to reveal a suppression that covers only some of the
+  // three zones this slice declares, or only one of the two sidebars.
+  it('presents rxAudio, dsp and cwKeyer controls exactly ONCE each on desktop-v2', () => {
+    h.caps = S9_CAPS();
+    const t = renderAll('desktop-v2');
+    expect(t.querySelectorAll('[data-testid="rx-audio-surface"]').length).toBe(1);
+    expect(t.querySelectorAll('[data-testid="dsp-surface"]').length).toBe(1);
+    expect(t.querySelectorAll('[data-testid="cw-keyer-surface"]').length).toBe(1);
+    for (const [, host, selector] of S9_RETIRED) {
+      expect(t.querySelectorAll(selector).length, host).toBe(0);
+    }
+    // ...and relocating three families adds no second key/unkey affordance.
+    expect(t.querySelectorAll(KEY_AUTHORITIES).length).toBe(1);
+  });
+
+  // The non-vacuity control for the three tests above: on an UNDECLARED
+  // layout, with the identical caps, every one of the ten twins is on screen.
+  // Without this the suppressions could be satisfied by a fixture in which the
+  // panels never rendered at all.
+  it.each(S9_RETIRED)('[%s] %s renders on an undeclared layout with the same caps', (_s, _host, selector) => {
+    h.caps = S9_CAPS();
+    expect(renderAll('no-such-layout' as SkinId).querySelector(selector)).not.toBeNull();
   });
 
   /**

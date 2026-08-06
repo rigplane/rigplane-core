@@ -88,6 +88,26 @@ const DESKTOP_V2_ZONES = [
   { id: 'band', surfaces: ['band'] },
   { id: 'antenna', surfaces: ['antenna'] },
   { id: 'rit-xit-scan', surfaces: ['ritXitScan'] },
+  // MOR-1368 (S9): the cross-sidebar family. `rxAudio`, `dsp` and `cwKeyer`
+  // become zone-OWNED, and the MOR-1364 suppression channel retires their
+  // legacy twins in BOTH sidebars (a cross-sidebar drag can move `rx-audio`,
+  // `dsp` and `cw` to either side) plus the settings modal's `desktop-dsp`,
+  // `desktop-agc` and `desktop-cw` sections. `AgcPanel` retires WITH `dsp`,
+  // not on a zone of its own: `DspSurface` covers the AGC leaf (5A/MOR-1290),
+  // so a `dsp` zone that left `AgcPanel` standing would ship a half-double.
+  //
+  // SAFETY (MOR-1310, the wave's only SAFETY-CRITICAL surface): declaring
+  // `cw-keyer` makes `CwKeyerSurface` the SOLE break-in affordance on the
+  // flagship skin. That is a relocation of ownership and nothing else — this
+  // declaration writes no key path, mounts no second TX permit, and the R9
+  // count (exactly one `<RxTxSurface>` on screen) is unchanged by it.
+  //
+  // None `required`: each surface self-gates on its own view-model group
+  // (`view.rxAudio` / `view.dsp` / `view.cwKeyer`), so a radio with no audio
+  // chain, no DSP capability or no keyer must still resolve this layout.
+  { id: 'rx-audio', surfaces: ['rxAudio'] },
+  { id: 'dsp', surfaces: ['dsp'] },
+  { id: 'cw-keyer', surfaces: ['cwKeyer'] },
 ] as const;
 
 export const desktopV2Layout: LayoutManifest = {

@@ -50,17 +50,49 @@ describe('cwKeyer is a declarable semantic surface', () => {
   });
 });
 
-describe('no shipped manifest declares a cwKeyer zone in this slice', () => {
-  // Kills: slipping a cwKeyer zone into an existing layout here. SAFETY-
-  // relevant: the dual-receiver cockpit's MOR-1069 tab-order assertion is
-  // written against the zones it declares today, so declaring one here would
-  // put break-in controls in the cockpit with no updated sequence pin.
-  it.each([
+describe('exactly the reviewed manifests declare a cwKeyer zone (MOR-1368)', () => {
+  /**
+   * The literal — extend by hand, with a layout review, never silently. This
+   * is the SAFETY-CRITICAL one: `desktop-v2` is the only family reviewed for
+   * it, and the dual-receiver cockpit stays OFF the list deliberately. Its
+   * MOR-1069 tab-order assertion is written against the zones it declares
+   * today, so adding `cwKeyer` there would put break-in controls in the
+   * cockpit with no updated sequence pin.
+   */
+  const DECLARES_CW_KEYER = ['desktop-v2'];
+
+  const ALL = [
     ['sdr-test', sdrTestLayout], ['dual-receiver-cockpit', dualReceiverCockpitLayout],
     ['lcd-cockpit', lcdCockpitLayout], ['lcd-scope', lcdScopeLayout],
     ['mobile', mobileLayout], ['desktop-v2', desktopV2Layout],
-  ])('%s declares no cwKeyer zone and does not require the surface', (_id, manifest) => {
-    for (const zone of manifest.zones) expect(zone.surfaces).not.toContain('cwKeyer');
+  ] as const;
+
+  // Kills BOTH directions: desktop-v2 losing the zone S9 gave it — which would
+  // put `CwPanel` back beside `CwKeyerSurface`, i.e. two break-in affordances
+  // disagreeing about one setting — and any other family gaining one without
+  // the review above.
+  it('the declaring set is exactly the reviewed literal', () => {
+    const declaring = ALL
+      .filter(([, m]) => m.zones.some((z) => z.surfaces.includes('cwKeyer')))
+      .map(([id]) => id)
+      .sort();
+    expect(declaring).toEqual([...DECLARES_CW_KEYER].sort());
+  });
+
+  // Kills: declaring the zone under a drifted id, or folding `cwKeyer` into
+  // the `rx-tx` zone — the shape MOR-1310 named as putting break-in choices
+  // between the operator and the unkey button.
+  it.each(DECLARES_CW_KEYER)('%s declares it under the stable `cw-keyer` id, alone in its zone', (id) => {
+    const manifest = ALL.find(([name]) => name === id)![1];
+    const zone = manifest.zones.find((z) => z.surfaces.includes('cwKeyer'))!;
+    expect(zone.id).toBe('cw-keyer');
+    expect(zone.surfaces).toEqual(['cwKeyer']);
+    expect(manifest.zones.find((z) => z.id === 'rx-tx')!.surfaces).toEqual(['rxTx']);
+  });
+
+  // Kills: making cwKeyer REQUIRED. A radio with no keyer must still resolve
+  // this layout; the surface self-gates on `view.cwKeyer`.
+  it.each(ALL)('%s does not require the cwKeyer surface', (_id, manifest) => {
     expect(manifest.requiredSemanticSurfaces).not.toContain('cwKeyer');
   });
 });
