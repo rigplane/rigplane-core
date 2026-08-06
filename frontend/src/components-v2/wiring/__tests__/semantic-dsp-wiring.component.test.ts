@@ -92,7 +92,18 @@ vi.mock('../command-bus', () => ({
   // as `makeVfoHandlers`/`makeTxHandlers` above.
   makeRxAudioHandlers: () => ({ onMonitorModeChange: h.noop, onAfLevelChange: h.noop }),
   makeAudioRoutingHandlers: () => ({ onFocusChange: h.noop, onSplitStereoChange: h.noop }),
-  makeModeHandlers: () => ({ onModInputChange: h.noop }),
+  // MOR-1304 — the wiring now also composes the modeFilter/filterPassband
+  // intent vocabulary; `makeModeHandlers` is composed at both call sites
+  // (rxAudio's MOD-input remedy and filterIntents), so the stub carries both.
+  // This fixture declares no filter capability, so none of these is
+  // reachable — same stand-in role as `makeVfoHandlers`/`makeTxHandlers` above.
+  makeModeHandlers: () => ({
+    onModInputChange: h.noop, onModeChange: h.noop, onDataModeChange: h.noop,
+  }),
+  makeFilterHandlers: () => ({
+    onFilterChange: h.noop, onFilterWidthChange: h.noop, onFilterShapeChange: h.noop,
+    onIfShiftChange: h.noop, onPbtInnerChange: h.noop, onPbtOuterChange: h.noop,
+  }),
   makeDspHandlers: () => ({
     onNrModeChange: h.nrMode, onNrLevelChange: h.nrLevel, onNbToggle: h.nbToggle,
     onNbLevelChange: h.nbLevel, onNbDepthChange: h.nbDepth, onNbWidthChange: h.nbWidth,
