@@ -194,24 +194,28 @@ function withMeters(state: ServerState): ServerState {
  * MOR-1351: hardened to a REAL radio's shape — IC-7610 (`rigs/ic7610.toml`),
  * the only dual-receiver profile in the tree and already this fixture's
  * implied topology (`receivers: 2, vfoScheme: 'main_sub'`) — modes/filters/
- * tags verbatim from that profile, with one exclusion:
+ * tags verbatim from that profile.
  *
- *  - `tuner`/`vox`/`compressor`/`monitor`/`drive_gain` (the `deriveTxAux`
- *    evidence tags): this harness (`fixtures/main.ts`) supplies NO resolved
- *    `SurfacePlan`, so `SemanticRadioSurfaces.svelte`'s `zoneOwning()` is
- *    unconditionally `null` and `TxAuxSurface` would render its controls
- *    ZONE-LESS rather than inside `tx-aux` — flipping every fixture's pinned
- *    `zonelessControls: 0` for a reason unrelated to this ticket. Confirmed
- *    by measurement: adding `tuner` alone (`deriveTxAux`'s cheapest evidence
- *    tag — `hasTuner` alone satisfies `hasEvidence`) flips 36/60 captures to
- *    `zone-less-control-count: 4` (the ATU button, ATU-tune button, and two
- *    disabled inputs, landing `NO-ZONE`). All five tags stay OUT here, unlike
- *    the cockpit vitest fixture where `render(defaultPlan())` supplies a real
- *    plan and `tuner` (pre-existing since MOR-1336/S4) lands inside `tx-aux`
- *    correctly. Follow-up ticket N1 will wire the plan and lift this
- *    exclusion together.
+ * MOR-1355 (N1 follow-up landed): the five `deriveTxAux` evidence tags
+ * (`tuner`/`vox`/`compressor`/`monitor`/`drive_gain`) are now INCLUDED — the
+ * reason they were withheld ("this harness supplies no resolved
+ * `SurfacePlan`, so every fixture would render the group ZONE-LESS") no
+ * longer holds universally: `fixtures/main.ts` can now supply a real
+ * `resolveSurfacePlan(dualReceiverCockpitLayout, …)` plan through Svelte
+ * context, exactly the `DualReceiverCockpit.component.test.ts` recipe. It
+ * still holds PER FIXTURE — only `topology-2-main-sub--planned` below opts
+ * in (`planned: true`); every other fixture stays plan-less on purpose (the
+ * ticket's instruction: the existing zone-less topologies still represent
+ * production's pre-navigation reference path). Measured consequence: with
+ * caps evidence for all five tags and no fixture state observing any of
+ * them, `TxAuxSurface` renders exactly 13 controls, all present-and-disabled
+ * (4 toggles + TUNE + 8 level inputs — see `TX_AUX_TOGGLES`/`TX_AUX_LEVELS`
+ * in `TxAuxSurface.svelte`) — inside `tx-aux` for the one planned fixture,
+ * outside every declared zone (`NO-ZONE`) everywhere else. Every affected
+ * `zonelessControls` pin below carries this count with its own rationale
+ * rather than a blanket default, per the MOR-1355 build report.
  *
- * `scope` is now `true` with a `'scope'` tag (matching the cockpit vitest
+ * `scope` is `true` with a `'scope'` tag (matching the cockpit vitest
  * fixture): `presentation-capabilities.ts`'s `agreed()` requires the boolean
  * and the tag to agree, so leaving the tag off while flipping the boolean
  * would itself raise `scope-capability-contradiction`. The MOR-1085
@@ -224,13 +228,13 @@ function withMeters(state: ServerState): ServerState {
 const baseCaps = (): Capabilities => ({
   model: 'fixture', scope: true, audio: true, tx: true,
   capabilities: [
-    'audio', 'tx', 'dual_rx', 'dual_watch', 'lan_dual_rx_audio_routing',
+    'audio', 'tx', 'dual_rx', 'tuner', 'dual_watch', 'lan_dual_rx_audio_routing',
     'af_level', 'rf_gain', 'squelch', 'attenuator', 'preamp', 'digisel', 'ip_plus',
     'antenna', 'rx_antenna', 'nb', 'nr', 'notch', 'apf', 'twin_peak', 'pbt',
     'filter_width', 'filter_shape', 'split', 'ssb_tx_bw', 'cw', 'break_in', 'rit', 'xit',
     'meters', 'data_mode', 'mod_input_routing', 'agc', 'power_control', 'dial_lock',
     'scan', 'bsr', 'main_sub_tracking', 'tuning_step', 'band_edge', 'xfc', 'system_settings',
-    'scope',
+    'scope', 'vox', 'compressor', 'monitor', 'drive_gain',
   ],
   receivers: 2, vfoScheme: 'main_sub',
   freqRanges: [{ start: 1800000, end: 54000000, label: 'HF+6m', bands: [
@@ -355,11 +359,35 @@ export interface Fixture {
    * id from its cockpit sibling.
    */
   layout?: 'cockpit' | 'reference';
+  /**
+   * MOR-1355. `true` ⇒ `fixtures/main.ts` mounts this fixture with a REAL
+   * resolved `SurfacePlan` (`resolveSurfacePlan(dualReceiverCockpitLayout,
+   * …)`) supplied through Svelte context — the same recipe
+   * `DualReceiverCockpit.component.test.ts`'s `render(defaultPlan())` uses.
+   * Default `false`/absent: the pre-MOR-1355 plan-less mount, unchanged.
+   */
+  planned?: boolean;
   expect: Expectation;
 }
 
 const DUAL_ZONES = ['primary-vfo', 'secondary-vfo', 'global', 'rx-tx'] as const;
 const SINGLE_ZONES = ['primary-vfo', 'global', 'rx-tx'] as const;
+/**
+ * MOR-1355. `dualReceiverCockpitLayout` declares a `tx-aux` zone (MOR-1336/
+ * S4); a `planned` fixture resolves a real plan against it, so `tx-aux`
+ * genuinely comes last in DOM order, after `rx-tx`.
+ */
+const DUAL_ZONES_PLANNED = [...DUAL_ZONES, 'tx-aux'] as const;
+/**
+ * MOR-1355. The exact `TxAuxSurface` control count once `baseCaps` carries
+ * all five `deriveTxAux` evidence tags and no fixture state observes any of
+ * them: 4 toggles (ATU/VOX/COMP/MON) + 1 TUNE button + 8 level inputs
+ * (rfPower/micGain/driveGain/voxGain/antiVoxGain/voxDelay/compressorLevel/
+ * monitorLevel) = 13, every one present-and-disabled
+ * (`TxAuxSurface.svelte`'s `TX_AUX_TOGGLES`/`TX_AUX_LEVELS`). Measured via
+ * `fixtures/capture.mjs`, not assumed — see the MOR-1355 build report.
+ */
+const TX_AUX_ZONELESS_CONTROLS = 13;
 
 /** Shared shape of every healthy `2/main_sub` fixture — only TX state varies. */
 const mainSubExpect = (over: Partial<Expectation> = {}): Expectation => ({
@@ -441,7 +469,11 @@ const CORE_FIXTURES: readonly Fixture[] = [
       tiles: 2, selectsEnabled: 1, selectsDisabled: 0,
       radioWideSwitchesDisabled: false, keyDisabled: false,
       rfLabel: 'RX', sessionLabel: 'ready',
-      faultResetPresent: false, modInputWarningPresent: false, zonelessControls: 0,
+      faultResetPresent: false, modInputWarningPresent: false,
+      // MOR-1355: `abSharedCaps` inherits `baseCaps`'s txAux evidence and this
+      // fixture supplies no plan (`planned` unset), so TxAuxSurface's 13
+      // controls land NO-ZONE.
+      zonelessControls: TX_AUX_ZONELESS_CONTROLS,
     },
   },
   {
@@ -490,7 +522,9 @@ const CORE_FIXTURES: readonly Fixture[] = [
       tiles: 2, selectsEnabled: 1, selectsDisabled: 0,
       radioWideSwitchesDisabled: false, keyDisabled: false,
       rfLabel: 'RX', sessionLabel: 'ready',
-      faultResetPresent: false, modInputWarningPresent: false, zonelessControls: 0,
+      faultResetPresent: false, modInputWarningPresent: false,
+      // MOR-1355: same reasoning as `topology-2-ab-shared` above.
+      zonelessControls: TX_AUX_ZONELESS_CONTROLS,
     },
   },
   {
@@ -516,6 +550,10 @@ const CORE_FIXTURES: readonly Fixture[] = [
         audioFftScope: { structural: false, operational: false },
       },
       rxAudioSurfacePresent: false,
+      // MOR-1355: `mainSubCaps` (= `baseCaps`) now carries txAux evidence and
+      // this fixture supplies no plan — see `topology-2-main-sub--planned`
+      // below for the plan-ful twin where this is honestly 0.
+      zonelessControls: TX_AUX_ZONELESS_CONTROLS,
     }),
   },
   {
@@ -533,13 +571,19 @@ const CORE_FIXTURES: readonly Fixture[] = [
         audioFftScope: { structural: true, operational: true },
       },
       rxAudioSurfacePresent: false,
+      // MOR-1355: `audioOnlyScopeCaps` inherits `baseCaps`'s txAux evidence
+      // and this fixture supplies no plan.
+      zonelessControls: TX_AUX_ZONELESS_CONTROLS,
     }),
   },
   {
     id: 'sub-unobserved',
     what: 'startup window: SUB never observed — strip present, one explicit unknown slot, select disabled.',
     state: mainSubSubUnobserved, caps: mainSubCaps, tx: tx({}),
-    expect: mainSubExpect({ tiles: 3, selectsEnabled: 1, selectsDisabled: 1 }),
+    // MOR-1355: `mainSubCaps` carries txAux evidence, no plan supplied.
+    expect: mainSubExpect({
+      tiles: 3, selectsEnabled: 1, selectsDisabled: 1, zonelessControls: TX_AUX_ZONELESS_CONTROLS,
+    }),
   },
   {
     id: 'dual-rx-unavailable',
@@ -553,7 +597,8 @@ const CORE_FIXTURES: readonly Fixture[] = [
     id: 'tx-phase-rx',
     what: 'TX idle — RF receiving, session ready, key enabled, unkey ungated.',
     state: () => withMeters(mainSubState('MAIN')), caps: mainSubCaps, tx: tx({}),
-    expect: mainSubExpect(),
+    // MOR-1355: `mainSubCaps` carries txAux evidence, no plan supplied.
+    expect: mainSubExpect({ zonelessControls: TX_AUX_ZONELESS_CONTROLS }),
   },
   {
     id: 'tx-phase-pending',
@@ -563,7 +608,11 @@ const CORE_FIXTURES: readonly Fixture[] = [
       phase: 'key-confirm-pending', intent: 'latched', guard: { leaseId: 'L1' },
       radioTx: 'off', txRisk: 'uncertain', mayOwnKey: true,
     }),
-    expect: mainSubExpect({ keyDisabled: true, rfLabel: 'TX?', sessionLabel: 'keying' }),
+    // MOR-1355: `mainSubCaps` carries txAux evidence, no plan supplied.
+    expect: mainSubExpect({
+      keyDisabled: true, rfLabel: 'TX?', sessionLabel: 'keying',
+      zonelessControls: TX_AUX_ZONELESS_CONTROLS,
+    }),
   },
   {
     id: 'tx-phase-tx',
@@ -573,34 +622,46 @@ const CORE_FIXTURES: readonly Fixture[] = [
       phase: 'active', intent: 'latched', guard: { leaseId: 'L1' },
       radioTx: 'on', txRisk: 'confirmed-on', mayOwnKey: true,
     }),
-    expect: mainSubExpect({ keyDisabled: true, rfLabel: 'TX', sessionLabel: 'key down' }),
+    // MOR-1355: `mainSubCaps` carries txAux evidence, no plan supplied.
+    expect: mainSubExpect({
+      keyDisabled: true, rfLabel: 'TX', sessionLabel: 'key down',
+      zonelessControls: TX_AUX_ZONELESS_CONTROLS,
+    }),
   },
   {
     id: 'tx-phase-fault',
     what: 'TX fault — session fault, fault line shown, the App-owned fault reset affordance renders.',
     state: () => withMeters(mainSubState('MAIN')), caps: mainSubCaps,
     tx: tx({ phase: 'failed', radioTx: 'unknown', txRisk: 'uncertain', fault: 'audio-failed' }),
+    // MOR-1355: `mainSubCaps` carries txAux evidence, no plan supplied.
     expect: mainSubExpect({
       keyDisabled: true, rfLabel: 'TX?', sessionLabel: 'fault',
-      faultResetPresent: true, zonelessControls: 0,
+      faultResetPresent: true, zonelessControls: TX_AUX_ZONELESS_CONTROLS,
     }),
   },
   {
     id: 'connection-loss-stale',
     what: 'radio link lost, values retained but every field STALE — every fact degrades to unknown.',
     state: () => mainSubState('MAIN', stale), caps: mainSubCaps, tx: tx({}),
+    // MOR-1355: `mainSubCaps` carries txAux evidence, no plan supplied.
     expect: mainSubExpect({
       stripActive: [false, false], selectsEnabled: 4, selectsDisabled: 0,
       radioWideSwitchesDisabled: true, keyDisabled: true,
+      zonelessControls: TX_AUX_ZONELESS_CONTROLS,
     }),
   },
   {
     id: 'connection-loss-state-null',
     what: 'reconnect window — capabilities known, no state payload at all; everything present and inert.',
     state: () => null, caps: mainSubCaps, tx: tx({}),
+    // MOR-1355: `toRadioViewModel` gates only on `caps` being non-null
+    // (`radio-view-model-adapter.ts:1195`), so `mainSubCaps`'s txAux evidence
+    // still emits the group here even though `state` is null — no plan
+    // supplied, so still NO-ZONE.
     expect: mainSubExpect({
       stripActive: [false, false], tiles: 2, selectsEnabled: 0, selectsDisabled: 2,
       radioWideSwitchesDisabled: true, keyDisabled: true,
+      zonelessControls: TX_AUX_ZONELESS_CONTROLS,
     }),
   },
   {
@@ -631,9 +692,14 @@ const CORE_FIXTURES: readonly Fixture[] = [
     state: () => mainSubState('MAIN'), caps: mainSubCaps,
     tx: tx({ phase: 'failed', radioTx: 'unknown', txRisk: 'uncertain', fault: 'audio-failed' }),
     modGuard: { visible: true, sourceLabel: 'MIC' },
+    // MOR-1355: `mainSubCaps` carries txAux evidence, no plan supplied — the
+    // acceptance gate this fixture proves (the three TX-adjacent alerts are
+    // inside `rx-tx`, never zone-less) is UNCHANGED; the 13 txAux controls
+    // are a separate, honestly-disclosed zone-less class alongside it.
     expect: mainSubExpect({
       keyDisabled: true, rfLabel: 'TX?', sessionLabel: 'fault',
-      faultResetPresent: true, modInputWarningPresent: true, zonelessControls: 0,
+      faultResetPresent: true, modInputWarningPresent: true,
+      zonelessControls: TX_AUX_ZONELESS_CONTROLS,
     }),
   },
 ];
@@ -712,16 +778,68 @@ function toReferenceFixture(f: Fixture): Fixture {
 }
 
 /**
+ * MOR-1355 — the harness's first PLAN-FUL topology. `planned: true` makes
+ * `fixtures/main.ts` mount this fixture with a REAL
+ * `resolveSurfacePlan(dualReceiverCockpitLayout, …)` plan (default
+ * workspace — no operator preference), the same recipe
+ * `DualReceiverCockpit.component.test.ts`'s `render(defaultPlan())` proves.
+ * Same radio as `topology-2-main-sub` (state/caps/tx all byte-identical) so
+ * the ONLY variable is plan-ful vs plan-less — a controlled pair, not a new
+ * radio shape.
+ *
+ * Kept OUT of `CORE_FIXTURES` (and so out of `toReferenceFixture`'s
+ * `--reference` derivation) deliberately: a `--reference` twin would mount
+ * `ReferenceLayout`/`desktop-v2`'s wiring, whose manifest
+ * (`desktopV2Layout`) declares a DIFFERENT zone set (`receiver-deck`,
+ * `meters`, `scope-display`, `filter`, `rf-front-end` in addition to
+ * `tx-aux`) — plumbing that through is real, separately-scoped work
+ * (`main.ts` only resolves `dualReceiverCockpitLayout` today), not implied
+ * by this one topology. Left as a named follow-up in the build report
+ * rather than silently mounted plan-less under a `--planned` name that
+ * would claim more than it does.
+ *
+ * `zones` gains `tx-aux` (`DUAL_ZONES_PLANNED`) — the manifest's declared
+ * zone the resolved plan actually binds — and `zonelessControls: 0` is now
+ * HONEST: the same 13 `TxAuxSurface` controls every plan-less `main_sub`
+ * fixture above counts as NO-ZONE land inside `data-zone-id="tx-aux"` here.
+ * `assertions.ts`'s `focus-order-is-zone-order` proves the ordering claim:
+ * the zoned index sequence must still end at the LAST declared zone, which
+ * is `tx-aux` now, not `rx-tx` — MOR-1344's zone-INDEPENDENT
+ * `logical-focus-order-vfo-precedes-rx-tx-authority` is untouched by any of
+ * this (it never reads `data-zone-id` at all), so both the zone-aware and
+ * zone-free tab-order invariants are exercised on the SAME capture.
+ */
+const PLANNED_FIXTURES: readonly Fixture[] = [
+  {
+    id: 'topology-2-main-sub--planned',
+    what: '2/main_sub with a REAL resolved SurfacePlan (dualReceiverCockpitLayout, default '
+      + 'workspace) — tx-aux is genuinely BOUND, not merely declared; zonelessControls is honest 0.',
+    state: () => withMeters(mainSubState('MAIN')), caps: mainSubCaps, tx: tx({}),
+    planned: true,
+    expect: mainSubExpect({
+      zones: DUAL_ZONES_PLANNED,
+      scopeFacts: {
+        hardwareScope: { structural: true, operational: false },
+        audioFftScope: { structural: false, operational: false },
+      },
+      rxAudioSurfacePresent: false,
+    }),
+  },
+];
+
+/**
  * The full MOR-1085 grid: every `CORE_FIXTURES` (dual-receiver-cockpit)
  * entry, plus its reference-layout twin — except `tx-adjacent-alerts`, whose
  * whole point is the cockpit's OWN zone-containment acceptance gate (b) and
  * has no reference-layout equivalent (the reference/single composition has
  * no zone concept for the three alerts to be "inside" or "outside" of; see
- * `zonedComposition` in `assertions.ts`).
+ * `zonedComposition` in `assertions.ts`) — plus MOR-1355's `PLANNED_FIXTURES`
+ * (no reference twin either; see the comment above `PLANNED_FIXTURES`).
  */
 export const FIXTURES: readonly Fixture[] = [
   ...CORE_FIXTURES,
   ...CORE_FIXTURES.filter((f) => f.id !== 'tx-adjacent-alerts').map(toReferenceFixture),
+  ...PLANNED_FIXTURES,
 ];
 
 export const fixtureById = (id: string): Fixture | undefined =>

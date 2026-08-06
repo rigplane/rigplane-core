@@ -204,7 +204,12 @@ function mainSubState(active: 'MAIN' | 'SUB' = 'MAIN'): ServerState {
  * (`render(defaultPlan())`, used by every MOR-1069 assertion in this file), so
  * `zoneOwning()` is NOT unconditionally null here — the earlier claim that it
  * was (pre-MOR-1351) was wrong for this file; that reasoning only holds for
- * `fixtures/catalog.ts`'s browser harness, which has no plan context at all.
+ * `fixtures/catalog.ts`'s browser harness, which had NO plan context at all
+ * pre-MOR-1355. As of MOR-1355 the browser harness ALSO resolves a plan, but
+ * only for its one `topology-2-main-sub--planned` fixture — every other
+ * `fixtures/catalog.ts` fixture is still plan-less by design (see that
+ * ticket's `main.ts`/`catalog.ts` comments), so the statement still holds for
+ * every capture except that one.
  *
  * MOR-1351: `modes`/`filters` and the rest of the capability tags were an
  * inert placeholder (`[]` / four tags) — the view-model groups those tags
