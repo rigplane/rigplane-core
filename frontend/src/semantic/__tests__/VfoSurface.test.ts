@@ -787,9 +787,21 @@ const tunableTile = topologyFixtures['2/main_sub'];
 
 /** The one readout slot per tile — the composition invariant's subject. */
 const slots = (t: HTMLElement) => [...t.querySelectorAll<HTMLElement>('[data-vfo-freq]')];
-/** The ACTIVE tile's slot — since B1, the only one that may carry tuning. */
+/** The radio-wide ACTIVE tile's slot. */
 const activeSlot = (t: HTMLElement) => slots(t).find(
   (sl) => (sl.closest('[data-vfo-tile]') as HTMLElement).dataset.vfoActive === 'true')!;
+/**
+ * MOR-1335 — every slot whose tile is its OWN receiver's active slot: since
+ * G4 that, not the radio-wide active flag, is what may carry tuning. On a
+ * single-receiver topology the two sets coincide, so the pre-G4 tests that
+ * read `activeSlot` above are unchanged there.
+ */
+const activeSlots = (t: HTMLElement) => slots(t).filter(
+  (sl) => (sl.closest('[data-vfo-tile]') as HTMLElement).dataset.vfoActiveSlot === 'true');
+const tileOf = (sl: HTMLElement) => sl.closest('[data-vfo-tile]') as HTMLElement;
+/** The slots that actually mounted a digit control — the observable outcome. */
+const withDigits = (t: HTMLElement) => slots(t).filter((sl) => sl.querySelectorAll('.digit').length > 0);
+const tileId = (sl: HTMLElement) => `${tileOf(sl).dataset.vfoReceiver}:${tileOf(sl).dataset.vfoSlot}`;
 
 describe('per-digit tuning (MOR-1322) — structural gating', () => {
   // Kills: mounting the control with no intent wired, which would give the
@@ -801,12 +813,13 @@ describe('per-digit tuning (MOR-1322) — structural gating', () => {
   });
 
   // The non-vacuous half.
-  it('mounts the digit control on the ACTIVE tile once the intent is wired', () => {
+  it('mounts the digit control on each receiver\'s ACTIVE-SLOT tile once the intent is wired', () => {
     const t = mountSurface({ viewModel: tunableTile, onTuneFrequency: vi.fn() });
     expect(slots(t)).toHaveLength(tunableTile.vfos.length);
-    // Exactly one control per receiver-scoped intent (B1) — never one per tile.
+    // MOR-1335: exactly one control per RECEIVER — never one per tile (B1's
+    // wrong-VFO hazard), and no longer only one per radio (G4's parity gap).
     expect(slots(t).filter((sl) => sl.dataset.freqTunable === 'true'))
-      .toHaveLength(tunableTile.vfos.filter((v) => v.isActive).length);
+      .toHaveLength(tunableTile.vfos.filter((v) => v.isActiveSlot).length);
     expect(activeSlot(t).querySelectorAll('.digit').length).toBeGreaterThan(0);
   });
 
@@ -932,13 +945,20 @@ describe('per-digit tuning (MOR-1322) — the operational guard, pinned independ
   // on its own: markup says inert, handler enforces inert.
   it('MUTATION KILL: a strip-disabled slot is marked inert for assistive tech', () => {
     const t = mountSurface({ viewModel: tunableTile, onTuneFrequency: vi.fn(), disabled: true });
-    // The ACTIVE tile is the one that mounts a control, so it is the one that
-    // must be marked inert; the rest are structurally absent (B1) and must NOT
-    // claim `aria-disabled` — absent is not inert.
-    expect(activeSlot(t).dataset.freqTunable).toBe('false');
-    expect(activeSlot(t).getAttribute('aria-disabled')).toBe('true');
-    for (const slot of slots(t).filter((sl) => sl !== activeSlot(t))) {
-      expect(slot.hasAttribute('aria-disabled')).toBe(false);
+    // Each receiver's ACTIVE-SLOT tile is the one that mounts a control
+    // (MOR-1335), so those are the ones that must be marked inert; the rest are
+    // structurally absent (B1) and must NOT claim `aria-disabled` — absent is
+    // not inert. Non-vacuous on both sides: `2/main_sub` has two of each.
+    const inert = activeSlots(t);
+    expect(inert.length).toBeGreaterThan(0);
+    for (const slot of inert) {
+      expect(slot.dataset.freqTunable, tileId(slot)).toBe('false');
+      expect(slot.getAttribute('aria-disabled'), tileId(slot)).toBe('true');
+    }
+    const absent = slots(t).filter((sl) => !inert.includes(sl));
+    expect(absent.length).toBeGreaterThan(0);
+    for (const slot of absent) {
+      expect(slot.hasAttribute('aria-disabled'), tileId(slot)).toBe(false);
     }
   });
 
@@ -957,14 +977,17 @@ describe('per-digit tuning (MOR-1322) — the operational guard, pinned independ
   // absence cannot be a broken mount.
   it('an unknown-frequency tile carries no control while its sibling does', () => {
     const base = topologyFixtures['2/main_sub'];
+    // Index 2 is SUB's ACTIVE-SLOT tile: since MOR-1335 it would otherwise
+    // mount a control, so nulling its frequency is a real structural gate test
+    // rather than a tile that was absent for the slot reason anyway.
     const model = validateRadioViewModel({
       ...base,
-      vfos: base.vfos.map((v, i) => (i === 1 ? { ...v, frequencyHz: null } : v)),
+      vfos: base.vfos.map((v, i) => (i === 2 ? { ...v, frequencyHz: null } : v)),
     });
     const onTuneFrequency = vi.fn();
     const t = mountSurface({ viewModel: model, onTuneFrequency });
     expect(slots(t)[0].querySelectorAll('.digit').length).toBeGreaterThan(0);
-    expect(slots(t)[1].querySelectorAll('.digit')).toHaveLength(0);
+    expect(slots(t)[2].querySelectorAll('.digit')).toHaveLength(0);
     const digits = slots(t)[0].querySelectorAll('.digit');
     wheel(digits[digits.length - 1]);
     flushSync();
@@ -979,18 +1002,19 @@ describe('per-digit tuning (MOR-1322) — the SLOT axis (verification B1)', () =
 
   /**
    * The tune intent is RECEIVER-scoped: `set_freq {receiver}` writes that
-   * receiver's ACTIVE VFO. A control on an inactive tile would therefore take
-   * its step from that tile's digits and move a DIFFERENT VFO — the operator
-   * scrolls B and A moves. Only the active tile may carry tuning.
+   * receiver's ACTIVE VFO. A control on a tile that is not its receiver's
+   * active slot would therefore take its step from that tile's digits and move
+   * a DIFFERENT VFO — the operator scrolls B and A moves. MOR-1335 states that
+   * rule per RECEIVER (`isActiveSlot`) instead of per RADIO (`isActive`): the
+   * hazard is intra-receiver, so the qualification must be too.
    */
   it.each(['1/ab', '2/main_sub', '2/ab_shared'] as const)(
-    'on %s, every tile carrying a tuning control is the active one', (id) => {
+    'on %s, every tile carrying a tuning control is its receiver\'s active slot', (id) => {
       const t = mountSurface({ viewModel: topologyFixtures[id], onTuneFrequency: vi.fn() });
       for (const slot of slots(t)) {
-        const tile = slot.closest('[data-vfo-tile]') as HTMLElement;
         const tunable = slot.querySelectorAll('.digit').length > 0;
-        expect(tunable, `${id} ${tile.dataset.vfoReceiver}:${tile.dataset.vfoSlot}`)
-          .toBe(tile.dataset.vfoActive === 'true');
+        expect(tunable, `${id} ${tileId(slot)}`)
+          .toBe(tileOf(slot).dataset.vfoActiveSlot === 'true');
       }
     },
   );
@@ -1034,7 +1058,10 @@ describe('per-digit tuning (MOR-1322) — the SLOT axis (verification B1)', () =
     const base = topologyFixtures['1/ab'];
     const flipped = validateRadioViewModel({
       ...base,
-      vfos: base.vfos.map((v) => ({ ...v, isActive: !v.isActive })),
+      // Both flags move together: on a single-receiver topology "the active
+      // VFO" and "this receiver's active slot" are the same event, and the
+      // MOR-1335 validator refuses `isActive` without `isActiveSlot`.
+      vfos: base.vfos.map((v) => ({ ...v, isActive: !v.isActive, isActiveSlot: !v.isActiveSlot })),
     });
     const before = mountSurface({ viewModel: base, onTuneFrequency: vi.fn() });
     const after = mountSurface({ viewModel: flipped, onTuneFrequency: vi.fn() });
@@ -1061,6 +1088,154 @@ describe('per-digit tuning (MOR-1322) — the SLOT axis (verification B1)', () =
     // control and still refuses.
     expect(inactiveTile.querySelectorAll('.digit')).toHaveLength(0);
     expect(onTuneFrequency).not.toHaveBeenCalled();
+  });
+});
+
+// ── MOR-1335 (vocabulary gap G4): per-receiver active slot ─────────────────
+//
+// S3b gated tuning on `isActive`, which is GLOBALLY unique, so on `2/main_sub`
+// (IC-7610) exactly one tile on the whole radio was tunable and the SUB
+// receiver lost the per-digit tuning the legacy `VfoPanel` had (one widget per
+// RECEIVER). G4 restores it by qualifying the gate per receiver.
+//
+// The widening must not reintroduce the hazard it replaced. The adversarial
+// property, asserted below in both directions: a tune raised on a receiver's
+// tile dispatches to THAT receiver, carrying a value derived from THAT tile's
+// own frequency. Cross-dispatch (SUB's gesture moving MAIN, or MAIN's value
+// landing on SUB) is impossible by construction, and the intra-receiver hazard
+// B1 found stays closed — an inactive slot of the SAME receiver never mounts.
+describe('per-receiver tuning (MOR-1335) — cross-dispatch is impossible', () => {
+  const wheelUp = (el: Element) =>
+    el.dispatchEvent(new WheelEvent('wheel', { deltaY: -1, bubbles: true, cancelable: true }));
+  /** The 1 Hz digit — a wheel here steps the frequency by exactly one. */
+  const onesDigit = (sl: HTMLElement) => {
+    const digits = sl.querySelectorAll('.digit');
+    return digits[digits.length - 1];
+  };
+
+  /**
+   * `2/main_sub` with EACH receiver's active slot named independently — the
+   * IC-7610 axis this ticket exists for. `isActive` stays radio-wide (it is
+   * the active RECEIVER's active slot); `isActiveSlot` is the per-receiver
+   * fact, and `null` models a receiver whose active slot was never observed.
+   */
+  function mainSubActiveSlots(
+    mainSlot: 'A' | 'B' | null, subSlot: 'A' | 'B' | null,
+  ): RadioViewModel {
+    const base = topologyFixtures['2/main_sub'];
+    const activeReceiver = base.activeReceiver;
+    return validateRadioViewModel({
+      ...base,
+      vfos: base.vfos.map((v) => {
+        const wanted = v.receiver === 'MAIN' ? mainSlot : subSlot;
+        const isActiveSlot = v.slot.kind === 'slotted' && v.slot.id === wanted;
+        return {
+          ...v,
+          isActiveSlot,
+          isActive: isActiveSlot && activeReceiver.status === 'known'
+            && activeReceiver.receiver === v.receiver,
+        };
+      }),
+    });
+  }
+
+  // THE PARITY GAP, stated directly: on the dual-receiver bench radio the SUB
+  // receiver must be tunable again. Red before G4 (one control per RADIO).
+  it('2/main_sub mounts exactly one control per RECEIVER, MAIN and SUB', () => {
+    const t = mountSurface({ viewModel: tunableTile, onTuneFrequency: vi.fn() });
+    expect(withDigits(t).map(tileId)).toEqual(['MAIN:A', 'SUB:A']);
+  });
+
+  // THE ADVERSARIAL PROPERTY. Both controls are exercised in ONE mount, so a
+  // gate that leaked a receiver would show up as the wrong pair here — and the
+  // frequency proves the VALUE could not have come from another tile either.
+  it('each control dispatches its OWN receiver and its OWN tile frequency', () => {
+    const model = mainSubActiveSlots('A', 'B');
+    const onTuneFrequency = vi.fn();
+    const t = mountSurface({ viewModel: model, onTuneFrequency });
+    const controls = withDigits(t);
+    expect(controls.map(tileId)).toEqual(['MAIN:A', 'SUB:B']);
+    for (const slot of controls) wheelUp(onesDigit(slot));
+    flushSync();
+    const mainA = model.vfos.find((v) => v.receiver === 'MAIN' && v.isActiveSlot)!;
+    const subB = model.vfos.find((v) => v.receiver === 'SUB' && v.isActiveSlot)!;
+    // Non-vacuous: the two tiles hold DIFFERENT frequencies, so a swapped
+    // value cannot coincide with the right one.
+    expect(mainA.frequencyHz).not.toBe(subB.frequencyHz);
+    expect(onTuneFrequency.mock.calls).toEqual([
+      ['MAIN', mainA.frequencyHz! + 1],
+      ['SUB', subB.frequencyHz! + 1],
+    ]);
+  });
+
+  // The other direction of the same property: SUB active-slot B while MAIN is
+  // the active RECEIVER. A gate that read the radio-wide flag would dispatch
+  // MAIN here; a gate that read slot identity would pick SUB A.
+  it('a SUB gesture never reaches MAIN, even while MAIN is the active receiver', () => {
+    const model = mainSubActiveSlots('A', 'B');
+    expect(model.activeReceiver).toEqual({ status: 'known', receiver: 'MAIN' });
+    const onTuneFrequency = vi.fn();
+    const t = mountSurface({ viewModel: model, onTuneFrequency });
+    const sub = withDigits(t).find((sl) => tileOf(sl).dataset.vfoReceiver === 'SUB')!;
+    expect(tileId(sub)).toBe('SUB:B');
+    wheelUp(onesDigit(sub));
+    flushSync();
+    expect(onTuneFrequency).toHaveBeenCalledTimes(1);
+    expect(onTuneFrequency.mock.calls[0][0]).toBe('SUB');
+  });
+
+  // B1's hazard, still closed: the INACTIVE slot of the SAME receiver mounts
+  // nothing and dispatches nothing, on BOTH receivers at once.
+  it('the inactive slot of the same receiver stays non-tunable on both receivers', () => {
+    const onTuneFrequency = vi.fn();
+    const t = mountSurface({ viewModel: mainSubActiveSlots('A', 'B'), onTuneFrequency });
+    const inactive = slots(t).filter((sl) => tileOf(sl).dataset.vfoActiveSlot !== 'true');
+    expect(inactive.map(tileId)).toEqual(['MAIN:B', 'SUB:A']);
+    for (const slot of inactive) {
+      expect(slot.querySelectorAll('.digit'), tileId(slot)).toHaveLength(0);
+      expect(slot.dataset.freqTunable, tileId(slot)).toBe('false');
+      wheelUp(slot);
+    }
+    flushSync();
+    expect(onTuneFrequency).not.toHaveBeenCalled();
+  });
+
+  // FAILS CLOSED. An unobserved active-slot reading for SUB (the adapter's
+  // `activeSlot === null`) leaves NEITHER SUB tile tunable — the unknown is
+  // never guessed into 'A'. MAIN keeps its control, so the absence is the
+  // per-receiver gate and not a dead surface.
+  it('an unobserved active slot leaves that receiver untunable while the other still tunes', () => {
+    const onTuneFrequency = vi.fn();
+    const t = mountSurface({ viewModel: mainSubActiveSlots('A', null), onTuneFrequency });
+    expect(withDigits(t).map(tileId)).toEqual(['MAIN:A']);
+    for (const slot of slots(t).filter((sl) => tileOf(sl).dataset.vfoReceiver === 'SUB')) {
+      wheelUp(slot);
+    }
+    flushSync();
+    expect(onTuneFrequency).not.toHaveBeenCalled();
+    wheelUp(onesDigit(withDigits(t)[0]));
+    flushSync();
+    expect(onTuneFrequency.mock.calls).toEqual([['MAIN', tunableTile.vfos[0].frequencyHz! + 1]]);
+  });
+
+  // The unslotted topology: one position per receiver IS that receiver's
+  // active slot, so `2/ab_shared` regains BOTH controls. Kills a gate keyed to
+  // a slotted `id` that would leave every unslotted position untunable.
+  it('2/ab_shared tunes both receivers, each on its own position', () => {
+    const onTuneFrequency = vi.fn();
+    const t = mountSurface({ viewModel: topologyFixtures['2/ab_shared'], onTuneFrequency });
+    expect(withDigits(t).map(tileId)).toEqual(['MAIN:unslotted', 'SUB:unslotted']);
+    for (const slot of withDigits(t)) wheelUp(onesDigit(slot));
+    flushSync();
+    expect(onTuneFrequency.mock.calls.map((c) => c[0])).toEqual(['MAIN', 'SUB']);
+  });
+
+  // The single-receiver topologies are UNCHANGED by G4: one receiver has one
+  // active slot, so the pre-G4 "one tunable tile per radio" still holds there.
+  it.each(['1/single', '1/ab'] as const)('%s still carries exactly one control', (id) => {
+    const t = mountSurface({ viewModel: topologyFixtures[id], onTuneFrequency: vi.fn() });
+    expect(withDigits(t)).toHaveLength(1);
+    expect(tileOf(withDigits(t)[0]).dataset.vfoActive).toBe('true');
   });
 });
 

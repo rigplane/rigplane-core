@@ -65,7 +65,30 @@ export interface VfoViewModel {
   frequencyHz: number | null;
   mode: string | null;
   filter: string | null;
+  /** The ACTIVE RECEIVER's active VFO — globally unique across the radio. */
   isActive: boolean;
+  /**
+   * MOR-1335 (vocabulary gap G4): this VFO is the active slot OF ITS OWN
+   * RECEIVER, whether or not that receiver is the radio-wide active one. The
+   * decomposition is exact — `isActive === isActiveSlot && (this receiver is
+   * the active receiver)` — so this is an ADDITIVE qualification of a fact the
+   * vocabulary already carried, not a second opinion about it.
+   *
+   * It exists because the receiver-scoped intents (`set_freq {receiver}`)
+   * write THAT receiver's active VFO: a consumer gating such an intent needs
+   * "the slot this receiver would write", and `isActive` can only name one
+   * such slot per RADIO. On `2/main_sub` that left the SUB receiver with no
+   * addressable VFO at all (the S3b parity gap).
+   *
+   * Unobserved fails CLOSED: a slotted position whose receiver's active-slot
+   * reading was never seen is `false` on BOTH slots — never guessed onto 'A',
+   * the same doctrine `slot: {kind:'unknown'}` follows. An UNSLOTTED position
+   * (and the single unknown-slot position of a receiver whose slot view was
+   * never observed) is `true`: it is the only position that receiver has, it
+   * reads that receiver's own top-level frequency, and there is no second VFO
+   * for a receiver-scoped write to land on instead.
+   */
+  isActiveSlot: boolean;
   isTxTarget: boolean;
 }
 
@@ -1111,7 +1134,11 @@ function validateAvailability(value: unknown, path: string): Availability {
 
 function validateVfo(value: unknown, path: string): VfoViewModel {
   const v = record(value, path);
-  exactKeys(v, ['receiver', 'slot', 'label', 'frequencyHz', 'mode', 'filter', 'isActive', 'isTxTarget'], path);
+  exactKeys(
+    v,
+    ['receiver', 'slot', 'label', 'frequencyHz', 'mode', 'filter', 'isActive', 'isActiveSlot', 'isTxTarget'],
+    path,
+  );
   return {
     receiver: oneOf(v.receiver, RECEIVER_IDS, `${path}.receiver`),
     slot: validateVfoSlot(v.slot, `${path}.slot`),
@@ -1120,6 +1147,7 @@ function validateVfo(value: unknown, path: string): VfoViewModel {
     mode: nullableString(v.mode, `${path}.mode`),
     filter: nullableString(v.filter, `${path}.filter`),
     isActive: bool(v.isActive, `${path}.isActive`),
+    isActiveSlot: bool(v.isActiveSlot, `${path}.isActiveSlot`),
     isTxTarget: bool(v.isTxTarget, `${path}.isTxTarget`),
   };
 }
@@ -1570,11 +1598,31 @@ export function validateRadioViewModel(value: unknown): RadioViewModel {
   if (txPermit.status === 'allowed' && txTarget.status === 'unknown') {
     invalid('$.txPermit', "'allowed' only when txTarget is known (fail-open otherwise)");
   }
+  // MOR-1335 (G4): `isActiveSlot` is what a consumer gates a RECEIVER-SCOPED
+  // write on (`set_freq {receiver}` moves that receiver's active VFO), so the
+  // two invariants below are the safety property of that gate, checked in the
+  // vocabulary rather than trusted to one adapter:
+  //   (a) at most ONE active slot per receiver — otherwise two tiles of the
+  //       same receiver would both claim the VFO a single write can reach, and
+  //       one of them would move a DIFFERENT VFO than its own digits show;
+  //   (b) `isActive` implies `isActiveSlot` — the radio-wide active VFO is by
+  //       definition its own receiver's active slot, and a model that says
+  //       otherwise contradicts itself about which VFO the radio is on.
+  const activeSlotOf = new Set<ReceiverId>();
   vfos.forEach((vfo, i) => {
     const matches = txTarget.status === 'known'
       && vfo.receiver === txTarget.receiver && slotEqual(vfo.slot, txTarget.slot);
     if (vfo.isTxTarget && !matches) {
       invalid(`$.vfos[${i}].isTxTarget`, 'true only on the VFO matching a known txTarget');
+    }
+    if (vfo.isActive && !vfo.isActiveSlot) {
+      invalid(`$.vfos[${i}].isActive`, 'true only on a VFO that is its own receiver\'s active slot');
+    }
+    if (vfo.isActiveSlot) {
+      if (activeSlotOf.has(vfo.receiver)) {
+        invalid(`$.vfos[${i}].isActiveSlot`, `at most one active slot per receiver (${vfo.receiver})`);
+      }
+      activeSlotOf.add(vfo.receiver);
     }
   });
 

@@ -1269,16 +1269,27 @@ export function toRadioViewModel(
         // unknown slot identity. Synthesising 'A' here is exactly the
         // fabrication MOR-988 §3.2 forbids.
         : [{ slot: { kind: 'unknown' }, base: `${key}.`, filterKey: 'filter', src: rx }];
-    return positions.map(({ slot, base, filterKey, src }) => ({
-      receiver,
-      slot,
-      label: slot.kind === 'slotted' ? `${receiver} ${slot.id}` : receiver,
-      ...readings(state, base, filterKey, src),
-      isActive: activeReceiver.status === 'known' && activeReceiver.receiver === receiver
-        && (slot.kind !== 'slotted' || slot.id === activeSlot),
-      isTxTarget: txTarget.status === 'known' && txTarget.receiver === receiver
-        && sameSlot(txTarget.slot, slot),
-    }));
+    return positions.map(({ slot, base, filterKey, src }) => {
+      // MOR-1335 (G4): the per-RECEIVER half of "active", named on its own so a
+      // receiver-scoped intent has a slot to address on EVERY receiver — not
+      // only on the active one. `activeSlot` is already the gated read above,
+      // so an unobserved reading is `null` and BOTH slots fail closed here; an
+      // unslotted (or unknown-slot) position is its receiver's only one.
+      const isActiveSlot = slot.kind !== 'slotted' || slot.id === activeSlot;
+      return {
+        receiver,
+        slot,
+        label: slot.kind === 'slotted' ? `${receiver} ${slot.id}` : receiver,
+        ...readings(state, base, filterKey, src),
+        // Unchanged in meaning, restated on the new fact: the radio-wide active
+        // VFO IS the active receiver's active slot.
+        isActive: activeReceiver.status === 'known' && activeReceiver.receiver === receiver
+          && isActiveSlot,
+        isActiveSlot,
+        isTxTarget: txTarget.status === 'known' && txTarget.receiver === receiver
+          && sameSlot(txTarget.slot, slot),
+      };
+    });
   });
 
   const split = boolFact(state, 'split', state?.split);

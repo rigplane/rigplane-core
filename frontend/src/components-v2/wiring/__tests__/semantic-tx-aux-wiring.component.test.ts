@@ -321,15 +321,23 @@ describe('the txAux surface mounts only when the view model carries the group', 
    * outline is the only probe that sees the difference, which is exactly its job.
    */
   /**
-   * MOR-1322 (S3b): the ACTIVE VFO tile's `.vfo-freq` slot holds the self-rendered
+   * MOR-1322 (S3b): a tunable VFO tile's `.vfo-freq` slot holds the self-rendered
    * per-digit tuning control (a `div.freq` of digit/separator spans); every other
-   * tile keeps its single text node. Only the active tile may tune, because the
-   * tune intent is receiver-scoped and writes that receiver's ACTIVE VFO
-   * (verification B1). The testid list above is unchanged — the primitive carries
-   * no testids, so this outline is the only probe that sees the difference.
+   * tile keeps its single text node. A tile may tune only when it is the slot its
+   * receiver's receiver-scoped `set_freq` would write (verification B1). The
+   * testid list above is unchanged — the primitive carries no testids, so this
+   * outline is the only probe that sees the difference.
+   *
+   * MOR-1335 (G4) — DELIBERATE CHANGE, and the end-to-end evidence for it: this
+   * mount is `2/main_sub` with BOTH receivers' `activeSlot` observed, through the
+   * real adapter and the real wiring. The sequence now carries TWO digit controls
+   * (MAIN A and SUB A) where it carried one, because the gate is qualified per
+   * RECEIVER instead of per radio. MAIN B and SUB B keep their text nodes — the
+   * intra-receiver hazard B1 found stays closed.
    */
   const DEFAULT_PATH_OUTLINE = 'div p div div span span div span span span span span span span span span span span span span '
-    + 'div span span span button div span span span button div span span span button div button button '
+    + 'div span span span button div span span div span span span span span span span span span span span button '
+    + 'div span span span button div button button '
     + 'div button button button button p span span section p span span span span p div button button '
     + 'ul section div button button button label span input output div button button button output '
     + 'div button button output';

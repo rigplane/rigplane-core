@@ -34,7 +34,7 @@ const singleReceiver: RadioViewModel = {
   vfos: [
     {
       receiver: 'MAIN', slot: { kind: 'unslotted' }, label: 'MAIN', frequencyHz: 14195000,
-      mode: 'USB', filter: 'WIDE', isActive: true, isTxTarget: true,
+      mode: 'USB', filter: 'WIDE', isActive: true, isActiveSlot: true, isTxTarget: true,
     },
   ],
   split: { status: 'known', value: false },
@@ -57,11 +57,11 @@ const singleAb: RadioViewModel = {
   vfos: [
     {
       receiver: 'MAIN', slot: { kind: 'slotted', id: 'A' }, label: 'VFO A', frequencyHz: 7100000,
-      mode: 'LSB', filter: 'NARROW', isActive: true, isTxTarget: false,
+      mode: 'LSB', filter: 'NARROW', isActive: true, isActiveSlot: true, isTxTarget: false,
     },
     {
       receiver: 'MAIN', slot: { kind: 'slotted', id: 'B' }, label: 'VFO B', frequencyHz: 7150000,
-      mode: 'LSB', filter: 'NARROW', isActive: false, isTxTarget: false,
+      mode: 'LSB', filter: 'NARROW', isActive: false, isActiveSlot: false, isTxTarget: false,
     },
   ],
   // dualWatch deliberately unknown: this fixture models an early/partial
@@ -84,11 +84,11 @@ const dualAbShared: RadioViewModel = {
   vfos: [
     {
       receiver: 'MAIN', slot: { kind: 'unslotted' }, label: 'MAIN', frequencyHz: 3573000,
-      mode: 'CW', filter: 'NARROW', isActive: false, isTxTarget: false,
+      mode: 'CW', filter: 'NARROW', isActive: false, isActiveSlot: true, isTxTarget: false,
     },
     {
       receiver: 'SUB', slot: { kind: 'unslotted' }, label: 'SUB', frequencyHz: 3573000,
-      mode: 'CW', filter: 'NARROW', isActive: true, isTxTarget: true,
+      mode: 'CW', filter: 'NARROW', isActive: true, isActiveSlot: true, isTxTarget: true,
     },
   ],
   split: { status: 'known', value: false },
@@ -111,19 +111,23 @@ const dualMainSub: RadioViewModel = {
   vfos: [
     {
       receiver: 'MAIN', slot: { kind: 'slotted', id: 'A' }, label: 'M-A', frequencyHz: 14250000,
-      mode: 'USB', filter: 'WIDE', isActive: true, isTxTarget: true,
+      mode: 'USB', filter: 'WIDE', isActive: true, isActiveSlot: true, isTxTarget: true,
     },
     {
       receiver: 'MAIN', slot: { kind: 'slotted', id: 'B' }, label: 'M-B', frequencyHz: 14280000,
-      mode: 'USB', filter: 'WIDE', isActive: false, isTxTarget: false,
+      mode: 'USB', filter: 'WIDE', isActive: false, isActiveSlot: false, isTxTarget: false,
     },
+    // MOR-1335: `isActiveSlot` without `isActive` — SUB's OWN active slot
+    // while MAIN is the active receiver. This is the state `isActive` alone
+    // could not express, and the one the IC-7610 is in whenever the operator
+    // is listening on MAIN.
     {
       receiver: 'SUB', slot: { kind: 'slotted', id: 'A' }, label: 'S-A', frequencyHz: 21295000,
-      mode: 'USB', filter: 'WIDE', isActive: false, isTxTarget: false,
+      mode: 'USB', filter: 'WIDE', isActive: false, isActiveSlot: true, isTxTarget: false,
     },
     {
       receiver: 'SUB', slot: { kind: 'slotted', id: 'B' }, label: 'S-B', frequencyHz: 21330000,
-      mode: 'USB', filter: 'WIDE', isActive: false, isTxTarget: false,
+      mode: 'USB', filter: 'WIDE', isActive: false, isActiveSlot: false, isTxTarget: false,
     },
   ],
   // Both true at once, proving the orthogonal split/dualWatch representation

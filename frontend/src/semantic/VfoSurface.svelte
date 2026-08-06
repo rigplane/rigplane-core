@@ -195,23 +195,28 @@
    * Two-level gating (MOR-977), and the split matters — it is what makes the
    * guard REACHABLE and therefore independently testable:
    *   STRUCTURAL (`hasTunableFrequency`) — no observed frequency, no tune
-   *     intent wired, or the tile is NOT THE ACTIVE VFO: there is nothing this
-   *     tile can tune, so no control mounts and the slot shows the plain
-   *     readout. ABSENT.
+   *     intent wired, or the tile is NOT ITS RECEIVER'S ACTIVE SLOT: there is
+   *     nothing this tile can tune, so no control mounts and the slot shows the
+   *     plain readout. ABSENT.
    *
-   *     The `isActive` term is load-bearing and was a real bug without it
+   *     The active-slot term is load-bearing and was a real bug without it
    *     (MOR-1322 verification B1). The tune intent is RECEIVER-scoped —
    *     `set_freq {receiver}` writes that receiver's *active* VFO — so a
-   *     control on an inactive tile would take its step from VFO B's digits and
-   *     move VFO A. On `1/ab` and `2/main_sub` (i.e. the whole live bench) the
-   *     operator would scroll one VFO and watch a different one move. The
-   *     legacy `VfoPanel` never had this shape: it mounted ONE widget per
-   *     RECEIVER, over that receiver's current frequency. Gating on `isActive`
-   *     restores exactly that correspondence — one tunable tile per radio
-   *     (isActive is global); SUB-receiver tuning on dual-receiver radios is a
-   *     known parity gap tracked externally; the gate exists because set_freq
-   *     is receiver-scoped and writes the receiver's ACTIVE VFO (wrong-VFO
-   *     dispatch hazard).
+   *     control on a tile that is not that receiver's active slot would take
+   *     its step from VFO B's digits and move VFO A: the operator scrolls one
+   *     VFO and watches a different one move.
+   *
+   *     MOR-1335 (G4) qualifies the term PER RECEIVER. B1 first spelled it
+   *     `isActive`, which is globally unique, so on `2/main_sub` (IC-7610) only
+   *     one tile on the WHOLE radio was tunable and the SUB receiver lost the
+   *     per-digit tuning the legacy `VfoPanel` had. That legacy shape is the
+   *     specification: ONE widget per RECEIVER, over that receiver's current
+   *     frequency. `isActiveSlot` is exactly that correspondence, and it does
+   *     not widen the hazard — the hazard is INTRA-receiver (which VFO of this
+   *     receiver `set_freq` lands on), and the intent carries `vfo.receiver`,
+   *     so a SUB tile can only ever address SUB. Unobserved active-slot
+   *     readings are `false` on both of that receiver's slots (the contract's
+   *     fail-closed rule), so an unknown never becomes a tunable guess.
    *   OPERATIONAL (`disabled`, a MOR-1256 strip whose receiver is present but
    *     unavailable) — the control DOES mount, marked `aria-disabled`, and
    *     `tuneFrequency` refuses the dispatch. PRESENT BUT INERT, exactly as the
@@ -224,11 +229,11 @@
    * on its own by bypassing the other.
    */
   function hasTunableFrequency(vfo: VfoViewModel): boolean {
-    return vfo.isActive && vfo.frequencyHz !== null && onTuneFrequency !== undefined;
+    return vfo.isActiveSlot && vfo.frequencyHz !== null && onTuneFrequency !== undefined;
   }
 
   function tuneFrequency(vfo: VfoViewModel, frequencyHz: number): void {
-    if (disabled || vfo.frequencyHz === null || !vfo.isActive) return;
+    if (disabled || vfo.frequencyHz === null || !vfo.isActiveSlot) return;
     onTuneFrequency?.(vfo.receiver, frequencyHz);
   }
 
@@ -326,6 +331,7 @@
         data-vfo-receiver={vfo.receiver}
         data-vfo-slot={slotKey(vfo.slot)}
         data-vfo-active={vfo.isActive}
+        data-vfo-active-slot={vfo.isActiveSlot}
         data-vfo-tx-target={vfo.isTxTarget}
       >
         <span class="vfo-role">{roleLabel(vfo)}</span>

@@ -8,7 +8,7 @@ function valid(): RadioViewModel {
     activeReceiver: { status: 'known', receiver: 'MAIN' },
     vfos: [{
       receiver: 'MAIN', slot: { kind: 'unslotted' }, label: 'MAIN', frequencyHz: 14195000,
-      mode: 'USB', filter: 'WIDE', isActive: true, isTxTarget: true,
+      mode: 'USB', filter: 'WIDE', isActive: true, isActiveSlot: true, isTxTarget: true,
     }],
     split: { status: 'known', value: false },
     dualWatch: { status: 'known', value: false },
@@ -176,10 +176,75 @@ describe('validateRadioViewModel', () => {
       txTarget: { status: 'known', receiver: 'MAIN', slot: { kind: 'slotted', id: 'A' }, frequencyHz: 14195000 },
       vfos: [
         { ...valid().vfos[0], slot: { kind: 'slotted' as const, id: 'A' as const }, isTxTarget: true },
-        { ...valid().vfos[0], slot: { kind: 'slotted' as const, id: 'B' as const }, isTxTarget: false },
+        {
+          ...valid().vfos[0], slot: { kind: 'slotted' as const, id: 'B' as const },
+          // MOR-1335: a receiver has at most ONE active slot, so the second
+          // position of the same receiver cannot claim it (nor `isActive`).
+          isActive: false, isActiveSlot: false, isTxTarget: false,
+        },
       ],
     };
     expect(() => validateRadioViewModel(legal)).not.toThrow();
+  });
+
+  // ── MOR-1335 (G4): the per-receiver active-slot fact ─────────────────────
+  //
+  // `isActiveSlot` is what the VFO surface gates per-digit TUNING on, and the
+  // tune intent is receiver-scoped (`set_freq {receiver}` writes that
+  // receiver's active VFO). Two invariants make "at most one tunable tile per
+  // receiver, and it is the one the radio would actually write" a checked
+  // property of the vocabulary rather than a convention of one adapter.
+  const slotted = (id: 'A' | 'B', receiver: 'MAIN' | 'SUB', over: Record<string, unknown> = {}) => ({
+    ...valid().vfos[0], receiver, slot: { kind: 'slotted' as const, id },
+    label: `${receiver} ${id}`, isActive: false, isActiveSlot: false, isTxTarget: false, ...over,
+  });
+  const dual = (vfos: unknown[]) => ({
+    ...valid(), topologyId: '2/main_sub', vfoScheme: 'main_sub' as const, vfos,
+    txTarget: { status: 'unknown', reason: 'not-observed' },
+    txPermit: { status: 'unknown', reason: 'tx-target-unknown' },
+  });
+
+  it('rejects isActive=true on a VFO that is not its own receiver\'s active slot', () => {
+    // The wrong-VFO dispatch shape: the radio says MAIN is active, the model
+    // says MAIN B is the active VFO *and* that MAIN's active slot is A.
+    const smuggled = dual([
+      slotted('A', 'MAIN', { isActiveSlot: true }),
+      slotted('B', 'MAIN', { isActive: true }),
+    ]);
+    expect(() => validateRadioViewModel(smuggled)).toThrow(TypeError);
+  });
+
+  it('rejects two active slots on the SAME receiver', () => {
+    const smuggled = dual([
+      slotted('A', 'MAIN', { isActiveSlot: true }),
+      slotted('B', 'MAIN', { isActiveSlot: true }),
+    ]);
+    expect(() => validateRadioViewModel(smuggled)).toThrow(TypeError);
+  });
+
+  it('accepts one active slot PER RECEIVER — the whole point of the fact', () => {
+    const legal = dual([
+      slotted('A', 'MAIN', { isActive: true, isActiveSlot: true }),
+      slotted('B', 'MAIN'),
+      slotted('A', 'SUB'),
+      // SUB's active slot, while MAIN is the active RECEIVER: `isActiveSlot`
+      // without `isActive` is exactly the state `isActive` alone could not say.
+      slotted('B', 'SUB', { isActiveSlot: true }),
+    ]);
+    const view = validateRadioViewModel(legal);
+    expect(view.vfos.filter((v) => v.isActiveSlot).map((v) => v.label)).toEqual(['MAIN A', 'SUB B']);
+    expect(view.vfos.filter((v) => v.isActive).map((v) => v.label)).toEqual(['MAIN A']);
+  });
+
+  it('accepts a receiver with NO active slot — unobserved fails closed, never guessed', () => {
+    const legal = dual([
+      slotted('A', 'MAIN', { isActive: true, isActiveSlot: true }),
+      slotted('B', 'MAIN'),
+      slotted('A', 'SUB'),
+      slotted('B', 'SUB'),
+    ]);
+    expect(validateRadioViewModel(legal).vfos.filter((v) => v.receiver === 'SUB' && v.isActiveSlot))
+      .toEqual([]);
   });
 
   // ── Rejects a fixture that smuggles a raw capability object or module path ──
