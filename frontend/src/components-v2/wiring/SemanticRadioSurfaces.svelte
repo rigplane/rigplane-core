@@ -31,6 +31,9 @@
     compositionSurfaces, useSurfacePlan, zoneShowsSurface,
   } from '../../presentation/workspace/resolution';
   import { LAN_MOD_INPUT_SOURCE } from '$lib/radio/mod-input';
+  import DspSurface, {
+    type DspLevelField, type DspToggleField,
+  } from '../../semantic/DspSurface.svelte';
   import FilterSurface from '../../semantic/FilterSurface.svelte';
   import MetersSurface from '../../semantic/MetersSurface.svelte';
   import type { RadioViewModel } from '../../semantic/radio-view-model';
@@ -43,8 +46,8 @@
   import VfoSurface, { type VfoSelection } from '../../semantic/VfoSurface.svelte';
   import ModInputTxWarning from '../panels/ModInputTxWarning.svelte';
   import {
-    makeAudioRoutingHandlers, makeFilterHandlers, makeModeHandlers, makeRxAudioHandlers,
-    makeTxHandlers, makeVfoHandlers, makeVoxHandlers,
+    makeAgcHandlers, makeAudioRoutingHandlers, makeDspHandlers, makeFilterHandlers,
+    makeModeHandlers, makeRxAudioHandlers, makeTxHandlers, makeVfoHandlers, makeVoxHandlers,
   } from './command-bus';
   import {
     forReceiver, receiversOf, isActiveStrip, isOperationalStrip,
@@ -176,6 +179,36 @@
    * names 1:1, so no per-field `Record` indirection is needed.
    */
   const filterIntents = { ...makeModeHandlers(), ...makeFilterHandlers() };
+  /**
+   * MOR-1305. `makeDspHandlers`/`makeAgcHandlers` already carry every dsp
+   * intent; the two maps below keep the pure surface field-addressed, same
+   * precedent as `TX_AUX_*_INTENT` above — agreement with the shipped
+   * command-bus names is exercised against the REAL module in the component
+   * test, not re-asserted here.
+   */
+  const dspIntents = makeDspHandlers();
+  const DSP_TOGGLE_INTENT: Record<DspToggleField, (next: boolean) => void> = {
+    nrActive: (next) => dspIntents.onNrModeChange(next ? 1 : 0),
+    nbActive: (next) => dspIntents.onNbToggle(next),
+  };
+  const DSP_LEVEL_INTENT: Record<DspLevelField, (value: number) => void> = {
+    nrLevel: dspIntents.onNrLevelChange, nbLevel: dspIntents.onNbLevelChange,
+    nbDepth: dspIntents.onNbDepthChange, nbWidth: dspIntents.onNbWidthChange,
+    notchFreq: dspIntents.onNotchFreqChange, manualNotchWidth: dspIntents.onManualNotchWidthChange,
+    agcTimeConstant: dspIntents.onAgcTimeChange,
+  };
+  const agcIntents = makeAgcHandlers();
+  /**
+   * `agcLabels`/`nbLevelMax`/`nbLevelPercent` are pure caps-echo display
+   * metadata, NOT `dsp` facts (MOR-1290/MOR-1305 carry-forward 1) — read
+   * straight off `runtime.caps` here, at the one seam that already holds it
+   * for the `toRadioViewModel` call below, verbatim `toDspProps`'s own
+   * fallbacks (`lib/runtime/props/panel-props.ts`).
+   */
+  let agcLabels = $derived(runtime.caps?.agcLabels ?? { '1': 'FAST', '2': 'MID', '3': 'SLOW' });
+  let nbLevelRange = $derived(runtime.caps?.controls?.nb_level ?? null);
+  let nbLevelMax = $derived(nbLevelRange?.raw_max ?? 10);
+  let nbLevelPercent = $derived(nbLevelRange !== null);
   const tx = getAppTxController();
   const sourceId = `semantic-rx-tx-${++surfaceSeq}`;
   let leaseSeq = 0;
@@ -594,6 +627,38 @@
     {/if}
   {/snippet}
 
+  <!--
+    MOR-1305 (vocabulary slice 5B). Same structural gate and same reasoning as
+    `rxAudioSurface` above: the surface mounts only when the view model
+    actually carries the MOR-1290 `dsp` group, so a radio the evidence gate
+    declined renders the pre-1305 element shape exactly.
+
+    Like `rxAudioSurface` and UNLIKE `txAuxSurface`/`metersSurface`, it is
+    rendered in the SINGLE composition ONLY (MOR-1304/MOR-1305 zone-mount
+    ruling). `DspSurface` renders up to 8 range inputs and 7 buttons — it is
+    control-bearing, and the cockpit's MOR-1069 rule forbids mounting any
+    control-bearing surface bare in the dual composition: every focusable
+    control must live inside a declared zone, with rx-tx last in the tab
+    order. `'dsp'` became DECLARABLE with this slice, so the cockpit gains the
+    surface the moment its manifest declares a zone for it — a layout
+    decision, separately reviewed, exactly as rxAudio left it.
+
+    `agcLabels`/`nbLevelMax`/`nbLevelPercent` are the caps-echo metadata
+    carry-forward (1) requires stay OUT of the view model — read at this seam,
+    from `runtime.caps`, and handed down as plain props.
+  -->
+  {#snippet dspSurface()}
+    {#if view?.dsp}
+      <DspSurface
+        {view} {agcLabels} {nbLevelMax} {nbLevelPercent}
+        onToggle={(field, next) => DSP_TOGGLE_INTENT[field](next)}
+        onLevelChange={(field, value) => DSP_LEVEL_INTENT[field](value)}
+        onNotchModeChange={dspIntents.onNotchModeChange}
+        onAgcModeChange={agcIntents.onAgcModeChange}
+      />
+    {/if}
+  {/snippet}
+
   {#if strips === 'dual'}
     <!--
       MOR-1258: the zone now carries RxTxSurface AND the two TX-adjacent
@@ -638,6 +703,7 @@
     {@render zoned('meters', view?.meters !== undefined, metersSurface)}
     {@render zoned('rxAudio', view?.rxAudio !== undefined, rxAudioSurface)}
     {@render zoned('filter', view?.modeFilter !== undefined || view?.filterPassband !== undefined, filterSurface)}
+    {@render zoned('dsp', view?.dsp !== undefined, dspSurface)}
     {@render txAdjacentAlerts()}
   {/if}
 </div>

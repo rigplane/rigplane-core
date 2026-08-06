@@ -47,6 +47,9 @@ const h = vi.hoisted(() => ({
    *  txAux capability and carry no txAux state, so the MOR-1244 evidence gate
    *  omits the group and none of these is ever reachable here. */
   txAuxNoop: vi.fn(),
+  /** MOR-1305: same stand-in role for every dsp intent — no dsp capability
+   *  or state here either, so the group is absent and these are unreachable. */
+  dspNoop: vi.fn(),
 }));
 
 vi.mock('$lib/runtime', () => ({
@@ -115,6 +118,14 @@ vi.mock('../command-bus', () => ({
     onFilterChange: h.txAuxNoop, onFilterWidthChange: h.txAuxNoop, onFilterShapeChange: h.txAuxNoop,
     onIfShiftChange: h.txAuxNoop, onPbtInnerChange: h.txAuxNoop, onPbtOuterChange: h.txAuxNoop,
   }),
+  // MOR-1305 — the wiring now also composes the dsp intent vocabulary.
+  makeDspHandlers: () => ({
+    onNrModeChange: h.dspNoop, onNrLevelChange: h.dspNoop, onNbToggle: h.dspNoop,
+    onNbLevelChange: h.dspNoop, onNbDepthChange: h.dspNoop, onNbWidthChange: h.dspNoop,
+    onNotchModeChange: h.dspNoop, onNotchFreqChange: h.dspNoop,
+    onManualNotchWidthChange: h.dspNoop, onAgcTimeChange: h.dspNoop,
+  }),
+  makeAgcHandlers: () => ({ onAgcModeChange: h.dspNoop }),
 }));
 
 import SemanticRadioSurfaces from '../SemanticRadioSurfaces.svelte';

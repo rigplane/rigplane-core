@@ -24,7 +24,9 @@ import {
 describe('rxAudio is a declarable semantic surface', () => {
   // Kills: reverting the SEMANTIC_SURFACE_NAMES addition.
   it('is in the declarable set alongside vfo, rxTx, txAux and meters', () => {
-    expect([...SEMANTIC_SURFACE_NAMES]).toEqual(['vfo', 'rxTx', 'txAux', 'meters', 'rxAudio', 'filter']);
+    expect([...SEMANTIC_SURFACE_NAMES]).toEqual([
+      'vfo', 'rxTx', 'txAux', 'meters', 'rxAudio', 'filter', 'dsp',
+    ]);
   });
 
   // Kills: adding the name to the type but not to the runtime allow-list the

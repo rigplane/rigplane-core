@@ -91,6 +91,15 @@ vi.mock('../command-bus', () => ({
     onFilterChange: h.noop, onFilterWidthChange: h.noop, onFilterShapeChange: h.noop,
     onIfShiftChange: h.noop, onPbtInnerChange: h.noop, onPbtOuterChange: h.noop,
   }),
+  // MOR-1305 — the wiring now also composes the dsp intent vocabulary. This
+  // fixture declares no dsp capability or state, so none of these is reachable.
+  makeDspHandlers: () => ({
+    onNrModeChange: h.noop, onNrLevelChange: h.noop, onNbToggle: h.noop,
+    onNbLevelChange: h.noop, onNbDepthChange: h.noop, onNbWidthChange: h.noop,
+    onNotchModeChange: h.noop, onNotchFreqChange: h.noop,
+    onManualNotchWidthChange: h.noop, onAgcTimeChange: h.noop,
+  }),
+  makeAgcHandlers: () => ({ onAgcModeChange: h.noop }),
 }));
 
 import SemanticRadioSurfaces from '../SemanticRadioSurfaces.svelte';
