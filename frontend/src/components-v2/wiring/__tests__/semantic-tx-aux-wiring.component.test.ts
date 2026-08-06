@@ -291,11 +291,20 @@ describe('the txAux surface mounts only when the view model carries the group', 
     expect(target.querySelectorAll('[data-testid="tx-aux-surface"]')).toHaveLength(1);
   });
 
-  // MUTATION KILLED: giving the txAux surface a `data-zone-id` here. Zone
-  // declarability comes from `SEMANTIC_SURFACE_NAMES`; no manifest declares a
-  // txAux zone in this slice, so binding one would put a zone id in the DOM
-  // that no layout manifest ever declared (the MOR-1069 lesson).
-  it('binds no zone id to the txAux surface in either composition', () => {
+  // MOR-1336 (S4) UPDATE: the cockpit manifest DOES declare a `tx-aux` zone
+  // now (`presentation/layouts/dual-receiver-cockpit.ts`) — what this pin
+  // still proves is the STANDALONE-mount path: with no resolved plan handed
+  // down through context (`render`'s default here), `zoneOwning` reads no
+  // plan and returns `null` for every surface, so the mount stays bare
+  // regardless of what any manifest declares (`useSurfacePlan()`'s documented
+  // fallback). The zoned case — a plan actually supplied — is pinned
+  // separately in `MOR-1336 — the zone-mount mechanism generalizes beyond
+  // txAux` below and in `DualReceiverCockpit.component.test.ts`'s F6 suite.
+  // MUTATION KILLED: giving the txAux surface a `data-zone-id` here anyway,
+  // i.e. ignoring the plan and binding a zone id unconditionally (the
+  // MOR-1069 lesson: a zone element must exist only where BOTH a layout
+  // declared one AND a plan actually resolved it).
+  it('binds no zone id to the txAux surface in either composition, absent a resolved plan', () => {
     render({ strips: 'dual' });
     const zones = [...target.querySelectorAll<HTMLElement>('[data-zone-id]')]
       .map((el) => el.dataset.zoneId);
@@ -324,6 +333,25 @@ describe('the txAux surface does not become a second key path', () => {
     expect(h.atuTune).toHaveBeenCalledOnce();
     expect(h.start).not.toHaveBeenCalled();
     expect(h.release).not.toHaveBeenCalled();
+  });
+
+  // MOR-1336 (S4) restated (R9): the invariant above holds vacuously once
+  // txAux is ALWAYS unzoned — no plan was ever supplied, so `zoneOwning`
+  // always returned null. Restated against a RESOLVED plan that actually
+  // zones txAux (the cockpit's own), so "no second key authority" is proven
+  // for the zoned surface, not merely the bare one.
+  it('still keeps exactly one key/unkey authority once a resolved plan actually zones txAux', () => {
+    const plan = resolveSurfacePlan(dualReceiverCockpitLayout, readWorkspace({ version: 1 }).workspace);
+    render({ strips: 'dual' }, plan);
+
+    const zone = q('[data-zone-id="tx-aux"]');
+    expect(zone).not.toBeNull(); // sanity: the zone this pin restates for actually exists
+    expect(target.querySelectorAll('[data-testid="rx-tx-surface"]')).toHaveLength(1);
+    expect(target.querySelectorAll('[data-testid="rx-tx-key"]')).toHaveLength(1);
+    expect(target.querySelectorAll('[data-testid="rx-tx-unkey"]')).toHaveLength(1);
+    // ...and none of them live inside the tx-aux zone itself.
+    expect(zone!.querySelector('[data-testid="rx-tx-key"]')).toBeNull();
+    expect(zone!.querySelector('[data-testid="rx-tx-unkey"]')).toBeNull();
   });
 });
 
@@ -514,5 +542,76 @@ describe('MOR-1082 — the semantic vertical consults the resolved surface plan'
     document.body.innerHTML = '';
     render({ strips: 'single' });
     expect(surfaceOrder()).toEqual(['vfo-surface', 'rx-tx-surface']);
+  });
+});
+
+// ── MOR-1336 (S4) — the zone-mount mechanism is generic, not txAux-shaped ───
+//
+// `zoneOwning`/`zoned` in `SemanticRadioSurfaces` is written ONCE and applied
+// uniformly to every optional surface (txAux, meters, and — single
+// composition only — rxAudio). Every pin above proves it exclusively against
+// txAux, which is also the one real manifest happens to declare a zone for —
+// a wiring change that special-cased `if (surface === 'txAux')` would pass
+// every one of them just as well. These pins exercise the SAME mechanism
+// against `meters`, a structurally unrelated surface, through a SYNTHETIC
+// plan no shipped manifest declares, so it is the mechanism's own generality
+// under test, not any layout's arrangement.
+describe('MOR-1336 — the zone-mount mechanism generalizes beyond txAux', () => {
+  /**
+   * Enough raw state for `deriveMeters` (`radio-view-model-adapter.ts`) to
+   * emit the `meters` group: the TX authority and `state` are already
+   * supplied by every fixture here, so one observed raw meter field is the
+   * only thing missing — `deriveMeters` emits the group the moment any of
+   * its seven raw fields is defined, `caps.tx` untouched.
+   */
+  function withMeterReading(state: ServerState): ServerState {
+    return {
+      ...state,
+      powerMeter: 50,
+      fieldStatus: { ...(state.fieldStatus as Record<string, unknown>), powerMeter: fresh },
+    } as unknown as ServerState;
+  }
+
+  it('mounts a real zone element for meters when a plan declares one, under an id no shipped manifest uses', () => {
+    h.state = withMeterReading(liveState(false));
+    h.caps = liveCaps(false);
+    // MUTATION KILLED: a mechanism secretly keyed on the literal 'tx-aux' id
+    // or on `SEMANTIC_SURFACE_NAMES` order rather than the plan's own keys.
+    const plan: SurfacePlan = new Map([['synthetic-meters-zone', ['meters']]]);
+    render({ strips: 'dual' }, plan);
+
+    const zone = q('[data-zone-id="synthetic-meters-zone"]');
+    expect(zone).not.toBeNull();
+    expect(zone!.classList.contains('surface-zone')).toBe(true);
+    expect(q('[data-testid="meters-surface"]')!.parentElement).toBe(zone);
+  });
+
+  it('renders the identical meters content bare when no plan declares a zone for it', () => {
+    h.state = withMeterReading(liveState(false));
+    h.caps = liveCaps(false);
+    render({ strips: 'dual' }); // no plan at all — the pre-S4 / standalone-mount path
+
+    const surface = q('[data-testid="meters-surface"]');
+    expect(surface).not.toBeNull();
+    expect(surface!.closest('.surface-zone')).toBeNull();
+    expect(surface!.closest('[data-zone-id]')).toBeNull();
+  });
+});
+
+// ── MOR-1336 (S4) — a declared zone is never an empty promise ───────────────
+describe('MOR-1336 — a declared zone renders nothing for a radio without the group', () => {
+  // MUTATION KILLED: wrapping the zone unconditionally on `zoneId !== null`
+  // rather than gating on the surface's own `present` argument first — the
+  // exact regression the `zoned` snippet's `present` parameter exists to
+  // prevent (see the handover note on `SemanticRadioSurfaces.svelte`).
+  it('mounts no tx-aux zone element for a radio without the group, even though the cockpit declares one', () => {
+    h.state = liveState(false);
+    h.caps = liveCaps(false);
+    const plan = resolveSurfacePlan(dualReceiverCockpitLayout, readWorkspace({ version: 1 }).workspace);
+    render({ strips: 'dual' }, plan);
+
+    expect(q('[data-testid="tx-aux-surface"]')).toBeNull();
+    expect(q('[data-zone-id="tx-aux"]')).toBeNull();
+    expect(target.innerHTML).not.toContain('tx-aux');
   });
 });

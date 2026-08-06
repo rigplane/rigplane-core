@@ -31,6 +31,8 @@ describe('the dual-receiver-cockpit real registration', () => {
       { id: 'secondary-vfo', surfaces: ['vfo'] },
       { id: 'global', surfaces: ['vfo'] },
       { id: 'rx-tx', surfaces: ['rxTx'] },
+      // MOR-1336 (S4): the cockpit's txAux controls gain a zone of their own.
+      { id: 'tx-aux', surfaces: ['txAux'] },
     ]);
     expect(dualReceiverCockpitLayout.requiredSemanticSurfaces).toEqual(['vfo', 'rxTx']);
   });
