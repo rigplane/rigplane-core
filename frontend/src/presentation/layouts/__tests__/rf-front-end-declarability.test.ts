@@ -23,10 +23,11 @@ import {
 } from '../declarations';
 
 describe('rfFrontEnd is a declarable semantic surface', () => {
-  // Kills: reverting the SEMANTIC_SURFACE_NAMES addition.
+  // Kills: reverting the SEMANTIC_SURFACE_NAMES addition. MOR-1307 appended
+  // `band`; `rfFrontEnd` must stay present and in place.
   it('is in the declarable set alongside vfo, rxTx, txAux, meters and rxAudio', () => {
     expect([...SEMANTIC_SURFACE_NAMES])
-      .toEqual(['vfo', 'rxTx', 'txAux', 'meters', 'rxAudio', 'filter', 'dsp', 'rfFrontEnd']);
+      .toEqual(['vfo', 'rxTx', 'txAux', 'meters', 'rxAudio', 'filter', 'dsp', 'rfFrontEnd', 'band']);
   });
 
   // Kills: adding the name to the type but not to the runtime allow-list the

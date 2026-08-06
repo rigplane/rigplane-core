@@ -52,11 +52,19 @@ function recorders<K extends string>(
   ) as Record<K, (...args: unknown[]) => void>;
 }
 
+/** MOR-1307: `onMainFreqChange`/`onSubFreqChange` are the per-receiver
+ *  `set_freq` path the semantic wiring routes BOTH digit tuning (MOR-1322)
+ *  and the band surface's frequency entry / no-BSR band fallback through.
+ *  Missing here they were not a resolution failure — the names are read off
+ *  the returned object, not the module — but the first captured gesture that
+ *  reached one would have thrown inside the harness instead of recording. */
 export function makeVfoHandlers() {
   return {
     onVfoSelect: (...args: unknown[]): void => record('vfo.select', args),
     onSplitToggle: (...args: unknown[]): void => record('vfo.split', args),
     onDualWatchToggle: (...args: unknown[]): void => record('vfo.dualWatch', args),
+    onMainFreqChange: (...args: unknown[]): void => record('vfo.mainFreq', args),
+    onSubFreqChange: (...args: unknown[]): void => record('vfo.subFreq', args),
   };
 }
 
@@ -158,6 +166,8 @@ export function makePresetHandlers() {
   return recorders('preset', ['onPresetSelect', 'onFreqPreset'] as const);
 }
 
+/** MOR-1307: reached by the fixture-mounted tree from this slice on — the
+ *  band surface's BSR path calls `onBandSelect`. Name set unchanged. */
 export function makeBandHandlers() {
   return recorders('band', ['onBandSelect'] as const);
 }

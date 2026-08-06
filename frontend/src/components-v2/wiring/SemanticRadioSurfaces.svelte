@@ -31,6 +31,7 @@
     compositionSurfaces, useSurfacePlan, zoneShowsSurface,
   } from '../../presentation/workspace/resolution';
   import { LAN_MOD_INPUT_SOURCE } from '$lib/radio/mod-input';
+  import BandSurface from '../../semantic/BandSurface.svelte';
   import DspSurface, {
     type DspLevelField, type DspToggleField,
   } from '../../semantic/DspSurface.svelte';
@@ -49,9 +50,9 @@
   import VfoSurface, { type VfoSelection } from '../../semantic/VfoSurface.svelte';
   import ModInputTxWarning from '../panels/ModInputTxWarning.svelte';
   import {
-    makeAgcHandlers, makeAudioRoutingHandlers, makeDspHandlers, makeFilterHandlers,
-    makeModeHandlers, makeRfFrontEndHandlers, makeRxAudioHandlers, makeTxHandlers,
-    makeVfoHandlers, makeVoxHandlers,
+    makeAgcHandlers, makeAudioRoutingHandlers, makeBandHandlers, makeDspHandlers,
+    makeFilterHandlers, makeModeHandlers, makeRfFrontEndHandlers, makeRxAudioHandlers,
+    makeTxHandlers, makeVfoHandlers, makeVoxHandlers,
   } from './command-bus';
   import {
     forReceiver, receiversOf, isActiveStrip, isOperationalStrip,
@@ -143,6 +144,8 @@
   }
 
   const vfo = makeVfoHandlers();
+  /** MOR-1307: the shipped band vocabulary, composed rather than forked. */
+  const band = makeBandHandlers();
   /**
    * MOR-1265. The two v2 handler factories already carry every txAux intent
    * (`makeVoxHandlers` owns gain/anti-VOX/delay, `makeTxHandlers` the rest);
@@ -332,6 +335,36 @@
   function tuneFrequency(receiver: 'MAIN' | 'SUB', frequencyHz: number): void {
     if (receiver === 'SUB') vfo.onSubFreqChange(frequencyHz);
     else vfo.onMainFreqChange(frequencyHz);
+  }
+
+  /**
+   * MOR-1307 (vocabulary slice 7B) — band select and frequency entry, both
+   * routed through the SHIPPED command vocabulary and both gated on a KNOWN
+   * active receiver.
+   *
+   * The gate is the MOR-1322 B1 wrong-VFO dispatch class: `set_freq` /
+   * `set_band` write the ACTIVE receiver's VFO, and the `band` facts are
+   * themselves derived from the active receiver — so with `activeReceiver`
+   * unobserved there is no honest target and neither intent may leave. The
+   * surface disables the controls on the same condition; this is the second,
+   * independent mechanism.
+   *
+   * A band WITHOUT a band-stacking register falls back to a plain frequency
+   * set, and that fallback goes through `tuneFrequency` — the SAME per-receiver
+   * path the VFO tuning uses — rather than `makeBandHandlers`' own fallback,
+   * which hardcodes `receiver: 0` and would tune MAIN while SUB is active.
+   * The BSR path stays the shipped handler untouched.
+   */
+  function selectBand(name: string, defaultHz: number, bsrCode: number | null): void {
+    const active = view?.activeReceiver;
+    if (active?.status !== 'known') return;
+    if (bsrCode !== null) band.onBandSelect(name, defaultHz, bsrCode);
+    else tuneFrequency(active.receiver, defaultHz);
+  }
+  function enterFrequency(frequencyHz: number): void {
+    const active = view?.activeReceiver;
+    if (active?.status !== 'known') return;
+    tuneFrequency(active.receiver, frequencyHz);
   }
 
   function selectVfo(target: VfoSelection): void {
@@ -705,6 +738,30 @@
     {/if}
   {/snippet}
 
+  <!--
+    MOR-1307 (vocabulary slice 7B). Same structural gate as the surfaces above,
+    and the SAME single-composition-only mounting as `rxAudioSurface`, for the
+    same MOR-1069 reason: this surface is control-bearing (band buttons, a
+    frequency entry field and its Set button) and no manifest declares a `band`
+    zone, so a dual mount would put focusable controls outside every declared
+    zone and break the cockpit's "tab order ends in rx-tx" invariant. `zoned()`
+    does not grant that permission by itself — `zoneOwning()` answers `null` for
+    an undeclared surface and the mount renders BARE, which is the violating
+    shape. `'band'` becomes DECLARABLE with this slice; the cockpit gains the
+    surface the moment a rework slice declares a zone for it, and the dual
+    absence is pinned by name in
+    `__tests__/semantic-band-wiring.component.test.ts`.
+
+    It takes NO authority snapshot: the TX permit it renders is already decided
+    inside `view.band` by the one shipped derivation, and this component has no
+    second one to offer.
+  -->
+  {#snippet bandSurface()}
+    {#if view?.band}
+      <BandSurface {view} onSelectBand={selectBand} onEnterFrequency={enterFrequency} />
+    {/if}
+  {/snippet}
+
   {#if strips === 'dual'}
     <!--
       MOR-1258: the zone now carries RxTxSurface AND the two TX-adjacent
@@ -751,6 +808,7 @@
     {@render zoned('filter', view?.modeFilter !== undefined || view?.filterPassband !== undefined, filterSurface)}
     {@render zoned('dsp', view?.dsp !== undefined, dspSurface)}
     {@render zoned('rfFrontEnd', view?.rfFrontEnd !== undefined, rfFrontEndSurface)}
+    {@render zoned('band', view?.band !== undefined, bandSurface)}
     {@render txAdjacentAlerts()}
   {/if}
 </div>
