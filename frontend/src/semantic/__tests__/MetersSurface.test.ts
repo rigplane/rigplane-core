@@ -32,6 +32,7 @@ import type {
   Availability, MeterField, MeterRfState, MetersViewModel, RadioViewModel,
 } from '../radio-view-model';
 import { RF_LABEL, RF_MARK } from '../rx-tx-surface';
+import { isAlcFault, isSwrFault } from '../../components-v2/panels/meter-utils';
 
 /** Source scans below run over the CODE, with comments stripped — the same
  *  instrument (and the same reason) as `TxAuxSurface.test.ts`: a behavioural
@@ -605,11 +606,18 @@ describe('SWR/ALC fault highlighting reuses the dock\'s own threshold', () => {
     });
   });
 
-  // MUTATION KILLED: dropping the "observed" gate — unknown is not a fault
-  // (omission doctrine). Sets a huge underlying raw amplitude so a fault
-  // computed from `rawOf`'s 0-fallback (rather than from `observed`) would
-  // also read false by coincidence; the real guard is exercised by directly
-  // marking the reading unknown regardless of what a resumed reading would be.
+  // Unknown is not a fault (omission doctrine).
+  //
+  // HONEST SCOPE (verify-MOR-1345): dropping the `isObserved` conjunct alone
+  // does NOT go red here, and that is not a weakness in this test — it is an
+  // EQUIVALENT mutant under `rawOf`'s current contract. `rawOf` returns `0`
+  // for an unknown reading, `swrRatio(0)` is 1.0 and `alcLevel(0)` is 0, so
+  // neither predicate can fire on an unobserved field however the conjunction
+  // is written. What this test DOES kill is the dangerous combination: change
+  // `rawOf`'s fallback to a hazardous value AND drop the guard, and it goes
+  // red (verifier mutant M6b). The guard is therefore load-bearing the moment
+  // that fallback changes — which is why the next test pins the fallback
+  // itself, so the two edits can never pass independently.
   it('does not fault an unobserved (unknown) reading even when relevant', () => {
     const view = withField(base('transmitting'), 'swr', { unknown: true, relevant: true });
     withSurface(view, (s) => {
@@ -617,6 +625,23 @@ describe('SWR/ALC fault highlighting reuses the dock\'s own threshold', () => {
       expect(s.tile('swr')!.dataset.fault).toBe('false');
       expect(s.tile('swr')!.querySelector('svg')).toBeNull();
     });
+  });
+
+  // MUTATION KILLED (verifier mutant M6a, verify-MOR-1345): changing `rawOf`'s
+  // unknown-fallback to a value either predicate would fault on. Today the
+  // whole meters suite stays GREEN through such a change, because the
+  // `isObserved` conjunct above absorbs it — so the fallback is the silent
+  // assumption the "unknown never faults" property actually rests on, and
+  // nothing else in the repo pins it. Source-scanned rather than behavioural
+  // because `rawOf` is module-private to the component: a behavioural test
+  // cannot observe a fallback the render path never reaches.
+  it('pins rawOf\'s unknown-fallback to a value neither fault predicate fires on', () => {
+    const fallback = /reading\.status === 'known' \? f\.reading\.value : (-?\d+(?:\.\d+)?)/.exec(SOURCE);
+    expect(fallback, 'rawOf no longer has a numeric literal fallback').not.toBeNull();
+    const raw = Number(fallback![1]);
+    expect(raw).toBe(0);
+    expect(isSwrFault(raw)).toBe(false);
+    expect(isAlcFault(raw)).toBe(false);
   });
 
   // Threads the boolean through to the REAL BarGauge (no stub) — mirrors the
