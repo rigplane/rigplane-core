@@ -508,7 +508,7 @@ export interface BandChoice {
  * `tuneMinHz`/`tuneMaxHz` are the frequency-entry constraint: the envelope of
  * the declared `freqRanges` (range bounds, not band bounds — the gaps between
  * bands are still tunable). `null` when the radio declares no range at all;
- * never `components-v2/display/frequency-tuning.ts::adjustFreqByDigit`'s
+ * never `primitives/frequency/frequency-tuning.ts::adjustFreqByDigit`'s
  * fabricated `0 … 999 MHz` defaults, which is the only bound v2 has (that
  * function has no production caller that supplies one).
  */

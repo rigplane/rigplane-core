@@ -1,6 +1,6 @@
 <script lang="ts">
   import LinearSMeter from '../meters/LinearSMeter.svelte';
-  import FrequencyDisplayInteractive from '../display/FrequencyDisplayInteractive.svelte';
+  import FrequencyDisplayInteractive from '../../primitives/frequency/FrequencyDisplayInteractive.svelte';
   import { StatusIndicator } from '$lib/Button';
   import { getCapabilities, receiverLabel, vfoSlotLabel } from '$lib/stores/capabilities.svelte';
   import { findActiveBand } from '../controls/band-utils';

@@ -32,6 +32,7 @@
 
 <script lang="ts">
   import { t } from '$lib/i18n';
+  import FrequencyDisplayInteractive from '../primitives/frequency/FrequencyDisplayInteractive.svelte';
   import { renderSlot } from './design-language-renderers';
   import type { BooleanFact, RadioViewModel, VfoViewModel } from './radio-view-model';
 
@@ -89,6 +90,15 @@
      */
     disabled?: boolean;
     /**
+     * MOR-1322 (S3b) — a per-digit tuning intent for ONE receiver's frequency.
+     * The same command-bus path the legacy VfoHeader used
+     * (`onMainFreqChange`/`onSubFreqChange`), so this is not a new key path and
+     * carries no TX semantics (R9): it sets a receive/transmit FREQUENCY, it
+     * never keys the transmitter. Omit it and the surface renders the plain
+     * readout, exactly as before this slice.
+     */
+    onTuneFrequency?: (receiver: ReceiverId, frequencyHz: number) => void;
+    /**
      * MOR-1321 (v3-rework slice S3a) — the VFO-scoped ACTIONS the legacy
      * `VfoOps` bridge carried and the semantic deck lost at MOR-1313: equalize
      * (copy one VFO onto the other), swap, and the two composite "quick"
@@ -117,6 +127,7 @@
     showVfoList = true,
     groupLabel,
     disabled = false,
+    onTuneFrequency,
     onEqualizeVfos,
     onSwapVfos,
     onQuickSplit,
@@ -159,6 +170,66 @@
    */
   function frequencyDisplay(vfo: VfoViewModel): ReturnType<typeof renderSlot> {
     return renderSlot('frequencyDisplay', { frequencyHz: vfo.frequencyHz });
+  }
+
+  /**
+   * MOR-1322 (S3b) — per-digit tuning parity with the legacy VfoHeader, under
+   * the owner's option (b): tuning OPTS OUT of the design language. The
+   * MOR-1275 `frequencyDisplay` renderer stays display-only — it is never asked
+   * to produce interactive markup — and the digit control self-renders.
+   *
+   * COMPOSITION RULE: one readout slot (`.vfo-freq`), two MUTUALLY EXCLUSIVE
+   * fillings. Tunable → the self-rendered digit control; not tunable → the
+   * language's text, or `formatFrequency` when no language is active (today's
+   * behaviour, byte-identical). Never both: two elements painting the same
+   * frequency is a double readout, and the operator must see exactly one number
+   * per VFO. Because both fillings read the SAME single fact
+   * (`vfo.frequencyHz`), they cannot show conflicting values by construction —
+   * that is the property the tests pin, in both language states.
+   *
+   * The language keeps its claim on the REGION either way: `freq.attributes`
+   * are spread onto the slot in both branches, so a language's tokens/hooks
+   * still decorate the frequency area. What opts out is the rendering of the
+   * VALUE, which is exactly what "the renderer stays display-only" means.
+   *
+   * Two-level gating (MOR-977), and the split matters — it is what makes the
+   * guard REACHABLE and therefore independently testable:
+   *   STRUCTURAL (`hasTunableFrequency`) — no observed frequency, no tune
+   *     intent wired, or the tile is NOT THE ACTIVE VFO: there is nothing this
+   *     tile can tune, so no control mounts and the slot shows the plain
+   *     readout. ABSENT.
+   *
+   *     The `isActive` term is load-bearing and was a real bug without it
+   *     (MOR-1322 verification B1). The tune intent is RECEIVER-scoped —
+   *     `set_freq {receiver}` writes that receiver's *active* VFO — so a
+   *     control on an inactive tile would take its step from VFO B's digits and
+   *     move VFO A. On `1/ab` and `2/main_sub` (i.e. the whole live bench) the
+   *     operator would scroll one VFO and watch a different one move. The
+   *     legacy `VfoPanel` never had this shape: it mounted ONE widget per
+   *     RECEIVER, over that receiver's current frequency. Gating on `isActive`
+   *     restores exactly that correspondence — one tunable tile per radio
+   *     (isActive is global); SUB-receiver tuning on dual-receiver radios is a
+   *     known parity gap tracked externally; the gate exists because set_freq
+   *     is receiver-scoped and writes the receiver's ACTIVE VFO (wrong-VFO
+   *     dispatch hazard).
+   *   OPERATIONAL (`disabled`, a MOR-1256 strip whose receiver is present but
+   *     unavailable) — the control DOES mount, marked `aria-disabled`, and
+   *     `tuneFrequency` refuses the dispatch. PRESENT BUT INERT, exactly as the
+   *     select controls in this same surface behave.
+   *
+   * Folding `disabled` into the structural gate instead would make the guard
+   * unreachable from the DOM — a mutant deleting it would survive, which is
+   * precisely the MOR-1321 B2 finding. Here the markup gate and the handler
+   * guard are two mechanisms on two different conditions, and each is pinned
+   * on its own by bypassing the other.
+   */
+  function hasTunableFrequency(vfo: VfoViewModel): boolean {
+    return vfo.isActive && vfo.frequencyHz !== null && onTuneFrequency !== undefined;
+  }
+
+  function tuneFrequency(vfo: VfoViewModel, frequencyHz: number): void {
+    if (disabled || vfo.frequencyHz === null || !vfo.isActive) return;
+    onTuneFrequency?.(vfo.receiver, frequencyHz);
   }
 
   function isSelectable(vfo: VfoViewModel): boolean {
@@ -258,7 +329,30 @@
         data-vfo-tx-target={vfo.isTxTarget}
       >
         <span class="vfo-role">{roleLabel(vfo)}</span>
-        <span class="vfo-freq" {...freq?.attributes ?? {}}>{freq?.text ?? formatFrequency(vfo.frequencyHz)}</span>
+        <!--
+          MOR-1322 — ONE readout slot, two mutually exclusive fillings. See the
+          `tuneFrequency` comment for the composition rule and why "alongside"
+          cannot mean two visible numbers.
+        -->
+        <span
+          class="vfo-freq"
+          {...freq?.attributes ?? {}}
+          data-vfo-freq
+          data-freq-tunable={hasTunableFrequency(vfo) && !disabled}
+          aria-disabled={hasTunableFrequency(vfo) && disabled ? 'true' : undefined}
+        >
+          {#if hasTunableFrequency(vfo)}
+            <FrequencyDisplayInteractive
+              freq={vfo.frequencyHz ?? 0}
+              compact
+              active={vfo.isActive}
+              receiver={vfo.receiver === 'SUB' ? 'sub' : 'main'}
+              onFreqChange={(hz) => tuneFrequency(vfo, hz)}
+            />
+          {:else}
+            {freq?.text ?? formatFrequency(vfo.frequencyHz)}
+          {/if}
+        </span>
         <span class="vfo-mode">{vfo.mode ?? '—'}{vfo.filter ? ` / ${vfo.filter}` : ''}</span>
         {#if vfo.isTxTarget}
           <span class="vfo-badge" data-vfo-tx-badge>{t('core.vfo.txTarget.label')}</span>
