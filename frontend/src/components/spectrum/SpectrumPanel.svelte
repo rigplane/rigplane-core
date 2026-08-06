@@ -42,7 +42,13 @@
   // bridge, issue #832) can suppress the duplicate in the toolbar. Layouts that
   // do not surface them (v1 desktop/mobile, v2 mobile chip view) omit the prop
   // and keep the controls reachable (#832 mobile/v1 fallback).
-  let { hideSourceControls = false } = $props();
+  //
+  // `hideScopeControls` is forwarded the same way (MOR-1369, v3-rework
+  // S6b-1): it hides the toolbar's fact-backed `scopeControls.*` half once a
+  // layout's manifest declares a `scopeControls` zone (S6b-2). Landed INERT
+  // — no manifest declares that zone yet, so `RadioLayout` always passes
+  // `false` today and this prop is a pure pass-through, no logic of its own.
+  let { hideSourceControls = false, hideScopeControls = false } = $props();
 
   // --- Component state ---
   let scopeConnected = $derived(runtime.scope.hardwareScopeConnected);
@@ -379,7 +385,7 @@
 />
 
 <div class="spectrum-panel" class:fullscreen onwheel={handleWheel}>
-  <SpectrumToolbar bind:enableAvg bind:enablePeakHold bind:brtLevel bind:colorScheme bind:fullscreen bind:showBandPlan bind:hiddenLayers bind:showEiBi {scopeDemandOn} onScopeDemandChange={setScopeDemand} {hideSourceControls} />
+  <SpectrumToolbar bind:enableAvg bind:enablePeakHold bind:brtLevel bind:colorScheme bind:fullscreen bind:showBandPlan bind:hiddenLayers bind:showEiBi {scopeDemandOn} onScopeDemandChange={setScopeDemand} {hideSourceControls} {hideScopeControls} />
   <div class="spectrum-with-scales">
     <div class="db-scale">
       {#each DB_TICKS as tick}
