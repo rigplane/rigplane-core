@@ -343,6 +343,30 @@ describe('the three-way denial reason distinguishes an unconfirmed receiver (MOR
     r.dispose();
   });
 
+  // ORDER PIN (added in verification). The two explanations can hold AT ONCE:
+  // a receiver that was never confirmed AND a recorded out-of-band fault. The
+  // F2 TX-scoped match must keep winning — it names a specific, actionable TX
+  // fault and is equally a cause of the denial, whereas the receiver sentence
+  // would bury it. Kills: hoisting the `activeReceiver` branch above the
+  // TX-scoped search. No other test in this file reaches that state — row 1
+  // above uses a CONFIRMED receiver — so without this the branch ORDER, which
+  // is what makes the three-way split safe, is unpinned.
+  it('lets a recorded out-of-band fault outrank an unconfirmed receiver', () => {
+    const r = render({
+      ...withB({ currentBand: knownBand('MW'), currentBandTx: 'denied' }),
+      activeReceiver: { status: 'unknown' },
+      txPermit: DENIED,
+      disabledReasons: [
+        { field: 'activeReceiver', code: 'field-not-observed' },
+        { field: 'txPermit', code: 'out-of-band' },
+      ] as readonly DisabledReason[],
+    });
+    expect(r.text('current-value')).toBe('MW');
+    expect(r.text('tx-reason')).toBe(REASON_LABEL['out-of-band']);
+    expect(r.text('tx-reason')).not.toBe(ACTIVE_RECEIVER_UNCONFIRMED_REASON);
+    r.dispose();
+  });
+
   // The distinguishing signal named in rule (4) — band-choice buttons dim
   // while the active receiver is unconfirmed — must still hold in exactly
   // the state row 2 renders the new sentence for.
