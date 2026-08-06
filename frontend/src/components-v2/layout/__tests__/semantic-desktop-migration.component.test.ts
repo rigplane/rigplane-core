@@ -998,6 +998,70 @@ describe('the legacy-twin suppression channel (MOR-1364, S6-pre)', () => {
 });
 
 /**
+ * MOR-1371 (v3-rework S11) — the drag-order/workspace boundary
+ * (`docs/plans/2026-08-06-panel-order-workspace-boundary.md`).
+ *
+ * `LeftSidebar` and `RightSidebar` do NOT prune or filter their `defaults`
+ * literal — the doc's §1.2 ruling, reversed from the brief's tentative
+ * recommendation on EMPIRICAL evidence, not just the LCD-sharing argument.
+ * `rigplane:panel-order`/`rigplane:right-panel-order` are ONE storage key
+ * shared by every skin that mounts these components (`desktop-v2`,
+ * `sdr-test` via `RadioLayout`; `lcd-cockpit`/`lcd-scope` via `LcdLayout`),
+ * and `loadPanelOrder` always prefers a valid STORED order over `defaults`.
+ * A per-`declared` computation of `defaults` — tried and reverted during this
+ * slice's build — only affects a brand-new user's very first load; a
+ * RETURNING user who switches skins inherits whichever skin last wrote the
+ * shared key, silently losing panels on the OTHER skin the moment the two
+ * skins' id sets diverge. That is not hypothetical: it reproduced as a real
+ * full-suite failure in `semantic-lcd-migration.component.test.ts` (a
+ * `desktop-v2`-shaped write leaking into an LCD-context mount via the
+ * `--localstorage-file`-backed store shared across the whole run) before
+ * this file's tests below were changed to stop asserting it. The only safe
+ * suppression point is the RENDER `{#if}` (`declared.has(...)`), which was
+ * already correct before this slice — these tests pin that it stays correct
+ * even when `order` still names every legacy id, on both a declaring and a
+ * non-declaring manifest, so a future attempt to "clean up" the shared
+ * literal has a regression test to fail against.
+ */
+describe('a stored order naming every legacy panelId cannot resurrect a declared-retired one (MOR-1371, S11)', () => {
+  const RETIRED_ON_DESKTOP_V2 = ['rf-front-end', 'mode', 'filter', 'agc', 'rit-xit',
+    'antenna', 'scan', 'rx-audio', 'dsp', 'cw'];
+
+  it('the ten desktop-v2-declared ids do not render even when a stored order still names them', () => {
+    localStorage.setItem('rigplane:panel-order', JSON.stringify(
+      ['rf-front-end', 'mode', 'filter', 'agc', 'rit-xit', 'band', 'antenna', 'scan']));
+    localStorage.setItem('rigplane:right-panel-order', JSON.stringify(
+      ['rx-audio', 'audio-scope', 'dsp', 'tx', 'cw', 'memory']));
+    let t!: HTMLElement;
+    expect(() => { t = render('desktop-v2'); }).not.toThrow();
+    const ids = new Set([...t.querySelectorAll('[data-panel-id]')]
+      .map((el) => el.getAttribute('data-panel-id')));
+    for (const stale of RETIRED_ON_DESKTOP_V2) {
+      expect(ids.has(stale), stale).toBe(false);
+    }
+  });
+
+  // The reason `defaults` stays untouched (doc §1.2): the IDENTICAL stored
+  // order, mounted where nothing is declared, renders every one of the same
+  // ten ids normally. Deleting them from the shared literal would have been
+  // wrong for this shape, not just untested for it.
+  it('the identical stored order renders all ten ids on a layout that declares nothing', () => {
+    localStorage.setItem('rigplane:panel-order', JSON.stringify(
+      ['rf-front-end', 'mode', 'filter', 'agc', 'rit-xit', 'band', 'antenna', 'scan']));
+    localStorage.setItem('rigplane:right-panel-order', JSON.stringify(
+      ['rx-audio', 'audio-scope', 'dsp', 'tx', 'cw', 'memory']));
+    h.caps = { ...(capsFor('2/main_sub') as object), antennas: 2 } as Capabilities;
+    vi.mocked(hasCapability).mockImplementation((tag: string) => tag === 'cw');
+    const t = render('sdr-test');
+    const ids = new Set([...t.querySelectorAll('[data-panel-id]')]
+      .map((el) => el.getAttribute('data-panel-id')));
+    for (const id of RETIRED_ON_DESKTOP_V2) {
+      expect(ids.has(id), id).toBe(true);
+    }
+  });
+});
+
+/**
  * MOR-1365 (v3-rework S6a) — `scopeDisplay` GRADUATES from a synthetic probe
  * (the `ZONE_PROBE` shape above) to a REAL zone `desktopV2Layout` declares.
  * The status bar's legacy scope indicator retires through the SAME MOR-1364
