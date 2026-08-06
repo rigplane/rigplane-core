@@ -16,6 +16,14 @@
   import { applyModeDefault } from '$lib/stores/tuning.svelte';
   import { getKeyboardConfig, hasCapability, hasSpectrum } from '$lib/stores/capabilities.svelte';
   import type { SkinId } from '../../skins/registry';
+  import { declaredSurfaces, getLayout } from '../../presentation/layouts/contract';
+  // Side-effect import: populates the LAYOUT registry `getLayout` resolves
+  // against — the same idiom App.svelte and `semantic/design-language-renderers`
+  // use for their registries. Imported HERE, in the shell that reads the
+  // manifest, so a presentation resolved through the v3 path is self-sufficient:
+  // whether the legacy twins are suppressed can never depend on some other
+  // module having pulled the barrel in first.
+  import '../../presentation/layouts/declarations';
   import SpectrumPanel from '../../components/spectrum/SpectrumPanel.svelte';
   import LeftSidebar from './LeftSidebar.svelte';
   import RightSidebar from './RightSidebar.svelte';
@@ -59,11 +67,49 @@
 
   let { skinId = 'desktop-v2' }: { skinId?: SkinId } = $props();
 
-  // MOR-1065: the sdr-test desktop layout is the migrated reference vertical —
-  // its VFO and TX presentation is owned by the semantic surfaces, so the
-  // legacy twin-VFO block and the sidebars' TX panel must not also render.
-  // desktop-v2 keeps the legacy panels for the compatibility window (MOR-1099).
-  let semanticSurfaces = $derived(skinId === 'sdr-test');
+  // MOR-1313 (v3-rework slice S2) — PER-ZONE suppression, replacing the
+  // MOR-1065 `skinId === 'sdr-test'` boolean. This shell hosts two areas that
+  // have a semantic twin: the receiver deck (legacy `<VfoHeader>` vs the `vfo`
+  // surface) and the sidebars' `<TxPanel>` (vs the `rxTx` surface). Which one
+  // the semantic vertical owns is read off the ACTIVE layout manifest's zone
+  // declarations: a surface some declared zone mounts renders semantically and
+  // its legacy twin does NOT also render; a surface no zone declares keeps its
+  // legacy presentation untouched.
+  //
+  // Both resolving families declare the full pair, so both are fully semantic:
+  // `sdr-test` through one zone (`main: [vfo, rxTx]`) — its all-semantic
+  // behavior is the DEGENERATE case of this rule, byte-identical to MOR-1065 —
+  // and `desktop-v2` through two (`receiver-deck: [vfo]` + `rx-tx: [rxTx]`,
+  // MOR-1266), which is what puts desktop-v2 on the v3 path.
+  //
+  // The MANIFEST is the authority, deliberately NOT the resolved surface plan
+  // (`useSurfacePlan`, MOR-1082): the workspace may subtract a surface from a
+  // zone, and letting a subtraction bring the legacy twin back would be
+  // force-show through the back door — the one thing the plan may never do.
+  let declared = $derived(declaredSurfaces(getLayout(skinId)));
+  let semanticDeck = $derived(declared.has('vfo'));
+  // R9 — ONE key/unkey authority, and this line is where that count is decided.
+  //
+  // It follows the DECK, not the `rxTx` declaration, and the asymmetry is
+  // deliberate: `SemanticRadioSurfaces` is manifest-BLIND by design (importing a
+  // manifest there would close the MOR-1068 cycle), so its single composition is
+  // a hardcoded `['vfo', 'rxTx']` — mounting the semantic deck ALWAYS brings
+  // exactly one `<RxTxSurface>` with it, whatever the manifest declared. Gating
+  // the sidebars' TX twin on `declared.has('rxTx')` instead would therefore let
+  // the two disagree: a manifest declaring `vfo` WITHOUT `rxTx` (which
+  // `validateLayoutManifest` permits, and which the programme's additive
+  // subset-declaration pattern positively invites) would render the semantic
+  // RxTxSurface AND the legacy TxPanel — two key/unkey authorities, each holding
+  // its own TX lease `sourceId`, so keying from one cannot be released by the
+  // other. That is the stranded-transmitter hazard R9 and MOR-1011 exist to
+  // prevent; the pre-MOR-1313 single boolean made it structurally impossible and
+  // this rule keeps it so.
+  //
+  // Truth table, all four quadrants: deck mounted → semantic surface 1 / legacy
+  // 0; deck not mounted → semantic 0 / legacy 1. Exactly one, always. Should
+  // `SINGLE_COMPOSITION` ever become manifest-driven, THAT is the change that
+  // earns this line a second term — not a subset manifest landing.
+  let semanticRxTx = $derived(semanticDeck);
 
   // Reactive state + capabilities — via runtime
   let radioState = $derived(runtime.state);
@@ -218,12 +264,18 @@
 {:else if skinId === 'lcd-scope'}
   <LcdLayout variant="scope" />
 {:else}
-<div class="radio-layout" class:sdr-test={skinId === 'sdr-test'}>
+<!--
+  `sdr-test` stays a pure IDENTITY hook (which entrypoint is on screen);
+  `semantic-deck` is the PRESENTATIONAL one — the taller deck row and the
+  wide-viewport promotion below belong to the semantic deck, not to one skin id,
+  now that a second family resolves into it (MOR-1313).
+-->
+<div class="radio-layout" class:sdr-test={skinId === 'sdr-test'} class:semantic-deck={semanticDeck}>
   <StatusBar onSettings={() => (settingsOpen = true)} />
   <KeyboardHandler config={keyboardConfig} onAction={keyboardHandlers.dispatch} />
 
   <section class="receiver-deck" bind:this={receiverDeckElement} style={receiverDeckStyle}>
-    {#if semanticSurfaces}
+    {#if semanticDeck}
       <SemanticRadioSurfaces />
     {:else}
       <VfoHeader
@@ -255,7 +307,7 @@
 
   <section class="content-row">
     <div class="content-left">
-      <LeftSidebar hideTxPanel={semanticSurfaces} />
+      <LeftSidebar hideTxPanel={semanticRxTx} />
     </div>
 
     <main class="content-center center-column">
@@ -272,7 +324,7 @@
     </main>
 
     <div class="content-right">
-      <RightSidebar hideTxPanel={semanticSurfaces} />
+      <RightSidebar hideTxPanel={semanticRxTx} />
     </div>
   </section>
 
@@ -377,13 +429,13 @@
     display: grid;
     grid-template-rows: 28px 200px minmax(0, 1fr) auto;
   }
-  .radio-layout.sdr-test {
+  .radio-layout.semantic-deck {
     grid-template-rows: 28px 280px minmax(0, 1fr) auto;
   }
   /* Wide-viewport promotion: sidebars move up to flank the VFO row.
      Below 1680px we keep the stacked layout (VFO full-width, sidebars below). */
   @media (min-width: 1680px) {
-    .radio-layout.sdr-test {
+    .radio-layout.semantic-deck {
       grid-template-columns: 228px minmax(0, 1fr) 228px;
       grid-template-rows: 28px 280px minmax(0, 1fr) auto;
       grid-template-areas:
@@ -392,18 +444,18 @@
         "left   center right"
         "dock   dock   dock";
     }
-    .radio-layout.sdr-test > :global(.status-bar) { grid-area: status; }
-    .radio-layout.sdr-test > .receiver-deck { grid-area: deck; }
-    .radio-layout.sdr-test > .bottom-dock { grid-area: dock; }
+    .radio-layout.semantic-deck > :global(.status-bar) { grid-area: status; }
+    .radio-layout.semantic-deck > .receiver-deck { grid-area: deck; }
+    .radio-layout.semantic-deck > .bottom-dock { grid-area: dock; }
     /* Flatten content-row so its children become direct grid items. */
-    .radio-layout.sdr-test > .content-row {
+    .radio-layout.semantic-deck > .content-row {
       display: contents;
     }
-    .radio-layout.sdr-test > .content-row > .content-left { grid-area: left; }
-    .radio-layout.sdr-test > .content-row > .content-right { grid-area: right; }
-    .radio-layout.sdr-test > .content-row > .content-center { grid-area: center; }
+    .radio-layout.semantic-deck > .content-row > .content-left { grid-area: left; }
+    .radio-layout.semantic-deck > .content-row > .content-right { grid-area: right; }
+    .radio-layout.semantic-deck > .content-row > .content-center { grid-area: center; }
   }
-  .radio-layout, .radio-layout.sdr-test {
+  .radio-layout, .radio-layout.semantic-deck {
     height: 100vh;
     background:
       linear-gradient(180deg, var(--v2-bg-gradient-start) 0%, var(--v2-bg-darkest) 100%),

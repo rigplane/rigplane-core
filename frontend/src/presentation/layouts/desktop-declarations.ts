@@ -5,36 +5,33 @@
  * declaration idiom.
  *
  * MANIFEST FIRST, NOT DOM FIRST (MOR-1263 decomposition §3, item 1 vs item
- * 2). Every existing family's zones bind something a real DOM tree already
- * mounts: `sdr-test` renders `<SemanticRadioSurfaces />` in place of the
- * legacy VFO/TX block (`sdr-registration.test.ts`), and LCD/mobile/cockpit
- * each own their entrypoint outright. `desktop-v2` is different: it shares
- * `components-v2/layout/RadioLayout.svelte`'s "else" branch with `sdr-test`,
- * gated by `let semanticSurfaces = $derived(skinId === 'sdr-test')` — for
- * `skinId === 'desktop-v2'` that is `false`, so TODAY it still mounts the
- * legacy `<VfoHeader>` in `.receiver-deck` and the sidebars' legacy
- * `<TxPanel>` (`hideTxPanel={semanticSurfaces}` is `false` here), pinned by
- * the pre-existing `RadioLayout.isolated.test.ts` ("renders .vfo-header inside
- * .receiver-deck", default `skinId: 'desktop-v2'`). Registering this
- * manifest does not change that — `validateLayoutManifest` only requires
- * internal self-consistency (every `requiredSemanticSurfaces` entry covered
- * by some zone); it "does not require the layout to be fully semantic"
- * (MOR-1263 decomposition §3). Actually wiring `RadioLayout`'s
- * `semanticSurfaces` flag to mount these zones for `desktop-v2` for real is
- * MOR-1263 step 2, a later slice — this ticket registers the manifest half
- * only, deliberately ahead of the DOM, per the programme's "manifest first"
- * ordering argument.
+ * 2). MOR-1266 registered these zones deliberately AHEAD of the DOM, while
+ * `components-v2/layout/RadioLayout.svelte` still gated its semantic mount on
+ * `skinId === 'sdr-test'` and `desktop-v2` therefore still rendered the legacy
+ * `<VfoHeader>` and the sidebars' `<TxPanel>`.
+ *
+ * MOR-1263 STEP 2 (MOR-1313) CLOSED THAT GAP: RadioLayout no longer knows any
+ * skin id — it reads the active manifest's zone declarations and suppresses
+ * the legacy twin of every surface a declared zone mounts. The two zones below
+ * are consequently DOM-backed now, not forward-declared
+ * (`__tests__/forward-declaration-inventory.test.ts`), and this file is a
+ * description of what `desktop-v2` composes rather than a promise about it.
  */
 import { registerLayout, type LayoutManifest } from './contract';
 
 /**
  * `receiver-deck` names the real DOM section (`RadioLayout.svelte`'s
- * `<section class="receiver-deck">`) that will host the `vfo` surface once
- * MOR-1263 step 2 lands; `rx-tx` names the future replacement for the
- * sidebars' legacy `<TxPanel>`. Both are forward-declared zone ids, not yet
- * bound to a `data-zone-id` in the DOM — unlike the dual-receiver-cockpit's
- * `rx-tx` zone, which IS bound today (`SemanticRadioSurfaces.svelte`,
- * `strips="dual"`).
+ * `<section class="receiver-deck">`) that hosts the `vfo` surface; `rx-tx`
+ * names the area the sidebars' legacy `<TxPanel>` used to occupy. Since
+ * MOR-1313 both declarations are what actually decides the rendered tree.
+ *
+ * Neither is bound to a `data-zone-id` element in the single composition —
+ * unlike the dual-receiver-cockpit's `rx-tx` zone, which IS
+ * (`SemanticRadioSurfaces.svelte`, `strips="dual"`). That stays deliberate:
+ * MOR-1069 established that a zone element exists only where an arrangement
+ * must place it, and the single composition places nothing. The zone ids are
+ * read here as DECLARATIONS — what this layout mounts where — which is exactly
+ * what per-zone suppression consumes.
  */
 const DESKTOP_V2_ZONES = [
   { id: 'receiver-deck', surfaces: ['vfo'] },
