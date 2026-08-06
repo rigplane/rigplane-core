@@ -28,6 +28,7 @@ from rigplane.core.state_store import (
     StateStore,
 )
 from rigplane.core.tx_target import KnownTxTarget, TxTarget, UnknownTxTarget
+from rigplane.core.types import ScopeFixedEdge
 from rigplane.radio_state import RadioState
 
 
@@ -808,5 +809,99 @@ def test_observed_scope_control_leaves_survive_frontend_parent_veto() -> None:
     )
     field_status = payload["fieldStatus"]
     for suffix in _SCOPE_TOOLBAR_SUFFIXES:
+        path = f"scopeControls.{suffix}"
+        assert _frontend_availability(field_status, path) == "available", suffix
+
+
+_SCOPE_SETTINGS_POPOVER_SUFFIXES = (
+    "duringTx",
+    "centerType",
+    "vbwNarrow",
+    "rbw",
+    "fixedEdge",
+)
+
+
+def test_public_state_projection_covers_scope_settings_popover_leaves() -> None:
+    """MOR-1302: the five ScopeSettingsPopover leaves must project and seed
+    field status exactly like the eight MOR-557 toolbar leaves."""
+    clock = FreshnessClock(start=10.0)
+    store = StateStore(freshness_clock=clock)
+    fixed_edge = ScopeFixedEdge(
+        range_index=1, edge=0, start_hz=7_000_000, end_hz=7_300_000
+    )
+    leaves: dict[str, Any] = {
+        "during_tx": True,
+        "center_type": 2,
+        "vbw_narrow": True,
+        "rbw": 1,
+        "fixed_edge": fixed_edge,
+    }
+    for name, value in leaves.items():
+        store.apply(
+            _observation(
+                FieldPath.scope_control("display", name), value, at=clock.now()
+            )
+        )
+
+    payload = build_public_state_payload_from_snapshot(
+        store.snapshot(), radio=None, receiver_count=2
+    )
+
+    sc = payload["scopeControls"]
+    assert sc["duringTx"] is True
+    assert sc["centerType"] == 2
+    assert sc["vbwNarrow"] is True
+    assert sc["rbw"] == 1
+    assert sc["fixedEdge"] == {
+        "rangeIndex": 1,
+        "edge": 0,
+        "startHz": 7_000_000,
+        "endHz": 7_300_000,
+    }
+
+    for suffix in _SCOPE_SETTINGS_POPOVER_SUFFIXES:
+        status = payload["fieldStatus"][f"scopeControls.{suffix}"]
+        assert status["observed"] is True, suffix
+        assert status["availability"] == "available", suffix
+
+
+def test_default_field_status_seeds_scope_settings_popover_leaves_missing() -> None:
+    """MOR-1302: the five popover leaves are seeded ``missing`` by default,
+    same as the eight existing scope-control toolbar leaves (MOR-429)."""
+    payload = build_public_state_payload_from_snapshot(
+        StateSnapshot.empty(), radio=None, receiver_count=2
+    )
+    field_status = payload["fieldStatus"]
+    for suffix in _SCOPE_SETTINGS_POPOVER_SUFFIXES:
+        status = field_status[f"scopeControls.{suffix}"]
+        assert status["availability"] == "missing", suffix
+        assert status["observed"] is False, suffix
+
+
+def test_observed_scope_settings_popover_leaves_survive_frontend_parent_veto() -> None:
+    """MOR-1302: observed popover leaves resolve ``available`` through the
+    frontend parent-availability walk, same as the MOR-557 toolbar leaves."""
+    clock = FreshnessClock(start=10.0)
+    store = StateStore(freshness_clock=clock)
+    fixed_edge = ScopeFixedEdge(range_index=0, edge=0, start_hz=0, end_hz=0)
+    leaves: dict[str, Any] = {
+        "during_tx": False,
+        "center_type": 0,
+        "vbw_narrow": False,
+        "rbw": 0,
+        "fixed_edge": fixed_edge,
+    }
+    for name, value in leaves.items():
+        store.apply(
+            _observation(
+                FieldPath.scope_control("display", name), value, at=clock.now()
+            )
+        )
+    payload = build_public_state_payload_from_snapshot(
+        store.snapshot(), radio=None, receiver_count=2
+    )
+    field_status = payload["fieldStatus"]
+    for suffix in _SCOPE_SETTINGS_POPOVER_SUFFIXES:
         path = f"scopeControls.{suffix}"
         assert _frontend_availability(field_status, path) == "available", suffix
