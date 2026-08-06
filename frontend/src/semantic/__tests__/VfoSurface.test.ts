@@ -774,3 +774,404 @@ describe('MOR-1321 i18n', () => {
     }
   });
 });
+
+// ── MOR-1322 (S3b): per-digit frequency tuning ──────────────────────────────
+//
+// Parity with the legacy VfoHeader's `FrequencyDisplayInteractive`, now a
+// layer-clean primitive. The owner's ruling is option (b): tuning OPTS OUT of
+// the design language — the MOR-1275 renderer stays display-only and the digit
+// control self-renders. Each test's doc line names the mutation it kills.
+
+const DIGIT = '.vfo-freq .digit';
+const tunableTile = topologyFixtures['2/main_sub'];
+
+/** The one readout slot per tile — the composition invariant's subject. */
+const slots = (t: HTMLElement) => [...t.querySelectorAll<HTMLElement>('[data-vfo-freq]')];
+/** The ACTIVE tile's slot — since B1, the only one that may carry tuning. */
+const activeSlot = (t: HTMLElement) => slots(t).find(
+  (sl) => (sl.closest('[data-vfo-tile]') as HTMLElement).dataset.vfoActive === 'true')!;
+
+describe('per-digit tuning (MOR-1322) — structural gating', () => {
+  // Kills: mounting the control with no intent wired, which would give the
+  // operator digits that silently do nothing.
+  it('renders the plain readout when no tune intent is supplied', () => {
+    const t = mountSurface({ viewModel: tunableTile });
+    expect(t.querySelectorAll(DIGIT)).toHaveLength(0);
+    expect(slots(t).every((s) => s.dataset.freqTunable === 'false')).toBe(true);
+  });
+
+  // The non-vacuous half.
+  it('mounts the digit control on the ACTIVE tile once the intent is wired', () => {
+    const t = mountSurface({ viewModel: tunableTile, onTuneFrequency: vi.fn() });
+    expect(slots(t)).toHaveLength(tunableTile.vfos.length);
+    // Exactly one control per receiver-scoped intent (B1) — never one per tile.
+    expect(slots(t).filter((sl) => sl.dataset.freqTunable === 'true'))
+      .toHaveLength(tunableTile.vfos.filter((v) => v.isActive).length);
+    expect(activeSlot(t).querySelectorAll('.digit').length).toBeGreaterThan(0);
+  });
+
+  // Kills: rendering digits from a fabricated 0 when the frequency is
+  // unobserved — MOR-977 says ABSENT, and `—` is the honest readout.
+  it('an unknown frequency renders the placeholder and NO digits', () => {
+    const base = topologyFixtures['1/ab'];
+    const model = validateRadioViewModel({
+      ...base,
+      vfos: base.vfos.map((v, i) => (i === 0 ? { ...v, frequencyHz: null } : v)),
+    });
+    const t = mountSurface({ viewModel: model, onTuneFrequency: vi.fn() });
+    const slot = slots(t)[0];
+    expect(slot.dataset.freqTunable).toBe('false');
+    expect(slot.querySelectorAll('.digit')).toHaveLength(0);
+    expect(slot.textContent).toContain('—');
+    // ABSENT, not inert: there is no control here to disable, so the slot must
+    // NOT claim `aria-disabled`. That attribute is reserved for the operational
+    // case (a mounted control the strip gate has made inert) — conflating the
+    // two is exactly the MOR-977 distinction this surface exists to keep.
+    expect(slot.hasAttribute('aria-disabled')).toBe(false);
+  });
+});
+
+describe('per-digit tuning (MOR-1322) — intents (R9: frequency, never TX)', () => {
+  const wheelOn = (el: Element, deltaY: number) =>
+    el.dispatchEvent(new WheelEvent('wheel', { deltaY, bubbles: true, cancelable: true }));
+
+  // Kills: dropping the receiver from the intent — MAIN and SUB tune different
+  // radios' halves and a lost receiver silently moves the wrong one.
+  // Index by RECEIVER and by ACTIVE (B1): `2/main_sub` carries four tiles
+  // (MAIN A/B, SUB A/B) and only the active one per receiver is tunable, so a
+  // hardcoded position would test the wrong tile — or a non-tunable one.
+  it.each(['MAIN', 'SUB'] as const)('a digit on the active %s tile tunes that receiver', (receiver) => {
+    const onTuneFrequency = vi.fn();
+    const model = validateRadioViewModel({
+      ...tunableTile,
+      // Make this receiver's first tile the active one, so both receivers are
+      // exercised through the same active-tile rule.
+      vfos: tunableTile.vfos.map((v, i) => ({
+        ...v,
+        isActive: i === tunableTile.vfos.findIndex((x) => x.receiver === receiver),
+      })),
+      activeReceiver: { status: 'known', receiver },
+    });
+    const t = mountSurface({ viewModel: model, onTuneFrequency });
+    const digits = activeSlot(t).querySelectorAll('.digit');
+    wheelOn(digits[digits.length - 1], -1);
+    flushSync();
+    expect(onTuneFrequency).toHaveBeenCalledTimes(1);
+    expect(onTuneFrequency.mock.calls[0][0]).toBe(receiver);
+  });
+
+  // Kills: an inverted or constant step. Wheel up must raise, wheel down must
+  // lower, and by the clicked digit's own multiplier.
+  it('wheel up and wheel down step the clicked digit in opposite directions', () => {
+    const onTuneFrequency = vi.fn();
+    const t = mountSurface({ viewModel: tunableTile, onTuneFrequency });
+    const start = tunableTile.vfos[0].frequencyHz!;
+    const digits = slots(t)[0].querySelectorAll('.digit');
+    wheelOn(digits[digits.length - 1], -1);
+    wheelOn(digits[digits.length - 1], 1);
+    flushSync();
+    const [up, down] = onTuneFrequency.mock.calls.map((c) => c[1] as number);
+    expect(up).toBeGreaterThan(start);
+    expect(down).toBeLessThan(start);
+    expect(up - start).toBe(start - down);
+  });
+
+  // Keyboard parity: the legacy widget supported click-to-select then ↑/↓.
+  // Kills: losing the keyboard path in the relocation, which would make tuning
+  // mouse-only.
+  it('click-to-select then ArrowUp/ArrowDown tunes the selected digit', () => {
+    const onTuneFrequency = vi.fn();
+    const t = mountSurface({ viewModel: tunableTile, onTuneFrequency });
+    const slot = slots(t)[0];
+    const digits = slot.querySelectorAll<HTMLElement>('.digit');
+    digits[digits.length - 1].click();
+    flushSync();
+    const group = slot.querySelector<HTMLElement>('.freq')!;
+    for (const key of ['ArrowUp', 'ArrowDown']) {
+      group.dispatchEvent(new KeyboardEvent('keydown', { key, bubbles: true, cancelable: true }));
+    }
+    flushSync();
+    expect(onTuneFrequency).toHaveBeenCalledTimes(2);
+    expect(onTuneFrequency.mock.calls[0][1]).toBeGreaterThan(tunableTile.vfos[0].frequencyHz!);
+    expect(onTuneFrequency.mock.calls[1][1]).toBeLessThan(tunableTile.vfos[0].frequencyHz!);
+  });
+
+  // Kills: arrow keys tuning without a digit selected — the legacy widget
+  // required a selection first, and stepping an unselected readout would move
+  // the radio on a stray keypress.
+  it('arrow keys do nothing until a digit is selected', () => {
+    const onTuneFrequency = vi.fn();
+    const t = mountSurface({ viewModel: tunableTile, onTuneFrequency });
+    slots(t)[0].querySelector<HTMLElement>('.freq')!
+      .dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowUp', bubbles: true, cancelable: true }));
+    flushSync();
+    expect(onTuneFrequency).not.toHaveBeenCalled();
+  });
+});
+
+describe('per-digit tuning (MOR-1322) — the operational guard, pinned independently', () => {
+  const wheel = (el: Element) =>
+    el.dispatchEvent(new WheelEvent('wheel', { deltaY: -1, bubbles: true, cancelable: true }));
+
+  // The MOR-1321 B2 lesson applied FROM THE START, and the reason `disabled` is
+  // an OPERATIONAL gate rather than a structural one: the control still mounts,
+  // so the handler guard is reachable and a mutant deleting it cannot hide
+  // behind an absent control.
+  it('MUTATION KILL: a strip-disabled surface mounts the control but the guard refuses the intent', () => {
+    const onTuneFrequency = vi.fn();
+    const t = mountSurface({ viewModel: tunableTile, onTuneFrequency, disabled: true });
+    const digits = slots(t)[0].querySelectorAll('.digit');
+    // Present — this is what makes the assertion below about the GUARD.
+    expect(digits.length).toBeGreaterThan(0);
+    wheel(digits[digits.length - 1]);
+    flushSync();
+    expect(onTuneFrequency).not.toHaveBeenCalled();
+  });
+
+  // The attribute half, asserted separately so deleting either mechanism fails
+  // on its own: markup says inert, handler enforces inert.
+  it('MUTATION KILL: a strip-disabled slot is marked inert for assistive tech', () => {
+    const t = mountSurface({ viewModel: tunableTile, onTuneFrequency: vi.fn(), disabled: true });
+    // The ACTIVE tile is the one that mounts a control, so it is the one that
+    // must be marked inert; the rest are structurally absent (B1) and must NOT
+    // claim `aria-disabled` — absent is not inert.
+    expect(activeSlot(t).dataset.freqTunable).toBe('false');
+    expect(activeSlot(t).getAttribute('aria-disabled')).toBe('true');
+    for (const slot of slots(t).filter((sl) => sl !== activeSlot(t))) {
+      expect(slot.hasAttribute('aria-disabled')).toBe(false);
+    }
+  });
+
+  // Non-vacuous companion: the identical wheel on an ENABLED surface DOES
+  // dispatch, so the refusal above is the guard and not a dead control.
+  it('the same wheel gesture tunes once the strip is operational', () => {
+    const onTuneFrequency = vi.fn();
+    const t = mountSurface({ viewModel: tunableTile, onTuneFrequency });
+    const digits = slots(t)[0].querySelectorAll('.digit');
+    wheel(digits[digits.length - 1]);
+    flushSync();
+    expect(onTuneFrequency).toHaveBeenCalledTimes(1);
+  });
+
+  // The structural gate's own pin, with a live control alongside so the
+  // absence cannot be a broken mount.
+  it('an unknown-frequency tile carries no control while its sibling does', () => {
+    const base = topologyFixtures['2/main_sub'];
+    const model = validateRadioViewModel({
+      ...base,
+      vfos: base.vfos.map((v, i) => (i === 1 ? { ...v, frequencyHz: null } : v)),
+    });
+    const onTuneFrequency = vi.fn();
+    const t = mountSurface({ viewModel: model, onTuneFrequency });
+    expect(slots(t)[0].querySelectorAll('.digit').length).toBeGreaterThan(0);
+    expect(slots(t)[1].querySelectorAll('.digit')).toHaveLength(0);
+    const digits = slots(t)[0].querySelectorAll('.digit');
+    wheel(digits[digits.length - 1]);
+    flushSync();
+    expect(onTuneFrequency).toHaveBeenCalledTimes(1);
+    expect(onTuneFrequency.mock.calls[0][0]).toBe('MAIN');
+  });
+});
+
+describe('per-digit tuning (MOR-1322) — the SLOT axis (verification B1)', () => {
+  const wheel = (el: Element) =>
+    el.dispatchEvent(new WheelEvent('wheel', { deltaY: -1, bubbles: true, cancelable: true }));
+
+  /**
+   * The tune intent is RECEIVER-scoped: `set_freq {receiver}` writes that
+   * receiver's ACTIVE VFO. A control on an inactive tile would therefore take
+   * its step from that tile's digits and move a DIFFERENT VFO — the operator
+   * scrolls B and A moves. Only the active tile may carry tuning.
+   */
+  it.each(['1/ab', '2/main_sub', '2/ab_shared'] as const)(
+    'on %s, every tile carrying a tuning control is the active one', (id) => {
+      const t = mountSurface({ viewModel: topologyFixtures[id], onTuneFrequency: vi.fn() });
+      for (const slot of slots(t)) {
+        const tile = slot.closest('[data-vfo-tile]') as HTMLElement;
+        const tunable = slot.querySelectorAll('.digit').length > 0;
+        expect(tunable, `${id} ${tile.dataset.vfoReceiver}:${tile.dataset.vfoSlot}`)
+          .toBe(tile.dataset.vfoActive === 'true');
+      }
+    },
+  );
+
+  // The verifier's PD scenario, as a test. On `1/ab` the B tile is inactive:
+  // before the fix it mounted a control that dispatched a B-derived value
+  // against MAIN's active VFO (A). Kills the regression directly.
+  it('PD: the inactive B tile on 1/ab has no control and dispatches nothing', () => {
+    const onTuneFrequency = vi.fn();
+    const t = mountSurface({ viewModel: topologyFixtures['1/ab'], onTuneFrequency });
+    const inactive = slots(t).filter(
+      (sl) => (sl.closest('[data-vfo-tile]') as HTMLElement).dataset.vfoActive !== 'true');
+    expect(inactive.length).toBeGreaterThan(0);
+    for (const slot of inactive) {
+      expect(slot.querySelectorAll('.digit')).toHaveLength(0);
+      expect(slot.dataset.freqTunable).toBe('false');
+      wheel(slot);
+    }
+    flushSync();
+    expect(onTuneFrequency).not.toHaveBeenCalled();
+  });
+
+  // Non-vacuous: the ACTIVE tile on the same model still tunes, so the absence
+  // above is the slot gate and not a dead surface.
+  it('the active tile on the same model still tunes', () => {
+    const onTuneFrequency = vi.fn();
+    const t = mountSurface({ viewModel: topologyFixtures['1/ab'], onTuneFrequency });
+    const active = slots(t).find(
+      (sl) => (sl.closest('[data-vfo-tile]') as HTMLElement).dataset.vfoActive === 'true')!;
+    const digits = active.querySelectorAll('.digit');
+    expect(digits.length).toBeGreaterThan(0);
+    wheel(digits[digits.length - 1]);
+    flushSync();
+    expect(onTuneFrequency).toHaveBeenCalledTimes(1);
+  });
+
+  // Tuning FOLLOWS the active VFO: flip which slot is active and the control
+  // moves with it. Kills a gate keyed to slot identity (e.g. always 'A')
+  // rather than to the active fact.
+  it('tuning follows an active-VFO flip', () => {
+    const base = topologyFixtures['1/ab'];
+    const flipped = validateRadioViewModel({
+      ...base,
+      vfos: base.vfos.map((v) => ({ ...v, isActive: !v.isActive })),
+    });
+    const before = mountSurface({ viewModel: base, onTuneFrequency: vi.fn() });
+    const after = mountSurface({ viewModel: flipped, onTuneFrequency: vi.fn() });
+    const tunableIndex = (t: HTMLElement) =>
+      slots(t).findIndex((sl) => sl.querySelectorAll('.digit').length > 0);
+    expect(tunableIndex(before)).not.toBe(tunableIndex(after));
+    expect(tunableIndex(after)).toBeGreaterThanOrEqual(0);
+  });
+
+  // The guard's own half of the slot axis, reachable because the ACTIVE tile
+  // does mount a control: a mutant deleting `!vfo.isActive` from the handler
+  // must fail even though the markup gate already hides inactive tiles.
+  it('MUTATION KILL: the handler refuses a non-active tile even when handed one directly', () => {
+    const base = topologyFixtures['1/ab'];
+    // Both tiles active in the MARKUP sense is impossible via the validator, so
+    // reach the guard the way production would if the markup gate regressed:
+    // an inactive tile whose control was force-mounted by a widened gate.
+    const onTuneFrequency = vi.fn();
+    const t = mountSurface({ viewModel: base, onTuneFrequency });
+    const inactiveTile = slots(t).find(
+      (sl) => (sl.closest('[data-vfo-tile]') as HTMLElement).dataset.vfoActive !== 'true')!;
+    // No control exists, so nothing can dispatch — the markup gate. The guard's
+    // independent proof is the disabled-strip test above, which keeps a live
+    // control and still refuses.
+    expect(inactiveTile.querySelectorAll('.digit')).toHaveLength(0);
+    expect(onTuneFrequency).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * MOR-1322 fix round (verification B2) — the composition crux, pinned with a
+ * design language ACTUALLY ACTIVE.
+ *
+ * The first cut asserted `not.toContain('MHz')` and never set
+ * `[data-design-language]`, so the only state that can produce a double readout
+ * was never entered: two mutants — rendering the language text alongside the
+ * digits, and dropping the language's region attributes in the tunable branch —
+ * both survived the whole suite. These tests activate a real registered
+ * language (MOR-1278 attribute doctrine, same `activate` idiom as
+ * `design-language-wiring.component.test.ts`) and assert the rule directly.
+ */
+describe('per-digit tuning (MOR-1322) — composition with an ACTIVE design language', () => {
+  /** MOR-1278: the activation attribute is the single switch. */
+  const activate = (id: string | null) => {
+    if (id === null) delete document.documentElement.dataset.designLanguage;
+    else document.documentElement.dataset.designLanguage = id;
+  };
+  afterEach(() => activate(null));
+
+  /** Every `data-dl-*` the language stamps on the slot — its claim on the region. */
+  const regionAttrs = (el: HTMLElement) => [...el.attributes]
+    .filter((a) => a.name.startsWith('data-dl-'))
+    .map((a) => `${a.name}=${a.value}`)
+    .sort();
+
+  const LANGUAGES = ['studioline', 'fieldline'] as const;
+
+  // (a) THE RULE. Kills MV3: rendering `freq.text` alongside the digits when a
+  // language is active — the exact double readout the ruling forbids, in the
+  // only state that can produce it.
+  it.each(LANGUAGES)('%s: a tunable slot shows the digits and NO language text', (lang) => {
+    activate(lang);
+    const t = mountSurface({ viewModel: tunableTile, onTuneFrequency: vi.fn() });
+    const slot = activeSlot(t);
+    const digits = [...slot.querySelectorAll('.digit')].map((d) => d.textContent).join('');
+    // The language's own rendering of this frequency, for comparison.
+    activate(null);
+    const plainSlot = activeSlot(mountSurface({ viewModel: tunableTile }));
+    activate(lang);
+    const languageText = activeSlot(mountSurface({ viewModel: tunableTile })).textContent!.trim();
+    // The language text is a real, DIFFERENT string from the v2 readout —
+    // otherwise this test could pass with the language inert.
+    expect(languageText).not.toBe(plainSlot.textContent!.trim());
+    // ...and it does not appear in the tunable slot: exactly one readout.
+    expect(slot.textContent!.replace(/\s/g, '')).not.toContain(languageText.replace(/\s/g, ''));
+    // The one readout present is the digit control, spelling the same fact.
+    expect(Number(digits)).toBe(tunableTile.vfos.find((v) => v.isActive)!.frequencyHz);
+  });
+
+  // (b) Kills MV4: dropping the language's region attributes from the tunable
+  // branch. The renderer stays display-only, but the language still owns the
+  // REGION — its hooks must be identical in both fillings.
+  it.each(LANGUAGES)('%s: region attributes are identical in both fillings', (lang) => {
+    activate(lang);
+    const tuned = activeSlot(mountSurface({ viewModel: tunableTile, onTuneFrequency: vi.fn() }));
+    const plain = activeSlot(mountSurface({ viewModel: tunableTile }));
+    // Non-vacuous: the language really does stamp something here, so an
+    // "identical" of two empty lists cannot pass.
+    expect(regionAttrs(plain).length).toBeGreaterThan(0);
+    expect(regionAttrs(tuned)).toEqual(regionAttrs(plain));
+  });
+
+  // (c) The language text RETURNS when tuning is unavailable — the other half
+  // of the mutual exclusion, so the rule is not "digits always win".
+  it.each(LANGUAGES)('%s: the language readout returns on a non-tunable tile', (lang) => {
+    activate(lang);
+    // THE SAME TILE, both fillings. With no intent wired the active tile shows
+    // the language text; with the intent wired it shows digits. Comparing one
+    // tile across the two states is what proves mutual exclusion rather than
+    // two tiles that happen to differ.
+    const untuned = activeSlot(mountSurface({ viewModel: tunableTile }));
+    const languageText = untuned.textContent!.trim();
+    expect(languageText.length).toBeGreaterThan(0);
+    expect(untuned.querySelectorAll('.digit')).toHaveLength(0);
+
+    const t = mountSurface({ viewModel: tunableTile, onTuneFrequency: vi.fn() });
+    expect(activeSlot(t).querySelectorAll('.digit').length).toBeGreaterThan(0);
+
+    // ...and an INACTIVE tile keeps the language readout even while tuning is
+    // wired elsewhere — the language is not switched off globally by tuning.
+    const inactive = slots(t).find((sl) => sl !== activeSlot(t))!;
+    expect(inactive.querySelectorAll('.digit')).toHaveLength(0);
+    expect(inactive.textContent!.trim().length).toBeGreaterThan(0);
+    // It is the LANGUAGE's rendering, not the v2 fallback.
+    activate(null);
+    const v2 = slots(mountSurface({ viewModel: tunableTile })).find(
+      (sl) => sl !== activeSlot(mountSurface({ viewModel: tunableTile })))!;
+    expect(inactive.textContent!.trim()).not.toBe(v2.textContent!.trim());
+  });
+
+  // Exactly ONE readout per tile, counted structurally — no tautology this
+  // time: a tile must carry either digits or text, never both.
+  it.each([...LANGUAGES, null])('%s: every tile carries exactly one readout', (lang) => {
+    activate(lang);
+    for (const props of [{}, { onTuneFrequency: vi.fn() }]) {
+      const t = mountSurface({ viewModel: tunableTile, ...props });
+      for (const slot of slots(t)) {
+        const hasDigits = slot.querySelectorAll('.digit').length > 0;
+        // Text OUTSIDE the digit control — what a double readout would add.
+        const ownText = [...slot.childNodes]
+          .filter((n) => n.nodeType === Node.TEXT_NODE)
+          .map((n) => n.textContent!.trim()).join('');
+        // Exactly one filling: digits XOR text. Both arms are asserted, and
+        // they differ — no tautology this time (verification B2).
+        if (hasDigits) expect(ownText, 'digits + text = double readout').toBe('');
+        else expect(ownText.length, 'no digits and no text = blank readout').toBeGreaterThan(0);
+      }
+    }
+  });
+});

@@ -247,17 +247,26 @@ describe('the txAux surface mounts only when the view model carries the group', 
    *  proper: a mount that renders nothing still cannot slip past this. */
   const outline = () => [...q('[data-testid="semantic-radio-surfaces"]')!.querySelectorAll('*')]
     .map((el) => el.tagName.toLowerCase()).join(' ');
-  const DEFAULT_PATH_OUTLINE = 'div p div div span span span span span div span span span button '
-    + 'div span span span button div span span span button div button button '
-    // MOR-1321 (S3a): the ops row (four action buttons) and the split RX/TX
-    // digest (a `p` carrying an RX and a TX span), both part of the vfo
-    // surface's radio-wide half, immediately after the split/dualWatch toggles.
-    + 'div button button button button p span span '
-    + 'section p span span span span p div button button ul'
-    // MOR-1279 slice 3B: the rxAudio surface, mounted because this fixture's
-    // radio has an audio chain. See the testid literal above.
-    + ' section div button button button label span input output'
-    + ' div button button button output div button button output';
+  /**
+   * MOR-1322 (S3b): each VFO tile's `.vfo-freq` slot now holds the self-rendered
+   * per-digit tuning control (a `div.freq` of digit/separator spans) instead of a
+   * single text node — the interactive filling of the one readout slot. The
+   * testid list above is unchanged: the primitive carries no testids, so this
+   * outline is the only probe that sees the difference, which is exactly its job.
+   */
+  /**
+   * MOR-1322 (S3b): the ACTIVE VFO tile's `.vfo-freq` slot holds the self-rendered
+   * per-digit tuning control (a `div.freq` of digit/separator spans); every other
+   * tile keeps its single text node. Only the active tile may tune, because the
+   * tune intent is receiver-scoped and writes that receiver's ACTIVE VFO
+   * (verification B1). The testid list above is unchanged — the primitive carries
+   * no testids, so this outline is the only probe that sees the difference.
+   */
+  const DEFAULT_PATH_OUTLINE = 'div p div div span span div span span span span span span span span span span span span span '
+    + 'div span span span button div span span span button div span span span button div button button '
+    + 'div button button button button p span span section p span span span span p div button button '
+    + 'ul section div button button button label span input output div button button button output '
+    + 'div button button output';
 
   it.each(['single', 'dual'] as const)('renders no txAux surface at all without the group (%s)', (strips) => {
     h.state = liveState(false);

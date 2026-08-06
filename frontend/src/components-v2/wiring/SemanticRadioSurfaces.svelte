@@ -230,6 +230,18 @@
     txAuxIntents.onAtuTune();
   }
 
+  /**
+   * MOR-1322 (S3b) — per-digit tuning, routed to the SAME per-receiver
+   * command-bus handlers the legacy VfoHeader used (`onMainFreqChange` /
+   * `onSubFreqChange`), which own the optimistic patch and the `set_freq`
+   * command. No new key path and no TX semantics (R9): this moves a frequency,
+   * it never keys the transmitter.
+   */
+  function tuneFrequency(receiver: 'MAIN' | 'SUB', frequencyHz: number): void {
+    if (receiver === 'SUB') vfo.onSubFreqChange(frequencyHz);
+    else vfo.onMainFreqChange(frequencyHz);
+  }
+
   function selectVfo(target: VfoSelection): void {
     vfo.onVfoSelect(target.receiver, target.slot.kind === 'slotted' ? target.slot.id : null);
   }
@@ -281,6 +293,7 @@
               showRadioWideFacts={false}
               groupLabel={t('core.vfo.receiverGroupLabel', { receiver: receiverId })}
               onSelectVfo={selectVfo}
+              onTuneFrequency={tuneFrequency}
               disabled={!isOperationalStrip(view, receiverId)}
             />
           </div>
@@ -333,6 +346,7 @@
       <VfoSurface
         viewModel={view}
         onSelectVfo={selectVfo}
+        onTuneFrequency={tuneFrequency}
         onToggleSplit={vfo.onSplitToggle}
         onToggleDualWatch={toggleDualWatch}
         onEqualizeVfos={vfo.onEqual}

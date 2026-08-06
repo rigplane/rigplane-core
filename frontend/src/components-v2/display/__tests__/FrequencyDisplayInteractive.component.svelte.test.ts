@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { mount, unmount, flushSync } from 'svelte';
 import type { ComponentProps } from 'svelte';
 import type { ServerState } from '$lib/types/state';
-import FrequencyDisplayInteractive from '../FrequencyDisplayInteractive.svelte';
+import FrequencyDisplayInteractive from '../../../primitives/frequency/FrequencyDisplayInteractive.svelte';
 import { toVfoProps } from '../../wiring/state-adapter';
 
 // This test exercises the REAL radio store + REAL state-adapter so the freq
