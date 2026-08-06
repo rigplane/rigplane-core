@@ -219,6 +219,12 @@ describe('the txAux surface mounts only when the view model carries the group', 
    */
   const DEFAULT_PATH_TESTIDS = [
     'vfo-surface', 'vfo-active-receiver', 'vfo-list',
+    // MOR-1321 (S3a): the VFO ops row and the split RX/TX digest are part of
+    // the vfo surface's radio-wide half now, so they belong to the default
+    // path's element shape. This fixture's radio is dual-receiver, so the
+    // structural gate (more than one VFO) legitimately opens; the single-VFO
+    // absence is pinned in `semantic/__tests__/VfoSurface.test.ts`.
+    'vfo-ops', 'vfo-split-digest',
     'rx-tx-surface', 'rx-tx-state', 'rx-tx-rf-mark', 'rx-tx-rf-label',
     'rx-tx-target', 'rx-tx-key', 'rx-tx-unkey', 'rx-tx-blocked',
     // MOR-1279 slice 3B: this fixture's radio DOES have an audio chain
@@ -243,6 +249,10 @@ describe('the txAux surface mounts only when the view model carries the group', 
     .map((el) => el.tagName.toLowerCase()).join(' ');
   const DEFAULT_PATH_OUTLINE = 'div p div div span span span span span div span span span button '
     + 'div span span span button div span span span button div button button '
+    // MOR-1321 (S3a): the ops row (four action buttons) and the split RX/TX
+    // digest (a `p` carrying an RX and a TX span), both part of the vfo
+    // surface's radio-wide half, immediately after the split/dualWatch toggles.
+    + 'div button button button button p span span '
     + 'section p span span span span p div button button ul'
     // MOR-1279 slice 3B: the rxAudio surface, mounted because this fixture's
     // radio has an audio chain. See the testid literal above.

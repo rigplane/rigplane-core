@@ -181,6 +181,12 @@
   "core.vfo.state.on": "включено",
   "core.vfo.state.off": "выключено",
   "core.vfo.state.unknown": "неизвестно",
+  "core.vfo.ops.equalize": "Уравнять VFO",
+  "core.vfo.ops.swap": "Поменять VFO местами",
+  "core.vfo.ops.quickSplit": "Быстрый сплит",
+  "core.vfo.ops.quickDualWatch": "Быстрый двойной приём",
+  "core.vfo.splitDigest.rx": "RX {frequency}",
+  "core.vfo.splitDigest.tx": "TX {frequency}",
 
   "core.txGuard.modInputNotLan": "Вход MOD установлен в {source}, а не LAN — голос из веб-интерфейса не уйдёт в эфир (TX).",
   "core.txGuard.setLan": "Включить LAN",

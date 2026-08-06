@@ -194,6 +194,12 @@ describe('the meters surface mounts only when the view model carries the group',
    */
   const DEFAULT_PATH_TESTIDS = [
     'vfo-surface', 'vfo-active-receiver', 'vfo-list',
+    // MOR-1321 (S3a): the VFO ops row and the split RX/TX digest are part of
+    // the vfo surface's radio-wide half now, so they belong to the default
+    // path's element shape. This fixture's radio is dual-receiver, so the
+    // structural gate (more than one VFO) legitimately opens; the single-VFO
+    // absence is pinned in `semantic/__tests__/VfoSurface.test.ts`.
+    'vfo-ops', 'vfo-split-digest',
     'rx-tx-surface', 'rx-tx-state', 'rx-tx-rf-mark', 'rx-tx-rf-label',
     'rx-tx-target', 'rx-tx-key', 'rx-tx-unkey', 'rx-tx-blocked',
     // MOR-1279 slice 3B: this fixture's radio DOES have an audio chain
