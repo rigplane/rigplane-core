@@ -27,6 +27,15 @@ cd frontend && npm ci && npm run build   # → frontend/dist/
 # IDENTICAL content hashed with mismatched path prefixes ("frontend/dist/…"
 # vs "../src/rigplane/web/static/…") produce DIFFERENT final digests — hit
 # this during the pass; a naive `find dist | sha256sum` recipe is a trap.
+# PORTABILITY NOTES:
+# - The `sort` is load-bearing: it ensures consistent order before xargs, so
+#   multiple invocations (ARG_MAX overflow on large artifact trees) always
+#   concatenate in the same order.
+# - `find | xargs` breaks on filenames with spaces. Vite output has none;
+#   future artifacts may.
+# - `shasum -a 256` is macOS (perl-based). Linux uses `sha256sum` with
+#   different output format. Cross-OS digest equality remains unmeasured;
+#   see §1 caveat.
 digest_dir() {
   ( cd "$1" && find . -type f | LC_ALL=C sort | xargs shasum -a 256 | shasum -a 256 | awk '{print $1}' )
 }
@@ -63,7 +72,7 @@ per "existing packaging smoke hooks only."
 | Row | Reused from | Note |
 |---|---|---|
 | **Topology** | `capture.mjs` MATRIX §B, "the four topology pairs": `topology-1-single`, `topology-1-ab`, `topology-2-ab-shared`, `topology-2-main-sub` (+ `--reference` twins) | Direct match — harness names this set itself. |
-| **Workspace fallback** | `topology-2-main-sub--planned` fixture (`catalog.ts` `PLANNED_FIXTURES`) | **Interpretation, flagged**: fixture's own comment calls it "default workspace — no operator preference." No fixture is literally named `workspace-fallback`; a reviewer should correct if a more specific one is intended. |
+| **Workspace fallback** | `topology-2-main-sub--planned` fixture (`catalog.ts` `PLANNED_FIXTURES`) | **Interpretation, flagged**: Proves the benign workspace fallback (absent operator preference → `pickId` defaults → resolved plan → bound zones), driven through production `readWorkspace`/`resolveSurfacePlan`. Does NOT prove `reset` / `version-discarded` / `repaired`-with-rejections / surface-subtraction degradation; those are pinned in jsdom by `presentation/workspace/__tests__/` and are out of this runbook's browser scope. |
 | **Presentation switch** | `presentation-switch-tx/-resources/lazy-presentation.component.test.ts` (MOR-1086) | Direct match — real `App.svelte` + `TxController` stack, skin switch under a live TX key. |
 | **TX indication** | `capture.mjs` MATRIX §F: `tx-phase-rx/-pending/-tx/-fault` (+ variants) | Direct match — RX/pending/TX/fault key-authority states. |
 
@@ -126,6 +135,11 @@ matching SHAs — the pattern `rigplane-pro/scripts/local-act-ci.sh`'s
 against the live WebView.
 
 ### 3.3 Station — DEFERRED, structurally inapplicable at this commit
+
+**Follow-up ticket:** this section is being split into its own post-release
+follow-up ticket MOR-1381 (coordinator will insert ticket number at landing).
+See the Ruling §7 for sequence: this leg closes *after* a v3 release is tagged
+and `dispatch-downstream.yml`'s pin-bump PR lands in `rigplane-station`.
 
 `rigplane-station` (present locally, not otherwise touched) pins Core by
 **exact registry version**: `dependencies = ["rigplane==2.11.1"]`, no
