@@ -9,6 +9,7 @@
  * manifest — the picture is evidence of the assertions, never a substitute.
  */
 import { toRadioViewModel } from '../src/lib/runtime/adapters/radio-view-model-adapter';
+import { desktopV2Layout } from '../src/presentation/layouts/declarations';
 import type { Expectation } from './catalog';
 import { harness } from './harness-state';
 
@@ -113,6 +114,60 @@ const TEXT_CONTRAST_FLOOR: Readonly<Record<string, number>> = {
   'fieldline:rx-tx-key': 3.9,
 };
 
+/**
+ * MOR-1379 — the reference/single composition's declared zone SET, read
+ * live off the real `desktopV2Layout` manifest rather than a per-fixture
+ * literal in `catalog.ts` (`toReferenceFixture` sets `expect.zones: []`
+ * unconditionally — that literal predates `fixtures/main.ts` resolving any
+ * plan for this layout, MOR-1085, and updating 20 catalog literals by hand
+ * every time an S-slice declares a new desktop-v2 zone is exactly the "goes
+ * stale the moment base moves" trap the MOR-1355 discharge ruling named).
+ * Module scope, computed once: importing the manifest directly is what
+ * keeps this immune to that trap — the alternative, a hardcoded zone-id
+ * list here, would need a human to remember to touch it on every future
+ * S-slice. `receiver-deck`/`rx-tx` are excluded: `SemanticRadioSurfaces
+ * .svelte`'s `zoned()` snippet is deliberately never applied to `vfo`/
+ * `rxTx` (MOR-1069 — "a zone element exists only where an arrangement must
+ * place it, and the single composition places nothing"), a structural fact
+ * about the wiring component, not a zone list that goes stale.
+ *
+ * A SET, not an order: measured live against a real resolved plan (see the
+ * MOR-1379 build report), the single composition's `{#each singleOrder}` +
+ * `zoned()` call sequence in `SemanticRadioSurfaces.svelte` (txAux, meters,
+ * rxAudio, filter, dsp, rfFrontEnd, band, antenna, ritXitScan, cwKeyer,
+ * scopeDisplay, scopeControls — the order each vocabulary slice landed in)
+ * does NOT match `desktopV2Layout.zones`' declared array order (tx-aux,
+ * meters, scope-display, filter, rf-front-end, band, antenna, rit-xit-scan,
+ * rx-audio, dsp, cw-keyer, scope-controls — the S6a-S9 rework program's own
+ * later regrouping for readability). The two orderings were never meant to
+ * agree; `zoneOwning()` is a membership lookup, not a sequencing contract.
+ * Asserting DOM order against manifest-array order would therefore assert
+ * something false by construction, not a real regression — membership is
+ * the honest invariant.
+ */
+const REFERENCE_ZONE_IDS = new Set(
+  desktopV2Layout.zones
+    .map((z) => z.id)
+    .filter((id) => id !== 'receiver-deck' && id !== 'rx-tx'),
+);
+
+/**
+ * MOR-1379 — the controls MOR-1069 permanently exempts from zone
+ * containment on the reference/single composition: the VFO surface and the
+ * RX/TX authority (plus its TX-adjacent alerts) never bind a `data-zone-id`
+ * wrapper there, with or without a resolved plan (`SemanticRadioSurfaces
+ * .svelte`'s single-composition branch renders `vfoSurface()`/
+ * `rxTxSurface()`/`txAdjacentAlerts()` outside the generic `zoned()` path —
+ * see the file header comment). Read structurally, off which real component
+ * root a control lives under, so this stays correct regardless of which
+ * named buttons either surface happens to render.
+ */
+const isStructurallyZoneless = (el: HTMLElement): boolean =>
+  el.closest('[data-testid="vfo-surface"]') !== null
+  || el.closest('[data-testid="rx-tx-surface"]') !== null
+  || el.dataset.testid === 'tx-fault-reset'
+  || el.closest('[data-testid="mod-input-tx-warning"]') !== null;
+
 export function runAssertions(
   expected: Expectation, options: AssertionOptions = {},
 ): AssertionResult[] {
@@ -121,12 +176,27 @@ export function runAssertions(
   // default, so every existing fixture is unaffected), false for the
   // reference/single composition (`ReferenceLayout.svelte` /
   // `SemanticRadioSurfaces strips="single"`), which MOR-1069 deliberately
-  // leaves zone-less: "a zone element exists only where an arrangement must
-  // place it, and the single composition places nothing"
-  // (`presentation/layouts/desktop-declarations.ts`). Every gate below that
-  // depends on a `data-zone-id` wrapper existing at all reads this flag
-  // instead of assuming one composition's shape for both.
+  // leaves zone-less FOR ITS OWN vfo/rxTx/global structure: "a zone element
+  // exists only where an arrangement must place it, and the single
+  // composition places nothing" (`presentation/layouts/desktop-declarations
+  // .ts`). This still governs the checks that are genuinely specific to the
+  // dual-receiver-cockpit's OWN promises (its inert scope/controls
+  // placeholders, the global-zone containment half of the radio-wide row) —
+  // MOR-1379 does not touch those. It does NOT mean "the reference layout
+  // can never observe a zone at all" any more: see `isReferenceLayout` below.
   const zonedComposition = expected.zonedComposition ?? true;
+  // MOR-1379 — `fixtures/main.ts` now resolves a real `desktopV2Layout` plan
+  // for every `layout: 'reference'` fixture unconditionally, so the
+  // reference/single composition genuinely binds `data-zone-id` wrappers
+  // around whichever OPTIONAL surfaces (`txAux`/`meters`/`scopeDisplay`/…)
+  // its view model carries — the harness blindness the MOR-1355 discharge
+  // ruling named (`ReferenceLayout` standing in for desktop-v2 while
+  // `desktopV2Layout` went unresolved). `catalog.ts`'s `expect.zones`/
+  // `expect.zonedComposition: false` literals (`toReferenceFixture`) predate
+  // that resolution and are out of this ticket's two-file scope, so the
+  // checks below that are actually about desktop-v2's zone set are made
+  // conditional on the RUNTIME root, not on the stale catalog literal.
+  const isReferenceLayout = currentRootTestId === 'reference-layout';
   const out: AssertionResult[] = [];
   const check = (name: string, ok: boolean, detail: string): void => {
     out.push({ name, ok, detail });
@@ -134,8 +204,29 @@ export function runAssertions(
 
   // ── structure ───────────────────────────────────────────────────────────
   const zones = qa('[data-zone-id]').map((el) => el.dataset.zoneId);
-  check('zones-in-declaration-order', eq(zones, [...expected.zones]),
-    `rendered ${JSON.stringify(zones)} · expected ${JSON.stringify(expected.zones)}`);
+  if (isReferenceLayout) {
+    // MOR-1379: exact-set equality against `expected.zones` (always `[]`
+    // here, see above) cannot be the check any more — which OPTIONAL zones
+    // actually render depends on which surfaces this fixture's view model
+    // carries (each `zoned()` mount self-gates), and that legitimately
+    // varies per fixture/topology. And unlike the cockpit, DOM order is NOT
+    // a proxy for "matches the manifest" here — measured live, the render
+    // sequence follows `SemanticRadioSurfaces.svelte`'s own hardcoded
+    // `zoned()` call order (each vocabulary slice's landing order), not
+    // `desktopV2Layout.zones`' declared array order (the rework program's
+    // later regrouping) — see `REFERENCE_ZONE_IDS` above. What DOES hold,
+    // and is real containment rather than a sequencing coincidence: every
+    // rendered zone id is one the manifest actually declares, and no zone id
+    // is split across two separate DOM elements.
+    const knownZones = zones.every((id) => id !== undefined && REFERENCE_ZONE_IDS.has(id));
+    const noSplitZones = new Set(zones).size === zones.length;
+    check('zones-in-declaration-order', knownZones && noSplitZones,
+      `rendered ${JSON.stringify(zones)} · desktopV2Layout zones `
+      + `${JSON.stringify([...REFERENCE_ZONE_IDS])}`);
+  } else {
+    check('zones-in-declaration-order', eq(zones, [...expected.zones]),
+      `rendered ${JSON.stringify(zones)} · expected ${JSON.stringify(expected.zones)}`);
+  }
 
   const strips = qa<HTMLElement>('[data-testid^="channel-strip-"]');
   check('strip-count', strips.length === expected.strips,
@@ -292,18 +383,32 @@ export function runAssertions(
   // ── focus order is DOM order, ending in the LAST declared zone (MOR-1069) ─
   // MOR-1085: "every control lives inside a declared zone" is the
   // dual-receiver-cockpit's own acceptance gate (MOR-1069/1070 gate item
-  // (b)) — it presupposes zones exist to live inside. The reference/single
-  // composition has no zone concept at all (see `zonedComposition` above),
-  // so EVERY control there is trivially "outside every declared zone"; that
-  // is not a regression to police, it is the honest absence of the concept
-  // this check verifies. Both checks stay cockpit-only for that reason.
-  // MOR-1355: the terminal zone is `declared[declared.length - 1]`, not a
-  // hardcoded `'rx-tx'` — the same generalisation
+  // (b)) — it presupposes zones exist to live inside. `zonedComposition`
+  // false (reference layout) used to mean "no zone concept at all", so this
+  // whole block was skipped there. MOR-1379: that is no longer honest —
+  // `main.ts` now resolves `desktopV2Layout` for every reference-layout
+  // fixture, so its OPTIONAL surfaces genuinely bind `data-zone-id`
+  // wrappers. The cockpit path below is UNCHANGED (still reads
+  // `expected.zones`/`expected.zonelessControls` off `catalog.ts`); the
+  // reference path is a parallel branch using `REFERENCE_ZONE_IDS` (the
+  // manifest, module scope above) and `isStructurallyZoneless` (the
+  // vfo/rxTx exemption MOR-1069 makes permanent there) instead of catalog
+  // literals that would need hand-updating on every future S-slice.
+  // MOR-1355: the cockpit's terminal zone is `declared[declared.length - 1]`,
+  // not a hardcoded `'rx-tx'` — the same generalisation
   // `DualReceiverCockpit.component.test.ts`'s MOR-1069 suite already made
   // ("the LAST declared zone comes last"), needed the moment a resolved
   // `SurfacePlan` puts real content in the manifest's `tx-aux` zone, which
   // sits declared (and rendered) AFTER `rx-tx`. A no-op for every fixture
-  // whose declared zones still end in `rx-tx` (every one before this ticket).
+  // whose declared zones still end in `rx-tx` (every one before MOR-1355).
+  // The reference layout has no single "terminal zone", and — per the
+  // `REFERENCE_ZONE_IDS` finding above — no shared order with the manifest
+  // array either, so "ends at the last declared zone" isn't a meaningful
+  // requirement there. What IS meaningful and layout-agnostic: once the tab
+  // sequence enters a zone it should not leave and re-enter that SAME zone
+  // later — a real containment property (controls belonging to one surface
+  // group stay contiguous), independent of which order the zones happen to
+  // render in.
   if (zonedComposition) {
     const declared = [...expected.zones];
     const seq = controls().map((el) => {
@@ -320,6 +425,43 @@ export function runAssertions(
       seq.filter((i) => i === -1).length === expected.zonelessControls,
       `${seq.filter((i) => i === -1).length} outside every zone · `
       + `expected ${expected.zonelessControls}`);
+  } else if (isReferenceLayout) {
+    const seq = controls().map((el) => (el.closest('[data-zone-id]') as HTMLElement | null)
+      ?.dataset.zoneId ?? null);
+    // No zone id may appear in two disjoint runs (i.e. every control for a
+    // given zone id is contiguous in tab order) — the ordering invariant
+    // that survives the `REFERENCE_ZONE_IDS` finding above, since it does
+    // not depend on the manifest array's OWN order matching the DOM's.
+    const seenAndClosed = new Set<string>();
+    let previous: string | null = null;
+    const contiguous = seq.every((zoneId) => {
+      if (zoneId === previous) return true;
+      // Leaving `previous`'s run (to another zone OR to no zone at all)
+      // closes it — a later control back inside the SAME zone id would be
+      // re-entrant, whether or not a zone-less control briefly interrupted.
+      if (previous !== null) seenAndClosed.add(previous);
+      if (zoneId !== null && seenAndClosed.has(zoneId)) return false;
+      previous = zoneId;
+      return true;
+    });
+    check('focus-order-is-zone-order', contiguous,
+      `zone sequence ${JSON.stringify(seq)} (null = outside every desktopV2Layout zone) — `
+      + 'each zone id must stay contiguous, not necessarily in manifest-array order '
+      + '(see REFERENCE_ZONE_IDS)');
+    // MOR-1379: every OPTIONAL surface desktop-v2 can show is zone-owned
+    // (`desktop-declarations.ts`'s S9/`scope-controls` comment: "This empties
+    // `RECORDED_REASONS` in `zone-ownership-coverage.test.ts`" — the MOR-1317
+    // ledger closed program-wide), so the only controls a plan-ful reference
+    // capture may honestly leave outside every zone are the ones MOR-1069
+    // permanently exempts (`isStructurallyZoneless`). That expected count is
+    // derived from THIS capture's own DOM, not a catalog literal — a real
+    // regression (a future declarable surface shipping unzoned) still fails
+    // this the moment the two disagree.
+    const zoneless = seq.filter((zoneId) => zoneId === null).length;
+    const structurallyZoneless = controls().filter(isStructurallyZoneless).length;
+    check('zone-less-control-count', zoneless === structurallyZoneless,
+      `${zoneless} outside every desktopV2Layout zone · `
+      + `expected ${structurallyZoneless} (vfo/rx-tx surface controls, MOR-1069 exempt)`);
   }
   check('no-negative-tabindex-and-no-aria-hidden-control',
     controls().every((el) => Number(el.getAttribute('tabindex') ?? '0') >= 0
