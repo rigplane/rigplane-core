@@ -461,3 +461,50 @@ describe('the meter table matches the shipped dock', () => {
       .toEqual(['Po', 'SWR', 'ALC', 'Id', 'Vd', 'COMP']);
   });
 });
+
+// ── 9. Peak-hold channel (MOR-1282) — the surface passes it through ────────
+
+describe('BarGauge peak channel (MOR-1282)', () => {
+  // MUTATION KILLED: enabling (or dropping) the peak flag on the wrong
+  // meters. Matches the dock's own peak-held set exactly (MetersDockPanel's
+  // `PeakKey`) — Vd (continuous supply rail) and COMP were never peak-held
+  // there either, so the surface must not invent peak-hold for them.
+  it('enables the peak marker on exactly the meters the dock peak-holds (Po/SWR/ALC/Id)', () => {
+    const withPeak = METER_BARS.filter(([, , , , showPeak]) => showPeak).map(([field]) => field);
+    expect(withPeak).toEqual(['power', 'swr', 'alc', 'drainCurrent']);
+  });
+
+  // MUTATION KILLED: `showPeak` not reaching `<BarGauge>` (freezing it to
+  // its `false` default) — the marker would never render regardless of the
+  // flag table above. This mounts the REAL BarGauge (no stub), so the
+  // marker's presence proves the prop actually threads through.
+  it('renders a peak marker on a peak-tracked meter and none on Vd/COMP', () => {
+    withSurface(base('transmitting'), (s) => {
+      expect(s.tile('power')!.querySelector('[data-testid="bar-gauge-peak-marker"]')).not.toBeNull();
+      expect(s.tile('swr')!.querySelector('[data-testid="bar-gauge-peak-marker"]')).not.toBeNull();
+      expect(s.tile('drainVoltage')!.querySelector('[data-testid="bar-gauge-peak-marker"]')).toBeNull();
+      expect(s.tile('compression')!.querySelector('[data-testid="bar-gauge-peak-marker"]')).toBeNull();
+    });
+  });
+});
+
+// ── 10. Same channel as the dock (MOR-1282) — no independent reimplementation ─
+
+describe('MetersSurface and MetersDockPanel are on the same peak-hold channel', () => {
+  // MUTATION KILLED: either side reimplementing the hold/decay math instead
+  // of calling the shared `meter-utils` functions. `MetersSurface` itself may
+  // never import them (block 7 above); `BarGauge` (which it delegates every
+  // gauge to) and `MetersDockPanel` must both import the SAME functions from
+  // the SAME module, so a raw sample can never decay differently depending on
+  // which surface is rendering it.
+  it('both BarGauge and MetersDockPanel import updatePeakHold/peakHoldDisplay from the shared meter-utils module', () => {
+    const barGaugeSource = readFileSync('src/components-v2/meters/BarGauge.svelte', 'utf8');
+    const dockSource = readFileSync('src/components-v2/panels/MetersDockPanel.svelte', 'utf8');
+    expect(barGaugeSource).toMatch(/updatePeakHold/);
+    expect(barGaugeSource).toMatch(/peakHoldDisplay/);
+    expect(barGaugeSource).toMatch(/from '\.\.\/panels\/meter-utils'/);
+    expect(dockSource).toMatch(/updatePeakHold/);
+    expect(dockSource).toMatch(/peakHoldDisplay/);
+    expect(dockSource).toMatch(/from '\.\/meter-utils'/);
+  });
+});

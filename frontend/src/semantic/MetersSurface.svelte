@@ -44,20 +44,23 @@
   import { renderSlot } from './design-language-renderers';
 
   type BarKey = Exclude<keyof MetersViewModel, 'rfState' | 'signal'>;
-  type Scale = readonly [BarKey, string, (raw: number) => number, (raw: number) => string];
+  type Scale = readonly [BarKey, string, (raw: number) => number, (raw: number) => string, boolean];
 
-  /** `[field, label, level, format]` for the six bar meters, in the shipped
-   *  dock's priority order. The level/format pairs are `meter-utils`' own
-   *  calibrated functions — the same ones `MetersDockPanel` uses — so the two
-   *  can never disagree about what a raw sample means. `signal` is absent
-   *  because it has its own component (`LinearSMeter`, below). */
+  /** `[field, label, level, format, showPeak]` for the six bar meters, in the
+   *  shipped dock's priority order. The level/format pairs are
+   *  `meter-utils`' own calibrated functions — the same ones `MetersDockPanel`
+   *  uses — so the two can never disagree about what a raw sample means.
+   *  `showPeak` (MOR-1282) mirrors the dock's own `PeakKey` set (Po/SWR/ALC/
+   *  Id) — Vd (a continuous supply rail) and COMP were never peak-held there
+   *  either. `signal` is absent because it has its own component
+   *  (`LinearSMeter`, below). */
   export const METER_BARS = [
-    ['power', 'Po', normalizePower, formatPowerWatts],
-    ['swr', 'SWR', swrLevel, formatSwr],
-    ['alc', 'ALC', alcLevel, formatAlc],
-    ['drainCurrent', 'Id', idLevel, formatAmps],
-    ['drainVoltage', 'Vd', vdLevel, formatVolts],
-    ['compression', 'COMP', compLevel, formatCompDb],
+    ['power', 'Po', normalizePower, formatPowerWatts, true],
+    ['swr', 'SWR', swrLevel, formatSwr, true],
+    ['alc', 'ALC', alcLevel, formatAlc, true],
+    ['drainCurrent', 'Id', idLevel, formatAmps, true],
+    ['drainVoltage', 'Vd', vdLevel, formatVolts, false],
+    ['compression', 'COMP', compLevel, formatCompDb, false],
   ] as const satisfies readonly Scale[];
 
   /** Level 1 — does this radio HAVE the meter at all. */
@@ -131,7 +134,7 @@
       </div>
     {/if}
 
-    {#each METER_BARS as [field, label, level, format] (field)}
+    {#each METER_BARS as [field, label, level, format, showPeak] (field)}
       {#if present(meters[field]) && (field !== 'compression' || compressorOn)}
         <div
           class="meter-tile" data-meter-tile data-meter={field} data-testid={`meter-${field}`}
@@ -141,7 +144,7 @@
           {#if observed(meters[field])}
             <BarGauge
               value={level(rawOf(meters[field]))} {label}
-              displayValue={format(rawOf(meters[field]))} compact
+              displayValue={format(rawOf(meters[field]))} compact {showPeak}
             />
           {:else}
             <span class="meter-unknown">{label} ?</span>
