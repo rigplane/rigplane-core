@@ -1,15 +1,21 @@
 /**
- * MOR-1312 — `scopeDisplay` is DECLARABLE, and nothing declares it yet.
+ * MOR-1312 — `scopeDisplay` is DECLARABLE. MOR-1365 (S6a) declares it for
+ * real.
  *
- * Slice 12B adds the name to `SEMANTIC_SURFACE_NAMES` so a manifest CAN mount
- * the surface later; it deliberately does not touch any manifest, and it adds
- * no design-language renderer slot (that set was frozen by MOR-1072 — adding
- * one would be a language-contract change this slice must not make).
+ * Slice 12B added the name to `SEMANTIC_SURFACE_NAMES` so a manifest CAN
+ * mount the surface later; it deliberately did not touch any manifest, and it
+ * added no design-language renderer slot (that set was frozen by MOR-1072 —
+ * adding one would be a language-contract change this slice must not make).
+ *
+ * MOR-1365 flips the second half, on `desktop-v2` ONLY: the cockpit manifest
+ * is deliberately untouched (S5 precedent), so `scopeDisplay` keeps mounting
+ * bare there. The inventory below is a LITERAL of who declares it, mirroring
+ * `meters-declarability.test.ts`'s post-S5 shape.
  *
  * Same three pins as `tx-aux-declarability.test.ts` / `meters-declarability.test.ts`
  * / `rx-audio-declarability.test.ts`:
  *   - drop the name and a future manifest's zone stops validating;
- *   - quietly add a `scopeDisplay` zone to a shipped manifest and the DOM
+ *   - quietly add a `scopeDisplay` zone to an unreviewed manifest and the DOM
  *     grows a zone id no layout review ever saw;
  *   - the renderer slot set stays exactly what MOR-1072 froze.
  */
@@ -49,17 +55,43 @@ describe('scopeDisplay is a declarable semantic surface', () => {
   });
 });
 
-describe('no shipped manifest declares a scopeDisplay zone in this slice', () => {
-  // Kills: slipping a scopeDisplay zone into an existing layout here.
-  // Declarability is the whole scope of the contract touch; placing the
-  // surface in a real layout is a later, separately reviewed slice (the
-  // same discipline `rxAudio`'s MOR-1279 established).
-  it.each([
+describe('exactly the reviewed manifests declare a scopeDisplay zone (MOR-1365)', () => {
+  /** The literal — extend by hand, with a layout review, never silently. */
+  const DECLARES_SCOPE_DISPLAY = ['desktop-v2'];
+
+  const ALL = [
     ['sdr-test', sdrTestLayout], ['dual-receiver-cockpit', dualReceiverCockpitLayout],
     ['lcd-cockpit', lcdCockpitLayout], ['lcd-scope', lcdScopeLayout],
     ['mobile', mobileLayout], ['desktop-v2', desktopV2Layout],
-  ])('%s declares no scopeDisplay zone and does not require the surface', (_id, manifest) => {
-    for (const zone of manifest.zones) expect(zone.surfaces).not.toContain('scopeDisplay');
+  ] as const;
+
+  // Kills BOTH directions: a family losing the zone S6a gave it, and a family
+  // gaining one without review.
+  it('the declaring set is exactly the reviewed literal', () => {
+    const declaring = ALL
+      .filter(([, m]) => m.zones.some((z) => z.surfaces.includes('scopeDisplay')))
+      .map(([id]) => id)
+      .sort();
+    expect(declaring).toEqual([...DECLARES_SCOPE_DISPLAY].sort());
+  });
+
+  // Kills: declaring the zone under a drifted id — the wiring binds whatever
+  // the plan's key is, so the id IS the contract with the layout's arrangement.
+  it.each(DECLARES_SCOPE_DISPLAY)(
+    '%s declares it under the stable `scope-display` id, alone in its zone',
+    (id) => {
+      const manifest = ALL.find(([name]) => name === id)![1];
+      const zone = manifest.zones.find((z) => z.surfaces.includes('scopeDisplay'))!;
+      expect(zone.id).toBe('scope-display');
+      expect(zone.surfaces).toEqual(['scopeDisplay']);
+    },
+  );
+
+  // Kills: making scopeDisplay REQUIRED. A radio the MOR-1301 evidence gate
+  // declines must still resolve this layout; the surface self-gates on
+  // `view.scopeDisplay`, and a required surface no zone could fill would be a
+  // resolution failure rather than an honest absence.
+  it.each(ALL)('%s does not require the scopeDisplay surface', (_id, manifest) => {
     expect(manifest.requiredSemanticSurfaces).not.toContain('scopeDisplay');
   });
 });

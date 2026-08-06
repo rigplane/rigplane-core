@@ -263,10 +263,10 @@ describe('MOR-1082 — the single-composition order comes from the same plan', (
   it('flattens the plan in zone-declaration order, deduped', () => {
     expect(compositionSurfaces(plan(sdrTestLayout), FALLBACK)).toEqual(['vfo', 'rxTx']);
     // desktop-v2 spreads the same two surfaces over two zones, plus its own
-    // MOR-1336 (S4) tx-aux zone and MOR-1341 (S5) meters zone — flattening
-    // never drops a fourth zone.
+    // MOR-1336 (S4) tx-aux zone, MOR-1341 (S5) meters zone and MOR-1365 (S6a)
+    // scope-display zone — flattening never drops a fifth zone.
     expect(compositionSurfaces(plan(desktopV2Layout), FALLBACK))
-      .toEqual(['vfo', 'rxTx', 'txAux', 'meters']);
+      .toEqual(['vfo', 'rxTx', 'txAux', 'meters', 'scopeDisplay']);
     expect(compositionSurfaces(plan(sdrTestLayout, { zoneOrder: { main: ['rxTx', 'vfo'] } }), FALLBACK))
       .toEqual(['rxTx', 'vfo']);
   });

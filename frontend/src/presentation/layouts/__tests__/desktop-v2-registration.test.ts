@@ -55,7 +55,7 @@ describe('the desktop-v2 entrypoint is registered in the real registry', () => {
 describe('declared zones now drive the DOM (MOR-1263 step 2, MOR-1313)', () => {
   // Kills: declaring a surface this manifest does not name, or dropping
   // either one — the pair per-zone suppression consumes.
-  it('declares receiver-deck:[vfo], rx-tx:[rxTx], tx-aux:[txAux] and meters:[meters]', () => {
+  it('declares receiver-deck:[vfo], rx-tx:[rxTx], tx-aux:[txAux], meters:[meters] and scope-display:[scopeDisplay]', () => {
     expect(desktopV2Layout.zones).toEqual([
       { id: 'receiver-deck', surfaces: ['vfo'] },
       { id: 'rx-tx', surfaces: ['rxTx'] },
@@ -63,6 +63,9 @@ describe('declared zones now drive the DOM (MOR-1263 step 2, MOR-1313)', () => {
       { id: 'tx-aux', surfaces: ['txAux'] },
       // MOR-1341 (S5): meters became zone-owned too, retiring the legacy dock.
       { id: 'meters', surfaces: ['meters'] },
+      // MOR-1365 (S6a): scopeDisplay became zone-owned too, retiring the
+      // status bar's legacy scope indicator.
+      { id: 'scope-display', surfaces: ['scopeDisplay'] },
     ]);
     expect([...desktopV2Layout.requiredSemanticSurfaces].sort()).toEqual(['rxTx', 'vfo']);
   });
@@ -84,7 +87,7 @@ describe('declared zones now drive the DOM (MOR-1263 step 2, MOR-1313)', () => {
   // is per-zone rather than per-manifest-first-zone.
   it('its zones flatten to the surfaces the shell suppresses legacy twins for', () => {
     expect([...declaredSurfaces(getLayout('desktop-v2'))].sort())
-      .toEqual(['meters', 'rxTx', 'txAux', 'vfo']);
+      .toEqual(['meters', 'rxTx', 'scopeDisplay', 'txAux', 'vfo']);
   });
 });
 
