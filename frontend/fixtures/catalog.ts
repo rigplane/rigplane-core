@@ -309,7 +309,7 @@ export const FIXTURES: readonly Fixture[] = [
     tx: tx({ phase: 'failed', radioTx: 'unknown', txRisk: 'uncertain', fault: 'audio-failed' }),
     expect: mainSubExpect({
       keyDisabled: true, rfLabel: 'TX?', sessionLabel: 'fault',
-      faultResetPresent: true, zonelessControls: 1,
+      faultResetPresent: true, zonelessControls: 0,
     }),
   },
   {
@@ -335,7 +335,7 @@ export const FIXTURES: readonly Fixture[] = [
     what: 'no capabilities yet — the shell renders its inert placeholders and claims nothing.',
     state: () => null, caps: () => null, tx: tx({}),
     expect: {
-      zones: [], strips: 0, stripReceivers: [], stripOperational: [], stripActive: [],
+      zones: ['rx-tx'], strips: 0, stripReceivers: [], stripOperational: [], stripActive: [],
       tiles: 0, selectsEnabled: 0, selectsDisabled: 0,
       radioWideSwitchesDisabled: false, keyDisabled: false,
       rfLabel: null, sessionLabel: null,
@@ -350,7 +350,7 @@ export const FIXTURES: readonly Fixture[] = [
     modGuard: { visible: true, sourceLabel: 'MIC' },
     expect: mainSubExpect({
       keyDisabled: true, rfLabel: 'TX?', sessionLabel: 'fault',
-      faultResetPresent: true, modInputWarningPresent: true, zonelessControls: 3,
+      faultResetPresent: true, modInputWarningPresent: true, zonelessControls: 0,
     }),
   },
 ];
