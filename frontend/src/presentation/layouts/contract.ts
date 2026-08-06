@@ -15,15 +15,16 @@ import { isValidLanguageId as isValidProductId } from '../languages/contract';
 /** Semantic surfaces a layout may mount (MOR-1062/1065 reference vertical;
  *  `txAux` added by MOR-1265, `meters` by MOR-1273, `rxAudio` by MOR-1279,
  *  `filter` by MOR-1304, `dsp` by MOR-1305, `rfFrontEnd` by MOR-1306, `band`
- *  by MOR-1307). Adding a name makes it DECLARABLE — it does not mount
- *  anything by itself, and no manifest declares a `meters`, `rxAudio`,
- *  `filter`, `dsp`, `rfFrontEnd` or `band` zone yet (the cockpit declares
- *  only `txAux`, as `tx-aux` — MOR-1336). Distinct from the design-language
- *  renderer slot of the same name (`languages/contract.ts`'s
- *  `RENDERER_SLOT_NAMES`): that one says how a language DRAWS a meter, this
- *  one says which layout zone may HOST the surface. */
+ *  by MOR-1307, `antenna` by MOR-1309). Adding a name makes it DECLARABLE —
+ *  it does not mount anything by itself, and no manifest declares a
+ *  `meters`, `rxAudio`, `filter`, `dsp`, `rfFrontEnd`, `band` or `antenna`
+ *  zone yet (the cockpit declares only `txAux`, as `tx-aux` — MOR-1336).
+ *  Distinct from the design-language renderer slot of the same name
+ *  (`languages/contract.ts`'s `RENDERER_SLOT_NAMES`): that one says how a
+ *  language DRAWS a meter, this one says which layout zone may HOST the
+ *  surface. */
 export const SEMANTIC_SURFACE_NAMES = [
-  'vfo', 'rxTx', 'txAux', 'meters', 'rxAudio', 'filter', 'dsp', 'rfFrontEnd', 'band',
+  'vfo', 'rxTx', 'txAux', 'meters', 'rxAudio', 'filter', 'dsp', 'rfFrontEnd', 'band', 'antenna',
 ] as const;
 export type SemanticSurfaceName = (typeof SEMANTIC_SURFACE_NAMES)[number];
 
