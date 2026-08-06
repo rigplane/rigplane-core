@@ -24,9 +24,11 @@ dist-ssr
 *.sw?
 
 # Playwright artifacts — traces/error contexts from failed runs.
-# Baseline screenshots under tests/e2e/i18n/__screenshots__/ ARE tracked.
+# Baseline screenshots under tests/e2e/i18n/__screenshots__/ and
+# fixtures/approved-baselines/ ARE tracked.
 tests/e2e/i18n/.output
 playwright-report
+test-results
 
 # Fixture verification capture output (verification-only, never committed).
 fixtures-baselines/
