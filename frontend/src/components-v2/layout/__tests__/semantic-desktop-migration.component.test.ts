@@ -139,7 +139,9 @@ vi.mock('$lib/stores/capabilities.svelte', () => ({
 import RadioLayout from '../RadioLayout.svelte';
 import { getCapabilities, hasAnyScope, hasCapability } from '$lib/stores/capabilities.svelte';
 import { topologyFixtures, type TopologyFixtureId } from '../../../semantic/fixtures/topologies';
-import { registerLayout, type LayoutManifest } from '../../../presentation/layouts/contract';
+import {
+  registerLayout, type LayoutManifest, type SemanticSurfaceName,
+} from '../../../presentation/layouts/contract';
 // Barrel, for the same reason `skins/dual-receiver-cockpit/__tests__/
 // DualReceiverCockpit.component.test.ts` uses it: a real registered manifest to
 // derive the probes below from. RadioLayout.svelte already pulls this module in
@@ -600,8 +602,8 @@ describe('the legacy-twin suppression channel (MOR-1364, S6-pre)', () => {
    * the intended terminal state of this synthetic-probe list, not a gap
    * (harness note, same structural blindness ruled on for S6a/S7/S8).
    */
-  const ZONES = [] as const;
-  type CoveredSurface = (typeof ZONES)[number][0];
+  const ZONES: readonly (readonly [SemanticSurfaceName, string])[] = [];
+  type CoveredSurface = SemanticSurfaceName;
 
   const ZONE_PROBE = Object.fromEntries(ZONES.map(([surface, zoneId]) => {
     const id = `${zoneId}-zone-probe` as SkinId;
@@ -626,7 +628,7 @@ describe('the legacy-twin suppression channel (MOR-1364, S6-pre)', () => {
    * inventory. `dsp` alone would have owned FIVE rows (`DspSurface` also
    * covers the AGC leaf, 5A/MOR-1290) had it still been here.
    */
-  const TWINS = [] as const satisfies readonly (readonly [CoveredSurface, string, string])[];
+  const TWINS: readonly (readonly [CoveredSurface, string, string])[] = [];
 
   /**
    * The ten twins S9 retired, kept as a named inventory so the *survival*
