@@ -122,6 +122,8 @@ vi.mock('../command-bus', () => ({
   }),
   // MOR-1307 slice 7B: the band-select intent the band surface composes.
   makeBandHandlers: () => ({ onBandSelect: h.noop }),
+  // MOR-1309 slice 8C: the antenna intent vocabulary.
+  makeAntennaHandlers: () => ({ onSelectAnt1: h.noop, onSelectAnt2: h.noop, onToggleRxAnt: h.noop }),
 }));
 
 import SemanticRadioSurfaces from '../SemanticRadioSurfaces.svelte';

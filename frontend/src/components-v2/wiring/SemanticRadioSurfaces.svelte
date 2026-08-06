@@ -31,6 +31,7 @@
     compositionSurfaces, useSurfacePlan, zoneShowsSurface,
   } from '../../presentation/workspace/resolution';
   import { LAN_MOD_INPUT_SOURCE } from '$lib/radio/mod-input';
+  import AntennaSurface from '../../semantic/AntennaSurface.svelte';
   import BandSurface from '../../semantic/BandSurface.svelte';
   import DspSurface, {
     type DspLevelField, type DspToggleField,
@@ -50,9 +51,9 @@
   import VfoSurface, { type VfoSelection } from '../../semantic/VfoSurface.svelte';
   import ModInputTxWarning from '../panels/ModInputTxWarning.svelte';
   import {
-    makeAgcHandlers, makeAudioRoutingHandlers, makeBandHandlers, makeDspHandlers,
-    makeFilterHandlers, makeModeHandlers, makeRfFrontEndHandlers, makeRxAudioHandlers,
-    makeTxHandlers, makeVfoHandlers, makeVoxHandlers,
+    makeAgcHandlers, makeAntennaHandlers, makeAudioRoutingHandlers, makeBandHandlers,
+    makeDspHandlers, makeFilterHandlers, makeModeHandlers, makeRfFrontEndHandlers,
+    makeRxAudioHandlers, makeTxHandlers, makeVfoHandlers, makeVoxHandlers,
   } from './command-bus';
   import {
     forReceiver, receiversOf, isActiveStrip, isOperationalStrip,
@@ -177,6 +178,18 @@
    */
   const rxAudioIntents = makeRxAudioHandlers();
   const routingIntents = makeAudioRoutingHandlers();
+  /**
+   * MOR-1309. The antenna intent vocabulary, composed from the SHIPPED command
+   * bus rather than forked — `set_antenna_1`/`set_antenna_2`/the two RX-ANT
+   * commands are exactly what `AntennaPanel` fires today. The port map exists
+   * so the pure surface can stay PORT-addressed while the bus stays
+   * command-addressed; a port the bus cannot name is unreachable by
+   * construction rather than by a silent no-op.
+   */
+  const antennaIntents = makeAntennaHandlers();
+  const ANTENNA_PORT_INTENT: Record<number, () => void> = {
+    1: antennaIntents.onSelectAnt1, 2: antennaIntents.onSelectAnt2,
+  };
   const setModInputLan = () => makeModeHandlers().onModInputChange(LAN_MOD_INPUT_SOURCE);
   /**
    * MOR-1304. `makeModeHandlers` owns mode/dataMode intents, `makeFilterHandlers`
@@ -679,6 +692,36 @@
   {/snippet}
 
   <!--
+    MOR-1309 (vocabulary slice 8C, SAFETY-ADJACENT). Same structural gate as
+    the surfaces above, and the SAME single-composition-only rule `rxAudio`
+    carries: this surface renders focusable controls and no manifest declares
+    an `antenna` zone, so mounting it in the dual composition would put
+    controls outside every declared zone — the MOR-1069 invariant the cockpit
+    enforces, and `zoned()` does NOT grant that permission on its own
+    (`zoneOwning()` returns null for an undeclared surface and renders bare,
+    which IS the violating shape). Its absence from the dual composition is
+    pinned by name in `__tests__/semantic-antenna-wiring.component.test.ts`.
+    `'antenna'` became DECLARABLE with this slice, so a layout gains the
+    surface the moment its manifest declares a zone — a layout decision,
+    separately reviewed, exactly as txAux/meters/rxAudio left it.
+
+    It DOES take the App-owned TX authority snapshot: unlike `rxAudio`,
+    switching a TX antenna under power is a hazard, and the surface gates on
+    the SHARED `keyBlockedReasons` predicate applied to this snapshot. It
+    still takes no lease and keys nothing — exactly one `<RxTxSurface>`
+    remains the key/unkey authority (R9).
+  -->
+  {#snippet antennaSurface()}
+    {#if view?.antenna}
+      <AntennaSurface
+        {view} tx={txState}
+        onSelectPort={(port) => ANTENNA_PORT_INTENT[port]?.()}
+        onToggleRxAnt={antennaIntents.onToggleRxAnt}
+      />
+    {/if}
+  {/snippet}
+
+  <!--
     MOR-1305 (vocabulary slice 5B). Same structural gate and same reasoning as
     `rxAudioSurface` above: the surface mounts only when the view model
     actually carries the MOR-1290 `dsp` group, so a radio the evidence gate
@@ -809,6 +852,7 @@
     {@render zoned('dsp', view?.dsp !== undefined, dspSurface)}
     {@render zoned('rfFrontEnd', view?.rfFrontEnd !== undefined, rfFrontEndSurface)}
     {@render zoned('band', view?.band !== undefined, bandSurface)}
+    {@render zoned('antenna', view?.antenna !== undefined, antennaSurface)}
     {@render txAdjacentAlerts()}
   {/if}
 </div>

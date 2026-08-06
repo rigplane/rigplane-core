@@ -123,6 +123,10 @@ vi.mock('../command-bus', () => ({
   // This fixture declares no band capability, so it is never reachable —
   // same stand-in role as `makeVfoHandlers`/`makeTxHandlers` above.
   makeBandHandlers: () => ({ onBandSelect: h.noop }),
+  // MOR-1309 slice 8C: the wiring now also composes the antenna intent
+  // vocabulary unconditionally. This fixture declares no antenna capability,
+  // so none of these is reachable — same stand-in role as `makeBandHandlers`.
+  makeAntennaHandlers: () => ({ onSelectAnt1: h.noop, onSelectAnt2: h.noop, onToggleRxAnt: h.noop }),
 }));
 
 import SemanticRadioSurfaces from '../SemanticRadioSurfaces.svelte';
