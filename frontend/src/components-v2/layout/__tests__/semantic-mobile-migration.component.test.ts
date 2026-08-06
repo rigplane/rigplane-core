@@ -156,6 +156,12 @@ vi.mock('../../wiring/command-bus', () => {
     }),
     makeAntennaHandlers: () => ({ onAntennaSelect: n }),
     makeScanHandlers: () => ({ onScanStart: n, onScanStop: n, onDfSpanChange: n, onResumeChange: n }),
+    // MOR-1311 slice 11B: the scope-toolbar/popover intent vocabulary.
+    makeScopeControlsHandlers: () => ({
+      onModeChange: n, onEdgeChange: n, onSpanChange: n, onSpeedChange: n, onHoldChange: n,
+      onRefChange: n, onDualChange: n, onReceiverChange: n, onDuringTxChange: n,
+      onCenterTypeChange: n, onVbwChange: n, onRbwChange: n,
+    }),
   };
 });
 vi.mock('../../wiring/state-adapter', () => {

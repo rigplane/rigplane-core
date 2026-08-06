@@ -1,17 +1,16 @@
 /**
- * MOR-1310 — `cwKeyer` is DECLARABLE, and nothing declares it yet.
+ * MOR-1311 — `scopeControls` is DECLARABLE, and nothing declares it yet.
  *
- * Slice 9B adds the name to `SEMANTIC_SURFACE_NAMES` so a manifest CAN mount
- * the surface later; it deliberately does not touch any manifest, and it adds
- * no design-language renderer slot (that set was frozen by MOR-1072).
+ * Slice 11B (the LAST B-slice of the vocabulary program) adds the name to
+ * `SEMANTIC_SURFACE_NAMES` so a manifest CAN mount the surface later; it
+ * deliberately does not touch any manifest, and it adds no design-language
+ * renderer slot (that set was frozen by MOR-1072).
  *
- * Same three pins as `rx-audio-declarability.test.ts` /
- * `tx-aux-declarability.test.ts` / `meters-declarability.test.ts`:
+ * Same three pins as `cw-keyer-declarability.test.ts` /
+ * `ritxit-scan-declarability.test.ts` / `rx-audio-declarability.test.ts`:
  *   - drop the name and a future manifest's zone stops validating;
- *   - quietly add a `cwKeyer` zone to a shipped manifest and the DOM grows a
- *     zone id no layout review ever saw — which for THIS surface would also
- *     mount break-in controls into the cockpit's tab order without the
- *     MOR-1069 sequence assertion ever being updated;
+ *   - quietly add a `scopeControls` zone to a shipped manifest and the DOM
+ *     grows a zone id no layout review ever saw;
  *   - the renderer slot set stays exactly what MOR-1072 froze.
  */
 import { describe, it, expect } from 'vitest';
@@ -23,7 +22,7 @@ import {
   sdrTestLayout,
 } from '../declarations';
 
-describe('cwKeyer is a declarable semantic surface', () => {
+describe('scopeControls is a declarable semantic surface', () => {
   // Kills: reverting the SEMANTIC_SURFACE_NAMES addition.
   it('is in the declarable set, appended last', () => {
     expect([...SEMANTIC_SURFACE_NAMES]).toEqual([
@@ -36,7 +35,7 @@ describe('cwKeyer is a declarable semantic surface', () => {
   // zone validator checks — the manifest would still be rejected.
   it('accepts a manifest zone that declares it', () => {
     const manifest = validLayoutManifest({
-      zones: [{ id: 'main', surfaces: ['vfo', 'rxTx', 'cwKeyer'] }],
+      zones: [{ id: 'main', surfaces: ['vfo', 'rxTx', 'scopeControls'] }],
       requiredSemanticSurfaces: ['vfo', 'rxTx'],
     });
     expect(() => validateLayoutManifest(manifest)).not.toThrow();
@@ -44,30 +43,30 @@ describe('cwKeyer is a declarable semantic surface', () => {
 
   it('still rejects a zone naming a surface that does not exist', () => {
     const manifest = validLayoutManifest({
-      zones: [{ id: 'main', surfaces: ['cwPanel'] as unknown as readonly ['vfo'] }],
+      zones: [{ id: 'main', surfaces: ['spectrumToolbar'] as unknown as readonly ['vfo'] }],
     });
     expect(() => validateLayoutManifest(manifest)).toThrow(/subset of/);
   });
 });
 
-describe('no shipped manifest declares a cwKeyer zone in this slice', () => {
-  // Kills: slipping a cwKeyer zone into an existing layout here. SAFETY-
-  // relevant: the dual-receiver cockpit's MOR-1069 tab-order assertion is
-  // written against the zones it declares today, so declaring one here would
-  // put break-in controls in the cockpit with no updated sequence pin.
+describe('no shipped manifest declares a scopeControls zone in this slice', () => {
+  // Kills: slipping a scopeControls zone into an existing layout here — the
+  // MOR-1069 dual-receiver-cockpit tab-order assertion is written against
+  // the zones it declares today, so declaring one here would put toolbar
+  // controls in the cockpit with no updated sequence pin.
   it.each([
     ['sdr-test', sdrTestLayout], ['dual-receiver-cockpit', dualReceiverCockpitLayout],
     ['lcd-cockpit', lcdCockpitLayout], ['lcd-scope', lcdScopeLayout],
     ['mobile', mobileLayout], ['desktop-v2', desktopV2Layout],
-  ])('%s declares no cwKeyer zone and does not require the surface', (_id, manifest) => {
-    for (const zone of manifest.zones) expect(zone.surfaces).not.toContain('cwKeyer');
-    expect(manifest.requiredSemanticSurfaces).not.toContain('cwKeyer');
+  ])('%s declares no scopeControls zone and does not require the surface', (_id, manifest) => {
+    for (const zone of manifest.zones) expect(zone.surfaces).not.toContain('scopeControls');
+    expect(manifest.requiredSemanticSurfaces).not.toContain('scopeControls');
   });
 });
 
 describe('the design-language renderer slot set is untouched', () => {
-  // Kills: adding a renderer slot for this surface. A CW keyer has no gauge
-  // grammar a language must describe; the slot set stays frozen.
+  // Kills: adding a renderer slot for this surface. The scope toolbar has no
+  // gauge grammar a language must describe; the slot set stays frozen.
   it('still carries exactly the three MOR-1072 slots', () => {
     expect([...RENDERER_SLOT_NAMES]).toEqual(['meters', 'frequencyDisplay', 'stateFeedback']);
   });

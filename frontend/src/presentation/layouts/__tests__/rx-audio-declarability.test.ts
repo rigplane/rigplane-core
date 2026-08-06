@@ -26,7 +26,7 @@ describe('rxAudio is a declarable semantic surface', () => {
   it('is in the declarable set alongside vfo, rxTx, txAux and meters', () => {
     expect([...SEMANTIC_SURFACE_NAMES]).toEqual([
       'vfo', 'rxTx', 'txAux', 'meters', 'rxAudio', 'filter', 'dsp', 'rfFrontEnd', 'band',
-      'antenna', 'ritXitScan', 'cwKeyer', 'scopeDisplay',
+      'antenna', 'ritXitScan', 'cwKeyer', 'scopeDisplay', 'scopeControls',
     ]);
   });
 
