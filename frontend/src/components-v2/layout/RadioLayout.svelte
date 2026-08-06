@@ -446,11 +446,11 @@
                HAM tab is duplicated by `BandSurface`, while the LW/MW + SWL tabs
                and their 17 broadcast presets are deliberately not facts and have
                no other host. It joins the channel in S8, after `BandSelector` is
-               split. When BOTH children of this section are eventually gated,
-               gate the whole `<CollapsiblePanel>` instead — a suppressed section
-               must not ship as a titled empty shell with a live localStorage
-               collapse entry (the RightSidebar `hideTxPanel` precedent, and the
-               shape every other section below already uses). -->
+               split. This panel is the ONE section that must never be wrapped as
+               a whole: row 10 (the LW/MW + SWL tabs) is permanent, so the panel
+               can never be empty, and S8 retires the HAM half by passing
+               `hamBands={!declared.has('band')}` — a prop change, not a mount
+               gate (S10 §4a/§7). -->
           <BandSelector />
         </CollapsiblePanel>
 
