@@ -11,12 +11,29 @@ name: Visual regression (pixel-diff)
 # divergence can be measured over a real cycle before it blocks anything.
 # Flipping it to blocking — removing `continue-on-error` below — is an
 # OWNER decision at v3 gate promotion, not a builder's call.
+#
+# BATCHING (verify-mor-1090.md §7.4): keep `continue-on-error: true` through
+# the remainder of the rework series (S6a-S12 etc.) even though each slice
+# may redden captures — regenerate the baseline set ONCE at series end, on
+# Linux (see the README's Platform section), immediately before the owner
+# flips this job to blocking. Regenerating per-slice would rubber-stamp
+# reviewers within two rounds and burn ~700KB of unreclaimable PNG history
+# per pass for no gating benefit while the job is non-blocking.
+#
+# PR-ONLY GAP: this workflow triggers on `pull_request` only, not `push`, so
+# it never runs on `main` — two individually-green PRs that each touch
+# different baselines could jointly redden the approved set without either
+# PR's own run catching it. Accepted for now: adding a `push` trigger would
+# double self-hosted runner minutes for a job that is `continue-on-error`
+# and therefore non-gating anyway; revisit at the same v3 promotion point
+# that flips the job to blocking.
 
 on:
   pull_request:
     branches: [main]
     paths:
       - "frontend/**"
+      - ".github/workflows/visual.yml"
 
 concurrency:
   group: visual-${{ github.workflow }}-${{ github.ref }}
