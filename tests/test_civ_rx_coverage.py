@@ -3431,8 +3431,21 @@ def test_scope_control_observations_project_public(radio: IcomRadio) -> None:
     assert sc["fixedEdge"]["endHz"] == 14_350_000
     assert sc["rbw"] == 2
 
-    suffixes = ("receiver", "dual", "mode", "span", "edge", "hold", "refDb", "speed",
-                "duringTx", "centerType", "vbwNarrow", "fixedEdge", "rbw")
+    suffixes = (
+        "receiver",
+        "dual",
+        "mode",
+        "span",
+        "edge",
+        "hold",
+        "refDb",
+        "speed",
+        "duringTx",
+        "centerType",
+        "vbwNarrow",
+        "fixedEdge",
+        "rbw",
+    )
     for suffix in suffixes:
         status = payload["fieldStatus"][f"scopeControls.{suffix}"]
         assert status["observed"] is True, suffix
