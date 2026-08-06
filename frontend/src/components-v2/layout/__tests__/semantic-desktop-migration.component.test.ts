@@ -579,11 +579,17 @@ describe('the legacy-twin suppression channel (MOR-1364, S6-pre)', () => {
     'antenna', 'scan', 'rx-audio', 'dsp', 'tx', 'cw', 'memory'];
   const RIGHT_ALL = ['rx-audio', 'audio-scope', 'dsp', 'tx', 'cw', 'memory'];
 
-  /** surface → the zone id its rework slice will declare on `desktop-v2`. */
+  /** surface → the zone id its rework slice will declare on `desktop-v2`.
+   *  `scopeDisplay` graduated to a REAL declaration in MOR-1365 (S6a) and left
+   *  this synthetic-probe literal — a probe re-declaring `scope-display` here
+   *  would collide with the real zone `desktopV2Layout.zones` already
+   *  carries. Its suppression is now proved directly against the real
+   *  manifest below (`the legacy-twin suppression channel retires the status
+   *  bar scope indicator on the REAL desktop-v2 manifest (MOR-1365)`). */
   const ZONES = [
     ['filter', 'filter'], ['rfFrontEnd', 'rf-front-end'], ['dsp', 'dsp'],
     ['ritXitScan', 'rit-xit-scan'], ['antenna', 'antenna'], ['rxAudio', 'rx-audio'],
-    ['cwKeyer', 'cw-keyer'], ['scopeDisplay', 'scope-display'], ['band', 'band'],
+    ['cwKeyer', 'cw-keyer'], ['band', 'band'],
   ] as const;
   type CoveredSurface = (typeof ZONES)[number][0];
 
@@ -622,7 +628,6 @@ describe('the legacy-twin suppression channel (MOR-1364, S6-pre)', () => {
     ['cwKeyer', 'left sidebar CW', '.left-sidebar [data-panel-id="cw"]'],
     ['cwKeyer', 'right sidebar CW', '.right-sidebar [data-panel-id="cw"]'],
     ['cwKeyer', 'settings modal CW', '[data-panel-id="desktop-cw"]'],
-    ['scopeDisplay', 'status bar scope indicator', '.status-indicators [title^="Scope WebSocket"]'],
   ] as const satisfies readonly (readonly [CoveredSurface, string, string])[];
 
   /**
@@ -754,5 +759,66 @@ describe('the legacy-twin suppression channel (MOR-1364, S6-pre)', () => {
     expect(renderAll('desktop-v2').querySelector('.receiver-deck [data-vfo-split]')).not.toBeNull();
     // The BAND half of the same modal section is untouched by this exception.
     expect(renderAll('desktop-v2').querySelector('[data-panel-id="desktop-vfo-ops"] .band-tabs')).not.toBeNull();
+  });
+});
+
+/**
+ * MOR-1365 (v3-rework S6a) — `scopeDisplay` GRADUATES from a synthetic probe
+ * (the `ZONE_PROBE` shape above) to a REAL zone `desktopV2Layout` declares.
+ * The status bar's legacy scope indicator retires through the SAME MOR-1364
+ * suppression channel; this describe proves it directly against the real
+ * manifest, not a hand-built one, so a regression here is a statement about
+ * `desktop-declarations.ts` and not about test scaffolding.
+ *
+ * MUTATION PROBE (required by the ticket): dropping the `scope-display` zone
+ * from `DESKTOP_V2_ZONES` turns this file's own
+ * `scope-display-declarability.test.ts` / `desktop-v2-registration.test.ts` /
+ * `preferences-adoption.test.ts` pins red (the S5 MM2 fan-out) AND turns the
+ * first test below red too — five independent pins, not a thin margin.
+ */
+describe('scopeDisplay zone ownership retires the status bar scope indicator (MOR-1365, S6a)', () => {
+  const SCOPE_INDICATOR = '.status-indicators [title^="Scope WebSocket"]';
+
+  beforeEach(() => {
+    h.caps = { ...(capsFor('2/main_sub') as object), antennas: 2 } as Capabilities;
+    vi.mocked(hasAnyScope).mockReturnValue(true);
+  });
+
+  afterEach(() => {
+    vi.mocked(hasAnyScope).mockReturnValue(false);
+  });
+
+  // THE CHANNEL, on the real manifest: the twin that rendered unconditionally
+  // before this slice (proved by the S6-pre `TWINS` inventory prior to
+  // MOR-1365 removing the row — see git history) is gone.
+  it('suppresses the status bar scope indicator on real desktop-v2', () => {
+    expect(render('desktop-v2').querySelector(SCOPE_INDICATOR)).toBeNull();
+  });
+
+  // Mirrors the S6-pre matrix's own inertness half: a layout that declares NO
+  // scope-display zone still shows the legacy indicator — proves the
+  // predicate reads the manifest, not a global flag.
+  it('leaves the indicator on a layout that declares no scope-display zone', () => {
+    expect(render(RX_TX_ONLY).querySelector(SCOPE_INDICATOR)).not.toBeNull();
+  });
+
+  // R9 restated once more: this zone carries no key/unkey authority.
+  it('adds no key authority when the scope-display zone is declared', () => {
+    expect(render('desktop-v2').querySelectorAll(KEY_AUTHORITIES).length).toBe(1);
+  });
+
+  // MOR-1069, verified rather than assumed (ScopeDisplaySurface is a
+  // ZERO-FOCUSABLE pure readout — see its own file header): declaring the
+  // zone contributes NOTHING to desktop-v2's tab sequence. This shell mounts
+  // `RadioLayout` directly (not under `App`), so it never provides a
+  // `SurfacePlan` context and cannot see the `data-zone-id` wrapper itself
+  // (`useSurfacePlan()` falls back to `NO_PLAN`, same as every other test in
+  // this file) — the zone-binding half of MOR-1069 is proved with a real
+  // context in `semantic-scope-display-wiring.component.test.ts` instead.
+  // What THIS harness can and does prove is the surface's own contract.
+  it('contributes no focusable control to desktop-v2 (MOR-1069 sequence unmoved)', () => {
+    const surface = render('desktop-v2').querySelector('[data-testid="scope-display-surface"]');
+    expect(surface).not.toBeNull();
+    expect(surface!.querySelectorAll('button, input, select, a[href], [tabindex]')).toHaveLength(0);
   });
 });

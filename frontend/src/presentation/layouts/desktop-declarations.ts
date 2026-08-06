@@ -46,6 +46,15 @@ const DESKTOP_V2_ZONES = [
   // reporting no meter fields at all must still resolve this layout, and the
   // surface self-gates on `view.meters`.
   { id: 'meters', surfaces: ['meters'] },
+  // MOR-1365 (S6a): scopeDisplay becomes zone-OWNED here too, retiring the
+  // status bar's legacy scope indicator via the MOR-1364 suppression channel
+  // (`StatusBar.svelte`'s `!declared.has('scopeDisplay')` guard). Pure
+  // readout, zero focusable elements, so MOR-1069 cannot be disturbed. Not
+  // `required` — a radio the MOR-1301 evidence gate declined must still
+  // resolve this layout, and the surface self-gates on `view.scopeDisplay`.
+  // The dual-receiver cockpit manifest is deliberately untouched;
+  // `scopeDisplay` keeps mounting bare there (12B's own shape).
+  { id: 'scope-display', surfaces: ['scopeDisplay'] },
 ] as const;
 
 export const desktopV2Layout: LayoutManifest = {

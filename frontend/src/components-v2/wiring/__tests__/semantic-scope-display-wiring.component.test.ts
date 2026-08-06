@@ -154,6 +154,18 @@ vi.mock('../command-bus', () => ({
 }));
 
 import SemanticRadioSurfaces from '../SemanticRadioSurfaces.svelte';
+// MOR-1365 (S6a): the REAL manifests + the REAL resolution seam, mirroring
+// `semantic-tx-aux-wiring.component.test.ts`'s "MOR-1082 — the semantic
+// vertical consults the resolved surface plan" shape — the only way to prove
+// the `scope-display` zone binding and the S5 subtraction asymmetry, since
+// `useSurfacePlan()` falls back to `NO_PLAN` on a standalone mount.
+import {
+  desktopV2Layout, dualReceiverCockpitLayout,
+} from '../../../presentation/layouts/declarations';
+import { readWorkspace } from '../../../presentation/workspace/contract';
+import {
+  resolveSurfacePlan, SURFACE_PLAN_CONTEXT_KEY, type SurfacePlan,
+} from '../../../presentation/workspace/resolution';
 
 const IDLE: Snapshot = {
   phase: 'idle', intent: null, guard: null, radioTx: 'off', txRisk: 'none',
@@ -198,10 +210,13 @@ const liveCaps = (withScope: boolean): Capabilities => ({
 let target: HTMLDivElement;
 let component: ReturnType<typeof mount> | null = null;
 
-function render(props: { strips?: 'single' | 'dual' } = {}): void {
+function render(props: { strips?: 'single' | 'dual' } = {}, plan?: SurfacePlan): void {
   target = document.createElement('div');
   document.body.appendChild(target);
-  component = mount(SemanticRadioSurfaces, { target, props });
+  const context = plan === undefined
+    ? undefined
+    : new Map<unknown, unknown>([[SURFACE_PLAN_CONTEXT_KEY, () => plan]]);
+  component = mount(SemanticRadioSurfaces, { target, props, context });
   flushSync();
 }
 
@@ -381,4 +396,70 @@ describe('the scope-display surface adds no control and no TX path', () => {
       expect(h.release).not.toHaveBeenCalled();
     },
   );
+});
+
+// ── 4. MOR-1365 (S6a) — desktop-v2 REALLY declares the zone; the cockpit ──
+// ── does not, and the plan can only ever cost the wrapper, never the fact ─
+
+/**
+ * `desktopV2Layout` now carries a `scope-display` zone
+ * (`presentation/layouts/desktop-declarations.ts`). This describes the two
+ * things that follow from it, using the REAL manifest + the REAL
+ * `resolveSurfacePlan` seam, exactly as `semantic-tx-aux-wiring.component
+ * .test.ts`'s "MOR-1082 — the semantic vertical consults the resolved
+ * surface plan" section does for `txAux`:
+ *
+ *   (a) the zone binds — `zoneOwning('scopeDisplay')` now answers
+ *       `'scope-display'` against desktop-v2's real plan, so the composed
+ *       tree wraps the surface in `<div data-zone-id="scope-display">`;
+ *   (b) the S5/S6-pre asymmetry: a workspace that SUBTRACTS `scopeDisplay`
+ *       from that zone costs the operator the wrapper `<div>`, never the
+ *       readout — `zoned()` degrades to bare (S5-N3), so "the workspace
+ *       hid it" and "no zone declares it" are indistinguishable and both
+ *       render exactly the pre-1365 element shape. MUTATION PROBE: remove
+ *       the `zoned(...)` mount from `scopeDisplaySurface`'s call site and
+ *       BOTH tests below go red — (a) loses the wrapper, (b) loses the
+ *       surface entirely, proving the wrapper mount is what keeps the
+ *       readout alive when subtracted, not a redundant safety net.
+ *   (c) the dual-receiver cockpit manifest is untouched by this slice, so
+ *       the surface keeps mounting bare there — MOR-1069 unmoved.
+ */
+describe('desktop-v2 declares a REAL scope-display zone; the cockpit does not (MOR-1365)', () => {
+  /** What App resolves for `layout` given a stored workspace `fields`. */
+  function planFor(layout: typeof desktopV2Layout, fields: Record<string, unknown>): SurfacePlan {
+    return resolveSurfacePlan(layout, readWorkspace({ version: 1, ...fields }).workspace);
+  }
+
+  it('binds the scope-display zone id against desktop-v2\'s real plan', () => {
+    h.caps = liveCaps(true);
+    h.scopeStatus = { ...LIVE_SCOPE_STATUS };
+    render({ strips: 'single' }, planFor(desktopV2Layout, {}));
+    expect(q('[data-testid="scope-display-surface"]')!.closest('[data-zone-id="scope-display"]'))
+      .not.toBeNull();
+  });
+
+  // THE ASYMMETRY (S5 shape): a workspace subtraction costs the wrapper, not
+  // the fact. MUTATION PROBE: reading the PLAN instead of the MANIFEST for
+  // suppression anywhere in this channel would make this subtraction able to
+  // resurrect a legacy twin — this test only proves the surface side (the
+  // legacy-twin side is `semantic-desktop-migration.component.test.ts`'s
+  // job), but it is the half that shows the readout itself never disappears.
+  it('degrades to a bare readout — never disappears — when the workspace subtracts scopeDisplay from its zone', () => {
+    h.caps = liveCaps(true);
+    h.scopeStatus = { ...LIVE_SCOPE_STATUS };
+    render({ strips: 'single' }, planFor(desktopV2Layout, {
+      visibleSurfaces: { 'scope-display': [] },
+    }));
+    expect(q('[data-testid="scope-display-surface"]')).not.toBeNull();
+    expect(q('[data-testid="scope-display-source"]')!.textContent).toContain('hardware');
+    expect(q('[data-testid="scope-display-surface"]')!.closest('[data-zone-id]')).toBeNull();
+  });
+
+  it('keeps mounting bare in the dual-receiver cockpit — its manifest is untouched by this slice', () => {
+    h.caps = liveCaps(true);
+    h.scopeStatus = { ...LIVE_SCOPE_STATUS };
+    render({ strips: 'dual' }, planFor(dualReceiverCockpitLayout, {}));
+    expect(q('[data-testid="scope-display-surface"]')).not.toBeNull();
+    expect(q('[data-testid="scope-display-surface"]')!.closest('[data-zone-id]')).toBeNull();
+  });
 });
