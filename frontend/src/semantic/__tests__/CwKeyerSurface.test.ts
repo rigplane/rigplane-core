@@ -106,7 +106,10 @@ describe('the CW-keyer surface is NOT a key path (decomposition R9)', () => {
    *  it is a pure, dependency-free `aria-pressed` derivation shared with
    *  four sibling surfaces, itself importing only a TYPE from
    *  `./radio-view-model` — it cannot reach the TX controller, the
-   *  transport or the permit utility any more than the fact contract can. */
+   *  transport or the permit utility any more than the fact contract can.
+   *  This check regexes THIS file's specifiers only, so that premise is
+   *  pinned one level down by `pressed-of.test.ts`'s `'has no runtime
+   *  import'` case (verify-MOR-1358 F1) — the two together are the closure. */
   it('imports nothing but the fact contract and the shared pressedOf helper', () => {
     const specifiers = [...CODE.matchAll(/from\s+'([^']+)'/g)].map((m) => m[1]);
     expect(specifiers.length).toBeGreaterThan(0);

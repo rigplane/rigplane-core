@@ -18,6 +18,7 @@
  * keep passing unmodified because the wiring — `aria-pressed={pressedOf(f)}`
  * — is unchanged; only the definition moved.
  */
+import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 import { pressedOf } from '../pressed-of';
 import type { Availability, TxAuxField } from '../radio-view-model';
@@ -47,7 +48,24 @@ describe('pressedOf (MOR-1358)', () => {
     expect(pressedOf(known('off'))).toBe(false);
   });
 
-  it.each(['on', 'tuning'])('returns true for a known enum reading of "%s"', (value) => {
+  it.each(['on', 'tuning'] as const)('returns true for a known enum reading of "%s"', (value) => {
     expect(pressedOf(known(value))).toBe(true);
+  });
+
+  /** verify-MOR-1358 F1. `CwKeyerSurface` is SAFETY-CRITICAL (MOR-1310) and
+   *  its "imports nothing but the fact contract" allow-list was widened to
+   *  admit `./pressed-of`. That allow-list regexes `CwKeyerSurface.svelte`'s
+   *  OWN specifiers only — it cannot see one level down — so the premise the
+   *  widening rests on ("pure, dependency-free, imports only a type") was
+   *  unpinned. This is that pin. Kills: any value import added here, which
+   *  would become a runtime edge from the safety-critical surface into
+   *  whatever it reaches (the TX controller, the transport, the permit
+   *  utility) without any existing test noticing. */
+  it('has no runtime import — the safety allow-lists that name it depend on this', () => {
+    const source = readFileSync('src/semantic/pressed-of.ts', 'utf8');
+    const statements = [...source.matchAll(/^import\b[^;]*;/gm)].map((m) => m[0]);
+    expect(statements.length).toBeGreaterThan(0);
+    for (const statement of statements) expect(statement.startsWith('import type ')).toBe(true);
+    for (const forbidden of ['import(', 'require(']) expect(source).not.toContain(forbidden);
   });
 });
