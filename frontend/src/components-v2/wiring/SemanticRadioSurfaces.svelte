@@ -297,12 +297,23 @@
       -->
       {#if zoneShows('global', 'vfo')}
         <div class="cockpit-global-row" data-testid="cockpit-zone-global" data-zone-id="global">
+          <!--
+            MOR-1321: the VFO ops ride with the radio-wide facts, so in the dual
+            composition they land HERE — once, in the global row — and not in the
+            per-receiver strips above, which set `showRadioWideFacts={false}`.
+            Same placement rule split/dual-watch already follow, for the same
+            reason: one radio-wide action must not appear once per receiver.
+          -->
           <VfoSurface
             viewModel={view}
             showVfoList={false}
             groupLabel={t('core.vfo.radioWideGroupLabel')}
             onToggleSplit={vfo.onSplitToggle}
             onToggleDualWatch={toggleDualWatch}
+            onEqualizeVfos={vfo.onEqual}
+            onSwapVfos={vfo.onSwap}
+            onQuickSplit={vfo.onQuickSplit}
+            onQuickDualWatch={vfo.onQuickDw}
           />
         </div>
       {/if}
@@ -324,6 +335,10 @@
         onSelectVfo={selectVfo}
         onToggleSplit={vfo.onSplitToggle}
         onToggleDualWatch={toggleDualWatch}
+        onEqualizeVfos={vfo.onEqual}
+        onSwapVfos={vfo.onSwap}
+        onQuickSplit={vfo.onQuickSplit}
+        onQuickDualWatch={vfo.onQuickDw}
       />
     {/if}
   {/snippet}

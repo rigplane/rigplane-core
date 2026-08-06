@@ -181,6 +181,12 @@
   "core.vfo.state.on": "オン",
   "core.vfo.state.off": "オフ",
   "core.vfo.state.unknown": "不明",
+  "core.vfo.ops.equalize": "VFO を等しくする",
+  "core.vfo.ops.swap": "VFO を入れ替え",
+  "core.vfo.ops.quickSplit": "クイックスプリット",
+  "core.vfo.ops.quickDualWatch": "クイックデュアルウォッチ",
+  "core.vfo.splitDigest.rx": "RX {frequency}",
+  "core.vfo.splitDigest.tx": "TX {frequency}",
 
   "core.txGuard.modInputNotLan": "MOD 入力が {source} のため LAN 経由の音声は送信 (TX) されません。",
   "core.txGuard.setLan": "LAN に設定",

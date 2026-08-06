@@ -201,6 +201,12 @@
   "core.vfo.state.on": "on",
   "core.vfo.state.off": "off",
   "core.vfo.state.unknown": "unknown",
+  "core.vfo.ops.equalize": "Equalize VFOs",
+  "core.vfo.ops.swap": "Swap VFOs",
+  "core.vfo.ops.quickSplit": "Quick split",
+  "core.vfo.ops.quickDualWatch": "Quick dual watch",
+  "core.vfo.splitDigest.rx": "RX {frequency}",
+  "core.vfo.splitDigest.tx": "TX {frequency}",
 
   "core.txGuard.modInputNotLan": "MOD input is {source}, not LAN — your voice from the web will not be transmitted (TX).",
   "core.txGuard.setLan": "Set LAN",

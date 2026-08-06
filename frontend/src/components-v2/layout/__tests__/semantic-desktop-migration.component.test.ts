@@ -478,3 +478,42 @@ describe('exactly one key authority on a partially declaring manifest (R9)', () 
     expect(render(skinId).querySelectorAll(KEY_AUTHORITIES).length).toBe(1);
   });
 });
+
+/**
+ * MOR-1321 (S3a) — receiver-deck parity for the VFO ops.
+ *
+ * MOR-1313 put desktop-v2 on the v3 path and, with it, retired the legacy
+ * `VfoOps` bridge from the deck: A=B, A↔B and the two composite quick triggers
+ * left the flagship skin (A=B/A↔B survived only in the settings modal, which
+ * the owner declined as parity). These assert the semantic deck carries them
+ * again — end-to-end through the real RadioLayout mount, not just in the
+ * surface's own unit tests.
+ */
+describe('the semantic receiver deck carries the VFO ops again (MOR-1321)', () => {
+  const OPS = ['equalize', 'swap', 'quick-split', 'quick-dual-watch'] as const;
+
+  // MUTATION KILLED: the ops landing in the surface but never being wired at
+  // the desktop mount site — every VfoSurface unit test would still pass.
+  it.each(['desktop-v2', 'sdr-test'] as const)('%s renders all four ops inside the deck', (skinId) => {
+    const deck = render(skinId).querySelector('.receiver-deck')!;
+    for (const op of OPS) expect(deck.querySelector(`[data-vfo-${op}]`), op).not.toBeNull();
+    expect(deck.querySelector('[data-testid="vfo-split-digest"]')).not.toBeNull();
+  });
+
+  // The structural gate survives the trip through the real adapter: a
+  // single-VFO radio has nothing to swap against, so the deck shows no ops.
+  // Kills a wiring that renders them unconditionally at the mount site.
+  it('a single-VFO topology renders no ops in the deck', () => {
+    h.caps = capsFor('1/single');
+    const deck = render('desktop-v2').querySelector('.receiver-deck')!;
+    for (const op of OPS) expect(deck.querySelector(`[data-vfo-${op}]`), op).toBeNull();
+    expect(deck.querySelector('[data-testid="vfo-split-digest"]')).toBeNull();
+  });
+
+  // R9 restated at the deck level: adding four buttons to the deck must not
+  // add a second key authority. Same probe shape as the MOR-1313 matrix.
+  it('adds no key authority to the deck', () => {
+    const t = render('desktop-v2');
+    expect(t.querySelectorAll('[data-testid="rx-tx-surface"], .tx-panel').length).toBe(1);
+  });
+});
