@@ -55,6 +55,10 @@ function caps(overrides: Partial<Capabilities> = {}): Capabilities {
 
 const fresh: FieldStatus = { storePath: 'x', observed: true, freshness: 'fresh', availability: 'available' };
 const stale: FieldStatus = { storePath: 'x', observed: true, freshness: 'stale', availability: 'stale' };
+/** The two remaining ways `seen()` can fail on a field that HAS a status
+ *  entry — never observed, and observed-but-unavailable (MOR-1356). */
+const unobserved: FieldStatus = { storePath: 'x', observed: false, freshness: 'unknown', availability: 'missing' };
+const missing: FieldStatus = { storePath: 'x', observed: true, freshness: 'fresh', availability: 'missing' };
 
 /** The exact shape `rf-front-end-adapter.test.ts`'s own baseline uses. */
 function bareState(overrides: Partial<ServerState> = {}): ServerState {
@@ -334,6 +338,118 @@ describe('currentBandTx fails closed (MOR-1294)', () => {
     }), hfCaps);
     expect(view.band!.currentBand.reading).toEqual({ status: 'unknown' });
     expect(view.band!.currentBandTx).toBe('denied');
+  });
+});
+
+/**
+ * SAFETY — THE PERMIT IS SCOPED TO AN OBSERVED RECEIVER (MOR-1356, 7A
+ * follow-up). `deriveBand` picks the receiver it samples from the RAW
+ * `state.active`, which carries no evidence of its own; `activeReceiver`
+ * (the model's own answer to "which receiver is live") requires the
+ * three-part `seen()` gate. The model could therefore report
+ * `activeReceiver: unknown` and, in the same breath, a `currentBandTx:
+ * 'allowed'` scoped to a receiver it never confirmed — a TX permit resting
+ * on a guess.
+ *
+ * The gate added here is the SAME criterion `activeReceiver` uses, not a
+ * parallel one: the sameness is asserted structurally below (every state in
+ * the matrix must agree), so a future divergence in either direction goes
+ * red. The fail-closed representation is `'denied'` — the shipped
+ * `getTxPermit` collapse this group already uses everywhere else for an
+ * unknown input ("unknown fails closed", `$lib/utils/tx-permit`), NOT a new
+ * tri-state: `currentBandTx` is `TxPermit`, validated against
+ * `TX_PERMITS = ['allowed', 'denied']` (`radio-view-model.ts`).
+ *
+ * SCOPE: only the permit. Every other band fact keeps the ordinary-fact
+ * convention 7A landed with (pinned by the last case here).
+ */
+describe('currentBandTx fails closed on an unconfirmed active receiver (MOR-1356)', () => {
+  /** MAIN at 14.195, inside the 20m TX allocation: the permit derivation
+   *  itself says 'allowed', so every denial below is the GATE, not the
+   *  frequency — the pin cannot pass vacuously. */
+  const LIVE_HZ = 14195000;
+
+  const UNCONFIRMED: ReadonlyArray<readonly [label: string, state: () => ServerState]> = [
+    [
+      'the active-receiver field was never observed at all (no status entry)',
+      () => {
+        const status = { ...bareState().fieldStatus };
+        delete (status as Record<string, unknown>).active;
+        return bareState({ fieldStatus: status });
+      },
+    ],
+    [
+      'the active-receiver field carries an unobserved status',
+      () => bareState({ fieldStatus: { ...bareState().fieldStatus, active: unobserved } }),
+    ],
+    [
+      'the active-receiver reading is stale',
+      () => bareState({ fieldStatus: { ...bareState().fieldStatus, active: stale } }),
+    ],
+    [
+      'the active-receiver field is observed and fresh but not available',
+      () => bareState({ fieldStatus: { ...bareState().fieldStatus, active: missing } }),
+    ],
+    [
+      'the raw active value is not a receiver the model recognises',
+      () => bareState({ active: 'BOTH' as unknown as ServerState['active'] }),
+    ],
+  ];
+
+  it('sanity: the same fixture with a confirmed active receiver really reads allowed', () => {
+    const view = model(bareState(), hfCaps);
+    expect(view.activeReceiver).toEqual({ status: 'known', receiver: 'MAIN' });
+    expect(view.band!.currentBandTx).toBe('allowed');
+    expect(getTxPermit(LIVE_HZ, HAM_TX_BANDS)).toBe('allowed');
+  });
+
+  it.each(UNCONFIRMED)('reads denied when %s', (_label, makeState) => {
+    const view = model(makeState(), hfCaps);
+    // The model itself does not know which receiver is live…
+    expect(view.activeReceiver).toEqual({ status: 'unknown' });
+    // …so the frequency-only permit (which still says allowed) must not be
+    // promoted into a permit for a receiver nobody confirmed.
+    expect(getTxPermit(LIVE_HZ, HAM_TX_BANDS)).toBe('allowed');
+    expect(view.band!.currentBandTx).toBe('denied');
+  });
+
+  it('uses the SAME criterion activeReceiver does — allowed implies a known active receiver', () => {
+    const states: ServerState[] = [
+      bareState(),
+      bareState({ active: 'SUB', fieldStatus: { ...bareState().fieldStatus, 'sub.freqHz': fresh } }),
+      ...UNCONFIRMED.map(([, makeState]) => makeState()),
+    ];
+    const dualCaps = caps({
+      freqRanges: HF_RANGES, txBands: HAM_TX_BANDS, receivers: 2, vfoScheme: 'main_sub',
+      capabilities: ['tx', 'dual_rx'],
+    });
+    const seenPermits = new Set<string>();
+    for (const state of states) {
+      for (const capabilities of [hfCaps, dualCaps]) {
+        const view = model(state, capabilities);
+        seenPermits.add(view.band!.currentBandTx);
+        if (view.band!.currentBandTx === 'allowed') {
+          expect(view.activeReceiver.status).toBe('known');
+        }
+      }
+    }
+    // Both branches actually occurred — the implication above is not vacuous.
+    expect(seenPermits).toEqual(new Set(['allowed', 'denied']));
+  });
+
+  it('leaves every NON-permit band fact on the ordinary-fact convention (no scope creep)', () => {
+    const status = { ...bareState().fieldStatus };
+    delete (status as Record<string, unknown>).active;
+    const gated = model(bareState({ fieldStatus: status }), hfCaps).band!;
+    const confirmed = model(bareState(), hfCaps).band!;
+    expect(gated.currentBand).toEqual(confirmed.currentBand);
+    expect(gated.currentBand.reading).toEqual({ status: 'known', value: '20m' });
+    expect(gated.bandChoices).toEqual(confirmed.bandChoices);
+    expect(gated.tuneMinHz).toBe(confirmed.tuneMinHz);
+    expect(gated.tuneMaxHz).toBe(confirmed.tuneMaxHz);
+    // Only the permit differs.
+    expect(confirmed.currentBandTx).toBe('allowed');
+    expect(gated.currentBandTx).toBe('denied');
   });
 });
 
