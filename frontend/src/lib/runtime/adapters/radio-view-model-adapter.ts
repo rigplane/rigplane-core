@@ -32,6 +32,7 @@ import type {
   FilterPassbandViewModel, DspViewModel, RfFrontEndViewModel,
   BandChoice, BandViewModel, RitXitViewModel, AntennaViewModel, ScanViewModel,
   BreakInMode, CwKeyerViewModel, ScopeControlsViewModel,
+  ScopeDisplayViewModel, ScopeSourceKind, ScopeHealthState,
 } from '../../../semantic/radio-view-model';
 import type { TxAuthoritySnapshot } from '../../../semantic/rx-tx-surface';
 import { isFieldAvailable } from '$lib/state/field-status';
@@ -966,6 +967,95 @@ function deriveScopeControls(
 }
 
 /**
+ * The App-owned scope-display snapshot the `scopeDisplay` facts are read
+ * against (MOR-1262 slice 12A, MOR-1301). Like `RxAudioSnapshot`, this is an
+ * INPUT: `defaultScopeStatus` lives on the `FrontendRuntime` singleton
+ * (`lib/runtime/frontend-runtime.ts`), not on `ServerState`/`Capabilities`,
+ * so a fact derivation may not reach for it directly (MOR-988 §3.2
+ * determinism) — the caller reads its own already-live
+ * `runtime.defaultScopeStatus` plus the radio-power state it already tracks
+ * and hands the values in. Field names mirror `DefaultScopeStatus` verbatim
+ * (`source`/`available`/`resourceSelected`/`demand`/`lifecycle`/`transport`/
+ * `frameSeen`) so a caller can spread `runtime.defaultScopeStatus` in
+ * directly; `isPoweredOff` is the one addition, the status bar's own
+ * override input to the same classification (see `classifyScopeHealth`).
+ */
+export interface ScopeDisplaySnapshot {
+  source: ScopeSourceKind | null;
+  available: boolean;
+  resourceSelected: boolean;
+  demand: number;
+  lifecycle: 'inactive' | 'starting' | 'streaming' | 'failed';
+  transport: 'disconnected' | 'connecting' | 'connected' | 'reconnecting';
+  frameSeen: boolean;
+  isPoweredOff: boolean;
+}
+
+/**
+ * Mirrors `hasAnyScope()` (`$lib/stores/capabilities.svelte.ts`) — the real
+ * gate the status bar's scope indicator uses to decide whether to render at
+ * all — re-driven on THIS function's own `caps` argument rather than that
+ * store singleton, which a fact derivation may not read (determinism, N2).
+ * A one-line boolean; agreement with the store function is a direct
+ * expression match, not something worth a live-store parity test (which
+ * would need `setCapabilities`/`afterEach` cleanup under the fast pool,
+ * MOR-1272 — avoided here because it is avoidable).
+ */
+function hasAnyScopeCap(caps: Capabilities | null): boolean {
+  return caps?.scope === true || caps?.scopeSource === 'audio_fft';
+}
+
+/**
+ * Byte-identical to `deriveScopeIndicatorState` (`components-v2/layout/
+ * StatusBar.svelte`) — the shipped status-bar scope indicator's own state
+ * machine, reproduced here because `lib/runtime` may not import
+ * `components-v2` (ADR 2026-04-12, `eslint.config.js`'s `FORBIDDEN` import
+ * boundary), so the real function cannot be called from this file. Parity
+ * with the real function, across a full discriminating-combo matrix, is
+ * pinned in `__tests__/scope-display-adapter.test.ts` rather than assumed —
+ * the same "agree with the real projector" discipline `projectModInputSource`
+ * above uses for the same reason (that one duplicates `app-authority.ts`'s
+ * `projectInputs`, blocked by the same boundary).
+ */
+function classifyScopeHealth(s: ScopeDisplaySnapshot): ScopeHealthState {
+  if (s.isPoweredOff) return 'disconnected';
+  if (s.source === null || !s.available || !s.resourceSelected || s.demand === 0) return 'inactive';
+  if (s.lifecycle === 'failed') return 'failed';
+  if (s.lifecycle === 'starting') return 'starting';
+  if (s.transport === 'connecting') return 'connecting';
+  if (s.transport === 'reconnecting') return 'reconnecting';
+  if (s.transport === 'disconnected') return 'disconnected';
+  if (!s.frameSeen) return 'waiting';
+  return s.lifecycle === 'streaming' ? 'connected' : 'inactive';
+}
+
+/**
+ * Scope-display facts (MOR-1262 decomposition slice 12A, MOR-1301 — the
+ * FINAL A-slice of the vocabulary program). See `ScopeDisplayViewModel`'s
+ * doc comment for the group-shape rationale (why scope tuning and scope
+ * pixels are both deliberately absent).
+ *
+ * Evidence gate: NO snapshot ⇒ NO group (same `deriveRxAudio` discipline —
+ * `defaultScopeStatus` is App-owned, not this layer's to guess), AND
+ * `hasAnyScopeCap(caps)` ⇒ NO group otherwise (a radio with neither a
+ * hardware scope nor an audio-FFT source has no indicator to state a fact
+ * about, mirroring the real status bar rendering nothing at all).
+ *
+ * Both leaves share the one structural gate: unlike `scopeControls`'s
+ * per-leaf capability split, there is exactly one v2 reader here (the status
+ * bar's single indicator), so there is exactly one gate.
+ */
+function deriveScopeDisplay(
+  caps: Capabilities | null, snapshot: ScopeDisplaySnapshot | null | undefined,
+): ScopeDisplayViewModel | undefined {
+  if (!snapshot || !hasAnyScopeCap(caps)) return undefined;
+  return {
+    source: txAuxField(true, snapshot.source !== null, snapshot.source ?? undefined),
+    health: txAuxField(true, true, classifyScopeHealth(snapshot)),
+  };
+}
+
+/**
  * The App-owned RX-audio snapshot the `rxAudio` facts are read against
  * (MOR-1262 slice 3A). It is an INPUT, deliberately: audio lifetime belongs to
  * the App (MOR-1058) and building a view model must never open, start or probe
@@ -1065,6 +1155,7 @@ export function toRadioViewModel(
   state: ServerState | null, caps: Capabilities | null,
   tx?: MetersTxAuthority | null,
   rxAudioSnapshot?: RxAudioSnapshot | null,
+  scopeDisplaySnapshot?: ScopeDisplaySnapshot | null,
 ): RadioViewModel | null {
   if (!caps) return null;
   const presentation = derivePresentationCapabilities(caps);
@@ -1204,6 +1295,7 @@ export function toRadioViewModel(
   const scan = deriveScan(state);
   const cwKeyer = deriveCwKeyer(state, caps);
   const scopeControls = deriveScopeControls(state, caps);
+  const scopeDisplay = deriveScopeDisplay(caps, scopeDisplaySnapshot);
   const rfFrontEndMutex = deriveRfFrontEndMutex(rfFrontEnd);
   if (rfFrontEndMutex) disabledReasons.push(rfFrontEndMutex);
   disabledReasons.push(...deriveCwKeyerReasons(cwKeyer, modeFilter, txPermit));
@@ -1232,5 +1324,6 @@ export function toRadioViewModel(
     ...(scan !== undefined ? { scan } : {}),
     ...(cwKeyer !== undefined ? { cwKeyer } : {}),
     ...(scopeControls !== undefined ? { scopeControls } : {}),
+    ...(scopeDisplay !== undefined ? { scopeDisplay } : {}),
   };
 }
