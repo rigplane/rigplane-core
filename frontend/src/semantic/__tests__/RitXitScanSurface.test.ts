@@ -198,6 +198,83 @@ describe('S3b wrong-VFO guard: every RIT/XIT control fails closed while activeRe
   });
 });
 
+describe('F2 (fix round): RIT/XIT toggles fail closed on their OWN unobserved reading', () => {
+  // activeReceiver stays KNOWN throughout this block — isolates the field's
+  // own observation gate from the S3b wrong-VFO guard above.
+  it('disables the RIT toggle while ritActive itself is unread', () => {
+    const r = render(withRx({ ritActive: unread<boolean>() }));
+    expect(r.el('ritxit-rit-toggle')!.hasAttribute('disabled')).toBe(true);
+    r.dispose();
+  });
+
+  it('refuses to toggle RIT even when the click bypasses disabled, while ritActive is unread', () => {
+    const onRitToggle = vi.fn();
+    const r = render(withRx({ ritActive: unread<boolean>() }), { onRitToggle });
+    bypassClick(r.el('ritxit-rit-toggle')!);
+    flushSync();
+    expect(onRitToggle).not.toHaveBeenCalled();
+    r.dispose();
+  });
+
+  it('omits aria-pressed — never "false" — for an unread RIT reading', () => {
+    const r = render(withRx({ ritActive: unread<boolean>() }));
+    expect(r.el('ritxit-rit-toggle')!.hasAttribute('aria-pressed')).toBe(false);
+    r.dispose();
+  });
+
+  it('disables the XIT toggle while xitActive itself is unread', () => {
+    const r = render(withRx({ xitActive: unread<boolean>() }));
+    expect(r.el('ritxit-xit-toggle')!.hasAttribute('disabled')).toBe(true);
+    r.dispose();
+  });
+
+  it('refuses to toggle XIT even when the click bypasses disabled, while xitActive is unread', () => {
+    const onXitToggle = vi.fn();
+    const r = render(withRx({ xitActive: unread<boolean>() }), { onXitToggle });
+    bypassClick(r.el('ritxit-xit-toggle')!);
+    flushSync();
+    expect(onXitToggle).not.toHaveBeenCalled();
+    r.dispose();
+  });
+
+  it('omits aria-pressed — never "false" — for an unread XIT reading', () => {
+    const r = render(withRx({ xitActive: unread<boolean>() }));
+    expect(r.el('ritxit-xit-toggle')!.hasAttribute('aria-pressed')).toBe(false);
+    r.dispose();
+  });
+
+  it('shows aria-pressed once the reading is known, RIT on / XIT off', () => {
+    const r = render(withRx({ ritActive: known(true), xitActive: known(false) }));
+    expect(r.el('ritxit-rit-toggle')!.getAttribute('aria-pressed')).toBe('true');
+    expect(r.el('ritxit-xit-toggle')!.getAttribute('aria-pressed')).toBe('false');
+    r.dispose();
+  });
+
+  it('CLEAR stays ungated by field observation — writes freq:0 absolutely, not a read-modify-write', () => {
+    const onClear = vi.fn();
+    const r = render(withRx({ ritActive: unread<boolean>(), xitActive: unread<boolean>() }), { onClear });
+    expect(r.el('ritxit-clear')!.hasAttribute('disabled')).toBe(false);
+    r.el('ritxit-clear')!.click();
+    flushSync();
+    expect(onClear).toHaveBeenCalledExactlyOnceWith();
+    r.dispose();
+  });
+});
+
+describe('F2 (fix round): scan-toggle aria-pressed is honest about an unobserved scanning reading', () => {
+  it('omits aria-pressed — never "false" — while scanning itself is unread', () => {
+    const r = render(withSc({ scanning: unreadScan<boolean>() }));
+    expect(r.el('scan-toggle')!.hasAttribute('aria-pressed')).toBe(false);
+    r.dispose();
+  });
+
+  it('shows aria-pressed="false" once scanning is known idle', () => {
+    const r = render(withSc({ scanning: knownScan(false) }));
+    expect(r.el('scan-toggle')!.getAttribute('aria-pressed')).toBe('false');
+    r.dispose();
+  });
+});
+
 describe('O1: one offset register under two capability gates', () => {
   it('renders exactly one offset control, never two', () => {
     const r = render(withRx({ ritActive: known(true), xitActive: known(false) }));

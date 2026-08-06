@@ -56,6 +56,13 @@
   export const textOf = (f: RitXitField<unknown> | ScanField<unknown>): string =>
     f.reading.status === 'known' ? String(f.reading.value) : UNKNOWN_TEXT;
   const isOn = (f: RitXitField<boolean>): boolean => f.reading.status === 'known' && f.reading.value === true;
+  /** F2 (fix round, verify-MOR-1308). `TxAuxSurface.svelte`'s `pressedOf`,
+   *  verbatim shape: `boolean | undefined` so `aria-pressed` is OMITTED —
+   *  never `"false"` — when the reading is unknown. Claiming "off" for a
+   *  field this surface has never observed is the same fabrication the
+   *  B-wave criterion forbids for the underlying dispatch below. */
+  const pressedOf = (f: RitXitField<boolean> | ScanField<boolean>): boolean | undefined =>
+    f.reading.status === 'known' ? f.reading.value : undefined;
 </script>
 
 <script lang="ts">
@@ -88,13 +95,23 @@
   let scanningOn = $derived(sc !== undefined && usable(sc.scanning)
     && sc.scanning.reading.status === 'known' && sc.scanning.reading.value === true);
 
-  function toggleRit(): void { if (activeKnown) onRitToggle?.(); }
-  function toggleXit(): void { if (activeKnown) onXitToggle?.(); }
+  // F2 (fix round, verify-MOR-1308): gated on the field's OWN observation,
+  // not just the wrong-VFO guard — mirrors `TxAuxSurface.svelte`'s `toggle`.
+  // Firing over an unobserved reading arms a guess at the command bus
+  // (`makeRitXitHandlers().onRitToggle`'s `?? false` optimism), exactly the
+  // re-loosening the B-wave criterion forbids.
+  function toggleRit(): void { if (rx && activeKnown && usable(rx.ritActive)) onRitToggle?.(); }
+  function toggleXit(): void { if (rx && activeKnown && usable(rx.xitActive)) onXitToggle?.(); }
   function changeOffset(hz: number): void {
     const offset = rx && (xitLeads ? rx.xitOffset : rx.ritOffset);
     if (!activeKnown || !offset || !usable(offset)) return;
     if (xitLeads) onXitOffsetChange?.(hz); else onRitOffsetChange?.(hz);
   }
+  // CLEAR is correctly LEFT UNGATED on field observation (F2 fix round):
+  // `onClear` writes `freq: 0` absolutely, not a read-modify-write of the
+  // current offset, so it is honest even while the offset is unobserved —
+  // unlike the toggles, it never reads a guessed value to decide what to
+  // send. Still gated on `activeKnown` (S3b — no receiver to attribute it to).
   function clear(): void { if (activeKnown) onClear?.(); }
   function toggleScan(): void {
     if (!sc || !usable(sc.scanning)) return;
@@ -118,14 +135,14 @@
       <div class="row" data-testid="ritxit" data-active-vfo-known={activeKnown}>
         {#if rx.ritActive.availability.structural}
           <button
-            type="button" data-testid="ritxit-rit-toggle" aria-pressed={isOn(rx.ritActive)}
-            disabled={!activeKnown} onclick={toggleRit}
+            type="button" data-testid="ritxit-rit-toggle" aria-pressed={pressedOf(rx.ritActive)}
+            disabled={!activeKnown || !usable(rx.ritActive)} onclick={toggleRit}
           >RIT</button>
         {/if}
         {#if rx.xitActive.availability.structural}
           <button
-            type="button" data-testid="ritxit-xit-toggle" aria-pressed={isOn(rx.xitActive)}
-            disabled={!activeKnown} onclick={toggleXit}
+            type="button" data-testid="ritxit-xit-toggle" aria-pressed={pressedOf(rx.xitActive)}
+            disabled={!activeKnown || !usable(rx.xitActive)} onclick={toggleXit}
           >XIT</button>
         {/if}
         <label class="offset" data-testid="ritxit-offset" data-observed={usable(offset)}>
@@ -147,7 +164,7 @@
         {#if sc.scanning.availability.structural}
           <span data-testid="scan-status" data-observed={usable(sc.scanning)}>{textOf(sc.scanning)}</span>
           <button
-            type="button" data-testid="scan-toggle" aria-pressed={scanningOn}
+            type="button" data-testid="scan-toggle" aria-pressed={pressedOf(sc.scanning)}
             disabled={!usable(sc.scanning) || (!scanningOn && !usable(sc.scanType))}
             onclick={toggleScan}
           >{scanningOn ? 'STOP' : 'START'}</button>
