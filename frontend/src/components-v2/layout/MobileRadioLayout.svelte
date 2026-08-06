@@ -1,14 +1,3 @@
-<script module lang="ts">
-  /**
-   * Per-surface PTT lease identity. The portrait FAB and the landscape strip
-   * are separate recognizer instances and a rotation swaps one for the other,
-   * so each needs its own sourceId: the App TX controller keys lease ownership
-   * by sourceId, and a shared id would let a torn-down surface release — or
-   * latch — a lease the freshly created one, or another source entirely, owns.
-   */
-  let mobilePttSeq = 0;
-</script>
-
 <script lang="ts">
   import { runtime } from '$lib/runtime';
   import { t } from '$lib/i18n';
@@ -63,7 +52,7 @@
   } from '../wiring/command-bus';
   import { getKeyboardConfig } from '$lib/stores/capabilities.svelte';
   import { getAppTxController } from '$lib/runtime/tx-controller/app-host';
-  import { createPttGesture, type PttGesture } from '../wiring/tx-ptt-gesture';
+  import { createMobilePttSurface, type MobilePttBinding } from '../wiring/mobile-ptt-surface';
   import { onMount, onDestroy } from 'svelte';
 
   // ── State — via runtime ──
@@ -348,61 +337,34 @@
     'var(--v2-text-dim, #555)'
   );
 
-  // One recognizer per input surface. The portrait FAB and the landscape strip
-  // are never mounted together and a rotation swaps one for the other; a shared
-  // recognizer would carry an armed release window across that swap, where the
-  // first press on the new surface would be misread as the second half of a
-  // double-tap. Re-keying the effect on the surface destroys the old recognizer
-  // instead — `destroy()` releases a live lease exactly once, which is why
-  // rotating away while keyed or latched now drops TX rather than stranding it.
+  // One recognizer per input surface — the orchestration itself lives in
+  // `wiring/mobile-ptt-surface.ts` (MOR-1378) so it is testable and mountable
+  // without this component's runtime-store dependencies. Re-keying the effect
+  // on the surface destroys the old binding, which releases a live lease
+  // exactly once: rotating away while keyed or latched drops TX rather than
+  // stranding it.
   let pttSurface: 'none' | 'portrait' | 'landscape' = $derived(
     !txCapable ? 'none' : isLandscape ? 'landscape' : 'portrait'
   );
-  let ptt: PttGesture | null = null;
+  let ptt: MobilePttBinding | null = null;
 
   $effect(() => {
     const surface = pttSurface;
     if (surface === 'none') return;
-    const sourceId = `mobile-ptt-${surface}-${++mobilePttSeq}`;
-    let leaseSeq = 0;
-    const gesture = createPttGesture(
-      // Read the controller DIRECTLY rather than the subscribed `txState`:
-      // teardown runs after the subscription has already been dropped, and a
-      // stale snapshot there would release a guard that has since moved on.
-      {
-        guard: () => txCtl.snapshot().guard,
-        latched: () => txCtl.snapshot().intent === 'latched',
-      },
-      {
-        start: () => {
-          // A stale fault would swallow the start (the model only leaves
-          // 'failed' on an explicit reset), so clear it as part of the press —
-          // otherwise one denied press bricks mobile TX for the session.
-          if (txCtl.snapshot().phase === 'failed') txCtl.resetFault();
-          txCtl.start(sourceId, `${sourceId}-${++leaseSeq}`, 'momentary');
-        },
-        latch: (guard) => txCtl.setIntent(sourceId, guard, 'latched'),
-        release: (guard) => txCtl.release(sourceId, guard),
-      },
-      {
-        schedule: (callback, ms) => setTimeout(callback, ms),
-        cancel: (handle) => clearTimeout(handle as ReturnType<typeof setTimeout>),
-      },
-    );
-    ptt = gesture;
-    return () => { ptt = null; gesture.destroy(); };
+    const binding = createMobilePttSurface(surface, txCtl, {
+      schedule: (callback, ms) => setTimeout(callback, ms),
+      cancel: (handle) => clearTimeout(handle as ReturnType<typeof setTimeout>),
+    }, () => pttSurface);
+    ptt = binding;
+    return () => { ptt = null; binding.destroy(); };
   });
 
-  // PttFab's 50 ms hold timer is not cleared when it unmounts, so a press that
-  // began in portrait can still fire onDown() after a rotation has already
-  // swapped in the landscape recognizer. Both FAB entry points therefore check
-  // that portrait is still the live surface before touching the recognizer.
   function fabDown() {
-    if (pttSurface === 'portrait') ptt?.down();
+    ptt?.fabDown();
   }
 
   function fabUp() {
-    if (pttSurface === 'portrait') ptt?.up();
+    ptt?.fabUp();
   }
 
   // ── Landscape PTT guards (#843 parity with FAB) ──

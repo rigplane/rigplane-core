@@ -16,17 +16,20 @@
  * `ReferenceLayout.svelte` already makes for `RadioLayout` (a lighter,
  * real-component stand-in, not a re-simulation).
  *
- * The orientation-swap wiring below (recreate-one-recognizer-per-surface,
- * shared `fabDown`/`fabUp` reading LIVE state) is a hand-mirror of
- * `MobileRadioLayout.svelte`'s own `$effect`, not an import of it. Scenarios
- * below prove the PATTERN is load-bearing where mirrored faithfully, not that
- * MobileRadioLayout.svelte's own copy is byte-identical (verified by direct
- * reading instead). Extraction into a shared mountable function is MOR-1378.
- * `PttFab.svelte` itself is mounted unmodified.
+ * The orientation-swap wiring below is NO LONGER a hand-mirror: MOR-1378
+ * extracted `MobileRadioLayout.svelte`'s own `$effect` into
+ * `components-v2/wiring/mobile-ptt-surface.ts`, and this harness now imports
+ * and drives that REAL, unmodified module — the same code the shipped layout
+ * composes. `PttFab.svelte` is likewise mounted unmodified. What remains
+ * harness-local is only the host facade (a fixed fake authority/eligibility in
+ * place of the WS-backed session projector) and the surface swap trigger the
+ * component gets from its `isLandscape` `$derived`.
  */
 import { mount, unmount } from 'svelte';
 import { TxController, type TxControllerDependencies } from '../src/lib/runtime/tx-controller/controller';
-import { createPttGesture, type PttGesture } from '../src/components-v2/wiring/tx-ptt-gesture';
+import {
+  createMobilePttSurface, type MobilePttBinding,
+} from '../src/components-v2/wiring/mobile-ptt-surface';
 import type {
   Eligibility, PttMarker, PttObservation, TxGuard,
 } from '../src/lib/runtime/tx-controller/model';
@@ -80,49 +83,49 @@ const controller = new TxController(
 );
 controller.subscribe((s) => setPttMode(s.intent === 'latched' ? 'latched' : s.guard !== null ? 'held' : 'idle'));
 
-// The same 4-verb facade `tx-controller/app-host.ts` exposes over
+// The same facade `tx-controller/app-host.ts` exposes over
 // `controller.dispatch` — rebuilt here against a fixed eligibility/PTT
-// observation instead of `browser-dependencies.ts`'s WS-session projector.
-const facade = {
-  start: (sourceId: string, leaseId: string) => controller.dispatch(
-    { type: 'start', sourceId, leaseId, intent: 'momentary', eligibility, ptt: observation() }),
-  setIntent: (sourceId: string, guard: TxGuard) => controller.dispatch(
-    { type: 'intent', sourceId, guard, intent: 'latched' }),
-  release: (sourceId: string, guard: TxGuard) => controller.dispatch(
-    { type: 'release', sourceId, guard, commandId: deps.commandId('off') }),
+// observation instead of `browser-dependencies.ts`'s WS-session projector, and
+// shaped to `MobilePttHost` so the REAL `createMobilePttSurface` runs on it.
+const host = {
+  snapshot: () => controller.snapshot(),
+  resetFault: () => controller.dispatch({ type: 'reset-fault' }),
+  start: (sourceId: string, leaseId: string) => {
+    calls.push('tx.start');
+    controller.dispatch({ type: 'start', sourceId, leaseId, intent: 'momentary', eligibility, ptt: observation() });
+  },
+  setIntent: (sourceId: string, guard: TxGuard) => {
+    calls.push('tx.latch');
+    controller.dispatch({ type: 'intent', sourceId, guard, intent: 'latched' });
+  },
+  release: (sourceId: string, guard: TxGuard) => {
+    calls.push('tx.release');
+    controller.dispatch({ type: 'release', sourceId, guard, commandId: deps.commandId('off') });
+  },
 };
 
-// ── orientation-swap wiring (mirrors MobileRadioLayout.svelte) ──────────
+// ── orientation swap — drives the REAL wiring module (MOR-1378) ─────────
 let surface: 'portrait' | 'landscape' = 'portrait';
-let seq = 0;
 let generation = 0;
-let ptt: PttGesture | null = null;
+let ptt: MobilePttBinding | null = null;
 let fabInstance: object | null = null;
 const portraitEl = document.getElementById('portrait-slot')!;
 const landscapeEl = document.getElementById('landscape-slot')!;
 
-// Stable, shared across every surface generation — reads LIVE `surface`/`ptt`
-// at call time, exactly like the real component's `fabDown`/`fabUp`. This is
-// the function whose staleness guard MOR-1088 sabotage-tests (see build
-// report item 10/11): a press begun on an old surface can still fire this
-// after a rotation swapped in a new recognizer.
-function fabDown(): void { if (surface === 'portrait') ptt?.down(); }
-function fabUp(): void { if (surface === 'portrait') ptt?.up(); }
-
 function applySurface(): void {
   ptt?.destroy();
-  const sourceId = `mobile-ptt-${surface}-${++seq}`;
-  generation = seq;
-  let leaseSeq = 0;
-  ptt = createPttGesture(
-    { guard: () => controller.snapshot().guard, latched: () => controller.snapshot().intent === 'latched' },
-    {
-      start: () => { calls.push('tx.start'); facade.start(sourceId, `${sourceId}-${++leaseSeq}`); },
-      latch: (guard) => { calls.push('tx.latch'); facade.setIntent(sourceId, guard); },
-      release: (guard) => { calls.push('tx.release'); facade.release(sourceId, guard); },
-    },
+  generation += 1;
+  ptt = createMobilePttSurface(
+    surface, host,
     { schedule: (cb, ms) => setTimeout(cb, ms), cancel: (h) => clearTimeout(h as ReturnType<typeof setTimeout>) },
+    () => surface,
   );
+  // Reads the LIVE binding slot at call time, faithfully modelling how Svelte
+  // compiles `onDown={fabDown}` in the shipped component: the layout's stable
+  // handler forwards to whatever `ptt` currently holds. This is the staleness
+  // the MOR-1088 double-flip scenario exercises.
+  const fabDown = (): void => ptt?.fabDown();
+  const fabUp = (): void => ptt?.fabUp();
   if (fabInstance) { unmount(fabInstance); fabInstance = null; }
   portraitEl.replaceChildren();
   landscapeEl.replaceChildren();

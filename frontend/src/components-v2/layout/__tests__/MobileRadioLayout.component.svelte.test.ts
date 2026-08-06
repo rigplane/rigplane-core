@@ -884,6 +884,9 @@ describe('mobile PTT via the App TX controller (MOR-1012)', () => {
     // Deliberately NOT asserting on 'ptt' as a bare substring — PttFab and the
     // landscape lsPtt* handlers legitimately keep it.
     expect(mobileLayoutSource).toContain('getAppTxController');
-    expect(mobileLayoutSource).toContain('createPttGesture');
+    // MOR-1378: the recognizer wiring moved to wiring/mobile-ptt-surface.ts —
+    // this layout now composes it instead of building the gesture inline.
+    expect(mobileLayoutSource).toContain('createMobilePttSurface');
+    expect(mobileLayoutSource).not.toContain('createPttGesture');
   });
 });

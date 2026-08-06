@@ -454,7 +454,8 @@ describe('mobile press-and-hold PTT identity (MOR-1011/1012, unchanged)', () => 
   // re-asserted here because this slice edits the same file).
   it('still routes every mobile TX path through the App controller alone', () => {
     expect(mobileLayoutSource).toContain('getAppTxController');
-    expect(mobileLayoutSource).toContain('createPttGesture');
+    // MOR-1378: the recognizer wiring lives in wiring/mobile-ptt-surface.ts now.
+    expect(mobileLayoutSource).toContain('createMobilePttSurface');
     // Deliberately NOT asserting on 'ptt_on'/'ptt_off' as bare substrings —
     // the retirement note in the layout's own comments names them.
     for (const retired of [
