@@ -924,10 +924,12 @@ function deriveCwKeyerReasons(
 
 /**
  * Scope-control facts (MOR-1262 decomposition slice 11A/MOR-1298, extended
- * by slice 11A′/MOR-1299 with mode/edge/hold/refDb). See
- * `ScopeControlsViewModel`'s doc comment for the field set, the parity
- * story against `SpectrumToolbar.svelte`'s own `scopeControls?.<leaf> ??
- * <default>` reads, and the doubly-applied X6200 capability-gating lesson.
+ * by slice 11A′/MOR-1299 with mode/edge/hold/refDb, and slice 11A″/MOR-1330
+ * with duringTx/centerType/vbwNarrow/rbw). See `ScopeControlsViewModel`'s
+ * doc comment for the field set (including why `fixedEdge` is excluded),
+ * the parity story against `SpectrumToolbar.svelte`'s/
+ * `ScopeSettingsPopover.svelte`'s own `scopeControls?.<leaf> ?? <default>`
+ * reads, and the doubly-applied X6200 capability-gating lesson.
  *
  * Evidence gate (N3): `hasCap(caps, 'scope')`, the same single gate the
  * shipped toolbar uses to render at all (`{#if hasCapability('scope')}`,
@@ -936,13 +938,13 @@ function deriveCwKeyerReasons(
  * scope-adjacent state that reports independently of the `scope` capability
  * the way TX telemetry does.
  *
- * `mode`/`edge`/`span`/`speed`/`hold`/`refDb` are structurally available
- * whenever the group is (every scope-bearing single-RX radio supports them
- * — the backend spec declares all six as read-only ingress leaves with no
- * additional capability distinction); `dual`/`receiver` additionally
- * require `hasCap(caps, 'dual_rx')` — the only generic tag available to
- * gate "does dual-scope / receiver-select make sense here" without a
- * radio-specific table.
+ * `mode`/`edge`/`span`/`speed`/`hold`/`refDb`/`duringTx`/`centerType`/
+ * `vbwNarrow`/`rbw` are structurally available whenever the group is (every
+ * scope-bearing single-RX radio supports them — the backend spec declares
+ * all ten as read-only ingress leaves with no additional capability
+ * distinction); `dual`/`receiver` additionally require `hasCap(caps,
+ * 'dual_rx')` — the only generic tag available to gate "does dual-scope /
+ * receiver-select make sense here" without a radio-specific table.
  */
 function deriveScopeControls(
   state: ServerState | null, caps: Capabilities | null,
@@ -963,6 +965,16 @@ function deriveScopeControls(
     receiver: txAuxField(
       hasReceiverSelect, topFieldAvailable(state, 'scopeControls.receiver'), numOrUndef(sc?.receiver),
     ),
+    duringTx: txAuxField(
+      true, topFieldAvailable(state, 'scopeControls.duringTx'), boolOrUndef(sc?.duringTx),
+    ),
+    centerType: txAuxField(
+      true, topFieldAvailable(state, 'scopeControls.centerType'), numOrUndef(sc?.centerType),
+    ),
+    vbwNarrow: txAuxField(
+      true, topFieldAvailable(state, 'scopeControls.vbwNarrow'), boolOrUndef(sc?.vbwNarrow),
+    ),
+    rbw: txAuxField(true, topFieldAvailable(state, 'scopeControls.rbw'), numOrUndef(sc?.rbw)),
   };
 }
 

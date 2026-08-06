@@ -735,62 +735,85 @@ export type ScopeControlsField<T> = TxAuxField<T>;
 
 /**
  * Scope-control facts (MOR-1262 decomposition slice 11A/MOR-1298, extended
- * by slice 11A′/MOR-1299): the eight operator-navigated facts off the
- * shipped spectrum toolbar's own `scopeControls` block
- * (`components/spectrum/SpectrumToolbar.svelte`) — SPAN preset index, sweep
- * SPEED, DUAL-scope on/off, which RECEIVER (MAIN=0/SUB=1) feeds the scope
- * (11A), plus scope MODE (CTR/FIX/S-C/S-F), EDGE, HOLD and REF level (11A′).
- * The design doc that named this toolbar
- * (`docs/plans/2026-04-18-spectrum-controls.md`) calls the MAIN/SUB selector
- * the "scope-source selector" and proposes labelling it "SCOPE SRC" — the
- * decomposition ticket's "receiver/source" pair names this ONE wire field
- * (`ScopeControlsPublic.receiver`), not two.
+ * by slice 11A′/MOR-1299 and slice 11A″/MOR-1330): the twelve
+ * operator-navigated facts off the shipped spectrum toolbar's own
+ * `scopeControls` block (`components/spectrum/SpectrumToolbar.svelte`) —
+ * SPAN preset index, sweep SPEED, DUAL-scope on/off, which RECEIVER
+ * (MAIN=0/SUB=1) feeds the scope (11A), scope MODE (CTR/FIX/S-C/S-F), EDGE,
+ * HOLD and REF level (11A′), plus the four `ScopeSettingsPopover.svelte`
+ * leaves — CENTER TYPE, VBW NARROW, RBW and DURING-TX (11A″). The design doc
+ * that named this toolbar (`docs/plans/2026-04-18-spectrum-controls.md`)
+ * calls the MAIN/SUB selector the "scope-source selector" and proposes
+ * labelling it "SCOPE SRC" — the decomposition ticket's "receiver/source"
+ * pair names this ONE wire field (`ScopeControlsPublic.receiver`), not two.
  *
- * FACTS ONLY, and now the COMPLETE set of the eight `scopeControls.*` leaves
- * the backend gives field-status entries for (`runtime_helpers.py`'s
- * `_SCOPE_CONTROL_PUBLIC_FIELDS`) — MODE/EDGE/HOLD/REF were a recorded
- * enumeration gap in 11A (they matched `SpectrumToolbar.svelte`'s own
- * `scopeModeAvailable`/`scopeEdgeAvailable`/`scopeHoldAvailable`/
- * `scopeRefAvailable` booleans but were left out of the first slice; MOR-1299
- * closes the gap, same group, same `scope` gate, same namespace — not a
- * separate "display" family). Live scope FRAMES/WATERFALL DATA remain a
- * wholly different, App-owned resource demand (12A) and are never carried
- * here — this group states facts about the scope's CONTROLS, never its
- * pixels.
+ * FACTS ONLY, and now the COMPLETE set of the twelve `scopeControls.*`
+ * SCALAR leaves the backend gives field-status entries for
+ * (`runtime_helpers.py`'s `_SCOPE_CONTROL_PUBLIC_FIELDS`) — MODE/EDGE/HOLD/
+ * REF were a recorded enumeration gap in 11A (11A′ closed it);
+ * duringTx/centerType/vbwNarrow/rbw were the four scalar leaves
+ * `ScopeSettingsPopover.svelte` reads (`scopeControls?.centerType`/
+ * `?.vbwNarrow`/`?.rbw`/`?.duringTx`) with no registered fact-layer home
+ * until now (11A″ closes that gap too). Same group, same `scope` gate, same
+ * namespace — not a separate "popover" or "display" family. Live scope
+ * FRAMES/WATERFALL DATA remain a wholly different, App-owned resource
+ * demand (12A) and are never carried here — this group states facts about
+ * the scope's CONTROLS, never its pixels.
+ *
+ * EXCLUDED — `fixedEdge`: the backend spec registers a fifth
+ * ScopeSettingsPopover-adjacent leaf, `scopeControls.fixedEdge`
+ * (MOR-1302), but it is deliberately left out of this group. It is a
+ * COMPOSITE — `FixedEdgePublic{rangeIndex, edge, startHz, endHz}`, not a
+ * scalar `int` as the original ticket guessed (MOR-1302's correction) — so
+ * adding it here would need a bespoke nested-object validator, not a
+ * drop-in `ScopeControlsField<number>`/`<boolean>`. And nothing reads it:
+ * `ScopeSettingsPopover.svelte` has no Fixed-Edge control section (verified
+ * by grep — only `centerType`/`vbwNarrow`/`rbw`/`duringTx` are read), nor
+ * does any other v2 component. A composite validator with zero consumers is
+ * exactly the speculative surface "no speculative keys" forbids. If a
+ * future surface reads `fixedEdge`, give it its own ticket.
  *
  * PARITY: values mirror the same `scopeControls.<leaf>` register the toolbar
- * reads (`radio.current?.scopeControls`), and availability reuses the exact
- * same `isFieldAvailable(state, 'scopeControls.<leaf>')` predicate the
- * toolbar calls for its own `scope{Mode,Edge,Span,Speed,Hold,Ref,Dual,
- * Receiver}Available` booleans — not a reimplementation. Where this contract
- * DIVERGES from v2: the toolbar's `scopeControls?.span ?? 3` / `?? 1` /
- * `?? false` / `?? 0` fallbacks (and the analogous `?.mode` / `?.edge`
- * / `?.hold ?? false` / `?.refDb ?? 0` reads) fabricate a value on an
- * unobserved field; here an absent raw reads `unknown`, never those
+ * and popover read (`radio.current?.scopeControls`), and availability
+ * reuses the exact same `isFieldAvailable(state, 'scopeControls.<leaf>')`
+ * predicate the toolbar calls for its own `scope{Mode,Edge,Span,Speed,Hold,
+ * Ref,Dual,Receiver}Available` booleans — not a reimplementation. Where
+ * this contract DIVERGES from v2: the toolbar's `scopeControls?.span ?? 3`
+ * / `?? 1` / `?? false` / `?? 0` fallbacks (and the analogous `?.mode` /
+ * `?.edge` / `?.hold ?? false` / `?.refDb ?? 0` reads) fabricate a value on
+ * an unobserved field; here an absent raw reads `unknown`, never those
  * defaults. When `mode` is absent, the entire row is hidden rather than
  * fabricating CTR. EDGE's applicability is UI-only, gated on the current MODE
  * value (`isEdgeApplicable` in `spectrum-toolbar-logic.ts` shows EDGE only
  * in FIX/S-F modes) — that is a rendering decision, not a fact-availability
  * distinction, so `edge`'s structural gate here mirrors `span`/`speed`/
- * `mode`/`hold`/`refDb`, not a mode-conditional gate.
+ * `mode`/`hold`/`refDb`, not a mode-conditional gate. The popover itself
+ * only fabricates on two of its four leaves — `vbwNarrow ?? false` and
+ * `duringTx ?? false` pick a concrete default, while `centerType`/`rbw` use
+ * bare `=== val` comparisons against `undefined` (no button lights up, but
+ * no specific value is asserted either) — this contract still reports
+ * `unknown` for all four when the raw field is unobserved, same honesty
+ * story either way.
  *
  * STRUCTURAL gate, doubly per the X6200 lesson (scope command support
  * varies per radio — IC-7300/IC-9700 lack the `27 12`/`27 13` receiver-select
  * commands even though `scope` is declared, and dual-scope operation is
  * IC-7610-only in practice per MOR-664): `span`/`speed`/`mode`/`edge`/
- * `hold`/`refDb` are structurally available under `hasCap('scope')` alone
- * (every scope-bearing single-RX radio supports them — the backend spec
- * (`state_pipeline_contracts.py`) declares all six as read-only ingress
- * leaves with no additional capability distinction), while `dual`/`receiver`
- * ADDITIONALLY require `hasCap('dual_rx')` — the only generic capability tag
- * this contract may use, per "no radio-specific tables in the frontend".
- * This is a real strengthening beyond the shipped toolbar, which gates
- * DUAL/MAIN-SUB on field-availability alone; where `dual_rx` still
- * over-declares for a specific radio (e.g. IC-9700, whose VHF/UHF `dual_rx`
- * is unrelated to scope receiver-select), the OPERATIONAL half degrades
- * honestly because the backend never observes that leaf for that radio —
- * same structural/operational split `hardwareScope`/`audioFftScope` already
- * use.
+ * `hold`/`refDb`/`duringTx`/`centerType`/`vbwNarrow`/`rbw` are structurally
+ * available under `hasCap('scope')` alone (every scope-bearing single-RX
+ * radio supports them — the backend spec (`state_pipeline_contracts.py`)
+ * declares all ten as read-only ingress leaves with no additional
+ * capability distinction; the four popover leaves get no `dual_rx`
+ * sub-gate, matching MOR-1302's `family DISPLAY` registration), while
+ * `dual`/`receiver` ADDITIONALLY require `hasCap('dual_rx')` — the only
+ * generic capability tag this contract may use, per "no radio-specific
+ * tables in the frontend". This is a real strengthening beyond the shipped
+ * toolbar, which gates DUAL/MAIN-SUB on field-availability alone; where
+ * `dual_rx` still over-declares for a specific radio (e.g. IC-9700, whose
+ * VHF/UHF `dual_rx` is unrelated to scope receiver-select), the OPERATIONAL
+ * half degrades honestly because the backend never observes that leaf for
+ * that radio — same structural/operational split `hardwareScope`/
+ * `audioFftScope` already use.
  */
 export interface ScopeControlsViewModel {
   /** Scope mode ordinal: 0=CTR, 1=FIX, 2=S-C (scroll-center), 3=S-F
@@ -816,6 +839,21 @@ export interface ScopeControlsViewModel {
   dual: ScopeControlsField<boolean>;
   /** 0=MAIN, 1=SUB. */
   receiver: ScopeControlsField<number>;
+  /** Whether the scope keeps sweeping while transmitting. Popover's
+   *  `duringTx ?? false` read fabricates a default on absence; here an
+   *  absent raw reads `unknown`. */
+  duringTx: ScopeControlsField<boolean>;
+  /** Sweep-center reference ordinal: 0=Filter, 1=Carrier, 2=Abs.Freq
+   *  (`CENTER_TYPE_LABELS` in `ScopeSettingsPopover.svelte` maps the
+   *  ordinal to a display label; that table is UI convenience, not a fact,
+   *  and is deliberately absent here). */
+  centerType: ScopeControlsField<number>;
+  /** Video-bandwidth-narrow toggle. Popover's `vbwNarrow ?? false` read
+   *  fabricates a default on absence; here an absent raw reads `unknown`. */
+  vbwNarrow: ScopeControlsField<boolean>;
+  /** Resolution-bandwidth ordinal: 0=Wide, 1=Mid, 2=Narrow (`RBW_LABELS` in
+   *  `ScopeSettingsPopover.svelte` maps the ordinal to a display label). */
+  rbw: ScopeControlsField<number>;
 }
 
 /**
@@ -1449,12 +1487,18 @@ function validateCwKeyer(value: unknown, path: string): CwKeyerViewModel {
   };
 }
 
-/** Exactly the eight facts the adapter reads (11A's four plus 11A′'s
- *  mode/edge/hold/refDb). See
- *  `radio-view-model-adapter.ts::deriveScopeControls`. */
+/** Exactly the twelve facts the adapter reads (11A's four, plus 11A′'s
+ *  mode/edge/hold/refDb, plus 11A″'s duringTx/centerType/vbwNarrow/rbw).
+ *  `fixedEdge` is deliberately excluded — see `ScopeControlsViewModel`'s
+ *  doc comment. See `radio-view-model-adapter.ts::deriveScopeControls`. */
 function validateScopeControls(value: unknown, path: string): ScopeControlsViewModel {
   const v = record(value, path);
-  exactKeys(v, ['mode', 'edge', 'span', 'speed', 'hold', 'refDb', 'dual', 'receiver'], path);
+  exactKeys(
+    v,
+    ['mode', 'edge', 'span', 'speed', 'hold', 'refDb', 'dual', 'receiver',
+      'duringTx', 'centerType', 'vbwNarrow', 'rbw'],
+    path,
+  );
   return {
     mode: validateTxAuxField(v.mode, `${path}.mode`, num),
     edge: validateTxAuxField(v.edge, `${path}.edge`, num),
@@ -1464,6 +1508,10 @@ function validateScopeControls(value: unknown, path: string): ScopeControlsViewM
     refDb: validateTxAuxField(v.refDb, `${path}.refDb`, num),
     dual: validateTxAuxField(v.dual, `${path}.dual`, bool),
     receiver: validateTxAuxField(v.receiver, `${path}.receiver`, num),
+    duringTx: validateTxAuxField(v.duringTx, `${path}.duringTx`, bool),
+    centerType: validateTxAuxField(v.centerType, `${path}.centerType`, num),
+    vbwNarrow: validateTxAuxField(v.vbwNarrow, `${path}.vbwNarrow`, bool),
+    rbw: validateTxAuxField(v.rbw, `${path}.rbw`, num),
   };
 }
 
