@@ -108,6 +108,26 @@ const DESKTOP_V2_ZONES = [
   { id: 'rx-audio', surfaces: ['rxAudio'] },
   { id: 'dsp', surfaces: ['dsp'] },
   { id: 'cw-keyer', surfaces: ['cwKeyer'] },
+  // MOR-1370 (S6b-2): scopeControls becomes zone-OWNED here — the LAST
+  // surface in the whole MOR-1262 vocabulary to graduate. Declaring it
+  // activates the MOR-1369 (S6b-1) suppression channel: `RadioLayout.svelte`
+  // already forwards `hideScopeControls={declared.has('scopeControls')}` to
+  // `SpectrumPanel`, retiring the scope toolbar's twelve fact-backed
+  // `scopeControls.*` leaves (mode/edge/span/speed/hold/refDb/dual/receiver/
+  // duringTx/centerType/vbwNarrow/rbw) while its eight client-side view
+  // options (AVG, PEAK, BRT, color scheme, fullscreen, band plan, layers,
+  // EiBi — S10 category (b), no wire field) keep rendering unconditionally.
+  // `ScopeControlsSurface` is control-bearing (MOR-1304 canon) and mounts
+  // single-composition-only, so the dual-receiver cockpit is untouched by
+  // this declaration.
+  //
+  // This empties `RECORDED_REASONS` in `zone-ownership-coverage.test.ts` —
+  // MOR-1317 closes, program-wide, on this line.
+  //
+  // Not `required`: a radio whose evidence gate declines the `scope`
+  // capability must still resolve this layout, and the surface self-gates on
+  // `view.scopeControls`.
+  { id: 'scope-controls', surfaces: ['scopeControls'] },
 ] as const;
 
 export const desktopV2Layout: LayoutManifest = {

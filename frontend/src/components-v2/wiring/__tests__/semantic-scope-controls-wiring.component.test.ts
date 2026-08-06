@@ -78,6 +78,18 @@ vi.mock('$lib/runtime/adapters/mod-input-tx-guard.svelte', () => ({
 import { sendCommand } from '$lib/transport/ws-client';
 import { resetRadioState, setRadioState } from '$lib/stores/radio.svelte';
 import SemanticRadioSurfaces from '../SemanticRadioSurfaces.svelte';
+// MOR-1370 (S6b-2): the REAL manifests + the REAL resolution seam, mirroring
+// `semantic-scope-display-wiring.component.test.ts`'s "MOR-1365 (S6a)"
+// section — the only way to prove the `scope-controls` zone binding and the
+// S5/S6-pre subtraction asymmetry, since `useSurfacePlan()` falls back to
+// `NO_PLAN` on a standalone mount.
+import {
+  desktopV2Layout, dualReceiverCockpitLayout,
+} from '../../../presentation/layouts/declarations';
+import { readWorkspace } from '../../../presentation/workspace/contract';
+import {
+  resolveSurfacePlan, SURFACE_PLAN_CONTEXT_KEY, type SurfacePlan,
+} from '../../../presentation/workspace/resolution';
 
 const IDLE: Snapshot = {
   phase: 'idle', intent: null, guard: null, radioTx: 'off', txRisk: 'none',
@@ -131,10 +143,13 @@ const NO_SCOPE_TAGS = ['tx'] as const;
 let target: HTMLDivElement;
 let component: ReturnType<typeof mount> | null = null;
 
-function render(props: { strips?: 'single' | 'dual' } = {}): void {
+function render(props: { strips?: 'single' | 'dual' } = {}, plan?: SurfacePlan): void {
   target = document.createElement('div');
   document.body.appendChild(target);
-  component = mount(SemanticRadioSurfaces, { target, props });
+  const context = plan === undefined
+    ? undefined
+    : new Map<unknown, unknown>([[SURFACE_PLAN_CONTEXT_KEY, () => plan]]);
+  component = mount(SemanticRadioSurfaces, { target, props, context });
   flushSync();
 }
 
@@ -285,5 +300,69 @@ describe('the surface mounts only in the single composition, never in dual', () 
     const outside = [...target.querySelectorAll<HTMLElement>('button, input, select, [tabindex]')]
       .filter((node) => node.closest('[data-zone-id]') === null);
     expect(outside).toEqual([]);
+  });
+});
+
+/* ── (d) MOR-1370 (S6b-2) — desktop-v2 REALLY declares the zone; the ──────
+   ── cockpit still mounts nothing (canon option (ii), single-only) ────── */
+
+/**
+ * `desktopV2Layout` now carries a `scope-controls` zone
+ * (`presentation/layouts/desktop-declarations.ts`). Unlike `scopeDisplay`
+ * (pure readout, bare in both compositions), `scopeControls` is
+ * control-bearing and mounts SINGLE-COMPOSITION-ONLY under the MOR-1304
+ * canon — so there is no dual-composition half of this claim to make; (b)
+ * above already proves the dual composition mounts nothing regardless of the
+ * plan. What this section adds, using the REAL manifest + the REAL
+ * `resolveSurfacePlan` seam (`semantic-scope-display-wiring.component
+ * .test.ts`'s "MOR-1365 (S6a)" shape):
+ *
+ *   (a) the zone binds — `zoneOwning('scopeControls')` now answers
+ *       `'scope-controls'` against desktop-v2's real plan, so the composed
+ *       tree wraps the surface in `<div data-zone-id="scope-controls">`;
+ *   (b) the S5/S6-pre asymmetry: a workspace that SUBTRACTS `scopeControls`
+ *       from that zone costs the operator the wrapper `<div>`, never the
+ *       controls — `zoned()` degrades to bare (S5-N3), so "the workspace hid
+ *       it" and "no zone declares it" are indistinguishable and both render
+ *       the pre-1370 bare element shape. MUTATION PROBE: remove the
+ *       `zoned(...)` mount from `scopeControlsSurface`'s call site and BOTH
+ *       tests below go red — (a) loses the wrapper, (b) loses the surface
+ *       entirely;
+ *   (c) the dual-receiver cockpit manifest is untouched by this slice, so the
+ *       surface keeps mounting NOTHING there — MOR-1069 unmoved, and this is
+ *       the one direction where "declared" and "undeclared" agree (both
+ *       absent), which is exactly what canon option (ii) requires: declaring
+ *       a zone on `desktop-v2` must never put a control into the cockpit.
+ */
+describe('desktop-v2 declares a REAL scope-controls zone; the cockpit mounts nothing (MOR-1370, S6b-2)', () => {
+  /** What App resolves for `layout` given a stored workspace `fields`. */
+  function planFor(layout: typeof desktopV2Layout, fields: Record<string, unknown>): SurfacePlan {
+    return resolveSurfacePlan(layout, readWorkspace({ version: 1, ...fields }).workspace);
+  }
+
+  it('binds the scope-controls zone id against desktop-v2\'s real plan', () => {
+    render({ strips: 'single' }, planFor(desktopV2Layout, {}));
+    expect(el('scope-controls-surface')!.closest('[data-zone-id="scope-controls"]')).not.toBeNull();
+  });
+
+  // THE ASYMMETRY (S5 shape): a workspace subtraction costs the wrapper, not
+  // the controls. MUTATION PROBE: reading the PLAN instead of the MANIFEST
+  // for suppression anywhere in this channel would make this subtraction
+  // able to resurrect the legacy toolbar half — this test only proves the
+  // surface side (the legacy-twin side is `semantic-desktop-migration
+  // .component.test.ts`'s job), but it is the half that shows the controls
+  // themselves never disappear.
+  it('degrades to a bare surface — never disappears — when the workspace subtracts scopeControls from its zone', () => {
+    render({ strips: 'single' }, planFor(desktopV2Layout, {
+      visibleSurfaces: { 'scope-controls': [] },
+    }));
+    const surface = el('scope-controls-surface')!;
+    expect(surface).not.toBeNull();
+    expect(surface.closest('[data-zone-id]')).toBeNull();
+  });
+
+  it('still mounts nothing in the dual-receiver cockpit — its manifest is untouched by this slice', () => {
+    render({ strips: 'dual' }, planFor(dualReceiverCockpitLayout, {}));
+    expect(el('scope-controls-surface')).toBeNull();
   });
 });

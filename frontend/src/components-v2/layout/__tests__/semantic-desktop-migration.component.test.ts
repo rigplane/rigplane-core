@@ -1386,3 +1386,59 @@ describe('band, antenna and ritXitScan are zone-owned on desktop-v2 (MOR-1367, S
     expect(renderAll('desktop-v2').querySelectorAll(KEY_AUTHORITIES).length).toBe(1);
   });
 });
+
+/**
+ * MOR-1370 (v3-rework S6b-2) — `scopeControls` becomes ZONE-OWNED on
+ * `desktop-v2`, the LAST surface in the whole MOR-1262 vocabulary to
+ * graduate; `zone-ownership-coverage.test.ts`'s `RECORDED_REASONS` ledger is
+ * empty after this slice.
+ *
+ * Unlike every other family in this file, its legacy twin is not a
+ * sidebar/modal panel but the scope toolbar's fact-backed half
+ * (`SpectrumToolbar.svelte`, behind the MOR-1369 (S6b-1) `hideScopeControls`
+ * suppression channel — `RadioLayout.svelte` forwards
+ * `declared.has('scopeControls')` straight through to `SpectrumPanel`, which
+ * this file's `SpectrumPanelStub` mock records as `data-hide-scope-controls`).
+ * The toolbar's own leaf-level removal (the twelve `scopeControls.*` fields
+ * gone, the eight client-side view options untouched) is proven directly in
+ * `SpectrumToolbar.component.test.ts`'s S6b-1 pins — not re-proven here.
+ * `ScopeControlsSurface` is control-bearing (MOR-1304 canon) and mounts
+ * single-composition-only, so this describe has no dual-composition half to
+ * prove — that half, plus the zone-binding assertion (S6a's context-injection
+ * recipe), lives in `semantic-scope-controls-wiring.component.test.ts`.
+ *
+ * NON-VACUITY: `deriveScopeControls` gates only on the `scope` capability tag
+ * (`radio-view-model-adapter.ts:963`), which the outer file's default
+ * `capsFor('2/main_sub')` already declares — no special fixture is needed for
+ * the surface itself to fire, unlike S8's band/antenna/ritXitScan gates.
+ */
+describe('scopeControls is zone-owned on desktop-v2, retiring the toolbar fact-backed half (MOR-1370, S6b-2)', () => {
+  // THE CHANNEL, on the real manifest.
+  it('suppresses the fact-backed toolbar half on real desktop-v2', () => {
+    const t = render('desktop-v2');
+    const stub = t.querySelector('.spectrum-panel-stub');
+    expect(stub?.getAttribute('data-hide-scope-controls')).toBe('true');
+  });
+
+  // Mirrors the S6-pre matrix's own inertness half: a layout that declares NO
+  // scope-controls zone leaves the toolbar's fact-backed half on screen —
+  // proves the predicate reads the manifest, not a global flag.
+  it('leaves the toolbar unsuppressed on a layout that declares no scope-controls zone', () => {
+    const t = render(RX_TX_ONLY);
+    const stub = t.querySelector('.spectrum-panel-stub');
+    expect(stub?.getAttribute('data-hide-scope-controls')).toBe('false');
+  });
+
+  // §1.5 / MOR-1339: `compositionSurfaces(plan(desktopV2Layout))` grew by one
+  // more member, and no `{#each singleOrder}` branch was added for it — the
+  // semantic surface must render exactly ONCE. This is the double-presentation
+  // CLOSED assertion for the last family in the vocabulary.
+  it('presents the scopeControls surface exactly ONCE on desktop-v2', () => {
+    expect(render('desktop-v2').querySelectorAll('[data-testid="scope-controls-surface"]').length).toBe(1);
+  });
+
+  // R9: relocating the toolbar's fact-backed half adds no key/unkey authority.
+  it('adds no key authority when the scope-controls zone is declared', () => {
+    expect(render('desktop-v2').querySelectorAll(KEY_AUTHORITIES).length).toBe(1);
+  });
+});
