@@ -114,6 +114,18 @@ vi.mock('../../../components-v2/wiring/command-bus', () => ({
   makeBandHandlers: () => ({ onBandSelect: h.txAuxNoop }),
   // MOR-1309 slice 8C: the antenna intent vocabulary.
   makeAntennaHandlers: () => ({ onSelectAnt1: h.txAuxNoop, onSelectAnt2: h.txAuxNoop, onToggleRxAnt: h.txAuxNoop }),
+  // MOR-1308 slice 8B: the RIT/XIT and scan intent vocabularies. MOR-1351
+  // hardened `mainSubCaps()` to carry `rit`/`xit` tags, so this group IS
+  // reachable through the default fixture below — these stubs are exercised,
+  // not merely composition-time stand-ins.
+  makeRitXitHandlers: () => ({
+    onRitToggle: h.txAuxNoop, onXitToggle: h.txAuxNoop, onRitOffsetChange: h.txAuxNoop,
+    onXitOffsetChange: h.txAuxNoop, onClear: h.txAuxNoop,
+  }),
+  makeScanHandlers: () => ({
+    onScanStart: h.txAuxNoop, onScanStop: h.txAuxNoop, onDfSpanChange: h.txAuxNoop,
+    onResumeChange: h.txAuxNoop,
+  }),
 }));
 
 import DualReceiverCockpit from '../DualReceiverCockpit.svelte';

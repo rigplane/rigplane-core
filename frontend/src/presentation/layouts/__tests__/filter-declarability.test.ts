@@ -23,7 +23,8 @@ describe('filter is a declarable semantic surface', () => {
   // Kills: reverting the SEMANTIC_SURFACE_NAMES addition.
   it('is in the declarable set alongside vfo, rxTx, txAux, meters and rxAudio', () => {
     expect([...SEMANTIC_SURFACE_NAMES]).toEqual([
-      'vfo', 'rxTx', 'txAux', 'meters', 'rxAudio', 'filter', 'dsp', 'rfFrontEnd', 'band', 'antenna',
+      'vfo', 'rxTx', 'txAux', 'meters', 'rxAudio', 'filter', 'dsp', 'rfFrontEnd', 'band',
+      'antenna', 'ritXitScan',
     ]);
   });
 

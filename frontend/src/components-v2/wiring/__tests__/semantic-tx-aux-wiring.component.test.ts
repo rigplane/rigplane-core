@@ -124,6 +124,14 @@ vi.mock('../command-bus', () => ({
   makeBandHandlers: () => ({ onBandSelect: h.noop }),
   // MOR-1309 slice 8C: the antenna intent vocabulary.
   makeAntennaHandlers: () => ({ onSelectAnt1: h.noop, onSelectAnt2: h.noop, onToggleRxAnt: h.noop }),
+  // MOR-1308 slice 8B: the RIT/XIT and scan intent vocabularies.
+  makeRitXitHandlers: () => ({
+    onRitToggle: h.noop, onXitToggle: h.noop, onRitOffsetChange: h.noop,
+    onXitOffsetChange: h.noop, onClear: h.noop,
+  }),
+  makeScanHandlers: () => ({
+    onScanStart: h.noop, onScanStop: h.noop, onDfSpanChange: h.noop, onResumeChange: h.noop,
+  }),
 }));
 
 import SemanticRadioSurfaces from '../SemanticRadioSurfaces.svelte';

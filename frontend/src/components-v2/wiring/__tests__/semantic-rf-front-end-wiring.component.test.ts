@@ -128,6 +128,17 @@ vi.mock('../command-bus', () => ({
   // assertions ever run. This fixture declares no antenna capability, so
   // none of these is reachable — same stand-in role as `makeBandHandlers`.
   makeAntennaHandlers: () => ({ onSelectAnt1: h.noop, onSelectAnt2: h.noop, onToggleRxAnt: h.noop }),
+  // MOR-1308 — the wiring's module scope also composes the RIT/XIT and scan
+  // intent vocabularies unconditionally; without stubs here the wiring's
+  // `makeRitXitHandlers()`/`makeScanHandlers()` calls throw before this
+  // file's own RF-front-end assertions ever run.
+  makeRitXitHandlers: () => ({
+    onRitToggle: h.noop, onXitToggle: h.noop, onRitOffsetChange: h.noop,
+    onXitOffsetChange: h.noop, onClear: h.noop,
+  }),
+  makeScanHandlers: () => ({
+    onScanStart: h.noop, onScanStop: h.noop, onDfSpanChange: h.noop, onResumeChange: h.noop,
+  }),
 }));
 
 import SemanticRadioSurfaces from '../SemanticRadioSurfaces.svelte';
