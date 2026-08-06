@@ -190,10 +190,44 @@ function withMeters(state: ServerState): ServerState {
   } as unknown as ServerState;
 }
 
+/**
+ * MOR-1351: was an inert placeholder (`modes: [], filters: []`, three
+ * capability tags) — no semantic surface `SemanticRadioSurfaces.svelte`
+ * actually mounts (`vfo`/`rxTx`/`txAux`/`meters`/`rxAudio`, verified against
+ * its own imports) consumes `modes`/`filters`, or any of the DSP tags added
+ * below, so the vacuous shape proved nothing about those gates being
+ * honestly absent versus never exercised. Hardened to a REAL radio's shape —
+ * IC-7610 (`rigs/ic7610.toml`), the only dual-receiver profile in the tree
+ * and already this fixture's implied topology (`receivers: 2, vfoScheme:
+ * 'main_sub'`) — modes/filters/tags verbatim from that profile, with three
+ * exclusions:
+ *
+ *  - `scope`: `caps.scope` stays `false` (the MOR-1085 `audio-only-scope`
+ *    contrast fixture depends on it), and `presentation-capabilities.ts`'s
+ *    `agreed()` raises `scope-capability-contradiction` the moment the tag
+ *    and the boolean disagree.
+ *  - `tuner`/`vox`/`compressor`/`monitor`/`drive_gain` (the `deriveTxAux`
+ *    evidence tags): this harness (`fixtures/main.ts`) mounts
+ *    `DualReceiverCockpit` with NO `SurfacePlan` context, so
+ *    `SemanticRadioSurfaces.svelte`'s `zoneOwning()` is unconditionally
+ *    `null` and `TxAuxSurface` would render its controls ZONE-LESS rather
+ *    than inside `tx-aux` — flipping every fixture's pinned
+ *    `zonelessControls: 0` for a reason unrelated to this ticket. Left
+ *    exactly as before (absent), so `deriveTxAux` keeps emitting no group.
+ */
 const baseCaps = (): Capabilities => ({
   model: 'fixture', scope: false, audio: true, tx: true,
-  capabilities: ['audio', 'tx', 'dual_rx'], receivers: 2, vfoScheme: 'main_sub',
-  freqRanges: [], modes: [], filters: [],
+  capabilities: [
+    'audio', 'tx', 'dual_rx', 'dual_watch', 'lan_dual_rx_audio_routing',
+    'af_level', 'rf_gain', 'squelch', 'attenuator', 'preamp', 'digisel', 'ip_plus',
+    'antenna', 'rx_antenna', 'nb', 'nr', 'notch', 'apf', 'twin_peak', 'pbt',
+    'filter_width', 'filter_shape', 'split', 'ssb_tx_bw', 'cw', 'break_in', 'rit', 'xit',
+    'meters', 'data_mode', 'mod_input_routing', 'agc', 'power_control', 'dial_lock',
+    'scan', 'bsr', 'main_sub_tracking', 'tuning_step', 'band_edge', 'xfc', 'system_settings',
+  ],
+  receivers: 2, vfoScheme: 'main_sub',
+  freqRanges: [], modes: ['USB', 'LSB', 'CW', 'CW-R', 'AM', 'FM', 'RTTY', 'RTTY-R', 'PSK', 'PSK-R'],
+  filters: ['FIL1', 'FIL2', 'FIL3'],
   audioConfig: { sampleRate: 48000, channels: 1, codecs: ['pcm16'] },
   webrtc: { available: false, enabled: false },
   txBands: [{ start: 14000000, end: 14350000, name: '20m' }],

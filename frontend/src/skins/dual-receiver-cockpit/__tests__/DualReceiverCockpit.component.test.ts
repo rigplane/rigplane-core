@@ -128,12 +128,43 @@ function mainSubState(active: 'MAIN' | 'SUB' = 'MAIN'): ServerState {
  * otherwise the surface self-gates away, the zone has nothing to hold, and the
  * F6 "every declared zone renders" invariant fails for the right reason but the
  * wrong cause. `tuner` is the cheapest honest evidence (`deriveTxAux` accepts a
- * capability tag OR a raw value); everything else stays as it was.
+ * capability tag OR a raw value); `vox`/`compressor`/`monitor`/`drive_gain`
+ * stay OUT deliberately — this harness never supplies a resolved `SurfacePlan`
+ * (see `render()` below), so `zoneOwning` is unconditionally null and any
+ * ADDITIONAL txAux evidence tag would render its control zone-less rather
+ * than inside `tx-aux`, changing the zone-containment shape these tests pin
+ * rather than deepening it.
+ *
+ * MOR-1351: `modes`/`filters` and the rest of the capability tags were an
+ * inert placeholder (`[]` / four tags) — the view-model groups those tags
+ * gate (`deriveModeFilter`/`deriveFilterPassband`/`deriveAgc`/
+ * `deriveRfFrontEnd`/`deriveRitXit`/`deriveCwKeyer`, all in
+ * `radio-view-model-adapter.ts`) are none of them consumed by
+ * `SemanticRadioSurfaces.svelte` (verified against its own imports: it
+ * renders only `vfo`/`rxTx`/`txAux`/`meters`/`rxAudio`), so a vacuous caps
+ * object here proved nothing about those gates being honestly absent versus
+ * simply never exercised. Hardened to a REAL radio's shape — IC-7610
+ * (`rigs/ic7610.toml`), the only
+ * dual-receiver profile in the tree and already this fixture's implied
+ * topology (`receivers: 2`, `vfoScheme: 'main_sub'`) — modes/filters/tags
+ * verbatim from that profile, MINUS `scope` (would flip the deliberate
+ * `scope: false` into a `scope-capability-contradiction` diagnostic —
+ * `presentation-capabilities.ts`'s `agreed()`) and minus the four txAux tags
+ * held out above.
  */
 const mainSubCaps = (): Capabilities => ({
   model: 'fixture', scope: false, audio: true, tx: true,
-  capabilities: ['audio', 'tx', 'dual_rx', 'tuner'], receivers: 2, vfoScheme: 'main_sub',
-  freqRanges: [], modes: [], filters: [],
+  capabilities: [
+    'audio', 'tx', 'dual_rx', 'tuner', 'dual_watch', 'lan_dual_rx_audio_routing',
+    'af_level', 'rf_gain', 'squelch', 'attenuator', 'preamp', 'digisel', 'ip_plus',
+    'antenna', 'rx_antenna', 'nb', 'nr', 'notch', 'apf', 'twin_peak', 'pbt',
+    'filter_width', 'filter_shape', 'split', 'ssb_tx_bw', 'cw', 'break_in', 'rit', 'xit',
+    'meters', 'data_mode', 'mod_input_routing', 'agc', 'power_control', 'dial_lock',
+    'scan', 'bsr', 'main_sub_tracking', 'tuning_step', 'band_edge', 'xfc', 'system_settings',
+  ],
+  receivers: 2, vfoScheme: 'main_sub',
+  freqRanges: [], modes: ['USB', 'LSB', 'CW', 'CW-R', 'AM', 'FM', 'RTTY', 'RTTY-R', 'PSK', 'PSK-R'],
+  filters: ['FIL1', 'FIL2', 'FIL3'],
   audioConfig: { sampleRate: 48000, channels: 1, codecs: ['pcm16'] },
   webrtc: { available: false, enabled: false },
   txBands: [{ start: 14000000, end: 14350000, name: '20m' }],
