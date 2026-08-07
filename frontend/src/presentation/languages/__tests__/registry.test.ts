@@ -43,7 +43,12 @@ describe('the two frozen v3 declarations', () => {
 
   it('fieldline declares itself layout-incompatible with dual-receiver-cockpit as a manifest fact, not a capability check', () => {
     expect(fieldline.layoutCompatibility).toEqual([
-      expect.objectContaining({ layoutId: 'dual-receiver-cockpit', compatible: false }),
+      {
+        layoutId: 'dual-receiver-cockpit',
+        compatible: false,
+        reason: 'fieldline cannot serve as the desktop dual-receiver default at 0.6 relative density (MOR-977 §4.4).',
+      },
+      { layoutId: 'desktop-v2', compatible: true },
     ]);
   });
 
