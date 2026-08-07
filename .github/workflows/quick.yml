@@ -52,6 +52,7 @@ jobs:
             frontend:
               - 'frontend/**'
               - 'src/rigplane/web/**'
+              - '.github/workflows/quick.yml'
 
       - name: Install uv
         uses: astral-sh/setup-uv@v8.1.0
@@ -149,10 +150,16 @@ jobs:
           cd frontend
           npx playwright install chromium
 
+      - name: Install Playwright Chromium system dependencies
+        if: steps.filter.outputs.frontend == 'true'
+        working-directory: frontend
+        run: sudo -E env "PATH=$PATH" npx playwright install-deps chromium
+
       # MOR-1382 — wires the MOR-1070/1085/1087/1088 browser fixture-harness
       # capture (`frontend/fixtures/capture.mjs`) into the PR leg. Gated by
       # the SAME `steps.filter.outputs.frontend` path filter as the rest of
-      # this frontend block (frontend/** or src/rigplane/web/** changed) —
+      # this frontend block (frontend/**, src/rigplane/web/**, or this
+      # workflow changed) —
       # minimum Actions minutes is a hard project policy (CLAUDE.md), so
       # this never runs on an unrelated push/PR.
       #
@@ -160,8 +167,9 @@ jobs:
       # used to run `continue-on-error: true` for one cycle (MOR-1382);
       # that cycle is closed — quick-leg green on PR #2286 run 31127603844,
       # full-leg green on dispatched run 31137987620 — so the owner flipped
-      # it to blocking here. The chromium provisioning step above fails
-      # loud on its own, so a red here means a fixture regression only.
+      # it to blocking here. The browser and system-dependency provisioning
+      # steps above fail loud on their own, so a red here means a fixture
+      # regression only.
       - name: Frontend fixture-harness capture
         id: capture
         if: steps.filter.outputs.frontend == 'true'
