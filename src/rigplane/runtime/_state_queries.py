@@ -55,6 +55,11 @@ def build_state_queries(
         # filter/attenuator/preamp that don't come via transceive.
         queries.append((0x25, None, receiver))  # frequency
         queries.append((0x26, None, receiver))  # mode
+        if receiver == 0 and profile.vfo_readback == "selected_unselected":
+            # ``sub=1`` is an internal selector consumed by the senders below;
+            # receiver remains 0/None so it never invents a SUB topology.
+            queries.append((0x25, 0x01, None))  # unselected frequency
+            queries.append((0x26, 0x01, None))  # unselected mode
 
         # Per-receiver state queries.  On dual-receiver radios these use
         # cmd29 wrapping.  On single-receiver radios without cmd29 we send
@@ -128,13 +133,15 @@ def build_state_queries(
             (0x14, 0x09, None),  # CW pitch (global)
             (0x14, 0x0C, None),  # Key speed (global)
             (0x0F, None, None),  # Split (global)
-            (0x07, 0xD2, None),  # Active receiver
-            (0x07, 0xC2, None),  # Dual Watch status
             (0x21, 0x00, None),  # RIT frequency
             (0x21, 0x01, None),  # RIT status
             (0x21, 0x02, None),  # RIT TX status
         ]
     )
+    if profile.receiver_count > 1:
+        queries.append((0x07, 0xD2, None))  # Active receiver
+    if "dual_watch" in capabilities:
+        queries.append((0x07, 0xC2, None))  # Dual Watch status
 
     # Common feature queries (data-driven: if radio has the command, poll it)
     _COMMON_FEATURE_QUERIES: list[tuple[int, int]] = [

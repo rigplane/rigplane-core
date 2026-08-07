@@ -241,6 +241,17 @@ describe('fetchCapabilities', () => {
     await expect(fetchCapabilities()).resolves.toMatchObject({ vfoScheme, receivers });
   });
 
+  it('accepts both a declared VFO readback contract and an older absent field', async () => {
+    const { fetchCapabilities } = await import('../http-client');
+    mockCapabilities(makeCapabilities({ vfoReadback: 'selected_unselected' }));
+    await expect(fetchCapabilities()).resolves.toMatchObject({
+      vfoReadback: 'selected_unselected',
+    });
+
+    mockCapabilities(makeCapabilities());
+    await expect(fetchCapabilities()).resolves.not.toHaveProperty('vfoReadback');
+  });
+
   it.each([
     ['null', null],
     ['an explicit empty list', []],
@@ -276,6 +287,7 @@ describe('fetchCapabilities', () => {
     ['$.vfoScheme', { vfoScheme: undefined }],
     ['$.vfoScheme', { vfoScheme: 'unknown' }],
     ['$.vfoScheme', { vfoScheme: 'single', receivers: 2 }],
+    ['$.vfoReadback', { vfoReadback: 'relative' }],
     ['$.freqRanges[0]', { freqRanges: [null] }],
     ['$.freqRanges[0].start', { freqRanges: [{}] }],
     ['$.freqRanges[0].start', { freqRanges: [{ start: true, end: 2, label: 'HF' }] }],

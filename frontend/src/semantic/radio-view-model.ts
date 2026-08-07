@@ -31,6 +31,7 @@ export type VfoSlotId = 'A' | 'B';
  */
 export type VfoSlot =
   | { kind: 'slotted'; id: VfoSlotId }
+  | { kind: 'relative'; role: 'selected' | 'unselected' }
   | { kind: 'unslotted' }
   | { kind: 'unknown' };
 
@@ -1086,6 +1087,13 @@ function validateVfoSlot(value: unknown, path: string): VfoSlot {
     exactKeys(v, ['kind', 'id'], path);
     return { kind: 'slotted', id: oneOf(v.id, SLOT_IDS, `${path}.id`) };
   }
+  if (v.kind === 'relative') {
+    exactKeys(v, ['kind', 'role'], path);
+    return {
+      kind: 'relative',
+      role: oneOf(v.role, ['selected', 'unselected'] as const, `${path}.role`),
+    };
+  }
   if (v.kind === 'unslotted') {
     exactKeys(v, ['kind'], path);
     return { kind: 'unslotted' };
@@ -1094,10 +1102,12 @@ function validateVfoSlot(value: unknown, path: string): VfoSlot {
     exactKeys(v, ['kind'], path);
     return { kind: 'unknown' };
   }
-  invalid(`${path}.kind`, `'slotted' | 'unslotted' | 'unknown'`);
+  invalid(`${path}.kind`, `'slotted' | 'relative' | 'unslotted' | 'unknown'`);
 }
 function slotEqual(a: VfoSlot, b: VfoSlot): boolean {
-  return a.kind === 'slotted' && b.kind === 'slotted' ? a.id === b.id : a.kind === b.kind;
+  if (a.kind === 'slotted' && b.kind === 'slotted') return a.id === b.id;
+  if (a.kind === 'relative' && b.kind === 'relative') return a.role === b.role;
+  return a.kind === b.kind;
 }
 
 function validateActiveRx(value: unknown, path: string): ActiveRx {

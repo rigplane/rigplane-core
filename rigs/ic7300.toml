@@ -242,6 +242,7 @@ defaults = [15000, 10000, 7000]
 
 [vfo]
 scheme = "ab"
+readback = "selected_unselected"
 main_select = [0x00]  # VFO A
 sub_select = [0x01]   # VFO B
 swap_ab = [0xB0]

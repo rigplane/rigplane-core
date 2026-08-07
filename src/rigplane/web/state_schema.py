@@ -84,6 +84,9 @@ class ReceiverStatePublic(_Strict):
     vfoA: VfoSlotPublic
     vfoB: VfoSlotPublic
     activeSlot: str = "A"
+    # Relative inactive-VFO readback for providers that cannot prove absolute
+    # A/B identity. Additive and optional for older providers/clients.
+    unselectedVfo: VfoSlotPublic | None = None
 
     # Legacy active-slot scalars (derived from the active slot). ``freq`` is
     # renamed to ``freqHz`` by ``_RECEIVER_KEY_MAP``; the rest pass through.

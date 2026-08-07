@@ -108,6 +108,7 @@ class TestInfoEndpoint:
         await srv._serve_info(writer)  # noqa: SLF001
         data = _parse_json_body(writer)
         assert data["capabilities"]["vfoScheme"] == "ab"
+        assert data["capabilities"]["vfoReadback"] == "selected_unselected"
 
     @pytest.mark.asyncio
     async def test_info_includes_has_lan_true(self):
@@ -251,6 +252,7 @@ class TestCapabilitiesEndpoint:
         data = _parse_json_body(writer)
         assert data["receivers"] == 1
         assert data["vfoScheme"] == "ab"
+        assert data["vfoReadback"] == "selected_unselected"
 
     @pytest.mark.asyncio
     async def test_capabilities_include_filter_config(self):

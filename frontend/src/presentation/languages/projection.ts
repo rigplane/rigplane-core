@@ -59,6 +59,7 @@ function primitive(value: unknown, path: string): Primitive {
 
 function projectSlot(slot: VfoSlot): string {
   if (slot.kind === 'slotted') return primitive(slot.id, 'slot.id') as string;
+  if (slot.kind === 'relative') return primitive(slot.role, 'slot.role') as string;
   return slot.kind; // 'unslotted' | 'unknown' — both already explicit, distinct strings
 }
 

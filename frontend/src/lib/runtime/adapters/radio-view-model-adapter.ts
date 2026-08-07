@@ -39,7 +39,10 @@ import { isFieldAvailable } from '$lib/state/field-status';
 import { modInputStateKey } from '$lib/radio/mod-input';
 import { flattenBands, findActiveBand } from '$lib/radio/band-plan';
 import { getFrequencyPermit, type FrequencyPermit, type TxPermit } from '$lib/utils/tx-permit';
-import { resolveFilterModeConfig } from '$lib/runtime/props/panel-props';
+import {
+  relativeVfoIdentityUnknown,
+  resolveFilterModeConfig,
+} from '$lib/runtime/props/panel-props';
 import {
   deriveIfShift, pbtRangeFromCaps, pbtRawToHz,
   controlRangeFromCapsOrDefault, nrRawToDisplay, nbDepthRawToDisplay,
@@ -62,7 +65,11 @@ import {
 // keeps its inline union and only `.lifecycle` gets the real type.
 import type { ResourceHealth } from '$lib/runtime/resource-demand';
 
-type Slot = { kind: 'slotted'; id: VfoSlotId } | { kind: 'unslotted' } | { kind: 'unknown' };
+type Slot =
+  | { kind: 'slotted'; id: VfoSlotId }
+  | { kind: 'relative'; role: 'selected' | 'unselected' }
+  | { kind: 'unslotted' }
+  | { kind: 'unknown' };
 type Fact = { status: 'known'; value: boolean } | { status: 'unknown' };
 type Reason = {
   field: string;
@@ -120,7 +127,9 @@ function readings(
 }
 
 const sameSlot = (a: Slot, b: Slot): boolean =>
-  a.kind === 'slotted' && b.kind === 'slotted' ? a.id === b.id : a.kind === b.kind;
+  a.kind === 'slotted' && b.kind === 'slotted' ? a.id === b.id
+    : a.kind === 'relative' && b.kind === 'relative' ? a.role === b.role
+      : a.kind === b.kind;
 
 function hasCap(caps: Capabilities | null, name: string): boolean {
   return caps?.capabilities?.includes(name) ?? false;
@@ -1258,13 +1267,26 @@ export function toRadioViewModel(
     // MAIN A active on evidence the radio never provided.
     const activeSlot = seen(state, `${key}.activeSlot`)
       && (rx?.activeSlot === 'A' || rx?.activeSlot === 'B') ? rx.activeSlot : null;
+    const relativeIdentityUnknown = relativeVfoIdentityUnknown(state, caps, key);
     const positions: Position[] = slots === null
       ? [{ slot: { kind: 'unslotted' }, base: `${key}.`, filterKey: 'filter', src: rx }]
-      : slots.every((id) => rx?.[SLOT_KEY[id]] != null)
-        ? slots.map((id) => ({
-          slot: { kind: 'slotted', id }, base: `${key}.${SLOT_KEY[id]}.`,
-          filterKey: 'filterNum', src: rx?.[SLOT_KEY[id]] ?? null,
-        }))
+      : relativeIdentityUnknown
+          ? [
+            {
+              slot: { kind: 'relative', role: 'selected' }, base: `${key}.`,
+              filterKey: 'filter', src: rx,
+            },
+            {
+              slot: { kind: 'relative', role: 'unselected' },
+              base: `${key}.unselectedVfo.`, filterKey: 'filterNum',
+              src: rx?.unselectedVfo ?? null,
+            },
+          ]
+        : slots.every((id) => rx?.[SLOT_KEY[id]] != null)
+          ? slots.map((id) => ({
+            slot: { kind: 'slotted', id }, base: `${key}.${SLOT_KEY[id]}.`,
+            filterKey: 'filterNum', src: rx?.[SLOT_KEY[id]] ?? null,
+          }))
         // A slotted scheme whose slot view was never observed: ONE position of
         // unknown slot identity. Synthesising 'A' here is exactly the
         // fabrication MOR-988 §3.2 forbids.
@@ -1275,11 +1297,15 @@ export function toRadioViewModel(
       // only on the active one. `activeSlot` is already the gated read above,
       // so an unobserved reading is `null` and BOTH slots fail closed here; an
       // unslotted (or unknown-slot) position is its receiver's only one.
-      const isActiveSlot = slot.kind !== 'slotted' || slot.id === activeSlot;
+      const isActiveSlot = slot.kind === 'relative' ? slot.role === 'selected'
+        : slot.kind !== 'slotted' || slot.id === activeSlot;
       return {
         receiver,
         slot,
-        label: slot.kind === 'slotted' ? `${receiver} ${slot.id}` : receiver,
+        label: slot.kind === 'slotted' ? `${receiver} ${slot.id}`
+          : slot.kind === 'relative'
+            ? (slot.role === 'selected' ? 'Selected VFO' : 'Unselected VFO')
+            : receiver,
         ...readings(state, base, filterKey, src),
         // Unchanged in meaning, restated on the new fact: the radio-wide active
         // VFO IS the active receiver's active slot.

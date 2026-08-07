@@ -54,6 +54,7 @@ VALID_KEYBOARD_MODIFIERS = {"SHIFT", "CTRL", "ALT", "META"}
 VALID_AUDIO_SAMPLE_RATES_HZ = {8000, 12000, 16000, 24000, 48000}
 VALID_BROWSER_RX_TRANSPORTS = {"auto", "pcm", "opus"}
 VALID_RX_AUDIO_CHANNELS = {"mix", "left", "right"}
+VALID_VFO_READBACK = {"absolute", "selected_unselected", "none"}
 DEFAULT_KEYBOARD_PROFILE_NAME = "_keyboard-default.toml"
 
 _REQUIRED_SECTIONS = ("radio", "capabilities", "modes", "filters", "vfo")
@@ -79,6 +80,7 @@ class RigConfig:
     modes: tuple[str, ...]
     filters: tuple[str, ...]
     vfo_scheme: str
+    vfo_readback: str
     vfo_main_select: tuple[int, ...] | None
     vfo_sub_select: tuple[int, ...] | None
     vfo_swap_ab: tuple[int, ...] | None
@@ -177,6 +179,7 @@ class RigConfig:
             swap_main_sub_code=swap_main_sub,
             equal_main_sub_code=equal_main_sub,
             vfo_scheme=self.vfo_scheme,
+            vfo_readback=self.vfo_readback,
             has_lan=self.has_lan,
             freq_ranges=ranges,
             modes=tuple(self.modes),
@@ -1013,6 +1016,12 @@ def load_rig(path: Path) -> RigConfig:
             f"{filename}: [vfo].scheme must be one of {VALID_VFO_SCHEMES}, "
             f"got {scheme!r}"
         )
+    vfo_readback = vfo.get("readback", "none")
+    if vfo_readback not in VALID_VFO_READBACK:
+        raise RigLoadError(
+            f"{filename}: [vfo].readback must be one of "
+            f"{sorted(VALID_VFO_READBACK)}, got {vfo_readback!r}"
+        )
     expected_receiver_count = 1 if scheme in {"single", "ab"} else 2
     receiver_count = radio["receiver_count"]
     if (
@@ -1395,6 +1404,7 @@ def load_rig(path: Path) -> RigConfig:
         filter_config=filter_config,
         max_watts=max_watts,
         vfo_scheme=scheme,
+        vfo_readback=vfo_readback,
         vfo_main_select=vfo_main,
         vfo_sub_select=vfo_sub,
         vfo_swap_ab=vfo_swap_ab,

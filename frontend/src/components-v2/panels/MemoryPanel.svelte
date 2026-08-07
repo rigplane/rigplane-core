@@ -56,12 +56,14 @@
   }
 
   function recallChannel(ch: number) {
+    if (!p.vfoIdentityKnown) return;
     runtime.send('set_memory_mode', { channel: ch });
     runtime.send('memory_to_vfo', { channel: ch });
     selectedChannel = ch;
   }
 
   function storeVfoToChannel(ch: number) {
+    if (!p.vfoIdentityKnown) return;
     const freq = p.activeFreqHz;
     const mode = p.activeMode;
 
@@ -128,6 +130,9 @@
     <button
       type="button"
       class="store-btn"
+      disabled={!p.vfoIdentityKnown}
+      data-disabled-reason={!p.vfoIdentityKnown ? 'vfo-identity-unknown' : undefined}
+      title={!p.vfoIdentityKnown ? 'VFO identity is unknown' : undefined}
       onclick={() => { storeTarget = storeTarget === null ? findNextEmpty() : null; }}
     >
       VFO {'->'} M
@@ -146,7 +151,10 @@
           bind:value={storeTarget}
         />
       </label>
-      <button type="button" class="action-btn store-confirm" onclick={() => storeVfoToChannel(storeTarget!)}>
+      <button type="button" class="action-btn store-confirm"
+        disabled={!p.vfoIdentityKnown}
+        data-disabled-reason={!p.vfoIdentityKnown ? 'vfo-identity-unknown' : undefined}
+        onclick={() => storeVfoToChannel(storeTarget!)}>
         Store
       </button>
       <button type="button" class="action-btn cancel-btn" onclick={() => (storeTarget = null)}>
@@ -203,6 +211,8 @@
               type="button"
               class="action-btn recall-btn"
               title="Recall to VFO"
+              disabled={!p.vfoIdentityKnown}
+              data-disabled-reason={!p.vfoIdentityKnown ? 'vfo-identity-unknown' : undefined}
               onclick={() => recallChannel(ch)}
             >
               {'>>'}VFO
@@ -241,6 +251,8 @@
               type="button"
               class="action-btn store-btn-inline"
               title="Store VFO to this channel"
+              disabled={!p.vfoIdentityKnown}
+              data-disabled-reason={!p.vfoIdentityKnown ? 'vfo-identity-unknown' : undefined}
               onclick={() => storeVfoToChannel(ch)}
             >
               {'<<'}VFO

@@ -8,7 +8,7 @@ import time
 from collections.abc import Callable
 from types import SimpleNamespace
 from typing import Any
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, call, patch
 
 import pytest
 
@@ -24,7 +24,12 @@ from rigplane.core.state_acquisition_policy import (
     FieldCapability,
     RadioAcquisitionProfile,
 )
-from rigplane.core.state_pipeline_contracts import FieldPath
+from rigplane.core.state_pipeline_contracts import (
+    FieldPath,
+    Observation,
+    SourceMetadata,
+)
+from rigplane.core.radio_protocol import RelativeVfoState
 from rigplane.core.state_store import StateStore
 from rigplane.core.types import CivFrame
 from rigplane.core.command_service import (
@@ -209,6 +214,13 @@ def _make_radio(active: str = "MAIN", *, model: str = "IC-7610") -> MagicMock:
 
     radio.select_receiver = AsyncMock(side_effect=_select_receiver)
     radio.set_vfo_slot = AsyncMock()
+    radio._set_vfo_slot_confirmed = AsyncMock()
+    radio.read_relative_vfo = AsyncMock(
+        side_effect=(
+            RelativeVfoState(14_200_000, "USB", 1, 0),
+            RelativeVfoState(7_100_000, "LSB", 2, 0),
+        )
+    )
     radio.get_dual_watch = AsyncMock(return_value=False)
     radio.set_tuner_status = AsyncMock()
     radio.get_tuner_status = AsyncMock(return_value=0)
@@ -1172,10 +1184,112 @@ async def test_single_receiver_vfo_b_selects_slot_without_sub_receiver() -> None
 
     await poller._execute(SelectVfo("B"))  # noqa: SLF001
 
-    radio.set_vfo_slot.assert_awaited_once_with("B", receiver=0)
+    radio._set_vfo_slot_confirmed.assert_awaited_once_with("B", receiver=0)
+    radio.set_vfo_slot.assert_not_awaited()
     radio.select_receiver.assert_not_awaited()
     assert state.active == "MAIN"
     assert state.main.active_slot == "B"
+
+
+@pytest.mark.asyncio
+async def test_relative_vfo_ack_maps_selected_and_complement_then_rebinds() -> None:
+    state = RadioState()
+    state.active = "MAIN"
+    radio = _make_radio(model="IC-7300")
+    radio._radio_state = state
+    radio.read_relative_vfo.side_effect = (
+        RelativeVfoState(14_200_000, "USB", 1, 0),
+        RelativeVfoState(7_100_000, "LSB", 2, 0),
+        RelativeVfoState(7_200_000, "LSB", 2, 0),
+        RelativeVfoState(14_250_000, "USB", 1, 0),
+    )
+    store = StateStore()
+    poller = RadioPoller(radio, CommandQueue(), radio_state=state, state_store=store)
+
+    assert "receiver.0.vfo.active_slot" not in store.snapshot().as_dict()
+    await poller._execute(SelectVfo("B"))  # noqa: SLF001
+    first = store.snapshot()
+    assert first.field("receiver.0.vfo.active_slot").value == "B"
+    assert first.field("receiver.0.slot.B.freq_mode.freq_hz").value == 14_200_000
+    assert first.field("receiver.0.slot.A.freq_mode.freq_hz").value == 7_100_000
+
+    await poller._execute(SelectVfo("A"))  # noqa: SLF001
+    second = store.snapshot()
+    assert second.field("receiver.0.vfo.active_slot").value == "A"
+    assert second.field("receiver.0.slot.A.freq_mode.freq_hz").value == 7_200_000
+    assert second.field("receiver.0.slot.B.freq_mode.freq_hz").value == 14_250_000
+    assert radio._set_vfo_slot_confirmed.await_args_list == [
+        call("B", receiver=0),
+        call("A", receiver=0),
+    ]
+    assert radio.set_vfo_slot.await_count == 0
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "failure",
+    (
+        CommandError("NAK"),
+        RigplaneTimeoutError("select timeout"),
+        asyncio.CancelledError(),
+    ),
+)
+async def test_relative_vfo_failed_select_leaves_identity_unknown(
+    failure: BaseException,
+) -> None:
+    radio = _make_radio(model="IC-7300")
+    radio._radio_state = RadioState()
+    radio._set_vfo_slot_confirmed.side_effect = failure
+    store = StateStore()
+    poller = RadioPoller(radio, CommandQueue(), state_store=store)
+
+    with pytest.raises(type(failure)):
+        await poller._execute(SelectVfo("B"))  # noqa: SLF001
+
+    assert "receiver.0.vfo.active_slot" not in store.snapshot().as_dict()
+    radio.read_relative_vfo.assert_not_awaited()
+    assert radio._relative_vfo_observations_suspended is False
+
+
+@pytest.mark.asyncio
+async def test_relative_vfo_readback_failure_retains_ack_identity_only() -> None:
+    radio = _make_radio(model="IC-7300")
+    radio._radio_state = RadioState()
+    radio.read_relative_vfo.side_effect = RigplaneTimeoutError("read timeout")
+    store = StateStore()
+    poller = RadioPoller(radio, CommandQueue(), state_store=store)
+
+    with pytest.raises(RigplaneTimeoutError):
+        await poller._execute(SelectVfo("B"))  # noqa: SLF001
+
+    snapshot = store.snapshot()
+    assert snapshot.field("receiver.0.vfo.active_slot").value == "B"
+    assert "receiver.0.slot.B.freq_mode.freq_hz" not in snapshot.as_dict()
+
+
+@pytest.mark.asyncio
+async def test_relative_vfo_epoch_reset_discards_vfo_facts_but_not_ptt() -> None:
+    radio = _make_radio(model="IC-7300")
+    radio._radio_state = RadioState()
+    store = StateStore()
+    poller = RadioPoller(radio, CommandQueue(), state_store=store)
+    store.apply(
+        Observation(
+            path=FieldPath.global_("tx_state", "ptt"),
+            value=False,
+            source=SourceMetadata(source="test", provider="test"),
+            timestamp_monotonic=time.monotonic(),
+        )
+    )
+    await poller._execute(SelectVfo("B"))  # noqa: SLF001
+
+    poller.reset_vfo_session()
+
+    fields = store.snapshot().as_dict()
+    assert "receiver.0.vfo.active_slot" not in fields
+    assert "receiver.0.active.freq_mode.freq_hz" not in fields
+    assert "receiver.0.unselected.freq_mode.freq_hz" not in fields
+    assert fields["global.tx_state.ptt"]["value"] is False
 
 
 @pytest.mark.asyncio

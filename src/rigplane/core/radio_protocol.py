@@ -84,6 +84,8 @@ __all__ = [
     "ReceiverBankCapable",
     "TransceiverBankCapable",
     "VfoSlotCapable",
+    "RelativeVfoReadbackCapable",
+    "RelativeVfoState",
     "StateCacheCapable",
     "StateModelCapable",
     "StateModelService",
@@ -1468,6 +1470,25 @@ class VfoSlotCapable(Protocol):
 
     async def equalize_vfo_ab(self, receiver: int = 0) -> None:
         """Copy the active VFO's state to the inactive VFO on ``receiver``."""
+        ...
+
+
+@dataclass(frozen=True, slots=True)
+class RelativeVfoState:
+    """Provider-neutral Selected/Unselected frequency-mode tuple."""
+
+    freq_hz: int
+    mode: str
+    filter_num: int | None = None
+    data_mode: int = 0
+
+
+@runtime_checkable
+class RelativeVfoReadbackCapable(Protocol):
+    """Radio can read Selected/Unselected VFOs without selecting or swapping."""
+
+    async def read_relative_vfo(self, *, selected: bool) -> RelativeVfoState:
+        """Return a fresh tuple for the radio's current relative role."""
         ...
 
 

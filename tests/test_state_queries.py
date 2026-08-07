@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, call, patch
 
 import pytest
 
@@ -43,11 +43,13 @@ class TestBuildStateQueries:
         assert 1 in freq_receivers
 
     def test_ic7300_single_receiver(self) -> None:
-        """IC-7300 has 1 receiver — freq/mode only for rx 0."""
+        """IC-7300 has selected/unselected reads on its one receiver."""
         profile = resolve_radio_profile(model="IC-7300")
         queries = build_state_queries(profile, _ic7300_caps())
-        freq_receivers = [q[2] for q in queries if q[0] == 0x25]
-        assert freq_receivers == [0]
+        freq_queries = [q for q in queries if q[0] == 0x25]
+        assert freq_queries == [(0x25, None, 0), (0x25, 0x01, None)]
+        assert (0x07, 0xD2, None) not in queries
+        assert (0x07, 0xC2, None) not in queries
 
     def test_ic7610_includes_scope_queries(self) -> None:
         """IC-7610 should have scope sub-commands (0x27)."""
@@ -154,6 +156,23 @@ class TestFetchInitialState:
         await radio._fetch_initial_state()
         assert radio.send_civ.call_count == len(queries)
         assert radio._initial_state_fetched is True
+
+    @pytest.mark.asyncio
+    async def test_single_rx_unselected_selector_is_data_not_sub_receiver(
+        self, radio
+    ) -> None:
+        radio._profile = resolve_radio_profile(model="IC-7300")
+
+        await radio._fetch_initial_state()
+
+        assert (
+            call(0x25, data=b"\x01", wait_response=False)
+            in radio.send_civ.await_args_list
+        )
+        assert (
+            call(0x26, data=b"\x01", wait_response=False)
+            in radio.send_civ.await_args_list
+        )
 
     @pytest.mark.asyncio
     async def test_sets_flag_on_success(self, radio) -> None:

@@ -90,6 +90,7 @@ class VfoSlot(StrEnum):
     """VFO slot dimension for receiver-scoped frequency/mode fields."""
 
     ACTIVE = "active"
+    UNSELECTED = "unselected"
     A = "A"
     B = "B"
 
@@ -227,8 +228,11 @@ class FieldPath:
             raise ValueError("scope_controls field paths cannot include VFO slot")
         if scope is FieldScope.SCOPE_CONTROLS and family is not FieldFamily.DISPLAY:
             raise ValueError("scope_controls field paths must use display family")
-        if slot is VfoSlot.ACTIVE and scope is not FieldScope.RECEIVER:
-            raise ValueError("active VFO slot is only valid for receiver fields")
+        if (
+            slot in (VfoSlot.ACTIVE, VfoSlot.UNSELECTED)
+            and scope is not FieldScope.RECEIVER
+        ):
+            raise ValueError("relative VFO slot is only valid for receiver fields")
         if slot is not None and family is not FieldFamily.FREQ_MODE:
             raise ValueError("VFO slot paths are only valid for freq_mode fields")
 
@@ -269,10 +273,11 @@ class FieldPath:
             if len(parts) != 6:
                 raise ValueError(f"receiver slot path must have 6 parts: {raw!r}")
             return cls.vfo_slot(receiver, parts[3], parts[4], parts[5])
-        if marker == VfoSlot.ACTIVE.value:
+        if marker in (VfoSlot.ACTIVE.value, VfoSlot.UNSELECTED.value):
             if len(parts) != 5:
-                raise ValueError(f"receiver active path must have 5 parts: {raw!r}")
-            return cls.active(receiver, parts[3], parts[4])
+                raise ValueError(f"receiver relative path must have 5 parts: {raw!r}")
+            builder = cls.active if marker == VfoSlot.ACTIVE.value else cls.unselected
+            return builder(receiver, parts[3], parts[4])
         if len(parts) != 4:
             raise ValueError(f"receiver field path must have 4 parts: {raw!r}")
         return cls.receiver(receiver, marker, parts[3])
@@ -332,6 +337,16 @@ class FieldPath:
         )
 
     @classmethod
+    def unselected(cls, receiver_id: str, family: str, name: str) -> FieldPath:
+        return cls(
+            scope=FieldScope.RECEIVER,
+            receiver_id=receiver_id,
+            slot=VfoSlot.UNSELECTED,
+            family=_validate_family(family),
+            name=name,
+        )
+
+    @classmethod
     def active_slot(cls, receiver_id: str) -> FieldPath:
         return cls.receiver(receiver_id, FieldFamily.VFO.value, "active_slot")
 
@@ -364,7 +379,7 @@ class FieldPath:
     def __str__(self) -> str:
         if self.scope is FieldScope.RECEIVER:
             assert self.receiver_id is not None
-            if self.slot is VfoSlot.ACTIVE:
+            if self.slot in (VfoSlot.ACTIVE, VfoSlot.UNSELECTED):
                 return ".".join(
                     [
                         self.scope.value,
@@ -911,6 +926,14 @@ def _receiver_specs(receiver_id: str) -> tuple[FieldSpec, ...]:
             unit="hz",
         ),
         spec(FieldPath.active(receiver_id, "freq_mode", "mode"), "str", writable=True),
+        spec(
+            FieldPath.unselected(receiver_id, "freq_mode", "freq_hz"),
+            "int",
+            unit="hz",
+        ),
+        spec(FieldPath.unselected(receiver_id, "freq_mode", "mode"), "str"),
+        spec(FieldPath.unselected(receiver_id, "freq_mode", "filter_num"), "int"),
+        spec(FieldPath.unselected(receiver_id, "freq_mode", "data_mode"), "int"),
         spec(
             FieldPath.vfo_slot(receiver_id, "A", "freq_mode", "freq_hz"),
             "int",

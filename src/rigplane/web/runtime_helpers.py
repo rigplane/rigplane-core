@@ -237,6 +237,17 @@ def _snapshot_field_public_paths(path: FieldPath) -> tuple[str, ...]:
                         _receiver_public_key(target),
                     ),
                 )
+            if path.slot is VfoSlot.UNSELECTED:
+                target = _VFO_SLOT_FIELDS.get(path.name)
+                if target is None:
+                    return ()
+                return (
+                    _public_field_path(
+                        receiver_key,
+                        "unselectedVfo",
+                        _receiver_public_key(target),
+                    ),
+                )
             if path.slot not in (None, VfoSlot.ACTIVE):
                 return ()
             target = _RECEIVER_FREQ_MODE_FIELDS.get(path.name)
@@ -367,6 +378,16 @@ def _default_receiver_field_status(
                 ),
                 FieldPath.vfo_slot(receiver_key, slot_name, "freq_mode", name),
             )
+    for name, state_key in _VFO_SLOT_FIELDS.items():
+        _set_missing_field_status(
+            statuses,
+            _public_field_path(
+                receiver_key,
+                "unselectedVfo",
+                _receiver_public_key(state_key),
+            ),
+            FieldPath.unselected(receiver_key, "freq_mode", name),
+        )
     _set_missing_field_status(
         statuses,
         _public_field_path(receiver_key, "activeSlot"),
@@ -815,7 +836,8 @@ def _project_tx_target(field: FieldSnapshot) -> dict[str, object]:
         )
     except (TypeError, ValueError):
         return {"status": "unknown", "reason": "contradiction"}
-    return cast(dict[str, object], target.to_dict())
+    projected: dict[str, object] = target.to_dict()
+    return projected
 
 
 def _project_scope_fixed_edge(value: Any) -> dict[str, int]:
@@ -847,7 +869,8 @@ def _canonical_snapshot_fields(snapshot: StateSnapshot) -> tuple[FieldSnapshot, 
     path = FieldPath.global_("tx_state", "tx_target")
     targets = tuple(field for field in snapshot.fields if field.path == path)
     if len(targets) < 2:
-        return cast(tuple[FieldSnapshot, ...], snapshot.fields)
+        canonical: tuple[FieldSnapshot, ...] = snapshot.fields
+        return canonical
     newest_at = max(field.last_observed_monotonic for field in targets)
     newest = tuple(f for f in targets if f.last_observed_monotonic == newest_at)
     rank = (FreshnessState.FRESH, FreshnessState.UNKNOWN, FreshnessState.STALE)
@@ -883,6 +906,17 @@ def _apply_snapshot_field(
                 target = _VFO_SLOT_FIELDS.get(path.name)
                 if target is not None:
                     slot_state[target] = value
+                return
+            if path.slot is VfoSlot.UNSELECTED:
+                receiver = state.get(receiver_key)
+                if not isinstance(receiver, dict):
+                    return
+                relative = receiver.setdefault("unselected_vfo", {})
+                if not isinstance(relative, dict):
+                    return
+                target = _VFO_SLOT_FIELDS.get(path.name)
+                if target is not None:
+                    relative[target] = value
                 return
             if path.slot not in (None, VfoSlot.ACTIVE):
                 return
@@ -985,6 +1019,17 @@ def _project_snapshot_state_dict(
     state = copy.deepcopy(_EMPTY_STATE_DICT)
     for field in snapshot.fields:
         _apply_snapshot_field(state, field, radio=radio)
+    required_relative_fields = frozenset(_VFO_SLOT_FIELDS.values())
+    for receiver_key in ("main", "sub"):
+        receiver = state.get(receiver_key)
+        if not isinstance(receiver, dict):
+            continue
+        relative = receiver.get("unselected_vfo")
+        if (
+            not isinstance(relative, dict)
+            or frozenset(relative) != required_relative_fields
+        ):
+            receiver.pop("unselected_vfo", None)
     return cast(dict[str, Any], state)
 
 

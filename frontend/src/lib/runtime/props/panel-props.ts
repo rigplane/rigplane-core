@@ -52,6 +52,40 @@ function activeFieldShown(state: ServerState | null, field: string): boolean {
   );
 }
 
+function fieldObserved(state: ServerState | null, field: string): boolean {
+  const status = state?.fieldStatus?.[field];
+  return status?.observed === true
+    && status.freshness === 'fresh'
+    && status.availability === 'available';
+}
+
+/**
+ * Whether a single-RX A/B surface must remain in Selected/Unselected mode.
+ *
+ * Current servers declare the provider readback contract explicitly. For an
+ * older compatible capabilities payload, absence of any observed absolute A
+ * and B slot facts is the conservative signal that literal A/B identity is
+ * not available. State values alone are deliberately insufficient because
+ * legacy receiver defaults can contain fabricated-looking slot objects.
+ */
+export function relativeVfoIdentityUnknown(
+  state: ServerState | null,
+  caps: Capabilities | null,
+  receiverKey: 'main' | 'sub' = 'main',
+): boolean {
+  if (!state || !caps || caps.receivers !== 1 || caps.vfoScheme !== 'ab') return false;
+  if (fieldObserved(state, `${receiverKey}.activeSlot`)) return false;
+  if (caps.vfoReadback === 'selected_unselected') return true;
+  if (caps.vfoReadback !== undefined) return false;
+
+  const hasObservedAbsoluteSlots = (['vfoA', 'vfoB'] as const).every((slotKey) =>
+    (['freqHz', 'mode', 'filterNum', 'dataMode'] as const).some((leaf) =>
+      fieldObserved(state, `${receiverKey}.${slotKey}.${leaf}`),
+    ),
+  );
+  return !hasObservedAbsoluteSlots;
+}
+
 /* ── VFO ─────────────────────────────────────────────────────── */
 
 export interface VfoStateProps {
@@ -822,13 +856,20 @@ export interface MemoryPanelProps {
   activeFreqHz: number;
   /** Active receiver mode — used by "store VFO → channel". */
   activeMode: string;
+  /** False only during a relative Selected/Unselected bootstrap epoch. */
+  vfoIdentityKnown: boolean;
 }
 
-export function toMemoryPanelProps(state: ServerState | null): MemoryPanelProps {
+export function toMemoryPanelProps(
+  state: ServerState | null,
+  caps: Capabilities | null = null,
+): MemoryPanelProps {
   const rx = state ? activeRx(state) : null;
+  const receiverKey = state?.active === 'SUB' ? 'sub' : 'main';
   return {
     activeFreqHz: rx?.freqHz ?? 0,
     activeMode: rx?.mode ?? '',
+    vfoIdentityKnown: !relativeVfoIdentityUnknown(state, caps, receiverKey),
   };
 }
 

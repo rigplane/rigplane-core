@@ -19,6 +19,7 @@ import {
   validateRadioViewModel, type RadioViewModel,
 } from '../../../../semantic/radio-view-model';
 import { topologyFixtures } from '../../../../semantic/fixtures/topologies';
+import { toMemoryPanelProps } from '../../props/panel-props';
 import { toRadioViewModel } from '../radio-view-model-adapter';
 
 const DUAL = ['scope', 'audio', 'tx', 'dual_rx'];
@@ -120,6 +121,101 @@ describe('topology is derived from real capabilities', () => {
 });
 
 describe('unobserved facts survive as the explicit unknown branch', () => {
+  it('projects fresh relative values without fabricating A/B identity', () => {
+    const base = observedState();
+    const fieldStatus = {
+      ...base.fieldStatus,
+      'main.freqHz': fresh,
+      'main.mode': fresh,
+      'main.filter': fresh,
+      'main.unselectedVfo.freqHz': fresh,
+      'main.unselectedVfo.mode': fresh,
+      'main.unselectedVfo.filterNum': fresh,
+    } as Record<string, FieldStatus>;
+    delete fieldStatus['main.activeSlot'];
+    const view = model({
+      ...base,
+      main: {
+        ...base.main,
+        unselectedVfo: slot(7_100_000, 'LSB'),
+      },
+      fieldStatus,
+    } as ServerState, caps({
+      vfoScheme: 'ab', receivers: 1, capabilities: SINGLE,
+      vfoReadback: 'selected_unselected',
+    }));
+
+    expect(view.vfos.map((vfo) => [vfo.slot, vfo.frequencyHz, vfo.label])).toEqual([
+      [{ kind: 'relative', role: 'selected' }, 14_250_000, 'Selected VFO'],
+      [{ kind: 'relative', role: 'unselected' }, 7_100_000, 'Unselected VFO'],
+    ]);
+    expect(view.vfos.filter((vfo) => vfo.isActive)).toHaveLength(1);
+    expect(view.vfos.some((vfo) => vfo.slot.kind === 'slotted')).toBe(false);
+  });
+
+  it('keeps selected-only relative readback neutral while the unselected tuple is unavailable', () => {
+    const base = observedState();
+    const fieldStatus = { ...base.fieldStatus } as Record<string, FieldStatus>;
+    delete fieldStatus['main.activeSlot'];
+    const capabilities = caps({
+      vfoScheme: 'ab', receivers: 1, capabilities: SINGLE,
+      vfoReadback: 'selected_unselected',
+    });
+    const state = {
+      ...base,
+      main: { ...base.main, unselectedVfo: undefined },
+      fieldStatus,
+    } as ServerState;
+
+    const view = model(state, capabilities);
+    expect(view.vfos.map((vfo) => [vfo.slot, vfo.frequencyHz])).toEqual([
+      [{ kind: 'relative', role: 'selected' }, 14_250_000],
+      [{ kind: 'relative', role: 'unselected' }, null],
+    ]);
+    expect(view.vfos.some((vfo) => vfo.slot.kind === 'slotted')).toBe(false);
+    expect(toMemoryPanelProps(state, capabilities).vfoIdentityKnown).toBe(false);
+  });
+
+  it('keeps an older selected-only payload neutral without local persistence guesses', () => {
+    const base = observedState();
+    const fieldStatus = { ...base.fieldStatus } as Record<string, FieldStatus>;
+    delete fieldStatus['main.activeSlot'];
+    for (const slotKey of ['vfoA', 'vfoB']) {
+      for (const leaf of ['freqHz', 'mode', 'filterNum', 'dataMode']) {
+        delete fieldStatus[`main.${slotKey}.${leaf}`];
+      }
+    }
+    const capabilities = caps({
+      vfoScheme: 'ab', receivers: 1, capabilities: SINGLE,
+    });
+    const state = {
+      ...base,
+      main: {
+        ...base.main, vfoA: undefined, vfoB: undefined, unselectedVfo: undefined,
+      },
+      fieldStatus,
+    } as ServerState;
+
+    const view = model(state, capabilities);
+    expect(view.vfos.map((vfo) => [vfo.slot, vfo.frequencyHz])).toEqual([
+      [{ kind: 'relative', role: 'selected' }, 14_250_000],
+      [{ kind: 'relative', role: 'unselected' }, null],
+    ]);
+    expect(toMemoryPanelProps(state, capabilities).vfoIdentityKnown).toBe(false);
+  });
+
+  it('leaves an explicitly absolute single-RX A/B contract literal', () => {
+    const base = observedState();
+    const fieldStatus = { ...base.fieldStatus } as Record<string, FieldStatus>;
+    delete fieldStatus['main.activeSlot'];
+    const view = model({ ...base, fieldStatus } as ServerState, caps({
+      vfoScheme: 'ab', receivers: 1, capabilities: SINGLE, vfoReadback: 'absolute',
+    }));
+    expect(view.vfos.map((vfo) => vfo.slot)).toEqual([
+      { kind: 'slotted', id: 'A' }, { kind: 'slotted', id: 'B' },
+    ]);
+  });
+
   // MUTATION KILLED: `activeReceiver: { status: 'known', receiver: state.active ?? 'MAIN' }`
   // — the classic "default to MAIN" that MOR-988 §3.2 forbids.
   it('never fabricates an active receiver, and marks no VFO active', () => {

@@ -1942,6 +1942,19 @@ class CivRuntime:
         receiver_id, _, slot_override = self._receiver_context(frame)
         observations: list[Observation] = []
 
+        if (
+            frame.command in (0x25, 0x26)
+            and getattr(self._host._profile, "vfo_readback", "none")
+            == "selected_unselected"
+            and getattr(self._host, "_relative_vfo_observations_suspended", False)
+            is True
+        ):
+            # An explicit slot-select owns this short causal window. Its
+            # transaction-bound readback is published by RadioPoller; dropping
+            # ambient responses here prevents pre-ACK tuples being bound to the
+            # newly selected absolute slot.
+            return ()
+
         if frame.command in (0x00, 0x03):
             if len(frame.data) == _FREQ_BCD_LEN:
                 observations.append(
@@ -1983,19 +1996,42 @@ class CivRuntime:
         elif frame.command == 0x25 and len(frame.data) >= 6:
             from rigplane.types import bcd_decode
 
-            target_receiver = "1" if frame.data[0] else "0"
+            relative = (
+                getattr(self._host._profile, "vfo_readback", "none")
+                == "selected_unselected"
+                and self._host._profile.receiver_count == 1
+            )
+            path = (
+                FieldPath.unselected("0", "freq_mode", "freq_hz")
+                if relative and frame.data[0] == 0x01
+                else FieldPath.active(
+                    "1" if frame.data[0] else "0", "freq_mode", "freq_hz"
+                )
+            )
             observations.append(
                 self._observation(
-                    FieldPath.active(target_receiver, "freq_mode", "freq_hz"),
+                    path,
                     bcd_decode(frame.data[1:6]),
                     frame=frame,
                 )
             )
         elif frame.command == 0x26 and len(frame.data) >= 2:
-            target_receiver = "1" if frame.data[0] else "0"
+            relative = (
+                getattr(self._host._profile, "vfo_readback", "none")
+                == "selected_unselected"
+                and self._host._profile.receiver_count == 1
+            )
+
+            def path_for(name: str) -> FieldPath:
+                if relative and frame.data[0] == 0x01:
+                    return FieldPath.unselected("0", "freq_mode", name)
+                return FieldPath.active(
+                    "1" if frame.data[0] else "0", "freq_mode", name
+                )
+
             observations.append(
                 self._observation(
-                    FieldPath.active(target_receiver, "freq_mode", "mode"),
+                    path_for("mode"),
                     Mode(frame.data[1]).name,
                     frame=frame,
                 )
@@ -2007,7 +2043,7 @@ class CivRuntime:
                 # reached the web UI. Project it as the active-slot data_mode.
                 observations.append(
                     self._observation(
-                        FieldPath.active(target_receiver, "freq_mode", "data_mode"),
+                        path_for("data_mode"),
                         int(frame.data[2]),
                         frame=frame,
                     )
@@ -2015,7 +2051,7 @@ class CivRuntime:
             if len(frame.data) >= 4:
                 observations.append(
                     self._observation(
-                        FieldPath.active(target_receiver, "freq_mode", "filter_num"),
+                        path_for("filter_num"),
                         int(frame.data[3]),
                         frame=frame,
                     )
@@ -2080,15 +2116,17 @@ class CivRuntime:
             mapping = _OBSERVABLE_CMD15_FIELDS.get(frame.sub or 0)
             if mapping is not None:
                 raw_value = self._decode_level(frame.data)
-                value: int | float = raw_value
-                quality = ("confirmed",)
+                meter_value: int | float = raw_value
+                quality: tuple[str, ...] = ("confirmed",)
                 meter_key = _CMD15_METER_CALIBRATION_KEYS.get(mapping)
                 if meter_key is not None:
-                    value, quality = self._calibrated_meter_value(raw_value, meter_key)
+                    meter_value, quality = self._calibrated_meter_value(
+                        raw_value, meter_key
+                    )
                 observations.append(
                     self._observation(
                         self._field_path(mapping, receiver_id=receiver_id),
-                        value,
+                        meter_value,
                         frame=frame,
                         quality=quality,
                     )

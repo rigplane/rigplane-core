@@ -822,6 +822,7 @@ class WebServer:
             on_delta=self._on_state_freshness_delta,
         )
         self._bootstrap_state_acquisition()
+        self._publish_single_receiver_topology()
         self.command_service = CommandService(
             executor=_SharedControlCommandExecutor(self),
             state_store=self.command_state_store,
@@ -1056,6 +1057,36 @@ class WebServer:
             setattr(radio, "_meter_observation_coalescer", coalescer)
         except Exception:
             logger.debug("state acquisition: failed to attach services", exc_info=True)
+
+    def _publish_single_receiver_topology(self) -> None:
+        """Publish MAIN when the declared topology has exactly one receiver.
+
+        This is a provider-neutral structural fact.  It carries no A/B or TX
+        meaning and has no freshness deadline because topology cannot decay
+        within a provider connection epoch.
+        """
+
+        if self._radio is None:
+            return
+        try:
+            profile = self._get_profile()
+        except Exception:
+            logger.debug("topology: failed to resolve radio profile", exc_info=True)
+            return
+        if profile.receiver_count != 1:
+            return
+        self.command_state_store.apply(
+            Observation(
+                path=FieldPath.global_("slow_state", "active"),
+                value="MAIN",
+                source=SourceMetadata(
+                    source="local_reconcile",
+                    provider="radio_topology",
+                    native_id="single_receiver_main",
+                ),
+                timestamp_monotonic=time.monotonic(),
+            )
+        )
 
     def _radio_ready(self) -> bool:
         """Backend view of radio readiness (CI-V healthy)."""
@@ -1934,6 +1965,12 @@ class WebServer:
 
     def _on_radio_reconnect(self) -> None:
         """Called after soft_reconnect — refetch state and re-enable scope."""
+        # A/B identity and relative samples are connection-epoch facts.  Clear
+        # them before any new-epoch read can arrive; the topology-derived MAIN
+        # fact is independently valid and is reasserted without touching TX.
+        if isinstance(self._radio_poller, RadioPoller):
+            self._radio_poller.reset_vfo_session()
+        self._publish_single_receiver_topology()
         # Clear poller readiness so scope waits for refetch to complete
         if self._radio_poller is not None:
             self._radio_poller._initial_fetch_done.clear()
@@ -2545,6 +2582,7 @@ class WebServer:
                     "filterWidthMax": profile.filter_width_max,
                     "filterConfig": _serialize_filter_config(profile),
                     "vfoScheme": profile.vfo_scheme,
+                    "vfoReadback": profile.vfo_readback,
                     "hasLan": profile.has_lan,
                     "attValues": (
                         list(profile.att_values) if profile.att_values else None
@@ -2972,6 +3010,7 @@ class WebServer:
                 "capabilities": sorted(caps),
                 "receivers": profile.receiver_count,
                 "vfoScheme": profile.vfo_scheme,
+                "vfoReadback": profile.vfo_readback,
                 "freqRanges": freq_ranges,
                 "modes": list(profile.modes),
                 "filters": list(profile.filters),

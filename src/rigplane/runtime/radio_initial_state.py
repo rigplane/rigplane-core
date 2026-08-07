@@ -62,7 +62,18 @@ async def fetch_initial_state(radio: IcomRadio) -> None:
         ok = 0
         for cmd_byte, sub_byte, receiver in queries:
             try:
-                if receiver is not None:
+                if (
+                    receiver is None
+                    and cmd_byte in (0x25, 0x26)
+                    and sub_byte == 0x01
+                    and radio._profile.vfo_readback == "selected_unselected"
+                ):
+                    await radio.send_civ(
+                        cmd_byte,
+                        data=b"\x01",
+                        wait_response=False,
+                    )
+                elif receiver is not None:
                     if cmd_byte in (0x25, 0x26):
                         # Freq/mode: receiver byte as data payload
                         await radio.send_civ(
